@@ -4,7 +4,8 @@
 TFRecord schema stores only pixels. This module persists that source list as a
 CSV next to the records (``sources_<subset>.csv``) so the evaluation can crop
 postage stamps centered on a known lens or galaxy, and so the forward op can
-re-inject a field's fixed stars (the scene is stored STARLESS). One row per
+re-inject a field's fixed stars, including their sampled four-band colours,
+temperature, and extinction (the scene is stored STARLESS). One row per
 galaxy, per lens, and per star.
 """
 
@@ -20,9 +21,10 @@ SOURCE_COLS = ["field_index", "type", "render", "x_pix", "y_pix",
                # Extra galaxy truth persisted for later analysis (empty for
                # lenses, and for whichever render path doesn't provide it):
                "re_arcsec", "logmass", "mass_scale",
-               # Star VIS magnitude (empty for galaxies/lenses); the forward op
-               # re-injects fixed stars from (x_pix, y_pix, mag_vis).
-               "mag_vis"]
+               # Per-band stellar magnitudes (empty for galaxies/lenses); the
+               # forward op re-injects fixed stars with their sampled colour.
+               "mag_vis", "mag_y_e", "mag_j_e", "mag_h_e",
+               "temperature_k", "extinction_av"]
 
 
 def _flux_vis(src: dict[str, Any]):
@@ -85,6 +87,11 @@ def _star_row(field_index: int, star: dict[str, Any]) -> dict[str, Any]:
         "flux_vis_e": "", "z": "", "subhalo_id": "", "theta_E_arcsec": "",
         "re_arcsec": "", "logmass": "", "mass_scale": "",
         "mag_vis": _num(star.get("mag_vis")),
+        "mag_y_e": _num(star.get("mag_y_e")),
+        "mag_j_e": _num(star.get("mag_j_e")),
+        "mag_h_e": _num(star.get("mag_h_e")),
+        "temperature_k": _num(star.get("temperature_k")),
+        "extinction_av": _num(star.get("extinction_av")),
     }
 
 
@@ -120,7 +127,9 @@ def _parse(row: dict[str, str]) -> dict[str, Any]:
                            "subhalo_id": row["subhalo_id"] or None}
     out["field_index"] = int(row["field_index"])
     for k in ("x_pix", "y_pix", "flux_vis_e", "z", "theta_E_arcsec",
-              "re_arcsec", "logmass", "mass_scale", "mag_vis"):
+              "re_arcsec", "logmass", "mass_scale", "mag_vis",
+              "mag_y_e", "mag_j_e", "mag_h_e", "temperature_k",
+              "extinction_av"):
         v = row.get(k, "")
         out[k] = float(v) if v not in ("", None) else None
     return out

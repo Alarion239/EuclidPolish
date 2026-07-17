@@ -10,6 +10,7 @@ from euclid_polish.image import Image
 from euclid_polish.sky.generation.sky_simulator import (
     SkySimulator,
     SkySimulatorConfig,
+    _sample_star_band_magnitudes,
 )
 from tests._tiny_catalog import TinyCosmosCatalog
 
@@ -109,7 +110,27 @@ def test_field_is_starless_by_default_but_records_stars(simulator: SkySimulator)
                                          n_stars=20, n_lenses=0)
     assert np.all(img.data == 0.0)                      # no star flux deposited
     assert meta["n_stars"] == 20 and len(meta["stars"]) == 20
-    assert all({"x_pix", "y_pix", "mag_vis"} <= set(s) for s in meta["stars"])
+    assert all(
+        {"x_pix", "y_pix", "mag_vis", "mag_y_e", "mag_j_e", "mag_h_e",
+         "temperature_k", "extinction_av"}
+        <= set(s)
+        for s in meta["stars"]
+    )
+
+
+def test_star_colours_are_correlated_broad_and_nir_bright():
+    rng = np.random.default_rng(123)
+    draws = np.asarray([
+        [m[name] - m["VIS"] for name in ("Y_E", "J_E", "H_E")]
+        for m in (_sample_star_band_magnitudes(rng, 20.0) for _ in range(4000))
+    ])
+
+    assert np.all(np.median(draws, axis=0) < -0.7)
+    assert np.all(np.std(draws, axis=0) > 0.4)
+    corr = np.corrcoef(draws.T)
+    assert np.all(corr[np.triu_indices(3, 1)] > 0.85)
+    assert draws.min() >= Config.STAR_COLOR_OFFSET_MIN_MAG
+    assert draws.max() <= Config.STAR_COLOR_OFFSET_MAX_MAG
 
 
 # ---------------------------------------------------------------------------

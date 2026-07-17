@@ -11,7 +11,10 @@ from typing import Any
 import numpy as np
 
 from euclid_polish.image import Image, Role
-from euclid_polish.sky.generation.sky_simulator import _deposit_star
+from euclid_polish.sky.generation.sky_simulator import (
+    _deposit_star,
+    star_band_magnitudes_from_record,
+)
 
 StarDepositor = Callable[[np.ndarray, dict[str, Any]], None]
 
@@ -23,6 +26,7 @@ def _deposit_fixed_star(canvas: np.ndarray, star: dict[str, Any]) -> None:
         float(star["x_pix"]),
         float(star["y_pix"]),
         float(star["mag_vis"]),
+        band_magnitudes=star_band_magnitudes_from_record(star),
     )
 
 

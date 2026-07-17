@@ -70,6 +70,7 @@ from euclid_polish.sky.generation.sky_simulator import (
     SkySimulator,
     SkySimulatorConfig,
     _deposit_star,
+    star_band_magnitudes_from_record,
 )
 from euclid_polish.sky.generation.source_catalog import (
     SOURCE_COLS,
@@ -698,8 +699,13 @@ def _forward_with_stars(fwd, sky_starless: Image, stars, rng) -> tuple:
     if stars:
         star_scene = np.zeros_like(sky_starless.data)
         for s in stars:
-            _deposit_star(star_scene, float(s["x_pix"]), float(s["y_pix"]),
-                          float(s["mag_vis"]))
+            _deposit_star(
+                star_scene,
+                float(s["x_pix"]),
+                float(s["y_pix"]),
+                float(s["mag_vis"]),
+                band_magnitudes=star_band_magnitudes_from_record(s),
+            )
     else:
         star_scene = None
     return fwd.process(

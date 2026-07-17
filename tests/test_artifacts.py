@@ -30,11 +30,11 @@ def test_default_config_has_reasonable_values():
 
 
 def test_default_hot_pixel_rate_is_sparse_in_lr_frame():
-    """Delivered 255x255 planes should contain only a few residual hot pixels."""
+    """Delivered 255x255 planes should contain well below one hot pixel."""
     cfg = ArtifactConfig()
     expected = cfg.hot_pixel_fraction * 255 * 255
-    assert cfg.hot_pixel_fraction == pytest.approx(1.0e-4)
-    assert expected == pytest.approx(6.5025)
+    assert cfg.hot_pixel_fraction == pytest.approx(5.0e-6)
+    assert expected == pytest.approx(0.325125)
 
 
 @pytest.mark.parametrize("bad_kwargs", [
@@ -86,8 +86,8 @@ def test_cr_count_scales_linearly_with_exposure():
 def test_cr_count_matches_back_of_envelope_for_vis():
     """VIS 510² @ 0.10″: raw rate × area × time × rejection factor.
 
-    The post-rejection factor (~0.02 for VIS) models across-dither
-    image-differencing that removes the vast majority of GCR hits
+    The post-rejection factor models across-dither image differencing and
+    MER masking that remove the vast majority of GCR hits
     before the science image is delivered.
     """
     cfg = ArtifactConfig()
@@ -95,18 +95,17 @@ def test_cr_count_matches_back_of_envelope_for_vis():
     raw   = 5.0 * (12e-4) ** 2 * 510 * 510 * (560.52 * 4)
     rejection = Config.BAND_VIS.cr_rate_factor
     assert n == pytest.approx(raw * rejection, rel=1e-9)
-    # Post-rejection should leave order ~100 hits per 510² stack (not 4000).
-    assert 30 < n < 300
+    # Post-rejection should leave order ten hits per 510² stack (not 4000).
+    assert 3 < n < 30
 
 
-def test_cr_count_nisp_keeps_most_hits():
-    """NISP up-the-ramp slope fit is less aggressive: rate factor ~1."""
+def test_cr_count_nisp_mer_rejects_nearly_all_hits():
+    """NISP MER residual counts are lower than VIS after ramp/mask rejection."""
     cfg = ArtifactConfig()
     n_vis = expected_cosmic_ray_count((510, 510), Config.BAND_VIS, cfg)
     n_nisp = expected_cosmic_ray_count((510, 510), Config.BAND_Y_E, cfg)
-    # After our per-band factors, NISP gets MORE hits than VIS because
-    # VIS is heavily rejected — even though VIS exposes 5× longer.
-    assert n_nisp > n_vis, (n_vis, n_nisp)
+    assert Config.BAND_Y_E.cr_rate_factor == pytest.approx(0.015)
+    assert 0 < n_nisp < n_vis, (n_vis, n_nisp)
 
 
 def test_cr_rate_factor_zero_disables_band():
@@ -347,11 +346,26 @@ def test_streak_orientation_is_isotropic_over_many_streaks():
 # Full pipeline integration: forward model with artifacts on vs off
 # ---------------------------------------------------------------------------
 
-def test_forward_model_with_artifacts_changes_image():
+def test_forward_model_with_artifacts_changes_image(monkeypatch):
     from euclid_polish.image import Image
+    from euclid_polish.sky.observation import noise as noise_module
     from euclid_polish.sky.observation.observation_simulator import (
         ObservationSimulator,
         ObservationSimulatorConfig,
+    )
+
+    # Production residuals are deliberately sparse enough that a 64x64 LR
+    # crop often contains none. Force a dense hot-pixel population here so
+    # this test isolates the simulator's add_artifacts switch deterministically.
+    forced_artifacts = ArtifactConfig(
+        add_cosmic_rays=False,
+        add_hot_pixels=True,
+        hot_pixel_fraction=0.01,
+        add_dead_pixels=False,
+        add_streaks=False,
+    )
+    monkeypatch.setattr(
+        noise_module, "ArtifactConfig", lambda: forced_artifacts,
     )
 
     H = W = 128

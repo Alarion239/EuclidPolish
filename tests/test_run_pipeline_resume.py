@@ -276,8 +276,12 @@ def test_truncate_tfrecord_keeps_first_k(tmp_path):
 
 def test_filter_sources_part_keeps_valid_rows_in_set(tmp_path):
     p = str(tmp_path / "sources_train.part0000.csv")
-    full = ",".join(["0", "galaxy", "sersic", "1.0", "2.0", "3.0", "0.5",
-                     "", "", "", "", "", ""])   # field_index … mag_vis (= SOURCE_COLS)
+    values = dict.fromkeys(rp.SOURCE_COLS, "")
+    values.update({
+        "field_index": "0", "type": "galaxy", "render": "sersic",
+        "x_pix": "1.0", "y_pix": "2.0", "flux_vis_e": "3.0", "z": "0.5",
+    })
+    full = ",".join(values[column] for column in rp.SOURCE_COLS)
     rows = [
         ",".join(rp.SOURCE_COLS),                 # header
         full,                                     # field 0 — keep

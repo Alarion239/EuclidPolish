@@ -12,7 +12,7 @@ before convolution + noise.
 Five modes (one object per mode, chosen at random — except ``field``):
 
   --mode sersic   a single analytic Sérsic bulge+disk galaxy (COSMOS row)
-  --mode star     a single point source (PSF-free delta; fixed G-type colour)
+  --mode star     a single point source (PSF-free delta; median stellar colour)
   --mode lens     a gravitational lens system — SIE + shear deflection with a
                   real TNG50 deflector and lensed source, the same pure-TNG
                   lens model the main training pipeline uses (needs the TNG

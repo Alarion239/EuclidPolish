@@ -55,6 +55,7 @@ from euclid_polish.sky.generation.redshift_model import (
     sample_target_logmass,
     sigma_v_from_stellar_mass,
 )
+from euclid_polish.sky.generation.stellar_sed import sample_stellar_sed
 from euclid_polish.sky.generation.tng_galaxy import (
     N_ORIENTATIONS,
     composite_stamp,
@@ -132,7 +133,7 @@ class SkySimulatorConfig:
 
 
 # ---------------------------------------------------------------------------
-# Stars (point sources with fixed colour)
+# Stars (point sources on a correlated stellar-colour locus)
 # ---------------------------------------------------------------------------
 
 def _sample_star_mag(
@@ -151,10 +152,43 @@ def _sample_star_mag(
     return float(m_bright + t)
 
 
+_STAR_MAG_KEYS = {
+    "VIS": "mag_vis",
+    "Y_E": "mag_y_e",
+    "J_E": "mag_j_e",
+    "H_E": "mag_h_e",
+}
+
+
+def _sample_star_band_magnitudes(
+    rng: np.random.Generator, mag_vis: float,
+) -> dict[str, float]:
+    """Compatibility wrapper returning a temperature-driven four-band SED."""
+    return sample_stellar_sed(rng, mag_vis).magnitudes
+
+
+def star_band_magnitudes_from_record(star: dict) -> dict[str, float]:
+    """Read persisted star magnitudes, with old-catalog compatibility."""
+    mag_vis = float(star["mag_vis"])
+    mags = {"VIS": mag_vis}
+    for band_name in Config.LR_INPUT_BAND_NAMES[1:]:
+        value = star.get(_STAR_MAG_KEYS[band_name])
+        mags[band_name] = (
+            float(value) if value is not None
+            else mag_vis + Config.STAR_BAND_OFFSETS_MAG[band_name]
+        )
+    return mags
+
+
 def _deposit_star(
-    canvas_4ch: np.ndarray, x_pix: float, y_pix: float, mag_vis: float,
+    canvas_4ch: np.ndarray,
+    x_pix: float,
+    y_pix: float,
+    mag_vis: float,
+    *,
+    band_magnitudes: dict[str, float] | None = None,
 ) -> None:
-    """Drop a point source at the nearest HR pixel, replicating across bands."""
+    """Drop a point source at the nearest HR pixel in all four bands."""
     H, W, C = canvas_4ch.shape
     ix = int(round(x_pix))
     iy = int(round(y_pix))
@@ -162,7 +196,11 @@ def _deposit_star(
         return
     for k, band_name in enumerate(Config.LR_INPUT_BAND_NAMES):
         band = Config.get_band(band_name)
-        mag_k = mag_vis + Config.STAR_BAND_OFFSETS_MAG[band_name]
+        mag_k = (
+            float(band_magnitudes[band_name])
+            if band_magnitudes is not None and band_name in band_magnitudes
+            else mag_vis + Config.STAR_BAND_OFFSETS_MAG[band_name]
+        )
         canvas_4ch[iy, ix, k] += np.float32(ab_mag_to_electrons(mag_k, band))
 
 
@@ -177,7 +215,8 @@ def inject_random_stars(
     FRESH star realization per visit — stars are HR deltas added *before* the
     PSF/rebin, so the forward gives them realistic shape and the model learns
     to erase them (the target stays starless). Returns the per-star metadata
-    (position + VIS magnitude), so a caller can persist it to the source CSV.
+    (position + four-band magnitudes), so a caller can persist it to the
+    source CSV.
     """
     N = canvas_4ch.shape[0]
     stars: list[dict] = []
@@ -186,9 +225,17 @@ def inject_random_stars(
         y_pix = float(rng.uniform(0.0, N - 1))
         mag = _sample_star_mag(rng, slope=mag_slope,
                                m_bright=mag_bright, m_faint=mag_faint)
-        _deposit_star(canvas_4ch, x_pix, y_pix, mag)
-        stars.append({"type": "star", "x_pix": x_pix, "y_pix": y_pix,
-                      "mag_vis": float(mag)})
+        sed = sample_stellar_sed(rng, mag)
+        band_mags = sed.magnitudes
+        _deposit_star(
+            canvas_4ch, x_pix, y_pix, mag, band_magnitudes=band_mags,
+        )
+        stars.append({
+            "type": "star", "x_pix": x_pix, "y_pix": y_pix,
+            **{_STAR_MAG_KEYS[name]: value for name, value in band_mags.items()},
+            "temperature_k": sed.temperature_k,
+            "extinction_av": sed.extinction_av,
+        })
     return stars
 
 
@@ -403,7 +450,7 @@ class SkySimulator:
         }
 
     def _draw_star(self, rng: np.random.Generator) -> dict:
-        """Draw one star's position + VIS magnitude — WITHOUT depositing it.
+        """Draw one star's position + four-band colour — WITHOUT depositing it.
 
         Deposition is deferred: at generation the base scene stays starless
         (stars are re-added in the forward op — fresh per visit on-the-fly, or
@@ -413,11 +460,15 @@ class SkySimulator:
         mag = _sample_star_mag(
             rng, slope=cfg.star_mag_slope,
             m_bright=cfg.star_mag_bright, m_faint=cfg.star_mag_faint)
+        sed = sample_stellar_sed(rng, mag)
+        band_mags = sed.magnitudes
         return {
             "type": "star",
             "x_pix": float(x_pix),
             "y_pix": float(y_pix),
-            "mag_vis": float(mag),
+            **{_STAR_MAG_KEYS[name]: value for name, value in band_mags.items()},
+            "temperature_k": sed.temperature_k,
+            "extinction_av": sed.extinction_av,
         }
 
     @staticmethod
@@ -617,7 +668,7 @@ class SkySimulator:
 
         The rendered scene is STARLESS by default (galaxies + lenses only) —
         the network's target. Stars are still DRAWN and returned in
-        ``metadata["stars"]`` (positions + VIS mag) so the forward op can
+        ``metadata["stars"]`` (positions + four-band magnitudes) so the forward op can
         re-inject them: fresh per visit for on-the-fly training, or from this
         record for the fixed validate/test fields. Pass ``deposit_stars=True``
         to also stamp them onto the canvas (the with-stars scene, e.g. for
@@ -658,8 +709,13 @@ class SkySimulator:
         for _ in range(n_stars):
             star = self._draw_star(rng)
             if deposit_stars:
-                _deposit_star(canvas, star["x_pix"], star["y_pix"],
-                              star["mag_vis"])
+                _deposit_star(
+                    canvas,
+                    star["x_pix"],
+                    star["y_pix"],
+                    star["mag_vis"],
+                    band_magnitudes=star_band_magnitudes_from_record(star),
+                )
             stars.append(star)
 
         for _ in range(n_lenses):

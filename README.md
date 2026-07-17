@@ -88,7 +88,7 @@ budget — Y/J/H accumulate 4 × 112 s).
 
 | Class | Magnitude source per band | Flux assignment |
 |---|---|---|
-| **Stars** (point sources) | VIS drawn from a smooth differential star-count law dN/dm ∝ 10^(slope·m) over [bright, faint] (`Config.STAR_MAG_SLOPE=0.20`, `STAR_MAG_BRIGHT=12.0`, `STAR_MAG_FAINT=25.0`); other bands offset by `Config.STAR_BAND_OFFSETS_MAG` (fixed G-type SED proxy) | `flux_e_B` deposited as a single HR pixel per channel (`multiband_generator.py:_deposit_star`); the PSF is applied later by the forward model |
+| **Stars** (point sources) | VIS drawn from a smooth differential star-count law dN/dm ∝ 10^(slope·m) over [bright, faint] (`Config.STAR_MAG_SLOPE=0.20`, `STAR_MAG_BRIGHT=12.0`, `STAR_MAG_FAINT=25.0`); each star draws a cool-dwarf-dominated temperature mixture, whose Planck `f_ν` is integrated over approximate VIS/Y/J/H passbands, plus modest interstellar extinction and stellar-population colour scatter | `flux_e_B` is deposited as a single HR pixel per channel (`sky_simulator.py:_deposit_star`); temperature, extinction, and four-band magnitudes are persisted for fixed validate/test stars and redrawn per visit on-the-fly; the PSF is applied later by the forward model |
 | **COSMOS2025 galaxies** (when `--sersic-density-arcmin2 > 0`) | Per-component (bulge / disk), per-band magnitudes from HDU 6 of the master catalog: `mag_model_bulge_hst-f814w` ↦ VIS_E, `mag_model_disk_uvista-y` ↦ Y_E (disk), etc. | Custom vectorised Sérsic2D renderer evaluates the analytic profile with closed-form amplitude from total flux. Bulge fixed at n=4, disk at n=1; geometry shared via `angle_bd`. (`profiles.py`) |
 | **TNG50 galaxies** (when `--tng-density-arcmin2 > 0`) | Real SKIRT-rendered multi-band stamps from the TNG50 atlas | TNG stamps are injected at their configured field density and resampled to the HR grid (`sky/tng_galaxy.py`). In redshift mode (§1.5), each stamp's size and photometry follow from its own redshift draw. |
 | **Strong lenses** | Catalog-backed lenses use COSMOS priors; catalog-free pure-TNG fields sample the same geometry priors while deriving σ_v from the deflector subhalo's stellar mass | SIE + external-shear mass model from lenstronomy; lens-light + lensed-source-light rendered by our Sérsic implementation or TNG stamps at the ray-shot coordinates. (`lens_population.py`) |
@@ -229,42 +229,42 @@ not part of the synthetic forward model.
 
 ### 2.2 Forward model
 
-All four bands are delivered by the Euclid MER archive on a common **0.10″/pix** grid, so
-the simulator models them the same way — there is no native-0.30″ NISP stage in the
-forward path. From clean HR (4-channel, 0.05″/pix) → noisy LR (4-channel, 0.10″/pix):
+All four bands are delivered by the Euclid MER archive on a common **0.10″/pix** grid.
+The deterministic optical signal remains on that grid because the empirical ePSF already
+contains detector sampling and MER resampling. NISP stochastic noise is generated in four
+native 0.30″ exposures and dither-resampled to reproduce the delivered covariance. From
+clean HR (4-channel, 0.05″/pix) → noisy LR (4-channel, 0.10″/pix):
 
 ```
 For each band B:
     hr_e_B = (psf_sample applied to psf_set[B]) ⊛ hr_4ch[..., B]      # HR plane, e⁻
     lr_e_B = sum_rebin(hr_e_B, factor=round(0.10 / 0.05) = 2)         # → 0.10″/pix
-    lr_e_B = apply_band_noise(lr_e_B, B, rng)                         # per-band Poisson+read+artifacts
+    lr_e_B = apply_archive_noise(lr_e_B, B, rng)                      # VIS native; NISP native-noise→MER
 lr_4ch    = stack(lr_e_VIS, lr_e_Y, lr_e_J, lr_e_H)                   # all on the 0.10″ grid
 lr_4ch    = apply_star_saturation(lr_4ch)                            # bright-star wells, on the dirty LR
-hr_target = hr_4ch[..., VIS] only (1 channel, clean, no noise)
+hr_target = hr_4ch                                                    # 4 channels, clean, no noise
 ```
 
 `sum_rebin` is **photometric**: each LR pixel is the *sum* of its (n × n) HR sub-pixels,
-conserving total electron count. (A Lanczos-3 NISP→VIS-LR resample stage exists in the
-code — `sky/resample.py`, `NISP_RESAMPLE_KERNEL="lanczos3"` — but is **dormant** under the
-current uniform-0.10″ band configuration, where the resample factor evaluates to 1. It
-would re-activate only if a band's LR pixel scale were restored to 0.30″.)
+conserving total electron count. Only the stochastic NISP residual is Lanczos-resampled;
+the optical signal is not blurred twice. Sparse CR/hot/dead residuals are injected after
+that MER resampling, so they do not acquire PSF-like Lanczos wings.
 
 ---
 
 ## 3. Noise model
 
-**Code:** `euclid_polish/sky/noise.py` (`apply_band_noise`),
-`euclid_polish/sky/artifacts.py` (detector-artifact injection),
-`euclid_polish/sky/saturation.py` (bright-star wells).
+**Code:** `euclid_polish/sky/observation/noise.py` (`apply_archive_noise`),
+`euclid_polish/sky/observation/artifacts.py` (detector-artifact injection),
+`euclid_polish/sky/observation/saturation.py` (bright-star wells).
 
 Per LR pixel, given the noise-free signal `s` (electrons of the source over the stack):
 
 ```
 λ        = max(s + sky + dark, 0)
-observed = Poisson(λ) − (sky + dark)              # sky/dark-subtracted
-artifacts = CR hits + hot pixels + masked-trail streaks   # see §3.3
-read     = N(0, σ_read · sqrt(N_exp))             # uncorrelated reads
-output   = observed + artifacts + read            # float32, can be negative
+native   = Poisson(λ) − (sky + dark) + read       # per detector exposure
+mer_noise = dither_resample(native − signal)      # NISP only
+output   = signal + mer_noise + residual_artifacts # sparse final-grid survivors
 ```
 
 This corresponds to the standard CCD noise budget — Poisson photon noise on the *total*
@@ -312,14 +312,14 @@ the VIS gain (3.1 e⁻/ADU) and integration — same order of magnitude as the m
 
 ### 3.3 Detector artifacts
 
-**Code:** `euclid_polish/sky/artifacts.py` — `inject_cosmic_rays`, `inject_hot_pixels`,
+**Code:** `euclid_polish/sky/observation/artifacts.py` — `inject_cosmic_rays`, `inject_hot_pixels`,
 `inject_streaks`, dispatched by `inject_artifacts` and gated by
 `MultiBandForwardConfig.add_artifacts`.
 
 | Artifact | Per-frame rate | Amplitude | Source |
 |---|---|---|---|
-| Cosmic rays | `CR_RATE_PER_S_PER_CM2 = 5 hits/cm²/s` × `cr_rate_factor` (per-band post-rejection: 0.02 for VIS, 1.0 for NISP). Q1 MER reports ~1.6% of pixels CR-flagged per single VIS frame; cross-dither median rejection leaves ~0.1% in the stack. | Track length `Exp(mean=3 px)` clipped to [1, 25] px; charge per hit `Exp(scale=1500 e⁻)`. | Holmes+ SREM; Q1 paper. |
-| Hot pixels | `HOT_PIXEL_FRACTION = 0.0001` (~6.5 residual pixels per 255² band plane; per-frame randomised so a fixed mask isn't memorised) | Charge `Exp(mean=10⁴ e⁻)`. | Cropper+ 2014, MSSL CCD273. |
+| Cosmic rays | `CR_RATE_PER_S_PER_CM2 = 5 hits/cm²/s` × delivered-MER survival factor (`0.002` VIS, `0.015` NISP). The much larger raw detector rate is rejected by image differencing, ramp fitting, masks, and dither combination. | Track length `Exp(mean=3 px)` clipped to [1, 25] px; charge per hit `Exp(scale=1500 e⁻)` (NISP residual peaks are area-scaled on the final grid). | Holmes+ SREM; calibrated to single-band compact outliers in cached real MER tiles. |
+| Hot pixels | `HOT_PIXEL_FRACTION = 5e-6` (~0.33 residual pixels per 255² band plane; per-frame randomised so a fixed mask isn't memorised) | Charge `Exp(mean=10⁴ e⁻)` (area-scaled for NISP MER). | Calibrated to cached real MER tiles. |
 | Long faint streaks | `STREAK_RATE_PER_KPIX2 = 4.0` per (1000×1000)-LR-pixel area (≈ 1 per 512² VIS cutout) | Length `Exp(mean=250 px)` clipped to [40, 2000] px; width 1–3 px; amplitude `Uniform(0.3, 0.8) · σ_floor` with random sign. | Calibrated against Q1 VIS cutouts. |
 
 **Why a separate "streaks" channel?** Roughly 30–60% of Q1 VIS cutouts contain a long,

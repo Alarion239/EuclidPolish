@@ -60,9 +60,10 @@ class BandConfig:
     # are served as instrument='NISP' with filter_name='NIR_Y' etc.
     archive_instrument: str = "VIS"
     archive_filter: str = ""
-    # Native detector pixel pitch in arcsec. Detector noise/artifacts are
-    # generated here before being resampled to the 0.10" archive/network grid;
-    # it also converts cosmic-ray rates from cm² to detector pixels.
+    # Native detector pixel pitch in arcsec. NISP noise is generated here
+    # before being resampled to the 0.10" archive/network grid; the scale also
+    # converts cosmic-ray rates from cm² to the detector area represented by
+    # the delivered field. Sparse post-rejection artifacts are added later.
     native_detector_scale_arcsec: float = 0.10
     # ePSF oversampling factor: the photutils EPSFBuilder is given this
     # as ``oversampling=N`` so the resulting ePSF lives on a grid with
@@ -74,10 +75,9 @@ class BandConfig:
     # scaling (CRs/cm²/s → CRs/pixel). VIS CCD pixels are 12 µm; the
     # NISP HAWAII-2RG H2RG pixels are 18 µm.
     detector_pixel_um: float = 12.0
-    # Post-rejection CR efficiency. The raw L2 GCR rate (5 hits/cm²/s)
-    # is heavily suppressed in VIS by across-dither image differencing
-    # (~95–98% of hits are removed → factor ~0.02). NISP's up-the-ramp
-    # slope fitting is less aggressive and most hits survive.
+    # Post-rejection CR efficiency in the delivered MER mosaic.  This is not
+    # the raw detector-hit efficiency: ramp fitting, masks, and dither
+    # combination remove nearly all hits before the public 0.10" product.
     cr_rate_factor: float = 1.0
 
     @property
@@ -274,9 +274,8 @@ class Config:
         read_noise_e            = READ_NOISE_E,
         dark_e_per_s_per_pix    = DARK_E_PER_S_PER_PIX,
         asinh_stretch_scale_e   = 100.0,
-        # VIS CR rejection via across-dither image differencing kills ~98%
-        # of hits before they reach the science image (0.02 ≈ 1/50).
-        cr_rate_factor          = 0.02,
+        # Calibrated against compact single-band outliers in real MER tiles.
+        cr_rate_factor          = 0.002,
     )
 
     # Euclid archive delivers every band — VIS and NISP alike — resampled to
@@ -310,6 +309,7 @@ class Config:
         archive_instrument      = "NISP",
         archive_filter          = "NIR_Y",
         detector_pixel_um       = 18.0,
+        cr_rate_factor          = 0.015,
     )
 
     BAND_J_E = BandConfig(
@@ -328,6 +328,7 @@ class Config:
         archive_instrument      = "NISP",
         archive_filter          = "NIR_J",
         detector_pixel_um       = 18.0,
+        cr_rate_factor          = 0.015,
     )
 
     BAND_H_E = BandConfig(
@@ -346,6 +347,7 @@ class Config:
         archive_instrument      = "NISP",
         archive_filter          = "NIR_H",
         detector_pixel_um       = 18.0,
+        cr_rate_factor          = 0.015,
     )
 
     # Canonical band ordering for the 4-channel network input AND the
@@ -375,14 +377,45 @@ class Config:
     NISP_RESAMPLE_KERNEL    = "lanczos3"        # one of {"lanczos3", "cubic"}
     NISP_LR_TO_VIS_LR_RATIO = 3                 # 0.30" → 0.10"
 
-    # Fixed stellar SED for the simulator (G-type, V-J ≈ 0.7 mag).
-    # Per-band magnitude offsets relative to VIS (m_band - m_VIS).
+    # Fallback median stellar locus for old source catalogs that only persist
+    # mag_vis. New stars use a temperature-driven SED (see stellar_sed.py).
+    # These are m_band - m_VIS, hence negative for NIR-brighter cool stars; the
+    # old positive signs made synthetic Y/J/H fluxes 4-8x too faint.
     STAR_BAND_OFFSETS_MAG = {
         "VIS": 0.00,
-        "Y_E": 0.40,
-        "J_E": 0.70,
-        "H_E": 0.85,
+        "Y_E": -0.85,
+        "J_E": -1.00,
+        "H_E": -1.10,
     }
+    # Approximate Euclid passband limits used to integrate Planck f_nu. The
+    # public throughput curves are not bundled with the training runtime, so
+    # top-hat bands are an intentionally lightweight approximation.
+    STAR_BANDPASS_UM = {
+        "VIS": (0.55, 0.90),
+        "Y_E": (0.92, 1.146),
+        "J_E": (1.146, 1.372),
+        "H_E": (1.372, 2.00),
+    }
+    # Apparent high-latitude star-count mixture: component weight, median
+    # temperature [K], log-temperature sigma, and hard temperature limits.
+    # It is deliberately cool-dwarf dominated, matching the compact-source
+    # colours measured on the cached real comparison field, while retaining
+    # solar-type and rare hot-star tails.
+    STAR_TEMPERATURE_COMPONENTS = (
+        (0.78, 3300.0, 0.15, 2400.0, 4800.0),
+        (0.19, 5400.0, 0.15, 3800.0, 8000.0),
+        (0.03, 10000.0, 0.22, 7000.0, 25000.0),
+    )
+    STAR_EXTINCTION_AV_SCALE_MAG = 0.12
+    STAR_EXTINCTION_AV_MAX_MAG   = 0.8
+    # Small empirical stellar-population/passband correction that aligns the
+    # simple top-hat blackbody locus with compact sources in the real field.
+    STAR_SED_BAND_CORRECTION_MAG = {
+        "VIS": 0.0, "Y_E": -0.05, "J_E": 0.0, "H_E": -0.10,
+    }
+    STAR_SED_BAND_SCATTER_MAG    = 0.06
+    STAR_COLOR_OFFSET_MIN_MAG    = -2.75
+    STAR_COLOR_OFFSET_MAX_MAG    = 1.80
 
     # --- Detector saturation masking (synthetic LR dirty image) ----------------
     # Any pixel at/above the band well depth saturates; the forward model masks a
@@ -873,10 +906,10 @@ class Config:
     CR_RATE_PER_S_PER_CM2  = 5.0
     CR_CHARGE_MEDIAN_E     = 1500.0     # exponential-distribution scale
     # Residual hot-pixel fraction in the delivered MER image. Most detector
-    # hot pixels are identified before stacking, so only a sparse population
-    # should remain visible: 1e-4 gives ~6.5 pixels per 255x255 band plane.
+    # hot pixels are identified before stacking; comparison against real
+    # 256x256 tiles leaves well below one unmasked hot pixel per band plane.
     # Modelled as a large positive offset (effective additional well filling).
-    HOT_PIXEL_FRACTION     = 1.0e-4
+    HOT_PIXEL_FRACTION     = 5.0e-6
     HOT_PIXEL_CHARGE_MEAN_E = 10000.0
     # Dead / unresponsive pixels: a small fraction of detector pixels collect
     # ~no charge, so they read at the background floor (≈0 after sky/dark

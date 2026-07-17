@@ -21,9 +21,10 @@ does not reproduce. Three classes are modelled here:
   in the final image. Roughly 30–50% of VIS Q1 cutouts show at least
   one such streak.
 
-All three are injected *after* the Poisson shot-noise stage but *before*
-read noise, matching the physical readout order (charge integrates →
-pixels are read → read noise added).
+On native VIS images these are injected after Poisson shot noise and before
+read noise. For NISP the public MER product has already gone through ramp
+fitting, masking, and dither resampling; :func:`apply_archive_noise` therefore
+injects only the rare surviving residuals on the final 0.10" grid.
 
 Rates are quoted per native detector pixel (12 µm VIS, 18 µm NISP). The
 caller passes the band, which sets the pixel area to scale to.
@@ -139,8 +140,7 @@ def expected_cosmic_ray_count(
     pix_ratio   = _native_pix_arcsec(band) / band.pixel_scale_lr_arcsec
     n_native_pixels = (H * W) / (pix_ratio ** 2)
     t_total = band.exposure_time_s * band.n_exposures
-    # Per-band post-rejection factor: VIS has aggressive cross-dither CR
-    # rejection (~98% killed → factor 0.02); NISP keeps most hits.
+    # Per-band post-rejection factor calibrated for the delivered MER mosaic.
     rejection = float(getattr(band, "cr_rate_factor", 1.0))
     return cfg.cr_rate_per_s_per_cm2 * det_area_cm2 * n_native_pixels * t_total * rejection
 

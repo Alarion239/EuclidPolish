@@ -264,6 +264,41 @@ def test_nisp_archive_noise_preserves_non_multiple_of_three_shape():
     assert observed.shape == signal.shape
 
 
+def test_nisp_sparse_hot_pixels_are_injected_after_mer_resampling():
+    """A surviving hot pixel must not acquire Lanczos wings or negative lobes."""
+    from euclid_polish.sky.observation.artifacts import ArtifactConfig
+
+    signal = np.zeros((96, 96), dtype=np.float32)
+    cfg = ArtifactConfig(
+        add_cosmic_rays=False,
+        add_hot_pixels=True,
+        hot_pixel_fraction=0.01,
+        add_dead_pixels=False,
+        add_streaks=False,
+    )
+    plain = apply_archive_noise(
+        signal,
+        Config.BAND_Y_E,
+        np.random.default_rng(17),
+        add_artifacts=False,
+    )
+    with_hot = apply_archive_noise(
+        signal,
+        Config.BAND_Y_E,
+        np.random.default_rng(17),
+        add_artifacts=True,
+        artifact_config=cfg,
+    )
+    delta = with_hot - plain
+    changed = np.abs(delta) > 1e-6
+
+    assert changed.any()
+    assert np.all(delta[changed] > 0.0)
+    # Direct final-grid injection changes individual pixels, not 3x3/7x7
+    # interpolation footprints around every detector hit.
+    assert int(changed.sum()) < 0.02 * signal.size
+
+
 def test_noise_off_yields_zero_blank_image(forward: ObservationSimulator):
     """A blank HR scene with noise off produces an all-zero LR (no sky added)."""
     H = W = 64

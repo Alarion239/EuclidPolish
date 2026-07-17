@@ -16,7 +16,6 @@ from euclid_polish.config import BandConfig
 from euclid_polish.sky.observation.artifacts import (
     ArtifactConfig,
     inject_artifacts,
-    inject_streaks,
 )
 from euclid_polish.sky.observation.resample import upsample
 
@@ -162,7 +161,9 @@ def apply_archive_noise(
     detector cells, Lanczos-resampled at their dither phases, converted from
     native-cell integrated electrons to 0.10"-cell electrons (``/ 3**2``),
     and co-added. This reproduces the strong short-range covariance and much
-    lower per-output-pixel RMS of real MER NISP mosaics.
+    lower per-output-pixel RMS of real MER NISP mosaics. Sparse artifacts are
+    post-rejection MER residuals, so they are injected only after resampling;
+    they must not acquire Lanczos lobes that resemble an optical PSF.
 
     ``signal_e`` remains on the delivered archive grid. Empirical MER ePSFs
     already contain detector sampling and resampling, so reprocessing the
@@ -199,7 +200,6 @@ def apply_archive_noise(
     )
 
     cfg = artifact_config or ArtifactConfig()
-    native_cfg = replace(cfg, add_streaks=False)
     phases = _dither_phases(band.n_exposures, factor, rng)
     output_residual = np.zeros(
         (native_signal_stack.shape[0] * factor,
@@ -212,8 +212,10 @@ def apply_archive_noise(
             native_signal_one,
             native_band,
             rng,
-            add_artifacts=add_artifacts,
-            artifact_config=native_cfg,
+            # Detector masks/ramp fitting/dither rejection happen before the
+            # delivered MER mosaic.  We model only the sparse survivors below
+            # on the final grid, after the native noise has been resampled.
+            add_artifacts=False,
         )
         native_residual = native_observed - native_signal_one
         archive_residual = upsample(
@@ -225,17 +227,22 @@ def apply_archive_noise(
             archive_residual, phase_y, phase_x,
         )
 
-    # MER trail interpolation happens after detector sampling, on the archive
-    # mosaic. Keep its width/rate in 0.10" pixels and scale its faint amplitude
-    # to the actual resampled background RMS.
-    if add_artifacts and cfg.add_streaks:
-        sigma_e = _robust_sigma(output_residual)
-        if sigma_e > 0.0:
-            output_residual = inject_streaks(
-                output_residual, rng, cfg, local_sigma_e=sigma_e,
-            )
-
     height, width = signal.shape
-    return (signal + output_residual[:height, :width]).astype(
-        np.float32, copy=False,
-    )
+    observed = (signal + output_residual[:height, :width]).astype(
+        np.float32, copy=False)
+    if add_artifacts:
+        sigma_e = _robust_sigma(output_residual[:height, :width])
+        if sigma_e > 0.0:
+            # A native single-pixel charge was previously spread over roughly
+            # factor² MER pixels. Keep the residual peak scale while making
+            # the surviving artifact genuinely sparse on the delivered grid.
+            archive_cfg = replace(
+                cfg,
+                cr_charge_median_e=cfg.cr_charge_median_e / area_ratio,
+                hot_pixel_charge_mean_e=(
+                    cfg.hot_pixel_charge_mean_e / area_ratio),
+            )
+            observed = inject_artifacts(
+                observed, band, rng, archive_cfg, local_sigma_e=sigma_e,
+            )
+    return observed.astype(np.float32, copy=False)

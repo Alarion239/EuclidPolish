@@ -182,6 +182,12 @@ def test_star_band_offsets_cover_all_bands():
     for band in Config.LR_INPUT_BAND_NAMES:
         assert band in offsets
         assert isinstance(offsets[band], float)
+    # m_band - m_VIS is negative for the NIR-brighter stellar locus.
+    assert all(offsets[band] < 0.0 for band in ("Y_E", "J_E", "H_E"))
+    assert set(Config.STAR_BANDPASS_UM) == set(Config.LR_INPUT_BAND_NAMES)
+    assert sum(
+        c[0] for c in Config.STAR_TEMPERATURE_COMPONENTS
+    ) == pytest.approx(1.0)
 
 
 # ---------------------------------------------------------------------------

@@ -46,12 +46,20 @@ def test_stars_are_recorded(tmp_path):
     w = sc.SourceCatalogWriter(p)
     w.add_field(0, {"galaxies": [], "lenses": [],
                     "stars": [{"type": "star", "x_pix": 12.0, "y_pix": 34.0,
-                               "mag_vis": 19.5}]})
+                               "mag_vis": 19.5, "mag_y_e": 18.7,
+                               "mag_j_e": 18.5, "mag_h_e": 18.4,
+                               "temperature_k": 3420.0,
+                               "extinction_av": 0.08}]})
     w.close()
     rows = sc.read_sources(p)[0]
     star = next(r for r in rows if r["type"] == "star")
     assert star["x_pix"] == 12.0 and star["y_pix"] == 34.0
     assert float(star["mag_vis"]) == 19.5
+    assert [star[k] for k in ("mag_y_e", "mag_j_e", "mag_h_e")] == [
+        18.7, 18.5, 18.4,
+    ]
+    assert star["temperature_k"] == 3420.0
+    assert star["extinction_av"] == 0.08
 
 
 def test_read_sources_missing_file(tmp_path):
