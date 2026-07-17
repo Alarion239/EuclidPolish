@@ -37,10 +37,11 @@ class BandConfig:
     drives archive cutout sizing, the downloader, and ePSF oversampling.
 
     ``native_detector_scale_arcsec`` is the **native detector** pixel pitch
-    (0.10" for the VIS CCDs, 0.30" for the NISP HAWAII-2RGs). It is used only
-    for the cosmic-ray areal density on the H2RG/CCD (CRs/cm²/s → CRs/pixel);
-    it is NOT used by the forward rebin, which works on the uniform 0.10"
-    archive grid that reaches the network. For VIS the two scales coincide.
+    (0.10" for the VIS CCDs, 0.30" for the NISP HAWAII-2RGs). The optical
+    signal stays on the archive grid because empirical MER ePSFs already
+    include the sampling, while detector noise/artifacts are generated at this
+    native scale and resampled into the delivered mosaic. It also sets the
+    cosmic-ray detector-pixel area. For VIS the two scales coincide.
     """
 
     name: str
@@ -59,11 +60,9 @@ class BandConfig:
     # are served as instrument='NISP' with filter_name='NIR_Y' etc.
     archive_instrument: str = "VIS"
     archive_filter: str = ""
-    # Native detector pixel pitch in arcsec — used for the cosmic-ray areal
-    # density on the H2RG/CCD (CRs/cm²/s → CRs/pixel). NOT used by the forward
-    # rebin, which works on the uniform 0.10" archive grid. VIS CCDs sample at
-    # 0.10"; NISP HAWAII-2RGs at 0.30". Distinct from ``pixel_scale_lr_arcsec``
-    # (the 0.10" archive/network grid). See the class docstring.
+    # Native detector pixel pitch in arcsec. Detector noise/artifacts are
+    # generated here before being resampled to the 0.10" archive/network grid;
+    # it also converts cosmic-ray rates from cm² to detector pixels.
     native_detector_scale_arcsec: float = 0.10
     # ePSF oversampling factor: the photutils EPSFBuilder is given this
     # as ``oversampling=N`` so the resulting ePSF lives on a grid with

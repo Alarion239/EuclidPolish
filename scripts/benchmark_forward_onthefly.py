@@ -45,7 +45,7 @@ from euclid_polish.image.tfio import tfrecord_path  # noqa: E402
 from euclid_polish.psf import PSF  # noqa: E402
 from euclid_polish.psf.psf_library import load_all_band_psf_sets  # noqa: E402
 from euclid_polish.psf.psf_set import PSFSample  # noqa: E402
-from euclid_polish.sky.observation.noise import apply_band_noise  # noqa: E402
+from euclid_polish.sky.observation.noise import apply_archive_noise  # noqa: E402
 from euclid_polish.sky.observation.observation_simulator import (  # noqa: E402
     ObservationSimulator,
     ObservationSimulatorConfig,
@@ -200,15 +200,21 @@ def main() -> int:
 
     def _noise_all():
         for name in bands:
-            apply_band_noise(reb[name], Config.get_band(name), rng,
-                             add_artifacts=False)
-    _row("noise (Poisson+read, 4 bands)", *_bench(_noise_all, args.repeats))
+            apply_archive_noise(
+                reb[name], Config.get_band(name), rng, add_artifacts=False,
+                resample_kernel=Config.NISP_RESAMPLE_KERNEL,
+            )
+    _row("MER noise (native NISP + resample, 4 bands)",
+         *_bench(_noise_all, args.repeats))
 
     def _noise_art_all():
         for name in bands:
-            apply_band_noise(reb[name], Config.get_band(name), rng,
-                             add_artifacts=True)
-    _row("noise + artifacts (4 bands)", *_bench(_noise_art_all, args.repeats))
+            apply_archive_noise(
+                reb[name], Config.get_band(name), rng, add_artifacts=True,
+                resample_kernel=Config.NISP_RESAMPLE_KERNEL,
+            )
+    _row("MER noise + artifacts (4 bands)",
+         *_bench(_noise_art_all, args.repeats))
 
     lr_stack = np.stack([reb[n] for n in bands], axis=-1).astype(np.float32)
 
@@ -267,8 +273,10 @@ def main() -> int:
                 c = kern[name].convolved_with(patch[..., j])
                 core = c[pad: pad + hr_crop, pad: pad + hr_crop]
                 lr = ObservationSimulator.sum_rebin(core, 2)
-                apply_band_noise(lr, Config.get_band(name), rng,
-                                 add_artifacts=True)
+                apply_archive_noise(
+                    lr, Config.get_band(name), rng, add_artifacts=True,
+                    resample_kernel=Config.NISP_RESAMPLE_KERNEL,
+                )
 
         wall, cpu = _bench(_one_example, args.repeats)
         # truncation accuracy per field: crop-local (truncated, renormalised)

@@ -7,6 +7,10 @@ import pytest
 
 from euclid_polish.config import Config
 from euclid_polish.image import Image
+from euclid_polish.sky.observation.noise import (
+    apply_archive_noise,
+    apply_band_noise,
+)
 from euclid_polish.sky.observation.observation_simulator import (
     ObservationSimulator,
     ObservationSimulatorConfig,
@@ -202,6 +206,62 @@ def test_noise_on_yields_negative_pixels():
     # Each LR channel should have many negative pixels (sky-subtracted + read noise).
     for k in range(4):
         assert (lr.data[..., k] < 0).sum() > 0
+
+
+def test_vis_archive_noise_is_unchanged_native_noise():
+    """VIS is already native at 0.10", so the new MER path is identical."""
+    signal = np.full((48, 48), 20.0, dtype=np.float32)
+    direct = apply_band_noise(
+        signal, Config.BAND_VIS, np.random.default_rng(21),
+        add_artifacts=False,
+    )
+    archive = apply_archive_noise(
+        signal, Config.BAND_VIS, np.random.default_rng(21),
+        add_artifacts=False,
+    )
+    np.testing.assert_array_equal(archive, direct)
+
+
+def test_nisp_archive_noise_has_mer_covariance_and_scale():
+    """NISP native 0.30" noise becomes correlated and faint after 3x MER."""
+    noise = apply_archive_noise(
+        np.zeros((192, 192), dtype=np.float32),
+        Config.BAND_Y_E,
+        np.random.default_rng(7),
+        add_artifacts=False,
+    )
+    core = noise[12:-12, 12:-12].astype(np.float64)
+    centered = core - core.mean()
+    variance = float(np.mean(centered * centered))
+    lag1 = float(np.mean(centered[:, :-1] * centered[:, 1:]) / variance)
+    lag2 = float(np.mean(centered[:, :-2] * centered[:, 2:]) / variance)
+    sigma = 1.4826 * float(np.median(np.abs(core - np.median(core))))
+    phase_sigma = np.asarray([
+        core[y::3, x::3].std()
+        for y in range(3)
+        for x in range(3)
+    ])
+
+    # Real MER Y/J/H fields measured ~0.78 and ~0.44 at lags 1 and 2;
+    # tolerate field/realisation differences while rejecting white noise.
+    assert 0.70 < lag1 < 0.93
+    assert 0.30 < lag2 < 0.65
+    # Real blank-sky RMS is ~2 e-/0.10" pixel, not the old ~17 e- white RMS.
+    assert 1.2 < sigma < 4.0
+    # Four balanced dither phases must not create a modulo-3 checkerboard.
+    assert float(phase_sigma.max() / phase_sigma.min()) < 1.12
+
+
+def test_nisp_archive_noise_preserves_non_multiple_of_three_shape():
+    """Native-grid edge padding must never change the network-facing shape."""
+    signal = np.zeros((32, 35), dtype=np.float32)
+    observed = apply_archive_noise(
+        signal,
+        Config.BAND_J_E,
+        np.random.default_rng(9),
+        add_artifacts=False,
+    )
+    assert observed.shape == signal.shape
 
 
 def test_noise_off_yields_zero_blank_image(forward: ObservationSimulator):

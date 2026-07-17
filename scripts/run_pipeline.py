@@ -6,8 +6,9 @@ Mirrors the three CLI menu steps but drives them sequentially without prompts:
     1. Generate clean HR fields with COSMOS2025 galaxies + stars + lenses
        (saved as ``clean_{train,validate,test}.tfrecord`` in v2 schema,
        4 channels).
-    2. Run the per-band forward model HR → LR (PSF convolution + noise + NISP
-       upsample to VIS LR grid), including a seeded elastic PSF deformation.
+    2. Run the per-band forward model HR → LR (PSF convolution + detector/MER
+       noise), including a seeded elastic PSF deformation. NISP Y/J/H noise is
+       drawn per native 0.30" dither and resampled to the 0.10" archive grid.
        Saved as ``dirty_{train,validate,test}.tfrecord``, 4-channel LR at
        0.10″/pix.
     3. Train WDSR (4-channel input, 4-channel VIS+NISP HR target).
@@ -461,11 +462,11 @@ def step_generate(args: argparse.Namespace) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Step 2: per-band PSF convolution + noise + NISP upsample
+# Step 2: per-band PSF convolution + detector/MER noise
 # ---------------------------------------------------------------------------
 
 def step_convolve(args: argparse.Namespace) -> None:
-    _banner("STEP 2: HR → LR  (per-band PSF + noise + NISP→VIS-LR resample)")
+    _banner("STEP 2: HR → LR  (per-band PSF + native detector/MER noise)")
 
     targets = _regenerate_splits(args)
     if targets and getattr(args, "skip_generate", False):
@@ -503,6 +504,10 @@ def step_convolve(args: argparse.Namespace) -> None:
     _log(
         "  saturation dark-core probability: "
         f"{fwd.config.saturation_mask_prob:g}"
+    )
+    _log(
+        "  NISP noise: 4 native 0.30\" dithers → "
+        f"{fwd.config.nisp_resample_kernel} MER resample → 0.10\" (/9 flux)"
     )
 
     # One master seed for the forward step, recorded on its run so the noise /
@@ -1109,6 +1114,10 @@ def step_generate_and_convolve_parallel(args: argparse.Namespace) -> None:
     _log(
         "  saturation dark-core probability: "
         f"{observation_cfg.saturation_mask_prob:g}"
+    )
+    _log(
+        "  NISP noise: 4 native 0.30\" dithers → "
+        f"{observation_cfg.nisp_resample_kernel} MER resample → 0.10\" (/9 flux)"
     )
 
     onthefly_train = bool(getattr(args, "onthefly_train", False))

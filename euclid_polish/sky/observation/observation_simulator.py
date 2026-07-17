@@ -1,19 +1,19 @@
 """
 Multi-band forward model: HR clean (4 channels) → LR dirty (4 channels) + HR clean target (4 channels).
 
-All four bands sit on a common 0.10″/pix LR grid, so every band is modelled the
-same way. Pipeline per band on the HR canvas (0.05″ HR pixel scale, electrons):
+All four bands reach the network on a common 0.10″/pix LR grid. The optical
+signal is modelled there because the empirical MER ePSFs already contain the
+detector sampling and mosaic interpolation. Noise follows the detector:
 
   VIS / Y_E / J_E / H_E:
     HR (0.05″, e⁻)
       → fftconvolve with the band PSF sample (real ePSF / Gaussian fallback)
       → sum-rebin round(0.10 / 0.05) = 2× → 0.10″
-      → Poisson(sky + signal) − sky + read_noise · √N_exp  (+ optional artifacts)
+      → VIS: Poisson/read/artifacts directly at native 0.10″
+      → NISP: four independent native 0.30″ noise residuals
+             → dithered Lanczos-3 MER resample → flux-area scale /9
       → LR (0.10″, e⁻)
 
-A Lanczos-3 resample-to-VIS-LR stage (sky/resample.py) maps each band onto the
-shared LR grid; under the uniform 0.10″ band configuration its factor is 1, so
-it is a no-op. It activates when a band's LR pixel scale differs (e.g. 0.30″).
 Bright-star saturation is then applied to the assembled dirty LR stack.
 
 The HR clean target keeps all four channels: the model super-resolves VIS and
@@ -44,8 +44,12 @@ from euclid_polish.psf.psf_library import (
 )
 from euclid_polish.psf.psf_set import PSFSample, PSFSet
 
-# Re-export the canonical noise function (defined in sky.observation.noise).
-from euclid_polish.sky.observation.noise import apply_band_noise  # noqa: F401
+# Re-export the canonical low-level noise function for legacy callers, while
+# the simulator uses the delivered-MER-aware path.
+from euclid_polish.sky.observation.noise import (  # noqa: F401
+    apply_archive_noise,
+    apply_band_noise,
+)
 from euclid_polish.sky.observation.resample import upsample as resample_upsample
 from euclid_polish.sky.observation.saturation import (
     StarSaturationModel,
@@ -131,12 +135,12 @@ def default_psf_for_band(band: BandConfig, hr_pixel_scale: float) -> PSF:
 # Forward model
 # ---------------------------------------------------------------------------
 
-# ``apply_band_noise`` is defined in :mod:`euclid_polish.sky.noise` and
-# re-exported at the top of this module (see the import block above).
+# Noise operators are defined in :mod:`euclid_polish.sky.observation.noise`;
+# the detector-grid primitive remains re-exported for legacy callers.
 
 
 class ObservationSimulator:
-    """Apply per-band PSF + noise + (NISP→VIS-LR resample) to a 4-band HR field."""
+    """Apply per-band PSF plus detector/MER noise to a 4-band HR field."""
 
     def __init__(
         self,
@@ -317,12 +321,14 @@ class ObservationSimulator:
         rebin_factor = int(round(band.pixel_scale_lr_arcsec / self.config.hr_pixel_scale))
         lr_signal_e = self.sum_rebin(hr_e, rebin_factor)
 
-        # 3. Apply per-band noise on the LR grid.
+        # 3. Apply delivered-MER noise. VIS is native on this grid; NISP noise
+        #    is generated per 0.30" exposure and dither-resampled to 0.10".
         if self.config.add_noise:
-            lr_e = apply_band_noise(
+            lr_e = apply_archive_noise(
                 lr_signal_e, band, rng,
                 add_artifacts=self.config.add_artifacts,
                 artifact_config=self.config.artifact_config,
+                resample_kernel=self.config.nisp_resample_kernel,
             )
         else:
             lr_e = lr_signal_e.astype(np.float32, copy=False)
@@ -410,10 +416,10 @@ class ObservationSimulator:
                     f"shape {hr_4ch.data.shape}"
                 )
 
-        # HR canvas must be divisible by every band's rebin factor so all four
-        # LR channels land on the same grid after the band-specific rebin (and
-        # NISP upsample) chain. Trim to the largest such multiple — a few
-        # pixels at the edge are not science-relevant.
+        # HR canvas must be divisible by every archive-grid rebin factor so all
+        # four delivered channels have the same shape. The NISP detector-noise
+        # helper pads its private 0.30" workspace when this archive shape is
+        # not divisible by 3, then crops back without changing public shapes.
         max_rebin = max(
             int(round(b.pixel_scale_lr_arcsec / self.config.hr_pixel_scale))
             for b in Config.BANDS

@@ -99,7 +99,7 @@ from euclid_polish.image.tfio import open_writer
 from euclid_polish.observability.reporter import Reporter
 from euclid_polish.sky.generation.cosmos2025 import open_cosmos2025
 from euclid_polish.sky.observation.differential_kernel import DifferentialKernel
-from euclid_polish.sky.observation.noise import apply_band_noise
+from euclid_polish.sky.observation.noise import apply_archive_noise
 
 
 def parse_args() -> argparse.Namespace:
@@ -474,8 +474,10 @@ def _make_pair(
         rebinned = Image.rebin_array(convolved, 2)
         # Apply per-band Euclid noise (Poisson + read; artifacts off for
         # synthetic HST templates).
-        lr_cube[..., k] = apply_band_noise(rebinned, band, rng,
-                                           add_artifacts=False)
+        lr_cube[..., k] = apply_archive_noise(
+            rebinned, band, rng, add_artifacts=False,
+            resample_kernel=Config.NISP_RESAMPLE_KERNEL,
+        )
     return lr_cube
 
 
