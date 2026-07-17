@@ -29,6 +29,14 @@ def test_default_config_has_reasonable_values():
     assert 0 < cfg.hot_pixel_fraction < 0.1
 
 
+def test_default_hot_pixel_rate_is_sparse_in_lr_frame():
+    """Delivered 255x255 planes should contain only a few residual hot pixels."""
+    cfg = ArtifactConfig()
+    expected = cfg.hot_pixel_fraction * 255 * 255
+    assert cfg.hot_pixel_fraction == pytest.approx(1.0e-4)
+    assert expected == pytest.approx(6.5025)
+
+
 @pytest.mark.parametrize("bad_kwargs", [
     {"cr_rate_per_s_per_cm2": -1.0},
     {"cr_charge_median_e":   0.0},

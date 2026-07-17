@@ -870,10 +870,11 @@ class Config:
     # the 100 µm depleted layer.
     CR_RATE_PER_S_PER_CM2  = 5.0
     CR_CHARGE_MEDIAN_E     = 1500.0     # exponential-distribution scale
-    # Hot-pixel fraction: ~0.1% of the detector pixels exhibit anomalous
-    # dark current that saturates over the integration. Modelled as a
-    # large positive offset (effective additional well filling).
-    HOT_PIXEL_FRACTION     = 1.0e-3
+    # Residual hot-pixel fraction in the delivered MER image. Most detector
+    # hot pixels are identified before stacking, so only a sparse population
+    # should remain visible: 1e-4 gives ~6.5 pixels per 255x255 band plane.
+    # Modelled as a large positive offset (effective additional well filling).
+    HOT_PIXEL_FRACTION     = 1.0e-4
     HOT_PIXEL_CHARGE_MEAN_E = 10000.0
     # Dead / unresponsive pixels: a small fraction of detector pixels collect
     # ~no charge, so they read at the background floor (≈0 after sky/dark

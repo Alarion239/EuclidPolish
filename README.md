@@ -316,7 +316,7 @@ the VIS gain (3.1 e⁻/ADU) and integration — same order of magnitude as the m
 | Artifact | Per-frame rate | Amplitude | Source |
 |---|---|---|---|
 | Cosmic rays | `CR_RATE_PER_S_PER_CM2 = 5 hits/cm²/s` × `cr_rate_factor` (per-band post-rejection: 0.02 for VIS, 1.0 for NISP). Q1 MER reports ~1.6% of pixels CR-flagged per single VIS frame; cross-dither median rejection leaves ~0.1% in the stack. | Track length `Exp(mean=3 px)` clipped to [1, 25] px; charge per hit `Exp(scale=1500 e⁻)`. | Holmes+ SREM; Q1 paper. |
-| Hot pixels | `HOT_PIXEL_FRACTION = 0.001` (per-frame, randomised so a fixed mask isn't memorised) | Charge `Exp(mean=10⁴ e⁻)`. | Cropper+ 2014, MSSL CCD273. |
+| Hot pixels | `HOT_PIXEL_FRACTION = 0.0001` (~6.5 residual pixels per 255² band plane; per-frame randomised so a fixed mask isn't memorised) | Charge `Exp(mean=10⁴ e⁻)`. | Cropper+ 2014, MSSL CCD273. |
 | Long faint streaks | `STREAK_RATE_PER_KPIX2 = 4.0` per (1000×1000)-LR-pixel area (≈ 1 per 512² VIS cutout) | Length `Exp(mean=250 px)` clipped to [40, 2000] px; width 1–3 px; amplitude `Uniform(0.3, 0.8) · σ_floor` with random sign. | Calibrated against Q1 VIS cutouts. |
 
 **Why a separate "streaks" channel?** Roughly 30–60% of Q1 VIS cutouts contain a long,

@@ -8,8 +8,8 @@ does not reproduce. Three classes are modelled here:
   few neighbouring pixels; the full track geometry is approximated as
   short oriented streaks of length 1–4 native pixels. Most are removed
   by the MER cross-dither median; this models the post-rejection survivors.
-* **Hot pixels** — ~0.1% of detector pixels show anomalously high dark
-  current and effectively saturate over a typical exposure.
+* **Hot pixels** — a sparse residual population remains after detector-mask
+  rejection and shows anomalously high dark current in the delivered image.
 * **Dead pixels** — a rarer set of unresponsive pixels collect ~no charge,
   reading at the background floor (≈0) regardless of incident light; their
   real signal is destroyed so the network must inpaint from neighbours.
