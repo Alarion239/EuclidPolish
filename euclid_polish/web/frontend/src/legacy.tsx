@@ -6,11 +6,14 @@ import "./viewer.css";
 
 type ViewerState = {
   index: number; tier: string; tiers: string[]; color: string;
+  knee: number; gain: number;
   params: Record<string, string>;
 };
 export type ViewerApi = {
   goTo(i: number): void;
   setTiers(keys: string | string[]): void;
+  /** Apply the shared browser-side colour/asinh/brightness transfer. */
+  setView(patch: { color?: string; knee?: number; gain?: number }): void;
   /** Patch cube-query parameters and refresh the visible pixels in place. */
   setParams(patch: Record<string, string>): Promise<void>;
   setMorphMembers(csv: string | null): void;
@@ -57,6 +60,8 @@ export type CutoutViewerProps = {
   collection: string;
   params?: Record<string, string>;
   compact?: boolean;
+  hideToolbar?: boolean;
+  initialTier?: string;
   initialIndex?: number;
   onChange?: (s: ViewerState) => void;
   /** Called with the imperative engine handle once mounted (and null on
@@ -69,7 +74,8 @@ export type CutoutViewerProps = {
 /** Mount the shared canvas cutout viewer for a `collection`, re-mounting when
  *  the collection or its params change. Cleans up on unmount. */
 export function CutoutViewer(
-  { collection, params, compact, initialIndex, onChange, onReady, className }: CutoutViewerProps,
+  { collection, params, compact, hideToolbar, initialTier, initialIndex,
+    onChange, onReady, className }: CutoutViewerProps,
 ) {
   const host = useRef<HTMLDivElement>(null);
   const paramsKey = JSON.stringify(params ?? {});
@@ -90,6 +96,8 @@ export function CutoutViewer(
         collection,
         params: params ?? {},
         compact,
+        hideToolbar,
+        initialTier,
         initialIndex,
         onChange: (s: ViewerState) => onChangeRef.current?.(s),
       });
@@ -101,7 +109,7 @@ export function CutoutViewer(
       try { api?.destroy(); } catch { /* noop */ }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [collection, paramsKey, compact, initialIndex]);
+  }, [collection, paramsKey, compact, hideToolbar, initialTier, initialIndex]);
 
   return <div ref={host} className={`cv-root ${className ?? ""}`} />;
 }

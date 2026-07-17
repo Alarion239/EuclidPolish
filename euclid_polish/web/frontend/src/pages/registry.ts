@@ -14,6 +14,7 @@ import LensFinderPage from "./LensFinder";
 import LensIsolationPage from "./LensIsolation";
 import PsfsPage from "./Psfs";
 import SkyPage from "./Sky";
+import SyntheticRealPage from "./SyntheticReal";
 import TngPage from "./Tng";
 import TrackingPage from "./Tracking";
 import TrainMembersPage from "./TrainMembers";
@@ -30,6 +31,7 @@ export const PAGES: PageDef[] = [
   { label: "Sky", path: "/sky", component: SkyPage },
   { label: "Cutouts", path: "/cutouts", component: CutoutsPage },
   { label: "TNG", path: "/tng", component: TngPage },
+  { label: "Synthetic–Real", path: "/synthetic-real", component: SyntheticRealPage },
   { label: "Inference", path: "/inference", component: InferencePage },
   { label: "Ensemble", path: "/ensemble", component: EnsemblePage },
   { label: "Train members", path: "/train-members", component: TrainMembersPage },
@@ -48,7 +50,7 @@ const item = (label: string) => ({ label, path: path(label) });
 /** Sidebar sections in the reading order of a run: setup → data → model → ops. */
 export const NAV: NavGroup[] = [
   { title: "Setup", items: [item("Config"), item("Catalog"), item("PSFs")] },
-  { title: "Data", items: [item("Sky"), item("Cutouts"), item("TNG")] },
+  { title: "Data", items: [item("Sky"), item("Cutouts"), item("TNG"), item("Synthetic–Real")] },
   { title: "Model", items: [item("Inference"), item("Ensemble"), item("Train members"), item("Evaluation"), item("Lens finder"), item("Lens isolation")] },
   { title: "Ops", items: [item("Tracking"), item("Visualization"), item("FASRC"), item("Git")] },
 ];

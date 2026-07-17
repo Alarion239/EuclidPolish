@@ -273,11 +273,13 @@ export function mountCutoutViewer(root, opts = {}) {
     meta: null,
     params: Object.assign({}, opts.params || {}),
     index: opts.initialIndex || 0,
-    tiers: [],             // selected tier keys (multi-select), canonical order
+    tiers: opts.initialTier ? [String(opts.initialTier)] : [],
+                           // selected tier keys (multi-select), canonical order
     color: "VIS",          // band name | "lupton" | "temp"
     knee: 100,             // K (e⁻)
     gain: 1.0,             // brightness multiplier
     K0: 100,               // knee captured on first load → fixes the white ref
+    viewOverride: {},      // externally driven colour / transfer-function values
     cubeCache: new Map(),  // "tier:index" → cube record
     prepCache: new Map(),  // "tier:index:color" → colour/intensity decomposition
     shown: new Map(),      // tier → rec currently displayed (for cheap re-render)
@@ -302,6 +304,7 @@ export function mountCutoutViewer(root, opts = {}) {
   // Compact mode (e.g. the morphology hover preview): hide the toolbar/nav
   // chrome so only the image frame shows.
   if (opts.compact) { toolbar.style.display = "none"; nav.style.display = "none"; }
+  else if (opts.hideToolbar) toolbar.style.display = "none";
 
   // --- helpers -------------------------------------------------------------
   const band = (name) => state.meta.color.bands[name];
@@ -1168,8 +1171,11 @@ export function mountCutoutViewer(root, opts = {}) {
         && !["lupton", "temp"].includes(state.color)) {
       state.color = state.meta.band_names[0];
     }
-    state.knee = state.meta.color.default_asinh || 100;
-    state.K0 = state.knee;
+    const defaultKnee = state.meta.color.default_asinh || 100;
+    state.K0 = defaultKnee;
+    state.knee = Number.isFinite(state.viewOverride.knee)
+      ? state.viewOverride.knee : defaultKnee;
+    if (Number.isFinite(state.viewOverride.gain)) state.gain = state.viewOverride.gain;
     state.cubeCache.clear();
     state.prepCache.clear();
     buildToolbar();
@@ -1200,6 +1206,33 @@ export function mountCutoutViewer(root, opts = {}) {
       Object.assign(state.params, patch || {});
       return refreshVisible();
     },
+    /** Drive the client-side colour transfer from an external control surface.
+     *  Values are remembered even when called before metadata finishes loading,
+     *  which lets two separately mounted viewers share one exact transfer. */
+    setView(patch) {
+      const next = patch || {};
+      if (typeof next.color === "string") {
+        const allowed = !state.meta || state.meta.band_names.includes(next.color)
+          || ["lupton", "temp"].includes(next.color);
+        if (allowed) {
+          state.color = next.color;
+          state.viewOverride.color = next.color;
+        }
+      }
+      if (Number.isFinite(next.knee) && next.knee > 0) {
+        state.knee = next.knee;
+        state.viewOverride.knee = next.knee;
+      }
+      if (Number.isFinite(next.gain) && next.gain > 0) {
+        state.gain = next.gain;
+        state.viewOverride.gain = next.gain;
+      }
+      if (!state.meta) return;
+      buildToolbar();
+      syncChips();
+      rerender();
+      notify();
+    },
     /** Set the disagreement movie's member subset — a CSV of member indices
      *  (e.g. "0,3,7"), or null/"" for the full ensemble. The sr/pcaN cubes are
      *  recomputed server-side over the subset. Re-arms the movie if shown. */
@@ -1214,6 +1247,7 @@ export function mountCutoutViewer(root, opts = {}) {
     getState() {
       return { index: state.index, tier: state.tiers[0],
                tiers: state.tiers.slice(), color: state.color,
+               knee: state.knee, gain: state.gain,
                params: Object.assign({}, state.params) };
     },
     reload() { return loadMeta().then(show); },
