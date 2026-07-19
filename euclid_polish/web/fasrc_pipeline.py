@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import secrets
 import shlex
 import textwrap
 import time
@@ -181,6 +182,10 @@ class FASRCPipelineStep(ABC):
     #: work is single-threaded and asking SLURM for extra cores just
     #: wastes the allocation — see HSTPSFExtractStep.
     fixed_cpus: int | None = None
+    #: GPU equivalent of ``fixed_cpus``. Ensemble members are ordinary
+    #: single-device models, so allocating extra GPUs to one array task would
+    #: reserve hardware the trainer never uses.
+    fixed_gpus: int | None = None
     #: Simple, stable SLURM job name (what the user sees in squeue/sacct
     #: and the log filenames). Describes WHAT the job does, independent of
     #: any pipeline grouping, so it survives feature reshuffles. Falls back
@@ -209,6 +214,19 @@ class FASRCPipelineStep(ABC):
         spaces and shell-quotes individually.
         """
 
+    def prepare_params(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Resolve submission-time values before rendering and logging.
+
+        Most steps are already fully specified by their form values.  Array
+        steps override this hook to freeze values that every task must share
+        (member names and the base seed, for example).
+        """
+        return dict(params)
+
+    def array_shape(self, params: dict[str, Any]) -> tuple[int, int] | None:
+        """Return ``(task_count, max_parallel)`` for an array submission."""
+        return None
+
     # ------------------------------------------------------------------ #
 
     #: Subclasses override this class-level constant to control where
@@ -234,7 +252,7 @@ class FASRCPipelineStep(ABC):
         cfg: fasrc_config.FasrcConfig,
         label: str,
         relative_log_dir: str | None = None,
-    ) -> dict[str, str]:
+    ) -> dict[str, Any]:
         """Render the full sbatch script + the relative log paths.
 
         Returns ``{"body": str, "script": rel, "out": rel, "err": rel,
@@ -244,17 +262,21 @@ class FASRCPipelineStep(ABC):
         log_dir   = relative_log_dir or self.log_dir_prefix
         ts        = time.strftime("%Y%m%d-%H%M%S")
         job_name  = f"{self.job_name or self.step_id}-{ts}"
-        return render_sbatch_body(
+        prepared = self.prepare_params(params)
+        built = render_sbatch_body(
             job_name=job_name,
             relative_log_dir=log_dir,
             resources=resources,
             cfg=cfg,
             label=label,
-            cmd_argv=self.build_command(params),
+            cmd_argv=self.build_command(prepared),
             banner_line=self.banner_line(label),
             step_id=self.step_id,
             conda_env_path=self.conda_env,
+            array_shape=self.array_shape(prepared),
         )
+        built["params"] = prepared
+        return built
 
 
 # ---------------------------------------------------------------------------
@@ -272,7 +294,8 @@ def render_sbatch_body(
     banner_line:      str,
     step_id:          str | None = None,
     conda_env_path:   str | None = None,
-) -> dict[str, str]:
+    array_shape:      tuple[int, int] | None = None,
+) -> dict[str, Any]:
     """Render an sbatch script body + the relative log paths.
 
     Every FASRC job submitted from the UI runs through here — there is no
@@ -296,12 +319,24 @@ def render_sbatch_body(
         ``{"body": str, "script": rel, "out": rel, "err": rel, "name": str}``
     """
     script_rel = f"{relative_log_dir}/{job_name}.sh"
-    out_rel    = f"{relative_log_dir}/{job_name}.out"
-    err_rel    = f"{relative_log_dir}/{job_name}.err"
+    array_count = int(array_shape[0]) if array_shape else 0
+    array_parallel = int(array_shape[1]) if array_shape else 0
+    array_suffix = "-%A_%a" if array_count > 1 else ""
+    out_rel    = f"{relative_log_dir}/{job_name}{array_suffix}.out"
+    err_rel    = f"{relative_log_dir}/{job_name}{array_suffix}.err"
     # JSONL stream of structured progress events. Producer:
     # :class:`euclid_polish.observability.Reporter`. Consumer: the
     # /api/fasrc/jobs/<jobid>/status endpoint.
-    events_rel = f"{relative_log_dir}/{job_name}.events"
+    events_rel = f"{relative_log_dir}/{job_name}{array_suffix}.events"
+    exit_rel = f"{relative_log_dir}/{job_name}{array_suffix}.exit"
+    runtime_array_suffix = (
+        "-${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}"
+        if array_count > 1 else ""
+    )
+    events_runtime_rel = (
+        f"{relative_log_dir}/{job_name}{runtime_array_suffix}.events"
+    )
+    exit_runtime_rel = f"{relative_log_dir}/{job_name}{runtime_array_suffix}.exit"
 
     # 14 spaces of leading indent on continuation lines — must equal
     # or exceed the heredoc body's 12-space dedent baseline, otherwise
@@ -326,6 +361,10 @@ def render_sbatch_body(
     gres_line = (
         f"#SBATCH --gres=gpu:{n_gpus}\n        " if n_gpus > 0 else ""
     )
+    array_line = (
+        f"#SBATCH --array=0-{array_count - 1}%{array_parallel}\n        "
+        if array_count > 1 else ""
+    )
     # Sanitize anything embedded inside a double-quoted ``echo`` line —
     # newlines would split the echo, and single quotes are stripped to
     # match what users see in the rendered log banner. The caller's
@@ -344,7 +383,7 @@ def render_sbatch_body(
         #!/bin/bash
         #SBATCH --job-name={shlex.quote(job_name)}
         #SBATCH --partition={shlex.quote(resources.partition)}
-        {gres_line}#SBATCH --cpus-per-task={int(resources.n_cpus)}
+        {gres_line}{array_line}#SBATCH --cpus-per-task={int(resources.n_cpus)}
         #SBATCH --mem={resources.memory}
         #SBATCH --time={resources.time_limit}
         #SBATCH --output={out_rel}
@@ -353,6 +392,8 @@ def render_sbatch_body(
         set -euo pipefail
         cd "$SLURM_SUBMIT_DIR"
         mkdir -p {relative_log_dir}
+        __FASRC_EXIT_PATH__={exit_runtime_rel}
+        trap '__FASRC_RC__=$?; printf "%s\\n" "$__FASRC_RC__" > "$__FASRC_EXIT_PATH__"' EXIT
 
         echo "============================================================"
         echo "{safe_banner}"
@@ -370,7 +411,7 @@ def render_sbatch_body(
         export EUCLID_POLISH_CKPT_DIR={shlex.quote(cfg.ckpt_dir)}
         # ``Reporter.from_env()`` reads this to open the per-job
         # structured events stream.
-        export EUCLID_POLISH_EVENTS_PATH={shlex.quote(events_rel)}
+        export EUCLID_POLISH_EVENTS_PATH={events_runtime_rel}
         # The WebUI bar is driven by the Reporter, so silence every tqdm
         # progress bar in the job — otherwise they flood the .err log with
         # redundant ASCII frames. ``tqdm.write`` status lines (.out) stay.
@@ -408,8 +449,11 @@ def render_sbatch_body(
         "out":    out_rel,
         "err":    err_rel,
         "events": events_rel,
+        "exit":   exit_rel,
         "name":   job_name,
         "entry":  entry,
+        "array_count": array_count,
+        "array_parallelism": array_parallel,
     }
 
 
@@ -1020,7 +1064,7 @@ class EuclidStarAnchorTFRecordStep(FASRCPipelineStep):
 
 
 class EnsembleTrainStep(FASRCPipelineStep):
-    """Ensemble training with three modes (sequential, one GPU job).
+    """Ensemble training with one independent model per SLURM array task.
 
     Shells out to ``scripts/train_ensemble.py``:
 
@@ -1032,8 +1076,8 @@ class EnsembleTrainStep(FASRCPipelineStep):
     * ``fork`` — create N new members initialized from an existing member's
       weights (psnr or loss track), step 0, fresh optimizer + LR schedule.
 
-    Evaluates the ensemble on the held-out test set at the end. Pull the
-    trained members back via the ensemble page's download action.
+    Held-out ensemble evaluation is intentionally local and is not part of
+    these cluster jobs. Periodic validation within each training run remains.
     """
 
     def __init__(self) -> None:
@@ -1046,7 +1090,45 @@ class EnsembleTrainStep(FASRCPipelineStep):
                 memory="32G", time_limit="48:00:00",
             ),
             needs_gpu=True,
+            fixed_gpus=1,
         )
+
+    @staticmethod
+    def _members(params: dict[str, Any]) -> list[str]:
+        return list(dict.fromkeys(
+            name.strip()
+            for name in str(params.get("members", "")).split(",")
+            if name.strip()
+        ))
+
+    def prepare_params(self, params: dict[str, Any]) -> dict[str, Any]:
+        prepared = dict(params)
+        mode = str(prepared.get("mode", "add") or "add").strip()
+        if mode == "continue":
+            names = self._members(prepared)
+            if not names:
+                raise ValueError("continue mode needs at least one member")
+            prepared["members"] = ",".join(names)
+        else:
+            count = int(prepared.get("count", prepared.get("n_members", 0)) or
+                        (1 if mode == "fork" else 5))
+            if count <= 0:
+                raise ValueError("member count must be positive")
+            names = next_member_names(default_ensemble_dir(), count)
+            prepared["count"] = count
+            prepared["member_names"] = ",".join(names)
+        if str(prepared.get("base_seed", "")).strip() in ("", "-1"):
+            prepared["base_seed"] = secrets.randbits(32)
+        prepared["array_count"] = len(names)
+        requested = int(prepared.get("array_max_parallel", 2) or 2)
+        prepared["array_max_parallel"] = max(1, min(requested, len(names)))
+        return prepared
+
+    def array_shape(self, params: dict[str, Any]) -> tuple[int, int] | None:
+        count = int(params.get("array_count", 1) or 1)
+        if count <= 1:
+            return None
+        return count, int(params["array_max_parallel"])
 
     def build_command(self, params: dict[str, Any]) -> list[str]:
         mode = str(params.get("mode", "add") or "add").strip()
@@ -1054,11 +1136,7 @@ class EnsembleTrainStep(FASRCPipelineStep):
                     Config.DEFAULT_TRAIN_STEPS)
         cmd = ["scripts/train_ensemble.py", "--mode", mode]
         if mode == "continue":
-            members = list(dict.fromkeys(
-                name.strip()
-                for name in str(params.get("members", "")).split(",")
-                if name.strip()
-            ))
+            members = self._members(params)
             if not members:
                 raise ValueError("continue mode needs at least one member")
             extra_steps = int(params.get("extra_steps", 50_000) or 50_000)
@@ -1072,7 +1150,15 @@ class EnsembleTrainStep(FASRCPipelineStep):
             # dir still holds archived members' directories).
             count = int(params.get("count", params.get("n_members", 0)) or
                         (1 if mode == "fork" else 5))
-            names = next_member_names(default_ensemble_dir(), count)
+            names = [name.strip() for name in
+                     str(params.get("member_names", "")).split(",")
+                     if name.strip()]
+            if not names:
+                # ``build_sbatch_body`` always prepares explicit names first;
+                # keep direct command construction useful for CLI/tests.
+                names = next_member_names(default_ensemble_dir(), count)
+            if len(names) != count:
+                raise ValueError("prepared member names do not match count")
             cmd += ["--count", str(count),
                     "--member-names", ",".join(names),
                     "--steps", str(steps)]
@@ -1152,10 +1238,8 @@ class EnsembleTrainStep(FASRCPipelineStep):
         if base_seed not in ("", "-1"):
             with contextlib.suppress(ValueError):
                 cmd += ["--base-seed", str(int(base_seed))]
-        eval_images = str(params.get("eval_images", "")).strip()
-        if eval_images:
-            with contextlib.suppress(ValueError):
-                cmd += ["--eval-images", str(int(eval_images))]
+        if int(params.get("array_count", 1) or 1) > 1:
+            cmd.append("--array-task")
         # LR schedule + plateau-guard knobs, injected from the /config page via
         # FASRC_STEP_PARAMS. Passed through verbatim as --lr-* / --plateau-lr-*
         # flags (train_ensemble.py's argparse validates/typechecks them).

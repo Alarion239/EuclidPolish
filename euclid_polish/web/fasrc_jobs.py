@@ -577,6 +577,34 @@ def parse_squeue(text: str) -> list[dict[str, str]]:
 SQUEUE_FMT = "%i|%j|%T|%M|%l|%D|%R|%S"
 
 
+def array_squeue_rows(jobid: str, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return the live rows belonging to a parent job or its array tasks."""
+    parent = str(jobid)
+    return [r for r in rows
+            if str(r.get("jobid", "")) == parent
+            or str(r.get("jobid", "")).startswith(parent + "_")]
+
+
+def aggregate_squeue_state(rows: list[dict[str, Any]]) -> str | None:
+    """Fold array-task states into the parent state used by the local queue."""
+    states = [str(r.get("state", "")).upper() for r in rows]
+    if not states:
+        return None
+    if "RUNNING" in states:
+        return "RUNNING"
+    if "PENDING" in states:
+        return "PENDING"
+    failed = next((s for s in states if s not in ("COMPLETED", "")), None)
+    return failed or "COMPLETED"
+
+
+def expand_array_path(path: str | None, parent_jobid: str, index: int) -> str | None:
+    """Resolve SLURM's ``%A``/``%a`` filename tokens for one array task."""
+    if not path:
+        return None
+    return str(path).replace("%A", str(parent_jobid)).replace("%a", str(index))
+
+
 # Terminal states — once a row reaches any of these we stop reconciling
 # it against squeue. ``UNKNOWN`` is here too: it means "this job was
 # tracked but disappeared from squeue without ever showing started_at",
@@ -629,7 +657,7 @@ def sync_pending_on_connect(
         if not ssh.is_connected():
             return {}
         rc, out, _err = ssh.run(
-            f"squeue -h -u $USER --format='{SQUEUE_FMT}'", timeout=15,
+            f"squeue -r -h -u $USER --format='{SQUEUE_FMT}'", timeout=15,
         )
     except Exception:
         return {}
@@ -801,8 +829,6 @@ def reconcile_with_squeue(squeue_rows: list[dict[str, Any]],
     """
     target_db  = db if db is not None else DB
     target_log = job_log if job_log is not None else JOBLOG
-    live_state: dict[str, str] = {r["jobid"]: r.get("state", "?")
-                                  for r in squeue_rows}
     changes: dict[str, str] = {}
     just_finalised: list[str] = []
 
@@ -811,7 +837,8 @@ def reconcile_with_squeue(squeue_rows: list[dict[str, Any]],
     for stored in db_rows:
         jobid = stored["jobid"]
         cur   = stored.get("state") or ""
-        live  = live_state.get(jobid)
+        matching_rows = array_squeue_rows(jobid, squeue_rows)
+        live = aggregate_squeue_state(matching_rows)
         alive = live in ("RUNNING", "PENDING")
 
         if cur in TERMINAL_STATES:
@@ -825,13 +852,13 @@ def reconcile_with_squeue(squeue_rows: list[dict[str, Any]],
         else:
             resurrecting = False
 
-        if jobid in live_state:
+        if matching_rows:
             if live == "RUNNING":
                 target_db.update_state(
                     jobid, state="RUNNING",
                     started_at=time.time() - parse_slurm_time(
-                        next((r.get("time") for r in squeue_rows
-                              if r["jobid"] == jobid), "")
+                        max((r.get("time", "") for r in matching_rows),
+                            key=parse_slurm_time, default="")
                     ),
                     clear_ended=resurrecting,
                 )

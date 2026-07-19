@@ -210,6 +210,12 @@ function renderPS(el, payload, mode) {
 
   const COMB_COLOR = "#ee7733";
   const STATS_RBF_COMB_COLOR = "#2a9d8f";
+  const MODEL_META = {
+    rbf_gate: ["max RBF combiner", COMB_COLOR],
+    stats_rbf_gate: ["mean + std RBF", STATS_RBF_COMB_COLOR],
+    minmax_rbf_gate: ["min + max RBF", "#d47f34"],
+    stacked_rbf_gate: ["stacked RBF", "#7b5fc6"],
+  };
   const COMBINED_COLOR = "#9d6cff";
   const LR_COLOR = "#c23b3b";                 // baseline-to-beat (no SR)
   const hasComb = (arr) => (arr || []).some((v) => v != null && isFinite(v));
@@ -252,11 +258,14 @@ function renderPS(el, payload, mode) {
     drawLine(p, xd, yd, theta, ps.r_lr, { color: LR_COLOR, width: 2.5, dash: [7, 4] });
   }
   drawLine(p, xd, yd, theta, ps.r, { color: VIS_COLOR, width: 2.5, dots: true });
-  if (hasComb(ps.r_comb)) {
-    drawLine(p, xd, yd, theta, ps.r_comb, { color: COMB_COLOR, width: 2, dots: true });
-  }
-  if (hasComb(ps.r_stats_rbf_comb)) {
-    drawLine(p, xd, yd, theta, ps.r_stats_rbf_comb, { color: STATS_RBF_COMB_COLOR, width: 2, dots: true });
+  const modelCurves = Object.entries(ps.model_combiners || {}).filter(([, curve]) => hasComb(curve.r));
+  if (modelCurves.length) modelCurves.forEach(([kind, curve]) => {
+    const [, color] = MODEL_META[kind] || [kind, "#6f7a8a"];
+    drawLine(p, xd, yd, theta, curve.r, { color, width: 2, dots: true });
+  });
+  else {
+    if (hasComb(ps.r_comb)) drawLine(p, xd, yd, theta, ps.r_comb, { color: COMB_COLOR, width: 2, dots: true });
+    if (hasComb(ps.r_stats_rbf_comb)) drawLine(p, xd, yd, theta, ps.r_stats_rbf_comb, { color: STATS_RBF_COMB_COLOR, width: 2, dots: true });
   }
   if (hasComb(ps.r_combined)) {
     drawLine(p, xd, yd, theta, ps.r_combined, { color: COMBINED_COLOR, width: 2, dots: true });
@@ -267,8 +276,13 @@ function renderPS(el, payload, mode) {
     ...(hasLR ? [["LR baseline (no SR)", LR_COLOR, true]] : []),
     ...groups.map(([l, c]) => [l, c, false]),
     ["ensemble mean", VIS_COLOR, false],
-    ...(hasComb(ps.r_comb) ? [["max RBF combiner", COMB_COLOR, false]] : []),
-    ...(hasComb(ps.r_stats_rbf_comb) ? [["mean + std RBF", STATS_RBF_COMB_COLOR, false]] : []),
+    ...(modelCurves.length ? modelCurves.map(([kind]) => {
+      const [label, color] = MODEL_META[kind] || [kind, "#6f7a8a"];
+      return [label, color, false];
+    }) : [
+      ...(hasComb(ps.r_comb) ? [["max RBF combiner", COMB_COLOR, false]] : []),
+      ...(hasComb(ps.r_stats_rbf_comb) ? [["mean + std RBF", STATS_RBF_COMB_COLOR, false]] : []),
+    ]),
     ...(hasComb(ps.r_combined) ? [["combined combiner", COMBINED_COLOR, false]] : []),
     ["model–model r̃(k) (no HR)", "#555", true],
     ["LR sampling (0.1″)", "#333", true],
@@ -281,9 +295,11 @@ function renderStdErr(el, payload) {
   const base = payload.std_err;
   if (!base) { el.innerHTML = '<p class="muted">no data — run Evaluate.</p>'; return; }
   const labels = { ensemble_mean: "ensemble mean", rbf_gate: "max RBF",
-    stats_rbf_gate: "mean + std RBF", minmax_rbf_gate: "min + max RBF" };
+    stats_rbf_gate: "mean + std RBF", minmax_rbf_gate: "min + max RBF",
+    stacked_rbf_gate: "stacked RBF" };
   const colors = { ensemble_mean: VIS_COLOR, rbf_gate: "#ee7733",
-    stats_rbf_gate: "#2a9d8f", minmax_rbf_gate: "#d47f34" };
+    stats_rbf_gate: "#2a9d8f", minmax_rbf_gate: "#d47f34",
+    stacked_rbf_gate: "#7b5fc6" };
   const models = base.models || {};
   const kinds = Object.keys(models);
   let kind = models[base.primary] ? base.primary : (kinds[0] || "ensemble_mean");

@@ -155,14 +155,64 @@ def create_app() -> Flask:
                                  # down/flaky (the XHR got redirected to HTML).
         "/evaluation",           # results gallery reads local eval_results/
         "/api/evaluation/",      # (only .../sync needs SSH; it 400s when down)
+        "/api/inspect",          # local FITS metadata for the React inspector
         "/ensemble",             # local: runs ensemble checkpoints on local test
         "/ensemble/",            # records; render + evaluate jobs need no SSH
         "/eval-files/",          # serve already-pulled PNG/FITS offline
         "/viewer/",              # unified cutout viewer reads local caches
-        "/app",                  # new React console (SPA) — local-first
         "/lens-isolation",       # additive experiment status works offline
         "/api/lens-isolation/",
     )
+
+    # The React console is now the only page UI. Keep the list explicit so
+    # Flask data endpoints such as /ensemble/status.json and
+    # /inspect/preview.png continue to reach their normal handlers.
+    _REACT_PAGE_PATHS = frozenset({
+        "/",
+        "/config",
+        "/catalog",
+        "/psfs",
+        "/sky",
+        "/cutouts",
+        "/tng",
+        "/synthetic-real",
+        "/inference",
+        "/ensemble",
+        "/ensemble/starfull",
+        "/ensemble/starless",
+        "/train-members",
+        "/evaluation",
+        "/lensfinder",
+        "/lens-isolation",
+        "/tracking",
+        "/visualization",
+        "/fasrc",
+        "/git",
+        "/inspect",
+        "/connection-error",
+    })
+
+    # These pages are all rendered by the React shell even while their Flask
+    # handlers remain registered as deprecated compatibility code. The HST
+    # lanes are normally disabled, but including them here prevents a feature
+    # flag change from silently bringing the old Jinja UI back.
+    _DEPRECATED_PAGE_PATHS = frozenset({
+        "/hst-psf", "/hst-cutouts", "/hst-tiles", "/hst-pairs", "/roundtrip",
+        "/cutouts/VIS", "/cutouts/Y_E", "/cutouts/J_E", "/cutouts/H_E",
+    })
+
+    def _is_react_page_path(path: str) -> bool:
+        normalized = path.rstrip("/") or "/"
+        return normalized in _REACT_PAGE_PATHS or normalized in _DEPRECATED_PAGE_PATHS
+
+    @app.before_request
+    def _redirect_deprecated_app_prefix():
+        """Move old /app bookmarks to the same route without the prefix."""
+        if request.path == "/app" or request.path.startswith("/app/"):
+            suffix = request.path[4:] or "/"
+            query = f"?{request.query_string.decode('utf-8')}" if request.query_string else ""
+            return redirect(f"{suffix}{query}", code=308)
+        return None
 
     @app.before_request
     def _enforce_ssh_gate():
@@ -170,6 +220,8 @@ def create_app() -> Flask:
         if STATE.ssh is not None and STATE.ssh.is_connected():
             return None
         if request.path == "/connection-error":
+            return None
+        if _is_react_page_path(request.path):
             return None
         if any(request.path.startswith(p) for p in _ALWAYS_REACHABLE_PREFIXES):
             return None
@@ -221,23 +273,25 @@ def create_app() -> Flask:
     # ---------------- Root ----------------
     @app.route("/")
     def index():
-        # The status dashboard was removed; the FASRC tab is the hub. Keep
-        # this endpoint named ``index`` so existing ``url_for("index")``
-        # call sites (e.g. the connection-error bounce) still resolve, and
-        # the root URL lands somewhere useful instead of 404ing.
+        # Keep this endpoint named ``index`` for existing url_for("index")
+        # call sites. GET / is intercepted by the React shell above; this
+        # fallback is only for code paths that explicitly dispatch the view.
         return redirect(url_for("fasrc_page"))
 
     # ---- new React console (SPA) ----
     # The redesigned UI is a Vite/React single-page app built into
-    # static/dist/. Flask serves its shell for every /app/* path (client-side
-    # routing) and Flask's own static handler serves /static/dist/* assets.
-    # The classic Jinja pages stay live at their routes during the migration.
+    # static/dist/. The shell is served at the canonical page URLs and Flask's
+    # own static handler serves /static/dist/* assets. The old Jinja handlers
+    # stay registered only as compatibility code for backend route ownership;
+    # page requests are intercepted below before dispatch.
     _spa_index = os.path.join(here, "static", "dist", "index.html")
 
-    @app.route("/app")
-    @app.route("/app/")
-    @app.route("/app/<path:_sub>")
-    def react_console(_sub: str = ""):
+    @app.before_request
+    def react_console():
+        if request.path in {"/cutouts/VIS", "/cutouts/Y_E", "/cutouts/J_E", "/cutouts/H_E"}:
+            return redirect("/cutouts", code=308)
+        if request.method not in ("GET", "HEAD") or not _is_react_page_path(request.path):
+            return None
         if not os.path.isfile(_spa_index):
             return (
                 "React console not built. Run:\n"

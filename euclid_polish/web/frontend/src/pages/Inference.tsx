@@ -60,7 +60,9 @@ function InferenceDiagnostics({ data }: { data: Diagnostics }) {
     </Card>
 
     {Object.entries(data.combiners).map(([kind, comb]) => {
-      const title = kind === "rbf_gate" ? "max RBF" : kind === "stats_rbf_gate" ? "mean + std RBF" : "min + max RBF";
+      const title = kind === "rbf_gate" ? "max RBF"
+        : kind === "stats_rbf_gate" ? "mean + std RBF"
+          : kind === "stacked_rbf_gate" ? "stacked RBF" : "min + max RBF";
       if (comb.mode === "histogram") {
         const counts = comb.counts as number[];
         const centers = counts.map((_, i) => (comb.x_edges[i] + comb.x_edges[i + 1]) / 2);

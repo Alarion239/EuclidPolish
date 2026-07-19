@@ -30,6 +30,7 @@ GRID_SIDE = FIELD_SIZE // TILE_SIZE
 _BRIGHTNESS_EDGES = np.linspace(-1.0, 13.0, 81)
 _LOG_STD_EDGES = np.linspace(-6.0, 3.0, 73)
 _MINMAX_EDGES = np.linspace(-1.0, 13.0, 81)
+_STACKED_DIFF_EDGES = np.linspace(-5.0, 5.0, 81)
 
 
 def field_id(ra: float, dec: float) -> str:
@@ -90,7 +91,9 @@ def _diagnostic_accumulators(combiners: dict[str, Any], n_members: int) -> dict[
             kind: np.zeros((len(_BRIGHTNESS_EDGES) - 1,), np.int64)
             if kind == "rbf_gate" else np.zeros(
                 (len(_MINMAX_EDGES) - 1,
-                 len(_LOG_STD_EDGES if kind == "stats_rbf_gate" else _MINMAX_EDGES) - 1), np.int64)
+                 len(_LOG_STD_EDGES if kind == "stats_rbf_gate"
+                     else _STACKED_DIFF_EDGES if kind == "stacked_rbf_gate"
+                     else _MINMAX_EDGES) - 1), np.int64)
             for kind in combiners
         },
     }
@@ -136,6 +139,13 @@ def _accumulate_diagnostics(acc: dict[str, Any], members: np.ndarray,
                     np.mean(active, axis=1), np.log(np.maximum(raw_std, 0.0) + floor),
                     bins=(_MINMAX_EDGES, _LOG_STD_EDGES),
                 )[0].astype(np.int64)
+            elif kind == "stacked_rbf_gate":
+                experts = combiner.expert_asinh(name, active)
+                features = combiner.bands[name].features(experts)
+                counts += np.histogram2d(
+                    features[:, 0], features[:, 1],
+                    bins=(_MINMAX_EDGES, _STACKED_DIFF_EDGES),
+                )[0].astype(np.int64)
             else:  # min+max RBF
                 counts += np.histogram2d(np.min(active, axis=1), np.max(active, axis=1),
                                          bins=(_MINMAX_EDGES, _MINMAX_EDGES))[0].astype(np.int64)
@@ -158,11 +168,16 @@ def _diagnostic_payload(acc: dict[str, Any], labels: list[str],
                 "pixel_count": int(counts.sum()),
             }
         else:
-            axis = ("mean brightness", "log(std + floor)") if kind == "stats_rbf_gate" \
-                else ("min brightness", "max brightness")
+            axis = (("mean brightness", "log(std + floor)")
+                    if kind == "stats_rbf_gate" else
+                    ("expert midpoint", "minmax - meanstd")
+                    if kind == "stacked_rbf_gate" else
+                    ("min brightness", "max brightness"))
             combiner_payload[kind] = {
                 "kind": kind, "mode": "heat", "x_edges": _MINMAX_EDGES.tolist(),
-                "y_edges": (_LOG_STD_EDGES if kind == "stats_rbf_gate" else _MINMAX_EDGES).tolist(),
+                "y_edges": (_LOG_STD_EDGES if kind == "stats_rbf_gate"
+                            else _STACKED_DIFF_EDGES if kind == "stacked_rbf_gate"
+                            else _MINMAX_EDGES).tolist(),
                 "counts": counts.tolist(),
                 "x_label": axis[0], "y_label": axis[1], "pixel_count": int(counts.sum()),
             }

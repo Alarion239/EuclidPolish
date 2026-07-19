@@ -108,10 +108,29 @@ def parse_sacct_output(text: str) -> dict[str, Any]:
     if not rows:
         return {}
 
-    # The main job row's JobID is the bare numeric id; step rows append
-    # ``.batch`` / ``.extern`` etc. Find both classes.
-    main_row  = next((r for r in rows if "." not in r["JobID"]), rows[0])
-    batch_row = next((r for r in rows if r["JobID"].endswith(".batch")), None)
+    # An array query returns ``123_0``, ``123_1``, ... top rows (plus each
+    # task's .batch/.extern rows). Fold the task lifecycle into the parent:
+    # the parent succeeds only when every task succeeds. Allocation fields
+    # remain per task, which is the honest unit for an array submission.
+    task_rows = [r for r in rows
+                 if re.fullmatch(r"\d+_\d+", r.get("JobID", ""))]
+    main_row = next((r for r in rows if re.fullmatch(r"\d+", r["JobID"])),
+                    task_rows[0] if task_rows else rows[0])
+    batch_rows = [r for r in rows if r["JobID"].endswith(".batch")]
+    batch_row = batch_rows[0] if batch_rows else None
+    if len(task_rows) > 1:
+        states = [_clean_state(r.get("State")) for r in task_rows]
+        failed_state = next((s for s in states if s != "COMPLETED"), None)
+        main_row = dict(main_row)
+        main_row["State"] = failed_state or "COMPLETED"
+        if failed_state:
+            failed_row = next(r for r in task_rows
+                              if _clean_state(r.get("State")) == failed_state)
+            main_row["ExitCode"] = failed_row.get("ExitCode", "")
+        main_row["ElapsedRaw"] = str(max(
+            (_parse_int(r.get("ElapsedRaw")) or 0 for r in task_rows),
+            default=0,
+        ))
 
     elapsed_sec = _parse_int(main_row.get("ElapsedRaw")) or 0
     # CPU time actually CONSUMED (user+system across all cores) — TotalCPU,
@@ -119,14 +138,28 @@ def parse_sacct_output(text: str) -> dict[str, Any]:
     # CPU time, so using it makes efficiency a constant 1.0. TotalCPU is
     # what ``seff`` divides by (Elapsed × NCPUS) to get real utilisation.
     # Prefer the batch step (where the work runs); fall back to the main row.
-    cpu_seconds = (
-        _parse_slurm_duration_secs((batch_row or {}).get("TotalCPU"))
-        or _parse_slurm_duration_secs(main_row.get("TotalCPU"))
-        or 0.0
-    )
+    if len(batch_rows) > 1:
+        cpu_seconds = sum(
+            _parse_slurm_duration_secs(r.get("TotalCPU")) or 0.0
+            for r in batch_rows
+        )
+    else:
+        cpu_seconds = (
+            _parse_slurm_duration_secs((batch_row or {}).get("TotalCPU"))
+            or _parse_slurm_duration_secs(main_row.get("TotalCPU"))
+            or 0.0
+        )
     alloc_cpus = _parse_int(main_row.get("AllocCPUS")) or 0
     cpu_efficiency: float | None = None
-    if elapsed_sec > 0 and alloc_cpus > 0:
+    if len(task_rows) > 1:
+        allocated_cpu_seconds = sum(
+            (_parse_int(r.get("ElapsedRaw")) or 0)
+            * (_parse_int(r.get("AllocCPUS")) or alloc_cpus)
+            for r in task_rows
+        )
+        if allocated_cpu_seconds > 0:
+            cpu_efficiency = cpu_seconds / allocated_cpu_seconds
+    elif elapsed_sec > 0 and alloc_cpus > 0:
         cpu_efficiency = cpu_seconds / (elapsed_sec * alloc_cpus)
 
     alloc_tres  = main_row.get("AllocTRES", "")
@@ -134,7 +167,8 @@ def parse_sacct_output(text: str) -> dict[str, Any]:
     alloc_mem_mb = _tres_mem_mb(alloc_tres)
 
     # MaxRSS + GPU usage typically live on the batch step.
-    max_rss_mb = _parse_mem_mb((batch_row or {}).get("MaxRSS"))
+    max_rss_values = [_parse_mem_mb(r.get("MaxRSS")) for r in batch_rows]
+    max_rss_mb = max((v for v in max_rss_values if v is not None), default=None)
     req_mem_mb = _parse_mem_mb(main_row.get("ReqMem"))
 
     # GPU util/mem from NVML job accounting (gres/gpuutil = mean compute %,

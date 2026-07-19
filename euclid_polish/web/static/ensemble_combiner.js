@@ -32,6 +32,11 @@ function memberMeta(comb, evals) {
 }
 
 function memberColorsFor(members, mode) {
+  if (members.some((m) => m.expert_color)) {
+    return members.map((m, i) => ({
+      color: m.expert_color || COLORS[i % COLORS.length], tag: "expert",
+    }));
+  }
   if (mode === "loss") {
     return members.map((m) => {
       const l = (m.loss || "l1").toLowerCase();
@@ -70,7 +75,9 @@ function metricsHtml(comb, evals) {
   const kind = comb.kind || "rbf_gate";
   const statsRBF = kind === "stats_rbf_gate";
   const minmaxRBF = kind === "minmax_rbf_gate";
-  const modelLabel = minmaxRBF ? "min + max RBF"
+  const stackedRBF = kind === "stacked_rbf_gate";
+  const modelLabel = stackedRBF ? "stacked RBF"
+    : minmaxRBF ? "min + max RBF"
     : (statsRBF ? "mean + std RBF" : "max RBF");
   const c = evals && (combined ? evals.combined_combiner
     : ((evals.model_combiners || {})[kind]
@@ -121,14 +128,17 @@ function drawImportance(host, comb, members) {
     return;
   }
   const pct = (v) => v == null || !isFinite(v) ? "—" : `${(100 * v).toFixed(2)}%`;
-  const head = `<tr><th>member</th>` + bands.map((band) =>
+  const totals = labels.map((_, member) => bands.reduce((sum, band) =>
+    sum + ((peaks[band] || [])[member] || 0) + ((integrals[band] || [])[member] || 0), 0));
+  const routed = comb.kind === "stacked_rbf_gate" ? "expert" : "member";
+  const head = `<tr><th>${routed}</th><th>8-channel weight sum</th>` + bands.map((band) =>
     `<th>${band}<br><span class="muted">peak</span></th>`
     + `<th>${band}<br><span class="muted">integral</span></th>`).join("") + `</tr>`;
-  const rows = labels.map((label, member) => `<tr><td class="mono">${label}</td>`
+  const rows = labels.map((label, member) => `<tr><td class="mono">${label}</td><td>${pct(totals[member])}</td>`
     + bands.map((band) => `<td>${pct((peaks[band] || [])[member])}</td>`
       + `<td>${pct((integrals[band] || [])[member])}</td>`).join("") + `</tr>`).join("");
   host.innerHTML = `<div style="overflow-x:auto"><table class="mini-table">${head}${rows}</table></div>`
-    + `<p class="hint">Peak is the maximum gate share on represented validation pixels. Integral is the mean gate share over brightness-stratified validation rows. No member is removed.</p>`;
+    + `<p class="hint">Peak is the maximum gate share on represented validation pixels. Integral is the mean gate share over brightness-stratified validation rows. No ${routed} is removed.</p>`;
 }
 
 // Gate weight (convex, sums to 1) of each member vs pixel brightness, one line
@@ -310,14 +320,17 @@ function render(root, comb, evals) {
   const bands = comb.band_names || Object.keys(comb.eff_weights || {});
   const statsRBF = comb.kind === "stats_rbf_gate";
   const minmaxRBF = comb.kind === "minmax_rbf_gate";
-  const featureRBF = statsRBF || minmaxRBF;
-  const featureLabel = minmaxRBF ? "min × max" : "mean × std";
+  const stackedRBF = comb.kind === "stacked_rbf_gate";
+  const featureRBF = statsRBF || minmaxRBF || stackedRBF;
+  const featureLabel = stackedRBF ? "expert midpoint × signed disagreement"
+    : minmaxRBF ? "min × max" : "mean × std";
+  const routed = stackedRBF ? "expert" : "member";
   root.innerHTML = `
     <div style="max-width:860px;margin:0 auto">
       <div style="margin-bottom:1rem">${metricsHtml(comb, evals)}</div>
-      <h4 style="margin:.2rem 0;text-align:center">member weight diagnostics</h4>
+      <h4 style="margin:.2rem 0;text-align:center">${routed} weight diagnostics</h4>
       <div id="ens-comb-imp"></div>
-      ${featureRBF ? `<h4 style="margin:1rem 0 .2rem;text-align:center">interactive member gate weight across ${featureLabel}
+      ${featureRBF ? `<h4 style="margin:1rem 0 .2rem;text-align:center">interactive ${routed} gate weight across ${featureLabel}
         <select id="ens-comb-band" style="margin-left:.4rem">
           ${bands.map((b) => `<option value="${b}">${b}</option>`).join("")}
         </select>

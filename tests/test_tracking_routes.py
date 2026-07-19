@@ -20,8 +20,7 @@ def client():
 def test_tracking_page_renders_when_empty(client):
     r = client.get("/tracking")
     assert r.status_code == 200
-    body = r.get_data(as_text=True)
-    assert "Start a campaign" in body
+    assert b'id="root"' in r.data
 
 
 def test_tracking_page_reachable_without_ssh(client, monkeypatch):
@@ -47,9 +46,8 @@ def test_new_then_state_then_save(client):
     st = client.get("/api/tracking/state").get_json()
     assert st["active"]["title"] == "Route Run"
 
-    # The page now shows the title + the Save button.
-    body = client.get("/tracking").get_data(as_text=True)
-    assert "Route Run" in body and "Save &amp; start new" in body
+    # The React page reads the updated state through its JSON endpoint.
+    assert client.get("/tracking").status_code == 200
 
     # Save → archived, no active.
     rs = client.post("/api/tracking/save")

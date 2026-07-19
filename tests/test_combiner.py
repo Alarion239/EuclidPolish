@@ -12,12 +12,15 @@ import pytest
 
 from euclid_polish.eval.combiner import (
     MINMAX_RBF_GATE_KIND,
+    STACKED_RBF_GATE_KIND,
     STATS_RBF_GATE_KIND,
     BandCombiner,
     Combiner,
     StatsRBFBandCombiner,
     build_fit_buffers_from_fields,
+    combiner_artifact_fingerprint,
     fit_combiner,
+    fit_stacked_combiner,
     load_combiner,
     member_weight_diagnostics,
     save_combiner,
@@ -273,6 +276,72 @@ def test_minmax_rbf_surface_adapts_to_fitted_feature_range():
     assert maximum[0] < 4.0 and maximum[-1] > 21.0
     assert surface["x_label"] == "min"
     assert surface["y_label"] == "max"
+
+
+def test_stacked_rbf_is_convex_roundtrips_and_tracks_parent_artifacts(tmp_path):
+    rng = np.random.default_rng(31)
+    X = rng.normal(1.0, 0.45, (600, 2)).astype(np.float32)
+    # Two deliberately distinct parent experts: mean+std routes to member 0,
+    # while min+max routes to member 1. The stack therefore gets a meaningful
+    # two-prediction input without involving model inference or TensorFlow.
+    stats_band = StatsRBFBandCombiner(
+        V=np.zeros((1, 2), np.float32), a=np.array([5.0, -5.0], np.float32),
+        centers=np.array([[1.0, 0.0]], np.float32), scales=np.ones(2, np.float32),
+        sigma=1.0, surviving=np.ones(2, bool), std_floor=0.1,
+        feature_kind=STATS_RBF_GATE_KIND,
+    )
+    minmax_band = StatsRBFBandCombiner(
+        V=np.zeros((1, 2), np.float32), a=np.array([-5.0, 5.0], np.float32),
+        centers=np.array([[0.0, 2.0]], np.float32), scales=np.ones(2, np.float32),
+        sigma=1.0, surviving=np.ones(2, bool), std_floor=0.1,
+        feature_kind=MINMAX_RBF_GATE_KIND,
+    )
+    labels = ["00", "01"]
+    stats = Combiner(labels, 1, 1.0, 0.0, {"VIS": stats_band},
+                     band_names=("VIS",), kind=STATS_RBF_GATE_KIND)
+    minmax = Combiner(labels, 1, 1.0, 0.0, {"VIS": minmax_band},
+                      band_names=("VIS",), kind=MINMAX_RBF_GATE_KIND)
+    # Truth switches between the two experts, so the fitted stack can learn a
+    # useful local choice while remaining a convex interpolation everywhere.
+    y = np.where(X.mean(axis=1) > 1.0, X[:, 0], X[:, 1]).astype(np.float32)
+    buffers = {"VIS": (X, y)}
+    stack = fit_stacked_combiner(
+        buffers, labels, stats_combiner=stats, minmax_combiner=minmax,
+        n_kernels=6, steps=80, batch=128, seed=4,
+    )
+    experts = stack.expert_asinh("VIS", X)
+    out = stack.bands["VIS"].forward_asinh(experts)
+    weights = stack.band_weights("VIS", X)
+    np.testing.assert_allclose(weights.sum(axis=1), 1.0, atol=1e-6)
+    assert np.all(weights >= 0.0)
+    assert np.all(out >= experts.min(axis=1) - 1e-6)
+    assert np.all(out <= experts.max(axis=1) + 1e-6)
+    np.testing.assert_allclose(
+        stack.bands["VIS"].forward_asinh(np.array([[2.0, 2.0]])), 2.0,
+        atol=1e-6,
+    )
+
+    save_combiner(stats, str(tmp_path), artifact_dir="stats_rbf_combiner")
+    save_combiner(minmax, str(tmp_path), artifact_dir="minmax_rbf_combiner")
+    stack.parent_fingerprints = {
+        STATS_RBF_GATE_KIND: combiner_artifact_fingerprint(
+            str(tmp_path), "stats_rbf_combiner"),
+        MINMAX_RBF_GATE_KIND: combiner_artifact_fingerprint(
+            str(tmp_path), "minmax_rbf_combiner"),
+    }
+    save_combiner(stack, str(tmp_path), artifact_dir="stacked_rbf_combiner")
+    loaded = load_combiner(
+        str(tmp_path), member_labels=labels, artifact_dir="stacked_rbf_combiner")
+    assert loaded is not None and loaded.kind == STACKED_RBF_GATE_KIND
+    np.testing.assert_allclose(loaded.band_weights("VIS", X[:50]),
+                               stack.band_weights("VIS", X[:50]), atol=1e-6)
+
+    # A separately refitted parent invalidates the derived stack instead of
+    # silently combining a new parent with an old meta-gate.
+    stats.bands["VIS"].a[0] += 0.5
+    save_combiner(stats, str(tmp_path), artifact_dir="stats_rbf_combiner")
+    assert load_combiner(str(tmp_path), member_labels=labels,
+                         artifact_dir="stacked_rbf_combiner") is None
 
 
 def test_stats_rbf_fit_keeps_all_members_and_persists_weight_diagnostics(monkeypatch, tmp_path):

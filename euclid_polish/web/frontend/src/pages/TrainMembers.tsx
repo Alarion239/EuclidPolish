@@ -74,6 +74,7 @@ export default function TrainMembersPage() {
   const [rows, setRows] = useState<SpecRow[]>([newRow(true)]);
   const [steps, setSteps] = useState("50000");
   const [extraSteps, setExtraSteps] = useState("50000");
+  const [arrayMaxParallel, setArrayMaxParallel] = useState("2");
 
   const setRow = (i: number, patch: Partial<SpecRow>) =>
     setRows((rs) => rs.map((r, j) => (j === i ? { ...r, ...patch } : r)));
@@ -109,15 +110,18 @@ export default function TrainMembersPage() {
 
   const extra = useMemo<Record<string, string>>(() => {
     if (mode === "continue")
-      return { mode, members: selectedMemberNames.join(","), extra_steps: extraSteps };
+      return { mode, members: selectedMemberNames.join(","), extra_steps: extraSteps,
+        array_max_parallel: arrayMaxParallel };
     const p: Record<string, string> = {
       mode, count: String(rows.length), steps,
       forward_onthefly: forwardOtf ? "1" : "0",
       member_spec: JSON.stringify(buildSpec(rows, mode)),
+      array_max_parallel: arrayMaxParallel,
     };
     if (mode === "fork") p.fork_from = member.trim();
     return p;
-  }, [mode, member, selectedMemberNames, extraSteps, rows, steps, forwardOtf]);
+  }, [mode, member, selectedMemberNames, extraSteps, rows, steps, forwardOtf,
+    arrayMaxParallel]);
 
   const showDepth = mode === "add";   // fork inherits its source's depth + init
   const extraStepCount = Number(extraSteps);
@@ -138,7 +142,7 @@ export default function TrainMembersPage() {
       {mode === "continue" ? (
         <Card>
           <CardHead title="Continue members"
-            sub="select one or more active models; one FASRC job trains them sequentially for the same number of additional steps"
+            sub="select active models; each becomes an independent task in one capped FASRC job array"
             right={<div className="row" style={{ gap: 6 }}>
               <Badge>{selectedMemberNames.length} selected</Badge>
               <Button size="sm" variant="ghost"
@@ -244,6 +248,12 @@ export default function TrainMembersPage() {
             ? `continue ${selectedSummary} for ${extraSteps} more steps each`
             : `${rows.length} member${rows.length > 1 ? "s" : ""} · ${steps} steps each`} />
         <CardBody>
+          <div className="fasrc-step__res" style={{ marginBottom: "var(--s3)" }}>
+            <NumberField label="models at once" value={arrayMaxParallel}
+              onChange={setArrayMaxParallel} min={1} max={Math.max(1,
+                mode === "continue" ? selectedMemberNames.length : rows.length)} />
+            <span className="ui-field__hint">Array concurrency cap. Resources below are allocated per model, not shared by the array.</span>
+          </div>
           <StepById stepId="ensemble_train" extraParams={extra}
             submitDisabled={continueSubmitDisabled}
             submitDisabledHint={selectedMemberNames.length === 0

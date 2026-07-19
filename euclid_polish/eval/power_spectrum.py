@@ -702,6 +702,7 @@ def render_ensemble_power_spectrum(out_png: str, curves: dict[str, np.ndarray],
             "rbf_gate": ("max RBF combiner", "#e05a47"),
             "stats_rbf_gate": ("mean+std RBF", "#2a9d8f"),
             "minmax_rbf_gate": ("min+max RBF", "#d47f34"),
+            "stacked_rbf_gate": ("stacked RBF", "#7b5fc6"),
         }
         if model_curves:
             for kind, curve_set in model_curves.items():

@@ -65,9 +65,7 @@ def test_save_endpoint_round_trips(client, cfg_path):
 def test_config_page_renders(client, cfg_path):
     r = client.get("/config")
     assert r.status_code == 200
-    assert b"Universal job config" in r.data
-    assert b"Star field" in r.data
-    assert b"Strong lenses" in r.data
+    assert b'id="root"' in r.data
 
 
 def test_lens_field_defaults_update_and_mapping(cfg_path):
@@ -157,8 +155,7 @@ def test_save_endpoint_persists_lensfinder_fields(client, cfg_path):
 def test_config_page_renders_training_section(client, cfg_path):
     r = client.get("/config")
     assert r.status_code == 200
-    assert b"Lens-finder training" in r.data
-    assert b"lensfinder_patience" in r.data
+    assert b'id="root"' in r.data
 
 
 def test_training_mode_default_and_string_update(cfg_path):
@@ -235,10 +232,7 @@ def test_saturation_mask_probability_is_capped_at_half(cfg_path):
 def test_config_page_renders_lr_plateau_section(client, cfg_path):
     r = client.get("/config")
     assert r.status_code == 200
-    assert b"warmup" in r.data.lower()
-    assert b"plateau_lr_patience" in r.data
-    assert b"plateau_lr_metric" in r.data
-    assert b"psf_warp_alpha_max" in r.data
+    assert b'id="root"' in r.data
 
 
 def test_ensemble_train_build_command_injects_lr_plateau_flags(monkeypatch):

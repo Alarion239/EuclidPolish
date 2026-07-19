@@ -109,6 +109,19 @@ _SACCT_CANCELLED = """\
 
 class TestParseSacctOutput:
 
+    def test_array_fails_parent_when_any_task_fails(self):
+        text = """\
+123_0|COMPLETED|0:0|2026-05-26T14:00:00|2026-05-26T14:01:00|60|120|01:00||8G|2|cpu=2,mem=8G|2|cpu=2,gres/gpu=1,mem=8G|1:00:00
+123_0.batch|COMPLETED|0:0|2026-05-26T14:00:00|2026-05-26T14:01:00|60|120|01:00|1G|||||||cpu=2
+123_1|FAILED|1:0|2026-05-26T14:00:00|2026-05-26T14:00:30|30|60|00:20||8G|2|cpu=2,mem=8G|2|cpu=2,gres/gpu=1,mem=8G|1:00:00
+123_1.batch|FAILED|1:0|2026-05-26T14:00:00|2026-05-26T14:00:30|30|60|00:20|2G|||||||cpu=2
+"""
+        stats = parse_sacct_output(text)
+        assert stats["state"] == "FAILED"
+        assert stats["exit_code"] == "1:0"
+        assert stats["cpu_seconds"] == pytest.approx(80.0)
+        assert stats["max_rss_mb"] == 2048.0
+
     def test_completed_job_round_trip(self):
         stats = parse_sacct_output(_SACCT_COMPLETED)
         assert stats["state"] == "COMPLETED"

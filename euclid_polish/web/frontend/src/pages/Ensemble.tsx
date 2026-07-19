@@ -129,7 +129,7 @@ export type Combiner = {
   available?: boolean; stale?: boolean; regime?: string;
   member_labels: string[];
   members?: { label: string; loss?: string; blocks?: number; asinh_knee?: number | null; step?: number | null; psnr?: number | null }[];
-  kind?: "rbf_gate" | "stats_rbf_gate" | "minmax_rbf_gate"; n_kernels?: number;
+  kind?: "rbf_gate" | "stats_rbf_gate" | "minmax_rbf_gate" | "stacked_rbf_gate"; n_kernels?: number;
   min_usage?: number; val_l1?: number | null;
   band_names?: string[];
   member_weight_peaks?: Record<string, number[]>;
@@ -138,6 +138,8 @@ export type Combiner = {
   feature_grid?: Record<string, FeatureGrid>;
   hr_weights?: HRWeights;
   source_starless?: boolean[]; reason?: string;
+  source_member_labels?: string[];
+  fit_meta?: { experts?: string[]; parents_fitted_together?: boolean };
 };
 
 /* ── training-curves.json ────────────────────────────────────────────────── */
@@ -151,6 +153,7 @@ const COMBINER_META: Record<string, { label: string; color: string }> = {
   rbf_gate: { label: "max RBF", color: C.comb },
   stats_rbf_gate: { label: "mean + std RBF", color: "#2a9d8f" },
   minmax_rbf_gate: { label: "min + max RBF", color: "#d47f34" },
+  stacked_rbf_gate: { label: "stacked RBF", color: "#7b5fc6" },
 };
 const combinerMeta = (kind: string) => COMBINER_META[kind] ?? {
   label: kind.replace(/_/g, " "), color: categorical(kind.length),
@@ -557,7 +560,7 @@ function Members(
         <Button size="sm" variant="ghost" title="fork a new member from this one"
           onClick={() => onFork(m.name)}>⑂ fork</Button>
         <Button size="sm" variant="ghost" disabled={opJob.busy}
-          title="zip → tracking, tombstone, delete, purge caches"
+          title="zip → tracking, tombstone, delete; rebuild cached cubes on next evaluation"
           onClick={() => { if (window.confirm(`Archive ${m.name}? This retires it from the ensemble.`)) opJob.run("/ensemble/archive-member", { member: m.name }, { onDone: onArchived }); }}>
           📦
         </Button>
@@ -1037,7 +1040,7 @@ export function Evaluations(
 
 /* ── combiner ────────────────────────────────────────────────────────────── */
 type GateColorBy = "loss" | "psnr" | "depth" | "knee" | "regime";
-type CombinerModelKind = "rbf_gate" | "stats_rbf_gate" | "minmax_rbf_gate";
+type CombinerModelKind = "rbf_gate" | "stats_rbf_gate" | "minmax_rbf_gate" | "stacked_rbf_gate";
 type SurfaceView = { yaw: number; pitch: number; zoom: number };
 
 function WeightSurface3D(
@@ -1237,9 +1240,11 @@ export function CombinerCard(
   const fittingStatsRBF = modelKind === "stats_rbf_gate";
   const fittedStatsRBF = comb?.kind === "stats_rbf_gate";
   const fittedMinmaxRBF = comb?.kind === "minmax_rbf_gate";
-  const featureRBF = fittedStatsRBF || fittedMinmaxRBF;
+  const fittedStackedRBF = comb?.kind === "stacked_rbf_gate";
+  const featureRBF = fittedStatsRBF || fittedMinmaxRBF || fittedStackedRBF;
   const fittedModelLabel = fittedStatsRBF ? "mean + std RBF"
-    : fittedMinmaxRBF ? "min + max RBF" : "max-conditioned RBF";
+    : fittedMinmaxRBF ? "min + max RBF"
+      : fittedStackedRBF ? "stacked mean+std/min+max RBF" : "max-conditioned RBF";
   const surfaceLabels = asArray<string>(comb?.member_labels);
   const selectedSurfaceMember = Math.max(0, Math.min(surfaceLabels.length - 1, Number(surfaceMember) || 0));
   const surfaceBands = bands.filter((b) => comb?.feature_grid?.[b]);
@@ -1248,29 +1253,42 @@ export function CombinerCard(
     if (selectedSurfaceMember >= surfaceLabels.length) setSurfaceMember("0");
   }, [selectedSurfaceMember, surfaceLabels.length]);
 
+  const [importanceSort, setImportanceSort] = useState<"index" | "total">("index");
+  const [importanceSortDescending, setImportanceSortDescending] = useState(true);
+
   const importance = useMemo(() => {
     if (!comb) return [];
     const labels = asArray<string>(comb.member_labels);
     const memberMeta = asArray<NonNullable<Combiner["members"]>[number]>(comb.members);
-    return labels
+    const rows = labels
       .map((label, i) => {
+        const peaks = Object.fromEntries(bands.map((b) => [b, comb.member_weight_peaks?.[b]?.[i] ?? null]));
+        const integrals = Object.fromEntries(bands.map((b) => [b, comb.member_weight_integrals?.[b]?.[i] ?? null]));
         return { i, label, meta: memberMeta[i],
-          peaks: Object.fromEntries(bands.map((b) => [b, comb.member_weight_peaks?.[b]?.[i] ?? null])),
-          integrals: Object.fromEntries(bands.map((b) => [b, comb.member_weight_integrals?.[b]?.[i] ?? null])) };
-      })
-      .sort((a, b2) => a.i - b2.i);
+          peaks, integrals,
+          total: [...Object.values(peaks), ...Object.values(integrals)]
+            .reduce((sum, value) => sum + (value == null || !Number.isFinite(value) ? 0 : value), 0) };
+      });
+    return rows.sort((a, b2) => importanceSort === "total"
+      ? (importanceSortDescending ? b2.total - a.total : a.total - b2.total) || a.i - b2.i
+      : a.i - b2.i);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [comb, theme]);
+  }, [bands, comb, importanceSort, importanceSortDescending, theme]);
 
   const weightColumns = useMemo<Column<(typeof importance)[number]>[]>(() => [
-    { header: "member", cell: (row) => <code>{row.label}</code> },
+    { header: fittedStackedRBF ? "expert" : "member", cell: (row) => <code>{row.label}</code> },
+    { header: <button type="button" className="ui-table__sort-button"
+        onClick={() => { setImportanceSort("total"); setImportanceSortDescending((v) => importanceSort === "total" ? !v : true); }}>
+        8-channel weight sum{importanceSort === "total" ? (importanceSortDescending ? " ↓" : " ↑") : ""}
+      </button>, align: "right",
+      cell: (row) => `${(100 * row.total).toFixed(2)}%` },
     ...bands.flatMap((b) => ([
       { header: `${b} peak`, align: "right" as const,
         cell: (row: (typeof importance)[number]) => row.peaks[b] == null ? "—" : `${(100 * row.peaks[b]!).toFixed(2)}%` },
       { header: `${b} integral`, align: "right" as const,
         cell: (row: (typeof importance)[number]) => row.integrals[b] == null ? "—" : `${(100 * row.integrals[b]!).toFixed(2)}%` },
     ])),
-  ], [bands, importance]);
+  ], [bands, fittedStackedRBF, importance, importanceSort, importanceSortDescending]);
 
   const surfaceMembers = importance;
   const surfaceMemberPosition = surfaceMembers.findIndex((r) => r.i === selectedSurfaceMember);
@@ -1281,10 +1299,10 @@ export function CombinerCard(
     }
   };
   useEffect(() => {
-    if ((fittedStatsRBF || fittedMinmaxRBF) && surfaceMembers.length && surfaceMemberPosition < 0) {
+    if (featureRBF && surfaceMembers.length && surfaceMemberPosition < 0) {
       setSurfaceMember(String(surfaceMembers[0].i));
     }
-  }, [fittedMinmaxRBF, fittedStatsRBF, selectedSurfaceMember, surfaceMemberPosition, surfaceMembers]);
+  }, [featureRBF, selectedSurfaceMember, surfaceMemberPosition, surfaceMembers]);
 
   // Shared facet colorer (member index → colour by `colorBy`) so the importance
   // bars and the gate-weight curves colour a member the SAME way — and both
@@ -1301,6 +1319,7 @@ export function CombinerCard(
     const pMin = psnrs.length ? Math.min(...psnrs) : 0;
     const pMax = psnrs.length ? Math.max(...psnrs) : 1;
     return (m: number): string => {
+      if (fittedStackedRBF) return m === 0 ? "#2a9d8f" : "#d47f34";
       const meta = members[m];
       if (colorBy === "loss") return LOSS_COLOR[meta?.loss ?? "l1"] ?? C.muted;
       if (colorBy === "depth") return categorical(depths.indexOf(meta?.blocks ?? 0));
@@ -1310,7 +1329,7 @@ export function CombinerCard(
       return p == null || pMax === pMin ? C.mean : viridis((p - pMin) / (pMax - pMin));
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [comb, colorBy, theme]);
+  }, [comb, colorBy, fittedStackedRBF, theme]);
 
   const gate = useMemo(() => {
     const ew = comb?.eff_weights?.[activeBand];
@@ -1382,7 +1401,7 @@ export function CombinerCard(
   return (
     <Card>
       <CardHead title={title ?? `${combined ? "Combined combiner" : "Combiner"} · ${mode}`}
-        sub={combined ? "experimental all-member brightness gate — fit locally on validate, scored on test" : "independent max-RBF and mean+std-RBF convex fusers — fit locally on validate, scored on test"}
+        sub={combined ? "experimental all-member brightness gate — fit locally on validate, scored on test" : "independent RBF fusers plus a convex mean+std/min+max stack — fit locally on validate, scored on test"}
         right={comb?.available && <Badge tone={comb.stale ? "warn" : "good"}>{comb.stale ? "stale" : "fitted"}</Badge>} />
       <CardBody>
         <div className="row" style={{ alignItems: "flex-end", gap: "var(--s3)" }}>
@@ -1393,7 +1412,7 @@ export function CombinerCard(
               onChange={(next) => {
                 setModelKind(next);
               }}
-              options={[{ value: "rbf_gate", label: "max RBF" }, { value: "stats_rbf_gate", label: "mean+std RBF" }, { value: "minmax_rbf_gate", label: "min+max RBF" }]} />
+              options={[{ value: "rbf_gate", label: "max RBF" }, { value: "stats_rbf_gate", label: "mean+std RBF" }, { value: "minmax_rbf_gate", label: "min+max RBF" }, { value: "stacked_rbf_gate", label: "stacked RBF" }]} />
           </div>}
           <NumberField label="kernels (K)" value={nKernels} onChange={setNKernels} min={2} max={64} />
           <Button variant="primary" disabled={fitJob.busy || !evalReady}
@@ -1403,7 +1422,8 @@ export function CombinerCard(
               ...(combined ? { min_usage: "0" } : {}),
               model_kind: modelKind, mode,
             }, { onDone: onFit })}>
-            Fit {fittingStatsRBF ? "mean+std RBF" : (combined ? "combined combiner" : "combiner")}
+            Fit {modelKind === "stacked_rbf_gate" ? "both parents + stacked RBF"
+              : fittingStatsRBF ? "mean+std RBF" : (combined ? "combined combiner" : "combiner")}
           </Button>
         </div>
         {!evalReady && (
@@ -1417,7 +1437,8 @@ export function CombinerCard(
           : !comb?.available ? <Empty>{comb?.reason ?? `no ${combined ? "combined " : ""}combiner fitted for ${mode} yet — set knobs above and fit.`}</Empty> : (
           <div style={{ marginTop: "var(--s4)" }}>
             <DefList items={[
-              ["members", String(asArray<string>(comb.member_labels).length)],
+              [fittedStackedRBF ? "experts" : "members", String(asArray<string>(comb.member_labels).length)],
+              ...(fittedStackedRBF ? [["source members", String(asArray<string>(comb.source_member_labels).length)]] : []),
               ["model", fittedModelLabel],
               ["kernels", String(comb.n_kernels ?? "—")],
               ["validate L1", comb.val_l1 != null ? comb.val_l1.toFixed(4) : "—"],
@@ -1425,21 +1446,22 @@ export function CombinerCard(
 
             <div style={{ marginTop: "var(--s4)" }}>
               <div className="row" style={{ justifyContent: "space-between", marginBottom: 8, gap: "var(--s3)" }}>
-                <div className="eyebrow">member weight diagnostics</div>
-                <Select<GateColorBy> value={colorBy} onChange={setColorBy}
+                <div className="eyebrow">{fittedStackedRBF ? "expert weight diagnostics" : "member weight diagnostics"}</div>
+                {!fittedStackedRBF && <Select<GateColorBy> value={colorBy} onChange={setColorBy}
                   options={[{ value: "loss", label: "by loss" }, { value: "psnr", label: "by PSNR" }, { value: "depth", label: "by depth" }, { value: "knee", label: "by knee" }, ...(combined ? [{ value: "regime" as GateColorBy, label: "by star regime" }] : [])]} />
+                }
               </div>
               <Table columns={weightColumns} rows={importance} rowKey={(row) => row.label}
                 empty="fit the combiner to compute member weights" />
               <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
-                Peak is the maximum fitted gate share on represented validation pixels. Integral is the mean gate share over the brightness-stratified validation rows. Values are computed independently for every band; no member is removed.
+                Peak is the maximum fitted gate share on represented validation pixels. Integral is the mean gate share over the brightness-stratified validation rows. Values are computed independently for every band; no {fittedStackedRBF ? "expert" : "member"} is removed.
               </div>
             </div>
 
             {bands.length > 0 && (
               <div style={{ marginTop: "var(--s4)" }}>
                 <div className="row" style={{ justifyContent: "space-between", marginBottom: 8, gap: "var(--s3)" }}>
-                  <div className="eyebrow">{featureRBF ? "member gate weight surface" : "gate weight vs brightness"}</div>
+                  <div className="eyebrow">{featureRBF ? `${fittedStackedRBF ? "expert" : "member"} gate weight surface` : "gate weight vs brightness"}</div>
                   <Segmented<string> value={activeBand} onChange={setBand} options={bands.map((b) => ({ value: b, label: b }))} />
                 </div>
                 {!featureRBF && (!gate ? <Empty>no gate data for {activeBand}</Empty> : (
@@ -1453,7 +1475,7 @@ export function CombinerCard(
                 {featureRBF && surfaceBands.length > 0 && surfaceMembers.length > 0 && (
                   <div style={{ marginTop: "var(--s4)" }}>
                     <div className="row" style={{ justifyContent: "space-between", marginBottom: 8, gap: "var(--s3)" }}>
-                      <div className="eyebrow">member gate-weight surfaces · click a band to focus</div>
+                      <div className="eyebrow">{fittedStackedRBF ? "expert" : "member"} gate-weight surfaces · click a band to focus</div>
                       <div className="row" style={{ gap: 4 }}>
                         <Button size="sm" variant="ghost" title="previous member"
                           onClick={() => moveSurfaceMember(-1)}
@@ -1499,7 +1521,7 @@ export function CombinerCard(
                     <>
                       <Plot title={`${activeBand} — observed weights by ${hrGate.target} brightness`} xDomain={hrGate.xDomain}
                         yDomain={hrGate.yDomain} xTicks={hrGate.xTicks} yTicks={[0, 0.5, 1].map((v) => ({ v, label: String(v) }))}
-                        xLabel={`${hrGate.target} pixel brightness [e⁻]`} yLabel="mean member weight"
+                        xLabel={`${hrGate.target} pixel brightness [e⁻]`} yLabel={`mean ${fittedStackedRBF ? "expert" : "member"} weight`}
                         series={hrGate.series} aspect={0.4} />
                       <Legend items={hrGate.legend} />
                       <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>

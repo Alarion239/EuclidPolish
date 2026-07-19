@@ -443,6 +443,24 @@ class TestJobStatusFetcher:
         assert len(stub.calls) == 1
         assert "/remote/job.events" in stub.calls[0]
 
+    def test_fetch_many_uses_one_round_trip(self):
+        first = _jsonl({"ts": 1.0, "kind": "stage", "value": "member 0"})
+        second = _jsonl({"ts": 1.0, "kind": "stage", "value": "member 1"})
+
+        class ManyStub:
+            calls = []
+            def is_connected(self):
+                return True
+            def run(self, cmd, *, timeout=10):
+                self.calls.append(cmd)
+                return 0, f"\x1e0\x1f{first}\x1e1\x1f{second}", ""
+
+        stub = ManyStub()
+        statuses = JobStatusFetcher(ssh=stub).fetch_many(
+            ["/remote/0.events", "/remote/1.events"])
+        assert [s.stage for s in statuses] == ["member 0", "member 1"]
+        assert len(stub.calls) == 1
+
 
 # ---------------------------------------------------------------------------
 # fold_events — resource utilisation (GPU/CPU) samples

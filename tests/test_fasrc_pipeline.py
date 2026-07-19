@@ -101,6 +101,7 @@ class TestRegistry:
             lambda base, k: [f"member_{9 + i:02d}" for i in range(k)])
         step = REGISTRY.get("ensemble_train")
         assert step.needs_gpu and step.defaults.n_gpus == 1
+        assert step.fixed_gpus == 1
         argv = step.build_command({"n_members": 7, "steps": 150000,
                                    "base_seed": 42})
         assert "scripts/train_ensemble.py" in argv
@@ -657,6 +658,22 @@ class TestSbatchRendering:
         )
         assert "--gres=gpu:1" in out["body"]
         assert "--partition=gpu" in out["body"]
+        assert "#SBATCH --array=0-1%2" in out["body"]
+        assert "%A_%a.out" in out["out"]
+        assert "${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}.events" in out["body"]
+        assert "--array-task" in out["body"]
+        assert out["params"]["array_count"] == 2
+        assert "--eval-images" not in out["body"]
+
+    def test_ensemble_array_parallelism_is_capped(self, cfg):
+        step = REGISTRY.get("ensemble_train")
+        out = step.build_sbatch_body(
+            params={"steps": 1000, "n_members": 3,
+                    "array_max_parallel": 99},
+            resources=step.defaults, cfg=cfg, label="x",
+        )
+        assert "#SBATCH --array=0-2%3" in out["body"]
+        assert out["params"]["array_max_parallel"] == 3
 
     def test_gpu_step_first_line_is_valid_shebang(self, cfg):
         """REGRESSION: a previous version of build_sbatch_body inlined

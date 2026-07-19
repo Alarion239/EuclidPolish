@@ -1,5 +1,4 @@
-/* Fallback for routes not yet ported into the SPA. Keeps the console navigable
-   while the redesign rolls out tab by tab. */
+/* Fallback for optional/experimental routes without a dedicated React page. */
 import { useLocation } from "react-router-dom";
 import { Card, CardBody, Empty } from "../ui";
 
@@ -10,7 +9,7 @@ export default function Placeholder() {
       <header className="page__head">
         <div>
           <div className="eyebrow">console</div>
-          <h1 className="page__title">Not ported yet</h1>
+          <h1 className="page__title">Unavailable in this build</h1>
           <div className="page__sub">
             <code className="mono">{loc.pathname}</code> hasn’t been rebuilt in the new
             console yet.
@@ -20,8 +19,8 @@ export default function Placeholder() {
       <Card>
         <CardBody>
           <Empty>
-            This tab still lives in the classic UI. Use the sidebar’s ↗ links, or go
-            back to the <a href="/">classic UI</a>.
+            This route is reserved for an optional pipeline lane and is not enabled
+            in the current React console build.
           </Empty>
         </CardBody>
       </Card>
