@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import builtins
+import io
 import os
+import shutil
 import sys
 
 # Make ``euclid_polish`` importable even when pytest is run from /tests.
@@ -78,7 +81,123 @@ class _SessionNullSSH:
 
 
 @_pytest.fixture(autouse=True, scope="function")
-def _redirect_writable_config_paths(monkeypatch, tmp_path_factory):
+def _forbid_real_data_writes(monkeypatch):
+    """Fail before a test mutates anything under the live data directory.
+
+    This is a prevention boundary, not a snapshot: it neither walks nor reads
+    ``Config.DATA_DIR``.  Normal reads remain allowed, while Python file and
+    filesystem APIs reject writes, deletes, renames, and directory creation
+    below the real data root.  Tests must redirect writable paths to
+    ``tmp_path`` (the shared writable-path fixture does this for production
+    outputs used throughout the suite).
+    """
+    from euclid_polish.config import Config
+
+    configured_data_dir = os.fspath(Config.DATA_DIR)
+    real_data_roots = {
+        os.path.realpath(os.path.abspath(configured_data_dir)),
+    }
+    if not os.path.isabs(configured_data_dir):
+        # Also guard the checkout's data directory when pytest is launched
+        # from a subdirectory and the relative Config path resolves elsewhere.
+        real_data_roots.add(
+            os.path.realpath(os.path.join(_PROJECT_ROOT, configured_data_dir))
+        )
+
+    def _inside_real_data(path) -> bool:
+        if isinstance(path, int):
+            return False
+        try:
+            candidate = os.path.realpath(os.path.abspath(os.fspath(path)))
+            return any(
+                os.path.commonpath((root, candidate)) == root
+                for root in real_data_roots
+            )
+        except (TypeError, ValueError):
+            return False
+
+    def _reject(path, operation: str) -> None:
+        if _inside_real_data(path):
+            raise AssertionError(
+                f"test attempted to {operation} live data path {os.fspath(path)!r}; "
+                "redirect the output to tmp_path"
+            )
+
+    original_builtin_open = builtins.open
+    original_io_open = io.open
+    original_os_open = os.open
+
+    def _guarded_builtin_open(file, mode="r", *args, **kwargs):
+        if any(flag in mode for flag in "wax+"):
+            _reject(file, f"open for mode {mode!r}")
+        return original_builtin_open(file, mode, *args, **kwargs)
+
+    def _guarded_io_open(file, mode="r", *args, **kwargs):
+        if any(flag in mode for flag in "wax+"):
+            _reject(file, f"open for mode {mode!r}")
+        return original_io_open(file, mode, *args, **kwargs)
+
+    write_flags = (
+        os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND
+    )
+
+    def _guarded_os_open(path, flags, mode=0o777, *, dir_fd=None):
+        if flags & write_flags:
+            _reject(path, "open for writing")
+        if dir_fd is None:
+            return original_os_open(path, flags, mode)
+        return original_os_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(builtins, "open", _guarded_builtin_open)
+    monkeypatch.setattr(io, "open", _guarded_io_open)
+    monkeypatch.setattr(os, "open", _guarded_os_open)
+
+    def _guard_one(module, name: str, operation: str) -> None:
+        original = getattr(module, name)
+
+        def guarded(path, *args, **kwargs):
+            _reject(path, operation)
+            return original(path, *args, **kwargs)
+
+        monkeypatch.setattr(module, name, guarded)
+
+    def _guard_two(module, name: str, operation: str) -> None:
+        original = getattr(module, name)
+
+        def guarded(src, dst, *args, **kwargs):
+            _reject(src, operation)
+            _reject(dst, operation)
+            return original(src, dst, *args, **kwargs)
+
+        monkeypatch.setattr(module, name, guarded)
+
+    for name in (
+        "mkdir", "makedirs", "remove", "unlink", "rmdir", "removedirs",
+        "truncate", "utime",
+    ):
+        _guard_one(os, name, name)
+    for name in ("rename", "replace", "link"):
+        _guard_two(os, name, name)
+    for name in ("rmtree",):
+        _guard_one(shutil, name, name)
+    for name in ("move",):
+        _guard_two(shutil, name, name)
+    for name in ("copy", "copy2", "copyfile", "copytree"):
+        original = getattr(shutil, name)
+
+        def guarded_copy(src, dst, *args, _original=original, _name=name, **kwargs):
+            _reject(dst, _name)
+            return _original(src, dst, *args, **kwargs)
+
+        monkeypatch.setattr(shutil, name, guarded_copy)
+
+    yield
+
+
+@_pytest.fixture(autouse=True, scope="function")
+def _redirect_writable_config_paths(
+    monkeypatch, tmp_path_factory, _forbid_real_data_writes,
+):
     """Redirect every ``Config.*`` path that test runs are known to
     write to → a per-test tmp directory.
 
@@ -96,6 +215,9 @@ def _redirect_writable_config_paths(monkeypatch, tmp_path_factory):
     """
     from euclid_polish.config import Config
     pkg_tmp = tmp_path_factory.mktemp("writable_config_paths")
+    # Child Python processes construct Config afresh.  Point those processes
+    # at the same temporary boundary instead of letting them inherit ./data.
+    monkeypatch.setenv("EUCLID_POLISH_DATA_DIR", str(pkg_tmp / "data"))
     vis_psf_dir = str(pkg_tmp / "vis_psf")
     os.makedirs(vis_psf_dir, exist_ok=True)
     monkeypatch.setattr(Config, "VIS_PSF_DIR", vis_psf_dir, raising=False)
@@ -105,9 +227,9 @@ def _redirect_writable_config_paths(monkeypatch, tmp_path_factory):
     )
     # The fasrc training-plot route renders ``tmp_training_plot.png`` into
     # ``Config.VIS_DIR``; without this redirect a test that exercises it
-    # overwrites the live WebUI's copy under ./data/vis and trips the
-    # session-teardown immutability guard. Routes read ``Config.VIS_DIR``
-    # at request time, so writing AND serving (/vis/...) stay consistent;
+    # overwrites the live WebUI's copy under ./data/vis. Routes read that
+    # Config path at request time, so writing AND serving (/vis/...) stay
+    # consistent;
     # tests that need a specific VIS_DIR monkeypatch it themselves (their
     # setattr runs after this autouse fixture and wins).
     vis_dir = str(pkg_tmp / "vis")
@@ -159,7 +281,7 @@ def _redirect_writable_config_paths(monkeypatch, tmp_path_factory):
     # daemon thread). They must finish while the redirects above are still
     # active — this fixture's teardown runs BEFORE its ``monkeypatch``
     # dependency reverts the paths — otherwise a late write lands in the
-    # real ./data tree and trips the session-teardown immutability guard.
+    # real ./data tree (where the prevention fixture would reject it).
     try:
         import time as _time
 
@@ -204,139 +326,3 @@ def _safe_default_ssh_state(monkeypatch):
     monkeypatch.setattr(remote.STATE, "ssh", _SessionNullSSH())
     monkeypatch.setattr(remote.STATE, "connected_at", 0.0)
     yield
-
-
-# ─── LOAD-BEARING SAFETY: real-data-dir files are immutable during tests ─
-#
-# Background: a unit test that wrote a 31×31 Gaussian stub to
-# ``Config.EUCLID_PSF_DIR/euclid_psf_VIS.fits`` quietly replaced the
-# user's real 1023² Euclid VIS ePSF on every ``pytest`` run. The user
-# only noticed when the live pipeline started producing wrong results.
-#
-# This fixture takes a snapshot (path → SHA-256) of every FITS file
-# under ``Config.DATA_DIR`` at session start, then on session teardown
-# re-checks every snapshot path. If any file's contents changed, it
-# (a) restores the original bytes from the snapshot when possible
-# (kept in memory only for files < 16 MB so we don't blow RAM on big
-# tile mosaics — we'll just fail loudly on those), and (b) raises so
-# the test author sees the violation immediately. Side benefit: the
-# restored bytes mean a failed run doesn't leave the working tree
-# corrupted.
-#
-# A test that *legitimately* needs to write into a real-data path
-# should ``tmp_path`` + monkeypatch the resolver instead. There's no
-# valid reason for a test to mutate ``data/`` in-place.
-@_pytest.fixture(scope="session", autouse=True)
-def _protect_real_data_dir():
-    import hashlib
-
-    from euclid_polish.config import Config
-
-    DATA_DIR = Config.DATA_DIR
-    INLINE_RESTORE_LIMIT = 16 * 1024 * 1024   # 16 MB
-    # Files at or above this size skip the SHA-256 round trip on both
-    # snapshot and verify — they use ``(size, mtime_ns)`` as a tamper
-    # check instead. Hashing the 10 GB COSMOS2025 catalog twice per
-    # session was ~50 s of the suite runtime; mtime+size is good
-    # enough for "did a test accidentally rewrite this file?" without
-    # the I/O cost. Small load-bearing files (PSFs, kernels, summary
-    # JSONs) — the ones the original incident actually touched —
-    # stay under this threshold and keep the full SHA-256 check.
-    HASH_SIZE_LIMIT = 32 * 1024 * 1024        # 32 MB
-
-    def _snapshot(p: str, size: int) -> dict:
-        if size >= HASH_SIZE_LIMIT:
-            try:
-                mtime_ns = os.stat(p).st_mtime_ns
-            except FileNotFoundError:
-                mtime_ns = 0
-            return {"sha": None, "size": size, "mtime_ns": mtime_ns,
-                    "blob": None}
-        with open(p, "rb") as fh:
-            blob = fh.read()
-        return {
-            "sha":      hashlib.sha256(blob).hexdigest(),
-            "size":     size,
-            "mtime_ns": None,
-            # Keep contents in memory only for files small enough to
-            # restore from RAM. Larger-than-inline files (16-32 MB)
-            # still get hashed but can't be auto-restored.
-            "blob":     blob if size <= INLINE_RESTORE_LIMIT else None,
-        }
-
-    snapshots: dict = {}
-    if os.path.isdir(DATA_DIR):
-        for root, _dirs, files in os.walk(DATA_DIR):
-            # Skip the FASRC rsync cache — it's transient by design.
-            if "_fasrc_cache" in root.split(os.sep):
-                continue
-            for f in files:
-                # Scratch render of the live WebUI's per-run training plot.
-                # The route now renders to a tempfile outside data/, but a
-                # server started before that fix still rewrites this path
-                # every status poll — i.e. a process OUTSIDE pytest mutates
-                # it mid-suite, which is noise, not a test violation.
-                if f == "tmp_training_plot.png":
-                    continue
-                p = os.path.join(root, f)
-                try:
-                    st = os.stat(p)
-                except FileNotFoundError:
-                    continue
-                snapshots[p] = _snapshot(p, st.st_size)
-
-    yield
-
-    violations = []
-    for p, snap in snapshots.items():
-        if not os.path.exists(p):
-            violations.append(("deleted", p))
-            continue
-        try:
-            st = os.stat(p)
-        except FileNotFoundError:
-            violations.append(("deleted", p))
-            continue
-        if snap["sha"] is None:
-            # Big-file shortcut: only compare size + mtime. Cheap.
-            if st.st_size != snap["size"] or st.st_mtime_ns != snap["mtime_ns"]:
-                violations.append(
-                    ("modified (large file, mtime+size diverged, cannot "
-                     "restore)", p),
-                )
-            continue
-        with open(p, "rb") as fh:
-            cur = fh.read()
-        if hashlib.sha256(cur).hexdigest() != snap["sha"]:
-            if snap["blob"] is not None:
-                with open(p, "wb") as fh:
-                    fh.write(snap["blob"])
-                violations.append(("modified (restored)", p))
-            else:
-                violations.append(("modified (cannot restore, > 16MB)", p))
-
-    if violations:
-        msg = [
-            "",
-            "─" * 72,
-            " conftest session-teardown guard fired",
-            "─" * 72,
-            "",
-            " IMPORTANT: this is NOT a failure of the test pytest blames",
-            " it on. The check runs at SESSION teardown and pytest",
-            " attributes session-fixture teardown errors to whichever",
-            " test happened to run last. The real culprit is whatever",
-            " production code path modified the file(s) listed below.",
-            "",
-            " Files mutated under Config.DATA_DIR during this run:",
-            "",
-        ]
-        for kind, p in violations:
-            msg.append(f"   [{kind}] {p}")
-        msg.append("")
-        msg.append(" Tests must NEVER write to real data paths. Use")
-        msg.append(" ``tmp_path`` + monkeypatch the path resolver")
-        msg.append(" (e.g. psf_path_for_band, Config.VIS_PSF_DIR)")
-        msg.append(" so the production write lands under tmp_path.")
-        msg.append("─" * 72)
-        raise AssertionError("\n".join(msg))
