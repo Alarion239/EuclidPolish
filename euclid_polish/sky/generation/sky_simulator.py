@@ -7,7 +7,8 @@ Two independent source populations are rendered onto each field:
     (:mod:`euclid_polish.sky.cosmos2025`). Typically the small/compact end of
     the galaxy size distribution; density set by ``sersic_density_arcmin2``.
 
-  * **TNG** — real TNG50 SKIRT stamps (:mod:`euclid_polish.sky.tng_galaxy`).
+  * **TNG** — real TNG50 SKIRT stamps
+    (:mod:`euclid_polish.sky.generation.tng_galaxy`).
     Covers the resolved/extended population; size drawn log-uniformly over
     ``tng_re_arcsec_range`` (or from D_A(z) when ``tng_redshift_mode`` is on).
     Density set by ``tng_density_arcmin2``. Set to 0.0 (default) to disable.
@@ -35,6 +36,7 @@ from euclid_polish.image import Image, Role
 from euclid_polish.photometry import ab_mag_to_electrons
 from euclid_polish.provenance.defaults import mint_id
 from euclid_polish.provenance.records import Stamp
+from euclid_polish.skirt.image import composite_stamp
 from euclid_polish.sky.generation.cosmos2025 import (
     CosmosCatalog,
     circularized_effective_radius_arcsec,
@@ -58,7 +60,6 @@ from euclid_polish.sky.generation.redshift_model import (
 from euclid_polish.sky.generation.stellar_sed import sample_stellar_sed
 from euclid_polish.sky.generation.tng_galaxy import (
     N_ORIENTATIONS,
-    composite_stamp,
     list_tng_galaxies,
     native_halflight_px,
     predict_vis_flux_e,

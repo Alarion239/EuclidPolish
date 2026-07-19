@@ -17,16 +17,16 @@ redshift ``z`` every observable is derived from that single draw:
    log-log-interpolates the stamp's *own* 4-point SED at the blueshifted
    wavelengths, and (b) a stochastic tilt ``exp(ε · ln(λ_b/λ_H))`` with
    ``ε ~ N(0, σ(z))``, anchored at H (the band least exposed to the rest-UV
-   extrapolation). The randomness covers the SED diversity four points
-   cannot — red-biased on average, but crossing the true (and occasionally
-   bluer) colours.
+   extrapolation). The randomness broadens the colour distribution around the
+   deterministic four-point estimate.
 
 The same module derives the lens **velocity dispersion from the TNG mass
 catalog** (``tng_properties.csv``) via the Faber–Jackson relation, so a
 TNG-lit lens galaxy bends light according to its own subhalo's mass.
 
 The cosmological-distance helpers (flat ΛCDM, Collett-2015 parameters) live
-here and are re-exported by :mod:`euclid_polish.sky.lens_population`.
+here and are re-exported by
+:mod:`euclid_polish.sky.generation.lens_population`.
 """
 
 from __future__ import annotations
@@ -188,10 +188,12 @@ def sample_galaxy_redshift(
     """Draw one redshift for a TNG stamp, truncated to ``[z_min, z_max]``.
 
     ``form="volume"`` (default): ``dN/dz ∝ dV_c/dz · exp(-(z/phi_scale)²)``
-    — the right distribution for the atlas's massive galaxies, which are
-    visible across the whole survey volume: comoving volume element times
-    the Muzzin+ 2013 decline of the log M*≳11 number density. Median
-    z ≈ 1.2; only ~4% of draws land below z = 0.4 (where atlas giants
+    — our default prior for the atlas's massive galaxies, which are visible
+    across a large survey volume: comoving volume element times a smooth
+    approximation to the Muzzin+ 2013 decline of the log M*≳11 number
+    density. It is not a fitted TNG light cone. Median z ≈ 1.15; about 5%
+    of draws land below z = 0.4
+    (where atlas giants
     appear arcsec-sized).
 
     ``form="smail"``: ``n(z) ∝ z² exp(-(z/z0)^1.5)`` — the full

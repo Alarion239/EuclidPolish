@@ -238,7 +238,7 @@ def test_tng_injection_with_redshift_mode(tmp_path):
 
 
 def test_composite_stamp_clipping():
-    from euclid_polish.sky.generation.tng_galaxy import composite_stamp
+    from euclid_polish.skirt.image import composite_stamp
     # centred fully inside → full flux
     c = np.zeros((10, 10, 4), np.float32)
     composite_stamp(c, np.ones((4, 4, 4), np.float32), x0=5, y0=5)

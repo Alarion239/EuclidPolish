@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Bulk-download the *entire* IllustrisTNG TNG50-1 SKIRT atlas (~1153 galaxies).
+"""Bulk-download the *entire* IllustrisTNG TNG50-1 SKIRT atlas (~1154 galaxies).
 
 This is the FASRC, all-galaxies counterpart of the single-galaxy
 ``scripts/download_tng_skirt.py``. It lists every entry under the API's

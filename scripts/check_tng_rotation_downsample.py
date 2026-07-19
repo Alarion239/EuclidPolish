@@ -55,8 +55,8 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from euclid_polish.config import Config  # noqa: E402
+from euclid_polish.skirt.image import block_mean  # noqa: E402
 from euclid_polish.sky.generation.tng_galaxy import (  # noqa: E402
-    block_mean,
     list_tng_galaxies,
     load_tng_frame,
     tng_fits_path,

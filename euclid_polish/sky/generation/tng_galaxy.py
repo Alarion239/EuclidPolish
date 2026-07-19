@@ -16,7 +16,7 @@ To place a galaxy into a synthetic field we run three steps (in this order):
    knob: a coarser rebin makes the galaxy both smaller and fainter, as a more
    distant galaxy would appear. In redshift mode
    (:func:`tng_stamp_at_redshift`) the factor is computed from
-   D_A(z) — see :mod:`euclid_polish.sky.redshift_model`.
+   D_A(z) — see :mod:`euclid_polish.sky.generation.redshift_model`.
 2. **Rotate** for orientation augmentation on top of the atlas's 5 physical
    viewpoints. When the rebin factor is ≥ ``ARBITRARY_ROTATION_MIN_REBIN`` (4)
    an *arbitrary* 0–360° cubic-spline rotation is applied at native resolution
@@ -39,14 +39,26 @@ from __future__ import annotations
 import os
 
 import numpy as np
-from astropy.io import fits
-from scipy.ndimage import rotate as _ndi_rotate
 
 from euclid_polish.config import BandConfig, Config
 from euclid_polish.photometry import (
     ab_mag_to_electrons,
     mjy_per_sr_to_electrons,
     mjy_per_sr_to_electrons_factor,
+)
+from euclid_polish.skirt.image import (
+    block_mean,
+    centered_rotation_crop_slices,
+    load_skirt_frame,
+    measure_halflight_radius_px,
+    radius_int_grid,
+    rebin_for_target_size,
+    rotate_arbitrary,
+    rotate_quarter,
+    stochastic_round_factor,
+)
+from euclid_polish.skirt.image import (
+    composite_stamp as _composite_stamp,
 )
 from euclid_polish.sky.generation.redshift_model import (
     TNG_NATIVE_PC_PER_PIXEL,
@@ -64,6 +76,10 @@ _FITS_BAND_TO_CONFIG: dict[str, str] = {
     "VIS": "VIS", "Y": "Y_E", "J": "J_E", "H": "H_E",
 }
 
+# Backward-compatible import for callers that historically obtained this
+# generic operation from ``tng_galaxy``.
+composite_stamp = _composite_stamp
+
 
 def tng_fits_path(galaxy_dir: str, subhalo_id: int | str,
                   orientation: int, fits_band: str) -> str:
@@ -73,184 +89,22 @@ def tng_fits_path(galaxy_dir: str, subhalo_id: int | str,
 
 
 def load_tng_frame(path: str) -> np.ndarray:
-    """Read a SKIRT mock FITS as a native-endian float32 MJy/sr array.
+    """Read a TNG-SKIRT FITS as a native-endian float32 MJy/sr array.
 
-    SKIRT writes big-endian ``>f4``; the array is converted to host order for
-    downstream numpy/TF ops. Non-finite pixels are zeroed (treated as sky,
-    i.e. no flux).
+    This compatibility wrapper keeps the established TNG API while the generic
+    FITS mechanics live in :mod:`euclid_polish.skirt.image`.
     """
-    with fits.open(path) as hdul:
-        data = hdul[0].data
-    if data is None:
-        raise ValueError(f"empty primary HDU: {path}")
-    arr = np.asarray(data, dtype=np.float32)   # also normalises endianness
-    return np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
+    return load_skirt_frame(path)
 
 
-def block_mean(arr: np.ndarray, factor: int, *,
-               trim_remainder: bool = True) -> np.ndarray:
-    """Surface-brightness-preserving rebin: average each ``factor × factor``
-    block. ``factor == 1`` is a no-op copy.
-
-    Unlike :meth:`MultiBandSkyImage.rebin_array` (a flux-conserving *sum*),
-    this keeps the intensive MJy/sr brightness unchanged, so a rebinned frame
-    is still a valid surface-brightness image.
-    """
-    if factor < 1:
-        raise ValueError(f"factor must be ≥ 1, got {factor}")
-    a = np.asarray(arr, dtype=np.float32)
-    if factor == 1:
-        return a.copy()
-    if a.ndim != 2:
-        raise ValueError(f"expected a 2-D array, got shape {a.shape}")
-    H, W = a.shape
-    if H % factor != 0 or W % factor != 0:
-        if not trim_remainder:
-            raise ValueError(
-                f"spatial dims {(H, W)} not divisible by factor={factor}")
-        H, W = (H // factor) * factor, (W // factor) * factor
-        a = a[:H, :W]
-    Hn, Wn = H // factor, W // factor
-    return a.reshape(Hn, factor, Wn, factor).mean(axis=(1, 3))
-
-
-def rotate_quarter(arr: np.ndarray, k: int) -> np.ndarray:
-    """Rotate by ``k`` quarter-turns (k·90° CCW) via exact ``np.rot90``.
-
-    ``k`` is taken mod 4, so 0/1/2/3 → 0/90/180/270°; no interpolation, so
-    flux is bit-exactly conserved.
-    """
-    return np.rot90(np.asarray(arr), k=int(k) % 4)
-
-
-#: Block-mean factor at/above which arbitrary-angle spline rotation is safe to
-#: apply *before* the downsample: the ≥K× averaging washes out the cubic-spline
-#: interpolation blur. K=4 is validated in
-#: ``scripts/check_tng_rotation_downsample.py`` (per-galaxy critical K of 2–6 for
-#: <1% RMS error even under 360 accumulated 1° rotations). Below it, only exact
-#: quarter-turns are used so low-downsample stamps stay artefact-free.
+#: TNG-policy threshold at/above which an arbitrary-angle rotation may precede
+#: the block mean. The generic rotation primitive itself lives in
+#: :mod:`euclid_polish.skirt.image`; this threshold is specific to our validation
+#: on the TNG atlas and Euclid HR grid.
 ARBITRARY_ROTATION_MIN_REBIN = 4
-
-
-def rotate_arbitrary(arr: np.ndarray, angle_deg: float, *,
-                     order: int = 3) -> np.ndarray:
-    """Rotate ``arr`` by an arbitrary angle with cubic-spline interpolation.
-
-    Same array size (``reshape=False``), zero outside the frame, and clipped
-    non-negative (surface brightness can't go below zero from spline overshoot).
-    Apply only at native resolution with a ≥:data:`ARBITRARY_ROTATION_MIN_REBIN`×
-    downsample to follow — otherwise the interpolation blur is not averaged out.
-    """
-    out = _ndi_rotate(np.asarray(arr, dtype=np.float32), float(angle_deg),
-                      reshape=False, order=int(order), mode="constant", cval=0.0)
-    np.maximum(out, 0.0, out=out)
-    return out.astype(np.float32)
-
-
-def _rotation_crop_slices(frame: np.ndarray, rebin: int) -> tuple[slice, slice]:
-    """Centred crop that holds the galaxy inside its inscribed circle.
-
-    The SKIRT box is 160 kpc of mostly-empty sky; rotating the full frame is
-    wasteful and slow. Cropping to a square of half-side ``r99·√2·1.05`` (the
-    99%-flux radius padded so rotation never clips real light) makes the spline
-    rotation cheap. The side is snapped to a multiple of ``rebin`` for a clean
-    block-mean.
-    """
-    H, W = frame.shape
-    r = measure_halflight_radius_px(frame, frac=0.99)
-    half = (int(np.ceil(r * np.sqrt(2.0) * 1.05))
-            if np.isfinite(r) and r > 0.0 else min(H, W) // 2)
-    side = min(2 * half, H, W)
-    step = max(1, int(rebin))
-    side = max(step, side - side % step)
-    cy, cx = H // 2, W // 2
-    h = side // 2
-    return slice(cy - h, cy - h + side), slice(cx - h, cx - h + side)
-
-
-# ---------------------------------------------------------------------------
-# Half-light radius (for sizing a stamp to a target apparent angular size)
-# ---------------------------------------------------------------------------
-
-#: Cache of the integer radius-from-centre grid, keyed by frame shape — the
-#: atlas frames are all the same size, so this is computed once per shape.
-_RADIUS_INT_GRID: dict[tuple[int, int], np.ndarray] = {}
-
-
-def _radius_int_grid(shape: tuple[int, int]) -> np.ndarray:
-    grid = _RADIUS_INT_GRID.get(shape)
-    if grid is None:
-        H, W = shape
-        cy, cx = (H - 1) / 2.0, (W - 1) / 2.0
-        yy = np.arange(H, dtype=np.float64)[:, None] - cy
-        xx = np.arange(W, dtype=np.float64)[None, :] - cx
-        grid = np.sqrt(yy * yy + xx * xx).astype(np.int64)
-        _RADIUS_INT_GRID[shape] = grid
-    return grid
-
-
-def measure_halflight_radius_px(frame: np.ndarray, *, frac: float = 0.5) -> float:
-    """Half-light radius (pixels) of ``frame`` via a curve of growth about the
-    frame centre — SKIRT centres each subhalo, so the geometric centre is the
-    light centre. Only positive flux counts; an empty/negative frame → NaN.
-
-    Returns the (sub-pixel, linearly interpolated) radius enclosing ``frac`` of
-    the total positive flux.
-    """
-    a = np.asarray(frame, dtype=np.float64)
-    a = np.where(np.isfinite(a) & (a > 0.0), a, 0.0)
-    total = float(a.sum())
-    if total <= 0.0:
-        return float("nan")
-    rint = _radius_int_grid(a.shape)
-    prof = np.bincount(rint.ravel(), weights=a.ravel())
-    cum = np.cumsum(prof)
-    target = frac * total
-    idx = int(np.searchsorted(cum, target))
-    if idx <= 0:
-        return 0.5
-    c0, c1 = cum[idx - 1], cum[idx]
-    sub = (target - c0) / (c1 - c0) if c1 > c0 else 0.0
-    return float(idx - 1 + sub)
-
-
-def stochastic_round_factor(f: float,
-                            rng: np.random.Generator | None) -> int:
-    """Round a continuous rebin factor to an integer ≥ 1. With an ``rng`` the
-    fractional part is a Bernoulli draw, so the *mean* factor is unbiased even
-    where integer granularity is coarse (F ≈ 2–4); without one, plain
-    rounding to nearest."""
-    lo = int(np.floor(f))
-    rem = f - lo
-    if rng is not None and rem > 0.0:
-        return max(1, lo + (1 if rng.random() < rem else 0))
-    return max(1, int(round(f)))
-
-
-def rebin_for_target_size(
-    re_native_px: float,
-    target_re_arcsec: float,
-    hr_pixel_scale: float,
-    *,
-    rng: np.random.Generator | None = None,
-    f_max: int = 64,
-) -> int:
-    """Integer block-mean factor that places a stamp of native half-light radius
-    ``re_native_px`` at apparent half-light radius ``target_re_arcsec`` on the
-    ``hr_pixel_scale`` grid.
-
-    Geometry: after a block-mean of ``F`` the half-light radius is
-    ``re_native_px / F`` *output* pixels, each spanning ``hr_pixel_scale``
-    arcsec, so ``apparent = hr_pixel_scale · re_native_px / F`` →
-    ``F = hr_pixel_scale · re_native_px / target``. Clipped to ``[1, f_max]``
-    (can't upsample below native; cap keeps the stamp from collapsing to a few
-    pixels), then rounded via :func:`stochastic_round_factor`.
-    """
-    if not (re_native_px > 0.0) or not (target_re_arcsec > 0.0):
-        return 1
-    f = hr_pixel_scale * re_native_px / target_re_arcsec
-    f = min(max(f, 1.0), float(f_max))
-    return stochastic_round_factor(f, rng)
+TNG_ROTATION_CROP_ENCLOSED_FRACTION = 0.99
+TNG_ROTATION_CROP_PADDING = 1.05
+TNG_MAX_REBIN_FACTOR = 64
 
 
 def surface_brightness_to_electrons(arr_mjy_sr: np.ndarray, band: BandConfig,
@@ -314,7 +168,12 @@ def prepare_tng_galaxy(
         sb = load_tng_frame(path)                       # MJy/sr, 1600²
         if use_angle:
             if rot_crop is None:                        # size from the first (VIS) frame
-                rot_crop = _rotation_crop_slices(sb, rebin_factor)
+                rot_crop = centered_rotation_crop_slices(
+                    sb,
+                    rebin_factor,
+                    enclosed_fraction=TNG_ROTATION_CROP_ENCLOSED_FRACTION,
+                    padding=TNG_ROTATION_CROP_PADDING,
+                )
             # Crop to the galaxy core, then spline-rotate (cheap) at native res.
             sb = rotate_arbitrary(sb[rot_crop], rot_angle)
         sb = block_mean(sb, rebin_factor)               # still MJy/sr
@@ -374,25 +233,6 @@ def list_tng_galaxies(tng_dir: str) -> list[tuple[str, str]]:
 _HALFLIGHT_PX_CACHE: dict[tuple[str, str, int], float] = {}
 
 
-def composite_stamp(canvas_4ch: np.ndarray, stamp: np.ndarray,
-                    x0: float, y0: float) -> None:
-    """Add a ``(Hs,Ws,C)`` stamp centred at ``(x0,y0)`` onto the canvas, clipped
-    to the canvas bounds. The stamp may be larger than the field — only the
-    overlapping region is added. Shared by field-galaxy injection and TNG lens
-    light."""
-    H, W = canvas_4ch.shape[:2]
-    Hs, Ws = stamp.shape[:2]
-    i0 = int(round(y0)) - Hs // 2
-    j0 = int(round(x0)) - Ws // 2
-    ci_lo, ci_hi = max(0, i0), min(H, i0 + Hs)
-    cj_lo, cj_hi = max(0, j0), min(W, j0 + Ws)
-    if ci_lo >= ci_hi or cj_lo >= cj_hi:
-        return
-    si_lo, sj_lo = ci_lo - i0, cj_lo - j0
-    canvas_4ch[ci_lo:ci_hi, cj_lo:cj_hi, :] += \
-        stamp[si_lo:si_lo + (ci_hi - ci_lo), sj_lo:sj_lo + (cj_hi - cj_lo), :]
-
-
 def native_halflight_px(
     galaxy_dir: str, subhalo_id: int | str, orientation: int,
     *, fits_band: str = "VIS",
@@ -444,7 +284,7 @@ def truncate_below_sb(
     # 160 kpc box open.
     total = stamp.sum(axis=2, dtype=np.float64)
     H, W = total.shape
-    rint = _radius_int_grid((H, W))
+    rint = radius_int_grid((H, W))
     prof = np.bincount(rint.ravel(), weights=total.ravel())
     cum = np.cumsum(prof)
     r = int(np.searchsorted(cum, 0.995 * cum[-1])) + 4
@@ -463,7 +303,7 @@ def tng_stamp_at_redshift(
     *,
     pixel_scale_arcsec: float = Config.DEFAULT_PIXEL_SCALE,
     rot_k: int | None = None,
-    f_max: int = 64,
+    f_max: int = TNG_MAX_REBIN_FACTOR,
     sb_cut_mag_arcsec2: float = Config.TNG_SB_TRUNCATE_MAG_ARCSEC2,
     mass_scale: float = 1.0,
 ) -> tuple[np.ndarray, dict]:
@@ -476,13 +316,13 @@ def tng_stamp_at_redshift(
     compactness correction, which conserves flux.
 
     A single ``z`` drives all three observables (see
-    :mod:`euclid_polish.sky.redshift_model`):
+    :mod:`euclid_polish.sky.generation.redshift_model`):
 
     * the block-mean factor comes from the angular size of the 100 pc native
       pixel at D_A(z) (stochastically rounded with ``rng`` so the mean
       apparent size is unbiased), times the flux-conserving compactness
       correction C(z) for the z = 0 atlas morphologies
-      (:func:`~euclid_polish.sky.redshift_model.compactness_factor`);
+      (:func:`~euclid_polish.sky.generation.redshift_model.compactness_factor`);
     * Tolman (1+z)⁻³ surface-brightness dimming;
     * a randomized spectral drift across the four bands, anchored on the
       stamp's own 4-point SED (``rng=None`` → deterministic drift only);
@@ -568,7 +408,7 @@ def native_photometry(galaxy_dir: str, subhalo_id: int | str,
             tng_fits_path(galaxy_dir, subhalo_id, orientation, fband))
         sums.append(float(frame.sum()))
         if fband == "VIS":
-            rint = _radius_int_grid(frame.shape)
+            rint = radius_int_grid(frame.shape)
             flux = np.bincount(rint.ravel(), weights=frame.ravel())
             cnt = np.bincount(rint.ravel()).astype(np.float64)
             profile = (flux / np.maximum(cnt, 1.0)).astype(np.float64)
@@ -633,7 +473,7 @@ def sample_tng_stamp(
     target_re_arcsec: float | None = None,
     z: float | None = None,
     mass_scale: float = 1.0,
-    f_max: int = 64,
+    f_max: int = TNG_MAX_REBIN_FACTOR,
 ) -> tuple[np.ndarray, dict] | None:
     """Pick a random galaxy / orientation / downsample / quarter-rotation and
     return its injectable ``(H,W,4)`` electron stamp + meta (None if it can't

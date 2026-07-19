@@ -1,0 +1,214 @@
+"""Instrument-independent image mechanics for SKIRT FITS products.
+
+SKIRT broadband images are commonly stored as surface brightness in MJy/sr.
+The helpers here load those arrays, preserve their intensive units while
+rebinning, provide controlled rotation augmentation, measure centred curves of
+growth, and composite prepared stamps onto a canvas.  They do not select bands,
+assign a distance or redshift, or convert into detector-specific units.
+"""
+
+from __future__ import annotations
+
+import numpy as np
+from astropy.io import fits
+from scipy.ndimage import rotate as _ndi_rotate
+
+
+def load_skirt_frame(path: str) -> np.ndarray:
+    """Read a SKIRT FITS primary image as native-endian float32.
+
+    Non-finite pixels are replaced with zero.  The caller remains responsible
+    for checking the FITS ``BUNIT`` and interpreting the image calibration.
+    """
+    with fits.open(path) as hdul:
+        data = hdul[0].data
+    if data is None:
+        raise ValueError(f"empty primary HDU: {path}")
+    arr = np.asarray(data, dtype=np.float32)
+    return np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
+
+
+def block_mean(
+    arr: np.ndarray,
+    factor: int,
+    *,
+    trim_remainder: bool = True,
+) -> np.ndarray:
+    """Average each ``factor x factor`` block without changing surface brightness.
+
+    ``factor == 1`` returns a copy.  This is appropriate for intensive image
+    units such as MJy/sr; it is not a flux-conserving sum rebin.
+    """
+    if factor < 1:
+        raise ValueError(f"factor must be >= 1, got {factor}")
+    a = np.asarray(arr, dtype=np.float32)
+    if factor == 1:
+        return a.copy()
+    if a.ndim != 2:
+        raise ValueError(f"expected a 2-D array, got shape {a.shape}")
+    height, width = a.shape
+    if height % factor != 0 or width % factor != 0:
+        if not trim_remainder:
+            raise ValueError(
+                f"spatial dims {(height, width)} not divisible by factor={factor}"
+            )
+        height = (height // factor) * factor
+        width = (width // factor) * factor
+        a = a[:height, :width]
+    new_height, new_width = height // factor, width // factor
+    return a.reshape(new_height, factor, new_width, factor).mean(axis=(1, 3))
+
+
+def rotate_quarter(arr: np.ndarray, k: int) -> np.ndarray:
+    """Rotate by ``k`` exact quarter-turns counter-clockwise."""
+    return np.rot90(np.asarray(arr), k=int(k) % 4)
+
+
+def rotate_arbitrary(
+    arr: np.ndarray,
+    angle_deg: float,
+    *,
+    order: int = 3,
+) -> np.ndarray:
+    """Rotate in place-sized coordinates and clip interpolation undershoot.
+
+    The returned image has the input shape.  Values outside the frame are zero;
+    negative spline overshoot is clipped because surface brightness is
+    non-negative.  Whether interpolation is scientifically acceptable at the
+    requested resolution is a policy decision for the caller.
+    """
+    out = _ndi_rotate(
+        np.asarray(arr, dtype=np.float32),
+        float(angle_deg),
+        reshape=False,
+        order=int(order),
+        mode="constant",
+        cval=0.0,
+    )
+    np.maximum(out, 0.0, out=out)
+    return out.astype(np.float32)
+
+
+_RADIUS_INT_GRID: dict[tuple[int, int], np.ndarray] = {}
+
+
+def radius_int_grid(shape: tuple[int, int]) -> np.ndarray:
+    """Cached integer-radius grid measured from the geometric image centre."""
+    grid = _RADIUS_INT_GRID.get(shape)
+    if grid is None:
+        height, width = shape
+        cy, cx = (height - 1) / 2.0, (width - 1) / 2.0
+        yy = np.arange(height, dtype=np.float64)[:, None] - cy
+        xx = np.arange(width, dtype=np.float64)[None, :] - cx
+        grid = np.sqrt(yy * yy + xx * xx).astype(np.int64)
+        _RADIUS_INT_GRID[shape] = grid
+    return grid
+
+
+def measure_halflight_radius_px(frame: np.ndarray, *, frac: float = 0.5) -> float:
+    """Radius in pixels enclosing ``frac`` of positive flux about the centre.
+
+    SKIRT atlas products centre their target galaxies geometrically.  For other
+    products, callers should centre the source before using this helper.
+    Empty or non-positive images return NaN.
+    """
+    a = np.asarray(frame, dtype=np.float64)
+    a = np.where(np.isfinite(a) & (a > 0.0), a, 0.0)
+    total = float(a.sum())
+    if total <= 0.0:
+        return float("nan")
+    radii = radius_int_grid(a.shape)
+    profile = np.bincount(radii.ravel(), weights=a.ravel())
+    cumulative = np.cumsum(profile)
+    target = frac * total
+    index = int(np.searchsorted(cumulative, target))
+    if index <= 0:
+        return 0.5
+    lower, upper = cumulative[index - 1], cumulative[index]
+    subpixel = (target - lower) / (upper - lower) if upper > lower else 0.0
+    return float(index - 1 + subpixel)
+
+
+def centered_rotation_crop_slices(
+    frame: np.ndarray,
+    rebin: int,
+    *,
+    enclosed_fraction: float,
+    padding: float,
+) -> tuple[slice, slice]:
+    """Centred square crop large enough to rotate the enclosed source light.
+
+    The half-side is the requested curve-of-growth radius times ``sqrt(2)`` and
+    ``padding``.  Its side is snapped to a multiple of ``rebin`` for subsequent
+    block averaging.
+    """
+    height, width = frame.shape
+    radius = measure_halflight_radius_px(frame, frac=enclosed_fraction)
+    half = (
+        int(np.ceil(radius * np.sqrt(2.0) * padding))
+        if np.isfinite(radius) and radius > 0.0
+        else min(height, width) // 2
+    )
+    side = min(2 * half, height, width)
+    step = max(1, int(rebin))
+    side = max(step, side - side % step)
+    cy, cx = height // 2, width // 2
+    half_side = side // 2
+    return (
+        slice(cy - half_side, cy - half_side + side),
+        slice(cx - half_side, cx - half_side + side),
+    )
+
+
+def stochastic_round_factor(
+    factor: float,
+    rng: np.random.Generator | None,
+) -> int:
+    """Round a continuous scale to an integer >= 1, unbiased in expectation."""
+    lower = int(np.floor(factor))
+    remainder = factor - lower
+    if rng is not None and remainder > 0.0:
+        return max(1, lower + (1 if rng.random() < remainder else 0))
+    return max(1, int(round(factor)))
+
+
+def rebin_for_target_size(
+    re_native_px: float,
+    target_re_arcsec: float,
+    pixel_scale_arcsec: float,
+    *,
+    rng: np.random.Generator | None = None,
+    f_max: int | None = None,
+) -> int:
+    """Integer block factor placing a native radius at a target angular radius."""
+    if not (re_native_px > 0.0) or not (target_re_arcsec > 0.0):
+        return 1
+    factor = pixel_scale_arcsec * re_native_px / target_re_arcsec
+    factor = max(factor, 1.0)
+    if f_max is not None:
+        factor = min(factor, float(f_max))
+    return stochastic_round_factor(factor, rng)
+
+
+def composite_stamp(
+    canvas: np.ndarray,
+    stamp: np.ndarray,
+    x0: float,
+    y0: float,
+) -> None:
+    """Add a centred ``(height, width, channels)`` stamp, clipped to the canvas."""
+    height, width = canvas.shape[:2]
+    stamp_height, stamp_width = stamp.shape[:2]
+    row0 = int(round(y0)) - stamp_height // 2
+    col0 = int(round(x0)) - stamp_width // 2
+    canvas_row_lo, canvas_row_hi = max(0, row0), min(height, row0 + stamp_height)
+    canvas_col_lo, canvas_col_hi = max(0, col0), min(width, col0 + stamp_width)
+    if canvas_row_lo >= canvas_row_hi or canvas_col_lo >= canvas_col_hi:
+        return
+    stamp_row_lo = canvas_row_lo - row0
+    stamp_col_lo = canvas_col_lo - col0
+    canvas[canvas_row_lo:canvas_row_hi, canvas_col_lo:canvas_col_hi, :] += stamp[
+        stamp_row_lo : stamp_row_lo + (canvas_row_hi - canvas_row_lo),
+        stamp_col_lo : stamp_col_lo + (canvas_col_hi - canvas_col_lo),
+        :,
+    ]

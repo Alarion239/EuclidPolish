@@ -16,14 +16,17 @@ from euclid_polish.photometry import (
     pixel_solid_angle_sr,
     uJy_to_electrons,
 )
-from euclid_polish.sky.generation.tng_galaxy import (
+from euclid_polish.skirt.image import (
     block_mean,
+    measure_halflight_radius_px,
+    rebin_for_target_size,
+    rotate_arbitrary,
+    rotate_quarter,
+)
+from euclid_polish.sky.generation.tng_galaxy import (
     list_tng_galaxies,
     load_tng_frame,
-    measure_halflight_radius_px,
     prepare_tng_galaxy,
-    rebin_for_target_size,
-    rotate_quarter,
     sample_tng_stamp,
     tng_fits_path,
 )
@@ -147,7 +150,6 @@ def _fake_tng_galaxy(tng_dir, gid, *, size=64):
 
 
 def test_rotate_arbitrary_preserves_flux_and_nonneg():
-    from euclid_polish.sky.generation.tng_galaxy import rotate_arbitrary
     img = np.zeros((64, 64), np.float32)
     img[24:40, 28:36] = (np.random.default_rng(0).random((16, 8)) + 0.1).astype(np.float32)
     out = rotate_arbitrary(img, 37.0)
@@ -155,6 +157,13 @@ def test_rotate_arbitrary_preserves_flux_and_nonneg():
     assert (out >= 0).all()                            # SB stays non-negative
     assert out.sum() == pytest.approx(img.sum(), rel=0.03)   # flux ~conserved
     assert not np.allclose(out, img)                   # actually rotated
+
+
+def test_tng_module_keeps_legacy_image_helper_imports():
+    from euclid_polish.sky.generation import tng_galaxy
+
+    assert tng_galaxy.block_mean is block_mean
+    assert tng_galaxy.rotate_arbitrary is rotate_arbitrary
 
 
 def test_prepare_arbitrary_rotation_gated_on_rebin(tmp_path):

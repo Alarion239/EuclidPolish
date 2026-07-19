@@ -90,7 +90,7 @@ budget — Y/J/H accumulate 4 × 112 s).
 |---|---|---|
 | **Stars** (point sources) | VIS drawn from a smooth differential star-count law dN/dm ∝ 10^(slope·m) over [bright, faint] (`Config.STAR_MAG_SLOPE=0.20`, `STAR_MAG_BRIGHT=12.0`, `STAR_MAG_FAINT=25.0`); each star draws a cool-dwarf-dominated temperature mixture, whose Planck `f_ν` is integrated over approximate VIS/Y/J/H passbands, plus modest interstellar extinction and stellar-population colour scatter | `flux_e_B` is deposited as a single HR pixel per channel (`sky_simulator.py:_deposit_star`); temperature, extinction, and four-band magnitudes are persisted for fixed validate/test stars and redrawn per visit on-the-fly; the PSF is applied later by the forward model |
 | **COSMOS2025 galaxies** (when `--sersic-density-arcmin2 > 0`) | Per-component (bulge / disk), per-band magnitudes from HDU 6 of the master catalog: `mag_model_bulge_hst-f814w` ↦ VIS_E, `mag_model_disk_uvista-y` ↦ Y_E (disk), etc. | Custom vectorised Sérsic2D renderer evaluates the analytic profile with closed-form amplitude from total flux. Bulge fixed at n=4, disk at n=1; geometry shared via `angle_bd`. (`profiles.py`) |
-| **TNG50 galaxies** (when `--tng-density-arcmin2 > 0`) | Real SKIRT-rendered multi-band stamps from the TNG50 atlas | TNG stamps are injected at their configured field density and resampled to the HR grid (`sky/tng_galaxy.py`). In redshift mode (§1.5), each stamp's size and photometry follow from its own redshift draw. |
+| **TNG50 galaxies** (when `--tng-density-arcmin2 > 0`) | Real SKIRT-rendered multi-band stamps from the TNG50 atlas | Instrument-independent FITS loading, surface-brightness rebinning, rotation, and compositing live in `euclid_polish/skirt/image.py`. TNG/Euclid band calibration and population policy live in `sky/generation/tng_galaxy.py`. In redshift mode (§1.5), each stamp's size and photometry follow from its own redshift draw. |
 | **Strong lenses** | Catalog-backed lenses use COSMOS priors; catalog-free pure-TNG fields sample the same geometry priors while deriving σ_v from the deflector subhalo's stellar mass | SIE + external-shear mass model from lenstronomy; lens-light + lensed-source-light rendered by our Sérsic implementation or TNG stamps at the ray-shot coordinates. (`lens_population.py`) |
 
 Our Sérsic amplitude is derived in closed form from the total flux and Sérsic index
@@ -111,10 +111,11 @@ and therefore skips the catalog entirely.
 ### 1.5 TNG redshift realism (`--tng-redshift-mode`)
 
 The SKIRT atlas frames are intrinsic z = 0 images on a physical 100 pc/pixel grid.
-In redshift mode (`sky/redshift_model.py`) each injected stamp draws one z from
+In redshift mode (`sky/generation/redshift_model.py`) each injected stamp draws one z from
 `dN/dz ∝ dV_c/dz · exp(-(z/1.5)²)` on [0.10, 2.5] — the comoving volume element
-times the declining number density of massive galaxies (Muzzin+ 2013), the right
-distribution for the atlas's intrinsically luminous population (median z ≈ 1.2;
+times a smooth approximation to the declining number density of massive galaxies
+(motivated by Muzzin+ 2013). This is a project prior for the atlas's intrinsically
+luminous population, not a fitted TNG light cone (median z ≈ 1.15;
 a Smail-form `n(z) ∝ z² exp(-(z/0.65)^1.5)` is available via `TNG_Z_FORM`).
 That single draw sets everything:
 
@@ -130,7 +131,7 @@ That single draw sets everything:
   (`TNG_COMPACT_C0`/`TNG_COMPACT_BETA`).
 - **Mass-function-weighted rescaling** — the atlas is a *morphology library*,
   not a population sample: each field stamp draws its target mass from the real
-  Schechter mass function (α = −1.2, log M* = 10.97) over [10⁹, 10¹²], matches
+  Schechter mass function (α = −1.2, log M* = 10.97) over [10⁸·⁵, 10¹²], matches
   an atlas galaxy within ×30 in mass, and is rescaled down — flux × s (L ∝ M),
   size ÷ s^0.25 (the observed mass–size slope), so surface brightness falls as
   s^0.5 (Kormendy-like). The rendered population follows the observed mass
@@ -147,7 +148,7 @@ That single draw sets everything:
 - **Spectral drift** — observed band b samples the rest SED at λ_b/(1+z): a
   deterministic part interpolates the stamp's own 4-point SED, and a stochastic
   tilt `exp(ε·ln(λ_b/λ_H))`, `ε ~ N(0, 0.15 + 0.35·ln(1+z))`, randomizes the
-  colours — red-leaning on average, sometimes bluer.
+  colours around that deterministic estimate.
 - **Physical number density** — in pure-TNG mode the field-galaxy count follows
   the real sky density of the rendered (log M★ ≥ 9) population, ≈ 33/arcmin²
   (Baldry+ 2012 φ₀ × the same weighted volume integral), not the full COSMOS
@@ -156,10 +157,13 @@ That single draw sets everything:
   population covers the small end with real morphology, keeping pure-TNG
   catalog-free); `--tng-dwarf-density-arcmin2 102` mixes small COSMOS Sérsic
   rows (R_e ≤ 0.5″) back in.
-- **Lens masses** — a TNG-lit deflector takes σ_v from its subhalo's stellar mass
-  (Faber–Jackson on `data/_tng_infographics/tng_properties.csv`), and the system is
-  rejected unless θ_E ≥ 1.2 × the lens's apparent half-light radius, so the arcs
-  always clear the foreground light.
+- **Lens masses** — in the catalog-free pure-TNG path, a deflector takes σ_v from
+  its subhalo's stellar mass when
+  `data/_tng_infographics/tng_properties.csv` is available (otherwise it falls
+  back to the configured uniform prior). The system is rejected unless
+  θ_E ≥ 1.2 × the lens's apparent half-light radius. In the mixed
+  COSMOS/TNG path, COSMOS sets the lens geometry and TNG supplies only the light
+  morphology.
 
 ### 1.4 Sky background
 
@@ -535,6 +539,8 @@ models/FITS/images, log FASRC jobs, mirror to holylabs) and `scripts/timetravel.
 - **Euclid Q1 MER pipeline (CR-flag fraction, MAGZERO, masking/interpolation):** Euclid Collaboration: Romelli et al., [*Euclid Quick Data Release (Q1): the Euclid MERge Processing Function*](https://arxiv.org/abs/2503.15305), 2025.
 - **Euclid Q1 release overview:** Euclid Collaboration, [*Euclid Quick Data Release (Q1)*](https://arxiv.org/abs/2503.15303), 2025.
 - **COSMOS2025 / COSMOS-Web catalog:** Shuntov et al., [*COSMOS-Web: The morphological catalog*](https://arxiv.org/abs/2506.03243), 2025.
+- **TNG50-SKIRT Atlas:** Baes et al., [*The TNG50-SKIRT Atlas: post-processing methodology and first data release*](https://arxiv.org/abs/2401.04224), A&A 2024 — 18 UV-to-NIR bands, 100 pc pixels, five views, and no instrument PSF/noise.
+- **Euclid-band TNG50-SKIRT images:** Euclid Collaboration: Kovačić et al., [*Euclid preparation: Extracting physical parameters from galaxies with machine learning*](https://arxiv.org/abs/2501.14408), 2025 — noise-free VIS/Y/J/H images used by this project.
 - **Strong-lens population:** Collett, [*The population of galaxy-galaxy strong lenses in forthcoming optical imaging surveys*](https://arxiv.org/abs/1507.02657), ApJ 2015. Ray-tracing via [lenstronomy](https://github.com/lenstronomy/lenstronomy).
 - **AB magnitude system:** Oke & Gunn, [*Secondary standard stars for absolute spectrophotometry*](https://ui.adsabs.harvard.edu/abs/1983ApJ...266..713O), ApJ 1983.
 - **CCD noise model:** Janesick, [*Photon Transfer*](https://spie.org/Publications/Book/725073), SPIE Press, 2007.

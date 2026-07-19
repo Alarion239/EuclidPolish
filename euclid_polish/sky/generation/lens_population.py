@@ -22,10 +22,10 @@ import math
 from dataclasses import dataclass
 
 import numpy as np
-from lenstronomy.LensModel.lens_model import LensModel
 from scipy.ndimage import map_coordinates
 
 from euclid_polish.config import Config
+from euclid_polish.skirt.image import composite_stamp
 from euclid_polish.sky.generation.cosmos2025 import CosmosCatalog, GalaxyParams
 from euclid_polish.sky.generation.profiles import (
     add_sersic_to_bands,
@@ -35,7 +35,6 @@ from euclid_polish.sky.generation.redshift_model import (
     angular_diameter_distance,
     comoving_distance_mpc,
 )
-from euclid_polish.sky.generation.tng_galaxy import composite_stamp
 
 # ---------------------------------------------------------------------------
 # Per-lens parameter dataclass
@@ -81,7 +80,7 @@ class LensParams:
 # Cosmological distance helpers (flat ΛCDM, Collett-2015 cosmology)
 # ---------------------------------------------------------------------------
 
-# The distance helpers live in :mod:`euclid_polish.sky.redshift_model`
+# The distance helpers live in :mod:`euclid_polish.sky.generation.redshift_model`
 # (shared with the TNG redshift model); these private aliases keep them
 # importable from here.
 _comoving_distance_mpc = comoving_distance_mpc
@@ -290,6 +289,8 @@ def _build_lenstronomy_lens(params: LensParams):
     Returns ``(lens_model, kwargs_list)``. Heavy import is deferred to here
     so the module is cheap to import when lensing is disabled.
     """
+    from lenstronomy.LensModel.lens_model import LensModel
+
     lens_model = LensModel(lens_model_list=["SIE", "SHEAR"])
 
     # Convert SIE axis ratio + PA to lenstronomy's eccentricity convention.

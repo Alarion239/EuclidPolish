@@ -99,12 +99,12 @@ def _name_from_url(url: str) -> str:
 
 
 def _list_atlas(key: str):
-    """Return [(name, url, size)] of the .hdf5 galaxy files under skirt_atlas.
+    """Return ``(name, url, size)`` entries exposed under ``skirt_atlas``.
 
     The endpoint is Django-REST-framework's *browsable API* (HTML), the same
-    page ``wget -r -A hdf5`` crawls. We try JSON first (cleaner), then fall
-    back to scraping ``href="...hdf5"`` links out of the HTML — so we can
-    pick ONE file instead of downloading the whole atlas.
+    page a recursive downloader would crawl. We try JSON first (cleaner), then
+    fall back to scraping archive links from the HTML — so we can pick one
+    subhalo instead of downloading the whole atlas.
     """
     # 1) JSON if the server will give it.
     r = _request(SKIRT_ATLAS + "?format=json", key)
@@ -115,7 +115,7 @@ def _list_atlas(key: str):
                 return files
         except ValueError:
             pass
-    # 2) Scrape the browsable-API HTML for .hdf5 links.
+    # 2) Scrape the browsable-API HTML for legacy .hdf5 listing links.
     html = _request(SKIRT_ATLAS, key).text
     seen, out = set(), []
     for href in re.findall(r'href=["\']([^"\']+\.hdf5)["\']', html):

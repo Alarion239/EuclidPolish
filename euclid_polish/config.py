@@ -763,28 +763,30 @@ class Config:
     LENS_SOURCE_OFFSET_FRAC = 0.7       # source impact parameter in units of θ_E
 
     # ---------------------------------------------------------------------
-    # TNG redshift realism (sky/redshift_model.py)
+    # TNG redshift realism (sky/generation/redshift_model.py)
     # ---------------------------------------------------------------------
     #
     # When the generator's ``tng_redshift_mode`` is on, each injected TNG
     # stamp gets one redshift draw that sets its angular size (rebin factor
-    # via D_A), Tolman dimming, and a randomized red-leaning spectral drift;
-    # TNG-lit lens galaxies additionally derive σ_v from the subhalo's
-    # stellar mass (Faber–Jackson) instead of the uniform prior.
+    # via D_A), Tolman dimming, and a randomized spectral drift;
+    # In the catalog-free pure-TNG lens path, deflectors additionally derive
+    # σ_v from the subhalo's stellar mass (Faber–Jackson) instead of the
+    # uniform prior when the property cache is available.
 
     # Field n(z) for TNG stamps, truncated to [TNG_Z_MIN, TNG_Z_MAX]
     # (z_min=0.10 is where the 100 pc native pixel matches the 0.05″ HR grid).
     #
     # "volume" (default): dN/dz ∝ dV_c/dz · exp(-(z/TNG_Z_PHI_SCALE)²) —
-    # the atlas holds only MASSIVE galaxies, visible across the whole survey
-    # volume, so their redshift distribution is the comoving volume element
-    # (Hogg 1999) times the declining number density of log M*≳11 galaxies
+    # the atlas holds only MASSIVE galaxies, so our project prior uses the
+    # comoving volume element (Hogg 1999) times a smooth approximation to the
+    # declining number density of log M*≳11 galaxies
     # (×~10 drop from z≈0.35 to z≈2.25, Muzzin+ 2013 — matched by the
-    # Gaussian factor with scale 1.5). Median z ≈ 1.2, ~4% below z = 0.4.
+    # Gaussian factor with scale 1.5). This is not a fitted TNG light cone.
+    # Median z ≈ 1.15, ~5% below z = 0.4.
     #
     # "smail": n(z) ∝ z² exp(-(z/TNG_Z0)^1.5) — the full flux-limited-survey
     # population (Smail+ 1995; Euclid Red Book z_m≈0.9 with z0=0.65). Kept
-    # for comparison; for the massive-only atlas it over-draws low z (≈13%
+    # for comparison; for the massive-only atlas it over-draws low z (≈8%
     # below z = 0.4 → far too many arcsec-scale giants per field).
     TNG_Z_FORM      = "volume"
     TNG_Z_PHI_SCALE = 1.5
