@@ -145,20 +145,20 @@ def run_grouped_analysis(
         on_progress = tqdm_progress("grouped")
 
     ensemble_dir = ensemble_dir or default_ensemble_dir()
-    catalog = catalog_path or catalog_runner.default_catalog_path()
-    if not os.path.isfile(catalog):
-        if catalog_path:
-            raise FileNotFoundError(f"catalog not found: {catalog}")
-        from euclid_polish.eval import lens_catalog
-        _emit(f"catalog {catalog} not found — fetching from Zenodo…")
-        lens_catalog.fetch(catalog)
-
     # Plan the work so the single progress bar spans every group.
     lens_plan = []
-    for g in grades:
-        rows = read_eval_catalog(catalog, grade=g, max_n=n)
-        lens_plan.append((g, rows))
-        _emit(f"grade {g}: {len(rows)} lens(es)")
+    if grades:
+        catalog = catalog_path or catalog_runner.default_catalog_path()
+        if not os.path.isfile(catalog):
+            if catalog_path:
+                raise FileNotFoundError(f"catalog not found: {catalog}")
+            from euclid_polish.eval import lens_catalog
+            _emit(f"catalog {catalog} not found — fetching from Zenodo…")
+            lens_catalog.fetch(catalog)
+        for g in grades:
+            rows = read_eval_catalog(catalog, grade=g, max_n=n)
+            lens_plan.append((g, rows))
+            _emit(f"grade {g}: {len(rows)} lens(es)")
     if include_galaxies:
         # Balance to 3N real galaxies (matches the 3N real lenses).
         gal_rows = _galaxy_plan(_emit, max_n=CLASS_MULT * n)

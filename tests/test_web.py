@@ -509,11 +509,13 @@ def _stub_fetch(monkeypatch, *, local_path=None, ok=True, error=None):
     return captured
 
 
-def test_tng_histograms_png_renders_locally(client, monkeypatch):
+def test_tng_histograms_png_renders_locally(client, tmp_path, monkeypatch):
     """Histograms render in-process (not a job): the route calls the local
     render with the FASRC id list + key and streams the PNG."""
     from euclid_polish.web.routes import tng as tng_routes
     seen = {}
+    monkeypatch.setattr(tng_routes, "_LOCAL_TNG_DIR",
+                        str(tmp_path / "_tng_infographics"))
 
     def fake_render(work, ids, key, **kw):
         seen["work"] = work
@@ -717,12 +719,13 @@ def test_cutout_image_rejects_bad_size(client):
     assert r.status_code == 400
 
 
-def test_cutout_image_renders_real_fits(client, tmp_path):
+def test_cutout_image_renders_real_fits(client, tmp_path, monkeypatch):
     """Drop a tiny FITS into the VIS cutout dir and round-trip a render."""
     import numpy as np
     from astropy.io import fits
 
     from euclid_polish.config import Config
+    monkeypatch.setattr(Config, "DEFAULT_OUTPUT_DIR", str(tmp_path / "data"))
     band_dir = Config.cutout_dir_for_band(
         "VIS", root=os.path.join(Config.DEFAULT_OUTPUT_DIR, "cutouts"),
     )

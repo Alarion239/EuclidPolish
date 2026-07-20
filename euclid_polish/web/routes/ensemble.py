@@ -153,7 +153,7 @@ def register(app):
                 "kind": model_kind,
                 "reason": "no current combiner fitted for this model",
                 "member_labels": [], "members": [], "band_names": [],
-                "eff_weights": {}, "feature_grid": {},
+                "eff_weights": {}, "feature_grid": {}, "surviving": {},
             })
         return send_file(path, mimetype="application/json", max_age=0)
 

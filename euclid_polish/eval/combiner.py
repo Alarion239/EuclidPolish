@@ -323,6 +323,10 @@ class StatsRBFBandCombiner:
         # Uniform rows in the model's log coordinate preserve low-std detail.
         std_log = np.linspace(np.log(self.std_floor), std_hi_geometry, int(n_std))
         std = np.maximum(0.0, np.exp(std_log) - self.std_floor)
+        # Preserve the exact zero-disagreement boundary promised by this
+        # diagnostic surface.  exp(log(std_floor)) can otherwise leave a
+        # platform-dependent ~1e-17 residue in the first cell.
+        std[0] = 0.0
         mm, ss = np.meshgrid(mean, std, indexing="xy")
         z = np.stack((mm.reshape(-1), ss.reshape(-1)), axis=1)
         logits = self._basis_from_raw_features(z) @ self.V + self.a
