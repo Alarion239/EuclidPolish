@@ -39,15 +39,35 @@
 }
 
 .cv-frames {
-  display: flex; justify-content: center; align-items: flex-start;
+  display: grid;
+  grid-template-columns: repeat(var(--cv-columns, 1), minmax(0, var(--cv-frame-size, 1fr)));
+  justify-content: center; align-items: start;
   gap: 14px; width: 100%;
 }
 .cv-frame {
   position: relative; aspect-ratio: 1 / 1;
-  flex: 1 1 0; max-width: 540px; min-width: 0;
+  width: 100%; max-width: none; min-width: 0;
   background: #05070d; border: 1px solid var(--border-strong);
   border-radius: var(--r-md); overflow: hidden;
   box-shadow: var(--shadow-1);
+}
+.cv-lens-box {
+  position: absolute; z-index: 4; display: none; pointer-events: none;
+  box-sizing: border-box; border: 2px solid #f4c95d;
+  box-shadow: 0 0 0 1px rgba(10, 14, 24, .8), 0 0 12px rgba(244, 201, 93, .65);
+}
+.cv-lens {
+  position: fixed; z-index: 1000; display: none; pointer-events: none;
+  box-sizing: border-box; overflow: hidden; border: 2px solid #f4c95d;
+  border-radius: var(--r-md); background: #05070d;
+  box-shadow: 0 10px 32px rgba(5, 8, 16, .38), 0 0 0 1px rgba(244, 201, 93, .35);
+}
+.cv-lens--frozen { position: absolute; }
+.cv-lens__canvas { display: block; width: 100%; height: 100%; image-rendering: pixelated; }
+.cv-lens__label {
+  position: absolute; top: 7px; left: 8px; padding: 3px 7px;
+  color: #fff2c7; background: rgba(6, 9, 16, .72); border-radius: 4px;
+  font: 11px/1.2 var(--font-mono); white-space: nowrap;
 }
 .cv-canvas {
   position: absolute; inset: 0; width: 100%; height: 100%;
