@@ -1,10 +1,10 @@
 #!/usr/bin/env python
 """Train ensemble members: add new ones, continue existing, or fork.
 
-Members live in ``<base-dir>/member_NN/`` and train sequentially on the SAME
-train/validate TFRecords, each with a distinct seed (recorded on the member's
-provenance). The ensemble mean is the prediction; the per-member spread is
-the hallucination signal.
+Members live in ``<base-dir>/member_NN/`` and train on the same train/validate
+TFRecords, each with a distinct seed (recorded in its provenance).  A WebUI
+submission uses a SLURM array and this process trains exactly one selected
+member; direct CLI use without ``--array-task`` may still train sequentially.
 
 Modes:
   --mode add       (default) create --count NEW members and train only them.
@@ -41,7 +41,6 @@ from euclid_polish.config import Config  # noqa: E402
 from euclid_polish.ensemble import (  # noqa: E402
     EnsembleModel,
     MemberTrainSpec,
-    evaluate_on_records,
 )
 from euclid_polish.image.tfio import tfrecord_path  # noqa: E402
 from euclid_polish.observability import Reporter, ResourceSampler  # noqa: E402
@@ -73,6 +72,10 @@ def parse_args(argv=None) -> argparse.Namespace:
                    help="Explicit new-member names (comma-separated), "
                         "allocated by the WebUI from the registry. Absent → "
                         "next free on-disk indices.")
+    p.add_argument("--array-task", action="store_true",
+                   help="Train only the member selected by "
+                        "SLURM_ARRAY_TASK_ID. Requires explicit member names "
+                        "for add/fork mode.")
     p.add_argument("--members", default="",
                    help="continue: comma-separated existing member names.")
     p.add_argument("--extra-steps", type=int, default=50_000,
@@ -194,8 +197,6 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--batch-size", type=int, default=Config.DEFAULT_BATCH_SIZE)
     p.add_argument("--evaluate-every", type=int, default=Config.DEFAULT_EVALUATE_EVERY)
     p.add_argument("--num-res-blocks", type=int, default=Config.DEFAULT_NUM_RES_BLOCKS)
-    p.add_argument("--eval-images", type=int, default=200,
-                   help="Test fields to score after training (0 = skip eval).")
     # LR schedule (warmup → cosine) + reduce-LR-on-plateau guard. Defaults from
     # Config; the WebUI /config page injects these on FASRC submission.
     p.add_argument("--lr-peak", type=float, default=Config.LR_PEAK)
@@ -270,6 +271,22 @@ def _fresh_names(args, base: str, k: int) -> list[str]:
         out.append(n)
         os.makedirs(os.path.join(base, n), exist_ok=True)
     return out
+
+
+def _array_index(args, count: int) -> int | None:
+    """Validate and return this process's array index, if array mode is on."""
+    if not args.array_task:
+        return None
+    raw = os.environ.get("SLURM_ARRAY_TASK_ID", "")
+    try:
+        index = int(raw)
+    except ValueError as e:
+        print("✗ --array-task requires integer SLURM_ARRAY_TASK_ID")
+        raise SystemExit(2) from e
+    if not 0 <= index < count:
+        print(f"✗ SLURM_ARRAY_TASK_ID={index} is outside 0..{count - 1}")
+        raise SystemExit(2)
+    return index
 
 
 def _member_overrides(args, k: int) -> list[dict]:
@@ -353,9 +370,13 @@ def build_specs(args, base: str) -> list[MemberTrainSpec]:
         if not names:
             print("✗ --mode continue needs --members")
             raise SystemExit(2)
-        overrides = _member_overrides(args, len(names))
+        array_index = _array_index(args, len(names))
+        all_names = names
+        overrides = _member_overrides(args, len(all_names))
+        selected = range(len(all_names)) if array_index is None else [array_index]
         specs = []
-        for i, name in enumerate(names):
+        for i in selected:
+            name = all_names[i]
             d = os.path.join(base, name)
             cur = checkpoint_step(d) if _has_ckpt(d) else None
             if cur is None:
@@ -370,6 +391,7 @@ def build_specs(args, base: str) -> list[MemberTrainSpec]:
         return specs
 
     k = int(args.count or args.n_members or (1 if args.mode == "fork" else 5))
+    array_index = _array_index(args, k)
     init_from = forked_from = None
     if args.mode == "fork":
         if not args.fork_from:
@@ -383,12 +405,27 @@ def build_specs(args, base: str) -> list[MemberTrainSpec]:
             raise SystemExit(2)
         init_from = src
         forked_from = f"{args.fork_from}·{args.fork_track}"
-    names = _fresh_names(args, base, k)
+    if array_index is None:
+        names_with_indices = list(enumerate(_fresh_names(args, base, k)))
+    else:
+        wanted = [n.strip() for n in args.member_names.split(",") if n.strip()]
+        if len(wanted) != k or len(set(wanted)) != k:
+            print("✗ array add/fork requires one unique --member-name per task")
+            raise SystemExit(2)
+        name = wanted[array_index]
+        member_dir = os.path.join(base, name)
+        try:
+            os.makedirs(member_dir, exist_ok=False)
+        except FileExistsError as e:
+            print(f"✗ array target already exists: {member_dir}; refusing to "
+                  "silently train a different member")
+            raise SystemExit(2) from e
+        names_with_indices = [(array_index, name)]
     overrides = _member_overrides(args, k)
     # Depth applies to ADD only: a fork inherits its source's depth (weights
     # are copied verbatim), and continue is dictated by the existing ckpt.
     specs = []
-    for i, n in enumerate(names):
+    for i, n in names_with_indices:
         over = overrides[i]
         blocks = (int(over.get("num_res_blocks", args.num_res_blocks))
                   if args.mode == "add" else None)
@@ -466,14 +503,13 @@ def main() -> int:
     reporter.set_stage(f"ensemble: {label}")
     # Sample CPU + GPU utilisation every 10 s into the events stream so the job
     # log records gpu_util_mean/peak (the "GPU util" column). Daemon thread;
-    # stopped after the eval below.
+    # stopped when this member (or direct-CLI member sequence) is done.
     sampler = ResourceSampler(reporter).start()
 
     # Stage the hot train + validate records onto node-local scratch (fast NVMe,
     # no shared-netscratch contention — the input-pipeline stall behind the
     # 48s-vs-100s/1000-step variance). Best-effort: falls back to the original
-    # dir if local scratch is missing/too small. Test records stay on netscratch
-    # (read once by the post-training eval, not the hot loop).
+    # dir if local scratch is missing/too small.
     def _stage_log(m: str) -> None:
         print(m)
         if m.lstrip().startswith("⚠"):      # surface staging fallbacks to the WebUI
@@ -534,8 +570,7 @@ def main() -> int:
     # train_members() resets self._models on entry and only constructs the
     # members it is told to train, so restoring every active checkpoint here
     # (the ctor's default) is pure waste — tens of GPU checkpoint loads that
-    # are immediately discarded. The post-training eval builds its own
-    # ensemble via evaluate_on_records(); this handle is used only to train.
+    # are immediately discarded. This handle is used only to train.
     ens = EnsembleModel(base, scale=Config.DEFAULT_REBIN_FACTOR,
                         num_res_blocks=args.num_res_blocks, _models=[])
     try:
@@ -560,18 +595,7 @@ def main() -> int:
             plateau_lr_recovery=bool(args.plateau_lr_recovery),
         )
 
-        if args.eval_images > 0:
-            print("\nEvaluating ensemble on the held-out test set...")
-            # Test records read once here — keep them on the original dir.
-            out = evaluate_on_records(base, args.records_dir,
-                                      num_images=args.eval_images)
-            print(f"  subset:            {out['subset']}  ({out['n_scored']} scored)")
-            print(f"  ensemble PSNR:     {out['ensemble_psnr']:.3f} dB")
-            print(f"  mean member PSNR:  {out['mean_member_psnr']:.3f} dB")
-            print(f"  ensemble gain:     {out['ensemble_gain_db']:+.3f} dB")
-            d = out["disagreement"]
-            print(f"  mean disagreement: {d['mean_std_e']:.4g} e⁻  "
-                  f"({d['frac_flux_hallucinated'] * 100:.1f}% of flux hallucinated)")
+        reporter.set_step(total, total, "ensemble training complete")
     finally:
         sampler.stop()
         if staged:                          # remove the node-local staged copy

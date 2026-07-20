@@ -44,6 +44,29 @@ def test_add_collision_shifts_past_existing_dir(tmp_path):
     assert build_specs(args, base)[0].name == "member_10"
 
 
+def test_array_add_selects_only_its_positional_member(tmp_path, monkeypatch):
+    base = str(tmp_path / "ens")
+    monkeypatch.setenv("SLURM_ARRAY_TASK_ID", "1")
+    args = parse_args(["--mode", "add", "--count", "3", "--steps", "1000",
+                       "--base-seed", "50", "--array-task",
+                       "--member-names", "member_09,member_10,member_11"])
+    (spec,) = build_specs(args, base)
+    assert (spec.name, spec.seed) == ("member_10", 51)
+    assert not os.path.exists(os.path.join(base, "member_09"))
+    assert os.path.isdir(os.path.join(base, "member_10"))
+
+
+def test_array_add_refuses_target_collision(tmp_path, monkeypatch):
+    base = str(tmp_path / "ens")
+    _mk_member(base, 10)
+    monkeypatch.setenv("SLURM_ARRAY_TASK_ID", "1")
+    args = parse_args(["--mode", "add", "--count", "2", "--steps", "10",
+                       "--array-task",
+                       "--member-names", "member_09,member_10"])
+    with pytest.raises(SystemExit):
+        build_specs(args, base)
+
+
 def test_continue_mode_reads_current_step(tmp_path, monkeypatch):
     base = str(tmp_path / "ens")
     _mk_member(base, 3)
@@ -55,6 +78,21 @@ def test_continue_mode_reads_current_step(tmp_path, monkeypatch):
     assert (s.name, s.target_steps, s.run_steps, s.op) == \
         ("member_03", 2500, 500, "continue")
     assert s.init_from is None
+
+
+def test_array_continue_selects_one_member_and_keeps_original_seed_offset(
+        tmp_path, monkeypatch):
+    base = str(tmp_path / "ens")
+    _mk_member(base, 3)
+    _mk_member(base, 5)
+    monkeypatch.setattr("scripts.train_ensemble.checkpoint_step", lambda d: 2000)
+    monkeypatch.setenv("SLURM_ARRAY_TASK_ID", "1")
+    args = parse_args(["--mode", "continue",
+                       "--members", "member_03,member_05",
+                       "--extra-steps", "500", "--base-seed", "20",
+                       "--array-task"])
+    (spec,) = build_specs(args, base)
+    assert (spec.name, spec.seed, spec.target_steps) == ("member_05", 21, 2500)
 
 
 def test_continue_requires_existing_checkpoint(tmp_path):

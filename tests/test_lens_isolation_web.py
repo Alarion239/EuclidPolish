@@ -11,19 +11,15 @@ os.environ["EUCLID_POLISH_DISABLE_AUTO_SSH"] = "1"
 from euclid_polish.web.app import create_app
 
 
-def test_classic_page_and_status_are_registered():
+def test_react_page_and_status_are_registered(tmp_path, monkeypatch):
+    from euclid_polish.web.helpers import lens_isolation_viz
+
+    monkeypatch.setattr(lens_isolation_viz, "output_dir", lambda: str(tmp_path))
     app = create_app()
     client = app.test_client()
     page = client.get("/lens-isolation")
     assert page.status_code == 200
-    body = page.get_data(as_text=True)
-    assert "lens_isolation_generate" in body
-    assert "lens_isolation_train" in body
-    assert "lens_isolation_evaluate" in body
-    assert "Pure TNG" in body
-    assert "10 lenses / arcmin²" in body
-    assert "random, block-aligned crops" in body
-    assert "balanced" not in body.lower()
+    assert b'id="root"' in page.data
     status = client.get("/api/lens-isolation/status")
     assert status.status_code == 200
     assert "experiments/lens_isolation" in status.get_json()["root"]

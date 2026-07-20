@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import shlex
 import time
 from dataclasses import dataclass, field
 from typing import Any, Protocol
@@ -512,3 +513,28 @@ class JobStatusFetcher:
         if rc != 0 or not out:
             return JobStatus()
         return fold_events(out)
+
+    def fetch_many(self, events_paths: list[str | None]) -> list[JobStatus]:
+        """Fetch several array-task event streams in one SSH round-trip."""
+        if self.ssh is None or not self.ssh.is_connected():
+            return [JobStatus() for _ in events_paths]
+        valid = [(i, path) for i, path in enumerate(events_paths) if path]
+        if not valid:
+            return [JobStatus() for _ in events_paths]
+        pieces = [
+            f"printf '\\036{i}\\037'; cat {shlex.quote(str(path))} "
+            "2>/dev/null || true"
+            for i, path in valid
+        ]
+        rc, out, _err = self.ssh.run("; ".join(pieces), timeout=15)
+        if rc != 0:
+            return [JobStatus() for _ in events_paths]
+        texts: dict[int, str] = {}
+        for chunk in out.split("\x1e"):
+            if "\x1f" not in chunk:
+                continue
+            raw_index, text = chunk.split("\x1f", 1)
+            with contextlib.suppress(ValueError):
+                texts[int(raw_index)] = text
+        return [fold_events(texts[i]) if texts.get(i) else JobStatus()
+                for i in range(len(events_paths))]

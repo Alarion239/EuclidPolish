@@ -28,9 +28,14 @@ from euclid_polish.ensemble import (
     evaluate_member_on_records,
     evaluate_on_records,
     member_fingerprint,
+    member_is_starless,
     pca_field,
 )
-from euclid_polish.eval.combiner import COMBINER_MODELS, MINMAX_RBF_GATE_KIND
+from euclid_polish.eval.combiner import (
+    COMBINER_MODELS,
+    MINMAX_RBF_GATE_KIND,
+    STACKED_RBF_GATE_KIND,
+)
 from euclid_polish.eval.ensemble_diagnostics import (
     EnsembleDiagnosticsAccumulator,
     render_std_vs_brightness,
@@ -213,6 +218,7 @@ def _eval_records_fingerprint(records_dir: str | None, subset: str, *,
 _RBF_KIND = "rbf_gate"
 _STATS_RBF_KIND = "stats_rbf_gate"
 _MINMAX_RBF_KIND = MINMAX_RBF_GATE_KIND
+_STACKED_RBF_KIND = STACKED_RBF_GATE_KIND
 _ORDINARY_COMBINER_KINDS = tuple(COMBINER_MODELS)
 
 
@@ -299,6 +305,35 @@ def _reusable_eval(starless: bool, identity: dict) -> dict | None:
     if man.get("records_fp") != identity["records_fp"]:
         return None
     return summary
+
+
+def _archive_stale_path(starless: bool) -> str:
+    """Durable queue of archived members whose cached cubes need rebuilding."""
+    return os.path.join(_ensemble_regime_dir(starless), "archive_stale.json")
+
+
+def _pending_archived_members(starless: bool) -> list[str]:
+    """Archived member names waiting for this regime's next evaluation."""
+    try:
+        with open(_archive_stale_path(starless)) as f:
+            names = json.load(f).get("members", [])
+    except (OSError, ValueError, AttributeError):
+        return []
+    return [str(name) for name in names
+            if re.fullmatch(r"member_\d{2,}", str(name))]
+
+
+def _mark_archive_stale(starless: bool, name: str) -> None:
+    """Remember an archive without touching the expensive cube cache yet."""
+    names = _pending_archived_members(starless)
+    if name not in names:
+        names.append(name)
+    _atomic_json(_archive_stale_path(starless), {"members": names})
+
+
+def _clear_archive_stale(starless: bool) -> None:
+    with contextlib.suppress(FileNotFoundError):
+        os.remove(_archive_stale_path(starless))
 
 
 def _load_member_psnr_cache() -> dict:
@@ -848,6 +883,9 @@ def _combiner_signature(comb) -> str:
     h = hashlib.sha256()
     h.update(str(comb.kind).encode())
     h.update(json.dumps(list(comb.member_labels), separators=(",", ":")).encode())
+    if comb.kind == _STACKED_RBF_KIND:
+        h.update(json.dumps(comb.parent_fingerprints, sort_keys=True,
+                            separators=(",", ":")).encode())
     for name in comb.band_names:
         bc = comb.bands[name]
         if comb.kind == _RBF_KIND:
@@ -855,6 +893,9 @@ def _combiner_signature(comb) -> str:
         elif comb.kind in {_STATS_RBF_KIND, _MINMAX_RBF_KIND}:
             values = [bc.V, bc.a, bc.centers, bc.scales,
                       np.asarray([bc.sigma]), bc.surviving]
+        elif comb.kind == _STACKED_RBF_KIND:
+            values = [bc.V, bc.a, bc.centers, bc.scales,
+                      np.asarray([bc.sigma])]
         else:
             values = [bc.W_in, bc.b_in, bc.W_out, bc.b_out, bc.surviving]
         for value in values:
@@ -870,7 +911,8 @@ def _unavailable_hr_weight_diagnostic(comb, *, target: str, reason: str) -> dict
         "reason": reason,
         "subset": "validate",
         "target": target,
-        "member_labels": list(comb.member_labels),
+        "member_labels": list(comb.weight_labels),
+        "source_member_labels": list(comb.member_labels),
         "bands": {},
         "n_fields": 0,
         "n_pixels": 0,
@@ -922,8 +964,10 @@ def _hr_weight_diagnostic_from_bucket(comb, *, starless: bool,
     lo, hi = map(float, comb.level_range)
     edges = np.linspace(lo, hi, n_bins + 1)
     centers = (edges[:-1] + edges[1:]) / 2.0
-    m = len(comb.member_labels)
-    sums = {name: np.zeros((n_bins, m), np.float64) for name in comb.band_names}
+    source_m = len(comb.member_labels)
+    weight_labels = list(comb.weight_labels)
+    weight_m = len(weight_labels)
+    sums = {name: np.zeros((n_bins, weight_m), np.float64) for name in comb.band_names}
     counts = {name: np.zeros(n_bins, np.int64) for name in comb.band_names}
     samples = {name: [[] for _ in range(n_bins)] for name in comb.band_names}
     per_field = max(1, int(max_pixels_per_bin) // max(len(indices), 1))
@@ -935,7 +979,7 @@ def _hr_weight_diagnostic_from_bucket(comb, *, starless: bool,
         if target_image is None:
             continue
         paths = [os.path.join(cubes_dir, f"member{i}_{rec:05d}.npy")
-                 for i in range(m)]
+                 for i in range(source_m)]
         if not all(os.path.isfile(path) for path in paths):
             continue
         stack = np.stack([np.load(path).astype(np.float32) for path in paths], 0)
@@ -945,7 +989,7 @@ def _hr_weight_diagnostic_from_bucket(comb, *, starless: bool,
         used_fields.add(int(rec))
         for ci, name in enumerate(comb.band_names):
             scale = float(Config.get_band(name).asinh_stretch_scale_e)
-            x = np.arcsinh(stack[..., ci].reshape(m, -1).T / scale)
+            x = np.arcsinh(stack[..., ci].reshape(source_m, -1).T / scale)
             y = np.arcsinh(truth[..., ci].reshape(-1) / scale)
             bin_idx = np.clip(np.digitize(y, edges) - 1, 0, n_bins - 1)
             for bi in np.unique(bin_idx):
@@ -959,7 +1003,7 @@ def _hr_weight_diagnostic_from_bucket(comb, *, starless: bool,
                 # A deterministic, per-field brightness-stratified reservoir
                 # gives each occupied brightness bin equal representation and
                 # is exactly the sample used for its percentile ribbons.
-                picked_weights = np.asarray(comb.bands[name].weights(x[pick]),
+                picked_weights = np.asarray(comb.band_weights(name, x[pick]),
                                             np.float64)
                 sums[name][bi] += picked_weights.sum(axis=0)
                 counts[name][bi] += len(pick)
@@ -971,7 +1015,7 @@ def _hr_weight_diagnostic_from_bucket(comb, *, starless: bool,
 
     bands = {}
     for name in comb.band_names:
-        mean = np.full((n_bins, m), np.nan, np.float64)
+        mean = np.full((n_bins, weight_m), np.nan, np.float64)
         valid = counts[name] > 0
         mean[valid] = sums[name][valid] / counts[name][valid, None]
         p16 = np.full_like(mean, np.nan)
@@ -996,7 +1040,8 @@ def _hr_weight_diagnostic_from_bucket(comb, *, starless: bool,
         "available": True,
         "subset": "validate",
         "target": target,
-        "member_labels": list(comb.member_labels),
+        "member_labels": weight_labels,
+        "source_member_labels": list(comb.member_labels),
         "bands": bands,
         "n_fields": len(used_fields),
         "n_pixels": int(max((int(x.sum()) for x in counts.values()), default=0)),
@@ -1018,7 +1063,9 @@ def _cached_hr_weight_diagnostic(existing: dict | None, comb) -> dict | None:
     if not isinstance(existing, dict):
         return None
     if (existing.get("combiner_signature") == _combiner_signature(comb)
-            and existing.get("member_labels") == list(comb.member_labels)
+            and existing.get("member_labels") == list(comb.weight_labels)
+            and existing.get("source_member_labels", list(comb.member_labels))
+                == list(comb.member_labels)
             and existing.get("records_fp") == comb.records_fp):
         return existing
     return None
@@ -1171,6 +1218,28 @@ def _collect_bounded_ablation_patches(
     return patch_stacks, patch_truth, regions
 
 
+def _invalidate_stacked_combiner(starless: bool) -> None:
+    """Drop the derived stack when either of its two parent fits changes."""
+    regime_dir = _ensemble_regime_dir(starless)
+    shutil.rmtree(os.path.join(regime_dir, _combiner_artifact_dir(_STACKED_RBF_KIND)),
+                  ignore_errors=True)
+    with contextlib.suppress(FileNotFoundError):
+        os.remove(_combiner_payload_path(starless, _STACKED_RBF_KIND))
+    cubes_dir = _ensemble_cubes_dir(starless=starless)
+    man_path = os.path.join(cubes_dir, "viz_index.json")
+    try:
+        with open(man_path) as handle:
+            man = json.load(handle)
+    except (OSError, ValueError):
+        return
+    prefix = _combiner_cube_prefix(_STACKED_RBF_KIND)
+    for path in glob.glob(os.path.join(cubes_dir, f"{prefix}_*.npy")):
+        with contextlib.suppress(FileNotFoundError):
+            os.remove(path)
+    man[f"has_combiner_{_STACKED_RBF_KIND}"] = False
+    _atomic_json(man_path, man)
+
+
 def job_combiner_fit(cap, *, num_images: int, n_kernels: int = 12,
                      min_usage: float | None = None,
                      starless: bool = False,
@@ -1190,7 +1259,17 @@ def job_combiner_fit(cap, *, num_images: int, n_kernels: int = 12,
     :func:`_reevaluate_from_cached_cubes`) — no model re-inference, since only the
     fusion changed. So the combiner's test PSNR + the ``|combiner − HR|``
     diagnostic are current the moment the fit finishes."""
-    from euclid_polish.eval.combiner import BAND_NAMES, FitBufferAccumulator, fit_combiner, save_combiner
+    from euclid_polish.eval.combiner import (
+        BAND_NAMES,
+        DEFAULT_N_KERNELS,
+        DEFAULT_STATS_RBF_N_KERNELS,
+        FitBufferAccumulator,
+        combiner_artifact_fingerprint,
+        fit_combiner,
+        fit_stacked_combiner,
+        member_weight_diagnostics,
+        save_combiner,
+    )
     from euclid_polish.eval.ensemble_cube_cache import load_cached_member_stack
 
     base = ensemble_dir()
@@ -1261,28 +1340,80 @@ def job_combiner_fit(cap, *, num_images: int, n_kernels: int = 12,
     acc = None  # release per-field lists after the bounded concatenated buffers exist
     if not any(np.asarray(X).size for X, _ in buffers.values()):
         raise RuntimeError("no validate pixels collected — check the records.")
-    if model_kind in {_STATS_RBF_KIND, _MINMAX_RBF_KIND}:
-        from euclid_polish.eval.combiner import DEFAULT_N_KERNELS, DEFAULT_STATS_RBF_N_KERNELS
-        if int(n_kernels) == DEFAULT_N_KERNELS:
-            n_kernels = DEFAULT_STATS_RBF_N_KERNELS
-    # Always retain the complete fitted gate.  Member weights are diagnostics,
-    # not an automatic removal criterion.
-    comb = fit_combiner(buffers, labels, n_kernels=int(n_kernels),
-                        min_usage=0.0, model_kind=model_kind)
-    from euclid_polish.eval.combiner import member_weight_diagnostics
-    peaks, integrals = member_weight_diagnostics(comb, buffers)
-    comb.member_weight_peaks = peaks
-    comb.member_weight_integrals = integrals
+    if (model_kind in {_STATS_RBF_KIND, _MINMAX_RBF_KIND, _STACKED_RBF_KIND}
+            and int(n_kernels) == DEFAULT_N_KERNELS):
+        n_kernels = DEFAULT_STATS_RBF_N_KERNELS
+    regime_dir = _ensemble_regime_dir(starless)
+    fitted: dict[str, object] = {}
+    if model_kind == _STACKED_RBF_KIND:
+        # The stacked artifact is defined by these exact two parent fits. Fit
+        # all three from the same full validate buffers in one deterministic job.
+        for parent_kind in (_STATS_RBF_KIND, _MINMAX_RBF_KIND):
+            parent = fit_combiner(
+                buffers, labels, n_kernels=int(n_kernels), min_usage=0.0,
+                model_kind=parent_kind)
+            peaks, integrals = member_weight_diagnostics(parent, buffers)
+            parent.member_weight_peaks = peaks
+            parent.member_weight_integrals = integrals
+            parent.records_fp = fp
+            parent.starfull = not bool(starless)
+            parent.fit_meta = {
+                "subset": "validate", "num_images": int(num_images),
+                "model_kind": parent.kind, "pruning": "disabled",
+                "fitted_for_stack": True,
+                "weight_diagnostics": "validation_peak_and_integral_per_band",
+            }
+            save_combiner(parent, regime_dir,
+                          artifact_dir=_combiner_artifact_dir(parent_kind))
+            fitted[parent_kind] = parent
+        comb = fit_stacked_combiner(
+            buffers, labels,
+            stats_combiner=fitted[_STATS_RBF_KIND],
+            minmax_combiner=fitted[_MINMAX_RBF_KIND],
+            n_kernels=int(n_kernels))
+        comb.records_fp = fp
+        comb.starfull = not bool(starless)
+        comb.parent_fingerprints = {
+            kind: combiner_artifact_fingerprint(regime_dir,
+                                                 _combiner_artifact_dir(kind))
+            for kind in (_STATS_RBF_KIND, _MINMAX_RBF_KIND)
+        }
+        peaks, integrals = member_weight_diagnostics(comb, buffers)
+        comb.member_weight_peaks = peaks
+        comb.member_weight_integrals = integrals
+        comb.fit_meta = {
+            "subset": "validate", "num_images": int(num_images),
+            "model_kind": comb.kind, "pruning": "disabled",
+            "parents_fitted_together": True,
+            "experts": [_STATS_RBF_KIND, _MINMAX_RBF_KIND],
+            "features": ["expert_midpoint", "signed_expert_disagreement"],
+            "weight_diagnostics": "validation_peak_and_integral_per_expert_band",
+        }
+        save_combiner(comb, regime_dir,
+                      artifact_dir=_combiner_artifact_dir(model_kind))
+        fitted[model_kind] = comb
+    else:
+        # Always retain the complete fitted gate. Member weights are
+        # diagnostics, not an automatic removal criterion.
+        comb = fit_combiner(buffers, labels, n_kernels=int(n_kernels),
+                            min_usage=0.0, model_kind=model_kind)
+        peaks, integrals = member_weight_diagnostics(comb, buffers)
+        comb.member_weight_peaks = peaks
+        comb.member_weight_integrals = integrals
+        comb.records_fp = fp
+        comb.starfull = not bool(starless)
+        comb.fit_meta = {"subset": "validate", "num_images": int(num_images),
+                         "model_kind": comb.kind,
+                         "pruning": "disabled",
+                         "weight_diagnostics": "validation_peak_and_integral_per_band"}
+        save_combiner(comb, regime_dir,
+                      artifact_dir=_combiner_artifact_dir(model_kind))
+        fitted[model_kind] = comb
+        if model_kind in {_STATS_RBF_KIND, _MINMAX_RBF_KIND}:
+            _invalidate_stacked_combiner(starless)
     del buffers
-    comb.records_fp = fp
-    comb.starfull = not bool(starless)
-    comb.fit_meta = {"subset": "validate", "num_images": int(num_images),
-                     "model_kind": comb.kind,
-                     "pruning": "disabled",
-                     "weight_diagnostics": "validation_peak_and_integral_per_band"}
-    save_combiner(comb, _ensemble_regime_dir(starless),
-                  artifact_dir=_combiner_artifact_dir(model_kind))
-    compute_combiner_payload(starless, model_kind=model_kind)
+    for kind in fitted:
+        compute_combiner_payload(starless, model_kind=kind)
 
     # Score the new combiner on the TEST set automatically: apply it to the
     # cached test member cubes and re-derive the evaluation — no re-inference
@@ -1291,9 +1422,11 @@ def job_combiner_fit(cap, *, num_images: int, n_kernels: int = 12,
     test_summary = None
     if score_test:
         cap.tick(0, 1, "scoring combiner on the test set")
-        # This fit only changes one artifact. Refresh that model's cached cubes,
-        # rather than needlessly re-applying every coexisting combiner per pixel.
-        if _apply_combiner_to_test_cubes(starless, model_kind):
+        # The stack job refreshes both parents and then the derived output from
+        # the same cached member cubes; an ordinary fit refreshes only itself.
+        applied = [_apply_combiner_to_test_cubes(starless, kind)
+                   for kind in fitted]
+        if all(applied):
             prev = (_read_eval_summary(starless) or {}).get("eval_identity") or {}
             test_summary = _reevaluate_from_cached_cubes(
                 starless, num_images=prev.get("num_images"))
@@ -1301,7 +1434,9 @@ def job_combiner_fit(cap, *, num_images: int, n_kernels: int = 12,
 
     result = {"n_members": len(labels), "n_kernels": int(n_kernels),
               "model_kind": comb.kind,
+              "fitted_models": list(fitted),
               "min_usage": float(comb.min_usage),
+              "surviving": comb.surviving_members(),
               "member_weight_peaks": comb.member_weight_peaks,
               "member_weight_integrals": comb.member_weight_integrals,
               "val_l1": comb.val_l1,
@@ -1342,11 +1477,12 @@ def compute_combiner_payload(starless: bool,
     eff = {}
     feature_grid = {}
     for b in comb.bands:
-        ew = comb.effective_weights(b)
-        eff[b] = {"brightness_asinh": _jsonable(ew["brightness_asinh"]),
-                  "brightness_e": _jsonable(ew["brightness_e"]),
-                  "jacobian": _jsonable(ew["jacobian"])}
-        if comb.kind in {_STATS_RBF_KIND, _MINMAX_RBF_KIND}:
+        if comb.kind != _STACKED_RBF_KIND:
+            ew = comb.effective_weights(b)
+            eff[b] = {"brightness_asinh": _jsonable(ew["brightness_asinh"]),
+                      "brightness_e": _jsonable(ew["brightness_e"]),
+                      "jacobian": _jsonable(ew["jacobian"])}
+        if comb.kind in {_STATS_RBF_KIND, _MINMAX_RBF_KIND, _STACKED_RBF_KIND}:
             grid = comb.bands[b].weight_surface()
             feature_grid[b] = {
                 "mean_asinh": _jsonable(grid["mean_asinh"]),
@@ -1360,22 +1496,33 @@ def compute_combiner_payload(starless: bool,
                 "y_is_log": bool(grid.get("y_is_log", True)),
                 "weights": np.round(np.asarray(grid["weights"], float), 6).tolist(),
             }
+    weight_labels = list(comb.weight_labels)
+    if comb.kind == _STACKED_RBF_KIND:
+        expert_colors = ["#2a9d8f", "#d47f34"]
+        member_rows = [{"label": label, "role": "expert",
+                        "expert_color": expert_colors[i]}
+                       for i, label in enumerate(weight_labels)]
+    else:
+        member_rows = [{"label": str(lbl), **meta} for lbl, meta in
+                       zip(comb.member_labels,
+                           _member_meta_from_labels(comb.member_labels),
+                           strict=True)]
     payload = {
         "available": True, "stale": bool(stale), "kind": comb.kind,
         "regime": _regime_slug(starless),
-        "member_labels": list(comb.member_labels),
-        "members": [{"label": str(lbl), **meta} for lbl, meta in
-                    zip(comb.member_labels,
-                        _member_meta_from_labels(comb.member_labels),
-                        strict=True)],
+        "member_labels": weight_labels,
+        "source_member_labels": list(comb.member_labels),
+        "members": member_rows,
         "n_kernels": int(comb.n_kernels),
         "min_usage": float(comb.min_usage),
         "val_l1": comb.val_l1, "band_names": list(comb.band_names),
         "eff_weights": eff,
         "member_weight_peaks": comb.member_weight_peaks,
         "member_weight_integrals": comb.member_weight_integrals,
+        "surviving": comb.surviving_members(),
         "feature_grid": feature_grid,
         "hr_weights": hr_weights,
+        "fit_meta": comb.fit_meta,
     }
     with open(payload_path, "w") as f:
         json.dump(payload, f)
@@ -1512,7 +1659,7 @@ def compute_combined_combiner_payload(starless: bool) -> dict:
         return {"available": False, "stale": False,
                 "reason": "no combined combiner fitted for this target",
                 "member_labels": [], "members": [], "band_names": [],
-                "eff_weights": {},
+                "eff_weights": {}, "surviving": {},
                 "source_starless": [],
                 "hr_weights": {"available": False, "bands": {},
                                 "member_labels": [], "n_fields": 0,
@@ -1539,6 +1686,7 @@ def compute_combined_combiner_payload(starless: bool) -> dict:
                "min_usage": comb.min_usage, "val_l1": comb.val_l1,
                "band_names": list(comb.band_names),
                "eff_weights": eff,
+               "surviving": comb.surviving_members(),
                "fit_meta": comb.fit_meta,
                "hr_weights": hr_weights}
     _atomic_json(payload_path, payload)
@@ -2128,17 +2276,18 @@ def _apply_all_combiners_to_test_cubes(starless: bool) -> bool:
     return any(applied)
 
 
-def _reconcile_combined_combiner_on_archive(starless: bool, member_nn: str) -> bool:
-    """Preserve a combined model only when the archived column was pruned."""
+def _reconcile_combined_combiner_on_archives(starless: bool,
+                                             member_nns: list[str]) -> bool:
+    """Preserve a combined model only when all archived columns were pruned."""
     from euclid_polish.eval.combiner import load_combiner, save_combiner
     regime_dir = _ensemble_regime_dir(starless)
     comb = load_combiner(regime_dir, artifact_dir=_combined_artifact_dir())
     if comb is None:
         return False
     labels = list(comb.member_labels)
-    index = next((i for i, label in enumerate(labels)
-                  if str(label).split("·")[0] == str(member_nn)), None)
-    if index is None or not comb.member_pruned(index):
+    indexes = [i for i, label in enumerate(labels)
+               if str(label).split("·")[0] in set(member_nns)]
+    if not indexes or any(not comb.member_pruned(index) for index in indexes):
         shutil.rmtree(os.path.join(regime_dir, _combined_artifact_dir()), ignore_errors=True)
         with contextlib.suppress(FileNotFoundError):
             os.remove(_combined_payload_path(starless))
@@ -2150,7 +2299,8 @@ def _reconcile_combined_combiner_on_archive(starless: bool, member_nn: str) -> b
             man["combined_member_labels"] = []
             _atomic_json(os.path.join(cubes_dir, "viz_index.json"), man)
         return False
-    comb = comb.without_member(index)
+    for index in reversed(indexes):
+        comb = comb.without_member(index)
     save_combiner(comb, regime_dir,
                   artifact_dir=_combined_artifact_dir())
     cubes_dir = _ensemble_cubes_dir(starless=starless)
@@ -2162,18 +2312,15 @@ def _reconcile_combined_combiner_on_archive(starless: bool, member_nn: str) -> b
     return True
 
 
-def _reconcile_combiner_on_archive(regime_dir: str, starless: bool,
-                                   member_nn: str,
+def _reconcile_combiner_on_archives(regime_dir: str, starless: bool,
+                                   member_nns: list[str],
                                    model_kind: str = _RBF_KIND) -> bool:
-    """Keep the regime's combiner across an archive when it doesn't use the
-    departing member; otherwise drop it.
+    """Keep the regime's combiner when none of the departed members were used.
 
-    If the archived member is PRUNED by the combiner (gate weight 0 in every
-    band), the combiner is reindexed to drop that column and re-saved — the fused
-    output is unchanged, so it stays valid (and its cached output cubes too).
-    If the member CONTRIBUTES, the combiner is stale for the smaller ensemble and
-    is deleted (refit when wanted). Returns ``True`` iff the combiner was kept.
-    A missing combiner returns ``False`` (nothing to keep)."""
+    Every queued archive is handled as one batch.  This matters when several
+    pruned members were archived before the next evaluation: an intermediate
+    combiner label set would not match the final active ensemble.
+    """
     from euclid_polish.eval.combiner import load_combiner, save_combiner
     model_kind = _normalize_combiner_kind(model_kind)
     artifact_dir = _combiner_artifact_dir(model_kind)
@@ -2187,17 +2334,48 @@ def _reconcile_combiner_on_archive(regime_dir: str, starless: bool,
             os.remove(_combiner_payload_path(starless, model_kind))
         return False
 
-    pos = next((i for i, lbl in enumerate(comb.member_labels)
-                if str(lbl).split("·")[0] == member_nn), None)
-    if pos is not None:
-        if not comb.member_pruned(pos):
-            return _drop()                        # member is used → stale
-        comb = comb.without_member(pos)           # reindex out the pruned column
-    # Keep only if the (reindexed) combiner now matches the active ensemble.
+    positions = [i for i, lbl in enumerate(comb.member_labels)
+                 if str(lbl).split("·")[0] in set(member_nns)]
+    if any(not comb.member_pruned(pos) for pos in positions):
+        return _drop()                            # a departed member was used
+    for pos in reversed(positions):
+        comb = comb.without_member(pos)
+    # Keep only if the fully reindexed combiner matches the active ensemble.
     if list(comb.member_labels) != _regime_labels(ensemble_dir(), starless):
         return _drop()
     save_combiner(comb, regime_dir, artifact_dir=artifact_dir)
     return True
+
+
+def _rebuild_pending_archive_caches(starless: bool) -> bool:
+    """Apply queued archives to cached cubes just before the next evaluation.
+
+    Archiving is intentionally cheap: it only records the stale member.  The
+    next evaluation performs this cache-only reconciliation once, batching all
+    archives made since the prior evaluation.  Returns whether the test bucket
+    was rebuilt and can therefore provide a fresh evaluation without inference.
+    """
+    names = _pending_archived_members(starless)
+    member_nns = [name.split("_", 1)[1] for name in names]
+    keep_comb = {
+        kind: _reconcile_combiner_on_archives(
+            _ensemble_regime_dir(starless), starless, member_nns, kind)
+        for kind in _ORDINARY_COMBINER_KINDS
+    }
+    _reconcile_combined_combiner_on_archives(starless, member_nns)
+    rebuilt_test = False
+    for member_nn in member_nns:
+        rebuilt_test = (_rebuild_bucket_dropping_member(
+            _ensemble_cubes_dir(starless=starless), member_nn,
+            keep_combiner=keep_comb[_RBF_KIND],
+            keep_stats_rbf_combiner=keep_comb[_STATS_RBF_KIND],
+            keep_combiners=keep_comb) or rebuilt_test)
+        _rebuild_bucket_dropping_member(
+            _ensemble_cubes_dir("validate", starless=starless), member_nn,
+            keep_combiner=keep_comb[_RBF_KIND],
+            keep_stats_rbf_combiner=keep_comb[_STATS_RBF_KIND],
+            keep_combiners=keep_comb)
+    return rebuilt_test
 
 
 def job_ensemble_evaluate(cap, *, num_images: int,
@@ -2236,6 +2414,25 @@ def job_ensemble_evaluate(cap, *, num_images: int,
         raise RuntimeError(
             f"missing local {sub} record shard(s): {names}. "
             "Use Sky → Sync records from FASRC; it pulls test + validate together.")
+
+    pending_archives = _pending_archived_members(starless)
+    if pending_archives:
+        cap.tick(0, 1, "rebuilding stale ensemble from cached cubes (no re-inference)")
+        rebuilt_test = _rebuild_pending_archive_caches(starless)
+        if rebuilt_test:
+            cached_summary = _reevaluate_from_cached_cubes(
+                starless, num_images=int(num_images))
+            if cached_summary is not None:
+                _clear_archive_stale(starless)
+                cap.tick(1, 1, "rebuilt stale ensemble from cached cubes")
+                cached_summary["recomputed_from_archives"] = list(pending_archives)
+                print(f"[ensemble evaluate] rebuilt {_regime_slug(starless)} "
+                      f"after archiving {', '.join(pending_archives)} from cached cubes")
+                return cached_summary
+        # The cache might predate the archived member or be incomplete. Keep
+        # the marker through the normal evaluation, then clear it only after a
+        # new complete summary is written below.
+
     viz_cap = min(int(num_images), ENSEMBLE_VIZ_FIELDS_MAX)
     out_dir = _ensemble_regime_dir(starless)
 
@@ -2425,6 +2622,8 @@ def job_ensemble_evaluate(cap, *, num_images: int,
     out["reused"] = False
     with open(os.path.join(out_dir, "eval_summary.json"), "w") as f:
         json.dump(out, f, indent=2)
+    if pending_archives:
+        _clear_archive_stale(starless)
     print(json.dumps(out, indent=2))
     out["viz_fields"] = len(saved)
     return out
@@ -2634,20 +2833,17 @@ def _delete_remote_member(name: str) -> str:
 
 
 def job_archive_member(cap, *, name: str) -> dict:
-    """Retire one ensemble member: zip → tracking, tombstone, delete, re-derive.
+    """Retire one ensemble member: zip → tracking, tombstone, delete, mark stale.
 
     The zip lands in the active tracking campaign's ``models/``; the registry
     gets a permanent tombstone (so a FASRC mirror pulling the dir back never
     re-activates it); the local member dir is deleted; the FASRC-side copy is
     deleted too (best-effort, needs the SSH session).
 
-    Crucially it does NOT force a full re-evaluation: the remaining members'
-    per-member cubes are still valid inference, so the position-keyed cube
-    buckets are surgically rebuilt for the smaller set and the evaluation is
-    re-derived from them (see :func:`_rebuild_bucket_dropping_member` /
-    :func:`_reevaluate_from_cached_cubes`) — cheap, no model re-run. A combiner
-    that had PRUNED the departing member stays valid (reindexed in place); one
-    that actually used it is dropped (refit when wanted).
+    The archive path deliberately does not touch cached cubes.  Instead it
+    records the affected regime as stale; its next evaluation batches any
+    pending archives, rebuilds from the cached member cubes, and re-derives the
+    summary without model inference when that cache is complete.
     """
     if not re.fullmatch(r"member_\d{2,}", name or ""):
         raise RuntimeError(f"invalid member name {name!r}")
@@ -2661,6 +2857,7 @@ def job_archive_member(cap, *, name: str) -> dict:
         raise RuntimeError(
             "no active tracking campaign — start one on the /tracking page "
             "so the archived member has somewhere to go.")
+    archived_starless = member_is_starless(src)
     cap.tick(0, 3, f"zipping {name}")
     try:
         meta = store.archive_model_zip(
@@ -2673,63 +2870,22 @@ def job_archive_member(cap, *, name: str) -> dict:
     ensemble_registry.archive_member_entry(
         base, name, zip_path=os.path.join("models", meta["name"]),
         commit=commit)
-    cap.tick(2, 4, "rebuilding ensemble from cached cubes (no re-inference)")
+    _mark_archive_stale(archived_starless, name)
+    cap.tick(2, 3, "marked ensemble stale — rebuild queued for next evaluation")
     shutil.rmtree(src, ignore_errors=True)
-    # Reuse the cached per-member inference instead of forcing a full
-    # re-evaluation: surgically drop this member from every position-keyed cube
-    # bucket (test + validate, both regimes) and rebuild the aggregates. The
-    # regime that actually held the member then has its evaluation RE-DERIVED
-    # from those cubes — ensemble/member PSNR, diagnostics, back-trace samples —
-    # with no model re-run. The combiner was fit on the old set, so it's dropped.
-    member_nn = name.split("_", 1)[1]
-    # Both RBF gates can survive when they pruned the departing member.
-    keep_comb = {
-        sl: {
-            kind: _reconcile_combiner_on_archive(
-                _ensemble_regime_dir(sl), sl, member_nn, kind)
-            for kind in _ORDINARY_COMBINER_KINDS
-        }
-        for sl in (True, False)
-    }
-    keep_combined = {sl: _reconcile_combined_combiner_on_archive(sl, member_nn)
-                     for sl in (True, False)}
-    affected: set[bool] = set()
-    for sl in (True, False):
-        held = _rebuild_bucket_dropping_member(
-            _ensemble_cubes_dir(starless=sl), member_nn,
-            keep_combiner=keep_comb[sl][_RBF_KIND],
-            keep_stats_rbf_combiner=keep_comb[sl][_STATS_RBF_KIND],
-            keep_combiners=keep_comb[sl])
-        _rebuild_bucket_dropping_member(
-            _ensemble_cubes_dir("validate", starless=sl), member_nn,
-            keep_combiner=keep_comb[sl][_RBF_KIND],
-            keep_stats_rbf_combiner=keep_comb[sl][_STATS_RBF_KIND],
-            keep_combiners=keep_comb[sl])
-        if held:
-            affected.add(sl)
-    for sl in affected:
-        prev = (_read_eval_summary(sl) or {}).get("eval_identity") or {}
-        _reevaluate_from_cached_cubes(sl, num_images=prev.get("num_images"))
-    cap.tick(3, 4, "deleting FASRC copy")
+    cap.tick(3, 3, "deleting FASRC copy")
     remote_status = _delete_remote_member(name)
-    comb_note = ("max RBF combiner kept (member was pruned)"
-                 if any(v[_RBF_KIND] for v in keep_comb.values())
-                 else "max RBF combiner dropped")
-    stats_note = ("mean+std RBF kept (member was pruned)"
-                  if any(v[_STATS_RBF_KIND] for v in keep_comb.values())
-                  else "mean+std RBF dropped")
-    combined_note = ("combined combiner kept (member was pruned)"
-                     if any(keep_combined.values()) else "combined combiner dropped")
+    regime = _regime_slug(archived_starless)
     store.append_log(
         f"Archived ensemble member `{name}` → `models/{meta['name']}` "
         f"({meta['size_bytes'] / 1e6:.1f} MB). Local member dir deleted; "
-        f"ensemble re-derived from cached cubes (no re-inference); "
-        f"{comb_note}; {stats_note}; {combined_note}. FASRC copy: {remote_status}")
-    print(f"  ✓ {name} → tracking {meta['name']}; ensemble re-derived from "
-          f"cached cubes (no re-inference); {comb_note}; {stats_note}; {combined_note}; "
+        f"{regime} evaluation marked stale; cached cubes will rebuild on the next "
+        f"evaluation (no re-inference). FASRC copy: {remote_status}")
+    print(f"  ✓ {name} → tracking {meta['name']}; {regime} evaluation marked "
+          f"stale (cached-cube rebuild queued for next evaluation); "
           f"FASRC copy: {remote_status}")
     return {"zip": meta["name"], "member": name,
-            "remote": remote_status}
+            "remote": remote_status, "stale_regime": regime}
 
 
 def remote_ensemble_dir() -> str:

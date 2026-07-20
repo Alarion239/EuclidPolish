@@ -1,6 +1,6 @@
 /* Per-route error boundary: a runtime error in one page shows a contained
-   message (with the classic-page escape hatch) instead of blanking the whole
-   console. Reset when the route changes so navigating away recovers. */
+   message instead of blanking the whole console. Reset when the route changes
+   so navigating away recovers. */
 import { Component, type ReactNode } from "react";
 
 type Props = { routeKey: string; children: ReactNode };
@@ -24,8 +24,7 @@ export class ErrorBoundary extends Component<Props, State> {
               <div className="eyebrow">console · error</div>
               <h1 className="page__title">This page hit a snag</h1>
               <div className="page__sub">
-                It rendered an unexpected value. Try another tab, or use the{" "}
-                <a href={this.props.routeKey}>classic page</a>.
+                It rendered an unexpected value. Try another tab, or reload this page.
               </div>
             </div>
           </header>

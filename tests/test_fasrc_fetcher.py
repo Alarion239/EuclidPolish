@@ -271,22 +271,23 @@ class TestConnectionGate:
         monkeypatch.setattr(STATE, "ssh", None)
         return app
 
-    def test_root_redirects_when_disconnected(self, app_with_no_ssh):
+    def test_root_serves_react_console_when_disconnected(self, app_with_no_ssh):
         client = app_with_no_ssh.test_client()
         r = client.get("/", follow_redirects=False)
-        assert r.status_code == 302
-        assert "/connection-error" in r.headers["Location"]
+        assert r.status_code == 200
+        assert b'id="root"' in r.data
 
-    def test_catalog_redirects_when_disconnected(self, app_with_no_ssh):
+    def test_catalog_serves_react_console_when_disconnected(self, app_with_no_ssh):
         client = app_with_no_ssh.test_client()
         r = client.get("/catalog", follow_redirects=False)
-        assert r.status_code == 302
+        assert r.status_code == 200
+        assert b'id="root"' in r.data
 
     def test_connection_error_page_reachable(self, app_with_no_ssh):
         client = app_with_no_ssh.test_client()
         r = client.get("/connection-error")
         assert r.status_code == 200
-        assert b"FASRC connection required" in r.data
+        assert b'id="root"' in r.data
 
     def test_static_assets_reachable(self, app_with_no_ssh):
         client = app_with_no_ssh.test_client()

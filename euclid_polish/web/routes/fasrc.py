@@ -294,7 +294,7 @@ def register(app):
         if not STATE.ssh or not STATE.ssh.is_connected():
             return jsonify({"ok": False, "error": "not connected"}), 400
         rc, out, err = STATE.ssh.run(
-            f"squeue -h -u $USER --format='{fasrc_jobs.SQUEUE_FMT}'",
+            f"squeue -r -h -u $USER --format='{fasrc_jobs.SQUEUE_FMT}'",
             timeout=15,
         )
         if rc != 0:
@@ -407,13 +407,20 @@ def register(app):
         form2["partition"] = step.defaults.partition
         if step.fixed_cpus is not None:
             form2["n_cpus"] = str(step.fixed_cpus)
+        if step.fixed_gpus is not None:
+            form2["n_gpus"] = str(step.fixed_gpus)
         resources = StepResources.from_form_strict(form2)
         if step.fixed_cpus is not None:
             resources.n_cpus = int(step.fixed_cpus)
+        if step.fixed_gpus is not None:
+            resources.n_gpus = int(step.fixed_gpus)
         label = _spec_label(kind, step_ref, form2)
         built = step.build_sbatch_body(
             params=form2, resources=resources, cfg=cfg, label=label)
-        params_for_db = dict(form2)
+        # Array steps resolve member names/base seeds while rendering. Persist
+        # those prepared values so monitoring can map task indices to members
+        # and a queued/retried submission remains reproducible.
+        params_for_db = dict(built.get("params", form2))
         params_for_db.update(resources.to_dict())
         params_for_db["step_id"] = step_ref
         return fasrc_jobs.submit_sbatch_script(
@@ -556,6 +563,7 @@ def register(app):
                 "label":       step.label,
                 "needs_gpu":   step.needs_gpu,
                 "fixed_cpus":  step.fixed_cpus,
+                "fixed_gpus":  step.fixed_gpus,
                 "defaults":    step.defaults.to_dict(),
             })
 
@@ -690,6 +698,8 @@ def register(app):
         # value is forced again below regardless of what the form sent.
         if step.fixed_cpus is not None:
             form["n_cpus"] = str(step.fixed_cpus)
+        if step.fixed_gpus is not None:
+            form["n_gpus"] = str(step.fixed_gpus)
 
         try:
             resources = StepResources.from_form_strict(form)
@@ -701,6 +711,8 @@ def register(app):
         # for a single-threaded job.
         if step.fixed_cpus is not None:
             resources.n_cpus = int(step.fixed_cpus)
+        if step.fixed_gpus is not None:
+            resources.n_gpus = int(step.fixed_gpus)
 
         # Fill universal job-config values. Most steps always inherit /config
         # (including computed/locked values); React Train members deliberately
@@ -838,7 +850,7 @@ def register(app):
         stale = False
         try:
             rc_q, out_q, _err_q = STATE.ssh.run(
-                f"squeue -h -u $USER --format='{fasrc_jobs.SQUEUE_FMT}'",
+                f"squeue -r -h -u $USER --format='{fasrc_jobs.SQUEUE_FMT}'",
                 timeout=15,
             )
         except (subprocess.TimeoutExpired, SSHError):
@@ -877,29 +889,81 @@ def register(app):
         # only persists state + started_at, so these have to be merged
         # in at the response layer.
         jid = str(current_row.get("jobid", "")).strip()
-        live = next((r for r in squeue_rows if r.get("jobid") == jid), None)
+        live_rows = fasrc_jobs.array_squeue_rows(jid, squeue_rows)
+        live = next((r for r in live_rows
+                     if r.get("state") == "RUNNING"), None)
+        live = live or next(iter(live_rows), None)
         if live is not None:
             for k in ("start_time", "reason", "nodes", "time", "time_limit"):
                 v = live.get(k)
                 if v is not None and v != "":
                     current_row[k] = v
 
-        # Fold the live event stream into a JobStatus.
+        # Fold the live event stream into a JobStatus. Array submissions have
+        # one Reporter stream per model; expose them separately rather than
+        # inventing a misleading aggregate training curve.
         fetcher = JobStatusFetcher(ssh=STATE.ssh)
-        status  = fetcher.fetch(events_path=current_row.get("events_path"))
+        try:
+            stored_params = json.loads(current_row.get("params_json") or "{}")
+        except (TypeError, json.JSONDecodeError):
+            stored_params = {}
+        array_count = int(stored_params.get("array_count", 1) or 1)
+        array_tasks = None
+        if array_count > 1:
+            names_raw = (stored_params.get("members")
+                         if stored_params.get("mode") == "continue"
+                         else stored_params.get("member_names"))
+            member_names = [n.strip() for n in str(names_raw or "").split(",")]
+            event_paths = [fasrc_jobs.expand_array_path(
+                current_row.get("events_path"), jid, i)
+                for i in range(array_count)]
+            task_statuses = fetcher.fetch_many(event_paths)
+            child_by_index = {}
+            for row in live_rows:
+                child_id = str(row.get("jobid", ""))
+                suffix = child_id.removeprefix(jid + "_")
+                if suffix.isdigit():
+                    child_by_index[int(suffix)] = row
+            array_tasks = []
+            for i, task_status in enumerate(task_statuses):
+                child = child_by_index.get(i, {})
+                completed = bool(
+                    task_status.step and task_status.step.total > 0
+                    and task_status.step.current >= task_status.step.total
+                )
+                array_tasks.append({
+                    "index": i,
+                    "member": member_names[i] if i < len(member_names) else f"task {i}",
+                    "jobid": f"{jid}_{i}",
+                    "state": child.get("state") or
+                             ("COMPLETED" if completed else "NOT_IN_QUEUE"),
+                    "reason": child.get("reason"),
+                    "nodes": child.get("nodes"),
+                    "time": child.get("time"),
+                    "status": task_status.to_dict(),
+                })
+            status = None
+        else:
+            status = fetcher.fetch(
+                events_path=current_row.get("events_path")).to_dict()
         # Jobstats is richer than the local event sampler, but the endpoint
         # polls frequently.  The helper applies a 30-second per-job TTL and
         # only gets called for a job that is actually running.
         live_accounting = (
             fasrc_jobs.fetch_live_jobstats(STATE.ssh, jid)
-            if current_row.get("state") == "RUNNING" else None
+            if current_row.get("state") == "RUNNING" and array_count <= 1
+            else None
         )
         return jsonify({
             "ok":      True,
             "stale":   False,
             "current": {
                 "job":    current_row,
-                "status": status.to_dict(),
+                "status": status,
+                "array": ({"count": array_count,
+                           "max_parallel": stored_params.get("array_max_parallel"),
+                           "tasks": array_tasks}
+                          if array_tasks is not None else None),
                 "accounting": live_accounting,
             },
             "queue":   queue_public,
@@ -919,13 +983,36 @@ def register(app):
         if not row:
             return jsonify({"ok": False, "error": "unknown jobid"}), 404
         fetcher = JobStatusFetcher(ssh=STATE.ssh)
-        status  = fetcher.fetch(events_path=row.get("events_path"))
+        try:
+            params = json.loads(row.get("params_json") or "{}")
+        except (TypeError, json.JSONDecodeError):
+            params = {}
+        array_count = int(params.get("array_count", 1) or 1)
+        array_tasks = None
+        if array_count > 1:
+            names_raw = (params.get("members") if params.get("mode") == "continue"
+                         else params.get("member_names"))
+            names = [n.strip() for n in str(names_raw or "").split(",")]
+            paths = [fasrc_jobs.expand_array_path(
+                row.get("events_path"), jobid, i) for i in range(array_count)]
+            statuses = fetcher.fetch_many(paths)
+            array_tasks = [{
+                "index": i,
+                "member": names[i] if i < len(names) else f"task {i}",
+                "jobid": f"{jobid}_{i}",
+                "status": task_status.to_dict(),
+            } for i, task_status in enumerate(statuses)]
+            status = None
+        else:
+            status = fetcher.fetch(events_path=row.get("events_path")).to_dict()
         return jsonify({
             "ok":          True,
             "jobid":       jobid,
             "state":       row.get("state"),
             "events_path": row.get("events_path"),
-            "status":      status.to_dict(),
+            "status":      status,
+            "array":       ({"count": array_count, "tasks": array_tasks}
+                            if array_tasks is not None else None),
         })
 
     # ---- past-runs browser (Logs tab) ---------------------------------------
@@ -956,7 +1043,7 @@ def register(app):
         # (sbatch rejected, queue purged, etc.) stay PENDING. One
         # extra cheap squeue call per Logs-tab load is well worth it.
         rc_q, out_q, _err_q = STATE.ssh.run(
-            f"squeue -h -u $USER --format='{fasrc_jobs.SQUEUE_FMT}'",
+            f"squeue -r -h -u $USER --format='{fasrc_jobs.SQUEUE_FMT}'",
             timeout=15,
         )
         if rc_q == 0:
@@ -1406,7 +1493,7 @@ def register(app):
 
         # 1. Identify the running job. Trust live squeue > sqlite.
         rc, sq_out, _err = STATE.ssh.run(
-            f"squeue -h -u $USER --format='{fasrc_jobs.SQUEUE_FMT}'",
+            f"squeue -r -h -u $USER --format='{fasrc_jobs.SQUEUE_FMT}'",
             timeout=10,
         )
         # Drive the local submit queue off this poll too — this endpoint is
@@ -1426,16 +1513,31 @@ def register(app):
                             "queue_rows": fasrc_jobs.parse_squeue(sq_out)
                                           if rc == 0 else []})
 
-        # Prefer a row whose jobid matches one we submitted from this UI.
-        known_ids = {r["jobid"] for r in fasrc_jobs.DB.list_recent(20)}
-        live = next((r for r in running_rows if r["jobid"] in known_ids),
-                    running_rows[0])
-        jobid  = live["jobid"]
+        # Prefer a row belonging to a submission from this UI. With ``squeue
+        # -r`` an array appears as parent_index rows while sqlite stores the
+        # numeric parent id, so map the selected live task back to its parent.
+        known_ids = [r["jobid"] for r in fasrc_jobs.DB.list_recent(20)]
+        live = next((r for r in running_rows
+                     if any(r["jobid"] == parent
+                            or r["jobid"].startswith(parent + "_")
+                            for parent in known_ids)), running_rows[0])
+        live_jobid = live["jobid"]
+        jobid = next((parent for parent in known_ids
+                      if live_jobid == parent
+                      or live_jobid.startswith(parent + "_")), live_jobid)
+        task_suffix = live_jobid.removeprefix(jobid + "_")
+        task_index = int(task_suffix) if task_suffix.isdigit() else None
         stored = fasrc_jobs.DB.get(jobid)
         log_path = (stored or {}).get("log_path") \
                    or f"{cfg.repo_path}/logs/jobs/{live['name']}.out"
         err_path = (stored or {}).get("err_path") \
                    or log_path.replace(".out", ".err")
+        events_path = (stored or {}).get("events_path")
+        if task_index is not None:
+            log_path = fasrc_jobs.expand_array_path(log_path, jobid, task_index)
+            err_path = fasrc_jobs.expand_array_path(err_path, jobid, task_index)
+            events_path = fasrc_jobs.expand_array_path(
+                events_path, jobid, task_index)
         # 2. Fold the job's structured event stream into a JobStatus —
         # the SAME Reporter events the JobStatusCard polls. No log
         # scraping: stage, progress, per-evaluate metrics (loss/PSNR) and
@@ -1443,7 +1545,7 @@ def register(app):
         # writes via :class:`Reporter`.
         elapsed_s = fasrc_jobs.parse_slurm_time(live.get("time"))
         status = JobStatusFetcher(ssh=STATE.ssh).fetch(
-            events_path=(stored or {}).get("events_path"))
+            events_path=events_path)
 
         # Map JobStatus → the dashboard's existing field shape.
         progress = None
@@ -1491,6 +1593,7 @@ def register(app):
             "running":  True,
             "job": {
                 "jobid":           jobid,
+                "array_task_jobid": live_jobid if task_index is not None else None,
                 "name":            live.get("name", ""),
                 "state":           live.get("state", ""),
                 "elapsed_seconds": elapsed_s,

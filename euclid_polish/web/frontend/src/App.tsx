@@ -48,7 +48,7 @@ function Rail({ theme, onToggle }: { theme: Theme; onToggle: () => void }) {
         ))}
       </div>
       <div className="rail__foot">
-        <a href="/" className="rail__foot-link">← classic UI</a>
+        <span className="rail__foot-link rail__foot-link--current">React console</span>
         <ThemeToggle theme={theme} onToggle={onToggle} />
       </div>
     </nav>

@@ -74,8 +74,10 @@ def test_combiner_fit_api_preserves_explicit_zero_min_usage(client, monkeypatch)
     assert seen["min_usage"] == 0.0
 
 
-def test_combiner_json_404_before_fit(client):
-    assert client.get("/ensemble/combiner.json").status_code == 404
+def test_combiner_json_reports_unavailable_before_fit(client):
+    response = client.get("/ensemble/combiner.json")
+    assert response.status_code == 200
+    assert response.get_json()["available"] is False
 
 
 def test_combined_combiner_unavailable_payload_has_stable_collections(client):
@@ -231,7 +233,7 @@ def test_compute_evaluation_payload_includes_combiner(tmp_path, monkeypatch):
         hr = np.cumsum(r.normal(0, 1, (n, n)), axis=0).astype(np.float32) * 20
         members = np.stack([hr + r.normal(0, 3, (n, n)) for _ in range(M)])
         # target, mean, members, combiner, combined combiner, LR, record index
-        return hr, members.mean(0), members, hr, None, None, rec
+        return hr, members.mean(0), members, {"rbf_gate": hr}, None, None, rec
 
     fields = [_field(1, 0), _field(2, 1)]
     monkeypatch.setattr(ev, "_iter_cached_fields", lambda starless: iter(fields))
@@ -262,12 +264,12 @@ def test_viewer_advertises_combiner_tier_only_when_present(monkeypatch):
         vd, "_ensemble_manifest", lambda _starless: {**base, "has_combiner": True}
     )
     keys = [t["key"] for t in vd._ensemble_meta({})["tiers"]]
-    assert "comb" in keys
+    assert "comb_rbf" in keys
 
     monkeypatch.setattr(
         vd, "_ensemble_manifest", lambda _starless: {**base, "has_combiner": False}
     )
-    assert "comb" not in [t["key"] for t in vd._ensemble_meta({})["tiers"]]
+    assert "comb_rbf" not in [t["key"] for t in vd._ensemble_meta({})["tiers"]]
 
 
 # ---------------------------------------------------------------------------

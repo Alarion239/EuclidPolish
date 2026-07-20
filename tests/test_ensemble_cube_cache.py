@@ -151,6 +151,11 @@ def test_evaluate_reuses_cached_result_without_inference(tmp_path, monkeypatch):
     # Keep the (destructive) rmtree that the force path runs inside tmp.
     monkeypatch.setattr(ev, "_ensemble_cubes_dir",
                         lambda *a, **k: str(tmp_path / "regime" / "cubes"))
+    # Evaluation validates the selected record pair before consulting its
+    # result cache, so provide the two empty shard sentinels this unit test
+    # intentionally substitutes for real TFRecords.
+    (tmp_path / "dirty_test.tfrecord").touch()
+    (tmp_path / "hr_test.tfrecord").touch()
     fake_identity = {"records_fp": "rfp", "num_images": 100}
     monkeypatch.setattr(ev, "_eval_identity", lambda *a, **k: fake_identity)
     monkeypatch.setattr(ev, "_reusable_eval",

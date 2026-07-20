@@ -141,6 +141,19 @@ def test_reconcile_promotes_pending_to_running_when_in_squeue(db):
     assert row["started_at"] is not None
 
 
+def test_reconcile_array_children_keep_parent_running(db):
+    db.insert("700", label="array", params={"array_count": 3},
+              script_path="x", log_path="x", err_path="x")
+    rows = [
+        {"jobid": "700_0", "state": "COMPLETED", "time": "1:00"},
+        {"jobid": "700_1", "state": "RUNNING", "time": "0:30"},
+        {"jobid": "700_2", "state": "PENDING", "time": "0:00"},
+    ]
+    changes = fasrc_jobs.reconcile_with_squeue(rows, db=db)
+    assert changes == {"700": "RUNNING"}
+    assert db.get("700")["state"] == "RUNNING"
+
+
 def test_list_recent_orders_newest_first(db):
     for i in range(5):
         db.insert(f"job{i}", label=f"L{i}", params={"steps": 100 * i},

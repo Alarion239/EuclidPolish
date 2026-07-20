@@ -118,6 +118,17 @@ def register(app):
     # Universal FITS inspector — every image card across the UI links here.
     # =========================================================================
 
+    @app.route("/api/inspect")
+    def api_inspect_fits():
+        """Return the inspector payload consumed by the React page."""
+        path = _resolve_inspectable_fits(request.args.get("fits", ""))
+        return jsonify({
+            "file": _fits_file_info(path),
+            "hdus": _read_fits_header_rows(path),
+            "rel": _safe_relpath(path),
+            "allowed_roots": _inspectable_roots(),
+        })
+
     @app.route("/inspect")
     def inspect_fits_page():
         path = _resolve_inspectable_fits(request.args.get("fits", ""))

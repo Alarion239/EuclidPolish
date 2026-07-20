@@ -327,28 +327,7 @@ class TestEvaluationRoutes:
     def test_page_renders(self, client):
         r = client.get("/evaluation")
         assert r.status_code == 200
-        body = r.get_data(as_text=True)
-        # Local run forms (grouped + zoobot + lens-finder) + the catalog-fetch
-        # + results controls are present (no FASRC step cards).
-        assert "runGroupedBtn" in body and "runZoobotBtn" in body
-        assert "runLensfinderBtn" in body
-        # The single-grade form and all stamp-size / model knobs were removed —
-        # sizes are fixed (53² LR / 106² SR·HR) and the modes auto-resolve.
-        assert "runEvalBtn" not in body and "evGrade" not in body
-        for gone in ("gpCutout", "gpStampM", "zbTree", "lfHeadsDir"):
-            assert gone not in body
-        assert "jobPanel" in body
-        assert "fetchCatBtn" in body and "runSelect" not in body
-        assert "Shared evaluation store" in body
-        # PCA shown in 3D and 2D side by side (MDS dropped — identical metric);
-        # the 2D plot is JS-drawn in the same panel, with group/HR/arrows toggles.
-        assert "space3dPanel" in body and "space3dPca" in body
-        assert "space3dPca2d" in body and "space3dMds" not in body
-        assert "space3dFilters" in body and "space3dHrToggle" in body
-        assert "space3dArrowsToggle" in body
-        assert "morphImg" not in body          # server PNG replaced by JS 2D PCA
-        for group in ("A", "B", "C", "syn-lens", "syn-gal"):
-            assert f'data-space3d-group="{group}"' in body
+        assert b'id="root"' in r.data
 
     def test_runs_api_empty(self, client, tmp_path, monkeypatch):
         # Isolate the shared store to a fresh dir; otherwise this reads whatever

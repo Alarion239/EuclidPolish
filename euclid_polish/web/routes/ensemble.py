@@ -146,8 +146,15 @@ def register(app):
         except ValueError:
             model_kind = "rbf_gate"
         path = _combiner_payload_path(starless, model_kind)
-        if compute_combiner_payload(starless, model_kind=model_kind) is None and not os.path.isfile(path):
-            abort(404)
+        if compute_combiner_payload(starless, model_kind=model_kind) is None:
+            return jsonify({
+                "available": False,
+                "stale": False,
+                "kind": model_kind,
+                "reason": "no current combiner fitted for this model",
+                "member_labels": [], "members": [], "band_names": [],
+                "eff_weights": {}, "feature_grid": {}, "surviving": {},
+            })
         return send_file(path, mimetype="application/json", max_age=0)
 
     @app.route("/ensemble/combined-combiner/fit", methods=["POST"])

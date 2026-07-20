@@ -230,8 +230,9 @@
 <section class="card" id="ens-combiner-card">
   <h3>Combiner (<span id="ens-combiner-regime">starfull</span>)</h3>
   <p class="hint" style="flex-basis:100%;">Choose the tiny per-band <b>max-conditioned RBF gate</b>
-     or a compact <b>mean + std RBF</b> that sees two permutation-invariant summary
-     numbers from the full stack. All end in a convex softmax mix. Their
+     or compact <b>mean + std</b> / <b>min + max</b> RBFs, plus a
+     <b>stacked RBF</b> that convexly blends those two fitted pixels. All end in
+     a convex softmax mix. Their
      fits, parameters, and plots are stored separately. Fit <b>locally on the
      validate split</b> (reusing cached member inference), evaluated on
      <code>{{ eval_subset }}</code>, <b>per regime</b> (the fitted combiner and
@@ -245,7 +246,7 @@
       <input type="number" name="num_images" value="100" min="1" max="2000"></label>
     <label title="Each model has a separate fitted artifact for this regime; choosing a model only switches which one is shown or fitted.">
       Model
-      <select name="model_kind"><option value="rbf_gate">max-conditioned RBF</option><option value="stats_rbf_gate">mean + std RBF</option><option value="minmax_rbf_gate">min + max RBF</option></select></label>
+      <select name="model_kind"><option value="rbf_gate">max-conditioned RBF</option><option value="stats_rbf_gate">mean + std RBF</option><option value="minmax_rbf_gate">min + max RBF</option><option value="stacked_rbf_gate">stacked mean+std / min+max RBF</option></select></label>
     <label title="Number of RBF kernels. The mean+std and min+max models use 32 compact 2-D kernels by default.">
       Kernels (K)
       <input type="number" name="n_kernels" value="12" min="2" max="64"></label>

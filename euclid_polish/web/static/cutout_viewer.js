@@ -266,6 +266,11 @@ const COLOR_MODES_EXTRA = [
 
 //: Auto-run ("Run through") cadence — slow enough to read each object.
 const PLAY_INTERVAL_MS = 1500;
+const LENS_MIN_ZOOM = 1.0;
+const LENS_MAX_ZOOM = 16.0;
+const LENS_DEFAULT_ZOOM = 3.0;
+const LENS_SIDE = 280;
+const COLOR_KEYS = ["q", "w", "e", "r", "t", "y"];
 
 export function mountCutoutViewer(root, opts = {}) {
   const collection = opts.collection;
@@ -293,6 +298,7 @@ export function mountCutoutViewer(root, opts = {}) {
   };
   let morphRaf = null;          // requestAnimationFrame id for the "morph" tier
   let paramRefreshToken = 0;    // rejects a slower, superseded PSF warp response
+  let brightnessControl = null;
 
   // --- DOM scaffold --------------------------------------------------------
   root.classList.add("cutout-viewer");
@@ -301,10 +307,50 @@ export function mountCutoutViewer(root, opts = {}) {
   const framesRow = el("div", { class: "cv-frames" });
   const nav = el("div", { class: "cv-nav" });
   root.append(toolbar, framesRow, nav);
+  const makeLensPopup = () => {
+    const canvas = el("canvas", { class: "cv-lens__canvas", width: 560, height: 560 });
+    const label = el("span", { class: "cv-lens__label" });
+    const popup = el("div", { class: "cv-lens", "aria-hidden": "true" }, [canvas, label]);
+    document.body.appendChild(popup);
+    return { popup, canvas, label, ctx: canvas.getContext("2d") };
+  };
+  const hoverLens = makeLensPopup();
+  const frozenLenses = new Map(); // frame → {u, v, zoom, popup}
+  const lensState = {
+    frame: null,
+    x: 0,
+    y: 0,
+    zoom: LENS_DEFAULT_ZOOM,
+    angularSide: null,
+    relativeSide: null,
+    visible: false,
+  };
   // Compact mode (e.g. the morphology hover preview): hide the toolbar/nav
   // chrome so only the image frame shows.
   if (opts.compact) { toolbar.style.display = "none"; nav.style.display = "none"; }
   else if (opts.hideToolbar) toolbar.style.display = "none";
+
+  const onViewportChange = () => requestAnimationFrame(() => {
+    fitFramesToViewport();
+    refreshAllLenses();
+  });
+  const onDocumentMouseMove = (event) => {
+    if (!lensState.frame || !lensState.visible) return;
+    const rect = lensState.frame.canvas.getBoundingClientRect();
+    if (event.clientX < rect.left || event.clientX > rect.right
+        || event.clientY < rect.top || event.clientY > rect.bottom) {
+      hideHoverLens();
+    }
+  };
+  const scrollParents = [];
+  for (let parent = root.parentElement; parent; parent = parent.parentElement) {
+    scrollParents.push(parent);
+    parent.addEventListener("scroll", onViewportChange, { passive: true });
+  }
+  window.addEventListener("resize", onViewportChange);
+  window.addEventListener("scroll", onViewportChange, { passive: true });
+  window.visualViewport?.addEventListener("resize", onViewportChange);
+  document.addEventListener("mousemove", onDocumentMouseMove);
 
   // --- helpers -------------------------------------------------------------
   const band = (name) => state.meta.color.bands[name];
@@ -415,6 +461,8 @@ export function mountCutoutViewer(root, opts = {}) {
   }
 
   function renderInto(fr, rec) {
+    fr.pixscale = Number.isFinite(rec.pixscale) && rec.pixscale > 0
+      ? rec.pixscale : null;
     const prep = prepare(rec);
     if (fr.canvas.width !== prep.w || fr.canvas.height !== prep.h) {
       fr.canvas.width = prep.w; fr.canvas.height = prep.h;
@@ -425,6 +473,7 @@ export function mountCutoutViewer(root, opts = {}) {
     setFrameMsg(fr, "");
     showPlens(fr);
     addSigmaToSR(fr, rec);
+    refreshAllLenses();
   }
 
   /** Integrated flux of the cube in the shown band (colour composites fall
@@ -508,6 +557,312 @@ export function mountCutoutViewer(root, opts = {}) {
     }
   }
 
+  function lensSide() {
+    return Math.max(160, Math.min(LENS_SIDE, window.innerWidth - 24, window.innerHeight - 24));
+  }
+
+  function hideHoverLens() {
+    lensState.visible = false;
+    const oldFrame = lensState.frame;
+    lensState.frame = null;
+    hoverLens.popup.style.display = "none";
+    if (oldFrame && !frozenLenses.has(oldFrame)) oldFrame.lensBox.style.display = "none";
+  }
+
+  function clearFrozenLenses() {
+    for (const frozen of frozenLenses.values()) frozen.popup.remove();
+    frozenLenses.clear();
+  }
+
+  function clearAllLenses() {
+    hideHoverLens();
+    clearFrozenLenses();
+    lensState.angularSide = null;
+    lensState.relativeSide = null;
+    lensState.zoom = LENS_DEFAULT_ZOOM;
+  }
+
+  function placeLensPopup(popup, side, x, y) {
+    const pad = 12;
+    const gap = 18;
+    let left = x + gap;
+    let top = y + gap;
+    if (left + side > window.innerWidth - pad) left = x - side - gap;
+    if (top + side > window.innerHeight - pad) top = y - side - gap;
+    popup.style.width = `${side}px`;
+    popup.style.height = `${side}px`;
+    left = Math.max(pad, Math.min(left, window.innerWidth - side - pad));
+    top = Math.max(pad, Math.min(top, window.innerHeight - side - pad));
+    // Hover lenses follow the viewport. Frozen lenses follow the document:
+    // x/y are recomputed from the source tile on every refresh, so adding the
+    // scroll offset keeps the popup beside the same image location while the
+    // page moves underneath it.
+    const documentPosition = popup.classList.contains("cv-lens--frozen");
+    popup.style.left = `${left + (documentPosition ? (window.scrollX || 0) : 0)}px`;
+    popup.style.top = `${top + (documentPosition ? (window.scrollY || 0) : 0)}px`;
+  }
+
+  function validPixscale(fr) {
+    return Number.isFinite(fr.pixscale) && fr.pixscale > 0 ? fr.pixscale : null;
+  }
+
+  function currentAngularSide(fr, zoom) {
+    const pixscale = validPixscale(fr);
+    if (!pixscale) return null;
+    const sourceSide = Math.min(
+      fr.canvas.width,
+      fr.canvas.height,
+      Math.max(1, lensSide() / zoom),
+    );
+    return sourceSide * pixscale;
+  }
+
+  function currentRelativeSide(fr, zoom) {
+    if (!(fr.canvas.width > 0 && fr.canvas.height > 0)) return null;
+    const extent = Math.min(fr.canvas.width, fr.canvas.height);
+    const sourceSide = Math.min(extent, Math.max(1, lensSide() / zoom));
+    return sourceSide / extent;
+  }
+
+  function zoomForAngularSide(fr, angularSide) {
+    const pixscale = validPixscale(fr);
+    if (!pixscale || !(angularSide > 0)) return lensState.zoom;
+    const sourceSide = Math.min(
+      fr.canvas.width,
+      fr.canvas.height,
+      Math.max(1, angularSide / pixscale),
+    );
+    return Math.max(LENS_MIN_ZOOM,
+      Math.min(LENS_MAX_ZOOM, lensSide() / sourceSide));
+  }
+
+  function zoomForRelativeSide(fr, relativeSide) {
+    if (!(relativeSide > 0)) return lensState.zoom;
+    const extent = Math.min(fr.canvas.width, fr.canvas.height);
+    const sourceSide = Math.min(extent, Math.max(1, relativeSide * extent));
+    return Math.max(LENS_MIN_ZOOM,
+      Math.min(LENS_MAX_ZOOM, lensSide() / sourceSide));
+  }
+
+  function drawLens(fr, lens, position, pinned) {
+    if (fr.canvas.width <= 1 || fr.canvas.height <= 1) return;
+    const canvasRect = fr.canvas.getBoundingClientRect();
+    if (!(canvasRect.width > 0 && canvasRect.height > 0)) return;
+    const side = lensSide();
+    const x = position.u == null
+      ? position.x : canvasRect.left + position.u * canvasRect.width;
+    const y = position.v == null
+      ? position.y : canvasRect.top + position.v * canvasRect.height;
+    const pixscale = validPixscale(fr);
+    const extent = Math.min(fr.canvas.width, fr.canvas.height);
+    const requestedSourceSide = pixscale && position.angularSide != null
+      ? position.angularSide / pixscale
+      : position.relativeSide != null
+        ? position.relativeSide * extent
+      : side / position.zoom;
+    const sourceSide = Math.min(
+      fr.canvas.width,
+      fr.canvas.height,
+      Math.max(1, requestedSourceSide),
+    );
+    const effectiveZoom = side / sourceSide;
+    position.zoom = effectiveZoom;
+    if (pixscale) position.angularSide = sourceSide * pixscale;
+    position.relativeSide = sourceSide / extent;
+    const px = ((x - canvasRect.left) / canvasRect.width) * fr.canvas.width;
+    const py = ((y - canvasRect.top) / canvasRect.height) * fr.canvas.height;
+    const cx = Math.max(sourceSide / 2,
+      Math.min(fr.canvas.width - sourceSide / 2, px));
+    const cy = Math.max(sourceSide / 2,
+      Math.min(fr.canvas.height - sourceSide / 2, py));
+    const cropX = cx - sourceSide / 2;
+    const cropY = cy - sourceSide / 2;
+    lens.ctx.clearRect(0, 0, lens.canvas.width, lens.canvas.height);
+    lens.ctx.imageSmoothingEnabled = false;
+    lens.ctx.drawImage(fr.canvas, cropX, cropY, sourceSide, sourceSide,
+      0, 0, lens.canvas.width, lens.canvas.height);
+
+    const frameRect = fr.frame.getBoundingClientRect();
+    const cropLeft = canvasRect.left - frameRect.left
+      + (cropX / fr.canvas.width) * canvasRect.width;
+    const cropTop = canvasRect.top - frameRect.top
+      + (cropY / fr.canvas.height) * canvasRect.height;
+    fr.lensBox.style.display = "block";
+    fr.lensBox.style.left = `${cropLeft}px`;
+    fr.lensBox.style.top = `${cropTop}px`;
+    fr.lensBox.style.width = `${(sourceSide / fr.canvas.width) * canvasRect.width}px`;
+    fr.lensBox.style.height = `${(sourceSide / fr.canvas.height) * canvasRect.height}px`;
+    lens.label.textContent = `${effectiveZoom.toFixed(1)}× · ${pinned ? "click to unfreeze" : "↑↓ zoom · ←→ brightness"}`;
+    lens.popup.classList.toggle("cv-lens--frozen", pinned);
+    placeLensPopup(lens.popup, side, x, y);
+    lens.popup.style.display = "block";
+  }
+
+  function refreshLens(fr) {
+    const frozen = frozenLenses.get(fr);
+    if (frozen) {
+      drawLens(fr, frozen, frozen, true);
+    } else if (lensState.visible && lensState.frame === fr) {
+      drawLens(fr, hoverLens, lensState, false);
+    } else {
+      fr.lensBox.style.display = "none";
+    }
+  }
+
+  function refreshAllLenses() {
+    for (const fr of state.frames) refreshLens(fr);
+    resolveLensOverlaps();
+  }
+
+  function popupDocumentRect(popup) {
+    const rect = popup.getBoundingClientRect();
+    const scrollX = window.scrollX || 0;
+    const scrollY = window.scrollY || 0;
+    return {
+      left: rect.left + scrollX,
+      top: rect.top + scrollY,
+      right: rect.right + scrollX,
+      bottom: rect.bottom + scrollY,
+      width: rect.width,
+      height: rect.height,
+    };
+  }
+
+  function lensRectsOverlap(a, b, gap = 18) {
+    return a.left < b.right + gap && a.right + gap > b.left
+      && a.top < b.bottom + gap && a.bottom + gap > b.top;
+  }
+
+  // Keep frozen popups close to their source locations, but move them onto
+  // nearby grid slots when several source locations would make them overlap.
+  // The grid expands as needed, so this remains collision-free for any number
+  // of frozen tiles without tying the popups to viewport coordinates.
+  function resolveLensOverlaps() {
+    const placed = [];
+    if (hoverLens.popup.style.display !== "none") {
+      placed.push(popupDocumentRect(hoverLens.popup));
+    }
+    for (const frozen of frozenLenses.values()) {
+      if (frozen.popup.style.display === "none") continue;
+      const current = popupDocumentRect(frozen.popup);
+      const stepX = current.width + 22;
+      const stepY = current.height + 22;
+      let chosen = null;
+      for (let radius = 0; radius < 256 && !chosen; radius++) {
+        for (let dx = -radius; dx <= radius && !chosen; dx++) {
+          for (let dy = -radius; dy <= radius; dy++) {
+            if (Math.max(Math.abs(dx), Math.abs(dy)) !== radius) continue;
+            const candidate = {
+              left: Math.max(12, current.left + dx * stepX),
+              top: Math.max(12, current.top + dy * stepY),
+              width: current.width,
+              height: current.height,
+            };
+            candidate.right = candidate.left + candidate.width;
+            candidate.bottom = candidate.top + candidate.height;
+            if (placed.every((other) => !lensRectsOverlap(candidate, other))) {
+              chosen = candidate;
+              break;
+            }
+          }
+        }
+      }
+      if (!chosen) continue;
+      frozen.popup.style.left = `${chosen.left}px`;
+      frozen.popup.style.top = `${chosen.top}px`;
+      placed.push(chosen);
+    }
+  }
+
+  function enterLens(fr, event) {
+    if (frozenLenses.has(fr)) return;
+    if (lensState.frame && lensState.frame !== fr) {
+      const angularSide = currentAngularSide(lensState.frame, lensState.zoom);
+      if (angularSide != null) lensState.angularSide = angularSide;
+      const relativeSide = currentRelativeSide(lensState.frame, lensState.zoom);
+      if (relativeSide != null) lensState.relativeSide = relativeSide;
+      hideHoverLens();
+    }
+    state.hot = true;
+    lensState.frame = fr;
+    lensState.visible = true;
+    lensState.x = event.clientX;
+    lensState.y = event.clientY;
+    if (lensState.angularSide != null) {
+      lensState.zoom = validPixscale(fr)
+        ? zoomForAngularSide(fr, lensState.angularSide)
+        : zoomForRelativeSide(fr, lensState.relativeSide);
+    } else if (lensState.relativeSide != null) {
+      lensState.zoom = zoomForRelativeSide(fr, lensState.relativeSide);
+    }
+    refreshLens(fr);
+    resolveLensOverlaps();
+  }
+
+  function moveLens(fr, event) {
+    if (lensState.frame !== fr) {
+      enterLens(fr, event);
+      return;
+    }
+    lensState.x = event.clientX;
+    lensState.y = event.clientY;
+    refreshLens(fr);
+    resolveLensOverlaps();
+  }
+
+  function zoomLens(fr, event) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (Math.abs(event.deltaX) > Math.abs(event.deltaY)) {
+      state.gain = Math.max(0.1, Math.min(10, state.gain * Math.exp(-event.deltaX * 0.002)));
+      if (brightnessControl) {
+        const input = brightnessControl.querySelector("input");
+        const output = brightnessControl.querySelector(".cv-val");
+        input.value = Math.round(1000 * (Math.log(state.gain) - Math.log(0.1))
+          / (Math.log(10) - Math.log(0.1)));
+        output.textContent = `${state.gain.toFixed(2)}×`;
+      }
+      rerender();
+      notify();
+      return;
+    }
+    if (frozenLenses.has(fr)) return;
+    if (lensState.frame !== fr) enterLens(fr, event);
+    const factor = event.deltaY < 0 ? 1.18 : 1 / 1.18;
+    lensState.zoom = Math.max(LENS_MIN_ZOOM,
+      Math.min(LENS_MAX_ZOOM, lensState.zoom * factor));
+    const angularSide = currentAngularSide(fr, lensState.zoom);
+    if (angularSide != null) lensState.angularSide = angularSide;
+    const relativeSide = currentRelativeSide(fr, lensState.zoom);
+    if (relativeSide != null) lensState.relativeSide = relativeSide;
+    refreshLens(fr);
+    resolveLensOverlaps();
+  }
+
+  function toggleFrozen(fr, event) {
+    if (frozenLenses.has(fr)) {
+      frozenLenses.get(fr).popup.remove();
+      frozenLenses.delete(fr);
+      hideHoverLens();
+      refreshAllLenses();
+      return;
+    }
+    const rect = fr.canvas.getBoundingClientRect();
+    const u = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
+    const v = Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height));
+    const popup = makeLensPopup();
+    const frozen = {
+      u, v,
+      zoom: lensState.frame === fr ? lensState.zoom : LENS_DEFAULT_ZOOM,
+      angularSide: lensState.frame === fr ? lensState.angularSide : null,
+      relativeSide: lensState.frame === fr ? lensState.relativeSide : null,
+      popup: popup.popup, canvas: popup.canvas, label: popup.label, ctx: popup.ctx,
+    };
+    frozenLenses.set(fr, frozen);
+    hideHoverLens();
+    refreshAllLenses();
+  }
+
   function makeFrame(tier) {
     const canvas = el("canvas", { class: "cv-canvas", width: 1, height: 1 });
     const legendCanvas = el("canvas", { class: "cv-legend", width: 14, height: 160 });
@@ -516,12 +871,22 @@ export function mountCutoutViewer(root, opts = {}) {
       legendCanvas,
       el("span", { class: "cv-legend-tick", text: "3k" }),
     ]);
+    const lensBox = el("div", { class: "cv-lens-box", "aria-hidden": "true" });
     const overlay = el("div", { class: "cv-overlay" });
     const plens = el("div", { class: "cv-plens" });   // headed-model P(lens) for this tier
     const msg = el("div", { class: "cv-msg" });
-    const frame = el("div", { class: "cv-frame" }, [canvas, legendWrap, overlay, plens, msg]);
-    const fr = { tier, frame, canvas, ctx: canvas.getContext("2d"),
-                 legendWrap, legendCanvas, overlay, plens, msg };
+    const frame = el("div", { class: "cv-frame" }, [
+      canvas, lensBox, legendWrap, overlay, plens, msg,
+    ]);
+    canvas.addEventListener("mouseenter", (event) => enterLens(fr, event));
+    canvas.addEventListener("mousemove", (event) => moveLens(fr, event));
+    canvas.addEventListener("mouseleave", () => {
+      if (lensState.frame === fr && !frozenLenses.has(fr)) hideHoverLens();
+    });
+    canvas.addEventListener("wheel", (event) => zoomLens(fr, event), { passive: false });
+    canvas.addEventListener("click", (event) => toggleFrozen(fr, event));
+    const fr = { tier, frame, canvas, ctx: canvas.getContext("2d"), pixscale: null,
+                 legendWrap, legendCanvas, lensBox, overlay, plens, msg };
     drawLegend(fr);
     return fr;
   }
@@ -550,6 +915,7 @@ export function mountCutoutViewer(root, opts = {}) {
     const want = orderedSelected().map((t) => t.key);
     const have = state.frames.map((f) => f.tier);
     if (want.length === have.length && want.every((t, i) => t === have[i])) return;
+    clearAllLenses();
     stopMorph();               // frames are being recreated → drop the old loop
     framesRow.innerHTML = "";
     state.frames = want.map((t) => {
@@ -558,6 +924,52 @@ export function mountCutoutViewer(root, opts = {}) {
       return fr;
     });
     framesRow.classList.toggle("cv-multi", state.frames.length > 1);
+    requestAnimationFrame(fitFramesToViewport);
+  }
+
+  /** Choose the grid that gives every visible tile the largest square side.
+   *
+   * Reserve the viewer's own toolbar and navigation rows, but do not subtract
+   * the viewer's document position: a page header can place the viewer below
+   * the fold even though the tile should still be screen-sized when reached.
+   * Try every possible column count because the best choice depends on both
+   * the screen aspect ratio and the number of selected tiers. */
+  function fitFramesToViewport() {
+    if (!state.frames.length) {
+      root.style.removeProperty("--cv-frame-size");
+      root.style.removeProperty("--cv-columns");
+      return;
+    }
+    const frameStyle = getComputedStyle(framesRow);
+    const columnGap = parseFloat(frameStyle.columnGap) || 14;
+    const rowGap = parseFloat(frameStyle.rowGap) || columnGap;
+    const width = framesRow.clientWidth;
+    const toolbarStyle = getComputedStyle(toolbar);
+    const toolbarMargin = parseFloat(toolbarStyle.marginBottom) || 0;
+    const navStyle = getComputedStyle(nav);
+    const navMargin = parseFloat(navStyle.marginTop) || 0;
+    const bottomMargin = 16;
+    const visibleHeight = window.visualViewport?.height ?? window.innerHeight;
+    const viewportHeight = visibleHeight - toolbar.offsetHeight - toolbarMargin
+      - nav.offsetHeight - navMargin - bottomMargin;
+    const count = state.frames.length;
+    const maxColumns = window.innerWidth > 760 ? count : 1;
+    let best = { side: 0, columns: 1 };
+
+    for (let columns = 1; columns <= maxColumns; columns++) {
+      const rows = Math.ceil(count / columns);
+      const widthLimit = (width - columnGap * (columns - 1)) / columns;
+      const heightLimit = (viewportHeight - rowGap * (rows - 1)) / rows;
+      const side = Math.floor(Math.min(widthLimit, heightLimit));
+      if (side > best.side || (side === best.side && columns > best.columns)) {
+        best = { side, columns };
+      }
+    }
+
+    if (best.side > 0) {
+      root.style.setProperty("--cv-frame-size", `${best.side}px`);
+      root.style.setProperty("--cv-columns", `${best.columns}`);
+    }
   }
 
   // --- "morph" tier: an animated ensemble-disagreement frame ----------------
@@ -640,7 +1052,8 @@ export function mountCutoutViewer(root, opts = {}) {
     const subLbl = subset ? ` · ${nSub} members` : "";
     const varLbl = varTot > 0
       ? ` · ${comps.length} PCs ≈ ${(varTot * 100).toFixed(0)}% of variance` : "";
-    return { sr, comps, amps, label: `disagreement movie${subLbl}${varLbl}` };
+    return { sr, comps, amps, pixscale: sr.pixscale,
+      label: `disagreement movie${subLbl}${varLbl}` };
   }
 
   // Build (cache) one field's movie loop — MORPH_FRAMES prepared frames at the
@@ -658,10 +1071,10 @@ export function mountCutoutViewer(root, opts = {}) {
     let ing;
     try { ing = await movieCubes(index, subset); } catch { return null; }
     if (token != null && token !== buildToken) return null;
-    const { sr, comps, amps, label } = ing;
+    const { sr, comps, amps, pixscale, label } = ing;
     const len = sr.data.length, data = new Float32Array(len);
     const entry = { frames: new Array(MORPH_FRAMES).fill(null), w: sr.w, h: sr.h,
-                    mode: "gray", bytes: 0, color, amp, done: false, label };
+                    mode: "gray", bytes: 0, color, amp, done: false, label, pixscale };
     movieStore.set(key, entry);
     for (let slot = 0; slot < MORPH_FRAMES; slot++) {
       if (token != null && token !== buildToken) { movieStore.delete(key); return null; }
@@ -698,10 +1111,13 @@ export function mountCutoutViewer(root, opts = {}) {
       if (fr.canvas.width !== entry.w || fr.canvas.height !== entry.h) {
         fr.canvas.width = entry.w; fr.canvas.height = entry.h;
       }
+      fr.pixscale = Number.isFinite(entry.pixscale) && entry.pixscale > 0
+        ? entry.pixscale : null;
       fr.ctx.putImageData(transferPrepared(prep), 0, 0);
       fr.overlay.textContent = entry.label;           // magLabel="" for morph
       fr.legendWrap.style.display = entry.mode === "temp" ? "flex" : "none";
       setFrameMsg(fr, "");
+      refreshLens(fr);
     };
     drawSlot(0);                                       // instant first frame
     const tick = (now) => {
@@ -757,6 +1173,7 @@ export function mountCutoutViewer(root, opts = {}) {
 
   // --- load + show current index across all selected tiers -----------------
   async function show() {
+    clearAllLenses();
     if (!state.meta || state.meta.count === 0) {
       rebuildFrames();
       for (const fr of state.frames) {
@@ -889,6 +1306,7 @@ export function mountCutoutViewer(root, opts = {}) {
 
   function buildToolbar() {
     toolbar.innerHTML = "";
+    brightnessControl = null;
     const tiers = state.meta.tiers || [];
     // `hidden` tiers (e.g. the 22 individual member SRs) stay loadable via
     // setTiers but are kept out of the chip row — an external panel drives them.
@@ -910,8 +1328,16 @@ export function mountCutoutViewer(root, opts = {}) {
     if (!logMode) {
       toolbar.append(el("span", { class: "cv-grouplabel", text: "Colour" }));
       const cg = el("div", { class: "cv-group" });
-      state.meta.band_names.forEach((n) => cg.append(chip("color", n, n)));
-      COLOR_MODES_EXTRA.forEach((m) => cg.append(chip("color", m.key, m.label, m.title)));
+      let colorIndex = 0;
+      state.meta.band_names.forEach((n) => {
+        const key = COLOR_KEYS[colorIndex++]?.toUpperCase();
+        cg.append(chip("color", n, n, key ? `${key} — ${n}` : n));
+      });
+      COLOR_MODES_EXTRA.forEach((m) => {
+        const key = COLOR_KEYS[colorIndex++]?.toUpperCase();
+        cg.append(chip("color", m.key, m.label,
+          key ? `${key} — ${m.title}` : m.title));
+      });
       toolbar.append(cg);
     }
 
@@ -920,8 +1346,9 @@ export function mountCutoutViewer(root, opts = {}) {
       sg.append(slider("asinh knee", 5, 5000, state.knee,
         (v) => `${Math.round(v)} e⁻`, (v) => { state.knee = v; rerender(); }));
     }
-    sg.append(slider("brightness", 0.1, 10, state.gain,
-      (v) => `${v.toFixed(2)}×`, (v) => { state.gain = v; rerender(); }));
+    brightnessControl = slider("brightness", 0.1, 10, state.gain,
+      (v) => `${v.toFixed(2)}×`, (v) => { state.gain = v; rerender(); });
+    sg.append(brightnessControl);
     toolbar.append(sg);
 
     // "morph" tier controls — amplitude + speed (live; the rAF loop reads them).
@@ -1141,13 +1568,27 @@ export function mountCutoutViewer(root, opts = {}) {
 
   function onKey(e) {
     if (!state.hot) return;     // only when the viewer is hovered/focused
-    if (e.target.matches("input, textarea, select")) return;
+    if (e.target.matches("input, textarea, select") || e.ctrlKey || e.metaKey || e.altKey) return;
+    const key = e.key.toLowerCase();
+    const colorIndex = COLOR_KEYS.indexOf(key);
+    if (colorIndex >= 0 && state.meta && state.meta.render_mode !== "log") {
+      const colors = [...(state.meta.band_names || []), ...COLOR_MODES_EXTRA.map((m) => m.key)];
+      const color = colors[colorIndex];
+      if (color && color !== state.color) {
+        state.color = color;
+        syncChips();
+        rerender();
+        notify();
+      }
+      if (color) e.preventDefault();
+      return;
+    }
     if (e.key === "ArrowLeft") { go(state.index - 1); e.preventDefault(); }
     else if (e.key === "ArrowRight") { go(state.index + 1); e.preventDefault(); }
     else if (e.key === " ") { togglePlay(); e.preventDefault(); }
   }
   root.addEventListener("mouseenter", () => { state.hot = true; });
-  root.addEventListener("mouseleave", () => { state.hot = false; });
+  root.addEventListener("mouseleave", () => { state.hot = false; hideHoverLens(); });
   root.addEventListener("focusin", () => { state.hot = true; });
 
   // --- meta + lifecycle ----------------------------------------------------
@@ -1253,6 +1694,15 @@ export function mountCutoutViewer(root, opts = {}) {
     reload() { return loadMeta().then(show); },
     destroy() {
       paramRefreshToken++;
+      clearAllLenses();
+      hoverLens.popup.remove();
+      window.removeEventListener("resize", onViewportChange);
+      window.removeEventListener("scroll", onViewportChange);
+      for (const parent of scrollParents) {
+        parent.removeEventListener("scroll", onViewportChange);
+      }
+      window.visualViewport?.removeEventListener("resize", onViewportChange);
+      document.removeEventListener("mousemove", onDocumentMouseMove);
       document.removeEventListener("keydown", onKey);
       if (state.playTimer) clearInterval(state.playTimer);
       stopMorph();

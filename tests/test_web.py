@@ -85,17 +85,27 @@ def test_view_training_log_empty_is_404_not_500(client, tmp_path, monkeypatch):
 # Pages render
 # ---------------------------------------------------------------------------
 
-def test_root_redirects_to_fasrc_hub(client):
-    # The status dashboard was removed; "/" now redirects to the FASRC hub.
+def _assert_react_shell(response):
+    assert response.status_code == 200, response.get_data(as_text=True)
+    body = response.get_data(as_text=True)
+    assert 'id="root"' in body
+    assert "/static/dist/assets/" in body
+
+
+def test_root_serves_react_console(client):
+    # The React console owns the root URL; the old /app prefix is gone.
     r = client.get("/")
-    assert r.status_code in (301, 302)
-    assert "/fasrc" in r.headers["Location"]
+    _assert_react_shell(r)
+
+
+def test_app_prefix_redirects_to_canonical_route(client):
+    r = client.get("/app/inference")
+    assert r.status_code == 308
+    assert r.headers["Location"] == "/inference"
 
 
 def test_ensemble_page_renders(client):
-    r = client.get("/ensemble")
-    assert r.status_code == 200, r.get_data(as_text=True)
-    assert b"Ensemble" in r.data
+    _assert_react_shell(client.get("/ensemble"))
 
 
 def test_ensemble_power_spectrum_serves_with_relative_vis_dir(
@@ -134,46 +144,23 @@ def test_ensemble_status_no_members(monkeypatch, tmp_path):
 
 
 def test_catalog_page_renders(client):
-    r = client.get("/catalog")
-    assert r.status_code == 200
-    assert b"sky positions" in r.data
+    _assert_react_shell(client.get("/catalog"))
 
 
 def test_psfs_page_renders(client):
-    r = client.get("/psfs")
-    assert r.status_code == 200
-    # All four band names appear in the inventory table.
-    body = r.data.decode()
-    for name in ("VIS", "Y_E", "J_E", "H_E"):
-        assert name in body
+    _assert_react_shell(client.get("/psfs"))
 
 
 def test_sky_page_renders(client):
-    r = client.get("/sky")
-    assert r.status_code == 200
-    # Synthetic generation is a FASRC step card (mounted by step_id),
-    # not the old local generate/forward forms.
-    assert b"synthetic_generate" in r.data
-    assert b"Records on FASRC" in r.data
+    _assert_react_shell(client.get("/sky"))
 
 
 def test_visualization_page_renders(client):
-    r = client.get("/visualization")
-    assert r.status_code == 200
-    # The gallery is the central viz pane on /visualization.
-    assert b"data/vis/" in r.data
+    _assert_react_shell(client.get("/visualization"))
 
 
 def test_cutouts_page_renders(client):
-    r = client.get("/cutouts")
-    assert r.status_code == 200
-    body = r.data.decode()
-    assert "Cutouts" in body
-    # The band/colour picker now lives in the unified client-side cutout
-    # viewer (static/cutout_viewer.js), mounted on #cutout-viewer, rather
-    # than as server-rendered band chips.
-    assert 'id="cutout-viewer"' in body
-    assert "cutout_viewer.js" in body
+    _assert_react_shell(client.get("/cutouts"))
 
 
 def test_cutout_viewer_exports_capture_all_visible_frames():
@@ -287,9 +274,7 @@ def test_training_redirects_to_ensemble(client):
 
 
 def test_inference_page_renders(client):
-    r = client.get("/inference")
-    assert r.status_code == 200
-    assert b"Real Euclid field inference" in r.data
+    _assert_react_shell(client.get("/inference"))
 
 
 def test_no_experimental_lane_traces_in_ui(client):
@@ -524,11 +509,13 @@ def _stub_fetch(monkeypatch, *, local_path=None, ok=True, error=None):
     return captured
 
 
-def test_tng_histograms_png_renders_locally(client, monkeypatch):
+def test_tng_histograms_png_renders_locally(client, tmp_path, monkeypatch):
     """Histograms render in-process (not a job): the route calls the local
     render with the FASRC id list + key and streams the PNG."""
     from euclid_polish.web.routes import tng as tng_routes
     seen = {}
+    monkeypatch.setattr(tng_routes, "_LOCAL_TNG_DIR",
+                        str(tmp_path / "_tng_infographics"))
 
     def fake_render(work, ids, key, **kw):
         seen["work"] = work
@@ -704,13 +691,10 @@ def test_failed_job_records_error():
 # ---------------------------------------------------------------------------
 
 def test_cutouts_gallery_page_renders(client):
-    """The per-band gallery page renders even with no cutouts on disk."""
+    """The deprecated per-band page redirects into the React cutouts page."""
     r = client.get("/cutouts/VIS")
-    assert r.status_code == 200
-    body = r.data.decode()
-    assert "VIS cutouts" in body
-    # Either there are thumbnails or the "no cutouts on disk" notice fires.
-    assert "gallery" in body or "No cutouts" in body
+    assert r.status_code == 308
+    assert r.headers["Location"] == "/cutouts"
 
 
 def test_cutouts_gallery_unknown_band_404(client):
@@ -735,12 +719,13 @@ def test_cutout_image_rejects_bad_size(client):
     assert r.status_code == 400
 
 
-def test_cutout_image_renders_real_fits(client, tmp_path):
+def test_cutout_image_renders_real_fits(client, tmp_path, monkeypatch):
     """Drop a tiny FITS into the VIS cutout dir and round-trip a render."""
     import numpy as np
     from astropy.io import fits
 
     from euclid_polish.config import Config
+    monkeypatch.setattr(Config, "DEFAULT_OUTPUT_DIR", str(tmp_path / "data"))
     band_dir = Config.cutout_dir_for_band(
         "VIS", root=os.path.join(Config.DEFAULT_OUTPUT_DIR, "cutouts"),
     )
@@ -848,19 +833,7 @@ def test_api_sky_sync_pulls_source_catalog_sidecars(client, monkeypatch):
 
 def test_hst_pairs_page_renders(lanes_client):
     r = lanes_client.get("/hst-pairs")
-    assert r.status_code == 200
-    body = r.data.decode()
-    assert "HST Catalog" in body
-    assert "Sync from FASRC" in body
-    # Toolbar bands match /sky's set so the same chip layout works.
-    for n in ("VIS", "Y_E", "J_E", "H_E", "color"):
-        assert n in body
-    # Pair (triptych) view chip — the default landing view.
-    assert "pair (triptych)" in body, (
-        "expected 'pair (triptych)' chip in the Type toolbar — the "
-        "side-by-side clean/dirty/HR view should be available + the "
-        "page's initial selection."
-    )
+    _assert_react_shell(r)
 
 
 def test_api_hst_pairs_totals_returns_json_with_all_six_files(lanes_client):

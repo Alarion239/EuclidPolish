@@ -10,6 +10,7 @@ import EvaluationPage from "./Evaluation";
 import FasrcPage from "./Fasrc";
 import GitPage from "./Git";
 import InferencePage from "./Inference";
+import InspectPage from "./Inspect";
 import LensFinderPage from "./LensFinder";
 import LensIsolationPage from "./LensIsolation";
 import PsfsPage from "./Psfs";
@@ -33,6 +34,7 @@ export const PAGES: PageDef[] = [
   { label: "TNG", path: "/tng", component: TngPage },
   { label: "Synthetic–Real", path: "/synthetic-real", component: SyntheticRealPage },
   { label: "Inference", path: "/inference", component: InferencePage },
+  { label: "FITS inspector", path: "/inspect", component: InspectPage },
   { label: "Ensemble", path: "/ensemble", component: EnsemblePage },
   { label: "Train members", path: "/train-members", component: TrainMembersPage },
   { label: "Evaluation", path: "/evaluation", component: EvaluationPage },

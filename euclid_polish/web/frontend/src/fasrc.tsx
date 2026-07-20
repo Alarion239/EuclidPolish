@@ -19,7 +19,7 @@ export type StepDefaults = {
 };
 export type Step = {
   step_id: string; label: string; needs_gpu: boolean;
-  fixed_cpus?: number | null; defaults: StepDefaults;
+  fixed_cpus?: number | null; fixed_gpus?: number | null; defaults: StepDefaults;
 };
 export type HstStatus = {
   ssh_connected: boolean;
@@ -45,7 +45,8 @@ export type SlurmStatus = {
   metrics?: CurveRec[];
 };
 type JobStatusResp = {
-  ok: boolean; jobid: string; state: string; status?: SlurmStatus; error?: string;
+  ok: boolean; jobid: string; state: string; status?: SlurmStatus;
+  array?: CSArray | null; error?: string;
 };
 
 const TERMINAL_SLURM = new Set(["COMPLETED", "DONE", "TIMEOUT", "FAILED", "CANCELLED"]);
@@ -109,6 +110,7 @@ export function SlurmMonitor({ jobid }: { jobid: string }) {
         <span className="mono fasrc-mon__jobid">#{jobid}</span>
       </div>
       <JobStatusBody status={resp.status} />
+      {resp.array && <ArrayTaskStatuses array={resp.array} />}
     </div>
   );
 }
@@ -135,11 +137,34 @@ type CSQueue = {
   count: number; halted: boolean; halted_reason?: string | null;
   names: string[]; active_jobid?: string | null;
 };
+type CSArrayTask = {
+  index: number; member: string; jobid: string; state?: string;
+  reason?: string; nodes?: string; time?: string; status?: SlurmStatus;
+};
+type CSArray = { count: number; max_parallel?: number; tasks?: CSArrayTask[] };
 type CurrentSubmissionResp = {
   ok: boolean; stale?: boolean;
-  current: { job: CSJob; status?: SlurmStatus | null; accounting?: JobstatsSnapshot | null } | null;
+  current: { job: CSJob; status?: SlurmStatus | null; array?: CSArray | null;
+    accounting?: JobstatsSnapshot | null } | null;
   queue: CSQueue;
 };
+
+function ArrayTaskStatuses({ array }: { array: CSArray }) {
+  const tasks = asArray<CSArrayTask>(array.tasks);
+  return <div className="grid" style={{ gap: "var(--s3)", marginTop: "var(--s3)" }}>
+    <div className="muted">{array.count} independent model tasks
+      {array.max_parallel ? ` · up to ${array.max_parallel} running at once` : ""}</div>
+    {tasks.map((task) => <div className="fasrc-mon" key={task.index}>
+      <div className="fasrc-mon__head">
+        <strong className="mono">{task.member}</strong>
+        <span className="mono fasrc-mon__jobid">#{task.jobid}</span>
+        {task.state && <Badge tone={jobStateTone(task.state)}>{task.state}</Badge>}
+      </div>
+      {task.reason && task.state === "PENDING" && <div className="muted">{task.reason}</div>}
+      <JobStatusBody status={task.status} />
+    </div>)}
+  </div>;
+}
 
 function JobstatsSnapshotBody({ snapshot }: { snapshot?: JobstatsSnapshot | null }) {
   if (!snapshot) return null;
@@ -223,12 +248,13 @@ export function CurrentSubmission() {
             </div>
             <div style={{ marginTop: "var(--s3)" }}>
               <JobStatusBody status={cur.status} />
+              {cur.array && <ArrayTaskStatuses array={cur.array} />}
               <JobstatsSnapshotBody snapshot={resp?.current?.accounting} />
             </div>
           </CardBody>
         </Card>
       )}
-      {cur?.job.started_at && <TrainingCurve startedAt={cur.job.started_at}
+      {cur?.job.started_at && !cur.array && <TrainingCurve startedAt={cur.job.started_at}
         endedAt={cur.job.ended_at} stepId={cur.job.step_id}
         eventRecords={cur.status?.metrics} />}
     </div>
@@ -655,9 +681,11 @@ export function StepCard(
 ) {
   const d = step.defaults;
   const lockedCpus = step.fixed_cpus != null;
+  const lockedGpus = step.fixed_gpus != null;
+  const perModel = step.step_id === "ensemble_train" ? " / model" : "";
   const [partition, setPartition] = useState(d.partition);
   const [nCpus, setNCpus] = useState(String(step.fixed_cpus ?? d.n_cpus));
-  const [nGpus, setNGpus] = useState(String(d.n_gpus));
+  const [nGpus, setNGpus] = useState(String(step.fixed_gpus ?? d.n_gpus));
   const [memory, setMemory] = useState(d.memory);
   const [timeLimit, setTimeLimit] = useState(d.time_limit);
   const [jobid, setJobid] = useState<string | null>(null);
@@ -695,10 +723,10 @@ export function StepCard(
       )}
         <div className="fasrc-step__res">
           <Field label="partition"><Input value={partition} onChange={setPartition} /></Field>
-          <NumberField label="cpus" value={nCpus} onChange={setNCpus} min={1} disabled={lockedCpus} />
-          {step.needs_gpu && <NumberField label="gpus" value={nGpus} onChange={setNGpus} min={0} />}
-          <Field label="memory"><Input value={memory} onChange={setMemory} /></Field>
-          <Field label="time limit"><Input value={timeLimit} onChange={setTimeLimit} /></Field>
+          <NumberField label={`cpus${perModel}`} value={nCpus} onChange={setNCpus} min={1} disabled={lockedCpus} />
+          {step.needs_gpu && <NumberField label={`gpus${perModel}`} value={nGpus} onChange={setNGpus} min={0} disabled={lockedGpus} />}
+          <Field label={`memory${perModel}`}><Input value={memory} onChange={setMemory} /></Field>
+          <Field label={`time limit${perModel}`}><Input value={timeLimit} onChange={setTimeLimit} /></Field>
         </div>
         <div className="row" style={{ marginTop: "var(--s3)" }}>
           <Button variant="primary" onClick={submit}

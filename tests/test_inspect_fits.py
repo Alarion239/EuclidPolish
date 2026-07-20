@@ -153,25 +153,27 @@ class TestInspectRoutes:
         app = create_app()
         urls = {str(r) for r in app.url_map.iter_rules()}
         assert "/inspect" in urls
+        assert "/api/inspect" in urls
         assert "/inspect/download" in urls
         assert "/inspect/preview.png" in urls
         assert "/sky/fits" in urls
         assert "/sky/inspect" in urls
 
     def test_inspect_with_unknown_path_404(self, client):
-        r = client.get("/inspect?fits=data/euclid_stars/cutouts/VIS/nope.fits")
+        r = client.get("/api/inspect?fits=data/euclid_stars/cutouts/VIS/nope.fits")
         assert r.status_code == 404
 
     def test_inspect_empty_400(self, client):
-        r = client.get("/inspect?fits=")
+        r = client.get("/api/inspect?fits=")
         assert r.status_code == 400
 
     def test_inspect_renders_with_real_fits(self, client, cutout_fits):
         rel = _safe_relpath(os.path.realpath(cutout_fits))
-        r = client.get(f"/inspect?fits={rel}")
+        r = client.get(f"/api/inspect?fits={rel}")
         assert r.status_code == 200
-        assert b"TESTKEY" in r.data
-        assert b"OBJECT" in r.data
+        cards = [card for hdu in r.get_json()["hdus"] for card in hdu["cards"]]
+        assert any(card[0] == "TESTKEY" for card in cards)
+        assert any(card[0] == "OBJECT" for card in cards)
 
     def test_download_serves_fits_bytes(self, client, cutout_fits):
         rel = _safe_relpath(os.path.realpath(cutout_fits))

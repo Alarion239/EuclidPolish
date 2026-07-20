@@ -4,7 +4,13 @@ from __future__ import annotations
 from flask import jsonify, redirect, render_template, request
 
 from euclid_polish.config import Config
-from euclid_polish.web.helpers.real_field import FIELD_SIZE, cache_real_field, field_dir, latest_field
+from euclid_polish.web.helpers.real_field import (
+    FIELD_SIZE,
+    REAL_FIELD_DIAGNOSTICS_VERSION,
+    cache_real_field,
+    field_dir,
+    latest_field,
+)
 from euclid_polish.web.helpers.status import _checkpoints_status
 from euclid_polish.web.jobs import REGISTRY
 
@@ -41,6 +47,8 @@ def register(app):
             import json
             with (field_dir(str(field["field_id"])) / "diagnostics.json").open() as f:
                 diagnostics = json.load(f)
+            if diagnostics.get("version") != REAL_FIELD_DIAGNOSTICS_VERSION:
+                diagnostics = None
         except (OSError, ValueError, KeyError):
             diagnostics = None
         return jsonify({"diagnostics": diagnostics})

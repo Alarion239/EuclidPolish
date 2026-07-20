@@ -11,8 +11,8 @@ from euclid_polish.config import Config
 from euclid_polish.web import fasrc_config
 from euclid_polish.web import fasrc_fetcher as _fasrc_fetcher
 from euclid_polish.web.fasrc_jobs import _conda_activate_snippet
-from euclid_polish.web.helpers.status import PSF_CLUSTERS_META, _psf_status
 from euclid_polish.web.helpers.fits_render import _psf_preview_payload
+from euclid_polish.web.helpers.status import PSF_CLUSTERS_META, _psf_status
 from euclid_polish.web.remote import STATE
 
 

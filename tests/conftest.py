@@ -156,7 +156,13 @@ def _forbid_real_data_writes(monkeypatch):
         original = getattr(module, name)
 
         def guarded(path, *args, **kwargs):
-            _reject(path, operation)
+            # shutil's fd-safe rmtree implementation passes child names such
+            # as ``data`` relative to an already-open temporary directory.
+            # Interpreting those names against pytest's process cwd produces a
+            # false match with the checkout's live ``./data`` tree.  The
+            # absolute rmtree root was guarded before its dir_fd traversal.
+            if kwargs.get("dir_fd") is None:
+                _reject(path, operation)
             return original(path, *args, **kwargs)
 
         monkeypatch.setattr(module, name, guarded)

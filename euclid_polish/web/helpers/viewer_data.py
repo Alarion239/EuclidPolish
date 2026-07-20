@@ -170,7 +170,7 @@ def _sky_cube(index: int, tier: str, params: dict[str, str]):
         return cube, {
             "label": f"sr · {subset} · idx {index}",
             "asinh": float(Config.STRETCH_SCALE_E),
-            "pixscale": 0.0,
+            "pixscale": float(Config.DEFAULT_PIXEL_SCALE),
         }
     if tier not in ("dirty", "clean"):
         raise ViewerError(400, "bad tier")
@@ -362,7 +362,11 @@ def _eval_cube(index: int, tier: str, params: dict[str, str]):
         with contextlib.suppress(TypeError, ValueError):
             asinh = float(hdul[0].header.get("ASINH", asinh))
     cube = _as_hwc(data)
-    info = {"label": f"{obj['label']} · {tier}", "asinh": asinh, "pixscale": 0.0}
+    tier_scale = (Config.VIS_PIXEL_SCALE_ARCSEC
+                  if tier.lower() in {"lr", "original", "original_stack"}
+                  else Config.DEFAULT_PIXEL_SCALE)
+    info = {"label": f"{obj['label']} · {tier}", "asinh": asinh,
+            "pixscale": float(tier_scale)}
     return cube, info
 
 
@@ -598,13 +602,14 @@ def _ensemble_cube(index: int, tier: str, params: dict[str, str]):
         if tier == "sr":
             return _as_hwc(mean), {
                 "label": f"SR (subset mean · {tag}) · {sub} · idx {rec_index}",
-                "asinh": float(Config.STRETCH_SCALE_E), "pixscale": 0.0}
+                "asinh": float(Config.STRETCH_SCALE_E),
+                "pixscale": float(Config.DEFAULT_PIXEL_SCALE)}
         k = int(tier[3:])
         if k >= len(comps):
             raise ViewerError(404, "pca component out of range")
         return _as_hwc(comps[k]), {
             "label": f"PC{k} · {tag}", "asinh": float(Config.STRETCH_SCALE_E),
-            "pixscale": 0.0, "amp": float(amps[k]),
+            "pixscale": float(Config.DEFAULT_PIXEL_SCALE), "amp": float(amps[k]),
             "var": float(var[k]) if k < len(var) else 0.0}
     # Combiner reconstruction: prefer a baked model-specific cube; otherwise
     # apply that fitted model to the cached member stack on the fly.
@@ -621,7 +626,8 @@ def _ensemble_cube(index: int, tier: str, params: dict[str, str]):
                     starless, rec_index, man.get("member_labels", []) or [], model_kind)))
         label = COMBINER_MODELS[model_kind].label
         return cube, {"label": f"SR ({label}) · {sub} · idx {rec_index}",
-                      "asinh": float(Config.STRETCH_SCALE_E), "pixscale": 0.0}
+                      "asinh": float(Config.STRETCH_SCALE_E),
+                      "pixscale": float(Config.DEFAULT_PIXEL_SCALE)}
     # Records are written index==position from 0, so reading up to the largest
     # cached index covers every LR/HR field we need.
     n_read = (max(int(i) for i in idxs) + 1) if idxs else 1
@@ -636,7 +642,7 @@ def _ensemble_cube(index: int, tier: str, params: dict[str, str]):
                             f"{tier}_{rec_index:05d}.npy")
         if not os.path.isfile(path):
             raise ViewerError(404, f"{tier} cube missing")
-        cube, pix = _as_hwc(np.load(path)), 0.0
+        cube, pix = _as_hwc(np.load(path)), float(Config.DEFAULT_PIXEL_SCALE)
     elif tier == "lr":
         cube, pix = _ensemble_record_cube(sub, n_read, "dirty", rec_index)
     elif tier == "hr":
@@ -744,8 +750,11 @@ def _real_field_cube(index: int, tier: str, params: dict[str, str]):
     else:
         label = next((spec.label for spec in COMBINER_MODELS.values()
                       if spec.cube_prefix == tier), tier)
+    tier_scale = (Config.VIS_PIXEL_SCALE_ARCSEC
+                  if tier.lower() == "lr" else Config.DEFAULT_PIXEL_SCALE)
     return cube, {"label": f"{label} · tile {index + 1:03d}",
-                  "asinh": float(Config.STRETCH_SCALE_E), "pixscale": 0.0}
+                  "asinh": float(Config.STRETCH_SCALE_E),
+                  "pixscale": float(tier_scale)}
 
 
 # ---------------------------------------------------------------------------
@@ -1015,7 +1024,7 @@ def _lens_isolation_cube(index: int, tier: str, params: dict[str, str]):
             return _as_hwc(mean), {
                 "label": f"SR (subset mean · {tag}) · {subset_name} · idx {rec_index}",
                 "asinh": float(Config.STRETCH_SCALE_E),
-                "pixscale": 0.0,
+                "pixscale": float(Config.DEFAULT_PIXEL_SCALE),
             }
         component = int(tier[3:])
         if component >= len(components):
@@ -1023,7 +1032,7 @@ def _lens_isolation_cube(index: int, tier: str, params: dict[str, str]):
         return _as_hwc(components[component]), {
             "label": f"PC{component} · {tag}",
             "asinh": float(Config.STRETCH_SCALE_E),
-            "pixscale": 0.0,
+            "pixscale": float(Config.DEFAULT_PIXEL_SCALE),
             "amp": float(amplitudes[component]),
             "var": float(variance[component]) if component < len(variance) else 0.0,
         }
@@ -1035,7 +1044,7 @@ def _lens_isolation_cube(index: int, tier: str, params: dict[str, str]):
         return _as_hwc(cube), {
             "label": f"SR (combiner) · {subset_name} · idx {rec_index}",
             "asinh": float(Config.STRETCH_SCALE_E),
-            "pixscale": 0.0,
+            "pixscale": float(Config.DEFAULT_PIXEL_SCALE),
         }
     n_read = max((int(value) for value in indices), default=0) + 1
     is_npy = (
@@ -1047,7 +1056,7 @@ def _lens_isolation_cube(index: int, tier: str, params: dict[str, str]):
         path = os.path.join(cubes_dir(), f"{tier}_{rec_index:05d}.npy")
         if not os.path.isfile(path):
             raise ViewerError(404, f"{tier} cube missing")
-        cube, pixel_scale = _as_hwc(np.load(path)), 0.0
+        cube, pixel_scale = _as_hwc(np.load(path)), float(Config.DEFAULT_PIXEL_SCALE)
     elif tier == "lr":
         cube, pixel_scale = _lens_isolation_record_cube(
             subset_name, n_read, "dirty", rec_index

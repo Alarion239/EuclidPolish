@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import warnings
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -22,6 +23,7 @@ from euclid_polish.catalog.downloader import fetch_cutout_at
 from euclid_polish.config import Config
 from euclid_polish.ensemble import default_ensemble_dir, pca_field
 from euclid_polish.eval.combiner import COMBINER_MODELS, load_combiner
+from euclid_polish.eval.power_spectrum import log_k_edges, pairwise_cross_correlation
 from euclid_polish.photometry import adu_per_s_to_electrons_factor
 
 FIELD_SIZE = 2560
@@ -30,6 +32,10 @@ GRID_SIDE = FIELD_SIZE // TILE_SIZE
 _BRIGHTNESS_EDGES = np.linspace(-1.0, 13.0, 81)
 _LOG_STD_EDGES = np.linspace(-6.0, 3.0, 73)
 _MINMAX_EDGES = np.linspace(-1.0, 13.0, 81)
+_STACKED_DIFF_EDGES = np.linspace(-5.0, 5.0, 81)
+_POWER_K_EDGES = log_k_edges(Config.DEFAULT_PIXEL_SCALE, kmin=0.2, nbins=24)
+_POWER_K_CENTERS = np.sqrt(_POWER_K_EDGES[:-1] * _POWER_K_EDGES[1:])
+REAL_FIELD_DIAGNOSTICS_VERSION = 2
 
 
 def field_id(ra: float, dec: float) -> str:
@@ -80,17 +86,16 @@ def _write_json(path: Path, value: dict[str, Any]) -> None:
 
 def _diagnostic_accumulators(combiners: dict[str, Any], n_members: int) -> dict[str, Any]:
     return {
-        "corr_n": 0,
-        "corr_sum": np.zeros(n_members, np.float64),
-        "corr_sq": np.zeros(n_members, np.float64),
-        "corr_cross": np.zeros((n_members, n_members), np.float64),
+        "power_rows": [],
         "std_brightness": np.zeros((len(_BRIGHTNESS_EDGES) - 1,
                                     len(_LOG_STD_EDGES) - 1), np.int64),
         "combiner_counts": {
             kind: np.zeros((len(_BRIGHTNESS_EDGES) - 1,), np.int64)
             if kind == "rbf_gate" else np.zeros(
                 (len(_MINMAX_EDGES) - 1,
-                 len(_LOG_STD_EDGES if kind == "stats_rbf_gate" else _MINMAX_EDGES) - 1), np.int64)
+                 len(_LOG_STD_EDGES if kind == "stats_rbf_gate"
+                     else _STACKED_DIFF_EDGES if kind == "stacked_rbf_gate"
+                     else _MINMAX_EDGES) - 1), np.int64)
             for kind in combiners
         },
     }
@@ -100,17 +105,22 @@ def _accumulate_diagnostics(acc: dict[str, Any], members: np.ndarray,
                             combiners: dict[str, Any]) -> None:
     """Collect between-member relations and real-pixel gate occupancy.
 
-    Correlation and std density are deterministically subsampled to keep a
-    100-tile cache operation bounded; combiner occupancy bins every pixel.
+    Spectral relations use every tile and band; std density is deterministically
+    subsampled to keep a 100-tile cache operation bounded, while combiner
+    occupancy bins every pixel.
     """
     values = np.arcsinh(np.asarray(members, np.float32) / Config.STRETCH_SCALE_E)
-    # Model relation matrix: each member's all-band predictions, sampled on a
-    # regular lattice. This is explicitly model-vs-model only: no HR enters.
-    sample = values[:, ::4, ::4, :].reshape(values.shape[0], -1).astype(np.float64)
-    acc["corr_n"] += sample.shape[1]
-    acc["corr_sum"] += sample.sum(axis=1)
-    acc["corr_sq"] += np.square(sample).sum(axis=1)
-    acc["corr_cross"] += sample @ sample.T
+    # Model relation curves: Fourier cross-correlation for every model pair,
+    # computed independently in each band. This is explicitly model-vs-model
+    # only: no HR enters. Tile/band curves are retained so the final payload
+    # can use the same robust median-across-fields convention as evaluation.
+    acc["power_rows"].extend(
+        pairwise_cross_correlation(
+            [values[i, :, :, band] for i in range(values.shape[0])],
+            Config.DEFAULT_PIXEL_SCALE, _POWER_K_EDGES,
+        )
+        for band in range(values.shape[-1])
+    )
 
     std_sample = values[:, ::4, ::4, :]
     brightness = std_sample.mean(axis=0).reshape(-1)
@@ -136,6 +146,13 @@ def _accumulate_diagnostics(acc: dict[str, Any], members: np.ndarray,
                     np.mean(active, axis=1), np.log(np.maximum(raw_std, 0.0) + floor),
                     bins=(_MINMAX_EDGES, _LOG_STD_EDGES),
                 )[0].astype(np.int64)
+            elif kind == "stacked_rbf_gate":
+                experts = combiner.expert_asinh(name, active)
+                features = combiner.bands[name].features(experts)
+                counts += np.histogram2d(
+                    features[:, 0], features[:, 1],
+                    bins=(_MINMAX_EDGES, _STACKED_DIFF_EDGES),
+                )[0].astype(np.int64)
             else:  # min+max RBF
                 counts += np.histogram2d(np.min(active, axis=1), np.max(active, axis=1),
                                          bins=(_MINMAX_EDGES, _MINMAX_EDGES))[0].astype(np.int64)
@@ -143,12 +160,24 @@ def _accumulate_diagnostics(acc: dict[str, Any], members: np.ndarray,
 
 def _diagnostic_payload(acc: dict[str, Any], labels: list[str],
                         combiners: dict[str, Any]) -> dict[str, Any]:
-    n = max(int(acc["corr_n"]), 1)
-    sums, sq, cross = acc["corr_sum"], acc["corr_sq"], acc["corr_cross"]
-    cov = cross / n - np.outer(sums / n, sums / n)
-    std = np.sqrt(np.maximum(sq / n - np.square(sums / n), 0.0))
-    corr = cov / np.maximum(np.outer(std, std), 1e-12)
-    np.fill_diagonal(corr, 1.0)
+    power_rows = acc["power_rows"]
+    n_pairs = len(labels) * (len(labels) - 1) // 2
+    if power_rows:
+        with np.errstate(all="ignore"), warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            pair_curves = np.nanmedian(np.stack(power_rows, axis=0), axis=0)
+            median_curve = np.nanmedian(pair_curves, axis=0)
+    else:
+        pair_curves = np.full((n_pairs, len(_POWER_K_CENTERS)), np.nan)
+        median_curve = np.full(len(_POWER_K_CENTERS), np.nan)
+
+    def json_numbers(array: np.ndarray) -> list:
+        return [None if not np.isfinite(float(value)) else float(value)
+                for value in np.asarray(array).reshape(-1)]
+
+    def json_rows(array: np.ndarray) -> list[list[float | None]]:
+        return [json_numbers(row) for row in np.asarray(array)]
+
     combiner_payload: dict[str, Any] = {}
     for kind, counts in acc["combiner_counts"].items():
         if kind == "rbf_gate":
@@ -158,16 +187,31 @@ def _diagnostic_payload(acc: dict[str, Any], labels: list[str],
                 "pixel_count": int(counts.sum()),
             }
         else:
-            axis = ("mean brightness", "log(std + floor)") if kind == "stats_rbf_gate" \
-                else ("min brightness", "max brightness")
+            axis = (("mean brightness", "log(std + floor)")
+                    if kind == "stats_rbf_gate" else
+                    ("expert midpoint", "minmax - meanstd")
+                    if kind == "stacked_rbf_gate" else
+                    ("min brightness", "max brightness"))
             combiner_payload[kind] = {
                 "kind": kind, "mode": "heat", "x_edges": _MINMAX_EDGES.tolist(),
-                "y_edges": (_LOG_STD_EDGES if kind == "stats_rbf_gate" else _MINMAX_EDGES).tolist(),
+                "y_edges": (_LOG_STD_EDGES if kind == "stats_rbf_gate"
+                            else _STACKED_DIFF_EDGES if kind == "stacked_rbf_gate"
+                            else _MINMAX_EDGES).tolist(),
                 "counts": counts.tolist(),
                 "x_label": axis[0], "y_label": axis[1], "pixel_count": int(counts.sum()),
             }
     return {
-        "member_labels": labels, "correlation": corr.tolist(), "correlation_samples": int(acc["corr_n"]),
+        "version": REAL_FIELD_DIAGNOSTICS_VERSION,
+        "member_labels": labels,
+        "model_power": {
+            "k": _POWER_K_CENTERS.tolist(),
+            "r_pairs": json_rows(pair_curves),
+            "r_cross": json_numbers(median_curve),
+            "pair_indices": [[i, j] for i in range(len(labels))
+                             for j in range(i + 1, len(labels))],
+            "samples": len(power_rows),
+            "pixel_scale_arcsec": float(Config.DEFAULT_PIXEL_SCALE),
+        },
         "std_brightness": {"x_edges": _BRIGHTNESS_EDGES.tolist(), "y_edges": _LOG_STD_EDGES.tolist(),
                            "counts": acc["std_brightness"].tolist(),
                            "x_label": "mean brightness (asinh)", "y_label": "log10(member std)"},

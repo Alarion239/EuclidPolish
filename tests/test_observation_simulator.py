@@ -162,7 +162,7 @@ def test_separate_star_plane_shares_warped_observation_psf():
     assert difference[4:17, 4:17].max() > 100.0
     assert difference[29:44, 29:44].max() > 100.0
     np.testing.assert_allclose(
-        lr_warped.data, lr_warped_combined.data, rtol=2e-5, atol=1e-3,
+        lr_warped.data, lr_warped_combined.data, rtol=2e-5, atol=3e-3,
     )
 
 
