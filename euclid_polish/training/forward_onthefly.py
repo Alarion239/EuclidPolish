@@ -136,6 +136,8 @@ class OnTheFlyForward:
         self.pixel_scale_arcsec = float(pixel_scale_arcsec)
         if self.crops_per_field < 1:
             raise ValueError("crops_per_field must be >= 1")
+        if self.hr_crop_size < self.scale:
+            raise ValueError("hr_crop_size must be positive and >= scale")
         if self.hr_crop_size % self.scale:
             raise ValueError("hr_crop_size must be divisible by the scale")
         if not 0.0 <= float(saturation_mask_prob) <= \

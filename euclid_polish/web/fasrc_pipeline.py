@@ -1135,6 +1135,10 @@ class EnsembleTrainStep(FASRCPipelineStep):
         steps = int(params.get("steps", Config.DEFAULT_TRAIN_STEPS) or
                     Config.DEFAULT_TRAIN_STEPS)
         cmd = ["scripts/train_ensemble.py", "--mode", mode]
+        batch_size = str(params.get("batch_size", "")).strip()
+        if batch_size:
+            with contextlib.suppress(ValueError):
+                cmd += ["--batch-size", str(int(float(batch_size)))]
         if mode == "continue":
             members = self._members(params)
             if not members:
@@ -1205,7 +1209,8 @@ class EnsembleTrainStep(FASRCPipelineStep):
                 "1", "true", "yes", "on"):
             cmd += ["--forward-onthefly", "1"]
             for flag, key in (("--psf-subset", "psf_subset"),
-                              ("--crops-per-field", "crops_per_field")):
+                              ("--crops-per-field", "crops_per_field"),
+                              ("--hr-crop-size", "hr_crop_size")):
                 val = str(params.get(key, "")).strip()
                 if val not in ("", "0"):
                     with contextlib.suppress(ValueError):

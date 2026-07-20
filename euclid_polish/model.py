@@ -376,6 +376,7 @@ class Model:
         forward_onthefly: bool = False,
         psf_subset: int | None = None,
         crops_per_field: int = DEFAULT_CROPS_PER_FIELD,
+        hr_crop_size: int = Config.DEFAULT_HR_CROP_SIZE,
         psf_warp_prob: float = Config.TRAIN_PSF_WARP_PROB,
         psf_warp_alpha_max: float = Config.TRAIN_PSF_WARP_ALPHA_MAX,
         psf_warp_sigma: float = Config.TRAIN_PSF_WARP_SIGMA,
@@ -407,8 +408,10 @@ class Model:
         model (see :class:`~euclid_polish.training.forward_onthefly
         .OnTheFlyForward`): the dirty records are ignored; each visit of a
         clean field re-draws PSF + noise on the FULL field and cuts
-        ``crops_per_field`` crops. ``psf_subset`` bags the member's PSF pool
-        to that many source clusters (keyed by the seed). ``psf_warp_*``
+        ``crops_per_field`` crops of ``hr_crop_size`` HR pixels. Setting
+        ``hr_crop_size`` to the clean field side and ``crops_per_field=1``
+        trains on the complete field. ``psf_subset`` bags the member's PSF
+        pool to that many source clusters (keyed by the seed). ``psf_warp_*``
         controls polish-pub-style elastic deformation of each training
         exposure's sampled PSF; the clean/HR target is never warped.
         ``saturation_mask_prob`` controls the minority of above-well sources
@@ -428,7 +431,8 @@ class Model:
             psf_sets, note = member_psf_sets(seed=self._seed,
                                              psf_subset=psf_subset)
             print(f"  on-the-fly forward: {note} · "
-                  f"{int(crops_per_field)} crops/field · "
+                  f"{int(crops_per_field)} × {int(hr_crop_size)}px HR "
+                  "crops/field · "
                   f"PSF warp p={float(psf_warp_prob):g}, "
                   f"alpha<= {float(psf_warp_alpha_max):g}, "
                   f"sigma={float(psf_warp_sigma):g}px · "
@@ -438,6 +442,7 @@ class Model:
             # with-stars scene (reconstruct).
             fwd = OnTheFlyForward(psf_sets, seed=self._seed,
                                   crops_per_field=int(crops_per_field),
+                                  hr_crop_size=int(hr_crop_size),
                                   scale=self._scale,
                                   starless=bool(starless),
                                   psf_warp_prob=float(psf_warp_prob),
