@@ -2,7 +2,7 @@
    viewed as its fixed 10x10 grid; synthetic generation and run galleries live
    elsewhere and are intentionally not part of this page. */
 import { useState } from "react";
-import Plot from "../charts/Plot";
+import Plot, { Legend } from "../charts/Plot";
 import { useResource } from "../hooks";
 import { useJob, JobProgressView } from "../jobs";
 import { CutoutViewer } from "../legacy";
@@ -17,8 +17,12 @@ type FieldManifest = {
   combiner_kinds: string[];
 };
 type FieldStatus = { field: FieldManifest | null; field_size: number };
+type ModelPower = {
+  k: number[]; r_pairs: (number | null)[][]; r_cross: (number | null)[];
+  pair_indices: [number, number][]; samples: number; pixel_scale_arcsec: number;
+};
 type Diagnostics = {
-  member_labels: string[]; correlation: number[][]; correlation_samples: number;
+  version: number; member_labels: string[]; model_power: ModelPower;
   std_brightness: { x_edges: number[]; y_edges: number[]; counts: number[][]; x_label: string; y_label: string };
   combiners: Record<string, { mode: "histogram" | "heat"; x_edges: number[]; y_edges?: number[];
     counts: number[] | number[][]; x_label: string; y_label?: string; pixel_count: number }>;
@@ -31,19 +35,31 @@ const ticks = (lo: number, hi: number, n = 4) => Array.from({ length: n + 1 }, (
 
 function InferenceDiagnostics({ data }: { data: Diagnostics }) {
   const labels = data.member_labels.map((label) => label.replace("·psnr", ""));
-  const corrTicks = labels.map((label, i) => ({ v: i + 0.5, label }));
+  const power = data.model_power;
+  const kMin = power.k[0] ?? 0.2;
+  const kMax = power.k[power.k.length - 1] ?? 10;
+  const kTicks = [0.2, 0.5, 1, 2, 5, 10]
+    .filter((value) => value >= kMin && value <= kMax)
+    .map((value) => ({ v: value, label: String(value) }));
   const std = data.std_brightness;
   return <>
     <Card>
-      <CardHead title="Between-member correlation"
-        sub={`Pearson correlation of cached STARFULL member predictions · ${data.correlation_samples.toLocaleString()} regularly sampled multi-band pixels · no HR reference`} />
+      <CardHead title="Model–model angular cross-correlation"
+        sub={`${labels.length * (labels.length - 1) / 2} member pairs · median across ${power.samples.toLocaleString()} tile-band spectra · no HR reference`} />
       <CardBody>
-        <Plot xDomain={[0, labels.length]} yDomain={[0, labels.length]}
-          xTicks={corrTicks} yTicks={corrTicks} xLabel="member" yLabel="member"
-          heat={{ z: data.correlation, xEdges: Array.from({ length: labels.length + 1 }, (_, i) => i),
-            yEdges: Array.from({ length: labels.length + 1 }, (_, i) => i), scale: "linear", min: -1, max: 1,
-            colorLabel: "correlation", colorTicks: [{ v: -1, label: "−1" }, { v: 0, label: "0" }, { v: 1, label: "1" }] }}
-          series={[]} height={430} />
+        <Plot title="cross-correlation rᵢⱼ(k)  ·  1 = identical Fourier structure"
+          xScale="log" xDomain={[kMin, kMax]} yDomain={[-1, 1.05]}
+          xTicks={kTicks}
+          yTicks={[{ v: -1, label: "−1" }, { v: -0.5, label: "−0.5" }, { v: 0, label: "0" }, { v: 0.5, label: "0.5" }, { v: 1, label: "1" }]}
+          xLabel={`angular frequency k [cycles / arcsec] · ${power.pixel_scale_arcsec.toFixed(2)}″ pixels`}
+          yLabel="rᵢⱼ(k)" series={[
+            ...power.r_pairs.map((row) => ({ x: power.k, y: row, color: "#708096", width: 0.8, alpha: 0.22 })),
+            { x: power.k, y: power.r_cross, color: "#4c9ffe", width: 2.4, dash: [6, 3] },
+          ]} guides={[{ axis: "y", v: 1, color: "#8c98a8", dash: [2, 3] }]} height={430} />
+        <Legend items={[{ label: "individual model pairs", color: "#708096" }, { label: "median rᵢⱼ(k)", color: "#4c9ffe", dash: true }]} />
+        <p className="muted" style={{ margin: "var(--s3) 0 0", fontSize: 12 }}>
+          Each curve compares two cached STARFULL predictions after mean subtraction and windowed 2-D FFTs; the bands and tiles are combined by median.
+        </p>
       </CardBody>
     </Card>
 
@@ -156,7 +172,7 @@ export default function InferencePage() {
 
         {field && diagnostics.data?.diagnostics && <InferenceDiagnostics data={diagnostics.data.diagnostics} />}
         {field && !diagnostics.loading && !diagnostics.data?.diagnostics && (
-          <Card><CardHead title="Field diagnostics" sub="Rerun this exact cached field once to derive its between-member and gate-occupancy plots." /></Card>
+          <Card><CardHead title="Field diagnostics" sub="Rerun this exact cached field once to derive its model–model spectral and gate-occupancy plots." /></Card>
         )}
       </div>
     </Page>
