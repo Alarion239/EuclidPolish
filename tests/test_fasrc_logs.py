@@ -1,9 +1,9 @@
 """Unit tests for the FASRC ``Logs`` tab endpoints.
 
-Both endpoints (``/api/fasrc/runs`` and ``/api/fasrc/runs/log``) run a
-single SSH command and parse its stdout. We stub the SSH session with a
-canned-response shim so the tests don't depend on GNU ``find -printf``
-(unavailable on macOS) or a real FASRC connection.
+Both endpoints (``/api/fasrc/runs`` and ``/api/fasrc/runs/log``) parse
+remote command output. We stub the SSH session with a canned-response
+shim so the tests don't depend on GNU ``find -printf`` (unavailable on
+macOS) or a real FASRC connection.
 """
 
 from __future__ import annotations
@@ -67,15 +67,19 @@ def _find_response(rows: list[tuple[float, int, str]]) -> str:
 
 
 def test_runs_returns_empty_when_log_dir_missing(client, tmp_repo, monkeypatch):
-    """If FASRC has no logs/jobs yet, the route still returns ok with an empty list."""
+    """An empty log tree is valid and both pipeline log folders are scanned."""
+    repo, _log_dir, _db = tmp_repo
     # /api/fasrc/runs now does TWO ssh calls: squeue first (for state
     # reconciliation), then find. Both empty here.
-    web_app.STATE.ssh = StubSSH([(0, "", ""), (0, "", "")])
+    ssh = StubSSH([(0, "", ""), (0, "", "")])
+    web_app.STATE.ssh = ssh
     r = client.get("/api/fasrc/runs")
     assert r.status_code == 200
     body = r.get_json()
     assert body["ok"] is True
     assert body["runs"] == []
+    assert f"find {repo}/logs -maxdepth 3" in ssh.calls[1]
+    assert f"find {repo}/logs/jobs" not in ssh.calls[1]
 
 
 def test_runs_lists_from_find_alone(client, tmp_repo, monkeypatch):
@@ -145,6 +149,63 @@ def test_runs_shows_db_jobs_with_missing_files(client, tmp_repo):
     assert runs[0]["missing"] is True
     assert runs[0]["jobid"] == "777"
     assert runs[0]["state"] == "FAILED"
+
+
+def test_runs_groups_array_task_logs_under_the_parent(client, tmp_repo):
+    """Concrete ``%A_%a`` files stay one run and retain member metadata."""
+    repo, log_dir, db = tmp_repo
+    template = f"{log_dir}/ensemble-night-%A_%a"
+    db.insert(
+        "900",
+        label="night ensemble",
+        params={
+            "array_count": 3,
+            "mode": "add",
+            "member_names": "member_20,member_21,member_22",
+        },
+        script_path=f"{repo}/array.sh",
+        log_path=f"{template}.out",
+        err_path=f"{template}.err",
+    )
+    rows = [
+        (1700000100.0, 120, f"{log_dir}/ensemble-night-900_0.out"),
+        (1700000100.0, 10, f"{log_dir}/ensemble-night-900_0.err"),
+        (1700000200.0, 220, f"{log_dir}/ensemble-night-900_1.out"),
+        (1700000200.0, 20, f"{log_dir}/ensemble-night-900_1.err"),
+        # Task 2 has not started and therefore has no files yet.
+    ]
+    squeue = (
+        "900_0|night|RUNNING|0:10|3:00:00|1|None|now\n"
+        "900_1|night|RUNNING|0:10|3:00:00|1|None|now\n"
+        "900_2|night|PENDING|0:00|3:00:00|1|Resources|later\n"
+    )
+    web_app.STATE.ssh = StubSSH([
+        (0, squeue, ""),
+        (0, _find_response(rows), ""),
+    ])
+
+    body = client.get("/api/fasrc/runs").get_json()
+    assert body["total_runs"] == 1
+    run = body["runs"][0]
+    assert run["jobid"] == "900"
+    assert run["array_count"] == 3
+    assert run["out_path"] is None
+    assert run["out_size"] == 340
+    assert [task["member"] for task in run["tasks"]] == [
+        "member_20", "member_21", "member_22",
+    ]
+    assert [task["jobid"] for task in run["tasks"]] == [
+        "900_0", "900_1", "900_2",
+    ]
+    assert run["tasks"][0]["out_path"].endswith(
+        "ensemble-night-900_0.out"
+    )
+    assert run["tasks"][0]["state"] == "RUNNING"
+    assert run["tasks"][2]["state"] == "PENDING"
+    assert run["tasks"][2]["missing"] is True
+    assert run["tasks"][2]["out_path"].endswith(
+        "ensemble-night-900_2.out"
+    )
 
 
 def test_runs_log_returns_content(client, tmp_repo):

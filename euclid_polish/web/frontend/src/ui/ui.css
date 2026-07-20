@@ -261,6 +261,13 @@
 .fasrc-mon__events--err { color: var(--bad); }
 .fasrc-log__toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s2); }
 .fasrc-log__content { min-height: 280px; max-height: min(68vh, 760px); }
+.fasrc-log__tasks { margin-bottom: var(--s3); }
+.fasrc-log__task-caption { margin-bottom: var(--s2); font-size: 12px; }
+.fasrc-log__selected {
+  padding: var(--s2) var(--s3); border: 1px solid var(--border);
+  border-bottom: 0; border-radius: var(--r-sm) var(--r-sm) 0 0;
+  background: var(--surface-2); font-size: 12px;
+}
 .fasrc-log__pager {
   display: flex; align-items: center; flex-wrap: wrap; gap: var(--s2);
   margin-top: var(--s3); font-size: 12px;

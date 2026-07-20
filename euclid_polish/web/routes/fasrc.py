@@ -1021,7 +1021,7 @@ def register(app):
     # FASRC, regardless of how it was submitted:
     #   (1) ``JobDB`` — every job submitted from this UI, with its SLURM
     #       jobid, label, state, and timestamps.
-    #   (2) Remote ``find <repo>/logs/jobs -name '*.out' -o -name '*.err'``
+    #   (2) Remote ``find <repo>/logs -name '*.out' -o -name '*.err'``
     #       — picks up jobs submitted directly via sbatch from the CLI,
     #       which the DB has no record of.
     # Rows are de-duplicated by base name (the ``euclid-YYYYMMDD-HHMMSS``
@@ -1034,7 +1034,7 @@ def register(app):
         if not STATE.ssh or not STATE.ssh.is_connected():
             return jsonify({"ok": False, "error": "not connected"}), 400
         cfg = fasrc_config.load()
-        log_dir = f"{cfg.repo_path}/{cfg.logs_subdir}/jobs"
+        log_dir = f"{cfg.repo_path}/{cfg.logs_subdir}"
 
         # 0. Reconcile DB state against the live queue *before* we read
         # rows out of sqlite. Without this, any job that finished
@@ -1046,9 +1046,11 @@ def register(app):
             f"squeue -r -h -u $USER --format='{fasrc_jobs.SQUEUE_FMT}'",
             timeout=15,
         )
+        squeue_rows: list[dict[str, Any]] = []
         if rc_q == 0:
+            squeue_rows = fasrc_jobs.parse_squeue(out_q)
             fasrc_jobs.reconcile_with_squeue(
-                fasrc_jobs.parse_squeue(out_q), ssh=STATE.ssh,
+                squeue_rows, ssh=STATE.ssh,
             )
 
         # 1. Scan remote for every .out / .err — one cheap SSH call.
@@ -1056,7 +1058,10 @@ def register(app):
         # through with empty output if the dir doesn't exist yet.
         cmd = (
             f"{{ [ -d {shlex.quote(log_dir)} ] && "
-            f"find {shlex.quote(log_dir)} -maxdepth 2 -type f "
+            # Modern pipeline logs live in ``logs/hst_pipeline`` while older
+            # generic submissions live in ``logs/jobs``. Search the configured
+            # log tree, not just the legacy jobs directory.
+            f"find {shlex.quote(log_dir)} -maxdepth 3 -type f "
             f"\\( -name '*.out' -o -name '*.err' \\) "
             f"-printf '%T@\\t%s\\t%p\\n' 2>/dev/null "
             f"| sort -rn -k1,1 | head -20000 ; }}; exit 0"
@@ -1086,64 +1091,140 @@ def register(app):
                 rec[f"{kind}_size"] = size
                 rec["mtime"] = max(rec["mtime"], mtime)
 
-        # 2. Overlay JobDB rows (gives us jobid + state + label + params).
-        #    Large limit so older runs (later pages) still get their
-        #    jobid/state/label, not just the most recent 120.
-        db_by_name: dict[str, dict[str, Any]] = {}
-        for row in fasrc_jobs.DB.list_recent(5000):
-            lp = row.get("log_path") or ""
+        # 2. Build one run per DB submission.  Array submissions deliberately
+        #    store SLURM's literal ``%A_%a`` template in the DB, while the
+        #    files on disk contain concrete ``<parent>_<index>`` values.  The
+        #    old name-based overlay could never join those records: it showed
+        #    an empty template row and (when found) anonymous child-file rows.
+        #    Keep the submission as one parent run and attach its concrete log
+        #    targets as named tasks for the UI to select.
+        runs: list[dict[str, Any]] = []
+        consumed_stems: set[str] = set()
+        live_by_jobid = {
+            str(row.get("jobid")): row for row in squeue_rows
+            if row.get("jobid")
+        }
+        for db_row in fasrc_jobs.DB.list_recent(5000):
+            lp = str(db_row.get("log_path") or "")
             base = os.path.basename(lp)
             stem = base[:-4] if base.endswith(".out") else base
-            if stem:
-                db_by_name[stem] = row
-
-        runs: list[dict[str, Any]] = []
-        for stem, rec in files.items():
-            db_row = db_by_name.get(stem) or {}
+            if not stem:
+                continue
             try:
                 params = json.loads(db_row.get("params_json") or "{}")
             except (TypeError, ValueError):
                 params = {}
-            runs.append({
+            try:
+                array_count = max(1, int(params.get("array_count", 1) or 1))
+            except (TypeError, ValueError):
+                array_count = 1
+
+            common = {
                 "name":         stem,
                 "jobid":        db_row.get("jobid"),
                 "label":        db_row.get("label"),
                 "state":        db_row.get("state"),
-                "submitted_at": db_row.get("submitted_at") or rec["mtime"],
+                "submitted_at": db_row.get("submitted_at") or 0.0,
                 "started_at":   db_row.get("started_at"),
                 "ended_at":     db_row.get("ended_at"),
-                "out_path":     rec.get("out_path"),
-                "err_path":     rec.get("err_path"),
+                "params":       params,
+            }
+            if array_count > 1:
+                parent_jobid = str(db_row.get("jobid") or "")
+                names_key = "members" if params.get("mode") == "continue" else "member_names"
+                member_names = [
+                    name.strip() for name in str(params.get(names_key) or "").split(",")
+                    if name.strip()
+                ]
+                tasks: list[dict[str, Any]] = []
+                latest_mtime = float(db_row.get("submitted_at") or 0.0)
+                total_out_size = 0
+                total_err_size = 0
+                for index in range(array_count):
+                    task_out = fasrc_jobs.expand_array_path(
+                        db_row.get("log_path"), parent_jobid, index,
+                    )
+                    task_err = fasrc_jobs.expand_array_path(
+                        db_row.get("err_path"), parent_jobid, index,
+                    )
+                    task_base = os.path.basename(task_out or "")
+                    task_stem = (task_base[:-4]
+                                 if task_base.endswith(".out") else task_base)
+                    rec = files.get(task_stem, {})
+                    if task_stem in files:
+                        consumed_stems.add(task_stem)
+                    task_jobid = f"{parent_jobid}_{index}"
+                    live = live_by_jobid.get(task_jobid)
+                    parent_state = str(db_row.get("state") or "").upper()
+                    task_state = live.get("state") if live else (
+                        parent_state if parent_state in fasrc_jobs.TERMINAL_STATES
+                        else None
+                    )
+                    out_size = int(rec.get("out_size", 0) or 0)
+                    err_size = int(rec.get("err_size", 0) or 0)
+                    latest_mtime = max(latest_mtime, float(rec.get("mtime", 0.0) or 0.0))
+                    total_out_size += out_size
+                    total_err_size += err_size
+                    tasks.append({
+                        "index": index,
+                        "member": (member_names[index]
+                                   if index < len(member_names)
+                                   else f"task {index}"),
+                        "jobid": task_jobid,
+                        "name": task_stem,
+                        "state": task_state,
+                        "out_path": rec.get("out_path") or task_out,
+                        "err_path": rec.get("err_path") or task_err,
+                        "out_size": out_size,
+                        "err_size": err_size,
+                        "mtime": rec.get("mtime", 0.0),
+                        "missing": not bool(rec.get("out_path") or rec.get("err_path")),
+                    })
+                runs.append({
+                    **common,
+                    "array_count": array_count,
+                    "tasks": tasks,
+                    "out_path": None,
+                    "err_path": None,
+                    "out_size": total_out_size,
+                    "err_size": total_err_size,
+                    "mtime": latest_mtime,
+                    "missing": all(task["missing"] for task in tasks),
+                })
+                continue
+
+            rec = files.get(stem, {})
+            if stem in files:
+                consumed_stems.add(stem)
+            runs.append({
+                **common,
+                "out_path":     rec.get("out_path") or db_row.get("log_path"),
+                "err_path":     rec.get("err_path") or db_row.get("err_path"),
                 "out_size":     rec.get("out_size", 0),
                 "err_size":     rec.get("err_size", 0),
-                "mtime":        rec["mtime"],
-                "params":       params,
+                "mtime":        rec.get("mtime") or db_row.get("submitted_at") or 0.0,
+                "missing":      not bool(rec.get("out_path") or rec.get("err_path")),
             })
 
-        # Also surface DB-known jobs whose log files have been deleted
-        # (so the user can still see the row even if the .out is gone).
-        for stem, row in db_by_name.items():
-            if stem in files:
+        # 3. Files with no DB submission are CLI/manual runs.  Array child
+        #    stems consumed above must not leak out as eight anonymous runs.
+        for stem, rec in files.items():
+            if stem in consumed_stems:
                 continue
-            try:
-                params = json.loads(row.get("params_json") or "{}")
-            except (TypeError, ValueError):
-                params = {}
             runs.append({
-                "name":         stem,
-                "jobid":        row.get("jobid"),
-                "label":        row.get("label"),
-                "state":        row.get("state"),
-                "submitted_at": row.get("submitted_at") or 0.0,
-                "started_at":   row.get("started_at"),
-                "ended_at":     row.get("ended_at"),
-                "out_path":     row.get("log_path"),
-                "err_path":     row.get("err_path"),
-                "out_size":     0,
-                "err_size":     0,
-                "mtime":        row.get("submitted_at") or 0.0,
-                "missing":      True,
-                "params":       params,
+                "name": stem,
+                "jobid": None,
+                "label": None,
+                "state": None,
+                "submitted_at": rec["mtime"],
+                "started_at": None,
+                "ended_at": None,
+                "out_path": rec.get("out_path"),
+                "err_path": rec.get("err_path"),
+                "out_size": rec.get("out_size", 0),
+                "err_size": rec.get("err_size", 0),
+                "mtime": rec["mtime"],
+                "params": {},
             })
         runs.sort(key=lambda r: r["mtime"], reverse=True)
 

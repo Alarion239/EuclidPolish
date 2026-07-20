@@ -6,6 +6,10 @@ export type RunLogFiles = {
   missing?: boolean;
 };
 
+export type RunWithTaskLogs = RunLogFiles & {
+  tasks?: RunLogFiles[] | null;
+};
+
 export function preferredLogKind(files: RunLogFiles): LogKind | null {
   // `missing` means the remote directory scan did not see the files.  DB rows
   // still carry their canonical paths and the classic UI lets the log endpoint
@@ -18,6 +22,11 @@ export function preferredLogKind(files: RunLogFiles): LogKind | null {
 
 export function logPath(files: RunLogFiles, kind: LogKind): string | null {
   return kind === "out" ? files.out_path ?? null : files.err_path ?? null;
+}
+
+export function hasRunLogs(run: RunWithTaskLogs): boolean {
+  if (preferredLogKind(run)) return true;
+  return (run.tasks ?? []).some((task) => preferredLogKind(task) != null);
 }
 
 export function buildLogPageUrl(path: string, page: number, pageSize: number): string {

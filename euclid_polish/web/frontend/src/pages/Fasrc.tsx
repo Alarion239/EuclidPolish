@@ -12,7 +12,7 @@ import {
   PageHead, Spinner, Table, Tabs, type Column,
 } from "../ui";
 import {
-  buildLogPageUrl, logPath, preferredLogKind, type LogKind,
+  buildLogPageUrl, hasRunLogs, logPath, preferredLogKind, type LogKind,
 } from "./fasrcLogs";
 
 type GitStatus = { ok: boolean; repo?: string; branch?: string; ahead?: number; behind?: number; last?: { hash: string; subject: string; relative: string } };
@@ -25,6 +25,13 @@ type RunRow = {
   name: string; jobid?: string | null; label?: string | null; state?: string | null;
   submitted_at?: number; out_size?: number; err_size?: number; missing?: boolean;
   out_path?: string | null; err_path?: string | null;
+  array_count?: number;
+  tasks?: RunTask[];
+};
+type RunTask = {
+  index: number; member: string; jobid: string; name: string; state?: string | null;
+  out_path?: string | null; err_path?: string | null;
+  out_size?: number; err_size?: number; missing?: boolean;
 };
 type RunsResp = { ok: boolean; log_dir?: string; runs: RunRow[]; total_runs: number; page: number; page_size: number };
 type LogResp = {
@@ -163,10 +170,13 @@ function StorageTab({ connected }: { connected: boolean }) {
 const LOG_PAGE_SIZE = 1000;
 
 function RunLogDetail({ run, onBack }: { run: RunRow; onBack: () => void }) {
-  const [which, setWhich] = useState<LogKind>(() => preferredLogKind(run) ?? "out");
+  const targets: (RunTask | RunRow)[] = run.tasks?.length ? run.tasks : [run];
+  const [targetIndex, setTargetIndex] = useState(0);
+  const target = targets[targetIndex] ?? targets[0];
+  const [which, setWhich] = useState<LogKind>(() => preferredLogKind(targets[0]) ?? "out");
   const [page, setPage] = useState(0);
   const contentRef = useRef<HTMLPreElement>(null);
-  const path = logPath(run, which);
+  const path = logPath(target, which);
   const url = path ? buildLogPageUrl(path, page, LOG_PAGE_SIZE) : null;
   const log = useResource<LogResp>(url, [path, page], { ttl: 0 });
   const data = log.data?.path === path ? log.data : null;
@@ -178,23 +188,60 @@ function RunLogDetail({ run, onBack }: { run: RunRow; onBack: () => void }) {
   }, [data, page]);
 
   function show(kind: LogKind) {
-    if (!logPath(run, kind)) return;
+    if (!logPath(target, kind)) return;
     setWhich(kind);
     setPage(0);
   }
 
+  function selectTarget(index: number) {
+    const next = targets[index];
+    if (!next) return;
+    setTargetIndex(index);
+    setWhich(preferredLogKind(next) ?? "out");
+    setPage(0);
+  }
+
+  const taskCols: Column<RunTask>[] = [
+    { header: "task", width: 72, cell: (task) => <code className="mono">#{task.index}</code> },
+    { header: "member", cell: (task) => <code className="mono">{task.member}</code> },
+    { header: "SLURM job", cell: (task) => <code className="mono">{task.jobid}</code> },
+    { header: "state", cell: (task) => task.state
+      ? <Badge tone={stateTone(task.state)}>{task.state}</Badge>
+      : <span className="muted">—</span> },
+    { header: "", align: "right", cell: (task) => (
+      <Button size="sm" variant={task.index === targetIndex ? "primary" : "ghost"}>
+        {task.index === targetIndex ? "viewing" : "view log"}
+      </Button>
+    ) },
+  ];
+
   return (
     <Card>
       <CardHead title="Run logs"
-        sub={<><code className="mono">{run.name}</code>{run.jobid ? ` · job ${run.jobid}` : ""}</>}
+        sub={<>
+          <code className="mono">{run.name}</code>{run.jobid ? ` · job ${run.jobid}` : ""}
+          {run.tasks?.length ? ` · ${run.tasks.length} array tasks` : ""}
+        </>}
         right={<div className="fasrc-log__toolbar">
           <Button size="sm" variant="ghost" onClick={onBack}>← Back to past runs</Button>
           <Button size="sm" variant={which === "out" ? "primary" : "default"}
-            disabled={!run.out_path} onClick={() => show("out")}>.out</Button>
+            disabled={!target.out_path} onClick={() => show("out")}>.out</Button>
           <Button size="sm" variant={which === "err" ? "primary" : "default"}
-            disabled={!run.err_path} onClick={() => show("err")}>.err</Button>
+            disabled={!target.err_path} onClick={() => show("err")}>.err</Button>
         </div>} />
       <CardBody>
+        {run.tasks?.length ? <div className="fasrc-log__tasks">
+          <div className="muted fasrc-log__task-caption">
+            Select an array task to read that member's own stdout or stderr.
+          </div>
+          <Table columns={taskCols} rows={run.tasks}
+            rowKey={(task) => task.jobid}
+            onRowClick={(task) => selectTarget(task.index)} />
+        </div> : null}
+        {run.tasks?.length ? <div className="fasrc-log__selected muted">
+          task #{(target as RunTask).index} · <code className="mono">{(target as RunTask).member}</code>
+          {target.missing ? " · not seen by the history scan yet" : ""}
+        </div> : null}
         {!data
           ? log.error
             ? <Empty>couldn't load this log</Empty>
@@ -224,15 +271,22 @@ function LogsTab({ connected }: { connected: boolean }) {
   const [selected, setSelected] = useState<RunRow | null>(null);
 
   function openRun(run: RunRow) {
-    if (preferredLogKind(run)) setSelected(run);
+    if (hasRunLogs(run)) setSelected(run);
   }
 
   const cols: Column<RunRow>[] = [
     { header: "job", cell: (r) => <code className="mono">{r.jobid ?? "—"}</code> },
-    { header: "label", cell: (r) => r.label ?? r.name },
+    { header: "label", cell: (r) => <div>
+      <div>{r.label ?? r.name}</div>
+      {r.tasks?.length ? <div className="muted" style={{ fontSize: 11 }}>
+        array · {r.tasks.length} members
+      </div> : null}
+    </div> },
     { header: "state", cell: (r) => r.state ? <Badge tone={stateTone(r.state)}>{r.state}</Badge> : <span className="muted">—</span> },
-    { header: "", align: "right", cell: (r) => preferredLogKind(r)
-      ? <Button size="sm" title="Open raw logs">open logs →</Button>
+    { header: "", align: "right", cell: (r) => hasRunLogs(r)
+      ? <Button size="sm" title="Open raw logs">
+        {r.tasks?.length ? `open ${r.tasks.length} task logs →` : "open logs →"}
+      </Button>
       : <span className="muted">no files</span> },
   ];
   if (!connected) return <Card><CardBody><Empty>connect to FASRC to browse past runs</Empty></CardBody></Card>;
@@ -250,7 +304,7 @@ function LogsTab({ connected }: { connected: boolean }) {
         </div>} />
       <CardBody>
         <Table columns={cols} rows={asArray<RunRow>(d?.runs)} rowKey={(r) => r.name}
-          onRowClick={openRun} isRowClickable={(r) => preferredLogKind(r) != null}
+          onRowClick={openRun} isRowClickable={(r) => hasRunLogs(r)}
           empty={runs.loading ? "loading…" : "no past runs found"} />
       </CardBody>
     </Card>
