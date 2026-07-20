@@ -91,12 +91,16 @@ def test_train_members_writes_origin_for_created_members(tmp_path):
     base = str(tmp_path / "ensemble")
     specs = [MemberTrainSpec(name="member_09", seed=7, target_steps=100,
                              op="fork", run_steps=100, init_from="x",
-                             forked_from="member_03·loss")]
-    EnsembleModel(base, _models=[]).train_members("lr", "hr", specs)
+                             forked_from="member_03·loss",
+                             crops_per_field=1, hr_crop_size=510)]
+    EnsembleModel(base, _models=[]).train_members(
+        "lr", "hr", specs, batch_size=2)
     with open(os.path.join(base, "member_09", "origin.json")) as f:
         o = json.load(f)
     assert o["op"] == "fork" and o["forked_from"] == "member_03·loss"
     assert o["seed"] == 7 and o["target_steps"] == 100
+    assert o["batch_size"] == 2
+    assert o["crops_per_field"] == 1 and o["hr_crop_size"] == 510
     assert "created_at" in o
     assert "num_res_blocks" in o
     # continue never writes/overwrites origin

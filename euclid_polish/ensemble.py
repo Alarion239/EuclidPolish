@@ -125,6 +125,7 @@ class MemberTrainSpec:
     forward_onthefly: bool = False
     psf_subset: int | None = None
     crops_per_field: int = 16
+    hr_crop_size: int = Config.DEFAULT_HR_CROP_SIZE
     psf_warp_prob: float = Config.TRAIN_PSF_WARP_PROB
     psf_warp_alpha_max: float = Config.TRAIN_PSF_WARP_ALPHA_MAX
     psf_warp_sigma: float = Config.TRAIN_PSF_WARP_SIGMA
@@ -385,8 +386,10 @@ class EnsembleModel:
                         "noise_aug": float(spec.noise_aug),
                         "bootstrap": spec.bootstrap,
                         "forward_onthefly": bool(spec.forward_onthefly),
+                        "batch_size": int(batch_size),
                         "psf_subset": spec.psf_subset,
                         "crops_per_field": int(spec.crops_per_field),
+                        "hr_crop_size": int(spec.hr_crop_size),
                         "psf_warp_prob": float(spec.psf_warp_prob),
                         "psf_warp_alpha_max": float(spec.psf_warp_alpha_max),
                         "psf_warp_sigma": float(spec.psf_warp_sigma),
@@ -415,6 +418,7 @@ class EnsembleModel:
                     forward_onthefly=spec.forward_onthefly,
                     psf_subset=spec.psf_subset,
                     crops_per_field=spec.crops_per_field,
+                    hr_crop_size=spec.hr_crop_size,
                     psf_warp_prob=spec.psf_warp_prob,
                     psf_warp_alpha_max=spec.psf_warp_alpha_max,
                     psf_warp_sigma=spec.psf_warp_sigma,

@@ -702,12 +702,15 @@ def register(app):
         if step.fixed_cpus is not None:
             resources.n_cpus = int(step.fixed_cpus)
 
-        # Inject the universal job-config values for this step. These fields
-        # were removed from the step cards and now live on the /config tab, so
-        # the form never carries them — we supply them here, server-side
-        # (including computed params like the locked ePSF output size).
+        # Fill universal job-config values. Most steps always inherit /config
+        # (including computed/locked values); React Train members deliberately
+        # exposes experiment-local ensemble controls, so preserve values that
+        # page explicitly submitted instead of silently replacing them.
         for param_name, value in job_config.fasrc_params_for(step_id).items():
-            form[param_name] = value
+            if step_id == "ensemble_train":
+                form.setdefault(param_name, value)
+            else:
+                form[param_name] = value
 
         # All form values are passed as ``params``; the step picks out
         # what it needs (e.g. ``n_tiles``, ``hst_fraction``).

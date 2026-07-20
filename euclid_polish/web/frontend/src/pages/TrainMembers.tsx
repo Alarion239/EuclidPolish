@@ -33,7 +33,7 @@ type SpecRow = {
 };
 const newRow = (starless: boolean, from?: SpecRow): SpecRow => ({
   loss: from?.loss ?? "l1",
-  blocks: from?.blocks ?? "16",
+  blocks: from?.blocks ?? "32",
   knee: from?.knee ?? "100",
   noise: from?.noise ?? "0",
   boot: from?.boot ?? "",
@@ -71,8 +71,16 @@ export default function TrainMembersPage() {
     prefilledMember ? [prefilledMember] : []);
   const [starlessDefault, setStarlessDefault] = useState(true);
   const [forwardOtf, setForwardOtf] = useState(true);   // run-wide forward model
+  const [batchSize, setBatchSize] = useState("1");
+  const [hrCropSize, setHrCropSize] = useState("510");
+  const [cropsPerField, setCropsPerField] = useState("1");
+  const [psfSubset, setPsfSubset] = useState("64");
+  const [psfWarpProb, setPsfWarpProb] = useState("1");
+  const [psfWarpAlphaMax, setPsfWarpAlphaMax] = useState("20");
+  const [psfWarpSigma, setPsfWarpSigma] = useState("3");
+  const [saturationMaskProb, setSaturationMaskProb] = useState("0.2");
   const [rows, setRows] = useState<SpecRow[]>([newRow(true)]);
-  const [steps, setSteps] = useState("50000");
+  const [steps, setSteps] = useState("60000");
   const [extraSteps, setExtraSteps] = useState("50000");
 
   const setRow = (i: number, patch: Partial<SpecRow>) =>
@@ -108,22 +116,42 @@ export default function TrainMembersPage() {
   }, [continueMembers, selectedMembers]);
 
   const extra = useMemo<Record<string, string>>(() => {
+    const geometry = {
+      batch_size: batchSize,
+      forward_onthefly: forwardOtf ? "1" : "0",
+      hr_crop_size: hrCropSize,
+      crops_per_field: cropsPerField,
+      psf_subset: psfSubset,
+      psf_warp_prob: psfWarpProb,
+      psf_warp_alpha_max: psfWarpAlphaMax,
+      psf_warp_sigma: psfWarpSigma,
+      saturation_mask_prob: saturationMaskProb,
+    };
     if (mode === "continue")
-      return { mode, members: selectedMemberNames.join(","), extra_steps: extraSteps };
+      return { mode, members: selectedMemberNames.join(","), extra_steps: extraSteps,
+        ...geometry };
     const p: Record<string, string> = {
       mode, count: String(rows.length), steps,
-      forward_onthefly: forwardOtf ? "1" : "0",
       member_spec: JSON.stringify(buildSpec(rows, mode)),
+      ...geometry,
     };
     if (mode === "fork") p.fork_from = member.trim();
     return p;
-  }, [mode, member, selectedMemberNames, extraSteps, rows, steps, forwardOtf]);
+  }, [mode, member, selectedMemberNames, extraSteps, rows, steps, forwardOtf,
+    batchSize, hrCropSize, cropsPerField, psfSubset, psfWarpProb,
+    psfWarpAlphaMax, psfWarpSigma, saturationMaskProb]);
 
   const showDepth = mode === "add";   // fork inherits its source's depth + init
   const extraStepCount = Number(extraSteps);
   const extraStepsValid = Number.isInteger(extraStepCount) && extraStepCount > 0;
   const continueSubmitDisabled = mode === "continue"
     && (selectedMemberNames.length === 0 || !extraStepsValid);
+  const geometryValid = Number.isInteger(Number(batchSize)) && Number(batchSize) > 0
+    && Number.isInteger(Number(hrCropSize)) && Number(hrCropSize) > 0
+    && Number(hrCropSize) % 2 === 0
+    && Number.isInteger(Number(cropsPerField)) && Number(cropsPerField) > 0
+    && Number(psfWarpProb) >= 0 && Number(psfWarpProb) <= 1
+    && Number(saturationMaskProb) >= 0 && Number(saturationMaskProb) <= 0.5;
   const selectedSummary = selectedMemberNames.length === 0 ? "…"
     : selectedMemberNames.length <= 3 ? selectedMemberNames.join(", ")
       : `${selectedMemberNames.length} selected members`;
@@ -193,13 +221,11 @@ export default function TrainMembersPage() {
               <div className="fasrc-step__res" style={{ marginBottom: "var(--s3)" }}>
                 <Field label="fork from"><Input value={member} onChange={setMember} placeholder="member_02" /></Field>
                 <NumberField label="steps" value={steps} onChange={setSteps} min={1000} max={500000} step={1000} />
-                <Checkbox checked={forwardOtf} onChange={setForwardOtf}>on-the-fly forward</Checkbox>
               </div>
             )}
             {mode === "add" && (
               <div className="fasrc-step__res" style={{ marginBottom: "var(--s3)" }}>
                 <NumberField label="steps" value={steps} onChange={setSteps} min={1000} max={500000} step={1000} />
-                <Checkbox checked={forwardOtf} onChange={setForwardOtf}>on-the-fly forward</Checkbox>
               </div>
             )}
 
@@ -239,14 +265,44 @@ export default function TrainMembersPage() {
       )}
 
       <Card style={{ marginTop: "var(--s4)" }}>
+        <CardHead title="Training geometry"
+          sub="Run-wide controls. 510 HR / 255 LR with one crop trains on the complete generated field; loss and validation cover the complete output." />
+        <CardBody>
+          <div className="fasrc-step__res" style={{ marginBottom: "var(--s3)" }}>
+            <NumberField label="batch size" value={batchSize} onChange={setBatchSize}
+              min={1} max={64} step={1} />
+            <NumberField label="HR example side" value={hrCropSize} onChange={setHrCropSize}
+              min={2} max={510} step={2} />
+            <NumberField label="examples / field" value={cropsPerField}
+              onChange={setCropsPerField} min={1} max={25} step={1} />
+            <Checkbox checked={forwardOtf} onChange={setForwardOtf}>on-the-fly forward</Checkbox>
+          </div>
+          <div className="fasrc-step__res">
+            <NumberField label="PSF clusters / member" value={psfSubset}
+              onChange={setPsfSubset} min={1} max={10000} step={1} />
+            <NumberField label="PSF warp probability" value={psfWarpProb}
+              onChange={setPsfWarpProb} min={0} max={1} step={0.05} />
+            <NumberField label="PSF warp alpha max" value={psfWarpAlphaMax}
+              onChange={setPsfWarpAlphaMax} min={0} max={100} step={1} />
+            <NumberField label="PSF warp sigma [HR px]" value={psfWarpSigma}
+              onChange={setPsfWarpSigma} min={0.1} max={100} step={0.5} />
+            <NumberField label="saturation mask probability" value={saturationMaskProb}
+              onChange={setSaturationMaskProb} min={0} max={0.5} step={0.05} />
+          </div>
+        </CardBody>
+      </Card>
+
+      <Card style={{ marginTop: "var(--s4)" }}>
         <CardHead title="Submit"
           sub={mode === "continue"
             ? `continue ${selectedSummary} for ${extraSteps} more steps each`
             : `${rows.length} member${rows.length > 1 ? "s" : ""} · ${steps} steps each`} />
         <CardBody>
           <StepById stepId="ensemble_train" extraParams={extra}
-            submitDisabled={continueSubmitDisabled}
-            submitDisabledHint={selectedMemberNames.length === 0
+            submitDisabled={continueSubmitDisabled || !geometryValid}
+            submitDisabledHint={!geometryValid
+              ? "enter a positive batch, an even HR side, positive examples per field, and valid probabilities"
+              : selectedMemberNames.length === 0
               ? "select at least one member above"
               : "enter a positive whole number of extra steps"} />
         </CardBody>

@@ -516,7 +516,12 @@ function taskColumnsFor(stepId: string): Column<HistoryRow>[] {
     case "lensfinder_train":
       return [taskColumn("epochs", (p) => paramCount(p, "epochs"), 76), taskColumn("batch", (p) => paramCount(p, "batch_size"), 70), taskColumn("mode", (p) => paramText(p, "training_mode"), 104)];
     case "ensemble_train":
-      return [taskColumn("total steps", ensembleTotalSteps, 104)];
+      return [
+        taskColumn("total steps", ensembleTotalSteps, 104),
+        taskColumn("batch", (p) => paramCount(p, "batch_size", "16"), 68),
+        taskColumn("HR side", (p) => paramCount(p, "hr_crop_size", "96"), 76),
+        taskColumn("examples / field", (p) => paramCount(p, "crops_per_field", "16"), 108),
+      ];
     case "download":
       return [taskColumn("tiles", (p) => paramCount(p, "n_tiles"), 72)];
     case "extract_psf":

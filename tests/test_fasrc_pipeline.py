@@ -111,6 +111,19 @@ class TestRegistry:
         assert argv[argv.index("--steps") + 1] == "150000"
         assert argv[argv.index("--base-seed") + 1] == "42"
 
+    def test_ensemble_train_passes_training_geometry(self, monkeypatch):
+        monkeypatch.setattr(
+            "euclid_polish.web.fasrc_pipeline.next_member_names",
+            lambda base, k: ["member_09"])
+        argv = REGISTRY.get("ensemble_train").build_command({
+            "mode": "add", "count": 1, "steps": 60000,
+            "batch_size": 2, "forward_onthefly": "1",
+            "crops_per_field": 1, "hr_crop_size": 510,
+        })
+        assert argv[argv.index("--batch-size") + 1] == "2"
+        assert argv[argv.index("--crops-per-field") + 1] == "1"
+        assert argv[argv.index("--hr-crop-size") + 1] == "510"
+
     def test_ensemble_train_step_entropy_seed_omits_flag(self, monkeypatch):
         monkeypatch.setattr(
             "euclid_polish.web.fasrc_pipeline.next_member_names",

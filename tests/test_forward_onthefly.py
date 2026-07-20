@@ -50,6 +50,22 @@ def test_crop_shapes_and_count(gaussian_sets):
     assert np.isfinite(lr).all() and np.isfinite(hr).all()
 
 
+def test_complete_field_is_one_training_example(gaussian_sets):
+    """A crop side equal to the forward-compatible field side returns the
+    complete LR/HR pair, not a 96px crop disguised as one example."""
+    side = 126  # divisible by the 2x public scale and 6x NISP workspace
+    field = _field(n=side)
+    fwd = OnTheFlyForward(
+        gaussian_sets, seed=1, crops_per_field=1, hr_crop_size=side,
+        add_noise=False, add_artifacts=False, add_saturation=False,
+        inject_stars=False, psf_warp_prob=0.0,
+    )
+    lr, hr = fwd.crops(field)
+    assert lr.shape == (1, side // 2, side // 2, 4)
+    assert hr.shape == (1, side, side, 4)
+    np.testing.assert_array_equal(hr[0], field)
+
+
 def test_hr_crops_are_subtiles_and_lr_matches_full_forward(gaussian_sets):
     """With noise off the forward is deterministic: every HR crop must be a
     block-aligned tile of the input field, and the LR crop must equal the
@@ -212,7 +228,7 @@ def test_onthefly_pipeline_yields_batches(gaussian_sets, tmp_path):
 def test_build_specs_forward_flags(tmp_path):
     args = parse_args(["--mode", "add", "--count", "2", "--steps", "10",
                        "--forward-onthefly", "1", "--psf-subset", "48",
-                       "--crops-per-field", "8",
+                       "--crops-per-field", "1", "--hr-crop-size", "510",
                        "--psf-warp-prob", "0.75",
                        "--psf-warp-alpha-max", "12",
                        "--psf-warp-sigma", "4",
@@ -221,7 +237,8 @@ def test_build_specs_forward_flags(tmp_path):
                        '[{"forward_onthefly": false}]'])
     s0, s1 = build_specs(args, str(tmp_path / "ens"))
     assert (s0.forward_onthefly, s1.forward_onthefly) == (False, True)
-    assert s1.psf_subset == 48 and s1.crops_per_field == 8
+    assert s1.psf_subset == 48 and s1.crops_per_field == 1
+    assert s1.hr_crop_size == 510
     assert s1.psf_warp_prob == pytest.approx(0.75)
     assert s1.psf_warp_alpha_max == pytest.approx(12.0)
     assert s1.psf_warp_sigma == pytest.approx(4.0)
@@ -235,13 +252,17 @@ def test_ensemble_train_step_forwards_onthefly_flags(monkeypatch):
         lambda base, k: ["member_00"])
     cmd = " ".join(EnsembleTrainStep().build_command({
         "mode": "add", "count": "1", "steps": "1000",
+        "batch_size": "2",
         "forward_onthefly": "1", "psf_subset": "48",
-        "crops_per_field": "8", "psf_warp_prob": "0.75",
+        "crops_per_field": "1", "hr_crop_size": "510",
+        "psf_warp_prob": "0.75",
         "psf_warp_alpha_max": "12", "psf_warp_sigma": "4",
         "saturation_mask_prob": "0.3"}))
     assert "--forward-onthefly 1" in cmd
+    assert "--batch-size 2" in cmd
     assert "--psf-subset 48" in cmd
-    assert "--crops-per-field 8" in cmd
+    assert "--crops-per-field 1" in cmd
+    assert "--hr-crop-size 510" in cmd
     assert "--psf-warp-prob 0.75" in cmd
     assert "--psf-warp-alpha-max 12" in cmd
     assert "--psf-warp-sigma 4" in cmd
