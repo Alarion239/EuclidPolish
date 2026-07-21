@@ -269,7 +269,9 @@ const PLAY_INTERVAL_MS = 1500;
 const LENS_MIN_ZOOM = 1.0;
 const LENS_MAX_ZOOM = 16.0;
 const LENS_DEFAULT_ZOOM = 3.0;
+const LENS_ZOOM_STEP = 1.18;
 const LENS_SIDE = 280;
+const LENS_LAYOUT_GAP = 12;
 const COLOR_KEYS = ["q", "w", "e", "r", "t", "y"];
 
 export function mountCutoutViewer(root, opts = {}) {
@@ -316,6 +318,7 @@ export function mountCutoutViewer(root, opts = {}) {
   };
   const hoverLens = makeLensPopup();
   const frozenLenses = new Map(); // frame → {u, v, zoom, popup}
+  let frozenSequence = 0;
   const lensState = {
     frame: null,
     x: 0,
@@ -574,6 +577,41 @@ export function mountCutoutViewer(root, opts = {}) {
     frozenLenses.clear();
   }
 
+  function snapshotFrozenLenses() {
+    const snapshot = new Map();
+    for (const [fr, frozen] of frozenLenses) {
+      snapshot.set(fr.tier, {
+        u: frozen.u,
+        v: frozen.v,
+        zoom: frozen.zoom,
+        angularSide: frozen.angularSide,
+        relativeSide: frozen.relativeSide,
+        corner: frozen.corner,
+        order: frozen.order,
+      });
+    }
+    return snapshot;
+  }
+
+  function restoreFrozenLenses(snapshot) {
+    if (!snapshot || !snapshot.size) return;
+    for (const fr of state.frames) {
+      const position = snapshot.get(fr.tier);
+      if (!position) continue;
+      const popup = makeLensPopup();
+      const order = Number.isFinite(position.order) ? position.order : ++frozenSequence;
+      frozenSequence = Math.max(frozenSequence, order);
+      popup.popup.style.zIndex = String(1000 + order);
+      frozenLenses.set(fr, {
+        ...position,
+        popup: popup.popup,
+        canvas: popup.canvas,
+        label: popup.label,
+        ctx: popup.ctx,
+      });
+    }
+  }
+
   function clearAllLenses() {
     hideHoverLens();
     clearFrozenLenses();
@@ -585,21 +623,25 @@ export function mountCutoutViewer(root, opts = {}) {
   function placeLensPopup(popup, side, x, y) {
     const pad = 12;
     const gap = 18;
+    const documentPosition = popup.classList.contains("cv-lens--frozen");
     let left = x + gap;
     let top = y + gap;
     if (left + side > window.innerWidth - pad) left = x - side - gap;
     if (top + side > window.innerHeight - pad) top = y - side - gap;
     popup.style.width = `${side}px`;
     popup.style.height = `${side}px`;
+    // Frozen popups follow the source tile, including when that tile is
+    // outside the viewport. Clamping them here would pin them to the top or
+    // bottom edge while the scroll container moved the source away.
+    if (documentPosition) {
+      popup.style.left = `${left + (window.scrollX || 0)}px`;
+      popup.style.top = `${top + (window.scrollY || 0)}px`;
+      return;
+    }
     left = Math.max(pad, Math.min(left, window.innerWidth - side - pad));
     top = Math.max(pad, Math.min(top, window.innerHeight - side - pad));
-    // Hover lenses follow the viewport. Frozen lenses follow the document:
-    // x/y are recomputed from the source tile on every refresh, so adding the
-    // scroll offset keeps the popup beside the same image location while the
-    // page moves underneath it.
-    const documentPosition = popup.classList.contains("cv-lens--frozen");
-    popup.style.left = `${left + (documentPosition ? (window.scrollX || 0) : 0)}px`;
-    popup.style.top = `${top + (documentPosition ? (window.scrollY || 0) : 0)}px`;
+    popup.style.left = `${left}px`;
+    popup.style.top = `${top}px`;
   }
 
   function validPixscale(fr) {
@@ -642,6 +684,26 @@ export function mountCutoutViewer(root, opts = {}) {
     const sourceSide = Math.min(extent, Math.max(1, relativeSide * extent));
     return Math.max(LENS_MIN_ZOOM,
       Math.min(LENS_MAX_ZOOM, lensSide() / sourceSide));
+  }
+
+  function receptiveFieldLabels(fr, position) {
+    const fields = state.meta && Array.isArray(state.meta.receptive_fields)
+      ? state.meta.receptive_fields : [];
+    const angularSide = validPixscale(fr) ? position.angularSide : null;
+    if (!(angularSide > 0) || !fields.length) return [];
+    // Wheel zoom is discrete. Treat the two neighboring wheel positions as
+    // the valid match for a field that lies between them, using log-space so
+    // the tolerance is symmetric for zooming in and out.
+    const tolerance = Math.log(LENS_ZOOM_STEP) / 2 + 1e-9;
+    return fields
+      .filter((field) => {
+        const target = Number(field && field.angular_side_arcsec);
+        return target > 0
+          && Math.abs(Math.log(angularSide / target)) <= tolerance;
+      })
+      .sort((a, b) => Math.abs(Math.log(angularSide / a.angular_side_arcsec))
+        - Math.abs(Math.log(angularSide / b.angular_side_arcsec)))
+      .map((field) => String(field.label || `${field.blocks}b`));
   }
 
   function drawLens(fr, lens, position, pinned) {
@@ -692,7 +754,16 @@ export function mountCutoutViewer(root, opts = {}) {
     fr.lensBox.style.top = `${cropTop}px`;
     fr.lensBox.style.width = `${(sourceSide / fr.canvas.width) * canvasRect.width}px`;
     fr.lensBox.style.height = `${(sourceSide / fr.canvas.height) * canvasRect.height}px`;
-    lens.label.textContent = `${effectiveZoom.toFixed(1)}× · ${pinned ? "click to unfreeze" : "↑↓ zoom · ←→ brightness"}`;
+    position.sourceRect = {
+      left: canvasRect.left + (cropX / fr.canvas.width) * canvasRect.width,
+      top: canvasRect.top + (cropY / fr.canvas.height) * canvasRect.height,
+      width: (sourceSide / fr.canvas.width) * canvasRect.width,
+      height: (sourceSide / fr.canvas.height) * canvasRect.height,
+    };
+    const rfLabels = receptiveFieldLabels(fr, position);
+    const labelParts = [`${effectiveZoom.toFixed(1)}×`, ...rfLabels.map((label) => `${label} RF`)];
+    if (pinned) labelParts.push("click to unfreeze");
+    lens.label.textContent = labelParts.join(" · ");
     lens.popup.classList.toggle("cv-lens--frozen", pinned);
     placeLensPopup(lens.popup, side, x, y);
     lens.popup.style.display = "block";
@@ -728,49 +799,138 @@ export function mountCutoutViewer(root, opts = {}) {
     };
   }
 
-  function lensRectsOverlap(a, b, gap = 18) {
-    return a.left < b.right + gap && a.right + gap > b.left
-      && a.top < b.bottom + gap && a.bottom + gap > b.top;
+  function lensRectsOverlap(a, b) {
+    return a.left < b.right && a.right > b.left
+      && a.top < b.bottom && a.bottom > b.top;
   }
 
-  // Keep frozen popups close to their source locations, but move them onto
-  // nearby grid slots when several source locations would make them overlap.
-  // The grid expands as needed, so this remains collision-free for any number
-  // of frozen tiles without tying the popups to viewport coordinates.
+  function sourceDocumentRect(position) {
+    if (!position.sourceRect) return null;
+    const source = position.sourceRect;
+    const scrollX = window.scrollX || 0;
+    const scrollY = window.scrollY || 0;
+    return {
+      left: source.left + scrollX,
+      top: source.top + scrollY,
+      right: source.left + source.width + scrollX,
+      bottom: source.top + source.height + scrollY,
+    };
+  }
+
+  function cornerCandidates(source, width, height) {
+    if (!source) return [];
+    const gap = LENS_LAYOUT_GAP;
+    return [
+      { corner: "top-left", left: source.left - width - gap, top: source.top - height - gap },
+      { corner: "top-right", left: source.right + gap, top: source.top - height - gap },
+      { corner: "bottom-left", left: source.left - width - gap, top: source.bottom + gap },
+      { corner: "bottom-right", left: source.right + gap, top: source.bottom + gap },
+    ].map((candidate) => Object.assign(candidate, {
+      width, height,
+      right: candidate.left + width,
+      bottom: candidate.top + height,
+    }));
+  }
+
+  function candidateFitsViewport(candidate) {
+    const left = candidate.left - (window.scrollX || 0);
+    const top = candidate.top - (window.scrollY || 0);
+    const pad = 12;
+    return left >= pad && top >= pad
+      && candidate.right - (window.scrollX || 0) <= window.innerWidth - pad
+      && candidate.bottom - (window.scrollY || 0) <= window.innerHeight - pad;
+  }
+
+  function candidateVisibleArea(candidate) {
+    const scrollX = window.scrollX || 0;
+    const scrollY = window.scrollY || 0;
+    const left = candidate.left - scrollX;
+    const top = candidate.top - scrollY;
+    const right = candidate.right - scrollX;
+    const bottom = candidate.bottom - scrollY;
+    return Math.max(0, Math.min(window.innerWidth, right) - Math.max(0, left))
+      * Math.max(0, Math.min(window.innerHeight, bottom) - Math.max(0, top));
+  }
+
+  function sourceIsVisible(position) {
+    const source = position.sourceRect;
+    if (!source) return false;
+    return source.left < window.innerWidth && source.left + source.width > 0
+      && source.top < window.innerHeight && source.top + source.height > 0;
+  }
+
+  function chooseLensPosition(current, placed, position) {
+    const candidates = cornerCandidates(
+      sourceDocumentRect(position), current.width, current.height,
+    );
+    if (!candidates.length) {
+      candidates.push(Object.assign({}, current, { corner: null }));
+    }
+    const free = candidates.filter((candidate) =>
+      placed.every((other) => !lensRectsOverlap(candidate, other)));
+    if (!free.length) return null;
+
+    const preferred = (items) => {
+      if (position.corner) {
+        const saved = items.find((candidate) => candidate.corner === position.corner);
+        if (saved) return saved;
+      }
+      return items.slice().sort((a, b) => {
+        const da = Math.hypot(a.left - current.left, a.top - current.top);
+        const db = Math.hypot(b.left - current.left, b.top - current.top);
+        return da - db;
+      })[0];
+    };
+
+    // While the source is visible, prefer a fully visible corner. This is
+    // what prevents a lens near the screen edge from oscillating off-screen.
+    if (sourceIsVisible(position)) {
+      const fullyVisible = free.filter(candidateFitsViewport);
+      if (fullyVisible.length) return preferred(fullyVisible);
+      const partiallyVisible = free.filter((candidate) => candidateVisibleArea(candidate) > 0);
+      if (partiallyVisible.length) {
+        return partiallyVisible.slice().sort((a, b) =>
+          candidateVisibleArea(b) - candidateVisibleArea(a))[0];
+      }
+    }
+
+    // Once the source itself has scrolled away, preserve its selected corner
+    // so the popup follows it and returns from the same side.
+    return preferred(free);
+  }
+
+  function applyLensPosition(popup, rect) {
+    const documentPosition = popup.classList.contains("cv-lens--frozen");
+    const scrollX = window.scrollX || 0;
+    const scrollY = window.scrollY || 0;
+    popup.style.left = `${rect.left - (documentPosition ? 0 : scrollX)}px`;
+    popup.style.top = `${rect.top - (documentPosition ? 0 : scrollY)}px`;
+  }
+
+  // Frozen popups are authoritative: each one uses one of the four corners
+  // around its source square. If that angle collides, choose another corner;
+  // the live hover popup is the flexible one and moves around frozen popups.
   function resolveLensOverlaps() {
     const placed = [];
-    if (hoverLens.popup.style.display !== "none") {
-      placed.push(popupDocumentRect(hoverLens.popup));
+    const frozen = [...frozenLenses.values()]
+      .sort((a, b) => (a.order || 0) - (b.order || 0));
+    for (const position of frozen) {
+      if (position.popup.style.display === "none") continue;
+      const current = popupDocumentRect(position.popup);
+      const chosen = chooseLensPosition(current, placed, position);
+      // If every corner is occupied, keep the newest popup source-attached
+      // and let its higher z-index make it the visible one.
+      const fallback = chooseLensPosition(current, [], position) || current;
+      const finalPosition = chosen || fallback;
+      position.corner = finalPosition.corner || null;
+      applyLensPosition(position.popup, finalPosition);
+      placed.push(finalPosition);
     }
-    for (const frozen of frozenLenses.values()) {
-      if (frozen.popup.style.display === "none") continue;
-      const current = popupDocumentRect(frozen.popup);
-      const stepX = current.width + 22;
-      const stepY = current.height + 22;
-      let chosen = null;
-      for (let radius = 0; radius < 256 && !chosen; radius++) {
-        for (let dx = -radius; dx <= radius && !chosen; dx++) {
-          for (let dy = -radius; dy <= radius; dy++) {
-            if (Math.max(Math.abs(dx), Math.abs(dy)) !== radius) continue;
-            const candidate = {
-              left: Math.max(12, current.left + dx * stepX),
-              top: Math.max(12, current.top + dy * stepY),
-              width: current.width,
-              height: current.height,
-            };
-            candidate.right = candidate.left + candidate.width;
-            candidate.bottom = candidate.top + candidate.height;
-            if (placed.every((other) => !lensRectsOverlap(candidate, other))) {
-              chosen = candidate;
-              break;
-            }
-          }
-        }
-      }
-      if (!chosen) continue;
-      frozen.popup.style.left = `${chosen.left}px`;
-      frozen.popup.style.top = `${chosen.top}px`;
-      placed.push(chosen);
+    if (hoverLens.popup.style.display !== "none") {
+      const chosen = chooseLensPosition(
+        popupDocumentRect(hoverLens.popup), placed, lensState,
+      );
+      if (chosen) applyLensPosition(hoverLens.popup, chosen);
     }
   }
 
@@ -828,7 +988,7 @@ export function mountCutoutViewer(root, opts = {}) {
     }
     if (frozenLenses.has(fr)) return;
     if (lensState.frame !== fr) enterLens(fr, event);
-    const factor = event.deltaY < 0 ? 1.18 : 1 / 1.18;
+    const factor = event.deltaY < 0 ? LENS_ZOOM_STEP : 1 / LENS_ZOOM_STEP;
     lensState.zoom = Math.max(LENS_MIN_ZOOM,
       Math.min(LENS_MAX_ZOOM, lensState.zoom * factor));
     const angularSide = currentAngularSide(fr, lensState.zoom);
@@ -851,11 +1011,15 @@ export function mountCutoutViewer(root, opts = {}) {
     const u = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
     const v = Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height));
     const popup = makeLensPopup();
+    const order = ++frozenSequence;
+    popup.popup.style.zIndex = String(1000 + order);
     const frozen = {
       u, v,
       zoom: lensState.frame === fr ? lensState.zoom : LENS_DEFAULT_ZOOM,
       angularSide: lensState.frame === fr ? lensState.angularSide : null,
       relativeSide: lensState.frame === fr ? lensState.relativeSide : null,
+      corner: null,
+      order,
       popup: popup.popup, canvas: popup.canvas, label: popup.label, ctx: popup.ctx,
     };
     frozenLenses.set(fr, frozen);
@@ -911,10 +1075,11 @@ export function mountCutoutViewer(root, opts = {}) {
   }
 
   /** Rebuild the frame row to match the selected tiers (canonical order). */
-  function rebuildFrames() {
+  function rebuildFrames({ preserveFrozen = false } = {}) {
     const want = orderedSelected().map((t) => t.key);
     const have = state.frames.map((f) => f.tier);
     if (want.length === have.length && want.every((t, i) => t === have[i])) return;
+    const frozenSnapshot = preserveFrozen ? snapshotFrozenLenses() : null;
     clearAllLenses();
     stopMorph();               // frames are being recreated → drop the old loop
     framesRow.innerHTML = "";
@@ -924,6 +1089,7 @@ export function mountCutoutViewer(root, opts = {}) {
       return fr;
     });
     framesRow.classList.toggle("cv-multi", state.frames.length > 1);
+    restoreFrozenLenses(frozenSnapshot);
     requestAnimationFrame(fitFramesToViewport);
   }
 
@@ -1172,10 +1338,10 @@ export function mountCutoutViewer(root, opts = {}) {
   }
 
   // --- load + show current index across all selected tiers -----------------
-  async function show() {
-    clearAllLenses();
+  async function show({ preserveFrozen = false } = {}) {
+    if (!preserveFrozen) clearAllLenses();
     if (!state.meta || state.meta.count === 0) {
-      rebuildFrames();
+      rebuildFrames({ preserveFrozen });
       for (const fr of state.frames) {
         setFrameMsg(fr, state.meta?.empty_label || "No cutouts available.");
       }
@@ -1184,7 +1350,7 @@ export function mountCutoutViewer(root, opts = {}) {
     }
     state.index = Math.max(0, Math.min(state.index, state.meta.count - 1));
     stopMorph();
-    rebuildFrames();
+    rebuildFrames({ preserveFrozen });
     state.shown.clear();
     await Promise.all(state.frames.map(async (fr) => {
       if (!tierAvail(fr.tier)) { setFrameMsg(fr, `no ${fr.tier} for this object`); return; }
@@ -1276,7 +1442,7 @@ export function mountCutoutViewer(root, opts = {}) {
       state.tiers = (state.meta.tiers || [])
         .map((t) => t.key).filter((k) => set.has(k));
       syncChips();
-      show();
+      show({ preserveFrozen: true });
     } else if (group === "color") {
       state.color = value;
       syncChips();
@@ -1639,7 +1805,7 @@ export function mountCutoutViewer(root, opts = {}) {
       if (!next.length) return;              // nothing valid → leave as-is
       state.tiers = next;
       syncChips();
-      show();
+      show({ preserveFrozen: true });
     },
     /** Patch cube-query parameters without reloading metadata or rebuilding
      *  frames. Used by the PSF page's replayable live-warp preview. */
@@ -1681,7 +1847,7 @@ export function mountCutoutViewer(root, opts = {}) {
       const v = (csv == null || csv === "") ? null : String(csv);
       if (v === state.morphMembers) return;
       state.morphMembers = v;
-      if (state.tiers.includes("morph")) show();
+      if (state.tiers.includes("morph")) show({ preserveFrozen: true });
     },
     getIndex() { return state.index; },
     isReady() { return !!state.meta; },

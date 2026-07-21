@@ -57,6 +57,28 @@ from euclid_polish.web.helpers.status import (
 BAND_NAMES: tuple[str, ...] = tuple(Config.LR_INPUT_BAND_NAMES)
 
 
+def receptive_field_constants() -> list[dict[str, Any]]:
+    """Return the WDSR model receptive fields used by the shared viewer.
+
+    The main WDSR path has a 3-pixel entry convolution, one 3-pixel
+    convolution per residual block, and a 3-pixel reconstruction convolution.
+    The two same-padded sides of each convolution add two input pixels to the
+    receptive-field side, hence ``2 * blocks + 5``.  Store the angular side as
+    well as the LR-pixel side so the client can keep the annotation stable
+    while changing between LR/SR/HR tiles.
+    """
+    fields = []
+    for blocks in (8, 16, 32):
+        pixels = 2 * blocks + 5
+        fields.append({
+            "label": f"{blocks}b",
+            "blocks": blocks,
+            "pixels": pixels,
+            "angular_side_arcsec": pixels * float(Config.VIS_PIXEL_SCALE_ARCSEC),
+        })
+    return fields
+
+
 class ViewerError(Exception):
     """Raised by a collection loader; ``code`` maps to an HTTP status."""
 
@@ -400,6 +422,12 @@ def _ensemble_starless(params: dict[str, str]) -> bool:
     return (params.get("mode", "starless") or "starless").lower() != "starfull"
 
 
+def _ensemble_target(starless: bool) -> tuple[str, str]:
+    """Return the record kind and viewer label for one ensemble regime."""
+    return (("clean", "Clean (starless goal)")
+            if starless else ("hr", "HR"))
+
+
 def _ensemble_cubes_dir(starless: bool) -> str:
     regime = "starless" if starless else "starfull"
     return os.path.join(Config.VIS_DIR, "ensemble", regime, "cubes")
@@ -414,13 +442,17 @@ def _ensemble_manifest(starless: bool) -> dict[str, Any]:
 
 
 def _ensemble_meta(params: dict[str, str]) -> dict[str, Any]:
-    man = _ensemble_manifest(_ensemble_starless(params))
+    starless = _ensemble_starless(params)
+    target_kind, target_label = _ensemble_target(starless)
+    man = _ensemble_manifest(starless)
     idxs = man.get("indices", [])
     sub = man.get("subset", "")
     rdir = _sky_records_local_dir()
-    has_hr = bool(sub) and bool(rdir) and os.path.exists(
-        tfrecord_path(rdir, f"hr_{sub}"))
-    tiers = [dict(t) for t in _ENSEMBLE_TIERS if t["key"] != "hr" or has_hr]
+    has_target = bool(sub) and bool(rdir) and os.path.exists(
+        tfrecord_path(rdir, f"{target_kind}_{sub}"))
+    tiers = [({**t, "label": target_label} if t["key"] == "hr" else dict(t))
+             for t in _ENSEMBLE_TIERS
+             if t["key"] != "hr" or has_target]
     member_labels0 = man.get("member_labels", []) or []
     # Each ordinary combiner model gets its own selectable tier. Cubes are
     # computed on demand from the shared member cache when not baked by eval.
@@ -466,7 +498,7 @@ def _ensemble_meta(params: dict[str, str]) -> dict[str, Any]:
 
 
 def _ensemble_record_cube(sub: str, n_read: int, kind: str, rec_index: int):
-    """LR (``kind='dirty'``) or HR (``kind='hr'``) record matched by ``.index``."""
+    """LR/goal record matched by ``.index`` (dirty, clean, or hr)."""
     rdir = _sky_records_local_dir()
     path = tfrecord_path(rdir, f"{kind}_{sub}") if rdir else ""
     if not rdir or not os.path.exists(path):
@@ -583,6 +615,7 @@ def _combiner_field_cube(starless: bool, rec_index: int,
 
 def _ensemble_cube(index: int, tier: str, params: dict[str, str]):
     starless = _ensemble_starless(params)
+    target_kind, target_label = _ensemble_target(starless)
     man = _ensemble_manifest(starless)
     idxs = man.get("indices", [])
     sub = man.get("subset", "")
@@ -628,11 +661,13 @@ def _ensemble_cube(index: int, tier: str, params: dict[str, str]):
                       "asinh": float(Config.STRETCH_SCALE_E),
                       "pixscale": float(Config.DEFAULT_PIXEL_SCALE)}
     # Records are written index==position from 0, so reading up to the largest
-    # cached index covers every LR/HR field we need.
+    # cached index covers every LR/goal field we need.
     n_read = (max(int(i) for i in idxs) + 1) if idxs else 1
     # sr / std, the PCA eigen-images (pca0…) and individual member SRs
-    # (member0…) are cached .npy cubes; lr / hr come from the records. pcaN are
-    # served on demand for the animation (not advertised as static tiers).
+    # (member0…) are cached .npy cubes; LR and the regime goal come from the
+    # records. pcaN are served on demand for the animation (not advertised as
+    # static tiers). The stable ``hr`` tier key means "goal" here: clean for
+    # starless and hr for starfull.
     is_npy = (tier in ("sr", "std")
               or (tier.startswith("pca") and tier[3:].isdigit())
               or (tier.startswith("member") and tier[6:].isdigit()))
@@ -645,11 +680,12 @@ def _ensemble_cube(index: int, tier: str, params: dict[str, str]):
     elif tier == "lr":
         cube, pix = _ensemble_record_cube(sub, n_read, "dirty", rec_index)
     elif tier == "hr":
-        cube, pix = _ensemble_record_cube(sub, n_read, "hr", rec_index)
+        cube, pix = _ensemble_record_cube(
+            sub, n_read, target_kind, rec_index)
     else:
         raise ViewerError(400, "bad tier")
     labels = {"lr": "LR", "sr": "SR (ensemble mean)",
-              "std": "stdSR (member std)", "hr": "HR",
+              "std": "stdSR (member std)", "hr": target_label,
               "comb": "SR (combiner)"}
     if tier.startswith("member") and tier[6:].isdigit():
         mlabels = man.get("member_labels", []) or []
@@ -1118,6 +1154,10 @@ def get_meta(collection: str, params: dict[str, str]) -> dict[str, Any]:
         raise ViewerError(404, "unknown collection")
     meta = _REGISTRY[collection][0](params)
     meta["collection"] = collection
+    # This is shared metadata rather than collection-specific UI state: the
+    # generic Tile viewer is mounted by all routes and must annotate every
+    # tile at the same physical/angular receptive-field sizes.
+    meta["receptive_fields"] = receptive_field_constants()
     meta["color"] = color_constants()
     if meta.get("render_mode"):
         meta["color"]["render_mode"] = meta["render_mode"]

@@ -186,6 +186,9 @@ def test_viewer_meta_shape_and_color_constants(client):
         assert isinstance(m["count"], int) and m["count"] >= 0
         assert {"key", "label"} <= set((m["tiers"] or [{}])[0]) or m["count"] == 0
         assert m["band_names"] == ["VIS", "Y_E", "J_E", "H_E"]
+        assert [(f["label"], f["pixels"]) for f in m["receptive_fields"]] == [
+            ("8b", 21), ("16b", 37), ("32b", 69),
+        ]
         # Colour constants the JS renderer needs for parity with color.py.
         col = m["color"]
         assert col["default_asinh"] == float(Config.STRETCH_SCALE_E)
