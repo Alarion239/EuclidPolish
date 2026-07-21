@@ -46,7 +46,11 @@ export function useJob() {
       if (cancelled.current) return;
       const j = await getJSON<Job>(`/api/jobs/${id}`);
       if (cancelled.current) return;
-      if (!j) { setError("job not found"); setBusy(false); return; }
+      if (!j) {
+        setError("job is no longer available — the local server may have restarted; run it again");
+        setBusy(false);
+        return;
+      }
       setJob(j);
       if (TERMINAL(j.status)) { setBusy(false); onDone?.(j); return; }
       interval = Math.min(2000, interval * 1.4);
