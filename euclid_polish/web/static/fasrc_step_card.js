@@ -1120,12 +1120,13 @@ large cutout don't leak across train/validate."></label>`;
     return `
       <b class="ens-member-idx" style="min-width:2em;"></b>
       <label style="font-weight:normal;"
-             title="Reconstruction p-norm on the asinh residuals: (mean|SR−HR|^p)^(1/p). The root keeps all three on the L1 scale, so no LR retuning. L2/L3 weight the worst residuals harder — different norms train different estimators (posterior median vs mean), i.e. ensemble diversity. (BerHu was tried and deprecated — no star resolution, worse PSNR/power-spectra, degenerate plateaus.)">
+             title="Reconstruction loss on the asinh residuals. L1 is MAE, L2 is RMSE, L3 is the rooted cubic mean, and MSE is the unrooted mean squared error. (BerHu was tried and deprecated — no star resolution, worse PSNR/power-spectra, degenerate plateaus.)">
         loss
         <select data-f="loss">
           <option value="l1">L1 (median)</option>
-          <option value="l2">L2 (mean)</option>
+          <option value="l2">L2 (RMSE)</option>
           <option value="l3">L3 (outlier-heavy)</option>
+          <option value="mse">MSE (unrooted L2)</option>
         </select></label>
       <label style="font-weight:normal;"
              title="Extra Gaussian noise added to each LR training crop, in read-noise units (1.0 = one extra read noise: VIS 3.6 e⁻, NISP 6.1 e⁻), drawn fresh every crop on top of the record's baked-in realization. Decorrelates members (0.5–1.0 sane); 0 = off. Validation is never noised.">

@@ -10,7 +10,7 @@ const COLORS = [
 const BAND_COLORS = { VIS: "#4477aa", Y_E: "#66ccee", J_E: "#228833", H_E: "#ccbb44" };
 const TXT = "var(--text-primary,#333)";
 // Member-line coloring, matching the power-spectrum plot's palettes.
-const LOSS_COLORS = { l1: "#3b6fb0", l2: "#5aae61", l3: "#e08214", berhu: "#9970ab" };
+const LOSS_COLORS = { l1: "#3b6fb0", l2: "#5aae61", l3: "#e08214", mse: "#1b9e9a", berhu: "#9970ab" };
 const GROUP_PALETTE = ["#3b6fb0", "#5aae61", "#e08214", "#d6604d",
                        "#9970ab", "#e8c944", "#59c7d6", "#e07356"];
 const NO_DATA = "#7a8292";

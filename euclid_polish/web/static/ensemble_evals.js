@@ -14,7 +14,7 @@
  */
 
 const LOSS_COLORS = { l1: "#3b6fb0", l2: "#5aae61", l3: "#e08214",
-                      berhu: "#9970ab" };
+                      mse: "#1b9e9a", berhu: "#9970ab" };
 const GROUP_PALETTE = ["#3b6fb0", "#5aae61", "#e08214", "#d6604d",
                       "#9970ab", "#e8c944", "#59c7d6", "#e07356"];
 const VIS_COLOR = "#3b6fb0";

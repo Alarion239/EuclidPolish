@@ -112,8 +112,8 @@ class TrainConfig:
             raise ValueError("batch_size and evaluate_every must be >= 1")
         if not (0 < float(self.lr_final) <= float(self.lr_peak)):
             raise ValueError("learning rates must satisfy 0 < final <= peak")
-        if self.loss_norm not in {"l1", "l2", "l3", "berhu"}:
-            raise ValueError("loss_norm must be one of l1, l2, l3, or berhu")
+        if self.loss_norm not in {"l1", "l2", "l3", "mse", "berhu"}:
+            raise ValueError("loss_norm must be one of l1, l2, l3, mse, or berhu")
         if float(self.noise_aug) < 0.0:
             raise ValueError("noise_aug must be non-negative")
         if self.bootstrap is not None and not (0.0 < float(self.bootstrap) <= 1.0):

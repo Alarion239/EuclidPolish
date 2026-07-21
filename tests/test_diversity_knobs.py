@@ -17,7 +17,7 @@ from euclid_polish.training.augmentation import (
     add_lr_noise,
     random_dihedral,
 )
-from euclid_polish.training.losses import berhu_loss, build_loss, lp_loss
+from euclid_polish.training.losses import berhu_loss, build_loss, lp_loss, mse_loss
 from euclid_polish.training.models.common import ICNR
 from scripts.train_ensemble import build_specs, parse_args
 
@@ -38,6 +38,26 @@ def test_lp_loss_l2_is_rmse():
     b = tf.zeros_like(a)
     assert float(lp_loss("l2")(a, b)) == pytest.approx(
         float(np.sqrt(np.mean(a.numpy() ** 2))), rel=1e-5)
+
+
+def test_mse_is_unrooted_mean_squared_error():
+    a = tf.constant([3.0, 4.0])
+    b = tf.zeros_like(a)
+    assert float(mse_loss()(a, b)) == pytest.approx(12.5)
+    assert float(build_loss("mse")(a, b)) == pytest.approx(12.5)
+    assert float(build_loss("l2")(a, b)) == pytest.approx(np.sqrt(12.5))
+
+
+def test_mse_is_invariant_to_equal_sized_crop_grouping():
+    residuals = tf.constant([0.0, 0.0, 0.0, 4.0])
+    crops = tf.reshape(residuals, [2, 2])
+    full_mse = mse_loss()(residuals, tf.zeros_like(residuals))
+    crop_mse = tf.reduce_mean(tf.reduce_mean(tf.square(crops), axis=1))
+    assert float(crop_mse) == pytest.approx(float(full_mse))
+
+    full_rmse = lp_loss("l2")(residuals, tf.zeros_like(residuals))
+    crop_rmse = tf.reduce_mean(tf.sqrt(tf.reduce_mean(tf.square(crops), axis=1)))
+    assert float(crop_rmse) != pytest.approx(float(full_rmse))
 
 
 def test_lp_losses_share_scale_and_order():
@@ -221,7 +241,7 @@ def test_plateau_guard_applies_l1_only():
     from euclid_polish.training.loss_names import plateau_guard_applies
     assert plateau_guard_applies("l1") is True
     assert plateau_guard_applies("L1") is True                # case-insensitive
-    for n in ("l2", "l3", "berhu"):
+    for n in ("l2", "l3", "mse", "berhu"):
         assert plateau_guard_applies(n) is False
 
 
@@ -260,7 +280,8 @@ class _CaptureTrainer:
 
 @pytest.mark.parametrize("loss,guard_on",
                          [("l1", True), ("l2", False),
-                          ("l3", False), ("berhu", False)])
+                          ("l3", False), ("mse", False),
+                          ("berhu", False)])
 def test_train_gates_plateau_guard_by_loss(tmp_path, monkeypatch, loss, guard_on):
     """model.train forces the plateau guard off for the large-residual losses
     even when plateau_lr_enabled=True — it is meaningful only for L1."""
@@ -453,6 +474,13 @@ def test_member_spec_rejects_deprecated_berhu(tmp_path):
         build_specs(args, str(tmp_path / "ens"))
 
 
+def test_member_spec_accepts_mse(tmp_path):
+    args = parse_args(["--count", "1", "--steps", "10",
+                       "--member-spec", '[{"loss":"mse"}]'])
+    specs = build_specs(args, str(tmp_path / "ens"))
+    assert specs[0].loss_norm == "mse"
+
+
 def test_build_loss_still_dispatches_deprecated_berhu():
     """Back-compat: the loss stays constructible for the existing members."""
     a = tf.constant([0.1, 0.1, 0.1, 1.0])
@@ -468,10 +496,10 @@ def test_ensemble_train_step_forwards_diversity_flags(monkeypatch):
         lambda base, k: [f"member_{i:02d}" for i in range(k)])
     cmd = EnsembleTrainStep().build_command({
         "mode": "add", "count": "2", "steps": "1000",
-        "loss": "l3", "noise_aug": "1.0", "bootstrap": "0.7",
+        "loss": "mse", "noise_aug": "1.0", "bootstrap": "0.7",
         "member_spec": '[{"loss": "l1"}]'})
     joined = " ".join(cmd)
-    assert "--loss l3" in joined
+    assert "--loss mse" in joined
     assert "--noise-aug 1" in joined
     assert "--bootstrap 0.7" in joined
     assert "--member-spec" in cmd

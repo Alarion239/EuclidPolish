@@ -18,7 +18,7 @@ import {
 } from "../ui";
 
 type Mode = "add" | "continue" | "fork";
-const LOSSES = ["l1", "l2", "l3"];
+const LOSSES = ["l1", "l2", "l3", "mse"];
 
 type ContinueMember = {
   name: string; step?: number | null; loss?: string; blocks?: number | null;

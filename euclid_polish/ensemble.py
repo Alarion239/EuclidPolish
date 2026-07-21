@@ -97,8 +97,9 @@ class MemberTrainSpec:
     because the existing checkpoint / fork source dictates the depth.
 
     Diversity knobs (all optional, per member — the point of an ensemble is
-    that members differ): ``loss_norm`` ∈ {"l1","l2","l3"} picks the
-    reconstruction p-norm; ``noise_aug`` adds extra LR noise (read-noise
+    that members differ): ``loss_norm`` ∈ {"l1","l2","l3","mse"} picks the
+    reconstruction loss (``l2`` is RMSE; ``mse`` has no outer root);
+    ``noise_aug`` adds extra LR noise (read-noise
     units); ``bootstrap`` ∈ (0, 1) trains on that deterministic fraction of
     the fields (keyed by the member's seed); ``forward_onthefly`` re-draws
     PSF + noise live on the full field each visit (``psf_subset`` bags the

@@ -11,6 +11,9 @@ from __future__ import annotations
 #: Loss-norm knob values → exponent for the rooted p-norm family.
 LOSS_NORMS = {"l1": 1, "l2": 2, "l3": 3}
 
+#: Mean squared error, deliberately separate from rooted ``l2`` (RMSE).
+MSE_NAME = "mse"
+
 #: The fraction of the batch's max residual used as the BerHu L1↔L2 threshold.
 BERHU_DEFAULT_C = 0.2
 
@@ -23,13 +26,13 @@ BERHU_DEFAULT_C = 0.2
 #: :func:`~euclid_polish.training.losses.build_loss` (so the few existing
 #: members still load / continue / display) but can no longer be SELECTED for a
 #: new member. Do not re-add it without a new, better result.
-LOSS_NAMES = tuple(LOSS_NORMS)
+LOSS_NAMES = (*LOSS_NORMS, MSE_NAME)
 
 #: Losses whose median-like optimum admits the DEGENERATE skip-only basin — the
 #: flat ~43.5 dB PSNR floor where the trunk collapses to 0 and only the bilinear
 #: skip survives. L1's median doesn't move for rare point sources, so erasing
 #: them is a low-loss solution and the basin is a real local optimum. L2/L3
-#: weight large residuals quadratically-or-worse, and BerHu's L2 branch
+#: and MSE weight large residuals quadratically-or-worse, and BerHu's L2 branch
 #: penalises exactly those erased-star residuals, so for them the skip-only
 #: solution is high-loss, NOT a basin. The reduce-LR / rollback plateau guard
 #: exists only to escape this basin — see :func:`plateau_guard_applies`.

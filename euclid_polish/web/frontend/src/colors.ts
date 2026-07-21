@@ -36,10 +36,10 @@ export function categorical(i: number): string {
 }
 
 const LOSS_FALLBACK: Record<string, string> = {
-  l1: "#4c9ffe", l2: "#56d68a", l3: "#ffb454", berhu: "#b48ef2",
+  l1: "#4c9ffe", l2: "#56d68a", l3: "#ffb454", mse: "#33d6c4", berhu: "#b48ef2",
 };
 
-/* `LOSS_COLOR[loss]` — themed loss-norm color (l1 / l2 / l3 / berhu). */
+/* `LOSS_COLOR[loss]` — themed reconstruction-loss color. */
 export const LOSS_COLOR = new Proxy({} as Record<string, string>, {
   get: (_t, k: string) => cvar(`--loss-${k}`, LOSS_FALLBACK[k] ?? "#55627a"),
 });

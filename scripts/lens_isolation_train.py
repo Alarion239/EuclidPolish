@@ -36,7 +36,9 @@ def parse_args(argv=None):
     parser.add_argument("--lr-peak", type=float, default=1e-5)
     parser.add_argument("--lr-final", type=float, default=1e-6)
     parser.add_argument("--lr-warmup-steps", type=int, default=500)
-    parser.add_argument("--loss-norm", choices=("l1", "l2", "l3", "berhu"), default="l1")
+    parser.add_argument(
+        "--loss-norm", choices=("l1", "l2", "l3", "mse", "berhu"), default="l1"
+    )
     parser.add_argument("--noise-aug", type=float, default=0.0)
     parser.add_argument("--bootstrap", type=float, default=None)
     parser.add_argument(

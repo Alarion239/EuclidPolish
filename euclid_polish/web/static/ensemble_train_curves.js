@@ -39,7 +39,7 @@ function viridis(t) {
 
 // Fixed colors per reconstruction loss (matches the power-spectrum figure).
 const LOSS_COLORS = { l1: "#3b6fb0", l2: "#5aae61", l3: "#e08214",
-                      berhu: "#9970ab" };
+                      mse: "#1b9e9a", berhu: "#9970ab" };
 
 // mode ∈ {"distinct", "depth", "psnr", "loss"} → per-series color fn + legend
 // suffix.

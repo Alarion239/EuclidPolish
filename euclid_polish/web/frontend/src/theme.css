@@ -64,7 +64,7 @@
   /* — categorical (facet coloring: loss / depth) — */
   --cat-0: #2563eb; --cat-1: #0f9d58; --cat-2: #d97706; --cat-3: #7c3aed;
   --cat-4: #db2777; --cat-5: #0e8f96; --cat-6: #dc2626; --cat-7: #927608;
-  --loss-l1: #2563eb; --loss-l2: #0f9d58; --loss-l3: #d97706; --loss-berhu: #7c3aed;
+  --loss-l1: #2563eb; --loss-l2: #0f9d58; --loss-l3: #d97706; --loss-mse: #0e8f96; --loss-berhu: #7c3aed;
 
   /* — type — */
   --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
@@ -129,7 +129,7 @@
 
   --cat-0: #4c9ffe; --cat-1: #56d68a; --cat-2: #ffb454; --cat-3: #b48ef2;
   --cat-4: #ff77c8; --cat-5: #33d6c4; --cat-6: #ff6b6b; --cat-7: #c7d05e;
-  --loss-l1: #4c9ffe; --loss-l2: #56d68a; --loss-l3: #ffb454; --loss-berhu: #b48ef2;
+  --loss-l1: #4c9ffe; --loss-l2: #56d68a; --loss-l3: #ffb454; --loss-mse: #33d6c4; --loss-berhu: #b48ef2;
 
   --shadow-1: 0 1px 2px #0006;
   --shadow-2: 0 6px 22px -8px #000a;
