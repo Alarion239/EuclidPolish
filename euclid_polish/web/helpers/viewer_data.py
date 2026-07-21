@@ -41,7 +41,7 @@ import numpy as np
 from astropy.io import fits
 
 from euclid_polish.config import Config
-from euclid_polish.eval.combiner import COMBINER_MODELS
+from euclid_polish.eval.combiner import ACTIVE_COMBINER_KINDS, COMBINER_MODELS
 from euclid_polish.eval.lensfinder_eval import per_object_plens
 from euclid_polish.image.tfio import read_images, tfrecord_path
 from euclid_polish.psf.core import PSF
@@ -425,10 +425,10 @@ def _ensemble_meta(params: dict[str, str]) -> dict[str, Any]:
     # Each ordinary combiner model gets its own selectable tier. Cubes are
     # computed on demand from the shared member cache when not baked by eval.
     for kind, key, label in reversed(tuple(
-            (kind, "comb_rbf" if kind == "rbf_gate" else spec.cube_prefix, spec.label)
-            for kind, spec in COMBINER_MODELS.items())):
+            (kind, spec.cube_prefix, spec.label)
+            for kind, spec in COMBINER_MODELS.items()
+            if kind in ACTIVE_COMBINER_KINDS)):
         if man.get(f"has_combiner_{kind}") or (
-                key == "comb_rbf" and man.get("has_combiner")) or (
                 member_labels0 and _load_field_combiner(
                     _ensemble_starless(params), member_labels0, kind) is not None):
             tiers.insert(2, {"key": key, "label": label})
@@ -533,7 +533,7 @@ def _ensemble_regime_dir(starless: bool) -> str:
 
 
 def _load_field_combiner(starless: bool, member_labels: list[str],
-                         model_kind: str = "rbf_gate"):
+                         model_kind: str = "raw_incremental_minmeanmax_rbf"):
     """The regime's fitted combiner if it exists AND its membership matches the
     cube stack (``member_labels``), else ``None``. Cheap (an ~8 KB npz)."""
     if not member_labels:
@@ -555,7 +555,7 @@ _COMB_CUBE_MAX = 8
 
 def _combiner_field_cube(starless: bool, rec_index: int,
                          member_labels: list[str],
-                         model_kind: str = "rbf_gate") -> np.ndarray:
+                         model_kind: str = "raw_incremental_minmeanmax_rbf") -> np.ndarray:
     """The combiner reconstruction ``(H,W,C)`` for one field, applied to the
     cached full member stack. LRU-cached; raises 404 if no combiner / cubes."""
     key = ("starless" if starless else "starfull", int(rec_index),
@@ -613,9 +613,8 @@ def _ensemble_cube(index: int, tier: str, params: dict[str, str]):
             "var": float(var[k]) if k < len(var) else 0.0}
     # Combiner reconstruction: prefer a baked model-specific cube; otherwise
     # apply that fitted model to the cached member stack on the fly.
-    tier_kinds = {"comb": "rbf_gate", "comb_rbf": "rbf_gate"}
-    tier_kinds.update({spec.cube_prefix: kind
-                       for kind, spec in COMBINER_MODELS.items() if kind != "rbf_gate"})
+    tier_kinds = {COMBINER_MODELS[kind].cube_prefix: kind
+                  for kind in ACTIVE_COMBINER_KINDS}
     if tier in tier_kinds:
         model_kind = tier_kinds[tier]
         prefix = COMBINER_MODELS[model_kind].cube_prefix
@@ -703,6 +702,8 @@ def _real_field_meta(params: dict[str, str]) -> dict[str, Any]:
         {"key": "std", "label": "stdSR", "hidden": True},
     ]
     for kind, spec in COMBINER_MODELS.items():
+        if kind not in ACTIVE_COMBINER_KINDS:
+            continue
         if kind in set(manifest.get("combiner_kinds", []) or []):
             tiers.append({"key": spec.cube_prefix, "label": spec.label})
     tiers += [{"key": f"member{i}", "label": f"SR {label}", "hidden": True}
@@ -748,8 +749,8 @@ def _real_field_cube(index: int, tier: str, params: dict[str, str]):
     elif tier == "lr":
         label = "LR"
     else:
-        label = next((spec.label for spec in COMBINER_MODELS.values()
-                      if spec.cube_prefix == tier), tier)
+        label = next((COMBINER_MODELS[kind].label for kind in ACTIVE_COMBINER_KINDS
+                      if COMBINER_MODELS[kind].cube_prefix == tier), tier)
     tier_scale = (Config.VIS_PIXEL_SCALE_ARCSEC
                   if tier.lower() == "lr" else Config.DEFAULT_PIXEL_SCALE)
     return cube, {"label": f"{label} · tile {index + 1:03d}",

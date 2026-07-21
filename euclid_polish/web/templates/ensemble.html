@@ -229,50 +229,25 @@
 
 <section class="card" id="ens-combiner-card">
   <h3>Combiner (<span id="ens-combiner-regime">starfull</span>)</h3>
-  <p class="hint" style="flex-basis:100%;">Choose the tiny per-band <b>max-conditioned RBF gate</b>
-     or compact <b>mean + std</b> / <b>min + max</b> RBFs, plus a
-     <b>stacked RBF</b> that convexly blends those two fitted pixels. All end in
-     a convex softmax mix. Their
-     fits, parameters, and plots are stored separately. Fit <b>locally on the
-     validate split</b> (reusing cached member inference), evaluated on
-     <code>{{ eval_subset }}</code>, <b>per regime</b> (the fitted combiner and
-     its curves belong to the current mode only). Does <b>not</b> change the
-     default ensemble-mean SR. Re-run <b>Evaluate on test set</b> afterwards to
-     score it on test.</p>
+  <p class="hint" style="flex-basis:100%;">Incremental raw-electron
+     min/mean/max RBF, fitted locally on validate and scored on test. Kernels
+     within one stage remain separated; different stages may place kernels
+     arbitrarily close.</p>
   <form id="ens-combiner-form" action="/ensemble/combiner/fit">
     <input type="hidden" name="mode" id="ens-combiner-mode" value="starfull">
     <label title="How many validate fields to fit on (member inference is cached + reused).">
       Validate fields
       <input type="number" name="num_images" value="100" min="1" max="2000"></label>
-    <label title="Each model has a separate fitted artifact for this regime; choosing a model only switches which one is shown or fitted.">
-      Model
-      <select name="model_kind"><option value="rbf_gate">max-conditioned RBF</option><option value="stats_rbf_gate">mean + std RBF</option><option value="minmax_rbf_gate">min + max RBF</option><option value="stacked_rbf_gate">stacked mean+std / min+max RBF</option></select></label>
-    <label title="Number of RBF kernels. The mean+std and min+max models use 32 compact 2-D kernels by default.">
+    <input type="hidden" name="model_kind" value="raw_incremental_minmeanmax_rbf">
+    <label title="Number of incremental residual RBF kernels.">
       Kernels (K)
-      <input type="number" name="n_kernels" value="12" min="2" max="64"></label>
+      <input type="number" name="n_kernels" value="128" min="2" max="128"></label>
     <button type="submit">Fit combiner</button>
   </form>
   <div id="ens-combiner-status"></div>
   <div id="ens-combiner-results" style="margin-top:0.75rem;"></div>
 </section>
 
-<section class="card" id="ens-combined-combiner-card">
-  <h3>Combined combiner (<span id="ens-combined-combiner-regime">starfull</span>)</h3>
-  <p class="hint">Experimental: one selected combiner per band over
-     <b>all</b> active starfull + starless members. This target remains
-     <b id="ens-combined-target">hr</b>; the ordinary combiner, viewer tier,
-     and disagreement diagnostics remain unchanged.</p>
-  <form id="ens-combined-combiner-form" action="/ensemble/combined-combiner/fit">
-    <input type="hidden" name="mode" id="ens-combined-combiner-mode" value="starfull">
-    <label>Validate fields <input type="number" name="num_images" value="100" min="1" max="2000"></label>
-    <label>Kernels (K) <input type="number" name="n_kernels" value="12" min="2" max="32"></label>
-    <label title="The experimental cross-regime combiner is fit without automatic pruning.">
-      Pruning disabled <input type="number" value="0" disabled></label>
-    <button type="submit">Fit combined combiner</button>
-  </form>
-  <div id="ens-combined-combiner-status"></div>
-  <div data-combiner-results style="margin-top:0.75rem;"></div>
-</section>
 {% endblock %}
 
 {% block scripts %}
@@ -305,12 +280,6 @@ window.ENSEMBLE_MEMBERS = {{ members | tojson }};
     if (cm) cm.value = sel.value;
     const cr = document.getElementById("ens-combiner-regime");
     if (cr) cr.textContent = sel.value;
-    const ccm = document.getElementById("ens-combined-combiner-mode");
-    if (ccm) ccm.value = sel.value;
-    const ccr = document.getElementById("ens-combined-combiner-regime");
-    if (ccr) ccr.textContent = sel.value;
-    const cct = document.getElementById("ens-combined-target");
-    if (cct) cct.textContent = starless ? "clean" : "hr";
     // Expose for the train curves / evals modules to filter their own series.
     window.ENSEMBLE_MODE = sel.value;
     document.dispatchEvent(new CustomEvent("ensemble-mode-change",
@@ -337,15 +306,6 @@ document.getElementById("ens-eval-form").addEventListener("submit", (e) => {
   if (cf) cf.addEventListener("submit", (e) => {
     e.preventDefault();
     polishUI.run(e.target, document.getElementById("ens-combiner-status"), {
-      onDone: () => setTimeout(() => location.reload(), 1500),
-    });
-  });
-}
-{
-  const cf = document.getElementById("ens-combined-combiner-form");
-  if (cf) cf.addEventListener("submit", (e) => {
-    e.preventDefault();
-    polishUI.run(e.target, document.getElementById("ens-combined-combiner-status"), {
       onDone: () => setTimeout(() => location.reload(), 1500),
     });
   });
@@ -434,11 +394,6 @@ import { mountEnsembleCombiner } from "{{ url_for('static', filename='ensemble_c
 mountEnsembleCombiner(
   document.getElementById("ens-combiner-card"),
   "{{ url_for('ensemble_combiner_json') }}",
-  "{{ url_for('ensemble_evals_json') }}",
-);
-mountEnsembleCombiner(
-  document.getElementById("ens-combined-combiner-card"),
-  "/ensemble/combined-combiner.json",
   "{{ url_for('ensemble_evals_json') }}",
 );
 </script>

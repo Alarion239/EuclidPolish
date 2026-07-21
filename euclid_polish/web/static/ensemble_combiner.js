@@ -71,23 +71,15 @@ function fmtE(e) {
 }
 
 function metricsHtml(comb, evals) {
-  const combined = !!(comb.fit_meta && comb.fit_meta.combined);
-  const kind = comb.kind || "rbf_gate";
-  const statsRBF = kind === "stats_rbf_gate";
-  const minmaxRBF = kind === "minmax_rbf_gate";
-  const stackedRBF = kind === "stacked_rbf_gate";
-  const modelLabel = stackedRBF ? "stacked RBF"
-    : minmaxRBF ? "min + max RBF"
-    : (statsRBF ? "mean + std RBF" : "max RBF");
-  const c = evals && (combined ? evals.combined_combiner
-    : ((evals.model_combiners || {})[kind]
-      || (statsRBF ? evals.stats_rbf_combiner : evals.combiner)));
+  const kind = comb.kind || "raw_incremental_minmeanmax_rbf";
+  const modelLabel = "incremental raw min/mean/max RBF";
+  const c = evals && ((evals.model_combiners || {})[kind] || evals.combiner);
   let rows = "<tr><th>series</th><th>VIS PSNR (dB, asinh)</th></tr>";
   if (c && c.available) {
     const g = (v) => (v == null ? "" : ` <span class="muted">(${v >= 0 ? "+" : ""}${fmt(v, 2)} dB)</span>`);
     const vsMean = c.psnr != null && c.ensemble_mean_psnr != null ? c.psnr - c.ensemble_mean_psnr : null;
     const vsBest = c.psnr != null && c.best_member_psnr != null ? c.psnr - c.best_member_psnr : null;
-    rows += `<tr><td><b>${combined ? "combined combiner" : modelLabel}</b></td><td><b>${fmt(c.psnr, 3)}</b></td></tr>`;
+    rows += `<tr><td><b>${modelLabel}</b></td><td><b>${fmt(c.psnr, 3)}</b></td></tr>`;
     rows += `<tr><td>ensemble mean</td><td>${fmt(c.ensemble_mean_psnr, 3)}${g(vsMean)}</td></tr>`;
     rows += `<tr><td>best member${c.best_member_label ? ` (${c.best_member_label})` : ""}</td>`
           + `<td>${fmt(c.best_member_psnr, 3)}${g(vsBest)}</td></tr>`;
@@ -96,10 +88,12 @@ function metricsHtml(comb, evals) {
   }
   const stale = comb.stale
     ? ` · <b style="color:#c33">STALE</b> (membership changed since fit — re-fit)` : "";
+  const preview = comb.fit_meta && comb.fit_meta.preview
+    ? ` · <b style="color:#b06c00">PREVIEW</b> (${comb.fit_meta.num_images || "?"} validation fields)` : "";
   return `<div style="display:flex;justify-content:center"><table class="mini-table">${rows}</table></div>`
        + `<p class="hint" style="text-align:center">Fit L1 on validate: <b>${fmt(comb.val_l1, 4)}</b>`
-       + ` · ${combined ? "combined" : modelLabel} gate, K=${comb.n_kernels} kernels`
-       + `${stale}</p>`;
+       + ` · ${modelLabel}, K=${comb.n_kernels} kernels`
+       + `${stale}${preview}</p>`;
 }
 
 function fmtSteps(s) {
@@ -130,7 +124,7 @@ function drawImportance(host, comb, members) {
   const pct = (v) => v == null || !isFinite(v) ? "—" : `${(100 * v).toFixed(2)}%`;
   const totals = labels.map((_, member) => bands.reduce((sum, band) =>
     sum + ((peaks[band] || [])[member] || 0) + ((integrals[band] || [])[member] || 0), 0));
-  const routed = comb.kind === "stacked_rbf_gate" ? "expert" : "member";
+  const routed = "member";
   const head = `<tr><th>${routed}</th><th>8-channel weight sum</th>` + bands.map((band) =>
     `<th>${band}<br><span class="muted">peak</span></th>`
     + `<th>${band}<br><span class="muted">integral</span></th>`).join("") + `</tr>`;
@@ -248,8 +242,8 @@ function drawHRWeights(host, comb, band, members, mode) {
 
 // Interactive 3-D RBF gate-weight surface. The floor is the two actual model
 // features (mean×log-std or min×max); the height is one member's gate weight.
-function drawFeatureSurface(host, comb, band, member) {
-  const g = ((comb.feature_grid || {})[band] || {});
+function drawFeatureSurface(host, comb, band, member, suppliedGrid) {
+  const g = suppliedGrid || ((comb.feature_grid || {})[band] || {});
   const x = g.mean_asinh || [];
   const yRaw = g.std_asinh || [];
   const y = g.y_is_log === false ? yRaw : (g.std_log || yRaw);
@@ -318,19 +312,24 @@ function drawFeatureSurface(host, comb, band, member) {
 
 function render(root, comb, evals) {
   const bands = comb.band_names || Object.keys(comb.eff_weights || {});
-  const statsRBF = comb.kind === "stats_rbf_gate";
-  const minmaxRBF = comb.kind === "minmax_rbf_gate";
-  const stackedRBF = comb.kind === "stacked_rbf_gate";
-  const featureRBF = statsRBF || minmaxRBF || stackedRBF;
-  const featureLabel = stackedRBF ? "expert midpoint × signed disagreement"
-    : minmaxRBF ? "min × max" : "mean × std";
-  const routed = stackedRBF ? "expert" : "member";
+  const featureRBF = true;
+  const sharedPCA = comb.pca_weight_surface && comb.pca_weight_surface.available;
+  const featureLabel = "raw min/mean/max PCA";
+  const routed = "band";
   root.innerHTML = `
     <div style="max-width:860px;margin:0 auto">
       <div style="margin-bottom:1rem">${metricsHtml(comb, evals)}</div>
       <h4 style="margin:.2rem 0;text-align:center">${routed} weight diagnostics</h4>
       <div id="ens-comb-imp"></div>
-      ${featureRBF ? `<h4 style="margin:1rem 0 .2rem;text-align:center">interactive ${routed} gate weight across ${featureLabel}
+      ${sharedPCA ? `<h4 style="margin:1rem 0 .2rem;text-align:center">shared gate weight on validation PCA · PC1 × PC2
+        <button type="button" id="ens-comb-surface-prev" title="previous member" style="margin-left:.4rem">←</button>
+        <select id="ens-comb-surface-member" style="margin-left:.4rem">
+          ${(comb.member_labels || []).map((m, i) => `<option value="${i}">${m}</option>`).join("")}
+        </select>
+        <button type="button" id="ens-comb-surface-next" title="next member">→</button></h4>
+        <div id="ens-comb-pca-surface"></div>
+        <p class="hint" style="text-align:center">PC1 and PC2 vary jointly through the validation mean; every remaining principal component stays at zero.</p>`
+        : featureRBF ? `<h4 style="margin:1rem 0 .2rem;text-align:center">interactive ${routed} gate weight across ${featureLabel}
         <select id="ens-comb-band" style="margin-left:.4rem">
           ${bands.map((b) => `<option value="${b}">${b}</option>`).join("")}
         </select>
@@ -338,7 +337,8 @@ function render(root, comb, evals) {
         <select id="ens-comb-surface-member" style="margin-left:.4rem">
           ${(comb.member_labels || []).map((m, i) => `<option value="${i}">${m}</option>`).join("")}
         </select>
-        <button type="button" id="ens-comb-surface-next" title="next member">→</button></h4><div id="ens-comb-surface"></div>` : `<h4 style="margin:1rem 0 .2rem;text-align:center">gate weight vs brightness
+        <button type="button" id="ens-comb-surface-next" title="next member">→</button></h4><div id="ens-comb-surface"></div>
+        ` : `<h4 style="margin:1rem 0 .2rem;text-align:center">gate weight vs brightness
         <select id="ens-comb-band" style="margin-left:.4rem">
           ${bands.map((b) => `<option value="${b}">${b}</option>`).join("")}
         </select>
@@ -362,18 +362,23 @@ function render(root, comb, evals) {
   const host = root.querySelector("#ens-comb-eff");
   const hrHost = root.querySelector("#ens-comb-hr");
   const surfaceHost = root.querySelector("#ens-comb-surface");
+  const pcaSurfaceHost = root.querySelector("#ens-comb-pca-surface");
   const surfaceSel = root.querySelector("#ens-comb-surface-member");
   const surfacePrev = root.querySelector("#ens-comb-surface-prev");
   const surfaceNext = root.querySelector("#ens-comb-surface-next");
   const draw = () => {
-    if (host) drawEffWeights(host, comb, sel.value, members, colorSel ? colorSel.value : "");
+    if (host && sel) drawEffWeights(host, comb, sel.value, members, colorSel ? colorSel.value : "");
   };
   const drawBoth = () => {
     draw();
-    drawHRWeights(hrHost, comb, sel.value, members, colorSel ? colorSel.value : "");
-    if (surfaceHost) drawFeatureSurface(surfaceHost, comb, sel.value, +(surfaceSel && surfaceSel.value || 0));
+    const hrBand = sel ? sel.value.split(" ")[0] : bands[0];
+    drawHRWeights(hrHost, comb, hrBand, members, colorSel ? colorSel.value : "");
+    if (surfaceHost && sel) drawFeatureSurface(surfaceHost, comb, sel.value, +(surfaceSel && surfaceSel.value || 0));
+    if (pcaSurfaceHost) drawFeatureSurface(
+      pcaSurfaceHost, comb, "PC1 × PC2", +(surfaceSel && surfaceSel.value || 0),
+      comb.pca_weight_surface);
   };
-  sel.addEventListener("change", drawBoth);
+  if (sel) sel.addEventListener("change", drawBoth);
   if (colorSel) colorSel.addEventListener("change", drawBoth);
   if (surfaceSel) surfaceSel.addEventListener("change", drawBoth);
   const moveSurface = (step) => {
@@ -403,7 +408,7 @@ export async function mountEnsembleCombiner(card, combinerUrl, evalsUrl) {
   const modeSel = document.getElementById("ens-mode");
   const modelSel = card.querySelector('select[name="model_kind"]');
   const curMode = () => (modeSel ? modeSel.value : "starfull");
-  const curModel = () => (modelSel ? modelSel.value : "rbf_gate");
+  const curModel = () => (modelSel ? modelSel.value : "raw_incremental_minmeanmax_rbf");
   const withMode = (u) =>
     u + (u.includes("?") ? "&" : "?") + "mode=" + encodeURIComponent(curMode())
       + "&model_kind=" + encodeURIComponent(curModel());
@@ -424,7 +429,7 @@ export async function mountEnsembleCombiner(card, combinerUrl, evalsUrl) {
   document.addEventListener("ensemble-mode-change", () => { load(); });
   if (modelSel) modelSel.addEventListener("change", () => {
     const kernels = card.querySelector('input[name="n_kernels"]');
-    if (kernels) kernels.value = modelSel.value === "rbf_gate" ? "12" : "32";
+    if (kernels) kernels.value = "128";
     load();
   });
   await load();

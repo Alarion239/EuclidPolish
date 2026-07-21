@@ -106,9 +106,10 @@ def test_ensemble_cubes_dir_is_subset_keyed():
 def test_combiner_fingerprint(tmp_path):
     from euclid_polish.web.helpers import ensemble_viz as ev
     regime = tmp_path / "r"
-    (regime / "combiner").mkdir(parents=True)
+    artifact = regime / ev._combiner_artifact_dir(None)
+    artifact.mkdir(parents=True)
     assert ev._combiner_fingerprint(str(regime)) is None       # none saved yet
-    (regime / "combiner" / "combiner.npz").write_bytes(b"x" * 10)
+    (artifact / "combiner.npz").write_bytes(b"x" * 10)
     fp = ev._combiner_fingerprint(str(regime))
     assert fp and fp.startswith("10:")                         # size:mtime
 
@@ -201,7 +202,8 @@ def test_rebuild_bucket_drops_member_and_renumbers_from_cache(tmp_path):
     np.save(os.path.join(d, f"sr_{tag}.npy"), np.full(shape, 3.0, np.float32))
     np.save(os.path.join(d, f"std_{tag}.npy"), np.zeros(shape, np.float32))
     np.save(os.path.join(d, f"pca0_{tag}.npy"), np.zeros(shape, np.float32))
-    np.save(os.path.join(d, f"comb_{tag}.npy"), np.zeros(shape, np.float32))
+    prefix = ev._combiner_cube_prefix(None)
+    np.save(os.path.join(d, f"{prefix}_{tag}.npy"), np.zeros(shape, np.float32))
     labels = [f"{i:02d}·x" for i in range(5)]
     with open(os.path.join(d, "viz_index.json"), "w") as f:
         json.dump({"subset": "test", "indices": [rec], "member_labels": labels,
@@ -219,7 +221,7 @@ def test_rebuild_bucket_drops_member_and_renumbers_from_cache(tmp_path):
                                np.full(shape, np.mean([1, 2, 4, 5]), np.float32))
     assert np.load(os.path.join(d, f"std_{tag}.npy")).std() >= 0  # recomputed, non-null
     # Combiner cube dropped (stale for the smaller set); manifest updated.
-    assert not os.path.isfile(os.path.join(d, f"comb_{tag}.npy"))
+    assert not os.path.isfile(os.path.join(d, f"{prefix}_{tag}.npy"))
     man = json.load(open(os.path.join(d, "viz_index.json")))
     assert [lbl.split("·")[0] for lbl in man["member_labels"]] == ["00", "01", "03", "04"]
     assert man["has_combiner"] is False
@@ -236,17 +238,18 @@ def test_rebuild_bucket_keeps_combiner_cubes_when_flagged(tmp_path):
         np.save(os.path.join(d, f"member{i}_{tag}.npy"), np.full(shape, i + 1, np.float32))
     np.save(os.path.join(d, f"sr_{tag}.npy"), np.zeros(shape, np.float32))
     np.save(os.path.join(d, f"std_{tag}.npy"), np.zeros(shape, np.float32))
-    np.save(os.path.join(d, f"comb_{tag}.npy"), np.full(shape, 7.0, np.float32))
+    prefix = ev._combiner_cube_prefix(None)
+    np.save(os.path.join(d, f"{prefix}_{tag}.npy"), np.full(shape, 7.0, np.float32))
     with open(os.path.join(d, "viz_index.json"), "w") as f:
         json.dump({"subset": "test", "indices": [rec],
                    "member_labels": ["00·x", "01·y", "02·z"], "has_combiner": True}, f)
 
     assert ev._rebuild_bucket_dropping_member(d, "01", keep_combiner=True) is True
-    assert os.path.isfile(os.path.join(d, f"comb_{tag}.npy"))          # kept
+    assert os.path.isfile(os.path.join(d, f"{prefix}_{tag}.npy"))      # kept
     assert json.load(open(os.path.join(d, "viz_index.json")))["has_combiner"] is True
     # …and dropping it (default) removes it.
     assert ev._rebuild_bucket_dropping_member(d, "00", keep_combiner=False) is True
-    assert not os.path.isfile(os.path.join(d, f"comb_{tag}.npy"))
+    assert not os.path.isfile(os.path.join(d, f"{prefix}_{tag}.npy"))
     assert json.load(open(os.path.join(d, "viz_index.json")))["has_combiner"] is False
 
 

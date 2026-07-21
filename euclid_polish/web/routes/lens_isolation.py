@@ -101,7 +101,7 @@ def register(app):
     @app.route("/api/lens-isolation/ensemble/combiner/fit", methods=["POST"])
     def api_lens_isolation_combiner_fit():
         num_images = _bounded_int("num_images", 100, 1, 2000)
-        n_kernels = _bounded_int("n_kernels", 12, 2, 32)
+        n_kernels = _bounded_int("n_kernels", 128, 2, 128)
         try:
             min_usage = max(0.0, min(0.5, float(request.form.get("min_usage", 0.0) or 0.0)))
         except (TypeError, ValueError):

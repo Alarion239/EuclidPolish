@@ -1,47 +1,10 @@
-"""Deep-ensemble **combiner** — tiny per-band convex mixtures.
+"""Incremental raw-electron min/mean/max ensemble combiner.
 
-For the STARFULL regime the reconstruction is normally the naive per-pixel mean
-of the ``M`` ensemble members. That discards their complementary strengths
-(L1-trained members render faint galaxies cleanly but erase star cores;
-L2-trained members keep the point sources but leave a speckle floor). This
-module learns a tiny **per-band** model that fuses the members — leaning on the
-right member at the right brightness.
-
-Design (RBF brightness gate — replaced the earlier skip-MLP, which couldn't
-route faint pixels to the L1 members: near zero it collapsed to a fixed linear
-blend that inherited the L2 floor, and its tanh gate modulated strongest at
-faint, i.e. the wrong direction):
-
-* **Per-band gated convex mixture.** One model per output band (VIS, Y_E, J_E,
-  H_E). At each pixel a **brightness scalar** ``b`` (the max over members, asinh)
-  is expanded in ``K`` fixed **RBF kernels**, mapped to per-member logits and
-  soft-maxed to weights ``w(b)`` (≥0, sum to 1); the output is the convex
-  combination ``Σ wₘ(b)·xₘ``. Localized kernels give an ARBITRARY weight-vs-
-  brightness profile — faint bins can put ~all weight on the L1 members (killing
-  the L2 floor exactly, since it's a convex combination) while bright bins pick
-  the star-reproducing members. The weight curves ARE the model (see
-  :meth:`Combiner.effective_weights`). No saturation issue: a convex combo of
-  members never has to extrapolate.
-* **asinh space.** ``arcsinh(electrons / STRETCH_SCALE_E)`` in; output inverse-
-  stretched with ``sinh(·)·scale`` after the same ±clip the inference path uses.
-* **L1 loss** (asinh-space ``mean|·|``), fit LOCALLY on the ``validate`` split.
-* **Mean/std RBF gate.** The second RBF regime sees the full-stack ``mean``
-  and ``std``, so it can react to disagreement without making a sparse,
-  redundant three-dimensional geometry.
-* **Stacked RBF gate.** A final two-input convex gate sees the validation
-  predictions from the mean/std and min/max experts. Its coordinates are their
-  midpoint and signed disagreement, so identical experts pass through exactly
-  while uncertain regions can route toward the locally better parent.
-* **Diagnostic-only member weights.** Every fit retains every member.  Peak
-  gate share and distribution-integrated (mean) gate share are measured on the
-  brightness-stratified validation rows, independently for every band, and
-  persisted for comparison in the UI.
-* **Per regime.** Starfull learns against ``hr_``; starless learns against
-  ``clean_`` and remains a separately persisted model.
-
-Persistence: ``<dir>/combiner/combiner.npz`` + ``combiner.json``.
-:func:`load_combiner` returns ``None`` when the saved member labels no longer
-match the active ensemble (stale) or the format is incompatible.
+The combiner starts at the exact ensemble mean and adds blocks of localized
+RBF residual corrections in the twelve raw-electron min/mean/max coordinates.
+Kernels within one stage repel each other. Kernels from different stages have
+no minimum-distance constraint, allowing later stages to refine the same part
+of feature space.
 """
 
 from __future__ import annotations
@@ -49,33 +12,20 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 
 import numpy as np
 
 from euclid_polish.config import Config
 
-#: Per-band asinh knee (electrons). All HR bands use STRETCH_SCALE_E today, but
-#: honour the per-band config so a future change tracks automatically.
 _BAND_SCALE = {name: float(Config.get_band(name).asinh_stretch_scale_e)
                for name in Config.HR_TARGET_BAND_NAMES}
-
-#: Clip on the asinh output before ``sinh`` (matches training/inference.py).
-SINH_CLIP = float(getattr(Config, "SINH_STRETCH_CLIP", 20.0))
-
-#: Brightness (asinh) sweep the RBF kernels tile — faint sky (~0) to a bright
-#: star core (asinh of a very bright source).
 GATE_LEVEL_RANGE = (-1.0, 13.0)
-DEFAULT_N_KERNELS = 12
-DEFAULT_STATS_RBF_N_KERNELS = 32
-DEFAULT_STATS_RBF_MIN_USAGE = 0.0
-DEFAULT_STATS_RBF_MIN_CENTER_SEPARATION = 0.35
-DEFAULT_SIGMA_SCALE = 1.0
-
-RBF_GATE_KIND = "rbf_gate"
-STATS_RBF_GATE_KIND = "stats_rbf_gate"
-MINMAX_RBF_GATE_KIND = "minmax_rbf_gate"
-STACKED_RBF_GATE_KIND = "stacked_rbf_gate"
+DEFAULT_N_KERNELS = 128
+DEFAULT_WITHIN_STAGE_MIN_SEPARATION = 0.35
+CROSS_STAGE_MIN_SEPARATION = 0.0
+RAW_INCREMENTAL_MINMEANMAX_RBF_KIND = "raw_incremental_minmeanmax_rbf"
+BAND_NAMES = tuple(Config.HR_TARGET_BAND_NAMES)
 
 
 @dataclass(frozen=True)
@@ -85,496 +35,262 @@ class CombinerModelSpec:
     artifact_dir: str
     payload_name: str
     cube_prefix: str
-    feature_names: tuple[str, ...] | None = None
+    feature_names: tuple[str, ...]
     default_kernels: int = DEFAULT_N_KERNELS
     default_min_usage: float = 0.0
 
 
+_RAW_FEATURE_NAMES = tuple(
+    f"{band}_{stat}_e" for band in BAND_NAMES for stat in ("min", "mean", "max")
+) + (
+    "raw_electrons_mean_residual_boosting_v1",
+    "within_stage_separation_0.35_cross_stage_separation_0_v2",
+)
 COMBINER_MODELS = {
-    RBF_GATE_KIND: CombinerModelSpec(RBF_GATE_KIND, "max RBF", "combiner",
-                                     "combiner_evals.json", "comb", None),
-    STATS_RBF_GATE_KIND: CombinerModelSpec(
-        STATS_RBF_GATE_KIND, "mean + std RBF", "stats_rbf_combiner",
-        "stats_rbf_combiner_evals.json", "comb_stats_rbf",
-        ("mean", "log_std", "repelled_hybrid_reservoirs_v2"),
-        DEFAULT_STATS_RBF_N_KERNELS, DEFAULT_STATS_RBF_MIN_USAGE),
-    MINMAX_RBF_GATE_KIND: CombinerModelSpec(
-        MINMAX_RBF_GATE_KIND, "min + max RBF", "minmax_rbf_combiner",
-        "minmax_rbf_combiner_evals.json", "comb_minmax_rbf",
-        ("min", "max", "repelled_hybrid_reservoirs_v2"),
-        DEFAULT_STATS_RBF_N_KERNELS, DEFAULT_STATS_RBF_MIN_USAGE),
-    STACKED_RBF_GATE_KIND: CombinerModelSpec(
-        STACKED_RBF_GATE_KIND, "stacked RBF", "stacked_rbf_combiner",
-        "stacked_rbf_combiner_evals.json", "comb_stacked_rbf",
-        ("expert_midpoint", "signed_expert_disagreement", "parent_fingerprints_v1"),
-        DEFAULT_STATS_RBF_N_KERNELS, DEFAULT_STATS_RBF_MIN_USAGE),
+    RAW_INCREMENTAL_MINMEANMAX_RBF_KIND: CombinerModelSpec(
+        RAW_INCREMENTAL_MINMEANMAX_RBF_KIND,
+        "incremental raw min/mean/max RBF",
+        "raw_incremental_minmeanmax_rbf_combiner",
+        "raw_incremental_minmeanmax_rbf_combiner_evals.json",
+        "comb_raw_incremental_minmeanmax_rbf",
+        _RAW_FEATURE_NAMES,
+    ),
 }
-
-
-def combiner_model_spec(kind: str | None) -> CombinerModelSpec:
-    return COMBINER_MODELS[normalize_model_kind(kind)]
-
-BAND_NAMES = tuple(Config.HR_TARGET_BAND_NAMES)
+ACTIVE_COMBINER_KINDS = (RAW_INCREMENTAL_MINMEANMAX_RBF_KIND,)
 
 
 def _band_scale(name: str) -> float:
-    return _BAND_SCALE.get(name, float(Config.STRETCH_SCALE_E))
+    return _BAND_SCALE[name]
 
 
-def _brightness(X: np.ndarray) -> np.ndarray:
-    """Per-pixel brightness scalar from the member vector (asinh): the max over
-    members — 'is there a bright source here'. Sharpens star (all-high) vs floor
-    (one member's small speckle) far better than the mean."""
-    return np.max(np.asarray(X, np.float64), axis=1)
-
-
-def _rbf(b: np.ndarray, centers: np.ndarray, sigma: float) -> np.ndarray:
-    z = (np.asarray(b, np.float64)[:, None] - np.asarray(centers)[None, :]) / sigma
-    return np.exp(-0.5 * z * z)
-
-
-def _stats_features(X: np.ndarray, kind: str = STATS_RBF_GATE_KIND) -> np.ndarray:
-    """Permutation-invariant full-stack summary: consensus and spread."""
-    X = np.asarray(X, np.float64)
-    if kind == MINMAX_RBF_GATE_KIND:
-        return np.stack((np.min(X, axis=1), np.max(X, axis=1)), axis=1)
-    return np.stack((np.mean(X, axis=1), np.std(X, axis=1)), axis=1)
-
-
-def _stats_geometry_features(features: np.ndarray, std_floor: float,
-                             kind: str = STATS_RBF_GATE_KIND) -> np.ndarray:
-    """Mean + logarithmic disagreement coordinates used by the stats RBF.
-
-    Member predictions are already in asinh brightness space.  Their spread is
-    non-negative; a log coordinate sharply resolves quiet stacks without
-    allowing a rare high-disagreement tail to dominate RBF distances.
-    """
-    raw = np.asarray(features, np.float64)
-    if kind == MINMAX_RBF_GATE_KIND:
-        return raw
-    floor = max(float(std_floor), 1e-8)
-    return np.stack((raw[:, 0], np.log(np.maximum(raw[:, 1], 0.0) + floor)),
-                    axis=1)
-
-
-def _std_floor(features: np.ndarray) -> float:
-    """Small robust offset that makes ``log(std + floor)`` finite at zero."""
-    spread = np.asarray(features, np.float64)[:, 1]
-    positive = spread[np.isfinite(spread) & (spread > 1e-6)]
-    return max(0.005, float(np.quantile(positive, 0.05)) if len(positive) else 0.005)
-
-
-def _softmax_masked(logits: np.ndarray, surviving: np.ndarray) -> np.ndarray:
-    logits = np.where(surviving[None, :], logits, -1e9)
-    logits = logits - logits.max(axis=1, keepdims=True)
-    e = np.exp(logits)
-    return e / e.sum(axis=1, keepdims=True)
+def combiner_model_spec(kind: str | None = None) -> CombinerModelSpec:
+    return COMBINER_MODELS[normalize_model_kind(kind)]
 
 
 def normalize_model_kind(kind: str | None) -> str:
-    """Normalize public model names to the persisted model-kind names."""
-    key = (kind or RBF_GATE_KIND).strip().lower().replace("-", "_")
-    if key in {"rbf", "rbf_gate", "rbf_max", "max", "max_conditioned"}:
-        return RBF_GATE_KIND
-    if key in {"stats_rbf", "stats_rbf_gate", "max_mean_std_rbf", "max_mean_std"}:
-        return STATS_RBF_GATE_KIND
-    if key in {"minmax_rbf", "minmax_rbf_gate", "min_max_rbf", "minmax"}:
-        return MINMAX_RBF_GATE_KIND
-    if key in {"stacked_rbf", "stacked_rbf_gate", "stacked", "combiner_stack"}:
-        return STACKED_RBF_GATE_KIND
-    raise ValueError(f"unknown combiner model kind: {kind!r}")
+    key = str(kind or RAW_INCREMENTAL_MINMEANMAX_RBF_KIND).strip().lower()
+    if key in {
+        RAW_INCREMENTAL_MINMEANMAX_RBF_KIND,
+        "incremental_raw_minmeanmax_rbf",
+        "raw_minmeanmax_rbf",
+        "residual_rbf",
+    }:
+        return RAW_INCREMENTAL_MINMEANMAX_RBF_KIND
+    raise ValueError(f"unsupported combiner model kind: {kind!r}")
 
 
-# ---------------------------------------------------------------------------
-# Model
-# ---------------------------------------------------------------------------
+def _raw_minmeanmax_features(member_pixels: np.ndarray) -> np.ndarray:
+    values = np.asarray(member_pixels, np.float64)
+    if values.ndim != 3:
+        raise ValueError(f"expected (N,M,C) member pixels, got {values.shape}")
+    return np.stack((np.min(values, axis=1), np.mean(values, axis=1),
+                     np.max(values, axis=1)), axis=2).reshape(len(values), -1)
 
-@dataclass
-class BandCombiner:
-    """One band's RBF brightness gate: ``(N, M) asinh members → (N,) asinh``.
+class FitBufferAccumulator:
+    """Bounded, aligned four-band pixels for fitting the incremental combiner.
 
-    ``b = max_m x`` → ``φ = rbf(b)`` (K kernels) → ``w = softmax(φ·V + a)`` →
-    ``y = Σ wₘ·xₘ`` (convex combination).
+    Sampling is stratified by the brightest target band, but a selected pixel
+    always retains every member and every band.  This alignment is what makes
+    one shared raw-electron model possible.
     """
 
-    V: np.ndarray                  # (K, M)
-    a: np.ndarray                  # (M,)
-    centers: np.ndarray            # (K,)
-    sigma: float
-    surviving: np.ndarray          # (M,) bool
+    def __init__(self, band_names, *, max_rows: int = 200_000,
+                 n_bright_bins: int = 8, per_bin_per_field: int = 250,
+                 level_range: tuple[float, float] = (-1.0, 12.0), seed: int = 0):
+        self.band_names = tuple(band_names)
+        self.max_rows = int(max_rows)
+        self.n_bright_bins = int(n_bright_bins)
+        self.per_bin_per_field = int(per_bin_per_field)
+        self.edges = np.linspace(level_range[0], level_range[1],
+                                 self.n_bright_bins + 1)
+        self._rng = np.random.default_rng(seed)
+        self._X: list[np.ndarray] = []
+        self._y: list[np.ndarray] = []
+        self._n = 0
 
-    def weights(self, X: np.ndarray) -> np.ndarray:
-        """Per-pixel member weights ``(N, M)`` for a member stack ``(N, M)``.
+    def add(self, preds: np.ndarray, hr: np.ndarray) -> None:
+        if self._n >= self.max_rows:
+            return
+        raw = np.asarray(preds, np.float32)
+        target = np.asarray(hr, np.float32)
+        if raw.ndim != 4 or target.ndim != 3:
+            raise ValueError(f"expected (M,H,W,C)/(H,W,C), got {raw.shape}/{target.shape}")
+        m, _, _, c = raw.shape
+        if c != len(self.band_names) or target.shape[-1] != c:
+            raise ValueError(f"expected bands {self.band_names}, got {c}")
+        pixels = raw.reshape(m, -1, c).transpose(1, 0, 2)
+        targets = target.reshape(-1, c)
+        scales = np.asarray([_band_scale(name) for name in self.band_names])
+        target_asinh = np.arcsinh(targets / scales[None, :])
+        level = np.max(target_asinh, axis=1)
+        bin_idx = np.clip(np.digitize(level, self.edges) - 1,
+                          0, self.n_bright_bins - 1)
+        for bin_i in range(self.n_bright_bins):
+            if self._n >= self.max_rows:
+                break
+            selected = np.where(bin_idx == bin_i)[0]
+            if selected.size == 0:
+                continue
+            take = int(min(self.per_bin_per_field, selected.size,
+                           self.max_rows - self._n))
+            pick = self._rng.choice(selected, size=take, replace=False)
+            self._X.append(pixels[pick])
+            self._y.append(targets[pick])
+            self._n += take
 
-        The brightness scalar is the max over the SURVIVING members only, so
-        pruned members influence neither the gate nor the convex sum (weight 0):
-        their SR is genuinely unused and need never be computed. With no pruning
-        (all surviving) this is identical to the max over all members."""
-        X = np.asarray(X, np.float64)
-        surv = np.asarray(self.surviving, bool)
-        b = np.max(X[:, surv] if surv.any() else X, axis=1)
-        logits = _rbf(b, self.centers, self.sigma) @ self.V + self.a
-        return _softmax_masked(logits, self.surviving)
-
-    def forward_asinh(self, X: np.ndarray) -> np.ndarray:
-        X = np.asarray(X, np.float64)
-        return np.sum(self.weights(X) * X, axis=1)
-
-    def weights_at(self, b_levels: np.ndarray) -> np.ndarray:
-        """Gate weights ``(L, M)`` at given brightness levels (asinh)."""
-        logits = _rbf(b_levels, self.centers, self.sigma) @ self.V + self.a
-        return _softmax_masked(logits, self.surviving)
+    def buffer(self) -> tuple[np.ndarray, np.ndarray]:
+        if not self._X:
+            return (np.zeros((0, 0, len(self.band_names)), np.float32),
+                    np.zeros((0, len(self.band_names)), np.float32))
+        return (np.concatenate(self._X).astype(np.float32),
+                np.concatenate(self._y).astype(np.float32))
 
 
-@dataclass
-class StatsRBFBandCombiner:
-    """A compact mean/std RBF gate.
+SharedFitBufferAccumulator = FitBufferAccumulator
 
-    ``x(M) → [mean(x), std(x)] → RBF(32) → softmax(M) → Σ w·x``.
-    The std coordinate is ``log(std + std_floor)``. Centers are fixed after a
-    small deterministic k-means pass over validation features; only the
-    kernel-to-member logits are supervised. This retains RBF smoothness with
-    deliberately high resolution for quiet, low-disagreement stacks.
+def _weighted_kmeans(rows: np.ndarray, sample_weight: np.ndarray,
+                     n_clusters: int, *, seed: int, max_iter: int = 40,
+                     tol: float = 1e-5,
+                     existing_centers: np.ndarray | None = None,
+                     min_separation: float = 0.0) -> np.ndarray:
+    """Deterministic weighted Lloyd K-means with weighted K-means++ seeds.
+
+    ``sample_weight`` affects both seed probability and centroid means.  This
+    small NumPy implementation avoids making scikit-learn a runtime dependency
+    of inference artifacts while preserving its standard weighted-K-means
+    semantics.
     """
+    points = np.asarray(rows, np.float64)
+    weights = np.asarray(sample_weight, np.float64).reshape(-1)
+    if points.ndim != 2 or len(points) != len(weights):
+        raise ValueError("weighted K-means expects (N,D) rows and N weights")
+    finite = np.all(np.isfinite(points), axis=1) & np.isfinite(weights)
+    points = points[finite]
+    weights = np.maximum(weights[finite], 0.0)
+    if not len(points):
+        return np.empty((0, rows.shape[1]), np.float64)
+    if not np.any(weights > 0):
+        weights = np.ones(len(points), np.float64)
+    requested_k = min(max(1, int(n_clusters)), len(points))
+    anchors = np.asarray(
+        existing_centers if existing_centers is not None
+        else np.empty((0, points.shape[1])), np.float64)
+    if anchors.ndim != 2 or anchors.shape[1] != points.shape[1]:
+        raise ValueError("existing weighted K-means centers have wrong shape")
+    # Request extra candidates when a hard separation filter is active. This
+    # lets K-means++ find a complete batch without accepting near-duplicates.
+    k = min(len(points), requested_k * 2 if min_separation > 0 else requested_k)
+    rng = np.random.default_rng(seed)
+    centers = np.empty((k, points.shape[1]), np.float64)
+    chosen: list[int] = []
+    if len(anchors):
+        anchor_distance = np.min(np.sum(
+            (points[:, None, :] - anchors[None, :, :]) ** 2, axis=2), axis=1)
+        first_score = weights * anchor_distance
+    else:
+        first_score = weights
+    if float(first_score.sum()) <= 0:
+        first_score = weights
+    first = int(rng.choice(len(points), p=first_score / first_score.sum()))
+    centers[0] = points[first]
+    chosen.append(first)
+    nearest = np.sum((points - centers[0]) ** 2, axis=1)
+    if len(anchors):
+        nearest = np.minimum(nearest, anchor_distance)
+    for ci in range(1, k):
+        score = weights * nearest
+        score[chosen] = 0.0
+        if float(score.sum()) > 0:
+            pick = int(rng.choice(len(points), p=score / score.sum()))
+        else:
+            available = np.ones(len(points), bool)
+            available[chosen] = False
+            candidates = np.flatnonzero(available)
+            pick = int(candidates[np.argmax(weights[candidates])])
+        centers[ci] = points[pick]
+        chosen.append(pick)
+        nearest = np.minimum(
+            nearest, np.sum((points - centers[ci]) ** 2, axis=1))
 
-    V: np.ndarray                  # (K, M)
-    a: np.ndarray                  # (M,)
-    centers: np.ndarray            # (K, 2), mean / log(std + std_floor)
-    scales: np.ndarray             # (2,), geometry-coordinate scales
-    sigma: float                   # isotropic width in normalized space
-    surviving: np.ndarray          # (M,) bool
-    std_floor: float               # raw asinh-space std offset for log geometry
-    feature_kind: str = STATS_RBF_GATE_KIND
-
-    def _raw_features(self, X: np.ndarray) -> np.ndarray:
-        X = np.asarray(X, np.float64)
-        surv = np.asarray(self.surviving, bool)
-        return _stats_features(X[:, surv] if surv.any() else X, self.feature_kind)
-
-    def _basis_from_raw_features(self, z: np.ndarray) -> np.ndarray:
-        geometry = _stats_geometry_features(z, self.std_floor, self.feature_kind)
-        d = (geometry[:, None, :] - self.centers[None, :, :])
-        d = d / np.maximum(np.asarray(self.scales, np.float64)[None, None, :], 1e-6)
-        return np.exp(-0.5 * np.sum(d * d, axis=2) / max(float(self.sigma) ** 2, 1e-6))
-
-    def weights(self, X: np.ndarray) -> np.ndarray:
-        logits = self._basis_from_raw_features(self._raw_features(X)) @ self.V + self.a
-        return _softmax_masked(logits, self.surviving)
-
-    def forward_asinh(self, X: np.ndarray) -> np.ndarray:
-        X = np.asarray(X, np.float64)
-        return np.sum(self.weights(X) * X, axis=1)
-
-    def weights_at(self, b_levels: np.ndarray) -> np.ndarray:
-        """Equal-input, zero-disagreement diagnostic slice for the UI."""
-        levels = np.asarray(b_levels, np.float64).reshape(-1)
-        z = np.stack((levels, np.zeros_like(levels)), axis=1)
-        logits = self._basis_from_raw_features(z) @ self.V + self.a
-        return _softmax_masked(logits, self.surviving)
-
-    def weight_surface(self, *, n_mean: int = 31, n_std: int = 31) -> dict:
-        """A deliberately padded 2-D feature grid for the rotatable WebUI view."""
-        centers = np.asarray(self.centers, np.float64)
-        scales = np.maximum(np.asarray(self.scales, np.float64), 1e-6)
-        width = max(float(self.sigma), 0.5)
-        if self.feature_kind == MINMAX_RBF_GATE_KIND:
-            # The min/max features are in raw asinh space and can extend well
-            # beyond the old brightness sweep.  Do not clip them to the
-            # brightness-gate range: that could cut off fitted centres and
-            # make the surface look truncated.  Keep a margin around the
-            # actual fitted geometry instead.
-            pad = scales * width * 1.25
-            finite_centers = np.isfinite(centers)
-            lo = np.where(finite_centers, centers, np.inf).min(axis=0) - pad
-            hi = np.where(finite_centers, centers, -np.inf).max(axis=0) + pad
-            # Degenerate/sparse fitted geometry should still produce a useful
-            # axis rather than a zero-width linspace.
-            span = np.maximum(pad * 2.0, 1e-3)
-            lo = np.where(np.isfinite(lo), lo, -span / 2.0)
-            hi = np.where(np.isfinite(hi), hi, span / 2.0)
-            hi = np.maximum(hi, lo + span)
-            minimum = np.linspace(lo[0], hi[0], int(n_mean))
-            maximum = np.linspace(lo[1], hi[1], int(n_std))
-            mm, xx = np.meshgrid(minimum, maximum, indexing="xy")
-            z = np.stack((mm.reshape(-1), xx.reshape(-1)), axis=1)
-            logits = self._basis_from_raw_features(z) @ self.V + self.a
-            weights = _softmax_masked(logits, self.surviving)
-            return {"mean_asinh": minimum, "std_asinh": maximum,
-                    "std_log": maximum,
-                    "center_mean_asinh": centers[:, 0],
-                    "center_std_asinh": centers[:, 1],
-                    "center_std_log": centers[:, 1],
-                    "x_label": "min", "y_label": "max", "y_is_log": False,
-                    "weights": weights.reshape(len(maximum), len(minimum), -1)}
-        # Mean only needs a conventional local RBF margin.  For std, show the
-        # full zero-disagreement boundary plus three kernel-widths above the
-        # outermost centre: the action is often near the low-std edge, and a
-        # symmetric narrow crop made that structure visually misleading.
-        pad = scales * width * 1.25
-        lo, hi = centers.min(axis=0) - pad, centers.max(axis=0) + pad
-        lo[0], hi[0] = max(-1.0, lo[0]), min(13.0, hi[0])
-        # Keep zero disagreement visible, then extend high std by three RBF
-        # widths in *log-like* geometry before returning to raw std units.
-        std_hi_geometry = max(0.0, float(centers[:, 1].max())
-                              + float(scales[1] * width * 3.0))
-        lo[1] = 0.0
-        hi[1] = max(float(np.exp(std_hi_geometry) - self.std_floor), lo[1] + 1e-4)
-        mean = np.linspace(lo[0], hi[0], int(n_mean))
-        # Uniform rows in the model's log coordinate preserve low-std detail.
-        std_log = np.linspace(np.log(self.std_floor), std_hi_geometry, int(n_std))
-        std = np.maximum(0.0, np.exp(std_log) - self.std_floor)
-        # Preserve the exact zero-disagreement boundary promised by this
-        # diagnostic surface.  exp(log(std_floor)) can otherwise leave a
-        # platform-dependent ~1e-17 residue in the first cell.
-        std[0] = 0.0
-        mm, ss = np.meshgrid(mean, std, indexing="xy")
-        z = np.stack((mm.reshape(-1), ss.reshape(-1)), axis=1)
-        logits = self._basis_from_raw_features(z) @ self.V + self.a
-        weights = _softmax_masked(logits, self.surviving)
-        return {"mean_asinh": mean, "std_asinh": std,
-                "std_log": std_log,
-                "center_mean_asinh": centers[:, 0],
-                "center_std_asinh": np.maximum(0.0, np.exp(centers[:, 1]) - self.std_floor),
-                "center_std_log": centers[:, 1],
-                "x_label": "mean", "y_label": "std", "y_is_log": True,
-                "weights": weights.reshape(len(std), len(mean), -1)}
-
-
-@dataclass
-class StackedRBFBandCombiner:
-    """Two-expert convex gate over the mean/std and min/max predictions.
-
-    The RBF geometry uses an invertible rotation of the two expert pixels:
-    their midpoint and signed disagreement.  Near the one-to-one diagonal the
-    output is insensitive to the gate; away from it the sign retains which
-    expert is brighter and the midpoint retains the local brightness regime.
-    """
-
-    V: np.ndarray                  # (K, 2) expert logits
-    a: np.ndarray                  # (2,)
-    centers: np.ndarray            # (K, 2), midpoint / signed disagreement
-    scales: np.ndarray             # (2,), geometry-coordinate scales
-    sigma: float
-
-    @staticmethod
-    def features(experts: np.ndarray) -> np.ndarray:
-        experts = np.asarray(experts, np.float64)
-        if experts.ndim != 2 or experts.shape[1] != 2:
-            raise ValueError(f"expected (N,2) expert predictions, got {experts.shape}")
-        stats, minmax = experts[:, 0], experts[:, 1]
-        return np.stack(((stats + minmax) * 0.5, minmax - stats), axis=1)
-
-    def _basis(self, experts: np.ndarray) -> np.ndarray:
-        z = self.features(experts)
-        d = (z[:, None, :] - np.asarray(self.centers, np.float64)[None, :, :])
-        d /= np.maximum(np.asarray(self.scales, np.float64)[None, None, :], 1e-6)
-        return np.exp(-0.5 * np.sum(d * d, axis=2)
-                      / max(float(self.sigma) ** 2, 1e-6))
-
-    def weights(self, experts: np.ndarray) -> np.ndarray:
-        logits = self._basis(experts) @ self.V + self.a
-        logits = logits - logits.max(axis=1, keepdims=True)
-        e = np.exp(logits)
-        return e / e.sum(axis=1, keepdims=True)
-
-    def forward_asinh(self, experts: np.ndarray) -> np.ndarray:
-        experts = np.asarray(experts, np.float64)
-        return np.sum(self.weights(experts) * experts, axis=1)
-
-    def weight_surface(self, *, n_mean: int = 31, n_std: int = 31) -> dict:
-        centers = np.asarray(self.centers, np.float64)
-        scales = np.maximum(np.asarray(self.scales, np.float64), 1e-6)
-        pad = scales * max(float(self.sigma), 0.5) * 1.5
-        lo, hi = centers.min(axis=0) - pad, centers.max(axis=0) + pad
-        span = np.maximum(hi - lo, 1e-3)
-        hi = np.maximum(hi, lo + span)
-        midpoint = np.linspace(lo[0], hi[0], int(n_mean))
-        disagreement = np.linspace(lo[1], hi[1], int(n_std))
-        mm, dd = np.meshgrid(midpoint, disagreement, indexing="xy")
-        stats = mm - 0.5 * dd
-        minmax = mm + 0.5 * dd
-        experts = np.stack((stats.reshape(-1), minmax.reshape(-1)), axis=1)
-        weights = self.weights(experts)
-        return {
-            "mean_asinh": midpoint,
-            "std_asinh": disagreement,
-            "std_log": disagreement,
-            "center_mean_asinh": centers[:, 0],
-            "center_std_asinh": centers[:, 1],
-            "center_std_log": centers[:, 1],
-            "x_label": "expert midpoint",
-            "y_label": "minmax - meanstd",
-            "y_is_log": False,
-            "weights": weights.reshape(len(disagreement), len(midpoint), 2),
-        }
-
-
-@dataclass
-class Combiner:
-    """The 4-band combiner + metadata to apply/persist/validate it."""
-
-    member_labels: list[str]
-    n_kernels: int
-    sigma_scale: float
-    min_usage: float
-    bands: dict[str, BandCombiner | StatsRBFBandCombiner]
-    band_names: tuple[str, ...] = BAND_NAMES
-    level_range: tuple[float, float] = GATE_LEVEL_RANGE
-    records_fp: str | None = None
-    starfull: bool = True
-    val_l1: float | None = None
-    kind: str = RBF_GATE_KIND
-    fit_meta: dict = field(default_factory=dict)
-    member_importance: dict[str, list[float]] = field(default_factory=dict)
-    member_weight_peaks: dict[str, list[float]] = field(default_factory=dict)
-    member_weight_integrals: dict[str, list[float]] = field(default_factory=dict)
-    max_prune_regret: float = 0.0
-    min_peak_weight: float = 0.0
-    member_ablation: dict = field(default_factory=dict)
-
-    # -- inference -- #
-    def apply_field(self, preds: np.ndarray,
-                    band_names: tuple[str, ...] | None = None) -> np.ndarray:
-        """Combine a member stack ``(M,H,W,C)`` (electrons) → ``(H,W,C)``."""
-        preds = np.asarray(preds, np.float32)
-        if preds.ndim != 4:
-            raise ValueError(f"expected (M,H,W,C) member stack, got {preds.shape}")
-        m, h, w, c = preds.shape
-        names = tuple(band_names) if band_names is not None else self.band_names
-        out = np.empty((h, w, c), np.float32)
-        for ci in range(c):
-            name = names[ci]
-            bc = self.bands[name]
-            scale = _band_scale(name)
-            x = np.arcsinh(preds[..., ci].reshape(m, h * w).T / scale)   # (HW, M)
-            y = np.clip(bc.forward_asinh(x), -SINH_CLIP, SINH_CLIP)
-            out[..., ci] = (np.sinh(y) * scale).reshape(h, w).astype(np.float32)
-        return out
-
-    @property
-    def weight_labels(self) -> list[str]:
-        return list(self.member_labels)
-
-    def band_weights(self, band: str, member_asinh: np.ndarray) -> np.ndarray:
-        return self.bands[band].weights(member_asinh)
-
-    def needed_member_indices(self) -> list[int]:
-        """Indices of the members actually used by the gate (surviving in any
-        band). Pruned members contribute nothing and don't need to be run."""
-        m = len(self.member_labels)
-        mask = np.zeros(m, bool)
-        for bc in self.bands.values():
-            s = np.asarray(bc.surviving, bool)
-            mask[:len(s)] |= s
-        return [int(i) for i in np.where(mask)[0]]
-
-    def member_pruned(self, index: int) -> bool:
-        """True when the member at ``index`` is dropped in EVERY band — its gate
-        weight is 0 everywhere, so the fused output does not depend on it (and it
-        can be removed without changing anything)."""
-        return 0 <= index < len(self.member_labels) \
-            and index not in set(self.needed_member_indices())
-
-    def without_member(self, index: int) -> Combiner:
-        """A copy with the member at ``index`` removed from ``member_labels`` and
-        every band's weights (``V`` column, bias ``a``, ``surviving`` mask),
-        reindexed contiguous. **Exact only for a PRUNED member** (see
-        :meth:`member_pruned`): dropping a weight-0, masked-off column leaves the
-        max-over-surviving brightness and the softmax over the surviving members
-        unchanged, so every kept member's weight — and the fused output — is
-        identical. Lets the combiner survive archiving a member it never used."""
-        keep = [i for i in range(len(self.member_labels)) if i != index]
-        bands = {}
-        for name, bc in self.bands.items():
-            if self.kind in {STATS_RBF_GATE_KIND, MINMAX_RBF_GATE_KIND}:
-                bands[name] = StatsRBFBandCombiner(
-                    V=np.asarray(bc.V)[:, keep], a=np.asarray(bc.a)[keep],
-                    centers=np.asarray(bc.centers), scales=np.asarray(bc.scales),
-                    sigma=bc.sigma, surviving=np.asarray(bc.surviving, bool)[keep],
-                    std_floor=bc.std_floor, feature_kind=bc.feature_kind)
+    for _ in range(max(1, int(max_iter))):
+        distance = np.sum(
+            (points[:, None, :] - centers[None, :, :]) ** 2, axis=2)
+        labels = np.argmin(distance, axis=1)
+        updated = centers.copy()
+        nearest = distance[np.arange(len(points)), labels]
+        for ci in range(k):
+            hit = labels == ci
+            mass = float(weights[hit].sum())
+            if mass > 0:
+                updated[ci] = np.average(
+                    points[hit], axis=0, weights=weights[hit])
             else:
-                bands[name] = BandCombiner(
-                    V=np.asarray(bc.V)[:, keep], a=np.asarray(bc.a)[keep],
-                    centers=bc.centers, sigma=bc.sigma,
-                    surviving=np.asarray(bc.surviving, bool)[keep])
-        importance = {
-            name: [float(values[i]) for i in keep]
-            for name, values in self.member_importance.items()
-            if len(values) == len(self.member_labels)
-        }
-        peaks = {
-            name: [float(values[i]) for i in keep]
-            for name, values in self.member_weight_peaks.items()
-            if len(values) == len(self.member_labels)
-        }
-        integrals = {
-            name: [float(values[i]) for i in keep]
-            for name, values in self.member_weight_integrals.items()
-            if len(values) == len(self.member_labels)
-        }
-        return replace(self, member_labels=[self.member_labels[i] for i in keep],
-                       bands=bands, member_importance=importance,
-                       member_weight_peaks=peaks,
-                       member_weight_integrals=integrals)
+                updated[ci] = points[int(np.argmax(weights * nearest))]
+        shift = np.sqrt(np.sum((updated - centers) ** 2, axis=1)).max()
+        centers = updated
+        if float(shift) <= float(tol):
+            break
+    if min_separation <= 0:
+        return centers[:requested_k]
+    distance = np.sum(
+        (points[:, None, :] - centers[None, :, :]) ** 2, axis=2)
+    labels = np.argmin(distance, axis=1)
+    mass = np.asarray(
+        [weights[labels == ci].sum() for ci in range(len(centers))])
+    accepted: list[np.ndarray] = []
+    floor2 = float(min_separation) ** 2
+    for ci in np.argsort(mass)[::-1]:
+        candidate = centers[int(ci)]
+        comparison = (anchors if not accepted else
+                      np.concatenate((anchors, np.asarray(accepted)), axis=0))
+        if (not len(comparison) or float(np.min(np.sum(
+                (comparison - candidate[None, :]) ** 2, axis=1))) >= floor2):
+            accepted.append(candidate)
+            if len(accepted) >= requested_k:
+                break
+    return np.asarray(accepted, np.float64).reshape(-1, points.shape[1])
 
-    def upsample(self, ens, lr_array: np.ndarray) -> np.ndarray:
-        """Combine one LR field, running the members required by this model.
-
-        RBF gates can skip members pruned from every band.
-        """
-        keep = self.needed_member_indices()
-        if not keep:
-            raise RuntimeError("combiner has no surviving members")
-        m = len(self.member_labels)
-        preds = None
-        for i in keep:
-            sr = np.asarray(ens._models[i].upsample_array(lr_array), np.float32)
-            if preds is None:
-                preds = np.zeros((m, *sr.shape), np.float32)   # pruned slots stay 0
-            preds[i] = sr
-        return self.apply_field(preds)
-
-    # -- interpretability -- #
-    def effective_weights(self, band: str, *, n_levels: int = 25,
-                          level_range: tuple[float, float] | None = None) -> dict:
-        """A one-dimensional gate view for the UI.
-
-        Max-RBF is exact on this brightness sweep. Mean/std RBF uses the
-        equal-input, zero-disagreement slice; its HR-conditioned diagnostic
-        remains the faithful view of real input stacks.
-        """
-        bc = self.bands[band]
-        lr = level_range or self.level_range
-        levels = np.linspace(lr[0], lr[1], int(n_levels))
-        scale = _band_scale(band)
-        return {"brightness_asinh": levels,
-                "brightness_e": np.sinh(levels) * scale,
-                "jacobian": bc.weights_at(levels)}       # (L, M), rows sum to 1
-
-    def surviving_members(self) -> dict[str, list[bool]]:
-        return {b: self.bands[b].surviving.astype(bool).tolist()
-                for b in self.bands}
-
+def _rbf_sigma_from_centers(centers: np.ndarray) -> float:
+    centers = np.asarray(centers, np.float64)
+    if len(centers) <= 1:
+        return 1.0
+    separation = np.sqrt(np.sum(
+        (centers[:, None, :] - centers[None, :, :]) ** 2, axis=2))
+    np.fill_diagonal(separation, np.inf)
+    nearest = np.min(separation, axis=1)
+    positive = nearest[np.isfinite(nearest) & (nearest > 1e-8)]
+    return max(0.5, float(np.median(positive)) * 1.25
+               if len(positive) else 1.0)
 
 @dataclass
-class StackedCombiner:
-    """Four-band convex stack of two already-fitted RBF combiners."""
+class RawIncrementalMinMeanMaxRBFCombiner:
+    """Raw min/mean/max RBF boosting around an exact ensemble-mean default.
+
+    Fixed centers describe residual regions in twelve raw-electron coordinates.
+    Each kernel contributes one signed correction per output band; the final
+    prediction is ``relu(member_mean + rbf @ correction)``.  With no nearby
+    kernel the correction tends smoothly to zero, so inference returns the
+    ordinary ensemble mean rather than a learned global bias.
+    """
 
     member_labels: list[str]
     n_kernels: int
-    bands: dict[str, StackedRBFBandCombiner]
-    stats_combiner: Combiner
-    minmax_combiner: Combiner
+    coefficients: np.ndarray       # (K, C), signed raw-electron corrections
+    centers: np.ndarray            # (K, 3*C), raw min/mean/max coordinates
+    scales: np.ndarray             # (3*C,), distance normalization only
+    sigmas: np.ndarray             # (K,), fixed per-increment widths
+    increment_ids: np.ndarray      # (K,), allocation batch for diagnostics
+    reference_features: np.ndarray # (3*C,), validation median
+    output_floors: np.ndarray      # (C,), PCA suppression denominator floors
     band_names: tuple[str, ...] = BAND_NAMES
     level_range: tuple[float, float] = GATE_LEVEL_RANGE
     records_fp: str | None = None
     starfull: bool = True
     val_l1: float | None = None
-    kind: str = STACKED_RBF_GATE_KIND
+    kind: str = RAW_INCREMENTAL_MINMEANMAX_RBF_KIND
     fit_meta: dict = field(default_factory=dict)
     member_weight_peaks: dict[str, list[float]] = field(default_factory=dict)
     member_weight_integrals: dict[str, list[float]] = field(default_factory=dict)
-    parent_fingerprints: dict[str, str | None] = field(default_factory=dict)
     sigma_scale: float = 1.0
     min_usage: float = 0.0
     max_prune_regret: float = 0.0
@@ -583,36 +299,70 @@ class StackedCombiner:
     member_ablation: dict = field(default_factory=dict)
 
     @property
+    def bands(self) -> dict:
+        return {}
+
+    @property
     def weight_labels(self) -> list[str]:
-        return ["mean + std RBF", "min + max RBF"]
+        # These label the four PCA suppression surfaces.  This model has no
+        # member weights; its source membership is retained separately.
+        return list(self.band_names)
 
-    def expert_asinh(self, band: str, member_asinh: np.ndarray) -> np.ndarray:
-        """Return ``(mean/std, min/max)`` parent predictions in asinh space."""
-        stats = self.stats_combiner.bands[band].forward_asinh(member_asinh)
-        minmax = self.minmax_combiner.bands[band].forward_asinh(member_asinh)
-        return np.stack((stats, minmax), axis=1)
+    def features_from_electrons(self, pixels: np.ndarray) -> np.ndarray:
+        raw = np.asarray(pixels, np.float64)
+        if raw.ndim != 3 or raw.shape[1] != len(self.member_labels):
+            raise ValueError(
+                f"expected (N,{len(self.member_labels)},C) member pixels, got {raw.shape}")
+        if raw.shape[2] != len(self.band_names):
+            raise ValueError(f"expected {len(self.band_names)} bands, got {raw.shape[2]}")
+        return _raw_minmeanmax_features(raw)
 
-    def band_weights(self, band: str, member_asinh: np.ndarray) -> np.ndarray:
-        return self.bands[band].weights(self.expert_asinh(band, member_asinh))
+    def _basis_from_features(self, features: np.ndarray) -> np.ndarray:
+        z = np.asarray(features, np.float64)
+        if not self.n_kernels:
+            return np.zeros((len(z), 0), np.float64)
+        scales = np.maximum(np.asarray(self.scales, np.float64), 1e-8)
+        normalized = z / scales[None, :]
+        centers = np.asarray(self.centers, np.float64) / scales[None, :]
+        distance2 = (np.sum(normalized * normalized, axis=1)[:, None]
+                     + np.sum(centers * centers, axis=1)[None, :]
+                     - 2.0 * normalized @ centers.T)
+        np.maximum(distance2, 0.0, out=distance2)
+        sigma = np.maximum(np.asarray(self.sigmas, np.float64), 1e-6)
+        return np.exp(-0.5 * distance2
+                      / (sigma[None, :] * sigma[None, :]))
+
+    def correction_from_electrons(self, pixels: np.ndarray, *,
+                                  chunk_rows: int = 4096) -> np.ndarray:
+        features = self.features_from_electrons(pixels)
+        coefficients = np.asarray(self.coefficients, np.float64)
+        out = np.empty((len(features), len(self.band_names)), np.float64)
+        chunk = max(1, int(chunk_rows))
+        for start in range(0, len(features), chunk):
+            stop = min(len(features), start + chunk)
+            out[start:stop] = (self._basis_from_features(features[start:stop])
+                               @ coefficients)
+        return out
+
+    def predict_pixels(self, pixels: np.ndarray) -> np.ndarray:
+        raw = np.asarray(pixels, np.float64)
+        out = np.mean(raw, axis=1) + self.correction_from_electrons(raw)
+        return np.maximum(out, 0.0)
 
     def apply_field(self, preds: np.ndarray,
                     band_names: tuple[str, ...] | None = None) -> np.ndarray:
-        preds = np.asarray(preds, np.float32)
-        if preds.ndim != 4:
-            raise ValueError(f"expected (M,H,W,C) member stack, got {preds.shape}")
-        m, h, w, c = preds.shape
-        if m != len(self.member_labels):
-            raise ValueError(f"expected {len(self.member_labels)} members, got {m}")
+        raw = np.asarray(preds, np.float32)
+        if raw.ndim != 4:
+            raise ValueError(f"expected (M,H,W,C) member stack, got {raw.shape}")
+        m, h, w, c = raw.shape
         names = tuple(band_names) if band_names is not None else self.band_names
-        out = np.empty((h, w, c), np.float32)
-        for ci, name in enumerate(names[:c]):
-            scale = _band_scale(name)
-            x = np.arcsinh(preds[..., ci].reshape(m, h * w).T / scale)
-            experts = self.expert_asinh(name, x)
-            y = np.clip(self.bands[name].forward_asinh(experts),
-                        -SINH_CLIP, SINH_CLIP)
-            out[..., ci] = (np.sinh(y) * scale).reshape(h, w).astype(np.float32)
-        return out
+        if (m != len(self.member_labels) or c != len(self.band_names)
+                or tuple(names) != tuple(self.band_names)):
+            raise ValueError(
+                f"raw incremental RBF expects {len(self.member_labels)} members "
+                f"and bands {self.band_names}, got {m} members and {names}")
+        pixels = raw.reshape(m, h * w, c).transpose(1, 0, 2)
+        return self.predict_pixels(pixels).reshape(h, w, c).astype(np.float32)
 
     def needed_member_indices(self) -> list[int]:
         return list(range(len(self.member_labels)))
@@ -621,1262 +371,408 @@ class StackedCombiner:
         return False
 
     def without_member(self, index: int):
-        raise ValueError("a stacked combiner must be refitted after membership changes")
+        raise ValueError("a raw incremental RBF must be refitted after membership changes")
 
     def surviving_members(self) -> dict[str, list[bool]]:
-        return {b: [True, True] for b in self.bands}
+        return {"source": [True] * len(self.member_labels)}
 
     def upsample(self, ens, lr_array: np.ndarray) -> np.ndarray:
         return self.apply_field(ens.member_arrays(lr_array))
 
-
-# ---------------------------------------------------------------------------
-# Fit-data assembly (unchanged — streaming, brightness-stratified)
-# ---------------------------------------------------------------------------
-
-class FitBufferAccumulator:
-    """Streaming per-band fit-buffer builder. ``add(preds, hr)`` one field at a
-    time — so the caller never retains the full (multi-GB) member stack — pixel-
-    subsampling **stratified by brightness** (equal quota per asinh-brightness
-    bin) so faint structure isn't drowned by the dominant sky. ``buffers()``
-    returns ``{band: (X(N,M), y(N,))}`` in asinh space."""
-
-    def __init__(self, band_names, *, max_rows: int = 3_000_000,
-                 n_bright_bins: int = 8, per_bin_per_field: int = 2000,
-                 level_range: tuple[float, float] = (-1.0, 12.0), seed: int = 0):
-        self.band_names = tuple(band_names)
-        self.max_rows = int(max_rows)
-        self.n_bright_bins = int(n_bright_bins)
-        self.per_bin_per_field = int(per_bin_per_field)
-        self.edges = np.linspace(level_range[0], level_range[1],
-                                 int(n_bright_bins) + 1)
-        self._rng = np.random.default_rng(seed)
-        self._X = {b: [] for b in self.band_names}
-        self._y = {b: [] for b in self.band_names}
-        self._n = dict.fromkeys(self.band_names, 0)
-
-    def add(self, preds: np.ndarray, hr: np.ndarray) -> None:
-        preds = np.asarray(preds, np.float32)
-        hr = np.asarray(hr, np.float32)
-        m = preds.shape[0]
-        for ci, name in enumerate(self.band_names):
-            if self._n[name] >= self.max_rows:
-                continue
-            scale = _band_scale(name)
-            xs = np.arcsinh(preds[..., ci].reshape(m, -1).T / scale)   # (P, M)
-            ys = np.arcsinh(hr[..., ci].reshape(-1) / scale)           # (P,)
-            bin_idx = np.clip(np.digitize(ys, self.edges) - 1,
-                              0, self.n_bright_bins - 1)
-            for b in range(self.n_bright_bins):
-                if self._n[name] >= self.max_rows:
-                    break
-                sel = np.where(bin_idx == b)[0]
-                if sel.size == 0:
-                    continue
-                take = int(min(self.per_bin_per_field, sel.size,
-                               self.max_rows - self._n[name]))
-                pick = self._rng.choice(sel, size=take, replace=False)
-                self._X[name].append(xs[pick])
-                self._y[name].append(ys[pick])
-                self._n[name] += take
-
-    def buffers(self) -> dict[str, tuple[np.ndarray, np.ndarray]]:
-        out: dict[str, tuple[np.ndarray, np.ndarray]] = {}
-        for name in self.band_names:
-            if self._X[name]:
-                out[name] = (np.concatenate(self._X[name]).astype(np.float32),
-                             np.concatenate(self._y[name]).astype(np.float32))
-            else:
-                out[name] = (np.zeros((0, 0), np.float32), np.zeros((0,), np.float32))
-        return out
-
-
-def build_fit_buffers_from_fields(field_iter, band_names, **kw
-                                  ) -> dict[str, tuple[np.ndarray, np.ndarray]]:
-    """Convenience: drive a :class:`FitBufferAccumulator` from an iterator of
-    ``(preds(M,H,W,C), hr(H,W,C))`` fields (electrons)."""
-    acc = FitBufferAccumulator(band_names, **kw)
-    for preds, hr in field_iter:
-        acc.add(preds, hr)
-    return acc.buffers()
-
-
-def build_fit_buffers(base_dir: str, records_dir: str, *, subset: str = "validate",
-                      num_images: int = 100, ens=None, on_progress=None,
-                      **kw) -> tuple[dict[str, tuple[np.ndarray, np.ndarray]], list[str]]:
-    """Records-backed convenience: run each ``validate`` field through the
-    STARFULL ensemble and assemble the per-band fit buffers. Returns
-    ``(buffers, member_labels)``."""
-    from euclid_polish.ensemble import EnsembleModel
-    from euclid_polish.image.collection import ImageSet
-    from euclid_polish.image.tfio import tfrecord_path
-
-    ens = ens or EnsembleModel(base_dir, starless=False)
-    labels = list(ens.member_labels)
-    lr_list = list(ImageSet.read(tfrecord_path(records_dir, f"dirty_{subset}"),
-                                 num_images=num_images))
-    hr_by = {h.index: h for h in ImageSet.read(
-        tfrecord_path(records_dir, f"hr_{subset}"), num_images=num_images)}
-
-    def _iter():
-        n = len(lr_list)
-        for i, lr in enumerate(lr_list):
-            hr = hr_by.get(lr.index)
-            if hr is None:
-                continue
-            preds = ens.member_arrays(lr.data)
-            if on_progress is not None:
-                on_progress(i + 1, n, f"field {lr.index}")
-            yield preds, np.asarray(hr.data, np.float32)
-
-    buffers = build_fit_buffers_from_fields(_iter(), BAND_NAMES, **kw)
-    return buffers, labels
-
-
-# ---------------------------------------------------------------------------
-# Fit
-# ---------------------------------------------------------------------------
-
-def _fit_one_band(X: np.ndarray, y: np.ndarray, *, n_kernels: int,
-                  sigma_scale: float, level_range: tuple[float, float],
-                  steps: int, lr: float, batch: int, seed: int, holdout: float
-                  ) -> tuple[BandCombiner, np.ndarray, np.ndarray]:
-    import tensorflow as tf
-
-    X = np.asarray(X, np.float32)
-    y = np.asarray(y, np.float32)
-    n, m = X.shape
-    rng = np.random.default_rng(seed)
-    order = rng.permutation(n)
-    X, y = X[order], y[order]
-    n_val = int(n * holdout)
-    Xtr, ytr = (X[n_val:], y[n_val:]) if n_val > 0 else (X, y)
-    Xval, yval = (X[:n_val], y[:n_val]) if n_val > 0 else (X, y)
-
-    centers = np.linspace(level_range[0], level_range[1],
-                          int(n_kernels)).astype(np.float32)
-    sigma = float((level_range[1] - level_range[0])
-                  / max(int(n_kernels) - 1, 1) * float(sigma_scale))
-
-    tf.random.set_seed(seed)
-    V = tf.Variable(tf.zeros((int(n_kernels), m), tf.float32))   # start uniform
-    a = tf.Variable(tf.zeros((m,), tf.float32))
-    cen = tf.constant(centers)
-    opt = tf.keras.optimizers.Adam(lr)
-
-    def _weights(Xb):
-        b = tf.reduce_max(Xb, axis=1, keepdims=True)            # (n, 1)
-        phi = tf.exp(-0.5 * ((b - cen) / sigma) ** 2)           # (n, K)
-        return tf.nn.softmax(tf.matmul(phi, V) + a, axis=1)     # (n, M)
-
-    def _forward(Xb):
-        return tf.reduce_sum(_weights(Xb) * Xb, axis=1)
-
-    @tf.function
-    def train_step(xb, yb):
-        with tf.GradientTape() as tape:
-            loss = tf.reduce_mean(tf.abs(_forward(xb) - yb))
-        grads = tape.gradient(loss, [V, a])
-        opt.apply_gradients(zip(grads, [V, a], strict=True))
-
-    bs = int(min(batch, max(1, len(Xtr))))
-    ds = (tf.data.Dataset.from_tensor_slices((Xtr, ytr))
-          .shuffle(min(len(Xtr), 100_000), seed=seed, reshuffle_each_iteration=True)
-          .batch(bs).repeat())
-    it = iter(ds)
-
-    def _val_l1():
-        return float(np.mean(np.abs(_forward(tf.constant(Xval)).numpy() - yval)))
-
-    eval_every = max(1, int(steps) // 20)
-    patience = 5
-    best = np.inf
-    best_w = None
-    stale = 0
-    for s in range(int(steps)):
-        xb, yb = next(it)
-        train_step(xb, yb)
-        if (s + 1) % eval_every == 0 or s == int(steps) - 1:
-            v = _val_l1()
-            if v < best - 1e-6:
-                best, stale = v, 0
-                best_w = [V.numpy().copy(), a.numpy().copy()]
-            else:
-                stale += 1
-                if stale >= patience:
-                    break
-    if best_w is None:
-        best_w = [V.numpy().copy(), a.numpy().copy()]
-    Vn, an = best_w
-    # No pruning here. Spatial conditional ablation is a separate bounded
-    # post-fit stage; return the holdout for the fitted gate's validation loss.
-    bc = BandCombiner(V=Vn.astype(np.float32), a=an.astype(np.float32),
-                      centers=centers, sigma=sigma, surviving=np.ones(m, bool))
-    return bc, Xval, yval
-
-
-def _spread_rbf_centers(rows: np.ndarray, seeds: np.ndarray, count: int, *,
-                        min_separation: float = DEFAULT_STATS_RBF_MIN_CENTER_SEPARATION
-                        ) -> np.ndarray:
-    """Keep useful anchors apart, then cover the remaining occupied manifold.
-
-    Both inputs are in normalized gate coordinates.  Close seed centroids are
-    redundant when their distance is small compared with the RBF width, so the
-    greedy seed pass retains an anchor only when it clears ``min_separation``.
-    Missing anchors are selected from real feature rows by max-min (farthest-
-    point) coverage.  Thus separation does not push centers into unsupported
-    parts of the 2-D plane.  If the data itself has fewer distinct locations
-    than requested, max-min selection degrades gracefully and still returns the
-    requested number of centers.
-    """
-    rows = np.asarray(rows, np.float64).reshape(-1, 2)
-    seeds = np.asarray(seeds, np.float64).reshape(-1, 2)
-    rows = rows[np.all(np.isfinite(rows), axis=1)]
-    seeds = seeds[np.all(np.isfinite(seeds), axis=1)]
-    count = min(max(1, int(count)), len(rows))
-    if count <= 0:
-        return np.empty((0, 2), np.float64)
-
-    chosen: list[np.ndarray] = []
-    row_distance = np.full(len(rows), np.inf, np.float64)
-
-    def add(center: np.ndarray) -> None:
-        chosen.append(np.asarray(center, np.float64).copy())
-        delta = rows - chosen[-1]
-        np.minimum(row_distance, np.sqrt(np.sum(delta * delta, axis=1)),
-                   out=row_distance)
-
-    floor = max(0.0, float(min_separation))
-    for center in seeds:
-        if len(chosen) >= count:
-            break
-        if not chosen:
-            add(center)
-            continue
-        delta = np.asarray(chosen) - center
-        if float(np.sqrt(np.sum(delta * delta, axis=1)).min()) >= floor:
-            add(center)
-
-    while len(chosen) < count:
-        idx = int(np.argmax(row_distance))
-        add(rows[idx])
-
-    return np.asarray(chosen, np.float64)
-
-
-def _stats_rbf_geometry(X: np.ndarray, y: np.ndarray, n_kernels: int, *, seed: int,
-                        kind: str = STATS_RBF_GATE_KIND
-                        ) -> tuple[np.ndarray, np.ndarray, float, float]:
-    """Hybrid data/tail/hard-example RBF geometry from validation features.
-
-    Sixty-four kernels over two summary features cost only 128 distance terms
-    per pixel; clustering a bounded validation sample keeps fitting cheap
-    even though the buffers can contain millions of examples.
-    """
-    raw = _stats_features(np.asarray(X, np.float32), kind)
-    rng = np.random.default_rng(seed)
-    cap = min(len(raw), max(20_000, int(n_kernels) * 512))
-    sample_raw = (raw if len(raw) <= cap
-                  else raw[rng.choice(len(raw), cap, replace=False)])
-    std_floor = _std_floor(sample_raw) if kind == STATS_RBF_GATE_KIND else 0.0
-    sample = _stats_geometry_features(sample_raw, std_floor, kind)
-    floors = np.array([0.25, 0.02], np.float64)
-    scales = np.maximum(np.std(sample, axis=0), floors)
-    zn = sample / scales
-    k = min(max(1, int(n_kernels)), len(zn))
-
-    def cluster(rows, count):
-        count = min(int(count), len(rows))
-        if count <= 0:
-            return np.empty((0, 2), np.float64)
-        centers = rows[rng.choice(len(rows), count, replace=False)].copy()
-        for _ in range(8):
-            dist2 = np.sum((rows[:, None, :] - centers[None, :, :]) ** 2, axis=2)
-            labels = np.argmin(dist2, axis=1)
-            for j in range(count):
-                hit = rows[labels == j]
-                centers[j] = hit.mean(axis=0) if len(hit) else rows[rng.integers(len(rows))]
-        return centers
-
-    # Scale allocations with K: most centres follow density, while tail and
-    # residual reservoirs guarantee support for rare occupied feature regions.
-    n_tail = min(max(2, int(np.ceil(k * 0.25))), k)
-    n_hard = min(max(2, int(np.ceil(k * 0.125))), k - n_tail)
-    n_base = k - n_tail - n_hard
-    q_mean, q_std = np.quantile(sample[:, 0], 0.99), np.quantile(sample[:, 1], 0.99)
-    tail_rows = zn[(sample[:, 0] >= q_mean) | (sample[:, 1] >= q_std)]
-    # Hard examples are selected by the naive ensemble-mean error, then
-    # clustered in feature space so duplicate star-core pixels share support.
-    residual = np.abs(np.mean(np.asarray(X, np.float64), axis=1) - np.asarray(y, np.float64))
-    n_hard_rows = max(1, int(np.ceil(len(residual) * 0.01)))
-    hard_idx = np.argpartition(residual, -n_hard_rows)[-n_hard_rows:]
-    hard_raw = raw[hard_idx]
-    hard_rows = _stats_geometry_features(hard_raw, std_floor, kind) / scales
-    # Rare and difficult regions get first choice of anchors.  A global
-    # separation pass then removes cross-reservoir duplicates and fills their
-    # slots by max-min coverage of the occupied feature manifold.
-    tail_centers = cluster(tail_rows, n_tail)
-    hard_centers = cluster(hard_rows, n_hard)
-    base_centers = cluster(zn, n_base)
-    seeds = np.concatenate((tail_centers, hard_centers, base_centers), axis=0)
-    coverage_rows = np.concatenate((zn, tail_rows, hard_rows), axis=0)
-    centers = _spread_rbf_centers(coverage_rows, seeds, k)
-    if k == 1:
-        sigma = 1.0
-    else:
-        sep = np.sqrt(np.sum((centers[:, None, :] - centers[None, :, :]) ** 2, axis=2))
-        np.fill_diagonal(sep, np.inf)
-        sigma = max(0.5, float(np.median(np.min(sep, axis=1))) * 1.25)
-    return (centers * scales).astype(np.float32), scales.astype(np.float32), sigma, std_floor
-
-
-def _fit_one_band_stats_rbf(X: np.ndarray, y: np.ndarray, *, n_kernels: int,
-                            steps: int, lr: float, batch: int, seed: int,
-                            holdout: float, kind: str = STATS_RBF_GATE_KIND
-                            ) -> tuple[StatsRBFBandCombiner, np.ndarray, np.ndarray]:
-    """Fit the compact mean/std RBF gate with frozen data-covering centers.
-
-    This deliberately uses a NumPy clipped-Adam loop rather than TensorFlow's
-    input pipeline. There are only ``K × M + M`` learned values; matching the
-    max-RBF step, learning-rate, and batch budgets makes feature comparisons
-    meaningful without carrying a heavyweight graph/dataset.
-    """
-    X = np.asarray(X, np.float32)
-    y = np.asarray(y, np.float32)
-    n, m = X.shape
-    rng = np.random.default_rng(seed)
-    order = rng.permutation(n)
-    X, y = X[order], y[order]
-    n_val = int(n * holdout)
-    Xtr, ytr = (X[n_val:], y[n_val:]) if n_val > 0 else (X, y)
-    Xval, yval = (X[:n_val], y[:n_val]) if n_val > 0 else (X, y)
-    centers, scales, sigma, std_floor = _stats_rbf_geometry(Xtr, ytr, n_kernels, seed=seed, kind=kind)
-
-    ztr = _stats_geometry_features(_stats_features(Xtr, kind), std_floor, kind)
-    zval = _stats_geometry_features(_stats_features(Xval, kind), std_floor, kind)
-    centers = centers.astype(np.float64)
-    scales = np.maximum(scales.astype(np.float64), 1e-6)
-
-    def _basis(z):
-        d = (z[:, None, :] - centers[None, :, :]) / scales[None, None, :]
-        return np.exp(-0.5 * np.sum(d * d, axis=2) / (sigma * sigma))
-
-    def _weights(z, V, a):
-        logits = _basis(z) @ V + a
-        logits = np.nan_to_num(logits, nan=0.0, posinf=80.0, neginf=-80.0)
-        logits -= logits.max(axis=1, keepdims=True)
-        e = np.exp(logits)
-        return e / e.sum(axis=1, keepdims=True)
-
-    # Use the same requested optimizer budget as max-RBF. The public defaults
-    # are 3,000 steps, lr=0.01, and batch=16,384 for every RBF regime.
-    n_steps = max(1, int(steps))
-    bs = min(max(1, int(batch)), max(1, len(Xtr)))
-    rate = float(lr)
-    V = np.zeros((len(centers), m), np.float64)  # uniform softmax start
-    a = np.zeros((m,), np.float64)
-    mV = np.zeros_like(V); vV = np.zeros_like(V)
-    ma = np.zeros_like(a); va = np.zeros_like(a)
-    beta1, beta2, eps = 0.9, 0.999, 1e-8
-    best, best_w, stale = np.inf, None, 0
-    eval_every = max(10, n_steps // 20)
-    for step in range(1, n_steps + 1):
-        pick = (np.arange(len(Xtr)) if bs == len(Xtr)
-                else rng.integers(0, len(Xtr), size=bs))
-        xb, yb, zb = Xtr[pick], ytr[pick], ztr[pick]
-        phi = _basis(zb)
-        w = _weights(zb, V, a)
-        pred = np.sum(w * xb, axis=1)
-        # d |Σ w·x − y| / d logits. This is the softmax Jacobian contracted
-        # with the convex mixture, expressed without an M×M allocation.
-        grad_logits = (np.sign(pred - yb)[:, None] * w
-                       * (xb - pred[:, None]) / float(len(xb)))
-        grad_V = phi.T @ grad_logits
-        grad_a = grad_logits.sum(axis=0)
-        # A few rare saturated star pixels can otherwise make L1's subgradient
-        # jump sharply. Clip the *global* update while retaining its direction.
-        grad_norm = float(np.sqrt(np.sum(grad_V * grad_V) + np.sum(grad_a * grad_a)))
-        if grad_norm > 5.0:
-            grad_V *= 5.0 / grad_norm
-            grad_a *= 5.0 / grad_norm
-        mV = beta1 * mV + (1.0 - beta1) * grad_V
-        vV = beta2 * vV + (1.0 - beta2) * (grad_V * grad_V)
-        ma = beta1 * ma + (1.0 - beta1) * grad_a
-        va = beta2 * va + (1.0 - beta2) * (grad_a * grad_a)
-        corr1, corr2 = 1.0 - beta1 ** step, 1.0 - beta2 ** step
-        V -= rate * (mV / corr1) / (np.sqrt(vV / corr2) + eps)
-        a -= rate * (ma / corr1) / (np.sqrt(va / corr2) + eps)
-        np.clip(V, -20.0, 20.0, out=V)
-        np.clip(a, -20.0, 20.0, out=a)
-        if step % eval_every == 0 or step == n_steps:
-            val_w = _weights(zval, V, a)
-            value = float(np.mean(np.abs(np.sum(val_w * Xval, axis=1) - yval)))
-            if value < best - 1e-6:
-                best, stale = value, 0
-                best_w = [V.copy(), a.copy()]
-            else:
-                stale += 1
-                if stale >= 5:
-                    break
-    if best_w is None:
-        best_w = [V.copy(), a.copy()]
-    return (StatsRBFBandCombiner(
-                V=best_w[0].astype(np.float32), a=best_w[1].astype(np.float32),
-                centers=centers, scales=scales, sigma=float(sigma),
-                surviving=np.ones(m, bool), std_floor=float(std_floor), feature_kind=kind), Xval, yval)
-
-
-def _fit_stats_rbf_combiner(buffers, member_labels, *, n_kernels: int,
-                            min_usage: float, steps: int, lr: float,
-                            batch: int, seed: int, holdout: float,
-                            level_range: tuple[float, float],
-                            kind: str = STATS_RBF_GATE_KIND) -> Combiner:
-    bands: dict[str, StatsRBFBandCombiner] = {}
-    holdouts: dict[str, tuple[np.ndarray, np.ndarray]] = {}
-    for name, (X, y) in buffers.items():
-        if np.asarray(X).size == 0:
-            continue
-        bc, Xval, yval = _fit_one_band_stats_rbf(
-            X, y, n_kernels=int(n_kernels), steps=int(steps), lr=float(lr),
-            batch=int(batch), seed=int(seed), holdout=float(holdout), kind=kind)
-        bands[name] = bc
-        holdouts[name] = (Xval, yval)
-
-    vals = [float(np.mean(np.abs(bc.forward_asinh(holdouts[name][0]) - holdouts[name][1])))
-            for name, bc in bands.items()]
-    return Combiner(member_labels=list(member_labels), n_kernels=int(n_kernels),
-                    sigma_scale=1.0, min_usage=float(min_usage), bands=bands,
-                    band_names=tuple(buffers.keys()), level_range=tuple(level_range),
-                    val_l1=(float(np.mean(vals)) if vals else None),
-                    kind=kind)
-
-
-def _stacked_rbf_geometry(experts: np.ndarray, y: np.ndarray, n_kernels: int,
-                          *, seed: int) -> tuple[np.ndarray, np.ndarray, float]:
-    """Place compact expert-gate kernels on occupied and difficult regions."""
-    experts = np.asarray(experts, np.float64)
-    features = StackedRBFBandCombiner.features(experts)
-    rng = np.random.default_rng(seed)
-    cap = min(len(features), max(20_000, int(n_kernels) * 512))
-    sample_idx = (np.arange(len(features)) if len(features) <= cap
-                  else rng.choice(len(features), cap, replace=False))
-    sample = features[sample_idx]
-    scales = np.maximum(np.std(sample, axis=0), np.array([0.25, 0.005]))
-    zn = sample / scales
-    k = min(max(1, int(n_kernels)), len(zn))
-
-    def cluster(rows: np.ndarray, count: int) -> np.ndarray:
-        count = min(max(0, int(count)), len(rows))
-        if count <= 0:
-            return np.empty((0, 2), np.float64)
-        centers = rows[rng.choice(len(rows), count, replace=False)].copy()
-        for _ in range(8):
-            dist2 = np.sum((rows[:, None, :] - centers[None, :, :]) ** 2, axis=2)
-            labels = np.argmin(dist2, axis=1)
-            for j in range(count):
-                hit = rows[labels == j]
-                centers[j] = hit.mean(axis=0) if len(hit) else rows[rng.integers(len(rows))]
-        return centers
-
-    n_tail = min(max(2, int(np.ceil(k * 0.25))), k)
-    n_hard = min(max(2, int(np.ceil(k * 0.125))), k - n_tail)
-    n_base = k - n_tail - n_hard
-    disagreement = np.abs(sample[:, 1])
-    tail = zn[disagreement >= np.quantile(disagreement, 0.99)]
-    if not len(tail):
-        tail = zn
-    residual = np.abs(experts[:, 0] - np.asarray(y, np.float64))
-    n_hard_rows = max(1, int(np.ceil(len(residual) * 0.01)))
-    hard_idx = np.argpartition(residual, -n_hard_rows)[-n_hard_rows:]
-    hard = StackedRBFBandCombiner.features(experts[hard_idx]) / scales
-    seeds = np.concatenate((cluster(tail, n_tail), cluster(hard, n_hard),
-                            cluster(zn, n_base)), axis=0)
-    coverage = np.concatenate((zn, tail, hard), axis=0)
-    centers = _spread_rbf_centers(coverage, seeds, k)
-    if k == 1:
-        sigma = 1.0
-    else:
-        sep = np.sqrt(np.sum((centers[:, None, :] - centers[None, :, :]) ** 2,
-                             axis=2))
-        np.fill_diagonal(sep, np.inf)
-        sigma = max(0.5, float(np.median(np.min(sep, axis=1))) * 1.25)
-    return (centers * scales).astype(np.float32), scales.astype(np.float32), sigma
-
-
-def _fit_one_band_stacked(experts: np.ndarray, y: np.ndarray, *, n_kernels: int,
-                          steps: int, lr: float, batch: int, seed: int,
-                          holdout: float
-                          ) -> tuple[StackedRBFBandCombiner, np.ndarray, np.ndarray]:
-    experts = np.asarray(experts, np.float32)
-    y = np.asarray(y, np.float32)
-    rng = np.random.default_rng(seed)
-    order = rng.permutation(len(y))
-    experts, y = experts[order], y[order]
-    n_val = int(len(y) * holdout)
-    Xtr, ytr = ((experts[n_val:], y[n_val:]) if n_val > 0 else (experts, y))
-    Xval, yval = ((experts[:n_val], y[:n_val]) if n_val > 0 else (experts, y))
-    centers, scales, sigma = _stacked_rbf_geometry(
-        Xtr, ytr, n_kernels, seed=seed)
-    centers64 = centers.astype(np.float64)
-    scales64 = np.maximum(scales.astype(np.float64), 1e-6)
-
-    def basis(rows):
-        z = StackedRBFBandCombiner.features(rows)
-        d = (z[:, None, :] - centers64[None, :, :]) / scales64[None, None, :]
-        return np.exp(-0.5 * np.sum(d * d, axis=2) / (sigma * sigma))
-
-    def weights(rows, V, a):
-        logits = basis(rows) @ V + a
-        logits = np.nan_to_num(logits, nan=0.0, posinf=80.0, neginf=-80.0)
-        logits -= logits.max(axis=1, keepdims=True)
-        e = np.exp(logits)
-        return e / e.sum(axis=1, keepdims=True)
-
-    n_steps = max(1, int(steps))
-    bs = min(max(1, int(batch)), max(1, len(Xtr)))
-    V = np.zeros((len(centers64), 2), np.float64)
-    a = np.zeros(2, np.float64)
-    mV = np.zeros_like(V); vV = np.zeros_like(V)
-    ma = np.zeros_like(a); va = np.zeros_like(a)
-    beta1, beta2, eps = 0.9, 0.999, 1e-8
-    best, best_w, stale = np.inf, None, 0
-    eval_every = max(10, n_steps // 20)
-    for step in range(1, n_steps + 1):
-        pick = (np.arange(len(Xtr)) if bs == len(Xtr)
-                else rng.integers(0, len(Xtr), size=bs))
-        xb, yb = Xtr[pick], ytr[pick]
-        phi = basis(xb)
-        w = weights(xb, V, a)
-        pred = np.sum(w * xb, axis=1)
-        grad_logits = (np.sign(pred - yb)[:, None] * w
-                       * (xb - pred[:, None]) / float(len(xb)))
-        grad_V = phi.T @ grad_logits
-        grad_a = grad_logits.sum(axis=0)
-        grad_norm = float(np.sqrt(np.sum(grad_V * grad_V) + np.sum(grad_a * grad_a)))
-        if grad_norm > 5.0:
-            grad_V *= 5.0 / grad_norm
-            grad_a *= 5.0 / grad_norm
-        mV = beta1 * mV + (1.0 - beta1) * grad_V
-        vV = beta2 * vV + (1.0 - beta2) * (grad_V * grad_V)
-        ma = beta1 * ma + (1.0 - beta1) * grad_a
-        va = beta2 * va + (1.0 - beta2) * (grad_a * grad_a)
-        corr1, corr2 = 1.0 - beta1 ** step, 1.0 - beta2 ** step
-        V -= float(lr) * (mV / corr1) / (np.sqrt(vV / corr2) + eps)
-        a -= float(lr) * (ma / corr1) / (np.sqrt(va / corr2) + eps)
-        np.clip(V, -20.0, 20.0, out=V)
-        np.clip(a, -20.0, 20.0, out=a)
-        if step % eval_every == 0 or step == n_steps:
-            val_w = weights(Xval, V, a)
-            value = float(np.mean(np.abs(np.sum(val_w * Xval, axis=1) - yval)))
-            if value < best - 1e-6:
-                best, stale = value, 0
-                best_w = [V.copy(), a.copy()]
-            else:
-                stale += 1
-                if stale >= 5:
-                    break
-    if best_w is None:
-        best_w = [V.copy(), a.copy()]
-    return (StackedRBFBandCombiner(
-        V=best_w[0].astype(np.float32), a=best_w[1].astype(np.float32),
-        centers=centers, scales=scales, sigma=float(sigma)), Xval, yval)
-
-
-def fit_stacked_combiner(buffers, member_labels, *, stats_combiner: Combiner,
-                         minmax_combiner: Combiner,
-                         n_kernels: int = DEFAULT_STATS_RBF_N_KERNELS,
-                         steps: int = 3000, lr: float = 1e-2,
-                         batch: int = 16384, seed: int = 0,
-                         holdout: float = 0.1) -> StackedCombiner:
-    """Fit a per-band RBF convex gate over two fitted parent combiners."""
-    labels = list(member_labels)
-    if (stats_combiner.kind != STATS_RBF_GATE_KIND
-            or minmax_combiner.kind != MINMAX_RBF_GATE_KIND):
-        raise ValueError("stacked combiner requires mean/std and min/max parents")
-    if (stats_combiner.member_labels != labels
-            or minmax_combiner.member_labels != labels):
-        raise ValueError("stacked combiner parents do not match the fit members")
-    bands: dict[str, StackedRBFBandCombiner] = {}
-    holdouts: dict[str, tuple[np.ndarray, np.ndarray]] = {}
-    for name, (X, y) in buffers.items():
-        X = np.asarray(X, np.float32)
-        if not X.size:
-            continue
-        experts = np.stack((stats_combiner.bands[name].forward_asinh(X),
-                            minmax_combiner.bands[name].forward_asinh(X)), axis=1)
-        bc, Xval, yval = _fit_one_band_stacked(
-            experts, y, n_kernels=int(n_kernels), steps=int(steps),
-            lr=float(lr), batch=int(batch), seed=int(seed), holdout=float(holdout))
-        bands[name] = bc
-        holdouts[name] = (Xval, yval)
-    vals = [float(np.mean(np.abs(bands[name].forward_asinh(Xval) - yval)))
-            for name, (Xval, yval) in holdouts.items()]
-    return StackedCombiner(
-        member_labels=labels, n_kernels=int(n_kernels), bands=bands,
-        stats_combiner=stats_combiner, minmax_combiner=minmax_combiner,
-        band_names=tuple(buffers.keys()),
-        val_l1=(float(np.mean(vals)) if vals else None))
-
-
-def fit_combiner(buffers, member_labels, *, n_kernels: int = DEFAULT_N_KERNELS,
-                 sigma_scale: float = DEFAULT_SIGMA_SCALE,
-                 min_usage: float | None = None,
-                 level_range: tuple[float, float] = GATE_LEVEL_RANGE,
-                 steps: int = 3000, lr: float = 1e-2, batch: int = 16384,
-                 seed: int = 0, holdout: float = 0.1,
-                 model_kind: str = RBF_GATE_KIND) -> Combiner:
-    """Fit one per-band RBF brightness gate (convex mixture, L1 loss) for each
-    band in ``buffers`` (``{band: (X(N,M), y(N,))}`` asinh space).
-
-    ``min_usage`` is retained for artifact/API compatibility but does not
-    remove members. Every fitted member remains active."""
-    kind = normalize_model_kind(model_kind)
-    if kind == STACKED_RBF_GATE_KIND:
-        raise ValueError("stacked_rbf_gate requires fit_stacked_combiner and two fitted parents")
-    if min_usage is None:
-        min_usage = combiner_model_spec(kind).default_min_usage
-    if kind in {STATS_RBF_GATE_KIND, MINMAX_RBF_GATE_KIND}:
-        if int(n_kernels) == DEFAULT_N_KERNELS:
-            n_kernels = DEFAULT_STATS_RBF_N_KERNELS
-        return _fit_stats_rbf_combiner(
-            buffers, member_labels, n_kernels=int(n_kernels),
-            min_usage=float(min_usage), steps=int(steps), lr=float(lr),
-            batch=int(batch), seed=int(seed), holdout=float(holdout),
-            level_range=tuple(level_range), kind=kind)
-
-    bands: dict[str, BandCombiner] = {}
-    holdouts: dict[str, tuple[np.ndarray, np.ndarray]] = {}
-    for name, (X, y) in buffers.items():
-        if np.asarray(X).size == 0:
-            continue
-        bc, Xval, yval = _fit_one_band(X, y, n_kernels=int(n_kernels),
-                                       sigma_scale=float(sigma_scale),
-                                       level_range=level_range, steps=int(steps),
-                                       lr=float(lr), batch=int(batch),
-                                       seed=int(seed), holdout=float(holdout))
-        bands[name] = bc
-        holdouts[name] = (Xval, yval)
-
-    vals = [float(np.mean(np.abs(bc.forward_asinh(holdouts[name][0]) - holdouts[name][1])))
-            for name, bc in bands.items()]
-    return Combiner(member_labels=list(member_labels), n_kernels=int(n_kernels),
-                    sigma_scale=float(sigma_scale), min_usage=float(min_usage),
-                    bands=bands, band_names=tuple(buffers.keys()),
-                    level_range=tuple(level_range),
-                    val_l1=(float(np.mean(vals)) if vals else None),
-                    kind=RBF_GATE_KIND)
-
-
-# ---------------------------------------------------------------------------
-# Bounded rare-aware post-fit ablation
-# ---------------------------------------------------------------------------
-
-def combiner_region_ids(comb: Combiner, X: np.ndarray,
-                        band: str = "VIS") -> np.ndarray:
-    """Return the strongest RBF region for asinh member rows ``X(N,M)``.
-
-    This is a geometric diagnostic only: it does not integrate gate weight or
-    use population frequency, so a rare occupied region is represented on the
-    same footing as a common one.
-    """
-    bc = comb.bands[band]
-    X = np.asarray(X, np.float64)
-    if isinstance(bc, StatsRBFBandCombiner):
-        basis = bc._basis_from_raw_features(bc._raw_features(X))
-    else:
-        surv = np.asarray(bc.surviving, bool)
-        brightness = np.max(X[:, surv] if surv.any() else X, axis=1)
-        basis = _rbf(brightness, bc.centers, bc.sigma)
-    return np.argmax(basis, axis=1).astype(np.int32)
-
-
-def _set_member_surviving(comb: Combiner, index: int, value: bool) -> None:
-    for bc in comb.bands.values():
-        bc.surviving[index] = bool(value)
-
-
-def _apply_combiner_points(comb: Combiner, stacks: np.ndarray) -> np.ndarray:
-    """Apply a combiner to ``(N,M,C)`` point stacks without image allocation."""
-    stacks = np.asarray(stacks, np.float32)
-    n, _m, c = stacks.shape
-    out = np.empty((n, c), np.float64)
-    for ci, name in enumerate(comb.band_names[:c]):
-        scale = _band_scale(name)
-        x = np.arcsinh(stacks[..., ci] / scale)
-        y = np.clip(comb.bands[name].forward_asinh(x), -SINH_CLIP, SINH_CLIP)
-        out[:, ci] = np.sinh(y) * scale
-    return out
-
-
-def _apply_combiner_patches(comb: Combiner, patches: np.ndarray) -> np.ndarray:
-    """Apply once to many square patches by packing them into one strip."""
-    patches = np.asarray(patches, np.float32)
-    p, m, size, width, c = patches.shape
-    if size != width:
-        raise ValueError("ablation patches must be square")
-    strip = patches.transpose(1, 0, 2, 3, 4).reshape(m, p * size, size, c)
-    return comb.apply_field(strip).reshape(p, size, size, c)
-
-
-def _log_domain_mean(k: np.ndarray, values: np.ndarray, *,
-                     k_min: float, k_max: float) -> float:
-    if not (k_max > k_min > 0):
-        return float("nan")
-    k = np.asarray(k, float)
-    values = np.asarray(values, float)
-    keep = (np.isfinite(k) & np.isfinite(values) & (k >= k_min)
-            & (k <= k_max) & (k > 0))
-    if int(keep.sum()) < 2:
-        return float("nan")
-    order = np.argsort(k[keep])
-    x = np.log(k[keep][order])
-    y = values[keep][order]
-    integral = (np.trapezoid(y, x) if hasattr(np, "trapezoid")
-                else np.trapz(y, x))
-    return float(integral / np.log(k_max / k_min))
-
-
-def _patch_spectral_scores(truth: np.ndarray, pred: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Per-patch VIS coherence and |log transfer| error in mid/SR domains."""
-    from euclid_polish.eval.power_spectrum import (
-        LR_NYQUIST_CYC_ARCSEC,
-        bin_powers,
-        log_k_edges,
-        normalized_log_scale_mean,
-        ratios_from_powers,
-        tukey_window_2d,
-    )
-
-    truth = np.asarray(truth, np.float64)
-    pred = np.asarray(pred, np.float64)
-    size = int(truth.shape[1])
-    pixel_scale = float(Config.DEFAULT_PIXEL_SCALE)
-    k_min_available = 1.0 / (size * pixel_scale)
-    edges = log_k_edges(pixel_scale, kmin=k_min_available, nbins=12)
-    k = np.sqrt(edges[:-1] * edges[1:])
-    window = tukey_window_2d(size)
-    stretch = float(Config.STRETCH_SCALE_E)
-    coherence = np.full((len(truth), 2), np.nan)
-    transfer_error = np.full((len(truth), 2), np.nan)
-    domains = ((max(k_min_available, 1.0), LR_NYQUIST_CYC_ARCSEC),
-               (LR_NYQUIST_CYC_ARCSEC, 1.0 / (2.0 * pixel_scale)))
-    for i in range(len(truth)):
-        ah = np.arcsinh(truth[i] / stretch)
-        ap = np.arcsinh(pred[i] / stretch)
-        if float(np.std(ah)) < 1e-6:
-            continue
-        bh, bs, bx, counts = bin_powers(ah, ap, pixel_scale, edges, window)
-        transfer, corr = ratios_from_powers(bh, bs, bx, counts)
-        transfer_penalty = np.abs(np.log(np.clip(transfer, 1e-6, 1e6)))
-        for d, (lo, hi) in enumerate(domains):
-            coherence[i, d] = normalized_log_scale_mean(
-                k, corr, k_min=float(lo), k_max=float(hi))
-            transfer_error[i, d] = _log_domain_mean(
-                k, transfer_penalty, k_min=float(lo), k_max=float(hi))
-    return coherence, transfer_error
-
-
-def member_weight_diagnostics(
-    comb: Combiner | StackedCombiner, buffers, *, chunk_rows: int = 32_768,
-) -> tuple[dict[str, list[float]], dict[str, list[float]]]:
-    """Peak and distribution-integrated gate share per routed input and band.
-
-    The integral is the mean weight over the brightness-stratified validation
-    rows. Rows are evaluated in bounded chunks, so neither diagnostic
-    materializes a full ``N x M`` weight matrix.
-    """
-    source_m = len(comb.member_labels)
-    weight_m = len(comb.weight_labels)
-    peaks: dict[str, list[float]] = {}
-    integrals: dict[str, list[float]] = {}
-    for name, (X, _y) in buffers.items():
-        X = np.asarray(X, np.float32)
-        if name not in comb.bands or not len(X):
-            peaks[name] = [0.0] * weight_m
-            integrals[name] = [0.0] * weight_m
-            continue
-        if X.ndim != 2 or X.shape[1] != source_m:
-            raise ValueError(
-                f"{name} fit buffer has {X.shape[1] if X.ndim == 2 else '?'} "
-                f"members, expected {source_m}")
-        peak = np.zeros(weight_m, np.float64)
-        total = np.zeros(weight_m, np.float64)
-        count = 0
-        for start in range(0, len(X), max(1, int(chunk_rows))):
-            weights = comb.band_weights(
-                name, X[start:start + max(1, int(chunk_rows))])
-            peak = np.maximum(peak, np.max(weights, axis=0))
-            total += np.sum(weights, axis=0, dtype=np.float64)
-            count += len(weights)
-        peaks[name] = peak.astype(float).tolist()
-        integrals[name] = (total / max(count, 1)).astype(float).tolist()
-    return peaks, integrals
-
-
-def peak_member_weights(comb: Combiner, buffers, *,
-                        chunk_rows: int = 32_768) -> dict[str, list[float]]:
-    """Backward-compatible peak-only diagnostic helper."""
-    peaks, _integrals = member_weight_diagnostics(
-        comb, buffers, chunk_rows=chunk_rows)
-    return peaks
-
-
-def _expand_refit_combiner(comb: Combiner, all_labels: list[str],
-                           keep: list[int]) -> Combiner:
-    """Restore a reduced refit to the original cache/member indexing."""
-    if len(comb.member_labels) != len(keep):
-        raise ValueError("refit member labels do not match kept columns")
-    m = len(all_labels)
-    bands: dict[str, BandCombiner | StatsRBFBandCombiner] = {}
-    for name, bc in comb.bands.items():
-        V = np.zeros((len(bc.V), m), np.float32)
-        a = np.zeros(m, np.float32)
-        surviving = np.zeros(m, bool)
-        V[:, keep] = np.asarray(bc.V, np.float32)
-        a[keep] = np.asarray(bc.a, np.float32)
-        surviving[keep] = np.asarray(bc.surviving, bool)
-        if isinstance(bc, StatsRBFBandCombiner):
-            bands[name] = StatsRBFBandCombiner(
-                V=V, a=a, centers=np.asarray(bc.centers, np.float32),
-                scales=np.asarray(bc.scales, np.float32), sigma=float(bc.sigma),
-                surviving=surviving, std_floor=float(bc.std_floor),
-                feature_kind=bc.feature_kind)
-        else:
-            bands[name] = BandCombiner(
-                V=V, a=a, centers=np.asarray(bc.centers, np.float32),
-                sigma=float(bc.sigma), surviving=surviving)
-    return replace(comb, member_labels=list(all_labels), bands=bands)
-
-
-def _refit_patch_comparison(before: Combiner, after: Combiner,
-                            patch_stacks: np.ndarray,
-                            patch_truth: np.ndarray) -> dict[str, float | int]:
-    """Compare a reduced refit to its predecessor on rare-aware patches."""
-    patches = np.asarray(patch_stacks, np.float32)
-    truth = np.asarray(patch_truth, np.float32)
-    before_val = float(before.val_l1) if before.val_l1 is not None else float("inf")
-    after_val = float(after.val_l1) if after.val_l1 is not None else float("inf")
-    val_regret = ((after_val - before_val) / max(before_val, 0.01)
-                  if np.isfinite(before_val) and np.isfinite(after_val)
-                  else float("inf"))
-    if (patches.ndim != 5 or truth.ndim != 4 or len(patches) != len(truth)
-            or len(patches) < 4):
+    def pca_weight_surface(self, pixels: np.ndarray, *, n_pc1: int = 31,
+                           n_pc2: int = 31) -> dict:
+        """PCA surface of the fraction removed from the ensemble mean.
+
+        The existing WebUI surface contract calls the final axis ``weights``.
+        Here it is explicitly a diagnostic suppression fraction in [0, 1], one
+        surface per output band, not a member-routing weight.
+        """
+        features = self.features_from_electrons(pixels)
+        finite = np.all(np.isfinite(features), axis=1)
+        features = features[finite]
+        if len(features) < 2 or features.shape[1] < 2:
+            return {"n_pixels": int(len(features)), "available": False}
+        scales = np.maximum(np.asarray(self.scales, np.float64), 1e-8)
+        feature_mean = np.mean(features, axis=0)
+        normalized = (features - feature_mean[None, :]) / scales[None, :]
+        covariance = normalized.T @ normalized / max(1, len(normalized) - 1)
+        eigenvalues, eigenvectors = np.linalg.eigh(covariance)
+        order = np.argsort(eigenvalues)[::-1]
+        eigenvalues = np.maximum(eigenvalues[order[:2]], 0.0)
+        components = eigenvectors[:, order[:2]].T
+        for component in components:
+            pivot = int(np.argmax(np.abs(component)))
+            if component[pivot] < 0:
+                component *= -1.0
+        scores = normalized @ components.T
+        center_geometry = ((np.asarray(self.centers, np.float64)
+                            - feature_mean[None, :]) / scales[None, :])
+        center_scores = (center_geometry @ components.T if len(center_geometry)
+                         else np.empty((0, 2), np.float64))
+        bounds = []
+        for ci in range(2):
+            lo, hi = np.quantile(scores[:, ci], (0.005, 0.995))
+            if len(center_scores):
+                lo = min(float(lo), float(np.min(center_scores[:, ci])))
+                hi = max(float(hi), float(np.max(center_scores[:, ci])))
+            span = max(float(hi - lo), 1e-3)
+            bounds.append((float(min(lo, 0.0) - 0.05 * span),
+                           float(max(hi, 0.0) + 0.05 * span)))
+        pc1 = np.linspace(*bounds[0], max(3, int(n_pc1)))
+        pc2 = np.linspace(*bounds[1], max(3, int(n_pc2)))
+        xx, yy = np.meshgrid(pc1, pc2, indexing="xy")
+        path = (feature_mean[None, :]
+                + (xx.reshape(-1, 1) * components[0][None, :]
+                   + yy.reshape(-1, 1) * components[1][None, :]) * scales[None, :])
+        basis = self._basis_from_features(path)
+        correction = basis @ np.asarray(self.coefficients, np.float64)
+        mean_idx = np.arange(len(self.band_names)) * 3 + 1
+        mean = path[:, mean_idx]
+        pred = np.maximum(mean + correction, 0.0)
+        denominator = np.maximum(
+            np.abs(mean), np.asarray(self.output_floors, np.float64)[None, :])
+        suppression = np.clip((mean - pred) / denominator, 0.0, 1.0)
+        feature_names = [
+            f"{band}:{stat} raw e-" for band in self.band_names
+            for stat in ("min", "mean", "max")
+        ]
+        total_variance = max(float(np.trace(covariance)), 1e-12)
         return {
-            "val_l1_regret": float(val_regret),
-            "l1_region_max": float(val_regret),
-            "coherence_drop_max": 0.0,
-            "transfer_worsening_max": 0.0,
-            "n_patches": int(len(patches) if patches.ndim else 0),
+            "available": True,
+            "n_pixels": int(len(features)),
+            "feature_space": "scale-normalized raw-electron min/mean/max",
+            "conditioning_note": (
+                "The surface shows the fraction suppressed from the ensemble "
+                "mean along PC1 and PC2; all remaining PCs stay at their "
+                "validation mean."),
+            "pc1": pc1, "pc2": pc2,
+            "center_pc1": center_scores[:, 0],
+            "center_pc2": center_scores[:, 1],
+            "weights": suppression.reshape(len(pc2), len(pc1), -1),
+            "explained_variance_ratio": eigenvalues / total_variance,
+            "feature_names": feature_names,
+            "loadings": components.copy(),
+            "z_label": "mean suppression fraction [0-1]",
+            "surface_labels": list(self.band_names),
         }
 
-    size = int(patches.shape[2])
-    centre = size // 2
-    point_stacks = patches[:, :, centre, centre, :]
-    point_truth = truth[:, centre, centre, :]
-    before_points = _apply_combiner_points(before, point_stacks)
-    after_points = _apply_combiner_points(after, point_stacks)
-    scale = np.asarray([_band_scale(b) for b in before.band_names], float)
-    truth_asinh = np.arcsinh(point_truth / scale)
-    before_err = np.abs(np.arcsinh(before_points / scale) - truth_asinh)
-    after_err = np.abs(np.arcsinh(after_points / scale) - truth_asinh)
+def _fit_raw_incremental_minmeanmax_rbf(
+    Xtr: np.ndarray, ytr: np.ndarray, Xval: np.ndarray, yval: np.ndarray,
+    labels: list[str], names: tuple[str, ...], *, n_kernels: int,
+    seed: int, residual_abort: float = 1e-3,
+    increment_size: int = 16, within_increment_separation: float = 0.35,
+    ridge: float = 1e-5, max_optimizer_iterations: int = 500,
+) -> RawIncrementalMinMeanMaxRBFCombiner:
+    """Fit residual RBF blocks around an exact ensemble-mean baseline.
 
-    region_regrets: list[float] = []
-    for ci, name in enumerate(before.band_names[:point_stacks.shape[-1]]):
-        X = np.arcsinh(point_stacks[..., ci] / scale[ci])
-        regions = combiner_region_ids(before, X, band=name)
-        for region in np.unique(regions):
-            selected = regions == region
-            base = float(np.mean(before_err[selected, ci]))
-            candidate = float(np.mean(after_err[selected, ci]))
-            region_regrets.append((candidate - base) / max(base, 0.01))
+    Center exclusion deliberately applies only inside the newly allocated
+    increment.  Previous centers are not supplied to weighted K-means++, so a
+    later residual block may refine an already represented part of feature
+    space.  After every increment, all accumulated coefficients are jointly
+    re-optimized with deterministic full-batch L-BFGS.  The previous optimum
+    plus zero-valued new coefficients is only the warm start; no old block is
+    frozen.
+    """
+    rng = np.random.default_rng(seed)
+    train_features = _raw_minmeanmax_features(Xtr)
+    val_features = _raw_minmeanmax_features(Xval)
+    reference = np.median(train_features, axis=0)
+    q_lo, q_hi = np.quantile(train_features, (0.005, 0.995), axis=0)
+    scales = np.maximum((q_hi - q_lo) / 4.0, 1e-3)
+    normalized = (train_features - reference[None, :]) / scales[None, :]
 
-    before_patches = _apply_combiner_patches(before, patches)
-    after_patches = _apply_combiner_patches(after, patches)
-    before_coh, before_transfer = _patch_spectral_scores(
-        truth[..., 0], before_patches[..., 0])
-    after_coh, after_transfer = _patch_spectral_scores(
-        truth[..., 0], after_patches[..., 0])
-    coherence_delta = before_coh - after_coh
-    transfer_delta = after_transfer - before_transfer
-    finite_coh = coherence_delta[np.isfinite(coherence_delta)]
-    finite_transfer = transfer_delta[np.isfinite(transfer_delta)]
-    return {
-        "val_l1_regret": float(val_regret),
-        "l1_region_max": max(region_regrets, default=float("inf")),
-        "coherence_drop_max": (float(np.max(finite_coh))
-                                if finite_coh.size else 0.0),
-        "transfer_worsening_max": (float(np.max(finite_transfer))
-                                    if finite_transfer.size else 0.0),
-        "n_patches": int(len(patches)),
-    }
+    target_k = min(max(1, int(n_kernels)), len(normalized))
+    geometry_cap = min(len(normalized), max(50_000, target_k * 1024))
+    geometry_idx = (np.arange(len(normalized)) if len(normalized) <= geometry_cap
+                    else np.sort(rng.choice(
+                        len(normalized), geometry_cap, replace=False)))
+    geometry = normalized[geometry_idx]
 
+    train_mean = np.mean(np.asarray(Xtr, np.float64), axis=1)
+    val_mean = np.mean(np.asarray(Xval, np.float64), axis=1)
+    train_linear = train_mean.copy()
+    val_linear = val_mean.copy()
+    train_pred = np.maximum(train_linear, 0.0)
+    val_pred = np.maximum(val_linear, 0.0)
+    baseline_val_l1 = float(np.mean(np.abs(val_pred - yval)))
+    output_floors = []
+    for ci in range(len(names)):
+        positive = np.abs(np.asarray(ytr[:, ci], np.float64))
+        positive = positive[positive > 1e-6]
+        output_floors.append(max(
+            0.1, float(np.quantile(positive, 0.10)) if len(positive) else 0.1))
+    output_floors = np.asarray(output_floors, np.float64)
 
-def iterative_peak_weight_refit(
-    comb: Combiner,
-    buffers,
-    patch_stacks: np.ndarray,
-    patch_truth: np.ndarray,
+    all_centers: list[np.ndarray] = []
+    all_sigmas: list[np.ndarray] = []
+    all_increment_ids: list[np.ndarray] = []
+    train_basis = np.empty((len(Xtr), 0), np.float32)
+    val_basis = np.empty((len(Xval), 0), np.float32)
+    coefficients = np.empty((0, len(names)), np.float64)
+    history: list[dict[str, float | int | str | bool]] = []
+    best_val_l1 = baseline_val_l1
+    best_k = 0
+    best_centers = np.empty((0, train_features.shape[1]), np.float64)
+    best_sigmas = np.empty((0,), np.float64)
+    best_coefficients = np.empty((0, len(names)), np.float64)
+    best_increment_ids = np.empty((0,), np.int32)
+    abort_reason = "kernel_limit"
+    stage = 0
+
+    def basis(features: np.ndarray, centers: np.ndarray,
+              sigmas: np.ndarray, *, chunk_rows: int = 8192) -> np.ndarray:
+        out = np.empty((len(features), len(centers)), np.float32)
+        widths = np.maximum(np.asarray(sigmas, np.float64), 1e-6)
+        normalized_centers = centers / scales[None, :]
+        center_norm2 = np.sum(normalized_centers * normalized_centers, axis=1)
+        for start in range(0, len(features), max(1, int(chunk_rows))):
+            stop = min(len(features), start + max(1, int(chunk_rows)))
+            normalized = features[start:stop] / scales[None, :]
+            distance2 = (np.sum(normalized * normalized, axis=1)[:, None]
+                         + center_norm2[None, :]
+                         - 2.0 * normalized @ normalized_centers.T)
+            np.maximum(distance2, 0.0, out=distance2)
+            out[start:stop] = np.exp(
+                -0.5 * distance2
+                / (widths[None, :] * widths[None, :])).astype(np.float32)
+        return out
+
+    def jointly_optimize(phi: np.ndarray, initial: np.ndarray):
+        from scipy.optimize import minimize
+
+        k = phi.shape[1]
+        channels = len(names)
+        deltas = np.maximum(0.05, 0.05 * output_floors)
+        targets = np.asarray(ytr, np.float64)
+        normalization = float(max(1, len(phi)))
+        fitted = np.empty((k, channels), np.float64)
+        converged: list[bool] = []
+        iterations: list[int] = []
+        gradient_infinity: list[float] = []
+        final_losses: list[float] = []
+        messages: list[str] = []
+        # The four-band objective is separable once centers are fixed. Solving
+        # each K-vector independently reaches the same joint optimum, while
+        # avoiding a poorly conditioned interleaved 4K L-BFGS history.
+        for ci in range(channels):
+            def objective(current: np.ndarray, *, channel=ci
+                          ) -> tuple[float, np.ndarray]:
+                error = (train_mean[:, channel] + phi @ current
+                         - targets[:, channel])
+                smooth = np.sqrt(
+                    error * error + deltas[channel] * deltas[channel])
+                data_loss = float(
+                    np.sum(smooth - deltas[channel]) / normalization)
+                regularization = (0.5 * float(ridge)
+                                  * float(np.sum(current * current)))
+                gradient = phi.T @ ((error / smooth) / normalization)
+                gradient += float(ridge) * current
+                return data_loss + regularization, gradient
+
+            x = np.asarray(initial[:, ci], np.float64)
+            total_iterations = 0
+            result = None
+            for _attempt in range(2):
+                result = minimize(
+                    objective, x, method="L-BFGS-B", jac=True,
+                    options={"maxiter": max(1, int(max_optimizer_iterations)),
+                             "maxls": 40, "ftol": 1e-9, "gtol": 1e-5})
+                total_iterations += int(result.nit)
+                x = np.asarray(result.x, np.float64)
+                if bool(result.success) or int(result.status) != 1:
+                    break
+            final_loss, final_gradient = objective(x)
+            fitted[:, ci] = x
+            converged.append(bool(result.success))
+            iterations.append(total_iterations)
+            gradient_infinity.append(float(np.max(np.abs(final_gradient))))
+            final_losses.append(float(final_loss))
+            messages.append(str(result.message))
+        return (fitted, bool(all(converged)), iterations,
+                float(max(gradient_infinity, default=0.0)),
+                float(np.mean(final_losses)), " | ".join(messages))
+
+    while sum(len(batch) for batch in all_centers) < target_k:
+        train_residual = np.asarray(ytr, np.float64) - train_pred
+        row_residual = np.mean(np.abs(train_residual), axis=1)
+        max_residual = float(np.max(row_residual))
+        if max_residual <= float(residual_abort):
+            abort_reason = "all_train_residuals_below_threshold"
+            break
+        stage += 1
+        used = sum(len(batch) for batch in all_centers)
+        add_count = min(max(1, int(increment_size)), target_k - used)
+        center_weight = np.maximum(row_residual[geometry_idx], 0.0)
+        new_norm = _weighted_kmeans(
+            geometry, center_weight, add_count, seed=seed + stage,
+            # Intentionally no existing_centers: only this increment repels
+            # itself; later increments may land beside earlier kernels.
+            existing_centers=None,
+            min_separation=float(within_increment_separation))
+        if not len(new_norm):
+            abort_reason = "within_increment_separation_exhausted"
+            break
+        new_sigma = _rbf_sigma_from_centers(new_norm)
+        new_sigmas = np.full(len(new_norm), new_sigma, np.float64)
+        new_centers = new_norm * scales[None, :] + reference[None, :]
+        phi_train = basis(train_features, new_centers, new_sigmas)
+        phi_val = basis(val_features, new_centers, new_sigmas)
+        train_basis = np.concatenate((train_basis, phi_train), axis=1)
+        val_basis = np.concatenate((val_basis, phi_val), axis=1)
+        coefficients = np.concatenate(
+            (coefficients, np.zeros((len(new_centers), len(names)), np.float64)),
+            axis=0)
+        (coefficients, optimizer_converged, optimizer_iterations_by_band,
+         optimizer_gradient_inf, optimizer_loss,
+         optimizer_message) = jointly_optimize(train_basis, coefficients)
+        train_linear = train_mean + train_basis @ coefficients
+        train_pred = np.maximum(train_linear, 0.0)
+        val_linear = val_mean + val_basis @ coefficients
+        val_pred = np.maximum(val_linear, 0.0)
+
+        all_centers.append(new_centers)
+        all_sigmas.append(new_sigmas)
+        all_increment_ids.append(np.full(len(new_norm), stage, np.int32))
+        total_k = sum(len(batch) for batch in all_centers)
+        train_l1 = float(np.mean(np.abs(train_pred - ytr)))
+        val_l1 = float(np.mean(np.abs(val_pred - yval)))
+        selected = bool(optimizer_converged and val_l1 < best_val_l1 - 1e-9)
+        if selected:
+            best_val_l1 = val_l1
+            best_k = total_k
+            best_centers = np.concatenate(all_centers, axis=0).copy()
+            best_sigmas = np.concatenate(all_sigmas).copy()
+            best_coefficients = coefficients.copy()
+            best_increment_ids = np.concatenate(all_increment_ids).copy()
+        history.append({
+            "stage": stage,
+            "n_centers": int(total_k),
+            "added_centers": int(len(new_norm)),
+            "sigma": float(new_sigma),
+            "train_mean_residual": train_l1,
+            "train_max_residual": float(np.max(np.mean(
+                np.abs(np.asarray(ytr, np.float64) - train_pred), axis=1))),
+            "val_l1": val_l1,
+            "val_improvement_from_mean": baseline_val_l1 - val_l1,
+            "selected_by_validation": selected,
+            "optimizer_converged": bool(optimizer_converged),
+            "optimizer_iterations": int(sum(optimizer_iterations_by_band)),
+            "optimizer_iterations_by_band": [
+                int(value) for value in optimizer_iterations_by_band],
+            "optimizer_gradient_inf": float(optimizer_gradient_inf),
+            "optimizer_objective": float(optimizer_loss),
+            "optimizer_message": optimizer_message,
+        })
+        if not optimizer_converged:
+            abort_reason = "joint_optimizer_did_not_converge"
+            break
+
+    # Validation chooses a prefix of complete increments, including the exact
+    # zero-correction baseline when every learned block generalizes poorly.
+    centers = best_centers
+    sigmas = best_sigmas
+    coefficients = best_coefficients
+    increment_ids = best_increment_ids
+    return RawIncrementalMinMeanMaxRBFCombiner(
+        member_labels=labels, n_kernels=int(best_k),
+        coefficients=coefficients.astype(np.float32),
+        centers=centers.astype(np.float32), scales=scales.astype(np.float32),
+        sigmas=sigmas.astype(np.float32), increment_ids=increment_ids,
+        reference_features=reference.astype(np.float32),
+        output_floors=output_floors.astype(np.float32), band_names=names,
+        val_l1=float(best_val_l1),
+        fit_meta={
+            "shared_across_bands": True,
+            "features": "raw electron min/mean/max per band",
+            "initial_prediction": "ensemble_mean",
+            "output": "four_signed_raw_electron_residuals",
+            "output_activation": "relu_after_mean_plus_correction",
+            "loss": "smooth_raw_electron_l1_plus_ridge",
+            "optimizer": "joint_full_batch_lbfgs_after_every_increment",
+            "optimizer_warm_start": "previous_joint_optimum_plus_zero_new_block",
+            "optimizer_max_iterations_per_call": int(max_optimizer_iterations),
+            "optimizer_max_continuations": 2,
+            "requested_kernels": int(target_k),
+            "selected_kernels": int(best_k),
+            "learned_parameter_count": int(best_k * len(names)),
+            "stored_parameter_count": int(best_k * (train_features.shape[1]
+                                                       + len(names))),
+            "increment_size": int(increment_size),
+            "within_increment_min_separation_normalized": float(
+                within_increment_separation),
+            "cross_increment_min_separation_normalized": 0.0,
+            "kernel_width_rule": "per_increment_median_nearest_distance_x1.25",
+            "residual_weight": "current_equal_band_raw_l1",
+            "residual_abort_threshold_e": float(residual_abort),
+            "baseline_val_l1": float(baseline_val_l1),
+            "center_history": history,
+            "center_abort_reason": abort_reason,
+        })
+
+def fit_combiner(
+    buffer,
+    member_labels,
     *,
-    min_peak_weight: float = 0.05,
-    max_regret: float = 0.01,
-    max_coherence_drop: float = 0.01,
-    max_transfer_worsening: float = 0.02,
-    min_members: int = 2,
-    steps: int = 3000,
-    lr: float = 1e-2,
-    batch: int = 16_384,
+    band_names=BAND_NAMES,
+    n_kernels: int = DEFAULT_N_KERNELS,
     seed: int = 0,
     holdout: float = 0.1,
-    on_refit=None,
-) -> Combiner:
-    """Iteratively refit without members whose peak gate share is too small.
-
-    Each round first tries all sub-threshold members as one batch.  A failed
-    rare-aware comparison retries the lower-peak half, providing binary
-    backoff without assuming that validation quality is monotone in arbitrary
-    member subsets.  Accepted refits are expanded back to the original member
-    indexing with removed columns hard-masked, then peak weights are recomputed.
-    """
-    all_labels = list(comb.member_labels)
-    m = len(all_labels)
-    threshold = max(0.0, min(1.0, float(min_peak_weight)))
-    tolerance = max(0.0, float(max_regret))
-    working = comb
-    active = working.needed_member_indices()
-    blocked: set[int] = set()
-    removed: list[int] = []
-    attempts: list[dict] = []
-    rows = {
-        i: {"index": i, "label": label, "kept": True,
-            "status": "not_evaluated", "peak_weight_max": 0.0,
-            "peak_weights": {}}
-        for i, label in enumerate(all_labels)
-    }
-    attempt_number = 0
-    accepted_round = 0
-
-    while threshold > 0.0 and len(active) > max(1, int(min_members)):
-        importance = peak_member_weights(working, buffers)
-        working.member_importance = importance
-        aggregate = np.max(np.asarray(list(importance.values()), float), axis=0)
-        for i in active:
-            rows[i]["peak_weight_max"] = float(aggregate[i])
-            rows[i]["peak_weights"] = {
-                band: float(values[i]) for band, values in importance.items()}
-
-        capacity = len(active) - max(1, int(min_members))
-        pool = sorted(
-            (i for i in active if i not in blocked and aggregate[i] < threshold),
-            key=lambda i: (aggregate[i], i))[:capacity]
-        if not pool:
-            break
-
-        trial = list(pool)
-        accepted = False
-        tried: set[tuple[int, ...]] = set()
-        while trial:
-            signature = tuple(trial)
-            if signature in tried:
-                break
-            tried.add(signature)
-            attempt_number += 1
-            keep = [i for i in active if i not in set(trial)]
-            if on_refit is not None:
-                on_refit(attempt_number, [all_labels[i] for i in trial])
-            reduced_buffers = {
-                name: (np.asarray(X)[:, keep], y)
-                for name, (X, y) in buffers.items()
-            }
-            reduced = fit_combiner(
-                reduced_buffers, [all_labels[i] for i in keep],
-                n_kernels=int(working.n_kernels),
-                sigma_scale=float(working.sigma_scale), min_usage=0.0,
-                level_range=tuple(working.level_range), steps=int(steps),
-                lr=float(lr), batch=int(batch), seed=int(seed),
-                holdout=float(holdout), model_kind=working.kind)
-            candidate = _expand_refit_combiner(reduced, all_labels, keep)
-            comparison = _refit_patch_comparison(
-                working, candidate, patch_stacks, patch_truth)
-            safe = (
-                comparison["val_l1_regret"] <= tolerance
-                and comparison["l1_region_max"] <= tolerance
-                and comparison["coherence_drop_max"] <= float(max_coherence_drop)
-                and comparison["transfer_worsening_max"] <= float(max_transfer_worsening)
-            )
-            attempts.append({
-                "attempt": int(attempt_number),
-                "round": int(accepted_round + 1),
-                "removed": [all_labels[i] for i in trial],
-                "accepted": bool(safe),
-                "before_val_l1": working.val_l1,
-                "after_val_l1": candidate.val_l1,
-                **comparison,
-            })
-            if safe:
-                accepted_round += 1
-                for i in trial:
-                    rows[i].update({
-                        "kept": False, "status": "pruned_after_refit",
-                        "prune_round": int(accepted_round),
-                        "l1_region_max": comparison["l1_region_max"],
-                        "coherence_drop_max": comparison["coherence_drop_max"],
-                        "transfer_worsening_max": comparison["transfer_worsening_max"],
-                    })
-                removed.extend(trial)
-                working = candidate
-                active = keep
-                blocked.clear()
-                accepted = True
-                break
-
-            if len(trial) > 1:
-                trial = trial[:max(1, len(trial) // 2)]
-                continue
-            rejected = trial[0]
-            blocked.add(rejected)
-            rows[rejected].update({
-                "status": "retained_by_refit_veto",
-                "l1_region_max": comparison["l1_region_max"],
-                "coherence_drop_max": comparison["coherence_drop_max"],
-                "transfer_worsening_max": comparison["transfer_worsening_max"],
-            })
-            remaining = [i for i in pool if i not in blocked]
-            trial = remaining[:capacity]
-        if not accepted:
-            break
-
-    final_importance = peak_member_weights(working, buffers)
-    working.member_importance = final_importance
-    final_aggregate = np.max(np.asarray(list(final_importance.values()), float), axis=0)
-    active_set = set(working.needed_member_indices())
-    for i in active_set:
-        rows[i]["kept"] = True
-        rows[i]["peak_weight_max"] = float(final_aggregate[i])
-        rows[i]["peak_weights"] = {
-            band: float(values[i]) for band, values in final_importance.items()}
-        if threshold <= 0.0:
-            rows[i]["status"] = "retained_threshold_disabled"
-        elif final_aggregate[i] >= threshold:
-            rows[i]["status"] = "retained_peak_above_threshold"
-        elif rows[i]["status"] != "retained_by_refit_veto":
-            rows[i]["status"] = "retained_no_safe_refit"
-
-    report = {
-        "metric": "iterative peak gate weight refit + patch spectrum",
-        "peak_weight": "maximum gate share on represented validation pixels in any band",
-        "min_peak_weight": float(threshold),
-        "max_regret": float(tolerance),
-        "max_coherence_drop": float(max_coherence_drop),
-        "max_transfer_worsening": float(max_transfer_worsening),
-        "binary_backoff": True,
-        "n_patches": int(len(np.asarray(patch_stacks))),
-        "attempts": attempts,
-        "pruned": [all_labels[i] for i in sorted(set(removed))],
-        "members": [rows[i] for i in range(m)],
-    }
-    working.min_peak_weight = float(threshold)
-    working.max_prune_regret = float(tolerance)
-    working.member_ablation = report
-    return working
+    model_kind: str = RAW_INCREMENTAL_MINMEANMAX_RBF_KIND,
+    **_unused,
+) -> RawIncrementalMinMeanMaxRBFCombiner:
+    """Fit the sole supported combiner on aligned raw-electron pixels."""
+    normalize_model_kind(model_kind)
+    X, y = buffer
+    X = np.asarray(X, np.float32)
+    y = np.asarray(y, np.float32)
+    labels = [str(label) for label in member_labels]
+    names = tuple(band_names)
+    if X.ndim != 3 or y.ndim != 2 or len(X) != len(y):
+        raise ValueError(f"expected (N,M,C)/(N,C), got {X.shape}/{y.shape}")
+    if not len(X) or X.shape[1] != len(labels) or X.shape[2] != len(names):
+        raise ValueError("combiner fit buffer does not match members/bands")
+    rng = np.random.default_rng(int(seed))
+    order = rng.permutation(len(X))
+    if len(X) == 1:
+        train_idx = val_idx = order
+    else:
+        n_val = min(len(X) - 1, max(1, int(round(len(X) * float(holdout)))))
+        val_idx, train_idx = order[:n_val], order[n_val:]
+    return _fit_raw_incremental_minmeanmax_rbf(
+        X[train_idx], y[train_idx], X[val_idx], y[val_idx], labels, names,
+        n_kernels=int(n_kernels), seed=int(seed),
+        within_increment_separation=DEFAULT_WITHIN_STAGE_MIN_SEPARATION,
+    )
 
 
-def bounded_ablation_prune(
-    comb: Combiner,
-    patch_stacks: np.ndarray,
-    patch_truth: np.ndarray,
-    patch_regions: np.ndarray,
-    *,
-    max_regret: float = 0.01,
-    max_rounds: int = 4,
-    shortlist: int = 6,
-    max_coherence_drop: float = 0.01,
-    max_transfer_worsening: float = 0.02,
-) -> dict:
-    """Conservatively prune with exact, sequential, bounded ablations.
-
-    ``patch_stacks`` is ``(P,M,S,S,C)`` and is intentionally capped by the
-    caller. Regional L1 is evaluated at patch centres for every member; only a
-    small L1-safe shortlist receives the more expensive patch FFT evaluation.
-    At most one member is removed per round and at most ``max_rounds`` members
-    can be removed. Explicit ``max_regret=0`` computes diagnostics but removes
-    nothing.
-    """
-    patches = np.asarray(patch_stacks, np.float32)
-    truth = np.asarray(patch_truth, np.float32)
-    regions = np.asarray(patch_regions, np.int32)
-    if patches.ndim != 5 or truth.ndim != 4 or len(patches) != len(truth):
-        raise ValueError("invalid bounded ablation patch arrays")
-    if regions.ndim == 1:
-        regions = np.repeat(regions[:, None], truth.shape[-1], axis=1)
-    if regions.ndim != 2 or regions.shape != (len(patches), truth.shape[-1]):
-        raise ValueError("patch regions must be (P,) or (P,C)")
-    if len(patches) < 4:
-        report = {"metric": "conditional ablation regret + patch spectrum",
-                  "status": "insufficient_patches", "n_patches": int(len(patches)),
-                  "members": []}
-        comb.max_prune_regret = float(max_regret)
-        comb.member_ablation = report
-        return report
-
-    size = int(patches.shape[2])
-    centre = size // 2
-    point_stacks = patches[:, :, centre, centre, :]
-    point_truth = truth[:, centre, centre, :]
-    labels = list(comb.member_labels)
-    report_rows: dict[int, dict] = {}
-    pruned: list[int] = []
-    rounds = 1 if float(max_regret) <= 0 else max(1, int(max_rounds))
-
-    for round_index in range(rounds):
-        survivors = comb.needed_member_indices()
-        if len(survivors) <= 2:
-            break
-        full_points = _apply_combiner_points(comb, point_stacks)
-        scale = np.asarray([_band_scale(b) for b in comb.band_names], float)
-        full_err = np.abs(np.arcsinh(full_points / scale)
-                          - np.arcsinh(point_truth / scale))
-        candidates: list[tuple[float, int, dict]] = []
-        for member in survivors:
-            _set_member_surviving(comb, member, False)
-            try:
-                ablated_points = _apply_combiner_points(comb, point_stacks)
-            finally:
-                _set_member_surviving(comb, member, True)
-            ablated_err = np.abs(np.arcsinh(ablated_points / scale)
-                                 - np.arcsinh(point_truth / scale))
-            regret = (ablated_err - full_err) / np.maximum(full_err, 0.01)
-            region_values = [
-                float(np.max(regret[regions[:, ci] == region, ci]))
-                for ci in range(regions.shape[1])
-                for region in np.unique(regions[:, ci])
-                if np.any(regions[:, ci] == region)
-            ]
-            worst = max(region_values, default=float("inf"))
-            row = {
-                "index": int(member), "label": labels[member], "kept": True,
-                "status": "retained", "l1_region_max": float(worst),
-                "coherence_drop_max": None, "transfer_worsening_max": None,
-                "round": int(round_index + 1),
-            }
-            report_rows[member] = row
-            candidates.append((worst, member, row))
-
-        candidates.sort(key=lambda item: item[0])
-        spectral_candidates = candidates[:max(1, min(int(shortlist), len(candidates)))]
-        full_patches = _apply_combiner_patches(comb, patches)
-        full_coh, full_transfer = _patch_spectral_scores(
-            truth[..., 0], full_patches[..., 0])
-        safe: list[tuple[float, int, dict]] = []
-        for l1_regret, member, row in spectral_candidates:
-            _set_member_surviving(comb, member, False)
-            try:
-                ablated_patches = _apply_combiner_patches(comb, patches)
-            finally:
-                _set_member_surviving(comb, member, True)
-            coh, transfer = _patch_spectral_scores(truth[..., 0], ablated_patches[..., 0])
-            coh_delta = full_coh - coh
-            transfer_delta = transfer - full_transfer
-            finite_coh = coh_delta[np.isfinite(coh_delta)]
-            finite_transfer = transfer_delta[np.isfinite(transfer_delta)]
-            coherence_drop = (float(np.max(finite_coh)) if finite_coh.size
-                              else float("inf"))
-            transfer_worsening = (float(np.max(finite_transfer))
-                                  if finite_transfer.size else float("inf"))
-            row["coherence_drop_max"] = coherence_drop if np.isfinite(coherence_drop) else None
-            row["transfer_worsening_max"] = (transfer_worsening
-                                               if np.isfinite(transfer_worsening) else None)
-            row["spectral_patches"] = int(np.sum(np.any(np.isfinite(coh_delta), axis=1)))
-            is_safe = (float(max_regret) > 0.0
-                       and l1_regret <= float(max_regret)
-                       and coherence_drop <= float(max_coherence_drop)
-                       and transfer_worsening <= float(max_transfer_worsening))
-            if is_safe:
-                score = max(l1_regret / max(float(max_regret), 1e-9),
-                            coherence_drop / max(float(max_coherence_drop), 1e-9),
-                            transfer_worsening / max(float(max_transfer_worsening), 1e-9))
-                safe.append((float(score), member, row))
-            else:
-                row["status"] = "retained_by_veto"
-
-        if float(max_regret) <= 0.0 or not safe:
-            break
-        _score, member, row = min(safe, key=lambda item: item[0])
-        _set_member_surviving(comb, member, False)
-        row["kept"] = False
-        row["status"] = "pruned"
-        row["prune_round"] = int(round_index + 1)
-        pruned.append(member)
-
-    kept = set(comb.needed_member_indices())
-    for member, row in report_rows.items():
-        if member in kept and row.get("status") == "retained":
-            row["status"] = "retained_not_shortlisted"
-        row["kept"] = member in kept
-    report = {
-        "metric": "conditional ablation regret + patch spectrum",
-        "regret": "max relative asinh-L1 increase within represented RBF regions",
-        "spectrum": "max VIS coherence drop and |log T| worsening over 1-5 and 5-10 cyc/arcsec",
-        "n_patches": int(len(patches)), "patch_size": int(size),
-        "n_regions": int(sum(len(np.unique(regions[:, ci]))
-                             for ci in range(regions.shape[1]))),
-        "regions_per_band": {
-            name: int(len(np.unique(regions[:, ci])))
-            for ci, name in enumerate(comb.band_names[:regions.shape[1]])
-        },
-        "max_rounds": int(max_rounds),
-        "shortlist": int(shortlist), "max_regret": float(max_regret),
-        "max_coherence_drop": float(max_coherence_drop),
-        "max_transfer_worsening": float(max_transfer_worsening),
-        "pruned": [labels[i] for i in pruned],
-        "members": [report_rows[i] for i in sorted(report_rows)],
-    }
-    comb.max_prune_regret = float(max_regret)
-    comb.member_ablation = report
-    return report
+fit_shared_combiner = fit_combiner
 
 
-def recompute_holdout_l1(comb: Combiner, buffers, *, holdout: float = 0.1,
-                         seed: int = 0, chunk_rows: int = 32_768) -> float | None:
-    """Re-evaluate the original deterministic holdout after survivor changes.
-
-    Rows are gathered and evaluated in bounded chunks; unlike fitting, this
-    never copies or materialises the full shuffled buffer.
-    """
-    losses: list[float] = []
-    for name, (X, y) in buffers.items():
-        X = np.asarray(X, np.float32)
-        y = np.asarray(y, np.float32)
-        if not len(X) or name not in comb.bands:
-            continue
-        n_val = int(len(X) * float(holdout))
-        if n_val <= 0:
-            indices = np.arange(len(X), dtype=np.int64)
-        else:
-            indices = np.random.default_rng(seed).permutation(len(X))[:n_val]
-        total = 0.0
-        count = 0
-        for start in range(0, len(indices), max(1, int(chunk_rows))):
-            idx = indices[start:start + int(chunk_rows)]
-            pred = comb.bands[name].forward_asinh(X[idx])
-            total += float(np.sum(np.abs(pred - y[idx]), dtype=np.float64))
-            count += len(idx)
-        if count:
-            losses.append(total / count)
-    comb.val_l1 = float(np.mean(losses)) if losses else None
-    return comb.val_l1
+def build_fit_buffers_from_fields(field_iter, band_names=BAND_NAMES, **kwargs):
+    accumulator = FitBufferAccumulator(band_names, **kwargs)
+    for predictions, target in field_iter:
+        accumulator.add(predictions, target)
+    return accumulator.buffer()
 
 
-# ---------------------------------------------------------------------------
-# Persistence
-# ---------------------------------------------------------------------------
+def combiner_region_ids(comb: RawIncrementalMinMeanMaxRBFCombiner,
+                        pixels: np.ndarray, band: str | None = None) -> np.ndarray:
+    """Return the nearest active-kernel id for aligned four-band pixels."""
+    del band
+    features = comb.features_from_electrons(np.asarray(pixels, np.float64))
+    if not comb.n_kernels:
+        return np.full(len(features), -1, np.int32)
+    scales = np.maximum(np.asarray(comb.scales, np.float64), 1e-8)
+    distance = ((features[:, None, :] - np.asarray(comb.centers)[None, :, :])
+                / scales[None, None, :])
+    return np.argmin(np.sum(distance * distance, axis=2), axis=1).astype(np.int32)
+
 
 def _combiner_dir(base_dir: str, artifact_dir: str | None = None) -> str:
-    """Return a combiner artifact directory without changing the default path."""
-    return os.path.join(base_dir, artifact_dir or "combiner")
+    return os.path.join(base_dir, artifact_dir or combiner_model_spec().artifact_dir)
 
 
 def combiner_artifact_fingerprint(base_dir: str, artifact_dir: str) -> str | None:
-    """Content identity for a parent artifact used by a derived combiner."""
     digest = hashlib.sha256()
     for filename in ("combiner.json", "combiner.npz"):
         path = os.path.join(_combiner_dir(base_dir, artifact_dir), filename)
@@ -1890,175 +786,75 @@ def combiner_artifact_fingerprint(base_dir: str, artifact_dir: str) -> str | Non
     return digest.hexdigest()
 
 
-def save_combiner(comb: Combiner | StackedCombiner, base_dir: str, *,
+def save_combiner(comb: RawIncrementalMinMeanMaxRBFCombiner, base_dir: str, *,
                   artifact_dir: str | None = None) -> None:
-    d = _combiner_dir(base_dir, artifact_dir)
-    os.makedirs(d, exist_ok=True)
-    arrays: dict[str, np.ndarray] = {}
-    for name, bc in comb.bands.items():
-        if comb.kind == RBF_GATE_KIND:
-            if not isinstance(bc, BandCombiner):
-                raise TypeError("RBF combiner has a non-RBF band")
-            arrays[f"{name}__V"] = np.asarray(bc.V, np.float32)
-            arrays[f"{name}__a"] = np.asarray(bc.a, np.float32)
-            arrays[f"{name}__centers"] = np.asarray(bc.centers, np.float32)
-            arrays[f"{name}__sigma"] = np.asarray([bc.sigma], np.float32)
-        elif comb.kind in {STATS_RBF_GATE_KIND, MINMAX_RBF_GATE_KIND}:
-            if not isinstance(bc, StatsRBFBandCombiner):
-                raise TypeError("stats RBF combiner has a non-stats-RBF band")
-            arrays[f"{name}__V"] = np.asarray(bc.V, np.float32)
-            arrays[f"{name}__a"] = np.asarray(bc.a, np.float32)
-            arrays[f"{name}__centers"] = np.asarray(bc.centers, np.float32)
-            arrays[f"{name}__scales"] = np.asarray(bc.scales, np.float32)
-            arrays[f"{name}__sigma"] = np.asarray([bc.sigma], np.float32)
-            arrays[f"{name}__std_floor"] = np.asarray([bc.std_floor], np.float32)
-        elif comb.kind == STACKED_RBF_GATE_KIND:
-            if not isinstance(bc, StackedRBFBandCombiner):
-                raise TypeError("stacked RBF combiner has a non-stacked band")
-            arrays[f"{name}__V"] = np.asarray(bc.V, np.float32)
-            arrays[f"{name}__a"] = np.asarray(bc.a, np.float32)
-            arrays[f"{name}__centers"] = np.asarray(bc.centers, np.float32)
-            arrays[f"{name}__scales"] = np.asarray(bc.scales, np.float32)
-            arrays[f"{name}__sigma"] = np.asarray([bc.sigma], np.float32)
-        else:
-            raise ValueError(f"unsupported combiner kind: {comb.kind}")
-        if hasattr(bc, "surviving"):
-            arrays[f"{name}__mask"] = np.asarray(bc.surviving, bool)
-    np.savez_compressed(os.path.join(d, "combiner.npz"), **arrays)
+    if not isinstance(comb, RawIncrementalMinMeanMaxRBFCombiner):
+        raise TypeError("only the incremental raw min/mean/max combiner is supported")
+    directory = _combiner_dir(base_dir, artifact_dir)
+    os.makedirs(directory, exist_ok=True)
+    np.savez_compressed(
+        os.path.join(directory, "combiner.npz"),
+        coefficients=np.asarray(comb.coefficients, np.float32),
+        centers=np.asarray(comb.centers, np.float32),
+        scales=np.asarray(comb.scales, np.float32),
+        sigmas=np.asarray(comb.sigmas, np.float32),
+        increment_ids=np.asarray(comb.increment_ids, np.int32),
+        reference_features=np.asarray(comb.reference_features, np.float32),
+        output_floors=np.asarray(comb.output_floors, np.float32),
+    )
     manifest = {
-        "kind": comb.kind,
+        "schema": 2,
+        "kind": RAW_INCREMENTAL_MINMEANMAX_RBF_KIND,
+        "feature_names": list(_RAW_FEATURE_NAMES),
         "member_labels": list(comb.member_labels),
         "n_kernels": int(comb.n_kernels),
-        "sigma_scale": float(comb.sigma_scale),
-        "min_usage": float(comb.min_usage),
-        "max_prune_regret": float(comb.max_prune_regret),
-        "min_peak_weight": float(comb.min_peak_weight),
-        "level_range": list(comb.level_range),
         "band_names": list(comb.band_names),
-        "stretch_e": {b: _band_scale(b) for b in comb.band_names},
+        "level_range": list(comb.level_range),
         "records_fp": comb.records_fp,
         "starfull": bool(comb.starfull),
         "val_l1": comb.val_l1,
-        "surviving": comb.surviving_members(),
-        "member_importance": comb.member_importance,
-        "member_weight_peaks": comb.member_weight_peaks,
-        "member_weight_integrals": comb.member_weight_integrals,
-        "member_ablation": comb.member_ablation,
         "fit_meta": comb.fit_meta,
     }
-    if comb.kind in {STATS_RBF_GATE_KIND, MINMAX_RBF_GATE_KIND,
-                     STACKED_RBF_GATE_KIND}:
-        manifest["feature_names"] = list(combiner_model_spec(comb.kind).feature_names or ())
-    if comb.kind == STACKED_RBF_GATE_KIND:
-        manifest["expert_labels"] = list(comb.weight_labels)
-        manifest["parent_fingerprints"] = dict(comb.parent_fingerprints)
-    with open(os.path.join(d, "combiner.json"), "w") as f:
-        json.dump(manifest, f, indent=2)
+    with open(os.path.join(directory, "combiner.json"), "w") as handle:
+        json.dump(manifest, handle, indent=2)
 
 
 def load_combiner(base_dir: str, *, member_labels: list[str] | None = None,
                   artifact_dir: str | None = None
-                  ) -> Combiner | StackedCombiner | None:
-    """Load a persisted combiner, or ``None`` if absent, **stale** (its saved
-    member labels no longer match ``member_labels``), or an incompatible/old
-    format (e.g. a pre-RBF combiner)."""
-    d = _combiner_dir(base_dir, artifact_dir)
-    jp, npzp = os.path.join(d, "combiner.json"), os.path.join(d, "combiner.npz")
-    if not (os.path.exists(jp) and os.path.exists(npzp)):
+                  ) -> RawIncrementalMinMeanMaxRBFCombiner | None:
+    """Load the sole supported artifact; all former formats are rejected."""
+    directory = _combiner_dir(base_dir, artifact_dir)
+    manifest_path = os.path.join(directory, "combiner.json")
+    arrays_path = os.path.join(directory, "combiner.npz")
+    if not (os.path.isfile(manifest_path) and os.path.isfile(arrays_path)):
         return None
     try:
-        with open(jp) as f:
-            man = json.load(f)
-        kind = normalize_model_kind(man.get("kind"))
-        if kind not in COMBINER_MODELS:
+        with open(manifest_path) as handle:
+            manifest = json.load(handle)
+        if manifest.get("kind") != RAW_INCREMENTAL_MINMEANMAX_RBF_KIND:
             return None
-        # Old stats-RBF artifacts have incompatible feature geometry. Treat
-        # them as unavailable rather than silently applying raw-std centres.
-        if (kind != RBF_GATE_KIND and man.get("feature_names")
-                != list(combiner_model_spec(kind).feature_names or ())):
+        if manifest.get("feature_names") != list(_RAW_FEATURE_NAMES):
             return None
-        if member_labels is not None and list(man["member_labels"]) != list(member_labels):
+        labels = [str(value) for value in manifest["member_labels"]]
+        if member_labels is not None and labels != [str(value) for value in member_labels]:
             return None
-        z = np.load(npzp)
-        if kind == STACKED_RBF_GATE_KIND:
-            expected = dict(man.get("parent_fingerprints") or {})
-            parent_dirs = {
-                STATS_RBF_GATE_KIND: combiner_model_spec(STATS_RBF_GATE_KIND).artifact_dir,
-                MINMAX_RBF_GATE_KIND: combiner_model_spec(MINMAX_RBF_GATE_KIND).artifact_dir,
-            }
-            current = {key: combiner_artifact_fingerprint(base_dir, value)
-                       for key, value in parent_dirs.items()}
-            if not expected or current != expected:
-                return None
-            stats = load_combiner(base_dir, member_labels=list(man["member_labels"]),
-                                  artifact_dir=parent_dirs[STATS_RBF_GATE_KIND])
-            minmax = load_combiner(base_dir, member_labels=list(man["member_labels"]),
-                                   artifact_dir=parent_dirs[MINMAX_RBF_GATE_KIND])
-            if not isinstance(stats, Combiner) or not isinstance(minmax, Combiner):
-                return None
-            stacked_bands = {
-                name: StackedRBFBandCombiner(
-                    V=z[f"{name}__V"], a=z[f"{name}__a"],
-                    centers=z[f"{name}__centers"], scales=z[f"{name}__scales"],
-                    sigma=float(z[f"{name}__sigma"][0]))
-                for name in man["band_names"]
-            }
-            return StackedCombiner(
-                member_labels=list(man["member_labels"]),
-                n_kernels=int(man.get("n_kernels", DEFAULT_STATS_RBF_N_KERNELS)),
-                bands=stacked_bands, stats_combiner=stats, minmax_combiner=minmax,
-                band_names=tuple(man["band_names"]),
-                level_range=tuple(man.get("level_range", GATE_LEVEL_RANGE)),
-                records_fp=man.get("records_fp"),
-                starfull=bool(man.get("starfull", True)), val_l1=man.get("val_l1"),
-                fit_meta=man.get("fit_meta", {}), parent_fingerprints=expected,
-                member_weight_peaks={
-                    str(name): [float(v) for v in values]
-                    for name, values in (man.get("member_weight_peaks") or {}).items()
-                },
-                member_weight_integrals={
-                    str(name): [float(v) for v in values]
-                    for name, values in (man.get("member_weight_integrals") or {}).items()
-                })
-        bands: dict[str, BandCombiner | StatsRBFBandCombiner] = {}
-        for name in man["band_names"]:
-            if kind == RBF_GATE_KIND:
-                bands[name] = BandCombiner(
-                    V=z[f"{name}__V"], a=z[f"{name}__a"],
-                    centers=z[f"{name}__centers"].reshape(-1),
-                    sigma=float(z[f"{name}__sigma"][0]),
-                    surviving=z[f"{name}__mask"])
-            elif kind in {STATS_RBF_GATE_KIND, MINMAX_RBF_GATE_KIND}:
-                bands[name] = StatsRBFBandCombiner(
-                    V=z[f"{name}__V"], a=z[f"{name}__a"],
-                    centers=z[f"{name}__centers"], scales=z[f"{name}__scales"],
-                    sigma=float(z[f"{name}__sigma"][0]),
-                    surviving=z[f"{name}__mask"],
-                    std_floor=float(z[f"{name}__std_floor"][0]), feature_kind=kind)
-        return Combiner(
-            member_labels=list(man["member_labels"]),
-            n_kernels=int(man.get("n_kernels", DEFAULT_N_KERNELS)),
-            sigma_scale=float(man.get("sigma_scale", DEFAULT_SIGMA_SCALE)),
-            min_usage=float(man.get("min_usage", 0.0)), bands=bands,
-            band_names=tuple(man["band_names"]),
-            level_range=tuple(man.get("level_range", GATE_LEVEL_RANGE)),
-            records_fp=man.get("records_fp"), starfull=bool(man.get("starfull", True)),
-            val_l1=man.get("val_l1"), fit_meta=man.get("fit_meta", {}),
-            kind=kind,
-            max_prune_regret=float(man.get("max_prune_regret", 0.0)),
-            min_peak_weight=float(man.get("min_peak_weight", 0.0)),
-            member_ablation=dict(man.get("member_ablation") or {}),
-            member_importance={
-                str(name): [float(v) for v in values]
-                for name, values in (man.get("member_importance") or {}).items()
-            },
-            member_weight_peaks={
-                str(name): [float(v) for v in values]
-                for name, values in (man.get("member_weight_peaks") or {}).items()
-            },
-            member_weight_integrals={
-                str(name): [float(v) for v in values]
-                for name, values in (man.get("member_weight_integrals") or {}).items()
-            })
-    except (OSError, ValueError, KeyError, TypeError):
+        arrays = np.load(arrays_path)
+        return RawIncrementalMinMeanMaxRBFCombiner(
+            member_labels=labels,
+            n_kernels=int(manifest.get("n_kernels", 0)),
+            coefficients=arrays["coefficients"],
+            centers=arrays["centers"],
+            scales=arrays["scales"],
+            sigmas=arrays["sigmas"],
+            increment_ids=arrays["increment_ids"],
+            reference_features=arrays["reference_features"],
+            output_floors=arrays["output_floors"],
+            band_names=tuple(manifest.get("band_names", BAND_NAMES)),
+            level_range=tuple(manifest.get("level_range", GATE_LEVEL_RANGE)),
+            records_fp=manifest.get("records_fp"),
+            starfull=bool(manifest.get("starfull", True)),
+            val_l1=manifest.get("val_l1"),
+            fit_meta=manifest.get("fit_meta", {}),
+        )
+    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
         return None

@@ -16,6 +16,7 @@ import numpy as np
 
 from euclid_polish.config import Config
 from euclid_polish.ensemble import member_fingerprint
+from euclid_polish.eval.combiner import RAW_INCREMENTAL_MINMEANMAX_RBF_KIND
 from euclid_polish.eval.ensemble_diagnostics import EnsembleDiagnosticsAccumulator
 from euclid_polish.eval.power_spectrum import EnsembleSpectrumAccumulator
 from euclid_polish.experiments.lens_isolation.config import ExperimentPaths
@@ -318,7 +319,11 @@ def compute_evaluation_payload() -> dict | None:
     for truth, mean, members, combiner, lr, rec in _iter_cached_fields():
         if spectrum is None:
             spectrum = EnsembleSpectrumAccumulator(int(truth.shape[0]), float(Config.DEFAULT_PIXEL_SCALE))
-        spectrum.add(truth, mean, members, combiner=combiner, lr=lr)
+        spectrum.add(
+            truth, mean, members,
+            model_combiners={RAW_INCREMENTAL_MINMEANMAX_RBF_KIND: combiner},
+            lr=lr,
+        )
         diag.add(truth, mean, members, combiner=combiner, field_index=rec)
         metrics.add(truth, mean, members, combiner)
     if diag.n_fields == 0:
@@ -385,8 +390,11 @@ def job_evaluate(cap, *, num_images: int = 100, force: bool = False) -> dict:
                 spectrum[0] = EnsembleSpectrumAccumulator(
                     int(truth_v.shape[0]), float(Config.DEFAULT_PIXEL_SCALE)
                 )
-            spectrum[0].add(truth_v, mean_v, member_v, combiner=comb_v,
-                            lr=_lr_on_hr_grid(lr, int(truth_v.shape[0])))
+            spectrum[0].add(
+                truth_v, mean_v, member_v,
+                model_combiners={RAW_INCREMENTAL_MINMEANMAX_RBF_KIND: comb_v},
+                lr=_lr_on_hr_grid(lr, int(truth_v.shape[0])),
+            )
             diag.add(truth_v, mean_v, member_v, combiner=comb_v,
                      field_index=int(rec) if len(saved) < viz_cap else None)
             metrics.add(truth_v, mean_v, member_v, comb_v)
@@ -543,7 +551,7 @@ def _reevaluate_from_cubes(num_images: int = 100) -> dict | None:
     return summary
 
 
-def job_combiner_fit(cap, *, num_images: int = 100, n_kernels: int = 12,
+def job_combiner_fit(cap, *, num_images: int = 100, n_kernels: int = 128,
                      min_usage: float = 0.0) -> dict:
     from euclid_polish.eval.combiner import BAND_NAMES, FitBufferAccumulator, fit_combiner, save_combiner
     from euclid_polish.eval.ensemble_cube_cache import load_cached_member_stack
@@ -595,8 +603,8 @@ def job_combiner_fit(cap, *, num_images: int = 100, n_kernels: int = 12,
             json.dump({"subset": "validate", "indices": saved,
                        "member_labels": labels, "records_fp": _record_fingerprint("validate"),
                        "pca_n": ENSEMBLE_PCA_COMPONENTS, "target_kind": TARGET_KIND}, handle)
-    buffers = accumulator.buffers()
-    if not any(np.asarray(x).size for x, _target in buffers.values()):
+    buffers = accumulator.buffer()
+    if not np.asarray(buffers[0]).size:
         raise RuntimeError("no lens-isolation validation pixels collected")
     combiner = fit_combiner(buffers, labels, n_kernels=int(n_kernels), min_usage=float(min_usage))
     combiner.records_fp = _record_fingerprint("validate")

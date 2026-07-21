@@ -8,19 +8,16 @@ import os
 
 from flask import abort, jsonify, render_template, request, send_file
 
-from euclid_polish.eval.combiner import COMBINER_MODELS
+from euclid_polish.eval.combiner import ACTIVE_COMBINER_KINDS
 from euclid_polish.web.helpers.ensemble_viz import (
     EVAL_DIAGNOSTIC_PNGS,
-    _combined_payload_path,
     _combiner_payload_path,
     _ensemble_regime_dir,
     _evals_payload_path,
-    compute_combined_combiner_payload,
     compute_combiner_payload,
     compute_evaluation_payload,
     ensemble_status,
     job_archive_member,
-    job_combined_combiner_fit,
     job_combiner_fit,
     job_ensemble_evaluate,
     job_ensemble_pull,
@@ -98,10 +95,6 @@ def register(app):
             num_images = max(1, int(request.form.get("num_images", 100) or 100))
         except (TypeError, ValueError):
             num_images = 100
-        try:
-            n_kernels = max(2, min(64, int(request.form.get("n_kernels", 12) or 12)))
-        except (TypeError, ValueError):
-            n_kernels = 12
         raw_min_usage = request.form.get("min_usage")
         try:
             min_usage = (None if raw_min_usage in (None, "")
@@ -109,16 +102,23 @@ def register(app):
         except (TypeError, ValueError):
             min_usage = None
         from euclid_polish.eval.combiner import (
-            DEFAULT_N_KERNELS,
             combiner_model_spec,
             normalize_model_kind,
         )
         try:
-            model_kind = normalize_model_kind(request.form.get("model_kind"))
+            model_kind = normalize_model_kind(
+                request.form.get("model_kind"))
         except ValueError:
-            model_kind = "rbf_gate"
+            abort(400)
+        if model_kind not in ACTIVE_COMBINER_KINDS:
+            abort(400)
         spec = combiner_model_spec(model_kind)
-        if spec.feature_names is not None and n_kernels == DEFAULT_N_KERNELS:
+        raw_kernels = request.form.get("n_kernels")
+        try:
+            n_kernels = max(2, min(
+                128, int(raw_kernels if raw_kernels not in (None, "")
+                         else spec.default_kernels)))
+        except (TypeError, ValueError):
             n_kernels = spec.default_kernels
         regime = "starless" if starless else "starfull"
         model_label = f"{spec.label} K={n_kernels}"
@@ -142,9 +142,12 @@ def register(app):
         starless = _mode_starless(default="starfull")
         from euclid_polish.eval.combiner import normalize_model_kind
         try:
-            model_kind = normalize_model_kind(request.args.get("model_kind"))
+            model_kind = normalize_model_kind(
+                request.args.get("model_kind"))
         except ValueError:
-            model_kind = "rbf_gate"
+            abort(400)
+        if model_kind not in ACTIVE_COMBINER_KINDS:
+            abort(400)
         path = _combiner_payload_path(starless, model_kind)
         if compute_combiner_payload(starless, model_kind=model_kind) is None:
             return jsonify({
@@ -155,48 +158,6 @@ def register(app):
                 "member_labels": [], "members": [], "band_names": [],
                 "eff_weights": {}, "feature_grid": {}, "surviving": {},
             })
-        return send_file(path, mimetype="application/json", max_age=0)
-
-    @app.route("/ensemble/combined-combiner/fit", methods=["POST"])
-    def ensemble_combined_combiner_fit():
-        """Fit the selected target's additive all-member experimental gate."""
-        starless = _mode_starless(default="starfull")
-        try:
-            num_images = max(1, int(request.form.get("num_images", 100) or 100))
-        except (TypeError, ValueError):
-            num_images = 100
-        try:
-            n_kernels = max(2, min(32, int(request.form.get("n_kernels", 12) or 12)))
-        except (TypeError, ValueError):
-            n_kernels = 12
-        raw_min_usage = request.form.get("min_usage")
-        try:
-            min_usage = (None if raw_min_usage in (None, "")
-                         else max(0.0, float(raw_min_usage)))
-        except (TypeError, ValueError):
-            min_usage = None
-        from euclid_polish.eval.combiner import normalize_model_kind
-        try:
-            model_kind = normalize_model_kind(request.form.get("model_kind"))
-        except ValueError:
-            model_kind = "rbf_gate"
-        regime = "starless" if starless else "starfull"
-        model_label = f"RBF K={n_kernels}"
-        job_id = REGISTRY.spawn(
-            f"combined combiner: fit {regime} on validate ({num_images} fields, {model_label})",
-            target=lambda cap: job_combined_combiner_fit(
-                cap, num_images=num_images, n_kernels=n_kernels,
-                min_usage=min_usage, starless=starless, model_kind=model_kind),
-        )
-        return jsonify({"job_id": job_id})
-
-    @app.route("/ensemble/combined-combiner.json")
-    def ensemble_combined_combiner_json():
-        starless = _mode_starless(default="starfull")
-        payload = compute_combined_combiner_payload(starless)
-        path = _combined_payload_path(starless)
-        if not os.path.isfile(path):
-            return jsonify(payload)
         return send_file(path, mimetype="application/json", max_age=0)
 
     @app.route("/ensemble/member-psnr", methods=["POST"])
@@ -253,7 +214,11 @@ def register(app):
                     cached = json.load(f)
                     fresh = "coherence" not in cached
                     feature_error = cached.get("combiner_feature_error") or {}
-                    needs_diagnostics = "axes" not in feature_error
+                    std_err = cached.get("std_err") or {}
+                    needs_diagnostics = (
+                        "axes" not in feature_error
+                        or not std_err.get("adaptive_range", False)
+                    )
             except (OSError, ValueError):
                 fresh = True
         if (needs_diagnostics
@@ -281,10 +246,10 @@ def register(app):
             abort(404)
         model_kind = (request.args.get("model") or "").strip()
         axis_mode = (request.args.get("axis") or "").strip()
-        if model_kind and model_kind not in ("ensemble_mean", *COMBINER_MODELS):
+        if model_kind and model_kind not in ("ensemble_mean", *ACTIVE_COMBINER_KINDS):
             abort(400)
         if (diag == "combiner_feature_error"
-                and model_kind not in ("ensemble_mean", *COMBINER_MODELS)):
+                and model_kind not in ("ensemble_mean", *ACTIVE_COMBINER_KINDS)):
             abort(400)
         if diag == "combiner_feature_error" and axis_mode not in (
                 "mean_std", "min_max"):

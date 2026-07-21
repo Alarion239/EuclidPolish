@@ -215,67 +215,32 @@ def test_ensemble_spectrum_uses_displayed_raw_mean():
 
 
 def test_ensemble_accumulator_combiner_series():
-    """A combiner plane fed to add() yields its own P_comb/r_comb series; a
-    perfect combiner (== HR) reads T_comb≈1 and r_comb≈1 on signal scales."""
+    """The raw incremental combiner gets its own model-specific curves."""
     n = 64
     rng = np.random.default_rng(5)
     hr = _smooth_field(n, sigma=1.0)
     members = np.stack([hr + rng.standard_normal((n, n)) * 0.1 for _ in range(3)])
     acc = EnsembleSpectrumAccumulator(n, PIXEL_SCALE)
-    acc.add(hr, members.mean(0), members, combiner=hr)        # perfect combiner
-    assert acc.has_combiner
+    kind = "raw_incremental_minmeanmax_rbf"
+    acc.add(hr, members.mean(0), members, model_combiners={kind: hr})
     curves = acc.curves()
-    assert "P_comb" in curves and "r_comb" in curves
+    assert set(curves["model_combiners"]) == {kind}
     plot = ensemble_ps_plot_curves(curves)
-    assert plot["T_comb"].shape == plot["theta"].shape
-    m = np.isfinite(plot["T_comb"]) & (acc.k_cen < 5.0)
-    assert np.nanmedian(plot["T_comb"][m]) == pytest.approx(1.0, abs=0.05)
-    assert np.nanmedian(plot["r_comb"][np.isfinite(plot["r_comb"])
-                                       & (acc.k_cen < 5.0)]) > 0.95
-
-
-def test_ensemble_accumulator_stats_rbf_series_is_independent():
-    """The third combiner gets a separate curve rather than overwriting RBF."""
-    n = 64
-    rng = np.random.default_rng(15)
-    hr = _smooth_field(n, sigma=1.0)
-    members = np.stack([hr + rng.standard_normal((n, n)) * 0.1 for _ in range(3)])
-    acc = EnsembleSpectrumAccumulator(n, PIXEL_SCALE)
-    acc.add(hr, members.mean(0), members, combiner=members.mean(0),
-            stats_rbf_combiner=hr)
-    assert acc.has_combiner and acc.has_stats_rbf_combiner
-    curves = acc.curves()
-    assert "P_comb" in curves and "P_stats_rbf_comb" in curves
-    plot = ensemble_ps_plot_curves(curves)
-    m = np.isfinite(plot["T_stats_rbf_comb"]) & (acc.k_cen < 5.0)
-    assert np.nanmedian(plot["T_stats_rbf_comb"][m]) == pytest.approx(1.0, abs=0.05)
-
-
-def test_ensemble_accumulator_combined_combiner_series_is_independent():
-    """The experimental reconstruction has its own power/coherence keys."""
-    n = 64
-    rng = np.random.default_rng(6)
-    hr = _smooth_field(n, sigma=1.0)
-    members = np.stack([hr + rng.standard_normal((n, n)) * 0.1 for _ in range(3)])
-    acc = EnsembleSpectrumAccumulator(n, PIXEL_SCALE)
-    acc.add(hr, members.mean(0), members, combiner=members.mean(0),
-            combined_combiner=hr)
-    curves = acc.curves()
-    assert "P_comb" in curves and "P_combined" in curves
-    plot = ensemble_ps_plot_curves(curves)
-    m = np.isfinite(plot["T_combined"]) & (acc.k_cen < 5.0)
-    assert np.nanmedian(plot["T_combined"][m]) == pytest.approx(1.0, abs=0.05)
+    raw = plot["model_combiners"][kind]
+    assert raw["T"].shape == plot["theta"].shape
+    m = np.isfinite(raw["T"]) & (acc.k_cen < 5.0)
+    assert np.nanmedian(raw["T"][m]) == pytest.approx(1.0, abs=0.05)
+    assert np.nanmedian(raw["r"][np.isfinite(raw["r"])
+                                  & (acc.k_cen < 5.0)]) > 0.95
 
 
 def test_ensemble_ps_plot_curves_no_combiner_is_nan():
-    """No combiner fed → T_comb/r_comb are present but all-NaN (the JS hides
-    the series)."""
+    """No combiner produces no model-specific curve."""
     k = np.array([0.5, 1.0])
     curves = {"k": k, "P_hr": np.array([1.0, 1.0]),
               "P_sr": np.array([1.0, 1.0]), "r": np.array([1.0, 1.0])}
     out = ensemble_ps_plot_curves(curves)
-    assert out["T_comb"].shape == (2,) and np.isnan(out["T_comb"]).all()
-    assert np.isnan(out["r_comb"]).all()
+    assert out["model_combiners"] == {}
 
 
 def test_ensemble_ps_plot_curves_derives_per_member_transfer():

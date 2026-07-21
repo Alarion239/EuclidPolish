@@ -137,7 +137,7 @@ def test_lens_ensemble_routes_bound_and_validate_parameters(monkeypatch):
     jobs[-1][1](object())
     assert jobs[-1] == (
         "combiner args",
-        {"num_images": 1, "n_kernels": 32, "min_usage": 0.5},
+        {"num_images": 1, "n_kernels": 99, "min_usage": 0.5},
     )
 
 

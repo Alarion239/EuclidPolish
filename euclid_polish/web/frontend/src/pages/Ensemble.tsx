@@ -100,9 +100,7 @@ export type Evals = {
   std_err?: StdErr | null; bright_std?: BrightStd | null;
   combiner_feature_error?: CombinerFeatureError;
   combiner?: { available?: boolean; psnr?: number | null; ensemble_mean_psnr?: number | null; best_member_psnr?: number | null } | null;
-  stats_rbf_combiner?: { available?: boolean; psnr?: number | null; ensemble_mean_psnr?: number | null; best_member_psnr?: number | null } | null;
   model_combiners?: Record<string, { available?: boolean; psnr?: number | null; ensemble_mean_psnr?: number | null; best_member_psnr?: number | null } | null>;
-  combined_combiner?: { available?: boolean; psnr?: number | null; ensemble_mean_psnr?: number | null; best_member_psnr?: number | null } | null;
 };
 
 /* ── combiner.json ───────────────────────────────────────────────────────── */
@@ -112,8 +110,34 @@ type FeatureGrid = {
   std_log?: (number | null)[];
   center_mean_asinh?: (number | null)[]; center_std_asinh?: (number | null)[];
   center_std_log?: (number | null)[];
-  x_label?: string; y_label?: string; y_is_log?: boolean;
+  x_label?: string; y_label?: string; y_is_log?: boolean; conditioning_note?: string;
+  z_label?: string;
   weights?: (number | null)[][][];
+};
+type PCAWeightSurface = FeatureGrid & {
+  available?: boolean; reason?: string; n_pixels?: number; n_fields?: number;
+  feature_space?: string; conditioning_note?: string;
+  explained_variance_ratio?: (number | null)[];
+  feature_names?: string[]; loadings?: (number | null)[][];
+  surface_labels?: string[];
+};
+type PredictiveAxisMetrics = {
+  soft_route_r2?: number; top_route_accuracy?: number;
+  mean_selected_regret?: number; soft_expected_regret?: number;
+};
+type PredictiveAxes = {
+  available?: boolean; stale?: boolean; reason?: string; regime?: string; target?: string;
+  method?: string; feature_space?: string; sampling?: string; split?: string;
+  n_fields?: number; n_pixels?: number; n_train?: number; n_holdout?: number;
+  oracle_temperature?: number; member_labels?: string[]; route_labels?: string[];
+  feature_names?: string[]; axis_loadings?: (number | null)[][];
+  axis1?: (number | null)[]; axis2?: (number | null)[];
+  oracle_weights?: (number | null)[][][]; density?: (number | null)[][];
+  route_fraction?: (number | null)[]; conditioning_note?: string;
+  metrics?: {
+    two_axis?: PredictiveAxisMetrics; full_input_linear?: PredictiveAxisMetrics;
+    ensemble_mean_regret?: number; r2_retention?: number | null;
+  };
 };
 type HRWeightBand = {
   brightness_asinh?: (number | null)[]; brightness_e?: (number | null)[];
@@ -125,21 +149,31 @@ type HRWeights = {
   member_labels?: string[]; bands?: Record<string, HRWeightBand>;
   n_fields?: number; n_pixels?: number;
 };
+type CenterStage = {
+  stage?: number; n_centers?: number; val_l1?: number;
+  train_mean_residual?: number; train_max_residual?: number;
+  target_nonzero_mean_residual?: number;
+  aborted_for_small_residual?: boolean;
+  optimizer_converged?: boolean; optimizer_iterations?: number;
+  optimizer_gradient_inf?: number; optimizer_message?: string;
+};
 export type Combiner = {
   available?: boolean; stale?: boolean; regime?: string;
   member_labels: string[];
   members?: { label: string; loss?: string; blocks?: number; asinh_knee?: number | null; step?: number | null; psnr?: number | null }[];
-  kind?: "rbf_gate" | "stats_rbf_gate" | "minmax_rbf_gate" | "stacked_rbf_gate"; n_kernels?: number;
+  kind?: "raw_incremental_minmeanmax_rbf"; n_kernels?: number;
   min_usage?: number; val_l1?: number | null;
   band_names?: string[];
   member_weight_peaks?: Record<string, number[]>;
   member_weight_integrals?: Record<string, number[]>;
   eff_weights?: Record<string, EffW>;
   feature_grid?: Record<string, FeatureGrid>;
+  pca_weight_surface?: PCAWeightSurface | null;
   hr_weights?: HRWeights;
   source_starless?: boolean[]; reason?: string;
   source_member_labels?: string[];
-  fit_meta?: { experts?: string[]; parents_fitted_together?: boolean };
+  fit_meta?: { experts?: string[]; parents_fitted_together?: boolean; preview?: boolean; num_images?: number;
+    center_history?: CenterStage[]; center_abort_reason?: string; residual_abort_threshold?: number };
 };
 
 /* ── training-curves.json ────────────────────────────────────────────────── */
@@ -150,14 +184,12 @@ export type Curve = { name: string; psnr: [number, number][]; blocks?: number; t
 const XTICKS = [0.05, 0.1, 0.2, 0.5, 1, 2, 5];
 const COMBINER_META: Record<string, { label: string; color: string }> = {
   ensemble_mean: { label: "ensemble mean", color: C.mean },
-  rbf_gate: { label: "max RBF", color: C.comb },
-  stats_rbf_gate: { label: "mean + std RBF", color: "#2a9d8f" },
-  minmax_rbf_gate: { label: "min + max RBF", color: "#d47f34" },
-  stacked_rbf_gate: { label: "stacked RBF", color: "#7b5fc6" },
+  raw_incremental_minmeanmax_rbf: { label: "incremental raw min/mean/max RBF", color: "#4f9d69" },
 };
 const combinerMeta = (kind: string) => COMBINER_META[kind] ?? {
   label: kind.replace(/_/g, " "), color: categorical(kind.length),
 };
+const activeCombinerKind = (kind: string) => kind === "raw_incremental_minmeanmax_rbf";
 const hasData = (a: unknown) => asArray<number | null>(a).some((v) => v != null && isFinite(v));
 const finite = (a: unknown, i: 0 | 1) => asArray<[number, number]>(a).map((p) => p[i]);
 const num = (a: unknown) => asArray<number | null>(a).map((v) => (v == null ? NaN : v));
@@ -400,24 +432,22 @@ export default function EnsemblePage() {
   const mode: Mode = modeParam === "starless" ? "starless" : "starfull";
   const setMode = (m: Mode) => navigate(`/ensemble/${m}`);
   const starless = mode === "starless";
-  const [combinerKind, setCombinerKind] = useState<CombinerModelKind>("rbf_gate");
+  const combinerKind: CombinerModelKind = "raw_incremental_minmeanmax_rbf";
 
   const status = useResource<Status>(`/ensemble/status.json?mode=${mode}`, [mode]);
   const evals = useResource<Evals>(`/ensemble/evals.json?mode=${mode}`, [mode]);
   const comb = useResource<Combiner>(`/ensemble/combiner.json?mode=${mode}&model_kind=${combinerKind}`, [mode, combinerKind]);
-  const combined = useResource<Combiner>(`/ensemble/combined-combiner.json?mode=${mode}`, [mode]);
   const curves = useResource<{ members?: Curve[] }>("/ensemble/training-curves.json");
 
   const evalJob = useJob();
   const opJob = useJob();
   const fitJob = useJob();
-  const combinedFitJob = useJob();
   // Continue/fork buttons in the members table jump to the Train members page,
   // prefilled via query params.
   const toTrain = (m: "continue" | "fork", member: string) =>
     navigate(`/train-members?mode=${m}&member=${encodeURIComponent(member)}`);
 
-  const reloadAll = () => { status.reload(); evals.reload(); comb.reload(); combined.reload(); curves.reload(); };
+  const reloadAll = () => { status.reload(); evals.reload(); comb.reload(); curves.reload(); };
 
   return (
     <Page>
@@ -437,13 +467,13 @@ export default function EnsemblePage() {
           onContinue={(m) => toTrain("continue", m)}
           onFork={(m) => toTrain("fork", m)} />
         <TrainingCurves curves={asArray<Curve>(curves.data?.members)} starless={starless} />
-        <Evaluations evals={evals.data} loading={evals.loading} mode={mode} theme={theme} />
+        <Evaluations evals={evals.data} loading={evals.loading} mode={mode} theme={theme}
+          targetLabel={starless ? "clean goal" : "HR"} />
         <CombinerCard comb={comb.data} loading={comb.loading} mode={mode} theme={theme} fitJob={fitJob} onFit={reloadAll}
           evalReady={status.data?.evaluations_ready ?? false}
-          modelKind={combinerKind} onModelKindChange={setCombinerKind} />
-        <DisagreementCard key={mode} mode={mode} members={asArray<Member>(status.data?.members)} />
-        <CombinerCard comb={combined.data} loading={combined.loading} mode={mode} theme={theme} fitJob={combinedFitJob} onFit={reloadAll}
-          evalReady={status.data?.evaluations_ready ?? false} combined />
+          modelKind={combinerKind} />
+        <DisagreementCard key={mode} mode={mode} members={asArray<Member>(status.data?.members)}
+          targetLabel={starless ? "clean goal" : "HR"} />
       </div>
     </Page>
   );
@@ -642,10 +672,10 @@ export function Evaluations(
   const [tab, setTab] = useState<DiagTab>("power-spectrum");
   const [colorBy, setColorBy] = useState<ColorBy>("uniform");
   // Which overlay curves to draw on the power spectrum.
-  const [show, setShow] = useState({ cross: true, mean: true, comb: true, stats: true, combined: true });
+  const [show, setShow] = useState({ cross: true, mean: true });
   const [showModels, setShowModels] = useState<Record<string, boolean>>({});
-  const [stdErrKind, setStdErrKind] = useState("rbf_gate");
-  const [combinerErrorKind, setCombinerErrorKind] = useState("rbf_gate");
+  const [stdErrKind, setStdErrKind] = useState("raw_incremental_minmeanmax_rbf");
+  const [combinerErrorKind, setCombinerErrorKind] = useState("raw_incremental_minmeanmax_rbf");
   const [combinerAxisMode, setCombinerAxisMode] = useState("mean_std");
   const toggle = (k: keyof typeof show) => setShow((s) => ({ ...s, [k]: !s[k] }));
   const modelShown = (kind: string) => showModels[kind] ?? true;
@@ -662,13 +692,15 @@ export function Evaluations(
   const ps = evals?.ps ?? null;
   const members = asArray<NonNullable<Evals["members"]>[number]>(evals?.members);
   const availableModelCurves = Object.entries(ps?.model_combiners ?? {})
-    .filter(([, curve]) => hasData(curve?.r));
+    .filter(([kind, curve]) => activeCombinerKind(kind) && hasData(curve?.r));
   const availableStdErrModels = Object.entries(evals?.std_err?.models ?? {})
-    .filter(([, diagnostic]) => asArray<number[]>(diagnostic?.hist).length > 0);
+    .filter(([kind, diagnostic]) => activeCombinerKind(kind)
+      && asArray<number[]>(diagnostic?.hist).length > 0);
   const availableCombinerErrorAxes = Object.entries(evals?.combiner_feature_error?.axes ?? {});
   const selectedCombinerErrorAxis = evals?.combiner_feature_error?.axes?.[combinerAxisMode]
     ?? availableCombinerErrorAxes[0]?.[1];
-  const availableCombinerErrorModels = Object.keys(selectedCombinerErrorAxis?.models ?? {});
+  const availableCombinerErrorModels = Object.keys(selectedCombinerErrorAxis?.models ?? {})
+    .filter(activeCombinerKind);
 
   const chart = useMemo(() => {
     if (!ps || !hasData(ps.theta)) return null;
@@ -682,7 +714,7 @@ export function Evaluations(
     const knees = [...new Set(members.map((mm) => kneeOf(mm?.asinh_knee)))].sort((a, b) => a - b);
     const losses = [...new Set(members.map((mm) => mm?.loss ?? "l1"))].sort();
     const modelCurves = Object.entries(ps.model_combiners ?? {})
-      .filter(([, curve]) => hasData(curve?.r));
+      .filter(([kind, curve]) => activeCombinerKind(kind) && hasData(curve?.r));
     const memberColor = (i: number) => {
       const mm = members[i];
       if (colorBy === "loss") return LOSS_COLOR[mm?.loss ?? "l1"] ?? C.muted;
@@ -700,15 +732,9 @@ export function Evaluations(
     asArray<(number | null)[]>(ps.r_members).forEach((row, i) => series.push({ x: theta, y: num(row), color: memberColor(i), width: 1, alpha: grouped ? 0.6 : 0.4 }));
     if (hasData(ps.r_lr)) series.push({ x: theta, y: ps.r_lr!, color: C.baseline, width: 2.5, dash: [7, 4] });
     if (show.mean && hasData(ps.r)) series.push({ x: theta, y: num(ps.r), color: C.mean, width: 2.6, dots: true });
-    if (modelCurves.length) {
-      modelCurves.forEach(([kind, curve]) => {
-        if (modelShown(kind)) series.push({ x: theta, y: curve.r!, color: combinerMeta(kind).color, width: 2.2, dots: true });
-      });
-    } else {
-      if (show.comb && hasData(ps.r_comb)) series.push({ x: theta, y: ps.r_comb!, color: C.comb, width: 2.2, dots: true });
-      if (show.stats && hasData(ps.r_stats_rbf_comb)) series.push({ x: theta, y: ps.r_stats_rbf_comb!, color: "#2a9d8f", width: 2.2, dots: true });
-    }
-    if (show.combined && hasData(ps.r_combined)) series.push({ x: theta, y: ps.r_combined!, color: "#9d6cff", width: 2.2, dots: true });
+    modelCurves.forEach(([kind, curve]) => {
+      if (modelShown(kind)) series.push({ x: theta, y: curve.r!, color: combinerMeta(kind).color, width: 2.2, dots: true });
+    });
     const guides: Guide[] = [
       { axis: "y", v: 1, color: C.guide, dash: [2, 3] },
       { axis: "x", v: g.lr_scale ?? 0.1, color: C.guide, width: 1.3, dash: [6, 3] },
@@ -720,13 +746,7 @@ export function Evaluations(
     const legend = [
       ...(hasData(ps.r_lr) ? [{ label: "LR baseline", color: C.baseline, dash: true }] : []),
       ...(show.mean ? [{ label: "displayed ensemble mean", color: C.mean }] : []),
-      ...(modelCurves.length
-        ? modelCurves.filter(([kind]) => modelShown(kind)).map(([kind]) => ({ label: combinerMeta(kind).label, color: combinerMeta(kind).color }))
-        : [
-          ...(show.comb && hasData(ps.r_comb) ? [{ label: "max RBF combiner", color: C.comb }] : []),
-          ...(show.stats && hasData(ps.r_stats_rbf_comb) ? [{ label: "mean + std RBF", color: "#2a9d8f" }] : []),
-        ]),
-      ...(show.combined && hasData(ps.r_combined) ? [{ label: "combined combiner", color: "#9d6cff" }] : []),
+      ...modelCurves.filter(([kind]) => modelShown(kind)).map(([kind]) => ({ label: combinerMeta(kind).label, color: combinerMeta(kind).color })),
       ...(facet.length ? facet : [{ label: "individual models", color: C.muted }]),
       ...(show.cross && hasData(ps.r_cross) ? [{ label: "model–model r̃(k)", color: C.cross, dash: true }] : []),
     ];
@@ -736,14 +756,13 @@ export function Evaluations(
 
   const coherenceChart = useMemo(() => {
     const rows = asArray<CoherenceScore>(evals?.coherence?.scores)
-      .filter((r) => r && (r.overall != null || r.sr != null));
+      .filter((r) => r && r.id !== "combiner" && (r.overall != null || r.sr != null));
     if (!rows.length) return null;
     const shortLabel = (r: CoherenceScore, i: number) => {
       if (r.id === "ensemble_mean") return "mean";
       if (r.id === "lr_baseline") return "LR";
       if (r.id === "combiner") return "comb";
-      if (r.id === "stats_rbf_combiner") return "μσ RBF";
-      if (r.id === "combined_combiner") return "combined";
+      if (r.id === "raw_incremental_minmeanmax_rbf_combiner") return "raw RBF";
       if (r.id === "model_agreement") return "agree";
       return `m${String(i).padStart(2, "0")}`;
     };
@@ -776,7 +795,9 @@ export function Evaluations(
   // log10(e⁻). The |err|=σ diagonal reference rides as a 2-pt series.
   const stdErr = useMemo(() => {
     const d = evals?.std_err;
-    const chosenKind = d?.models?.[stdErrKind] ? stdErrKind : (d?.primary ?? "ensemble_mean");
+    const fallbackKind = Object.keys(d?.models ?? {}).find(activeCombinerKind)
+      ?? "ensemble_mean";
+    const chosenKind = d?.models?.[stdErrKind] ? stdErrKind : fallbackKind;
     const selected = d?.models?.[chosenKind] ?? d;
     const hist = asArray<number[]>(selected?.hist);
     if (!d || !selected || !hist.length) return null;
@@ -809,7 +830,7 @@ export function Evaluations(
       ? combinerAxisMode : (Object.keys(axes)[0] ?? "mean_std");
     const axis = axes[chosenAxisMode];
     if (!axis || !axis.edges?.[0]?.length) return null;
-    const modelKinds = Object.keys(axis.models ?? {});
+    const modelKinds = Object.keys(axis.models ?? {}).filter(activeCombinerKind);
     const chosenKind = axis.models?.[combinerErrorKind]
       ? combinerErrorKind : (modelKinds[0] ?? "ensemble_mean");
     const model = axis.models?.[chosenKind];
@@ -877,10 +898,8 @@ export function Evaluations(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [evals, theme]);
 
-  const cb = evals?.combiner;
-  const statsRbfCb = evals?.stats_rbf_combiner;
   const modelMetrics = Object.entries(evals?.model_combiners ?? {})
-    .filter(([, metric]) => Boolean(metric?.available));
+    .filter(([kind, metric]) => activeCombinerKind(kind) && Boolean(metric?.available));
   return (
     <Card>
       <CardHead title="Evaluations"
@@ -900,14 +919,7 @@ export function Evaluations(
                     {availableModelCurves.length ? availableModelCurves.map(([kind]) => (
                       <Chip key={kind} on={modelShown(kind)} dot={combinerMeta(kind).color} onClick={() => toggleModel(kind)}
                         title={`${combinerMeta(kind).label} combiner r(k)`}>{combinerMeta(kind).label}</Chip>
-                    )) : <>
-                      {hasData(ps?.r_comb) && <Chip on={show.comb} dot={C.comb} onClick={() => toggle("comb")}
-                        title="max-conditioned RBF combiner r(k)">max RBF</Chip>}
-                      {hasData(ps?.r_stats_rbf_comb) && <Chip on={show.stats} dot="#2a9d8f" onClick={() => toggle("stats")}
-                        title="mean-and-standard-deviation RBF combiner r(k)">mean+std RBF</Chip>}
-                    </>}
-                    {hasData(ps?.r_combined) && <Chip on={show.combined} dot="#9d6cff" onClick={() => toggle("combined")}
-                      title="cross-regime combined-combiner r(k)">combined combiner</Chip>}
+                    )) : null}
                   </div>
                   <Select<ColorBy> value={colorBy} onChange={setColorBy}
                     options={[{ value: "uniform", label: "uniform" }, { value: "loss", label: "by loss" }, { value: "depth", label: "by depth" }, { value: "knee", label: "by knee" }]} />
@@ -919,14 +931,8 @@ export function Evaluations(
                 <div className="row" style={{ gap: "var(--s5)", marginTop: "var(--s4)" }}>
                   <Stat k="fields" v={evals?.n_fields ?? "—"} />
                   <Stat k="members" v={evals?.n_members ?? "—"} />
-                  {cb?.available && <Stat k="max RBF PSNR" v={cb.psnr != null ? `${cb.psnr.toFixed(2)} dB` : "—"} />}
-                  {statsRbfCb?.available && <Stat k="mean+std RBF PSNR" v={statsRbfCb.psnr != null ? `${statsRbfCb.psnr.toFixed(2)} dB` : "—"} />}
-                  {modelMetrics.filter(([kind]) => kind !== "rbf_gate" && kind !== "stats_rbf_gate").map(([kind, metric]) =>
+                  {modelMetrics.map(([kind, metric]) =>
                     <Stat key={kind} k={`${combinerMeta(kind).label} PSNR`} v={metric?.psnr != null ? `${metric.psnr.toFixed(2)} dB` : "—"} />)}
-                  {cb?.available && cb.psnr != null && cb.ensemble_mean_psnr != null &&
-                    <Badge tone={cb.psnr >= cb.ensemble_mean_psnr ? "good" : "warn"}>
-                      {cb.psnr >= cb.ensemble_mean_psnr ? "+" : ""}{(cb.psnr - cb.ensemble_mean_psnr).toFixed(2)} vs mean
-                    </Badge>}
                 </div>
               </>
             )
@@ -1040,13 +1046,13 @@ export function Evaluations(
 
 /* ── combiner ────────────────────────────────────────────────────────────── */
 type GateColorBy = "loss" | "psnr" | "depth" | "knee" | "regime";
-type CombinerModelKind = "rbf_gate" | "stats_rbf_gate" | "minmax_rbf_gate" | "stacked_rbf_gate";
+type CombinerModelKind = "raw_incremental_minmeanmax_rbf";
 type SurfaceView = { yaw: number; pitch: number; zoom: number };
 
 function WeightSurface3D(
-  { grid, member, memberLabel, theme, stdAxis, view, onViewChange, onMemberStep }:
+  { grid, member, memberLabel, theme, stdAxis, view, resetView, onViewChange, onMemberStep }:
   { grid: FeatureGrid; member: number; memberLabel: string; theme: string; stdAxis: "raw" | "log";
-    view: SurfaceView; onViewChange: (view: SurfaceView) => void;
+    view: SurfaceView; resetView?: SurfaceView; onViewChange: (view: SurfaceView) => void;
     onMemberStep?: (step: -1 | 1) => void },
 ) {
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -1152,7 +1158,7 @@ function WeightSurface3D(
     };
     axis([-1, -1, 0], [1, -1, 0], grid.x_label ?? "mean");
     axis([-1, -1, 0], [-1, 1, 0], useLogAxis ? `log ${grid.y_label ?? "std"}` : (grid.y_label ?? "std"));
-    axis([-1, -1, 0], [-1, -1, 1], "relative weight [0–1]");
+    axis([-1, -1, 0], [-1, -1, 1], grid.z_label ?? "relative weight [0–1]");
     const fmtTick = (v: number) => Math.abs(v) >= 10 ? v.toFixed(0)
       : Math.abs(v) >= 1 ? v.toFixed(1) : v.toPrecision(2);
     const tick = (p: ReturnType<typeof project>, q: ReturnType<typeof project>, label: string) => {
@@ -1201,53 +1207,167 @@ function WeightSurface3D(
           });
         }} />
       <div className="row muted" style={{ padding: "6px 10px", justifyContent: "space-between", fontSize: 12, gap: "var(--s3)" }}>
-        <span>{memberLabel} · max weight {(maxWeight * 100).toFixed(1)}%</span>
-      <Button variant="ghost" onClick={() => onViewChange({ yaw: -0.72, pitch: 0.58, zoom: 1 })}>reset view</Button>
+        <span>{memberLabel} · {grid.z_label?.includes("suppression") ? "max suppression" : "max weight"} {(maxWeight * 100).toFixed(1)}%</span>
+      <Button variant="ghost" onClick={() => onViewChange(resetView ?? { yaw: -0.72, pitch: 0.58, zoom: 1 })}>reset view</Button>
       </div>
     </div>
   );
 }
 
-export function CombinerCard(
-  { comb, loading, mode, theme, fitJob, onFit, evalReady, combined = false,
-    fitUrl = "/ensemble/combiner/fit", title, modelKind: controlledKind,
-    onModelKindChange }:
-  { comb: Combiner | null; loading: boolean; mode: string; theme: string; fitJob: ReturnType<typeof useJob>; onFit: () => void; evalReady: boolean; combined?: boolean;
-    fitUrl?: string; title?: string; modelKind?: CombinerModelKind;
-    onModelKindChange?: (kind: CombinerModelKind) => void },
+function PredictiveAxesCard(
+  { axes, loading, mode, theme, fitJob, onFit }:
+  { axes: PredictiveAxes | null; loading: boolean; mode: string; theme: string;
+    fitJob: ReturnType<typeof useJob>; onFit: () => void },
 ) {
   const [nImg, setNImg] = useState("100");
-  const [nKernels, setNKernels] = useState("12");
-  const [localModelKind, setLocalModelKind] = useState<CombinerModelKind>("rbf_gate");
+  const [route, setRoute] = useState("0");
+  const defaultView: SurfaceView = { yaw: -0.72, pitch: 0.58, zoom: 0.62 };
+  const [view, setView] = useState<SurfaceView>(defaultView);
+  const labels = asArray<string>(axes?.route_labels);
+  const densitySelected = route === "density";
+  const selected = densitySelected ? 0
+    : Math.max(0, Math.min(labels.length - 1, Number(route) || 0));
+  useEffect(() => {
+    if (!densitySelected && selected >= labels.length) setRoute("0");
+  }, [densitySelected, labels.length, selected]);
+  const grid = useMemo<FeatureGrid | null>(() => {
+    const axis1 = asArray<number | null>(axes?.axis1);
+    const axis2 = asArray<number | null>(axes?.axis2);
+    let weights = asArray<(number | null)[][]>(axes?.oracle_weights);
+    if (axis1.length < 2 || axis2.length < 2 || !weights.length) return null;
+    if (densitySelected) {
+      const density = asArray<(number | null)[]>(axes?.density);
+      const maxDensity = Math.max(1, ...density.flat().map((value) => Number(value) || 0));
+      weights = density.map((row) => row.map((value) => [
+        Math.log1p(Number(value) || 0) / Math.log1p(maxDensity),
+      ]));
+    }
+    return {
+      mean_asinh: axis1,
+      std_asinh: axis2,
+      std_log: axis2,
+      x_label: "predictive axis 1",
+      y_label: "predictive axis 2",
+      y_is_log: false,
+      z_label: densitySelected ? "log validation density [0–1]"
+        : "soft oracle responsibility [0–1]",
+      weights,
+    };
+  }, [axes, densitySelected]);
+  const two = axes?.metrics?.two_axis;
+  const full = axes?.metrics?.full_input_linear;
+  const loadings = asArray<(number | null)[]>(axes?.axis_loadings);
+  const names = asArray<string>(axes?.feature_names);
+  const loadingSummary = (axis: number) => num(loadings[axis]).map((value, i) => ({
+    name: names[i] ?? `feature ${i + 1}`, value,
+  })).filter((item) => isFinite(item.value))
+    .sort((a, b) => Math.abs(b.value) - Math.abs(a.value)).slice(0, 5)
+    .map((item) => `${item.value >= 0 ? "+" : "−"}${item.name}`).join(" · ");
+  const pct = (value?: number | null) => value == null || !isFinite(value)
+    ? "—" : `${(100 * value).toFixed(1)}%`;
+  const regret = (value?: number | null) => value == null || !isFinite(value)
+    ? "—" : value.toFixed(5);
+
+  return (
+    <Card>
+      <CardHead title={`Predictive routing axes · ${mode}`}
+        sub="Two supervised PLS axes fitted from ordered member-band pixels to soft oracle expert responsibilities. This is a diagnostic, not an image combiner."
+        right={axes?.available && <Badge tone={axes.stale ? "warn" : "good"}>{axes.stale ? "stale" : "fitted"}</Badge>} />
+      <CardBody>
+        <div className="row" style={{ alignItems: "flex-end", gap: "var(--s3)" }}>
+          <NumberField label="validate fields" value={nImg} onChange={setNImg} min={1} max={2000} />
+          <Button variant="primary" disabled={fitJob.busy}
+            onClick={() => fitJob.run("/ensemble/predictive-axes/fit", {
+              num_images: nImg, mode,
+            }, { onDone: onFit })}>
+            Fit two predictive axes
+          </Button>
+        </div>
+        <JobProgressView job={fitJob.job} error={fitJob.error} />
+        {loading ? <Empty><Spinner /> loading…</Empty>
+          : !axes?.available ? <Empty>{axes?.reason ?? "predictive axes have not been fitted"}</Empty>
+          : <div style={{ marginTop: "var(--s4)" }}>
+            <DefList items={[
+              ["fit", `${axes.n_fields ?? "—"} fields · ${(axes.n_train ?? 0).toLocaleString()} train · ${(axes.n_holdout ?? 0).toLocaleString()} held out`],
+              ["two-axis soft-route R²", two?.soft_route_r2 == null ? "—" : two.soft_route_r2.toFixed(3)],
+              ["full-input linear R²", full?.soft_route_r2 == null ? "—" : full.soft_route_r2.toFixed(3)],
+              ["R² retained in 2D", pct(axes.metrics?.r2_retention)],
+              ["two-axis top-route accuracy", pct(two?.top_route_accuracy)],
+              ["full-input top-route accuracy", pct(full?.top_route_accuracy)],
+              ["two-axis selected regret", regret(two?.mean_selected_regret)],
+              ["ensemble-mean regret", regret(axes.metrics?.ensemble_mean_regret)],
+            ]} />
+            <div className="muted" style={{ fontSize: 12, marginTop: 8 }}>
+              Regret is equal-band asinh L1 above the best available expert on held-out validation pixels.
+              The split is by sampled pixel, so this is a separability diagnostic rather than a field-level generalization claim.
+            </div>
+            {grid && labels.length > 0 && <div style={{ marginTop: "var(--s4)" }}>
+              <div className="row" style={{ justifyContent: "space-between", marginBottom: 8, gap: "var(--s3)" }}>
+                <div className="eyebrow">soft oracle responsibility · supervised axis 1 × axis 2</div>
+                <Select<string> value={route} onChange={setRoute}
+                  options={[
+                    ...labels.map((label, index) => ({ value: String(index), label })),
+                    { value: "density", label: "validation density" },
+                  ]} />
+              </div>
+              <WeightSurface3D grid={grid} member={selected}
+                memberLabel={densitySelected ? "validation density"
+                  : labels[selected] ?? `route ${selected + 1}`} theme={theme}
+                stdAxis="raw" view={view} resetView={defaultView} onViewChange={setView}
+                onMemberStep={densitySelected ? undefined : (step) => setRoute(String(
+                  Math.max(0, Math.min(labels.length - 1, selected + step))))} />
+              <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
+                {axes.conditioning_note} Dominant inputs: axis 1 {loadingSummary(0) || "—"}; axis 2 {loadingSummary(1) || "—"}.
+              </div>
+            </div>}
+          </div>}
+      </CardBody>
+    </Card>
+  );
+}
+
+export function CombinerCard(
+  { comb, loading, mode, theme, fitJob, onFit, evalReady,
+    fitUrl = "/ensemble/combiner/fit", title, modelKind: controlledKind }:
+  { comb: Combiner | null; loading: boolean; mode: string; theme: string; fitJob: ReturnType<typeof useJob>; onFit: () => void; evalReady: boolean;
+    fitUrl?: string; title?: string; modelKind?: CombinerModelKind },
+) {
+  const [nImg, setNImg] = useState("100");
+  const [nKernels, setNKernels] = useState("128");
+  const [localModelKind] = useState<CombinerModelKind>("raw_incremental_minmeanmax_rbf");
   const [band, setBand] = useState<string>("");
   const [colorBy, setColorBy] = useState<GateColorBy>("loss");
   const [surfaceMember, setSurfaceMember] = useState("0");
   const [surfaceStdAxis, setSurfaceStdAxis] = useState<"raw" | "log">("log");
   const [surfaceView, setSurfaceView] = useState<SurfaceView>({ yaw: -0.72, pitch: 0.58, zoom: 1 });
+  const pcaDefaultView: SurfaceView = { yaw: -0.72, pitch: 0.58, zoom: 0.5 };
+  const [pcaSurfaceView, setPcaSurfaceView] = useState<SurfaceView>(pcaDefaultView);
   const [focusedSurfaceBand, setFocusedSurfaceBand] = useState<string | null>(null);
 
   const modelKind = controlledKind ?? localModelKind;
-  const setModelKind = onModelKindChange ?? setLocalModelKind;
-  const allowModelChoice = !combined;
-
-  // Fit controls are defaults for the next fit, not a replay of the artifact.
-  useEffect(() => {
-    setNKernels(modelKind === "rbf_gate" ? "12" : "32");
-  }, [combined, modelKind]);
 
   const bands = asArray<string>(comb?.band_names);
   const activeBand = band || bands[0] || "";
-  const fittingStatsRBF = modelKind === "stats_rbf_gate";
-  const fittedStatsRBF = comb?.kind === "stats_rbf_gate";
-  const fittedMinmaxRBF = comb?.kind === "minmax_rbf_gate";
-  const fittedStackedRBF = comb?.kind === "stacked_rbf_gate";
-  const featureRBF = fittedStatsRBF || fittedMinmaxRBF || fittedStackedRBF;
-  const fittedModelLabel = fittedStatsRBF ? "mean + std RBF"
-    : fittedMinmaxRBF ? "min + max RBF"
-      : fittedStackedRBF ? "stacked mean+std/min+max RBF" : "max-conditioned RBF";
-  const surfaceLabels = asArray<string>(comb?.member_labels);
+  const fittingRawResidual = modelKind === "raw_incremental_minmeanmax_rbf";
+  const fittedRawResidual = comb?.kind === "raw_incremental_minmeanmax_rbf";
+  const centerHistory = asArray<CenterStage>(comb?.fit_meta?.center_history);
+  const featureRBF = fittedRawResidual;
+  const fittedModelLabel = "incremental raw min/mean/max residual RBF";
+  const surfaceLabels = asArray<string>(comb?.pca_weight_surface?.surface_labels);
   const selectedSurfaceMember = Math.max(0, Math.min(surfaceLabels.length - 1, Number(surfaceMember) || 0));
   const surfaceBands = bands.filter((b) => comb?.feature_grid?.[b]);
+  const pcaDiagnostic = comb?.pca_weight_surface?.available
+    ? comb.pca_weight_surface : null;
+  const pcaSurface = pcaDiagnostic;
+  const pcaVariance = num(pcaSurface?.explained_variance_ratio);
+  const pcaLoadingSummary = (component: number) => {
+    const names = asArray<string>(pcaSurface?.feature_names);
+    const values = num(asArray<(number | null)[]>(pcaSurface?.loadings)[component]);
+    return values.map((value, i) => ({ name: names[i] ?? `feature ${i + 1}`, value }))
+      .filter((item) => isFinite(item.value))
+      .sort((a, b) => Math.abs(b.value) - Math.abs(a.value)).slice(0, 3)
+      .map((item) => `${item.value >= 0 ? "+" : "−"}${item.name}`).join(" · ");
+  };
 
   useEffect(() => {
     if (selectedSurfaceMember >= surfaceLabels.length) setSurfaceMember("0");
@@ -1264,18 +1384,29 @@ export function CombinerCard(
       .map((label, i) => {
         const peaks = Object.fromEntries(bands.map((b) => [b, comb.member_weight_peaks?.[b]?.[i] ?? null]));
         const integrals = Object.fromEntries(bands.map((b) => [b, comb.member_weight_integrals?.[b]?.[i] ?? null]));
+        const sharedPeak = comb.member_weight_peaks?.shared?.[i] ?? null;
+        const sharedIntegral = comb.member_weight_integrals?.shared?.[i] ?? null;
         return { i, label, meta: memberMeta[i],
-          peaks, integrals,
-          total: [...Object.values(peaks), ...Object.values(integrals)]
-            .reduce((sum, value) => sum + (value == null || !Number.isFinite(value) ? 0 : value), 0) };
+          peaks, integrals, sharedPeak, sharedIntegral,
+          total: sharedMemberDiagnostic ? (sharedIntegral ?? 0) : [...Object.values(peaks), ...Object.values(integrals)]
+            .reduce<number>((sum, value) => sum + (value == null || !Number.isFinite(value) ? 0 : value), 0) };
       });
     return rows.sort((a, b2) => importanceSort === "total"
       ? (importanceSortDescending ? b2.total - a.total : a.total - b2.total) || a.i - b2.i
       : a.i - b2.i);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bands, comb, importanceSort, importanceSortDescending, theme]);
+  }, [bands, comb, sharedMemberDiagnostic, importanceSort, importanceSortDescending, theme]);
 
-  const weightColumns = useMemo<Column<(typeof importance)[number]>[]>(() => [
+  const weightColumns = useMemo<Column<(typeof importance)[number]>[]>(() => sharedMemberDiagnostic ? [
+    { header: "member", cell: (row) => <code>{row.label}</code> },
+    { header: "max importance", align: "right",
+      cell: (row) => row.sharedPeak == null ? "—" : `${(100 * row.sharedPeak).toFixed(2)}%` },
+    { header: <button type="button" className="ui-table__sort-button"
+        onClick={() => { setImportanceSort("total"); setImportanceSortDescending((v) => importanceSort === "total" ? !v : true); }}>
+        integrated importance{importanceSort === "total" ? (importanceSortDescending ? " ↓" : " ↑") : ""}
+      </button>, align: "right",
+      cell: (row) => row.sharedIntegral == null ? "—" : `${(100 * row.sharedIntegral).toFixed(2)}%` },
+  ] : [
     { header: fittedStackedRBF ? "expert" : "member", cell: (row) => <code>{row.label}</code> },
     { header: <button type="button" className="ui-table__sort-button"
         onClick={() => { setImportanceSort("total"); setImportanceSortDescending((v) => importanceSort === "total" ? !v : true); }}>
@@ -1288,7 +1419,7 @@ export function CombinerCard(
       { header: `${b} integral`, align: "right" as const,
         cell: (row: (typeof importance)[number]) => row.integrals[b] == null ? "—" : `${(100 * row.integrals[b]!).toFixed(2)}%` },
     ])),
-  ], [bands, fittedStackedRBF, importance, importanceSort, importanceSortDescending]);
+  ], [bands, fittedStackedRBF, importance, importanceSort, importanceSortDescending, sharedMemberDiagnostic]);
 
   const surfaceMembers = importance;
   const surfaceMemberPosition = surfaceMembers.findIndex((r) => r.i === selectedSurfaceMember);
@@ -1400,30 +1531,22 @@ export function CombinerCard(
 
   return (
     <Card>
-      <CardHead title={title ?? `${combined ? "Combined combiner" : "Combiner"} · ${mode}`}
-        sub={combined ? "experimental all-member brightness gate — fit locally on validate, scored on test" : "independent RBF fusers plus a convex mean+std/min+max stack — fit locally on validate, scored on test"}
-        right={comb?.available && <Badge tone={comb.stale ? "warn" : "good"}>{comb.stale ? "stale" : "fitted"}</Badge>} />
+      <CardHead title={title ?? `Combiner · ${mode}`}
+        sub="incremental raw min/mean/max RBF — fit locally on validate, scored on test; cross-stage kernel distance is unconstrained"
+        right={comb?.available && <Badge tone={comb.stale || comb.fit_meta?.preview ? "warn" : "good"}>
+          {comb.stale ? "stale" : comb.fit_meta?.preview ? `preview · ${comb.fit_meta.num_images ?? "?"} fields` : "fitted"}
+        </Badge>} />
       <CardBody>
         <div className="row" style={{ alignItems: "flex-end", gap: "var(--s3)" }}>
           <NumberField label="validate fields" value={nImg} onChange={setNImg} min={1} max={2000} />
-          {allowModelChoice && <div>
-            <div className="field__label">combiner model</div>
-            <Segmented<CombinerModelKind> value={modelKind}
-              onChange={(next) => {
-                setModelKind(next);
-              }}
-              options={[{ value: "rbf_gate", label: "max RBF" }, { value: "stats_rbf_gate", label: "mean+std RBF" }, { value: "minmax_rbf_gate", label: "min+max RBF" }, { value: "stacked_rbf_gate", label: "stacked RBF" }]} />
-          </div>}
-          <NumberField label="kernels (K)" value={nKernels} onChange={setNKernels} min={2} max={64} />
+          <NumberField label="kernels (K)" value={nKernels} onChange={setNKernels} min={2} max={128} />
           <Button variant="primary" disabled={fitJob.busy || !evalReady}
             title={evalReady ? undefined : `evaluate ${mode} on the test set first — its evaluation must match the current members`}
-            onClick={() => fitJob.run(combined ? "/ensemble/combined-combiner/fit" : fitUrl, {
+            onClick={() => fitJob.run(fitUrl, {
               num_images: nImg, n_kernels: nKernels,
-              ...(combined ? { min_usage: "0" } : {}),
               model_kind: modelKind, mode,
             }, { onDone: onFit })}>
-            Fit {modelKind === "stacked_rbf_gate" ? "both parents + stacked RBF"
-              : fittingStatsRBF ? "mean+std RBF" : (combined ? "combined combiner" : "combiner")}
+            Fit incremental raw residual RBF
           </Button>
         </div>
         {!evalReady && (
@@ -1434,34 +1557,57 @@ export function CombinerCard(
         <JobProgressView job={fitJob.job} error={fitJob.error} />
 
         {loading ? <Empty><Spinner /> loading…</Empty>
-          : !comb?.available ? <Empty>{comb?.reason ?? `no ${combined ? "combined " : ""}combiner fitted for ${mode} yet — set knobs above and fit.`}</Empty> : (
+          : !comb?.available ? <Empty>{comb?.reason ?? `no combiner fitted for ${mode} yet — set knobs above and fit.`}</Empty> : (
           <div style={{ marginTop: "var(--s4)" }}>
             <DefList items={[
-              [fittedStackedRBF ? "experts" : "members", String(asArray<string>(comb.member_labels).length)],
-              ...(fittedStackedRBF ? [["source members", String(asArray<string>(comb.source_member_labels).length)]] : []),
-              ["model", fittedModelLabel],
-              ["kernels", String(comb.n_kernels ?? "—")],
-              ["validate L1", comb.val_l1 != null ? comb.val_l1.toFixed(4) : "—"],
+              [fittedRawResidual ? "outputs" : fittedStackedRBF ? "experts" : fittedSharedZeroRBF || fittedIdentitySelector ? "routes" : "members", String(asArray<string>(comb.member_labels).length)] as [string, string],
+              ...(fittedRawResidual || fittedStackedRBF || fittedSharedZeroRBF || fittedIdentitySelector ? [["source members", String(asArray<string>(comb.source_member_labels).length)] as [string, string]] : []),
+              ["model", fittedModelLabel] as [string, string],
+              [fittedIdentitySelector ? "hidden width" : "kernels", String(comb.n_kernels ?? "—")] as [string, string],
+              ...(comb.fit_meta?.preview ? [["fit scope", `preview · ${comb.fit_meta.num_images ?? "?"} validation fields`] as [string, string]] : []),
+              ["validate L1", comb.val_l1 != null ? comb.val_l1.toFixed(4) : "—"] as [string, string],
             ]} />
 
-            <div style={{ marginTop: "var(--s4)" }}>
+            {fittedSharedZeroRBF && centerHistory.length > 0 && (
+              <div className="muted" style={{ fontSize: 12, marginTop: 8 }}>
+                Valid-manifold K-means++ center growth: {centerHistory.map((stage) => stage.n_centers ?? "?").join(" → ")} centers.
+                {" "}Maximum train residual by stage: {centerHistory.map((stage) => stage.train_max_residual?.toFixed(3) ?? "—").join(" → ")}.
+                {" "}Mean residual on clean nonzero pixels: {centerHistory.map((stage) => stage.target_nonzero_mean_residual?.toFixed(4) ?? "—").join(" → ")}.
+                {" "}Stopped at {comb.fit_meta?.center_abort_reason === "all_train_residuals_below_threshold"
+                  ? `the ${comb.fit_meta.residual_abort_threshold ?? 0.001} residual threshold`
+                  : "the configured kernel limit"}.
+              </div>
+            )}
+
+            {fittedRawResidual && centerHistory.length > 0 && (
+              <div className="muted" style={{ fontSize: 12, marginTop: 8 }}>
+                Raw residual center growth: {centerHistory.map((stage) => stage.n_centers ?? "?").join(" → ")} requested centers.
+                {" "}Validation raw L1: {centerHistory.map((stage) => stage.val_l1?.toFixed(3) ?? "—").join(" → ")} e⁻.
+                {" "}Joint L-BFGS iterations: {centerHistory.map((stage) => stage.optimizer_iterations ?? "—").join(" → ")}; convergence: {centerHistory.map((stage) => stage.optimizer_converged ? "yes" : "no").join(" → ")}.
+                {" "}The saved model keeps the best validation prefix ({comb.n_kernels ?? 0} kernels); each increment is internally separated, while later increments may refine earlier regions.
+              </div>
+            )}
+
+            {!fittedRawResidual && <div style={{ marginTop: "var(--s4)" }}>
               <div className="row" style={{ justifyContent: "space-between", marginBottom: 8, gap: "var(--s3)" }}>
                 <div className="eyebrow">{fittedStackedRBF ? "expert weight diagnostics" : "member weight diagnostics"}</div>
                 {!fittedStackedRBF && <Select<GateColorBy> value={colorBy} onChange={setColorBy}
-                  options={[{ value: "loss", label: "by loss" }, { value: "psnr", label: "by PSNR" }, { value: "depth", label: "by depth" }, { value: "knee", label: "by knee" }, ...(combined ? [{ value: "regime" as GateColorBy, label: "by star regime" }] : [])]} />
+                  options={[{ value: "loss", label: "by loss" }, { value: "psnr", label: "by PSNR" }, { value: "depth", label: "by depth" }, { value: "knee", label: "by knee" }]} />
                 }
               </div>
               <Table columns={weightColumns} rows={importance} rowKey={(row) => row.label}
                 empty="fit the combiner to compute member weights" />
               <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
-                Peak is the maximum fitted gate share on represented validation pixels. Integral is the mean gate share over the brightness-stratified validation rows. Values are computed independently for every band; no {fittedStackedRBF ? "expert" : "member"} is removed.
+                {fittedSharedRBF || fittedIdentitySelector
+                  ? "One member-weight vector is used for VIS, Y, J, and H. Maximum importance is the largest validation-pixel share; integrated importance is its mean share over the stratified validation sample."
+                  : `Peak is the maximum fitted gate share on represented validation pixels. Integral is the mean gate share over the brightness-stratified validation rows. Values are computed independently for every band; no ${fittedStackedRBF ? "expert" : "member"} is removed.`}
               </div>
-            </div>
+            </div>}
 
             {bands.length > 0 && (
               <div style={{ marginTop: "var(--s4)" }}>
                 <div className="row" style={{ justifyContent: "space-between", marginBottom: 8, gap: "var(--s3)" }}>
-                  <div className="eyebrow">{featureRBF ? `${fittedStackedRBF ? "expert" : "member"} gate weight surface` : "gate weight vs brightness"}</div>
+                  <div className="eyebrow">{fittedSharedRBF || fittedIdentitySelector ? "diagnostic output band" : featureRBF ? `${fittedStackedRBF ? "expert" : "member"} gate weight surface` : "gate weight vs brightness"}</div>
                   <Segmented<string> value={activeBand} onChange={setBand} options={bands.map((b) => ({ value: b, label: b }))} />
                 </div>
                 {!featureRBF && (!gate ? <Empty>no gate data for {activeBand}</Empty> : (
@@ -1472,10 +1618,10 @@ export function CombinerCard(
                     <Legend items={gate.legend} />
                   </>
                 ))}
-                {featureRBF && surfaceBands.length > 0 && surfaceMembers.length > 0 && (
+                {featureRBF && !fittedSharedRBF && !fittedIdentitySelector && surfaceBands.length > 0 && surfaceMembers.length > 0 && (
                   <div style={{ marginTop: "var(--s4)" }}>
                     <div className="row" style={{ justifyContent: "space-between", marginBottom: 8, gap: "var(--s3)" }}>
-                      <div className="eyebrow">{fittedStackedRBF ? "expert" : "member"} gate-weight surfaces · click a band to focus</div>
+                      <div className="eyebrow">{fittedStackedRBF ? "expert" : "member"} gate-weight surfaces · click a slice to focus</div>
                       <div className="row" style={{ gap: 4 }}>
                         <Button size="sm" variant="ghost" title="previous member"
                           onClick={() => moveSurfaceMember(-1)}
@@ -1515,7 +1661,34 @@ export function CombinerCard(
                     </div>
                   </div>
                 )}
-                <div style={{ marginTop: "var(--s4)" }}>
+                {(fittedRawResidual || fittedSharedRBF || fittedIdentitySelector) && pcaSurface && surfaceMembers.length > 0 && (
+                  <div style={{ marginTop: "var(--s4)" }}>
+                    <div className="row" style={{ justifyContent: "space-between", marginBottom: 8, gap: "var(--s3)" }}>
+                      <div className="eyebrow">{fittedRawResidual ? "mean suppression on validation PCA" : "selector weight on validation PCA"} · PC1 × PC2</div>
+                      <div className="row" style={{ gap: 4 }}>
+                        <Button size="sm" variant="ghost" title="previous member"
+                          onClick={() => moveSurfaceMember(-1)}
+                          disabled={surfaceMemberPosition <= 0}>←</Button>
+                        <Select<string> value={surfaceMember} onChange={setSurfaceMember}
+                          options={surfaceMembers.map((r) => ({ value: String(r.i), label: r.label }))} />
+                        <Button size="sm" variant="ghost" title="next member"
+                          onClick={() => moveSurfaceMember(1)}
+                          disabled={surfaceMemberPosition < 0 || surfaceMemberPosition >= surfaceMembers.length - 1}>→</Button>
+                      </div>
+                    </div>
+                    <WeightSurface3D grid={pcaSurface} member={selectedSurfaceMember}
+                      memberLabel={surfaceLabels[selectedSurfaceMember] ?? `member ${selectedSurfaceMember}`} theme={theme}
+                      stdAxis="raw" view={pcaSurfaceView} resetView={pcaDefaultView}
+                      onViewChange={setPcaSurfaceView}
+                      onMemberStep={moveSurfaceMember} />
+                    <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
+                      PCA uses {pcaSurface.n_pixels?.toLocaleString() ?? "—"} sampled validation pixels in the model’s {fittedRawResidual ? "scale-normalized 12-D raw min/mean/max" : fittedIdentitySelector ? `${asArray<string>(pcaSurface.feature_names).length}-D ordered member-band` : fittedSharedExtremaRBF ? "scale-normalized 16-D" : "scale-normalized 8-D"} feature space.
+                      {" "}PC1 explains {isFinite(pcaVariance[0]) ? `${(100 * pcaVariance[0]).toFixed(1)}%` : "—"}; PC2 explains {isFinite(pcaVariance[1]) ? `${(100 * pcaVariance[1]).toFixed(1)}%` : "—"}.
+                      {" "}All remaining PCs stay at the validation mean. Dominant loadings: PC1 {pcaLoadingSummary(0) || "—"}; PC2 {pcaLoadingSummary(1) || "—"}.
+                    </div>
+                  </div>
+                )}
+                {!fittedRawResidual && <div style={{ marginTop: "var(--s4)" }}>
                   <div className="eyebrow">weights conditioned on underlying HR brightness</div>
                   {!hrGate ? <Empty>{comb.hr_weights?.reason ?? "no HR-conditioned validation diagnostic available"}</Empty> : (
                     <>
@@ -1530,7 +1703,7 @@ export function CombinerCard(
                       </div>
                     </>
                   )}
-                </div>
+                </div>}
               </div>
             )}
           </div>
@@ -1647,7 +1820,7 @@ export function DisagreementCard(
   return (
     <Card>
       <CardHead title="Disagreement viewer"
-        sub={`LR · mean · max RBF · mean+std RBF · ${targetLabel} · movie — pick members to see where those reconstructions disagree`} />
+        sub={`LR · mean · mean+std RBF · min+max RBF · stacked RBF · ${targetLabel} · movie — pick members to see where those reconstructions disagree`} />
       <CardBody>
         <CutoutViewer collection={collection} params={collection === "ensemble" ? { mode } : {}}
           onReady={(api) => { apiRef.current = api; }} />
