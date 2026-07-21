@@ -46,6 +46,25 @@ def test_accumulator_rejects_bad_shapes():
     assert acc.n_fields == 0
 
 
+def test_log_axes_expand_to_late_high_sigma_and_error():
+    """High stellar values arriving late are not clipped into the old 1e6 bin."""
+    acc = EnsembleDiagnosticsAccumulator()
+    hr, mean, members = _calibrated_ensemble(n=16, sigma=5.0)
+    acc.add(hr, mean, members, field_index=0)
+
+    hr_high = np.zeros((16, 16))
+    members_high = np.stack([
+        np.zeros_like(hr_high), np.full_like(hr_high, 2e7),
+    ])
+    acc.add(hr_high, members_high.mean(axis=0), members_high, field_index=1)
+
+    assert acc.log_edges[-1] > np.log10(1e7)
+    assert acc.h_std_err.sum() == 2 * hr.size
+    assert acc.h_bright_std.sum() == 2 * hr.size
+    payload = acc.to_payload()
+    assert payload["std_err"]["edges"][-1] == acc.log_edges[-1]
+
+
 def test_zscores_calibrated_ensemble_near_standard_normal():
     """members = truth + N(0, σ) ⇒ error of the mean = N(0, σ/√M); dividing by
     the member std (≈σ) gives z ~ N(0, 1/√M) — but the *calibration* question
@@ -122,6 +141,7 @@ def test_to_payload_is_json_ready(tmp_path):
     s = json.dumps(p)                      # no NaN anywhere → serializes
     assert "NaN" not in s
     assert p["n_fields"] == 2 and p["n_members"] == 8
+    assert p["std_err"]["adaptive_range"] is True
     assert len(p["std_err"]["hist"]) == len(p["std_err"]["edges"]) - 1
     assert len(p["bright_std"]["hist"]) == len(p["bright_std"]["bright_edges"]) - 1
     assert len(p["calibration"]["pdf"]) == len(p["calibration"]["z_edges"]) - 1

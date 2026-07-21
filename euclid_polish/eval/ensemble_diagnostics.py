@@ -28,9 +28,9 @@ import numpy as np
 
 from euclid_polish.config import Config
 
-#: log10(e⁻) histogram edges for std / |error| axes — wide enough for both the
-#: ~0.05 e⁻ background disagreement through the ~1e6 e⁻ spread reached by
-#: bright stellar cores.  Values outside remain clipped into the edge bins.
+#: Initial log10(e⁻) histogram range for std / |error| axes.  The upper edge is
+#: expanded from observed finite σ and error values as fields are streamed;
+#: this lower bound and initial range keep ordinary diagnostics unchanged.
 LOG_E_RANGE = (-4.0, 6.0)
 LOG_E_BINS = 96
 
@@ -46,6 +46,25 @@ Z_BINS = 161
 
 def _log10_clipped(x: np.ndarray, eps: float = 1e-12) -> np.ndarray:
     return np.log10(np.maximum(np.asarray(x, np.float64), eps))
+
+
+def _rebin_axis(hist: np.ndarray, old_edges: np.ndarray,
+                new_edges: np.ndarray, axis: int) -> np.ndarray:
+    """Move an existing histogram onto expanded edges using bin centres.
+
+    The accumulator is streaming, so an observed high-value field can arrive
+    after lower-value fields have already been counted.  Only the upper range
+    grows; centre-based remapping preserves those counts without retaining all
+    pixels.
+    """
+    a = np.moveaxis(np.asarray(hist), axis, 0)
+    out = np.zeros((len(new_edges) - 1, *a.shape[1:]), dtype=a.dtype)
+    old_centres = 0.5 * (old_edges[:-1] + old_edges[1:])
+    new_bins = np.clip(np.searchsorted(new_edges, old_centres, side="right") - 1,
+                       0, len(new_edges) - 2)
+    for old_bin, new_bin in enumerate(new_bins):
+        out[new_bin] += a[old_bin]
+    return np.moveaxis(out, 0, axis)
 
 
 class EnsembleDiagnosticsAccumulator:
@@ -107,6 +126,69 @@ class EnsembleDiagnosticsAccumulator:
         self.bs_seen: dict[int, int] = {}
         # Deterministic given call order → reproducible sidecars + testable.
         self._rng = np.random.default_rng(0)
+
+    def _ensure_log_upper(self, values: tuple[np.ndarray, ...]) -> None:
+        """Expand σ/error axes to contain the largest finite observed value."""
+        finite_max = -np.inf
+        for value in values:
+            with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+                a = _log10_clipped(np.asarray(value, np.float64))
+            finite = a[np.isfinite(a)]
+            if finite.size:
+                finite_max = max(finite_max, float(np.max(finite)))
+        old_edges = self.log_edges
+        if not np.isfinite(finite_max) or finite_max <= old_edges[-1]:
+            return
+
+        # A small log-space margin keeps the largest occupied bin away from
+        # the frame edge while remaining data-adaptive (rather than choosing
+        # another arbitrary fixed detector-flux ceiling).
+        new_hi = finite_max + max(0.10, 0.02 * abs(finite_max))
+        new_edges = np.linspace(old_edges[0], new_hi, LOG_E_BINS + 1)
+        self.h_std_err = _rebin_axis(self.h_std_err, old_edges, new_edges, 0)
+        self.h_std_err = _rebin_axis(self.h_std_err, old_edges, new_edges, 1)
+        for kind, hist in self.h_std_err_models.items():
+            hist = _rebin_axis(hist, old_edges, new_edges, 0)
+            self.h_std_err_models[kind] = _rebin_axis(hist, old_edges, new_edges, 1)
+        self.h_bright_std = _rebin_axis(self.h_bright_std, old_edges, new_edges, 1)
+        for axis_hists in self.h_combiner_feature_err.values():
+            for kind, hist in axis_hists.items():
+                axis_hists[kind] = _rebin_axis(hist, old_edges, new_edges, -1)
+
+        self._remap_std_error_samples(old_edges, new_edges)
+        self.log_edges = new_edges
+
+    def _remap_cells(self, samples: dict[int, list[tuple[int, int, int]]],
+                     seen: dict[int, int], old_edges: np.ndarray,
+                     new_edges: np.ndarray, *, remap_x: bool = True) -> None:
+        """Remap reservoir keys after the std/error grid expands."""
+        nb = LOG_E_BINS
+        old_centres = 0.5 * (old_edges[:-1] + old_edges[1:])
+        new_bins = np.clip(np.searchsorted(new_edges, old_centres, side="right") - 1,
+                           0, nb - 1)
+        merged: dict[int, list[tuple[int, int, int]]] = {}
+        merged_seen: dict[int, int] = {}
+        for key, picks in samples.items():
+            x, y = divmod(int(key), nb)
+            nx = int(new_bins[x]) if remap_x else x
+            ny = int(new_bins[y])
+            dst = nx * nb + ny
+            merged.setdefault(dst, []).extend(picks)
+            merged_seen[dst] = merged_seen.get(dst, 0) + seen.get(key, len(picks))
+        samples.clear()
+        samples.update({key: picks[:self.sample_k] for key, picks in merged.items()})
+        seen.clear()
+        seen.update(merged_seen)
+
+    def _remap_std_error_samples(self, old_edges: np.ndarray,
+                                 new_edges: np.ndarray) -> None:
+        self._remap_cells(self.se_samples, self.se_seen, old_edges, new_edges)
+        for kind, samples in self.se_model_samples.items():
+            self._remap_cells(samples, self.se_model_seen[kind],
+                              old_edges, new_edges)
+        # Brightness is the x axis here; only the σ (y) coordinate moves.
+        self._remap_cells(self.bs_samples, self.bs_seen, old_edges, new_edges,
+                          remap_x=False)
 
     def _reservoir_add_field(self, samples, seen, bin_ids, W, field_index):
         """Insert one random representative pixel per occupied cell of one
@@ -193,6 +275,10 @@ class EnsembleDiagnosticsAccumulator:
             pred = predictions["rbf_gate"]
             self.n_pred_combiner += 1
         err = pred - hr
+
+        with np.errstate(over="ignore", invalid="ignore"):
+            self._ensure_log_upper((std, np.abs(err), *(
+                np.abs(image - hr) for image in predictions.values())))
 
         ls = _log10_clipped(std).ravel()
         le = _log10_clipped(np.abs(err)).ravel()
@@ -397,6 +483,7 @@ class EnsembleDiagnosticsAccumulator:
             "n_fields": int(self.n_fields),
             "n_members": int(self.n_members),
             "std_err": {
+                "adaptive_range": True,
                 "edges": _l(self.log_edges),           # log10 e⁻, both axes
                 "hist": self.h_std_err.astype(int).tolist(),
                 "med_std": _l(np.log10(cen)),
@@ -504,7 +591,7 @@ def render_std_vs_error(out_png: str, acc: EnsembleDiagnosticsAccumulator,
     cen, med = acc.binned_median_err()
     ax.plot(cen, med, "-o", ms=3, lw=2.0, color="#d6604d",
             label="median |error| per std bin")
-    lim = 10.0 ** np.array(LOG_E_RANGE)
+    lim = 10.0 ** np.array([acc.log_edges[0], acc.log_edges[-1]])
     ax.plot(lim, lim, ls="--", color="#333", lw=1.2, label="|error| = std")
     ax.set_xlim(*lim)
     ax.set_ylim(*lim)
@@ -545,7 +632,7 @@ def render_std_vs_brightness(out_png: str,
     ax.xaxis.set_major_formatter(FixedFormatter(
         ["0", "100", "10³", "10⁴", "10⁵", "10⁶"]))
     ax.set_xlim(acc.bright_edges[0], acc.bright_edges[-1])
-    ax.set_ylim(*(10.0 ** np.array(LOG_E_RANGE)))
+    ax.set_ylim(*(10.0 ** np.array([acc.log_edges[0], acc.log_edges[-1]])))
     ax.set_xlabel("HR pixel brightness  [e⁻]  (asinh-spaced axis)")
     ax.set_ylabel("cross-member per-pixel std  σ  [e⁻]")
     ax.set_title("Where does disagreement live?  "
