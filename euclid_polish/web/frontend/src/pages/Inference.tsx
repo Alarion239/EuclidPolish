@@ -1,11 +1,12 @@
-/* Real Euclid inference workspace.  Archive data is cached as one field and
-   viewed as its fixed 10x10 grid; synthetic generation and run galleries live
-   elsewhere and are intentionally not part of this page. */
-import { useState } from "react";
+/* Real Euclid inference workspace. Archive data is cached as one field and
+   viewed as its fixed 10x10 grid; cached synthetic evaluation diagnostics are
+   shown beside the real-field diagnostics for direct comparison. */
+import { useState, type ReactNode } from "react";
 import Plot, { Legend } from "../charts/Plot";
 import { useResource } from "../hooks";
 import { useJob, JobProgressView } from "../jobs";
 import { CutoutViewer } from "../legacy";
+import type { Evals } from "./Ensemble";
 import {
   Badge, Button, Card, CardBody, CardHead, Empty, Field, Input, Page,
   PageHead, Spinner, Stat,
@@ -28,12 +29,104 @@ type Diagnostics = {
     counts: number[] | number[][]; x_label: string; y_label?: string; pixel_count: number }>;
 };
 
+type ComparisonCardProps = {
+  title: string; sub: string; real: ReactNode; synthetic: ReactNode;
+};
+
+const finiteEdges = (values: (number | null)[]) =>
+  values.filter((value): value is number => value != null && isFinite(value));
+
+function ComparisonCard({ title, sub, real, synthetic }: ComparisonCardProps) {
+  return <Card>
+    <CardHead title={title} sub={sub} />
+    <CardBody>
+      <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))", gap: "var(--s5)" }}>
+        <div style={{ minWidth: 0 }}>
+          <div className="eyebrow" style={{ marginBottom: "var(--s2)" }}>real Euclid field</div>
+          {real}
+        </div>
+        <div style={{ minWidth: 0 }}>
+          <div className="eyebrow" style={{ marginBottom: "var(--s2)" }}>synthetic STARFULL evaluation</div>
+          {synthetic}
+        </div>
+      </div>
+    </CardBody>
+  </Card>;
+}
+
+function MissingSyntheticPlot({ loading, error }: { loading: boolean; error: boolean }) {
+  return <p className="muted" style={{ margin: "var(--s4) 0", fontSize: 12 }}>
+    {loading ? "Loading cached synthetic evaluation…"
+      : error ? "Synthetic evaluation data is unavailable."
+        : "This synthetic evaluation does not contain an analogous plot."}
+  </p>;
+}
+
+function reciprocalSeries(theta: (number | null)[], values: (number | null)[]) {
+  return theta.map((value, index) => ({
+    x: value == null || !isFinite(value) || value <= 0 ? NaN : 1 / value,
+    y: values[index] ?? null,
+  })).filter((point) => isFinite(point.x) && point.y != null && isFinite(point.y))
+    .sort((a, b) => a.x - b.x);
+}
+
+function SyntheticPowerPlot({ evals }: { evals: Evals }) {
+  const power = evals.ps;
+  if (!power?.theta?.length || !power.r_cross?.length) return null;
+  const cross = reciprocalSeries(power.theta, power.r_cross);
+  if (!cross.length) return null;
+  const pairs = (power.r_pairs ?? []).map((row) => reciprocalSeries(power.theta, row));
+  const k = cross.map((point) => point.x);
+  const kMin = k[0], kMax = k[k.length - 1];
+  const kTicks = [0.1, 0.2, 0.5, 1, 2, 5, 10, 20]
+    .filter((value) => value >= kMin && value <= kMax)
+    .map((value) => ({ v: value, label: String(value) }));
+  return <>
+    <Plot title="cross-correlation rᵢⱼ(k)  ·  synthetic test fields"
+      xScale="log" xDomain={[kMin, kMax]} yDomain={[-1, 1.05]} xTicks={kTicks}
+      yTicks={[{ v: -1, label: "−1" }, { v: -0.5, label: "−0.5" }, { v: 0, label: "0" }, { v: 0.5, label: "0.5" }, { v: 1, label: "1" }]}
+      xLabel="angular frequency k [cycles / arcsec] · 1 / synthetic θ"
+      yLabel="rᵢⱼ(k)" series={[
+        ...pairs.filter((row) => row.length).map((row) => ({ x: row.map((point) => point.x), y: row.map((point) => point.y), color: "#708096", width: 0.8, alpha: 0.22 })),
+        { x: cross.map((point) => point.x), y: cross.map((point) => point.y), color: "#d47f34", width: 2.4, dash: [6, 3] },
+      ]} guides={[{ axis: "y", v: 1, color: "#8c98a8", dash: [2, 3] }]} height={430} />
+    <Legend items={[{ label: "individual model pairs", color: "#708096" }, { label: "median rᵢⱼ(k)", color: "#d47f34", dash: true }]} />
+  </>;
+}
+
+function SyntheticBrightnessPlot({ evals }: { evals: Evals }) {
+  const bright = evals.bright_std;
+  const xEdges = finiteEdges(bright?.bright_edges ?? []);
+  const yEdges = finiteEdges(bright?.std_edges ?? []);
+  if (!bright || xEdges.length < 2 || yEdges.length < 2 || !bright.hist.length) return null;
+  return <Plot title="member STD versus brightness  ·  synthetic test fields"
+    xDomain={[xEdges[0], xEdges[xEdges.length - 1]]} yDomain={[yEdges[0], yEdges[yEdges.length - 1]]}
+    xTicks={ticks(xEdges[0], xEdges[xEdges.length - 1])} yTicks={ticks(yEdges[0], yEdges[yEdges.length - 1])}
+    xLabel="mean brightness (asinh)" yLabel="log10(member std)"
+    heat={{ z: bright.hist, xEdges, yEdges, colorLabel: "synthetic pixels" }} series={[]} height={360} />;
+}
+
+function SyntheticCombinerPlot({ evals, kind }: { evals: Evals; kind: string }) {
+  const axis = evals.combiner_feature_error?.axes?.mean_std;
+  const model = axis?.models?.[kind];
+  const xEdges = finiteEdges(axis?.edges?.[0] ?? []);
+  const yEdges = finiteEdges(axis?.edges?.[1] ?? []);
+  if (!model || xEdges.length < 2 || yEdges.length < 2 || !model.counts.length) return null;
+  return <Plot title="combiner feature occupancy  ·  synthetic test fields"
+    xDomain={[xEdges[0], xEdges[xEdges.length - 1]]} yDomain={[yEdges[0], yEdges[yEdges.length - 1]]}
+    xTicks={ticks(xEdges[0], xEdges[xEdges.length - 1])} yTicks={ticks(yEdges[0], yEdges[yEdges.length - 1])}
+    xLabel={axis?.axis_names?.[0] ?? "mean member"} yLabel={axis?.axis_names?.[1] ?? "member std"}
+    heat={{ z: model.counts, xEdges, yEdges, colorLabel: "synthetic pixels" }} series={[]} height={360} />;
+}
+
 const ticks = (lo: number, hi: number, n = 4) => Array.from({ length: n + 1 }, (_, i) => {
   const v = lo + (hi - lo) * i / n;
   return { v, label: Number.isInteger(v) ? String(v) : v.toFixed(1) };
 });
 
-function InferenceDiagnostics({ data }: { data: Diagnostics }) {
+function InferenceDiagnostics({ data, synthetic, syntheticLoading, syntheticError }: {
+  data: Diagnostics; synthetic: Evals | null; syntheticLoading: boolean; syntheticError: boolean;
+}) {
   const labels = data.member_labels.map((label) => label.replace("·psnr", ""));
   const power = data.model_power;
   const kMin = power.k[0] ?? 0.2;
@@ -43,10 +136,9 @@ function InferenceDiagnostics({ data }: { data: Diagnostics }) {
     .map((value) => ({ v: value, label: String(value) }));
   const std = data.std_brightness;
   return <>
-    <Card>
-      <CardHead title="Model–model angular cross-correlation"
-        sub={`${labels.length * (labels.length - 1) / 2} member pairs · median across ${power.samples.toLocaleString()} tile-band spectra · no HR reference`} />
-      <CardBody>
+    <ComparisonCard title="Model–model angular cross-correlation"
+      sub={`${labels.length * (labels.length - 1) / 2} real-field member pairs · no HR reference · matched to synthetic STARFULL evaluation`}
+      real={<>
         <Plot title="cross-correlation rᵢⱼ(k)  ·  1 = identical Fourier structure"
           xScale="log" xDomain={[kMin, kMax]} yDomain={[-1, 1.05]}
           xTicks={kTicks}
@@ -60,45 +152,44 @@ function InferenceDiagnostics({ data }: { data: Diagnostics }) {
         <p className="muted" style={{ margin: "var(--s3) 0 0", fontSize: 12 }}>
           Each curve compares two cached STARFULL predictions after mean subtraction and windowed 2-D FFTs; the bands and tiles are combined by median.
         </p>
-      </CardBody>
-    </Card>
+      </>}
+      synthetic={synthetic ? <SyntheticPowerPlot evals={synthetic} /> : <MissingSyntheticPlot loading={syntheticLoading} error={syntheticError} />} />
 
-    <Card>
-      <CardHead title="Member STD versus brightness"
-        sub="Density of cached real-field pixels. Brightness and spread are in asinh-space; this is ensemble variation, not error." />
-      <CardBody>
-        <Plot xDomain={[std.x_edges[0], std.x_edges.at(-1)!]} yDomain={[std.y_edges[0], std.y_edges.at(-1)!]}
-          xTicks={ticks(std.x_edges[0], std.x_edges.at(-1)!)} yTicks={ticks(std.y_edges[0], std.y_edges.at(-1)!)}
+    <ComparisonCard title="Member STD versus brightness"
+      sub="Density of pixels in each domain. Brightness and spread are in asinh-space; this is ensemble variation, not error."
+      real={<>
+        <Plot xDomain={[std.x_edges[0], std.x_edges[std.x_edges.length - 1]]} yDomain={[std.y_edges[0], std.y_edges[std.y_edges.length - 1]]}
+          xTicks={ticks(std.x_edges[0], std.x_edges[std.x_edges.length - 1])} yTicks={ticks(std.y_edges[0], std.y_edges[std.y_edges.length - 1])}
           xLabel={std.x_label} yLabel={std.y_label}
           heat={{ z: std.counts, xEdges: std.x_edges, yEdges: std.y_edges, colorLabel: "sampled pixels" }}
           series={[]} height={360} />
-      </CardBody>
-    </Card>
+      </>}
+      synthetic={synthetic ? <SyntheticBrightnessPlot evals={synthetic} /> : <MissingSyntheticPlot loading={syntheticLoading} error={syntheticError} />} />
 
-    {Object.entries(data.combiners).map(([kind, comb]) => {
-      const title = kind === "rbf_gate" ? "max RBF"
-        : kind === "stats_rbf_gate" ? "mean + std RBF"
-          : kind === "stacked_rbf_gate" ? "stacked RBF" : "min + max RBF";
+    {Object.entries(data.combiners)
+      .filter(([kind]) => kind === "raw_incremental_minmeanmax_rbf")
+      .map(([kind, comb]) => {
+      const title = "incremental raw min/mean/max RBF";
       if (comb.mode === "histogram") {
         const counts = comb.counts as number[];
         const centers = counts.map((_, i) => (comb.x_edges[i] + comb.x_edges[i + 1]) / 2);
         const ys = counts.map((count) => Math.log10(count + 1));
-        return <Card key={kind}>
-          <CardHead title={`${title} · pixel occupancy`} sub={`${comb.pixel_count.toLocaleString()} real pixels across four bands · no error or HR target`} />
-          <CardBody><Plot xDomain={[comb.x_edges[0], comb.x_edges.at(-1)!]} yDomain={[0, Math.max(...ys, 1)]}
-            xTicks={ticks(comb.x_edges[0], comb.x_edges.at(-1)!)} yTicks={ticks(0, Math.max(...ys, 1))}
+        return <ComparisonCard key={kind} title={`${title} · pixel occupancy`}
+          sub={`${comb.pixel_count.toLocaleString()} real pixels across four bands · no error or HR target · matched to synthetic gate occupancy`}
+          real={<Plot xDomain={[comb.x_edges[0], comb.x_edges[comb.x_edges.length - 1]]} yDomain={[0, Math.max(...ys, 1)]}
+            xTicks={ticks(comb.x_edges[0], comb.x_edges[comb.x_edges.length - 1])} yTicks={ticks(0, Math.max(...ys, 1))}
             xLabel={comb.x_label} yLabel="log10(pixel count + 1)"
-            series={[{ x: centers, y: ys, color: "#4c9ffe", width: 2 }]} height={300} /></CardBody>
-        </Card>;
+            series={[{ x: centers, y: ys, color: "#4c9ffe", width: 2 }]} height={300} />}
+          synthetic={synthetic ? <SyntheticCombinerPlot evals={synthetic} kind={kind} /> : <MissingSyntheticPlot loading={syntheticLoading} error={syntheticError} />} />;
       }
       const counts = comb.counts as number[][];
-      return <Card key={kind}>
-        <CardHead title={`${title} · pixel occupancy`} sub={`${comb.pixel_count.toLocaleString()} real pixels across four bands · no error or HR target`} />
-        <CardBody><Plot xDomain={[comb.x_edges[0], comb.x_edges.at(-1)!]} yDomain={[comb.y_edges![0], comb.y_edges!.at(-1)!]}
-          xTicks={ticks(comb.x_edges[0], comb.x_edges.at(-1)!)} yTicks={ticks(comb.y_edges![0], comb.y_edges!.at(-1)!)}
+      return <ComparisonCard key={kind} title={`${title} · pixel occupancy`}
+        sub={`${comb.pixel_count.toLocaleString()} real pixels across four bands · no error or HR target · matched to synthetic gate occupancy`}
+        real={<Plot xDomain={[comb.x_edges[0], comb.x_edges[comb.x_edges.length - 1]]} yDomain={[comb.y_edges![0], comb.y_edges![comb.y_edges!.length - 1]]}
+          xTicks={ticks(comb.x_edges[0], comb.x_edges[comb.x_edges.length - 1])} yTicks={ticks(comb.y_edges![0], comb.y_edges![comb.y_edges!.length - 1])}
           xLabel={comb.x_label} yLabel={comb.y_label ?? "feature"}
-          heat={{ z: counts, xEdges: comb.x_edges, yEdges: comb.y_edges!, colorLabel: "pixel count" }} series={[]} height={360} /></CardBody>
-      </Card>;
+          heat={{ z: counts, xEdges: comb.x_edges, yEdges: comb.y_edges!, colorLabel: "real pixel count" }} series={[]} height={360} />}
+        synthetic={synthetic ? <SyntheticCombinerPlot evals={synthetic} kind={kind} /> : <MissingSyntheticPlot loading={syntheticLoading} error={syntheticError} />} />;
     })}
   </>;
 }
@@ -106,6 +197,7 @@ function InferenceDiagnostics({ data }: { data: Diagnostics }) {
 export default function InferencePage() {
   const { data, loading, reload } = useResource<FieldStatus>("/api/inference/field.json");
   const diagnostics = useResource<{ diagnostics: Diagnostics | null }>("/api/inference/diagnostics.json");
+  const synthetic = useResource<Evals>("/ensemble/evals.json?mode=starfull");
   const [ra, setRa] = useState("267.4229");
   const [dec, setDec] = useState("64.8873");
   const job = useJob();
@@ -170,7 +262,8 @@ export default function InferencePage() {
           </CardBody>
         </Card>
 
-        {field && diagnostics.data?.diagnostics && <InferenceDiagnostics data={diagnostics.data.diagnostics} />}
+        {field && diagnostics.data?.diagnostics && <InferenceDiagnostics data={diagnostics.data.diagnostics}
+          synthetic={synthetic.data} syntheticLoading={synthetic.loading} syntheticError={synthetic.error} />}
         {field && !diagnostics.loading && !diagnostics.data?.diagnostics && (
           <Card><CardHead title="Field diagnostics" sub="Rerun this exact cached field once to derive its model–model spectral and gate-occupancy plots." /></Card>
         )}
