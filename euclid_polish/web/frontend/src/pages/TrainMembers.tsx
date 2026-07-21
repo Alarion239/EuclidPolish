@@ -71,9 +71,9 @@ export default function TrainMembersPage() {
     prefilledMember ? [prefilledMember] : []);
   const [starlessDefault, setStarlessDefault] = useState(true);
   const [forwardOtf, setForwardOtf] = useState(true);   // run-wide forward model
-  const [batchSize, setBatchSize] = useState("1");
-  const [hrCropSize, setHrCropSize] = useState("510");
-  const [cropsPerField, setCropsPerField] = useState("1");
+  const [batchSize, setBatchSize] = useState("4");
+  const [hrCropSize, setHrCropSize] = useState("256");
+  const [cropsPerField, setCropsPerField] = useState("8");
   const [psfSubset, setPsfSubset] = useState("64");
   const [psfWarpProb, setPsfWarpProb] = useState("1");
   const [psfWarpAlphaMax, setPsfWarpAlphaMax] = useState("20");
@@ -268,13 +268,13 @@ export default function TrainMembersPage() {
 
       <Card style={{ marginTop: "var(--s4)" }}>
         <CardHead title="Training geometry"
-          sub="Run-wide controls. 510 HR / 255 LR with one crop trains on the complete generated field; loss and validation cover the complete output." />
+          sub="Run-wide controls. Defaults use eight random 256 HR / 128 LR crops per generated field; siblings are shuffled across optimizer batches." />
         <CardBody>
           <div className="fasrc-step__res" style={{ marginBottom: "var(--s3)" }}>
             <NumberField label="batch size" value={batchSize} onChange={setBatchSize}
               min={1} max={64} step={1} />
             <NumberField label="HR example side" value={hrCropSize} onChange={setHrCropSize}
-              min={2} max={510} step={2} />
+              min={2} max={508} step={2} />
             <NumberField label="examples / field" value={cropsPerField}
               onChange={setCropsPerField} min={1} max={25} step={1} />
             <Checkbox checked={forwardOtf} onChange={setForwardOtf}>on-the-fly forward</Checkbox>

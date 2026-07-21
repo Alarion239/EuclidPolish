@@ -32,6 +32,7 @@ from euclid_polish.training.augmentation import (
 )
 from euclid_polish.training.forward_onthefly import (
     DEFAULT_CROPS_PER_FIELD,
+    DEFAULT_ONTHEFLY_HR_CROP_SIZE,
     OnTheFlyForward,
     member_psf_sets,
 )
@@ -376,7 +377,7 @@ class Model:
         forward_onthefly: bool = False,
         psf_subset: int | None = None,
         crops_per_field: int = DEFAULT_CROPS_PER_FIELD,
-        hr_crop_size: int = Config.DEFAULT_HR_CROP_SIZE,
+        hr_crop_size: int = DEFAULT_ONTHEFLY_HR_CROP_SIZE,
         psf_warp_prob: float = Config.TRAIN_PSF_WARP_PROB,
         psf_warp_alpha_max: float = Config.TRAIN_PSF_WARP_ALPHA_MAX,
         psf_warp_sigma: float = Config.TRAIN_PSF_WARP_SIGMA,
@@ -408,9 +409,9 @@ class Model:
         model (see :class:`~euclid_polish.training.forward_onthefly
         .OnTheFlyForward`): the dirty records are ignored; each visit of a
         clean field re-draws PSF + noise on the FULL field and cuts
-        ``crops_per_field`` crops of ``hr_crop_size`` HR pixels. Setting
-        ``hr_crop_size`` to the clean field side and ``crops_per_field=1``
-        trains on the complete field. ``psf_subset`` bags the member's PSF
+        ``crops_per_field`` random crops of ``hr_crop_size`` HR pixels. The
+        defaults are eight 256² crops; the crop shuffle mixes their parent
+        exposures before batching. ``psf_subset`` bags the member's PSF
         pool to that many source clusters (keyed by the seed). ``psf_warp_*``
         controls polish-pub-style elastic deformation of each training
         exposure's sampled PSF; the clean/HR target is never warped.

@@ -39,6 +39,10 @@ from euclid_polish.ensemble_registry import default_ensemble_dir  # re-export
 from euclid_polish.image import Image, ImageSet, Role
 from euclid_polish.model import Model, _checkpoint_exists
 from euclid_polish.provenance.gitinfo import capture_git
+from euclid_polish.training.forward_onthefly import (
+    DEFAULT_CROPS_PER_FIELD,
+    DEFAULT_ONTHEFLY_HR_CROP_SIZE,
+)
 
 #: Per-member checkpoint sub-directory name, e.g. ``member_03``.
 MEMBER_DIR_FMT = "member_{:02d}"
@@ -125,8 +129,8 @@ class MemberTrainSpec:
     bootstrap: float | None = None
     forward_onthefly: bool = False
     psf_subset: int | None = None
-    crops_per_field: int = 16
-    hr_crop_size: int = Config.DEFAULT_HR_CROP_SIZE
+    crops_per_field: int = DEFAULT_CROPS_PER_FIELD
+    hr_crop_size: int = DEFAULT_ONTHEFLY_HR_CROP_SIZE
     psf_warp_prob: float = Config.TRAIN_PSF_WARP_PROB
     psf_warp_alpha_max: float = Config.TRAIN_PSF_WARP_ALPHA_MAX
     psf_warp_sigma: float = Config.TRAIN_PSF_WARP_SIGMA

@@ -44,6 +44,10 @@ from euclid_polish.ensemble import (  # noqa: E402
 )
 from euclid_polish.image.tfio import tfrecord_path  # noqa: E402
 from euclid_polish.observability import Reporter, ResourceSampler  # noqa: E402
+from euclid_polish.training.forward_onthefly import (  # noqa: E402
+    DEFAULT_CROPS_PER_FIELD,
+    DEFAULT_ONTHEFLY_HR_CROP_SIZE,
+)
 from euclid_polish.training.inference import checkpoint_step  # noqa: E402
 from euclid_polish.training.loss_names import LOSS_NAMES  # noqa: E402
 from euclid_polish.training.staging import stage_records  # noqa: E402
@@ -122,19 +126,17 @@ def parse_args(argv=None) -> argparse.Namespace:
                         "(subset keyed by the member's seed; different "
                         "members → different instrument-response bags). "
                         "0 = default (64). Only with --forward-onthefly.")
-    p.add_argument("--crops-per-field", type=int, default=16,
-                   help="On-the-fly mode: crops cut per forward-modelled "
-                        "field — one field forward is amortised over this "
-                        "many examples (a batch of B costs B/K forwards; "
-                        "the default 16 makes one batch = one forward). A "
-                        "510² field holds 25 non-overlapping 96² crops, so "
-                        "up to ~25 barely re-samples pixels.")
+    p.add_argument("--crops-per-field", type=int,
+                   default=DEFAULT_CROPS_PER_FIELD,
+                   help="On-the-fly mode: random crops cut per forward-"
+                        "modelled field before the crop-level shuffle. "
+                        "Default: 8.")
     p.add_argument("--hr-crop-size", type=int,
-                   default=Config.DEFAULT_HR_CROP_SIZE,
+                   default=DEFAULT_ONTHEFLY_HR_CROP_SIZE,
                    help="On-the-fly mode: HR side of each aligned training "
-                        "example. Use 510 with --crops-per-field 1 to train "
-                        "on the complete 510² field (255² LR). Must be "
-                        "divisible by the 2x scale.")
+                        "example. Default: 256 (128 LR), the nearest "
+                        "scale-aligned half-side crop of a 510² field. Must "
+                        "be divisible by the 2x scale.")
     p.add_argument("--psf-warp-prob", type=float,
                    default=Config.TRAIN_PSF_WARP_PROB,
                    help="On-the-fly mode: probability that the shared "
@@ -193,7 +195,10 @@ def parse_args(argv=None) -> argparse.Namespace:
                         "crops_per_field, psf_warp_prob, "
                         "psf_warp_alpha_max, psf_warp_sigma, "
                         "saturation_mask_prob, icnr.")
-    p.add_argument("--batch-size", type=int, default=Config.DEFAULT_BATCH_SIZE)
+    p.add_argument("--batch-size", type=int, default=4,
+                   help="Training examples per optimizer update. Default 4 "
+                        "for 256² HR crops (about the pixels of one 510² "
+                        "field while mixing parent exposures).")
     p.add_argument("--evaluate-every", type=int, default=Config.DEFAULT_EVALUATE_EVERY)
     p.add_argument("--num-res-blocks", type=int, default=Config.DEFAULT_NUM_RES_BLOCKS)
     # LR schedule (warmup → cosine) + reduce-LR-on-plateau guard. Defaults from
@@ -344,8 +349,9 @@ def _diversity_kwargs(args, over: dict) -> dict:
             "forward_onthefly": bool(over.get("forward_onthefly",
                                               args.forward_onthefly)),
             "psf_subset": subset if subset > 0 else None,
-            "crops_per_field": int(over.get("crops_per_field",
-                                            args.crops_per_field) or 16),
+            "crops_per_field": int(over.get(
+                "crops_per_field", args.crops_per_field,
+            ) or DEFAULT_CROPS_PER_FIELD),
             "hr_crop_size": int(over.get("hr_crop_size",
                                           args.hr_crop_size)),
             "psf_warp_prob": float(over.get("psf_warp_prob",

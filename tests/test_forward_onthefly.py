@@ -19,12 +19,14 @@ from euclid_polish.image.tfio import tfrecord_path, write_images
 from euclid_polish.model import Model
 from euclid_polish.psf.psf_library import load_all_band_psf_sets
 from euclid_polish.training.forward_onthefly import (
+    DEFAULT_CROPS_PER_FIELD,
+    DEFAULT_ONTHEFLY_HR_CROP_SIZE,
     OnTheFlyForward,
     member_psf_sets,
 )
 from scripts.train_ensemble import build_specs, parse_args
 
-FIELD = 128                                  # ≥ DEFAULT_HR_CROP_SIZE (96)
+FIELD = 128                                  # compact fixture field
 CROP = int(Config.DEFAULT_HR_CROP_SIZE)
 
 
@@ -43,7 +45,9 @@ def _field(seed=0, n=FIELD):
 
 
 def test_crop_shapes_and_count(gaussian_sets):
-    fwd = OnTheFlyForward(gaussian_sets, seed=1, crops_per_field=4)
+    fwd = OnTheFlyForward(
+        gaussian_sets, seed=1, crops_per_field=4, hr_crop_size=CROP,
+    )
     lr, hr = fwd.crops(_field())
     assert lr.shape == (4, CROP // 2, CROP // 2, 4)
     assert hr.shape == (4, CROP, CROP, 4)
@@ -72,6 +76,7 @@ def test_hr_crops_are_subtiles_and_lr_matches_full_forward(gaussian_sets):
     SAME tile of the full-field forward output (wings included)."""
     field = _field()
     fwd = OnTheFlyForward(gaussian_sets, seed=2, crops_per_field=3,
+                          hr_crop_size=CROP,
                           add_noise=False, add_artifacts=False,
                           add_saturation=False, inject_stars=False,
                           psf_warp_prob=0.0)
@@ -122,6 +127,7 @@ def test_crops_target_is_starless_even_with_injection(gaussian_sets):
     them."""
     field = _field()
     fwd = OnTheFlyForward(gaussian_sets, seed=5, crops_per_field=4,
+                          hr_crop_size=CROP,
                           add_noise=False, add_artifacts=False,
                           add_saturation=False, inject_stars=True,
                           star_density_arcmin2=500.0)
@@ -138,7 +144,8 @@ def test_both_regimes_inject_stars_only_target_differs(gaussian_sets):
     """Both starless and starfull inject the SAME fresh stars (identical LR);
     the target is what differs — starless erases them, starfull keeps them."""
     field = _field()
-    kw = {"seed": 5, "crops_per_field": 4, "add_noise": False,
+    kw = {"seed": 5, "crops_per_field": 4, "hr_crop_size": CROP,
+          "add_noise": False,
           "add_artifacts": False, "add_saturation": False, "inject_stars": True,
           "star_density_arcmin2": 500.0}
     lr_less, hr_less = OnTheFlyForward(gaussian_sets, starless=True, **kw).crops(field)
@@ -159,24 +166,34 @@ def test_inject_stars_off_reproduces_plain_forward(gaussian_sets):
     """inject_stars=False (validate/test-style) is deterministic per seed."""
     field = _field()
     a = OnTheFlyForward(gaussian_sets, seed=9, crops_per_field=2,
-                        add_noise=False, inject_stars=False).crops(field)
+                        hr_crop_size=CROP, add_noise=False,
+                        inject_stars=False).crops(field)
     b = OnTheFlyForward(gaussian_sets, seed=9, crops_per_field=2,
-                        add_noise=False, inject_stars=False).crops(field)
+                        hr_crop_size=CROP, add_noise=False,
+                        inject_stars=False).crops(field)
     np.testing.assert_array_equal(a[0], b[0])
 
 
 def test_seeded_draws_reproduce_and_differ(gaussian_sets):
     field = _field()
-    a1 = OnTheFlyForward(gaussian_sets, seed=7, crops_per_field=2).crops(field)
-    a2 = OnTheFlyForward(gaussian_sets, seed=7, crops_per_field=2).crops(field)
-    b = OnTheFlyForward(gaussian_sets, seed=8, crops_per_field=2).crops(field)
+    a1 = OnTheFlyForward(
+        gaussian_sets, seed=7, crops_per_field=2, hr_crop_size=CROP,
+    ).crops(field)
+    a2 = OnTheFlyForward(
+        gaussian_sets, seed=7, crops_per_field=2, hr_crop_size=CROP,
+    ).crops(field)
+    b = OnTheFlyForward(
+        gaussian_sets, seed=8, crops_per_field=2, hr_crop_size=CROP,
+    ).crops(field)
     np.testing.assert_array_equal(a1[0], a2[0])
     np.testing.assert_array_equal(a1[1], a2[1])
     assert not np.array_equal(a1[0], b[0])   # different seed → different draw
 
 
 def test_revisits_redraw_noise(gaussian_sets):
-    fwd = OnTheFlyForward(gaussian_sets, seed=3, crops_per_field=1)
+    fwd = OnTheFlyForward(
+        gaussian_sets, seed=3, crops_per_field=1, hr_crop_size=CROP,
+    )
     field = _field()
     first = fwd.crops(field)[0]
     second = fwd.crops(field)[0]             # next epoch's visit
@@ -214,7 +231,9 @@ def test_onthefly_pipeline_yields_batches(gaussian_sets, tmp_path):
                   index=i) for i in range(3)]
     write_images(imgs, "clean_train", records_dir=str(tmp_path))
     m = Model(str(tmp_path / "ckpt"), scale=2, num_res_blocks=1)
-    fwd = OnTheFlyForward(gaussian_sets, seed=4, crops_per_field=4)
+    fwd = OnTheFlyForward(
+        gaussian_sets, seed=4, crops_per_field=4, hr_crop_size=CROP,
+    )
     ds = m._build_onthefly_pipeline(
         tfrecord_path(str(tmp_path), "clean_train"), 8, fwd)
     lr, hr = next(iter(ds))
@@ -223,6 +242,16 @@ def test_onthefly_pipeline_yields_batches(gaussian_sets, tmp_path):
     # asinh-stretched values, not raw electrons
     assert float(tf.reduce_max(tf.abs(hr))) < 25.0
     assert np.isfinite(lr.numpy()).all()
+
+
+def test_new_onthefly_geometry_defaults(gaussian_sets):
+    fwd = OnTheFlyForward(gaussian_sets, seed=1)
+    assert fwd.crops_per_field == DEFAULT_CROPS_PER_FIELD == 8
+    assert fwd.hr_crop_size == DEFAULT_ONTHEFLY_HR_CROP_SIZE == 256
+    args = parse_args([])
+    assert args.batch_size == 4
+    assert args.crops_per_field == 8
+    assert args.hr_crop_size == 256
 
 
 def test_build_specs_forward_flags(tmp_path):

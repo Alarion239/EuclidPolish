@@ -13,11 +13,9 @@ Design points (why full-field, why multiple crops):
   bright star OUTSIDE the crop scatters PSF-wing flux INTO it, which the
   FASRC benchmark measured at up to ~50–84% of the read noise for truncated
   crop-local convolution. Full-field pays the wings exactly.
-* One full-field forward (~350 ms CPU) is amortised over K crops, so the
-  per-example cost is ``full/K`` and a batch of B needs only ``B/K`` field
-  forwards. A 510² field fits a 5×5 grid of non-overlapping 96² crops, so
-  K up to ~25 reuses the forward without materially re-sampling the same
-  pixels; the default K=16 makes one batch of 16 cost ONE field forward.
+* One full-field forward (~350 ms CPU) is amortised over K crops. The default
+  K=8 returns eight random 256² HR crops from each 510² field; the downstream
+  shuffle spreads those siblings across batches.
   Crops from one field share that visit's PSF draw + noise realization
   (they are one exposure — physically consistent), while every EPOCH
   re-draws both; the pipeline's crop-level shuffle spreads the siblings
@@ -55,10 +53,12 @@ from euclid_polish.sky.observation.observation_simulator import (
 #: pool; ~64 clusters × (rolls+1) kernels is plenty of diversity.
 DEFAULT_PSF_SUBSET = 64
 
-#: Default crops per forward-modelled field: one batch of 16 costs one
-#: ~350 ms field forward. A 510² field holds 25 non-overlapping 96² crops,
-#: so 16 random crops barely re-sample pixels.
-DEFAULT_CROPS_PER_FIELD = 16
+#: Training defaults for the on-the-fly forward. A 256px HR crop is the nearest
+#: scale-aligned half-side crop of a 510px field (255 is not divisible by 2).
+#: Eight random positions reuse each expensive field forward while the crop
+#: shuffle still mixes exposures before batching.
+DEFAULT_CROPS_PER_FIELD = 8
+DEFAULT_ONTHEFLY_HR_CROP_SIZE = 256
 
 
 def member_psf_sets(*, seed: int | None, psf_subset: int | None = None,
@@ -103,7 +103,7 @@ class OnTheFlyForward:
         *,
         seed: int | None = None,
         crops_per_field: int = DEFAULT_CROPS_PER_FIELD,
-        hr_crop_size: int = Config.DEFAULT_HR_CROP_SIZE,
+        hr_crop_size: int = DEFAULT_ONTHEFLY_HR_CROP_SIZE,
         scale: int = Config.DEFAULT_REBIN_FACTOR,
         add_noise: bool = True,
         add_artifacts: bool = True,

@@ -544,9 +544,9 @@ function taskColumnsFor(stepId: string): Column<HistoryRow>[] {
     case "ensemble_train":
       return [
         taskColumn("total steps", ensembleTotalSteps, 104),
-        taskColumn("batch", (p) => paramCount(p, "batch_size", "16"), 68),
-        taskColumn("HR side", (p) => paramCount(p, "hr_crop_size", "96"), 76),
-        taskColumn("examples / field", (p) => paramCount(p, "crops_per_field", "16"), 108),
+        taskColumn("batch", (p) => paramCount(p, "batch_size", "4"), 68),
+        taskColumn("HR side", (p) => paramCount(p, "hr_crop_size", "256"), 76),
+        taskColumn("examples / field", (p) => paramCount(p, "crops_per_field", "8"), 108),
       ];
     case "download":
       return [taskColumn("tiles", (p) => paramCount(p, "n_tiles"), 72)];
