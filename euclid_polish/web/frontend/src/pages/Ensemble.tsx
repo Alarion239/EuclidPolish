@@ -179,7 +179,7 @@ export type Combiner = {
   available?: boolean; stale?: boolean; regime?: string;
   member_labels: string[];
   members?: { label: string; loss?: string; blocks?: number; asinh_knee?: number | null; step?: number | null; psnr?: number | null }[];
-  kind?: "raw_incremental_minmeanmax_rbf"; n_kernels?: number;
+  kind?: CombinerModelKind; n_kernels?: number;
   min_usage?: number; val_l1?: number | null;
   band_names?: string[];
   member_weight_peaks?: Record<string, number[]>;
@@ -208,11 +208,13 @@ const XTICKS = [0.05, 0.1, 0.2, 0.5, 1, 2, 5];
 const COMBINER_META: Record<string, { label: string; color: string }> = {
   ensemble_mean: { label: "ensemble mean", color: C.mean },
   raw_incremental_minmeanmax_rbf: { label: "minibatched convex all-asinh RBF", color: "#4f9d69" },
+  raw_incremental_frozen_minmeanmax_rbf: { label: "frozen-block convex all-asinh RBF", color: "#b48ef2" },
 };
 const combinerMeta = (kind: string) => COMBINER_META[kind] ?? {
   label: kind.replace(/_/g, " "), color: categorical(kind.length),
 };
-const activeCombinerKind = (kind: string) => kind === "raw_incremental_minmeanmax_rbf";
+const activeCombinerKind = (kind: string) => kind === "raw_incremental_minmeanmax_rbf"
+  || kind === "raw_incremental_frozen_minmeanmax_rbf";
 const hasData = (a: unknown) => asArray<number | null>(a).some((v) => v != null && isFinite(v));
 const finite = (a: unknown, i: 0 | 1) => asArray<[number, number]>(a).map((p) => p[i]);
 const num = (a: unknown) => asArray<number | null>(a).map((v) => (v == null ? NaN : v));
@@ -455,22 +457,27 @@ export default function EnsemblePage() {
   const mode: Mode = modeParam === "starless" ? "starless" : "starfull";
   const setMode = (m: Mode) => navigate(`/ensemble/${m}`);
   const starless = mode === "starless";
-  const combinerKind: CombinerModelKind = "raw_incremental_minmeanmax_rbf";
+  const jointCombinerKind: CombinerModelKind = "raw_incremental_minmeanmax_rbf";
+  const frozenCombinerKind: CombinerModelKind = "raw_incremental_frozen_minmeanmax_rbf";
 
   const status = useResource<Status>(`/ensemble/status.json?mode=${mode}`, [mode]);
   const evals = useResource<Evals>(`/ensemble/evals.json?mode=${mode}`, [mode]);
-  const comb = useResource<Combiner>(`/ensemble/combiner.json?mode=${mode}&model_kind=${combinerKind}`, [mode, combinerKind]);
+  const jointComb = useResource<Combiner>(`/ensemble/combiner.json?mode=${mode}&model_kind=${jointCombinerKind}`, [mode, jointCombinerKind]);
+  const frozenComb = useResource<Combiner>(`/ensemble/combiner.json?mode=${mode}&model_kind=${frozenCombinerKind}`, [mode, frozenCombinerKind]);
   const curves = useResource<{ members?: Curve[] }>("/ensemble/training-curves.json");
 
   const evalJob = useJob();
   const opJob = useJob();
-  const fitJob = useJob();
+  const jointFitJob = useJob();
+  const frozenFitJob = useJob();
   // Continue/fork buttons in the members table jump to the Train members page,
   // prefilled via query params.
   const toTrain = (m: "continue" | "fork", member: string) =>
     navigate(`/train-members?mode=${m}&member=${encodeURIComponent(member)}`);
 
-  const reloadAll = () => { status.reload(); evals.reload(); comb.reload(); curves.reload(); };
+  const reloadAll = () => {
+    status.reload(); evals.reload(); jointComb.reload(); frozenComb.reload(); curves.reload();
+  };
 
   return (
     <Page>
@@ -492,9 +499,14 @@ export default function EnsemblePage() {
         <TrainingCurves curves={asArray<Curve>(curves.data?.members)} starless={starless} />
         <Evaluations evals={evals.data} loading={evals.loading} mode={mode} theme={theme}
           targetLabel={starless ? "clean goal" : "HR"} />
-        <CombinerCard comb={comb.data} loading={comb.loading} mode={mode} theme={theme} fitJob={fitJob} onFit={reloadAll}
+        <CombinerCard comb={jointComb.data} loading={jointComb.loading} mode={mode} theme={theme} fitJob={jointFitJob} onFit={reloadAll}
           evalReady={status.data?.evaluations_ready ?? false}
-          modelKind={combinerKind} />
+          title={`Combiner · joint refit · ${mode}`}
+          modelKind={jointCombinerKind} />
+        <CombinerCard comb={frozenComb.data} loading={frozenComb.loading} mode={mode} theme={theme} fitJob={frozenFitJob} onFit={reloadAll}
+          evalReady={status.data?.evaluations_ready ?? false}
+          title={`Combiner · frozen blocks · ${mode}`}
+          modelKind={frozenCombinerKind} />
         <DisagreementCard key={mode} mode={mode} members={asArray<Member>(status.data?.members)}
           targetLabel={starless ? "clean goal" : "HR"} />
       </div>
@@ -786,6 +798,7 @@ export function Evaluations(
       if (r.id === "lr_baseline") return "LR";
       if (r.id === "combiner") return "comb";
       if (r.id === "raw_incremental_minmeanmax_rbf_combiner") return "raw RBF";
+      if (r.id === "raw_incremental_frozen_minmeanmax_rbf_combiner") return "frozen RBF";
       if (r.id === "model_agreement") return "agree";
       return `m${String(i).padStart(2, "0")}`;
     };
@@ -1079,7 +1092,8 @@ export function Evaluations(
 
 /* ── combiner ────────────────────────────────────────────────────────────── */
 type GateColorBy = "loss" | "psnr" | "depth" | "knee" | "regime";
-type CombinerModelKind = "raw_incremental_minmeanmax_rbf";
+type CombinerModelKind = "raw_incremental_minmeanmax_rbf"
+  | "raw_incremental_frozen_minmeanmax_rbf";
 type SurfaceView = { yaw: number; pitch: number; zoom: number };
 
 function WeightSurface3D(
@@ -1368,6 +1382,8 @@ export function CombinerCard(
   const [nImg, setNImg] = useState("100");
   const [nKernels, setNKernels] = useState("128");
   const [localModelKind] = useState<CombinerModelKind>("raw_incremental_minmeanmax_rbf");
+  const modelKind = controlledKind ?? localModelKind;
+  const fittedModelLabel = combinerMeta(modelKind).label;
   const [band, setBand] = useState<string>("");
   const [colorBy, setColorBy] = useState<GateColorBy>("loss");
   const [surfaceMember, setSurfaceMember] = useState("0");
@@ -1376,12 +1392,12 @@ export function CombinerCard(
   const pcaDefaultView: SurfaceView = { yaw: -0.72, pitch: 0.58, zoom: 0.5 };
   const [pcaSurfaceView, setPcaSurfaceView] = useState<SurfaceView>(pcaDefaultView);
   const [focusedSurfaceBand, setFocusedSurfaceBand] = useState<string | null>(null);
-  const trackedFitJob = useTrackedJob(`combiner: fit ${mode} `);
+  const trackedFitJob = useTrackedJob(fittedModelLabel);
+  const anyTrackedFitJob = useTrackedJob(`combiner: fit ${mode} `);
   const trackedCompletion = useRef<string | null>(null);
 
-  const modelKind = controlledKind ?? localModelKind;
   const visibleFitJob = fitJob.job ?? trackedFitJob;
-  const backgroundFitRunning = trackedFitJob?.status === "running";
+  const backgroundFitRunning = anyTrackedFitJob?.status === "running";
 
   useEffect(() => {
     if (!fitJob.job && trackedFitJob && trackedFitJob.status !== "running"
@@ -1393,10 +1409,10 @@ export function CombinerCard(
 
   const bands = asArray<string>(comb?.band_names);
   const activeBand = band || bands[0] || "";
-  const fittedConvexGate = comb?.kind === "raw_incremental_minmeanmax_rbf";
+  const fittedConvexGate = activeCombinerKind(comb?.kind ?? "");
+  const frozenBlockFit = comb?.kind === "raw_incremental_frozen_minmeanmax_rbf";
   const centerHistory = asArray<CenterStage>(comb?.fit_meta?.center_history);
   const minibatchedFit = comb?.fit_meta?.training_mode === "all_validation_pixels_minibatch";
-  const fittedModelLabel = "minibatched convex all-asinh RBF";
   const surfaceLabels = asArray<string>(comb?.pca_weight_surface?.surface_labels);
   const selectedSurfaceMember = Math.max(0, Math.min(surfaceLabels.length - 1, Number(surfaceMember) || 0));
   const surfaceBands = bands.filter((b) => comb?.feature_grid?.[b]);
@@ -1578,7 +1594,7 @@ export function CombinerCard(
               num_images: nImg, n_kernels: nKernels,
               model_kind: modelKind, mode,
             }, { onDone: onFit })}>
-            Fit convex all-asinh RBF
+            Fit {modelKind === "raw_incremental_frozen_minmeanmax_rbf" ? "frozen-block" : "joint-refit"} RBF
           </Button>
         </div>
         {!evalReady && (
@@ -1606,12 +1622,13 @@ export function CombinerCard(
             {fittedConvexGate && centerHistory.length > 0 && (
               <div className="muted" style={{ fontSize: 12, marginTop: 8 }}>
                 {minibatchedFit ? <>
-                  16-kernel staged refits: {centerHistory.map((stage) => stage.n_centers ?? "?").join(" → ")} centers.
+                  16-kernel staged {frozenBlockFit ? "frozen-block additions" : "joint refits"}: {centerHistory.map((stage) => stage.n_centers ?? "?").join(" → ")} centers.
                   {" "}Training asinh L1: {centerHistory.map((stage) => stage.train_l1?.toFixed(5) ?? "—").join(" → ")}.
                   {" "}Mean achievable placement gain: {centerHistory.map((stage) => stage.candidate_mean_achievable_gain?.toFixed(5) ?? "—").join(" → ")}.
                   {" "}{comb.fit_meta?.training_fields ?? "?"} training fields ({comb.fit_meta?.training_pixels_per_epoch?.toLocaleString() ?? "?"} pixels/epoch)
                   {" "}and {comb.fit_meta?.validation_fields ?? "?"} disjoint validation fields ({comb.fit_meta?.validation_pixels_per_epoch?.toLocaleString() ?? "?"} pixels).
                   {" "}Saved stage: {comb.fit_meta?.selected_stage ?? 0}; minibatch size: {comb.fit_meta?.batch_rows?.toLocaleString() ?? "?"}.
+                  {frozenBlockFit && <> Previous blocks and global logits stay frozen; rejected blocks are zeroed before the next stage.</>}
                 </> : <>
                   Recoverable-error center growth: {centerHistory.map((stage) => stage.n_centers ?? "?").join(" → ")} requested centers.
                   {" "}Mean recoverable asinh L1 used for placement: {centerHistory.map((stage) => stage.center_weight_mean_recoverable_l1?.toFixed(4) ?? "—").join(" → ")}.

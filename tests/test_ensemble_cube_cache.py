@@ -203,7 +203,11 @@ def test_rebuild_bucket_drops_member_and_renumbers_from_cache(tmp_path):
     np.save(os.path.join(d, f"std_{tag}.npy"), np.zeros(shape, np.float32))
     np.save(os.path.join(d, f"pca0_{tag}.npy"), np.zeros(shape, np.float32))
     prefix = ev._combiner_cube_prefix(None)
+    frozen_prefix = ev._combiner_cube_prefix(
+        "raw_incremental_frozen_minmeanmax_rbf")
     np.save(os.path.join(d, f"{prefix}_{tag}.npy"), np.zeros(shape, np.float32))
+    np.save(os.path.join(d, f"{frozen_prefix}_{tag}.npy"),
+            np.zeros(shape, np.float32))
     labels = [f"{i:02d}·x" for i in range(5)]
     with open(os.path.join(d, "viz_index.json"), "w") as f:
         json.dump({"subset": "test", "indices": [rec], "member_labels": labels,
@@ -222,6 +226,7 @@ def test_rebuild_bucket_drops_member_and_renumbers_from_cache(tmp_path):
     assert np.load(os.path.join(d, f"std_{tag}.npy")).std() >= 0  # recomputed, non-null
     # Combiner cube dropped (stale for the smaller set); manifest updated.
     assert not os.path.isfile(os.path.join(d, f"{prefix}_{tag}.npy"))
+    assert not os.path.isfile(os.path.join(d, f"{frozen_prefix}_{tag}.npy"))
     man = json.load(open(os.path.join(d, "viz_index.json")))
     assert [lbl.split("·")[0] for lbl in man["member_labels"]] == ["00", "01", "03", "04"]
     assert man["has_combiner"] is False

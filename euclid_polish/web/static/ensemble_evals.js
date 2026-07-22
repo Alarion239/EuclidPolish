@@ -210,6 +210,7 @@ function renderPS(el, payload, mode) {
 
   const MODEL_META = {
     raw_incremental_minmeanmax_rbf: ["minibatched convex all-asinh RBF", "#4f9d69"],
+    raw_incremental_frozen_minmeanmax_rbf: ["frozen-block convex all-asinh RBF", "#b48ef2"],
   };
   const LR_COLOR = "#c23b3b";                 // baseline-to-beat (no SR)
   const hasComb = (arr) => (arr || []).some((v) => v != null && isFinite(v));
@@ -279,12 +280,16 @@ function renderStdErr(el, payload) {
   const base = payload.std_err;
   if (!base) { el.innerHTML = '<p class="muted">no data — run Evaluate.</p>'; return; }
   const labels = { ensemble_mean: "ensemble mean",
-    raw_incremental_minmeanmax_rbf: "minibatched convex all-asinh RBF" };
+    raw_incremental_minmeanmax_rbf: "minibatched convex all-asinh RBF",
+    raw_incremental_frozen_minmeanmax_rbf: "frozen-block convex all-asinh RBF" };
   const colors = { ensemble_mean: VIS_COLOR,
-    raw_incremental_minmeanmax_rbf: "#4f9d69" };
+    raw_incremental_minmeanmax_rbf: "#4f9d69",
+    raw_incremental_frozen_minmeanmax_rbf: "#b48ef2" };
   const models = base.models || {};
   const kinds = Object.keys(models).filter(
-    (key) => key === "ensemble_mean" || key === "raw_incremental_minmeanmax_rbf");
+    (key) => key === "ensemble_mean"
+      || key === "raw_incremental_minmeanmax_rbf"
+      || key === "raw_incremental_frozen_minmeanmax_rbf");
   let kind = kinds.includes(base.primary) ? base.primary : (kinds[0] || "ensemble_mean");
   const render = () => {
     el.innerHTML = "";

@@ -1334,6 +1334,7 @@ def job_combiner_fit(cap, *, num_images: int, n_kernels: int = 128,
     combiner = fit_combiner_minibatched(
         validation_fields, indices, labels, band_names=BAND_NAMES,
         n_kernels=int(n_kernels),
+        model_kind=model_kind,
         member_validation_psnr=member_psnr,
         progress=lambda current, total, label: cap.tick(current, total, label))
     combiner.records_fp = records_fp
@@ -1814,7 +1815,9 @@ def refresh_evaluation_diagnostics(starless: bool) -> dict | None:
 
 
 def _rebuild_bucket_dropping_member(cubes_dir: str, member_nn: str,
-                                    *, keep_combiner: bool = False) -> bool:
+                                    *, keep_combiner: bool = False,
+                                    keep_combiners: dict[str, bool] | None = None
+                                    ) -> bool:
     """Drop one member from a position-keyed cube bucket, REUSING the cached
     per-member inference (no model re-run).
 
@@ -1841,7 +1844,11 @@ def _rebuild_bucket_dropping_member(cubes_dir: str, member_nn: str,
     old_n, new_n = len(old_labels), len(new_labels)
     pca_amps: dict[str, list[float]] = {}
     pca_var: dict[str, list[float]] = {}
-    keep_by_kind = {_RBF_KIND: keep_combiner}
+    keep_by_kind = {
+        kind: bool((keep_combiners or {}).get(
+            kind, keep_combiner if kind == _RBF_KIND else False))
+        for kind in _ORDINARY_COMBINER_KINDS
+    }
     for rec in (int(i) for i in man.get("indices", []) or []):
         tag = f"{rec:05d}"
         arch = os.path.join(cubes_dir, f"member{drop_pos}_{tag}.npy")
@@ -1883,8 +1890,8 @@ def _rebuild_bucket_dropping_member(cubes_dir: str, member_nn: str,
         pca_amps[str(rec)] = [float(a) for a in amps]
         pca_var[str(rec)] = [float(v) for v in var]
     man["member_labels"] = new_labels
-    man["has_combiner"] = bool(keep_combiner)  # legacy RBF contract
-    man[f"has_combiner_{_RBF_KIND}"] = bool(keep_combiner)
+    man["has_combiner"] = bool(keep_by_kind[_RBF_KIND])
+    man[f"has_combiner_{_RBF_KIND}"] = bool(keep_by_kind[_RBF_KIND])
     for kind, keep in keep_by_kind.items():
         man[f"has_combiner_{kind}"] = bool(keep)
     man["pca_amps"] = pca_amps
@@ -2103,10 +2110,10 @@ def _rebuild_pending_archive_caches(starless: bool) -> bool:
     for member_nn in member_nns:
         rebuilt_test = (_rebuild_bucket_dropping_member(
             _ensemble_cubes_dir(starless=starless), member_nn,
-            keep_combiner=keep_comb[_RBF_KIND]) or rebuilt_test)
+            keep_combiners=keep_comb) or rebuilt_test)
         _rebuild_bucket_dropping_member(
             _ensemble_cubes_dir("validate", starless=starless), member_nn,
-            keep_combiner=keep_comb[_RBF_KIND])
+            keep_combiners=keep_comb)
     return rebuilt_test
 
 

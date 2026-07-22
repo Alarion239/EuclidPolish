@@ -12,6 +12,7 @@ from euclid_polish.eval.combiner import (
     COMBINER_MODELS,
     CROSS_STAGE_MIN_SEPARATION,
     DEFAULT_WITHIN_STAGE_MIN_SEPARATION,
+    RAW_INCREMENTAL_FROZEN_MINMEANMAX_RBF_KIND,
     RAW_INCREMENTAL_MINMEANMAX_RBF_KIND,
     FitBufferAccumulator,
     RawIncrementalMinMeanMaxRBFCombiner,
@@ -41,11 +42,16 @@ def _training_problem(seed=7, n=2400):
     return raw, target
 
 
-def test_only_incremental_raw_combiner_is_registered():
-    assert ACTIVE_COMBINER_KINDS == (RAW_INCREMENTAL_MINMEANMAX_RBF_KIND,)
+def test_joint_and_frozen_incremental_raw_combiners_are_registered():
+    assert ACTIVE_COMBINER_KINDS == (
+        RAW_INCREMENTAL_MINMEANMAX_RBF_KIND,
+        RAW_INCREMENTAL_FROZEN_MINMEANMAX_RBF_KIND,
+    )
     assert tuple(COMBINER_MODELS) == ACTIVE_COMBINER_KINDS
     assert combiner_model_spec().default_kernels == 128
     assert normalize_model_kind(None) == RAW_INCREMENTAL_MINMEANMAX_RBF_KIND
+    assert normalize_model_kind("frozen_block_rbf") \
+        == RAW_INCREMENTAL_FROZEN_MINMEANMAX_RBF_KIND
     with pytest.raises(ValueError, match="unsupported combiner"):
         normalize_model_kind("stats_rbf_gate")
 
@@ -373,6 +379,64 @@ def test_minibatched_combiner_streams_every_pixel_with_disjoint_fields():
         np.fill_diagonal(distance, np.inf)
         assert float(np.min(distance)) >= DEFAULT_WITHIN_STAGE_MIN_SEPARATION
     assert len(passes) >= 5
+
+
+def test_frozen_minibatched_combiner_updates_only_new_accepted_blocks(tmp_path):
+    rng = np.random.default_rng(27)
+    fields = {}
+    for field_index in range(5):
+        target = rng.uniform(0.0, 3.0, (8, 7, 4)).astype(np.float32)
+        raw = np.repeat(target[None, ...], 3, axis=0)
+        raw += rng.normal(0.0, 0.12, raw.shape).astype(np.float32)
+        raw[0] += 0.35
+        fields[field_index] = (raw, target)
+
+    def field_factory(indices):
+        for field_index in indices:
+            raw, target = fields[field_index]
+            yield field_index, raw, target
+
+    psnr = np.asarray([30.0, 20.0, 10.0])
+    initial_logits, _, _ = _best_psnr_initial_logits(psnr)
+    combiner = fit_combiner_minibatched(
+        field_factory,
+        list(fields),
+        ["m0", "m1", "m2"],
+        n_kernels=8,
+        seed=5,
+        batch_rows=16,
+        epochs=1,
+        normalizer_rows=80,
+        candidate_rows=80,
+        increment_size=4,
+        model_kind=RAW_INCREMENTAL_FROZEN_MINMEANMAX_RBF_KIND,
+        member_validation_psnr=psnr,
+    )
+
+    history = combiner.fit_meta["center_history"]
+    assert combiner.kind == RAW_INCREMENTAL_FROZEN_MINMEANMAX_RBF_KIND
+    assert combiner.fit_meta["stage_parameter_updates"] \
+        == "newest_16_rbf_rows_only"
+    assert combiner.fit_meta["previous_rbf_blocks_frozen"] is True
+    assert combiner.fit_meta["global_logits_frozen_after_initialization"] is True
+    np.testing.assert_allclose(combiner.global_logits, initial_logits)
+    assert [row["n_centers"] for row in history] == [4, 8]
+    assert all(row["frozen_prefix_delta_norm"] == 0.0 for row in history)
+    assert all(row["frozen_global_logit_delta_norm"] == 0.0 for row in history)
+    accepted_losses = [row["accepted_val_l1"] for row in history]
+    assert accepted_losses == sorted(accepted_losses, reverse=True)
+    assert combiner.n_kernels == history[-1]["accepted_kernels"]
+    assert combiner.fit_meta["allocated_kernels"] == 8
+    assert (combiner.fit_meta["accepted_kernel_blocks"]
+            + combiner.fit_meta["rejected_kernel_blocks"]) == 2
+
+    artifact_dir = combiner_model_spec(combiner.kind).artifact_dir
+    save_combiner(combiner, str(tmp_path), artifact_dir=artifact_dir)
+    loaded = load_combiner(
+        str(tmp_path), member_labels=combiner.member_labels,
+        artifact_dir=artifact_dir)
+    assert loaded is not None
+    assert loaded.kind == RAW_INCREMENTAL_FROZEN_MINMEANMAX_RBF_KIND
 
 
 def test_loader_rejects_retired_combiner_artifact(tmp_path):

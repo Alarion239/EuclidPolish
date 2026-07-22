@@ -636,6 +636,8 @@ def render_ensemble_power_spectrum(out_png: str, curves: dict[str, np.ndarray],
         model_style = {
             "raw_incremental_minmeanmax_rbf": (
                 "incremental all-inference RBF", "#4f9d69"),
+            "raw_incremental_frozen_minmeanmax_rbf": (
+                "frozen-block all-inference RBF", "#b48ef2"),
         }
         if model_curves:
             for kind, curve_set in model_curves.items():

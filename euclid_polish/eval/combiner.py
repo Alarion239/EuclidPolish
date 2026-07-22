@@ -28,6 +28,9 @@ DEFAULT_WITHIN_STAGE_MIN_SEPARATION = 0.35
 CROSS_STAGE_MIN_SEPARATION = 0.1
 MAX_MINIBATCH_RBF_SIGMA = 8.0
 RAW_INCREMENTAL_MINMEANMAX_RBF_KIND = "raw_incremental_minmeanmax_rbf"
+RAW_INCREMENTAL_FROZEN_MINMEANMAX_RBF_KIND = (
+    "raw_incremental_frozen_minmeanmax_rbf"
+)
 BAND_NAMES = tuple(Config.HR_TARGET_BAND_NAMES)
 
 
@@ -55,8 +58,19 @@ COMBINER_MODELS = {
         "comb_raw_incremental_minmeanmax_rbf",
         _RAW_FEATURE_NAMES,
     ),
+    RAW_INCREMENTAL_FROZEN_MINMEANMAX_RBF_KIND: CombinerModelSpec(
+        RAW_INCREMENTAL_FROZEN_MINMEANMAX_RBF_KIND,
+        "frozen-block convex all-asinh RBF",
+        "raw_incremental_frozen_minmeanmax_rbf_combiner",
+        "raw_incremental_frozen_minmeanmax_rbf_combiner_evals.json",
+        "comb_raw_incremental_frozen_minmeanmax_rbf",
+        _RAW_FEATURE_NAMES,
+    ),
 }
-ACTIVE_COMBINER_KINDS = (RAW_INCREMENTAL_MINMEANMAX_RBF_KIND,)
+ACTIVE_COMBINER_KINDS = (
+    RAW_INCREMENTAL_MINMEANMAX_RBF_KIND,
+    RAW_INCREMENTAL_FROZEN_MINMEANMAX_RBF_KIND,
+)
 
 
 def _band_scale(name: str) -> float:
@@ -84,6 +98,12 @@ def normalize_model_kind(kind: str | None) -> str:
         "residual_rbf",
     }:
         return RAW_INCREMENTAL_MINMEANMAX_RBF_KIND
+    if key in {
+        RAW_INCREMENTAL_FROZEN_MINMEANMAX_RBF_KIND,
+        "frozen_incremental_raw_minmeanmax_rbf",
+        "frozen_block_rbf",
+    }:
+        return RAW_INCREMENTAL_FROZEN_MINMEANMAX_RBF_KIND
     raise ValueError(f"unsupported combiner model kind: {kind!r}")
 
 
@@ -1128,16 +1148,22 @@ def fit_combiner_minibatched(
     candidate_rows: int | None = None,
     increment_size: int = 16,
     initial_best_weight: float = 0.99,
+    model_kind: str = RAW_INCREMENTAL_MINMEANMAX_RBF_KIND,
     member_validation_psnr: np.ndarray | None = None,
     progress: Callable[[int, int, str], None] | None = None,
 ) -> RawIncrementalMinMeanMaxRBFCombiner:
     """Fit staged shared-band RBF logits from every streamed field pixel.
 
     Each stage rescans the training fields for improvement that is definitely
-    attainable by selecting one shared four-band member, adds at most 16
-    weighted K-means++ centers, and jointly refits every accumulated RBF
-    coefficient plus the global member logits with minibatch Adam.
+    attainable by selecting one shared four-band member and adds at most 16
+    weighted K-means++ centers.  The original kind jointly refits every
+    accumulated coefficient plus the global logits.  The separate frozen kind
+    keeps the global logits and all prior blocks fixed, trains only the newest
+    block, and zeros a block that does not improve whole-field validation L1.
     """
+    model_kind = normalize_model_kind(model_kind)
+    freeze_previous_blocks = (
+        model_kind == RAW_INCREMENTAL_FROZEN_MINMEANMAX_RBF_KIND)
     labels = [str(value) for value in member_labels]
     names = tuple(str(value) for value in band_names)
     indices = np.asarray(sorted({int(value) for value in field_indices}), np.int64)
@@ -1394,6 +1420,8 @@ def fit_combiner_minibatched(
     best_increment_ids = increment_ids.copy()
     best_theta = theta.copy()
     best_global_logits = global_logits.copy()
+    accepted_kernel_mask = np.empty((0,), bool)
+    best_accepted_kernel_mask = accepted_kernel_mask.copy()
     best_stage = 0
     history: list[dict] = []
     optimizer_rng = np.random.default_rng(int(seed) + 307)
@@ -1445,13 +1473,23 @@ def fit_combiner_minibatched(
             theta,
             np.zeros((len(new_centers), len(labels)), np.float64),
         ), axis=0)
+        accepted_kernel_mask = np.concatenate((
+            accepted_kernel_mask,
+            np.full(len(new_centers), not freeze_previous_blocks, bool),
+        ))
 
-        # Reset Adam moments at each stage while warm-starting the actual
-        # parameters. This makes every stage a genuine joint refit.
-        theta_first = np.zeros_like(theta)
-        theta_second = np.zeros_like(theta)
-        global_first = np.zeros_like(global_logits)
-        global_second = np.zeros_like(global_logits)
+        # The original model jointly refits all accumulated parameters.  The
+        # additive comparison model has separate state and updates only the
+        # newly appended rows; its prior gate is therefore exactly preserved.
+        optimized_theta = theta[used:] if freeze_previous_blocks else theta
+        theta_first = np.zeros_like(optimized_theta)
+        theta_second = np.zeros_like(optimized_theta)
+        global_first = (None if freeze_previous_blocks
+                        else np.zeros_like(global_logits))
+        global_second = (None if freeze_previous_blocks
+                         else np.zeros_like(global_logits))
+        frozen_prefix_before = theta[:used].copy()
+        frozen_global_before = global_logits.copy()
         adam_step = 0
         stage_l1_total = 0.0
         stage_pixel_count = 0
@@ -1494,24 +1532,36 @@ def fit_combiner_minibatched(
                         weight_gradient - np.sum(
                             weight_gradient * member_weights,
                             axis=1, keepdims=True))
-                    theta_gradient = (
-                        phi.T @ logit_gradient + float(ridge) * theta)
-                    global_gradient = np.sum(logit_gradient, axis=0)
+                    if freeze_previous_blocks:
+                        theta_gradient = (
+                            phi[:, used:].T @ logit_gradient
+                            + float(ridge) * theta[used:])
+                    else:
+                        theta_gradient = (
+                            phi.T @ logit_gradient + float(ridge) * theta)
+                        global_gradient = np.sum(logit_gradient, axis=0)
                     adam_step += 1
                     theta_first = 0.9 * theta_first + 0.1 * theta_gradient
                     theta_second = (
                         0.999 * theta_second + 0.001 * theta_gradient ** 2)
-                    global_first = 0.9 * global_first + 0.1 * global_gradient
-                    global_second = (
-                        0.999 * global_second + 0.001 * global_gradient ** 2)
                     correction1 = 1.0 - 0.9 ** adam_step
                     correction2 = 1.0 - 0.999 ** adam_step
-                    theta -= float(learning_rate) * (theta_first / correction1) / (
-                        np.sqrt(theta_second / correction2) + 1e-8)
-                    global_logits -= float(learning_rate) * (
-                        global_first / correction1) / (
+                    theta_update = float(learning_rate) * (
+                        theta_first / correction1) / (
+                            np.sqrt(theta_second / correction2) + 1e-8)
+                    if freeze_previous_blocks:
+                        theta[used:] -= theta_update
+                    else:
+                        theta -= theta_update
+                        global_first = (
+                            0.9 * global_first + 0.1 * global_gradient)
+                        global_second = (
+                            0.999 * global_second
+                            + 0.001 * global_gradient ** 2)
+                        global_logits -= float(learning_rate) * (
+                            global_first / correction1) / (
                             np.sqrt(global_second / correction2) + 1e-8)
-                    global_logits -= np.mean(global_logits)
+                        global_logits -= np.mean(global_logits)
                     stage_l1_total += float(np.sum(np.abs(error)))
                     stage_pixel_count += len(batch)
                     batches += 1
@@ -1523,7 +1573,14 @@ def fit_combiner_minibatched(
             f"stage {stage} validation")
         selected = bool(
             np.isfinite(val_l1) and val_l1 < best_val_l1 - 1e-9)
+        candidate_block_norm = float(np.linalg.norm(theta[used:]))
+        frozen_prefix_delta = float(np.linalg.norm(
+            theta[:used] - frozen_prefix_before))
+        frozen_global_delta = float(np.linalg.norm(
+            global_logits - frozen_global_before))
         if selected:
+            if freeze_previous_blocks:
+                accepted_kernel_mask[used:] = True
             best_val_l1 = val_l1
             best_val_vis_mse = val_vis_mse
             best_centers = centers.copy()
@@ -1531,7 +1588,12 @@ def fit_combiner_minibatched(
             best_increment_ids = increment_ids.copy()
             best_theta = theta.copy()
             best_global_logits = global_logits.copy()
+            best_accepted_kernel_mask = accepted_kernel_mask.copy()
             best_stage = stage
+        elif freeze_previous_blocks:
+            # Keep the attempted centers for cross-stage separation, but make
+            # their rejected block exactly neutral before placing the next one.
+            theta[used:] = 0.0
         history.append({
             "stage": int(stage),
             "epoch": int(max(1, int(epochs))),
@@ -1545,14 +1607,25 @@ def fit_combiner_minibatched(
             "candidate_max_achievable_gain": float(max_gain),
             "val_pixels": int(val_pixel_count),
             "val_l1": float(val_l1),
+            "accepted_val_l1": float(best_val_l1),
             "val_vis_asinh_mse": float(val_vis_mse),
             "val_vis_asinh_psnr": _stretched_psnr_from_mse(val_vis_mse),
             "selected_by_validation": selected,
             "optimizer_iterations": int(batches),
             "optimizer_progress": bool(batches > 0),
-            "new_block_norm": float(np.linalg.norm(theta[used:])),
+            "new_block_norm": candidate_block_norm,
+            "accepted_kernels": int(np.count_nonzero(
+                accepted_kernel_mask)),
+            "block_retained": bool(selected or not freeze_previous_blocks),
+            "frozen_prefix_delta_norm": frozen_prefix_delta,
+            "frozen_global_logit_delta_norm": frozen_global_delta,
         })
 
+    if freeze_previous_blocks:
+        best_centers = best_centers[best_accepted_kernel_mask]
+        best_sigmas = best_sigmas[best_accepted_kernel_mask]
+        best_increment_ids = best_increment_ids[best_accepted_kernel_mask]
+        best_theta = best_theta[best_accepted_kernel_mask]
     selected_k = len(best_centers)
 
     return RawIncrementalMinMeanMaxRBFCombiner(
@@ -1569,6 +1642,7 @@ def fit_combiner_minibatched(
         baseline_member_index=None,
         global_logits=best_global_logits.astype(np.float32),
         val_l1=float(best_val_l1),
+        kind=model_kind,
         fit_meta={
             "shared_across_bands": True,
             "features": "all member asinh inferences",
@@ -1591,9 +1665,22 @@ def fit_combiner_minibatched(
             "signed_sky_subtracted_output": True,
             "loss": "minibatch_smooth_asinh_l1_plus_ridge",
             "coefficient_parameterization": "global_plus_rbf_member_logits",
+            "stage_parameter_updates": (
+                "newest_16_rbf_rows_only"
+                if freeze_previous_blocks
+                else "all_rbf_rows_plus_global_logits"),
+            "previous_rbf_blocks_frozen": bool(freeze_previous_blocks),
+            "global_logits_frozen_after_initialization": bool(
+                freeze_previous_blocks),
+            "rejected_stage_behavior": (
+                "zero_new_block_then_continue_with_attempted_centers_reserved"
+                if freeze_previous_blocks else "continue_from_joint_refit"),
             "ridge_normalized_coefficient_l2": float(ridge),
             "optimizer": "streaming_minibatch_adam",
-            "optimizer_acceptance": "lowest whole-field holdout asinh-L1",
+            "optimizer_acceptance": (
+                "monotonic whole-field holdout asinh-L1 with block rollback"
+                if freeze_previous_blocks
+                else "lowest whole-field holdout asinh-L1"),
             "validation_prefix_metric": "asinh_L1_primary",
             "training_mode": "all_validation_pixels_minibatch",
             "field_split": "deterministic_disjoint_fields",
@@ -1612,9 +1699,17 @@ def fit_combiner_minibatched(
             "requested_kernels": int(target_k),
             "selected_kernels": int(selected_k),
             "learned_parameter_count": int(
-                len(labels) + selected_k * len(labels)),
+                (0 if freeze_previous_blocks else len(labels))
+                + selected_k * len(labels)),
             "stored_parameter_count": int(
                 selected_k * (len(labels) * len(names) + len(labels))),
+            "allocated_kernels": int(len(centers)),
+            "accepted_kernel_blocks": int(
+                sum(bool(row["selected_by_validation"]) for row in history)
+                if freeze_previous_blocks else len(history)),
+            "rejected_kernel_blocks": int(
+                sum(not bool(row["selected_by_validation"])
+                    for row in history) if freeze_previous_blocks else 0),
             "center_candidates": int(last_candidate_count),
             "center_candidate_rule": (
                 "rescanned after every stage; field-balanced hard attainable-"
@@ -1663,7 +1758,10 @@ def fit_combiner(
     **_unused,
 ) -> RawIncrementalMinMeanMaxRBFCombiner:
     """Fit the asinh-space combiner from aligned electron-domain inputs."""
-    normalize_model_kind(model_kind)
+    model_kind = normalize_model_kind(model_kind)
+    if model_kind == RAW_INCREMENTAL_FROZEN_MINMEANMAX_RBF_KIND:
+        raise ValueError(
+            "the frozen-block combiner requires fit_combiner_minibatched")
     X, y = buffer
     X = np.asarray(X, np.float32)
     y = np.asarray(y, np.float32)
@@ -1734,7 +1832,12 @@ def save_combiner(comb: RawIncrementalMinMeanMaxRBFCombiner, base_dir: str, *,
                   artifact_dir: str | None = None) -> None:
     if not isinstance(comb, RawIncrementalMinMeanMaxRBFCombiner):
         raise TypeError("only the all-inference RBF combiner is supported")
-    directory = _combiner_dir(base_dir, artifact_dir)
+    kind = normalize_model_kind(comb.kind)
+    expected_artifact_dir = combiner_model_spec(kind).artifact_dir
+    if artifact_dir is not None and artifact_dir != expected_artifact_dir:
+        raise ValueError(
+            f"artifact directory {artifact_dir!r} does not match {kind!r}")
+    directory = _combiner_dir(base_dir, artifact_dir or expected_artifact_dir)
     os.makedirs(directory, exist_ok=True)
     np.savez_compressed(
         os.path.join(directory, "combiner.npz"),
@@ -1752,7 +1855,7 @@ def save_combiner(comb: RawIncrementalMinMeanMaxRBFCombiner, base_dir: str, *,
     )
     manifest = {
         "schema": 9,
-        "kind": RAW_INCREMENTAL_MINMEANMAX_RBF_KIND,
+        "kind": kind,
         "feature_names": list(_RAW_FEATURE_NAMES),
         "member_labels": list(comb.member_labels),
         "n_kernels": int(comb.n_kernels),
@@ -1771,7 +1874,7 @@ def save_combiner(comb: RawIncrementalMinMeanMaxRBFCombiner, base_dir: str, *,
 def load_combiner(base_dir: str, *, member_labels: list[str] | None = None,
                   artifact_dir: str | None = None
                   ) -> RawIncrementalMinMeanMaxRBFCombiner | None:
-    """Load the sole supported artifact; all former formats are rejected."""
+    """Load one active all-inference artifact; retired formats are rejected."""
     directory = _combiner_dir(base_dir, artifact_dir)
     manifest_path = os.path.join(directory, "combiner.json")
     arrays_path = os.path.join(directory, "combiner.npz")
@@ -1780,7 +1883,12 @@ def load_combiner(base_dir: str, *, member_labels: list[str] | None = None,
     try:
         with open(manifest_path) as handle:
             manifest = json.load(handle)
-        if manifest.get("kind") != RAW_INCREMENTAL_MINMEANMAX_RBF_KIND:
+        manifest_kind = normalize_model_kind(manifest.get("kind"))
+        expected_kind = next((
+            kind for kind, spec in COMBINER_MODELS.items()
+            if spec.artifact_dir == (artifact_dir or combiner_model_spec().artifact_dir)
+        ), None)
+        if expected_kind is not None and manifest_kind != expected_kind:
             return None
         if manifest.get("feature_names") != list(_RAW_FEATURE_NAMES):
             return None
@@ -1805,6 +1913,7 @@ def load_combiner(base_dir: str, *, member_labels: list[str] | None = None,
             records_fp=manifest.get("records_fp"),
             starfull=bool(manifest.get("starfull", True)),
             val_l1=manifest.get("val_l1"),
+            kind=manifest_kind,
             fit_meta=manifest.get("fit_meta", {}),
         )
     except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):

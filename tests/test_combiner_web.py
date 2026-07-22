@@ -87,6 +87,33 @@ def test_combiner_fit_accepts_kernel_count_above_default(client, monkeypatch):
     assert seen["n_kernels"] == 1024
 
 
+def test_combiner_fit_accepts_separate_frozen_block_model(client, monkeypatch):
+    from euclid_polish.web.routes import ensemble as routes
+
+    seen = {}
+
+    def fake_job(_cap, **kwargs):
+        seen.update(kwargs)
+
+    def fake_spawn(_description, target):
+        target(_Cap())
+        return "frozen-block"
+
+    monkeypatch.setattr(routes, "job_combiner_fit", fake_job)
+    monkeypatch.setattr(routes.REGISTRY, "spawn", fake_spawn)
+    response = client.post("/ensemble/combiner/fit", data={
+        "mode": "starfull",
+        "model_kind": "raw_incremental_frozen_minmeanmax_rbf",
+        "n_kernels": "256",
+    })
+
+    assert response.status_code == 200
+    assert response.get_json()["job_id"] == "frozen-block"
+    assert seen["model_kind"] \
+        == "raw_incremental_frozen_minmeanmax_rbf"
+    assert seen["n_kernels"] == 256
+
+
 @pytest.mark.parametrize("retired", [
     "rbf_gate",
     "stats_rbf_gate",

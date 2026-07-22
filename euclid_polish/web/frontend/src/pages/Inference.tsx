@@ -231,9 +231,12 @@ function InferenceDiagnostics({ data, synthetic, syntheticLoading, syntheticErro
         : <MissingSyntheticPlot loading={syntheticLoading} error={syntheticError} />} />
 
     {Object.entries(data.combiners)
-      .filter(([kind]) => kind === "raw_incremental_minmeanmax_rbf")
+      .filter(([kind]) => kind === "raw_incremental_minmeanmax_rbf"
+        || kind === "raw_incremental_frozen_minmeanmax_rbf")
       .map(([kind, comb]) => {
-      const title = "minibatched convex all-asinh RBF";
+      const title = kind === "raw_incremental_frozen_minmeanmax_rbf"
+        ? "frozen-block convex all-asinh RBF"
+        : "minibatched convex all-asinh RBF";
       const combinerXDomain = sharedDomain(comb.x_edges, syntheticAxis?.edges?.[0] ?? []);
       const combinerYDomain = sharedDomain(comb.y_edges ?? [], syntheticAxis?.edges?.[1] ?? []);
       const combinerXTicks = ticks(combinerXDomain[0], combinerXDomain[1]);
