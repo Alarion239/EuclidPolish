@@ -206,10 +206,12 @@ def _table_rows(table: Iterable[Any]) -> list[dict[str, Any]]:
     return [{name: _jsonable(row[name]) for name in names} for row in table]
 
 
-def euclid_tile(tile_index: str, row: Mapping[str, Any]) -> dict[str, Any]:
+def euclid_tile(
+    tile_index: str, row: Mapping[str, Any], *, refresh: bool = False,
+) -> dict[str, Any]:
     """Resolve the Euclid product path, using the overlap cache first."""
     cached_path = overlap_root() / "euclid_vis_mosaics.json"
-    if cached_path.exists():
+    if not refresh and cached_path.exists():
         try:
             payload = json.loads(cached_path.read_text(encoding="utf-8"))
             for candidate in payload.get("rows", []):
@@ -237,6 +239,15 @@ def euclid_tile(tile_index: str, row: Mapping[str, Any]) -> dict[str, Any]:
     if not rows:
         raise RuntimeError(f"Euclid archive has no VIS mosaic product for tile {tile_index}")
     return rows[0]
+
+
+def euclid_product_path(tile: Mapping[str, Any]) -> str:
+    """Join the archive directory and filename into the cutout product path."""
+    path = _text(tile.get("file_path"))
+    filename = _text(tile.get("file_name"))
+    if path and filename and not path.rstrip("/").endswith(f"/{filename}"):
+        return f"{path.rstrip('/')}/{filename}"
+    return path
 
 
 def _find_image(path: Path) -> tuple[np.ndarray, Any, Any, str]:
@@ -359,6 +370,7 @@ def _download_euclid_cutout(
             coordinate=coordinate,
             radius=radius,
             output_file=str(destination),
+            verbose=True,
         )
         if _is_readable_fits(destination):
             return
@@ -368,6 +380,8 @@ def _download_euclid_cutout(
                 return
         except RuntimeError as error:
             last_error = str(error)
+        if result is None:
+            last_error = "cutout client returned no file (archive request or network failed)"
         if attempt == 0:
             print("Euclid returned an invalid cutout file; retrying once")
     raise RuntimeError(f"Euclid archive did not return a readable VIS cutout: {last_error}")
@@ -472,7 +486,7 @@ def download_and_align_pair(
         if progress:
             progress(1, 5, "resolving Euclid VIS tile")
         tile = euclid_tile(tile_index, row)
-        file_path = _text(tile.get("file_path"))
+        file_path = euclid_product_path(tile)
         if not file_path:
             raise RuntimeError(f"Euclid tile {tile_index} has no downloadable file_path")
 
@@ -485,14 +499,44 @@ def download_and_align_pair(
 
         if progress:
             progress(2, 5, "downloading Euclid VIS cutout")
-        _download_euclid_cutout(
-            Euclid,
-            file_path=file_path,
-            tile_index=tile_index,
-            coordinate=SkyCoord(ra=ra, dec=dec, unit="deg", frame="icrs"),
-            radius=(float(size_arcsec) / 2.0) * u.arcsec,
-            destination=euclid_path,
-        )
+        coordinate = SkyCoord(ra=ra, dec=dec, unit="deg", frame="icrs")
+        radius = (float(size_arcsec) / 2.0) * u.arcsec
+        try:
+            _download_euclid_cutout(
+                Euclid,
+                file_path=file_path,
+                tile_index=tile_index,
+                coordinate=coordinate,
+                radius=radius,
+                destination=euclid_path,
+            )
+        except RuntimeError as first_error:
+            # The overlap cache can outlive an archive data release. Resolve
+            # the tile once more after a failed cutout, but do not repeat the
+            # same stale request when the archive returned the same path.
+            try:
+                fresh_tile = euclid_tile(tile_index, row, refresh=True)
+            except Exception as refresh_error:  # noqa: BLE001 - retain the useful cutout error
+                raise RuntimeError(
+                    f"{first_error}; refreshing Euclid tile metadata also failed: "
+                    f"{type(refresh_error).__name__}: {refresh_error}"
+                ) from first_error
+            fresh_path = euclid_product_path(fresh_tile)
+            if not fresh_path or fresh_path == file_path:
+                raise RuntimeError(
+                    f"{first_error}; cached Euclid product path was still current"
+                ) from first_error
+            if progress:
+                progress(2, 5, "retrying Euclid VIS cutout with refreshed metadata")
+            _download_euclid_cutout(
+                Euclid,
+                file_path=fresh_path,
+                tile_index=tile_index,
+                coordinate=coordinate,
+                radius=radius,
+                destination=euclid_path,
+            )
+            tile = fresh_tile
 
         jwst_path = temporary_dir / "jwst_native.fits"
         if progress:

@@ -15,6 +15,17 @@ def test_field_id_is_stable_and_path_safe():
     assert " " not in identifier
 
 
+def test_euclid_product_path_joins_directory_and_filename():
+    assert jwst_euclid.euclid_product_path({
+        "file_path": "/archive/VIS",
+        "file_name": "tile.fits",
+    }) == "/archive/VIS/tile.fits"
+    assert jwst_euclid.euclid_product_path({
+        "file_path": "/archive/VIS/tile.fits",
+        "file_name": "tile.fits",
+    }) == "/archive/VIS/tile.fits"
+
+
 def test_jwst_product_selection_prefers_resampled_image():
     rows = [
         {"filename": "jw0001_rate.fits"},
