@@ -139,18 +139,25 @@ def test_scan_euclid_coverage_caches_unique_field_centers(tmp_path, monkeypatch)
     )
 
     calls = []
+    probes = []
 
     def fake_coverage(ra, dec, *, strict=False):
         calls.append((ra, dec, strict))
         return [{"tile_index": "VIS-T123", "file_name": "vis.fits", "file_path": "/archive"}] if ra == 10.0 else []
 
     monkeypatch.setattr(jwst_euclid, "euclid_tiles_covering", fake_coverage)
+    def fake_probe(client, tiles, **kwargs):
+        probes.append(list(tiles))
+        return (tiles[0], 0, []) if tiles else (None, 1, [])
+
+    monkeypatch.setattr(jwst_euclid, "_probe_euclid_tiles", fake_probe)
     summary = jwst_euclid.scan_euclid_coverage()
 
     assert summary["unique_count"] == 2
     assert summary["covered_count"] == 1
     assert summary["not_covered_count"] == 1
     assert len(calls) == 2
+    assert len(probes) == 1
     rows, _ = jwst_euclid.overlap_rows()
     assert [row["euclid_coverage_status"] for row in rows] == ["covered", "covered", "not_covered"]
 

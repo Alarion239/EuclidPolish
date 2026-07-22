@@ -139,13 +139,19 @@ def _coverage_key(ra: float, dec: float) -> str:
 def _load_coverage_scan() -> dict[str, Any]:
     path = coverage_scan_path()
     if not path.exists():
-        return {"version": 1, "results": {}}
+        return {"version": 2, "results": {}}
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return {"version": 1, "results": {}}
-    if not isinstance(payload, dict) or not isinstance(payload.get("results"), dict):
-        return {"version": 1, "results": {}}
+        return {"version": 2, "results": {}}
+    if (
+        not isinstance(payload, dict)
+        or payload.get("version") != 2
+        or not isinstance(payload.get("results"), dict)
+    ):
+        # Version 1 only tested catalog footprints.  It must not be reused as
+        # evidence that a real cutout contains usable VIS pixels.
+        return {"version": 2, "results": {}}
     return payload
 
 
@@ -367,6 +373,43 @@ def euclid_tiles_covering(ra: float, dec: float, *, strict: bool = False) -> lis
     return _table_rows(job.get_results())
 
 
+def _probe_euclid_tiles(
+    euclid_client: Any,
+    tiles: Iterable[Mapping[str, Any]],
+    *,
+    coordinate: Any,
+    radius: Any,
+    destination_dir: Path,
+) -> tuple[dict[str, Any] | None, int, list[str]]:
+    """Try real VIS cutouts and return the first one with non-zero pixels."""
+    blank_count = 0
+    errors: list[str] = []
+    destination = destination_dir / "euclid_probe.fits"
+    for tile in tiles:
+        file_path = euclid_product_path(tile)
+        tile_index = _text(tile.get("tile_index"))
+        if not file_path or not tile_index:
+            errors.append("coverage row has no downloadable VIS product")
+            continue
+        try:
+            _download_euclid_cutout(
+                euclid_client,
+                file_path=file_path,
+                tile_index=tile_index,
+                coordinate=coordinate,
+                radius=radius,
+                destination=destination,
+            )
+            data, _, _, _ = _find_image(destination)
+        except (OSError, RuntimeError, ValueError) as exc:
+            errors.append(f"{tile_index}: {exc}")
+            continue
+        if _has_signal(data):
+            return dict(tile), blank_count, errors
+        blank_count += 1
+    return None, blank_count, errors
+
+
 def scan_euclid_coverage(progress: Any = None) -> dict[str, Any]:
     """Check every unique JWST field center against the Euclid VIS footprint.
 
@@ -381,7 +424,7 @@ def scan_euclid_coverage(progress: Any = None) -> dict[str, Any]:
             positions.setdefault(_coverage_key(ra, dec), (ra, dec))
 
     scan = _load_coverage_scan()
-    scan["version"] = 1
+    scan["version"] = 2
     results = scan.setdefault("results", {})
     if not isinstance(results, dict):
         results = {}
@@ -398,21 +441,74 @@ def scan_euclid_coverage(progress: Any = None) -> dict[str, Any]:
         checked_utc = datetime.now(UTC).isoformat()
         try:
             tiles = euclid_tiles_covering(ra, dec, strict=True)
-            result = {
-                "status": "covered" if tiles else "not_covered",
-                "tile_count": len(tiles),
-                "tiles": [
-                    {
-                        "tile_index": _text(tile.get("tile_index")),
-                        "file_name": _text(tile.get("file_name")),
-                        "file_path": _text(tile.get("file_path")),
+            tile_records = [
+                {
+                    "tile_index": _text(tile.get("tile_index")),
+                    "file_name": _text(tile.get("file_name")),
+                    "file_path": _text(tile.get("file_path")),
+                }
+                for tile in tiles[:8]
+            ]
+            if not tiles:
+                result = {
+                    "status": "not_covered",
+                    "tile_count": 0,
+                    "reason": "no_metadata_footprint",
+                    "tiles": [],
+                    "ra_deg": ra,
+                    "dec_deg": dec,
+                    "checked_utc": checked_utc,
+                }
+            else:
+                import astropy.units as u
+                from astropy.coordinates import SkyCoord
+                from astroquery.esa.euclid import Euclid
+
+                probe_dir = Path(tempfile.mkdtemp(prefix=".coverage-probe-", dir=overlap_root()))
+                try:
+                    usable_tile, blank_count, probe_errors = _probe_euclid_tiles(
+                        Euclid,
+                        tiles,
+                        coordinate=SkyCoord(ra=ra, dec=dec, unit="deg", frame="icrs"),
+                        radius=15.0 * u.arcsec,
+                        destination_dir=probe_dir,
+                    )
+                finally:
+                    shutil.rmtree(probe_dir, ignore_errors=True)
+                if usable_tile is not None:
+                    result = {
+                        "status": "covered",
+                        "tile_count": len(tiles),
+                        "usable_tile": {
+                            "tile_index": _text(usable_tile.get("tile_index")),
+                            "file_name": _text(usable_tile.get("file_name")),
+                            "file_path": _text(usable_tile.get("file_path")),
+                        },
+                        "tiles": tile_records,
+                        "ra_deg": ra,
+                        "dec_deg": dec,
+                        "checked_utc": checked_utc,
                     }
-                    for tile in tiles[:8]
-                ],
-                "ra_deg": ra,
-                "dec_deg": dec,
-                "checked_utc": checked_utc,
-            }
+                elif probe_errors and not blank_count:
+                    result = {
+                        "status": "error",
+                        "tile_count": len(tiles),
+                        "tiles": tile_records,
+                        "ra_deg": ra,
+                        "dec_deg": dec,
+                        "checked_utc": checked_utc,
+                        "error": "; ".join(probe_errors[:3]),
+                    }
+                else:
+                    result = {
+                        "status": "not_covered",
+                        "tile_count": len(tiles),
+                        "reason": "blank_cutout",
+                        "tiles": tile_records,
+                        "ra_deg": ra,
+                        "dec_deg": dec,
+                        "checked_utc": checked_utc,
+                    }
         except Exception as exc:  # noqa: BLE001 - continue checking other fields
             result = {
                 "status": "error",
@@ -798,8 +894,8 @@ def download_and_align_pair(
                     break
             if not recovered:
                 raise RuntimeError(
-                    "Euclid VIS footprint query found no non-zero mosaic covering the JWST field; "
-                    "this overlap row is only a nearby candidate"
+                    "Euclid returned a readable VIS cutout, but it contained no non-zero pixels; "
+                    "the catalog footprint match is not a usable overlap for this JWST field"
                 )
 
         jwst_path = temporary_dir / "jwst_native.fits"

@@ -94,11 +94,12 @@ def register(app):
 
     @app.post("/api/jwst-euclid/scan-coverage")
     def api_jwst_euclid_scan_coverage():
-        rows, _ = overlap_rows()
+        rows, status = overlap_rows()
         if not rows:
             return jsonify({"error": "no cached JWST fields are available to scan"}), 400
+        unique_count = status.get("coverage_scan", {}).get("unique_count", len(rows))
         job_id = REGISTRY.spawn(
-            label=f"scan Euclid VIS coverage ({len(rows)} JWST fields)",
+            label=f"scan Euclid VIS coverage ({len(rows)} JWST rows; {unique_count} unique centers)",
             target=lambda cap: scan_euclid_coverage(
                 progress=lambda done, total, label: cap.tick(done, total, label),
             ),
