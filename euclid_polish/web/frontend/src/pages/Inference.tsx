@@ -185,10 +185,14 @@ function InferenceDiagnostics({ data, synthetic, syntheticLoading, syntheticErro
   const brightnessYDomain = sharedDomain(std.y_edges, syntheticBright?.std_edges ?? []);
   const brightnessXTicks = ticks(brightnessXDomain[0], brightnessXDomain[1]);
   const brightnessYTicks = ticks(brightnessYDomain[0], brightnessYDomain[1]);
+  const syntheticBrightnessXBins = syntheticBright?.bright_edges.length
+    ? syntheticBright.bright_edges.length - 1 : std.x_edges.length - 1;
+  const syntheticBrightnessYBins = syntheticBright?.std_edges.length
+    ? syntheticBright.std_edges.length - 1 : std.y_edges.length - 1;
   const brightnessXEdges = displayEdges(brightnessXDomain,
-    Math.max(std.x_edges.length - 1, (syntheticBright?.bright_edges.length ?? 2) - 1));
+    Math.min(std.x_edges.length - 1, syntheticBrightnessXBins));
   const brightnessYEdges = displayEdges(brightnessYDomain,
-    Math.max(std.y_edges.length - 1, (syntheticBright?.std_edges.length ?? 2) - 1));
+    Math.min(std.y_edges.length - 1, syntheticBrightnessYBins));
   const syntheticAxis = synthetic?.combiner_feature_error?.axes?.min_max;
   return <>
     <ComparisonCard title="Model–model angular cross-correlation"
@@ -234,10 +238,14 @@ function InferenceDiagnostics({ data, synthetic, syntheticLoading, syntheticErro
       const combinerYDomain = sharedDomain(comb.y_edges ?? [], syntheticAxis?.edges?.[1] ?? []);
       const combinerXTicks = ticks(combinerXDomain[0], combinerXDomain[1]);
       const combinerYTicks = ticks(combinerYDomain[0], combinerYDomain[1]);
+      const syntheticCombinerXBins = syntheticAxis?.edges?.[0]?.length
+        ? syntheticAxis.edges[0].length - 1 : comb.x_edges.length - 1;
+      const syntheticCombinerYBins = syntheticAxis?.edges?.[1]?.length
+        ? syntheticAxis.edges[1].length - 1 : (comb.y_edges?.length ?? 2) - 1;
       const combinerXEdges = displayEdges(combinerXDomain,
-        Math.max(comb.x_edges.length - 1, (syntheticAxis?.edges?.[0]?.length ?? 2) - 1));
+        Math.min(comb.x_edges.length - 1, syntheticCombinerXBins));
       const combinerYEdges = displayEdges(combinerYDomain,
-        Math.max(comb.y_edges?.length ? comb.y_edges.length - 1 : 1, (syntheticAxis?.edges?.[1]?.length ?? 2) - 1));
+        Math.min(comb.y_edges?.length ? comb.y_edges.length - 1 : 1, syntheticCombinerYBins));
       if (comb.mode === "histogram") {
         const counts = comb.counts as number[];
         const centers = counts.map((_, i) => (comb.x_edges[i] + comb.x_edges[i + 1]) / 2);
