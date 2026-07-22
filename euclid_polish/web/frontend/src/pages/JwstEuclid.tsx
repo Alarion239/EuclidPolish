@@ -12,9 +12,9 @@ type FieldRow = {
   jwst_instrument?: string;
   jwst_filters?: string;
   euclid_tile_index: string;
-  euclid_ra_deg?: number;
-  euclid_dec_deg?: number;
-  jwst_distance_deg?: number;
+  euclid_ra_deg?: number | string;
+  euclid_dec_deg?: number | string;
+  jwst_distance_deg?: number | string;
   footprint_status?: string;
   available: boolean;
 };
@@ -31,18 +31,25 @@ type Manifest = {
   target_name?: string;
   jwst_instrument?: string;
   jwst_filters?: string;
-  ra_deg: number;
-  dec_deg: number;
-  size_arcsec: number;
+  ra_deg: number | string;
+  dec_deg: number | string;
+  size_arcsec: number | string;
   shape: [number, number];
   alignment: { method: string; target_grid: string; source_units: string; target_units: string };
   display: { euclid: { display_min: number; display_max: number }; jwst: { display_min: number; display_max: number } };
   files: { euclid_png: string; jwst_png: string };
 };
 
-const formatCoord = (value: number | undefined, positive: string, negative: string) => {
-  if (value == null) return "—";
-  return `${Math.abs(value).toFixed(5)}° ${value >= 0 ? positive : negative}`;
+const asNumber = (value: number | string | undefined): number | null => {
+  if (value == null || value === "") return null;
+  const number = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(number) ? number : null;
+};
+
+const formatCoord = (value: number | string | undefined, positive: string, negative: string) => {
+  const number = asNumber(value);
+  if (number == null) return "—";
+  return `${Math.abs(number).toFixed(5)}° ${number >= 0 ? positive : negative}`;
 };
 
 const targetName = (row: FieldRow) => row.jwst_target_name?.trim() || "Unnamed JWST field";
@@ -65,7 +72,7 @@ export default function JwstEuclidPage() {
     const query = search.trim().toLowerCase();
     return fields.filter((row) => {
       const searchable = [targetName(row), instrumentName(row), filterName(row),
-        row.euclid_ra_deg?.toFixed(4), row.euclid_dec_deg?.toFixed(4)].join(" ").toLowerCase();
+        asNumber(row.euclid_ra_deg)?.toFixed(4), asNumber(row.euclid_dec_deg)?.toFixed(4)].join(" ").toLowerCase();
       const matchesSearch = !query || searchable.includes(query);
       const matchesInstrument = instrument === "all" || instrumentName(row) === instrument;
       const matchesView = view === "all"
@@ -216,7 +223,7 @@ export default function JwstEuclidPage() {
             <div>
               <div className="eyebrow">registered comparison</div>
               <h2>{pair.target_name || "Unnamed field"}</h2>
-              <p>{formatCoord(pair.ra_deg, "N", "S")} · {formatCoord(pair.dec_deg, "E", "W")} · {pair.size_arcsec.toFixed(1)}″ field · {pair.shape.join(" × ")} px</p>
+              <p>{formatCoord(pair.ra_deg, "N", "S")} · {formatCoord(pair.dec_deg, "E", "W")} · {(asNumber(pair.size_arcsec) ?? 0).toFixed(1)}″ field · {pair.shape.join(" × ")} px</p>
             </div>
             <div className="jwst-euclid__viewer-actions">
               <Badge tone="good">WCS aligned</Badge>
