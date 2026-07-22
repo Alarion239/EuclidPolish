@@ -1444,6 +1444,7 @@ def _jwst_euclid_meta(params: dict[str, str]) -> dict[str, Any]:
         jwst_band_options.append({"value": band, "label": band})
     tiers = [
         {"key": "lr", "label": "LR · Euclid VIS"},
+        {"key": "sr", "label": "SR · STARFULL combiner"},
         {"key": "jwst", "label": "JWST"},
     ]
     return {
@@ -1453,9 +1454,13 @@ def _jwst_euclid_meta(params: dict[str, str]) -> dict[str, Any]:
         "band_names": list(BAND_NAMES),
         "color_label": "Euclid colour",
         "jwst_band_options": jwst_band_options,
+        "missing_tier_labels": {"sr": "Generate SR"},
         "objects": [
             {
                 "label": f"{index} · {manifest.get('target_name') or 'paired field'}",
+                # Keep SR in every comparison row.  Before inference its tile
+                # is an explicit "Generate SR" affordance rather than a hidden
+                # tier, while after inference the same tile receives the result.
                 "tiers": [tier["key"] for tier in tiers],
                 "jwst_bands": ["colour"] + [
                     str(entry.get("filter") or "").strip().upper()
@@ -1484,6 +1489,19 @@ def _jwst_euclid_cube(index: int, tier: str, params: dict[str, str]):
             "label": "LR · Euclid VIS",
             "asinh": float(Config.STRETCH_SCALE_E),
             "pixscale": float(Config.VIS_PIXEL_SCALE_ARCSEC),
+            "bands": bands,
+            "display_scale": _robust_display_scale(cube),
+        }
+    if tier == "sr":
+        source = inference_files.get("starfull")
+        if not source:
+            raise ViewerError(404, "STARFULL inference is not available for this field")
+        cube = _pair_cube(_pair_file(directory, source))
+        bands = list(BAND_NAMES[:cube.shape[-1]])
+        return cube, {
+            "label": str(inference.get("combiner_label") or "SR · STARFULL combiner"),
+            "asinh": float(Config.STRETCH_SCALE_E),
+            "pixscale": float(inference.get("pixel_scale_arcsec") or Config.DEFAULT_PIXEL_SCALE),
             "bands": bands,
             "display_scale": _robust_display_scale(cube),
         }

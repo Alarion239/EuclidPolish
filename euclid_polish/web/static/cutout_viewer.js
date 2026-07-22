@@ -405,6 +405,9 @@ export function mountCutoutViewer(root, opts = {}) {
   };
   const tierMeta = (key) =>
     ((state.meta && state.meta.tiers) || []).find((t) => t.key === key);
+  const missingTierLabel = (key) =>
+    (state.meta && state.meta.missing_tier_labels && state.meta.missing_tier_labels[key])
+      || `no ${key}`;
   const jwstBandAvailable = (value) => {
     if (value === "colour") return true;
     const obj = state.meta && state.meta.objects && state.meta.objects[state.index];
@@ -1403,7 +1406,7 @@ export function mountCutoutViewer(root, opts = {}) {
     rebuildFrames({ preserveFrozen });
     state.shown.clear();
     await Promise.all(state.frames.map(async (fr) => {
-      if (!tierAvail(fr.tier)) { setFrameMsg(fr, `no ${fr.tier} for this object`); return; }
+      if (!tierAvail(fr.tier)) { setFrameMsg(fr, missingTierLabel(fr.tier)); return; }
       if (fr.tier === "morph") { await startMorph(fr, state.index); return; }
       fr.frame.classList.add("cv-loading");
       try {
@@ -1411,7 +1414,8 @@ export function mountCutoutViewer(root, opts = {}) {
         state.shown.set(fr.tier, rec);
         renderInto(fr, rec);
       } catch (e) {
-        setFrameMsg(fr, tierAvail(fr.tier) ? "not synced yet" : `no ${fr.tier}`);
+        setFrameMsg(fr, tierAvail(fr.tier) ? (state.meta.missing_tier_labels?.[fr.tier] || "not synced yet")
+          : missingTierLabel(fr.tier));
       } finally {
         fr.frame.classList.remove("cv-loading");
       }
@@ -1442,7 +1446,8 @@ export function mountCutoutViewer(root, opts = {}) {
         renderInto(fr, rec);
       } catch {
         if (token !== paramRefreshToken) return;
-        setFrameMsg(fr, tierAvail(fr.tier) ? "not synced yet" : `no ${fr.tier}`);
+        setFrameMsg(fr, tierAvail(fr.tier) ? (state.meta.missing_tier_labels?.[fr.tier] || "not synced yet")
+          : missingTierLabel(fr.tier));
       } finally {
         if (token === paramRefreshToken) fr.frame.classList.remove("cv-loading");
       }

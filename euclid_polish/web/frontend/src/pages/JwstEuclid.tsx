@@ -127,6 +127,8 @@ export default function JwstEuclidPage() {
   const [search, setSearch] = useState("");
   const [instrument, setInstrument] = useState("all");
   const [view, setView] = useState<FieldView>("all");
+  const [carouselIndex, setCarouselIndex] = useState(0);
+  const [viewerVersion, setViewerVersion] = useState(0);
   const pairJob = useJob();
   const bulkDownloadJob = useJob();
   const coverageJob = useJob();
@@ -185,13 +187,14 @@ export default function JwstEuclidPage() {
     });
   };
 
-  const runInference = () => {
-    if (!selected?.available) return;
-    void inferenceJob.run("/api/jwst-euclid/infer", { field_id: selected.field_id }, {
+  const runInference = (field: FieldRow | null) => {
+    if (!field?.available) return;
+    void inferenceJob.run("/api/jwst-euclid/infer", { field_id: field.field_id }, {
       onDone: () => {
         window.setTimeout(() => {
           void index.reload();
           void manifest.reload();
+          setViewerVersion((version) => version + 1);
         }, 250);
       },
     });
@@ -199,6 +202,7 @@ export default function JwstEuclidPage() {
 
   const pair = manifest.data;
   const savedFields = fields.filter((row) => row.available);
+  const carouselField = savedFields[carouselIndex] ?? savedFields[0] ?? null;
   const canDownload = !!selected && coverageStatus(selected) !== "not_covered" && !pairJob.busy;
   const remainingDownloadCount = fields.filter((row) => !row.available && coverageStatus(row) !== "not_covered").length;
   const sourceStatus = index.data?.status;
@@ -331,7 +335,7 @@ export default function JwstEuclidPage() {
                 <Button variant="primary" onClick={runDownload} disabled={!canDownload}>
                   {pairJob.busy ? "downloading location…" : coverageStatus(selected) === "not_covered" ? "no Euclid coverage" : selected.available ? "refresh grouped field" : "download grouped field"}
                 </Button>
-                <Button variant="ghost" onClick={runInference} disabled={!selected.available || inferenceJob.busy}>
+                <Button variant="ghost" onClick={() => runInference(selected)} disabled={!selected.available || inferenceJob.busy}>
                   {inferenceJob.busy ? "running STARFULL…" : pair?.inference ? "refresh STARFULL" : "run STARFULL combiner"}
                 </Button>
               </div>
@@ -349,22 +353,29 @@ export default function JwstEuclidPage() {
           <div className="jwst-euclid__viewer-head">
             <div>
               <div className="eyebrow">saved field carousel</div>
-              <h2>Euclid LR × JWST</h2>
-              <p>Carousel position 0 is {targetName(savedFields[0])}. Use the previous/next controls to move through every saved sky location, then choose either JWST colour or one native JWST filter in the same toolbar used for Euclid bands.</p>
+              <h2>Euclid LR × STARFULL × JWST</h2>
+              <p>Carousel position 0 is {targetName(savedFields[0])}. Use the previous/next controls to move through every saved sky location, run STARFULL on its Euclid VIS+Y+J+H inputs, then compare LR, SR, and JWST.</p>
             </div>
             <div className="jwst-euclid__viewer-actions">
               <Badge tone="good">{savedFields.length} saved fields</Badge>
-              <Badge>colour or native JWST band</Badge>
+              <Badge>field {carouselIndex} · {carouselField ? targetName(carouselField) : "—"}</Badge>
+              <Button variant="primary" size="sm" onClick={() => runInference(carouselField)}
+                disabled={!carouselField || inferenceJob.busy}>
+                {inferenceJob.busy ? "running STARFULL…" : "run STARFULL on Euclid"}
+              </Button>
             </div>
           </div>
           <JobProgressView job={inferenceJob.job} error={inferenceJob.error} />
           <CutoutViewer
-            key={`jwst-carousel-${savedFields.length}`}
+            key={`jwst-carousel-${savedFields.length}-${viewerVersion}`}
             collection="jwst-euclid"
-            initialTiers={["lr", "jwst"]}
+            initialTiers={["lr", "sr", "jwst"]}
+            initialIndex={carouselIndex}
+            onChange={(state) => setCarouselIndex((current) => current === state.index ? current : state.index)}
           />
           <div className="jwst-euclid__meta">
             <Stat k="Euclid tier" v="LR · VIS reference" />
+            <Stat k="STARFULL tier" v="SR · appears after the active Euclid field is run" />
             <Stat k="JWST tier" v="colour composite or selected native band" />
             <Stat k="display stretch" v="each panel p99.5 → same white point; not photometric" />
           </div>
