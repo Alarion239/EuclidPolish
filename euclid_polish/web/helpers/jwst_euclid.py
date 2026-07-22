@@ -310,6 +310,20 @@ def _write_display_png(data: np.ndarray, path: Path, accent: tuple[float, float,
     return {"display_min": float(lo), "display_max": float(hi)}
 
 
+def _aligned_primary_header(source_header: Any, product_name: str) -> Any:
+    """Make an archive image header safe for a new primary HDU."""
+    header = source_header.copy()
+    # Euclid image extensions can carry EXTNAME/EXTVER and extension-only
+    # structural cards.  Some products contain a non-string EXTNAME; copying
+    # that card into a new PrimaryHDU makes Astropy reject the aligned file.
+    for key in ("XTENSION", "EXTNAME", "EXTVER", "PCOUNT", "GCOUNT", "THEAP"):
+        header.pop(key, None)
+    header["ALIGN"] = "JWST-EUCLID"
+    header["SRCFILE"] = product_name[:68]
+    header.add_history("JWST resampled onto the Euclid VIS cutout WCS")
+    return header
+
+
 def _copy_downloaded(source: Any, destination: Path) -> None:
     if isinstance(source, (list, tuple)):
         source = source[0] if source else None
@@ -549,11 +563,10 @@ def download_and_align_pair(
             progress(4, 5, "registering JWST image on Euclid WCS")
         aligned = align_to_target(jwst_data, jwst_wcs, euclid_wcs, euclid_data.shape)
         aligned_path = temporary_dir / "jwst_aligned_to_euclid.fits"
-        aligned_header = euclid_header.copy()
-        aligned_header["ALIGN"] = "JWST-EUCLID"
-        aligned_header["SRCFILE"] = product_name[:68]
-        aligned_header.add_history("JWST resampled onto the Euclid VIS cutout WCS")
-        fits.PrimaryHDU(data=aligned, header=aligned_header).writeto(aligned_path, overwrite=True)
+        aligned_header = _aligned_primary_header(euclid_header, product_name)
+        fits.PrimaryHDU(data=aligned, header=aligned_header).writeto(
+            aligned_path, overwrite=True, output_verify="silentfix",
+        )
 
         euclid_png = temporary_dir / "euclid_vis.png"
         jwst_png = temporary_dir / "jwst_aligned.png"

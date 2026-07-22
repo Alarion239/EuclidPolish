@@ -20,6 +20,20 @@ def test_euclid_product_path_joins_directory_and_filename():
         "file_path": "/archive/VIS",
         "file_name": "tile.fits",
     }) == "/archive/VIS/tile.fits"
+
+
+def test_aligned_header_removes_invalid_extension_cards(tmp_path):
+    from astropy.io import fits
+
+    header = fits.Header()
+    header["EXTNAME"] = 1
+    header["EXTVER"] = 1
+    safe = jwst_euclid._aligned_primary_header(header, "jwst_i2d.fits")
+    assert "EXTNAME" not in safe
+    assert safe["ALIGN"] == "JWST-EUCLID"
+    fits.PrimaryHDU(data=np.zeros((2, 2), dtype=np.float32), header=safe).writeto(
+        tmp_path / "aligned.fits",
+    )
     assert jwst_euclid.euclid_product_path({
         "file_path": "/archive/VIS/tile.fits",
         "file_name": "tile.fits",
