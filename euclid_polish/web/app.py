@@ -158,6 +158,8 @@ def create_app() -> Flask:
         "/api/inspect",          # local FITS metadata for the React inspector
         "/ensemble",             # local: runs ensemble checkpoints on local test
         "/ensemble/",            # records; render + evaluate jobs need no SSH
+        "/api/inference/",       # cached real-field workspace is local
+        "/inference/",           # local recache/reapply jobs reuse archive data
         "/eval-files/",          # serve already-pulled PNG/FITS offline
         "/viewer/",              # unified cutout viewer reads local caches
         "/lens-isolation",       # additive experiment status works offline

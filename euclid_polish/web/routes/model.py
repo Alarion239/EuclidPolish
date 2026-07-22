@@ -10,6 +10,7 @@ from euclid_polish.web.helpers.real_field import (
     cache_real_field,
     field_dir,
     latest_field,
+    refresh_real_field_combiners,
 )
 from euclid_polish.web.helpers.status import _checkpoints_status
 from euclid_polish.web.jobs import REGISTRY
@@ -68,5 +69,33 @@ def register(app):
             label=f"cache real Euclid field @ ({ra:.4f}, {dec:+.4f})",
             target=lambda cap: cache_real_field(
                 ra, dec, progress=lambda done, total, label: cap.tick(done, total, label)),
+        )
+        return jsonify({"job_id": job_id})
+
+    @app.route("/inference/refresh-combiners", methods=["POST"])
+    def inference_refresh_combiners():
+        """Apply the newest STARFULL combiner, rebuilding stale members."""
+        field = latest_field()
+        if field is None:
+            return jsonify({"error": "no cached real Euclid field"}), 400
+        identifier = str(field["field_id"])
+
+        def refresh(cap):
+            def progress(done, total, label):
+                cap.tick(done, total, label)
+
+            try:
+                return refresh_real_field_combiners(
+                    identifier, progress=progress)
+            except RuntimeError as error:
+                if "member cache is stale" not in str(error):
+                    raise
+                return cache_real_field(
+                    float(field["ra"]), float(field["dec"]),
+                    progress=progress)
+
+        job_id = REGISTRY.spawn(
+            label=f"refresh real-field inference ({identifier})",
+            target=refresh,
         )
         return jsonify({"job_id": job_id})

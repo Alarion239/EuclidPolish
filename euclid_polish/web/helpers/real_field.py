@@ -251,6 +251,42 @@ def _load_or_download_lr(ra: float, dec: float, root: Path,
     return cube
 
 
+def _preserve_matching_member_cubes(
+    cubes: Path,
+    old_labels: list[str],
+    new_labels: list[str],
+    *,
+    count: int,
+) -> tuple[Path, int]:
+    """Hard-link reusable member tiles into a temporary remapping directory."""
+    staging = cubes / ".member_reuse"
+    staging.mkdir(exist_ok=True)
+    for stale in staging.iterdir():
+        if stale.is_file():
+            stale.unlink()
+    old_indices = {str(label): index for index, label in enumerate(old_labels)}
+    preserved = 0
+    for new_index, label in enumerate(new_labels):
+        old_index = old_indices.get(str(label))
+        if old_index is None:
+            continue
+        for tile in range(max(0, int(count))):
+            source = cubes / f"member{old_index}_{tile:03d}.npy"
+            if not source.is_file():
+                continue
+            staged = staging / f"member{new_index}_{tile:03d}.npy"
+            os.link(source, staged)
+            preserved += 1
+    return staging, preserved
+
+
+def _restore_matching_member_cubes(cubes: Path, staging: Path) -> None:
+    for staged in staging.glob("member*_*.npy"):
+        os.replace(staged, cubes / staged.name)
+    with contextlib.suppress(OSError):
+        staging.rmdir()
+
+
 def cache_real_field(ra: float, dec: float, *,
                      progress: Callable[[int, int, str], None]) -> dict[str, Any]:
     """Materialise the 100-tile STARFULL real-data cache, reusing raw data."""
@@ -269,10 +305,20 @@ def cache_real_field(ra: float, dec: float, *,
     n_members = len(labels)
     old_labels = old.get("member_labels") or []
     if old_labels != labels:
-        # Raw archive data remains reusable, but every derived cube belongs to
-        # the old membership and must not be presented as current inference.
+        # Preserve member cubes whose checkpoint labels still match, remapping
+        # their positional indices through hard links.  All aggregate/PCA/
+        # combiner products are membership-dependent and are rebuilt below.
+        staging, preserved = _preserve_matching_member_cubes(
+            cubes,
+            [str(label) for label in old_labels],
+            labels,
+            count=int(old.get("count", GRID_SIDE * GRID_SIDE)),
+        )
         for path in cubes.glob("*.npy"):
             path.unlink()
+        _restore_matching_member_cubes(cubes, staging)
+        if preserved:
+            print(f"  reused {preserved} matching cached member tiles")
 
     regime_dir = Path(Config.VIS_DIR) / "ensemble" / "starfull"
     combiners = {
@@ -303,17 +349,22 @@ def cache_real_field(ra: float, dec: float, *,
         tile_lr = lr[ys:ys + TILE_SIZE, xs:xs + TILE_SIZE]
         np.save(cubes / f"lr_{tile:03d}.npy", tile_lr)
         member_paths = [cubes / f"member{i}_{tile:03d}.npy" for i in range(n_members)]
-        if not all(path.is_file() for path in member_paths):
+        missing_members = [
+            index for index, path in enumerate(member_paths)
+            if not path.is_file()]
+        if missing_members:
             if ensemble is None:
                 from euclid_polish.ensemble import EnsembleModel
                 ensemble = EnsembleModel(default_ensemble_dir(), starless=False)
                 if list(ensemble.member_labels) != labels:
                     raise RuntimeError("STARFULL membership changed during real-field refresh")
-            members = np.asarray(ensemble.member_arrays(tile_lr), np.float32)
-            for i, member in enumerate(members):
-                np.save(member_paths[i], member)
-        else:
-            members = np.stack([np.load(path) for path in member_paths]).astype(np.float32)
+            models = ensemble.members
+            for member_index in missing_members:
+                member = np.asarray(
+                    models[member_index].upsample_array(tile_lr), np.float32)
+                np.save(member_paths[member_index], member)
+        members = np.stack(
+            [np.load(path) for path in member_paths]).astype(np.float32)
         mean, pcs, amps, variance = pca_field(members)
         np.save(cubes / f"sr_{tile:03d}.npy", mean)
         np.save(cubes / f"std_{tile:03d}.npy", members.std(axis=0))

@@ -569,6 +569,23 @@ def test_post_inference_cache_real_field_returns_job_id(client, monkeypatch):
     assert "job_id" in r.get_json()
 
 
+def test_post_inference_refresh_combiners_returns_job_id(client, monkeypatch):
+    """A fitted combiner can be reapplied without rerunning member networks."""
+    monkeypatch.setattr(
+        "euclid_polish.web.routes.model.latest_field",
+        lambda: {"field_id": "ra267p4_dec64p9"},
+    )
+    monkeypatch.setattr(
+        "euclid_polish.web.routes.model.refresh_real_field_combiners",
+        lambda *args, **kwargs: {},
+    )
+
+    response = client.post("/inference/refresh-combiners")
+
+    assert response.status_code == 200
+    assert "job_id" in response.get_json()
+
+
 def test_login_node_generate_cmd_injects_tng_density():
     """The inference login-node generation always runs all-TNG mode with
     redshift realism: COSMOS off, pure-TNG density, --tng-redshift-mode."""

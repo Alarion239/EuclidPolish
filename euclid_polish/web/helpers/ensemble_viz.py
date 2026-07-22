@@ -219,7 +219,7 @@ _RAW_INCREMENTAL_MINMEANMAX_RBF_KIND = RAW_INCREMENTAL_MINMEANMAX_RBF_KIND
 _RBF_KIND = _RAW_INCREMENTAL_MINMEANMAX_RBF_KIND
 _PCA_GATE_KINDS = {_RAW_INCREMENTAL_MINMEANMAX_RBF_KIND}
 _ORDINARY_COMBINER_KINDS = tuple(COMBINER_MODELS)
-_PCA_WEIGHT_SURFACE_SCHEMA = 2
+_PCA_WEIGHT_SURFACE_SCHEMA = 3
 
 
 def _normalize_combiner_kind(kind: str | None) -> str:
@@ -1402,7 +1402,13 @@ def _shared_pca_weight_diagnostic(comb, *, starless: bool,
     rng = np.random.default_rng(271828)
     rows: list[np.ndarray] = []
     used = 0
-    for rec in sorted(int(i) for i in manifest.get("indices", []) or []):
+    field_indices = sorted(
+        int(i) for i in manifest.get("indices", []) or [])
+    field_budget = min(
+        int(per_field),
+        max(1, int(np.ceil(max_rows / max(1, len(field_indices))))),
+    )
+    for rec in field_indices:
         if used >= int(max_rows):
             break
         stack = load_cached_member_stack(
@@ -1412,7 +1418,7 @@ def _shared_pca_weight_diagnostic(comb, *, starless: bool,
             continue
         members, height, width, channels = stack.shape
         n_pixels = height * width
-        take = min(int(per_field), n_pixels, int(max_rows) - used)
+        take = min(field_budget, n_pixels, int(max_rows) - used)
         pick = (np.arange(n_pixels) if take == n_pixels
                 else rng.choice(n_pixels, size=take, replace=False))
         rows.append(stack.reshape(members, n_pixels, channels)[:, pick, :]
@@ -1433,6 +1439,8 @@ def _shared_pca_weight_diagnostic(comb, *, starless: bool,
         "n_fields": len(manifest.get("indices", []) or []),
         "feature_space": surface.get("feature_space"),
         "conditioning_note": surface.get("conditioning_note"),
+        "projection_method": surface.get("projection_method"),
+        "integration_neighbors": surface.get("integration_neighbors"),
         "records_fp": manifest.get("records_fp"),
         # FeatureGrid-compatible names let the existing interactive 3-D renderer
         # draw this diagnostic with exactly the same camera and weight scale.
@@ -1452,6 +1460,9 @@ def _shared_pca_weight_diagnostic(comb, *, starless: bool,
             surface["explained_variance_ratio"]),
         "feature_names": [str(name) for name in surface["feature_names"]],
         "loadings": np.round(np.asarray(surface["loadings"], float), 6).tolist(),
+        "projected_density": _jsonable(surface.get("projected_density", [])),
+        "integrated_weights": _jsonable(surface.get("integrated_weights", [])),
+        "peak_weights": _jsonable(surface.get("peak_weights", [])),
     }
     weights = np.asarray(surface["weights"], float)
     common["weights"] = np.round(weights, 6).tolist()
@@ -1487,17 +1498,20 @@ def compute_combiner_payload(starless: bool,
             combiner, starless=starless)
         surface["artifact_fp"] = artifact_fp
     weight_labels = list(combiner.weight_labels)
-    surface_weights = np.asarray(surface.get("weights", []), np.float64)
-    if (surface_weights.ndim == 3
-            and surface_weights.shape[-1] == len(weight_labels)):
-        shared_peaks = np.max(surface_weights, axis=(0, 1)).tolist()
-        shared_integrals = np.mean(surface_weights, axis=(0, 1)).tolist()
+    integrated_weights = np.asarray(
+        surface.get("integrated_weights", []), np.float64)
+    peak_weights = np.asarray(surface.get("peak_weights", []), np.float64)
+    if (integrated_weights.shape == (len(weight_labels),)
+            and peak_weights.shape == (len(weight_labels),)):
+        shared_peaks = peak_weights.tolist()
+        shared_integrals = integrated_weights.tolist()
     else:
         shared_peaks = []
         shared_integrals = []
     member_weight_peaks = dict.fromkeys(combiner.band_names, shared_peaks)
     member_weight_integrals = dict.fromkeys(
         combiner.band_names, shared_integrals)
+    member_meta = _member_meta_from_labels(weight_labels)
     payload = {
         "available": True,
         "stale": list(combiner.member_labels) != _regime_labels(
@@ -1507,8 +1521,8 @@ def compute_combiner_payload(starless: bool,
         "member_labels": weight_labels,
         "source_member_labels": list(combiner.member_labels),
         "members": [
-            {"label": str(label), "role": "source_member"}
-            for label in weight_labels
+            {"label": str(label), "role": "source_member", **member_meta[index]}
+            for index, label in enumerate(weight_labels)
         ],
         "n_kernels": int(combiner.n_kernels),
         "min_usage": 0.0,

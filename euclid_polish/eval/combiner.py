@@ -686,11 +686,14 @@ class RawIncrementalMinMeanMaxRBFCombiner:
         return self.apply_field(ens.member_arrays(lr_array))
 
     def pca_weight_surface(self, pixels: np.ndarray, *, n_pc1: int = 31,
-                           n_pc2: int = 31) -> dict:
-        """PCA surface of shared convex member weights."""
-        features = self.features_from_electrons(pixels)
+                           n_pc2: int = 31,
+                           integration_neighbors: int = 256) -> dict:
+        """Empirically integrate full-space member weights onto PC1 x PC2."""
+        raw_pixels = np.asarray(pixels)
+        features = self.features_from_electrons(raw_pixels)
         finite = np.all(np.isfinite(features), axis=1)
         features = features[finite]
+        raw_pixels = raw_pixels[finite]
         if len(features) < 2 or features.shape[1] < 2:
             return {"n_pixels": int(len(features)), "available": False}
         scales = np.maximum(np.asarray(self.scales, np.float64), 1e-8)
@@ -722,17 +725,31 @@ class RawIncrementalMinMeanMaxRBFCombiner:
         pc1 = np.linspace(*bounds[0], max(3, int(n_pc1)))
         pc2 = np.linspace(*bounds[1], max(3, int(n_pc2)))
         xx, yy = np.meshgrid(pc1, pc2, indexing="xy")
-        path = (feature_mean[None, :]
-                + (xx.reshape(-1, 1) * components[0][None, :]
-                   + yy.reshape(-1, 1) * components[1][None, :]) * scales[None, :])
-        basis = self._basis_from_features(path)
-        global_logits = (
-            np.zeros(len(self.member_labels), np.float64)
-            if self.global_logits is None
-            else np.asarray(self.global_logits, np.float64))
-        weights = _softmax_rows(
-            global_logits[None, :]
-            + basis @ np.asarray(self.coefficients, np.float64))
+        projected_grid = np.stack((xx.reshape(-1), yy.reshape(-1)), axis=1)
+
+        # Evaluate the actual gate in full feature space first.  The omitted
+        # PCs are then marginalized over the empirical validation
+        # distribution rather than being fixed to zero/mean.  An adaptive
+        # k-nearest-neighbour Gaussian gives a smooth conditional expectation
+        # E[w | PC1, PC2] without constructing a G x N distance matrix.
+        observed_weights = self.weights_from_electrons(raw_pixels)
+        from scipy.spatial import cKDTree
+        neighbor_count = min(
+            len(scores), max(1, int(integration_neighbors)))
+        distances, neighbors = cKDTree(scores).query(
+            projected_grid, k=neighbor_count, workers=1)
+        if neighbor_count == 1:
+            distances = distances[:, None]
+            neighbors = neighbors[:, None]
+        bandwidth = np.maximum(distances[:, -1], 1e-8)
+        kernel = np.exp(
+            -0.5 * (distances / bandwidth[:, None]) ** 2)
+        kernel_sum = np.maximum(np.sum(kernel, axis=1, keepdims=True), 1e-12)
+        weights = np.einsum(
+            "gk,gkm->gm", kernel, observed_weights[neighbors], optimize=True
+        ) / kernel_sum
+        projected_density = 1.0 / np.maximum(bandwidth * bandwidth, 1e-12)
+        projected_density /= max(float(np.max(projected_density)), 1e-12)
         feature_names = [
             f"{label}:{band} asinh" for label in self.member_labels
             for band in self.band_names
@@ -743,16 +760,22 @@ class RawIncrementalMinMeanMaxRBFCombiner:
             "n_pixels": int(len(features)),
             "feature_space": "scale-normalized all-member asinh inferences",
             "conditioning_note": (
-                "The surface shows the shared convex member weights along PC1 "
-                "and PC2; all remaining PCs stay at their validation mean."),
+                "The surface is the empirical conditional mean member weight "
+                "at PC1 and PC2; omitted PCs are integrated over nearby "
+                "full-dimensional validation pixels."),
+            "projection_method": "adaptive_knn_conditional_weight_mean",
+            "integration_neighbors": int(neighbor_count),
             "pc1": pc1, "pc2": pc2,
             "center_pc1": center_scores[:, 0],
             "center_pc2": center_scores[:, 1],
             "weights": weights.reshape(len(pc2), len(pc1), -1),
+            "projected_density": projected_density.reshape(len(pc2), len(pc1)),
+            "integrated_weights": np.mean(observed_weights, axis=0),
+            "peak_weights": np.max(observed_weights, axis=0),
             "explained_variance_ratio": eigenvalues / total_variance,
             "feature_names": feature_names,
             "loadings": components.copy(),
-            "z_label": "shared convex member weight [0-1]",
+            "z_label": "integrated shared member weight [0-1]",
             "surface_labels": list(self.member_labels),
         }
 

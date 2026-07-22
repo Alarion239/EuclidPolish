@@ -128,6 +128,8 @@ type PCAWeightSurface = FeatureGrid & {
   explained_variance_ratio?: (number | null)[];
   feature_names?: string[]; loadings?: (number | null)[][];
   surface_labels?: string[];
+  projection_method?: string; integration_neighbors?: number;
+  integrated_weights?: (number | null)[]; peak_weights?: (number | null)[];
 };
 type PredictiveAxisMetrics = {
   soft_route_r2?: number; top_route_accuracy?: number;
@@ -1415,23 +1417,23 @@ export function CombinerCard(
     if (selectedSurfaceMember >= surfaceLabels.length) setSurfaceMember("0");
   }, [selectedSurfaceMember, surfaceLabels.length]);
 
-  const [importanceSort, setImportanceSort] = useState<"index" | "total">("index");
+  const [importanceSort, setImportanceSort] = useState<"index" | "integrated">("index");
   const [importanceSortDescending, setImportanceSortDescending] = useState(true);
 
   const importance = useMemo(() => {
     if (!comb) return [];
     const labels = asArray<string>(comb.member_labels);
     const memberMeta = asArray<NonNullable<Combiner["members"]>[number]>(comb.members);
+    const sharedBand = bands[0];
     const rows = labels
       .map((label, i) => {
-        const peaks = Object.fromEntries(bands.map((b) => [b, comb.member_weight_peaks?.[b]?.[i] ?? null]));
-        const integrals = Object.fromEntries(bands.map((b) => [b, comb.member_weight_integrals?.[b]?.[i] ?? null]));
+        const peak = sharedBand ? comb.member_weight_peaks?.[sharedBand]?.[i] ?? null : null;
+        const integrated = sharedBand ? comb.member_weight_integrals?.[sharedBand]?.[i] ?? null : null;
         return { i, label, meta: memberMeta[i],
-          peaks, integrals,
-          total: [...Object.values(peaks), ...Object.values(integrals)]
-            .reduce<number>((sum, value) => sum + (value == null || !Number.isFinite(value) ? 0 : value), 0) };
+          peak, integrated,
+          total: integrated == null || !Number.isFinite(integrated) ? 0 : integrated };
       });
-    return rows.sort((a, b2) => importanceSort === "total"
+    return rows.sort((a, b2) => importanceSort === "integrated"
       ? (importanceSortDescending ? b2.total - a.total : a.total - b2.total) || a.i - b2.i
       : a.i - b2.i);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1440,17 +1442,17 @@ export function CombinerCard(
   const weightColumns = useMemo<Column<(typeof importance)[number]>[]>(() => [
     { header: "member", cell: (row) => <code>{row.label}</code> },
     { header: <button type="button" className="ui-table__sort-button"
-        onClick={() => { setImportanceSort("total"); setImportanceSortDescending((v) => importanceSort === "total" ? !v : true); }}>
-        8-channel weight sum{importanceSort === "total" ? (importanceSortDescending ? " ↓" : " ↑") : ""}
+        onClick={() => { setImportanceSort("integrated"); setImportanceSortDescending((v) => importanceSort === "integrated" ? !v : true); }}>
+        integrated weight{importanceSort === "integrated" ? (importanceSortDescending ? " ↓" : " ↑") : ""}
       </button>, align: "right",
-      cell: (row) => `${(100 * row.total).toFixed(2)}%` },
-    ...bands.flatMap((b) => ([
-      { header: `${b} peak`, align: "right" as const,
-        cell: (row: (typeof importance)[number]) => row.peaks[b] == null ? "—" : `${(100 * row.peaks[b]!).toFixed(2)}%` },
-      { header: `${b} integral`, align: "right" as const,
-        cell: (row: (typeof importance)[number]) => row.integrals[b] == null ? "—" : `${(100 * row.integrals[b]!).toFixed(2)}%` },
-    ])),
-  ], [bands, importance, importanceSort, importanceSortDescending]);
+      cell: (row) => row.integrated == null ? "—" : `${(100 * row.integrated).toFixed(2)}%` },
+    { header: "peak weight", align: "right",
+      cell: (row) => row.peak == null ? "—" : `${(100 * row.peak).toFixed(2)}%` },
+    { header: "PSNR", align: "right",
+      cell: (row) => row.meta?.psnr == null ? "—" : `${row.meta.psnr.toFixed(2)} dB` },
+    { header: "loss", cell: (row) => (row.meta?.loss ?? "—").toUpperCase() },
+    { header: "depth", align: "right", cell: (row) => row.meta?.blocks ?? "—" },
+  ], [importance, importanceSort, importanceSortDescending]);
 
   const surfaceMembers = importance;
   const surfaceMemberPosition = surfaceMembers.findIndex((r) => r.i === selectedSurfaceMember);
@@ -1620,6 +1622,19 @@ export function CombinerCard(
               </div>
             )}
 
+            {fittedConvexGate && importance.length > 0 && (
+              <div style={{ marginTop: "var(--s4)" }}>
+                <div className="eyebrow" style={{ marginBottom: 8 }}>
+                  member importance · validation-distribution integrated shared weight
+                </div>
+                <Table columns={weightColumns} rows={importance}
+                  rowKey={(row) => row.i} />
+                <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
+                  Integrated weight is the mean learned shared softmax weight over sampled full-dimensional validation pixels; values sum to 100%.
+                </div>
+              </div>
+            )}
+
             {bands.length > 0 && (
               <div style={{ marginTop: "var(--s4)" }}>
                 <div className="row" style={{ justifyContent: "space-between", marginBottom: 8, gap: "var(--s3)" }}>
@@ -1649,7 +1664,8 @@ export function CombinerCard(
                     <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
                       PCA uses {pcaSurface.n_pixels?.toLocaleString() ?? "—"} sampled validation pixels in the model’s scale-normalized full member-inference feature space.
                       {" "}PC1 explains {isFinite(pcaVariance[0]) ? `${(100 * pcaVariance[0]).toFixed(1)}%` : "—"}; PC2 explains {isFinite(pcaVariance[1]) ? `${(100 * pcaVariance[1]).toFixed(1)}%` : "—"}.
-                      {" "}All remaining PCs stay at the validation mean. Dominant loadings: PC1 {pcaLoadingSummary(0) || "—"}; PC2 {pcaLoadingSummary(1) || "—"}.
+                      {" "}Weights are evaluated in the complete input space and locally integrated after projection using {pcaSurface.integration_neighbors ?? "—"} neighboring validation pixels; omitted PCs are not fixed to their mean.
+                      {" "}Dominant loadings: PC1 {pcaLoadingSummary(0) || "—"}; PC2 {pcaLoadingSummary(1) || "—"}.
                     </div>
                   </div>
                 )}

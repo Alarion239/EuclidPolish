@@ -201,6 +201,7 @@ export default function InferencePage() {
   const [ra, setRa] = useState("267.4229");
   const [dec, setDec] = useState("64.8873");
   const job = useJob();
+  const refreshJob = useJob();
   const raNum = Number(ra), decNum = Number(dec);
   const valid = ra.trim() !== "" && dec.trim() !== "" && Number.isFinite(raNum)
     && Number.isFinite(decNum) && raNum >= 0 && raNum < 360 && decNum >= -90 && decNum <= 90;
@@ -208,6 +209,12 @@ export default function InferencePage() {
   const cache = () => {
     if (!valid) return;
     job.run("/inference/cache-real-field", { ra: raNum, dec: decNum }, { onDone: () => { reload(); diagnostics.reload(); } });
+  };
+  const refreshCombiners = () => {
+    if (!field) return;
+    refreshJob.run("/inference/refresh-combiners", {}, {
+      onDone: () => { reload(); diagnostics.reload(); },
+    });
   };
 
   return (
@@ -239,10 +246,17 @@ export default function InferencePage() {
               <Button variant="primary" disabled={!valid || job.busy} onClick={cache}>
                 Download field & cache cubes
               </Button>
-              <span className="muted">STARFULL members only; fitted combiners are cached alongside the mean.</span>
+              <Button disabled={!field || refreshJob.busy || job.busy}
+                onClick={refreshCombiners}>
+                Refresh inference with latest combiner
+              </Button>
+              <span className="muted">STARFULL only; cached members are reused when current, otherwise rebuilt from the cached archive field.</span>
             </div>
             {(job.job || job.error) && <div style={{ marginTop: "var(--s3)" }}>
               <JobProgressView job={job.job} error={job.error} />
+            </div>}
+            {(refreshJob.job || refreshJob.error) && <div style={{ marginTop: "var(--s3)" }}>
+              <JobProgressView job={refreshJob.job} error={refreshJob.error} />
             </div>}
           </CardBody>
         </Card>

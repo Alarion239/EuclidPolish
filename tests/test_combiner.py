@@ -150,6 +150,37 @@ def test_best_psnr_initial_logits_are_near_one_hot_but_trainable():
     assert np.all(probabilities > 0.0)
 
 
+def test_pca_surface_integrates_full_space_weights_after_projection():
+    rng = np.random.default_rng(21)
+    pixels = rng.normal(0.0, 2.0, (40, 3, 4))
+    logits, probabilities, _ = _best_psnr_initial_logits(
+        np.asarray([3.0, 2.0, 1.0]), best_weight=0.8)
+    combiner = RawIncrementalMinMeanMaxRBFCombiner(
+        member_labels=["m0", "m1", "m2"],
+        n_kernels=0,
+        coefficients=np.empty((0, 3), np.float32),
+        centers=np.empty((0, 12), np.float32),
+        scales=np.ones(12, np.float32),
+        sigmas=np.empty((0,), np.float32),
+        increment_ids=np.empty((0,), np.int32),
+        reference_features=np.zeros(12, np.float32),
+        output_floors=np.ones(4, np.float32),
+        global_logits=logits,
+    )
+
+    surface = combiner.pca_weight_surface(
+        pixels, n_pc1=5, n_pc2=4, integration_neighbors=8)
+
+    assert surface["projection_method"] \
+        == "adaptive_knn_conditional_weight_mean"
+    assert surface["integration_neighbors"] == 8
+    np.testing.assert_allclose(
+        surface["weights"],
+        np.broadcast_to(probabilities, (4, 5, 3)), atol=1e-12)
+    np.testing.assert_allclose(surface["integrated_weights"], probabilities)
+    np.testing.assert_allclose(surface["peak_weights"], probabilities)
+
+
 def test_all_inference_coordinates_are_signed_per_band_asinh():
     scales = np.asarray([
         Config.get_band(name).asinh_stretch_scale_e for name in BAND_NAMES
