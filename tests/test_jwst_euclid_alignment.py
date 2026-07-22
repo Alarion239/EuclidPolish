@@ -24,6 +24,41 @@ def test_jwst_product_selection_prefers_resampled_image():
     assert jwst_euclid._choose_jwst_product(rows) == "jw0001_i2d.fits"
 
 
+def test_readable_fits_rejects_empty_archive_placeholder(tmp_path):
+    from astropy.io import fits
+
+    empty = tmp_path / "empty.fits"
+    empty.touch()
+    valid = tmp_path / "valid.fits"
+    fits.PrimaryHDU(data=np.zeros((2, 2), dtype=np.float32)).writeto(valid)
+    assert not jwst_euclid._is_readable_fits(empty)
+    assert jwst_euclid._is_readable_fits(valid)
+
+
+def test_euclid_download_recovers_valid_file_from_placeholder(tmp_path):
+    from astropy.io import fits
+
+    extracted = tmp_path / "extracted.fits"
+    fits.PrimaryHDU(data=np.ones((2, 2), dtype=np.float32)).writeto(extracted)
+    destination = tmp_path / "requested.fits"
+
+    class FakeEuclid:
+        @staticmethod
+        def get_cutout(**kwargs):
+            destination.touch()
+            return [str(extracted)]
+
+    jwst_euclid._download_euclid_cutout(
+        FakeEuclid,
+        file_path="archive/file",
+        tile_index="T123",
+        coordinate=None,
+        radius=None,
+        destination=destination,
+    )
+    assert jwst_euclid._is_readable_fits(destination)
+
+
 def test_align_to_target_preserves_an_identity_grid():
     from astropy.wcs import WCS
 

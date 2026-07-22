@@ -310,6 +310,69 @@ def _copy_downloaded(source: Any, destination: Path) -> None:
     shutil.copy2(source_path, destination)
 
 
+def _is_readable_fits(path: Path) -> bool:
+    """Return whether an archive output is a non-empty, readable FITS file."""
+    try:
+        if not path.is_file() or path.stat().st_size < 2880:
+            return False
+        from astropy.io import fits
+
+        with fits.open(path, memmap=False):
+            return True
+    except (OSError, ValueError):
+        return False
+
+
+def _copy_valid_fits(source: Any, destination: Path) -> None:
+    """Copy the first readable FITS path returned by an archive client."""
+    candidates = source if isinstance(source, (list, tuple)) else [source]
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        source_path = Path(str(candidate))
+        if not _is_readable_fits(source_path):
+            continue
+        if source_path.resolve() != destination.resolve():
+            shutil.copy2(source_path, destination)
+        return
+    raise RuntimeError("archive returned no readable FITS file")
+
+
+def _download_euclid_cutout(
+    euclid_client: Any,
+    *,
+    file_path: str,
+    tile_index: str,
+    coordinate: Any,
+    radius: Any,
+    destination: Path,
+) -> None:
+    """Download a Euclid cutout, recovering extracted files from bad placeholders."""
+    last_error = "archive returned no readable FITS file"
+    for attempt in range(2):
+        with __import__("contextlib").suppress(OSError):
+            destination.unlink()
+        result = euclid_client.get_cutout(
+            file_path=file_path,
+            instrument="VIS",
+            id=tile_index,
+            coordinate=coordinate,
+            radius=radius,
+            output_file=str(destination),
+        )
+        if _is_readable_fits(destination):
+            return
+        try:
+            _copy_valid_fits(result, destination)
+            if _is_readable_fits(destination):
+                return
+        except RuntimeError as error:
+            last_error = str(error)
+        if attempt == 0:
+            print("Euclid returned an invalid cutout file; retrying once")
+    raise RuntimeError(f"Euclid archive did not return a readable VIS cutout: {last_error}")
+
+
 def _choose_jwst_product(rows: Iterable[Mapping[str, Any]]) -> str:
     """Prefer a calibrated/resampled 2-D image over ramps and metadata."""
     names = []
@@ -422,18 +485,14 @@ def download_and_align_pair(
 
         if progress:
             progress(2, 5, "downloading Euclid VIS cutout")
-        result = Euclid.get_cutout(
+        _download_euclid_cutout(
+            Euclid,
             file_path=file_path,
-            instrument="VIS",
-            id=tile_index,
+            tile_index=tile_index,
             coordinate=SkyCoord(ra=ra, dec=dec, unit="deg", frame="icrs"),
             radius=(float(size_arcsec) / 2.0) * u.arcsec,
-            output_file=str(euclid_path),
+            destination=euclid_path,
         )
-        if not euclid_path.exists() and result:
-            _copy_downloaded(result, euclid_path)
-        if not euclid_path.exists():
-            raise RuntimeError("Euclid archive did not create the requested cutout")
 
         jwst_path = temporary_dir / "jwst_native.fits"
         if progress:
