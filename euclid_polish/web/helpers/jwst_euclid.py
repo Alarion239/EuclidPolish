@@ -553,6 +553,26 @@ def _find_image(path: Path) -> tuple[np.ndarray, Any, Any, str]:
     raise ValueError(f"no 2-D image with celestial WCS found in {path.name}")
 
 
+def _pixel_metadata(data: np.ndarray, wcs: Any, header: Any) -> dict[str, Any]:
+    """Return compact product and pixel metadata for the viewer manifest."""
+    try:
+        from astropy.wcs.utils import proj_plane_pixel_scales
+
+        scales = [float(abs(value) * 3600.0) for value in proj_plane_pixel_scales(wcs)[:2]]
+    except Exception:  # noqa: BLE001 - some archive WCS headers omit a scale
+        scales = []
+    return {
+        "shape": [int(value) for value in data.shape],
+        "pixel_scale_arcsec": scales,
+        "units": _text(header.get("BUNIT")),
+        "instrument": _text(header.get("INSTRUME") or header.get("INSTRUMENT")),
+        "detector": _text(header.get("DETECTOR")),
+        "filter": _text(header.get("FILTER")),
+        "pupil": _text(header.get("PUPIL")),
+        "exposure_s": _number(header.get("EXPTIME") or header.get("EFFEXPTM")),
+    }
+
+
 def _has_signal(data: np.ndarray) -> bool:
     finite = data[np.isfinite(data)]
     return finite.size > 0 and bool(np.any(finite != 0))
@@ -575,6 +595,35 @@ def _cached_pair_is_usable(directory: Path, manifest: Mapping[str, Any]) -> bool
     except (OSError, ValueError):
         return False
     return _has_signal(euclid_data) and _has_signal(aligned_data)
+
+
+def enrich_manifest_metadata(directory: Path, manifest: Mapping[str, Any]) -> dict[str, Any]:
+    """Add pixel metadata to older cached manifests when their FITS files exist."""
+    result = dict(manifest)
+    files = manifest.get("files", {})
+    try:
+        euclid_data, euclid_header, euclid_wcs, _ = _find_image(
+            directory / str(files.get("euclid", "euclid_vis.fits")),
+        )
+        jwst_data, jwst_header, jwst_wcs, _ = _find_image(
+            directory / str(files.get("jwst_native", "jwst_native.fits")),
+        )
+        aligned_data, aligned_header, aligned_wcs, _ = _find_image(
+            directory / str(files.get("jwst_aligned", "jwst_aligned_to_euclid.fits")),
+        )
+    except (OSError, ValueError):
+        return result
+    result.setdefault("euclid_product", result.get("euclid_file_name", ""))
+    result["euclid_metadata"] = result.get(
+        "euclid_metadata", _pixel_metadata(euclid_data, euclid_wcs, euclid_header),
+    )
+    result["jwst_metadata"] = result.get(
+        "jwst_metadata", _pixel_metadata(jwst_data, jwst_wcs, jwst_header),
+    )
+    result["aligned_metadata"] = result.get(
+        "aligned_metadata", _pixel_metadata(aligned_data, aligned_wcs, aligned_header),
+    )
+    return result
 
 
 def align_to_target(data: np.ndarray, source_wcs: Any, target_wcs: Any, shape: tuple[int, int]) -> np.ndarray:
@@ -937,6 +986,7 @@ def download_and_align_pair(
             "jwst_filters": _text(row.get("jwst_filters")),
             "euclid_tile_index": tile_index,
             "euclid_file_name": _text(tile.get("file_name") or row.get("euclid_file_name")),
+            "euclid_product": _text(tile.get("file_name") or row.get("euclid_file_name")),
             "target_name": _text(row.get("jwst_target_name")),
             "ra_deg": ra,
             "dec_deg": dec,
@@ -944,6 +994,9 @@ def download_and_align_pair(
             "shape": list(euclid_data.shape),
             "euclid_hdu": euclid_hdu,
             "jwst_hdu": jwst_hdu,
+            "euclid_metadata": _pixel_metadata(euclid_data, euclid_wcs, euclid_header),
+            "jwst_metadata": _pixel_metadata(jwst_data, jwst_wcs, jwst_header),
+            "aligned_metadata": _pixel_metadata(aligned, euclid_wcs, aligned_header),
             "alignment": {
                 "method": "bilinear WCS remap",
                 "target_grid": "Euclid VIS cutout",

@@ -9,8 +9,11 @@ type FieldRow = {
   jwst_archive: string;
   jwst_observation_id: string;
   jwst_target_name?: string;
+  jwst_proposal_id?: string;
   jwst_instrument?: string;
   jwst_filters?: string;
+  jwst_exposure_time_s?: number | string;
+  euclid_file_name?: string;
   euclid_tile_index: string;
   euclid_ra_deg?: number | string;
   euclid_dec_deg?: number | string;
@@ -46,6 +49,7 @@ type Manifest = {
   jwst_observation_id: string;
   jwst_product: string;
   euclid_tile_index: string;
+  euclid_product?: string;
   target_name?: string;
   jwst_instrument?: string;
   jwst_filters?: string;
@@ -56,6 +60,19 @@ type Manifest = {
   alignment: { method: string; target_grid: string; source_units: string; target_units: string };
   display: { euclid: { display_min: number; display_max: number }; jwst: { display_min: number; display_max: number } };
   files: { euclid_png: string; jwst_png: string };
+  euclid_metadata?: PixelMetadata;
+  jwst_metadata?: PixelMetadata;
+  aligned_metadata?: PixelMetadata;
+};
+type PixelMetadata = {
+  shape?: number[];
+  pixel_scale_arcsec?: number[];
+  units?: string;
+  instrument?: string;
+  detector?: string;
+  filter?: string;
+  pupil?: string;
+  exposure_s?: number | string;
 };
 
 const asNumber = (value: number | string | undefined): number | null => {
@@ -76,7 +93,15 @@ const filterName = (row: FieldRow) => row.jwst_filters?.trim() || "filter not li
 const footprintName = (row: FieldRow) => row.footprint_status === "exact_intersection" ? "footprints intersect" : "nearby candidate";
 const fieldRa = (row: FieldRow) => row.jwst_ra_deg ?? row.euclid_ra_deg;
 const fieldDec = (row: FieldRow) => row.jwst_dec_deg ?? row.euclid_dec_deg;
+const detectorToken = (row: FieldRow) => row.jwst_observation_id.match(/(?:^|[_-])((?:nrc|mir|nis|fgs)[a-z0-9]+)/i)?.[1] || "resolved after download";
+const shapeName = (shape?: number[]) => shape?.length === 2 ? `${shape[1]} × ${shape[0]} px` : "not listed";
+const scaleName = (scale?: number[]) => scale?.length ? `${scale.map((value) => value.toFixed(4)).join(" × ")}″/px` : "not listed";
+const exposureName = (value: number | string | undefined) => {
+  const number = asNumber(value);
+  return number == null ? "not listed" : `${number.toFixed(1)} s`;
+};
 type FieldView = "all" | "exact" | "saved" | "covered" | "uncovered" | "unchecked";
+type ViewerMode = "sky" | "pixels";
 
 const coverageStatus = (row: FieldRow) => row.euclid_coverage_status || "unchecked";
 const coverageLabel = (row: FieldRow) => {
@@ -101,6 +126,7 @@ export default function JwstEuclidPage() {
   const [view, setView] = useState<FieldView>("all");
   const pairJob = useJob();
   const coverageJob = useJob();
+  const [viewerMode, setViewerMode] = useState<ViewerMode>("sky");
 
   const fields = index.data?.fields ?? [];
   const instruments = useMemo(() => Array.from(new Set(fields.map(instrumentName))).sort(), [fields]);
@@ -271,6 +297,13 @@ export default function JwstEuclidPage() {
                 <span className="jwst-euclid__selection-status">
                   {coverageLabel(selected)}{coverageStatus(selected) === "covered" && ` · ${asNumber(selected.euclid_coverage_tile_count) ?? 0} VIS tile${asNumber(selected.euclid_coverage_tile_count) === 1 ? "" : "s"}`}
                 </span>
+                <div className="jwst-euclid__selection-details">
+                  <span><b>JWST product</b>{selected.jwst_observation_id}</span>
+                  <span><b>detector</b>{detectorToken(selected)}</span>
+                  <span><b>exposure</b>{exposureName(selected.jwst_exposure_time_s)}</span>
+                  <span><b>proposal</b>{selected.jwst_proposal_id || "not listed"}</span>
+                  <span><b>Euclid product</b>{selected.euclid_file_name || selected.euclid_tile_index}</span>
+                </div>
               </div>
               <Button variant="primary" onClick={runDownload} disabled={!canDownload}>
                 {pairJob.busy ? "preparing field…" : coverageStatus(selected) === "not_covered" ? "no Euclid coverage" : selected.available ? "open saved comparison" : "download + align"}
@@ -284,7 +317,7 @@ export default function JwstEuclidPage() {
       </Card>
 
       {pair ? (
-        <section className="jwst-euclid__viewer" aria-label="Aligned JWST and Euclid images">
+        <section className="jwst-euclid__viewer" data-pixel-view={viewerMode === "pixels"} aria-label="Aligned JWST and Euclid images">
           <div className="jwst-euclid__viewer-head">
             <div>
               <div className="eyebrow">registered comparison</div>
@@ -292,6 +325,10 @@ export default function JwstEuclidPage() {
               <p>{formatCoord(pair.ra_deg, "N", "S")} · {formatCoord(pair.dec_deg, "E", "W")} · {(asNumber(pair.size_arcsec) ?? 0).toFixed(1)}″ field · {pair.shape.join(" × ")} px</p>
             </div>
             <div className="jwst-euclid__viewer-actions">
+              <Segmented<ViewerMode> value={viewerMode} onChange={setViewerMode} options={[
+                { value: "sky", label: "sky view" },
+                { value: "pixels", label: "pixel view" },
+              ]} />
               <Badge tone="good">WCS aligned</Badge>
               <a className="ui-btn ui-btn--sm ui-btn--ghost" href={`/api/jwst-euclid/field/${pair.field_id}/download/jwst_aligned`}>
                 aligned FITS
@@ -310,6 +347,22 @@ export default function JwstEuclidPage() {
               <img src={`/api/jwst-euclid/field/${pair.field_id}/jwst_png`} alt={`JWST aligned view of ${pair.target_name || "selected field"}`} />
               <figcaption>resampled to Euclid VIS pixels · {pair.alignment.source_units}</figcaption>
             </figure>
+          </div>
+          <div className="jwst-euclid__pixel-panel">
+            <div className="eyebrow">products · exposures · pixels</div>
+            <div className="jwst-euclid__pixel-grid">
+              <Stat k="JWST product" v={pair.jwst_product || "not listed"} />
+              <Stat k="JWST detector" v={pair.jwst_metadata?.detector || "not listed in FITS header"} />
+              <Stat k="JWST exposure" v={exposureName(pair.jwst_metadata?.exposure_s)} />
+              <Stat k="JWST native pixels" v={shapeName(pair.jwst_metadata?.shape)} />
+              <Stat k="JWST native scale" v={scaleName(pair.jwst_metadata?.pixel_scale_arcsec)} />
+              <Stat k="Euclid pixels" v={shapeName(pair.euclid_metadata?.shape || pair.shape)} />
+              <Stat k="Euclid scale" v={scaleName(pair.euclid_metadata?.pixel_scale_arcsec)} />
+              <Stat k="aligned pixels" v={shapeName(pair.aligned_metadata?.shape || pair.shape)} />
+            </div>
+            <div className="jwst-euclid__pixel-note">
+              {viewerMode === "pixels" ? "Pixel view uses nearest-neighbour display so the sampled grid remains visible." : "Switch to pixel view to inspect the downloaded grid rather than the smoothed sky presentation."}
+            </div>
           </div>
           <div className="jwst-euclid__meta">
             <Stat k="Euclid view" v="VIS reference grid" />

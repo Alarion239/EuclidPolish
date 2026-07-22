@@ -106,6 +106,26 @@ def test_align_to_target_preserves_an_identity_grid():
     np.testing.assert_allclose(aligned[1:-1, 1:-1], data[1:-1, 1:-1], atol=1e-4)
 
 
+def test_pixel_metadata_reports_shape_scale_and_detector():
+    from astropy.io import fits
+    from astropy.wcs import WCS
+
+    wcs = WCS(naxis=2)
+    wcs.wcs.crpix = [2.0, 2.0]
+    wcs.wcs.crval = [10.0, 20.0]
+    wcs.wcs.cdelt = [-0.001, 0.001]
+    wcs.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+    header = fits.Header(wcs.to_header())
+    header["DETECTOR"] = "NRCA3"
+    header["EXPTIME"] = 12.5
+    metadata = jwst_euclid._pixel_metadata(np.ones((4, 6), dtype=np.float32), wcs, header)
+
+    assert metadata["shape"] == [4, 6]
+    np.testing.assert_allclose(metadata["pixel_scale_arcsec"], [3.6, 3.6])
+    assert metadata["detector"] == "NRCA3"
+    assert metadata["exposure_s"] == 12.5
+
+
 def test_overlap_rows_reads_cached_csv_and_marks_pairs(tmp_path, monkeypatch):
     monkeypatch.setattr(Config, "DATA_DIR", str(tmp_path / "data"))
     root = jwst_euclid.overlap_root()

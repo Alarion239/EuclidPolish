@@ -51,11 +51,20 @@
 .jwst-euclid__selection strong { color: var(--text); font-size: 16px; font-weight: 500; }
 .jwst-euclid__selection .eyebrow { font-size: 9px; }
 .jwst-euclid__selection-status { color: var(--accent); font-family: var(--mono); font-size: 10px; }
+.jwst-euclid__selection-details { display: flex; gap: 10px 16px; flex-wrap: wrap; margin-top: 5px; color: var(--muted); font-family: var(--mono); font-size: 10px; }
+.jwst-euclid__selection-details span { display: inline-flex; gap: 5px; }
+.jwst-euclid__selection-details b { color: var(--text); font-weight: 500; }
 .jwst-euclid__viewer { margin-top: 18px; }
 .jwst-euclid__viewer-head { display: flex; justify-content: space-between; align-items: end; gap: 20px; margin: 26px 0 14px; }
 .jwst-euclid__viewer-head h2 { margin: 4px 0 3px; font-size: 22px; letter-spacing: -.02em; }
 .jwst-euclid__viewer-head p { margin: 0; color: var(--muted); font-size: 12px; }
 .jwst-euclid__viewer-actions { display: flex; align-items: center; gap: 8px; }
+.jwst-euclid__viewer[data-pixel-view="true"] .jwst-euclid__frame img { image-rendering: pixelated; }
+.jwst-euclid__pixel-panel { margin: 0 0 14px; padding: 13px 16px 12px; border: 1px solid var(--line); border-radius: 9px; background: rgba(12, 19, 35, .72); }
+.jwst-euclid__pixel-grid { display: grid; grid-template-columns: repeat(4, minmax(120px, 1fr)); gap: 12px 20px; margin-top: 8px; }
+.jwst-euclid__pixel-grid .ui-stat { min-width: 0; }
+.jwst-euclid__pixel-grid .ui-stat__v { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.jwst-euclid__pixel-note { margin-top: 10px; color: var(--muted); font-size: 11px; }
 .jwst-euclid__pair { display: grid; grid-template-columns: minmax(0, 1fr) 34px minmax(0, 1fr); gap: 12px; align-items: stretch; }
 .jwst-euclid__frame { position: relative; min-width: 0; margin: 0; border: 1px solid var(--line); border-radius: 10px; background: #03050a; overflow: hidden; }
 .jwst-euclid__frame--euclid { border-color: rgba(105, 174, 255, .7); }
@@ -71,5 +80,6 @@
 .jwst-euclid__meta .ui-stat { min-width: 160px; max-width: 340px; }
 .jwst-euclid__empty-view { margin-top: 18px; }
 @media (max-width: 1050px) { .jwst-euclid__browse-bar { grid-template-columns: minmax(190px, 1fr) minmax(170px, .8fr); } .jwst-euclid__view-filter { grid-column: 1 / -1; } .jwst-euclid__field-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-@media (max-width: 720px) { .jwst-euclid__hero { grid-template-columns: 1fr; } .jwst-euclid__hero-mark { width: 76px; } .jwst-euclid__hero-stats { margin-top: 8px; } .jwst-euclid__control-actions { justify-content: start; } .jwst-euclid__browse-bar { grid-template-columns: 1fr; } .jwst-euclid__view-filter { grid-column: auto; min-width: 0; } .jwst-euclid__results-head { align-items: start; flex-direction: column; } .jwst-euclid__field-grid { grid-template-columns: 1fr; max-height: none; } .jwst-euclid__selection { align-items: start; flex-direction: column; } .jwst-euclid__selection .ui-btn { width: 100%; } .jwst-euclid__viewer-head { align-items: start; flex-direction: column; } .jwst-euclid__pair { grid-template-columns: 1fr; } .jwst-euclid__seam { height: 28px; } .jwst-euclid__seam::before { width: 100%; height: 1px; } .jwst-euclid__seam span { writing-mode: horizontal-tb; } }
+@media (max-width: 900px) { .jwst-euclid__pixel-grid { grid-template-columns: repeat(2, minmax(120px, 1fr)); } }
+@media (max-width: 720px) { .jwst-euclid__hero { grid-template-columns: 1fr; } .jwst-euclid__hero-mark { width: 76px; } .jwst-euclid__hero-stats { margin-top: 8px; } .jwst-euclid__control-actions { justify-content: start; } .jwst-euclid__browse-bar { grid-template-columns: 1fr; } .jwst-euclid__view-filter { grid-column: auto; min-width: 0; } .jwst-euclid__results-head { align-items: start; flex-direction: column; } .jwst-euclid__field-grid { grid-template-columns: 1fr; max-height: none; } .jwst-euclid__selection { align-items: start; flex-direction: column; } .jwst-euclid__selection .ui-btn { width: 100%; } .jwst-euclid__viewer-head { align-items: start; flex-direction: column; } .jwst-euclid__viewer-actions { align-items: start; flex-wrap: wrap; } .jwst-euclid__pair { grid-template-columns: 1fr; } .jwst-euclid__seam { height: 28px; } .jwst-euclid__seam::before { width: 100%; height: 1px; } .jwst-euclid__seam span { writing-mode: horizontal-tb; } }
 @media (prefers-reduced-motion: reduce) { .jwst-euclid__register { box-shadow: none; } }

@@ -11,6 +11,7 @@ from flask import jsonify, request, send_file
 from euclid_polish.web.helpers.jwst_euclid import (
     _cached_pair_is_usable,
     download_and_align_pair,
+    enrich_manifest_metadata,
     field_id,
     find_overlap_row,
     overlap_rows,
@@ -33,7 +34,10 @@ def _manifest(identifier: str) -> dict | None:
         return None
     if not isinstance(payload, dict):
         return None
-    return payload if _cached_pair_is_usable(pair_root() / identifier, payload) else None
+    directory = pair_root() / identifier
+    if not _cached_pair_is_usable(directory, payload):
+        return None
+    return enrich_manifest_metadata(directory, payload)
 
 
 def _asset_path(identifier: str, filename: str) -> Path | None:
