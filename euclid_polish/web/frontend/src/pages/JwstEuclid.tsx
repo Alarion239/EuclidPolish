@@ -18,11 +18,27 @@ type FieldRow = {
   jwst_dec_deg?: number | string;
   jwst_distance_deg?: number | string;
   footprint_status?: string;
+  euclid_coverage_status?: "unchecked" | "covered" | "not_covered" | "error";
+  euclid_coverage_tile_count?: number | string;
+  euclid_coverage_error?: string;
   available: boolean;
 };
 type FieldIndex = {
   fields: FieldRow[];
-  status: { partial?: boolean; count: number; source_files?: string[]; source_manifest?: Record<string, unknown> };
+  status: {
+    partial?: boolean;
+    count: number;
+    source_files?: string[];
+    source_manifest?: Record<string, unknown>;
+    coverage_scan?: {
+      checked_count?: number;
+      covered_count?: number;
+      not_covered_count?: number;
+      error_count?: number;
+      unique_count?: number;
+      updated_utc?: string;
+    };
+  };
 };
 type Manifest = {
   field_id: string;
@@ -60,7 +76,22 @@ const filterName = (row: FieldRow) => row.jwst_filters?.trim() || "filter not li
 const footprintName = (row: FieldRow) => row.footprint_status === "exact_intersection" ? "footprints intersect" : "nearby candidate";
 const fieldRa = (row: FieldRow) => row.jwst_ra_deg ?? row.euclid_ra_deg;
 const fieldDec = (row: FieldRow) => row.jwst_dec_deg ?? row.euclid_dec_deg;
-type FieldView = "all" | "exact" | "saved";
+type FieldView = "all" | "exact" | "saved" | "covered" | "uncovered" | "unchecked";
+
+const coverageStatus = (row: FieldRow) => row.euclid_coverage_status || "unchecked";
+const coverageLabel = (row: FieldRow) => {
+  const status = coverageStatus(row);
+  if (status === "covered") return "Euclid covered";
+  if (status === "not_covered") return "No Euclid coverage";
+  if (status === "error") return "Check failed";
+  return "Needs checking";
+};
+const coverageTone = (row: FieldRow): "good" | "warn" | undefined => {
+  const status = coverageStatus(row);
+  if (status === "covered") return "good";
+  if (status === "not_covered" || status === "error") return "warn";
+  return undefined;
+};
 
 export default function JwstEuclidPage() {
   const index = useResource<FieldIndex>("/api/jwst-euclid/fields", [], { ttl: 60_000 });
@@ -69,6 +100,7 @@ export default function JwstEuclidPage() {
   const [instrument, setInstrument] = useState("all");
   const [view, setView] = useState<FieldView>("all");
   const pairJob = useJob();
+  const coverageJob = useJob();
 
   const fields = index.data?.fields ?? [];
   const instruments = useMemo(() => Array.from(new Set(fields.map(instrumentName))).sort(), [fields]);
@@ -81,7 +113,10 @@ export default function JwstEuclidPage() {
       const matchesInstrument = instrument === "all" || instrumentName(row) === instrument;
       const matchesView = view === "all"
         || (view === "exact" && row.footprint_status === "exact_intersection")
-        || (view === "saved" && row.available);
+        || (view === "saved" && row.available)
+        || (view === "covered" && coverageStatus(row) === "covered")
+        || (view === "uncovered" && coverageStatus(row) === "not_covered")
+        || (view === "unchecked" && ["unchecked", "error"].includes(coverageStatus(row)));
       return matchesSearch && matchesInstrument && matchesView;
     }).slice(0, 500);
   }, [fields, instrument, search, view]);
@@ -109,9 +144,18 @@ export default function JwstEuclidPage() {
     });
   };
 
+  const runCoverageScan = () => {
+    void coverageJob.run("/api/jwst-euclid/scan-coverage", undefined, {
+      onDone: () => {
+        window.setTimeout(() => index.reload(), 250);
+      },
+    });
+  };
+
   const pair = manifest.data;
-  const canDownload = !!selected && !pairJob.busy;
+  const canDownload = !!selected && coverageStatus(selected) !== "not_covered" && !pairJob.busy;
   const sourceStatus = index.data?.status;
+  const coverageSummary = sourceStatus?.coverage_scan;
 
   return (
     <Page>
@@ -145,7 +189,12 @@ export default function JwstEuclidPage() {
 
       <Card className="jwst-euclid__control-card">
         <CardHead title="Pick a field" sub="Choose by target, instrument, filters, and sky position. Archive identifiers stay behind the scenes." right={
-          <Button size="sm" variant="ghost" onClick={index.reload}>↻ refresh index</Button>
+          <div className="jwst-euclid__control-actions">
+            <Button size="sm" variant="primary" onClick={runCoverageScan} disabled={coverageJob.busy || fields.length === 0}>
+              {coverageJob.busy ? "scanning Euclid…" : "scan Euclid coverage"}
+            </Button>
+            <Button size="sm" variant="ghost" onClick={index.reload}>↻ refresh index</Button>
+          </div>
         } />
         <CardBody>
           {index.loading && !index.data ? <Empty><Spinner /> loading overlap rows…</Empty> : fields.length === 0 ? (
@@ -170,8 +219,17 @@ export default function JwstEuclidPage() {
                   { value: "all", label: "All" },
                   { value: "exact", label: "Footprint matches" },
                   { value: "saved", label: "Saved" },
+                  { value: "covered", label: "Euclid covered" },
+                  { value: "uncovered", label: "No Euclid" },
+                  { value: "unchecked", label: "Needs checking" },
                 ]} />
               </div>
+            </div>
+            <div className="jwst-euclid__scan-summary">
+              <span><strong>{coverageSummary?.checked_count ?? 0}</strong> / {coverageSummary?.unique_count ?? "—"} unique JWST positions checked</span>
+              <span className="jwst-euclid__scan-summary-good">{coverageSummary?.covered_count ?? 0} covered</span>
+              <span className="jwst-euclid__scan-summary-warn">{coverageSummary?.not_covered_count ?? 0} without Euclid coverage</span>
+              {(coverageSummary?.error_count ?? 0) > 0 && <span className="jwst-euclid__scan-summary-warn">{coverageSummary?.error_count} query errors</span>}
             </div>
             <div className="jwst-euclid__results-head">
               <span>{filtered.length.toLocaleString()} fields shown</span>
@@ -191,8 +249,8 @@ export default function JwstEuclidPage() {
                 >
                   <span className="jwst-euclid__field-card-head">
                     <strong>{targetName(row)}</strong>
-                    <Badge tone={row.available ? "good" : row.footprint_status === "exact_intersection" ? "good" : "warn"}>
-                      {row.available ? "saved" : row.footprint_status === "exact_intersection" ? "matched" : "candidate"}
+                    <Badge tone={coverageTone(row)}>
+                      {coverageLabel(row)}
                     </Badge>
                   </span>
                   <span className="jwst-euclid__field-card-meta">
@@ -210,14 +268,18 @@ export default function JwstEuclidPage() {
                 <span className="eyebrow">selected field</span>
                 <strong>{targetName(selected)}</strong>
                 <span>{instrumentName(selected)} · {filterName(selected)} · {footprintName(selected)}</span>
+                <span className="jwst-euclid__selection-status">
+                  {coverageLabel(selected)}{coverageStatus(selected) === "covered" && ` · ${asNumber(selected.euclid_coverage_tile_count) ?? 0} VIS tile${asNumber(selected.euclid_coverage_tile_count) === 1 ? "" : "s"}`}
+                </span>
               </div>
               <Button variant="primary" onClick={runDownload} disabled={!canDownload}>
-                {pairJob.busy ? "preparing field…" : selected.available ? "open saved comparison" : "download + align"}
+                {pairJob.busy ? "preparing field…" : coverageStatus(selected) === "not_covered" ? "no Euclid coverage" : selected.available ? "open saved comparison" : "download + align"}
               </Button>
             </div>}
             </>
           )}
           <JobProgressView job={pairJob.job} error={pairJob.error} />
+          <JobProgressView job={coverageJob.job} error={coverageJob.error} />
         </CardBody>
       </Card>
 

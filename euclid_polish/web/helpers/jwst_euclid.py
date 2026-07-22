@@ -18,6 +18,7 @@ import re
 import shutil
 import tempfile
 from collections.abc import Iterable, Mapping
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -43,6 +44,10 @@ def overlap_root() -> Path:
 
 def pair_root() -> Path:
     return overlap_root() / "paired_fields"
+
+
+def coverage_scan_path() -> Path:
+    return overlap_root() / "euclid_coverage_scan.json"
 
 
 def _text(value: Any) -> str:
@@ -127,9 +132,72 @@ def _normalise_row(row: Mapping[str, Any], archive: str | None = None) -> dict[s
     return result
 
 
+def _coverage_key(ra: float, dec: float) -> str:
+    return f"{ra:.7f},{dec:.7f}"
+
+
+def _load_coverage_scan() -> dict[str, Any]:
+    path = coverage_scan_path()
+    if not path.exists():
+        return {"version": 1, "results": {}}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"version": 1, "results": {}}
+    if not isinstance(payload, dict) or not isinstance(payload.get("results"), dict):
+        return {"version": 1, "results": {}}
+    return payload
+
+
+def _coverage_scan_summary(
+    scan: Mapping[str, Any], unique_count: int, keys: Iterable[str] | None = None,
+) -> dict[str, Any]:
+    results = scan.get("results", {})
+    if not isinstance(results, Mapping):
+        results = {}
+    values = (
+        [results[key] for key in keys if key in results]
+        if keys is not None
+        else list(results.values())
+    )
+    counts = {
+        "covered_count": sum(
+            result.get("status") == "covered"
+            for result in values
+            if isinstance(result, Mapping)
+        ),
+        "not_covered_count": sum(
+            result.get("status") == "not_covered"
+            for result in values
+            if isinstance(result, Mapping)
+        ),
+        "error_count": sum(
+            result.get("status") == "error"
+            for result in values
+            if isinstance(result, Mapping)
+        ),
+    }
+    return {
+        "checked_count": counts["covered_count"] + counts["not_covered_count"] + counts["error_count"],
+        "unique_count": unique_count,
+        **counts,
+        "updated_utc": _text(scan.get("updated_utc")),
+    }
+
+
+def _coverage_for_row(row: Mapping[str, Any], scan: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    ra, dec = field_coordinates(row)
+    if ra is None or dec is None:
+        return None
+    results = scan.get("results", {})
+    result = results.get(_coverage_key(ra, dec)) if isinstance(results, Mapping) else None
+    return result if isinstance(result, Mapping) else None
+
+
 def overlap_rows() -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Load cached discovery rows and a small source-status summary."""
     root = overlap_root()
+    coverage_scan = _load_coverage_scan()
     rows: dict[tuple[str, str, str], dict[str, Any]] = {}
     sources: list[str] = []
     for filename in _OVERLAP_FILENAMES:
@@ -172,6 +240,10 @@ def overlap_rows() -> tuple[list[dict[str, Any]], dict[str, Any]]:
         )
         row = dict(row)
         row["field_id"] = identifier
+        coverage = _coverage_for_row(row, coverage_scan)
+        row["euclid_coverage_status"] = _text(coverage.get("status")) if coverage else "unchecked"
+        row["euclid_coverage_tile_count"] = int(coverage.get("tile_count", 0)) if coverage else 0
+        row["euclid_coverage_error"] = _text(coverage.get("error")) if coverage else ""
         manifest_path = pair_root() / identifier / "manifest.json"
         row["available"] = False
         if manifest_path.exists():
@@ -191,11 +263,18 @@ def overlap_rows() -> tuple[list[dict[str, Any]], dict[str, Any]]:
         row["euclid_tile_index"],
         row["jwst_observation_id"],
     ))
+    position_keys = {
+        _coverage_key(ra, dec)
+        for row in output
+        for ra, dec in [field_coordinates(row)]
+        if ra is not None and dec is not None
+    }
     status = {
         "source_files": sources,
         "partial": bool(manifest.get("partial", False)),
         "source_manifest": manifest,
         "count": len(output),
+        "coverage_scan": _coverage_scan_summary(coverage_scan, len(position_keys), position_keys),
     }
     return output, status
 
@@ -267,7 +346,7 @@ def field_coordinates(row: Mapping[str, Any]) -> tuple[float | None, float | Non
     return ra, dec
 
 
-def euclid_tiles_covering(ra: float, dec: float) -> list[dict[str, Any]]:
+def euclid_tiles_covering(ra: float, dec: float, *, strict: bool = False) -> list[dict[str, Any]]:
     """Query Euclid for VIS mosaics whose archive footprint covers a point."""
     try:
         from astroquery.esa.euclid import Euclid
@@ -282,8 +361,77 @@ def euclid_tiles_covering(ra: float, dec: float) -> list[dict[str, Any]]:
     Euclid.ROW_LIMIT = -1
     job = Euclid.launch_job_async(query)
     if job is None:
+        if strict:
+            raise RuntimeError("Euclid coverage query returned no TAP job")
         return []
     return _table_rows(job.get_results())
+
+
+def scan_euclid_coverage(progress: Any = None) -> dict[str, Any]:
+    """Check every unique JWST field center against the Euclid VIS footprint.
+
+    Results are written after each archive query, so an interrupted scan can be
+    resumed without repeating successful coverage checks.
+    """
+    rows, _ = overlap_rows()
+    positions: dict[str, tuple[float, float]] = {}
+    for row in rows:
+        ra, dec = field_coordinates(row)
+        if ra is not None and dec is not None:
+            positions.setdefault(_coverage_key(ra, dec), (ra, dec))
+
+    scan = _load_coverage_scan()
+    scan["version"] = 1
+    results = scan.setdefault("results", {})
+    if not isinstance(results, dict):
+        results = {}
+        scan["results"] = results
+    pending = [key for key in positions if not isinstance(results.get(key), Mapping)
+               or results[key].get("status") == "error"]
+    total = len(pending)
+    done = 0
+    if progress:
+        progress(done, total, "checking Euclid VIS coverage")
+
+    for key in pending:
+        ra, dec = positions[key]
+        checked_utc = datetime.now(UTC).isoformat()
+        try:
+            tiles = euclid_tiles_covering(ra, dec, strict=True)
+            result = {
+                "status": "covered" if tiles else "not_covered",
+                "tile_count": len(tiles),
+                "tiles": [
+                    {
+                        "tile_index": _text(tile.get("tile_index")),
+                        "file_name": _text(tile.get("file_name")),
+                        "file_path": _text(tile.get("file_path")),
+                    }
+                    for tile in tiles[:8]
+                ],
+                "ra_deg": ra,
+                "dec_deg": dec,
+                "checked_utc": checked_utc,
+            }
+        except Exception as exc:  # noqa: BLE001 - continue checking other fields
+            result = {
+                "status": "error",
+                "tile_count": 0,
+                "ra_deg": ra,
+                "dec_deg": dec,
+                "checked_utc": checked_utc,
+                "error": str(exc),
+            }
+        results[key] = result
+        scan["updated_utc"] = checked_utc
+        _write_json(coverage_scan_path(), scan)
+        done += 1
+        if progress:
+            progress(done, total, f"checked {done}/{total} field centers")
+
+    summary = _coverage_scan_summary(scan, len(positions), positions)
+    summary["path"] = str(coverage_scan_path())
+    return summary
 
 
 def _find_image(path: Path) -> tuple[np.ndarray, Any, Any, str]:

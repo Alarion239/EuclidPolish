@@ -124,3 +124,35 @@ def test_overlap_rows_reads_cached_csv_and_marks_pairs(tmp_path, monkeypatch):
     pair.mkdir(parents=True)
     (pair / "manifest.json").write_text(json.dumps({"field_id": rows[0]["field_id"]}), encoding="utf-8")
     assert jwst_euclid.overlap_rows()[0][0]["available"] is False
+
+
+def test_scan_euclid_coverage_caches_unique_field_centers(tmp_path, monkeypatch):
+    monkeypatch.setattr(Config, "DATA_DIR", str(tmp_path / "data"))
+    root = jwst_euclid.overlap_root()
+    root.mkdir(parents=True)
+    (root / "esa_partial.csv").write_text(
+        "euclid_tile_index,euclid_ra_deg,euclid_dec_deg,jwst_archive,jwst_observation_id,jwst_target_name,jwst_ra_deg,jwst_dec_deg\n"
+        "T123,10,20,esa,jwobs-1,Covered,10.0,20.0\n"
+        "T123,10,20,esa,jwobs-2,Same center,10.0,20.0\n"
+        "T124,11,21,esa,jwobs-3,Uncovered,11.0,21.0\n",
+        encoding="utf-8",
+    )
+
+    calls = []
+
+    def fake_coverage(ra, dec, *, strict=False):
+        calls.append((ra, dec, strict))
+        return [{"tile_index": "VIS-T123", "file_name": "vis.fits", "file_path": "/archive"}] if ra == 10.0 else []
+
+    monkeypatch.setattr(jwst_euclid, "euclid_tiles_covering", fake_coverage)
+    summary = jwst_euclid.scan_euclid_coverage()
+
+    assert summary["unique_count"] == 2
+    assert summary["covered_count"] == 1
+    assert summary["not_covered_count"] == 1
+    assert len(calls) == 2
+    rows, _ = jwst_euclid.overlap_rows()
+    assert [row["euclid_coverage_status"] for row in rows] == ["covered", "covered", "not_covered"]
+
+    jwst_euclid.scan_euclid_coverage()
+    assert len(calls) == 2

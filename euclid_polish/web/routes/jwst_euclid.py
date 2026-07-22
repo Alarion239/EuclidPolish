@@ -15,6 +15,7 @@ from euclid_polish.web.helpers.jwst_euclid import (
     find_overlap_row,
     overlap_rows,
     pair_root,
+    scan_euclid_coverage,
 )
 from euclid_polish.web.jobs import REGISTRY
 
@@ -90,6 +91,19 @@ def register(app):
             ),
         )
         return jsonify({"job_id": job_id, "field_id": identifier})
+
+    @app.post("/api/jwst-euclid/scan-coverage")
+    def api_jwst_euclid_scan_coverage():
+        rows, _ = overlap_rows()
+        if not rows:
+            return jsonify({"error": "no cached JWST fields are available to scan"}), 400
+        job_id = REGISTRY.spawn(
+            label=f"scan Euclid VIS coverage ({len(rows)} JWST fields)",
+            target=lambda cap: scan_euclid_coverage(
+                progress=lambda done, total, label: cap.tick(done, total, label),
+            ),
+        )
+        return jsonify({"job_id": job_id})
 
     @app.get("/api/jwst-euclid/field/<identifier>/<kind>")
     def api_jwst_euclid_image(identifier: str, kind: str):
