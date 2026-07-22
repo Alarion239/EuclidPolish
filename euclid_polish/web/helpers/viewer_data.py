@@ -1398,8 +1398,8 @@ def _jwst_colour_cube(manifest: dict[str, Any], directory: str) -> tuple[np.ndar
     reference_filter = str(reference_entry.get("filter") or "JWST")
     return cube, {
         "label": (
-            f"JWST colour · R {names(red_indices)} · G {names(green_indices)} · "
-            f"B {names(blue_indices)} · display WCS {reference_filter}"
+            f"JWST colour | R {names(red_indices)} | G {names(green_indices)} | "
+            f"B {names(blue_indices)} | display WCS {reference_filter}"
         ),
         "asinh": 0.05,
         "pixscale": reference_scale if math.isfinite(reference_scale) else 0.0,
