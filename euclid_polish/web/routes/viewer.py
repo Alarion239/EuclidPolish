@@ -65,15 +65,18 @@ def register(app):
         # so the browser reads the raw bytes straight into a Float32Array.
         # One source of truth for the wire format (Image.to_raw_bytes).
         c = cube.shape[-1]
+        cube_bands = tuple(info.get("bands") or viewer_data.BAND_NAMES[:c])
+        if len(cube_bands) != c:
+            abort(500)
         img = Image(data=cube,
                     pixel_scale_arcsec=float(info.get("pixscale", 0.0)),
-                    band_names=tuple(viewer_data.BAND_NAMES[:c]),
+                    band_names=cube_bands,
                     is_clean=True)
         body = img.to_raw_bytes()
         h, w, c = img.wire_meta()["shape"]
         resp = Response(body, mimetype="application/octet-stream")
         resp.headers["X-Cube-Shape"] = f"{h},{w},{c}"
-        resp.headers["X-Cube-Bands"] = ",".join(viewer_data.BAND_NAMES)
+        resp.headers["X-Cube-Bands"] = ",".join(cube_bands)
         resp.headers["X-Cube-Label"] = str(info.get("label", ""))
         resp.headers["X-Cube-Asinh"] = repr(float(info.get("asinh", 100.0)))
         resp.headers["X-Cube-Pixscale"] = repr(float(info.get("pixscale", 0.0)))
@@ -88,6 +91,11 @@ def register(app):
         if "var" in info:
             resp.headers["X-Cube-Var"] = repr(float(info["var"]))
             exposed.append("X-Cube-Var")
+        if "tint" in info:
+            tint = info["tint"]
+            if isinstance(tint, (list, tuple)) and len(tint) == 3:
+                resp.headers["X-Cube-Tint"] = ",".join(str(float(value)) for value in tint)
+                exposed.append("X-Cube-Tint")
         # Expose the custom headers to fetch() under any CORS posture.
         resp.headers["Access-Control-Expose-Headers"] = ",".join(exposed)
         resp.headers["Cache-Control"] = "no-cache"

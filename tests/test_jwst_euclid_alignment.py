@@ -106,6 +106,26 @@ def test_align_to_target_preserves_an_identity_grid():
     np.testing.assert_allclose(aligned[1:-1, 1:-1], data[1:-1, 1:-1], atol=1e-4)
 
 
+def test_align_to_target_corrects_a_one_pixel_wcs_offset():
+    from astropy.wcs import WCS
+
+    target_wcs = WCS(naxis=2)
+    target_wcs.wcs.crpix = [3.0, 3.0]
+    target_wcs.wcs.crval = [10.0, 20.0]
+    target_wcs.wcs.cdelt = [-0.001, 0.001]
+    target_wcs.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+    source_wcs = target_wcs.deepcopy()
+    source_wcs.wcs.crpix[0] += 1.0
+    source_data = np.tile(np.arange(7, dtype=np.float32), (7, 1))
+
+    registered = jwst_euclid.align_to_target(
+        source_data, source_wcs, target_wcs, (5, 5),
+    )
+
+    # The target centre maps to source x=3 (rather than its own x=2).
+    assert registered[2, 2] == 3.0
+
+
 def test_native_sky_cutout_keeps_source_pixel_scale():
     from astropy.coordinates import SkyCoord
     from astropy.wcs import WCS

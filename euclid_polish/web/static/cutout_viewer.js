@@ -111,13 +111,20 @@ function asinhTransfer(I, gain, Kc, norm) {
 // ----------------------------------------------------------------------------
 
 function prepareCore(rec, colorMeta, color) {
-  const names = colorMeta.band_names;
+  // A collection can mix cameras: e.g. Euclid's four calibrated channels
+  // beside a one-filter JWST image.  The response header, not the collection
+  // default, is the authority for a particular frame's channel order.
+  const names = Array.isArray(rec.bands) && rec.bands.length === rec.c
+    ? rec.bands : colorMeta.band_names.slice(0, rec.c);
   const bandOf = (n) => colorMeta.bands[n];
   const npx = rec.h * rec.w;
   const at = (p, k) => rec.data[p * rec.c + k];   // band k at pixel p
+  const calibrated = names.every((n) => !!bandOf(n));
+  const canLupton = calibrated && colorMeta.rgb_scheme.every((n) => names.includes(n));
+  const canTemp = calibrated && names.length >= 2;
 
   let prepared;
-  if (color === "lupton" || color === "temp") {
+  if ((color === "lupton" && canLupton) || (color === "temp" && canTemp)) {
     const useSolar = color === "lupton";
     const calib = names.map((n) => {
       let f = abFluxNorm(bandOf(n));
@@ -168,6 +175,8 @@ function prepareCore(rec, colorMeta, color) {
       prepared = { mode: "temp", hueR, hueG, hueB, I, factor: abFluxNorm(visB) };
     }
   } else {
+    // A colour chosen for a different camera is never applied to this image.
+    // For a one-filter JWST frame this resolves to its sole native channel.
     const k = Math.max(0, names.indexOf(color));
     const I = new Float32Array(npx);
     if (colorMeta.render_mode === "log") {
@@ -182,7 +191,9 @@ function prepareCore(rec, colorMeta, color) {
       };
     } else {
       for (let p = 0; p < npx; p++) I[p] = at(p, k);
-      prepared = { mode: "gray", I, factor: 1.0 };
+      prepared = rec.tint && rec.tint.length === 3
+        ? { mode: "tint", I, factor: 1.0, tint: rec.tint }
+        : { mode: "gray", I, factor: 1.0 };
     }
   }
   prepared.h = rec.h; prepared.w = rec.w; prepared.npx = npx;
@@ -210,6 +221,13 @@ function transferCore(prep, knee, gain, K0) {
     for (let p = 0; p < npx; p++) {
       const v = (asinhTransfer(I[p], G, Kc, norm) * 255) | 0;
       const o = p * 4; out[o] = v; out[o + 1] = v; out[o + 2] = v; out[o + 3] = 255;
+    }
+  } else if (prep.mode === "tint") {
+    const [tr, tg, tb] = prep.tint;
+    for (let p = 0; p < npx; p++) {
+      const v = asinhTransfer(I[p], G, Kc, norm) * 255;
+      const o = p * 4;
+      out[o] = tr * v; out[o + 1] = tg * v; out[o + 2] = tb * v; out[o + 3] = 255;
     }
   } else if (prep.mode === "lupton") {
     const { R, G: GG, B } = prep;
@@ -399,6 +417,9 @@ export function mountCutoutViewer(root, opts = {}) {
       label: r.headers.get("X-Cube-Label") || "",
       asinh: parseFloat(r.headers.get("X-Cube-Asinh")) || 100,
       pixscale: parseFloat(r.headers.get("X-Cube-Pixscale")) || 0,
+      bands: (r.headers.get("X-Cube-Bands") || "").split(",").filter(Boolean),
+      tint: (r.headers.get("X-Cube-Tint") || "").split(",").map(Number)
+        .filter(Number.isFinite),
       // PCA eigen-image amplitude/variance (subset-aware) for the movie.
       amp: Number.isFinite(amp) ? amp : null,
       varexp: parseFloat(r.headers.get("X-Cube-Var")) || 0,
@@ -491,7 +512,8 @@ export function mountCutoutViewer(root, opts = {}) {
     if (state.meta && state.meta.render_mode === "log") return null;
     const bands = state.meta && state.meta.color && state.meta.color.bands;
     if (!bands || rec.noCache || !rec.data) return null;
-    const names = state.meta.band_names || [];
+    const names = rec.bands && rec.bands.length === rec.c
+      ? rec.bands : (state.meta.band_names || []);
     const bi = Math.max(0, names.indexOf(state.color));   // composite → band 0
     const c = rec.c || 1;
     const idx = Math.min(bi, c - 1);
@@ -505,6 +527,7 @@ export function mountCutoutViewer(root, opts = {}) {
     const tot = rec._sums[idx];
     const name = names[Math.min(idx, names.length - 1)] || "VIS";
     const b = bands[name];
+    if (!b) return null;  // e.g. a native JWST filter, not Euclid photometry
     const mag = (b && tot > 0 && b.zeropoint_ab_e_total)
       ? b.zeropoint_ab_e_total - 2.5 * Math.log10(tot) : null;
     return { name, tot, mag };
@@ -1493,7 +1516,7 @@ export function mountCutoutViewer(root, opts = {}) {
     }
     const logMode = state.meta.render_mode === "log";
     if (!logMode) {
-      toolbar.append(el("span", { class: "cv-grouplabel", text: "Colour" }));
+      toolbar.append(el("span", { class: "cv-grouplabel", text: state.meta.color_label || "Colour" }));
       const cg = el("div", { class: "cv-group" });
       let colorIndex = 0;
       state.meta.band_names.forEach((n) => {

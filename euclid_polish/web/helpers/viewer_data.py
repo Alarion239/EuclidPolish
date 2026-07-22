@@ -1237,6 +1237,36 @@ def _pair_asinh(cube: np.ndarray) -> float:
     return max(float(np.nanpercentile(finite, 95.0)), 1e-8)
 
 
+def _jwst_band_name(manifest: dict[str, Any]) -> str:
+    """Return the real JWST filter/pupil name, excluding non-band CLEAR."""
+    metadata = manifest.get("jwst_metadata", {}) or {}
+    candidates = (
+        metadata.get("filter"),
+        metadata.get("pupil"),
+        manifest.get("jwst_filters"),
+    )
+    for candidate in candidates:
+        text = str(candidate or "").strip().upper()
+        if text and text not in {"CLEAR", "N/A", "NONE", "UNKNOWN"}:
+            return text
+    return "JWST"
+
+
+def _jwst_filter_tint(band: str) -> list[float]:
+    """Give an uncalibrated single JWST filter a clearly labelled display tint."""
+    match = re.search(r"F(\d{3,4})", band.upper())
+    wavelength_um = float(match.group(1)) / 100.0 if match else None
+    if wavelength_um is None:
+        return [0.92, 0.92, 0.96]
+    if wavelength_um <= 1.2:
+        return [0.38, 0.62, 1.0]
+    if wavelength_um <= 1.8:
+        return [0.32, 0.92, 0.66]
+    if wavelength_um <= 2.6:
+        return [1.0, 0.72, 0.26]
+    return [1.0, 0.34, 0.30]
+
+
 def _jwst_euclid_meta(params: dict[str, str]) -> dict[str, Any]:
     manifest, directory = _jwst_euclid_pair(params)
     inference = manifest.get("inference", {}) or {}
@@ -1263,6 +1293,7 @@ def _jwst_euclid_meta(params: dict[str, str]) -> dict[str, Any]:
         "tiers": tiers,
         "default_tier": "lr",
         "band_names": list(BAND_NAMES),
+        "color_label": "Euclid colour",
         "objects": [{"label": target, "tiers": [tier["key"] for tier in tiers]}],
     }
 
@@ -1277,20 +1308,25 @@ def _jwst_euclid_cube(index: int, tier: str, params: dict[str, str]):
     if tier == "lr":
         source = inference_files.get("lr") or files.get("euclid")
         cube = _pair_cube(_pair_file(directory, source))
+        bands = list(BAND_NAMES[:cube.shape[-1]])
         return cube, {
             "label": "LR · Euclid VIS",
             "asinh": float(Config.STRETCH_SCALE_E),
             "pixscale": float(Config.VIS_PIXEL_SCALE_ARCSEC),
+            "bands": bands,
         }
     if tier == "jwst":
         data, wcs = _pair_native_jwst(manifest, directory)
         metadata = manifest.get("jwst_metadata", {}) or {}
         scale = metadata.get("pixel_scale_arcsec", [])
         pixscale = float(scale[0]) if isinstance(scale, list) and scale else 0.0
+        band = _jwst_band_name(manifest)
         return _as_hwc(data), {
-            "label": f"JWST native · {manifest.get('jwst_instrument') or 'imaging'}",
+            "label": f"JWST native · {band} · single-filter false colour",
             "asinh": _pair_asinh(data),
             "pixscale": pixscale,
+            "bands": [band],
+            "tint": _jwst_filter_tint(band),
         }
     if tier == "starfull":
         cube = _pair_cube(_pair_file(directory, inference_files.get("starfull")))
@@ -1298,6 +1334,7 @@ def _jwst_euclid_cube(index: int, tier: str, params: dict[str, str]):
             "label": str(inference.get("combiner_label") or "STARFULL combiner"),
             "asinh": float(Config.STRETCH_SCALE_E),
             "pixscale": float(inference.get("pixel_scale_arcsec") or Config.DEFAULT_PIXEL_SCALE),
+            "bands": list(BAND_NAMES[:cube.shape[-1]]),
         }
     raise ViewerError(400, "bad paired-field tier")
 

@@ -1094,19 +1094,27 @@ def run_starfull_pair_inference(
     raw_dir = inference_dir / "raw"
     raw_dir.mkdir(parents=True, exist_ok=True)
     side = max(1, int(round(size_arcsec / Config.VIS_PIXEL_SCALE_ARCSEC)))
+    # Request extra source pixels for every band.  Y/J/H are re-sampled to
+    # the VIS WCS below; without this guard band a sub-pixel WCS offset leaves
+    # an otherwise avoidable NaN rim around the model input.
+    registration_padding = 8
+    source_side = side + registration_padding
+    padded_size_arcsec = source_side * float(Config.VIS_PIXEL_SCALE_ARCSEC)
     from astropy.coordinates import SkyCoord
 
     coordinate = SkyCoord(ra=ra, dec=dec, unit="deg", frame="icrs")
     bands: list[np.ndarray] = []
     vis_header = None
+    vis_data = None
+    vis_wcs = None
     for index, band_name in enumerate(Config.LR_INPUT_BAND_NAMES):
-        raw_path = raw_dir / f"{band_name}.fits"
+        raw_path = raw_dir / f"{band_name}_padded.fits"
         if not _is_readable_fits(raw_path):
             if progress:
                 progress(index + 1, 8, f"downloading Euclid {band_name} input")
             ok, error = fetch_cutout_at(
                 ra=ra, dec=dec, band_name=band_name, output_file=str(raw_path),
-                cutout_size_vis_pixels=side,
+                cutout_size_vis_pixels=source_side,
             )
             if not ok:
                 raise RuntimeError(f"{band_name} input unavailable: {error}")
@@ -1114,26 +1122,49 @@ def run_starfull_pair_inference(
             if progress:
                 progress(index + 1, 8, f"reusing Euclid {band_name} input")
         data, header, wcs, _ = _find_image(raw_path)
-        native_data, native_wcs = _native_sky_cutout(data, wcs, coordinate, size_arcsec)
-        if native_data.shape != (side, side):
-            raise RuntimeError(
-                f"{band_name} archive cutout has shape {native_data.shape}; expected {(side, side)}"
+        if band_name == "VIS":
+            registered, registered_wcs = _native_sky_cutout(
+                data, wcs, coordinate, size_arcsec,
             )
-        if not _has_signal(native_data):
+            vis_data, vis_wcs = registered, registered_wcs
+        else:
+            if vis_data is None or vis_wcs is None:
+                raise RuntimeError("VIS must be available before registering Euclid NISP bands")
+            source_data, source_wcs = _native_sky_cutout(
+                data, wcs, coordinate, padded_size_arcsec,
+            )
+            registered = align_to_target(
+                source_data, source_wcs, vis_wcs, vis_data.shape,
+            )
+            registered_wcs = vis_wcs
+        if registered.shape != (side, side):
+            raise RuntimeError(
+                f"{band_name} registered input has shape {registered.shape}; expected {(side, side)}"
+            )
+        if not _has_signal(registered):
             raise RuntimeError(f"{band_name} input has no usable pixels at the selected field")
+        if not np.all(np.isfinite(registered)):
+            raise RuntimeError(
+                f"{band_name} cannot be registered fully onto the VIS footprint; "
+                "archive coverage is incomplete"
+            )
         band = Config.get_band(band_name)
-        bands.append(native_data * adu_per_s_to_electrons_factor(
+        bands.append(registered * adu_per_s_to_electrons_factor(
             float(header.get("MAGZERO", band.sim_zeropoint_e)), band,
         ))
         if band_name == "VIS":
             vis_header = _primary_image_header(
-                header, native_wcs, raw_path.name, "Euclid STARFULL LR input cutout",
+                header, registered_wcs, raw_path.name, "Euclid STARFULL VIS reference input cutout",
             )
     if vis_header is None:
         raise RuntimeError("VIS header missing from STARFULL input")
     lr_cube = np.stack(bands, axis=-1).astype(np.float32)
     lr_path = inference_dir / "euclid_lr_vis_y_j_h.fits"
     vis_header["BANDS"] = (",".join(Config.LR_INPUT_BAND_NAMES), "input channel order")
+    vis_header["REGWCS"] = ("VIS", "all Euclid input bands registered to VIS WCS")
+    vis_header.add_history(
+        "Y_E, J_E, and H_E sampled bilinearly onto the VIS native WCS before STARFULL inference",
+    )
     fits.PrimaryHDU(np.moveaxis(lr_cube, -1, 0), header=vis_header).writeto(
         lr_path, overwrite=True, output_verify="silentfix",
     )
@@ -1187,6 +1218,11 @@ def run_starfull_pair_inference(
         "combiner_label": COMBINER_MODELS[selected_kind].label,
         "member_labels": labels,
         "pixel_scale_arcsec": float(Config.DEFAULT_PIXEL_SCALE),
+        "input_registration": {
+            "reference_band": "VIS",
+            "method": "bilinear WCS sampling",
+            "source_padding_vis_pixels": registration_padding,
+        },
         "shape": [int(value) for value in starfull.shape],
         "files": {
             "lr": str(lr_path.relative_to(pair_dir)),

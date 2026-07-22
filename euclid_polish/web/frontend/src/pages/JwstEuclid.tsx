@@ -334,7 +334,6 @@ export default function JwstEuclidPage() {
           )}
           <JobProgressView job={pairJob.job} error={pairJob.error} />
           <JobProgressView job={coverageJob.job} error={coverageJob.error} />
-          <JobProgressView job={inferenceJob.job} error={inferenceJob.error} />
         </CardBody>
       </Card>
 
@@ -347,6 +346,9 @@ export default function JwstEuclidPage() {
               <p>{formatCoord(pair.ra_deg, "N", "S")} · {formatCoord(pair.dec_deg, "E", "W")} · {(asNumber(pair.size_arcsec) ?? 0).toFixed(1)}″ field. Use the tier strip for Euclid LR and native JWST pixels.</p>
             </div>
             <div className="jwst-euclid__viewer-actions">
+              <Button size="sm" variant="primary" onClick={runInference} disabled={inferenceJob.busy}>
+                {inferenceJob.busy ? "running STARFULL…" : pair.inference ? "refresh STARFULL" : "run STARFULL combiner"}
+              </Button>
               <Badge tone="good">native WCS grids</Badge>
               <a className="ui-btn ui-btn--sm ui-btn--ghost" href={`/api/jwst-euclid/field/${pair.field_id}/download/jwst_native`}>
                 JWST FITS
@@ -356,6 +358,7 @@ export default function JwstEuclidPage() {
               </a>}
             </div>
           </div>
+          <JobProgressView job={inferenceJob.job} error={inferenceJob.error} />
           <CutoutViewer
             key={`${pair.field_id}:${pair.inference?.combiner_kind ?? "pending"}`}
             collection="jwst-euclid"
@@ -363,9 +366,9 @@ export default function JwstEuclidPage() {
             initialTiers={["lr", "jwst"]}
           />
           <div className="jwst-euclid__meta">
-            <Stat k="Euclid LR" v="VIS native grid" />
-            <Stat k="JWST tier" v={`${pair.jwst_instrument || "imaging"} · native pixels`} />
-            <Stat k="STARFULL" v={pair.inference?.combiner_label || "run on matching VIS + Y + J + H"} />
+            <Stat k="Euclid colour" v={pair.inference ? "VIS · Y_E · J_E · H_E, registered to VIS" : "VIS until STARFULL input is prepared"} />
+            <Stat k="JWST filter" v={`${pair.jwst_metadata?.filter || pair.jwst_metadata?.pupil || "native filter"} · single-filter false colour`} />
+            <Stat k="STARFULL" v={pair.inference?.combiner_label || "run on registered VIS + Y + J + H"} />
           </div>
         </section>
       ) : (
