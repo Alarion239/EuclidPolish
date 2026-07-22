@@ -70,21 +70,32 @@ function reciprocalSeries(theta: (number | null)[], values: (number | null)[]) {
     .sort((a, b) => a.x - b.x);
 }
 
-function SyntheticPowerPlot({ evals }: { evals: Evals }) {
+function sharedDomain(...arrays: Array<readonly (number | null)[]>): [number, number] {
+  const values = arrays.flatMap((array) => array.filter(
+    (value): value is number => value != null && isFinite(value),
+  ));
+  if (!values.length) return [0, 1];
+  const lo = Math.min(...values), hi = Math.max(...values);
+  return lo === hi ? [lo, lo + 1] : [lo, hi];
+}
+
+const CROSS_Y_DOMAIN: [number, number] = [0, 1.05];
+const CROSS_Y_TICKS = [
+  { v: 0, label: "0" }, { v: 0.5, label: "0.5" }, { v: 1, label: "1" },
+];
+
+function SyntheticPowerPlot({ evals, xDomain, xTicks }: {
+  evals: Evals; xDomain: [number, number]; xTicks: { v: number; label: string }[];
+}) {
   const power = evals.ps;
   if (!power?.theta?.length || !power.r_cross?.length) return null;
   const cross = reciprocalSeries(power.theta, power.r_cross);
   if (!cross.length) return null;
   const pairs = (power.r_pairs ?? []).map((row) => reciprocalSeries(power.theta, row));
-  const k = cross.map((point) => point.x);
-  const kMin = k[0], kMax = k[k.length - 1];
-  const kTicks = [0.1, 0.2, 0.5, 1, 2, 5, 10, 20]
-    .filter((value) => value >= kMin && value <= kMax)
-    .map((value) => ({ v: value, label: String(value) }));
   return <>
     <Plot title="cross-correlation rᵢⱼ(k)  ·  synthetic test fields"
-      xScale="log" xDomain={[kMin, kMax]} yDomain={[-1, 1.05]} xTicks={kTicks}
-      yTicks={[{ v: -1, label: "−1" }, { v: -0.5, label: "−0.5" }, { v: 0, label: "0" }, { v: 0.5, label: "0.5" }, { v: 1, label: "1" }]}
+      xScale="log" xDomain={xDomain} yDomain={CROSS_Y_DOMAIN} xTicks={xTicks}
+      yTicks={CROSS_Y_TICKS}
       xLabel="angular frequency k [cycles / arcsec] · 1 / synthetic θ"
       yLabel="rᵢⱼ(k)" series={[
         ...pairs.filter((row) => row.length).map((row) => ({ x: row.map((point) => point.x), y: row.map((point) => point.y), color: "#708096", width: 0.8, alpha: 0.22 })),
@@ -94,28 +105,32 @@ function SyntheticPowerPlot({ evals }: { evals: Evals }) {
   </>;
 }
 
-function SyntheticBrightnessPlot({ evals }: { evals: Evals }) {
+function SyntheticBrightnessPlot({ evals, xDomain, yDomain, xTicks, yTicks }: {
+  evals: Evals; xDomain: [number, number]; yDomain: [number, number];
+  xTicks: { v: number; label: string }[]; yTicks: { v: number; label: string }[];
+}) {
   const bright = evals.bright_std;
   const xEdges = finiteEdges(bright?.bright_edges ?? []);
   const yEdges = finiteEdges(bright?.std_edges ?? []);
   if (!bright || xEdges.length < 2 || yEdges.length < 2 || !bright.hist.length) return null;
   return <Plot title="member STD versus brightness  ·  synthetic test fields"
-    xDomain={[xEdges[0], xEdges[xEdges.length - 1]]} yDomain={[yEdges[0], yEdges[yEdges.length - 1]]}
-    xTicks={ticks(xEdges[0], xEdges[xEdges.length - 1])} yTicks={ticks(yEdges[0], yEdges[yEdges.length - 1])}
+    xDomain={xDomain} yDomain={yDomain} xTicks={xTicks} yTicks={yTicks}
     xLabel="mean brightness (asinh)" yLabel="log10(member std)"
     heat={{ z: bright.hist, xEdges, yEdges, colorLabel: "synthetic pixels" }} series={[]} height={360} />;
 }
 
-function SyntheticCombinerPlot({ evals, kind }: { evals: Evals; kind: string }) {
-  const axis = evals.combiner_feature_error?.axes?.mean_std;
+function SyntheticCombinerPlot({ evals, kind, xDomain, yDomain, xTicks, yTicks }: {
+  evals: Evals; kind: string; xDomain: [number, number]; yDomain: [number, number];
+  xTicks: { v: number; label: string }[]; yTicks: { v: number; label: string }[];
+}) {
+  const axis = evals.combiner_feature_error?.axes?.min_max;
   const model = axis?.models?.[kind];
   const xEdges = finiteEdges(axis?.edges?.[0] ?? []);
   const yEdges = finiteEdges(axis?.edges?.[1] ?? []);
   if (!model || xEdges.length < 2 || yEdges.length < 2 || !model.counts.length) return null;
   return <Plot title="combiner feature occupancy  ·  synthetic test fields"
-    xDomain={[xEdges[0], xEdges[xEdges.length - 1]]} yDomain={[yEdges[0], yEdges[yEdges.length - 1]]}
-    xTicks={ticks(xEdges[0], xEdges[xEdges.length - 1])} yTicks={ticks(yEdges[0], yEdges[yEdges.length - 1])}
-    xLabel={axis?.axis_names?.[0] ?? "mean member"} yLabel={axis?.axis_names?.[1] ?? "member std"}
+    xDomain={xDomain} yDomain={yDomain} xTicks={xTicks} yTicks={yTicks}
+    xLabel={axis?.axis_names?.[0] ?? "min member"} yLabel={axis?.axis_names?.[1] ?? "max member"}
     heat={{ z: model.counts, xEdges, yEdges, colorLabel: "synthetic pixels" }} series={[]} height={360} />;
 }
 
@@ -129,20 +144,28 @@ function InferenceDiagnostics({ data, synthetic, syntheticLoading, syntheticErro
 }) {
   const labels = data.member_labels.map((label) => label.replace("·psnr", ""));
   const power = data.model_power;
-  const kMin = power.k[0] ?? 0.2;
-  const kMax = power.k[power.k.length - 1] ?? 10;
+  const syntheticPower = synthetic?.ps;
+  const syntheticCross = syntheticPower?.theta && syntheticPower.r_cross
+    ? reciprocalSeries(syntheticPower.theta, syntheticPower.r_cross) : [];
+  const kDomain = sharedDomain(power.k, syntheticCross.map((point) => point.x));
+  const kMin = kDomain[0], kMax = kDomain[1];
   const kTicks = [0.2, 0.5, 1, 2, 5, 10]
     .filter((value) => value >= kMin && value <= kMax)
     .map((value) => ({ v: value, label: String(value) }));
   const std = data.std_brightness;
+  const syntheticBright = synthetic?.bright_std;
+  const brightnessXDomain = sharedDomain(std.x_edges, syntheticBright?.bright_edges ?? []);
+  const brightnessYDomain = sharedDomain(std.y_edges, syntheticBright?.std_edges ?? []);
+  const brightnessXTicks = ticks(brightnessXDomain[0], brightnessXDomain[1]);
+  const brightnessYTicks = ticks(brightnessYDomain[0], brightnessYDomain[1]);
   return <>
     <ComparisonCard title="Model–model angular cross-correlation"
       sub={`${labels.length * (labels.length - 1) / 2} real-field member pairs · no HR reference · matched to synthetic STARFULL evaluation`}
       real={<>
         <Plot title="cross-correlation rᵢⱼ(k)  ·  1 = identical Fourier structure"
-          xScale="log" xDomain={[kMin, kMax]} yDomain={[-1, 1.05]}
+          xScale="log" xDomain={kDomain} yDomain={CROSS_Y_DOMAIN}
           xTicks={kTicks}
-          yTicks={[{ v: -1, label: "−1" }, { v: -0.5, label: "−0.5" }, { v: 0, label: "0" }, { v: 0.5, label: "0.5" }, { v: 1, label: "1" }]}
+          yTicks={CROSS_Y_TICKS}
           xLabel={`angular frequency k [cycles / arcsec] · ${power.pixel_scale_arcsec.toFixed(2)}″ pixels`}
           yLabel="rᵢⱼ(k)" series={[
             ...power.r_pairs.map((row) => ({ x: power.k, y: row, color: "#708096", width: 0.8, alpha: 0.22 })),
@@ -153,23 +176,32 @@ function InferenceDiagnostics({ data, synthetic, syntheticLoading, syntheticErro
           Each curve compares two cached STARFULL predictions after mean subtraction and windowed 2-D FFTs; the bands and tiles are combined by median.
         </p>
       </>}
-      synthetic={synthetic ? <SyntheticPowerPlot evals={synthetic} /> : <MissingSyntheticPlot loading={syntheticLoading} error={syntheticError} />} />
+      synthetic={synthetic ? <SyntheticPowerPlot evals={synthetic} xDomain={kDomain} xTicks={kTicks} />
+        : <MissingSyntheticPlot loading={syntheticLoading} error={syntheticError} />} />
 
     <ComparisonCard title="Member STD versus brightness"
       sub="Density of pixels in each domain. Brightness and spread are in asinh-space; this is ensemble variation, not error."
       real={<>
-        <Plot xDomain={[std.x_edges[0], std.x_edges[std.x_edges.length - 1]]} yDomain={[std.y_edges[0], std.y_edges[std.y_edges.length - 1]]}
-          xTicks={ticks(std.x_edges[0], std.x_edges[std.x_edges.length - 1])} yTicks={ticks(std.y_edges[0], std.y_edges[std.y_edges.length - 1])}
+        <Plot xDomain={brightnessXDomain} yDomain={brightnessYDomain}
+          xTicks={brightnessXTicks} yTicks={brightnessYTicks}
           xLabel={std.x_label} yLabel={std.y_label}
           heat={{ z: std.counts, xEdges: std.x_edges, yEdges: std.y_edges, colorLabel: "sampled pixels" }}
           series={[]} height={360} />
       </>}
-      synthetic={synthetic ? <SyntheticBrightnessPlot evals={synthetic} /> : <MissingSyntheticPlot loading={syntheticLoading} error={syntheticError} />} />
+      synthetic={synthetic ? <SyntheticBrightnessPlot evals={synthetic}
+        xDomain={brightnessXDomain} yDomain={brightnessYDomain}
+        xTicks={brightnessXTicks} yTicks={brightnessYTicks} />
+        : <MissingSyntheticPlot loading={syntheticLoading} error={syntheticError} />} />
 
     {Object.entries(data.combiners)
       .filter(([kind]) => kind === "raw_incremental_minmeanmax_rbf")
       .map(([kind, comb]) => {
       const title = "minibatched convex all-asinh RBF";
+      const syntheticAxis = synthetic?.combiner_feature_error?.axes?.min_max;
+      const combinerXDomain = sharedDomain(comb.x_edges, syntheticAxis?.edges?.[0] ?? []);
+      const combinerYDomain = sharedDomain(comb.y_edges ?? [], syntheticAxis?.edges?.[1] ?? []);
+      const combinerXTicks = ticks(combinerXDomain[0], combinerXDomain[1]);
+      const combinerYTicks = ticks(combinerYDomain[0], combinerYDomain[1]);
       if (comb.mode === "histogram") {
         const counts = comb.counts as number[];
         const centers = counts.map((_, i) => (comb.x_edges[i] + comb.x_edges[i + 1]) / 2);
@@ -180,16 +212,22 @@ function InferenceDiagnostics({ data, synthetic, syntheticLoading, syntheticErro
             xTicks={ticks(comb.x_edges[0], comb.x_edges[comb.x_edges.length - 1])} yTicks={ticks(0, Math.max(...ys, 1))}
             xLabel={comb.x_label} yLabel="log10(pixel count + 1)"
             series={[{ x: centers, y: ys, color: "#4c9ffe", width: 2 }]} height={300} />}
-          synthetic={synthetic ? <SyntheticCombinerPlot evals={synthetic} kind={kind} /> : <MissingSyntheticPlot loading={syntheticLoading} error={syntheticError} />} />;
+          synthetic={synthetic ? <SyntheticCombinerPlot evals={synthetic} kind={kind}
+            xDomain={combinerXDomain} yDomain={combinerYDomain}
+            xTicks={combinerXTicks} yTicks={combinerYTicks} />
+            : <MissingSyntheticPlot loading={syntheticLoading} error={syntheticError} />} />;
       }
       const counts = comb.counts as number[][];
       return <ComparisonCard key={kind} title={`${title} · pixel occupancy`}
         sub={`${comb.pixel_count.toLocaleString()} real pixels across four bands · no error or HR target · matched to synthetic gate occupancy`}
-        real={<Plot xDomain={[comb.x_edges[0], comb.x_edges[comb.x_edges.length - 1]]} yDomain={[comb.y_edges![0], comb.y_edges![comb.y_edges!.length - 1]]}
-          xTicks={ticks(comb.x_edges[0], comb.x_edges[comb.x_edges.length - 1])} yTicks={ticks(comb.y_edges![0], comb.y_edges![comb.y_edges!.length - 1])}
+        real={<Plot xDomain={combinerXDomain} yDomain={combinerYDomain}
+          xTicks={combinerXTicks} yTicks={combinerYTicks}
           xLabel={comb.x_label} yLabel={comb.y_label ?? "feature"}
           heat={{ z: counts, xEdges: comb.x_edges, yEdges: comb.y_edges!, colorLabel: "real pixel count" }} series={[]} height={360} />}
-        synthetic={synthetic ? <SyntheticCombinerPlot evals={synthetic} kind={kind} /> : <MissingSyntheticPlot loading={syntheticLoading} error={syntheticError} />} />;
+        synthetic={synthetic ? <SyntheticCombinerPlot evals={synthetic} kind={kind}
+          xDomain={combinerXDomain} yDomain={combinerYDomain}
+          xTicks={combinerXTicks} yTicks={combinerYTicks} />
+          : <MissingSyntheticPlot loading={syntheticLoading} error={syntheticError} />} />;
     })}
   </>;
 }
