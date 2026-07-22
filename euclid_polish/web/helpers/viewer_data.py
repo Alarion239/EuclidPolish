@@ -34,8 +34,9 @@ import json
 import math
 import os
 import re
+import warnings
 from collections import OrderedDict
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any
 
 import numpy as np
@@ -1283,44 +1284,157 @@ def _jwst_filter_tint(band: str) -> list[float]:
     return [1.0, 0.34, 0.30]
 
 
+def _saved_jwst_euclid_pairs() -> list[tuple[dict[str, Any], str]]:
+    """Return saved paired fields in the stable location-carousel order."""
+    from euclid_polish.web.helpers.jwst_euclid import (
+        _cached_pair_is_usable,
+        enrich_manifest_metadata,
+        location_groups,
+        pair_root,
+    )
+
+    pairs: list[tuple[dict[str, Any], str]] = []
+    groups, _ = location_groups()
+    for group in groups:
+        if not group.get("available"):
+            continue
+        identifier = str(group.get("field_id") or "")
+        if not _PAIR_ID.fullmatch(identifier):
+            continue
+        directory = pair_root() / identifier
+        try:
+            with (directory / "manifest.json").open(encoding="utf-8") as handle:
+                manifest = json.load(handle)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(manifest, dict) or not _cached_pair_is_usable(directory, manifest):
+            continue
+        pairs.append((enrich_manifest_metadata(directory, manifest), str(directory)))
+    if not pairs:
+        raise ViewerError(404, "no saved JWST × Euclid fields")
+    return pairs
+
+
+def _jwst_filter_wavelength_um(entry: Mapping[str, Any]) -> float:
+    """Approximate a JWST filter pivot from its standard ``F###`` name."""
+    text = str(entry.get("filter") or "").upper()
+    match = re.search(r"F(\d{3,4})", text)
+    return float(match.group(1)) / 100.0 if match else math.inf
+
+
+def _jwst_colour_channel_groups(entries: list[dict[str, Any]]) -> tuple[list[int], list[int], list[int]]:
+    """Assign every available filter to blue, green, or red display light."""
+    ordered = sorted(range(len(entries)), key=lambda index: _jwst_filter_wavelength_um(entries[index]))
+    if len(ordered) == 1:
+        return ordered, ordered, ordered
+    if len(ordered) == 2:
+        return [ordered[0]], [ordered[0]], [ordered[1]]
+    blue, green, red = (list(chunk) for chunk in np.array_split(np.asarray(ordered), 3))
+    return blue, green, red
+
+
+def _jwst_colour_cube(manifest: dict[str, Any], directory: str) -> tuple[np.ndarray, dict[str, Any]]:
+    """Build a display-only RGB composite while retaining the source FITS grids.
+
+    Native JWST files remain untouched in the cache.  For the viewer only,
+    every usable filter is sampled onto the finest saved JWST WCS, then split
+    by wavelength into blue/green/red groups.  This makes camera/filter choice
+    a colour decision rather than a second navigation axis.
+    """
+    from euclid_polish.web.helpers.jwst_euclid import align_to_target
+
+    loaded: list[tuple[dict[str, Any], np.ndarray, Any, float]] = []
+    for entry in _jwst_band_entries(manifest):
+        try:
+            data, wcs = _pair_native_jwst(manifest, directory, entry)
+        except ViewerError:
+            continue
+        metadata = entry.get("metadata", {}) or {}
+        scales = metadata.get("pixel_scale_arcsec", [])
+        scale = float(scales[0]) if isinstance(scales, list) and scales else math.inf
+        if not math.isfinite(scale) or scale <= 0:
+            scale = math.inf
+        loaded.append((entry, np.asarray(data, np.float32), wcs, scale))
+    if not loaded:
+        raise ViewerError(404, "saved field has no usable JWST images")
+
+    reference_index = min(range(len(loaded)), key=lambda index: loaded[index][3])
+    reference_entry, reference_data, reference_wcs, reference_scale = loaded[reference_index]
+    aligned_entries: list[dict[str, Any]] = []
+    aligned_planes: list[np.ndarray] = []
+    for entry, data, wcs, _scale in loaded:
+        try:
+            plane = data if wcs is reference_wcs else align_to_target(
+                data, wcs, reference_wcs, reference_data.shape,
+            )
+        except Exception:  # noqa: BLE001 - a non-overlapping camera need not break colour
+            continue
+        if np.any(np.isfinite(plane)):
+            aligned_entries.append(entry)
+            aligned_planes.append(np.asarray(plane, np.float32))
+    if not aligned_planes:
+        raise ViewerError(404, "JWST cameras do not overlap on this field")
+
+    blue_indices, green_indices, red_indices = _jwst_colour_channel_groups(aligned_entries)
+
+    def channel(indices: list[int]) -> np.ndarray:
+        stack = np.stack([aligned_planes[index] for index in indices], axis=0)
+        # WCS resampling leaves a NaN rim where a coarser camera has no source
+        # pixels.  A fully empty edge is expected and transparent in display.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            plane = np.nanmedian(stack, axis=0)
+        finite = plane[np.isfinite(plane)]
+        positive = finite[finite > 0]
+        scale = float(np.nanpercentile(positive, 99.5)) if positive.size else 1.0
+        return np.clip(np.nan_to_num(plane / max(scale, 1e-12)), 0.0, 4.0).astype(np.float32)
+
+    blue, green, red = channel(blue_indices), channel(green_indices), channel(red_indices)
+    cube = np.stack([red, green, blue], axis=-1)
+
+    def names(indices: list[int]) -> str:
+        return "+".join(str(aligned_entries[index].get("filter") or "JWST") for index in indices)
+
+    reference_filter = str(reference_entry.get("filter") or "JWST")
+    return cube, {
+        "label": (
+            f"JWST colour · R {names(red_indices)} · G {names(green_indices)} · "
+            f"B {names(blue_indices)} · display WCS {reference_filter}"
+        ),
+        "asinh": 0.05,
+        "pixscale": reference_scale if math.isfinite(reference_scale) else 0.0,
+        "bands": ["JWST-R", "JWST-G", "JWST-B"],
+        "direct_rgb": True,
+    }
+
+
 def _jwst_euclid_meta(params: dict[str, str]) -> dict[str, Any]:
-    manifest, directory = _jwst_euclid_pair(params)
-    inference = manifest.get("inference", {}) or {}
-    inference_files = inference.get("files", {}) if isinstance(inference, dict) else {}
-    has_starfull = False
-    try:
-        _pair_file(directory, inference_files.get("starfull"))
-        _pair_file(directory, inference_files.get("lr"))
-        has_starfull = True
-    except ViewerError:
-        pass
+    pairs = _saved_jwst_euclid_pairs()
     tiers = [
         {"key": "lr", "label": "LR · Euclid VIS"},
+        {"key": "jwst", "label": "JWST colour"},
     ]
-    for entry in _jwst_band_entries(manifest):
-        key = str(entry.get("key") or f"jwst{len(tiers)}")
-        band = str(entry.get("filter") or "JWST")
-        tiers.append({"key": key, "label": f"JWST · {band} · native"})
-    if has_starfull:
-        tiers.append({
-            "key": "starfull",
-            "label": str(inference.get("combiner_label") or "STARFULL combiner"),
-        })
-    target = str(manifest.get("target_name") or "paired field")
     return {
-        "count": 1,
+        "count": len(pairs),
         "tiers": tiers,
         "default_tier": "lr",
         "band_names": list(BAND_NAMES),
         "color_label": "Euclid colour",
-        "objects": [{"label": target, "tiers": [tier["key"] for tier in tiers]}],
+        "objects": [
+            {
+                "label": f"{index} · {manifest.get('target_name') or 'paired field'}",
+                "tiers": [tier["key"] for tier in tiers],
+            }
+            for index, (manifest, _directory) in enumerate(pairs)
+        ],
     }
 
 
 def _jwst_euclid_cube(index: int, tier: str, params: dict[str, str]):
-    if index != 0:
+    pairs = _saved_jwst_euclid_pairs()
+    if not 0 <= index < len(pairs):
         raise ViewerError(404, "paired field index out of range")
-    manifest, directory = _jwst_euclid_pair(params)
+    manifest, directory = pairs[index]
     files = manifest.get("files", {}) or {}
     inference = manifest.get("inference", {}) or {}
     inference_files = inference.get("files", {}) if isinstance(inference, dict) else {}
@@ -1334,29 +1448,8 @@ def _jwst_euclid_cube(index: int, tier: str, params: dict[str, str]):
             "pixscale": float(Config.VIS_PIXEL_SCALE_ARCSEC),
             "bands": bands,
         }
-    entries = {str(entry.get("key")): entry for entry in _jwst_band_entries(manifest)}
-    if tier in entries:
-        entry = entries[tier]
-        data, wcs = _pair_native_jwst(manifest, directory, entry)
-        metadata = entry.get("metadata", {}) or {}
-        scale = metadata.get("pixel_scale_arcsec", [])
-        pixscale = float(scale[0]) if isinstance(scale, list) and scale else 0.0
-        band = str(entry.get("filter") or _jwst_band_name(manifest))
-        return _as_hwc(data), {
-            "label": f"JWST native · {band} · single-filter false colour",
-            "asinh": _pair_asinh(data),
-            "pixscale": pixscale,
-            "bands": [band],
-            "tint": _jwst_filter_tint(band),
-        }
-    if tier == "starfull":
-        cube = _pair_cube(_pair_file(directory, inference_files.get("starfull")))
-        return cube, {
-            "label": str(inference.get("combiner_label") or "STARFULL combiner"),
-            "asinh": float(Config.STRETCH_SCALE_E),
-            "pixscale": float(inference.get("pixel_scale_arcsec") or Config.DEFAULT_PIXEL_SCALE),
-            "bands": list(BAND_NAMES[:cube.shape[-1]]),
-        }
+    if tier == "jwst":
+        return _jwst_colour_cube(manifest, directory)
     raise ViewerError(400, "bad paired-field tier")
 
 

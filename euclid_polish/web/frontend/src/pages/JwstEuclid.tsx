@@ -198,6 +198,7 @@ export default function JwstEuclidPage() {
   };
 
   const pair = manifest.data;
+  const savedFields = fields.filter((row) => row.available);
   const canDownload = !!selected && coverageStatus(selected) !== "not_covered" && !pairJob.busy;
   const remainingDownloadCount = fields.filter((row) => !row.available && coverageStatus(row) !== "not_covered").length;
   const sourceStatus = index.data?.status;
@@ -343,43 +344,34 @@ export default function JwstEuclidPage() {
         </CardBody>
       </Card>
 
-      {pair ? (
+      {savedFields.length > 0 ? (
         <section className="jwst-euclid__viewer" aria-label="JWST and Euclid native-grid field viewer">
           <div className="jwst-euclid__viewer-head">
             <div>
-              <div className="eyebrow">native-grid field viewer</div>
-              <h2>{pair.target_name || "Unnamed field"}</h2>
-              <p>{formatCoord(pair.ra_deg, "N", "S")} · {formatCoord(pair.dec_deg, "E", "W")} · {(asNumber(pair.size_arcsec) ?? 0).toFixed(1)}″ field. Use the tier strip to switch between Euclid LR and every native JWST filter.</p>
+              <div className="eyebrow">saved field carousel</div>
+              <h2>Euclid LR × JWST colour</h2>
+              <p>Carousel position 0 is {targetName(savedFields[0])}. Use the previous/next controls to move through every saved sky location; the JWST tier combines all available filters and cameras into one display colour image.</p>
             </div>
             <div className="jwst-euclid__viewer-actions">
-              <Button size="sm" variant="primary" onClick={runInference} disabled={inferenceJob.busy}>
-                {inferenceJob.busy ? "running STARFULL…" : pair.inference ? "refresh STARFULL" : "run STARFULL combiner"}
-              </Button>
-              <Badge tone="good">native WCS grids</Badge>
-              <a className="ui-btn ui-btn--sm ui-btn--ghost" href={`/api/jwst-euclid/field/${pair.field_id}/download/jwst_native`}>
-                JWST FITS
-              </a>
-              {pair.inference && <a className="ui-btn ui-btn--sm ui-btn--ghost" href={`/api/jwst-euclid/field/${pair.field_id}/download/starfull`}>
-                STARFULL FITS
-              </a>}
+              <Badge tone="good">{savedFields.length} saved fields</Badge>
+              <Badge>all JWST filters → colour</Badge>
             </div>
           </div>
           <JobProgressView job={inferenceJob.job} error={inferenceJob.error} />
           <CutoutViewer
-            key={`${pair.field_id}:${pair.inference?.combiner_kind ?? "pending"}`}
+            key={`jwst-carousel-${savedFields.length}`}
             collection="jwst-euclid"
-            params={{ field: pair.field_id }}
-            initialTiers={["lr", "jwst0"]}
+            initialTiers={["lr", "jwst"]}
           />
           <div className="jwst-euclid__meta">
-            <Stat k="Euclid colour" v={pair.inference ? "VIS · Y_E · J_E · H_E, registered to VIS" : "VIS until STARFULL input is prepared"} />
-            <Stat k="JWST native filters" v={`${pair.jwst_bands?.length ?? 1} separate native-WCS tier${(pair.jwst_bands?.length ?? 1) === 1 ? "" : "s"}`} />
-            <Stat k="STARFULL" v={pair.inference?.combiner_label || "run on registered VIS + Y + J + H"} />
+            <Stat k="Euclid tier" v="LR · VIS reference" />
+            <Stat k="JWST tier" v="colour composite · all saved filters/cameras" />
+            <Stat k="display grid" v="finest saved JWST WCS; source FITS stay native" />
           </div>
         </section>
       ) : (
         <Card className="jwst-euclid__empty-view"><CardBody><Empty>
-          {selected?.available ? "Loading the cached paired field…" : "Choose a candidate and download it to open the registered comparison."}
+          Choose a candidate and download it to add the first field to the LR × JWST colour carousel.
         </Empty></CardBody></Card>
       )}
     </Page>

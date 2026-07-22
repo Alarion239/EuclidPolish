@@ -5,7 +5,7 @@ import json
 import numpy as np
 
 from euclid_polish.config import Config
-from euclid_polish.web.helpers import jwst_euclid
+from euclid_polish.web.helpers import jwst_euclid, viewer_data
 
 
 def test_field_id_is_stable_and_path_safe():
@@ -56,6 +56,21 @@ def test_jwst_product_selection_prefers_resampled_image():
         {"filename": "jw0001_uncal.fits"},
     ]
     assert jwst_euclid._choose_jwst_product(rows) == "jw0001_i2d.fits"
+
+
+def test_jwst_colour_groups_use_every_filter_in_wavelength_order():
+    entries = [
+        {"filter": "F356W"},
+        {"filter": "F115W"},
+        {"filter": "F200W"},
+        {"filter": "F444W"},
+        {"filter": "F150W"},
+    ]
+    blue, green, red = viewer_data._jwst_colour_channel_groups(entries)
+    assert blue == [1, 4]
+    assert green == [2, 0]
+    assert red == [3]
+    assert sorted(blue + green + red) == list(range(len(entries)))
 
 
 def test_readable_fits_rejects_empty_archive_placeholder(tmp_path):

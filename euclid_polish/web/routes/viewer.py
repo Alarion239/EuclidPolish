@@ -96,6 +96,9 @@ def register(app):
             if isinstance(tint, (list, tuple)) and len(tint) == 3:
                 resp.headers["X-Cube-Tint"] = ",".join(str(float(value)) for value in tint)
                 exposed.append("X-Cube-Tint")
+        if info.get("direct_rgb"):
+            resp.headers["X-Cube-Direct-RGB"] = "1"
+            exposed.append("X-Cube-Direct-RGB")
         # Expose the custom headers to fetch() under any CORS posture.
         resp.headers["Access-Control-Expose-Headers"] = ",".join(exposed)
         resp.headers["Cache-Control"] = "no-cache"

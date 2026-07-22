@@ -124,7 +124,15 @@ function prepareCore(rec, colorMeta, color) {
   const canTemp = calibrated && names.length >= 2;
 
   let prepared;
-  if ((color === "lupton" && canLupton) || (color === "temp" && canTemp)) {
+  if (rec.directRgb && rec.c >= 3) {
+    const R = new Float32Array(npx), G = new Float32Array(npx), B = new Float32Array(npx);
+    const I = new Float32Array(npx);
+    for (let p = 0; p < npx; p++) {
+      R[p] = Math.max(at(p, 0), 0); G[p] = Math.max(at(p, 1), 0); B[p] = Math.max(at(p, 2), 0);
+      I[p] = (R[p] + G[p] + B[p]) / 3.0;
+    }
+    prepared = { mode: "direct-rgb", R, G, B, I, factor: 1.0 };
+  } else if ((color === "lupton" && canLupton) || (color === "temp" && canTemp)) {
     const useSolar = color === "lupton";
     const calib = names.map((n) => {
       let f = abFluxNorm(bandOf(n));
@@ -229,7 +237,7 @@ function transferCore(prep, knee, gain, K0) {
       const o = p * 4;
       out[o] = tr * v; out[o + 1] = tg * v; out[o + 2] = tb * v; out[o + 3] = 255;
     }
-  } else if (prep.mode === "lupton") {
+  } else if (prep.mode === "lupton" || prep.mode === "direct-rgb") {
     const { R, G: GG, B } = prep;
     for (let p = 0; p < npx; p++) {
       const t = asinhTransfer(I[p], G, Kc, norm);
@@ -420,6 +428,7 @@ export function mountCutoutViewer(root, opts = {}) {
       bands: (r.headers.get("X-Cube-Bands") || "").split(",").filter(Boolean),
       tint: (r.headers.get("X-Cube-Tint") || "").split(",").map(Number)
         .filter(Number.isFinite),
+      directRgb: r.headers.get("X-Cube-Direct-RGB") === "1",
       // PCA eigen-image amplitude/variance (subset-aware) for the movie.
       amp: Number.isFinite(amp) ? amp : null,
       varexp: parseFloat(r.headers.get("X-Cube-Var")) || 0,
