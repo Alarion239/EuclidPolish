@@ -211,6 +211,38 @@ def test_location_groups_collect_filters_at_one_sky_position(tmp_path, monkeypat
     assert target["jwst_filters"] == "F150W, F322W2"
 
 
+def test_download_remaining_locations_skips_saved_and_keeps_going(monkeypatch):
+    rows = [
+        {"field_id": "saved", "available": True},
+        {"field_id": "blank", "available": False, "euclid_coverage_status": "not_covered"},
+        {"field_id": "good", "available": False, "jwst_target_name": "Good field"},
+        {"field_id": "bad", "available": False, "jwst_target_name": "Bad field"},
+    ]
+    calls = []
+    ticks = []
+
+    monkeypatch.setattr(jwst_euclid, "location_groups", lambda: (rows, {}))
+
+    def fake_download(row, *, size_arcsec, progress=None):
+        calls.append((row["field_id"], size_arcsec))
+        if row["field_id"] == "bad":
+            raise RuntimeError("archive unavailable")
+        return {"field_id": row["field_id"]}
+
+    monkeypatch.setattr(jwst_euclid, "download_and_align_pair", fake_download)
+    result = jwst_euclid.download_remaining_locations(
+        size_arcsec=30.0,
+        progress=lambda current, total, label: ticks.append((current, total, label)),
+    )
+
+    assert calls == [("good", 30.0), ("bad", 30.0)]
+    assert result["already_saved_count"] == 1
+    assert result["known_no_coverage_count"] == 1
+    assert result["downloaded_count"] == 1
+    assert result["failed_count"] == 1
+    assert ticks[-1][:2] == (2, 2)
+
+
 def test_scan_euclid_coverage_caches_unique_field_centers(tmp_path, monkeypatch):
     monkeypatch.setattr(Config, "DATA_DIR", str(tmp_path / "data"))
     root = jwst_euclid.overlap_root()

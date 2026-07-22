@@ -11,6 +11,7 @@ from flask import jsonify, request, send_file
 from euclid_polish.web.helpers.jwst_euclid import (
     _cached_pair_is_usable,
     download_and_align_pair,
+    download_remaining_locations,
     enrich_manifest_metadata,
     find_location_group,
     location_groups,
@@ -95,6 +96,28 @@ def register(app):
             ),
         )
         return jsonify({"job_id": job_id, "field_id": identifier})
+
+    @app.post("/api/jwst-euclid/download-all")
+    def api_jwst_euclid_download_all():
+        try:
+            size_arcsec = float(request.form.get("size_arcsec", "30"))
+        except ValueError:
+            return jsonify({"error": "size_arcsec must be a number"}), 400
+        if not 1.0 <= size_arcsec <= 120.0:
+            return jsonify({"error": "size_arcsec must be between 1 and 120 arcsec"}), 400
+        rows, _ = location_groups()
+        remaining = sum(
+            not row.get("available") and row.get("euclid_coverage_status") != "not_covered"
+            for row in rows
+        )
+        job_id = REGISTRY.spawn(
+            label=f"download remaining JWST bands + Euclid ({remaining} locations)",
+            target=lambda cap: download_remaining_locations(
+                size_arcsec=size_arcsec,
+                progress=lambda done, total, label: cap.tick(done, total, label),
+            ),
+        )
+        return jsonify({"job_id": job_id, "remaining_count": remaining})
 
     @app.post("/api/jwst-euclid/scan-coverage")
     def api_jwst_euclid_scan_coverage():

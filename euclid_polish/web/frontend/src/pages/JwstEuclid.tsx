@@ -128,6 +128,7 @@ export default function JwstEuclidPage() {
   const [instrument, setInstrument] = useState("all");
   const [view, setView] = useState<FieldView>("all");
   const pairJob = useJob();
+  const bulkDownloadJob = useJob();
   const coverageJob = useJob();
   const inferenceJob = useJob();
 
@@ -176,6 +177,14 @@ export default function JwstEuclidPage() {
     });
   };
 
+  const runRemainingDownloads = () => {
+    void bulkDownloadJob.run("/api/jwst-euclid/download-all", { size_arcsec: 30 }, {
+      onDone: () => {
+        window.setTimeout(() => index.reload(), 250);
+      },
+    });
+  };
+
   const runInference = () => {
     if (!selected?.available) return;
     void inferenceJob.run("/api/jwst-euclid/infer", { field_id: selected.field_id }, {
@@ -190,6 +199,7 @@ export default function JwstEuclidPage() {
 
   const pair = manifest.data;
   const canDownload = !!selected && coverageStatus(selected) !== "not_covered" && !pairJob.busy;
+  const remainingDownloadCount = fields.filter((row) => !row.available && coverageStatus(row) !== "not_covered").length;
   const sourceStatus = index.data?.status;
   const coverageSummary = sourceStatus?.coverage_scan;
 
@@ -225,6 +235,10 @@ export default function JwstEuclidPage() {
       <Card className="jwst-euclid__control-card">
         <CardHead title="Pick a sky location" sub="Choose by target, camera, available JWST filters, and sky position. Archive products remain behind the scenes." right={
           <div className="jwst-euclid__control-actions">
+            <Button size="sm" variant="primary" onClick={runRemainingDownloads}
+              disabled={bulkDownloadJob.busy || pairJob.busy || fields.length === 0 || remainingDownloadCount === 0}>
+              {bulkDownloadJob.busy ? "downloading locations…" : `download remaining (${remainingDownloadCount})`}
+            </Button>
             <Button size="sm" variant="primary" onClick={runCoverageScan} disabled={coverageJob.busy || fields.length === 0}>
               {coverageJob.busy ? "scanning Euclid…" : "scan Euclid coverage"}
             </Button>
@@ -324,6 +338,7 @@ export default function JwstEuclidPage() {
             </>
           )}
           <JobProgressView job={pairJob.job} error={pairJob.error} />
+          <JobProgressView job={bulkDownloadJob.job} error={bulkDownloadJob.error} />
           <JobProgressView job={coverageJob.job} error={coverageJob.error} />
         </CardBody>
       </Card>
@@ -334,7 +349,7 @@ export default function JwstEuclidPage() {
             <div>
               <div className="eyebrow">native-grid field viewer</div>
               <h2>{pair.target_name || "Unnamed field"}</h2>
-              <p>{formatCoord(pair.ra_deg, "N", "S")} · {formatCoord(pair.dec_deg, "E", "W")} · {(asNumber(pair.size_arcsec) ?? 0).toFixed(1)}″ field. Use the tier strip for Euclid LR and native JWST pixels.</p>
+              <p>{formatCoord(pair.ra_deg, "N", "S")} · {formatCoord(pair.dec_deg, "E", "W")} · {(asNumber(pair.size_arcsec) ?? 0).toFixed(1)}″ field. Use the tier strip to switch between Euclid LR and every native JWST filter.</p>
             </div>
             <div className="jwst-euclid__viewer-actions">
               <Button size="sm" variant="primary" onClick={runInference} disabled={inferenceJob.busy}>

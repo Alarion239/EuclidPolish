@@ -1264,6 +1264,66 @@ def download_and_align_pair(
         raise
 
 
+def download_remaining_locations(
+    *,
+    size_arcsec: float = 30.0,
+    progress: Any | None = None,
+) -> dict[str, Any]:
+    """Save every remaining usable location, sequentially and cache-first.
+
+    A single location can contain several JWST filters, so this deliberately
+    calls :func:`download_and_align_pair` once per location rather than once
+    per archive row.  Known blank/no-coverage positions are skipped; all
+    other locations are checked again by the download path and a failure at
+    one position never prevents later locations from being tried.
+    """
+    if not 1.0 <= float(size_arcsec) <= 120.0:
+        raise ValueError("size_arcsec must be between 1 and 120 arcsec")
+
+    groups, _ = location_groups()
+    saved = [row for row in groups if row.get("available")]
+    no_coverage = [
+        row for row in groups
+        if not row.get("available") and row.get("euclid_coverage_status") == "not_covered"
+    ]
+    candidates = [
+        row for row in groups
+        if not row.get("available") and row.get("euclid_coverage_status") != "not_covered"
+    ]
+    downloaded: list[dict[str, str]] = []
+    failed: list[dict[str, str]] = []
+    total = len(candidates)
+    if progress:
+        progress(0, total, "preparing remaining sky locations")
+
+    for number, row in enumerate(candidates, start=1):
+        identifier = _text(row.get("field_id"))
+        target = _text(row.get("jwst_target_name")) or identifier
+        if progress:
+            progress(number - 1, total, f"location {number}/{total}: {target}")
+        print(f"Downloading location {number}/{total}: {target}")
+        try:
+            download_and_align_pair(row, size_arcsec=size_arcsec)
+            downloaded.append({"field_id": identifier, "target_name": target})
+            print(f"Saved location {number}/{total}: {target}")
+        except Exception as exc:  # noqa: BLE001 - a later location may still work
+            failed.append({"field_id": identifier, "target_name": target, "error": str(exc)})
+            print(f"Skipped failed location {number}/{total}: {target}: {exc}")
+        if progress:
+            progress(number, total, f"completed location {number}/{total}: {target}")
+
+    return {
+        "location_count": len(groups),
+        "already_saved_count": len(saved),
+        "known_no_coverage_count": len(no_coverage),
+        "attempted_count": total,
+        "downloaded_count": len(downloaded),
+        "failed_count": len(failed),
+        "downloaded": downloaded,
+        "failed": failed,
+    }
+
+
 def run_starfull_pair_inference(
     identifier: str, *, progress: Any | None = None,
 ) -> dict[str, Any]:
@@ -1442,6 +1502,7 @@ def run_starfull_pair_inference(
 __all__ = [
     "align_to_target",
     "download_and_align_pair",
+    "download_remaining_locations",
     "euclid_tile",
     "field_id",
     "find_overlap_row",
