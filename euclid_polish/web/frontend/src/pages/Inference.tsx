@@ -204,8 +204,8 @@ function InferenceDiagnostics({ data, synthetic, syntheticLoading, syntheticErro
           yTicks={CROSS_Y_TICKS}
           xLabel={`angular distance d [arcsec] · ${power.pixel_scale_arcsec.toFixed(2)}″ pixels`}
           yLabel="rᵢⱼ(d)" series={[
-            ...power.r_pairs.map((row) => { const points = transformedSeries(power.k, row, (value) => 1 / value); return { x: points.map((point) => point.x), y: points.map((point) => point.y), color: "#708096", width: 0.8, alpha: 0.22 }; }),
-            (() => { const points = transformedSeries(power.k, power.r_cross, (value) => 1 / value); return { x: points.map((point) => point.x), y: points.map((point) => point.y), color: "#4c9ffe", width: 2.4, dash: [6, 3] }; })(),
+            ...power.r_pairs.map((row) => { const points = transformedSeries(power.k, row, (value) => 0.5 / value); return { x: points.map((point) => point.x), y: points.map((point) => point.y), color: "#708096", width: 0.8, alpha: 0.22 }; }),
+            (() => { const points = transformedSeries(power.k, power.r_cross, (value) => 0.5 / value); return { x: points.map((point) => point.x), y: points.map((point) => point.y), color: "#4c9ffe", width: 2.4, dash: [6, 3] }; })(),
           ]} guides={[{ axis: "y", v: 1, color: "#8c98a8", dash: [2, 3] }]} height={430} />
         <Legend items={[{ label: "individual model pairs", color: "#708096" }, { label: "median rᵢⱼ(d)", color: "#4c9ffe", dash: true }]} />
         <p className="muted" style={{ margin: "var(--s3) 0 0", fontSize: 12 }}>
