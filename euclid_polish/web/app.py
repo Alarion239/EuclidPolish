@@ -46,6 +46,7 @@ from euclid_polish.web.routes import (
     git,
     hst,
     hstpairs,
+    jwst_euclid,
     lens_isolation,
     lensfinder,
     model,
@@ -164,6 +165,8 @@ def create_app() -> Flask:
         "/viewer/",              # unified cutout viewer reads local caches
         "/lens-isolation",       # additive experiment status works offline
         "/api/lens-isolation/",
+        "/jwst-euclid",
+        "/api/jwst-euclid",
     )
 
     # The React console is now the only page UI. Keep the list explicit so
@@ -191,6 +194,7 @@ def create_app() -> Flask:
         "/fasrc",
         "/git",
         "/inspect",
+        "/jwst-euclid",
         "/connection-error",
     })
 
@@ -320,6 +324,7 @@ def create_app() -> Flask:
     lens_isolation.register(app)
     views.register(app)
     hstpairs.register(app)
+    jwst_euclid.register(app)
     files.register(app)
     git.register(app)
     tracking.register(app)

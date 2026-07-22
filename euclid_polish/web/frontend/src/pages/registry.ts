@@ -11,6 +11,7 @@ import FasrcPage from "./Fasrc";
 import GitPage from "./Git";
 import InferencePage from "./Inference";
 import InspectPage from "./Inspect";
+import JwstEuclidPage from "./JwstEuclid";
 import LensFinderPage from "./LensFinder";
 import LensIsolationPage from "./LensIsolation";
 import PsfsPage from "./Psfs";
@@ -33,6 +34,7 @@ export const PAGES: PageDef[] = [
   { label: "Cutouts", path: "/cutouts", component: CutoutsPage },
   { label: "TNG", path: "/tng", component: TngPage },
   { label: "Synthetic–Real", path: "/synthetic-real", component: SyntheticRealPage },
+  { label: "JWST × Euclid", path: "/jwst-euclid", component: JwstEuclidPage },
   { label: "Inference", path: "/inference", component: InferencePage },
   { label: "FITS inspector", path: "/inspect", component: InspectPage },
   { label: "Ensemble", path: "/ensemble", component: EnsemblePage },
@@ -52,7 +54,7 @@ const item = (label: string) => ({ label, path: path(label) });
 /** Sidebar sections in the reading order of a run: setup → data → model → ops. */
 export const NAV: NavGroup[] = [
   { title: "Setup", items: [item("Config"), item("Catalog"), item("PSFs")] },
-  { title: "Data", items: [item("Sky"), item("Cutouts"), item("TNG"), item("Synthetic–Real")] },
+  { title: "Data", items: [item("Sky"), item("Cutouts"), item("TNG"), item("Synthetic–Real"), item("JWST × Euclid")] },
   { title: "Model", items: [item("Inference"), item("Ensemble"), item("Train members"), item("Evaluation"), item("Lens finder"), item("Lens isolation")] },
   { title: "Ops", items: [item("Tracking"), item("Visualization"), item("FASRC"), item("Git")] },
 ];
