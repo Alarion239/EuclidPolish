@@ -22,6 +22,15 @@ def test_euclid_product_path_joins_directory_and_filename():
     }) == "/archive/VIS/tile.fits"
 
 
+def test_field_coordinates_prefer_jwst_footprint_center():
+    assert jwst_euclid.field_coordinates({
+        "jwst_ra_deg": "58.91",
+        "jwst_dec_deg": "-46.29",
+        "euclid_ra_deg": "59.02",
+        "euclid_dec_deg": "-46.50",
+    }) == (58.91, -46.29)
+
+
 def test_aligned_header_removes_invalid_extension_cards(tmp_path):
     from astropy.io import fits
 
@@ -114,4 +123,4 @@ def test_overlap_rows_reads_cached_csv_and_marks_pairs(tmp_path, monkeypatch):
     pair = jwst_euclid.pair_root() / rows[0]["field_id"]
     pair.mkdir(parents=True)
     (pair / "manifest.json").write_text(json.dumps({"field_id": rows[0]["field_id"]}), encoding="utf-8")
-    assert jwst_euclid.overlap_rows()[0][0]["available"] is True
+    assert jwst_euclid.overlap_rows()[0][0]["available"] is False

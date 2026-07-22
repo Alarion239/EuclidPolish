@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from pathlib import Path
 
 from flask import jsonify, request, send_file
 
@@ -29,6 +30,16 @@ def _manifest(identifier: str) -> dict | None:
     except (OSError, json.JSONDecodeError):
         return None
     return payload if isinstance(payload, dict) else None
+
+
+def _asset_path(identifier: str, filename: str) -> Path | None:
+    """Resolve a cached asset below exactly one paired-field directory."""
+    root = pair_root().resolve()
+    field_dir = (root / identifier).resolve()
+    path = (field_dir / filename).resolve()
+    if field_dir.parent != root or path.parent != field_dir:
+        return None
+    return path
 
 
 def register(app):
@@ -83,8 +94,8 @@ def register(app):
         payload = _manifest(identifier)
         if filename is None or payload is None:
             return jsonify({"error": "paired field asset not found"}), 404
-        path = pair_root() / identifier / filename
-        if not path.is_file():
+        path = _asset_path(identifier, filename)
+        if path is None or not path.is_file():
             return jsonify({"error": "paired field asset not found"}), 404
         return send_file(path, mimetype="image/png", max_age=0)
 
@@ -94,7 +105,7 @@ def register(app):
         filename = payload.get("files", {}).get(kind) if payload else None
         if payload is None or not isinstance(filename, str) or not _SAFE_ID.fullmatch(identifier):
             return jsonify({"error": "paired field asset not found"}), 404
-        path = pair_root() / identifier / filename
-        if not path.is_file():
+        path = _asset_path(identifier, filename)
+        if path is None or not path.is_file():
             return jsonify({"error": "paired field asset not found"}), 404
         return send_file(path, as_attachment=True, download_name=filename, max_age=0)

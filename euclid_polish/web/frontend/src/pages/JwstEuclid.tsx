@@ -14,6 +14,8 @@ type FieldRow = {
   euclid_tile_index: string;
   euclid_ra_deg?: number | string;
   euclid_dec_deg?: number | string;
+  jwst_ra_deg?: number | string;
+  jwst_dec_deg?: number | string;
   jwst_distance_deg?: number | string;
   footprint_status?: string;
   available: boolean;
@@ -56,6 +58,8 @@ const targetName = (row: FieldRow) => row.jwst_target_name?.trim() || "Unnamed J
 const instrumentName = (row: FieldRow) => row.jwst_instrument?.split("/")[0]?.trim() || "JWST imaging";
 const filterName = (row: FieldRow) => row.jwst_filters?.trim() || "filter not listed";
 const footprintName = (row: FieldRow) => row.footprint_status === "exact_intersection" ? "footprints intersect" : "nearby candidate";
+const fieldRa = (row: FieldRow) => row.jwst_ra_deg ?? row.euclid_ra_deg;
+const fieldDec = (row: FieldRow) => row.jwst_dec_deg ?? row.euclid_dec_deg;
 type FieldView = "all" | "exact" | "saved";
 
 export default function JwstEuclidPage() {
@@ -72,7 +76,7 @@ export default function JwstEuclidPage() {
     const query = search.trim().toLowerCase();
     return fields.filter((row) => {
       const searchable = [targetName(row), instrumentName(row), filterName(row),
-        asNumber(row.euclid_ra_deg)?.toFixed(4), asNumber(row.euclid_dec_deg)?.toFixed(4)].join(" ").toLowerCase();
+        asNumber(fieldRa(row))?.toFixed(4), asNumber(fieldDec(row))?.toFixed(4)].join(" ").toLowerCase();
       const matchesSearch = !query || searchable.includes(query);
       const matchesInstrument = instrument === "all" || instrumentName(row) === instrument;
       const matchesView = view === "all"
@@ -195,7 +199,7 @@ export default function JwstEuclidPage() {
                     <span>{instrumentName(row)}</span><span>{filterName(row)}</span>
                   </span>
                   <span className="jwst-euclid__field-card-coords">
-                    {formatCoord(row.euclid_ra_deg, "N", "S")} · {formatCoord(row.euclid_dec_deg, "E", "W")}
+                    {formatCoord(fieldRa(row), "N", "S")} · {formatCoord(fieldDec(row), "E", "W")}
                   </span>
                   <span className="jwst-euclid__field-card-action">{isSelected ? "selected" : "choose field"} <span>→</span></span>
                 </button>;

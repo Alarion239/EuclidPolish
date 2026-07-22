@@ -172,7 +172,17 @@ def overlap_rows() -> tuple[list[dict[str, Any]], dict[str, Any]]:
         )
         row = dict(row)
         row["field_id"] = identifier
-        row["available"] = (pair_root() / identifier / "manifest.json").exists()
+        manifest_path = pair_root() / identifier / "manifest.json"
+        row["available"] = False
+        if manifest_path.exists():
+            try:
+                cached_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                cached_manifest = None
+            row["available"] = (
+                isinstance(cached_manifest, dict)
+                and _cached_pair_is_usable(manifest_path.parent, cached_manifest)
+            )
         output.append(row)
     output.sort(key=lambda row: (
         not row.get("available", False),
@@ -250,6 +260,13 @@ def euclid_product_path(tile: Mapping[str, Any]) -> str:
     return path
 
 
+def field_coordinates(row: Mapping[str, Any]) -> tuple[float | None, float | None]:
+    """Use the JWST footprint center, falling back to the Euclid tile center."""
+    ra = _number(row.get("jwst_ra_deg")) or _number(row.get("euclid_ra_deg"))
+    dec = _number(row.get("jwst_dec_deg")) or _number(row.get("euclid_dec_deg"))
+    return ra, dec
+
+
 def _find_image(path: Path) -> tuple[np.ndarray, Any, Any, str]:
     """Read the first 2-D image HDU and its celestial WCS."""
     from astropy.io import fits
@@ -271,6 +288,30 @@ def _find_image(path: Path) -> tuple[np.ndarray, Any, Any, str]:
                 except Exception:  # noqa: BLE001 - archive headers vary by instrument
                     continue
     raise ValueError(f"no 2-D image with celestial WCS found in {path.name}")
+
+
+def _has_signal(data: np.ndarray) -> bool:
+    finite = data[np.isfinite(data)]
+    return finite.size > 0 and bool(np.any(finite != 0))
+
+
+def _cached_pair_is_usable(directory: Path, manifest: Mapping[str, Any]) -> bool:
+    """Reject old/partial caches, including successful-but-blank cutouts."""
+    files = manifest.get("files", {})
+    required = [
+        directory / str(files.get("euclid", "euclid_vis.fits")),
+        directory / str(files.get("jwst_aligned", "jwst_aligned_to_euclid.fits")),
+        directory / str(files.get("euclid_png", "euclid_vis.png")),
+        directory / str(files.get("jwst_png", "jwst_aligned.png")),
+    ]
+    if any(not path.is_file() or path.stat().st_size == 0 for path in required):
+        return False
+    try:
+        euclid_data, _, _, _ = _find_image(required[0])
+        aligned_data, _, _, _ = _find_image(required[1])
+    except (OSError, ValueError):
+        return False
+    return _has_signal(euclid_data) and _has_signal(aligned_data)
 
 
 def align_to_target(data: np.ndarray, source_wcs: Any, target_wcs: Any, shape: tuple[int, int]) -> np.ndarray:
@@ -480,8 +521,7 @@ def download_and_align_pair(
     archive = _text(row.get("jwst_archive") or "esa").lower()
     tile_index = _text(row.get("euclid_tile_index"))
     observation_id = _text(row.get("jwst_observation_id") or row.get("jwst_obsid"))
-    ra = _number(row.get("euclid_ra_deg"))
-    dec = _number(row.get("euclid_dec_deg"))
+    ra, dec = field_coordinates(row)
     if not tile_index or not observation_id or ra is None or dec is None:
         raise ValueError("pair row needs Euclid tile, JWST observation id, and Euclid coordinates")
     if not 1.0 <= float(size_arcsec) <= 120.0:
@@ -491,7 +531,15 @@ def download_and_align_pair(
     final_dir = pair_root() / identifier
     manifest_path = final_dir / "manifest.json"
     if manifest_path.exists():
-        return json.loads(manifest_path.read_text(encoding="utf-8"))
+        try:
+            cached_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            cached_manifest = None
+        if isinstance(cached_manifest, dict) and _cached_pair_is_usable(final_dir, cached_manifest):
+            return cached_manifest
+        # A previous archive response can be formally valid FITS but contain
+        # only zeros when the requested center missed the tile footprint.
+        shutil.rmtree(final_dir, ignore_errors=True)
 
     pair_root().mkdir(parents=True, exist_ok=True)
     temporary_dir = Path(tempfile.mkdtemp(prefix=f".{identifier}.", dir=pair_root()))
@@ -552,12 +600,17 @@ def download_and_align_pair(
             )
             tile = fresh_tile
 
+        euclid_data, euclid_header, euclid_wcs, euclid_hdu = _find_image(euclid_path)
+        if not _has_signal(euclid_data):
+            raise RuntimeError(
+                "Euclid VIS cutout contains no non-zero pixels at the JWST footprint center"
+            )
+
         jwst_path = temporary_dir / "jwst_native.fits"
         if progress:
             progress(3, 5, f"downloading JWST {archive.upper()} image")
         product_name = _download_jwst(archive, observation_id, jwst_path)
 
-        euclid_data, euclid_header, euclid_wcs, euclid_hdu = _find_image(euclid_path)
         jwst_data, jwst_header, jwst_wcs, jwst_hdu = _find_image(jwst_path)
         if progress:
             progress(4, 5, "registering JWST image on Euclid WCS")
