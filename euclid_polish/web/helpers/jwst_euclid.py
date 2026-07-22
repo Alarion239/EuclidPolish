@@ -826,77 +826,84 @@ def download_and_align_pair(
             progress(2, 5, "downloading Euclid VIS cutout")
         coordinate = SkyCoord(ra=ra, dec=dec, unit="deg", frame="icrs")
         radius = (float(size_arcsec) / 2.0) * u.arcsec
-        try:
-            _download_euclid_cutout(
-                Euclid,
-                file_path=file_path,
-                tile_index=tile_index,
-                coordinate=coordinate,
-                radius=radius,
-                destination=euclid_path,
-            )
-        except RuntimeError as first_error:
-            # The overlap cache can outlive an archive data release. Resolve
-            # the tile once more after a failed cutout, but do not repeat the
-            # same stale request when the archive returned the same path.
+        candidate_tiles: list[dict[str, Any]] = [dict(tile)]
+        seen_paths = {file_path}
+        alternatives_loaded = False
+        discovery_errors: list[str] = []
+        last_error = "archive returned no readable FITS file"
+        blank_seen = False
+        selected: tuple[dict[str, Any], str, np.ndarray, Any, Any, str] | None = None
+        candidate_index = 0
+        while candidate_index < len(candidate_tiles):
+            candidate_tile = candidate_tiles[candidate_index]
+            candidate_path = euclid_product_path(candidate_tile)
+            candidate_tile_index = _text(candidate_tile.get("tile_index")) or tile_index
+            if candidate_index > 0 and progress:
+                progress(2, 5, f"trying alternate Euclid VIS product {candidate_index + 1}")
             try:
-                fresh_tile = euclid_tile(tile_index, row, refresh=True)
-            except Exception as refresh_error:  # noqa: BLE001 - retain the useful cutout error
-                raise RuntimeError(
-                    f"{first_error}; refreshing Euclid tile metadata also failed: "
-                    f"{type(refresh_error).__name__}: {refresh_error}"
-                ) from first_error
-            fresh_path = euclid_product_path(fresh_tile)
-            if not fresh_path or fresh_path == file_path:
-                raise RuntimeError(
-                    f"{first_error}; cached Euclid product path was still current"
-                ) from first_error
-            if progress:
-                progress(2, 5, "retrying Euclid VIS cutout with refreshed metadata")
-            _download_euclid_cutout(
-                Euclid,
-                file_path=fresh_path,
-                tile_index=tile_index,
-                coordinate=coordinate,
-                radius=radius,
-                destination=euclid_path,
-            )
-            tile = fresh_tile
-
-        euclid_data, euclid_header, euclid_wcs, euclid_hdu = _find_image(euclid_path)
-        if not _has_signal(euclid_data):
-            covering_tiles = euclid_tiles_covering(ra, dec)
-            recovered = False
-            for covering_tile in covering_tiles:
-                covering_path = euclid_product_path(covering_tile)
-                if not covering_path or covering_path == file_path:
-                    continue
-                try:
-                    _download_euclid_cutout(
-                        Euclid,
-                        file_path=covering_path,
-                        tile_index=_text(covering_tile.get("tile_index")) or tile_index,
-                        coordinate=coordinate,
-                        radius=radius,
-                        destination=euclid_path,
-                    )
-                    candidate_data, candidate_header, candidate_wcs, candidate_hdu = _find_image(euclid_path)
-                except (OSError, RuntimeError, ValueError):
-                    continue
+                if not candidate_path:
+                    raise RuntimeError("candidate has no downloadable file_path")
+                _download_euclid_cutout(
+                    Euclid,
+                    file_path=candidate_path,
+                    tile_index=candidate_tile_index,
+                    coordinate=coordinate,
+                    radius=radius,
+                    destination=euclid_path,
+                )
+                candidate_data, candidate_header, candidate_wcs, candidate_hdu = _find_image(euclid_path)
                 if _has_signal(candidate_data):
-                    tile = covering_tile
-                    file_path = covering_path
-                    euclid_data = candidate_data
-                    euclid_header = candidate_header
-                    euclid_wcs = candidate_wcs
-                    euclid_hdu = candidate_hdu
-                    recovered = True
+                    selected = (
+                        candidate_tile,
+                        candidate_path,
+                        candidate_data,
+                        candidate_header,
+                        candidate_wcs,
+                        candidate_hdu,
+                    )
                     break
-            if not recovered:
+                blank_seen = True
+            except (OSError, RuntimeError, ValueError) as exc:
+                last_error = str(exc)
+
+            if not alternatives_loaded and candidate_index == 0:
+                alternatives_loaded = True
+                # Refresh the original product metadata, then ask the archive
+                # for every VIS product whose footprint covers this position.
+                try:
+                    fresh_tile = euclid_tile(tile_index, row, refresh=True)
+                    fresh_path = euclid_product_path(fresh_tile)
+                    if fresh_path and fresh_path not in seen_paths:
+                        candidate_tiles.append(dict(fresh_tile))
+                        seen_paths.add(fresh_path)
+                except Exception as exc:  # noqa: BLE001 - retain the original cutout error
+                    discovery_errors.append(f"metadata refresh: {exc}")
+                try:
+                    covering_tiles = euclid_tiles_covering(ra, dec, strict=True)
+                    for covering_tile in covering_tiles:
+                        covering_path = euclid_product_path(covering_tile)
+                        if covering_path and covering_path not in seen_paths:
+                            candidate_tiles.append(dict(covering_tile))
+                            seen_paths.add(covering_path)
+                except Exception as exc:  # noqa: BLE001 - retain the original cutout error
+                    discovery_errors.append(f"coverage query: {exc}")
+            candidate_index += 1
+
+        if selected is None:
+            if blank_seen:
                 raise RuntimeError(
                     "Euclid returned a readable VIS cutout, but it contained no non-zero pixels; "
                     "the catalog footprint match is not a usable overlap for this JWST field"
                 )
+            details = last_error
+            if discovery_errors:
+                details = f"{details}; {'; '.join(discovery_errors[:2])}"
+            raise RuntimeError(
+                f"Euclid archive did not return a readable VIS cutout after trying "
+                f"{len(candidate_tiles)} candidate product(s): {details}"
+            )
+
+        tile, file_path, euclid_data, euclid_header, euclid_wcs, euclid_hdu = selected
 
         jwst_path = temporary_dir / "jwst_native.fits"
         if progress:

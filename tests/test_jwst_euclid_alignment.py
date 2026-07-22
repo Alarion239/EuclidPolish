@@ -163,3 +163,30 @@ def test_scan_euclid_coverage_caches_unique_field_centers(tmp_path, monkeypatch)
 
     jwst_euclid.scan_euclid_coverage()
     assert len(calls) == 2
+
+
+def test_euclid_probe_skips_blank_product_for_alternate(tmp_path, monkeypatch):
+    tiles = [
+        {"tile_index": "VIS-BLANK", "file_path": "/archive", "file_name": "blank.fits"},
+        {"tile_index": "VIS-GOOD", "file_path": "/archive", "file_name": "good.fits"},
+    ]
+    downloaded = []
+
+    def fake_download(client, *, file_path, tile_index, coordinate, radius, destination):
+        downloaded.append(tile_index)
+        destination.touch()
+
+    def fake_find_image(path):
+        data = np.zeros((2, 2), dtype=np.float32) if downloaded[-1] == "VIS-BLANK" else np.ones((2, 2), dtype=np.float32)
+        return data, None, None, "PRIMARY"
+
+    monkeypatch.setattr(jwst_euclid, "_download_euclid_cutout", fake_download)
+    monkeypatch.setattr(jwst_euclid, "_find_image", fake_find_image)
+    selected, blank_count, errors = jwst_euclid._probe_euclid_tiles(
+        object(), tiles, coordinate=None, radius=None, destination_dir=tmp_path,
+    )
+
+    assert selected["tile_index"] == "VIS-GOOD"
+    assert blank_count == 1
+    assert errors == []
+    assert downloaded == ["VIS-BLANK", "VIS-GOOD"]
