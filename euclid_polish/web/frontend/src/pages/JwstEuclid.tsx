@@ -376,7 +376,7 @@ export default function JwstEuclidPage() {
           <div className="jwst-euclid__meta">
             <Stat k="Euclid tier" v="LR · VIS reference" />
             <Stat k="STARFULL tier" v="SR · appears after the active Euclid field is run" />
-            <Stat k="JWST tier" v="colour composite or selected native band" />
+            <Stat k="JWST tier" v="colour, grayscale native band, or approximate temperature" />
             <Stat k="display stretch" v="each panel p99.5 → same white point; not photometric" />
           </div>
         </section>

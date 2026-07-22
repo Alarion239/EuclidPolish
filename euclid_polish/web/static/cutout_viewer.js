@@ -184,7 +184,10 @@ function prepareCore(rec, colorMeta, color) {
         hueR[p] = hr; hueG[p] = hg; hueB[p] = hb;
       }
       const visB = bandOf("VIS");
-      prepared = { mode: "temp", hueR, hueG, hueB, I, factor: abFluxNorm(visB) };
+      // JWST's F### approximation carries no invented AB zero point; retain
+      // its display-normalised native scale instead of borrowing Euclid VIS.
+      const factor = names.some((n) => bandOf(n).display_only) ? 1.0 : abFluxNorm(visB);
+      prepared = { mode: "temp", hueR, hueG, hueB, I, factor };
     }
   } else {
     // A colour chosen for a different camera is never applied to this image.
@@ -552,7 +555,7 @@ export function mountCutoutViewer(root, opts = {}) {
     const tot = rec._sums[idx];
     const name = names[Math.min(idx, names.length - 1)] || "VIS";
     const b = bands[name];
-    if (!b) return null;  // e.g. a native JWST filter, not Euclid photometry
+    if (!b || b.display_only) return null; // native JWST approximation: no fake AB magnitude
     const mag = (b && tot > 0 && b.zeropoint_ab_e_total)
       ? b.zeropoint_ab_e_total - 2.5 * Math.log10(tot) : null;
     return { name, tot, mag };
@@ -1506,6 +1509,10 @@ export function mountCutoutViewer(root, opts = {}) {
       notify();
     } else {                                  // param control (e.g. sky subset)
       if (group === "jwst_band" && !jwstBandAvailable(value)) return;
+      if (group === "jwst_band") {
+        if (value === "temperature") state.color = "temp";
+        else if (state.color === "temp") state.color = state.meta.band_names[0];
+      }
       state.params[group] = value;
       syncChips();
       loadMeta().then(show);

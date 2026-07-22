@@ -1341,6 +1341,27 @@ def _jwst_filter_wavelength_um(entry: Mapping[str, Any]) -> float:
     return float(match.group(1)) / 100.0 if match else math.inf
 
 
+def _jwst_approx_color_band(entry: Mapping[str, Any]) -> tuple[str, dict[str, Any]] | None:
+    """Describe a JWST filter for display-only temperature colouring.
+
+    Archive products can be expressed in different calibrated surface-brightness
+    units and need their actual throughput curves for photometric colour work.
+    The viewer therefore uses only the wavelength encoded in ``F###`` as an
+    effective pivot and marks this path display-only.
+    """
+    name = str(entry.get("filter") or "").strip().upper()
+    pivot_um = _jwst_filter_wavelength_um(entry)
+    if not name or not math.isfinite(pivot_um):
+        return None
+    return name, {
+        "pivot_um": pivot_um,
+        # The JS temperature renderer only needs a relative normalisation.
+        # Avoid exposing a fictitious JWST AB zero point or magnitude readout.
+        "zeropoint_ab_e_total": 1.0,
+        "display_only": True,
+    }
+
+
 def _jwst_colour_channel_groups(entries: list[dict[str, Any]]) -> tuple[list[int], list[int], list[int]]:
     """Assign every available filter to blue, green, or red display light."""
     ordered = sorted(range(len(entries)), key=lambda index: _jwst_filter_wavelength_um(entries[index]))
@@ -1352,14 +1373,10 @@ def _jwst_colour_channel_groups(entries: list[dict[str, Any]]) -> tuple[list[int
     return blue, green, red
 
 
-def _jwst_colour_cube(manifest: dict[str, Any], directory: str) -> tuple[np.ndarray, dict[str, Any]]:
-    """Build a display-only RGB composite while retaining the source FITS grids.
-
-    Native JWST files remain untouched in the cache.  For the viewer only,
-    every usable filter is sampled onto the finest saved JWST WCS, then split
-    by wavelength into blue/green/red groups.  This makes camera/filter choice
-    a colour decision rather than a second navigation axis.
-    """
+def _jwst_aligned_planes(
+    manifest: dict[str, Any], directory: str,
+) -> tuple[list[dict[str, Any]], list[np.ndarray], str, float]:
+    """Return the usable JWST planes on the finest native JWST display WCS."""
     from euclid_polish.web.helpers.jwst_euclid import align_to_target
 
     loaded: list[tuple[dict[str, Any], np.ndarray, Any, float]] = []
@@ -1393,6 +1410,21 @@ def _jwst_colour_cube(manifest: dict[str, Any], directory: str) -> tuple[np.ndar
             aligned_planes.append(np.asarray(plane, np.float32))
     if not aligned_planes:
         raise ViewerError(404, "JWST cameras do not overlap on this field")
+    reference_filter = str(reference_entry.get("filter") or "JWST")
+    return aligned_entries, aligned_planes, reference_filter, reference_scale
+
+
+def _jwst_colour_cube(manifest: dict[str, Any], directory: str) -> tuple[np.ndarray, dict[str, Any]]:
+    """Build a display-only RGB composite while retaining the source FITS grids.
+
+    Native JWST files remain untouched in the cache.  For the viewer only,
+    every usable filter is sampled onto the finest saved JWST WCS, then split
+    by wavelength into blue/green/red groups.  This makes camera/filter choice
+    a colour decision rather than a second navigation axis.
+    """
+    aligned_entries, aligned_planes, reference_filter, reference_scale = _jwst_aligned_planes(
+        manifest, directory,
+    )
 
     blue_indices, green_indices, red_indices = _jwst_colour_channel_groups(aligned_entries)
 
@@ -1414,7 +1446,6 @@ def _jwst_colour_cube(manifest: dict[str, Any], directory: str) -> tuple[np.ndar
     def names(indices: list[int]) -> str:
         return "+".join(str(aligned_entries[index].get("filter") or "JWST") for index in indices)
 
-    reference_filter = str(reference_entry.get("filter") or "JWST")
     return cube, {
         "label": (
             f"JWST colour | R {names(red_indices)} | G {names(green_indices)} | "
@@ -1424,6 +1455,31 @@ def _jwst_colour_cube(manifest: dict[str, Any], directory: str) -> tuple[np.ndar
         "pixscale": reference_scale if math.isfinite(reference_scale) else 0.0,
         "bands": ["JWST-R", "JWST-G", "JWST-B"],
         "direct_rgb": True,
+        "display_scale": _robust_display_scale(cube),
+    }
+
+
+def _jwst_temperature_cube(manifest: dict[str, Any], directory: str) -> tuple[np.ndarray, dict[str, Any]]:
+    """Build an approximate JWST temperature cube from filter-name pivots."""
+    entries, planes, reference_filter, reference_scale = _jwst_aligned_planes(manifest, directory)
+    bands_and_meta = [_jwst_approx_color_band(entry) for entry in entries]
+    usable = [item for item in bands_and_meta if item is not None]
+    if len(usable) < 2:
+        raise ViewerError(404, "JWST temperature colour needs at least two named filters")
+    names = [item[0] for item in usable]
+    selected_planes = [
+        np.nan_to_num(planes[index], nan=0.0, posinf=0.0, neginf=0.0)
+        for index, item in enumerate(bands_and_meta) if item is not None
+    ]
+    cube = np.stack(selected_planes, axis=-1).astype(np.float32)
+    return cube, {
+        "label": (
+            f"JWST temperature · approximate F### pivots ({'+'.join(names)}) | "
+            f"display WCS {reference_filter}"
+        ),
+        "asinh": 100.0,
+        "pixscale": reference_scale if math.isfinite(reference_scale) else 0.0,
+        "bands": names,
         "display_scale": _robust_display_scale(cube),
     }
 
@@ -1442,6 +1498,14 @@ def _jwst_euclid_meta(params: dict[str, str]) -> dict[str, Any]:
             continue
         seen_filters.add(band)
         jwst_band_options.append({"value": band, "label": band})
+    if len(seen_filters) >= 2:
+        jwst_band_options.insert(1, {
+            "value": "temperature",
+            "label": "JWST temperature · approximate",
+        })
+    jwst_color_bands = dict(
+        item for entry in filter_entries if (item := _jwst_approx_color_band(entry)) is not None
+    )
     tiers = [
         {"key": "lr", "label": "LR · Euclid VIS"},
         {"key": "sr", "label": "SR · STARFULL combiner"},
@@ -1454,6 +1518,7 @@ def _jwst_euclid_meta(params: dict[str, str]) -> dict[str, Any]:
         "band_names": list(BAND_NAMES),
         "color_label": "Euclid colour",
         "jwst_band_options": jwst_band_options,
+        "extra_color_bands": jwst_color_bands,
         "missing_tier_labels": {"sr": "Generate SR"},
         "objects": [
             {
@@ -1462,7 +1527,9 @@ def _jwst_euclid_meta(params: dict[str, str]) -> dict[str, Any]:
                 # is an explicit "Generate SR" affordance rather than a hidden
                 # tier, while after inference the same tile receives the result.
                 "tiers": [tier["key"] for tier in tiers],
-                "jwst_bands": ["colour"] + [
+                "jwst_bands": ["colour"] + (
+                    ["temperature"] if len(_jwst_band_entries(manifest)) >= 2 else []
+                ) + [
                     str(entry.get("filter") or "").strip().upper()
                     for entry in _jwst_band_entries(manifest)
                     if str(entry.get("filter") or "").strip()
@@ -1509,6 +1576,8 @@ def _jwst_euclid_cube(index: int, tier: str, params: dict[str, str]):
         choice = str(params.get("jwst_band") or "colour").strip().upper()
         if choice in {"", "COLOUR"}:
             return _jwst_colour_cube(manifest, directory)
+        if choice == "TEMPERATURE":
+            return _jwst_temperature_cube(manifest, directory)
         entry = next(
             (candidate for candidate in _jwst_band_entries(manifest)
              if str(candidate.get("filter") or "").strip().upper() == choice),
@@ -1525,7 +1594,6 @@ def _jwst_euclid_cube(index: int, tier: str, params: dict[str, str]):
             "asinh": 100.0,
             "pixscale": scale if math.isfinite(scale) else 0.0,
             "bands": [choice],
-            "tint": _jwst_filter_tint(choice),
             "display_scale": _robust_display_scale(data),
         }
     raise ViewerError(400, "bad paired-field tier")
@@ -1559,7 +1627,11 @@ def get_meta(collection: str, params: dict[str, str]) -> dict[str, Any]:
     # generic Tile viewer is mounted by all routes and must annotate every
     # tile at the same physical/angular receptive-field sizes.
     meta["receptive_fields"] = receptive_field_constants()
-    meta["color"] = color_constants()
+    color = color_constants()
+    extra_color_bands = meta.pop("extra_color_bands", {})
+    if isinstance(extra_color_bands, dict):
+        color["bands"].update(extra_color_bands)
+    meta["color"] = color
     if meta.get("render_mode"):
         meta["color"]["render_mode"] = meta["render_mode"]
     return meta

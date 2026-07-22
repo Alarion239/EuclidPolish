@@ -73,6 +73,14 @@ def test_jwst_colour_groups_use_every_filter_in_wavelength_order():
     assert sorted(blue + green + red) == list(range(len(entries)))
 
 
+def test_jwst_temperature_uses_filter_name_as_display_only_pivot():
+    name, band = viewer_data._jwst_approx_color_band({"filter": "F150W2"}) or (None, None)
+    assert name == "F150W2"
+    assert band["pivot_um"] == 1.5
+    assert band["display_only"] is True
+    assert viewer_data._jwst_approx_color_band({"filter": "CLEAR"}) is None
+
+
 def test_readable_fits_rejects_empty_archive_placeholder(tmp_path):
     from astropy.io import fits
 
