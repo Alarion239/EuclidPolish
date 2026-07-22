@@ -17,6 +17,7 @@ import os
 import re
 import shlex
 import shutil
+from collections.abc import Callable
 
 import numpy as np
 
@@ -751,28 +752,40 @@ def _vis_stretched_psnr(a_vis, hr_vis) -> float:
     return float(10.0 * np.log10(peak * peak / mse))
 
 
+def _vis_stretched_l1(a_vis, hr_vis) -> float:
+    """Mean absolute VIS error in the same asinh space used by PSNR."""
+    knee = float(Config.STRETCH_SCALE_E)
+    aa = np.arcsinh(np.asarray(a_vis, np.float64) / knee)
+    hh = np.arcsinh(np.asarray(hr_vis, np.float64) / knee)
+    return float(np.mean(np.abs(aa - hh)))
+
+
 class _CombinerMetricAcc:
-    """Running VIS stretched-PSNR of the ensemble mean, the combiner, and each
-    member vs HR — for the combiner comparison block (combiner vs mean vs best
-    single member). Fed the same VIS planes as the spectrum accumulator, live
-    and on lazy re-render, so both paths agree."""
+    """Running VIS asinh PSNR and L1 for mean, combiner, and each member."""
 
     def __init__(self) -> None:
         self.mean = 0.0
         self.comb = 0.0
         self.mem: np.ndarray | None = None
+        self.mean_l1 = 0.0
+        self.comb_l1 = 0.0
+        self.mem_l1: np.ndarray | None = None
         self.n = 0
         self.n_comb = 0
 
     def add(self, hr_v, mean_v, mem_v, comb_v) -> None:
         self.mean += _vis_stretched_psnr(mean_v, hr_v)
+        self.mean_l1 += _vis_stretched_l1(mean_v, hr_v)
         mem_v = np.asarray(mem_v)
         if self.mem is None:
             self.mem = np.zeros(len(mem_v))
+            self.mem_l1 = np.zeros(len(mem_v))
         for i, m in enumerate(mem_v):
             self.mem[i] += _vis_stretched_psnr(m, hr_v)
+            self.mem_l1[i] += _vis_stretched_l1(m, hr_v)
         if comb_v is not None:
             self.comb += _vis_stretched_psnr(comb_v, hr_v)
+            self.comb_l1 += _vis_stretched_l1(comb_v, hr_v)
             self.n_comb += 1
         self.n += 1
 
@@ -780,15 +793,25 @@ class _CombinerMetricAcc:
         if not self.n:
             return None
         mem = (self.mem / self.n) if self.mem is not None else np.array([])
+        mem_l1 = (self.mem_l1 / self.n
+                  if self.mem_l1 is not None else np.array([]))
         best_i = int(np.argmax(mem)) if mem.size else -1
+        best_l1_i = int(np.argmin(mem_l1)) if mem_l1.size else -1
         has_comb = self.n_comb > 0
         return {
             "available": bool(has_comb),
             "psnr": (self.comb / self.n_comb) if has_comb else None,
+            "asinh_l1": (self.comb_l1 / self.n_comb) if has_comb else None,
             "ensemble_mean_psnr": self.mean / self.n,
+            "ensemble_mean_asinh_l1": self.mean_l1 / self.n,
             "best_member_psnr": float(mem[best_i]) if mem.size else None,
             "best_member_label": (member_labels[best_i]
                                   if 0 <= best_i < len(member_labels) else None),
+            "best_member_asinh_l1": (float(mem_l1[best_l1_i])
+                                      if mem_l1.size else None),
+            "best_member_l1_label": (
+                member_labels[best_l1_i]
+                if 0 <= best_l1_i < len(member_labels) else None),
         }
 
 
@@ -856,8 +879,22 @@ def _evals_payload(ps_curves: dict | None, diag: EnsembleDiagnosticsAccumulator,
             score_rows.append(item)
         c["scores"] = score_rows
         payload["coherence"] = c
+    model_blocks = {
+        str(kind): (dict(block) if block is not None else None)
+        for kind, block in (model_combiners or {}).items()
+    }
+    if payload["coherence"] is not None:
+        coherence_by_id = {
+            str(row.get("id", "")): row
+            for row in payload["coherence"].get("scores", [])
+        }
+        for kind, block in model_blocks.items():
+            row = coherence_by_id.get(f"{kind}_combiner")
+            if block is not None and row is not None:
+                block["coherence_overall"] = row.get("overall")
+                block["coherence_sr"] = row.get("sr")
     payload["combiner"] = combiner       # test-time combiner metrics (or None)
-    payload["model_combiners"] = dict(model_combiners or {})
+    payload["model_combiners"] = model_blocks
     return payload
 
 
@@ -1206,13 +1243,12 @@ def job_combiner_fit(cap, *, num_images: int, n_kernels: int = 128,
                      starless: bool = False,
                      model_kind: str = _RAW_INCREMENTAL_MINMEANMAX_RBF_KIND,
                      score_test: bool = True) -> dict:
-    """Fit and optionally test-score the incremental raw combiner."""
+    """Fit every validation pixel in minibatches, then optionally test-score."""
     del min_usage
     from euclid_polish.eval.combiner import (
         BAND_NAMES,
-        FitBufferAccumulator,
         combiner_model_spec,
-        fit_combiner,
+        fit_combiner_minibatched,
         save_combiner,
     )
     from euclid_polish.eval.ensemble_cube_cache import load_cached_member_stack
@@ -1231,61 +1267,75 @@ def job_combiner_fit(cap, *, num_images: int, n_kernels: int = 128,
     records_fp = _eval_records_fingerprint(
         records_dir, "validate", starless=starless)
     validate_dir = _ensemble_cubes_dir("validate", starless=starless)
-    accumulator = FitBufferAccumulator(BAND_NAMES)
     reuse = _reuse_validate_cubes(
         validate_dir, records_fp, _regime_labels(base, starless))
     if reuse is not None:
         indices, labels = reuse
-        from euclid_polish.image.collection import ImageSet
-        target_iter = iter(ImageSet.read(
-            tfrecord_path(records_dir, f"{target}_validate"),
-            num_images=max(indices) + 1 if indices else int(num_images)))
-        current_target = next(target_iter, None)
-        for position, index in enumerate(sorted(indices), 1):
-            while (current_target is not None
-                   and int(current_target.index) < int(index)):
-                current_target = next(target_iter, None)
-            target_record = (current_target if current_target is not None
-                             and int(current_target.index) == int(index) else None)
-            stack = load_cached_member_stack(
-                index, subset="validate", cubes_dir=validate_dir, active=labels)
-            if stack is not None and target_record is not None:
-                accumulator.add(stack, np.asarray(target_record.data, np.float32))
-            cap.tick(position, len(indices), f"reuse field {index}")
     else:
         shutil.rmtree(validate_dir, ignore_errors=True)
         os.makedirs(validate_dir, exist_ok=True)
         saved: list[int] = []
 
-        def on_field(record_index, _lr, predictions, mean, std, target_image):
+        def on_field(record_index, _lr, predictions, mean, std, _target_image):
             _cache_field_cubes(
                 validate_dir, record_index, predictions, mean, std)
             saved.append(int(record_index))
-            if target_image is not None:
-                accumulator.add(
-                    np.asarray(predictions, np.float32),
-                    np.asarray(target_image, np.float32),
-                )
 
         result = evaluate_on_records(
             base, records_dir, subset="validate", num_images=int(num_images),
             starless=bool(starless), on_field=on_field,
             on_progress=lambda i, n, label: cap.tick(i, n, label))
         labels = list(result.get("member_labels", []))
+        indices = list(saved)
         _atomic_json(os.path.join(validate_dir, "viz_index.json"), {
             "subset": "validate", "indices": saved,
             "member_labels": labels, "records_fp": records_fp,
             "pca_n": ENSEMBLE_PCA_COMPONENTS,
         })
 
-    buffers = accumulator.buffer()
-    if not np.asarray(buffers[0]).size:
-        raise RuntimeError("no validate pixels collected — check the records.")
+    if not indices:
+        raise RuntimeError("no validate fields collected — check the records.")
+
+    def validation_fields(requested_indices):
+        from euclid_polish.image.collection import ImageSet
+
+        wanted = sorted({int(value) for value in requested_indices})
+        if not wanted:
+            return
+        target_iter = iter(ImageSet.read(
+            tfrecord_path(records_dir, f"{target}_validate"),
+            num_images=max(wanted) + 1))
+        current_target = next(target_iter, None)
+        for index in wanted:
+            while (current_target is not None
+                   and int(current_target.index) < int(index)):
+                current_target = next(target_iter, None)
+            target_record = (
+                current_target
+                if current_target is not None
+                and int(current_target.index) == int(index)
+                else None)
+            stack = load_cached_member_stack(
+                index, subset="validate", cubes_dir=validate_dir, active=labels)
+            if stack is not None and target_record is not None:
+                yield (
+                    int(index),
+                    np.asarray(stack, np.float32),
+                    np.asarray(target_record.data, np.float32),
+                )
+
     if int(n_kernels) <= 0:
         n_kernels = combiner_model_spec().default_kernels
-    combiner = fit_combiner(
-        buffers, labels, band_names=BAND_NAMES,
-        n_kernels=int(n_kernels), model_kind=model_kind)
+    member_meta = _member_meta_from_labels(labels)
+    member_psnr = np.asarray(
+        [row.get("psnr", np.nan) for row in member_meta], np.float64)
+    if member_psnr.shape != (len(labels),) or not np.any(np.isfinite(member_psnr)):
+        member_psnr = None
+    combiner = fit_combiner_minibatched(
+        validation_fields, indices, labels, band_names=BAND_NAMES,
+        n_kernels=int(n_kernels),
+        member_validation_psnr=member_psnr,
+        progress=lambda current, total, label: cap.tick(current, total, label))
     combiner.records_fp = records_fp
     combiner.starfull = not bool(starless)
     combiner.fit_meta.update({
@@ -1293,8 +1343,8 @@ def job_combiner_fit(cap, *, num_images: int, n_kernels: int = 128,
         "num_images": int(num_images),
         "model_kind": combiner.kind,
         "pruning": "not_applicable",
-        "features": "raw per-band member min/mean/max electrons",
-        "cross_stage_min_separation_normalized": 0.0,
+        "features": "all member asinh inferences",
+        "pixel_source": "all pixels from disjoint validation fields",
     })
     regime_dir = _ensemble_regime_dir(starless)
     save_combiner(
@@ -1304,10 +1354,12 @@ def job_combiner_fit(cap, *, num_images: int, n_kernels: int = 128,
     test_summary = None
     if score_test:
         cap.tick(0, 1, "scoring combiner on the test set")
-        if _apply_combiner_to_test_cubes(starless, model_kind):
+        if _apply_combiner_to_test_cubes(
+                starless, model_kind, progress=cap.tick):
             previous = (_read_eval_summary(starless) or {}).get("eval_identity") or {}
             test_summary = _reevaluate_from_cached_cubes(
-                starless, num_images=previous.get("num_images"))
+                starless, num_images=previous.get("num_images"),
+                progress=cap.tick)
     cap.tick(1, 1, "done")
     result = {
         "n_members": len(labels),
@@ -1318,7 +1370,7 @@ def job_combiner_fit(cap, *, num_images: int, n_kernels: int = 128,
         "subset": "validate",
         "regime": _regime_slug(starless),
         "test_scored": test_summary is not None,
-        "cross_stage_min_separation_normalized": 0.0,
+        "training_mode": "all_validation_pixels_minibatch",
     }
     if test_summary is not None:
         prefix = f"{model_kind}_combiner"
@@ -1435,6 +1487,17 @@ def compute_combiner_payload(starless: bool,
             combiner, starless=starless)
         surface["artifact_fp"] = artifact_fp
     weight_labels = list(combiner.weight_labels)
+    surface_weights = np.asarray(surface.get("weights", []), np.float64)
+    if (surface_weights.ndim == 3
+            and surface_weights.shape[-1] == len(weight_labels)):
+        shared_peaks = np.max(surface_weights, axis=(0, 1)).tolist()
+        shared_integrals = np.mean(surface_weights, axis=(0, 1)).tolist()
+    else:
+        shared_peaks = []
+        shared_integrals = []
+    member_weight_peaks = dict.fromkeys(combiner.band_names, shared_peaks)
+    member_weight_integrals = dict.fromkeys(
+        combiner.band_names, shared_integrals)
     payload = {
         "available": True,
         "stale": list(combiner.member_labels) != _regime_labels(
@@ -1444,7 +1507,7 @@ def compute_combiner_payload(starless: bool,
         "member_labels": weight_labels,
         "source_member_labels": list(combiner.member_labels),
         "members": [
-            {"label": str(label), "role": "output_band"}
+            {"label": str(label), "role": "source_member"}
             for label in weight_labels
         ],
         "n_kernels": int(combiner.n_kernels),
@@ -1452,8 +1515,8 @@ def compute_combiner_payload(starless: bool,
         "val_l1": combiner.val_l1,
         "band_names": list(combiner.band_names),
         "eff_weights": {},
-        "member_weight_peaks": {},
-        "member_weight_integrals": {},
+        "member_weight_peaks": member_weight_peaks,
+        "member_weight_integrals": member_weight_integrals,
         "surviving": combiner.surviving_members(),
         "feature_grid": {},
         "pca_weight_surface": surface,
@@ -1818,7 +1881,9 @@ def _rebuild_bucket_dropping_member(cubes_dir: str, member_nn: str,
 
 
 def _reevaluate_from_cached_cubes(starless: bool,
-                                  *, num_images: int | None = None) -> dict | None:
+                                  *, num_images: int | None = None,
+                                  progress: Callable[[int, int, str], None]
+                                  | None = None) -> dict | None:
     """Re-derive a full evaluation ENTIRELY from the cached per-member cubes —
     no model inference. Recomputes the ensemble/member PSNR summary, the pixel
     diagnostics + back-trace samples, the power spectrum and the combiner block,
@@ -1836,7 +1901,9 @@ def _reevaluate_from_cached_cubes(starless: bool,
     ps_acc = None
     diag = EnsembleDiagnosticsAccumulator()
     model_cmet = {kind: _CombinerMetricAcc() for kind in _ORDINARY_COMBINER_KINDS}
-    for hr_v, mean_v, mem_v, model_v, lr_v, rec in _iter_cached_fields(starless):
+    progress_total = max(0, int(num_images or 0))
+    for position, (hr_v, mean_v, mem_v, model_v, lr_v, rec) in enumerate(
+            _iter_cached_fields(starless), 1):
         if ps_acc is None:
             ps_acc = EnsembleSpectrumAccumulator(
                 int(hr_v.shape[0]), float(Config.DEFAULT_PIXEL_SCALE))
@@ -1844,6 +1911,9 @@ def _reevaluate_from_cached_cubes(starless: bool,
         diag.add(hr_v, mean_v, mem_v, combiners=model_v, field_index=rec)
         for kind, cmet in model_cmet.items():
             cmet.add(hr_v, mean_v, mem_v, model_v.get(kind))
+        if progress is not None:
+            progress(position, progress_total,
+                     f"reevaluating cached test field {rec}")
     if not model_cmet[_RBF_KIND].n:
         return None
     _write_diag_samples(starless, diag)
@@ -1907,7 +1977,9 @@ def _reevaluate_from_cached_cubes(starless: bool,
 
 
 def _apply_combiner_to_test_cubes(starless: bool,
-                                  model_kind: str | None = None) -> bool:
+                                  model_kind: str | None = None, *,
+                                  progress: Callable[[int, int, str], None]
+                                  | None = None) -> bool:
     """Apply one fitted model to cached TEST member cubes without re-inference."""
     from euclid_polish.eval.combiner import load_combiner
     model_kind = _normalize_combiner_kind(model_kind)
@@ -1926,7 +1998,8 @@ def _apply_combiner_to_test_cubes(starless: bool,
         return False
     n_members = len(labels)
     applied = 0
-    for rec in (int(i) for i in man.get("indices", []) or []):
+    indices = [int(i) for i in man.get("indices", []) or []]
+    for position, rec in enumerate(indices, 1):
         tag = f"{rec:05d}"
         stack = []
         for p in range(n_members):
@@ -1934,12 +2007,15 @@ def _apply_combiner_to_test_cubes(starless: bool,
             if not os.path.isfile(mf):
                 break
             stack.append(np.load(mf))
-        if len(stack) != n_members:
-            continue
-        comb_full = comb.apply_field(np.stack(stack, 0))     # (H, W, C) electrons
-        np.save(os.path.join(cubes_dir, f"{prefix}_{tag}.npy"),
-                np.asarray(comb_full, np.float32))
-        applied += 1
+        if len(stack) == n_members:
+            comb_full = comb.apply_field(
+                np.stack(stack, 0))     # (H, W, C) electrons
+            np.save(os.path.join(cubes_dir, f"{prefix}_{tag}.npy"),
+                    np.asarray(comb_full, np.float32))
+            applied += 1
+        if progress is not None:
+            progress(position, len(indices),
+                     f"applying combiner to test field {rec}")
     if applied == 0:
         return False
     man[f"has_combiner_{model_kind}"] = True

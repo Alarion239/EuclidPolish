@@ -169,7 +169,7 @@ function InferenceDiagnostics({ data, synthetic, syntheticLoading, syntheticErro
     {Object.entries(data.combiners)
       .filter(([kind]) => kind === "raw_incremental_minmeanmax_rbf")
       .map(([kind, comb]) => {
-      const title = "incremental raw min/mean/max RBF";
+      const title = "minibatched convex all-asinh RBF";
       if (comb.mode === "histogram") {
         const counts = comb.counts as number[];
         const centers = counts.map((_, i) => (comb.x_edges[i] + comb.x_edges[i + 1]) / 2);

@@ -209,7 +209,7 @@ function renderPS(el, payload, mode) {
   const uniformAlpha = mode ? 0.55 : 0.3;
 
   const MODEL_META = {
-    raw_incremental_minmeanmax_rbf: ["incremental raw min/mean/max RBF", "#4f9d69"],
+    raw_incremental_minmeanmax_rbf: ["minibatched convex all-asinh RBF", "#4f9d69"],
   };
   const LR_COLOR = "#c23b3b";                 // baseline-to-beat (no SR)
   const hasComb = (arr) => (arr || []).some((v) => v != null && isFinite(v));
@@ -279,7 +279,7 @@ function renderStdErr(el, payload) {
   const base = payload.std_err;
   if (!base) { el.innerHTML = '<p class="muted">no data — run Evaluate.</p>'; return; }
   const labels = { ensemble_mean: "ensemble mean",
-    raw_incremental_minmeanmax_rbf: "incremental raw min/mean/max RBF" };
+    raw_incremental_minmeanmax_rbf: "minibatched convex all-asinh RBF" };
   const colors = { ensemble_mean: VIS_COLOR,
     raw_incremental_minmeanmax_rbf: "#4f9d69" };
   const models = base.models || {};

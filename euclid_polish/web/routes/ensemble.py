@@ -115,9 +115,9 @@ def register(app):
         spec = combiner_model_spec(model_kind)
         raw_kernels = request.form.get("n_kernels")
         try:
-            n_kernels = max(2, min(
-                128, int(raw_kernels if raw_kernels not in (None, "")
-                         else spec.default_kernels)))
+            n_kernels = max(
+                2, int(raw_kernels if raw_kernels not in (None, "")
+                       else spec.default_kernels))
         except (TypeError, ValueError):
             n_kernels = spec.default_kernels
         regime = "starless" if starless else "starfull"

@@ -131,13 +131,13 @@ def test_lens_ensemble_routes_bound_and_validate_parameters(monkeypatch):
 
     fit = client.post(
         "/api/lens-isolation/ensemble/combiner/fit",
-        data={"num_images": "0", "n_kernels": "99", "min_usage": "0.9"},
+        data={"num_images": "0", "n_kernels": "256", "min_usage": "0.9"},
     )
     assert fit.get_json() == {"job_id": "job-1"}
     jobs[-1][1](object())
     assert jobs[-1] == (
         "combiner args",
-        {"num_images": 1, "n_kernels": 99, "min_usage": 0.5},
+        {"num_images": 1, "n_kernels": 256, "min_usage": 0.5},
     )
 
 

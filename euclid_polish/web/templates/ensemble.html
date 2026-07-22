@@ -229,20 +229,22 @@
 
 <section class="card" id="ens-combiner-card">
   <h3>Combiner (<span id="ens-combiner-regime">starfull</span>)</h3>
-  <p class="hint" style="flex-basis:100%;">Incremental raw-electron
-     min/mean/max RBF, fitted locally on validate and scored on test. Kernels
-     within one stage remain separated; different stages may place kernels
-     arbitrarily close.</p>
+  <p class="hint" style="flex-basis:100%;">An all-asinh RBF learns one shared
+     softmax weight vector for every pixel, takes the convex average of the
+     member predictions after the per-band asinh transform, then applies sinh
+     to return electrons. It trains on every pixel in whole validation fields using
+     bounded minibatches, holds out disjoint validation fields for epoch
+     selection, and is scored only afterward on test.</p>
   <form id="ens-combiner-form" action="/ensemble/combiner/fit">
     <input type="hidden" name="mode" id="ens-combiner-mode" value="starfull">
     <label title="How many validate fields to fit on (member inference is cached + reused).">
       Validate fields
       <input type="number" name="num_images" value="100" min="1" max="2000"></label>
     <input type="hidden" name="model_kind" value="raw_incremental_minmeanmax_rbf">
-    <label title="Number of incremental residual RBF kernels.">
+    <label title="Number of convex-gate RBF kernels. Larger K automatically uses smaller minibatches.">
       Kernels (K)
-      <input type="number" name="n_kernels" value="128" min="2" max="128"></label>
-    <button type="submit">Fit combiner</button>
+      <input type="number" name="n_kernels" value="128" min="2"></label>
+    <button type="submit">Fit minibatched combiner</button>
   </form>
   <div id="ens-combiner-status"></div>
   <div id="ens-combiner-results" style="margin-top:0.75rem;"></div>

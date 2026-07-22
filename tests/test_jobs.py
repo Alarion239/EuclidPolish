@@ -3,7 +3,7 @@ from __future__ import annotations
 import threading
 import time
 
-from euclid_polish.web.jobs import JobRegistry
+from euclid_polish.web.jobs import Job, JobRegistry
 
 
 def _wait_for_done(registry: JobRegistry, *job_ids: str) -> None:
@@ -65,3 +65,28 @@ def test_job_can_be_serialized_while_log_and_progress_are_updated():
     assert payload["status"] == "done"
     assert payload["progress"]["current"] == 100
     assert "line 99" in payload["log"]
+
+
+def test_job_progress_exposes_stage_rate_and_eta(monkeypatch):
+    from euclid_polish.web import jobs
+
+    now = [100.0]
+    monkeypatch.setattr(jobs.time, "time", lambda: now[0])
+    job = Job("eta", "tracked", started=now[0])
+
+    job.set_progress(1, 10, "field 1")
+    now[0] = 102.0
+    job.set_progress(2, 10, "field 2")
+    payload = job.to_dict()["progress"]
+
+    assert payload["stage_elapsed"] == 2.0
+    assert payload["rate_per_second"] == 0.5
+    assert payload["eta_seconds"] == 16.0
+    assert payload["updated_ago_seconds"] == 0.0
+
+    now[0] = 103.0
+    job.set_progress(1, 5, "next stage")
+    payload = job.to_dict()["progress"]
+    assert payload["stage_elapsed"] == 0.0
+    assert payload["rate_per_second"] is None
+    assert payload["eta_seconds"] is None

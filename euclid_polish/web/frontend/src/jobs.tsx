@@ -11,6 +11,10 @@ export type JobProgress = {
   total: number;
   pct: number;
   label: string;
+  stage_elapsed?: number | null;
+  rate_per_second?: number | null;
+  eta_seconds?: number | null;
+  updated_ago_seconds?: number | null;
 };
 
 export type Job = {
@@ -27,6 +31,24 @@ export type Job = {
 export type RunOpts = { onDone?: (job: Job) => void };
 
 const TERMINAL = (s: string) => s !== "running";
+
+const formatSpan = (seconds: number | null | undefined) => {
+  if (seconds == null || !Number.isFinite(seconds) || seconds < 0) return "—";
+  if (seconds < 10) return `${seconds.toFixed(1)}s`;
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  if (seconds < 3600) {
+    const minutes = Math.floor(seconds / 60);
+    return `${minutes}m ${String(Math.round(seconds % 60)).padStart(2, "0")}s`;
+  }
+  const hours = Math.floor(seconds / 3600);
+  return `${hours}h ${String(Math.floor((seconds % 3600) / 60)).padStart(2, "0")}m`;
+};
+
+const formatRate = (rate: number | null | undefined, label: string) => {
+  if (rate == null || !Number.isFinite(rate) || rate <= 0) return null;
+  const value = rate < 0.01 ? rate.toFixed(3) : rate < 1 ? rate.toFixed(2) : rate.toFixed(1);
+  return `${value} ${/field/i.test(label) ? "fields" : "items"}/s`;
+};
 
 /** Spawn a local job by POSTing a form, then poll `/api/jobs/<id>` with 0.5→2s
  *  backoff, exposing the live Job. `run` resolves the job_id from the POST
@@ -85,6 +107,41 @@ export function useJob() {
   return { job, error, busy, run, reset };
 }
 
+/** Discover a matching running job even when it was submitted from another
+ *  tab or before this page loaded. Once attached, keep its terminal snapshot. */
+export function useTrackedJob(labelNeedle: string) {
+  const [job, setJob] = useState<Job | null>(null);
+  const trackedId = useRef<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    trackedId.current = null;
+    setJob(null);
+    const tick = async () => {
+      if (!active) return;
+      let candidate: Job | null = null;
+      if (trackedId.current) {
+        candidate = await getJSON<Job>(`/api/jobs/${trackedId.current}`);
+      } else {
+        const jobs = await getJSON<Job[]>("/api/jobs");
+        candidate = jobs?.find((item) =>
+          item.status === "running" && item.label.includes(labelNeedle)) ?? null;
+        if (candidate) trackedId.current = candidate.job_id;
+      }
+      if (!active) return;
+      if (candidate) setJob(candidate);
+      if (!candidate || !TERMINAL(candidate.status)) {
+        timer = setTimeout(tick, 2000);
+      }
+    };
+    tick();
+    return () => { active = false; clearTimeout(timer); };
+  }, [labelNeedle]);
+
+  return job;
+}
+
 /** Live progress panel for a Job (status badge, progress bar, error, log tail).
  *  Renders nothing until a job is spawned or an error occurs. */
 export function JobProgressView({ job, error }: { job: Job | null; error?: string | null }) {
@@ -93,27 +150,45 @@ export function JobProgressView({ job, error }: { job: Job | null; error?: strin
   const p = job.progress;
   const tone = job.status === "done" ? "good" : job.status === "failed" ? "bad" : undefined;
   const determinate = p && p.total > 0;
+  const rate = formatRate(p?.rate_per_second, p?.label ?? "");
+  const eta = p?.eta_seconds == null ? null : formatSpan(p.eta_seconds);
+  const calibrating = job.status === "running" && determinate
+    && p.current < p.total && eta == null;
   return (
     <div className={`job-panel job-panel--${job.status}`}>
       <div className="job-panel__head">
         <Badge tone={tone}>{job.status}</Badge>
         <span className="job-panel__label">{job.label}</span>
-        <span className="job-panel__dur mono">{job.duration.toFixed(1)}s</span>
+        <span className="job-panel__dur mono">elapsed {formatSpan(job.duration)}</span>
       </div>
-      <div className="job-panel__bar">
-        {determinate ? (
-          <>
+      {determinate ? (
+        <>
+          <div className="job-panel__stage">
+            <span>{p.label || "working"}</span>
+            <span className="mono">{p.current.toLocaleString()}/{p.total.toLocaleString()} · {p.pct.toFixed(0)}%</span>
+          </div>
+          <div className="job-panel__bar">
             <div className="job-bar">
               <div className="job-bar__fill" style={{ width: `${p.pct}%` }} />
             </div>
-            <span className="job-panel__pct mono">
-              {p.label ? `${p.label} ` : ""}{p.current}/{p.total} ({p.pct.toFixed(0)}%)
-            </span>
-          </>
-        ) : job.status === "running" ? (
+          </div>
+          {job.status === "running" && (
+            <div className="job-panel__telemetry mono" aria-live="polite">
+              <span>stage {formatSpan(p.stage_elapsed)}</span>
+              <span>{rate ?? "measuring throughput…"}</span>
+              <span className="job-panel__eta">
+                {calibrating ? "ETA calibrating…" : `stage ETA ${eta ?? "—"}`}
+              </span>
+              {(p.updated_ago_seconds ?? 0) >= 4
+                && <span>updated {formatSpan(p.updated_ago_seconds)} ago</span>}
+            </div>
+          )}
+        </>
+      ) : job.status === "running" ? (
+        <div className="job-panel__bar">
           <div className="job-bar job-bar--indeterminate"><div className="job-bar__fill" /></div>
-        ) : null}
-      </div>
+        </div>
+      ) : null}
       {job.error && <pre className="job-panel__err">{job.error}</pre>}
       {job.log && (
         <details open={job.status !== "running"}>

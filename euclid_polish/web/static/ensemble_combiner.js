@@ -72,28 +72,30 @@ function fmtE(e) {
 
 function metricsHtml(comb, evals) {
   const kind = comb.kind || "raw_incremental_minmeanmax_rbf";
-  const modelLabel = "incremental raw min/mean/max RBF";
+  const modelLabel = "minibatched convex all-asinh RBF";
   const c = evals && ((evals.model_combiners || {})[kind] || evals.combiner);
-  let rows = "<tr><th>series</th><th>VIS PSNR (dB, asinh)</th></tr>";
+  let rows = "<tr><th>series</th><th>VIS asinh L1</th><th>VIS PSNR (dB, asinh)</th></tr>";
   if (c && c.available) {
     const g = (v) => (v == null ? "" : ` <span class="muted">(${v >= 0 ? "+" : ""}${fmt(v, 2)} dB)</span>`);
     const vsMean = c.psnr != null && c.ensemble_mean_psnr != null ? c.psnr - c.ensemble_mean_psnr : null;
     const vsBest = c.psnr != null && c.best_member_psnr != null ? c.psnr - c.best_member_psnr : null;
-    rows += `<tr><td><b>${modelLabel}</b></td><td><b>${fmt(c.psnr, 3)}</b></td></tr>`;
-    rows += `<tr><td>ensemble mean</td><td>${fmt(c.ensemble_mean_psnr, 3)}${g(vsMean)}</td></tr>`;
-    rows += `<tr><td>best member${c.best_member_label ? ` (${c.best_member_label})` : ""}</td>`
-          + `<td>${fmt(c.best_member_psnr, 3)}${g(vsBest)}</td></tr>`;
+    rows += `<tr><td><b>${modelLabel}</b></td><td><b>${fmt(c.asinh_l1, 5)}</b></td><td><b>${fmt(c.psnr, 3)}</b></td></tr>`;
+    rows += `<tr><td>ensemble mean</td><td>${fmt(c.ensemble_mean_asinh_l1, 5)}</td><td>${fmt(c.ensemble_mean_psnr, 3)}${g(vsMean)}</td></tr>`;
+    rows += `<tr><td>best PSNR member${c.best_member_label ? ` (${c.best_member_label})` : ""}</td>`
+          + `<td>—</td><td>${fmt(c.best_member_psnr, 3)}${g(vsBest)}</td></tr>`;
+    rows += `<tr><td>best L1 member${c.best_member_l1_label ? ` (${c.best_member_l1_label})` : ""}</td>`
+          + `<td>${fmt(c.best_member_asinh_l1, 5)}</td><td>—</td></tr>`;
   } else {
-    rows += `<tr><td colspan="2" class="muted">Run “Evaluate on test set” (starfull) to score the combiner on test.</td></tr>`;
+    rows += `<tr><td colspan="3" class="muted">Run “Evaluate on test set” (starfull) to score the combiner on test.</td></tr>`;
   }
   const stale = comb.stale
     ? ` · <b style="color:#c33">STALE</b> (membership changed since fit — re-fit)` : "";
   const preview = comb.fit_meta && comb.fit_meta.preview
     ? ` · <b style="color:#b06c00">PREVIEW</b> (${comb.fit_meta.num_images || "?"} validation fields)` : "";
   return `<div style="display:flex;justify-content:center"><table class="mini-table">${rows}</table></div>`
-       + `<p class="hint" style="text-align:center">Fit L1 on validate: <b>${fmt(comb.val_l1, 4)}</b>`
+       + `<p class="hint" style="text-align:center">Fit asinh L1 on validate: <b>${fmt(comb.val_l1, 4)}</b>`
        + ` · ${modelLabel}, K=${comb.n_kernels} kernels`
-       + `${stale}${preview}</p>`;
+       + ` · shared convex weights${stale}${preview}</p>`;
 }
 
 function fmtSteps(s) {
@@ -314,7 +316,7 @@ function render(root, comb, evals) {
   const bands = comb.band_names || Object.keys(comb.eff_weights || {});
   const featureRBF = true;
   const sharedPCA = comb.pca_weight_surface && comb.pca_weight_surface.available;
-  const featureLabel = "raw min/mean/max PCA";
+  const featureLabel = "all-inference PCA";
   const routed = "band";
   root.innerHTML = `
     <div style="max-width:860px;margin:0 auto">

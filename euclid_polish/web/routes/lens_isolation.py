@@ -58,6 +58,13 @@ def _bounded_int(name: str, default: int, minimum: int, maximum: int) -> int:
         return default
 
 
+def _positive_int(name: str, default: int, minimum: int) -> int:
+    try:
+        return max(minimum, int(request.form.get(name, default) or default))
+    except (TypeError, ValueError):
+        return default
+
+
 def _selected_subsets() -> list[str]:
     raw = str(request.form.get("subsets", "") or "").strip()
     if not raw and _truthy(request.form.get("records")):
@@ -101,7 +108,7 @@ def register(app):
     @app.route("/api/lens-isolation/ensemble/combiner/fit", methods=["POST"])
     def api_lens_isolation_combiner_fit():
         num_images = _bounded_int("num_images", 100, 1, 2000)
-        n_kernels = _bounded_int("n_kernels", 128, 2, 128)
+        n_kernels = _positive_int("n_kernels", 128, 2)
         try:
             min_usage = max(0.0, min(0.5, float(request.form.get("min_usage", 0.0) or 0.0)))
         except (TypeError, ValueError):

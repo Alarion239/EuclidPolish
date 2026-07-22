@@ -52,6 +52,10 @@ class Job:
     progress_current: int = 0
     progress_total:   int = 0
     progress_label:   str = ""
+    _progress_stage_started: float | None = field(
+        default=None, repr=False)
+    _progress_last_updated: float | None = field(default=None, repr=False)
+    _progress_rate: float | None = field(default=None, repr=False)
     _lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
 
     def append_log(self, msg: str) -> None:
@@ -60,8 +64,31 @@ class Job:
 
     def set_progress(self, current: int, total: int, label: str = "") -> None:
         with self._lock:
-            self.progress_current = int(current)
-            self.progress_total   = int(total)
+            now = time.time()
+            current = int(current)
+            total = int(total)
+            stage_changed = (
+                self._progress_stage_started is None
+                or total != self.progress_total
+                or current < self.progress_current
+            )
+            if stage_changed:
+                self._progress_stage_started = now
+                self._progress_rate = None
+            elif (self._progress_last_updated is not None
+                  and current > self.progress_current):
+                elapsed = now - self._progress_last_updated
+                if elapsed > 0:
+                    instantaneous = (
+                        (current - self.progress_current) / elapsed)
+                    self._progress_rate = (
+                        instantaneous
+                        if self._progress_rate is None
+                        else 0.25 * instantaneous + 0.75 * self._progress_rate
+                    )
+            self.progress_current = current
+            self.progress_total = total
+            self._progress_last_updated = now
             if label:
                 self.progress_label = label
 
@@ -92,6 +119,7 @@ class Job:
 
     def to_dict(self) -> dict[str, Any]:
         with self._lock:
+            now = time.time()
             # Keep the log payload small — the UI only renders the last ~4 KB.
             log = self.log_buf.getvalue()
             log_tail = log[-4000:] if len(log) > 4000 else log
@@ -99,6 +127,19 @@ class Job:
                 progress_pct = 0.0
             else:
                 progress_pct = 100.0 * self.progress_current / self.progress_total
+            stage_elapsed = (
+                max(0.0, now - self._progress_stage_started)
+                if self._progress_stage_started is not None else None)
+            eta_seconds = None
+            if (self.status == "running" and self.progress_total > 0
+                    and self.progress_current < self.progress_total
+                    and self._progress_rate is not None
+                    and self._progress_rate > 0):
+                eta_seconds = (
+                    (self.progress_total - self.progress_current)
+                    / self._progress_rate)
+            elif self.status == "done" and self.progress_total > 0:
+                eta_seconds = 0.0
             return {
                 "job_id":   self.job_id,
                 "label":    self.label,
@@ -114,6 +155,12 @@ class Job:
                     "total":   self.progress_total,
                     "pct":     round(progress_pct, 1),
                     "label":   self.progress_label,
+                    "stage_elapsed": stage_elapsed,
+                    "rate_per_second": self._progress_rate,
+                    "eta_seconds": eta_seconds,
+                    "updated_ago_seconds": (
+                        max(0.0, now - self._progress_last_updated)
+                        if self._progress_last_updated is not None else None),
                 },
             }
 

@@ -206,7 +206,8 @@ class EnsembleSpectrumAccumulator:
 
     def __init__(self, n: int, pixel_scale_arcsec: float, *,
                  kmin: float = 0.06, nbins: int = 28,
-                 stretch: float | None = None) -> None:
+                 stretch: float | None = None,
+                 collect_pairwise: bool = True) -> None:
         self.n = int(n)
         self.pix = float(pixel_scale_arcsec)
         # asinh compression scale — matches the /evaluation power spectrum, so a
@@ -217,6 +218,7 @@ class EnsembleSpectrumAccumulator:
         self.k_cen = np.sqrt(self.k_edges[:-1] * self.k_edges[1:])
         self.window = tukey_window_2d(self.n)
         self.nbins = int(nbins)
+        self.collect_pairwise = bool(collect_pairwise)
         self.bc = np.zeros(nbins, dtype=np.float64)     # summed mode counts
         # Per-FIELD rows → median-aggregated in curves() (robust to flux outliers,
         # like the evaluation's BandStat). Each holds one bounded curve per field.
@@ -305,8 +307,9 @@ class EnsembleSpectrumAccumulator:
                 self._p_members.append(np.vstack(p_rows))
                 # model–model cross-correlation per pair: the truth-free
                 # counterpart of r(k) — where members agree spectrally.
-                self._r_pairs.append(pairwise_cross_correlation(
-                    am, self.pix, self.k_edges, self.window))
+                if self.collect_pairwise:
+                    self._r_pairs.append(pairwise_cross_correlation(
+                        am, self.pix, self.k_edges, self.window))
                 self.n_members = mm
 
         empty = bc <= 0
@@ -632,7 +635,7 @@ def render_ensemble_power_spectrum(out_png: str, curves: dict[str, np.ndarray],
         model_curves = cv.get("model_combiners", {})
         model_style = {
             "raw_incremental_minmeanmax_rbf": (
-                "incremental raw min/mean/max RBF", "#4f9d69"),
+                "incremental all-inference RBF", "#4f9d69"),
         }
         if model_curves:
             for kind, curve_set in model_curves.items():
