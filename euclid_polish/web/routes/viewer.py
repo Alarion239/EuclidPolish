@@ -27,7 +27,7 @@ def _params() -> dict:
     cubes are then recomputed on the fly over just those members."""
     out = {}
     for key in (
-        "subset", "mode", "members", "field",
+        "subset", "mode", "members", "field", "jwst_band",
         # PSF-page live preview: the client changes only the replay seed every
         # few seconds.  These remain harmless for every other collection.
         "psf_warp", "psf_warp_seed",
@@ -99,6 +99,11 @@ def register(app):
         if info.get("direct_rgb"):
             resp.headers["X-Cube-Direct-RGB"] = "1"
             exposed.append("X-Cube-Direct-RGB")
+        # This is a viewer-only contrast factor.  The raw FITS payload is
+        # deliberately left unchanged for download and science use.
+        if "display_scale" in info:
+            resp.headers["X-Cube-Display-Scale"] = repr(float(info["display_scale"]))
+            exposed.append("X-Cube-Display-Scale")
         # Expose the custom headers to fetch() under any CORS posture.
         resp.headers["Access-Control-Expose-Headers"] = ",".join(exposed)
         resp.headers["Cache-Control"] = "no-cache"

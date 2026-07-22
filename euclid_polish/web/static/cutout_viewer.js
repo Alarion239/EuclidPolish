@@ -118,7 +118,11 @@ function prepareCore(rec, colorMeta, color) {
     ? rec.bands : colorMeta.band_names.slice(0, rec.c);
   const bandOf = (n) => colorMeta.bands[n];
   const npx = rec.h * rec.w;
-  const at = (p, k) => rec.data[p * rec.c + k];   // band k at pixel p
+  // A heterogeneous archive panel may ask for a display-only contrast scale.
+  // It never modifies the served Float32/FITS science values.
+  const displayScale = Number.isFinite(rec.displayScale) && rec.displayScale > 0
+    ? rec.displayScale : 1.0;
+  const at = (p, k) => rec.data[p * rec.c + k] * displayScale; // band k at pixel p
   const calibrated = names.every((n) => !!bandOf(n));
   const canLupton = calibrated && colorMeta.rgb_scheme.every((n) => names.includes(n));
   const canTemp = calibrated && names.length >= 2;
@@ -386,8 +390,11 @@ export function mountCutoutViewer(root, opts = {}) {
   const band = (name) => state.meta.color.bands[name];
   // `extra` (e.g. the movie's member subset) belongs in the key so a subset
   // frame never collides with the plain tier's cached cube.
-  const cacheKey = (tier, index, extra) =>
-    `${tier}:${index}${extra ? ":" + new URLSearchParams(extra).toString() : ""}`;
+  const cacheKey = (tier, index, extra) => {
+    const params = Object.assign({}, state.params, extra || {});
+    const suffix = new URLSearchParams(params).toString();
+    return `${tier}:${index}${suffix ? ":" + suffix : ""}`;
+  };
   /** Selected tiers in the meta's canonical order ([{key,label}]). */
   const orderedSelected = () =>
     ((state.meta && state.meta.tiers) || []).filter((t) => state.tiers.includes(t.key));
@@ -398,6 +405,11 @@ export function mountCutoutViewer(root, opts = {}) {
   };
   const tierMeta = (key) =>
     ((state.meta && state.meta.tiers) || []).find((t) => t.key === key);
+  const jwstBandAvailable = (value) => {
+    if (value === "colour") return true;
+    const obj = state.meta && state.meta.objects && state.meta.objects[state.index];
+    return !obj || !obj.jwst_bands || obj.jwst_bands.includes(value);
+  };
   /** Not selectable: globally disabled (e.g. SR not generated yet) or, for
    *  per-object collections, missing for the current object. */
   const tierDisabled = (key) => {
@@ -425,6 +437,7 @@ export function mountCutoutViewer(root, opts = {}) {
       label: r.headers.get("X-Cube-Label") || "",
       asinh: parseFloat(r.headers.get("X-Cube-Asinh")) || 100,
       pixscale: parseFloat(r.headers.get("X-Cube-Pixscale")) || 0,
+      displayScale: parseFloat(r.headers.get("X-Cube-Display-Scale")) || 1,
       bands: (r.headers.get("X-Cube-Bands") || "").split(",").filter(Boolean),
       tint: (r.headers.get("X-Cube-Tint") || "").split(",").map(Number)
         .filter(Number.isFinite),
@@ -1382,6 +1395,10 @@ export function mountCutoutViewer(root, opts = {}) {
       return;
     }
     state.index = Math.max(0, Math.min(state.index, state.meta.count - 1));
+    if (!jwstBandAvailable(state.params.jwst_band || "colour")) {
+      state.params.jwst_band = "colour";
+      syncChips();
+    }
     stopMorph();
     rebuildFrames({ preserveFrozen });
     state.shown.clear();
@@ -1459,6 +1476,7 @@ export function mountCutoutViewer(root, opts = {}) {
       else on = c.dataset.value === String(state.params[g]);
       c.classList.toggle("active", on);
       if (g === "tier") c.classList.toggle("cv-disabled", tierDisabled(c.dataset.value));
+      if (g === "jwst_band") c.classList.toggle("cv-disabled", !jwstBandAvailable(c.dataset.value));
     });
     if (toolbar._morphGroup)
       toolbar._morphGroup.style.display = state.tiers.includes("morph") ? "" : "none";
@@ -1482,6 +1500,7 @@ export function mountCutoutViewer(root, opts = {}) {
       rerender();
       notify();
     } else {                                  // param control (e.g. sky subset)
+      if (group === "jwst_band" && !jwstBandAvailable(value)) return;
       state.params[group] = value;
       syncChips();
       loadMeta().then(show);
@@ -1522,6 +1541,16 @@ export function mountCutoutViewer(root, opts = {}) {
       const g = el("div", { class: "cv-group" });
       pc.options.forEach((o) => g.append(chip(pc.key, o.value, o.label)));
       toolbar.append(g);
+    }
+    const jwstOptions = state.meta.jwst_band_options || [];
+    if (jwstOptions.length > 1) {
+      toolbar.append(el("span", { class: "cv-grouplabel", text: "JWST band" }));
+      const jwstGroup = el("div", { class: "cv-group" });
+      jwstOptions.forEach((option) => jwstGroup.append(chip(
+        "jwst_band", option.value, option.label,
+        option.value === "colour" ? "all available filters as display colour" : `show native ${option.label}`,
+      )));
+      toolbar.append(jwstGroup);
     }
     const logMode = state.meta.render_mode === "log";
     if (!logMode) {
@@ -1810,6 +1839,11 @@ export function mountCutoutViewer(root, opts = {}) {
     if (!state.meta.band_names.includes(state.color)
         && !["lupton", "temp"].includes(state.color)) {
       state.color = state.meta.band_names[0];
+    }
+    const jwstOptions = state.meta.jwst_band_options || [];
+    if (jwstOptions.length
+        && !jwstOptions.some((option) => option.value === state.params.jwst_band)) {
+      state.params.jwst_band = jwstOptions[0].value;
     }
     const defaultKnee = state.meta.color.default_asinh || 100;
     state.K0 = defaultKnee;

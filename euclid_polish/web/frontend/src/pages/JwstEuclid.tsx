@@ -349,12 +349,12 @@ export default function JwstEuclidPage() {
           <div className="jwst-euclid__viewer-head">
             <div>
               <div className="eyebrow">saved field carousel</div>
-              <h2>Euclid LR × JWST colour</h2>
-              <p>Carousel position 0 is {targetName(savedFields[0])}. Use the previous/next controls to move through every saved sky location; the JWST tier combines all available filters and cameras into one display colour image.</p>
+              <h2>Euclid LR × JWST</h2>
+              <p>Carousel position 0 is {targetName(savedFields[0])}. Use the previous/next controls to move through every saved sky location, then choose either JWST colour or one native JWST filter in the same toolbar used for Euclid bands.</p>
             </div>
             <div className="jwst-euclid__viewer-actions">
               <Badge tone="good">{savedFields.length} saved fields</Badge>
-              <Badge>all JWST filters → colour</Badge>
+              <Badge>colour or native JWST band</Badge>
             </div>
           </div>
           <JobProgressView job={inferenceJob.job} error={inferenceJob.error} />
@@ -365,8 +365,8 @@ export default function JwstEuclidPage() {
           />
           <div className="jwst-euclid__meta">
             <Stat k="Euclid tier" v="LR · VIS reference" />
-            <Stat k="JWST tier" v="colour composite · all saved filters/cameras" />
-            <Stat k="display grid" v="finest saved JWST WCS; source FITS stay native" />
+            <Stat k="JWST tier" v="colour composite or selected native band" />
+            <Stat k="display stretch" v="each panel p99.5 → same white point; not photometric" />
           </div>
         </section>
       ) : (

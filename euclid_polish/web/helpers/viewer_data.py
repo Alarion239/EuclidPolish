@@ -1254,6 +1254,25 @@ def _pair_asinh(cube: np.ndarray) -> float:
     return max(float(np.nanpercentile(finite, 95.0)), 1e-8)
 
 
+def _robust_display_scale(data: np.ndarray) -> float:
+    """Return a display-only factor that puts the robust bright end at white.
+
+    The canvas viewer uses ``30 * 100`` as its default white reference.  The
+    archive products have unrelated units and calibrations, so this is not a
+    flux conversion or a resampling operation; native FITS values stay intact.
+    """
+    finite = np.asarray(data, np.float32)
+    finite = finite[np.isfinite(finite)]
+    positive = finite[finite > 0]
+    if positive.size:
+        bright = float(np.nanpercentile(positive, 99.5))
+    elif finite.size:
+        bright = float(np.nanpercentile(np.abs(finite), 99.5))
+    else:
+        bright = 1.0
+    return 3000.0 / max(bright, 1e-12)
+
+
 def _jwst_band_name(manifest: dict[str, Any]) -> str:
     """Return the real JWST filter/pupil name, excluding non-band CLEAR."""
     metadata = manifest.get("jwst_metadata", {}) or {}
@@ -1405,14 +1424,27 @@ def _jwst_colour_cube(manifest: dict[str, Any], directory: str) -> tuple[np.ndar
         "pixscale": reference_scale if math.isfinite(reference_scale) else 0.0,
         "bands": ["JWST-R", "JWST-G", "JWST-B"],
         "direct_rgb": True,
+        "display_scale": _robust_display_scale(cube),
     }
 
 
 def _jwst_euclid_meta(params: dict[str, str]) -> dict[str, Any]:
     pairs = _saved_jwst_euclid_pairs()
+    seen_filters: set[str] = set()
+    jwst_band_options = [{"value": "colour", "label": "JWST colour"}]
+    filter_entries = sorted(
+        (entry for manifest, _directory in pairs for entry in _jwst_band_entries(manifest)),
+        key=_jwst_filter_wavelength_um,
+    )
+    for entry in filter_entries:
+        band = str(entry.get("filter") or "").strip().upper()
+        if not band or band in seen_filters:
+            continue
+        seen_filters.add(band)
+        jwst_band_options.append({"value": band, "label": band})
     tiers = [
         {"key": "lr", "label": "LR · Euclid VIS"},
-        {"key": "jwst", "label": "JWST colour"},
+        {"key": "jwst", "label": "JWST"},
     ]
     return {
         "count": len(pairs),
@@ -1420,10 +1452,16 @@ def _jwst_euclid_meta(params: dict[str, str]) -> dict[str, Any]:
         "default_tier": "lr",
         "band_names": list(BAND_NAMES),
         "color_label": "Euclid colour",
+        "jwst_band_options": jwst_band_options,
         "objects": [
             {
                 "label": f"{index} · {manifest.get('target_name') or 'paired field'}",
                 "tiers": [tier["key"] for tier in tiers],
+                "jwst_bands": ["colour"] + [
+                    str(entry.get("filter") or "").strip().upper()
+                    for entry in _jwst_band_entries(manifest)
+                    if str(entry.get("filter") or "").strip()
+                ],
             }
             for index, (manifest, _directory) in enumerate(pairs)
         ],
@@ -1447,9 +1485,31 @@ def _jwst_euclid_cube(index: int, tier: str, params: dict[str, str]):
             "asinh": float(Config.STRETCH_SCALE_E),
             "pixscale": float(Config.VIS_PIXEL_SCALE_ARCSEC),
             "bands": bands,
+            "display_scale": _robust_display_scale(cube),
         }
     if tier == "jwst":
-        return _jwst_colour_cube(manifest, directory)
+        choice = str(params.get("jwst_band") or "colour").strip().upper()
+        if choice in {"", "COLOUR"}:
+            return _jwst_colour_cube(manifest, directory)
+        entry = next(
+            (candidate for candidate in _jwst_band_entries(manifest)
+             if str(candidate.get("filter") or "").strip().upper() == choice),
+            None,
+        )
+        if entry is None:
+            raise ViewerError(404, f"JWST band {choice} is unavailable for this field")
+        data, _wcs = _pair_native_jwst(manifest, directory, entry)
+        metadata = entry.get("metadata", {}) or {}
+        scales = metadata.get("pixel_scale_arcsec", [])
+        scale = float(scales[0]) if isinstance(scales, list) and scales else 0.0
+        return _as_hwc(data), {
+            "label": f"JWST native · {choice} · display-normalised only",
+            "asinh": 100.0,
+            "pixscale": scale if math.isfinite(scale) else 0.0,
+            "bands": [choice],
+            "tint": _jwst_filter_tint(choice),
+            "display_scale": _robust_display_scale(data),
+        }
     raise ViewerError(400, "bad paired-field tier")
 
 
