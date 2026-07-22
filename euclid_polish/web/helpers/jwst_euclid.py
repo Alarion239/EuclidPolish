@@ -267,6 +267,25 @@ def field_coordinates(row: Mapping[str, Any]) -> tuple[float | None, float | Non
     return ra, dec
 
 
+def euclid_tiles_covering(ra: float, dec: float) -> list[dict[str, Any]]:
+    """Query Euclid for VIS mosaics whose archive footprint covers a point."""
+    try:
+        from astroquery.esa.euclid import Euclid
+    except ImportError as exc:
+        raise RuntimeError("astroquery is required for Euclid downloads") from exc
+
+    query = (
+        "SELECT file_path, file_name, tile_index, instrument_name, filter_name, ra, dec "
+        "FROM sedm.mosaic_product WHERE instrument_name = 'VIS' AND technique = 'IMAGE' "
+        f"AND INTERSECTS(mosaic_product.fov, CIRCLE('ICRS', {ra:.10f}, {dec:.10f}, 0.0003)) = 1"
+    )
+    Euclid.ROW_LIMIT = -1
+    job = Euclid.launch_job_async(query)
+    if job is None:
+        return []
+    return _table_rows(job.get_results())
+
+
 def _find_image(path: Path) -> tuple[np.ndarray, Any, Any, str]:
     """Read the first 2-D image HDU and its celestial WCS."""
     from astropy.io import fits
@@ -602,9 +621,38 @@ def download_and_align_pair(
 
         euclid_data, euclid_header, euclid_wcs, euclid_hdu = _find_image(euclid_path)
         if not _has_signal(euclid_data):
-            raise RuntimeError(
-                "Euclid VIS cutout contains no non-zero pixels at the JWST footprint center"
-            )
+            covering_tiles = euclid_tiles_covering(ra, dec)
+            recovered = False
+            for covering_tile in covering_tiles:
+                covering_path = euclid_product_path(covering_tile)
+                if not covering_path or covering_path == file_path:
+                    continue
+                try:
+                    _download_euclid_cutout(
+                        Euclid,
+                        file_path=covering_path,
+                        tile_index=_text(covering_tile.get("tile_index")) or tile_index,
+                        coordinate=coordinate,
+                        radius=radius,
+                        destination=euclid_path,
+                    )
+                    candidate_data, candidate_header, candidate_wcs, candidate_hdu = _find_image(euclid_path)
+                except (OSError, RuntimeError, ValueError):
+                    continue
+                if _has_signal(candidate_data):
+                    tile = covering_tile
+                    file_path = covering_path
+                    euclid_data = candidate_data
+                    euclid_header = candidate_header
+                    euclid_wcs = candidate_wcs
+                    euclid_hdu = candidate_hdu
+                    recovered = True
+                    break
+            if not recovered:
+                raise RuntimeError(
+                    "Euclid VIS footprint query found no non-zero mosaic covering the JWST field; "
+                    "this overlap row is only a nearby candidate"
+                )
 
         jwst_path = temporary_dir / "jwst_native.fits"
         if progress:
