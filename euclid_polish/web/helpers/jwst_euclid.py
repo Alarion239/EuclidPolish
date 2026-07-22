@@ -965,7 +965,10 @@ def _download_jwst_esa(observation_id: str, destination: Path) -> str:
     from astroquery.esa.jwst import Jwst
 
     products = Jwst.get_product_list(
-        observation_id=observation_id, cal_level=3, product_type="science",
+        # Detector-level rows cannot request a synthetic level-3 product;
+        # ask ESA for every level it actually associates with this observation
+        # and let ``_choose_jwst_product`` prefer the best available image.
+        observation_id=observation_id, cal_level="ALL", product_type="science",
     )
     product_name = _choose_jwst_product(_table_rows(products))
     # astroquery's ESA JWST client writes the requested filename in the
