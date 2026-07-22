@@ -16,12 +16,13 @@ from euclid_polish.web.helpers.jwst_euclid import (
     find_overlap_row,
     overlap_rows,
     pair_root,
+    run_starfull_pair_inference,
     scan_euclid_coverage,
 )
 from euclid_polish.web.jobs import REGISTRY
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9._-]{1,220}$")
-_SIZES = {"euclid_png": "euclid_vis.png", "jwst_png": "jwst_aligned.png"}
+_SIZES = {"euclid_png": "euclid_vis.png", "jwst_png": "jwst_native.png"}
 
 
 def _manifest(identifier: str) -> dict | None:
@@ -45,7 +46,11 @@ def _asset_path(identifier: str, filename: str) -> Path | None:
     root = pair_root().resolve()
     field_dir = (root / identifier).resolve()
     path = (field_dir / filename).resolve()
-    if field_dir.parent != root or path.parent != field_dir:
+    if field_dir.parent != root:
+        return None
+    try:
+        path.relative_to(field_dir)
+    except ValueError:
         return None
     return path
 
@@ -110,6 +115,20 @@ def register(app):
         )
         return jsonify({"job_id": job_id})
 
+    @app.post("/api/jwst-euclid/infer")
+    def api_jwst_euclid_infer():
+        identifier = request.form.get("field_id", "").strip()
+        if _manifest(identifier) is None:
+            return jsonify({"error": "save a valid JWST × Euclid field before inference"}), 404
+        job_id = REGISTRY.spawn(
+            label=f"run STARFULL combiner ({identifier})",
+            target=lambda cap: run_starfull_pair_inference(
+                identifier,
+                progress=lambda done, total, label: cap.tick(done, total, label),
+            ),
+        )
+        return jsonify({"job_id": job_id, "field_id": identifier})
+
     @app.get("/api/jwst-euclid/field/<identifier>/<kind>")
     def api_jwst_euclid_image(identifier: str, kind: str):
         filename = _SIZES.get(kind)
@@ -125,9 +144,11 @@ def register(app):
     def api_jwst_euclid_download_asset(identifier: str, kind: str):
         payload = _manifest(identifier)
         filename = payload.get("files", {}).get(kind) if payload else None
+        if filename is None and payload and kind in {"lr", "starfull"}:
+            filename = (payload.get("inference", {}).get("files", {}) or {}).get(kind)
         if payload is None or not isinstance(filename, str) or not _SAFE_ID.fullmatch(identifier):
             return jsonify({"error": "paired field asset not found"}), 404
         path = _asset_path(identifier, filename)
         if path is None or not path.is_file():
             return jsonify({"error": "paired field asset not found"}), 404
-        return send_file(path, as_attachment=True, download_name=filename, max_age=0)
+        return send_file(path, as_attachment=True, download_name=path.name, max_age=0)

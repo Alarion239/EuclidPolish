@@ -280,7 +280,8 @@ export function mountCutoutViewer(root, opts = {}) {
     meta: null,
     params: Object.assign({}, opts.params || {}),
     index: opts.initialIndex || 0,
-    tiers: opts.initialTier ? [String(opts.initialTier)] : [],
+    tiers: Array.isArray(opts.initialTiers) ? opts.initialTiers.map(String)
+      : (opts.initialTier ? [String(opts.initialTier)] : []),
                            // selected tier keys (multi-select), canonical order
     color: "VIS",          // band name | "lupton" | "temp"
     knee: 100,             // K (e⁻)

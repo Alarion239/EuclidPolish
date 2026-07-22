@@ -62,6 +62,7 @@ export type CutoutViewerProps = {
   compact?: boolean;
   hideToolbar?: boolean;
   initialTier?: string;
+  initialTiers?: string[];
   initialIndex?: number;
   onChange?: (s: ViewerState) => void;
   /** Called with the imperative engine handle once mounted (and null on
@@ -74,7 +75,7 @@ export type CutoutViewerProps = {
 /** Mount the shared canvas cutout viewer for a `collection`, re-mounting when
  *  the collection or its params change. Cleans up on unmount. */
 export function CutoutViewer(
-  { collection, params, compact, hideToolbar, initialTier, initialIndex,
+  { collection, params, compact, hideToolbar, initialTier, initialTiers, initialIndex,
     onChange, onReady, className }: CutoutViewerProps,
 ) {
   const host = useRef<HTMLDivElement>(null);
@@ -98,6 +99,7 @@ export function CutoutViewer(
         compact,
         hideToolbar,
         initialTier,
+        initialTiers,
         initialIndex,
         onChange: (s: ViewerState) => onChangeRef.current?.(s),
       });

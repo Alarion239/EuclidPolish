@@ -106,6 +106,28 @@ def test_align_to_target_preserves_an_identity_grid():
     np.testing.assert_allclose(aligned[1:-1, 1:-1], data[1:-1, 1:-1], atol=1e-4)
 
 
+def test_native_sky_cutout_keeps_source_pixel_scale():
+    from astropy.coordinates import SkyCoord
+    from astropy.wcs import WCS
+    from astropy.wcs.utils import proj_plane_pixel_scales
+
+    wcs = WCS(naxis=2)
+    wcs.wcs.crpix = [51.0, 51.0]
+    wcs.wcs.crval = [10.0, 20.0]
+    wcs.wcs.cdelt = [-0.00001, 0.00001]
+    wcs.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+    source_scale = proj_plane_pixel_scales(wcs)[:2]
+    cutout, cutout_wcs = jwst_euclid._native_sky_cutout(
+        np.ones((101, 101), dtype=np.float32),
+        wcs,
+        SkyCoord(ra=10.0, dec=20.0, unit="deg"),
+        1.0,
+    )
+
+    assert cutout.shape == (28, 28)
+    np.testing.assert_allclose(proj_plane_pixel_scales(cutout_wcs)[:2], source_scale)
+
+
 def test_pixel_metadata_reports_shape_scale_and_detector():
     from astropy.io import fits
     from astropy.wcs import WCS

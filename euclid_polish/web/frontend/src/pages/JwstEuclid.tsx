@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useResource } from "../hooks";
 import { JobProgressView, useJob } from "../jobs";
+import { CutoutViewer } from "../legacy";
 import { Badge, Button, Card, CardBody, CardHead, Empty, Field, Input, Page, PageHead, Segmented, Select, Spinner, Stat } from "../ui";
 import "./jwst-euclid.css";
 
@@ -56,13 +57,20 @@ type Manifest = {
   ra_deg: number | string;
   dec_deg: number | string;
   size_arcsec: number | string;
-  shape: [number, number];
+  shape?: [number, number];
   alignment: { method: string; target_grid: string; source_units: string; target_units: string };
   display: { euclid: { display_min: number; display_max: number }; jwst: { display_min: number; display_max: number } };
-  files: { euclid_png: string; jwst_png: string };
+  files: { euclid?: string; jwst_native?: string };
   euclid_metadata?: PixelMetadata;
   jwst_metadata?: PixelMetadata;
-  aligned_metadata?: PixelMetadata;
+  inference?: {
+    mode: "starfull";
+    combiner_kind: string;
+    combiner_label: string;
+    pixel_scale_arcsec: number;
+    shape: number[];
+    files: { lr: string; starfull: string };
+  };
 };
 type PixelMetadata = {
   shape?: number[];
@@ -94,14 +102,11 @@ const footprintName = (row: FieldRow) => row.footprint_status === "exact_interse
 const fieldRa = (row: FieldRow) => row.jwst_ra_deg ?? row.euclid_ra_deg;
 const fieldDec = (row: FieldRow) => row.jwst_dec_deg ?? row.euclid_dec_deg;
 const detectorToken = (row: FieldRow) => row.jwst_observation_id.match(/(?:^|[_-])((?:nrc|mir|nis|fgs)[a-z0-9]+)/i)?.[1] || "resolved after download";
-const shapeName = (shape?: number[]) => shape?.length === 2 ? `${shape[1]} × ${shape[0]} px` : "not listed";
-const scaleName = (scale?: number[]) => scale?.length ? `${scale.map((value) => value.toFixed(4)).join(" × ")}″/px` : "not listed";
 const exposureName = (value: number | string | undefined) => {
   const number = asNumber(value);
   return number == null ? "not listed" : `${number.toFixed(1)} s`;
 };
 type FieldView = "all" | "exact" | "saved" | "covered" | "uncovered" | "unchecked";
-type ViewerMode = "sky" | "pixels";
 
 const coverageStatus = (row: FieldRow) => row.euclid_coverage_status || "unchecked";
 const coverageLabel = (row: FieldRow) => {
@@ -126,7 +131,7 @@ export default function JwstEuclidPage() {
   const [view, setView] = useState<FieldView>("all");
   const pairJob = useJob();
   const coverageJob = useJob();
-  const [viewerMode, setViewerMode] = useState<ViewerMode>("sky");
+  const inferenceJob = useJob();
 
   const fields = index.data?.fields ?? [];
   const instruments = useMemo(() => Array.from(new Set(fields.map(instrumentName))).sort(), [fields]);
@@ -178,6 +183,18 @@ export default function JwstEuclidPage() {
     });
   };
 
+  const runInference = () => {
+    if (!selected?.available) return;
+    void inferenceJob.run("/api/jwst-euclid/infer", { field_id: selected.field_id }, {
+      onDone: () => {
+        window.setTimeout(() => {
+          void index.reload();
+          void manifest.reload();
+        }, 250);
+      },
+    });
+  };
+
   const pair = manifest.data;
   const canDownload = !!selected && coverageStatus(selected) !== "not_covered" && !pairJob.busy;
   const sourceStatus = index.data?.status;
@@ -188,7 +205,7 @@ export default function JwstEuclidPage() {
       <PageHead
         eyebrow="reference imaging · archive bridge"
         title="JWST × Euclid"
-        sub="Download a matched field, register the JWST image on the Euclid VIS grid, and inspect both views side-by-side."
+        sub="Download a matched field, retain both instruments on their native grids, and inspect them with the standard tiered field viewer."
         right={<Badge tone={sourceStatus?.partial ? "warn" : "good"}>
           {sourceStatus?.partial ? "overlap index partial" : "overlap index ready"}
         </Badge>}
@@ -203,8 +220,7 @@ export default function JwstEuclidPage() {
         <div>
           <div className="eyebrow">same sky · different instruments</div>
           <p className="jwst-euclid__hero-copy">
-            The Euclid cutout is the reference grid. JWST stays in its native file for provenance,
-            then appears again after a WCS-only remap onto that grid.
+            Euclid and JWST share one sky field but keep their own pixel grids. The viewer’s tier strip lets you move between Euclid LR, native JWST, and—when requested—the STARFULL output.
           </p>
         </div>
         <div className="jwst-euclid__hero-stats">
@@ -305,69 +321,51 @@ export default function JwstEuclidPage() {
                   <span><b>Euclid product</b>{selected.euclid_file_name || selected.euclid_tile_index}</span>
                 </div>
               </div>
-              <Button variant="primary" onClick={runDownload} disabled={!canDownload}>
-                {pairJob.busy ? "preparing field…" : coverageStatus(selected) === "not_covered" ? "no Euclid coverage" : selected.available ? "open saved comparison" : "download + align"}
-              </Button>
+              <div className="jwst-euclid__selection-actions">
+                <Button variant="primary" onClick={runDownload} disabled={!canDownload}>
+                  {pairJob.busy ? "preparing field…" : coverageStatus(selected) === "not_covered" ? "no Euclid coverage" : selected.available ? "refresh saved field" : "download field"}
+                </Button>
+                <Button variant="ghost" onClick={runInference} disabled={!selected.available || inferenceJob.busy}>
+                  {inferenceJob.busy ? "running STARFULL…" : pair?.inference ? "refresh STARFULL" : "run STARFULL combiner"}
+                </Button>
+              </div>
             </div>}
             </>
           )}
           <JobProgressView job={pairJob.job} error={pairJob.error} />
           <JobProgressView job={coverageJob.job} error={coverageJob.error} />
+          <JobProgressView job={inferenceJob.job} error={inferenceJob.error} />
         </CardBody>
       </Card>
 
       {pair ? (
-        <section className="jwst-euclid__viewer" data-pixel-view={viewerMode === "pixels"} aria-label="Aligned JWST and Euclid images">
+        <section className="jwst-euclid__viewer" aria-label="JWST and Euclid native-grid field viewer">
           <div className="jwst-euclid__viewer-head">
             <div>
-              <div className="eyebrow">registered comparison</div>
+              <div className="eyebrow">native-grid field viewer</div>
               <h2>{pair.target_name || "Unnamed field"}</h2>
-              <p>{formatCoord(pair.ra_deg, "N", "S")} · {formatCoord(pair.dec_deg, "E", "W")} · {(asNumber(pair.size_arcsec) ?? 0).toFixed(1)}″ field · {pair.shape.join(" × ")} px</p>
+              <p>{formatCoord(pair.ra_deg, "N", "S")} · {formatCoord(pair.dec_deg, "E", "W")} · {(asNumber(pair.size_arcsec) ?? 0).toFixed(1)}″ field. Use the tier strip for Euclid LR and native JWST pixels.</p>
             </div>
             <div className="jwst-euclid__viewer-actions">
-              <Segmented<ViewerMode> value={viewerMode} onChange={setViewerMode} options={[
-                { value: "sky", label: "sky view" },
-                { value: "pixels", label: "pixel view" },
-              ]} />
-              <Badge tone="good">WCS aligned</Badge>
-              <a className="ui-btn ui-btn--sm ui-btn--ghost" href={`/api/jwst-euclid/field/${pair.field_id}/download/jwst_aligned`}>
-                aligned FITS
+              <Badge tone="good">native WCS grids</Badge>
+              <a className="ui-btn ui-btn--sm ui-btn--ghost" href={`/api/jwst-euclid/field/${pair.field_id}/download/jwst_native`}>
+                JWST FITS
               </a>
+              {pair.inference && <a className="ui-btn ui-btn--sm ui-btn--ghost" href={`/api/jwst-euclid/field/${pair.field_id}/download/starfull`}>
+                STARFULL FITS
+              </a>}
             </div>
           </div>
-          <div className="jwst-euclid__pair">
-            <figure className="jwst-euclid__frame jwst-euclid__frame--euclid">
-              <div className="jwst-euclid__frame-label"><span>EUCLID</span><small>VIS · reference grid</small></div>
-              <img src={`/api/jwst-euclid/field/${pair.field_id}/euclid_png`} alt={`Euclid VIS view of ${pair.target_name || "selected field"}`} />
-              <figcaption>native archive cutout · {pair.alignment.target_units}</figcaption>
-            </figure>
-            <div className="jwst-euclid__seam" aria-hidden><span>same WCS</span></div>
-            <figure className="jwst-euclid__frame jwst-euclid__frame--jwst">
-              <div className="jwst-euclid__frame-label"><span>JWST</span><small>{pair.jwst_instrument || "imaging"} · {pair.jwst_filters || "filter not listed"}</small></div>
-              <img src={`/api/jwst-euclid/field/${pair.field_id}/jwst_png`} alt={`JWST aligned view of ${pair.target_name || "selected field"}`} />
-              <figcaption>resampled to Euclid VIS pixels · {pair.alignment.source_units}</figcaption>
-            </figure>
-          </div>
-          <div className="jwst-euclid__pixel-panel">
-            <div className="eyebrow">products · exposures · pixels</div>
-            <div className="jwst-euclid__pixel-grid">
-              <Stat k="JWST product" v={pair.jwst_product || "not listed"} />
-              <Stat k="JWST detector" v={pair.jwst_metadata?.detector || "not listed in FITS header"} />
-              <Stat k="JWST exposure" v={exposureName(pair.jwst_metadata?.exposure_s)} />
-              <Stat k="JWST native pixels" v={shapeName(pair.jwst_metadata?.shape)} />
-              <Stat k="JWST native scale" v={scaleName(pair.jwst_metadata?.pixel_scale_arcsec)} />
-              <Stat k="Euclid pixels" v={shapeName(pair.euclid_metadata?.shape || pair.shape)} />
-              <Stat k="Euclid scale" v={scaleName(pair.euclid_metadata?.pixel_scale_arcsec)} />
-              <Stat k="aligned pixels" v={shapeName(pair.aligned_metadata?.shape || pair.shape)} />
-            </div>
-            <div className="jwst-euclid__pixel-note">
-              {viewerMode === "pixels" ? "Pixel view uses nearest-neighbour display so the sampled grid remains visible." : "Switch to pixel view to inspect the downloaded grid rather than the smoothed sky presentation."}
-            </div>
-          </div>
+          <CutoutViewer
+            key={`${pair.field_id}:${pair.inference?.combiner_kind ?? "pending"}`}
+            collection="jwst-euclid"
+            params={{ field: pair.field_id }}
+            initialTiers={["lr", "jwst"]}
+          />
           <div className="jwst-euclid__meta">
-            <Stat k="Euclid view" v="VIS reference grid" />
-            <Stat k="JWST view" v={`${pair.jwst_instrument || "imaging"} · ${pair.jwst_filters || "filter not listed"}`} />
-            <Stat k="remap" v={pair.alignment.method} />
+            <Stat k="Euclid LR" v="VIS native grid" />
+            <Stat k="JWST tier" v={`${pair.jwst_instrument || "imaging"} · native pixels`} />
+            <Stat k="STARFULL" v={pair.inference?.combiner_label || "run on matching VIS + Y + J + H"} />
           </div>
         </section>
       ) : (

@@ -33,6 +33,7 @@ import contextlib
 import json
 import math
 import os
+import re
 from collections import OrderedDict
 from collections.abc import Callable
 from typing import Any
@@ -1132,6 +1133,176 @@ def _lens_isolation_cube(index: int, tier: str, params: dict[str, str]):
 
 
 # ---------------------------------------------------------------------------
+# jwst-euclid — one saved paired field, preserving each native image grid
+# ---------------------------------------------------------------------------
+
+_PAIR_ID = re.compile(r"^[A-Za-z0-9._-]{1,220}$")
+
+
+def _jwst_euclid_pair(params: dict[str, str]) -> tuple[dict[str, Any], str]:
+    """Load a verified paired-field manifest without exposing its cache path."""
+    from euclid_polish.web.helpers.jwst_euclid import (
+        _cached_pair_is_usable,
+        enrich_manifest_metadata,
+        pair_root,
+    )
+
+    identifier = (params.get("field") or "").strip()
+    if not _PAIR_ID.fullmatch(identifier):
+        raise ViewerError(404, "paired field not found")
+    directory = pair_root() / identifier
+    try:
+        with (directory / "manifest.json").open(encoding="utf-8") as handle:
+            manifest = json.load(handle)
+    except (OSError, ValueError):
+        raise ViewerError(404, "paired field not found") from None
+    if not isinstance(manifest, dict) or not _cached_pair_is_usable(directory, manifest):
+        raise ViewerError(404, "paired field is incomplete")
+    return enrich_manifest_metadata(directory, manifest), str(directory)
+
+
+def _pair_file(directory: str, relative: object) -> str:
+    """Resolve a manifest FITS path below one saved-pair directory."""
+    if not isinstance(relative, str) or not relative:
+        raise ViewerError(404, "paired field product is missing")
+    root = os.path.realpath(directory)
+    path = os.path.realpath(os.path.join(root, relative))
+    if os.path.commonpath((root, path)) != root or not os.path.isfile(path):
+        raise ViewerError(404, "paired field product is missing")
+    return path
+
+
+def _pair_image(path: str) -> tuple[np.ndarray, Any, Any]:
+    """Read the first usable celestial image from a cached pair FITS file."""
+    from astropy.wcs import WCS
+
+    try:
+        with fits.open(path, memmap=False) as hdul:
+            primary = hdul[0].header
+            for hdu in hdul:
+                data = getattr(hdu, "data", None)
+                if data is None or np.ndim(data) != 2:
+                    continue
+                header = hdu.header.copy()
+                try:
+                    wcs = WCS(header).celestial
+                    if not wcs.has_celestial:
+                        wcs = WCS(primary).celestial
+                    if wcs.has_celestial:
+                        return np.asarray(data, np.float32), header, wcs
+                except Exception:  # noqa: BLE001 - heterogeneous archive headers
+                    continue
+    except OSError as exc:
+        raise ViewerError(404, "paired field FITS is unreadable") from exc
+    raise ViewerError(404, "paired field FITS has no celestial image")
+
+
+def _pair_cube(path: str) -> np.ndarray:
+    """Read a 2-D image or a small channel-first cube from a pair product."""
+    try:
+        with fits.open(path, memmap=False) as hdul:
+            for hdu in hdul:
+                data = getattr(hdu, "data", None)
+                if data is None or np.ndim(data) not in (2, 3):
+                    continue
+                return _as_hwc(np.asarray(data, np.float32))
+    except OSError as exc:
+        raise ViewerError(404, "paired field FITS is unreadable") from exc
+    raise ViewerError(404, "paired field FITS has no image cube")
+
+
+def _pair_native_jwst(manifest: dict[str, Any], directory: str) -> tuple[np.ndarray, Any]:
+    """Return JWST at its source pixel scale, cropping legacy full products only."""
+    from astropy.coordinates import SkyCoord
+
+    from euclid_polish.web.helpers.jwst_euclid import _native_sky_cutout
+
+    files = manifest.get("files", {}) or {}
+    data, _, wcs = _pair_image(_pair_file(directory, files.get("jwst_native")))
+    if manifest.get("jwst_native_is_field_cutout"):
+        return data, wcs
+    try:
+        coordinate = SkyCoord(
+            ra=float(manifest["ra_deg"]), dec=float(manifest["dec_deg"]), unit="deg", frame="icrs",
+        )
+        return _native_sky_cutout(data, wcs, coordinate, float(manifest["size_arcsec"]))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ViewerError(404, "legacy JWST product has no usable field geometry") from exc
+
+
+def _pair_asinh(cube: np.ndarray) -> float:
+    finite = np.abs(cube[np.isfinite(cube)])
+    if finite.size == 0:
+        return 1.0
+    return max(float(np.nanpercentile(finite, 95.0)), 1e-8)
+
+
+def _jwst_euclid_meta(params: dict[str, str]) -> dict[str, Any]:
+    manifest, directory = _jwst_euclid_pair(params)
+    inference = manifest.get("inference", {}) or {}
+    inference_files = inference.get("files", {}) if isinstance(inference, dict) else {}
+    has_starfull = False
+    try:
+        _pair_file(directory, inference_files.get("starfull"))
+        _pair_file(directory, inference_files.get("lr"))
+        has_starfull = True
+    except ViewerError:
+        pass
+    tiers = [
+        {"key": "lr", "label": "LR · Euclid VIS"},
+        {"key": "jwst", "label": "JWST · native pixels"},
+    ]
+    if has_starfull:
+        tiers.append({
+            "key": "starfull",
+            "label": str(inference.get("combiner_label") or "STARFULL combiner"),
+        })
+    target = str(manifest.get("target_name") or "paired field")
+    return {
+        "count": 1,
+        "tiers": tiers,
+        "default_tier": "lr",
+        "band_names": list(BAND_NAMES),
+        "objects": [{"label": target, "tiers": [tier["key"] for tier in tiers]}],
+    }
+
+
+def _jwst_euclid_cube(index: int, tier: str, params: dict[str, str]):
+    if index != 0:
+        raise ViewerError(404, "paired field index out of range")
+    manifest, directory = _jwst_euclid_pair(params)
+    files = manifest.get("files", {}) or {}
+    inference = manifest.get("inference", {}) or {}
+    inference_files = inference.get("files", {}) if isinstance(inference, dict) else {}
+    if tier == "lr":
+        source = inference_files.get("lr") or files.get("euclid")
+        cube = _pair_cube(_pair_file(directory, source))
+        return cube, {
+            "label": "LR · Euclid VIS",
+            "asinh": float(Config.STRETCH_SCALE_E),
+            "pixscale": float(Config.VIS_PIXEL_SCALE_ARCSEC),
+        }
+    if tier == "jwst":
+        data, wcs = _pair_native_jwst(manifest, directory)
+        metadata = manifest.get("jwst_metadata", {}) or {}
+        scale = metadata.get("pixel_scale_arcsec", [])
+        pixscale = float(scale[0]) if isinstance(scale, list) and scale else 0.0
+        return _as_hwc(data), {
+            "label": f"JWST native · {manifest.get('jwst_instrument') or 'imaging'}",
+            "asinh": _pair_asinh(data),
+            "pixscale": pixscale,
+        }
+    if tier == "starfull":
+        cube = _pair_cube(_pair_file(directory, inference_files.get("starfull")))
+        return cube, {
+            "label": str(inference.get("combiner_label") or "STARFULL combiner"),
+            "asinh": float(Config.STRETCH_SCALE_E),
+            "pixscale": float(inference.get("pixel_scale_arcsec") or Config.DEFAULT_PIXEL_SCALE),
+        }
+    raise ViewerError(400, "bad paired-field tier")
+
+
+# ---------------------------------------------------------------------------
 # registry
 # ---------------------------------------------------------------------------
 
@@ -1144,6 +1315,7 @@ _REGISTRY: dict[str, tuple[_Meta, _Cube]] = {
     "evaluation": (_eval_meta, _eval_cube),
     "ensemble": (_ensemble_meta, _ensemble_cube),
     "real-field": (_real_field_meta, _real_field_cube),
+    "jwst-euclid": (_jwst_euclid_meta, _jwst_euclid_cube),
     "psfs": (_psf_meta, _psf_cube),
     "lens-isolation": (_lens_isolation_meta, _lens_isolation_cube),
 }

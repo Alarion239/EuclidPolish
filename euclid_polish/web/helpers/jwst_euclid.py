@@ -573,6 +573,35 @@ def _pixel_metadata(data: np.ndarray, wcs: Any, header: Any) -> dict[str, Any]:
     }
 
 
+def _native_sky_cutout(
+    data: np.ndarray, wcs: Any, coordinate: Any, size_arcsec: float,
+) -> tuple[np.ndarray, Any]:
+    """Crop a field on its source WCS without changing its pixel scale."""
+    import astropy.units as u
+    from astropy.nddata import Cutout2D
+
+    cutout = Cutout2D(
+        data,
+        position=coordinate,
+        size=float(size_arcsec) * u.arcsec,
+        wcs=wcs,
+        mode="partial",
+        fill_value=np.nan,
+    )
+    return np.asarray(cutout.data, np.float32), cutout.wcs
+
+
+def _primary_image_header(source_header: Any, wcs: Any, product_name: str, history: str) -> Any:
+    """Copy archive metadata into a WCS-correct primary image header."""
+    header = source_header.copy()
+    for key in ("XTENSION", "EXTNAME", "EXTVER", "PCOUNT", "GCOUNT", "THEAP"):
+        header.pop(key, None)
+    header.update(wcs.to_header(relax=True))
+    header["SRCFILE"] = product_name[:68]
+    header.add_history(history)
+    return header
+
+
 def _has_signal(data: np.ndarray) -> bool:
     finite = data[np.isfinite(data)]
     return finite.size > 0 and bool(np.any(finite != 0))
@@ -583,7 +612,7 @@ def _cached_pair_is_usable(directory: Path, manifest: Mapping[str, Any]) -> bool
     files = manifest.get("files", {})
     required = [
         directory / str(files.get("euclid", "euclid_vis.fits")),
-        directory / str(files.get("jwst_aligned", "jwst_aligned_to_euclid.fits")),
+        directory / str(files.get("jwst_native", "jwst_native.fits")),
         directory / str(files.get("euclid_png", "euclid_vis.png")),
         directory / str(files.get("jwst_png", "jwst_aligned.png")),
     ]
@@ -591,10 +620,10 @@ def _cached_pair_is_usable(directory: Path, manifest: Mapping[str, Any]) -> bool
         return False
     try:
         euclid_data, _, _, _ = _find_image(required[0])
-        aligned_data, _, _, _ = _find_image(required[1])
+        jwst_data, _, _, _ = _find_image(required[1])
     except (OSError, ValueError):
         return False
-    return _has_signal(euclid_data) and _has_signal(aligned_data)
+    return _has_signal(euclid_data) and _has_signal(jwst_data)
 
 
 def enrich_manifest_metadata(directory: Path, manifest: Mapping[str, Any]) -> dict[str, Any]:
@@ -608,9 +637,6 @@ def enrich_manifest_metadata(directory: Path, manifest: Mapping[str, Any]) -> di
         jwst_data, jwst_header, jwst_wcs, _ = _find_image(
             directory / str(files.get("jwst_native", "jwst_native.fits")),
         )
-        aligned_data, aligned_header, aligned_wcs, _ = _find_image(
-            directory / str(files.get("jwst_aligned", "jwst_aligned_to_euclid.fits")),
-        )
     except (OSError, ValueError):
         return result
     result.setdefault("euclid_product", result.get("euclid_file_name", ""))
@@ -620,9 +646,15 @@ def enrich_manifest_metadata(directory: Path, manifest: Mapping[str, Any]) -> di
     result["jwst_metadata"] = result.get(
         "jwst_metadata", _pixel_metadata(jwst_data, jwst_wcs, jwst_header),
     )
-    result["aligned_metadata"] = result.get(
-        "aligned_metadata", _pixel_metadata(aligned_data, aligned_wcs, aligned_header),
-    )
+    aligned_path = directory / str(files.get("jwst_aligned", "jwst_aligned_to_euclid.fits"))
+    if aligned_path.is_file():
+        try:
+            aligned_data, aligned_header, aligned_wcs, _ = _find_image(aligned_path)
+            result["aligned_metadata"] = result.get(
+                "aligned_metadata", _pixel_metadata(aligned_data, aligned_wcs, aligned_header),
+            )
+        except (OSError, ValueError):
+            pass
     return result
 
 
@@ -954,30 +986,37 @@ def download_and_align_pair(
 
         tile, file_path, euclid_data, euclid_header, euclid_wcs, euclid_hdu = selected
 
-        jwst_path = temporary_dir / "jwst_native.fits"
+        jwst_download_path = temporary_dir / "jwst_download.fits"
         if progress:
             progress(3, 5, f"downloading JWST {archive.upper()} image")
-        product_name = _download_jwst(archive, observation_id, jwst_path)
+        product_name = _download_jwst(archive, observation_id, jwst_download_path)
 
-        jwst_data, jwst_header, jwst_wcs, jwst_hdu = _find_image(jwst_path)
+        jwst_data, jwst_header, jwst_wcs, jwst_hdu = _find_image(jwst_download_path)
         if progress:
-            progress(4, 5, "registering JWST image on Euclid WCS")
-        aligned = align_to_target(jwst_data, jwst_wcs, euclid_wcs, euclid_data.shape)
-        aligned_path = temporary_dir / "jwst_aligned_to_euclid.fits"
-        aligned_header = _aligned_primary_header(euclid_header, product_name)
-        fits.PrimaryHDU(data=aligned, header=aligned_header).writeto(
-            aligned_path, overwrite=True, output_verify="silentfix",
+            progress(4, 5, "cropping JWST on its native pixel grid")
+        jwst_native, jwst_native_wcs = _native_sky_cutout(
+            jwst_data, jwst_wcs, coordinate, float(size_arcsec),
+        )
+        if not _has_signal(jwst_native):
+            raise RuntimeError("JWST native-grid cutout contains no non-zero pixels at the field center")
+        jwst_native_header = _primary_image_header(
+            jwst_header, jwst_native_wcs, product_name,
+            "JWST native-grid cutout; no resampling onto the Euclid grid",
+        )
+        jwst_path = temporary_dir / "jwst_native.fits"
+        fits.PrimaryHDU(data=jwst_native, header=jwst_native_header).writeto(
+            jwst_path, overwrite=True, output_verify="silentfix",
         )
 
         euclid_png = temporary_dir / "euclid_vis.png"
-        jwst_png = temporary_dir / "jwst_aligned.png"
+        jwst_png = temporary_dir / "jwst_native.png"
         euclid_display = _write_display_png(euclid_data, euclid_png, (0.40, 0.76, 1.0))
-        jwst_display = _write_display_png(aligned, jwst_png, (1.0, 0.69, 0.28))
+        jwst_display = _write_display_png(jwst_native, jwst_png, (1.0, 0.69, 0.28))
         if progress:
             progress(5, 5, "publishing complete paired field")
 
         manifest = {
-            "version": 1,
+            "version": 2,
             "field_id": identifier,
             "jwst_archive": archive,
             "jwst_observation_id": observation_id,
@@ -992,14 +1031,14 @@ def download_and_align_pair(
             "dec_deg": dec,
             "size_arcsec": float(size_arcsec),
             "shape": list(euclid_data.shape),
+            "jwst_native_is_field_cutout": True,
             "euclid_hdu": euclid_hdu,
             "jwst_hdu": jwst_hdu,
             "euclid_metadata": _pixel_metadata(euclid_data, euclid_wcs, euclid_header),
-            "jwst_metadata": _pixel_metadata(jwst_data, jwst_wcs, jwst_header),
-            "aligned_metadata": _pixel_metadata(aligned, euclid_wcs, aligned_header),
+            "jwst_metadata": _pixel_metadata(jwst_native, jwst_native_wcs, jwst_native_header),
             "alignment": {
-                "method": "bilinear WCS remap",
-                "target_grid": "Euclid VIS cutout",
+                "method": "native WCS cutout",
+                "target_grid": "each instrument native pixel grid",
                 "source_units": _text(jwst_header.get("BUNIT")) or "archive header not specified",
                 "target_units": _text(euclid_header.get("BUNIT")) or "archive header not specified",
             },
@@ -1007,9 +1046,8 @@ def download_and_align_pair(
             "files": {
                 "euclid": "euclid_vis.fits",
                 "jwst_native": "jwst_native.fits",
-                "jwst_aligned": "jwst_aligned_to_euclid.fits",
                 "euclid_png": "euclid_vis.png",
-                "jwst_png": "jwst_aligned.png",
+                "jwst_png": "jwst_native.png",
             },
             "source_row": _jsonable(dict(row)),
         }
@@ -1022,6 +1060,145 @@ def download_and_align_pair(
         raise
 
 
+def run_starfull_pair_inference(
+    identifier: str, *, progress: Any | None = None,
+) -> dict[str, Any]:
+    """Run the fitted STARFULL combiner on matching four-band Euclid cutouts.
+
+    JWST is deliberately absent from the model input: it remains a native-grid
+    reference image in the viewer, while the production model expects Euclid
+    VIS+Y+J+H on its own common LR grid.
+    """
+    pair_dir = pair_root() / _safe(identifier)
+    manifest_file = pair_dir / "manifest.json"
+    try:
+        manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError("saved JWST × Euclid field not found") from exc
+    if not isinstance(manifest, dict) or not _cached_pair_is_usable(pair_dir, manifest):
+        raise RuntimeError("saved JWST × Euclid field is incomplete or invalid")
+    ra = _number(manifest.get("ra_deg"))
+    dec = _number(manifest.get("dec_deg"))
+    size_arcsec = _number(manifest.get("size_arcsec"))
+    if ra is None or dec is None or size_arcsec is None:
+        raise RuntimeError("saved field has no usable sky coordinate or angular size")
+
+    from astropy.io import fits
+
+    from euclid_polish.catalog.downloader import fetch_cutout_at
+    from euclid_polish.ensemble import EnsembleModel, default_ensemble_dir
+    from euclid_polish.eval.combiner import ACTIVE_COMBINER_KINDS, COMBINER_MODELS, load_combiner
+    from euclid_polish.photometry import adu_per_s_to_electrons_factor
+
+    inference_dir = pair_dir / "starfull_inference"
+    raw_dir = inference_dir / "raw"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    side = max(1, int(round(size_arcsec / Config.VIS_PIXEL_SCALE_ARCSEC)))
+    from astropy.coordinates import SkyCoord
+
+    coordinate = SkyCoord(ra=ra, dec=dec, unit="deg", frame="icrs")
+    bands: list[np.ndarray] = []
+    vis_header = None
+    for index, band_name in enumerate(Config.LR_INPUT_BAND_NAMES):
+        raw_path = raw_dir / f"{band_name}.fits"
+        if not _is_readable_fits(raw_path):
+            if progress:
+                progress(index + 1, 8, f"downloading Euclid {band_name} input")
+            ok, error = fetch_cutout_at(
+                ra=ra, dec=dec, band_name=band_name, output_file=str(raw_path),
+                cutout_size_vis_pixels=side,
+            )
+            if not ok:
+                raise RuntimeError(f"{band_name} input unavailable: {error}")
+        else:
+            if progress:
+                progress(index + 1, 8, f"reusing Euclid {band_name} input")
+        data, header, wcs, _ = _find_image(raw_path)
+        native_data, native_wcs = _native_sky_cutout(data, wcs, coordinate, size_arcsec)
+        if native_data.shape != (side, side):
+            raise RuntimeError(
+                f"{band_name} archive cutout has shape {native_data.shape}; expected {(side, side)}"
+            )
+        if not _has_signal(native_data):
+            raise RuntimeError(f"{band_name} input has no usable pixels at the selected field")
+        band = Config.get_band(band_name)
+        bands.append(native_data * adu_per_s_to_electrons_factor(
+            float(header.get("MAGZERO", band.sim_zeropoint_e)), band,
+        ))
+        if band_name == "VIS":
+            vis_header = _primary_image_header(
+                header, native_wcs, raw_path.name, "Euclid STARFULL LR input cutout",
+            )
+    if vis_header is None:
+        raise RuntimeError("VIS header missing from STARFULL input")
+    lr_cube = np.stack(bands, axis=-1).astype(np.float32)
+    lr_path = inference_dir / "euclid_lr_vis_y_j_h.fits"
+    vis_header["BANDS"] = (",".join(Config.LR_INPUT_BAND_NAMES), "input channel order")
+    fits.PrimaryHDU(np.moveaxis(lr_cube, -1, 0), header=vis_header).writeto(
+        lr_path, overwrite=True, output_verify="silentfix",
+    )
+
+    if progress:
+        progress(5, 8, "running active STARFULL members")
+    ensemble = EnsembleModel(default_ensemble_dir(), starless=False)
+    labels = list(ensemble.member_labels)
+    if not labels:
+        raise RuntimeError("no active STARFULL ensemble members")
+    members = ensemble.member_arrays(lr_cube)
+    if progress:
+        progress(6, 8, "applying fitted STARFULL combiner")
+    regime_dir = Path(Config.VIS_DIR) / "ensemble" / "starfull"
+    selected_kind = None
+    selected_combiner = None
+    for kind in ACTIVE_COMBINER_KINDS:
+        combiner = load_combiner(
+            str(regime_dir), member_labels=labels,
+            artifact_dir=COMBINER_MODELS[kind].artifact_dir,
+        )
+        if combiner is not None:
+            selected_kind = kind
+            selected_combiner = combiner
+            break
+    if selected_kind is None or selected_combiner is None:
+        raise RuntimeError("no fitted STARFULL combiner is available")
+    starfull = np.asarray(selected_combiner.apply_field(members), np.float32)
+    sr_path = inference_dir / "starfull_combiner.fits"
+    sr_header = vis_header.copy()
+    scale = max(1, int(round(starfull.shape[0] / lr_cube.shape[0])))
+    for key in ("CRPIX1", "CRPIX2"):
+        if key in sr_header:
+            sr_header[key] = (float(sr_header[key]) - 1.0) * scale + 1.0
+    for key in ("CDELT1", "CDELT2"):
+        if key in sr_header:
+            sr_header[key] = float(sr_header[key]) / scale
+    for key in ("CD1_1", "CD1_2", "CD2_1", "CD2_2"):
+        if key in sr_header:
+            sr_header[key] = float(sr_header[key]) / scale
+    sr_header["SRCFILE"] = lr_path.name
+    sr_header["SRMODE"] = "STARFULL"
+    fits.PrimaryHDU(np.moveaxis(starfull, -1, 0), header=sr_header).writeto(
+        sr_path, overwrite=True, output_verify="silentfix",
+    )
+    if progress:
+        progress(7, 8, "publishing STARFULL inference")
+    manifest["inference"] = {
+        "mode": "starfull",
+        "combiner_kind": selected_kind,
+        "combiner_label": COMBINER_MODELS[selected_kind].label,
+        "member_labels": labels,
+        "pixel_scale_arcsec": float(Config.DEFAULT_PIXEL_SCALE),
+        "shape": [int(value) for value in starfull.shape],
+        "files": {
+            "lr": str(lr_path.relative_to(pair_dir)),
+            "starfull": str(sr_path.relative_to(pair_dir)),
+        },
+    }
+    _write_json(manifest_file, manifest)
+    if progress:
+        progress(8, 8, "STARFULL inference complete")
+    return manifest
+
+
 __all__ = [
     "align_to_target",
     "download_and_align_pair",
@@ -1031,4 +1208,5 @@ __all__ = [
     "overlap_rows",
     "overlap_root",
     "pair_root",
+    "run_starfull_pair_inference",
 ]
