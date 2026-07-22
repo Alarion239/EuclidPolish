@@ -62,10 +62,10 @@ function MissingSyntheticPlot({ loading, error }: { loading: boolean; error: boo
   </p>;
 }
 
-function reciprocalSeries(theta: (number | null)[], values: (number | null)[]) {
-  return theta.map((value, index) => ({
-    x: value == null || !isFinite(value) || value <= 0 ? NaN : 1 / value,
-    y: values[index] ?? null,
+function transformedSeries(valuesX: (number | null)[], valuesY: (number | null)[], transform: (value: number) => number) {
+  return valuesX.map((value, index) => ({
+    x: value == null || !isFinite(value) || value <= 0 ? NaN : transform(value),
+    y: valuesY[index] ?? null,
   })).filter((point) => isFinite(point.x) && point.y != null && isFinite(point.y))
     .sort((a, b) => a.x - b.x);
 }
@@ -79,59 +79,94 @@ function sharedDomain(...arrays: Array<readonly (number | null)[]>): [number, nu
   return lo === hi ? [lo, lo + 1] : [lo, hi];
 }
 
+function displayEdges(domain: [number, number], bins: number) {
+  return Array.from({ length: bins + 1 }, (_, index) =>
+    domain[0] + (domain[1] - domain[0]) * index / bins);
+}
+
+function edgeBin(edges: number[], value: number) {
+  if (value < edges[0] || value > edges[edges.length - 1]) return -1;
+  if (value === edges[edges.length - 1]) return edges.length - 2;
+  const index = Math.floor((value - edges[0]) / (edges[1] - edges[0]));
+  return index >= 0 && index < edges.length - 1 ? index : -1;
+}
+
+function rebinHeat(z: number[][], sourceXEdges: number[], sourceYEdges: number[], targetXEdges: number[], targetYEdges: number[]) {
+  const output = Array.from({ length: targetXEdges.length - 1 }, () =>
+    Array(targetYEdges.length - 1).fill(0));
+  for (let i = 0; i < z.length; i++) {
+    const x = (sourceXEdges[i] + sourceXEdges[i + 1]) / 2;
+    const targetI = edgeBin(targetXEdges, x);
+    if (targetI < 0) continue;
+    for (let j = 0; j < z[i].length; j++) {
+      const count = z[i][j];
+      const y = (sourceYEdges[j] + sourceYEdges[j + 1]) / 2;
+      const targetJ = edgeBin(targetYEdges, y);
+      if (targetJ >= 0 && isFinite(count)) output[targetI][targetJ] += count;
+    }
+  }
+  return output;
+}
+
+const CROSS_X_DOMAIN: [number, number] = [0.05, 10];
+const CROSS_X_TICKS = [
+  { v: 0.05, label: "0.05" }, { v: 0.1, label: "0.1" }, { v: 0.2, label: "0.2" },
+  { v: 0.5, label: "0.5" }, { v: 1, label: "1" }, { v: 2, label: "2" },
+  { v: 5, label: "5" }, { v: 10, label: "10" },
+];
 const CROSS_Y_DOMAIN: [number, number] = [0, 1.05];
 const CROSS_Y_TICKS = [
   { v: 0, label: "0" }, { v: 0.5, label: "0.5" }, { v: 1, label: "1" },
 ];
 
-function SyntheticPowerPlot({ evals, xDomain, xTicks }: {
-  evals: Evals; xDomain: [number, number]; xTicks: { v: number; label: string }[];
-}) {
+function SyntheticPowerPlot({ evals }: { evals: Evals }) {
   const power = evals.ps;
   if (!power?.theta?.length || !power.r_cross?.length) return null;
-  const cross = reciprocalSeries(power.theta, power.r_cross);
+  const cross = transformedSeries(power.theta, power.r_cross, (value) => value);
   if (!cross.length) return null;
-  const pairs = (power.r_pairs ?? []).map((row) => reciprocalSeries(power.theta, row));
+  const pairs = (power.r_pairs ?? []).map((row) => transformedSeries(power.theta, row, (value) => value));
   return <>
-    <Plot title="cross-correlation rᵢⱼ(k)  ·  synthetic test fields"
-      xScale="log" xDomain={xDomain} yDomain={CROSS_Y_DOMAIN} xTicks={xTicks}
+    <Plot title="cross-correlation rᵢⱼ(d)  ·  synthetic test fields"
+      xScale="log" xDomain={CROSS_X_DOMAIN} yDomain={CROSS_Y_DOMAIN} xTicks={CROSS_X_TICKS}
       yTicks={CROSS_Y_TICKS}
-      xLabel="angular frequency k [cycles / arcsec] · 1 / synthetic θ"
-      yLabel="rᵢⱼ(k)" series={[
+      xLabel="angular distance d [arcsec]"
+      yLabel="rᵢⱼ(d)" series={[
         ...pairs.filter((row) => row.length).map((row) => ({ x: row.map((point) => point.x), y: row.map((point) => point.y), color: "#708096", width: 0.8, alpha: 0.22 })),
         { x: cross.map((point) => point.x), y: cross.map((point) => point.y), color: "#d47f34", width: 2.4, dash: [6, 3] },
       ]} guides={[{ axis: "y", v: 1, color: "#8c98a8", dash: [2, 3] }]} height={430} />
-    <Legend items={[{ label: "individual model pairs", color: "#708096" }, { label: "median rᵢⱼ(k)", color: "#d47f34", dash: true }]} />
+    <Legend items={[{ label: "individual model pairs", color: "#708096" }, { label: "median rᵢⱼ(d)", color: "#d47f34", dash: true }]} />
   </>;
 }
 
-function SyntheticBrightnessPlot({ evals, xDomain, yDomain, xTicks, yTicks }: {
+function SyntheticBrightnessPlot({ evals, xDomain, yDomain, xTicks, yTicks, xEdges: targetXEdges, yEdges: targetYEdges }: {
   evals: Evals; xDomain: [number, number]; yDomain: [number, number];
   xTicks: { v: number; label: string }[]; yTicks: { v: number; label: string }[];
+  xEdges: number[]; yEdges: number[];
 }) {
   const bright = evals.bright_std;
-  const xEdges = finiteEdges(bright?.bright_edges ?? []);
-  const yEdges = finiteEdges(bright?.std_edges ?? []);
-  if (!bright || xEdges.length < 2 || yEdges.length < 2 || !bright.hist.length) return null;
+  const sourceXEdges = finiteEdges(bright?.bright_edges ?? []);
+  const sourceYEdges = finiteEdges(bright?.std_edges ?? []);
+  if (!bright || sourceXEdges.length < 2 || sourceYEdges.length < 2 || !bright.hist.length) return null;
   return <Plot title="member STD versus brightness  ·  synthetic test fields"
     xDomain={xDomain} yDomain={yDomain} xTicks={xTicks} yTicks={yTicks}
     xLabel="mean brightness (asinh)" yLabel="log10(member std)"
-    heat={{ z: bright.hist, xEdges, yEdges, colorLabel: "synthetic pixels" }} series={[]} height={360} />;
+    heat={{ z: rebinHeat(bright.hist, sourceXEdges, sourceYEdges, targetXEdges, targetYEdges), xEdges: targetXEdges, yEdges: targetYEdges, colorLabel: "synthetic pixels" }} series={[]} height={360} />;
 }
 
-function SyntheticCombinerPlot({ evals, kind, xDomain, yDomain, xTicks, yTicks }: {
+function SyntheticCombinerPlot({ evals, kind, xDomain, yDomain, xTicks, yTicks, xEdges: targetXEdges, yEdges: targetYEdges }: {
   evals: Evals; kind: string; xDomain: [number, number]; yDomain: [number, number];
   xTicks: { v: number; label: string }[]; yTicks: { v: number; label: string }[];
+  xEdges: number[]; yEdges: number[];
 }) {
   const axis = evals.combiner_feature_error?.axes?.min_max;
   const model = axis?.models?.[kind];
-  const xEdges = finiteEdges(axis?.edges?.[0] ?? []);
-  const yEdges = finiteEdges(axis?.edges?.[1] ?? []);
-  if (!model || xEdges.length < 2 || yEdges.length < 2 || !model.counts.length) return null;
+  const sourceXEdges = finiteEdges(axis?.edges?.[0] ?? []);
+  const sourceYEdges = finiteEdges(axis?.edges?.[1] ?? []);
+  if (!model || sourceXEdges.length < 2 || sourceYEdges.length < 2 || !model.counts.length) return null;
   return <Plot title="combiner feature occupancy  ·  synthetic test fields"
     xDomain={xDomain} yDomain={yDomain} xTicks={xTicks} yTicks={yTicks}
     xLabel={axis?.axis_names?.[0] ?? "min member"} yLabel={axis?.axis_names?.[1] ?? "max member"}
-    heat={{ z: model.counts, xEdges, yEdges, colorLabel: "synthetic pixels" }} series={[]} height={360} />;
+    heat={{ z: rebinHeat(model.counts, sourceXEdges, sourceYEdges, targetXEdges, targetYEdges), xEdges: targetXEdges, yEdges: targetYEdges, colorLabel: "synthetic pixels" }} series={[]} height={360} />;
 }
 
 const ticks = (lo: number, hi: number, n = 4) => Array.from({ length: n + 1 }, (_, i) => {
@@ -144,39 +179,36 @@ function InferenceDiagnostics({ data, synthetic, syntheticLoading, syntheticErro
 }) {
   const labels = data.member_labels.map((label) => label.replace("·psnr", ""));
   const power = data.model_power;
-  const syntheticPower = synthetic?.ps;
-  const syntheticCross = syntheticPower?.theta && syntheticPower.r_cross
-    ? reciprocalSeries(syntheticPower.theta, syntheticPower.r_cross) : [];
-  const kDomain = sharedDomain(power.k, syntheticCross.map((point) => point.x));
-  const kMin = kDomain[0], kMax = kDomain[1];
-  const kTicks = [0.2, 0.5, 1, 2, 5, 10]
-    .filter((value) => value >= kMin && value <= kMax)
-    .map((value) => ({ v: value, label: String(value) }));
   const std = data.std_brightness;
   const syntheticBright = synthetic?.bright_std;
   const brightnessXDomain = sharedDomain(std.x_edges, syntheticBright?.bright_edges ?? []);
   const brightnessYDomain = sharedDomain(std.y_edges, syntheticBright?.std_edges ?? []);
   const brightnessXTicks = ticks(brightnessXDomain[0], brightnessXDomain[1]);
   const brightnessYTicks = ticks(brightnessYDomain[0], brightnessYDomain[1]);
+  const brightnessXEdges = displayEdges(brightnessXDomain,
+    Math.max(std.x_edges.length - 1, (syntheticBright?.bright_edges.length ?? 2) - 1));
+  const brightnessYEdges = displayEdges(brightnessYDomain,
+    Math.max(std.y_edges.length - 1, (syntheticBright?.std_edges.length ?? 2) - 1));
+  const syntheticAxis = synthetic?.combiner_feature_error?.axes?.min_max;
   return <>
     <ComparisonCard title="Model–model angular cross-correlation"
       sub={`${labels.length * (labels.length - 1) / 2} real-field member pairs · no HR reference · matched to synthetic STARFULL evaluation`}
       real={<>
-        <Plot title="cross-correlation rᵢⱼ(k)  ·  1 = identical Fourier structure"
-          xScale="log" xDomain={kDomain} yDomain={CROSS_Y_DOMAIN}
-          xTicks={kTicks}
+        <Plot title="cross-correlation rᵢⱼ(d)  ·  1 = identical Fourier structure"
+          xScale="log" xDomain={CROSS_X_DOMAIN} yDomain={CROSS_Y_DOMAIN}
+          xTicks={CROSS_X_TICKS}
           yTicks={CROSS_Y_TICKS}
-          xLabel={`angular frequency k [cycles / arcsec] · ${power.pixel_scale_arcsec.toFixed(2)}″ pixels`}
-          yLabel="rᵢⱼ(k)" series={[
-            ...power.r_pairs.map((row) => ({ x: power.k, y: row, color: "#708096", width: 0.8, alpha: 0.22 })),
-            { x: power.k, y: power.r_cross, color: "#4c9ffe", width: 2.4, dash: [6, 3] },
+          xLabel={`angular distance d [arcsec] · ${power.pixel_scale_arcsec.toFixed(2)}″ pixels`}
+          yLabel="rᵢⱼ(d)" series={[
+            ...power.r_pairs.map((row) => { const points = transformedSeries(power.k, row, (value) => 1 / value); return { x: points.map((point) => point.x), y: points.map((point) => point.y), color: "#708096", width: 0.8, alpha: 0.22 }; }),
+            (() => { const points = transformedSeries(power.k, power.r_cross, (value) => 1 / value); return { x: points.map((point) => point.x), y: points.map((point) => point.y), color: "#4c9ffe", width: 2.4, dash: [6, 3] }; })(),
           ]} guides={[{ axis: "y", v: 1, color: "#8c98a8", dash: [2, 3] }]} height={430} />
-        <Legend items={[{ label: "individual model pairs", color: "#708096" }, { label: "median rᵢⱼ(k)", color: "#4c9ffe", dash: true }]} />
+        <Legend items={[{ label: "individual model pairs", color: "#708096" }, { label: "median rᵢⱼ(d)", color: "#4c9ffe", dash: true }]} />
         <p className="muted" style={{ margin: "var(--s3) 0 0", fontSize: 12 }}>
           Each curve compares two cached STARFULL predictions after mean subtraction and windowed 2-D FFTs; the bands and tiles are combined by median.
         </p>
       </>}
-      synthetic={synthetic ? <SyntheticPowerPlot evals={synthetic} xDomain={kDomain} xTicks={kTicks} />
+      synthetic={synthetic ? <SyntheticPowerPlot evals={synthetic} />
         : <MissingSyntheticPlot loading={syntheticLoading} error={syntheticError} />} />
 
     <ComparisonCard title="Member STD versus brightness"
@@ -185,23 +217,27 @@ function InferenceDiagnostics({ data, synthetic, syntheticLoading, syntheticErro
         <Plot xDomain={brightnessXDomain} yDomain={brightnessYDomain}
           xTicks={brightnessXTicks} yTicks={brightnessYTicks}
           xLabel={std.x_label} yLabel={std.y_label}
-          heat={{ z: std.counts, xEdges: std.x_edges, yEdges: std.y_edges, colorLabel: "sampled pixels" }}
+          heat={{ z: rebinHeat(std.counts, std.x_edges, std.y_edges, brightnessXEdges, brightnessYEdges), xEdges: brightnessXEdges, yEdges: brightnessYEdges, colorLabel: "sampled pixels" }}
           series={[]} height={360} />
       </>}
       synthetic={synthetic ? <SyntheticBrightnessPlot evals={synthetic}
         xDomain={brightnessXDomain} yDomain={brightnessYDomain}
-        xTicks={brightnessXTicks} yTicks={brightnessYTicks} />
+        xTicks={brightnessXTicks} yTicks={brightnessYTicks}
+        xEdges={brightnessXEdges} yEdges={brightnessYEdges} />
         : <MissingSyntheticPlot loading={syntheticLoading} error={syntheticError} />} />
 
     {Object.entries(data.combiners)
       .filter(([kind]) => kind === "raw_incremental_minmeanmax_rbf")
       .map(([kind, comb]) => {
       const title = "minibatched convex all-asinh RBF";
-      const syntheticAxis = synthetic?.combiner_feature_error?.axes?.min_max;
       const combinerXDomain = sharedDomain(comb.x_edges, syntheticAxis?.edges?.[0] ?? []);
       const combinerYDomain = sharedDomain(comb.y_edges ?? [], syntheticAxis?.edges?.[1] ?? []);
       const combinerXTicks = ticks(combinerXDomain[0], combinerXDomain[1]);
       const combinerYTicks = ticks(combinerYDomain[0], combinerYDomain[1]);
+      const combinerXEdges = displayEdges(combinerXDomain,
+        Math.max(comb.x_edges.length - 1, (syntheticAxis?.edges?.[0]?.length ?? 2) - 1));
+      const combinerYEdges = displayEdges(combinerYDomain,
+        Math.max(comb.y_edges?.length ? comb.y_edges.length - 1 : 1, (syntheticAxis?.edges?.[1]?.length ?? 2) - 1));
       if (comb.mode === "histogram") {
         const counts = comb.counts as number[];
         const centers = counts.map((_, i) => (comb.x_edges[i] + comb.x_edges[i + 1]) / 2);
@@ -214,7 +250,8 @@ function InferenceDiagnostics({ data, synthetic, syntheticLoading, syntheticErro
             series={[{ x: centers, y: ys, color: "#4c9ffe", width: 2 }]} height={300} />}
           synthetic={synthetic ? <SyntheticCombinerPlot evals={synthetic} kind={kind}
             xDomain={combinerXDomain} yDomain={combinerYDomain}
-            xTicks={combinerXTicks} yTicks={combinerYTicks} />
+            xTicks={combinerXTicks} yTicks={combinerYTicks}
+            xEdges={combinerXEdges} yEdges={combinerYEdges} />
             : <MissingSyntheticPlot loading={syntheticLoading} error={syntheticError} />} />;
       }
       const counts = comb.counts as number[][];
@@ -223,10 +260,11 @@ function InferenceDiagnostics({ data, synthetic, syntheticLoading, syntheticErro
         real={<Plot xDomain={combinerXDomain} yDomain={combinerYDomain}
           xTicks={combinerXTicks} yTicks={combinerYTicks}
           xLabel={comb.x_label} yLabel={comb.y_label ?? "feature"}
-          heat={{ z: counts, xEdges: comb.x_edges, yEdges: comb.y_edges!, colorLabel: "real pixel count" }} series={[]} height={360} />}
+          heat={{ z: rebinHeat(counts, comb.x_edges, comb.y_edges!, combinerXEdges, combinerYEdges), xEdges: combinerXEdges, yEdges: combinerYEdges, colorLabel: "real pixel count" }} series={[]} height={360} />}
         synthetic={synthetic ? <SyntheticCombinerPlot evals={synthetic} kind={kind}
           xDomain={combinerXDomain} yDomain={combinerYDomain}
-          xTicks={combinerXTicks} yTicks={combinerYTicks} />
+          xTicks={combinerXTicks} yTicks={combinerYTicks}
+          xEdges={combinerXEdges} yEdges={combinerYEdges} />
           : <MissingSyntheticPlot loading={syntheticLoading} error={syntheticError} />} />;
     })}
   </>;
