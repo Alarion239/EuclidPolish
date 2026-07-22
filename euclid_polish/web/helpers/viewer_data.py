@@ -1211,15 +1211,31 @@ def _pair_cube(path: str) -> np.ndarray:
     raise ViewerError(404, "paired field FITS has no image cube")
 
 
-def _pair_native_jwst(manifest: dict[str, Any], directory: str) -> tuple[np.ndarray, Any]:
+def _jwst_band_entries(manifest: dict[str, Any]) -> list[dict[str, Any]]:
+    """Normalise old one-product manifests and current multi-filter locations."""
+    entries = manifest.get("jwst_bands", [])
+    if isinstance(entries, list) and entries:
+        return [dict(entry) for entry in entries if isinstance(entry, dict)]
+    files = manifest.get("files", {}) or {}
+    return [{
+        "key": "jwst0",
+        "filter": _jwst_band_name(manifest),
+        "file": files.get("jwst_native"),
+        "metadata": manifest.get("jwst_metadata", {}),
+        "native_is_field_cutout": bool(manifest.get("jwst_native_is_field_cutout")),
+    }]
+
+
+def _pair_native_jwst(
+    manifest: dict[str, Any], directory: str, entry: dict[str, Any],
+) -> tuple[np.ndarray, Any]:
     """Return JWST at its source pixel scale, cropping legacy full products only."""
     from astropy.coordinates import SkyCoord
 
     from euclid_polish.web.helpers.jwst_euclid import _native_sky_cutout
 
-    files = manifest.get("files", {}) or {}
-    data, _, wcs = _pair_image(_pair_file(directory, files.get("jwst_native")))
-    if manifest.get("jwst_native_is_field_cutout"):
+    data, _, wcs = _pair_image(_pair_file(directory, entry.get("file")))
+    if entry.get("native_is_field_cutout"):
         return data, wcs
     try:
         coordinate = SkyCoord(
@@ -1280,8 +1296,11 @@ def _jwst_euclid_meta(params: dict[str, str]) -> dict[str, Any]:
         pass
     tiers = [
         {"key": "lr", "label": "LR · Euclid VIS"},
-        {"key": "jwst", "label": "JWST · native pixels"},
     ]
+    for entry in _jwst_band_entries(manifest):
+        key = str(entry.get("key") or f"jwst{len(tiers)}")
+        band = str(entry.get("filter") or "JWST")
+        tiers.append({"key": key, "label": f"JWST · {band} · native"})
     if has_starfull:
         tiers.append({
             "key": "starfull",
@@ -1315,12 +1334,14 @@ def _jwst_euclid_cube(index: int, tier: str, params: dict[str, str]):
             "pixscale": float(Config.VIS_PIXEL_SCALE_ARCSEC),
             "bands": bands,
         }
-    if tier == "jwst":
-        data, wcs = _pair_native_jwst(manifest, directory)
-        metadata = manifest.get("jwst_metadata", {}) or {}
+    entries = {str(entry.get("key")): entry for entry in _jwst_band_entries(manifest)}
+    if tier in entries:
+        entry = entries[tier]
+        data, wcs = _pair_native_jwst(manifest, directory, entry)
+        metadata = entry.get("metadata", {}) or {}
         scale = metadata.get("pixel_scale_arcsec", [])
         pixscale = float(scale[0]) if isinstance(scale, list) and scale else 0.0
-        band = _jwst_band_name(manifest)
+        band = str(entry.get("filter") or _jwst_band_name(manifest))
         return _as_hwc(data), {
             "label": f"JWST native · {band} · single-filter false colour",
             "asinh": _pair_asinh(data),

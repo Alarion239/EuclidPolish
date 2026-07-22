@@ -21,6 +21,8 @@ type FieldRow = {
   jwst_ra_deg?: number | string;
   jwst_dec_deg?: number | string;
   jwst_distance_deg?: number | string;
+  jwst_product_count?: number;
+  jwst_row_count?: number;
   footprint_status?: string;
   euclid_coverage_status?: "unchecked" | "covered" | "not_covered" | "error";
   euclid_coverage_tile_count?: number | string;
@@ -63,6 +65,7 @@ type Manifest = {
   files: { euclid?: string; jwst_native?: string };
   euclid_metadata?: PixelMetadata;
   jwst_metadata?: PixelMetadata;
+  jwst_bands?: Array<{ key: string; filter: string; product: string; metadata?: PixelMetadata }>;
   inference?: {
     mode: "starfull";
     combiner_kind: string;
@@ -101,11 +104,6 @@ const filterName = (row: FieldRow) => row.jwst_filters?.trim() || "filter not li
 const footprintName = (row: FieldRow) => row.footprint_status === "exact_intersection" ? "footprints intersect" : "nearby candidate";
 const fieldRa = (row: FieldRow) => row.jwst_ra_deg ?? row.euclid_ra_deg;
 const fieldDec = (row: FieldRow) => row.jwst_dec_deg ?? row.euclid_dec_deg;
-const detectorToken = (row: FieldRow) => row.jwst_observation_id.match(/(?:^|[_-])((?:nrc|mir|nis|fgs)[a-z0-9]+)/i)?.[1] || "resolved after download";
-const exposureName = (value: number | string | undefined) => {
-  const number = asNumber(value);
-  return number == null ? "not listed" : `${number.toFixed(1)} s`;
-};
 type FieldView = "all" | "exact" | "saved" | "covered" | "uncovered" | "unchecked";
 
 const coverageStatus = (row: FieldRow) => row.euclid_coverage_status || "unchecked";
@@ -163,12 +161,7 @@ export default function JwstEuclidPage() {
 
   const runDownload = () => {
     if (!selected) return;
-    void pairJob.run("/api/jwst-euclid/download", {
-      jwst_archive: selected.jwst_archive,
-      euclid_tile_index: selected.euclid_tile_index,
-      jwst_observation_id: selected.jwst_observation_id,
-      size_arcsec: 30,
-    }, {
+    void pairJob.run("/api/jwst-euclid/download", { field_id: selected.field_id, size_arcsec: 30 }, {
       onDone: () => {
         window.setTimeout(() => index.reload(), 250);
       },
@@ -205,7 +198,7 @@ export default function JwstEuclidPage() {
       <PageHead
         eyebrow="reference imaging · archive bridge"
         title="JWST × Euclid"
-        sub="Download a matched field, retain both instruments on their native grids, and inspect them with the standard tiered field viewer."
+        sub="Choose a sky location. Its JWST filters download together beside one Euclid counterpart, while every instrument keeps its native grid."
         right={<Badge tone={sourceStatus?.partial ? "warn" : "good"}>
           {sourceStatus?.partial ? "overlap index partial" : "overlap index ready"}
         </Badge>}
@@ -220,7 +213,7 @@ export default function JwstEuclidPage() {
         <div>
           <div className="eyebrow">same sky · different instruments</div>
           <p className="jwst-euclid__hero-copy">
-            Euclid and JWST share one sky field but keep their own pixel grids. The viewer’s tier strip lets you move between Euclid LR, native JWST, and—when requested—the STARFULL output.
+            One card is one sky location, not one archive product. The location groups its JWST filters automatically; Euclid coverage is checked before the shared field is saved.
           </p>
         </div>
         <div className="jwst-euclid__hero-stats">
@@ -230,7 +223,7 @@ export default function JwstEuclidPage() {
       </section>
 
       <Card className="jwst-euclid__control-card">
-        <CardHead title="Pick a field" sub="Choose by target, instrument, filters, and sky position. Archive identifiers stay behind the scenes." right={
+        <CardHead title="Pick a sky location" sub="Choose by target, camera, available JWST filters, and sky position. Archive products remain behind the scenes." right={
           <div className="jwst-euclid__control-actions">
             <Button size="sm" variant="primary" onClick={runCoverageScan} disabled={coverageJob.busy || fields.length === 0}>
               {coverageJob.busy ? "scanning Euclid…" : "scan Euclid coverage"}
@@ -275,7 +268,7 @@ export default function JwstEuclidPage() {
             </div>
             <div className="jwst-euclid__results-head">
               <span>{filtered.length.toLocaleString()} fields shown</span>
-              <span className="mono">30″ Euclid VIS reference cutout</span>
+              <span className="mono">one location · grouped JWST filters</span>
             </div>
             {filtered.length > 0 ? <div className="jwst-euclid__field-grid" role="listbox" aria-label="Available overlapping fields">
               {filtered.map((row) => {
@@ -296,7 +289,7 @@ export default function JwstEuclidPage() {
                     </Badge>
                   </span>
                   <span className="jwst-euclid__field-card-meta">
-                    <span>{instrumentName(row)}</span><span>{filterName(row)}</span>
+                    <span>{instrumentName(row)}</span><span>{row.jwst_product_count ?? 1} JWST bands</span>
                   </span>
                   <span className="jwst-euclid__field-card-coords">
                     {formatCoord(fieldRa(row), "N", "S")} · {formatCoord(fieldDec(row), "E", "W")}
@@ -309,21 +302,19 @@ export default function JwstEuclidPage() {
               <div>
                 <span className="eyebrow">selected field</span>
                 <strong>{targetName(selected)}</strong>
-                <span>{instrumentName(selected)} · {filterName(selected)} · {footprintName(selected)}</span>
+                <span>{instrumentName(selected)} · {selected.jwst_product_count ?? 1} JWST bands · {footprintName(selected)}</span>
                 <span className="jwst-euclid__selection-status">
                   {coverageLabel(selected)}{coverageStatus(selected) === "covered" && ` · ${asNumber(selected.euclid_coverage_tile_count) ?? 0} VIS tile${asNumber(selected.euclid_coverage_tile_count) === 1 ? "" : "s"}`}
                 </span>
                 <div className="jwst-euclid__selection-details">
-                  <span><b>JWST product</b>{selected.jwst_observation_id}</span>
-                  <span><b>detector</b>{detectorToken(selected)}</span>
-                  <span><b>exposure</b>{exposureName(selected.jwst_exposure_time_s)}</span>
-                  <span><b>proposal</b>{selected.jwst_proposal_id || "not listed"}</span>
-                  <span><b>Euclid product</b>{selected.euclid_file_name || selected.euclid_tile_index}</span>
+                  <span><b>JWST filters</b>{filterName(selected)}</span>
+                  <span><b>JWST bands</b>{selected.jwst_product_count ?? 1}</span>
+                  <span><b>Euclid</b>coverage checked at this location</span>
                 </div>
               </div>
               <div className="jwst-euclid__selection-actions">
                 <Button variant="primary" onClick={runDownload} disabled={!canDownload}>
-                  {pairJob.busy ? "preparing field…" : coverageStatus(selected) === "not_covered" ? "no Euclid coverage" : selected.available ? "refresh saved field" : "download field"}
+                  {pairJob.busy ? "downloading location…" : coverageStatus(selected) === "not_covered" ? "no Euclid coverage" : selected.available ? "refresh grouped field" : "download grouped field"}
                 </Button>
                 <Button variant="ghost" onClick={runInference} disabled={!selected.available || inferenceJob.busy}>
                   {inferenceJob.busy ? "running STARFULL…" : pair?.inference ? "refresh STARFULL" : "run STARFULL combiner"}
@@ -363,11 +354,11 @@ export default function JwstEuclidPage() {
             key={`${pair.field_id}:${pair.inference?.combiner_kind ?? "pending"}`}
             collection="jwst-euclid"
             params={{ field: pair.field_id }}
-            initialTiers={["lr", "jwst"]}
+            initialTiers={["lr", "jwst0"]}
           />
           <div className="jwst-euclid__meta">
             <Stat k="Euclid colour" v={pair.inference ? "VIS · Y_E · J_E · H_E, registered to VIS" : "VIS until STARFULL input is prepared"} />
-            <Stat k="JWST filter" v={`${pair.jwst_metadata?.filter || pair.jwst_metadata?.pupil || "native filter"} · single-filter false colour`} />
+            <Stat k="JWST native filters" v={`${pair.jwst_bands?.length ?? 1} separate native-WCS tier${(pair.jwst_bands?.length ?? 1) === 1 ? "" : "s"}`} />
             <Stat k="STARFULL" v={pair.inference?.combiner_label || "run on registered VIS + Y + J + H"} />
           </div>
         </section>

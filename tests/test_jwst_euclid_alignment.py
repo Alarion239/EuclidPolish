@@ -188,6 +188,29 @@ def test_overlap_rows_reads_cached_csv_and_marks_pairs(tmp_path, monkeypatch):
     assert jwst_euclid.overlap_rows()[0][0]["available"] is False
 
 
+def test_location_groups_collect_filters_at_one_sky_position(tmp_path, monkeypatch):
+    monkeypatch.setattr(Config, "DATA_DIR", str(tmp_path / "data"))
+    root = jwst_euclid.overlap_root()
+    root.mkdir(parents=True)
+    (root / "esa_partial.csv").write_text(
+        "euclid_tile_index,euclid_ra_deg,euclid_dec_deg,jwst_archive,jwst_observation_id,jwst_target_name,jwst_ra_deg,jwst_dec_deg,jwst_instrument\n"
+        "T123,10,20,esa,jw0001-o001_nircam_clear-f150w,Target,10.0,20.0,NIRCAM/IMAGE\n"
+        "T123,10,20,esa,jw0001-o002_nircam_clear-f150w,Target,10.0,20.0,NIRCAM/IMAGE\n"
+        "T123,10,20,esa,jw0001-o003_nircam_clear-f322w2,Target,10.00001,20.0,NIRCAM/IMAGE\n"
+        "T124,11,21,esa,jw0002-o001_nircam_clear-f200w,Elsewhere,11.0,21.0,NIRCAM/IMAGE\n",
+        encoding="utf-8",
+    )
+
+    groups, status = jwst_euclid.location_groups()
+
+    target = next(group for group in groups if group["jwst_target_name"] == "Target")
+    assert status["count"] == 2
+    assert status["product_count"] == 4
+    assert target["jwst_row_count"] == 3
+    assert target["jwst_product_count"] == 2
+    assert target["jwst_filters"] == "F150W, F322W2"
+
+
 def test_scan_euclid_coverage_caches_unique_field_centers(tmp_path, monkeypatch):
     monkeypatch.setattr(Config, "DATA_DIR", str(tmp_path / "data"))
     root = jwst_euclid.overlap_root()

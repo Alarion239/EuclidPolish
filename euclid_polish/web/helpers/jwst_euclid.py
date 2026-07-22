@@ -28,6 +28,7 @@ from euclid_polish.config import Config
 
 _SAFE = re.compile(r"[^A-Za-z0-9._-]+")
 _IMAGE_SUFFIXES = (".fits", ".fits.gz", ".fit", ".fit.gz")
+_JWST_FILTER = re.compile(r"(?:^|[-_])((?:f|F)\d{3,4}[a-zA-Z0-9]*)")
 _OVERLAP_FILENAMES = (
     "esa.csv",
     "mast.csv",
@@ -87,6 +88,31 @@ def field_id(archive: str, tile_index: str, observation_id: str, size_arcsec: fl
         return base
     digest = hashlib.sha256(base.encode("utf-8")).hexdigest()[:12]
     return f"{_safe(archive)}-{_safe(tile_index)}-{digest}-s{size_token}"
+
+
+def location_id(ra: float, dec: float, size_arcsec: float) -> str:
+    """Stable id for one sky location, irrespective of its JWST products."""
+    size_token = f"{size_arcsec:.1f}".rstrip("0").rstrip(".").replace(".", "p")
+    return f"location-ra{ra:.7f}-dec{dec:.7f}-s{size_token}".replace("+", "p")
+
+
+def jwst_filter_name(row: Mapping[str, Any]) -> str:
+    """Extract a human band name from discovery metadata or the product id."""
+    for value in (row.get("jwst_filters"), row.get("jwst_observation_id")):
+        text = _text(value)
+        match = _JWST_FILTER.search(text)
+        if match:
+            return match.group(1).upper()
+    return ""
+
+
+def jwst_header_filter(header: Mapping[str, Any], fallback: str = "JWST") -> str:
+    """Prefer the actual archive filter/pupil once a JWST FITS is downloaded."""
+    for value in (header.get("FILTER"), header.get("PUPIL")):
+        match = _JWST_FILTER.search(_text(value))
+        if match:
+            return match.group(1).upper()
+    return fallback
 
 
 def _jsonable(value: Any) -> Any:
@@ -294,6 +320,130 @@ def find_overlap_row(archive: str, tile_index: str, observation_id: str) -> dict
         ) == key),
         None,
     )
+
+
+def _angular_separation_arcsec(a: tuple[float, float], b: tuple[float, float]) -> float:
+    """Small-angle separation, sufficient for grouping duplicate pointings."""
+    ra0, dec0 = a
+    ra1, dec1 = b
+    return math.hypot(
+        (ra0 - ra1) * math.cos(math.radians((dec0 + dec1) / 2.0)), dec0 - dec1,
+    ) * 3600.0
+
+
+def _location_components(rows: list[dict[str, Any]], link_arcsec: float = 1.0) -> list[list[int]]:
+    """Connected components of duplicate JWST position rows within one arcsec."""
+    parents = list(range(len(rows)))
+
+    def root(index: int) -> int:
+        while parents[index] != index:
+            parents[index] = parents[parents[index]]
+            index = parents[index]
+        return index
+
+    def join(left: int, right: int) -> None:
+        left_root, right_root = root(left), root(right)
+        if left_root != right_root:
+            parents[right_root] = left_root
+
+    coordinates = [field_coordinates(row) for row in rows]
+    for index, coordinate in enumerate(coordinates):
+        if coordinate[0] is None or coordinate[1] is None:
+            continue
+        for other_index, other in enumerate(coordinates[:index]):
+            if other[0] is None or other[1] is None:
+                continue
+            if _angular_separation_arcsec(coordinate, other) <= link_arcsec:
+                join(index, other_index)
+    grouped: dict[int, list[int]] = {}
+    for index in range(len(rows)):
+        grouped.setdefault(root(index), []).append(index)
+    return list(grouped.values())
+
+
+def _location_products(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Choose one best calibrated JWST product for each filter at a location."""
+    raw_rows = [dict(raw) for raw in rows]
+    candidates: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for row in raw_rows:
+        band = jwst_filter_name(row)
+        if not band:
+            continue  # detector-only archive rows duplicate a named filter product
+        instrument = _text(row.get("jwst_instrument") or "JWST imaging")
+        candidates.setdefault((instrument, band), []).append(row)
+
+    # Some archive rows name a detector but omit the filter entirely.  Keep a
+    # location selectable rather than silently dropping it; the downloaded
+    # FITS header then supplies the real filter name in the saved manifest.
+    if not candidates and raw_rows:
+        fallback = raw_rows[0]
+        instrument = _text(fallback.get("jwst_instrument") or "JWST imaging")
+        candidates[(instrument, "JWST")] = raw_rows
+
+    def rank(row: Mapping[str, Any]) -> tuple[int, int, str]:
+        observation = _text(row.get("jwst_observation_id")).lower()
+        # ESA ``oNNN`` products are field mosaics; detector readouts are a
+        # fallback only when a mosaic is not in the discovery table.
+        return (
+            0 if re.search(r"(?:^|[-_])o\d+", observation) else 1,
+            -int(_number(row.get("jwst_exposure_time_s")) or 0),
+            observation,
+        )
+
+    selected = [min(options, key=rank) for options in candidates.values()]
+    return sorted(selected, key=lambda row: (
+        _text(row.get("jwst_instrument")), jwst_filter_name(row),
+        _text(row.get("jwst_observation_id")),
+    ))
+
+
+def location_groups() -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Collapse archive products into selectable sky locations and JWST bands."""
+    rows, status = overlap_rows()
+    groups: list[dict[str, Any]] = []
+    for component in _location_components(rows):
+        source_rows = [rows[index] for index in component]
+        products = _location_products(source_rows)
+        if not products:
+            continue
+        representative = products[0]
+        ra, dec = field_coordinates(representative)
+        if ra is None or dec is None:
+            continue
+        identifier = location_id(ra, dec, 30.0)
+        manifest_path = pair_root() / identifier / "manifest.json"
+        available = False
+        if manifest_path.exists():
+            try:
+                cached_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                cached_manifest = None
+            available = isinstance(cached_manifest, dict) and _cached_pair_is_usable(
+                manifest_path.parent, cached_manifest,
+            )
+        group = dict(representative)
+        group.update({
+            "field_id": identifier,
+            "jwst_product_count": len(products),
+            "jwst_row_count": len(source_rows),
+            "jwst_filters": ", ".join(jwst_filter_name(product) for product in products),
+            "jwst_products": products,
+            "available": available,
+        })
+        groups.append(group)
+    groups.sort(key=lambda row: (
+        not row.get("available", False),
+        row.get("jwst_target_name", ""), row["field_id"],
+    ))
+    grouped_status = dict(status)
+    grouped_status["product_count"] = len(rows)
+    grouped_status["count"] = len(groups)
+    return groups, grouped_status
+
+
+def find_location_group(identifier: str) -> dict[str, Any] | None:
+    groups, _ = location_groups()
+    return next((group for group in groups if group.get("field_id") == identifier), None)
 
 
 def _table_rows(table: Iterable[Any]) -> list[dict[str, Any]]:
@@ -861,17 +1011,23 @@ def download_and_align_pair(
     size_arcsec: float = 30.0,
     progress: Any | None = None,
 ) -> dict[str, Any]:
-    """Download and register one Euclid/JWST field as an atomic cache entry."""
-    archive = _text(row.get("jwst_archive") or "esa").lower()
+    """Download one Euclid field and all selected JWST filters atomically."""
+    product_rows = [dict(product) for product in row.get("jwst_products", [])]
+    if not product_rows:
+        product_rows = [dict(row)]
+    primary_row = product_rows[0]
+    archive = _text(primary_row.get("jwst_archive") or "esa").lower()
     tile_index = _text(row.get("euclid_tile_index"))
-    observation_id = _text(row.get("jwst_observation_id") or row.get("jwst_obsid"))
+    observation_id = _text(primary_row.get("jwst_observation_id") or primary_row.get("jwst_obsid"))
     ra, dec = field_coordinates(row)
     if not tile_index or not observation_id or ra is None or dec is None:
         raise ValueError("pair row needs Euclid tile, JWST observation id, and Euclid coordinates")
     if not 1.0 <= float(size_arcsec) <= 120.0:
         raise ValueError("size_arcsec must be between 1 and 120 arcsec")
 
-    identifier = field_id(archive, tile_index, observation_id, float(size_arcsec))
+    identifier = _text(row.get("field_id")) or field_id(
+        archive, tile_index, observation_id, float(size_arcsec),
+    )
     final_dir = pair_root() / identifier
     manifest_path = final_dir / "manifest.json"
     if manifest_path.exists():
@@ -890,7 +1046,7 @@ def download_and_align_pair(
     try:
         temporary_dir.mkdir(parents=True, exist_ok=True)
         if progress:
-            progress(1, 5, "resolving Euclid VIS tile")
+            progress(1, len(product_rows) + 3, "checking Euclid VIS coverage")
         tile = euclid_tile(tile_index, row)
         file_path = euclid_product_path(tile)
         if not file_path:
@@ -904,10 +1060,14 @@ def download_and_align_pair(
         from astroquery.esa.euclid import Euclid
 
         if progress:
-            progress(2, 5, "downloading Euclid VIS cutout")
+            progress(2, len(product_rows) + 3, "downloading Euclid VIS cutout")
         coordinate = SkyCoord(ra=ra, dec=dec, unit="deg", frame="icrs")
         radius = (float(size_arcsec) / 2.0) * u.arcsec
-        candidate_tiles: list[dict[str, Any]] = [dict(tile)]
+        covering_tiles = euclid_tiles_covering(ra, dec, strict=True)
+        if not covering_tiles:
+            raise RuntimeError("Euclid VIS has no archive footprint covering this JWST location")
+        candidate_tiles: list[dict[str, Any]] = [dict(candidate) for candidate in covering_tiles]
+        candidate_tiles.append(dict(tile))
         seen_paths = {file_path}
         alternatives_loaded = False
         discovery_errors: list[str] = []
@@ -920,7 +1080,10 @@ def download_and_align_pair(
             candidate_path = euclid_product_path(candidate_tile)
             candidate_tile_index = _text(candidate_tile.get("tile_index")) or tile_index
             if candidate_index > 0 and progress:
-                progress(2, 5, f"trying alternate Euclid VIS product {candidate_index + 1}")
+                progress(
+                    2, len(product_rows) + 3,
+                    f"trying alternate Euclid VIS product {candidate_index + 1}",
+                )
             try:
                 if not candidate_path:
                     raise RuntimeError("candidate has no downloadable file_path")
@@ -986,43 +1149,83 @@ def download_and_align_pair(
 
         tile, file_path, euclid_data, euclid_header, euclid_wcs, euclid_hdu = selected
 
-        jwst_download_path = temporary_dir / "jwst_download.fits"
-        if progress:
-            progress(3, 5, f"downloading JWST {archive.upper()} image")
-        product_name = _download_jwst(archive, observation_id, jwst_download_path)
-
-        jwst_data, jwst_header, jwst_wcs, jwst_hdu = _find_image(jwst_download_path)
-        if progress:
-            progress(4, 5, "cropping JWST on its native pixel grid")
-        jwst_native, jwst_native_wcs = _native_sky_cutout(
-            jwst_data, jwst_wcs, coordinate, float(size_arcsec),
-        )
-        if not _has_signal(jwst_native):
-            raise RuntimeError("JWST native-grid cutout contains no non-zero pixels at the field center")
-        jwst_native_header = _primary_image_header(
-            jwst_header, jwst_native_wcs, product_name,
-            "JWST native-grid cutout; no resampling onto the Euclid grid",
-        )
-        jwst_path = temporary_dir / "jwst_native.fits"
-        fits.PrimaryHDU(data=jwst_native, header=jwst_native_header).writeto(
-            jwst_path, overwrite=True, output_verify="silentfix",
-        )
+        jwst_bands: list[dict[str, Any]] = []
+        jwst_errors: list[str] = []
+        primary_data = primary_header = primary_wcs = primary_product = None
+        primary_hdu = "PRIMARY"
+        for product_index, product_row in enumerate(product_rows, start=1):
+            product_archive = _text(product_row.get("jwst_archive") or "esa").lower()
+            product_observation = _text(
+                product_row.get("jwst_observation_id") or product_row.get("jwst_obsid"),
+            )
+            band = jwst_filter_name(product_row) or f"JWST{product_index}"
+            band_key = _safe(band.lower())
+            if progress:
+                progress(
+                    product_index + 2, len(product_rows) + 3,
+                    f"downloading JWST {band} ({product_index}/{len(product_rows)})",
+                )
+            try:
+                download_path = temporary_dir / f"jwst_download_{band_key}.fits"
+                product_name = _download_jwst(product_archive, product_observation, download_path)
+                jwst_data, jwst_header, jwst_wcs, jwst_hdu = _find_image(download_path)
+                band = jwst_header_filter(jwst_header, band)
+                band_key = _safe(band.lower())
+                jwst_native, jwst_native_wcs = _native_sky_cutout(
+                    jwst_data, jwst_wcs, coordinate, float(size_arcsec),
+                )
+                if not _has_signal(jwst_native):
+                    raise RuntimeError("native-grid cutout has no non-zero pixels at this location")
+                jwst_native_header = _primary_image_header(
+                    jwst_header, jwst_native_wcs, product_name,
+                    "JWST native-grid cutout; no resampling onto the Euclid grid",
+                )
+                relative_path = "jwst_native.fits" if not jwst_bands else f"jwst/{band_key}.fits"
+                output_path = temporary_dir / relative_path
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                fits.PrimaryHDU(data=jwst_native, header=jwst_native_header).writeto(
+                    output_path, overwrite=True, output_verify="silentfix",
+                )
+                metadata = _pixel_metadata(jwst_native, jwst_native_wcs, jwst_native_header)
+                jwst_bands.append({
+                    "key": f"jwst{len(jwst_bands)}",
+                    "filter": band,
+                    "archive": product_archive,
+                    "observation_id": product_observation,
+                    "product": product_name,
+                    "instrument": _text(product_row.get("jwst_instrument")) or "JWST imaging",
+                    "file": relative_path,
+                    "metadata": metadata,
+                    "native_is_field_cutout": True,
+                })
+                if primary_data is None:
+                    primary_data = jwst_native
+                    primary_header = jwst_native_header
+                    primary_wcs = jwst_native_wcs
+                    primary_product, primary_hdu = product_name, jwst_hdu
+            except Exception as exc:  # noqa: BLE001 - preserve other filters when one product is unavailable
+                jwst_errors.append(f"{band}: {exc}")
+        if not jwst_bands or primary_data is None or primary_header is None or primary_wcs is None:
+            detail = "; ".join(jwst_errors[:3]) or "no usable JWST science product"
+            raise RuntimeError(f"no JWST filter could be downloaded for this location: {detail}")
 
         euclid_png = temporary_dir / "euclid_vis.png"
         jwst_png = temporary_dir / "jwst_native.png"
         euclid_display = _write_display_png(euclid_data, euclid_png, (0.40, 0.76, 1.0))
-        jwst_display = _write_display_png(jwst_native, jwst_png, (1.0, 0.69, 0.28))
+        jwst_display = _write_display_png(primary_data, jwst_png, (1.0, 0.69, 0.28))
         if progress:
-            progress(5, 5, "publishing complete paired field")
+            progress(len(product_rows) + 3, len(product_rows) + 3, "publishing complete location")
 
         manifest = {
-            "version": 2,
+            "version": 3,
             "field_id": identifier,
             "jwst_archive": archive,
             "jwst_observation_id": observation_id,
-            "jwst_product": product_name,
-            "jwst_instrument": _text(row.get("jwst_instrument")) or "JWST imaging",
-            "jwst_filters": _text(row.get("jwst_filters")),
+            "jwst_product": primary_product,
+            "jwst_instrument": _text(primary_row.get("jwst_instrument")) or "JWST imaging",
+            "jwst_filters": ", ".join(entry["filter"] for entry in jwst_bands),
+            "jwst_bands": jwst_bands,
+            "jwst_download_errors": jwst_errors,
             "euclid_tile_index": tile_index,
             "euclid_file_name": _text(tile.get("file_name") or row.get("euclid_file_name")),
             "euclid_product": _text(tile.get("file_name") or row.get("euclid_file_name")),
@@ -1033,13 +1236,13 @@ def download_and_align_pair(
             "shape": list(euclid_data.shape),
             "jwst_native_is_field_cutout": True,
             "euclid_hdu": euclid_hdu,
-            "jwst_hdu": jwst_hdu,
+            "jwst_hdu": primary_hdu,
             "euclid_metadata": _pixel_metadata(euclid_data, euclid_wcs, euclid_header),
-            "jwst_metadata": _pixel_metadata(jwst_native, jwst_native_wcs, jwst_native_header),
+            "jwst_metadata": _pixel_metadata(primary_data, primary_wcs, primary_header),
             "alignment": {
                 "method": "native WCS cutout",
                 "target_grid": "each instrument native pixel grid",
-                "source_units": _text(jwst_header.get("BUNIT")) or "archive header not specified",
+                "source_units": _text(primary_header.get("BUNIT")) or "archive header not specified",
                 "target_units": _text(euclid_header.get("BUNIT")) or "archive header not specified",
             },
             "display": {"euclid": euclid_display, "jwst": jwst_display},
@@ -1049,7 +1252,8 @@ def download_and_align_pair(
                 "euclid_png": "euclid_vis.png",
                 "jwst_png": "jwst_native.png",
             },
-            "source_row": _jsonable(dict(row)),
+            "source_row": _jsonable(dict(primary_row)),
+            "source_products": _jsonable(product_rows),
         }
         _write_json(temporary_dir / "manifest.json", manifest)
         final_dir.parent.mkdir(parents=True, exist_ok=True)
@@ -1241,6 +1445,10 @@ __all__ = [
     "euclid_tile",
     "field_id",
     "find_overlap_row",
+    "find_location_group",
+    "jwst_filter_name",
+    "location_groups",
+    "location_id",
     "overlap_rows",
     "overlap_root",
     "pair_root",

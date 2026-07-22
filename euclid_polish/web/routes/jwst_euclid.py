@@ -12,8 +12,8 @@ from euclid_polish.web.helpers.jwst_euclid import (
     _cached_pair_is_usable,
     download_and_align_pair,
     enrich_manifest_metadata,
-    field_id,
-    find_overlap_row,
+    find_location_group,
+    location_groups,
     overlap_rows,
     pair_root,
     run_starfull_pair_inference,
@@ -58,7 +58,7 @@ def _asset_path(identifier: str, filename: str) -> Path | None:
 def register(app):
     @app.get("/api/jwst-euclid/fields")
     def api_jwst_euclid_fields():
-        rows, status = overlap_rows()
+        rows, status = location_groups()
         return jsonify({"fields": rows, "status": status})
 
     @app.get("/api/jwst-euclid/field.json")
@@ -71,28 +71,23 @@ def register(app):
 
     @app.post("/api/jwst-euclid/download")
     def api_jwst_euclid_download():
-        archive = request.form.get("jwst_archive", "esa").strip().lower()
-        tile_index = request.form.get("euclid_tile_index", "").strip()
-        observation_id = request.form.get("jwst_observation_id", "").strip()
+        identifier = request.form.get("field_id", "").strip()
         try:
             size_arcsec = float(request.form.get("size_arcsec", "30"))
         except ValueError:
             return jsonify({"error": "size_arcsec must be a number"}), 400
-        if archive not in {"esa", "mast"}:
-            return jsonify({"error": "jwst_archive must be esa or mast"}), 400
-        if not tile_index or len(tile_index) > 120 or not observation_id or len(observation_id) > 180:
-            return jsonify({"error": "a Euclid tile and JWST observation id are required"}), 400
+        if not _SAFE_ID.fullmatch(identifier):
+            return jsonify({"error": "select a sky location from the field list"}), 400
         if not 1.0 <= size_arcsec <= 120.0:
             return jsonify({"error": "size_arcsec must be between 1 and 120 arcsec"}), 400
 
-        row = find_overlap_row(archive, tile_index, observation_id)
+        row = find_location_group(identifier)
         if row is None:
             return jsonify({
-                "error": "select a field from the cached overlap table before downloading",
+                "error": "select a sky location from the cached field list before downloading",
             }), 400
-        identifier = field_id(archive, tile_index, observation_id, size_arcsec)
         job_id = REGISTRY.spawn(
-            label=f"download + align JWST × Euclid ({tile_index} / {observation_id})",
+            label=f"download JWST bands + Euclid ({row.get('jwst_target_name') or identifier})",
             target=lambda cap: download_and_align_pair(
                 row,
                 size_arcsec=size_arcsec,
