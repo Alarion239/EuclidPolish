@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useResource } from "../hooks";
 import { JobProgressView, useJob } from "../jobs";
-import { Badge, Button, Card, CardBody, CardHead, Empty, Field, Input, Page, PageHead, Select, Spinner, Stat } from "../ui";
+import { Badge, Button, Card, CardBody, CardHead, Empty, Field, Input, Page, PageHead, Segmented, Select, Spinner, Stat } from "../ui";
 import "./jwst-euclid.css";
 
 type FieldRow = {
@@ -29,6 +29,8 @@ type Manifest = {
   jwst_product: string;
   euclid_tile_index: string;
   target_name?: string;
+  jwst_instrument?: string;
+  jwst_filters?: string;
   ra_deg: number;
   dec_deg: number;
   size_arcsec: number;
@@ -43,46 +45,49 @@ const formatCoord = (value: number | undefined, positive: string, negative: stri
   return `${Math.abs(value).toFixed(5)}° ${value >= 0 ? positive : negative}`;
 };
 
-function FieldOption({ row }: { row: FieldRow }) {
-  const source = row.jwst_target_name || row.jwst_observation_id;
-  const instrument = row.jwst_instrument?.split("/")[0] || "JWST";
-  return <>{source} · {instrument} · Euclid {row.euclid_tile_index}{row.available ? " · cached" : ""}</>;
-}
+const targetName = (row: FieldRow) => row.jwst_target_name?.trim() || "Unnamed JWST field";
+const instrumentName = (row: FieldRow) => row.jwst_instrument?.split("/")[0]?.trim() || "JWST imaging";
+const filterName = (row: FieldRow) => row.jwst_filters?.trim() || "filter not listed";
+const footprintName = (row: FieldRow) => row.footprint_status === "exact_intersection" ? "footprints intersect" : "nearby candidate";
+type FieldView = "all" | "exact" | "saved";
 
 export default function JwstEuclidPage() {
   const index = useResource<FieldIndex>("/api/jwst-euclid/fields", [], { ttl: 60_000 });
   const [selectedId, setSelectedId] = useState("");
   const [search, setSearch] = useState("");
-  const [archive, setArchive] = useState("esa");
+  const [instrument, setInstrument] = useState("all");
+  const [view, setView] = useState<FieldView>("all");
   const pairJob = useJob();
 
   const fields = index.data?.fields ?? [];
+  const instruments = useMemo(() => Array.from(new Set(fields.map(instrumentName))).sort(), [fields]);
   const filtered = useMemo(() => {
     const query = search.trim().toLowerCase();
-    if (!query) return fields.slice(0, 500);
-    return fields.filter((row) => [
-      row.jwst_target_name, row.jwst_observation_id, row.jwst_instrument,
-      row.jwst_filters, row.euclid_tile_index,
-    ].some((value) => value?.toLowerCase().includes(query))).slice(0, 500);
-  }, [fields, search]);
-  const selected = fields.find((row) => row.field_id === selectedId) ?? filtered[0] ?? null;
+    return fields.filter((row) => {
+      const searchable = [targetName(row), instrumentName(row), filterName(row),
+        row.euclid_ra_deg?.toFixed(4), row.euclid_dec_deg?.toFixed(4)].join(" ").toLowerCase();
+      const matchesSearch = !query || searchable.includes(query);
+      const matchesInstrument = instrument === "all" || instrumentName(row) === instrument;
+      const matchesView = view === "all"
+        || (view === "exact" && row.footprint_status === "exact_intersection")
+        || (view === "saved" && row.available);
+      return matchesSearch && matchesInstrument && matchesView;
+    }).slice(0, 500);
+  }, [fields, instrument, search, view]);
+  const selected = filtered.find((row) => row.field_id === selectedId) ?? filtered[0] ?? null;
   const effectiveId = selected?.field_id ?? "";
   const manifest = useResource<Manifest>(
     effectiveId && selected?.available ? `/api/jwst-euclid/field.json?id=${encodeURIComponent(effectiveId)}` : null,
   );
 
   useEffect(() => {
-    if (!selectedId && filtered[0]) setSelectedId(filtered[0].field_id);
+    if (!filtered.some((row) => row.field_id === selectedId)) setSelectedId(filtered[0]?.field_id ?? "");
   }, [filtered, selectedId]);
-
-  useEffect(() => {
-    if (selected?.jwst_archive) setArchive(selected.jwst_archive);
-  }, [selected?.field_id, selected?.jwst_archive]);
 
   const runDownload = () => {
     if (!selected) return;
     void pairJob.run("/api/jwst-euclid/download", {
-      jwst_archive: archive,
+      jwst_archive: selected.jwst_archive,
       euclid_tile_index: selected.euclid_tile_index,
       jwst_observation_id: selected.jwst_observation_id,
       size_arcsec: 30,
@@ -122,13 +127,13 @@ export default function JwstEuclidPage() {
           </p>
         </div>
         <div className="jwst-euclid__hero-stats">
-          <Stat k="candidate pairs" v={sourceStatus?.count ?? "—"} />
-          <Stat k="cached pairs" v={fields.filter((row) => row.available).length} />
+          <Stat k="fields to browse" v={sourceStatus?.count ?? "—"} />
+          <Stat k="saved comparisons" v={fields.filter((row) => row.available).length} />
         </div>
       </section>
 
       <Card className="jwst-euclid__control-card">
-        <CardHead title="Choose an overlap" sub="Discovery rows are cached locally; downloading is explicit and cache-first." right={
+        <CardHead title="Pick a field" sub="Choose by target, instrument, filters, and sky position. Archive identifiers stay behind the scenes." right={
           <Button size="sm" variant="ghost" onClick={index.reload}>↻ refresh index</Button>
         } />
         <CardBody>
@@ -137,33 +142,70 @@ export default function JwstEuclidPage() {
               <span>No cached overlap table is available. Run <code>scripts/find_jwst_euclid_overlap.py --jwst-archive esa</code> first.</span>
             </Empty>
           ) : (
-            <div className="jwst-euclid__controls">
-              <Field label="field">
-                <Select value={effectiveId} onChange={setSelectedId} options={filtered.map((row) => ({
-                  value: row.field_id,
-                  label: `${row.jwst_target_name || row.jwst_observation_id} · ${row.jwst_instrument?.split("/")[0] || "JWST"} · ${row.euclid_tile_index}${row.available ? " · cached" : ""}`,
-                }))} />
+            <>
+            <div className="jwst-euclid__browse-bar">
+              <Field label="search fields">
+                <Input value={search} onChange={setSearch} placeholder="target name or coordinates…" />
               </Field>
-              <Field label="filter list">
-                <Input value={search} onChange={setSearch} placeholder="target, observation, tile…" />
-              </Field>
-              <div className="jwst-euclid__size-note"><span>cutout side</span><strong>30″</strong><small>Euclid VIS grid</small></div>
-              <Field label="JWST archive">
-                <Select value={archive} onChange={setArchive} options={[
-                  { value: "esa", label: "ESA archive" },
-                  { value: "mast", label: "MAST" },
+              <Field label="instrument">
+                <Select value={instrument} onChange={setInstrument} options={[
+                  { value: "all", label: "All instruments" },
+                  ...instruments.map((name) => ({ value: name, label: name })),
                 ]} />
               </Field>
-              <Button variant="primary" onClick={runDownload} disabled={!canDownload}>
-                {selected?.available ? "use cached pair" : "download + align"}
-              </Button>
+              <div className="jwst-euclid__view-filter">
+                <span>show</span>
+                <Segmented<FieldView> value={view} onChange={setView} options={[
+                  { value: "all", label: "All" },
+                  { value: "exact", label: "Footprint matches" },
+                  { value: "saved", label: "Saved" },
+                ]} />
+              </div>
             </div>
+            <div className="jwst-euclid__results-head">
+              <span>{filtered.length.toLocaleString()} fields shown</span>
+              <span className="mono">30″ Euclid VIS reference cutout</span>
+            </div>
+            {filtered.length > 0 ? <div className="jwst-euclid__field-grid" role="listbox" aria-label="Available overlapping fields">
+              {filtered.map((row) => {
+                const isSelected = selected?.field_id === row.field_id;
+                return <button
+                  key={row.field_id}
+                  type="button"
+                  role="option"
+                  aria-selected={isSelected}
+                  className="jwst-euclid__field-card"
+                  data-selected={isSelected}
+                  onClick={() => setSelectedId(row.field_id)}
+                >
+                  <span className="jwst-euclid__field-card-head">
+                    <strong>{targetName(row)}</strong>
+                    <Badge tone={row.available ? "good" : row.footprint_status === "exact_intersection" ? "good" : "warn"}>
+                      {row.available ? "saved" : row.footprint_status === "exact_intersection" ? "matched" : "candidate"}
+                    </Badge>
+                  </span>
+                  <span className="jwst-euclid__field-card-meta">
+                    <span>{instrumentName(row)}</span><span>{filterName(row)}</span>
+                  </span>
+                  <span className="jwst-euclid__field-card-coords">
+                    {formatCoord(row.euclid_ra_deg, "N", "S")} · {formatCoord(row.euclid_dec_deg, "E", "W")}
+                  </span>
+                  <span className="jwst-euclid__field-card-action">{isSelected ? "selected" : "choose field"} <span>→</span></span>
+                </button>;
+              })}
+            </div> : <Empty>No fields match these choices. Clear the search or choose a broader instrument/footprint view.</Empty>}
+            {selected && <div className="jwst-euclid__selection">
+              <div>
+                <span className="eyebrow">selected field</span>
+                <strong>{targetName(selected)}</strong>
+                <span>{instrumentName(selected)} · {filterName(selected)} · {footprintName(selected)}</span>
+              </div>
+              <Button variant="primary" onClick={runDownload} disabled={!canDownload}>
+                {pairJob.busy ? "preparing field…" : selected.available ? "open saved comparison" : "download + align"}
+              </Button>
+            </div>}
+            </>
           )}
-          {selected && <div className="jwst-euclid__selection mono">
-            <span><FieldOption row={selected} /></span>
-            <span>{formatCoord(selected.euclid_ra_deg, "N", "S")} · {formatCoord(selected.euclid_dec_deg, "E", "W")}</span>
-            <span>{selected.footprint_status || "candidate"}</span>
-          </div>}
           <JobProgressView job={pairJob.job} error={pairJob.error} />
         </CardBody>
       </Card>
@@ -186,19 +228,19 @@ export default function JwstEuclidPage() {
           <div className="jwst-euclid__pair">
             <figure className="jwst-euclid__frame jwst-euclid__frame--euclid">
               <div className="jwst-euclid__frame-label"><span>EUCLID</span><small>VIS · reference grid</small></div>
-              <img src={`/api/jwst-euclid/field/${pair.field_id}/euclid_png`} alt={`Euclid VIS view of ${pair.target_name || pair.field_id}`} />
+              <img src={`/api/jwst-euclid/field/${pair.field_id}/euclid_png`} alt={`Euclid VIS view of ${pair.target_name || "selected field"}`} />
               <figcaption>native archive cutout · {pair.alignment.target_units}</figcaption>
             </figure>
             <div className="jwst-euclid__seam" aria-hidden><span>same WCS</span></div>
             <figure className="jwst-euclid__frame jwst-euclid__frame--jwst">
-              <div className="jwst-euclid__frame-label"><span>JWST</span><small>{pair.jwst_product}</small></div>
-              <img src={`/api/jwst-euclid/field/${pair.field_id}/jwst_png`} alt={`JWST aligned view of ${pair.target_name || pair.field_id}`} />
+              <div className="jwst-euclid__frame-label"><span>JWST</span><small>{pair.jwst_instrument || "imaging"} · {pair.jwst_filters || "filter not listed"}</small></div>
+              <img src={`/api/jwst-euclid/field/${pair.field_id}/jwst_png`} alt={`JWST aligned view of ${pair.target_name || "selected field"}`} />
               <figcaption>resampled to Euclid VIS pixels · {pair.alignment.source_units}</figcaption>
             </figure>
           </div>
           <div className="jwst-euclid__meta">
-            <Stat k="Euclid tile" v={pair.euclid_tile_index} />
-            <Stat k="JWST observation" v={pair.jwst_observation_id} />
+            <Stat k="Euclid view" v="VIS reference grid" />
+            <Stat k="JWST view" v={`${pair.jwst_instrument || "imaging"} · ${pair.jwst_filters || "filter not listed"}`} />
             <Stat k="remap" v={pair.alignment.method} />
           </div>
         </section>

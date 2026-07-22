@@ -465,6 +465,8 @@ def download_and_align_pair(
             "jwst_archive": archive,
             "jwst_observation_id": observation_id,
             "jwst_product": product_name,
+            "jwst_instrument": _text(row.get("jwst_instrument")) or "JWST imaging",
+            "jwst_filters": _text(row.get("jwst_filters")),
             "euclid_tile_index": tile_index,
             "euclid_file_name": _text(tile.get("file_name") or row.get("euclid_file_name")),
             "target_name": _text(row.get("jwst_target_name")),
