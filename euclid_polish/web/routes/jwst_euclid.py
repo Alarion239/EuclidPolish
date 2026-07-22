@@ -9,6 +9,7 @@ from pathlib import Path
 from flask import jsonify, request, send_file
 
 from euclid_polish.web.helpers.jwst_euclid import (
+    _cached_pair_is_usable,
     download_and_align_pair,
     field_id,
     find_overlap_row,
@@ -29,7 +30,9 @@ def _manifest(identifier: str) -> dict | None:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
-    return payload if isinstance(payload, dict) else None
+    if not isinstance(payload, dict):
+        return None
+    return payload if _cached_pair_is_usable(pair_root() / identifier, payload) else None
 
 
 def _asset_path(identifier: str, filename: str) -> Path | None:
