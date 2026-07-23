@@ -400,10 +400,28 @@ class EuclidCatalog:
             return {'downloaded': 0, 'valid': valid, 'corrupted': corrupted,
                     'failed': failed, 'cutout_size': cutout_size, 'band': band}
 
-        # Resolve every object → mosaic tile in ONE ADQL query.
-        print(f"  Resolving mosaic tiles for {len(needing)} stars...")
-        mosaic_lookup = resolve_mosaics(needing, config, relogin=self.relogin)
-        unmatched_ids = {o.id for o in needing if o.id not in mosaic_lookup}
+        # Recovered/orphaned catalog rows can lack usable WCS coordinates.  Do
+        # not let one such row abort SkyCoord matching for the entire band;
+        # record it as failed for this (band, size) and resolve the rest.
+        invalid_coord_objects = [
+            o for o in needing
+            if _finite_float(o.ra) is None or _finite_float(o.dec) is None
+        ]
+        resolvable = [
+            o for o in needing
+            if _finite_float(o.ra) is not None and _finite_float(o.dec) is not None
+        ]
+        if invalid_coord_objects:
+            print(f"  ⚠️  {len(invalid_coord_objects)} stars have non-finite "
+                  f"RA/Dec — skipping and marking failed for {band} "
+                  f"size {cutout_size}")
+            for o in invalid_coord_objects:
+                o.set_download_failed(cutout_size, band=band)
+
+        # Resolve every usable object → mosaic tile in ONE ADQL query.
+        print(f"  Resolving mosaic tiles for {len(resolvable)} stars...")
+        mosaic_lookup = resolve_mosaics(resolvable, config, relogin=self.relogin)
+        unmatched_ids = {o.id for o in resolvable if o.id not in mosaic_lookup}
         if unmatched_ids:
             print(f"  ⚠️  {len(unmatched_ids)} stars not covered by any "
                   f"{band} tile — marking failed")
@@ -475,6 +493,8 @@ class EuclidCatalog:
             'failed': final_failed,
             'rejected_ids': rejected_ids,
             'unmatched_ids': sorted(unmatched_ids),
+            'invalid_coordinate_ids': sorted(
+                o.id for o in invalid_coord_objects if o.id is not None),
             'cutout_size': cutout_size,
             'band': band,
         }

@@ -13,6 +13,8 @@ from __future__ import annotations
 import os
 from unittest.mock import patch
 
+import numpy as np
+
 from euclid_polish.catalog.catalog_object import CatalogObject
 from euclid_polish.catalog.client import EuclidCatalog
 from euclid_polish.catalog.downloader import DownloadConfig
@@ -95,3 +97,32 @@ def test_no_retry_takes_early_return_without_resolving(tmp_path, monkeypatch):
         cat.download_cutouts(objects, output_dir, _cfg(),
                              show_progress=False, retry_failed=False)
     assert called["resolve"] is False   # never resolved — all stayed failed
+
+
+def test_nonfinite_coordinates_are_skipped_without_aborting_band(tmp_path):
+    output_dir = str(tmp_path)
+    objects = [
+        CatalogObject(ra=150.0, dec=2.0, id=0, magnitude=18.0),
+        CatalogObject(ra=np.nan, dec=2.1, id=1, magnitude=18.0),
+        CatalogObject(ra=150.2, dec=np.inf, id=2, magnitude=18.0),
+    ]
+    catalog_path = os.path.join(output_dir, Config.CATALOG_FILE)
+    CatalogObject.write(objects, catalog_path)
+    cat = EuclidCatalog._unauthenticated()
+
+    seen_ids = []
+
+    def fake_resolve(objs, config, *, relogin):
+        seen_ids.extend(o.id for o in objs)
+        return {}                       # valid row is simply uncovered
+
+    with patch("euclid_polish.catalog.client.resolve_mosaics", fake_resolve):
+        result = cat.download_cutouts(
+            objects, output_dir, _cfg(), show_progress=False)
+
+    assert seen_ids == [0]              # NaN/Inf rows never reach SkyCoord
+    assert result["downloaded"] == 0
+    assert result["failed"] == 3
+    assert result["invalid_coordinate_ids"] == [1, 2]
+    reloaded = CatalogObject.read(catalog_path)
+    assert all(o.is_download_failed(_SIZE, band="VIS") for o in reloaded)
