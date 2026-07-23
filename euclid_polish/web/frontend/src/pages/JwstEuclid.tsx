@@ -377,7 +377,7 @@ export default function JwstEuclidPage() {
             <Stat k="Euclid tier" v="LR · VIS reference" />
             <Stat k="STARFULL tier" v="SR · appears after the active Euclid field is run" />
             <Stat k="JWST tier" v="colour, grayscale native band, or approximate temperature" />
-            <Stat k="display stretch" v="each panel p99.5 → same white point; not photometric" />
+            <Stat k="display stretch" v="one p99.5 scale per panel; native JWST band ratios preserved" />
           </div>
         </section>
       ) : (

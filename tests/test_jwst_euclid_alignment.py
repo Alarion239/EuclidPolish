@@ -81,6 +81,28 @@ def test_jwst_temperature_uses_filter_name_as_display_only_pivot():
     assert viewer_data._jwst_approx_color_band({"filter": "CLEAR"}) is None
 
 
+def test_jwst_colour_and_temperature_preserve_native_band_brightness(monkeypatch):
+    entries = [{"filter": "F100W"}, {"filter": "F200W"}, {"filter": "F300M"}]
+    planes = [
+        np.full((2, 2), 2.0, dtype=np.float32),
+        np.full((2, 2), 10.0, dtype=np.float32),
+        np.full((2, 2), 50.0, dtype=np.float32),
+    ]
+    monkeypatch.setattr(
+        viewer_data,
+        "_jwst_aligned_planes",
+        lambda _manifest, _directory: (entries, planes, "F100W", 0.03),
+    )
+
+    colour, colour_meta = viewer_data._jwst_colour_cube({}, "")
+    temperature, temperature_meta = viewer_data._jwst_temperature_cube({}, "")
+
+    np.testing.assert_array_equal(colour[0, 0], [50.0, 10.0, 2.0])
+    np.testing.assert_array_equal(temperature[0, 0], [2.0, 10.0, 50.0])
+    assert colour_meta["display_scale"] == 60.0
+    assert temperature_meta["display_scale"] == 60.0
+
+
 def test_readable_fits_rejects_empty_archive_placeholder(tmp_path):
     from astropy.io import fits
 

@@ -1419,8 +1419,9 @@ def _jwst_colour_cube(manifest: dict[str, Any], directory: str) -> tuple[np.ndar
 
     Native JWST files remain untouched in the cache.  For the viewer only,
     every usable filter is sampled onto the finest saved JWST WCS, then split
-    by wavelength into blue/green/red groups.  This makes camera/filter choice
-    a colour decision rather than a second navigation axis.
+    by wavelength into blue/green/red groups.  The aligned native brightnesses
+    are combined directly: one shared display stretch is applied to the final
+    cube, so inter-filter brightness ratios remain intact.
     """
     aligned_entries, aligned_planes, reference_filter, reference_scale = _jwst_aligned_planes(
         manifest, directory,
@@ -1435,10 +1436,7 @@ def _jwst_colour_cube(manifest: dict[str, Any], directory: str) -> tuple[np.ndar
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", RuntimeWarning)
             plane = np.nanmedian(stack, axis=0)
-        finite = plane[np.isfinite(plane)]
-        positive = finite[finite > 0]
-        scale = float(np.nanpercentile(positive, 99.5)) if positive.size else 1.0
-        return np.clip(np.nan_to_num(plane / max(scale, 1e-12)), 0.0, 4.0).astype(np.float32)
+        return np.nan_to_num(plane, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
 
     blue, green, red = channel(blue_indices), channel(green_indices), channel(red_indices)
     cube = np.stack([red, green, blue], axis=-1)
@@ -1460,7 +1458,7 @@ def _jwst_colour_cube(manifest: dict[str, Any], directory: str) -> tuple[np.ndar
 
 
 def _jwst_temperature_cube(manifest: dict[str, Any], directory: str) -> tuple[np.ndarray, dict[str, Any]]:
-    """Build an approximate JWST temperature cube from filter-name pivots."""
+    """Build an approximate JWST temperature cube from native brightnesses."""
     entries, planes, reference_filter, reference_scale = _jwst_aligned_planes(manifest, directory)
     bands_and_meta = [_jwst_approx_color_band(entry) for entry in entries]
     usable = [item for item in bands_and_meta if item is not None]
