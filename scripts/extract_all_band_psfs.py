@@ -6,8 +6,9 @@ For each of ``Config.BANDS`` this script:
   1. Looks for cutouts in the band-specific directory:
        VIS  → ``Config.DEFAULT_OUTPUT_DIR/cutouts``
        NISP → ``Config.NISP_DEFAULT_OUTPUT_DIR_BY_BAND[band.name]/cutouts``
-  2. Loads + accepts the good cutouts (saturation/edge rejection) for every
-     band, then **clusters ONCE** the stars that are valid in ALL four bands,
+  2. Checks good cutouts (saturation/edge rejection) one at a time without
+     retaining their image data, then **clusters ONCE** the stars that are
+     valid in ALL four bands,
      by catalog sky position (K-Means++) into groups of ``--stars-per-psf``.
      Each band builds **one ePSF per cluster** from that band's cutouts of the
      cluster's stars — the Euclid PSF varies across the focal plane, so a band
@@ -54,7 +55,6 @@ if _PROJECT_ROOT not in sys.path:
 import contextlib
 
 import numpy as np
-from photutils.psf import EPSFStar
 from sklearn.cluster import KMeans
 
 from euclid_polish.config import BandConfig, Config
@@ -293,8 +293,9 @@ def load_accepted_band(
     """Load one band's cutouts and reject saturated/edge stars.
 
     Returns ``{cfg, scale, filename, accepted}`` where ``accepted`` is
-    ``{star_id: normalised-cutout ndarray}`` for every star that passes the
-    checks, or ``None`` to skip the band (no cutouts / no usable stars). No
+    ``{star_id: filepath}`` for every star that passes the checks, or ``None``
+    to skip the band (no cutouts / no usable stars). Each image is released
+    immediately after validation; no star stamps are retained here. No
     clustering here — the clustering is done ONCE on the stars common to all
     bands, so cluster numbering is shared (see :func:`main`)."""
     cutout_dir = _cutout_dir_for_band(band)
@@ -337,7 +338,7 @@ def load_accepted_band(
 
     selected = extractor.select_files(all_files, num_stars=args.num_stars)
     print(f"  considering {len(selected)} of {len(all_files)} available stars")
-    accepted = extractor.extract_accepted_stars(selected)
+    accepted = extractor.extract_accepted_files(selected)
     if not accepted:
         reporter.warn(f"{band.name}: no usable (non-saturated) stars — skipping")
         print("  ⚠️  no usable stars after saturation/edge rejection — skipping.")
@@ -347,29 +348,28 @@ def load_accepted_band(
         "cfg":      cfg,
         "scale":    band.epsf_pixel_scale_arcsec,
         "filename": band.psf_fits_filename,
-        # Normalised cutouts (ndarrays) — picklable; the worker rebuilds the
-        # EPSFStar objects, so nothing photutils-specific crosses processes.
-        "accepted": {sid: np.asarray(star.data, dtype=np.float32)
-                     for sid, star in accepted},
+        # File references only. Star pixels are reloaded later, for one PSF
+        # cluster at a time, and released as soon as that PSF is built.
+        "accepted": dict(accepted),
     }
 
 
 def _build_cluster_psf(payload):
-    """Worker: build ONE cluster's ePSF from its star stamps.
+    """Worker: load and build ONE cluster's ePSF.
 
-    Top-level + picklable. ``payload`` is ``(cfg, epsf_pixel_scale, stamps)``
-    where ``stamps`` is a list of normalised cutout ndarrays; the EPSFStar
-    objects are reconstructed here so only plain arrays cross the process
-    boundary. Returns a :class:`PSF` (picklable). EPSFBuilder runs
+    Top-level + picklable. ``payload`` is
+    ``(cfg, epsf_pixel_scale, cutout_files)``. Only this PSF's files are
+    loaded, and its extracted stars are released before the worker returns.
+    Returns a :class:`PSF` (picklable). EPSFBuilder runs
     single-threaded (BLAS capped at the module top), so N workers use N cores.
     """
-    cfg, scale, stamps = payload
+    cfg, scale, cutout_files = payload
     extractor = PSFExtractor(cfg)
-    stars = [EPSFStar(data=np.asarray(d, dtype=np.float32),
-                      cutout_center=(d.shape[1] // 2, d.shape[0] // 2))
-             for d in stamps]
-    epsf, _ = extractor.build_epsf_from_stars(stars)
-    return extractor.psf_from_epsf(epsf, scale)
+    stars = extractor.extract_psf_stars_from_files(cutout_files)
+    epsf, fitted_stars = extractor.build_epsf_from_stars(stars)
+    psf = extractor.psf_from_epsf(epsf, scale)
+    del fitted_stars, epsf, stars
+    return psf
 
 
 def main() -> int:
@@ -395,14 +395,15 @@ def main() -> int:
     print(f"  psf-dir      = {args.psf_dir}")
     print(f"  workers      = {n_workers} parallel ePSF builds\n")
 
-    # Phase 1 — load + reject each band (sequential, so "VIS first, then …").
-    reporter.set_stage("loading + rejecting stars")
+    # Phase 1 — validate each band one star at a time. Only IDs and paths
+    # survive this phase; image arrays are released after each check.
+    reporter.set_stage("validating stars one at a time")
     band_data: dict[str, dict] = {}
     for bi, band in enumerate(bands, start=1):
         d = load_accepted_band(band, args, reporter)
         if d is not None:
             band_data[band.name] = d
-        reporter.set_step(bi, len(bands), f"loaded {band.name}")
+        reporter.set_step(bi, len(bands), f"validated {band.name}")
         print()
     if not band_data:
         print("No bands had usable cutouts; nothing to build.")
@@ -463,7 +464,7 @@ def main() -> int:
     def _cache_path(band_name: str, ci: int) -> str:
         return os.path.join(cache_dir, f"{band_name}_PSF{ci:03d}.fits")
 
-    # Drop the now-unused (non-common) stamps to save memory.
+    # Drop the now-unused (non-common) file references.
     used = set().union(*clusters)
     for b in present:
         band_data[b]["accepted"] = {i: band_data[b]["accepted"][i]
@@ -489,7 +490,7 @@ def main() -> int:
     reporter.set_step(done, total, "building ePSFs")
 
     def _flush(band_name: str, ci: int, psf) -> None:
-        """Write a built kernel to its cache slot and free the RAM. Only
+        """Write a built kernel to its cache slot. Only
         successes advance the bar; failures are left to be retried."""
         nonlocal done
         ok = psf is not None
@@ -502,7 +503,7 @@ def main() -> int:
 
     def _payload(bn: str, ci: int):
         return (band_data[bn]["cfg"], band_data[bn]["scale"],
-                [band_data[bn]["accepted"][i] for i in clusters[ci]])
+                [(i, band_data[bn]["accepted"][i]) for i in clusters[ci]])
 
     if n_workers <= 1:
         for bn, ci in pending:
@@ -513,10 +514,11 @@ def main() -> int:
                               f"{type(e).__name__}: {e}")
                 psf = None
             _flush(bn, ci, psf)
+            del psf
     else:
-        # A default cluster now carries ~400 full-resolution stamps. Keep only
-        # one payload per worker in flight so pickled stamp copies do not erase
-        # the memory savings from building four times fewer regional kernels.
+        # Keep only one cluster per worker in flight. Each worker loads only
+        # that cluster's files and exits after the PSF is cached, releasing
+        # EPSFBuilder's fitted-star arrays before another cluster is loaded.
         chunk = n_workers
         stalls = 0
         while pending:
@@ -540,6 +542,7 @@ def main() -> int:
                                       f"{type(e).__name__}: {e}")
                         psf = None
                     _flush(bn, ci, psf)
+                    del psf
             # Re-derive what's left from the cache: successes (flushed) drop
             # out; a broken pool's lost tasks stay and get retried in a fresh
             # pool next round.

@@ -296,16 +296,18 @@ class PSFExtractor:
 
         return epsf_star
 
-    def extract_accepted_stars(
+    def _extract_accepted(
         self,
-        cutout_files: list[tuple[int, str]]
-    ) -> list[tuple[int, EPSFStar]]:
-        """Extract accepted PSF stars, **keeping each star's index**.
+        cutout_files: list[tuple[int, str]],
+        *,
+        keep_stars: bool,
+    ) -> list[tuple[int, EPSFStar]] | list[tuple[int, str]]:
+        """Validate cutouts, optionally retaining the extracted stars.
 
-        One load pass over the files. Returns ``[(index, EPSFStar)]`` for
-        every star that passes the saturation + edge checks — the index
-        (parsed from the ``star_NNNN_*`` filename) lets callers join the
-        star back to its catalog RA/Dec for spatial clustering.
+        With ``keep_stars=False``, only ``(index, filepath)`` is retained.
+        The image and temporary :class:`EPSFStar` are released before the
+        next file is loaded. This is the low-memory validation path used
+        before stars have been assigned to individual PSFs.
 
         Updates ``self.n_rejected_*`` counters with the cause of every
         rejection (load failure / edge crop / saturation). Saturation
@@ -314,7 +316,7 @@ class PSFExtractor:
         self.n_rejected_load = 0
         self.n_rejected_edge = 0
         self.n_rejected_saturated = 0
-        accepted: list[tuple[int, EPSFStar]] = []
+        accepted = []
 
         iterator = tqdm(
             cutout_files,
@@ -325,6 +327,8 @@ class PSFExtractor:
         sat_n = int(self.config.saturation_core_size)
 
         for index, filepath in iterator:
+            image_data = None
+            epsf_star = None
             try:
                 image_data = self.load_cutout(filepath)
                 if image_data is None:
@@ -343,12 +347,22 @@ class PSFExtractor:
                     self.n_rejected_edge += 1
                     continue
 
-                accepted.append((index, epsf_star))
-
+                accepted.append(
+                    (index, epsf_star) if keep_stars else (index, filepath)
+                )
+                # Validation must never retain a star stamp. In extraction
+                # mode ``accepted`` owns ``epsf_star``; either way the full
+                # loaded FITS image can be released before the next file.
             except Exception as e:
                 self.n_rejected_load += 1
                 print(f"  Warning: Error processing {filepath}: {e}")
                 continue
+            finally:
+                # Explicitly break references on every path, including
+                # rejection and exception paths. In keep-stars mode the
+                # accepted list still owns the extracted EPSFStar.
+                epsf_star = None
+                image_data = None
 
         if self.n_rejected_saturated:
             print(f"  rejected {self.n_rejected_saturated} stars with clipped "
@@ -359,6 +373,25 @@ class PSFExtractor:
             print(f"  rejected {self.n_rejected_load} stars (FITS load error)")
 
         return accepted
+
+    def extract_accepted_stars(
+        self,
+        cutout_files: list[tuple[int, str]]
+    ) -> list[tuple[int, EPSFStar]]:
+        """Extract accepted PSF stars, **keeping each star's index**."""
+        return self._extract_accepted(cutout_files, keep_stars=True)
+
+    def extract_accepted_files(
+        self,
+        cutout_files: list[tuple[int, str]],
+    ) -> list[tuple[int, str]]:
+        """Return accepted file references without retaining star data.
+
+        Every FITS cutout is loaded and checked independently. Once its
+        validity is known, its image and normalized stamp are released; only
+        the small ``(star_id, filepath)`` reference remains.
+        """
+        return self._extract_accepted(cutout_files, keep_stars=False)
 
     def extract_psf_stars_from_files(
         self,

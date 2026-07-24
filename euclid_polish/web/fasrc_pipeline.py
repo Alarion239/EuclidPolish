@@ -716,9 +716,9 @@ class EuclidPSFExtractStep(FASRCPipelineStep):
             job_name="euclid-psf",
             defaults=StepResources(
                 partition="shared", n_cpus=8, n_gpus=0,
-                # One band's stars held in memory + n_cpus EPSFBuilders (each
-                # on a ~400-star cluster). Scale memory up with the CPU count
-                # and the cutout size.
+                # Validation retains paths only. Peak star memory is one
+                # ~400-star cluster per CPU worker while its ePSF is built.
+                # Scale memory with the CPU count and cutout size.
                 memory="48G", time_limit="6:00:00",
             ),
             needs_gpu=False,

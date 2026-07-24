@@ -6,8 +6,10 @@ parallel ``set_worker_step`` reporting (cumulative across bands)."""
 from __future__ import annotations
 
 import argparse
+import gc
 import importlib
 import json
+import weakref
 
 import numpy as np
 import pytest
@@ -109,6 +111,35 @@ class _FakeStar:
         self.data = np.zeros((side, side), dtype=np.float32)
 
 
+def test_validation_releases_each_star_array(monkeypatch):
+    """The path-only validation API must not retain normalized star data."""
+    refs = []
+
+    def fake_load(self, path):
+        image = np.ones((5, 5), dtype=np.float32)
+        refs.append(weakref.ref(image))
+        return image
+
+    def fake_extract(self, image):
+        star = _FakeStar()
+        star.data = image
+        return star
+
+    monkeypatch.setattr(PSFExtractor, "load_cutout", fake_load)
+    monkeypatch.setattr(PSFExtractor, "_is_saturated_core",
+                        lambda self, image: False)
+    monkeypatch.setattr(PSFExtractor, "extract_psf_star_from_cutout",
+                        fake_extract)
+    ext = PSFExtractor()
+    accepted = ext.extract_accepted_files(
+        [(i, f"star-{i}.fits") for i in range(3)]
+    )
+    gc.collect()
+
+    assert accepted == [(i, f"star-{i}.fits") for i in range(3)]
+    assert all(ref() is None for ref in refs)
+
+
 def _fake_args(tmp_path, **over):
     base = {
         "num_stars": None, "cutout_size": 64, "vis_pixels": None, "output_size": None,
@@ -119,17 +150,17 @@ def _fake_args(tmp_path, **over):
     return argparse.Namespace(**base)
 
 
-def test_load_accepted_band_returns_stamps_and_gates_tqdm(tmp_path, monkeypatch):
-    """``load_accepted_band`` returns ``{star_id: stamp}`` for the accepted
-    stars and disables tqdm under a job (events path set)."""
+def test_load_accepted_band_returns_paths_and_gates_tqdm(tmp_path, monkeypatch):
+    """Validation retains file paths, not star pixel arrays, and disables
+    tqdm under a job (events path set)."""
     cutdir = tmp_path / "cutouts"
     cutdir.mkdir()
     monkeypatch.setattr(gen, "_cutout_dir_for_band", lambda b: str(cutdir))
     monkeypatch.setattr(PSFExtractor, "get_cutout_files",
                         lambda self, d, cutout_size=None:
                         [(i, f"f{i}") for i in range(9)])
-    monkeypatch.setattr(PSFExtractor, "extract_accepted_stars",
-                        lambda self, files: [(i, _FakeStar()) for i in range(9)])
+    monkeypatch.setattr(PSFExtractor, "extract_accepted_files",
+                        lambda self, files: list(files))
 
     seen = {}
     orig_init = PSFExtractor.__init__
@@ -144,7 +175,7 @@ def test_load_accepted_band_returns_stamps_and_gates_tqdm(tmp_path, monkeypatch)
                                Reporter(events_path=str(tmp_path / "j.events")))
     assert seen["progress_bar"] is False
     assert set(d["accepted"]) == set(range(9))
-    assert all(isinstance(s, np.ndarray) for s in d["accepted"].values())
+    assert d["accepted"][0] == "f0"
 
     # Interactive (no events path) → tqdm ON.
     gen.load_accepted_band(Config.BAND_VIS, _fake_args(tmp_path),
@@ -152,9 +183,15 @@ def test_load_accepted_band_returns_stamps_and_gates_tqdm(tmp_path, monkeypatch)
     assert seen["progress_bar"] is True
 
 
-def test_build_cluster_psf_builds_from_stamps(monkeypatch):
-    """``_build_cluster_psf`` rebuilds EPSFStars from the stamp arrays and
-    returns a PSF (EPSFBuilder stubbed)."""
+def test_build_cluster_psf_loads_only_cluster_files(monkeypatch):
+    """``_build_cluster_psf`` loads the files for its one cluster and returns
+    a PSF (EPSFBuilder stubbed)."""
+    seen = {}
+    def fake_extract(self, files):
+        seen["files"] = files
+        return [_FakeStar() for _ in files]
+    monkeypatch.setattr(PSFExtractor, "extract_psf_stars_from_files",
+                        fake_extract)
     monkeypatch.setattr(PSFExtractor, "build_epsf_from_stars",
                         lambda self, stars: (object(), None))
     monkeypatch.setattr(
@@ -165,9 +202,10 @@ def test_build_cluster_psf_builds_from_stamps(monkeypatch):
     from euclid_polish.psf.psf_extractor import PSFExtractionConfig
     cfg = PSFExtractionConfig(psf_size=5, progress_bar=False)
     psf = gen._build_cluster_psf((cfg, 0.025,
-                                  [np.ones((5, 5), np.float32) for _ in range(3)]))
+                                  [(1, "one.fits"), (2, "two.fits")]))
     assert isinstance(psf, PSF)
     assert psf.pixel_scale == 0.025
+    assert seen["files"] == [(1, "one.fits"), (2, "two.fits")]
 
 
 def _patch_main(tmp_path, monkeypatch, accepts, idx_clusters, positions=None):
@@ -176,7 +214,7 @@ def _patch_main(tmp_path, monkeypatch, accepts, idx_clusters, positions=None):
     def fake_band(band, args, reporter):
         return {"cfg": None, "scale": band.epsf_pixel_scale_arcsec,
                 "filename": band.psf_fits_filename,
-                "accepted": {i: np.ones((5, 5), np.float32)
+                "accepted": {i: f"{band.name}-{i}.fits"
                              for i in accepts[band.name]}}
     monkeypatch.setattr(gen, "load_accepted_band", fake_band)
     monkeypatch.setattr(gen, "_load_star_positions",
