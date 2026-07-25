@@ -250,15 +250,53 @@ def test_sky_sr_count_isolated(tmp_path, monkeypatch):
     assert sky_records.sr_count("validate") == 1
 
 
-def test_viewer_meta_sky_has_sr_tier_not_hr_target(client):
-    """Sky tiers are LR/HR plus an always-offered SR tier with a disabled
-    flag; the old 'HR target' tier is gone."""
-    m = client.get("/viewer/meta/sky?subset=validate").get_json()
+def test_viewer_meta_sky_uses_starfull_hr_record(tmp_path, monkeypatch):
+    """HR is the starfull record; clean remains a separate starless target."""
+    from euclid_polish.web.helpers import viewer_data as vd
+
+    for kind in ("dirty", "clean", "hr"):
+        (tmp_path / f"{kind}_validate.tfrecord").touch()
+    monkeypatch.setattr(vd, "_sky_records_local_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(vd, "_record_count", lambda *_args: 1)
+    monkeypatch.setattr(vd.sky_records, "sr_count", lambda _subset: 0)
+
+    m = vd._sky_meta({"subset": "validate"})
     keys = [t["key"] for t in m["tiers"]]
-    assert "hr" not in keys
+    assert "hr" in keys
+    assert "clean" not in keys
     assert "sr" in keys
     sr = next(t for t in m["tiers"] if t["key"] == "sr")
     assert isinstance(sr.get("disabled"), bool)
+
+
+def test_viewer_sky_hr_cube_reads_starfull_record(tmp_path, monkeypatch):
+    import types
+
+    import numpy as np
+
+    from euclid_polish.web.helpers import viewer_data as vd
+
+    hr_path = tmp_path / "hr_validate.tfrecord"
+    hr_path.touch()
+    read_paths = []
+
+    def fake_read_images(path, num_images):
+        read_paths.append((path, num_images))
+        record = types.SimpleNamespace(
+            data=np.ones((8, 8, 4), dtype=np.float32),
+            index=0,
+            pixel_scale_arcsec=0.025,
+        )
+        return [record]
+
+    monkeypatch.setattr(vd, "_sky_records_local_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(vd, "read_images", fake_read_images)
+
+    cube, info = vd._sky_cube(0, "hr", {"subset": "validate"})
+
+    assert read_paths == [(str(hr_path), 1)]
+    assert cube.shape == (8, 8, 4)
+    assert info["label"] == "hr · validate · idx 0"
 
 
 def test_viewer_meta_sky_accepts_test_subset(client):

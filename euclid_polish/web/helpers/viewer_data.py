@@ -19,7 +19,7 @@ Three collections are registered:
 ==============  =========  ======================================  ==========
 collection      params     tiers                                    source
 ==============  =========  ======================================  ==========
-``sky``         subset     dirty→LR, clean→HR, hr→HR-target          TFRecords
+``sky``         subset     dirty→LR, hr→HR                           TFRecords
 ``cutouts``     —          real→Euclid                               per-band FITS
 ``evaluation``  —          LR / SR / HR (per object)                 object FITS
 ``psfs``        —          VIS / Y_E / J_E / H_E cluster kernels     FASRC ePSF FITS
@@ -141,14 +141,13 @@ def _as_hwc(arr: np.ndarray) -> np.ndarray:
 # sky — multi-band TFRecords (FASRC-synced cache)
 # ---------------------------------------------------------------------------
 
-# Tiers offered for sky records: LR (the dirty record), HR (the clean
-# record), and SR (model output, generated on demand by the /sky button —
-# disabled until at least one SR cube exists). The "hr target" record is the
-# same clean 4-band sky since the VIS+NISP-output change, so it isn't a
-# separate tier.
+# Tiers offered for sky records: LR (the dirty record), HR (the starfull
+# target), and SR (model output, generated on demand by the /sky button —
+# disabled until at least one SR cube exists). The clean record is the
+# deliberately starless target and must not be substituted for HR.
 _SKY_RECORD_TIERS = [
     {"key": "dirty", "label": "LR"},
-    {"key": "clean", "label": "HR"},
+    {"key": "hr", "label": "HR"},
 ]
 
 
@@ -196,7 +195,7 @@ def _sky_cube(index: int, tier: str, params: dict[str, str]):
             "asinh": float(Config.STRETCH_SCALE_E),
             "pixscale": float(Config.DEFAULT_PIXEL_SCALE),
         }
-    if tier not in ("dirty", "clean"):
+    if tier not in ("dirty", "hr"):
         raise ViewerError(400, "bad tier")
     path = tfrecord_path(_sky_records_local_dir(), f"{tier}_{subset}")
     if not os.path.exists(path):
