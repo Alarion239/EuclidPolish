@@ -247,33 +247,64 @@ def _has_ckpt(d: str) -> bool:
             or bool(glob.glob(os.path.join(d, "*.index"))))
 
 
-def _next_free_names(base: str, k: int) -> list[str]:
+def _next_free_names(base: str, k: int, *, start_past: int = -1) -> list[str]:
     used = [int(tail)
             for tail in (os.path.basename(d).removeprefix("member_")
                          for d in glob.glob(os.path.join(base, "member_*")))
             if tail.isdigit()]
-    start = (max(used) + 1) if used else 0
+    start = max([start_past, *used]) + 1
     return [f"member_{i:02d}" for i in range(start, start + k)]
+
+
+def _member_index(name: str) -> int | None:
+    tail = str(name).removeprefix("member_")
+    return int(tail) if tail.isdigit() else None
+
+
+def _claim_fresh_name(base: str, wanted: str | None, *,
+                      reserved: list[str]) -> str:
+    """Atomically reserve ``wanted``, shifting beyond sibling reservations.
+
+    Several queued jobs may receive the same submit-time allocation.  The
+    directory creation is the cross-process claim: if another task/job won
+    it, keep advancing until this task claims a genuinely unused member.
+    """
+    if wanted:
+        try:
+            os.makedirs(os.path.join(base, wanted), exist_ok=False)
+            return wanted
+        except FileExistsError:
+            pass
+
+    reserved_indices = [i for i in map(_member_index, reserved)
+                        if i is not None]
+    start_past = max(reserved_indices, default=-1)
+    while True:
+        shifted = _next_free_names(base, 1, start_past=start_past)[0]
+        try:
+            os.makedirs(os.path.join(base, shifted), exist_ok=False)
+        except FileExistsError:
+            # Another array task claimed the same candidate between the scan
+            # and mkdir. Re-scan and try the next index.
+            continue
+        if wanted:
+            print(f"  ⚠ {wanted} already exists on disk — shifted to "
+                  f"{shifted}")
+        return shifted
 
 
 def _fresh_names(args, base: str, k: int) -> list[str]:
     """Names for members this run CREATES: the submitted allocation, with a
     collision shift past any name that already exists on this filesystem
-    (two queued jobs can allocate the same index at submit time). Each name's
-    dir is created immediately so subsequent picks can't collide either."""
+    (two queued jobs can allocate the same index at submit time). Each name is
+    claimed atomically so concurrent tasks cannot share a directory."""
     wanted = [n.strip() for n in args.member_names.split(",") if n.strip()]
     out: list[str] = []
-    for n in wanted[:k]:
-        if os.path.isdir(os.path.join(base, n)):
-            shifted = _next_free_names(base, 1)[0]
-            print(f"  ⚠ {n} already exists on disk — shifted to {shifted}")
-            n = shifted
-        out.append(n)
-        os.makedirs(os.path.join(base, n), exist_ok=True)  # reserve now
+    reserved = wanted[:k]
+    for n in reserved:
+        out.append(_claim_fresh_name(base, n, reserved=reserved))
     while len(out) < k:
-        n = _next_free_names(base, 1)[0]
-        out.append(n)
-        os.makedirs(os.path.join(base, n), exist_ok=True)
+        out.append(_claim_fresh_name(base, None, reserved=reserved))
     return out
 
 
@@ -417,14 +448,9 @@ def build_specs(args, base: str) -> list[MemberTrainSpec]:
         if len(wanted) != k or len(set(wanted)) != k:
             print("✗ array add/fork requires one unique --member-name per task")
             raise SystemExit(2)
-        name = wanted[array_index]
-        member_dir = os.path.join(base, name)
-        try:
-            os.makedirs(member_dir, exist_ok=False)
-        except FileExistsError as e:
-            print(f"✗ array target already exists: {member_dir}; refusing to "
-                  "silently train a different member")
-            raise SystemExit(2) from e
+        name = _claim_fresh_name(
+            base, wanted[array_index], reserved=wanted,
+        )
         names_with_indices = [(array_index, name)]
     overrides = _member_overrides(args, k)
     # Depth applies to ADD only: a fork inherits its source's depth (weights

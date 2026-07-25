@@ -56,15 +56,32 @@ def test_array_add_selects_only_its_positional_member(tmp_path, monkeypatch):
     assert os.path.isdir(os.path.join(base, "member_10"))
 
 
-def test_array_add_refuses_target_collision(tmp_path, monkeypatch):
+def test_array_add_collision_claims_name_after_sibling_reservations(
+        tmp_path, monkeypatch):
     base = str(tmp_path / "ens")
     _mk_member(base, 10)
     monkeypatch.setenv("SLURM_ARRAY_TASK_ID", "1")
     args = parse_args(["--mode", "add", "--count", "2", "--steps", "10",
+                       "--base-seed", "50",
                        "--array-task",
                        "--member-names", "member_09,member_10"])
-    with pytest.raises(SystemExit):
-        build_specs(args, base)
+    (spec,) = build_specs(args, base)
+    assert (spec.name, spec.seed) == ("member_11", 51)
+    assert os.path.isdir(os.path.join(base, "member_11"))
+
+
+def test_array_collision_does_not_claim_a_sibling_target(
+        tmp_path, monkeypatch):
+    base = str(tmp_path / "ens")
+    _mk_member(base, 9)
+    monkeypatch.setenv("SLURM_ARRAY_TASK_ID", "0")
+    args = parse_args(["--mode", "add", "--count", "3", "--steps", "10",
+                       "--array-task",
+                       "--member-names", "member_09,member_10,member_11"])
+    (spec,) = build_specs(args, base)
+    assert spec.name == "member_12"
+    assert not os.path.exists(os.path.join(base, "member_10"))
+    assert not os.path.exists(os.path.join(base, "member_11"))
 
 
 def test_continue_mode_reads_current_step(tmp_path, monkeypatch):
