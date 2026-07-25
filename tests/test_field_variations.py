@@ -71,30 +71,33 @@ def test_archive_noise_scale_map_scales_only_noise_residual(band):
     )
 
 
-def test_distant_star_wing_is_drawn_thousands_of_pixels_outside_field():
+def test_distant_star_wing_draws_random_direction_and_fade():
     wings = draw_distant_star_wings(
         (128, 128),
         np.random.default_rng(4),
         probability=1.0,
-        source_distance_min_lr_pix=1000.0,
-        source_distance_max_lr_pix=5000.0,
-        amplitude_sigma_min=8.0,
-        amplitude_sigma_max=30.0,
+        amplitude_sigma_min=2.5,
+        amplitude_sigma_max=8.0,
         width_min_lr_pix=0.8,
         width_max_lr_pix=2.0,
+        fade_length_min_lr_pix=60.0,
+        fade_length_max_lr_pix=220.0,
     )
 
     assert len(wings) == 1
-    assert 1000.0 <= wings[0].source_distance_lr_pix <= 5000.0
+    assert 0.0 <= wings[0].angle_rad < np.pi
+    assert wings[0].source_side in (-1, 1)
+    assert 60.0 <= wings[0].fade_length_lr_pix <= 220.0
 
 
 def test_distant_star_wing_crosses_whole_cutout_without_visible_star():
     wing = DistantStarWing(
         angle_rad=np.pi / 4.0,
         offset_lr_pix=0.0,
-        source_distance_lr_pix=3000.0,
-        amplitude_sigma=20.0,
+        source_side=1,
+        amplitude_sigma=8.0,
         width_lr_pix=1.0,
+        fade_length_lr_pix=100.0,
     )
     image = add_distant_star_wings(
         np.zeros((128, 128), dtype=np.float32),
@@ -102,9 +105,9 @@ def test_distant_star_wing_crosses_whole_cutout_without_visible_star():
         local_sigma_e=10.0,
     )
 
-    assert image.max() == pytest.approx(200.0, rel=0.04)
-    assert image[0, 0] > 100.0
-    assert image[-1, -1] > 100.0
+    assert image[-1, -1] > 70.0
+    assert 10.0 < image[0, 0] < 20.0
+    assert image[-1, -1] > 4.0 * image[0, 0]
 
 
 def test_simulator_adds_off_field_wing_without_local_star_or_hr_target():
@@ -136,11 +139,11 @@ def test_simulator_adds_off_field_wing_without_local_star_or_hr_target():
 
 @pytest.mark.parametrize("kwargs", [
     {"distant_star_wing_probability": 1.1},
-    {"distant_star_wing_source_distance_min_lr_pix": 5000.0,
-     "distant_star_wing_source_distance_max_lr_pix": 1000.0},
     {"distant_star_wing_amplitude_sigma_min": 0.0},
     {"distant_star_wing_width_min_lr_pix": 2.0,
      "distant_star_wing_width_max_lr_pix": 1.0},
+    {"distant_star_wing_fade_length_min_lr_pix": 220.0,
+     "distant_star_wing_fade_length_max_lr_pix": 60.0},
     {"noise_global_scale_min": 0.0},
     {"noise_region_probability": 1.1},
     {"noise_region_fraction_min": 0.6,

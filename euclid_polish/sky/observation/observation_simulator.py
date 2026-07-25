@@ -102,21 +102,21 @@ class ObservationSimulatorConfig:
     # cast a nearly straight, field-spanning PSF wing through the LR cutout.
     add_distant_star_wings: bool = True
     distant_star_wing_probability: float = 0.20
-    distant_star_wing_source_distance_min_lr_pix: float = 1000.0
-    distant_star_wing_source_distance_max_lr_pix: float = 5000.0
-    distant_star_wing_amplitude_sigma_min: float = 8.0
-    distant_star_wing_amplitude_sigma_max: float = 30.0
+    distant_star_wing_amplitude_sigma_min: float = 2.5
+    distant_star_wing_amplitude_sigma_max: float = 8.0
     distant_star_wing_width_min_lr_pix: float = 0.8
     distant_star_wing_width_max_lr_pix: float = 2.0
+    distant_star_wing_fade_length_min_lr_pix: float = 60.0
+    distant_star_wing_fade_length_max_lr_pix: float = 220.0
     # Per-field depth jitter plus a shared four-band pointing intersection.
     add_noise_variation: bool = True
-    noise_global_scale_min: float = 0.85
-    noise_global_scale_max: float = 1.15
-    noise_region_probability: float = 0.75
+    noise_global_scale_min: float = 0.80
+    noise_global_scale_max: float = 1.20
+    noise_region_probability: float = 1.0
     noise_region_fraction_min: float = 0.25
     noise_region_fraction_max: float = 0.50
-    noise_region_scale_min: float = 1.08
-    noise_region_scale_max: float = 1.35
+    noise_region_scale_min: float = 1.35
+    noise_region_scale_max: float = 1.75
 
     def __post_init__(self) -> None:
         if self.nisp_resample_kernel not in ("lanczos3", "cubic"):
@@ -137,13 +137,6 @@ class ObservationSimulatorConfig:
         if not 0.0 <= float(self.distant_star_wing_probability) <= 1.0:
             raise ValueError("distant_star_wing_probability must be in [0, 1]")
         if not (
-            0.0 < float(self.distant_star_wing_source_distance_min_lr_pix)
-            <= float(self.distant_star_wing_source_distance_max_lr_pix)
-        ):
-            raise ValueError(
-                "distant-star source distances must satisfy 0 < min <= max"
-            )
-        if not (
             0.0 < float(self.distant_star_wing_amplitude_sigma_min)
             <= float(self.distant_star_wing_amplitude_sigma_max)
         ):
@@ -156,6 +149,13 @@ class ObservationSimulatorConfig:
         ):
             raise ValueError(
                 "distant-star wing widths must satisfy 0 < min <= max"
+            )
+        if not (
+            0.0 < float(self.distant_star_wing_fade_length_min_lr_pix)
+            <= float(self.distant_star_wing_fade_length_max_lr_pix)
+        ):
+            raise ValueError(
+                "distant-star wing fade lengths must satisfy 0 < min <= max"
             )
         if not (
             0.0 < float(self.noise_global_scale_min)
@@ -528,12 +528,6 @@ class ObservationSimulator:
                 target_lr_shape,
                 rng,
                 probability=self.config.distant_star_wing_probability,
-                source_distance_min_lr_pix=(
-                    self.config.distant_star_wing_source_distance_min_lr_pix
-                ),
-                source_distance_max_lr_pix=(
-                    self.config.distant_star_wing_source_distance_max_lr_pix
-                ),
                 amplitude_sigma_min=(
                     self.config.distant_star_wing_amplitude_sigma_min
                 ),
@@ -545,6 +539,12 @@ class ObservationSimulator:
                 ),
                 width_max_lr_pix=(
                     self.config.distant_star_wing_width_max_lr_pix
+                ),
+                fade_length_min_lr_pix=(
+                    self.config.distant_star_wing_fade_length_min_lr_pix
+                ),
+                fade_length_max_lr_pix=(
+                    self.config.distant_star_wing_fade_length_max_lr_pix
                 ),
             )
 

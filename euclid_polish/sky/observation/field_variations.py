@@ -25,9 +25,10 @@ class DistantStarWing:
 
     angle_rad: float
     offset_lr_pix: float
-    source_distance_lr_pix: float
+    source_side: int
     amplitude_sigma: float
     width_lr_pix: float
+    fade_length_lr_pix: float
 
 
 def draw_distant_star_wings(
@@ -35,12 +36,12 @@ def draw_distant_star_wings(
     rng: np.random.Generator,
     *,
     probability: float,
-    source_distance_min_lr_pix: float,
-    source_distance_max_lr_pix: float,
     amplitude_sigma_min: float,
     amplitude_sigma_max: float,
     width_min_lr_pix: float,
     width_max_lr_pix: float,
+    fade_length_min_lr_pix: float,
+    fade_length_max_lr_pix: float,
 ) -> tuple[DistantStarWing, ...]:
     """Possibly draw one wing whose parent star lies far beyond the cutout."""
     if rng.random() >= float(probability):
@@ -53,14 +54,15 @@ def draw_distant_star_wings(
     return (DistantStarWing(
         angle_rad=angle,
         offset_lr_pix=float(rng.uniform(-0.9, 0.9) * half_extent),
-        source_distance_lr_pix=float(rng.uniform(
-            source_distance_min_lr_pix, source_distance_max_lr_pix,
-        )),
+        source_side=1 if rng.random() < 0.5 else -1,
         amplitude_sigma=float(rng.uniform(
             amplitude_sigma_min, amplitude_sigma_max,
         )),
         width_lr_pix=float(rng.uniform(
             width_min_lr_pix, width_max_lr_pix,
+        )),
+        fade_length_lr_pix=float(rng.uniform(
+            fade_length_min_lr_pix, fade_length_max_lr_pix,
         )),
     ),)
 
@@ -73,9 +75,10 @@ def add_distant_star_wings(
 ) -> np.ndarray:
     """Add off-field-star wings to one delivered LR band.
 
-    Across each wing the profile is Gaussian. Along it, brightness follows
-    inverse distance to a parent star 1,000--5,000 pixels away, and therefore
-    changes only slightly over one cutout.
+    Across each wing the profile is Gaussian. Along it, an exponential taper
+    approximates the measured portion of a much larger off-field PSF wing:
+    brightest at the boundary facing the parent star, then fading through the
+    cutout. The parent itself is never rendered.
     """
     if not wings or local_sigma_e <= 0.0:
         return image_e
@@ -95,10 +98,15 @@ def add_distant_star_wings(
         cross_profile = np.exp(
             -0.5 * (across / wing.width_lr_pix) ** 2
         )
-        radial_distance = np.maximum(
-            wing.source_distance_lr_pix - along, 1.0,
+        half_along_extent = 0.5 * (
+            abs(cos_a) * (width - 1) + abs(sin_a) * (height - 1)
         )
-        long_profile = wing.source_distance_lr_pix / radial_distance
+        distance_from_source_edge = np.maximum(
+            half_along_extent - wing.source_side * along, 0.0,
+        )
+        long_profile = np.exp(
+            -distance_from_source_edge / wing.fade_length_lr_pix
+        )
         out += np.float32(local_sigma_e * wing.amplitude_sigma) * (
             cross_profile * long_profile
         ).astype(np.float32)
