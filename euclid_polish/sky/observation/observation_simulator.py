@@ -43,9 +43,12 @@ from euclid_polish.psf.psf_library import (
     psf_side_pixels_for_band,
 )
 from euclid_polish.psf.psf_set import PSFSample, PSFSet
-
-# Re-export the canonical low-level noise function for legacy callers, while
-# the simulator uses the delivered-MER-aware path.
+from euclid_polish.sky.observation.field_variations import (
+    DistantStarWing,
+    add_distant_star_wings,
+    draw_distant_star_wings,
+    draw_noise_scale_map,
+)
 from euclid_polish.sky.observation.noise import (  # noqa: F401
     apply_archive_noise,
     apply_band_noise,
@@ -95,6 +98,25 @@ class ObservationSimulatorConfig:
     # always-mask operator; train/validate/test and on-the-fly configs pass the
     # lower, real-field-calibrated training default explicitly.
     saturation_mask_prob: float = 1.0
+    # A very bright star thousands of pixels beyond the generated field can
+    # cast a nearly straight, field-spanning PSF wing through the LR cutout.
+    add_distant_star_wings: bool = True
+    distant_star_wing_probability: float = 0.20
+    distant_star_wing_source_distance_min_lr_pix: float = 1000.0
+    distant_star_wing_source_distance_max_lr_pix: float = 5000.0
+    distant_star_wing_amplitude_sigma_min: float = 8.0
+    distant_star_wing_amplitude_sigma_max: float = 30.0
+    distant_star_wing_width_min_lr_pix: float = 0.8
+    distant_star_wing_width_max_lr_pix: float = 2.0
+    # Per-field depth jitter plus a shared four-band pointing intersection.
+    add_noise_variation: bool = True
+    noise_global_scale_min: float = 0.85
+    noise_global_scale_max: float = 1.15
+    noise_region_probability: float = 0.75
+    noise_region_fraction_min: float = 0.25
+    noise_region_fraction_max: float = 0.50
+    noise_region_scale_min: float = 1.08
+    noise_region_scale_max: float = 1.35
 
     def __post_init__(self) -> None:
         if self.nisp_resample_kernel not in ("lanczos3", "cubic"):
@@ -112,6 +134,52 @@ class ObservationSimulatorConfig:
             raise ValueError("psf_warp_sigma must be > 0")
         if not 0.0 <= float(self.saturation_mask_prob) <= 1.0:
             raise ValueError("saturation_mask_prob must be in [0, 1]")
+        if not 0.0 <= float(self.distant_star_wing_probability) <= 1.0:
+            raise ValueError("distant_star_wing_probability must be in [0, 1]")
+        if not (
+            0.0 < float(self.distant_star_wing_source_distance_min_lr_pix)
+            <= float(self.distant_star_wing_source_distance_max_lr_pix)
+        ):
+            raise ValueError(
+                "distant-star source distances must satisfy 0 < min <= max"
+            )
+        if not (
+            0.0 < float(self.distant_star_wing_amplitude_sigma_min)
+            <= float(self.distant_star_wing_amplitude_sigma_max)
+        ):
+            raise ValueError(
+                "distant-star wing amplitudes must satisfy 0 < min <= max"
+            )
+        if not (
+            0.0 < float(self.distant_star_wing_width_min_lr_pix)
+            <= float(self.distant_star_wing_width_max_lr_pix)
+        ):
+            raise ValueError(
+                "distant-star wing widths must satisfy 0 < min <= max"
+            )
+        if not (
+            0.0 < float(self.noise_global_scale_min)
+            <= float(self.noise_global_scale_max)
+        ):
+            raise ValueError(
+                "global noise scales must satisfy 0 < min <= max"
+            )
+        if not 0.0 <= float(self.noise_region_probability) <= 1.0:
+            raise ValueError("noise_region_probability must be in [0, 1]")
+        if not (
+            0.0 < float(self.noise_region_fraction_min)
+            <= float(self.noise_region_fraction_max) < 1.0
+        ):
+            raise ValueError(
+                "noise region fractions must satisfy 0 < min <= max < 1"
+            )
+        if not (
+            0.0 < float(self.noise_region_scale_min)
+            <= float(self.noise_region_scale_max)
+        ):
+            raise ValueError(
+                "regional noise scales must satisfy 0 < min <= max"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -297,6 +365,8 @@ class ObservationSimulator:
         psf_spec: PSFSample | None = None,
         star_hr_channel: np.ndarray | None = None,
         star_psf_spec: PSFSample | None = None,
+        distant_star_wings: tuple[DistantStarWing, ...] = (),
+        noise_scale_map: np.ndarray | None = None,
         warp_displacements: dict[
             tuple[int, int], tuple[np.ndarray, np.ndarray]
         ] | None = None,
@@ -329,6 +399,7 @@ class ObservationSimulator:
                 add_artifacts=self.config.add_artifacts,
                 artifact_config=self.config.artifact_config,
                 resample_kernel=self.config.nisp_resample_kernel,
+                noise_scale_map=noise_scale_map,
             )
         else:
             lr_e = lr_signal_e.astype(np.float32, copy=False)
@@ -343,6 +414,17 @@ class ObservationSimulator:
                 lr_signal_e,
                 factor=upsample_factor,
                 kernel=self.config.nisp_resample_kernel,
+            )
+        if distant_star_wings:
+            residual = lr_e - lr_signal_e
+            residual_median = float(np.median(residual))
+            local_sigma_e = 1.4826 * float(np.median(
+                np.abs(residual - residual_median)
+            ))
+            lr_e = add_distant_star_wings(
+                lr_e,
+                distant_star_wings,
+                local_sigma_e=local_sigma_e,
             )
         return (
             lr_e.astype(np.float32, copy=False),
@@ -431,6 +513,54 @@ class ObservationSimulator:
         star_data_trim = (
             star_data[:H_trim, :W_trim, :] if star_data is not None else None
         )
+        target_rebin = int(round(
+            self.target_lr_pixel_scale_arcsec / self.config.hr_pixel_scale
+        ))
+        target_lr_shape = (H_trim // target_rebin, W_trim // target_rebin)
+
+        distant_star_wings: tuple[DistantStarWing, ...] = ()
+        if (
+            self.config.add_noise
+            and self.config.add_artifacts
+            and self.config.add_distant_star_wings
+        ):
+            distant_star_wings = draw_distant_star_wings(
+                target_lr_shape,
+                rng,
+                probability=self.config.distant_star_wing_probability,
+                source_distance_min_lr_pix=(
+                    self.config.distant_star_wing_source_distance_min_lr_pix
+                ),
+                source_distance_max_lr_pix=(
+                    self.config.distant_star_wing_source_distance_max_lr_pix
+                ),
+                amplitude_sigma_min=(
+                    self.config.distant_star_wing_amplitude_sigma_min
+                ),
+                amplitude_sigma_max=(
+                    self.config.distant_star_wing_amplitude_sigma_max
+                ),
+                width_min_lr_pix=(
+                    self.config.distant_star_wing_width_min_lr_pix
+                ),
+                width_max_lr_pix=(
+                    self.config.distant_star_wing_width_max_lr_pix
+                ),
+            )
+
+        noise_scale_map = None
+        if self.config.add_noise and self.config.add_noise_variation:
+            noise_scale_map = draw_noise_scale_map(
+                target_lr_shape,
+                rng,
+                global_scale_min=self.config.noise_global_scale_min,
+                global_scale_max=self.config.noise_global_scale_max,
+                region_probability=self.config.noise_region_probability,
+                region_fraction_min=self.config.noise_region_fraction_min,
+                region_fraction_max=self.config.noise_region_fraction_max,
+                region_scale_min=self.config.noise_region_scale_min,
+                region_scale_max=self.config.noise_region_scale_max,
+            )
 
         # Draw ONE PSF sample (cluster index + roll) for the whole scene so all
         # four bands share the field position and the telescope roll — one
@@ -460,6 +590,8 @@ class ObservationSimulator:
                 star_hr_channel=(star_data_trim[..., k]
                                  if star_data_trim is not None else None),
                 star_psf_spec=star_psf_spec,
+                distant_star_wings=distant_star_wings,
+                noise_scale_map=noise_scale_map,
                 warp_displacements=warp_displacements,
             )
             lr_channels.append(lr_channel)

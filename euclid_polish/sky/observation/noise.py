@@ -152,6 +152,7 @@ def apply_archive_noise(
     add_artifacts: bool = False,
     artifact_config: ArtifactConfig | None = None,
     resample_kernel: Literal["lanczos3", "cubic"] = "lanczos3",
+    noise_scale_map: np.ndarray | None = None,
 ) -> np.ndarray:
     """Add detector noise as it appears in the delivered 0.10" MER mosaic.
 
@@ -169,10 +170,24 @@ def apply_archive_noise(
     already contain detector sampling and resampling, so reprocessing the
     deterministic signal through the native grid would blur it twice. Only
     the stochastic detector residual follows the native path.
+
+    ``noise_scale_map`` optionally scales only the stochastic residual on the
+    archive grid.  The observation simulator uses one shared map for all four
+    bands to represent a field's depth plus a noisier pointing intersection.
     """
     signal = np.asarray(signal_e, dtype=np.float32)
     if signal.ndim != 2:
         raise ValueError(f"signal_e must be 2-D, got shape {signal.shape}")
+    noise_scale = None
+    if noise_scale_map is not None:
+        noise_scale = np.asarray(noise_scale_map, dtype=np.float32)
+        if noise_scale.shape != signal.shape:
+            raise ValueError(
+                f"noise_scale_map shape {noise_scale.shape} must match "
+                f"signal shape {signal.shape}"
+            )
+        if not np.all(np.isfinite(noise_scale)) or np.any(noise_scale <= 0.0):
+            raise ValueError("noise_scale_map must contain finite positive values")
 
     ratio = band.native_detector_scale_arcsec / band.pixel_scale_lr_arcsec
     factor = int(round(ratio))
@@ -183,11 +198,14 @@ def apply_archive_noise(
             f"{band.pixel_scale_lr_arcsec:g}={ratio:g} for {band.name}"
         )
     if factor == 1:
-        return apply_band_noise(
+        observed = apply_band_noise(
             signal, band, rng,
             add_artifacts=add_artifacts,
             artifact_config=artifact_config,
         )
+        if noise_scale is not None:
+            observed = signal + (observed - signal) * noise_scale
+        return observed.astype(np.float32, copy=False)
 
     # The input is the full-stack source expectation. A native detector cell
     # covers factor^2 archive pixels; each dither receives 1/N of that stack.
@@ -228,7 +246,10 @@ def apply_archive_noise(
         )
 
     height, width = signal.shape
-    observed = (signal + output_residual[:height, :width]).astype(
+    residual = output_residual[:height, :width]
+    if noise_scale is not None:
+        residual = residual * noise_scale
+    observed = (signal + residual).astype(
         np.float32, copy=False)
     if add_artifacts:
         sigma_e = _robust_sigma(output_residual[:height, :width])
