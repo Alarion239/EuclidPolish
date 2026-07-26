@@ -406,7 +406,7 @@ large cutout don't leak across train/validate."></label>`;
 
   function _ensembleTrainFields() {
     // EnsembleTrainStep.build_command reads: mode, then per mode —
-    // add: count/steps/base_seed · continue: members/extra_steps ·
+    // add: count/steps/base_seed · continue: members + extra/target steps ·
     // fork: fork_from/fork_track/count/steps/base_seed.
     // The member list is injected by the /ensemble template.
     const members = window.ENSEMBLE_MEMBERS || [];
@@ -446,8 +446,19 @@ large cutout don't leak across train/validate."></label>`;
       </span>
       <span data-mode-group="continue" style="display:none;">
         <div class="form-row" style="flex-direction:column; gap:4px;">${memberChecks}</div>
-        <label>Extra steps
-          <input type="number" name="extra_steps" value="50000" min="1000" max="1000000"></label>
+        <label>Continue by
+          <select name="continue_basis">
+            <option value="extra">Add extra steps</option>
+            <option value="target">Up to step N</option>
+          </select></label>
+        <label data-continue-basis="extra">Extra steps
+          <input type="number" name="extra_steps" value="50000"
+                 min="1000" max="1000000"></label>
+        <label data-continue-basis="target" style="display:none;"
+               title="Each selected member adds N minus its checkpoint step. Members already at or beyond N are successful no-ops.">
+          Up to step N
+          <input type="number" name="target_steps" value="100000"
+                 min="1000" max="2000000"></label>
       </span>
       <span data-mode-group="add fork continue">
         <label class="checkbox-field"
@@ -1111,6 +1122,18 @@ large cutout don't leak across train/validate."></label>`;
       };
       modeSel.addEventListener('change', applyMode);
       applyMode();
+    }
+    const continueBasisSel = scope.querySelector(
+      'form[data-step-id="ensemble_train"] select[name="continue_basis"]');
+    if (continueBasisSel) {
+      const applyContinueBasis = () => {
+        scope.querySelectorAll('[data-continue-basis]').forEach((group) => {
+          group.style.display =
+            group.dataset.continueBasis === continueBasisSel.value ? '' : 'none';
+        });
+      };
+      continueBasisSel.addEventListener('change', applyContinueBasis);
+      applyContinueBasis();
     }
     _wireEnsembleMembers(scope);
   }

@@ -4,9 +4,9 @@
    seed, exactly like the classic card. The rows are the source of truth — they
    build the positional `member_spec` JSON (+ `count`) the backend consumes
    (build_command → --member-spec). Continue mode selects one or more existing
-   members and extends each by the same number of steps. Row/continue prefill
-   arrives via ?mode=&member= (the Ensemble members table's ▶continue / ⑂fork
-   buttons link here). */
+   members either by the same extra work or up to one absolute target step.
+   Row/continue prefill arrives via ?mode=&member= (the Ensemble members
+   table's ▶continue / ⑂fork buttons link here). */
 import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { StepById } from "../fasrc";
@@ -18,6 +18,7 @@ import {
 } from "../ui";
 
 type Mode = "add" | "continue" | "fork";
+type ContinueBasis = "extra" | "target";
 const LOSSES = ["l1", "l2", "l3", "mse"];
 
 type ContinueMember = {
@@ -81,7 +82,9 @@ export default function TrainMembersPage() {
   const [saturationMaskProb, setSaturationMaskProb] = useState("0.2");
   const [rows, setRows] = useState<SpecRow[]>([newRow(true)]);
   const [steps, setSteps] = useState("60000");
+  const [continueBasis, setContinueBasis] = useState<ContinueBasis>("extra");
   const [extraSteps, setExtraSteps] = useState("50000");
+  const [targetSteps, setTargetSteps] = useState("100000");
   const [arrayMaxParallel, setArrayMaxParallel] = useState("2");
 
   const setRow = (i: number, patch: Partial<SpecRow>) =>
@@ -128,9 +131,13 @@ export default function TrainMembersPage() {
       psf_warp_sigma: psfWarpSigma,
       saturation_mask_prob: saturationMaskProb,
     };
-    if (mode === "continue")
-      return { mode, members: selectedMemberNames.join(","), extra_steps: extraSteps,
+    if (mode === "continue") {
+      const continuation = continueBasis === "target"
+        ? { target_steps: targetSteps } : { extra_steps: extraSteps };
+      return { mode, members: selectedMemberNames.join(","),
+        continue_basis: continueBasis, ...continuation,
         array_max_parallel: arrayMaxParallel, ...geometry };
+    }
     const p: Record<string, string> = {
       mode, count: String(rows.length), steps,
       member_spec: JSON.stringify(buildSpec(rows, mode)),
@@ -139,15 +146,20 @@ export default function TrainMembersPage() {
     };
     if (mode === "fork") p.fork_from = member.trim();
     return p;
-  }, [mode, member, selectedMemberNames, extraSteps, rows, steps, forwardOtf,
-    batchSize, hrCropSize, cropsPerField, psfSubset, psfWarpProb,
+  }, [mode, member, selectedMemberNames, continueBasis, extraSteps, targetSteps,
+    rows, steps, forwardOtf, batchSize, hrCropSize, cropsPerField, psfSubset,
+    psfWarpProb,
     psfWarpAlphaMax, psfWarpSigma, saturationMaskProb, arrayMaxParallel]);
 
   const showDepth = mode === "add";   // fork inherits its source's depth + init
   const extraStepCount = Number(extraSteps);
   const extraStepsValid = Number.isInteger(extraStepCount) && extraStepCount > 0;
+  const targetStepCount = Number(targetSteps);
+  const targetStepsValid = Number.isInteger(targetStepCount) && targetStepCount > 0;
+  const continuationStepsValid = continueBasis === "target"
+    ? targetStepsValid : extraStepsValid;
   const continueSubmitDisabled = mode === "continue"
-    && (selectedMemberNames.length === 0 || !extraStepsValid);
+    && (selectedMemberNames.length === 0 || !continuationStepsValid);
   const geometryValid = Number.isInteger(Number(batchSize)) && Number(batchSize) > 0
     && Number.isInteger(Number(hrCropSize)) && Number(hrCropSize) > 0
     && Number(hrCropSize) % 2 === 0
@@ -179,8 +191,24 @@ export default function TrainMembersPage() {
             </div>} />
           <CardBody>
             <div className="fasrc-step__res" style={{ marginBottom: "var(--s3)" }}>
-              <NumberField label="extra steps" value={extraSteps} onChange={setExtraSteps} min={1000} max={500000} step={1000} />
-              <span className="ui-field__hint">Applied to every selected member from its current checkpoint.</span>
+              <Field label="continue by">
+                <Select value={continueBasis}
+                  onChange={(value) => setContinueBasis(value as ContinueBasis)}
+                  options={[
+                    { value: "extra", label: "add extra steps" },
+                    { value: "target", label: "up to step N" },
+                  ]} />
+              </Field>
+              {continueBasis === "target"
+                ? <NumberField label="up to step N" value={targetSteps}
+                    onChange={setTargetSteps} min={1000} max={2000000} step={1000} />
+                : <NumberField label="extra steps" value={extraSteps}
+                    onChange={setExtraSteps} min={1000} max={500000} step={1000} />}
+              <span className="ui-field__hint">
+                {continueBasis === "target"
+                  ? "Each array task reads its checkpoint on FASRC and adds N − current. Members already at N are skipped."
+                  : "Applied to every selected member from its current checkpoint."}
+              </span>
             </div>
             {continueStatus.loading ? <Empty><Spinner /> loading active members…</Empty>
               : continueStatus.error ? <Empty>could not load active ensemble members</Empty>
@@ -297,7 +325,9 @@ export default function TrainMembersPage() {
       <Card style={{ marginTop: "var(--s4)" }}>
         <CardHead title="Submit"
           sub={mode === "continue"
-            ? `continue ${selectedSummary} for ${extraSteps} more steps each`
+            ? continueBasis === "target"
+              ? `continue ${selectedSummary} up to step ${targetSteps}`
+              : `continue ${selectedSummary} for ${extraSteps} more steps each`
             : `${rows.length} member${rows.length > 1 ? "s" : ""} · ${steps} steps each`} />
         <CardBody>
           <div className="fasrc-step__res" style={{ marginBottom: "var(--s3)" }}>
@@ -312,6 +342,8 @@ export default function TrainMembersPage() {
               ? "enter a positive batch, an even HR side, positive examples per field, and valid probabilities"
               : selectedMemberNames.length === 0
               ? "select at least one member above"
+              : continueBasis === "target"
+              ? "enter a positive whole-number target step"
               : "enter a positive whole number of extra steps"} />
         </CardBody>
       </Card>

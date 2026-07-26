@@ -97,6 +97,28 @@ def test_continue_mode_reads_current_step(tmp_path, monkeypatch):
     assert s.init_from is None
 
 
+def test_continue_mode_can_target_one_absolute_step(tmp_path, monkeypatch):
+    base = str(tmp_path / "ens")
+    _mk_member(base, 3)
+    monkeypatch.setattr("scripts.train_ensemble.checkpoint_step",
+                        lambda d: 2000)
+    args = parse_args(["--mode", "continue", "--members", "member_03",
+                       "--target-steps", "5000"])
+    (s,) = build_specs(args, base)
+    assert (s.name, s.target_steps, s.run_steps, s.op) == \
+        ("member_03", 5000, 3000, "continue")
+
+
+def test_continue_target_skips_member_already_there(tmp_path, monkeypatch):
+    base = str(tmp_path / "ens")
+    _mk_member(base, 3)
+    monkeypatch.setattr("scripts.train_ensemble.checkpoint_step",
+                        lambda d: 5000)
+    args = parse_args(["--mode", "continue", "--members", "member_03",
+                       "--target-steps", "5000"])
+    assert build_specs(args, base) == []
+
+
 def test_array_continue_selects_one_member_and_keeps_original_seed_offset(
         tmp_path, monkeypatch):
     base = str(tmp_path / "ens")
@@ -110,6 +132,31 @@ def test_array_continue_selects_one_member_and_keeps_original_seed_offset(
                        "--array-task"])
     (spec,) = build_specs(args, base)
     assert (spec.name, spec.seed, spec.target_steps) == ("member_05", 21, 2500)
+
+
+def test_array_continue_target_uses_selected_members_checkpoint(
+        tmp_path, monkeypatch):
+    base = str(tmp_path / "ens")
+    _mk_member(base, 3)
+    _mk_member(base, 5)
+    monkeypatch.setattr(
+        "scripts.train_ensemble.checkpoint_step",
+        lambda d: 2000 if d.endswith("member_03") else 4500,
+    )
+    monkeypatch.setenv("SLURM_ARRAY_TASK_ID", "1")
+    args = parse_args(["--mode", "continue",
+                       "--members", "member_03,member_05",
+                       "--target-steps", "5000", "--base-seed", "20",
+                       "--array-task"])
+    (spec,) = build_specs(args, base)
+    assert (spec.name, spec.seed, spec.target_steps, spec.run_steps) == \
+        ("member_05", 21, 5000, 500)
+
+
+def test_continue_step_modes_are_mutually_exclusive():
+    with pytest.raises(SystemExit):
+        parse_args(["--mode", "continue", "--members", "member_03",
+                    "--extra-steps", "500", "--target-steps", "5000"])
 
 
 def test_continue_requires_existing_checkpoint(tmp_path):

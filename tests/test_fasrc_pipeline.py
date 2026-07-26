@@ -159,6 +159,14 @@ class TestRegistry:
         assert argv[argv.index("--extra-steps") + 1] == "500"
         assert "--member-names" not in argv and "--count" not in argv
 
+    def test_ensemble_train_continue_to_absolute_target(self):
+        argv = REGISTRY.get("ensemble_train").build_command(
+            {"mode": "continue", "members": "member_03,member_05",
+             "continue_basis": "target", "target_steps": 120000})
+        assert argv[argv.index("--members") + 1] == "member_03,member_05"
+        assert argv[argv.index("--target-steps") + 1] == "120000"
+        assert "--extra-steps" not in argv
+
     def test_ensemble_train_continue_normalizes_and_validates_members(self):
         argv = REGISTRY.get("ensemble_train").build_command(
             {"mode": "continue",
@@ -172,6 +180,14 @@ class TestRegistry:
             REGISTRY.get("ensemble_train").build_command(
                 {"mode": "continue", "members": "member_03",
                  "extra_steps": -1})
+        with pytest.raises(ValueError, match="target_steps"):
+            REGISTRY.get("ensemble_train").build_command(
+                {"mode": "continue", "members": "member_03",
+                 "continue_basis": "target", "target_steps": 0})
+        with pytest.raises(ValueError, match="continue_basis"):
+            REGISTRY.get("ensemble_train").build_command(
+                {"mode": "continue", "members": "member_03",
+                 "continue_basis": "unknown"})
 
     def test_ensemble_train_fork_mode(self, monkeypatch):
         monkeypatch.setattr(

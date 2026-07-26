@@ -1071,8 +1071,9 @@ class EnsembleTrainStep(FASRCPipelineStep):
     * ``add`` — create N NEW members (fresh names allocated from the LOCAL
       registry at submit time, so archived/tombstoned indices are never
       reused) and train only them;
-    * ``continue`` — train selected existing members ``extra_steps`` more
-      steps each (warm cosine restart over the new absolute total);
+    * ``continue`` — train selected existing members either ``extra_steps``
+      more each or up to one absolute ``target_steps`` checkpoint (warm cosine
+      restart over each member's new absolute total);
     * ``fork`` — create N new members initialized from an existing member's
       weights (psnr or loss track), step 0, fresh optimizer + LR schedule.
 
@@ -1143,11 +1144,25 @@ class EnsembleTrainStep(FASRCPipelineStep):
             members = self._members(params)
             if not members:
                 raise ValueError("continue mode needs at least one member")
-            extra_steps = int(params.get("extra_steps", 50_000) or 50_000)
-            if extra_steps <= 0:
-                raise ValueError("extra_steps must be positive")
-            cmd += ["--members", ",".join(members),
-                    "--extra-steps", str(extra_steps)]
+            basis = str(params.get("continue_basis", "extra") or
+                        "extra").strip()
+            cmd += ["--members", ",".join(members)]
+            if basis == "target":
+                target_steps = int(params.get("target_steps", 0) or 0)
+                if target_steps <= 0:
+                    raise ValueError("target_steps must be positive")
+                cmd += ["--target-steps", str(target_steps)]
+            elif basis == "extra":
+                extra_steps = int(
+                    params.get("extra_steps", 50_000) or 50_000,
+                )
+                if extra_steps <= 0:
+                    raise ValueError("extra_steps must be positive")
+                cmd += ["--extra-steps", str(extra_steps)]
+            else:
+                raise ValueError(
+                    "continue_basis must be 'extra' or 'target'",
+                )
         else:
             # add / fork create members → allocate names from the LOCAL
             # registry now (tombstones must never be reused, and the remote

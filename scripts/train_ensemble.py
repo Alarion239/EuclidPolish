@@ -8,7 +8,8 @@ member; direct CLI use without ``--array-task`` may still train sequentially.
 
 Modes:
   --mode add       (default) create --count NEW members and train only them.
-  --mode continue  train --members m,… for --extra-steps MORE steps each
+  --mode continue  train --members m,… either for --extra-steps MORE steps
+                   each, or up to the absolute --target-steps checkpoint
                    (warm cosine restart: the schedule recomputes over the
                    new absolute total; warmup is already past).
   --mode fork      create --count new members initialized from
@@ -21,6 +22,7 @@ without it the script takes the next free on-disk indices.
 
     python -u scripts/train_ensemble.py --mode add --count 3 --steps 200000
     python -u scripts/train_ensemble.py --mode continue --members member_03 --extra-steps 50000
+    python -u scripts/train_ensemble.py --mode continue --members member_03 --target-steps 200000
     python -u scripts/train_ensemble.py --mode fork --fork-from member_02 --count 2
 """
 
@@ -82,8 +84,18 @@ def parse_args(argv=None) -> argparse.Namespace:
                         "for add/fork mode.")
     p.add_argument("--members", default="",
                    help="continue: comma-separated existing member names.")
-    p.add_argument("--extra-steps", type=int, default=50_000,
-                   help="continue: train each member this many MORE steps.")
+    continue_steps = p.add_mutually_exclusive_group()
+    continue_steps.add_argument(
+        "--extra-steps", type=int, default=None,
+        help="continue: train each member this many MORE steps "
+             "(default: 50000 when neither continuation option is given).",
+    )
+    continue_steps.add_argument(
+        "--target-steps", type=int, default=None,
+        help="continue: train each member UP TO this absolute step; each "
+             "member adds target-current, and members already there are "
+             "successful no-ops.",
+    )
     p.add_argument("--fork-from", default="",
                    help="fork: source member name (e.g. member_02).")
     p.add_argument("--fork-track", choices=["psnr", "loss"], default="psnr",
@@ -406,6 +418,16 @@ def build_specs(args, base: str) -> list[MemberTrainSpec]:
         if not names:
             print("✗ --mode continue needs --members")
             raise SystemExit(2)
+        target = (int(args.target_steps)
+                  if args.target_steps is not None else None)
+        extra = (50_000 if args.extra_steps is None
+                 else int(args.extra_steps))
+        if target is not None and target <= 0:
+            print("✗ --target-steps must be positive")
+            raise SystemExit(2)
+        if target is None and extra <= 0:
+            print("✗ --extra-steps must be positive")
+            raise SystemExit(2)
         array_index = _array_index(args, len(names))
         all_names = names
         overrides = _member_overrides(args, len(all_names))
@@ -418,11 +440,17 @@ def build_specs(args, base: str) -> list[MemberTrainSpec]:
             if cur is None:
                 print(f"✗ {name}: no checkpoint to continue from in {d}")
                 raise SystemExit(2)
+            if target is not None and cur >= target:
+                print(f"  ✓ {name}: already at step {cur:,} "
+                      f"(target {target:,}); nothing to train")
+                continue
+            run_steps = target - cur if target is not None else extra
+            absolute_target = target if target is not None else cur + extra
             specs.append(MemberTrainSpec(
                 name=name, seed=int(overrides[i].get("seed", base_seed + i)),
                 op="continue",
-                target_steps=cur + int(args.extra_steps),
-                run_steps=int(args.extra_steps),
+                target_steps=absolute_target,
+                run_steps=run_steps,
                 **_diversity_kwargs(args, overrides[i])))
         return specs
 
@@ -488,6 +516,10 @@ def main() -> int:
     args = parse_args()
     base = args.base_dir or _default_base_dir()
     specs = build_specs(args, base)
+    if not specs:
+        print("✓ selected members are already at or beyond the requested "
+              "target; nothing to train")
+        return 0
     lr = tfrecord_path(args.records_dir, "dirty_train")
     hr = tfrecord_path(args.records_dir, "clean_train")
     needed = required_record_names(specs)
