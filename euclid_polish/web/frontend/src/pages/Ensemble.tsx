@@ -492,7 +492,8 @@ export default function EnsemblePage() {
 
       <div className="grid" style={{ gridTemplateColumns: "1fr", gap: "var(--s4)" }}>
         <Controls status={status.data} mode={mode} evalJob={evalJob} opJob={opJob} onDone={reloadAll} />
-        <Members status={status.data} loading={status.loading} starless={starless} opJob={opJob}
+        <Members status={status.data} evals={evals.data} jointComb={jointComb.data} frozenComb={frozenComb.data}
+          loading={status.loading} starless={starless} opJob={opJob}
           onArchived={reloadAll}
           onContinue={(m) => toTrain("continue", m)}
           onFork={(m) => toTrain("fork", m)} />
@@ -552,10 +553,44 @@ function Controls(
 }
 
 /* ── members table ───────────────────────────────────────────────────────── */
-type MemberSortKey = "rank" | "name" | "psnr" | "loss" | "depth" | "knee" | "step";
+type MemberTableRow = Member & {
+  jointWeight: number | null;
+  frozenWeight: number | null;
+  coherenceOverall: number | null;
+  coherenceSr: number | null;
+};
+type MemberSortKey = "rank" | "name" | "psnr" | "loss" | "depth" | "knee" | "step"
+  | "jointWeight" | "frozenWeight" | "coherenceOverall" | "coherenceSr";
 type MemberSort = { key: MemberSortKey; direction: "asc" | "desc" };
 
-function memberSortValue(member: Member, key: MemberSortKey): number | string | null {
+function memberNameFromModelLabel(label: string): string {
+  const base = label.split("·")[0];
+  if (base.startsWith("member_")) return base;
+  return /^\d+$/.test(base) ? `member_${base}` : base;
+}
+
+function integratedWeightsByMember(comb: Combiner | null): Map<string, number> {
+  if (!comb?.available || comb.stale) return new Map();
+  const band = comb.band_names?.[0];
+  const values = band ? comb.member_weight_integrals?.[band] : undefined;
+  if (!values) return new Map();
+  return new Map(comb.member_labels.flatMap((label, index) => {
+    const value = values[index];
+    return value != null && Number.isFinite(value)
+      ? [[memberNameFromModelLabel(label), value] as const]
+      : [];
+  }));
+}
+
+function coherenceByMember(evals: Evals | null, stale: boolean): Map<string, CoherenceScore> {
+  if (stale) return new Map();
+  return new Map(asArray<CoherenceScore>(evals?.coherence?.scores).flatMap((score) => {
+    const memberName = memberNameFromModelLabel(score.label);
+    return memberName.startsWith("member_") ? [[memberName, score] as const] : [];
+  }));
+}
+
+function memberSortValue(member: MemberTableRow, key: MemberSortKey): number | string | null {
   switch (key) {
     case "rank": return member.psnr_rank ?? null;
     case "name": return member.name;
@@ -564,6 +599,10 @@ function memberSortValue(member: Member, key: MemberSortKey): number | string | 
     case "depth": return member.blocks ?? null;
     case "knee": return kneeOf(member.asinh_knee);
     case "step": return member.step ?? null;
+    case "jointWeight": return member.jointWeight;
+    case "frozenWeight": return member.frozenWeight;
+    case "coherenceOverall": return member.coherenceOverall;
+    case "coherenceSr": return member.coherenceSr;
   }
 }
 
@@ -576,11 +615,28 @@ function compareMemberValues(a: number | string | null, b: number | string | nul
 }
 
 function Members(
-  { status, loading, starless, opJob, onArchived, onContinue, onFork }:
-  { status: Status | null; loading: boolean; starless: boolean; opJob: ReturnType<typeof useJob>;
+  { status, evals, jointComb, frozenComb, loading, starless, opJob, onArchived, onContinue, onFork }:
+  { status: Status | null; evals: Evals | null; jointComb: Combiner | null; frozenComb: Combiner | null;
+    loading: boolean; starless: boolean; opJob: ReturnType<typeof useJob>;
     onArchived: () => void; onContinue: (m: string) => void; onFork: (m: string) => void },
 ) {
-  const rows = asArray<Member>(status?.members).filter((m) => !!m.starless === starless);
+  const rows = useMemo<MemberTableRow[]>(() => {
+    const jointWeights = integratedWeightsByMember(jointComb);
+    const frozenWeights = integratedWeightsByMember(frozenComb);
+    const coherence = coherenceByMember(evals, !!status?.eval_summary_stale);
+    return asArray<Member>(status?.members)
+      .filter((member) => !!member.starless === starless)
+      .map((member) => {
+        const score = coherence.get(member.name);
+        return {
+          ...member,
+          jointWeight: jointWeights.get(member.name) ?? null,
+          frozenWeight: frozenWeights.get(member.name) ?? null,
+          coherenceOverall: score?.overall ?? null,
+          coherenceSr: score?.sr ?? null,
+        };
+      });
+  }, [evals, frozenComb, jointComb, starless, status?.eval_summary_stale, status?.members]);
   const [sort, setSort] = useState<MemberSort | null>(null);
   const shownRows = useMemo(() => {
     if (!sort) return rows;
@@ -595,7 +651,7 @@ function Members(
     });
   }, [rows, sort]);
 
-  const sortHeader = (key: MemberSortKey, label: string, align?: "right") => {
+  const sortHeader = (key: MemberSortKey, label: string, align?: "right", description?: string) => {
     const active = sort?.key === key;
     return (
       <button type="button" className={`ui-table__sort${align === "right" ? " ui-table__sort--right" : ""}`}
@@ -603,22 +659,34 @@ function Members(
           ? { key, direction: previous.direction === "asc" ? "desc" : "asc" }
           : { key, direction: "asc" })}
         aria-label={`Sort by ${label}`}
-        title={`Sort by ${label}${active ? ` (${sort.direction === "asc" ? "ascending" : "descending"})` : ""}`}>
+        title={`${description ? `${description}. ` : ""}Sort by ${label}${active ? ` (${sort.direction === "asc" ? "ascending" : "descending"})` : ""}`}>
         <span>{label}</span>
         <span className="ui-table__sort-icon" aria-hidden>{active ? (sort.direction === "asc" ? "↑" : "↓") : "↕"}</span>
       </button>
     );
   };
 
-  const cols: Column<Member>[] = [
-    { header: sortHeader("rank", "#", "right"), cell: (m) => m.psnr_rank ? <b>{m.psnr_rank}</b> : <span className="muted">—</span>, width: "5%", align: "right" },
-    { header: sortHeader("name", "member"), cell: (m) => <code className="mono">{m.name}</code>, width: "17%" },
-    { header: sortHeader("psnr", "PSNR", "right"), cell: (m) => m.psnr != null ? `${m.psnr.toFixed(3)} dB` : <span className="muted">—</span>, width: "13%", align: "right" },
-    { header: sortHeader("loss", "loss"), cell: (m) => <Badge>{(m.loss ?? "l1").toUpperCase()}</Badge>, width: "9%" },
-    { header: sortHeader("depth", "depth", "right"), cell: (m) => m.blocks ?? "—", width: "8%", align: "right" },
-    { header: sortHeader("knee", "knee", "right"), cell: (m) => <span className="mono">{kneeTag(m.asinh_knee)}</span>, width: "10%", align: "right" },
-    { header: sortHeader("step", "step", "right"), cell: (m) => m.step ? m.step.toLocaleString() : "—", width: "12%", align: "right" },
-    { header: "", align: "right", width: "26%", cell: (m) => (
+  const metric = (value: number | null, digits: number, suffix = "") => value == null
+    ? <span className="muted">—</span>
+    : `${value.toFixed(digits)}${suffix}`;
+
+  const cols: Column<MemberTableRow>[] = [
+    { header: sortHeader("rank", "#", "right"), cell: (m) => m.psnr_rank ? <b>{m.psnr_rank}</b> : <span className="muted">—</span>, width: "4%", align: "right" },
+    { header: sortHeader("name", "member"), cell: (m) => <code className="mono">{m.name}</code>, width: "11%" },
+    { header: sortHeader("psnr", "PSNR", "right"), cell: (m) => m.psnr != null ? `${m.psnr.toFixed(3)} dB` : <span className="muted">—</span>, width: "9%", align: "right" },
+    { header: sortHeader("loss", "loss"), cell: (m) => <Badge>{(m.loss ?? "l1").toUpperCase()}</Badge>, width: "6%" },
+    { header: sortHeader("depth", "depth", "right"), cell: (m) => m.blocks ?? "—", width: "5%", align: "right" },
+    { header: sortHeader("knee", "knee", "right"), cell: (m) => <span className="mono">{kneeTag(m.asinh_knee)}</span>, width: "6%", align: "right" },
+    { header: sortHeader("step", "step", "right"), cell: (m) => m.step ? m.step.toLocaleString() : "—", width: "8%", align: "right" },
+    { header: sortHeader("jointWeight", "joint wt", "right", "Integrated validation weight from the joint-refit combiner"),
+      cell: (m) => metric(m.jointWeight == null ? null : 100 * m.jointWeight, 2, "%"), width: "8%", align: "right" },
+    { header: sortHeader("frozenWeight", "frozen wt", "right", "Integrated validation weight from the frozen-block combiner"),
+      cell: (m) => metric(m.frozenWeight == null ? null : 100 * m.frozenWeight, 2, "%"), width: "8%", align: "right" },
+    { header: sortHeader("coherenceOverall", "coh all", "right", "Spectral coherence with HR over the full measured frequency range"),
+      cell: (m) => metric(m.coherenceOverall, 3), width: "7%", align: "right" },
+    { header: sortHeader("coherenceSr", "coh SR", "right", "Spectral coherence with HR above the LR Nyquist boundary"),
+      cell: (m) => metric(m.coherenceSr, 3), width: "7%", align: "right" },
+    { header: "", align: "right", width: "21%", cell: (m) => (
       <div className="row" style={{ gap: 4, justifyContent: "flex-end", flexWrap: "nowrap" }}>
         <Button size="sm" variant="ghost" title="continue training this member"
           onClick={() => onContinue(m.name)}>▶ continue</Button>

@@ -147,7 +147,7 @@
    fields keep the same x-coordinates as the rows, while the actions retain
    enough room to stay on one line. The wrapper supplies the small-screen
    horizontal scroll affordance. */
-.ens-members-table { table-layout: fixed; min-width: 900px; }
+.ens-members-table { table-layout: fixed; min-width: 1280px; }
 .ens-members-table th, .ens-members-table td { overflow: hidden; }
 .ens-members-table td:nth-child(2) code { display: block; overflow: hidden; text-overflow: ellipsis; }
 .ens-members-table th:last-child, .ens-members-table td:last-child { overflow: visible; }
