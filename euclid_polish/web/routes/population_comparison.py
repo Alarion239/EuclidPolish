@@ -10,6 +10,7 @@ from euclid_polish.web.helpers.population_comparison import (
     build_comparison,
     query_euclid_population,
     read_comparison,
+    refresh_population_comparison,
 )
 from euclid_polish.web.jobs import REGISTRY
 from euclid_polish.web.remote import ensure_ssh_connected
@@ -58,13 +59,19 @@ def register(app):
             )}), 400
 
         def run(cap):
-            cap.tick(0, 1, "Euclid MER cone query")
+            cap.tick(0, 2, "Euclid MER cone query")
             meta = query_euclid_population(ra, dec, radius_arcmin)
-            cap.tick(1, 1, "Euclid MER cone query")
+            cap.tick(1, 2, "population histograms")
+            refreshed = refresh_population_comparison()
+            cap.tick(2, 2, "population histograms")
             cap.write(
                 f"cached {meta['rows']} clean sources over "
                 f"{meta['area_arcmin2']:.2f} arcmin²\n"
             )
+            if refreshed is None:
+                cap.write("Run Measure local fields to create the comparison cache.\n")
+            else:
+                cap.write("updated Euclid population statistics\n")
             return meta
 
         job_id = REGISTRY.spawn(
@@ -78,15 +85,17 @@ def register(app):
         remote = f"{_sky_records_remote_dir()}/sources_train.csv"
 
         def run(cap):
-            cap.tick(0, 2, "connecting to FASRC")
+            cap.tick(0, 3, "connecting to FASRC")
             ensure_ssh_connected()
-            cap.tick(1, 2, "training source catalog")
+            cap.tick(1, 3, "training source catalog")
             result = fasrc_fetcher.fetch_one_file(
                 remote, force=True, max_bytes=1024 * 1024 * 1024
             )
             if not result.ok:
                 raise RuntimeError(result.error or "training source catalog sync failed")
-            cap.tick(2, 2, "training source catalog")
+            cap.tick(2, 3, "population histograms")
+            refresh_population_comparison()
+            cap.tick(3, 3, "population histograms")
             cap.write(
                 f"synced sources_train.csv ({result.size_bytes or 0:,} bytes)\n"
             )

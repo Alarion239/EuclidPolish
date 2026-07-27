@@ -403,6 +403,8 @@ def _field_payload(synthetic: _FieldAccumulator,
 
 
 def _finite(value: Any) -> float | None:
+    if np.ma.is_masked(value):
+        return None
     try:
         number = float(value)
     except (TypeError, ValueError):
@@ -555,6 +557,21 @@ def _population_payload(source_csvs: Iterable[Path],
         ),
         "euclid_meta": euclid_meta,
     }
+
+
+def refresh_population_comparison() -> dict[str, Any] | None:
+    """Refresh source-population statistics without rereading image fields."""
+    payload = read_comparison()
+    if payload is None:
+        return None
+    _, source_csvs = _synthetic_paths()
+    synthetic_field_count = int(
+        payload.get("samples", {}).get("synthetic", {}).get("fields", 0)
+    )
+    population = _population_payload(source_csvs, synthetic_field_count)
+    payload["population"] = population
+    _write_json(comparison_path(), payload)
+    return population
 
 
 def build_comparison(

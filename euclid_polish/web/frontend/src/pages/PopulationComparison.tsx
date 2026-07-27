@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { NavLink } from "react-router-dom";
 import Plot, { Legend, type Series, type Tick } from "../charts/Plot";
 import { C, categorical } from "../colors";
@@ -96,6 +96,18 @@ const bandLabel = (band: Band) => band.replace("_E", "");
 
 function finite(values: readonly (number | null)[]): number[] {
   return values.filter((value): value is number => value != null && Number.isFinite(value));
+}
+
+function euclidMetaMatches(
+  cached: Comparison["population"]["euclid_meta"],
+  displayed: Comparison["population"]["euclid_meta"],
+): boolean {
+  if (cached == null || displayed == null) return cached === displayed;
+  return cached.rows === displayed.rows
+    && cached.ra === displayed.ra
+    && cached.dec === displayed.dec
+    && cached.radius_arcmin === displayed.radius_arcmin
+    && cached.area_arcmin2 === displayed.area_arcmin2;
 }
 
 function domain(values: readonly (number | null)[], includeZero = false): [number, number] {
@@ -432,7 +444,10 @@ export default function PopulationComparisonPage() {
     comparison.samples.synthetic.fields !== api.availability.synthetic.fields
     || comparison.samples.real.fields !== api.availability.real.fields
     || comparison.population.synthetic_field_count !== api.availability.synthetic.population_fields
-    || (!!comparison.population.euclid) !== api.availability.euclid_catalog.cached
+    || !euclidMetaMatches(
+      api.availability.euclid_catalog.meta,
+      comparison.population.euclid_meta,
+    )
   );
 
   const rebuild = () => build.run("/api/population-comparison/build", {}, {
@@ -444,7 +459,6 @@ export default function PopulationComparisonPage() {
     { onDone: (job) => {
       if (job.status !== "failed") {
         resource.reload();
-        rebuild();
       }
     } },
   );
@@ -460,13 +474,6 @@ export default function PopulationComparisonPage() {
     });
     return value;
   }, [comparison]);
-
-  useEffect(() => {
-    if (api?.availability.euclid_catalog.cached && comparison && !comparison.population.euclid && !build.busy) {
-      // A cone query may have completed in another tab. Keep this page explicit:
-      // mark it stale, but do not launch a surprise image-statistics pass.
-    }
-  }, [api, comparison, build.busy]);
 
   if (resource.loading && !api) {
     return <Page><Empty><Spinner /> reading local field census…</Empty></Page>;
@@ -539,7 +546,7 @@ export default function PopulationComparisonPage() {
               )}
             </div>
 
-            <ConeQuery api={api} onQueried={rebuild} />
+            <ConeQuery api={api} onQueried={resource.reload} />
 
             {sections.map((section) => (
               <section className="parameter-section" key={section.title}>

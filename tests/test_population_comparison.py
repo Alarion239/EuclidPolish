@@ -2,15 +2,19 @@
 from __future__ import annotations
 
 import json
+import warnings
 
 import numpy as np
 
 from euclid_polish.web.helpers.population_comparison import (
+    VERSION,
     _field_payload,
     _FieldAccumulator,
+    _finite,
     _normalise_field,
     _parameter_payload,
     _read_synthetic_sources,
+    refresh_population_comparison,
 )
 
 
@@ -74,6 +78,46 @@ def test_population_parameter_payload_plots_every_available_parameter():
     assert {"objects_per_field", "mag_vis", "z", "temperature_k"} <= set(
         payload["parameters"]
     )
+
+
+def test_masked_catalog_values_are_missing_without_warning():
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        assert _finite(np.ma.masked) is None
+    assert not caught
+
+
+def test_population_refresh_preserves_field_statistics(tmp_path, monkeypatch):
+    from euclid_polish.web.helpers import population_comparison as comparison
+
+    comparison_file = tmp_path / "comparison.json"
+    comparison_file.write_text(json.dumps({
+        "version": VERSION,
+        "samples": {"synthetic": {"fields": 2}},
+        "fields": {"sentinel": "unchanged"},
+        "population": {},
+    }))
+    sources = tmp_path / "sources.csv"
+    sources.write_text(
+        "field_index,type,mag_vis\n"
+        "0,galaxy,21.0\n"
+        "1,star,18.0\n"
+    )
+    monkeypatch.setattr(comparison, "comparison_path", lambda: comparison_file)
+    monkeypatch.setattr(comparison, "_synthetic_paths", lambda: ([], [sources]))
+    monkeypatch.setattr(comparison, "_read_euclid_sources", lambda: ([
+        {"type": "galaxy", "mag_vis": 22.0},
+        {"type": "star", "mag_vis": 19.0},
+    ], {"area_arcmin2": 4.0, "rows": 2}))
+
+    refreshed = refresh_population_comparison()
+    saved = json.loads(comparison_file.read_text())
+
+    assert refreshed is not None
+    assert refreshed["euclid"]["objects"] == 2
+    assert refreshed["synthetic_field_count"] == 2
+    assert saved["fields"] == {"sentinel": "unchanged"}
+    assert saved["population"] == refreshed
 
 
 def test_synthetic_lenses_are_merged_into_galaxies(tmp_path):
