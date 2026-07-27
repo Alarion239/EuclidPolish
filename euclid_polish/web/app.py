@@ -51,6 +51,7 @@ from euclid_polish.web.routes import (
     lensfinder,
     model,
     poster,
+    population_comparison,
     psfs,
     sky,
     tng,
@@ -161,6 +162,8 @@ def create_app() -> Flask:
         "/ensemble/",            # records; render + evaluate jobs need no SSH
         "/api/inference/",       # cached real-field workspace is local
         "/inference/",           # local recache/reapply jobs reuse archive data
+        "/api/population-comparison",
+        "/population-comparison",
         "/eval-files/",          # serve already-pulled PNG/FITS offline
         "/viewer/",              # unified cutout viewer reads local caches
         "/lens-isolation",       # additive experiment status works offline
@@ -181,6 +184,7 @@ def create_app() -> Flask:
         "/cutouts",
         "/tng",
         "/synthetic-real",
+        "/population-comparison",
         "/inference",
         "/ensemble",
         "/ensemble/starfull",
@@ -317,6 +321,7 @@ def create_app() -> Flask:
     sky.register(app)
     tng.register(app)
     poster.register(app)
+    population_comparison.register(app)
     model.register(app)
     ensemble.register(app)
     evaluation.register(app)
