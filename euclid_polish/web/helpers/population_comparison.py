@@ -23,7 +23,7 @@ from euclid_polish.config import Config
 from euclid_polish.photometry import electrons_to_ab_mag, uJy_to_ab_mag
 from euclid_polish.web.helpers.paths import _sky_records_local_dir
 
-VERSION = 2
+VERSION = 3
 BANDS = ("VIS", "Y_E", "J_E", "H_E")
 TILE_SIZE = 256
 ANALYSIS_SIZE = 255
@@ -328,6 +328,14 @@ def _field_payload(synthetic: _FieldAccumulator,
             "x": ((edges[:-1] + edges[1:]) / 2).tolist(),
             "synthetic": histogram_fraction(samples_s).tolist(),
             "real": histogram_fraction(samples_r).tolist(),
+            "zero_bin": (
+                int(np.clip(
+                    np.searchsorted(edges, 0.0, side="right") - 1,
+                    0,
+                    len(edges) - 2,
+                ))
+                if lo <= 0.0 <= hi else None
+            ),
             "x_label": "pixel brightness (e⁻ / stack)",
             "y_label": "fraction of sampled pixels / bin",
             "range": [float(lo), float(hi)],

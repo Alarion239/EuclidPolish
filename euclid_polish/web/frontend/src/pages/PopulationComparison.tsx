@@ -16,6 +16,7 @@ type FieldComparison = {
   bands: Band[];
   histograms: Record<Band, {
     x: number[]; synthetic: number[]; real: number[];
+    zero_bin: number | null;
     x_label: string; y_label: string;
   }>;
   power: Record<Band, {
@@ -122,6 +123,10 @@ function log10(values: readonly (number | null)[]): (number | null)[] {
     value != null && value > 0 && Number.isFinite(value) ? Math.log10(value) : null);
 }
 
+function omitBin(values: readonly number[], index: number | null): (number | null)[] {
+  return values.map((value, bin) => bin === index ? null : value);
+}
+
 function DatasetRuler({ availability, comparison }: {
   availability: Availability; comparison: Comparison | null;
 }) {
@@ -176,7 +181,8 @@ function FieldPlots({ comparison }: { comparison: Comparison }) {
   const crosses = BANDS.map((band) => [band, comparison.fields.mean_cross_correlation[band]] as const);
   const histogramX = domain(histograms.flatMap(([, histogram]) => histogram.x));
   const histogramY = domain(histograms.flatMap(([, histogram]) => [
-    ...histogram.synthetic, ...histogram.real,
+    ...omitBin(histogram.synthetic, histogram.zero_bin),
+    ...omitBin(histogram.real, histogram.zero_bin),
   ]), true);
   const powerY = domain(powers.flatMap(([, power]) => [
     ...log10(power.synthetic.median), ...log10(power.real.median),
@@ -186,11 +192,13 @@ function FieldPlots({ comparison }: { comparison: Comparison }) {
   const crossY: [number, number] = [-1, 1];
   const histogramSeries: Series[] = histograms.flatMap(([band, histogram]) => [
     {
-      x: histogram.x, y: histogram.synthetic, color: BAND_COLOR(band),
+      x: histogram.x, y: omitBin(histogram.synthetic, histogram.zero_bin),
+      color: BAND_COLOR(band),
       mode: "histogram", width: 1.25, alpha: 0.72, fillAlpha: 0.13,
     },
     {
-      x: histogram.x, y: histogram.real, color: BAND_COLOR(band),
+      x: histogram.x, y: omitBin(histogram.real, histogram.zero_bin),
+      color: BAND_COLOR(band),
       mode: "histogram", width: 1.4, dash: [4, 3], alpha: 0.95, fillAlpha: 0.025,
     },
   ]);
@@ -234,7 +242,7 @@ function FieldPlots({ comparison }: { comparison: Comparison }) {
       <div className="field-plot-grid">
         <Card className="comparison-plot">
           <CardHead title="Brightness distribution"
-            sub="Normalized histogram over the full shared range; no pixels are clipped from the bright or negative tails." />
+            sub="The bin containing 0 e⁻ is hidden to expose the signal wings; bright and negative tails remain unclipped." />
           <CardBody>
             <Plot xDomain={histogramX} yDomain={histogramY}
               xTicks={ticks(histogramX)} yTicks={ticks(histogramY)}

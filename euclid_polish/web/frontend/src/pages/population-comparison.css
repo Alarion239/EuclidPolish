@@ -293,6 +293,8 @@
   .survey-ruler__track span { animation: none; }
 }
 @media (max-width: 1080px) {
+  .field-plot-grid { grid-template-columns: 1fr; }
+  .comparison-plot--cross { grid-column: auto; }
   .parameter-atlas { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .cone-query__form { grid-template-columns: repeat(3, 1fr); }
   .cone-query__area { border-left: 0; border-top: 1px solid var(--border-strong); }

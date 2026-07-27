@@ -20,6 +20,7 @@ def test_population_field_payload_is_json_safe_and_keeps_four_bands():
     real = _FieldAccumulator()
     for _ in range(3):
         base = rng.normal(100.0, 8.0, (256, 256, 4)).astype(np.float32)
+        base[0, 0, :] = 0.0
         synthetic.add(base)
         real.add(base * 1.2 + rng.normal(0, 0.5, base.shape))
 
@@ -44,6 +45,11 @@ def test_population_field_payload_is_json_safe_and_keeps_four_bands():
     assert payload["histograms"]["VIS"]["y_label"] == (
         "fraction of sampled pixels / bin"
     )
+    zero_bin = payload["histograms"]["VIS"]["zero_bin"]
+    assert zero_bin is not None
+    centers = payload["histograms"]["VIS"]["x"]
+    width = centers[1] - centers[0]
+    assert centers[zero_bin] - width / 2 <= 0 <= centers[zero_bin] + width / 2
 
 
 def test_population_field_normalisation_accepts_fits_plane_order():
