@@ -10,6 +10,7 @@ from euclid_polish.web.helpers.population_comparison import (
     _FieldAccumulator,
     _normalise_field,
     _parameter_payload,
+    _read_synthetic_sources,
 )
 
 
@@ -31,6 +32,13 @@ def test_population_field_payload_is_json_safe_and_keeps_four_bands():
     assert len(payload["mean_cross_correlation"]["VIS"]["r"]) == 24
     assert any(value is not None
                for value in payload["mean_cross_correlation"]["VIS"]["r"])
+    vis_range = payload["histograms"]["VIS"]["range"]
+    assert vis_range[0] == min(
+        float(np.min(samples)) for samples in synthetic.samples[0] + real.samples[0]
+    )
+    assert vis_range[1] == max(
+        float(np.max(samples)) for samples in synthetic.samples[0] + real.samples[0]
+    )
 
 
 def test_population_field_normalisation_accepts_fits_plane_order():
@@ -55,6 +63,60 @@ def test_population_parameter_payload_plots_every_available_parameter():
     assert {"objects_per_field", "mag_vis", "z", "temperature_k"} <= set(
         payload["parameters"]
     )
+
+
+def test_synthetic_lenses_are_merged_into_galaxies(tmp_path):
+    sources = tmp_path / "sources.csv"
+    sources.write_text(
+        "field_index,type,mag_vis,theta_E_arcsec\n"
+        "0,galaxy,21.0,\n"
+        "0,lens,20.0,1.2\n"
+        "0,star,18.0,\n"
+    )
+    rows = _read_synthetic_sources([sources])
+    payload = _parameter_payload(rows, area_arcmin2=1.0,
+                                 include_per_field=True)
+
+    assert payload["counts"] == {"galaxy": 2, "star": 1}
+    assert "theta_E_arcsec" not in payload["parameters"]
+
+
+def test_ensure_ssh_connected_builds_shared_session(monkeypatch):
+    from types import SimpleNamespace
+
+    from euclid_polish.web import remote
+
+    created = []
+
+    class FakeSession:
+        def __init__(self, cfg):
+            self.cfg = cfg
+            self.connected = False
+            created.append(self)
+
+        def is_connected(self):
+            return self.connected
+
+        def connect(self):
+            self.connected = True
+
+    cfg = SimpleNamespace(
+        ssh_user="astro",
+        ssh_host="cluster.example",
+        control_socket="/tmp/test-population-ssh.sock",
+        control_persist="8h",
+    )
+    monkeypatch.setattr(remote.STATE, "ssh", None)
+    monkeypatch.setattr(remote.STATE, "connected_at", None)
+    monkeypatch.setattr(remote, "SSHSession", FakeSession)
+    monkeypatch.setattr("euclid_polish.web.fasrc_config.load", lambda: cfg)
+
+    session = remote.ensure_ssh_connected()
+
+    assert session is created[0]
+    assert session.connected
+    assert remote.STATE.ssh is session
+    assert remote.STATE.connected_at is not None
 
 
 def test_population_comparison_page_and_status_route(monkeypatch):

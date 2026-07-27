@@ -65,6 +65,14 @@ def test_login_failure_raises(no_env, monkeypatch):
         EuclidCatalog(login="x", password="y")
 
 
+def test_silently_rejected_astroquery_login_raises(no_env, monkeypatch):
+    fake = _FakeEuclid()
+    fake._TapPlus__isLoggedIn = False
+    monkeypatch.setattr("euclid_polish.catalog.client.Euclid", fake)
+    with pytest.raises(EuclidAuthError, match="rejected by the archive"):
+        EuclidCatalog(login="x", password="y")
+
+
 def test_query_bright_stars_returns_objects(monkeypatch):
     rows = [{"right_ascension": 10.0, "declination": -5.0,
              "flux_vis_psf": 500.0, "fluxerr_vis_psf": 5.0},

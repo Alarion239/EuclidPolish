@@ -141,8 +141,23 @@ function render(ctx: CanvasRenderingContext2D, W: number, H: number, p: PlotProp
   const gridS = css("--border-strong", "#33415a");
 
   ctx.clearRect(0, 0, W, H);
+  ctx.font = '11px "IBM Plex Mono", monospace';
+  const widestYTick = Math.max(
+    0,
+    ...(p.yTicks ?? []).map((tick) => ctx.measureText(tick.label).width),
+  );
+  const lastXTickWidth = p.xTicks?.length
+    ? ctx.measureText(p.xTicks[p.xTicks.length - 1].label).width
+    : 0;
   // A heat plot reserves the right margin for its density colorbar.
-  const m = { l: 58, r: p.heat ? 74 : 16, t: p.title ? 30 : 12, b: 44 };
+  // Tick text and axis titles have separate lanes.  The old fixed 58×44
+  // margin let longer scientific-notation ticks collide with both titles.
+  const m = {
+    l: Math.max(p.yLabel ? 76 : 42, Math.ceil(widestYTick) + (p.yLabel ? 38 : 16)),
+    r: p.heat ? 74 : Math.max(22, Math.ceil(lastXTickWidth / 2) + 7),
+    t: p.title ? 30 : 12,
+    b: p.xLabel ? 58 : 38,
+  };
   const iw = W - m.l - m.r, ih = H - m.t - m.b;
 
   const logx = p.xScale === "log";

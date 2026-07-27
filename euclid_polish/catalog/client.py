@@ -93,6 +93,18 @@ class EuclidCatalog:
                 Euclid.login(user=user, password=password)
             except Exception as e:
                 raise EuclidAuthError(f"Euclid login failed: {e}") from e
+            # Astroquery 0.4.11's Euclid wrapper catches HTTPError itself and
+            # returns ``None`` after a rejected TAP/data-service login.  Check
+            # the state maintained by TapPlus so that a silent rejection is
+            # not recorded as an authenticated WebUI session.  Test doubles
+            # and older clients may not expose this private state; in that
+            # case the absence of an exception remains the compatibility path.
+            logged_in = getattr(Euclid, "_TapPlus__isLoggedIn", None)
+            if logged_in is False:
+                raise EuclidAuthError(
+                    "Euclid login was rejected by the archive. Check the "
+                    "username/password and the Euclid Science Archive status."
+                )
         self._user, self._password = user, password
 
     @property

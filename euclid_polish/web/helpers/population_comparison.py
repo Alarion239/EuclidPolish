@@ -46,7 +46,6 @@ _PARAM_META = {
     "vis_snr": ("VIS PSF signal-to-noise", "ratio"),
     "segmentation_area": ("segmentation area", "VIS pixels"),
     "z": ("redshift", "z"),
-    "theta_E_arcsec": ("Einstein radius", "arcsec"),
     "re_arcsec": ("half-light radius", "arcsec"),
     "logmass": ("stellar mass", "log₁₀ M☉"),
     "mass_scale": ("TNG mass scale", "ratio"),
@@ -308,7 +307,11 @@ def _field_payload(synthetic: _FieldAccumulator,
         samples_s = np.concatenate(synthetic.samples[band_index])
         samples_r = np.concatenate(real.samples[band_index])
         combined = np.concatenate((samples_s, samples_r))
-        lo, hi = np.nanpercentile(combined, [0.2, 99.8])
+        # Use the complete shared range.  The former 0.2–99.8 percentile
+        # window made the bulk of each distribution easier to see, but hid
+        # the bright and negative tails that this comparison is meant to
+        # expose.
+        lo, hi = np.min(combined), np.max(combined)
         if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
             lo, hi = -1.0, 1.0
         edges = np.linspace(float(lo), float(hi), 65)
@@ -324,8 +327,9 @@ def _field_payload(synthetic: _FieldAccumulator,
             "x": ((edges[:-1] + edges[1:]) / 2).tolist(),
             "synthetic": density(samples_s).tolist(),
             "real": density(samples_r).tolist(),
-            "x_label": f"{band} pixel brightness (e⁻ / stack)",
+            "x_label": "pixel brightness (e⁻ / stack)",
             "y_label": "probability density",
+            "range": [float(lo), float(hi)],
         }
 
         def power_summary(rows: list[np.ndarray]) -> dict[str, Any]:
@@ -417,8 +421,13 @@ def _read_synthetic_sources(paths: Iterable[Path]) -> list[dict[str, Any]]:
             for raw in csv.DictReader(handle):
                 field_index = int(raw["field_index"]) + offset
                 local_max = max(local_max, int(raw["field_index"]))
+                source_type = str(raw.get("type", "unknown")).strip().lower()
                 row: dict[str, Any] = {
-                    "type": raw.get("type", "unknown"),
+                    # Lensed galaxies are part of the galaxy population here:
+                    # there are too few synthetic lenses for a meaningful
+                    # standalone distribution and MER has no matching lens
+                    # classification.
+                    "type": "galaxy" if source_type == "lens" else source_type,
                     "field_index": field_index,
                 }
                 for key in _PARAM_META:
@@ -480,13 +489,16 @@ def _parameter_payload(rows: list[dict[str, Any]], area_arcmin2: float,
             if not include_per_field:
                 continue
             field_ids = sorted({int(row["field_index"]) for row in rows})
+            counts_by_type = {
+                kind: dict.fromkeys(field_ids, 0)
+                for kind in types
+            }
+            for row in rows:
+                kind = str(row.get("type", "unknown"))
+                counts_by_type[kind][int(row["field_index"])] += 1
             for kind in types:
-                counts = [
-                    sum(1 for row in rows
-                        if row.get("type") == kind
-                        and int(row["field_index"]) == field_id)
-                    for field_id in field_ids
-                ]
+                counts = [counts_by_type[kind][field_id]
+                          for field_id in field_ids]
                 series[kind] = _histogram(counts)
         else:
             for kind in types:

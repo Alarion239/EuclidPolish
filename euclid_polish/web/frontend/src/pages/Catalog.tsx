@@ -27,6 +27,7 @@ type CatalogStatus = {
 type StatusResp = { catalog: CatalogStatus };
 
 type AuthResp = { ok: boolean; error?: string; user?: string };
+type AuthStatus = { authenticated: boolean; user?: string };
 
 type View = "positions" | "magnitudes" | "saturation";
 const VIEWS: { key: View; label: string }[] = [
@@ -37,11 +38,11 @@ const VIEWS: { key: View; label: string }[] = [
 
 export default function CatalogPage() {
   const { data, loading } = useResource<StatusResp>("/api/status");
+  const auth = useResource<AuthStatus>("/auth/status");
   const [view, setView] = useState<View>("positions");
 
   const [user, setUser] = useState("");
   const [pwd, setPwd] = useState("");
-  const [loggedIn, setLoggedIn] = useState(false);
   const [authNote, setAuthNote] = useState<{ ok: boolean; text: string } | null>(null);
   const [authBusy, setAuthBusy] = useState(false);
 
@@ -54,9 +55,9 @@ export default function CatalogPage() {
     try {
       const r = await postForm<AuthResp>("/auth/login", { username: user, password: pwd });
       if (r.ok) {
-        setLoggedIn(true);
         setPwd("");
         setAuthNote({ ok: true, text: `Logged in${r.user ? ` as ${r.user}` : ""}.` });
+        auth.reload();
       } else {
         setAuthNote({ ok: false, text: r.error || "login failed" });
       }
@@ -74,9 +75,9 @@ export default function CatalogPage() {
     } catch {
       /* ignore — logout is best-effort */
     } finally {
-      setLoggedIn(false);
       setAuthNote(null);
       setAuthBusy(false);
+      auth.reload();
     }
   }
 
@@ -158,9 +159,12 @@ export default function CatalogPage() {
             sub="log in to the Euclid Science Archive for this WebUI session"
           />
           <CardBody>
-            {loggedIn ? (
+            {auth.data?.authenticated ? (
               <div className="row" style={{ gap: "var(--s3)", alignItems: "center" }}>
-                <span className="muted">Logged in to the Euclid archive.</span>
+                <span className="muted">
+                  Logged in to the Euclid archive
+                  {auth.data.user ? ` as ${auth.data.user}` : ""}.
+                </span>
                 <Button onClick={logout} disabled={authBusy}>Logout</Button>
               </div>
             ) : (
@@ -181,7 +185,7 @@ export default function CatalogPage() {
                   <Button
                     variant="primary"
                     onClick={login}
-                    disabled={authBusy || !user.trim() || !pwd.trim()}
+                    disabled={authBusy || !user.trim() || !pwd}
                   >
                     Login
                   </Button>

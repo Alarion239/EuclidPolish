@@ -333,3 +333,35 @@ class RemoteState:
 
 
 STATE = RemoteState()
+
+_CONNECT_LOCK = threading.Lock()
+
+
+def ensure_ssh_connected() -> SSHSession:
+    """Return the live shared FASRC session, connecting it when necessary."""
+    if STATE.ssh is not None and STATE.ssh.is_connected():
+        return STATE.ssh
+
+    # Several WebUI actions can notice a dropped ControlMaster together.
+    # Only one of them should create the replacement session.
+    with _CONNECT_LOCK:
+        if STATE.ssh is not None and STATE.ssh.is_connected():
+            return STATE.ssh
+
+        # Import lazily to keep the low-level SSH module independent from the
+        # persisted WebUI configuration at import time.
+        from euclid_polish.web import fasrc_config
+
+        cfg = fasrc_config.load()
+        if not cfg.ssh_user:
+            raise SSHError("set ssh_user in Settings first")
+        session = SSHSession(SSHConfig(
+            user=cfg.ssh_user,
+            host=cfg.ssh_host,
+            socket=cfg.control_socket,
+            control_persist=cfg.control_persist,
+        ))
+        session.connect()
+        STATE.ssh = session
+        STATE.connected_at = time.time()
+        return session

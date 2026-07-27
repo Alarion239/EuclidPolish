@@ -12,6 +12,7 @@ from euclid_polish.web.helpers.population_comparison import (
     read_comparison,
 )
 from euclid_polish.web.jobs import REGISTRY
+from euclid_polish.web.remote import ensure_ssh_connected
 
 
 def register(app):
@@ -77,13 +78,15 @@ def register(app):
         remote = f"{_sky_records_remote_dir()}/sources_train.csv"
 
         def run(cap):
-            cap.tick(0, 1, "training source catalog")
+            cap.tick(0, 2, "connecting to FASRC")
+            ensure_ssh_connected()
+            cap.tick(1, 2, "training source catalog")
             result = fasrc_fetcher.fetch_one_file(
                 remote, force=True, max_bytes=1024 * 1024 * 1024
             )
             if not result.ok:
                 raise RuntimeError(result.error or "training source catalog sync failed")
-            cap.tick(1, 1, "training source catalog")
+            cap.tick(2, 2, "training source catalog")
             cap.write(
                 f"synced sources_train.csv ({result.size_bytes or 0:,} bytes)\n"
             )

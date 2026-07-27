@@ -20,10 +20,19 @@ def register(app):
     # were removed.
 
     # ---------------- Authentication ----------------
+    @app.route("/auth/status")
+    def auth_status():
+        return jsonify({
+            "authenticated": euclid_session.is_authenticated(),
+            "user": euclid_session.current_user(),
+        })
+
     @app.route("/auth/login", methods=["POST"])
     def auth_login():
         user = request.form.get("username", "").strip()
-        pwd  = request.form.get("password", "").strip()
+        # Passwords are opaque: trimming them can turn a valid archive
+        # credential into a different password.
+        pwd = request.form.get("password", "")
         if not user or not pwd:
             return jsonify({"ok": False, "error": "Missing username or password"}), 400
         try:

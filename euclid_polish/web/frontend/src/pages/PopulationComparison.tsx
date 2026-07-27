@@ -6,7 +6,7 @@ import { useResource } from "../hooks";
 import { JobProgressView, useJob } from "../jobs";
 import {
   Badge, Button, Card, CardBody, CardHead, Empty, Field, Input, Page,
-  PageHead, Segmented, Spinner, Stat,
+  PageHead, Spinner, Stat,
 } from "../ui";
 import "./population-comparison.css";
 
@@ -89,9 +89,9 @@ type ApiPayload = {
 };
 
 const BANDS: Band[] = ["VIS", "Y_E", "J_E", "H_E"];
-const TYPE_ORDER = ["galaxy", "star", "lens", "unknown"];
-const SYNTHETIC = () => C.comb;
-const REAL = () => C.mean;
+const TYPE_ORDER = ["galaxy", "star", "unknown"];
+const BAND_COLOR = (band: Band) => categorical(BANDS.indexOf(band));
+const bandLabel = (band: Band) => band.replace("_E", "");
 
 function finite(values: readonly (number | null)[]): number[] {
   return values.filter((value): value is number => value != null && Number.isFinite(value));
@@ -171,17 +171,37 @@ function DatasetRuler({ availability, comparison }: {
 }
 
 function FieldPlots({ comparison }: { comparison: Comparison }) {
-  const [band, setBand] = useState<Band>("VIS");
-  const histogram = comparison.fields.histograms[band];
-  const power = comparison.fields.power[band];
-  const cross = comparison.fields.mean_cross_correlation[band];
-  const histogramX = domain(histogram.x);
-  const histogramY = domain([...histogram.synthetic, ...histogram.real], true);
-  const powerSynthetic = log10(power.synthetic.median);
-  const powerReal = log10(power.real.median);
-  const powerY = domain([...powerSynthetic, ...powerReal]);
-  const powerX: [number, number] = [Math.min(...power.k), Math.max(...power.k)];
+  const histograms = BANDS.map((band) => [band, comparison.fields.histograms[band]] as const);
+  const powers = BANDS.map((band) => [band, comparison.fields.power[band]] as const);
+  const crosses = BANDS.map((band) => [band, comparison.fields.mean_cross_correlation[band]] as const);
+  const histogramX = domain(histograms.flatMap(([, histogram]) => histogram.x));
+  const histogramY = domain(histograms.flatMap(([, histogram]) => [
+    ...histogram.synthetic, ...histogram.real,
+  ]), true);
+  const powerY = domain(powers.flatMap(([, power]) => [
+    ...log10(power.synthetic.median), ...log10(power.real.median),
+  ]));
+  const allPowerK = powers.flatMap(([, power]) => power.k);
+  const powerX: [number, number] = [Math.min(...allPowerK), Math.max(...allPowerK)];
   const crossY: [number, number] = [-1, 1];
+  const histogramSeries: Series[] = histograms.flatMap(([band, histogram]) => [
+    { x: histogram.x, y: histogram.synthetic, color: BAND_COLOR(band), width: 2.4 },
+    { x: histogram.x, y: histogram.real, color: BAND_COLOR(band), width: 2.2, dash: [6, 4] },
+  ]);
+  const powerSeries: Series[] = powers.flatMap(([band, power]) => [
+    { x: power.k, y: log10(power.synthetic.median), color: BAND_COLOR(band), width: 2.4 },
+    { x: power.k, y: log10(power.real.median), color: BAND_COLOR(band), width: 2.2, dash: [6, 4] },
+  ]);
+  const crossSeries: Series[] = crosses.map(([band, cross]) => ({
+    x: cross.k, y: cross.r, color: BAND_COLOR(band), width: 2.4,
+  }));
+  const bandLegend = BANDS.map((band) => ({
+    color: BAND_COLOR(band), label: bandLabel(band),
+  }));
+  const sourceLegend = [
+    { color: C.cross, label: "synthetic LR", dash: false },
+    { color: C.cross, label: "real Euclid LR", dash: true },
+  ];
 
   return (
     <section className="comparison-section">
@@ -189,51 +209,36 @@ function FieldPlots({ comparison }: { comparison: Comparison }) {
         <div>
           <div className="eyebrow">image domain · one field at a time</div>
           <h2>Pixel statistics</h2>
-          <p>All curves use the same 255×255 center crop and the native 0.1″ pixel scale.</p>
+          <p>VIS, Y, J and H share each plot; every curve uses the same 255×255 center crop and native 0.1″ pixel scale.</p>
         </div>
-        <Segmented<Band> value={band} onChange={setBand}
-          options={BANDS.map((value) => ({ value, label: value }))} />
       </header>
       <div className="field-plot-grid">
         <Card className="comparison-plot">
           <CardHead title="Brightness distribution"
-            sub="Pixel density after common percentile clipping; negative detector values are retained." />
+            sub="Full shared pixel range with no percentile clipping; bright and negative tails are retained." />
           <CardBody>
             <Plot xDomain={histogramX} yDomain={histogramY}
               xTicks={ticks(histogramX)} yTicks={ticks(histogramY)}
-              xLabel={histogram.x_label} yLabel={histogram.y_label}
-              series={[
-                { x: histogram.x, y: histogram.synthetic, color: SYNTHETIC(), width: 2.4 },
-                { x: histogram.x, y: histogram.real, color: REAL(), width: 2.4 },
-              ]} />
-            <Legend items={[
-              { color: SYNTHETIC(), label: "synthetic LR" },
-              { color: REAL(), label: "real Euclid LR" },
-            ]} />
+              xLabel="pixel brightness (e⁻ / stack)" yLabel="probability density"
+              series={histogramSeries} />
+            <Legend items={bandLegend} />
+            <Legend items={sourceLegend} />
           </CardBody>
         </Card>
 
         <Card className="comparison-plot">
           <CardHead title="Angular power"
-            sub="Median mean-subtracted field power; dashed lines mark the 16th–84th percentile envelope." />
+            sub="Median mean-subtracted field power; solid is synthetic and dashed is real Euclid." />
           <CardBody>
             <Plot xDomain={powerX} yDomain={powerY} xScale="log"
-              xTicks={power.k.filter((_, index) => index % 5 === 0)
+              xTicks={powers[0][1].k.filter((_, index) => index % 5 === 0)
                 .map((value) => ({ v: value, label: value.toPrecision(2) }))}
               yTicks={ticks(powerY).map((tick) => ({ ...tick, label: `10^${tick.label}` }))}
-              xLabel={power.x_label} yLabel="log₁₀ mean-subtracted power (e⁻²)"
-              series={[
-                { x: power.k, y: log10(power.synthetic.p16), color: SYNTHETIC(), width: 1, dash: [4, 4], alpha: 0.55 },
-                { x: power.k, y: log10(power.synthetic.p84), color: SYNTHETIC(), width: 1, dash: [4, 4], alpha: 0.55 },
-                { x: power.k, y: powerSynthetic, color: SYNTHETIC(), width: 2.5 },
-                { x: power.k, y: log10(power.real.p16), color: REAL(), width: 1, dash: [4, 4], alpha: 0.55 },
-                { x: power.k, y: log10(power.real.p84), color: REAL(), width: 1, dash: [4, 4], alpha: 0.55 },
-                { x: power.k, y: powerReal, color: REAL(), width: 2.5 },
-              ]} />
-            <Legend items={[
-              { color: SYNTHETIC(), label: "synthetic median" },
-              { color: REAL(), label: "real median" },
-            ]} />
+              xLabel="angular frequency (cycles / arcsec)"
+              yLabel="log₁₀ mean-subtracted power (e⁻²)"
+              series={powerSeries} />
+            <Legend items={bandLegend} />
+            <Legend items={sourceLegend} />
           </CardBody>
         </Card>
 
@@ -241,14 +246,16 @@ function FieldPlots({ comparison }: { comparison: Comparison }) {
           <CardHead title="Population-mean cross-correlation"
             sub="Fourier coherence between the synthetic mean LR field and the real mean LR field; no HR reference." />
           <CardBody>
-            <Plot xDomain={[Math.min(...cross.k), Math.max(...cross.k)]}
+            <Plot xDomain={[Math.min(...crosses[0][1].k), Math.max(...crosses[0][1].k)]}
               yDomain={crossY} xScale="log"
-              xTicks={cross.k.filter((_, index) => index % 5 === 0)
+              xTicks={crosses[0][1].k.filter((_, index) => index % 5 === 0)
                 .map((value) => ({ v: value, label: value.toPrecision(2) }))}
               yTicks={[-1, -0.5, 0, 0.5, 1].map((v) => ({ v, label: String(v) }))}
               guides={[{ axis: "y", v: 0, dash: [4, 4] }]}
-              xLabel={cross.x_label} yLabel={cross.y_label}
-              series={[{ x: cross.k, y: cross.r, color: C.cross, width: 2.5, dots: true }]} />
+              xLabel="angular frequency (cycles / arcsec)"
+              yLabel="mean-field coherence r(k)"
+              series={crossSeries} />
+            <Legend items={bandLegend} />
           </CardBody>
         </Card>
       </div>
