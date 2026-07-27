@@ -39,6 +39,11 @@ def test_population_field_payload_is_json_safe_and_keeps_four_bands():
     assert vis_range[1] == max(
         float(np.max(samples)) for samples in synthetic.samples[0] + real.samples[0]
     )
+    assert np.isclose(sum(payload["histograms"]["VIS"]["synthetic"]), 1.0)
+    assert np.isclose(sum(payload["histograms"]["VIS"]["real"]), 1.0)
+    assert payload["histograms"]["VIS"]["y_label"] == (
+        "fraction of sampled pixels / bin"
+    )
 
 
 def test_population_field_normalisation_accepts_fits_plane_order():

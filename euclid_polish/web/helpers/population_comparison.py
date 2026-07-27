@@ -23,7 +23,7 @@ from euclid_polish.config import Config
 from euclid_polish.photometry import electrons_to_ab_mag, uJy_to_ab_mag
 from euclid_polish.web.helpers.paths import _sky_records_local_dir
 
-VERSION = 1
+VERSION = 2
 BANDS = ("VIS", "Y_E", "J_E", "H_E")
 TILE_SIZE = 256
 ANALYSIS_SIZE = 255
@@ -316,19 +316,20 @@ def _field_payload(synthetic: _FieldAccumulator,
             lo, hi = -1.0, 1.0
         edges = np.linspace(float(lo), float(hi), 65)
 
-        def density(samples: np.ndarray,
-                    histogram_edges: np.ndarray = edges) -> np.ndarray:
+        def histogram_fraction(
+            samples: np.ndarray,
+            histogram_edges: np.ndarray = edges,
+        ) -> np.ndarray:
             counts, _ = np.histogram(samples, bins=histogram_edges)
-            width = np.diff(histogram_edges)
             total = max(int(counts.sum()), 1)
-            return counts / (total * width)
+            return counts / total
 
         histograms[band] = {
             "x": ((edges[:-1] + edges[1:]) / 2).tolist(),
-            "synthetic": density(samples_s).tolist(),
-            "real": density(samples_r).tolist(),
+            "synthetic": histogram_fraction(samples_s).tolist(),
+            "real": histogram_fraction(samples_r).tolist(),
             "x_label": "pixel brightness (e⁻ / stack)",
-            "y_label": "probability density",
+            "y_label": "fraction of sampled pixels / bin",
             "range": [float(lo), float(hi)],
         }
 

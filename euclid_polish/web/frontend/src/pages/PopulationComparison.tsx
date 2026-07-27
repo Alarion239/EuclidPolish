@@ -104,7 +104,7 @@ function domain(values: readonly (number | null)[], includeZero = false): [numbe
   if (includeZero) lo = Math.min(0, lo);
   if (lo === hi) return [lo - 0.5, hi + 0.5];
   const pad = (hi - lo) * 0.06;
-  return [lo - pad, hi + pad];
+  return [includeZero ? 0 : lo - pad, hi + pad];
 }
 
 function ticks([lo, hi]: [number, number], count = 5): Tick[] {
@@ -185,8 +185,14 @@ function FieldPlots({ comparison }: { comparison: Comparison }) {
   const powerX: [number, number] = [Math.min(...allPowerK), Math.max(...allPowerK)];
   const crossY: [number, number] = [-1, 1];
   const histogramSeries: Series[] = histograms.flatMap(([band, histogram]) => [
-    { x: histogram.x, y: histogram.synthetic, color: BAND_COLOR(band), width: 2.4 },
-    { x: histogram.x, y: histogram.real, color: BAND_COLOR(band), width: 2.2, dash: [6, 4] },
+    {
+      x: histogram.x, y: histogram.synthetic, color: BAND_COLOR(band),
+      mode: "histogram", width: 1.25, alpha: 0.72, fillAlpha: 0.13,
+    },
+    {
+      x: histogram.x, y: histogram.real, color: BAND_COLOR(band),
+      mode: "histogram", width: 1.4, dash: [4, 3], alpha: 0.95, fillAlpha: 0.025,
+    },
   ]);
   const powerSeries: Series[] = powers.flatMap(([band, power]) => [
     { x: power.k, y: log10(power.synthetic.median), color: BAND_COLOR(band), width: 2.4 },
@@ -202,6 +208,19 @@ function FieldPlots({ comparison }: { comparison: Comparison }) {
     { color: C.cross, label: "synthetic LR", dash: false },
     { color: C.cross, label: "real Euclid LR", dash: true },
   ];
+  const histogramBandLegend = BANDS.map((band) => ({
+    color: BAND_COLOR(band), label: bandLabel(band), histogram: true,
+  }));
+  const histogramSourceLegend = [
+    {
+      color: C.cross, label: "synthetic LR",
+      histogram: true, filled: true, dash: false,
+    },
+    {
+      color: C.cross, label: "real Euclid LR",
+      histogram: true, filled: false, dash: true,
+    },
+  ];
 
   return (
     <section className="comparison-section">
@@ -209,20 +228,21 @@ function FieldPlots({ comparison }: { comparison: Comparison }) {
         <div>
           <div className="eyebrow">image domain · one field at a time</div>
           <h2>Pixel statistics</h2>
-          <p>VIS, Y, J and H share each plot; every curve uses the same 255×255 center crop and native 0.1″ pixel scale.</p>
+          <p>VIS, Y, J and H share each plot; every histogram and curve uses the same 255×255 center crop and native 0.1″ pixel scale.</p>
         </div>
       </header>
       <div className="field-plot-grid">
         <Card className="comparison-plot">
           <CardHead title="Brightness distribution"
-            sub="Full shared pixel range with no percentile clipping; bright and negative tails are retained." />
+            sub="Normalized histogram over the full shared range; no pixels are clipped from the bright or negative tails." />
           <CardBody>
             <Plot xDomain={histogramX} yDomain={histogramY}
               xTicks={ticks(histogramX)} yTicks={ticks(histogramY)}
-              xLabel="pixel brightness (e⁻ / stack)" yLabel="probability density"
+              xLabel="pixel brightness (e⁻ / stack)"
+              yLabel="fraction of sampled pixels / bin"
               series={histogramSeries} />
-            <Legend items={bandLegend} />
-            <Legend items={sourceLegend} />
+            <Legend items={histogramBandLegend} />
+            <Legend items={histogramSourceLegend} />
           </CardBody>
         </Card>
 
@@ -312,7 +332,10 @@ function ParameterPlot({ parameter, source }: { parameter: Parameter; source: st
     x: histogram.x,
     y: histogram.density,
     color: categorical(index + (source === "Euclid catalog" ? 4 : 0)),
-    width: 2.1,
+    mode: "histogram",
+    width: 1.3,
+    alpha: 0.86,
+    fillAlpha: 0.22,
   }));
   return (
     <Card className="parameter-card">
@@ -327,6 +350,8 @@ function ParameterPlot({ parameter, source }: { parameter: Parameter; source: st
         <Legend items={entries.map(([kind], index) => ({
           color: categorical(index + (source === "Euclid catalog" ? 4 : 0)),
           label: kind,
+          histogram: true,
+          filled: true,
         }))} />
       </CardBody>
     </Card>
