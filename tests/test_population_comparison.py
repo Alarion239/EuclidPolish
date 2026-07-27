@@ -5,6 +5,7 @@ import json
 import warnings
 
 import numpy as np
+import pytest
 
 from euclid_polish.web.helpers.population_comparison import (
     VERSION,
@@ -34,9 +35,11 @@ def test_population_field_payload_is_json_safe_and_keeps_four_bands():
     assert payload["bands"] == ["VIS", "Y_E", "J_E", "H_E"]
     assert set(payload["histograms"]) == set(payload["bands"])
     assert len(payload["power"]["VIS"]["k"]) == 24
-    assert len(payload["mean_cross_correlation"]["VIS"]["r"]) == 24
-    assert any(value is not None
-               for value in payload["mean_cross_correlation"]["VIS"]["r"])
+    similarity = payload["scale_similarity"]["VIS"]
+    assert len(similarity["log_shape_ratio"]["median"]) == 24
+    assert 0 <= similarity["overlap"]["median"] <= 1
+    assert similarity["overlap"]["p16"] <= similarity["overlap"]["p84"]
+    assert similarity["variance_ratio"]["median"] > 0
     vis_range = payload["histograms"]["VIS"]["range"]
     assert vis_range[0] == min(
         float(np.min(samples)) for samples in synthetic.samples[0] + real.samples[0]
@@ -54,6 +57,30 @@ def test_population_field_payload_is_json_safe_and_keeps_four_bands():
     centers = payload["histograms"]["VIS"]["x"]
     width = centers[1] - centers[0]
     assert centers[zero_bin] - width / 2 <= 0 <= centers[zero_bin] + width / 2
+
+
+def test_scale_similarity_ignores_unrelated_fourier_phase():
+    rng = np.random.default_rng(21)
+    synthetic = _FieldAccumulator()
+    real = _FieldAccumulator()
+    for index in range(4):
+        base = rng.normal(0.0, 1.0, (256, 256, 4)).astype(np.float32)
+        synthetic.add(base)
+        real.add(np.roll(base, shift=(17 + index, 29 - index), axis=(0, 1)))
+
+    payload = _field_payload(synthetic, real)
+
+    for band in payload["bands"]:
+        similarity = payload["scale_similarity"][band]
+        assert similarity["overlap"]["median"] > 0.99
+        ratio = np.asarray([
+            np.nan if value is None else value
+            for value in similarity["log_shape_ratio"]["median"]
+        ])
+        assert np.nanmedian(np.abs(ratio)) < 0.03
+        assert similarity["variance_ratio"]["median"] == pytest.approx(
+            1.0, rel=0.02
+        )
 
 
 def test_population_field_normalisation_accepts_fits_plane_order():

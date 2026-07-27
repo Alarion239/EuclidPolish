@@ -7,6 +7,8 @@ import { viridis } from "../colors";
 export type Series = {
   x: number[];
   y: (number | null)[];
+  low?: (number | null)[];
+  high?: (number | null)[];
   color: string;
   mode?: "line" | "histogram";
   width?: number;
@@ -257,6 +259,34 @@ function render(ctx: CanvasRenderingContext2D, W: number, H: number, p: PlotProp
   // clip to plot area for series
   ctx.save();
   ctx.beginPath(); ctx.rect(m.l, m.t, iw, ih); ctx.clip();
+  for (const s of p.series) {
+    if (!s.low || !s.high || s.mode === "histogram") continue;
+    ctx.fillStyle = s.color;
+    ctx.globalAlpha = s.fillAlpha ?? 0.1;
+    let start = 0;
+    while (start < s.x.length) {
+      while (start < s.x.length && (
+        s.low[start] == null || !isFinite(s.low[start]!)
+        || s.high[start] == null || !isFinite(s.high[start]!)
+      )) start++;
+      if (start >= s.x.length) break;
+      let end = start + 1;
+      while (end < s.x.length
+        && s.low[end] != null && isFinite(s.low[end]!)
+        && s.high[end] != null && isFinite(s.high[end]!)) end++;
+      ctx.beginPath();
+      ctx.moveTo(tx(s.x[start]), ty(s.high[start]!));
+      for (let i = start + 1; i < end; i++) {
+        ctx.lineTo(tx(s.x[i]), ty(s.high[i]!));
+      }
+      for (let i = end - 1; i >= start; i--) {
+        ctx.lineTo(tx(s.x[i]), ty(s.low[i]!));
+      }
+      ctx.closePath();
+      ctx.fill();
+      start = end;
+    }
+  }
   for (const s of p.series) {
     ctx.globalAlpha = s.alpha ?? 1;
     ctx.strokeStyle = s.color;

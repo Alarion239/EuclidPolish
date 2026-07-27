@@ -136,7 +136,7 @@
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--s4);
 }
-.comparison-plot--cross {
+.comparison-plot--scale {
   grid-column: 1 / -1;
 }
 .comparison-plot .ui-card__body {
@@ -183,6 +183,58 @@
 }
 .dot--synthetic { background: var(--amber); }
 .dot--real { background: var(--accent); }
+
+.scale-score-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1px;
+  margin-bottom: var(--s4);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--border);
+}
+.scale-score {
+  position: relative;
+  display: grid;
+  gap: 9px;
+  min-width: 0;
+  padding: 12px var(--s3) 13px;
+  background: var(--surface-2);
+}
+.scale-score::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 2px;
+  background: var(--band-color);
+}
+.scale-score__band {
+  color: var(--band-color);
+  font: 600 12px/1 var(--font-mono);
+}
+.scale-score > div:not(.scale-score__band) {
+  display: grid;
+  gap: 3px;
+}
+.scale-score span {
+  color: var(--text-faint);
+  font: 500 9px/1.25 var(--font-mono);
+  letter-spacing: .05em;
+  text-transform: uppercase;
+}
+.scale-score strong {
+  overflow: hidden;
+  color: var(--text);
+  font: 500 11px/1.3 var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.scale-score__note {
+  margin: var(--s2) 0 0;
+  color: var(--text-faint);
+  font-size: 11px;
+}
 
 .population-summary-grid {
   display: grid;
@@ -294,7 +346,8 @@
 }
 @media (max-width: 1080px) {
   .field-plot-grid { grid-template-columns: 1fr; }
-  .comparison-plot--cross { grid-column: auto; }
+  .comparison-plot--scale { grid-column: auto; }
+  .scale-score-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .parameter-atlas { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .cone-query__form { grid-template-columns: repeat(3, 1fr); }
   .cone-query__area { border-left: 0; border-top: 1px solid var(--border-strong); }
@@ -314,7 +367,8 @@
   .parameter-atlas {
     grid-template-columns: 1fr;
   }
-  .comparison-plot--cross { grid-column: auto; }
+  .comparison-plot--scale { grid-column: auto; }
+  .scale-score-grid { grid-template-columns: 1fr; }
   .comparison-section__head { align-items: flex-start; flex-direction: column; }
   .band-ledger__row { grid-template-columns: 58px 1fr; }
   .band-ledger__row span:last-child { grid-column: 2; }

@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, type CSSProperties } from "react";
 import { NavLink } from "react-router-dom";
 import Plot, { Legend, type Series, type Tick } from "../charts/Plot";
 import { C, categorical } from "../colors";
@@ -12,6 +12,7 @@ import "./population-comparison.css";
 
 type Band = "VIS" | "Y_E" | "J_E" | "H_E";
 type Curve = { p16: (number | null)[]; median: (number | null)[]; p84: (number | null)[] };
+type Interval = { median: number; p16: number; p84: number };
 type FieldComparison = {
   bands: Band[];
   histograms: Record<Band, {
@@ -23,8 +24,13 @@ type FieldComparison = {
     k: number[]; synthetic: Curve; real: Curve;
     x_label: string; y_label: string;
   }>;
-  mean_cross_correlation: Record<Band, {
-    k: number[]; r: (number | null)[]; x_label: string; y_label: string;
+  scale_similarity: Record<Band, {
+    k: number[];
+    log_shape_ratio: Curve;
+    overlap: Interval;
+    variance_ratio: Interval;
+    x_label: string;
+    y_label: string;
   }>;
   summary: Record<"synthetic" | "real", Record<Band, {
     mean: number; median: number; p16: number; p84: number;
@@ -130,6 +136,10 @@ function ticks([lo, hi]: [number, number], count = 5): Tick[] {
   });
 }
 
+function intervalLabel(interval: Interval, digits: number): string {
+  return `${interval.median.toFixed(digits)} · ${interval.p16.toFixed(digits)}–${interval.p84.toFixed(digits)}`;
+}
+
 function log10(values: readonly (number | null)[]): (number | null)[] {
   return values.map((value) =>
     value != null && value > 0 && Number.isFinite(value) ? Math.log10(value) : null);
@@ -190,7 +200,7 @@ function DatasetRuler({ availability, comparison }: {
 function FieldPlots({ comparison }: { comparison: Comparison }) {
   const histograms = BANDS.map((band) => [band, comparison.fields.histograms[band]] as const);
   const powers = BANDS.map((band) => [band, comparison.fields.power[band]] as const);
-  const crosses = BANDS.map((band) => [band, comparison.fields.mean_cross_correlation[band]] as const);
+  const similarities = BANDS.map((band) => [band, comparison.fields.scale_similarity[band]] as const);
   const histogramX = domain(histograms.flatMap(([, histogram]) => histogram.x));
   const histogramY = domain(histograms.flatMap(([, histogram]) => [
     ...omitBin(histogram.synthetic, histogram.zero_bin),
@@ -201,7 +211,16 @@ function FieldPlots({ comparison }: { comparison: Comparison }) {
   ]));
   const allPowerK = powers.flatMap(([, power]) => power.k);
   const powerX: [number, number] = [Math.min(...allPowerK), Math.max(...allPowerK)];
-  const crossY: [number, number] = [-1, 1];
+  const ratioValues = similarities.flatMap(([, similarity]) => [
+    ...similarity.log_shape_ratio.p16,
+    ...similarity.log_shape_ratio.median,
+    ...similarity.log_shape_ratio.p84,
+  ]);
+  const finiteRatios = finite(ratioValues);
+  const ratioLow = Math.min(0, ...finiteRatios);
+  const ratioHigh = Math.max(0, ...finiteRatios);
+  const ratioPad = Math.max(0.05, (ratioHigh - ratioLow) * 0.06);
+  const ratioY: [number, number] = [ratioLow - ratioPad, ratioHigh + ratioPad];
   const histogramSeries: Series[] = histograms.flatMap(([band, histogram]) => [
     {
       x: histogram.x, y: omitBin(histogram.synthetic, histogram.zero_bin),
@@ -218,8 +237,14 @@ function FieldPlots({ comparison }: { comparison: Comparison }) {
     { x: power.k, y: log10(power.synthetic.median), color: BAND_COLOR(band), width: 2.4 },
     { x: power.k, y: log10(power.real.median), color: BAND_COLOR(band), width: 2.2, dash: [6, 4] },
   ]);
-  const crossSeries: Series[] = crosses.map(([band, cross]) => ({
-    x: cross.k, y: cross.r, color: BAND_COLOR(band), width: 2.4,
+  const similaritySeries: Series[] = similarities.map(([band, similarity]) => ({
+    x: similarity.k,
+    y: similarity.log_shape_ratio.median,
+    low: similarity.log_shape_ratio.p16,
+    high: similarity.log_shape_ratio.p84,
+    color: BAND_COLOR(band),
+    width: 2.4,
+    fillAlpha: 0.08,
   }));
   const bandLegend = BANDS.map((band) => ({
     color: BAND_COLOR(band), label: bandLabel(band),
@@ -282,20 +307,39 @@ function FieldPlots({ comparison }: { comparison: Comparison }) {
           </CardBody>
         </Card>
 
-        <Card className="comparison-plot comparison-plot--cross">
-          <CardHead title="Population-mean cross-correlation"
-            sub="Fourier coherence between the synthetic mean LR field and the real mean LR field; no HR reference." />
+        <Card className="comparison-plot comparison-plot--scale">
+          <CardHead title="Scale-spectrum similarity"
+            sub="Phase-free comparison of where each population places its fluctuation power. Intervals are bootstrap 16–84%." />
           <CardBody>
-            <Plot xDomain={[Math.min(...crosses[0][1].k), Math.max(...crosses[0][1].k)]}
-              yDomain={crossY} xScale="log"
-              xTicks={crosses[0][1].k.filter((_, index) => index % 5 === 0)
+            <div className="scale-score-grid">
+              {similarities.map(([band, similarity]) => (
+                <div className="scale-score" key={band}
+                  style={{ "--band-color": BAND_COLOR(band) } as CSSProperties}>
+                  <div className="scale-score__band">{bandLabel(band)}</div>
+                  <div>
+                    <span>shape overlap</span>
+                    <strong>{intervalLabel(similarity.overlap, 3)}</strong>
+                  </div>
+                  <div>
+                    <span>fluctuation power · syn / real</span>
+                    <strong>{intervalLabel(similarity.variance_ratio, 1)}</strong>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <Plot xDomain={[Math.min(...similarities[0][1].k), Math.max(...similarities[0][1].k)]}
+              yDomain={ratioY} xScale="log"
+              xTicks={similarities[0][1].k.filter((_, index) => index % 5 === 0)
                 .map((value) => ({ v: value, label: value.toPrecision(2) }))}
-              yTicks={[-1, -0.5, 0, 0.5, 1].map((v) => ({ v, label: String(v) }))}
+              yTicks={ticks(ratioY)}
               guides={[{ axis: "y", v: 0, dash: [4, 4] }]}
               xLabel="angular frequency (cycles / arcsec)"
-              yLabel="mean-field coherence r(k)"
-              series={crossSeries} />
+              yLabel="log₁₀ scale-share ratio"
+              series={similaritySeries} />
             <Legend items={bandLegend} />
+            <p className="scale-score__note">
+              0 on the plot means equal scale share. Positive values mean the synthetic fields place more of their variance at that scale; negative values mean Euclid does.
+            </p>
           </CardBody>
         </Card>
       </div>

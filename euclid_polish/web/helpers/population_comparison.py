@@ -23,7 +23,7 @@ from euclid_polish.config import Config
 from euclid_polish.photometry import electrons_to_ab_mag, uJy_to_ab_mag
 from euclid_polish.web.helpers.paths import _sky_records_local_dir
 
-VERSION = 3
+VERSION = 4
 BANDS = ("VIS", "Y_E", "J_E", "H_E")
 TILE_SIZE = 256
 ANALYSIS_SIZE = 255
@@ -33,6 +33,7 @@ DEFAULT_CONE_RA = 267.4229
 DEFAULT_CONE_DEC = 64.8873
 DEFAULT_CONE_RADIUS_ARCMIN = math.sqrt((200 * FIELD_AREA_ARCMIN2) / math.pi)
 MAX_CATALOG_ROWS = 50_000
+SCALE_BOOTSTRAPS = 256
 
 _PARAM_META = {
     "objects_per_field": ("objects per field", "count"),
@@ -261,8 +262,6 @@ class _FieldAccumulator:
         self.radius, self.k_edges = _power_geometry()
         self.samples: list[list[np.ndarray]] = [[] for _ in BANDS]
         self.power: list[list[np.ndarray]] = [[] for _ in BANDS]
-        self.means = np.zeros((ANALYSIS_SIZE, ANALYSIS_SIZE, len(BANDS)),
-                              dtype=np.float64)
         self.field_means: list[list[float]] = [[] for _ in BANDS]
         self.count = 0
         self.window = np.outer(np.hanning(ANALYSIS_SIZE),
@@ -271,7 +270,6 @@ class _FieldAccumulator:
     def add(self, field: np.ndarray) -> None:
         data = _normalise_field(field)
         finite = np.where(np.isfinite(data), data, 0.0)
-        self.means += finite
         self.count += 1
         for band in range(len(BANDS)):
             plane = finite[..., band]
@@ -283,15 +281,147 @@ class _FieldAccumulator:
                 _radial_average(np.abs(fft) ** 2, self.radius, self.k_edges)
             )
 
-    def mean_field(self) -> np.ndarray:
-        if not self.count:
-            return np.zeros_like(self.means)
-        return self.means / self.count
-
 
 def _json_curve(values: np.ndarray) -> list[float | None]:
     return [float(value) if np.isfinite(value) else None
             for value in np.asarray(values).reshape(-1)]
+
+
+def _normalise_scale_curve(values: np.ndarray, k: np.ndarray) -> np.ndarray:
+    """Return a unit-integral 2-D variance density over logarithmic k."""
+    curve = np.asarray(values, dtype=np.float64)
+    variance_density = k**2 * curve
+    valid = np.isfinite(variance_density) & (variance_density >= 0) & (k > 0)
+    out = np.full_like(variance_density, np.nan)
+    if np.count_nonzero(valid) < 2:
+        return out
+    integral = float(np.trapezoid(variance_density[valid], np.log(k[valid])))
+    if not np.isfinite(integral) or integral <= 0:
+        return out
+    out[valid] = variance_density[valid] / integral
+    return out
+
+
+def _scale_similarity(
+    synthetic_rows: list[np.ndarray],
+    real_rows: list[np.ndarray],
+    k: np.ndarray,
+    *,
+    seed: int,
+) -> dict[str, Any]:
+    """Compare phase-free scale allocation and total fluctuation power."""
+    synthetic = np.stack(synthetic_rows)
+    real = np.stack(real_rows)
+    synthetic_shapes = np.stack([
+        _normalise_scale_curve(row, k) for row in synthetic
+    ])
+    real_shapes = np.stack([
+        _normalise_scale_curve(row, k) for row in real
+    ])
+
+    def representative(rows: np.ndarray) -> np.ndarray:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            median = np.nanmedian(rows, axis=0)
+        return _normalise_scale_curve(median / k**2, k)
+
+    def total_variance(row: np.ndarray) -> float:
+        density = k**2 * row
+        valid = np.isfinite(density) & (density >= 0) & (k > 0)
+        if np.count_nonzero(valid) < 2:
+            return math.nan
+        return float(np.trapezoid(density[valid], np.log(k[valid])))
+
+    synthetic_total = np.asarray(
+        [total_variance(row) for row in synthetic], dtype=np.float64
+    )
+    real_total = np.asarray(
+        [total_variance(row) for row in real], dtype=np.float64
+    )
+
+    def compare(
+        synthetic_shape: np.ndarray,
+        real_shape: np.ndarray,
+        synthetic_variance: float,
+        real_variance: float,
+    ) -> tuple[np.ndarray, float, float]:
+        valid = (
+            np.isfinite(synthetic_shape)
+            & np.isfinite(real_shape)
+            & (synthetic_shape > 0)
+            & (real_shape > 0)
+        )
+        ratio = np.full_like(k, np.nan)
+        ratio[valid] = np.log10(
+            synthetic_shape[valid] / real_shape[valid]
+        )
+        overlap = (
+            float(np.trapezoid(
+                np.sqrt(synthetic_shape[valid] * real_shape[valid]),
+                np.log(k[valid]),
+            ))
+            if np.count_nonzero(valid) >= 2 else math.nan
+        )
+        variance_ratio = (
+            synthetic_variance / real_variance
+            if np.isfinite(synthetic_variance)
+            and np.isfinite(real_variance)
+            and real_variance > 0 else math.nan
+        )
+        return ratio, float(np.clip(overlap, 0.0, 1.0)), variance_ratio
+
+    synthetic_shape = representative(synthetic_shapes)
+    real_shape = representative(real_shapes)
+    ratio, overlap, variance_ratio = compare(
+        synthetic_shape,
+        real_shape,
+        float(np.nanmedian(synthetic_total)),
+        float(np.nanmedian(real_total)),
+    )
+
+    rng = np.random.default_rng(seed)
+    ratio_boot = np.full((SCALE_BOOTSTRAPS, len(k)), np.nan)
+    overlap_boot = np.full(SCALE_BOOTSTRAPS, np.nan)
+    variance_boot = np.full(SCALE_BOOTSTRAPS, np.nan)
+    for index in range(SCALE_BOOTSTRAPS):
+        synthetic_indices = rng.integers(
+            0, len(synthetic_shapes), len(synthetic_shapes)
+        )
+        real_indices = rng.integers(0, len(real_shapes), len(real_shapes))
+        boot_ratio, boot_overlap, boot_variance = compare(
+            representative(synthetic_shapes[synthetic_indices]),
+            representative(real_shapes[real_indices]),
+            float(np.nanmedian(synthetic_total[synthetic_indices])),
+            float(np.nanmedian(real_total[real_indices])),
+        )
+        ratio_boot[index] = boot_ratio
+        overlap_boot[index] = boot_overlap
+        variance_boot[index] = boot_variance
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        ratio_p16 = np.nanpercentile(ratio_boot, 16, axis=0)
+        ratio_p84 = np.nanpercentile(ratio_boot, 84, axis=0)
+    return {
+        "k": k.tolist(),
+        "log_shape_ratio": {
+            "median": _json_curve(ratio),
+            "p16": _json_curve(ratio_p16),
+            "p84": _json_curve(ratio_p84),
+        },
+        "overlap": {
+            "median": overlap,
+            "p16": float(np.nanpercentile(overlap_boot, 16)),
+            "p84": float(np.nanpercentile(overlap_boot, 84)),
+        },
+        "variance_ratio": {
+            "median": variance_ratio,
+            "p16": float(np.nanpercentile(variance_boot, 16)),
+            "p84": float(np.nanpercentile(variance_boot, 84)),
+        },
+        "x_label": "angular frequency (cycles / arcsec)",
+        "y_label": "log₁₀ synthetic / real normalized scale power",
+    }
 
 
 def _field_payload(synthetic: _FieldAccumulator,
@@ -299,9 +429,7 @@ def _field_payload(synthetic: _FieldAccumulator,
     centers_k = np.sqrt(synthetic.k_edges[:-1] * synthetic.k_edges[1:])
     histograms: dict[str, Any] = {}
     power: dict[str, Any] = {}
-    cross: dict[str, Any] = {}
-    mean_synthetic = synthetic.mean_field()
-    mean_real = real.mean_field()
+    scale_similarity: dict[str, Any] = {}
 
     for band_index, band in enumerate(BANDS):
         samples_s = np.concatenate(synthetic.samples[band_index])
@@ -358,26 +486,12 @@ def _field_payload(synthetic: _FieldAccumulator,
             "x_label": "angular frequency (cycles / arcsec)",
             "y_label": "mean-subtracted power (e⁻²)",
         }
-
-        syn_plane = mean_synthetic[..., band_index]
-        real_plane = mean_real[..., band_index]
-        syn_fft = np.fft.rfft2((syn_plane - syn_plane.mean()) * synthetic.window)
-        real_fft = np.fft.rfft2((real_plane - real_plane.mean()) * real.window)
-        denominator = np.sqrt(np.abs(syn_fft) ** 2 * np.abs(real_fft) ** 2)
-        coherence = np.divide(
-            np.real(syn_fft * np.conj(real_fft)),
-            denominator,
-            out=np.full_like(denominator, np.nan, dtype=np.float64),
-            where=denominator > 0,
+        scale_similarity[band] = _scale_similarity(
+            synthetic.power[band_index],
+            real.power[band_index],
+            centers_k,
+            seed=1701 + band_index,
         )
-        cross[band] = {
-            "k": centers_k.tolist(),
-            "r": _json_curve(_radial_average(
-                coherence, synthetic.radius, synthetic.k_edges
-            )),
-            "x_label": "angular frequency (cycles / arcsec)",
-            "y_label": "mean-field coherence r(k)",
-        }
 
     def field_summary(acc: _FieldAccumulator) -> dict[str, Any]:
         return {
@@ -394,7 +508,7 @@ def _field_payload(synthetic: _FieldAccumulator,
         "bands": list(BANDS),
         "histograms": histograms,
         "power": power,
-        "mean_cross_correlation": cross,
+        "scale_similarity": scale_similarity,
         "summary": {
             "synthetic": field_summary(synthetic),
             "real": field_summary(real),
