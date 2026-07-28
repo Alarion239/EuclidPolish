@@ -1,6 +1,7 @@
 """train_ensemble.py: CLI args → MemberTrainSpec lists for the three modes."""
 from __future__ import annotations
 
+import json
 import os
 
 import pytest
@@ -8,11 +9,14 @@ import pytest
 from scripts.train_ensemble import build_specs, parse_args
 
 
-def _mk_member(base, i):
+def _mk_member(base, i, *, starless=None):
     d = os.path.join(base, f"member_{i:02d}")
     os.makedirs(d, exist_ok=True)
     with open(os.path.join(d, "checkpoint"), "w") as f:
         f.write("x")
+    if starless is not None:
+        with open(os.path.join(d, "origin.json"), "w") as f:
+            json.dump({"starless": starless}, f)
     return d
 
 
@@ -184,6 +188,34 @@ def test_fork_mode_builds_init_from(tmp_path):
     assert all(s.forked_from == "member_02·loss" for s in specs)
     assert [s.seed for s in specs] == [7, 8]
     assert all(s.op == "fork" for s in specs)
+
+
+@pytest.mark.parametrize("source_starless", [False, True])
+def test_fork_inherits_source_regime(tmp_path, source_starless):
+    base = str(tmp_path / "ens")
+    _mk_member(base, 2, starless=source_starless)
+    args = parse_args([
+        "--mode", "fork", "--fork-from", "member_02", "--count", "1",
+        "--steps", "1000", "--member-names", "member_09",
+        # Deliberately request the opposite regime: fork inheritance is
+        # authoritative over run-wide and per-member form defaults.
+        "--starless", str(int(not source_starless)),
+        "--member-spec",
+        json.dumps([{"starless": not source_starless}]),
+    ])
+    (spec,) = build_specs(args, base)
+    assert spec.starless is source_starless
+
+
+def test_fork_legacy_source_without_regime_is_starfull(tmp_path):
+    base = str(tmp_path / "ens")
+    _mk_member(base, 2)
+    args = parse_args([
+        "--mode", "fork", "--fork-from", "member_02", "--count", "1",
+        "--steps", "1000", "--member-names", "member_09",
+    ])
+    (spec,) = build_specs(args, base)
+    assert spec.starless is False
 
 
 def test_fork_requires_source_checkpoint(tmp_path):

@@ -43,6 +43,7 @@ from euclid_polish.config import Config  # noqa: E402
 from euclid_polish.ensemble import (  # noqa: E402
     EnsembleModel,
     MemberTrainSpec,
+    member_is_starless,
 )
 from euclid_polish.image.tfio import tfrecord_path  # noqa: E402
 from euclid_polish.observability import Reporter, ResourceSampler  # noqa: E402
@@ -176,7 +177,8 @@ def parse_args(argv=None) -> argparse.Namespace:
                         "starless scene, so the model learns to ERASE stars "
                         "(scored on lr↔clean). 0 = starfull: keep the scene's "
                         "stars, reconstruct them (scored on lr↔hr). Recorded "
-                        "in origin.json; drives the /ensemble eval mode.")
+                        "in origin.json; drives the /ensemble eval mode. "
+                        "Forks always inherit their source member's regime.")
     p.add_argument("--asinh-knee", type=float, default=None,
                    help="Per-member asinh stretch knee in ELECTRONS — the "
                         "linear/log crossover of asinh(x/knee) the network "
@@ -457,11 +459,13 @@ def build_specs(args, base: str) -> list[MemberTrainSpec]:
     k = int(args.count or args.n_members or (1 if args.mode == "fork" else 5))
     array_index = _array_index(args, k)
     init_from = forked_from = None
+    fork_starless = None
     if args.mode == "fork":
         if not args.fork_from:
             print("✗ --mode fork needs --fork-from")
             raise SystemExit(2)
-        src = os.path.join(base, args.fork_from)
+        source_member = os.path.join(base, args.fork_from)
+        src = source_member
         if args.fork_track == "loss":
             src = os.path.join(src, "loss_best")
         if not _has_ckpt(src):
@@ -469,6 +473,11 @@ def build_specs(args, base: str) -> list[MemberTrainSpec]:
             raise SystemExit(2)
         init_from = src
         forked_from = f"{args.fork_from}·{args.fork_track}"
+        # Regime is a property of the task the source model learned, just like
+        # its architecture and input normalization. A fork may change its loss
+        # or training distribution, but must not silently turn a starfull model
+        # into a star eraser (or vice versa) because the form default differed.
+        fork_starless = member_is_starless(source_member)
     if array_index is None:
         names_with_indices = list(enumerate(_fresh_names(args, base, k)))
     else:
@@ -488,12 +497,15 @@ def build_specs(args, base: str) -> list[MemberTrainSpec]:
         over = overrides[i]
         blocks = (int(over.get("num_res_blocks", args.num_res_blocks))
                   if args.mode == "add" else None)
+        diversity = _diversity_kwargs(args, over)
+        if fork_starless is not None:
+            diversity["starless"] = fork_starless
         specs.append(MemberTrainSpec(
             name=n, seed=int(over.get("seed", base_seed + i)), op=args.mode,
             target_steps=int(args.steps), run_steps=int(args.steps),
             init_from=init_from, forked_from=forked_from,
             num_res_blocks=blocks,
-            **_diversity_kwargs(args, over)))
+            **diversity))
     return specs
 
 
