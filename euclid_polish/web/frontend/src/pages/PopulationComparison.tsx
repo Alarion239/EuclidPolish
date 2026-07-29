@@ -61,6 +61,23 @@ type Population = {
   density_arcmin2: Record<string, number | null>;
   area_arcmin2: number;
 };
+type Histogram = {
+  x: number[]; density: number[]; count: number; range?: [number, number];
+};
+type ComparisonClass = "nonstellar" | "star";
+type SharedParameter = {
+  label: string;
+  unit: string;
+  classes: Partial<Record<ComparisonClass, {
+    synthetic: Histogram;
+    euclid: Histogram;
+  }>>;
+};
+type SharedPopulation = {
+  parameters: Record<string, SharedParameter>;
+  class_labels: Record<ComparisonClass, string>;
+  density_unit: string;
+};
 type PriorInterval = { median: number; p16: number; p84: number };
 type CatalogPrior = {
   method: string;
@@ -124,7 +141,7 @@ type Comparison = {
     synthetic: Population;
     synthetic_field_count: number;
     euclid: Population | null;
-    shared: null;
+    shared: SharedPopulation | null;
     tng_prior?: TngPrior | null;
     synthetic_splits?: string[];
     training_included?: boolean;
@@ -163,7 +180,16 @@ type ApiPayload = {
 
 const BANDS: Band[] = ["VIS", "Y_E", "J_E", "H_E"];
 const TYPE_ORDER = ["galaxy", "star", "unknown"];
+const COMPARISON_CLASSES: ComparisonClass[] = ["nonstellar", "star"];
+const SHARED_PARAMETER_ORDER = [
+  "mag_vis", "mag_y_e", "mag_j_e", "mag_h_e",
+  "vis_y_color", "y_j_color", "j_h_color",
+];
 const BAND_COLOR = (band: Band) => categorical(BANDS.indexOf(band));
+const CLASS_COLOR: Record<ComparisonClass, string> = {
+  nonstellar: categorical(0),
+  star: categorical(2),
+};
 const bandLabel = (band: Band) => band.replace("_E", "");
 
 function finite(values: readonly (number | null)[]): number[] {
@@ -814,6 +840,90 @@ function PopulationSummary({ title, eyebrow, population, tone }: {
   );
 }
 
+function ComparableParameterPlot({ parameter, shared }: {
+  parameter: SharedParameter;
+  shared: SharedPopulation;
+}) {
+  const entries = COMPARISON_CLASSES
+    .filter((kind) => parameter.classes[kind]?.synthetic.x.length
+      && parameter.classes[kind]?.euclid.x.length)
+    .map((kind) => [kind, parameter.classes[kind]!] as const);
+  const histograms = entries.flatMap(([, pair]) => [pair.synthetic, pair.euclid]);
+  const xs = histograms.flatMap((histogram) => histogram.x);
+  const ys = histograms.flatMap((histogram) => histogram.density);
+  const xDomain = domain(xs);
+  const yDomain = domain(ys, true);
+  const series: Series[] = entries.flatMap(([kind, pair]) => [
+    {
+      x: pair.synthetic.x,
+      y: pair.synthetic.density,
+      color: CLASS_COLOR[kind],
+      mode: "histogram",
+      width: 1.55,
+      alpha: 0.94,
+      fillAlpha: 0.24,
+    },
+    {
+      x: pair.euclid.x,
+      y: pair.euclid.density,
+      color: CLASS_COLOR[kind],
+      mode: "histogram",
+      width: 1.9,
+      dash: [8, 4],
+      hatch: true,
+      alpha: 1,
+      fillAlpha: 0.025,
+    },
+  ]);
+  const counts = entries.map(([kind, pair]) => (
+    `${shared.class_labels[kind]} ${pair.synthetic.count.toLocaleString()} / ${
+      pair.euclid.count.toLocaleString()}`
+  )).join(" · ");
+  return (
+    <Card className="parameter-card">
+      <CardHead title={parameter.label}
+        sub={`synthetic truth / Euclid detections n · ${counts}`} />
+      <CardBody>
+        <AdjustablePlot boundsLabel={`Synthetic–Euclid ${parameter.label}`}
+          xDomain={xDomain} yDomain={yDomain}
+          xTicksForDomain={(value) => ticks(value, 4)}
+          yTicksForDomain={(value) => ticks(value, 4)}
+          xLabel={parameter.unit} yLabel={shared.density_unit}
+          series={series} aspect={0.62} />
+        <Legend items={entries.map(([kind]) => ({
+          color: CLASS_COLOR[kind],
+          label: shared.class_labels[kind],
+          histogram: true,
+          filled: true,
+        }))} />
+        <Legend items={[
+          {
+            color: C.cross, label: "synthetic truth · filled",
+            histogram: true, filled: true, dash: false,
+          },
+          {
+            color: C.cross, label: "Euclid detections · hatched",
+            histogram: true, filled: false, hatch: true, dash: true,
+          },
+        ]} />
+      </CardBody>
+    </Card>
+  );
+}
+
+function ComparableParameterAtlas({ shared }: { shared: SharedPopulation }) {
+  return (
+    <div className="parameter-atlas">
+      {SHARED_PARAMETER_ORDER
+        .filter((key) => shared.parameters[key])
+        .map((key) => (
+          <ComparableParameterPlot key={key}
+            parameter={shared.parameters[key]} shared={shared} />
+        ))}
+    </div>
+  );
+}
+
 function priorValue(value: number): string {
   return Number.isFinite(value) ? value.toFixed(0) : "—";
 }
@@ -1075,6 +1185,28 @@ export default function PopulationComparisonPage() {
             ) : null}
 
             <ConeQuery api={api} onQueried={resource.reload} />
+
+            {comparison.population.shared && (
+              <section className="parameter-section">
+                <header>
+                  <div className="eyebrow">selection-mismatched diagnostic · identical bins</div>
+                  <h3>Complete synthetic truth × detection-selected Euclid catalog</h3>
+                  <span>
+                    {Object.keys(comparison.population.shared.parameters).length} shared parameters
+                  </span>
+                </header>
+                <p className="catalog-classification-note">
+                  These plots are useful for inspecting the observed discrepancy,
+                  but they do not estimate intrinsic population agreement: synthetic
+                  truth includes every generated source, whereas Euclid includes only
+                  detected and deblended sources. They are excluded from TNG calibration.
+                  Solid filled histograms are synthetic truth; dashed hatched outlines
+                  are Euclid detections. Euclid magnitudes use 3-FWHM aperture
+                  photometry; synthetic magnitudes are intrinsic source totals.
+                </p>
+                <ComparableParameterAtlas shared={comparison.population.shared} />
+              </section>
+            )}
           </section>
         </>
       )}
