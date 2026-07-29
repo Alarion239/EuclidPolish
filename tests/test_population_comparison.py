@@ -17,6 +17,7 @@ from euclid_polish.web.helpers.population_comparison import (
     _normalise_field,
     _parameter_payload,
     _read_synthetic_sources,
+    _shared_parameter_payload,
     query_euclid_population,
     refresh_population_comparison,
 )
@@ -117,6 +118,49 @@ def test_population_parameter_payload_plots_every_available_parameter():
     assert {"objects_per_field", "mag_vis", "z", "temperature_k"} <= set(
         payload["parameters"]
     )
+
+
+def test_shared_population_parameters_keep_only_comparable_observables():
+    synthetic = [
+        {
+            "type": "galaxy", "mag_vis": 22.0, "re_arcsec": 0.3, "z": 0.8,
+        },
+        {
+            "type": "star", "mag_vis": 18.0, "mag_y_e": 17.5,
+            "vis_y_color": 0.5, "temperature_k": 5400.0,
+        },
+    ]
+    euclid = [
+        {
+            "type": "unknown", "mag_vis": 23.0, "semimajor_axis": 4.0,
+            "vis_snr": 12.0,
+        },
+        {
+            "type": "star", "mag_vis": 18.5, "mag_y_e": 18.0,
+            "vis_y_color": 0.5, "point_like_prob": 0.99,
+        },
+    ]
+
+    payload = _shared_parameter_payload(
+        synthetic, euclid, synthetic_area_arcmin2=2.0,
+        euclid_area_arcmin2=4.0,
+    )
+
+    assert set(payload["parameters"]) == {
+        "mag_vis", "mag_y_e", "vis_y_color",
+    }
+    assert set(payload["parameters"]["mag_vis"]["classes"]) == {
+        "nonstellar", "star",
+    }
+    assert set(payload["parameters"]["mag_y_e"]["classes"]) == {"star"}
+    nonstellar = payload["parameters"]["mag_vis"]["classes"]["nonstellar"]
+    assert nonstellar["synthetic"]["x"] == nonstellar["euclid"]["x"]
+    assert sum(nonstellar["synthetic"]["density"]) == pytest.approx(0.5)
+    assert sum(nonstellar["euclid"]["density"]) == pytest.approx(0.25)
+    assert "re_arcsec" not in payload["parameters"]
+    assert "semimajor_axis" not in payload["parameters"]
+    assert "z" not in payload["parameters"]
+    assert "vis_snr" not in payload["parameters"]
 
 
 def test_masked_catalog_values_are_missing_without_warning():
@@ -227,6 +271,20 @@ def test_synthetic_lenses_are_merged_into_galaxies(tmp_path):
 
     assert payload["counts"] == {"galaxy": 2, "star": 1}
     assert "theta_E_arcsec" not in payload["parameters"]
+
+
+def test_synthetic_catalog_derives_shared_colours(tmp_path):
+    sources = tmp_path / "sources.csv"
+    sources.write_text(
+        "field_index,type,mag_vis,mag_y_e,mag_j_e,mag_h_e\n"
+        "0,star,20.0,19.5,19.2,19.0\n"
+    )
+
+    row = _read_synthetic_sources([sources])[0]
+
+    assert row["vis_y_color"] == pytest.approx(0.5)
+    assert row["y_j_color"] == pytest.approx(0.3)
+    assert row["j_h_color"] == pytest.approx(0.2)
 
 
 def test_ensure_ssh_connected_builds_shared_session(monkeypatch):

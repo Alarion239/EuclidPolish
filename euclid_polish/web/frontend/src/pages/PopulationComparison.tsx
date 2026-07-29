@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import { NavLink } from "react-router-dom";
 import Plot, { Legend, type PlotProps, type Series, type Tick } from "../charts/Plot";
 import { C, categorical } from "../colors";
@@ -58,17 +58,25 @@ type FieldComparison = {
 type Histogram = {
   x: number[]; density: number[]; count: number; range?: [number, number];
 };
-type Parameter = {
-  label: string;
-  unit: string;
-  series: Record<string, Histogram>;
-};
 type Population = {
   objects: number;
   counts: Record<string, number>;
   density_arcmin2: Record<string, number | null>;
   area_arcmin2: number;
-  parameters: Record<string, Parameter>;
+};
+type ComparisonClass = "nonstellar" | "star";
+type SharedParameter = {
+  label: string;
+  unit: string;
+  classes: Partial<Record<ComparisonClass, {
+    synthetic: Histogram;
+    euclid: Histogram;
+  }>>;
+};
+type SharedPopulation = {
+  parameters: Record<string, SharedParameter>;
+  class_labels: Record<ComparisonClass, string>;
+  density_unit: string;
 };
 type Comparison = {
   version: number;
@@ -88,6 +96,7 @@ type Comparison = {
     synthetic: Population;
     synthetic_field_count: number;
     euclid: Population | null;
+    shared: SharedPopulation | null;
     euclid_meta: {
       ra: number; dec: number; radius_arcmin: number; area_arcmin2: number;
       rows: number; limit: number; limit_reached: boolean; classification: string;
@@ -120,7 +129,16 @@ type ApiPayload = {
 
 const BANDS: Band[] = ["VIS", "Y_E", "J_E", "H_E"];
 const TYPE_ORDER = ["galaxy", "star", "unknown"];
+const COMPARISON_CLASSES: ComparisonClass[] = ["nonstellar", "star"];
+const SHARED_PARAMETER_ORDER = [
+  "mag_vis", "mag_y_e", "mag_j_e", "mag_h_e",
+  "vis_y_color", "y_j_color", "j_h_color",
+];
 const BAND_COLOR = (band: Band) => categorical(BANDS.indexOf(band));
+const CLASS_COLOR: Record<ComparisonClass, string> = {
+  nonstellar: categorical(0),
+  star: categorical(2),
+};
 const bandLabel = (band: Band) => band.replace("_E", "");
 
 function finite(values: readonly (number | null)[]): number[] {
@@ -735,7 +753,11 @@ function PopulationSummary({ title, eyebrow, population, tone }: {
         <div className="population-summary__stats">
           <Stat k="catalog objects" v={population.objects.toLocaleString()} />
           {TYPE_ORDER.filter((kind) => kind in population.counts).map((kind) => (
-            <Stat key={kind} k={`${kind} / arcmin²`}
+            <Stat key={kind} k={`${
+              tone === "real" && kind === "unknown"
+                ? "non-stellar candidates"
+                : kind === "galaxy" ? "galaxies" : `${kind}s`
+            } / arcmin²`}
               v={(population.density_arcmin2[kind] ?? 0).toFixed(2)} />
           ))}
         </div>
@@ -744,52 +766,85 @@ function PopulationSummary({ title, eyebrow, population, tone }: {
   );
 }
 
-function ParameterPlot({ parameter, source }: { parameter: Parameter; source: string }) {
-  const entries = TYPE_ORDER
-    .filter((kind) => parameter.series[kind]?.x.length)
-    .map((kind) => [kind, parameter.series[kind]] as const);
-  const xs = entries.flatMap(([, histogram]) => histogram.x);
-  const ys = entries.flatMap(([, histogram]) => histogram.density);
+function ComparableParameterPlot({ parameter, shared }: {
+  parameter: SharedParameter;
+  shared: SharedPopulation;
+}) {
+  const entries = COMPARISON_CLASSES
+    .filter((kind) => parameter.classes[kind]?.synthetic.x.length
+      && parameter.classes[kind]?.euclid.x.length)
+    .map((kind) => [kind, parameter.classes[kind]!] as const);
+  const histograms = entries.flatMap(([, pair]) => [pair.synthetic, pair.euclid]);
+  const xs = histograms.flatMap((histogram) => histogram.x);
+  const ys = histograms.flatMap((histogram) => histogram.density);
   const xDomain = domain(xs);
   const yDomain = domain(ys, true);
-  const series: Series[] = entries.map(([kind, histogram], index) => ({
-    x: histogram.x,
-    y: histogram.density,
-    color: categorical(index + (source === "Euclid catalog" ? 4 : 0)),
-    mode: "histogram",
-    width: 1.3,
-    alpha: 0.86,
-    fillAlpha: 0.22,
-  }));
+  const series: Series[] = entries.flatMap(([kind, pair]) => [
+    {
+      x: pair.synthetic.x,
+      y: pair.synthetic.density,
+      color: CLASS_COLOR[kind],
+      mode: "histogram",
+      width: 1.35,
+      alpha: 0.88,
+      fillAlpha: 0.20,
+    },
+    {
+      x: pair.euclid.x,
+      y: pair.euclid.density,
+      color: CLASS_COLOR[kind],
+      mode: "histogram",
+      width: 1.55,
+      dash: [5, 3],
+      alpha: 1,
+      fillAlpha: 0,
+    },
+  ]);
+  const counts = entries.map(([kind, pair]) => (
+    `${shared.class_labels[kind]} ${pair.synthetic.count.toLocaleString()} / ${
+      pair.euclid.count.toLocaleString()}`
+  )).join(" · ");
   return (
     <Card className="parameter-card">
       <CardHead title={parameter.label}
-        sub={`${source} · ${entries.map(([kind, histogram]) =>
-          `${kind} n=${histogram.count.toLocaleString()}`).join(" · ")}`} />
+        sub={`synthetic / Euclid n · ${counts}`} />
       <CardBody>
-        <AdjustablePlot boundsLabel={`${source} ${parameter.label}`}
+        <AdjustablePlot boundsLabel={`Synthetic–Euclid ${parameter.label}`}
           xDomain={xDomain} yDomain={yDomain}
           xTicksForDomain={(value) => ticks(value, 4)}
           yTicksForDomain={(value) => ticks(value, 4)}
-          xLabel={parameter.unit} yLabel="fraction / bin"
+          xLabel={parameter.unit} yLabel={shared.density_unit}
           series={series} aspect={0.62} />
-        <Legend items={entries.map(([kind], index) => ({
-          color: categorical(index + (source === "Euclid catalog" ? 4 : 0)),
-          label: kind,
+        <Legend items={entries.map(([kind]) => ({
+          color: CLASS_COLOR[kind],
+          label: shared.class_labels[kind],
           histogram: true,
           filled: true,
         }))} />
+        <Legend items={[
+          {
+            color: C.cross, label: "synthetic truth",
+            histogram: true, filled: true, dash: false,
+          },
+          {
+            color: C.cross, label: "Euclid catalog",
+            histogram: true, filled: false, dash: true,
+          },
+        ]} />
       </CardBody>
     </Card>
   );
 }
 
-function ParameterAtlas({ population, source }: { population: Population; source: string }) {
+function ComparableParameterAtlas({ shared }: { shared: SharedPopulation }) {
   return (
     <div className="parameter-atlas">
-      {Object.entries(population.parameters).map(([key, parameter]) => (
-        <ParameterPlot key={`${source}-${key}`} parameter={parameter} source={source} />
-      ))}
+      {SHARED_PARAMETER_ORDER
+        .filter((key) => shared.parameters[key])
+        .map((key) => (
+          <ComparableParameterPlot key={key}
+            parameter={shared.parameters[key]} shared={shared} />
+        ))}
     </div>
   );
 }
@@ -868,19 +923,6 @@ export default function PopulationComparisonPage() {
       }
     } },
   );
-  const sections = useMemo(() => {
-    if (!comparison) return [];
-    const value: { title: string; source: string; population: Population }[] = [
-      { title: "Synthetic truth parameters", source: "Synthetic source truth", population: comparison.population.synthetic },
-    ];
-    if (comparison.population.euclid) value.push({
-      title: "Euclid catalog parameters",
-      source: "Euclid catalog",
-      population: comparison.population.euclid,
-    });
-    return value;
-  }, [comparison]);
-
   if (resource.loading && !api) {
     return <Page><Empty><Spinner /> reading local field census…</Empty></Page>;
   }
@@ -921,7 +963,7 @@ export default function PopulationComparisonPage() {
               <div>
                 <div className="eyebrow">source domain · area-normalized</div>
                 <h2>Population census</h2>
-                <p>Counts use the true sky footprint. Histograms below include every available scientific parameter.</p>
+                <p>Counts use the true sky footprint. Histograms retain only observables available for both synthetic truth and the Euclid catalog.</p>
               </div>
               <div className="comparison-actions">
                 <Badge tone={api.availability.synthetic.train_source_catalog ? "good" : "warn"}>
@@ -939,10 +981,10 @@ export default function PopulationComparisonPage() {
             </header>
             <JobProgressView job={trainingCatalog.job} error={trainingCatalog.error} />
             <div className="population-summary-grid">
-              <PopulationSummary title="Synthetic source truth" eyebrow="test + validate CSV sidecars"
+              <PopulationSummary title="Synthetic source truth" eyebrow="generated catalog sidecars"
                 population={comparison.population.synthetic} tone="synthetic" />
               {comparison.population.euclid ? (
-                <PopulationSummary title="Euclid MER catalog" eyebrow="star · explicit galaxy · unknown"
+                <PopulationSummary title="Euclid MER catalog" eyebrow="stars · non-stellar candidates"
                   population={comparison.population.euclid} tone="real" />
               ) : (
                 <Card className="population-summary population-summary--empty">
@@ -954,22 +996,31 @@ export default function PopulationComparisonPage() {
             {comparison.population.euclid_meta && (
               <p className="catalog-classification-note">
                 <strong>Classification:</strong> {comparison.population.euclid_meta.classification}.{" "}
-                {comparison.population.euclid_meta.classification_note}
+                Unknown rows are plotted as non-stellar candidates alongside synthetic galaxies,
+                not as confirmed galaxies. {comparison.population.euclid_meta.classification_note}
               </p>
             )}
 
             <ConeQuery api={api} onQueried={resource.reload} />
 
-            {sections.map((section) => (
-              <section className="parameter-section" key={section.title}>
+            {comparison.population.shared && (
+              <section className="parameter-section">
                 <header>
-                  <div className="eyebrow">parameter atlas</div>
-                  <h3>{section.title}</h3>
-                  <span>{Object.keys(section.population.parameters).length} distributions</span>
+                  <div className="eyebrow">shared observables · identical bins</div>
+                  <h3>Synthetic truth × Euclid catalog</h3>
+                  <span>
+                    {Object.keys(comparison.population.shared.parameters).length} comparable distributions
+                  </span>
                 </header>
-                <ParameterAtlas population={section.population} source={section.source} />
+                <p className="catalog-classification-note">
+                  Solid filled histograms are synthetic truth; dashed outlines are Euclid.
+                  Counts are normalized by each catalog’s sky area. Catalog magnitudes use
+                  Euclid 3-FWHM aperture photometry, while synthetic magnitudes are intrinsic
+                  source totals, so offsets include measurement and selection effects.
+                </p>
+                <ComparableParameterAtlas shared={comparison.population.shared} />
               </section>
-            ))}
+            )}
           </section>
         </>
       )}

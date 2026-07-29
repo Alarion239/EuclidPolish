@@ -87,6 +87,16 @@ _PARAM_META = {
     "extinction_av": ("stellar extinction Aᵥ", "mag"),
 }
 
+_SHARED_PARAMETERS = {
+    "mag_vis": ("VIS magnitude", "AB mag"),
+    "mag_y_e": ("Y_E magnitude", "AB mag"),
+    "mag_j_e": ("J_E magnitude", "AB mag"),
+    "mag_h_e": ("H_E magnitude", "AB mag"),
+    "vis_y_color": ("VIS − Y colour", "AB mag"),
+    "y_j_color": ("Y − J colour", "AB mag"),
+    "j_h_color": ("J − H colour", "AB mag"),
+}
+
 
 def cache_dir() -> Path:
     return Path(Config.DATA_DIR) / "population_comparison"
@@ -681,6 +691,20 @@ def _source_field_count(paths: Iterable[Path]) -> int:
     return total
 
 
+def _derive_colours(row: dict[str, Any]) -> None:
+    for colour, left, right in (
+        ("vis_y_color", "mag_vis", "mag_y_e"),
+        ("y_j_color", "mag_y_e", "mag_j_e"),
+        ("j_h_color", "mag_j_e", "mag_h_e"),
+    ):
+        if row.get(colour) is not None:
+            continue
+        left_value = _finite(row.get(left))
+        right_value = _finite(row.get(right))
+        if left_value is not None and right_value is not None:
+            row[colour] = left_value - right_value
+
+
 def _read_synthetic_sources(paths: Iterable[Path]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     offset = 0
@@ -707,6 +731,7 @@ def _read_synthetic_sources(paths: Iterable[Path]) -> list[dict[str, Any]]:
                     row["mag_vis"] = _finite(electrons_to_ab_mag(
                         row["flux_vis_e"], Config.BAND_VIS
                     ))
+                _derive_colours(row)
                 rows.append(row)
         offset += local_max + 1
     return rows
@@ -728,6 +753,7 @@ def _read_euclid_sources() -> tuple[list[dict[str, Any]], dict[str, Any] | None]
             for key in _PARAM_META:
                 if key != "objects_per_field":
                     row[key] = _finite(raw.get(key))
+            _derive_colours(row)
             rows.append(row)
     return rows, meta
 
@@ -801,6 +827,97 @@ def _parameter_payload(rows: list[dict[str, Any]], area_arcmin2: float,
     }
 
 
+def _shared_histogram(
+    values: list[float],
+    edges: np.ndarray,
+    area_arcmin2: float,
+) -> dict[str, Any]:
+    data = np.asarray(values, dtype=np.float64)
+    data = data[np.isfinite(data)]
+    counts, _ = np.histogram(data, bins=edges)
+    return {
+        "x": ((edges[:-1] + edges[1:]) / 2).tolist(),
+        "density": (
+            counts / area_arcmin2
+            if area_arcmin2 > 0 else np.zeros_like(counts, dtype=float)
+        ).tolist(),
+        "count": int(data.size),
+        "range": [float(edges[0]), float(edges[-1])],
+    }
+
+
+def _shared_parameter_payload(
+    synthetic_rows: list[dict[str, Any]],
+    euclid_rows: list[dict[str, Any]],
+    synthetic_area_arcmin2: float,
+    euclid_area_arcmin2: float,
+) -> dict[str, Any]:
+    """Build only like-for-like observables on identical histogram bins."""
+
+    def comparison_class(row: dict[str, Any], *, euclid: bool) -> str | None:
+        kind = str(row.get("type", "unknown"))
+        if kind == "star":
+            return "star"
+        if kind == "galaxy" or (euclid and kind == "unknown"):
+            return "nonstellar"
+        return None
+
+    parameters: dict[str, Any] = {}
+    for parameter, (label, unit) in _SHARED_PARAMETERS.items():
+        values_by_class: dict[str, tuple[list[float], list[float]]] = {}
+        for kind in ("nonstellar", "star"):
+            synthetic_values = [
+                value for row in synthetic_rows
+                if comparison_class(row, euclid=False) == kind
+                if (value := _finite(row.get(parameter))) is not None
+            ]
+            euclid_values = [
+                value for row in euclid_rows
+                if comparison_class(row, euclid=True) == kind
+                if (value := _finite(row.get(parameter))) is not None
+            ]
+            if not synthetic_values or not euclid_values:
+                continue
+            values_by_class[kind] = (synthetic_values, euclid_values)
+        if values_by_class:
+            combined = np.asarray([
+                value
+                for pair in values_by_class.values()
+                for values in pair
+                for value in values
+            ], dtype=np.float64)
+            lo, hi = float(combined.min()), float(combined.max())
+            if hi <= lo:
+                lo, hi = lo - 0.5, hi + 0.5
+            bins = min(36, max(8, int(np.sqrt(combined.size))))
+            edges = np.linspace(float(lo), float(hi), bins + 1)
+            classes = {
+                kind: {
+                    "synthetic": _shared_histogram(
+                        synthetic_values, edges, synthetic_area_arcmin2
+                    ),
+                    "euclid": _shared_histogram(
+                        euclid_values, edges, euclid_area_arcmin2
+                    ),
+                }
+                for kind, (synthetic_values, euclid_values)
+                in values_by_class.items()
+            }
+            parameters[parameter] = {
+                "label": label,
+                "unit": unit,
+                "classes": classes,
+            }
+    return {
+        "parameters": parameters,
+        "class_labels": {
+            "nonstellar": "galaxies / non-stellar candidates",
+            "star": "stars",
+        },
+        "density_unit": "objects / arcmin² / bin",
+    }
+
+
 def _population_payload(source_csvs: Iterable[Path],
                         synthetic_field_count: int) -> dict[str, Any]:
     paths = list(source_csvs)
@@ -816,6 +933,15 @@ def _population_payload(source_csvs: Iterable[Path],
         "synthetic_field_count": population_fields,
         "euclid": (
             _parameter_payload(euclid_rows, euclid_area, include_per_field=False)
+            if euclid_rows and euclid_area > 0 else None
+        ),
+        "shared": (
+            _shared_parameter_payload(
+                synthetic_rows,
+                euclid_rows,
+                synthetic_area,
+                euclid_area,
+            )
             if euclid_rows and euclid_area > 0 else None
         ),
         "euclid_meta": euclid_meta,
