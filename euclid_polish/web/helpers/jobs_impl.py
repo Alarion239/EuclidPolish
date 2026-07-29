@@ -33,7 +33,7 @@ from euclid_polish.training.inference import (
     reconstruct,  # experimental round-trip lane only (raw keras model)
     scaled_wcs_header,
 )
-from euclid_polish.web import fasrc_config
+from euclid_polish.web import fasrc_config, job_config
 from euclid_polish.web import fasrc_fetcher as _fasrc_fetcher
 from euclid_polish.web.fasrc_jobs import _conda_activate_snippet
 from euclid_polish.web.helpers.status import _fasrc_psf_dir
@@ -41,7 +41,8 @@ from euclid_polish.web.remote import STATE
 
 
 def _login_node_generate_cmd(cfg, remote_tmp: str, hr_image_size: int,
-                             n_pairs: int) -> str:
+                             n_pairs: int, *,
+                             tng_density_arcmin2: float) -> str:
     """Shell command that generates ``n_pairs`` synthetic *validate* pairs
     at ``hr_image_size`` on the FASRC **login node** — a plain command, not
     an sbatch job.
@@ -61,7 +62,7 @@ def _login_node_generate_cmd(cfg, remote_tmp: str, hr_image_size: int,
     # draw budget and smooth mass prior are separate from the COSMOS Sersic
     # density.
     tng_flag = (f" --sersic-density-arcmin2 0"
-                f" --tng-density-arcmin2 {Config.TNG_GAL_DENSITY_ARCMIN2:g}"
+                f" --tng-density-arcmin2 {float(tng_density_arcmin2):g}"
                 f" --tng-redshift-mode")
     _conda_block = _conda_activate_snippet(cfg.conda_env_path)
     return textwrap.dedent(f"""
@@ -117,7 +118,13 @@ def _job_generate_reconstruct(
     print(f"  login-node generate → {remote_tmp}")
     try:
         rc, out, err = STATE.ssh.run(
-            _login_node_generate_cmd(cfg, remote_tmp, hr_image_size, n_pairs),
+            _login_node_generate_cmd(
+                cfg,
+                remote_tmp,
+                hr_image_size,
+                n_pairs,
+                tng_density_arcmin2=job_config.load().tng_density_arcmin2,
+            ),
             timeout=900,
         )
         if rc != 0:

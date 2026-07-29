@@ -102,6 +102,19 @@ def test_star_field_mapped_for_synthetic_generate():
         assert m[k] == k
 
 
+def test_tng_density_defaults_updates_and_maps_to_generators(cfg_path):
+    c = job_config.load()
+    assert c.tng_density_arcmin2 == 200.0
+    c = job_config.update({"tng_density_arcmin2": "175"})
+    assert c.tng_density_arcmin2 == 175.0
+    assert job_config.load().tng_density_arcmin2 == 175.0
+    for step_id in ("synthetic_generate", "lensfinder_generate"):
+        assert (
+            job_config.FASRC_STEP_PARAMS[step_id]["tng_density_arcmin2"]
+            == "tng_density_arcmin2"
+        )
+
+
 def test_psf_warp_mapped_for_all_generation_and_training_steps():
     keys = ("psf_warp_prob", "psf_warp_alpha_max", "psf_warp_sigma",
             "saturation_mask_prob")

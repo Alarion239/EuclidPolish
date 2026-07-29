@@ -798,13 +798,12 @@ large cutout don't leak across train/validate."></label>`;
 
   function historyTaskSpec(stepId, params) {
     const field = (label, value) => ({ label, value });
-    // Mirrors Config.TNG_GAL_DENSITY_ARCMIN2: fixed for the pure-TNG
-    // generators, but still useful context for the work represented by a run.
+    // Legacy rows predate the persisted /config TNG density and used 60.
     switch (stepId) {
       case 'synthetic_generate':
       case 'lensfinder_generate':
         return [field('nfields', historySum(params, ['n_train', 'n_valid', 'n_test'])),
-          field('galaxies / arcmin²', historyText(params, 'tng_density_arcmin2', '200')),
+          field('galaxies / arcmin²', historyText(params, 'tng_density_arcmin2', '60')),
           field('lenses / arcmin²', historyText(params, 'lens_density_arcmin2'))];
       case 'lens_isolation_generate':
         return [field('nfields', historySum(params, ['ntrain', 'nvalid', 'ntest']))];

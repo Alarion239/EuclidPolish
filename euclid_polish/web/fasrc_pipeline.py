@@ -1403,11 +1403,22 @@ class SyntheticGenerateStep(RunPipelineStep):
         # apparent-size distribution (median R_e ≈ 0.22″, only ~2% > 1″).
         # WITHOUT --tng-redshift-mode the generator sizes stamps log-uniformly
         # over [0.3,4]″ at full atlas mass (median ~1.1″, ~half > 1″) → fields
-        # full of arcsec-scale giants. TNG_GAL_DENSITY_ARCMIN2 is the raw
-        # pure-TNG draw budget; the smooth mass prior controls how that budget
-        # is distributed over bright/large versus faint/small galaxies.
+        # full of arcsec-scale giants. The /config TNG density is the raw draw
+        # budget; the smooth mass prior controls how it is distributed over
+        # bright/large versus faint/small galaxies.
+        raw_tng_density = params.get(
+            "tng_density_arcmin2", Config.TNG_GAL_DENSITY_ARCMIN2
+        )
+        try:
+            tng_density = float(raw_tng_density)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"invalid TNG density: {raw_tng_density!r}"
+            ) from exc
+        if not (0.0 <= tng_density < float("inf")):
+            raise ValueError(f"invalid TNG density: {raw_tng_density!r}")
         cmd += ["--sersic-density-arcmin2", "0",
-                "--tng-density-arcmin2", f"{Config.TNG_GAL_DENSITY_ARCMIN2:g}",
+                "--tng-density-arcmin2", f"{tng_density:g}",
                 "--tng-redshift-mode"]
         # Scene-population and forward-PSF knobs (from /config). Emit only when
         # supplied so direct programmatic callers can still rely on CLI

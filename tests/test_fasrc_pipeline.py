@@ -467,6 +467,8 @@ class TestRegistry:
         assert argv[argv.index("--sersic-density-arcmin2") + 1] == "0"
         assert (argv[argv.index("--tng-density-arcmin2") + 1]
                 == f"{Config.TNG_GAL_DENSITY_ARCMIN2:g}")
+        custom = step.build_command({**base, "tng_density_arcmin2": "175"})
+        assert custom[custom.index("--tng-density-arcmin2") + 1] == "175"
         assert "--tng-redshift-mode" in argv
 
     def test_synthetic_generate_force_flag(self):

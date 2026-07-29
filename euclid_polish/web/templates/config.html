@@ -48,8 +48,13 @@
           <input type="number" name="hr_image_size" value="{{ cfg.hr_image_size }}"
                  min="60" max="2048" step="6" required>
         </label>
+        <label title="Raw TNG candidate budget. The smooth mass/flux prior determines how many become bright/large versus faint/small. Current calibrated value: 200.">
+          TNG draws (/arcmin²)
+          <input type="number" name="tng_density_arcmin2" value="{{ cfg.tng_density_arcmin2 }}"
+                 min="0" max="1000" step="1" required>
+        </label>
       </div>
-      <p class="hint">→ <code>/sky</code> (generate) and <code>/inference</code> (HR size).</p>
+      <p class="hint">→ <code>/sky</code> and lens-finder generation; HR size also feeds <code>/inference</code>.</p>
     </fieldset>
 
     <fieldset style="border:1px solid #e2e5ea; border-radius:6px; margin:10px 0; padding:10px 14px;">

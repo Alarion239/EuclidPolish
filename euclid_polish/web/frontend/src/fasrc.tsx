@@ -440,9 +440,9 @@ const parseHistoryParams = (raw?: string): HistoryParamsMap => {
   return {};
 };
 
-// The pure-TNG generator fixes this at Config.TNG_GAL_DENSITY_ARCMIN2; it is
-// shown here because it affects field work but is not a per-run form knob.
-const DEFAULT_TNG_GALAXY_DENSITY = 200;
+// Rows produced before the density became a persisted /config field did not
+// record it in params_json; those legacy submissions used 60.
+const LEGACY_TNG_GALAXY_DENSITY = 60;
 const param = (params: HistoryParamsMap, key: string): unknown => {
   const value = params[key];
   return value === "" || value == null ? null : value;
@@ -502,13 +502,13 @@ function taskColumnsFor(stepId: string): Column<HistoryRow>[] {
       return [
         taskColumn("splits", syntheticSplitMode, 132),
         taskColumn("nfields", syntheticFieldCount, 92),
-        taskColumn("galaxies / arcmin²", (p) => paramText(p, "tng_density_arcmin2", String(DEFAULT_TNG_GALAXY_DENSITY)), 128),
+        taskColumn("galaxies / arcmin²", (p) => paramText(p, "tng_density_arcmin2", String(LEGACY_TNG_GALAXY_DENSITY)), 128),
         taskColumn("lenses / arcmin²", (p) => paramText(p, "lens_density_arcmin2"), 122),
       ];
     case "lensfinder_generate":
       return [
         taskColumn("nfields", (p) => paramSum(p, ["n_train", "n_valid", "n_test"]), 92),
-        taskColumn("galaxies / arcmin²", (p) => paramText(p, "tng_density_arcmin2", String(DEFAULT_TNG_GALAXY_DENSITY)), 128),
+        taskColumn("galaxies / arcmin²", (p) => paramText(p, "tng_density_arcmin2", String(LEGACY_TNG_GALAXY_DENSITY)), 128),
         taskColumn("lenses / arcmin²", (p) => paramText(p, "lens_density_arcmin2"), 122),
       ];
     case "lens_isolation_generate":
