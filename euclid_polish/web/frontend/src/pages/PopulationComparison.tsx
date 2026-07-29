@@ -78,6 +78,47 @@ type SharedPopulation = {
   class_labels: Record<ComparisonClass, string>;
   density_unit: string;
 };
+type PriorInterval = { median: number; p16: number; p84: number };
+type CatalogPrior = {
+  method: string;
+  current_prior_arcmin2: number;
+  fitted_prior_arcmin2: number;
+  interval_arcmin2: PriorInterval;
+  turnover_limit_mag: number;
+  selected_bin_count: number;
+  synthetic_selected_count: number;
+  euclid_selected_count: number;
+  reduced_poisson_deviance: number;
+  log10_prior_slope_per_mag: number;
+  single_scalar_adequate: boolean;
+  curve: {
+    mag: number[];
+    prior_arcmin2: number[];
+    synthetic_density: number[];
+    euclid_density: number[];
+  };
+  uncertainty_note: string;
+};
+type VisiblePrior = {
+  method: string;
+  current_prior_arcmin2: number;
+  fitted_prior_arcmin2: number;
+  interval_arcmin2: PriorInterval;
+  synthetic_detected_density_arcmin2: number;
+  real_detected_density_arcmin2: number;
+  synthetic_retained_truth_density_arcmin2: number;
+  matched_truth_fraction: number;
+  synthetic_fields: number;
+  real_fields: number;
+  caveat: string;
+};
+type TngPrior = {
+  catalog: CatalogPrior | null;
+  visible: VisiblePrior | null;
+  single_scalar_adequate: boolean;
+  pilot_grid_arcmin2: number[];
+  recommendation: string;
+};
 type Comparison = {
   version: number;
   geometry: {
@@ -97,6 +138,7 @@ type Comparison = {
     synthetic_field_count: number;
     euclid: Population | null;
     shared: SharedPopulation | null;
+    tng_prior?: TngPrior | null;
     euclid_meta: {
       ra: number; dec: number; radius_arcmin: number; area_arcmin2: number;
       rows: number; limit: number; limit_reached: boolean; classification: string;
@@ -849,6 +891,130 @@ function ComparableParameterAtlas({ shared }: { shared: SharedPopulation }) {
   );
 }
 
+function priorValue(value: number): string {
+  return Number.isFinite(value) ? value.toFixed(0) : "—";
+}
+
+function TngPriorPanel({ prior }: { prior: TngPrior }) {
+  const catalog = prior.catalog;
+  const visible = prior.visible;
+  const current = catalog?.current_prior_arcmin2
+    ?? visible?.current_prior_arcmin2 ?? 60;
+  const curve = catalog?.curve;
+  const plotY = domain([
+    current,
+    catalog?.fitted_prior_arcmin2 ?? null,
+    visible?.fitted_prior_arcmin2 ?? null,
+    ...(curve?.prior_arcmin2 ?? []),
+  ], true);
+  return (
+    <section className="tng-prior">
+      <header className="tng-prior__head">
+        <div>
+          <div className="eyebrow">normalization inference · current images + catalog</div>
+          <h3>TNG draw-prior calibration</h3>
+          <p>Two independent transfers anchor the raw draw density currently set to {current.toFixed(0)} galaxies / arcmin².</p>
+        </div>
+        <Badge tone={prior.single_scalar_adequate ? "good" : "warn"}>
+          {prior.single_scalar_adequate ? "one scalar is adequate" : "population shape mismatch"}
+        </Badge>
+      </header>
+
+      <div className="tng-prior__readouts">
+        {catalog && (
+          <article className="tng-prior__readout tng-prior__readout--catalog">
+            <span>shared VIS catalog</span>
+            <strong>{priorValue(catalog.fitted_prior_arcmin2)}</strong>
+            <small>
+              {priorValue(catalog.interval_arcmin2.p16)}–
+              {priorValue(catalog.interval_arcmin2.p84)} / arcmin² ·
+              {" "}m&lt;{catalog.turnover_limit_mag.toFixed(1)}
+            </small>
+            <p>{catalog.synthetic_selected_count.toLocaleString()} synthetic /
+              {" "}{catalog.euclid_selected_count.toLocaleString()} Euclid objects
+              across {catalog.selected_bin_count} bins.</p>
+          </article>
+        )}
+        {visible && (
+          <article className="tng-prior__readout tng-prior__readout--visible">
+            <span>common VIS detections</span>
+            <strong>{priorValue(visible.fitted_prior_arcmin2)}</strong>
+            <small>
+              {priorValue(visible.interval_arcmin2.p16)}–
+              {priorValue(visible.interval_arcmin2.p84)} / arcmin² ·
+              {" "}{visible.synthetic_fields} / {visible.real_fields} fields
+            </small>
+            <p>{visible.synthetic_detected_density_arcmin2.toFixed(1)} synthetic /
+              {" "}{visible.real_detected_density_arcmin2.toFixed(1)} Euclid
+              detections / arcmin².</p>
+          </article>
+        )}
+      </div>
+
+      <div className="tng-prior__detail-grid">
+        {catalog && curve && (
+          <Card className="tng-prior__plot">
+            <CardHead title="Prior implied by each VIS magnitude bin"
+              sub="A flat sequence would support changing only the global TNG density." />
+            <CardBody>
+              <AdjustablePlot boundsLabel="Magnitude-bin TNG prior"
+                xDomain={domain(curve.mag)}
+                yDomain={plotY}
+                xTicksForDomain={(value) => ticks(value, 5)}
+                yTicksForDomain={(value) => ticks(value, 5)}
+                guides={[
+                  { axis: "y", v: current, dash: [4, 4] },
+                  { axis: "y", v: catalog.fitted_prior_arcmin2, dash: [7, 3] },
+                ]}
+                xLabel="VIS magnitude (AB)"
+                yLabel="implied raw TNG draws / arcmin²"
+                series={[{
+                  x: curve.mag,
+                  y: curve.prior_arcmin2,
+                  color: C.comb,
+                  width: 2.2,
+                  marker: "filled",
+                }]} />
+              <Legend items={[
+                { color: C.comb, label: "per-bin inferred prior", marker: "filled" },
+                { color: C.cross, label: `current ${current.toFixed(0)}`, dash: true },
+              ]} />
+            </CardBody>
+          </Card>
+        )}
+        <Card className="tng-prior__decision">
+          <CardHead title="Decision"
+            sub={prior.single_scalar_adequate
+              ? "The selected bins agree with one normalization."
+              : "Density alone cannot reproduce the observed magnitude distribution."} />
+          <CardBody>
+            <p>{prior.recommendation}</p>
+            {!!prior.pilot_grid_arcmin2.length && (
+              <div className="tng-prior__pilot">
+                <span className="eyebrow">matched-seed pilot grid</span>
+                <strong>{prior.pilot_grid_arcmin2.join(" · ")}</strong>
+                <small>raw TNG draws / arcmin²</small>
+              </div>
+            )}
+            {catalog && (
+              <dl className="tng-prior__diagnostics">
+                <div><dt>Poisson deviance / dof</dt>
+                  <dd>{catalog.reduced_poisson_deviance.toFixed(1)}</dd></div>
+                <div><dt>prior slope / mag</dt>
+                  <dd>{catalog.log10_prior_slope_per_mag.toFixed(2)} dex</dd></div>
+                <div><dt>catalog interval</dt>
+                  <dd>Poisson only</dd></div>
+                {visible && <div><dt>truth matched visibly</dt>
+                  <dd>{(100 * visible.matched_truth_fraction).toFixed(1)}%</dd></div>}
+              </dl>
+            )}
+          </CardBody>
+        </Card>
+      </div>
+    </section>
+  );
+}
+
 function ConeQuery({ api, onQueried }: { api: ApiPayload; onQueried: () => void }) {
   const defaults = api.availability.default_cone;
   const [ra, setRa] = useState(String(defaults.ra));
@@ -1000,6 +1166,15 @@ export default function PopulationComparisonPage() {
                 not as confirmed galaxies. {comparison.population.euclid_meta.classification_note}
               </p>
             )}
+
+            {comparison.population.tng_prior ? (
+              <TngPriorPanel prior={comparison.population.tng_prior} />
+            ) : comparison.population.euclid ? (
+              <Card className="tng-prior tng-prior--empty">
+                <CardHead title="TNG draw-prior calibration"
+                  sub="Rebuild statistics to run the common VIS detector and magnitude normalization." />
+              </Card>
+            ) : null}
 
             <ConeQuery api={api} onQueried={resource.reload} />
 

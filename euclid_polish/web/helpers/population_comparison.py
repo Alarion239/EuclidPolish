@@ -21,7 +21,13 @@ from astroquery.esa.euclid import Euclid
 
 from euclid_polish.config import Config
 from euclid_polish.photometry import electrons_to_ab_mag, uJy_to_ab_mag
+from euclid_polish.sky.generation.source_catalog import read_sources
 from euclid_polish.web.helpers.paths import _sky_records_local_dir
+from euclid_polish.web.helpers.tng_prior import (
+    DetectionAccumulator,
+    detection_payload,
+    tng_prior_payload,
+)
 
 VERSION = 5
 CATALOG_VERSION = 2
@@ -919,7 +925,9 @@ def _shared_parameter_payload(
 
 
 def _population_payload(source_csvs: Iterable[Path],
-                        synthetic_field_count: int) -> dict[str, Any]:
+                        synthetic_field_count: int,
+                        source_detection: dict[str, Any] | None = None,
+                        ) -> dict[str, Any]:
     paths = list(source_csvs)
     synthetic_rows = _read_synthetic_sources(paths)
     euclid_rows, euclid_meta = _read_euclid_sources()
@@ -944,6 +952,17 @@ def _population_payload(source_csvs: Iterable[Path],
             )
             if euclid_rows and euclid_area > 0 else None
         ),
+        "tng_prior": (
+            tng_prior_payload(
+                synthetic_rows,
+                euclid_rows,
+                synthetic_area,
+                euclid_area,
+                FIELD_AREA_ARCMIN2,
+                source_detection,
+            )
+            if euclid_rows and euclid_area > 0 else None
+        ),
         "euclid_meta": euclid_meta,
     }
 
@@ -957,7 +976,11 @@ def refresh_population_comparison() -> dict[str, Any] | None:
     synthetic_field_count = int(
         payload.get("samples", {}).get("synthetic", {}).get("fields", 0)
     )
-    population = _population_payload(source_csvs, synthetic_field_count)
+    population = _population_payload(
+        source_csvs,
+        synthetic_field_count,
+        payload.get("fields", {}).get("source_detection"),
+    )
     payload["population"] = population
     _write_json(comparison_path(), payload)
     return population
@@ -978,18 +1001,38 @@ def build_comparison(
     total = synthetic_count + real_count
     done = 0
     synthetic_acc = _FieldAccumulator()
-    for field in _synthetic_fields(records):
-        synthetic_acc.add(field)
-        done += 1
-        if progress:
-            progress(done, total, "synthetic LR fields")
+    synthetic_detection = DetectionAccumulator()
+    for record_path in records:
+        source_path = record_path.with_name(
+            record_path.name
+            .replace("dirty_", "sources_")
+            .replace(".tfrecord", ".csv")
+        )
+        truth_by_field = read_sources(str(source_path))
+        for field_index, field in enumerate(_synthetic_fields([record_path])):
+            normalized = _normalise_field(field)
+            synthetic_acc.add(normalized)
+            synthetic_detection.add(
+                normalized[..., 0],
+                truth_by_field.get(field_index, []),
+            )
+            done += 1
+            if progress:
+                progress(done, total, "synthetic LR fields + VIS detections")
 
     real_acc = _FieldAccumulator()
+    real_detection = DetectionAccumulator()
     for field in _real_fields(inference, overlap):
-        real_acc.add(field)
+        normalized = _normalise_field(field)
+        real_acc.add(normalized)
+        real_detection.add(normalized[..., 0])
         done += 1
         if progress:
-            progress(done, total, "real Euclid LR fields")
+            progress(done, total, "real Euclid LR fields + VIS detections")
+
+    detections = detection_payload(synthetic_detection, real_detection)
+    fields = _field_payload(synthetic_acc, real_acc)
+    fields["source_detection"] = detections
 
     payload = {
         "version": VERSION,
@@ -1012,8 +1055,10 @@ def build_comparison(
                 "jwst_overlap_fields": len(overlap),
             },
         },
-        "fields": _field_payload(synthetic_acc, real_acc),
-        "population": _population_payload(source_csvs, synthetic_acc.count),
+        "fields": fields,
+        "population": _population_payload(
+            source_csvs, synthetic_acc.count, detections
+        ),
     }
     _write_json(comparison_path(), payload)
     return payload
