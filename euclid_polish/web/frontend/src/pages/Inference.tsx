@@ -1,7 +1,7 @@
 /* Real Euclid inference workspace. Archive data is cached as one field and
    viewed as its fixed 10x10 grid; cached synthetic evaluation diagnostics are
    shown beside the real-field diagnostics for direct comparison. */
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import Plot, { Legend } from "../charts/Plot";
 import { useResource } from "../hooks";
 import { useJob, JobProgressView } from "../jobs";
@@ -9,6 +9,7 @@ import { CutoutViewer } from "../legacy";
 import type { Evals } from "./Ensemble";
 import {
   Badge, Button, Card, CardBody, CardHead, Empty, Field, Input, Page,
+  Select,
   PageHead, Spinner, Stat,
 } from "../ui";
 
@@ -18,6 +19,12 @@ type FieldManifest = {
   combiner_kinds: string[];
 };
 type FieldStatus = { field: FieldManifest | null; field_size: number };
+type NexusField = {
+  field_id: string; filter: string; target_name: string; count: number;
+  tile_size_euclid_pixels: number; tile_size_jwst_pixels: number;
+  four_band_count: number; sr_count: number; current_sr_count: number;
+  stale_sr_count: number; active_combiner_kind?: string | null;
+};
 type ModelPower = {
   k: number[]; r_pairs: (number | null)[][]; r_cross: (number | null)[];
   pair_indices: [number, number][]; samples: number; pixel_scale_arcsec: number;
@@ -62,12 +69,20 @@ function MissingSyntheticPlot({ loading, error }: { loading: boolean; error: boo
   </p>;
 }
 
-function transformedSeries(valuesX: (number | null)[], valuesY: (number | null)[], transform: (value: number) => number) {
+type SeriesPoint = { x: number; y: number };
+
+function transformedSeries(valuesX: (number | null)[], valuesY: (number | null)[], transform: (value: number) => number): SeriesPoint[] {
   return valuesX.map((value, index) => ({
     x: value == null || !isFinite(value) || value <= 0 ? NaN : transform(value),
     y: valuesY[index] ?? null,
-  })).filter((point) => isFinite(point.x) && point.y != null && isFinite(point.y))
+  })).filter((point): point is SeriesPoint => isFinite(point.x) && point.y != null && isFinite(point.y))
     .sort((a, b) => a.x - b.x);
+}
+
+function extendSeriesTo(points: SeriesPoint[], endX: number): SeriesPoint[] {
+  if (!points.length || points[points.length - 1].x >= endX) return points;
+  const last = points[points.length - 1];
+  return [...points, { x: endX, y: last.y }];
 }
 
 function sharedDomain(...arrays: Array<readonly (number | null)[]>): [number, number] {
@@ -122,9 +137,10 @@ const CROSS_Y_TICKS = [
 function SyntheticPowerPlot({ evals }: { evals: Evals }) {
   const power = evals.ps;
   if (!power?.theta?.length || !power.r_cross?.length) return null;
-  const cross = transformedSeries(power.theta, power.r_cross, (value) => value);
+  const cross = extendSeriesTo(transformedSeries(power.theta, power.r_cross, (value) => value), CROSS_X_DOMAIN[1]);
   if (!cross.length) return null;
-  const pairs = (power.r_pairs ?? []).map((row) => transformedSeries(power.theta, row, (value) => value));
+  const pairs = (power.r_pairs ?? []).map((row) => extendSeriesTo(
+    transformedSeries(power.theta, row, (value) => value), CROSS_X_DOMAIN[1]));
   return <>
     <Plot title="cross-correlation rᵢⱼ(d)  ·  synthetic test fields"
       xScale="log" xDomain={CROSS_X_DOMAIN} yDomain={CROSS_Y_DOMAIN} xTicks={CROSS_X_TICKS}
@@ -196,7 +212,7 @@ function InferenceDiagnostics({ data, synthetic, syntheticLoading, syntheticErro
   const syntheticAxis = synthetic?.combiner_feature_error?.axes?.min_max;
   return <>
     <ComparisonCard title="Model–model angular cross-correlation"
-      sub={`${labels.length * (labels.length - 1) / 2} real-field member pairs · no HR reference · matched to synthetic STARFULL evaluation`}
+      sub={`${labels.length * (labels.length - 1) / 2} real-field member pairs · no HR reference · matched to synthetic STARFULL evaluation · final measured bin held to 10″`}
       real={<>
         <Plot title="cross-correlation rᵢⱼ(d)  ·  1 = identical Fourier structure"
           xScale="log" xDomain={CROSS_X_DOMAIN} yDomain={CROSS_Y_DOMAIN}
@@ -204,12 +220,12 @@ function InferenceDiagnostics({ data, synthetic, syntheticLoading, syntheticErro
           yTicks={CROSS_Y_TICKS}
           xLabel={`angular distance d [arcsec] · ${power.pixel_scale_arcsec.toFixed(2)}″ pixels`}
           yLabel="rᵢⱼ(d)" series={[
-            ...power.r_pairs.map((row) => { const points = transformedSeries(power.k, row, (value) => 0.5 / value); return { x: points.map((point) => point.x), y: points.map((point) => point.y), color: "#708096", width: 0.8, alpha: 0.22 }; }),
-            (() => { const points = transformedSeries(power.k, power.r_cross, (value) => 0.5 / value); return { x: points.map((point) => point.x), y: points.map((point) => point.y), color: "#4c9ffe", width: 2.4, dash: [6, 3] }; })(),
+            ...power.r_pairs.map((row) => { const points = extendSeriesTo(transformedSeries(power.k, row, (value) => 0.5 / value), CROSS_X_DOMAIN[1]); return { x: points.map((point) => point.x), y: points.map((point) => point.y), color: "#708096", width: 0.8, alpha: 0.22 }; }),
+            (() => { const points = extendSeriesTo(transformedSeries(power.k, power.r_cross, (value) => 0.5 / value), CROSS_X_DOMAIN[1]); return { x: points.map((point) => point.x), y: points.map((point) => point.y), color: "#4c9ffe", width: 2.4, dash: [6, 3] }; })(),
           ]} guides={[{ axis: "y", v: 1, color: "#8c98a8", dash: [2, 3] }]} height={430} />
         <Legend items={[{ label: "individual model pairs", color: "#708096" }, { label: "median rᵢⱼ(d)", color: "#4c9ffe", dash: true }]} />
         <p className="muted" style={{ margin: "var(--s3) 0 0", fontSize: 12 }}>
-          Each curve compares two cached STARFULL predictions after mean subtraction and windowed 2-D FFTs; the bands and tiles are combined by median.
+          Each curve compares two cached STARFULL predictions after mean subtraction and windowed 2-D FFTs; the bands and tiles are combined by median. Beyond the final available low-frequency bin, the curve is held constant to the common 10″ endpoint.
         </p>
       </>}
       synthetic={synthetic ? <SyntheticPowerPlot evals={synthetic} />
@@ -285,14 +301,25 @@ export default function InferencePage() {
   const { data, loading, reload } = useResource<FieldStatus>("/api/inference/field.json");
   const diagnostics = useResource<{ diagnostics: Diagnostics | null }>("/api/inference/diagnostics.json");
   const synthetic = useResource<Evals>("/ensemble/evals.json?mode=starfull");
+  const nexusFields = useResource<{ fields: NexusField[] }>("/api/jwst-euclid/nexus/fields");
   const [ra, setRa] = useState("267.4229");
   const [dec, setDec] = useState("64.8873");
   const job = useJob();
   const refreshJob = useJob();
+  const nexusInferenceJob = useJob();
+  const [nexusFieldId, setNexusFieldId] = useState("");
   const raNum = Number(ra), decNum = Number(dec);
   const valid = ra.trim() !== "" && dec.trim() !== "" && Number.isFinite(raNum)
     && Number.isFinite(decNum) && raNum >= 0 && raNum < 360 && decNum >= -90 && decNum <= 90;
   const field = data?.field ?? null;
+  const downloadedNexusFields = nexusFields.data?.fields ?? [];
+  const selectedNexusField = downloadedNexusFields.find((field) => field.field_id === nexusFieldId)
+    ?? downloadedNexusFields[0] ?? null;
+  useEffect(() => {
+    if (downloadedNexusFields.length && !downloadedNexusFields.some((field) => field.field_id === nexusFieldId)) {
+      setNexusFieldId(downloadedNexusFields[0].field_id);
+    }
+  }, [nexusFieldId, downloadedNexusFields]);
   const cache = () => {
     if (!valid) return;
     job.run("/inference/cache-real-field", { ra: raNum, dec: decNum }, { onDone: () => { reload(); diagnostics.reload(); } });
@@ -302,6 +329,12 @@ export default function InferencePage() {
     refreshJob.run("/inference/refresh-combiners", {}, {
       onDone: () => { reload(); diagnostics.reload(); },
     });
+  };
+  const runNexusInference = () => {
+    if (!selectedNexusField || selectedNexusField.four_band_count === 0) return;
+    void nexusInferenceJob.run("/api/jwst-euclid/nexus/infer", {
+      field_id: selectedNexusField.field_id,
+    }, { onDone: () => { void nexusFields.reload(); } });
   };
 
   return (
@@ -360,6 +393,42 @@ export default function InferencePage() {
             {loading ? <Empty><Spinner /> loading field cache…</Empty>
               : field ? <CutoutViewer key={`${field.field_id}:${field.combiner_kinds.join(",")}`} collection="real-field" params={{ field: field.field_id }} />
                 : <Empty>No real Euclid field is cached yet.</Empty>}
+          </CardBody>
+        </Card>
+
+        <Card>
+          <CardHead title="NEXUS × Euclid reference fields"
+            sub="A full NEXUS quick-release mosaic is tiled from its own WCS. Every displayed row is a 255 × 255 four-band Euclid tile at the same sky centre, beside its larger native-JWST cutout."
+            right={<Badge tone={downloadedNexusFields.length ? "good" : "warn"}>{downloadedNexusFields.length} NEXUS mosaic{downloadedNexusFields.length === 1 ? "" : "s"}</Badge>} />
+          <CardBody>
+            {nexusFields.loading ? <Empty><Spinner /> loading NEXUS fields…</Empty>
+              : selectedNexusField ? <>
+                <div className="row" style={{ marginBottom: "var(--s3)", gap: "var(--s3)", alignItems: "end", flexWrap: "wrap" }}>
+                  <Field label="downloaded NEXUS mosaic">
+                    <Select value={selectedNexusField.field_id} onChange={setNexusFieldId} options={downloadedNexusFields.map((field) => ({
+                      value: field.field_id,
+                      label: `${field.filter} · ${field.four_band_count}/${field.count} four-band · ${field.current_sr_count}/${field.sr_count} current SR`,
+                    }))} />
+                  </Field>
+                  <Button variant="primary" size="sm" onClick={runNexusInference}
+                    disabled={nexusInferenceJob.busy || selectedNexusField.four_band_count === 0}>
+                    {nexusInferenceJob.busy ? "generating NEXUS SR…"
+                      : selectedNexusField.stale_sr_count > 0
+                        ? `replace stale SR (${selectedNexusField.stale_sr_count} tiles)`
+                        : selectedNexusField.current_sr_count < selectedNexusField.four_band_count
+                          ? `generate SR (${selectedNexusField.four_band_count - selectedNexusField.current_sr_count} tiles)`
+                          : "check SR against active combiner"}
+                  </Button>
+                  <span className="muted">NEXUS is a cross-instrument reference: the tile grid is derived from the JWST WCS, not from a manually selected position. SRs are reused only when their saved combiner fingerprint matches the active fit; stale SRs are replaced.</span>
+                </div>
+                {(nexusInferenceJob.job || nexusInferenceJob.error) && <div style={{ marginBottom: "var(--s3)" }}>
+                  <JobProgressView job={nexusInferenceJob.job} error={nexusInferenceJob.error} />
+                </div>}
+                <CutoutViewer key={`nexus-${selectedNexusField.field_id}:${selectedNexusField.current_sr_count}:${selectedNexusField.stale_sr_count}`} collection="nexus-field"
+                  params={{ field: selectedNexusField.field_id }} initialTiers={["lr", "sr", "jwst"]} />
+              </> : <Empty>
+                Download a full NEXUS F200W or F444W quick-release mosaic on the <a href="/jwst-euclid">JWST × Euclid page</a>; its WCS-derived Euclid tile coverage will appear here automatically.
+              </Empty>}
           </CardBody>
         </Card>
 

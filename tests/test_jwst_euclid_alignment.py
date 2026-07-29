@@ -15,6 +15,312 @@ def test_field_id_is_stable_and_path_safe():
     assert " " not in identifier
 
 
+def test_nexus_pair_id_and_public_product_options_are_stable():
+    identifier = jwst_euclid.nexus_pair_id(268.4625, 65.19917, "f444w", 30.0)
+    assert identifier == "nexus-qdr-ep05-F444W-location-ra268.4625000-dec65.1991700-s30"
+    assert "/" not in identifier
+    options = {item["filter"]: item for item in jwst_euclid.nexus_product_options()}
+    assert options["F200W"]["pixel_scale_mas"] == 30
+    assert options["F444W"]["pixel_scale_mas"] == 60
+
+
+def test_nexus_source_tiles_use_exact_255_pixel_euclid_footprints(monkeypatch):
+    from astropy.wcs import WCS
+
+    wcs = WCS(naxis=2)
+    wcs.wcs.crpix = [1.0, 1.0]
+    wcs.wcs.crval = [268.4625, 65.19917]
+    wcs.wcs.cdelt = [-0.03 / 3600.0, 0.03 / 3600.0]
+    wcs.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+    data = np.ones((1700, 1700), dtype=np.float32)
+    monkeypatch.setattr(
+        jwst_euclid,
+        "_find_image",
+        lambda _path: (data, wcs.to_header(), wcs, "PRIMARY"),
+    )
+    _data, _header, _wcs, tiles = jwst_euclid._nexus_source_tiles(
+        __import__("pathlib").Path("nexus.fits"), filter_name="F200W",
+    )
+    assert tiles == [
+        (0, 0, 850, 850), (850, 0, 1700, 850),
+        (0, 850, 850, 1700), (850, 850, 1700, 1700),
+    ]
+
+
+def test_nexus_field_viewer_reads_saved_255_pixel_tiles(tmp_path, monkeypatch):
+    from astropy.io import fits
+
+    monkeypatch.setattr(Config, "DATA_DIR", str(tmp_path / "data"))
+    identifier = jwst_euclid.nexus_field_id("F200W")
+    root = jwst_euclid.nexus_field_root() / identifier / "tiles"
+    root.mkdir(parents=True)
+    fits.PrimaryHDU(np.ones((255, 255), dtype=np.float32)).writeto(root / "euclid.fits")
+    fits.PrimaryHDU(np.ones((850, 850), dtype=np.float32)).writeto(root / "jwst.fits")
+    manifest = {
+        "field_id": identifier, "filter": "F200W", "count": 1,
+        "tiles": [{"ra_deg": 268.4625, "dec_deg": 65.19917,
+                   "euclid_file": "tiles/euclid.fits", "jwst_file": "tiles/jwst.fits",
+                   "jwst_metadata": {"pixel_scale_arcsec": [0.03, 0.03]}}],
+    }
+    (root.parent / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    meta = viewer_data._nexus_field_meta({"field": identifier})
+    euclid, _euclid_meta = viewer_data._nexus_field_cube(0, "lr", {"field": identifier})
+    jwst, jwst_meta = viewer_data._nexus_field_cube(0, "jwst", {"field": identifier})
+
+    assert meta["count"] == 1
+    assert meta["tiers"][0]["label"] == "LR · Euclid · 255 px"
+    assert meta["objects"][0]["tiers"] == ["lr", "jwst"]
+    assert euclid.shape == (255, 255, 1)
+    assert jwst.shape == (850, 850, 1)
+    assert jwst_meta["pixscale"] == 0.03
+
+
+def test_nexus_download_reuses_cached_tiles_while_filling_missing_bands(tmp_path, monkeypatch):
+    from astropy.io import fits
+    from astropy.wcs import WCS
+
+    monkeypatch.setattr(Config, "DATA_DIR", str(tmp_path / "data"))
+    wcs = WCS(naxis=2)
+    wcs.wcs.crpix = [1.0, 1.0]
+    wcs.wcs.crval = [268.4625, 65.19917]
+    wcs.wcs.cdelt = [-0.1 / 3600.0, 0.1 / 3600.0]
+    wcs.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+    header = wcs.to_header()
+    source = np.ones((850, 850), dtype=np.float32)
+    calls: list[str] = []
+
+    monkeypatch.setattr(jwst_euclid, "_download_nexus_mosaic", lambda *_args, **_kwargs: tmp_path / "nexus.fits")
+    monkeypatch.setattr(
+        jwst_euclid, "_nexus_source_tiles",
+        lambda *_args, **_kwargs: (source, header, wcs, [(0, 0, 850, 850)]),
+    )
+
+    def write_jwst(_data, _header, _wcs, _bounds, destination, **_kwargs):
+        fits.PrimaryHDU(source, header=header).writeto(destination, overwrite=True)
+        return source, header, wcs, 268.4625, 65.19917
+
+    def fetch_cutout_at(*, band_name, output_file, cutout_size_vis_pixels, **_kwargs):
+        calls.append(band_name)
+        data = np.ones((cutout_size_vis_pixels, cutout_size_vis_pixels), dtype=np.float32)
+        cutout_header = header.copy()
+        if band_name != "VIS":
+            cutout_header["CRPIX1"] = 5.0
+            cutout_header["CRPIX2"] = 5.0
+        fits.PrimaryHDU(data, header=cutout_header).writeto(output_file, overwrite=True)
+        return True, None
+
+    monkeypatch.setattr(jwst_euclid, "_write_nexus_source_tile", write_jwst)
+    monkeypatch.setattr("euclid_polish.catalog.downloader.fetch_cutout_at", fetch_cutout_at)
+
+    first = jwst_euclid.download_nexus_field(filter_name="F200W")
+    second = jwst_euclid.download_nexus_field(filter_name="F200W")
+
+    assert calls == ["VIS", "Y_E", "J_E", "H_E"]
+    assert "four_band_error" not in first["tiles"][0], first["tiles"][0].get("four_band_error")
+    assert first["tiles"][0]["lr_file"] == second["tiles"][0]["lr_file"]
+    assert set(first["tiles"][0]["euclid_files"]) == set(Config.LR_INPUT_BAND_NAMES)
+
+
+def test_nexus_field_viewer_exposes_registered_lr_and_sr(tmp_path, monkeypatch):
+    from astropy.io import fits
+
+    monkeypatch.setattr(Config, "DATA_DIR", str(tmp_path / "data"))
+    identifier = jwst_euclid.nexus_field_id("F444W")
+    root = jwst_euclid.nexus_field_root() / identifier / "tiles"
+    root.mkdir(parents=True)
+    fits.PrimaryHDU(np.ones((425, 425), dtype=np.float32)).writeto(root / "jwst.fits")
+    fits.PrimaryHDU(np.ones((4, 255, 255), dtype=np.float32)).writeto(root / "lr.fits")
+    fits.PrimaryHDU(np.ones((4, 1020, 1020), dtype=np.float32)).writeto(root / "sr.fits")
+    manifest = {
+        "field_id": identifier, "filter": "F444W", "count": 2,
+        "tiles": [{"ra_deg": 268.4625, "dec_deg": 65.19917,
+                   "euclid_file": "tiles/lr.fits", "lr_file": "tiles/lr.fits",
+                   "jwst_file": "tiles/jwst.fits",
+                   "inference": {"combiner_label": "STARFULL", "pixel_scale_arcsec": 0.025,
+                                 "files": {"starfull": "tiles/sr.fits"}}},
+                  {"ra_deg": 268.4626, "dec_deg": 65.19918,
+                   "euclid_file": "tiles/lr.fits", "lr_file": "tiles/lr.fits",
+                   "jwst_file": "tiles/jwst.fits"}],
+    }
+    (root.parent / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    meta = viewer_data._nexus_field_meta({"field": identifier})
+    lr, lr_meta = viewer_data._nexus_field_cube(0, "lr", {"field": identifier})
+    sr, sr_meta = viewer_data._nexus_field_cube(0, "sr", {"field": identifier})
+
+    assert [tier["key"] for tier in meta["tiers"]] == ["lr", "sr", "jwst"]
+    assert meta["objects"][0]["tiers"] == ["lr", "sr", "jwst"]
+    assert meta["objects"][1]["tiers"] == ["lr", "sr", "jwst"]
+    assert meta["transfer_groups"] == ["euclid", "jwst"]
+    assert lr.shape == (255, 255, 4)
+    assert lr_meta["bands"] == list(Config.LR_INPUT_BAND_NAMES)
+    assert "display_scale" not in lr_meta
+    assert lr_meta["transfer_group"] == "euclid"
+    assert sr.shape == (1020, 1020, 4)
+    assert sr_meta["pixscale"] == 0.025
+    assert "display_scale" not in sr_meta
+    assert sr_meta["transfer_group"] == "euclid"
+
+
+def test_nexus_starfull_inference_reuses_current_and_replaces_stale_sr(
+        tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from astropy.io import fits
+
+    import euclid_polish.ensemble as ensemble_module
+    import euclid_polish.eval.combiner as combiner_module
+
+    monkeypatch.setattr(Config, "DATA_DIR", str(tmp_path / "data"))
+    identifier = jwst_euclid.nexus_field_id("F200W")
+    root = jwst_euclid.nexus_field_root() / identifier / "tiles"
+    root.mkdir(parents=True)
+    files = {}
+    for band_name in Config.LR_INPUT_BAND_NAMES:
+        filename = f"{band_name}.fits"
+        fits.PrimaryHDU(np.ones((255, 255), dtype=np.float32)).writeto(root / filename)
+        files[band_name] = f"tiles/{filename}"
+    fits.PrimaryHDU(np.ones((4, 255, 255), dtype=np.float32)).writeto(root / "lr.fits")
+    manifest = {
+        "field_id": identifier, "filter": "F200W", "tiles": [{
+            "index": 0, "source_index": 0, "euclid_file": files["VIS"],
+            "euclid_files": files, "lr_file": "tiles/lr.fits",
+        }],
+    }
+    (root.parent / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    class FakeEnsemble:
+        member_labels = ["member"]
+
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def member_arrays(self, cube):
+            return cube
+
+    class FakeCombiner:
+        def apply_field(self, members):
+            applied.append((fingerprint["value"], member_fingerprint["value"]))
+            multiplier = 2 if fingerprint["value"] == "fp-one" else 3
+            return members * multiplier
+
+    fingerprint = {"value": "fp-one"}
+    member_fingerprint = {"value": "member-one"}
+    applied: list[tuple[str, str]] = []
+    monkeypatch.setattr(ensemble_module, "EnsembleModel", FakeEnsemble)
+    monkeypatch.setattr(ensemble_module, "default_ensemble_dir", lambda: "unused")
+    monkeypatch.setattr(
+        jwst_euclid, "_starfull_member_fingerprints",
+        lambda *_args: [member_fingerprint["value"]],
+    )
+    monkeypatch.setattr(combiner_module, "ACTIVE_COMBINER_KINDS", ("fake",))
+    monkeypatch.setattr(
+        combiner_module, "COMBINER_MODELS",
+        {"fake": SimpleNamespace(artifact_dir="fake", label="Fake STARFULL")},
+    )
+    monkeypatch.setattr(combiner_module, "load_combiner", lambda *_args, **_kwargs: FakeCombiner())
+    monkeypatch.setattr(
+        combiner_module, "combiner_artifact_fingerprint",
+        lambda *_args, **_kwargs: fingerprint["value"],
+    )
+
+    result = jwst_euclid.run_starfull_nexus_field_inference(identifier)
+    source = result["tiles"][0]["inference"]["files"]["starfull"]
+    assert (root.parent / source).is_file()
+    assert result["tiles"][0]["inference"]["combiner_fingerprint"] == "fp-one"
+    assert applied == [("fp-one", "member-one")]
+
+    # The same exact artifact reuses the completed SR.
+    assert jwst_euclid.run_starfull_nexus_field_inference(identifier)["field_id"] == identifier
+    assert applied == [("fp-one", "member-one")]
+
+    # Retraining a member under the same label invalidates the cached SR even
+    # while the fitted combiner artifact itself is unchanged.
+    member_fingerprint["value"] = "member-two"
+    member_refreshed = jwst_euclid.run_starfull_nexus_field_inference(identifier)
+    assert applied == [("fp-one", "member-one"), ("fp-one", "member-two")]
+    assert member_refreshed["tiles"][0]["inference"][
+        "member_fingerprints"
+    ] == ["member-two"]
+
+    # A refit under the same combiner kind changes the artifact hash. The old
+    # FITS stays in place until its replacement is complete, then the manifest
+    # and image move to the new identity together.
+    fingerprint["value"] = "fp-two"
+    refreshed = jwst_euclid.run_starfull_nexus_field_inference(identifier)
+    assert applied == [
+        ("fp-one", "member-one"), ("fp-one", "member-two"),
+        ("fp-two", "member-two"),
+    ]
+    assert refreshed["tiles"][0]["inference"]["combiner_fingerprint"] == "fp-two"
+    with fits.open(root.parent / source) as hdul:
+        assert np.all(np.asarray(hdul[0].data) == 3)
+
+
+def test_nexus_field_status_marks_changed_combiner_sr_stale(
+        tmp_path, monkeypatch):
+    from astropy.io import fits
+
+    monkeypatch.setattr(Config, "DATA_DIR", str(tmp_path / "data"))
+    identifier = jwst_euclid.nexus_field_id("F200W")
+    directory = jwst_euclid.nexus_field_root() / identifier
+    root = directory / "tiles"
+    root.mkdir(parents=True)
+    files = {}
+    for band_name in Config.LR_INPUT_BAND_NAMES:
+        filename = f"{band_name}.fits"
+        fits.PrimaryHDU(np.ones((255, 255), dtype=np.float32)).writeto(
+            root / filename,
+        )
+        files[band_name] = f"tiles/{filename}"
+    fits.PrimaryHDU(np.ones((850, 850), dtype=np.float32)).writeto(
+        root / "jwst.fits",
+    )
+    fits.PrimaryHDU(np.ones((4, 255, 255), dtype=np.float32)).writeto(
+        root / "lr.fits",
+    )
+    fits.PrimaryHDU(np.ones((4, 1020, 1020), dtype=np.float32)).writeto(
+        root / "sr.fits",
+    )
+    manifest = {
+        "field_id": identifier, "filter": "F200W", "count": 1,
+        "tiles": [{
+            "euclid_file": files["VIS"], "euclid_files": files,
+            "lr_file": "tiles/lr.fits", "jwst_file": "tiles/jwst.fits",
+            "inference": {
+                "combiner_kind": "fake",
+                "combiner_fingerprint": "old-fingerprint",
+                "files": {"starfull": "tiles/sr.fits"},
+            },
+        }],
+    }
+    (directory / "manifest.json").write_text(
+        json.dumps(manifest), encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        jwst_euclid, "_active_starfull_combiner_artifact",
+        lambda: {
+            "combiner_kind": "fake",
+            "combiner_fingerprint": "new-fingerprint",
+        },
+    )
+
+    (field,) = jwst_euclid.nexus_fields()
+    assert (field["sr_count"], field["current_sr_count"],
+            field["stale_sr_count"]) == (1, 0, 1)
+
+    manifest["tiles"][0]["inference"][
+        "combiner_fingerprint"
+    ] = "new-fingerprint"
+    (directory / "manifest.json").write_text(
+        json.dumps(manifest), encoding="utf-8",
+    )
+    (field,) = jwst_euclid.nexus_fields()
+    assert (field["sr_count"], field["current_sr_count"],
+            field["stale_sr_count"]) == (1, 1, 0)
+
+
 def test_euclid_product_path_joins_directory_and_filename():
     assert jwst_euclid.euclid_product_path({
         "file_path": "/archive/VIS",

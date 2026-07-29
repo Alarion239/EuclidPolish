@@ -1305,29 +1305,17 @@ def _jwst_filter_tint(band: str) -> list[float]:
 def _saved_jwst_euclid_pairs() -> list[tuple[dict[str, Any], str]]:
     """Return saved paired fields in the stable location-carousel order."""
     from euclid_polish.web.helpers.jwst_euclid import (
-        _cached_pair_is_usable,
-        enrich_manifest_metadata,
-        location_groups,
         pair_root,
+        saved_pairs,
     )
 
     pairs: list[tuple[dict[str, Any], str]] = []
-    groups, _ = location_groups()
-    for group in groups:
-        if not group.get("available"):
-            continue
-        identifier = str(group.get("field_id") or "")
+    for manifest in saved_pairs():
+        identifier = str(manifest.get("field_id") or "")
         if not _PAIR_ID.fullmatch(identifier):
             continue
         directory = pair_root() / identifier
-        try:
-            with (directory / "manifest.json").open(encoding="utf-8") as handle:
-                manifest = json.load(handle)
-        except (OSError, ValueError):
-            continue
-        if not isinstance(manifest, dict) or not _cached_pair_is_usable(directory, manifest):
-            continue
-        pairs.append((enrich_manifest_metadata(directory, manifest), str(directory)))
+        pairs.append((manifest, str(directory)))
     if not pairs:
         raise ViewerError(404, "no saved JWST × Euclid fields")
     return pairs
@@ -1453,6 +1441,7 @@ def _jwst_colour_cube(manifest: dict[str, Any], directory: str) -> tuple[np.ndar
         "bands": ["JWST-R", "JWST-G", "JWST-B"],
         "direct_rgb": True,
         "display_scale": _robust_display_scale(cube),
+        "transfer_group": "jwst",
     }
 
 
@@ -1478,6 +1467,7 @@ def _jwst_temperature_cube(manifest: dict[str, Any], directory: str) -> tuple[np
         "pixscale": reference_scale if math.isfinite(reference_scale) else 0.0,
         "bands": names,
         "display_scale": _robust_display_scale(cube),
+        "transfer_group": "jwst",
     }
 
 
@@ -1517,6 +1507,7 @@ def _jwst_euclid_meta(params: dict[str, str]) -> dict[str, Any]:
         "jwst_band_options": jwst_band_options,
         "extra_color_bands": jwst_color_bands,
         "missing_tier_labels": {"sr": "Generate SR"},
+        "transfer_groups": ["euclid", "jwst"],
         "objects": [
             {
                 "label": f"{index} · {manifest.get('target_name') or 'paired field'}",
@@ -1555,6 +1546,7 @@ def _jwst_euclid_cube(index: int, tier: str, params: dict[str, str]):
             "pixscale": float(Config.VIS_PIXEL_SCALE_ARCSEC),
             "bands": bands,
             "display_scale": _robust_display_scale(cube),
+            "transfer_group": "euclid",
         }
     if tier == "sr":
         source = inference_files.get("starfull")
@@ -1568,6 +1560,7 @@ def _jwst_euclid_cube(index: int, tier: str, params: dict[str, str]):
             "pixscale": float(inference.get("pixel_scale_arcsec") or Config.DEFAULT_PIXEL_SCALE),
             "bands": bands,
             "display_scale": _robust_display_scale(cube),
+            "transfer_group": "euclid",
         }
     if tier == "jwst":
         choice = str(params.get("jwst_band") or "colour").strip().upper()
@@ -1592,8 +1585,127 @@ def _jwst_euclid_cube(index: int, tier: str, params: dict[str, str]):
             "pixscale": scale if math.isfinite(scale) else 0.0,
             "bands": [choice],
             "display_scale": _robust_display_scale(data),
+            "transfer_group": "jwst",
         }
     raise ViewerError(400, "bad paired-field tier")
+
+
+# ---------------------------------------------------------------------------
+# nexus-field — one full NEXUS mosaic covered by 255×255 Euclid tiles
+# ---------------------------------------------------------------------------
+
+def _nexus_field(params: dict[str, str]) -> tuple[dict[str, Any], str]:
+    from euclid_polish.web.helpers.jwst_euclid import (
+        _read_nexus_field_manifest,
+        nexus_field_root,
+    )
+
+    identifier = (params.get("field") or "").strip()
+    if not _PAIR_ID.fullmatch(identifier):
+        raise ViewerError(404, "NEXUS tiled field not found")
+    manifest = _read_nexus_field_manifest(identifier)
+    if manifest is None:
+        raise ViewerError(404, "NEXUS tiled field not found")
+    return manifest, str(nexus_field_root() / identifier)
+
+
+def _nexus_field_meta(params: dict[str, str]) -> dict[str, Any]:
+    manifest, directory = _nexus_field(params)
+    tiles = manifest.get("tiles", [])
+    if not isinstance(tiles, list) or not tiles:
+        raise ViewerError(404, "NEXUS tiled field has no covered Euclid tiles")
+
+    def _available_tiers(tile: Mapping[str, Any]) -> list[str]:
+        lr_file = tile.get("lr_file")
+        inference = tile.get("inference", {})
+        files = inference.get("files", {}) if isinstance(inference, Mapping) else {}
+        sr_file = files.get("starfull") if isinstance(files, Mapping) else None
+        has_registered_lr = (
+            isinstance(lr_file, str) and os.path.isfile(os.path.join(directory, lr_file))
+        )
+        has_sr = (
+            isinstance(sr_file, str) and os.path.isfile(os.path.join(directory, sr_file))
+        )
+        tiers = ["lr"]
+        if has_registered_lr or has_sr:
+            tiers.append("sr")
+        tiers.append("jwst")
+        return tiers
+
+    return {
+        "count": len(tiles),
+        "tiers": [
+            {"key": "lr", "label": "LR · Euclid · 255 px"},
+            {"key": "sr", "label": "SR · STARFULL combiner"},
+            {"key": "jwst", "label": f"NEXUS {manifest.get('filter') or 'JWST'} · native"},
+        ],
+        "default_tier": "lr",
+        "band_names": list(BAND_NAMES),
+        "color_label": "Euclid colour",
+        "missing_tier_labels": {"sr": "Generate SR"},
+        "transfer_groups": ["euclid", "jwst"],
+        "objects": [{
+            "label": (
+                f"{index} · RA {float(tile.get('ra_deg', 0.0)):.5f}, "
+                f"Dec {float(tile.get('dec_deg', 0.0)):.5f}"
+            ),
+            "tiers": _available_tiers(tile),
+            "jwst_bands": [str(manifest.get("filter") or "JWST")],
+        } for index, tile in enumerate(tiles) if isinstance(tile, Mapping)],
+    }
+
+
+def _nexus_field_cube(index: int, tier: str, params: dict[str, str]):
+    manifest, directory = _nexus_field(params)
+    tiles = manifest.get("tiles", [])
+    if not isinstance(tiles, list) or not 0 <= index < len(tiles):
+        raise ViewerError(404, "NEXUS tiled field index out of range")
+    tile = tiles[index]
+    if not isinstance(tile, Mapping):
+        raise ViewerError(404, "NEXUS tile is invalid")
+    if tier == "lr":
+        lr_file = tile.get("lr_file")
+        cube = _pair_cube(_pair_file(directory, lr_file or tile.get("euclid_file")))
+        bands = list(BAND_NAMES[:cube.shape[-1]])
+        return cube, {
+            "label": "LR · Euclid VIS+Y+J+H · matched 255 × 255 tile" if len(bands) == 4
+            else "Euclid VIS · matched 255 × 255 tile",
+            "asinh": float(Config.STRETCH_SCALE_E),
+            "pixscale": float(Config.VIS_PIXEL_SCALE_ARCSEC),
+            # The registered NEXUS Euclid cube is already in the same raw
+            # electron units as the normal Inference Tile viewer.  Do not
+            # apply the archive-only robust scale here: it made faint
+            # background/noise much brighter before the shared asinh clip.
+            "bands": bands,
+            "transfer_group": "euclid",
+        }
+    if tier == "sr":
+        inference = tile.get("inference", {}) if isinstance(tile, Mapping) else {}
+        files = inference.get("files", {}) if isinstance(inference, Mapping) else {}
+        source = files.get("starfull") if isinstance(files, Mapping) else None
+        if not isinstance(source, str) or not source:
+            raise ViewerError(404, "STARFULL inference is not available for this NEXUS tile")
+        cube = _pair_cube(_pair_file(directory, source))
+        return cube, {
+            "label": str(inference.get("combiner_label") or "SR · STARFULL combiner"),
+            "asinh": float(Config.STRETCH_SCALE_E),
+            "pixscale": float(inference.get("pixel_scale_arcsec") or Config.DEFAULT_PIXEL_SCALE),
+            "bands": list(BAND_NAMES[:cube.shape[-1]]),
+            "transfer_group": "euclid",
+        }
+    if tier == "jwst":
+        cube = _pair_cube(_pair_file(directory, tile.get("jwst_file")))
+        metadata = tile.get("jwst_metadata", {}) if isinstance(tile, Mapping) else {}
+        scales = metadata.get("pixel_scale_arcsec", []) if isinstance(metadata, Mapping) else []
+        scale = float(scales[0]) if isinstance(scales, list) and scales else 0.0
+        return cube, {
+            "label": f"NEXUS native · {manifest.get('filter') or 'JWST'}",
+            "asinh": 100.0, "pixscale": scale if math.isfinite(scale) else 0.0,
+            "bands": [str(manifest.get("filter") or "JWST")],
+            "display_scale": _robust_display_scale(cube),
+            "transfer_group": "jwst",
+        }
+    raise ViewerError(400, "bad NEXUS tiled-field tier")
 
 
 # ---------------------------------------------------------------------------
@@ -1610,6 +1722,7 @@ _REGISTRY: dict[str, tuple[_Meta, _Cube]] = {
     "ensemble": (_ensemble_meta, _ensemble_cube),
     "real-field": (_real_field_meta, _real_field_cube),
     "jwst-euclid": (_jwst_euclid_meta, _jwst_euclid_cube),
+    "nexus-field": (_nexus_field_meta, _nexus_field_cube),
     "psfs": (_psf_meta, _psf_cube),
     "lens-isolation": (_lens_isolation_meta, _lens_isolation_cube),
 }

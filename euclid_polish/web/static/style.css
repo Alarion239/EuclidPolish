@@ -343,8 +343,8 @@ button.secondary:hover { background: #565e64; }
   min-width: 52px; text-align: right;
 }
 
-/* Image frames — the shared viewer chooses the column count that maximises
-   each square tile, then wraps any remaining tiers onto later rows. */
+/* Image frames — the shared viewer's Layout control chooses either one row
+   or two columns, then sizes the square tiles to fit the viewport. */
 .cv-frames {
   display: grid;
   grid-template-columns: repeat(var(--cv-columns, 1), minmax(0, var(--cv-frame-size, 1fr)));

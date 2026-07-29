@@ -99,6 +99,9 @@ def register(app):
         if info.get("direct_rgb"):
             resp.headers["X-Cube-Direct-RGB"] = "1"
             exposed.append("X-Cube-Direct-RGB")
+        if "transfer_group" in info:
+            resp.headers["X-Cube-Transfer-Group"] = str(info["transfer_group"])
+            exposed.append("X-Cube-Transfer-Group")
         # This is a viewer-only contrast factor.  The raw FITS payload is
         # deliberately left unchanged for download and science use.
         if "display_scale" in info:

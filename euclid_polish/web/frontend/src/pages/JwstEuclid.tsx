@@ -133,6 +133,8 @@ export default function JwstEuclidPage() {
   const bulkDownloadJob = useJob();
   const coverageJob = useJob();
   const inferenceJob = useJob();
+  const nexusJob = useJob();
+  const [nexusFilter, setNexusFilter] = useState("F200W");
 
   const fields = index.data?.fields ?? [];
   const instruments = useMemo(() => Array.from(new Set(fields.map(instrumentName))).sort(), [fields]);
@@ -207,6 +209,9 @@ export default function JwstEuclidPage() {
   const remainingDownloadCount = fields.filter((row) => !row.available && coverageStatus(row) !== "not_covered").length;
   const sourceStatus = index.data?.status;
   const coverageSummary = sourceStatus?.coverage_scan;
+  const downloadNexus = () => {
+    void nexusJob.run("/api/jwst-euclid/nexus/download-field", { filter: nexusFilter });
+  };
 
   return (
     <Page>
@@ -236,6 +241,28 @@ export default function JwstEuclidPage() {
           <Stat k="saved comparisons" v={fields.filter((row) => row.available).length} />
         </div>
       </section>
+
+      <Card className="jwst-euclid__control-card">
+        <CardHead title="NEXUS quick-release comparison"
+          sub="Download one full public NEXUS Deep Epoch 05 mosaic, derive the tile centres from its WCS, then fetch all released Euclid VIS, Y, J, and H coverage. Each retained comparison row is exactly 255 × 255 Euclid VIS pixels with a larger native-JWST counterpart; reruns reuse every readable cached tile and only fill missing bands." />
+        <CardBody>
+          <div className="grid" style={{ gridTemplateColumns: "minmax(220px, 360px)", gap: "var(--s3)" }}>
+            <Field label="NEXUS filter"><Select value={nexusFilter} onChange={setNexusFilter} options={[
+              { value: "F200W", label: "F200W · 30 mas · 1.0 GB" },
+              { value: "F444W", label: "F444W · 60 mas · 252 MB" },
+            ]} /></Field>
+          </div>
+          <div className="row" style={{ marginTop: "var(--s3)", gap: "var(--s3)", alignItems: "center" }}>
+            <Button variant="primary" onClick={downloadNexus} disabled={nexusJob.busy}>
+              {nexusJob.busy ? "covering NEXUS with four-band Euclid…" : "cache NEXUS mosaic + four-band Euclid"}
+            </Button>
+            <span className="muted">No coordinate is chosen manually. The NEXUS mosaic WCS sets every tile centre; F200W produces 850 × 850 JWST pixels per Euclid tile, and F444W produces 425 × 425.</span>
+          </div>
+          {(nexusJob.job || nexusJob.error) && <div style={{ marginTop: "var(--s3)" }}>
+            <JobProgressView job={nexusJob.job} error={nexusJob.error} />
+          </div>}
+        </CardBody>
+      </Card>
 
       <Card className="jwst-euclid__control-card">
         <CardHead title="Pick a sky location" sub="Choose by target, camera, available JWST filters, and sky position. Archive products remain behind the scenes." right={

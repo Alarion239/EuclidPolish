@@ -171,6 +171,14 @@ def test_cutout_viewer_exports_capture_all_visible_frames():
     assert "function compositeVisibleFrames" in source
     assert "state.frames.find((f) => f.canvas.width > 1)" not in source
     assert "Record the current view (all selected tiers, side by side)" in source
+    assert 'VIEW_LAYOUT_STORAGE_KEY = "euclid-polish.cutout-viewer.layout"' in source
+    assert 'state.layout === "two-rows" ? Math.ceil(count / 2) : count' in source
+    assert "const columns = forcedColumns;" in source
+    assert 'r.headers.get("X-Cube-Transfer-Group") || "default"' in source
+    assert "function transferFor(rec)" in source
+    assert "function resetTransferSettings()" in source
+    assert "function copiedTransferSettings()" in source
+    assert "const transferGroups = transferGroupKeys();" in source
 
 
 def test_viewer_meta_unknown_collection_404(client):

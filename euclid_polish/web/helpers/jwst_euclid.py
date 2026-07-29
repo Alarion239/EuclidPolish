@@ -21,6 +21,7 @@ from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from urllib.request import urlopen
 
 import numpy as np
 
@@ -37,6 +38,25 @@ _OVERLAP_FILENAMES = (
     "mast_partial.csv",
 )
 
+# NEXUS's quick-release mosaics are deliberately cached once, then cropped
+# locally.  The public archive distributes full mosaics (F200W is about 1 GB),
+# not a cutout service, so this avoids a second multi-gigabyte transfer when a
+# user compares another Euclid position from the same epoch/filter.
+_NEXUS_QDR_BASE = "https://ariel.astro.illinois.edu/nexus/qdr/nircam"
+_NEXUS_PRODUCTS = {
+    "F200W": {
+        "filename": "nexus_central_deep_ep05_f200w_i2d_data.fits.gz",
+        "pixel_scale_mas": 30,
+        "download_size": "1.0 GB",
+    },
+    "F444W": {
+        "filename": "nexus_central_deep_ep05_f444w_60mas_i2d_data.fits.gz",
+        "pixel_scale_mas": 60,
+        "download_size": "252 MB",
+    },
+}
+_NEXUS_EUCLID_TILE_SIDE = 255
+
 
 def overlap_root() -> Path:
     """Return the configured, ignored cache root for overlap products."""
@@ -45,6 +65,35 @@ def overlap_root() -> Path:
 
 def pair_root() -> Path:
     return overlap_root() / "paired_fields"
+
+
+def nexus_mosaic_root() -> Path:
+    """Local cache for the large, public NEXUS QDR mosaics."""
+    return overlap_root() / "nexus_mosaics"
+
+
+def nexus_field_root() -> Path:
+    """Persistent tiled NEXUS/Euclid field comparisons."""
+    return overlap_root() / "nexus_fields"
+
+
+def nexus_field_id(filter_name: str) -> str:
+    """One field cache per released NEXUS epoch/filter mosaic."""
+    return f"nexus-qdr-ep05-{_safe(filter_name).lower()}-euclid255"
+
+
+def nexus_pair_id(ra: float, dec: float, filter_name: str, size_arcsec: float) -> str:
+    """Stable id for one NEXUS QDR / Euclid cutout pair."""
+    filter_token = _safe(filter_name).upper()
+    return f"nexus-qdr-ep05-{filter_token}-{location_id(ra, dec, size_arcsec)}"
+
+
+def nexus_product_options() -> list[dict[str, Any]]:
+    """Public QDR science mosaics supported by the NEXUS importer."""
+    return [
+        {"filter": filter_name, **details}
+        for filter_name, details in _NEXUS_PRODUCTS.items()
+    ]
 
 
 def coverage_scan_path() -> Path:
@@ -845,6 +894,733 @@ def _write_display_png(data: np.ndarray, path: Path, accent: tuple[float, float,
     return {"display_min": float(lo), "display_max": float(hi)}
 
 
+def _download_nexus_mosaic(
+    filter_name: str, *, progress: Any | None = None,
+) -> Path:
+    """Fetch one published NEXUS QDR mosaic once, with an atomic cache write."""
+    product = _NEXUS_PRODUCTS.get(filter_name.upper())
+    if product is None:
+        raise ValueError(f"unsupported NEXUS quick-release filter {filter_name!r}")
+    destination = nexus_mosaic_root() / str(product["filename"])
+    if _is_readable_fits(destination):
+        if progress:
+            progress(1, 4, f"reusing NEXUS {filter_name} mosaic")
+        return destination
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(f".{destination.name}.{os.getpid()}.part")
+    url = f"{_NEXUS_QDR_BASE}/{product['filename']}"
+    downloaded = 0
+    if progress:
+        progress(0, 4, f"downloading NEXUS {filter_name} mosaic ({product['download_size']})")
+    try:
+        with urlopen(url, timeout=60) as response, temporary.open("wb") as output:
+            length = int(response.headers.get("Content-Length") or 0)
+            while True:
+                chunk = response.read(1024 * 1024)
+                if not chunk:
+                    break
+                output.write(chunk)
+                downloaded += len(chunk)
+                if progress and length:
+                    percent = min(99, int(100 * downloaded / length))
+                    progress(0, 4, f"downloading NEXUS {filter_name} mosaic ({percent}%)")
+        if not _is_readable_fits(temporary):
+            raise RuntimeError("NEXUS quick-release response was not a readable FITS mosaic")
+        os.replace(temporary, destination)
+    except OSError as exc:
+        with __import__("contextlib").suppress(OSError):
+            temporary.unlink()
+        raise RuntimeError(f"could not download NEXUS {filter_name} mosaic: {exc}") from exc
+    return destination
+
+
+def _write_nexus_cutout(
+    mosaic_path: Path,
+    *,
+    ra: float,
+    dec: float,
+    size_arcsec: float,
+    destination: Path,
+) -> tuple[np.ndarray, Any, Any]:
+    """Extract a native-grid NEXUS cutout and preserve its science WCS."""
+    from astropy.coordinates import SkyCoord
+    from astropy.io import fits
+
+    data, header, wcs, _ = _find_image(mosaic_path)
+    coordinate = SkyCoord(ra=ra, dec=dec, unit="deg", frame="icrs")
+    cutout, cutout_wcs = _native_sky_cutout(data, wcs, coordinate, size_arcsec)
+    if not _has_signal(cutout):
+        raise RuntimeError("selected NEXUS position has no usable mosaic pixels")
+    cutout_header = _primary_image_header(
+        header, cutout_wcs, mosaic_path.name, "Native NEXUS QDR cutout",
+    )
+    fits.PrimaryHDU(cutout, header=cutout_header).writeto(
+        destination, overwrite=True, output_verify="silentfix",
+    )
+    return cutout, cutout_header, cutout_wcs
+
+
+def _nexus_source_tiles(
+    mosaic_path: Path, *, filter_name: str,
+) -> tuple[np.ndarray, Any, Any, list[tuple[int, int, int, int]]]:
+    """Derive complete 255-Euclid-pixel tiles from the mosaic WCS itself."""
+    data, header, wcs, _ = _find_image(mosaic_path)
+    product = _NEXUS_PRODUCTS[filter_name]
+    jwst_side = int(round(
+        _NEXUS_EUCLID_TILE_SIDE * Config.VIS_PIXEL_SCALE_ARCSEC
+        / (float(product["pixel_scale_mas"]) / 1000.0)
+    ))
+    if jwst_side < 1:
+        raise RuntimeError("NEXUS pixel scale cannot form Euclid-sized tiles")
+    tiles: list[tuple[int, int, int, int]] = []
+    for y0 in range(0, data.shape[0] - jwst_side + 1, jwst_side):
+        for x0 in range(0, data.shape[1] - jwst_side + 1, jwst_side):
+            tile = data[y0:y0 + jwst_side, x0:x0 + jwst_side]
+            # Keep the source mosaic's natural footprint and omit empty
+            # padded regions before issuing any Euclid archive requests.
+            if _has_signal(tile):
+                tiles.append((x0, y0, x0 + jwst_side, y0 + jwst_side))
+    if not tiles:
+        raise RuntimeError("NEXUS mosaic has no non-empty 255-pixel Euclid tiles")
+    return data, header, wcs, tiles
+
+
+def _write_nexus_source_tile(
+    data: np.ndarray, header: Any, wcs: Any,
+    bounds: tuple[int, int, int, int], destination: Path,
+    *, product_name: str,
+) -> tuple[np.ndarray, Any, Any, float, float]:
+    """Save one exact source-pixel NEXUS tile and return its sky centre."""
+    from astropy.io import fits
+
+    x0, y0, x1, y1 = bounds
+    tile = np.ascontiguousarray(data[y0:y1, x0:x1], dtype=np.float32)
+    tile_wcs = wcs.slice((slice(y0, y1), slice(x0, x1)))
+    centre = tile_wcs.pixel_to_world((tile.shape[1] - 1) / 2, (tile.shape[0] - 1) / 2)
+    tile_header = _primary_image_header(header, tile_wcs, product_name, "NEXUS native mosaic tile")
+    fits.PrimaryHDU(tile, header=tile_header).writeto(
+        destination, overwrite=True, output_verify="silentfix",
+    )
+    return tile, tile_header, tile_wcs, float(centre.ra.deg), float(centre.dec.deg)
+
+
+def _read_nexus_field_manifest(identifier: str) -> dict[str, Any] | None:
+    if not re.fullmatch(r"[A-Za-z0-9._-]{1,220}", identifier):
+        return None
+    try:
+        payload = json.loads((nexus_field_root() / identifier / "manifest.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _nexus_tile_key(ra: float, dec: float) -> str:
+    """Stable WCS-derived identity for one NEXUS/Euclid tile centre."""
+    return f"{ra:.7f}:{dec:.7f}"
+
+
+def _nexus_euclid_files(tile: Mapping[str, Any]) -> dict[str, str]:
+    """Return the archived Euclid files, accepting the initial VIS-only cache."""
+    files = {
+        str(band).upper(): str(path)
+        for band, path in (tile.get("euclid_files", {}) or {}).items()
+        if isinstance(path, str) and path
+    }
+    legacy_vis = tile.get("euclid_file")
+    if isinstance(legacy_vis, str) and legacy_vis:
+        files.setdefault("VIS", legacy_vis)
+    return files
+
+
+def _nexus_tile_has_bands(directory: Path, tile: Mapping[str, Any], bands: Iterable[str]) -> bool:
+    files = _nexus_euclid_files(tile)
+    return all(_is_readable_fits(directory / files.get(band, "")) for band in bands)
+
+
+def _nexus_tile_has_registered_lr(directory: Path, tile: Mapping[str, Any]) -> bool:
+    path = tile.get("lr_file")
+    return isinstance(path, str) and _is_readable_fits(directory / path)
+
+
+def _starfull_member_fingerprints(
+    base_dir: str, labels: Iterable[str],
+) -> list[str] | None:
+    """Return checkpoint identities in the combiner's ordered member layout."""
+    from euclid_polish.ensemble import member_fingerprint
+
+    fingerprints = [
+        member_fingerprint(
+            str(Path(base_dir) / f"member_{str(label).split('·')[0]}"),
+        )
+        for label in labels
+    ]
+    if any(fingerprint is None for fingerprint in fingerprints):
+        return None
+    return [str(fingerprint) for fingerprint in fingerprints]
+
+
+def _active_starfull_combiner_artifact() -> dict[str, Any] | None:
+    """Return the first active fitted STARFULL ensemble's persistent identity.
+
+    This intentionally hashes the fitted JSON and NPZ rather than using mtimes:
+    a copied/refitted artifact is current only when its actual parameters and
+    metadata match what produced a cached NEXUS SR. Loading only the small
+    combiner artifact also verifies that its member labels match the active
+    STARFULL registry without restoring any member checkpoints. The cheap
+    checkpoint fingerprints ensure that retraining a member under the same
+    label also invalidates its cached NEXUS SR.
+    """
+    from euclid_polish import ensemble_registry
+    from euclid_polish.eval.combiner import (
+        ACTIVE_COMBINER_KINDS,
+        COMBINER_MODELS,
+        combiner_artifact_fingerprint,
+        load_combiner,
+    )
+
+    regime_dir = Path(Config.VIS_DIR) / "ensemble" / "starfull"
+    base_dir = ensemble_registry.default_ensemble_dir()
+    labels = ensemble_registry.regime_labels(base_dir, False)
+    if not labels:
+        return None
+    member_fingerprints = _starfull_member_fingerprints(base_dir, labels)
+    if member_fingerprints is None:
+        return None
+    for kind in ACTIVE_COMBINER_KINDS:
+        artifact_dir = COMBINER_MODELS[kind].artifact_dir
+        if load_combiner(
+            str(regime_dir), member_labels=labels, artifact_dir=artifact_dir,
+        ) is None:
+            continue
+        fingerprint = combiner_artifact_fingerprint(
+            str(regime_dir), artifact_dir,
+        )
+        if fingerprint:
+            return {
+                "combiner_kind": kind,
+                "combiner_fingerprint": fingerprint,
+                "member_fingerprints": member_fingerprints,
+            }
+    return None
+
+
+def _nexus_tile_sr_is_current(
+    directory: Path,
+    tile: Mapping[str, Any],
+    combiner_artifact: Mapping[str, Any] | None,
+) -> bool:
+    """Whether one readable SR was made by the currently active combiner."""
+    if combiner_artifact is None:
+        return False
+    inference = tile.get("inference")
+    if not isinstance(inference, Mapping):
+        return False
+    files = inference.get("files")
+    source = files.get("starfull") if isinstance(files, Mapping) else None
+    return (
+        isinstance(source, str)
+        and _is_readable_fits(directory / source)
+        and all(inference.get(key) == value
+                for key, value in combiner_artifact.items())
+    )
+
+
+def _nexus_tile_centre(wcs: Any, bounds: tuple[int, int, int, int]) -> tuple[float, float]:
+    """Compute a source-tile centre without touching an existing JWST file."""
+    x0, y0, x1, y1 = bounds
+    centre = wcs.pixel_to_world((x0 + x1 - 1) / 2, (y0 + y1 - 1) / 2)
+    return float(centre.ra.deg), float(centre.dec.deg)
+
+
+def nexus_fields() -> list[dict[str, Any]]:
+    """Return completed NEXUS field caches in stable display order."""
+    root = nexus_field_root()
+    if not root.is_dir():
+        return []
+    combiner_artifact = _active_starfull_combiner_artifact()
+    fields = []
+    for directory in sorted(root.iterdir(), key=lambda path: path.name):
+        manifest = _read_nexus_field_manifest(directory.name) if directory.is_dir() else None
+        if not manifest:
+            continue
+        tiles = manifest.get("tiles")
+        if not isinstance(tiles, list) or not tiles:
+            continue
+        if not all(
+            isinstance(tile, Mapping)
+            and _is_readable_fits(directory / str(tile.get("jwst_file", "")))
+            and _nexus_tile_has_bands(directory, tile, ("VIS",))
+            for tile in tiles
+        ):
+            continue
+        complete = sum(
+            _nexus_tile_has_bands(directory, tile, Config.LR_INPUT_BAND_NAMES)
+            and _nexus_tile_has_registered_lr(directory, tile)
+            for tile in tiles if isinstance(tile, Mapping)
+        )
+        sr_count = sum(
+            isinstance(tile.get("inference"), Mapping)
+            and _is_readable_fits(directory / str(
+                (tile.get("inference", {}).get("files", {}) or {}).get("starfull", "")
+            ))
+            for tile in tiles if isinstance(tile, Mapping)
+        )
+        current_sr_count = sum(
+            _nexus_tile_sr_is_current(directory, tile, combiner_artifact)
+            for tile in tiles if isinstance(tile, Mapping)
+        )
+        fields.append({
+            **manifest,
+            "four_band_count": complete,
+            "sr_count": sr_count,
+            "current_sr_count": current_sr_count,
+            "stale_sr_count": sr_count - current_sr_count,
+            "active_combiner_kind": (
+                combiner_artifact.get("combiner_kind")
+                if combiner_artifact is not None else None
+            ),
+        })
+    return fields
+
+
+def download_nexus_field(
+    *, filter_name: str, progress: Any | None = None,
+) -> dict[str, Any]:
+    """Download a full NEXUS mosaic and cover it with matched Euclid tiles.
+
+    VIS remains an exact 255×255-pixel cutout.  The three NISP inputs include
+    a small guard band, so they can later be registered onto that VIS WCS for
+    the four-band STARFULL input.  Existing readable JWST or Euclid files are
+    always reused; this operation only fills missing bands/tiles.
+    """
+    filter_name = filter_name.upper().strip()
+    if filter_name not in _NEXUS_PRODUCTS:
+        raise ValueError("NEXUS filter must be F200W or F444W")
+    identifier = nexus_field_id(filter_name)
+    final_dir = nexus_field_root() / identifier
+    existing = _read_nexus_field_manifest(identifier)
+
+    mosaic_path = _download_nexus_mosaic(filter_name, progress=progress)
+    source_data, source_header, source_wcs, source_tiles = _nexus_source_tiles(
+        mosaic_path, filter_name=filter_name,
+    )
+    previous_tiles = existing.get("tiles", []) if isinstance(existing, Mapping) else []
+    previous_by_centre = {
+        _nexus_tile_key(float(tile["ra_deg"]), float(tile["dec_deg"])): dict(tile)
+        for tile in previous_tiles if isinstance(tile, Mapping)
+        and _number(tile.get("ra_deg")) is not None and _number(tile.get("dec_deg")) is not None
+    }
+    total = len(source_tiles)
+    product = _NEXUS_PRODUCTS[filter_name]
+    nexus_field_root().mkdir(parents=True, exist_ok=True)
+    final_dir.mkdir(parents=True, exist_ok=True)
+    (final_dir / "tiles").mkdir(exist_ok=True)
+    from euclid_polish.catalog.downloader import fetch_cutout_at
+
+    # Write in place so a paused/failed archive job retains every good file
+    # and the next invocation can resume without network work for it.
+    # Start from the persisted rows.  Updating the manifest after each tile is
+    # deliberate (a later run can resume), but must not hide unread rows from
+    # an interrupted earlier pass.
+    tiles_by_centre = dict(previous_by_centre)
+    manifest_tiles: list[dict[str, Any]] = list(tiles_by_centre.values())
+    source_padding = 8
+    manifest = {
+        "field_id": identifier, "source": "NEXUS QDR", "filter": filter_name,
+        "target_name": f"NEXUS Deep Epoch 05 · {filter_name}",
+        "tile_size_euclid_pixels": _NEXUS_EUCLID_TILE_SIDE,
+        "tile_size_arcsec": _NEXUS_EUCLID_TILE_SIDE * Config.VIS_PIXEL_SCALE_ARCSEC,
+        "tile_size_jwst_pixels": int(round(
+            _NEXUS_EUCLID_TILE_SIDE * Config.VIS_PIXEL_SCALE_ARCSEC
+            / (float(product["pixel_scale_mas"]) / 1000.0)
+        )),
+        "mosaic_file": mosaic_path.name,
+        "mosaic_url": f"{_NEXUS_QDR_BASE}/{product['filename']}",
+        "mosaic_pixel_scale_mas": product["pixel_scale_mas"],
+        "euclid_bands": list(Config.LR_INPUT_BAND_NAMES),
+        "source_tile_count": total,
+        "tiles": manifest_tiles,
+    }
+    for source_index, bounds in enumerate(source_tiles):
+        ra, dec = _nexus_tile_centre(source_wcs, bounds)
+        tile = previous_by_centre.get(_nexus_tile_key(ra, dec), {}).copy()
+        tile.update({"source_index": source_index, "ra_deg": ra, "dec_deg": dec})
+        jwst_relative = str(tile.get("jwst_file") or f"tiles/jwst_{source_index:04d}.fits")
+        jwst_path = final_dir / jwst_relative
+        if _is_readable_fits(jwst_path):
+            jwst_data, jwst_header, jwst_wcs, _ = _find_image(jwst_path)
+        else:
+            jwst_data, jwst_header, jwst_wcs, _ra, _dec = _write_nexus_source_tile(
+                source_data, source_header, source_wcs, bounds, jwst_path,
+                product_name=mosaic_path.name,
+            )
+        tile["jwst_file"] = jwst_relative
+        tile["jwst_metadata"] = _pixel_metadata(jwst_data, jwst_wcs, jwst_header)
+
+        euclid_files = _nexus_euclid_files(tile)
+        euclid_files.setdefault("VIS", f"tiles/euclid_vis_{source_index:04d}.fits")
+        vis_path = final_dir / euclid_files["VIS"]
+        if not _is_readable_fits(vis_path):
+            if progress:
+                progress(source_index * 4 + 1, total * 4, f"Euclid VIS tile {source_index + 1}/{total}")
+            _ok, _error = fetch_cutout_at(
+                ra=ra, dec=dec, band_name="VIS", output_file=str(vis_path),
+                cutout_size_vis_pixels=_NEXUS_EUCLID_TILE_SIDE,
+            )
+        if not _is_readable_fits(vis_path):
+            # No point requesting NISP when this location has no released VIS
+            # coverage.  The source tile is retried only if a later run finds
+            # a new archive product.
+            continue
+        vis_data, vis_header, vis_wcs, _ = _find_image(vis_path)
+        if vis_data.shape != (_NEXUS_EUCLID_TILE_SIDE, _NEXUS_EUCLID_TILE_SIDE) or not _has_signal(vis_data):
+            continue
+        tile["euclid_file"] = euclid_files["VIS"]  # compatibility with the VIS-only cache
+        tile["euclid_metadata"] = _pixel_metadata(vis_data, vis_wcs, vis_header)
+        for band_offset, band_name in enumerate(Config.LR_INPUT_BAND_NAMES[1:], start=2):
+            euclid_files.setdefault(
+                band_name, f"tiles/euclid_{band_name.lower()}_padded_{source_index:04d}.fits",
+            )
+            raw_path = final_dir / euclid_files[band_name]
+            if _is_readable_fits(raw_path):
+                continue
+            if progress:
+                progress(source_index * 4 + band_offset, total * 4,
+                         f"Euclid {band_name} tile {source_index + 1}/{total}")
+            fetch_cutout_at(
+                ra=ra, dec=dec, band_name=band_name, output_file=str(raw_path),
+                cutout_size_vis_pixels=_NEXUS_EUCLID_TILE_SIDE + source_padding,
+            )
+        tile["euclid_files"] = euclid_files
+        tile["index"] = source_index
+        if _nexus_tile_has_bands(final_dir, tile, Config.LR_INPUT_BAND_NAMES):
+            try:
+                _cache_nexus_tile_lr(final_dir, tile)
+            except (OSError, RuntimeError, ValueError) as exc:
+                tile["four_band_error"] = str(exc)
+            else:
+                tile.pop("four_band_error", None)
+        tiles_by_centre[_nexus_tile_key(ra, dec)] = tile
+        manifest_tiles = list(tiles_by_centre.values())
+        manifest["tiles"] = manifest_tiles
+        manifest["count"] = len(manifest_tiles)
+        # Persist after every completed VIS tile: subsequent invocations use
+        # these files rather than fetching them again.
+        _write_json(final_dir / "manifest.json", manifest)
+    if not manifest_tiles:
+        raise RuntimeError("no NEXUS mosaic tiles have usable Euclid VIS coverage")
+    # A completed scan has a deterministic source-mosaic order.  (The
+    # in-place checkpoint ordering above prioritises resumability.)
+    manifest_tiles = [
+        tiles_by_centre[key]
+        for bounds in source_tiles
+        if (key := _nexus_tile_key(*_nexus_tile_centre(source_wcs, bounds))) in tiles_by_centre
+    ]
+    manifest["tiles"] = manifest_tiles
+    manifest["count"] = len(manifest_tiles)
+    _write_json(final_dir / "manifest.json", manifest)
+    if progress:
+        progress(total * 4, total * 4, "NEXUS Euclid coverage cached")
+    return manifest
+
+
+def _cache_nexus_tile_lr(directory: Path, tile: dict[str, Any]) -> tuple[np.ndarray, Any]:
+    """Register one cached NEXUS tile's four Euclid bands onto its VIS WCS."""
+    from astropy.io import fits
+
+    source_index = int(tile.get("source_index", tile.get("index", 0)))
+    lr_relative = str(tile.get("lr_file") or f"tiles/euclid_lr_vis_y_j_h_{source_index:04d}.fits")
+    lr_path = directory / lr_relative
+    if _is_readable_fits(lr_path):
+        with fits.open(lr_path, memmap=False) as hdul:
+            data = np.asarray(hdul[0].data, dtype=np.float32)
+            header = hdul[0].header.copy()
+        if data.ndim == 3 and data.shape[0] == len(Config.LR_INPUT_BAND_NAMES):
+            tile["lr_file"] = lr_relative
+            return np.moveaxis(data, 0, -1), header
+    files = _nexus_euclid_files(tile)
+    if not _nexus_tile_has_bands(directory, tile, Config.LR_INPUT_BAND_NAMES):
+        raise RuntimeError("all four Euclid bands have not been cached for this tile")
+    vis_data, vis_header, vis_wcs, _ = _find_image(directory / files["VIS"])
+    bands: list[np.ndarray] = []
+    for band_name in Config.LR_INPUT_BAND_NAMES:
+        data, header, wcs, _ = _find_image(directory / files[band_name])
+        registered = data if band_name == "VIS" else align_to_target(
+            data, wcs, vis_wcs, vis_data.shape,
+        )
+        if registered.shape != vis_data.shape or not _has_signal(registered):
+            raise RuntimeError(f"{band_name} cannot be registered onto the VIS tile")
+        if not np.all(np.isfinite(registered)):
+            raise RuntimeError(f"{band_name} does not fully cover the VIS tile")
+        band = Config.get_band(band_name)
+        from euclid_polish.photometry import adu_per_s_to_electrons_factor
+        bands.append(registered * adu_per_s_to_electrons_factor(
+            float(header.get("MAGZERO", band.sim_zeropoint_e)), band,
+        ))
+    cube = np.stack(bands, axis=-1).astype(np.float32)
+    header = _primary_image_header(vis_header, vis_wcs, Path(files["VIS"]).name,
+                                   "NEXUS Euclid VIS+Y+J+H registered input tile")
+    header["BANDS"] = (",".join(Config.LR_INPUT_BAND_NAMES), "input channel order")
+    header["REGWCS"] = ("VIS", "all Euclid input bands registered to VIS WCS")
+    fits.PrimaryHDU(np.moveaxis(cube, -1, 0), header=header).writeto(
+        lr_path, overwrite=True, output_verify="silentfix",
+    )
+    tile["lr_file"] = lr_relative
+    tile["lr_metadata"] = _pixel_metadata(cube[..., 0], vis_wcs, header)
+    return cube, header
+
+
+def run_starfull_nexus_field_inference(
+    identifier: str, *, progress: Any | None = None,
+) -> dict[str, Any]:
+    """Run the active STARFULL combiner on every complete NEXUS Euclid tile.
+
+    The four archive inputs must already exist: inference never asks the
+    archive for a duplicate cutout. A completed SR is reused only when its
+    recorded combiner fingerprint matches the active fitted artifact; stale
+    SRs are atomically replaced.
+    """
+    identifier = _safe(identifier)
+    directory = nexus_field_root() / identifier
+    manifest_path = directory / "manifest.json"
+    manifest = _read_nexus_field_manifest(identifier)
+    if manifest is None:
+        raise RuntimeError("saved NEXUS tiled field not found")
+    tiles = manifest.get("tiles", [])
+    if not isinstance(tiles, list) or not tiles:
+        raise RuntimeError("saved NEXUS tiled field has no Euclid VIS tiles")
+
+    from astropy.io import fits
+
+    from euclid_polish.ensemble import EnsembleModel, default_ensemble_dir
+    from euclid_polish.eval.combiner import (
+        ACTIVE_COMBINER_KINDS,
+        COMBINER_MODELS,
+        combiner_artifact_fingerprint,
+        load_combiner,
+    )
+
+    ensemble_dir = default_ensemble_dir()
+    ensemble = EnsembleModel(ensemble_dir, starless=False)
+    labels = list(ensemble.member_labels)
+    if not labels:
+        raise RuntimeError("no active STARFULL ensemble members")
+    member_fingerprints = _starfull_member_fingerprints(ensemble_dir, labels)
+    if member_fingerprints is None:
+        raise RuntimeError("active STARFULL member checkpoint identity is incomplete")
+    regime_dir = Path(Config.VIS_DIR) / "ensemble" / "starfull"
+    selected_kind = None
+    selected_combiner = None
+    for kind in ACTIVE_COMBINER_KINDS:
+        combiner = load_combiner(
+            str(regime_dir), member_labels=labels,
+            artifact_dir=COMBINER_MODELS[kind].artifact_dir,
+        )
+        if combiner is not None:
+            selected_kind, selected_combiner = kind, combiner
+            break
+    if selected_kind is None or selected_combiner is None:
+        raise RuntimeError("no fitted STARFULL combiner is available")
+    combiner_fingerprint = combiner_artifact_fingerprint(
+        str(regime_dir), COMBINER_MODELS[selected_kind].artifact_dir,
+    )
+    if not combiner_fingerprint:
+        raise RuntimeError("active STARFULL combiner artifact is incomplete")
+    combiner_artifact = {
+        "combiner_kind": selected_kind,
+        "combiner_fingerprint": combiner_fingerprint,
+        "member_fingerprints": member_fingerprints,
+    }
+
+    remaining: list[tuple[int, dict[str, Any]]] = []
+    for index, item in enumerate(tiles):
+        if not isinstance(item, dict) or not _nexus_tile_has_bands(
+            directory, item, Config.LR_INPUT_BAND_NAMES,
+        ):
+            continue
+        if _nexus_tile_sr_is_current(directory, item, combiner_artifact):
+            continue
+        remaining.append((index, item))
+    if not remaining:
+        return manifest
+
+    completed = 0
+    failed: list[dict[str, Any]] = []
+    for order, (index, tile) in enumerate(remaining, start=1):
+        try:
+            if progress:
+                progress(order - 1, len(remaining), f"STARFULL tile {order}/{len(remaining)}")
+            lr_cube, lr_header = _cache_nexus_tile_lr(directory, tile)
+            members = ensemble.member_arrays(lr_cube)
+            starfull = np.asarray(selected_combiner.apply_field(members), np.float32)
+            source_index = int(tile.get("source_index", tile.get("index", index)))
+            sr_relative = f"tiles/starfull_combiner_{source_index:04d}.fits"
+            sr_path = directory / sr_relative
+            sr_header = lr_header.copy()
+            scale = max(1, int(round(starfull.shape[0] / lr_cube.shape[0])))
+            for key in ("CRPIX1", "CRPIX2"):
+                if key in sr_header:
+                    sr_header[key] = (float(sr_header[key]) - 1.0) * scale + 1.0
+            for key in ("CDELT1", "CDELT2", "CD1_1", "CD1_2", "CD2_1", "CD2_2"):
+                if key in sr_header:
+                    sr_header[key] = float(sr_header[key]) / scale
+            sr_header["SRCFILE"] = str(tile.get("lr_file", ""))[:68]
+            sr_header["SRMODE"] = "STARFULL"
+            temporary_sr = sr_path.with_name(
+                f".{sr_path.stem}.{os.getpid()}.tmp.fits",
+            )
+            try:
+                fits.PrimaryHDU(
+                    np.moveaxis(starfull, -1, 0), header=sr_header,
+                ).writeto(
+                    temporary_sr, overwrite=True, output_verify="silentfix",
+                )
+                os.replace(temporary_sr, sr_path)
+            finally:
+                with __import__("contextlib").suppress(OSError):
+                    temporary_sr.unlink()
+            tile["inference"] = {
+                "mode": "starfull", "combiner_kind": selected_kind,
+                "combiner_fingerprint": combiner_fingerprint,
+                "combiner_label": COMBINER_MODELS[selected_kind].label,
+                "member_labels": labels,
+                "member_fingerprints": member_fingerprints,
+                "pixel_scale_arcsec": float(Config.DEFAULT_PIXEL_SCALE),
+                "shape": [int(value) for value in starfull.shape],
+                "files": {"lr": str(tile["lr_file"]), "starfull": sr_relative},
+            }
+            completed += 1
+        except Exception as exc:  # noqa: BLE001 - retain successfully inferred neighbouring tiles
+            failed.append({"index": index, "error": str(exc)})
+        manifest["inference"] = {
+            "mode": "starfull", "combiner_kind": selected_kind,
+            "combiner_fingerprint": combiner_fingerprint,
+            "combiner_label": COMBINER_MODELS[selected_kind].label,
+            "member_fingerprints": member_fingerprints,
+            "requested_tile_count": len(remaining), "completed_now": completed,
+            "failed": failed,
+        }
+        _write_json(manifest_path, manifest)
+        if progress:
+            progress(order, len(remaining), f"STARFULL tile {order}/{len(remaining)}")
+    if not completed and failed:
+        raise RuntimeError(f"STARFULL could not infer any NEXUS tile: {failed[0]['error']}")
+    return manifest
+
+
+def download_nexus_pair(
+    *,
+    ra: float,
+    dec: float,
+    filter_name: str,
+    size_arcsec: float = 30.0,
+    progress: Any | None = None,
+) -> dict[str, Any]:
+    """Cache one NEXUS native cutout beside Euclid VIS at the same ICRS point.
+
+    NEXUS's full science mosaic remains a source cache; only the selected
+    cutout is published to the paired viewer.  This keeps the native JWST grid
+    intact while the companion Euclid cutout is independently fetched from the
+    Euclid archive.
+    """
+    filter_name = filter_name.upper().strip()
+    if filter_name not in _NEXUS_PRODUCTS:
+        raise ValueError("NEXUS filter must be F200W or F444W")
+    if not (0.0 <= float(ra) < 360.0 and -90.0 <= float(dec) <= 90.0):
+        raise ValueError("NEXUS coordinates are outside the ICRS sky range")
+    if not 1.0 <= float(size_arcsec) <= 120.0:
+        raise ValueError("NEXUS cutout size must be between 1 and 120 arcsec")
+    identifier = nexus_pair_id(ra, dec, filter_name, size_arcsec)
+    final_dir = pair_root() / identifier
+    manifest_file = final_dir / "manifest.json"
+    if manifest_file.exists():
+        try:
+            existing = json.loads(manifest_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            existing = None
+        if isinstance(existing, dict) and _cached_pair_is_usable(final_dir, existing):
+            return existing
+
+    pair_root().mkdir(parents=True, exist_ok=True)
+    temporary_dir = Path(tempfile.mkdtemp(prefix=f".{identifier}.", dir=pair_root()))
+    try:
+        mosaic = _download_nexus_mosaic(filter_name, progress=progress)
+        if progress:
+            progress(1, 4, f"cropping NEXUS {filter_name} at selected sky position")
+        jwst_dir = temporary_dir / "jwst"
+        jwst_dir.mkdir()
+        jwst_relative = f"jwst/{filter_name.lower()}.fits"
+        jwst_path = temporary_dir / jwst_relative
+        jwst_data, jwst_header, jwst_wcs = _write_nexus_cutout(
+            mosaic, ra=ra, dec=dec, size_arcsec=size_arcsec, destination=jwst_path,
+        )
+
+        from euclid_polish.catalog.downloader import fetch_cutout_at
+
+        euclid_path = temporary_dir / "euclid_vis.fits"
+        if progress:
+            progress(2, 4, "downloading matching Euclid VIS cutout")
+        vis_side = max(1, int(round(size_arcsec / Config.VIS_PIXEL_SCALE_ARCSEC)))
+        ok, error = fetch_cutout_at(
+            ra=ra, dec=dec, band_name="VIS", output_file=str(euclid_path),
+            cutout_size_vis_pixels=vis_side,
+        )
+        if not ok or not _is_readable_fits(euclid_path):
+            raise RuntimeError(f"matching Euclid VIS cutout unavailable: {error or 'unknown archive error'}")
+        euclid_data, euclid_header, euclid_wcs, _ = _find_image(euclid_path)
+        if not _has_signal(euclid_data):
+            raise RuntimeError("matching Euclid VIS cutout has no usable pixels")
+        if progress:
+            progress(3, 4, "writing native-grid comparison previews")
+        euclid_display = _write_display_png(euclid_data, temporary_dir / "euclid_vis.png", (0.45, 0.72, 1.0))
+        jwst_display = _write_display_png(jwst_data, temporary_dir / "jwst_native.png", (0.94, 0.94, 0.94))
+        product = _NEXUS_PRODUCTS[filter_name]
+        manifest = {
+            "field_id": identifier,
+            "source": "NEXUS QDR",
+            "target_name": f"NEXUS Deep Ep05 · {filter_name}",
+            "ra_deg": float(ra), "dec_deg": float(dec), "size_arcsec": float(size_arcsec),
+            "jwst_archive": "nexus-qdr",
+            "jwst_observation_id": f"nexus-central-deep-ep05-{filter_name.lower()}",
+            "jwst_product": str(product["filename"]), "jwst_filters": filter_name,
+            "jwst_native_is_field_cutout": True,
+            "euclid_product": "VIS archive cutout",
+            "alignment": {
+                "method": "shared ICRS centre; native grids retained",
+                "target_grid": "Euclid VIS for LR/SR; native NEXUS WCS for JWST",
+                "source_units": str(jwst_header.get("BUNIT", "")),
+                "target_units": str(euclid_header.get("BUNIT", "")),
+            },
+            "display": {"euclid": euclid_display, "jwst": jwst_display},
+            "files": {
+                "euclid": "euclid_vis.fits", "euclid_png": "euclid_vis.png",
+                "jwst_native": jwst_relative, "jwst_png": "jwst_native.png",
+            },
+            "euclid_metadata": _pixel_metadata(euclid_data, euclid_wcs, euclid_header),
+            "jwst_metadata": _pixel_metadata(jwst_data, jwst_wcs, jwst_header),
+            "jwst_bands": [{
+                "key": filter_name.lower(), "filter": filter_name, "file": jwst_relative,
+                "product": str(product["filename"]), "native_is_field_cutout": True,
+                "metadata": _pixel_metadata(jwst_data, jwst_wcs, jwst_header),
+            }],
+            "provenance": {
+                "nexus_qdr_url": f"{_NEXUS_QDR_BASE}/{product['filename']}",
+                "nexus_pixel_scale_mas": product["pixel_scale_mas"],
+                "release": "NEXUS Deep Epoch 05 quick data release",
+            },
+        }
+        _write_json(temporary_dir / "manifest.json", manifest)
+        if final_dir.exists():
+            shutil.rmtree(final_dir)
+        os.replace(temporary_dir, final_dir)
+        if progress:
+            progress(4, 4, "NEXUS × Euclid comparison saved")
+        return manifest
+    except Exception:
+        shutil.rmtree(temporary_dir, ignore_errors=True)
+        raise
+
+
 def _aligned_primary_header(source_header: Any, product_name: str) -> Any:
     """Make an archive image header safe for a new primary HDU."""
     header = source_header.copy()
@@ -1502,6 +2278,27 @@ def run_starfull_pair_inference(
     return manifest
 
 
+def saved_pairs(*, source: str | None = None) -> list[dict[str, Any]]:
+    """List verified paired fields, including imports outside the discovery CSV."""
+    results: list[dict[str, Any]] = []
+    root = pair_root()
+    if not root.is_dir():
+        return results
+    for directory in sorted(root.iterdir(), key=lambda path: path.name):
+        if not directory.is_dir():
+            continue
+        try:
+            manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(manifest, dict) or not _cached_pair_is_usable(directory, manifest):
+            continue
+        if source is not None and _text(manifest.get("source")) != source:
+            continue
+        results.append(enrich_manifest_metadata(directory, manifest))
+    return results
+
+
 __all__ = [
     "align_to_target",
     "download_and_align_pair",
@@ -1517,4 +2314,13 @@ __all__ = [
     "overlap_root",
     "pair_root",
     "run_starfull_pair_inference",
+    "run_starfull_nexus_field_inference",
+    "download_nexus_pair",
+    "download_nexus_field",
+    "nexus_field_id",
+    "nexus_field_root",
+    "nexus_fields",
+    "nexus_pair_id",
+    "nexus_product_options",
+    "saved_pairs",
 ]

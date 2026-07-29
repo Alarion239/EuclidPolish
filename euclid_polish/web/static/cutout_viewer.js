@@ -306,6 +306,20 @@ const LENS_ZOOM_STEP = 1.18;
 const LENS_SIDE = 280;
 const LENS_LAYOUT_GAP = 12;
 const COLOR_KEYS = ["q", "w", "e", "r", "t", "y"];
+const VIEW_LAYOUT_STORAGE_KEY = "euclid-polish.cutout-viewer.layout";
+
+function savedViewLayout() {
+  try {
+    const value = window.localStorage.getItem(VIEW_LAYOUT_STORAGE_KEY);
+    return value === "two-rows" ? value : "one-row";
+  } catch (_) {
+    return "one-row";
+  }
+}
+
+function saveViewLayout(value) {
+  try { window.localStorage.setItem(VIEW_LAYOUT_STORAGE_KEY, value); } catch (_) { /* optional */ }
+}
 
 export function mountCutoutViewer(root, opts = {}) {
   const collection = opts.collection;
@@ -316,9 +330,11 @@ export function mountCutoutViewer(root, opts = {}) {
     tiers: Array.isArray(opts.initialTiers) ? opts.initialTiers.map(String)
       : (opts.initialTier ? [String(opts.initialTier)] : []),
                            // selected tier keys (multi-select), canonical order
+    layout: savedViewLayout(), // one-row | two-rows; applies to every shared viewer
     color: "VIS",          // band name | "lupton" | "temp"
     knee: 100,             // K (e⁻)
     gain: 1.0,             // brightness multiplier
+    transfers: {},         // transfer group → { knee, gain }; default retains legacy behaviour
     K0: 100,               // knee captured on first load → fixes the white ref
     viewOverride: {},      // externally driven colour / transfer-function values
     cubeCache: new Map(),  // "tier:index" → cube record
@@ -334,7 +350,7 @@ export function mountCutoutViewer(root, opts = {}) {
   };
   let morphRaf = null;          // requestAnimationFrame id for the "morph" tier
   let paramRefreshToken = 0;    // rejects a slower, superseded PSF warp response
-  let brightnessControl = null;
+  const brightnessControls = new Map();
 
   // --- DOM scaffold --------------------------------------------------------
   root.classList.add("cutout-viewer");
@@ -443,6 +459,7 @@ export function mountCutoutViewer(root, opts = {}) {
       label: r.headers.get("X-Cube-Label") || "",
       asinh: parseFloat(r.headers.get("X-Cube-Asinh")) || 100,
       pixscale: parseFloat(r.headers.get("X-Cube-Pixscale")) || 0,
+      transferGroup: r.headers.get("X-Cube-Transfer-Group") || "default",
       displayScale: parseFloat(r.headers.get("X-Cube-Display-Scale")) || 1,
       bands: (r.headers.get("X-Cube-Bands") || "").split(",").filter(Boolean),
       tint: (r.headers.get("X-Cube-Tint") || "").split(",").map(Number)
@@ -509,8 +526,41 @@ export function mountCutoutViewer(root, opts = {}) {
   // live. Split out from renderInto so the movie can cache the EXPENSIVE half
   // (prepare's per-pixel colour/temp-fit) once per frame and re-run only this
   // on every blit — so the brightness slider rescales instantly with no rebuild.
-  function transferPrepared(prep) {
-    return transferCore(prep, state.knee, state.gain, state.K0);
+  function transferGroupKeys() {
+    const groups = state.meta && Array.isArray(state.meta.transfer_groups)
+      ? state.meta.transfer_groups.filter((group) => group === "euclid" || group === "jwst")
+      : [];
+    return groups.length ? Array.from(new Set(groups)) : ["default"];
+  }
+
+  function resetTransferSettings() {
+    state.transfers = {};
+    for (const group of transferGroupKeys()) {
+      state.transfers[group] = { knee: state.knee, gain: state.gain };
+    }
+  }
+
+  function copiedTransferSettings() {
+    const copied = {};
+    for (const group of Object.keys(state.transfers)) {
+      const transfer = state.transfers[group];
+      copied[group] = { knee: transfer.knee, gain: transfer.gain };
+    }
+    return copied;
+  }
+
+  function transferSetting(group) {
+    if (!state.transfers[group]) state.transfers[group] = { knee: state.knee, gain: state.gain };
+    return state.transfers[group];
+  }
+
+  function transferFor(rec) {
+    return transferSetting(rec && rec.transferGroup ? rec.transferGroup : "default");
+  }
+
+  function transferPrepared(prep, rec) {
+    const transfer = transferFor(rec);
+    return transferCore(prep, transfer.knee, transfer.gain, state.K0);
   }
 
   function renderInto(fr, rec) {
@@ -520,7 +570,7 @@ export function mountCutoutViewer(root, opts = {}) {
     if (fr.canvas.width !== prep.w || fr.canvas.height !== prep.h) {
       fr.canvas.width = prep.w; fr.canvas.height = prep.h;
     }
-    fr.ctx.putImageData(transferPrepared(prep), 0, 0);
+    fr.ctx.putImageData(transferPrepared(prep, rec), 0, 0);
     fr.overlay.textContent = rec.label + magLabel(rec);
     fr.legendWrap.style.display = prep.mode === "temp" ? "flex" : "none";
     setFrameMsg(fr, "");
@@ -1026,13 +1076,18 @@ export function mountCutoutViewer(root, opts = {}) {
     event.preventDefault();
     event.stopPropagation();
     if (Math.abs(event.deltaX) > Math.abs(event.deltaY)) {
-      state.gain = Math.max(0.1, Math.min(10, state.gain * Math.exp(-event.deltaX * 0.002)));
+      const rec = state.shown.get(fr.tier);
+      const group = rec && rec.transferGroup ? rec.transferGroup : "default";
+      const transfer = transferFor(rec);
+      transfer.gain = Math.max(0.1, Math.min(10, transfer.gain * Math.exp(-event.deltaX * 0.002)));
+      if (group === "default") state.gain = transfer.gain;
+      const brightnessControl = brightnessControls.get(group);
       if (brightnessControl) {
         const input = brightnessControl.querySelector("input");
         const output = brightnessControl.querySelector(".cv-val");
-        input.value = Math.round(1000 * (Math.log(state.gain) - Math.log(0.1))
+        input.value = Math.round(1000 * (Math.log(transfer.gain) - Math.log(0.1))
           / (Math.log(10) - Math.log(0.1)));
-        output.textContent = `${state.gain.toFixed(2)}×`;
+        output.textContent = `${transfer.gain.toFixed(2)}×`;
       }
       rerender();
       notify();
@@ -1171,17 +1226,24 @@ export function mountCutoutViewer(root, opts = {}) {
     const viewportHeight = visibleHeight - toolbar.offsetHeight - toolbarMargin
       - nav.offsetHeight - navMargin - bottomMargin;
     const count = state.frames.length;
-    const maxColumns = window.innerWidth > 760 ? count : 1;
+    // The layout control is intentionally a column limit rather than a CSS
+    // reordering trick: exports and the frame-size calculation then match the
+    // exact layout the user sees.  On narrow screens retain the single-column
+    // fallback for legibility.
+    const forcedColumns = window.innerWidth <= 760 ? 1
+      : state.layout === "two-rows" ? Math.ceil(count / 2) : count;
     let best = { side: 0, columns: 1 };
 
-    for (let columns = 1; columns <= maxColumns; columns++) {
-      const rows = Math.ceil(count / columns);
-      const widthLimit = (width - columnGap * (columns - 1)) / columns;
-      const heightLimit = (viewportHeight - rowGap * (rows - 1)) / rows;
-      const side = Math.floor(Math.min(widthLimit, heightLimit));
-      if (side > best.side || (side === best.side && columns > best.columns)) {
-        best = { side, columns };
-      }
+    // The control chooses an exact layout.  Do not let the former
+    // tile-size optimiser silently replace the requested one-row layout with
+    // two columns on a shorter viewport.
+    const columns = forcedColumns;
+    const rows = Math.ceil(count / columns);
+    const widthLimit = (width - columnGap * (columns - 1)) / columns;
+    const heightLimit = (viewportHeight - rowGap * (rows - 1)) / rows;
+    const side = Math.floor(Math.min(widthLimit, heightLimit));
+    if (side > best.side || (side === best.side && columns > best.columns)) {
+      best = { side, columns };
     }
 
     if (best.side > 0) {
@@ -1481,6 +1543,7 @@ export function mountCutoutViewer(root, opts = {}) {
       let on;
       if (g === "tier") on = state.tiers.includes(c.dataset.value);
       else if (g === "color") on = c.dataset.value === state.color;
+      else if (g === "layout") on = c.dataset.value === state.layout;
       else on = c.dataset.value === String(state.params[g]);
       c.classList.toggle("active", on);
       if (g === "tier") c.classList.toggle("cv-disabled", tierDisabled(c.dataset.value));
@@ -1506,6 +1569,12 @@ export function mountCutoutViewer(root, opts = {}) {
       state.color = value;
       syncChips();
       rerender();
+      notify();
+    } else if (group === "layout") {
+      state.layout = value === "two-rows" ? "two-rows" : "one-row";
+      saveViewLayout(state.layout);
+      syncChips();
+      requestAnimationFrame(fitFramesToViewport);
       notify();
     } else {                                  // param control (e.g. sky subset)
       if (group === "jwst_band" && !jwstBandAvailable(value)) return;
@@ -1534,9 +1603,13 @@ export function mountCutoutViewer(root, opts = {}) {
     return el("div", { class: "cv-slider" }, [el("label", { text: label }), input, out]);
   }
 
+  function transferGroupLabel(group) {
+    return group === "jwst" ? "JWST" : group === "euclid" ? "Euclid" : "";
+  }
+
   function buildToolbar() {
     toolbar.innerHTML = "";
-    brightnessControl = null;
+    brightnessControls.clear();
     const tiers = state.meta.tiers || [];
     // `hidden` tiers (e.g. the 22 individual member SRs) stay loadable via
     // setTiers but are kept out of the chip row — an external panel drives them.
@@ -1547,6 +1620,15 @@ export function mountCutoutViewer(root, opts = {}) {
       shown.forEach((t) => g.append(chip("tier", t.key, t.label,
         "toggle — select more than one to compare side by side")));
       toolbar.append(g);
+    }
+    if (shown.length >= 3) {
+      toolbar.append(el("span", { class: "cv-grouplabel", text: "Layout" }));
+      const layoutGroup = el("div", { class: "cv-group" });
+      layoutGroup.append(
+        chip("layout", "one-row", "one row", "place all selected images side by side"),
+        chip("layout", "two-rows", "two rows", "place selected images across two rows"),
+      );
+      toolbar.append(layoutGroup);
     }
     for (const pc of (opts.paramControls || [])) {
       toolbar.append(el("span", { class: "cv-grouplabel", text: pc.label }));
@@ -1582,13 +1664,29 @@ export function mountCutoutViewer(root, opts = {}) {
     }
 
     const sg = el("div", { class: "cv-group cv-sliders" });
-    if (!logMode) {
-      sg.append(slider("asinh knee", 5, 5000, state.knee,
-        (v) => `${Math.round(v)} e⁻`, (v) => { state.knee = v; rerender(); }));
+    const transferGroups = transferGroupKeys();
+    for (const group of transferGroups) {
+      const transfer = transferSetting(group);
+      const prefix = transferGroups.length > 1 ? `${transferGroupLabel(group)} ` : "";
+      if (!logMode) {
+        sg.append(slider(`${prefix}asinh knee`, 5, 5000, transfer.knee,
+          (v) => `${Math.round(v)} e⁻`,
+          (v) => {
+            transfer.knee = v;
+            if (group === "default") state.knee = v;
+            rerender();
+          }));
+      }
+      const brightnessControl = slider(`${prefix}brightness`, 0.1, 10, transfer.gain,
+        (v) => `${v.toFixed(2)}×`,
+        (v) => {
+          transfer.gain = v;
+          if (group === "default") state.gain = v;
+          rerender();
+        });
+      brightnessControls.set(group, brightnessControl);
+      sg.append(brightnessControl);
     }
-    brightnessControl = slider("brightness", 0.1, 10, state.gain,
-      (v) => `${v.toFixed(2)}×`, (v) => { state.gain = v; rerender(); });
-    sg.append(brightnessControl);
     toolbar.append(sg);
 
     // "morph" tier controls — amplitude + speed (live; the rAF loop reads them).
@@ -1861,7 +1959,8 @@ export function mountCutoutViewer(root, opts = {}) {
     state.K0 = defaultKnee;
     state.knee = Number.isFinite(state.viewOverride.knee)
       ? state.viewOverride.knee : defaultKnee;
-    if (Number.isFinite(state.viewOverride.gain)) state.gain = state.viewOverride.gain;
+    state.gain = Number.isFinite(state.viewOverride.gain) ? state.viewOverride.gain : 1.0;
+    resetTransferSettings();
     state.cubeCache.clear();
     state.prepCache.clear();
     buildToolbar();
@@ -1908,10 +2007,12 @@ export function mountCutoutViewer(root, opts = {}) {
       if (Number.isFinite(next.knee) && next.knee > 0) {
         state.knee = next.knee;
         state.viewOverride.knee = next.knee;
+        for (const group of transferGroupKeys()) transferSetting(group).knee = next.knee;
       }
       if (Number.isFinite(next.gain) && next.gain > 0) {
         state.gain = next.gain;
         state.viewOverride.gain = next.gain;
+        for (const group of transferGroupKeys()) transferSetting(group).gain = next.gain;
       }
       if (!state.meta) return;
       buildToolbar();
@@ -1932,8 +2033,9 @@ export function mountCutoutViewer(root, opts = {}) {
     isReady() { return !!state.meta; },
     getState() {
       return { index: state.index, tier: state.tiers[0],
-               tiers: state.tiers.slice(), color: state.color,
+               tiers: state.tiers.slice(), color: state.color, layout: state.layout,
                knee: state.knee, gain: state.gain,
+               transfers: copiedTransferSettings(),
                params: Object.assign({}, state.params) };
     },
     reload() { return loadMeta().then(show); },

@@ -6,7 +6,9 @@ import "./viewer.css";
 
 type ViewerState = {
   index: number; tier: string; tiers: string[]; color: string;
+  layout: "one-row" | "two-rows";
   knee: number; gain: number;
+  transfers: Record<string, { knee: number; gain: number }>;
   params: Record<string, string>;
 };
 export type ViewerApi = {
@@ -44,7 +46,9 @@ let viewerMod: Promise<ViewerModule> | null = null;
 function loadViewer(): Promise<ViewerModule> {
   // Non-literal specifier: loaded at runtime from Flask's /static, NOT bundled
   // by Vite and not statically resolved by TS (the engine ships with classic UI).
-  const url = "/static/cutout_viewer.js";
+  // Bump this token whenever the standalone engine changes: the browser caches
+  // dynamic module imports by URL, independently of the rebuilt Vite bundle.
+  const url = "/static/cutout_viewer.js?v=20260729-nexus-layout";
   if (!viewerMod) viewerMod = import(/* @vite-ignore */ url) as Promise<ViewerModule>;
   return viewerMod;
 }

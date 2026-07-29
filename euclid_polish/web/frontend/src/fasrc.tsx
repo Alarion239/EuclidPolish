@@ -682,12 +682,14 @@ export function StepCard(
   const d = step.defaults;
   const lockedCpus = step.fixed_cpus != null;
   const lockedGpus = step.fixed_gpus != null;
+  const hasWorkerControl = step.step_id === "download_euclid_cutouts";
   const perModel = step.step_id === "ensemble_train" ? " / model" : "";
   const [partition, setPartition] = useState(d.partition);
   const [nCpus, setNCpus] = useState(String(step.fixed_cpus ?? d.n_cpus));
   const [nGpus, setNGpus] = useState(String(step.fixed_gpus ?? d.n_gpus));
   const [memory, setMemory] = useState(d.memory);
   const [timeLimit, setTimeLimit] = useState(d.time_limit);
+  const [workers, setWorkers] = useState("8");
   const [jobid, setJobid] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -701,6 +703,7 @@ export function StepCard(
         {
           partition, n_cpus: nCpus, n_gpus: nGpus, memory, time_limit: timeLimit,
           confirm: "yes", ...extraParams,
+          ...(hasWorkerControl ? { workers } : {}),
         },
       );
       if (res.error) setError(res.error);
@@ -721,6 +724,19 @@ export function StepCard(
           {step.needs_gpu ? <Badge>GPU</Badge> : <Badge>CPU</Badge>}
         </div>
       )}
+        {hasWorkerControl && (
+          <div className="fasrc-step__res" style={{ marginBottom: "var(--s3)" }}>
+            <NumberField
+              label="parallel workers"
+              value={workers}
+              onChange={setWorkers}
+              min={1}
+              max={32}
+              step={1}
+              hint="per band; all four bands can run concurrently"
+            />
+          </div>
+        )}
         <div className="fasrc-step__res">
           <Field label="partition"><Input value={partition} onChange={setPartition} /></Field>
           <NumberField label={`cpus${perModel}`} value={nCpus} onChange={setNCpus} min={1} disabled={lockedCpus} />

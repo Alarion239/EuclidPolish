@@ -11,13 +11,20 @@ from flask import jsonify, request, send_file
 from euclid_polish.web.helpers.jwst_euclid import (
     _cached_pair_is_usable,
     download_and_align_pair,
+    download_nexus_field,
+    download_nexus_pair,
     download_remaining_locations,
     enrich_manifest_metadata,
     find_location_group,
     location_groups,
+    nexus_fields,
+    nexus_pair_id,
+    nexus_product_options,
     overlap_rows,
     pair_root,
+    run_starfull_nexus_field_inference,
     run_starfull_pair_inference,
+    saved_pairs,
     scan_euclid_coverage,
 )
 from euclid_polish.web.jobs import REGISTRY
@@ -62,6 +69,39 @@ def register(app):
         rows, status = location_groups()
         return jsonify({"fields": rows, "status": status})
 
+    @app.get("/api/jwst-euclid/nexus/options")
+    def api_nexus_options():
+        return jsonify({"products": nexus_product_options()})
+
+    @app.get("/api/jwst-euclid/nexus/fields")
+    def api_nexus_fields():
+        fields = [{
+            "field_id": field.get("field_id"), "filter": field.get("filter"),
+            "target_name": field.get("target_name"), "count": field.get("count"),
+            "tile_size_euclid_pixels": field.get("tile_size_euclid_pixels"),
+            "tile_size_jwst_pixels": field.get("tile_size_jwst_pixels"),
+            "four_band_count": field.get("four_band_count", 0),
+            "sr_count": field.get("sr_count", 0),
+            "current_sr_count": field.get("current_sr_count", 0),
+            "stale_sr_count": field.get("stale_sr_count", 0),
+            "active_combiner_kind": field.get("active_combiner_kind"),
+        } for field in nexus_fields()]
+        return jsonify({"fields": fields})
+
+    @app.get("/api/jwst-euclid/saved")
+    def api_jwst_euclid_saved():
+        source = request.args.get("source") or None
+        fields = [{
+            "field_id": field.get("field_id"),
+            "source": field.get("source"),
+            "target_name": field.get("target_name"),
+            "jwst_filters": field.get("jwst_filters"),
+            "ra_deg": field.get("ra_deg"),
+            "dec_deg": field.get("dec_deg"),
+            "size_arcsec": field.get("size_arcsec"),
+        } for field in saved_pairs(source=source)]
+        return jsonify({"fields": fields})
+
     @app.get("/api/jwst-euclid/field.json")
     def api_jwst_euclid_field():
         identifier = request.args.get("id", "")
@@ -92,6 +132,59 @@ def register(app):
             target=lambda cap: download_and_align_pair(
                 row,
                 size_arcsec=size_arcsec,
+                progress=lambda done, total, label: cap.tick(done, total, label),
+            ),
+        )
+        return jsonify({"job_id": job_id, "field_id": identifier})
+
+    @app.post("/api/jwst-euclid/nexus/download")
+    def api_nexus_download():
+        try:
+            ra = float(request.form.get("ra", ""))
+            dec = float(request.form.get("dec", ""))
+            size_arcsec = float(request.form.get("size_arcsec", "30"))
+        except ValueError:
+            return jsonify({"error": "NEXUS RA, Dec, and cutout size must be numbers"}), 400
+        filter_name = request.form.get("filter", "F200W").strip().upper()
+        if filter_name not in {str(product["filter"]) for product in nexus_product_options()}:
+            return jsonify({"error": "NEXUS filter must be F200W or F444W"}), 400
+        if not (0.0 <= ra < 360.0 and -90.0 <= dec <= 90.0 and 1.0 <= size_arcsec <= 120.0):
+            return jsonify({"error": "NEXUS coordinates or cutout size are outside the supported range"}), 400
+        identifier = nexus_pair_id(ra, dec, filter_name, size_arcsec)
+        job_id = REGISTRY.spawn(
+            label=f"download NEXUS {filter_name} + matching Euclid VIS",
+            target=lambda cap: download_nexus_pair(
+                ra=ra, dec=dec, filter_name=filter_name, size_arcsec=size_arcsec,
+                progress=lambda done, total, label: cap.tick(done, total, label),
+            ),
+        )
+        return jsonify({"job_id": job_id, "field_id": identifier})
+
+    @app.post("/api/jwst-euclid/nexus/download-field")
+    def api_nexus_download_field():
+        filter_name = request.form.get("filter", "F200W").strip().upper()
+        if filter_name not in {str(product["filter"]) for product in nexus_product_options()}:
+            return jsonify({"error": "NEXUS filter must be F200W or F444W"}), 400
+        job_id = REGISTRY.spawn(
+            label=f"cache NEXUS {filter_name} mosaic + four-band Euclid coverage",
+            target=lambda cap: download_nexus_field(
+                filter_name=filter_name,
+                progress=lambda done, total, label: cap.tick(done, total, label),
+            ),
+        )
+        return jsonify({"job_id": job_id})
+
+    @app.post("/api/jwst-euclid/nexus/infer")
+    def api_nexus_infer():
+        identifier = request.form.get("field_id", "").strip()
+        if not _SAFE_ID.fullmatch(identifier) or not any(
+            field.get("field_id") == identifier for field in nexus_fields()
+        ):
+            return jsonify({"error": "save a valid NEXUS Euclid field before inference"}), 404
+        job_id = REGISTRY.spawn(
+            label=f"run STARFULL combiner on NEXUS tiles ({identifier})",
+            target=lambda cap: run_starfull_nexus_field_inference(
+                identifier,
                 progress=lambda done, total, label: cap.tick(done, total, label),
             ),
         )
