@@ -23,7 +23,8 @@ from euclid_polish.config import Config
 from euclid_polish.photometry import electrons_to_ab_mag, uJy_to_ab_mag
 from euclid_polish.web.helpers.paths import _sky_records_local_dir
 
-VERSION = 4
+VERSION = 5
+CATALOG_VERSION = 2
 BANDS = ("VIS", "Y_E", "J_E", "H_E")
 TILE_SIZE = 256
 ANALYSIS_SIZE = 255
@@ -34,6 +35,17 @@ DEFAULT_CONE_DEC = 64.8873
 DEFAULT_CONE_RADIUS_ARCMIN = math.sqrt((200 * FIELD_AREA_ARCMIN2) / math.pi)
 MAX_CATALOG_ROWS = 50_000
 SCALE_BOOTSTRAPS = 256
+PIXEL_QUANTILES = (0.1, 1.0, 5.0, 16.0, 50.0, 84.0, 95.0, 99.0, 99.9)
+FIELD_METRICS = (
+    "mean",
+    "median",
+    "std",
+    "robust_std",
+    "p01",
+    "p99",
+    "zero_fraction",
+    "negative_fraction",
+)
 
 _PARAM_META = {
     "objects_per_field": ("objects per field", "count"),
@@ -41,11 +53,32 @@ _PARAM_META = {
     "mag_y_e": ("Y_E magnitude", "AB mag"),
     "mag_j_e": ("J_E magnitude", "AB mag"),
     "mag_h_e": ("H_E magnitude", "AB mag"),
+    "vis_y_color": ("VIS − Y colour", "AB mag"),
+    "y_j_color": ("Y − J colour", "AB mag"),
+    "j_h_color": ("J − H colour", "AB mag"),
     "flux_vis_e": ("VIS source flux", "e⁻ / stack"),
     "flux_vis_psf_uJy": ("VIS PSF flux", "µJy"),
     "fluxerr_vis_psf_uJy": ("VIS PSF flux error", "µJy"),
     "vis_snr": ("VIS PSF signal-to-noise", "ratio"),
+    "aper_vis_snr": ("VIS aperture signal-to-noise", "ratio"),
+    "aper_y_snr": ("Y aperture signal-to-noise", "ratio"),
+    "aper_j_snr": ("J aperture signal-to-noise", "ratio"),
+    "aper_h_snr": ("H aperture signal-to-noise", "ratio"),
+    "point_like_prob": ("point-like probability", "probability"),
+    "extended_prob": ("extended-source probability", "probability"),
+    "spurious_prob": ("spurious-source probability", "probability"),
+    "blended_prob": ("blended-source probability", "probability"),
     "segmentation_area": ("segmentation area", "VIS pixels"),
+    "semimajor_axis": ("semi-major axis", "VIS pixels"),
+    "ellipticity": ("ellipticity", "ratio"),
+    "kron_radius": ("Kron radius", "VIS pixels"),
+    "fwhm": ("photometry FWHM", "arcsec"),
+    "mu_max": ("peak surface brightness", "mag / arcsec²"),
+    "mumax_minus_mag": ("peak − total magnitude", "mag / arcsec²"),
+    "gal_ebv": ("Galactic E(B−V)", "mag"),
+    "gaia_match_quality": ("Gaia match quality", "score"),
+    "gaia_matched": ("Gaia counterpart", "0 / 1"),
+    "deblended": ("deblended source", "0 / 1"),
     "z": ("redshift", "z"),
     "re_arcsec": ("half-light radius", "arcsec"),
     "logmass": ("stellar mass", "log₁₀ M☉"),
@@ -127,6 +160,9 @@ def availability() -> dict[str, Any]:
     inference_fields = 100 * len(inference)
     real_fields = inference_fields + len(overlap)
     meta = _read_json(euclid_catalog_meta_path())
+    catalog_current = (
+        meta is not None and meta.get("catalog_version") == CATALOG_VERSION
+    )
     return {
         "synthetic": {
             "fields": synthetic_fields,
@@ -146,8 +182,8 @@ def availability() -> dict[str, Any]:
             "jwst_overlap_fields": len(overlap),
         },
         "euclid_catalog": {
-            "cached": euclid_catalog_path().is_file() and meta is not None,
-            "meta": meta,
+            "cached": euclid_catalog_path().is_file() and catalog_current,
+            "meta": meta if catalog_current else None,
         },
         "field_area_arcmin2": FIELD_AREA_ARCMIN2,
         "default_cone": {
@@ -263,23 +299,65 @@ class _FieldAccumulator:
         self.samples: list[list[np.ndarray]] = [[] for _ in BANDS]
         self.power: list[list[np.ndarray]] = [[] for _ in BANDS]
         self.field_means: list[list[float]] = [[] for _ in BANDS]
+        self.field_metrics: list[dict[str, list[float]]] = [
+            {metric: [] for metric in FIELD_METRICS} for _ in BANDS
+        ]
+        self.band_correlations: dict[str, list[float]] = {
+            f"{BANDS[left]}:{BANDS[right]}": []
+            for left in range(len(BANDS))
+            for right in range(left + 1, len(BANDS))
+        }
         self.count = 0
         self.window = np.outer(np.hanning(ANALYSIS_SIZE),
                                np.hanning(ANALYSIS_SIZE)).astype(np.float32)
 
     def add(self, field: np.ndarray) -> None:
         data = _normalise_field(field)
-        finite = np.where(np.isfinite(data), data, 0.0)
         self.count += 1
         for band in range(len(BANDS)):
-            plane = finite[..., band]
-            self.samples[band].append(plane[::8, ::8].reshape(-1))
-            self.field_means[band].append(float(np.mean(plane)))
-            centered = (plane - np.mean(plane)) * self.window
+            plane = data[..., band]
+            values = plane[np.isfinite(plane)]
+            if not values.size:
+                raise ValueError(f"field has no finite {BANDS[band]} pixels")
+            sampled = plane[::8, ::8].reshape(-1)
+            sampled = sampled[np.isfinite(sampled)]
+            self.samples[band].append(sampled)
+            median = float(np.median(values))
+            mean = float(np.mean(values))
+            metrics = {
+                "mean": mean,
+                "median": median,
+                "std": float(np.std(values)),
+                "robust_std": float(
+                    1.4826 * np.median(np.abs(values - median))
+                ),
+                "p01": float(np.percentile(values, 1)),
+                "p99": float(np.percentile(values, 99)),
+                "zero_fraction": float(np.mean(values == 0)),
+                "negative_fraction": float(np.mean(values < 0)),
+            }
+            for metric, value in metrics.items():
+                self.field_metrics[band][metric].append(value)
+            self.field_means[band].append(mean)
+            filled = np.where(np.isfinite(plane), plane, median)
+            centered = (filled - mean) * self.window
             fft = np.fft.rfft2(centered)
             self.power[band].append(
                 _radial_average(np.abs(fft) ** 2, self.radius, self.k_edges)
             )
+        sampled_bands = data[::4, ::4, :].reshape(-1, len(BANDS))
+        for left in range(len(BANDS)):
+            for right in range(left + 1, len(BANDS)):
+                pair = sampled_bands[:, [left, right]]
+                pair = pair[np.all(np.isfinite(pair), axis=1)]
+                if pair.shape[0] < 3:
+                    continue
+                if np.std(pair[:, 0]) == 0 or np.std(pair[:, 1]) == 0:
+                    continue
+                value = float(np.corrcoef(pair[:, 0], pair[:, 1])[0, 1])
+                if np.isfinite(value):
+                    key = f"{BANDS[left]}:{BANDS[right]}"
+                    self.band_correlations[key].append(value)
 
 
 def _json_curve(values: np.ndarray) -> list[float | None]:
@@ -430,6 +508,11 @@ def _field_payload(synthetic: _FieldAccumulator,
     histograms: dict[str, Any] = {}
     power: dict[str, Any] = {}
     scale_similarity: dict[str, Any] = {}
+    quantiles: dict[str, Any] = {}
+    relations: dict[str, Any] = {
+        "mean_std": {},
+        "median_robust_std": {},
+    }
 
     for band_index, band in enumerate(BANDS):
         samples_s = np.concatenate(synthetic.samples[band_index])
@@ -468,6 +551,17 @@ def _field_payload(synthetic: _FieldAccumulator,
             "y_label": "fraction of sampled pixels / bin",
             "range": [float(lo), float(hi)],
         }
+        quantiles[band] = {
+            "q": list(PIXEL_QUANTILES),
+            "synthetic": np.percentile(
+                samples_s, PIXEL_QUANTILES
+            ).astype(float).tolist(),
+            "real": np.percentile(
+                samples_r, PIXEL_QUANTILES
+            ).astype(float).tolist(),
+            "x_label": "pixel percentile",
+            "y_label": "pixel brightness (e⁻ / stack)",
+        }
 
         def power_summary(rows: list[np.ndarray]) -> dict[str, Any]:
             stacked = np.stack(rows)
@@ -492,23 +586,73 @@ def _field_payload(synthetic: _FieldAccumulator,
             centers_k,
             seed=1701 + band_index,
         )
+        relations["mean_std"][band] = {
+            "synthetic": {
+                "x": synthetic.field_metrics[band_index]["mean"],
+                "y": synthetic.field_metrics[band_index]["std"],
+            },
+            "real": {
+                "x": real.field_metrics[band_index]["mean"],
+                "y": real.field_metrics[band_index]["std"],
+            },
+            "x_label": "field mean (e⁻ / pixel)",
+            "y_label": "field standard deviation (e⁻ / pixel)",
+        }
+        relations["median_robust_std"][band] = {
+            "synthetic": {
+                "x": synthetic.field_metrics[band_index]["median"],
+                "y": synthetic.field_metrics[band_index]["robust_std"],
+            },
+            "real": {
+                "x": real.field_metrics[band_index]["median"],
+                "y": real.field_metrics[band_index]["robust_std"],
+            },
+            "x_label": "field median (e⁻ / pixel)",
+            "y_label": "robust noise, 1.4826 × MAD (e⁻ / pixel)",
+        }
+
+    def interval(values: list[float]) -> dict[str, float]:
+        return {
+            "median": float(np.median(values)),
+            "p16": float(np.percentile(values, 16)),
+            "p84": float(np.percentile(values, 84)),
+        }
 
     def field_summary(acc: _FieldAccumulator) -> dict[str, Any]:
         return {
             band: {
-                "mean": float(np.mean(acc.field_means[index])),
-                "median": float(np.median(acc.field_means[index])),
-                "p16": float(np.percentile(acc.field_means[index], 16)),
-                "p84": float(np.percentile(acc.field_means[index], 84)),
+                metric: interval(acc.field_metrics[index][metric])
+                for metric in FIELD_METRICS
             }
             for index, band in enumerate(BANDS)
         }
 
+    correlation_pairs = list(synthetic.band_correlations)
+    band_correlation = {
+        "pairs": [pair.replace("_E", "").replace(":", "–")
+                  for pair in correlation_pairs],
+        "synthetic": {
+            key: [interval(synthetic.band_correlations[pair])[key]
+                  for pair in correlation_pairs]
+            for key in ("median", "p16", "p84")
+        },
+        "real": {
+            key: [interval(real.band_correlations[pair])[key]
+                  for pair in correlation_pairs]
+            for key in ("median", "p16", "p84")
+        },
+        "x_label": "band pair",
+        "y_label": "within-field pixel correlation",
+    }
+
     return {
         "bands": list(BANDS),
         "histograms": histograms,
+        "quantiles": quantiles,
         "power": power,
         "scale_similarity": scale_similarity,
+        "relations": relations,
+        "band_correlation": band_correlation,
         "summary": {
             "synthetic": field_summary(synthetic),
             "real": field_summary(real),
@@ -570,7 +714,12 @@ def _read_synthetic_sources(paths: Iterable[Path]) -> list[dict[str, Any]]:
 
 def _read_euclid_sources() -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
     path = euclid_catalog_path()
-    if not path.is_file():
+    meta = _read_json(euclid_catalog_meta_path())
+    if (
+        not path.is_file()
+        or meta is None
+        or meta.get("catalog_version") != CATALOG_VERSION
+    ):
         return [], None
     rows: list[dict[str, Any]] = []
     with path.open(newline="") as handle:
@@ -580,7 +729,7 @@ def _read_euclid_sources() -> tuple[list[dict[str, Any]], dict[str, Any] | None]
                 if key != "objects_per_field":
                     row[key] = _finite(raw.get(key))
             rows.append(row)
-    return rows, _read_json(euclid_catalog_meta_path())
+    return rows, meta
 
 
 def _histogram(values: list[float]) -> dict[str, Any]:
@@ -751,12 +900,25 @@ def query_euclid_population(
     *,
     limit: int = MAX_CATALOG_ROWS,
 ) -> dict[str, Any]:
-    """Query clean MER sources in a cone and cache every selected parameter."""
+    """Query clean MER sources in a cone and cache generation-facing columns.
+
+    MER's point-like classifier is deliberately high-purity and incomplete.
+    A row is therefore called a star only when ``point_like_flag = 1``, a
+    galaxy only when ``extended_flag = 1``, and unknown otherwise.
+    """
     radius_deg = radius_arcmin / 60.0
     query = f"""
     SELECT TOP {int(limit)}
-        object_id, right_ascension, declination, point_like_flag,
-        segmentation_area, flux_vis_psf, fluxerr_vis_psf
+        object_id, right_ascension, declination,
+        point_like_flag, point_like_prob, extended_flag, extended_prob,
+        spurious_prob, blended_prob, deblended_flag,
+        segmentation_area, semimajor_axis, ellipticity, kron_radius, fwhm,
+        mu_max, mumax_minus_mag, gal_ebv, gaia_id, gaia_match_quality,
+        flux_vis_psf, fluxerr_vis_psf,
+        flux_vis_3fwhm_aper, fluxerr_vis_3fwhm_aper,
+        flux_y_3fwhm_aper, fluxerr_y_3fwhm_aper,
+        flux_j_3fwhm_aper, fluxerr_j_3fwhm_aper,
+        flux_h_3fwhm_aper, fluxerr_h_3fwhm_aper
     FROM catalogue.mer_catalogue
     WHERE CONTAINS(
         POINT('ICRS', right_ascension, declination),
@@ -771,34 +933,109 @@ def query_euclid_population(
     job = Euclid.launch_job_async(query)
     results = job.get_results() if job is not None else []
     rows: list[dict[str, Any]] = []
+
+    def value(raw: Any, key: str) -> float | None:
+        try:
+            return _finite(raw[key])
+        except (KeyError, IndexError, TypeError):
+            return None
+
+    def magnitude(flux: float | None) -> float | None:
+        return uJy_to_ab_mag(flux) if flux is not None and flux > 0 else None
+
+    def signal_to_noise(flux: float | None,
+                        error: float | None) -> float | None:
+        return (
+            flux / error
+            if flux is not None and error is not None and error > 0 else None
+        )
+
     for raw in ([] if results is None else results):
-        flux = _finite(raw["flux_vis_psf"])
-        flux_error = _finite(raw["fluxerr_vis_psf"])
+        flux = value(raw, "flux_vis_psf")
+        flux_error = value(raw, "fluxerr_vis_psf")
         if flux is None or flux <= 0:
             continue
-        point_like = _finite(raw["point_like_flag"])
+        point_like = value(raw, "point_like_flag")
+        extended = value(raw, "extended_flag")
+        source_type = (
+            "star" if point_like == 1
+            else "galaxy" if extended == 1
+            else "unknown"
+        )
+        aperture_fluxes = {
+            band: value(raw, f"flux_{band}_3fwhm_aper")
+            for band in ("vis", "y", "j", "h")
+        }
+        aperture_errors = {
+            band: value(raw, f"fluxerr_{band}_3fwhm_aper")
+            for band in ("vis", "y", "j", "h")
+        }
+        magnitudes = {
+            band: magnitude(aperture_fluxes[band])
+            for band in ("vis", "y", "j", "h")
+        }
+        gaia_id = value(raw, "gaia_id")
         rows.append({
             "object_id": str(raw["object_id"]),
-            "type": "star" if point_like == 1 else "galaxy",
-            "ra": _finite(raw["right_ascension"]),
-            "dec": _finite(raw["declination"]),
-            "mag_vis": uJy_to_ab_mag(flux),
-            "flux_vis_psf_uJy": flux,
-            "fluxerr_vis_psf_uJy": flux_error,
-            "vis_snr": (
-                flux / flux_error if flux_error is not None and flux_error > 0
+            "type": source_type,
+            "ra": value(raw, "right_ascension"),
+            "dec": value(raw, "declination"),
+            "mag_vis": magnitudes["vis"],
+            "mag_y_e": magnitudes["y"],
+            "mag_j_e": magnitudes["j"],
+            "mag_h_e": magnitudes["h"],
+            "vis_y_color": (
+                magnitudes["vis"] - magnitudes["y"]
+                if magnitudes["vis"] is not None and magnitudes["y"] is not None
                 else None
             ),
-            "segmentation_area": _finite(raw["segmentation_area"]),
+            "y_j_color": (
+                magnitudes["y"] - magnitudes["j"]
+                if magnitudes["y"] is not None and magnitudes["j"] is not None
+                else None
+            ),
+            "j_h_color": (
+                magnitudes["j"] - magnitudes["h"]
+                if magnitudes["j"] is not None and magnitudes["h"] is not None
+                else None
+            ),
+            "flux_vis_psf_uJy": flux,
+            "fluxerr_vis_psf_uJy": flux_error,
+            "vis_snr": signal_to_noise(flux, flux_error),
+            **{
+                f"aper_{band}_snr": signal_to_noise(
+                    aperture_fluxes[band], aperture_errors[band]
+                )
+                for band in ("vis", "y", "j", "h")
+            },
+            "point_like_prob": value(raw, "point_like_prob"),
+            "extended_prob": value(raw, "extended_prob"),
+            "spurious_prob": value(raw, "spurious_prob"),
+            "blended_prob": value(raw, "blended_prob"),
+            "segmentation_area": value(raw, "segmentation_area"),
+            "semimajor_axis": value(raw, "semimajor_axis"),
+            "ellipticity": value(raw, "ellipticity"),
+            "kron_radius": value(raw, "kron_radius"),
+            "fwhm": value(raw, "fwhm"),
+            "mu_max": value(raw, "mu_max"),
+            "mumax_minus_mag": value(raw, "mumax_minus_mag"),
+            "gal_ebv": value(raw, "gal_ebv"),
+            "gaia_match_quality": value(raw, "gaia_match_quality"),
+            "gaia_matched": 1.0 if gaia_id is not None else 0.0,
+            "deblended": (
+                1.0 if value(raw, "deblended_flag") == 1 else 0.0
+            ),
         })
 
     out = euclid_catalog_path()
     out.parent.mkdir(parents=True, exist_ok=True)
     temporary = out.with_suffix(".tmp")
-    columns = [
-        "object_id", "type", "ra", "dec", "mag_vis", "flux_vis_psf_uJy",
-        "fluxerr_vis_psf_uJy", "vis_snr", "segmentation_area",
-    ]
+    columns = ["object_id", "type", "ra", "dec", *[
+        key for key in _PARAM_META if key not in {
+            "objects_per_field", "flux_vis_e", "z", "re_arcsec", "logmass",
+            "mass_scale", "temperature_k", "extinction_av",
+        }
+    ]]
     with temporary.open("w", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=columns)
         writer.writeheader()
@@ -806,6 +1043,7 @@ def query_euclid_population(
     os.replace(temporary, out)
 
     meta = {
+        "catalog_version": CATALOG_VERSION,
         "ra": float(ra),
         "dec": float(dec),
         "radius_arcmin": float(radius_arcmin),
@@ -813,8 +1051,21 @@ def query_euclid_population(
         "rows": len(rows),
         "limit": int(limit),
         "limit_reached": len(rows) >= int(limit),
+        "counts": {
+            kind: sum(row["type"] == kind for row in rows)
+            for kind in ("star", "galaxy", "unknown")
+        },
         "classification": (
-            "point_like_flag = 1 → star; clean non-spurious remainder → galaxy"
+            "point_like_flag = 1 → high-purity star; extended_flag = 1 → "
+            "galaxy; all other clean non-spurious sources → unknown"
+        ),
+        "classification_note": (
+            "Euclid documents the point-like selector as high-purity but "
+            "low-completeness; unknown rows must not be counted as galaxies."
+        ),
+        "photometry": (
+            "3 FWHM PSF-matched aperture magnitudes and colours; VIS PSF flux "
+            "is retained separately"
         ),
     }
     _write_json(euclid_catalog_meta_path(), meta)

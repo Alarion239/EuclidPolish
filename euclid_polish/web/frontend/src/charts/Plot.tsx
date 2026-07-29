@@ -10,7 +10,8 @@ export type Series = {
   low?: (number | null)[];
   high?: (number | null)[];
   color: string;
-  mode?: "line" | "histogram";
+  mode?: "line" | "histogram" | "scatter";
+  marker?: "filled" | "ring";
   width?: number;
   dash?: number[];
   dots?: boolean;
@@ -260,7 +261,7 @@ function render(ctx: CanvasRenderingContext2D, W: number, H: number, p: PlotProp
   ctx.save();
   ctx.beginPath(); ctx.rect(m.l, m.t, iw, ih); ctx.clip();
   for (const s of p.series) {
-    if (!s.low || !s.high || s.mode === "histogram") continue;
+    if (!s.low || !s.high || s.mode === "histogram" || s.mode === "scatter") continue;
     ctx.fillStyle = s.color;
     ctx.globalAlpha = s.fillAlpha ?? 0.1;
     let start = 0;
@@ -311,6 +312,22 @@ function render(ctx: CanvasRenderingContext2D, W: number, H: number, p: PlotProp
         ctx.fillRect(x0 + inset, top, Math.max(0, x1 - x0 - 2 * inset), baseline - top);
         ctx.globalAlpha = s.alpha ?? 1;
         ctx.strokeRect(x0 + inset, top, Math.max(0, x1 - x0 - 2 * inset), baseline - top);
+      }
+      continue;
+    }
+    if (s.mode === "scatter") {
+      ctx.setLineDash([]);
+      for (let i = 0; i < s.x.length; i++) {
+        const yv = s.y[i];
+        if (yv == null || !isFinite(yv) || !isFinite(s.x[i])) continue;
+        ctx.beginPath();
+        ctx.arc(tx(s.x[i]), ty(yv), (s.width ?? 2) + 0.7, 0, 2 * Math.PI);
+        if (s.marker === "ring") {
+          ctx.lineWidth = Math.max(1.2, s.width ?? 1.5);
+          ctx.stroke();
+        } else {
+          ctx.fill();
+        }
       }
       continue;
     }
@@ -423,13 +440,21 @@ export function Legend({ items }: {
     dash?: boolean;
     histogram?: boolean;
     filled?: boolean;
+    marker?: "filled" | "ring";
   }[];
 }) {
   return (
     <div style={{ display: "flex", flexWrap: "wrap", gap: "6px 16px", padding: "10px 2px 2px", fontSize: 12 }}>
       {items.map((it, i) => (
         <span key={i} style={{ display: "inline-flex", alignItems: "center", gap: 7, color: "var(--text-dim)" }}>
-          <span style={it.histogram ? {
+          <span style={it.marker ? {
+            width: 9,
+            height: 9,
+            boxSizing: "border-box",
+            borderRadius: "50%",
+            border: `2px solid ${it.color}`,
+            background: it.marker === "filled" ? it.color : "transparent",
+          } : it.histogram ? {
             width: 18,
             height: 9,
             boxSizing: "border-box",

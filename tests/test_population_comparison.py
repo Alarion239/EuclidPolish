@@ -1,6 +1,7 @@
 """Focused checks for the real-versus-synthetic field-statistics workspace."""
 from __future__ import annotations
 
+import csv
 import json
 import warnings
 
@@ -8,6 +9,7 @@ import numpy as np
 import pytest
 
 from euclid_polish.web.helpers.population_comparison import (
+    CATALOG_VERSION,
     VERSION,
     _field_payload,
     _FieldAccumulator,
@@ -15,6 +17,7 @@ from euclid_polish.web.helpers.population_comparison import (
     _normalise_field,
     _parameter_payload,
     _read_synthetic_sources,
+    query_euclid_population,
     refresh_population_comparison,
 )
 
@@ -52,6 +55,15 @@ def test_population_field_payload_is_json_safe_and_keeps_four_bands():
     assert payload["histograms"]["VIS"]["y_label"] == (
         "fraction of sampled pixels / bin"
     )
+    assert payload["quantiles"]["VIS"]["q"][0] == 0.1
+    assert payload["quantiles"]["VIS"]["q"][-1] == 99.9
+    assert len(payload["relations"]["mean_std"]["VIS"]["synthetic"]["x"]) == 3
+    assert len(payload["relations"]["median_robust_std"]["VIS"]["real"]["y"]) == 3
+    assert len(payload["band_correlation"]["pairs"]) == 6
+    assert set(payload["summary"]["synthetic"]["VIS"]) >= {
+        "mean", "median", "std", "robust_std", "zero_fraction",
+        "negative_fraction",
+    }
     zero_bin = payload["histograms"]["VIS"]["zero_bin"]
     assert zero_bin is not None
     centers = payload["histograms"]["VIS"]["x"]
@@ -145,6 +157,60 @@ def test_population_refresh_preserves_field_statistics(tmp_path, monkeypatch):
     assert refreshed["synthetic_field_count"] == 2
     assert saved["fields"] == {"sentinel": "unchanged"}
     assert saved["population"] == refreshed
+
+
+def test_euclid_population_query_keeps_classifier_uncertainty_and_photometry(
+    tmp_path, monkeypatch
+):
+    from euclid_polish.web.helpers import population_comparison as comparison
+
+    rows = [
+        {
+            "object_id": 1, "right_ascension": 10.0, "declination": 20.0,
+            "point_like_flag": 1, "extended_flag": None,
+            "point_like_prob": 0.99, "extended_prob": 0.01,
+            "flux_vis_psf": 10.0, "fluxerr_vis_psf": 1.0,
+            "flux_vis_3fwhm_aper": 12.0, "flux_y_3fwhm_aper": 10.0,
+            "flux_j_3fwhm_aper": 8.0, "flux_h_3fwhm_aper": 6.0,
+        },
+        {
+            "object_id": 2, "right_ascension": 10.1, "declination": 20.1,
+            "point_like_flag": None, "extended_flag": 1,
+            "point_like_prob": 0.02, "extended_prob": 0.98,
+            "flux_vis_psf": 5.0, "fluxerr_vis_psf": 1.0,
+        },
+        {
+            "object_id": 3, "right_ascension": 10.2, "declination": 20.2,
+            "point_like_flag": None, "extended_flag": None,
+            "point_like_prob": 0.45, "extended_prob": 0.55,
+            "flux_vis_psf": 2.0, "fluxerr_vis_psf": 1.0,
+        },
+    ]
+    captured = {}
+
+    class FakeJob:
+        def get_results(self):
+            return rows
+
+    def launch(query):
+        captured["query"] = query
+        return FakeJob()
+
+    catalog_path = tmp_path / "euclid_population.csv"
+    meta_path = tmp_path / "euclid_population_meta.json"
+    monkeypatch.setattr(comparison.Euclid, "launch_job_async", launch)
+    monkeypatch.setattr(comparison, "euclid_catalog_path", lambda: catalog_path)
+    monkeypatch.setattr(comparison, "euclid_catalog_meta_path", lambda: meta_path)
+
+    meta = query_euclid_population(10.0, 20.0, 1.0)
+
+    assert meta["catalog_version"] == CATALOG_VERSION
+    assert meta["counts"] == {"star": 1, "galaxy": 1, "unknown": 1}
+    assert "point_like_prob" in captured["query"]
+    assert "flux_h_3fwhm_aper" in captured["query"]
+    written = list(csv.DictReader(catalog_path.open()))
+    assert [row["type"] for row in written] == ["star", "galaxy", "unknown"]
+    assert float(written[0]["vis_y_color"]) != 0
 
 
 def test_synthetic_lenses_are_merged_into_galaxies(tmp_path):

@@ -13,11 +13,20 @@ import "./population-comparison.css";
 type Band = "VIS" | "Y_E" | "J_E" | "H_E";
 type Curve = { p16: (number | null)[]; median: (number | null)[]; p84: (number | null)[] };
 type Interval = { median: number; p16: number; p84: number };
+type PointCloud = { x: number[]; y: number[] };
+type Relation = {
+  synthetic: PointCloud; real: PointCloud;
+  x_label: string; y_label: string;
+};
 type FieldComparison = {
   bands: Band[];
   histograms: Record<Band, {
     x: number[]; synthetic: number[]; real: number[];
     zero_bin: number | null;
+    x_label: string; y_label: string;
+  }>;
+  quantiles: Record<Band, {
+    q: number[]; synthetic: number[]; real: number[];
     x_label: string; y_label: string;
   }>;
   power: Record<Band, {
@@ -32,9 +41,19 @@ type FieldComparison = {
     x_label: string;
     y_label: string;
   }>;
-  summary: Record<"synthetic" | "real", Record<Band, {
-    mean: number; median: number; p16: number; p84: number;
-  }>>;
+  relations: Record<"mean_std" | "median_robust_std", Record<Band, Relation>>;
+  band_correlation: {
+    pairs: string[];
+    synthetic: Curve;
+    real: Curve;
+    x_label: string;
+    y_label: string;
+  };
+  summary: Record<"synthetic" | "real", Record<Band, Record<
+    "mean" | "median" | "std" | "robust_std" | "p01" | "p99"
+    | "zero_fraction" | "negative_fraction",
+    Interval
+  >>>;
 };
 type Histogram = {
   x: number[]; density: number[]; count: number; range?: [number, number];
@@ -72,6 +91,10 @@ type Comparison = {
     euclid_meta: {
       ra: number; dec: number; radius_arcmin: number; area_arcmin2: number;
       rows: number; limit: number; limit_reached: boolean; classification: string;
+      catalog_version: number;
+      counts: Record<string, number>;
+      classification_note: string;
+      photometry: string;
     } | null;
   };
 };
@@ -199,8 +222,13 @@ function DatasetRuler({ availability, comparison }: {
 
 function FieldPlots({ comparison }: { comparison: Comparison }) {
   const histograms = BANDS.map((band) => [band, comparison.fields.histograms[band]] as const);
+  const quantiles = BANDS.map((band) => [band, comparison.fields.quantiles[band]] as const);
   const powers = BANDS.map((band) => [band, comparison.fields.power[band]] as const);
   const similarities = BANDS.map((band) => [band, comparison.fields.scale_similarity[band]] as const);
+  const meanStd = BANDS.map((band) =>
+    [band, comparison.fields.relations.mean_std[band]] as const);
+  const medianRobust = BANDS.map((band) =>
+    [band, comparison.fields.relations.median_robust_std[band]] as const);
   const histogramX = domain(histograms.flatMap(([, histogram]) => histogram.x));
   const histogramY = domain(histograms.flatMap(([, histogram]) => [
     ...omitBin(histogram.synthetic, histogram.zero_bin),
@@ -208,6 +236,9 @@ function FieldPlots({ comparison }: { comparison: Comparison }) {
   ]), true);
   const powerY = domain(powers.flatMap(([, power]) => [
     ...log10(power.synthetic.median), ...log10(power.real.median),
+  ]));
+  const quantileY = domain(quantiles.flatMap(([, item]) => [
+    ...item.synthetic, ...item.real,
   ]));
   const allPowerK = powers.flatMap(([, power]) => power.k);
   const powerX: [number, number] = [Math.min(...allPowerK), Math.max(...allPowerK)];
@@ -233,6 +264,10 @@ function FieldPlots({ comparison }: { comparison: Comparison }) {
       mode: "histogram", width: 1.4, dash: [4, 3], alpha: 0.95, fillAlpha: 0.025,
     },
   ]);
+  const quantileSeries: Series[] = quantiles.flatMap(([band, item]) => [
+    { x: item.q, y: item.synthetic, color: BAND_COLOR(band), width: 2.4 },
+    { x: item.q, y: item.real, color: BAND_COLOR(band), width: 2.2, dash: [6, 4] },
+  ]);
   const powerSeries: Series[] = powers.flatMap(([band, power]) => [
     { x: power.k, y: log10(power.synthetic.median), color: BAND_COLOR(band), width: 2.4 },
     { x: power.k, y: log10(power.real.median), color: BAND_COLOR(band), width: 2.2, dash: [6, 4] },
@@ -246,6 +281,55 @@ function FieldPlots({ comparison }: { comparison: Comparison }) {
     width: 2.4,
     fillAlpha: 0.08,
   }));
+  const relationSeries = (
+    entries: readonly (readonly [Band, Relation])[],
+  ): Series[] => entries.flatMap(([band, relation]) => [
+    {
+      x: relation.synthetic.x, y: relation.synthetic.y,
+      color: BAND_COLOR(band), mode: "scatter", marker: "filled",
+      width: 1.25, alpha: 0.38,
+    },
+    {
+      x: relation.real.x, y: relation.real.y,
+      color: BAND_COLOR(band), mode: "scatter", marker: "ring",
+      width: 1.15, alpha: 0.78,
+    },
+  ]);
+  const relationDomains = (
+    entries: readonly (readonly [Band, Relation])[],
+  ): { x: [number, number]; y: [number, number] } => ({
+    x: domain(entries.flatMap(([, relation]) => [
+      ...relation.synthetic.x, ...relation.real.x,
+    ])),
+    y: domain(entries.flatMap(([, relation]) => [
+      ...relation.synthetic.y, ...relation.real.y,
+    ]), true),
+  });
+  const meanStdDomain = relationDomains(meanStd);
+  const medianRobustDomain = relationDomains(medianRobust);
+  const correlations = comparison.fields.band_correlation;
+  const correlationX: [number, number] = [-0.35, correlations.pairs.length - 0.65];
+  const correlationValues = [
+    ...correlations.synthetic.p16, ...correlations.synthetic.p84,
+    ...correlations.real.p16, ...correlations.real.p84,
+  ];
+  const correlationY = domain(correlationValues);
+  const correlationSeries: Series[] = [
+    {
+      x: correlations.pairs.map((_, index) => index),
+      y: correlations.synthetic.median,
+      low: correlations.synthetic.p16,
+      high: correlations.synthetic.p84,
+      color: C.comb, width: 2.5, dots: true, fillAlpha: 0.09,
+    },
+    {
+      x: correlations.pairs.map((_, index) => index),
+      y: correlations.real.median,
+      low: correlations.real.p16,
+      high: correlations.real.p84,
+      color: C.mean, width: 2.5, dots: true, fillAlpha: 0.09,
+    },
+  ];
   const bandLegend = BANDS.map((band) => ({
     color: BAND_COLOR(band), label: bandLabel(band),
   }));
@@ -265,6 +349,10 @@ function FieldPlots({ comparison }: { comparison: Comparison }) {
       color: C.cross, label: "real Euclid LR",
       histogram: true, filled: false, dash: true,
     },
+  ];
+  const scatterSourceLegend = [
+    { color: C.cross, label: "synthetic LR", marker: "filled" as const },
+    { color: C.cross, label: "real Euclid LR", marker: "ring" as const },
   ];
 
   return (
@@ -292,6 +380,23 @@ function FieldPlots({ comparison }: { comparison: Comparison }) {
         </Card>
 
         <Card className="comparison-plot">
+          <CardHead title="Pixel quantile profile"
+            sub="A tail-stable view of the same brightness samples, from the 0.1st to 99.9th percentile." />
+          <CardBody>
+            <Plot xDomain={[0.1, 99.9]} yDomain={quantileY}
+              xTicks={[0.1, 1, 16, 50, 84, 99, 99.9].map((value) => ({
+                v: value, label: `${value}%`,
+              }))}
+              yTicks={ticks(quantileY)}
+              xLabel="pixel percentile"
+              yLabel="pixel brightness (e⁻ / stack)"
+              series={quantileSeries} />
+            <Legend items={bandLegend} />
+            <Legend items={sourceLegend} />
+          </CardBody>
+        </Card>
+
+        <Card className="comparison-plot">
           <CardHead title="Angular power"
             sub="Median mean-subtracted field power; solid is synthetic and dashed is real Euclid." />
           <CardBody>
@@ -304,6 +409,54 @@ function FieldPlots({ comparison }: { comparison: Comparison }) {
               series={powerSeries} />
             <Legend items={bandLegend} />
             <Legend items={sourceLegend} />
+          </CardBody>
+        </Card>
+
+        <Card className="comparison-plot">
+          <CardHead title="Mean brightness vs field variation"
+            sub="Each marker is one 255×255 field. Filled markers are synthetic; rings are real Euclid." />
+          <CardBody>
+            <Plot xDomain={meanStdDomain.x} yDomain={meanStdDomain.y}
+              xTicks={ticks(meanStdDomain.x)} yTicks={ticks(meanStdDomain.y)}
+              xLabel="field mean (e⁻ / pixel)"
+              yLabel="field standard deviation (e⁻ / pixel)"
+              series={relationSeries(meanStd)} />
+            <Legend items={bandLegend} />
+            <Legend items={scatterSourceLegend} />
+          </CardBody>
+        </Card>
+
+        <Card className="comparison-plot">
+          <CardHead title="Background vs robust noise"
+            sub="Median and MAD suppress bright objects, exposing sky-offset and detector-noise mismatch." />
+          <CardBody>
+            <Plot xDomain={medianRobustDomain.x} yDomain={medianRobustDomain.y}
+              xTicks={ticks(medianRobustDomain.x)}
+              yTicks={ticks(medianRobustDomain.y)}
+              xLabel="field median (e⁻ / pixel)"
+              yLabel="robust noise · 1.4826 × MAD (e⁻ / pixel)"
+              series={relationSeries(medianRobust)} />
+            <Legend items={bandLegend} />
+            <Legend items={scatterSourceLegend} />
+          </CardBody>
+        </Card>
+
+        <Card className="comparison-plot">
+          <CardHead title="Inter-band pixel correlation"
+            sub="Median within-field Pearson correlation; ribbons span the field-to-field 16–84% range." />
+          <CardBody>
+            <Plot xDomain={correlationX} yDomain={correlationY}
+              xTicks={correlations.pairs.map((label, index) => ({
+                v: index, label,
+              }))}
+              yTicks={ticks(correlationY)}
+              xLabel="band pair"
+              yLabel="within-field pixel correlation"
+              series={correlationSeries} />
+            <Legend items={[
+              { color: C.comb, label: "synthetic LR" },
+              { color: C.mean, label: "real Euclid LR" },
+            ]} />
           </CardBody>
         </Card>
 
@@ -345,17 +498,20 @@ function FieldPlots({ comparison }: { comparison: Comparison }) {
       </div>
 
       <div className="band-ledger">
-        <div className="band-ledger__head">field-mean brightness · e⁻ / pixel</div>
+        <div className="band-ledger__head">
+          median field metrics · synthetic / real · e⁻ per pixel unless marked
+        </div>
         {BANDS.map((item) => {
           const synthetic = comparison.fields.summary.synthetic[item];
           const real = comparison.fields.summary.real[item];
           return (
             <div className="band-ledger__row" key={item}>
               <strong>{item}</strong>
-              <span><i className="dot dot--synthetic" />synthetic {synthetic.median.toPrecision(4)}</span>
-              <span><i className="dot dot--real" />real {real.median.toPrecision(4)}</span>
-              <span className="mono">real / synthetic {synthetic.median !== 0
-                ? (real.median / synthetic.median).toFixed(3) : "—"}</span>
+              <span><b>mean</b> {synthetic.mean.median.toPrecision(4)} / {real.mean.median.toPrecision(4)}</span>
+              <span><b>std</b> {synthetic.std.median.toPrecision(4)} / {real.std.median.toPrecision(4)}</span>
+              <span><b>robust σ</b> {synthetic.robust_std.median.toPrecision(4)} / {real.robust_std.median.toPrecision(4)}</span>
+              <span><b>zero</b> {(100 * synthetic.zero_fraction.median).toFixed(2)}% / {(100 * real.zero_fraction.median).toFixed(2)}%</span>
+              <span><b>negative</b> {(100 * synthetic.negative_fraction.median).toFixed(2)}% / {(100 * real.negative_fraction.median).toFixed(2)}%</span>
             </div>
           );
         })}
@@ -443,7 +599,7 @@ function ConeQuery({ api, onQueried }: { api: ApiPayload; onQueried: () => void 
   return (
     <Card className="cone-query">
       <CardHead title="Euclid population cone"
-        sub="Query clean MER sources, classify point-like rows as stars, and normalize every count by sky area."
+        sub="Query clean MER sources with four-band aperture photometry, classifier probabilities, morphology, blending and Gaia-match fields."
         right={<Badge tone={api.authenticated ? "good" : "warn"}>
           {api.authenticated ? "archive session ready" : "archive login required"}
         </Badge>} />
@@ -580,7 +736,7 @@ export default function PopulationComparisonPage() {
               <PopulationSummary title="Synthetic source truth" eyebrow="test + validate CSV sidecars"
                 population={comparison.population.synthetic} tone="synthetic" />
               {comparison.population.euclid ? (
-                <PopulationSummary title="Euclid MER catalog" eyebrow="clean cone-query sources"
+                <PopulationSummary title="Euclid MER catalog" eyebrow="star · explicit galaxy · unknown"
                   population={comparison.population.euclid} tone="real" />
               ) : (
                 <Card className="population-summary population-summary--empty">
@@ -589,6 +745,12 @@ export default function PopulationComparisonPage() {
                 </Card>
               )}
             </div>
+            {comparison.population.euclid_meta && (
+              <p className="catalog-classification-note">
+                <strong>Classification:</strong> {comparison.population.euclid_meta.classification}.{" "}
+                {comparison.population.euclid_meta.classification_note}
+              </p>
+            )}
 
             <ConeQuery api={api} onQueried={resource.reload} />
 
