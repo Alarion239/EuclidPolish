@@ -426,18 +426,23 @@ def tng_prior_payload(
     euclid_area_arcmin2: float,
     field_area_arcmin2: float,
     source_detection: dict[str, Any] | None,
+    *,
+    dataset_prior: float,
+    configured_prior: float = Config.TNG_GAL_DENSITY_ARCMIN2,
 ) -> dict[str, Any] | None:
     catalog = catalog_prior_estimate(
         synthetic_rows,
         euclid_rows,
         synthetic_area_arcmin2,
         euclid_area_arcmin2,
+        current_prior=dataset_prior,
     )
     visible = visible_prior_estimate(
         source_detection,
         euclid_rows,
         euclid_area_arcmin2,
         field_area_arcmin2,
+        current_prior=dataset_prior,
     )
     if catalog is None and visible is None:
         return None
@@ -462,6 +467,9 @@ def tng_prior_payload(
     return {
         "catalog": catalog,
         "visible": visible,
+        "dataset_prior_arcmin2": float(dataset_prior),
+        "configured_prior_arcmin2": float(configured_prior),
+        "configured_mf_alpha": float(Config.TNG_MF_ALPHA),
         "single_scalar_adequate": scalar_adequate,
         "pilot_grid_arcmin2": pilot_grid,
         "recommendation": (

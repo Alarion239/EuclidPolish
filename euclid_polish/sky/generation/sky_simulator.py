@@ -406,6 +406,11 @@ class SkySimulator:
             "rot_k":        tmeta["rot_k"],
             "z":            float(tmeta.get("z", float("nan"))),
             "mass_scale":   float(tmeta.get("mass_scale", float("nan"))),
+            # Persist the population prior that produced this source so later
+            # Field Statistics refreshes do not reinterpret legacy 60/arcmin²
+            # records using a newer generator configuration.
+            "tng_density_arcmin2": float(self.config.tng_density_arcmin2),
+            "tng_mf_alpha": float(Config.TNG_MF_ALPHA),
             "drift_eps":    float(tmeta.get("drift_eps", float("nan"))),
             "target_re_arcsec":   float(tmeta.get("target_re_arcsec", float("nan"))),
             "apparent_re_arcsec": float(tmeta.get("apparent_re_arcsec", float("nan"))),

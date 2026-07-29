@@ -29,7 +29,7 @@ from euclid_polish.web.helpers.tng_prior import (
     tng_prior_payload,
 )
 
-VERSION = 5
+VERSION = 6
 CATALOG_VERSION = 2
 BANDS = ("VIS", "Y_E", "J_E", "H_E")
 TILE_SIZE = 256
@@ -727,11 +727,14 @@ def _read_synthetic_sources(paths: Iterable[Path]) -> list[dict[str, Any]]:
                     # standalone distribution and MER has no matching lens
                     # classification.
                     "type": "galaxy" if source_type == "lens" else source_type,
+                    "render": str(raw.get("render", "")).strip().lower(),
                     "field_index": field_index,
                 }
                 for key in _PARAM_META:
                     if key == "objects_per_field":
                         continue
+                    row[key] = _finite(raw.get(key))
+                for key in ("tng_density_arcmin2", "tng_mf_alpha"):
                     row[key] = _finite(raw.get(key))
                 if row.get("mag_vis") is None and row.get("flux_vis_e"):
                     row["mag_vis"] = _finite(electrons_to_ab_mag(
@@ -741,6 +744,24 @@ def _read_synthetic_sources(paths: Iterable[Path]) -> list[dict[str, Any]]:
                 rows.append(row)
         offset += local_max + 1
     return rows
+
+
+def _synthetic_dataset_tng_prior(rows: list[dict[str, Any]]) -> float:
+    """Raw TNG budget that produced the displayed source truth.
+
+    New source catalogs persist the value per TNG row. Existing cached
+    catalogs predate that column and are known to use the legacy 60/arcmin²
+    generator; never reinterpret those pixels with the live Config value.
+    """
+    saved = [
+        value
+        for row in rows
+        if str(row.get("render")) == "tng"
+        if (value := _finite(row.get("tng_density_arcmin2"))) is not None
+    ]
+    if saved:
+        return float(np.median(saved))
+    return float(Config.TNG_LEGACY_DATASET_DENSITY_ARCMIN2)
 
 
 def _read_euclid_sources() -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
@@ -931,6 +952,7 @@ def _population_payload(source_csvs: Iterable[Path],
     paths = list(source_csvs)
     synthetic_rows = _read_synthetic_sources(paths)
     euclid_rows, euclid_meta = _read_euclid_sources()
+    dataset_tng_prior = _synthetic_dataset_tng_prior(synthetic_rows)
     population_fields = _source_field_count(paths) or synthetic_field_count
     synthetic_area = population_fields * FIELD_AREA_ARCMIN2
     euclid_area = float(euclid_meta.get("area_arcmin2", 0.0)) if euclid_meta else 0.0
@@ -960,6 +982,7 @@ def _population_payload(source_csvs: Iterable[Path],
                 euclid_area,
                 FIELD_AREA_ARCMIN2,
                 source_detection,
+                dataset_prior=dataset_tng_prior,
             )
             if euclid_rows and euclid_area > 0 else None
         ),

@@ -442,7 +442,7 @@ const parseHistoryParams = (raw?: string): HistoryParamsMap => {
 
 // The pure-TNG generator fixes this at Config.TNG_GAL_DENSITY_ARCMIN2; it is
 // shown here because it affects field work but is not a per-run form knob.
-const DEFAULT_TNG_GALAXY_DENSITY = 60;
+const DEFAULT_TNG_GALAXY_DENSITY = 200;
 const param = (params: HistoryParamsMap, key: string): unknown => {
   const value = params[key];
   return value === "" || value == null ? null : value;

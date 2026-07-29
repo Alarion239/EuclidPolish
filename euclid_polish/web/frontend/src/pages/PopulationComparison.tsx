@@ -115,6 +115,9 @@ type VisiblePrior = {
 type TngPrior = {
   catalog: CatalogPrior | null;
   visible: VisiblePrior | null;
+  dataset_prior_arcmin2?: number;
+  configured_prior_arcmin2?: number;
+  configured_mf_alpha?: number;
   single_scalar_adequate: boolean;
   pilot_grid_arcmin2: number[];
   recommendation: string;
@@ -923,10 +926,17 @@ function TngPriorPanel({ prior }: { prior: TngPrior }) {
   const catalog = prior.catalog;
   const visible = prior.visible;
   const current = catalog?.current_prior_arcmin2
-    ?? visible?.current_prior_arcmin2 ?? 60;
+    ?? visible?.current_prior_arcmin2
+    ?? prior.dataset_prior_arcmin2
+    ?? 60;
+  const configured = prior.configured_prior_arcmin2 ?? current;
+  const alphaLabel = Number.isFinite(prior.configured_mf_alpha)
+    ? ` (α=${prior.configured_mf_alpha!.toFixed(2)})`
+    : "";
   const curve = catalog?.curve;
   const plotY = domain([
     current,
+    configured,
     catalog?.fitted_prior_arcmin2 ?? null,
     visible?.fitted_prior_arcmin2 ?? null,
     ...(curve?.prior_arcmin2 ?? []),
@@ -937,7 +947,11 @@ function TngPriorPanel({ prior }: { prior: TngPrior }) {
         <div>
           <div className="eyebrow">normalization inference · current images + catalog</div>
           <h3>TNG draw-prior calibration</h3>
-          <p>Two independent transfers anchor the raw draw density currently set to {current.toFixed(0)} galaxies / arcmin².</p>
+          <p>
+            Displayed fields used {current.toFixed(0)} raw draws / arcmin².
+            {" "}The generator is now configured for {configured.toFixed(0)} with one
+            smooth mass prior{alphaLabel}.
+          </p>
         </div>
         <Badge tone={prior.single_scalar_adequate ? "good" : "warn"}>
           {prior.single_scalar_adequate ? "one scalar is adequate" : "population shape mismatch"}
@@ -988,6 +1002,7 @@ function TngPriorPanel({ prior }: { prior: TngPrior }) {
                 yTicksForDomain={(value) => ticks(value, 5)}
                 guides={[
                   { axis: "y", v: current, dash: [4, 4] },
+                  { axis: "y", v: configured, color: C.mean, dash: [2, 4] },
                   { axis: "y", v: catalog.fitted_prior_arcmin2, dash: [7, 3] },
                 ]}
                 xLabel="VIS magnitude (AB)"
@@ -1001,7 +1016,8 @@ function TngPriorPanel({ prior }: { prior: TngPrior }) {
                 }]} />
               <Legend items={[
                 { color: C.comb, label: "per-bin inferred prior", marker: "filled" },
-                { color: C.cross, label: `current ${current.toFixed(0)}`, dash: true },
+                { color: C.cross, label: `displayed data ${current.toFixed(0)}`, dash: true },
+                { color: C.mean, label: `configured ${configured.toFixed(0)}`, dash: true },
               ]} />
             </CardBody>
           </Card>

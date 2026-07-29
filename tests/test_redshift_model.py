@@ -363,10 +363,13 @@ def test_target_logmass_schechter():
     lm = np.array([sample_target_logmass(rng) for _ in range(6000)])
     assert lm.min() >= Config.TNG_MF_LOGM_MIN
     assert lm.max() <= Config.TNG_MF_LOGM_MAX
-    # alpha=-1.2 from logM=9: small galaxies dominate, giants are the tail.
-    assert 9.3 < float(np.median(lm)) < 10.1
-    assert (lm > 10.5).mean() < 0.25
-    assert (lm > 11.0).mean() < 0.08
+    # The smooth data-calibrated slope strongly favors faint/small targets;
+    # giants remain a continuous rare tail rather than a separate component.
+    assert 8.7 < float(np.median(lm)) < 9.1
+    assert (lm > 10.5).mean() < 0.05
+    assert (lm > 11.0).mean() < 0.015
+    assert pytest.approx(-1.76) == Config.TNG_MF_ALPHA
+    assert pytest.approx(200.0) == Config.TNG_GAL_DENSITY_ARCMIN2
 
 
 def test_sample_tng_stamp_z_mode(tmp_path):

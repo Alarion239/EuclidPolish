@@ -57,8 +57,9 @@ def _login_node_generate_cmd(cfg, remote_tmp: str, hr_image_size: int,
     # All-TNG mode with full redshift realism (COSMOS catalog skipped): the
     # n(z) + mass-function model gives the deep-field apparent-size distribution
     # (median R_e ≈ 0.22″). Without --tng-redshift-mode sizes are log-uniform
-    # [0.3,4]″ (median ~1.1″) → arcsec-scale giants; 60/arcmin² is the pure-TNG
-    # density, not the COSMOS Sersic 111.
+    # [0.3,4]″ (median ~1.1″) → arcsec-scale giants. The configured pure-TNG
+    # draw budget and smooth mass prior are separate from the COSMOS Sersic
+    # density.
     tng_flag = (f" --sersic-density-arcmin2 0"
                 f" --tng-density-arcmin2 {Config.TNG_GAL_DENSITY_ARCMIN2:g}"
                 f" --tng-redshift-mode")

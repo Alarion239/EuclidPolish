@@ -1403,9 +1403,9 @@ class SyntheticGenerateStep(RunPipelineStep):
         # apparent-size distribution (median R_e ≈ 0.22″, only ~2% > 1″).
         # WITHOUT --tng-redshift-mode the generator sizes stamps log-uniformly
         # over [0.3,4]″ at full atlas mass (median ~1.1″, ~half > 1″) → fields
-        # full of arcsec-scale giants. TNG_GAL_DENSITY_ARCMIN2 (60) is the
-        # pure-TNG sky density of log M*≥8.5 galaxies, not the COSMOS Sersic
-        # density (111) — using the latter over-populates the field ~2×.
+        # full of arcsec-scale giants. TNG_GAL_DENSITY_ARCMIN2 is the raw
+        # pure-TNG draw budget; the smooth mass prior controls how that budget
+        # is distributed over bright/large versus faint/small galaxies.
         cmd += ["--sersic-density-arcmin2", "0",
                 "--tng-density-arcmin2", f"{Config.TNG_GAL_DENSITY_ARCMIN2:g}",
                 "--tng-redshift-mode"]

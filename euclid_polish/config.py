@@ -793,16 +793,20 @@ class Config:
     TNG_Z0    = 0.65
     TNG_Z_MIN = 0.10
     TNG_Z_MAX = 2.50
-    # Field-galaxy density in PURE-TNG mode: the real sky density of
-    # log M* ≥ TNG_MF_LOGM_MIN galaxies (the mass-function-rescaled TNG
-    # population renders all of them, see TNG_MF_* below). Normalization:
-    # φ0 ≈ 2.3e-2 Mpc⁻³ for log M* ≥ 8.5 (Baldry+ 2012 double Schechter),
-    # times ∫ dV_c/dz/dΩ · exp(-(z/TNG_Z_PHI_SCALE)²) dz over [TNG_Z_MIN,
-    # TNG_Z_MAX] ≈ 2.2e3 Mpc³/arcmin² ≈ 50, rounded up to 60 because the
-    # Gaussian φ(z) decline is calibrated on massive galaxies and is too
-    # aggressive for dwarfs → ~11 draws per 510 px field, of which the
-    # undetectably faint (see TNG_FAINT_SKIP_MAG_VIS) are skipped.
-    TNG_GAL_DENSITY_ARCMIN2 = 60.0
+    # Raw field-galaxy draw budget in PURE-TNG mode. The Field Statistics
+    # Euclid comparison calls for ≈200 candidates/arcmin² but rejects a
+    # uniform 200/60 multiplication across magnitude. The smooth Schechter
+    # draw below is therefore steepened instead of adding a second population:
+    # current-data importance reweighting keeps the m_VIS<22.5 density at
+    # ≈4.3/arcmin² while adding the missing faint/small population.
+    #
+    # This is a project training prior, not a claim that 200 is the observed
+    # density of a particular Euclid catalog selection.
+    TNG_GAL_DENSITY_ARCMIN2 = 200.0
+    # Legacy records without an explicit saved draw budget were generated at
+    # 60/arcmin². Field Statistics uses this to avoid reinterpreting old pixels
+    # as though they had already been generated with the new 200 prior.
+    TNG_LEGACY_DATASET_DENSITY_ARCMIN2 = 60.0
     # Skip a field draw (before the expensive 4-band stamp load) when its
     # predicted VIS magnitude (L ∝ M + luminosity distance, anchored on
     # measured atlas photometry) is fainter than this — those galaxies
@@ -837,9 +841,13 @@ class Config:
     # Wel+ 2014); surface brightness then falls as s^0.5, the Kormendy-
     # like trend. Lens deflectors are never rescaled.
     #
-    # The target mass is drawn from the real Schechter mass function
-    # (per dlogM ∝ (M/M*)^(α+1) e^(-M/M*); α=-1.2, logM*=10.97 — Baldry+
-    # 2012 / Muzzin+ 2013) over [LOGM_MIN, LOGM_MAX], then matched to an
+    # The target mass is drawn from one smooth Schechter-like training prior
+    # (per dlogM ∝ (M/M*)^(α+1) e^(-M/M*)). logM*=10.97 and the original
+    # α=-1.2 came from Baldry+ 2012 / Muzzin+ 2013; α=-1.76 is the
+    # data-calibrated sampling slope needed when the draw budget rises
+    # 60→200. It is a generator importance prior, not a new measurement of the
+    # physical stellar-mass function. The draw spans [LOGM_MIN, LOGM_MAX] and
+    # is then matched to an
     # atlas galaxy with mass within ×MASS_WINDOW above it (closest-decade
     # morphology; caps the shrink at s ≥ 1/MASS_WINDOW). The resulting
     # field population follows the observed mass distribution by
@@ -847,7 +855,7 @@ class Config:
     # Schechter tail. If the property CSV is unavailable, falls back to
     # s ~ log-uniform[RESCALE_MIN, 1] (RESCALE_MIN ≥ 1 disables).
     TNG_MF_LOGM_STAR     = 10.97
-    TNG_MF_ALPHA         = -1.2
+    TNG_MF_ALPHA         = -1.76
     TNG_MF_LOGM_MIN      = 8.5
     TNG_MF_LOGM_MAX      = 12.0
     TNG_MASS_WINDOW      = 30.0

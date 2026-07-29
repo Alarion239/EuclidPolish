@@ -8,6 +8,7 @@ import warnings
 import numpy as np
 import pytest
 
+from euclid_polish.config import Config
 from euclid_polish.web.helpers.population_comparison import (
     CATALOG_VERSION,
     VERSION,
@@ -18,6 +19,7 @@ from euclid_polish.web.helpers.population_comparison import (
     _parameter_payload,
     _read_synthetic_sources,
     _shared_parameter_payload,
+    _synthetic_dataset_tng_prior,
     query_euclid_population,
     refresh_population_comparison,
 )
@@ -285,6 +287,26 @@ def test_synthetic_catalog_derives_shared_colours(tmp_path):
     assert row["vis_y_color"] == pytest.approx(0.5)
     assert row["y_j_color"] == pytest.approx(0.3)
     assert row["j_h_color"] == pytest.approx(0.2)
+
+
+def test_synthetic_dataset_prior_distinguishes_legacy_and_saved_config(tmp_path):
+    legacy = tmp_path / "legacy.csv"
+    legacy.write_text(
+        "field_index,type,render,flux_vis_e\n"
+        "0,galaxy,tng,100\n"
+    )
+    current = tmp_path / "current.csv"
+    current.write_text(
+        "field_index,type,render,flux_vis_e,tng_density_arcmin2,tng_mf_alpha\n"
+        "0,galaxy,tng,100,200,-1.76\n"
+    )
+
+    assert _synthetic_dataset_tng_prior(
+        _read_synthetic_sources([legacy])
+    ) == pytest.approx(Config.TNG_LEGACY_DATASET_DENSITY_ARCMIN2)
+    assert _synthetic_dataset_tng_prior(
+        _read_synthetic_sources([current])
+    ) == pytest.approx(200.0)
 
 
 def test_ensure_ssh_connected_builds_shared_session(monkeypatch):

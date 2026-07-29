@@ -21,6 +21,9 @@ SOURCE_COLS = ["field_index", "type", "render", "x_pix", "y_pix",
                # Extra galaxy truth persisted for later analysis (empty for
                # lenses, and for whichever render path doesn't provide it):
                "re_arcsec", "logmass", "mass_scale",
+               # TNG population configuration saved with every rendered TNG
+               # row so analysis can distinguish legacy and regenerated data.
+               "tng_density_arcmin2", "tng_mf_alpha",
                # Per-band stellar magnitudes (empty for galaxies/lenses); the
                # forward op re-injects fixed stars with their sampled colour.
                "mag_vis", "mag_y_e", "mag_j_e", "mag_h_e",
@@ -64,6 +67,8 @@ def _galaxy_row(field_index: int, g: dict[str, Any]) -> dict[str, Any]:
         "re_arcsec":  _num(g.get("re_arcsec", g.get("apparent_re_arcsec"))),
         "logmass":    _num(g.get("logmass")),
         "mass_scale": _num(g.get("mass_scale")),
+        "tng_density_arcmin2": _num(g.get("tng_density_arcmin2")),
+        "tng_mf_alpha": _num(g.get("tng_mf_alpha")),
     }
 
 
@@ -77,6 +82,7 @@ def _lens_row(field_index: int, lens: dict[str, Any]) -> dict[str, Any]:
         "theta_E_arcsec": float(theta) if theta is not None else "",
         # Galaxy-truth columns are not meaningful for the lens row.
         "re_arcsec": "", "logmass": "", "mass_scale": "",
+        "tng_density_arcmin2": "", "tng_mf_alpha": "",
     }
 
 
@@ -86,6 +92,7 @@ def _star_row(field_index: int, star: dict[str, Any]) -> dict[str, Any]:
         "x_pix": float(star["x_pix"]), "y_pix": float(star["y_pix"]),
         "flux_vis_e": "", "z": "", "subhalo_id": "", "theta_E_arcsec": "",
         "re_arcsec": "", "logmass": "", "mass_scale": "",
+        "tng_density_arcmin2": "", "tng_mf_alpha": "",
         "mag_vis": _num(star.get("mag_vis")),
         "mag_y_e": _num(star.get("mag_y_e")),
         "mag_j_e": _num(star.get("mag_j_e")),
@@ -128,6 +135,7 @@ def _parse(row: dict[str, str]) -> dict[str, Any]:
     out["field_index"] = int(row["field_index"])
     for k in ("x_pix", "y_pix", "flux_vis_e", "z", "theta_E_arcsec",
               "re_arcsec", "logmass", "mass_scale", "mag_vis",
+              "tng_density_arcmin2", "tng_mf_alpha",
               "mag_y_e", "mag_j_e", "mag_h_e", "temperature_k",
               "extinction_av"):
         v = row.get(k, "")
