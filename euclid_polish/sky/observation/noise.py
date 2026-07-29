@@ -173,7 +173,8 @@ def apply_archive_noise(
 
     ``noise_scale_map`` optionally scales only the stochastic residual on the
     archive grid.  The observation simulator uses one shared map for all four
-    bands to represent a field's depth plus a noisier pointing intersection.
+    bands to represent a field's depth plus a different-depth pointing
+    intersection.
     """
     signal = np.asarray(signal_e, dtype=np.float32)
     if signal.ndim != 2:

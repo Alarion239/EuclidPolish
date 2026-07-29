@@ -108,15 +108,18 @@ class ObservationSimulatorConfig:
     distant_star_wing_width_max_lr_pix: float = 2.0
     distant_star_wing_fade_length_min_lr_pix: float = 60.0
     distant_star_wing_fade_length_max_lr_pix: float = 220.0
-    # Per-field depth jitter plus a shared four-band pointing intersection.
+    # Per-field depth jitter plus an occasional shared four-band pointing
+    # intersection.  Both scale distributions are centred on one: the
+    # augmentation broadens the range of field depths without systematically
+    # making the training set noisier.
     add_noise_variation: bool = True
     noise_global_scale_min: float = 0.80
     noise_global_scale_max: float = 1.20
-    noise_region_probability: float = 1.0
+    noise_region_probability: float = 0.20
     noise_region_fraction_min: float = 0.25
     noise_region_fraction_max: float = 0.50
-    noise_region_scale_min: float = 1.35
-    noise_region_scale_max: float = 1.75
+    noise_region_scale_min: float = 0.50
+    noise_region_scale_max: float = 1.50
 
     def __post_init__(self) -> None:
         if self.nisp_resample_kernel not in ("lanczos3", "cubic"):

@@ -49,6 +49,18 @@ def test_rotated_noise_region_covers_requested_cutout_fraction():
     np.testing.assert_allclose(np.unique(scale), [1.0, 1.2])
 
 
+def test_default_noise_variation_is_rare_and_centered():
+    config = ObservationSimulatorConfig()
+
+    assert config.noise_region_probability == pytest.approx(0.20)
+    assert (
+        config.noise_global_scale_min + config.noise_global_scale_max
+    ) / 2.0 == pytest.approx(1.0)
+    assert (
+        config.noise_region_scale_min + config.noise_region_scale_max
+    ) / 2.0 == pytest.approx(1.0)
+
+
 @pytest.mark.parametrize("band", [Config.BAND_VIS, Config.BAND_Y_E])
 def test_archive_noise_scale_map_scales_only_noise_residual(band):
     signal = np.full((72, 75), 30.0, dtype=np.float32)
