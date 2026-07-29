@@ -169,42 +169,105 @@ function logarithmicTicks([lo, hi]: [number, number], count = 5): Tick[] {
 }
 
 type AxisDomain = [number, number];
-type BoundDraft = {
-  xMin: string; xMax: string; yMin: string; yMax: string;
-};
 type DomainTicks = (value: AxisDomain) => Tick[];
 type AdjustablePlotProps = Omit<PlotProps, "xTicks" | "yTicks"> & {
   boundsLabel: string;
   xTicksForDomain?: DomainTicks;
   yTicksForDomain?: DomainTicks;
 };
+type DualRangeProps = {
+  axis: "x" | "y";
+  boundsLabel: string;
+  domain: AxisDomain;
+  value: AxisDomain;
+  scale?: PlotProps["xScale"];
+  onChange: (value: AxisDomain) => void;
+};
+
+const SLIDER_STEPS = 10_000;
 
 function boundText(value: number): string {
   return Number(value.toPrecision(8)).toString();
 }
 
-function draftFor(x: AxisDomain, y: AxisDomain): BoundDraft {
-  return {
-    xMin: boundText(x[0]), xMax: boundText(x[1]),
-    yMin: boundText(y[0]), yMax: boundText(y[1]),
-  };
+function sliderPosition(
+  value: number,
+  [lo, hi]: AxisDomain,
+  scale: PlotProps["xScale"],
+): number {
+  const fraction = scale === "log"
+    ? (Math.log(value) - Math.log(lo)) / (Math.log(hi) - Math.log(lo))
+    : (value - lo) / (hi - lo);
+  return Math.round(Math.max(0, Math.min(1, fraction)) * SLIDER_STEPS);
 }
 
-function parsedDraft(
-  draft: BoundDraft,
-  xScale: PlotProps["xScale"],
-): { x: AxisDomain; y: AxisDomain } | null {
-  const values = [draft.xMin, draft.xMax, draft.yMin, draft.yMax].map((value) =>
-    value.trim() === "" ? Number.NaN : Number(value));
-  if (!values.every(Number.isFinite)) return null;
-  const [xMin, xMax, yMin, yMax] = values;
-  if (!(xMin < xMax) || !(yMin < yMax)) return null;
-  if (xScale === "log" && !(xMin > 0)) return null;
-  return { x: [xMin, xMax], y: [yMin, yMax] };
+function sliderValue(
+  position: number,
+  [lo, hi]: AxisDomain,
+  scale: PlotProps["xScale"],
+): number {
+  if (position <= 0) return lo;
+  if (position >= SLIDER_STEPS) return hi;
+  const fraction = position / SLIDER_STEPS;
+  return scale === "log"
+    ? Math.exp(Math.log(lo) + fraction * (Math.log(hi) - Math.log(lo)))
+    : lo + fraction * (hi - lo);
 }
 
 function sameDomain(a: AxisDomain, b: AxisDomain): boolean {
   return a[0] === b[0] && a[1] === b[1];
+}
+
+function DualRange({
+  axis,
+  boundsLabel,
+  domain,
+  value,
+  scale,
+  onChange,
+}: DualRangeProps) {
+  const lower = sliderPosition(value[0], domain, scale);
+  const upper = sliderPosition(value[1], domain, scale);
+  const start = `${100 * lower / SLIDER_STEPS}%`;
+  const end = `${100 * upper / SLIDER_STEPS}%`;
+  const setLower = (position: number) => {
+    const next = Math.min(position, upper - 1);
+    onChange([sliderValue(next, domain, scale), value[1]]);
+  };
+  const setUpper = (position: number) => {
+    const next = Math.max(position, lower + 1);
+    onChange([value[0], sliderValue(next, domain, scale)]);
+  };
+
+  return (
+    <div className="dual-range">
+      <div className="dual-range__head">
+        <span>{axis} range</span>
+        <output>
+          <b>{boundText(value[0])}</b>
+          <i>to</i>
+          <b>{boundText(value[1])}</b>
+        </output>
+      </div>
+      <div className="dual-range__control"
+        style={{ "--range-start": start, "--range-end": end } as CSSProperties}>
+        <div className="dual-range__rail" />
+        <div className="dual-range__selection" />
+        <input type="range" min={0} max={SLIDER_STEPS} step={1}
+          value={lower}
+          aria-label={`${boundsLabel} ${axis} lower bound`}
+          aria-valuetext={boundText(value[0])}
+          onInput={(event) => setLower(Number(event.currentTarget.value))}
+          onChange={(event) => setLower(Number(event.target.value))} />
+        <input type="range" min={0} max={SLIDER_STEPS} step={1}
+          value={upper}
+          aria-label={`${boundsLabel} ${axis} upper bound`}
+          aria-valuetext={boundText(value[1])}
+          onInput={(event) => setUpper(Number(event.currentTarget.value))}
+          onChange={(event) => setUpper(Number(event.target.value))} />
+      </div>
+    </div>
+  );
 }
 
 function AdjustablePlot({
@@ -219,24 +282,14 @@ function AdjustablePlot({
   const [view, setView] = useState<{ x: AxisDomain; y: AxisDomain }>({
     x: xDomain, y: yDomain,
   });
-  const [draft, setDraft] = useState<BoundDraft>(() => draftFor(xDomain, yDomain));
 
   useEffect(() => {
     setView({ x: xDomain, y: yDomain });
-    setDraft(draftFor(xDomain, yDomain));
   }, [xDomain[0], xDomain[1], yDomain[0], yDomain[1]]);
 
-  const parsed = parsedDraft(draft, xScale);
   const custom = !sameDomain(view.x, xDomain) || !sameDomain(view.y, yDomain);
-  const updateBound = (key: keyof BoundDraft, value: string) => {
-    const next = { ...draft, [key]: value };
-    setDraft(next);
-    const nextView = parsedDraft(next, xScale);
-    if (nextView) setView(nextView);
-  };
   const reset = () => {
     setView({ x: xDomain, y: yDomain });
-    setDraft(draftFor(xDomain, yDomain));
   };
 
   return (
@@ -245,34 +298,23 @@ function AdjustablePlot({
         xDomain={view.x} yDomain={view.y} xScale={xScale}
         xTicks={xTicksForDomain(view.x)}
         yTicks={yTicksForDomain(view.y)} />
-      <details className={`plot-bounds${custom ? " plot-bounds--custom" : ""}${parsed == null ? " plot-bounds--invalid" : ""}`}>
+      <details className={`plot-bounds${custom ? " plot-bounds--custom" : ""}`}>
         <summary>
           <span>axis bounds</span>
           <small>{custom ? "custom view" : "full data range"}</small>
         </summary>
-        <div className="plot-bounds__grid">
-          {([
-            ["xMin", "x min"], ["xMax", "x max"],
-            ["yMin", "y min"], ["yMax", "y max"],
-          ] as const).map(([key, label]) => (
-            <label className="plot-bounds__field" key={key}>
-              <span>{label}</span>
-              <input type="number" step="any" value={draft[key]}
-                aria-label={`${boundsLabel} ${label}`}
-                onChange={(event) => updateBound(key, event.target.value)} />
-            </label>
-          ))}
+        <div className="plot-bounds__controls">
+          <DualRange axis="x" boundsLabel={boundsLabel}
+            domain={xDomain} value={view.x} scale={xScale}
+            onChange={(value) => setView((current) => ({ ...current, x: value }))} />
+          <DualRange axis="y" boundsLabel={boundsLabel}
+            domain={yDomain} value={view.y}
+            onChange={(value) => setView((current) => ({ ...current, y: value }))} />
           <button type="button" className="plot-bounds__reset"
-            disabled={!custom && parsed != null} onClick={reset}>
+            disabled={!custom} onClick={reset}>
             reset
           </button>
         </div>
-        {parsed == null && (
-          <p className="plot-bounds__error" role="status">
-            Min must be smaller than max{xScale === "log" ? ", and x min must be positive" : ""}.
-            The last valid view is still shown.
-          </p>
-        )}
       </details>
     </div>
   );

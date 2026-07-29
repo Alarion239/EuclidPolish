@@ -184,45 +184,131 @@
 .plot-bounds--custom summary small {
   color: var(--accent);
 }
-.plot-bounds__grid {
+.plot-bounds__controls {
   display: grid;
-  grid-template-columns: repeat(4, minmax(62px, 1fr)) auto;
-  gap: var(--s2);
+  grid-template-columns: repeat(2, minmax(150px, 1fr)) auto;
+  gap: var(--s3);
   align-items: end;
-  padding: 8px 0 3px;
+  padding: 9px 0 3px;
 }
-.plot-bounds__field {
+.dual-range {
   display: grid;
-  gap: 4px;
+  gap: 5px;
   min-width: 0;
 }
-.plot-bounds__field span {
+.dual-range__head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s2);
+  justify-content: space-between;
+  min-width: 0;
+}
+.dual-range__head > span {
   color: var(--text-faint);
   font: 500 9px/1 var(--font-mono);
   letter-spacing: .05em;
   text-transform: uppercase;
 }
-.plot-bounds__field input {
-  width: 100%;
+.dual-range__head output {
+  display: flex;
   min-width: 0;
-  height: 30px;
-  padding: 0 7px;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--r-sm);
+  align-items: baseline;
+  gap: 5px;
+  color: var(--text-faint);
+  font: 9px/1 var(--font-mono);
+}
+.dual-range__head output b {
+  overflow: hidden;
+  max-width: 88px;
+  color: var(--text-dim);
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dual-range__head output i {
+  font-style: normal;
+}
+.dual-range__control {
+  position: relative;
+  height: 24px;
+}
+.dual-range__rail,
+.dual-range__selection {
+  position: absolute;
+  top: 10px;
+  height: 4px;
+  border-radius: 2px;
+  pointer-events: none;
+}
+.dual-range__rail {
+  right: 0;
+  left: 0;
+  background: var(--surface-3);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+}
+.dual-range__selection {
+  right: calc(100% - var(--range-end));
+  left: var(--range-start);
+  background: var(--accent);
+}
+.dual-range__control input[type="range"] {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 24px;
+  margin: 0;
+  padding: 0;
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
   outline: none;
-  color: var(--text);
-  background: var(--surface-2);
-  font: 10px/1 var(--font-mono);
+  pointer-events: none;
 }
-.plot-bounds__field input:focus {
-  border-color: var(--accent);
-  box-shadow: var(--ring);
+.dual-range__control input:first-of-type {
+  z-index: 3;
 }
-.plot-bounds--invalid .plot-bounds__field input {
-  border-color: var(--danger, #d6604d);
+.dual-range__control input:last-of-type {
+  z-index: 4;
+}
+.dual-range__control input[type="range"]::-webkit-slider-runnable-track {
+  height: 4px;
+  background: transparent;
+}
+.dual-range__control input[type="range"]::-webkit-slider-thumb {
+  width: 15px;
+  height: 15px;
+  margin-top: -5.5px;
+  appearance: none;
+  -webkit-appearance: none;
+  border: 2px solid var(--surface-1);
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent), 0 1px 4px rgb(0 0 0 / 28%);
+  cursor: ew-resize;
+  pointer-events: auto;
+}
+.dual-range__control input[type="range"]::-moz-range-track {
+  height: 4px;
+  background: transparent;
+}
+.dual-range__control input[type="range"]::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--surface-1);
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent), 0 1px 4px rgb(0 0 0 / 28%);
+  cursor: ew-resize;
+  pointer-events: auto;
+}
+.dual-range__control input[type="range"]:focus-visible::-webkit-slider-thumb {
+  box-shadow: var(--ring), 0 0 0 1px var(--accent);
+}
+.dual-range__control input[type="range"]:focus-visible::-moz-range-thumb {
+  box-shadow: var(--ring), 0 0 0 1px var(--accent);
 }
 .plot-bounds__reset {
-  height: 30px;
+  height: 28px;
   padding: 0 10px;
   border: 1px solid var(--border-strong);
   border-radius: var(--r-sm);
@@ -241,16 +327,11 @@
   cursor: default;
   opacity: .35;
 }
-.plot-bounds__error {
-  margin: 4px 0 0;
-  color: var(--danger, #d6604d);
-  font: 10px/1.4 var(--font-mono);
-}
-.parameter-card .plot-bounds__grid {
-  grid-template-columns: repeat(2, minmax(80px, 1fr));
+.parameter-card .plot-bounds__controls {
+  grid-template-columns: 1fr;
 }
 .parameter-card .plot-bounds__reset {
-  grid-column: 1 / -1;
+  justify-self: start;
 }
 
 .band-ledger {
@@ -502,4 +583,6 @@
   .band-ledger__row { grid-template-columns: 58px 1fr; }
   .band-ledger__row span { grid-column: 2; }
   .cone-query__form { grid-template-columns: 1fr; }
+  .plot-bounds__controls { grid-template-columns: 1fr; }
+  .plot-bounds__reset { justify-self: start; }
 }
