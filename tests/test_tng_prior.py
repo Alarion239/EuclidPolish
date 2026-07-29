@@ -7,6 +7,7 @@ import pytest
 
 from euclid_polish.web.helpers.tng_prior import (
     catalog_prior_estimate,
+    tng_prior_payload,
     visible_prior_estimate,
 )
 
@@ -93,3 +94,40 @@ def test_visible_prior_uses_common_net_detection_density():
     assert result["fitted_prior_arcmin2"] == pytest.approx(138.0)
     assert result["matched_truth_fraction"] == pytest.approx(1 / 3)
     assert np.isfinite(result["interval_arcmin2"]["median"])
+
+
+def test_active_prior_ignores_selection_unmatched_catalog_counts():
+    source_detection = {
+        "settings": {"threshold_sigma": 4.0},
+        "synthetic": {
+            "positive": [5, 5],
+            "negative": [1, 1],
+            "matched_stars": [0, 0],
+            "matched_galaxies": [2, 2],
+            "truth_galaxies": [8, 8],
+        },
+        "real": {
+            "positive": [9, 9],
+            "negative": [1, 1],
+        },
+    }
+    synthetic = _rows("galaxy", [20.1] * 1000)
+    euclid = _rows("unknown", [20.1] * 10)
+
+    result = tng_prior_payload(
+        synthetic,
+        euclid,
+        synthetic_area_arcmin2=10.0,
+        euclid_area_arcmin2=10.0,
+        field_area_arcmin2=1.0,
+        source_detection=source_detection,
+        dataset_prior=200.0,
+        configured_prior=200.0,
+    )
+
+    assert result is not None
+    assert result["catalog"] is None
+    assert result["single_scalar_adequate"] is None
+    assert result["calibration_scope"] == "matched_detection_normalization_only"
+    assert result["visible"]["fitted_prior_arcmin2"] == pytest.approx(400.0)
+    assert result["pilot_grid_arcmin2"] == [340, 400, 460]

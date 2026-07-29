@@ -430,13 +430,11 @@ def tng_prior_payload(
     dataset_prior: float,
     configured_prior: float = Config.TNG_GAL_DENSITY_ARCMIN2,
 ) -> dict[str, Any] | None:
-    catalog = catalog_prior_estimate(
-        synthetic_rows,
-        euclid_rows,
-        synthetic_area_arcmin2,
-        euclid_area_arcmin2,
-        current_prior=dataset_prior,
-    )
+    # Do not use synthetic truth versus the Euclid MER catalog to calibrate
+    # the draw prior. Truth contains every generated source, while MER contains
+    # only sources that survived detection, deblending, and catalog photometry.
+    # No magnitude cut makes those selection functions equivalent.
+    del synthetic_rows, synthetic_area_arcmin2
     visible = visible_prior_estimate(
         source_detection,
         euclid_rows,
@@ -444,38 +442,27 @@ def tng_prior_payload(
         field_area_arcmin2,
         current_prior=dataset_prior,
     )
-    if catalog is None and visible is None:
+    if visible is None:
         return None
 
-    estimates = [
-        estimate["fitted_prior_arcmin2"]
-        for estimate in (catalog, visible)
-        if estimate is not None
-    ]
-    pilot_grid: list[int] = []
-    if estimates:
-        low = min(estimates)
-        high = max(estimates)
-        pilot_grid = sorted({
-            int(round(low / 20.0) * 20),
-            int(round(((low + high) / 2.0) / 20.0) * 20),
-            int(round(high / 20.0) * 20),
-        })
-    scalar_adequate = bool(
-        catalog is not None and catalog["single_scalar_adequate"]
-    )
+    center = float(visible["fitted_prior_arcmin2"])
+    pilot_grid = sorted({
+        max(20, int(round((0.85 * center) / 20.0) * 20)),
+        max(20, int(round(center / 20.0) * 20)),
+        max(20, int(round((1.15 * center) / 20.0) * 20)),
+    })
     return {
-        "catalog": catalog,
+        "catalog": None,
         "visible": visible,
         "dataset_prior_arcmin2": float(dataset_prior),
         "configured_prior_arcmin2": float(configured_prior),
         "configured_mf_alpha": float(Config.TNG_MF_ALPHA),
-        "single_scalar_adequate": scalar_adequate,
+        "single_scalar_adequate": None,
+        "calibration_scope": "matched_detection_normalization_only",
         "pilot_grid_arcmin2": pilot_grid,
         "recommendation": (
-            "Fit the luminosity/redshift population as well as normalization; "
-            "the magnitude-bin ratios reject one global density scalar."
-            if not scalar_adequate
-            else "A single normalization is consistent over the selected bins."
+            "Run this matched-seed density sweep and compare common-detector "
+            "counts. Infer the luminosity/redshift distribution only after "
+            "applying the same detection and photometry to synthetic images."
         ),
     }

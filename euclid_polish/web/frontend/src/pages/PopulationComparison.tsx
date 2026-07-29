@@ -55,28 +55,11 @@ type FieldComparison = {
     Interval
   >>>;
 };
-type Histogram = {
-  x: number[]; density: number[]; count: number; range?: [number, number];
-};
 type Population = {
   objects: number;
   counts: Record<string, number>;
   density_arcmin2: Record<string, number | null>;
   area_arcmin2: number;
-};
-type ComparisonClass = "nonstellar" | "star";
-type SharedParameter = {
-  label: string;
-  unit: string;
-  classes: Partial<Record<ComparisonClass, {
-    synthetic: Histogram;
-    euclid: Histogram;
-  }>>;
-};
-type SharedPopulation = {
-  parameters: Record<string, SharedParameter>;
-  class_labels: Record<ComparisonClass, string>;
-  density_unit: string;
 };
 type PriorInterval = { median: number; p16: number; p84: number };
 type CatalogPrior = {
@@ -118,7 +101,8 @@ type TngPrior = {
   dataset_prior_arcmin2?: number;
   configured_prior_arcmin2?: number;
   configured_mf_alpha?: number;
-  single_scalar_adequate: boolean;
+  single_scalar_adequate: boolean | null;
+  calibration_scope?: string;
   pilot_grid_arcmin2: number[];
   recommendation: string;
 };
@@ -140,7 +124,7 @@ type Comparison = {
     synthetic: Population;
     synthetic_field_count: number;
     euclid: Population | null;
-    shared: SharedPopulation | null;
+    shared: null;
     tng_prior?: TngPrior | null;
     synthetic_splits?: string[];
     training_included?: boolean;
@@ -179,16 +163,7 @@ type ApiPayload = {
 
 const BANDS: Band[] = ["VIS", "Y_E", "J_E", "H_E"];
 const TYPE_ORDER = ["galaxy", "star", "unknown"];
-const COMPARISON_CLASSES: ComparisonClass[] = ["nonstellar", "star"];
-const SHARED_PARAMETER_ORDER = [
-  "mag_vis", "mag_y_e", "mag_j_e", "mag_h_e",
-  "vis_y_color", "y_j_color", "j_h_color",
-];
 const BAND_COLOR = (band: Band) => categorical(BANDS.indexOf(band));
-const CLASS_COLOR: Record<ComparisonClass, string> = {
-  nonstellar: categorical(0),
-  star: categorical(2),
-};
 const bandLabel = (band: Band) => band.replace("_E", "");
 
 function finite(values: readonly (number | null)[]): number[] {
@@ -839,90 +814,6 @@ function PopulationSummary({ title, eyebrow, population, tone }: {
   );
 }
 
-function ComparableParameterPlot({ parameter, shared }: {
-  parameter: SharedParameter;
-  shared: SharedPopulation;
-}) {
-  const entries = COMPARISON_CLASSES
-    .filter((kind) => parameter.classes[kind]?.synthetic.x.length
-      && parameter.classes[kind]?.euclid.x.length)
-    .map((kind) => [kind, parameter.classes[kind]!] as const);
-  const histograms = entries.flatMap(([, pair]) => [pair.synthetic, pair.euclid]);
-  const xs = histograms.flatMap((histogram) => histogram.x);
-  const ys = histograms.flatMap((histogram) => histogram.density);
-  const xDomain = domain(xs);
-  const yDomain = domain(ys, true);
-  const series: Series[] = entries.flatMap(([kind, pair]) => [
-    {
-      x: pair.synthetic.x,
-      y: pair.synthetic.density,
-      color: CLASS_COLOR[kind],
-      mode: "histogram",
-      width: 1.55,
-      alpha: 0.94,
-      fillAlpha: 0.24,
-    },
-    {
-      x: pair.euclid.x,
-      y: pair.euclid.density,
-      color: CLASS_COLOR[kind],
-      mode: "histogram",
-      width: 1.9,
-      dash: [8, 4],
-      hatch: true,
-      alpha: 1,
-      fillAlpha: 0.025,
-    },
-  ]);
-  const counts = entries.map(([kind, pair]) => (
-    `${shared.class_labels[kind]} ${pair.synthetic.count.toLocaleString()} / ${
-      pair.euclid.count.toLocaleString()}`
-  )).join(" · ");
-  return (
-    <Card className="parameter-card">
-      <CardHead title={parameter.label}
-        sub={`synthetic / Euclid n · ${counts}`} />
-      <CardBody>
-        <AdjustablePlot boundsLabel={`Synthetic–Euclid ${parameter.label}`}
-          xDomain={xDomain} yDomain={yDomain}
-          xTicksForDomain={(value) => ticks(value, 4)}
-          yTicksForDomain={(value) => ticks(value, 4)}
-          xLabel={parameter.unit} yLabel={shared.density_unit}
-          series={series} aspect={0.62} />
-        <Legend items={entries.map(([kind]) => ({
-          color: CLASS_COLOR[kind],
-          label: shared.class_labels[kind],
-          histogram: true,
-          filled: true,
-        }))} />
-        <Legend items={[
-          {
-            color: C.cross, label: "synthetic truth · filled",
-            histogram: true, filled: true, dash: false,
-          },
-          {
-            color: C.cross, label: "Euclid catalog · hatched",
-            histogram: true, filled: false, hatch: true, dash: true,
-          },
-        ]} />
-      </CardBody>
-    </Card>
-  );
-}
-
-function ComparableParameterAtlas({ shared }: { shared: SharedPopulation }) {
-  return (
-    <div className="parameter-atlas">
-      {SHARED_PARAMETER_ORDER
-        .filter((key) => shared.parameters[key])
-        .map((key) => (
-          <ComparableParameterPlot key={key}
-            parameter={shared.parameters[key]} shared={shared} />
-        ))}
-    </div>
-  );
-}
-
 function priorValue(value: number): string {
   return Number.isFinite(value) ? value.toFixed(0) : "—";
 }
@@ -938,19 +829,11 @@ function TngPriorPanel({ prior }: { prior: TngPrior }) {
   const alphaLabel = Number.isFinite(prior.configured_mf_alpha)
     ? ` (α=${prior.configured_mf_alpha!.toFixed(2)})`
     : "";
-  const curve = catalog?.curve;
-  const plotY = domain([
-    current,
-    configured,
-    catalog?.fitted_prior_arcmin2 ?? null,
-    visible?.fitted_prior_arcmin2 ?? null,
-    ...(curve?.prior_arcmin2 ?? []),
-  ], true);
   return (
     <section className="tng-prior">
       <header className="tng-prior__head">
         <div>
-          <div className="eyebrow">normalization inference · current images + catalog</div>
+          <div className="eyebrow">normalization inference · common VIS detector</div>
           <h3>TNG draw-prior calibration</h3>
           <p>
             Displayed fields used {current.toFixed(0)} raw draws / arcmin².
@@ -958,26 +841,10 @@ function TngPriorPanel({ prior }: { prior: TngPrior }) {
             smooth mass prior{alphaLabel}.
           </p>
         </div>
-        <Badge tone={prior.single_scalar_adequate ? "good" : "warn"}>
-          {prior.single_scalar_adequate ? "one scalar is adequate" : "population shape mismatch"}
-        </Badge>
+        <Badge tone="good">selection-matched density</Badge>
       </header>
 
       <div className="tng-prior__readouts">
-        {catalog && (
-          <article className="tng-prior__readout tng-prior__readout--catalog">
-            <span>shared VIS catalog</span>
-            <strong>{priorValue(catalog.fitted_prior_arcmin2)}</strong>
-            <small>
-              {priorValue(catalog.interval_arcmin2.p16)}–
-              {priorValue(catalog.interval_arcmin2.p84)} / arcmin² ·
-              {" "}m&lt;{catalog.turnover_limit_mag.toFixed(1)}
-            </small>
-            <p>{catalog.synthetic_selected_count.toLocaleString()} synthetic /
-              {" "}{catalog.euclid_selected_count.toLocaleString()} Euclid objects
-              across {catalog.selected_bin_count} bins.</p>
-          </article>
-        )}
         {visible && (
           <article className="tng-prior__readout tng-prior__readout--visible">
             <span>common VIS detections</span>
@@ -995,43 +862,9 @@ function TngPriorPanel({ prior }: { prior: TngPrior }) {
       </div>
 
       <div className="tng-prior__detail-grid">
-        {catalog && curve && (
-          <Card className="tng-prior__plot">
-            <CardHead title="Prior implied by each VIS magnitude bin"
-              sub="A flat sequence would support changing only the global TNG density." />
-            <CardBody>
-              <AdjustablePlot boundsLabel="Magnitude-bin TNG prior"
-                xDomain={domain(curve.mag)}
-                yDomain={plotY}
-                xTicksForDomain={(value) => ticks(value, 5)}
-                yTicksForDomain={(value) => ticks(value, 5)}
-                guides={[
-                  { axis: "y", v: current, dash: [4, 4] },
-                  { axis: "y", v: configured, color: C.mean, dash: [2, 4] },
-                  { axis: "y", v: catalog.fitted_prior_arcmin2, dash: [7, 3] },
-                ]}
-                xLabel="VIS magnitude (AB)"
-                yLabel="implied raw TNG draws / arcmin²"
-                series={[{
-                  x: curve.mag,
-                  y: curve.prior_arcmin2,
-                  color: C.comb,
-                  width: 2.2,
-                  marker: "filled",
-                }]} />
-              <Legend items={[
-                { color: C.comb, label: "per-bin inferred prior", marker: "filled" },
-                { color: C.cross, label: `displayed data ${current.toFixed(0)}`, dash: true },
-                { color: C.mean, label: `configured ${configured.toFixed(0)}`, dash: true },
-              ]} />
-            </CardBody>
-          </Card>
-        )}
         <Card className="tng-prior__decision">
-          <CardHead title="Decision"
-            sub={prior.single_scalar_adequate
-              ? "The selected bins agree with one normalization."
-              : "Density alone cannot reproduce the observed magnitude distribution."} />
+          <CardHead title="What this constrains"
+            sub="Matched detections constrain normalization, not the intrinsic luminosity-function shape." />
           <CardBody>
             <p>{prior.recommendation}</p>
             {!!prior.pilot_grid_arcmin2.length && (
@@ -1041,16 +874,11 @@ function TngPriorPanel({ prior }: { prior: TngPrior }) {
                 <small>raw TNG draws / arcmin²</small>
               </div>
             )}
-            {catalog && (
+            {visible && (
               <dl className="tng-prior__diagnostics">
-                <div><dt>Poisson deviance / dof</dt>
-                  <dd>{catalog.reduced_poisson_deviance.toFixed(1)}</dd></div>
-                <div><dt>prior slope / mag</dt>
-                  <dd>{catalog.log10_prior_slope_per_mag.toFixed(2)} dex</dd></div>
-                <div><dt>catalog interval</dt>
-                  <dd>Poisson only</dd></div>
-                {visible && <div><dt>truth matched visibly</dt>
-                  <dd>{(100 * visible.matched_truth_fraction).toFixed(1)}%</dd></div>}
+                <div><dt>truth recovered by detector</dt>
+                  <dd>{(100 * visible.matched_truth_fraction).toFixed(1)}%</dd></div>
+                <div><dt>selection</dt><dd>same VIS detector</dd></div>
               </dl>
             )}
           </CardBody>
@@ -1183,7 +1011,7 @@ export default function PopulationComparisonPage() {
               <div>
                 <div className="eyebrow">source domain · area-normalized</div>
                 <h2>Population census</h2>
-                <p>Counts use the true sky footprint. Histograms retain only observables available for both synthetic truth and the Euclid catalog.</p>
+                <p>Synthetic truth and Euclid MER detections are shown as separate censuses because their selection functions differ.</p>
               </div>
               <div className="comparison-actions">
                 <Checkbox checked={includeTraining}
@@ -1213,10 +1041,10 @@ export default function PopulationComparisonPage() {
               </p>
             )}
             <div className="population-summary-grid">
-              <PopulationSummary title="Synthetic source truth" eyebrow="generated catalog sidecars"
+              <PopulationSummary title="Synthetic source truth" eyebrow="complete generated population"
                 population={comparison.population.synthetic} tone="synthetic" />
               {comparison.population.euclid ? (
-                <PopulationSummary title="Euclid MER catalog" eyebrow="stars · non-stellar candidates"
+                <PopulationSummary title="Euclid MER catalog" eyebrow="detection-selected population"
                   population={comparison.population.euclid} tone="real" />
               ) : (
                 <Card className="population-summary population-summary--empty">
@@ -1227,6 +1055,10 @@ export default function PopulationComparisonPage() {
             </div>
             {comparison.population.euclid_meta && (
               <p className="catalog-classification-note">
+                <strong>Selection:</strong> synthetic truth contains all generated
+                sources, while MER contains detected and deblended sources only.
+                Their raw counts and parameter distributions are not direct
+                population-shape comparisons.{" "}
                 <strong>Classification:</strong> {comparison.population.euclid_meta.classification}.{" "}
                 Unknown rows are plotted as non-stellar candidates alongside synthetic galaxies,
                 not as confirmed galaxies. {comparison.population.euclid_meta.classification_note}
@@ -1238,30 +1070,11 @@ export default function PopulationComparisonPage() {
             ) : comparison.population.euclid ? (
               <Card className="tng-prior tng-prior--empty">
                 <CardHead title="TNG draw-prior calibration"
-                  sub="Rebuild statistics to run the common VIS detector and magnitude normalization." />
+                  sub="Rebuild statistics to run the common VIS detector normalization." />
               </Card>
             ) : null}
 
             <ConeQuery api={api} onQueried={resource.reload} />
-
-            {comparison.population.shared && (
-              <section className="parameter-section">
-                <header>
-                  <div className="eyebrow">shared observables · identical bins</div>
-                  <h3>Synthetic truth × Euclid catalog</h3>
-                  <span>
-                    {Object.keys(comparison.population.shared.parameters).length} comparable distributions
-                  </span>
-                </header>
-                <p className="catalog-classification-note">
-                  Solid filled histograms are synthetic truth; dashed outlines are Euclid.
-                  Counts are normalized by each catalog’s sky area. Catalog magnitudes use
-                  Euclid 3-FWHM aperture photometry, while synthetic magnitudes are intrinsic
-                  source totals, so offsets include measurement and selection effects.
-                </p>
-                <ComparableParameterAtlas shared={comparison.population.shared} />
-              </section>
-            )}
           </section>
         </>
       )}

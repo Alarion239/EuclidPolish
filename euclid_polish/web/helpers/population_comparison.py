@@ -981,15 +981,10 @@ def _population_payload(source_csvs: Iterable[Path],
             _parameter_payload(euclid_rows, euclid_area, include_per_field=False)
             if euclid_rows and euclid_area > 0 else None
         ),
-        "shared": (
-            _shared_parameter_payload(
-                synthetic_rows,
-                euclid_rows,
-                synthetic_area,
-                euclid_area,
-            )
-            if euclid_rows and euclid_area > 0 else None
-        ),
+        # Synthetic sidecars are complete generation truth; Euclid MER is a
+        # detection-selected catalog. Their distributions must not be overlaid
+        # as if they were samples from the same selection function.
+        "shared": None,
         "tng_prior": (
             tng_prior_payload(
                 synthetic_rows,
