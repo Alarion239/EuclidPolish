@@ -143,6 +143,116 @@
   min-width: 0;
 }
 
+.plot-bounds {
+  margin-top: var(--s2);
+  border-top: 1px solid var(--border);
+}
+.plot-bounds summary {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  padding: 8px 2px 3px;
+  color: var(--text-faint);
+  cursor: pointer;
+  font: 500 9px/1 var(--font-mono);
+  letter-spacing: .08em;
+  list-style: none;
+  text-transform: uppercase;
+  user-select: none;
+}
+.plot-bounds summary::-webkit-details-marker {
+  display: none;
+}
+.plot-bounds summary::before {
+  content: "›";
+  color: var(--text-faint);
+  font-size: 15px;
+  line-height: 0;
+  transition: transform .15s ease;
+}
+.plot-bounds[open] summary::before {
+  transform: rotate(90deg);
+}
+.plot-bounds summary small {
+  margin-left: auto;
+  color: var(--text-faint);
+  font: inherit;
+  letter-spacing: .03em;
+  text-transform: none;
+}
+.plot-bounds--custom summary,
+.plot-bounds--custom summary small {
+  color: var(--accent);
+}
+.plot-bounds__grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(62px, 1fr)) auto;
+  gap: var(--s2);
+  align-items: end;
+  padding: 8px 0 3px;
+}
+.plot-bounds__field {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+.plot-bounds__field span {
+  color: var(--text-faint);
+  font: 500 9px/1 var(--font-mono);
+  letter-spacing: .05em;
+  text-transform: uppercase;
+}
+.plot-bounds__field input {
+  width: 100%;
+  min-width: 0;
+  height: 30px;
+  padding: 0 7px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  outline: none;
+  color: var(--text);
+  background: var(--surface-2);
+  font: 10px/1 var(--font-mono);
+}
+.plot-bounds__field input:focus {
+  border-color: var(--accent);
+  box-shadow: var(--ring);
+}
+.plot-bounds--invalid .plot-bounds__field input {
+  border-color: var(--danger, #d6604d);
+}
+.plot-bounds__reset {
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  color: var(--text-dim);
+  background: transparent;
+  cursor: pointer;
+  font: 500 9px/1 var(--font-mono);
+  letter-spacing: .05em;
+  text-transform: uppercase;
+}
+.plot-bounds__reset:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--text);
+}
+.plot-bounds__reset:disabled {
+  cursor: default;
+  opacity: .35;
+}
+.plot-bounds__error {
+  margin: 4px 0 0;
+  color: var(--danger, #d6604d);
+  font: 10px/1.4 var(--font-mono);
+}
+.parameter-card .plot-bounds__grid {
+  grid-template-columns: repeat(2, minmax(80px, 1fr));
+}
+.parameter-card .plot-bounds__reset {
+  grid-column: 1 / -1;
+}
+
 .band-ledger {
   margin-top: var(--s4);
   border: 1px solid var(--border);

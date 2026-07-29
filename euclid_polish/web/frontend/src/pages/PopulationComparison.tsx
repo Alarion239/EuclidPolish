@@ -1,6 +1,6 @@
-import { useMemo, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { NavLink } from "react-router-dom";
-import Plot, { Legend, type Series, type Tick } from "../charts/Plot";
+import Plot, { Legend, type PlotProps, type Series, type Tick } from "../charts/Plot";
 import { C, categorical } from "../colors";
 import { useResource } from "../hooks";
 import { JobProgressView, useJob } from "../jobs";
@@ -157,6 +157,125 @@ function ticks([lo, hi]: [number, number], count = 5): Tick[] {
       ? value.toExponential(1) : Number(value.toPrecision(3)).toString();
     return { v: value, label };
   });
+}
+
+function logarithmicTicks([lo, hi]: [number, number], count = 5): Tick[] {
+  if (!(lo > 0) || !(hi > lo)) return [];
+  const a = Math.log10(lo), b = Math.log10(hi);
+  return Array.from({ length: count }, (_, index) => {
+    const value = 10 ** (a + (b - a) * index / (count - 1));
+    return { v: value, label: Number(value.toPrecision(3)).toString() };
+  });
+}
+
+type AxisDomain = [number, number];
+type BoundDraft = {
+  xMin: string; xMax: string; yMin: string; yMax: string;
+};
+type DomainTicks = (value: AxisDomain) => Tick[];
+type AdjustablePlotProps = Omit<PlotProps, "xTicks" | "yTicks"> & {
+  boundsLabel: string;
+  xTicksForDomain?: DomainTicks;
+  yTicksForDomain?: DomainTicks;
+};
+
+function boundText(value: number): string {
+  return Number(value.toPrecision(8)).toString();
+}
+
+function draftFor(x: AxisDomain, y: AxisDomain): BoundDraft {
+  return {
+    xMin: boundText(x[0]), xMax: boundText(x[1]),
+    yMin: boundText(y[0]), yMax: boundText(y[1]),
+  };
+}
+
+function parsedDraft(
+  draft: BoundDraft,
+  xScale: PlotProps["xScale"],
+): { x: AxisDomain; y: AxisDomain } | null {
+  const values = [draft.xMin, draft.xMax, draft.yMin, draft.yMax].map((value) =>
+    value.trim() === "" ? Number.NaN : Number(value));
+  if (!values.every(Number.isFinite)) return null;
+  const [xMin, xMax, yMin, yMax] = values;
+  if (!(xMin < xMax) || !(yMin < yMax)) return null;
+  if (xScale === "log" && !(xMin > 0)) return null;
+  return { x: [xMin, xMax], y: [yMin, yMax] };
+}
+
+function sameDomain(a: AxisDomain, b: AxisDomain): boolean {
+  return a[0] === b[0] && a[1] === b[1];
+}
+
+function AdjustablePlot({
+  boundsLabel,
+  xDomain,
+  yDomain,
+  xScale,
+  xTicksForDomain = ticks,
+  yTicksForDomain = ticks,
+  ...plotProps
+}: AdjustablePlotProps) {
+  const [view, setView] = useState<{ x: AxisDomain; y: AxisDomain }>({
+    x: xDomain, y: yDomain,
+  });
+  const [draft, setDraft] = useState<BoundDraft>(() => draftFor(xDomain, yDomain));
+
+  useEffect(() => {
+    setView({ x: xDomain, y: yDomain });
+    setDraft(draftFor(xDomain, yDomain));
+  }, [xDomain[0], xDomain[1], yDomain[0], yDomain[1]]);
+
+  const parsed = parsedDraft(draft, xScale);
+  const custom = !sameDomain(view.x, xDomain) || !sameDomain(view.y, yDomain);
+  const updateBound = (key: keyof BoundDraft, value: string) => {
+    const next = { ...draft, [key]: value };
+    setDraft(next);
+    const nextView = parsedDraft(next, xScale);
+    if (nextView) setView(nextView);
+  };
+  const reset = () => {
+    setView({ x: xDomain, y: yDomain });
+    setDraft(draftFor(xDomain, yDomain));
+  };
+
+  return (
+    <div className="adjustable-plot">
+      <Plot {...plotProps}
+        xDomain={view.x} yDomain={view.y} xScale={xScale}
+        xTicks={xTicksForDomain(view.x)}
+        yTicks={yTicksForDomain(view.y)} />
+      <details className={`plot-bounds${custom ? " plot-bounds--custom" : ""}${parsed == null ? " plot-bounds--invalid" : ""}`}>
+        <summary>
+          <span>axis bounds</span>
+          <small>{custom ? "custom view" : "full data range"}</small>
+        </summary>
+        <div className="plot-bounds__grid">
+          {([
+            ["xMin", "x min"], ["xMax", "x max"],
+            ["yMin", "y min"], ["yMax", "y max"],
+          ] as const).map(([key, label]) => (
+            <label className="plot-bounds__field" key={key}>
+              <span>{label}</span>
+              <input type="number" step="any" value={draft[key]}
+                aria-label={`${boundsLabel} ${label}`}
+                onChange={(event) => updateBound(key, event.target.value)} />
+            </label>
+          ))}
+          <button type="button" className="plot-bounds__reset"
+            disabled={!custom && parsed != null} onClick={reset}>
+            reset
+          </button>
+        </div>
+        {parsed == null && (
+          <p className="plot-bounds__error" role="status">
+            Min must be smaller than max{xScale === "log" ? ", and x min must be positive" : ""}.
+            The last valid view is still shown.
+          </p>
+        )}
+      </details>
+    </div>
+  );
 }
 
 function intervalLabel(interval: Interval, digits: number): string {
@@ -369,8 +488,8 @@ function FieldPlots({ comparison }: { comparison: Comparison }) {
           <CardHead title="Brightness distribution"
             sub="The bin containing 0 e⁻ is hidden to expose the signal wings; bright and negative tails remain unclipped." />
           <CardBody>
-            <Plot xDomain={histogramX} yDomain={histogramY}
-              xTicks={ticks(histogramX)} yTicks={ticks(histogramY)}
+            <AdjustablePlot boundsLabel="Brightness distribution"
+              xDomain={histogramX} yDomain={histogramY}
               xLabel="pixel brightness (e⁻ / stack)"
               yLabel="fraction of sampled pixels / bin"
               series={histogramSeries} />
@@ -383,11 +502,11 @@ function FieldPlots({ comparison }: { comparison: Comparison }) {
           <CardHead title="Pixel quantile profile"
             sub="A tail-stable view of the same brightness samples, from the 0.1st to 99.9th percentile." />
           <CardBody>
-            <Plot xDomain={[0.1, 99.9]} yDomain={quantileY}
-              xTicks={[0.1, 1, 16, 50, 84, 99, 99.9].map((value) => ({
-                v: value, label: `${value}%`,
+            <AdjustablePlot boundsLabel="Pixel quantile profile"
+              xDomain={[0.1, 99.9]} yDomain={quantileY}
+              xTicksForDomain={(value) => ticks(value).map((tick) => ({
+                ...tick, label: `${tick.label}%`,
               }))}
-              yTicks={ticks(quantileY)}
               xLabel="pixel percentile"
               yLabel="pixel brightness (e⁻ / stack)"
               series={quantileSeries} />
@@ -400,10 +519,12 @@ function FieldPlots({ comparison }: { comparison: Comparison }) {
           <CardHead title="Angular power"
             sub="Median mean-subtracted field power; solid is synthetic and dashed is real Euclid." />
           <CardBody>
-            <Plot xDomain={powerX} yDomain={powerY} xScale="log"
-              xTicks={powers[0][1].k.filter((_, index) => index % 5 === 0)
-                .map((value) => ({ v: value, label: value.toPrecision(2) }))}
-              yTicks={ticks(powerY).map((tick) => ({ ...tick, label: `10^${tick.label}` }))}
+            <AdjustablePlot boundsLabel="Angular power"
+              xDomain={powerX} yDomain={powerY} xScale="log"
+              xTicksForDomain={logarithmicTicks}
+              yTicksForDomain={(value) => ticks(value).map((tick) => ({
+                ...tick, label: `10^${tick.label}`,
+              }))}
               xLabel="angular frequency (cycles / arcsec)"
               yLabel="log₁₀ mean-subtracted power (e⁻²)"
               series={powerSeries} />
@@ -416,8 +537,8 @@ function FieldPlots({ comparison }: { comparison: Comparison }) {
           <CardHead title="Mean brightness vs field variation"
             sub="Each marker is one 255×255 field. Filled markers are synthetic; rings are real Euclid." />
           <CardBody>
-            <Plot xDomain={meanStdDomain.x} yDomain={meanStdDomain.y}
-              xTicks={ticks(meanStdDomain.x)} yTicks={ticks(meanStdDomain.y)}
+            <AdjustablePlot boundsLabel="Mean brightness vs field variation"
+              xDomain={meanStdDomain.x} yDomain={meanStdDomain.y}
               xLabel="field mean (e⁻ / pixel)"
               yLabel="field standard deviation (e⁻ / pixel)"
               series={relationSeries(meanStd)} />
@@ -430,9 +551,8 @@ function FieldPlots({ comparison }: { comparison: Comparison }) {
           <CardHead title="Background vs robust noise"
             sub="Median and MAD suppress bright objects, exposing sky-offset and detector-noise mismatch." />
           <CardBody>
-            <Plot xDomain={medianRobustDomain.x} yDomain={medianRobustDomain.y}
-              xTicks={ticks(medianRobustDomain.x)}
-              yTicks={ticks(medianRobustDomain.y)}
+            <AdjustablePlot boundsLabel="Background vs robust noise"
+              xDomain={medianRobustDomain.x} yDomain={medianRobustDomain.y}
               xLabel="field median (e⁻ / pixel)"
               yLabel="robust noise · 1.4826 × MAD (e⁻ / pixel)"
               series={relationSeries(medianRobust)} />
@@ -445,11 +565,11 @@ function FieldPlots({ comparison }: { comparison: Comparison }) {
           <CardHead title="Inter-band pixel correlation"
             sub="Median within-field Pearson correlation; ribbons span the field-to-field 16–84% range." />
           <CardBody>
-            <Plot xDomain={correlationX} yDomain={correlationY}
-              xTicks={correlations.pairs.map((label, index) => ({
-                v: index, label,
-              }))}
-              yTicks={ticks(correlationY)}
+            <AdjustablePlot boundsLabel="Inter-band pixel correlation"
+              xDomain={correlationX} yDomain={correlationY}
+              xTicksForDomain={(value) => correlations.pairs
+                .map((label, index) => ({ v: index, label }))
+                .filter((tick) => tick.v >= value[0] && tick.v <= value[1])}
               xLabel="band pair"
               yLabel="within-field pixel correlation"
               series={correlationSeries} />
@@ -480,11 +600,10 @@ function FieldPlots({ comparison }: { comparison: Comparison }) {
                 </div>
               ))}
             </div>
-            <Plot xDomain={[Math.min(...similarities[0][1].k), Math.max(...similarities[0][1].k)]}
+            <AdjustablePlot boundsLabel="Scale-spectrum similarity"
+              xDomain={[Math.min(...similarities[0][1].k), Math.max(...similarities[0][1].k)]}
               yDomain={ratioY} xScale="log"
-              xTicks={similarities[0][1].k.filter((_, index) => index % 5 === 0)
-                .map((value) => ({ v: value, label: value.toPrecision(2) }))}
-              yTicks={ticks(ratioY)}
+              xTicksForDomain={logarithmicTicks}
               guides={[{ axis: "y", v: 0, dash: [4, 4] }]}
               xLabel="angular frequency (cycles / arcsec)"
               yLabel="log₁₀ scale-share ratio"
@@ -563,8 +682,10 @@ function ParameterPlot({ parameter, source }: { parameter: Parameter; source: st
         sub={`${source} · ${entries.map(([kind, histogram]) =>
           `${kind} n=${histogram.count.toLocaleString()}`).join(" · ")}`} />
       <CardBody>
-        <Plot xDomain={xDomain} yDomain={yDomain}
-          xTicks={ticks(xDomain, 4)} yTicks={ticks(yDomain, 4)}
+        <AdjustablePlot boundsLabel={`${source} ${parameter.label}`}
+          xDomain={xDomain} yDomain={yDomain}
+          xTicksForDomain={(value) => ticks(value, 4)}
+          yTicksForDomain={(value) => ticks(value, 4)}
           xLabel={parameter.unit} yLabel="fraction / bin"
           series={series} aspect={0.62} />
         <Legend items={entries.map(([kind], index) => ({
