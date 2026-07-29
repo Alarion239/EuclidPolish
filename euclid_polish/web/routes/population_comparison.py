@@ -19,8 +19,20 @@ from euclid_polish.web.remote import ensure_ssh_connected
 def register(app):
     @app.route("/api/population-comparison")
     def api_population_comparison():
+        comparison = read_comparison()
+        include_training = request.args.get(
+            "include_training", ""
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        if comparison is not None:
+            comparison = dict(comparison)
+            if include_training:
+                comparison["population"] = comparison.get(
+                    "population_with_training",
+                    comparison.get("population"),
+                )
+            comparison.pop("population_with_training", None)
         return jsonify({
-            "comparison": read_comparison(),
+            "comparison": comparison,
             "availability": availability(),
             "authenticated": euclid_session.is_authenticated(),
         })

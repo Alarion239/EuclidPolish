@@ -182,18 +182,17 @@ def test_population_refresh_preserves_field_statistics(tmp_path, monkeypatch):
         "fields": {"sentinel": "unchanged"},
         "population": {},
     }))
-    sources = tmp_path / "sources.csv"
-    sources.write_text(
-        "field_index,type,mag_vis\n"
-        "0,galaxy,21.0\n"
-        "1,star,18.0\n"
-    )
+    current = {"synthetic_field_count": 2, "euclid": {"objects": 2}}
+    with_training = {
+        "synthetic_field_count": 12,
+        "euclid": {"objects": 2},
+    }
     monkeypatch.setattr(comparison, "comparison_path", lambda: comparison_file)
-    monkeypatch.setattr(comparison, "_synthetic_paths", lambda: ([], [sources]))
-    monkeypatch.setattr(comparison, "_read_euclid_sources", lambda: ([
-        {"type": "galaxy", "mag_vis": 22.0},
-        {"type": "star", "mag_vis": 19.0},
-    ], {"area_arcmin2": 4.0, "rows": 2}))
+    monkeypatch.setattr(
+        comparison,
+        "_population_variants",
+        lambda field_count, detection: (current, with_training),
+    )
 
     refreshed = refresh_population_comparison()
     saved = json.loads(comparison_file.read_text())
@@ -203,6 +202,69 @@ def test_population_refresh_preserves_field_statistics(tmp_path, monkeypatch):
     assert refreshed["synthetic_field_count"] == 2
     assert saved["fields"] == {"sentinel": "unchanged"}
     assert saved["population"] == refreshed
+    assert saved["population_with_training"] == with_training
+
+
+def test_synthetic_paths_exclude_training_by_default(tmp_path, monkeypatch):
+    from euclid_polish.web.helpers import population_comparison as comparison
+
+    for name in (
+        "dirty_test.tfrecord",
+        "dirty_validate.tfrecord",
+        "sources_test.csv",
+        "sources_validate.csv",
+        "sources_train.csv",
+    ):
+        (tmp_path / name).touch()
+    monkeypatch.setattr(
+        comparison, "_sky_records_local_dir", lambda: str(tmp_path)
+    )
+
+    _, current = comparison._synthetic_paths()
+    _, with_training = comparison._synthetic_paths(include_training=True)
+
+    assert [path.name for path in current] == [
+        "sources_test.csv",
+        "sources_validate.csv",
+    ]
+    assert [path.name for path in with_training] == [
+        "sources_test.csv",
+        "sources_validate.csv",
+        "sources_train.csv",
+    ]
+
+
+def test_population_variants_keep_calibration_on_current_splits(monkeypatch):
+    from pathlib import Path
+
+    from euclid_polish.web.helpers import population_comparison as comparison
+
+    current_paths = [Path("sources_test.csv"), Path("sources_validate.csv")]
+    all_paths = [*current_paths, Path("sources_train.csv")]
+    monkeypatch.setattr(
+        comparison,
+        "_synthetic_paths",
+        lambda *, include_training=False: (
+            [],
+            all_paths if include_training else current_paths,
+        ),
+    )
+
+    def fake_payload(paths, field_count, detection, *, calibrate_tng_prior=True):
+        return {
+            "synthetic_field_count": len(paths),
+            "tng_prior": "current calibration" if calibrate_tng_prior else None,
+        }
+
+    monkeypatch.setattr(comparison, "_population_payload", fake_payload)
+    current, with_training = comparison._population_variants(200, {})
+
+    assert current["synthetic_field_count"] == 2
+    assert current["training_included"] is False
+    assert with_training["synthetic_field_count"] == 3
+    assert with_training["training_included"] is True
+    assert with_training["tng_prior"] == "current calibration"
+    assert with_training["calibration_splits"] == ["test", "validate"]
 
 
 def test_euclid_population_query_keeps_classifier_uncertainty_and_photometry(
@@ -377,3 +439,32 @@ def test_population_comparison_page_and_status_route(monkeypatch):
         "availability": expected_availability,
         "authenticated": False,
     }
+
+
+def test_population_comparison_status_selects_training_variant(monkeypatch):
+    from euclid_polish.web.app import create_app
+    from euclid_polish.web.routes import population_comparison as routes
+
+    cached = {
+        "version": VERSION,
+        "population": {"synthetic_field_count": 200},
+        "population_with_training": {"synthetic_field_count": 6600},
+    }
+    monkeypatch.setattr(routes, "availability", lambda: {})
+    monkeypatch.setattr(routes, "read_comparison", lambda: cached)
+    monkeypatch.setattr(
+        routes.euclid_session, "is_authenticated", lambda: False
+    )
+    client = create_app().test_client()
+
+    current = client.get("/api/population-comparison").get_json()
+    with_training = client.get(
+        "/api/population-comparison?include_training=1"
+    ).get_json()
+
+    assert current["comparison"]["population"]["synthetic_field_count"] == 200
+    assert (
+        with_training["comparison"]["population"]["synthetic_field_count"]
+        == 6600
+    )
+    assert "population_with_training" not in with_training["comparison"]

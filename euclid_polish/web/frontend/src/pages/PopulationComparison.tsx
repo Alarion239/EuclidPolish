@@ -5,7 +5,7 @@ import { C, categorical } from "../colors";
 import { useResource } from "../hooks";
 import { JobProgressView, useJob } from "../jobs";
 import {
-  Badge, Button, Card, CardBody, CardHead, Empty, Field, Input, Page,
+  Badge, Button, Card, CardBody, CardHead, Checkbox, Empty, Field, Input, Page,
   PageHead, Spinner, Stat,
 } from "../ui";
 import "./population-comparison.css";
@@ -142,6 +142,9 @@ type Comparison = {
     euclid: Population | null;
     shared: SharedPopulation | null;
     tng_prior?: TngPrior | null;
+    synthetic_splits?: string[];
+    training_included?: boolean;
+    calibration_splits?: string[];
     euclid_meta: {
       ra: number; dec: number; radius_arcmin: number; area_arcmin2: number;
       rows: number; limit: number; limit_reached: boolean; classification: string;
@@ -157,6 +160,8 @@ type Availability = {
     fields: number; area_arcmin2: number; record_files: number;
     source_catalogs: number; train_source_catalog: boolean;
     population_fields: number; population_area_arcmin2: number;
+    population_fields_with_training: number;
+    population_area_arcmin2_with_training: number;
   };
   real: {
     fields: number; area_arcmin2: number;
@@ -1102,7 +1107,12 @@ function ConeQuery({ api, onQueried }: { api: ApiPayload; onQueried: () => void 
 }
 
 export default function PopulationComparisonPage() {
-  const resource = useResource<ApiPayload>("/api/population-comparison", [], { ttl: 10_000 });
+  const [includeTraining, setIncludeTraining] = useState(false);
+  const resource = useResource<ApiPayload>(
+    `/api/population-comparison?include_training=${includeTraining ? "1" : "0"}`,
+    [includeTraining],
+    { ttl: 10_000 },
+  );
   const build = useJob();
   const trainingCatalog = useJob();
   const api = resource.data;
@@ -1110,7 +1120,11 @@ export default function PopulationComparisonPage() {
   const stale = !!comparison && !!api && (
     comparison.samples.synthetic.fields !== api.availability.synthetic.fields
     || comparison.samples.real.fields !== api.availability.real.fields
-    || comparison.population.synthetic_field_count !== api.availability.synthetic.population_fields
+    || comparison.population.synthetic_field_count !== (
+      includeTraining
+        ? api.availability.synthetic.population_fields_with_training
+        : api.availability.synthetic.population_fields
+    )
     || !euclidMetaMatches(
       api.availability.euclid_catalog.meta,
       comparison.population.euclid_meta,
@@ -1172,10 +1186,15 @@ export default function PopulationComparisonPage() {
                 <p>Counts use the true sky footprint. Histograms retain only observables available for both synthetic truth and the Euclid catalog.</p>
               </div>
               <div className="comparison-actions">
-                <Badge tone={api.availability.synthetic.train_source_catalog ? "good" : "warn"}>
-                  {api.availability.synthetic.train_source_catalog
-                    ? `${comparison.population.synthetic_field_count.toLocaleString()} synthetic fields`
-                    : "test + validate only"}
+                <Checkbox checked={includeTraining}
+                  disabled={!api.availability.synthetic.train_source_catalog}
+                  onChange={setIncludeTraining}>
+                  include training catalog
+                </Checkbox>
+                <Badge tone={includeTraining ? "warn" : "good"}>
+                  {includeTraining
+                    ? `train + test + validate · ${comparison.population.synthetic_field_count.toLocaleString()} fields`
+                    : `test + validate · ${comparison.population.synthetic_field_count.toLocaleString()} fields`}
                 </Badge>
                 {!api.availability.synthetic.train_source_catalog && (
                   <Button size="sm" disabled={trainingCatalog.busy}
@@ -1186,6 +1205,13 @@ export default function PopulationComparisonPage() {
               </div>
             </header>
             <JobProgressView job={trainingCatalog.job} error={trainingCatalog.error} />
+            {includeTraining && (
+              <p className="catalog-classification-note">
+                Training truth uses the legacy generator prior. It is included in
+                the population histograms only; TNG calibration remains restricted
+                to the regenerated 200-field test + validation catalogs.
+              </p>
+            )}
             <div className="population-summary-grid">
               <PopulationSummary title="Synthetic source truth" eyebrow="generated catalog sidecars"
                 population={comparison.population.synthetic} tone="synthetic" />

@@ -29,7 +29,7 @@ from euclid_polish.web.helpers.tng_prior import (
     tng_prior_payload,
 )
 
-VERSION = 6
+VERSION = 7
 CATALOG_VERSION = 2
 BANDS = ("VIS", "Y_E", "J_E", "H_E")
 TILE_SIZE = 256
@@ -141,16 +141,22 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
     os.replace(temporary, path)
 
 
-def _synthetic_paths() -> tuple[list[Path], list[Path]]:
+def _synthetic_paths(
+    *,
+    include_training: bool = False,
+) -> tuple[list[Path], list[Path]]:
     root = Path(_sky_records_local_dir())
     records = [
         root / f"dirty_{subset}.tfrecord"
         for subset in ("test", "validate")
         if (root / f"dirty_{subset}.tfrecord").is_file()
     ]
+    source_splits = ["test", "validate"]
+    if include_training:
+        source_splits.append("train")
     sources = [
         root / f"sources_{subset}.csv"
-        for subset in ("test", "validate", "train")
+        for subset in source_splits
         if (root / f"sources_{subset}.csv").is_file()
     ]
     return records, sources
@@ -170,9 +176,13 @@ def _real_field_sources() -> tuple[list[Path], list[Path]]:
 
 def availability() -> dict[str, Any]:
     records, source_csvs = _synthetic_paths()
+    _, source_csvs_with_training = _synthetic_paths(include_training=True)
     inference, overlap = _real_field_sources()
     synthetic_fields = sum(_count_tfrecord(path) for path in records)
     population_fields = _source_field_count(source_csvs)
+    population_fields_with_training = _source_field_count(
+        source_csvs_with_training
+    )
     inference_fields = 100 * len(inference)
     real_fields = inference_fields + len(overlap)
     meta = _read_json(euclid_catalog_meta_path())
@@ -185,8 +195,12 @@ def availability() -> dict[str, Any]:
             "area_arcmin2": synthetic_fields * FIELD_AREA_ARCMIN2,
             "population_fields": population_fields,
             "population_area_arcmin2": population_fields * FIELD_AREA_ARCMIN2,
+            "population_fields_with_training": population_fields_with_training,
+            "population_area_arcmin2_with_training": (
+                population_fields_with_training * FIELD_AREA_ARCMIN2
+            ),
             "record_files": len(records),
-            "source_catalogs": len(source_csvs),
+            "source_catalogs": len(source_csvs_with_training),
             "train_source_catalog": (
                 Path(_sky_records_local_dir()) / "sources_train.csv"
             ).is_file(),
@@ -948,6 +962,8 @@ def _shared_parameter_payload(
 def _population_payload(source_csvs: Iterable[Path],
                         synthetic_field_count: int,
                         source_detection: dict[str, Any] | None = None,
+                        *,
+                        calibrate_tng_prior: bool = True,
                         ) -> dict[str, Any]:
     paths = list(source_csvs)
     synthetic_rows = _read_synthetic_sources(paths)
@@ -984,10 +1000,52 @@ def _population_payload(source_csvs: Iterable[Path],
                 source_detection,
                 dataset_prior=dataset_tng_prior,
             )
-            if euclid_rows and euclid_area > 0 else None
+            if calibrate_tng_prior and euclid_rows and euclid_area > 0
+            else None
         ),
         "euclid_meta": euclid_meta,
     }
+
+
+def _population_variants(
+    synthetic_field_count: int,
+    source_detection: dict[str, Any] | None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Current-prior population and optional legacy-training-inclusive view.
+
+    Pixel statistics and TNG calibration always use regenerated test+validate
+    fields. The training toggle changes only catalog histograms/counts because
+    the cached training truth was produced with the legacy generator prior.
+    """
+    _, current_paths = _synthetic_paths()
+    _, all_paths = _synthetic_paths(include_training=True)
+    current = _population_payload(
+        current_paths,
+        synthetic_field_count,
+        source_detection,
+    )
+    current["synthetic_splits"] = ["test", "validate"]
+    current["training_included"] = False
+    current["calibration_splits"] = ["test", "validate"]
+
+    if all_paths == current_paths:
+        with_training = dict(current)
+        with_training["training_included"] = False
+        return current, with_training
+
+    with_training = _population_payload(
+        all_paths,
+        synthetic_field_count,
+        source_detection,
+        calibrate_tng_prior=False,
+    )
+    # Never reinterpret the legacy training catalog using the current raw
+    # prior. The calibration remains the matched 200-field test+validate one.
+    with_training["tng_prior"] = current["tng_prior"]
+    with_training["synthetic_splits"] = ["train", "test", "validate"]
+    with_training["training_included"] = True
+    with_training["calibration_splits"] = ["test", "validate"]
+    return current, with_training
 
 
 def refresh_population_comparison() -> dict[str, Any] | None:
@@ -995,16 +1053,15 @@ def refresh_population_comparison() -> dict[str, Any] | None:
     payload = read_comparison()
     if payload is None:
         return None
-    _, source_csvs = _synthetic_paths()
     synthetic_field_count = int(
         payload.get("samples", {}).get("synthetic", {}).get("fields", 0)
     )
-    population = _population_payload(
-        source_csvs,
+    population, population_with_training = _population_variants(
         synthetic_field_count,
         payload.get("fields", {}).get("source_detection"),
     )
     payload["population"] = population
+    payload["population_with_training"] = population_with_training
     _write_json(comparison_path(), payload)
     return population
 
@@ -1012,7 +1069,7 @@ def refresh_population_comparison() -> dict[str, Any] | None:
 def build_comparison(
     progress: Callable[[int, int, str], None] | None = None,
 ) -> dict[str, Any]:
-    records, source_csvs = _synthetic_paths()
+    records, _ = _synthetic_paths()
     inference, overlap = _real_field_sources()
     synthetic_count = sum(_count_tfrecord(path) for path in records)
     real_count = 100 * len(inference) + len(overlap)
@@ -1057,6 +1114,10 @@ def build_comparison(
     fields = _field_payload(synthetic_acc, real_acc)
     fields["source_detection"] = detections
 
+    population, population_with_training = _population_variants(
+        synthetic_acc.count,
+        detections,
+    )
     payload = {
         "version": VERSION,
         "geometry": {
@@ -1079,9 +1140,8 @@ def build_comparison(
             },
         },
         "fields": fields,
-        "population": _population_payload(
-            source_csvs, synthetic_acc.count, detections
-        ),
+        "population": population,
+        "population_with_training": population_with_training,
     }
     _write_json(comparison_path(), payload)
     return payload
