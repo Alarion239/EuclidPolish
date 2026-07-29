@@ -507,29 +507,38 @@ function FieldPlots({ comparison }: { comparison: Comparison }) {
   const histogramSeries: Series[] = histograms.flatMap(([band, histogram]) => [
     {
       x: histogram.x, y: omitBin(histogram.synthetic, histogram.zero_bin),
-      color: BAND_COLOR(band),
-      mode: "histogram", width: 1.25, alpha: 0.72, fillAlpha: 0.13,
+      color: BAND_COLOR(band), mode: "histogram",
+      width: 1.5, alpha: 0.92, fillAlpha: 0.22,
     },
     {
       x: histogram.x, y: omitBin(histogram.real, histogram.zero_bin),
-      color: BAND_COLOR(band),
-      mode: "histogram", width: 1.4, dash: [4, 3], alpha: 0.95, fillAlpha: 0.025,
+      color: BAND_COLOR(band), mode: "histogram",
+      width: 1.9, dash: [8, 4], hatch: true, alpha: 1, fillAlpha: 0.025,
     },
   ]);
   const quantileSeries: Series[] = quantiles.flatMap(([band, item]) => [
-    { x: item.q, y: item.synthetic, color: BAND_COLOR(band), width: 2.4 },
-    { x: item.q, y: item.real, color: BAND_COLOR(band), width: 2.2, dash: [6, 4] },
+    {
+      x: item.q, y: item.synthetic, color: BAND_COLOR(band),
+      width: 2.7, dots: true, marker: "filled", markerEvery: 4,
+    },
+    {
+      x: item.q, y: item.real, color: BAND_COLOR(band),
+      width: 2.4, dash: [10, 5], dots: true, marker: "diamond", markerEvery: 4,
+    },
   ]);
   const powerSeries: Series[] = powers.flatMap(([band, power]) => {
     const axis = powerAxes.get(band)!;
+    const markerEvery = Math.max(1, Math.round(axis.x.length / 9));
     return [
       {
         x: axis.x, y: ordered(log10(power.synthetic.median), axis.order),
-        color: BAND_COLOR(band), width: 2.4,
+        color: BAND_COLOR(band), width: 2.7,
+        dots: true, marker: "filled", markerEvery,
       },
       {
         x: axis.x, y: ordered(log10(power.real.median), axis.order),
-        color: BAND_COLOR(band), width: 2.2, dash: [6, 4],
+        color: BAND_COLOR(band), width: 2.4, dash: [10, 5],
+        dots: true, marker: "diamond", markerEvery,
       },
     ];
   });
@@ -551,12 +560,12 @@ function FieldPlots({ comparison }: { comparison: Comparison }) {
     {
       x: relation.synthetic.x, y: relation.synthetic.y,
       color: BAND_COLOR(band), mode: "scatter", marker: "filled",
-      width: 1.25, alpha: 0.38,
+      width: 1.7, alpha: 0.52,
     },
     {
       x: relation.real.x, y: relation.real.y,
-      color: BAND_COLOR(band), mode: "scatter", marker: "ring",
-      width: 1.15, alpha: 0.78,
+      color: BAND_COLOR(band), mode: "scatter", marker: "diamond",
+      width: 1.8, alpha: 0.92,
     },
   ]);
   const relationDomains = (
@@ -584,22 +593,30 @@ function FieldPlots({ comparison }: { comparison: Comparison }) {
       y: correlations.synthetic.median,
       low: correlations.synthetic.p16,
       high: correlations.synthetic.p84,
-      color: C.comb, width: 2.5, dots: true, fillAlpha: 0.09,
+      color: C.comb, width: 2.8, dots: true, marker: "filled",
+      fillAlpha: 0.11,
     },
     {
       x: correlations.pairs.map((_, index) => index),
       y: correlations.real.median,
       low: correlations.real.p16,
       high: correlations.real.p84,
-      color: C.mean, width: 2.5, dots: true, fillAlpha: 0.09,
+      color: C.mean, width: 2.5, dash: [10, 5],
+      dots: true, marker: "diamond", fillAlpha: 0.055,
     },
   ];
   const bandLegend = BANDS.map((band) => ({
     color: BAND_COLOR(band), label: bandLabel(band),
   }));
   const sourceLegend = [
-    { color: C.cross, label: "synthetic LR", dash: false },
-    { color: C.cross, label: "real Euclid LR", dash: true },
+    {
+      color: C.cross, label: "synthetic LR · solid + circles",
+      line: true, dash: false, marker: "filled" as const,
+    },
+    {
+      color: C.cross, label: "real Euclid LR · dashed + diamonds",
+      line: true, dash: true, marker: "diamond" as const,
+    },
   ];
   const histogramBandLegend = BANDS.map((band) => ({
     color: BAND_COLOR(band), label: bandLabel(band), histogram: true,
@@ -610,13 +627,13 @@ function FieldPlots({ comparison }: { comparison: Comparison }) {
       histogram: true, filled: true, dash: false,
     },
     {
-      color: C.cross, label: "real Euclid LR",
-      histogram: true, filled: false, dash: true,
+      color: C.cross, label: "real Euclid LR · hatched outline",
+      histogram: true, filled: false, hatch: true, dash: true,
     },
   ];
   const scatterSourceLegend = [
-    { color: C.cross, label: "synthetic LR", marker: "filled" as const },
-    { color: C.cross, label: "real Euclid LR", marker: "ring" as const },
+    { color: C.cross, label: "synthetic LR · filled circles", marker: "filled" as const },
+    { color: C.cross, label: "real Euclid LR · hollow diamonds", marker: "diamond" as const },
   ];
 
   return (
@@ -631,7 +648,7 @@ function FieldPlots({ comparison }: { comparison: Comparison }) {
       <div className="field-plot-grid">
         <Card className="comparison-plot">
           <CardHead title="Brightness distribution"
-            sub="The bin containing 0 e⁻ is hidden to expose the signal wings; bright and negative tails remain unclipped." />
+            sub="Filled bars are synthetic; hatched outlines are real Euclid. The 0 e⁻ bin is hidden to expose the signal wings." />
           <CardBody>
             <AdjustablePlot boundsLabel="Brightness distribution"
               xDomain={histogramX} yDomain={histogramY}
@@ -645,7 +662,7 @@ function FieldPlots({ comparison }: { comparison: Comparison }) {
 
         <Card className="comparison-plot">
           <CardHead title="Pixel quantile profile"
-            sub="A tail-stable view of the same brightness samples, from the 0.1st to 99.9th percentile." />
+            sub="A tail-stable view from the 0.1st to 99.9th percentile. Circles are synthetic; diamonds are real Euclid." />
           <CardBody>
             <AdjustablePlot boundsLabel="Pixel quantile profile"
               xDomain={[0.1, 99.9]} yDomain={quantileY}
@@ -662,7 +679,7 @@ function FieldPlots({ comparison }: { comparison: Comparison }) {
 
         <Card className="comparison-plot">
           <CardHead title="Angular-scale power"
-            sub="Median mean-subtracted field power, ordered from fine to broad angular structure; solid is synthetic and dashed is real Euclid." />
+            sub="Median mean-subtracted field power. Solid circles are synthetic; dashed diamonds are real Euclid." />
           <CardBody>
             <AdjustablePlot boundsLabel="Angular-scale power"
               xDomain={powerX} yDomain={powerY} xScale="log"
@@ -680,7 +697,7 @@ function FieldPlots({ comparison }: { comparison: Comparison }) {
 
         <Card className="comparison-plot">
           <CardHead title="Mean brightness vs field variation"
-            sub="Each marker is one 255×255 field. Filled markers are synthetic; rings are real Euclid." />
+            sub="Each marker is one 255×255 field. Filled circles are synthetic; hollow diamonds are real Euclid." />
           <CardBody>
             <AdjustablePlot boundsLabel="Mean brightness vs field variation"
               xDomain={meanStdDomain.x} yDomain={meanStdDomain.y}
@@ -694,7 +711,7 @@ function FieldPlots({ comparison }: { comparison: Comparison }) {
 
         <Card className="comparison-plot">
           <CardHead title="Background vs robust noise"
-            sub="Median and MAD suppress bright objects, exposing sky-offset and detector-noise mismatch." />
+            sub="Median and MAD suppress bright objects. Filled circles are synthetic; hollow diamonds are real Euclid." />
           <CardBody>
             <AdjustablePlot boundsLabel="Background vs robust noise"
               xDomain={medianRobustDomain.x} yDomain={medianRobustDomain.y}
@@ -719,8 +736,14 @@ function FieldPlots({ comparison }: { comparison: Comparison }) {
               yLabel="within-field pixel correlation"
               series={correlationSeries} />
             <Legend items={[
-              { color: C.comb, label: "synthetic LR" },
-              { color: C.mean, label: "real Euclid LR" },
+              {
+                color: C.comb, label: "synthetic LR · solid + circles",
+                line: true, marker: "filled",
+              },
+              {
+                color: C.mean, label: "real Euclid LR · dashed + diamonds",
+                line: true, dash: true, marker: "diamond",
+              },
             ]} />
           </CardBody>
         </Card>
@@ -827,19 +850,20 @@ function ComparableParameterPlot({ parameter, shared }: {
       y: pair.synthetic.density,
       color: CLASS_COLOR[kind],
       mode: "histogram",
-      width: 1.35,
-      alpha: 0.88,
-      fillAlpha: 0.20,
+      width: 1.55,
+      alpha: 0.94,
+      fillAlpha: 0.24,
     },
     {
       x: pair.euclid.x,
       y: pair.euclid.density,
       color: CLASS_COLOR[kind],
       mode: "histogram",
-      width: 1.55,
-      dash: [5, 3],
+      width: 1.9,
+      dash: [8, 4],
+      hatch: true,
       alpha: 1,
-      fillAlpha: 0,
+      fillAlpha: 0.025,
     },
   ]);
   const counts = entries.map(([kind, pair]) => (
@@ -865,12 +889,12 @@ function ComparableParameterPlot({ parameter, shared }: {
         }))} />
         <Legend items={[
           {
-            color: C.cross, label: "synthetic truth",
+            color: C.cross, label: "synthetic truth · filled",
             histogram: true, filled: true, dash: false,
           },
           {
-            color: C.cross, label: "Euclid catalog",
-            histogram: true, filled: false, dash: true,
+            color: C.cross, label: "Euclid catalog · hatched",
+            histogram: true, filled: false, hatch: true, dash: true,
           },
         ]} />
       </CardBody>

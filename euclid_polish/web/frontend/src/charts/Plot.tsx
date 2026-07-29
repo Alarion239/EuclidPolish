@@ -11,10 +11,12 @@ export type Series = {
   high?: (number | null)[];
   color: string;
   mode?: "line" | "histogram" | "scatter";
-  marker?: "filled" | "ring";
+  marker?: "filled" | "ring" | "diamond";
   width?: number;
   dash?: number[];
   dots?: boolean;
+  markerEvery?: number;
+  hatch?: boolean;
   alpha?: number;
   fillAlpha?: number;
 };
@@ -86,6 +88,28 @@ function binOf(edges: number[], v: number): number {
   let lo = 0, hi = edges.length - 1;
   while (lo < hi - 1) { const mid = (lo + hi) >> 1; if (edges[mid] <= v) lo = mid; else hi = mid; }
   return lo;
+}
+
+function drawMarker(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  radius: number,
+  marker: Series["marker"] = "filled",
+) {
+  ctx.beginPath();
+  if (marker === "diamond") {
+    ctx.moveTo(x, y - radius);
+    ctx.lineTo(x + radius, y);
+    ctx.lineTo(x, y + radius);
+    ctx.lineTo(x - radius, y);
+    ctx.closePath();
+    ctx.stroke();
+  } else {
+    ctx.arc(x, y, radius, 0, 2 * Math.PI);
+    if (marker === "ring") ctx.stroke();
+    else ctx.fill();
+  }
 }
 
 export default function Plot(p: PlotProps) {
@@ -308,10 +332,31 @@ function render(ctx: CanvasRenderingContext2D, W: number, H: number, p: PlotProp
           : s.x[i] + (s.x[i] - (s.x[i - 1] ?? p.xDomain[0])) / 2;
         const x0 = tx(left), x1 = tx(right), top = ty(yv);
         const inset = Math.min(0.6, Math.max(0, (x1 - x0) * 0.08));
+        const barX = x0 + inset;
+        const barW = Math.max(0, x1 - x0 - 2 * inset);
+        const barH = baseline - top;
         ctx.globalAlpha = s.fillAlpha ?? 0.18;
-        ctx.fillRect(x0 + inset, top, Math.max(0, x1 - x0 - 2 * inset), baseline - top);
+        ctx.fillRect(barX, top, barW, barH);
+        if (s.hatch && barW > 0 && barH > 0) {
+          ctx.save();
+          ctx.beginPath();
+          ctx.rect(barX, top, barW, barH);
+          ctx.clip();
+          ctx.globalAlpha = Math.max(0.26, s.alpha ?? 1);
+          ctx.lineWidth = 0.8;
+          ctx.setLineDash([]);
+          const step = 6;
+          for (let x = barX - barH; x < barX + barW; x += step) {
+            ctx.beginPath();
+            ctx.moveTo(x, baseline);
+            ctx.lineTo(x + barH, top);
+            ctx.stroke();
+          }
+          ctx.restore();
+        }
         ctx.globalAlpha = s.alpha ?? 1;
-        ctx.strokeRect(x0 + inset, top, Math.max(0, x1 - x0 - 2 * inset), baseline - top);
+        ctx.setLineDash(s.dash ?? []);
+        ctx.strokeRect(barX, top, barW, barH);
       }
       continue;
     }
@@ -320,14 +365,14 @@ function render(ctx: CanvasRenderingContext2D, W: number, H: number, p: PlotProp
       for (let i = 0; i < s.x.length; i++) {
         const yv = s.y[i];
         if (yv == null || !isFinite(yv) || !isFinite(s.x[i])) continue;
-        ctx.beginPath();
-        ctx.arc(tx(s.x[i]), ty(yv), (s.width ?? 2) + 0.7, 0, 2 * Math.PI);
-        if (s.marker === "ring") {
-          ctx.lineWidth = Math.max(1.2, s.width ?? 1.5);
-          ctx.stroke();
-        } else {
-          ctx.fill();
-        }
+        ctx.lineWidth = Math.max(1.2, s.width ?? 1.5);
+        drawMarker(
+          ctx,
+          tx(s.x[i]),
+          ty(yv),
+          (s.width ?? 2) + (s.marker === "diamond" ? 2 : 0.9),
+          s.marker,
+        );
       }
       continue;
     }
@@ -342,10 +387,19 @@ function render(ctx: CanvasRenderingContext2D, W: number, H: number, p: PlotProp
     ctx.stroke();
     if (s.dots) {
       ctx.setLineDash([]);
+      const markerEvery = Math.max(1, s.markerEvery ?? 1);
       for (let i = 0; i < s.x.length; i++) {
         const yv = s.y[i];
-        if (yv == null || !isFinite(yv)) continue;
-        ctx.beginPath(); ctx.arc(tx(s.x[i]), ty(yv), (s.width ?? 2) + 0.6, 0, 7); ctx.fill();
+        if (yv == null || !isFinite(yv)
+          || (i % markerEvery !== 0 && i !== s.x.length - 1)) continue;
+        ctx.lineWidth = Math.max(1.2, s.width ?? 1.5);
+        drawMarker(
+          ctx,
+          tx(s.x[i]),
+          ty(yv),
+          (s.width ?? 2) + (s.marker === "diamond" ? 1.7 : 0.6),
+          s.marker,
+        );
       }
     }
   }
@@ -440,31 +494,62 @@ export function Legend({ items }: {
     dash?: boolean;
     histogram?: boolean;
     filled?: boolean;
-    marker?: "filled" | "ring";
+    hatch?: boolean;
+    line?: boolean;
+    marker?: "filled" | "ring" | "diamond";
   }[];
 }) {
   return (
     <div style={{ display: "flex", flexWrap: "wrap", gap: "6px 16px", padding: "10px 2px 2px", fontSize: 12 }}>
       {items.map((it, i) => (
         <span key={i} style={{ display: "inline-flex", alignItems: "center", gap: 7, color: "var(--text-dim)" }}>
-          <span style={it.marker ? {
+          <span style={it.line ? {
+            position: "relative",
+            width: 22,
+            height: 12,
+          } : it.marker ? {
             width: 9,
             height: 9,
             boxSizing: "border-box",
-            borderRadius: "50%",
+            borderRadius: it.marker === "diamond" ? 1 : "50%",
             border: `2px solid ${it.color}`,
             background: it.marker === "filled" ? it.color : "transparent",
+            transform: it.marker === "diamond" ? "rotate(45deg)" : undefined,
           } : it.histogram ? {
             width: 18,
             height: 9,
             boxSizing: "border-box",
             border: `2px ${it.dash ? "dashed" : "solid"} ${it.color}`,
-            background: it.filled ? it.color : "transparent",
-            opacity: it.filled ? 0.48 : 1,
+            background: it.hatch
+              ? `repeating-linear-gradient(135deg, transparent 0 3px, ${it.color} 3px 4px)`
+              : it.filled ? it.color : "transparent",
+            opacity: it.filled && !it.hatch ? 0.55 : 1,
           } : {
             width: 18, height: 0,
             borderTop: `${it.dash ? "2.5px dashed" : "3px solid"} ${it.color}`,
-          }} />
+          }}>
+            {it.line && <>
+              <span style={{
+                position: "absolute",
+                left: 0,
+                right: 0,
+                top: 5,
+                borderTop: `${it.dash ? "2.5px dashed" : "3px solid"} ${it.color}`,
+              }} />
+              <span style={{
+                position: "absolute",
+                left: 8,
+                top: 2,
+                width: 7,
+                height: 7,
+                boxSizing: "border-box",
+                borderRadius: it.marker === "diamond" ? 1 : "50%",
+                border: `2px solid ${it.color}`,
+                background: it.marker === "filled" ? it.color : "var(--surface-1)",
+                transform: it.marker === "diamond" ? "rotate(45deg)" : undefined,
+              }} />
+            </>}
+          </span>
           {it.label}
         </span>
       ))}
