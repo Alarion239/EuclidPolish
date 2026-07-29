@@ -329,6 +329,25 @@ function log10(values: readonly (number | null)[]): (number | null)[] {
     value != null && value > 0 && Number.isFinite(value) ? Math.log10(value) : null);
 }
 
+function angularScaleAxis(frequencies: readonly number[]): {
+  x: number[];
+  order: number[];
+} {
+  const points = frequencies
+    .map((frequency, index) => ({ frequency, index }))
+    .filter(({ frequency }) => frequency > 0 && Number.isFinite(frequency))
+    .map(({ frequency, index }) => ({ scale: 1 / frequency, index }))
+    .sort((left, right) => left.scale - right.scale);
+  return {
+    x: points.map(({ scale }) => scale),
+    order: points.map(({ index }) => index),
+  };
+}
+
+function ordered<T>(values: readonly T[], order: readonly number[]): T[] {
+  return order.map((index) => values[index]);
+}
+
 function omitBin(values: readonly number[], index: number | null): (number | null)[] {
   return values.map((value, bin) => bin === index ? null : value);
 }
@@ -401,8 +420,20 @@ function FieldPlots({ comparison }: { comparison: Comparison }) {
   const quantileY = domain(quantiles.flatMap(([, item]) => [
     ...item.synthetic, ...item.real,
   ]));
-  const allPowerK = powers.flatMap(([, power]) => power.k);
-  const powerX: [number, number] = [Math.min(...allPowerK), Math.max(...allPowerK)];
+  const powerAxes = new Map(powers.map(([band, power]) => [
+    band, angularScaleAxis(power.k),
+  ]));
+  const allPowerScales = [...powerAxes.values()].flatMap((axis) => axis.x);
+  const powerX: [number, number] = [
+    Math.min(...allPowerScales), Math.max(...allPowerScales),
+  ];
+  const similarityAxes = new Map(similarities.map(([band, similarity]) => [
+    band, angularScaleAxis(similarity.k),
+  ]));
+  const allSimilarityScales = [...similarityAxes.values()].flatMap((axis) => axis.x);
+  const similarityX: [number, number] = [
+    Math.min(...allSimilarityScales), Math.max(...allSimilarityScales),
+  ];
   const ratioValues = similarities.flatMap(([, similarity]) => [
     ...similarity.log_shape_ratio.p16,
     ...similarity.log_shape_ratio.median,
@@ -429,19 +460,31 @@ function FieldPlots({ comparison }: { comparison: Comparison }) {
     { x: item.q, y: item.synthetic, color: BAND_COLOR(band), width: 2.4 },
     { x: item.q, y: item.real, color: BAND_COLOR(band), width: 2.2, dash: [6, 4] },
   ]);
-  const powerSeries: Series[] = powers.flatMap(([band, power]) => [
-    { x: power.k, y: log10(power.synthetic.median), color: BAND_COLOR(band), width: 2.4 },
-    { x: power.k, y: log10(power.real.median), color: BAND_COLOR(band), width: 2.2, dash: [6, 4] },
-  ]);
-  const similaritySeries: Series[] = similarities.map(([band, similarity]) => ({
-    x: similarity.k,
-    y: similarity.log_shape_ratio.median,
-    low: similarity.log_shape_ratio.p16,
-    high: similarity.log_shape_ratio.p84,
-    color: BAND_COLOR(band),
-    width: 2.4,
-    fillAlpha: 0.08,
-  }));
+  const powerSeries: Series[] = powers.flatMap(([band, power]) => {
+    const axis = powerAxes.get(band)!;
+    return [
+      {
+        x: axis.x, y: ordered(log10(power.synthetic.median), axis.order),
+        color: BAND_COLOR(band), width: 2.4,
+      },
+      {
+        x: axis.x, y: ordered(log10(power.real.median), axis.order),
+        color: BAND_COLOR(band), width: 2.2, dash: [6, 4],
+      },
+    ];
+  });
+  const similaritySeries: Series[] = similarities.map(([band, similarity]) => {
+    const axis = similarityAxes.get(band)!;
+    return {
+      x: axis.x,
+      y: ordered(similarity.log_shape_ratio.median, axis.order),
+      low: ordered(similarity.log_shape_ratio.p16, axis.order),
+      high: ordered(similarity.log_shape_ratio.p84, axis.order),
+      color: BAND_COLOR(band),
+      width: 2.4,
+      fillAlpha: 0.08,
+    };
+  });
   const relationSeries = (
     entries: readonly (readonly [Band, Relation])[],
   ): Series[] => entries.flatMap(([band, relation]) => [
@@ -558,16 +601,16 @@ function FieldPlots({ comparison }: { comparison: Comparison }) {
         </Card>
 
         <Card className="comparison-plot">
-          <CardHead title="Angular power"
-            sub="Median mean-subtracted field power; solid is synthetic and dashed is real Euclid." />
+          <CardHead title="Angular-scale power"
+            sub="Median mean-subtracted field power, ordered from fine to broad angular structure; solid is synthetic and dashed is real Euclid." />
           <CardBody>
-            <AdjustablePlot boundsLabel="Angular power"
+            <AdjustablePlot boundsLabel="Angular-scale power"
               xDomain={powerX} yDomain={powerY} xScale="log"
               xTicksForDomain={logarithmicTicks}
               yTicksForDomain={(value) => ticks(value).map((tick) => ({
                 ...tick, label: `10^${tick.label}`,
               }))}
-              xLabel="angular frequency (cycles / arcsec)"
+              xLabel="angular scale (arcsec / cycle)"
               yLabel="log₁₀ mean-subtracted power (e⁻²)"
               series={powerSeries} />
             <Legend items={bandLegend} />
@@ -643,11 +686,11 @@ function FieldPlots({ comparison }: { comparison: Comparison }) {
               ))}
             </div>
             <AdjustablePlot boundsLabel="Scale-spectrum similarity"
-              xDomain={[Math.min(...similarities[0][1].k), Math.max(...similarities[0][1].k)]}
+              xDomain={similarityX}
               yDomain={ratioY} xScale="log"
               xTicksForDomain={logarithmicTicks}
               guides={[{ axis: "y", v: 0, dash: [4, 4] }]}
-              xLabel="angular frequency (cycles / arcsec)"
+              xLabel="angular scale (arcsec / cycle)"
               yLabel="log₁₀ scale-share ratio"
               series={similaritySeries} />
             <Legend items={bandLegend} />
