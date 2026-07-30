@@ -123,6 +123,36 @@ type TngPrior = {
   pilot_grid_arcmin2: number[];
   recommendation: string;
 };
+type CosmosEuclidFit = {
+  interpretation: string;
+  fit: {
+    population_scale: number;
+    vis_minus_f814w_mag: number;
+    magnitude_slope: number;
+    scatter_mag: number;
+    completeness_m50: number;
+    completeness_width_mag: number;
+    poisson_deviance: number;
+    dof: number;
+  };
+  local_normalization_sensitivity_fit: CosmosEuclidFit["fit"];
+  latent_density: {
+    cosmos_m_lt_28_arcmin2: number;
+    locally_renormalized_m_lt_28_arcmin2: number;
+  };
+  bins: {
+    mag_center: number;
+    cosmos_latent_density: number;
+    fitted_latent_density: number;
+    local_fitted_latent_density: number;
+    euclid_detected_density: number;
+    euclid_poisson_error: number;
+    predicted_detected_density: number;
+    local_predicted_detected_density: number;
+    fitted_completeness: number;
+    synthetic_truth_density: number | null;
+  }[];
+};
 type Comparison = {
   version: number;
   geometry: {
@@ -143,6 +173,7 @@ type Comparison = {
     euclid: Population | null;
     shared: SharedPopulation | null;
     tng_prior?: TngPrior | null;
+    cosmos_euclid_fit?: CosmosEuclidFit | null;
     synthetic_splits?: string[];
     training_included?: boolean;
     calibration_splits?: string[];
@@ -928,6 +959,82 @@ function priorValue(value: number): string {
   return Number.isFinite(value) ? value.toFixed(0) : "—";
 }
 
+function CosmosEuclidDensityPanel({ fit }: { fit: CosmosEuclidFit }) {
+  const x = fit.bins.map((row) => row.mag_center);
+  const densityValues = fit.bins.flatMap((row) => [
+    row.cosmos_latent_density,
+    row.fitted_latent_density,
+    row.local_fitted_latent_density,
+    row.euclid_detected_density,
+    row.predicted_detected_density,
+    row.local_predicted_detected_density,
+    row.synthetic_truth_density ?? 0,
+  ]);
+  const densitySeries: Series[] = [
+    {
+      x, y: fit.bins.map((row) => row.cosmos_latent_density),
+      color: "#242424", width: 2.5, dash: [8, 4],
+    },
+    {
+      x, y: fit.bins.map((row) => row.fitted_latent_density),
+      color: "#008c68", width: 2.8,
+    },
+    {
+      x, y: fit.bins.map((row) => row.local_fitted_latent_density),
+      color: "#008c68", width: 1.8, dash: [2, 3],
+    },
+    {
+      x, y: fit.bins.map((row) => row.synthetic_truth_density),
+      color: "#8d48b5", width: 2.2, dash: [3, 3],
+    },
+    {
+      x, y: fit.bins.map((row) => row.euclid_detected_density),
+      color: "#1267d6", mode: "scatter", marker: "ring", width: 2.0,
+    },
+    {
+      x, y: fit.bins.map((row) => row.predicted_detected_density),
+      color: "#cf3d2e", width: 2.6, marker: "diamond", markerEvery: 1,
+    },
+    {
+      x, y: fit.bins.map((row) => row.local_predicted_detected_density),
+      color: "#e68a00", width: 1.9, dash: [7, 4], dots: true,
+    },
+  ];
+  return (
+    <Card className="comparison-plot">
+      <CardHead title="Latent COSMOS × detected Euclid density"
+        sub="COSMOS controls the intrinsic rising counts; Euclid fits only the F814W→VIS transfer and detection completeness." />
+      <CardBody>
+        <AdjustablePlot boundsLabel="COSMOS–Euclid density"
+          xDomain={[20, 28]} yDomain={domain(densityValues, true)}
+          xLabel="catalog VIS magnitude (AB)"
+          yLabel="objects / arcmin² / 0.5 mag"
+          series={densitySeries} aspect={0.58} />
+        <Legend items={[
+          { color: "#242424", label: "COSMOS latent", dash: true },
+          { color: "#008c68", label: "fixed-normalization latent" },
+          { color: "#008c68", label: "local-normalization sensitivity", dash: true },
+          { color: "#8d48b5", label: "current synthetic truth", dash: true },
+          { color: "#1267d6", label: "Euclid non-star detections", marker: "ring" },
+          { color: "#cf3d2e", label: "fixed-normalization detection fit", line: true, marker: "diamond" },
+          { color: "#e68a00", label: "local-normalization detection fit", dash: true },
+        ]} />
+        <dl className="tng-prior__diagnostics">
+          <div><dt>COSMOS m&lt;28</dt>
+            <dd>{fit.latent_density.cosmos_m_lt_28_arcmin2.toFixed(0)} / arcmin²</dd></div>
+          <div><dt>Euclid 50% completeness</dt>
+            <dd>VIS {fit.fit.completeness_m50.toFixed(2)}</dd></div>
+          <div><dt>fixed fit deviance / dof</dt>
+            <dd>{(fit.fit.poisson_deviance / fit.fit.dof).toFixed(2)}</dd></div>
+          <div><dt>local density sensitivity</dt>
+            <dd>{fit.local_normalization_sensitivity_fit.population_scale.toFixed(2)}×</dd></div>
+        </dl>
+        <p className="catalog-classification-note">{fit.interpretation}</p>
+      </CardBody>
+    </Card>
+  );
+}
+
 function TngPriorPanel({ prior }: { prior: TngPrior }) {
   const catalog = prior.catalog;
   const visible = prior.visible;
@@ -1183,6 +1290,11 @@ export default function PopulationComparisonPage() {
                   sub="Rebuild statistics to run the common VIS detector normalization." />
               </Card>
             ) : null}
+
+            {comparison.population.cosmos_euclid_fit && (
+              <CosmosEuclidDensityPanel
+                fit={comparison.population.cosmos_euclid_fit} />
+            )}
 
             <ConeQuery api={api} onQueried={resource.reload} />
 

@@ -10,6 +10,7 @@ from euclid_polish.web.helpers.population_comparison import (
     build_comparison,
     query_euclid_population,
     read_comparison,
+    read_cosmos_euclid_fit,
     refresh_population_comparison,
 )
 from euclid_polish.web.jobs import REGISTRY
@@ -30,6 +31,9 @@ def register(app):
                     "population_with_training",
                     comparison.get("population"),
                 )
+            population = dict(comparison.get("population") or {})
+            population["cosmos_euclid_fit"] = read_cosmos_euclid_fit()
+            comparison["population"] = population
             comparison.pop("population_with_training", None)
         return jsonify({
             "comparison": comparison,

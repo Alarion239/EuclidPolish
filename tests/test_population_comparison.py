@@ -453,6 +453,9 @@ def test_population_comparison_status_selects_training_variant(monkeypatch):
     monkeypatch.setattr(routes, "availability", lambda: {})
     monkeypatch.setattr(routes, "read_comparison", lambda: cached)
     monkeypatch.setattr(
+        routes, "read_cosmos_euclid_fit", lambda: {"version": 1}
+    )
+    monkeypatch.setattr(
         routes.euclid_session, "is_authenticated", lambda: False
     )
     client = create_app().test_client()
@@ -467,4 +470,7 @@ def test_population_comparison_status_selects_training_variant(monkeypatch):
         with_training["comparison"]["population"]["synthetic_field_count"]
         == 6600
     )
+    assert current["comparison"]["population"]["cosmos_euclid_fit"] == {
+        "version": 1
+    }
     assert "population_with_training" not in with_training["comparison"]

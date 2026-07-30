@@ -120,6 +120,10 @@ def euclid_catalog_meta_path() -> Path:
     return cache_dir() / "euclid_population_meta.json"
 
 
+def cosmos_euclid_fit_path() -> Path:
+    return cache_dir() / "cosmos2025" / "cosmos_euclid_density_fit.json"
+
+
 def _read_json(path: Path) -> dict[str, Any] | None:
     try:
         with path.open() as handle:
@@ -131,6 +135,11 @@ def _read_json(path: Path) -> dict[str, Any] | None:
 def read_comparison() -> dict[str, Any] | None:
     payload = _read_json(comparison_path())
     return payload if payload and payload.get("version") == VERSION else None
+
+
+def read_cosmos_euclid_fit() -> dict[str, Any] | None:
+    payload = _read_json(cosmos_euclid_fit_path())
+    return payload if payload and payload.get("version") == 1 else None
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
