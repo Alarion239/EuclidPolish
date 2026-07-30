@@ -10,6 +10,7 @@ import csv
 import json
 import math
 import os
+import random
 import warnings
 from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
@@ -1348,25 +1349,43 @@ def query_euclid_population(
 
 
 def select_star_cone_centers(
-    *, count: int = 6, stars_csv: str | Path | None = None,
+    *,
+    count: int = 6,
+    radius_arcmin: float = DEFAULT_CONE_RADIUS_ARCMIN,
+    stars_csv: str | Path | None = None,
+    seed: int | None = None,
 ) -> list[dict[str, Any]]:
-    """Select spatially separated, archive-known positions from stars.csv."""
+    """Randomly select non-overlapping, archive-known positions from stars.csv."""
     path = Path(stars_csv or Path(Config.DATA_DIR) / "euclid_stars" / "stars.csv")
     candidates: list[dict[str, Any]] = []
+    seen_positions: set[tuple[float, float]] = set()
     with path.open(newline="", encoding="utf-8") as handle:
         for row in csv.DictReader(handle):
             try:
-                candidates.append({
+                candidate = {
                     "star_id": str(row["id"]),
                     "ra": float(row["ra"]),
                     "dec": float(row["dec"]),
                     "magnitude": float(row["magnitude"]),
-                })
+                }
             except (KeyError, TypeError, ValueError):
                 continue
+            position = (candidate["ra"], candidate["dec"])
+            if position not in seen_positions:
+                seen_positions.add(position)
+                candidates.append(candidate)
     if not candidates:
         raise ValueError(f"No usable star positions in {path}")
-    chosen = [min(candidates, key=lambda row: row["magnitude"])]
+    requested = int(count)
+    if requested < 1:
+        raise ValueError("count must be at least 1")
+    if requested > len(candidates):
+        raise ValueError(
+            f"Requested {requested} cones but only {len(candidates)} "
+            "unique star positions are available"
+        )
+    shuffled = list(candidates)
+    random.Random(seed).shuffle(shuffled)
 
     def separation(a: dict[str, Any], b: dict[str, Any]) -> float:
         ra1, ra2 = math.radians(a["ra"]), math.radians(b["ra"])
@@ -1375,23 +1394,41 @@ def select_star_cone_centers(
             math.sin(d1) * math.sin(d2)
             + math.cos(d1) * math.cos(d2) * math.cos(ra1 - ra2)
         )
-        return math.acos(max(-1.0, min(1.0, cosine)))
+        return math.degrees(
+            math.acos(max(-1.0, min(1.0, cosine)))
+        ) * 60.0
 
-    while len(chosen) < min(int(count), len(candidates)):
-        remaining = [row for row in candidates if row not in chosen]
-        chosen.append(max(
-            remaining,
-            key=lambda row: min(separation(row, old) for old in chosen),
-        ))
+    minimum_separation = 2.0 * float(radius_arcmin)
+    chosen: list[dict[str, Any]] = []
+    for candidate in shuffled:
+        if all(
+            separation(candidate, previous) >= minimum_separation
+            for previous in chosen
+        ):
+            chosen.append(candidate)
+            if len(chosen) == requested:
+                break
+    if len(chosen) < requested:
+        raise ValueError(
+            f"Only {len(chosen)} non-overlapping cones of radius "
+            f"{radius_arcmin:g} arcmin fit around the saved star positions"
+        )
     return chosen
 
 
 def query_euclid_population_multi(
     *, count: int = 6, radius_arcmin: float = DEFAULT_CONE_RADIUS_ARCMIN,
+    selection_seed: int | None = None,
     progress: Callable[[int, int, str], None] | None = None,
 ) -> dict[str, Any]:
-    """Query several star-centred cones, deduplicate, and cache one census."""
-    centers = select_star_cone_centers(count=count)
+    """Query random star-centred cones, deduplicate, and cache one census."""
+    if selection_seed is None:
+        selection_seed = random.SystemRandom().getrandbits(64)
+    centers = select_star_cone_centers(
+        count=count,
+        radius_arcmin=radius_arcmin,
+        seed=selection_seed,
+    )
     combined: dict[str, dict[str, Any]] = {}
     cone_meta: list[dict[str, Any]] = []
     for index, center in enumerate(centers):
@@ -1419,6 +1456,9 @@ def query_euclid_population_multi(
         "catalog_version": CATALOG_VERSION,
         "cone_count": len(centers),
         "cones": cone_meta,
+        "selection_method": "random saved stars without replacement",
+        "selection_seed": int(selection_seed),
+        "minimum_center_separation_arcmin": 2.0 * float(radius_arcmin),
         "radius_arcmin": float(radius_arcmin),
         "area_arcmin2": len(centers) * math.pi * float(radius_arcmin) ** 2,
         "rows": len(rows),
@@ -1431,7 +1471,7 @@ def query_euclid_population_multi(
             "galaxy; all other clean non-spurious sources → unknown"
         ),
         "classification_note": (
-            "Aggregated from spatially separated cones centred on locally "
+            "Aggregated from random non-overlapping cones centred on locally "
             "saved Euclid stars; object_id duplicates are removed."
         ),
         "photometry": (

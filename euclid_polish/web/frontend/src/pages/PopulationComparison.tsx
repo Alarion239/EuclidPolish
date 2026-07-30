@@ -1129,47 +1129,49 @@ function TngPriorPanel({ prior }: { prior: TngPrior }) {
 
 function ConeQuery({ api, onQueried }: { api: ApiPayload; onQueried: () => void }) {
   const defaults = api.availability.default_cone;
-  const [ra, setRa] = useState(String(defaults.ra));
-  const [dec, setDec] = useState(String(defaults.dec));
+  const [count, setCount] = useState("6");
   const [radius, setRadius] = useState(defaults.radius_arcmin.toFixed(3));
   const query = useJob();
+  const countNumber = Number(count);
   const radiusNumber = Number(radius);
-  const area = Number.isFinite(radiusNumber) ? Math.PI * radiusNumber ** 2 : 0;
+  const valid = Number.isInteger(countNumber) && countNumber >= 1 && countNumber <= 12
+    && Number.isFinite(radiusNumber) && radiusNumber > 0 && radiusNumber <= 30;
+  const area = valid ? countNumber * Math.PI * radiusNumber ** 2 : 0;
   return (
     <Card className="cone-query">
-      <CardHead title="Euclid population cone"
-        sub="Query clean MER sources with four-band aperture photometry, classifier probabilities, morphology, blending and Gaia-match fields."
+      <CardHead title="Random Euclid population cones"
+        sub="Randomly select non-overlapping saved-star positions, then query clean MER sources around each one."
         right={<Badge tone={api.authenticated ? "good" : "warn"}>
           {api.authenticated ? "archive session ready" : "archive login required"}
         </Badge>} />
       <CardBody>
         <div className="cone-query__form">
-          <Field label="RA · deg"><Input value={ra} type="number" onChange={setRa} step={0.0001} /></Field>
-          <Field label="Dec · deg"><Input value={dec} type="number" onChange={setDec} step={0.0001} /></Field>
+          <Field label="Number of cones"><Input value={count} type="number"
+            onChange={setCount} min={1} max={12} step={1} /></Field>
           <Field label="Radius · arcmin"><Input value={radius} type="number"
             onChange={setRadius} min={0.01} max={30} step={0.01} /></Field>
           <div className="cone-query__area">
-            <span className="eyebrow">cone area</span>
+            <span className="eyebrow">total cone area</span>
             <strong>{area.toFixed(2)} arcmin²</strong>
             <small>{Math.abs(area - defaults.area_arcmin2) < 0.1
               ? "matches the 200-field synthetic footprint"
               : `${(area / defaults.area_arcmin2).toFixed(2)}× synthetic footprint`}</small>
           </div>
-          <Button variant="primary" disabled={!api.authenticated || query.busy}
-            onClick={() => query.run("/api/population-comparison/query-euclid", {
-              ra, dec, radius_arcmin: radius,
-            }, { onDone: (job) => { if (job.status !== "failed") onQueried(); } })}>
-            {query.busy ? "Querying…" : "Query Euclid cone"}
-          </Button>
-          <Button disabled={!api.authenticated || query.busy}
+          <Button variant="primary"
+            disabled={!api.authenticated || query.busy || !valid}
             onClick={() => query.run(
               "/api/population-comparison/query-euclid-multi",
-              { count: "6", radius_arcmin: radius },
+              { count, radius_arcmin: radius },
               { onDone: (job) => { if (job.status !== "failed") onQueried(); } },
             )}>
-            {query.busy ? "Querying…" : "Query 6 saved-star cones"}
+            {query.busy ? "Querying…" : `Query ${count || "0"} random cone${countNumber === 1 ? "" : "s"}`}
           </Button>
         </div>
+        <p className="cone-query__login">
+          Each run draws a fresh set of saved stars. Cones are kept at least
+          two radii apart; the selected centers and random seed are saved with
+          the catalog metadata.
+        </p>
         {!api.authenticated && (
           <p className="cone-query__login">
             Open <NavLink to="/catalog">Catalog</NavLink> and log in to the Euclid archive first.

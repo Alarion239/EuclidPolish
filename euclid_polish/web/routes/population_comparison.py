@@ -116,9 +116,9 @@ def register(app):
             ))
         except (TypeError, ValueError):
             return jsonify({"ok": False, "error": "invalid cone settings"}), 400
-        if not 2 <= count <= 12 or not 0 < radius <= 30:
+        if not 1 <= count <= 12 or not 0 < radius <= 30:
             return jsonify({"ok": False, "error": (
-                "count must be 2–12 and radius_arcmin must be in (0, 30]"
+                "count must be 1–12 and radius_arcmin must be in (0, 30]"
             )}), 400
 
         def run(cap):
@@ -162,7 +162,7 @@ def register(app):
             return meta
 
         job_id = REGISTRY.spawn(
-            label=f"population comparison: {count} Euclid cones",
+            label=f"population comparison: {count} random Euclid cones",
             target=run,
         )
         return jsonify({"ok": True, "job_id": job_id})

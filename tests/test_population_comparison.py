@@ -22,6 +22,7 @@ from euclid_polish.web.helpers.population_comparison import (
     _synthetic_dataset_tng_prior,
     query_euclid_population,
     refresh_population_comparison,
+    select_star_cone_centers,
 )
 
 
@@ -72,6 +73,30 @@ def test_population_field_payload_is_json_safe_and_keeps_four_bands():
     centers = payload["histograms"]["VIS"]["x"]
     width = centers[1] - centers[0]
     assert centers[zero_bin] - width / 2 <= 0 <= centers[zero_bin] + width / 2
+
+
+def test_star_cone_centers_are_seeded_random_and_non_overlapping(tmp_path):
+    stars = tmp_path / "stars.csv"
+    stars.write_text(
+        "id,ra,dec,magnitude\n"
+        "a,0.0,0.0,18\n"
+        "b,0.1,0.0,19\n"
+        "c,10.0,0.0,20\n"
+        "d,20.0,0.0,21\n"
+        "e,30.0,0.0,22\n"
+        "f,40.0,0.0,23\n"
+    )
+
+    first = select_star_cone_centers(
+        count=4, radius_arcmin=10.0, stars_csv=stars, seed=17,
+    )
+    replay = select_star_cone_centers(
+        count=4, radius_arcmin=10.0, stars_csv=stars, seed=17,
+    )
+
+    assert first == replay
+    assert len({row["star_id"] for row in first}) == 4
+    assert not {"a", "b"}.issubset({row["star_id"] for row in first})
 
 
 def test_scale_similarity_ignores_unrelated_fourier_phase():
@@ -439,6 +464,31 @@ def test_population_comparison_page_and_status_route(monkeypatch):
         "availability": expected_availability,
         "authenticated": False,
     }
+
+
+def test_random_cone_route_accepts_one_cone_and_rejects_zero(monkeypatch):
+    from euclid_polish.web.app import create_app
+    from euclid_polish.web.routes import population_comparison as routes
+
+    monkeypatch.setattr(routes.euclid_session, "catalog", lambda: object())
+    monkeypatch.setattr(
+        routes.REGISTRY, "spawn", lambda *args, **kwargs: "random-cones-job",
+    )
+    client = create_app().test_client()
+
+    accepted = client.post(
+        "/api/population-comparison/query-euclid-multi",
+        data={"count": "1", "radius_arcmin": "3.5"},
+    )
+    rejected = client.post(
+        "/api/population-comparison/query-euclid-multi",
+        data={"count": "0", "radius_arcmin": "3.5"},
+    )
+
+    assert accepted.status_code == 200
+    assert accepted.get_json()["job_id"] == "random-cones-job"
+    assert rejected.status_code == 400
+    assert "count must be 1–12" in rejected.get_json()["error"]
 
 
 def test_population_comparison_status_selects_training_variant(monkeypatch):
