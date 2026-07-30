@@ -7,6 +7,7 @@ import numpy as np
 from astropy.io import fits
 
 from scripts import fasrc_extract_cosmos_population as mod
+from scripts import fit_tng_vis_counts as fit_mod
 
 
 def _table(columns: dict[str, np.ndarray], name: str) -> fits.BinTableHDU:
@@ -143,3 +144,21 @@ def test_component_magnitudes_and_bulge_fraction():
     assert 0.0 < bt[0] < 0.5
     assert np.isnan(total[1])
     assert np.isnan(bt[1])
+
+
+def test_tng_fit_integrates_cosmos_quarter_mag_counts(tmp_path):
+    catalog = tmp_path / "tiny.fits"
+    output = tmp_path / "out"
+    _tiny_catalog(catalog)
+    mod.extract_catalog(str(catalog), str(output), area_deg2=1.0)
+
+    density = fit_mod.read_binned_cosmos_counts(
+        output / "cosmos2025_number_counts.csv",
+        selection="clean",
+    )
+
+    # Clean objects at m=22, m=24 (a retained blend), and m=27.
+    assert density[4] == 1.0 / 3600.0
+    assert density[8] == 1.0 / 3600.0
+    assert density[14] == 1.0 / 3600.0
+    assert np.isclose(density.sum(), 3.0 / 3600.0)
