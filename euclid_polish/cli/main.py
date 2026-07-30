@@ -54,7 +54,7 @@ from euclid_polish.psf.psf_library import (
     load_all_band_psf_sets,
     psf_inventory,
 )
-from euclid_polish.sky.generation.cosmos2025 import open_cosmos2025
+from euclid_polish.sky.generation.cosmos_tng_prior import CosmosTngPrior
 from euclid_polish.sky.generation.sky_simulator import (
     SkySimulator,
     SkySimulatorConfig,
@@ -1022,8 +1022,10 @@ class InteractiveCLI:
             return
 
         try:
-            catalog = open_cosmos2025(path=catalog_path)
-            print(f"\nCatalog: {type(catalog).__name__} — {len(catalog)} galaxies usable")
+            catalog = CosmosTngPrior(Config.COSMOS_TNG_PRIOR_PATH)
+            print(
+                f"\nCOSMOS joint prior: {len(catalog)} latent galaxies"
+            )
 
             cfg = SkySimulatorConfig(
                 image_size=image_size_val,

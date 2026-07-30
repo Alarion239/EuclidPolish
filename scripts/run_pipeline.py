@@ -61,7 +61,7 @@ from euclid_polish.model import Model
 from euclid_polish.observability.reporter import Reporter
 from euclid_polish.observability.resource_sampler import ResourceSampler
 from euclid_polish.psf.psf_library import load_all_band_psf_sets
-from euclid_polish.sky.generation.cosmos2025 import ensure_prefiltered_catalog, open_cosmos2025
+from euclid_polish.sky.generation.cosmos_tng_prior import CosmosTngPrior
 from euclid_polish.sky.generation.gen_provenance import (
     ShardStampPlan,
     make_generation_context,
@@ -144,8 +144,11 @@ def _split_forced(args: argparse.Namespace, subset: str) -> bool:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--catalog",        default=Config.COSMOS2025_CATALOG_PATH,
-                    help="Path to the COSMOS2025 master FITS file (required)")
+    ap.add_argument(
+        "--catalog",
+        default="",
+        help=argparse.SUPPRESS,  # accepted only for old submitted-job replay
+    )
     ap.add_argument("--psf-dir",        default=Config.EUCLID_PSF_DIR,
                     help="Directory containing per-band ePSF FITS files; "
                          "missing bands fall back to Gaussian.")
@@ -195,25 +198,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                          "Requires both generate and convolve (i.e. neither "
                          "--skip-generate nor --skip-convolve); falls back to "
                          "the serial two-step path otherwise.")
-    ap.add_argument("--tng-density-arcmin2", type=float, default=0.0,
-                    help="Surface density of TNG50 SKIRT stamp galaxies "
-                         "(TNG population, galaxies/arcmin²). 0 = all-Sersic "
-                         "baseline; set > 0 to mix in resolved TNG stamps. "
-                         "Independent of --sersic-density-arcmin2. "
-                         "Needs TNG galaxies downloaded under "
-                         "$DATA_DIR/tng_skirt/.")
-    ap.add_argument("--sersic-density-arcmin2", type=float,
-                    default=Config.DEFAULT_GAL_DENSITY_ARCMIN2,
-                    help="Surface density of analytic Sersic (COSMOS) "
-                         "galaxies (galaxies/arcmin²). Set to 0 to run "
-                         "TNG-only without a COSMOS catalog.")
-    ap.add_argument("--tng-redshift-mode", action="store_true",
-                    help="Physical-redshift treatment of TNG stamps: one z "
-                         "draw per stamp sets its downsample factor (via "
-                         "D_A), (1+z)^-3 dimming, and a randomized spectral "
-                         "drift; TNG-lit lenses take σ_v from the subhalo "
-                         "stellar mass (tng_properties.csv) and require "
-                         "θ_E ≥ κ × apparent R_e.")
+    ap.add_argument("--galaxy-density-arcmin2", type=float,
+                    default=Config.GALAXY_DENSITY_ARCMIN2,
+                    help="COSMOS-conditioned TNG galaxies per arcmin².")
+    ap.add_argument("--cosmos-prior", default=Config.COSMOS_TNG_PRIOR_PATH,
+                    help="Joint COSMOS2025 population-prior NPZ.")
     ap.add_argument("--star-density-arcmin2", type=float,
                     default=Config.DEFAULT_STAR_DENSITY_ARCMIN2,
                     help="Stellar surface density (stars/arcmin²).")
@@ -322,9 +311,8 @@ def _generator_config_from_args(args: argparse.Namespace) -> SkySimulatorConfig:
     return SkySimulatorConfig(
         image_size=args.image_size,
         pixel_scale=Config.DEFAULT_PIXEL_SCALE,
-        sersic_density_arcmin2=args.sersic_density_arcmin2,
-        tng_density_arcmin2=args.tng_density_arcmin2,
-        tng_redshift_mode=args.tng_redshift_mode,
+        galaxy_density_arcmin2=args.galaxy_density_arcmin2,
+        cosmos_prior_path=args.cosmos_prior,
         star_density_arcmin2=args.star_density_arcmin2,
         star_mag_slope=args.star_mag_slope,
         star_mag_bright=args.star_mag_bright,
@@ -368,14 +356,10 @@ def step_generate(args: argparse.Namespace) -> None:
             f"({args.ntrain} train + {args.nvalid} valid, "
             f"{args.image_size}² @ {Config.DEFAULT_PIXEL_SCALE}\"/pix)")
 
-    # Skip the 10 GB COSMOS master FITS when the Sersic population is disabled.
-    # Otherwise pre-filter it to a small cached .npz once → instant on repeat runs.
-    if args.sersic_density_arcmin2 <= 0.0:
-        cat = None
-        _log("Catalog: skipped (sersic_density_arcmin2=0)")
-    else:
-        cat = open_cosmos2025(path=ensure_prefiltered_catalog(args.catalog))
-        _log(f"Catalog: {type(cat).__name__}  ({len(cat)} galaxies usable)")
+    cat = (CosmosTngPrior(args.cosmos_prior)
+           if args.galaxy_density_arcmin2 > 0.0 else None)
+    if cat is not None:
+        _log(f"COSMOS joint prior: {len(cat)} latent galaxies")
 
     cfg = _generator_config_from_args(args)
     sim = SkySimulator(cat, cfg)
@@ -1022,11 +1006,9 @@ _W_FWD = None
 _W_RECORDS_DIR = ""
 
 
-def _gen_init_worker(catalog_path, image_size, psf_dir,
+def _gen_init_worker(prior_path, image_size, psf_dir,
                      require_empirical_psf, records_dir,
-                     sersic_density_arcmin2=Config.DEFAULT_GAL_DENSITY_ARCMIN2,
-                     tng_density_arcmin2=0.0,
-                     tng_redshift_mode=False,
+                     galaxy_density_arcmin2=Config.GALAXY_DENSITY_ARCMIN2,
                      star_density_arcmin2=Config.DEFAULT_STAR_DENSITY_ARCMIN2,
                      star_mag_slope=Config.STAR_MAG_SLOPE,
                      star_mag_bright=Config.STAR_MAG_BRIGHT,
@@ -1044,15 +1026,13 @@ def _gen_init_worker(catalog_path, image_size, psf_dir,
     memmapped and only the filtered columns are held, so each worker's copy
     is a few MB — no 10 GB-per-worker blow-up."""
     global _W_SIM, _W_FWD, _W_RECORDS_DIR
-    # catalog_path is None when sersic_density_arcmin2=0: nothing Sersic is
-    # rendered so COSMOS never loads.
-    cat = open_cosmos2025(path=catalog_path) if catalog_path else None
+    cat = (CosmosTngPrior(prior_path)
+           if prior_path and galaxy_density_arcmin2 > 0.0 else None)
     _W_SIM = SkySimulator(
         cat, SkySimulatorConfig(image_size=image_size,
                                       pixel_scale=Config.DEFAULT_PIXEL_SCALE,
-                                      sersic_density_arcmin2=sersic_density_arcmin2,
-                                      tng_density_arcmin2=tng_density_arcmin2,
-                                      tng_redshift_mode=tng_redshift_mode,
+                                      galaxy_density_arcmin2=galaxy_density_arcmin2,
+                                      cosmos_prior_path=prior_path or "",
                                       star_density_arcmin2=star_density_arcmin2,
                                       star_mag_slope=star_mag_slope,
                                       star_mag_bright=star_mag_bright,
@@ -1095,12 +1075,8 @@ def step_generate_and_convolve_parallel(args: argparse.Namespace) -> None:
     os.makedirs(args.records_dir, exist_ok=True)
     workers = max(1, int(args.gen_workers))
 
-    # Pre-filter the 10 GB master FITS to a small cached .npz ONCE (in the
-    # parent), so each per-subset, per-worker pool initializer reloads a few-MB
-    # file in milliseconds instead of re-parsing 784k rows every time.
-    # sersic_density=0 needs no COSMOS catalog at all.
-    catalog_path = (None if args.sersic_density_arcmin2 <= 0.0
-                    else ensure_prefiltered_catalog(args.catalog))
+    prior_path = (None if args.galaxy_density_arcmin2 <= 0.0
+                  else args.cosmos_prior)
 
     # One master seed for the whole parallel step, recorded on the generation
     # run; every shard's RNG is derived from it, so the run replays via --seed.
@@ -1220,10 +1196,9 @@ def step_generate_and_convolve_parallel(args: argparse.Namespace) -> None:
                  f"{workers} workers (run_seed={run_seed})")
             with ProcessPoolExecutor(
                 max_workers=workers, initializer=_gen_init_worker,
-                initargs=(catalog_path, args.image_size, args.psf_dir,
+                initargs=(prior_path, args.image_size, args.psf_dir,
                           args.require_empirical_psf, args.records_dir,
-                          args.sersic_density_arcmin2, args.tng_density_arcmin2,
-                          args.tng_redshift_mode,
+                          args.galaxy_density_arcmin2,
                           args.star_density_arcmin2,
                           args.star_mag_slope, args.star_mag_bright,
                           args.star_mag_faint, args.lens_density_arcmin2,

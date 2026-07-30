@@ -24,6 +24,7 @@ SOURCE_COLS = ["field_index", "type", "render", "x_pix", "y_pix",
                # TNG population configuration saved with every rendered TNG
                # row so analysis can distinguish legacy and regenerated data.
                "tng_density_arcmin2", "tng_mf_alpha",
+               "galaxy_density_arcmin2", "population_prior",
                # Per-band stellar magnitudes (empty for galaxies/lenses); the
                # forward op re-injects fixed stars with their sampled colour.
                "mag_vis", "mag_y_e", "mag_j_e", "mag_h_e",
@@ -69,6 +70,8 @@ def _galaxy_row(field_index: int, g: dict[str, Any]) -> dict[str, Any]:
         "mass_scale": _num(g.get("mass_scale")),
         "tng_density_arcmin2": _num(g.get("tng_density_arcmin2")),
         "tng_mf_alpha": _num(g.get("tng_mf_alpha")),
+        "galaxy_density_arcmin2": _num(g.get("galaxy_density_arcmin2")),
+        "population_prior": g.get("population_prior", ""),
     }
 
 
@@ -83,6 +86,7 @@ def _lens_row(field_index: int, lens: dict[str, Any]) -> dict[str, Any]:
         # Galaxy-truth columns are not meaningful for the lens row.
         "re_arcsec": "", "logmass": "", "mass_scale": "",
         "tng_density_arcmin2": "", "tng_mf_alpha": "",
+        "galaxy_density_arcmin2": "", "population_prior": "",
     }
 
 
@@ -93,6 +97,7 @@ def _star_row(field_index: int, star: dict[str, Any]) -> dict[str, Any]:
         "flux_vis_e": "", "z": "", "subhalo_id": "", "theta_E_arcsec": "",
         "re_arcsec": "", "logmass": "", "mass_scale": "",
         "tng_density_arcmin2": "", "tng_mf_alpha": "",
+        "galaxy_density_arcmin2": "", "population_prior": "",
         "mag_vis": _num(star.get("mag_vis")),
         "mag_y_e": _num(star.get("mag_y_e")),
         "mag_j_e": _num(star.get("mag_j_e")),
@@ -136,10 +141,12 @@ def _parse(row: dict[str, str]) -> dict[str, Any]:
     for k in ("x_pix", "y_pix", "flux_vis_e", "z", "theta_E_arcsec",
               "re_arcsec", "logmass", "mass_scale", "mag_vis",
               "tng_density_arcmin2", "tng_mf_alpha",
+              "galaxy_density_arcmin2",
               "mag_y_e", "mag_j_e", "mag_h_e", "temperature_k",
               "extinction_av"):
         v = row.get(k, "")
         out[k] = float(v) if v not in ("", None) else None
+    out["population_prior"] = row.get("population_prior") or None
     return out
 
 

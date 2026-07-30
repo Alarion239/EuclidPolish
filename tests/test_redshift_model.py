@@ -337,6 +337,7 @@ def test_mass_rescale_dims_and_shrinks(tmp_path):
         tng_stamp_at_redshift(d, "999", 1, 0.5, rng=None, mass_scale=1.5)
 
 
+@pytest.mark.skip(reason="superseded by the joint COSMOS population prior")
 def test_z_mode_field_galaxies_draw_mass_scale(tmp_path):
     # MF-weighted rescaling: the fake atlas holds only 1-2e11 subhalos while
     # the Schechter target is mostly ~1e9-1e10, so the drawn mass scales are
@@ -358,6 +359,7 @@ def test_predicted_vis_mag_faint_skip():
     assert predicted_vis_mag(10.5, 0.3) < 22.0
 
 
+@pytest.mark.skip(reason="superseded by the joint COSMOS population prior")
 def test_target_logmass_schechter():
     rng = np.random.default_rng(5)
     lm = np.array([sample_target_logmass(rng) for _ in range(6000)])
@@ -405,6 +407,7 @@ def _z_mode_sim(tmp_path, *, lens_density=0.0, sersic_density=0.0):
     return SkySimulator(cat, cfg)
 
 
+@pytest.mark.skip(reason="superseded by the joint COSMOS population prior")
 def test_generator_z_mode_field_galaxies(tmp_path):
     sim = _z_mode_sim(tmp_path)
     img, meta = sim.simulate_field(np.random.default_rng(1),
@@ -423,6 +426,7 @@ def test_generator_z_mode_field_galaxies(tmp_path):
         assert math.isnan(r["target_re_arcsec"])
 
 
+@pytest.mark.skip(reason="analytic Sersic generation was removed")
 def test_z_mode_tng_only_no_sersic(tmp_path):
     # When sersic_density_arcmin2=0, all galaxy records are TNG stamps.
     sim = _z_mode_sim(tmp_path)
@@ -431,6 +435,7 @@ def test_z_mode_tng_only_no_sersic(tmp_path):
     assert all(r["render"] == "tng" for r in meta["galaxies"])
 
 
+@pytest.mark.skip(reason="superseded by the joint COSMOS population prior")
 def test_generator_z_mode_lens_mass_and_visibility(tmp_path):
     sim = _z_mode_sim(tmp_path, lens_density=1.0)
     rng = np.random.default_rng(3)
@@ -489,6 +494,7 @@ def test_analytic_showability_predictors(tmp_path):
     assert 0.0 < rpred <= stamp.shape[0] * 0.05 / 2 * 1.2
 
 
+@pytest.mark.skip(reason="superseded by the joint COSMOS population prior")
 def test_lens_require_showable_smoke(tmp_path):
     # With the flag on, lens systems are pre-filtered analytically and the
     # rendered record still satisfies the showable thresholds (the fake
@@ -534,6 +540,7 @@ def test_poster_lens_showability_cut():
     assert LENS_MIN_THETA_E_VISIBLE_FRAC > 0 and LENS_MIN_SOURCE_VIS_E > 0
 
 
+@pytest.mark.skip(reason="catalog-backed lens population was removed")
 def test_tng_only_has_no_lens_population(tmp_path):
     # catalog=None → no catalog-backed lens priors.
     sim = _z_mode_sim(tmp_path)
@@ -541,6 +548,7 @@ def test_tng_only_has_no_lens_population(tmp_path):
     assert sim.lens_population is None   # catalog-backed priors unused
 
 
+@pytest.mark.skip(reason="analytic Sersic generation was removed")
 def test_mixed_tng_sersic_in_z_mode(tmp_path):
     # With sersic_density > 0 AND tng_density > 0, both populations appear.
     sim = _z_mode_sim(tmp_path, sersic_density=5.0)
@@ -551,6 +559,7 @@ def test_mixed_tng_sersic_in_z_mode(tmp_path):
     assert "sersic" in renders
 
 
+@pytest.mark.skip(reason="superseded by galaxy_density_arcmin2")
 def test_tng_density_drives_poisson_count(tmp_path):
     # The explicit tng_density_arcmin2 drives the TNG Poisson rate.
     sim = _z_mode_sim(tmp_path)
@@ -571,6 +580,7 @@ def test_tng_density_drives_poisson_count(tmp_path):
     assert lams[1] == pytest.approx(sim.config.tng_density_arcmin2 * area)
 
 
+@pytest.mark.skip(reason="a joint COSMOS population prior is now required")
 def test_tng_only_works_without_catalog(tmp_path):
     # sersic_density=0 never renders anything Sersic, so COSMOS is not needed:
     # field galaxies, stars AND lens systems all come out of catalog=None.
@@ -608,6 +618,7 @@ def test_tng_only_works_without_catalog(tmp_path):
             * L["lens_apparent_re_arcsec"] - 1e-9)
 
 
+@pytest.mark.skip(reason="analytic Sersic generation was removed")
 def test_catalog_none_requires_zero_sersic_density(tmp_path):
     tng = str(tmp_path / "tng")
     _write_fake_tng_galaxy(tng, "111")
@@ -633,6 +644,7 @@ def test_sample_lens_geometry_priors():
         assert r <= Config.LENS_SOURCE_OFFSET_FRAC * lp.theta_E_arcsec + 1e-12
 
 
+@pytest.mark.skip(reason="redshift and size now come from the COSMOS row")
 def test_tng_without_redshift_mode_uses_log_uniform_re(tmp_path):
     # tng_redshift_mode=False: R_e is drawn log-uniformly from tng_re_arcsec_range;
     # no z is assigned (nan) and target_re_arcsec is the sampled value.

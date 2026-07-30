@@ -1398,16 +1398,11 @@ class SyntheticGenerateStep(RunPipelineStep):
         except (TypeError, ValueError):
             workers = self.defaults.n_cpus
         cmd += ["--gen-workers", str(max(1, workers))]
-        # All-TNG generation with full redshift realism (COSMOS skipped). The
-        # physical n(z) + mass-function forward model reproduces the deep-field
-        # apparent-size distribution (median R_e ≈ 0.22″, only ~2% > 1″).
-        # WITHOUT --tng-redshift-mode the generator sizes stamps log-uniformly
-        # over [0.3,4]″ at full atlas mass (median ~1.1″, ~half > 1″) → fields
-        # full of arcsec-scale giants. The /config TNG density is the raw draw
-        # budget; the smooth mass prior controls how it is distributed over
-        # bright/large versus faint/small galaxies.
+        # One joint COSMOS row controls every TNG morphology's flux, redshift,
+        # stellar mass, and apparent size. This is the only galaxy population.
         raw_tng_density = params.get(
-            "tng_density_arcmin2", Config.TNG_GAL_DENSITY_ARCMIN2
+            "galaxy_density_arcmin2",
+            params.get("tng_density_arcmin2", Config.GALAXY_DENSITY_ARCMIN2),
         )
         try:
             tng_density = float(raw_tng_density)
@@ -1417,9 +1412,7 @@ class SyntheticGenerateStep(RunPipelineStep):
             ) from exc
         if not (0.0 <= tng_density < float("inf")):
             raise ValueError(f"invalid TNG density: {raw_tng_density!r}")
-        cmd += ["--sersic-density-arcmin2", "0",
-                "--tng-density-arcmin2", f"{tng_density:g}",
-                "--tng-redshift-mode"]
+        cmd += ["--galaxy-density-arcmin2", f"{tng_density:g}"]
         # Scene-population and forward-PSF knobs (from /config). Emit only when
         # supplied so direct programmatic callers can still rely on CLI
         # defaults. The warp is realised while each dirty exposure is rendered;

@@ -67,7 +67,7 @@ import contextlib
 from euclid_polish.config import Config
 from euclid_polish.image import Image
 from euclid_polish.psf.psf_library import load_all_band_psf_sets
-from euclid_polish.sky.generation.cosmos2025 import ensure_prefiltered_catalog, open_cosmos2025
+from euclid_polish.sky.generation.cosmos_tng_prior import CosmosTngPrior
 from euclid_polish.sky.generation.sky_simulator import (
     SkySimulator,
     SkySimulatorConfig,
@@ -83,7 +83,7 @@ from euclid_polish.training.inference import (
 )
 from euclid_polish.visualization.color import eye_rgb
 
-MODES = ("sersic", "star", "lens", "tng", "field")
+MODES = ("star", "lens", "tng", "field")
 # Output band order matches the generator's channel order.
 BAND_NAMES: tuple[str, ...] = Config.LR_INPUT_BAND_NAMES  # ("VIS","Y_E","J_E","H_E")
 
@@ -99,7 +99,6 @@ FIELD_STAR_DENSITY_ARCMIN2 = 12.0
 
 # ASCII label per mode (safe for FITS headers, which are ASCII-only).
 MODE_LABEL = {
-    "sersic": "Sersic galaxy",
     "star":   "Star (point source)",
     "lens":   "Gravitational lens",
     "tng":    "TNG50 galaxy",
@@ -107,7 +106,6 @@ MODE_LABEL = {
 }
 # Pretty title per mode for the PNG montage (matplotlib renders unicode fine).
 MODE_TITLE = {
-    "sersic": "Sérsic galaxy",
     "star":   "Star (point source)",
     "lens":   "Gravitational lens",
     "tng":    "TNG50 galaxy",
@@ -134,11 +132,9 @@ def _counts_for_mode(mode: str) -> dict[str, int]:
     exactly as the main training pipeline does."""
     if mode == "field":
         return {}
-    base = {"n_sersic": 0, "n_tng": 0, "n_stars": 0, "n_lenses": 0}
-    if mode == "sersic":
-        base["n_sersic"] = 1
-    elif mode == "tng":
-        base["n_tng"] = 1
+    base = {"n_galaxies": 0, "n_stars": 0, "n_lenses": 0}
+    if mode == "tng":
+        base["n_galaxies"] = 1
     elif mode == "star":
         base["n_stars"] = 1
     elif mode == "lens":
@@ -180,9 +176,6 @@ def _record_ok(mode: str, meta: dict) -> bool:
         # Poisson counts can come up all-zero on a tiny field; ask for at
         # least one rendered source so the preview isn't a blank frame.
         return (meta["n_galaxies"] + meta["n_stars"] + meta["n_lenses"]) > 0
-    if mode == "sersic":
-        gals = meta["galaxies"]
-        return len(gals) == 1 and gals[0].get("render") == "sersic"
     if mode == "tng":
         gals = meta["galaxies"]
         return len(gals) == 1 and gals[0].get("render") == "tng"
@@ -202,16 +195,13 @@ def generate_cutout(
         raise ValueError(f"unknown mode {mode!r}; choose from {MODES}")
 
     # TNG-stamp modes (tng, lens, field) use real TNG50 stamps matching the
-    # training pipeline: no Sersic catalog needed for lens/tng/field.
-    # `sersic`/`star` modes stay all-analytic.
     tng_mode = mode in ("tng", "lens", "field")
     cfg = SkySimulatorConfig(
         image_size=image_size,
         pixel_scale=Config.DEFAULT_PIXEL_SCALE,
-        sersic_density_arcmin2=(0.0 if tng_mode
-                                else Config.DEFAULT_GAL_DENSITY_ARCMIN2),
-        tng_density_arcmin2=(Config.DEFAULT_GAL_DENSITY_ARCMIN2 if tng_mode
-                             else 0.0),
+        galaxy_density_arcmin2=(
+            Config.GALAXY_DENSITY_ARCMIN2 if mode == "field" else 0.0
+        ),
         # Poster lenses must be eye-visible: rejected analytically inside
         # _add_lens_pure before any stamp is rendered.
         lens_require_showable=(mode == "lens"),
@@ -220,9 +210,10 @@ def generate_cutout(
         star_density_arcmin2=(FIELD_STAR_DENSITY_ARCMIN2 if mode == "field"
                               else Config.DEFAULT_STAR_DENSITY_ARCMIN2),
     )
-    # TNG modes render nothing Sersic, so COSMOS is not needed.
-    cat = None if tng_mode else open_cosmos2025(
-        path=ensure_prefiltered_catalog(Config.COSMOS2025_CATALOG_PATH))
+    cat = (
+        CosmosTngPrior(Config.COSMOS_TNG_PRIOR_PATH)
+        if mode in ("tng", "field") else None
+    )
     sim = SkySimulator(cat, cfg)
     if tng_mode and not sim.tng_galaxies:
         raise RuntimeError(

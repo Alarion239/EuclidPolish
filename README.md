@@ -15,13 +15,10 @@ per-band Poisson + read-noise model plus detector artifacts, and writes float32
 TFRecords. All photometry is calibrated against the published Euclid AB zeropoints per
 band; nothing is normalised to a unit interval before noise is injected.
 
-The light-profile renderer is our own vectorised Sérsic implementation
-(`euclid_polish/sky/generation/profiles.py`). The normal synthetic
-pipeline controls the COSMOS Sérsic and TNG50 SKIRT populations independently with
-`--sersic-density-arcmin2` and `--tng-density-arcmin2`. Setting the former to zero
-and enabling `--tng-redshift-mode` produces a pure-TNG field without loading the
-COSMOS catalog. The lens-isolation experiment uses that pure-TNG configuration by
-default, with its own record and model namespace.
+Every field galaxy uses a TNG50 SKIRT morphology. A sampled COSMOS2025 row
+jointly supplies its VIS/Y/J/H total flux, photometric redshift, stellar mass,
+and apparent half-light radius; the TNG stamp is resized and normalized to
+those targets. `--galaxy-density-arcmin2` is the single population control.
 
 **What the model learns.** The network input is the 4-channel LR stack
 `(VIS, Y_E, J_E, H_E) @ 0.10″/pix`. The output is a 4-channel deconvolved HR sky
@@ -89,9 +86,8 @@ budget — Y/J/H accumulate 4 × 112 s).
 | Class | Magnitude source per band | Flux assignment |
 |---|---|---|
 | **Stars** (point sources) | VIS drawn from a smooth differential star-count law dN/dm ∝ 10^(slope·m) over [bright, faint] (`Config.STAR_MAG_SLOPE=0.20`, `STAR_MAG_BRIGHT=12.0`, `STAR_MAG_FAINT=25.0`); each star draws a cool-dwarf-dominated temperature mixture, whose Planck `f_ν` is integrated over approximate VIS/Y/J/H passbands, plus modest interstellar extinction and stellar-population colour scatter | `flux_e_B` is deposited as a single HR pixel per channel (`sky_simulator.py:_deposit_star`); temperature, extinction, and four-band magnitudes are persisted for fixed validate/test stars and redrawn per visit on-the-fly; the PSF is applied later by the forward model |
-| **COSMOS2025 galaxies** (when `--sersic-density-arcmin2 > 0`) | Per-component (bulge / disk), per-band magnitudes from HDU 6 of the master catalog: `mag_model_bulge_hst-f814w` ↦ VIS_E, `mag_model_disk_uvista-y` ↦ Y_E (disk), etc. | Custom vectorised Sérsic2D renderer evaluates the analytic profile with closed-form amplitude from total flux. Bulge fixed at n=4, disk at n=1; geometry shared via `angle_bd`. (`profiles.py`) |
-| **TNG50 galaxies** (when `--tng-density-arcmin2 > 0`) | Real SKIRT-rendered multi-band stamps from the TNG50 atlas | Instrument-independent FITS loading, surface-brightness rebinning, rotation, and compositing live in `euclid_polish/skirt/image.py`. TNG/Euclid band calibration and population policy live in `sky/generation/tng_galaxy.py`. In redshift mode (§1.5), each stamp's size and photometry follow from its own redshift draw. |
-| **Strong lenses** | Catalog-backed lenses use COSMOS priors; catalog-free pure-TNG fields sample the same geometry priors while deriving σ_v from the deflector subhalo's stellar mass | SIE + external-shear mass model from lenstronomy; lens-light + lensed-source-light rendered by our Sérsic implementation or TNG stamps at the ray-shot coordinates. (`lens_population.py`) |
+| **Galaxies** | One joint COSMOS2025 row: VIS/Y/J/H magnitudes, photo-z, stellar mass, and apparent R_e; missing faint-end NISP/size values use a nearby COSMOS donor in (VIS,z) | A mass-near TNG50 SKIRT morphology is resized to the COSMOS R_e and normalized independently in every band to the COSMOS total flux. |
+| **Strong lenses** | TNG subhalo masses and the lens geometry prior | SIE + external-shear mass model from lenstronomy; deflector and source light are both TNG stamps. |
 
 Our Sérsic amplitude is derived in closed form from the total flux and Sérsic index
 (`sersic_amp_from_flux` in `profiles.py`). Sub-pixel sampling is auto-selected from the
@@ -108,7 +104,7 @@ fluxes). The catalog is mandatory only when the configured Sérsic density is po
 there is no synthetic-stub fallback. Pure-TNG generation sets the Sérsic density to zero
 and therefore skips the catalog entirely.
 
-### 1.5 TNG redshift realism (`--tng-redshift-mode`)
+### 1.5 COSMOS-conditioned TNG population
 
 The SKIRT atlas frames are intrinsic z = 0 images on a physical 100 pc/pixel grid.
 In redshift mode (`sky/generation/redshift_model.py`) each injected stamp draws one z from
@@ -153,10 +149,6 @@ That single draw sets everything:
   the real sky density of the rendered (log M★ ≥ 9) population, ≈ 33/arcmin²
   (Baldry+ 2012 φ₀ × the same weighted volume integral), not the full COSMOS
   111/arcmin² that counts undetectable dwarfs (`TNG_GAL_DENSITY_ARCMIN2`).
-- **Optional Sérsic dwarf backfill** — off by default (the MF-rescaled TNG
-  population covers the small end with real morphology, keeping pure-TNG
-  catalog-free); `--tng-dwarf-density-arcmin2 102` mixes small COSMOS Sérsic
-  rows (R_e ≤ 0.5″) back in.
 - **Lens masses** — in the catalog-free pure-TNG path, a deflector takes σ_v from
   its subhalo's stellar mass when
   `data/_tng_infographics/tng_properties.csv` is available (otherwise it falls

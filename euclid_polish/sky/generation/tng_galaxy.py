@@ -306,6 +306,8 @@ def tng_stamp_at_redshift(
     f_max: int = TNG_MAX_REBIN_FACTOR,
     sb_cut_mag_arcsec2: float = Config.TNG_SB_TRUNCATE_MAG_ARCSEC2,
     mass_scale: float = 1.0,
+    target_re_arcsec: float | None = None,
+    target_flux_e_per_band: tuple[float, float, float, float] | None = None,
 ) -> tuple[np.ndarray, dict]:
     """Build one TNG stamp **as it would appear at redshift ``z``**.
 
@@ -336,7 +338,17 @@ def tng_stamp_at_redshift(
         raise ValueError(f"mass_scale must be in (0, 1], got {mass_scale}")
     squeeze = compact * mass_scale ** -Config.TNG_MASS_SIZE_ALPHA
     f_geo = rebin_factor_for_redshift(z, pixel_scale_arcsec=pixel_scale_arcsec)
-    f_cont = min(float(f_max), f_geo * squeeze)
+    re_px = native_halflight_px(galaxy_dir, subhalo_id, orientation)
+    if (
+        target_re_arcsec is not None and target_re_arcsec > 0.0
+        and np.isfinite(re_px) and re_px > 0.0
+    ):
+        f_cont = min(
+            float(f_max),
+            max(1.0, float(re_px) * pixel_scale_arcsec / target_re_arcsec),
+        )
+    else:
+        f_cont = min(float(f_max), f_geo * squeeze)
     rebin = stochastic_round_factor(f_cont, rng)
     if rot_k is None:
         rot_k = int(rng.integers(0, 4)) if rng is not None else 0
@@ -365,7 +377,19 @@ def tng_stamp_at_redshift(
     # integer rounding); mass_scale then dims the rescaled galaxy (L ∝ M).
     stamp *= (np.asarray(factors, dtype=np.float32)[None, None, :]
               * np.float32((rebin / f_geo) ** 2 * mass_scale))
+    if target_flux_e_per_band is not None:
+        for k, target in enumerate(target_flux_e_per_band):
+            current = float(stamp[..., k].sum(dtype=np.float64))
+            if current > 0.0 and target >= 0.0:
+                stamp[..., k] *= np.float32(float(target) / current)
     stamp = truncate_below_sb(stamp, pixel_scale_arcsec, sb_cut_mag_arcsec2)
+    # The COSMOS magnitude is the total-flux contract. Restore flux removed by
+    # the surface-brightness crop so size and flux are independently controlled.
+    if target_flux_e_per_band is not None:
+        for k, target in enumerate(target_flux_e_per_band):
+            current = float(stamp[..., k].sum(dtype=np.float64))
+            if current > 0.0 and target >= 0.0:
+                stamp[..., k] *= np.float32(float(target) / current)
     meta["flux_e_per_band"] = {
         b: float(stamp[..., k].sum())
         for k, b in enumerate(Config.LR_INPUT_BAND_NAMES)
@@ -378,11 +402,20 @@ def tng_stamp_at_redshift(
     meta["mass_scale"] = float(mass_scale)
     meta["redshift_band_factors"] = [float(f) for f in factors]
     meta.update(dmeta)
-    re_px = native_halflight_px(galaxy_dir, subhalo_id, orientation)
     if np.isfinite(re_px) and re_px > 0.0:
         meta["native_halflight_px"] = float(re_px)
-        meta["apparent_re_arcsec"] = physical_pc_to_arcsec(
-            re_px * TNG_NATIVE_PC_PER_PIXEL, z) / squeeze
+        meta["apparent_re_arcsec"] = float(
+            pixel_scale_arcsec * re_px / rebin
+            if target_re_arcsec is not None
+            else physical_pc_to_arcsec(
+                re_px * TNG_NATIVE_PC_PER_PIXEL, z) / squeeze
+        )
+    if target_re_arcsec is not None:
+        meta["target_re_arcsec"] = float(target_re_arcsec)
+    if target_flux_e_per_band is not None:
+        meta["target_flux_e_per_band"] = [
+            float(value) for value in target_flux_e_per_band
+        ]
     return stamp, meta
 
 
@@ -474,6 +507,7 @@ def sample_tng_stamp(
     z: float | None = None,
     mass_scale: float = 1.0,
     f_max: int = TNG_MAX_REBIN_FACTOR,
+    target_flux_e_per_band: tuple[float, float, float, float] | None = None,
 ) -> tuple[np.ndarray, dict] | None:
     """Pick a random galaxy / orientation / downsample / quarter-rotation and
     return its injectable ``(H,W,4)`` electron stamp + meta (None if it can't
@@ -503,7 +537,9 @@ def sample_tng_stamp(
             return tng_stamp_at_redshift(
                 gdir, gid, orientation, z, rng,
                 pixel_scale_arcsec=pixel_scale_arcsec, f_max=f_max,
-                mass_scale=mass_scale)
+                mass_scale=mass_scale,
+                target_re_arcsec=target_re_arcsec,
+                target_flux_e_per_band=target_flux_e_per_band)
         except Exception:
             return None
 

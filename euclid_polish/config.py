@@ -120,6 +120,10 @@ class Config:
     # netscratch without touching code. Default keeps the historical
     # ``./data`` behavior for local checkouts.
     DATA_DIR = os.environ.get("EUCLID_POLISH_DATA_DIR", "./data")
+    COSMOS_TNG_PRIOR_PATH = os.path.join(
+        DATA_DIR, "population_comparison", "cosmos2025",
+        "cosmos2025_population_prior.npz",
+    )
 
     COSMOS2025_CATALOG_PATH    = os.path.join(DATA_DIR, "COSMOS2025/cosmos2025.fits")
     COSMOS2025_HDU_PHOTOMETRY = 1       # PHOTOMETRY HOTCOLD AND SE++
@@ -161,7 +165,10 @@ class Config:
     # Sky generation defaults
     DEFAULT_IMAGE_SIZE           = 256
     DEFAULT_PIXEL_SCALE          = 0.05     # arcsec / pixel
-    DEFAULT_GAL_DENSITY_ARCMIN2  = 4.0e5 / 3600.0   # ≈ 111.11 (4×10⁵ galaxies / deg²)
+    # Latent 18 <= VIS < 28 COSMOS2025 population. Every draw is rendered
+    # with TNG morphology; COSMOS supplies the joint photometry/z/mass/size.
+    GALAXY_DENSITY_ARCMIN2 = 245.0
+    DEFAULT_GAL_DENSITY_ARCMIN2 = GALAXY_DENSITY_ARCMIN2
     # Reverted to the 5dece6f ("worked") density: ~1.389/arcmin² (the real
     # Wide-Survey stellar density). The 10/arcmin² inflation was paired with
     # the 192px crop to guarantee point sources per crop; with the crop back
@@ -802,7 +809,8 @@ class Config:
     #
     # This is a project training prior, not a claim that 200 is the observed
     # density of a particular Euclid catalog selection.
-    TNG_GAL_DENSITY_ARCMIN2 = 200.0
+    # Backward-compatible alias for old saved job metadata.
+    TNG_GAL_DENSITY_ARCMIN2 = GALAXY_DENSITY_ARCMIN2
     # Legacy records without an explicit saved draw budget were generated at
     # 60/arcmin². Field Statistics uses this to avoid reinterpreting old pixels
     # as though they had already been generated with the new 200 prior.

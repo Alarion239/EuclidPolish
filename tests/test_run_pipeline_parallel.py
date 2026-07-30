@@ -29,7 +29,6 @@ from euclid_polish.sky.observation.observation_simulator import (
     ObservationSimulator,
     ObservationSimulatorConfig,
 )
-from tests._tiny_catalog import TinyCosmosCatalog
 
 
 def _load_run_pipeline():
@@ -47,10 +46,13 @@ rp = _load_run_pipeline()
 
 
 def _sim_fwd():
-    cat = TinyCosmosCatalog(n_galaxies=200, seed=0)
     sim = SkySimulator(
-        cat, SkySimulatorConfig(image_size=96,
-                                      pixel_scale=Config.DEFAULT_PIXEL_SCALE),
+        None, SkySimulatorConfig(
+            image_size=96,
+            pixel_scale=Config.DEFAULT_PIXEL_SCALE,
+            galaxy_density_arcmin2=0.0,
+            lens_density_arcmin2=0.0,
+        ),
     )
     psfs = load_all_band_psfs(psf_dir="/nonexistent_dir_for_test")  # Gaussian
     fwd = ObservationSimulator(psfs_by_band=psfs,
@@ -246,9 +248,14 @@ def test_onthefly_shard_writes_clean_only(tmp_path):
 
 def _sim_fwd_dense_stars():
     sim = SkySimulator(
-        TinyCosmosCatalog(n_galaxies=200, seed=0),
-        SkySimulatorConfig(image_size=96, pixel_scale=Config.DEFAULT_PIXEL_SCALE,
-                           star_density_arcmin2=5000.0))       # guarantee stars
+        None,
+        SkySimulatorConfig(
+            image_size=96,
+            pixel_scale=Config.DEFAULT_PIXEL_SCALE,
+            galaxy_density_arcmin2=0.0,
+            lens_density_arcmin2=0.0,
+            star_density_arcmin2=5000.0,
+        ))       # guarantee stars
     fwd = ObservationSimulator(
         psfs_by_band=load_all_band_psfs(psf_dir="/nonexistent_dir_for_test"),
         config=ObservationSimulatorConfig(add_noise=False))
@@ -461,7 +468,7 @@ def test_tng_density_with_empty_atlas_is_fatal(tmp_path):
     )
 
     with pytest.raises(RuntimeError, match="ZERO usable TNG galaxies"):
-        SkySimulator(None, SkySimulatorConfig(
+        SkySimulator(object(), SkySimulatorConfig(
             image_size=96, pixel_scale=Config.DEFAULT_PIXEL_SCALE,
-            sersic_density_arcmin2=0.0, tng_density_arcmin2=60.0,
+            galaxy_density_arcmin2=60.0,
             tng_galaxy_dir=str(tmp_path / "empty_atlas")))

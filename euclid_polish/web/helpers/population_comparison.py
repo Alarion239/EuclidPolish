@@ -757,7 +757,11 @@ def _read_synthetic_sources(paths: Iterable[Path]) -> list[dict[str, Any]]:
                     if key == "objects_per_field":
                         continue
                     row[key] = _finite(raw.get(key))
-                for key in ("tng_density_arcmin2", "tng_mf_alpha"):
+                for key in (
+                    "galaxy_density_arcmin2",
+                    "tng_density_arcmin2",
+                    "tng_mf_alpha",
+                ):
                     row[key] = _finite(raw.get(key))
                 if row.get("mag_vis") is None and row.get("flux_vis_e"):
                     row["mag_vis"] = _finite(electrons_to_ab_mag(
@@ -780,7 +784,12 @@ def _synthetic_dataset_tng_prior(rows: list[dict[str, Any]]) -> float:
         value
         for row in rows
         if str(row.get("render")) == "tng"
-        if (value := _finite(row.get("tng_density_arcmin2"))) is not None
+        if (
+            value := _finite(
+                row.get("galaxy_density_arcmin2")
+                or row.get("tng_density_arcmin2")
+            )
+        ) is not None
     ]
     if saved:
         return float(np.median(saved))
@@ -1335,4 +1344,102 @@ def query_euclid_population(
         ),
     }
     _write_json(euclid_catalog_meta_path(), meta)
+    return meta
+
+
+def select_star_cone_centers(
+    *, count: int = 6, stars_csv: str | Path | None = None,
+) -> list[dict[str, Any]]:
+    """Select spatially separated, archive-known positions from stars.csv."""
+    path = Path(stars_csv or Path(Config.DATA_DIR) / "euclid_stars" / "stars.csv")
+    candidates: list[dict[str, Any]] = []
+    with path.open(newline="", encoding="utf-8") as handle:
+        for row in csv.DictReader(handle):
+            try:
+                candidates.append({
+                    "star_id": str(row["id"]),
+                    "ra": float(row["ra"]),
+                    "dec": float(row["dec"]),
+                    "magnitude": float(row["magnitude"]),
+                })
+            except (KeyError, TypeError, ValueError):
+                continue
+    if not candidates:
+        raise ValueError(f"No usable star positions in {path}")
+    chosen = [min(candidates, key=lambda row: row["magnitude"])]
+
+    def separation(a: dict[str, Any], b: dict[str, Any]) -> float:
+        ra1, ra2 = math.radians(a["ra"]), math.radians(b["ra"])
+        d1, d2 = math.radians(a["dec"]), math.radians(b["dec"])
+        cosine = (
+            math.sin(d1) * math.sin(d2)
+            + math.cos(d1) * math.cos(d2) * math.cos(ra1 - ra2)
+        )
+        return math.acos(max(-1.0, min(1.0, cosine)))
+
+    while len(chosen) < min(int(count), len(candidates)):
+        remaining = [row for row in candidates if row not in chosen]
+        chosen.append(max(
+            remaining,
+            key=lambda row: min(separation(row, old) for old in chosen),
+        ))
+    return chosen
+
+
+def query_euclid_population_multi(
+    *, count: int = 6, radius_arcmin: float = DEFAULT_CONE_RADIUS_ARCMIN,
+    progress: Callable[[int, int, str], None] | None = None,
+) -> dict[str, Any]:
+    """Query several star-centred cones, deduplicate, and cache one census."""
+    centers = select_star_cone_centers(count=count)
+    combined: dict[str, dict[str, Any]] = {}
+    cone_meta: list[dict[str, Any]] = []
+    for index, center in enumerate(centers):
+        if progress:
+            progress(index, len(centers), f"Euclid cone {index + 1}/{len(centers)}")
+        meta = query_euclid_population(
+            center["ra"], center["dec"], radius_arcmin,
+        )
+        with euclid_catalog_path().open(newline="", encoding="utf-8") as handle:
+            for row in csv.DictReader(handle):
+                row["cone_index"] = index
+                combined.setdefault(str(row["object_id"]), row)
+        cone_meta.append({**center, "rows": meta["rows"]})
+
+    rows = list(combined.values())
+    out = euclid_catalog_path()
+    temporary = out.with_suffix(".tmp")
+    columns = list(rows[0]) if rows else ["object_id", "cone_index"]
+    with temporary.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=columns)
+        writer.writeheader()
+        writer.writerows(rows)
+    os.replace(temporary, out)
+    meta = {
+        "catalog_version": CATALOG_VERSION,
+        "cone_count": len(centers),
+        "cones": cone_meta,
+        "radius_arcmin": float(radius_arcmin),
+        "area_arcmin2": len(centers) * math.pi * float(radius_arcmin) ** 2,
+        "rows": len(rows),
+        "counts": {
+            kind: sum(row.get("type") == kind for row in rows)
+            for kind in ("star", "galaxy", "unknown")
+        },
+        "classification": (
+            "point_like_flag = 1 → high-purity star; extended_flag = 1 → "
+            "galaxy; all other clean non-spurious sources → unknown"
+        ),
+        "classification_note": (
+            "Aggregated from spatially separated cones centred on locally "
+            "saved Euclid stars; object_id duplicates are removed."
+        ),
+        "photometry": (
+            "3 FWHM PSF-matched aperture magnitudes and colours; VIS PSF flux "
+            "is retained separately"
+        ),
+    }
+    _write_json(euclid_catalog_meta_path(), meta)
+    if progress:
+        progress(len(centers), len(centers), "Euclid cones cached")
     return meta

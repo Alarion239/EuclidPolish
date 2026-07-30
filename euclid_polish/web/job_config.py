@@ -34,7 +34,7 @@ FASRC_STEP_PARAMS: dict[str, dict[str, str]] = {
                                 "n_valid": "n_valid",
                                 "n_test": "n_test",
                                 "image_size": "hr_image_size",
-                                "tng_density_arcmin2": "tng_density_arcmin2",
+                                "galaxy_density_arcmin2": "galaxy_density_arcmin2",
                                 "star_density_arcmin2": "star_density_arcmin2",
                                 "star_mag_slope": "star_mag_slope",
                                 "star_mag_bright": "star_mag_bright",
@@ -49,7 +49,7 @@ FASRC_STEP_PARAMS: dict[str, dict[str, str]] = {
     "lensfinder_generate":     {"n_train": "lensfinder_n_fields",
                                 "n_valid": "lensfinder_n_valid",
                                 "image_size": "lensfinder_image_size",
-                                "tng_density_arcmin2": "tng_density_arcmin2",
+                                "galaxy_density_arcmin2": "galaxy_density_arcmin2",
                                 "star_density_arcmin2": "star_density_arcmin2",
                                 "star_mag_slope": "star_mag_slope",
                                 "star_mag_bright": "star_mag_bright",
@@ -123,9 +123,8 @@ class JobConfig:
     # HR scene side in 0.05″/pix pixels — feeds both synthetic generation
     # and inference. Kept a multiple of 6 (the NISP rebin factor).
     hr_image_size: int = 510
-    # Raw TNG candidates per arcmin². The smooth mass/flux prior determines
-    # how those draws divide between bright/large and faint/small galaxies.
-    tng_density_arcmin2: float = Config.TNG_GAL_DENSITY_ARCMIN2
+    # Joint COSMOS-conditioned TNG population density.
+    galaxy_density_arcmin2: float = Config.GALAXY_DENSITY_ARCMIN2
     # Brightness knee (e⁻) for the asinh display panels in inference.
     asinh_scale:   float = 1000.0
     # WDSR SR training — LR schedule (warmup → cosine) that decays smoothly from

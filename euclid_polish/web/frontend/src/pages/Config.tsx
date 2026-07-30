@@ -20,7 +20,7 @@ interface JobConfig {
   n_valid: number;
   n_test: number;
   hr_image_size: number;
-  tng_density_arcmin2: number;
+  galaxy_density_arcmin2: number;
   // Lens-finder dataset
   lensfinder_n_fields: number;
   lensfinder_n_valid: number;
@@ -71,7 +71,7 @@ type SaveResp = { ok: boolean; config: Record<string, number | string>; note?: s
    without a hand-maintained duplicate. */
 const FIELDS: Field[] = [
   "vis_pixels",
-  "n_train", "n_valid", "n_test", "hr_image_size", "tng_density_arcmin2",
+  "n_train", "n_valid", "n_test", "hr_image_size", "galaxy_density_arcmin2",
   "lensfinder_n_fields", "lensfinder_n_valid", "lensfinder_image_size",
   "lensfinder_epochs", "lensfinder_patience", "lensfinder_batch_size",
   "lensfinder_learning_rate", "lensfinder_training_mode",
@@ -215,9 +215,9 @@ export default function ConfigPage() {
                 {num("hr_image_size", "HR image size (px)",
                   { min: 60, max: 2048, step: 6,
                     hint: "HR scene side in 0.05″/pix pixels. Kept a multiple of 6 (the NISP rebin factor). Feeds synthetic generation and inference." })}
-                {num("tng_density_arcmin2", "TNG draws (/arcmin²)",
+                {num("galaxy_density_arcmin2", "Galaxies (/arcmin²)",
                   { min: 0, max: 1000, step: 1,
-                    hint: "Raw TNG candidate budget. The smooth mass/flux prior determines how many become bright/large versus faint/small. Current calibrated value: 200." })}
+                    hint: "One COSMOS2025 joint draw per TNG morphology: correlated VIS/Y/J/H flux, redshift, mass and apparent size. Current latent prior: 245." })}
               </div>
             </CardBody>
           </Card>

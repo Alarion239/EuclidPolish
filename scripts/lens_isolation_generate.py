@@ -42,9 +42,7 @@ class LensWorkerRuntime:
     image_size: int
     psf_dir: str
     tng_dir: str
-    sersic_density_arcmin2: float
-    tng_density_arcmin2: float
-    tng_redshift_mode: bool
+    galaxy_density_arcmin2: float
     lens_density_arcmin2: float
     config_fingerprint: str
 
@@ -61,6 +59,7 @@ def _init_lens_worker(runtime: LensWorkerRuntime) -> None:
 
     from euclid_polish.experiments.lens_isolation.generation import LensCaptureAdapter
     from euclid_polish.psf.psf_library import load_all_band_psf_sets
+    from euclid_polish.sky.generation.cosmos_tng_prior import CosmosTngPrior
     from euclid_polish.sky.generation.sky_simulator import SkySimulator, SkySimulatorConfig
     from euclid_polish.sky.observation.observation_simulator import (
         ObservationSimulator,
@@ -68,13 +67,11 @@ def _init_lens_worker(runtime: LensWorkerRuntime) -> None:
     )
 
     sky = SkySimulator(
-        None,
+        CosmosTngPrior(Config.COSMOS_TNG_PRIOR_PATH),
         SkySimulatorConfig(
             image_size=runtime.image_size,
             pixel_scale=Config.DEFAULT_PIXEL_SCALE,
-            sersic_density_arcmin2=runtime.sersic_density_arcmin2,
-            tng_density_arcmin2=runtime.tng_density_arcmin2,
-            tng_redshift_mode=runtime.tng_redshift_mode,
+            galaxy_density_arcmin2=runtime.galaxy_density_arcmin2,
             tng_galaxy_dir=runtime.tng_dir,
             lens_density_arcmin2=runtime.lens_density_arcmin2,
         ),
@@ -331,9 +328,7 @@ def main(argv: list[str] | None = None) -> int:
         "counts": counts,
         "image_size": config.image_size,
         "population": {
-            "sersic_density_arcmin2": config.sersic_density_arcmin2,
-            "tng_density_arcmin2": config.tng_density_arcmin2,
-            "tng_redshift_mode": config.tng_redshift_mode,
+            "galaxy_density_arcmin2": config.galaxy_density_arcmin2,
             "lens_density_arcmin2": config.lens_density_arcmin2,
         },
         "config_fingerprint": config_fingerprint,
@@ -373,9 +368,7 @@ def main(argv: list[str] | None = None) -> int:
         image_size=config.image_size,
         psf_dir=args.psf_dir or Config.EUCLID_PSF_DIR,
         tng_dir=args.tng_dir or Config.TNG_SKIRT_DIR,
-        sersic_density_arcmin2=config.sersic_density_arcmin2,
-        tng_density_arcmin2=config.tng_density_arcmin2,
-        tng_redshift_mode=config.tng_redshift_mode,
+        galaxy_density_arcmin2=config.galaxy_density_arcmin2,
         lens_density_arcmin2=config.lens_density_arcmin2,
         config_fingerprint=config_fingerprint,
     )

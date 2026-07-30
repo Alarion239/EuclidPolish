@@ -42,7 +42,7 @@ from euclid_polish.web.remote import STATE
 
 def _login_node_generate_cmd(cfg, remote_tmp: str, hr_image_size: int,
                              n_pairs: int, *,
-                             tng_density_arcmin2: float) -> str:
+                             galaxy_density_arcmin2: float) -> str:
     """Shell command that generates ``n_pairs`` synthetic *validate* pairs
     at ``hr_image_size`` on the FASRC **login node** — a plain command, not
     an sbatch job.
@@ -55,15 +55,10 @@ def _login_node_generate_cmd(cfg, remote_tmp: str, hr_image_size: int,
     sbatch wrapper uses, minus the GPU module (generation is CPU-only).
     """
     q = shlex.quote
-    # All-TNG mode with full redshift realism (COSMOS catalog skipped): the
-    # n(z) + mass-function model gives the deep-field apparent-size distribution
-    # (median R_e ≈ 0.22″). Without --tng-redshift-mode sizes are log-uniform
-    # [0.3,4]″ (median ~1.1″) → arcsec-scale giants. The configured pure-TNG
-    # draw budget and smooth mass prior are separate from the COSMOS Sersic
-    # density.
-    tng_flag = (f" --sersic-density-arcmin2 0"
-                f" --tng-density-arcmin2 {float(tng_density_arcmin2):g}"
-                f" --tng-redshift-mode")
+    # The configured density controls one COSMOS-conditioned TNG population.
+    tng_flag = (
+        f" --galaxy-density-arcmin2 {float(galaxy_density_arcmin2):g}"
+    )
     _conda_block = _conda_activate_snippet(cfg.conda_env_path)
     return textwrap.dedent(f"""
         set -e
@@ -123,7 +118,9 @@ def _job_generate_reconstruct(
                 remote_tmp,
                 hr_image_size,
                 n_pairs,
-                tng_density_arcmin2=job_config.load().tng_density_arcmin2,
+                galaxy_density_arcmin2=(
+                    job_config.load().galaxy_density_arcmin2
+                ),
             ),
             timeout=900,
         )

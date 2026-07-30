@@ -510,6 +510,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         maximum_spurious_probability=args.maximum_spurious_probability,
     )
     euclid_area = _read_area(euclid_meta_path)
+    euclid_meta = json.loads(euclid_meta_path.read_text())
     euclid_counts = np.histogram(euclid_magnitudes, bins=DISPLAY_BINS)[0]
     euclid_density = euclid_counts / euclid_area
     euclid_error = np.sqrt(euclid_counts) / euclid_area
@@ -596,6 +597,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "cosmos_selection": args.cosmos_selection,
             "euclid_catalog_csv": str(euclid_path),
             "euclid_area_arcmin2": euclid_area,
+            "euclid_cone_count": int(euclid_meta.get("cone_count", 1)),
+            "euclid_cones": euclid_meta.get("cones"),
             "euclid_nonstar_rows_used": int(len(euclid_magnitudes)),
             "maximum_spurious_probability": float(
                 args.maximum_spurious_probability

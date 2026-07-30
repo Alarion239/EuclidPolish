@@ -178,8 +178,9 @@ type Comparison = {
     training_included?: boolean;
     calibration_splits?: string[];
     euclid_meta: {
-      ra: number; dec: number; radius_arcmin: number; area_arcmin2: number;
-      rows: number; limit: number; limit_reached: boolean; classification: string;
+      ra?: number; dec?: number; radius_arcmin: number; area_arcmin2: number;
+      cone_count?: number; cones?: Array<{ star_id: string; ra: number; dec: number; rows: number }>;
+      rows: number; limit?: number; limit_reached?: boolean; classification: string;
       catalog_version: number;
       counts: Record<string, number>;
       classification_note: string;
@@ -1139,6 +1140,14 @@ function ConeQuery({ api, onQueried }: { api: ApiPayload; onQueried: () => void 
             }, { onDone: (job) => { if (job.status !== "failed") onQueried(); } })}>
             {query.busy ? "Querying…" : "Query Euclid cone"}
           </Button>
+          <Button disabled={!api.authenticated || query.busy}
+            onClick={() => query.run(
+              "/api/population-comparison/query-euclid-multi",
+              { count: "6", radius_arcmin: radius },
+              { onDone: (job) => { if (job.status !== "failed") onQueried(); } },
+            )}>
+            {query.busy ? "Querying…" : "Query 6 saved-star cones"}
+          </Button>
         </div>
         {!api.authenticated && (
           <p className="cone-query__login">
@@ -1278,7 +1287,11 @@ export default function PopulationComparisonPage() {
                 population-shape comparisons.{" "}
                 <strong>Classification:</strong> {comparison.population.euclid_meta.classification}.{" "}
                 Unknown rows are plotted as non-stellar candidates alongside synthetic galaxies,
-                not as confirmed galaxies. {comparison.population.euclid_meta.classification_note}
+                not as confirmed galaxies.{" "}
+                {comparison.population.euclid_meta.cone_count
+                  ? `${comparison.population.euclid_meta.cone_count} spatially separated saved-star cones; `
+                  : ""}
+                {comparison.population.euclid_meta.classification_note}
               </p>
             )}
 

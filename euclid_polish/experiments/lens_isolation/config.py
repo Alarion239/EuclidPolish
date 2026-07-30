@@ -45,9 +45,7 @@ class DatasetConfig:
     n_test: int = 100
     image_size: int = 510
     seed: int = -1
-    sersic_density_arcmin2: float = 0.0
-    tng_density_arcmin2: float = 60.0
-    tng_redshift_mode: bool = True
+    galaxy_density_arcmin2: float = 60.0
     lens_density_arcmin2: float = 10.0
 
     def __post_init__(self) -> None:
@@ -57,18 +55,13 @@ class DatasetConfig:
         if int(self.image_size) <= 0 or int(self.image_size) % 2:
             raise ValueError("image_size must be a positive even integer")
         densities = (
-            self.sersic_density_arcmin2,
-            self.tng_density_arcmin2,
+            self.galaxy_density_arcmin2,
             self.lens_density_arcmin2,
         )
         if any(float(value) < 0.0 for value in densities):
             raise ValueError("population densities must be non-negative")
-        if float(self.sersic_density_arcmin2) != 0.0:
-            raise ValueError("lens isolation requires sersic_density_arcmin2=0")
-        if float(self.tng_density_arcmin2) != 60.0:
-            raise ValueError("lens isolation requires tng_density_arcmin2=60")
-        if not self.tng_redshift_mode:
-            raise ValueError("lens isolation requires tng_redshift_mode=true")
+        if float(self.galaxy_density_arcmin2) != 60.0:
+            raise ValueError("lens isolation requires galaxy_density_arcmin2=60")
         if float(self.lens_density_arcmin2) != 10.0:
             raise ValueError("lens isolation requires lens_density_arcmin2=10")
 

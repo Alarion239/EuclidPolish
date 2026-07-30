@@ -448,28 +448,28 @@ class TestRegistry:
         """`field` overrides no counts and accepts any non-empty scene."""
         from scripts.fasrc_poster_cutout import _counts_for_mode, _record_ok
         assert _counts_for_mode("field") == {}
-        assert _counts_for_mode("tng")["n_tng"] == 1
-        assert _counts_for_mode("sersic")["n_sersic"] == 1
+        assert _counts_for_mode("tng")["n_galaxies"] == 1
         meta = {"n_galaxies": 3, "n_stars": 0, "n_lenses": 1}
         assert _record_ok("field", meta)
         assert not _record_ok("field",
                               {"n_galaxies": 0, "n_stars": 0, "n_lenses": 0})
 
-    def test_synthetic_generate_tng_density_flags(self):
-        """All-TNG mode with redshift realism: COSMOS off, pure-TNG density,
-        and --tng-redshift-mode (the physical n(z) + mass-function size model,
-        not log-uniform[0.3,4]″ giants)."""
+    def test_synthetic_generate_galaxy_density_flag(self):
+        """Generation has one COSMOS-conditioned TNG population."""
         from euclid_polish.config import Config
         step = REGISTRY.get("synthetic_generate")
         base = {"n_train": 10, "n_valid": 2, "image_size": 252,
                 "batch_size": 4, "steps": 100}
         argv = step.build_command(base)
-        assert argv[argv.index("--sersic-density-arcmin2") + 1] == "0"
-        assert (argv[argv.index("--tng-density-arcmin2") + 1]
-                == f"{Config.TNG_GAL_DENSITY_ARCMIN2:g}")
-        custom = step.build_command({**base, "tng_density_arcmin2": "175"})
-        assert custom[custom.index("--tng-density-arcmin2") + 1] == "175"
-        assert "--tng-redshift-mode" in argv
+        assert (argv[argv.index("--galaxy-density-arcmin2") + 1]
+                == f"{Config.GALAXY_DENSITY_ARCMIN2:g}")
+        custom = step.build_command({
+            **base, "galaxy_density_arcmin2": "175",
+        })
+        assert custom[
+            custom.index("--galaxy-density-arcmin2") + 1
+        ] == "175"
+        assert "--sersic-density-arcmin2" not in argv
 
     def test_synthetic_generate_force_flag(self):
         """The "Override existing data" checkbox adds --force (regenerate from

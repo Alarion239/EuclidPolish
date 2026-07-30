@@ -803,7 +803,10 @@ large cutout don't leak across train/validate."></label>`;
       case 'synthetic_generate':
       case 'lensfinder_generate':
         return [field('nfields', historySum(params, ['n_train', 'n_valid', 'n_test'])),
-          field('galaxies / arcmin²', historyText(params, 'tng_density_arcmin2', '60')),
+          field('galaxies / arcmin²', historyText(
+            params, 'galaxy_density_arcmin2',
+            historyText(params, 'tng_density_arcmin2', '60')
+          )),
           field('lenses / arcmin²', historyText(params, 'lens_density_arcmin2'))];
       case 'lens_isolation_generate':
         return [field('nfields', historySum(params, ['ntrain', 'nvalid', 'ntest']))];

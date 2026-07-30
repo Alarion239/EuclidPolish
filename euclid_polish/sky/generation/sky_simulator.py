@@ -1,21 +1,9 @@
 """
 Multi-band clean-HR scene generator.
 
-Two independent source populations are rendered onto each field:
-
-  * **Sersic** — analytic bulge+disk galaxies drawn from the COSMOS2025 catalog
-    (:mod:`euclid_polish.sky.cosmos2025`). Typically the small/compact end of
-    the galaxy size distribution; density set by ``sersic_density_arcmin2``.
-
-  * **TNG** — real TNG50 SKIRT stamps
-    (:mod:`euclid_polish.sky.generation.tng_galaxy`).
-    Covers the resolved/extended population; size drawn log-uniformly over
-    ``tng_re_arcsec_range`` (or from D_A(z) when ``tng_redshift_mode`` is on).
-    Density set by ``tng_density_arcmin2``. Set to 0.0 (default) to disable.
-
-The two populations together produce a merged galaxy size distribution with
-a Sersic-dominated compact peak and a TNG-populated extended tail. Stars and
-strong lenses are rendered independently of both densities.
+Every field galaxy uses a resolved TNG50 SKIRT morphology.  A joint COSMOS2025
+row supplies its VIS/Y/J/H total flux, photometric redshift, stellar mass and
+apparent half-light radius.  There is one smooth population and one density.
 
 The output of :meth:`SkySimulator.simulate_field` is a single :class:`Image`
 with ``data`` of shape ``(H, W, 4)`` in **raw electrons** on the 0.05″ HR
@@ -37,24 +25,16 @@ from euclid_polish.photometry import ab_mag_to_electrons
 from euclid_polish.provenance.defaults import mint_id
 from euclid_polish.provenance.records import Stamp
 from euclid_polish.skirt.image import composite_stamp
-from euclid_polish.sky.generation.cosmos2025 import (
-    CosmosCatalog,
-    circularized_effective_radius_arcsec,
-)
+from euclid_polish.sky.generation.cosmos_tng_prior import CosmosTngPrior
 from euclid_polish.sky.generation.lens_population import (
-    LensPopulation,
     render_lens_to_multiband_canvas,
     sample_lens_geometry,
 )
-from euclid_polish.sky.generation.profiles import add_sersic_to_bands
 from euclid_polish.sky.generation.redshift_model import (
     TNG_NATIVE_PC_PER_PIXEL,
     compactness_factor,
     load_tng_properties,
     physical_pc_to_arcsec,
-    predicted_vis_mag,
-    sample_galaxy_redshift,
-    sample_target_logmass,
     sigma_v_from_stellar_mass,
 )
 from euclid_polish.sky.generation.stellar_sed import sample_stellar_sed
@@ -76,24 +56,14 @@ from euclid_polish.sky.generation.tng_galaxy import (
 class SkySimulatorConfig:
     """Field-level config for the multi-band simulator.
 
-    Two independent galaxy populations contribute to each field:
-    ``sersic_density_arcmin2`` controls the compact COSMOS-catalog population
-    (analytic bulge+disk); ``tng_density_arcmin2`` controls the resolved
-    TNG-stamp population (log-uniform R_e over ``tng_re_arcsec_range``).
-    Set ``tng_density_arcmin2=0.0`` (default) to disable TNG injection
-    entirely — the field is then all-Sersic, which also requires no downloaded
-    TNG data.
+    ``galaxy_density_arcmin2`` controls a single COSMOS-conditioned TNG
+    population. There is no analytic Sérsic field-galaxy branch.
     """
     image_size:               int   = Config.DEFAULT_IMAGE_SIZE
     pixel_scale:              float = Config.DEFAULT_PIXEL_SCALE     # arcsec/pix
-    # Sersic galaxy population (compact, from COSMOS catalog)
-    sersic_density_arcmin2:   float = Config.DEFAULT_GAL_DENSITY_ARCMIN2
-    # TNG stamp population (resolved, log-uniform size)
-    tng_density_arcmin2:      float = 0.0
-    tng_re_arcsec_range:      tuple[float, float] = (0.3, 4.0)
+    galaxy_density_arcmin2:   float = Config.GALAXY_DENSITY_ARCMIN2
+    cosmos_prior_path:        str   = Config.COSMOS_TNG_PRIOR_PATH
     tng_galaxy_dir:           str   = Config.TNG_SKIRT_DIR
-    # Physical-redshift mode for TNG: z from n(z) → D_A sizing + Tolman dimming
-    tng_redshift_mode:        bool  = False
     tng_properties_csv:       str   = ""
     # Stars
     star_density_arcmin2:     float = Config.DEFAULT_STAR_DENSITY_ARCMIN2
@@ -115,12 +85,9 @@ class SkySimulatorConfig:
             return False, "image_size must be positive"
         if self.pixel_scale <= 0:
             return False, "pixel_scale must be positive"
-        if min(self.sersic_density_arcmin2, self.tng_density_arcmin2,
+        if min(self.galaxy_density_arcmin2,
                self.star_density_arcmin2, self.lens_density_arcmin2) < 0:
             return False, "densities must be non-negative"
-        lo, hi = self.tng_re_arcsec_range
-        if not (0.0 < lo <= hi):
-            return False, "tng_re_arcsec_range must be (lo, hi) with 0 < lo ≤ hi"
         if self.lens_light_re_factor <= 0.0:
             return False, "lens_light_re_factor must be > 0"
         if not (0.0 < self.lens_sigma_v_min_kms < self.lens_sigma_v_max_kms):
@@ -247,70 +214,61 @@ def inject_random_stars(
 class SkySimulator:
     """Generates ``(H, W, 4)`` HR clean fields in electrons.
 
-    Two independent galaxy populations are mixed on each field:
-    Sersic (compact, from COSMOS) and TNG (resolved, real stamps).
-    Set ``tng_density_arcmin2=0.0`` (the default) for the all-Sersic baseline.
+    COSMOS supplies the joint population draw; TNG supplies morphology.
     """
 
     def __init__(
         self,
-        catalog: CosmosCatalog | None,
+        population_prior: CosmosTngPrior | None,
         config: SkySimulatorConfig | None = None,
-        *,
-        lens_population: LensPopulation | None = None,
     ):
-        self.catalog = catalog
+        self.population_prior = population_prior
         self.config  = config or SkySimulatorConfig()
         ok, why = self.config.validate()
         if not ok:
             raise ValueError(f"Invalid generator config: {why}")
 
-        if catalog is None and self.config.sersic_density_arcmin2 > 0.0:
+        if (
+            population_prior is None
+            and self.config.galaxy_density_arcmin2 > 0.0
+        ):
             raise ValueError(
-                "catalog=None requires sersic_density_arcmin2=0.0 "
-                "(Sersic galaxies need COSMOS rows)")
+                "population_prior=None requires galaxy_density_arcmin2=0")
 
         # Load TNG galaxies when the TNG population is enabled OR when TNG
         # stamps may be used for lens/source light.
-        needs_tng = (self.config.tng_density_arcmin2 > 0.0
+        needs_tng = (population_prior is not None
+                     or self.config.galaxy_density_arcmin2 > 0.0
                      or self.config.lens_density_arcmin2 > 0.0)
         self.tng_galaxies: list[tuple[str, str]] = (
             list_tng_galaxies(self.config.tng_galaxy_dir)
             if needs_tng else []
         )
-        if self.config.tng_density_arcmin2 > 0.0 and not self.tng_galaxies:
+        if self.config.galaxy_density_arcmin2 > 0.0 and not self.tng_galaxies:
             # HARD failure, not a warning: with a TNG population requested and
             # zero usable stamps, every field silently renders star-only — a
             # buried stderr line shipped 200 galaxy-free validate/test fields
             # when the netscratch purge deleted the SKIRT atlas (2026-07-06).
             raise RuntimeError(
-                f"tng_density_arcmin2={self.config.tng_density_arcmin2:g} but "
+                f"galaxy_density_arcmin2={self.config.galaxy_density_arcmin2:g} but "
                 f"ZERO usable TNG galaxies under "
                 f"{self.config.tng_galaxy_dir!r} (a galaxy needs its .done "
                 "marker + VIS O1 frame — an empty dir usually means the "
                 "atlas was purged from netscratch). Re-download it via the "
                 "TNG atlas page's download step, or set "
-                "tng_density_arcmin2=0 if star-only fields are intended.")
-
-        # Catalog-backed lens priors (needed when catalog is available).
-        self.lens_population: LensPopulation | None = (
-            lens_population or LensPopulation(
-                catalog,
-                sigma_v_min_kms=self.config.lens_sigma_v_min_kms,
-                sigma_v_max_kms=self.config.lens_sigma_v_max_kms)
-        ) if catalog is not None else None
+                "galaxy_density_arcmin2=0 for star-only fields.")
 
         # TNG properties for mass → σ_v mapping (redshift mode).
         self.tng_properties: dict = {}
         self._atlas_logm: np.ndarray | None = None
-        if self.config.tng_redshift_mode and self.tng_galaxies:
+        if self.tng_galaxies:
             self.tng_properties = load_tng_properties(
                 self.config.tng_properties_csv or None)
             if not self.tng_properties:
                 sys.stderr.write(
-                    "[generator] tng_redshift_mode: no usable "
-                    "tng_properties.csv — lens σ_v falls back to the "
-                    "uniform prior; field rescaling to log-uniform.\n")
+                    "[generator] no usable tng_properties.csv — morphology "
+                    "selection is unconditioned and lens σ_v uses its "
+                    "fallback prior.\n")
             else:
                 m = np.array([
                     self.tng_properties.get(str(gid), {}).get(
@@ -332,64 +290,31 @@ class SkySimulator:
 
     # ------------------------------------------------------------------ #
     def _pick_field_galaxy(
-        self, rng: np.random.Generator,
-    ) -> tuple[list[tuple[str, str]], float, float | None]:
-        """Mass-function-weighted pick for one TNG field stamp (redshift mode).
-
-        Draws the target mass from the Schechter MF, finds atlas galaxies in
-        the matching mass window, and returns ``(candidate_list, mass_scale,
-        target_logM)``. Falls back to log-uniform rescale when masses are
-        missing.
-        """
+        self, rng: np.random.Generator, target_logmass: float,
+    ) -> list[tuple[str, str]]:
+        """Choose morphology near the COSMOS row's stellar mass."""
         if self._atlas_logm is None:
-            s_min = Config.TNG_MASS_RESCALE_MIN
-            if 0.0 < s_min < 1.0:
-                return self.tng_galaxies, float(
-                    10.0 ** rng.uniform(np.log10(s_min), 0.0)), None
-            return self.tng_galaxies, 1.0, None
-        lm_t = sample_target_logmass(rng)
+            return self.tng_galaxies
         lm = self._atlas_logm
-        window = (lm >= lm_t) & (lm <= lm_t + np.log10(Config.TNG_MASS_WINDOW))
-        if not window.any():
-            window = lm >= lm_t
-        if not window.any():
-            idx = int(np.nanargmax(lm))
-            return [self.tng_galaxies[idx]], 1.0, float(lm[idx])
-        idx = int(rng.choice(np.nonzero(window)[0]))
-        mass_scale = min(1.0, 10.0 ** (lm_t - lm[idx]))
-        return [self.tng_galaxies[idx]], float(mass_scale), float(lm_t)
+        finite = np.flatnonzero(np.isfinite(lm))
+        distance = np.abs(lm[finite] - target_logmass)
+        nearest = finite[np.argsort(distance)[:min(12, len(finite))]]
+        return [self.tng_galaxies[int(rng.choice(nearest))]]
 
     # ------------------------------------------------------------------ #
     def _add_tng_galaxy(
         self, canvas_4ch: np.ndarray, rng: np.random.Generator,
-        *, z: float | None = None,
     ) -> dict | None:
-        """Inject one TNG stamp at a random field position.
-
-        **Non-redshift mode**: R_e drawn log-uniformly over ``tng_re_arcsec_range``.
-        **Redshift mode**: z drawn from survey n(z); D_A(z) sets the downsample
-        factor with Tolman dimming and spectral drift.
-        """
-        lm_eff = None                               # target log stellar mass (Msun)
-        if self.config.tng_redshift_mode:
-            if z is None:
-                z = sample_galaxy_redshift(rng)
-            galaxies, mass_scale, lm_eff = self._pick_field_galaxy(rng)
-            if lm_eff is not None:
-                cut = Config.TNG_FAINT_SKIP_MAG_VIS
-                if cut > 0 and predicted_vis_mag(lm_eff, z) > cut:
-                    return None
-            target_re = None
-        else:
-            galaxies = self.tng_galaxies
-            mass_scale = 1.0
-            lo, hi = self.config.tng_re_arcsec_range
-            target_re = float(np.exp(rng.uniform(np.log(lo), np.log(hi))))
-
-        res = sample_tng_stamp(galaxies, rng,
+        """Inject one COSMOS-conditioned TNG morphology."""
+        if self.population_prior is None:
+            return None
+        draw = self.population_prior.sample(rng)
+        galaxies = self._pick_field_galaxy(rng, draw.logmass)
+        res = sample_tng_stamp(
+                               galaxies, rng,
                                pixel_scale_arcsec=self.config.pixel_scale,
-                               target_re_arcsec=target_re, z=z,
-                               mass_scale=mass_scale)
+                               target_re_arcsec=draw.re_arcsec, z=draw.z,
+                               target_flux_e_per_band=draw.flux_e_per_band)
         if res is None:
             return None
         stamp, tmeta = res
@@ -404,55 +329,23 @@ class SkySimulator:
             "orientation":  tmeta["orientation"],
             "rebin_factor": tmeta["rebin_factor"],
             "rot_k":        tmeta["rot_k"],
-            "z":            float(tmeta.get("z", float("nan"))),
-            "mass_scale":   float(tmeta.get("mass_scale", float("nan"))),
-            # Persist the population prior that produced this source so later
-            # Field Statistics refreshes do not reinterpret legacy 60/arcmin²
-            # records using a newer generator configuration.
-            "tng_density_arcmin2": float(self.config.tng_density_arcmin2),
-            "tng_mf_alpha": float(Config.TNG_MF_ALPHA),
+            "catalog_id":   draw.catalog_id,
+            "z":            draw.z,
+            "mass_scale":   1.0,
+            "galaxy_density_arcmin2": float(self.config.galaxy_density_arcmin2),
+            "population_prior": "cosmos2025_joint",
             "drift_eps":    float(tmeta.get("drift_eps", float("nan"))),
             "target_re_arcsec":   float(tmeta.get("target_re_arcsec", float("nan"))),
             "apparent_re_arcsec": float(tmeta.get("apparent_re_arcsec", float("nan"))),
             # Unified half-light radius + log stellar mass persisted to the
             # source catalog for later analysis.
-            "re_arcsec":    float(tmeta.get("apparent_re_arcsec", float("nan"))),
-            "logmass":      float(lm_eff) if lm_eff is not None else float("nan"),
+            "re_arcsec":    draw.re_arcsec,
+            "logmass":      draw.logmass,
+            "imputed_photometry": draw.imputed_photometry,
+            "imputed_size": draw.imputed_size,
+            "magnitudes": list(draw.magnitudes),
             "flux_e_per_band": [float(tmeta["flux_e_per_band"][b])
                                 for b in Config.LR_INPUT_BAND_NAMES],
-        }
-
-    def _render_sersic_galaxy(
-        self, canvas_4ch: np.ndarray, rng: np.random.Generator,
-    ) -> dict:
-        """Rasterise one COSMOS B+D Sersic galaxy at a random field position."""
-        g = self.catalog.sample_galaxy(rng)
-        x_pix, y_pix = self._random_pix(rng)
-        add_sersic_to_bands(
-            canvas_4ch, flux_per_band=g.bulge_flux_e, n=4.0,
-            r_e=g.bulge_r_e_arcsec, q=g.bulge_axis_ratio,
-            theta_rad=g.angle_rad, x0=x_pix, y0=y_pix,
-            pixel_scale=self.config.pixel_scale,
-        )
-        add_sersic_to_bands(
-            canvas_4ch, flux_per_band=g.disk_flux_e, n=1.0,
-            r_e=g.disk_r_e_arcsec, q=g.disk_axis_ratio,
-            theta_rad=g.angle_rad, x0=x_pix, y0=y_pix,
-            pixel_scale=self.config.pixel_scale,
-        )
-        return {
-            "type": "galaxy",
-            "render": "sersic",
-            "catalog_id": g.catalog_id,
-            "x_pix": float(x_pix),
-            "y_pix": float(y_pix),
-            "z_phot": float(g.z_phot),
-            "bulge_re_arcsec": float(g.bulge_r_e_arcsec),
-            "disk_re_arcsec":  float(g.disk_r_e_arcsec),
-            # Circularized combined bulge+disk half-light radius persisted as the
-            # unified re_arcsec; COSMOS carries no stellar mass, so logmass stays ''.
-            "re_arcsec": self._galaxy_effective_re(g),
-            "flux_e_per_band": list(map(float, [g.total_flux_e(k) for k in range(4)])),
         }
 
     def _draw_star(self, rng: np.random.Generator) -> dict:
@@ -476,30 +369,6 @@ class SkySimulator:
             "temperature_k": sed.temperature_k,
             "extinction_av": sed.extinction_av,
         }
-
-    @staticmethod
-    def _galaxy_effective_re(g) -> float:
-        """Galaxy ``g``'s circularized combined bulge+disk half-light radius."""
-        return float(circularized_effective_radius_arcsec(
-            np.array([g.bulge_r_e_arcsec]), np.array([g.bulge_axis_ratio]),
-            np.array([g.bulge_flux_e[0]]),
-            np.array([g.disk_r_e_arcsec]), np.array([g.disk_axis_ratio]),
-            np.array([g.disk_flux_e[0]]))[0])
-
-    def _tng_stamp_for_galaxy(
-        self, g, rng: np.random.Generator,
-        *, target_re_arcsec: float | None = None,
-    ) -> np.ndarray | None:
-        """A TNG stamp sized to match galaxy ``g``'s effective radius (or
-        ``target_re_arcsec`` when given). None if TNG is unavailable."""
-        if not self.tng_galaxies:
-            return None
-        target = (target_re_arcsec if target_re_arcsec is not None
-                  else self._galaxy_effective_re(g))
-        res = sample_tng_stamp(
-            self.tng_galaxies, rng, pixel_scale_arcsec=self.config.pixel_scale,
-            target_re_arcsec=target)
-        return res[0] if res is not None else None
 
     def _add_lens_pure(
         self, canvas_4ch: np.ndarray, rng: np.random.Generator,
@@ -587,69 +456,10 @@ class SkySimulator:
     def _add_lens(
         self, canvas_4ch: np.ndarray, rng: np.random.Generator,
     ) -> dict | None:
-        """Render one strong-lens system onto the canvas.
-
-        Routes to :meth:`_add_lens_pure` (catalog-free, TNG-only) when no
-        COSMOS catalog is available. Otherwise samples geometry from
-        :attr:`lens_population` and overlays TNG stamps for the lens-galaxy
-        light and lensed source when TNG galaxies are downloaded.
-        """
-        cfg = self.config
-        if self.lens_population is None:
-            # No catalog: pure-TNG geometry path.
-            if not self.tng_galaxies:
-                return None
-            return self._add_lens_pure(canvas_4ch, rng)
-
-        try:
-            lp = self.lens_population.sample(rng)
-        except RuntimeError:
+        """Render one pure-TNG strong-lens system onto the canvas."""
+        if not self.tng_galaxies:
             return None
-
-        x_pix, y_pix = self._random_pix(rng)
-        lp = replace(lp, centre_x_pix=x_pix, centre_y_pix=y_pix)
-
-        # Cap lens light to stay compact inside the arcs.
-        lens_eff = self._galaxy_effective_re(lp.lens_galaxy)
-        lens_cap = cfg.lens_light_re_factor * float(lp.theta_E_arcsec)
-        lens_re = min(lens_eff, lens_cap) if lens_eff > 0 else lens_cap
-        lens_scale = (lens_re / lens_eff) if lens_eff > 0 else 1.0
-
-        lp_render = lp
-        if lens_scale < 1.0:
-            lg = lp.lens_galaxy
-            lp_render = replace(lp, lens_galaxy=replace(
-                lg, bulge_r_e_arcsec=lg.bulge_r_e_arcsec * lens_scale,
-                disk_r_e_arcsec=lg.disk_r_e_arcsec * lens_scale))
-
-        # Use TNG stamps for realistic lens/source morphology when available.
-        lens_light_stamp = source_stamp = None
-        lens_render = source_render = "sersic"
-        if self.tng_galaxies:
-            lens_light_stamp = self._tng_stamp_for_galaxy(
-                lp.lens_galaxy, rng, target_re_arcsec=lens_re)
-            if lens_light_stamp is not None:
-                lens_render = "tng"
-            source_stamp = self._tng_stamp_for_galaxy(lp.source_galaxy, rng)
-            if source_stamp is not None:
-                source_render = "tng"
-
-        render_lens_to_multiband_canvas(
-            canvas_4ch, params=lp_render, pixel_scale=cfg.pixel_scale,
-            lens_light_stamp=lens_light_stamp, source_stamp=source_stamp,
-        )
-        return {
-            "type": "lens",
-            "x_pix": float(x_pix),
-            "y_pix": float(y_pix),
-            "z_lens": float(lp.z_lens),
-            "z_source": float(lp.z_source),
-            "theta_E_arcsec": float(lp.theta_E_arcsec),
-            "sigma_v_proxy_q": float(lp.lens_q),
-            "lens_light_render": lens_render,
-            "lens_light_re_arcsec": float(lens_re),
-            "source_render": source_render,
-        }
+        return self._add_lens_pure(canvas_4ch, rng)
 
     # ------------------------------------------------------------------ #
     def generate(self, rng=None, *, store=None, **kwargs) -> Image:
@@ -664,8 +474,7 @@ class SkySimulator:
         self,
         rng: np.random.Generator,
         *,
-        n_sersic:  int | None = None,
-        n_tng:     int | None = None,
+        n_galaxies: int | None = None,
         n_stars:   int | None = None,
         n_lenses:  int | None = None,
         deposit_stars: bool = False,
@@ -690,10 +499,8 @@ class SkySimulator:
         N    = cfg.image_size
         area = self._field_area_arcmin2()
 
-        if n_sersic is None:
-            n_sersic = int(rng.poisson(cfg.sersic_density_arcmin2 * area))
-        if n_tng is None:
-            n_tng = int(rng.poisson(cfg.tng_density_arcmin2 * area))
+        if n_galaxies is None:
+            n_galaxies = int(rng.poisson(cfg.galaxy_density_arcmin2 * area))
         if n_stars is None:
             n_stars = int(rng.poisson(cfg.star_density_arcmin2 * area))
         if n_lenses is None:
@@ -702,10 +509,7 @@ class SkySimulator:
         canvas = np.zeros((N, N, Config.NUM_LR_CHANNELS), dtype=np.float32)
         galaxies, stars, lenses = [], [], []
 
-        for _ in range(n_sersic):
-            galaxies.append(self._render_sersic_galaxy(canvas, rng))
-
-        for _ in range(n_tng):
+        for _ in range(n_galaxies):
             rec = self._add_tng_galaxy(canvas, rng)
             if rec is not None:
                 galaxies.append(rec)
@@ -731,8 +535,8 @@ class SkySimulator:
 
         meta = {
             "field_area_arcmin2":      float(area),
-            "sersic_density_arcmin2":  float(cfg.sersic_density_arcmin2),
-            "tng_density_arcmin2":     float(cfg.tng_density_arcmin2),
+            "galaxy_density_arcmin2":  float(cfg.galaxy_density_arcmin2),
+            "population_prior": "cosmos2025_joint",
             "star_density_arcmin2":    float(cfg.star_density_arcmin2),
             "lens_density_arcmin2":    float(cfg.lens_density_arcmin2),
             "n_galaxies": len(galaxies),

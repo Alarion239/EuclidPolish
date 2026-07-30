@@ -502,13 +502,13 @@ function taskColumnsFor(stepId: string): Column<HistoryRow>[] {
       return [
         taskColumn("splits", syntheticSplitMode, 132),
         taskColumn("nfields", syntheticFieldCount, 92),
-        taskColumn("galaxies / arcmin²", (p) => paramText(p, "tng_density_arcmin2", String(LEGACY_TNG_GALAXY_DENSITY)), 128),
+        taskColumn("galaxies / arcmin²", (p) => paramText(p, "galaxy_density_arcmin2", paramText(p, "tng_density_arcmin2", String(LEGACY_TNG_GALAXY_DENSITY))), 128),
         taskColumn("lenses / arcmin²", (p) => paramText(p, "lens_density_arcmin2"), 122),
       ];
     case "lensfinder_generate":
       return [
         taskColumn("nfields", (p) => paramSum(p, ["n_train", "n_valid", "n_test"]), 92),
-        taskColumn("galaxies / arcmin²", (p) => paramText(p, "tng_density_arcmin2", String(LEGACY_TNG_GALAXY_DENSITY)), 128),
+        taskColumn("galaxies / arcmin²", (p) => paramText(p, "galaxy_density_arcmin2", paramText(p, "tng_density_arcmin2", String(LEGACY_TNG_GALAXY_DENSITY))), 128),
         taskColumn("lenses / arcmin²", (p) => paramText(p, "lens_density_arcmin2"), 122),
       ];
     case "lens_isolation_generate":
