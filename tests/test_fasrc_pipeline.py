@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shlex
 
@@ -470,6 +471,44 @@ class TestRegistry:
             custom.index("--galaxy-density-arcmin2") + 1
         ] == "175"
         assert "--sersic-density-arcmin2" not in argv
+
+    def test_synthetic_generate_embeds_local_photometric_fit(
+        self, monkeypatch, tmp_path,
+    ):
+        """FASRC jobs must not depend on the fit JSON existing remotely."""
+        from euclid_polish.config import Config
+
+        fit_path = tmp_path / "cosmos_euclid_density_fit.json"
+        fit_path.write_text(json.dumps({
+            "inputs": {"euclid_cone_count": 6},
+            "local_normalization_sensitivity_fit": {
+                "vis_minus_f814w_mag": 0.286,
+                "magnitude_slope": 0.745,
+                "scatter_mag": 0.392,
+            },
+        }))
+        monkeypatch.setattr(
+            Config, "COSMOS_EUCLID_FIT_PATH", str(fit_path)
+        )
+        step = REGISTRY.get("synthetic_generate")
+        prepared = step.prepare_params({
+            "n_train": 10,
+            "n_valid": 2,
+            "image_size": 252,
+            "batch_size": 4,
+            "steps": 100,
+        })
+        argv = step.build_command(prepared)
+
+        assert argv[argv.index("--cosmos-vis-offset-mag") + 1] == "0.286"
+        assert (
+            argv[argv.index("--cosmos-vis-magnitude-slope") + 1]
+            == "0.745"
+        )
+        assert argv[argv.index("--cosmos-vis-scatter-mag") + 1] == "0.392"
+        assert argv[argv.index("--cosmos-vis-transfer-source") + 1].startswith(
+            "local_normalization_sensitivity_fit:"
+        )
 
     def test_synthetic_generate_force_flag(self):
         """The "Override existing data" checkbox adds --force (regenerate from

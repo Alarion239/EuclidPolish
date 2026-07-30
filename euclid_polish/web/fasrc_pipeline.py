@@ -40,6 +40,9 @@ from typing import Any, ClassVar
 
 from euclid_polish.config import Config
 from euclid_polish.ensemble_registry import default_ensemble_dir, next_member_names
+from euclid_polish.sky.generation.cosmos_tng_prior import (
+    load_brightness_transfer,
+)
 from euclid_polish.training.loss_names import LOSS_NAMES
 from euclid_polish.web import fasrc_config
 from euclid_polish.web.fasrc_jobs import _conda_activate_snippet
@@ -1389,6 +1392,16 @@ class SyntheticGenerateStep(RunPipelineStep):
             skip_flags=("--skip-train",),
         )
 
+    def prepare_params(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Freeze the local fitted brightness transfer into the remote job."""
+        prepared = super().prepare_params(params)
+        transfer = load_brightness_transfer(Config.COSMOS_EUCLID_FIT_PATH)
+        prepared["_cosmos_vis_offset_mag"] = transfer.offset_mag
+        prepared["_cosmos_vis_magnitude_slope"] = transfer.magnitude_slope
+        prepared["_cosmos_vis_scatter_mag"] = transfer.scatter_mag
+        prepared["_cosmos_vis_transfer_source"] = transfer.source
+        return prepared
+
     def build_command(self, params: dict[str, Any]) -> list[str]:
         # Parallelise generation across the allocated CPUs: one process per
         # CPU runs the combined generate+forward pass on its index range.
@@ -1413,6 +1426,22 @@ class SyntheticGenerateStep(RunPipelineStep):
         if not (0.0 <= tng_density < float("inf")):
             raise ValueError(f"invalid TNG density: {raw_tng_density!r}")
         cmd += ["--galaxy-density-arcmin2", f"{tng_density:g}"]
+        transfer_values = (
+            params.get("_cosmos_vis_offset_mag"),
+            params.get("_cosmos_vis_magnitude_slope"),
+            params.get("_cosmos_vis_scatter_mag"),
+        )
+        if all(value is not None for value in transfer_values):
+            offset, slope, scatter = (float(value) for value in transfer_values)
+            cmd += [
+                "--cosmos-vis-offset-mag", f"{offset:.12g}",
+                "--cosmos-vis-magnitude-slope", f"{slope:.12g}",
+                "--cosmos-vis-scatter-mag", f"{scatter:.12g}",
+                "--cosmos-vis-transfer-source",
+                str(params.get(
+                    "_cosmos_vis_transfer_source", "embedded_web_fit"
+                )),
+            ]
         # Scene-population and forward-PSF knobs (from /config). Emit only when
         # supplied so direct programmatic callers can still rely on CLI
         # defaults. The warp is realised while each dirty exposure is rendered;

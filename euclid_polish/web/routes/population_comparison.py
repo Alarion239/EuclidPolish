@@ -7,7 +7,7 @@ from pathlib import Path
 
 from flask import jsonify, request
 
-from euclid_polish.web import euclid_session, fasrc_fetcher, job_config
+from euclid_polish.web import euclid_session, fasrc_fetcher
 from euclid_polish.web.helpers.paths import _sky_records_remote_dir
 from euclid_polish.web.helpers.population_comparison import (
     availability,
@@ -23,11 +23,19 @@ from euclid_polish.web.remote import ensure_ssh_connected
 
 
 def _fit_and_evaluate_cached_cones(
-    cap, *, progress_start: int = 0, progress_total: int = 2,
+    cap, *, progress_start: int = 0, progress_total: int = 3,
 ) -> dict:
-    """Fit cached Euclid cones, apply their density, and refresh evaluations."""
-    cap.tick(progress_start, progress_total, "fit COSMOS observation layer")
+    """Rebuild current truth, fit cached cones, and refresh evaluations."""
     project_root = Path(__file__).resolve().parents[3]
+    cap.tick(progress_start, progress_total, "rebuild current synthetic truth")
+    subprocess.run(
+        [sys.executable, "scripts/fit_tng_vis_counts.py"],
+        cwd=project_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    cap.tick(progress_start + 1, progress_total, "fit COSMOS observation layer")
     subprocess.run(
         [sys.executable, "scripts/fit_cosmos_euclid_counts.py"],
         cwd=project_root,
@@ -40,23 +48,21 @@ def _fit_and_evaluate_cached_cones(
         raise RuntimeError("fit completed without a readable fit artifact")
 
     density_fit = fit_payload.get("generator_density_recommendation") or {}
-    configured_density = None
+    recommended_density = None
     if density_fit.get("apply_to_config"):
-        configured_density = float(density_fit["density_arcmin2"])
-        job_config.update({
-            "galaxy_density_arcmin2": f"{configured_density:.6g}",
-        })
+        recommended_density = float(density_fit["density_arcmin2"])
         cap.write(
-            "updated generator galaxy density to "
-            f"{configured_density:.2f} / arcmin²\n"
+            "recommended generator galaxy density "
+            f"{recommended_density:.2f} / arcmin² "
+            "(not applied automatically)\n"
         )
 
     cap.tick(
-        progress_start + 1, progress_total,
+        progress_start + 2, progress_total,
         "refresh field-statistics evaluations",
     )
     refreshed = refresh_population_comparison()
-    cap.tick(progress_start + 2, progress_total, "fit and evaluations ready")
+    cap.tick(progress_start + 3, progress_total, "fit and evaluations ready")
 
     selected_fit = (
         fit_payload.get("local_normalization_sensitivity_fit")
@@ -79,7 +85,7 @@ def _fit_and_evaluate_cached_cones(
         cap.write("refreshed cached population evaluations\n")
     return {
         "fit": fit_payload,
-        "configured_density_arcmin2": configured_density,
+        "recommended_density_arcmin2": recommended_density,
         "population_refreshed": refreshed is not None,
     }
 
@@ -188,13 +194,13 @@ def register(app):
                 count=count,
                 radius_arcmin=radius,
                 progress=lambda done, _total, label: cap.tick(
-                    done, count + 2, label
+                    done, count + 3, label
                 ),
             )
             _fit_and_evaluate_cached_cones(
                 cap,
                 progress_start=count,
-                progress_total=count + 2,
+                progress_total=count + 3,
             )
             cap.write(
                 f"cached {meta['rows']} unique sources from "

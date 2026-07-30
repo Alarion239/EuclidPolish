@@ -61,7 +61,10 @@ from euclid_polish.model import Model
 from euclid_polish.observability.reporter import Reporter
 from euclid_polish.observability.resource_sampler import ResourceSampler
 from euclid_polish.psf.psf_library import load_all_band_psf_sets
-from euclid_polish.sky.generation.cosmos_tng_prior import CosmosTngPrior
+from euclid_polish.sky.generation.cosmos_tng_prior import (
+    CosmosTngPrior,
+    F814WToVisTransfer,
+)
 from euclid_polish.sky.generation.gen_provenance import (
     ShardStampPlan,
     make_generation_context,
@@ -203,6 +206,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                     help="COSMOS-conditioned TNG galaxies per arcmin².")
     ap.add_argument("--cosmos-prior", default=Config.COSMOS_TNG_PRIOR_PATH,
                     help="Joint COSMOS2025 population-prior NPZ.")
+    ap.add_argument("--cosmos-vis-offset-mag", type=float, default=None,
+                    help="Embedded fitted VIS-F814W magnitude offset.")
+    ap.add_argument("--cosmos-vis-magnitude-slope", type=float, default=None,
+                    help="Embedded fitted F814W-to-VIS magnitude slope.")
+    ap.add_argument("--cosmos-vis-scatter-mag", type=float, default=None,
+                    help="Embedded fitted F814W-to-VIS scatter.")
+    ap.add_argument("--cosmos-vis-transfer-source", default="",
+                    help="Provenance label for the embedded brightness fit.")
     ap.add_argument("--star-density-arcmin2", type=float,
                     default=Config.DEFAULT_STAR_DENSITY_ARCMIN2,
                     help="Stellar surface density (stars/arcmin²).")
@@ -323,6 +334,44 @@ def _generator_config_from_args(args: argparse.Namespace) -> SkySimulatorConfig:
     )
 
 
+def _photometric_transfer_from_args(
+    args: argparse.Namespace,
+) -> F814WToVisTransfer | None:
+    """Return an explicitly embedded transfer, or defer to the local fit.
+
+    Web-submitted FASRC jobs embed all three fitted coefficients because the
+    analysis artifact lives on the web host and may not exist on the cluster.
+    Older CLI invocations without these flags retain the file-based behavior.
+    """
+    values = (
+        getattr(args, "cosmos_vis_offset_mag", None),
+        getattr(args, "cosmos_vis_magnitude_slope", None),
+        getattr(args, "cosmos_vis_scatter_mag", None),
+    )
+    if all(value is None for value in values):
+        return None
+    if any(value is None for value in values):
+        raise ValueError(
+            "COSMOS brightness transfer needs offset, slope, and scatter"
+        )
+    offset, slope, scatter = (float(value) for value in values)
+    if not all(np.isfinite(value) for value in (offset, slope, scatter)):
+        raise ValueError("COSMOS brightness transfer must be finite")
+    if slope <= 0.0 or scatter < 0.0:
+        raise ValueError(
+            "COSMOS brightness slope must be positive and scatter non-negative"
+        )
+    return F814WToVisTransfer(
+        offset_mag=offset,
+        magnitude_slope=slope,
+        scatter_mag=scatter,
+        source=(
+            str(getattr(args, "cosmos_vis_transfer_source", "")).strip()
+            or "embedded_cli"
+        ),
+    )
+
+
 def _observation_config_from_args(
     args: argparse.Namespace,
 ) -> ObservationSimulatorConfig:
@@ -356,7 +405,10 @@ def step_generate(args: argparse.Namespace) -> None:
             f"({args.ntrain} train + {args.nvalid} valid, "
             f"{args.image_size}² @ {Config.DEFAULT_PIXEL_SCALE}\"/pix)")
 
-    cat = (CosmosTngPrior(args.cosmos_prior)
+    cat = (CosmosTngPrior(
+               args.cosmos_prior,
+               photometric_transfer=_photometric_transfer_from_args(args),
+           )
            if args.galaxy_density_arcmin2 > 0.0 else None)
     if cat is not None:
         _log(f"COSMOS joint prior: {len(cat)} latent galaxies")
@@ -1020,13 +1072,23 @@ def _gen_init_worker(prior_path, image_size, psf_dir,
                      psf_warp_alpha_max=Config.TRAIN_PSF_WARP_ALPHA_MAX,
                      psf_warp_sigma=Config.TRAIN_PSF_WARP_SIGMA,
                      saturation_mask_prob=Config.TRAIN_SATURATION_MASK_PROB,
+                     cosmos_vis_offset_mag=None,
+                     cosmos_vis_magnitude_slope=None,
+                     cosmos_vis_scatter_mag=None,
+                     cosmos_vis_transfer_source="",
                      ) -> None:
     """ProcessPool initializer: build the (small, filtered) catalog +
     simulator + forward model once per worker. The COSMOS2025 FITS is
     memmapped and only the filtered columns are held, so each worker's copy
     is a few MB — no 10 GB-per-worker blow-up."""
     global _W_SIM, _W_FWD, _W_RECORDS_DIR
-    cat = (CosmosTngPrior(prior_path)
+    transfer = _photometric_transfer_from_args(argparse.Namespace(
+        cosmos_vis_offset_mag=cosmos_vis_offset_mag,
+        cosmos_vis_magnitude_slope=cosmos_vis_magnitude_slope,
+        cosmos_vis_scatter_mag=cosmos_vis_scatter_mag,
+        cosmos_vis_transfer_source=cosmos_vis_transfer_source,
+    ))
+    cat = (CosmosTngPrior(prior_path, photometric_transfer=transfer)
            if prior_path and galaxy_density_arcmin2 > 0.0 else None)
     _W_SIM = SkySimulator(
         cat, SkySimulatorConfig(image_size=image_size,
@@ -1210,7 +1272,11 @@ def step_generate_and_convolve_parallel(args: argparse.Namespace) -> None:
                           getattr(args, "psf_warp_sigma",
                                   Config.TRAIN_PSF_WARP_SIGMA),
                           getattr(args, "saturation_mask_prob",
-                                  Config.TRAIN_SATURATION_MASK_PROB)),
+                                  Config.TRAIN_SATURATION_MASK_PROB),
+                          getattr(args, "cosmos_vis_offset_mag", None),
+                          getattr(args, "cosmos_vis_magnitude_slope", None),
+                          getattr(args, "cosmos_vis_scatter_mag", None),
+                          getattr(args, "cosmos_vis_transfer_source", "")),
             ) as pool:
                 futs = [pool.submit(_gen_convolve_shard, t) for t in tasks]
                 for fut in as_completed(futs):

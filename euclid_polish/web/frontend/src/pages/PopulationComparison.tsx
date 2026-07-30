@@ -1047,7 +1047,7 @@ function CosmosEuclidDensityPanel({ fit }: { fit: CosmosEuclidFit }) {
         {fit.generator_density_recommendation && (
           <p className="catalog-classification-note">
             {fit.generator_density_recommendation.apply_to_config
-              ? `Applied to generator config from ${fit.generator_density_recommendation.cone_count} separated cones.`
+              ? `Recommendation from ${fit.generator_density_recommendation.cone_count} separated cones; it is not applied automatically.`
               : fit.generator_density_recommendation.caveat}
           </p>
         )}

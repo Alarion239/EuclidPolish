@@ -3,7 +3,10 @@ import json
 import numpy as np
 import pytest
 
-from euclid_polish.sky.generation.cosmos_tng_prior import CosmosTngPrior
+from euclid_polish.sky.generation.cosmos_tng_prior import (
+    CosmosTngPrior,
+    F814WToVisTransfer,
+)
 
 
 def _write_prior(path):
@@ -52,3 +55,24 @@ def test_multicone_fit_maps_f814w_to_vis_brightness(tmp_path):
     assert draw.brightness_transfer.startswith(
         "local_normalization_sensitivity_fit:"
     )
+
+
+def test_embedded_transfer_does_not_need_fit_file(tmp_path):
+    path = tmp_path / "prior.npz"
+    _write_prior(path)
+    transfer = F814WToVisTransfer(
+        offset_mag=0.3,
+        magnitude_slope=0.8,
+        scatter_mag=0.0,
+        source="embedded:test-fit",
+    )
+
+    draw = CosmosTngPrior(
+        path,
+        photometric_fit_path=tmp_path / "missing.json",
+        photometric_transfer=transfer,
+    ).sample(np.random.default_rng(2))
+
+    expected = 24.0 + 0.8 * (draw.mag_hst_f814w - 24.0) + 0.3
+    assert draw.target_vis_mag == pytest.approx(expected)
+    assert draw.brightness_transfer == "embedded:test-fit"

@@ -511,7 +511,7 @@ def test_fit_cached_cones_route_does_not_require_archive_session(monkeypatch):
     assert response.get_json()["job_id"] == "fit-cones-job"
 
 
-def test_fit_cached_cones_updates_density_and_refreshes_evaluations(
+def test_fit_cached_cones_rebuilds_truth_without_changing_config(
     monkeypatch,
 ):
     from euclid_polish.web.routes import population_comparison as routes
@@ -540,13 +540,14 @@ def test_fit_cached_cones_updates_density_and_refreshes_evaluations(
             "density_arcmin2": 400.3426,
         },
     }
-    updates = []
-    monkeypatch.setattr(routes.subprocess, "run", lambda *args, **kwargs: None)
+    commands = []
     monkeypatch.setattr(
-        routes, "read_cosmos_euclid_fit", lambda: fit_payload,
+        routes.subprocess,
+        "run",
+        lambda argv, **kwargs: commands.append(argv),
     )
     monkeypatch.setattr(
-        routes.job_config, "update", lambda patch: updates.append(patch),
+        routes, "read_cosmos_euclid_fit", lambda: fit_payload,
     )
     monkeypatch.setattr(
         routes, "refresh_population_comparison", lambda: {"updated": True},
@@ -555,10 +556,14 @@ def test_fit_cached_cones_updates_density_and_refreshes_evaluations(
 
     result = routes._fit_and_evaluate_cached_cones(cap)
 
-    assert updates == [{"galaxy_density_arcmin2": "400.343"}]
-    assert result["configured_density_arcmin2"] == pytest.approx(400.3426)
+    assert [command[1] for command in commands] == [
+        "scripts/fit_tng_vis_counts.py",
+        "scripts/fit_cosmos_euclid_counts.py",
+    ]
+    assert result["recommended_density_arcmin2"] == pytest.approx(400.3426)
     assert result["population_refreshed"] is True
-    assert cap.ticks[-1] == (2, 2, "fit and evaluations ready")
+    assert cap.ticks[-1] == (3, 3, "fit and evaluations ready")
+    assert any("not applied automatically" in line for line in cap.output)
     assert any("64.84 / 10" in line for line in cap.output)
 
 

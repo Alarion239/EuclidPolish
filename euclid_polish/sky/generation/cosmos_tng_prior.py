@@ -49,7 +49,13 @@ class F814WToVisTransfer:
         return float(mean + rng.normal(0.0, self.scatter_mag))
 
 
-def _load_brightness_transfer(path: str | Path) -> F814WToVisTransfer:
+def load_brightness_transfer(path: str | Path) -> F814WToVisTransfer:
+    """Read the preferred fitted F814W→VIS transfer from an analysis artifact.
+
+    The returned object is self-contained so callers submitting work to a
+    different machine can serialize its coefficients instead of relying on
+    the artifact being present at the same path remotely.
+    """
     fit_path = Path(path)
     try:
         payload = json.loads(fit_path.read_text())
@@ -81,6 +87,7 @@ class CosmosTngPrior:
         path: str | Path,
         *,
         photometric_fit_path: str | Path = Config.COSMOS_EUCLID_FIT_PATH,
+        photometric_transfer: F814WToVisTransfer | None = None,
         mag_min: float = 18.0,
         mag_max: float = 28.0,
     ):
@@ -119,8 +126,10 @@ class CosmosTngPrior:
         )
         if not len(self._size_donors):
             raise ValueError(f"COSMOS prior lacks size donors: {self.path}")
-        self.brightness_transfer = _load_brightness_transfer(
-            photometric_fit_path
+        self.brightness_transfer = (
+            photometric_transfer
+            if photometric_transfer is not None
+            else load_brightness_transfer(photometric_fit_path)
         )
 
     def __len__(self) -> int:

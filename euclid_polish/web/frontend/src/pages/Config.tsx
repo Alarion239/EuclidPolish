@@ -217,7 +217,7 @@ export default function ConfigPage() {
                     hint: "HR scene side in 0.05″/pix pixels. Kept a multiple of 6 (the NISP rebin factor). Feeds synthetic generation and inference." })}
                 {num("galaxy_density_arcmin2", "Galaxies (/arcmin²)",
                   { min: 0, max: 1000, step: 1,
-                    hint: "Raw TNG draw density. A multi-cone Euclid fit updates this value; COSMOS does not set its normalization." })}
+                    hint: "Raw TNG draw density. Use the multi-cone Euclid fit recommendation to set it; COSMOS does not set its normalization." })}
               </div>
             </CardBody>
           </Card>
