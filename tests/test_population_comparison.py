@@ -491,6 +491,77 @@ def test_random_cone_route_accepts_one_cone_and_rejects_zero(monkeypatch):
     assert "count must be 1–12" in rejected.get_json()["error"]
 
 
+def test_fit_cached_cones_route_does_not_require_archive_session(monkeypatch):
+    from euclid_polish.web.app import create_app
+    from euclid_polish.web.routes import population_comparison as routes
+
+    monkeypatch.setattr(
+        routes,
+        "availability",
+        lambda: {"euclid_catalog": {"cached": True}},
+    )
+    monkeypatch.setattr(
+        routes.REGISTRY, "spawn", lambda *args, **kwargs: "fit-cones-job",
+    )
+    client = create_app().test_client()
+
+    response = client.post("/api/population-comparison/fit-euclid")
+
+    assert response.status_code == 200
+    assert response.get_json()["job_id"] == "fit-cones-job"
+
+
+def test_fit_cached_cones_updates_density_and_refreshes_evaluations(
+    monkeypatch,
+):
+    from euclid_polish.web.routes import population_comparison as routes
+
+    class Capture:
+        def __init__(self):
+            self.ticks = []
+            self.output = []
+
+        def tick(self, done, total, label):
+            self.ticks.append((done, total, label))
+
+        def write(self, message):
+            self.output.append(message)
+
+    fit_payload = {
+        "fit": {"poisson_deviance": 10.0, "dof": 5,
+                "completeness_m50": 25.0},
+        "local_normalization_sensitivity_fit": {
+            "poisson_deviance": 64.84,
+            "dof": 10,
+            "completeness_m50": 25.12,
+        },
+        "generator_density_recommendation": {
+            "apply_to_config": True,
+            "density_arcmin2": 400.3426,
+        },
+    }
+    updates = []
+    monkeypatch.setattr(routes.subprocess, "run", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        routes, "read_cosmos_euclid_fit", lambda: fit_payload,
+    )
+    monkeypatch.setattr(
+        routes.job_config, "update", lambda patch: updates.append(patch),
+    )
+    monkeypatch.setattr(
+        routes, "refresh_population_comparison", lambda: {"updated": True},
+    )
+    cap = Capture()
+
+    result = routes._fit_and_evaluate_cached_cones(cap)
+
+    assert updates == [{"galaxy_density_arcmin2": "400.343"}]
+    assert result["configured_density_arcmin2"] == pytest.approx(400.3426)
+    assert result["population_refreshed"] is True
+    assert cap.ticks[-1] == (2, 2, "fit and evaluations ready")
+    assert any("64.84 / 10" in line for line in cap.output)
+
+
 def test_population_comparison_status_selects_training_variant(monkeypatch):
     from euclid_polish.web.app import create_app
     from euclid_polish.web.routes import population_comparison as routes

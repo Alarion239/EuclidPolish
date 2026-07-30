@@ -1132,11 +1132,16 @@ function ConeQuery({ api, onQueried }: { api: ApiPayload; onQueried: () => void 
   const [count, setCount] = useState("6");
   const [radius, setRadius] = useState(defaults.radius_arcmin.toFixed(3));
   const query = useJob();
+  const analysis = useJob();
   const countNumber = Number(count);
   const radiusNumber = Number(radius);
   const valid = Number.isInteger(countNumber) && countNumber >= 1 && countNumber <= 12
     && Number.isFinite(radiusNumber) && radiusNumber > 0 && radiusNumber <= 30;
   const area = valid ? countNumber * Math.PI * radiusNumber ** 2 : 0;
+  const cachedConeCount = api.availability.euclid_catalog.meta?.cone_count ?? 0;
+  const fitButtonLabel = cachedConeCount
+    ? `Fit + evaluate ${cachedConeCount} cached cone${cachedConeCount === 1 ? "" : "s"}`
+    : "Fit + evaluate cached cones";
   return (
     <Card className="cone-query">
       <CardHead title="Random Euclid population cones"
@@ -1158,13 +1163,24 @@ function ConeQuery({ api, onQueried }: { api: ApiPayload; onQueried: () => void 
               : `${(area / defaults.area_arcmin2).toFixed(2)}× synthetic footprint`}</small>
           </div>
           <Button variant="primary"
-            disabled={!api.authenticated || query.busy || !valid}
+            disabled={!api.authenticated || query.busy || analysis.busy || !valid}
             onClick={() => query.run(
               "/api/population-comparison/query-euclid-multi",
               { count, radius_arcmin: radius },
               { onDone: (job) => { if (job.status !== "failed") onQueried(); } },
             )}>
             {query.busy ? "Querying…" : `Query ${count || "0"} random cone${countNumber === 1 ? "" : "s"}`}
+          </Button>
+          <Button disabled={!api.availability.euclid_catalog.cached
+              || query.busy || analysis.busy}
+            onClick={() => analysis.run(
+              "/api/population-comparison/fit-euclid",
+              {},
+              { onDone: (job) => { if (job.status !== "failed") onQueried(); } },
+            )}>
+            {analysis.busy
+              ? "Fitting…"
+              : fitButtonLabel}
           </Button>
         </div>
         <p className="cone-query__login">
@@ -1178,6 +1194,7 @@ function ConeQuery({ api, onQueried }: { api: ApiPayload; onQueried: () => void 
           </p>
         )}
         <JobProgressView job={query.job} error={query.error} />
+        <JobProgressView job={analysis.job} error={analysis.error} />
       </CardBody>
     </Card>
   );

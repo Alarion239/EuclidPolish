@@ -22,6 +22,68 @@ from euclid_polish.web.jobs import REGISTRY
 from euclid_polish.web.remote import ensure_ssh_connected
 
 
+def _fit_and_evaluate_cached_cones(
+    cap, *, progress_start: int = 0, progress_total: int = 2,
+) -> dict:
+    """Fit cached Euclid cones, apply their density, and refresh evaluations."""
+    cap.tick(progress_start, progress_total, "fit COSMOS observation layer")
+    project_root = Path(__file__).resolve().parents[3]
+    subprocess.run(
+        [sys.executable, "scripts/fit_cosmos_euclid_counts.py"],
+        cwd=project_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    fit_payload = read_cosmos_euclid_fit()
+    if fit_payload is None:
+        raise RuntimeError("fit completed without a readable fit artifact")
+
+    density_fit = fit_payload.get("generator_density_recommendation") or {}
+    configured_density = None
+    if density_fit.get("apply_to_config"):
+        configured_density = float(density_fit["density_arcmin2"])
+        job_config.update({
+            "galaxy_density_arcmin2": f"{configured_density:.6g}",
+        })
+        cap.write(
+            "updated generator galaxy density to "
+            f"{configured_density:.2f} / arcmin²\n"
+        )
+
+    cap.tick(
+        progress_start + 1, progress_total,
+        "refresh field-statistics evaluations",
+    )
+    refreshed = refresh_population_comparison()
+    cap.tick(progress_start + 2, progress_total, "fit and evaluations ready")
+
+    selected_fit = (
+        fit_payload.get("local_normalization_sensitivity_fit")
+        if density_fit.get("apply_to_config")
+        else fit_payload.get("fit")
+    ) or {}
+    if selected_fit:
+        cap.write(
+            "fit deviance / dof "
+            f"{float(selected_fit.get('poisson_deviance', 0.0)):.2f} / "
+            f"{int(selected_fit.get('dof', 0))}; "
+            f"VIS 50% completeness "
+            f"{float(selected_fit.get('completeness_m50', 0.0)):.2f}\n"
+        )
+    if refreshed is None:
+        cap.write(
+            "Fit saved; run Rebuild statistics once to create the field cache.\n"
+        )
+    else:
+        cap.write("refreshed cached population evaluations\n")
+    return {
+        "fit": fit_payload,
+        "configured_density_arcmin2": configured_density,
+        "population_refreshed": refreshed is not None,
+    }
+
+
 def register(app):
     @app.route("/api/population-comparison")
     def api_population_comparison():
@@ -125,35 +187,15 @@ def register(app):
             meta = query_euclid_population_multi(
                 count=count,
                 radius_arcmin=radius,
-                progress=lambda done, total, label: cap.tick(
-                    done, total + 1, label
+                progress=lambda done, _total, label: cap.tick(
+                    done, count + 2, label
                 ),
             )
-            cap.tick(count, count + 2, "fit COSMOS observation layer")
-            project_root = Path(__file__).resolve().parents[3]
-            subprocess.run(
-                [sys.executable, "scripts/fit_cosmos_euclid_counts.py"],
-                cwd=project_root,
-                check=True,
-                capture_output=True,
-                text=True,
+            _fit_and_evaluate_cached_cones(
+                cap,
+                progress_start=count,
+                progress_total=count + 2,
             )
-            fit_payload = read_cosmos_euclid_fit() or {}
-            density_fit = (
-                fit_payload.get("generator_density_recommendation") or {}
-            )
-            if density_fit.get("apply_to_config"):
-                fitted_density = float(density_fit["density_arcmin2"])
-                job_config.update({
-                    "galaxy_density_arcmin2": f"{fitted_density:.6g}",
-                })
-                cap.write(
-                    "updated generator galaxy density to "
-                    f"{fitted_density:.2f} / arcmin² from the multi-cone fit\n"
-                )
-            cap.tick(count + 1, count + 2, "population histograms")
-            refresh_population_comparison()
-            cap.tick(count + 2, count + 2, "population histograms")
             cap.write(
                 f"cached {meta['rows']} unique sources from "
                 f"{meta['cone_count']} cones over "
@@ -164,6 +206,22 @@ def register(app):
         job_id = REGISTRY.spawn(
             label=f"population comparison: {count} random Euclid cones",
             target=run,
+        )
+        return jsonify({"ok": True, "job_id": job_id})
+
+    @app.route(
+        "/api/population-comparison/fit-euclid", methods=["POST"]
+    )
+    def api_population_comparison_fit_euclid():
+        if not availability().get("euclid_catalog", {}).get("cached"):
+            return jsonify({
+                "ok": False,
+                "error": "Query and cache at least one Euclid cone first.",
+            }), 400
+
+        job_id = REGISTRY.spawn(
+            label="population comparison: fit cached Euclid cones",
+            target=_fit_and_evaluate_cached_cones,
         )
         return jsonify({"ok": True, "job_id": job_id})
 
