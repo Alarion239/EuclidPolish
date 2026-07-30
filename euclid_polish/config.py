@@ -124,6 +124,10 @@ class Config:
         DATA_DIR, "population_comparison", "cosmos2025",
         "cosmos2025_population_prior.npz",
     )
+    COSMOS_EUCLID_FIT_PATH = os.path.join(
+        DATA_DIR, "population_comparison", "cosmos2025",
+        "cosmos_euclid_density_fit.json",
+    )
 
     COSMOS2025_CATALOG_PATH    = os.path.join(DATA_DIR, "COSMOS2025/cosmos2025.fits")
     COSMOS2025_HDU_PHOTOMETRY = 1       # PHOTOMETRY HOTCOLD AND SE++
@@ -165,9 +169,9 @@ class Config:
     # Sky generation defaults
     DEFAULT_IMAGE_SIZE           = 256
     DEFAULT_PIXEL_SCALE          = 0.05     # arcsec / pixel
-    # Latent 18 <= VIS < 28 COSMOS2025 population. Every draw is rendered
-    # with TNG morphology; COSMOS supplies the joint photometry/z/mass/size.
-    GALAXY_DENSITY_ARCMIN2 = 245.0
+    # Project fallback until a multi-cone Euclid observation fit updates the
+    # persisted job configuration. This is not the COSMOS surface density.
+    GALAXY_DENSITY_ARCMIN2 = 200.0
     DEFAULT_GAL_DENSITY_ARCMIN2 = GALAXY_DENSITY_ARCMIN2
     # Reverted to the 5dece6f ("worked") density: ~1.389/arcmin² (the real
     # Wide-Survey stellar density). The 10/arcmin² inflation was paired with

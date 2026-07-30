@@ -104,7 +104,7 @@ def test_star_field_mapped_for_synthetic_generate():
 
 def test_galaxy_density_defaults_updates_and_maps_to_generators(cfg_path):
     c = job_config.load()
-    assert c.galaxy_density_arcmin2 == 245.0
+    assert c.galaxy_density_arcmin2 == 200.0
     c = job_config.update({"galaxy_density_arcmin2": "175"})
     assert c.galaxy_density_arcmin2 == 175.0
     assert job_config.load().galaxy_density_arcmin2 == 175.0

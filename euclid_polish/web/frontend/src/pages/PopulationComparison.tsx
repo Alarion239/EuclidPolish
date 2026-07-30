@@ -136,6 +136,13 @@ type CosmosEuclidFit = {
     dof: number;
   };
   local_normalization_sensitivity_fit: CosmosEuclidFit["fit"];
+  generator_density_recommendation?: {
+    density_arcmin2: number;
+    cone_count: number;
+    apply_to_config: boolean;
+    method: string;
+    caveat: string;
+  };
   latent_density: {
     cosmos_m_lt_28_arcmin2: number;
     locally_renormalized_m_lt_28_arcmin2: number;
@@ -1004,11 +1011,11 @@ function CosmosEuclidDensityPanel({ fit }: { fit: CosmosEuclidFit }) {
   return (
     <Card className="comparison-plot">
       <CardHead title="Latent COSMOS × detected Euclid density"
-        sub="COSMOS controls the intrinsic rising counts; Euclid fits only the F814W→VIS transfer and detection completeness." />
+        sub="COSMOS supplies the count-shape prior; separated Euclid cones fit normalization, F814W→VIS transfer, and completeness." />
       <CardBody>
         <AdjustablePlot boundsLabel="COSMOS–Euclid density"
           xDomain={[20, 28]} yDomain={domain(densityValues, true)}
-          xLabel="catalog VIS magnitude (AB)"
+          xLabel="HST F814W / fitted Euclid VIS magnitude (AB)"
           yLabel="objects / arcmin² / 0.5 mag"
           series={densitySeries} aspect={0.58} />
         <Legend items={[
@@ -1029,7 +1036,21 @@ function CosmosEuclidDensityPanel({ fit }: { fit: CosmosEuclidFit }) {
             <dd>{(fit.fit.poisson_deviance / fit.fit.dof).toFixed(2)}</dd></div>
           <div><dt>local density sensitivity</dt>
             <dd>{fit.local_normalization_sensitivity_fit.population_scale.toFixed(2)}×</dd></div>
+          {fit.generator_density_recommendation && (
+            <div><dt>generator density fit</dt>
+              <dd>
+                {fit.generator_density_recommendation.density_arcmin2.toFixed(0)}
+                {" "}/ arcmin²
+              </dd></div>
+          )}
         </dl>
+        {fit.generator_density_recommendation && (
+          <p className="catalog-classification-note">
+            {fit.generator_density_recommendation.apply_to_config
+              ? `Applied to generator config from ${fit.generator_density_recommendation.cone_count} separated cones.`
+              : fit.generator_density_recommendation.caveat}
+          </p>
+        )}
         <p className="catalog-classification-note">{fit.interpretation}</p>
       </CardBody>
     </Card>

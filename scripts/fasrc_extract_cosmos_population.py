@@ -11,8 +11,8 @@ master FITS.  It deliberately keeps two selections separate:
 
 ``generator_ready``
     Population rows with clean flags, no blend flag, a viable B+D fit, and
-    finite B+D photometry in the four Euclid proxy bands.  This is the subset
-    from which morphology/colour conditionals may safely be learned.
+    finite B+D photometry in HST F814W and UltraVISTA Y/J/H.  This is the
+    subset from which morphology conditionals may safely be learned.
 
 The separation is important: applying morphology-fit or Euclid-detection cuts
 to the number-count target would manufacture a faint-end turnover.
@@ -21,7 +21,7 @@ Outputs
 -------
 ``cosmos2025_population_prior.npz``
     One row per population galaxy with photo-z, physical properties,
-    four-band photometry, morphology, and selection flags.
+    HST/UltraVISTA photometry, morphology, and selection flags.
 ``cosmos2025_number_counts.csv``
     Differential and cumulative F814W counts for the broad, clean, isolated,
     and generator-ready selections.  Counts use the supplied survey area and
@@ -72,11 +72,17 @@ DEFAULT_OUTPUT_DIR = os.path.join(
     Config.DATA_DIR, "population_comparison", "cosmos2025"
 )
 MAG_BINS = np.arange(18.0, 31.0001, 0.25)
-EUCLID_PROXY_COLUMNS = {
+COSMOS_FILTER_COLUMNS = {
     "VIS": "hst-f814w",
     "Y_E": "uvista-y",
     "J_E": "uvista-j",
     "H_E": "uvista-h",
+}
+PHYSICAL_FILTER_KEYS = {
+    "VIS": "hst_f814w",
+    "Y_E": "uvista_y",
+    "J_E": "uvista_j",
+    "H_E": "uvista_h",
 }
 HDU_INDEX = {
     "photometry": 1,
@@ -292,7 +298,11 @@ def _make_plot(
         (25.0, 27.0, "#e07a1f"),
         (27.0, 29.0, "#a13d63"),
     ):
-        mask = pop & (arrays["mag_vis"] >= lo) & (arrays["mag_vis"] < hi)
+        mask = (
+            pop
+            & (arrays["mag_hst_f814w"] >= lo)
+            & (arrays["mag_hst_f814w"] < hi)
+        )
         if np.any(mask):
             ax.hist(
                 arrays["z_phot"][mask],
@@ -344,8 +354,8 @@ def _make_plot(
     ):
         mask = (
             gen
-            & (arrays["mag_vis"] >= lo)
-            & (arrays["mag_vis"] < hi)
+            & (arrays["mag_hst_f814w"] >= lo)
+            & (arrays["mag_hst_f814w"] < hi)
             & np.isfinite(arrays["re_combined_arcsec"])
         )
         if np.any(mask):
@@ -365,9 +375,9 @@ def _make_plot(
     ax.legend(fontsize=8)
 
     ax = axes[1, 1]
-    good = gen & np.isfinite(arrays["bulge_to_total_vis"])
+    good = gen & np.isfinite(arrays["bulge_to_total_hst_f814w"])
     ax.hist(
-        arrays["bulge_to_total_vis"][good],
+        arrays["bulge_to_total_hst_f814w"][good],
         bins=np.linspace(0.0, 1.0, 51),
         color="#8b45a6",
         alpha=0.8,
@@ -460,7 +470,7 @@ def extract_catalog(
         warn_flag = _native(photo["warn_flag"], np.int32)
         model_mags = {
             band: _native(photo[f"mag_model_{column}"], np.float32)
-            for band, column in EUCLID_PROXY_COLUMNS.items()
+            for band, column in COSMOS_FILTER_COLUMNS.items()
         }
         mag_vis = model_mags["VIS"]
         mag_auto_vis = _optional(
@@ -469,7 +479,7 @@ def extract_catalog(
         consumed["photometry"] = [
             "id", "ra", "dec", "flag_star", "flag_blend", "warn_flag",
             "mag_auto_hst-f814w",
-            *(f"mag_model_{column}" for column in EUCLID_PROXY_COLUMNS.values()),
+            *(f"mag_model_{column}" for column in COSMOS_FILTER_COLUMNS.values()),
         ]
 
         obj_type = _native(lephare["type"], np.int16)
@@ -515,7 +525,7 @@ def extract_catalog(
             "disk_radius_deg", "bulge_radius_deg", "disk_axratio",
             "bulge_axratio", "angle_bd", "fmf_b+d_chi2",
         ]
-        for band, column in EUCLID_PROXY_COLUMNS.items():
+        for band, column in COSMOS_FILTER_COLUMNS.items():
             total_name = f"mag_model_bd_total_{column}"
             bulge_name = f"mag_model_bulge_{column}"
             disk_name = f"mag_model_disk_{column}"
@@ -560,7 +570,7 @@ def extract_catalog(
     clean = population & (warn_flag == 0)
     isolated = clean & (flag_blend == 0)
     finite_bd_photometry = np.ones(row_count, dtype=bool)
-    for band in EUCLID_PROXY_COLUMNS:
+    for band in COSMOS_FILTER_COLUMNS:
         finite_bd_photometry &= (
             _valid_mag(bulge_mags[band])
             & _valid_mag(disk_mags[band])
@@ -625,8 +635,8 @@ def extract_catalog(
         "count_clean": clean[selected],
         "count_isolated": isolated[selected],
         "generator_ready": generator_ready[selected],
-        "mag_vis": mag_vis[selected],
-        "mag_auto_vis": mag_auto_vis[selected],
+        "mag_hst_f814w": mag_vis[selected],
+        "mag_auto_hst_f814w": mag_auto_vis[selected],
         "z_phot": z_phot[selected],
         "z_pdf_median": z_med[selected],
         "z_pdf_l68": z_l68[selected],
@@ -648,18 +658,19 @@ def extract_catalog(
         "bulge_axis_ratio": bulge_q[selected],
         "position_angle_deg": angle_deg[selected],
         "bd_chi2": bd_chi2[selected],
-        "bulge_to_total_vis": bulge_to_total[selected],
+        "bulge_to_total_hst_f814w": bulge_to_total[selected],
         "re_combined_arcsec": re_combined[selected],
         "re_combined_kpc": re_kpc[selected],
-        "mean_surface_brightness_vis": mean_sb_vis[selected],
+        "mean_surface_brightness_hst_f814w": mean_sb_vis[selected],
     }
-    for band in EUCLID_PROXY_COLUMNS:
+    for band in COSMOS_FILTER_COLUMNS:
+        physical_filter = PHYSICAL_FILTER_KEYS[band]
         # Broad total profile-fit photometry is available for population
         # galaxies even when the stricter B+D decomposition failed.
-        arrays[f"mag_{band}"] = model_mags[band][selected]
-        arrays[f"mag_bd_{band}"] = band_mags[band][selected]
-        arrays[f"mag_bulge_{band}"] = bulge_mags[band][selected]
-        arrays[f"mag_disk_{band}"] = disk_mags[band][selected]
+        arrays[f"mag_{physical_filter}"] = model_mags[band][selected]
+        arrays[f"mag_bd_{physical_filter}"] = band_mags[band][selected]
+        arrays[f"mag_bulge_{physical_filter}"] = bulge_mags[band][selected]
+        arrays[f"mag_disk_{physical_filter}"] = disk_mags[band][selected]
     arrays.update({name: value[selected] for name, value in morph.items()})
     arrays.update(
         {
@@ -753,7 +764,7 @@ def extract_catalog(
             ),
         },
         "percentiles": {
-            "population_mag_vis": _nan_percentiles(
+            "population_mag_hst_f814w": _nan_percentiles(
                 mag_vis, population
             ),
             "population_z_phot": _nan_percentiles(
@@ -768,10 +779,10 @@ def extract_catalog(
             "generator_re_kpc": _nan_percentiles(
                 re_kpc, generator_ready
             ),
-            "generator_bulge_to_total_vis": _nan_percentiles(
+            "generator_bulge_to_total_hst_f814w": _nan_percentiles(
                 bulge_to_total, generator_ready
             ),
-            "generator_mean_surface_brightness_vis": _nan_percentiles(
+            "generator_mean_surface_brightness_hst_f814w": _nan_percentiles(
                 mean_sb_vis, generator_ready
             ),
         },

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Fit Euclid VIS detections as an observation of the COSMOS population.
 
-COSMOS2025 provides the latent galaxy number counts.  The fit is intentionally
+COSMOS2025 provides the latent galaxy count shape.  The fit is intentionally
 restricted to an observation layer:
 
 * a global population normalization;
@@ -588,9 +588,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         ),
         "interpretation": (
             "Euclid non-star rows are detections, not confirmed galaxies. "
-            "COSMOS sets the latent shape and normalization; Euclid calibrates "
-            "the observation layer. A separately reported free-normalization fit "
-            "is only a local-field sensitivity check."
+            "COSMOS sets the latent shape; Euclid calibrates the observation "
+            "layer and, with at least three separated cones, its normalization."
         ),
         "inputs": {
             "cosmos_counts_csv": str(cosmos_path),
@@ -609,6 +608,21 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         },
         "fit": asdict(fit),
         "local_normalization_sensitivity_fit": asdict(local_fit),
+        "generator_density_recommendation": {
+            "density_arcmin2": float(
+                local_fit.population_scale * raw_cosmos_m28
+            ),
+            "cone_count": int(euclid_meta.get("cone_count", 1)),
+            "apply_to_config": int(euclid_meta.get("cone_count", 1)) >= 3,
+            "method": (
+                "free population normalization in the F814W-to-VIS "
+                "observation fit over spatially separated Euclid cones"
+            ),
+            "caveat": (
+                "Requires at least three separated cones; one cone is retained "
+                "only as a local cosmic-variance sensitivity estimate."
+            ),
+        },
         "reliability": {
             "cosmos_f814w_turnover_sensitive_above_mag": 27.5,
             "fixed_fit_vis_turnover_sensitive_above_mag": (

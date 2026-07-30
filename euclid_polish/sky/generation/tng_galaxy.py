@@ -307,7 +307,7 @@ def tng_stamp_at_redshift(
     sb_cut_mag_arcsec2: float = Config.TNG_SB_TRUNCATE_MAG_ARCSEC2,
     mass_scale: float = 1.0,
     target_re_arcsec: float | None = None,
-    target_flux_e_per_band: tuple[float, float, float, float] | None = None,
+    target_vis_flux_e: float | None = None,
 ) -> tuple[np.ndarray, dict]:
     """Build one TNG stamp **as it would appear at redshift ``z``**.
 
@@ -377,19 +377,22 @@ def tng_stamp_at_redshift(
     # integer rounding); mass_scale then dims the rescaled galaxy (L ∝ M).
     stamp *= (np.asarray(factors, dtype=np.float32)[None, None, :]
               * np.float32((rebin / f_geo) ** 2 * mass_scale))
-    if target_flux_e_per_band is not None:
-        for k, target in enumerate(target_flux_e_per_band):
-            current = float(stamp[..., k].sum(dtype=np.float64))
-            if current > 0.0 and target >= 0.0:
-                stamp[..., k] *= np.float32(float(target) / current)
+    brightness_scale = 1.0
+    if target_vis_flux_e is not None:
+        current_vis = float(stamp[..., 0].sum(dtype=np.float64))
+        if current_vis > 0.0 and target_vis_flux_e >= 0.0:
+            brightness_scale = float(target_vis_flux_e) / current_vis
+            # One scalar preserves the TNG VIS/NISP proportions.
+            stamp *= np.float32(brightness_scale)
     stamp = truncate_below_sb(stamp, pixel_scale_arcsec, sb_cut_mag_arcsec2)
-    # The COSMOS magnitude is the total-flux contract. Restore flux removed by
-    # the surface-brightness crop so size and flux are independently controlled.
-    if target_flux_e_per_band is not None:
-        for k, target in enumerate(target_flux_e_per_band):
-            current = float(stamp[..., k].sum(dtype=np.float64))
-            if current > 0.0 and target >= 0.0:
-                stamp[..., k] *= np.float32(float(target) / current)
+    # Restore the fitted VIS brightness after cropping, again with one shared
+    # scalar so no COSMOS proxy colour is injected into the TNG SED.
+    if target_vis_flux_e is not None:
+        current_vis = float(stamp[..., 0].sum(dtype=np.float64))
+        if current_vis > 0.0 and target_vis_flux_e >= 0.0:
+            correction = float(target_vis_flux_e) / current_vis
+            stamp *= np.float32(correction)
+            brightness_scale *= correction
     meta["flux_e_per_band"] = {
         b: float(stamp[..., k].sum())
         for k, b in enumerate(Config.LR_INPUT_BAND_NAMES)
@@ -412,10 +415,9 @@ def tng_stamp_at_redshift(
         )
     if target_re_arcsec is not None:
         meta["target_re_arcsec"] = float(target_re_arcsec)
-    if target_flux_e_per_band is not None:
-        meta["target_flux_e_per_band"] = [
-            float(value) for value in target_flux_e_per_band
-        ]
+    if target_vis_flux_e is not None:
+        meta["target_vis_flux_e"] = float(target_vis_flux_e)
+        meta["brightness_scale"] = float(brightness_scale)
     return stamp, meta
 
 
@@ -507,7 +509,7 @@ def sample_tng_stamp(
     z: float | None = None,
     mass_scale: float = 1.0,
     f_max: int = TNG_MAX_REBIN_FACTOR,
-    target_flux_e_per_band: tuple[float, float, float, float] | None = None,
+    target_vis_flux_e: float | None = None,
 ) -> tuple[np.ndarray, dict] | None:
     """Pick a random galaxy / orientation / downsample / quarter-rotation and
     return its injectable ``(H,W,4)`` electron stamp + meta (None if it can't
@@ -539,7 +541,7 @@ def sample_tng_stamp(
                 pixel_scale_arcsec=pixel_scale_arcsec, f_max=f_max,
                 mass_scale=mass_scale,
                 target_re_arcsec=target_re_arcsec,
-                target_flux_e_per_band=target_flux_e_per_band)
+                target_vis_flux_e=target_vis_flux_e)
         except Exception:
             return None
 

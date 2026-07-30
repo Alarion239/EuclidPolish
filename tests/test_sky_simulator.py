@@ -21,13 +21,14 @@ class StaticPrior:
     def sample(self, _rng):
         return CosmosTngDraw(
             catalog_id="cosmos-1",
-            magnitudes=(23.0, 22.5, 22.3, 22.1),
-            flux_e_per_band=(1200.0, 1000.0, 900.0, 800.0),
+            mag_hst_f814w=23.0,
+            target_vis_mag=23.1,
+            target_vis_flux_e=1200.0,
             z=0.8,
             logmass=10.0,
             re_arcsec=0.2,
-            imputed_photometry=False,
             imputed_size=False,
+            brightness_transfer="test",
         )
 
 

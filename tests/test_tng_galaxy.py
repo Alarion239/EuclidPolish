@@ -29,6 +29,7 @@ from euclid_polish.sky.generation.tng_galaxy import (
     prepare_tng_galaxy,
     sample_tng_stamp,
     tng_fits_path,
+    tng_stamp_at_redshift,
 )
 
 BAND = Config.BAND_VIS
@@ -286,6 +287,33 @@ def test_sample_tng_stamp(tmp_path):
     assert meta["rot_k"] in (0, 1, 2, 3)
     # empty pool → None
     assert sample_tng_stamp([], np.random.default_rng(0)) is None
+
+
+def test_vis_brightness_normalization_preserves_tng_band_ratios(tmp_path):
+    tng = str(tmp_path)
+    _write_fake_galaxy(tng, "111")
+    galaxy_dir = os.path.join(tng, "111")
+    _, native = tng_stamp_at_redshift(
+        galaxy_dir, "111", 1, 0.8, np.random.default_rng(9),
+        sb_cut_mag_arcsec2=0.0,
+    )
+    target_vis = 2.5 * native["flux_e_per_band"]["VIS"]
+    _, normalized = tng_stamp_at_redshift(
+        galaxy_dir, "111", 1, 0.8, np.random.default_rng(9),
+        sb_cut_mag_arcsec2=0.0,
+        target_vis_flux_e=target_vis,
+    )
+    assert normalized["flux_e_per_band"]["VIS"] == pytest.approx(target_vis)
+    for band in Config.LR_INPUT_BAND_NAMES[1:]:
+        native_ratio = (
+            native["flux_e_per_band"][band]
+            / native["flux_e_per_band"]["VIS"]
+        )
+        normalized_ratio = (
+            normalized["flux_e_per_band"][band]
+            / normalized["flux_e_per_band"]["VIS"]
+        )
+        assert normalized_ratio == pytest.approx(native_ratio, rel=1e-6)
 
 
 # --------------------- half-light radius / target sizing -------------------

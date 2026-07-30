@@ -1,9 +1,10 @@
 """
 Multi-band clean-HR scene generator.
 
-Every field galaxy uses a resolved TNG50 SKIRT morphology.  A joint COSMOS2025
-row supplies its VIS/Y/J/H total flux, photometric redshift, stellar mass and
-apparent half-light radius.  There is one smooth population and one density.
+Every field galaxy uses a resolved TNG50 SKIRT morphology and its native
+VIS/NISP proportions. A COSMOS2025 row supplies photometric redshift, stellar
+mass, apparent half-light radius, and an F814W brightness anchor. One shared
+brightness scale is applied to all TNG bands after the fitted F814W→VIS transfer.
 
 The output of :meth:`SkySimulator.simulate_field` is a single :class:`Image`
 with ``data`` of shape ``(H, W, 4)`` in **raw electrons** on the 0.05″ HR
@@ -305,7 +306,7 @@ class SkySimulator:
     def _add_tng_galaxy(
         self, canvas_4ch: np.ndarray, rng: np.random.Generator,
     ) -> dict | None:
-        """Inject one COSMOS-conditioned TNG morphology."""
+        """Inject one TNG SED conditioned on COSMOS z/mass/size/brightness."""
         if self.population_prior is None:
             return None
         draw = self.population_prior.sample(rng)
@@ -314,7 +315,7 @@ class SkySimulator:
                                galaxies, rng,
                                pixel_scale_arcsec=self.config.pixel_scale,
                                target_re_arcsec=draw.re_arcsec, z=draw.z,
-                               target_flux_e_per_band=draw.flux_e_per_band)
+                               target_vis_flux_e=draw.target_vis_flux_e)
         if res is None:
             return None
         stamp, tmeta = res
@@ -334,6 +335,12 @@ class SkySimulator:
             "mass_scale":   1.0,
             "galaxy_density_arcmin2": float(self.config.galaxy_density_arcmin2),
             "population_prior": "cosmos2025_joint",
+            "mag_hst_f814w": draw.mag_hst_f814w,
+            "target_vis_mag": draw.target_vis_mag,
+            "brightness_transfer": draw.brightness_transfer,
+            "brightness_scale": float(
+                tmeta.get("brightness_scale", float("nan"))
+            ),
             "drift_eps":    float(tmeta.get("drift_eps", float("nan"))),
             "target_re_arcsec":   float(tmeta.get("target_re_arcsec", float("nan"))),
             "apparent_re_arcsec": float(tmeta.get("apparent_re_arcsec", float("nan"))),
@@ -341,9 +348,7 @@ class SkySimulator:
             # source catalog for later analysis.
             "re_arcsec":    draw.re_arcsec,
             "logmass":      draw.logmass,
-            "imputed_photometry": draw.imputed_photometry,
             "imputed_size": draw.imputed_size,
-            "magnitudes": list(draw.magnitudes),
             "flux_e_per_band": [float(tmeta["flux_e_per_band"][b])
                                 for b in Config.LR_INPUT_BAND_NAMES],
         }

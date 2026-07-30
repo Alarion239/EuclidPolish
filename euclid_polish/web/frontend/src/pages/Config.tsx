@@ -217,7 +217,7 @@ export default function ConfigPage() {
                     hint: "HR scene side in 0.05″/pix pixels. Kept a multiple of 6 (the NISP rebin factor). Feeds synthetic generation and inference." })}
                 {num("galaxy_density_arcmin2", "Galaxies (/arcmin²)",
                   { min: 0, max: 1000, step: 1,
-                    hint: "One COSMOS2025 joint draw per TNG morphology: correlated VIS/Y/J/H flux, redshift, mass and apparent size. Current latent prior: 245." })}
+                    hint: "Raw TNG draw density. A multi-cone Euclid fit updates this value; COSMOS does not set its normalization." })}
               </div>
             </CardBody>
           </Card>

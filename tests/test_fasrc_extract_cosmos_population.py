@@ -77,7 +77,7 @@ def _tiny_catalog(path) -> None:
         "angle_bd": np.linspace(0.0, 90.0, n),
         "fmf_b+d_chi2": [1.0, 1.0, 1.0, 1.0, 20.0],
     }
-    for column in mod.EUCLID_PROXY_COLUMNS.values():
+    for column in mod.COSMOS_FILTER_COLUMNS.values():
         bd_columns[f"mag_model_bd_total_{column}"] = np.linspace(22.0, 26.0, n)
         bd_columns[f"mag_model_bulge_{column}"] = np.linspace(23.0, 27.0, n)
         bd_columns[f"mag_model_disk_{column}"] = np.linspace(22.5, 26.5, n)
@@ -117,9 +117,12 @@ def test_extract_catalog_keeps_counts_separate_from_morphology(tmp_path):
         assert prior["catalog_id"].tolist() == [0, 1, 3, 4]
         assert prior["generator_ready"].tolist() == [True, False, False, False]
         assert np.isfinite(prior["re_combined_arcsec"][0])
-        assert prior["mag_VIS"][0] == 22.0
-        assert prior["mag_Y_E"][0] == 21.8
-        assert prior["mag_bd_VIS"][0] < prior["mag_bulge_VIS"][0]
+        assert prior["mag_hst_f814w"][0] == 22.0
+        assert prior["mag_uvista_y"][0] == 21.8
+        assert (
+            prior["mag_bd_hst_f814w"][0]
+            < prior["mag_bulge_hst_f814w"][0]
+        )
 
     with (output / "cosmos2025_number_counts.csv").open() as handle:
         rows = list(csv.DictReader(handle))

@@ -15,10 +15,11 @@ per-band Poisson + read-noise model plus detector artifacts, and writes float32
 TFRecords. All photometry is calibrated against the published Euclid AB zeropoints per
 band; nothing is normalised to a unit interval before noise is injected.
 
-Every field galaxy uses a TNG50 SKIRT morphology. A sampled COSMOS2025 row
-jointly supplies its VIS/Y/J/H total flux, photometric redshift, stellar mass,
-and apparent half-light radius; the TNG stamp is resized and normalized to
-those targets. `--galaxy-density-arcmin2` is the single population control.
+Every field galaxy uses a TNG50 SKIRT morphology and retains its native
+VIS/Y/J/H proportions. A sampled COSMOS2025 row supplies photo-z, stellar
+mass, apparent half-light radius, and an HST F814W brightness anchor. A fitted
+F814W→VIS transfer sets one shared four-band brightness scale.
+`--galaxy-density-arcmin2` is fitted separately from Euclid cones.
 
 **What the model learns.** The network input is the 4-channel LR stack
 `(VIS, Y_E, J_E, H_E) @ 0.10″/pix`. The output is a 4-channel deconvolved HR sky
@@ -86,23 +87,14 @@ budget — Y/J/H accumulate 4 × 112 s).
 | Class | Magnitude source per band | Flux assignment |
 |---|---|---|
 | **Stars** (point sources) | VIS drawn from a smooth differential star-count law dN/dm ∝ 10^(slope·m) over [bright, faint] (`Config.STAR_MAG_SLOPE=0.20`, `STAR_MAG_BRIGHT=12.0`, `STAR_MAG_FAINT=25.0`); each star draws a cool-dwarf-dominated temperature mixture, whose Planck `f_ν` is integrated over approximate VIS/Y/J/H passbands, plus modest interstellar extinction and stellar-population colour scatter | `flux_e_B` is deposited as a single HR pixel per channel (`sky_simulator.py:_deposit_star`); temperature, extinction, and four-band magnitudes are persisted for fixed validate/test stars and redrawn per visit on-the-fly; the PSF is applied later by the forward model |
-| **Galaxies** | One joint COSMOS2025 row: VIS/Y/J/H magnitudes, photo-z, stellar mass, and apparent R_e; missing faint-end NISP/size values use a nearby COSMOS donor in (VIS,z) | A mass-near TNG50 SKIRT morphology is resized to the COSMOS R_e and normalized independently in every band to the COSMOS total flux. |
+| **Galaxies** | One COSMOS2025 row supplies HST F814W, photo-z, stellar mass, and apparent R_e; missing size values use a nearby COSMOS donor in (F814W,z) | A mass-near TNG50 SKIRT morphology is resized to the COSMOS R_e. Its existing redshift/SED treatment is retained, then all four bands receive one shared brightness normalization so TNG VIS/NISP colours are unchanged. |
 | **Strong lenses** | TNG subhalo masses and the lens geometry prior | SIE + external-shear mass model from lenstronomy; deflector and source light are both TNG stamps. |
-
-Our Sérsic amplitude is derived in closed form from the total flux and Sérsic index
-(`sersic_amp_from_flux` in `profiles.py`). Sub-pixel sampling is auto-selected from the
-Sérsic index and effective radius so the discrete pixel sum matches the analytic integral
-to ≤ a few percent across the realistic regime (n ∈ [0.5, 4], r_e ∈ [0.05, 1.0]″). The
-pixel response is absorbed into the empirical ePSF (§2).
 
 The COSMOS2025 master catalog (COSMOS-Web v1.1,
 [Shuntov+ 2025](https://arxiv.org/abs/2506.03243)) supplies ~784k galaxies with
-per-component bulge+disk fits and 4-band photometry (HST F814W + UltraVISTA YJH as our
-Euclid bandpass proxies); typically ~few × 10⁵ pass the quality cuts (`type == 0`,
-`flag_star == 0`, `flag_blend == 0`, `warn_flag == 0`, B+D χ² < 10, finite per-band
-fluxes). The catalog is mandatory only when the configured Sérsic density is positive;
-there is no synthetic-stub fallback. Pure-TNG generation sets the Sérsic density to zero
-and therefore skips the catalog entirely.
+photo-z, stellar-mass, HST F814W, and apparent-size measurements. UltraVISTA
+Y/J/H columns are retained under their physical filter names for diagnostics,
+but they do not replace the TNG Euclid-band colours.
 
 ### 1.5 COSMOS-conditioned TNG population
 

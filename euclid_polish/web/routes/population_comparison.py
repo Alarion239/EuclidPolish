@@ -7,7 +7,7 @@ from pathlib import Path
 
 from flask import jsonify, request
 
-from euclid_polish.web import euclid_session, fasrc_fetcher
+from euclid_polish.web import euclid_session, fasrc_fetcher, job_config
 from euclid_polish.web.helpers.paths import _sky_records_remote_dir
 from euclid_polish.web.helpers.population_comparison import (
     availability,
@@ -138,6 +138,19 @@ def register(app):
                 capture_output=True,
                 text=True,
             )
+            fit_payload = read_cosmos_euclid_fit() or {}
+            density_fit = (
+                fit_payload.get("generator_density_recommendation") or {}
+            )
+            if density_fit.get("apply_to_config"):
+                fitted_density = float(density_fit["density_arcmin2"])
+                job_config.update({
+                    "galaxy_density_arcmin2": f"{fitted_density:.6g}",
+                })
+                cap.write(
+                    "updated generator galaxy density to "
+                    f"{fitted_density:.2f} / arcmin² from the multi-cone fit\n"
+                )
             cap.tick(count + 1, count + 2, "population histograms")
             refresh_population_comparison()
             cap.tick(count + 2, count + 2, "population histograms")
