@@ -59,14 +59,24 @@ def _fit_and_evaluate_cached_cones(
     if fit_payload is None:
         raise RuntimeError("fit completed without a readable fit artifact")
 
-    density_fit = fit_payload.get("generator_density_recommendation") or {}
-    recommended_density = None
-    if density_fit.get("apply_to_config"):
-        recommended_density = float(density_fit["density_arcmin2"])
+    latent_estimate = (
+        fit_payload.get("euclid_latent_density_estimate")
+        or fit_payload.get("generator_density_recommendation")
+        or {}
+    )
+    use_local_normalization = bool(
+        latent_estimate.get(
+            "use_local_normalization",
+            latent_estimate.get("apply_to_config", False),
+        )
+    )
+    latent_density = None
+    if use_local_normalization:
+        latent_density = float(latent_estimate["density_arcmin2"])
         cap.write(
-            "recommended generator galaxy density "
-            f"{recommended_density:.2f} / arcmin² "
-            "(not applied automatically)\n"
+            "Euclid-inferred latent density "
+            f"{latent_density:.2f} / arcmin² "
+            "(completeness-model estimate, not a generator setting)\n"
         )
 
     cap.tick(
@@ -78,7 +88,7 @@ def _fit_and_evaluate_cached_cones(
 
     selected_fit = (
         fit_payload.get("local_normalization_sensitivity_fit")
-        if density_fit.get("apply_to_config")
+        if use_local_normalization
         else fit_payload.get("fit")
     ) or {}
     if selected_fit:
@@ -97,7 +107,7 @@ def _fit_and_evaluate_cached_cones(
         cap.write("refreshed cached population evaluations\n")
     return {
         "fit": fit_payload,
-        "recommended_density_arcmin2": recommended_density,
+        "euclid_latent_density_arcmin2": latent_density,
         "population_refreshed": refreshed is not None,
     }
 

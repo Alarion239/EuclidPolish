@@ -136,6 +136,14 @@ type CosmosEuclidFit = {
     dof: number;
   };
   local_normalization_sensitivity_fit: CosmosEuclidFit["fit"];
+  euclid_latent_density_estimate?: {
+    density_arcmin2: number;
+    cone_count: number;
+    use_local_normalization: boolean;
+    method: string;
+    caveat: string;
+  };
+  // Backward compatibility for a cached artifact created before the rename.
   generator_density_recommendation?: {
     density_arcmin2: number;
     cone_count: number;
@@ -968,6 +976,8 @@ function priorValue(value: number): string {
 }
 
 function CosmosEuclidDensityPanel({ fit }: { fit: CosmosEuclidFit }) {
+  const latentEstimate = fit.euclid_latent_density_estimate
+    ?? fit.generator_density_recommendation;
   const x = fit.bins.map((row) => row.mag_center);
   const densityValues = fit.bins.flatMap((row) => [
     row.cosmos_latent_density,
@@ -1036,19 +1046,19 @@ function CosmosEuclidDensityPanel({ fit }: { fit: CosmosEuclidFit }) {
             <dd>{(fit.fit.poisson_deviance / fit.fit.dof).toFixed(2)}</dd></div>
           <div><dt>local density sensitivity</dt>
             <dd>{fit.local_normalization_sensitivity_fit.population_scale.toFixed(2)}×</dd></div>
-          {fit.generator_density_recommendation && (
-            <div><dt>generator density fit</dt>
+          {latentEstimate && (
+            <div><dt>Euclid-inferred latent m&lt;28</dt>
               <dd>
-                {fit.generator_density_recommendation.density_arcmin2.toFixed(0)}
+                {latentEstimate.density_arcmin2.toFixed(0)}
                 {" "}/ arcmin²
               </dd></div>
           )}
         </dl>
-        {fit.generator_density_recommendation && (
+        {latentEstimate && (
           <p className="catalog-classification-note">
-            {fit.generator_density_recommendation.apply_to_config
-              ? `Recommendation from ${fit.generator_density_recommendation.cone_count} separated cones; it is not applied automatically.`
-              : fit.generator_density_recommendation.caveat}
+            Completeness-model extrapolation from {latentEstimate.cone_count}
+            {" "}separated cone{latentEstimate.cone_count === 1 ? "" : "s"};
+            {" "}this is not a raw TNG draw-budget recommendation.
           </p>
         )}
         <p className="catalog-classification-note">{fit.interpretation}</p>

@@ -536,8 +536,8 @@ def test_fit_cached_cones_rebuilds_truth_without_changing_config(
             "dof": 10,
             "completeness_m50": 25.12,
         },
-        "generator_density_recommendation": {
-            "apply_to_config": True,
+        "euclid_latent_density_estimate": {
+            "use_local_normalization": True,
             "density_arcmin2": 400.3426,
         },
     }
@@ -561,10 +561,10 @@ def test_fit_cached_cones_rebuilds_truth_without_changing_config(
         "scripts/fit_tng_vis_counts.py",
         "scripts/fit_cosmos_euclid_counts.py",
     ]
-    assert result["recommended_density_arcmin2"] == pytest.approx(400.3426)
+    assert result["euclid_latent_density_arcmin2"] == pytest.approx(400.3426)
     assert result["population_refreshed"] is True
     assert cap.ticks[-1] == (3, 3, "fit and evaluations ready")
-    assert any("not applied automatically" in line for line in cap.output)
+    assert any("not a generator setting" in line for line in cap.output)
     assert any("64.84 / 10" in line for line in cap.output)
 
 

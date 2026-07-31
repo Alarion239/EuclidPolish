@@ -589,7 +589,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "interpretation": (
             "Euclid non-star rows are detections, not confirmed galaxies. "
             "COSMOS sets the latent shape; Euclid calibrates the observation "
-            "layer and, with at least three separated cones, its normalization."
+            "layer and, with at least three separated cones, a model-dependent "
+            "latent normalization. This is not the generator's raw draw budget; "
+            "calibrate that with the common detector applied to real and "
+            "synthetic fields."
         ),
         "inputs": {
             "cosmos_counts_csv": str(cosmos_path),
@@ -608,19 +611,23 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         },
         "fit": asdict(fit),
         "local_normalization_sensitivity_fit": asdict(local_fit),
-        "generator_density_recommendation": {
+        "euclid_latent_density_estimate": {
             "density_arcmin2": float(
                 local_fit.population_scale * raw_cosmos_m28
             ),
             "cone_count": int(euclid_meta.get("cone_count", 1)),
-            "apply_to_config": int(euclid_meta.get("cone_count", 1)) >= 3,
+            "use_local_normalization": (
+                int(euclid_meta.get("cone_count", 1)) >= 3
+            ),
             "method": (
                 "free population normalization in the F814W-to-VIS "
                 "observation fit over spatially separated Euclid cones"
             ),
             "caveat": (
-                "Requires at least three separated cones; one cone is retained "
-                "only as a local cosmic-variance sensitivity estimate."
+                "Completeness-model extrapolation to the unseen population; "
+                "not directly comparable to raw TNG draws. Requires at least "
+                "three separated cones; one cone is retained only as a local "
+                "cosmic-variance sensitivity estimate."
             ),
         },
         "reliability": {
