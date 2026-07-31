@@ -590,8 +590,14 @@ def test_population_comparison_status_selects_training_variant(monkeypatch):
 
     cached = {
         "version": VERSION,
-        "population": {"synthetic_field_count": 200},
-        "population_with_training": {"synthetic_field_count": 6600},
+        "population": {
+            "synthetic_field_count": 200,
+            "tng_prior": {"configured_prior_arcmin2": 200.0},
+        },
+        "population_with_training": {
+            "synthetic_field_count": 6600,
+            "tng_prior": {"configured_prior_arcmin2": 200.0},
+        },
     }
     monkeypatch.setattr(routes, "availability", lambda: {})
     monkeypatch.setattr(routes, "read_comparison", lambda: cached)
@@ -600,6 +606,11 @@ def test_population_comparison_status_selects_training_variant(monkeypatch):
     )
     monkeypatch.setattr(
         routes.euclid_session, "is_authenticated", lambda: False
+    )
+    monkeypatch.setattr(
+        routes.job_config,
+        "load",
+        lambda: type("Config", (), {"galaxy_density_arcmin2": 320.0})(),
     )
     client = create_app().test_client()
 
@@ -616,4 +627,10 @@ def test_population_comparison_status_selects_training_variant(monkeypatch):
     assert current["comparison"]["population"]["cosmos_euclid_fit"] == {
         "version": 1
     }
+    assert (
+        current["comparison"]["population"]["tng_prior"][
+            "configured_prior_arcmin2"
+        ]
+        == 320.0
+    )
     assert "population_with_training" not in with_training["comparison"]

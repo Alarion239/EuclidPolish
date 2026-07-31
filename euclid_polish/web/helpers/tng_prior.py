@@ -461,8 +461,9 @@ def tng_prior_payload(
         "calibration_scope": "matched_detection_normalization_only",
         "pilot_grid_arcmin2": pilot_grid,
         "recommendation": (
-            "Run this matched-seed density sweep and compare common-detector "
-            "counts. Infer the luminosity/redshift distribution only after "
-            "applying the same detection and photometry to synthetic images."
+            "Use the common-detector fit as the center of the next matched-seed "
+            "pilot. Move the raw draw density toward it when the current value "
+            "falls outside the interval; validate the pilot before regenerating "
+            "the full training set."
         ),
     }

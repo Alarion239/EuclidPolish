@@ -7,7 +7,7 @@ from pathlib import Path
 
 from flask import jsonify, request
 
-from euclid_polish.web import euclid_session, fasrc_fetcher
+from euclid_polish.web import euclid_session, fasrc_fetcher, job_config
 from euclid_polish.web.helpers.paths import _sky_records_remote_dir
 from euclid_polish.web.helpers.population_comparison import (
     availability,
@@ -128,6 +128,12 @@ def register(app):
                 )
             population = dict(comparison.get("population") or {})
             population["cosmos_euclid_fit"] = read_cosmos_euclid_fit()
+            if population.get("tng_prior"):
+                tng_prior = dict(population["tng_prior"])
+                tng_prior["configured_prior_arcmin2"] = float(
+                    job_config.load().galaxy_density_arcmin2
+                )
+                population["tng_prior"] = tng_prior
             comparison["population"] = population
             comparison.pop("population_with_training", None)
         return jsonify({

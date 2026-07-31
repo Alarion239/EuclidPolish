@@ -23,6 +23,7 @@ from astroquery.esa.euclid import Euclid
 from euclid_polish.config import Config
 from euclid_polish.photometry import electrons_to_ab_mag, uJy_to_ab_mag
 from euclid_polish.sky.generation.source_catalog import read_sources
+from euclid_polish.web import job_config
 from euclid_polish.web.helpers.paths import _sky_records_local_dir
 from euclid_polish.web.helpers.tng_prior import (
     DetectionAccumulator,
@@ -1021,6 +1022,9 @@ def _population_payload(source_csvs: Iterable[Path],
                 FIELD_AREA_ARCMIN2,
                 source_detection,
                 dataset_prior=dataset_tng_prior,
+                configured_prior=float(
+                    job_config.load().galaxy_density_arcmin2
+                ),
             )
             if calibrate_tng_prior and euclid_rows and euclid_area > 0
             else None

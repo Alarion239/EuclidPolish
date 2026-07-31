@@ -1078,6 +1078,16 @@ function TngPriorPanel({ prior }: { prior: TngPrior }) {
   const alphaLabel = Number.isFinite(prior.configured_mf_alpha)
     ? ` (α=${prior.configured_mf_alpha!.toFixed(2)})`
     : "";
+  const action = visible
+    ? current > visible.interval_arcmin2.p84
+      ? "decrease"
+      : current < visible.interval_arcmin2.p16
+        ? "increase"
+        : "keep"
+    : null;
+  const changePercent = visible && current > 0
+    ? Math.abs(100 * (visible.fitted_prior_arcmin2 / current - 1))
+    : 0;
   return (
     <section className="tng-prior">
       <header className="tng-prior__head">
@@ -1095,18 +1105,34 @@ function TngPriorPanel({ prior }: { prior: TngPrior }) {
 
       <div className="tng-prior__readouts">
         {visible && (
+          <>
+          <article className="tng-prior__readout">
+            <span>current regenerated fields</span>
+            <strong>{priorValue(current)}</strong>
+            <small>
+              raw draws / arcmin² · {visible.synthetic_fields} fields
+            </small>
+            <p>
+              Produced {visible.synthetic_detected_density_arcmin2.toFixed(1)}
+              {" "}common-detector VIS detections / arcmin².
+            </p>
+          </article>
           <article className="tng-prior__readout tng-prior__readout--visible">
-            <span>common VIS detections</span>
+            <span>actionable raw draw calibration</span>
             <strong>{priorValue(visible.fitted_prior_arcmin2)}</strong>
             <small>
               {priorValue(visible.interval_arcmin2.p16)}–
-              {priorValue(visible.interval_arcmin2.p84)} / arcmin² ·
-              {" "}{visible.synthetic_fields} / {visible.real_fields} fields
+              {priorValue(visible.interval_arcmin2.p84)} / arcmin² · Poisson 16–84%
             </small>
-            <p>{visible.synthetic_detected_density_arcmin2.toFixed(1)} synthetic /
-              {" "}{visible.real_detected_density_arcmin2.toFixed(1)} Euclid
-              detections / arcmin².</p>
+            <p>
+              {action === "keep"
+                ? `Keep ${priorValue(current)}: it lies inside the fitted interval.`
+                : `${action === "decrease" ? "Decrease" : "Increase"} the next pilot by about ${changePercent.toFixed(0)}% toward ${priorValue(visible.fitted_prior_arcmin2)}.`}
+              {" "}Euclid has {visible.real_detected_density_arcmin2.toFixed(1)}
+              {" "}detections / arcmin² across {visible.real_fields} fields.
+            </p>
           </article>
+          </>
         )}
       </div>
 

@@ -131,3 +131,4 @@ def test_active_prior_ignores_selection_unmatched_catalog_counts():
     assert result["calibration_scope"] == "matched_detection_normalization_only"
     assert result["visible"]["fitted_prior_arcmin2"] == pytest.approx(400.0)
     assert result["pilot_grid_arcmin2"] == [340, 400, 460]
+    assert "center of the next matched-seed pilot" in result["recommendation"]
