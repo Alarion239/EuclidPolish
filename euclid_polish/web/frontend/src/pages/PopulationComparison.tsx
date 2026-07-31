@@ -174,6 +174,8 @@ type CalibrationArtifact = {
   };
   retained_detection_fraction?: number;
   euclid_detected_density_arcmin2?: number;
+  euclid_cones?: unknown[];
+  cosmos_generator_rows?: number;
   local_draws?: number;
   interval_arcmin2?: PriorInterval;
 };
@@ -312,16 +314,7 @@ const EMPTY_CALIBRATION: CalibrationState = {
 
 const BANDS: Band[] = ["VIS", "Y_E", "J_E", "H_E"];
 const TYPE_ORDER = ["galaxy", "star", "unknown"];
-const COMPARISON_CLASSES: ComparisonClass[] = ["nonstellar", "star"];
-const SHARED_PARAMETER_ORDER = [
-  "mag_vis", "mag_y_e", "mag_j_e", "mag_h_e",
-  "vis_y_color", "y_j_color", "j_h_color",
-];
 const BAND_COLOR = (band: Band) => categorical(BANDS.indexOf(band));
-const CLASS_COLOR: Record<ComparisonClass, string> = {
-  nonstellar: categorical(0),
-  star: categorical(2),
-};
 const bandLabel = (band: Band) => band.replace("_E", "");
 
 function finite(values: readonly (number | null)[]): number[] {
@@ -972,119 +965,18 @@ function PopulationSummary({ title, eyebrow, population, tone }: {
   );
 }
 
-function ComparableParameterPlot({ parameter, shared }: {
-  parameter: SharedParameter;
-  shared: SharedPopulation;
-}) {
-  const entries = COMPARISON_CLASSES
-    .filter((kind) => parameter.classes[kind]?.synthetic.x.length
-      && parameter.classes[kind]?.euclid.x.length)
-    .map((kind) => [kind, parameter.classes[kind]!] as const);
-  const histograms = entries.flatMap(([, pair]) => [pair.synthetic, pair.euclid]);
-  const xs = histograms.flatMap((histogram) => histogram.x);
-  const ys = histograms.flatMap((histogram) => histogram.density);
-  const xDomain = domain(xs);
-  const yDomain = domain(ys, true);
-  const series: Series[] = entries.flatMap(([kind, pair]) => [
-    {
-      x: pair.synthetic.x,
-      y: pair.synthetic.density,
-      color: CLASS_COLOR[kind],
-      mode: "histogram",
-      width: 1.55,
-      alpha: 0.94,
-      fillAlpha: 0.24,
-    },
-    {
-      x: pair.euclid.x,
-      y: pair.euclid.density,
-      color: CLASS_COLOR[kind],
-      mode: "histogram",
-      width: 1.9,
-      dash: [8, 4],
-      hatch: true,
-      alpha: 1,
-      fillAlpha: 0.025,
-    },
-  ]);
-  const counts = entries.map(([kind, pair]) => (
-    `${shared.class_labels[kind]} ${pair.synthetic.count.toLocaleString()} / ${
-      pair.euclid.count.toLocaleString()}`
-  )).join(" · ");
-  return (
-    <Card className="parameter-card">
-      <CardHead title={parameter.label}
-        sub={`synthetic truth / Euclid detections n · ${counts}`} />
-      <CardBody>
-        <AdjustablePlot boundsLabel={`Synthetic–Euclid ${parameter.label}`}
-          xDomain={xDomain} yDomain={yDomain}
-          xTicksForDomain={(value) => ticks(value, 4)}
-          yTicksForDomain={(value) => ticks(value, 4)}
-          xLabel={parameter.unit} yLabel={shared.density_unit}
-          series={series} aspect={0.62} />
-        <Legend items={entries.map(([kind]) => ({
-          color: CLASS_COLOR[kind],
-          label: shared.class_labels[kind],
-          histogram: true,
-          filled: true,
-        }))} />
-        <Legend items={[
-          {
-            color: C.cross, label: "synthetic truth · filled",
-            histogram: true, filled: true, dash: false,
-          },
-          {
-            color: C.cross, label: "Euclid detections · hatched",
-            histogram: true, filled: false, hatch: true, dash: true,
-          },
-        ]} />
-      </CardBody>
-    </Card>
-  );
-}
-
-function ComparableParameterAtlas({ shared }: { shared: SharedPopulation }) {
-  return (
-    <div className="parameter-atlas">
-      {SHARED_PARAMETER_ORDER
-        .filter((key) => shared.parameters[key])
-        .map((key) => (
-          <ComparableParameterPlot key={key}
-            parameter={shared.parameters[key]} shared={shared} />
-        ))}
-    </div>
-  );
-}
-
-function priorValue(value: number): string {
-  return Number.isFinite(value) ? value.toFixed(0) : "—";
-}
-
 function CosmosEuclidDensityPanel({ fit }: { fit: CosmosEuclidFit }) {
-  const latentEstimate = fit.euclid_latent_density_estimate
-    ?? fit.generator_density_recommendation;
   const x = fit.bins.map((row) => row.mag_center);
   const densityValues = fit.bins.flatMap((row) => [
     row.cosmos_latent_density,
-    row.fitted_latent_density,
-    row.local_fitted_latent_density,
     row.euclid_detected_density,
     row.predicted_detected_density,
-    row.local_predicted_detected_density,
     row.synthetic_truth_density ?? 0,
   ]);
   const densitySeries: Series[] = [
     {
       x, y: fit.bins.map((row) => row.cosmos_latent_density),
-      color: "#242424", width: 2.5, dash: [8, 4],
-    },
-    {
-      x, y: fit.bins.map((row) => row.fitted_latent_density),
-      color: "#008c68", width: 2.8,
-    },
-    {
-      x, y: fit.bins.map((row) => row.local_fitted_latent_density),
-      color: "#008c68", width: 1.8, dash: [2, 3],
+      color: "#686868", width: 2.1, dash: [8, 5],
     },
     {
       x, y: fit.bins.map((row) => row.synthetic_truth_density),
@@ -1098,169 +990,29 @@ function CosmosEuclidDensityPanel({ fit }: { fit: CosmosEuclidFit }) {
       x, y: fit.bins.map((row) => row.predicted_detected_density),
       color: "#cf3d2e", width: 2.6, marker: "diamond", markerEvery: 1,
     },
-    {
-      x, y: fit.bins.map((row) => row.local_predicted_detected_density),
-      color: "#e68a00", width: 1.9, dash: [7, 4], dots: true,
-    },
   ];
   return (
-    <Card className="comparison-plot">
-      <CardHead title="Latent COSMOS × detected Euclid density"
-        sub="COSMOS supplies the count-shape prior; separated Euclid cones fit normalization, F814W→VIS transfer, and completeness." />
+    <Card className="comparison-plot population-fit-plot">
+      <CardHead title="VIS magnitude counts"
+        sub="The fitted curve is the COSMOS prior after the brightness transfer and Euclid catalog selection model." />
       <CardBody>
-        <AdjustablePlot boundsLabel="COSMOS–Euclid density"
+        <AdjustablePlot boundsLabel="Population magnitude counts"
           xDomain={[20, 28]} yDomain={domain(densityValues, true)}
-          xLabel="HST F814W / fitted Euclid VIS magnitude (AB)"
+          xLabel="magnitude (AB)"
           yLabel="objects / arcmin² / 0.5 mag"
           series={densitySeries} aspect={0.58} />
         <Legend items={[
-          { color: "#242424", label: "COSMOS latent", dash: true },
-          { color: "#008c68", label: "fixed-normalization latent" },
-          { color: "#008c68", label: "local-normalization sensitivity", dash: true },
+          { color: "#686868", label: "COSMOS F814W prior · before selection", dash: true },
           { color: "#8d48b5", label: "current synthetic truth", dash: true },
           { color: "#1267d6", label: "Euclid non-star detections", marker: "ring" },
-          { color: "#cf3d2e", label: "fixed-normalization detection fit", line: true, marker: "diamond" },
-          { color: "#e68a00", label: "local-normalization detection fit", dash: true },
+          { color: "#cf3d2e", label: "fitted detected population", line: true, marker: "diamond" },
         ]} />
-        <dl className="tng-prior__diagnostics">
-          <div><dt>COSMOS m&lt;28</dt>
-            <dd>{fit.latent_density.cosmos_m_lt_28_arcmin2.toFixed(0)} / arcmin²</dd></div>
-          <div><dt>Euclid 50% completeness</dt>
-            <dd>VIS {fit.fit.completeness_m50.toFixed(2)}</dd></div>
-          <div><dt>fixed fit deviance / dof</dt>
-            <dd>{(fit.fit.poisson_deviance / fit.fit.dof).toFixed(2)}</dd></div>
-          <div><dt>local density sensitivity</dt>
-            <dd>{fit.local_normalization_sensitivity_fit.population_scale.toFixed(2)}×</dd></div>
-          {latentEstimate && (
-            <div><dt>Euclid-inferred latent m&lt;28</dt>
-              <dd>
-                {latentEstimate.density_arcmin2.toFixed(0)}
-                {" "}/ arcmin²
-              </dd></div>
-          )}
-        </dl>
-        {latentEstimate && (
-          <p className="catalog-classification-note">
-            Completeness-model extrapolation from {latentEstimate.cone_count}
-            {" "}separated cone{latentEstimate.cone_count === 1 ? "" : "s"};
-            {" "}this is not a raw TNG draw-budget recommendation.
-          </p>
-        )}
-        <p className="catalog-classification-note">{fit.interpretation}</p>
+        <div className="population-fit-plot__numbers">
+          <span><b>{fit.latent_density.cosmos_m_lt_28_arcmin2.toFixed(0)}</b> COSMOS objects / arcmin² to F814W 28</span>
+          <span><b>{fit.fit.completeness_m50.toFixed(2)}</b> VIS magnitude at 50% catalog completeness</span>
+        </div>
       </CardBody>
     </Card>
-  );
-}
-
-function TngPriorPanel({ prior }: { prior: TngPrior }) {
-  const catalog = prior.catalog;
-  const visible = prior.visible;
-  const current = catalog?.current_prior_arcmin2
-    ?? visible?.current_prior_arcmin2
-    ?? prior.dataset_prior_arcmin2
-    ?? 60;
-  const configured = prior.configured_prior_arcmin2 ?? current;
-  const alphaLabel = Number.isFinite(prior.configured_mf_alpha)
-    ? ` (α=${prior.configured_mf_alpha!.toFixed(2)})`
-    : "";
-  const calibration = prior.density_calibration?.candidate;
-  const interval = calibration?.interval_arcmin2;
-  return (
-    <section className="tng-prior">
-      <header className="tng-prior__head">
-        <div>
-          <div className="eyebrow">normalization inference · common VIS detector</div>
-          <h3>TNG draw-prior calibration</h3>
-          <p>
-            Displayed fields used {current.toFixed(0)} raw draws / arcmin².
-            {" "}The generator is now configured for {configured.toFixed(0)} with one
-            smooth mass prior{alphaLabel}.
-          </p>
-        </div>
-        <Badge tone={calibration?.valid ? "good" : "warn"}>
-          {calibration?.valid ? "local fit ready" : "diagnostic only"}
-        </Badge>
-      </header>
-
-      <div className="tng-prior__readouts">
-        {visible && (
-          <>
-          <article className="tng-prior__readout">
-            <span>current regenerated fields</span>
-            <strong>{priorValue(current)}</strong>
-            <small>
-              raw draws / arcmin² · {visible.synthetic_fields} fields
-            </small>
-            <p>
-              Produced {visible.synthetic_detected_density_arcmin2.toFixed(1)}
-              {" "}common-detector VIS detections / arcmin².
-            </p>
-          </article>
-          <article className="tng-prior__readout tng-prior__readout--visible">
-            <span>synthetic detection residual</span>
-            <strong>{visible.detection_residual_arcmin2 != null
-              ? `${visible.detection_residual_arcmin2 >= 0 ? "+" : ""}${visible.detection_residual_arcmin2.toFixed(1)}`
-              : "—"}</strong>
-            <small>detections / arcmin² · diagnostic, not a density estimate</small>
-            <p>
-              Euclid has {visible.real_detected_density_arcmin2.toFixed(1)}
-              {" "}detections / arcmin² across {visible.real_fields} fields.
-              {" "}{visible.transfer_compatibility?.reason ?? "A local joint fit is required."}
-            </p>
-          </article>
-          </>
-        )}
-        {calibration && (
-          <article className="tng-prior__readout tng-prior__readout--visible">
-            <span>local catalog density calibration</span>
-            <strong>{calibration.valid && calibration.recommended_density_arcmin2 != null
-              ? priorValue(calibration.recommended_density_arcmin2) : "not actionable"}</strong>
-            <small>{interval
-              ? `${priorValue(interval.p16)}–${priorValue(interval.p84)} / arcmin² · cone bootstrap`
-              : "run the local joint fit on at least three cones"}</small>
-            {!!calibration.warnings?.length && <p>{calibration.warnings.join(" · ")}</p>}
-          </article>
-        )}
-      </div>
-
-      <div className="tng-prior__detail-grid">
-        <Card className="tng-prior__decision">
-          <CardHead title="What this constrains"
-            sub="COSMOS fixes the sampled latent shape; Euclid cones constrain its normalization after the fitted observation layer." />
-          <CardBody>
-            <p>{prior.recommendation}</p>
-            {!!prior.pilot_grid_arcmin2.length && (
-              <div className="tng-prior__pilot">
-                <span className="eyebrow">matched-seed pilot grid</span>
-                <strong>{prior.pilot_grid_arcmin2.join(" · ")}</strong>
-                <small>raw TNG draws / arcmin²</small>
-              </div>
-            )}
-            {visible && (
-              <dl className="tng-prior__diagnostics">
-                <div><dt>truth recovered by detector</dt>
-                  <dd>{(100 * visible.matched_truth_fraction).toFixed(1)}%</dd></div>
-                <div><dt>selection</dt><dd>same VIS detector</dd></div>
-              </dl>
-            )}
-            {!!prior.historical_incompatible_points?.length && (
-              <dl className="tng-prior__diagnostics">
-                {prior.historical_incompatible_points.map((point) => (
-                  <div key={point.job_id}>
-                    <dt>{point.density_arcmin2.toFixed(0)} historical · job {point.job_id}</dt>
-                    <dd>
-                      incompatible transfer: offset {point.offset_mag.toFixed(3)},
-                      {" "}slope {point.magnitude_slope.toFixed(3)},
-                      {" "}scatter {point.scatter_mag.toFixed(3)}
-                    </dd>
-                  </div>
-                ))}
-              </dl>
-            )}
-          </CardBody>
-        </Card>
-      </div>
-    </section>
   );
 }
 
@@ -1282,65 +1034,82 @@ function GalaxyCalibrationControls({ api, onChanged }: {
   const parameters = recommendation?.generator_parameters;
   const observation = recommendation?.observation_model_diagnostics;
   const allActive = transfer.is_active && density.is_active;
+  const interval = recommendation?.density_interval_arcmin2;
+  const coneCount = density.candidate?.euclid_cones?.length
+    ?? api.availability.euclid_catalog.meta?.cone_count ?? 0;
+  const fitWarning = recommendation?.warnings?.[0];
   const refresh = (job: { status: string }) => {
     if (job.status !== "failed") onChanged();
   };
   return (
     <Card className="calibration-workflow">
-      <CardHead title="Stable galaxy calibration"
-        sub="Fit the complete generator proposal locally from COSMOS/TNG draws and cached Euclid cones. FASRC is used only to render selected fields." />
+      <CardHead title="Galaxy generator calibration"
+        sub="One local fit turns the COSMOS population prior and Euclid cone counts into a complete, reproducible FASRC proposal. Nothing changes until you activate it." />
       <CardBody>
-        <div className="calibration-status-grid">
-          <div>
-            <span className="eyebrow">brightness transfer</span>
-            <strong>{transfer.is_active ? "active" : transfer.candidate?.valid
-              ? "candidate ready" : transfer.candidate ? "best fit · warnings" : "not fitted"}</strong>
-            <small className="mono">{transfer.candidate?.fingerprint?.slice(0, 12) ?? "no candidate"}</small>
-            {!!transfer.candidate?.warnings?.length && <p>{transfer.candidate.warnings.join(" · ")}</p>}
+        <div className="population-flow" aria-label="Galaxy calibration flow">
+          <div className="population-flow__step">
+            <span>1 · source prior</span>
+            <strong>COSMOS physical rows</strong>
+            <small>{density.candidate?.cosmos_generator_rows?.toLocaleString() ?? "cached"} usable rows · F814W, redshift, mass, size</small>
           </div>
-          <div>
-            <span className="eyebrow">local catalog calibration</span>
-            <strong>{density.is_active ? "active" : density.candidate?.valid ? "candidate ready" : "not actionable"}</strong>
-            <small>{density.candidate?.recommended_density_arcmin2 != null
-              ? `${density.candidate.recommended_density_arcmin2.toFixed(1)} draws / arcmin²`
-              : "no valid recommendation"}</small>
-            {!!density.candidate?.warnings?.length && <p>{density.candidate.warnings.join(" · ")}</p>}
+          <div className="population-flow__step">
+            <span>2 · observation target</span>
+            <strong>{coneCount || "—"} Euclid cones</strong>
+            <small>{density.candidate?.euclid_detected_density_arcmin2 != null
+              ? `${density.candidate.euclid_detected_density_arcmin2.toFixed(1)} non-star detections / arcmin²`
+              : "cached non-star VIS counts"}</small>
+          </div>
+          <div className="population-flow__step">
+            <span>3 · local forward fit</span>
+            <strong>{density.candidate?.retained_detection_fraction != null
+              ? `${(100 * density.candidate.retained_detection_fraction).toFixed(1)}% retained`
+              : "not fitted"}</strong>
+            <small>brightness transfer + catalog completeness</small>
+          </div>
+          <div className="population-flow__step population-flow__step--result">
+            <span>4 · generator proposal</span>
+            <strong>{parameters?.galaxy_density_arcmin2 != null
+              ? `${parameters.galaxy_density_arcmin2.toFixed(1)} draws / arcmin²`
+              : "pending fit"}</strong>
+            <small>{allActive ? "active for FASRC" : "inactive until activated"}</small>
           </div>
         </div>
-        <div className="calibration-parameters">
-          <div><span>raw galaxy density</span><strong>
-            {parameters?.galaxy_density_arcmin2 != null
-              ? parameters.galaxy_density_arcmin2.toFixed(1) : "pending fit"}
-          </strong><small>draws / arcmin²</small></div>
-          <div><span>VIS offset</span><strong>
-            {parameters?.cosmos_vis_offset_mag != null
-              ? parameters.cosmos_vis_offset_mag.toFixed(4) : "—"}
-          </strong><small>mag</small></div>
-          <div><span>magnitude slope</span><strong>
-            {parameters?.cosmos_vis_magnitude_slope != null
-              ? parameters.cosmos_vis_magnitude_slope.toFixed(4) : "—"}
-          </strong><small>F814W → VIS</small></div>
-          <div><span>brightness scatter</span><strong>
-            {parameters?.cosmos_vis_scatter_mag != null
-              ? parameters.cosmos_vis_scatter_mag.toFixed(4) : "—"}
-          </strong><small>mag</small></div>
-        </div>
-        <p className="catalog-classification-note">
-          Observation-model diagnostics, fitted but not submitted to the generator:
-          {" "}50% completeness VIS {observation?.completeness_m50?.toFixed(3) ?? "—"},
-          {" "}width {observation?.completeness_width_mag?.toFixed(3) ?? "—"} mag.
-          {density.candidate?.retained_detection_fraction != null && <>
-            {" "}The local forward model retains
-            {" "}{(100 * density.candidate.retained_detection_fraction).toFixed(1)}%
-            {" "}of raw draws as 20≤VIS&lt;28 Euclid detections.
-          </>}
-        </p>
-        {!!recommendation?.warnings?.length && (
-          <p className="catalog-classification-note">
-            Best-fit recommendation warnings: {recommendation.warnings.join(" · ")}
+        <div className="calibration-explainer">
+          <p>
+            A COSMOS row chooses the galaxy&apos;s redshift, stellar mass, apparent
+            size, and F814W magnitude. A matching TNG image supplies morphology and
+            the native VIS/Y/J/H ratios. The fitted VIS magnitude applies one flux
+            scale to all four bands, so those TNG colours are preserved.
           </p>
+        </div>
+        <div className="calibration-table-wrap">
+          <table className="calibration-table">
+            <thead><tr><th>Parameter</th><th>Current proposal</th><th>What fits it</th><th>FASRC</th></tr></thead>
+            <tbody>
+              <tr><td>Raw galaxy density</td><td className="mono">
+                {parameters?.galaxy_density_arcmin2 != null
+                  ? `${parameters.galaxy_density_arcmin2.toFixed(1)} / arcmin²` : "—"}
+                {interval && <small>{interval.p16.toFixed(1)}–{interval.p84.toFixed(1)}</small>}
+              </td><td>Euclid detected density ÷ fitted retained fraction</td><td><Badge tone="good">sent</Badge></td></tr>
+              <tr><td>VIS offset</td><td className="mono">
+                {parameters?.cosmos_vis_offset_mag?.toFixed(4) ?? "—"} mag
+              </td><td rowSpan={3}>COSMOS F814W count shape → Euclid VIS count shape</td><td><Badge tone="good">sent</Badge></td></tr>
+              <tr><td>Magnitude slope</td><td className="mono">
+                {parameters?.cosmos_vis_magnitude_slope?.toFixed(4) ?? "—"}
+              </td><td><Badge tone="good">sent</Badge></td></tr>
+              <tr><td>Brightness scatter</td><td className="mono">
+                {parameters?.cosmos_vis_scatter_mag?.toFixed(4) ?? "—"} mag
+              </td><td><Badge tone="good">sent</Badge></td></tr>
+              <tr><td>Catalog completeness</td><td className="mono">
+                m50 {observation?.completeness_m50?.toFixed(3) ?? "—"} · width {observation?.completeness_width_mag?.toFixed(3) ?? "—"}
+              </td><td>Euclid faint-end turnover</td><td><Badge>local only</Badge></td></tr>
+            </tbody>
+          </table>
+        </div>
+        {fitWarning && (
+          <p className="fit-caution"><strong>Fit note:</strong> {fitWarning}. Verify the next rendered sample before regenerating training.</p>
         )}
-        <div className="row" style={{ gap: "var(--s2)", marginBottom: "var(--s3)" }}>
+        <div className="calibration-actions">
           <Button disabled={localFit.busy}
             onClick={() => localFit.run(
               "/api/population-comparison/run-local-galaxy-calibration",
@@ -1362,24 +1131,17 @@ function GalaxyCalibrationControls({ api, onChanged }: {
         <JobProgressView job={localFit.job} error={localFit.error} />
         <JobProgressView job={activateRecommendation.job}
           error={activateRecommendation.error} />
-        <p className="catalog-classification-note">
-          Activation writes the recommended density to configuration and freezes
-          the exact offset, slope, scatter, artifact fingerprint, and fit warnings.
-          Every subsequent <NavLink to="/sky">Generate synthetic training pairs</NavLink>
-          {" "}submission embeds that complete parameter artifact.
-        </p>
-        <p className="catalog-classification-note">
-          This samples the same physical-row-filtered COSMOS prior and the same
-          fitted stochastic F814W→VIS transfer used by generation. It does not
-          render images; crowding and deblending remain an empirical check on the
-          next regenerated validation/test fields.
-        </p>
-        <div style={{ marginTop: "var(--s4)" }}>
+        <div className="fasrc-submit-boundary">
           <div className="fasrc-step-inline__head">
             <div>
-              <div className="eyebrow">submit fitted parameters</div>
-              <strong>Generate fields with the activated joint fit</strong>
+              <div className="eyebrow">FASRC boundary</div>
+              <strong>Render fields with the activated proposal</strong>
+              <small>
+                Sends density, offset, slope, scatter, and the immutable fit
+                fingerprint. Completeness stays local; FASRC does not refit anything.
+              </small>
             </div>
+            <Badge tone={allActive ? "good" : "warn"}>{allActive ? "ready" : "activate first"}</Badge>
           </div>
           <div className="row" style={{ gap: "var(--s4)", marginBottom: "var(--s3)" }}>
             {(["train", "validate", "test"] as const).map((split) => (
@@ -1438,7 +1200,9 @@ function StarCalibrationControls({ api, onChanged }: {
               ? `${candidate.population.density_arcmin2.toFixed(2)} stars / arcmin² · slope ${candidate.population.magnitude_slope.toFixed(3)}`
               : "legacy scalar fallback remains in use"}</small></div>
         </div>
-        {!!candidate?.warnings?.length && <p className="catalog-classification-note">{candidate.warnings.join(" · ")}</p>}
+        {candidate?.warnings?.[0] && (
+          <p className="fit-caution"><strong>Fit note:</strong> {candidate.warnings[0]}</p>
+        )}
         <div className="row" style={{ gap: "var(--s2)" }}>
           <Button variant="primary" disabled={query.busy || !api.availability.euclid_catalog.cached}
             onClick={() => query.run(
@@ -1449,7 +1213,7 @@ function StarCalibrationControls({ api, onChanged }: {
               "/api/population-comparison/activate-star-prior", {}, { onDone: refresh },
             )}>Activate calibration</Button>
         </div>
-        <p className="catalog-classification-note">
+        <p className="calibration-plain-note">
           Euclid point-like counts remain marked incomplete. Gaia controls the bright-side density and latent colour/temperature population; matched Euclid stars supply the VIS/Y/J/H mapping.
         </p>
         <JobProgressView job={query.job} error={query.error} />
@@ -1477,7 +1241,9 @@ function StarCalibrationControls({ api, onChanged }: {
                   ]} aspect={0.62} />
               </CardBody>
             </Card>
-            {Object.entries(diagnostics.parameters).map(([key, item]) => (
+            {Object.entries(diagnostics.parameters)
+              .filter(([key]) => key === "mag_vis" || key === "bp_rp")
+              .map(([key, item]) => (
               <Card className="parameter-card" key={key}>
                 <CardHead title={item.label}
                   sub="fitted synthetic prior × same-footprint observed stars" />
@@ -1657,7 +1423,7 @@ export default function PopulationComparisonPage() {
               <div>
                 <div className="eyebrow">source domain · area-normalized</div>
                 <h2>Population census</h2>
-                <p>Synthetic truth and Euclid MER detections are shown as separate censuses because their selection functions differ.</p>
+                <p>What is in the generated fields, what Euclid detects, and the fit that connects them.</p>
               </div>
               <div className="comparison-actions">
                 <Checkbox checked={includeTraining}
@@ -1680,10 +1446,9 @@ export default function PopulationComparisonPage() {
             </header>
             <JobProgressView job={trainingCatalog.job} error={trainingCatalog.error} />
             {includeTraining && (
-              <p className="catalog-classification-note">
-                Training truth uses the legacy generator prior. It is included in
-                the population histograms only; TNG calibration remains restricted
-                to the regenerated 200-field test + validation catalogs.
+              <p className="calibration-plain-note">
+                Training truth is included in the census only. Calibration still uses
+                the regenerated test + validation catalogs.
               </p>
             )}
             <div className="population-summary-grid">
@@ -1700,29 +1465,12 @@ export default function PopulationComparisonPage() {
               )}
             </div>
             {comparison.population.euclid_meta && (
-              <p className="catalog-classification-note">
-                <strong>Selection:</strong> synthetic truth contains all generated
-                sources, while MER contains detected and deblended sources only.
-                Their raw counts and parameter distributions are not direct
-                population-shape comparisons.{" "}
-                <strong>Classification:</strong> {comparison.population.euclid_meta.classification}.{" "}
-                Unknown rows are plotted as non-stellar candidates alongside synthetic galaxies,
-                not as confirmed galaxies.{" "}
-                {comparison.population.euclid_meta.cone_count
-                  ? `${comparison.population.euclid_meta.cone_count} spatially separated saved-star cones; `
-                  : ""}
-                {comparison.population.euclid_meta.classification_note}
+              <p className="population-census-note">
+                <strong>Do not compare the two totals directly.</strong> Synthetic is
+                complete source truth; Euclid is a detection/deblending catalog.
+                “Non-stellar” means a clean non-star detection, not a confirmed galaxy.
               </p>
             )}
-
-            {comparison.population.tng_prior ? (
-              <TngPriorPanel prior={comparison.population.tng_prior} />
-            ) : comparison.population.euclid ? (
-              <Card className="tng-prior tng-prior--empty">
-                <CardHead title="TNG draw-prior calibration"
-                  sub="Rebuild statistics to run the common VIS detector normalization." />
-              </Card>
-            ) : null}
 
             <GalaxyCalibrationControls api={api} onChanged={resource.reload} />
 
@@ -1734,28 +1482,6 @@ export default function PopulationComparisonPage() {
             <ConeQuery api={api} onQueried={resource.reload} />
 
             <StarCalibrationControls api={api} onChanged={resource.reload} />
-
-            {comparison.population.shared && (
-              <section className="parameter-section">
-                <header>
-                  <div className="eyebrow">selection-mismatched diagnostic · identical bins</div>
-                  <h3>Complete synthetic truth × detection-selected Euclid catalog</h3>
-                  <span>
-                    {Object.keys(comparison.population.shared.parameters).length} shared parameters
-                  </span>
-                </header>
-                <p className="catalog-classification-note">
-                  These plots are useful for inspecting the observed discrepancy,
-                  but they do not estimate intrinsic population agreement: synthetic
-                  truth includes every generated source, whereas Euclid includes only
-                  detected and deblended sources. They are excluded from TNG calibration.
-                  Solid filled histograms are synthetic truth; dashed hatched outlines
-                  are Euclid detections. Euclid magnitudes use 3-FWHM aperture
-                  photometry; synthetic magnitudes are intrinsic source totals.
-                </p>
-                <ComparableParameterAtlas shared={comparison.population.shared} />
-              </section>
-            )}
           </section>
         </>
       )}
