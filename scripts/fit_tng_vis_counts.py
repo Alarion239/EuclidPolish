@@ -174,13 +174,27 @@ def read_truth_calibration(records_dir: Path) -> TruthCalibration:
                     or not row.get("z")
                 ):
                     continue
-                gid = str(row.get("subhalo_id", "")).strip()
-                z = float(row["z"])
-                logmass = float(row["logmass"])
+                try:
+                    gid = str(row.get("subhalo_id", "")).strip()
+                    flux_vis = float(row["flux_vis_e"])
+                    z = float(row["z"])
+                    logmass = float(row["logmass"])
+                except (TypeError, ValueError):
+                    continue
+                if (
+                    not np.isfinite(flux_vis)
+                    or flux_vis <= 0.0
+                    or not np.isfinite(z)
+                    or not np.isfinite(logmass)
+                ):
+                    continue
                 actual = float(electrons_to_ab_mag(
-                    float(row["flux_vis_e"]), Config.BAND_VIS
+                    flux_vis, Config.BAND_VIS
                 ))
-                residual = actual - predicted_vis_mag(logmass, z)
+                predicted = float(predicted_vis_mag(logmass, z))
+                if not np.isfinite(actual) or not np.isfinite(predicted):
+                    continue
+                residual = actual - predicted
                 magnitudes.append(actual)
                 residual_by_atlas[gid].append(residual)
                 observations.append((gid, residual, z, logmass))

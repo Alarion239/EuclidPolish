@@ -165,3 +165,35 @@ def test_tng_fit_integrates_cosmos_quarter_mag_counts(tmp_path):
     assert density[8] == 1.0 / 3600.0
     assert density[14] == 1.0 / 3600.0
     assert np.isclose(density.sum(), 3.0 / 3600.0)
+
+
+def test_tng_truth_calibration_skips_nonpositive_and_nonfinite_flux(tmp_path):
+    records = tmp_path / "records"
+    records.mkdir()
+    fieldnames = (
+        "field_index", "render", "flux_vis_e", "logmass", "z", "subhalo_id",
+    )
+    rows_by_split = {
+        "test": [
+            (0, "tng", 1000.0, 9.5, 0.7, "1"),
+            (0, "tng", 0.0, 9.5, 0.7, "2"),
+        ],
+        "validate": [
+            (0, "tng", 2000.0, 10.0, 1.0, "3"),
+            (0, "tng", float("nan"), 10.0, 1.0, "4"),
+        ],
+    }
+    for split, rows in rows_by_split.items():
+        with (records / f"sources_{split}.csv").open(
+            "w", newline="", encoding="utf-8",
+        ) as handle:
+            writer = csv.writer(handle)
+            writer.writerow(fieldnames)
+            writer.writerows(rows)
+
+    calibration = fit_mod.read_truth_calibration(records)
+
+    assert len(calibration.magnitudes) == 2
+    assert np.all(np.isfinite(calibration.magnitudes))
+    assert np.all(np.isfinite(calibration.residual_noise))
+    assert np.all(np.isfinite(calibration.regression_beta))

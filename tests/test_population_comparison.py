@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import csv
 import json
+import subprocess
 import warnings
 
 import numpy as np
@@ -565,6 +566,22 @@ def test_fit_cached_cones_rebuilds_truth_without_changing_config(
     assert cap.ticks[-1] == (3, 3, "fit and evaluations ready")
     assert any("not applied automatically" in line for line in cap.output)
     assert any("64.84 / 10" in line for line in cap.output)
+
+
+def test_analysis_script_failure_includes_stderr(monkeypatch, tmp_path):
+    from euclid_polish.web.routes import population_comparison as routes
+
+    error = subprocess.CalledProcessError(
+        1,
+        ["python", "broken.py"],
+        stderr="ValueError: useful scientific failure",
+    )
+    monkeypatch.setattr(
+        routes.subprocess, "run", lambda *args, **kwargs: (_ for _ in ()).throw(error)
+    )
+
+    with pytest.raises(RuntimeError, match="useful scientific failure"):
+        routes._run_analysis_script(tmp_path, "broken.py")
 
 
 def test_population_comparison_status_selects_training_variant(monkeypatch):

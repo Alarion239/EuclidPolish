@@ -22,26 +22,38 @@ from euclid_polish.web.jobs import REGISTRY
 from euclid_polish.web.remote import ensure_ssh_connected
 
 
+def _run_analysis_script(project_root: Path, script: str) -> None:
+    """Run one local analysis script and preserve its useful failure output."""
+    try:
+        subprocess.run(
+            [sys.executable, script],
+            cwd=project_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or exc.stdout or "").strip()
+        if len(detail) > 4000:
+            detail = detail[-4000:]
+        message = f"{script} failed"
+        if detail:
+            message += f":\n{detail}"
+        raise RuntimeError(message) from exc
+
+
 def _fit_and_evaluate_cached_cones(
     cap, *, progress_start: int = 0, progress_total: int = 3,
 ) -> dict:
     """Rebuild current truth, fit cached cones, and refresh evaluations."""
     project_root = Path(__file__).resolve().parents[3]
     cap.tick(progress_start, progress_total, "rebuild current synthetic truth")
-    subprocess.run(
-        [sys.executable, "scripts/fit_tng_vis_counts.py"],
-        cwd=project_root,
-        check=True,
-        capture_output=True,
-        text=True,
+    _run_analysis_script(
+        project_root, "scripts/fit_tng_vis_counts.py"
     )
     cap.tick(progress_start + 1, progress_total, "fit COSMOS observation layer")
-    subprocess.run(
-        [sys.executable, "scripts/fit_cosmos_euclid_counts.py"],
-        cwd=project_root,
-        check=True,
-        capture_output=True,
-        text=True,
+    _run_analysis_script(
+        project_root, "scripts/fit_cosmos_euclid_counts.py"
     )
     fit_payload = read_cosmos_euclid_fit()
     if fit_payload is None:
