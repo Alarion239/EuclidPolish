@@ -57,6 +57,36 @@ def _write(path: Path, payload: dict[str, Any]) -> None:
     os.replace(temporary, path)
 
 
+def _catalog_weighted_fingerprint() -> str | None:
+    """Fingerprint all catalog inputs used by probability-weighted fits."""
+    from euclid_polish.web.helpers.population_comparison import (
+        euclid_catalog_meta_path,
+        euclid_catalog_path,
+    )
+    meta = _read(euclid_catalog_meta_path())
+    if not meta or not euclid_catalog_path().is_file():
+        return None
+    digest = hashlib.sha256()
+    try:
+        with euclid_catalog_path().open(newline="", encoding="utf-8") as handle:
+            for row in csv.DictReader(handle):
+                digest.update(json.dumps(row, sort_keys=True, separators=(",", ":")).encode())
+                digest.update(b"\n")
+    except OSError:
+        return None
+    identity = {
+        "catalog_version": meta.get("catalog_version"),
+        "area_arcmin2": meta.get("area_arcmin2"),
+        "radius_arcmin": meta.get("radius_arcmin"),
+        "cones": meta.get("cones"),
+        "rows": meta.get("rows"),
+        "rows_digest": digest.hexdigest(),
+    }
+    return hashlib.sha256(json.dumps(
+        identity, sort_keys=True, separators=(",", ":"),
+    ).encode()).hexdigest()
+
+
 def photometric_candidate() -> dict[str, Any] | None:
     return brightness_transfer_payload(Config.COSMOS_EUCLID_FIT_PATH)
 
@@ -400,7 +430,7 @@ def fit_local_catalog_density(
         "catalog_version": meta.get("catalog_version"),
         "catalog_area_arcmin2": area,
         "catalog_radius_arcmin": meta.get("radius_arcmin"),
-        "catalog_weighted_fingerprint": catalog_digest.hexdigest(),
+        "catalog_weighted_fingerprint": _catalog_weighted_fingerprint(),
         "classification_weighting": "galaxy_weight=1-POINT_LIKE_PROB",
         "selection": {
             "mag_min": 20.0, "mag_max": 28.0, "spurious_max": 0.5,
@@ -430,6 +460,9 @@ def fit_local_catalog_density(
         "transfer_fingerprint": transfer["fingerprint"],
         "active_transfer_fingerprint": (active_transfer() or {}).get("fingerprint"),
         "calibration_fingerprint": calibration_fingerprint,
+        "catalog_weighted_fingerprint": _catalog_weighted_fingerprint(),
+        "catalog_version": meta.get("catalog_version"),
+        "catalog_area_arcmin2": area,
         "recommended_density_arcmin2": float(recommendation),
         "interval_arcmin2": interval,
         "euclid_detected_density_arcmin2": euclid_density,
@@ -474,6 +507,13 @@ def density_state() -> dict[str, Any]:
             "brightness-transfer candidate changed after the sweep"
         ]
     active = _read(active_density_path())
+    current_catalog_fingerprint = _catalog_weighted_fingerprint()
+    if candidate and candidate.get("catalog_weighted_fingerprint") != current_catalog_fingerprint:
+        candidate = dict(candidate)
+        candidate["valid"] = False
+        candidate["warnings"] = list(candidate.get("warnings") or []) + [
+            "Euclid weighted catalog changed after the density fit"
+        ]
     return {
         "candidate": candidate,
         "active": active,

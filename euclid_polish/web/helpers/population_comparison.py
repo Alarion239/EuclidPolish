@@ -32,8 +32,8 @@ from euclid_polish.web.helpers.tng_prior import (
     tng_prior_payload,
 )
 
-VERSION = 7
-CATALOG_VERSION = 3
+VERSION = 8
+CATALOG_VERSION = 4
 BANDS = ("VIS", "Y_E", "J_E", "H_E")
 TILE_SIZE = 256
 ANALYSIS_SIZE = 255
@@ -68,6 +68,14 @@ _PARAM_META = {
     "flux_vis_e": ("VIS source flux", "e⁻ / stack"),
     "flux_vis_psf_uJy": ("VIS PSF flux", "µJy"),
     "fluxerr_vis_psf_uJy": ("VIS PSF flux error", "µJy"),
+    "flux_vis_aper_uJy": ("VIS 3-FWHM aperture flux", "µJy"),
+    "fluxerr_vis_aper_uJy": ("VIS 3-FWHM aperture flux error", "µJy"),
+    "flux_y_aper_uJy": ("Y 3-FWHM aperture flux", "µJy"),
+    "fluxerr_y_aper_uJy": ("Y 3-FWHM aperture flux error", "µJy"),
+    "flux_j_aper_uJy": ("J 3-FWHM aperture flux", "µJy"),
+    "fluxerr_j_aper_uJy": ("J 3-FWHM aperture flux error", "µJy"),
+    "flux_h_aper_uJy": ("H 3-FWHM aperture flux", "µJy"),
+    "fluxerr_h_aper_uJy": ("H 3-FWHM aperture flux error", "µJy"),
     "vis_snr": ("VIS PSF signal-to-noise", "ratio"),
     "aper_vis_snr": ("VIS aperture signal-to-noise", "ratio"),
     "aper_y_snr": ("Y aperture signal-to-noise", "ratio"),
@@ -1195,9 +1203,8 @@ def query_euclid_population(
 ) -> dict[str, Any]:
     """Query clean MER sources in a cone and cache generation-facing columns.
 
-    MER's point-like classifier is deliberately high-purity and incomplete.
-    A row is therefore called a star only when ``point_like_flag = 1``, a
-    galaxy only when ``extended_flag = 1``, and unknown otherwise.
+    MER's point-like probability is retained as a fractional membership value;
+    hard flags remain available for provenance and single-cone summaries.
     """
     radius_deg = radius_arcmin / 60.0
     query = f"""
@@ -1316,6 +1323,14 @@ def query_euclid_population(
             ),
             "flux_vis_psf_uJy": flux,
             "fluxerr_vis_psf_uJy": flux_error,
+            **{
+                f"flux_{band}_aper_uJy": aperture_fluxes[band]
+                for band in ("vis", "y", "j", "h")
+            },
+            **{
+                f"fluxerr_{band}_aper_uJy": aperture_errors[band]
+                for band in ("vis", "y", "j", "h")
+            },
             "vis_snr": signal_to_noise(flux, flux_error),
             **{
                 f"aper_{band}_snr": signal_to_noise(
@@ -1382,17 +1397,30 @@ def query_euclid_population(
             for kind in ("star", "galaxy", "unknown")
         },
         "classification": (
-            "point_like_flag = 1 → high-purity star; extended_flag = 1 → "
-            "galaxy; all other clean non-spurious sources → unknown"
+            "POINT_LIKE_PROB is fractional stellar membership; galaxy weight "
+            "is 1 − POINT_LIKE_PROB; invalid probabilities are excluded"
         ),
         "classification_note": (
             "Euclid documents the point-like selector as high-purity but "
             "low-completeness; unknown rows must not be counted as galaxies."
         ),
         "photometry": (
-            "3 FWHM PSF-matched aperture magnitudes and colours; VIS PSF flux "
-            "is retained separately"
+            "3 FWHM PSF-matched aperture magnitudes, raw fluxes/errors, and "
+            "colours; VIS PSF flux is retained separately"
         ),
+        "probability_coverage": {
+            "field": "point_like_prob",
+            "valid_rows": sum(
+                _finite(row.get("point_like_prob")) is not None
+                and 0.0 <= float(row["point_like_prob"]) <= 1.0
+                for row in rows
+            ),
+            "missing_or_invalid_rows": sum(
+                _finite(row.get("point_like_prob")) is None
+                or not 0.0 <= float(row["point_like_prob"]) <= 1.0
+                for row in rows
+            ),
+        },
     }
     _write_json(_meta_path or euclid_catalog_meta_path(), meta)
     return meta
@@ -1469,17 +1497,35 @@ def select_star_cone_centers(
 def query_euclid_population_multi(
     *, count: int = 6, radius_arcmin: float = DEFAULT_CONE_RADIUS_ARCMIN,
     selection_seed: int | None = None,
+    centers: list[dict[str, Any]] | None = None,
     progress: Callable[[int, int, str], None] | None = None,
     relogin: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
-    """Query random star-centred cones, deduplicate, and cache one census."""
-    if selection_seed is None:
-        selection_seed = random.SystemRandom().getrandbits(64)
-    centers = select_star_cone_centers(
-        count=count,
-        radius_arcmin=radius_arcmin,
-        seed=selection_seed,
-    )
+    """Query star-centred cones, deduplicate, and cache one census.
+
+    ``centers`` is used by the schema-refresh path so that a failed refresh
+    never silently changes the footprint being compared.
+    """
+    if centers is None:
+        if selection_seed is None:
+            selection_seed = random.SystemRandom().getrandbits(64)
+        centers = select_star_cone_centers(
+            count=count,
+            radius_arcmin=radius_arcmin,
+            seed=selection_seed,
+        )
+    else:
+        centers = [
+            {
+                **center,
+                "ra": float(center["ra"]),
+                "dec": float(center["dec"]),
+            }
+            for center in centers
+        ]
+        if not centers:
+            raise ValueError("same-footprint refresh has no saved centers")
+        count = len(centers)
     combined: dict[str, dict[str, Any]] = {}
     cone_meta: list[dict[str, Any]] = []
     out = euclid_catalog_path()
@@ -1539,19 +1585,54 @@ def query_euclid_population_multi(
             for kind in ("star", "galaxy", "unknown")
         },
         "classification": (
-            "point_like_flag = 1 → high-purity star; extended_flag = 1 → "
-            "galaxy; all other clean non-spurious sources → unknown"
+            "POINT_LIKE_PROB is fractional stellar membership; galaxy weight "
+            "is 1 − POINT_LIKE_PROB; invalid probabilities are excluded"
         ),
         "classification_note": (
             "Aggregated from random non-overlapping cones centred on locally "
             "saved Euclid stars; object_id duplicates are removed."
         ),
         "photometry": (
-            "3 FWHM PSF-matched aperture magnitudes and colours; VIS PSF flux "
-            "is retained separately"
+            "3 FWHM PSF-matched aperture magnitudes, raw fluxes/errors, and "
+            "colours; VIS PSF flux is retained separately"
         ),
+        "probability_coverage": {
+            "field": "point_like_prob",
+            "valid_rows": sum(
+                _finite(row.get("point_like_prob")) is not None
+                and 0.0 <= float(row["point_like_prob"]) <= 1.0
+                for row in rows
+            ),
+            "missing_or_invalid_rows": sum(
+                _finite(row.get("point_like_prob")) is None
+                or not 0.0 <= float(row["point_like_prob"]) <= 1.0
+                for row in rows
+            ),
+        },
     }
     _write_json(euclid_catalog_meta_path(), meta)
     if progress:
         progress(len(centers), len(centers), "Euclid cones cached")
     return meta
+
+
+def refresh_cached_euclid_population_multi(
+    *, progress: Callable[[int, int, str], None] | None = None,
+    relogin: Callable[[], bool] | None = None,
+) -> dict[str, Any]:
+    """Refresh raw Euclid photometry at the exact saved cone centers."""
+    saved = _read_json(euclid_catalog_meta_path())
+    if not saved or not saved.get("cones"):
+        raise ValueError("no saved multi-cone footprint is available")
+    centers = list(saved["cones"])
+    radius = float(saved.get("radius_arcmin") or 0.0)
+    if radius <= 0.0:
+        raise ValueError("saved cone metadata has no valid radius")
+    return query_euclid_population_multi(
+        count=len(centers),
+        radius_arcmin=radius,
+        selection_seed=saved.get("selection_seed"),
+        centers=centers,
+        progress=progress,
+        relogin=relogin,
+    )

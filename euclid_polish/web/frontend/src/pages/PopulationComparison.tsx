@@ -171,6 +171,10 @@ type CalibrationArtifact = {
       gaia_bright_label?: string;
       euclid_weighted?: (number | null)[];
       euclid_weighted_label?: string;
+      dirty_observed?: (number | null)[];
+      dirty_observed_label?: string;
+      posterior_predictive?: (number | null)[];
+      posterior_predictive_label?: string;
       statistics?: {
         expected_count?: number | null; density_arcmin2?: number | null;
         mean?: number | null; std?: number | null;
@@ -178,6 +182,16 @@ type CalibrationArtifact = {
         effective_n?: number | null;
         classification_sigma_count?: number | null;
         classification_sigma_density_arcmin2?: number | null;
+      };
+      dirty_statistics?: {
+        mean?: number | null; std?: number | null;
+        p16?: number | null; p50?: number | null; p84?: number | null;
+        effective_n?: number | null;
+      };
+      posterior_predictive_statistics?: {
+        mean?: number | null; std?: number | null;
+        p16?: number | null; p50?: number | null; p84?: number | null;
+        effective_n?: number | null;
       };
       observed_limit_mag?: number;
       extrapolation_note?: string;
@@ -1221,7 +1235,7 @@ function StarCalibrationControls({ api, onChanged }: {
   return (
     <Card className="calibration-workflow">
       <CardHead title="Gaia + Euclid stellar prior"
-        sub="Query Gaia DR3 on the same footprints, exclude each deliberately selected centre, and fit one smooth count law plus correlated Euclid colours." />
+        sub="Query Gaia DR3 on the same footprints, exclude each deliberately selected centre, and fit an error-aware latent stellar locus." />
       <CardBody>
         <div className="calibration-status-grid">
           <div><span className="eyebrow">candidate</span>
@@ -1284,20 +1298,23 @@ function StarCalibrationControls({ api, onChanged }: {
                 const magnitudeCounts = key === "mag_vis";
                 const gaiaBright = item.gaia_bright ?? [];
                 const euclidWeighted = item.euclid_weighted ?? [];
+                const dirtyObserved = item.dirty_observed ?? [];
+                const posteriorPredictive = item.posterior_predictive ?? [];
                 const comparisonValues = [
                   ...item.observed, ...item.fitted, ...gaiaBright,
-                  ...euclidWeighted,
+                  ...euclidWeighted, ...dirtyObserved, ...posteriorPredictive,
                 ];
                 const stats = item.statistics;
+                const dirtyStats = item.dirty_statistics;
                 const format = (value: number | null | undefined) =>
                   value == null || !Number.isFinite(value) ? "—" : value.toFixed(3);
                 return (
               <Card className="parameter-card" key={key}>
-                <CardHead title={item.label}
-                  sub={magnitudeCounts
-                    ? "fitted prior × Gaia bright × probability-weighted Euclid faint"
+                  <CardHead title={item.label}
+                    sub={magnitudeCounts
+                      ? "fitted prior × Gaia bright × probability-weighted Euclid faint"
                     : item.observed_label
-                      ? `fitted synthetic prior × ${item.observed_label}`
+                      ? `intrinsic locus: generated true colours × ${item.observed_label}`
                       : "fitted synthetic prior × same-footprint observed stars"} />
                 <CardBody>
                   <AdjustablePlot boundsLabel={item.label}
@@ -1317,6 +1334,15 @@ function StarCalibrationControls({ api, onChanged }: {
                       ...(magnitudeCounts && euclidWeighted.length ? [{
                         x: item.x, y: euclidWeighted, color: categorical(5),
                         mode: "line" as const, width: 1.8,
+                      }] : []),
+                      ...(!magnitudeCounts && dirtyObserved.length ? [{
+                        x: item.x, y: dirtyObserved, color: categorical(5),
+                        mode: "histogram" as const, hatch: true, dash: [4, 4],
+                        fillAlpha: 0.03, width: 1.8,
+                      }] : []),
+                      ...(!magnitudeCounts && posteriorPredictive.length ? [{
+                        x: item.x, y: posteriorPredictive, color: categorical(4),
+                        mode: "histogram" as const, fillAlpha: 0.16, width: 1.8,
                       }] : []),
                     ]}
                     guides={item.observed_limit_mag != null ? [{
@@ -1339,6 +1365,16 @@ function StarCalibrationControls({ api, onChanged }: {
                       label: item.euclid_weighted_label ?? "Euclid weighted point sources",
                       line: true,
                     }] : []),
+                    ...(!magnitudeCounts && dirtyObserved.length ? [{
+                      color: categorical(5),
+                      label: item.dirty_observed_label ?? "observed prediction: measured MER colours",
+                      histogram: true, hatch: true, dash: true,
+                    }] : []),
+                    ...(!magnitudeCounts && posteriorPredictive.length ? [{
+                      color: categorical(4),
+                      label: item.posterior_predictive_label ?? "observed prediction",
+                      histogram: true, filled: true,
+                    }] : []),
                   ]} />
                   {stats && (
                     <div className="calibration-status-grid" style={{ marginTop: "var(--s3)" }}>
@@ -1350,6 +1386,24 @@ function StarCalibrationControls({ api, onChanged }: {
                         <strong>{format(stats.expected_count)} / {format(stats.effective_n)}</strong></div>
                       {magnitudeCounts && <div><span className="eyebrow">density ± class. sigma</span>
                         <strong>{format(stats.density_arcmin2)} ± {format(stats.classification_sigma_density_arcmin2)}</strong></div>}
+                    </div>
+                  )}
+                  {dirtyStats && (
+                    <div className="calibration-status-grid" style={{ marginTop: "var(--s2)" }}>
+                      <div><span className="eyebrow">observed prediction mean ± sd</span>
+                        <strong>{format(dirtyStats.mean)} ± {format(dirtyStats.std)}</strong></div>
+                      <div><span className="eyebrow">observed p16 / p50 / p84</span>
+                        <strong>{format(dirtyStats.p16)} / {format(dirtyStats.p50)} / {format(dirtyStats.p84)}</strong></div>
+                      <div><span className="eyebrow">observed effective N</span>
+                        <strong>{format(dirtyStats.effective_n)}</strong></div>
+                    </div>
+                  )}
+                  {item.posterior_predictive_statistics && (
+                    <div className="calibration-status-grid" style={{ marginTop: "var(--s2)" }}>
+                      <div><span className="eyebrow">prediction mean ± sd</span>
+                        <strong>{format(item.posterior_predictive_statistics.mean)} ± {format(item.posterior_predictive_statistics.std)}</strong></div>
+                      <div><span className="eyebrow">prediction p16 / p50 / p84</span>
+                        <strong>{format(item.posterior_predictive_statistics.p16)} / {format(item.posterior_predictive_statistics.p50)} / {format(item.posterior_predictive_statistics.p84)}</strong></div>
                     </div>
                   )}
                   {magnitudeCounts && item.extrapolation_note && (
@@ -1373,6 +1427,7 @@ function ConeQuery({ api, onQueried }: { api: ApiPayload; onQueried: () => void 
   const [count, setCount] = useState("6");
   const [radius, setRadius] = useState(defaults.radius_arcmin.toFixed(3));
   const query = useJob();
+  const refreshSame = useJob();
   const analysis = useJob();
   const countNumber = Number(count);
   const radiusNumber = Number(radius);
@@ -1404,7 +1459,7 @@ function ConeQuery({ api, onQueried }: { api: ApiPayload; onQueried: () => void 
               : `${(area / defaults.area_arcmin2).toFixed(2)}× synthetic footprint`}</small>
           </div>
           <Button variant="primary"
-            disabled={!api.authenticated || query.busy || analysis.busy || !valid}
+            disabled={!api.authenticated || query.busy || refreshSame.busy || analysis.busy || !valid}
             onClick={() => query.run(
               "/api/population-comparison/query-euclid-multi",
               { count, radius_arcmin: radius },
@@ -1413,7 +1468,7 @@ function ConeQuery({ api, onQueried }: { api: ApiPayload; onQueried: () => void 
             {query.busy ? "Querying…" : `Query ${count || "0"} random cone${countNumber === 1 ? "" : "s"}`}
           </Button>
           <Button disabled={!api.availability.euclid_catalog.cached
-              || query.busy || analysis.busy}
+              || query.busy || refreshSame.busy || analysis.busy}
             onClick={() => analysis.run(
               "/api/population-comparison/fit-euclid",
               {},
@@ -1423,12 +1478,27 @@ function ConeQuery({ api, onQueried }: { api: ApiPayload; onQueried: () => void 
               ? "Fitting…"
               : fitButtonLabel}
           </Button>
+          <Button disabled={!api.authenticated || !cachedConeCount
+              || query.busy || refreshSame.busy || analysis.busy}
+            onClick={() => refreshSame.run(
+              "/api/population-comparison/refresh-euclid-multi",
+              {},
+              { onDone: (job) => { if (job.status !== "failed") onQueried(); } },
+            )}>
+            {refreshSame.busy ? "Refreshing saved cones…" : "Refresh same saved cones"}
+          </Button>
         </div>
         <p className="cone-query__login">
           Each run draws a fresh set of saved stars. Cones are kept at least
           two radii apart; the selected centers and random seed are saved with
           the catalog metadata.
         </p>
+        {cachedConeCount > 0 && (
+          <p className="cone-query__login">
+            Use <strong>Refresh same saved cones</strong> after a catalog-schema update to
+            retain the exact footprint while replacing raw flux/error measurements atomically.
+          </p>
+        )}
         {!api.authenticated && (
           <p className="cone-query__login">
             Open <NavLink to="/catalog">Catalog</NavLink> and log in to the Euclid archive first.
@@ -1436,6 +1506,7 @@ function ConeQuery({ api, onQueried }: { api: ApiPayload; onQueried: () => void 
         )}
         <JobProgressView job={query.job} error={query.error} />
         <JobProgressView job={analysis.job} error={analysis.error} />
+        <JobProgressView job={refreshSame.job} error={refreshSame.error} />
       </CardBody>
     </Card>
   );

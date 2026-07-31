@@ -27,6 +27,7 @@ from euclid_polish.web.helpers.population_comparison import (
     query_euclid_population_multi,
     read_comparison,
     read_cosmos_euclid_fit,
+    refresh_cached_euclid_population_multi,
     refresh_population_comparison,
 )
 from euclid_polish.web.helpers.star_population import (
@@ -388,6 +389,42 @@ def register(app):
             "ok": True,
             "job_id": REGISTRY.spawn(
                 label="population comparison: Gaia + stellar prior",
+                target=run,
+            ),
+        })
+
+    @app.route(
+        "/api/population-comparison/refresh-euclid-multi", methods=["POST"]
+    )
+    def api_population_comparison_refresh_euclid_multi():
+        catalog = euclid_session.catalog()
+        if catalog is None:
+            return jsonify({"ok": False, "error": (
+                "Log in to the Euclid archive on the Catalog page first."
+            )}), 400
+
+        def run(cap):
+            meta = refresh_cached_euclid_population_multi(
+                relogin=catalog.relogin,
+                progress=lambda done, total, label: cap.tick(
+                    done, total + 3, label
+                ),
+            )
+            _fit_and_evaluate_cached_cones(
+                cap,
+                progress_start=int(meta["cone_count"]),
+                progress_total=int(meta["cone_count"]) + 3,
+            )
+            cap.write(
+                f"refreshed {meta['rows']} unique sources from the same "
+                f"{meta['cone_count']} saved cones\n"
+            )
+            return meta
+
+        return jsonify({
+            "ok": True,
+            "job_id": REGISTRY.spawn(
+                label="population comparison: refresh same Euclid cones",
                 target=run,
             ),
         })

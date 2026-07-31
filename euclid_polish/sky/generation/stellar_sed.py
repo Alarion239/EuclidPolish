@@ -46,6 +46,7 @@ class EmpiricalStellarPrior:
     residual_covariance: np.ndarray
     magnitude_edges: np.ndarray | None = None
     magnitude_cdf: np.ndarray | None = None
+    color_model: dict[str, np.ndarray] | None = None
 
     @classmethod
     def from_payload(cls, payload: dict[str, Any]) -> EmpiricalStellarPrior:
@@ -82,7 +83,54 @@ class EmpiricalStellarPrior:
                 cdf = np.clip(cdf / cdf[-1], 0.0, 1.0)
                 cdf[0] = 0.0
                 cdf[-1] = 1.0
-        return cls(colors, temperatures, coefficients, covariance, edges, cdf)
+        color_model_payload = payload.get("color_model") or {}
+        color_model: dict[str, np.ndarray] | None = None
+        if color_model_payload.get("kind") == "gaia_euclid_latent_locus_v1":
+            try:
+                parsed = {
+                    key: np.asarray(color_model_payload[key], dtype=np.float64)
+                    for key in (
+                        "bp_rp_edges", "bp_rp_nodes", "temperature_nodes_k",
+                        "locus_colors", "intrinsic_color_covariance",
+                        "magnitude_edges", "magnitude_node_weights",
+                    )
+                }
+                if (
+                    parsed["bp_rp_edges"].ndim != 1
+                    or parsed["bp_rp_nodes"].ndim != 1
+                    or parsed["temperature_nodes_k"].shape
+                    != parsed["bp_rp_nodes"].shape
+                    or parsed["locus_colors"].shape
+                    != (parsed["bp_rp_nodes"].size, 3)
+                    or parsed["intrinsic_color_covariance"].shape != (3, 3)
+                    or parsed["magnitude_edges"].ndim != 1
+                    or parsed["magnitude_node_weights"].shape
+                    != (parsed["magnitude_edges"].size - 1,
+                        parsed["bp_rp_nodes"].size)
+                    or parsed["bp_rp_edges"].size
+                    != parsed["bp_rp_nodes"].size + 1
+                ):
+                    raise ValueError("invalid latent stellar locus dimensions")
+                if (
+                    not all(np.all(np.isfinite(value)) for value in parsed.values())
+                    or np.any(np.diff(parsed["bp_rp_edges"]) <= 0)
+                    or np.any(np.diff(parsed["magnitude_edges"]) <= 0)
+                    or np.any(parsed["magnitude_node_weights"] < 0)
+                    or np.any(~np.isfinite(parsed["magnitude_node_weights"]))
+                ):
+                    raise ValueError("latent stellar locus contains non-finite values")
+                covariance = _positive_semidefinite_covariance(
+                    parsed["intrinsic_color_covariance"], floor=1e-4,
+                )
+                parsed["intrinsic_color_covariance"] = covariance
+                parsed["magnitude_node_weights"] = _normalise_rows(
+                    parsed["magnitude_node_weights"],
+                )
+                color_model = parsed
+            except (KeyError, TypeError, ValueError):
+                color_model = None
+        return cls(colors, temperatures, coefficients, covariance, edges, cdf,
+                   color_model)
 
     def sample_magnitude(
         self, rng: np.random.Generator, *, slope: float,
@@ -110,6 +158,8 @@ class EmpiricalStellarPrior:
         )
 
     def sample(self, rng: np.random.Generator, mag_vis: float) -> StellarSED:
+        if self.color_model is not None:
+            return self._sample_latent_locus(rng, mag_vis)
         quantile = float(rng.random())
         grid = np.linspace(0.0, 1.0, self.bp_rp_quantiles.size)
         bp_rp = float(np.interp(quantile, grid, self.bp_rp_quantiles))
@@ -141,6 +191,44 @@ class EmpiricalStellarPrior:
             },
         )
 
+    def _sample_latent_locus(
+        self, rng: np.random.Generator, mag_vis: float,
+    ) -> StellarSED:
+        model = self.color_model
+        assert model is not None
+        edges = model["magnitude_edges"]
+        bin_index = int(np.searchsorted(edges, mag_vis, side="right") - 1)
+        bin_index = max(0, min(bin_index, edges.size - 2))
+        node_weights = model["magnitude_node_weights"][bin_index]
+        node_index = int(rng.choice(node_weights.size, p=node_weights))
+        bp_edges = model["bp_rp_edges"]
+        bp_rp = float(rng.uniform(bp_edges[node_index], bp_edges[node_index + 1]))
+        bp_nodes = model["bp_rp_nodes"]
+        temperatures = model["temperature_nodes_k"]
+        temperature = float(np.interp(bp_rp, bp_nodes, temperatures))
+        locus = np.asarray([
+            np.interp(bp_rp, bp_nodes, model["locus_colors"][:, index])
+            for index in range(3)
+        ])
+        covariance = model["intrinsic_color_covariance"]
+        for _ in range(12):
+            residual = rng.multivariate_normal(np.zeros(3), covariance)
+            mahalanobis = float(residual @ np.linalg.solve(covariance, residual))
+            if mahalanobis <= 16.0:
+                break
+        colors = locus + residual
+        magnitudes = {
+            "VIS": float(mag_vis),
+            "Y_E": float(mag_vis - colors[0]),
+            "J_E": float(mag_vis - colors[0] - colors[1]),
+            "H_E": float(mag_vis - colors[0] - colors[1] - colors[2]),
+        }
+        return StellarSED(
+            temperature_k=temperature,
+            extinction_av=0.0,
+            magnitudes=magnitudes,
+        )
+
 
 def _sample_exponential_magnitude(
     rng: np.random.Generator, *, slope: float,
@@ -155,6 +243,24 @@ def _sample_exponential_magnitude(
     t = (u * span if abs(beta) < 1e-9
          else np.log1p(u * np.expm1(beta * span)) / beta)
     return float(m_bright + t)
+
+
+def _normalise_rows(values: np.ndarray) -> np.ndarray:
+    values = np.maximum(np.asarray(values, dtype=np.float64), 0.0)
+    totals = values.sum(axis=1, keepdims=True)
+    return np.divide(
+        values, totals, out=np.full_like(values, 1.0 / values.shape[1]),
+        where=totals > 0,
+    )
+
+
+def _positive_semidefinite_covariance(
+    values: np.ndarray, *, floor: float,
+) -> np.ndarray:
+    matrix = np.asarray(values, dtype=np.float64)
+    matrix = 0.5 * (matrix + matrix.T)
+    eigenvalues, eigenvectors = np.linalg.eigh(matrix)
+    return (eigenvectors * np.maximum(eigenvalues, float(floor))) @ eigenvectors.T
 
 
 def _planck_fnu(wavelength_um: np.ndarray, temperature_k: float) -> np.ndarray:
