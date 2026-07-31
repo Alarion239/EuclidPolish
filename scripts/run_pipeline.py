@@ -204,6 +204,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--galaxy-density-arcmin2", type=float,
                     default=Config.GALAXY_DENSITY_ARCMIN2,
                     help="COSMOS-conditioned TNG galaxies per arcmin².")
+    ap.add_argument("--galaxy-thinning-max-density-arcmin2", type=float,
+                    default=None,
+                    help="Calibration-only master density. Shared seeds make "
+                         "lower densities exact nested source thinnings.")
     ap.add_argument("--cosmos-prior", default=Config.COSMOS_TNG_PRIOR_PATH,
                     help="Joint COSMOS2025 population-prior NPZ.")
     ap.add_argument("--cosmos-vis-offset-mag", type=float, default=None,
@@ -214,6 +218,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                     help="Embedded fitted F814W-to-VIS scatter.")
     ap.add_argument("--cosmos-vis-transfer-source", default="",
                     help="Provenance label for the embedded brightness fit.")
+    ap.add_argument("--cosmos-vis-transfer-artifact-json", default="",
+                    help="Exact activated transfer artifact embedded by the web job.")
     ap.add_argument("--star-density-arcmin2", type=float,
                     default=Config.DEFAULT_STAR_DENSITY_ARCMIN2,
                     help="Stellar surface density (stars/arcmin²).")
@@ -224,6 +230,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                     help="Brightest synthetic star (VIS mag).")
     ap.add_argument("--star-mag-faint", type=float, default=Config.STAR_MAG_FAINT,
                     help="Faintest synthetic star (VIS mag).")
+    ap.add_argument("--star-prior-json", default="",
+                    help="Activated versioned Gaia/Euclid stellar-prior JSON.")
     ap.add_argument("--lens-density-arcmin2", type=float,
                     default=Config.LENS_DENSITY_ARCMIN2,
                     help="Strong-lens surface density (lenses/arcmin²).")
@@ -323,11 +331,17 @@ def _generator_config_from_args(args: argparse.Namespace) -> SkySimulatorConfig:
         image_size=args.image_size,
         pixel_scale=Config.DEFAULT_PIXEL_SCALE,
         galaxy_density_arcmin2=args.galaxy_density_arcmin2,
+        galaxy_thinning_max_density_arcmin2=getattr(
+            args, "galaxy_thinning_max_density_arcmin2", None,
+        ),
         cosmos_prior_path=args.cosmos_prior,
         star_density_arcmin2=args.star_density_arcmin2,
         star_mag_slope=args.star_mag_slope,
         star_mag_bright=args.star_mag_bright,
         star_mag_faint=args.star_mag_faint,
+        star_prior_payload=(
+            json.loads(args.star_prior_json) if args.star_prior_json else None
+        ),
         lens_density_arcmin2=args.lens_density_arcmin2,
         lens_sigma_v_min_kms=args.lens_sigma_v_min_kms,
         lens_sigma_v_max_kms=args.lens_sigma_v_max_kms,
@@ -1061,10 +1075,12 @@ _W_RECORDS_DIR = ""
 def _gen_init_worker(prior_path, image_size, psf_dir,
                      require_empirical_psf, records_dir,
                      galaxy_density_arcmin2=Config.GALAXY_DENSITY_ARCMIN2,
+                     galaxy_thinning_max_density_arcmin2=None,
                      star_density_arcmin2=Config.DEFAULT_STAR_DENSITY_ARCMIN2,
                      star_mag_slope=Config.STAR_MAG_SLOPE,
                      star_mag_bright=Config.STAR_MAG_BRIGHT,
                      star_mag_faint=Config.STAR_MAG_FAINT,
+                     star_prior_json="",
                      lens_density_arcmin2=Config.LENS_DENSITY_ARCMIN2,
                      lens_sigma_v_min_kms=Config.LENS_SIGMA_V_MIN_KMS,
                      lens_sigma_v_max_kms=Config.LENS_SIGMA_V_MAX_KMS,
@@ -1094,11 +1110,18 @@ def _gen_init_worker(prior_path, image_size, psf_dir,
         cat, SkySimulatorConfig(image_size=image_size,
                                       pixel_scale=Config.DEFAULT_PIXEL_SCALE,
                                       galaxy_density_arcmin2=galaxy_density_arcmin2,
+                                      galaxy_thinning_max_density_arcmin2=(
+                                          galaxy_thinning_max_density_arcmin2
+                                      ),
                                       cosmos_prior_path=prior_path or "",
                                       star_density_arcmin2=star_density_arcmin2,
                                       star_mag_slope=star_mag_slope,
                                       star_mag_bright=star_mag_bright,
                                       star_mag_faint=star_mag_faint,
+                                      star_prior_payload=(
+                                          json.loads(star_prior_json)
+                                          if star_prior_json else None
+                                      ),
                                       lens_density_arcmin2=lens_density_arcmin2,
                                       lens_sigma_v_min_kms=lens_sigma_v_min_kms,
                                       lens_sigma_v_max_kms=lens_sigma_v_max_kms),
@@ -1261,9 +1284,15 @@ def step_generate_and_convolve_parallel(args: argparse.Namespace) -> None:
                 initargs=(prior_path, args.image_size, args.psf_dir,
                           args.require_empirical_psf, args.records_dir,
                           args.galaxy_density_arcmin2,
+                          getattr(
+                              args,
+                              "galaxy_thinning_max_density_arcmin2",
+                              None,
+                          ),
                           args.star_density_arcmin2,
                           args.star_mag_slope, args.star_mag_bright,
-                          args.star_mag_faint, args.lens_density_arcmin2,
+                          args.star_mag_faint, args.star_prior_json,
+                          args.lens_density_arcmin2,
                           args.lens_sigma_v_min_kms, args.lens_sigma_v_max_kms,
                           getattr(args, "psf_warp_prob",
                                   Config.TRAIN_PSF_WARP_PROB),

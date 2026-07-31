@@ -38,7 +38,10 @@ from euclid_polish.sky.generation.redshift_model import (
     physical_pc_to_arcsec,
     sigma_v_from_stellar_mass,
 )
-from euclid_polish.sky.generation.stellar_sed import sample_stellar_sed
+from euclid_polish.sky.generation.stellar_sed import (
+    EmpiricalStellarPrior,
+    sample_stellar_sed,
+)
 from euclid_polish.sky.generation.tng_galaxy import (
     N_ORIENTATIONS,
     list_tng_galaxies,
@@ -63,6 +66,9 @@ class SkySimulatorConfig:
     image_size:               int   = Config.DEFAULT_IMAGE_SIZE
     pixel_scale:              float = Config.DEFAULT_PIXEL_SCALE     # arcsec/pix
     galaxy_density_arcmin2:   float = Config.GALAXY_DENSITY_ARCMIN2
+    # Calibration-only master density. With a shared field seed, lower-density
+    # runs are exact nested thinnings of the same master source proposals.
+    galaxy_thinning_max_density_arcmin2: float | None = None
     cosmos_prior_path:        str   = Config.COSMOS_TNG_PRIOR_PATH
     tng_galaxy_dir:           str   = Config.TNG_SKIRT_DIR
     tng_properties_csv:       str   = ""
@@ -71,6 +77,7 @@ class SkySimulatorConfig:
     star_mag_slope:           float = Config.STAR_MAG_SLOPE
     star_mag_bright:          float = Config.STAR_MAG_BRIGHT
     star_mag_faint:           float = Config.STAR_MAG_FAINT
+    star_prior_payload:       dict | None = None
     # Lenses
     lens_density_arcmin2:     float = Config.LENS_DENSITY_ARCMIN2
     # Keep the foreground lens-galaxy light compact: cap its effective radius at
@@ -89,6 +96,15 @@ class SkySimulatorConfig:
         if min(self.galaxy_density_arcmin2,
                self.star_density_arcmin2, self.lens_density_arcmin2) < 0:
             return False, "densities must be non-negative"
+        if (
+            self.galaxy_thinning_max_density_arcmin2 is not None
+            and self.galaxy_thinning_max_density_arcmin2
+            < self.galaxy_density_arcmin2
+        ):
+            return False, (
+                "galaxy_thinning_max_density_arcmin2 must be >= "
+                "galaxy_density_arcmin2"
+            )
         if self.lens_light_re_factor <= 0.0:
             return False, "lens_light_re_factor must be > 0"
         if not (0.0 < self.lens_sigma_v_min_kms < self.lens_sigma_v_max_kms):
@@ -176,6 +192,7 @@ def _deposit_star(
 def inject_random_stars(
     canvas_4ch: np.ndarray, rng: np.random.Generator, *,
     n_stars: int, mag_slope: float, mag_bright: float, mag_faint: float,
+    stellar_prior: EmpiricalStellarPrior | None = None,
 ) -> list[dict]:
     """Draw ``n_stars`` random point sources and DEPOSIT them onto ``canvas_4ch``.
 
@@ -194,7 +211,7 @@ def inject_random_stars(
         y_pix = float(rng.uniform(0.0, N - 1))
         mag = _sample_star_mag(rng, slope=mag_slope,
                                m_bright=mag_bright, m_faint=mag_faint)
-        sed = sample_stellar_sed(rng, mag)
+        sed = sample_stellar_sed(rng, mag, stellar_prior)
         band_mags = sed.magnitudes
         _deposit_star(
             canvas_4ch, x_pix, y_pix, mag, band_magnitudes=band_mags,
@@ -228,6 +245,10 @@ class SkySimulator:
         ok, why = self.config.validate()
         if not ok:
             raise ValueError(f"Invalid generator config: {why}")
+        self.stellar_prior = (
+            EmpiricalStellarPrior.from_payload(self.config.star_prior_payload)
+            if self.config.star_prior_payload else None
+        )
 
         if (
             population_prior is None
@@ -364,7 +385,7 @@ class SkySimulator:
         mag = _sample_star_mag(
             rng, slope=cfg.star_mag_slope,
             m_bright=cfg.star_mag_bright, m_faint=cfg.star_mag_faint)
-        sed = sample_stellar_sed(rng, mag)
+        sed = sample_stellar_sed(rng, mag, self.stellar_prior)
         band_mags = sed.magnitudes
         return {
             "type": "star",
@@ -504,25 +525,63 @@ class SkySimulator:
         N    = cfg.image_size
         area = self._field_area_arcmin2()
 
+        # Component seeds are consumed once per field. Galaxy-count changes can
+        # therefore never shift the star, lens, or forward-model RNG streams.
+        component_seeds = rng.integers(
+            0, np.iinfo(np.uint64).max, size=3, dtype=np.uint64,
+        )
+        galaxy_rng = np.random.default_rng(component_seeds[0])
+        star_rng = np.random.default_rng(component_seeds[1])
+        lens_rng = np.random.default_rng(component_seeds[2])
+
+        galaxy_seeds: list[int]
         if n_galaxies is None:
-            n_galaxies = int(rng.poisson(cfg.galaxy_density_arcmin2 * area))
+            master_density = float(
+                cfg.galaxy_thinning_max_density_arcmin2
+                if cfg.galaxy_thinning_max_density_arcmin2 is not None
+                else cfg.galaxy_density_arcmin2
+            )
+            master_count = int(galaxy_rng.poisson(master_density * area))
+            keep_probability = (
+                cfg.galaxy_density_arcmin2 / master_density
+                if master_density > 0 else 0.0
+            )
+            keep = galaxy_rng.random(master_count) < keep_probability
+            proposals = galaxy_rng.integers(
+                0, np.iinfo(np.uint64).max,
+                size=master_count, dtype=np.uint64,
+            )
+            galaxy_seeds = [
+                int(seed) for seed, retained
+                in zip(proposals, keep, strict=True) if retained
+            ]
+            n_galaxies = len(galaxy_seeds)
+        else:
+            galaxy_seeds = [
+                int(value) for value in galaxy_rng.integers(
+                    0, np.iinfo(np.uint64).max,
+                    size=int(n_galaxies), dtype=np.uint64,
+                )
+            ]
         if n_stars is None:
-            n_stars = int(rng.poisson(cfg.star_density_arcmin2 * area))
+            n_stars = int(star_rng.poisson(cfg.star_density_arcmin2 * area))
         if n_lenses is None:
-            n_lenses = int(rng.poisson(cfg.lens_density_arcmin2 * area))
+            n_lenses = int(lens_rng.poisson(cfg.lens_density_arcmin2 * area))
 
         canvas = np.zeros((N, N, Config.NUM_LR_CHANNELS), dtype=np.float32)
         galaxies, stars, lenses = [], [], []
 
-        for _ in range(n_galaxies):
-            rec = self._add_tng_galaxy(canvas, rng)
+        for source_seed in galaxy_seeds:
+            rec = self._add_tng_galaxy(
+                canvas, np.random.default_rng(source_seed)
+            )
             if rec is not None:
                 galaxies.append(rec)
 
         # Stars are DRAWN (recorded) but not deposited — the base stays
         # starless; the forward op re-injects them (see inject_random_stars).
         for _ in range(n_stars):
-            star = self._draw_star(rng)
+            star = self._draw_star(star_rng)
             if deposit_stars:
                 _deposit_star(
                     canvas,
@@ -534,15 +593,24 @@ class SkySimulator:
             stars.append(star)
 
         for _ in range(n_lenses):
-            rec = self._add_lens(canvas, rng)
+            rec = self._add_lens(canvas, lens_rng)
             if rec is not None:
                 lenses.append(rec)
 
         meta = {
             "field_area_arcmin2":      float(area),
             "galaxy_density_arcmin2":  float(cfg.galaxy_density_arcmin2),
+            "galaxy_thinning_max_density_arcmin2": (
+                float(cfg.galaxy_thinning_max_density_arcmin2)
+                if cfg.galaxy_thinning_max_density_arcmin2 is not None
+                else None
+            ),
             "population_prior": "cosmos2025_joint",
             "star_density_arcmin2":    float(cfg.star_density_arcmin2),
+            "star_population_fingerprint": (
+                str(cfg.star_prior_payload.get("fingerprint", ""))
+                if cfg.star_prior_payload else "legacy"
+            ),
             "lens_density_arcmin2":    float(cfg.lens_density_arcmin2),
             "n_galaxies": len(galaxies),
             "n_stars":    len(stars),

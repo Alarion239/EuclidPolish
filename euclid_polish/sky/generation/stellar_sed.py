@@ -15,6 +15,7 @@ visit. No terrestrial atmospheric term is present: Euclid is space based.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 
@@ -33,6 +34,68 @@ class StellarSED:
     temperature_k: float
     extinction_av: float
     magnitudes: dict[str, float]
+
+
+@dataclass(frozen=True)
+class EmpiricalStellarPrior:
+    """Activated Gaia latent CDF plus matched Euclid colour mapping."""
+
+    bp_rp_quantiles: np.ndarray
+    temperature_quantiles_k: np.ndarray
+    band_coefficients: np.ndarray
+    residual_covariance: np.ndarray
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, Any]) -> EmpiricalStellarPrior:
+        gaia = payload.get("gaia") or {}
+        mapping = payload.get("euclid_mapping") or {}
+        colors = np.asarray(gaia.get("bp_rp_quantiles") or [], dtype=np.float64)
+        temperatures = np.asarray(
+            gaia.get("temperature_quantiles_k") or [], dtype=np.float64,
+        )
+        coefficients_by_name = mapping.get("g_to_band_offset_coefficients") or {}
+        coefficients = np.asarray([
+            coefficients_by_name.get(key, [])
+            for key in ("mag_vis", "mag_y_e", "mag_j_e", "mag_h_e")
+        ], dtype=np.float64)
+        covariance = np.asarray(mapping.get("residual_covariance"), dtype=np.float64)
+        if colors.size < 2 or temperatures.size < 2:
+            raise ValueError("stellar prior requires Gaia colour and temperature CDFs")
+        if coefficients.shape != (4, 3) or covariance.shape != (4, 4):
+            raise ValueError("stellar prior has invalid Euclid mapping dimensions")
+        return cls(colors, temperatures, coefficients, covariance)
+
+    def sample(self, rng: np.random.Generator, mag_vis: float) -> StellarSED:
+        quantile = float(rng.random())
+        grid = np.linspace(0.0, 1.0, self.bp_rp_quantiles.size)
+        bp_rp = float(np.interp(quantile, grid, self.bp_rp_quantiles))
+        temperature_grid = np.linspace(0.0, 1.0, self.temperature_quantiles_k.size)
+        temperature = float(np.interp(
+            1.0 - quantile, temperature_grid, self.temperature_quantiles_k,
+        ))
+        vis_coeff = self.band_coefficients[0]
+        denominator = 1.0 + vis_coeff[2]
+        if abs(denominator) < 0.05:
+            denominator = 0.05 if denominator >= 0 else -0.05
+        g_mag = (
+            float(mag_vis) - vis_coeff[0] - vis_coeff[1] * bp_rp
+            + 20.0 * vis_coeff[2]
+        ) / denominator
+        features = np.asarray([1.0, bp_rp, g_mag - 20.0])
+        predicted = g_mag + self.band_coefficients @ features
+        residual = rng.multivariate_normal(
+            np.zeros(4), self.residual_covariance, check_valid="ignore",
+        )
+        predicted += residual - residual[0]
+        predicted += float(mag_vis) - predicted[0]
+        return StellarSED(
+            temperature_k=temperature,
+            extinction_av=0.0,
+            magnitudes={
+                name: float(predicted[index])
+                for index, name in enumerate(_BAND_NAMES)
+            },
+        )
 
 
 def _planck_fnu(wavelength_um: np.ndarray, temperature_k: float) -> np.ndarray:
@@ -100,8 +163,11 @@ def _temperature_offsets(temperature_k: float) -> np.ndarray:
 
 def sample_stellar_sed(
     rng: np.random.Generator, mag_vis: float,
+    prior: EmpiricalStellarPrior | None = None,
 ) -> StellarSED:
     """Draw temperature, extinction, and correlated Euclid magnitudes."""
+    if prior is not None:
+        return prior.sample(rng, mag_vis)
     temperature = _draw_temperature(rng)
     extinction_av = float(np.clip(
         rng.exponential(Config.STAR_EXTINCTION_AV_SCALE_MAG),

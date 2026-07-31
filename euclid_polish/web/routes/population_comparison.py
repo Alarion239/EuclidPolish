@@ -1,14 +1,24 @@
 """Routes for the field-statistics and population-comparison workspace."""
 from __future__ import annotations
 
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 from flask import jsonify, request
 
-from euclid_polish.web import euclid_session, fasrc_fetcher, job_config
+from euclid_polish.web import euclid_session, fasrc_config, fasrc_fetcher, job_config
 from euclid_polish.web.helpers.paths import _sky_records_remote_dir
+from euclid_polish.web.helpers.population_calibration import (
+    activate_density_candidate,
+    activate_photometric_transfer,
+    activate_star_candidate,
+    density_calibration_path,
+    density_state,
+    star_state,
+    transfer_state,
+)
 from euclid_polish.web.helpers.population_comparison import (
     availability,
     build_comparison,
@@ -17,6 +27,10 @@ from euclid_polish.web.helpers.population_comparison import (
     read_comparison,
     read_cosmos_euclid_fit,
     refresh_population_comparison,
+)
+from euclid_polish.web.helpers.star_population import (
+    fit_star_population,
+    query_gaia_same_cones,
 )
 from euclid_polish.web.jobs import REGISTRY
 from euclid_polish.web.remote import ensure_ssh_connected
@@ -133,6 +147,43 @@ def register(app):
                 tng_prior["configured_prior_arcmin2"] = float(
                     job_config.load().galaxy_density_arcmin2
                 )
+                visible = dict(tng_prior.get("visible") or {})
+                if visible:
+                    visible["detection_residual_arcmin2"] = float(
+                        visible.get("synthetic_detected_density_arcmin2", 0.0)
+                    ) - float(visible.get("real_detected_density_arcmin2", 0.0))
+                    visible["actionable"] = False
+                    visible["transfer_compatibility"] = {
+                        "compatible": False,
+                        "source_fingerprints": [],
+                        "active_fingerprint": (
+                            (transfer_state().get("active") or {}).get("fingerprint")
+                        ),
+                        "reason": "not actionable—brightness transfer changed",
+                    }
+                    tng_prior["visible"] = visible
+                tng_prior["pilot_grid_arcmin2"] = [240, 280, 320, 360, 400]
+                tng_prior["density_calibration"] = density_state()
+                tng_prior["photometric_transfer"] = transfer_state()
+                tng_prior.setdefault("historical_incompatible_points", [
+                    {
+                        "density_arcmin2": 320.0, "job_id": "36490243",
+                        "offset_mag": 0.2863918, "magnitude_slope": 0.7454719,
+                        "scatter_mag": 0.3924409,
+                    },
+                    {
+                        "density_arcmin2": 281.0,
+                        "job_id": "36501765/36503544",
+                        "offset_mag": 0.7595169, "magnitude_slope": 0.6969390,
+                        "scatter_mag": 0.7986188,
+                    },
+                ])
+                tng_prior["recommendation"] = (
+                    "A single regenerated sample reports only a detection "
+                    "residual. Run the matched-seed sweep with one active "
+                    "fixed-normalization brightness transfer before changing "
+                    "the raw draw density."
+                )
                 population["tng_prior"] = tng_prior
             comparison["population"] = population
             comparison.pop("population_with_training", None)
@@ -140,6 +191,11 @@ def register(app):
             "comparison": comparison,
             "availability": availability(),
             "authenticated": euclid_session.is_authenticated(),
+            "calibrations": {
+                "brightness_transfer": transfer_state(),
+                "galaxy_density": density_state(),
+                "stars": star_state(),
+            },
         })
 
     @app.route("/api/population-comparison/build", methods=["POST"])
@@ -258,6 +314,103 @@ def register(app):
             target=_fit_and_evaluate_cached_cones,
         )
         return jsonify({"ok": True, "job_id": job_id})
+
+    def activation_job(label, action):
+        def run(cap):
+            cap.tick(0, 1, label)
+            result = action()
+            cap.tick(1, 1, label)
+            return result
+        return jsonify({
+            "ok": True,
+            "job_id": REGISTRY.spawn(label=label, target=run),
+        })
+
+    @app.route(
+        "/api/population-comparison/activate-transfer", methods=["POST"]
+    )
+    def api_population_comparison_activate_transfer():
+        return activation_job(
+            "activate fixed-normalization transfer",
+            activate_photometric_transfer,
+        )
+
+    @app.route(
+        "/api/population-comparison/activate-density", methods=["POST"]
+    )
+    def api_population_comparison_activate_density():
+        return activation_job(
+            "activate matched density calibration",
+            activate_density_candidate,
+        )
+
+    @app.route(
+        "/api/population-comparison/query-gaia-stars", methods=["POST"]
+    )
+    def api_population_comparison_query_gaia_stars():
+        if not availability().get("euclid_catalog", {}).get("cached"):
+            return jsonify({"ok": False, "error": (
+                "Query and cache the Euclid cones first."
+            )}), 400
+
+        def run(cap):
+            meta = query_gaia_same_cones(
+                progress=lambda done, total, label: cap.tick(
+                    done, total + 1, label
+                )
+            )
+            cap.tick(meta["cone_count"], meta["cone_count"] + 1, "fit star prior")
+            fit = fit_star_population()
+            cap.tick(meta["cone_count"] + 1, meta["cone_count"] + 1, "star prior ready")
+            cap.write(
+                f"cached {meta['rows']} Gaia DR3 sources; "
+                f"matched {fit['euclid_mapping']['matched_stars']} Euclid stars\n"
+            )
+            return {"gaia": meta, "fit": fit}
+
+        return jsonify({
+            "ok": True,
+            "job_id": REGISTRY.spawn(
+                label="population comparison: Gaia + stellar prior",
+                target=run,
+            ),
+        })
+
+    @app.route(
+        "/api/population-comparison/activate-star-prior", methods=["POST"]
+    )
+    def api_population_comparison_activate_star_prior():
+        return activation_job("activate stellar population", activate_star_candidate)
+
+    @app.route(
+        "/api/population-comparison/sync-density-calibration", methods=["POST"]
+    )
+    def api_population_comparison_sync_density_calibration():
+        remote = (
+            f"{fasrc_config.load().data_dir}/population_comparison/"
+            "calibrations/tng_density_calibration.json"
+        )
+
+        def run(cap):
+            cap.tick(0, 2, "connect to FASRC")
+            ensure_ssh_connected()
+            cap.tick(1, 2, "matched density calibration")
+            result = fasrc_fetcher.fetch_one_file(remote, force=True)
+            if not result.ok or not result.local_path:
+                raise RuntimeError(result.error or "density calibration sync failed")
+            target = density_calibration_path()
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(result.local_path, target)
+            state = density_state()
+            cap.tick(2, 2, "matched density calibration")
+            return state
+
+        return jsonify({
+            "ok": True,
+            "job_id": REGISTRY.spawn(
+                label="sync matched density calibration", target=run,
+            ),
+        })
 
     @app.route("/api/population-comparison/sync-training-catalog", methods=["POST"])
     def api_population_comparison_sync_training_catalog():

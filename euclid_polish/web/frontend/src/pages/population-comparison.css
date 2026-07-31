@@ -629,6 +629,32 @@
   font-size: 12px;
 }
 
+.calibration-workflow {
+  margin-top: var(--s4);
+}
+
+.calibration-status-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--s3);
+  margin-bottom: var(--s3);
+}
+
+.calibration-status-grid > div {
+  display: grid;
+  gap: 4px;
+  padding: var(--s3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-subtle);
+}
+
+.calibration-status-grid p {
+  margin: 4px 0 0;
+  color: var(--warning-text);
+  font-size: 0.78rem;
+}
+
 .parameter-section {
   margin-top: var(--s6);
 }

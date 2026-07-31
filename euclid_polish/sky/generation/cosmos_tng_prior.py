@@ -7,6 +7,7 @@ shared scalar normalizes all four TNG channels so their ratios are preserved.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,6 +37,7 @@ class F814WToVisTransfer:
     magnitude_slope: float = 1.0
     scatter_mag: float = 0.0
     source: str = "identity_fallback"
+    fingerprint: str = ""
 
     def sample_vis_mag(
         self, mag_hst_f814w: float, rng: np.random.Generator,
@@ -49,6 +51,76 @@ class F814WToVisTransfer:
         return float(mean + rng.normal(0.0, self.scatter_mag))
 
 
+def _transfer_fingerprint(payload: dict, fit: dict) -> str:
+    """Stable identity for coefficients plus the Euclid cone selection."""
+    inputs = payload.get("inputs") or {}
+    identity = {
+        "version": 1,
+        "fit_kind": "fixed_normalization",
+        "fit": {
+            key: fit.get(key)
+            for key in (
+                "vis_minus_f814w_mag", "magnitude_slope", "scatter_mag",
+                "completeness_m50", "completeness_width_mag",
+                "poisson_deviance", "dof",
+            )
+        },
+        "euclid_cones": inputs.get("euclid_cones"),
+        "euclid_cone_count": inputs.get("euclid_cone_count"),
+        "euclid_area_arcmin2": inputs.get("euclid_area_arcmin2"),
+    }
+    encoded = json.dumps(
+        identity, sort_keys=True, separators=(",", ":"), allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def brightness_transfer_payload(path: str | Path) -> dict | None:
+    """Return the fixed-normalization transfer candidate and quality flags."""
+    fit_path = Path(path)
+    try:
+        payload = json.loads(fit_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    fit = payload.get("fit") or {}
+    try:
+        coefficients = {
+            "offset_mag": float(fit["vis_minus_f814w_mag"]),
+            "magnitude_slope": float(fit["magnitude_slope"]),
+            "scatter_mag": max(0.0, float(fit["scatter_mag"])),
+        }
+    except (KeyError, TypeError, ValueError):
+        return None
+    warnings: list[str] = []
+    if coefficients["scatter_mag"] >= 0.999:
+        warnings.append("scatter reached the observation-fit upper bound")
+    dof = max(1, int(fit.get("dof", 1)))
+    reduced_deviance = float(fit.get("poisson_deviance", 0.0)) / dof
+    if reduced_deviance > 5.0:
+        warnings.append("fixed-normalization fit has high Poisson deviance")
+    fingerprint = _transfer_fingerprint(payload, fit)
+    return {
+        "version": 1,
+        "kind": "fixed_normalization",
+        "fingerprint": fingerprint,
+        "coefficients": coefficients,
+        "fit_quality": {
+            "poisson_deviance": float(fit.get("poisson_deviance", 0.0)),
+            "dof": dof,
+            "reduced_poisson_deviance": reduced_deviance,
+            "warnings": warnings,
+            "valid": not warnings,
+        },
+        "inputs": {
+            key: (payload.get("inputs") or {}).get(key)
+            for key in (
+                "euclid_cone_count", "euclid_area_arcmin2", "euclid_cones",
+            )
+        },
+        "source_fit": str(fit_path),
+    }
+
+
 def load_brightness_transfer(path: str | Path) -> F814WToVisTransfer:
     """Read the preferred fitted F814W→VIS transfer from an analysis artifact.
 
@@ -56,24 +128,20 @@ def load_brightness_transfer(path: str | Path) -> F814WToVisTransfer:
     different machine can serialize its coefficients instead of relying on
     the artifact being present at the same path remotely.
     """
-    fit_path = Path(path)
-    try:
-        payload = json.loads(fit_path.read_text())
-    except (OSError, json.JSONDecodeError):
+    transfer = brightness_transfer_payload(path)
+    if transfer is None:
         return F814WToVisTransfer()
-    cone_count = int((payload.get("inputs") or {}).get("euclid_cone_count", 1))
-    key = (
-        "local_normalization_sensitivity_fit"
-        if cone_count >= 3
-        else "fit"
-    )
-    fit = payload.get(key) or {}
+    coefficients = transfer["coefficients"]
     try:
         return F814WToVisTransfer(
-            offset_mag=float(fit["vis_minus_f814w_mag"]),
-            magnitude_slope=float(fit["magnitude_slope"]),
-            scatter_mag=max(0.0, float(fit["scatter_mag"])),
-            source=f"{key}:{fit_path}",
+            offset_mag=float(coefficients["offset_mag"]),
+            magnitude_slope=float(coefficients["magnitude_slope"]),
+            scatter_mag=float(coefficients["scatter_mag"]),
+            source=(
+                "fixed_normalization_fit:"
+                f"{transfer['fingerprint']}:{Path(path)}"
+            ),
+            fingerprint=str(transfer["fingerprint"]),
         )
     except (KeyError, TypeError, ValueError):
         return F814WToVisTransfer()

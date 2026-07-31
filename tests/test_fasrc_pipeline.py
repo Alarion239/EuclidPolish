@@ -20,6 +20,37 @@ from euclid_polish.web.fasrc_pipeline import (
     StepResources,
 )
 
+
+def _mock_population_calibrations(monkeypatch):
+    transfer = {
+        "fingerprint": "a" * 64,
+        "coefficients": {
+            "offset_mag": 0.2,
+            "magnitude_slope": 0.8,
+            "scatter_mag": 0.3,
+        },
+    }
+    monkeypatch.setattr(
+        "euclid_polish.web.helpers.population_calibration.active_transfer",
+        lambda: transfer,
+    )
+    monkeypatch.setattr(
+        "euclid_polish.web.helpers.population_calibration.active_star",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        "euclid_polish.web.helpers.population_comparison.read_comparison",
+        lambda: {
+            "fields": {"source_detection": {"real": {
+                "positive": [10, 11], "negative": [1, 1],
+            }}},
+            "population": {
+                "euclid": {"counts": {"star": 0}},
+                "euclid_meta": {"area_arcmin2": 1},
+            },
+        },
+    )
+
 # ---------------------------------------------------------------------------
 # StepResources
 # ---------------------------------------------------------------------------
@@ -88,7 +119,7 @@ class TestRegistry:
             "euclid_star_anchor_tfrecords",
             "download_tng_skirt",
             "tng_grid", "tng_stack", "poster_cutout",
-            "synthetic_generate",
+            "synthetic_generate", "tng_density_calibrate",
             "ensemble_train",
             "lensfinder_generate", "lensfinder_sr_infer",
             "lensfinder_build_stamps", "lensfinder_train",
@@ -475,20 +506,23 @@ class TestRegistry:
     def test_synthetic_generate_embeds_local_photometric_fit(
         self, monkeypatch, tmp_path,
     ):
-        """FASRC jobs must not depend on the fit JSON existing remotely."""
-        from euclid_polish.config import Config
-
-        fit_path = tmp_path / "cosmos_euclid_density_fit.json"
-        fit_path.write_text(json.dumps({
-            "inputs": {"euclid_cone_count": 6},
-            "local_normalization_sensitivity_fit": {
-                "vis_minus_f814w_mag": 0.286,
-                "magnitude_slope": 0.745,
-                "scatter_mag": 0.392,
-            },
-        }))
+        """FASRC jobs embed the exact explicitly activated transfer."""
+        del tmp_path
         monkeypatch.setattr(
-            Config, "COSMOS_EUCLID_FIT_PATH", str(fit_path)
+            "euclid_polish.web.helpers.population_calibration.active_transfer",
+            lambda: {
+                "fingerprint": "a" * 64,
+                "coefficients": {
+                    "offset_mag": 0.286,
+                    "magnitude_slope": 0.745,
+                    "scatter_mag": 0.392,
+                },
+                "fit_quality": {"valid": True, "warnings": []},
+            },
+        )
+        monkeypatch.setattr(
+            "euclid_polish.web.helpers.population_calibration.active_star",
+            lambda: None,
         )
         step = REGISTRY.get("synthetic_generate")
         prepared = step.prepare_params({
@@ -507,8 +541,12 @@ class TestRegistry:
         )
         assert argv[argv.index("--cosmos-vis-scatter-mag") + 1] == "0.392"
         assert argv[argv.index("--cosmos-vis-transfer-source") + 1].startswith(
-            "local_normalization_sensitivity_fit:"
+            "fixed_normalization_fit:"
         )
+        embedded = json.loads(
+            argv[argv.index("--cosmos-vis-transfer-artifact-json") + 1]
+        )
+        assert embedded["fingerprint"] == "a" * 64
 
     def test_synthetic_generate_force_flag(self):
         """The "Override existing data" checkbox adds --force (regenerate from
@@ -658,7 +696,7 @@ class TestSbatchRendering:
         assert out["out"].endswith(".out")
         assert out["err"].endswith(".err")
 
-    def test_job_names_are_simple_and_stable(self, cfg):
+    def test_job_names_are_simple_and_stable(self, cfg, monkeypatch):
         """Every step's SLURM job name is its explicit ``job_name`` —
         simple, informative, and decoupled from step ids / pipeline
         prefixes, so squeue/sacct read sensibly and the names survive
@@ -667,6 +705,7 @@ class TestSbatchRendering:
             "train":                        "train",
             "ensemble_train":               "ensemble-train",
             "synthetic_generate":           "synthetic-data",
+            "tng_density_calibrate":        "tng-density-calibration",
             "euclid_query":                 "star-catalog",
             "euclid_verify_photometry":     "verify-photometry",
             "download_euclid_cutouts":      "star-cutouts",
@@ -692,6 +731,7 @@ class TestSbatchRendering:
             "lens_isolation_train":         "lens-isolation-train",
             "lens_isolation_evaluate":      "lens-isolation-evaluate",
         }
+        _mock_population_calibrations(monkeypatch)
         for step in REGISTRY.all():
             assert step.job_name == expected[step.step_id], (
                 f"{step.step_id}: job_name {step.job_name!r}"
@@ -789,11 +829,12 @@ class TestSbatchRendering:
         )
         assert "--gres=" not in out["body"]
 
-    def test_all_steps_first_line_is_valid_shebang(self, cfg):
+    def test_all_steps_first_line_is_valid_shebang(self, cfg, monkeypatch):
         """Every registered step must produce a body that begins with
         ``#!/bin/bash``. Sanity guard against future edits to the
         template that would break the dedent invariant."""
         from dataclasses import replace
+        _mock_population_calibrations(monkeypatch)
         for step in REGISTRY.all():
             for n_gpus in (0, 1, 2):
                 resources = replace(step.defaults, n_gpus=n_gpus)

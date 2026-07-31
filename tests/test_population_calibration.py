@@ -1,0 +1,129 @@
+from __future__ import annotations
+
+import csv
+import json
+
+import numpy as np
+import pytest
+
+from euclid_polish.config import Config
+from euclid_polish.sky.generation.sky_simulator import (
+    SkySimulator,
+    SkySimulatorConfig,
+)
+from euclid_polish.sky.generation.stellar_sed import EmpiricalStellarPrior
+from euclid_polish.web.helpers.population_calibration import fit_density_response
+from euclid_polish.web.helpers.star_population import fit_star_population
+
+
+def test_density_response_is_reproducible_and_rejects_wrong_transfer():
+    densities = [240.0, 280.0, 320.0, 360.0, 400.0]
+    fields = [[density / 10 + offset for offset in (-1, 0, 1, 0)]
+              for density in densities]
+    real = [31.0, 32.0, 33.0, 32.0]
+    first = fit_density_response(
+        densities, fields, real, transfer_fingerprint="same",
+        active_transfer_fingerprint="same", field_area_arcmin2=1.0,
+        euclid_cone_detection_densities=[30.0, 32.0, 34.0],
+        bootstraps=100, seed=5,
+    )
+    second = fit_density_response(
+        densities, fields, real, transfer_fingerprint="same",
+        active_transfer_fingerprint="same", field_area_arcmin2=1.0,
+        euclid_cone_detection_densities=[30.0, 32.0, 34.0],
+        bootstraps=100, seed=5,
+    )
+    assert first["valid"]
+    assert first["recommended_density_arcmin2"] == pytest.approx(320.0)
+    assert first["interval_arcmin2"] == second["interval_arcmin2"]
+    assert first["euclid_cones"] == 3
+
+    mismatch = fit_density_response(
+        densities, fields, real, transfer_fingerprint="old",
+        active_transfer_fingerprint="new", field_area_arcmin2=1.0,
+        bootstraps=100,
+    )
+    assert not mismatch["valid"]
+    assert "different" in " ".join(mismatch["warnings"]) or "not the active" in " ".join(mismatch["warnings"])
+
+
+def test_nested_thinning_keeps_nuisance_population_identical(monkeypatch):
+    import euclid_polish.sky.generation.sky_simulator as module
+
+    monkeypatch.setattr(module, "list_tng_galaxies", lambda _path: [("x", "1")])
+    monkeypatch.setattr(module, "load_tng_properties", lambda _path: {})
+
+    def build(density: float) -> dict:
+        simulator = SkySimulator(object(), SkySimulatorConfig(
+            image_size=10, pixel_scale=6.0,
+            galaxy_density_arcmin2=density,
+            galaxy_thinning_max_density_arcmin2=8.0,
+            star_density_arcmin2=4.0, lens_density_arcmin2=0.0,
+        ))
+        simulator._add_tng_galaxy = lambda _canvas, rng: {
+            "proposal": int(rng.integers(0, 2**31)),
+        }
+        return simulator.simulate_field(np.random.default_rng(91))[1]
+
+    lower = build(4.0)
+    upper = build(8.0)
+    low_ids = {item["proposal"] for item in lower["galaxies"]}
+    high_ids = {item["proposal"] for item in upper["galaxies"]}
+    assert low_ids <= high_ids
+    assert lower["stars"] == upper["stars"]
+    assert lower["lenses"] == upper["lenses"]
+
+
+def _write_csv(path, rows):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def test_star_fit_excludes_centres_and_samples_correlated_euclid_colors(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setattr(Config, "DATA_DIR", str(tmp_path))
+    root = tmp_path / "population_comparison"
+    gaia = []
+    euclid = []
+    for index in range(24):
+        cone = index % 2
+        source_id = str(1000 + index)
+        color = 0.5 + 0.05 * index
+        g_mag = 16.0 + 0.18 * index
+        gaia.append({
+            "source_id": source_id, "cone_index": cone, "ra": 1,
+            "dec": 2, "g_mag": g_mag, "bp_mag": g_mag + color / 2,
+            "rp_mag": g_mag - color / 2, "bp_rp": color,
+            "temperature_k": 8000 - 150 * index, "extinction_g_mag": 0.1,
+            "central_selected_star": 1 if index < 2 else 0,
+        })
+        euclid.append({
+            "object_id": index, "gaia_id": source_id, "type": "star",
+            "mag_vis": g_mag + 0.2 * color,
+            "mag_y_e": g_mag - 0.4 * color,
+            "mag_j_e": g_mag - 0.55 * color,
+            "mag_h_e": g_mag - 0.60 * color,
+        })
+    _write_csv(root / "gaia_population.csv", gaia)
+    _write_csv(root / "euclid_population.csv", euclid)
+    (root / "gaia_population.meta.json").write_text(json.dumps({
+        "cone_count": 2, "radius_arcmin": 2.0,
+        "area_arcmin2": 8 * np.pi, "euclid_cone_selection_seed": 7,
+    }))
+
+    fit = fit_star_population()
+    assert fit["valid"]
+    assert fit["cone_provenance"]["central_sources_excluded"] == 2
+    assert fit["euclid_mapping"]["matched_stars"] == 24
+    assert fit["diagnostics"]["star_density_per_cone"]["observed"] == pytest.approx([
+        11 / (4 * np.pi), 11 / (4 * np.pi),
+    ])
+
+    prior = EmpiricalStellarPrior.from_payload(fit)
+    sed = prior.sample(np.random.default_rng(8), 21.5)
+    assert sed.magnitudes["VIS"] == pytest.approx(21.5)
+    assert set(sed.magnitudes) == {"VIS", "Y_E", "J_E", "H_E"}

@@ -42,9 +42,14 @@ def test_multicone_fit_maps_f814w_to_vis_brightness(tmp_path):
     fit = tmp_path / "fit.json"
     fit.write_text(json.dumps({
         "inputs": {"euclid_cone_count": 6},
-        "local_normalization_sensitivity_fit": {
+        "fit": {
             "vis_minus_f814w_mag": 0.2,
             "magnitude_slope": 1.0,
+            "scatter_mag": 0.0,
+        },
+        "local_normalization_sensitivity_fit": {
+            "vis_minus_f814w_mag": 9.0,
+            "magnitude_slope": 0.1,
             "scatter_mag": 0.0,
         },
     }))
@@ -53,7 +58,7 @@ def test_multicone_fit_maps_f814w_to_vis_brightness(tmp_path):
     )
     assert draw.target_vis_mag == pytest.approx(draw.mag_hst_f814w + 0.2)
     assert draw.brightness_transfer.startswith(
-        "local_normalization_sensitivity_fit:"
+        "fixed_normalization_fit:"
     )
 
 

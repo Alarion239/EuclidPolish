@@ -434,7 +434,7 @@ def tng_prior_payload(
     # the draw prior. Truth contains every generated source, while MER contains
     # only sources that survived detection, deblending, and catalog photometry.
     # No magnitude cut makes those selection functions equivalent.
-    del synthetic_rows, synthetic_area_arcmin2
+    del synthetic_area_arcmin2
     visible = visible_prior_estimate(
         source_detection,
         euclid_rows,
@@ -444,13 +444,23 @@ def tng_prior_payload(
     )
     if visible is None:
         return None
+    from euclid_polish.web.helpers.population_calibration import (
+        current_transfer_compatibility,
+        density_state,
+        transfer_state,
+    )
 
-    center = float(visible["fitted_prior_arcmin2"])
-    pilot_grid = sorted({
-        max(20, int(round((0.85 * center) / 20.0) * 20)),
-        max(20, int(round(center / 20.0) * 20)),
-        max(20, int(round((1.15 * center) / 20.0) * 20)),
-    })
+    compatibility = current_transfer_compatibility(synthetic_rows)
+    invalidated = float(visible["fitted_prior_arcmin2"])
+    visible["single_run_ratio_estimate_arcmin2"] = invalidated
+    visible["detection_residual_arcmin2"] = float(
+        visible["synthetic_detected_density_arcmin2"]
+        - visible["real_detected_density_arcmin2"]
+    )
+    visible["actionable"] = False
+    visible["transfer_compatibility"] = compatibility
+    calibration = density_state()
+    transfer = transfer_state()
     return {
         "catalog": None,
         "visible": visible,
@@ -459,11 +469,28 @@ def tng_prior_payload(
         "configured_mf_alpha": float(Config.TNG_MF_ALPHA),
         "single_scalar_adequate": None,
         "calibration_scope": "matched_detection_normalization_only",
-        "pilot_grid_arcmin2": pilot_grid,
+        "pilot_grid_arcmin2": [240, 280, 320, 360, 400],
+        "density_calibration": calibration,
+        "photometric_transfer": transfer,
+        "historical_incompatible_points": [
+            {
+                "density_arcmin2": 320.0,
+                "job_id": "36490243",
+                "offset_mag": 0.2863918,
+                "magnitude_slope": 0.7454719,
+                "scatter_mag": 0.3924409,
+            },
+            {
+                "density_arcmin2": 281.0,
+                "job_id": "36501765/36503544",
+                "offset_mag": 0.7595169,
+                "magnitude_slope": 0.6969390,
+                "scatter_mag": 0.7986188,
+            },
+        ],
         "recommendation": (
-            "Use the common-detector fit as the center of the next matched-seed "
-            "pilot. Move the raw draw density toward it when the current value "
-            "falls outside the interval; validate the pilot before regenerating "
-            "the full training set."
+            "A single regenerated sample reports only a detection residual. "
+            "Run the matched-seed sweep with one active fixed-normalization "
+            "brightness transfer before changing the raw draw density."
         ),
     }

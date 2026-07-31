@@ -671,6 +671,17 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     json_path = output_dir / "cosmos_euclid_density_fit.json"
     payload["outputs"]["json"] = str(json_path)
     json_path.write_text(json.dumps(payload, indent=2, sort_keys=True))
+    from euclid_polish.sky.generation.cosmos_tng_prior import (
+        brightness_transfer_payload,
+    )
+    transfer = brightness_transfer_payload(json_path)
+    if transfer is not None:
+        transfer_path = output_dir / "photometric_transfer_candidate.json"
+        transfer_path.write_text(json.dumps(transfer, indent=2, sort_keys=True))
+        payload["outputs"]["photometric_transfer_candidate"] = str(
+            transfer_path
+        )
+        json_path.write_text(json.dumps(payload, indent=2, sort_keys=True))
     return payload
 
 

@@ -32,7 +32,7 @@ from euclid_polish.web.helpers.tng_prior import (
 )
 
 VERSION = 7
-CATALOG_VERSION = 2
+CATALOG_VERSION = 3
 BANDS = ("VIS", "Y_E", "J_E", "H_E")
 TILE_SIZE = 256
 ANALYSIS_SIZE = 255
@@ -1254,9 +1254,14 @@ def query_euclid_population(
             band: magnitude(aperture_fluxes[band])
             for band in ("vis", "y", "j", "h")
         }
-        gaia_id = value(raw, "gaia_id")
+        try:
+            gaia_text = str(raw["gaia_id"]).strip()
+        except (KeyError, IndexError, TypeError):
+            gaia_text = ""
+        gaia_id = gaia_text if gaia_text and gaia_text not in {"--", "nan"} else None
         rows.append({
             "object_id": str(raw["object_id"]),
+            "gaia_id": gaia_id,
             "type": source_type,
             "ra": value(raw, "right_ascension"),
             "dec": value(raw, "declination"),
@@ -1310,7 +1315,7 @@ def query_euclid_population(
     out = euclid_catalog_path()
     out.parent.mkdir(parents=True, exist_ok=True)
     temporary = out.with_suffix(".tmp")
-    columns = ["object_id", "type", "ra", "dec", *[
+    columns = ["object_id", "gaia_id", "type", "ra", "dec", *[
         key for key in _PARAM_META if key not in {
             "objects_per_field", "flux_vis_e", "z", "re_arcsec", "logmass",
             "mass_scale", "temperature_k", "extinction_av",

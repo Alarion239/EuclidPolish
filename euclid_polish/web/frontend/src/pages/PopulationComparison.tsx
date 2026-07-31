@@ -4,6 +4,7 @@ import Plot, { Legend, type PlotProps, type Series, type Tick } from "../charts/
 import { C, categorical } from "../colors";
 import { useResource } from "../hooks";
 import { JobProgressView, useJob } from "../jobs";
+import { StepCard, useHstStatus, type Step } from "../fasrc";
 import {
   Badge, Button, Card, CardBody, CardHead, Checkbox, Empty, Field, Input, Page,
   PageHead, Spinner, Stat,
@@ -111,6 +112,12 @@ type VisiblePrior = {
   synthetic_fields: number;
   real_fields: number;
   caveat: string;
+  detection_residual_arcmin2?: number;
+  actionable?: boolean;
+  transfer_compatibility?: {
+    compatible: boolean; reason: string; source_fingerprints: string[];
+    active_fingerprint?: string | null;
+  };
 };
 type TngPrior = {
   catalog: CatalogPrior | null;
@@ -122,6 +129,48 @@ type TngPrior = {
   calibration_scope?: string;
   pilot_grid_arcmin2: number[];
   recommendation: string;
+  density_calibration?: CalibrationState;
+  photometric_transfer?: CalibrationState;
+  historical_incompatible_points?: Array<{
+    density_arcmin2: number; job_id: string; offset_mag: number;
+    magnitude_slope: number; scatter_mag: number;
+  }>;
+};
+type CalibrationArtifact = {
+  valid?: boolean;
+  warnings?: string[];
+  fingerprint?: string;
+  calibration_fingerprint?: string;
+  recommended_density_arcmin2?: number | null;
+  interval_arcmin2?: PriorInterval | null;
+  response_points?: Array<{
+    density_arcmin2: number;
+    detected_density_arcmin2: number;
+    isotonic_density_arcmin2: number;
+  }>;
+  transfer_fingerprint?: string;
+  population?: {
+    density_arcmin2: number; bright_gaia_density_arcmin2: number;
+    magnitude_slope: number; mag_bright: number; mag_faint: number;
+  };
+  euclid_mapping?: { matched_stars: number };
+  gaia?: { rows: number };
+  diagnostics?: {
+    star_density_per_cone: {
+      x: number[]; observed: number[]; fitted: number[]; label: string; unit: string;
+    };
+    parameters: Record<string, {
+      x: number[]; observed: number[]; fitted: number[];
+      label: string; unit: string; density_unit: string;
+      observed_count: number; fitted_count: number;
+    }>;
+  };
+  active?: boolean;
+};
+type CalibrationState = {
+  candidate: CalibrationArtifact | null;
+  active: CalibrationArtifact | null;
+  is_active: boolean;
 };
 type CosmosEuclidFit = {
   interpretation: string;
@@ -223,6 +272,15 @@ type ApiPayload = {
   comparison: Comparison | null;
   availability: Availability;
   authenticated: boolean;
+  calibrations?: {
+    brightness_transfer: CalibrationState;
+    galaxy_density: CalibrationState;
+    stars: CalibrationState;
+  };
+};
+
+const EMPTY_CALIBRATION: CalibrationState = {
+  candidate: null, active: null, is_active: false,
 };
 
 const BANDS: Band[] = ["VIS", "Y_E", "J_E", "H_E"];
@@ -1078,16 +1136,8 @@ function TngPriorPanel({ prior }: { prior: TngPrior }) {
   const alphaLabel = Number.isFinite(prior.configured_mf_alpha)
     ? ` (α=${prior.configured_mf_alpha!.toFixed(2)})`
     : "";
-  const action = visible
-    ? current > visible.interval_arcmin2.p84
-      ? "decrease"
-      : current < visible.interval_arcmin2.p16
-        ? "increase"
-        : "keep"
-    : null;
-  const changePercent = visible && current > 0
-    ? Math.abs(100 * (visible.fitted_prior_arcmin2 / current - 1))
-    : 0;
+  const calibration = prior.density_calibration?.candidate;
+  const interval = calibration?.interval_arcmin2;
   return (
     <section className="tng-prior">
       <header className="tng-prior__head">
@@ -1100,7 +1150,9 @@ function TngPriorPanel({ prior }: { prior: TngPrior }) {
             smooth mass prior{alphaLabel}.
           </p>
         </div>
-        <Badge tone="good">selection-matched density</Badge>
+        <Badge tone={calibration?.valid ? "good" : "warn"}>
+          {calibration?.valid ? "matched sweep ready" : "diagnostic only"}
+        </Badge>
       </header>
 
       <div className="tng-prior__readouts">
@@ -1118,21 +1170,29 @@ function TngPriorPanel({ prior }: { prior: TngPrior }) {
             </p>
           </article>
           <article className="tng-prior__readout tng-prior__readout--visible">
-            <span>actionable raw draw calibration</span>
-            <strong>{priorValue(visible.fitted_prior_arcmin2)}</strong>
-            <small>
-              {priorValue(visible.interval_arcmin2.p16)}–
-              {priorValue(visible.interval_arcmin2.p84)} / arcmin² · Poisson 16–84%
-            </small>
+            <span>synthetic detection residual</span>
+            <strong>{visible.detection_residual_arcmin2 != null
+              ? `${visible.detection_residual_arcmin2 >= 0 ? "+" : ""}${visible.detection_residual_arcmin2.toFixed(1)}`
+              : "—"}</strong>
+            <small>detections / arcmin² · diagnostic, not a density estimate</small>
             <p>
-              {action === "keep"
-                ? `Keep ${priorValue(current)}: it lies inside the fitted interval.`
-                : `${action === "decrease" ? "Decrease" : "Increase"} the next pilot by about ${changePercent.toFixed(0)}% toward ${priorValue(visible.fitted_prior_arcmin2)}.`}
-              {" "}Euclid has {visible.real_detected_density_arcmin2.toFixed(1)}
+              Euclid has {visible.real_detected_density_arcmin2.toFixed(1)}
               {" "}detections / arcmin² across {visible.real_fields} fields.
+              {" "}{visible.transfer_compatibility?.reason ?? "A matched sweep is required."}
             </p>
           </article>
           </>
+        )}
+        {calibration && (
+          <article className="tng-prior__readout tng-prior__readout--visible">
+            <span>matched-seed density calibration</span>
+            <strong>{calibration.valid && calibration.recommended_density_arcmin2 != null
+              ? priorValue(calibration.recommended_density_arcmin2) : "not actionable"}</strong>
+            <small>{interval
+              ? `${priorValue(interval.p16)}–${priorValue(interval.p84)} / arcmin² · paired bootstrap`
+              : "target must be bracketed by a valid sweep"}</small>
+            {!!calibration.warnings?.length && <p>{calibration.warnings.join(" · ")}</p>}
+          </article>
         )}
       </div>
 
@@ -1156,10 +1216,200 @@ function TngPriorPanel({ prior }: { prior: TngPrior }) {
                 <div><dt>selection</dt><dd>same VIS detector</dd></div>
               </dl>
             )}
+            {!!prior.historical_incompatible_points?.length && (
+              <dl className="tng-prior__diagnostics">
+                {prior.historical_incompatible_points.map((point) => (
+                  <div key={point.job_id}>
+                    <dt>{point.density_arcmin2.toFixed(0)} historical · job {point.job_id}</dt>
+                    <dd>
+                      incompatible transfer: offset {point.offset_mag.toFixed(3)},
+                      {" "}slope {point.magnitude_slope.toFixed(3)},
+                      {" "}scatter {point.scatter_mag.toFixed(3)}
+                    </dd>
+                  </div>
+                ))}
+              </dl>
+            )}
           </CardBody>
         </Card>
       </div>
     </section>
+  );
+}
+
+function GalaxyCalibrationControls({ api, onChanged }: {
+  api: ApiPayload; onChanged: () => void;
+}) {
+  const hst = useHstStatus();
+  const step = hst.data?.steps.find((item) => item.step_id === "tng_density_calibrate");
+  const [minimum, setMinimum] = useState("240");
+  const [maximum, setMaximum] = useState("400");
+  const [spacing, setSpacing] = useState("40");
+  const [fields, setFields] = useState("100");
+  const activateTransfer = useJob();
+  const sync = useJob();
+  const activateDensity = useJob();
+  const transfer = api.calibrations?.brightness_transfer ?? EMPTY_CALIBRATION;
+  const density = api.calibrations?.galaxy_density ?? EMPTY_CALIBRATION;
+  const validGrid = Number(minimum) > 0 && Number(maximum) > Number(minimum)
+    && Number(spacing) > 0 && Number(fields) >= 2;
+  const refresh = (job: { status: string }) => {
+    if (job.status !== "failed") onChanged();
+  };
+  return (
+    <Card className="calibration-workflow">
+      <CardHead title="Stable galaxy calibration"
+        sub="Freeze one fixed-normalization transfer, then vary only nested TNG density with shared fields, stars, PSFs, and noise." />
+      <CardBody>
+        <div className="calibration-status-grid">
+          <div>
+            <span className="eyebrow">brightness transfer</span>
+            <strong>{transfer.is_active ? "active" : transfer.candidate?.valid ? "candidate ready" : "not valid"}</strong>
+            <small className="mono">{transfer.candidate?.fingerprint?.slice(0, 12) ?? "no candidate"}</small>
+            {!!transfer.candidate?.warnings?.length && <p>{transfer.candidate.warnings.join(" · ")}</p>}
+          </div>
+          <div>
+            <span className="eyebrow">matched sweep</span>
+            <strong>{density.is_active ? "active" : density.candidate?.valid ? "candidate ready" : "not actionable"}</strong>
+            <small>{density.candidate?.recommended_density_arcmin2 != null
+              ? `${density.candidate.recommended_density_arcmin2.toFixed(1)} draws / arcmin²`
+              : "no valid recommendation"}</small>
+            {!!density.candidate?.warnings?.length && <p>{density.candidate.warnings.join(" · ")}</p>}
+          </div>
+        </div>
+        <div className="row" style={{ gap: "var(--s2)", marginBottom: "var(--s3)" }}>
+          <Button disabled={!transfer.candidate?.valid || transfer.is_active || activateTransfer.busy}
+            onClick={() => activateTransfer.run(
+              "/api/population-comparison/activate-transfer", {}, { onDone: refresh },
+            )}>Activate brightness transfer</Button>
+          <Button disabled={sync.busy}
+            onClick={() => sync.run(
+              "/api/population-comparison/sync-density-calibration", {}, { onDone: refresh },
+            )}>{sync.busy ? "Syncing…" : "Sync latest sweep result"}</Button>
+          <Button variant="primary"
+            disabled={!density.candidate?.valid || density.is_active || activateDensity.busy}
+            onClick={() => activateDensity.run(
+              "/api/population-comparison/activate-density", {}, { onDone: refresh },
+            )}>Activate calibration</Button>
+        </div>
+        <JobProgressView job={activateTransfer.job} error={activateTransfer.error} />
+        <JobProgressView job={sync.job} error={sync.error} />
+        <JobProgressView job={activateDensity.job} error={activateDensity.error} />
+        <div className="cone-query__form">
+          <Field label="Minimum · / arcmin²"><Input type="number" value={minimum} onChange={setMinimum} min={1} /></Field>
+          <Field label="Maximum · / arcmin²"><Input type="number" value={maximum} onChange={setMaximum} min={2} /></Field>
+          <Field label="Step"><Input type="number" value={spacing} onChange={setSpacing} min={1} /></Field>
+          <Field label="Shared fields / point"><Input type="number" value={fields} onChange={setFields} min={2} /></Field>
+        </div>
+        {step ? (
+          <StepCard step={step as Step}
+            sshConnected={!!hst.data?.ssh_connected} embedded showHistory
+            extraParams={{
+              density_min: minimum, density_max: maximum,
+              density_step: spacing, fields_per_point: fields,
+            }}
+            submitDisabled={!validGrid || !transfer.is_active}
+            submitDisabledHint={!transfer.is_active
+              ? "activate the fixed-normalization transfer first"
+              : "enter valid bounds and at least two fields"} />
+        ) : <Empty>{hst.loading ? "loading FASRC step…" : "density calibration step unavailable"}</Empty>}
+      </CardBody>
+    </Card>
+  );
+}
+
+function StarCalibrationControls({ api, onChanged }: {
+  api: ApiPayload; onChanged: () => void;
+}) {
+  const query = useJob();
+  const activate = useJob();
+  const state = api.calibrations?.stars ?? EMPTY_CALIBRATION;
+  const candidate = state.candidate;
+  const diagnostics = candidate?.diagnostics;
+  const refresh = (job: { status: string }) => {
+    if (job.status !== "failed") onChanged();
+  };
+  return (
+    <Card className="calibration-workflow">
+      <CardHead title="Gaia + Euclid stellar prior"
+        sub="Query Gaia DR3 on the same footprints, exclude each deliberately selected centre, and fit one smooth count law plus correlated Euclid colours." />
+      <CardBody>
+        <div className="calibration-status-grid">
+          <div><span className="eyebrow">candidate</span>
+            <strong>{candidate?.valid ? "valid" : candidate ? "quality warning" : "not fitted"}</strong>
+            <small>{candidate?.gaia?.rows?.toLocaleString() ?? 0} Gaia sources · {candidate?.euclid_mapping?.matched_stars ?? 0} Euclid matches</small></div>
+          <div><span className="eyebrow">generation state</span>
+            <strong>{state.is_active ? "active" : "inactive"}</strong>
+            <small>{candidate?.population
+              ? `${candidate.population.density_arcmin2.toFixed(2)} stars / arcmin² · slope ${candidate.population.magnitude_slope.toFixed(3)}`
+              : "legacy scalar fallback remains in use"}</small></div>
+        </div>
+        {!!candidate?.warnings?.length && <p className="catalog-classification-note">{candidate.warnings.join(" · ")}</p>}
+        <div className="row" style={{ gap: "var(--s2)" }}>
+          <Button variant="primary" disabled={query.busy || !api.availability.euclid_catalog.cached}
+            onClick={() => query.run(
+              "/api/population-comparison/query-gaia-stars", {}, { onDone: refresh },
+            )}>{query.busy ? "Querying + fitting…" : "Query Gaia + fit star prior"}</Button>
+          <Button disabled={!candidate?.valid || state.is_active || activate.busy}
+            onClick={() => activate.run(
+              "/api/population-comparison/activate-star-prior", {}, { onDone: refresh },
+            )}>Activate calibration</Button>
+        </div>
+        <p className="catalog-classification-note">
+          Euclid point-like counts remain marked incomplete. Gaia controls the bright-side density and latent colour/temperature population; matched Euclid stars supply the VIS/Y/J/H mapping.
+        </p>
+        <JobProgressView job={query.job} error={query.error} />
+        <JobProgressView job={activate.job} error={activate.error} />
+        {diagnostics && (
+          <div className="parameter-atlas" style={{ marginTop: "var(--s4)" }}>
+            <Card className="parameter-card">
+              <CardHead title={diagnostics.star_density_per_cone.label}
+                sub="selected central star excluded from every cone" />
+              <CardBody>
+                <AdjustablePlot boundsLabel="Gaia density per cone"
+                  xDomain={domain(diagnostics.star_density_per_cone.x)}
+                  yDomain={domain([
+                    ...diagnostics.star_density_per_cone.observed,
+                    ...diagnostics.star_density_per_cone.fitted,
+                  ], true)}
+                  xLabel="cone" yLabel={diagnostics.star_density_per_cone.unit}
+                  series={[
+                    { x: diagnostics.star_density_per_cone.x,
+                      y: diagnostics.star_density_per_cone.observed,
+                      color: categorical(2), mode: "scatter", marker: "ring", width: 2 },
+                    { x: diagnostics.star_density_per_cone.x,
+                      y: diagnostics.star_density_per_cone.fitted,
+                      color: categorical(0), width: 2.4, dash: [7, 4] },
+                  ]} aspect={0.62} />
+              </CardBody>
+            </Card>
+            {Object.entries(diagnostics.parameters).map(([key, item]) => (
+              <Card className="parameter-card" key={key}>
+                <CardHead title={item.label}
+                  sub="fitted synthetic prior × same-footprint observed stars" />
+                <CardBody>
+                  <AdjustablePlot boundsLabel={item.label}
+                    xDomain={domain(item.x)}
+                    yDomain={domain([...item.observed, ...item.fitted], true)}
+                    xLabel={item.unit} yLabel={item.density_unit}
+                    series={[
+                      { x: item.x, y: item.fitted, color: categorical(0),
+                        mode: "histogram", fillAlpha: 0.26, width: 1.8 },
+                      { x: item.x, y: item.observed, color: categorical(2),
+                        mode: "histogram", hatch: true, dash: [8, 4],
+                        fillAlpha: 0.02, width: 2.1 },
+                    ]} aspect={0.62} />
+                  <Legend items={[
+                    { color: categorical(0), label: "fitted synthetic prior", histogram: true, filled: true },
+                    { color: categorical(2), label: "same-footprint Gaia / matched Euclid", histogram: true, hatch: true, dash: true },
+                  ]} />
+                </CardBody>
+              </Card>
+            ))}
+          </div>
+        )}
+      </CardBody>
+    </Card>
   );
 }
 
@@ -1380,12 +1630,16 @@ export default function PopulationComparisonPage() {
               </Card>
             ) : null}
 
+            <GalaxyCalibrationControls api={api} onChanged={resource.reload} />
+
             {comparison.population.cosmos_euclid_fit && (
               <CosmosEuclidDensityPanel
                 fit={comparison.population.cosmos_euclid_fit} />
             )}
 
             <ConeQuery api={api} onQueried={resource.reload} />
+
+            <StarCalibrationControls api={api} onChanged={resource.reload} />
 
             {comparison.population.shared && (
               <section className="parameter-section">

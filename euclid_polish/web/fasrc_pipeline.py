@@ -29,7 +29,9 @@ compatibility; new code uses this module instead.
 from __future__ import annotations
 
 import contextlib
+import csv
 import json
+import math
 import secrets
 import shlex
 import textwrap
@@ -40,9 +42,6 @@ from typing import Any, ClassVar
 
 from euclid_polish.config import Config
 from euclid_polish.ensemble_registry import default_ensemble_dir, next_member_names
-from euclid_polish.sky.generation.cosmos_tng_prior import (
-    load_brightness_transfer,
-)
 from euclid_polish.training.loss_names import LOSS_NAMES
 from euclid_polish.web import fasrc_config
 from euclid_polish.web.fasrc_jobs import _conda_activate_snippet
@@ -1393,13 +1392,47 @@ class SyntheticGenerateStep(RunPipelineStep):
         )
 
     def prepare_params(self, params: dict[str, Any]) -> dict[str, Any]:
-        """Freeze the local fitted brightness transfer into the remote job."""
+        """Freeze the explicitly activated fixed transfer into the remote job."""
+        from euclid_polish.web.helpers.population_calibration import (
+            active_star,
+            active_transfer,
+        )
+
         prepared = super().prepare_params(params)
-        transfer = load_brightness_transfer(Config.COSMOS_EUCLID_FIT_PATH)
-        prepared["_cosmos_vis_offset_mag"] = transfer.offset_mag
-        prepared["_cosmos_vis_magnitude_slope"] = transfer.magnitude_slope
-        prepared["_cosmos_vis_scatter_mag"] = transfer.scatter_mag
-        prepared["_cosmos_vis_transfer_source"] = transfer.source
+        transfer = active_transfer()
+        if not transfer:
+            raise ValueError(
+                "activate a valid fixed-normalization brightness transfer first"
+            )
+        coefficients = transfer.get("coefficients") or {}
+        fingerprint = str(transfer.get("fingerprint") or "")
+        prepared["_cosmos_vis_offset_mag"] = coefficients["offset_mag"]
+        prepared["_cosmos_vis_magnitude_slope"] = coefficients["magnitude_slope"]
+        prepared["_cosmos_vis_scatter_mag"] = coefficients["scatter_mag"]
+        prepared["_cosmos_vis_transfer_source"] = (
+            f"fixed_normalization_fit:{fingerprint}:activated"
+        )
+        prepared["_cosmos_vis_transfer_fingerprint"] = fingerprint
+        prepared["_cosmos_vis_transfer_artifact_json"] = json.dumps(
+            transfer, separators=(",", ":"), sort_keys=True,
+        )
+        stars = active_star()
+        if stars:
+            prepared["_star_prior_json"] = json.dumps(
+                stars, separators=(",", ":")
+            )
+            population = stars.get("population") or {}
+            if population.get("density_arcmin2") is not None:
+                prepared["star_density_arcmin2"] = float(
+                    population["density_arcmin2"]
+                )
+            for source, target in (
+                ("magnitude_slope", "star_mag_slope"),
+                ("mag_bright", "star_mag_bright"),
+                ("mag_faint", "star_mag_faint"),
+            ):
+                if population.get(source) is not None:
+                    prepared[target] = float(population[source])
         return prepared
 
     def build_command(self, params: dict[str, Any]) -> list[str]:
@@ -1441,7 +1474,11 @@ class SyntheticGenerateStep(RunPipelineStep):
                 str(params.get(
                     "_cosmos_vis_transfer_source", "embedded_web_fit"
                 )),
+                "--cosmos-vis-transfer-artifact-json",
+                str(params.get("_cosmos_vis_transfer_artifact_json", "")),
             ]
+        if params.get("_star_prior_json"):
+            cmd += ["--star-prior-json", str(params["_star_prior_json"])]
         # Scene-population and forward-PSF knobs (from /config). Emit only when
         # supplied so direct programmatic callers can still rely on CLI
         # defaults. The warp is realised while each dirty exposure is rendered;
@@ -1463,6 +1500,124 @@ class SyntheticGenerateStep(RunPipelineStep):
                 with contextlib.suppress(TypeError, ValueError):
                     cmd += [flag, f"{float(val):g}"]
         return cmd
+
+
+class TngDensityCalibrationStep(FASRCPipelineStep):
+    """Isolated matched-seed response sweep; never touches records_v2."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            step_id="tng_density_calibrate",
+            label="Calibrate TNG density (matched fields)",
+            job_name="tng-density-calibration",
+            defaults=StepResources(
+                partition="shared", n_cpus=20, n_gpus=0,
+                memory="80G", time_limit="2:00:00",
+            ),
+            needs_gpu=False,
+        )
+
+    def prepare_params(self, params: dict[str, Any]) -> dict[str, Any]:
+        from euclid_polish.web.helpers.population_calibration import (
+            active_transfer,
+        )
+        from euclid_polish.web.helpers.population_comparison import (
+            FIELD_AREA_ARCMIN2,
+            euclid_catalog_path,
+            read_comparison,
+        )
+
+        prepared = dict(params)
+        transfer = active_transfer()
+        if not transfer:
+            raise ValueError(
+                "activate a valid fixed-normalization transfer first"
+            )
+        comparison = read_comparison() or {}
+        detection = (
+            comparison.get("fields", {}).get("source_detection", {})
+            .get("real", {})
+        )
+        positive = detection.get("positive") or []
+        negative = detection.get("negative") or []
+        if not positive or len(positive) != len(negative):
+            raise ValueError("rebuild field statistics before density calibration")
+        euclid_rows = (
+            comparison.get("population", {}).get("euclid", {}).get("counts", {})
+        )
+        meta = comparison.get("population", {}).get("euclid_meta") or {}
+        star_density = (
+            float(euclid_rows.get("star", 0)) / float(meta.get("area_arcmin2", 1))
+        )
+        star_per_field = star_density * FIELD_AREA_ARCMIN2
+        prepared["_euclid_field_detections"] = [
+            max(float(p) - float(n) - star_per_field, 0.0)
+            for p, n in zip(positive, negative, strict=True)
+        ]
+        prepared["_field_area_arcmin2"] = FIELD_AREA_ARCMIN2
+        cones = meta.get("cones") or []
+        radius = float(meta.get("radius_arcmin") or 0.0)
+        cone_counts = [0] * len(cones)
+        if cones and radius > 0 and euclid_catalog_path().exists():
+            with euclid_catalog_path().open(newline="", encoding="utf-8") as handle:
+                for row in csv.DictReader(handle):
+                    try:
+                        index = int(row.get("cone_index", -1))
+                    except (TypeError, ValueError):
+                        continue
+                    if 0 <= index < len(cone_counts) and row.get("type") != "star":
+                        cone_counts[index] += 1
+        cone_area = math.pi * radius ** 2
+        prepared["_euclid_cone_densities"] = (
+            [count / cone_area for count in cone_counts]
+            if cone_area > 0 else []
+        )
+        prepared["_transfer"] = transfer
+        return prepared
+
+    def build_command(self, params: dict[str, Any]) -> list[str]:
+        minimum = float(params.get("density_min", 240))
+        maximum = float(params.get("density_max", 400))
+        step = float(params.get("density_step", 40))
+        if minimum <= 0 or maximum <= minimum or step <= 0:
+            raise ValueError("density bounds must satisfy 0 < min < max and step > 0")
+        densities: list[float] = []
+        value = minimum
+        while value <= maximum + 1e-9:
+            densities.append(value)
+            value += step
+        if len(densities) < 3:
+            raise ValueError("density calibration needs at least three points")
+        transfer = params.get("_transfer") or {}
+        coefficients = transfer.get("coefficients") or {}
+        return [
+            "scripts/fasrc_calibrate_tng_density.py",
+            "--densities", ",".join(f"{item:g}" for item in densities),
+            "--fields", str(int(params.get("fields_per_point", 100))),
+            "--workers", str(int(params.get("n_cpus", self.defaults.n_cpus))),
+            "--image-size", str(int(params.get("image_size", 510))),
+            "--seed", str(int(params.get("seed", 71032))),
+            "--field-area-arcmin2", f"{float(params['_field_area_arcmin2']):.12g}",
+            "--euclid-field-detections", json.dumps(
+                params["_euclid_field_detections"], separators=(",", ":")
+            ),
+            "--euclid-cone-densities", json.dumps(
+                params.get("_euclid_cone_densities", []), separators=(",", ":")
+            ),
+            "--transfer-offset", f"{float(coefficients['offset_mag']):.12g}",
+            "--transfer-slope", f"{float(coefficients['magnitude_slope']):.12g}",
+            "--transfer-scatter", f"{float(coefficients['scatter_mag']):.12g}",
+            "--transfer-fingerprint", str(transfer["fingerprint"]),
+            "--transfer-artifact-json", json.dumps(
+                transfer, separators=(",", ":"), sort_keys=True,
+            ),
+            "--star-density", str(params.get(
+                "star_density_arcmin2", Config.DEFAULT_STAR_DENSITY_ARCMIN2
+            )),
+            "--star-mag-slope", str(params.get("star_mag_slope", Config.STAR_MAG_SLOPE)),
+            "--star-mag-bright", str(params.get("star_mag_bright", Config.STAR_MAG_BRIGHT)),
+            "--star-mag-faint", str(params.get("star_mag_faint", Config.STAR_MAG_FAINT)),
+        ]
 
 
 class LensfinderGenerateStep(SyntheticGenerateStep):
@@ -1659,6 +1814,7 @@ STEP_CLASSES: tuple[type[FASRCPipelineStep], ...] = (
     PosterCutoutStep,
     EuclidStarAnchorTFRecordStep,
     SyntheticGenerateStep,
+    TngDensityCalibrationStep,
     EnsembleTrainStep,
     LensfinderGenerateStep,
     LensfinderSRInferStep,
