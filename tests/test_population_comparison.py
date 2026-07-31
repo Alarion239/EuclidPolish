@@ -318,6 +318,7 @@ def test_euclid_population_query_keeps_classifier_uncertainty_and_photometry(
             "point_like_flag": None, "extended_flag": None,
             "point_like_prob": 0.45, "extended_prob": 0.55,
             "flux_vis_psf": 2.0, "fluxerr_vis_psf": 1.0,
+            "flux_vis_3fwhm_aper": 2.0,
         },
     ]
     captured = {}
@@ -345,6 +346,118 @@ def test_euclid_population_query_keeps_classifier_uncertainty_and_photometry(
     written = list(csv.DictReader(catalog_path.open()))
     assert [row["type"] for row in written] == ["star", "galaxy", "unknown"]
     assert float(written[0]["vis_y_color"]) != 0
+
+
+def test_euclid_population_query_preserves_cache_on_silent_archive_failure(
+    tmp_path, monkeypatch,
+):
+    from euclid_polish.web.helpers import population_comparison as comparison
+
+    catalog_path = tmp_path / "euclid_population.csv"
+    meta_path = tmp_path / "euclid_population_meta.json"
+    catalog_path.write_text("object_id,type,mag_vis\nold,galaxy,22\n")
+    meta_path.write_text('{"sentinel": "old"}')
+    monkeypatch.setattr(
+        comparison.Euclid, "launch_job_async", lambda _query: None,
+    )
+    monkeypatch.setattr(comparison, "euclid_catalog_path", lambda: catalog_path)
+    monkeypatch.setattr(
+        comparison, "euclid_catalog_meta_path", lambda: meta_path,
+    )
+
+    with pytest.raises(RuntimeError, match="failed before returning a job"):
+        query_euclid_population(10.0, 20.0, 1.0)
+
+    assert catalog_path.read_text() == "object_id,type,mag_vis\nold,galaxy,22\n"
+    assert json.loads(meta_path.read_text()) == {"sentinel": "old"}
+
+
+def test_euclid_population_query_retries_after_session_refresh(
+    tmp_path, monkeypatch,
+):
+    from euclid_polish.web.helpers import population_comparison as comparison
+
+    rows = [{
+        "object_id": 1,
+        "right_ascension": 10.0,
+        "declination": 20.0,
+        "point_like_flag": None,
+        "extended_flag": 1,
+        "flux_vis_psf": 5.0,
+        "flux_vis_3fwhm_aper": 5.0,
+    }]
+
+    class FakeJob:
+        def get_results(self):
+            return rows
+
+    jobs = iter([None, FakeJob()])
+    refreshes = []
+    monkeypatch.setattr(
+        comparison.Euclid, "launch_job_async", lambda _query: next(jobs),
+    )
+    monkeypatch.setattr(
+        comparison, "euclid_catalog_path", lambda: tmp_path / "catalog.csv",
+    )
+    monkeypatch.setattr(
+        comparison, "euclid_catalog_meta_path", lambda: tmp_path / "meta.json",
+    )
+
+    meta = query_euclid_population(
+        10.0, 20.0, 1.0,
+        relogin=lambda: refreshes.append(True) or True,
+    )
+
+    assert refreshes == [True]
+    assert meta["rows"] == 1
+
+
+def test_multi_cone_failure_preserves_complete_previous_cache(
+    tmp_path, monkeypatch,
+):
+    from euclid_polish.web.helpers import population_comparison as comparison
+
+    catalog_path = tmp_path / "euclid_population.csv"
+    meta_path = tmp_path / "euclid_population_meta.json"
+    original_catalog = "object_id,type,mag_vis\nold,galaxy,22\n"
+    original_meta = '{"sentinel": "old"}'
+    catalog_path.write_text(original_catalog)
+    meta_path.write_text(original_meta)
+    centers = [
+        {"star_id": "a", "ra": 10.0, "dec": 20.0, "magnitude": 18.0},
+        {"star_id": "b", "ra": 30.0, "dec": 40.0, "magnitude": 19.0},
+    ]
+    rows = [{
+        "object_id": 1,
+        "right_ascension": 10.0,
+        "declination": 20.0,
+        "point_like_flag": None,
+        "extended_flag": 1,
+        "flux_vis_psf": 5.0,
+        "flux_vis_3fwhm_aper": 5.0,
+    }]
+
+    class FakeJob:
+        def get_results(self):
+            return rows
+
+    jobs = iter([FakeJob(), None])
+    monkeypatch.setattr(
+        comparison.Euclid, "launch_job_async", lambda _query: next(jobs),
+    )
+    monkeypatch.setattr(
+        comparison, "select_star_cone_centers", lambda **_kwargs: centers,
+    )
+    monkeypatch.setattr(comparison, "euclid_catalog_path", lambda: catalog_path)
+    monkeypatch.setattr(
+        comparison, "euclid_catalog_meta_path", lambda: meta_path,
+    )
+
+    with pytest.raises(RuntimeError, match="failed before returning a job"):
+        comparison.query_euclid_population_multi(count=2, radius_arcmin=1.0)
+
+    assert catalog_path.read_text() == original_catalog
+    assert meta_path.read_text() == original_meta
 
 
 def test_synthetic_lenses_are_merged_into_galaxies(tmp_path):

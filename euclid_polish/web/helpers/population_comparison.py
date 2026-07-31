@@ -11,6 +11,7 @@ import json
 import math
 import os
 import random
+import tempfile
 import warnings
 from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
@@ -200,6 +201,14 @@ def availability() -> dict[str, Any]:
     catalog_current = (
         meta is not None and meta.get("catalog_version") == CATALOG_VERSION
     )
+    catalog_usable = bool(
+        catalog_current
+        and meta.get("rows", 0) > 0
+        and sum(
+            int(meta.get("counts", {}).get(kind, 0))
+            for kind in ("galaxy", "unknown")
+        ) > 0
+    )
     return {
         "synthetic": {
             "fields": synthetic_fields,
@@ -223,7 +232,7 @@ def availability() -> dict[str, Any]:
             "jwst_overlap_fields": len(overlap),
         },
         "euclid_catalog": {
-            "cached": euclid_catalog_path().is_file() and catalog_current,
+            "cached": euclid_catalog_path().is_file() and catalog_usable,
             "meta": meta if catalog_current else None,
         },
         "field_area_arcmin2": FIELD_AREA_ARCMIN2,
@@ -1179,6 +1188,10 @@ def query_euclid_population(
     radius_arcmin: float,
     *,
     limit: int = MAX_CATALOG_ROWS,
+    relogin: Callable[[], bool] | None = None,
+    _catalog_path: Path | None = None,
+    _meta_path: Path | None = None,
+    _require_nonstellar: bool = True,
 ) -> dict[str, Any]:
     """Query clean MER sources in a cone and cache generation-facing columns.
 
@@ -1211,7 +1224,24 @@ def query_euclid_population(
       AND flux_vis_psf > 0
     """
     job = Euclid.launch_job_async(query)
-    results = job.get_results() if job is not None else []
+    if job is None and relogin is not None:
+        try:
+            session_refreshed = relogin()
+        except Exception:  # noqa: BLE001 - the archive error is surfaced below
+            session_refreshed = False
+        if session_refreshed:
+            job = Euclid.launch_job_async(query)
+    if job is None:
+        raise RuntimeError(
+            "The Euclid archive query failed before returning a job. "
+            "The previous population cache was preserved."
+        )
+    results = job.get_results()
+    if results is None:
+        raise RuntimeError(
+            "The Euclid archive query returned no result table. "
+            "The previous population cache was preserved."
+        )
     rows: list[dict[str, Any]] = []
 
     def value(raw: Any, key: str) -> float | None:
@@ -1312,7 +1342,18 @@ def query_euclid_population(
             ),
         })
 
-    out = euclid_catalog_path()
+    usable_nonstellar = sum(
+        row["type"] != "star" and row.get("mag_vis") is not None
+        for row in rows
+    )
+    if _require_nonstellar and not usable_nonstellar:
+        raise ValueError(
+            "The Euclid archive returned no usable nonstellar sources for "
+            f"the cone at ({ra:g}, {dec:g}). The previous population cache "
+            "was preserved."
+        )
+
+    out = _catalog_path or euclid_catalog_path()
     out.parent.mkdir(parents=True, exist_ok=True)
     temporary = out.with_suffix(".tmp")
     columns = ["object_id", "gaia_id", "type", "ra", "dec", *[
@@ -1353,7 +1394,7 @@ def query_euclid_population(
             "is retained separately"
         ),
     }
-    _write_json(euclid_catalog_meta_path(), meta)
+    _write_json(_meta_path or euclid_catalog_meta_path(), meta)
     return meta
 
 
@@ -1429,6 +1470,7 @@ def query_euclid_population_multi(
     *, count: int = 6, radius_arcmin: float = DEFAULT_CONE_RADIUS_ARCMIN,
     selection_seed: int | None = None,
     progress: Callable[[int, int, str], None] | None = None,
+    relogin: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     """Query random star-centred cones, deduplicate, and cache one census."""
     if selection_seed is None:
@@ -1440,20 +1482,41 @@ def query_euclid_population_multi(
     )
     combined: dict[str, dict[str, Any]] = {}
     cone_meta: list[dict[str, Any]] = []
-    for index, center in enumerate(centers):
-        if progress:
-            progress(index, len(centers), f"Euclid cone {index + 1}/{len(centers)}")
-        meta = query_euclid_population(
-            center["ra"], center["dec"], radius_arcmin,
-        )
-        with euclid_catalog_path().open(newline="", encoding="utf-8") as handle:
-            for row in csv.DictReader(handle):
-                row["cone_index"] = index
-                combined.setdefault(str(row["object_id"]), row)
-        cone_meta.append({**center, "rows": meta["rows"]})
+    out = euclid_catalog_path()
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(
+        prefix=".euclid_population.", dir=out.parent,
+    ) as temporary_dir:
+        cone_catalog = Path(temporary_dir) / "cone.csv"
+        cone_meta_path = Path(temporary_dir) / "cone.json"
+        for index, center in enumerate(centers):
+            if progress:
+                progress(
+                    index, len(centers),
+                    f"Euclid cone {index + 1}/{len(centers)}",
+                )
+            meta = query_euclid_population(
+                center["ra"], center["dec"], radius_arcmin,
+                relogin=relogin,
+                _catalog_path=cone_catalog,
+                _meta_path=cone_meta_path,
+                _require_nonstellar=False,
+            )
+            with cone_catalog.open(newline="", encoding="utf-8") as handle:
+                for row in csv.DictReader(handle):
+                    row["cone_index"] = index
+                    combined.setdefault(str(row["object_id"]), row)
+            cone_meta.append({**center, "rows": meta["rows"]})
 
     rows = list(combined.values())
-    out = euclid_catalog_path()
+    if not any(
+        row.get("type") != "star" and _finite(row.get("mag_vis")) is not None
+        for row in rows
+    ):
+        raise ValueError(
+            "The Euclid cones contained no usable nonstellar sources. "
+            "The previous population cache was preserved."
+        )
     temporary = out.with_suffix(".tmp")
     columns = list(rows[0]) if rows else ["object_id", "cone_index"]
     with temporary.open("w", newline="", encoding="utf-8") as handle:

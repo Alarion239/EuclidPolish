@@ -211,7 +211,8 @@ def register(app):
 
     @app.route("/api/population-comparison/query-euclid", methods=["POST"])
     def api_population_comparison_query_euclid():
-        if euclid_session.catalog() is None:
+        catalog = euclid_session.catalog()
+        if catalog is None:
             return jsonify({"ok": False, "error": (
                 "Log in to the Euclid archive on the Catalog page first."
             )}), 400
@@ -234,7 +235,9 @@ def register(app):
 
         def run(cap):
             cap.tick(0, 2, "Euclid MER cone query")
-            meta = query_euclid_population(ra, dec, radius_arcmin)
+            meta = query_euclid_population(
+                ra, dec, radius_arcmin, relogin=catalog.relogin,
+            )
             cap.tick(1, 2, "population histograms")
             refreshed = refresh_population_comparison()
             cap.tick(2, 2, "population histograms")
@@ -258,7 +261,8 @@ def register(app):
         "/api/population-comparison/query-euclid-multi", methods=["POST"]
     )
     def api_population_comparison_query_euclid_multi():
-        if euclid_session.catalog() is None:
+        catalog = euclid_session.catalog()
+        if catalog is None:
             return jsonify({"ok": False, "error": (
                 "Log in to the Euclid archive on the Catalog page first."
             )}), 400
@@ -278,6 +282,7 @@ def register(app):
             meta = query_euclid_population_multi(
                 count=count,
                 radius_arcmin=radius,
+                relogin=catalog.relogin,
                 progress=lambda done, _total, label: cap.tick(
                     done, count + 3, label
                 ),
