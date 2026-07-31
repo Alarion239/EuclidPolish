@@ -382,6 +382,7 @@ class Model:
         psf_warp_alpha_max: float = Config.TRAIN_PSF_WARP_ALPHA_MAX,
         psf_warp_sigma: float = Config.TRAIN_PSF_WARP_SIGMA,
         saturation_mask_prob: float = Config.TRAIN_SATURATION_MASK_PROB,
+        star_prior_payload: dict | None = None,
         starless: bool = True,
         **kwargs,
     ) -> None:
@@ -450,7 +451,8 @@ class Model:
                                   psf_warp_alpha_max=float(psf_warp_alpha_max),
                                   psf_warp_sigma=float(psf_warp_sigma),
                                   saturation_mask_prob=float(
-                                      saturation_mask_prob))
+                                      saturation_mask_prob),
+                                  star_prior_payload=star_prior_payload)
             train_ds = self._build_onthefly_pipeline(
                 hr_path, batch_size, fwd,
                 noise_aug_rn=float(noise_aug),

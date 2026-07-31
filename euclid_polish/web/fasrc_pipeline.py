@@ -1103,6 +1103,8 @@ class EnsembleTrainStep(FASRCPipelineStep):
         ))
 
     def prepare_params(self, params: dict[str, Any]) -> dict[str, Any]:
+        from euclid_polish.web.helpers.population_calibration import active_star
+
         prepared = dict(params)
         mode = str(prepared.get("mode", "add") or "add").strip()
         if mode == "continue":
@@ -1123,6 +1125,11 @@ class EnsembleTrainStep(FASRCPipelineStep):
         prepared["array_count"] = len(names)
         requested = int(prepared.get("array_max_parallel", 2) or 2)
         prepared["array_max_parallel"] = max(1, min(requested, len(names)))
+        stars = active_star()
+        if stars:
+            prepared["_star_prior_json"] = json.dumps(
+                stars, separators=(",", ":"), sort_keys=True,
+            )
         return prepared
 
     def array_shape(self, params: dict[str, Any]) -> tuple[int, int] | None:
@@ -1217,8 +1224,10 @@ class EnsembleTrainStep(FASRCPipelineStep):
             cmd += ["--icnr"]
         # Star regime (default starless): 0 = starfull (reconstruct stars).
         if str(params.get("starless", "1")).strip().lower() in (
-                "0", "false", "no", "off"):
+            "0", "false", "no", "off"):
             cmd += ["--starless", "0"]
+        if params.get("_star_prior_json"):
+            cmd += ["--star-prior-json", str(params["_star_prior_json"])]
         # Live forward model: full-field PSF+noise re-realization per visit.
         if str(params.get("forward_onthefly", "")).strip().lower() in (
                 "1", "true", "yes", "on"):

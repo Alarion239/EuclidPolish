@@ -179,6 +179,9 @@ def parse_args(argv=None) -> argparse.Namespace:
                         "stars, reconstruct them (scored on lr↔hr). Recorded "
                         "in origin.json; drives the /ensemble eval mode. "
                         "Forks always inherit their source member's regime.")
+    p.add_argument("--star-prior-json", default="",
+                   help="JSON-encoded activated point-source prior for live "
+                        "on-the-fly star magnitudes and colours.")
     p.add_argument("--asinh-knee", type=float, default=None,
                    help="Per-member asinh stretch knee in ELECTRONS — the "
                         "linear/log crossover of asinh(x/knee) the network "
@@ -648,6 +651,16 @@ def main() -> int:
     # are immediately discarded. This handle is used only to train.
     ens = EnsembleModel(base, scale=Config.DEFAULT_REBIN_FACTOR,
                         num_res_blocks=args.num_res_blocks, _models=[])
+    star_prior_payload = None
+    if args.star_prior_json.strip():
+        try:
+            star_prior_payload = json.loads(args.star_prior_json)
+        except json.JSONDecodeError as exc:
+            print(f"✗ --star-prior-json is not valid JSON: {exc}")
+            return 2
+        if not isinstance(star_prior_payload, dict):
+            print("✗ --star-prior-json must contain a JSON object")
+            return 2
     try:
         ens.train_members(
             lr, hr, specs,
@@ -668,6 +681,7 @@ def main() -> int:
             plateau_lr_metric=args.plateau_lr_metric,
             plateau_rollback_min_gap=args.plateau_rollback_min_gap,
             plateau_lr_recovery=bool(args.plateau_lr_recovery),
+            star_prior_payload=star_prior_payload,
         )
 
         reporter.set_step(total, total, "ensemble training complete")

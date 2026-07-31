@@ -43,6 +43,7 @@ from euclid_polish.psf.psf_library import load_all_band_psf_sets
 from euclid_polish.psf.psf_set import PSFSet
 from euclid_polish.psf.rotpool import load_all_band_rotpools
 from euclid_polish.sky.generation.sky_simulator import inject_random_stars
+from euclid_polish.sky.generation.stellar_sed import EmpiricalStellarPrior
 from euclid_polish.sky.observation.observation_simulator import (
     ObservationSimulator,
     ObservationSimulatorConfig,
@@ -114,6 +115,7 @@ class OnTheFlyForward:
         star_mag_slope: float = Config.STAR_MAG_SLOPE,
         star_mag_bright: float = Config.STAR_MAG_BRIGHT,
         star_mag_faint: float = Config.STAR_MAG_FAINT,
+        star_prior_payload: dict | None = None,
         pixel_scale_arcsec: float = Config.DEFAULT_PIXEL_SCALE,
         psf_warp_prob: float = Config.TRAIN_PSF_WARP_PROB,
         psf_warp_alpha_max: float = Config.TRAIN_PSF_WARP_ALPHA_MAX,
@@ -133,6 +135,10 @@ class OnTheFlyForward:
         self.star_mag_slope = float(star_mag_slope)
         self.star_mag_bright = float(star_mag_bright)
         self.star_mag_faint = float(star_mag_faint)
+        self.stellar_prior = (
+            EmpiricalStellarPrior.from_payload(star_prior_payload)
+            if star_prior_payload else None
+        )
         self.pixel_scale_arcsec = float(pixel_scale_arcsec)
         if self.crops_per_field < 1:
             raise ValueError("crops_per_field must be >= 1")
@@ -180,7 +186,8 @@ class OnTheFlyForward:
         n_stars = int(rng.poisson(self.star_density_arcmin2 * side_arcmin ** 2))
         inject_random_stars(
             canvas, rng, n_stars=n_stars, mag_slope=self.star_mag_slope,
-            mag_bright=self.star_mag_bright, mag_faint=self.star_mag_faint)
+            mag_bright=self.star_mag_bright, mag_faint=self.star_mag_faint,
+            stellar_prior=self.stellar_prior)
 
     def crops(self, field: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         field = np.asarray(field, np.float32)

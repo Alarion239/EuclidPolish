@@ -254,6 +254,30 @@ def read_euclid_magnitudes(path: Path) -> np.ndarray:
     return np.asarray(values)
 
 
+def read_euclid_weighted_magnitudes(
+    path: Path,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Read Euclid magnitudes with complementary extended-source weights."""
+    values: list[float] = []
+    weights: list[float] = []
+    with path.open(newline="", encoding="utf-8") as handle:
+        for row in csv.DictReader(handle):
+            try:
+                value = float(row["mag_vis"])
+                point_probability = float(row["point_like_prob"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if (
+                np.isfinite(value) and np.isfinite(point_probability)
+                and 0.0 <= point_probability <= 1.0
+            ):
+                values.append(value)
+                weights.append(1.0 - point_probability)
+    if not values:
+        raise ValueError(f"No usable weighted Euclid magnitudes in {path}")
+    return np.asarray(values), np.asarray(weights)
+
+
 def read_binned_cosmos_counts(
     path: Path,
     *,
@@ -429,8 +453,11 @@ def density_histogram(
     *,
     bins: np.ndarray,
     area_arcmin2: float,
+    weights: np.ndarray | None = None,
 ) -> np.ndarray:
-    return np.histogram(values, bins=bins)[0].astype(np.float64) / area_arcmin2
+    return np.histogram(values, bins=bins, weights=weights)[0].astype(
+        np.float64
+    ) / area_arcmin2
 
 
 def weighted_draft_density(
@@ -610,7 +637,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
 
     atlas = read_atlas(properties_path)
     calibration = read_truth_calibration(records_dir)
-    euclid_magnitudes = read_euclid_magnitudes(euclid_path)
+    euclid_magnitudes, euclid_weights = read_euclid_weighted_magnitudes(
+        euclid_path
+    )
     cosmos_density = read_binned_cosmos_counts(
         cosmos_counts_path, selection=args.cosmos_selection
     )
@@ -631,9 +660,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         area_arcmin2=synthetic_area,
     )
     euclid_density = density_histogram(
-        euclid_magnitudes,
-        bins=MAG_BINS,
-        area_arcmin2=euclid_area,
+        euclid_magnitudes, bins=MAG_BINS, area_arcmin2=euclid_area,
+        weights=euclid_weights,
     )
     raw_density = float(args.raw_density)
     baseline_density = (

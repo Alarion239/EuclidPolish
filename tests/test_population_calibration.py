@@ -20,7 +20,47 @@ from euclid_polish.web.helpers.population_calibration import (
     fit_local_catalog_density,
     galaxy_recommendation_state,
 )
-from euclid_polish.web.helpers.star_population import fit_star_population
+from euclid_polish.web.helpers.star_population import (
+    _weighted_summary,
+    fit_star_population,
+)
+
+
+def test_probability_weighted_summary_and_empirical_magnitude_cdf():
+    values = np.asarray([20.0, 22.0])
+    weights = np.asarray([0.25, 0.75])
+    summary = _weighted_summary(
+        values, weights, area_arcmin2=2.0,
+        classification_variance=float(np.sum(weights * (1.0 - weights))),
+    )
+    assert summary["expected_count"] == pytest.approx(1.0)
+    assert summary["density_arcmin2"] == pytest.approx(0.5)
+    assert summary["mean"] == pytest.approx(21.5)
+    assert summary["effective_n"] == pytest.approx(1.6)
+    assert summary["classification_sigma_count"] == pytest.approx(0.612372)
+
+    prior = EmpiricalStellarPrior.from_payload({
+        "gaia": {"bp_rp_quantiles": [0.5, 1.0],
+                 "temperature_quantiles_k": [4000.0, 6000.0]},
+        "euclid_mapping": {
+            "g_to_band_offset_coefficients": {
+                key: [0.0, 0.0, 0.0]
+                for key in ("mag_vis", "mag_y_e", "mag_j_e", "mag_h_e")
+            },
+            "residual_covariance": np.eye(4).tolist(),
+        },
+        "population": {"magnitude_distribution": {
+            "edges": [20.0, 21.0, 22.0], "cdf": [0.0, 0.25, 1.0],
+        }},
+    })
+    draws = np.asarray([
+        prior.sample_magnitude(
+            np.random.default_rng(seed), slope=0.2,
+            m_bright=20.0, m_faint=22.0,
+        )
+        for seed in range(2000)
+    ])
+    assert np.mean(draws < 21.0) == pytest.approx(0.25, abs=0.04)
 
 
 def test_density_response_is_reproducible_and_rejects_wrong_transfer():
@@ -96,10 +136,11 @@ def test_local_catalog_fit_recovers_raw_density_without_rendering(
     }))
     rows = []
     for cone_index in range(4):
-        rows.extend({
-            "type": "unknown",
-            "spurious_prob": "0.0",
-            "mag_vis": "24.0",
+            rows.extend({
+                "type": "unknown",
+                "spurious_prob": "0.0",
+                "point_like_prob": "0.0",
+                "mag_vis": "24.0",
             "cone_index": str(cone_index),
         } for _ in range(10))
     _write_csv(root / "euclid_population.csv", rows)
@@ -230,6 +271,7 @@ def test_star_fit_excludes_centres_and_samples_correlated_euclid_colors(
         })
         euclid.append({
             "object_id": index, "gaia_id": source_id, "type": "star",
+            "point_like_prob": "1.0",
             "mag_vis": g_mag + 0.2 * color,
             "mag_y_e": g_mag - 0.4 * color,
             "mag_j_e": g_mag - 0.55 * color,
@@ -250,18 +292,20 @@ def test_star_fit_excludes_centres_and_samples_correlated_euclid_colors(
         11 / (4 * np.pi), 11 / (4 * np.pi),
     ])
     magnitude = fit["diagnostics"]["parameters"]["mag_vis"]
-    assert magnitude["density_unit"] == "stars / arcmin² / mag"
+    assert magnitude["density_unit"] == "point sources / arcmin² / mag"
     assert magnitude["observed_count"] == 22
-    assert magnitude["euclid_lower_bound_count"] == 24
+    assert magnitude["weighted_count"] == pytest.approx(22.0)
+    assert sum(magnitude["euclid_weighted"]) == pytest.approx(0.0)
     assert sum(value for value in magnitude["observed"] if value is not None) * 0.5 \
         == pytest.approx(22 / (8 * np.pi))
-    assert sum(magnitude["euclid_lower_bound"]) * 0.5 \
-        == pytest.approx(24 / (8 * np.pi))
-    assert all(
-        value is None
+    assert fit["population"]["magnitude_distribution"][
+        "euclid_faint_expected_count"
+    ] == pytest.approx(0.0)
+    assert any(
+        value > 0.0
         for centre, value in zip(magnitude["x"], magnitude["observed"], strict=True)
         if centre > magnitude["observed_limit_mag"]
-    )
+    ) is False
 
     prior = EmpiricalStellarPrior.from_payload(fit)
     sed = prior.sample(np.random.default_rng(8), 21.5)

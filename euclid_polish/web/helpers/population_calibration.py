@@ -271,8 +271,9 @@ def fit_local_catalog_density(
 
     This evaluates the *actual* generator sampler: uniform draws from the
     physical-row-filtered COSMOS prior, followed by the fitted F814W-to-VIS
-    transfer and Euclid completeness curve.  Dividing the Euclid non-star
-    detection density by that retained fraction gives the raw TNG draw budget.
+    transfer and Euclid completeness curve. Dividing the probability-weighted
+    extended-source density by that retained fraction gives the raw TNG draw
+    budget.
     Cone bootstraps carry the dominant field-to-field uncertainty.
     """
     from euclid_polish.sky.generation.cosmos_tng_prior import CosmosTngPrior
@@ -311,27 +312,47 @@ def fit_local_catalog_density(
         raise ValueError("Local density calibration needs at least three Euclid cones")
 
     cone_counts = np.zeros(cone_count, dtype=np.float64)
-    total_count = 0
+    total_count = 0.0
+    missing_probability = 0
+    invalid_probability = 0
+    catalog_digest = hashlib.sha256()
     with euclid_catalog_path().open(newline="", encoding="utf-8") as handle:
         for row in csv.DictReader(handle):
-            if str(row.get("type") or "").strip().lower() == "star":
-                continue
+            catalog_digest.update(json.dumps({
+                "object_id": row.get("object_id"),
+                "cone_index": row.get("cone_index"),
+                "mag_vis": row.get("mag_vis"),
+                "spurious_prob": row.get("spurious_prob"),
+                "point_like_prob": row.get("point_like_prob"),
+            }, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+            catalog_digest.update(b"\n")
             try:
                 spurious = float(row.get("spurious_prob") or 0.0)
                 magnitude = float(row["mag_vis"])
                 cone_index = int(row.get("cone_index") or -1)
             except (KeyError, TypeError, ValueError):
                 continue
+            try:
+                point_probability = float(row["point_like_prob"])
+            except (KeyError, TypeError, ValueError):
+                missing_probability += 1
+                continue
+            if not math.isfinite(point_probability) or not 0.0 <= point_probability <= 1.0:
+                invalid_probability += 1
+                continue
             if not (
                 math.isfinite(spurious) and spurious <= 0.5
                 and math.isfinite(magnitude) and 20.0 <= magnitude < 28.0
             ):
                 continue
-            total_count += 1
+            extended_weight = 1.0 - point_probability
+            total_count += extended_weight
             if 0 <= cone_index < cone_count:
-                cone_counts[cone_index] += 1.0
+                cone_counts[cone_index] += extended_weight
     if total_count <= 0 or np.any(cone_counts <= 0):
-        raise ValueError("Euclid cone catalog lacks usable per-cone non-star detections")
+        raise ValueError(
+            "Euclid cone catalog lacks usable per-cone weighted extended sources"
+        )
 
     rng = np.random.default_rng(seed)
     indices = rng.integers(0, len(prior), size=int(draws))
@@ -371,12 +392,19 @@ def fit_local_catalog_density(
         np.ascontiguousarray(prior.f814w).tobytes()
     ).hexdigest()
     identity = {
-        "version": 2,
-        "method": "local_catalog_forward_model",
+        "version": 3,
+        "method": "local_catalog_forward_model_probability_weighted",
         "transfer_fingerprint": transfer["fingerprint"],
         "prior_f814w_fingerprint": prior_fingerprint,
         "euclid_cones": meta.get("cones"),
-        "selection": {"mag_min": 20.0, "mag_max": 28.0, "spurious_max": 0.5},
+        "catalog_version": meta.get("catalog_version"),
+        "catalog_area_arcmin2": area,
+        "catalog_radius_arcmin": meta.get("radius_arcmin"),
+        "catalog_weighted_fingerprint": catalog_digest.hexdigest(),
+        "classification_weighting": "galaxy_weight=1-POINT_LIKE_PROB",
+        "selection": {
+            "mag_min": 20.0, "mag_max": 28.0, "spurious_max": 0.5,
+        },
         "draws": int(draws),
         "seed": int(seed),
     }
@@ -395,7 +423,10 @@ def fit_local_catalog_density(
         ),
         "valid": True,
         "validated": not (transfer.get("fit_quality") or {}).get("warnings"),
-        "warnings": warnings,
+        "warnings": warnings + [
+            f"excluded {missing_probability:,} rows without point-like probability",
+            f"excluded {invalid_probability:,} rows with invalid point-like probability",
+        ],
         "transfer_fingerprint": transfer["fingerprint"],
         "active_transfer_fingerprint": (active_transfer() or {}).get("fingerprint"),
         "calibration_fingerprint": calibration_fingerprint,
@@ -415,7 +446,14 @@ def fit_local_catalog_density(
         "seed": int(seed),
         "cosmos_generator_rows": int(len(prior)),
         "cosmos_f814w_fingerprint": prior_fingerprint,
-        "euclid_nonstar_detections": int(total_count),
+        "euclid_expected_extended_sources": float(total_count),
+        "euclid_nonstar_detections": float(total_count),
+        "classification_weighting": {
+            "star_weight": "POINT_LIKE_PROB",
+            "galaxy_weight": "1 - POINT_LIKE_PROB",
+            "missing_probability_rows": int(missing_probability),
+            "invalid_probability_rows": int(invalid_probability),
+        },
         "euclid_cones": cone_count,
         "euclid_cone_densities_arcmin2": cone_densities.tolist(),
         "selection": identity["selection"],

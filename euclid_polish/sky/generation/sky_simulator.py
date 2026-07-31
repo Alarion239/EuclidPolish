@@ -124,10 +124,15 @@ class SkySimulatorConfig:
 def _sample_star_mag(
     rng: np.random.Generator, *,
     slope: float, m_bright: float, m_faint: float,
+    stellar_prior: EmpiricalStellarPrior | None = None,
 ) -> float:
     """Sample one VIS magnitude from the differential stellar number-count law
     ``dN/dm ∝ 10^(slope · m)`` over ``[m_bright, m_faint]``, by inverse-CDF.
     """
+    if stellar_prior is not None:
+        return stellar_prior.sample_magnitude(
+            rng, slope=slope, m_bright=m_bright, m_faint=m_faint,
+        )
     span = float(m_faint) - float(m_bright)
     if span <= 0.0:
         return float(m_bright)
@@ -210,7 +215,8 @@ def inject_random_stars(
         x_pix = float(rng.uniform(0.0, N - 1))
         y_pix = float(rng.uniform(0.0, N - 1))
         mag = _sample_star_mag(rng, slope=mag_slope,
-                               m_bright=mag_bright, m_faint=mag_faint)
+                               m_bright=mag_bright, m_faint=mag_faint,
+                               stellar_prior=stellar_prior)
         sed = sample_stellar_sed(rng, mag, stellar_prior)
         band_mags = sed.magnitudes
         _deposit_star(
@@ -384,7 +390,8 @@ class SkySimulator:
         cfg = self.config
         mag = _sample_star_mag(
             rng, slope=cfg.star_mag_slope,
-            m_bright=cfg.star_mag_bright, m_faint=cfg.star_mag_faint)
+            m_bright=cfg.star_mag_bright, m_faint=cfg.star_mag_faint,
+            stellar_prior=self.stellar_prior)
         sed = sample_stellar_sed(rng, mag, self.stellar_prior)
         band_mags = sed.magnitudes
         return {

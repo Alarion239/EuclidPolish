@@ -139,6 +139,7 @@ type TngPrior = {
 type CalibrationArtifact = {
   valid?: boolean;
   warnings?: string[];
+  coverage_notes?: string[];
   fingerprint?: string;
   calibration_fingerprint?: string;
   recommended_density_arcmin2?: number | null;
@@ -158,16 +159,27 @@ type CalibrationArtifact = {
   diagnostics?: {
     star_density_per_cone: {
       x: number[]; observed: number[]; fitted: number[]; label: string; unit: string;
+      statistics?: { mean?: number | null; std?: number | null;
+        p16?: number | null; p50?: number | null; p84?: number | null };
     };
     parameters: Record<string, {
       x: number[]; observed: (number | null)[]; fitted: (number | null)[];
       label: string; unit: string; density_unit: string;
       observed_count: number; fitted_count: number;
       observed_label?: string;
+      gaia_bright?: (number | null)[];
+      gaia_bright_label?: string;
+      euclid_weighted?: (number | null)[];
+      euclid_weighted_label?: string;
+      statistics?: {
+        expected_count?: number | null; density_arcmin2?: number | null;
+        mean?: number | null; std?: number | null;
+        p16?: number | null; p50?: number | null; p84?: number | null;
+        effective_n?: number | null;
+        classification_sigma_count?: number | null;
+        classification_sigma_density_arcmin2?: number | null;
+      };
       observed_limit_mag?: number;
-      euclid_lower_bound?: (number | null)[];
-      euclid_lower_bound_count?: number;
-      euclid_lower_bound_label?: string;
       extrapolation_note?: string;
     }>;
   };
@@ -180,6 +192,12 @@ type CalibrationArtifact = {
   };
   retained_detection_fraction?: number;
   euclid_detected_density_arcmin2?: number;
+  classification_weighting?: {
+    star_weight?: string;
+    galaxy_weight?: string;
+    missing_probability_rows?: number;
+    invalid_probability_rows?: number;
+  };
   euclid_cones?: unknown[];
   cosmos_generator_rows?: number;
   local_draws?: number;
@@ -1010,7 +1028,7 @@ function CosmosEuclidDensityPanel({ fit }: { fit: CosmosEuclidFit }) {
         <Legend items={[
           { color: "#686868", label: "COSMOS F814W prior · before selection", dash: true },
           { color: "#8d48b5", label: "current synthetic truth", dash: true },
-          { color: "#1267d6", label: "Euclid non-star detections", marker: "ring" },
+          { color: "#1267d6", label: "Euclid weighted extended-source detections", marker: "ring" },
           { color: "#cf3d2e", label: "fitted detected population", line: true, marker: "diamond" },
         ]} />
         <div className="population-fit-plot__numbers">
@@ -1062,8 +1080,8 @@ function GalaxyCalibrationControls({ api, onChanged }: {
             <span>2 · observation target</span>
             <strong>{coneCount || "—"} Euclid cones</strong>
             <small>{density.candidate?.euclid_detected_density_arcmin2 != null
-              ? `${density.candidate.euclid_detected_density_arcmin2.toFixed(1)} non-star detections / arcmin²`
-              : "cached non-star VIS counts"}</small>
+              ? `${density.candidate.euclid_detected_density_arcmin2.toFixed(1)} weighted extended-source detections / arcmin²`
+              : "cached weighted extended-source VIS counts"}</small>
           </div>
           <div className="population-flow__step">
             <span>3 · local forward fit</span>
@@ -1087,6 +1105,15 @@ function GalaxyCalibrationControls({ api, onChanged }: {
             the native VIS/Y/J/H ratios. The fitted VIS magnitude applies one flux
             scale to all four bands, so those TNG colours are preserved.
           </p>
+          {density.candidate?.classification_weighting && (
+            <p className="fit-caution">
+              <strong>Classification coverage:</strong>{" "}
+              {density.candidate.classification_weighting.missing_probability_rows ?? 0}
+              {" rows without POINT_LIKE_PROB and "}
+              {density.candidate.classification_weighting.invalid_probability_rows ?? 0}
+              {" invalid rows were excluded; galaxy weight = 1 − POINT_LIKE_PROB."}
+            </p>
+          )}
         </div>
         <div className="calibration-table-wrap">
           <table className="calibration-table">
@@ -1209,6 +1236,9 @@ function StarCalibrationControls({ api, onChanged }: {
         {candidate?.warnings?.[0] && (
           <p className="fit-caution"><strong>Fit note:</strong> {candidate.warnings[0]}</p>
         )}
+        {candidate?.coverage_notes?.[0] && (
+          <p className="fit-caution"><strong>Coverage:</strong> {candidate.coverage_notes[0]}</p>
+        )}
         <div className="row" style={{ gap: "var(--s2)" }}>
           <Button variant="primary" disabled={query.busy || !api.availability.euclid_catalog.cached}
             onClick={() => query.run(
@@ -1220,7 +1250,7 @@ function StarCalibrationControls({ api, onChanged }: {
             )}>Activate calibration</Button>
         </div>
         <p className="calibration-plain-note">
-          Euclid point-like counts remain marked incomplete. Gaia controls the bright-side density and latent colour/temperature population; matched Euclid stars supply the VIS/Y/J/H mapping.
+          Gaia supplies the bright point-source side and latent colour/temperature population; Euclid point-like probabilities supply the faint count shape and weighted validation statistics.
         </p>
         <JobProgressView job={query.job} error={query.error} />
         <JobProgressView job={activate.job} error={activate.error} />
@@ -1248,19 +1278,27 @@ function StarCalibrationControls({ api, onChanged }: {
               </CardBody>
             </Card>
             {Object.entries(diagnostics.parameters)
-              .filter(([key]) => key === "mag_vis" || key === "bp_rp")
+              .filter(([key]) => ["mag_vis", "vis_y", "y_j", "j_h",
+                "bp_rp", "temperature_k"].includes(key))
               .map(([key, item]) => {
                 const magnitudeCounts = key === "mag_vis";
-                const euclidLowerBound = item.euclid_lower_bound ?? [];
+                const gaiaBright = item.gaia_bright ?? [];
+                const euclidWeighted = item.euclid_weighted ?? [];
                 const comparisonValues = [
-                  ...item.observed, ...item.fitted, ...euclidLowerBound,
+                  ...item.observed, ...item.fitted, ...gaiaBright,
+                  ...euclidWeighted,
                 ];
+                const stats = item.statistics;
+                const format = (value: number | null | undefined) =>
+                  value == null || !Number.isFinite(value) ? "—" : value.toFixed(3);
                 return (
               <Card className="parameter-card" key={key}>
                 <CardHead title={item.label}
                   sub={magnitudeCounts
-                    ? "fitted prior × Gaia transformed to VIS × Euclid lower bound"
-                    : "fitted synthetic prior × same-footprint observed stars"} />
+                    ? "fitted prior × Gaia bright × probability-weighted Euclid faint"
+                    : item.observed_label
+                      ? `fitted synthetic prior × ${item.observed_label}`
+                      : "fitted synthetic prior × same-footprint observed stars"} />
                 <CardBody>
                   <AdjustablePlot boundsLabel={item.label}
                     xDomain={domain(item.x)}
@@ -1272,9 +1310,13 @@ function StarCalibrationControls({ api, onChanged }: {
                       { x: item.x, y: item.observed, color: categorical(2),
                         mode: "histogram", hatch: true, dash: [8, 4],
                         fillAlpha: 0.02, width: 2.1 },
-                      ...(magnitudeCounts && euclidLowerBound.length ? [{
-                        x: item.x, y: euclidLowerBound, color: categorical(4),
-                        mode: "scatter" as const, marker: "ring" as const, width: 1.5,
+                      ...(magnitudeCounts && gaiaBright.length ? [{
+                        x: item.x, y: gaiaBright, color: categorical(4),
+                        mode: "line" as const, dash: [5, 4], width: 1.5,
+                      }] : []),
+                      ...(magnitudeCounts && euclidWeighted.length ? [{
+                        x: item.x, y: euclidWeighted, color: categorical(5),
+                        mode: "line" as const, width: 1.8,
                       }] : []),
                     ]}
                     guides={item.observed_limit_mag != null ? [{
@@ -1287,12 +1329,29 @@ function StarCalibrationControls({ api, onChanged }: {
                     { color: categorical(2),
                       label: item.observed_label ?? "same-footprint Gaia / matched Euclid",
                       histogram: true, hatch: true, dash: true },
-                    ...(magnitudeCounts && euclidLowerBound.length ? [{
+                    ...(magnitudeCounts && gaiaBright.length ? [{
                       color: categorical(4),
-                      label: item.euclid_lower_bound_label ?? "Euclid lower bound",
-                      marker: "ring" as const,
+                      label: item.gaia_bright_label ?? "Gaia bright component",
+                      line: true, dash: true,
+                    }] : []),
+                    ...(magnitudeCounts && euclidWeighted.length ? [{
+                      color: categorical(5),
+                      label: item.euclid_weighted_label ?? "Euclid weighted point sources",
+                      line: true,
                     }] : []),
                   ]} />
+                  {stats && (
+                    <div className="calibration-status-grid" style={{ marginTop: "var(--s3)" }}>
+                      <div><span className="eyebrow">weighted mean ± sd</span>
+                        <strong>{format(stats.mean)} ± {format(stats.std)}</strong></div>
+                      <div><span className="eyebrow">p16 / p50 / p84</span>
+                        <strong>{format(stats.p16)} / {format(stats.p50)} / {format(stats.p84)}</strong></div>
+                      <div><span className="eyebrow">expected count / effective N</span>
+                        <strong>{format(stats.expected_count)} / {format(stats.effective_n)}</strong></div>
+                      {magnitudeCounts && <div><span className="eyebrow">density ± class. sigma</span>
+                        <strong>{format(stats.density_arcmin2)} ± {format(stats.classification_sigma_density_arcmin2)}</strong></div>}
+                    </div>
+                  )}
                   {magnitudeCounts && item.extrapolation_note && (
                     <p className="fit-caution stellar-count-note">
                       <strong>Dashed boundary:</strong> {item.extrapolation_note}
@@ -1504,7 +1563,9 @@ export default function PopulationComparisonPage() {
               <p className="population-census-note">
                 <strong>Do not compare the two totals directly.</strong> Synthetic is
                 complete source truth; Euclid is a detection/deblending catalog.
-                “Non-stellar” means a clean non-star detection, not a confirmed galaxy.
+                “Non-stellar” is a detection-selected label; the active galaxy
+                calibration instead uses the fractional extended-source weight
+                1 − POINT_LIKE_PROB and is not a confirmed-galaxy count.
               </p>
             )}
 

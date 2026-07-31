@@ -44,6 +44,8 @@ class EmpiricalStellarPrior:
     temperature_quantiles_k: np.ndarray
     band_coefficients: np.ndarray
     residual_covariance: np.ndarray
+    magnitude_edges: np.ndarray | None = None
+    magnitude_cdf: np.ndarray | None = None
 
     @classmethod
     def from_payload(cls, payload: dict[str, Any]) -> EmpiricalStellarPrior:
@@ -63,7 +65,49 @@ class EmpiricalStellarPrior:
             raise ValueError("stellar prior requires Gaia colour and temperature CDFs")
         if coefficients.shape != (4, 3) or covariance.shape != (4, 4):
             raise ValueError("stellar prior has invalid Euclid mapping dimensions")
-        return cls(colors, temperatures, coefficients, covariance)
+        distribution = payload.get("population", {}).get("magnitude_distribution", {})
+        edges = np.asarray(distribution.get("edges") or [], dtype=np.float64)
+        cdf = np.asarray(distribution.get("cdf") or [], dtype=np.float64)
+        if edges.size < 2 or cdf.size != edges.size:
+            edges = None
+            cdf = None
+        else:
+            if (not np.all(np.isfinite(edges)) or not np.all(np.isfinite(cdf))
+                    or np.any(np.diff(edges) <= 0)
+                    or cdf[0] < -1e-9 or cdf[-1] <= 0.0
+                    or np.any(np.diff(cdf) < -1e-9)):
+                edges = None
+                cdf = None
+            else:
+                cdf = np.clip(cdf / cdf[-1], 0.0, 1.0)
+                cdf[0] = 0.0
+                cdf[-1] = 1.0
+        return cls(colors, temperatures, coefficients, covariance, edges, cdf)
+
+    def sample_magnitude(
+        self, rng: np.random.Generator, *, slope: float,
+        m_bright: float, m_faint: float,
+    ) -> float:
+        """Sample VIS magnitude from the empirical CDF when available.
+
+        Older calibration artifacts do not contain the distribution and keep
+        the historical exponential count-law fallback.
+        """
+        if self.magnitude_edges is None or self.magnitude_cdf is None:
+            return _sample_exponential_magnitude(
+                rng, slope=slope, m_bright=m_bright, m_faint=m_faint,
+            )
+        u = float(rng.random())
+        index = int(np.searchsorted(self.magnitude_cdf, u, side="right") - 1)
+        index = max(0, min(index, self.magnitude_edges.size - 2))
+        lo = float(self.magnitude_cdf[index])
+        hi = float(self.magnitude_cdf[index + 1])
+        fraction = 0.0 if hi <= lo else (u - lo) / (hi - lo)
+        return float(
+            self.magnitude_edges[index]
+            + fraction * (self.magnitude_edges[index + 1]
+                          - self.magnitude_edges[index])
+        )
 
     def sample(self, rng: np.random.Generator, mag_vis: float) -> StellarSED:
         quantile = float(rng.random())
@@ -96,6 +140,21 @@ class EmpiricalStellarPrior:
                 for index, name in enumerate(_BAND_NAMES)
             },
         )
+
+
+def _sample_exponential_magnitude(
+    rng: np.random.Generator, *, slope: float,
+    m_bright: float, m_faint: float,
+) -> float:
+    """Sample ``dN/dm ∝ 10^(slope·m)`` for legacy priors."""
+    span = float(m_faint) - float(m_bright)
+    if span <= 0.0:
+        return float(m_bright)
+    beta = float(slope) * np.log(10.0)
+    u = float(rng.random())
+    t = (u * span if abs(beta) < 1e-9
+         else np.log1p(u * np.expm1(beta * span)) / beta)
+    return float(m_bright + t)
 
 
 def _planck_fnu(wavelength_um: np.ndarray, temperature_k: float) -> np.ndarray:
