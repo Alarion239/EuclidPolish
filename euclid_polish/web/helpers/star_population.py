@@ -21,6 +21,8 @@ from euclid_polish.web.helpers.population_comparison import (
     euclid_catalog_path,
 )
 
+_GAIA_COUNT_LIMIT_MAG = 20.5
+
 
 def gaia_catalog_path() -> Path:
     return Path(Config.DATA_DIR) / "population_comparison" / "gaia_population.csv"
@@ -180,6 +182,16 @@ def _histogram(
     }
 
 
+def _fixed_width_edges(lower: float, upper: float, width: float) -> np.ndarray:
+    """Histogram edges that stop at ``upper`` instead of adding an empty bin."""
+    edges = np.arange(lower, upper + 0.5 * width, width, dtype=np.float64)
+    if edges[-1] < upper - 1e-9:
+        edges = np.append(edges, upper)
+    else:
+        edges[-1] = upper
+    return edges
+
+
 def fit_star_population(
     *, faint_limit: float | None = None, bright_limit: float | None = None,
 ) -> dict[str, Any]:
@@ -234,12 +246,13 @@ def fit_star_population(
         density_counts.append(sum(
             int(row.get("cone_index", -1)) == cone_index
             and row.get("central_selected_star") != "1"
-            and float(row["g_mag"]) <= 20.5
+            and float(row["g_mag"]) <= _GAIA_COUNT_LIMIT_MAG
             for row in usable_gaia
         ))
     bright_density = float(np.mean(density_counts) / area_per_cone)
 
     predicted_vis: list[float] = []
+    comparison_gaia_vis: list[float] = []
     if mapping:
         coeff = np.asarray(mapping["mag_vis"])
         for row in usable_gaia:
@@ -247,7 +260,10 @@ def fit_star_population(
             if bp_rp is None or row.get("central_selected_star") == "1":
                 continue
             g_mag = float(row["g_mag"])
-            predicted_vis.append(g_mag + float(np.dot(coeff, [1.0, bp_rp, g_mag - 20.0])))
+            vis_mag = g_mag + float(np.dot(coeff, [1.0, bp_rp, g_mag - 20.0]))
+            predicted_vis.append(vis_mag)
+            if g_mag <= _GAIA_COUNT_LIMIT_MAG:
+                comparison_gaia_vis.append(vis_mag)
     count_mags = np.asarray(predicted_vis, dtype=np.float64)
     hist, edges = np.histogram(count_mags, bins=np.arange(14.0, 21.01, 0.5))
     centres = 0.5 * (edges[:-1] + edges[1:])
@@ -259,7 +275,7 @@ def fit_star_population(
     # Normalize to the directly counted Gaia bright side, then extrapolate one
     # continuous magnitude law to the configured faint limit.
     beta = slope * math.log(10.0)
-    bright_integral = math.expm1(beta * (20.5 - bright))
+    bright_integral = math.expm1(beta * (_GAIA_COUNT_LIMIT_MAG - bright))
     full_integral = math.expm1(beta * (faint - bright))
     density = bright_density * full_integral / max(bright_integral, 1e-9)
 
@@ -338,6 +354,12 @@ def fit_star_population(
                 ("J_E", "mag_j_e"), ("H_E", "mag_h_e"),
             )
         }
+        euclid_vis_lower_bound = np.asarray([
+            value
+            for row in euclid_rows
+            if row.get("type") == "star"
+            and (value := _finite(row.get("mag_vis"))) is not None
+        ], dtype=np.float64)
         total_area = float(meta["area_arcmin2"])
         diagnostics: dict[str, Any] = {
             "star_density_per_cone": {
@@ -349,16 +371,44 @@ def fit_star_population(
             },
             "parameters": {},
         }
+        magnitude_diagnostic = _histogram(
+            np.asarray(comparison_gaia_vis, dtype=np.float64), fitted_band["VIS"],
+            bins=_fixed_width_edges(bright, faint, 0.5),
+            observed_scale=1.0 / total_area,
+            fitted_scale=density / sample_count,
+        )
+        magnitude_centres = magnitude_diagnostic["x"]
+        # G=20.5 is the density-normalisation boundary, not evidence that an
+        # observed zero exists in every fainter VIS bin.  Nulls leave that
+        # portion of the Gaia histogram explicitly unobserved in the plot.
+        magnitude_diagnostic["observed"] = [
+            value if centre <= _GAIA_COUNT_LIMIT_MAG else None
+            for centre, value in zip(
+                magnitude_centres, magnitude_diagnostic["observed"], strict=True,
+            )
+        ]
+        euclid_counts, euclid_edges = np.histogram(
+            euclid_vis_lower_bound,
+            bins=_fixed_width_edges(bright, faint, 0.5),
+        )
+        magnitude_diagnostic["euclid_lower_bound"] = (
+            euclid_counts / total_area / np.diff(euclid_edges)
+        ).tolist()
+        magnitude_diagnostic["euclid_lower_bound_count"] = int(
+            euclid_vis_lower_bound.size
+        )
+        magnitude_diagnostic["observed_limit_mag"] = _GAIA_COUNT_LIMIT_MAG
         diagnostics["parameters"]["mag_vis"] = {
-            **_histogram(
-                observed_band["VIS"], fitted_band["VIS"],
-                bins=np.arange(bright, faint + 0.5001, 0.5),
-                observed_scale=1.0 / total_area,
-                fitted_scale=density / sample_count,
-            ),
-            "label": "objects / arcmin² versus VIS magnitude",
+            **magnitude_diagnostic,
+            "label": "stellar density versus VIS magnitude",
             "unit": "AB mag",
-            "density_unit": "stars / arcmin² / 0.5 mag",
+            "density_unit": "stars / arcmin² / mag",
+            "observed_label": "same-footprint Gaia transformed to VIS",
+            "euclid_lower_bound_label": "Euclid high-purity point-like lower bound",
+            "extrapolation_note": (
+                "The fitted prior beyond the Gaia G≤20.5 boundary is an "
+                "extrapolation; Euclid point-like flags are high-purity but incomplete."
+            ),
         }
         for key, observed_values, fitted_values, label in (
             ("vis_y", observed_band["VIS"] - observed_band["Y_E"],

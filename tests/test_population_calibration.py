@@ -249,6 +249,19 @@ def test_star_fit_excludes_centres_and_samples_correlated_euclid_colors(
     assert fit["diagnostics"]["star_density_per_cone"]["observed"] == pytest.approx([
         11 / (4 * np.pi), 11 / (4 * np.pi),
     ])
+    magnitude = fit["diagnostics"]["parameters"]["mag_vis"]
+    assert magnitude["density_unit"] == "stars / arcmin² / mag"
+    assert magnitude["observed_count"] == 22
+    assert magnitude["euclid_lower_bound_count"] == 24
+    assert sum(value for value in magnitude["observed"] if value is not None) * 0.5 \
+        == pytest.approx(22 / (8 * np.pi))
+    assert sum(magnitude["euclid_lower_bound"]) * 0.5 \
+        == pytest.approx(24 / (8 * np.pi))
+    assert all(
+        value is None
+        for centre, value in zip(magnitude["x"], magnitude["observed"], strict=True)
+        if centre > magnitude["observed_limit_mag"]
+    )
 
     prior = EmpiricalStellarPrior.from_payload(fit)
     sed = prior.sample(np.random.default_rng(8), 21.5)

@@ -160,9 +160,15 @@ type CalibrationArtifact = {
       x: number[]; observed: number[]; fitted: number[]; label: string; unit: string;
     };
     parameters: Record<string, {
-      x: number[]; observed: number[]; fitted: number[];
+      x: number[]; observed: (number | null)[]; fitted: (number | null)[];
       label: string; unit: string; density_unit: string;
       observed_count: number; fitted_count: number;
+      observed_label?: string;
+      observed_limit_mag?: number;
+      euclid_lower_bound?: (number | null)[];
+      euclid_lower_bound_count?: number;
+      euclid_lower_bound_label?: string;
+      extrapolation_note?: string;
     }>;
   };
   active?: boolean;
@@ -1243,14 +1249,22 @@ function StarCalibrationControls({ api, onChanged }: {
             </Card>
             {Object.entries(diagnostics.parameters)
               .filter(([key]) => key === "mag_vis" || key === "bp_rp")
-              .map(([key, item]) => (
+              .map(([key, item]) => {
+                const magnitudeCounts = key === "mag_vis";
+                const euclidLowerBound = item.euclid_lower_bound ?? [];
+                const comparisonValues = [
+                  ...item.observed, ...item.fitted, ...euclidLowerBound,
+                ];
+                return (
               <Card className="parameter-card" key={key}>
                 <CardHead title={item.label}
-                  sub="fitted synthetic prior × same-footprint observed stars" />
+                  sub={magnitudeCounts
+                    ? "fitted prior × Gaia transformed to VIS × Euclid lower bound"
+                    : "fitted synthetic prior × same-footprint observed stars"} />
                 <CardBody>
                   <AdjustablePlot boundsLabel={item.label}
                     xDomain={domain(item.x)}
-                    yDomain={domain([...item.observed, ...item.fitted], true)}
+                    yDomain={domain(comparisonValues, true)}
                     xLabel={item.unit} yLabel={item.density_unit}
                     series={[
                       { x: item.x, y: item.fitted, color: categorical(0),
@@ -1258,14 +1272,36 @@ function StarCalibrationControls({ api, onChanged }: {
                       { x: item.x, y: item.observed, color: categorical(2),
                         mode: "histogram", hatch: true, dash: [8, 4],
                         fillAlpha: 0.02, width: 2.1 },
-                    ]} aspect={0.62} />
+                      ...(magnitudeCounts && euclidLowerBound.length ? [{
+                        x: item.x, y: euclidLowerBound, color: categorical(4),
+                        mode: "scatter" as const, marker: "ring" as const, width: 1.5,
+                      }] : []),
+                    ]}
+                    guides={item.observed_limit_mag != null ? [{
+                      axis: "x", v: item.observed_limit_mag,
+                      color: categorical(2), dash: [5, 5], width: 1.4,
+                    }] : undefined}
+                    aspect={0.62} />
                   <Legend items={[
                     { color: categorical(0), label: "fitted synthetic prior", histogram: true, filled: true },
-                    { color: categorical(2), label: "same-footprint Gaia / matched Euclid", histogram: true, hatch: true, dash: true },
+                    { color: categorical(2),
+                      label: item.observed_label ?? "same-footprint Gaia / matched Euclid",
+                      histogram: true, hatch: true, dash: true },
+                    ...(magnitudeCounts && euclidLowerBound.length ? [{
+                      color: categorical(4),
+                      label: item.euclid_lower_bound_label ?? "Euclid lower bound",
+                      marker: "ring" as const,
+                    }] : []),
                   ]} />
+                  {magnitudeCounts && item.extrapolation_note && (
+                    <p className="fit-caution stellar-count-note">
+                      <strong>Dashed boundary:</strong> {item.extrapolation_note}
+                    </p>
+                  )}
                 </CardBody>
               </Card>
-            ))}
+                );
+              })}
           </div>
         )}
       </CardBody>
