@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 import hashlib
 import json
 import math
@@ -260,6 +261,169 @@ def fit_density_response(
     }
 
 
+def fit_local_catalog_density(
+    *,
+    draws: int = 1_000_000,
+    bootstraps: int = 2_000,
+    seed: int = 71034,
+) -> dict[str, Any]:
+    """Infer the raw draw budget from local catalogs, without rendering fields.
+
+    This evaluates the *actual* generator sampler: uniform draws from the
+    physical-row-filtered COSMOS prior, followed by the fitted F814W-to-VIS
+    transfer and Euclid completeness curve.  Dividing the Euclid non-star
+    detection density by that retained fraction gives the raw TNG draw budget.
+    Cone bootstraps carry the dominant field-to-field uncertainty.
+    """
+    from euclid_polish.sky.generation.cosmos_tng_prior import CosmosTngPrior
+    from euclid_polish.web.helpers.population_comparison import (
+        euclid_catalog_meta_path,
+        euclid_catalog_path,
+    )
+
+    transfer = photometric_candidate()
+    if transfer is None:
+        raise ValueError("Fit the fixed-normalization brightness transfer first")
+    coefficients = transfer.get("coefficients") or {}
+    observation = transfer.get("observation_model") or {}
+    try:
+        offset = float(coefficients["offset_mag"])
+        slope = float(coefficients["magnitude_slope"])
+        scatter = float(coefficients["scatter_mag"])
+        m50 = float(observation["completeness_m50"])
+        width = float(observation["completeness_width_mag"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("Brightness-transfer artifact is incomplete") from exc
+    if not (slope > 0 and scatter >= 0 and width > 0):
+        raise ValueError("Brightness-transfer coefficients are outside physical bounds")
+    if draws < 10_000 or bootstraps < 100:
+        raise ValueError("Local calibration needs at least 10,000 draws and 100 bootstraps")
+
+    prior = CosmosTngPrior(Config.COSMOS_TNG_PRIOR_PATH)
+    if len(prior) < 1_000:
+        raise ValueError("COSMOS/TNG prior has too few generator-ready rows")
+    meta = _read(euclid_catalog_meta_path())
+    if not meta:
+        raise ValueError("Query and cache several Euclid cones first")
+    cone_count = int(meta.get("cone_count") or 0)
+    area = float(meta.get("area_arcmin2") or 0.0)
+    if cone_count < 3 or area <= 0:
+        raise ValueError("Local density calibration needs at least three Euclid cones")
+
+    cone_counts = np.zeros(cone_count, dtype=np.float64)
+    total_count = 0
+    with euclid_catalog_path().open(newline="", encoding="utf-8") as handle:
+        for row in csv.DictReader(handle):
+            if str(row.get("type") or "").strip().lower() == "star":
+                continue
+            try:
+                spurious = float(row.get("spurious_prob") or 0.0)
+                magnitude = float(row["mag_vis"])
+                cone_index = int(row.get("cone_index") or -1)
+            except (KeyError, TypeError, ValueError):
+                continue
+            if not (
+                math.isfinite(spurious) and spurious <= 0.5
+                and math.isfinite(magnitude) and 20.0 <= magnitude < 28.0
+            ):
+                continue
+            total_count += 1
+            if 0 <= cone_index < cone_count:
+                cone_counts[cone_index] += 1.0
+    if total_count <= 0 or np.any(cone_counts <= 0):
+        raise ValueError("Euclid cone catalog lacks usable per-cone non-star detections")
+
+    rng = np.random.default_rng(seed)
+    indices = rng.integers(0, len(prior), size=int(draws))
+    vis = (
+        24.0 + slope * (prior.f814w[indices].astype(np.float64) - 24.0)
+        + offset + rng.normal(0.0, scatter, size=int(draws))
+    )
+    argument = np.clip((vis - m50) / width, -60.0, 60.0)
+    detection_probability = 1.0 / (1.0 + np.exp(argument))
+    detection_probability *= (vis >= 20.0) & (vis < 28.0)
+    retained_fraction = float(np.mean(detection_probability))
+    if not 0.001 < retained_fraction < 0.999:
+        raise ValueError("Fitted observation model has a degenerate retained fraction")
+
+    cone_area = area / cone_count
+    cone_densities = cone_counts / cone_area
+    euclid_density = float(total_count / area)
+    recommendation = euclid_density / retained_fraction
+
+    # The finite Monte Carlo error is small next to cone-to-cone variance, but
+    # retain both. Fractional beta counts support non-binary completeness
+    # probabilities without materializing a large bootstrap matrix.
+    successes = retained_fraction * draws
+    cone_indices = rng.integers(0, cone_count, size=(bootstraps, cone_count))
+    target_samples = np.mean(cone_densities[cone_indices], axis=1)
+    retained_samples = rng.beta(
+        successes + 0.5, draws - successes + 0.5, size=bootstraps,
+    )
+    density_samples = target_samples / retained_samples
+    interval = {
+        "median": float(np.median(density_samples)),
+        "p16": float(np.percentile(density_samples, 16)),
+        "p84": float(np.percentile(density_samples, 84)),
+    }
+
+    prior_fingerprint = hashlib.sha256(
+        np.ascontiguousarray(prior.f814w).tobytes()
+    ).hexdigest()
+    identity = {
+        "version": 2,
+        "method": "local_catalog_forward_model",
+        "transfer_fingerprint": transfer["fingerprint"],
+        "prior_f814w_fingerprint": prior_fingerprint,
+        "euclid_cones": meta.get("cones"),
+        "selection": {"mag_min": 20.0, "mag_max": 28.0, "spurious_max": 0.5},
+        "draws": int(draws),
+        "seed": int(seed),
+    }
+    calibration_fingerprint = hashlib.sha256(json.dumps(
+        identity, sort_keys=True, separators=(",", ":"), allow_nan=False,
+    ).encode("utf-8")).hexdigest()
+    warnings = list((transfer.get("fit_quality") or {}).get("warnings") or [])
+    warnings.append(
+        "catalog-level calibration does not model rendering, crowding, or deblending"
+    )
+    result = {
+        "version": 2,
+        "method": (
+            "local COSMOS/TNG generator draws passed through the fitted "
+            "Euclid brightness and completeness model"
+        ),
+        "valid": True,
+        "validated": not (transfer.get("fit_quality") or {}).get("warnings"),
+        "warnings": warnings,
+        "transfer_fingerprint": transfer["fingerprint"],
+        "active_transfer_fingerprint": (active_transfer() or {}).get("fingerprint"),
+        "calibration_fingerprint": calibration_fingerprint,
+        "recommended_density_arcmin2": float(recommendation),
+        "interval_arcmin2": interval,
+        "euclid_detected_density_arcmin2": euclid_density,
+        "retained_detection_fraction": retained_fraction,
+        "response_points": [
+            {"density_arcmin2": 0.0, "detected_density_arcmin2": 0.0},
+            {
+                "density_arcmin2": float(recommendation),
+                "detected_density_arcmin2": euclid_density,
+            },
+        ],
+        "local_draws": int(draws),
+        "bootstrap_samples": int(bootstraps),
+        "seed": int(seed),
+        "cosmos_generator_rows": int(len(prior)),
+        "cosmos_f814w_fingerprint": prior_fingerprint,
+        "euclid_nonstar_detections": int(total_count),
+        "euclid_cones": cone_count,
+        "euclid_cone_densities_arcmin2": cone_densities.tolist(),
+        "selection": identity["selection"],
+    }
+    _write(density_calibration_path(), result)
+    return result
+
+
 def density_state() -> dict[str, Any]:
     candidate = _read(density_calibration_path())
     transfer = photometric_candidate() or {}
@@ -284,10 +448,10 @@ def density_state() -> dict[str, Any]:
 
 
 def activate_density_candidate() -> dict[str, Any]:
-    """Activate a valid, transfer-matched sweep and update the job config."""
+    """Activate a valid, transfer-matched local fit and update job config."""
     candidate = _read(density_calibration_path())
     if not candidate or not candidate.get("valid"):
-        raise ValueError("No valid matched density calibration is available")
+        raise ValueError("No valid local density calibration is available")
     transfer = active_transfer() or {}
     if candidate.get("transfer_fingerprint") != transfer.get("fingerprint"):
         raise ValueError(
@@ -352,7 +516,7 @@ def activate_galaxy_recommendation() -> dict[str, Any]:
     state = galaxy_recommendation_state()
     if not state["recommendation_available"]:
         raise ValueError(
-            "Run a transfer-matched density sweep before activating parameters"
+            "Run the local joint galaxy calibration before activating parameters"
         )
     transfer = activate_photometric_transfer(allow_quality_warnings=True)
     density = activate_density_candidate()

@@ -460,10 +460,13 @@ def test_population_comparison_page_and_status_route(monkeypatch):
 
     status = client.get("/api/population-comparison")
     assert status.status_code == 200
-    assert status.get_json() == {
-        "comparison": None,
-        "availability": expected_availability,
-        "authenticated": False,
+    payload = status.get_json()
+    assert payload["comparison"] is None
+    assert payload["availability"] == expected_availability
+    assert payload["authenticated"] is False
+    assert set(payload["calibrations"]) == {
+        "brightness_transfer", "galaxy_density", "stars",
+        "galaxy_recommendation",
     }
 
 

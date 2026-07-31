@@ -172,6 +172,10 @@ type CalibrationArtifact = {
   observation_model?: {
     completeness_m50: number; completeness_width_mag: number;
   };
+  retained_detection_fraction?: number;
+  euclid_detected_density_arcmin2?: number;
+  local_draws?: number;
+  interval_arcmin2?: PriorInterval;
 };
 type CalibrationState = {
   candidate: CalibrationArtifact | null;
@@ -1174,7 +1178,7 @@ function TngPriorPanel({ prior }: { prior: TngPrior }) {
           </p>
         </div>
         <Badge tone={calibration?.valid ? "good" : "warn"}>
-          {calibration?.valid ? "matched sweep ready" : "diagnostic only"}
+          {calibration?.valid ? "local fit ready" : "diagnostic only"}
         </Badge>
       </header>
 
@@ -1201,19 +1205,19 @@ function TngPriorPanel({ prior }: { prior: TngPrior }) {
             <p>
               Euclid has {visible.real_detected_density_arcmin2.toFixed(1)}
               {" "}detections / arcmin² across {visible.real_fields} fields.
-              {" "}{visible.transfer_compatibility?.reason ?? "A matched sweep is required."}
+              {" "}{visible.transfer_compatibility?.reason ?? "A local joint fit is required."}
             </p>
           </article>
           </>
         )}
         {calibration && (
           <article className="tng-prior__readout tng-prior__readout--visible">
-            <span>matched-seed density calibration</span>
+            <span>local catalog density calibration</span>
             <strong>{calibration.valid && calibration.recommended_density_arcmin2 != null
               ? priorValue(calibration.recommended_density_arcmin2) : "not actionable"}</strong>
             <small>{interval
-              ? `${priorValue(interval.p16)}–${priorValue(interval.p84)} / arcmin² · paired bootstrap`
-              : "target must be bracketed by a valid sweep"}</small>
+              ? `${priorValue(interval.p16)}–${priorValue(interval.p84)} / arcmin² · cone bootstrap`
+              : "run the local joint fit on at least three cones"}</small>
             {!!calibration.warnings?.length && <p>{calibration.warnings.join(" · ")}</p>}
           </article>
         )}
@@ -1222,7 +1226,7 @@ function TngPriorPanel({ prior }: { prior: TngPrior }) {
       <div className="tng-prior__detail-grid">
         <Card className="tng-prior__decision">
           <CardHead title="What this constrains"
-            sub="Matched detections constrain normalization, not the intrinsic luminosity-function shape." />
+            sub="COSMOS fixes the sampled latent shape; Euclid cones constrain its normalization after the fitted observation layer." />
           <CardBody>
             <p>{prior.recommendation}</p>
             {!!prior.pilot_grid_arcmin2.length && (
@@ -1264,18 +1268,13 @@ function GalaxyCalibrationControls({ api, onChanged }: {
   api: ApiPayload; onChanged: () => void;
 }) {
   const hst = useHstStatus();
-  const step = hst.data?.steps.find((item) => item.step_id === "tng_density_calibrate");
   const generationStep = hst.data?.steps.find(
     (item) => item.step_id === "synthetic_generate"
   );
-  const [minimum, setMinimum] = useState("240");
-  const [maximum, setMaximum] = useState("400");
-  const [spacing, setSpacing] = useState("40");
-  const [fields, setFields] = useState("100");
   const [generationSplits, setGenerationSplits] = useState<string[]>([
     "validate", "test",
   ]);
-  const sync = useJob();
+  const localFit = useJob();
   const activateRecommendation = useJob();
   const transfer = api.calibrations?.brightness_transfer ?? EMPTY_CALIBRATION;
   const density = api.calibrations?.galaxy_density ?? EMPTY_CALIBRATION;
@@ -1283,15 +1282,13 @@ function GalaxyCalibrationControls({ api, onChanged }: {
   const parameters = recommendation?.generator_parameters;
   const observation = recommendation?.observation_model_diagnostics;
   const allActive = transfer.is_active && density.is_active;
-  const validGrid = Number(minimum) > 0 && Number(maximum) > Number(minimum)
-    && Number(spacing) > 0 && Number(fields) >= 2;
   const refresh = (job: { status: string }) => {
     if (job.status !== "failed") onChanged();
   };
   return (
     <Card className="calibration-workflow">
       <CardHead title="Stable galaxy calibration"
-        sub="Freeze one fixed-normalization transfer, then vary only nested TNG density with shared fields, stars, PSFs, and noise." />
+        sub="Fit the complete generator proposal locally from COSMOS/TNG draws and cached Euclid cones. FASRC is used only to render selected fields." />
       <CardBody>
         <div className="calibration-status-grid">
           <div>
@@ -1302,7 +1299,7 @@ function GalaxyCalibrationControls({ api, onChanged }: {
             {!!transfer.candidate?.warnings?.length && <p>{transfer.candidate.warnings.join(" · ")}</p>}
           </div>
           <div>
-            <span className="eyebrow">matched sweep</span>
+            <span className="eyebrow">local catalog calibration</span>
             <strong>{density.is_active ? "active" : density.candidate?.valid ? "candidate ready" : "not actionable"}</strong>
             <small>{density.candidate?.recommended_density_arcmin2 != null
               ? `${density.candidate.recommended_density_arcmin2.toFixed(1)} draws / arcmin²`
@@ -1313,7 +1310,7 @@ function GalaxyCalibrationControls({ api, onChanged }: {
         <div className="calibration-parameters">
           <div><span>raw galaxy density</span><strong>
             {parameters?.galaxy_density_arcmin2 != null
-              ? parameters.galaxy_density_arcmin2.toFixed(1) : "pending sweep"}
+              ? parameters.galaxy_density_arcmin2.toFixed(1) : "pending fit"}
           </strong><small>draws / arcmin²</small></div>
           <div><span>VIS offset</span><strong>
             {parameters?.cosmos_vis_offset_mag != null
@@ -1332,6 +1329,11 @@ function GalaxyCalibrationControls({ api, onChanged }: {
           Observation-model diagnostics, fitted but not submitted to the generator:
           {" "}50% completeness VIS {observation?.completeness_m50?.toFixed(3) ?? "—"},
           {" "}width {observation?.completeness_width_mag?.toFixed(3) ?? "—"} mag.
+          {density.candidate?.retained_detection_fraction != null && <>
+            {" "}The local forward model retains
+            {" "}{(100 * density.candidate.retained_detection_fraction).toFixed(1)}%
+            {" "}of raw draws as 20≤VIS&lt;28 Euclid detections.
+          </>}
         </p>
         {!!recommendation?.warnings?.length && (
           <p className="catalog-classification-note">
@@ -1339,10 +1341,11 @@ function GalaxyCalibrationControls({ api, onChanged }: {
           </p>
         )}
         <div className="row" style={{ gap: "var(--s2)", marginBottom: "var(--s3)" }}>
-          <Button disabled={sync.busy}
-            onClick={() => sync.run(
-              "/api/population-comparison/sync-density-calibration", {}, { onDone: refresh },
-            )}>{sync.busy ? "Syncing…" : "Sync latest sweep result"}</Button>
+          <Button disabled={localFit.busy}
+            onClick={() => localFit.run(
+              "/api/population-comparison/run-local-galaxy-calibration",
+              {}, { onDone: refresh },
+            )}>{localFit.busy ? "Fitting locally…" : "Run local parameter fit"}</Button>
           <Button variant="primary" disabled={
               !recommendation?.recommendation_available
               || allActive || activateRecommendation.busy
@@ -1356,7 +1359,7 @@ function GalaxyCalibrationControls({ api, onChanged }: {
               : "Activate best fit with warnings"}
           </Button>
         </div>
-        <JobProgressView job={sync.job} error={sync.error} />
+        <JobProgressView job={localFit.job} error={localFit.error} />
         <JobProgressView job={activateRecommendation.job}
           error={activateRecommendation.error} />
         <p className="catalog-classification-note">
@@ -1365,24 +1368,12 @@ function GalaxyCalibrationControls({ api, onChanged }: {
           Every subsequent <NavLink to="/sky">Generate synthetic training pairs</NavLink>
           {" "}submission embeds that complete parameter artifact.
         </p>
-        <div className="cone-query__form">
-          <Field label="Minimum · / arcmin²"><Input type="number" value={minimum} onChange={setMinimum} min={1} /></Field>
-          <Field label="Maximum · / arcmin²"><Input type="number" value={maximum} onChange={setMaximum} min={2} /></Field>
-          <Field label="Step"><Input type="number" value={spacing} onChange={setSpacing} min={1} /></Field>
-          <Field label="Shared fields / point"><Input type="number" value={fields} onChange={setFields} min={2} /></Field>
-        </div>
-        {step ? (
-          <StepCard step={step as Step}
-            sshConnected={!!hst.data?.ssh_connected} embedded showHistory
-            extraParams={{
-              density_min: minimum, density_max: maximum,
-              density_step: spacing, fields_per_point: fields,
-            }}
-            submitDisabled={!validGrid || !transfer.candidate}
-            submitDisabledHint={!transfer.candidate
-              ? "fit the fixed-normalization transfer first"
-              : "enter valid bounds and at least two fields"} />
-        ) : <Empty>{hst.loading ? "loading FASRC step…" : "density calibration step unavailable"}</Empty>}
+        <p className="catalog-classification-note">
+          This samples the same physical-row-filtered COSMOS prior and the same
+          fitted stochastic F814W→VIS transfer used by generation. It does not
+          render images; crowding and deblending remain an empirical check on the
+          next regenerated validation/test fields.
+        </p>
         <div style={{ marginTop: "var(--s4)" }}>
           <div className="fasrc-step-inline__head">
             <div>

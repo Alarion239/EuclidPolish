@@ -17,6 +17,7 @@ from euclid_polish.web.helpers.population_calibration import (
     active_transfer_path,
     density_calibration_path,
     fit_density_response,
+    fit_local_catalog_density,
     galaxy_recommendation_state,
 )
 from euclid_polish.web.helpers.star_population import fit_star_population
@@ -51,6 +52,68 @@ def test_density_response_is_reproducible_and_rejects_wrong_transfer():
     )
     assert not mismatch["valid"]
     assert "different" in " ".join(mismatch["warnings"]) or "not the active" in " ".join(mismatch["warnings"])
+
+
+def test_local_catalog_fit_recovers_raw_density_without_rendering(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setattr(Config, "DATA_DIR", str(tmp_path))
+    root = tmp_path / "population_comparison"
+    prior_path = root / "cosmos2025" / "prior.npz"
+    fit_path = root / "cosmos2025" / "fit.json"
+    prior_path.parent.mkdir(parents=True)
+    monkeypatch.setattr(Config, "COSMOS_TNG_PRIOR_PATH", str(prior_path))
+    monkeypatch.setattr(Config, "COSMOS_EUCLID_FIT_PATH", str(fit_path))
+    size = 2_000
+    np.savez_compressed(
+        prior_path,
+        catalog_id=np.arange(size),
+        mag_hst_f814w=np.full(size, 24.0),
+        z_phot=np.full(size, 1.0),
+        logmass_lephare=np.full(size, 10.0),
+        re_combined_arcsec=np.full(size, 0.4),
+    )
+    fit_path.write_text(json.dumps({
+        "inputs": {
+            "euclid_cone_count": 4,
+            "euclid_area_arcmin2": 4.0,
+            "euclid_cones": [{"star_id": str(index)} for index in range(4)],
+        },
+        "fit": {
+            "vis_minus_f814w_mag": 0.0,
+            "magnitude_slope": 1.0,
+            "scatter_mag": 0.0,
+            "completeness_m50": 24.0,
+            "completeness_width_mag": 1.0,
+            "poisson_deviance": 4.0,
+            "dof": 4,
+        },
+    }))
+    (root / "euclid_population_meta.json").write_text(json.dumps({
+        "cone_count": 4,
+        "area_arcmin2": 4.0,
+        "cones": [{"star_id": str(index)} for index in range(4)],
+    }))
+    rows = []
+    for cone_index in range(4):
+        rows.extend({
+            "type": "unknown",
+            "spurious_prob": "0.0",
+            "mag_vis": "24.0",
+            "cone_index": str(cone_index),
+        } for _ in range(10))
+    _write_csv(root / "euclid_population.csv", rows)
+
+    first = fit_local_catalog_density(draws=10_000, bootstraps=100, seed=8)
+    second = fit_local_catalog_density(draws=10_000, bootstraps=100, seed=8)
+
+    assert first["valid"]
+    assert first["retained_detection_fraction"] == pytest.approx(0.5)
+    assert first["euclid_detected_density_arcmin2"] == pytest.approx(10.0)
+    assert first["recommended_density_arcmin2"] == pytest.approx(20.0)
+    assert first["calibration_fingerprint"] == second["calibration_fingerprint"]
+    assert first["interval_arcmin2"] == second["interval_arcmin2"]
+    assert density_calibration_path().exists()
 
 
 def test_nested_thinning_keeps_nuisance_population_identical(monkeypatch):

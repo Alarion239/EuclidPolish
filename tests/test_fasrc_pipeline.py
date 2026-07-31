@@ -43,6 +43,13 @@ def _mock_population_calibrations(monkeypatch):
         lambda: None,
     )
     monkeypatch.setattr(
+        "euclid_polish.web.helpers.population_calibration.density_state",
+        lambda: {"active": {
+            "transfer_fingerprint": "a" * 64,
+            "activated_density_arcmin2": 255.0,
+        }},
+    )
+    monkeypatch.setattr(
         "euclid_polish.web.helpers.population_comparison.read_comparison",
         lambda: {
             "fields": {"source_detection": {"real": {
@@ -123,7 +130,7 @@ class TestRegistry:
             "euclid_star_anchor_tfrecords",
             "download_tng_skirt",
             "tng_grid", "tng_stack", "poster_cutout",
-            "synthetic_generate", "tng_density_calibrate",
+            "synthetic_generate",
             "ensemble_train",
             "lensfinder_generate", "lensfinder_sr_infer",
             "lensfinder_build_stamps", "lensfinder_train",
@@ -528,6 +535,13 @@ class TestRegistry:
             "euclid_polish.web.helpers.population_calibration.active_star",
             lambda: None,
         )
+        monkeypatch.setattr(
+            "euclid_polish.web.helpers.population_calibration.density_state",
+            lambda: {"active": {
+                "transfer_fingerprint": "a" * 64,
+                "activated_density_arcmin2": 255.0,
+            }},
+        )
         step = REGISTRY.get("synthetic_generate")
         prepared = step.prepare_params({
             "n_train": 10,
@@ -551,6 +565,7 @@ class TestRegistry:
             argv[argv.index("--cosmos-vis-transfer-artifact-json") + 1]
         )
         assert embedded["fingerprint"] == "a" * 64
+        assert argv[argv.index("--galaxy-density-arcmin2") + 1] == "255"
 
     def test_synthetic_generate_force_flag(self):
         """The "Override existing data" checkbox adds --force (regenerate from
@@ -709,7 +724,6 @@ class TestSbatchRendering:
             "train":                        "train",
             "ensemble_train":               "ensemble-train",
             "synthetic_generate":           "synthetic-data",
-            "tng_density_calibrate":        "tng-density-calibration",
             "euclid_query":                 "star-catalog",
             "euclid_verify_photometry":     "verify-photometry",
             "download_euclid_cutouts":      "star-cutouts",

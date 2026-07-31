@@ -468,8 +468,8 @@ def tng_prior_payload(
         "configured_prior_arcmin2": float(configured_prior),
         "configured_mf_alpha": float(Config.TNG_MF_ALPHA),
         "single_scalar_adequate": None,
-        "calibration_scope": "matched_detection_normalization_only",
-        "pilot_grid_arcmin2": [240, 280, 320, 360, 400],
+        "calibration_scope": "local_catalog_forward_model",
+        "pilot_grid_arcmin2": [],
         "density_calibration": calibration,
         "photometric_transfer": transfer,
         "historical_incompatible_points": [
@@ -490,7 +490,8 @@ def tng_prior_payload(
         ],
         "recommendation": (
             "A single regenerated sample reports only a detection residual. "
-            "Run the matched-seed sweep with one active fixed-normalization "
-            "brightness transfer before changing the raw draw density."
+            "Run the local joint fit to evaluate the actual COSMOS/TNG draw "
+            "prior through the fitted Euclid brightness and completeness model "
+            "before changing raw density."
         ),
     }

@@ -29,9 +29,7 @@ compatibility; new code uses this module instead.
 from __future__ import annotations
 
 import contextlib
-import csv
 import json
-import math
 import secrets
 import shlex
 import textwrap
@@ -1396,6 +1394,7 @@ class SyntheticGenerateStep(RunPipelineStep):
         from euclid_polish.web.helpers.population_calibration import (
             active_star,
             active_transfer,
+            density_state,
         )
 
         prepared = super().prepare_params(params)
@@ -1416,6 +1415,25 @@ class SyntheticGenerateStep(RunPipelineStep):
         prepared["_cosmos_vis_transfer_artifact_json"] = json.dumps(
             transfer, separators=(",", ":"), sort_keys=True,
         )
+        density = density_state().get("active") or {}
+        if not density:
+            raise ValueError(
+                "activate the joint galaxy calibration before generating fields"
+            )
+        if density.get("transfer_fingerprint") != fingerprint:
+            raise ValueError(
+                "active galaxy density and brightness transfer do not match"
+            )
+        fitted_density = density.get(
+            "activated_density_arcmin2",
+            density.get("recommended_density_arcmin2"),
+        )
+        try:
+            prepared["galaxy_density_arcmin2"] = float(fitted_density)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "active galaxy calibration has no finite density"
+            ) from exc
         stars = active_star()
         if stars:
             prepared["_star_prior_json"] = json.dumps(
@@ -1500,124 +1518,6 @@ class SyntheticGenerateStep(RunPipelineStep):
                 with contextlib.suppress(TypeError, ValueError):
                     cmd += [flag, f"{float(val):g}"]
         return cmd
-
-
-class TngDensityCalibrationStep(FASRCPipelineStep):
-    """Isolated matched-seed response sweep; never touches records_v2."""
-
-    def __init__(self) -> None:
-        super().__init__(
-            step_id="tng_density_calibrate",
-            label="Calibrate TNG density (matched fields)",
-            job_name="tng-density-calibration",
-            defaults=StepResources(
-                partition="shared", n_cpus=20, n_gpus=0,
-                memory="80G", time_limit="2:00:00",
-            ),
-            needs_gpu=False,
-        )
-
-    def prepare_params(self, params: dict[str, Any]) -> dict[str, Any]:
-        from euclid_polish.web.helpers.population_calibration import (
-            photometric_candidate,
-        )
-        from euclid_polish.web.helpers.population_comparison import (
-            FIELD_AREA_ARCMIN2,
-            euclid_catalog_path,
-            read_comparison,
-        )
-
-        prepared = dict(params)
-        transfer = photometric_candidate()
-        if not transfer:
-            raise ValueError(
-                "fit a fixed-normalization brightness transfer first"
-            )
-        comparison = read_comparison() or {}
-        detection = (
-            comparison.get("fields", {}).get("source_detection", {})
-            .get("real", {})
-        )
-        positive = detection.get("positive") or []
-        negative = detection.get("negative") or []
-        if not positive or len(positive) != len(negative):
-            raise ValueError("rebuild field statistics before density calibration")
-        euclid_rows = (
-            comparison.get("population", {}).get("euclid", {}).get("counts", {})
-        )
-        meta = comparison.get("population", {}).get("euclid_meta") or {}
-        star_density = (
-            float(euclid_rows.get("star", 0)) / float(meta.get("area_arcmin2", 1))
-        )
-        star_per_field = star_density * FIELD_AREA_ARCMIN2
-        prepared["_euclid_field_detections"] = [
-            max(float(p) - float(n) - star_per_field, 0.0)
-            for p, n in zip(positive, negative, strict=True)
-        ]
-        prepared["_field_area_arcmin2"] = FIELD_AREA_ARCMIN2
-        cones = meta.get("cones") or []
-        radius = float(meta.get("radius_arcmin") or 0.0)
-        cone_counts = [0] * len(cones)
-        if cones and radius > 0 and euclid_catalog_path().exists():
-            with euclid_catalog_path().open(newline="", encoding="utf-8") as handle:
-                for row in csv.DictReader(handle):
-                    try:
-                        index = int(row.get("cone_index", -1))
-                    except (TypeError, ValueError):
-                        continue
-                    if 0 <= index < len(cone_counts) and row.get("type") != "star":
-                        cone_counts[index] += 1
-        cone_area = math.pi * radius ** 2
-        prepared["_euclid_cone_densities"] = (
-            [count / cone_area for count in cone_counts]
-            if cone_area > 0 else []
-        )
-        prepared["_transfer"] = transfer
-        return prepared
-
-    def build_command(self, params: dict[str, Any]) -> list[str]:
-        minimum = float(params.get("density_min", 240))
-        maximum = float(params.get("density_max", 400))
-        step = float(params.get("density_step", 40))
-        if minimum <= 0 or maximum <= minimum or step <= 0:
-            raise ValueError("density bounds must satisfy 0 < min < max and step > 0")
-        densities: list[float] = []
-        value = minimum
-        while value <= maximum + 1e-9:
-            densities.append(value)
-            value += step
-        if len(densities) < 3:
-            raise ValueError("density calibration needs at least three points")
-        transfer = params.get("_transfer") or {}
-        coefficients = transfer.get("coefficients") or {}
-        return [
-            "scripts/fasrc_calibrate_tng_density.py",
-            "--densities", ",".join(f"{item:g}" for item in densities),
-            "--fields", str(int(params.get("fields_per_point", 100))),
-            "--workers", str(int(params.get("n_cpus", self.defaults.n_cpus))),
-            "--image-size", str(int(params.get("image_size", 510))),
-            "--seed", str(int(params.get("seed", 71032))),
-            "--field-area-arcmin2", f"{float(params['_field_area_arcmin2']):.12g}",
-            "--euclid-field-detections", json.dumps(
-                params["_euclid_field_detections"], separators=(",", ":")
-            ),
-            "--euclid-cone-densities", json.dumps(
-                params.get("_euclid_cone_densities", []), separators=(",", ":")
-            ),
-            "--transfer-offset", f"{float(coefficients['offset_mag']):.12g}",
-            "--transfer-slope", f"{float(coefficients['magnitude_slope']):.12g}",
-            "--transfer-scatter", f"{float(coefficients['scatter_mag']):.12g}",
-            "--transfer-fingerprint", str(transfer["fingerprint"]),
-            "--transfer-artifact-json", json.dumps(
-                transfer, separators=(",", ":"), sort_keys=True,
-            ),
-            "--star-density", str(params.get(
-                "star_density_arcmin2", Config.DEFAULT_STAR_DENSITY_ARCMIN2
-            )),
-            "--star-mag-slope", str(params.get("star_mag_slope", Config.STAR_MAG_SLOPE)),
-            "--star-mag-bright", str(params.get("star_mag_bright", Config.STAR_MAG_BRIGHT)),
-            "--star-mag-faint", str(params.get("star_mag_faint", Config.STAR_MAG_FAINT)),
-        ]
 
 
 class LensfinderGenerateStep(SyntheticGenerateStep):
@@ -1814,7 +1714,6 @@ STEP_CLASSES: tuple[type[FASRCPipelineStep], ...] = (
     PosterCutoutStep,
     EuclidStarAnchorTFRecordStep,
     SyntheticGenerateStep,
-    TngDensityCalibrationStep,
     EnsembleTrainStep,
     LensfinderGenerateStep,
     LensfinderSRInferStep,

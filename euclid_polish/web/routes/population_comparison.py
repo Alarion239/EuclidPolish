@@ -1,22 +1,21 @@
 """Routes for the field-statistics and population-comparison workspace."""
 from __future__ import annotations
 
-import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 from flask import jsonify, request
 
-from euclid_polish.web import euclid_session, fasrc_config, fasrc_fetcher, job_config
+from euclid_polish.web import euclid_session, fasrc_fetcher, job_config
 from euclid_polish.web.helpers.paths import _sky_records_remote_dir
 from euclid_polish.web.helpers.population_calibration import (
     activate_density_candidate,
     activate_galaxy_recommendation,
     activate_photometric_transfer,
     activate_star_candidate,
-    density_calibration_path,
     density_state,
+    fit_local_catalog_density,
     galaxy_recommendation_state,
     star_state,
     transfer_state,
@@ -164,7 +163,6 @@ def register(app):
                         "reason": "not actionable—brightness transfer changed",
                     }
                     tng_prior["visible"] = visible
-                tng_prior["pilot_grid_arcmin2"] = [240, 280, 320, 360, 400]
                 tng_prior["density_calibration"] = density_state()
                 tng_prior["photometric_transfer"] = transfer_state()
                 tng_prior.setdefault("historical_incompatible_points", [
@@ -182,9 +180,9 @@ def register(app):
                 ])
                 tng_prior["recommendation"] = (
                     "A single regenerated sample reports only a detection "
-                    "residual. Run the matched-seed sweep with one active "
-                    "fixed-normalization brightness transfer before changing "
-                    "the raw draw density."
+                    "residual. Run the local joint fit to evaluate the actual "
+                    "COSMOS/TNG draw prior through the fitted Euclid brightness "
+                    "and completeness model before changing raw density."
                 )
                 population["tng_prior"] = tng_prior
             comparison["population"] = population
@@ -343,7 +341,7 @@ def register(app):
     )
     def api_population_comparison_activate_density():
         return activation_job(
-            "activate matched density calibration",
+            "activate local density calibration",
             activate_density_candidate,
         )
 
@@ -396,32 +394,33 @@ def register(app):
         return activation_job("activate stellar population", activate_star_candidate)
 
     @app.route(
-        "/api/population-comparison/sync-density-calibration", methods=["POST"]
+        "/api/population-comparison/run-local-galaxy-calibration",
+        methods=["POST"],
     )
-    def api_population_comparison_sync_density_calibration():
-        remote = (
-            f"{fasrc_config.load().data_dir}/population_comparison/"
-            "calibrations/tng_density_calibration.json"
-        )
-
+    def api_population_comparison_run_local_galaxy_calibration():
+        """Fit all galaxy-population parameters from cached local catalogs."""
         def run(cap):
-            cap.tick(0, 2, "connect to FASRC")
-            ensure_ssh_connected()
-            cap.tick(1, 2, "matched density calibration")
-            result = fasrc_fetcher.fetch_one_file(remote, force=True)
-            if not result.ok or not result.local_path:
-                raise RuntimeError(result.error or "density calibration sync failed")
-            target = density_calibration_path()
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(result.local_path, target)
-            state = density_state()
-            cap.tick(2, 2, "matched density calibration")
-            return state
+            project_root = Path(__file__).resolve().parents[3]
+            cap.tick(0, 3, "fit brightness transfer and completeness")
+            _run_analysis_script(
+                project_root, "scripts/fit_cosmos_euclid_counts.py"
+            )
+            cap.tick(1, 3, "draw local COSMOS/TNG population")
+            result = fit_local_catalog_density()
+            cap.tick(2, 3, "assemble joint generator recommendation")
+            recommendation = galaxy_recommendation_state()
+            cap.write(
+                "recommended raw density "
+                f"{float(result['recommended_density_arcmin2']):.1f} "
+                "draws / arcmin^2; no fields were rendered\n"
+            )
+            cap.tick(3, 3, "local galaxy calibration ready")
+            return {"density": result, "recommendation": recommendation}
 
         return jsonify({
             "ok": True,
             "job_id": REGISTRY.spawn(
-                label="sync matched density calibration", target=run,
+                label="local galaxy population calibration", target=run,
             ),
         })
 
