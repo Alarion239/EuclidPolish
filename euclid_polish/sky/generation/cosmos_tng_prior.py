@@ -111,6 +111,12 @@ def brightness_transfer_payload(path: str | Path) -> dict | None:
             "warnings": warnings,
             "valid": not warnings,
         },
+        "observation_model": {
+            "completeness_m50": float(fit.get("completeness_m50", 0.0)),
+            "completeness_width_mag": float(
+                fit.get("completeness_width_mag", 0.0)
+            ),
+        },
         "inputs": {
             key: (payload.get("inputs") or {}).get(key)
             for key in (

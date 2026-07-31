@@ -12,10 +12,12 @@ from euclid_polish.web import euclid_session, fasrc_config, fasrc_fetcher, job_c
 from euclid_polish.web.helpers.paths import _sky_records_remote_dir
 from euclid_polish.web.helpers.population_calibration import (
     activate_density_candidate,
+    activate_galaxy_recommendation,
     activate_photometric_transfer,
     activate_star_candidate,
     density_calibration_path,
     density_state,
+    galaxy_recommendation_state,
     star_state,
     transfer_state,
 )
@@ -195,6 +197,7 @@ def register(app):
                 "brightness_transfer": transfer_state(),
                 "galaxy_density": density_state(),
                 "stars": star_state(),
+                "galaxy_recommendation": galaxy_recommendation_state(),
             },
         })
 
@@ -342,6 +345,16 @@ def register(app):
         return activation_job(
             "activate matched density calibration",
             activate_density_candidate,
+        )
+
+    @app.route(
+        "/api/population-comparison/activate-galaxy-recommendation",
+        methods=["POST"],
+    )
+    def api_population_comparison_activate_galaxy_recommendation():
+        return activation_job(
+            "activate fitted galaxy generator parameters",
+            activate_galaxy_recommendation,
         )
 
     @app.route(

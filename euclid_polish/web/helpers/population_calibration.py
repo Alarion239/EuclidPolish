@@ -64,18 +64,27 @@ def active_transfer() -> dict[str, Any] | None:
     return _read(active_transfer_path())
 
 
-def activate_photometric_transfer() -> dict[str, Any]:
+def activate_photometric_transfer(
+    *, allow_quality_warnings: bool = False,
+) -> dict[str, Any]:
     candidate = photometric_candidate()
     if candidate is None:
         raise ValueError("No fixed-normalization photometric fit is available")
     quality = candidate.get("fit_quality") or {}
-    if not quality.get("valid", False):
+    if not quality.get("valid", False) and not allow_quality_warnings:
         warnings = "; ".join(quality.get("warnings") or [])
         raise ValueError(
             "Fixed-normalization fit failed its quality gate"
             + (f": {warnings}" if warnings else "")
         )
-    payload = {**candidate, "active": True}
+    payload = {
+        **candidate,
+        "active": True,
+        "validated": bool(quality.get("valid", False)),
+        "activated_with_quality_warnings": bool(
+            not quality.get("valid", False)
+        ),
+    }
     _write(active_transfer_path(), payload)
     return payload
 
@@ -253,6 +262,15 @@ def fit_density_response(
 
 def density_state() -> dict[str, Any]:
     candidate = _read(density_calibration_path())
+    transfer = photometric_candidate() or {}
+    if candidate and candidate.get("transfer_fingerprint") != transfer.get(
+        "fingerprint"
+    ):
+        candidate = dict(candidate)
+        candidate["valid"] = False
+        candidate["warnings"] = list(candidate.get("warnings") or []) + [
+            "brightness-transfer candidate changed after the sweep"
+        ]
     active = _read(active_density_path())
     return {
         "candidate": candidate,
@@ -288,6 +306,62 @@ def activate_density_candidate() -> dict[str, Any]:
     job_config.update({"galaxy_density_arcmin2": float(recommendation)})
     _write(active_density_path(), payload)
     return payload
+
+
+def galaxy_recommendation_state() -> dict[str, Any]:
+    """Return every fitted generator parameter as one reviewable proposal."""
+    transfer = photometric_candidate()
+    density = density_state().get("candidate")
+    coefficients = (transfer or {}).get("coefficients") or {}
+    quality = (transfer or {}).get("fit_quality") or {}
+    warnings = list(quality.get("warnings") or [])
+    if density:
+        warnings.extend(density.get("warnings") or [])
+    recommendation_available = bool(
+        transfer
+        and density
+        and density.get("valid")
+        and density.get("recommended_density_arcmin2") is not None
+        and density.get("transfer_fingerprint") == transfer.get("fingerprint")
+    )
+    return {
+        "recommendation_available": recommendation_available,
+        "validated": bool(recommendation_available and quality.get("valid")),
+        "warnings": list(dict.fromkeys(str(item) for item in warnings)),
+        "transfer_fingerprint": (transfer or {}).get("fingerprint"),
+        "density_calibration_fingerprint": (
+            (density or {}).get("calibration_fingerprint")
+        ),
+        "generator_parameters": {
+            "galaxy_density_arcmin2": (
+                (density or {}).get("recommended_density_arcmin2")
+            ),
+            "cosmos_vis_offset_mag": coefficients.get("offset_mag"),
+            "cosmos_vis_magnitude_slope": coefficients.get("magnitude_slope"),
+            "cosmos_vis_scatter_mag": coefficients.get("scatter_mag"),
+        },
+        "observation_model_diagnostics": (
+            (transfer or {}).get("observation_model") or {}
+        ),
+        "density_interval_arcmin2": (density or {}).get("interval_arcmin2"),
+    }
+
+
+def activate_galaxy_recommendation() -> dict[str, Any]:
+    """Freeze and apply the complete fitted generator parameter proposal."""
+    state = galaxy_recommendation_state()
+    if not state["recommendation_available"]:
+        raise ValueError(
+            "Run a transfer-matched density sweep before activating parameters"
+        )
+    transfer = activate_photometric_transfer(allow_quality_warnings=True)
+    density = activate_density_candidate()
+    return {
+        **state,
+        "active": True,
+        "brightness_transfer": transfer,
+        "density_calibration": density,
+    }
 
 
 def star_state() -> dict[str, Any]:

@@ -35,6 +35,10 @@ def _mock_population_calibrations(monkeypatch):
         lambda: transfer,
     )
     monkeypatch.setattr(
+        "euclid_polish.web.helpers.population_calibration.photometric_candidate",
+        lambda: transfer,
+    )
+    monkeypatch.setattr(
         "euclid_polish.web.helpers.population_calibration.active_star",
         lambda: None,
     )

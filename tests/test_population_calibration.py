@@ -12,7 +12,13 @@ from euclid_polish.sky.generation.sky_simulator import (
     SkySimulatorConfig,
 )
 from euclid_polish.sky.generation.stellar_sed import EmpiricalStellarPrior
-from euclid_polish.web.helpers.population_calibration import fit_density_response
+from euclid_polish.web.helpers.population_calibration import (
+    activate_galaxy_recommendation,
+    active_transfer_path,
+    density_calibration_path,
+    fit_density_response,
+    galaxy_recommendation_state,
+)
 from euclid_polish.web.helpers.star_population import fit_star_population
 
 
@@ -72,6 +78,64 @@ def test_nested_thinning_keeps_nuisance_population_identical(monkeypatch):
     assert low_ids <= high_ids
     assert lower["stars"] == upper["stars"]
     assert lower["lenses"] == upper["lenses"]
+
+
+def test_complete_generator_recommendation_can_activate_with_fit_warnings(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setattr(Config, "DATA_DIR", str(tmp_path))
+    fit_path = tmp_path / "fit.json"
+    monkeypatch.setattr(Config, "COSMOS_EUCLID_FIT_PATH", str(fit_path))
+    fit_path.write_text(json.dumps({
+        "inputs": {"euclid_cone_count": 6},
+        "fit": {
+            "vis_minus_f814w_mag": 0.4,
+            "magnitude_slope": 0.7,
+            "scatter_mag": 1.0,
+            "completeness_m50": 25.1,
+            "completeness_width_mag": 0.5,
+            "poisson_deviance": 60.0,
+            "dof": 10,
+        },
+    }))
+    from euclid_polish.sky.generation.cosmos_tng_prior import (
+        brightness_transfer_payload,
+    )
+    transfer = brightness_transfer_payload(fit_path)
+    assert transfer is not None
+    density_calibration_path().parent.mkdir(parents=True, exist_ok=True)
+    density_calibration_path().write_text(json.dumps({
+        "valid": True,
+        "warnings": [],
+        "transfer_fingerprint": transfer["fingerprint"],
+        "calibration_fingerprint": "sweep",
+        "recommended_density_arcmin2": 315.0,
+        "interval_arcmin2": {"median": 315, "p16": 295, "p84": 338},
+    }))
+    updates = []
+    monkeypatch.setattr(
+        "euclid_polish.web.job_config.update", lambda patch: updates.append(patch),
+    )
+
+    state = galaxy_recommendation_state()
+    assert state["recommendation_available"]
+    assert not state["validated"]
+    assert state["generator_parameters"] == {
+        "galaxy_density_arcmin2": 315.0,
+        "cosmos_vis_offset_mag": 0.4,
+        "cosmos_vis_magnitude_slope": 0.7,
+        "cosmos_vis_scatter_mag": 1.0,
+    }
+
+    activated = activate_galaxy_recommendation()
+    assert activated["active"]
+    assert activated["brightness_transfer"][
+        "activated_with_quality_warnings"
+    ]
+    assert json.loads(active_transfer_path().read_text())["fingerprint"] == transfer[
+        "fingerprint"
+    ]
+    assert updates == [{"galaxy_density_arcmin2": 315.0}]
 
 
 def _write_csv(path, rows):

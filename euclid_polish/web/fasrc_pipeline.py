@@ -1519,7 +1519,7 @@ class TngDensityCalibrationStep(FASRCPipelineStep):
 
     def prepare_params(self, params: dict[str, Any]) -> dict[str, Any]:
         from euclid_polish.web.helpers.population_calibration import (
-            active_transfer,
+            photometric_candidate,
         )
         from euclid_polish.web.helpers.population_comparison import (
             FIELD_AREA_ARCMIN2,
@@ -1528,10 +1528,10 @@ class TngDensityCalibrationStep(FASRCPipelineStep):
         )
 
         prepared = dict(params)
-        transfer = active_transfer()
+        transfer = photometric_candidate()
         if not transfer:
             raise ValueError(
-                "activate a valid fixed-normalization transfer first"
+                "fit a fixed-normalization brightness transfer first"
             )
         comparison = read_comparison() or {}
         detection = (

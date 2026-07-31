@@ -166,11 +166,33 @@ type CalibrationArtifact = {
     }>;
   };
   active?: boolean;
+  coefficients?: {
+    offset_mag: number; magnitude_slope: number; scatter_mag: number;
+  };
+  observation_model?: {
+    completeness_m50: number; completeness_width_mag: number;
+  };
 };
 type CalibrationState = {
   candidate: CalibrationArtifact | null;
   active: CalibrationArtifact | null;
   is_active: boolean;
+};
+type GalaxyRecommendation = {
+  recommendation_available: boolean;
+  validated: boolean;
+  warnings: string[];
+  generator_parameters: {
+    galaxy_density_arcmin2: number | null;
+    cosmos_vis_offset_mag: number | null;
+    cosmos_vis_magnitude_slope: number | null;
+    cosmos_vis_scatter_mag: number | null;
+  };
+  observation_model_diagnostics: {
+    completeness_m50?: number;
+    completeness_width_mag?: number;
+  };
+  density_interval_arcmin2?: PriorInterval | null;
 };
 type CosmosEuclidFit = {
   interpretation: string;
@@ -276,6 +298,7 @@ type ApiPayload = {
     brightness_transfer: CalibrationState;
     galaxy_density: CalibrationState;
     stars: CalibrationState;
+    galaxy_recommendation: GalaxyRecommendation;
   };
 };
 
@@ -1242,15 +1265,24 @@ function GalaxyCalibrationControls({ api, onChanged }: {
 }) {
   const hst = useHstStatus();
   const step = hst.data?.steps.find((item) => item.step_id === "tng_density_calibrate");
+  const generationStep = hst.data?.steps.find(
+    (item) => item.step_id === "synthetic_generate"
+  );
   const [minimum, setMinimum] = useState("240");
   const [maximum, setMaximum] = useState("400");
   const [spacing, setSpacing] = useState("40");
   const [fields, setFields] = useState("100");
-  const activateTransfer = useJob();
+  const [generationSplits, setGenerationSplits] = useState<string[]>([
+    "validate", "test",
+  ]);
   const sync = useJob();
-  const activateDensity = useJob();
+  const activateRecommendation = useJob();
   const transfer = api.calibrations?.brightness_transfer ?? EMPTY_CALIBRATION;
   const density = api.calibrations?.galaxy_density ?? EMPTY_CALIBRATION;
+  const recommendation = api.calibrations?.galaxy_recommendation;
+  const parameters = recommendation?.generator_parameters;
+  const observation = recommendation?.observation_model_diagnostics;
+  const allActive = transfer.is_active && density.is_active;
   const validGrid = Number(minimum) > 0 && Number(maximum) > Number(minimum)
     && Number(spacing) > 0 && Number(fields) >= 2;
   const refresh = (job: { status: string }) => {
@@ -1264,7 +1296,8 @@ function GalaxyCalibrationControls({ api, onChanged }: {
         <div className="calibration-status-grid">
           <div>
             <span className="eyebrow">brightness transfer</span>
-            <strong>{transfer.is_active ? "active" : transfer.candidate?.valid ? "candidate ready" : "not valid"}</strong>
+            <strong>{transfer.is_active ? "active" : transfer.candidate?.valid
+              ? "candidate ready" : transfer.candidate ? "best fit · warnings" : "not fitted"}</strong>
             <small className="mono">{transfer.candidate?.fingerprint?.slice(0, 12) ?? "no candidate"}</small>
             {!!transfer.candidate?.warnings?.length && <p>{transfer.candidate.warnings.join(" · ")}</p>}
           </div>
@@ -1277,24 +1310,61 @@ function GalaxyCalibrationControls({ api, onChanged }: {
             {!!density.candidate?.warnings?.length && <p>{density.candidate.warnings.join(" · ")}</p>}
           </div>
         </div>
+        <div className="calibration-parameters">
+          <div><span>raw galaxy density</span><strong>
+            {parameters?.galaxy_density_arcmin2 != null
+              ? parameters.galaxy_density_arcmin2.toFixed(1) : "pending sweep"}
+          </strong><small>draws / arcmin²</small></div>
+          <div><span>VIS offset</span><strong>
+            {parameters?.cosmos_vis_offset_mag != null
+              ? parameters.cosmos_vis_offset_mag.toFixed(4) : "—"}
+          </strong><small>mag</small></div>
+          <div><span>magnitude slope</span><strong>
+            {parameters?.cosmos_vis_magnitude_slope != null
+              ? parameters.cosmos_vis_magnitude_slope.toFixed(4) : "—"}
+          </strong><small>F814W → VIS</small></div>
+          <div><span>brightness scatter</span><strong>
+            {parameters?.cosmos_vis_scatter_mag != null
+              ? parameters.cosmos_vis_scatter_mag.toFixed(4) : "—"}
+          </strong><small>mag</small></div>
+        </div>
+        <p className="catalog-classification-note">
+          Observation-model diagnostics, fitted but not submitted to the generator:
+          {" "}50% completeness VIS {observation?.completeness_m50?.toFixed(3) ?? "—"},
+          {" "}width {observation?.completeness_width_mag?.toFixed(3) ?? "—"} mag.
+        </p>
+        {!!recommendation?.warnings?.length && (
+          <p className="catalog-classification-note">
+            Best-fit recommendation warnings: {recommendation.warnings.join(" · ")}
+          </p>
+        )}
         <div className="row" style={{ gap: "var(--s2)", marginBottom: "var(--s3)" }}>
-          <Button disabled={!transfer.candidate?.valid || transfer.is_active || activateTransfer.busy}
-            onClick={() => activateTransfer.run(
-              "/api/population-comparison/activate-transfer", {}, { onDone: refresh },
-            )}>Activate brightness transfer</Button>
           <Button disabled={sync.busy}
             onClick={() => sync.run(
               "/api/population-comparison/sync-density-calibration", {}, { onDone: refresh },
             )}>{sync.busy ? "Syncing…" : "Sync latest sweep result"}</Button>
-          <Button variant="primary"
-            disabled={!density.candidate?.valid || density.is_active || activateDensity.busy}
-            onClick={() => activateDensity.run(
-              "/api/population-comparison/activate-density", {}, { onDone: refresh },
-            )}>Activate calibration</Button>
+          <Button variant="primary" disabled={
+              !recommendation?.recommendation_available
+              || allActive || activateRecommendation.busy
+            }
+            onClick={() => activateRecommendation.run(
+              "/api/population-comparison/activate-galaxy-recommendation",
+              {}, { onDone: refresh },
+            )}>
+            {recommendation?.validated
+              ? "Activate recommended generator parameters"
+              : "Activate best fit with warnings"}
+          </Button>
         </div>
-        <JobProgressView job={activateTransfer.job} error={activateTransfer.error} />
         <JobProgressView job={sync.job} error={sync.error} />
-        <JobProgressView job={activateDensity.job} error={activateDensity.error} />
+        <JobProgressView job={activateRecommendation.job}
+          error={activateRecommendation.error} />
+        <p className="catalog-classification-note">
+          Activation writes the recommended density to configuration and freezes
+          the exact offset, slope, scatter, artifact fingerprint, and fit warnings.
+          Every subsequent <NavLink to="/sky">Generate synthetic training pairs</NavLink>
+          {" "}submission embeds that complete parameter artifact.
+        </p>
         <div className="cone-query__form">
           <Field label="Minimum · / arcmin²"><Input type="number" value={minimum} onChange={setMinimum} min={1} /></Field>
           <Field label="Maximum · / arcmin²"><Input type="number" value={maximum} onChange={setMaximum} min={2} /></Field>
@@ -1308,11 +1378,44 @@ function GalaxyCalibrationControls({ api, onChanged }: {
               density_min: minimum, density_max: maximum,
               density_step: spacing, fields_per_point: fields,
             }}
-            submitDisabled={!validGrid || !transfer.is_active}
-            submitDisabledHint={!transfer.is_active
-              ? "activate the fixed-normalization transfer first"
+            submitDisabled={!validGrid || !transfer.candidate}
+            submitDisabledHint={!transfer.candidate
+              ? "fit the fixed-normalization transfer first"
               : "enter valid bounds and at least two fields"} />
         ) : <Empty>{hst.loading ? "loading FASRC step…" : "density calibration step unavailable"}</Empty>}
+        <div style={{ marginTop: "var(--s4)" }}>
+          <div className="fasrc-step-inline__head">
+            <div>
+              <div className="eyebrow">submit fitted parameters</div>
+              <strong>Generate fields with the activated joint fit</strong>
+            </div>
+          </div>
+          <div className="row" style={{ gap: "var(--s4)", marginBottom: "var(--s3)" }}>
+            {(["train", "validate", "test"] as const).map((split) => (
+              <Checkbox key={split} checked={generationSplits.includes(split)}
+                onChange={(checked) => setGenerationSplits((current) => checked
+                  ? [...current, split]
+                  : current.filter((item) => item !== split))}>
+                regenerate {split}
+              </Checkbox>
+            ))}
+          </div>
+          {generationStep ? (
+            <StepCard step={generationStep as Step}
+              sshConnected={!!hst.data?.ssh_connected} embedded showHistory={false}
+              extraParams={{
+                galaxy_density_arcmin2:
+                  parameters?.galaxy_density_arcmin2 ?? "",
+                regenerate_splits: generationSplits.join(","),
+                extra_flags: generationSplits.length
+                  ? `--regenerate-splits=${generationSplits.join(",")}` : "",
+              }}
+              submitDisabled={!allActive || generationSplits.length === 0}
+              submitDisabledHint={!allActive
+                ? "activate the complete recommended parameter set first"
+                : "select at least one split to regenerate"} />
+          ) : <Empty>synthetic generation step unavailable</Empty>}
+        </div>
       </CardBody>
     </Card>
   );
