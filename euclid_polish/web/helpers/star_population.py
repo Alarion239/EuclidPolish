@@ -34,6 +34,8 @@ def gaia_catalog_meta_path() -> Path:
 
 
 def _finite(value: Any) -> float | None:
+    if np.ma.is_masked(value):
+        return None
     try:
         result = float(value)
     except (TypeError, ValueError):
@@ -754,6 +756,12 @@ def _softmax(values: np.ndarray) -> np.ndarray:
     return result / total if total > 0.0 else np.full_like(result, 1.0 / result.size)
 
 
+def _logsumexp(values: np.ndarray) -> float:
+    values = np.asarray(values, dtype=np.float64)
+    maximum = float(np.max(values))
+    return maximum + float(np.log(np.sum(np.exp(values - maximum))))
+
+
 def _flux_ratios(colors: np.ndarray) -> np.ndarray:
     vis_y, y_j, j_h = np.asarray(colors, dtype=np.float64)
     return np.power(10.0, 0.4 * np.asarray([
@@ -1002,22 +1010,41 @@ def _fit_star_population_latent() -> dict[str, Any]:
             ) if str(row.get("gaia_id") or "") in by_id else 0.03,
         })
 
+    # The flux likelihood is independent of the magnitude-bin mixture weights.
+    # Cache it once; recomputing 17 node scores for every EM iteration makes a
+    # large cached cone set needlessly expensive.
+    for record in euclid_records:
+        magnitude = _finite(record["row"].get("mag_vis"))
+        record["likelihood"] = (
+            _source_node_log_likelihood(
+                record["row"], locus, bp_nodes,
+                record["bp_rp"], record["bp_rp_sigma"],
+            )
+            if magnitude is not None and splice < magnitude <= faint
+            else None
+        )
+
     converged = False
     objective_change = float("inf")
+    previous_objective: float | None = None
     for _iteration in range(50):
-        old = node_weights.copy()
         accum = np.full_like(node_weights, 0.5)
+        objective = 0.0
         for record in euclid_records:
             magnitude = _finite(record["row"].get("mag_vis"))
             if magnitude is None or not splice < magnitude <= faint:
                 continue
             bin_index = int(np.searchsorted(magnitude_edges, magnitude, side="right") - 1)
             bin_index = max(0, min(bin_index, node_weights.shape[0] - 1))
-            likelihood = _source_node_log_likelihood(
-                record["row"], locus, bp_nodes,
-                record["bp_rp"], record["bp_rp_sigma"],
+            likelihood = record["likelihood"]
+            if likelihood is None:
+                continue
+            log_scores = (
+                np.log(np.maximum(node_weights[bin_index], 1e-20))
+                + likelihood
             )
-            posterior = _softmax(np.log(np.maximum(node_weights[bin_index], 1e-20)) + likelihood)
+            objective += float(record["probability"]) * _logsumexp(log_scores)
+            posterior = _softmax(log_scores)
             accum[bin_index] += float(record["probability"]) * posterior
         for index in range(node_weights.shape[0]):
             if float(np.sum(accum[index])) <= 20.0:
@@ -1028,7 +1055,11 @@ def _fit_star_population_latent() -> dict[str, Any]:
                 )
                 accum[index] = accum[nearest]
         node_weights = _normalise_probability_rows(accum, alpha=0.0)
-        objective_change = float(np.max(np.abs(node_weights - old)))
+        if previous_objective is not None:
+            objective_change = abs(objective - previous_objective) / max(
+                abs(previous_objective), 1.0,
+            )
+        previous_objective = objective
         if objective_change < 1e-5:
             converged = True
             break
@@ -1060,9 +1091,9 @@ def _fit_star_population_latent() -> dict[str, Any]:
             int(np.searchsorted(magnitude_edges, magnitude, side="right") - 1),
             node_weights.shape[0] - 1,
         ))
-        likelihood = _source_node_log_likelihood(
-            row, locus, bp_nodes, record["bp_rp"], record["bp_rp_sigma"],
-        )
+        likelihood = record["likelihood"]
+        if likelihood is None:
+            continue
         posterior = _softmax(np.log(np.maximum(node_weights[bin_index], 1e-20)) + likelihood)
         latent_base = posterior @ locus + diagnostic_rng.multivariate_normal(
             np.zeros(3), intrinsic_covariance,
@@ -1081,8 +1112,14 @@ def _fit_star_population_latent() -> dict[str, Any]:
             dirty_weights.append(float(record["probability"]))
             measurement_covariance = _color_measurement_covariance(row)
             if measurement_covariance is not None:
+                measurement_covariance = _positive_semidefinite_covariance(
+                    measurement_covariance, floor=0.0,
+                )
+                predictive_covariance = _positive_semidefinite_covariance(
+                    intrinsic_covariance + measurement_covariance, floor=0.0,
+                )
                 predictive_noise = diagnostic_rng.multivariate_normal(
-                    np.zeros(3), measurement_covariance,
+                    np.zeros(3), predictive_covariance,
                 )
                 predictive_colors.append(
                     latent_base + predictive_noise
