@@ -1261,7 +1261,7 @@ function StarCalibrationControls({ api, onChanged }: {
           <Button disabled={!candidate?.valid || state.is_active || activate.busy}
             onClick={() => activate.run(
               "/api/population-comparison/activate-star-prior", {}, { onDone: refresh },
-            )}>Activate calibration</Button>
+            )}>{state.is_active ? "Calibration active" : "Activate calibration"}</Button>
         </div>
         <p className="calibration-plain-note">
           Gaia supplies the bright point-source side and latent colour/temperature population; Euclid point-like probabilities supply the faint count shape and weighted validation statistics.
