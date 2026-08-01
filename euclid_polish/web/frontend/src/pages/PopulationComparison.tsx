@@ -1258,10 +1258,10 @@ function StarCalibrationControls({ api, onChanged }: {
             onClick={() => query.run(
               "/api/population-comparison/query-gaia-stars", {}, { onDone: refresh },
             )}>{query.busy ? "Querying + fitting…" : "Query Gaia + fit star prior"}</Button>
-          <Button disabled={!candidate?.valid || state.is_active || activate.busy}
+          <Button disabled={!candidate?.valid || activate.busy}
             onClick={() => activate.run(
               "/api/population-comparison/activate-star-prior", {}, { onDone: refresh },
-            )}>{state.is_active ? "Calibration active" : "Activate calibration"}</Button>
+            )}>{state.is_active ? "Re-activate calibration" : "Activate calibration"}</Button>
         </div>
         <p className="calibration-plain-note">
           Gaia supplies the bright point-source side and latent colour/temperature population; Euclid point-like probabilities supply the faint count shape and weighted validation statistics.
