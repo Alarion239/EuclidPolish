@@ -893,6 +893,11 @@ class MeasureTngRadiiStep(FASRCPipelineStep):
             value = str(params.get(key, "") or "").strip()
             if value:
                 cmd += [flag, value]
+        try:
+            workers = int(params.get("n_cpus") or self.defaults.n_cpus)
+        except (TypeError, ValueError):
+            workers = self.defaults.n_cpus
+        cmd += ["--workers", str(max(1, workers))]
         return cmd
 
 

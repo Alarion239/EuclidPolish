@@ -77,7 +77,9 @@ def test_manifest_payload_is_json_serializable(tmp_path):
     atlas.mkdir(); _atlas(atlas)
     properties = tmp_path / "props.csv"
     properties.write_text("id,sfr,mass_stars,m_halo,reff\n42,1,1e10,1e12,2\n")
-    report = build_manifest(str(atlas), properties_path=str(properties))
+    report = build_manifest(
+        str(atlas), properties_path=str(properties), workers=2,
+    )
     json.dumps(report, allow_nan=False)
 
 

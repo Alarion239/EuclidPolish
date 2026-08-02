@@ -12,6 +12,7 @@ import csv
 import hashlib
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -104,6 +105,7 @@ def build_manifest(
     *,
     properties_path: str | None = None,
     output_path: str | None = None,
+    workers: int = 1,
 ) -> dict[str, Any]:
     """Measure every completed atlas orientation and return a report.
 
@@ -115,41 +117,56 @@ def build_manifest(
         Config.DATA_DIR, "_tng_infographics", "tng_properties.csv"
     )
     properties = load_tng_properties(properties_path)
-    entries: list[dict[str, Any]] = []
-    failures: list[dict[str, str]] = []
+    tasks: list[tuple[str, str, int, bool]] = []
     for gdir, gid in galaxies:
         props = properties.get(str(gid), {})
         mass = float(props.get("mass_stars", float("nan")))
         has_properties = bool(np.isfinite(mass) and mass > 0.0)
         for orientation in range(1, N_ORIENTATIONS + 1):
-            vis_path = tng_fits_path(gdir, gid, orientation, "VIS")
-            row: dict[str, Any] = {
-                "subhalo_id": str(gid),
-                "orientation": int(orientation),
-                "vis_path": os.path.abspath(vis_path),
-                "valid": False,
+            tasks.append((gdir, str(gid), orientation, has_properties))
+
+    def measure(task: tuple[str, str, int, bool]) -> tuple[dict[str, Any], dict[str, str] | None]:
+        gdir, gid, orientation, has_properties = task
+        vis_path = tng_fits_path(gdir, gid, orientation, "VIS")
+        row: dict[str, Any] = {
+            "subhalo_id": gid,
+            "orientation": int(orientation),
+            "vis_path": os.path.abspath(vis_path),
+            "valid": False,
+        }
+        failure = None
+        try:
+            identity = _file_identity(vis_path)
+            frame = load_tng_frame(vis_path)
+            re_px = float(measure_halflight_radius_px(frame))
+            if not has_properties:
+                raise ValueError("missing finite positive mass_stars property")
+            if not np.isfinite(re_px) or re_px <= 0.0:
+                raise ValueError("VIS curve-of-growth returned no positive R_e")
+            row.update({
+                "valid": True,
+                "native_re_px": re_px,
+                "shape": [int(frame.shape[0]), int(frame.shape[1])],
+                "vis_file": identity,
+            })
+        except (OSError, ValueError, TypeError) as exc:
+            row["error"] = str(exc)
+            failure = {
+                "subhalo_id": gid,
+                "orientation": str(orientation),
+                "error": str(exc),
             }
-            try:
-                identity = _file_identity(vis_path)
-                frame = load_tng_frame(vis_path)
-                re_px = float(measure_halflight_radius_px(frame))
-                if not has_properties:
-                    raise ValueError("missing finite positive mass_stars property")
-                if not np.isfinite(re_px) or re_px <= 0.0:
-                    raise ValueError("VIS curve-of-growth returned no positive R_e")
-                row.update({
-                    "valid": True,
-                    "native_re_px": re_px,
-                    "shape": [int(frame.shape[0]), int(frame.shape[1])],
-                    "vis_file": identity,
-                })
-            except (OSError, ValueError, TypeError) as exc:
-                row["error"] = str(exc)
-                failures.append({
-                    "subhalo_id": str(gid), "orientation": str(orientation),
-                    "error": str(exc),
-                })
-            entries.append(row)
+        return row, failure
+
+    worker_count = max(1, int(workers))
+    if worker_count == 1:
+        measured = map(measure, tasks)
+        measured_rows = list(measured)
+    else:
+        with ThreadPoolExecutor(max_workers=worker_count) as pool:
+            measured_rows = list(pool.map(measure, tasks))
+    entries = [row for row, _ in measured_rows]
+    failures = [failure for _, failure in measured_rows if failure is not None]
 
     inventory = _inventory(tng_dir, galaxies, properties_path)
     inventory_fingerprint = _fingerprint({

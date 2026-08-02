@@ -147,6 +147,7 @@ class TestRegistry:
         assert command == [
             "scripts/measure_tng_radii.py",
             "--summary", "/data/tng_atlas_parameters.csv",
+            "--workers", "4",
         ]
 
     def test_ensemble_train_step_build_command(self, monkeypatch):

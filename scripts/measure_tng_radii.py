@@ -21,6 +21,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--properties", default="")
     parser.add_argument("--output", default="")
     parser.add_argument("--summary", default="")
+    parser.add_argument(
+        "--workers", type=int,
+        default=max(1, int(os.environ.get("SLURM_CPUS_PER_TASK", "1"))),
+    )
     args = parser.parse_args(argv)
     properties = args.properties or os.path.join(
         Config.DATA_DIR, "_tng_infographics", "tng_properties.csv"
@@ -33,6 +37,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     report = build_manifest(
         args.tng_dir, properties_path=properties, output_path=output,
+        workers=args.workers,
     )
     summary_meta = None
     if report.get("valid"):
