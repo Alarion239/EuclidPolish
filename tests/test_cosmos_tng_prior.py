@@ -24,7 +24,7 @@ def _write_prior(path):
 def test_prior_requires_strict_generator_ready_rows_and_fit(tmp_path):
     path = tmp_path / "prior.npz"
     _write_prior(path)
-    with pytest.raises(ValueError, match="brightness fit"):
+    with pytest.raises(ValueError, match="fitted F814W"):
         CosmosTngPrior(path, photometric_fit_path=tmp_path / "missing.json")
 
     transfer = F814WToVisTransfer(source="embedded:test")

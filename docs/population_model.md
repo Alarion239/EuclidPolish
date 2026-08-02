@@ -47,20 +47,23 @@ the reference for likelihood fitting with noisy latent distributions
 
 ## Sizes and TNG images
 
-Each COSMOS circularized combined B+D (R_e) is paired directly with the
-measured centered VIS curve-of-growth radius of the selected TNG frame. The
-continuous four-band resampling scale is
+Each COSMOS circularized combined B+D \(R_e\) is paired directly with the
+measured centered VIS curve-of-growth radius of the selected TNG frame. One
+spatial resampling is applied to the complete registered TNG cube:
 
 \[
 s_0=\frac{R_{e,\rm COSMOS}}
           {R_{e,\rm TNG,px}\,p},
 \]
 
-where (p) is the output pixel scale. The 1600-pixel atlas frame side is not
-part of this calculation. The final cropped VIS stamp is remeasured and the
-scale is refined until the residual is within 5% or 0.5 output pixel, whichever
-is larger. The effective-radius convention is the standard Sérsic/curve of
-growth definition ([Graham & Driver 2005](https://arxiv.org/abs/astro-ph/0503176)).
+where \(p\) is the output pixel scale. The same geometric transform is used for
+VIS/Y/J/H, preserving the native TNG inter-band ratios. After cropping, one
+VIS-anchored scalar multiplies the entire cube; the COSMOS-conditioned path
+has no per-band colour correction. The 1600-pixel atlas frame side is not part
+of this calculation. The final cropped VIS stamp is remeasured and the scale
+is refined until the residual is within 5% or 0.5 output pixel, whichever is
+larger. The effective-radius convention is the standard Sérsic/curve of growth
+definition ([Graham & Driver 2005](https://arxiv.org/abs/astro-ph/0503176)).
 The TNG50-SKIRT atlas and its effective-radius analysis provide the simulated
 multiband frames and comparison context ([TNG50-SKIRT Atlas](https://arxiv.org/abs/2401.04224),
 [effective-radius analysis](https://arxiv.org/abs/2401.04225)).

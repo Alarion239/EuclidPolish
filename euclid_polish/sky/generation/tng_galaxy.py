@@ -210,42 +210,46 @@ def prepare_tng_galaxy_continuous(
     pixel_scale_arcsec: float = Config.DEFAULT_PIXEL_SCALE,
     fits_bands: tuple[str, ...] = TNG_FITS_BANDS,
 ) -> tuple[np.ndarray, dict]:
-    """Render all four bands at an arbitrary linear scale.
+    """Render the registered four-band cube with one linear scale.
 
     This is the size-matching path.  The source is cropped from the native
-    atlas footprint using the VIS curve of growth, then every band is
-    resampled with the same continuous scale.  The stamp side is therefore a
-    consequence of the galaxy light footprint, never the quantity being
-    matched.
+    atlas footprint using the VIS curve of growth, then the complete cube is
+    rotated and resampled in one operation.  This guarantees identical
+    geometry in every band and preserves the native TNG relative SED.  The
+    stamp side is a consequence of the light footprint, never the matched
+    quantity.
     """
     if not np.isfinite(scale) or scale <= 0.0:
         raise ValueError(f"scale must be finite and positive, got {scale!r}")
     config_to_fits = {v: k for k, v in _FITS_BAND_TO_CONFIG.items()}
-    channels: list[np.ndarray] = []
-    flux_e: dict[str, float] = {}
-    crop: tuple[slice, slice] | None = None
-    use_angle = rot_angle is not None
+    native_channels: list[np.ndarray] = []
     for cfg_name in Config.LR_INPUT_BAND_NAMES:
         fband = config_to_fits[cfg_name]
         if fband not in fits_bands:
             raise ValueError(f"band {fband} not in requested fits_bands={fits_bands}")
-        band = Config.get_band(cfg_name)
-        sb = load_tng_frame(tng_fits_path(
-            galaxy_dir, subhalo_id, orientation, fband))
-        if crop is None:
-            crop = centered_rotation_crop_slices(
-                sb, 1, enclosed_fraction=0.999,
-                padding=TNG_ROTATION_CROP_PADDING,
-            )
-        sb = sb[crop]
-        if use_angle:
-            sb = rotate_arbitrary(sb, float(rot_angle))
-        sb = resample_surface_brightness(sb, scale)
-        if not use_angle:
-            sb = rotate_quarter(sb, rot_k)
-        e = surface_brightness_to_electrons(sb, band, pixel_scale_arcsec)
-        channels.append(e)
-        flux_e[cfg_name] = float(e.sum())
+        native_channels.append(load_tng_frame(tng_fits_path(
+            galaxy_dir, subhalo_id, orientation, fband)))
+    native_cube = np.stack(native_channels, axis=-1).astype(np.float32)
+    crop = centered_rotation_crop_slices(
+        native_cube[..., 0], 1, enclosed_fraction=0.999,
+        padding=TNG_ROTATION_CROP_PADDING,
+    )
+    cube = native_cube[crop]
+    use_angle = rot_angle is not None
+    if use_angle:
+        cube = rotate_arbitrary(cube, float(rot_angle))
+    cube = resample_surface_brightness(cube, scale)
+    if not use_angle:
+        cube = rotate_quarter(cube, rot_k)
+
+    channels: list[np.ndarray] = []
+    flux_e: dict[str, float] = {}
+    for index, cfg_name in enumerate(Config.LR_INPUT_BAND_NAMES):
+        electrons = surface_brightness_to_electrons(
+            cube[..., index], Config.get_band(cfg_name), pixel_scale_arcsec,
+        )
+        channels.append(electrons)
+        flux_e[cfg_name] = float(electrons.sum())
     stamp = np.stack(channels, axis=-1).astype(np.float32)
     return stamp, {
         "subhalo_id": str(subhalo_id),
@@ -387,26 +391,25 @@ def _render_target_re(
     rot_k: int,
     rot_angle: float | None,
     target_vis_flux_e: float | None,
-    sb_cut_mag_arcsec2: float,
-    redshift_factors: np.ndarray | None = None,
-    redshift_flux_scale: float = 1.0,
 ) -> tuple[np.ndarray, dict, float]:
-    """Render one trial scale and return ``(stamp, meta, achieved_re)``."""
+    """Render one trial using one geometry scale and one shared flux scale."""
     stamp, meta = prepare_tng_galaxy_continuous(
         galaxy_dir, subhalo_id, orientation, scale=scale,
         rot_k=rot_k, rot_angle=rot_angle,
         pixel_scale_arcsec=pixel_scale_arcsec,
     )
-    if redshift_factors is not None:
-        stamp *= (np.asarray(redshift_factors, dtype=np.float32)
-                  [None, None, :])
-    stamp *= np.float32(redshift_flux_scale)
+    # Exactly one scalar multiplication is applied to the complete cube.
     brightness_scale = _normalise_target_vis(stamp, target_vis_flux_e)
-    stamp = truncate_below_sb(stamp, pixel_scale_arcsec, sb_cut_mag_arcsec2)
-    brightness_scale *= _normalise_target_vis(stamp, target_vis_flux_e)
     achieved_px = measure_halflight_radius_px(stamp[..., 0])
     achieved = float(achieved_px * pixel_scale_arcsec)
     meta["brightness_scale"] = float(brightness_scale)
+    meta["shared_photometric_scale"] = float(brightness_scale)
+    meta["photometric_scaling"] = "single_shared_vis_anchor"
+    meta["flux_e_per_band"] = {
+        band: float(stamp[..., index].sum(dtype=np.float64))
+        for index, band in enumerate(Config.LR_INPUT_BAND_NAMES)
+    }
+    meta["shape"] = tuple(stamp.shape)
     return stamp, meta, achieved
 
 
@@ -418,7 +421,6 @@ def tng_stamp_to_target_re(
     *,
     rng: np.random.Generator | None = None,
     pixel_scale_arcsec: float = Config.DEFAULT_PIXEL_SCALE,
-    sb_cut_mag_arcsec2: float = Config.TNG_SB_TRUNCATE_MAG_ARCSEC2,
     target_vis_flux_e: float | None = None,
     native_re_px: float | None = None,
     radius_manifest_fingerprint: str = "",
@@ -449,7 +451,6 @@ def tng_stamp_to_target_re(
             pixel_scale_arcsec=pixel_scale_arcsec,
             rot_k=rot_k, rot_angle=rot_angle,
             target_vis_flux_e=target_vis_flux_e,
-            sb_cut_mag_arcsec2=sb_cut_mag_arcsec2,
         )
         error = achieved - float(target_re_arcsec)
         if np.isfinite(achieved) and abs(error) <= _target_re_tolerance(
@@ -471,6 +472,7 @@ def tng_stamp_to_target_re(
         "achieved_re_arcsec": float(achieved),
         "re_residual_arcsec": float(achieved - target_re_arcsec),
         "scale_factor": float(scale),
+        "native_tng_sed_preserved": True,
         "radius_manifest_fingerprint": str(radius_manifest_fingerprint),
     })
     return stamp, meta
@@ -501,8 +503,8 @@ def tng_stamp_at_redshift(
     as s^(1-2α), the observed trend. Distinct from the fixed-mass
     compactness correction, which conserves flux.
 
-    A single ``z`` drives all three observables (see
-    :mod:`euclid_polish.sky.generation.redshift_model`):
+    When no COSMOS target radius/flux is supplied, a single ``z`` drives all
+    three observables (see :mod:`euclid_polish.sky.generation.redshift_model`):
 
     * the block-mean factor comes from the angular size of the 100 pc native
       pixel at D_A(z) (stochastically rounded with ``rng`` so the mean
@@ -533,15 +535,6 @@ def tng_stamp_at_redshift(
             rot_k = int(rng.integers(0, 4)) if rng is not None else 0
         rot_angle = (float(rng.uniform(0.0, 360.0))
                      if rng is not None else None)
-        _, native_sums = native_photometry(
-            galaxy_dir, subhalo_id, orientation)
-        sed_fnu = np.asarray([
-            native_sums[index]
-            / mjy_per_sr_to_electrons_factor(
-                Config.get_band(band), pixel_scale_arcsec)
-            for index, band in enumerate(Config.LR_INPUT_BAND_NAMES)
-        ], dtype=np.float64)
-        factors, dmeta = band_drift_factors(sed_fnu, z, rng)
         scale = float(target_re_arcsec) / (float(re_px) * pixel_scale_arcsec)
         stamp: np.ndarray | None = None
         meta: dict = {}
@@ -553,9 +546,6 @@ def tng_stamp_at_redshift(
                 pixel_scale_arcsec=pixel_scale_arcsec,
                 rot_k=int(rot_k), rot_angle=rot_angle,
                 target_vis_flux_e=target_vis_flux_e,
-                sb_cut_mag_arcsec2=sb_cut_mag_arcsec2,
-                redshift_factors=factors,
-                redshift_flux_scale=(1.0 / scale / f_geo) ** 2 * mass_scale,
             )
             if np.isfinite(achieved) and abs(achieved - target_re_arcsec) <= _target_re_tolerance(
                 target_re_arcsec, pixel_scale_arcsec):
@@ -576,13 +566,11 @@ def tng_stamp_at_redshift(
             "achieved_re_arcsec": float(achieved),
             "re_residual_arcsec": float(achieved - target_re_arcsec),
             "scale_factor": float(scale),
-            "compactness": float(compact),
-            "mass_scale": float(mass_scale),
             "z": float(z),
-            "redshift_band_factors": [float(value) for value in factors],
+            "native_tng_sed_preserved": True,
+            "physical_redshift_rescaling_applied": False,
             "radius_manifest_fingerprint": str(radius_manifest_fingerprint),
         })
-        meta.update(dmeta)
         return stamp, meta
     if (
         target_re_arcsec is not None and target_re_arcsec > 0.0
@@ -765,15 +753,13 @@ def sample_tng_stamp(
 
     Sizing (first match wins):
 
-    * ``z`` given → full redshift treatment via :func:`tng_stamp_at_redshift`:
-      the downsample follows from D_A(z), and (1+z)⁻³ dimming + the randomized
-      spectral drift are applied. ``meta`` carries ``z`` and the per-band
-      factors.
-    * ``target_re_arcsec`` given → the galaxy is downsampled so its **apparent
-      half-light radius** matches that target (via :func:`rebin_for_target_size`
-      on the measured native size), giving a realistic, mostly-small angular
-      size with occasional big resolved galaxies. ``meta`` then also carries
-      ``target_re_arcsec`` / ``native_halflight_px`` / ``apparent_re_arcsec``.
+    * ``z`` and ``target_re_arcsec`` given → the COSMOS-conditioned path uses
+      one cube-wide geometric scale and one cube-wide VIS normalization. TNG
+      inter-band ratios are unchanged.
+    * ``z`` alone → the explicit physical-redshift path applies D_A(z),
+      dimming, and spectral drift for strong-lens rendering.
+    * ``target_re_arcsec`` alone → the same single-scale cube path without the
+      physical-redshift metadata.
     * otherwise → uniform draw from ``downsample_choices`` (×1/×2/×3/×4);
       coarser = smaller and fainter, like a more distant galaxy.
     """

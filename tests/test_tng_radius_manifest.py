@@ -5,7 +5,10 @@ import pytest
 from astropy.io import fits
 
 from euclid_polish.config import Config
-from euclid_polish.sky.generation.tng_galaxy import tng_stamp_to_target_re
+from euclid_polish.sky.generation.tng_galaxy import (
+    prepare_tng_galaxy_continuous,
+    tng_stamp_to_target_re,
+)
 from euclid_polish.sky.generation.tng_radius_manifest import (
     build_manifest,
     validate_manifest,
@@ -18,8 +21,8 @@ def _atlas(root, gid="42", size=64):
     y, x = np.mgrid[:size, :size]
     frame = np.exp(-((x - size / 2) ** 2 + (y - size / 2) ** 2) / 60.0).astype("f4")
     for orientation in range(1, 6):
-        for band in ("VIS", "Y", "J", "H"):
-            fits.PrimaryHDU(frame).writeto(
+        for band, amplitude in zip(("VIS", "Y", "J", "H"), (1.0, 2.0, 3.0, 4.0)):
+            fits.PrimaryHDU(frame * amplitude).writeto(
                 folder / f"TNG{gid}_O{orientation}_Euclid_{band}.fits"
             )
     (folder / Config.Tng.DONE_MARKER).touch()
@@ -74,3 +77,22 @@ def test_manifest_payload_is_json_serializable(tmp_path):
     properties.write_text("id,sfr,mass_stars,m_halo,reff\n42,1,1e10,1e12,2\n")
     report = build_manifest(str(atlas), properties_path=str(properties))
     json.dumps(report, allow_nan=False)
+
+
+def test_target_re_uses_one_shared_cube_scale(tmp_path):
+    atlas = tmp_path / "tng_skirt"
+    atlas.mkdir(); _atlas(atlas)
+    folder = str(atlas / "42")
+    native, _ = prepare_tng_galaxy_continuous(
+        folder, "42", 1, scale=1.0,
+    )
+    scaled, meta = tng_stamp_to_target_re(
+        folder, "42", 1, 0.20, target_vis_flux_e=1e5,
+    )
+    native_flux = native.sum(axis=(0, 1), dtype=np.float64)
+    scaled_flux = scaled.sum(axis=(0, 1), dtype=np.float64)
+    assert scaled_flux / scaled_flux[0] == pytest.approx(
+        native_flux / native_flux[0], rel=2e-5,
+    )
+    assert meta["photometric_scaling"] == "single_shared_vis_anchor"
+    assert scaled_flux[0] == pytest.approx(1e5, rel=2e-5)

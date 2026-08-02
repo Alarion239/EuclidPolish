@@ -97,7 +97,7 @@ def resample_surface_brightness(
         filtered,
         zoom_axes,
         order=int(order),
-        mode="constant",
+        mode="grid-constant",
         cval=0.0,
         prefilter=bool(order > 1),
         grid_mode=True,
