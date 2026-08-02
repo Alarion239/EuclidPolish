@@ -68,6 +68,14 @@ The TNG50-SKIRT atlas and its effective-radius analysis provide the simulated
 multiband frames and comparison context ([TNG50-SKIRT Atlas](https://arxiv.org/abs/2401.04224),
 [effective-radius analysis](https://arxiv.org/abs/2401.04225)).
 
+Atlas images are scanned only on FASRC. The resulting
+`tng_atlas_parameters.csv` has one row per subhalo and orientation, joining
+the measured native VIS half-light radius to stellar mass, SFR, halo mass,
+and the TNG catalogue stellar half-mass radius. A fingerprinted JSON sidecar
+identifies the exact remote atlas inventory and measurement algorithm. Local
+population fitting reads this compact table only; it neither downloads nor
+plots the SKIRT frames.
+
 ## What is fitted versus imposed
 
 The empirical COSMOS and Gaia distributions, brightness transfer, completeness,
