@@ -118,14 +118,19 @@ def test_local_catalog_fit_recovers_raw_density_without_rendering(
         mag_hst_f814w=np.full(size, 24.0),
         z_phot=np.full(size, 1.0),
         logmass_lephare=np.full(size, 10.0),
+        logssfr_lephare=np.where(
+            np.arange(size) % 2 == 0, -12.0, -10.0,
+        ),
         re_combined_arcsec=np.full(size, 0.4),
         generator_ready=np.ones(size, dtype=bool),
     )
     properties_path = tmp_path / "tng_properties.csv"
     properties_path.write_text(
         "id,sfr,mass_stars,m_halo,reff\n"
-        f"1,1,{10.0 ** 9.8},1e12,2\n"
-        f"2,1,{10.0 ** 10.2},1e12,2\n"
+        f"1,0.001,{10.0 ** 9.8},1e12,2\n"
+        f"2,0.001,{10.0 ** 10.2},1e12,2\n"
+        f"3,1,{10.0 ** 9.8},1e12,2\n"
+        f"4,1,{10.0 ** 10.2},1e12,2\n"
     )
     manifest = {
         "valid": True,
@@ -140,7 +145,8 @@ def test_local_catalog_fit_recovers_raw_density_without_rendering(
                 "shape": [64, 64],
                 "valid": True,
             }
-            for gid in ("1", "2") for orientation in range(1, 6)
+            for gid in ("1", "2", "3", "4")
+            for orientation in range(1, 6)
         ],
     }
     write_parameter_summary(
@@ -187,6 +193,10 @@ def test_local_catalog_fit_recovers_raw_density_without_rendering(
     assert first["recommended_density_arcmin2"] == pytest.approx(20.0)
     assert first["cosmos_generator_rows"] == size
     assert first["morphology_model"]["eligible_cosmos_rows"] == size
+    assert first["morphology_model"]["method"] == (
+        "activity_conditioned_empirical_mass_quantile_transport"
+    )
+    assert first["morphology_model"]["excluded_cosmos_rows"] == 0
     assert first["magnitude_fit_quality"]["valid"]
     assert first["calibration_fingerprint"] == second["calibration_fingerprint"]
     assert first["interval_arcmin2"] == second["interval_arcmin2"]

@@ -17,6 +17,13 @@ import numpy as np
 from euclid_polish.config import Config
 from euclid_polish.photometry import ab_mag_to_electrons
 
+# This is an explicit project calibration choice, not a TNG mass correction.
+# It is used only to keep quenched and star-forming morphology donors separate
+# during empirical rank transport.
+MORPHOLOGY_ACTIVITY_THRESHOLD_LOGSSFR = -11.0
+MORPHOLOGY_MIN_EFFECTIVE_DONORS = 64
+MORPHOLOGY_BALANCE_POWER = 0.5
+
 
 @dataclass(frozen=True)
 class CosmosTngDraw:
@@ -29,6 +36,8 @@ class CosmosTngDraw:
     re_arcsec: float
     imputed_size: bool
     brightness_transfer: str
+    mass_quantile: float = float("nan")
+    activity_class: str = "unknown"
 
 
 @dataclass(frozen=True)
@@ -76,6 +85,99 @@ def cross_validated_mass_bandwidth(logmass: np.ndarray) -> float:
         if score > best_score:
             best_h, best_score = float(h), score
     return best_h
+
+
+def empirical_mid_quantiles(values: np.ndarray) -> np.ndarray:
+    """Return tie-aware empirical CDF midpoints in ``(0, 1)``.
+
+    Rank transport deliberately discards the absolute mass scale.  Equal
+    masses receive the same midpoint so file ordering cannot create a false
+    morphology distinction.
+    """
+    array = np.asarray(values, dtype=float)
+    if array.ndim != 1 or not array.size or not np.isfinite(array).all():
+        raise ValueError("empirical quantiles require finite one-dimensional data")
+    ordered = np.sort(array, kind="mergesort")
+    left = np.searchsorted(ordered, array, side="left")
+    right = np.searchsorted(ordered, array, side="right")
+    return (left + right).astype(np.float64) / (2.0 * array.size)
+
+
+def conditional_mass_quantiles(
+    logmass: np.ndarray, activity_class: np.ndarray,
+) -> np.ndarray:
+    """Mass ranks computed independently within each activity population."""
+    mass = np.asarray(logmass, dtype=float)
+    classes = np.asarray(activity_class).astype(str)
+    if mass.ndim != 1 or classes.shape != mass.shape:
+        raise ValueError("mass and activity arrays must be aligned")
+    result = np.full(mass.shape, np.nan, dtype=np.float64)
+    for label in np.unique(classes):
+        indices = np.flatnonzero(classes == label)
+        result[indices] = empirical_mid_quantiles(mass[indices])
+    return result
+
+
+def effective_sample_size(weights: np.ndarray) -> float:
+    """Effective categorical donor count, ``1 / sum(p_j**2)``."""
+    array = np.asarray(weights, dtype=float)
+    total = float(np.sum(array))
+    if array.ndim != 1 or not np.isfinite(array).all() or total <= 0.0:
+        return 0.0
+    probabilities = array / total
+    return float(1.0 / np.sum(probabilities * probabilities))
+
+
+def quantile_transport_weights(
+    donor_quantiles: np.ndarray,
+    target_quantile: float,
+    *,
+    bandwidth: float,
+    minimum_effective_donors: int = MORPHOLOGY_MIN_EFFECTIVE_DONORS,
+    balance_weights: np.ndarray | None = None,
+) -> tuple[np.ndarray, float, float]:
+    """Gaussian rank-transport probabilities with an adaptive diversity floor.
+
+    The cross-validated bandwidth is widened only when an edge draw would have
+    too few effective donors.  Optional balance weights downweight donors that
+    have already been used frequently by the current generator worker.
+    """
+    quantiles = np.asarray(donor_quantiles, dtype=float)
+    target = float(target_quantile)
+    initial = float(bandwidth)
+    if (
+        quantiles.ndim != 1 or not quantiles.size
+        or not np.isfinite(quantiles).all()
+        or not np.isfinite(target) or not 0.0 <= target <= 1.0
+        or not np.isfinite(initial) or initial <= 0.0
+    ):
+        raise ValueError("invalid morphology quantile-transport inputs")
+    if balance_weights is None:
+        balance = np.ones(quantiles.size, dtype=np.float64)
+    else:
+        balance = np.asarray(balance_weights, dtype=float)
+        if (
+            balance.shape != quantiles.shape or not np.isfinite(balance).all()
+            or np.any(balance <= 0.0)
+        ):
+            raise ValueError("invalid morphology donor balance weights")
+
+    required = min(max(1, int(minimum_effective_donors)), quantiles.size)
+    selected_bandwidth = initial
+    for _ in range(64):
+        distance = (quantiles - target) / selected_bandwidth
+        weights = np.exp(-0.5 * distance * distance) * balance
+        effective = effective_sample_size(weights)
+        if effective >= required - 1e-9 or selected_bandwidth >= 4.0:
+            break
+        selected_bandwidth = min(4.0, selected_bandwidth * 1.25)
+    total = float(np.sum(weights))
+    if not np.isfinite(total) or total <= 0.0:
+        raise ValueError("morphology quantile transport has zero probability")
+    probabilities = weights / total
+    return probabilities, float(selected_bandwidth), effective_sample_size(
+        probabilities
+    )
 
 
 def _transfer_fingerprint(payload: dict, fit: dict) -> str:
@@ -178,8 +280,8 @@ def load_brightness_transfer(path: str | Path) -> F814WToVisTransfer:
             ),
             fingerprint=str(transfer["fingerprint"]),
         )
-    except (KeyError, TypeError, ValueError):
-        raise ValueError(f"invalid fitted F814W→VIS transfer: {path}")
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(f"invalid fitted F814W→VIS transfer: {path}") from exc
 
 
 class CosmosTngPrior:
@@ -210,6 +312,7 @@ class CosmosTngPrior:
             f814w = take("mag_hst_f814w", "mag_vis", "mag_VIS")
             z = take("z_phot")
             mass = take("logmass_lephare", "logmass")
+            logssfr = take("logssfr_lephare")
             re = take("re_combined_arcsec", "disk_re_arcsec")
             if "generator_ready" not in keys:
                 raise ValueError(
@@ -221,6 +324,7 @@ class CosmosTngPrior:
             np.isfinite(f814w) & (f814w >= mag_min) & (f814w < mag_max)
             & np.isfinite(z) & (z > 0.01) & (z < 6.0)
             & np.isfinite(mass) & (mass > 4.0) & (mass < 13.0)
+            & np.isfinite(logssfr)
             & generator_ready
             & np.isfinite(re) & (re > 0.01) & (re < 20.0)
         )
@@ -230,6 +334,7 @@ class CosmosTngPrior:
         self.f814w = f814w[valid].astype(np.float32)
         self.z = z[valid].astype(np.float32)
         self.mass = mass[valid].astype(np.float32)
+        self.logssfr = logssfr[valid].astype(np.float32)
         self.re = re[valid].astype(np.float32)
         if not len(self.re):
             raise ValueError(f"COSMOS prior lacks valid generator-ready sizes: {self.path}")
@@ -237,6 +342,13 @@ class CosmosTngPrior:
             photometric_transfer
             if photometric_transfer is not None
             else load_brightness_transfer(photometric_fit_path)
+        )
+        self.activity_class = np.where(
+            self.logssfr < MORPHOLOGY_ACTIVITY_THRESHOLD_LOGSSFR,
+            "quenched", "star_forming",
+        )
+        self.mass_quantile = conditional_mass_quantiles(
+            self.mass, self.activity_class,
         )
 
     def __len__(self) -> int:
@@ -289,4 +401,15 @@ class CosmosTngPrior:
             re_arcsec=re,
             imputed_size=False,
             brightness_transfer=self.brightness_transfer.source,
+            mass_quantile=float(self.mass_quantile[i]),
+            activity_class=str(self.activity_class[i]),
         )
+
+    def proxy_logmass(self, quantile: float, activity_class: str) -> float:
+        """Map a donor rank onto the corresponding COSMOS conditional mass."""
+        values = self.mass[self.activity_class == str(activity_class)]
+        if not values.size:
+            raise ValueError(
+                f"COSMOS prior has no {activity_class!r} morphology population"
+            )
+        return float(np.quantile(values.astype(np.float64), float(quantile)))

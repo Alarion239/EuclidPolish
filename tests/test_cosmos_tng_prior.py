@@ -6,7 +6,9 @@ import pytest
 from euclid_polish.sky.generation.cosmos_tng_prior import (
     CosmosTngPrior,
     F814WToVisTransfer,
+    conditional_mass_quantiles,
     cross_validated_mass_bandwidth,
+    quantile_transport_weights,
 )
 
 
@@ -17,6 +19,7 @@ def _write_prior(path):
         mag_hst_f814w=np.array([21.0, 23.0, 25.0, 27.0]),
         z_phot=np.array([0.3, 0.8, 1.1, 1.8]),
         logmass_lephare=np.array([10.5, 10.0, 9.5, 9.0]),
+        logssfr_lephare=np.array([-12.0, -10.0, -9.5, -9.0]),
         re_combined_arcsec=np.array([0.8, 0.4, np.nan, 0.12]),
         generator_ready=np.array([True, True, False, True]),
     )
@@ -34,6 +37,10 @@ def test_prior_requires_strict_generator_ready_rows_and_fit(tmp_path):
     draws = [prior.sample(np.random.default_rng(i)) for i in range(20)]
     assert all(not draw.imputed_size for draw in draws)
     assert {draw.catalog_id for draw in draws}.issubset({"0", "1", "3"})
+    assert all(0.0 < draw.mass_quantile < 1.0 for draw in draws)
+    assert {draw.activity_class for draw in draws} <= {
+        "quenched", "star_forming",
+    }
 
 
 def test_multicone_fit_maps_f814w_to_vis_brightness(tmp_path):
@@ -109,3 +116,24 @@ def test_mass_bandwidth_cross_validation_includes_kernel_normalization():
     bandwidth = cross_validated_mass_bandwidth(logmass)
 
     assert 0.03 <= bandwidth < 0.3
+
+
+def test_conditional_quantile_transport_preserves_classes_and_diversity():
+    masses = np.array([8.0, 9.0, 10.0, 10.5, 11.0, 11.5])
+    classes = np.array([
+        "star_forming", "star_forming", "star_forming",
+        "quenched", "quenched", "quenched",
+    ])
+    quantiles = conditional_mass_quantiles(masses, classes)
+    assert quantiles[:3] == pytest.approx([1 / 6, 3 / 6, 5 / 6])
+    assert quantiles[3:] == pytest.approx([1 / 6, 3 / 6, 5 / 6])
+
+    donor_quantiles = (np.arange(100) + 0.5) / 100
+    weights, used_bandwidth, effective = quantile_transport_weights(
+        donor_quantiles, 0.0, bandwidth=0.03,
+        minimum_effective_donors=64,
+    )
+    assert weights.sum() == pytest.approx(1.0)
+    assert used_bandwidth > 0.03
+    assert effective >= 64.0 - 1e-6
+    assert np.argmax(weights) == 0

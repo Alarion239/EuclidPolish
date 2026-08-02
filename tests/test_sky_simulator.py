@@ -29,7 +29,14 @@ class StaticPrior:
             re_arcsec=0.2,
             imputed_size=False,
             brightness_transfer="test",
+            mass_quantile=0.5,
+            activity_class="star_forming",
         )
+
+    def proxy_logmass(self, quantile, activity_class):
+        assert quantile == pytest.approx(0.5)
+        assert activity_class == "star_forming"
+        return 8.0
 
 
 def _write_fake_tng_galaxy(tng_dir, gid, *, size=24):
@@ -53,6 +60,10 @@ def _write_fake_tng_galaxy(tng_dir, gid, *, size=24):
 def _simulator(tmp_path):
     tng = str(tmp_path / "tng")
     _write_fake_tng_galaxy(tng, "111")
+    properties = tmp_path / "tng_properties.csv"
+    properties.write_text(
+        "id,sfr,mass_stars,m_halo,reff\n111,1,1e10,1e12,2\n"
+    )
     return SkySimulator(
         StaticPrior(),
         SkySimulatorConfig(
@@ -62,6 +73,7 @@ def _simulator(tmp_path):
             star_density_arcmin2=0.0,
             lens_density_arcmin2=0.0,
             tng_galaxy_dir=tng,
+            tng_properties_csv=str(properties),
         ),
     )
 
@@ -82,6 +94,13 @@ def test_joint_population_renders_only_tng(tmp_path):
         "cosmos2025_joint"
     }
     assert all(row["catalog_id"] == "cosmos-1" for row in meta["galaxies"])
+    assert all(
+        row["native_tng_logmass"] == pytest.approx(10.0)
+        and row["morphology_proxy_logmass"] == pytest.approx(8.0)
+        and row["morphology_activity_class"] == "star_forming"
+        and row["morphology_effective_donors"] == pytest.approx(1.0)
+        for row in meta["galaxies"]
+    )
     assert image.data.sum() > 0
 
 

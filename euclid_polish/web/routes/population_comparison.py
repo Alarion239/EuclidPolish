@@ -38,11 +38,13 @@ from euclid_polish.web.jobs import REGISTRY
 from euclid_polish.web.remote import ensure_ssh_connected
 
 
-def _run_analysis_script(project_root: Path, script: str) -> None:
+def _run_analysis_script(
+    project_root: Path, script: str, *arguments: str,
+) -> None:
     """Run one local analysis script and preserve its useful failure output."""
     try:
         subprocess.run(
-            [sys.executable, script],
+            [sys.executable, script, *arguments],
             cwd=project_root,
             check=True,
             capture_output=True,
@@ -445,7 +447,7 @@ def register(app):
             project_root = Path(__file__).resolve().parents[3]
             cap.tick(0, 3, "fit brightness transfer and completeness")
             _run_analysis_script(
-                project_root, "scripts/fit_cosmos_euclid_counts.py"
+                project_root, "scripts/fit_cosmos_euclid_counts.py", "--no-plot"
             )
             cap.tick(1, 3, "draw local COSMOS/TNG population")
             result = fit_local_catalog_density()

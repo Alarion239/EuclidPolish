@@ -53,6 +53,13 @@ def test_galaxy_row_persists_size_and_mass(tmp_path):
     tng = {"type": "galaxy", "render": "tng", "x_pix": 10.0, "y_pix": 20.0,
            "subhalo_id": "99", "flux_e_per_band": [123.0, 1, 2, 3],
            "apparent_re_arcsec": 0.85, "logmass": 10.4, "mass_scale": 0.7,
+           "native_tng_logmass": 11.1, "morphology_proxy_logmass": 8.2,
+           "target_mass_quantile": 0.3, "tng_mass_quantile": 0.31,
+           "morphology_selection_probability": 0.02,
+           "morphology_effective_donors": 64.0,
+           "morphology_kernel_bandwidth_quantile": 0.12,
+           "morphology_worker_use_count": 2,
+           "morphology_activity_class": "star_forming",
            "tng_density_arcmin2": 200.0, "tng_mf_alpha": -1.76}
     sersic = {"type": "galaxy", "render": "sersic", "x_pix": 30.0, "y_pix": 40.0,
               "flux_e_per_band": [50.0, 1, 2, 3], "re_arcsec": 1.2}  # no mass
@@ -66,5 +73,9 @@ def test_galaxy_row_persists_size_and_mass(tmp_path):
     assert by_render["tng"]["mass_scale"] == 0.7
     assert by_render["tng"]["tng_density_arcmin2"] == 200.0
     assert by_render["tng"]["tng_mf_alpha"] == -1.76
+    assert by_render["tng"]["native_tng_logmass"] == 11.1
+    assert by_render["tng"]["morphology_proxy_logmass"] == 8.2
+    assert by_render["tng"]["morphology_effective_donors"] == 64.0
+    assert by_render["tng"]["morphology_activity_class"] == "star_forming"
     assert by_render["sersic"]["re_arcsec"] == 1.2
     assert by_render["sersic"]["logmass"] is None      # COSMOS has no stellar mass

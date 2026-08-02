@@ -21,6 +21,14 @@ SOURCE_COLS = ["field_index", "type", "render", "x_pix", "y_pix",
                # Extra galaxy truth persisted for later analysis (empty for
                # lenses, and for whichever render path doesn't provide it):
                "re_arcsec", "logmass", "mass_scale",
+               # Conditional empirical mass-rank transport provenance.  The
+               # proxy is selection-only; it never rescales flux or size.
+               "native_tng_logmass", "morphology_proxy_logmass",
+               "target_mass_quantile", "tng_mass_quantile",
+               "morphology_selection_probability",
+               "morphology_effective_donors",
+               "morphology_kernel_bandwidth_quantile",
+               "morphology_worker_use_count", "morphology_activity_class",
                # TNG population configuration saved with every rendered TNG
                # row so analysis can distinguish legacy and regenerated data.
                "tng_density_arcmin2", "tng_mf_alpha",
@@ -70,6 +78,27 @@ def _galaxy_row(field_index: int, g: dict[str, Any]) -> dict[str, Any]:
         "re_arcsec":  _num(g.get("re_arcsec", g.get("apparent_re_arcsec"))),
         "logmass":    _num(g.get("logmass")),
         "mass_scale": _num(g.get("mass_scale")),
+        "native_tng_logmass": _num(g.get("native_tng_logmass")),
+        "morphology_proxy_logmass": _num(
+            g.get("morphology_proxy_logmass")
+        ),
+        "target_mass_quantile": _num(g.get("target_mass_quantile")),
+        "tng_mass_quantile": _num(g.get("tng_mass_quantile")),
+        "morphology_selection_probability": _num(
+            g.get("morphology_selection_probability")
+        ),
+        "morphology_effective_donors": _num(
+            g.get("morphology_effective_donors")
+        ),
+        "morphology_kernel_bandwidth_quantile": _num(
+            g.get("morphology_kernel_bandwidth_quantile")
+        ),
+        "morphology_worker_use_count": _num(
+            g.get("morphology_worker_use_count")
+        ),
+        "morphology_activity_class": g.get(
+            "morphology_activity_class", ""
+        ),
         "tng_density_arcmin2": _num(g.get("tng_density_arcmin2")),
         "tng_mf_alpha": _num(g.get("tng_mf_alpha")),
         "galaxy_density_arcmin2": _num(g.get("galaxy_density_arcmin2")),
@@ -91,6 +120,13 @@ def _lens_row(field_index: int, lens: dict[str, Any]) -> dict[str, Any]:
         "theta_E_arcsec": float(theta) if theta is not None else "",
         # Galaxy-truth columns are not meaningful for the lens row.
         "re_arcsec": "", "logmass": "", "mass_scale": "",
+        "native_tng_logmass": "", "morphology_proxy_logmass": "",
+        "target_mass_quantile": "", "tng_mass_quantile": "",
+        "morphology_selection_probability": "",
+        "morphology_effective_donors": "",
+        "morphology_kernel_bandwidth_quantile": "",
+        "morphology_worker_use_count": "",
+        "morphology_activity_class": "",
         "tng_density_arcmin2": "", "tng_mf_alpha": "",
         "galaxy_density_arcmin2": "", "population_prior": "",
         "mag_hst_f814w": "", "target_vis_mag": "", "brightness_scale": "",
@@ -104,6 +140,13 @@ def _star_row(field_index: int, star: dict[str, Any]) -> dict[str, Any]:
         "x_pix": float(star["x_pix"]), "y_pix": float(star["y_pix"]),
         "flux_vis_e": "", "z": "", "subhalo_id": "", "theta_E_arcsec": "",
         "re_arcsec": "", "logmass": "", "mass_scale": "",
+        "native_tng_logmass": "", "morphology_proxy_logmass": "",
+        "target_mass_quantile": "", "tng_mass_quantile": "",
+        "morphology_selection_probability": "",
+        "morphology_effective_donors": "",
+        "morphology_kernel_bandwidth_quantile": "",
+        "morphology_worker_use_count": "",
+        "morphology_activity_class": "",
         "tng_density_arcmin2": "", "tng_mf_alpha": "",
         "galaxy_density_arcmin2": "", "population_prior": "",
         "mag_hst_f814w": "", "target_vis_mag": "", "brightness_scale": "",
@@ -150,6 +193,12 @@ def _parse(row: dict[str, str]) -> dict[str, Any]:
     out["field_index"] = int(row["field_index"])
     for k in ("x_pix", "y_pix", "flux_vis_e", "z", "theta_E_arcsec",
               "re_arcsec", "logmass", "mass_scale", "mag_vis",
+              "native_tng_logmass", "morphology_proxy_logmass",
+              "target_mass_quantile", "tng_mass_quantile",
+              "morphology_selection_probability",
+              "morphology_effective_donors",
+              "morphology_kernel_bandwidth_quantile",
+              "morphology_worker_use_count",
               "tng_density_arcmin2", "tng_mf_alpha",
               "galaxy_density_arcmin2",
               "mag_hst_f814w", "target_vis_mag", "brightness_scale",
@@ -159,6 +208,9 @@ def _parse(row: dict[str, str]) -> dict[str, Any]:
         out[k] = float(v) if v not in ("", None) else None
     out["population_prior"] = row.get("population_prior") or None
     out["brightness_transfer"] = row.get("brightness_transfer") or None
+    out["morphology_activity_class"] = (
+        row.get("morphology_activity_class") or None
+    )
     return out
 
 

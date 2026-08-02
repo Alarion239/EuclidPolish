@@ -310,7 +310,11 @@ def fit_local_catalog_density(
     Cone bootstraps carry the dominant field-to-field uncertainty.
     """
     from euclid_polish.sky.generation.cosmos_tng_prior import (
+        MORPHOLOGY_ACTIVITY_THRESHOLD_LOGSSFR,
+        MORPHOLOGY_BALANCE_POWER,
+        MORPHOLOGY_MIN_EFFECTIVE_DONORS,
         CosmosTngPrior,
+        conditional_mass_quantiles,
         cross_validated_mass_bandwidth,
     )
     from euclid_polish.sky.generation.tng_radius_manifest import (
@@ -348,21 +352,68 @@ def fit_local_catalog_density(
     if not radius_fingerprint:
         raise ValueError("atlas parameter summary lacks a radius fingerprint")
     mass_by_id: dict[str, float] = {}
+    sfr_by_id: dict[str, float] = {}
     for row in atlas_summary["rows"]:
         gid = str(row["subhalo_id"])
         mass = float(row["mass_stars_msun"])
+        sfr = float(row["sfr_msun_yr"])
         previous = mass_by_id.setdefault(gid, mass)
         if not np.isclose(previous, mass, rtol=1e-12, atol=0.0):
             raise ValueError(f"TNG{gid} has inconsistent masses across orientations")
+        previous_sfr = sfr_by_id.setdefault(gid, sfr)
+        if not np.isclose(previous_sfr, sfr, rtol=1e-12, atol=0.0):
+            raise ValueError(f"TNG{gid} has inconsistent SFR across orientations")
     atlas_ids = sorted(mass_by_id, key=int)
     atlas_mass = np.asarray([mass_by_id[gid] for gid in atlas_ids])
+    atlas_sfr = np.asarray([sfr_by_id[gid] for gid in atlas_ids])
+    if (
+        not np.isfinite(atlas_mass).all() or np.any(atlas_mass <= 0.0)
+        or not np.isfinite(atlas_sfr).all() or np.any(atlas_sfr < 0.0)
+    ):
+        raise ValueError("TNG atlas summary has invalid mass or SFR values")
     atlas_logmass = np.log10(atlas_mass)
-    mass_support = (
-        float(np.min(atlas_logmass)), float(np.max(atlas_logmass)),
+    with np.errstate(divide="ignore", invalid="ignore"):
+        atlas_logssfr = np.where(
+            atlas_sfr > 0.0, np.log10(atlas_sfr) - atlas_logmass, -np.inf,
+        )
+    atlas_activity_class = np.where(
+        atlas_logssfr < MORPHOLOGY_ACTIVITY_THRESHOLD_LOGSSFR,
+        "quenched", "star_forming",
     )
-    mass_bandwidth = float(cross_validated_mass_bandwidth(atlas_logmass))
-    eligible_indices = prior.mass_support_indices(*mass_support)
-    excluded_mass_rows = int(len(prior) - len(eligible_indices))
+    atlas_mass_quantile = conditional_mass_quantiles(
+        atlas_logmass, atlas_activity_class,
+    )
+    transport_classes: dict[str, dict[str, Any]] = {}
+    atlas_proxy_logmass = np.full(atlas_logmass.shape, np.nan, dtype=np.float64)
+    for label in ("quenched", "star_forming"):
+        atlas_indices = np.flatnonzero(atlas_activity_class == label)
+        cosmos_indices = np.flatnonzero(prior.activity_class == label)
+        if atlas_indices.size < 2 or cosmos_indices.size < 2:
+            raise ValueError(
+                f"quantile transport lacks a usable {label} population"
+            )
+        bandwidth = float(cross_validated_mass_bandwidth(
+            atlas_mass_quantile[atlas_indices]
+        ))
+        cosmos_masses = prior.mass[cosmos_indices].astype(np.float64)
+        atlas_proxy_logmass[atlas_indices] = np.quantile(
+            cosmos_masses, atlas_mass_quantile[atlas_indices],
+        )
+        transport_classes[label] = {
+            "tng_donors": int(atlas_indices.size),
+            "cosmos_rows": int(cosmos_indices.size),
+            "kernel_bandwidth_quantile": bandwidth,
+            "native_tng_logmass_range": [
+                float(np.min(atlas_logmass[atlas_indices])),
+                float(np.max(atlas_logmass[atlas_indices])),
+            ],
+            "transported_proxy_logmass_range": [
+                float(np.min(atlas_proxy_logmass[atlas_indices])),
+                float(np.max(atlas_proxy_logmass[atlas_indices])),
+            ],
+        }
+    eligible_indices = np.arange(len(prior), dtype=np.int64)
+    excluded_mass_rows = 0
     meta = _read(euclid_catalog_meta_path())
     if not meta:
         raise ValueError("Query and cache several Euclid cones first")
@@ -482,7 +533,7 @@ def fit_local_catalog_density(
         prior_digest.update(np.ascontiguousarray(values).tobytes())
     prior_fingerprint = prior_digest.hexdigest()
     identity = {
-        "version": 4,
+        "version": 5,
         "method": "local_catalog_forward_model_probability_weighted",
         "transfer_fingerprint": transfer["fingerprint"],
         "prior_f814w_fingerprint": prior_fingerprint,
@@ -494,15 +545,30 @@ def fit_local_catalog_density(
         "catalog_weighted_fingerprint": _catalog_weighted_fingerprint(),
         "classification_weighting": "galaxy_weight=1-POINT_LIKE_PROB",
         "morphology_model": {
+            "method": "activity_conditioned_empirical_mass_quantile_transport",
             "atlas_ids": atlas_ids,
             "atlas_logmass": atlas_logmass.tolist(),
+            "atlas_mass_quantile": atlas_mass_quantile.tolist(),
+            "atlas_proxy_logmass": atlas_proxy_logmass.tolist(),
+            "atlas_activity_class": atlas_activity_class.tolist(),
             "atlas_parameter_summary_fingerprint": summary_meta.get(
                 "summary_fingerprint"
             ),
-            "supported_logmass_range": list(mass_support),
-            "kernel_bandwidth_dex": mass_bandwidth,
+            "native_tng_logmass_range": [
+                float(np.min(atlas_logmass)), float(np.max(atlas_logmass)),
+            ],
+            "cosmos_target_logmass_range": [
+                float(np.min(prior.mass)), float(np.max(prior.mass)),
+            ],
+            "activity_threshold_logssfr_yr": (
+                MORPHOLOGY_ACTIVITY_THRESHOLD_LOGSSFR
+            ),
+            "minimum_effective_donors": MORPHOLOGY_MIN_EFFECTIVE_DONORS,
+            "worker_balance_power": MORPHOLOGY_BALANCE_POWER,
+            "classes": transport_classes,
             "eligible_cosmos_rows": int(len(eligible_indices)),
             "excluded_cosmos_rows": excluded_mass_rows,
+            "changes_flux_or_size": False,
         },
         "selection": {
             "mag_min": 20.0, "mag_max": 28.0, "spurious_max": 0.5,
@@ -516,7 +582,7 @@ def fit_local_catalog_density(
     warnings = list((transfer.get("fit_quality") or {}).get("warnings") or [])
     if reduced_poisson_deviance > 5.0:
         warnings.append(
-            "mass-supported COSMOS draw pool has high Poisson deviance"
+            "quantile-transport COSMOS draw pool has high Poisson deviance"
         )
     warnings.append(
         "catalog-level calibration does not model rendering, crowding, or deblending"
@@ -526,7 +592,7 @@ def fit_local_catalog_density(
         if "does not model rendering" not in warning
     ]
     result = {
-        "version": 3,
+        "version": 4,
         "method": (
             "local COSMOS/TNG generator draws passed through the fitted "
             "Euclid brightness and completeness model"

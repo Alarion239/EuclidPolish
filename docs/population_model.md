@@ -35,13 +35,35 @@ p(m_{\rm F814W},z,\log M_\star,R_e),
 \]
 
 restricted to `generator_ready` rows with finite combined bulge+disc
-circularized (R_e). A cross-validated conditional categorical model maps
-stellar mass to TNG morphology. F814W-to-VIS magnitudes follow the fitted
+circularized (R_e). Because the TNG atlas is much more massive than most of
+this COSMOS pool, absolute stellar mass is not treated as overlapping support.
+Instead, galaxies are separated at the project-defined
+\(\log_{10}(\mathrm{sSFR}/\mathrm{yr}^{-1})=-11\) boundary and mass is mapped
+to an empirical percentile within the same star-forming or quenched class.
+For target percentile \(q\), the TNG donor distribution is
+
+\[
+P(j\mid q,c)\propto
+\exp\!\left[-\frac{(q-q_j)^2}{2h_c^2}\right]
+(1+n_j)^{-1/2},
+\]
+
+where \(h_c\) is selected by leave-one-out likelihood and \(n_j\) is the
+worker-local prior-use count. The bandwidth is widened at distribution edges
+until the categorical effective donor count
+\(N_{\rm eff}=1/\sum_j P(j)^2\) reaches 64, or all donors in that class are
+represented. This is an explicit diversity heuristic and an empirical rank
+transport, not a physical reduction of TNG stellar mass. It cannot reproduce
+internal dwarf-galaxy structure absent from the atlas. Each record therefore
+stores native TNG mass, transported proxy mass, both percentiles, selection
+probability, effective donor count, and reuse count.
+
+F814W-to-VIS magnitudes follow the fitted
 affine relation with Gaussian scatter, and detection is a Bernoulli draw from
 the fitted logistic completeness. COSMOS2025 motivates the measured catalogue
 quantities and selection ([COSMOS2025](https://arxiv.org/abs/2506.03243)).
-The morphology kernel, supported mass range, cuts, and numerical tolerances are
-measured validation decisions, not literature facts. Extreme Deconvolution is
+The activity split, rank transport, diversity floor, cuts, and numerical
+tolerances are project validation decisions, not literature facts. Extreme Deconvolution is
 the reference for likelihood fitting with noisy latent distributions
 ([Bovy et al. 2011](https://arxiv.org/abs/0905.2979)).
 
@@ -79,8 +101,9 @@ plots the SKIRT frames.
 ## What is fitted versus imposed
 
 The empirical COSMOS and Gaia distributions, brightness transfer, completeness,
-TNG morphology kernel, and stellar flux-error model are fitted or measured from
+TNG morphology rank kernel, and stellar flux-error model are fitted or measured from
 their respective artifacts. Homogeneous positions, Poisson counts, the
-five-orientation TNG inventory, and the 5%/0.5-pixel radius tolerance are
-simulation or validation choices. Euclid Q1 MER photometry motivates the
+five-orientation TNG inventory, activity boundary, 64-donor floor, balancing
+exponent, and the 5%/0.5-pixel radius tolerance are simulation or validation
+choices. Euclid Q1 MER photometry motivates the
 four-band measurement context ([Euclid Q1 MER catalogue](https://arxiv.org/abs/2503.15305)).

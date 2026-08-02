@@ -561,20 +561,21 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         writer.writerows(rows)
 
     plot_path = output_dir / "cosmos_euclid_density_fit.png"
-    _plot(
-        plot_path,
-        centers=centers,
-        cosmos_density=cosmos_binned,
-        fitted_latent_density=fitted_latent,
-        euclid_density=euclid_density,
-        euclid_error=euclid_error,
-        predicted_detected_density=predicted_detected,
-        local_latent_density=local_latent,
-        local_predicted_detected_density=local_predicted_detected,
-        synthetic_density=synthetic_density,
-        completeness=completeness,
-        fit=fit,
-    )
+    if not args.no_plot:
+        _plot(
+            plot_path,
+            centers=centers,
+            cosmos_density=cosmos_binned,
+            fitted_latent_density=fitted_latent,
+            euclid_density=euclid_density,
+            euclid_error=euclid_error,
+            predicted_detected_density=predicted_detected,
+            local_latent_density=local_latent,
+            local_predicted_detected_density=local_predicted_detected,
+            synthetic_density=synthetic_density,
+            completeness=completeness,
+            fit=fit,
+        )
 
     m28 = MODEL_GRID < 28.0
     raw_cosmos_m28 = float(
@@ -665,7 +666,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "bins": rows,
         "outputs": {
             "csv": str(csv_path),
-            "plot": str(plot_path),
+            "plot": None if args.no_plot else str(plot_path),
         },
     }
     json_path = output_dir / "cosmos_euclid_density_fit.json"
@@ -701,6 +702,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--maximum-spurious-probability",
         type=float,
         default=0.5,
+    )
+    parser.add_argument(
+        "--no-plot", action="store_true",
+        help="fit and write numeric artifacts without rendering a figure",
     )
     return parser
 

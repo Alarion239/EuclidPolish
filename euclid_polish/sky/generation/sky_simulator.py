@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import math
 import os
-import sys
 from dataclasses import dataclass, replace
 
 import numpy as np
@@ -28,8 +27,13 @@ from euclid_polish.provenance.defaults import mint_id
 from euclid_polish.provenance.records import Stamp
 from euclid_polish.skirt.image import composite_stamp
 from euclid_polish.sky.generation.cosmos_tng_prior import (
+    MORPHOLOGY_ACTIVITY_THRESHOLD_LOGSSFR,
+    MORPHOLOGY_BALANCE_POWER,
+    MORPHOLOGY_MIN_EFFECTIVE_DONORS,
     CosmosTngPrior,
+    conditional_mass_quantiles,
     cross_validated_mass_bandwidth,
+    quantile_transport_weights,
 )
 from euclid_polish.sky.generation.lens_population import (
     render_lens_to_multiband_canvas,
@@ -56,7 +60,9 @@ from euclid_polish.sky.generation.tng_galaxy import (
     tng_stamp_at_redshift,
 )
 from euclid_polish.sky.generation.tng_radius_manifest import (
-    load_manifest, radius_lookup, validate_manifest,
+    load_manifest,
+    radius_lookup,
+    validate_manifest,
 )
 
 # ---------------------------------------------------------------------------
@@ -262,8 +268,6 @@ class SkySimulator:
         )
         self._radius_lookup: dict[tuple[str, int], float] | None = None
         self._radius_manifest_fingerprint = ""
-        self._population_mass_indices: np.ndarray | None = None
-        self._morphology_mass_support: tuple[float, float] | None = None
 
         if self.config.strict_population_artifacts:
             if self.config.star_density_arcmin2 > 0.0 and self.stellar_prior is None:
@@ -335,6 +339,12 @@ class SkySimulator:
         # TNG properties for mass → σ_v mapping (redshift mode).
         self.tng_properties: dict = {}
         self._atlas_logm: np.ndarray | None = None
+        self._atlas_activity_class: np.ndarray | None = None
+        self._atlas_mass_quantile: np.ndarray | None = None
+        self._mass_kernel_bandwidth_by_class: dict[str, float] = {}
+        self._morphology_use_counts = np.zeros(
+            len(self.tng_galaxies), dtype=np.int64,
+        )
         if self.tng_galaxies:
             self.tng_properties = load_tng_properties(
                 self.config.tng_properties_csv or None)
@@ -345,33 +355,42 @@ class SkySimulator:
             ])
             with np.errstate(invalid="ignore", divide="ignore"):
                 self._atlas_logm = np.where(m > 0, np.log10(m), np.nan)
-            finite_mass = self._atlas_logm[np.isfinite(self._atlas_logm)]
-            self._mass_kernel_bandwidth = cross_validated_mass_bandwidth(
-                finite_mass
-            ) if finite_mass.size else None
+            sfr = np.array([
+                self.tng_properties.get(str(gid), {}).get(
+                    "sfr", float("nan")
+                ) for _, gid in self.tng_galaxies
+            ])
             if self.config.strict_population_artifacts and (
-                not self.tng_properties or not np.isfinite(self._atlas_logm).all()
+                not self.tng_properties
+                or not np.isfinite(self._atlas_logm).all()
+                or not np.isfinite(sfr).all()
+                or np.any(sfr < 0.0)
             ):
                 raise ValueError(
                     "strict population generation requires finite mass_stars "
-                    "properties for every TNG galaxy"
+                    "and non-negative SFR properties for every TNG galaxy"
                 )
             if not np.isfinite(self._atlas_logm).any():
                 self._atlas_logm = None
-            elif (
-                self.config.strict_population_artifacts
-                and population_prior is not None
-            ):
-                self._morphology_mass_support = (
-                    float(np.min(finite_mass)), float(np.max(finite_mass)),
-                )
-                self._population_mass_indices = (
-                    population_prior.mass_support_indices(
-                        *self._morphology_mass_support
+            elif np.isfinite(self._atlas_logm).all() and np.isfinite(sfr).all():
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    logssfr = np.where(
+                        sfr > 0.0, np.log10(sfr) - self._atlas_logm, -np.inf,
                     )
+                self._atlas_activity_class = np.where(
+                    logssfr < MORPHOLOGY_ACTIVITY_THRESHOLD_LOGSSFR,
+                    "quenched", "star_forming",
                 )
-        else:
-            self._mass_kernel_bandwidth = None
+                self._atlas_mass_quantile = conditional_mass_quantiles(
+                    self._atlas_logm, self._atlas_activity_class,
+                )
+                for label in np.unique(self._atlas_activity_class):
+                    class_quantiles = self._atlas_mass_quantile[
+                        self._atlas_activity_class == label
+                    ]
+                    self._mass_kernel_bandwidth_by_class[str(label)] = float(
+                        cross_validated_mass_bandwidth(class_quantiles)
+                    )
 
     # ------------------------------------------------------------------ #
     def _field_area_arcmin2(self) -> float:
@@ -384,35 +403,64 @@ class SkySimulator:
 
     # ------------------------------------------------------------------ #
     def _pick_field_galaxy(
-        self, rng: np.random.Generator, target_logmass: float,
-    ) -> list[tuple[str, str]]:
-        """Choose morphology near the COSMOS row's stellar mass."""
-        if self._atlas_logm is None:
-            if self.config.strict_population_artifacts:
-                raise ValueError("TNG morphology mass model has no valid support")
-            return self.tng_galaxies
-        lm = self._atlas_logm
-        finite = np.flatnonzero(np.isfinite(lm))
-        if self.config.strict_population_artifacts:
-            if not np.isfinite(target_logmass):
-                raise ValueError("COSMOS morphology target mass is not finite")
-            bandwidth = float(self._mass_kernel_bandwidth or 0.25)
-            support = (float(np.min(lm[finite])), float(np.max(lm[finite])))
-            if target_logmass < support[0] or target_logmass > support[1]:
-                raise ValueError(
-                    f"COSMOS mass {target_logmass:.3f} lies outside TNG "
-                    f"morphology support [{support[0]:.3f}, {support[1]:.3f}]"
-                )
-            distance = (lm[finite] - target_logmass) / bandwidth
-            weights = np.exp(-0.5 * distance * distance)
-            if not np.isfinite(weights).any() or float(weights.sum()) <= 0.0:
-                raise ValueError("COSMOS mass lies outside TNG morphology support")
-            weights = weights / weights.sum()
-            selected = int(rng.choice(finite, p=weights))
-            return [self.tng_galaxies[selected]]
-        distance = np.abs(lm[finite] - target_logmass)
-        nearest = finite[np.argsort(distance)[:min(12, len(finite))]]
-        return [self.tng_galaxies[int(rng.choice(nearest))]]
+        self,
+        rng: np.random.Generator,
+        target_quantile: float,
+        activity_class: str,
+    ) -> tuple[list[tuple[str, str]], dict[str, float | int | str]]:
+        """Choose a TNG donor by stochastic conditional mass-rank transport."""
+        if (
+            self._atlas_logm is None
+            or self._atlas_activity_class is None
+            or self._atlas_mass_quantile is None
+        ):
+            raise ValueError(
+                "TNG morphology quantile transport requires mass and SFR "
+                "properties for every donor"
+            )
+        target = float(target_quantile)
+        label = str(activity_class)
+        if not np.isfinite(target) or not 0.0 <= target <= 1.0:
+            raise ValueError("COSMOS morphology target mass quantile is invalid")
+        candidates = np.flatnonzero(self._atlas_activity_class == label)
+        if not candidates.size:
+            raise ValueError(f"TNG atlas has no {label!r} morphology donors")
+        bandwidth = self._mass_kernel_bandwidth_by_class.get(label)
+        if bandwidth is None:
+            raise ValueError(f"TNG atlas lacks a {label!r} transport bandwidth")
+        balance = np.power(
+            1.0 + self._morphology_use_counts[candidates].astype(np.float64),
+            -MORPHOLOGY_BALANCE_POWER,
+        )
+        probabilities, used_bandwidth, effective_donors = (
+            quantile_transport_weights(
+                self._atlas_mass_quantile[candidates], target,
+                bandwidth=bandwidth,
+                minimum_effective_donors=MORPHOLOGY_MIN_EFFECTIVE_DONORS,
+                balance_weights=balance,
+            )
+        )
+        local_index = int(rng.choice(candidates.size, p=probabilities))
+        selected = int(candidates[local_index])
+        use_count = int(self._morphology_use_counts[selected]) + 1
+        self._morphology_use_counts[selected] = use_count
+        donor_quantile = float(self._atlas_mass_quantile[selected])
+        proxy_logmass = (
+            float(self.population_prior.proxy_logmass(donor_quantile, label))
+            if hasattr(self.population_prior, "proxy_logmass")
+            else float("nan")
+        )
+        return [self.tng_galaxies[selected]], {
+            "activity_class": label,
+            "target_mass_quantile": target,
+            "tng_mass_quantile": donor_quantile,
+            "native_tng_logmass": float(self._atlas_logm[selected]),
+            "morphology_proxy_logmass": proxy_logmass,
+            "selection_probability": float(probabilities[local_index]),
+            "effective_donors": float(effective_donors),
+            "kernel_bandwidth_quantile": float(used_bandwidth),
+            "worker_donor_use_count": use_count,
+        }
 
     # ------------------------------------------------------------------ #
     def _add_tng_galaxy(
@@ -421,13 +469,10 @@ class SkySimulator:
         """Inject one TNG SED conditioned on COSMOS z/mass/size/brightness."""
         if self.population_prior is None:
             return None
-        if self._population_mass_indices is None:
-            draw = self.population_prior.sample(rng)
-        else:
-            draw = self.population_prior.sample(
-                rng, eligible_indices=self._population_mass_indices,
-            )
-        galaxies = self._pick_field_galaxy(rng, draw.logmass)
+        draw = self.population_prior.sample(rng)
+        galaxies, morphology = self._pick_field_galaxy(
+            rng, draw.mass_quantile, draw.activity_class,
+        )
         res = sample_tng_stamp(
                                galaxies, rng,
                                pixel_scale_arcsec=self.config.pixel_scale,
@@ -454,6 +499,21 @@ class SkySimulator:
             "catalog_id":   draw.catalog_id,
             "z":            draw.z,
             "mass_scale":   1.0,
+            "native_tng_logmass": morphology["native_tng_logmass"],
+            "morphology_proxy_logmass": morphology["morphology_proxy_logmass"],
+            "target_mass_quantile": morphology["target_mass_quantile"],
+            "tng_mass_quantile": morphology["tng_mass_quantile"],
+            "morphology_selection_probability": morphology[
+                "selection_probability"
+            ],
+            "morphology_effective_donors": morphology["effective_donors"],
+            "morphology_kernel_bandwidth_quantile": morphology[
+                "kernel_bandwidth_quantile"
+            ],
+            "morphology_worker_use_count": morphology[
+                "worker_donor_use_count"
+            ],
+            "morphology_activity_class": morphology["activity_class"],
             "galaxy_density_arcmin2": float(self.config.galaxy_density_arcmin2),
             "population_prior": "cosmos2025_joint",
             "mag_hst_f814w": draw.mag_hst_f814w,
