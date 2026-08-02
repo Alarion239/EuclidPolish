@@ -86,7 +86,17 @@ def tng_fits_path(galaxy_dir: str, subhalo_id: int | str,
                   orientation: int, fits_band: str) -> str:
     """Path of one atlas frame, e.g. ``…/167396/TNG167396_O4_Euclid_VIS.fits``."""
     name = f"TNG{subhalo_id}_O{orientation}_Euclid_{fits_band}.fits"
-    return os.path.join(galaxy_dir, name)
+    path = os.path.join(galaxy_dir, name)
+    if os.path.isfile(path):
+        return path
+    try:
+        padded_name = (
+            f"TNG{int(subhalo_id):06d}_O{orientation}_Euclid_{fits_band}.fits"
+        )
+    except (TypeError, ValueError):
+        return path
+    padded_path = os.path.join(galaxy_dir, padded_name)
+    return padded_path if os.path.isfile(padded_path) else path
 
 
 def load_tng_frame(path: str) -> np.ndarray:

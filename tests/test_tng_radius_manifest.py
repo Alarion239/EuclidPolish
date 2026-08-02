@@ -6,7 +6,9 @@ from astropy.io import fits
 
 from euclid_polish.config import Config
 from euclid_polish.sky.generation.tng_galaxy import (
+    list_tng_galaxies,
     prepare_tng_galaxy_continuous,
+    tng_fits_path,
     tng_stamp_to_target_re,
 )
 from euclid_polish.sky.generation.tng_radius_manifest import (
@@ -51,6 +53,22 @@ def test_manifest_is_atomic_and_validates_inventory(tmp_path):
                                manifest_path_value=str(output))
     assert not status["valid"]
     assert any("changed" in reason for reason in status["reasons"])
+
+
+def test_zero_padded_atlas_filenames_are_not_excluded(tmp_path):
+    atlas = tmp_path / "tng_skirt"
+    atlas.mkdir()
+    _atlas(atlas, gid="1")
+    folder = atlas / "1"
+    for path in list(folder.glob("TNG1_*.fits")):
+        path.rename(folder / path.name.replace("TNG1_", "TNG000001_"))
+
+    galaxies = list_tng_galaxies(str(atlas))
+
+    assert len(galaxies) == 1
+    assert tng_fits_path(str(folder), "1", 1, "VIS").endswith(
+        "TNG000001_O1_Euclid_VIS.fits"
+    )
 
 
 def test_radius_match_ignores_atlas_frame_side(tmp_path):
