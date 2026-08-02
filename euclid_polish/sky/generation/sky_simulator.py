@@ -27,7 +27,10 @@ from euclid_polish.photometry import ab_mag_to_electrons
 from euclid_polish.provenance.defaults import mint_id
 from euclid_polish.provenance.records import Stamp
 from euclid_polish.skirt.image import composite_stamp
-from euclid_polish.sky.generation.cosmos_tng_prior import CosmosTngPrior
+from euclid_polish.sky.generation.cosmos_tng_prior import (
+    CosmosTngPrior,
+    cross_validated_mass_bandwidth,
+)
 from euclid_polish.sky.generation.lens_population import (
     render_lens_to_multiband_canvas,
     sample_lens_geometry,
@@ -159,29 +162,6 @@ def _sample_star_band_magnitudes(
     return sample_stellar_sed(rng, mag_vis).magnitudes
 
 
-def _cross_validated_mass_bandwidth(logm: np.ndarray) -> float:
-    """Choose a Gaussian morphology-kernel bandwidth by leave-one-out CV."""
-    values = np.asarray(logm, dtype=float)
-    values = values[np.isfinite(values)]
-    if values.size < 2:
-        return 0.25
-    spread = float(np.std(values)) or 0.25
-    scale = float(np.median(np.abs(values - np.median(values)))) * 1.4826
-    scale = max(scale, spread / max(values.size ** 0.2, 1.0), 0.05)
-    grid = np.geomspace(max(0.03, scale / 4.0),
-                        min(1.0, max(0.08, scale * 4.0)), 24)
-    best_h, best_score = float(grid[0]), -float("inf")
-    for h in grid:
-        diff = (values[:, None] - values[None, :]) / h
-        kernels = np.exp(-0.5 * diff * diff)
-        np.fill_diagonal(kernels, 0.0)
-        denom = kernels.sum(axis=1)
-        score = float(np.log(np.maximum(denom / max(values.size - 1, 1), 1e-300)).sum())
-        if score > best_score:
-            best_h, best_score = float(h), score
-    return best_h
-
-
 def star_band_magnitudes_from_record(star: dict) -> dict[str, float]:
     """Read persisted star magnitudes, with old-catalog compatibility."""
     mag_vis = float(star["mag_vis"])
@@ -282,6 +262,8 @@ class SkySimulator:
         )
         self._radius_lookup: dict[tuple[str, int], float] | None = None
         self._radius_manifest_fingerprint = ""
+        self._population_mass_indices: np.ndarray | None = None
+        self._morphology_mass_support: tuple[float, float] | None = None
 
         if self.config.strict_population_artifacts:
             if self.config.star_density_arcmin2 > 0.0 and self.stellar_prior is None:
@@ -364,7 +346,7 @@ class SkySimulator:
             with np.errstate(invalid="ignore", divide="ignore"):
                 self._atlas_logm = np.where(m > 0, np.log10(m), np.nan)
             finite_mass = self._atlas_logm[np.isfinite(self._atlas_logm)]
-            self._mass_kernel_bandwidth = _cross_validated_mass_bandwidth(
+            self._mass_kernel_bandwidth = cross_validated_mass_bandwidth(
                 finite_mass
             ) if finite_mass.size else None
             if self.config.strict_population_artifacts and (
@@ -376,6 +358,18 @@ class SkySimulator:
                 )
             if not np.isfinite(self._atlas_logm).any():
                 self._atlas_logm = None
+            elif (
+                self.config.strict_population_artifacts
+                and population_prior is not None
+            ):
+                self._morphology_mass_support = (
+                    float(np.min(finite_mass)), float(np.max(finite_mass)),
+                )
+                self._population_mass_indices = (
+                    population_prior.mass_support_indices(
+                        *self._morphology_mass_support
+                    )
+                )
         else:
             self._mass_kernel_bandwidth = None
 
@@ -427,7 +421,12 @@ class SkySimulator:
         """Inject one TNG SED conditioned on COSMOS z/mass/size/brightness."""
         if self.population_prior is None:
             return None
-        draw = self.population_prior.sample(rng)
+        if self._population_mass_indices is None:
+            draw = self.population_prior.sample(rng)
+        else:
+            draw = self.population_prior.sample(
+                rng, eligible_indices=self._population_mass_indices,
+            )
         galaxies = self._pick_field_galaxy(rng, draw.logmass)
         res = sample_tng_stamp(
                                galaxies, rng,

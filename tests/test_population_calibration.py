@@ -112,6 +112,26 @@ def test_local_catalog_fit_recovers_raw_density_without_rendering(
         z_phot=np.full(size, 1.0),
         logmass_lephare=np.full(size, 10.0),
         re_combined_arcsec=np.full(size, 0.4),
+        generator_ready=np.ones(size, dtype=bool),
+    )
+    import euclid_polish.sky.generation.redshift_model as redshift_module
+    import euclid_polish.sky.generation.tng_galaxy as galaxy_module
+    import euclid_polish.sky.generation.tng_radius_manifest as radius_module
+
+    monkeypatch.setattr(
+        radius_module, "validate_manifest",
+        lambda _path: {"valid": True, "manifest_fingerprint": "radius-v1"},
+    )
+    monkeypatch.setattr(
+        galaxy_module, "list_tng_galaxies",
+        lambda _path: [("atlas/1", "1"), ("atlas/2", "2")],
+    )
+    monkeypatch.setattr(
+        redshift_module, "load_tng_properties",
+        lambda: {
+            "1": {"mass_stars": 10.0 ** 9.8},
+            "2": {"mass_stars": 10.0 ** 10.2},
+        },
     )
     fit_path.write_text(json.dumps({
         "inputs": {
@@ -152,6 +172,9 @@ def test_local_catalog_fit_recovers_raw_density_without_rendering(
     assert first["retained_detection_fraction"] == pytest.approx(0.5)
     assert first["euclid_detected_density_arcmin2"] == pytest.approx(10.0)
     assert first["recommended_density_arcmin2"] == pytest.approx(20.0)
+    assert first["cosmos_generator_rows"] == size
+    assert first["morphology_model"]["eligible_cosmos_rows"] == size
+    assert first["magnitude_fit_quality"]["valid"]
     assert first["calibration_fingerprint"] == second["calibration_fingerprint"]
     assert first["interval_arcmin2"] == second["interval_arcmin2"]
     assert density_calibration_path().exists()

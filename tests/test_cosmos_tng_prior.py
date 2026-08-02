@@ -80,3 +80,22 @@ def test_embedded_transfer_does_not_need_fit_file(tmp_path):
     expected = 24.0 + 0.8 * (draw.mag_hst_f814w - 24.0) + 0.3
     assert draw.target_vis_mag == pytest.approx(expected)
     assert draw.brightness_transfer == "embedded:test-fit"
+
+
+def test_mass_supported_sampling_never_draws_unsupported_cosmos_rows(tmp_path):
+    path = tmp_path / "prior.npz"
+    _write_prior(path)
+    prior = CosmosTngPrior(
+        path,
+        photometric_transfer=F814WToVisTransfer(source="embedded:test"),
+    )
+    eligible = prior.mass_support_indices(9.8, 10.2)
+
+    draws = [
+        prior.sample(np.random.default_rng(seed), eligible_indices=eligible)
+        for seed in range(50)
+    ]
+
+    assert {draw.catalog_id for draw in draws} == {"1"}
+    with pytest.raises(ValueError, match="no rows"):
+        prior.mass_support_indices(11.0, 12.0)

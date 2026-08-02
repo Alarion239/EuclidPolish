@@ -51,6 +51,32 @@ class F814WToVisTransfer:
         return float(mean + rng.normal(0.0, self.scatter_mag))
 
 
+def cross_validated_mass_bandwidth(logmass: np.ndarray) -> float:
+    """Choose a Gaussian morphology-kernel bandwidth by leave-one-out CV."""
+    values = np.asarray(logmass, dtype=float)
+    values = values[np.isfinite(values)]
+    if values.size < 2:
+        return 0.25
+    spread = float(np.std(values)) or 0.25
+    scale = float(np.median(np.abs(values - np.median(values)))) * 1.4826
+    scale = max(scale, spread / max(values.size ** 0.2, 1.0), 0.05)
+    grid = np.geomspace(
+        max(0.03, scale / 4.0), min(1.0, max(0.08, scale * 4.0)), 24,
+    )
+    best_h, best_score = float(grid[0]), -float("inf")
+    for h in grid:
+        diff = (values[:, None] - values[None, :]) / h
+        kernels = np.exp(-0.5 * diff * diff)
+        np.fill_diagonal(kernels, 0.0)
+        denom = kernels.sum(axis=1)
+        score = float(np.log(
+            np.maximum(denom / max(values.size - 1, 1), 1e-300)
+        ).sum())
+        if score > best_score:
+            best_h, best_score = float(h), score
+    return best_h
+
+
 def _transfer_fingerprint(payload: dict, fit: dict) -> str:
     """Stable identity for coefficients plus the Euclid cone selection."""
     inputs = payload.get("inputs") or {}
@@ -215,8 +241,36 @@ class CosmosTngPrior:
     def __len__(self) -> int:
         return len(self.f814w)
 
-    def sample(self, rng: np.random.Generator) -> CosmosTngDraw:
-        i = int(rng.integers(0, len(self)))
+    def mass_support_indices(
+        self, lower_logmass: float, upper_logmass: float,
+    ) -> np.ndarray:
+        """Indices whose stellar masses are supported by the local atlas."""
+        lower = float(lower_logmass)
+        upper = float(upper_logmass)
+        if not (np.isfinite(lower) and np.isfinite(upper) and lower <= upper):
+            raise ValueError("TNG morphology mass support is invalid")
+        indices = np.flatnonzero((self.mass >= lower) & (self.mass <= upper))
+        if not indices.size:
+            raise ValueError(
+                "COSMOS prior has no rows inside the TNG morphology mass support"
+            )
+        return indices
+
+    def sample(
+        self,
+        rng: np.random.Generator,
+        *,
+        eligible_indices: np.ndarray | None = None,
+    ) -> CosmosTngDraw:
+        if eligible_indices is None:
+            i = int(rng.integers(0, len(self)))
+        else:
+            eligible = np.asarray(eligible_indices, dtype=np.int64)
+            if eligible.ndim != 1 or not eligible.size:
+                raise ValueError("COSMOS eligible-index pool is empty")
+            i = int(eligible[int(rng.integers(0, eligible.size))])
+            if i < 0 or i >= len(self):
+                raise ValueError("COSMOS eligible-index pool is out of bounds")
         re = float(self.re[i])
         mag_hst_f814w = float(self.f814w[i])
         target_vis_mag = self.brightness_transfer.sample_vis_mag(

@@ -309,7 +309,12 @@ def fit_local_catalog_density(
     budget.
     Cone bootstraps carry the dominant field-to-field uncertainty.
     """
-    from euclid_polish.sky.generation.cosmos_tng_prior import CosmosTngPrior
+    from euclid_polish.sky.generation.cosmos_tng_prior import (
+        CosmosTngPrior,
+        cross_validated_mass_bandwidth,
+    )
+    from euclid_polish.sky.generation.redshift_model import load_tng_properties
+    from euclid_polish.sky.generation.tng_galaxy import list_tng_galaxies
     from euclid_polish.web.helpers.population_comparison import (
         euclid_catalog_meta_path,
         euclid_catalog_path,
@@ -344,6 +349,25 @@ def fit_local_catalog_density(
             "calibration: " + "; ".join(radius_status.get("reasons", []))
         )
     radius_fingerprint = str(radius_status.get("manifest_fingerprint") or "")
+    atlas = list_tng_galaxies(Config.TNG_SKIRT_DIR)
+    properties = load_tng_properties()
+    atlas_ids = [str(gid) for _, gid in atlas]
+    atlas_mass = np.asarray([
+        (properties.get(gid) or {}).get("mass_stars", float("nan"))
+        for gid in atlas_ids
+    ], dtype=np.float64)
+    if not atlas_ids or not np.all(np.isfinite(atlas_mass) & (atlas_mass > 0.0)):
+        raise ValueError(
+            "TNG morphology calibration requires finite mass_stars for every "
+            "completed atlas galaxy"
+        )
+    atlas_logmass = np.log10(atlas_mass)
+    mass_support = (
+        float(np.min(atlas_logmass)), float(np.max(atlas_logmass)),
+    )
+    mass_bandwidth = float(cross_validated_mass_bandwidth(atlas_logmass))
+    eligible_indices = prior.mass_support_indices(*mass_support)
+    excluded_mass_rows = int(len(prior) - len(eligible_indices))
     meta = _read(euclid_catalog_meta_path())
     if not meta:
         raise ValueError("Query and cache several Euclid cones first")
@@ -353,6 +377,8 @@ def fit_local_catalog_density(
         raise ValueError("Local density calibration needs at least three Euclid cones")
 
     cone_counts = np.zeros(cone_count, dtype=np.float64)
+    magnitude_edges = np.arange(20.0, 28.0001, 0.5, dtype=np.float64)
+    magnitude_counts = np.zeros(magnitude_edges.size - 1, dtype=np.float64)
     total_count = 0.0
     missing_probability = 0
     invalid_probability = 0
@@ -388,6 +414,11 @@ def fit_local_catalog_density(
                 continue
             extended_weight = 1.0 - point_probability
             total_count += extended_weight
+            bin_index = int(np.searchsorted(
+                magnitude_edges, magnitude, side="right",
+            ) - 1)
+            if 0 <= bin_index < magnitude_counts.size:
+                magnitude_counts[bin_index] += extended_weight
             if 0 <= cone_index < cone_count:
                 cone_counts[cone_index] += extended_weight
     if total_count <= 0 or np.any(cone_counts <= 0):
@@ -396,7 +427,9 @@ def fit_local_catalog_density(
         )
 
     rng = np.random.default_rng(seed)
-    indices = rng.integers(0, len(prior), size=int(draws))
+    indices = eligible_indices[
+        rng.integers(0, len(eligible_indices), size=int(draws))
+    ]
     vis = (
         24.0 + slope * (prior.f814w[indices].astype(np.float64) - 24.0)
         + offset + rng.normal(0.0, scatter, size=int(draws))
@@ -412,6 +445,26 @@ def fit_local_catalog_density(
     cone_densities = cone_counts / cone_area
     euclid_density = float(total_count / area)
     recommendation = euclid_density / retained_fraction
+    predicted_bin_density = np.asarray([
+        recommendation * np.mean(
+            detection_probability * ((vis >= lower) & (vis < upper))
+        )
+        for lower, upper in zip(
+            magnitude_edges[:-1], magnitude_edges[1:], strict=True,
+        )
+    ])
+    predicted_bin_counts = predicted_bin_density * area
+    positive = magnitude_counts > 0.0
+    deviance_terms = predicted_bin_counts.copy()
+    deviance_terms[positive] = (
+        magnitude_counts[positive] * np.log(
+            magnitude_counts[positive]
+            / np.maximum(predicted_bin_counts[positive], 1e-300)
+        ) - (magnitude_counts[positive] - predicted_bin_counts[positive])
+    )
+    poisson_deviance = float(2.0 * np.sum(deviance_terms))
+    magnitude_dof = max(1, int(magnitude_counts.size - 1))
+    reduced_poisson_deviance = poisson_deviance / magnitude_dof
 
     # The finite Monte Carlo error is small next to cone-to-cone variance, but
     # retain both. Fractional beta counts support non-binary completeness
@@ -434,7 +487,7 @@ def fit_local_catalog_density(
         prior_digest.update(np.ascontiguousarray(values).tobytes())
     prior_fingerprint = prior_digest.hexdigest()
     identity = {
-        "version": 3,
+        "version": 4,
         "method": "local_catalog_forward_model_probability_weighted",
         "transfer_fingerprint": transfer["fingerprint"],
         "prior_f814w_fingerprint": prior_fingerprint,
@@ -445,6 +498,14 @@ def fit_local_catalog_density(
         "catalog_radius_arcmin": meta.get("radius_arcmin"),
         "catalog_weighted_fingerprint": _catalog_weighted_fingerprint(),
         "classification_weighting": "galaxy_weight=1-POINT_LIKE_PROB",
+        "morphology_model": {
+            "atlas_ids": atlas_ids,
+            "atlas_logmass": atlas_logmass.tolist(),
+            "supported_logmass_range": list(mass_support),
+            "kernel_bandwidth_dex": mass_bandwidth,
+            "eligible_cosmos_rows": int(len(eligible_indices)),
+            "excluded_cosmos_rows": excluded_mass_rows,
+        },
         "selection": {
             "mag_min": 20.0, "mag_max": 28.0, "spurious_max": 0.5,
         },
@@ -455,17 +516,25 @@ def fit_local_catalog_density(
         identity, sort_keys=True, separators=(",", ":"), allow_nan=False,
     ).encode("utf-8")).hexdigest()
     warnings = list((transfer.get("fit_quality") or {}).get("warnings") or [])
+    if reduced_poisson_deviance > 5.0:
+        warnings.append(
+            "mass-supported COSMOS draw pool has high Poisson deviance"
+        )
     warnings.append(
         "catalog-level calibration does not model rendering, crowding, or deblending"
     )
+    quality_warnings = [
+        warning for warning in warnings
+        if "does not model rendering" not in warning
+    ]
     result = {
-        "version": 2,
+        "version": 3,
         "method": (
             "local COSMOS/TNG generator draws passed through the fitted "
             "Euclid brightness and completeness model"
         ),
-        "valid": True,
-        "validated": not (transfer.get("fit_quality") or {}).get("warnings"),
+        "valid": not quality_warnings,
+        "validated": not quality_warnings,
         "warnings": warnings + [
             f"excluded {missing_probability:,} rows without point-like probability",
             f"excluded {invalid_probability:,} rows with invalid point-like probability",
@@ -481,6 +550,24 @@ def fit_local_catalog_density(
         "interval_arcmin2": interval,
         "euclid_detected_density_arcmin2": euclid_density,
         "retained_detection_fraction": retained_fraction,
+        "magnitude_fit_quality": {
+            "poisson_deviance": poisson_deviance,
+            "dof": magnitude_dof,
+            "reduced_poisson_deviance": reduced_poisson_deviance,
+            "valid": reduced_poisson_deviance <= 5.0,
+            "bins": [
+                {
+                    "mag_lo": float(lower),
+                    "mag_hi": float(upper),
+                    "euclid_detected_density_arcmin2": float(count / area),
+                    "predicted_detected_density_arcmin2": float(predicted),
+                }
+                for lower, upper, count, predicted in zip(
+                    magnitude_edges[:-1], magnitude_edges[1:],
+                    magnitude_counts, predicted_bin_density, strict=True,
+                )
+            ],
+        },
         "response_points": [
             {"density_arcmin2": 0.0, "detected_density_arcmin2": 0.0},
             {
@@ -491,7 +578,9 @@ def fit_local_catalog_density(
         "local_draws": int(draws),
         "bootstrap_samples": int(bootstraps),
         "seed": int(seed),
-        "cosmos_generator_rows": int(len(prior)),
+        "cosmos_generator_rows": int(len(eligible_indices)),
+        "cosmos_generator_rows_before_mass_support": int(len(prior)),
+        "morphology_model": identity["morphology_model"],
         "cosmos_f814w_fingerprint": prior_fingerprint,
         "euclid_expected_extended_sources": float(total_count),
         "euclid_nonstar_detections": float(total_count),
