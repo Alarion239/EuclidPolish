@@ -12,6 +12,9 @@ from euclid_polish.sky.generation.sky_simulator import (
     SkySimulatorConfig,
 )
 from euclid_polish.sky.generation.stellar_sed import EmpiricalStellarPrior
+from euclid_polish.sky.generation.tng_radius_manifest import (
+    write_parameter_summary,
+)
 from euclid_polish.web.helpers.population_calibration import (
     activate_galaxy_recommendation,
     active_transfer_path,
@@ -104,6 +107,10 @@ def test_local_catalog_fit_recovers_raw_density_without_rendering(
     prior_path.parent.mkdir(parents=True)
     monkeypatch.setattr(Config, "COSMOS_TNG_PRIOR_PATH", str(prior_path))
     monkeypatch.setattr(Config, "COSMOS_EUCLID_FIT_PATH", str(fit_path))
+    atlas_summary_path = root / "tng_atlas_parameters.csv"
+    monkeypatch.setattr(
+        Config, "TNG_ATLAS_PARAMETERS_PATH", str(atlas_summary_path),
+    )
     size = 2_000
     np.savez_compressed(
         prior_path,
@@ -114,24 +121,30 @@ def test_local_catalog_fit_recovers_raw_density_without_rendering(
         re_combined_arcsec=np.full(size, 0.4),
         generator_ready=np.ones(size, dtype=bool),
     )
-    import euclid_polish.sky.generation.redshift_model as redshift_module
-    import euclid_polish.sky.generation.tng_galaxy as galaxy_module
-    import euclid_polish.sky.generation.tng_radius_manifest as radius_module
-
-    monkeypatch.setattr(
-        radius_module, "validate_manifest",
-        lambda _path: {"valid": True, "manifest_fingerprint": "radius-v1"},
+    properties_path = tmp_path / "tng_properties.csv"
+    properties_path.write_text(
+        "id,sfr,mass_stars,m_halo,reff\n"
+        f"1,1,{10.0 ** 9.8},1e12,2\n"
+        f"2,1,{10.0 ** 10.2},1e12,2\n"
     )
-    monkeypatch.setattr(
-        galaxy_module, "list_tng_galaxies",
-        lambda _path: [("atlas/1", "1"), ("atlas/2", "2")],
-    )
-    monkeypatch.setattr(
-        redshift_module, "load_tng_properties",
-        lambda: {
-            "1": {"mass_stars": 10.0 ** 9.8},
-            "2": {"mass_stars": 10.0 ** 10.2},
-        },
+    manifest = {
+        "valid": True,
+        "algorithm_version": "test-cog-v1",
+        "manifest_fingerprint": "radius-v1",
+        "atlas_inventory_fingerprint": "atlas-v1",
+        "entries": [
+            {
+                "subhalo_id": gid,
+                "orientation": orientation,
+                "native_re_px": 10.0,
+                "shape": [64, 64],
+                "valid": True,
+            }
+            for gid in ("1", "2") for orientation in range(1, 6)
+        ],
+    }
+    write_parameter_summary(
+        atlas_summary_path, manifest, properties_path=str(properties_path),
     )
     fit_path.write_text(json.dumps({
         "inputs": {

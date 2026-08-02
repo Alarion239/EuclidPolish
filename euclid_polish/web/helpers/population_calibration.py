@@ -313,8 +313,9 @@ def fit_local_catalog_density(
         CosmosTngPrior,
         cross_validated_mass_bandwidth,
     )
-    from euclid_polish.sky.generation.redshift_model import load_tng_properties
-    from euclid_polish.sky.generation.tng_galaxy import list_tng_galaxies
+    from euclid_polish.sky.generation.tng_radius_manifest import (
+        load_parameter_summary,
+    )
     from euclid_polish.web.helpers.population_comparison import (
         euclid_catalog_meta_path,
         euclid_catalog_path,
@@ -341,26 +342,20 @@ def fit_local_catalog_density(
     prior = CosmosTngPrior(Config.COSMOS_TNG_PRIOR_PATH)
     if len(prior) < 1_000:
         raise ValueError("COSMOS/TNG prior has too few generator-ready rows")
-    from euclid_polish.sky.generation.tng_radius_manifest import validate_manifest
-    radius_status = validate_manifest(Config.TNG_SKIRT_DIR)
-    if not radius_status.get("valid"):
-        raise ValueError(
-            "measure a current complete TNG radius manifest before galaxy "
-            "calibration: " + "; ".join(radius_status.get("reasons", []))
-        )
-    radius_fingerprint = str(radius_status.get("manifest_fingerprint") or "")
-    atlas = list_tng_galaxies(Config.TNG_SKIRT_DIR)
-    properties = load_tng_properties()
-    atlas_ids = [str(gid) for _, gid in atlas]
-    atlas_mass = np.asarray([
-        (properties.get(gid) or {}).get("mass_stars", float("nan"))
-        for gid in atlas_ids
-    ], dtype=np.float64)
-    if not atlas_ids or not np.all(np.isfinite(atlas_mass) & (atlas_mass > 0.0)):
-        raise ValueError(
-            "TNG morphology calibration requires finite mass_stars for every "
-            "completed atlas galaxy"
-        )
+    atlas_summary = load_parameter_summary(Config.TNG_ATLAS_PARAMETERS_PATH)
+    summary_meta = atlas_summary["meta"]
+    radius_fingerprint = str(summary_meta.get("manifest_fingerprint") or "")
+    if not radius_fingerprint:
+        raise ValueError("atlas parameter summary lacks a radius fingerprint")
+    mass_by_id: dict[str, float] = {}
+    for row in atlas_summary["rows"]:
+        gid = str(row["subhalo_id"])
+        mass = float(row["mass_stars_msun"])
+        previous = mass_by_id.setdefault(gid, mass)
+        if not np.isclose(previous, mass, rtol=1e-12, atol=0.0):
+            raise ValueError(f"TNG{gid} has inconsistent masses across orientations")
+    atlas_ids = sorted(mass_by_id, key=int)
+    atlas_mass = np.asarray([mass_by_id[gid] for gid in atlas_ids])
     atlas_logmass = np.log10(atlas_mass)
     mass_support = (
         float(np.min(atlas_logmass)), float(np.max(atlas_logmass)),
@@ -501,6 +496,9 @@ def fit_local_catalog_density(
         "morphology_model": {
             "atlas_ids": atlas_ids,
             "atlas_logmass": atlas_logmass.tolist(),
+            "atlas_parameter_summary_fingerprint": summary_meta.get(
+                "summary_fingerprint"
+            ),
             "supported_logmass_range": list(mass_support),
             "kernel_bandwidth_dex": mass_bandwidth,
             "eligible_cosmos_rows": int(len(eligible_indices)),

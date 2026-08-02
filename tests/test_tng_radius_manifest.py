@@ -11,7 +11,9 @@ from euclid_polish.sky.generation.tng_galaxy import (
 )
 from euclid_polish.sky.generation.tng_radius_manifest import (
     build_manifest,
+    load_parameter_summary,
     validate_manifest,
+    write_parameter_summary,
 )
 
 
@@ -77,6 +79,31 @@ def test_manifest_payload_is_json_serializable(tmp_path):
     properties.write_text("id,sfr,mass_stars,m_halo,reff\n42,1,1e10,1e12,2\n")
     report = build_manifest(str(atlas), properties_path=str(properties))
     json.dumps(report, allow_nan=False)
+
+
+def test_parameter_summary_joins_properties_without_atlas_pixels(tmp_path):
+    atlas = tmp_path / "tng_skirt"
+    atlas.mkdir(); _atlas(atlas)
+    properties = tmp_path / "props.csv"
+    properties.write_text("id,sfr,mass_stars,m_halo,reff\n42,1,1e10,1e12,2\n")
+    report = build_manifest(str(atlas), properties_path=str(properties))
+    summary = tmp_path / "tng_atlas_parameters.csv"
+
+    meta = write_parameter_summary(
+        summary, report, properties_path=str(properties),
+    )
+    loaded = load_parameter_summary(summary)
+
+    assert meta["galaxy_count"] == 1
+    assert meta["row_count"] == 5
+    assert len(loaded["rows"]) == 5
+    assert loaded["rows"][0]["mass_stars_msun"] == pytest.approx(1e10)
+    assert loaded["rows"][0]["native_re_kpc"] == pytest.approx(
+        loaded["rows"][0]["native_re_px"] * 0.1
+    )
+    summary.write_text(summary.read_text() + "\n")
+    with pytest.raises(ValueError, match="fingerprint"):
+        load_parameter_summary(summary)
 
 
 def test_target_re_uses_one_shared_cube_scale(tmp_path):

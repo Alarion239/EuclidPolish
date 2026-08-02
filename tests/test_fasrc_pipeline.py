@@ -139,6 +139,16 @@ class TestRegistry:
             "lens_isolation_evaluate",
         }
 
+    def test_measure_tng_radii_can_write_parameter_summary(self):
+        step = REGISTRY.get("measure_tng_radii")
+        command = step.build_command({
+            "tng_parameter_summary": "/data/tng_atlas_parameters.csv",
+        })
+        assert command == [
+            "scripts/measure_tng_radii.py",
+            "--summary", "/data/tng_atlas_parameters.csv",
+        ]
+
     def test_ensemble_train_step_build_command(self, monkeypatch):
         monkeypatch.setattr(
             "euclid_polish.web.fasrc_pipeline.next_member_names",

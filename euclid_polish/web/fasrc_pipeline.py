@@ -888,7 +888,8 @@ class MeasureTngRadiiStep(FASRCPipelineStep):
         cmd = ["scripts/measure_tng_radii.py"]
         for key, flag in (("tng_dir", "--tng-dir"),
                           ("tng_properties", "--properties"),
-                          ("tng_radius_manifest", "--output")):
+                          ("tng_radius_manifest", "--output"),
+                          ("tng_parameter_summary", "--summary")):
             value = str(params.get(key, "") or "").strip()
             if value:
                 cmd += [flag, value]

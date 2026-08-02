@@ -8,6 +8,7 @@ still match the files that were measured.
 
 from __future__ import annotations
 
+import csv
 import hashlib
 import json
 import os
@@ -24,11 +25,22 @@ from euclid_polish.sky.generation.tng_galaxy import (
     tng_fits_path,
 )
 from euclid_polish.skirt.image import measure_halflight_radius_px
-from euclid_polish.sky.generation.redshift_model import load_tng_properties
+from euclid_polish.sky.generation.redshift_model import (
+    TNG_NATIVE_PC_PER_PIXEL,
+    load_tng_properties,
+)
 
 MANIFEST_VERSION = 1
 ALGORITHM_VERSION = "centered-vis-cog-v1"
 DEFAULT_MANIFEST_NAME = "tng_radius_manifest.json"
+PARAMETER_SUMMARY_VERSION = 1
+DEFAULT_PARAMETER_SUMMARY_NAME = "tng_atlas_parameters.csv"
+PARAMETER_SUMMARY_FIELDS = (
+    "subhalo_id", "orientation", "native_re_px", "native_re_kpc",
+    "frame_height_px", "frame_width_px", "mass_stars_msun",
+    "logmass_stars", "sfr_msun_yr", "m_halo_msun",
+    "groupcat_reff_kpc",
+)
 
 
 def manifest_path(tng_dir: str, path: str | None = None) -> str:
@@ -58,6 +70,14 @@ def _fingerprint(payload: Any) -> str:
         payload, sort_keys=True, separators=(",", ":"), allow_nan=False,
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _file_sha256(path: str | Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _inventory(
@@ -171,6 +191,157 @@ def write_manifest(path: str, payload: dict[str, Any]) -> None:
     tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n",
                    encoding="utf-8")
     os.replace(tmp, target)
+
+
+def parameter_summary_meta_path(path: str | Path) -> Path:
+    target = Path(path)
+    return target.with_suffix(target.suffix + ".meta.json")
+
+
+def write_parameter_summary(
+    path: str | Path,
+    manifest: dict[str, Any],
+    *,
+    properties_path: str,
+) -> dict[str, Any]:
+    """Flatten a complete radius manifest and TNG properties into one CSV."""
+    if not manifest.get("valid"):
+        raise ValueError("cannot summarize an invalid TNG radius manifest")
+    properties = load_tng_properties(properties_path)
+    rows: list[dict[str, int | float | str]] = []
+    galaxy_ids: set[str] = set()
+    for entry in manifest.get("entries", []):
+        if not entry.get("valid"):
+            raise ValueError("radius manifest contains an invalid entry")
+        gid = str(entry["subhalo_id"])
+        props = properties.get(gid) or {}
+        mass = float(props.get("mass_stars", float("nan")))
+        native_re_px = float(entry["native_re_px"])
+        shape = entry.get("shape") or []
+        if (
+            not np.isfinite(mass) or mass <= 0.0
+            or not np.isfinite(native_re_px) or native_re_px <= 0.0
+            or len(shape) != 2
+        ):
+            raise ValueError(f"TNG{gid} has incomplete summary parameters")
+        row = {
+            "subhalo_id": gid,
+            "orientation": int(entry["orientation"]),
+            "native_re_px": native_re_px,
+            "native_re_kpc": (
+                native_re_px * TNG_NATIVE_PC_PER_PIXEL / 1000.0
+            ),
+            "frame_height_px": int(shape[0]),
+            "frame_width_px": int(shape[1]),
+            "mass_stars_msun": mass,
+            "logmass_stars": float(np.log10(mass)),
+            "sfr_msun_yr": float(props.get("sfr", float("nan"))),
+            "m_halo_msun": float(props.get("m_halo", float("nan"))),
+            "groupcat_reff_kpc": float(props.get("reff", float("nan"))),
+        }
+        rows.append(row)
+        galaxy_ids.add(gid)
+    rows.sort(key=lambda row: (int(str(row["subhalo_id"])), int(row["orientation"])))
+
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_suffix(target.suffix + ".tmp")
+    with temporary.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=PARAMETER_SUMMARY_FIELDS)
+        writer.writeheader()
+        writer.writerows(rows)
+    os.replace(temporary, target)
+    meta = {
+        "version": PARAMETER_SUMMARY_VERSION,
+        "kind": "tng_atlas_parameters",
+        "valid": True,
+        "algorithm_version": manifest.get("algorithm_version"),
+        "manifest_fingerprint": manifest.get("manifest_fingerprint"),
+        "atlas_inventory_fingerprint": manifest.get(
+            "atlas_inventory_fingerprint"
+        ),
+        "properties_sha256": _file_sha256(properties_path),
+        "csv_sha256": _file_sha256(target),
+        "row_count": len(rows),
+        "galaxy_count": len(galaxy_ids),
+        "orientations_per_galaxy": N_ORIENTATIONS,
+    }
+    meta["summary_fingerprint"] = _fingerprint(meta)
+    meta_target = parameter_summary_meta_path(target)
+    meta_tmp = meta_target.with_suffix(meta_target.suffix + ".tmp")
+    meta_tmp.write_text(
+        json.dumps(meta, indent=2, sort_keys=True) + "\n", encoding="utf-8",
+    )
+    os.replace(meta_tmp, meta_target)
+    return meta
+
+
+def load_parameter_summary(path: str | Path) -> dict[str, Any]:
+    """Load and fingerprint-check a compact atlas parameter summary."""
+    target = Path(path)
+    meta_path = parameter_summary_meta_path(target)
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"missing atlas parameter metadata: {meta_path}") from exc
+    if (
+        meta.get("version") != PARAMETER_SUMMARY_VERSION
+        or meta.get("kind") != "tng_atlas_parameters"
+        or not meta.get("valid")
+    ):
+        raise ValueError("atlas parameter summary metadata is invalid")
+    summary_identity = {
+        key: value for key, value in meta.items()
+        if key != "summary_fingerprint"
+    }
+    if meta.get("summary_fingerprint") != _fingerprint(summary_identity):
+        raise ValueError("atlas parameter summary metadata fingerprint changed")
+    try:
+        csv_sha256 = _file_sha256(target)
+    except OSError as exc:
+        raise ValueError(f"missing atlas parameter summary: {target}") from exc
+    if meta.get("csv_sha256") != csv_sha256:
+        raise ValueError("atlas parameter summary CSV fingerprint changed")
+    rows: list[dict[str, Any]] = []
+    with target.open(newline="", encoding="utf-8") as handle:
+        for raw in csv.DictReader(handle):
+            try:
+                row = {
+                    "subhalo_id": str(raw["subhalo_id"]),
+                    "orientation": int(raw["orientation"]),
+                    **{
+                        key: float(raw[key])
+                        for key in PARAMETER_SUMMARY_FIELDS
+                        if key not in {"subhalo_id", "orientation"}
+                    },
+                }
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError("atlas parameter summary has malformed rows") from exc
+            if (
+                not np.isfinite(row["native_re_px"])
+                or row["native_re_px"] <= 0.0
+                or not np.isfinite(row["mass_stars_msun"])
+                or row["mass_stars_msun"] <= 0.0
+            ):
+                raise ValueError("atlas parameter summary has invalid core values")
+            rows.append(row)
+    if len(rows) != int(meta.get("row_count", -1)):
+        raise ValueError("atlas parameter summary row count changed")
+    keys = {(row["subhalo_id"], row["orientation"]) for row in rows}
+    if len(keys) != len(rows):
+        raise ValueError("atlas parameter summary has duplicate orientations")
+    galaxy_ids = {row["subhalo_id"] for row in rows}
+    expected = len(galaxy_ids) * int(meta.get("orientations_per_galaxy", 0))
+    if len(rows) != expected or len(galaxy_ids) != int(meta.get("galaxy_count", -1)):
+        raise ValueError("atlas parameter summary is incomplete")
+    required_orientations = set(range(1, N_ORIENTATIONS + 1))
+    for gid in galaxy_ids:
+        orientations = {
+            row["orientation"] for row in rows if row["subhalo_id"] == gid
+        }
+        if orientations != required_orientations:
+            raise ValueError(f"TNG{gid} has incomplete orientation parameters")
+    return {"meta": meta, "rows": rows}
 
 
 def load_manifest(path: str) -> dict[str, Any] | None:

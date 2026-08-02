@@ -128,6 +128,9 @@ class Config:
         DATA_DIR, "population_comparison", "cosmos2025",
         "cosmos_euclid_density_fit.json",
     )
+    TNG_ATLAS_PARAMETERS_PATH = os.path.join(
+        DATA_DIR, "_tng_infographics", "tng_atlas_parameters.csv",
+    )
 
     COSMOS2025_CATALOG_PATH    = os.path.join(DATA_DIR, "COSMOS2025/cosmos2025.fits")
     COSMOS2025_HDU_PHOTOMETRY = 1       # PHOTOMETRY HOTCOLD AND SE++
