@@ -69,9 +69,10 @@ def cross_validated_mass_bandwidth(logmass: np.ndarray) -> float:
         kernels = np.exp(-0.5 * diff * diff)
         np.fill_diagonal(kernels, 0.0)
         denom = kernels.sum(axis=1)
-        score = float(np.log(
-            np.maximum(denom / max(values.size - 1, 1), 1e-300)
-        ).sum())
+        density = denom / (
+            max(values.size - 1, 1) * h * np.sqrt(2.0 * np.pi)
+        )
+        score = float(np.log(np.maximum(density, 1e-300)).sum())
         if score > best_score:
             best_h, best_score = float(h), score
     return best_h

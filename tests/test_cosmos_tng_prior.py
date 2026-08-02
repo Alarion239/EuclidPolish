@@ -6,6 +6,7 @@ import pytest
 from euclid_polish.sky.generation.cosmos_tng_prior import (
     CosmosTngPrior,
     F814WToVisTransfer,
+    cross_validated_mass_bandwidth,
 )
 
 
@@ -99,3 +100,12 @@ def test_mass_supported_sampling_never_draws_unsupported_cosmos_rows(tmp_path):
     assert {draw.catalog_id for draw in draws} == {"1"}
     with pytest.raises(ValueError, match="no rows"):
         prior.mass_support_indices(11.0, 12.0)
+
+
+def test_mass_bandwidth_cross_validation_includes_kernel_normalization():
+    rng = np.random.default_rng(91)
+    logmass = rng.normal(10.2, 0.18, size=300)
+
+    bandwidth = cross_validated_mass_bandwidth(logmass)
+
+    assert 0.03 <= bandwidth < 0.3
