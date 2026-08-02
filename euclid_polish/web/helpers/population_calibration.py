@@ -128,6 +128,9 @@ def transfer_state() -> dict[str, Any]:
         "active": active,
         "is_active": bool(
             candidate and active
+            and candidate.get("version") == 3
+            and active.get("version") == 3
+            and candidate.get("valid")
             and candidate.get("fingerprint") == active.get("fingerprint")
         ),
     }
@@ -333,6 +336,14 @@ def fit_local_catalog_density(
     prior = CosmosTngPrior(Config.COSMOS_TNG_PRIOR_PATH)
     if len(prior) < 1_000:
         raise ValueError("COSMOS/TNG prior has too few generator-ready rows")
+    from euclid_polish.sky.generation.tng_radius_manifest import validate_manifest
+    radius_status = validate_manifest(Config.TNG_SKIRT_DIR)
+    if not radius_status.get("valid"):
+        raise ValueError(
+            "measure a current complete TNG radius manifest before galaxy "
+            "calibration: " + "; ".join(radius_status.get("reasons", []))
+        )
+    radius_fingerprint = str(radius_status.get("manifest_fingerprint") or "")
     meta = _read(euclid_catalog_meta_path())
     if not meta:
         raise ValueError("Query and cache several Euclid cones first")
@@ -418,14 +429,16 @@ def fit_local_catalog_density(
         "p84": float(np.percentile(density_samples, 84)),
     }
 
-    prior_fingerprint = hashlib.sha256(
-        np.ascontiguousarray(prior.f814w).tobytes()
-    ).hexdigest()
+    prior_digest = hashlib.sha256()
+    for values in (prior.catalog_id, prior.f814w, prior.z, prior.mass, prior.re):
+        prior_digest.update(np.ascontiguousarray(values).tobytes())
+    prior_fingerprint = prior_digest.hexdigest()
     identity = {
         "version": 3,
         "method": "local_catalog_forward_model_probability_weighted",
         "transfer_fingerprint": transfer["fingerprint"],
         "prior_f814w_fingerprint": prior_fingerprint,
+        "tng_radius_manifest_fingerprint": radius_fingerprint,
         "euclid_cones": meta.get("cones"),
         "catalog_version": meta.get("catalog_version"),
         "catalog_area_arcmin2": area,
@@ -458,6 +471,7 @@ def fit_local_catalog_density(
             f"excluded {invalid_probability:,} rows with invalid point-like probability",
         ],
         "transfer_fingerprint": transfer["fingerprint"],
+        "tng_radius_manifest_fingerprint": radius_fingerprint,
         "active_transfer_fingerprint": (active_transfer() or {}).get("fingerprint"),
         "calibration_fingerprint": calibration_fingerprint,
         "catalog_weighted_fingerprint": _catalog_weighted_fingerprint(),
@@ -507,6 +521,18 @@ def density_state() -> dict[str, Any]:
             "brightness-transfer candidate changed after the sweep"
         ]
     active = _read(active_density_path())
+    from euclid_polish.sky.generation.tng_radius_manifest import validate_manifest
+    radius_status = validate_manifest(Config.TNG_SKIRT_DIR)
+    current_radius_fingerprint = (
+        radius_status.get("manifest_fingerprint") if radius_status.get("valid")
+        else None
+    )
+    if candidate and candidate.get("tng_radius_manifest_fingerprint") != current_radius_fingerprint:
+        candidate = dict(candidate)
+        candidate["valid"] = False
+        candidate["warnings"] = list(candidate.get("warnings") or []) + [
+            "TNG radius manifest changed or is not submit-ready"
+        ]
     current_catalog_fingerprint = _catalog_weighted_fingerprint()
     if candidate and candidate.get("catalog_weighted_fingerprint") != current_catalog_fingerprint:
         candidate = dict(candidate)
@@ -519,6 +545,7 @@ def density_state() -> dict[str, Any]:
         "active": active,
         "is_active": bool(
             candidate and active
+            and candidate.get("valid")
             and candidate.get("calibration_fingerprint")
             == active.get("calibration_fingerprint")
         ),
@@ -614,6 +641,9 @@ def star_state() -> dict[str, Any]:
         "active": active,
         "is_active": bool(
             candidate and active
+            and candidate.get("version") == 3
+            and active.get("version") == 3
+            and candidate.get("valid")
             and candidate.get("fingerprint") == active.get("fingerprint")
         ),
     }

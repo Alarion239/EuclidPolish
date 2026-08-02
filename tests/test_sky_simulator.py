@@ -110,8 +110,5 @@ def test_prior_required_for_nonzero_density(tmp_path):
 
 def test_star_colours_remain_correlated():
     rng = np.random.default_rng(123)
-    draws = np.asarray([
-        [m[name] - m["VIS"] for name in ("Y_E", "J_E", "H_E")]
-        for m in (_sample_star_band_magnitudes(rng, 20.0) for _ in range(1000))
-    ])
-    assert np.all(np.corrcoef(draws.T)[np.triu_indices(3, 1)] > 0.85)
+    with pytest.raises(ValueError, match="empirical stellar prior"):
+        _sample_star_band_magnitudes(rng, 20.0)

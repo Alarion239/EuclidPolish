@@ -210,6 +210,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                          "lower densities exact nested source thinnings.")
     ap.add_argument("--cosmos-prior", default=Config.COSMOS_TNG_PRIOR_PATH,
                     help="Joint COSMOS2025 population-prior NPZ.")
+    ap.add_argument("--tng-dir", default=Config.TNG_SKIRT_DIR,
+                    help="Downloaded TNG SKIRT atlas directory.")
+    ap.add_argument("--tng-properties", default="",
+                    help="TNG stellar-properties CSV (required for strict generation).")
+    ap.add_argument("--tng-radius-manifest", default="",
+                    help="Versioned measured TNG VIS-radius manifest.")
     ap.add_argument("--cosmos-vis-offset-mag", type=float, default=None,
                     help="Embedded fitted VIS-F814W magnitude offset.")
     ap.add_argument("--cosmos-vis-magnitude-slope", type=float, default=None,
@@ -335,6 +341,14 @@ def _generator_config_from_args(args: argparse.Namespace) -> SkySimulatorConfig:
             args, "galaxy_thinning_max_density_arcmin2", None,
         ),
         cosmos_prior_path=args.cosmos_prior,
+        tng_galaxy_dir=getattr(args, "tng_dir", Config.TNG_SKIRT_DIR),
+        tng_properties_csv=getattr(args, "tng_properties", ""),
+        tng_radius_manifest_path=(
+            getattr(args, "tng_radius_manifest", "")
+            or os.path.join(Config.DATA_DIR, "_tng_infographics",
+                             "tng_radius_manifest.json")
+        ),
+        strict_population_artifacts=True,
         star_density_arcmin2=args.star_density_arcmin2,
         star_mag_slope=args.star_mag_slope,
         star_mag_bright=args.star_mag_bright,
@@ -1092,6 +1106,9 @@ def _gen_init_worker(prior_path, image_size, psf_dir,
                      cosmos_vis_magnitude_slope=None,
                      cosmos_vis_scatter_mag=None,
                      cosmos_vis_transfer_source="",
+                     tng_galaxy_dir=Config.TNG_SKIRT_DIR,
+                     tng_properties_csv="",
+                     tng_radius_manifest_path="",
                      ) -> None:
     """ProcessPool initializer: build the (small, filtered) catalog +
     simulator + forward model once per worker. The COSMOS2025 FITS is
@@ -1114,6 +1131,17 @@ def _gen_init_worker(prior_path, image_size, psf_dir,
                                           galaxy_thinning_max_density_arcmin2
                                       ),
                                       cosmos_prior_path=prior_path or "",
+                                      tng_galaxy_dir=tng_galaxy_dir,
+                                      tng_properties_csv=tng_properties_csv,
+                                      tng_radius_manifest_path=(
+                                          tng_radius_manifest_path
+                                          or os.path.join(
+                                              Config.DATA_DIR,
+                                              "_tng_infographics",
+                                              "tng_radius_manifest.json",
+                                          )
+                                      ),
+                                      strict_population_artifacts=True,
                                       star_density_arcmin2=star_density_arcmin2,
                                       star_mag_slope=star_mag_slope,
                                       star_mag_bright=star_mag_bright,
@@ -1305,7 +1333,10 @@ def step_generate_and_convolve_parallel(args: argparse.Namespace) -> None:
                           getattr(args, "cosmos_vis_offset_mag", None),
                           getattr(args, "cosmos_vis_magnitude_slope", None),
                           getattr(args, "cosmos_vis_scatter_mag", None),
-                          getattr(args, "cosmos_vis_transfer_source", "")),
+                          getattr(args, "cosmos_vis_transfer_source", ""),
+                          getattr(args, "tng_dir", Config.TNG_SKIRT_DIR),
+                          getattr(args, "tng_properties", ""),
+                          getattr(args, "tng_radius_manifest", "")),
             ) as pool:
                 futs = [pool.submit(_gen_convolve_shard, t) for t in tasks]
                 for fut in as_completed(futs):

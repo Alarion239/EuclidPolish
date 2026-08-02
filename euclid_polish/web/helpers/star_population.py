@@ -22,7 +22,7 @@ from euclid_polish.web.helpers.population_comparison import (
 )
 
 _GAIA_COUNT_LIMIT_MAG = 20.5
-_STAR_POPULATION_VERSION = 2
+_STAR_POPULATION_VERSION = 3
 
 
 def gaia_catalog_path() -> Path:
@@ -1444,17 +1444,35 @@ def _fit_star_population_latent() -> dict[str, Any]:
 def fit_star_population(
     *, faint_limit: float | None = None, bright_limit: float | None = None,
 ) -> dict[str, Any]:
-    """Fit the active stellar prior, selecting the flux-aware schema when available."""
+    """Fit the required flux-aware empirical stellar prior.
+
+    The legacy exponential/blackbody fit is intentionally no longer selected
+    implicitly: a population artifact must be tied to raw Euclid fluxes and
+    errors so generation cannot silently change statistical models.
+    """
+    if faint_limit is not None or bright_limit is not None:
+        raise ValueError(
+            "custom stellar magnitude limits are not supported by the strict "
+            "data-driven fit; refit the empirical catalog artifact"
+        )
     try:
         rows = _read_rows(euclid_catalog_path())
+        raw_keys = tuple(
+            key
+            for band in ("vis", "y", "j", "h")
+            for key in (f"flux_{band}_aper_uJy", f"fluxerr_{band}_aper_uJy")
+        )
         has_raw_flux = bool(rows) and all(
-            any(key in row for key in ("flux_y_aper_uJy", "fluxerr_y_aper_uJy"))
+            all(key in row for key in raw_keys)
             for row in rows[: min(32, len(rows))]
         )
-    except (OSError, csv.Error):
-        has_raw_flux = False
-    if has_raw_flux and faint_limit is None and bright_limit is None:
-        return _fit_star_population_latent()
-    return _fit_star_population_legacy(
-        faint_limit=faint_limit, bright_limit=bright_limit,
-    )
+    except (OSError, csv.Error) as exc:
+        raise ValueError(
+            "cannot read the raw Euclid flux catalog required for stellar fitting"
+        ) from exc
+    if not has_raw_flux:
+        raise ValueError(
+            "stellar fitting requires flux_y_aper_uJy/fluxerr_y_aper_uJy "
+            "and the corresponding VIS/J/H fields"
+        )
+    return _fit_star_population_latent()

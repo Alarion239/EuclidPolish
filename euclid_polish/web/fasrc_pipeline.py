@@ -869,6 +869,32 @@ class TngSkirtAtlasDownloadStep(FASRCPipelineStep):
         return cmd
 
 
+class MeasureTngRadiiStep(FASRCPipelineStep):
+    """Measure the centered VIS half-light radius of every atlas frame."""
+
+    def __init__(self):
+        super().__init__(
+            step_id="measure_tng_radii",
+            label="Measure TNG effective radii (all galaxies/orientations)",
+            job_name="tng-radii",
+            defaults=StepResources(
+                partition="shared", n_cpus=4, n_gpus=0,
+                memory="16G", time_limit="4:00:00",
+            ),
+            needs_gpu=False,
+        )
+
+    def build_command(self, params: dict[str, Any]) -> list[str]:
+        cmd = ["scripts/measure_tng_radii.py"]
+        for key, flag in (("tng_dir", "--tng-dir"),
+                          ("tng_properties", "--properties"),
+                          ("tng_radius_manifest", "--output")):
+            value = str(params.get(key, "") or "").strip()
+            if value:
+                cmd += [flag, value]
+        return cmd
+
+
 # Galaxy-selection modes for the grid/stack (mirrors euclid_polish.tng.selection
 # .MODES). The pick happens *locally* (where the histogram property cache lives)
 # and the chosen ids ride to the FASRC job via --ids/--id.
@@ -1401,7 +1427,6 @@ class SyntheticGenerateStep(RunPipelineStep):
     def prepare_params(self, params: dict[str, Any]) -> dict[str, Any]:
         """Freeze the explicitly activated fixed transfer into the remote job."""
         from euclid_polish.web.helpers.population_calibration import (
-            active_star,
             active_transfer,
             density_state,
         )
@@ -1424,7 +1449,13 @@ class SyntheticGenerateStep(RunPipelineStep):
         prepared["_cosmos_vis_transfer_artifact_json"] = json.dumps(
             transfer, separators=(",", ":"), sort_keys=True,
         )
-        density = density_state().get("active") or {}
+        density_status = density_state()
+        if not density_status.get("is_active"):
+            raise ValueError(
+                "active galaxy density is stale or incompatible; rerun the "
+                "COSMOS calibration and activate it again"
+            )
+        density = density_status.get("active") or {}
         if not density:
             raise ValueError(
                 "activate the joint galaxy calibration before generating fields"
@@ -1443,23 +1474,29 @@ class SyntheticGenerateStep(RunPipelineStep):
             raise ValueError(
                 "active galaxy calibration has no finite density"
             ) from exc
-        stars = active_star()
-        if stars:
-            prepared["_star_prior_json"] = json.dumps(
-                stars, separators=(",", ":")
+        from euclid_polish.web.helpers.population_calibration import star_state
+        star_status = star_state()
+        stars = star_status.get("active") or {}
+        if not star_status.get("is_active") or not stars:
+            raise ValueError(
+                "activate a valid Gaia+Euclid stellar calibration before "
+                "generating fields"
             )
-            population = stars.get("population") or {}
-            if population.get("density_arcmin2") is not None:
-                prepared["star_density_arcmin2"] = float(
-                    population["density_arcmin2"]
-                )
-            for source, target in (
-                ("magnitude_slope", "star_mag_slope"),
-                ("mag_bright", "star_mag_bright"),
-                ("mag_faint", "star_mag_faint"),
-            ):
-                if population.get(source) is not None:
-                    prepared[target] = float(population[source])
+        prepared["_star_prior_json"] = json.dumps(
+            stars, separators=(",", ":")
+        )
+        population = stars.get("population") or {}
+        if population.get("density_arcmin2") is not None:
+            prepared["star_density_arcmin2"] = float(
+                population["density_arcmin2"]
+            )
+        for source, target in (
+            ("magnitude_slope", "star_mag_slope"),
+            ("mag_bright", "star_mag_bright"),
+            ("mag_faint", "star_mag_faint"),
+        ):
+            if population.get(source) is not None:
+                prepared[target] = float(population[source])
         return prepared
 
     def build_command(self, params: dict[str, Any]) -> list[str]:
@@ -1473,10 +1510,12 @@ class SyntheticGenerateStep(RunPipelineStep):
         cmd += ["--gen-workers", str(max(1, workers))]
         # One joint COSMOS row controls every TNG morphology's flux, redshift,
         # stellar mass, and apparent size. This is the only galaxy population.
-        raw_tng_density = params.get(
-            "galaxy_density_arcmin2",
-            params.get("tng_density_arcmin2", Config.GALAXY_DENSITY_ARCMIN2),
-        )
+        raw_tng_density = params.get("galaxy_density_arcmin2")
+        if raw_tng_density in (None, ""):
+            raise ValueError(
+                "an activated fitted galaxy density is required; refusing "
+                "the Config fallback"
+            )
         try:
             tng_density = float(raw_tng_density)
         except (TypeError, ValueError) as exc:
@@ -1486,6 +1525,12 @@ class SyntheticGenerateStep(RunPipelineStep):
         if not (0.0 <= tng_density < float("inf")):
             raise ValueError(f"invalid TNG density: {raw_tng_density!r}")
         cmd += ["--galaxy-density-arcmin2", f"{tng_density:g}"]
+        for key, flag in (("tng_dir", "--tng-dir"),
+                          ("tng_properties", "--tng-properties"),
+                          ("tng_radius_manifest", "--tng-radius-manifest")):
+            value = str(params.get(key, "") or "").strip()
+            if value:
+                cmd += [flag, value]
         transfer_values = (
             params.get("_cosmos_vis_offset_mag"),
             params.get("_cosmos_vis_magnitude_slope"),
@@ -1718,6 +1763,7 @@ STEP_CLASSES: tuple[type[FASRCPipelineStep], ...] = (
     EuclidPSFExtractStep,
     PSFRotationPoolStep,
     TngSkirtAtlasDownloadStep,
+    MeasureTngRadiiStep,
     TngGridStep,
     TngStackStep,
     PosterCutoutStep,

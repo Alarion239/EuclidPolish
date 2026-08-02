@@ -53,6 +53,7 @@ from euclid_polish.skirt.image import (
     measure_halflight_radius_px,
     radius_int_grid,
     rebin_for_target_size,
+    resample_surface_brightness,
     rotate_arbitrary,
     rotate_quarter,
     stochastic_round_factor,
@@ -198,6 +199,70 @@ def prepare_tng_galaxy(
     return stamp, meta
 
 
+def prepare_tng_galaxy_continuous(
+    galaxy_dir: str,
+    subhalo_id: int | str,
+    orientation: int,
+    *,
+    scale: float,
+    rot_k: int = 0,
+    rot_angle: float | None = None,
+    pixel_scale_arcsec: float = Config.DEFAULT_PIXEL_SCALE,
+    fits_bands: tuple[str, ...] = TNG_FITS_BANDS,
+) -> tuple[np.ndarray, dict]:
+    """Render all four bands at an arbitrary linear scale.
+
+    This is the size-matching path.  The source is cropped from the native
+    atlas footprint using the VIS curve of growth, then every band is
+    resampled with the same continuous scale.  The stamp side is therefore a
+    consequence of the galaxy light footprint, never the quantity being
+    matched.
+    """
+    if not np.isfinite(scale) or scale <= 0.0:
+        raise ValueError(f"scale must be finite and positive, got {scale!r}")
+    config_to_fits = {v: k for k, v in _FITS_BAND_TO_CONFIG.items()}
+    channels: list[np.ndarray] = []
+    flux_e: dict[str, float] = {}
+    crop: tuple[slice, slice] | None = None
+    use_angle = rot_angle is not None
+    for cfg_name in Config.LR_INPUT_BAND_NAMES:
+        fband = config_to_fits[cfg_name]
+        if fband not in fits_bands:
+            raise ValueError(f"band {fband} not in requested fits_bands={fits_bands}")
+        band = Config.get_band(cfg_name)
+        sb = load_tng_frame(tng_fits_path(
+            galaxy_dir, subhalo_id, orientation, fband))
+        if crop is None:
+            crop = centered_rotation_crop_slices(
+                sb, 1, enclosed_fraction=0.999,
+                padding=TNG_ROTATION_CROP_PADDING,
+            )
+        sb = sb[crop]
+        if use_angle:
+            sb = rotate_arbitrary(sb, float(rot_angle))
+        sb = resample_surface_brightness(sb, scale)
+        if not use_angle:
+            sb = rotate_quarter(sb, rot_k)
+        e = surface_brightness_to_electrons(sb, band, pixel_scale_arcsec)
+        channels.append(e)
+        flux_e[cfg_name] = float(e.sum())
+    stamp = np.stack(channels, axis=-1).astype(np.float32)
+    return stamp, {
+        "subhalo_id": str(subhalo_id),
+        "orientation": int(orientation),
+        "rebin_factor": 1,
+        "rebin_factor_continuous": float(1.0 / scale),
+        "scale_factor": float(scale),
+        "rot_k": int(rot_k) % 4,
+        "rot_angle": float(rot_angle) % 360.0 if use_angle else None,
+        "arbitrary_rotation": bool(use_angle),
+        "pixel_scale_arcsec": float(pixel_scale_arcsec),
+        "shape": tuple(stamp.shape),
+        "flux_e_per_band": flux_e,
+        "bands": tuple(Config.LR_INPUT_BAND_NAMES),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Enumeration + random sampling (for injection into synthetic scenes)
 # ---------------------------------------------------------------------------
@@ -294,6 +359,123 @@ def truncate_below_sb(
     return stamp[y0:y1, x0:x1]
 
 
+def _target_re_tolerance(target_re_arcsec: float, pixel_scale_arcsec: float) -> float:
+    return max(0.05 * float(target_re_arcsec), 0.5 * float(pixel_scale_arcsec))
+
+
+def _normalise_target_vis(
+    stamp: np.ndarray,
+    target_vis_flux_e: float | None,
+) -> float:
+    if target_vis_flux_e is None:
+        return 1.0
+    current = float(stamp[..., 0].sum(dtype=np.float64))
+    if current <= 0.0 or not np.isfinite(current) or target_vis_flux_e < 0.0:
+        raise ValueError("target VIS flux cannot be applied to an empty stamp")
+    factor = float(target_vis_flux_e) / current
+    stamp *= np.float32(factor)
+    return factor
+
+
+def _render_target_re(
+    galaxy_dir: str,
+    subhalo_id: int | str,
+    orientation: int,
+    *,
+    scale: float,
+    pixel_scale_arcsec: float,
+    rot_k: int,
+    rot_angle: float | None,
+    target_vis_flux_e: float | None,
+    sb_cut_mag_arcsec2: float,
+    redshift_factors: np.ndarray | None = None,
+    redshift_flux_scale: float = 1.0,
+) -> tuple[np.ndarray, dict, float]:
+    """Render one trial scale and return ``(stamp, meta, achieved_re)``."""
+    stamp, meta = prepare_tng_galaxy_continuous(
+        galaxy_dir, subhalo_id, orientation, scale=scale,
+        rot_k=rot_k, rot_angle=rot_angle,
+        pixel_scale_arcsec=pixel_scale_arcsec,
+    )
+    if redshift_factors is not None:
+        stamp *= (np.asarray(redshift_factors, dtype=np.float32)
+                  [None, None, :])
+    stamp *= np.float32(redshift_flux_scale)
+    brightness_scale = _normalise_target_vis(stamp, target_vis_flux_e)
+    stamp = truncate_below_sb(stamp, pixel_scale_arcsec, sb_cut_mag_arcsec2)
+    brightness_scale *= _normalise_target_vis(stamp, target_vis_flux_e)
+    achieved_px = measure_halflight_radius_px(stamp[..., 0])
+    achieved = float(achieved_px * pixel_scale_arcsec)
+    meta["brightness_scale"] = float(brightness_scale)
+    return stamp, meta, achieved
+
+
+def tng_stamp_to_target_re(
+    galaxy_dir: str,
+    subhalo_id: int | str,
+    orientation: int,
+    target_re_arcsec: float,
+    *,
+    rng: np.random.Generator | None = None,
+    pixel_scale_arcsec: float = Config.DEFAULT_PIXEL_SCALE,
+    sb_cut_mag_arcsec2: float = Config.TNG_SB_TRUNCATE_MAG_ARCSEC2,
+    target_vis_flux_e: float | None = None,
+    native_re_px: float | None = None,
+    radius_manifest_fingerprint: str = "",
+) -> tuple[np.ndarray, dict]:
+    """Render a TNG stamp whose final VIS half-light radius matches a target."""
+    if not np.isfinite(target_re_arcsec) or target_re_arcsec <= 0.0:
+        raise ValueError(f"target_re_arcsec must be positive, got {target_re_arcsec!r}")
+    native = (float(native_re_px) if native_re_px is not None
+              else native_halflight_px(galaxy_dir, subhalo_id, orientation))
+    if not np.isfinite(native) or native <= 0.0:
+        raise ValueError("TNG VIS frame has no measurable native half-light radius")
+    rot_k = int(rng.integers(0, 4)) if rng is not None else 0
+    rot_angle = (float(rng.uniform(0.0, 360.0))
+                 if rng is not None else None)
+    scale = float(target_re_arcsec) / (float(native) * pixel_scale_arcsec)
+    if not np.isfinite(scale) or scale <= 0.0:
+        raise ValueError("computed TNG-to-COSMOS scale is invalid")
+    # The achieved radius is monotonic in the continuous scale apart from
+    # subpixel quantisation.  Recompute from the original source each time so
+    # correction never compounds interpolation artefacts.
+    achieved = float("nan")
+    stamp: np.ndarray | None = None
+    meta: dict = {}
+    for _ in range(8):
+        stamp, meta, achieved = _render_target_re(
+            galaxy_dir, subhalo_id, orientation,
+            scale=scale,
+            pixel_scale_arcsec=pixel_scale_arcsec,
+            rot_k=rot_k, rot_angle=rot_angle,
+            target_vis_flux_e=target_vis_flux_e,
+            sb_cut_mag_arcsec2=sb_cut_mag_arcsec2,
+        )
+        error = achieved - float(target_re_arcsec)
+        if np.isfinite(achieved) and abs(error) <= _target_re_tolerance(
+            target_re_arcsec, pixel_scale_arcsec):
+            break
+        if not np.isfinite(achieved) or achieved <= 0.0:
+            raise ValueError("continuous TNG render has no measurable achieved R_e")
+        scale *= float(target_re_arcsec) / achieved
+    else:
+        raise ValueError(
+            f"TNG R_e matching failed: target={target_re_arcsec:.6g}, "
+            f"achieved={achieved:.6g} arcsec"
+        )
+    assert stamp is not None
+    meta.update({
+        "native_halflight_px": float(native),
+        "target_re_arcsec": float(target_re_arcsec),
+        "apparent_re_arcsec": float(achieved),
+        "achieved_re_arcsec": float(achieved),
+        "re_residual_arcsec": float(achieved - target_re_arcsec),
+        "scale_factor": float(scale),
+        "radius_manifest_fingerprint": str(radius_manifest_fingerprint),
+    })
+    return stamp, meta
+
+
 def tng_stamp_at_redshift(
     galaxy_dir: str,
     subhalo_id: int | str,
@@ -308,6 +490,8 @@ def tng_stamp_at_redshift(
     mass_scale: float = 1.0,
     target_re_arcsec: float | None = None,
     target_vis_flux_e: float | None = None,
+    native_re_px: float | None = None,
+    radius_manifest_fingerprint: str = "",
 ) -> tuple[np.ndarray, dict]:
     """Build one TNG stamp **as it would appear at redshift ``z``**.
 
@@ -338,7 +522,68 @@ def tng_stamp_at_redshift(
         raise ValueError(f"mass_scale must be in (0, 1], got {mass_scale}")
     squeeze = compact * mass_scale ** -Config.TNG_MASS_SIZE_ALPHA
     f_geo = rebin_factor_for_redshift(z, pixel_scale_arcsec=pixel_scale_arcsec)
-    re_px = native_halflight_px(galaxy_dir, subhalo_id, orientation)
+    re_px = (float(native_re_px) if native_re_px is not None
+             else native_halflight_px(galaxy_dir, subhalo_id, orientation))
+    if target_re_arcsec is not None:
+        if not np.isfinite(target_re_arcsec) or target_re_arcsec <= 0.0:
+            raise ValueError(f"target_re_arcsec must be positive, got {target_re_arcsec!r}")
+        if not np.isfinite(re_px) or re_px <= 0.0:
+            raise ValueError("TNG VIS frame has no measurable native half-light radius")
+        if rot_k is None:
+            rot_k = int(rng.integers(0, 4)) if rng is not None else 0
+        rot_angle = (float(rng.uniform(0.0, 360.0))
+                     if rng is not None else None)
+        _, native_sums = native_photometry(
+            galaxy_dir, subhalo_id, orientation)
+        sed_fnu = np.asarray([
+            native_sums[index]
+            / mjy_per_sr_to_electrons_factor(
+                Config.get_band(band), pixel_scale_arcsec)
+            for index, band in enumerate(Config.LR_INPUT_BAND_NAMES)
+        ], dtype=np.float64)
+        factors, dmeta = band_drift_factors(sed_fnu, z, rng)
+        scale = float(target_re_arcsec) / (float(re_px) * pixel_scale_arcsec)
+        stamp: np.ndarray | None = None
+        meta: dict = {}
+        achieved = float("nan")
+        for _ in range(8):
+            stamp, meta, achieved = _render_target_re(
+                galaxy_dir, subhalo_id, orientation,
+                scale=scale,
+                pixel_scale_arcsec=pixel_scale_arcsec,
+                rot_k=int(rot_k), rot_angle=rot_angle,
+                target_vis_flux_e=target_vis_flux_e,
+                sb_cut_mag_arcsec2=sb_cut_mag_arcsec2,
+                redshift_factors=factors,
+                redshift_flux_scale=(1.0 / scale / f_geo) ** 2 * mass_scale,
+            )
+            if np.isfinite(achieved) and abs(achieved - target_re_arcsec) <= _target_re_tolerance(
+                target_re_arcsec, pixel_scale_arcsec):
+                break
+            if not np.isfinite(achieved) or achieved <= 0.0:
+                raise ValueError("continuous TNG render has no measurable achieved R_e")
+            scale *= float(target_re_arcsec) / achieved
+        else:
+            raise ValueError(
+                f"TNG R_e matching failed: target={target_re_arcsec:.6g}, "
+                f"achieved={achieved:.6g} arcsec"
+            )
+        assert stamp is not None
+        meta.update({
+            "native_halflight_px": float(re_px),
+            "target_re_arcsec": float(target_re_arcsec),
+            "apparent_re_arcsec": float(achieved),
+            "achieved_re_arcsec": float(achieved),
+            "re_residual_arcsec": float(achieved - target_re_arcsec),
+            "scale_factor": float(scale),
+            "compactness": float(compact),
+            "mass_scale": float(mass_scale),
+            "z": float(z),
+            "redshift_band_factors": [float(value) for value in factors],
+            "radius_manifest_fingerprint": str(radius_manifest_fingerprint),
+        })
+        meta.update(dmeta)
+        return stamp, meta
     if (
         target_re_arcsec is not None and target_re_arcsec > 0.0
         and np.isfinite(re_px) and re_px > 0.0
@@ -510,6 +755,9 @@ def sample_tng_stamp(
     mass_scale: float = 1.0,
     f_max: int = TNG_MAX_REBIN_FACTOR,
     target_vis_flux_e: float | None = None,
+    native_re_px: float | None = None,
+    radius_manifest_fingerprint: str = "",
+    radius_lookup_map: dict[tuple[str, int], float] | None = None,
 ) -> tuple[np.ndarray, dict] | None:
     """Pick a random galaxy / orientation / downsample / quarter-rotation and
     return its injectable ``(H,W,4)`` electron stamp + meta (None if it can't
@@ -533,46 +781,43 @@ def sample_tng_stamp(
         return None
     gdir, gid = galaxies[int(rng.integers(0, len(galaxies)))]
     orientation = int(rng.integers(1, N_ORIENTATIONS + 1))      # O1..O5
+    selected_native_re = (
+        radius_lookup_map.get((str(gid), orientation))
+        if radius_lookup_map is not None else native_re_px
+    )
+    if radius_lookup_map is not None and selected_native_re is None:
+        raise ValueError(
+            f"radius manifest has no entry for TNG {gid} orientation {orientation}"
+        )
 
     if z is not None:
-        try:
-            return tng_stamp_at_redshift(
-                gdir, gid, orientation, z, rng,
-                pixel_scale_arcsec=pixel_scale_arcsec, f_max=f_max,
-                mass_scale=mass_scale,
-                target_re_arcsec=target_re_arcsec,
-                target_vis_flux_e=target_vis_flux_e)
-        except Exception:
-            return None
+        return tng_stamp_at_redshift(
+            gdir, gid, orientation, z, rng,
+            pixel_scale_arcsec=pixel_scale_arcsec, f_max=f_max,
+            mass_scale=mass_scale,
+            target_re_arcsec=target_re_arcsec,
+            target_vis_flux_e=target_vis_flux_e,
+            native_re_px=selected_native_re,
+            radius_manifest_fingerprint=radius_manifest_fingerprint)
+
+    if target_re_arcsec is not None:
+        return tng_stamp_to_target_re(
+            gdir, gid, orientation, target_re_arcsec,
+            rng=rng, pixel_scale_arcsec=pixel_scale_arcsec,
+            target_vis_flux_e=target_vis_flux_e,
+            native_re_px=selected_native_re,
+            radius_manifest_fingerprint=radius_manifest_fingerprint,
+        )
 
     rot_k = int(rng.integers(0, 4))
     rot_angle = float(rng.uniform(0.0, 360.0))   # used when rebin ≥ threshold
 
-    re_px: float | None = None
-    if target_re_arcsec is not None and target_re_arcsec > 0.0:
-        re_px = native_halflight_px(gdir, gid, orientation)
-        if re_px is not None and np.isfinite(re_px) and re_px > 0.0:
-            rebin = rebin_for_target_size(
-                re_px, target_re_arcsec, pixel_scale_arcsec,
-                rng=rng, f_max=f_max)
-        else:                                       # unmeasurable → safe default
-            rebin = int(downsample_choices[
-                int(rng.integers(0, len(downsample_choices)))])
-    else:
-        rebin = int(downsample_choices[
-            int(rng.integers(0, len(downsample_choices)))])
+    rebin = int(downsample_choices[
+        int(rng.integers(0, len(downsample_choices)))])
 
-    try:
-        stamp, meta = prepare_tng_galaxy(
-            gdir, gid, orientation,
-            rebin_factor=rebin, rot_k=rot_k, rot_angle=rot_angle,
-            pixel_scale_arcsec=pixel_scale_arcsec,
-        )
-    except Exception:
-        return None
-    if target_re_arcsec is not None and re_px is not None and np.isfinite(re_px):
-        meta["target_re_arcsec"] = float(target_re_arcsec)
-        meta["native_halflight_px"] = float(re_px)
-        meta["apparent_re_arcsec"] = float(
-            pixel_scale_arcsec * re_px / rebin)
+    stamp, meta = prepare_tng_galaxy(
+        gdir, gid, orientation,
+        rebin_factor=rebin, rot_k=rot_k, rot_angle=rot_angle,
+        pixel_scale_arcsec=pixel_scale_arcsec,
+    )
     return stamp, meta

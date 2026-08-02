@@ -36,7 +36,7 @@ class F814WToVisTransfer:
     offset_mag: float = 0.0
     magnitude_slope: float = 1.0
     scatter_mag: float = 0.0
-    source: str = "identity_fallback"
+    source: str = "embedded_fit"
     fingerprint: str = ""
 
     def sample_vis_mag(
@@ -136,7 +136,9 @@ def load_brightness_transfer(path: str | Path) -> F814WToVisTransfer:
     """
     transfer = brightness_transfer_payload(path)
     if transfer is None:
-        return F814WToVisTransfer()
+        raise ValueError(
+            f"missing or malformed fitted F814W→VIS transfer: {path}"
+        )
     coefficients = transfer["coefficients"]
     try:
         return F814WToVisTransfer(
@@ -150,7 +152,7 @@ def load_brightness_transfer(path: str | Path) -> F814WToVisTransfer:
             fingerprint=str(transfer["fingerprint"]),
         )
     except (KeyError, TypeError, ValueError):
-        return F814WToVisTransfer()
+        raise ValueError(f"invalid fitted F814W→VIS transfer: {path}")
 
 
 class CosmosTngPrior:
@@ -182,11 +184,18 @@ class CosmosTngPrior:
             z = take("z_phot")
             mass = take("logmass_lephare", "logmass")
             re = take("re_combined_arcsec", "disk_re_arcsec")
+            if "generator_ready" not in keys:
+                raise ValueError(
+                    f"{self.path} predates the strict generator-ready schema"
+                )
+            generator_ready = np.asarray(data["generator_ready"], dtype=bool)
 
         valid = (
             np.isfinite(f814w) & (f814w >= mag_min) & (f814w < mag_max)
             & np.isfinite(z) & (z > 0.01) & (z < 6.0)
             & np.isfinite(mass) & (mass > 4.0) & (mass < 13.0)
+            & generator_ready
+            & np.isfinite(re) & (re > 0.01) & (re < 20.0)
         )
         if not np.any(valid):
             raise ValueError(f"No usable COSMOS physical rows in {self.path}")
@@ -195,11 +204,8 @@ class CosmosTngPrior:
         self.z = z[valid].astype(np.float32)
         self.mass = mass[valid].astype(np.float32)
         self.re = re[valid].astype(np.float32)
-        self._size_donors = np.flatnonzero(
-            np.isfinite(self.re) & (self.re > 0.01) & (self.re < 20.0)
-        )
-        if not len(self._size_donors):
-            raise ValueError(f"COSMOS prior lacks size donors: {self.path}")
+        if not len(self.re):
+            raise ValueError(f"COSMOS prior lacks valid generator-ready sizes: {self.path}")
         self.brightness_transfer = (
             photometric_transfer
             if photometric_transfer is not None
@@ -209,25 +215,9 @@ class CosmosTngPrior:
     def __len__(self) -> int:
         return len(self.f814w)
 
-    def _nearby_size_donor(
-        self, rng: np.random.Generator, index: int,
-    ) -> int:
-        candidates = self._size_donors
-        pool = candidates[
-            rng.integers(0, len(candidates), size=min(128, len(candidates)))
-        ]
-        distance = (
-            ((self.f814w[pool] - self.f814w[index]) / 0.5) ** 2
-            + ((self.z[pool] - self.z[index]) / 0.35) ** 2
-        )
-        return int(pool[int(np.argmin(distance))])
-
     def sample(self, rng: np.random.Generator) -> CosmosTngDraw:
         i = int(rng.integers(0, len(self)))
         re = float(self.re[i])
-        imputed_size = not np.isfinite(re) or not 0.01 < re < 20.0
-        if imputed_size:
-            re = float(self.re[self._nearby_size_donor(rng, i)])
         mag_hst_f814w = float(self.f814w[i])
         target_vis_mag = self.brightness_transfer.sample_vis_mag(
             mag_hst_f814w, rng
@@ -242,6 +232,6 @@ class CosmosTngPrior:
             z=float(self.z[i]),
             logmass=float(self.mass[i]),
             re_arcsec=re,
-            imputed_size=imputed_size,
+            imputed_size=False,
             brightness_transfer=self.brightness_transfer.source,
         )

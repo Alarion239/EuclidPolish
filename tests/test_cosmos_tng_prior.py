@@ -17,23 +17,22 @@ def _write_prior(path):
         z_phot=np.array([0.3, 0.8, 1.1, 1.8]),
         logmass_lephare=np.array([10.5, 10.0, 9.5, 9.0]),
         re_combined_arcsec=np.array([0.8, 0.4, np.nan, 0.12]),
+        generator_ready=np.array([True, True, False, True]),
     )
 
 
-def test_physical_prior_keeps_faint_rows_and_imputes_only_size(tmp_path):
+def test_prior_requires_strict_generator_ready_rows_and_fit(tmp_path):
     path = tmp_path / "prior.npz"
     _write_prior(path)
-    prior = CosmosTngPrior(
-        path, photometric_fit_path=tmp_path / "missing.json"
-    )
-    assert len(prior) == 4
-    rng = np.random.default_rng(4)
-    draws = [prior.sample(rng) for _ in range(200)]
-    imputed = [draw for draw in draws if draw.catalog_id == "2"]
-    assert imputed
-    assert all(draw.imputed_size for draw in imputed)
-    assert all(draw.target_vis_mag == draw.mag_hst_f814w for draw in draws)
-    assert all(draw.target_vis_flux_e > 0 for draw in draws)
+    with pytest.raises(ValueError, match="brightness fit"):
+        CosmosTngPrior(path, photometric_fit_path=tmp_path / "missing.json")
+
+    transfer = F814WToVisTransfer(source="embedded:test")
+    prior = CosmosTngPrior(path, photometric_transfer=transfer)
+    assert len(prior) == 3
+    draws = [prior.sample(np.random.default_rng(i)) for i in range(20)]
+    assert all(not draw.imputed_size for draw in draws)
+    assert {draw.catalog_id for draw in draws}.issubset({"0", "1", "3"})
 
 
 def test_multicone_fit_maps_f814w_to_vis_brightness(tmp_path):

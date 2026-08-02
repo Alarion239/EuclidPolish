@@ -15,6 +15,7 @@ grid, one channel per band ordered as :attr:`Config.LR_INPUT_BAND_NAMES`
 from __future__ import annotations
 
 import math
+import os
 import sys
 from dataclasses import dataclass, replace
 
@@ -51,6 +52,9 @@ from euclid_polish.sky.generation.tng_galaxy import (
     sample_tng_stamp,
     tng_stamp_at_redshift,
 )
+from euclid_polish.sky.generation.tng_radius_manifest import (
+    load_manifest, radius_lookup, validate_manifest,
+)
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -72,6 +76,10 @@ class SkySimulatorConfig:
     cosmos_prior_path:        str   = Config.COSMOS_TNG_PRIOR_PATH
     tng_galaxy_dir:           str   = Config.TNG_SKIRT_DIR
     tng_properties_csv:       str   = ""
+    tng_radius_manifest_path: str   = os.path.join(
+        Config.DATA_DIR, "_tng_infographics", "tng_radius_manifest.json"
+    )
+    strict_population_artifacts: bool = False
     # Stars
     star_density_arcmin2:     float = Config.DEFAULT_STAR_DENSITY_ARCMIN2
     star_mag_slope:           float = Config.STAR_MAG_SLOPE
@@ -129,17 +137,11 @@ def _sample_star_mag(
     """Sample one VIS magnitude from the differential stellar number-count law
     ``dN/dm ∝ 10^(slope · m)`` over ``[m_bright, m_faint]``, by inverse-CDF.
     """
-    if stellar_prior is not None:
-        return stellar_prior.sample_magnitude(
-            rng, slope=slope, m_bright=m_bright, m_faint=m_faint,
-        )
-    span = float(m_faint) - float(m_bright)
-    if span <= 0.0:
-        return float(m_bright)
-    beta = float(slope) * math.log(10.0)
-    u = rng.random()
-    t = u * span if abs(beta) < 1e-09 else math.log1p(u * math.expm1(beta * span)) / beta
-    return float(m_bright + t)
+    if stellar_prior is None:
+        raise ValueError("an active empirical stellar prior is required")
+    return stellar_prior.sample_magnitude(
+        rng, slope=slope, m_bright=m_bright, m_faint=m_faint,
+    )
 
 
 _STAR_MAG_KEYS = {
@@ -155,6 +157,29 @@ def _sample_star_band_magnitudes(
 ) -> dict[str, float]:
     """Compatibility wrapper returning a temperature-driven four-band SED."""
     return sample_stellar_sed(rng, mag_vis).magnitudes
+
+
+def _cross_validated_mass_bandwidth(logm: np.ndarray) -> float:
+    """Choose a Gaussian morphology-kernel bandwidth by leave-one-out CV."""
+    values = np.asarray(logm, dtype=float)
+    values = values[np.isfinite(values)]
+    if values.size < 2:
+        return 0.25
+    spread = float(np.std(values)) or 0.25
+    scale = float(np.median(np.abs(values - np.median(values)))) * 1.4826
+    scale = max(scale, spread / max(values.size ** 0.2, 1.0), 0.05)
+    grid = np.geomspace(max(0.03, scale / 4.0),
+                        min(1.0, max(0.08, scale * 4.0)), 24)
+    best_h, best_score = float(grid[0]), -float("inf")
+    for h in grid:
+        diff = (values[:, None] - values[None, :]) / h
+        kernels = np.exp(-0.5 * diff * diff)
+        np.fill_diagonal(kernels, 0.0)
+        denom = kernels.sum(axis=1)
+        score = float(np.log(np.maximum(denom / max(values.size - 1, 1), 1e-300)).sum())
+        if score > best_score:
+            best_h, best_score = float(h), score
+    return best_h
 
 
 def star_band_magnitudes_from_record(star: dict) -> dict[str, float]:
@@ -255,6 +280,45 @@ class SkySimulator:
             EmpiricalStellarPrior.from_payload(self.config.star_prior_payload)
             if self.config.star_prior_payload else None
         )
+        self._radius_lookup: dict[tuple[str, int], float] | None = None
+        self._radius_manifest_fingerprint = ""
+
+        if self.config.strict_population_artifacts:
+            if self.config.star_density_arcmin2 > 0.0 and self.stellar_prior is None:
+                raise ValueError(
+                    "strict population generation requires an active empirical "
+                    "stellar prior"
+                )
+            if (self.config.galaxy_density_arcmin2 > 0.0
+                    or self.config.lens_density_arcmin2 > 0.0):
+                if population_prior is None:
+                    raise ValueError(
+                        "strict population generation requires a COSMOS prior"
+                    )
+                status = validate_manifest(
+                    self.config.tng_galaxy_dir,
+                    properties_path=self.config.tng_properties_csv or None,
+                    manifest_path_value=(
+                        self.config.tng_radius_manifest_path or None
+                    ),
+                )
+                if not status.get("valid"):
+                    raise ValueError(
+                        "TNG radius manifest is not submit-ready: "
+                        + "; ".join(status.get("reasons", []))
+                    )
+                manifest_path = (
+                    self.config.tng_radius_manifest_path
+                    or os.path.join(self.config.tng_galaxy_dir,
+                                    "tng_radius_manifest.json")
+                )
+                payload = load_manifest(manifest_path)
+                if payload is None:
+                    raise ValueError("validated TNG radius manifest disappeared")
+                self._radius_lookup = radius_lookup(payload)
+                self._radius_manifest_fingerprint = str(
+                    payload.get("manifest_fingerprint", "")
+                )
 
         if (
             population_prior is None
@@ -292,20 +356,28 @@ class SkySimulator:
         if self.tng_galaxies:
             self.tng_properties = load_tng_properties(
                 self.config.tng_properties_csv or None)
-            if not self.tng_properties:
-                sys.stderr.write(
-                    "[generator] no usable tng_properties.csv — morphology "
-                    "selection is unconditioned and lens σ_v uses its "
-                    "fallback prior.\n")
-            else:
-                m = np.array([
-                    self.tng_properties.get(str(gid), {}).get(
-                        "mass_stars", float("nan"))
-                    for _, gid in self.tng_galaxies])
-                with np.errstate(invalid="ignore"):
-                    self._atlas_logm = np.where(m > 0, np.log10(m), np.nan)
-                if not np.isfinite(self._atlas_logm).any():
-                    self._atlas_logm = None
+            m = np.array([
+                self.tng_properties.get(str(gid), {}).get(
+                    "mass_stars", float("nan")
+                ) for _, gid in self.tng_galaxies
+            ])
+            with np.errstate(invalid="ignore", divide="ignore"):
+                self._atlas_logm = np.where(m > 0, np.log10(m), np.nan)
+            finite_mass = self._atlas_logm[np.isfinite(self._atlas_logm)]
+            self._mass_kernel_bandwidth = _cross_validated_mass_bandwidth(
+                finite_mass
+            ) if finite_mass.size else None
+            if self.config.strict_population_artifacts and (
+                not self.tng_properties or not np.isfinite(self._atlas_logm).all()
+            ):
+                raise ValueError(
+                    "strict population generation requires finite mass_stars "
+                    "properties for every TNG galaxy"
+                )
+            if not np.isfinite(self._atlas_logm).any():
+                self._atlas_logm = None
+        else:
+            self._mass_kernel_bandwidth = None
 
     # ------------------------------------------------------------------ #
     def _field_area_arcmin2(self) -> float:
@@ -322,9 +394,28 @@ class SkySimulator:
     ) -> list[tuple[str, str]]:
         """Choose morphology near the COSMOS row's stellar mass."""
         if self._atlas_logm is None:
+            if self.config.strict_population_artifacts:
+                raise ValueError("TNG morphology mass model has no valid support")
             return self.tng_galaxies
         lm = self._atlas_logm
         finite = np.flatnonzero(np.isfinite(lm))
+        if self.config.strict_population_artifacts:
+            if not np.isfinite(target_logmass):
+                raise ValueError("COSMOS morphology target mass is not finite")
+            bandwidth = float(self._mass_kernel_bandwidth or 0.25)
+            support = (float(np.min(lm[finite])), float(np.max(lm[finite])))
+            if target_logmass < support[0] or target_logmass > support[1]:
+                raise ValueError(
+                    f"COSMOS mass {target_logmass:.3f} lies outside TNG "
+                    f"morphology support [{support[0]:.3f}, {support[1]:.3f}]"
+                )
+            distance = (lm[finite] - target_logmass) / bandwidth
+            weights = np.exp(-0.5 * distance * distance)
+            if not np.isfinite(weights).any() or float(weights.sum()) <= 0.0:
+                raise ValueError("COSMOS mass lies outside TNG morphology support")
+            weights = weights / weights.sum()
+            selected = int(rng.choice(finite, p=weights))
+            return [self.tng_galaxies[selected]]
         distance = np.abs(lm[finite] - target_logmass)
         nearest = finite[np.argsort(distance)[:min(12, len(finite))]]
         return [self.tng_galaxies[int(rng.choice(nearest))]]
@@ -342,9 +433,13 @@ class SkySimulator:
                                galaxies, rng,
                                pixel_scale_arcsec=self.config.pixel_scale,
                                target_re_arcsec=draw.re_arcsec, z=draw.z,
-                               target_vis_flux_e=draw.target_vis_flux_e)
+                               target_vis_flux_e=draw.target_vis_flux_e,
+                               radius_lookup_map=self._radius_lookup,
+                               radius_manifest_fingerprint=(
+                                   self._radius_manifest_fingerprint
+                               ))
         if res is None:
-            return None
+            raise RuntimeError("TNG population returned no stamp")
         stamp, tmeta = res
         x_pix, y_pix = self._random_pix(rng)
         composite_stamp(canvas_4ch, stamp, x_pix, y_pix)
@@ -423,6 +518,10 @@ class SkySimulator:
             mstar = float(props.get("mass_stars", float("nan")))
             sigma_v = sigma_v_from_stellar_mass(mstar, rng)
             if not math.isfinite(sigma_v):
+                if cfg.strict_population_artifacts:
+                    raise ValueError(
+                        f"TNG stellar mass is invalid for strict lens {gid}"
+                    )
                 sigma_v = float(rng.uniform(cfg.lens_sigma_v_min_kms,
                                             cfg.lens_sigma_v_max_kms))
             lp = sample_lens_geometry(rng, sigma_v)
@@ -453,10 +552,20 @@ class SkySimulator:
             try:
                 lens_light_stamp, _ = tng_stamp_at_redshift(
                     gdir, gid, orientation, lp.z_lens, rng,
-                    pixel_scale_arcsec=cfg.pixel_scale)
+                    pixel_scale_arcsec=cfg.pixel_scale,
+                    native_re_px=(self._radius_lookup or {}).get(
+                        (str(gid), orientation)),
+                    radius_manifest_fingerprint=(
+                        self._radius_manifest_fingerprint
+                    ))
                 src = tng_stamp_at_redshift(
                     sgdir, sgid, sori, lp.z_source, rng,
-                    pixel_scale_arcsec=cfg.pixel_scale)
+                    pixel_scale_arcsec=cfg.pixel_scale,
+                    native_re_px=(self._radius_lookup or {}).get(
+                        (str(sgid), sori)),
+                    radius_manifest_fingerprint=(
+                        self._radius_manifest_fingerprint
+                    ))
             except Exception:
                 continue
             x_pix, y_pix = self._random_pix(rng)

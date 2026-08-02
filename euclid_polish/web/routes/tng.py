@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import glob
 import io
+import json
 import os
 import shlex
 import time
@@ -76,6 +77,36 @@ _TNG_KEY_REMOTE = '"$HOME/' + os.path.basename(Config.Tng.API_KEY_FILE) + '"'
 
 
 def register(app):
+
+    @app.route("/api/tng/radii/status")
+    def tng_radii_status():
+        """Validate the remote, versioned TNG effective-radius manifest."""
+        if not STATE.ssh or not STATE.ssh.is_connected():
+            return jsonify({"valid": False, "connected": False,
+                            "reasons": ["not connected to FASRC"]})
+        cfg = fasrc_config.load()
+        tng_dir = os.path.join(cfg.data_dir, Config.Tng.SKIRT_SUBDIR)
+        props = os.path.join(cfg.data_dir, _INFOGRAPHIC_SUBDIR,
+                             "tng_properties.csv")
+        manifest = os.path.join(cfg.data_dir, _INFOGRAPHIC_SUBDIR,
+                                "tng_radius_manifest.json")
+        cmd = (
+            f"cd {shlex.quote(cfg.repo_path)} && "
+            "python scripts/validate_tng_radius_manifest.py "
+            f"--tng-dir {shlex.quote(tng_dir)} "
+            f"--properties {shlex.quote(props)} "
+            f"--manifest {shlex.quote(manifest)}"
+        )
+        try:
+            rc, out, err = STATE.ssh.run(cmd, timeout=90)
+            payload = json.loads((out or "").strip().splitlines()[-1])
+        except Exception as exc:
+            return jsonify({"valid": False, "connected": True,
+                            "reasons": [str(exc)]})
+        payload["connected"] = True
+        if rc != 0 and not payload.get("reasons"):
+            payload["reasons"] = [(err or "manifest validation failed").strip()]
+        return jsonify(payload)
 
     @app.route("/tng")
     def tng_page():

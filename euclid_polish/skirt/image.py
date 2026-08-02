@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import numpy as np
 from astropy.io import fits
+from scipy.ndimage import gaussian_filter as _ndi_gaussian_filter
 from scipy.ndimage import rotate as _ndi_rotate
+from scipy.ndimage import zoom as _ndi_zoom
 
 
 def load_skirt_frame(path: str) -> np.ndarray:
@@ -57,6 +59,51 @@ def block_mean(
         a = a[:height, :width]
     new_height, new_width = height // factor, width // factor
     return a.reshape(new_height, factor, new_width, factor).mean(axis=(1, 3))
+
+
+def resample_surface_brightness(
+    arr: np.ndarray,
+    scale: float,
+    *,
+    order: int = 3,
+) -> np.ndarray:
+    """Resample a surface-brightness image by an arbitrary linear scale.
+
+    ``scale`` is the linear size of an output pixel footprint relative to the
+    input image: values above one enlarge the source and values below one
+    shrink it.  The interpolation preserves a constant surface brightness and
+    applies a modest Gaussian pre-filter before shrinkage to avoid aliasing.
+    It deliberately does not apply a pixel-area flux correction: MJy/sr is an
+    intensive quantity and callers decide the final integrated flux separately.
+
+    The helper accepts either a 2-D image or a ``(H, W, C)`` channel stack and
+    always returns a native-endian float32 array.
+    """
+    if not np.isfinite(scale) or scale <= 0.0:
+        raise ValueError(f"scale must be finite and positive, got {scale!r}")
+    a = np.asarray(arr, dtype=np.float32)
+    if a.ndim not in (2, 3):
+        raise ValueError(f"expected a 2-D image or 3-D channel stack, got {a.shape}")
+    zoom_axes = (float(scale), float(scale)) + ((1.0,) if a.ndim == 3 else ())
+    filtered = a
+    if scale < 1.0:
+        # A box-like anti-alias width is sufficient for the smooth SKIRT
+        # surface-brightness fields and keeps this operation deterministic.
+        sigma = max(0.0, 0.5 * (1.0 / float(scale) - 1.0))
+        if sigma > 0.0:
+            sigma_axes = (sigma, sigma, 0.0) if a.ndim == 3 else (sigma, sigma)
+            filtered = _ndi_gaussian_filter(a, sigma=sigma_axes)
+    out = _ndi_zoom(
+        filtered,
+        zoom_axes,
+        order=int(order),
+        mode="constant",
+        cval=0.0,
+        prefilter=bool(order > 1),
+        grid_mode=True,
+    )
+    np.maximum(out, 0.0, out=out)
+    return np.asarray(out, dtype=np.float32)
 
 
 def rotate_quarter(arr: np.ndarray, k: int) -> np.ndarray:

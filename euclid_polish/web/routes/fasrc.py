@@ -35,6 +35,36 @@ from euclid_polish.web.remote import STATE, SSHConfig, SSHError, SSHSession
 
 def register(app):
 
+    def _population_preflight(step_ref: str) -> None:
+        """Fail closed before any synthetic-scene sbatch is rendered.
+
+        The local activation checks run through ``prepare_params`` below; this
+        second check validates the atlas manifest on the remote filesystem so
+        a queued promotion cannot race a stale/partial atlas update.
+        """
+        if step_ref not in {"synthetic_generate", "lensfinder_generate"}:
+            return
+        if not STATE.ssh or not STATE.ssh.is_connected():
+            raise ValueError("connect to FASRC before population preflight")
+        cfg = fasrc_config.load()
+        tng_dir = os.path.join(cfg.data_dir, "tng_skirt")
+        props = os.path.join(cfg.data_dir, "_tng_infographics", "tng_properties.csv")
+        manifest = os.path.join(cfg.data_dir, "_tng_infographics", "tng_radius_manifest.json")
+        cmd = (
+            f"cd {shlex.quote(cfg.repo_path)} && "
+            "python scripts/validate_tng_radius_manifest.py "
+            f"--tng-dir {shlex.quote(tng_dir)} "
+            f"--properties {shlex.quote(props)} "
+            f"--manifest {shlex.quote(manifest)}"
+        )
+        try:
+            rc, out, err = STATE.ssh.run(cmd, timeout=90)
+        except Exception as exc:
+            raise ValueError(f"population preflight failed: {exc}") from exc
+        if rc != 0:
+            detail = (out or err or "remote radius manifest is invalid").strip()
+            raise ValueError("population preflight failed: " + detail[-2000:])
+
     # =========================================================================
     # FASRC tab — Bitwarden-driven SSH ControlMaster, SLURM submission,
     # live log streaming, checkpoint auto-mirror.
@@ -370,6 +400,7 @@ def register(app):
             except KeyError:
                 step = STEP_REGISTRY.get("synthetic_generate")
                 step_ref = "synthetic_generate"
+            _population_preflight(step_ref)
             resources = StepResources.from_form(form, step.defaults)
             # Partition is fixed per job type — never taken from the form.
             resources.partition = step.defaults.partition
@@ -401,6 +432,7 @@ def register(app):
                 params=params, step_id=step.step_id)
         # Pipeline step
         step = STEP_REGISTRY.get(step_ref)
+        _population_preflight(step.step_id)
         form2 = dict(form)
         # Partition is fixed per job type — force the step's value even on
         # queued specs built from an older form.
@@ -442,6 +474,20 @@ def register(app):
         """Submit immediately if the single lane is free, else enqueue."""
         label = _spec_label(kind, step_ref, form)
         spec = {"kind": kind, "step": step_ref, "form": form}
+        # Validate before creating a queue entry as well as at promotion time.
+        # The latter protects against atlas changes while the item waits.
+        try:
+            resolved_step = step_ref
+            if kind == "synthetic":
+                try:
+                    resolved_step = STEP_REGISTRY.get(step_ref).step_id
+                except KeyError:
+                    resolved_step = "synthetic_generate"
+            if resolved_step in {"synthetic_generate", "lensfinder_generate"}:
+                STEP_REGISTRY.get(resolved_step).prepare_params(dict(form))
+                _population_preflight(resolved_step)
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
         if fasrc_queue.QUEUE.active_is_running(fasrc_jobs.DB):
             fasrc_queue.QUEUE.enqueue(spec, label)
             return jsonify({"ok": True, "queued": True, "label": label,

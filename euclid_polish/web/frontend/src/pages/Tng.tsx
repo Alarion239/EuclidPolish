@@ -21,10 +21,20 @@ interface TngSaveResp {
   error?: string;
   chars?: number;
 }
+interface TngRadiusStatus {
+  valid: boolean;
+  connected?: boolean;
+  expected_count?: number;
+  valid_count?: number;
+  failed_count?: number;
+  reasons?: string[];
+}
 
 export default function TngPage() {
   const { data: auth, loading: authLoading, reload: reloadAuth } =
     useResource<TngAuth>("/tng-auth/status");
+  const { data: radius, loading: radiusLoading, reload: reloadRadius } =
+    useResource<TngRadiusStatus>("/api/tng/radii/status");
 
   const [token, setToken] = useState("");
   const [saving, setSaving] = useState(false);
@@ -111,6 +121,33 @@ export default function TngPage() {
               time-limit only fills the gaps. Set your API token above first.
             </p>
             <StepById stepId="download_tng_skirt" />
+          </CardBody>
+        </Card>
+
+        <Card>
+          <CardHead title="Measured effective radii"
+            sub="required for COSMOS-conditioned population generation"
+            right={radiusLoading ? <Badge>…</Badge> : radius?.valid ?
+              <Badge tone="good">✓ valid</Badge> : <Badge tone="warn">recalculation required</Badge>} />
+          <CardBody>
+            <p className="muted" style={{ marginTop: 0 }}>
+              Each downloaded TNG VIS frame is measured independently. The
+              fitted COSMOS circularized <i>R</i><sub>e</sub> is matched to that
+              measurement; the atlas stamp side never enters the scale.
+            </p>
+            {radius && (
+              <p className="mono" style={{ fontSize: "var(--text-sm)" }}>
+                {radius.valid_count ?? 0}/{radius.expected_count ?? 0} frames valid
+                {radius.failed_count ? ` · ${radius.failed_count} failed` : ""}
+              </p>
+            )}
+            {!radius?.valid && radius?.reasons?.length ? (
+              <div className="job-panel job-panel--err"><LogTail text={radius.reasons.join("\n")} /></div>
+            ) : null}
+            <div className="row" style={{ gap: "var(--s2)" }}>
+              <StepById stepId="measure_tng_radii" />
+              <Button onClick={reloadRadius}>Refresh status</Button>
+            </div>
           </CardBody>
         </Card>
 

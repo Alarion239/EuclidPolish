@@ -70,15 +70,13 @@ class EmpiricalStellarPrior:
         edges = np.asarray(distribution.get("edges") or [], dtype=np.float64)
         cdf = np.asarray(distribution.get("cdf") or [], dtype=np.float64)
         if edges.size < 2 or cdf.size != edges.size:
-            edges = None
-            cdf = None
+            raise ValueError("stellar prior requires an empirical magnitude CDF")
         else:
             if (not np.all(np.isfinite(edges)) or not np.all(np.isfinite(cdf))
                     or np.any(np.diff(edges) <= 0)
                     or cdf[0] < -1e-9 or cdf[-1] <= 0.0
                     or np.any(np.diff(cdf) < -1e-9)):
-                edges = None
-                cdf = None
+                raise ValueError("stellar prior has an invalid magnitude CDF")
             else:
                 cdf = np.clip(cdf / cdf[-1], 0.0, 1.0)
                 cdf[0] = 0.0
@@ -129,6 +127,8 @@ class EmpiricalStellarPrior:
                 color_model = parsed
             except (KeyError, TypeError, ValueError):
                 color_model = None
+        if color_model is None:
+            raise ValueError("stellar prior requires a valid latent colour model")
         return cls(colors, temperatures, coefficients, covariance, edges, cdf,
                    color_model)
 
@@ -136,15 +136,9 @@ class EmpiricalStellarPrior:
         self, rng: np.random.Generator, *, slope: float,
         m_bright: float, m_faint: float,
     ) -> float:
-        """Sample VIS magnitude from the empirical CDF when available.
-
-        Older calibration artifacts do not contain the distribution and keep
-        the historical exponential count-law fallback.
-        """
+        """Sample VIS magnitude from the fitted empirical CDF."""
         if self.magnitude_edges is None or self.magnitude_cdf is None:
-            return _sample_exponential_magnitude(
-                rng, slope=slope, m_bright=m_bright, m_faint=m_faint,
-            )
+            raise ValueError("stellar prior has no empirical magnitude CDF")
         u = float(rng.random())
         index = int(np.searchsorted(self.magnitude_cdf, u, side="right") - 1)
         index = max(0, min(index, self.magnitude_edges.size - 2))
@@ -158,38 +152,9 @@ class EmpiricalStellarPrior:
         )
 
     def sample(self, rng: np.random.Generator, mag_vis: float) -> StellarSED:
-        if self.color_model is not None:
-            return self._sample_latent_locus(rng, mag_vis)
-        quantile = float(rng.random())
-        grid = np.linspace(0.0, 1.0, self.bp_rp_quantiles.size)
-        bp_rp = float(np.interp(quantile, grid, self.bp_rp_quantiles))
-        temperature_grid = np.linspace(0.0, 1.0, self.temperature_quantiles_k.size)
-        temperature = float(np.interp(
-            1.0 - quantile, temperature_grid, self.temperature_quantiles_k,
-        ))
-        vis_coeff = self.band_coefficients[0]
-        denominator = 1.0 + vis_coeff[2]
-        if abs(denominator) < 0.05:
-            denominator = 0.05 if denominator >= 0 else -0.05
-        g_mag = (
-            float(mag_vis) - vis_coeff[0] - vis_coeff[1] * bp_rp
-            + 20.0 * vis_coeff[2]
-        ) / denominator
-        features = np.asarray([1.0, bp_rp, g_mag - 20.0])
-        predicted = g_mag + self.band_coefficients @ features
-        residual = rng.multivariate_normal(
-            np.zeros(4), self.residual_covariance, check_valid="ignore",
-        )
-        predicted += residual - residual[0]
-        predicted += float(mag_vis) - predicted[0]
-        return StellarSED(
-            temperature_k=temperature,
-            extinction_av=0.0,
-            magnitudes={
-                name: float(predicted[index])
-                for index, name in enumerate(_BAND_NAMES)
-            },
-        )
+        if self.color_model is None:
+            raise ValueError("stellar prior has no latent colour model")
+        return self._sample_latent_locus(rng, mag_vis)
 
     def _sample_latent_locus(
         self, rng: np.random.Generator, mag_vis: float,
@@ -330,42 +295,9 @@ def sample_stellar_sed(
     rng: np.random.Generator, mag_vis: float,
     prior: EmpiricalStellarPrior | None = None,
 ) -> StellarSED:
-    """Draw temperature, extinction, and correlated Euclid magnitudes."""
-    if prior is not None:
-        return prior.sample(rng, mag_vis)
-    temperature = _draw_temperature(rng)
-    extinction_av = float(np.clip(
-        rng.exponential(Config.STAR_EXTINCTION_AV_SCALE_MAG),
-        0.0,
-        Config.STAR_EXTINCTION_AV_MAX_MAG,
-    ))
-    offsets = _temperature_offsets(temperature)
-
-    # Lightweight optical/NIR extinction law. Only differential extinction
-    # matters because the caller fixes the observed VIS magnitude.
-    wavelength = np.asarray([
-        Config.Color.PIVOT_WAVELENGTH_UM[name] for name in _BAND_NAMES
-    ])
-    extinction = extinction_av * np.power(wavelength / 0.55, -1.7)
-    offsets += extinction - extinction[0]
-    offsets += np.asarray([
-        Config.STAR_SED_BAND_CORRECTION_MAG[name] for name in _BAND_NAMES
-    ])
-    offsets[1:] += rng.normal(
-        0.0, Config.STAR_SED_BAND_SCATTER_MAG, len(_BAND_NAMES) - 1,
-    )
-    offsets = np.clip(
-        offsets,
-        Config.STAR_COLOR_OFFSET_MIN_MAG,
-        Config.STAR_COLOR_OFFSET_MAX_MAG,
-    )
-    offsets[0] = 0.0
-    magnitudes = {
-        name: float(mag_vis + offsets[k])
-        for k, name in enumerate(_BAND_NAMES)
-    }
-    return StellarSED(
-        temperature_k=temperature,
-        extinction_av=extinction_av,
-        magnitudes=magnitudes,
-    )
+    """Draw one star from the required empirical calibration."""
+    if prior is None:
+        raise ValueError(
+            "an active empirical stellar prior is required for star generation"
+        )
+    return prior.sample(rng, mag_vis)
