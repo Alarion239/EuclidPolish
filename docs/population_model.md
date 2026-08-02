@@ -35,7 +35,10 @@ p(m_{\rm F814W},z,\log M_\star,R_e),
 \]
 
 restricted to `generator_ready` rows with finite combined bulge+disc
-circularized (R_e). Because the TNG atlas is much more massive than most of
+circularized (R_e). A finite nonnegative B+D fit statistic is required as a
+fit diagnostic, but there is no fixed upper chi-square cut: the raw statistic
+is strongly signal-to-noise dependent and such a cut removed the bright
+population without improving size agreement. Because the TNG atlas is much more massive than most of
 this COSMOS pool, absolute stellar mass is not treated as overlapping support.
 Instead, galaxies are separated at the project-defined
 \(\log_{10}(\mathrm{sSFR}/\mathrm{yr}^{-1})=-11\) boundary and mass is mapped
@@ -60,7 +63,10 @@ probability, effective donor count, and reuse count.
 
 F814W-to-VIS magnitudes follow the fitted
 affine relation with Gaussian scatter, and detection is a Bernoulli draw from
-the fitted logistic completeness. COSMOS2025 motivates the measured catalogue
+the fitted logistic completeness. Euclid count bins consistently use the
+fractional extended-source weight (1-\mathtt{POINT\_LIKE\_PROB}). The
+catalog-level forward probabilities are integrated deterministically on a
+magnitude grid; random draws are used only when generating scenes. COSMOS2025 motivates the measured catalogue
 quantities and selection ([COSMOS2025](https://arxiv.org/abs/2506.03243)).
 The activity split, rank transport, diversity floor, cuts, and numerical
 tolerances are project validation decisions, not literature facts. Extreme Deconvolution is

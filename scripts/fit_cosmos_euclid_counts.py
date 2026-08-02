@@ -98,32 +98,57 @@ def read_cosmos_density(
     )
 
 
-def read_euclid_magnitudes(
+def read_euclid_weighted_counts(
     path: Path,
     *,
     maximum_spurious_probability: float = 0.5,
-) -> np.ndarray:
-    """Read clean non-star Euclid detections without calling them galaxies."""
-    values: list[float] = []
+    bins: np.ndarray = DISPLAY_BINS,
+) -> tuple[np.ndarray, dict[str, int | float | str]]:
+    """Read extended-source counts using probabilistic membership weights."""
+    counts = np.zeros(len(bins) - 1, dtype=np.float64)
+    rows = 0
+    selected_rows = 0
+    missing_probability = 0
+    invalid_probability = 0
     with path.open(newline="", encoding="utf-8") as handle:
         for row in csv.DictReader(handle):
-            if str(row.get("type", "")).strip().lower() == "star":
+            rows += 1
+            raw_probability = str(row.get("point_like_prob", "")).strip()
+            if not raw_probability:
+                missing_probability += 1
                 continue
             raw_spurious = str(row.get("spurious_prob", "")).strip()
             try:
+                point_like_probability = float(raw_probability)
                 spurious = float(raw_spurious) if raw_spurious else 0.0
                 magnitude = float(row["mag_vis"])
             except (KeyError, TypeError, ValueError):
+                continue
+            if not (
+                np.isfinite(point_like_probability)
+                and 0.0 <= point_like_probability <= 1.0
+            ):
+                invalid_probability += 1
                 continue
             if (
                 np.isfinite(magnitude)
                 and np.isfinite(spurious)
                 and spurious <= maximum_spurious_probability
+                and bins[0] <= magnitude < bins[-1]
             ):
-                values.append(magnitude)
-    if not values:
-        raise ValueError(f"No usable non-star Euclid magnitudes in {path}")
-    return np.asarray(values, dtype=np.float64)
+                index = int(np.searchsorted(bins, magnitude, side="right") - 1)
+                counts[index] += 1.0 - point_like_probability
+                selected_rows += 1
+    if counts.sum() <= 0.0:
+        raise ValueError(f"No usable probability-weighted Euclid rows in {path}")
+    return counts, {
+        "classification_weighting": "galaxy_weight=1-POINT_LIKE_PROB",
+        "catalog_rows": rows,
+        "selected_rows": selected_rows,
+        "missing_probability_rows": missing_probability,
+        "invalid_probability_rows": invalid_probability,
+        "expected_extended_sources": float(counts.sum()),
+    }
 
 
 def _integrate_grid(
@@ -505,13 +530,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         left=0.0,
         right=0.0,
     )
-    euclid_magnitudes = read_euclid_magnitudes(
+    euclid_counts, euclid_weighting = read_euclid_weighted_counts(
         euclid_path,
         maximum_spurious_probability=args.maximum_spurious_probability,
     )
     euclid_area = _read_area(euclid_meta_path)
     euclid_meta = json.loads(euclid_meta_path.read_text())
-    euclid_counts = np.histogram(euclid_magnitudes, bins=DISPLAY_BINS)[0]
     euclid_density = euclid_counts / euclid_area
     euclid_error = np.sqrt(euclid_counts) / euclid_area
 
@@ -588,7 +612,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "F814W-to-VIS transfer with scatter and logistic Euclid completeness"
         ),
         "interpretation": (
-            "Euclid non-star rows are detections, not confirmed galaxies. "
+            "Euclid rows are probability-weighted detections, not confirmed "
+            "galaxies. "
             "COSMOS sets the latent shape; Euclid calibrates the observation "
             "layer and, with at least three separated cones, a model-dependent "
             "latent normalization. This is not the generator's raw draw budget; "
@@ -602,7 +627,11 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "euclid_area_arcmin2": euclid_area,
             "euclid_cone_count": int(euclid_meta.get("cone_count", 1)),
             "euclid_cones": euclid_meta.get("cones"),
-            "euclid_nonstar_rows_used": int(len(euclid_magnitudes)),
+            "euclid_rows_used": int(euclid_weighting["selected_rows"]),
+            "euclid_expected_extended_sources": float(
+                euclid_weighting["expected_extended_sources"]
+            ),
+            "classification_weighting": euclid_weighting,
             "maximum_spurious_probability": float(
                 args.maximum_spurious_probability
             ),

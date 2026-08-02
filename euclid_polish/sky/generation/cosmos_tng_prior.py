@@ -184,7 +184,7 @@ def _transfer_fingerprint(payload: dict, fit: dict) -> str:
     """Stable identity for coefficients plus the Euclid cone selection."""
     inputs = payload.get("inputs") or {}
     identity = {
-        "version": 1,
+        "version": 3,
         "fit_kind": "fixed_normalization",
         "fit": {
             key: fit.get(key)
@@ -197,6 +197,7 @@ def _transfer_fingerprint(payload: dict, fit: dict) -> str:
         "euclid_cones": inputs.get("euclid_cones"),
         "euclid_cone_count": inputs.get("euclid_cone_count"),
         "euclid_area_arcmin2": inputs.get("euclid_area_arcmin2"),
+        "classification_weighting": inputs.get("classification_weighting"),
     }
     encoded = json.dumps(
         identity, sort_keys=True, separators=(",", ":"), allow_nan=False,
@@ -229,7 +230,7 @@ def brightness_transfer_payload(path: str | Path) -> dict | None:
         warnings.append("fixed-normalization fit has high Poisson deviance")
     fingerprint = _transfer_fingerprint(payload, fit)
     return {
-        "version": 1,
+        "version": 3,
         "kind": "fixed_normalization",
         "fingerprint": fingerprint,
         "coefficients": coefficients,
@@ -250,6 +251,7 @@ def brightness_transfer_payload(path: str | Path) -> dict | None:
             key: (payload.get("inputs") or {}).get(key)
             for key in (
                 "euclid_cone_count", "euclid_area_arcmin2", "euclid_cones",
+                "classification_weighting",
             )
         },
         "source_fit": str(fit_path),

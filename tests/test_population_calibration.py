@@ -184,8 +184,8 @@ def test_local_catalog_fit_recovers_raw_density_without_rendering(
         } for _ in range(10))
     _write_csv(root / "euclid_population.csv", rows)
 
-    first = fit_local_catalog_density(draws=10_000, bootstraps=100, seed=8)
-    second = fit_local_catalog_density(draws=10_000, bootstraps=100, seed=8)
+    first = fit_local_catalog_density(bootstraps=100, seed=8)
+    second = fit_local_catalog_density(bootstraps=100, seed=8)
 
     assert first["valid"]
     assert first["retained_detection_fraction"] == pytest.approx(0.5)
@@ -198,6 +198,9 @@ def test_local_catalog_fit_recovers_raw_density_without_rendering(
     )
     assert first["morphology_model"]["excluded_cosmos_rows"] == 0
     assert first["magnitude_fit_quality"]["valid"]
+    assert first["method"].startswith("empirical COSMOS/TNG")
+    assert first["forward_integration_grid_step_mag"] == pytest.approx(0.005)
+    assert "local_draws" not in first
     assert first["calibration_fingerprint"] == second["calibration_fingerprint"]
     assert first["interval_arcmin2"] == second["interval_arcmin2"]
     assert density_calibration_path().exists()

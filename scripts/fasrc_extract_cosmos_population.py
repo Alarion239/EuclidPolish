@@ -12,7 +12,9 @@ master FITS.  It deliberately keeps two selections separate:
 ``generator_ready``
     Population rows with clean flags, no blend flag, a viable B+D fit, and
     finite B+D photometry in HST F814W and UltraVISTA Y/J/H.  This is the
-    subset from which morphology conditionals may safely be learned.
+    subset from which morphology conditionals may safely be learned.  The
+    catalogue B+D chi-square is retained as a diagnostic, but is not cut at a
+    fixed value because its scale is strongly signal-to-noise dependent.
 
 The separation is important: applying morphology-fit or Euclid-detection cuts
 to the number-count target would manufacture a faint-end turnover.
@@ -422,7 +424,6 @@ def extract_catalog(
     output_dir: str,
     *,
     area_deg2: float = DEFAULT_AREA_DEG2,
-    max_bd_chi2: float = 10.0,
 ) -> dict[str, Any]:
     source = Path(catalog_path).resolve()
     out = Path(output_dir).resolve()
@@ -593,7 +594,6 @@ def extract_catalog(
         finite_geometry
         & np.isfinite(bd_chi2)
         & (bd_chi2 >= 0.0)
-        & (bd_chi2 < max_bd_chi2)
         & finite_bd_photometry
     )
     generator_ready = isolated & viable_bd
@@ -748,8 +748,9 @@ def extract_catalog(
             "clean": "population and warn_flag == 0; blends retained",
             "isolated": "clean and flag_blend == 0",
             "generator_ready": (
-                f"isolated plus viable B+D geometry, chi2 < {max_bd_chi2:g}, "
-                "and finite bulge+disk photometry in F814W and UltraVISTA Y/J/H"
+                "isolated plus viable B+D geometry, finite nonnegative B+D "
+                "chi-square diagnostic, and finite bulge+disk photometry in "
+                "F814W and UltraVISTA Y/J/H; no fixed chi-square ceiling"
             ),
         },
         "counts": {
@@ -848,12 +849,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=DEFAULT_AREA_DEG2,
         help="Effective catalog area for density normalization (default 0.54).",
     )
-    parser.add_argument(
-        "--max-bd-chi2",
-        type=float,
-        default=10.0,
-        help="B+D chi-square ceiling for generator_ready rows.",
-    )
     return parser.parse_args(argv)
 
 
@@ -863,7 +858,6 @@ def main(argv: list[str] | None = None) -> int:
         args.catalog,
         args.out_dir,
         area_deg2=args.area_deg2,
-        max_bd_chi2=args.max_bd_chi2,
     )
     return 0
 

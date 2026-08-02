@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from scipy.ndimage import gaussian_filter1d
 
 from euclid_polish.config import Config
 from euclid_polish.sky.generation.cosmos_tng_prior import (
@@ -294,19 +295,60 @@ def fit_density_response(
     }
 
 
+def _forward_detection_probabilities(
+    f814w: np.ndarray,
+    *,
+    offset: float,
+    slope: float,
+    scatter: float,
+    m50: float,
+    width: float,
+    magnitude_edges: np.ndarray,
+    grid_step: float = 0.005,
+) -> tuple[np.ndarray, float]:
+    """Deterministically project an empirical F814W sample into VIS bins."""
+    source = np.asarray(f814w, dtype=np.float64)
+    if source.size == 0 or not np.isfinite(source).all():
+        raise ValueError("COSMOS F814W prior is empty or non-finite")
+    grid = np.arange(12.0, 40.0 + grid_step / 2.0, grid_step)
+    grid_edges = np.concatenate((
+        grid - grid_step / 2.0,
+        np.asarray([grid[-1] + grid_step / 2.0]),
+    ))
+    means = 24.0 + slope * (source - 24.0) + offset
+    if means.min() < grid_edges[0] or means.max() >= grid_edges[-1]:
+        raise ValueError("Brightness transfer falls outside integration grid")
+    density = np.histogram(means, bins=grid_edges)[0].astype(np.float64)
+    density /= source.size * grid_step
+    if scatter > 0.0:
+        density = gaussian_filter1d(
+            density,
+            sigma=scatter / grid_step,
+            mode="constant",
+            cval=0.0,
+        )
+    argument = np.clip((grid - m50) / width, -60.0, 60.0)
+    detected_mass = density / (1.0 + np.exp(argument)) * grid_step
+    probabilities = np.asarray([
+        detected_mass[(grid >= lower) & (grid < upper)].sum()
+        for lower, upper in zip(
+            magnitude_edges[:-1], magnitude_edges[1:], strict=True,
+        )
+    ], dtype=np.float64)
+    return probabilities, float(probabilities.sum())
+
+
 def fit_local_catalog_density(
     *,
-    draws: int = 1_000_000,
     bootstraps: int = 2_000,
     seed: int = 71034,
 ) -> dict[str, Any]:
     """Infer the raw draw budget from local catalogs, without rendering fields.
 
-    This evaluates the *actual* generator sampler: uniform draws from the
-    physical-row-filtered COSMOS prior, followed by the fitted F814W-to-VIS
-    transfer and Euclid completeness curve. Dividing the probability-weighted
-    extended-source density by that retained fraction gives the raw TNG draw
-    budget.
+    This evaluates the generator's empirical COSMOS distribution on a fixed
+    magnitude grid, followed by the fitted F814W-to-VIS transfer and Euclid
+    completeness curve. Dividing the probability-weighted extended-source
+    density by that retained fraction gives the raw TNG draw budget.
     Cone bootstraps carry the dominant field-to-field uncertainty.
     """
     from euclid_polish.sky.generation.cosmos_tng_prior import (
@@ -340,8 +382,8 @@ def fit_local_catalog_density(
         raise ValueError("Brightness-transfer artifact is incomplete") from exc
     if not (slope > 0 and scatter >= 0 and width > 0):
         raise ValueError("Brightness-transfer coefficients are outside physical bounds")
-    if draws < 10_000 or bootstraps < 100:
-        raise ValueError("Local calibration needs at least 10,000 draws and 100 bootstraps")
+    if bootstraps < 100:
+        raise ValueError("Local calibration needs at least 100 bootstraps")
 
     prior = CosmosTngPrior(Config.COSMOS_TNG_PRIOR_PATH)
     if len(prior) < 1_000:
@@ -472,18 +514,18 @@ def fit_local_catalog_density(
             "Euclid cone catalog lacks usable per-cone weighted extended sources"
         )
 
-    rng = np.random.default_rng(seed)
-    indices = eligible_indices[
-        rng.integers(0, len(eligible_indices), size=int(draws))
-    ]
-    vis = (
-        24.0 + slope * (prior.f814w[indices].astype(np.float64) - 24.0)
-        + offset + rng.normal(0.0, scatter, size=int(draws))
+    bin_probabilities, retained_fraction = _forward_detection_probabilities(
+        prior.f814w[eligible_indices],
+        offset=offset,
+        slope=slope,
+        scatter=scatter,
+        m50=m50,
+        width=width,
+        magnitude_edges=magnitude_edges,
     )
-    argument = np.clip((vis - m50) / width, -60.0, 60.0)
-    detection_probability = 1.0 / (1.0 + np.exp(argument))
-    detection_probability *= (vis >= 20.0) & (vis < 28.0)
-    retained_fraction = float(np.mean(detection_probability))
+    prior_magnitude_counts = np.histogram(
+        prior.f814w[eligible_indices], bins=magnitude_edges,
+    )[0]
     if not 0.001 < retained_fraction < 0.999:
         raise ValueError("Fitted observation model has a degenerate retained fraction")
 
@@ -491,14 +533,7 @@ def fit_local_catalog_density(
     cone_densities = cone_counts / cone_area
     euclid_density = float(total_count / area)
     recommendation = euclid_density / retained_fraction
-    predicted_bin_density = np.asarray([
-        recommendation * np.mean(
-            detection_probability * ((vis >= lower) & (vis < upper))
-        )
-        for lower, upper in zip(
-            magnitude_edges[:-1], magnitude_edges[1:], strict=True,
-        )
-    ])
+    predicted_bin_density = recommendation * bin_probabilities
     predicted_bin_counts = predicted_bin_density * area
     positive = magnitude_counts > 0.0
     deviance_terms = predicted_bin_counts.copy()
@@ -512,16 +547,12 @@ def fit_local_catalog_density(
     magnitude_dof = max(1, int(magnitude_counts.size - 1))
     reduced_poisson_deviance = poisson_deviance / magnitude_dof
 
-    # The finite Monte Carlo error is small next to cone-to-cone variance, but
-    # retain both. Fractional beta counts support non-binary completeness
-    # probabilities without materializing a large bootstrap matrix.
-    successes = retained_fraction * draws
+    # The forward probability is deterministic. Bootstrap only the measured
+    # cone-to-cone variation, which is the dominant calibration uncertainty.
+    rng = np.random.default_rng(seed)
     cone_indices = rng.integers(0, cone_count, size=(bootstraps, cone_count))
     target_samples = np.mean(cone_densities[cone_indices], axis=1)
-    retained_samples = rng.beta(
-        successes + 0.5, draws - successes + 0.5, size=bootstraps,
-    )
-    density_samples = target_samples / retained_samples
+    density_samples = target_samples / retained_fraction
     interval = {
         "median": float(np.median(density_samples)),
         "p16": float(np.percentile(density_samples, 16)),
@@ -533,8 +564,8 @@ def fit_local_catalog_density(
         prior_digest.update(np.ascontiguousarray(values).tobytes())
     prior_fingerprint = prior_digest.hexdigest()
     identity = {
-        "version": 5,
-        "method": "local_catalog_forward_model_probability_weighted",
+        "version": 6,
+        "method": "local_catalog_deterministic_forward_model_probability_weighted",
         "transfer_fingerprint": transfer["fingerprint"],
         "prior_f814w_fingerprint": prior_fingerprint,
         "tng_radius_manifest_fingerprint": radius_fingerprint,
@@ -573,7 +604,7 @@ def fit_local_catalog_density(
         "selection": {
             "mag_min": 20.0, "mag_max": 28.0, "spurious_max": 0.5,
         },
-        "draws": int(draws),
+        "forward_integration_grid_step_mag": 0.005,
         "seed": int(seed),
     }
     calibration_fingerprint = hashlib.sha256(json.dumps(
@@ -592,10 +623,10 @@ def fit_local_catalog_density(
         if "does not model rendering" not in warning
     ]
     result = {
-        "version": 4,
+        "version": 5,
         "method": (
-            "local COSMOS/TNG generator draws passed through the fitted "
-            "Euclid brightness and completeness model"
+            "empirical COSMOS/TNG generator distribution deterministically "
+            "passed through the fitted Euclid brightness and completeness model"
         ),
         "valid": not quality_warnings,
         "validated": not quality_warnings,
@@ -639,11 +670,26 @@ def fit_local_catalog_density(
                 "detected_density_arcmin2": euclid_density,
             },
         ],
-        "local_draws": int(draws),
+        "forward_integration_grid_step_mag": 0.005,
         "bootstrap_samples": int(bootstraps),
         "seed": int(seed),
         "cosmos_generator_rows": int(len(eligible_indices)),
         "cosmos_generator_rows_before_mass_support": int(len(prior)),
+        "cosmos_f814w_support": {
+            "minimum_mag": float(np.min(prior.f814w[eligible_indices])),
+            "maximum_mag": float(np.max(prior.f814w[eligible_indices])),
+            "bins": [
+                {
+                    "mag_lo": float(lower),
+                    "mag_hi": float(upper),
+                    "rows": int(count),
+                }
+                for lower, upper, count in zip(
+                    magnitude_edges[:-1], magnitude_edges[1:],
+                    prior_magnitude_counts, strict=True,
+                )
+            ],
+        },
         "morphology_model": identity["morphology_model"],
         "cosmos_f814w_fingerprint": prior_fingerprint,
         "euclid_expected_extended_sources": float(total_count),

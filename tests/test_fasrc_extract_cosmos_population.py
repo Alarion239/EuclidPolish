@@ -105,17 +105,15 @@ def test_extract_catalog_keeps_counts_separate_from_morphology(tmp_path):
     output = tmp_path / "out"
     _tiny_catalog(catalog)
 
-    summary = mod.extract_catalog(
-        str(catalog), str(output), area_deg2=1.0, max_bd_chi2=10.0
-    )
+    summary = mod.extract_catalog(str(catalog), str(output), area_deg2=1.0)
 
     assert summary["counts"]["population"] == 4
     assert summary["counts"]["clean"] == 3
     assert summary["counts"]["isolated"] == 2
-    assert summary["counts"]["generator_ready"] == 1
+    assert summary["counts"]["generator_ready"] == 2
     with np.load(output / "cosmos2025_population_prior.npz") as prior:
         assert prior["catalog_id"].tolist() == [0, 1, 3, 4]
-        assert prior["generator_ready"].tolist() == [True, False, False, False]
+        assert prior["generator_ready"].tolist() == [True, False, False, True]
         assert np.isfinite(prior["re_combined_arcsec"][0])
         assert prior["mag_hst_f814w"][0] == 22.0
         assert prior["mag_uvista_y"][0] == 21.8
@@ -132,6 +130,9 @@ def test_extract_catalog_keeps_counts_separate_from_morphology(tmp_path):
 
     saved = json.loads(
         (output / "cosmos2025_population_summary.json").read_text()
+    )
+    assert "no fixed chi-square ceiling" in (
+        saved["selection_definitions"]["generator_ready"]
     )
     assert saved["normalization"]["completeness_correction"] == "none"
     assert (output / "cosmos2025_schema.json").is_file()
