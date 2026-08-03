@@ -232,6 +232,7 @@ def brightness_transfer_payload(path: str | Path) -> dict | None:
     return {
         "version": 3,
         "kind": "fixed_normalization",
+        "valid": not warnings,
         "fingerprint": fingerprint,
         "coefficients": coefficients,
         "fit_quality": {

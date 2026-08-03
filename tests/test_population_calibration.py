@@ -256,6 +256,8 @@ def test_complete_generator_recommendation_can_activate_with_fit_warnings(
     )
     transfer = brightness_transfer_payload(fit_path)
     assert transfer is not None
+    assert transfer["version"] == 3
+    assert not transfer["valid"]
     density_calibration_path().parent.mkdir(parents=True, exist_ok=True)
     density_calibration_path().write_text(json.dumps({
         "valid": True,

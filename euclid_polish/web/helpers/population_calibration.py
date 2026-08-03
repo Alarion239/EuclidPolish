@@ -693,7 +693,6 @@ def fit_local_catalog_density(
         "morphology_model": identity["morphology_model"],
         "cosmos_f814w_fingerprint": prior_fingerprint,
         "euclid_expected_extended_sources": float(total_count),
-        "euclid_nonstar_detections": float(total_count),
         "classification_weighting": {
             "star_weight": "POINT_LIKE_PROB",
             "galaxy_weight": "1 - POINT_LIKE_PROB",
