@@ -33,6 +33,46 @@ from euclid_polish.web.job_status import JobStatusFetcher
 from euclid_polish.web.remote import STATE, SSHConfig, SSHError, SSHSession
 
 
+def _run_population_preflight(
+    ssh: SSHSession | None,
+    *,
+    step_ref: str,
+    cfg: fasrc_config.FasrcConfig,
+) -> None:
+    """Validate generation inputs in the configured remote Python env."""
+    if step_ref not in {"synthetic_generate", "lensfinder_generate"}:
+        return
+    if not ssh or not ssh.is_connected():
+        raise ValueError("connect to FASRC before population preflight")
+
+    tng_dir = os.path.join(cfg.data_dir, "tng_skirt")
+    props = os.path.join(
+        cfg.data_dir, "_tng_infographics", "tng_properties.csv"
+    )
+    manifest = os.path.join(
+        cfg.data_dir, "_tng_infographics", "tng_radius_manifest.json"
+    )
+    argv = [
+        "-m",
+        "scripts.validate_tng_radius_manifest",
+        "--tng-dir",
+        tng_dir,
+        "--properties",
+        props,
+        "--manifest",
+        manifest,
+    ]
+    try:
+        rc, out, err = fasrc_jobs.run_remote_python(
+            ssh, cfg=cfg, argv=argv, timeout=90
+        )
+    except Exception as exc:
+        raise ValueError(f"population preflight failed: {exc}") from exc
+    if rc != 0:
+        detail = (out or err or "remote radius manifest is invalid").strip()
+        raise ValueError("population preflight failed: " + detail[-2000:])
+
+
 def register(app):
 
     def _population_preflight(step_ref: str) -> None:
@@ -42,28 +82,9 @@ def register(app):
         second check validates the atlas manifest on the remote filesystem so
         a queued promotion cannot race a stale/partial atlas update.
         """
-        if step_ref not in {"synthetic_generate", "lensfinder_generate"}:
-            return
-        if not STATE.ssh or not STATE.ssh.is_connected():
-            raise ValueError("connect to FASRC before population preflight")
-        cfg = fasrc_config.load()
-        tng_dir = os.path.join(cfg.data_dir, "tng_skirt")
-        props = os.path.join(cfg.data_dir, "_tng_infographics", "tng_properties.csv")
-        manifest = os.path.join(cfg.data_dir, "_tng_infographics", "tng_radius_manifest.json")
-        cmd = (
-            f"cd {shlex.quote(cfg.repo_path)} && "
-            "python scripts/validate_tng_radius_manifest.py "
-            f"--tng-dir {shlex.quote(tng_dir)} "
-            f"--properties {shlex.quote(props)} "
-            f"--manifest {shlex.quote(manifest)}"
+        _run_population_preflight(
+            STATE.ssh, step_ref=step_ref, cfg=fasrc_config.load()
         )
-        try:
-            rc, out, err = STATE.ssh.run(cmd, timeout=90)
-        except Exception as exc:
-            raise ValueError(f"population preflight failed: {exc}") from exc
-        if rc != 0:
-            detail = (out or err or "remote radius manifest is invalid").strip()
-            raise ValueError("population preflight failed: " + detail[-2000:])
 
     # =========================================================================
     # FASRC tab — Bitwarden-driven SSH ControlMaster, SLURM submission,

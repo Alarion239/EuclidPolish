@@ -10,6 +10,7 @@ from __future__ import annotations
 import shlex
 
 from euclid_polish.web import fasrc_config, fasrc_jobs
+from euclid_polish.web.routes.fasrc import _run_population_preflight
 
 
 def _cfg() -> fasrc_config.FasrcConfig:
@@ -68,3 +69,29 @@ def test_run_remote_python_delegates_to_ssh():
     assert rc == 0 and out == "Added 5 stars"
     assert captured["timeout"] == 123
     assert captured["cmd"].startswith("bash -lc ")
+
+
+def test_population_preflight_activates_remote_python_environment():
+    captured = {}
+
+    class _FakeSSH:
+        def is_connected(self):
+            return True
+
+        def run(self, cmd, timeout=60):
+            captured["cmd"] = cmd
+            captured["timeout"] = timeout
+            return (0, "valid radius manifest", "")
+
+    _run_population_preflight(
+        _FakeSSH(), step_ref="synthetic_generate", cfg=_cfg()
+    )
+
+    inner = shlex.split(captured["cmd"])[2]
+    python_pos = inner.index(
+        "python -u -m scripts.validate_tng_radius_manifest"
+    )
+    assert "mamba activate /n/holylabs/ENV" in inner[:python_pos]
+    assert "conda activate /n/holylabs/ENV" in inner[:python_pos]
+    assert "--tng-dir /n/netscratch/DATA/tng_skirt" in inner[python_pos:]
+    assert captured["timeout"] == 90
