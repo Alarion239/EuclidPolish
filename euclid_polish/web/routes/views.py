@@ -20,9 +20,9 @@ from euclid_polish.web.helpers.fits_render import _render_psf_panel_png
 from euclid_polish.web.helpers.paths import _sky_records_local_dir, _sky_records_remote_dir
 from euclid_polish.web.helpers.sky_render import _render_catalog_view_png, _render_psf_clusters_png
 from euclid_polish.web.helpers.status import (
+    _cached_fasrc_catalog_dir,
     _cached_fasrc_psf_dir,
     _cached_psf_clusters_json,
-    _fasrc_catalog_dir,
     _list_vis_pngs,
     _record_count,
     _resolve_training_log,
@@ -31,6 +31,12 @@ from euclid_polish.web.jobs import REGISTRY as JOB_REGISTRY
 
 
 def register(app):
+
+    def figure_dpi() -> int:
+        try:
+            return max(72, min(int(request.args.get("dpi", "110")), 600))
+        except (TypeError, ValueError):
+            abort(400)
 
     # ---------------- Visualization page ----------------
     @app.route("/visualization")
@@ -49,7 +55,9 @@ def register(app):
     @app.route("/view/psfs")
     def view_psfs():
         band = request.args.get("band", "all")
-        png = _render_psf_panel_png(None if band == "all" else band)
+        png = _render_psf_panel_png(
+            None if band == "all" else band, dpi=figure_dpi(),
+        )
         return send_file(io.BytesIO(png), mimetype="image/png", max_age=0)
 
     @app.route("/view/psf-clusters")
@@ -64,9 +72,10 @@ def register(app):
         psf_dir = _cached_fasrc_psf_dir()
         psf_path = (os.path.join(psf_dir, Config.BAND_VIS.psf_fits_filename)
                     if psf_dir else None)
-        out = _fasrc_catalog_dir(force=False)
+        out = _cached_fasrc_catalog_dir()
         png = _render_psf_clusters_png(
-            out, psf_path, clusters_json=_cached_psf_clusters_json())
+            out, psf_path, clusters_json=_cached_psf_clusters_json(),
+            dpi=figure_dpi())
         return send_file(io.BytesIO(png), mimetype="image/png", max_age=0)
 
     @app.route("/view/catalog")
@@ -74,10 +83,10 @@ def register(app):
         view = request.args.get("view", "positions")
         # Render from the FASRC catalog (pulled to the local cache), not a
         # stale local stars.csv — the query writes it on netscratch.
-        out = _fasrc_catalog_dir(force=True)
+        out = _cached_fasrc_catalog_dir()
         if out is None:
             abort(404)
-        png = _render_catalog_view_png(view, out)
+        png = _render_catalog_view_png(view, out, dpi=figure_dpi())
         return send_file(io.BytesIO(png), mimetype="image/png", max_age=0)
 
     @app.route("/view/training-log")

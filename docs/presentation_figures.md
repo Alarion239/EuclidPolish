@@ -1,0 +1,65 @@
+# Presentation figures
+
+EuclidPolish exports figures from the same cached arrays and display transfer
+used by the WebUI. Export does not publish, refit, query an archive, or alter a
+field.
+
+The **Figures** page at `/visualization` is the central index. It previews the
+galaxy and stellar population calibrations, catalog views, PSF clustering, and
+the shared-scale four-band PSF plate. It also links to every interactive viewer
+used to build LR/SR/HR, Euclid–JWST, lens, and selected-PSF comparisons.
+
+## Reconstruction and PSF figures
+
+Every shared image viewer has a **Figure** button. A reliable workflow is:
+
+1. Select the tiers that belong in the comparison.
+2. Move the pointer to the feature that should be magnified. Scroll vertically
+   over the image to change the crop size; click to freeze it if useful.
+3. Choose **Figure**. The last inspected region is projected onto every tier
+   and rendered as a matched inset at the bottom-left.
+
+The output is a fixed high-resolution PNG with descriptive panel names outside
+the image, matched angular crop labels, and physical scale bars when pixel scale
+is known. Each panel includes its displayed band, asinh knee, and a heatbar whose
+ticks invert the viewer transfer into input-equivalent electron signal. Titles,
+parameters, heatbar ticks, and inset annotations use a large presentation type
+scale that remains readable after the plate is placed on a slide. The plate
+deliberately omits field identifiers and pixel dimensions; keep those in the
+slide caption or manuscript caption.
+**PNG** remains available for a quick screen-layout capture.
+
+Suggested viewer presets:
+
+| Figure | Page | Tiers |
+| --- | --- | --- |
+| selected real/synthetic field | Evaluation | LR, HR |
+| synthetic reconstruction | Sky records | LR, SR, HR |
+| real Euclid reconstruction | Inference | LR and available SR tiers |
+| Euclid–JWST reference | Inference or JWST × Euclid | LR, SR, JWST |
+| empirical PSFs | PSFs | VIS, Y_E, J_E, H_E |
+| lens isolation | Lens isolation | LR, SR (and lens target when wanted) |
+
+Changing the index and repeating the workflow produces a consistent series of
+roughly ten publication-ready figures without a separate plotting script.
+
+## Population, catalog, and clustering figures
+
+Field statistics provides one three-panel **COSMOS × Euclid × TNG50 population
+atlas**. Download PNG for slides, PDF for LaTeX/Keynote placement, or SVG for
+vector editing. Its panels are magnitude density, redshift density, and
+angular-radius density; missing bins remain missing rather than becoming zero.
+
+The same page provides a four-panel **Gaia DR3 × Euclid MER stellar population
+calibration**: probability-weighted density by cone plus VIS−Y, Y−J, and J−H
+colour checks. The plot keeps the fitted true-colour population, estimated true
+colours of observed stars, estimated colours with simulated Euclid noise, and
+raw Euclid catalogue colours visually distinct.
+
+Catalog and PSF-cluster figures expose a **Download 300 dpi** action above the
+rendered plot. The catalog toolbar chooses positions, magnitude distribution,
+or per-band saturation before export. These exports, the population atlas, and
+the four-band PSF panel share a presentation profile: 20 pt figure titles,
+17 pt panel titles, 15 pt axis labels, 12.5 pt ticks, and 11.5 pt legends and
+notes. Scientific units are carried by axis or colorbar labels, and categorical
+status uses a color-blind-safe blue/orange pairing.

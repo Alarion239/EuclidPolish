@@ -265,7 +265,9 @@ export default function PsfsPage() {
           <CardHead title="PSF clusters"
             sub="local sky positions + angular diameter (× = cluster centre, Ø = angular diameter)" />
           <CardBody>
-            <PngFigure srcFor={() => "/view/psf-clusters"} alt="PSF clusters" />
+            <PngFigure srcFor={() => "/view/psf-clusters"}
+              downloadSrc={() => "/view/psf-clusters?dpi=300"}
+              alt="PSF clusters" />
           </CardBody>
         </Card>
 

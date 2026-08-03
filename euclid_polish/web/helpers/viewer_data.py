@@ -43,7 +43,11 @@ import numpy as np
 from astropy.io import fits
 
 from euclid_polish.config import Config
-from euclid_polish.eval.combiner import ACTIVE_COMBINER_KINDS, COMBINER_MODELS
+from euclid_polish.eval.combiner import (
+    ACTIVE_COMBINER_KINDS,
+    COMBINER_MODELS,
+    RAW_INCREMENTAL_MINMEANMAX_RBF_KIND,
+)
 from euclid_polish.eval.lensfinder_eval import per_object_plens
 from euclid_polish.image.tfio import read_images, tfrecord_path
 from euclid_polish.psf.core import PSF
@@ -394,17 +398,18 @@ def _eval_cube(index: int, tier: str, params: dict[str, str]):
 
 
 # ---------------------------------------------------------------------------
-# ensemble — LR / SR(mean) / stdSR(std) / HR for the disagreement viewer
+# ensemble — LR / SR(combiner) / stdSR(std) / HR disagreement viewer
 # ---------------------------------------------------------------------------
 #
-# The /ensemble "Evaluate" job caches the ensemble-mean (SR) and per-pixel std
+# The /ensemble "Evaluate" job caches the ensemble-mean and per-pixel std
 # (stdSR) cubes under <vis>/ensemble/cubes/{sr,std}_<recidx>.npy plus a
 # viz_index.json {subset, indices}. LR/HR are read back from the sky records by
-# record index, so only the computed cubes are duplicated.
+# record index.  The public ``sr`` viewer tier is replaced by the primary fitted
+# combiner below; the cached mean remains the centre of the disagreement movie.
 
 _ENSEMBLE_TIERS = [
     {"key": "lr", "label": "LR"},
-    {"key": "sr", "label": "SR (mean)"},
+    {"key": "sr", "label": "SR (minibatched convex all-asinh RBF)"},
     # stdSR stays available (it powers the ±σ magnitude on the mean frame) but
     # is hidden from the chip row per the trimmed tier set.
     {"key": "std", "label": "stdSR", "hidden": True},
@@ -455,12 +460,22 @@ def _ensemble_meta(params: dict[str, str]) -> dict[str, Any]:
              for t in _ENSEMBLE_TIERS
              if t["key"] != "hr" or has_target]
     member_labels0 = man.get("member_labels", []) or []
+    primary_available = bool(
+        man.get(f"has_combiner_{RAW_INCREMENTAL_MINMEANMAX_RBF_KIND}")
+        or man.get("has_combiner")
+        or (member_labels0 and _load_field_combiner(
+            starless, member_labels0,
+            RAW_INCREMENTAL_MINMEANMAX_RBF_KIND) is not None)
+    )
+    if not primary_available:
+        tiers = [tier for tier in tiers if tier["key"] != "sr"]
     # Each ordinary combiner model gets its own selectable tier. Cubes are
     # computed on demand from the shared member cache when not baked by eval.
     for kind, key, label in reversed(tuple(
             (kind, spec.cube_prefix, spec.label)
             for kind, spec in COMBINER_MODELS.items()
-            if kind in ACTIVE_COMBINER_KINDS)):
+            if kind in ACTIVE_COMBINER_KINDS
+            and kind != RAW_INCREMENTAL_MINMEANMAX_RBF_KIND)):
         if man.get(f"has_combiner_{kind}") or (
                 member_labels0 and _load_field_combiner(
                     _ensemble_starless(params), member_labels0, kind) is not None):
@@ -486,7 +501,7 @@ def _ensemble_meta(params: dict[str, str]) -> dict[str, Any]:
     return {
         "count": len(idxs),
         "tiers": tiers,
-        "default_tier": "sr",
+        "default_tier": "sr" if primary_available else "lr",
         "band_names": list(BAND_NAMES),
         "subset": sub,
         "pca_n": pca_n,
@@ -645,6 +660,15 @@ def _ensemble_cube(index: int, tier: str, params: dict[str, str]):
             "label": f"PC{k} · {tag}", "asinh": float(Config.STRETCH_SCALE_E),
             "pixscale": float(Config.DEFAULT_PIXEL_SCALE), "amp": float(amps[k]),
             "var": float(var[k]) if k < len(var) else 0.0}
+    # The main SR tier is the primary fitted combiner.  Keep ``sr`` as the
+    # stable viewer/API key while avoiding a duplicate primary-combiner chip.
+    # A requested member subset is handled above as a subset mean because a
+    # combiner fitted for the full ordered membership cannot accept fewer
+    # member channels.
+    if tier == "sr":
+        tier = COMBINER_MODELS[
+            RAW_INCREMENTAL_MINMEANMAX_RBF_KIND].cube_prefix
+
     # Combiner reconstruction: prefer a baked model-specific cube; otherwise
     # apply that fitted model to the cached member stack on the fly.
     tier_kinds = {COMBINER_MODELS[kind].cube_prefix: kind
@@ -1272,6 +1296,55 @@ def _robust_display_scale(data: np.ndarray) -> float:
     return 3000.0 / max(bright, 1e-12)
 
 
+def _jwst_sr_pixel_blur(
+    cube: np.ndarray,
+    info: Mapping[str, Any],
+    *,
+    sr_pixel_scale_arcsec: float,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    """Apply a Gaussian whose FWHM is one SR pixel to native-grid JWST.
+
+    The comparison tier deliberately stays on the JWST grid.  Converting the
+    angular SR-pixel width to a native-JWST sigma avoids silently resampling
+    either image, while the copied display scale ensures the native and
+    blurred JWST tiers differ only by this convolution.
+    """
+    from scipy.ndimage import gaussian_filter
+
+    jwst_pixel_scale = float(info.get("pixscale", 0.0))
+    if not math.isfinite(jwst_pixel_scale) or jwst_pixel_scale <= 0:
+        raise ViewerError(404, "JWST pixel scale is unavailable for SR-matched blur")
+    if not math.isfinite(sr_pixel_scale_arcsec) or sr_pixel_scale_arcsec <= 0:
+        raise ViewerError(500, "SR pixel scale is invalid")
+
+    sigma_pixels = (
+        sr_pixel_scale_arcsec
+        / jwst_pixel_scale
+        / (2.0 * math.sqrt(2.0 * math.log(2.0)))
+    )
+    source = np.asarray(cube, dtype=np.float32)
+    sigma = (sigma_pixels, sigma_pixels, 0.0)
+    finite = np.isfinite(source)
+    if np.all(finite):
+        blurred = gaussian_filter(source, sigma=sigma, mode="reflect")
+    else:
+        # FITS/WCS cutouts can carry NaN rims.  Normalised convolution keeps
+        # them from poisoning neighbouring valid pixels, then restores the
+        # original invalid footprint rather than inventing sky coverage.
+        values = gaussian_filter(np.where(finite, source, 0.0), sigma=sigma, mode="reflect")
+        weights = gaussian_filter(finite.astype(np.float32), sigma=sigma, mode="reflect")
+        blurred = np.full_like(source, np.nan)
+        np.divide(values, weights, out=blurred, where=weights > 1e-6)
+        blurred[~finite] = np.nan
+
+    blurred_info = dict(info)
+    blurred_info["label"] = (
+        f"{info.get('label') or 'JWST'} · Gaussian blur · "
+        f"FWHM {sr_pixel_scale_arcsec:.3f}\" (1 SR px)"
+    )
+    return np.asarray(blurred, dtype=np.float32), blurred_info
+
+
 def _jwst_band_name(manifest: dict[str, Any]) -> str:
     """Return the real JWST filter/pupil name, excluding non-band CLEAR."""
     metadata = manifest.get("jwst_metadata", {}) or {}
@@ -1497,6 +1570,7 @@ def _jwst_euclid_meta(params: dict[str, str]) -> dict[str, Any]:
         {"key": "lr", "label": "LR · Euclid VIS"},
         {"key": "sr", "label": "SR · STARFULL combiner"},
         {"key": "jwst", "label": "JWST"},
+        {"key": "jwst_blur", "label": "JWST · Gaussian blur · FWHM 1 SR px"},
     ]
     return {
         "count": len(pairs),
@@ -1562,31 +1636,36 @@ def _jwst_euclid_cube(index: int, tier: str, params: dict[str, str]):
             "display_scale": _robust_display_scale(cube),
             "transfer_group": "euclid",
         }
-    if tier == "jwst":
+    if tier in {"jwst", "jwst_blur"}:
         choice = str(params.get("jwst_band") or "colour").strip().upper()
         if choice in {"", "COLOUR"}:
-            return _jwst_colour_cube(manifest, directory)
-        if choice == "TEMPERATURE":
-            return _jwst_temperature_cube(manifest, directory)
-        entry = next(
-            (candidate for candidate in _jwst_band_entries(manifest)
-             if str(candidate.get("filter") or "").strip().upper() == choice),
-            None,
-        )
-        if entry is None:
-            raise ViewerError(404, f"JWST band {choice} is unavailable for this field")
-        data, _wcs = _pair_native_jwst(manifest, directory, entry)
-        metadata = entry.get("metadata", {}) or {}
-        scales = metadata.get("pixel_scale_arcsec", [])
-        scale = float(scales[0]) if isinstance(scales, list) and scales else 0.0
-        return _as_hwc(data), {
-            "label": f"JWST native · {choice} · display-normalised only",
-            "asinh": 100.0,
-            "pixscale": scale if math.isfinite(scale) else 0.0,
-            "bands": [choice],
-            "display_scale": _robust_display_scale(data),
-            "transfer_group": "jwst",
-        }
+            result = _jwst_colour_cube(manifest, directory)
+        elif choice == "TEMPERATURE":
+            result = _jwst_temperature_cube(manifest, directory)
+        else:
+            entry = next(
+                (candidate for candidate in _jwst_band_entries(manifest)
+                 if str(candidate.get("filter") or "").strip().upper() == choice),
+                None,
+            )
+            if entry is None:
+                raise ViewerError(404, f"JWST band {choice} is unavailable for this field")
+            data, _wcs = _pair_native_jwst(manifest, directory, entry)
+            metadata = entry.get("metadata", {}) or {}
+            scales = metadata.get("pixel_scale_arcsec", [])
+            scale = float(scales[0]) if isinstance(scales, list) and scales else 0.0
+            result = _as_hwc(data), {
+                "label": f"JWST native · {choice} · display-normalised only",
+                "asinh": 100.0,
+                "pixscale": scale if math.isfinite(scale) else 0.0,
+                "bands": [choice],
+                "display_scale": _robust_display_scale(data),
+                "transfer_group": "jwst",
+            }
+        if tier == "jwst_blur":
+            sr_scale = float(inference.get("pixel_scale_arcsec") or Config.DEFAULT_PIXEL_SCALE)
+            return _jwst_sr_pixel_blur(*result, sr_pixel_scale_arcsec=sr_scale)
+        return result
     raise ViewerError(400, "bad paired-field tier")
 
 
@@ -1629,7 +1708,7 @@ def _nexus_field_meta(params: dict[str, str]) -> dict[str, Any]:
         tiers = ["lr"]
         if has_registered_lr or has_sr:
             tiers.append("sr")
-        tiers.append("jwst")
+        tiers.extend(("jwst", "jwst_blur"))
         return tiers
 
     return {
@@ -1638,6 +1717,7 @@ def _nexus_field_meta(params: dict[str, str]) -> dict[str, Any]:
             {"key": "lr", "label": "LR · Euclid · 255 px"},
             {"key": "sr", "label": "SR · STARFULL combiner"},
             {"key": "jwst", "label": f"NEXUS {manifest.get('filter') or 'JWST'} · native"},
+            {"key": "jwst_blur", "label": "JWST · Gaussian blur · FWHM 1 SR px"},
         ],
         "default_tier": "lr",
         "band_names": list(BAND_NAMES),
@@ -1693,18 +1773,25 @@ def _nexus_field_cube(index: int, tier: str, params: dict[str, str]):
             "bands": list(BAND_NAMES[:cube.shape[-1]]),
             "transfer_group": "euclid",
         }
-    if tier == "jwst":
+    if tier in {"jwst", "jwst_blur"}:
         cube = _pair_cube(_pair_file(directory, tile.get("jwst_file")))
         metadata = tile.get("jwst_metadata", {}) if isinstance(tile, Mapping) else {}
         scales = metadata.get("pixel_scale_arcsec", []) if isinstance(metadata, Mapping) else []
         scale = float(scales[0]) if isinstance(scales, list) and scales else 0.0
-        return cube, {
+        result = cube, {
             "label": f"NEXUS native · {manifest.get('filter') or 'JWST'}",
             "asinh": 100.0, "pixscale": scale if math.isfinite(scale) else 0.0,
             "bands": [str(manifest.get("filter") or "JWST")],
             "display_scale": _robust_display_scale(cube),
             "transfer_group": "jwst",
         }
+        if tier == "jwst_blur":
+            inference = tile.get("inference", {}) if isinstance(tile, Mapping) else {}
+            sr_scale = float(
+                inference.get("pixel_scale_arcsec") or Config.DEFAULT_PIXEL_SCALE
+            ) if isinstance(inference, Mapping) else float(Config.DEFAULT_PIXEL_SCALE)
+            return _jwst_sr_pixel_blur(*result, sr_pixel_scale_arcsec=sr_scale)
+        return result
     raise ViewerError(400, "bad NEXUS tiled-field tier")
 
 

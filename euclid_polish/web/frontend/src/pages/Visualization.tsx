@@ -1,12 +1,6 @@
-/* Visualization — the classic Flask "Visualization" page, ported.
-
-   The classic page rendered a gallery of PNGs under data/vis/ from a server
-   render context. There is NO JSON listing endpoint for those PNGs (files.py
-   only exposes the raw byte server at /vis/<relpath>), so — per the port brief
-   — this page instead surfaces the three standard diagnostic figures that DO
-   have live PNG endpoints (/view/*), plus a FITS-inspector helper that links
-   into the universal /inspect page. */
+/* Presentation-figure index plus the existing operational render gallery. */
 import { useState } from "react";
+import { NavLink } from "react-router-dom";
 import { asArray } from "../data";
 import { useResource } from "../hooks";
 import { StepById } from "../fasrc";
@@ -14,8 +8,24 @@ import {
   Button, Card, CardBody, CardHead, Empty, Field, Gallery, Input, Page,
   PageHead, PngFigure, Spinner,
 } from "../ui";
+import "./presentation-figures.css";
 
 type VisPng = { rel: string; mtime: number; size_kb: number; inspect_fits: string | null };
+
+const FIGURE_BUILDERS = [
+  { label: "Synthetic comparison", path: "/sky", tiers: ["Euclid Image", "Super-resolved Image", "High-resolution truth"],
+    note: "Use the held-out synthetic records for the LR–SR–HR plate." },
+  { label: "Evaluation fields", path: "/evaluation", tiers: ["Euclid Image", "Super-resolved Image", "High-resolution truth"],
+    note: "Browse selected evaluation fields and ensemble products." },
+  { label: "Real Euclid fields", path: "/inference", tiers: ["Euclid Image", "Super-resolved Image"],
+    note: "Export cached real-field reconstructions without implying an unavailable truth image." },
+  { label: "Euclid × JWST", path: "/jwst-euclid", tiers: ["Euclid Image", "Super-resolved Image", "JWST reference"],
+    note: "Compare registered native-band Euclid and JWST views." },
+  { label: "Lens isolation", path: "/lens-isolation", tiers: ["Euclid Image", "Super-resolved Image"],
+    note: "Build LR–SR lens-isolation figures from the selected record." },
+  { label: "Selected ePSFs", path: "/psfs", tiers: ["VIS", "Y_E", "J_E", "H_E"],
+    note: "Choose the empirical PSF and place the magnified region with the pointer." },
+] as const;
 
 export default function VisualizationPage() {
   const gallery = useResource<{ pngs: VisPng[] }>("/api/vis/list.json");
@@ -28,6 +38,7 @@ export default function VisualizationPage() {
   // Cache-buster for the training-log "regenerate" chip: bumping this forces a
   // fresh ?force=1 render (the endpoint re-plots the CSV when force is set).
   const [logNonce, setLogNonce] = useState<number | null>(null);
+  const [catalogView, setCatalogView] = useState("positions");
   const trainingLogSrc = () =>
     logNonce == null
       ? "/view/training-log"
@@ -45,10 +56,140 @@ export default function VisualizationPage() {
   return (
     <Page>
       <PageHead
-        eyebrow="pipeline · visualization"
-        title="Visualization"
-        sub="Standard diagnostic figures across the pipeline, plus a jump into the universal FITS inspector."
+        eyebrow="presentation · publication exports"
+        title="Presentation figures"
+        sub="One index for calibrated population plots, catalog and PSF plates, and every cursor-driven image comparison."
       />
+
+      <section className="presentation-hero" aria-label="Figure export workflow">
+        <div>
+          <span className="eyebrow">viewer export</span>
+          <h2>Inspect the feature. Keep the pointer there. Export the figure.</h2>
+          <p>The last inspected sky position becomes the same bottom-left magnification window in every selected tier.</p>
+        </div>
+        <div className="presentation-hero__sequence" aria-label="Pointer to figure workflow">
+          <span>select tiers</span><b>→</b><span>place pointer</span><b>→</b><span>⬇ Figure</span>
+        </div>
+      </section>
+
+      <div className="presentation-section-head">
+        <div><span className="eyebrow">calibration plates</span><h2>Population constraints</h2></div>
+        <p>Cached reviewed artifacts only; opening this page never fits or activates a calibration.</p>
+      </div>
+
+      <div className="presentation-plate-stack">
+        <Card className="presentation-plate">
+          <CardHead title="Galaxy population calibration"
+            sub="COSMOS × Euclid × TNG50 · magnitude, redshift, and angular-radius density"
+            right={<div className="presentation-plate__formats">
+              <a href="/view/population-atlas?format=pdf" download>PDF</a>
+              <a href="/view/population-atlas?format=svg" download>SVG</a>
+            </div>} />
+          <CardBody>
+            <PngFigure
+              srcFor={() => "/view/population-atlas?format=png&dpi=150&inline=1"}
+              downloadSrc={() => "/view/population-atlas?format=png&dpi=300"}
+              alt="Galaxy population calibration"
+              minHeight={420}
+            />
+          </CardBody>
+        </Card>
+
+        <Card className="presentation-plate">
+          <CardHead title="Stellar population calibration"
+            sub="Gaia DR3 × Euclid MER · fitted, inferred, simulated-noise, and catalogue stellar colours"
+            right={<div className="presentation-plate__formats">
+              <a href="/view/star-population-calibration?format=pdf" download>PDF</a>
+              <a href="/view/star-population-calibration?format=svg" download>SVG</a>
+            </div>} />
+          <CardBody>
+            <PngFigure
+              srcFor={() => "/view/star-population-calibration?format=png&dpi=150&inline=1"}
+              downloadSrc={() => "/view/star-population-calibration?format=png&dpi=300"}
+              alt="Stellar population calibration"
+              minHeight={480}
+            />
+          </CardBody>
+        </Card>
+      </div>
+
+      <div className="presentation-section-head">
+        <div><span className="eyebrow">catalog and optics</span><h2>Observed inputs</h2></div>
+        <p>Large-label plots with explicit coordinates, units, selection state, and comparable colour scales.</p>
+      </div>
+
+      <div className="presentation-observed-grid">
+        <Card className="presentation-plate presentation-plate--wide">
+          <CardHead title="Stellar catalog"
+            sub="ICRS positions, VIS magnitude distribution, or four-band validity" />
+          <CardBody>
+            <PngFigure
+              srcFor={(view) => `/view/catalog?view=${view ?? "positions"}&dpi=150`}
+              toolbar={[
+                { key: "positions", label: "positions" },
+                { key: "magnitudes", label: "magnitudes" },
+                { key: "saturation", label: "validity" },
+              ]}
+              active={catalogView}
+              onActive={setCatalogView}
+              downloadSrc={(view) => `/view/catalog?view=${view ?? "positions"}&dpi=300`}
+              alt="Stellar catalog presentation figure"
+              minHeight={410}
+            />
+          </CardBody>
+        </Card>
+
+        <Card className="presentation-plate">
+          <CardHead title="PSF extraction clusters"
+            sub="ICRS cluster membership and angular diameter by disjoint sky region" />
+          <CardBody>
+            <PngFigure
+              srcFor={() => "/view/psf-clusters?dpi=150"}
+              downloadSrc={() => "/view/psf-clusters?dpi=300"}
+              alt="PSF extraction clusters"
+              minHeight={380}
+            />
+          </CardBody>
+        </Card>
+
+        <Card className="presentation-plate">
+          <CardHead title="Four-band empirical PSFs"
+            sub="VIS, Y_E, J_E, and H_E on one shared logarithmic intensity scale" />
+          <CardBody>
+            <PngFigure
+              srcFor={() => "/view/psfs?band=all&dpi=150"}
+              downloadSrc={() => "/view/psfs?band=all&dpi=300"}
+              alt="Four-band empirical PSFs"
+              minHeight={320}
+            />
+          </CardBody>
+        </Card>
+      </div>
+
+      <div className="presentation-section-head">
+        <div><span className="eyebrow">interactive builders</span><h2>Image comparisons</h2></div>
+        <p>Open a viewer, select the listed tiers, place the magnification window, then choose Figure.</p>
+      </div>
+
+      <div className="figure-builder-grid">
+        {FIGURE_BUILDERS.map((builder) => (
+          <article className="figure-builder" key={builder.path}>
+            <div className="figure-builder__head">
+              <h3>{builder.label}</h3>
+              <NavLink className="ui-btn ui-btn--sm" to={builder.path}>Open viewer</NavLink>
+            </div>
+            <p>{builder.note}</p>
+            <div className="figure-builder__tiers">
+              {builder.tiers.map((tier) => <span key={tier}>{tier}</span>)}
+            </div>
+          </article>
+        ))}
+      </div>
+
+      <div className="presentation-section-head presentation-section-head--diagnostics">
+        <div><span className="eyebrow">working material</span><h2>Pipeline diagnostics</h2></div>
+        <p>Operational renders remain available below, separate from the presentation set.</p>
+      </div>
 
       <div className="grid" style={{ gridTemplateColumns: "1fr", gap: "var(--s4)" }}>
         <Card>
@@ -76,28 +217,6 @@ export default function VisualizationPage() {
           />
           <CardBody>
             <PngFigure srcFor={trainingLogSrc} alt="training log" minHeight={280} />
-          </CardBody>
-        </Card>
-
-        <Card>
-          <CardHead title="ePSFs" sub="All bands (/view/psfs?band=all)" />
-          <CardBody>
-            <PngFigure
-              srcFor={() => "/view/psfs?band=all"}
-              alt="ePSF panel"
-              minHeight={280}
-            />
-          </CardBody>
-        </Card>
-
-        <Card>
-          <CardHead title="Catalog positions" sub="/view/catalog?view=positions" />
-          <CardBody>
-            <PngFigure
-              srcFor={() => "/view/catalog?view=positions"}
-              alt="catalog positions"
-              minHeight={280}
-            />
           </CardBody>
         </Card>
 

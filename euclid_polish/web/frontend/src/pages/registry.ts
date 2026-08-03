@@ -45,7 +45,7 @@ export const PAGES: PageDef[] = [
   { label: "Lens finder", path: "/lensfinder", component: LensFinderPage },
   { label: "Lens isolation", path: "/lens-isolation", component: LensIsolationPage },
   { label: "Tracking", path: "/tracking", component: TrackingPage },
-  { label: "Visualization", path: "/visualization", component: VisualizationPage },
+  { label: "Figures", path: "/visualization", component: VisualizationPage },
   { label: "FASRC", path: "/fasrc", component: FasrcPage },
   { label: "Git", path: "/git", component: GitPage },
 ];
@@ -58,5 +58,5 @@ export const NAV: NavGroup[] = [
   { title: "Setup", items: [item("Config"), item("Catalog"), item("PSFs")] },
   { title: "Data", items: [item("Sky"), item("Cutouts"), item("TNG"), item("Synthetic–Real"), item("Field statistics"), item("JWST × Euclid")] },
   { title: "Model", items: [item("Inference"), item("Ensemble"), item("Train members"), item("Evaluation"), item("Lens finder"), item("Lens isolation")] },
-  { title: "Ops", items: [item("Tracking"), item("Visualization"), item("FASRC"), item("Git")] },
+  { title: "Ops", items: [item("Tracking"), item("Figures"), item("FASRC"), item("Git")] },
 ];

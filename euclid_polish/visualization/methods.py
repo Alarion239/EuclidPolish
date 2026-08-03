@@ -24,6 +24,13 @@ from euclid_polish.visualization.base import (
     _asinh_scale,
     _asinh_scale_mad,
 )
+from euclid_polish.visualization.presentation_style import (
+    AXIS_LABEL_SIZE,
+    LEGEND_SIZE,
+    PANEL_TITLE_SIZE,
+    TICK_LABEL_SIZE,
+    apply_presentation_figure,
+)
 
 
 def _smooth_for_display(data: np.ndarray, sigma: float = 1.5) -> np.ndarray:
@@ -182,20 +189,24 @@ def plot_star_positions(stars: list[dict], fig=None):
     ra, dec, mag, corr = _star_arrays(stars)
     if ra.size == 0:
         if fig is None:
-            fig = plt.figure(figsize=(10, 5))
+            fig = plt.figure(figsize=(12, 6.5))
         ax = fig.add_subplot(111)
         ax.text(0.5, 0.5, "no stars in catalog",
-                ha="center", va="center", color="#888")
+                ha="center", va="center", color="#666",
+                fontsize=PANEL_TITLE_SIZE)
         ax.set_axis_off()
         return fig
 
     # Build SkyCoord once and reuse its wrapped values for Aitoff.
     coords = SkyCoord(ra=ra * u.deg, dec=dec * u.deg, frame="icrs")
-    ra_rad  = coords.ra.wrap_at(180 * u.deg).radian
+    # Negate wrapped longitude so right ascension increases to the left, as
+    # required for conventional astronomical sky maps.
+    ra_rad  = -coords.ra.wrap_at(180 * u.deg).radian
     dec_rad = coords.dec.radian
     # Visual sizing — brighter stars (lower mag) → larger dots, capped.
     # Range floored so even faint stars are visible against the sky grid.
-    sizes = np.clip((21.0 - mag) ** 2 * 2.0, 10.0, 80.0)
+    crowding_scale = max(0.22, min(1.0, (5000.0 / len(stars)) ** 0.5))
+    sizes = np.clip((21.0 - mag) ** 2 * 2.0, 10.0, 80.0) * crowding_scale
 
     # Decide whether to show a zoom panel: yes if the cluster is small.
     ra_span  = float(ra.max()  - ra.min())
@@ -203,7 +214,7 @@ def plot_star_positions(stars: list[dict], fig=None):
     show_zoom = (ra_span < 10.0 and dec_span < 10.0 and len(stars) > 1)
 
     if fig is None:
-        fig = plt.figure(figsize=(14, 6) if show_zoom else (11, 6))
+        fig = plt.figure(figsize=(16, 7.5) if show_zoom else (13, 7.5))
     if show_zoom:
         ax_sky  = fig.add_subplot(1, 2, 1, projection="aitoff")
         ax_zoom = fig.add_subplot(1, 2, 2)
@@ -213,25 +224,40 @@ def plot_star_positions(stars: list[dict], fig=None):
 
     # ---- Full-sky Aitoff scatter ----
     valid = ~corr
+    corrupted_scatter = None
+    if corr.any():
+        corrupted_scatter = ax_sky.scatter(
+            ra_rad[corr], dec_rad[corr], s=sizes[corr],
+            c="#4b5563", marker="x", linewidths=0.75, alpha=0.28,
+            label=f"corrupted ({int(corr.sum())})",
+            rasterized=True,
+        )
     sc = ax_sky.scatter(
         ra_rad[valid], dec_rad[valid], s=sizes[valid], c=mag[valid],
-        cmap="YlOrRd_r", alpha=0.8, edgecolors="none",
-        label=f"valid ({int(valid.sum())})",
+        cmap="YlOrRd_r", alpha=0.72, edgecolors="none",
+        label=f"valid ({int(valid.sum())})", rasterized=True,
     )
-    if corr.any():
-        ax_sky.scatter(
-            ra_rad[corr], dec_rad[corr], s=sizes[corr] * 1.5,
-            c="red", marker="x", linewidths=1.5,
-            label=f"corrupted ({int(corr.sum())})",
-        )
-    fig.colorbar(sc, ax=ax_sky, shrink=0.65, pad=0.04, label="VIS magnitude (AB)")
-    ax_sky.set_title(f"Sky positions — {len(stars)} stars (Aitoff)", pad=22)
+    colorbar = fig.colorbar(sc, ax=ax_sky, shrink=0.72, pad=0.05)
+    colorbar.set_label("VIS magnitude (AB)", fontsize=AXIS_LABEL_SIZE)
+    colorbar.ax.tick_params(labelsize=TICK_LABEL_SIZE)
+    ax_sky.set_title(
+        f"Stellar catalog — {len(stars):,} sources (ICRS Aitoff)",
+        pad=24, fontsize=PANEL_TITLE_SIZE,
+    )
     ax_sky.grid(True, color="#888", alpha=0.3)
-    # X-axis tick labels: convert -π..π → 0..360° in standard astronomy convention
-    # (RA increases to the LEFT on the sky → matplotlib's Aitoff already
-    # mirrors longitude so leftward ticks go up in numeric value if we use
-    # wrap_at(180°); leave matplotlib's default labelling for clarity).
-    ax_sky.legend(loc="lower left", fontsize=9)
+    # Matplotlib places Aitoff ticks at −150°…150°. With the negated longitude
+    # above, label those positions as ICRS RA in the conventional 0°…360° form.
+    ax_sky.set_xticklabels(
+        ["150°", "120°", "90°", "60°", "30°", "0°",
+         "330°", "300°", "270°", "240°", "210°"],
+    )
+    legend_handles = [sc]
+    if corrupted_scatter is not None:
+        legend_handles.append(corrupted_scatter)
+    ax_sky.legend(
+        handles=legend_handles, loc="lower left",
+        fontsize=LEGEND_SIZE, frameon=False,
+    )
 
     # ---- Optional tangent-plane zoom on the cluster ----
     if ax_zoom is not None:
@@ -241,16 +267,21 @@ def plot_star_positions(stars: list[dict], fig=None):
         )
         if corr.any():
             ax_zoom.scatter(
-                ra[corr], dec[corr], s=sizes[corr] * 1.5, c="red",
-                marker="x", linewidths=1.5,
+                ra[corr], dec[corr], s=sizes[corr], c="#4b5563",
+                marker="x", linewidths=0.75, alpha=0.28,
+                rasterized=True,
             )
         ax_zoom.invert_xaxis()                      # RA increases leftward
-        ax_zoom.set_xlabel("RA  [deg]")
-        ax_zoom.set_ylabel("Dec  [deg]")
+        ax_zoom.set_xlabel("ICRS RA (deg)", fontsize=AXIS_LABEL_SIZE)
+        ax_zoom.set_ylabel("ICRS Dec (deg)", fontsize=AXIS_LABEL_SIZE)
         ax_zoom.set_aspect("equal", adjustable="datalim")
         ax_zoom.grid(True, alpha=0.3)
-        ax_zoom.set_title(f"Zoom — ΔRA≈{ra_span:.2f}°  ΔDec≈{dec_span:.2f}°")
+        ax_zoom.set_title(
+            f"Zoom — ΔRA≈{ra_span:.2f}°  ΔDec≈{dec_span:.2f}°",
+            fontsize=PANEL_TITLE_SIZE,
+        )
 
+    apply_presentation_figure(fig)
     fig.tight_layout()
     return fig
 

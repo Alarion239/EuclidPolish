@@ -132,6 +132,7 @@ export default function CatalogPage() {
           <CardBody>
             <PngFigure
               srcFor={(v) => `/view/catalog?view=${v ?? "positions"}`}
+              downloadSrc={(v) => `/view/catalog?view=${v ?? "positions"}&dpi=300`}
               toolbar={VIEWS}
               active={view}
               onActive={(k) => setView(k as View)}

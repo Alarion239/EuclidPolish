@@ -15,6 +15,13 @@ from euclid_polish.catalog.catalog_object import CatalogObject
 from euclid_polish.config import Config
 from euclid_polish.image.tfio import read_images, tfrecord_path
 from euclid_polish.visualization.methods import plot_star_positions
+from euclid_polish.visualization.presentation_style import (
+    LEGEND_SIZE,
+    NOTE_SIZE,
+    PANEL_TITLE_SIZE,
+    apply_presentation_figure,
+    presentation_rc,
+)
 from euclid_polish.web.helpers.sky_records import SUBSETS
 
 
@@ -118,13 +125,13 @@ def _saturation_cutoff(valid_mags, invalid_mags, bins):
 
 def _render_saturation_view(objects):
     """2×2 grid (one panel per band) of VIS-magnitude histograms split into
-    valid (green) and invalid/saturated (red), with a suggested per-band
+    valid (blue) and invalid/saturated (orange), with a suggested per-band
     oversaturation cutoff line. ``objects`` is a list of ``CatalogObject``."""
     band_names = [b.name for b in Config.BANDS]
     n = len(band_names)
     ncols = 2
     nrows = (n + ncols - 1) // ncols
-    fig, axes = plt.subplots(nrows, ncols, figsize=(11, 4.0 * nrows))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(15, 5.8 * nrows))
     axes = np.atleast_1d(axes).ravel()
 
     for ax, name in zip(axes, band_names, strict=False):
@@ -143,13 +150,13 @@ def _render_saturation_view(objects):
             ax.set_title(f"{name}")
             ax.text(0.5, 0.5, "no processed stars in this band",
                     ha="center", va="center", color="#888",
-                    transform=ax.transAxes)
+                    transform=ax.transAxes, fontsize=PANEL_TITLE_SIZE)
             ax.set_xticks([]); ax.set_yticks([])
             continue
 
         bins = np.linspace(min(combined), max(combined), 30)
         ax.hist([valid_mags, invalid_mags], bins=bins, stacked=True,
-                color=["#2e9e4f", "#d1453b"],
+                color=["#2378b5", "#d95f02"],
                 edgecolor="white", linewidth=0.4,
                 label=[f"valid (N={len(valid_mags)})",
                        f"invalid/saturated (N={len(invalid_mags)})"])
@@ -160,20 +167,22 @@ def _render_saturation_view(objects):
             ax.annotate(f"cutoff ≈ {cutoff:.2f}", xy=(cutoff, 0.96),
                         xycoords=("data", "axes fraction"),
                         xytext=(4, -4), textcoords="offset points",
-                        ha="left", va="top", fontsize=9, color="#222")
+                        ha="left", va="top", fontsize=NOTE_SIZE, color="#222")
 
         ax.set_title(name)
         ax.set_xlabel("VIS magnitude (AB)  · brighter ←")
-        ax.set_ylabel("count")
-        ax.legend(fontsize=8, loc="upper right")
+        ax.set_ylabel("Stars per bin")
+        ax.grid(axis="y", alpha=0.18)
+        ax.spines[["top", "right"]].set_visible(False)
+        ax.legend(fontsize=LEGEND_SIZE, loc="upper right", frameon=False)
 
     # Blank any unused panels (e.g. if BANDS isn't a multiple of ncols).
     for ax in axes[n:]:
         ax.set_visible(False)
 
-    fig.suptitle("Per-band saturation — valid (green) vs invalid/saturated (red); "
-                 "dashed line = suggested oversaturation cutoff", fontsize=11)
-    fig.tight_layout(rect=(0, 0, 1, 0.97))
+    fig.suptitle("Per-band catalog validity and saturation")
+    apply_presentation_figure(fig)
+    fig.tight_layout(rect=(0, 0, 1, 0.94))
     return fig
 
 
@@ -189,7 +198,8 @@ def _great_circle_arcmin(ra1, dec1, ra2, dec2):
 
 def _render_psf_clusters_png(output_dir: str | None,
                              psf_path: str | None,
-                             clusters_json: str | None = None) -> bytes:
+                             clusters_json: str | None = None,
+                             dpi: int = 110) -> bytes:
     """Local sky map of the ePSF-extraction clusters + per-cluster diameter.
 
     Centroid source, in preference order:
@@ -213,7 +223,6 @@ def _render_psf_clusters_png(output_dir: str | None,
     matplotlib.use("Agg")
 
     cra, cdec = [], []
-    source = None
     if clusters_json and os.path.isfile(clusters_json):
         try:
             with open(clusters_json) as f:
@@ -222,8 +231,6 @@ def _render_psf_clusters_png(output_dir: str | None,
                 ra, dec = float(c["ra"]), float(c["dec"])
                 if np.isfinite(ra) and np.isfinite(dec):
                     cra.append(ra); cdec.append(dec)
-            if cra:
-                source = "FASRC metadata JSON"
         except (OSError, ValueError, KeyError, TypeError):
             cra, cdec = [], []                     # corrupt → FITS fallback
     if not cra and psf_path and os.path.isfile(psf_path):
@@ -233,8 +240,6 @@ def _render_psf_clusters_png(output_dir: str | None,
                 dec = hdu.header.get("DEC")
                 if ra is not None and dec is not None:
                     cra.append(float(ra)); cdec.append(float(dec))
-        if cra:
-            source = "local ePSF FITS"
     if not cra:
         abort(404)
     cra, cdec = np.asarray(cra), np.asarray(cdec)
@@ -296,7 +301,7 @@ def _render_psf_clusters_png(output_dir: str | None,
     cmap = plt.get_cmap("tab20")
     ncols = min(n_regions, 2)
     nrows = (n_regions + ncols - 1) // ncols
-    fig, axes = plt.subplots(nrows, ncols, figsize=(7.5 * ncols, 5.4 * nrows),
+    fig, axes = plt.subplots(nrows, ncols, figsize=(9.2 * ncols, 6.8 * nrows),
                              squeeze=False)
     axes = axes.ravel()
     for r in range(n_regions):
@@ -307,12 +312,12 @@ def _render_psf_clusters_png(output_dir: str | None,
         # per-cluster text becomes unreadable soup, so annotate only sparse
         # regions and shrink the centroid markers on dense ones.
         annotate = len(ks) <= 60
-        x_size = 70 if annotate else 18
+        x_size = 90 if annotate else 24
         for k in ks:
             col = cmap(k % 20)
             mem = np.where(labels == k)[0]
             if len(mem):
-                ax.scatter(sra[mem], sdec[mem], s=6, color=col, alpha=0.55,
+                ax.scatter(sra[mem], sdec[mem], s=10, color=col, alpha=0.55,
                            linewidths=0)
             ax.scatter([cra[k]], [cdec[k]], marker="x", s=x_size,
                        color="black", linewidths=1.5 if annotate else 0.9,
@@ -322,31 +327,42 @@ def _render_psf_clusters_png(output_dir: str | None,
                        else f"{k}\nØ—")
                 ax.annotate(lbl, (cra[k], cdec[k]),
                             textcoords="offset points",
-                            xytext=(5, 4), fontsize=7, zorder=6)
+                            xytext=(6, 5), fontsize=NOTE_SIZE, zorder=6)
         ax.set_xlabel("RA (deg)"); ax.set_ylabel("Dec (deg)")
         ax.set_aspect(1.0 / max(0.05, np.cos(np.radians(dec0))))
         ax.invert_xaxis()                          # RA increases to the left
+        if len(ks) == 1 and not np.any(labels == ks[0]):
+            # Avoid Matplotlib's very broad singular-axis fallback for an
+            # isolated centroid with no assignable catalog members.
+            ax.set_xlim(cra[ks[0]] + 0.5, cra[ks[0]] - 0.5)
+            ax.set_ylim(cdec[ks[0]] - 0.5, cdec[ks[0]] + 0.5)
         ax.set_title(f"region {r + 1}: {len(ks)} cluster(s)")
         ax.grid(alpha=0.2)
     for ax in axes[n_regions:]:
         ax.set_visible(False)
 
     ds = [d for d in diam if d is not None]
-    summary = (f"{n_clusters} ePSF clusters in {n_regions} region(s)"
-               + (f"; angular diameter {min(ds):.1f}–{max(ds):.1f}′ "
-                  f"(median {float(np.median(ds)):.1f}′)"
-                  if ds else "; download the catalog to get diameters")
-               + (f"  ·  source: {source}" if source else ""))
-    fig.suptitle("PSF extraction clusters — " + summary, fontsize=11)
-    fig.tight_layout(rect=(0, 0, 1, 0.96))
+    summary = f"N = {n_clusters}  ·  regions = {n_regions}"
+    if ds:
+        summary += (
+            f"  ·  diameter = {min(ds):.1f}–{max(ds):.1f}′"
+            f"  ·  median = {float(np.median(ds)):.1f}′"
+        )
+    fig.suptitle("PSF extraction clusters")
+    fig.text(
+        0.5, 0.955, summary, ha="center", va="top",
+        fontsize=NOTE_SIZE, color="#4b5563",
+    )
+    apply_presentation_figure(fig)
+    fig.tight_layout(rect=(0, 0, 1, 0.90))
     buf = io.BytesIO()
-    fig.savefig(buf, dpi=110, bbox_inches="tight", format="png")
+    fig.savefig(buf, dpi=max(72, min(int(dpi), 600)), bbox_inches="tight", format="png")
     plt.close(fig)
     buf.seek(0)
     return buf.getvalue()
 
 
-def _render_catalog_view_png(view: str, output_dir: str) -> bytes:
+def _render_catalog_view_png(view: str, output_dir: str, dpi: int = 110) -> bytes:
     """Render a catalog visualization: positions, magnitude histogram, or
     per-band saturation (valid vs invalid)."""
     matplotlib.use("Agg")
@@ -357,24 +373,34 @@ def _render_catalog_view_png(view: str, output_dir: str) -> bytes:
     objects = CatalogObject.read(cat_path)
     if not objects:
         abort(404)
-    if view == "positions":
-        stars = [{"ra": o.ra, "dec": o.dec, "magnitude": o.magnitude,
-                  "corrupted": o.has_any("corrupted")} for o in objects]
-        fig = plot_star_positions(stars)
-    elif view == "magnitudes":
-        mags = [o.magnitude for o in objects if o.magnitude is not None]
-        fig, ax = plt.subplots(figsize=(6.5, 4.5))
-        ax.hist(mags, bins=40, color="#2a5db0", edgecolor="white")
-        ax.set_xlabel("VIS magnitude (AB)"); ax.set_ylabel("count")
-        ax.set_title(f"Catalog mag distribution  "
-                     f"(median = {float(np.median(mags)):.2f})")
-        fig.tight_layout()
-    elif view == "saturation":
-        fig = _render_saturation_view(objects)
-    else:
-        abort(400)
-    buf = io.BytesIO()
-    fig.savefig(buf, dpi=110, bbox_inches="tight", format="png")
-    plt.close(fig)
+    with presentation_rc():
+        if view == "positions":
+            stars = [{"ra": o.ra, "dec": o.dec, "magnitude": o.magnitude,
+                      "corrupted": o.has_any("corrupted")} for o in objects]
+            fig = plot_star_positions(stars)
+        elif view == "magnitudes":
+            mags = [o.magnitude for o in objects if o.magnitude is not None]
+            fig, ax = plt.subplots(figsize=(10, 6.5))
+            ax.hist(mags, bins=40, color="#2459a6", edgecolor="white", linewidth=0.7)
+            ax.set_xlabel("VIS magnitude (AB)")
+            ax.set_ylabel("Stars per bin")
+            ax.set_title(
+                "Catalog magnitude distribution"
+                f"  ·  median {float(np.median(mags)):.2f} AB",
+            )
+            ax.grid(axis="y", alpha=0.22)
+            ax.spines[["top", "right"]].set_visible(False)
+            apply_presentation_figure(fig)
+            fig.tight_layout()
+        elif view == "saturation":
+            fig = _render_saturation_view(objects)
+        else:
+            abort(400)
+        buf = io.BytesIO()
+        fig.savefig(
+            buf, dpi=max(72, min(int(dpi), 600)),
+            bbox_inches="tight", format="png",
+        )
+        plt.close(fig)
     buf.seek(0)
     return buf.getvalue()

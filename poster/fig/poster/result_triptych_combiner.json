@@ -1,0 +1,30 @@
+{
+  "source": "/Users/alarion239/Desktop/EuclidPolish/data/euclid_inference/cutouts/ra273.23_dec68.36/original_stack.fits",
+  "hubble_reference": "/Users/alarion239/Desktop/EuclidPolish/poster/fig/poster/result_hubble.png",
+  "combiner": "raw_incremental_minmeanmax_rbf",
+  "members": [
+    "145\u00b7psnr",
+    "149\u00b7psnr",
+    "150\u00b7psnr",
+    "152\u00b7psnr",
+    "153\u00b7psnr",
+    "160\u00b7psnr",
+    "161\u00b7psnr",
+    "162\u00b7psnr",
+    "163\u00b7psnr",
+    "164\u00b7psnr"
+  ],
+  "target_ra_deg": 273.2308875,
+  "target_dec_deg": 68.3636556,
+  "lr_shape": [
+    1024,
+    1024,
+    4
+  ],
+  "sr_shape": [
+    2048,
+    2048,
+    4
+  ],
+  "display": "per-panel asinh stretch, 0.5-99.5 percentile clip"
+}

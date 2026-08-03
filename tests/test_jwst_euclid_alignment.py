@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 import numpy as np
+import pytest
 
 from euclid_polish.config import Config
 from euclid_polish.web.helpers import jwst_euclid, viewer_data
@@ -70,7 +71,10 @@ def test_nexus_field_viewer_reads_saved_255_pixel_tiles(tmp_path, monkeypatch):
 
     assert meta["count"] == 1
     assert meta["tiers"][0]["label"] == "LR · Euclid · 255 px"
-    assert meta["objects"][0]["tiers"] == ["lr", "jwst"]
+    assert [tier["key"] for tier in meta["tiers"]] == [
+        "lr", "sr", "jwst", "jwst_blur",
+    ]
+    assert meta["objects"][0]["tiers"] == ["lr", "jwst", "jwst_blur"]
     assert euclid.shape == (255, 255, 1)
     assert jwst.shape == (850, 850, 1)
     assert jwst_meta["pixscale"] == 0.03
@@ -149,9 +153,11 @@ def test_nexus_field_viewer_exposes_registered_lr_and_sr(tmp_path, monkeypatch):
     lr, lr_meta = viewer_data._nexus_field_cube(0, "lr", {"field": identifier})
     sr, sr_meta = viewer_data._nexus_field_cube(0, "sr", {"field": identifier})
 
-    assert [tier["key"] for tier in meta["tiers"]] == ["lr", "sr", "jwst"]
-    assert meta["objects"][0]["tiers"] == ["lr", "sr", "jwst"]
-    assert meta["objects"][1]["tiers"] == ["lr", "sr", "jwst"]
+    assert [tier["key"] for tier in meta["tiers"]] == [
+        "lr", "sr", "jwst", "jwst_blur",
+    ]
+    assert meta["objects"][0]["tiers"] == ["lr", "sr", "jwst", "jwst_blur"]
+    assert meta["objects"][1]["tiers"] == ["lr", "sr", "jwst", "jwst_blur"]
     assert meta["transfer_groups"] == ["euclid", "jwst"]
     assert lr.shape == (255, 255, 4)
     assert lr_meta["bands"] == list(Config.LR_INPUT_BAND_NAMES)
@@ -161,6 +167,78 @@ def test_nexus_field_viewer_exposes_registered_lr_and_sr(tmp_path, monkeypatch):
     assert sr_meta["pixscale"] == 0.025
     assert "display_scale" not in sr_meta
     assert sr_meta["transfer_group"] == "euclid"
+
+
+def test_saved_pair_viewer_exposes_sr_pixel_blurred_jwst(monkeypatch):
+    impulse = np.zeros((21, 21, 1), dtype=np.float32)
+    impulse[10, 10, 0] = 1.0
+    manifest = {
+        "field_id": "saved-field",
+        "target_name": "Test target",
+        "jwst_bands": [{"filter": "F200W"}],
+        "inference": {"pixel_scale_arcsec": 0.05},
+    }
+    monkeypatch.setattr(
+        viewer_data, "_saved_jwst_euclid_pairs", lambda: [(manifest, "/unused")],
+    )
+    monkeypatch.setattr(
+        viewer_data,
+        "_jwst_colour_cube",
+        lambda *_args: (impulse, {
+            "label": "JWST colour", "pixscale": 0.03, "display_scale": 3000.0,
+            "bands": ["JWST"], "transfer_group": "jwst",
+        }),
+    )
+
+    meta = viewer_data._jwst_euclid_meta({})
+    blurred, info = viewer_data._jwst_euclid_cube(0, "jwst_blur", {})
+
+    assert [tier["key"] for tier in meta["tiers"]] == [
+        "lr", "sr", "jwst", "jwst_blur",
+    ]
+    assert meta["objects"][0]["tiers"] == ["lr", "sr", "jwst", "jwst_blur"]
+    assert blurred[10, 10, 0] < impulse[10, 10, 0]
+    assert info["pixscale"] == 0.03
+    assert info["display_scale"] == 3000.0
+    assert 'FWHM 0.050" (1 SR px)' in info["label"]
+
+
+def test_nexus_jwst_blur_uses_one_sr_pixel_fwhm(tmp_path, monkeypatch):
+    from astropy.io import fits
+
+    monkeypatch.setattr(Config, "DATA_DIR", str(tmp_path / "data"))
+    identifier = jwst_euclid.nexus_field_id("F444W")
+    root = jwst_euclid.nexus_field_root() / identifier / "tiles"
+    root.mkdir(parents=True)
+    impulse = np.zeros((21, 21), dtype=np.float32)
+    impulse[10, 10] = 1.0
+    fits.PrimaryHDU(impulse).writeto(root / "jwst.fits")
+    manifest = {
+        "field_id": identifier, "filter": "F444W", "count": 1,
+        "tiles": [{
+            "ra_deg": 268.4625, "dec_deg": 65.19917,
+            "euclid_file": "tiles/jwst.fits", "jwst_file": "tiles/jwst.fits",
+            "jwst_metadata": {"pixel_scale_arcsec": [0.06, 0.06]},
+            "inference": {"pixel_scale_arcsec": 0.025},
+        }],
+    }
+    (root.parent / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    native, native_meta = viewer_data._nexus_field_cube(0, "jwst", {"field": identifier})
+    blurred, blurred_meta = viewer_data._nexus_field_cube(
+        0, "jwst_blur", {"field": identifier},
+    )
+
+    sigma_native_pixels = 0.025 / 0.06 / (2.0 * np.sqrt(2.0 * np.log(2.0)))
+    expected_peak = 1.0 / (
+        1.0 + 2.0 * np.exp(-0.5 / sigma_native_pixels**2)
+    ) ** 2
+    assert native[10, 10, 0] == 1.0
+    assert blurred[10, 10, 0] == pytest.approx(expected_peak, rel=1e-5)
+    assert blurred.sum() == pytest.approx(native.sum(), rel=1e-6)
+    assert blurred_meta["display_scale"] == native_meta["display_scale"]
+    assert 'FWHM 0.025" (1 SR px)' in blurred_meta["label"]
+    assert blurred_meta["pixscale"] == 0.06
 
 
 def test_nexus_starfull_inference_reuses_current_and_replaces_stale_sr(

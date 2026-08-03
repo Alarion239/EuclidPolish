@@ -309,22 +309,29 @@ export function Gallery({ items, thumb = 150, empty }: { items: GalleryItem[]; t
  *  themes), with an optional chip toolbar and a reload nonce so `?fresh=1`
  *  re-renders. `srcFor(active)` builds the URL for the selected toolbar key. */
 export function PngFigure(
-  { srcFor, toolbar, active, onActive, alt, minHeight = 220 }: {
+  { srcFor, toolbar, active, onActive, downloadSrc, alt, minHeight = 220 }: {
     srcFor: (active?: string) => string;
     toolbar?: { key: string; label: string }[];
     active?: string; onActive?: (key: string) => void;
+    downloadSrc?: (active?: string) => string;
     alt?: string; minHeight?: number;
   },
 ) {
   const src = srcFor(active);
   return (
     <div className="ui-figure">
-      {toolbar && toolbar.length > 0 && (
+      {((toolbar && toolbar.length > 0) || downloadSrc) && (
         <div className="ui-figure__bar">
-          {toolbar.map((t) => (
+          {(toolbar ?? []).map((t) => (
             <button key={t.key} className="ui-chip" data-on={t.key === active}
               onClick={() => onActive?.(t.key)}>{t.label}</button>
           ))}
+          {downloadSrc && (
+            <a className="ui-btn ui-btn--sm ui-figure__download"
+              href={downloadSrc(active)} download>
+              Download 300 dpi
+            </a>
+          )}
         </div>
       )}
       <div className="ui-figure__paper" style={{ minHeight }}>

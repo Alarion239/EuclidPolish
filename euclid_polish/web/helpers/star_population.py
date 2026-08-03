@@ -1372,11 +1372,13 @@ def _fit_star_population_latent() -> dict[str, Any]:
             "label": key.replace("_", " "),
             "unit": "AB mag",
             "density_unit": "probability density",
-            "observed_label": "Euclid error-aware latent posterior",
+            "observed_label": "Estimated true colours of observed stars",
             "dirty_observed": dirty_hist.get("observed", [0.0] * 24),
-            "dirty_observed_label": "measured MER colors",
+            "dirty_observed_label": "Raw Euclid catalogue colours",
             "posterior_predictive": predictive_hist.get("observed", [0.0] * 24),
-            "posterior_predictive_label": "latent posterior convolved with Euclid errors",
+            "posterior_predictive_label": (
+                "Estimated colours with simulated Euclid noise"
+            ),
             "statistics": latent_stats,
             "dirty_statistics": dirty_stats,
             "posterior_predictive_statistics": _weighted_color_summary(

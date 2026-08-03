@@ -1053,7 +1053,27 @@ function CosmosEuclidDensityPanel({ fit }: { fit: CosmosEuclidFit }) {
   const median = diagnostics.median_radius_by_magnitude;
   const surface = diagnostics.surface_brightness;
   return (
-    <div className="parameter-atlas">
+    <>
+      <div className="publication-atlas-export">
+        <div>
+          <div className="eyebrow">presentation figure</div>
+          <strong>COSMOS × Euclid × TNG50 population atlas</strong>
+          <span>Magnitude, redshift, and angular-radius density in one fixed layout.</span>
+        </div>
+        <div className="publication-atlas-export__actions">
+          <a className="ui-btn ui-btn--primary"
+            href="/view/population-atlas?format=png&dpi=300" download>
+            Download PNG
+          </a>
+          <a className="ui-btn" href="/view/population-atlas?format=pdf" download>
+            PDF
+          </a>
+          <a className="ui-btn" href="/view/population-atlas?format=svg" download>
+            SVG
+          </a>
+        </div>
+      </div>
+      <div className="parameter-atlas">
       <Card className="parameter-card">
         <CardHead title="Apparent-magnitude counts"
           sub="one latent population · COSMOS and Euclid observation spaces" />
@@ -1227,7 +1247,8 @@ function CosmosEuclidDensityPanel({ fit }: { fit: CosmosEuclidFit }) {
             }))} />
         </CardBody>
       </Card>
-    </div>
+      </div>
+    </>
   );
 }
 
@@ -1411,6 +1432,25 @@ function StarCalibrationControls({ api, onChanged }: {
         <p className="calibration-plain-note">
           Gaia supplies the bright point-source side and latent colour/temperature population; Euclid point-like probabilities supply the faint count shape and weighted validation statistics.
         </p>
+        {diagnostics && (
+          <div className="publication-atlas-export">
+            <div>
+              <div className="eyebrow">presentation figure</div>
+              <strong>Gaia × Euclid stellar population calibration</strong>
+              <span>Per-cone density and fitted, inferred, simulated-noise, and catalogue stellar colours.</span>
+            </div>
+            <div className="publication-atlas-export__actions">
+              <a className="ui-btn ui-btn--primary"
+                href="/view/star-population-calibration?format=png&dpi=300" download>
+                Download PNG
+              </a>
+              <a className="ui-btn"
+                href="/view/star-population-calibration?format=pdf" download>PDF</a>
+              <a className="ui-btn"
+                href="/view/star-population-calibration?format=svg" download>SVG</a>
+            </div>
+          </div>
+        )}
         <JobProgressView job={query.job} error={query.error} />
         <JobProgressView job={activate.job} error={activate.error} />
         {diagnostics && (
@@ -1458,9 +1498,7 @@ function StarCalibrationControls({ api, onChanged }: {
                   <CardHead title={item.label}
                     sub={magnitudeCounts
                       ? "fitted prior × Gaia bright × probability-weighted Euclid faint"
-                    : item.observed_label
-                      ? `intrinsic locus: generated true colours × ${item.observed_label}`
-                      : "fitted synthetic prior × same-footprint observed stars"} />
+                    : "Fitted, inferred, noise-simulated, and catalogue stellar colours"} />
                 <CardBody>
                   <AdjustablePlot boundsLabel={item.label}
                     xDomain={domain(item.x)}
@@ -1496,9 +1534,9 @@ function StarCalibrationControls({ api, onChanged }: {
                     }] : undefined}
                     aspect={0.62} />
                   <Legend items={[
-                    { color: categorical(0), label: "fitted synthetic prior", histogram: true, filled: true },
+                    { color: categorical(0), label: "Fitted true-colour population", histogram: true, filled: true },
                     { color: categorical(2),
-                      label: item.observed_label ?? "same-footprint Gaia / matched Euclid",
+                      label: "Estimated true colours of observed stars",
                       histogram: true, hatch: true, dash: true },
                     ...(magnitudeCounts && gaiaBright.length ? [{
                       color: categorical(4),
@@ -1512,12 +1550,12 @@ function StarCalibrationControls({ api, onChanged }: {
                     }] : []),
                     ...(!magnitudeCounts && dirtyObserved.length ? [{
                       color: categorical(5),
-                      label: item.dirty_observed_label ?? "observed prediction: measured MER colours",
+                      label: "Raw Euclid catalogue colours",
                       histogram: true, hatch: true, dash: true,
                     }] : []),
                     ...(!magnitudeCounts && posteriorPredictive.length ? [{
                       color: categorical(4),
-                      label: item.posterior_predictive_label ?? "observed prediction",
+                      label: "Estimated colours with simulated Euclid noise",
                       histogram: true, filled: true,
                     }] : []),
                   ]} />
@@ -1535,7 +1573,7 @@ function StarCalibrationControls({ api, onChanged }: {
                   )}
                   {dirtyStats && (
                     <div className="calibration-status-grid" style={{ marginTop: "var(--s2)" }}>
-                      <div><span className="eyebrow">observed prediction mean ± sd</span>
+                      <div><span className="eyebrow">simulated-noise mean ± sd</span>
                         <strong>{format(dirtyStats.mean)} ± {format(dirtyStats.std)}</strong></div>
                       <div><span className="eyebrow">observed p16 / p50 / p84</span>
                         <strong>{format(dirtyStats.p16)} / {format(dirtyStats.p50)} / {format(dirtyStats.p84)}</strong></div>

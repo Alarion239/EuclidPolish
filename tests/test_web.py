@@ -179,6 +179,72 @@ def test_cutout_viewer_exports_capture_all_visible_frames():
     assert "function resetTransferSettings()" in source
     assert "function copiedTransferSettings()" in source
     assert "const transferGroups = transferGroupKeys();" in source
+    assert 'text: "⬇ Figure"' in source
+    assert "function publicationFigureCanvas()" in source
+    assert "function publicationCrop(fr)" in source
+    assert "let publicationRegion = null" in source
+    assert "publicationTransferSummary" not in source
+    assert "PUBLICATION_GOLD" not in source
+    assert "panelHeader = 64" in source
+    assert "panelFooter = 184" in source
+    assert 'return "Euclid Image"' in source
+    assert 'return "Super-resolved Image"' in source
+    assert "function drawPublicationHeatbar" in source
+    assert 'asinh knee: ${Math.round(info.knee)} e⁻' in source
+    assert 'input-equivalent signal (e⁻)' in source
+    assert "cropFraction < 0.5" in source
+    assert "crop.angularSide.toFixed" in source
+    assert "exportFigure()" in source
+
+
+def test_population_atlas_download_route(client, monkeypatch):
+    from euclid_polish.web.routes import population_comparison as route
+
+    monkeypatch.setattr(route, "read_cosmos_euclid_fit", lambda: {"diagnostics": {}})
+    monkeypatch.setattr(
+        route,
+        "render_population_atlas",
+        lambda _fit, output_format, dpi: b"%PDF-atlas"
+        if output_format == "pdf"
+        else b"<svg/>",
+    )
+
+    response = client.get("/view/population-atlas?format=pdf")
+    assert response.status_code == 200
+    assert response.mimetype == "application/pdf"
+    assert response.data.startswith(b"%PDF")
+    assert "euclidpolish_population_atlas.pdf" in response.headers["Content-Disposition"]
+    assert client.get("/view/population-atlas?format=eps").status_code == 400
+
+
+def test_star_population_calibration_download_route(client, monkeypatch):
+    from euclid_polish.web.routes import population_comparison as route
+
+    monkeypatch.setattr(
+        route, "star_state",
+        lambda: {"active": {"diagnostics": {}}, "candidate": None},
+    )
+    monkeypatch.setattr(
+        route,
+        "render_star_population_calibration",
+        lambda _fit, output_format, dpi: b"%PDF-stars"
+        if output_format == "pdf"
+        else b"\x89PNG\r\n\x1a\n-stars",
+    )
+
+    response = client.get("/view/star-population-calibration?format=pdf")
+    assert response.status_code == 200
+    assert response.mimetype == "application/pdf"
+    assert "attachment" in response.headers["Content-Disposition"]
+    inline = client.get(
+        "/view/star-population-calibration?format=png&inline=1&dpi=150"
+    )
+    assert inline.status_code == 200
+    assert inline.mimetype == "image/png"
+    assert "attachment" not in inline.headers["Content-Disposition"]
+    assert client.get(
+        "/view/star-population-calibration?format=eps"
+    ).status_code == 400
 
 
 def test_viewer_meta_unknown_collection_404(client):
@@ -850,6 +916,26 @@ def test_view_catalog_unknown_view_400(client):
     r = client.get("/view/catalog?view=bogus")
     # 400 (bad view) when a catalog is present; 404 (no catalog) is also acceptable.
     assert r.status_code in (400, 404)
+
+
+def test_cached_catalog_directory_never_fetches(monkeypatch, tmp_path):
+    from euclid_polish.web.helpers import status
+
+    cached = tmp_path / "euclid_stars" / "stars.csv"
+    cached.parent.mkdir()
+    cached.write_text("id,ra,dec\n")
+    monkeypatch.setattr(
+        status, "_fasrc_catalog_remote_path", lambda: "/remote/stars.csv",
+    )
+    monkeypatch.setattr(status, "_local_path_for", lambda _remote: str(cached))
+    monkeypatch.setattr(
+        status._fasrc_fetcher, "fetch_one_file",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("cache-only helper must not fetch")
+        ),
+    )
+
+    assert status._cached_fasrc_catalog_dir() == str(cached.parent)
 
 
 def test_api_sky_totals_returns_json(client):

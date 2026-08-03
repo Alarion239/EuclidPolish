@@ -8,6 +8,12 @@ owns the FASRC SSH gate + the root redirect.
 """
 from __future__ import annotations
 
+import argparse
+import contextlib
+import os
+import os as _os
+import time
+
 # Force the non-interactive matplotlib backend BEFORE any submodule imports
 # pyplot. The job registry plots from worker threads; macOS's default GUI
 # backend only works on the main thread and would otherwise crash with
@@ -15,12 +21,6 @@ from __future__ import annotations
 import matplotlib
 
 matplotlib.use("Agg")
-
-import argparse
-import contextlib
-import os
-import os as _os
-import time
 
 from flask import (
     Flask,
@@ -50,8 +50,8 @@ from euclid_polish.web.routes import (
     lens_isolation,
     lensfinder,
     model,
-    poster,
     population_comparison,
+    poster,
     psfs,
     sky,
     tng,
@@ -164,6 +164,8 @@ def create_app() -> Flask:
         "/inference/",           # local recache/reapply jobs reuse archive data
         "/api/population-comparison",
         "/population-comparison",
+        "/view/",                # cached, read-only presentation/diagnostic PNGs
+        "/api/vis/",             # local data/vis gallery metadata
         "/eval-files/",          # serve already-pulled PNG/FITS offline
         "/viewer/",              # unified cutout viewer reads local caches
         "/lens-isolation",       # additive experiment status works offline

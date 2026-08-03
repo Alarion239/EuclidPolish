@@ -17,11 +17,13 @@ from PIL import Image
 from euclid_polish.config import BandConfig, Config
 from euclid_polish.psf import PSF
 from euclid_polish.psf.psf_library import load_all_band_psfs
-from euclid_polish.web.helpers._const import _CUTOUT_FNAME_RE
-from euclid_polish.web.helpers.status import (
-    _cached_fasrc_psf_dir,
-    _fasrc_psf_dir,
+from euclid_polish.visualization.presentation_style import (
+    AXIS_LABEL_SIZE,
+    TICK_LABEL_SIZE,
+    apply_presentation_figure,
 )
+from euclid_polish.web.helpers._const import _CUTOUT_FNAME_RE
+from euclid_polish.web.helpers.status import _cached_fasrc_psf_dir
 
 
 def _resolve_cutout_path(band_name: str, filename: str,
@@ -204,13 +206,13 @@ def _fits_file_info(path: str) -> dict[str, Any]:
     }
 
 
-def _render_psf_panel_png(band: str | None) -> bytes:
+def _render_psf_panel_png(band: str | None, dpi: int = 110) -> bytes:
     """Render one band (or all four) on a log-stretch panel as PNG bytes."""
     matplotlib.use("Agg")
 
     # Render the FASRC-extracted PSFs (pulled to the local cache), not a
     # stale local copy. None → nothing on FASRC yet.
-    psf_dir = _fasrc_psf_dir()
+    psf_dir = _cached_fasrc_psf_dir()
     if not psf_dir:
         abort(404)
     psfs = load_all_band_psfs(psf_dir=psf_dir)
@@ -223,18 +225,38 @@ def _render_psf_panel_png(band: str | None) -> bytes:
     if not names:
         abort(404)
     n = len(names)
-    fig, axes = plt.subplots(1, n, figsize=(4 * n, 4.2), squeeze=False)
+    logged = {
+        name: np.log10(np.clip(psfs[name].data, 1e-8, None))
+        for name in names
+    }
+    vmin = min(float(np.nanmin(data)) for data in logged.values())
+    vmax = max(float(np.nanmax(data)) for data in logged.values())
+    fig, axes = plt.subplots(
+        1, n, figsize=(5.2 * n, 5.8), squeeze=False,
+        layout="constrained",
+    )
+    image = None
     for ax, name in zip(axes[0], names, strict=False):
         p = psfs[name]
-        d = np.clip(p.data, 1e-8, None)
-        ax.imshow(np.log10(d), cmap="viridis", origin="lower",
-                  interpolation="nearest")
-        ax.set_title(f"{name}  {p.data.shape[0]}×{p.data.shape[1]}  "
-                     f"@ {p.pixel_scale:.3f}\"/pix", fontsize=10)
+        image = ax.imshow(
+            logged[name], cmap="viridis", origin="lower",
+            interpolation="nearest", vmin=vmin, vmax=vmax,
+        )
+        ax.set_title(
+            f"{name}\n{p.data.shape[0]}×{p.data.shape[1]} pixels"
+            f" · {p.pixel_scale:.3f}″ pixel⁻¹",
+            pad=12,
+        )
         ax.set_xticks([]); ax.set_yticks([])
-    fig.tight_layout()
+    colorbar = fig.colorbar(image, ax=axes[0].tolist(), shrink=0.82, pad=0.02)
+    colorbar.set_label("log₁₀ normalized PSF intensity", fontsize=AXIS_LABEL_SIZE)
+    colorbar.ax.tick_params(labelsize=TICK_LABEL_SIZE)
+    apply_presentation_figure(fig)
     buf = io.BytesIO()
-    fig.savefig(buf, dpi=110, bbox_inches="tight", format="png")
+    fig.savefig(
+        buf, dpi=max(72, min(int(dpi), 600)),
+        bbox_inches="tight", format="png",
+    )
     plt.close(fig)
     buf.seek(0)
     return buf.getvalue()

@@ -16,6 +16,7 @@ from euclid_polish.photometry import (
     pixel_solid_angle_sr,
     uJy_to_electrons,
 )
+from euclid_polish.skirt import image as skirt_image
 from euclid_polish.skirt.image import (
     block_mean,
     measure_halflight_radius_px,
@@ -333,6 +334,59 @@ def test_measure_halflight_radius_empty_is_nan():
     assert math.isnan(measure_halflight_radius_px(np.zeros((10, 10))))
     # negatives don't count as light
     assert math.isnan(measure_halflight_radius_px(-np.ones((10, 10))))
+
+
+def _fresh_radius_grid_cache(monkeypatch, *, max_bytes, max_seen=16):
+    monkeypatch.setattr(
+        skirt_image, "_RADIUS_INT_GRID",
+        type(skirt_image._RADIUS_INT_GRID)(),
+    )
+    monkeypatch.setattr(
+        skirt_image, "_RADIUS_INT_GRID_SEEN",
+        type(skirt_image._RADIUS_INT_GRID_SEEN)(),
+    )
+    monkeypatch.setattr(skirt_image, "_RADIUS_INT_GRID_BYTES", 0)
+    monkeypatch.setattr(skirt_image, "_RADIUS_INT_GRID_MAX_BYTES", max_bytes)
+    monkeypatch.setattr(
+        skirt_image, "_RADIUS_INT_GRID_SEEN_MAX_SHAPES", max_seen,
+    )
+
+
+def test_radius_grid_cache_is_byte_bounded_and_reuses_hot_shape(monkeypatch):
+    _fresh_radius_grid_cache(monkeypatch, max_bytes=5_000, max_seen=4)
+
+    first = skirt_image.radius_int_grid((16, 16))
+    assert not skirt_image._RADIUS_INT_GRID
+    second = skirt_image.radius_int_grid((16, 16))
+    assert np.array_equal(first, second)
+    assert second.nbytes == skirt_image._RADIUS_INT_GRID_BYTES
+    assert skirt_image.radius_int_grid((16, 16)) is second
+
+    # Reused shapes enter the LRU and force byte-based eviction. One-off shapes
+    # only enter the small admission-history set, which is bounded separately.
+    for side in range(17, 31):
+        skirt_image.radius_int_grid((side, side))
+        skirt_image.radius_int_grid((side, side))
+    for side in range(31, 50):
+        skirt_image.radius_int_grid((side, side))
+
+    assert skirt_image._RADIUS_INT_GRID_BYTES <= 5_000
+    assert sum(
+        grid.nbytes for grid in skirt_image._RADIUS_INT_GRID.values()
+    ) == skirt_image._RADIUS_INT_GRID_BYTES
+    assert len(skirt_image._RADIUS_INT_GRID_SEEN) <= 4
+
+
+def test_radius_grid_larger_than_budget_is_never_retained(monkeypatch):
+    _fresh_radius_grid_cache(monkeypatch, max_bytes=1_024)
+
+    expected = skirt_image.radius_int_grid((16, 16))
+    actual = skirt_image.radius_int_grid((16, 16))
+
+    assert np.array_equal(actual, expected)
+    assert actual.nbytes > skirt_image._RADIUS_INT_GRID_MAX_BYTES
+    assert not skirt_image._RADIUS_INT_GRID
+    assert skirt_image._RADIUS_INT_GRID_BYTES == 0
 
 
 def test_rebin_for_target_size_geometry():

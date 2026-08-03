@@ -9,6 +9,8 @@ assign a distance or redshift, or convert into detector-specific units.
 
 from __future__ import annotations
 
+from collections import OrderedDict
+
 import cv2
 import numpy as np
 from astropy.io import fits
@@ -152,19 +154,58 @@ def rotate_arbitrary(
     return out.astype(np.float32)
 
 
-_RADIUS_INT_GRID: dict[tuple[int, int], np.ndarray] = {}
+# Radius grids are expensive enough to cache for repeated native atlas shapes,
+# but continuous TNG scaling creates nearly one unique output shape per trial.
+# An unbounded shape -> grid dictionary therefore retained tens of MB per field
+# in every generation worker.  Admit a shape only after its second use and cap
+# retained arrays by bytes, not entry count (one large grid can dwarf hundreds
+# of small ones).
+_RADIUS_INT_GRID_MAX_BYTES = 64 * 1024 * 1024
+_RADIUS_INT_GRID_SEEN_MAX_SHAPES = 4096
+_RADIUS_INT_GRID: OrderedDict[tuple[int, int], np.ndarray] = OrderedDict()
+_RADIUS_INT_GRID_SEEN: OrderedDict[tuple[int, int], None] = OrderedDict()
+_RADIUS_INT_GRID_BYTES = 0
 
 
 def radius_int_grid(shape: tuple[int, int]) -> np.ndarray:
-    """Cached integer-radius grid measured from the geometric image centre."""
-    grid = _RADIUS_INT_GRID.get(shape)
-    if grid is None:
-        height, width = shape
-        cy, cx = (height - 1) / 2.0, (width - 1) / 2.0
-        yy = np.arange(height, dtype=np.float64)[:, None] - cy
-        xx = np.arange(width, dtype=np.float64)[None, :] - cx
-        grid = np.sqrt(yy * yy + xx * xx).astype(np.int64)
-        _RADIUS_INT_GRID[shape] = grid
+    """Integer-radius grid with bounded reuse for recurring image shapes.
+
+    First-use shapes are returned without caching.  A second request admits
+    the grid to a byte-limited LRU, which keeps the repeatedly used 1600-square
+    native atlas grid hot while one-off continuously scaled stamp dimensions
+    are released normally.  Grids larger than the complete cache budget are
+    never retained.
+    """
+    global _RADIUS_INT_GRID_BYTES
+    key = (int(shape[0]), int(shape[1]))
+    grid = _RADIUS_INT_GRID.pop(key, None)
+    if grid is not None:
+        _RADIUS_INT_GRID[key] = grid
+        return grid
+
+    height, width = key
+    cy, cx = (height - 1) / 2.0, (width - 1) / 2.0
+    yy = np.arange(height, dtype=np.float64)[:, None] - cy
+    xx = np.arange(width, dtype=np.float64)[None, :] - cx
+    grid = np.sqrt(yy * yy + xx * xx).astype(np.int64)
+
+    if grid.nbytes > _RADIUS_INT_GRID_MAX_BYTES:
+        return grid
+    if key not in _RADIUS_INT_GRID_SEEN:
+        _RADIUS_INT_GRID_SEEN[key] = None
+        if len(_RADIUS_INT_GRID_SEEN) > _RADIUS_INT_GRID_SEEN_MAX_SHAPES:
+            _RADIUS_INT_GRID_SEEN.popitem(last=False)
+        return grid
+
+    _RADIUS_INT_GRID_SEEN.pop(key, None)
+    while (
+        _RADIUS_INT_GRID
+        and _RADIUS_INT_GRID_BYTES + grid.nbytes > _RADIUS_INT_GRID_MAX_BYTES
+    ):
+        _, evicted = _RADIUS_INT_GRID.popitem(last=False)
+        _RADIUS_INT_GRID_BYTES -= int(evicted.nbytes)
+    _RADIUS_INT_GRID[key] = grid
+    _RADIUS_INT_GRID_BYTES += int(grid.nbytes)
     return grid
 
 

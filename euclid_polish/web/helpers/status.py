@@ -44,6 +44,16 @@ def _fasrc_catalog_dir(force: bool = True) -> str | None:
     return os.path.dirname(res.local_path)
 
 
+def _cached_fasrc_catalog_dir() -> str | None:
+    """Directory of the already-synchronised stellar catalog, if present.
+
+    Presentation renders are cache-only: opening a figure page must not turn
+    into an implicit rsync or require a live FASRC connection.
+    """
+    local = _local_path_for(_fasrc_catalog_remote_path())
+    return os.path.dirname(local) if os.path.isfile(local) else None
+
+
 def _valid_4band_stars(force: bool = False):
     """Stars valid in ALL 4 bands at ONE common cutout size, from the FASRC
     ``stars.csv``. Returns ``(size, [star_id, ...])`` (ids sorted) for the

@@ -1,11 +1,12 @@
 """Routes for the field-statistics and population-comparison workspace."""
 from __future__ import annotations
 
+import io
 import subprocess
 import sys
 from pathlib import Path
 
-from flask import jsonify, request
+from flask import abort, jsonify, request, send_file
 
 from euclid_polish.web import euclid_session, fasrc_fetcher, job_config
 from euclid_polish.web.helpers.paths import _sky_records_remote_dir
@@ -30,6 +31,10 @@ from euclid_polish.web.helpers.population_comparison import (
     read_cosmos_euclid_fit,
     refresh_cached_euclid_population_multi,
     refresh_population_comparison,
+)
+from euclid_polish.web.helpers.publication_figures import (
+    render_population_atlas,
+    render_star_population_calibration,
 )
 from euclid_polish.web.helpers.star_population import (
     fit_star_population,
@@ -96,6 +101,65 @@ def _fit_and_evaluate_cached_cones(
 
 
 def register(app):
+    def figure_response(payload: bytes, output_format: str, stem: str):
+        mimetype = {
+            "png": "image/png",
+            "pdf": "application/pdf",
+            "svg": "image/svg+xml",
+        }[output_format]
+        inline = request.args.get("inline", "").strip().lower() in {
+            "1", "true", "yes", "on",
+        }
+        return send_file(
+            io.BytesIO(payload),
+            mimetype=mimetype,
+            as_attachment=not inline,
+            download_name=f"{stem}.{output_format}",
+            max_age=0,
+        )
+
+    @app.route("/view/population-atlas")
+    def view_population_atlas():
+        """Download the reviewed joint population diagnostics as one figure."""
+        fit = read_cosmos_euclid_fit()
+        if fit is None:
+            abort(404)
+        output_format = (request.args.get("format") or "png").strip().lower()
+        if output_format not in {"png", "pdf", "svg"}:
+            abort(400)
+        try:
+            dpi = int(request.args.get("dpi", "300"))
+            payload = render_population_atlas(
+                fit, output_format=output_format, dpi=dpi,
+            )
+        except (TypeError, ValueError):
+            abort(400)
+        return figure_response(
+            payload, output_format, "euclidpolish_population_atlas",
+        )
+
+    @app.route("/view/star-population-calibration")
+    def view_star_population_calibration():
+        """Render the reviewed Gaia × Euclid stellar-prior diagnostics."""
+        state = star_state()
+        calibration = state.get("active") or state.get("candidate")
+        if not calibration:
+            abort(404)
+        output_format = (request.args.get("format") or "png").strip().lower()
+        if output_format not in {"png", "pdf", "svg"}:
+            abort(400)
+        try:
+            dpi = int(request.args.get("dpi", "300"))
+            payload = render_star_population_calibration(
+                calibration, output_format=output_format, dpi=dpi,
+            )
+        except (TypeError, ValueError):
+            abort(400)
+        return figure_response(
+            payload, output_format,
+            "euclidpolish_star_population_calibration",
+        )
+
     @app.route("/api/population-comparison")
     def api_population_comparison():
         comparison = read_comparison()

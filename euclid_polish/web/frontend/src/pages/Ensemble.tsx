@@ -1764,7 +1764,8 @@ export function CombinerCard(
 }
 
 /* ── disagreement viewer + member panel ──────────────────────────────────────
-   The tier row is trimmed to LR · SR (mean) · combiner · HR · Movie. The 22
+   The tier row is trimmed to LR · SR (primary combiner) · alternate combiner
+   · HR · Movie. The 22
    individual member SRs live here instead — a searchable, sortable panel that
    (a) toggles a member's SR into the viewer as a frame, and (b) selects the
    member SUBSET the disagreement movie decomposes (PCA recomputed on the fly,
@@ -1833,7 +1834,7 @@ export function DisagreementCard(
 
   const csv = (s: Set<number>) => [...s].sort((a, b) => a - b).join(",");
   // Map the selection onto the viewer, preserving the user's base chip picks
-  // (lr/sr/comb/hr): 2+ → the movie over the subset; 1 → that member's still;
+  // (lr/sr/alternate combiner/hr): 2+ → the movie over the subset; 1 → that member's still;
   // 0 → base only.
   const apply = useCallback((sel: Set<number>) => {
     const api = apiRef.current;
@@ -1870,7 +1871,7 @@ export function DisagreementCard(
   return (
     <Card>
       <CardHead title="Disagreement viewer"
-        sub={`LR · mean · mean+std RBF · min+max RBF · stacked RBF · ${targetLabel} · movie — pick members to see where those reconstructions disagree`} />
+        sub={`LR · SR (joint RBF combiner) · frozen-block RBF · ${targetLabel} · movie — pick members to see where those reconstructions disagree`} />
       <CardBody>
         <CutoutViewer collection={collection} params={collection === "ensemble" ? { mode } : {}}
           onReady={(api) => { apiRef.current = api; }} />
