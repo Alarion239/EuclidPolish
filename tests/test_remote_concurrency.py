@@ -81,3 +81,27 @@ def test_run_respects_max_concurrency(monkeypatch):
 
     # The bounded semaphore must never let more than max_concurrency run.
     assert peak() <= 2
+
+
+def test_write_text_streams_large_body_over_stdin(monkeypatch):
+    session = _make_session(max_concurrency=1)
+    captured = {}
+    body = "fitted-population-json:" + "x" * 50_000
+
+    def fake_run(args, **kwargs):
+        captured["args"] = args
+        captured["input"] = kwargs.get("input")
+        return _FakeCompleted()
+
+    monkeypatch.setattr("euclid_polish.web.remote.subprocess.run", fake_run)
+
+    rc, _out, _err = session.write_text(
+        "/remote/logs/job.sh", body, executable=True,
+    )
+
+    assert rc == 0
+    assert captured["input"] == body.encode("utf-8")
+    remote_command = captured["args"][-1]
+    assert body not in remote_command
+    assert "job.sh.tmp" in remote_command
+    assert "chmod +x" in remote_command

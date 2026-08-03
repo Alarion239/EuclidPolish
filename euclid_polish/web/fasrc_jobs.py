@@ -432,14 +432,32 @@ def submit_sbatch_script(
                 "for NFS to catch up, then resubmit.")}
 
     remote_script = f"{cfg.repo_path}/{built['script']}"
-    write_cmd = (
-        f"mkdir -p {cfg.repo_path}/{os.path.dirname(built['script'])} && "
-        f"cat > {remote_script} <<'{_HEREDOC_EOF}'\n"
-        f"{built['body']}"
-        f"{_HEREDOC_EOF}\n"
-        f"chmod +x {remote_script}"
+    remote_script_dir = (
+        f"{cfg.repo_path}/{os.path.dirname(built['script'])}"
     )
-    rc, _out, err = ssh.run(write_cmd, timeout=20)
+    rc, _out, err = ssh.run(
+        f"mkdir -p {shlex.quote(remote_script_dir)}", timeout=20,
+    )
+    if rc != 0:
+        return None, {"ok": False,
+                      "error": f"failed to create script directory: {err.strip()}"}
+
+    write_text = getattr(ssh, "write_text", None)
+    if callable(write_text):
+        rc, _out, err = write_text(
+            remote_script, built["body"], executable=True, timeout=20,
+        )
+    else:
+        # Compatibility for lightweight test/dry-run SSH doubles. Production
+        # SSHSession uses write_text() so large embedded fit artifacts travel
+        # over stdin instead of overflowing the ControlMaster command packet.
+        write_cmd = (
+            f"cat > {shlex.quote(remote_script)} <<'{_HEREDOC_EOF}'\n"
+            f"{built['body']}"
+            f"{_HEREDOC_EOF}\n"
+            f"chmod +x {shlex.quote(remote_script)}"
+        )
+        rc, _out, err = ssh.run(write_cmd, timeout=20)
     if rc != 0:
         return None, {"ok": False,
                       "error": f"failed to write script: {err.strip()}"}

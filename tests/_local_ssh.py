@@ -100,6 +100,29 @@ class LocalSSHSession:
             except Exception:
                 with contextlib.suppress(Exception): proc.kill()
 
+    def write_text(
+        self,
+        remote_path: str,
+        content: str,
+        *,
+        executable: bool = False,
+        timeout: int = 60,
+    ) -> tuple[int, str, str]:
+        del timeout
+        path = remote_path
+        if not os.path.isabs(path):
+            path = os.path.join(self.cwd, path)
+        temporary = path + ".tmp"
+        try:
+            with open(temporary, "w", encoding="utf-8") as handle:
+                handle.write(content)
+            if executable:
+                os.chmod(temporary, os.stat(temporary).st_mode | 0o111)
+            os.replace(temporary, path)
+        except OSError as exc:
+            return (1, "", str(exc))
+        return (0, "", "")
+
     def rsync_pull(self, remote_path: str, local_dir: str,
                    extra_args: list[str] | None = None,
                    timeout: int = 60) -> tuple[int, str, str]:

@@ -258,6 +258,41 @@ class SSHSession:
             except Exception:
                 proc.kill()
 
+    def write_text(
+        self,
+        remote_path: str,
+        content: str,
+        *,
+        executable: bool = False,
+        timeout: int = 60,
+    ) -> tuple[int, str, str]:
+        """Write text remotely through stdin, not the SSH command packet.
+
+        Generated SLURM scripts embed frozen population-fit JSON and can be
+        tens of kilobytes.  Putting that body inside the ControlMaster command
+        can exceed the mux request size (``mm_send_fd: Message too long``).
+        The remote command stays tiny here; the body streams through stdin and
+        is atomically renamed into place only after a complete transfer.
+        """
+        if not self.is_connected():
+            raise SSHError("not connected")
+        target = shlex.quote(remote_path)
+        temporary = shlex.quote(remote_path + ".tmp")
+        finish = f"chmod +x {temporary} && " if executable else ""
+        cmd = f"cat > {temporary} && {finish}mv {temporary} {target}"
+        with self._sem:
+            result = subprocess.run(
+                ["ssh", "-S", self.cfg.socket, self.cfg.target, cmd],
+                input=content.encode("utf-8"),
+                capture_output=True,
+                timeout=timeout,
+            )
+        return (
+            result.returncode,
+            result.stdout.decode("utf-8", errors="replace"),
+            result.stderr.decode("utf-8", errors="replace"),
+        )
+
     # ----------------------------- file xfer ------------------------------
 
     def rsync_pull(self, remote_path: str, local_dir: str,

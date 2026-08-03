@@ -572,6 +572,31 @@ class TestRegistry:
         )
         assert embedded["fingerprint"] == "a" * 64
 
+    def test_synthetic_generate_requires_active_galaxy_fit(self, monkeypatch):
+        monkeypatch.setattr(
+            "euclid_polish.web.helpers.population_calibration.joint_galaxy_state",
+            lambda: {"active": None, "is_active": False},
+        )
+
+        with pytest.raises(ValueError, match="activate the current joint"):
+            REGISTRY.get("synthetic_generate").prepare_params({})
+
+    def test_synthetic_generate_requires_active_stellar_fit(self, monkeypatch):
+        joint = {
+            "generation": {"surface_density_arcmin2": 207.0},
+        }
+        monkeypatch.setattr(
+            "euclid_polish.web.helpers.population_calibration.joint_galaxy_state",
+            lambda: {"active": joint, "is_active": True},
+        )
+        monkeypatch.setattr(
+            "euclid_polish.web.helpers.population_calibration.star_state",
+            lambda: {"active": None, "is_active": False},
+        )
+
+        with pytest.raises(ValueError, match=r"Gaia\+Euclid stellar"):
+            REGISTRY.get("synthetic_generate").prepare_params({})
+
     def test_synthetic_generate_force_flag(self):
         """The "Override existing data" checkbox adds --force (regenerate from
         scratch); absent / falsey → resume (no --force)."""
@@ -1097,30 +1122,6 @@ class TestFixedCpusEnforcement:
         assert writes, "no sbatch write captured containing --workers"
         # 8 appears as the worker count somewhere in the rendered body.
         assert any("8" in c for c in writes)
-
-    def test_tng_atlas_submission_invalidates_population_preflight(
-        self, monkeypatch,
-    ):
-        from euclid_polish.web.app import create_app
-        from euclid_polish.web.routes import fasrc as fasrc_routes
-
-        self._stub_ssh(monkeypatch)
-        fasrc_routes._POPULATION_PREFLIGHT_CACHE[("checked",)] = 1.0
-        app = create_app()
-        response = app.test_client().post(
-            "/api/fasrc/hst/download_tng_skirt/submit",
-            data={
-                "confirm": "yes",
-                "n_cpus": "8",
-                "n_gpus": "0",
-                "memory": "32G",
-                "time_limit": "1-00:00:00",
-                "partition": "shared",
-            },
-        )
-
-        assert response.status_code == 200 and response.get_json()["ok"]
-        assert not fasrc_routes._POPULATION_PREFLIGHT_CACHE
 
     def test_partition_forced_to_step_default(self, monkeypatch,
                                               experimental_lanes_on):

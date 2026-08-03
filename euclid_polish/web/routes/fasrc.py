@@ -32,104 +32,8 @@ from euclid_polish.web.fasrc_pipeline import StepResources
 from euclid_polish.web.job_status import JobStatusFetcher
 from euclid_polish.web.remote import STATE, SSHConfig, SSHError, SSHSession
 
-_POPULATION_PREFLIGHT_CACHE_TTL_SECONDS = 30 * 60
-_POPULATION_PREFLIGHT_CACHE: dict[tuple[Any, ...], float] = {}
-_POPULATION_PREFLIGHT_LOCK = _t.Lock()
-_POPULATION_PREFLIGHT_INVALIDATING_STEPS = frozenset({
-    "download_tng_skirt",
-    "measure_tng_radii",
-})
-
-
-def _population_preflight_cache_key(
-    ssh: SSHSession,
-    cfg: fasrc_config.FasrcConfig,
-) -> tuple[Any, ...]:
-    """Scope a remembered check to one connection and remote input set."""
-    return (
-        id(ssh),
-        cfg.ssh_user,
-        cfg.ssh_host,
-        cfg.repo_path,
-        cfg.data_dir,
-        cfg.conda_env_path,
-    )
-
-
-def _invalidate_population_preflight_cache() -> None:
-    """Forget successful checks after reconnects or atlas-changing jobs."""
-    with _POPULATION_PREFLIGHT_LOCK:
-        _POPULATION_PREFLIGHT_CACHE.clear()
-
-
-def _run_population_preflight(
-    ssh: SSHSession | None,
-    *,
-    step_ref: str,
-    cfg: fasrc_config.FasrcConfig,
-) -> None:
-    """Validate generation inputs in the configured remote Python env."""
-    if step_ref not in {"synthetic_generate", "lensfinder_generate"}:
-        return
-    if not ssh or not ssh.is_connected():
-        raise ValueError("connect to FASRC before population preflight")
-
-    cache_key = _population_preflight_cache_key(ssh, cfg)
-    # Hold the lock through the remote scan.  Submission requests are rare,
-    # and this makes simultaneous clicks share one check instead of launching
-    # duplicate metadata walks over the same 20k+ atlas paths.
-    with _POPULATION_PREFLIGHT_LOCK:
-        now = time.monotonic()
-        checked_at = _POPULATION_PREFLIGHT_CACHE.get(cache_key)
-        if (
-            checked_at is not None
-            and now - checked_at < _POPULATION_PREFLIGHT_CACHE_TTL_SECONDS
-        ):
-            return
-        _POPULATION_PREFLIGHT_CACHE.pop(cache_key, None)
-
-        tng_dir = os.path.join(cfg.data_dir, "tng_skirt")
-        props = os.path.join(
-            cfg.data_dir, "_tng_infographics", "tng_properties.csv"
-        )
-        manifest = os.path.join(
-            cfg.data_dir, "_tng_infographics", "tng_radius_manifest.json"
-        )
-        argv = [
-            "-m",
-            "scripts.validate_tng_radius_manifest",
-            "--tng-dir",
-            tng_dir,
-            "--properties",
-            props,
-            "--manifest",
-            manifest,
-        ]
-        try:
-            rc, out, err = fasrc_jobs.run_remote_python(
-                ssh, cfg=cfg, argv=argv, timeout=300
-            )
-        except Exception as exc:
-            raise ValueError(f"population preflight failed: {exc}") from exc
-        if rc != 0:
-            detail = (out or err or "remote radius manifest is invalid").strip()
-            raise ValueError("population preflight failed: " + detail[-2000:])
-        _POPULATION_PREFLIGHT_CACHE[cache_key] = time.monotonic()
-
 
 def register(app):
-
-    def _population_preflight(step_ref: str) -> None:
-        """Fail closed before any synthetic-scene sbatch is rendered.
-
-        The local activation checks run through ``prepare_params`` below; this
-        second check validates the atlas manifest on the remote filesystem so
-        a queued promotion cannot race a stale/partial atlas update.
-        """
-        _run_population_preflight(
-            STATE.ssh, step_ref=step_ref, cfg=fasrc_config.load()
-        )
-
     # =========================================================================
     # FASRC tab — Bitwarden-driven SSH ControlMaster, SLURM submission,
     # live log streaming, checkpoint auto-mirror.
@@ -157,7 +61,6 @@ def register(app):
         if request.method == "POST":
             patch = dict(request.form.items())
             cfg = fasrc_config.update(patch)
-            _invalidate_population_preflight_cache()
         else:
             cfg = fasrc_config.load()
         return jsonify(cfg.to_dict())
@@ -174,7 +77,6 @@ def register(app):
         if not cfg.ssh_user:
             return jsonify({"ok": False,
                             "error": "set ssh_user in Settings first"}), 400
-        _invalidate_population_preflight_cache()
         STATE.ssh = SSHSession(SSHConfig(
             user=cfg.ssh_user, host=cfg.ssh_host,
             socket=cfg.control_socket,
@@ -196,7 +98,6 @@ def register(app):
 
     @app.route("/api/fasrc/disconnect", methods=["POST"])
     def api_fasrc_disconnect():
-        _invalidate_population_preflight_cache()
         if STATE.ssh:
             STATE.ssh.disconnect()
         STATE.ssh = None
@@ -468,7 +369,6 @@ def register(app):
             except KeyError:
                 step = STEP_REGISTRY.get("synthetic_generate")
                 step_ref = "synthetic_generate"
-            _population_preflight(step_ref)
             resources = StepResources.from_form(form, step.defaults)
             # Partition is fixed per job type — never taken from the form.
             resources.partition = step.defaults.partition
@@ -500,7 +400,6 @@ def register(app):
                 params=params, step_id=step.step_id)
         # Pipeline step
         step = STEP_REGISTRY.get(step_ref)
-        _population_preflight(step.step_id)
         form2 = dict(form)
         # Partition is fixed per job type — force the step's value even on
         # queued specs built from an older form.
@@ -523,15 +422,9 @@ def register(app):
         params_for_db = dict(built.get("params", form2))
         params_for_db.update(resources.to_dict())
         params_for_db["step_id"] = step_ref
-        submission = fasrc_jobs.submit_sbatch_script(
+        return fasrc_jobs.submit_sbatch_script(
             STATE.ssh, cfg=cfg, built=built, label=label,
             params=params_for_db, step_id=step_ref)
-        if (
-            submission[0] is not None
-            and step_ref in _POPULATION_PREFLIGHT_INVALIDATING_STEPS
-        ):
-            _invalidate_population_preflight_cache()
-        return submission
 
     def _submit_spec_now(spec):
         return _build_and_submit(spec["kind"], spec["step"], spec["form"])
@@ -539,14 +432,6 @@ def register(app):
     def _queue_tick():
         """Promote/halt the local queue — call after every squeue reconcile."""
         try:
-            # A queued job may have waited behind an atlas-changing job.  Do
-            # not let its enqueue-time success suppress the required check at
-            # promotion; ordinary immediate submissions still reuse the cache.
-            if (
-                fasrc_queue.QUEUE.public().get("count", 0) > 0
-                and not fasrc_queue.QUEUE.active_is_running(fasrc_jobs.DB)
-            ):
-                _invalidate_population_preflight_cache()
             fasrc_queue.QUEUE.tick(
                 fasrc_jobs.DB, fasrc_jobs.JOBLOG, STATE.ssh, _submit_spec_now)
         except Exception:
@@ -556,8 +441,9 @@ def register(app):
         """Submit immediately if the single lane is free, else enqueue."""
         label = _spec_label(kind, step_ref, form)
         spec = {"kind": kind, "step": step_ref, "form": form}
-        # Validate before creating a queue entry as well as at promotion time.
-        # The latter protects against atlas changes while the item waits.
+        # Validate that both fitted population artifacts are active before
+        # creating a queue entry. They are resolved and embedded again at
+        # promotion, so no Config/legacy population fallback can enter.
         try:
             resolved_step = step_ref
             if kind == "synthetic":
@@ -567,7 +453,6 @@ def register(app):
                     resolved_step = "synthetic_generate"
             if resolved_step in {"synthetic_generate", "lensfinder_generate"}:
                 STEP_REGISTRY.get(resolved_step).prepare_params(dict(form))
-                _population_preflight(resolved_step)
         except ValueError as exc:
             return jsonify({"ok": False, "error": str(exc)}), 400
         if fasrc_queue.QUEUE.active_is_running(fasrc_jobs.DB):
