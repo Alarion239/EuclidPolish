@@ -9,11 +9,14 @@ assign a distance or redshift, or convert into detector-specific units.
 
 from __future__ import annotations
 
+import cv2
 import numpy as np
 from astropy.io import fits
-from scipy.ndimage import gaussian_filter as _ndi_gaussian_filter
-from scipy.ndimage import rotate as _ndi_rotate
-from scipy.ndimage import zoom as _ndi_zoom
+
+# Generation already parallelises over one process per allocated CPU.  OpenCV
+# otherwise creates a thread pool in every worker and oversubscribes the outer
+# process pool (for example, 10 x 10 runnable threads on a 10-CPU job).
+cv2.setNumThreads(1)
 
 
 def load_skirt_frame(path: str) -> np.ndarray:
@@ -71,10 +74,13 @@ def resample_surface_brightness(
 
     ``scale`` is the linear size of an output pixel footprint relative to the
     input image: values above one enlarge the source and values below one
-    shrink it.  The interpolation preserves a constant surface brightness and
-    applies a modest Gaussian pre-filter before shrinkage to avoid aliasing.
-    It deliberately does not apply a pixel-area flux correction: MJy/sr is an
-    intensive quantity and callers decide the final integrated flux separately.
+    shrink it.  Area resampling is used for shrinkage, so each output sample is
+    the mean surface brightness over its input footprint.  Cubic interpolation
+    is used only for enlargement.  This is both a closer match to intensive
+    MJy/sr semantics and much cheaper than Gaussian-filtering a 1600-pixel
+    atlas frame followed by a generic 3-D spline zoom.  It deliberately does
+    not apply a pixel-area flux correction: callers decide the final integrated
+    flux separately.
 
     The helper accepts either a 2-D image or a ``(H, W, C)`` channel stack and
     always returns a native-endian float32 array.
@@ -84,24 +90,21 @@ def resample_surface_brightness(
     a = np.asarray(arr, dtype=np.float32)
     if a.ndim not in (2, 3):
         raise ValueError(f"expected a 2-D image or 3-D channel stack, got {a.shape}")
-    zoom_axes = (float(scale), float(scale)) + ((1.0,) if a.ndim == 3 else ())
-    filtered = a
-    if scale < 1.0:
-        # A box-like anti-alias width is sufficient for the smooth SKIRT
-        # surface-brightness fields and keeps this operation deterministic.
-        sigma = max(0.0, 0.5 * (1.0 / float(scale) - 1.0))
-        if sigma > 0.0:
-            sigma_axes = (sigma, sigma, 0.0) if a.ndim == 3 else (sigma, sigma)
-            filtered = _ndi_gaussian_filter(a, sigma=sigma_axes)
-    out = _ndi_zoom(
-        filtered,
-        zoom_axes,
-        order=int(order),
-        mode="grid-constant",
-        cval=0.0,
-        prefilter=bool(order > 1),
-        grid_mode=True,
+    height, width = a.shape[:2]
+    out_height = max(1, int(round(height * float(scale))))
+    out_width = max(1, int(round(width * float(scale))))
+    interpolation = (
+        cv2.INTER_AREA
+        if scale < 1.0
+        else (cv2.INTER_NEAREST if order <= 0
+              else cv2.INTER_LINEAR if order == 1
+              else cv2.INTER_CUBIC)
     )
+    out = cv2.resize(a, (out_width, out_height), interpolation=interpolation)
+    # OpenCV drops a singleton channel axis.  Preserve this function's input
+    # dimensionality contract for callers using an H x W x 1 cube.
+    if a.ndim == 3 and out.ndim == 2:
+        out = out[..., None]
     np.maximum(out, 0.0, out=out)
     return np.asarray(out, dtype=np.float32)
 
@@ -120,18 +123,31 @@ def rotate_arbitrary(
     """Rotate in place-sized coordinates and clip interpolation undershoot.
 
     The returned image has the input shape.  Values outside the frame are zero;
-    negative spline overshoot is clipped because surface brightness is
+    negative cubic overshoot is clipped because surface brightness is
     non-negative.  Whether interpolation is scientifically acceptable at the
     requested resolution is a policy decision for the caller.
     """
-    out = _ndi_rotate(
-        np.asarray(arr, dtype=np.float32),
-        float(angle_deg),
-        reshape=False,
-        order=int(order),
-        mode="constant",
-        cval=0.0,
+    a = np.asarray(arr, dtype=np.float32)
+    if a.ndim not in (2, 3):
+        raise ValueError(f"expected a 2-D image or 3-D channel stack, got {a.shape}")
+    height, width = a.shape[:2]
+    centre = ((width - 1) / 2.0, (height - 1) / 2.0)
+    matrix = cv2.getRotationMatrix2D(centre, float(angle_deg), 1.0)
+    interpolation = (
+        cv2.INTER_NEAREST if order <= 0
+        else cv2.INTER_LINEAR if order == 1
+        else cv2.INTER_CUBIC
     )
+    out = cv2.warpAffine(
+        a,
+        matrix,
+        (width, height),
+        flags=interpolation,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=0.0,
+    )
+    if a.ndim == 3 and out.ndim == 2:
+        out = out[..., None]
     np.maximum(out, 0.0, out=out)
     return out.astype(np.float32)
 

@@ -5,6 +5,7 @@ import pytest
 from astropy.io import fits
 
 from euclid_polish.config import Config
+from euclid_polish.sky.generation import tng_galaxy
 from euclid_polish.sky.generation.tng_galaxy import (
     list_tng_galaxies,
     prepare_tng_galaxy_continuous,
@@ -25,7 +26,9 @@ def _atlas(root, gid="42", size=64):
     y, x = np.mgrid[:size, :size]
     frame = np.exp(-((x - size / 2) ** 2 + (y - size / 2) ** 2) / 60.0).astype("f4")
     for orientation in range(1, 6):
-        for band, amplitude in zip(("VIS", "Y", "J", "H"), (1.0, 2.0, 3.0, 4.0)):
+        for band, amplitude in zip(
+            ("VIS", "Y", "J", "H"), (1.0, 2.0, 3.0, 4.0), strict=True,
+        ):
             fits.PrimaryHDU(frame * amplitude).writeto(
                 folder / f"TNG{gid}_O{orientation}_Euclid_{band}.fits"
             )
@@ -143,3 +146,31 @@ def test_target_re_uses_one_shared_cube_scale(tmp_path):
     )
     assert meta["photometric_scaling"] == "single_shared_vis_anchor"
     assert scaled_flux[0] == pytest.approx(1e5, rel=2e-5)
+
+
+def test_subpixel_radius_refinement_reuses_one_native_source(tmp_path, monkeypatch):
+    atlas = tmp_path / "tng_skirt"
+    atlas.mkdir(); _atlas(atlas)
+    original_load = tng_galaxy.load_tng_frame
+    native_re_px = tng_galaxy.measure_halflight_radius_px(original_load(
+        str(atlas / "42" / "TNG42_O1_Euclid_VIS.fits")
+    ))
+    loaded_paths = []
+
+    def counted_load(path):
+        loaded_paths.append(path)
+        return original_load(path)
+
+    monkeypatch.setattr(tng_galaxy, "load_tng_frame", counted_load)
+    _stamp, meta = tng_stamp_to_target_re(
+        str(atlas / "42"), "42", 1, 0.055,
+        target_vis_flux_e=1e5, native_re_px=native_re_px,
+    )
+
+    tolerance = max(0.05 * meta["target_re_arcsec"],
+                    0.5 * Config.DEFAULT_PIXEL_SCALE)
+    assert abs(meta["re_residual_arcsec"]) <= tolerance
+    assert meta["radius_refinement_iterations"] > 1
+    # Four bands are loaded once; refinement trials reuse the same registered
+    # native cube instead of repeating FITS I/O + full-resolution rotation.
+    assert len(loaded_paths) == 4

@@ -52,7 +52,6 @@ from euclid_polish.skirt.image import (
     load_skirt_frame,
     measure_halflight_radius_px,
     radius_int_grid,
-    rebin_for_target_size,
     resample_surface_brightness,
     rotate_arbitrary,
     rotate_quarter,
@@ -209,28 +208,15 @@ def prepare_tng_galaxy(
     return stamp, meta
 
 
-def prepare_tng_galaxy_continuous(
+def _prepare_tng_continuous_source(
     galaxy_dir: str,
     subhalo_id: int | str,
     orientation: int,
     *,
-    scale: float,
-    rot_k: int = 0,
     rot_angle: float | None = None,
-    pixel_scale_arcsec: float = Config.DEFAULT_PIXEL_SCALE,
     fits_bands: tuple[str, ...] = TNG_FITS_BANDS,
-) -> tuple[np.ndarray, dict]:
-    """Render the registered four-band cube with one linear scale.
-
-    This is the size-matching path.  The source is cropped from the native
-    atlas footprint using the VIS curve of growth, then the complete cube is
-    rotated and resampled in one operation.  This guarantees identical
-    geometry in every band and preserves the native TNG relative SED.  The
-    stamp side is a consequence of the light footprint, never the matched
-    quantity.
-    """
-    if not np.isfinite(scale) or scale <= 0.0:
-        raise ValueError(f"scale must be finite and positive, got {scale!r}")
+) -> tuple[np.ndarray, bool]:
+    """Load, crop, and rotate one registered native four-band source once."""
     config_to_fits = {v: k for k, v in _FITS_BAND_TO_CONFIG.items()}
     native_channels: list[np.ndarray] = []
     for cfg_name in Config.LR_INPUT_BAND_NAMES:
@@ -244,11 +230,28 @@ def prepare_tng_galaxy_continuous(
         native_cube[..., 0], 1, enclosed_fraction=0.999,
         padding=TNG_ROTATION_CROP_PADDING,
     )
-    cube = native_cube[crop]
+    source = native_cube[crop]
     use_angle = rot_angle is not None
     if use_angle:
-        cube = rotate_arbitrary(cube, float(rot_angle))
-    cube = resample_surface_brightness(cube, scale)
+        source = rotate_arbitrary(source, float(rot_angle))
+    return source, use_angle
+
+
+def _render_tng_continuous_source(
+    source: np.ndarray,
+    *,
+    scale: float,
+    rot_k: int,
+    use_angle: bool,
+    subhalo_id: int | str,
+    orientation: int,
+    rot_angle: float | None,
+    pixel_scale_arcsec: float,
+) -> tuple[np.ndarray, dict]:
+    """Apply one shared spatial scale to an already prepared TNG source."""
+    if not np.isfinite(scale) or scale <= 0.0:
+        raise ValueError(f"scale must be finite and positive, got {scale!r}")
+    cube = resample_surface_brightness(source, scale)
     if not use_angle:
         cube = rotate_quarter(cube, rot_k)
 
@@ -275,6 +278,42 @@ def prepare_tng_galaxy_continuous(
         "flux_e_per_band": flux_e,
         "bands": tuple(Config.LR_INPUT_BAND_NAMES),
     }
+
+
+def prepare_tng_galaxy_continuous(
+    galaxy_dir: str,
+    subhalo_id: int | str,
+    orientation: int,
+    *,
+    scale: float,
+    rot_k: int = 0,
+    rot_angle: float | None = None,
+    pixel_scale_arcsec: float = Config.DEFAULT_PIXEL_SCALE,
+    fits_bands: tuple[str, ...] = TNG_FITS_BANDS,
+) -> tuple[np.ndarray, dict]:
+    """Render the registered four-band cube with one linear scale.
+
+    This is the size-matching path.  The source is cropped from the native
+    atlas footprint using the VIS curve of growth, then the complete cube is
+    rotated once and resampled with one shared linear scale.  This guarantees
+    identical geometry in every band and preserves the native TNG relative
+    SED.  The stamp side is a consequence of the light footprint, never the
+    matched quantity.
+    """
+    source, use_angle = _prepare_tng_continuous_source(
+        galaxy_dir, subhalo_id, orientation,
+        rot_angle=rot_angle, fits_bands=fits_bands,
+    )
+    return _render_tng_continuous_source(
+        source,
+        scale=scale,
+        rot_k=rot_k,
+        use_angle=use_angle,
+        subhalo_id=subhalo_id,
+        orientation=orientation,
+        rot_angle=rot_angle,
+        pixel_scale_arcsec=pixel_scale_arcsec,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -401,13 +440,27 @@ def _render_target_re(
     rot_k: int,
     rot_angle: float | None,
     target_vis_flux_e: float | None,
+    prepared_source: np.ndarray | None = None,
+    use_angle: bool | None = None,
 ) -> tuple[np.ndarray, dict, float]:
     """Render one trial using one geometry scale and one shared flux scale."""
-    stamp, meta = prepare_tng_galaxy_continuous(
-        galaxy_dir, subhalo_id, orientation, scale=scale,
-        rot_k=rot_k, rot_angle=rot_angle,
-        pixel_scale_arcsec=pixel_scale_arcsec,
-    )
+    if prepared_source is None:
+        stamp, meta = prepare_tng_galaxy_continuous(
+            galaxy_dir, subhalo_id, orientation, scale=scale,
+            rot_k=rot_k, rot_angle=rot_angle,
+            pixel_scale_arcsec=pixel_scale_arcsec,
+        )
+    else:
+        stamp, meta = _render_tng_continuous_source(
+            prepared_source,
+            scale=scale,
+            rot_k=rot_k,
+            use_angle=bool(use_angle),
+            subhalo_id=subhalo_id,
+            orientation=orientation,
+            rot_angle=rot_angle,
+            pixel_scale_arcsec=pixel_scale_arcsec,
+        )
     # Exactly one scalar multiplication is applied to the complete cube.
     brightness_scale = _normalise_target_vis(stamp, target_vis_flux_e)
     achieved_px = measure_halflight_radius_px(stamp[..., 0])
@@ -421,6 +474,84 @@ def _render_target_re(
     }
     meta["shape"] = tuple(stamp.shape)
     return stamp, meta, achieved
+
+
+def _match_target_re(
+    galaxy_dir: str,
+    subhalo_id: int | str,
+    orientation: int,
+    *,
+    initial_scale: float,
+    target_re_arcsec: float,
+    pixel_scale_arcsec: float,
+    rot_k: int,
+    rot_angle: float | None,
+    target_vis_flux_e: float | None,
+    max_iterations: int = 12,
+) -> tuple[np.ndarray, dict, float, float]:
+    """Bracket a target radius while reusing one loaded and rotated source.
+
+    Half-light measurements become quantised near the output pixel scale, so
+    the former unconstrained multiplicative update could bounce between two
+    scales and eventually run away.  A log-space bracket is monotonic-safe for
+    the continuous size transform and never compounds interpolation: every
+    trial is resized from the same prepared native source.
+    """
+    source, use_angle = _prepare_tng_continuous_source(
+        galaxy_dir, subhalo_id, orientation, rot_angle=rot_angle,
+    )
+    scale = float(initial_scale)
+    tolerance = _target_re_tolerance(target_re_arcsec, pixel_scale_arcsec)
+    lower: tuple[float, float] | None = None
+    upper: tuple[float, float] | None = None
+    best_error = float("inf")
+    best_achieved = float("nan")
+
+    for iteration in range(1, int(max_iterations) + 1):
+        stamp, meta, achieved = _render_target_re(
+            galaxy_dir, subhalo_id, orientation,
+            scale=scale,
+            pixel_scale_arcsec=pixel_scale_arcsec,
+            rot_k=rot_k,
+            rot_angle=rot_angle,
+            target_vis_flux_e=target_vis_flux_e,
+            prepared_source=source,
+            use_angle=use_angle,
+        )
+        if not np.isfinite(achieved) or achieved <= 0.0:
+            raise ValueError("continuous TNG render has no measurable achieved R_e")
+        error = abs(achieved - float(target_re_arcsec))
+        if error < best_error:
+            best_error = error
+            best_achieved = achieved
+        if error <= tolerance:
+            meta["radius_refinement_iterations"] = int(iteration)
+            return stamp, meta, achieved, scale
+
+        if achieved < target_re_arcsec:
+            if lower is None or scale > lower[0]:
+                lower = (scale, achieved)
+        else:
+            if upper is None or scale < upper[0]:
+                upper = (scale, achieved)
+
+        if lower is not None and upper is not None and lower[0] < upper[0]:
+            # Positive scales span orders of magnitude, so bisect in log space.
+            scale = float(np.sqrt(lower[0] * upper[0]))
+        elif achieved < target_re_arcsec:
+            # Find an upper bracket without permitting a single noisy radius
+            # estimate to launch an enormous output allocation.
+            factor = float(np.clip(target_re_arcsec / achieved, 1.25, 2.0))
+            scale *= factor
+        else:
+            factor = float(np.clip(target_re_arcsec / achieved, 0.5, 0.8))
+            scale *= factor
+
+    raise ValueError(
+        f"TNG R_e matching failed: target={target_re_arcsec:.6g}, "
+        f"best_achieved={best_achieved:.6g} arcsec after "
+        f"{max_iterations} bracketed trials"
+    )
 
 
 def tng_stamp_to_target_re(
@@ -448,33 +579,15 @@ def tng_stamp_to_target_re(
     scale = float(target_re_arcsec) / (float(native) * pixel_scale_arcsec)
     if not np.isfinite(scale) or scale <= 0.0:
         raise ValueError("computed TNG-to-COSMOS scale is invalid")
-    # The achieved radius is monotonic in the continuous scale apart from
-    # subpixel quantisation.  Recompute from the original source each time so
-    # correction never compounds interpolation artefacts.
-    achieved = float("nan")
-    stamp: np.ndarray | None = None
-    meta: dict = {}
-    for _ in range(8):
-        stamp, meta, achieved = _render_target_re(
-            galaxy_dir, subhalo_id, orientation,
-            scale=scale,
-            pixel_scale_arcsec=pixel_scale_arcsec,
-            rot_k=rot_k, rot_angle=rot_angle,
-            target_vis_flux_e=target_vis_flux_e,
-        )
-        error = achieved - float(target_re_arcsec)
-        if np.isfinite(achieved) and abs(error) <= _target_re_tolerance(
-            target_re_arcsec, pixel_scale_arcsec):
-            break
-        if not np.isfinite(achieved) or achieved <= 0.0:
-            raise ValueError("continuous TNG render has no measurable achieved R_e")
-        scale *= float(target_re_arcsec) / achieved
-    else:
-        raise ValueError(
-            f"TNG R_e matching failed: target={target_re_arcsec:.6g}, "
-            f"achieved={achieved:.6g} arcsec"
-        )
-    assert stamp is not None
+    stamp, meta, achieved, scale = _match_target_re(
+        galaxy_dir, subhalo_id, orientation,
+        initial_scale=scale,
+        target_re_arcsec=target_re_arcsec,
+        pixel_scale_arcsec=pixel_scale_arcsec,
+        rot_k=rot_k,
+        rot_angle=rot_angle,
+        target_vis_flux_e=target_vis_flux_e,
+    )
     meta.update({
         "native_halflight_px": float(native),
         "target_re_arcsec": float(target_re_arcsec),
@@ -546,29 +659,15 @@ def tng_stamp_at_redshift(
         rot_angle = (float(rng.uniform(0.0, 360.0))
                      if rng is not None else None)
         scale = float(target_re_arcsec) / (float(re_px) * pixel_scale_arcsec)
-        stamp: np.ndarray | None = None
-        meta: dict = {}
-        achieved = float("nan")
-        for _ in range(8):
-            stamp, meta, achieved = _render_target_re(
-                galaxy_dir, subhalo_id, orientation,
-                scale=scale,
-                pixel_scale_arcsec=pixel_scale_arcsec,
-                rot_k=int(rot_k), rot_angle=rot_angle,
-                target_vis_flux_e=target_vis_flux_e,
-            )
-            if np.isfinite(achieved) and abs(achieved - target_re_arcsec) <= _target_re_tolerance(
-                target_re_arcsec, pixel_scale_arcsec):
-                break
-            if not np.isfinite(achieved) or achieved <= 0.0:
-                raise ValueError("continuous TNG render has no measurable achieved R_e")
-            scale *= float(target_re_arcsec) / achieved
-        else:
-            raise ValueError(
-                f"TNG R_e matching failed: target={target_re_arcsec:.6g}, "
-                f"achieved={achieved:.6g} arcsec"
-            )
-        assert stamp is not None
+        stamp, meta, achieved, scale = _match_target_re(
+            galaxy_dir, subhalo_id, orientation,
+            initial_scale=scale,
+            target_re_arcsec=target_re_arcsec,
+            pixel_scale_arcsec=pixel_scale_arcsec,
+            rot_k=int(rot_k),
+            rot_angle=rot_angle,
+            target_vis_flux_e=target_vis_flux_e,
+        )
         meta.update({
             "native_halflight_px": float(re_px),
             "target_re_arcsec": float(target_re_arcsec),
