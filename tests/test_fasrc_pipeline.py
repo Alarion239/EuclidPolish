@@ -1098,6 +1098,30 @@ class TestFixedCpusEnforcement:
         # 8 appears as the worker count somewhere in the rendered body.
         assert any("8" in c for c in writes)
 
+    def test_tng_atlas_submission_invalidates_population_preflight(
+        self, monkeypatch,
+    ):
+        from euclid_polish.web.app import create_app
+        from euclid_polish.web.routes import fasrc as fasrc_routes
+
+        self._stub_ssh(monkeypatch)
+        fasrc_routes._POPULATION_PREFLIGHT_CACHE[("checked",)] = 1.0
+        app = create_app()
+        response = app.test_client().post(
+            "/api/fasrc/hst/download_tng_skirt/submit",
+            data={
+                "confirm": "yes",
+                "n_cpus": "8",
+                "n_gpus": "0",
+                "memory": "32G",
+                "time_limit": "1-00:00:00",
+                "partition": "shared",
+            },
+        )
+
+        assert response.status_code == 200 and response.get_json()["ok"]
+        assert not fasrc_routes._POPULATION_PREFLIGHT_CACHE
+
     def test_partition_forced_to_step_default(self, monkeypatch,
                                               experimental_lanes_on):
         """The partition is determined by the job type — a form-supplied

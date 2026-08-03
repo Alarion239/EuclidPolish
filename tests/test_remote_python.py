@@ -9,8 +9,13 @@ from __future__ import annotations
 
 import shlex
 
+import pytest
+
 from euclid_polish.web import fasrc_config, fasrc_jobs
-from euclid_polish.web.routes.fasrc import _run_population_preflight
+from euclid_polish.web.routes.fasrc import (
+    _invalidate_population_preflight_cache,
+    _run_population_preflight,
+)
 
 
 def _cfg() -> fasrc_config.FasrcConfig:
@@ -72,6 +77,7 @@ def test_run_remote_python_delegates_to_ssh():
 
 
 def test_population_preflight_activates_remote_python_environment():
+    _invalidate_population_preflight_cache()
     captured = {}
 
     class _FakeSSH:
@@ -94,4 +100,83 @@ def test_population_preflight_activates_remote_python_environment():
     assert "mamba activate /n/holylabs/ENV" in inner[:python_pos]
     assert "conda activate /n/holylabs/ENV" in inner[:python_pos]
     assert "--tng-dir /n/netscratch/DATA/tng_skirt" in inner[python_pos:]
-    assert captured["timeout"] == 90
+    assert captured["timeout"] == 300
+
+
+def test_population_preflight_remembers_success_for_same_connection():
+    _invalidate_population_preflight_cache()
+
+    class _FakeSSH:
+        def __init__(self):
+            self.run_count = 0
+
+        def is_connected(self):
+            return True
+
+        def run(self, _cmd, timeout=60):
+            self.run_count += 1
+            return (0, "valid radius manifest", "")
+
+    ssh = _FakeSSH()
+    _run_population_preflight(
+        ssh, step_ref="synthetic_generate", cfg=_cfg()
+    )
+    _run_population_preflight(
+        ssh, step_ref="synthetic_generate", cfg=_cfg()
+    )
+
+    assert ssh.run_count == 1
+
+
+def test_population_preflight_invalidation_forces_a_fresh_check():
+    _invalidate_population_preflight_cache()
+
+    class _FakeSSH:
+        def __init__(self):
+            self.run_count = 0
+
+        def is_connected(self):
+            return True
+
+        def run(self, _cmd, timeout=60):
+            self.run_count += 1
+            return (0, "valid radius manifest", "")
+
+    ssh = _FakeSSH()
+    _run_population_preflight(
+        ssh, step_ref="synthetic_generate", cfg=_cfg()
+    )
+    _invalidate_population_preflight_cache()
+    _run_population_preflight(
+        ssh, step_ref="synthetic_generate", cfg=_cfg()
+    )
+
+    assert ssh.run_count == 2
+
+
+def test_population_preflight_does_not_cache_failure():
+    _invalidate_population_preflight_cache()
+
+    class _FakeSSH:
+        def __init__(self):
+            self.run_count = 0
+
+        def is_connected(self):
+            return True
+
+        def run(self, _cmd, timeout=60):
+            self.run_count += 1
+            if self.run_count == 1:
+                return (2, "", "stale radius manifest")
+            return (0, "valid radius manifest", "")
+
+    ssh = _FakeSSH()
+    with pytest.raises(ValueError, match="stale radius manifest"):
+        _run_population_preflight(
+            ssh, step_ref="synthetic_generate", cfg=_cfg()
+        )
+    _run_population_preflight(
+        ssh, step_ref="synthetic_generate", cfg=_cfg()
+    )
+
+    assert ssh.run_count == 2

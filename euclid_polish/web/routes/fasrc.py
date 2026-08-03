@@ -32,6 +32,35 @@ from euclid_polish.web.fasrc_pipeline import StepResources
 from euclid_polish.web.job_status import JobStatusFetcher
 from euclid_polish.web.remote import STATE, SSHConfig, SSHError, SSHSession
 
+_POPULATION_PREFLIGHT_CACHE_TTL_SECONDS = 30 * 60
+_POPULATION_PREFLIGHT_CACHE: dict[tuple[Any, ...], float] = {}
+_POPULATION_PREFLIGHT_LOCK = _t.Lock()
+_POPULATION_PREFLIGHT_INVALIDATING_STEPS = frozenset({
+    "download_tng_skirt",
+    "measure_tng_radii",
+})
+
+
+def _population_preflight_cache_key(
+    ssh: SSHSession,
+    cfg: fasrc_config.FasrcConfig,
+) -> tuple[Any, ...]:
+    """Scope a remembered check to one connection and remote input set."""
+    return (
+        id(ssh),
+        cfg.ssh_user,
+        cfg.ssh_host,
+        cfg.repo_path,
+        cfg.data_dir,
+        cfg.conda_env_path,
+    )
+
+
+def _invalidate_population_preflight_cache() -> None:
+    """Forget successful checks after reconnects or atlas-changing jobs."""
+    with _POPULATION_PREFLIGHT_LOCK:
+        _POPULATION_PREFLIGHT_CACHE.clear()
+
 
 def _run_population_preflight(
     ssh: SSHSession | None,
@@ -45,32 +74,47 @@ def _run_population_preflight(
     if not ssh or not ssh.is_connected():
         raise ValueError("connect to FASRC before population preflight")
 
-    tng_dir = os.path.join(cfg.data_dir, "tng_skirt")
-    props = os.path.join(
-        cfg.data_dir, "_tng_infographics", "tng_properties.csv"
-    )
-    manifest = os.path.join(
-        cfg.data_dir, "_tng_infographics", "tng_radius_manifest.json"
-    )
-    argv = [
-        "-m",
-        "scripts.validate_tng_radius_manifest",
-        "--tng-dir",
-        tng_dir,
-        "--properties",
-        props,
-        "--manifest",
-        manifest,
-    ]
-    try:
-        rc, out, err = fasrc_jobs.run_remote_python(
-            ssh, cfg=cfg, argv=argv, timeout=90
+    cache_key = _population_preflight_cache_key(ssh, cfg)
+    # Hold the lock through the remote scan.  Submission requests are rare,
+    # and this makes simultaneous clicks share one check instead of launching
+    # duplicate metadata walks over the same 20k+ atlas paths.
+    with _POPULATION_PREFLIGHT_LOCK:
+        now = time.monotonic()
+        checked_at = _POPULATION_PREFLIGHT_CACHE.get(cache_key)
+        if (
+            checked_at is not None
+            and now - checked_at < _POPULATION_PREFLIGHT_CACHE_TTL_SECONDS
+        ):
+            return
+        _POPULATION_PREFLIGHT_CACHE.pop(cache_key, None)
+
+        tng_dir = os.path.join(cfg.data_dir, "tng_skirt")
+        props = os.path.join(
+            cfg.data_dir, "_tng_infographics", "tng_properties.csv"
         )
-    except Exception as exc:
-        raise ValueError(f"population preflight failed: {exc}") from exc
-    if rc != 0:
-        detail = (out or err or "remote radius manifest is invalid").strip()
-        raise ValueError("population preflight failed: " + detail[-2000:])
+        manifest = os.path.join(
+            cfg.data_dir, "_tng_infographics", "tng_radius_manifest.json"
+        )
+        argv = [
+            "-m",
+            "scripts.validate_tng_radius_manifest",
+            "--tng-dir",
+            tng_dir,
+            "--properties",
+            props,
+            "--manifest",
+            manifest,
+        ]
+        try:
+            rc, out, err = fasrc_jobs.run_remote_python(
+                ssh, cfg=cfg, argv=argv, timeout=300
+            )
+        except Exception as exc:
+            raise ValueError(f"population preflight failed: {exc}") from exc
+        if rc != 0:
+            detail = (out or err or "remote radius manifest is invalid").strip()
+            raise ValueError("population preflight failed: " + detail[-2000:])
+        _POPULATION_PREFLIGHT_CACHE[cache_key] = time.monotonic()
 
 
 def register(app):
@@ -113,6 +157,7 @@ def register(app):
         if request.method == "POST":
             patch = dict(request.form.items())
             cfg = fasrc_config.update(patch)
+            _invalidate_population_preflight_cache()
         else:
             cfg = fasrc_config.load()
         return jsonify(cfg.to_dict())
@@ -129,6 +174,7 @@ def register(app):
         if not cfg.ssh_user:
             return jsonify({"ok": False,
                             "error": "set ssh_user in Settings first"}), 400
+        _invalidate_population_preflight_cache()
         STATE.ssh = SSHSession(SSHConfig(
             user=cfg.ssh_user, host=cfg.ssh_host,
             socket=cfg.control_socket,
@@ -150,6 +196,7 @@ def register(app):
 
     @app.route("/api/fasrc/disconnect", methods=["POST"])
     def api_fasrc_disconnect():
+        _invalidate_population_preflight_cache()
         if STATE.ssh:
             STATE.ssh.disconnect()
         STATE.ssh = None
@@ -476,9 +523,15 @@ def register(app):
         params_for_db = dict(built.get("params", form2))
         params_for_db.update(resources.to_dict())
         params_for_db["step_id"] = step_ref
-        return fasrc_jobs.submit_sbatch_script(
+        submission = fasrc_jobs.submit_sbatch_script(
             STATE.ssh, cfg=cfg, built=built, label=label,
             params=params_for_db, step_id=step_ref)
+        if (
+            submission[0] is not None
+            and step_ref in _POPULATION_PREFLIGHT_INVALIDATING_STEPS
+        ):
+            _invalidate_population_preflight_cache()
+        return submission
 
     def _submit_spec_now(spec):
         return _build_and_submit(spec["kind"], spec["step"], spec["form"])
@@ -486,6 +539,14 @@ def register(app):
     def _queue_tick():
         """Promote/halt the local queue — call after every squeue reconcile."""
         try:
+            # A queued job may have waited behind an atlas-changing job.  Do
+            # not let its enqueue-time success suppress the required check at
+            # promotion; ordinary immediate submissions still reuse the cache.
+            if (
+                fasrc_queue.QUEUE.public().get("count", 0) > 0
+                and not fasrc_queue.QUEUE.active_is_running(fasrc_jobs.DB)
+            ):
+                _invalidate_population_preflight_cache()
             fasrc_queue.QUEUE.tick(
                 fasrc_jobs.DB, fasrc_jobs.JOBLOG, STATE.ssh, _submit_spec_now)
         except Exception:
