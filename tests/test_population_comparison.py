@@ -579,7 +579,7 @@ def test_population_comparison_page_and_status_route(monkeypatch):
     assert payload["authenticated"] is False
     assert set(payload["calibrations"]) == {
         "brightness_transfer", "galaxy_density", "stars",
-        "galaxy_recommendation",
+        "galaxy_recommendation", "joint_galaxy",
     }
 
 
@@ -628,7 +628,7 @@ def test_fit_cached_cones_route_does_not_require_archive_session(monkeypatch):
     assert response.get_json()["job_id"] == "fit-cones-job"
 
 
-def test_fit_cached_cones_rebuilds_truth_without_changing_config(
+def test_fit_cached_cones_runs_joint_analysis_without_tng(
     monkeypatch,
 ):
     from euclid_polish.web.routes import population_comparison as routes
@@ -645,16 +645,13 @@ def test_fit_cached_cones_rebuilds_truth_without_changing_config(
             self.output.append(message)
 
     fit_payload = {
-        "fit": {"poisson_deviance": 10.0, "dof": 5,
-                "completeness_m50": 25.0},
-        "local_normalization_sensitivity_fit": {
-            "poisson_deviance": 64.84,
-            "dof": 10,
-            "completeness_m50": 25.12,
+        "version": 2,
+        "fit_quality": {
+            "cosmos_reduced_poisson_deviance": 2.4,
+            "euclid_reduced_poisson_deviance": 3.1,
         },
-        "euclid_latent_density_estimate": {
-            "use_local_normalization": True,
-            "density_arcmin2": 400.3426,
+        "model": {
+            "euclid_response": {"completeness_m50": 25.12},
         },
     }
     commands = []
@@ -666,22 +663,17 @@ def test_fit_cached_cones_rebuilds_truth_without_changing_config(
     monkeypatch.setattr(
         routes, "read_cosmos_euclid_fit", lambda: fit_payload,
     )
-    monkeypatch.setattr(
-        routes, "refresh_population_comparison", lambda: {"updated": True},
-    )
     cap = Capture()
 
     result = routes._fit_and_evaluate_cached_cones(cap)
 
     assert [command[1] for command in commands] == [
-        "scripts/fit_tng_vis_counts.py",
         "scripts/fit_cosmos_euclid_counts.py",
     ]
-    assert result["euclid_latent_density_arcmin2"] == pytest.approx(400.3426)
-    assert result["population_refreshed"] is True
-    assert cap.ticks[-1] == (3, 3, "fit and evaluations ready")
-    assert any("not a generator setting" in line for line in cap.output)
-    assert any("64.84 / 10" in line for line in cap.output)
+    assert result == {"fit": fit_payload, "tng_used": False}
+    assert cap.ticks[-1] == (1, 1, "joint population fit ready")
+    assert any("No TNG catalogue or image was read" in line for line in cap.output)
+    assert any("COSMOS reduced deviance 2.40" in line for line in cap.output)
 
 
 def test_analysis_script_failure_includes_stderr(monkeypatch, tmp_path):
@@ -718,7 +710,7 @@ def test_population_comparison_status_selects_training_variant(monkeypatch):
     monkeypatch.setattr(routes, "availability", lambda: {})
     monkeypatch.setattr(routes, "read_comparison", lambda: cached)
     monkeypatch.setattr(
-        routes, "read_cosmos_euclid_fit", lambda: {"version": 1}
+        routes, "read_cosmos_euclid_fit", lambda: {"version": 2}
     )
     monkeypatch.setattr(
         routes.euclid_session, "is_authenticated", lambda: False
@@ -741,7 +733,7 @@ def test_population_comparison_status_selects_training_variant(monkeypatch):
         == 6600
     )
     assert current["comparison"]["population"]["cosmos_euclid_fit"] == {
-        "version": 1
+        "version": 2
     }
     assert (
         current["comparison"]["population"]["tng_prior"][

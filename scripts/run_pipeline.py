@@ -64,6 +64,7 @@ from euclid_polish.psf.psf_library import load_all_band_psf_sets
 from euclid_polish.sky.generation.cosmos_tng_prior import (
     CosmosTngPrior,
     F814WToVisTransfer,
+    JointGalaxyPopulationPrior,
 )
 from euclid_polish.sky.generation.gen_provenance import (
     ShardStampPlan,
@@ -226,6 +227,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                     help="Provenance label for the embedded brightness fit.")
     ap.add_argument("--cosmos-vis-transfer-artifact-json", default="",
                     help="Exact activated transfer artifact embedded by the web job.")
+    ap.add_argument("--joint-galaxy-population-json", default="",
+                    help="Compact activated analytical TNG draw artifact.")
     ap.add_argument("--star-density-arcmin2", type=float,
                     default=Config.DEFAULT_STAR_DENSITY_ARCMIN2,
                     help="Stellar surface density (stars/arcmin²).")
@@ -400,6 +403,23 @@ def _photometric_transfer_from_args(
     )
 
 
+def _population_prior_from_args(args: argparse.Namespace):
+    """Build the explicitly embedded analytical prior, or a legacy COSMOS prior."""
+    embedded = str(getattr(args, "joint_galaxy_population_json", "") or "").strip()
+    if embedded:
+        try:
+            payload = json.loads(embedded)
+        except json.JSONDecodeError as exc:
+            raise ValueError("joint galaxy population JSON is malformed") from exc
+        if not isinstance(payload, dict):
+            raise ValueError("joint galaxy population JSON must be an object")
+        return JointGalaxyPopulationPrior(payload)
+    return CosmosTngPrior(
+        args.cosmos_prior,
+        photometric_transfer=_photometric_transfer_from_args(args),
+    )
+
+
 def _observation_config_from_args(
     args: argparse.Namespace,
 ) -> ObservationSimulatorConfig:
@@ -433,13 +453,15 @@ def step_generate(args: argparse.Namespace) -> None:
             f"({args.ntrain} train + {args.nvalid} valid, "
             f"{args.image_size}² @ {Config.DEFAULT_PIXEL_SCALE}\"/pix)")
 
-    cat = (CosmosTngPrior(
-               args.cosmos_prior,
-               photometric_transfer=_photometric_transfer_from_args(args),
-           )
-           if args.galaxy_density_arcmin2 > 0.0 else None)
+    cat = (
+        _population_prior_from_args(args)
+        if args.galaxy_density_arcmin2 > 0.0 else None
+    )
     if cat is not None:
-        _log(f"COSMOS joint prior: {len(cat)} latent galaxies")
+        _log(
+            f"galaxy population prior: {type(cat).__name__} "
+            f"({len(cat)} weighted cells/rows)"
+        )
 
     cfg = _generator_config_from_args(args)
     sim = SkySimulator(cat, cfg)
@@ -1106,6 +1128,7 @@ def _gen_init_worker(prior_path, image_size, psf_dir,
                      cosmos_vis_magnitude_slope=None,
                      cosmos_vis_scatter_mag=None,
                      cosmos_vis_transfer_source="",
+                     joint_galaxy_population_json="",
                      tng_galaxy_dir=Config.TNG_SKIRT_DIR,
                      tng_properties_csv="",
                      tng_radius_manifest_path="",
@@ -1121,8 +1144,17 @@ def _gen_init_worker(prior_path, image_size, psf_dir,
         cosmos_vis_scatter_mag=cosmos_vis_scatter_mag,
         cosmos_vis_transfer_source=cosmos_vis_transfer_source,
     ))
-    cat = (CosmosTngPrior(prior_path, photometric_transfer=transfer)
-           if prior_path and galaxy_density_arcmin2 > 0.0 else None)
+    if joint_galaxy_population_json and galaxy_density_arcmin2 > 0.0:
+        try:
+            joint_payload = json.loads(joint_galaxy_population_json)
+        except json.JSONDecodeError as exc:
+            raise ValueError("joint galaxy population JSON is malformed") from exc
+        cat = JointGalaxyPopulationPrior(joint_payload)
+    else:
+        cat = (
+            CosmosTngPrior(prior_path, photometric_transfer=transfer)
+            if prior_path and galaxy_density_arcmin2 > 0.0 else None
+        )
     _W_SIM = SkySimulator(
         cat, SkySimulatorConfig(image_size=image_size,
                                       pixel_scale=Config.DEFAULT_PIXEL_SCALE,
@@ -1334,6 +1366,7 @@ def step_generate_and_convolve_parallel(args: argparse.Namespace) -> None:
                           getattr(args, "cosmos_vis_magnitude_slope", None),
                           getattr(args, "cosmos_vis_scatter_mag", None),
                           getattr(args, "cosmos_vis_transfer_source", ""),
+                          getattr(args, "joint_galaxy_population_json", ""),
                           getattr(args, "tng_dir", Config.TNG_SKIRT_DIR),
                           getattr(args, "tng_properties", ""),
                           getattr(args, "tng_radius_manifest", "")),

@@ -2,9 +2,9 @@ import { useEffect, useState, type CSSProperties } from "react";
 import { NavLink } from "react-router-dom";
 import Plot, { Legend, type PlotProps, type Series, type Tick } from "../charts/Plot";
 import { C, categorical } from "../colors";
+import { StepById } from "../fasrc";
 import { useResource } from "../hooks";
 import { JobProgressView, useJob } from "../jobs";
-import { StepCard, useHstStatus, type Step } from "../fasrc";
 import {
   Badge, Button, Card, CardBody, CardHead, Checkbox, Empty, Field, Input, Page,
   PageHead, Spinner, Stat,
@@ -138,9 +138,17 @@ type TngPrior = {
 };
 type CalibrationArtifact = {
   valid?: boolean;
+  validated?: boolean;
   warnings?: string[];
   coverage_notes?: string[];
   fingerprint?: string;
+  generation?: {
+    surface_density_arcmin2: number;
+    vis_magnitude_min: number;
+    vis_magnitude_max: number;
+    morphology_assignment: string;
+    position_process: string;
+  };
   calibration_fingerprint?: string;
   recommended_density_arcmin2?: number | null;
   interval_arcmin2?: PriorInterval | null;
@@ -238,50 +246,76 @@ type GalaxyRecommendation = {
   };
   density_interval_arcmin2?: PriorInterval | null;
 };
+type JointFitSeries = {
+  x: number[]; observed: (number | null)[]; model: (number | null)[];
+  unit: string; label: string;
+};
+type JointFitDensity = {
+  x: number[]; density: (number | null)[]; unit: string; label?: string;
+};
+type TngDrawMarginals = {
+  redshift: JointFitDensity;
+  magnitude: JointFitDensity;
+  angular_radius: JointFitDensity;
+  surface_density_arcmin2: number;
+};
 type CosmosEuclidFit = {
+  version: 2;
+  fingerprint: string;
   interpretation: string;
-  fit: {
-    population_scale: number;
-    vis_minus_f814w_mag: number;
-    magnitude_slope: number;
-    scatter_mag: number;
-    completeness_m50: number;
-    completeness_width_mag: number;
-    poisson_deviance: number;
-    dof: number;
+  inputs: {
+    cosmos_population_rows: number;
+    cosmos_measured_size_rows: number;
+    euclid_cone_count: number;
+    euclid_expected_galaxies_with_sizes: number;
+    missing_probability_rows: number;
+    missing_size_rows: number;
   };
-  local_normalization_sensitivity_fit: CosmosEuclidFit["fit"];
-  euclid_latent_density_estimate?: {
-    density_arcmin2: number;
-    cone_count: number;
-    use_local_normalization: boolean;
-    method: string;
-    caveat: string;
+  fit_quality: {
+    valid: boolean;
+    cosmos_reduced_poisson_deviance: number;
+    cosmos_reduced_negative_binomial_deviance?: number;
+    euclid_reduced_poisson_deviance: number;
+    warnings: string[];
   };
-  // Backward compatibility for a cached artifact created before the rename.
-  generator_density_recommendation?: {
-    density_arcmin2: number;
-    cone_count: number;
-    apply_to_config: boolean;
-    method: string;
-    caveat: string;
+  model: {
+    luminosity_function: Record<string, number | number[]>;
+    size_relation: Record<string, number | number[]>;
+    euclid_response: Record<string, number | number[]>;
   };
-  latent_density: {
-    cosmos_m_lt_28_arcmin2: number;
-    locally_renormalized_m_lt_28_arcmin2: number;
+  parameters: Array<{
+    group: string; key: string; label: string;
+    value: number; standard_error: number | null; unit: string;
+  }>;
+  diagnostics: {
+    magnitude_counts: { cosmos: JointFitSeries; euclid: JointFitSeries };
+    redshift: JointFitSeries;
+    angular_radius: { cosmos: JointFitSeries; euclid: JointFitSeries };
+    tng_draw: {
+      full: TngDrawMarginals;
+      comparison_window: TngDrawMarginals & {
+        vis_magnitude_min: number;
+        vis_magnitude_max: number;
+      };
+      definition: string;
+    };
+    median_radius_by_magnitude: {
+      x: number[];
+      cosmos_observed: (number | null)[]; cosmos_model: (number | null)[];
+      euclid_observed: (number | null)[]; euclid_model: (number | null)[];
+      unit: string;
+    };
+    surface_brightness: {
+      x: number[];
+      cosmos_observed: number[]; cosmos_model: number[];
+      euclid_observed: number[]; euclid_model: number[];
+      unit: string;
+    };
+    completeness: {
+      magnitude: number[];
+      by_radius_arcsec: Record<string, number[]>;
+    };
   };
-  bins: {
-    mag_center: number;
-    cosmos_latent_density: number;
-    fitted_latent_density: number;
-    local_fitted_latent_density: number;
-    euclid_detected_density: number;
-    euclid_poisson_error: number;
-    predicted_detected_density: number;
-    local_predicted_detected_density: number;
-    fitted_completeness: number;
-    synthetic_truth_density: number | null;
-  }[];
 };
 type Comparison = {
   version: number;
@@ -341,6 +375,7 @@ type ApiPayload = {
   calibrations?: {
     brightness_transfer: CalibrationState;
     galaxy_density: CalibrationState;
+    joint_galaxy: CalibrationState;
     stars: CalibrationState;
     galaxy_recommendation: GalaxyRecommendation;
   };
@@ -1004,218 +1039,328 @@ function PopulationSummary({ title, eyebrow, population, tone }: {
 }
 
 function CosmosEuclidDensityPanel({ fit }: { fit: CosmosEuclidFit }) {
-  const x = fit.bins.map((row) => row.mag_center);
-  const densityValues = fit.bins.flatMap((row) => [
-    row.cosmos_latent_density,
-    row.euclid_detected_density,
-    row.predicted_detected_density,
-    row.synthetic_truth_density ?? 0,
-  ]);
-  const densitySeries: Series[] = [
-    {
-      x, y: fit.bins.map((row) => row.cosmos_latent_density),
-      color: "#686868", width: 2.1, dash: [8, 5],
-    },
-    {
-      x, y: fit.bins.map((row) => row.synthetic_truth_density),
-      color: "#8d48b5", width: 2.2, dash: [3, 3],
-    },
-    {
-      x, y: fit.bins.map((row) => row.euclid_detected_density),
-      color: "#1267d6", mode: "scatter", marker: "ring", width: 2.0,
-    },
-    {
-      x, y: fit.bins.map((row) => row.predicted_detected_density),
-      color: "#cf3d2e", width: 2.6, marker: "diamond", markerEvery: 1,
-    },
+  const diagnostics = fit.diagnostics;
+  const tngFull = diagnostics.tng_draw.full;
+  const tngComparison = diagnostics.tng_draw.comparison_window;
+  const magnitudeValues = [
+    ...diagnostics.magnitude_counts.cosmos.observed,
+    ...diagnostics.magnitude_counts.cosmos.model,
+    ...diagnostics.magnitude_counts.euclid.observed,
+    ...diagnostics.magnitude_counts.euclid.model,
+    ...tngFull.magnitude.density,
+    ...tngComparison.magnitude.density,
   ];
+  const median = diagnostics.median_radius_by_magnitude;
+  const surface = diagnostics.surface_brightness;
   return (
-    <Card className="comparison-plot population-fit-plot">
-      <CardHead title="VIS magnitude counts"
-        sub="The fitted curve is the COSMOS prior after the brightness transfer and Euclid catalog selection model." />
-      <CardBody>
-        <AdjustablePlot boundsLabel="Population magnitude counts"
-          xDomain={[20, 28]} yDomain={domain(densityValues, true)}
-          xLabel="magnitude (AB)"
-          yLabel="objects / arcmin² / 0.5 mag"
-          series={densitySeries} aspect={0.58} />
-        <Legend items={[
-          { color: "#686868", label: "COSMOS F814W prior · before selection", dash: true },
-          { color: "#8d48b5", label: "current synthetic truth", dash: true },
-          { color: "#1267d6", label: "Euclid weighted extended-source detections", marker: "ring" },
-          { color: "#cf3d2e", label: "fitted detected population", line: true, marker: "diamond" },
-        ]} />
-        <div className="population-fit-plot__numbers">
-          <span><b>{fit.latent_density.cosmos_m_lt_28_arcmin2.toFixed(0)}</b> COSMOS objects / arcmin² to F814W 28</span>
-          <span><b>{fit.fit.completeness_m50.toFixed(2)}</b> VIS magnitude at 50% catalog completeness</span>
-        </div>
-      </CardBody>
-    </Card>
+    <div className="parameter-atlas">
+      <Card className="parameter-card">
+        <CardHead title="Apparent-magnitude counts"
+          sub="one latent population · COSMOS and Euclid observation spaces" />
+        <CardBody>
+          <AdjustablePlot boundsLabel="Joint apparent-magnitude counts"
+            xDomain={[18, 30]} yDomain={domain(magnitudeValues, true)}
+            xLabel="survey AB magnitude" yLabel="objects / arcmin² / mag"
+            series={[
+              { x: diagnostics.magnitude_counts.cosmos.x,
+                y: diagnostics.magnitude_counts.cosmos.observed,
+                color: "#242424", mode: "scatter", marker: "ring", width: 2 },
+              { x: diagnostics.magnitude_counts.cosmos.x,
+                y: diagnostics.magnitude_counts.cosmos.model,
+                color: "#008c68", width: 2.5 },
+              { x: diagnostics.magnitude_counts.euclid.x,
+                y: diagnostics.magnitude_counts.euclid.observed,
+                color: "#1267d6", mode: "scatter", marker: "ring", width: 2 },
+              { x: diagnostics.magnitude_counts.euclid.x,
+                y: diagnostics.magnitude_counts.euclid.model,
+                color: "#cf3d2e", width: 2.5 },
+              { x: tngFull.magnitude.x,
+                y: tngFull.magnitude.density,
+                color: "#7a3db8", width: 3 },
+              { x: tngComparison.magnitude.x,
+                y: tngComparison.magnitude.density,
+                color: "#7a3db8", width: 2.4, dash: [8, 5] },
+            ]} aspect={0.62} />
+          <Legend items={[
+            { color: "#242424", label: "COSMOS observed", marker: "ring" },
+            { color: "#008c68", label: "shared model in COSMOS", line: true },
+            { color: "#1267d6", label: "Euclid observed", marker: "ring" },
+            { color: "#cf3d2e", label: "shared model through Euclid", line: true },
+            { color: "#7a3db8", label: "TNG full truth · 18<VIS<30", line: true },
+            { color: "#7a3db8", label: "TNG comparison · 20<VIS<28", line: true, dash: true },
+          ]} />
+        </CardBody>
+      </Card>
+      <Card className="parameter-card">
+        <CardHead title="Redshift distribution"
+          sub="COSMOS constrains z; the cached Euclid table has no PHZ column" />
+        <CardBody>
+          <AdjustablePlot boundsLabel="COSMOS redshift distribution"
+            xDomain={domain(diagnostics.redshift.x)}
+            yDomain={domain([
+              ...diagnostics.redshift.observed, ...diagnostics.redshift.model,
+              ...tngFull.redshift.density,
+              ...tngComparison.redshift.density,
+            ], true)} xLabel="photometric redshift"
+            yLabel={diagnostics.redshift.unit}
+            series={[
+              { x: diagnostics.redshift.x, y: diagnostics.redshift.observed,
+                color: "#242424", mode: "scatter", marker: "ring", width: 2 },
+              { x: diagnostics.redshift.x, y: diagnostics.redshift.model,
+                color: "#008c68", width: 2.5 },
+              { x: tngFull.redshift.x,
+                y: tngFull.redshift.density,
+                color: "#7a3db8", width: 3 },
+              { x: tngComparison.redshift.x,
+                y: tngComparison.redshift.density,
+                color: "#7a3db8", width: 2.4, dash: [8, 5] },
+            ]} aspect={0.62} />
+          <Legend items={[
+            { color: "#242424", label: "COSMOS observed", marker: "ring" },
+            { color: "#008c68", label: "shared intrinsic fit", line: true },
+            { color: "#7a3db8", label: "TNG full truth · 18<VIS<30", line: true },
+            { color: "#7a3db8", label: "TNG comparison · 20<VIS<28", line: true, dash: true },
+          ]} />
+        </CardBody>
+      </Card>
+      <Card className="parameter-card">
+        <CardHead title="Angular-radius density"
+          sub="COSMOS fitted Re · Euclid MER proxy · true TNG target" />
+        <CardBody>
+          <AdjustablePlot boundsLabel="Joint angular-size distribution"
+            xDomain={domain([
+              ...diagnostics.angular_radius.cosmos.x,
+              ...diagnostics.angular_radius.euclid.x,
+            ])}
+            yDomain={domain([
+              ...diagnostics.angular_radius.cosmos.observed,
+              ...diagnostics.angular_radius.cosmos.model,
+              ...diagnostics.angular_radius.euclid.observed,
+              ...diagnostics.angular_radius.euclid.model,
+              ...tngFull.angular_radius.density,
+              ...tngComparison.angular_radius.density,
+            ], true)}
+            xLabel="log₁₀ angular radius / arcsec"
+            yLabel="objects / arcmin² / dex"
+            series={[
+              { x: diagnostics.angular_radius.cosmos.x,
+                y: diagnostics.angular_radius.cosmos.observed,
+                color: "#008c68", mode: "scatter", marker: "ring", width: 2 },
+              { x: diagnostics.angular_radius.cosmos.x,
+                y: diagnostics.angular_radius.cosmos.model,
+                color: "#008c68", width: 2.5 },
+              { x: diagnostics.angular_radius.euclid.x,
+                y: diagnostics.angular_radius.euclid.observed,
+                color: "#1267d6", mode: "scatter", marker: "ring", width: 2 },
+              { x: diagnostics.angular_radius.euclid.x,
+                y: diagnostics.angular_radius.euclid.model,
+                color: "#1267d6", width: 2.5 },
+              { x: tngFull.angular_radius.x, y: tngFull.angular_radius.density,
+                color: "#7a3db8", width: 3 },
+              { x: tngComparison.angular_radius.x,
+                y: tngComparison.angular_radius.density,
+                color: "#7a3db8", width: 2.4, dash: [8, 5] },
+            ]} aspect={0.62} />
+          <Legend items={[
+            { color: "#008c68", label: "COSMOS measured + response", line: true, marker: "ring" },
+            { color: "#1267d6", label: "Euclid MER + response", line: true, marker: "ring" },
+            { color: "#7a3db8", label: "TNG full truth · 18<VIS<30", line: true },
+            { color: "#7a3db8", label: "TNG comparison · 20<VIS<28", line: true, dash: true },
+          ]} />
+        </CardBody>
+      </Card>
+      <Card className="parameter-card">
+        <CardHead title="Magnitude-conditioned radius"
+          sub="the comparison that exposes size-selection and resolution floors" />
+        <CardBody>
+          <AdjustablePlot boundsLabel="Median radius by magnitude"
+            xDomain={domain(median.x)}
+            yDomain={domain([
+              ...median.cosmos_observed, ...median.cosmos_model,
+              ...median.euclid_observed, ...median.euclid_model,
+            ], true)} xLabel="survey AB magnitude" yLabel="median radius / arcsec"
+            series={[
+              { x: median.x, y: median.cosmos_observed, color: "#242424",
+                mode: "scatter", marker: "ring", width: 2 },
+              { x: median.x, y: median.cosmos_model, color: "#008c68", width: 2.5 },
+              { x: median.x, y: median.euclid_observed, color: "#1267d6",
+                mode: "scatter", marker: "ring", width: 2 },
+              { x: median.x, y: median.euclid_model, color: "#cf3d2e", width: 2.5 },
+            ]} aspect={0.62} />
+        </CardBody>
+      </Card>
+      <Card className="parameter-card">
+        <CardHead title="Derived mean surface brightness"
+          sub="computed from each survey magnitude and angular-size estimator" />
+        <CardBody>
+          <AdjustablePlot boundsLabel="Mean surface-brightness distribution"
+            xDomain={domain(surface.x)} yDomain={domain([
+              ...surface.cosmos_observed, ...surface.cosmos_model,
+              ...surface.euclid_observed, ...surface.euclid_model,
+            ], true)} xLabel="mag / arcsec²" yLabel="survey-specific density"
+            series={[
+              { x: surface.x, y: surface.cosmos_observed, color: "#242424",
+                mode: "scatter", marker: "ring", width: 2 },
+              { x: surface.x, y: surface.cosmos_model, color: "#008c68", width: 2.5 },
+              { x: surface.x, y: surface.euclid_observed, color: "#1267d6",
+                mode: "scatter", marker: "ring", width: 2 },
+              { x: surface.x, y: surface.euclid_model, color: "#cf3d2e", width: 2.5 },
+            ]} aspect={0.62} />
+        </CardBody>
+      </Card>
+      <Card className="parameter-card">
+        <CardHead title="Euclid completeness surface"
+          sub="magnitude dependence changes continuously with angular size" />
+        <CardBody>
+          <AdjustablePlot boundsLabel="Euclid completeness by angular size"
+            xDomain={domain(diagnostics.completeness.magnitude)} yDomain={[0, 1]}
+            xLabel="VIS AB magnitude" yLabel="detection probability"
+            series={Object.entries(diagnostics.completeness.by_radius_arcsec)
+              .map(([radius, values], index) => ({
+                x: diagnostics.completeness.magnitude, y: values,
+                color: categorical(index), width: 2.5,
+                label: `${radius} arcsec`,
+              }))} aspect={0.62} />
+          <Legend items={Object.keys(diagnostics.completeness.by_radius_arcsec)
+            .map((radius, index) => ({
+              color: categorical(index), label: `${radius} arcsec`, line: true,
+            }))} />
+        </CardBody>
+      </Card>
+    </div>
   );
 }
 
 function GalaxyCalibrationControls({ api, onChanged }: {
   api: ApiPayload; onChanged: () => void;
 }) {
-  const hst = useHstStatus();
-  const generationStep = hst.data?.steps.find(
-    (item) => item.step_id === "synthetic_generate"
-  );
-  const [generationSplits, setGenerationSplits] = useState<string[]>([
-    "validate", "test",
-  ]);
   const localFit = useJob();
-  const activateRecommendation = useJob();
-  const transfer = api.calibrations?.brightness_transfer ?? EMPTY_CALIBRATION;
-  const density = api.calibrations?.galaxy_density ?? EMPTY_CALIBRATION;
-  const recommendation = api.calibrations?.galaxy_recommendation;
-  const parameters = recommendation?.generator_parameters;
-  const observation = recommendation?.observation_model_diagnostics;
-  const allActive = transfer.is_active && density.is_active;
-  const interval = recommendation?.density_interval_arcmin2;
-  const coneCount = density.candidate?.euclid_cones?.length
-    ?? api.availability.euclid_catalog.meta?.cone_count ?? 0;
-  const fitWarning = recommendation?.warnings?.[0];
+  const activate = useJob();
+  const fit = api.comparison?.population.cosmos_euclid_fit;
+  const state = api.calibrations?.joint_galaxy ?? EMPTY_CALIBRATION;
+  const starsActive = api.calibrations?.stars?.is_active ?? false;
+  const candidate = state.candidate;
   const refresh = (job: { status: string }) => {
     if (job.status !== "failed") onChanged();
   };
   return (
     <Card className="calibration-workflow">
-      <CardHead title="Galaxy generator calibration"
-        sub="One local fit turns the COSMOS population prior and Euclid cone counts into a complete, reproducible FASRC proposal. Nothing changes until you activate it." />
+      <CardHead title="Joint analytical galaxy population"
+        sub="One smooth Schechter × lognormal distribution, observed through separate COSMOS and Euclid response models." />
       <CardBody>
         <div className="population-flow" aria-label="Galaxy calibration flow">
           <div className="population-flow__step">
-            <span>1 · source prior</span>
-            <strong>COSMOS physical rows</strong>
-            <small>{density.candidate?.cosmos_generator_rows?.toLocaleString() ?? "cached"} usable rows · F814W, redshift, mass, size</small>
+            <span>1 · latent distribution</span>
+            <strong>Evolving Schechter LF</strong>
+            <small>redshift × absolute-like F814W magnitude</small>
           </div>
           <div className="population-flow__step">
-            <span>2 · observation target</span>
-            <strong>{coneCount || "—"} Euclid cones</strong>
-            <small>{density.candidate?.euclid_detected_density_arcmin2 != null
-              ? `${density.candidate.euclid_detected_density_arcmin2.toFixed(1)} weighted extended-source detections / arcmin²`
-              : "cached weighted extended-source VIS counts"}</small>
+            <span>2 · intrinsic sizes</span>
+            <strong>Lognormal R<sub>e</sub></strong>
+            <small>smooth luminosity and redshift evolution</small>
           </div>
           <div className="population-flow__step">
-            <span>3 · local forward fit</span>
-            <strong>{density.candidate?.retained_detection_fraction != null
-              ? `${(100 * density.candidate.retained_detection_fraction).toFixed(1)}% retained`
-              : "not fitted"}</strong>
-            <small>brightness transfer + catalog completeness</small>
+            <span>3 · two surveys</span>
+            <strong>COSMOS + {fit?.inputs.euclid_cone_count ?? "—"} Euclid cones</strong>
+            <small>different bandpass, resolution and selection responses</small>
           </div>
           <div className="population-flow__step population-flow__step--result">
-            <span>4 · generator proposal</span>
-            <strong>{parameters?.galaxy_density_arcmin2 != null
-              ? `${parameters.galaxy_density_arcmin2.toFixed(1)} draws / arcmin²`
-              : "pending fit"}</strong>
-            <small>{allActive ? "active for FASRC" : "inactive until activated"}</small>
+            <span>4 · current result</span>
+            <strong>{fit ? (fit.fit_quality.valid ? "quality gate passed" : "diagnostic warnings") : "not fitted"}</strong>
+            <small>{state.is_active
+              ? "active for future synthetic jobs"
+              : "review and activate before generation"}</small>
           </div>
         </div>
         <div className="calibration-explainer">
           <p>
-            A COSMOS row chooses the galaxy&apos;s redshift, stellar mass, apparent
-            size, and F814W magnitude. A matching TNG image supplies morphology and
-            the native VIS/Y/J/H ratios. The fitted VIS magnitude applies one flux
-            scale to all four bands, so those TNG colours are preserved.
+            COSMOS constrains the redshift, luminosity and physical-size evolution.
+            Euclid constrains the projected VIS magnitude–size plane and a
+            surface-brightness-dependent completeness function. Both catalogues
+            are likelihood terms for the same latent distribution; there is no
+            magnitude splice and no row-by-row donor matching.
           </p>
-          {density.candidate?.classification_weighting && (
+          {fit && (
             <p className="fit-caution">
               <strong>Classification coverage:</strong>{" "}
-              {density.candidate.classification_weighting.missing_probability_rows ?? 0}
-              {" rows without POINT_LIKE_PROB and "}
-              {density.candidate.classification_weighting.invalid_probability_rows ?? 0}
-              {" invalid rows were excluded; galaxy weight = 1 − POINT_LIKE_PROB."}
+              {fit.inputs.missing_probability_rows} Euclid rows without
+              POINT_LIKE_PROB and {fit.inputs.missing_size_rows} without a usable
+              size proxy were excluded; galaxy weight = 1 − POINT_LIKE_PROB.
             </p>
           )}
         </div>
-        <div className="calibration-table-wrap">
+        {fit && <div className="calibration-table-wrap">
           <table className="calibration-table">
-            <thead><tr><th>Parameter</th><th>Current proposal</th><th>What fits it</th><th>FASRC</th></tr></thead>
+            <thead><tr><th>Group</th><th>Parameter</th><th>Fit ± local SE</th><th>Unit</th></tr></thead>
             <tbody>
-              <tr><td>Raw galaxy density</td><td className="mono">
-                {parameters?.galaxy_density_arcmin2 != null
-                  ? `${parameters.galaxy_density_arcmin2.toFixed(1)} / arcmin²` : "—"}
-                {interval && <small>{interval.p16.toFixed(1)}–{interval.p84.toFixed(1)}</small>}
-              </td><td>Euclid detected density ÷ fitted retained fraction</td><td><Badge tone="good">sent</Badge></td></tr>
-              <tr><td>VIS offset</td><td className="mono">
-                {parameters?.cosmos_vis_offset_mag?.toFixed(4) ?? "—"} mag
-              </td><td rowSpan={3}>COSMOS F814W count shape → Euclid VIS count shape</td><td><Badge tone="good">sent</Badge></td></tr>
-              <tr><td>Magnitude slope</td><td className="mono">
-                {parameters?.cosmos_vis_magnitude_slope?.toFixed(4) ?? "—"}
-              </td><td><Badge tone="good">sent</Badge></td></tr>
-              <tr><td>Brightness scatter</td><td className="mono">
-                {parameters?.cosmos_vis_scatter_mag?.toFixed(4) ?? "—"} mag
-              </td><td><Badge tone="good">sent</Badge></td></tr>
-              <tr><td>Catalog completeness</td><td className="mono">
-                m50 {observation?.completeness_m50?.toFixed(3) ?? "—"} · width {observation?.completeness_width_mag?.toFixed(3) ?? "—"}
-              </td><td>Euclid faint-end turnover</td><td><Badge>local only</Badge></td></tr>
+              {fit.parameters.map((parameter, index) => <tr key={parameter.key}>
+                <td>{index === 0 || fit.parameters[index - 1].group !== parameter.group
+                  ? parameter.group : ""}</td>
+                <td>{parameter.label}</td>
+                <td className="mono">{parameter.value.toPrecision(5)}{parameter.standard_error != null
+                  ? ` ± ${parameter.standard_error.toPrecision(3)}` : ""}</td>
+                <td>{parameter.unit || "—"}</td>
+              </tr>)}
             </tbody>
           </table>
-        </div>
-        {fitWarning && (
-          <p className="fit-caution"><strong>Fit note:</strong> {fitWarning}. Verify the next rendered sample before regenerating training.</p>
-        )}
+        </div>}
+        {fit?.fit_quality.warnings.map((warning) => (
+          <p className="fit-caution" key={warning}><strong>Fit note:</strong> {warning}</p>
+        ))}
         <div className="calibration-actions">
           <Button disabled={localFit.busy}
             onClick={() => localFit.run(
               "/api/population-comparison/run-local-galaxy-calibration",
               {}, { onDone: refresh },
-            )}>{localFit.busy ? "Fitting locally…" : "Run local parameter fit"}</Button>
-          <Button variant="primary" disabled={
-              !recommendation?.recommendation_available
-              || allActive || activateRecommendation.busy
-            }
-            onClick={() => activateRecommendation.run(
-              "/api/population-comparison/activate-galaxy-recommendation",
+            )}>{localFit.busy ? "Fitting locally…" : "Refit joint distribution + plots"}</Button>
+          <Button variant="primary"
+            disabled={!candidate?.valid || activate.busy || localFit.busy}
+            onClick={() => activate.run(
+              "/api/population-comparison/activate-joint-galaxy",
               {}, { onDone: refresh },
-            )}>
-            {recommendation?.validated
-              ? "Activate recommended generator parameters"
-              : "Activate best fit with warnings"}
-          </Button>
+            )}>{activate.busy
+              ? "Activating…"
+              : state.is_active ? "Re-activate TNG model" : "Use this TNG model"}</Button>
+          <Badge tone={state.is_active ? "good" : "warn"}>
+            {state.is_active ? "generation-ready" : "not active"}
+          </Badge>
+          {state.is_active && (
+            <NavLink to="/sky" className="ui-btn ui-btn--primary">
+              Open Sky job submission
+            </NavLink>
+          )}
         </div>
+        {candidate?.generation && (
+          <p className="calibration-plain-note">
+            Submission draws {candidate.generation.surface_density_arcmin2.toFixed(2)} galaxies / arcmin²
+            from the fitted z × true-VIS × R<sub>e</sub> distribution over VIS {candidate.generation.vis_magnitude_min.toFixed(0)}–{candidate.generation.vis_magnitude_max.toFixed(0)}.
+            TNG morphology is assigned independently with diversity balancing.
+          </p>
+        )}
         <JobProgressView job={localFit.job} error={localFit.error} />
-        <JobProgressView job={activateRecommendation.job}
-          error={activateRecommendation.error} />
-        <div className="fasrc-submit-boundary">
-          <div className="fasrc-step-inline__head">
-            <div>
-              <div className="eyebrow">FASRC boundary</div>
-              <strong>Render fields with the activated proposal</strong>
-              <small>
-                Sends density, offset, slope, scatter, and the immutable fit
-                fingerprint. Completeness stays local; FASRC does not refit anything.
-              </small>
+        <JobProgressView job={activate.job} error={activate.error} />
+        {state.is_active && (
+          <div className="fasrc-submit-boundary">
+            <div className="fasrc-step-inline__head">
+              <div>
+                <span className="eyebrow">FASRC · synthetic generation</span>
+                <h3>Submit fields with this TNG population</h3>
+                <small>
+                  The job embeds fingerprint {state.active?.fingerprint?.slice(0, 12)}…
+                  and rechecks every population artifact before allocation.
+                </small>
+              </div>
             </div>
-            <Badge tone={allActive ? "good" : "warn"}>{allActive ? "ready" : "activate first"}</Badge>
+            {!starsActive && (
+              <p className="fit-caution">
+                <strong>Before submission:</strong> re-activate the current
+                Gaia + Euclid stellar prior below. No job will be queued while
+                that calibration is stale.
+              </p>
+            )}
+            <StepById stepId="synthetic_generate" embedded showHistory />
           </div>
-          <div className="row" style={{ gap: "var(--s4)", marginBottom: "var(--s3)" }}>
-            {(["train", "validate", "test"] as const).map((split) => (
-              <Checkbox key={split} checked={generationSplits.includes(split)}
-                onChange={(checked) => setGenerationSplits((current) => checked
-                  ? [...current, split]
-                  : current.filter((item) => item !== split))}>
-                regenerate {split}
-              </Checkbox>
-            ))}
-          </div>
-          {generationStep ? (
-            <StepCard step={generationStep as Step}
-              sshConnected={!!hst.data?.ssh_connected} embedded showHistory={false}
-              extraParams={{
-                galaxy_density_arcmin2:
-                  parameters?.galaxy_density_arcmin2 ?? "",
-                regenerate_splits: generationSplits.join(","),
-                extra_flags: generationSplits.length
-                  ? `--regenerate-splits=${generationSplits.join(",")}` : "",
-              }}
-              submitDisabled={!allActive || generationSplits.length === 0}
-              submitDisabledHint={!allActive
-                ? "activate the complete recommended parameter set first"
-                : "select at least one split to regenerate"} />
-          ) : <Empty>synthetic generation step unavailable</Empty>}
-        </div>
+        )}
       </CardBody>
     </Card>
   );

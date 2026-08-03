@@ -12,11 +12,12 @@ from euclid_polish.web.helpers.paths import _sky_records_remote_dir
 from euclid_polish.web.helpers.population_calibration import (
     activate_density_candidate,
     activate_galaxy_recommendation,
+    activate_joint_galaxy_candidate,
     activate_photometric_transfer,
     activate_star_candidate,
     density_state,
-    fit_local_catalog_density,
     galaxy_recommendation_state,
+    joint_galaxy_state,
     star_state,
     transfer_state,
 )
@@ -61,72 +62,36 @@ def _run_analysis_script(
 
 
 def _fit_and_evaluate_cached_cones(
-    cap, *, progress_start: int = 0, progress_total: int = 3,
+    cap, *, progress_start: int = 0, progress_total: int = 1,
 ) -> dict:
-    """Rebuild current truth, fit cached cones, and refresh evaluations."""
+    """Fit the shared analytical population to cached local catalogues."""
     project_root = Path(__file__).resolve().parents[3]
-    cap.tick(progress_start, progress_total, "rebuild current synthetic truth")
-    _run_analysis_script(
-        project_root, "scripts/fit_tng_vis_counts.py"
-    )
-    cap.tick(progress_start + 1, progress_total, "fit COSMOS observation layer")
+    cap.tick(progress_start, progress_total, "fit joint COSMOS + Euclid population")
     _run_analysis_script(
         project_root, "scripts/fit_cosmos_euclid_counts.py"
     )
     fit_payload = read_cosmos_euclid_fit()
     if fit_payload is None:
         raise RuntimeError("fit completed without a readable fit artifact")
-
-    latent_estimate = (
-        fit_payload.get("euclid_latent_density_estimate")
-        or fit_payload.get("generator_density_recommendation")
-        or {}
+    quality = fit_payload.get("fit_quality") or {}
+    response = ((fit_payload.get("model") or {}).get("euclid_response") or {})
+    cosmos_deviance = quality.get(
+        "cosmos_reduced_negative_binomial_deviance",
+        quality.get("cosmos_reduced_poisson_deviance", 0.0),
     )
-    use_local_normalization = bool(
-        latent_estimate.get(
-            "use_local_normalization",
-            latent_estimate.get("apply_to_config", False),
-        )
+    cap.write(
+        "COSMOS reduced deviance "
+        f"{float(cosmos_deviance):.2f}; "
+        "Euclid reduced deviance "
+        f"{float(quality.get('euclid_reduced_poisson_deviance', 0.0)):.2f}; "
+        "VIS m50 "
+        f"{float(response.get('completeness_m50', 0.0)):.2f}\n"
     )
-    latent_density = None
-    if use_local_normalization:
-        latent_density = float(latent_estimate["density_arcmin2"])
-        cap.write(
-            "Euclid-inferred latent density "
-            f"{latent_density:.2f} / arcmin² "
-            "(completeness-model estimate, not a generator setting)\n"
-        )
-
-    cap.tick(
-        progress_start + 2, progress_total,
-        "refresh field-statistics evaluations",
-    )
-    refreshed = refresh_population_comparison()
-    cap.tick(progress_start + 3, progress_total, "fit and evaluations ready")
-
-    selected_fit = (
-        fit_payload.get("local_normalization_sensitivity_fit")
-        if use_local_normalization
-        else fit_payload.get("fit")
-    ) or {}
-    if selected_fit:
-        cap.write(
-            "fit deviance / dof "
-            f"{float(selected_fit.get('poisson_deviance', 0.0)):.2f} / "
-            f"{int(selected_fit.get('dof', 0))}; "
-            f"VIS 50% completeness "
-            f"{float(selected_fit.get('completeness_m50', 0.0)):.2f}\n"
-        )
-    if refreshed is None:
-        cap.write(
-            "Fit saved; run Rebuild statistics once to create the field cache.\n"
-        )
-    else:
-        cap.write("refreshed cached population evaluations\n")
+    cap.write("No TNG catalogue or image was read.\n")
+    cap.tick(progress_start + 1, progress_total, "joint population fit ready")
     return {
         "fit": fit_payload,
-        "euclid_latent_density_arcmin2": latent_density,
-        "population_refreshed": refreshed is not None,
+        "tng_used": False,
     }
 
 
@@ -197,6 +162,7 @@ def register(app):
             "calibrations": {
                 "brightness_transfer": transfer_state(),
                 "galaxy_density": density_state(),
+                "joint_galaxy": joint_galaxy_state(),
                 "stars": star_state(),
                 "galaxy_recommendation": galaxy_recommendation_state(),
             },
@@ -364,6 +330,15 @@ def register(app):
         )
 
     @app.route(
+        "/api/population-comparison/activate-joint-galaxy", methods=["POST"]
+    )
+    def api_population_comparison_activate_joint_galaxy():
+        return activation_job(
+            "activate joint analytical TNG population",
+            activate_joint_galaxy_candidate,
+        )
+
+    @app.route(
         "/api/population-comparison/query-gaia-stars", methods=["POST"]
     )
     def api_population_comparison_query_gaia_stars():
@@ -442,24 +417,20 @@ def register(app):
         methods=["POST"],
     )
     def api_population_comparison_run_local_galaxy_calibration():
-        """Fit all galaxy-population parameters from cached local catalogs."""
+        """Fit the shared analytical population from cached local catalogues."""
         def run(cap):
             project_root = Path(__file__).resolve().parents[3]
-            cap.tick(0, 3, "fit brightness transfer and completeness")
+            cap.tick(0, 1, "fit smooth COSMOS + Euclid population")
             _run_analysis_script(
-                project_root, "scripts/fit_cosmos_euclid_counts.py", "--no-plot"
+                project_root, "scripts/fit_cosmos_euclid_counts.py"
             )
-            cap.tick(1, 3, "draw local COSMOS/TNG population")
-            result = fit_local_catalog_density()
-            cap.tick(2, 3, "assemble joint generator recommendation")
-            recommendation = galaxy_recommendation_state()
-            cap.write(
-                "recommended raw density "
-                f"{float(result['recommended_density_arcmin2']):.1f} "
-                "draws / arcmin^2; no fields were rendered\n"
-            )
-            cap.tick(3, 3, "local galaxy calibration ready")
-            return {"density": result, "recommendation": recommendation}
+            result = read_cosmos_euclid_fit()
+            if result is None:
+                raise RuntimeError("joint fit completed without an artifact")
+            cap.write("Saved all parameter and survey-comparison plots locally.\n")
+            cap.write("No TNG catalogue or image was read.\n")
+            cap.tick(1, 1, "joint analytical population ready")
+            return {"fit": result, "tng_used": False}
 
         return jsonify({
             "ok": True,

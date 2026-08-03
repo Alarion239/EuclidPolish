@@ -43,6 +43,10 @@ def active_star_path() -> Path:
     return calibration_dir() / "star_population_active.json"
 
 
+def active_joint_galaxy_path() -> Path:
+    return calibration_dir() / "joint_galaxy_population_active.json"
+
+
 def _read(path: Path) -> dict[str, Any] | None:
     try:
         value = json.loads(path.read_text())
@@ -56,6 +60,98 @@ def _write(path: Path, payload: dict[str, Any]) -> None:
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(json.dumps(payload, indent=2, sort_keys=True))
     os.replace(temporary, path)
+
+
+def joint_galaxy_candidate() -> dict[str, Any] | None:
+    """Return a compact generation artifact derived from the joint fit."""
+    source_path = Path(Config.JOINT_GALAXY_POPULATION_FIT_PATH)
+    source = _read(source_path)
+    if not source or source.get("version") != 2:
+        return None
+    if source.get("kind") != "joint_intrinsic_galaxy_population":
+        return None
+    fingerprint = str(source.get("fingerprint") or "")
+    model = source.get("model") or {}
+    diagnostics = source.get("diagnostics") or {}
+    tng_full = ((diagnostics.get("tng_draw") or {}).get("full") or {})
+    try:
+        density = float(tng_full["surface_density_arcmin2"])
+        luminosity = dict(model["luminosity_function"])
+        size = dict(model["size_relation"])
+        response = dict(model["euclid_response"])
+        vis_edges = ((source.get("method") or {}).get("tng_draw_window") or [
+            18.0, 30.0,
+        ])
+        vis_min, vis_max = (float(vis_edges[0]), float(vis_edges[1]))
+    except (KeyError, TypeError, ValueError, IndexError):
+        return None
+    if (
+        len(fingerprint) != 64 or not math.isfinite(density) or density <= 0.0
+        or not (math.isfinite(vis_min) and math.isfinite(vis_max)
+                and vis_min < vis_max)
+    ):
+        return None
+    quality = dict(source.get("fit_quality") or {})
+    return {
+        "version": 1,
+        "kind": "joint_analytical_tng_draw",
+        "valid": True,
+        "validated": bool(quality.get("valid")),
+        "warnings": list(quality.get("warnings") or []),
+        "fingerprint": fingerprint,
+        "source_artifact": str(source_path),
+        "model": {
+            "luminosity_function": luminosity,
+            "size_relation": size,
+            "euclid_response": response,
+        },
+        "generation": {
+            "surface_density_arcmin2": density,
+            "vis_magnitude_min": vis_min,
+            "vis_magnitude_max": vis_max,
+            "morphology_assignment": "balanced_random_tng_atlas",
+            "position_process": "homogeneous_poisson",
+        },
+        "fit_quality": {
+            key: quality.get(key)
+            for key in (
+                "valid", "cosmos_reduced_negative_binomial_deviance",
+                "euclid_bright_transfer_reduced_poisson_deviance",
+                "euclid_reduced_poisson_deviance",
+                "euclid_cross_validated_reduced_poisson_deviance",
+            )
+        },
+    }
+
+
+def joint_galaxy_state() -> dict[str, Any]:
+    candidate = joint_galaxy_candidate()
+    active = _read(active_joint_galaxy_path())
+    return {
+        "candidate": candidate,
+        "active": active,
+        "is_active": bool(
+            candidate and active and candidate.get("valid")
+            and candidate.get("fingerprint") == active.get("fingerprint")
+        ),
+    }
+
+
+def activate_joint_galaxy_candidate() -> dict[str, Any]:
+    """Atomically activate the fitted joint draw model for future jobs."""
+    candidate = joint_galaxy_candidate()
+    if not candidate or not candidate.get("valid"):
+        raise ValueError("No structurally valid joint galaxy fit is available")
+    payload = {**candidate, "active": True}
+    _write(active_joint_galaxy_path(), payload)
+    from euclid_polish.web import job_config
+
+    job_config.update({
+        "galaxy_density_arcmin2": float(
+            payload["generation"]["surface_density_arcmin2"]
+        )
+    })
+    return payload
 
 
 def _catalog_weighted_fingerprint() -> str | None:
@@ -390,7 +486,10 @@ def fit_local_catalog_density(
     if bootstraps < 100:
         raise ValueError("Local calibration needs at least 100 bootstraps")
 
-    prior = CosmosTngPrior(Config.COSMOS_TNG_PRIOR_PATH)
+    prior = CosmosTngPrior(
+        Config.COSMOS_TNG_PRIOR_PATH,
+        photometric_fit_path=Config.COSMOS_EUCLID_FIT_PATH,
+    )
     if len(prior) < 1_000:
         raise ValueError("COSMOS/TNG prior has too few generator-ready rows")
     atlas_summary = load_parameter_summary(Config.TNG_ATLAS_PARAMETERS_PATH)

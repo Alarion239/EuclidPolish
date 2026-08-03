@@ -1431,54 +1431,28 @@ class SyntheticGenerateStep(RunPipelineStep):
         )
 
     def prepare_params(self, params: dict[str, Any]) -> dict[str, Any]:
-        """Freeze the explicitly activated fixed transfer into the remote job."""
+        """Freeze the explicitly activated joint population into the job."""
         from euclid_polish.web.helpers.population_calibration import (
-            active_transfer,
-            density_state,
+            joint_galaxy_state,
         )
 
         prepared = super().prepare_params(params)
-        transfer = active_transfer()
-        if not transfer:
+        joint_status = joint_galaxy_state()
+        joint = joint_status.get("active") or {}
+        if not joint_status.get("is_active") or not joint:
             raise ValueError(
-                "activate a valid fixed-normalization brightness transfer first"
+                "activate the current joint analytical TNG population first"
             )
-        coefficients = transfer.get("coefficients") or {}
-        fingerprint = str(transfer.get("fingerprint") or "")
-        prepared["_cosmos_vis_offset_mag"] = coefficients["offset_mag"]
-        prepared["_cosmos_vis_magnitude_slope"] = coefficients["magnitude_slope"]
-        prepared["_cosmos_vis_scatter_mag"] = coefficients["scatter_mag"]
-        prepared["_cosmos_vis_transfer_source"] = (
-            f"fixed_normalization_fit:{fingerprint}:activated"
-        )
-        prepared["_cosmos_vis_transfer_fingerprint"] = fingerprint
-        prepared["_cosmos_vis_transfer_artifact_json"] = json.dumps(
-            transfer, separators=(",", ":"), sort_keys=True,
-        )
-        density_status = density_state()
-        if not density_status.get("is_active"):
-            raise ValueError(
-                "active galaxy density is stale or incompatible; rerun the "
-                "COSMOS calibration and activate it again"
-            )
-        density = density_status.get("active") or {}
-        if not density:
-            raise ValueError(
-                "activate the joint galaxy calibration before generating fields"
-            )
-        if density.get("transfer_fingerprint") != fingerprint:
-            raise ValueError(
-                "active galaxy density and brightness transfer do not match"
-            )
-        fitted_density = density.get(
-            "activated_density_arcmin2",
-            density.get("recommended_density_arcmin2"),
+        prepared["_joint_galaxy_population_json"] = json.dumps(
+            joint, separators=(",", ":"), sort_keys=True,
         )
         try:
-            prepared["galaxy_density_arcmin2"] = float(fitted_density)
-        except (TypeError, ValueError) as exc:
+            prepared["galaxy_density_arcmin2"] = float(
+                joint["generation"]["surface_density_arcmin2"]
+            )
+        except (KeyError, TypeError, ValueError) as exc:
             raise ValueError(
-                "active galaxy calibration has no finite density"
+                "active joint galaxy population has no finite density"
             ) from exc
         from euclid_polish.web.helpers.population_calibration import star_state
         star_status = star_state()
@@ -1531,30 +1505,17 @@ class SyntheticGenerateStep(RunPipelineStep):
         if not (0.0 <= tng_density < float("inf")):
             raise ValueError(f"invalid TNG density: {raw_tng_density!r}")
         cmd += ["--galaxy-density-arcmin2", f"{tng_density:g}"]
+        joint_population = str(
+            params.get("_joint_galaxy_population_json", "") or ""
+        ).strip()
+        if joint_population:
+            cmd += ["--joint-galaxy-population-json", joint_population]
         for key, flag in (("tng_dir", "--tng-dir"),
                           ("tng_properties", "--tng-properties"),
                           ("tng_radius_manifest", "--tng-radius-manifest")):
             value = str(params.get(key, "") or "").strip()
             if value:
                 cmd += [flag, value]
-        transfer_values = (
-            params.get("_cosmos_vis_offset_mag"),
-            params.get("_cosmos_vis_magnitude_slope"),
-            params.get("_cosmos_vis_scatter_mag"),
-        )
-        if all(value is not None for value in transfer_values):
-            offset, slope, scatter = (float(value) for value in transfer_values)
-            cmd += [
-                "--cosmos-vis-offset-mag", f"{offset:.12g}",
-                "--cosmos-vis-magnitude-slope", f"{slope:.12g}",
-                "--cosmos-vis-scatter-mag", f"{scatter:.12g}",
-                "--cosmos-vis-transfer-source",
-                str(params.get(
-                    "_cosmos_vis_transfer_source", "embedded_web_fit"
-                )),
-                "--cosmos-vis-transfer-artifact-json",
-                str(params.get("_cosmos_vis_transfer_artifact_json", "")),
-            ]
         if params.get("_star_prior_json"):
             cmd += ["--star-prior-json", str(params["_star_prior_json"])]
         # Scene-population and forward-PSF knobs (from /config). Emit only when

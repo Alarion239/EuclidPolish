@@ -514,7 +514,8 @@ class TestRegistry:
         from euclid_polish.config import Config
         step = REGISTRY.get("synthetic_generate")
         base = {"n_train": 10, "n_valid": 2, "image_size": 252,
-                "batch_size": 4, "steps": 100}
+                "batch_size": 4, "steps": 100,
+                "galaxy_density_arcmin2": Config.GALAXY_DENSITY_ARCMIN2}
         argv = step.build_command(base)
         assert (argv[argv.index("--galaxy-density-arcmin2") + 1]
                 == f"{Config.GALAXY_DENSITY_ARCMIN2:g}")
@@ -526,33 +527,34 @@ class TestRegistry:
         ] == "175"
         assert "--sersic-density-arcmin2" not in argv
 
-    def test_synthetic_generate_embeds_local_photometric_fit(
+    def test_synthetic_generate_embeds_activated_joint_population(
         self, monkeypatch, tmp_path,
     ):
-        """FASRC jobs embed the exact explicitly activated transfer."""
+        """FASRC jobs embed the exact explicitly activated joint model."""
         del tmp_path
+        joint = {
+            "version": 1,
+            "kind": "joint_analytical_tng_draw",
+            "valid": True,
+            "active": True,
+            "fingerprint": "a" * 64,
+            "generation": {"surface_density_arcmin2": 207.3388649567},
+            "model": {},
+        }
         monkeypatch.setattr(
-            "euclid_polish.web.helpers.population_calibration.active_transfer",
-            lambda: {
-                "fingerprint": "a" * 64,
-                "coefficients": {
-                    "offset_mag": 0.286,
-                    "magnitude_slope": 0.745,
-                    "scatter_mag": 0.392,
-                },
-                "fit_quality": {"valid": True, "warnings": []},
-            },
+            "euclid_polish.web.helpers.population_calibration.joint_galaxy_state",
+            lambda: {"candidate": joint, "active": joint, "is_active": True},
         )
         monkeypatch.setattr(
-            "euclid_polish.web.helpers.population_calibration.active_star",
-            lambda: None,
-        )
-        monkeypatch.setattr(
-            "euclid_polish.web.helpers.population_calibration.density_state",
+            "euclid_polish.web.helpers.population_calibration.star_state",
             lambda: {"active": {
-                "transfer_fingerprint": "a" * 64,
-                "activated_density_arcmin2": 255.0,
-            }},
+                "population": {
+                    "density_arcmin2": 10.0,
+                    "magnitude_slope": 0.3,
+                    "mag_bright": 14.0,
+                    "mag_faint": 28.0,
+                },
+            }, "is_active": True},
         )
         step = REGISTRY.get("synthetic_generate")
         prepared = step.prepare_params({
@@ -564,20 +566,11 @@ class TestRegistry:
         })
         argv = step.build_command(prepared)
 
-        assert argv[argv.index("--cosmos-vis-offset-mag") + 1] == "0.286"
-        assert (
-            argv[argv.index("--cosmos-vis-magnitude-slope") + 1]
-            == "0.745"
-        )
-        assert argv[argv.index("--cosmos-vis-scatter-mag") + 1] == "0.392"
-        assert argv[argv.index("--cosmos-vis-transfer-source") + 1].startswith(
-            "fixed_normalization_fit:"
-        )
+        assert argv[argv.index("--galaxy-density-arcmin2") + 1] == "207.339"
         embedded = json.loads(
-            argv[argv.index("--cosmos-vis-transfer-artifact-json") + 1]
+            argv[argv.index("--joint-galaxy-population-json") + 1]
         )
         assert embedded["fingerprint"] == "a" * 64
-        assert argv[argv.index("--galaxy-density-arcmin2") + 1] == "255"
 
     def test_synthetic_generate_force_flag(self):
         """The "Override existing data" checkbox adds --force (regenerate from

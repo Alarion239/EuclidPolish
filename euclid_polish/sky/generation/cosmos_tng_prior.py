@@ -16,6 +16,13 @@ import numpy as np
 
 from euclid_polish.config import Config
 from euclid_polish.photometry import ab_mag_to_electrons
+from euclid_polish.population.joint_galaxy import (
+    EuclidResponseFit,
+    SchechterEvolutionFit,
+    SizeEvolutionFit,
+    latent_population_cube,
+    tng_draw_population_cube,
+)
 
 # This is an explicit project calibration choice, not a TNG mass correction.
 # It is used only to keep quenched and star-forming morphology donors separate
@@ -420,3 +427,113 @@ class CosmosTngPrior:
                 f"COSMOS prior has no {activity_class!r} morphology population"
             )
         return float(np.quantile(values.astype(np.float64), float(quantile)))
+
+
+class JointGalaxyPopulationPrior:
+    """Sample the activated analytical ``p(z, m_VIS, R_e)`` TNG target.
+
+    This is deliberately condition-free with respect to morphology: redshift,
+    true VIS magnitude, and angular half-light radius come from the fitted
+    joint population, while the simulator assigns a diversity-balanced random
+    TNG atlas donor.  Random morphology is an explicit model choice, never a
+    fallback for a missing empirical row.
+    """
+
+    morphology_mode = "balanced_random_tng_atlas"
+
+    def __init__(self, payload: dict):
+        if payload.get("version") != 1:
+            raise ValueError("joint galaxy population has an unsupported version")
+        if payload.get("kind") != "joint_analytical_tng_draw":
+            raise ValueError("joint galaxy population has the wrong kind")
+        if not payload.get("active") or not payload.get("valid"):
+            raise ValueError("joint galaxy population is not active and valid")
+        self.fingerprint = str(payload.get("fingerprint") or "")
+        if len(self.fingerprint) != 64:
+            raise ValueError("joint galaxy population fingerprint is invalid")
+        model = payload.get("model") or {}
+        try:
+            luminosity = dict(model["luminosity_function"])
+            size = dict(model["size_relation"])
+            response = dict(model["euclid_response"])
+            luminosity["standard_errors"] = tuple(
+                luminosity["standard_errors"]
+            )
+            size["standard_errors"] = tuple(size["standard_errors"])
+            response["standard_errors"] = tuple(response["standard_errors"])
+            lf_fit = SchechterEvolutionFit(**luminosity)
+            size_fit = SizeEvolutionFit(**size)
+            response_fit = EuclidResponseFit(**response)
+            expected_density = float(
+                payload["generation"]["surface_density_arcmin2"]
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("joint galaxy population model is incomplete") from exc
+        draw = tng_draw_population_cube(
+            latent_population_cube(lf_fit, size_fit), response_fit,
+        )
+        density = np.asarray(draw["density"], dtype=np.float64)
+        if (
+            density.ndim != 3 or not np.isfinite(density).all()
+            or np.any(density < 0.0) or float(np.sum(density)) <= 0.0
+        ):
+            raise ValueError("joint galaxy population density cube is invalid")
+        realised_density = float(np.sum(density))
+        if not np.isclose(realised_density, expected_density, rtol=2e-6, atol=1e-9):
+            raise ValueError(
+                "joint galaxy population density does not match its activation"
+            )
+        self.surface_density_arcmin2 = realised_density
+        self._shape = density.shape
+        self._cdf = np.cumsum(density.ravel())
+        self._cdf /= self._cdf[-1]
+        self._z_edges = np.asarray(draw["z_edges"], dtype=np.float64)
+        self._magnitude_edges = np.asarray(
+            draw["vis_magnitude_edges"], dtype=np.float64,
+        )
+        self._log_radius_edges = np.asarray(
+            draw["log_radius_edges"], dtype=np.float64,
+        )
+
+    def __len__(self) -> int:
+        return int(self._cdf.size)
+
+    def sample(self, rng: np.random.Generator) -> CosmosTngDraw:
+        flat_index = min(
+            int(np.searchsorted(self._cdf, rng.random(), side="right")),
+            self._cdf.size - 1,
+        )
+        z_index, magnitude_index, radius_index = np.unravel_index(
+            flat_index, self._shape,
+        )
+        redshift = float(rng.uniform(
+            self._z_edges[z_index], self._z_edges[z_index + 1],
+        ))
+        magnitude = float(rng.uniform(
+            self._magnitude_edges[magnitude_index],
+            self._magnitude_edges[magnitude_index + 1],
+        ))
+        log_radius = float(rng.uniform(
+            self._log_radius_edges[radius_index],
+            self._log_radius_edges[radius_index + 1],
+        ))
+        return CosmosTngDraw(
+            catalog_id=(
+                f"joint:{self.fingerprint[:12]}:{z_index}:"
+                f"{magnitude_index}:{radius_index}"
+            ),
+            mag_hst_f814w=float("nan"),
+            target_vis_mag=magnitude,
+            target_vis_flux_e=float(ab_mag_to_electrons(
+                magnitude, Config.get_band("VIS")
+            )),
+            z=redshift,
+            logmass=float("nan"),
+            re_arcsec=float(10.0 ** log_radius),
+            imputed_size=False,
+            brightness_transfer=(
+                f"joint_analytical_population:{self.fingerprint}:activated"
+            ),
+            mass_quantile=float("nan"),
+            activity_class="unconditioned",
+        )

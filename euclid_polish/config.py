@@ -120,14 +120,19 @@ class Config:
     # netscratch without touching code. Default keeps the historical
     # ``./data`` behavior for local checkouts.
     DATA_DIR = os.environ.get("EUCLID_POLISH_DATA_DIR", "./data")
-    COSMOS_TNG_PRIOR_PATH = os.path.join(
+    COSMOS_POPULATION_PRIOR_PATH = os.path.join(
         DATA_DIR, "population_comparison", "cosmos2025",
         "cosmos2025_population_prior.npz",
     )
-    COSMOS_EUCLID_FIT_PATH = os.path.join(
+    COSMOS_TNG_PRIOR_PATH = COSMOS_POPULATION_PRIOR_PATH
+    JOINT_GALAXY_POPULATION_FIT_PATH = os.path.join(
         DATA_DIR, "population_comparison", "cosmos2025",
-        "cosmos_euclid_density_fit.json",
+        "joint_population_fit.json",
     )
+    # Kept as a compatibility name for historical affine-transfer readers.
+    # Current WebUI jobs instead embed the explicitly activated compact joint
+    # population artifact and reconstruct its draw cube on each worker.
+    COSMOS_EUCLID_FIT_PATH = JOINT_GALAXY_POPULATION_FIT_PATH
     TNG_ATLAS_PARAMETERS_PATH = os.path.join(
         DATA_DIR, "_tng_infographics", "tng_atlas_parameters.csv",
     )

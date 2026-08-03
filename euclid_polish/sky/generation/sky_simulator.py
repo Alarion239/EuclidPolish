@@ -31,6 +31,7 @@ from euclid_polish.sky.generation.cosmos_tng_prior import (
     MORPHOLOGY_BALANCE_POWER,
     MORPHOLOGY_MIN_EFFECTIVE_DONORS,
     CosmosTngPrior,
+    JointGalaxyPopulationPrior,
     conditional_mass_quantiles,
     cross_validated_mass_bandwidth,
     quantile_transport_weights,
@@ -254,7 +255,7 @@ class SkySimulator:
 
     def __init__(
         self,
-        population_prior: CosmosTngPrior | None,
+        population_prior: CosmosTngPrior | JointGalaxyPopulationPrior | None,
         config: SkySimulatorConfig | None = None,
     ):
         self.population_prior = population_prior
@@ -462,6 +463,41 @@ class SkySimulator:
             "worker_donor_use_count": use_count,
         }
 
+    def _pick_random_field_galaxy(
+        self, rng: np.random.Generator,
+    ) -> tuple[list[tuple[str, str]], dict[str, float | int | str]]:
+        """Choose an explicitly unconditioned, diversity-balanced TNG donor."""
+        if (
+            self._atlas_logm is None
+            or self._atlas_activity_class is None
+            or self._atlas_mass_quantile is None
+        ):
+            raise ValueError(
+                "random TNG morphology assignment requires complete mass and "
+                "SFR properties for every donor"
+            )
+        balance = np.power(
+            1.0 + self._morphology_use_counts.astype(np.float64),
+            -MORPHOLOGY_BALANCE_POWER,
+        )
+        probabilities = balance / np.sum(balance)
+        selected = int(rng.choice(len(self.tng_galaxies), p=probabilities))
+        use_count = int(self._morphology_use_counts[selected]) + 1
+        self._morphology_use_counts[selected] = use_count
+        return [self.tng_galaxies[selected]], {
+            "activity_class": str(self._atlas_activity_class[selected]),
+            "target_mass_quantile": float("nan"),
+            "tng_mass_quantile": float(self._atlas_mass_quantile[selected]),
+            "native_tng_logmass": float(self._atlas_logm[selected]),
+            "morphology_proxy_logmass": float("nan"),
+            "selection_probability": float(probabilities[selected]),
+            "effective_donors": float(
+                1.0 / np.sum(probabilities * probabilities)
+            ),
+            "kernel_bandwidth_quantile": float("nan"),
+            "worker_donor_use_count": use_count,
+        }
+
     # ------------------------------------------------------------------ #
     def _add_tng_galaxy(
         self, canvas_4ch: np.ndarray, rng: np.random.Generator,
@@ -470,9 +506,14 @@ class SkySimulator:
         if self.population_prior is None:
             return None
         draw = self.population_prior.sample(rng)
-        galaxies, morphology = self._pick_field_galaxy(
-            rng, draw.mass_quantile, draw.activity_class,
-        )
+        if getattr(self.population_prior, "morphology_mode", "") == (
+            "balanced_random_tng_atlas"
+        ):
+            galaxies, morphology = self._pick_random_field_galaxy(rng)
+        else:
+            galaxies, morphology = self._pick_field_galaxy(
+                rng, draw.mass_quantile, draw.activity_class,
+            )
         res = sample_tng_stamp(
                                galaxies, rng,
                                pixel_scale_arcsec=self.config.pixel_scale,
@@ -515,7 +556,11 @@ class SkySimulator:
             ],
             "morphology_activity_class": morphology["activity_class"],
             "galaxy_density_arcmin2": float(self.config.galaxy_density_arcmin2),
-            "population_prior": "cosmos2025_joint",
+            "population_prior": (
+                "joint_analytical_v1"
+                if isinstance(self.population_prior, JointGalaxyPopulationPrior)
+                else "cosmos2025_joint"
+            ),
             "mag_hst_f814w": draw.mag_hst_f814w,
             "target_vis_mag": draw.target_vis_mag,
             "brightness_transfer": draw.brightness_transfer,

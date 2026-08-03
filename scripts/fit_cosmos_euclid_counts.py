@@ -1,29 +1,24 @@
 #!/usr/bin/env python3
-"""Fit Euclid VIS detections as an observation of the COSMOS population.
+"""Fit one smooth analytical galaxy population to COSMOS and Euclid.
 
-COSMOS2025 provides the latent galaxy count shape.  The fit is intentionally
-restricted to an observation layer:
-
-* a global population normalization;
-* a COSMOS F814W -> Euclid VIS magnitude offset and Gaussian scatter;
-* a logistic Euclid detection completeness curve.
-
-This prevents the Euclid catalog turnover from being interpreted as a physical
-decline in the faint galaxy population.  The output plot keeps the latent and
-detected curves visually distinct and includes the current rendered synthetic
-truth when its catalog-only fit CSV is available.
+The latent distribution is an evolving Schechter intensity in redshift and
+F814W absolute-like magnitude, multiplied by a lognormal physical-size
+distribution.  COSMOS constrains the latent redshift and size relations;
+Euclid constrains the projection through a photometric response, a
+resolution-limited size response, and surface-brightness-dependent
+completeness.  No TNG catalogue or image is read by this script.
 """
 
 from __future__ import annotations
 
 import argparse
-import csv
+import hashlib
 import json
 import math
 import os
 import sys
 import tempfile
-from dataclasses import asdict, dataclass
+import textwrap
 from pathlib import Path
 from typing import Any
 
@@ -34,714 +29,1209 @@ os.environ.setdefault(
     "MPLCONFIGDIR", os.path.join(tempfile.gettempdir(), "euclid_mpl_cache")
 )
 
+import matplotlib
+
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
-from scipy.ndimage import gaussian_filter1d
-from scipy.optimize import least_squares
+from matplotlib.colors import LogNorm
 
-plt.switch_backend("Agg")
-
-
-DEFAULT_COSMOS_COUNTS = (
-    "data/population_comparison/cosmos2025/cosmos2025_number_counts.csv"
+from euclid_polish.config import Config
+from euclid_polish.population.joint_galaxy import (
+    COSMOS_AREA_ARCMIN2,
+    COSMOS_FIT_MAG_MAX,
+    COSMOS_FIT_MAG_MIN,
+    COSMOS_FIT_Z_MAX,
+    COSMOS_FIT_Z_MIN,
+    EUCLID_LOG_RE_EDGES,
+    EUCLID_MAG_EDGES,
+    LF_MAG_EDGES,
+    LF_Z_EDGES,
+    fit_euclid_response,
+    fit_payload,
+    fit_schechter_evolution,
+    fit_size_evolution,
+    latent_population_cube,
+    predict_euclid_histogram,
+    read_cosmos_population,
+    read_euclid_population,
+    signed_poisson_residual,
+    tng_draw_population_cube,
 )
+
+DEFAULT_COSMOS = Config.COSMOS_POPULATION_PRIOR_PATH
 DEFAULT_EUCLID = "data/population_comparison/euclid_population.csv"
 DEFAULT_EUCLID_META = "data/population_comparison/euclid_population_meta.json"
-DEFAULT_SYNTHETIC = "data/population_comparison/tng_catalog_vis_fit.csv"
 DEFAULT_OUTPUT_DIR = "data/population_comparison/cosmos2025"
+OUTPUT_JSON = "joint_population_fit.json"
+OUTPUT_OVERVIEW = "joint_population_fit.png"
+OUTPUT_PLANES = "joint_population_joint_planes.png"
+OUTPUT_PARAMETERS = "joint_population_parameters.png"
+OUTPUT_CROSS_VALIDATION = "joint_population_cross_validation.png"
+OUTPUT_CORE_MARGINALS = "joint_population_core_marginals.png"
 
-DISPLAY_BINS = np.arange(20.0, 28.0001, 0.5)
-MODEL_STEP = 0.01
-MODEL_GRID = np.arange(17.0 + MODEL_STEP / 2, 32.0, MODEL_STEP)
-
-
-@dataclass(frozen=True)
-class ObservationFit:
-    population_scale: float
-    vis_minus_f814w_mag: float
-    magnitude_slope: float
-    scatter_mag: float
-    completeness_m50: float
-    completeness_width_mag: float
-    poisson_deviance: float
-    dof: int
+EUCLID_UNRESOLVED_RADIUS_ARCSEC = 0.10
+EUCLID_CENSORED_LOG_RE_EDGES = np.unique(np.append(
+    EUCLID_LOG_RE_EDGES, math.log10(EUCLID_UNRESOLVED_RADIUS_ARCSEC),
+))
 
 
-def read_cosmos_density(
-    path: Path,
+def _read_area(path: Path) -> tuple[float, dict[str, Any]]:
+    payload = json.loads(path.read_text())
+    area = float(payload["area_arcmin2"])
+    if area <= 0.0:
+        raise ValueError(f"No positive area_arcmin2 in {path}")
+    return area, payload
+
+
+def _fingerprint(paths: list[Path], identity: dict[str, Any]) -> str:
+    digest = hashlib.sha256()
+    digest.update(json.dumps(identity, sort_keys=True).encode("utf-8"))
+    for path in paths:
+        digest.update(str(path).encode("utf-8"))
+        with path.open("rb") as handle:
+            while chunk := handle.read(1024 * 1024):
+                digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _histogram_density(
+    values: np.ndarray,
+    edges: np.ndarray,
     *,
-    selection: str = "clean",
-) -> tuple[np.ndarray, np.ndarray]:
-    """Read the extractor's differential counts in objects/arcmin²/mag."""
-    key = f"{selection}_density_per_mag_arcmin2"
-    centers: list[float] = []
-    density: list[float] = []
-    with path.open(newline="", encoding="utf-8") as handle:
-        reader = csv.DictReader(handle)
-        if reader.fieldnames is None or key not in reader.fieldnames:
-            raise ValueError(f"{path} has no {key!r} column")
-        for row in reader:
-            try:
-                center = float(row["mag_center"])
-                value = float(row[key])
-            except (KeyError, TypeError, ValueError):
-                continue
-            if np.isfinite(center) and np.isfinite(value) and value >= 0:
-                centers.append(center)
-                density.append(value)
-    if len(centers) < 3:
-        raise ValueError(f"No usable COSMOS number counts in {path}")
-    order = np.argsort(centers)
-    return (
-        np.asarray(centers, dtype=np.float64)[order],
-        np.asarray(density, dtype=np.float64)[order],
+    area: float | None = None,
+    weights: np.ndarray | None = None,
+) -> np.ndarray:
+    counts, _ = np.histogram(values, bins=edges, weights=weights)
+    divisor = np.diff(edges)
+    if area is not None:
+        divisor = divisor * area
+    return counts.astype(np.float64) / divisor
+
+
+def _weighted_quantile(values: np.ndarray, weights: np.ndarray, q: float) -> float:
+    valid = np.isfinite(values) & np.isfinite(weights) & (weights > 0.0)
+    if not np.any(valid):
+        return float("nan")
+    order = np.argsort(values[valid])
+    value = values[valid][order]
+    weight = weights[valid][order]
+    cdf = np.cumsum(weight) - 0.5 * weight
+    cdf /= np.sum(weight)
+    return float(np.interp(q, cdf, value))
+
+
+def _median_radius_by_magnitude(
+    magnitude: np.ndarray,
+    radius: np.ndarray,
+    weights: np.ndarray,
+    edges: np.ndarray,
+) -> list[float | None]:
+    result: list[float | None] = []
+    for lower, upper in zip(edges[:-1], edges[1:], strict=True):
+        selected = (magnitude >= lower) & (magnitude < upper)
+        value = _weighted_quantile(radius[selected], weights[selected], 0.5)
+        result.append(float(value) if np.isfinite(value) else None)
+    return result
+
+
+def _parameter_rows(lf_fit, size_fit, response_fit) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+
+    def add(group: str, names: list[tuple[str, str, str]], values, errors):
+        for index, (key, label, unit) in enumerate(names):
+            rows.append({
+                "group": group,
+                "key": key,
+                "label": label,
+                "value": float(values[index]),
+                "standard_error": (
+                    float(errors[index]) if np.isfinite(errors[index]) else None
+                ),
+                "unit": unit,
+            })
+
+    add("intrinsic luminosity function", [
+        ("log_phi_star", "ln phi* at z=0", "ln(Mpc^-3 mag^-1)"),
+        ("m_star_0", "effective M* at z=0", "mag"),
+        ("alpha", "faint-end slope alpha", ""),
+        ("m_star_log1pz_slope", "M* evolution Q", "mag / log10(1+z)"),
+        ("log_phi_log1pz_slope", "density evolution P", "power of (1+z)"),
+        ("alpha_log1pz_slope", "alpha evolution", "per log10(1+z)"),
+        ("m_star_log1pz_quadratic", "M* evolution Q2", "mag / log10(1+z)^2"),
+        ("log_phi_log1pz_quadratic", "density evolution P2", "power / log10(1+z)"),
+    ], [
+        lf_fit.log_phi_star, lf_fit.m_star_0, lf_fit.alpha,
+        lf_fit.m_star_log1pz_slope, lf_fit.log_phi_log1pz_slope,
+        lf_fit.alpha_log1pz_slope, lf_fit.m_star_log1pz_quadratic,
+        lf_fit.log_phi_log1pz_quadratic,
+    ], lf_fit.standard_errors)
+    rows.append({
+        "group": "count covariance",
+        "key": "cosmic_variance_fractional_scatter",
+        "label": "extra-Poisson fractional scatter tau",
+        "value": float(lf_fit.cosmic_variance_fractional_scatter),
+        "standard_error": None,
+        "unit": "fraction per COSMOS z-m cell",
+    })
+    add("intrinsic size relation", [
+        ("log10_r0_kpc", "log10 R0", "kpc"),
+        ("size_magnitude_slope", "size-luminosity slope", "dex / mag"),
+        ("size_log1pz_slope", "size evolution", "dex / log10(1+z)"),
+        ("size_magnitude_curvature", "size-luminosity curvature", "dex / mag^2"),
+        (
+            "size_magnitude_redshift_interaction",
+            "size luminosity-redshift interaction",
+            "dex / mag / log10(1+z)",
+        ),
+        ("size_scatter_dex", "intrinsic log-size scatter", "dex"),
+        ("size_scatter_magnitude_slope", "log-size scatter magnitude slope", "per mag"),
+    ], [
+        size_fit.log10_r0_kpc, size_fit.magnitude_slope,
+        size_fit.log1pz_slope, size_fit.magnitude_curvature,
+        size_fit.magnitude_redshift_interaction, size_fit.scatter_dex,
+        size_fit.scatter_magnitude_slope,
+    ], size_fit.standard_errors)
+    add("Euclid observation response", [
+        ("population_scale", "Euclid field normalization", "ratio"),
+        ("vis_minus_f814w_mag", "VIS-F814W offset", "mag"),
+        ("magnitude_slope", "VIS magnitude slope", ""),
+        ("scatter_mag", "intrinsic F814W-to-VIS scatter", "mag"),
+        ("size_scale", "MER size-proxy scale", "ratio"),
+        ("size_floor_arcsec", "MER size-proxy floor", "arcsec"),
+        ("completeness_m50", "point-source m50", "AB mag"),
+        ("completeness_width_mag", "completeness width", "mag"),
+        ("surface_brightness_penalty", "surface-brightness penalty", "logit / mag arcsec^-2"),
+    ], [
+        response_fit.population_scale, response_fit.vis_minus_f814w_mag,
+        response_fit.magnitude_slope, response_fit.scatter_mag,
+        response_fit.size_scale, response_fit.size_floor_arcsec,
+        response_fit.completeness_m50, response_fit.completeness_width_mag,
+        response_fit.surface_brightness_penalty,
+    ], response_fit.standard_errors)
+    rows.append({
+        "group": "Euclid observation response",
+        "key": "measurement_flux_error_uJy",
+        "label": "catalogue VIS aperture-flux error",
+        "value": float(response_fit.measurement_flux_error_uJy),
+        "standard_error": None,
+        "unit": "microJy; empirical weighted median",
+    })
+    return rows
+
+
+def _diagnostics(
+    cosmos: dict[str, np.ndarray],
+    euclid: dict[str, Any],
+    euclid_area: float,
+    lf_observed: np.ndarray,
+    lf_predicted: np.ndarray,
+    cube: dict[str, np.ndarray],
+    euclid_observed: np.ndarray,
+    euclid_predicted_density: np.ndarray,
+    response_fit,
+    *,
+    euclid_log_radius_edges: np.ndarray,
+    unresolved_radius_arcsec: float,
+) -> dict[str, Any]:
+    latent = np.asarray(cube["density"])
+    latent_m = np.asarray(cube["magnitude"])
+    latent_z = np.asarray(cube["z"])
+    latent_log_r = np.asarray(cube["log_radius"])
+    latent_mr = np.sum(latent, axis=0)
+    tng_draw = tng_draw_population_cube(cube, response_fit)
+    tng_draw_density = np.asarray(tng_draw["density"])
+    tng_magnitude = np.asarray(tng_draw["vis_magnitude"])
+    comparison_magnitude = (tng_magnitude >= 20.0) & (tng_magnitude < 28.0)
+
+    def tng_marginals(density: np.ndarray) -> dict[str, Any]:
+        return {
+            "redshift": {
+                "x": np.asarray(tng_draw["z"]).tolist(),
+                "density": (
+                    np.sum(density, axis=(1, 2))
+                    / np.diff(np.asarray(tng_draw["z_edges"]))
+                ).tolist(),
+                "unit": "objects / arcmin2 / dz",
+            },
+            "magnitude": {
+                "x": tng_magnitude.tolist(),
+                "density": (
+                    np.sum(density, axis=(0, 2))
+                    / np.diff(np.asarray(tng_draw["vis_magnitude_edges"]))
+                ).tolist(),
+                "unit": "objects / arcmin2 / mag",
+                "label": "true pre-noise Euclid VIS AB magnitude",
+            },
+            "angular_radius": {
+                "x": np.asarray(tng_draw["log_radius"]).tolist(),
+                "density": (
+                    np.sum(density, axis=(0, 1))
+                    / np.diff(np.asarray(tng_draw["log_radius_edges"]))
+                ).tolist(),
+                "unit": "objects / arcmin2 / dex",
+                "label": "true circularized Re / arcsec",
+            },
+            "surface_density_arcmin2": float(np.sum(density)),
+        }
+
+    tng_full = tng_marginals(tng_draw_density)
+    tng_comparison_density = np.zeros_like(tng_draw_density)
+    tng_comparison_density[:, comparison_magnitude, :] = (
+        tng_draw_density[:, comparison_magnitude, :]
+    )
+    tng_comparison = tng_marginals(tng_comparison_density)
+    tng_comparison["magnitude"]["density"] = [
+        value if selected else None
+        for value, selected in zip(
+            tng_comparison["magnitude"]["density"],
+            comparison_magnitude,
+            strict=True,
+        )
+    ]
+
+    cosmos_mag_observed = np.sum(lf_observed, axis=0) / (
+        COSMOS_AREA_ARCMIN2 * np.diff(LF_MAG_EDGES)
+    )
+    cosmos_mag_model = np.sum(lf_predicted, axis=0) / (
+        COSMOS_AREA_ARCMIN2 * np.diff(LF_MAG_EDGES)
+    )
+    euclid_mag_observed = np.sum(euclid_observed, axis=1) / (
+        euclid_area * np.diff(EUCLID_MAG_EDGES)
+    )
+    euclid_mag_model = np.sum(euclid_predicted_density, axis=1) / np.diff(
+        EUCLID_MAG_EDGES
     )
 
+    cosmos_z_observed = np.sum(lf_observed, axis=1) / (
+        COSMOS_AREA_ARCMIN2 * np.diff(LF_Z_EDGES)
+    )
+    cosmos_z_model = np.sum(lf_predicted, axis=1) / (
+        COSMOS_AREA_ARCMIN2 * np.diff(LF_Z_EDGES)
+    )
 
-def read_euclid_weighted_counts(
-    path: Path,
-    *,
-    maximum_spurious_probability: float = 0.5,
-    bins: np.ndarray = DISPLAY_BINS,
-) -> tuple[np.ndarray, dict[str, int | float | str]]:
-    """Read extended-source counts using probabilistic membership weights."""
-    counts = np.zeros(len(bins) - 1, dtype=np.float64)
-    rows = 0
-    selected_rows = 0
-    missing_probability = 0
-    invalid_probability = 0
-    with path.open(newline="", encoding="utf-8") as handle:
-        for row in csv.DictReader(handle):
-            rows += 1
-            raw_probability = str(row.get("point_like_prob", "")).strip()
-            if not raw_probability:
-                missing_probability += 1
-                continue
-            raw_spurious = str(row.get("spurious_prob", "")).strip()
-            try:
-                point_like_probability = float(raw_probability)
-                spurious = float(raw_spurious) if raw_spurious else 0.0
-                magnitude = float(row["mag_vis"])
-            except (KeyError, TypeError, ValueError):
-                continue
-            if not (
-                np.isfinite(point_like_probability)
-                and 0.0 <= point_like_probability <= 1.0
-            ):
-                invalid_probability += 1
-                continue
-            if (
-                np.isfinite(magnitude)
-                and np.isfinite(spurious)
-                and spurious <= maximum_spurious_probability
-                and bins[0] <= magnitude < bins[-1]
-            ):
-                index = int(np.searchsorted(bins, magnitude, side="right") - 1)
-                counts[index] += 1.0 - point_like_probability
-                selected_rows += 1
-    if counts.sum() <= 0.0:
-        raise ValueError(f"No usable probability-weighted Euclid rows in {path}")
-    return counts, {
-        "classification_weighting": "galaxy_weight=1-POINT_LIKE_PROB",
-        "catalog_rows": rows,
-        "selected_rows": selected_rows,
-        "missing_probability_rows": missing_probability,
-        "invalid_probability_rows": invalid_probability,
-        "expected_extended_sources": float(counts.sum()),
+    log_r_edges = np.arange(-2.4, 0.81, 0.12)
+    has_radius = np.asarray(cosmos["has_radius"], dtype=bool)
+    cosmos_radius = np.asarray(cosmos["radius_arcsec"])[has_radius]
+    cosmos_radius_density = _histogram_density(
+        np.log10(cosmos_radius), log_r_edges, area=COSMOS_AREA_ARCMIN2,
+    )
+    cosmos_model_magnitude = (
+        (latent_m >= COSMOS_FIT_MAG_MIN)
+        & (latent_m < COSMOS_FIT_MAG_MAX)
+    )
+    latent_radius_density = np.sum(
+        latent[:, cosmos_model_magnitude, :], axis=(0, 1),
+    ) / np.diff(np.asarray(cube["log_radius_edges"]))
+    euclid_radius_observed = np.sum(euclid_observed, axis=0) / (
+        euclid_area * np.diff(euclid_log_radius_edges)
+    )
+    euclid_radius_model = np.sum(euclid_predicted_density, axis=0) / np.diff(
+        euclid_log_radius_edges
+    )
+    threshold_log_radius = math.log10(unresolved_radius_arcsec)
+    unresolved_radius_bins = (
+        euclid_log_radius_edges[1:] <= threshold_log_radius + 1e-10
+    )
+    resolved_radius_bins = ~unresolved_radius_bins
+    unresolved_log_width = threshold_log_radius - euclid_log_radius_edges[0]
+
+    median_edges = np.arange(20.0, 27.5001, 0.5)
+    cosmos_magnitude = np.asarray(cosmos["magnitude"])[has_radius]
+    cosmos_median = _median_radius_by_magnitude(
+        cosmos_magnitude, cosmos_radius, np.ones(len(cosmos_radius)), median_edges,
+    )
+    resolved_euclid_rows = (
+        np.asarray(euclid["radius_arcsec"]) >= unresolved_radius_arcsec
+    )
+    euclid_median = _median_radius_by_magnitude(
+        np.asarray(euclid["magnitude"])[resolved_euclid_rows],
+        np.asarray(euclid["radius_arcsec"])[resolved_euclid_rows],
+        np.asarray(euclid["weight"])[resolved_euclid_rows], median_edges,
+    )
+    latent_m_grid, latent_r_grid = np.meshgrid(
+        latent_m, np.power(10.0, latent_log_r), indexing="ij",
+    )
+    latent_model_median = _median_radius_by_magnitude(
+        latent_m_grid.ravel(), latent_r_grid.ravel(), latent_mr.ravel(),
+        median_edges,
+    )
+    euclid_m_centers = 0.5 * (EUCLID_MAG_EDGES[:-1] + EUCLID_MAG_EDGES[1:])
+    euclid_r_centers = np.power(
+        10.0,
+        0.5 * (euclid_log_radius_edges[:-1] + euclid_log_radius_edges[1:]),
+    )
+    em, er = np.meshgrid(euclid_m_centers, euclid_r_centers, indexing="ij")
+    euclid_model_median = _median_radius_by_magnitude(
+        em.ravel(), er.ravel(), euclid_predicted_density.ravel(), median_edges,
+    )
+
+    mu_edges = np.arange(16.0, 32.0001, 0.4)
+    cosmos_mu = (
+        cosmos_magnitude + 2.5 * np.log10(2.0 * np.pi * cosmos_radius**2)
+    )
+    cosmos_mu_shape = _histogram_density(cosmos_mu, mu_edges)
+    cosmos_mu_shape /= max(np.sum(cosmos_mu_shape * np.diff(mu_edges)), 1e-12)
+    latent_mu = (
+        latent_m_grid + 2.5 * np.log10(2.0 * np.pi * latent_r_grid**2)
+    )
+    latent_mu_shape = _histogram_density(
+        latent_mu.ravel(), mu_edges, weights=latent_mr.ravel(),
+    )
+    latent_mu_shape /= max(np.sum(latent_mu_shape * np.diff(mu_edges)), 1e-12)
+    euclid_mu = (
+        np.asarray(euclid["magnitude"])[resolved_euclid_rows]
+        + 2.5 * np.log10(
+            2.0 * np.pi
+            * np.asarray(euclid["radius_arcsec"])[resolved_euclid_rows] ** 2
+        )
+    )
+    euclid_mu_observed = _histogram_density(
+        euclid_mu, mu_edges, area=euclid_area,
+        weights=np.asarray(euclid["weight"])[resolved_euclid_rows],
+    )
+    euclid_model_mu = (
+        em + 2.5 * np.log10(2.0 * np.pi * er**2)
+    )
+    euclid_mu_model = _histogram_density(
+        euclid_model_mu.ravel(), mu_edges,
+        weights=euclid_predicted_density.ravel(),
+    )
+
+    completeness_magnitude = np.linspace(20.0, 28.0, 161)
+    completeness: dict[str, list[float]] = {}
+    for radius in (0.10, 0.20, 0.50):
+        mu = completeness_magnitude + 2.5 * math.log10(
+            2.0 * math.pi * radius**2
+        )
+        logit = (
+            (response_fit.completeness_m50 - completeness_magnitude)
+            / response_fit.completeness_width_mag
+            - response_fit.surface_brightness_penalty * (mu - 24.0)
+        )
+        completeness[f"{radius:.2f}"] = (
+            1.0 / (1.0 + np.exp(-np.clip(logit, -60.0, 60.0)))
+        ).tolist()
+
+    def series(x, observed, model, unit, label):
+        return {
+            "x": np.asarray(x).tolist(),
+            "observed": np.asarray(observed).tolist(),
+            "model": np.asarray(model).tolist(),
+            "unit": unit,
+            "label": label,
+        }
+
+    euclid_radius_series = series(
+        0.5 * (euclid_log_radius_edges[:-1] + euclid_log_radius_edges[1:]),
+        euclid_radius_observed, euclid_radius_model,
+        "objects / arcmin2 / dex", "log10 MER size proxy / arcsec",
+    )
+    for key in ("observed", "model"):
+        euclid_radius_series[key] = [
+            value if resolved else None
+            for value, resolved in zip(
+                euclid_radius_series[key], resolved_radius_bins, strict=True,
+            )
+        ]
+    euclid_radius_series["censored"] = {
+        "upper_radius_arcsec": unresolved_radius_arcsec,
+        "observed_density": (
+            float(np.sum(euclid_observed[:, unresolved_radius_bins]))
+            / euclid_area / unresolved_log_width
+        ),
+        "model_density": (
+            float(np.sum(euclid_predicted_density[:, unresolved_radius_bins]))
+            / unresolved_log_width
+        ),
+        "interpretation": (
+            "aggregate probability mass with MER radius below the resolution "
+            "threshold; exact proxy radii do not enter the likelihood"
+        ),
+    }
+
+    return {
+        "magnitude_counts": {
+            "cosmos": series(
+                0.5 * (LF_MAG_EDGES[:-1] + LF_MAG_EDGES[1:]),
+                cosmos_mag_observed, cosmos_mag_model,
+                "objects / arcmin2 / mag", "HST F814W AB magnitude",
+            ),
+            "euclid": series(
+                euclid_m_centers, euclid_mag_observed, euclid_mag_model,
+                "objects / arcmin2 / mag", "Euclid VIS AB magnitude",
+            ),
+        },
+        "redshift": series(
+            0.5 * (LF_Z_EDGES[:-1] + LF_Z_EDGES[1:]),
+            cosmos_z_observed, cosmos_z_model,
+            "objects / arcmin2 / dz", "photometric redshift",
+        ),
+        "tng_draw": {
+            "full": tng_full,
+            "comparison_window": {
+                **tng_comparison,
+                "vis_magnitude_min": 20.0,
+                "vis_magnitude_max": 28.0,
+            },
+            "definition": (
+                "latent Schechter x lognormal population, scaled to the "
+                "Euclid field normalization and transformed from F814W to "
+                "true VIS using intrinsic scatter only; no MER broadening, "
+                "measurement error, completeness, or radius censoring"
+            ),
+        },
+        "angular_radius": {
+            "cosmos": series(
+                0.5 * (log_r_edges[:-1] + log_r_edges[1:]),
+                cosmos_radius_density,
+                np.interp(
+                    0.5 * (log_r_edges[:-1] + log_r_edges[1:]),
+                    latent_log_r, latent_radius_density,
+                ),
+                "objects / arcmin2 / dex", "log10 circularized Re / arcsec",
+            ),
+            "euclid": euclid_radius_series,
+        },
+        "median_radius_by_magnitude": {
+            "x": (0.5 * (median_edges[:-1] + median_edges[1:])).tolist(),
+            "cosmos_observed": cosmos_median,
+            "cosmos_model": latent_model_median,
+            "euclid_observed": euclid_median,
+            "euclid_model": euclid_model_median,
+            "unit": "arcsec",
+        },
+        "surface_brightness": {
+            "x": (0.5 * (mu_edges[:-1] + mu_edges[1:])).tolist(),
+            "cosmos_observed": cosmos_mu_shape.tolist(),
+            "cosmos_model": latent_mu_shape.tolist(),
+            "euclid_observed": euclid_mu_observed.tolist(),
+            "euclid_model": euclid_mu_model.tolist(),
+            "unit": "mag / arcsec2",
+        },
+        "completeness": {
+            "magnitude": completeness_magnitude.tolist(),
+            "by_radius_arcsec": completeness,
+        },
+        "joint_planes": {
+            "cosmos_observed": (
+                lf_observed / COSMOS_AREA_ARCMIN2
+            ).tolist(),
+            "cosmos_model": (
+                lf_predicted / COSMOS_AREA_ARCMIN2
+            ).tolist(),
+            "cosmos_z_edges": LF_Z_EDGES.tolist(),
+            "cosmos_magnitude_edges": LF_MAG_EDGES.tolist(),
+            "euclid_observed": (euclid_observed / euclid_area).tolist(),
+            "euclid_model": euclid_predicted_density.tolist(),
+            "euclid_magnitude_edges": EUCLID_MAG_EDGES.tolist(),
+            "euclid_log_radius_edges": euclid_log_radius_edges.tolist(),
+            "euclid_unresolved_radius_arcsec": unresolved_radius_arcsec,
+        },
+        "predicted_euclid_redshift": {
+            "x": latent_z.tolist(),
+            "note": (
+                "Model projection only: the cached Euclid catalogue has no "
+                "PHZ redshift column."
+            ),
+        },
     }
 
 
-def _integrate_grid(
-    density_per_mag: np.ndarray,
-    *,
-    bins: np.ndarray = DISPLAY_BINS,
-    grid: np.ndarray = MODEL_GRID,
-) -> np.ndarray:
-    indices = np.digitize(grid, bins) - 1
-    valid = (indices >= 0) & (indices < len(bins) - 1)
-    return np.bincount(
-        indices[valid],
-        weights=density_per_mag[valid] * MODEL_STEP,
-        minlength=len(bins) - 1,
-    ).astype(np.float64)
+def _plot_overview(path: Path, diagnostics: dict[str, Any]) -> None:
+    fig, axes = plt.subplots(3, 2, figsize=(12.0, 13.2), constrained_layout=True)
+    cosmos_mag = diagnostics["magnitude_counts"]["cosmos"]
+    euclid_mag = diagnostics["magnitude_counts"]["euclid"]
+    ax = axes[0, 0]
+    ax.plot(cosmos_mag["x"], cosmos_mag["observed"], "o", ms=3.5,
+            color="#242424", label="COSMOS observed")
+    ax.plot(cosmos_mag["x"], cosmos_mag["model"], color="#008c68", lw=2.2,
+            label="shared model: COSMOS response")
+    ax.plot(euclid_mag["x"], euclid_mag["observed"], "o", ms=3.5,
+            color="#1267d6", label="Euclid observed")
+    ax.plot(euclid_mag["x"], euclid_mag["model"], color="#cf3d2e", lw=2.2,
+            label="shared model: Euclid response")
+    ax.set(yscale="log", xlabel="AB magnitude", ylabel="objects / arcmin² / mag",
+           title="Apparent-magnitude counts")
+    ax.legend(frameon=False, fontsize=8)
 
+    redshift = diagnostics["redshift"]
+    ax = axes[0, 1]
+    ax.plot(redshift["x"], redshift["observed"], "o", ms=3.5,
+            color="#242424", label="COSMOS observed")
+    ax.plot(redshift["x"], redshift["model"], color="#008c68", lw=2.2,
+            label="shared model")
+    ax.set(yscale="log", xlabel="photometric redshift", ylabel=redshift["unit"],
+           title="Redshift distribution (COSMOS constraint)")
+    ax.legend(frameon=False, fontsize=8)
 
-def completeness_curve(
-    magnitudes: np.ndarray,
-    *,
-    m50: float,
-    width: float,
-) -> np.ndarray:
-    argument = np.clip((magnitudes - m50) / width, -60.0, 60.0)
-    return 1.0 / (1.0 + np.exp(argument))
+    ax = axes[1, 0]
+    for survey, color in (("cosmos", "#008c68"), ("euclid", "#cf3d2e")):
+        item = diagnostics["angular_radius"][survey]
+        observed = np.asarray([
+            np.nan if value is None else value for value in item["observed"]
+        ])
+        model = np.asarray([
+            np.nan if value is None else value for value in item["model"]
+        ])
+        ax.plot(item["x"], observed, "o", ms=3.5, color=color,
+                alpha=0.7, label=f"{survey.title()} observed")
+        ax.plot(item["x"], model, color=color, lw=2.2,
+                label=f"{survey.title()} model")
+        if survey == "euclid" and "censored" in item:
+            censored = item["censored"]
+            x = math.log10(censored["upper_radius_arcsec"])
+            ax.scatter(
+                [x], [censored["observed_density"]], marker="<", s=65,
+                color="#7a3db8", label="Euclid radius-censored mass",
+            )
+            ax.scatter(
+                [x], [censored["model_density"]], marker="x", s=48,
+                color=color, label="model censored mass",
+            )
+    ax.set(yscale="log", xlabel="log10 angular radius / arcsec",
+           ylabel="density (survey-specific units)", title="Angular-size distributions")
+    ax.legend(frameon=False, fontsize=8)
 
-
-def observation_model(
-    intrinsic_density_per_mag: np.ndarray,
-    *,
-    population_scale: float,
-    magnitude_offset: float,
-    magnitude_slope: float,
-    scatter_mag: float,
-    completeness_m50: float,
-    completeness_width_mag: float,
-    bins: np.ndarray = DISPLAY_BINS,
-    grid: np.ndarray = MODEL_GRID,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Project latent COSMOS counts into the Euclid detected magnitude bins."""
-    pivot = 24.0
-    source_magnitude = pivot + (
-        grid - pivot - magnitude_offset
-    ) / magnitude_slope
-    shifted = np.interp(
-        source_magnitude,
-        grid,
-        intrinsic_density_per_mag,
-        left=0.0,
-        right=0.0,
-    ) / magnitude_slope
-    blurred = gaussian_filter1d(
-        shifted,
-        sigma=scatter_mag / MODEL_STEP,
-        mode="constant",
-        cval=0.0,
-    )
-    transferred = population_scale * blurred
-    completeness = completeness_curve(
-        grid,
-        m50=completeness_m50,
-        width=completeness_width_mag,
-    )
-    latent_binned = _integrate_grid(transferred, bins=bins, grid=grid)
-    detected_binned = _integrate_grid(
-        transferred * completeness,
-        bins=bins,
-        grid=grid,
-    )
-    return latent_binned, detected_binned, completeness
-
-
-def _signed_poisson_residual(observed: np.ndarray, predicted: np.ndarray) -> np.ndarray:
-    mu = np.clip(predicted, 1e-12, None)
-    term = mu - observed
-    positive = observed > 0
-    term[positive] += observed[positive] * np.log(observed[positive] / mu[positive])
-    deviance = np.maximum(2.0 * term, 0.0)
-    return np.sign(mu - observed) * np.sqrt(deviance)
-
-
-def fit_observation_layer(
-    cosmos_density_per_mag: np.ndarray,
-    euclid_counts: np.ndarray,
-    euclid_area_arcmin2: float,
-    *,
-    fit_population_scale: bool = False,
-    bins: np.ndarray = DISPLAY_BINS,
-    grid: np.ndarray = MODEL_GRID,
-) -> tuple[ObservationFit, np.ndarray, np.ndarray, np.ndarray]:
-    """Fit an affine photometric transfer and logistic selection curve.
-
-    The COSMOS normalization is fixed by default. One 36 arcmin² Euclid cone
-    cannot separate a global density change from cosmic variance and the
-    F814W-to-VIS transfer. Freeing it is therefore only a local-field
-    sensitivity calculation.
-    """
-    if euclid_area_arcmin2 <= 0:
-        raise ValueError("Euclid area must be positive")
-
-    def unpack(
-        parameters: np.ndarray,
-    ) -> tuple[float, float, float, float, float, float]:
-        index = 0
-        if fit_population_scale:
-            scale = float(np.exp(parameters[index]))
-            index += 1
+    median = diagnostics["median_radius_by_magnitude"]
+    ax = axes[1, 1]
+    for key, color, style, label in (
+        ("cosmos_observed", "#242424", "o", "COSMOS observed"),
+        ("cosmos_model", "#008c68", "-", "COSMOS model"),
+        ("euclid_observed", "#1267d6", "o", "Euclid observed proxy"),
+        ("euclid_model", "#cf3d2e", "-", "Euclid response model"),
+    ):
+        y = np.asarray([np.nan if value is None else value for value in median[key]])
+        if style == "o":
+            ax.plot(median["x"], y, style, ms=4, color=color, label=label)
         else:
-            scale = 1.0
-        return (
-            scale,
-            float(parameters[index]),
-            float(np.exp(parameters[index + 1])),
-            float(np.exp(parameters[index + 2])),
-            float(parameters[index + 3]),
-            float(np.exp(parameters[index + 4])),
-        )
+            ax.plot(median["x"], y, style, lw=2.2, color=color, label=label)
+    ax.set(yscale="log", xlabel="survey AB magnitude", ylabel="median radius / arcsec",
+           title="Magnitude-conditioned angular size")
+    ax.legend(frameon=False, fontsize=8)
 
-    def residuals(parameters: np.ndarray) -> np.ndarray:
-        scale, offset, slope, scatter, m50, width = unpack(parameters)
-        _latent, predicted_density, _completeness = observation_model(
-            cosmos_density_per_mag,
-            population_scale=scale,
-            magnitude_offset=offset,
-            magnitude_slope=slope,
-            scatter_mag=scatter,
-            completeness_m50=m50,
-            completeness_width_mag=width,
-            bins=bins,
-            grid=grid,
-        )
-        predicted_counts = predicted_density * euclid_area_arcmin2
-        data = _signed_poisson_residual(euclid_counts, predicted_counts)
-        index = 1 if fit_population_scale else 0
-        priors = [
-            offset / 0.60,
-            parameters[index + 1] / 0.20,
-            (parameters[index + 2] - math.log(0.15)) / 1.00,
-            (m50 - 25.2) / 1.50,
-            (parameters[index + 4] - math.log(0.35)) / 1.00,
-        ]
-        if fit_population_scale:
-            priors.insert(0, parameters[0] / 0.30)
-        return np.concatenate((data, np.asarray(priors)))
+    surface = diagnostics["surface_brightness"]
+    ax = axes[2, 0]
+    for key, color, style, label in (
+        ("cosmos_observed", "#242424", "o", "COSMOS observed shape"),
+        ("cosmos_model", "#008c68", "-", "COSMOS latent model"),
+        ("euclid_observed", "#1267d6", "o", "Euclid observed"),
+        ("euclid_model", "#cf3d2e", "-", "Euclid response model"),
+    ):
+        ax.plot(surface["x"], surface[key], style, color=color,
+                ms=3.2 if style == "o" else None,
+                lw=2.1 if style == "-" else None, label=label)
+    ax.set(yscale="log", xlabel="mean surface brightness / mag arcsec⁻²",
+           ylabel="density (survey-specific units)", title="Derived surface brightness")
+    ax.legend(frameon=False, fontsize=8)
 
-    core_initial = [0.0, 0.0, math.log(0.15), 25.2, math.log(0.35)]
-    core_lower = [-1.0, math.log(0.60), math.log(0.02), 23.5, math.log(0.04)]
-    core_upper = [1.0, math.log(1.40), math.log(1.00), 28.0, math.log(2.00)]
-    if fit_population_scale:
-        initial = np.asarray([0.0, *core_initial])
-        lower = np.asarray([math.log(0.30), *core_lower])
-        upper = np.asarray([math.log(3.00), *core_upper])
-    else:
-        initial = np.asarray(core_initial)
-        lower = np.asarray(core_lower)
-        upper = np.asarray(core_upper)
-    result = least_squares(
-        residuals,
-        initial,
-        bounds=(lower, upper),
-        max_nfev=1000,
-        xtol=1e-12,
-        ftol=1e-12,
-        gtol=1e-12,
-    )
-    scale, offset, slope, scatter, m50, width = unpack(result.x)
-    latent, detected, completeness = observation_model(
-        cosmos_density_per_mag,
-        population_scale=scale,
-        magnitude_offset=offset,
-        magnitude_slope=slope,
-        scatter_mag=scatter,
-        completeness_m50=m50,
-        completeness_width_mag=width,
-        bins=bins,
-        grid=grid,
-    )
-    predicted_counts = detected * euclid_area_arcmin2
-    poisson_residual = _signed_poisson_residual(euclid_counts, predicted_counts)
-    fit = ObservationFit(
-        population_scale=scale,
-        vis_minus_f814w_mag=offset,
-        magnitude_slope=slope,
-        scatter_mag=scatter,
-        completeness_m50=m50,
-        completeness_width_mag=width,
-        poisson_deviance=float(np.sum(poisson_residual**2)),
-        dof=max(1, len(euclid_counts) - (6 if fit_population_scale else 5)),
-    )
-    return fit, latent, detected, completeness
+    complete = diagnostics["completeness"]
+    ax = axes[2, 1]
+    for index, (radius, values) in enumerate(complete["by_radius_arcsec"].items()):
+        ax.plot(complete["magnitude"], values, lw=2.2,
+                color=("#1267d6", "#008c68", "#cf3d2e")[index],
+                label=f"observed radius {radius} arcsec")
+    ax.axhline(0.5, color="#777777", ls="--", lw=1)
+    ax.set(xlabel="Euclid VIS magnitude", ylabel="detection probability",
+           ylim=(-0.03, 1.03), title="Fitted Euclid completeness surface")
+    ax.legend(frameon=False, fontsize=8)
+    for axis in axes.ravel():
+        axis.grid(alpha=0.18)
+    fig.suptitle("One smooth Schechter × lognormal population; two survey responses",
+                 fontsize=15)
+    fig.savefig(path, dpi=180)
+    plt.close(fig)
 
 
-def _read_area(path: Path) -> float:
-    payload = json.loads(path.read_text())
-    area = float(payload["area_arcmin2"])
-    if area <= 0:
-        raise ValueError(f"No positive area_arcmin2 in {path}")
-    return area
-
-
-def _read_synthetic_density(path: Path) -> np.ndarray | None:
-    if not path.is_file():
-        return None
-    values: list[float] = []
-    with path.open(newline="", encoding="utf-8") as handle:
-        for row in csv.DictReader(handle):
-            try:
-                values.append(float(row["synthetic_truth_density"]))
-            except (KeyError, TypeError, ValueError):
-                return None
-    result = np.asarray(values, dtype=np.float64)
-    return result if len(result) == len(DISPLAY_BINS) - 1 else None
-
-
-def _plot(
-    path: Path,
-    *,
-    centers: np.ndarray,
-    cosmos_density: np.ndarray,
-    fitted_latent_density: np.ndarray,
-    euclid_density: np.ndarray,
-    euclid_error: np.ndarray,
-    predicted_detected_density: np.ndarray,
-    local_latent_density: np.ndarray,
-    local_predicted_detected_density: np.ndarray,
-    synthetic_density: np.ndarray | None,
-    completeness: np.ndarray,
-    fit: ObservationFit,
+def _plot_core_marginals(
+    path: Path, diagnostics: dict[str, Any],
 ) -> None:
-    fig, (ax, lower) = plt.subplots(
-        2,
-        1,
-        figsize=(9.6, 7.4),
-        sharex=True,
-        constrained_layout=True,
-        gridspec_kw={"height_ratios": (3.2, 1.25), "hspace": 0.06},
-    )
-    ax.step(
-        centers,
-        cosmos_density,
-        where="mid",
-        color="#242424",
-        linewidth=2.5,
-        linestyle=(0, (7, 3)),
-        label="COSMOS latent population",
-    )
-    ax.step(
-        centers,
-        fitted_latent_density,
-        where="mid",
-        color="#008c68",
-        linewidth=2.8,
-        label="fitted latent population",
-    )
-    ax.step(
-        centers,
-        local_latent_density,
-        where="mid",
-        color="#008c68",
-        linewidth=1.8,
-        linestyle=(0, (2, 2)),
-        label="latent + local normalization sensitivity",
-    )
-    ax.errorbar(
-        centers,
-        euclid_density,
-        yerr=euclid_error,
-        color="#1267d6",
-        marker="o",
-        markersize=5.5,
-        markerfacecolor="white",
-        markeredgewidth=1.8,
-        linestyle="none",
-        capsize=2.5,
-        label="Euclid non-star detections",
-        zorder=5,
-    )
-    ax.plot(
-        centers,
-        predicted_detected_density,
-        color="#cf3d2e",
-        linewidth=2.6,
-        marker="D",
-        markersize=4.5,
-        label="COSMOS through fitted Euclid selection",
-    )
-    ax.plot(
-        centers,
-        local_predicted_detected_density,
-        color="#e68a00",
-        linewidth=1.9,
-        linestyle="--",
-        marker="^",
-        markersize=4,
-        label="local-normalization detection fit",
-    )
-    if synthetic_density is not None:
-        ax.step(
-            centers,
-            synthetic_density,
-            where="mid",
-            color="#8d48b5",
-            linewidth=2.0,
-            linestyle=":",
-            label="current synthetic truth",
-        )
-    ax.set_ylabel("objects / arcmin² / 0.5 mag")
-    ax.set_title("COSMOS latent counts fitted to Euclid VIS detections")
-    ax.grid(alpha=0.20)
-    ax.legend(frameon=False, ncol=2, fontsize=9)
+    """Plot the three catalogue marginals that define the synthetic population."""
+    magnitude = diagnostics["magnitude_counts"]
+    redshift = diagnostics["redshift"]
+    radius = diagnostics["angular_radius"]
+    tng_draw = diagnostics["tng_draw"]
+    tng_full = tng_draw["full"]
+    tng_comparison = tng_draw["comparison_window"]
+    fig, axes = plt.subplots(1, 3, figsize=(16.5, 5.0), constrained_layout=True)
 
-    display_completeness = np.interp(centers, MODEL_GRID, completeness)
-    lower.plot(
-        centers,
-        display_completeness,
-        color="#cf3d2e",
-        linewidth=2.5,
-        marker="D",
-        markersize=4,
-        label="fitted completeness",
+    axes[0].scatter(
+        redshift["x"], redshift["observed"], s=22, facecolors="none",
+        edgecolors="#008c68", linewidths=1.4, label="COSMOS observed",
     )
-    lower.axhline(0.5, color="#6b7280", linewidth=1.0, linestyle="--")
-    lower.axvline(
-        fit.completeness_m50,
-        color="#cf3d2e",
-        linewidth=1.1,
-        linestyle=":",
+    axes[0].plot(
+        redshift["x"], redshift["model"], color="#008c68",
+        linewidth=2.2, label="shared intrinsic fit",
     )
-    lower.set(
-        xlabel="catalog VIS magnitude (AB)",
-        ylabel="detection\nprobability",
-        ylim=(-0.04, 1.04),
-        xlim=(DISPLAY_BINS[0], DISPLAY_BINS[-1]),
+    axes[0].plot(
+        tng_full["redshift"]["x"], tng_full["redshift"]["density"],
+        color="#7a3db8", linewidth=3.0,
+        label="TNG full truth, 18<VIS<30",
     )
-    lower.grid(alpha=0.20)
-    reliable_vis_max = (
-        24.0
-        + fit.magnitude_slope * (27.5 - 24.0)
-        + fit.vis_minus_f814w_mag
+    axes[0].plot(
+        tng_comparison["redshift"]["x"],
+        tng_comparison["redshift"]["density"],
+        color="#7a3db8", linewidth=2.4, linestyle="--",
+        label="TNG truth, 20<VIS<28",
     )
-    for axis in (ax, lower):
-        axis.axvspan(
-            reliable_vis_max,
-            DISPLAY_BINS[-1],
-            color="#8b93a1",
-            alpha=0.10,
-            linewidth=0,
+    axes[0].text(
+        0.98, 0.96, "No redshift column in cached Euclid MER",
+        transform=axes[0].transAxes, ha="right", va="top", fontsize=9,
+        color="0.35",
+    )
+    axes[0].set(
+        xlabel="photometric redshift",
+        ylabel="objects / arcmin² / dz",
+        title="Redshift density",
+    )
+    axes[0].set_yscale("log")
+
+    for survey, color in (("cosmos", "#008c68"), ("euclid", "#1267d6")):
+        item = magnitude[survey]
+        label = "COSMOS F814W" if survey == "cosmos" else "Euclid VIS"
+        axes[1].scatter(
+            item["x"], item["observed"], s=22, facecolors="none",
+            edgecolors=color, linewidths=1.4, label=f"{label} observed",
         )
-    ax.text(
-        reliable_vis_max + 0.04,
-        0.97,
-        "COSMOS turnover-sensitive",
-        transform=ax.get_xaxis_transform(),
-        color="#687080",
-        fontsize=8.5,
-        ha="left",
-        va="top",
+        axes[1].plot(
+            item["x"], item["model"], color=color, linewidth=2.2,
+            label=f"fit through {label.split()[0]} response",
+        )
+    axes[1].set(
+        xlabel="survey apparent AB magnitude",
+        ylabel="objects / arcmin² / mag",
+        title="Apparent-magnitude density",
+    )
+    axes[1].set_yscale("log")
+    axes[1].plot(
+        tng_full["magnitude"]["x"], tng_full["magnitude"]["density"],
+        color="#7a3db8", linewidth=3.0,
+        label="TNG full truth, 18<VIS<30",
+    )
+    axes[1].plot(
+        tng_comparison["magnitude"]["x"],
+        tng_comparison["magnitude"]["density"],
+        color="#7a3db8", linewidth=2.4, linestyle="--",
+        label="TNG truth, 20<VIS<28",
+    )
+
+    for survey, color in (("cosmos", "#008c68"), ("euclid", "#1267d6")):
+        item = radius[survey]
+        label = "COSMOS measured Re" if survey == "cosmos" else "Euclid MER proxy"
+        angular_radius = np.power(10.0, np.asarray(item["x"]))
+        observed = np.asarray([
+            np.nan if value is None else value for value in item["observed"]
+        ])
+        model = np.asarray([
+            np.nan if value is None else value for value in item["model"]
+        ])
+        axes[2].scatter(
+            angular_radius, observed, s=22, facecolors="none",
+            edgecolors=color, linewidths=1.4, label=f"{label} observed",
+        )
+        axes[2].plot(
+            angular_radius, model, color=color, linewidth=2.2,
+            label=f"fit through {survey.upper()} response",
+        )
+        if survey == "euclid" and "censored" in item:
+            censored = item["censored"]
+            x = censored["upper_radius_arcsec"]
+            axes[2].scatter(
+                [x], [censored["observed_density"]], marker="<", s=75,
+                color="#7a3db8", label=f"Euclid censored below {x:.2f}″",
+            )
+            axes[2].scatter(
+                [x], [censored["model_density"]], marker="x", s=55,
+                color="#cf3d2e", label="model censored mass",
+            )
+            axes[2].axvline(x, color="0.45", linestyle="--", linewidth=1.1)
+    axes[2].set(
+        xlabel="angular radius / arcsec",
+        ylabel="objects / arcmin² / dex",
+        title="Angular-radius density",
+    )
+    axes[2].set_yscale("log")
+    axes[2].set_xscale("log")
+    axes[2].plot(
+        np.power(10.0, np.asarray(tng_full["angular_radius"]["x"])),
+        tng_full["angular_radius"]["density"],
+        color="#7a3db8", linewidth=3.0,
+        label="TNG full truth, 18<VIS<30",
+    )
+    axes[2].plot(
+        np.power(10.0, np.asarray(tng_comparison["angular_radius"]["x"])),
+        tng_comparison["angular_radius"]["density"],
+        color="#7a3db8", linewidth=2.4, linestyle="--",
+        label="TNG truth, 20<VIS<28",
+    )
+
+    for axis in axes:
+        axis.grid(alpha=0.2)
+        axis.legend(frameon=False, fontsize=8.5)
+    fig.suptitle(
+        "TNG draw target before Euclid observation",
+        fontsize=15,
     )
     fig.savefig(path, dpi=180)
     plt.close(fig)
 
 
+def _plot_planes(path: Path, diagnostics: dict[str, Any]) -> None:
+    planes = diagnostics["joint_planes"]
+    fig, axes = plt.subplots(2, 2, figsize=(12, 9), constrained_layout=True)
+    entries = (
+        ("cosmos_observed", "COSMOS observed", "cosmos_magnitude_edges", "cosmos_z_edges",
+         "HST F814W magnitude", "redshift"),
+        ("cosmos_model", "Shared model in COSMOS", "cosmos_magnitude_edges", "cosmos_z_edges",
+         "HST F814W magnitude", "redshift"),
+        ("euclid_observed", "Euclid observed", "euclid_log_radius_edges", "euclid_magnitude_edges",
+         "log10 size proxy / arcsec", "VIS magnitude"),
+        (
+            "euclid_model", "Shared model through Euclid response",
+            "euclid_log_radius_edges", "euclid_magnitude_edges",
+         "log10 size proxy / arcsec", "VIS magnitude"),
+    )
+    positive = [
+        value for key, *_rest in entries
+        for value in np.asarray(planes[key]).ravel()
+        if np.isfinite(value) and value > 0.0
+    ]
+    norm = LogNorm(vmin=max(np.percentile(positive, 2), 1e-5),
+                   vmax=np.percentile(positive, 99.7))
+    for ax, (key, title, xkey, ykey, xlabel, ylabel) in zip(
+        axes.ravel(), entries, strict=True,
+    ):
+        values = np.asarray(planes[key])
+        xedges = np.asarray(planes[xkey])
+        yedges = np.asarray(planes[ykey])
+        image = ax.pcolormesh(xedges, yedges, values, shading="auto", norm=norm,
+                              cmap="magma")
+        ax.set(xlabel=xlabel, ylabel=ylabel, title=title)
+    fig.colorbar(image, ax=axes.ravel().tolist(), label="objects / arcmin² / cell")
+    fig.savefig(path, dpi=180)
+    plt.close(fig)
+
+
+def _plot_parameters(path: Path, rows: list[dict[str, Any]], quality: dict[str, Any]) -> None:
+    fig, ax = plt.subplots(figsize=(12.5, 11.0), constrained_layout=True)
+    ax.axis("off")
+    lines = [
+        "FITTED JOINT POPULATION PARAMETERS",
+        "",
+    ]
+    group = None
+    for row in rows:
+        if row["group"] != group:
+            group = row["group"]
+            lines.extend((group.upper(), "─" * len(group)))
+        error = row["standard_error"]
+        uncertainty = f" ± {error:.4g}" if error is not None else ""
+        unit = f"  {row['unit']}" if row["unit"] else ""
+        lines.append(f"{row['label']:<34} {row['value']:>11.5g}{uncertainty}{unit}")
+        if row["key"] in {"log_phi_star", "m_star_0", "alpha", "size_scatter_dex"}:
+            lines.append("")
+    lines.extend((
+        "",
+        "FIT QUALITY",
+        "───────────",
+        f"COSMOS reduced Poisson deviance: {quality['cosmos_reduced_poisson_deviance']:.3f}",
+        "COSMOS reduced overdispersed deviance: "
+        f"{quality['cosmos_reduced_negative_binomial_deviance']:.3f}",
+        "Euclid resolved-plus-censored reduced Cash deviance: "
+        f"{quality['euclid_reduced_poisson_deviance']:.3f}",
+    ))
+    for item in quality["warnings"]:
+        lines.extend(textwrap.wrap(
+            f"warning: {item}", width=105,
+            subsequent_indent="         ",
+        ))
+    ax.text(0.02, 0.98, "\n".join(lines), va="top", ha="left",
+            family="monospace", fontsize=10.2, linespacing=1.28)
+    fig.savefig(path, dpi=180)
+    plt.close(fig)
+
+
+def _cross_validate_euclid_response(
+    cube: dict[str, np.ndarray], euclid: dict[str, Any], area_arcmin2: float,
+    *,
+    unresolved_radius_arcsec: float,
+    log_radius_edges: np.ndarray,
+    folds: int = 4,
+) -> dict[str, Any]:
+    cone_index = np.asarray(euclid["cone_index"], dtype=np.int64)
+    cones = np.unique(cone_index)
+    if cones.size < folds:
+        raise ValueError("Euclid cross-validation needs at least four cones")
+    results: list[dict[str, Any]] = []
+    array_keys = (
+        "magnitude", "radius_arcsec", "magnitude_error", "flux_error_uJy", "weight",
+        "cone_index",
+    )
+    for fold in range(folds):
+        test_cones = cones[fold::folds]
+        is_test = np.isin(cone_index, test_cones)
+        train = {
+            key: np.asarray(euclid[key])[~is_test]
+            for key in array_keys
+        }
+        test_area = area_arcmin2 * len(test_cones) / len(cones)
+        train_area = area_arcmin2 - test_area
+        fitted, _observed_train, _predicted_train = fit_euclid_response(
+            cube, train, area_arcmin2=train_area,
+            unresolved_policy="censor",
+            unresolved_radius_arcsec=unresolved_radius_arcsec,
+            log_radius_edges=log_radius_edges,
+        )
+        observed, _, _ = np.histogram2d(
+            np.asarray(euclid["magnitude"])[is_test],
+            np.log10(np.asarray(euclid["radius_arcsec"])[is_test]),
+            bins=(EUCLID_MAG_EDGES, log_radius_edges),
+            weights=np.asarray(euclid["weight"])[is_test],
+        )
+        predicted_density, _ = predict_euclid_histogram(
+            np.sum(np.asarray(cube["density"]), axis=0),
+            np.asarray(cube["magnitude"]),
+            np.asarray(cube["log_radius"]),
+            np.asarray([
+                math.log(fitted.population_scale),
+                fitted.vis_minus_f814w_mag,
+                math.log(fitted.magnitude_slope),
+                math.log(fitted.scatter_mag),
+                math.log(fitted.size_scale),
+                math.log(fitted.size_floor_arcsec),
+                fitted.completeness_m50,
+                math.log(fitted.completeness_width_mag),
+                math.log(fitted.surface_brightness_penalty),
+            ]),
+            log_radius_edges=log_radius_edges,
+            measurement_flux_error_uJy=fitted.measurement_flux_error_uJy,
+        )
+        predicted = predicted_density * test_area
+        threshold = math.log10(unresolved_radius_arcsec)
+        unresolved_bins = log_radius_edges[1:] <= threshold + 1e-10
+        resolved_bins = ~unresolved_bins
+        resolved_residual = signed_poisson_residual(
+            observed[:, resolved_bins], predicted[:, resolved_bins],
+        )
+        censored_residual = signed_poisson_residual(
+            np.sum(observed[:, unresolved_bins], axis=1),
+            np.sum(predicted[:, unresolved_bins], axis=1),
+        )
+        deviance = float(
+            np.sum(resolved_residual**2) + np.sum(censored_residual**2)
+        )
+        comparison_cells = resolved_residual.size + censored_residual.size
+        results.append({
+            "fold": fold + 1,
+            "test_cones": [int(value) for value in test_cones],
+            "test_area_arcmin2": test_area,
+            "reduced_poisson_deviance": deviance / comparison_cells,
+            "observed_weighted_density_arcmin2": (
+                float(np.sum(observed)) / test_area
+            ),
+            "predicted_density_arcmin2": (
+                float(np.sum(predicted_density))
+            ),
+        })
+    return {
+        "folds": results,
+        "mean_reduced_poisson_deviance": float(np.mean([
+            item["reduced_poisson_deviance"] for item in results
+        ])),
+        "interpretation": (
+            "Four cone-group folds; the Euclid response is refitted on the "
+            "other cones and evaluated on unseen cones with exact radius bins "
+            f"at or above {unresolved_radius_arcsec:.2f} arcsec and one "
+            "magnitude-conditioned left-censored bin below it. The cached "
+            "cones share one query radius, so total area is apportioned equally."
+        ),
+    }
+
+
+def _plot_cross_validation(path: Path, payload: dict[str, Any]) -> None:
+    folds = payload["folds"]
+    x = np.arange(1, len(folds) + 1)
+    deviance = np.asarray([
+        item["reduced_poisson_deviance"] for item in folds
+    ])
+    density_ratio = np.asarray([
+        item["predicted_density_arcmin2"]
+        / item["observed_weighted_density_arcmin2"]
+        for item in folds
+    ])
+    fig, axes = plt.subplots(1, 2, figsize=(10.5, 4.2), constrained_layout=True)
+    axes[0].bar(x, deviance, color="#1267d6")
+    axes[0].axhline(1.0, color="0.4", linestyle="--", linewidth=1.2)
+    axes[0].set(xlabel="held-out cone group", ylabel="reduced Poisson deviance",
+                title="Unseen Euclid magnitude-size plane")
+    axes[1].bar(x, density_ratio, color="#008c68")
+    axes[1].axhline(1.0, color="0.4", linestyle="--", linewidth=1.2)
+    axes[1].set(xlabel="held-out cone group", ylabel="predicted / observed density",
+                title="Held-out surface-density normalization")
+    for axis in axes:
+        axis.set_xticks(x)
+        axis.grid(alpha=0.2, axis="y")
+    fig.suptitle("Four-fold Euclid cone validation", fontsize=15)
+    fig.savefig(path, dpi=180)
+    plt.close(fig)
+
+
 def run(args: argparse.Namespace) -> dict[str, Any]:
-    cosmos_path = Path(args.cosmos_counts)
+    cosmos_path = Path(args.cosmos)
     euclid_path = Path(args.euclid)
     euclid_meta_path = Path(args.euclid_meta)
-    synthetic_path = Path(args.synthetic)
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    euclid_area, euclid_meta = _read_area(euclid_meta_path)
 
-    cosmos_centers, cosmos_native_density = read_cosmos_density(
-        cosmos_path,
-        selection=args.cosmos_selection,
-    )
-    cosmos_model_density = np.interp(
-        MODEL_GRID,
-        cosmos_centers,
-        cosmos_native_density,
-        left=0.0,
-        right=0.0,
-    )
-    euclid_counts, euclid_weighting = read_euclid_weighted_counts(
+    cosmos = read_cosmos_population(cosmos_path)
+    euclid = read_euclid_population(
         euclid_path,
         maximum_spurious_probability=args.maximum_spurious_probability,
     )
-    euclid_area = _read_area(euclid_meta_path)
-    euclid_meta = json.loads(euclid_meta_path.read_text())
-    euclid_density = euclid_counts / euclid_area
-    euclid_error = np.sqrt(euclid_counts) / euclid_area
-
-    fit, fitted_latent, predicted_detected, completeness = fit_observation_layer(
-        cosmos_model_density,
-        euclid_counts,
-        euclid_area,
+    lf_fit, lf_observed, lf_predicted = fit_schechter_evolution(
+        np.asarray(cosmos["magnitude"]), np.asarray(cosmos["redshift"]),
     )
-    local_fit, local_latent, local_predicted_detected, _ = fit_observation_layer(
-        cosmos_model_density,
-        euclid_counts,
-        euclid_area,
-        fit_population_scale=True,
+    size_fit = fit_size_evolution(
+        np.asarray(cosmos["magnitude"]), np.asarray(cosmos["redshift"]),
+        np.asarray(cosmos["radius_arcsec"]),
     )
-    cosmos_binned = _integrate_grid(cosmos_model_density)
-    synthetic_density = _read_synthetic_density(synthetic_path)
-    centers = 0.5 * (DISPLAY_BINS[:-1] + DISPLAY_BINS[1:])
+    cube = latent_population_cube(lf_fit, size_fit)
+    response_fit, euclid_observed, euclid_predicted_density = fit_euclid_response(
+        cube, euclid, area_arcmin2=euclid_area,
+        unresolved_policy="censor",
+        unresolved_radius_arcsec=EUCLID_UNRESOLVED_RADIUS_ARCSEC,
+        log_radius_edges=EUCLID_CENSORED_LOG_RE_EDGES,
+    )
+    cross_validation = _cross_validate_euclid_response(
+        cube, euclid, euclid_area,
+        unresolved_radius_arcsec=EUCLID_UNRESOLVED_RADIUS_ARCSEC,
+        log_radius_edges=EUCLID_CENSORED_LOG_RE_EDGES,
+    )
+    diagnostics = _diagnostics(
+        cosmos, euclid, euclid_area, lf_observed, lf_predicted, cube,
+        euclid_observed, euclid_predicted_density, response_fit,
+        euclid_log_radius_edges=EUCLID_CENSORED_LOG_RE_EDGES,
+        unresolved_radius_arcsec=EUCLID_UNRESOLVED_RADIUS_ARCSEC,
+    )
 
-    rows: list[dict[str, float]] = []
-    display_completeness = np.interp(centers, MODEL_GRID, completeness)
-    for index, center in enumerate(centers):
-        rows.append({
-            "mag_lo": float(DISPLAY_BINS[index]),
-            "mag_hi": float(DISPLAY_BINS[index + 1]),
-            "mag_center": float(center),
-            "cosmos_latent_density": float(cosmos_binned[index]),
-            "fitted_latent_density": float(fitted_latent[index]),
-            "euclid_detected_density": float(euclid_density[index]),
-            "euclid_poisson_error": float(euclid_error[index]),
-            "predicted_detected_density": float(predicted_detected[index]),
-            "local_fitted_latent_density": float(local_latent[index]),
-            "local_predicted_detected_density": float(
-                local_predicted_detected[index]
-            ),
-            "fitted_completeness": float(display_completeness[index]),
-            "synthetic_truth_density": (
-                float(synthetic_density[index])
-                if synthetic_density is not None
-                else float("nan")
-            ),
-        })
-
-    csv_path = output_dir / "cosmos_euclid_density_fit.csv"
-    with csv_path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
-        writer.writeheader()
-        writer.writerows(rows)
-
-    plot_path = output_dir / "cosmos_euclid_density_fit.png"
-    if not args.no_plot:
-        _plot(
-            plot_path,
-            centers=centers,
-            cosmos_density=cosmos_binned,
-            fitted_latent_density=fitted_latent,
-            euclid_density=euclid_density,
-            euclid_error=euclid_error,
-            predicted_detected_density=predicted_detected,
-            local_latent_density=local_latent,
-            local_predicted_detected_density=local_predicted_detected,
-            synthetic_density=synthetic_density,
-            completeness=completeness,
-            fit=fit,
+    cosmos_poisson_reduced = lf_fit.poisson_deviance / max(1, lf_fit.dof)
+    cosmos_overdispersed_reduced = (
+        lf_fit.negative_binomial_deviance / max(1, lf_fit.dof)
+    )
+    euclid_reduced = response_fit.poisson_deviance / max(1, response_fit.dof)
+    bright_reduced = (
+        response_fit.bright_poisson_deviance
+        / max(1, response_fit.bright_dof)
+    )
+    warnings: list[str] = []
+    if cosmos_overdispersed_reduced > 5.0:
+        warnings.append(
+            "a single smooth Schechter component does not capture all COSMOS "
+            "redshift-magnitude structure"
         )
+    if lf_fit.cosmic_variance_fractional_scatter > 0.20:
+        warnings.append(
+            "extra-Poisson COSMOS scatter is too large to interpret as pure "
+            "cosmic variance; it also absorbs selection and model mismatch"
+        )
+    if euclid_reduced > 5.0:
+        warnings.append(
+            "the Euclid magnitude-size plane retains structure beyond the "
+            "single lognormal size and selection response"
+        )
+    if bright_reduced > 5.0:
+        warnings.append(
+            "the frozen bright F814W-to-VIS transfer matches integrated counts "
+            "but not every high-S/N magnitude bin"
+        )
+    if cross_validation["mean_reduced_poisson_deviance"] > 5.0:
+        warnings.append(
+            "held-out Euclid cones confirm that the remaining magnitude-size "
+            "structure is predictive mismatch, not only training overfit"
+        )
+    warnings.append(
+        "M_eff is F814W-DM(z); mean K-correction is absorbed by M* evolution"
+    )
+    warnings.append(
+        "Euclid SEMIMAJOR_AXIS is a detection-size proxy, not a half-light radius"
+    )
+    warnings.append(
+        "Euclid MER radii below 0.10 arcsec are left-censored; their exact "
+        "proxy values do not enter the response likelihood"
+    )
+    quality = {
+        "valid": bool(
+            cosmos_overdispersed_reduced <= 5.0 and euclid_reduced <= 5.0
+        ),
+        "cosmos_poisson_deviance": lf_fit.poisson_deviance,
+        "cosmos_dof": lf_fit.dof,
+        "cosmos_reduced_poisson_deviance": cosmos_poisson_reduced,
+        "cosmos_negative_binomial_deviance": (
+            lf_fit.negative_binomial_deviance
+        ),
+        "cosmos_reduced_negative_binomial_deviance": (
+            cosmos_overdispersed_reduced
+        ),
+        "euclid_poisson_deviance": response_fit.poisson_deviance,
+        "euclid_dof": response_fit.dof,
+        "euclid_reduced_poisson_deviance": euclid_reduced,
+        "euclid_bright_transfer_poisson_deviance": (
+            response_fit.bright_poisson_deviance
+        ),
+        "euclid_bright_transfer_dof": response_fit.bright_dof,
+        "euclid_bright_transfer_reduced_poisson_deviance": bright_reduced,
+        "euclid_cross_validated_reduced_poisson_deviance": (
+            cross_validation["mean_reduced_poisson_deviance"]
+        ),
+        "warnings": warnings,
+    }
+    parameters = _parameter_rows(lf_fit, size_fit, response_fit)
+    overview_path = output_dir / OUTPUT_OVERVIEW
+    planes_path = output_dir / OUTPUT_PLANES
+    parameters_path = output_dir / OUTPUT_PARAMETERS
+    cross_validation_path = output_dir / OUTPUT_CROSS_VALIDATION
+    core_marginals_path = output_dir / OUTPUT_CORE_MARGINALS
+    if not args.no_plot:
+        _plot_overview(overview_path, diagnostics)
+        _plot_planes(planes_path, diagnostics)
+        _plot_parameters(parameters_path, parameters, quality)
+        _plot_cross_validation(cross_validation_path, cross_validation)
+        _plot_core_marginals(core_marginals_path, diagnostics)
 
-    m28 = MODEL_GRID < 28.0
-    raw_cosmos_m28 = float(
-        np.sum(cosmos_model_density[m28]) * MODEL_STEP
+    algorithm = {
+        "name": "flexibly evolving Schechter x lognormal size joint survey fit",
+        "version": 5,
+        "cosmology": "Planck15",
+        "cosmos_fit_window": {
+            "magnitude": [COSMOS_FIT_MAG_MIN, COSMOS_FIT_MAG_MAX],
+            "redshift": [COSMOS_FIT_Z_MIN, COSMOS_FIT_Z_MAX],
+        },
+        "euclid_response": (
+            "affine F814W-to-true-VIS transfer with fitted intrinsic Gaussian "
+            "scatter fitted and frozen using VIS<24 counts; Gaussian VIS "
+            "measurement noise in flux space using the robust catalogue aperture-"
+            "flux error; quadrature size "
+            "scale plus resolution floor; logistic completeness in VIS "
+            "magnitude and derived mean surface brightness; exact MER radii "
+            "below 0.10 arcsec are replaced by a left-censoring event"
+        ),
+        "tng_draw_target": (
+            "latent population times Euclid field normalization, transformed "
+            "to true VIS with intrinsic scatter only; no measurement error, "
+            "MER size response, completeness, or censoring"
+        ),
+        "tng_draw_window": [18.0, 30.0],
+        "count_covariance": (
+            "negative-binomial fractional scatter fitted after the Poisson "
+            "mean; Var(N)=mu+(tau*mu)^2"
+        ),
+        "validation": (
+            "four folds across twelve cached Euclid cones using the same "
+            "left-censored radius likelihood"
+        ),
+    }
+    fingerprint = _fingerprint(
+        [cosmos_path, euclid_path, euclid_meta_path], algorithm,
     )
     payload: dict[str, Any] = {
-        "version": 1,
-        "method": (
-            "COSMOS latent number counts passed through a fitted affine "
-            "F814W-to-VIS transfer with scatter and logistic Euclid completeness"
-        ),
+        "version": 2,
+        "kind": "joint_intrinsic_galaxy_population",
+        "fingerprint": fingerprint,
+        "method": algorithm,
         "interpretation": (
-            "Euclid rows are probability-weighted detections, not confirmed "
-            "galaxies. "
-            "COSMOS sets the latent shape; Euclid calibrates the observation "
-            "layer and, with at least three separated cones, a model-dependent "
-            "latent normalization. This is not the generator's raw draw budget; "
-            "calibrate that with the common detector applied to real and "
-            "synthetic fields."
+            "One latent smooth galaxy distribution is observed through two "
+            "survey responses. COSMOS constrains redshift, luminosity and "
+            "physical-size evolution; Euclid constrains the projected VIS "
+            "magnitude-size distribution and its selection. No TNG data enter."
         ),
         "inputs": {
-            "cosmos_counts_csv": str(cosmos_path),
-            "cosmos_selection": args.cosmos_selection,
+            "cosmos_population_npz": str(cosmos_path),
+            "cosmos_area_arcmin2": COSMOS_AREA_ARCMIN2,
+            "cosmos_population_rows": int(len(cosmos["magnitude"])),
+            "cosmos_measured_size_rows": int(np.sum(cosmos["has_radius"])),
             "euclid_catalog_csv": str(euclid_path),
+            "euclid_meta_json": str(euclid_meta_path),
             "euclid_area_arcmin2": euclid_area,
             "euclid_cone_count": int(euclid_meta.get("cone_count", 1)),
-            "euclid_cones": euclid_meta.get("cones"),
-            "euclid_rows_used": int(euclid_weighting["selected_rows"]),
-            "euclid_expected_extended_sources": float(
-                euclid_weighting["expected_extended_sources"]
+            "euclid_catalog_rows": int(euclid["catalog_rows"]),
+            "euclid_expected_galaxies_with_sizes": float(
+                np.sum(np.asarray(euclid["weight"]))
             ),
-            "classification_weighting": euclid_weighting,
-            "maximum_spurious_probability": float(
-                args.maximum_spurious_probability
+            "euclid_unresolved_radius_policy": "left_censor",
+            "euclid_unresolved_radius_arcsec": (
+                EUCLID_UNRESOLVED_RADIUS_ARCSEC
             ),
-            "synthetic_truth_csv": (
-                str(synthetic_path) if synthetic_density is not None else None
-            ),
-        },
-        "fit": asdict(fit),
-        "local_normalization_sensitivity_fit": asdict(local_fit),
-        "euclid_latent_density_estimate": {
-            "density_arcmin2": float(
-                local_fit.population_scale * raw_cosmos_m28
-            ),
-            "cone_count": int(euclid_meta.get("cone_count", 1)),
-            "use_local_normalization": (
-                int(euclid_meta.get("cone_count", 1)) >= 3
-            ),
-            "method": (
-                "free population normalization in the F814W-to-VIS "
-                "observation fit over spatially separated Euclid cones"
-            ),
-            "caveat": (
-                "Completeness-model extrapolation to the unseen population; "
-                "not directly comparable to raw TNG draws. Requires at least "
-                "three separated cones; one cone is retained only as a local "
-                "cosmic-variance sensitivity estimate."
+            "euclid_unresolved_weighted_galaxies": float(np.sum(
+                np.asarray(euclid["weight"])[
+                    np.asarray(euclid["radius_arcsec"])
+                    < EUCLID_UNRESOLVED_RADIUS_ARCSEC
+                ]
+            )),
+            "classification_weighting": euclid["classification_weighting"],
+            "size_estimator": euclid["size_estimator"],
+            "missing_probability_rows": int(euclid["missing_probability_rows"]),
+            "invalid_probability_rows": int(euclid["invalid_probability_rows"]),
+            "missing_size_rows": int(euclid["missing_size_rows"]),
+            "missing_magnitude_error_rows": int(
+                euclid["missing_magnitude_error_rows"]
             ),
         },
-        "reliability": {
-            "cosmos_f814w_turnover_sensitive_above_mag": 27.5,
-            "fixed_fit_vis_turnover_sensitive_above_mag": (
-                24.0
-                + fit.magnitude_slope * (27.5 - 24.0)
-                + fit.vis_minus_f814w_mag
-            ),
+        "model": {
+            "luminosity_function": fit_payload(lf_fit),
+            "size_relation": fit_payload(size_fit),
+            "euclid_response": fit_payload(response_fit),
         },
-        "latent_density": {
-            "cosmos_m20_to_m28_arcmin2": float(
-                np.sum(cosmos_binned)
-            ),
-            "fitted_m20_to_m28_arcmin2": float(
-                np.sum(fitted_latent)
-            ),
-            "cosmos_m_lt_28_arcmin2": raw_cosmos_m28,
-            "fitted_m_lt_28_arcmin2": (
-                fit.population_scale * raw_cosmos_m28
-            ),
-            "locally_renormalized_m_lt_28_arcmin2": (
-                local_fit.population_scale * raw_cosmos_m28
-            ),
-        },
-        "detected_density": {
-            "euclid_m20_to_m28_arcmin2": float(np.sum(euclid_density)),
-            "predicted_m20_to_m28_arcmin2": float(
-                np.sum(predicted_detected)
-            ),
-            "local_prediction_m20_to_m28_arcmin2": float(
-                np.sum(local_predicted_detected)
-            ),
-        },
-        "bins": rows,
+        "parameters": parameters,
+        "fit_quality": quality,
+        "diagnostics": diagnostics,
+        "cross_validation": cross_validation,
         "outputs": {
-            "csv": str(csv_path),
-            "plot": None if args.no_plot else str(plot_path),
+            "overview_png": str(overview_path),
+            "joint_planes_png": str(planes_path),
+            "parameters_png": str(parameters_path),
+            "cross_validation_png": str(cross_validation_path),
+            "core_marginals_png": str(core_marginals_path),
         },
+        "generation_status": (
+            "pre-observation TNG draw target is defined and plotted; this "
+            "artifact does not yet select or render TNG galaxies"
+        ),
     }
-    json_path = output_dir / "cosmos_euclid_density_fit.json"
-    payload["outputs"]["json"] = str(json_path)
-    json_path.write_text(json.dumps(payload, indent=2, sort_keys=True))
-    from euclid_polish.sky.generation.cosmos_tng_prior import (
-        brightness_transfer_payload,
-    )
-    transfer = brightness_transfer_payload(json_path)
-    if transfer is not None:
-        transfer_path = output_dir / "photometric_transfer_candidate.json"
-        transfer_path.write_text(json.dumps(transfer, indent=2, sort_keys=True))
-        payload["outputs"]["photometric_transfer_candidate"] = str(
-            transfer_path
-        )
-        json_path.write_text(json.dumps(payload, indent=2, sort_keys=True))
+    output_path = output_dir / OUTPUT_JSON
+    temporary = output_path.with_suffix(output_path.suffix + ".tmp")
+    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True))
+    os.replace(temporary, output_path)
     return payload
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--cosmos-counts", default=DEFAULT_COSMOS_COUNTS)
-    parser.add_argument(
-        "--cosmos-selection",
-        choices=("population", "clean", "isolated", "generator_ready"),
-        default="clean",
-    )
+    parser.add_argument("--cosmos", default=DEFAULT_COSMOS)
     parser.add_argument("--euclid", default=DEFAULT_EUCLID)
     parser.add_argument("--euclid-meta", default=DEFAULT_EUCLID_META)
-    parser.add_argument("--synthetic", default=DEFAULT_SYNTHETIC)
     parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR)
-    parser.add_argument(
-        "--maximum-spurious-probability",
-        type=float,
-        default=0.5,
-    )
-    parser.add_argument(
-        "--no-plot", action="store_true",
-        help="fit and write numeric artifacts without rendering a figure",
-    )
+    parser.add_argument("--maximum-spurious-probability", type=float, default=0.5)
+    parser.add_argument("--no-plot", action="store_true")
     return parser
 
 
 def main() -> None:
     payload = run(build_parser().parse_args())
-    print(json.dumps(payload, indent=2, sort_keys=True))
+    quality = payload["fit_quality"]
+    print(f"Wrote {Path(payload['outputs']['overview_png']).parent / OUTPUT_JSON}")
+    print(
+        "COSMOS reduced deviance "
+        f"{quality['cosmos_reduced_poisson_deviance']:.3f} Poisson / "
+        f"{quality['cosmos_reduced_negative_binomial_deviance']:.3f} "
+        "overdispersed; "
+        "Euclid reduced deviance "
+        f"{quality['euclid_reduced_poisson_deviance']:.3f}; "
+        "held-out Euclid "
+        f"{quality['euclid_cross_validated_reduced_poisson_deviance']:.3f}"
+    )
+    for warning in quality["warnings"]:
+        print(f"WARNING: {warning}")
 
 
 if __name__ == "__main__":

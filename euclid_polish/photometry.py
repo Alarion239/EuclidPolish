@@ -59,20 +59,28 @@ from euclid_polish.config import BandConfig, Config
 # AB magnitude ↔ µJy (pure AB-system definition, band-independent)
 # --------------------------------------------------------------------------- #
 
-def uJy_to_ab_mag(flux_uJy: float) -> float:
+def uJy_to_ab_mag(flux_uJy):
     """AB magnitude of a flux quoted in microJansky.
 
     ``mag = Config.AB_ZP_UJY − 2.5·log10(flux_µJy)`` with ``AB_ZP_UJY = 23.90``
     exactly (the AB definition ``m = 8.90 − 2.5·log10(F[Jy])`` re-expressed in
     µJy). Inverse of :func:`ab_mag_to_uJy`.
     """
-    return float(Config.AB_ZP_UJY - 2.5 * math.log10(float(flux_uJy)))
+    flux = np.asarray(flux_uJy, dtype=np.float64)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        out = Config.AB_ZP_UJY - 2.5 * np.log10(
+            np.where(flux > 0.0, flux, np.nan)
+        )
+    return float(out) if np.ndim(flux_uJy) == 0 else out
 
 
-def ab_mag_to_uJy(mag: float) -> float:
+def ab_mag_to_uJy(mag):
     """Flux in microJansky of an AB magnitude — exact inverse of
     :func:`uJy_to_ab_mag`: ``F_µJy = 10^((AB_ZP_UJY − mag)/2.5)``."""
-    return float(10.0 ** ((Config.AB_ZP_UJY - float(mag)) / 2.5))
+    out = 10.0 ** (
+        (Config.AB_ZP_UJY - np.asarray(mag, dtype=np.float64)) / 2.5
+    )
+    return float(out) if np.ndim(mag) == 0 else out
 
 
 # --------------------------------------------------------------------------- #

@@ -17,11 +17,14 @@ from euclid_polish.sky.generation.tng_radius_manifest import (
 )
 from euclid_polish.web.helpers.population_calibration import (
     activate_galaxy_recommendation,
+    activate_joint_galaxy_candidate,
+    active_joint_galaxy_path,
     active_transfer_path,
     density_calibration_path,
     fit_density_response,
     fit_local_catalog_density,
     galaxy_recommendation_state,
+    joint_galaxy_state,
 )
 from euclid_polish.web.helpers.star_population import (
     _weighted_summary,
@@ -41,6 +44,7 @@ def test_probability_weighted_summary_and_empirical_magnitude_cdf():
     assert summary["mean"] == pytest.approx(21.5)
     assert summary["effective_n"] == pytest.approx(1.6)
     assert summary["classification_sigma_count"] == pytest.approx(0.612372)
+
 
     prior = EmpiricalStellarPrior.from_payload({
         "gaia": {"bp_rp_quantiles": [0.5, 1.0],
@@ -64,6 +68,45 @@ def test_probability_weighted_summary_and_empirical_magnitude_cdf():
         for seed in range(2000)
     ])
     assert np.mean(draws < 21.0) == pytest.approx(0.25, abs=0.04)
+
+
+def test_joint_galaxy_fit_activates_atomically_for_generation(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setattr(Config, "DATA_DIR", str(tmp_path))
+    fit_path = tmp_path / "joint_population_fit.json"
+    monkeypatch.setattr(
+        Config, "JOINT_GALAXY_POPULATION_FIT_PATH", str(fit_path),
+    )
+    fit_path.write_text(json.dumps({
+        "version": 2,
+        "kind": "joint_intrinsic_galaxy_population",
+        "fingerprint": "b" * 64,
+        "model": {
+            "luminosity_function": {"one": 1},
+            "size_relation": {"two": 2},
+            "euclid_response": {"three": 3},
+        },
+        "fit_quality": {"valid": False, "warnings": ["diagnostic warning"]},
+        "diagnostics": {"tng_draw": {"full": {
+            "surface_density_arcmin2": 207.3388649567,
+        }}},
+    }))
+    updates = []
+    monkeypatch.setattr(
+        "euclid_polish.web.job_config.update", lambda patch: updates.append(patch),
+    )
+
+    activated = activate_joint_galaxy_candidate()
+
+    assert activated["active"]
+    assert activated["valid"]
+    assert not activated["validated"]
+    assert joint_galaxy_state()["is_active"]
+    assert json.loads(active_joint_galaxy_path().read_text())["fingerprint"] == (
+        "b" * 64
+    )
+    assert updates == [{"galaxy_density_arcmin2": 207.3388649567}]
 
 
 def test_density_response_is_reproducible_and_rejects_wrong_transfer():
