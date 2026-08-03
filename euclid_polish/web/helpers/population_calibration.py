@@ -310,14 +310,19 @@ def _forward_detection_probabilities(
     source = np.asarray(f814w, dtype=np.float64)
     if source.size == 0 or not np.isfinite(source).all():
         raise ValueError("COSMOS F814W prior is empty or non-finite")
-    grid = np.arange(12.0, 40.0 + grid_step / 2.0, grid_step)
+    means = 24.0 + slope * (source - 24.0) + offset
+    margin = max(1.0, 8.0 * scatter)
+    grid_start = min(
+        12.0, math.floor((float(means.min()) - margin) / grid_step) * grid_step,
+    )
+    grid_stop = max(
+        40.0, math.ceil((float(means.max()) + margin) / grid_step) * grid_step,
+    )
+    grid = np.arange(grid_start, grid_stop + grid_step / 2.0, grid_step)
     grid_edges = np.concatenate((
         grid - grid_step / 2.0,
         np.asarray([grid[-1] + grid_step / 2.0]),
     ))
-    means = 24.0 + slope * (source - 24.0) + offset
-    if means.min() < grid_edges[0] or means.max() >= grid_edges[-1]:
-        raise ValueError("Brightness transfer falls outside integration grid")
     density = np.histogram(means, bins=grid_edges)[0].astype(np.float64)
     density /= source.size * grid_step
     if scatter > 0.0:

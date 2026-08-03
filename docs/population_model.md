@@ -38,7 +38,10 @@ restricted to `generator_ready` rows with finite combined bulge+disc
 circularized (R_e). A finite nonnegative B+D fit statistic is required as a
 fit diagnostic, but there is no fixed upper chi-square cut: the raw statistic
 is strongly signal-to-noise dependent and such a cut removed the bright
-population without improving size agreement. Because the TNG atlas is much more massive than most of
+population without improving size agreement. The sampler also does not clip
+the catalogue at F814W = 28; the VIS analysis window is applied after the
+fitted photometric transfer, because a fainter F814W source can scatter into
+that window. Because the TNG atlas is much more massive than most of
 this COSMOS pool, absolute stellar mass is not treated as overlapping support.
 Instead, galaxies are separated at the project-defined
 \(\log_{10}(\mathrm{sSFR}/\mathrm{yr}^{-1})=-11\) boundary and mass is mapped

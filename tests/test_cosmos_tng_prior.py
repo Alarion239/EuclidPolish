@@ -43,6 +43,28 @@ def test_prior_requires_strict_generator_ready_rows_and_fit(tmp_path):
     }
 
 
+def test_prior_does_not_clip_f814w_before_vis_transfer(tmp_path):
+    path = tmp_path / "prior.npz"
+    np.savez(
+        path,
+        catalog_id=np.arange(2),
+        mag_hst_f814w=np.array([17.5, 29.5]),
+        z_phot=np.array([0.3, 1.1]),
+        logmass_lephare=np.array([10.5, 9.5]),
+        logssfr_lephare=np.array([-12.0, -9.5]),
+        re_combined_arcsec=np.array([0.8, 0.2]),
+        generator_ready=np.array([True, True]),
+    )
+
+    prior = CosmosTngPrior(
+        path,
+        photometric_transfer=F814WToVisTransfer(source="embedded:test"),
+    )
+
+    assert len(prior) == 2
+    assert set(prior.f814w.tolist()) == {17.5, 29.5}
+
+
 def test_multicone_fit_maps_f814w_to_vis_brightness(tmp_path):
     path = tmp_path / "prior.npz"
     _write_prior(path)

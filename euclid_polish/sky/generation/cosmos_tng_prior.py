@@ -296,8 +296,8 @@ class CosmosTngPrior:
         *,
         photometric_fit_path: str | Path = Config.COSMOS_EUCLID_FIT_PATH,
         photometric_transfer: F814WToVisTransfer | None = None,
-        mag_min: float = 18.0,
-        mag_max: float = 28.0,
+        mag_min: float | None = None,
+        mag_max: float | None = None,
     ):
         self.path = str(path)
         with np.load(self.path, allow_pickle=False) as data:
@@ -324,13 +324,17 @@ class CosmosTngPrior:
             generator_ready = np.asarray(data["generator_ready"], dtype=bool)
 
         valid = (
-            np.isfinite(f814w) & (f814w >= mag_min) & (f814w < mag_max)
+            np.isfinite(f814w)
             & np.isfinite(z) & (z > 0.01) & (z < 6.0)
             & np.isfinite(mass) & (mass > 4.0) & (mass < 13.0)
             & np.isfinite(logssfr)
             & generator_ready
             & np.isfinite(re) & (re > 0.01) & (re < 20.0)
         )
+        if mag_min is not None:
+            valid &= f814w >= float(mag_min)
+        if mag_max is not None:
+            valid &= f814w < float(mag_max)
         if not np.any(valid):
             raise ValueError(f"No usable COSMOS physical rows in {self.path}")
         self.catalog_id = catalog_id[valid].astype(str)
