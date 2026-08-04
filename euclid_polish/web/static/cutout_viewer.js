@@ -1982,7 +1982,7 @@ export function mountCutoutViewer(root, opts = {}) {
     }
     ctx.font = `400 ${tickSize}px Arial, Helvetica, sans-serif`;
     ctx.textBaseline = "top";
-    ctx.fillText(info.log ? "relative display intensity" : "input-equivalent signal (e⁻)",
+    ctx.fillText(info.log ? "relative display intensity" : "Pixel signal (e⁻)",
       barX + barWidth / 2, barY + barHeight + side * 0.045);
   }
 
@@ -2022,7 +2022,7 @@ export function mountCutoutViewer(root, opts = {}) {
       // The inset is deliberately embedded at bottom-left in every panel.
       // This makes the comparison survive slide reflow and keeps all panels
       // registered to the same cursor-selected sky location.
-      const inset = Math.round(side * 0.255);
+      const inset = Math.round(side * 0.3825);
       const pad = Math.round(side * 0.022);
       const ix = x + pad;
       const iy = y + side - inset - pad;

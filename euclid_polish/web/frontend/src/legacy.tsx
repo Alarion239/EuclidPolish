@@ -50,7 +50,7 @@ function loadViewer(): Promise<ViewerModule> {
   // by Vite and not statically resolved by TS (the engine ships with classic UI).
   // Bump this token whenever the standalone engine changes: the browser caches
   // dynamic module imports by URL, independently of the rebuilt Vite bundle.
-  const url = "/static/cutout_viewer.js?v=20260803-publication-figures-v6";
+  const url = "/static/cutout_viewer.js?v=20260803-publication-figures-v8";
   if (!viewerMod) viewerMod = import(/* @vite-ignore */ url) as Promise<ViewerModule>;
   return viewerMod;
 }

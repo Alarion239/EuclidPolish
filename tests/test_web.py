@@ -191,8 +191,10 @@ def test_cutout_viewer_exports_capture_all_visible_frames():
     assert 'return "Super-resolved Image"' in source
     assert "function drawPublicationHeatbar" in source
     assert 'asinh knee: ${Math.round(info.knee)} e⁻' in source
-    assert 'input-equivalent signal (e⁻)' in source
+    assert 'Pixel signal (e⁻)' in source
+    assert 'input-equivalent signal' not in source
     assert "cropFraction < 0.5" in source
+    assert "const inset = Math.round(side * 0.3825);" in source
     assert "crop.angularSide.toFixed" in source
     assert "exportFigure()" in source
 
