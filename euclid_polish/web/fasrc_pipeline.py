@@ -1411,7 +1411,7 @@ class RunPipelineStep(FASRCPipelineStep):
 class SyntheticGenerateStep(RunPipelineStep):
     """Synthetic training-pair generation for the /sky page.
 
-    Renders synthetic clean HR scenes (COSMOS2025 galaxies + stars +
+    Renders synthetic clean HR scenes (PHZ-conditioned TNG galaxies + stars +
     strong lenses) and forward-models them to dirty Euclid LR with the
     empirical band PSFs, writing clean + HR + dirty TFRecords. Runs
     ``run_pipeline.py --skip-train`` as a dedicated, knob-bearing step
@@ -1431,18 +1431,17 @@ class SyntheticGenerateStep(RunPipelineStep):
         )
 
     def prepare_params(self, params: dict[str, Any]) -> dict[str, Any]:
-        """Freeze the explicitly activated joint population into the job."""
-        from euclid_polish.web.helpers.population_calibration import (
-            joint_galaxy_state,
+        """Freeze the empirical Euclid PHZ/Kron/size population into the job."""
+        from euclid_polish.sky.generation.phz_galaxy_prior import (
+            build_phz_galaxy_population_payload,
         )
 
         prepared = super().prepare_params(params)
-        joint_status = joint_galaxy_state()
-        joint = joint_status.get("active") or {}
-        if not joint_status.get("is_active") or not joint:
-            raise ValueError(
-                "activate the current joint analytical TNG population first"
-            )
+        joint = build_phz_galaxy_population_payload(
+            Config.EUCLID_POPULATION_CATALOG_PATH,
+            Config.EUCLID_PHZ_PDF_PATH,
+            Config.EUCLID_POPULATION_META_PATH,
+        )
         prepared["_joint_galaxy_population_json"] = json.dumps(
             joint, separators=(",", ":"), sort_keys=True,
         )
@@ -1452,7 +1451,7 @@ class SyntheticGenerateStep(RunPipelineStep):
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError(
-                "active joint galaxy population has no finite density"
+                "empirical PHZ galaxy population has no finite density"
             ) from exc
         from euclid_polish.web.helpers.population_calibration import star_state
         star_status = star_state()
@@ -1488,8 +1487,8 @@ class SyntheticGenerateStep(RunPipelineStep):
         except (TypeError, ValueError):
             workers = self.defaults.n_cpus
         cmd += ["--gen-workers", str(max(1, workers))]
-        # One joint COSMOS row controls every TNG morphology's flux, redshift,
-        # stellar mass, and apparent size. This is the only galaxy population.
+        # One empirical PHZ-grid draw controls every TNG morphology's redshift,
+        # apparent size, and VIS Kron brightness anchor.
         raw_tng_density = params.get("galaxy_density_arcmin2")
         if raw_tng_density in (None, ""):
             raise ValueError(

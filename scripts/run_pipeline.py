@@ -3,7 +3,7 @@
 
 Mirrors the three CLI menu steps but drives them sequentially without prompts:
 
-    1. Generate clean HR fields with COSMOS2025 galaxies + stars + lenses
+    1. Generate clean HR fields with PHZ-conditioned TNG galaxies + stars + lenses
        (saved as ``clean_{train,validate,test}.tfrecord`` in v2 schema,
        4 channels).
     2. Run the per-band forward model HR → LR (PSF convolution + detector/MER
@@ -64,11 +64,14 @@ from euclid_polish.psf.psf_library import load_all_band_psf_sets
 from euclid_polish.sky.generation.cosmos_tng_prior import (
     CosmosTngPrior,
     F814WToVisTransfer,
-    JointGalaxyPopulationPrior,
 )
 from euclid_polish.sky.generation.gen_provenance import (
     ShardStampPlan,
     make_generation_context,
+)
+from euclid_polish.sky.generation.phz_galaxy_prior import (
+    build_phz_galaxy_population_payload,
+    population_prior_from_payload,
 )
 from euclid_polish.sky.generation.sky_simulator import (
     SkySimulator,
@@ -203,8 +206,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                          "--skip-generate nor --skip-convolve); falls back to "
                          "the serial two-step path otherwise.")
     ap.add_argument("--galaxy-density-arcmin2", type=float,
-                    default=Config.GALAXY_DENSITY_ARCMIN2,
-                    help="COSMOS-conditioned TNG galaxies per arcmin².")
+                    default=None,
+                    help=(
+                        "TNG galaxies per arcmin². By default, use the "
+                        "integrated density of the empirical PHZ population."
+                    ))
     ap.add_argument("--galaxy-thinning-max-density-arcmin2", type=float,
                     default=None,
                     help="Calibration-only master density. Shared seeds make "
@@ -228,7 +234,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--cosmos-vis-transfer-artifact-json", default="",
                     help="Exact activated transfer artifact embedded by the web job.")
     ap.add_argument("--joint-galaxy-population-json", default="",
-                    help="Compact activated analytical TNG draw artifact.")
+                    help="Compact activated galaxy-population draw artifact.")
+    ap.add_argument(
+        "--phz-galaxy-catalog",
+        default=Config.EUCLID_POPULATION_CATALOG_PATH,
+        help="Cached Euclid MER+PHZ population CSV used by the default prior.",
+    )
+    ap.add_argument(
+        "--phz-pdf-cache",
+        default=Config.EUCLID_PHZ_PDF_PATH,
+        help="Aligned Euclid PHZ redshift-PDF NPZ used by the default prior.",
+    )
+    ap.add_argument(
+        "--phz-population-meta",
+        default=Config.EUCLID_POPULATION_META_PATH,
+        help="Euclid population-cache metadata containing the sampled area.",
+    )
     ap.add_argument("--star-density-arcmin2", type=float,
                     default=Config.DEFAULT_STAR_DENSITY_ARCMIN2,
                     help="Stellar surface density (stars/arcmin²).")
@@ -403,8 +424,8 @@ def _photometric_transfer_from_args(
     )
 
 
-def _population_prior_from_args(args: argparse.Namespace):
-    """Build the explicitly embedded analytical prior, or a legacy COSMOS prior."""
+def _embedded_population_payload(args: argparse.Namespace) -> dict:
+    """Return the frozen job payload, building the default PHZ prior once."""
     embedded = str(getattr(args, "joint_galaxy_population_json", "") or "").strip()
     if embedded:
         try:
@@ -413,11 +434,46 @@ def _population_prior_from_args(args: argparse.Namespace):
             raise ValueError("joint galaxy population JSON is malformed") from exc
         if not isinstance(payload, dict):
             raise ValueError("joint galaxy population JSON must be an object")
-        return JointGalaxyPopulationPrior(payload)
-    return CosmosTngPrior(
-        args.cosmos_prior,
-        photometric_transfer=_photometric_transfer_from_args(args),
+        return payload
+    return build_phz_galaxy_population_payload(
+        getattr(
+            args, "phz_galaxy_catalog", Config.EUCLID_POPULATION_CATALOG_PATH,
+        ),
+        getattr(args, "phz_pdf_cache", Config.EUCLID_PHZ_PDF_PATH),
+        getattr(
+            args, "phz_population_meta", Config.EUCLID_POPULATION_META_PATH,
+        ),
     )
+
+
+def _population_prior_from_args(args: argparse.Namespace):
+    """Build the empirical PHZ prior, or an explicitly embedded alternative."""
+    return population_prior_from_payload(_embedded_population_payload(args))
+
+
+def _freeze_generation_population(args: argparse.Namespace) -> None:
+    """Freeze one population artifact and resolve its default surface density."""
+    density = getattr(args, "galaxy_density_arcmin2", None)
+    if density is not None and float(density) <= 0.0:
+        return
+    payload = _embedded_population_payload(args)
+    args.joint_galaxy_population_json = json.dumps(
+        payload, separators=(",", ":"), sort_keys=True,
+    )
+    if density is None:
+        try:
+            resolved_density = float(
+                payload["generation"]["surface_density_arcmin2"]
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(
+                "galaxy population artifact has no finite surface density"
+            ) from exc
+        if not np.isfinite(resolved_density) or resolved_density <= 0.0:
+            raise ValueError(
+                "galaxy population artifact has no finite surface density"
+            )
+        args.galaxy_density_arcmin2 = resolved_density
 
 
 def _observation_config_from_args(
@@ -1149,7 +1205,7 @@ def _gen_init_worker(prior_path, image_size, psf_dir,
             joint_payload = json.loads(joint_galaxy_population_json)
         except json.JSONDecodeError as exc:
             raise ValueError("joint galaxy population JSON is malformed") from exc
-        cat = JointGalaxyPopulationPrior(joint_payload)
+        cat = population_prior_from_payload(joint_payload)
     else:
         cat = (
             CosmosTngPrior(prior_path, photometric_transfer=transfer)
@@ -1219,6 +1275,21 @@ def step_generate_and_convolve_parallel(args: argparse.Namespace) -> None:
     reporter = Reporter.from_env()
     os.makedirs(args.records_dir, exist_ok=True)
     workers = max(1, int(args.gen_workers))
+
+    # Process workers must all see the exact same empirical draw grid.  Build
+    # it once in the parent and embed the compact compressed payload, just as
+    # WebUI submissions do.
+    if (
+        args.galaxy_density_arcmin2 > 0.0
+        and not str(
+            getattr(args, "joint_galaxy_population_json", "") or ""
+        ).strip()
+    ):
+        args.joint_galaxy_population_json = json.dumps(
+            _embedded_population_payload(args),
+            separators=(",", ":"),
+            sort_keys=True,
+        )
 
     prior_path = (None if args.galaxy_density_arcmin2 <= 0.0
                   else args.cosmos_prior)
@@ -1440,6 +1511,8 @@ def main() -> int:
     t_script_start = time.time()
     t0_perf = time.perf_counter()
     args = parse_args()
+    if not args.skip_generate:
+        _freeze_generation_population(args)
     print(f"Pipeline started at {time.strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"  args = {vars(args)}")
 

@@ -133,6 +133,15 @@ class Config:
     # Current WebUI jobs instead embed the explicitly activated compact joint
     # population artifact and reconstruct its draw cube on each worker.
     COSMOS_EUCLID_FIT_PATH = JOINT_GALAXY_POPULATION_FIT_PATH
+    EUCLID_POPULATION_CATALOG_PATH = os.path.join(
+        DATA_DIR, "population_comparison", "euclid_population.csv",
+    )
+    EUCLID_POPULATION_META_PATH = os.path.join(
+        DATA_DIR, "population_comparison", "euclid_population_meta.json",
+    )
+    EUCLID_PHZ_PDF_PATH = os.path.join(
+        DATA_DIR, "population_comparison", "euclid_population_phz_pdf.npz",
+    )
     TNG_ATLAS_PARAMETERS_PATH = os.path.join(
         DATA_DIR, "_tng_infographics", "tng_atlas_parameters.csv",
     )

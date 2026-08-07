@@ -527,23 +527,24 @@ class TestRegistry:
         ] == "175"
         assert "--sersic-density-arcmin2" not in argv
 
-    def test_synthetic_generate_embeds_activated_joint_population(
+    def test_synthetic_generate_embeds_empirical_phz_population(
         self, monkeypatch, tmp_path,
     ):
-        """FASRC jobs embed the exact explicitly activated joint model."""
+        """FASRC jobs embed the exact empirical PHZ/Kron/size grid."""
         del tmp_path
         joint = {
             "version": 1,
-            "kind": "joint_analytical_tng_draw",
+            "kind": "phz_empirical_kron_tng_draw",
             "valid": True,
             "active": True,
             "fingerprint": "a" * 64,
-            "generation": {"surface_density_arcmin2": 207.3388649567},
-            "model": {},
+            "generation": {"surface_density_arcmin2": 66.4398137},
+            "grid": {},
         }
         monkeypatch.setattr(
-            "euclid_polish.web.helpers.population_calibration.joint_galaxy_state",
-            lambda: {"candidate": joint, "active": joint, "is_active": True},
+            "euclid_polish.sky.generation.phz_galaxy_prior."
+            "build_phz_galaxy_population_payload",
+            lambda *_args: joint,
         )
         monkeypatch.setattr(
             "euclid_polish.web.helpers.population_calibration.star_state",
@@ -566,28 +567,68 @@ class TestRegistry:
         })
         argv = step.build_command(prepared)
 
-        assert argv[argv.index("--galaxy-density-arcmin2") + 1] == "207.339"
+        assert argv[argv.index("--galaxy-density-arcmin2") + 1] == "66.4398"
         embedded = json.loads(
             argv[argv.index("--joint-galaxy-population-json") + 1]
         )
         assert embedded["fingerprint"] == "a" * 64
 
-    def test_synthetic_generate_requires_active_galaxy_fit(self, monkeypatch):
+    def test_synthetic_generate_requires_empirical_phz_cache(self, monkeypatch):
         monkeypatch.setattr(
-            "euclid_polish.web.helpers.population_calibration.joint_galaxy_state",
-            lambda: {"active": None, "is_active": False},
+            "euclid_polish.sky.generation.phz_galaxy_prior."
+            "build_phz_galaxy_population_payload",
+            lambda *_args: (_ for _ in ()).throw(
+                ValueError("Euclid PHZ PDF cache is unavailable")
+            ),
         )
 
-        with pytest.raises(ValueError, match="activate the current joint"):
+        with pytest.raises(ValueError, match="PHZ PDF cache"):
             REGISTRY.get("synthetic_generate").prepare_params({})
+
+    def test_synthetic_generate_serializes_phz_measurement_contract(
+        self, monkeypatch,
+    ):
+        joint = {
+            "version": 1,
+            "kind": "phz_empirical_kron_tng_draw",
+            "valid": True,
+            "validated": False,
+            "active": True,
+            "fingerprint": "b" * 64,
+            "generation": {"surface_density_arcmin2": 66.0},
+            "measurement_model": {
+                "redshift": "per-object PHZ redshift PDF",
+                "brightness": "MER FLUX_DETECTION_TOTAL detection-band Kron flux",
+            },
+            "grid": {},
+        }
+        monkeypatch.setattr(
+            "euclid_polish.sky.generation.phz_galaxy_prior."
+            "build_phz_galaxy_population_payload",
+            lambda *_args: joint,
+        )
+        monkeypatch.setattr(
+            "euclid_polish.web.helpers.population_calibration.star_state",
+            lambda: {"active": {"population": {}}, "is_active": True},
+        )
+
+        prepared = REGISTRY.get("synthetic_generate").prepare_params({})
+        argv = REGISTRY.get("synthetic_generate").build_command(prepared)
+        embedded = json.loads(
+            argv[argv.index("--joint-galaxy-population-json") + 1]
+        )
+
+        assert embedded["kind"] == "phz_empirical_kron_tng_draw"
+        assert "Kron" in embedded["measurement_model"]["brightness"]
 
     def test_synthetic_generate_requires_active_stellar_fit(self, monkeypatch):
         joint = {
             "generation": {"surface_density_arcmin2": 207.0},
         }
         monkeypatch.setattr(
-            "euclid_polish.web.helpers.population_calibration.joint_galaxy_state",
-            lambda: {"active": joint, "is_active": True},
+            "euclid_polish.sky.generation.phz_galaxy_prior."
+            "build_phz_galaxy_population_payload",
+            lambda *_args: joint,
         )
         monkeypatch.setattr(
             "euclid_polish.web.helpers.population_calibration.star_state",

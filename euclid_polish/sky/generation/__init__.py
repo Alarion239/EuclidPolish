@@ -17,6 +17,12 @@ _EXPORTS = {
     "einstein_radius_sis": ("lens_population", "einstein_radius_sis"),
     "render_lens_to_multiband_canvas": ("lens_population", "render_lens_to_multiband_canvas"),
     "sample_lens_geometry": ("lens_population", "sample_lens_geometry"),
+    "PhzGalaxyPopulationPrior": (
+        "phz_galaxy_prior", "PhzGalaxyPopulationPrior",
+    ),
+    "build_phz_galaxy_population_payload": (
+        "phz_galaxy_prior", "build_phz_galaxy_population_payload",
+    ),
     "add_sersic_to_bands": ("profiles", "add_sersic_to_bands"),
     "compute_sersic_stamp": ("profiles", "compute_sersic_stamp"),
     "draw_bulge_disk": ("profiles", "draw_bulge_disk"),

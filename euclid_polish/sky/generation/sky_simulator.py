@@ -556,10 +556,14 @@ class SkySimulator:
             ],
             "morphology_activity_class": morphology["activity_class"],
             "galaxy_density_arcmin2": float(self.config.galaxy_density_arcmin2),
-            "population_prior": (
-                "joint_analytical_v1"
-                if isinstance(self.population_prior, JointGalaxyPopulationPrior)
-                else "cosmos2025_joint"
+            "population_prior": getattr(
+                self.population_prior,
+                "population_label",
+                (
+                    "joint_analytical_v1"
+                    if isinstance(self.population_prior, JointGalaxyPopulationPrior)
+                    else "cosmos2025_joint"
+                ),
             ),
             "mag_hst_f814w": draw.mag_hst_f814w,
             "target_vis_mag": draw.target_vis_mag,
@@ -825,7 +829,9 @@ class SkySimulator:
                 if cfg.galaxy_thinning_max_density_arcmin2 is not None
                 else None
             ),
-            "population_prior": "cosmos2025_joint",
+            "population_prior": getattr(
+                self.population_prior, "population_label", "cosmos2025_joint",
+            ) if self.population_prior is not None else "none",
             "star_density_arcmin2":    float(cfg.star_density_arcmin2),
             "star_population_fingerprint": (
                 str(cfg.star_prior_payload.get("fingerprint", ""))

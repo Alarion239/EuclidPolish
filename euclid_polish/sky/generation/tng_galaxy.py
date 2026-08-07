@@ -430,6 +430,23 @@ def _normalise_target_vis(
     return factor
 
 
+def _record_target_vis_normalisation(
+    stamp: np.ndarray,
+    meta: dict,
+    target_vis_flux_e: float | None,
+) -> float:
+    """Apply and record one cube-wide VIS anchor after geometry is final."""
+    brightness_scale = _normalise_target_vis(stamp, target_vis_flux_e)
+    meta["brightness_scale"] = float(brightness_scale)
+    meta["shared_photometric_scale"] = float(brightness_scale)
+    meta["photometric_scaling"] = "single_shared_vis_anchor_after_size_match"
+    meta["flux_e_per_band"] = {
+        band: float(stamp[..., index].sum(dtype=np.float64))
+        for index, band in enumerate(Config.LR_INPUT_BAND_NAMES)
+    }
+    return brightness_scale
+
+
 def _render_target_re(
     galaxy_dir: str,
     subhalo_id: int | str,
@@ -462,16 +479,9 @@ def _render_target_re(
             pixel_scale_arcsec=pixel_scale_arcsec,
         )
     # Exactly one scalar multiplication is applied to the complete cube.
-    brightness_scale = _normalise_target_vis(stamp, target_vis_flux_e)
+    _record_target_vis_normalisation(stamp, meta, target_vis_flux_e)
     achieved_px = measure_halflight_radius_px(stamp[..., 0])
     achieved = float(achieved_px * pixel_scale_arcsec)
-    meta["brightness_scale"] = float(brightness_scale)
-    meta["shared_photometric_scale"] = float(brightness_scale)
-    meta["photometric_scaling"] = "single_shared_vis_anchor"
-    meta["flux_e_per_band"] = {
-        band: float(stamp[..., index].sum(dtype=np.float64))
-        for index, band in enumerate(Config.LR_INPUT_BAND_NAMES)
-    }
     meta["shape"] = tuple(stamp.shape)
     return stamp, meta, achieved
 
@@ -514,7 +524,11 @@ def _match_target_re(
             pixel_scale_arcsec=pixel_scale_arcsec,
             rot_k=rot_k,
             rot_angle=rot_angle,
-            target_vis_flux_e=target_vis_flux_e,
+            # Geometry is resolved first.  Brightness cannot affect a
+            # half-light radius, and the requested PHZ/Kron contract is clearer
+            # when its single shared normalization is applied only to the
+            # accepted final stamp.
+            target_vis_flux_e=None,
             prepared_source=source,
             use_angle=use_angle,
         )
@@ -525,6 +539,9 @@ def _match_target_re(
             best_error = error
             best_achieved = achieved
         if error <= tolerance:
+            _record_target_vis_normalisation(
+                stamp, meta, target_vis_flux_e,
+            )
             meta["radius_refinement_iterations"] = int(iteration)
             return stamp, meta, achieved, scale
 
