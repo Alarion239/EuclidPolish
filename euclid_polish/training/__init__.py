@@ -11,6 +11,7 @@ from euclid_polish.training.inference import (
     reconstruct,
 )
 from euclid_polish.training.models.wdsr import wdsr
+from euclid_polish.training.target_blur import blur_target_array
 from euclid_polish.training.trainer import Trainer
 
 __all__ = [
@@ -20,4 +21,5 @@ __all__ = [
     "plot_reconstruction",
     "load_model_from_checkpoint",
     "load_model_from_weights",
+    "blur_target_array",
 ]

@@ -11,6 +11,10 @@ from tensorflow.python.data.experimental import AUTOTUNE
 
 from euclid_polish.config import Config
 from euclid_polish.image.tfio import parse_example
+from euclid_polish.training.target_blur import (
+    target_sigma_pixels,
+    validate_target_fwhm_arcsec,
+)
 
 # ---------------------------------------------------------------------------
 # Per-band asinh stretch
@@ -69,6 +73,42 @@ def asinh_stretch_hr(x: tf.Tensor, num_channels: int | None = None,
     if knee is not None:
         return tf.asinh(x / tf.cast(knee, x.dtype))
     return tf.asinh(x / _hr_scale_for(x, num_channels))
+
+
+def blur_target_tf(
+    x: tf.Tensor,
+    fwhm_arcsec: float,
+    *,
+    pixel_scale_arcsec: float = Config.DEFAULT_PIXEL_SCALE,
+) -> tf.Tensor:
+    """Apply the target Gaussian PSF to an ``(H, W, C)`` HR tensor.
+
+    The kernel is depthwise, so bands remain independent. Reflective padding
+    keeps the operation equivalent to the NumPy target transform while the
+    whole-field tensor is still available before random crops are selected.
+    """
+    fwhm = validate_target_fwhm_arcsec(fwhm_arcsec)
+    if fwhm == 0.0:
+        return x
+    sigma = target_sigma_pixels(fwhm, pixel_scale_arcsec)
+    radius = max(1, int(round(4.0 * sigma)))
+    coords = np.arange(-radius, radius + 1, dtype=np.float32)
+    kernel_1d = np.exp(-0.5 * (coords / float(sigma)) ** 2)
+    kernel_1d /= np.sum(kernel_1d)
+    kernel_2d = np.outer(kernel_1d, kernel_1d).astype(np.float32)
+    channels = x.shape[-1]
+    if channels is None:
+        raise ValueError("blur_target_tf requires a statically known channel count")
+    kernel = np.repeat(kernel_2d[:, :, None, None], int(channels), axis=2)
+    padded = tf.pad(
+        tf.expand_dims(x, 0),
+        [[0, 0], [radius, radius], [radius, radius], [0, 0]],
+        mode="REFLECT",
+    )
+    blurred = tf.nn.depthwise_conv2d(
+        padded, tf.constant(kernel), strides=[1, 1, 1, 1], padding="VALID",
+    )
+    return tf.ensure_shape(blurred[0], x.shape)
 
 
 def inverse_asinh_stretch_lr(y: tf.Tensor, knee: float | None = None) -> tf.Tensor:

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import glob
 import os
 import shlex
@@ -33,6 +34,7 @@ from euclid_polish.training.inference import (
     reconstruct,  # experimental round-trip lane only (raw keras model)
     scaled_wcs_header,
 )
+from euclid_polish.training.target_blur import blur_target_array
 from euclid_polish.web import fasrc_config, job_config
 from euclid_polish.web import fasrc_fetcher as _fasrc_fetcher
 from euclid_polish.web.fasrc_jobs import _conda_activate_snippet
@@ -143,10 +145,28 @@ def _job_generate_reconstruct(
             raise FileNotFoundError(
                 f"login-node generation produced no dirty records in {local_tmp}")
         lr_records    = read_images(lr_path, num_images=10_000)
-        hr_records    = (read_images(hr_path, num_images=10_000)
-                         if os.path.exists(hr_path) else [])
-        clean_records = (read_images(clean_path, num_images=10_000)
-                         if os.path.exists(clean_path) else [])
+        hr_records = [
+            dataclasses.replace(
+                rec,
+                data=blur_target_array(
+                    rec.data,
+                    Config.TARGET_PSF_FWHM_ARCSEC,
+                    pixel_scale_arcsec=rec.pixel_scale_arcsec,
+                ),
+            )
+            for rec in read_images(hr_path, num_images=10_000)
+        ] if os.path.exists(hr_path) else []
+        clean_records = [
+            dataclasses.replace(
+                rec,
+                data=blur_target_array(
+                    rec.data,
+                    Config.TARGET_PSF_FWHM_ARCSEC,
+                    pixel_scale_arcsec=rec.pixel_scale_arcsec,
+                ),
+            )
+            for rec in read_images(clean_path, num_images=10_000)
+        ] if os.path.exists(clean_path) else []
         hr_by_idx    = {h.index: h for h in hr_records}
         clean_by_idx = {c.index: c for c in clean_records}
 

@@ -122,10 +122,18 @@ def test_reusable_eval_matches_only_on_identity_and_records(tmp_path, monkeypatc
     monkeypatch.setattr(ev, "_ensemble_regime_dir", lambda starless: str(regime))
     monkeypatch.setattr(ev, "_ensemble_cubes_dir", lambda *a, **k: str(cubes))
 
-    ident = {"records_fp": "rfp1", "num_images": 100, "member_fps": ["a"]}
+    ident = {
+        "records_fp": "rfp1",
+        "num_images": 100,
+        "member_fps": ["a"],
+        "target_psf_fwhm_arcsec": 0.05,
+    }
     (regime / "eval_summary.json").write_text(
         json.dumps({"eval_identity": ident, "ensemble_psnr": 1.0}))
-    (cubes / "viz_index.json").write_text(json.dumps({"records_fp": "rfp1"}))
+    (cubes / "viz_index.json").write_text(json.dumps({
+        "records_fp": "rfp1",
+        "target_psf_fwhm_arcsec": 0.05,
+    }))
 
     assert ev._reusable_eval(False, ident) is not None          # full match → reuse
     # A different field count / dataset / membership is a different eval.

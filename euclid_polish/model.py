@@ -28,6 +28,7 @@ from euclid_polish.training.augmentation import (
     add_lr_noise,
     asinh_stretch_hr,
     asinh_stretch_lr,
+    blur_target_tf,
     random_dihedral,
 )
 from euclid_polish.training.forward_onthefly import (
@@ -52,6 +53,7 @@ from euclid_polish.training.loss_names import plateau_guard_applies
 from euclid_polish.training.losses import build_loss
 from euclid_polish.training.lr_schedule import WarmupCosineDecay
 from euclid_polish.training.models.wdsr import wdsr as _wdsr_build
+from euclid_polish.training.target_blur import validate_target_fwhm_arcsec
 from euclid_polish.training.trainer import Trainer, seed_everything
 
 _HR_SCALE = Config.DEFAULT_PIXEL_SCALE   # 0.05 arcsec/pix
@@ -211,6 +213,7 @@ class Model:
         noise_aug_rn: float = 0.0,
         bootstrap_keep: float | None = None,
         bootstrap_seed: int = 0,
+        target_fwhm_arcsec: float = Config.TARGET_PSF_FWHM_ARCSEC,
     ):
         """TF data pipeline: TFRecord → parse → [bootstrap] → [crop + dihedral
         + noise] → asinh stretch → batch.
@@ -235,8 +238,10 @@ class Model:
         def _parse_lr(raw):
             return parse_example(raw, n_lr)
 
+        target_fwhm = validate_target_fwhm_arcsec(target_fwhm_arcsec)
+
         def _parse_hr(raw):
-            return parse_example(raw, n_hr)
+            return blur_target_tf(parse_example(raw, n_hr), target_fwhm)
 
         lr_ds = (tf.data.TFRecordDataset(dirty_path)
                  .map(_parse_lr, num_parallel_calls=AUTOTUNE))
@@ -382,6 +387,7 @@ class Model:
         psf_warp_alpha_max: float = Config.TRAIN_PSF_WARP_ALPHA_MAX,
         psf_warp_sigma: float = Config.TRAIN_PSF_WARP_SIGMA,
         saturation_mask_prob: float = Config.TRAIN_SATURATION_MASK_PROB,
+        target_fwhm_arcsec: float = Config.TARGET_PSF_FWHM_ARCSEC,
         star_prior_payload: dict | None = None,
         starless: bool = True,
         **kwargs,
@@ -429,6 +435,7 @@ class Model:
         # built in __init__).
         if self._seed is not None:
             seed_everything(self._seed, deterministic=self._deterministic)
+        target_fwhm = validate_target_fwhm_arcsec(target_fwhm_arcsec)
         if forward_onthefly:
             psf_sets, note = member_psf_sets(seed=self._seed,
                                              psf_subset=psf_subset)
@@ -452,6 +459,7 @@ class Model:
                                   psf_warp_sigma=float(psf_warp_sigma),
                                   saturation_mask_prob=float(
                                       saturation_mask_prob),
+                                  target_fwhm_arcsec=target_fwhm,
                                   star_prior_payload=star_prior_payload)
             train_ds = self._build_onthefly_pipeline(
                 hr_path, batch_size, fwd,
@@ -463,7 +471,9 @@ class Model:
                 lr_path, hr_path, batch_size,
                 noise_aug_rn=float(noise_aug),
                 bootstrap_keep=bootstrap,
-                bootstrap_seed=(self._seed if self._seed is not None else 0))
+                bootstrap_seed=(self._seed if self._seed is not None else 0),
+                target_fwhm_arcsec=target_fwhm)
+
         valid_lr_path = lr_path.replace("_train.", "_validate.")
         valid_hr_path = hr_path.replace("_train.", "_validate.")
         if valid_lr_path == lr_path:
@@ -472,7 +482,8 @@ class Model:
                 f"(got {lr_path!r})"
             )
         valid_ds = self._build_training_pipeline(
-            valid_lr_path, valid_hr_path, batch_size, augment=False
+            valid_lr_path, valid_hr_path, batch_size, augment=False,
+            target_fwhm_arcsec=target_fwhm,
         )
 
         # Warmup → cosine LR, scaled to THIS run's `steps`. The old flat 5e-4

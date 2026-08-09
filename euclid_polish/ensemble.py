@@ -24,6 +24,7 @@ disagreement quantifies how much a run is hallucinating.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import re
@@ -42,6 +43,10 @@ from euclid_polish.provenance.gitinfo import capture_git
 from euclid_polish.training.forward_onthefly import (
     DEFAULT_CROPS_PER_FIELD,
     DEFAULT_ONTHEFLY_HR_CROP_SIZE,
+)
+from euclid_polish.training.target_blur import (
+    blur_target_array,
+    validate_target_fwhm_arcsec,
 )
 
 #: Per-member checkpoint sub-directory name, e.g. ``member_03``.
@@ -142,6 +147,8 @@ class MemberTrainSpec:
     #: default (100 e⁻). A NEW-member (add) knob, like depth; continue/fork
     #: inherit the existing/source member's knee from its ``origin.json``.
     asinh_knee: float | None = None
+    #: Gaussian FWHM applied to the HR supervision/reference target.
+    target_fwhm_arcsec: float = Config.TARGET_PSF_FWHM_ARCSEC
 
 
 def pca_field(members: np.ndarray, n_components: int = 3
@@ -385,6 +392,8 @@ class EnsembleModel:
                         # config default (100 e⁻); a fork inherits its source's.
                         # Drives the input/output stretch at train + inference.
                         "asinh_knee": getattr(m, "_asinh_knee", spec.asinh_knee),
+                        "target_psf_fwhm_arcsec": float(
+                            validate_target_fwhm_arcsec(spec.target_fwhm_arcsec)),
                         # Diversity knobs, recorded so the member's training
                         # distribution is reconstructible from its sidecar.
                         "loss_norm": spec.loss_norm,
@@ -428,6 +437,7 @@ class EnsembleModel:
                     psf_warp_alpha_max=spec.psf_warp_alpha_max,
                     psf_warp_sigma=spec.psf_warp_sigma,
                     saturation_mask_prob=spec.saturation_mask_prob,
+                    target_fwhm_arcsec=spec.target_fwhm_arcsec,
                     starless=spec.starless,
                     **train_kwargs)
             self._models.append(m)
@@ -667,6 +677,7 @@ def evaluate_on_records(
     num_res_blocks: int = Config.DEFAULT_NUM_RES_BLOCKS,
     include_loss_best: bool = False,
     starless: bool | None = None,
+    target_fwhm_arcsec: float = Config.TARGET_PSF_FWHM_ARCSEC,
     on_field: Callable[
         [int, np.ndarray, np.ndarray, np.ndarray, np.ndarray,
          np.ndarray | None], None
@@ -692,8 +703,20 @@ def evaluate_on_records(
     target_kind = "clean" if starless else "hr"
     lr = ImageSet.read(tfrecord_path(records_dir, f"dirty_{sub}"),
                        num_images=num_images)
-    hr = ImageSet.read(tfrecord_path(records_dir, f"{target_kind}_{sub}"),
-                       num_images=num_images)
+    target_fwhm = validate_target_fwhm_arcsec(target_fwhm_arcsec)
+    hr = [
+        dataclasses.replace(
+            image,
+            data=blur_target_array(
+                image.data, target_fwhm,
+                pixel_scale_arcsec=image.pixel_scale_arcsec,
+            ),
+        )
+        for image in ImageSet.read(
+            tfrecord_path(records_dir, f"{target_kind}_{sub}"),
+            num_images=num_images,
+        )
+    ]
     out = ens.evaluate(list(lr), list(hr), on_field=on_field,
                        on_progress=on_progress)
     out["subset"] = sub
@@ -709,6 +732,7 @@ def evaluate_member_on_records(
     num_images: int = 100,
     scale: int = Config.DEFAULT_REBIN_FACTOR,
     num_res_blocks: int = Config.DEFAULT_NUM_RES_BLOCKS,
+    target_fwhm_arcsec: float = Config.TARGET_PSF_FWHM_ARCSEC,
     on_progress: Callable[[int, int, str], None] | None = None,
 ) -> dict:
     """ONE member's test-set PSNR in asinh space (the training metric).
@@ -725,9 +749,20 @@ def evaluate_member_on_records(
     m = Model(mdir, scale=scale, num_res_blocks=num_res_blocks)
     lr = list(ImageSet.read(tfrecord_path(records_dir, f"dirty_{sub}"),
                             num_images=num_images))
-    hr_by = {h.index: h for h in
-             ImageSet.read(tfrecord_path(records_dir, f"hr_{sub}"),
-                           num_images=num_images)}
+    target_fwhm = validate_target_fwhm_arcsec(target_fwhm_arcsec)
+    hr_by = {
+        h.index: dataclasses.replace(
+            h,
+            data=blur_target_array(
+                h.data, target_fwhm,
+                pixel_scale_arcsec=h.pixel_scale_arcsec,
+            ),
+        )
+        for h in ImageSet.read(
+            tfrecord_path(records_dir, f"hr_{sub}"),
+            num_images=num_images,
+        )
+    }
     knee = float(Config.STRETCH_SCALE_E)
     peak_str = float(Config.PSNR_PEAK_STRETCHED)
     vals: list[float] = []

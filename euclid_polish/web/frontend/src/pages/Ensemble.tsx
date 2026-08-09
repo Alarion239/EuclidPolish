@@ -455,6 +455,7 @@ export default function EnsemblePage() {
   const navigate = useNavigate();
   const { mode: modeParam } = useParams<{ mode: string }>();
   const mode: Mode = modeParam === "starless" ? "starless" : "starfull";
+  const [targetFwhm, setTargetFwhm] = useState("0.05");
   const setMode = (m: Mode) => navigate(`/ensemble/${m}`);
   const starless = mode === "starless";
   const jointCombinerKind: CombinerModelKind = "raw_incremental_minmeanmax_rbf";
@@ -491,7 +492,8 @@ export default function EnsemblePage() {
         } />
 
       <div className="grid" style={{ gridTemplateColumns: "1fr", gap: "var(--s4)" }}>
-        <Controls status={status.data} mode={mode} evalJob={evalJob} opJob={opJob} onDone={reloadAll} />
+        <Controls status={status.data} mode={mode} evalJob={evalJob} opJob={opJob}
+          onDone={reloadAll} targetFwhm={targetFwhm} onTargetFwhm={setTargetFwhm} />
         <Members status={status.data} evals={evals.data} jointComb={jointComb.data} frozenComb={frozenComb.data}
           loading={status.loading} starless={starless} opJob={opJob}
           onArchived={reloadAll}
@@ -503,11 +505,11 @@ export default function EnsemblePage() {
         <CombinerCard comb={jointComb.data} loading={jointComb.loading} mode={mode} theme={theme} fitJob={jointFitJob} onFit={reloadAll}
           evalReady={status.data?.evaluations_ready ?? false}
           title={`Combiner · joint refit · ${mode}`}
-          modelKind={jointCombinerKind} />
+          modelKind={jointCombinerKind} targetFwhm={targetFwhm} />
         <CombinerCard comb={frozenComb.data} loading={frozenComb.loading} mode={mode} theme={theme} fitJob={frozenFitJob} onFit={reloadAll}
           evalReady={status.data?.evaluations_ready ?? false}
           title={`Combiner · frozen blocks · ${mode}`}
-          modelKind={frozenCombinerKind} />
+          modelKind={frozenCombinerKind} targetFwhm={targetFwhm} />
         <DisagreementCard key={mode} mode={mode} members={asArray<Member>(status.data?.members)}
           targetLabel={starless ? "clean goal" : "HR"} />
       </div>
@@ -517,8 +519,8 @@ export default function EnsemblePage() {
 
 /* ── controls: evaluate / pull / psnr ────────────────────────────────────── */
 function Controls(
-  { status, mode, evalJob, opJob, onDone }:
-  { status: Status | null; mode: Mode; evalJob: ReturnType<typeof useJob>; opJob: ReturnType<typeof useJob>; onDone: () => void },
+  { status, mode, evalJob, opJob, onDone, targetFwhm, onTargetFwhm }:
+  { status: Status | null; mode: Mode; evalJob: ReturnType<typeof useJob>; opJob: ReturnType<typeof useJob>; onDone: () => void; targetFwhm: string; onTargetFwhm: (value: string) => void },
 ) {
   const [n, setN] = useState("100");
   const s = status;
@@ -535,8 +537,12 @@ function Controls(
       <CardBody>
         <div className="row" style={{ alignItems: "flex-end", gap: "var(--s3)" }}>
           <NumberField label="test fields" value={n} onChange={setN} min={1} max={2000} />
+          <NumberField label="target PSF FWHM [arcsec]" value={targetFwhm}
+            onChange={onTargetFwhm} min={0} max={2} step={0.005} />
           <Button variant="primary" disabled={evalJob.busy || !s?.test_present}
-            onClick={() => evalJob.run("/ensemble/evaluate", { num_images: n, mode }, { onDone })}>
+            onClick={() => evalJob.run("/ensemble/evaluate", {
+              num_images: n, mode, target_psf_fwhm_arcsec: targetFwhm,
+            }, { onDone })}>
             Evaluate on test set
           </Button>
           <Button disabled={opJob.busy}
@@ -1443,9 +1449,10 @@ function PredictiveAxesCard(
 
 export function CombinerCard(
   { comb, loading, mode, theme, fitJob, onFit, evalReady,
-    fitUrl = "/ensemble/combiner/fit", title, modelKind: controlledKind }:
+    fitUrl = "/ensemble/combiner/fit", title, modelKind: controlledKind,
+    targetFwhm = "0.05" }:
   { comb: Combiner | null; loading: boolean; mode: string; theme: string; fitJob: ReturnType<typeof useJob>; onFit: () => void; evalReady: boolean;
-    fitUrl?: string; title?: string; modelKind?: CombinerModelKind },
+    fitUrl?: string; title?: string; modelKind?: CombinerModelKind; targetFwhm?: string },
 ) {
   const [nImg, setNImg] = useState("100");
   const [nKernels, setNKernels] = useState("128");
@@ -1661,6 +1668,7 @@ export function CombinerCard(
             onClick={() => fitJob.run(fitUrl, {
               num_images: nImg, n_kernels: nKernels,
               model_kind: modelKind, mode,
+              target_psf_fwhm_arcsec: targetFwhm,
             }, { onDone: onFit })}>
             Fit {modelKind === "raw_incremental_frozen_minmeanmax_rbf" ? "frozen-block" : "joint-refit"} RBF
           </Button>

@@ -62,7 +62,7 @@ def test_complete_field_is_one_training_example(gaussian_sets):
     fwd = OnTheFlyForward(
         gaussian_sets, seed=1, crops_per_field=1, hr_crop_size=side,
         add_noise=False, add_artifacts=False, add_saturation=False,
-        inject_stars=False, psf_warp_prob=0.0,
+        inject_stars=False, psf_warp_prob=0.0, target_fwhm_arcsec=0.0,
     )
     lr, hr = fwd.crops(field)
     assert lr.shape == (1, side // 2, side // 2, 4)
@@ -79,7 +79,7 @@ def test_hr_crops_are_subtiles_and_lr_matches_full_forward(gaussian_sets):
                           hr_crop_size=CROP,
                           add_noise=False, add_artifacts=False,
                           add_saturation=False, inject_stars=False,
-                          psf_warp_prob=0.0)
+                          psf_warp_prob=0.0, target_fwhm_arcsec=0.0)
     lr_crops, hr_crops = fwd.crops(field)
     # Reference full-field forward (deterministic: 1-kernel sets, no noise).
     img = Image(data=field, pixel_scale_arcsec=Config.DEFAULT_PIXEL_SCALE,
@@ -111,7 +111,8 @@ def test_inject_stars_adds_flux_before_forward(gaussian_sets):
     """The injection primitive deposits fresh star flux onto the scene copy
     (HR deltas, pre-PSF) — directly, without the crop-offset RNG in play."""
     fwd = OnTheFlyForward(gaussian_sets, seed=5, inject_stars=True,
-                          star_density_arcmin2=500.0)
+                          star_density_arcmin2=500.0,
+                          target_fwhm_arcsec=0.0)
     field = _field()
     scene = field.copy()
     fwd._inject_stars(scene, np.random.default_rng(0))
@@ -147,7 +148,8 @@ def test_both_regimes_inject_stars_only_target_differs(gaussian_sets):
     kw = {"seed": 5, "crops_per_field": 4, "hr_crop_size": CROP,
           "add_noise": False,
           "add_artifacts": False, "add_saturation": False, "inject_stars": True,
-          "star_density_arcmin2": 500.0}
+          "star_density_arcmin2": 500.0,
+          "target_fwhm_arcsec": 0.0}
     lr_less, hr_less = OnTheFlyForward(gaussian_sets, starless=True, **kw).crops(field)
     lr_full, hr_full = OnTheFlyForward(gaussian_sets, starless=False, **kw).crops(field)
     # Same seed → same injected stars → IDENTICAL LR in both regimes.
@@ -252,6 +254,7 @@ def test_new_onthefly_geometry_defaults(gaussian_sets):
     assert args.batch_size == 4
     assert args.crops_per_field == 8
     assert args.hr_crop_size == 256
+    assert args.target_psf_fwhm_arcsec == pytest.approx(0.05)
 
 
 def test_build_specs_forward_flags(tmp_path):

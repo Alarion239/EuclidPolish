@@ -48,6 +48,10 @@ from euclid_polish.sky.observation.observation_simulator import (
     ObservationSimulator,
     ObservationSimulatorConfig,
 )
+from euclid_polish.training.target_blur import (
+    blur_target_array,
+    validate_target_fwhm_arcsec,
+)
 
 #: Default PSF-bagging subset (source clusters per member) when a rotation
 #: pool is available. Bounded so a member never loads the whole multi-GB
@@ -121,6 +125,7 @@ class OnTheFlyForward:
         psf_warp_alpha_max: float = Config.TRAIN_PSF_WARP_ALPHA_MAX,
         psf_warp_sigma: float = Config.TRAIN_PSF_WARP_SIGMA,
         saturation_mask_prob: float = Config.TRAIN_SATURATION_MASK_PROB,
+        target_fwhm_arcsec: float = Config.TARGET_PSF_FWHM_ARCSEC,
     ) -> None:
         self.crops_per_field = int(crops_per_field)
         self.hr_crop_size = int(hr_crop_size)
@@ -140,6 +145,8 @@ class OnTheFlyForward:
             if star_prior_payload else None
         )
         self.pixel_scale_arcsec = float(pixel_scale_arcsec)
+        self.target_fwhm_arcsec = validate_target_fwhm_arcsec(
+            target_fwhm_arcsec)
         if self.crops_per_field < 1:
             raise ValueError("crops_per_field must be >= 1")
         if self.hr_crop_size < self.scale:
@@ -216,8 +223,14 @@ class OnTheFlyForward:
         # block-aligned: starless = the original field, starfull = process's
         # (with-stars) HR.
         ht, wt = hr_out.data.shape[:2]
-        hr = (np.ascontiguousarray(field[:ht, :wt, :], np.float32)
-              if self.starless else np.asarray(hr_out.data, np.float32))
+        target = (field[:ht, :wt, :] if self.starless
+                  else np.asarray(hr_out.data, np.float32))
+        # Blur the complete target before selecting crops so the boundary of
+        # an individual crop never becomes an artificial PSF edge.
+        hr = blur_target_array(
+            target, self.target_fwhm_arcsec,
+            pixel_scale_arcsec=self.pixel_scale_arcsec,
+        )
 
         lr_crops = np.empty((self.crops_per_field, c // s, c // s, lr.shape[-1]),
                             np.float32)

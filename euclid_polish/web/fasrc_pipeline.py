@@ -1250,6 +1250,10 @@ class EnsembleTrainStep(FASRCPipelineStep):
         if knee not in ("", "0", "0.0", "100", "100.0"):
             with contextlib.suppress(ValueError):
                 cmd += ["--asinh-knee", f"{float(knee):g}"]
+        target_fwhm = str(params.get("target_psf_fwhm_arcsec", "")).strip()
+        if target_fwhm != "":
+            with contextlib.suppress(ValueError):
+                cmd += ["--target-psf-fwhm-arcsec", f"{float(target_fwhm):g}"]
         # ICNR init: checkerboard-free sub-pixel upsampler (add members only).
         if str(params.get("icnr", "")).strip().lower() in (
                 "1", "true", "yes", "on"):

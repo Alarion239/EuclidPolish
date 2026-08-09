@@ -6,6 +6,7 @@ This module provides an interactive command-line interface for all EuclidPolish 
 """
 
 import contextlib
+import dataclasses
 import getpass
 import glob
 import os
@@ -74,6 +75,7 @@ from euclid_polish.training.log_plot import (
     default_log_path,
     plot_training_log,
 )
+from euclid_polish.training.target_blur import blur_target_array
 from euclid_polish.visualization import BaseVisualizer
 from euclid_polish.visualization.methods import (
     draw_clean_dirty_pair,
@@ -1349,7 +1351,14 @@ class InteractiveCLI:
                 for i, lr_img in enumerate(chosen_lr):
                     hr_match = clean_by_idx.get(lr_img.index)
                     if hr_match is not None:
-                        chosen_hr[i] = hr_match
+                        chosen_hr[i] = dataclasses.replace(
+                            hr_match,
+                            data=blur_target_array(
+                                hr_match.data,
+                                Config.TARGET_PSF_FWHM_ARCSEC,
+                                pixel_scale_arcsec=hr_match.pixel_scale_arcsec,
+                            ),
+                        )
         else:
             lr_file = input("Path to LR image (.npy or .png): ").strip()
             if not lr_file or not os.path.exists(lr_file):
@@ -1804,6 +1813,14 @@ class InteractiveCLI:
                         for img in read_images(dirty_sub, num_images=9999)
                     }
                     for hr in read_images(clean_sub, num_images=9999):
+                        hr = dataclasses.replace(
+                            hr,
+                            data=blur_target_array(
+                                hr.data,
+                                Config.TARGET_PSF_FWHM_ARCSEC,
+                                pixel_scale_arcsec=hr.pixel_scale_arcsec,
+                            ),
+                        )
                         lr = dirty_by_index.get(hr.index)
                         if lr is not None:
                             all_pairs.append((hr, lr))

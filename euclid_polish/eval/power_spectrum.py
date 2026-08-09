@@ -34,12 +34,14 @@ imports matplotlib and the TFRecord/sky loaders.
 
 from __future__ import annotations
 
+import dataclasses
 import os
 import warnings
 
 import numpy as np
 
 from euclid_polish.config import Config
+from euclid_polish.training.target_blur import blur_target_array
 
 #: per-band line colours (blue→red, roughly by pivot wavelength)
 BAND_COLORS: dict[str, str] = {
@@ -845,7 +847,17 @@ def render_power_spectrum_summary(
     n_sr = sky_records.sr_count(subset)
     if not os.path.exists(clean_path) or n_sr == 0:
         return None
-    records = read_images(clean_path, num_images=n_sr)
+    records = [
+        dataclasses.replace(
+            rec,
+            data=blur_target_array(
+                rec.data,
+                Config.TARGET_PSF_FWHM_ARCSEC,
+                pixel_scale_arcsec=rec.pixel_scale_arcsec,
+            )
+        )
+        for rec in read_images(clean_path, num_images=n_sr)
+    ]
     if not records:
         return None
 

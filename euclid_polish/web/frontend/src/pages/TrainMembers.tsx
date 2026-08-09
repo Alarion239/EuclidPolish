@@ -80,6 +80,7 @@ export default function TrainMembersPage() {
   const [psfWarpAlphaMax, setPsfWarpAlphaMax] = useState("20");
   const [psfWarpSigma, setPsfWarpSigma] = useState("3");
   const [saturationMaskProb, setSaturationMaskProb] = useState("0.2");
+  const [targetPsfFwhm, setTargetPsfFwhm] = useState("0.05");
   const [rows, setRows] = useState<SpecRow[]>([newRow(true)]);
   const [steps, setSteps] = useState("60000");
   const [continueBasis, setContinueBasis] = useState<ContinueBasis>("extra");
@@ -130,6 +131,7 @@ export default function TrainMembersPage() {
       psf_warp_alpha_max: psfWarpAlphaMax,
       psf_warp_sigma: psfWarpSigma,
       saturation_mask_prob: saturationMaskProb,
+      target_psf_fwhm_arcsec: targetPsfFwhm,
     };
     if (mode === "continue") {
       const continuation = continueBasis === "target"
@@ -148,8 +150,8 @@ export default function TrainMembersPage() {
     return p;
   }, [mode, member, selectedMemberNames, continueBasis, extraSteps, targetSteps,
     rows, steps, forwardOtf, batchSize, hrCropSize, cropsPerField, psfSubset,
-    psfWarpProb,
-    psfWarpAlphaMax, psfWarpSigma, saturationMaskProb, arrayMaxParallel]);
+    psfWarpProb, psfWarpAlphaMax, psfWarpSigma, saturationMaskProb,
+    targetPsfFwhm, arrayMaxParallel]);
 
   const showDepth = mode === "add";   // fork inherits its source's depth + init
   const extraStepCount = Number(extraSteps);
@@ -165,7 +167,8 @@ export default function TrainMembersPage() {
     && Number(hrCropSize) % 2 === 0
     && Number.isInteger(Number(cropsPerField)) && Number(cropsPerField) > 0
     && Number(psfWarpProb) >= 0 && Number(psfWarpProb) <= 1
-    && Number(saturationMaskProb) >= 0 && Number(saturationMaskProb) <= 0.5;
+    && Number(saturationMaskProb) >= 0 && Number(saturationMaskProb) <= 0.5
+    && Number.isFinite(Number(targetPsfFwhm)) && Number(targetPsfFwhm) >= 0;
   const selectedSummary = selectedMemberNames.length === 0 ? "…"
     : selectedMemberNames.length <= 3 ? selectedMemberNames.join(", ")
       : `${selectedMemberNames.length} selected members`;
@@ -318,6 +321,8 @@ export default function TrainMembersPage() {
               onChange={setPsfWarpSigma} min={0.1} max={100} step={0.5} />
             <NumberField label="saturation mask probability" value={saturationMaskProb}
               onChange={setSaturationMaskProb} min={0} max={0.5} step={0.05} />
+            <NumberField label="target PSF FWHM [arcsec]" value={targetPsfFwhm}
+              onChange={setTargetPsfFwhm} min={0} max={2} step={0.005} />
           </div>
         </CardBody>
       </Card>

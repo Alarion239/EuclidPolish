@@ -51,6 +51,10 @@ from euclid_polish.eval.combiner import (
 from euclid_polish.eval.lensfinder_eval import per_object_plens
 from euclid_polish.image.tfio import read_images, tfrecord_path
 from euclid_polish.psf.core import PSF
+from euclid_polish.training.target_blur import (
+    blur_target_array,
+    validate_target_fwhm_arcsec,
+)
 from euclid_polish.web.helpers import sky_records
 from euclid_polish.web.helpers.paths import _sky_records_local_dir
 from euclid_polish.web.helpers.status import (
@@ -209,6 +213,11 @@ def _sky_cube(index: int, tier: str, params: dict[str, str]):
         raise ViewerError(404, "index out of range")
     rec = records[index]
     cube = _as_hwc(rec.data)
+    if tier == "hr":
+        cube = blur_target_array(
+            cube, Config.TARGET_PSF_FWHM_ARCSEC,
+            pixel_scale_arcsec=rec.pixel_scale_arcsec,
+        )
     info = {
         "label": f"{tier} · {subset} · idx {rec.index}",
         "asinh": float(Config.STRETCH_SCALE_E),
@@ -523,7 +532,17 @@ def _ensemble_record_cube(sub: str, n_read: int, kind: str, rec_index: int):
     rec = {r.index: r for r in recs}.get(rec_index)
     if rec is None:
         raise ViewerError(404, f"record {rec_index} not found")
-    return (_as_hwc(rec.data),
+    data = _as_hwc(rec.data)
+    if kind in {"clean", "hr"}:
+        manifest = _ensemble_manifest(_ensemble_starless({
+            "mode": "starless" if kind == "clean" else "starfull",
+        }))
+        fwhm = validate_target_fwhm_arcsec(
+            manifest.get("target_psf_fwhm_arcsec",
+                        Config.TARGET_PSF_FWHM_ARCSEC))
+        data = blur_target_array(
+            data, fwhm, pixel_scale_arcsec=rec.pixel_scale_arcsec)
+    return (data,
             float(getattr(rec, "pixel_scale_arcsec", 0.0) or 0.0))
 
 

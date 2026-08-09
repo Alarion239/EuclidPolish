@@ -143,6 +143,7 @@ def run_synthetic_eval(
     from euclid_polish.eval.subsets import eval_subset
     from euclid_polish.image.tfio import read_images, tfrecord_path
     from euclid_polish.sky.generation.source_catalog import read_sources
+    from euclid_polish.training.target_blur import blur_target_array
 
     def _emit(m): (log or print)(m)
     if on_progress is None:                     # local/CLI run → visible bar
@@ -176,7 +177,14 @@ def run_synthetic_eval(
     lr_recs = read_images(tfrecord_path(rdir, f"dirty_{sub}"),
                                        num_images=window)
     hr_recs = read_images(tfrecord_path(rdir, f"hr_{sub}"),
-                                       num_images=window)
+                          num_images=window)
+    for rec in hr_recs:
+        rec.data = blur_target_array(
+            rec.data,
+            Config.TARGET_PSF_FWHM_ARCSEC,
+            pixel_scale_arcsec=getattr(
+                rec, "pixel_scale_arcsec", Config.DEFAULT_PIXEL_SCALE),
+        )
     if not hr_recs:
         _emit(f"no HR {sub} records read.")
         return {"rows": [], "n_ok": 0, "n_skip": 0, "groups": {}}

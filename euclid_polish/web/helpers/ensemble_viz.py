@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import dataclasses
 import glob
 import hashlib
 import json
@@ -56,6 +57,10 @@ from euclid_polish.provenance.gitinfo import capture_git
 from euclid_polish.tracking import TrackingError
 from euclid_polish.tracking import default_store as tracking_default_store
 from euclid_polish.training.inference import infer_checkpoint_num_res_blocks
+from euclid_polish.training.target_blur import (
+    blur_target_array,
+    validate_target_fwhm_arcsec,
+)
 from euclid_polish.training.trainer import prune_orphaned_checkpoints
 from euclid_polish.visualization.base import BaseVisualizer
 from euclid_polish.web import fasrc_config
@@ -250,12 +255,14 @@ def _combiner_fingerprint(regime_dir: str, kind: str | None = None) -> str | Non
 
 
 def _eval_identity(base: str, rdir: str | None, sub: str, regime_dir: str,
-                   *, starless: bool, num_images: int) -> dict:
+                   *, starless: bool, num_images: int,
+                   target_fwhm_arcsec: float = Config.TARGET_PSF_FWHM_ARCSEC) -> dict:
     """Everything that determines an evaluation's numbers: the eval dataset
     (records fingerprint), the exact member weights (per-member checkpoint
     fingerprints), the fitted combiner and the requested field count. Two evals
     with the same identity produce the same results — so a cached one with a
     matching identity is reused instead of re-running model inference."""
+    target_fwhm = validate_target_fwhm_arcsec(target_fwhm_arcsec)
     labels = _regime_labels(base, starless)
     member_fps = [
         member_fingerprint(os.path.join(base, f"member_{str(lbl).split('·')[0]}"))
@@ -266,6 +273,7 @@ def _eval_identity(base: str, rdir: str | None, sub: str, regime_dir: str,
         "subset": sub,
         "num_images": int(num_images),
         "regime": _regime_slug(starless),
+        "target_psf_fwhm_arcsec": target_fwhm,
         "member_fps": member_fps,
         # Kept for older summary readers; ``combiner_fps`` is the complete
         # identity now that the two ordinary combiners are independent.
@@ -303,6 +311,9 @@ def _reusable_eval(starless: bool, identity: dict) -> dict | None:
     except (OSError, json.JSONDecodeError):
         return None
     if man.get("records_fp") != identity["records_fp"]:
+        return None
+    if float(man.get("target_psf_fwhm_arcsec", -1.0)) != float(
+            identity["target_psf_fwhm_arcsec"]):
         return None
     return summary
 
@@ -656,6 +667,14 @@ def job_ensemble_render(cap, *, index: int) -> dict:
     if os.path.exists(hr_path):
         hr_by = {h.index: h for h in read_images(hr_path, num_images=index + 1)}
         hr = hr_by.get(lr.index)
+        if hr is not None:
+            hr = dataclasses.replace(
+                hr,
+                data=blur_target_array(
+                    hr.data, Config.TARGET_PSF_FWHM_ARCSEC,
+                    pixel_scale_arcsec=hr.pixel_scale_arcsec,
+                ),
+            )
 
     cap.tick(0, ens.n_members, f"running {ens.n_members} members")
     mean, std = ens.predict(lr.data)
@@ -1110,7 +1129,9 @@ def _regime_labels(base: str, starless: bool) -> list[str]:
 
 
 def _reuse_validate_cubes(val_dir: str, records_fp,
-                          active_labels: list[str] | None = None
+                          active_labels: list[str] | None = None,
+                          *,
+                          target_fwhm_arcsec: float = Config.TARGET_PSF_FWHM_ARCSEC
                           ) -> tuple[list[int], list[str]] | None:
     """If ``cubes_validate/`` holds a manifest matching the current validate
     records fingerprint AND the current active member set, return ``(indices,
@@ -1129,6 +1150,9 @@ def _reuse_validate_cubes(val_dir: str, records_fp,
     if str(man.get("subset")) != "validate":
         return None
     if records_fp is not None and man.get("records_fp") != records_fp:
+        return None
+    if float(man.get("target_psf_fwhm_arcsec", -1.0)) != float(
+            validate_target_fwhm_arcsec(target_fwhm_arcsec)):
         return None
     labels = [str(x) for x in man.get("member_labels", []) or []]
     indices = [int(i) for i in man.get("indices", []) or []]
@@ -1242,7 +1266,8 @@ def job_combiner_fit(cap, *, num_images: int, n_kernels: int = 128,
                      min_usage: float | None = None,
                      starless: bool = False,
                      model_kind: str = _RAW_INCREMENTAL_MINMEANMAX_RBF_KIND,
-                     score_test: bool = True) -> dict:
+                     score_test: bool = True,
+                     target_fwhm_arcsec: float = Config.TARGET_PSF_FWHM_ARCSEC) -> dict:
     """Fit every validation pixel in minibatches, then optionally test-score."""
     del min_usage
     from euclid_polish.eval.combiner import (
@@ -1254,6 +1279,7 @@ def job_combiner_fit(cap, *, num_images: int, n_kernels: int = 128,
     from euclid_polish.eval.ensemble_cube_cache import load_cached_member_stack
 
     model_kind = _normalize_combiner_kind(model_kind)
+    target_fwhm = validate_target_fwhm_arcsec(target_fwhm_arcsec)
     base = ensemble_dir()
     records_dir = _sky_records_local_dir()
     target = "clean" if starless else "hr"
@@ -1268,7 +1294,8 @@ def job_combiner_fit(cap, *, num_images: int, n_kernels: int = 128,
         records_dir, "validate", starless=starless)
     validate_dir = _ensemble_cubes_dir("validate", starless=starless)
     reuse = _reuse_validate_cubes(
-        validate_dir, records_fp, _regime_labels(base, starless))
+        validate_dir, records_fp, _regime_labels(base, starless),
+        target_fwhm_arcsec=target_fwhm)
     if reuse is not None:
         indices, labels = reuse
     else:
@@ -1290,6 +1317,7 @@ def job_combiner_fit(cap, *, num_images: int, n_kernels: int = 128,
         _atomic_json(os.path.join(validate_dir, "viz_index.json"), {
             "subset": "validate", "indices": saved,
             "member_labels": labels, "records_fp": records_fp,
+            "target_psf_fwhm_arcsec": target_fwhm,
             "pca_n": ENSEMBLE_PCA_COMPONENTS,
         })
 
@@ -1318,6 +1346,13 @@ def job_combiner_fit(cap, *, num_images: int, n_kernels: int = 128,
             stack = load_cached_member_stack(
                 index, subset="validate", cubes_dir=validate_dir, active=labels)
             if stack is not None and target_record is not None:
+                target_record = dataclasses.replace(
+                    target_record,
+                    data=blur_target_array(
+                        target_record.data, target_fwhm,
+                        pixel_scale_arcsec=target_record.pixel_scale_arcsec,
+                    ),
+                )
                 yield (
                     int(index),
                     np.asarray(stack, np.float32),
@@ -1672,7 +1707,22 @@ def pixel_trace(starless: bool, diag: str, i: int, j: int,
     for rec, y, x in picks:
         by_rec.setdefault(rec, []).append((y, x))
     max_idx = max(by_rec) + 1
-    hr_by = {r.index: r for r in read_images(hr_path, num_images=max_idx)}
+    manifest = {}
+    with contextlib.suppress(OSError, json.JSONDecodeError), open(
+        os.path.join(cubes_dir, "viz_index.json")) as handle:
+        manifest = json.load(handle)
+    target_fwhm = validate_target_fwhm_arcsec(
+        manifest.get("target_psf_fwhm_arcsec", Config.TARGET_PSF_FWHM_ARCSEC))
+    hr_by = {
+        r.index: dataclasses.replace(
+            r,
+            data=blur_target_array(
+                r.data, target_fwhm,
+                pixel_scale_arcsec=r.pixel_scale_arcsec,
+            ),
+        )
+        for r in read_images(hr_path, num_images=max_idx)
+    }
     # LR baseline (dirty records), matched by index — optional (skip the LR tier
     # if the dirty records aren't synced).
     lr_path = tfrecord_path(rdir, f"dirty_{sub}")
@@ -1918,6 +1968,15 @@ def _reevaluate_from_cached_cubes(starless: bool,
         return None
     sub = eval_subset(rdir)
     out_dir = _ensemble_regime_dir(starless)
+    try:
+        with open(os.path.join(_ensemble_cubes_dir(starless=starless),
+                               "viz_index.json")) as f:
+            cached_manifest = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+    target_fwhm = validate_target_fwhm_arcsec(
+        cached_manifest.get("target_psf_fwhm_arcsec",
+                            Config.TARGET_PSF_FWHM_ARCSEC))
 
     ps_acc = None
     diag = EnsembleDiagnosticsAccumulator()
@@ -1987,7 +2046,8 @@ def _reevaluate_from_cached_cubes(starless: bool,
         summary["combiner_vs_mean_db"] = (
             comb_block["psnr"] - comb_block["ensemble_mean_psnr"])
     summary["eval_identity"] = _eval_identity(
-        base, rdir, sub, out_dir, starless=starless, num_images=int(num_images))
+        base, rdir, sub, out_dir, starless=starless, num_images=int(num_images),
+        target_fwhm_arcsec=target_fwhm)
     with open(os.path.join(out_dir, "eval_summary.json"), "w") as f:
         json.dump(summary, f, indent=2)
     # Classic-page diagnostic PNGs render lazily from the fresh cubes.
@@ -2118,7 +2178,8 @@ def _rebuild_pending_archive_caches(starless: bool) -> bool:
 
 
 def job_ensemble_evaluate(cap, *, num_images: int,
-                          starless: bool = True, force: bool = False) -> dict:
+                          starless: bool = True, force: bool = False,
+                          target_fwhm_arcsec: float = Config.TARGET_PSF_FWHM_ARCSEC) -> dict:
     """Evaluate the ensemble on the held-out test set; persist + return the summary.
 
     ``starless`` selects the regime: STARLESS members scored against the
@@ -2139,6 +2200,7 @@ def job_ensemble_evaluate(cap, *, num_images: int,
     payload, power spectrum, diagnostics, summary) lives under the regime dir,
     so starfull and starless never clobber each other.
     """
+    target_fwhm = validate_target_fwhm_arcsec(target_fwhm_arcsec)
     base = ensemble_dir()
     rdir = _sky_records_local_dir()
     if not rdir:
@@ -2179,7 +2241,8 @@ def job_ensemble_evaluate(cap, *, num_images: int,
     # with this exact identity is already cached, rebuild only the cheap figures
     # from the stored cubes (seconds, no GPU) and return the cached metrics.
     identity = _eval_identity(base, rdir, sub, out_dir,
-                              starless=starless, num_images=int(num_images))
+                              starless=starless, num_images=int(num_images),
+                              target_fwhm_arcsec=target_fwhm)
     if not force:
         cached = _reusable_eval(starless, identity)
         if cached is not None:
@@ -2264,6 +2327,7 @@ def job_ensemble_evaluate(cap, *, num_images: int,
 
     out = evaluate_on_records(base, rdir, num_images=int(num_images),
                               starless=bool(starless),
+                              target_fwhm_arcsec=target_fwhm,
                               on_field=_on_field, on_progress=_prog)
     member_labels = list(out.get("member_labels", []))
 
@@ -2296,6 +2360,7 @@ def job_ensemble_evaluate(cap, *, num_images: int,
                    "pca_n": ENSEMBLE_PCA_COMPONENTS, "pca_amps": pca_amps,
                    "pca_var": pca_var,
                    "member_labels": member_labels,
+                   "target_psf_fwhm_arcsec": target_fwhm,
                    "has_combiner": has_by_kind[_RBF_KIND],
                    **{f"has_combiner_{kind}": has
                       for kind, has in has_by_kind.items()},
@@ -2386,6 +2451,8 @@ def _iter_cached_fields(starless: bool):
     idxs = [int(i) for i in man.get("indices", [])]
     sub = man.get("subset", "")
     n_members = len(man.get("member_labels", []))
+    target_fwhm = validate_target_fwhm_arcsec(
+        man.get("target_psf_fwhm_arcsec", Config.TARGET_PSF_FWHM_ARCSEC))
     rdir = _sky_records_local_dir()
     target = "clean" if starless else "hr"
     hr_path = tfrecord_path(rdir, f"{target}_{sub}") if rdir else ""
@@ -2432,7 +2499,9 @@ def _iter_cached_fields(starless: bool):
             model_v[kind] = (_vis(np.load(model_f))
                              if (man.get(f"has_combiner_{kind}")
                                  and os.path.isfile(model_f)) else None)
-        hr_v = _vis(np.asarray(hr.data, np.float32))
+        hr_v = _vis(blur_target_array(
+            np.asarray(hr.data, np.float32), target_fwhm,
+            pixel_scale_arcsec=hr.pixel_scale_arcsec))
         lr_v = (_lr_on_hr_grid(np.asarray(lr_rec.data, np.float32),
                                int(hr_v.shape[0])) if lr_rec is not None else None)
         yield (hr_v, _vis(np.load(sr_f)),

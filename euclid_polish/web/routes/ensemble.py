@@ -8,7 +8,9 @@ import os
 
 from flask import abort, jsonify, render_template, request, send_file
 
+from euclid_polish.config import Config
 from euclid_polish.eval.combiner import ACTIVE_COMBINER_KINDS
+from euclid_polish.training.target_blur import validate_target_fwhm_arcsec
 from euclid_polish.web.helpers.ensemble_viz import (
     EVAL_DIAGNOSTIC_PNGS,
     _combiner_payload_path,
@@ -77,11 +79,18 @@ def register(app):
         # Star regime: starfull (reconstruct stars, hr target) vs starless
         # (erase them, clean target). Default starless (the current regime).
         starless = (request.form.get("mode", "starless").lower() != "starfull")
+        try:
+            target_fwhm = validate_target_fwhm_arcsec(
+                request.form.get("target_psf_fwhm_arcsec",
+                                 Config.TARGET_PSF_FWHM_ARCSEC))
+        except (TypeError, ValueError):
+            abort(400, description="invalid target_psf_fwhm_arcsec")
         regime = "starless" if starless else "starfull"
         job_id = REGISTRY.spawn(
             f"ensemble: evaluate {regime} on {num_images} test fields",
             target=lambda cap: job_ensemble_evaluate(
-                cap, num_images=num_images, starless=starless),
+                cap, num_images=num_images, starless=starless,
+                target_fwhm_arcsec=target_fwhm),
         )
         return jsonify({"job_id": job_id})
 
@@ -91,6 +100,12 @@ def register(app):
         validate split. Available in both regimes — starfull fuses star
         reconstructions, starless fuses the star-erasing members."""
         starless = _mode_starless(default="starfull")
+        try:
+            target_fwhm = validate_target_fwhm_arcsec(
+                request.form.get("target_psf_fwhm_arcsec",
+                                 Config.TARGET_PSF_FWHM_ARCSEC))
+        except (TypeError, ValueError):
+            abort(400, description="invalid target_psf_fwhm_arcsec")
         try:
             num_images = max(1, int(request.form.get("num_images", 100) or 100))
         except (TypeError, ValueError):
@@ -128,7 +143,8 @@ def register(app):
                 cap, num_images=num_images, n_kernels=n_kernels,
                 min_usage=min_usage,
                 starless=starless,
-                model_kind=model_kind),
+                model_kind=model_kind,
+                target_fwhm_arcsec=target_fwhm),
         )
         return jsonify({"job_id": job_id})
 

@@ -54,6 +54,9 @@ from euclid_polish.training.forward_onthefly import (  # noqa: E402
 from euclid_polish.training.inference import checkpoint_step  # noqa: E402
 from euclid_polish.training.loss_names import LOSS_NAMES  # noqa: E402
 from euclid_polish.training.staging import stage_records  # noqa: E402
+from euclid_polish.training.target_blur import (  # noqa: E402
+    validate_target_fwhm_arcsec,
+)
 
 
 def _default_base_dir() -> str:
@@ -194,6 +197,11 @@ def parse_args(argv=None) -> argparse.Namespace:
                         "with no TFRecord regen (it's an on-the-fly "
                         "normalization). ADD members only; continue/fork "
                         "inherit the existing/source member's knee.")
+    p.add_argument("--target-psf-fwhm-arcsec", type=float,
+                   default=Config.TARGET_PSF_FWHM_ARCSEC,
+                   help="Gaussian FWHM applied to clean/HR training and "
+                        "evaluation targets in arcseconds. Default 0.05 "
+                        "(one HR pixel); 0 disables target smoothing.")
     p.add_argument("--icnr", action="store_true",
                    help="ICNR-initialise the sub-pixel (pixel-shuffle) convs "
                         "so the upsampler starts as a checkerboard-free "
@@ -385,6 +393,8 @@ def _diversity_kwargs(args, over: dict) -> dict:
     saturation_mask_prob = float(over.get(
         "saturation_mask_prob", args.saturation_mask_prob,
     ))
+    target_fwhm_arcsec = validate_target_fwhm_arcsec(
+        args.target_psf_fwhm_arcsec)
     if not 0.0 <= saturation_mask_prob <= \
             Config.TRAIN_SATURATION_MASK_PROB_MAX:
         print("✗ saturation_mask_prob must be in [0, "
@@ -409,6 +419,7 @@ def _diversity_kwargs(args, over: dict) -> dict:
             "psf_warp_sigma": float(over.get("psf_warp_sigma",
                                                args.psf_warp_sigma)),
             "saturation_mask_prob": saturation_mask_prob,
+            "target_fwhm_arcsec": target_fwhm_arcsec,
             "icnr": bool(over.get("icnr", args.icnr)),
             "starless": bool(over.get("starless", args.starless))}
 
@@ -556,6 +567,8 @@ def main() -> int:
     print(f"Ensemble training ({label}) → {base}")
     for s in specs:
         knobs = f" loss={s.loss_norm}"
+        if s.target_fwhm_arcsec:
+            knobs += f" target_psf_fwhm={s.target_fwhm_arcsec:g}\""
         if s.asinh_knee is not None:
             knobs += f" asinh_knee={s.asinh_knee:g}e"
         if s.noise_aug:
