@@ -172,7 +172,12 @@ def test_joint_galaxy_fit_activates_atomically_for_generation(
     assert activated["active"]
     assert activated["valid"]
     assert not activated["validated"]
-    assert joint_galaxy_state()["is_active"]
+    state = joint_galaxy_state()
+    assert state["is_active"]
+    assert state["candidate"]["magnitude_plot"]["sampling_interval"] == [
+        14.0, 29.0,
+    ]
+    assert len(state["candidate"]["magnitude_plot"]["law"]["x"]) == 301
     stored = json.loads(active_joint_galaxy_path().read_text())
     assert stored["fingerprint"] == activated["fingerprint"]
     assert stored["geometry_model_fingerprint"] == "b" * 64
@@ -581,7 +586,11 @@ def test_star_fit_uses_q1_phz_counts_and_gaia_only_for_correlated_colors(
         magnitude["surface_density_arcmin2"],
     )
     density = fit["diagnostics"]["star_density_per_cone"]
-    assert density["x_label"] == "VIS PSF magnitude [AB]"
+    assert density["x_label"] == "native survey magnitude [AB]"
+    assert len(density["gaia_observed"]) == len(density["x"])
+    assert len(density["gaia_fitted"]) == len(density["x"])
+    assert density["fit_ranges"]["q1"][0] >= 12.0
+    assert density["fit_ranges"]["gaia"][1] <= 25.0
     assert density["observed"] == pytest.approx([
         item["density_arcmin2_mag"] for item in q1_bins
     ])

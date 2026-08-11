@@ -45,14 +45,18 @@ roughly ten publication-ready figures without a separate plotting script.
 
 ## Population, catalog, and clustering figures
 
-Field statistics provides one three-panel **COSMOS × Euclid × TNG50 population
-atlas**. Download PNG for slides, PDF for LaTeX/Keynote placement, or SVG for
-vector editing. Its panels are magnitude density, redshift density, and
-angular-radius density; missing bins remain missing rather than becoming zero.
+Field statistics provides one three-panel **Q1 brightness × staged TNG50
+geometry atlas**. Download PNG for slides, PDF for LaTeX/Keynote placement, or
+SVG for vector editing. Its first panel shows the Q1 MER+PHZ VIS 2FWHM raw
+counts and the straight log-density law over 14–29 (with 28–29 marked as
+extrapolation). Redshift and half-light-radius panels show
+brightness-marginalized staged geometry; missing bins remain missing rather
+than becoming zero.
 
-The same page provides a four-panel **Gaia DR3 × Euclid MER stellar population
-calibration**: probability-weighted density by cone plus VIS−Y, Y−J, and J−H
-colour checks. The plot keeps the fitted true-colour population, estimated true
+The same page provides a four-panel **Q1 PHZ × Gaia DR3 × Euclid MER stellar population
+calibration**: Q1 VIS and native Gaia G_AB counts with their shared-slope,
+separate-intercept straight fits over 12–25, plus VIS−Y, Y−J, and J−H colour
+checks. The plot keeps the fitted true-colour population, estimated true
 colours of observed stars, estimated colours with simulated Euclid noise, and
 raw Euclid catalogue colours visually distinct.
 

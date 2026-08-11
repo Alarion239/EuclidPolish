@@ -200,10 +200,11 @@ distribution is not the statistical target.
 
 The version-3 activation combines a fingerprinted geometry model with the
 versioned Q1 straight magnitude law. Older empirical-CDF and cubic artifacts
-fail closed. The calibration interface records and plots the geometry
-target. It also produces comparisons of
-apparent magnitude, redshift, angular size, median size at fixed magnitude,
-derived mean surface brightness, the fitted Euclid completeness surface, and
+fail closed. The calibration interface plots the brightness-marginalized
+geometry target beside the independent Q1 VIS 2FWHM straight brightness law.
+It also retains observation-response diagnostics for survey apparent
+magnitude, redshift, angular size, median size at fixed magnitude, derived mean
+surface brightness, the fitted Euclid completeness surface, and
 four-fold held-out validation across the twelve cached Euclid cones.
 The fitting step itself neither reads a TNG catalogue nor renders an image.
 After explicit WebUI activation, synthetic jobs embed a compact fingerprinted

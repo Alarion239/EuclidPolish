@@ -167,6 +167,14 @@ type CalibrationArtifact = {
     morphology_assignment: string;
     position_process: string;
   };
+  magnitude_plot?: {
+    label: string;
+    law: { x: number[]; density: number[] };
+    observed?: { x: number[]; density: number[] };
+    fit_interval: [number, number];
+    sampling_interval: [number, number];
+    extrapolated_interval: [number, number];
+  };
   calibration_fingerprint?: string;
   recommended_density_arcmin2?: number | null;
   interval_arcmin2?: PriorInterval | null;
@@ -186,6 +194,9 @@ type CalibrationArtifact = {
     star_density_per_cone: {
       x: number[]; observed: number[]; fitted: number[]; label: string; unit: string;
       x_label?: string;
+      gaia_observed?: number[];
+      gaia_fitted?: number[];
+      fit_ranges?: { q1?: [number, number]; gaia?: [number, number] };
       statistics?: { mean?: number | null; std?: number | null;
         p16?: number | null; p50?: number | null; p84?: number | null };
     };
@@ -1250,18 +1261,17 @@ function PhzCalibrationPanel({
   );
 }
 
-function CosmosEuclidDensityPanel({ fit }: { fit: CosmosEuclidFit }) {
+function CosmosEuclidDensityPanel({ fit, calibration }: {
+  fit: CosmosEuclidFit; calibration: CalibrationArtifact | null;
+}) {
   const diagnostics = fit.diagnostics;
   const tngFull = diagnostics.tng_draw.full;
-  const tngComparison = diagnostics.tng_draw.comparison_window;
+  const magnitude = calibration?.magnitude_plot;
   const magnitudeValues = [
-    ...diagnostics.magnitude_counts.cosmos.observed,
-    ...diagnostics.magnitude_counts.cosmos.model,
-    ...diagnostics.magnitude_counts.euclid.observed,
-    ...diagnostics.magnitude_counts.euclid.model,
-    ...tngFull.magnitude.density,
-    ...tngComparison.magnitude.density,
+    ...(magnitude?.observed?.density ?? []),
+    ...(magnitude?.law.density ?? []),
   ];
+  const magnitudeLogValues = log10(magnitudeValues);
   const median = diagnostics.median_radius_by_magnitude;
   const surface = diagnostics.surface_brightness;
   return (
@@ -1269,8 +1279,8 @@ function CosmosEuclidDensityPanel({ fit }: { fit: CosmosEuclidFit }) {
       <div className="publication-atlas-export">
         <div>
           <div className="eyebrow">presentation figure</div>
-          <strong>COSMOS × Euclid × TNG50 population atlas</strong>
-          <span>Magnitude, redshift, and angular-radius density in one fixed layout.</span>
+          <strong>Q1 brightness × staged TNG50 geometry atlas</strong>
+          <span>Independent VIS 2FWHM brightness, redshift, and half-light-radius density.</span>
         </div>
         <div className="publication-atlas-export__actions">
           <a className="ui-btn ui-btn--primary"
@@ -1287,40 +1297,44 @@ function CosmosEuclidDensityPanel({ fit }: { fit: CosmosEuclidFit }) {
       </div>
       <div className="parameter-atlas">
       <Card className="parameter-card">
-        <CardHead title="Apparent-magnitude counts"
-          sub="one latent population · COSMOS and Euclid observation spaces" />
+        <CardHead title="Independent goal 2FWHM brightness"
+          sub="Q1 MER + PHZ VIS · straight in log density from 14 to 29; 28–29 is extrapolated" />
         <CardBody>
-          <AdjustablePlot boundsLabel="Joint apparent-magnitude counts"
-            xDomain={[18, 30]} yDomain={domain(magnitudeValues, true)}
-            xLabel="survey AB magnitude" yLabel="objects / arcmin² / mag"
-            series={[
-              { x: diagnostics.magnitude_counts.cosmos.x,
-                y: diagnostics.magnitude_counts.cosmos.observed,
-                color: "#242424", mode: "scatter", marker: "ring", width: 2 },
-              { x: diagnostics.magnitude_counts.cosmos.x,
-                y: diagnostics.magnitude_counts.cosmos.model,
-                color: "#008c68", width: 2.5 },
-              { x: diagnostics.magnitude_counts.euclid.x,
-                y: diagnostics.magnitude_counts.euclid.observed,
-                color: "#1267d6", mode: "scatter", marker: "ring", width: 2 },
-              { x: diagnostics.magnitude_counts.euclid.x,
-                y: diagnostics.magnitude_counts.euclid.model,
-                color: "#cf3d2e", width: 2.5 },
-              { x: tngFull.magnitude.x,
-                y: tngFull.magnitude.density,
-                color: "#7a3db8", width: 3 },
-              { x: tngComparison.magnitude.x,
-                y: tngComparison.magnitude.density,
-                color: "#7a3db8", width: 2.4, dash: [8, 5] },
-            ]} aspect={0.62} />
-          <Legend items={[
-            { color: "#242424", label: "COSMOS observed", marker: "ring" },
-            { color: "#008c68", label: "shared model in COSMOS", line: true },
-            { color: "#1267d6", label: "Euclid observed", marker: "ring" },
-            { color: "#cf3d2e", label: "shared model through Euclid", line: true },
-            { color: "#7a3db8", label: "TNG full truth · 18<VIS<30", line: true },
-            { color: "#7a3db8", label: "TNG comparison · 20<VIS<28", line: true, dash: true },
-          ]} />
+          {magnitude ? <>
+            <AdjustablePlot boundsLabel="Q1 2FWHM brightness law"
+              xDomain={magnitude.sampling_interval}
+              yDomain={domain(magnitudeLogValues)}
+              yTicksForDomain={(value) => ticks(value).map((tick) => ({
+                ...tick, label: `10^${tick.label}`,
+              }))}
+              xLabel="VIS 2FWHM aperture magnitude [AB]"
+              yLabel="objects / arcmin² / mag (log scale)"
+              guides={[
+                ...magnitude.fit_interval.map((v) => ({
+                  axis: "x" as const, v, color: "#1267d6",
+                  dash: [3, 4], width: 1.2, alpha: 0.7,
+                })),
+                { axis: "x", v: magnitude.extrapolated_interval[0],
+                  color: "#7a3db8", dash: [7, 4], width: 1.2, alpha: 0.8 } as const,
+              ]}
+              series={[
+                ...(magnitude.observed ? [{
+                  x: magnitude.observed.x,
+                  y: log10(magnitude.observed.density),
+                  color: "#1267d6", mode: "scatter" as const,
+                  marker: "ring" as const, width: 2,
+                }] : []),
+                { x: magnitude.law.x, y: log10(magnitude.law.density),
+                  color: "#7a3db8", width: 3 },
+              ]} aspect={0.62} />
+            <Legend items={[
+              ...(magnitude.observed ? [{
+                color: "#1267d6", label: "Q1 MER + PHZ 2FWHM counts",
+                marker: "ring" as const,
+              }] : []),
+              { color: "#7a3db8", label: "Q1-normalized straight law", line: true },
+            ]} />
+          </> : <Empty>Fit the cached Q1 VIS 2FWHM counts to draw the brightness law.</Empty>}
         </CardBody>
       </Card>
       <Card className="parameter-card">
@@ -1334,7 +1348,6 @@ function CosmosEuclidDensityPanel({ fit }: { fit: CosmosEuclidFit }) {
             yDomain={domain([
               ...diagnostics.redshift.observed, ...diagnostics.redshift.model,
               ...tngFull.redshift.density,
-              ...tngComparison.redshift.density,
             ], true)} xLabel="photometric redshift"
             yLabel={diagnostics.redshift.unit}
             series={[
@@ -1345,21 +1358,17 @@ function CosmosEuclidDensityPanel({ fit }: { fit: CosmosEuclidFit }) {
               { x: tngFull.redshift.x,
                 y: tngFull.redshift.density,
                 color: "#7a3db8", width: 3 },
-              { x: tngComparison.redshift.x,
-                y: tngComparison.redshift.density,
-                color: "#7a3db8", width: 2.4, dash: [8, 5] },
             ]} aspect={0.62} />
           <Legend items={[
             { color: "#242424", label: "COSMOS observed", marker: "ring" },
             { color: "#008c68", label: "shared intrinsic fit", line: true },
-            { color: "#7a3db8", label: "TNG full truth · 18<VIS<30", line: true },
-            { color: "#7a3db8", label: "TNG comparison · 20<VIS<28", line: true, dash: true },
+            { color: "#7a3db8", label: "brightness-marginalized geometry", line: true },
           ]} />
         </CardBody>
       </Card>
       <Card className="parameter-card">
         <CardHead title="Angular-radius density"
-          sub="COSMOS fitted Re · Euclid MER proxy · true TNG target" />
+          sub="COSMOS fitted Re · Euclid MER proxy · brightness-marginalized staged geometry" />
         <CardBody>
           <AdjustablePlot boundsLabel="Joint angular-size distribution"
             xDomain={domain([
@@ -1372,7 +1381,6 @@ function CosmosEuclidDensityPanel({ fit }: { fit: CosmosEuclidFit }) {
               ...diagnostics.angular_radius.euclid.observed,
               ...diagnostics.angular_radius.euclid.model,
               ...tngFull.angular_radius.density,
-              ...tngComparison.angular_radius.density,
             ], true)}
             xLabel="log₁₀ angular radius / arcsec"
             yLabel="objects / arcmin² / dex"
@@ -1391,15 +1399,11 @@ function CosmosEuclidDensityPanel({ fit }: { fit: CosmosEuclidFit }) {
                 color: "#1267d6", width: 2.5 },
               { x: tngFull.angular_radius.x, y: tngFull.angular_radius.density,
                 color: "#7a3db8", width: 3 },
-              { x: tngComparison.angular_radius.x,
-                y: tngComparison.angular_radius.density,
-                color: "#7a3db8", width: 2.4, dash: [8, 5] },
             ]} aspect={0.62} />
           <Legend items={[
             { color: "#008c68", label: "COSMOS measured + response", line: true, marker: "ring" },
             { color: "#1267d6", label: "Euclid MER + response", line: true, marker: "ring" },
-            { color: "#7a3db8", label: "TNG full truth · 18<VIS<30", line: true },
-            { color: "#7a3db8", label: "TNG comparison · 20<VIS<28", line: true, dash: true },
+            { color: "#7a3db8", label: "brightness-marginalized geometry", line: true },
           ]} />
         </CardBody>
       </Card>
@@ -1510,10 +1514,10 @@ function GalaxyCalibrationControls({ api, onChanged }: {
         <div className="calibration-explainer">
           <p>
             COSMOS constrains the redshift, luminosity and physical-size evolution.
-            Euclid constrains the projected VIS magnitude–size plane and a
-            surface-brightness-dependent completeness function. Both catalogues
-            are likelihood terms for the same latent distribution; there is no
-            magnitude splice and no row-by-row donor matching.
+            Euclid constrains the projected magnitude–size response and a
+            surface-brightness-dependent completeness function used to recover
+            geometry. Final brightness is drawn independently from the Q1 VIS
+            2FWHM straight law; there is no row-by-row donor matching.
           </p>
           {fit && (
             <p className="fit-caution">
@@ -1570,10 +1574,10 @@ function GalaxyCalibrationControls({ api, onChanged }: {
         {candidate?.generation && (
           <p className="calibration-plain-note">
             Submission draws {candidate.generation.surface_density_arcmin2.toFixed(2)} galaxies / arcmin²
-            from the fitted z × true-VIS × R<sub>e</sub> distribution over VIS {candidate.generation.vis_magnitude_min.toFixed(0)}–{candidate.generation.vis_magnitude_max.toFixed(0)}.
-            {candidate.version === 2
-              ? " TNG morphology is conditioned on PHZ/COSMOS activity and mass rank."
-              : " TNG morphology is assigned independently with diversity balancing."}
+            by first sampling brightness-marginalized R<sub>e</sub> and z, then
+            drawing an independent Q1 2FWHM goal magnitude over VIS {candidate.generation.vis_magnitude_min.toFixed(0)}–{candidate.generation.vis_magnitude_max.toFixed(0)}.
+            TNG morphology is conditioned on the staged geometry and PHZ/COSMOS
+            physical state before one shared four-band aperture scale is applied.
           </p>
         )}
         <JobProgressView job={localFit.job} error={localFit.error} />
@@ -1676,24 +1680,51 @@ function StarCalibrationControls({ api, onChanged }: {
           <div className="parameter-atlas" style={{ marginTop: "var(--s4)" }}>
             <Card className="parameter-card">
               <CardHead title={diagnostics.star_density_per_cone.label}
-                sub="POINT_LIKE_PROB ≥ 0.9; sum of PHZ_STAR_PROB divided by Q1 area and 0.1-mag bin width" />
+                sub="shared slope from native Gaia G_AB and Q1 PHZ VIS; separate intercepts, with Q1 normalizing the 12–25 generator" />
               <CardBody>
-                <AdjustablePlot boundsLabel="Q1 PHZ stellar density"
-                  xDomain={domain(diagnostics.star_density_per_cone.x)}
+                <AdjustablePlot boundsLabel="Q1 and Gaia stellar straight laws"
+                  xDomain={[12, 25]}
                   yDomain={domain([
-                    ...diagnostics.star_density_per_cone.observed,
-                    ...diagnostics.star_density_per_cone.fitted,
-                  ], true)}
-                  xLabel={diagnostics.star_density_per_cone.x_label ?? "VIS [AB mag]"}
-                  yLabel={diagnostics.star_density_per_cone.unit}
+                    ...log10(diagnostics.star_density_per_cone.observed),
+                    ...log10(diagnostics.star_density_per_cone.fitted),
+                    ...log10(diagnostics.star_density_per_cone.gaia_observed ?? []),
+                    ...log10(diagnostics.star_density_per_cone.gaia_fitted ?? []),
+                  ])}
+                  yTicksForDomain={(value) => ticks(value).map((tick) => ({
+                    ...tick, label: `10^${tick.label}`,
+                  }))}
+                  xLabel={diagnostics.star_density_per_cone.x_label ?? "native survey magnitude [AB]"}
+                  yLabel={`${diagnostics.star_density_per_cone.unit} (log scale)`}
+                  guides={Object.values(diagnostics.star_density_per_cone.fit_ranges ?? {})
+                    .flatMap((interval) => interval.map((v) => ({
+                      axis: "x" as const, v, color: "#7a3db8",
+                      dash: [3, 4], width: 1, alpha: 0.55,
+                    })))}
                   series={[
                     { x: diagnostics.star_density_per_cone.x,
-                      y: diagnostics.star_density_per_cone.observed,
+                      y: log10(diagnostics.star_density_per_cone.observed),
                       color: categorical(2), mode: "scatter", marker: "ring", width: 2 },
                     { x: diagnostics.star_density_per_cone.x,
-                      y: diagnostics.star_density_per_cone.fitted,
-                      color: categorical(0), width: 2.4, dash: [7, 4] },
+                      y: log10(diagnostics.star_density_per_cone.fitted),
+                      color: categorical(0), width: 2.5 },
+                    ...(diagnostics.star_density_per_cone.gaia_observed ? [{
+                      x: diagnostics.star_density_per_cone.x,
+                      y: log10(diagnostics.star_density_per_cone.gaia_observed),
+                      color: categorical(4), mode: "scatter" as const,
+                      marker: "diamond" as const, width: 1.7,
+                    }] : []),
+                    ...(diagnostics.star_density_per_cone.gaia_fitted ? [{
+                      x: diagnostics.star_density_per_cone.x,
+                      y: log10(diagnostics.star_density_per_cone.gaia_fitted),
+                      color: categorical(4), width: 2.2, dash: [6, 3],
+                    }] : []),
                   ]} aspect={0.62} />
+                <Legend items={[
+                  { color: categorical(2), label: "Q1 PHZ VIS counts", marker: "ring" },
+                  { color: categorical(0), label: "Q1-normalized straight law", line: true },
+                  { color: categorical(4), label: "native Gaia G_AB counts", marker: "diamond" },
+                  { color: categorical(4), label: "Gaia-intercept shared-slope fit", line: true, dash: true },
+                ]} />
               </CardBody>
             </Card>
             {Object.entries(diagnostics.parameters)
@@ -2057,7 +2088,8 @@ export default function PopulationComparisonPage() {
                   colourConditioning={comparison.population.tng_colour_conditioning}
                 />
                 <CosmosEuclidDensityPanel
-                  fit={comparison.population.cosmos_euclid_fit} />
+                  fit={comparison.population.cosmos_euclid_fit}
+                  calibration={api.calibrations?.joint_galaxy.candidate ?? null} />
               </>
             )}
 

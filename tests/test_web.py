@@ -211,11 +211,16 @@ def test_population_atlas_download_route(client, monkeypatch):
 
     monkeypatch.setattr(route, "read_cosmos_euclid_fit", lambda: {"diagnostics": {}})
     monkeypatch.setattr(
+        route, "joint_galaxy_state",
+        lambda: {"candidate": {"magnitude_plot": {"law": "straight"}}},
+    )
+    monkeypatch.setattr(
         route,
         "render_population_atlas",
-        lambda _fit, output_format, dpi: b"%PDF-atlas"
-        if output_format == "pdf"
-        else b"<svg/>",
+        lambda _fit, magnitude_plot, output_format, dpi: (
+            b"%PDF-atlas" if magnitude_plot == {"law": "straight"}
+            and output_format == "pdf" else b"<svg/>"
+        ),
     )
 
     response = client.get("/view/population-atlas?format=pdf")

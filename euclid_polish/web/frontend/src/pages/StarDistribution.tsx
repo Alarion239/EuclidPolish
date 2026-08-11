@@ -20,6 +20,11 @@ type DensityParameter = {
   gaia: number[];
   model: number[];
   point_sources?: number[] | null;
+  gaia_fit?: number[] | null;
+  fit_ranges?: {
+    q1?: [number | null, number | null];
+    gaia?: [number | null, number | null];
+  };
 };
 type ColorPlot = {
   label: string;
@@ -169,7 +174,10 @@ function logDensity(values: number[]): (number | null)[] {
 }
 
 function densityDomain(parameter: DensityParameter): [number, number] {
-  const positive = [parameter.euclid, parameter.gaia, parameter.model, parameter.point_sources ?? []]
+  const positive = [
+    parameter.euclid, parameter.gaia, parameter.model,
+    parameter.gaia_fit ?? [], parameter.point_sources ?? [],
+  ]
     .flat().filter((value) => Number.isFinite(value) && value > 0);
   if (!positive.length) return [-4, 0];
   const high = Math.ceil(Math.log10(Math.max(...positive)));
@@ -322,8 +330,8 @@ function StellarDensityComparison({ distribution }: { distribution: Distribution
         <div className="star-colour-key" aria-label="Stellar density legend">
           <span><i className="star-density-key__point-source" />Q1 point sources (VIS)</span>
           <span><i className="star-density-key__euclid" />Q1 PHZ (VIS)</span>
-          <span><i className="star-density-key__gaia" />native Gaia G<sub>AB</sub> (magnitude) / fitted projection (colours)</span>
-          <span><i className="star-density-key__model" />model draw</span>
+          <span><i className="star-density-key__gaia" />native Gaia G<sub>AB</sub> + shared-slope fit</span>
+          <span><i className="star-density-key__model" />Q1-normalized straight law / colour draw</span>
         </div>
       </header>
       <div className="star-density-summary" aria-label="Density comparison sample sizes">
@@ -340,11 +348,24 @@ function StellarDensityComparison({ distribution }: { distribution: Distribution
         {DENSITY_ORDER.map((key) => {
           const parameter = comparison.parameters[key];
           const yDomain = densityDomain(parameter);
+          const fitGuides = key === "vis"
+            ? Object.values(parameter.fit_ranges ?? {}).flatMap((interval) => (
+              interval && interval.every((value): value is number =>
+                value != null && Number.isFinite(value))
+                ? interval.map((value) => ({
+                  axis: "x" as const, v: value, color: C.muted,
+                  dash: [3, 4], width: 1, alpha: 0.55,
+                }))
+                : []
+            ))
+            : [];
           return (
             <section className={`star-colour-plot ${key === "vis" ? "star-density-plot--vis" : ""}`} key={key}>
               <header>
                 <h3>{parameter.label}</h3>
-                <span>log density · no simulated noise</span>
+                <span>{key === "vis"
+                  ? "straight in log density · vertical guides mark fitted regions"
+                  : "log density · no simulated noise"}</span>
               </header>
               <Plot
                 xDomain={parameter.x_domain}
@@ -360,8 +381,13 @@ function StellarDensityComparison({ distribution }: { distribution: Distribution
                   }] : []),
                   { x: parameter.x, y: logDensity(parameter.euclid), color: C.mean, width: 2.2 },
                   { x: parameter.x, y: logDensity(parameter.gaia), color: C.comb, width: 2.2 },
+                  ...(parameter.gaia_fit ? [{
+                    x: parameter.x, y: logDensity(parameter.gaia_fit),
+                    color: C.comb, width: 2.2, dash: [4, 3],
+                  }] : []),
                   { x: parameter.x, y: logDensity(parameter.model), color: categorical(3), width: 2.2, dash: [6, 4] },
                 ]}
+                guides={fitGuides}
                 aspect={key === "vis" ? 0.34 : 0.62}
               />
             </section>

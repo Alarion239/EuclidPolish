@@ -83,14 +83,19 @@ def _line(
     )
 
 
-def _finish_axis(ax, title: str, xlabel: str, ylabel: str) -> None:
+def _finish_axis(
+    ax, title: str, xlabel: str, ylabel: str, *, logarithmic_y: bool = False,
+) -> None:
     ax.set_title(
         title, loc="left", fontsize=PANEL_TITLE_SIZE,
         fontweight=700, pad=12,
     )
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
-    ax.set_ylim(bottom=0)
+    if logarithmic_y:
+        ax.set_yscale("log")
+    else:
+        ax.set_ylim(bottom=0)
     ax.grid(True, color=GRID, linewidth=0.55, alpha=0.8)
     ax.set_axisbelow(True)
     ax.spines[["top", "right"]].set_visible(False)
@@ -98,23 +103,26 @@ def _finish_axis(ax, title: str, xlabel: str, ylabel: str) -> None:
 
 
 def render_population_atlas(
-    fit: Mapping[str, Any], *, output_format: str = "png", dpi: int = 300,
+    fit: Mapping[str, Any], *, magnitude_plot: Mapping[str, Any] | None = None,
+    output_format: str = "png", dpi: int = 300,
 ) -> bytes:
-    """Render magnitude, redshift, and angular-size density in one figure.
+    """Render independent Q1 brightness and staged geometry in one figure.
 
-    Unavailable bins remain missing and the TNG target is shown in full.
+    Unavailable bins remain missing. The joint cube contributes only the
+    brightness-marginalized geometry; final brightness is the Q1 2FWHM law.
     """
     fmt = output_format.lower()
     if fmt not in {"png", "pdf", "svg"}:
         raise ValueError("output_format must be png, pdf, or svg")
     dpi = max(120, min(int(dpi), 600))
     diagnostics = fit.get("diagnostics") or {}
-    magnitude = diagnostics.get("magnitude_counts") or {}
     redshift = diagnostics.get("redshift") or {}
     radius = diagnostics.get("angular_radius") or {}
     tng = diagnostics.get("tng_draw") or {}
     tng_full = tng.get("full") or {}
-    if not magnitude or not redshift or not radius:
+    brightness = magnitude_plot or {}
+    brightness_law = brightness.get("law") or {}
+    if not brightness_law or not redshift or not radius:
         raise ValueError("joint population fit has no publication diagnostics")
 
     matplotlib.use("Agg")
@@ -135,24 +143,43 @@ def render_population_atlas(
             left=0.062, right=0.992, bottom=0.23, top=0.93, wspace=0.30,
         )
 
-        cosmos_mag = magnitude.get("cosmos") or {}
-        euclid_mag = magnitude.get("euclid") or {}
-        _observed(axes[0], cosmos_mag, color=COSMOS_MODEL, label="COSMOS data")
-        _line(axes[0], cosmos_mag, "model", color=COSMOS_MODEL, label="COSMOS fit")
-        _observed(axes[0], euclid_mag, color=EUCLID_OBS, label="Euclid data")
-        _line(axes[0], euclid_mag, "model", color=EUCLID_OBS, label="Euclid fit")
-        _line(axes[0], tng_full.get("magnitude") or {}, "density",
-              color=TNG, label="TNG target", width=2.5)
-        axes[0].set_xlim(18, 30)
+        observed_brightness = brightness.get("observed") or {}
+        _line(
+            axes[0], brightness_law, "density", color=TNG,
+            label="Q1 2FWHM straight law", width=2.7,
+        )
+        observed_x, observed_y = _xy(observed_brightness, "density")
+        if observed_x.size:
+            axes[0].plot(
+                observed_x, observed_y, linestyle="none", marker="o",
+                markersize=4.6, markerfacecolor=PAPER,
+                markeredgecolor=EUCLID_OBS, markeredgewidth=1.2,
+                label="Q1 MER + PHZ 2FWHM counts", zorder=4,
+            )
+        fit_interval = brightness.get("fit_interval") or []
+        if len(fit_interval) == 2:
+            axes[0].axvspan(
+                float(fit_interval[0]), float(fit_interval[1]),
+                color=EUCLID_OBS, alpha=0.07, linewidth=0,
+            )
+        extrapolated = brightness.get("extrapolated_interval") or []
+        if len(extrapolated) == 2:
+            axes[0].axvspan(
+                float(extrapolated[0]), float(extrapolated[1]),
+                color=TNG, alpha=0.08, linewidth=0,
+            )
+        axes[0].set_xlim(14, 29)
         _finish_axis(
-            axes[0], "Apparent-magnitude density", "survey AB magnitude",
+            axes[0], "Independent goal brightness",
+            "VIS 2FWHM aperture magnitude [AB]",
             "objects arcmin$^{-2}$ mag$^{-1}$",
+            logarithmic_y=True,
         )
 
         _observed(axes[1], redshift, color=COSMOS_MODEL, label="COSMOS data")
         _line(axes[1], redshift, "model", color=COSMOS_MODEL, label="COSMOS fit")
         _line(axes[1], tng_full.get("redshift") or {}, "density",
-              color=TNG, label="TNG target", width=2.5)
+              color=TNG, label="staged geometry target", width=2.5)
         _finish_axis(
             axes[1], "Redshift density", "photometric redshift",
             r"objects arcmin$^{-2}$ $\Delta z^{-1}$",
@@ -167,16 +194,23 @@ def render_population_atlas(
         _line(axes[2], euclid_radius, "model", color=EUCLID_OBS,
               label="Euclid fit")
         _line(axes[2], tng_full.get("angular_radius") or {}, "density",
-              color=TNG, label="TNG target", width=2.5)
+              color=TNG, label="staged geometry target", width=2.5)
         _finish_axis(
             axes[2], "Angular-radius density",
             "log$_{10}$ angular radius / arcsec",
             "objects arcmin$^{-2}$ dex$^{-1}$",
         )
 
-        handles, labels = axes[0].get_legend_handles_labels()
+        handles, labels = [], []
+        for ax in axes:
+            for handle, label in zip(
+                *ax.get_legend_handles_labels(), strict=True,
+            ):
+                if label not in labels:
+                    handles.append(handle)
+                    labels.append(label)
         fig.legend(
-            handles, labels, loc="lower center", ncol=5, frameon=False,
+            handles, labels, loc="lower center", ncol=4, frameon=False,
             fontsize=LEGEND_SIZE, handlelength=2.2,
             bbox_to_anchor=(0.5, 0.035), columnspacing=2.0,
         )
@@ -192,7 +226,7 @@ def render_star_population_calibration(
 ) -> bytes:
     """Render the active Q1 PHZ × Gaia × Euclid calibration as one plate.
 
-    The density panel shows footprint-normalized PHZ stellar number counts.
+    The density panel shows the Q1/Gaia shared-slope straight-line calibration.
     The three colour panels separate the fitted true-colour population,
     inferred true colours, noise-simulated colours, and raw catalogue colours.
     """
@@ -232,17 +266,41 @@ def render_star_population_calibration(
         ax_density.plot(
             x_obs, y_obs, linestyle="none", marker="o", markersize=7,
             markerfacecolor=PAPER, markeredgecolor=INK, markeredgewidth=1.5,
-            label="Q1 PHZ probability-weighted count", zorder=4,
+            label="Q1 PHZ VIS counts", zorder=4,
         )
         ax_density.plot(
             x_fit, y_fit, color=STAR_MODEL, linewidth=2.5,
-            linestyle=(0, (6, 3)), label="fitted generator", zorder=3,
+            label="Q1-normalized straight law", zorder=3,
         )
-        ax_density.set_title("Q1 stellar number counts", loc="left")
+        x_gaia, y_gaia = _xy(density, "gaia_observed")
+        x_gaia_fit, y_gaia_fit = _xy(density, "gaia_fitted")
+        if x_gaia.size:
+            ax_density.plot(
+                x_gaia, y_gaia, linestyle="none", marker="s", markersize=4.2,
+                markerfacecolor=PAPER, markeredgecolor=TNG,
+                markeredgewidth=1.1, label="native Gaia G$_{AB}$ counts",
+                zorder=4,
+            )
+        if x_gaia_fit.size:
+            ax_density.plot(
+                x_gaia_fit, y_gaia_fit, color=TNG, linewidth=2.1,
+                linestyle=(0, (6, 3)), label="Gaia-intercept shared-slope fit",
+                zorder=3,
+            )
+        fit_ranges = density.get("fit_ranges") or {}
+        for key, color in (("q1", STAR_MODEL), ("gaia", TNG)):
+            interval = fit_ranges.get(key) or []
+            if len(interval) == 2:
+                ax_density.axvspan(
+                    float(interval[0]), float(interval[1]),
+                    color=color, alpha=0.055, linewidth=0,
+                )
+        ax_density.set_title("Shared-slope stellar brightness laws", loc="left")
         ax_density.set_xlabel(str(density.get("x_label") or "VIS PSF magnitude [AB]"))
         ax_density.set_ylabel(str(density.get("unit") or "stars arcmin$^{-2}$ mag$^{-1}$"))
-        ax_density.set_ylim(bottom=0)
-        ax_density.legend(loc="lower left", frameon=False, fontsize=LEGEND_SIZE)
+        ax_density.set_xlim(12, 25)
+        ax_density.set_yscale("log")
+        ax_density.legend(loc="upper left", frameon=False, fontsize=LEGEND_SIZE)
 
         color_titles = {
             "vis_y": r"VIS $-$ Y$_E$ colour",

@@ -106,14 +106,60 @@ def joint_galaxy_candidate() -> dict[str, Any] | None:
         return None
     try:
         from euclid_polish.web.helpers.q1_galaxy_counts import (
+            read_q1_galaxy_aperture_counts,
             read_q1_galaxy_aperture_fit,
         )
         aperture_fit = read_q1_galaxy_aperture_fit()
-        magnitude_law = StraightMagnitudeLaw.from_payload(
-            aperture_fit["apertures"]["f2"]["law"]
-        )
+        aperture_curve = aperture_fit["apertures"]["f2"]
+        magnitude_law = StraightMagnitudeLaw.from_payload(aperture_curve["law"])
     except (KeyError, TypeError, ValueError):
         return None
+    plot_grid = np.asarray(aperture_curve.get("x", []), dtype=np.float64)
+    plot_density = np.asarray(
+        aperture_curve.get("density", []), dtype=np.float64,
+    )
+    if (
+        plot_grid.size < 2 or plot_density.shape != plot_grid.shape
+        or not np.all(np.isfinite(plot_grid))
+        or not np.all(np.isfinite(plot_density))
+    ):
+        plot_grid = np.linspace(
+            magnitude_law.mag_bright, magnitude_law.mag_faint, 301,
+        )
+        plot_density = magnitude_law.density(plot_grid)
+    magnitude_plot: dict[str, Any] = {
+        "law": {
+            "x": plot_grid.tolist(),
+            "density": plot_density.tolist(),
+        },
+        "fit_interval": [
+            magnitude_law.fit_bright, magnitude_law.fit_faint,
+        ],
+        "sampling_interval": [
+            magnitude_law.mag_bright, magnitude_law.mag_faint,
+        ],
+        "extrapolated_interval": list(
+            aperture_curve.get("extrapolated_faint_interval") or [28.0, 29.0]
+        ),
+        "label": "Q1 MER + PHZ VIS 2FWHM straight law",
+    }
+    try:
+        aperture_counts = read_q1_galaxy_aperture_counts()["apertures"]["f2"]
+        magnitude_plot["observed"] = {
+            "x": [
+                0.5 * (float(item["mag_lo"]) + float(item["mag_hi"]))
+                for item in aperture_counts["bins"]
+            ],
+            "density": [
+                float(item["density_arcmin2_mag"])
+                for item in aperture_counts["bins"]
+            ],
+        }
+    except (KeyError, TypeError, ValueError):
+        # The law remains sufficient for generation and for a fail-closed
+        # calibration plot; raw points appear whenever the matching cache is
+        # present.
+        pass
     combined_fingerprint = hashlib.sha256(json.dumps({
         "geometry": fingerprint,
         "magnitude_law": magnitude_law.to_payload(),
@@ -138,6 +184,7 @@ def joint_galaxy_candidate() -> dict[str, Any] | None:
             "phz_quality_gates": phz_gates,
         } if enhanced else {}),
         "magnitude_law": magnitude_law.to_payload(),
+        "magnitude_plot": magnitude_plot,
         "generation": {
             "surface_density_arcmin2": magnitude_law.integrated_density(),
             "geometry_reference_density_arcmin2": geometry_density,

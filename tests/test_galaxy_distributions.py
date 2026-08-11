@@ -247,6 +247,11 @@ def test_q1_bright_counts_extend_aperture_curves_to_fourteen(monkeypatch):
                     "estimator": "2-FWHM diameter aperture",
                     "x": [14.05, 14.10, 14.15],
                     "density": [0.01, 0.015, 0.02],
+                    "law": {
+                        "fit_bright": 14.05, "fit_faint": 14.15,
+                        "mag_bright": 14.0, "mag_faint": 29.0,
+                    },
+                    "extrapolated_faint_interval": [28.0, 29.0],
                 },
             },
         },

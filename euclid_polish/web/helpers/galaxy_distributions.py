@@ -424,6 +424,18 @@ def _read_q1_bright_counts(parameters: dict[str, Any]) -> dict[str, Any]:
                 ),
                 "selection": str(fitted["scope"]),
                 "default_on": key == "f2",
+                "fit_interval": [
+                    float(curve["law"]["fit_bright"]),
+                    float(curve["law"]["fit_faint"]),
+                ],
+                "sampling_interval": [
+                    float(curve["law"]["mag_bright"]),
+                    float(curve["law"]["mag_faint"]),
+                ],
+                "extrapolated_interval": [
+                    float(value)
+                    for value in curve["extrapolated_faint_interval"]
+                ],
             }
     return {
         "available": True,

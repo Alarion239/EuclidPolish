@@ -148,6 +148,14 @@ def test_stellar_density_comparison_uses_area_density_and_all_six_colours(
                 "rms_log10_density": 0.0,
                 "surface_density_arcmin2": 2.0,
                 "source": "fixture",
+                "fit_diagnostics": {
+                    "gaia": {
+                        "intercept": -2.0,
+                        "fit_bright": 12.0,
+                        "fit_faint": 18.0,
+                    },
+                    "q1": {"fit_bright": 18.0, "fit_faint": 23.0},
+                },
             },
         },
         "gaia": {
@@ -203,6 +211,10 @@ def test_stellar_density_comparison_uses_area_density_and_all_six_colours(
     magnitude = result["parameters"]["vis"]
     bin_width = magnitude["x"][1] - magnitude["x"][0]
     assert sum(magnitude["gaia"]) * bin_width == pytest.approx(0.05)
+    assert magnitude["gaia_fit"] is not None
+    assert magnitude["fit_ranges"] == {
+        "gaia": [12.0, 18.0], "q1": [18.0, 23.0],
+    }
     assert result["q1_expected_point_sources"] is None
     assert set(result["parameters"]) == {
         "vis", "vis_y", "vis_j", "vis_h", "y_j", "y_h", "j_h",

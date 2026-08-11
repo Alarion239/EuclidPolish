@@ -62,6 +62,10 @@ from euclid_polish.population.joint_galaxy import (
     tng_draw_population_cube,
     validate_physical_conditionals,
 )
+from euclid_polish.web.helpers.q1_galaxy_counts import (
+    read_q1_galaxy_aperture_counts,
+    read_q1_galaxy_aperture_fit,
+)
 
 DEFAULT_COSMOS = Config.COSMOS_POPULATION_PRIOR_PATH
 DEFAULT_EUCLID = "data/population_comparison/euclid_population.csv"
@@ -555,22 +559,58 @@ def _diagnostics(
     }
 
 
-def _plot_overview(path: Path, diagnostics: dict[str, Any]) -> None:
-    fig, axes = plt.subplots(3, 2, figsize=(12.0, 13.2), constrained_layout=True)
-    cosmos_mag = diagnostics["magnitude_counts"]["cosmos"]
-    euclid_mag = diagnostics["magnitude_counts"]["euclid"]
-    ax = axes[0, 0]
-    ax.plot(cosmos_mag["x"], cosmos_mag["observed"], "o", ms=3.5,
-            color="#242424", label="COSMOS observed")
-    ax.plot(cosmos_mag["x"], cosmos_mag["model"], color="#008c68", lw=2.2,
-            label="shared model: COSMOS response")
-    ax.plot(euclid_mag["x"], euclid_mag["observed"], "o", ms=3.5,
-            color="#1267d6", label="Euclid observed")
-    ax.plot(euclid_mag["x"], euclid_mag["model"], color="#cf3d2e", lw=2.2,
-            label="shared model: Euclid response")
-    ax.set(yscale="log", xlabel="AB magnitude", ylabel="objects / arcmin² / mag",
-           title="Apparent-magnitude counts")
+def _q1_brightness_plot() -> dict[str, Any]:
+    counts = read_q1_galaxy_aperture_counts()["apertures"]["f2"]
+    curve = read_q1_galaxy_aperture_fit()["apertures"]["f2"]
+    return {
+        "observed_x": np.asarray([
+            0.5 * (float(item["mag_lo"]) + float(item["mag_hi"]))
+            for item in counts["bins"]
+        ]),
+        "observed_density": np.asarray([
+            float(item["density_arcmin2_mag"]) for item in counts["bins"]
+        ]),
+        "law_x": np.asarray(curve["x"], dtype=np.float64),
+        "law_density": np.asarray(curve["density"], dtype=np.float64),
+        "fit_interval": (
+            float(curve["law"]["fit_bright"]),
+            float(curve["law"]["fit_faint"]),
+        ),
+        "extrapolated_interval": tuple(
+            float(value) for value in curve["extrapolated_faint_interval"]
+        ),
+    }
+
+
+def _plot_q1_brightness(ax, brightness: dict[str, Any]) -> None:
+    ax.scatter(
+        brightness["observed_x"], brightness["observed_density"], s=20,
+        facecolors="none", edgecolors="#1267d6", linewidths=1.2,
+        label="Q1 MER + PHZ 2FWHM counts",
+    )
+    ax.plot(
+        brightness["law_x"], brightness["law_density"], color="#7a3db8",
+        linewidth=2.7, label="Q1-normalized straight law",
+    )
+    ax.axvspan(*brightness["fit_interval"], color="#1267d6", alpha=0.07)
+    ax.axvspan(
+        *brightness["extrapolated_interval"], color="#7a3db8", alpha=0.08,
+    )
+    ax.set(
+        yscale="log", xlim=(14, 29),
+        xlabel="VIS 2FWHM aperture magnitude [AB]",
+        ylabel="objects / arcmin² / mag",
+        title="Independent goal brightness",
+    )
     ax.legend(frameon=False, fontsize=8)
+
+
+def _plot_overview(
+    path: Path, diagnostics: dict[str, Any], brightness: dict[str, Any],
+) -> None:
+    fig, axes = plt.subplots(3, 2, figsize=(12.0, 13.2), constrained_layout=True)
+    ax = axes[0, 0]
+    _plot_q1_brightness(ax, brightness)
 
     redshift = diagnostics["redshift"]
     ax = axes[0, 1]
@@ -654,22 +694,20 @@ def _plot_overview(path: Path, diagnostics: dict[str, Any]) -> None:
     ax.legend(frameon=False, fontsize=8)
     for axis in axes.ravel():
         axis.grid(alpha=0.18)
-    fig.suptitle("One smooth Schechter × lognormal population; two survey responses",
+    fig.suptitle("Independent Q1 2FWHM brightness; staged Schechter × lognormal geometry",
                  fontsize=15)
     fig.savefig(path, dpi=180)
     plt.close(fig)
 
 
 def _plot_core_marginals(
-    path: Path, diagnostics: dict[str, Any],
+    path: Path, diagnostics: dict[str, Any], brightness: dict[str, Any],
 ) -> None:
-    """Plot the three catalogue marginals that define the synthetic population."""
-    magnitude = diagnostics["magnitude_counts"]
+    """Plot the independent brightness law and staged geometry marginals."""
     redshift = diagnostics["redshift"]
     radius = diagnostics["angular_radius"]
     tng_draw = diagnostics["tng_draw"]
     tng_full = tng_draw["full"]
-    tng_comparison = tng_draw["comparison_window"]
     fig, axes = plt.subplots(1, 3, figsize=(16.5, 5.0), constrained_layout=True)
 
     axes[0].scatter(
@@ -683,13 +721,7 @@ def _plot_core_marginals(
     axes[0].plot(
         tng_full["redshift"]["x"], tng_full["redshift"]["density"],
         color="#7a3db8", linewidth=3.0,
-        label="TNG full truth, 18<VIS<30",
-    )
-    axes[0].plot(
-        tng_comparison["redshift"]["x"],
-        tng_comparison["redshift"]["density"],
-        color="#7a3db8", linewidth=2.4, linestyle="--",
-        label="TNG truth, 20<VIS<28",
+        label="brightness-marginalized staged geometry",
     )
     axes[0].text(
         0.98, 0.96, "No redshift column in cached Euclid MER",
@@ -703,34 +735,7 @@ def _plot_core_marginals(
     )
     axes[0].set_yscale("log")
 
-    for survey, color in (("cosmos", "#008c68"), ("euclid", "#1267d6")):
-        item = magnitude[survey]
-        label = "COSMOS F814W" if survey == "cosmos" else "Euclid VIS"
-        axes[1].scatter(
-            item["x"], item["observed"], s=22, facecolors="none",
-            edgecolors=color, linewidths=1.4, label=f"{label} observed",
-        )
-        axes[1].plot(
-            item["x"], item["model"], color=color, linewidth=2.2,
-            label=f"fit through {label.split()[0]} response",
-        )
-    axes[1].set(
-        xlabel="survey apparent AB magnitude",
-        ylabel="objects / arcmin² / mag",
-        title="Apparent-magnitude density",
-    )
-    axes[1].set_yscale("log")
-    axes[1].plot(
-        tng_full["magnitude"]["x"], tng_full["magnitude"]["density"],
-        color="#7a3db8", linewidth=3.0,
-        label="TNG full truth, 18<VIS<30",
-    )
-    axes[1].plot(
-        tng_comparison["magnitude"]["x"],
-        tng_comparison["magnitude"]["density"],
-        color="#7a3db8", linewidth=2.4, linestyle="--",
-        label="TNG truth, 20<VIS<28",
-    )
+    _plot_q1_brightness(axes[1], brightness)
 
     for survey, color in (("cosmos", "#008c68"), ("euclid", "#1267d6")):
         item = radius[survey]
@@ -773,20 +778,14 @@ def _plot_core_marginals(
         np.power(10.0, np.asarray(tng_full["angular_radius"]["x"])),
         tng_full["angular_radius"]["density"],
         color="#7a3db8", linewidth=3.0,
-        label="TNG full truth, 18<VIS<30",
-    )
-    axes[2].plot(
-        np.power(10.0, np.asarray(tng_comparison["angular_radius"]["x"])),
-        tng_comparison["angular_radius"]["density"],
-        color="#7a3db8", linewidth=2.4, linestyle="--",
-        label="TNG truth, 20<VIS<28",
+        label="brightness-marginalized staged geometry",
     )
 
     for axis in axes:
         axis.grid(alpha=0.2)
         axis.legend(frameon=False, fontsize=8.5)
     fig.suptitle(
-        "TNG draw target before Euclid observation",
+        "Independent Q1 brightness and staged geometry before Euclid observation",
         fontsize=15,
     )
     fig.savefig(path, dpi=180)
@@ -1165,11 +1164,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     cross_validation_path = output_dir / OUTPUT_CROSS_VALIDATION
     core_marginals_path = output_dir / OUTPUT_CORE_MARGINALS
     if not args.no_plot:
-        _plot_overview(overview_path, diagnostics)
+        brightness_plot = _q1_brightness_plot()
+        _plot_overview(overview_path, diagnostics, brightness_plot)
         _plot_planes(planes_path, diagnostics)
         _plot_parameters(parameters_path, parameters, quality)
         _plot_cross_validation(cross_validation_path, cross_validation)
-        _plot_core_marginals(core_marginals_path, diagnostics)
+        _plot_core_marginals(
+            core_marginals_path, diagnostics, brightness_plot,
+        )
 
     algorithm = {
         "name": "flexibly evolving Schechter x lognormal size joint survey fit",

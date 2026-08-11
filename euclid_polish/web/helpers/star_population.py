@@ -583,6 +583,24 @@ def _stellar_density_comparison(
         if str(row.get("central_selected_star") or "0").strip() != "1"
         and (g_mag := _finite(row.get("g_mag"))) is not None
     ], dtype=np.float64)
+    magnitude_diagnostics = (
+        stellar_model["population"]["magnitude_distribution"].get(
+            "fit_diagnostics", {}
+        )
+    )
+    gaia_fit_diagnostics = magnitude_diagnostics.get("gaia") or {}
+    q1_fit_diagnostics = magnitude_diagnostics.get("q1") or {}
+    gaia_fit_density = None
+    try:
+        gaia_intercept = float(gaia_fit_diagnostics["intercept"])
+        gaia_fit_density = np.power(
+            10.0,
+            model_magnitude_law.slope
+            * (0.5 * (magnitude_edges[:-1] + magnitude_edges[1:]))
+            + gaia_intercept,
+        ).tolist()
+    except (KeyError, TypeError, ValueError):
+        pass
     parameters: dict[str, Any] = {
         "vis": {
             "label": "VIS and native Gaia G brightness",
@@ -602,6 +620,17 @@ def _stellar_density_comparison(
             "model": model_magnitude_law.density(
                 0.5 * (magnitude_edges[:-1] + magnitude_edges[1:])
             ).tolist(),
+            "gaia_fit": gaia_fit_density,
+            "fit_ranges": {
+                "q1": [
+                    q1_fit_diagnostics.get("fit_bright"),
+                    q1_fit_diagnostics.get("fit_faint"),
+                ],
+                "gaia": [
+                    gaia_fit_diagnostics.get("fit_bright"),
+                    gaia_fit_diagnostics.get("fit_faint"),
+                ],
+            },
         },
     }
     for key in ("vis_y", "vis_j", "vis_h", "y_j", "y_h", "j_h"):
@@ -662,8 +691,10 @@ def _stellar_density_comparison(
             )
             + "The magnitude panel also shows native Gaia G converted from "
             "the archive Vega magnitude to AB with the Gaia (E)DR3 zero-point "
-            "offset and divided by the cached Gaia-cone area; it is not fitted "
-            "or projected into VIS. Colour curves "
+            "offset and divided by the cached Gaia-cone area. Gaia and Q1 are "
+            "fit over independently selected straight regions with one shared "
+            "slope and separate intercepts; the Q1 intercept normalizes the "
+            "12–25 VIS generator. Colour curves "
             "remain matched-cone fit diagnostics; model curves are intrinsic "
             "generator draws without Euclid measurement noise."
         ),
@@ -2274,13 +2305,24 @@ def _fit_star_population_latent() -> dict[str, Any]:
             sed.magnitudes["J_E"] - sed.magnitudes["H_E"],
         ] for sed in fitted
     ])
-    fitted_vis = np.asarray([sed.magnitudes["VIS"] for sed in fitted])
-    fitted_vis_counts, _ = np.histogram(fitted_vis, bins=magnitude_bins)
-    fitted_vis_density = (
-        fitted_vis_counts
-        * (total_count / max(len(fitted_vis), 1))
-        / area
+    magnitude_centres = 0.5 * (magnitude_bins[:-1] + magnitude_bins[1:])
+    fitted_vis_density = magnitude_law.density(magnitude_centres)
+    gaia_g_ab = np.asarray([
+        float(value) + _GAIA_G_AB_MINUS_VEGA_MAG
+        for row in gaia_rows
+        if str(row.get("central_selected_star") or "0").strip() != "1"
+        and (value := _finite(row.get("g_mag"))) is not None
+    ], dtype=np.float64)
+    gaia_counts, _ = np.histogram(gaia_g_ab, bins=magnitude_bins)
+    gaia_density = (
+        gaia_counts.astype(np.float64)
+        / float(meta["area_arcmin2"])
         / np.diff(magnitude_bins)
+    )
+    gaia_fit = magnitude_fit_diagnostics["gaia"]
+    gaia_fitted_density = np.power(
+        10.0,
+        magnitude_law.slope * magnitude_centres + float(gaia_fit["intercept"]),
     )
     latent_array = np.asarray(latent_colors)
     latent_weight_array = np.asarray(latent_weights)
@@ -2292,14 +2334,27 @@ def _fit_star_population_latent() -> dict[str, Any]:
         # Keep the established key so existing cached-plot consumers can read
         # the new diagnostic; its axis is now VIS magnitude, not cone index.
         "star_density_per_cone": {
-            "x": (0.5 * (magnitude_bins[:-1] + magnitude_bins[1:])).tolist(),
+            "x": magnitude_centres.tolist(),
             "observed": (
                 counts / area / np.diff(magnitude_bins)
             ).tolist(),
             "fitted": fitted_vis_density.tolist(),
+            "gaia_observed": gaia_density.tolist(),
+            "gaia_fitted": gaia_fitted_density.tolist(),
+            "fit_ranges": {
+                "q1": [
+                    float(magnitude_fit_diagnostics["q1"]["fit_bright"]),
+                    float(magnitude_fit_diagnostics["q1"]["fit_faint"]),
+                ],
+                "gaia": [
+                    float(gaia_fit["fit_bright"]),
+                    float(gaia_fit["fit_faint"]),
+                ],
+            },
+            "sampling_interval": [bright, faint],
             "label": "Q1 PHZ probability-weighted stellar density",
             "unit": "stars / arcmin² / mag",
-            "x_label": "VIS PSF magnitude [AB]",
+            "x_label": "native survey magnitude [AB]",
         },
         "parameters": {},
     }

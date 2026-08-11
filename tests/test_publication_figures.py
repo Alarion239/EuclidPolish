@@ -50,9 +50,25 @@ def _fit():
 
 def test_population_atlas_exports_raster_and_vector_formats():
     fit = _fit()
-    png = render_population_atlas(fit, output_format="png", dpi=120)
-    pdf = render_population_atlas(fit, output_format="pdf", dpi=120)
-    svg = render_population_atlas(fit, output_format="svg", dpi=120)
+    magnitude_plot = {
+        "observed": {
+            "x": [14.5, 20.5, 27.5], "density": [0.1, 2.0, 50.0],
+        },
+        "law": {
+            "x": [14.0, 21.5, 29.0], "density": [0.08, 3.0, 100.0],
+        },
+        "fit_interval": [19.5, 25.0],
+        "extrapolated_interval": [28.0, 29.0],
+    }
+    png = render_population_atlas(
+        fit, magnitude_plot=magnitude_plot, output_format="png", dpi=120,
+    )
+    pdf = render_population_atlas(
+        fit, magnitude_plot=magnitude_plot, output_format="pdf", dpi=120,
+    )
+    svg = render_population_atlas(
+        fit, magnitude_plot=magnitude_plot, output_format="svg", dpi=120,
+    )
 
     assert png.startswith(b"\x89PNG\r\n\x1a\n")
     assert pdf.startswith(b"%PDF")
@@ -61,9 +77,9 @@ def test_population_atlas_exports_raster_and_vector_formats():
     assert b"Angular radii use" not in svg
     assert b"Missing bins are" not in svg
     assert b"Galaxy population calibration" not in svg
-    assert b"COSMOS data" in svg
-    assert b"Euclid data" in svg
-    assert b"TNG target" in svg
+    assert b"Q1 MER + PHZ 2FWHM counts" in svg
+    assert b"Q1 2FWHM straight law" in svg
+    assert b"staged geometry target" in svg
     assert b"TNG truth" not in svg
     assert b"20&lt;VIS&lt;28" not in svg
 
@@ -82,10 +98,13 @@ def _star_calibration():
         "population": {"density_arcmin2": 4.5},
         "diagnostics": {
             "star_density_per_cone": {
-                "x": [1, 2, 3],
-                "observed": [4.0, 5.0, 4.5],
-                "fitted": [4.5, 4.5, 4.5],
-                "unit": "point sources / arcmin²",
+                "x": [12.0, 18.5, 25.0],
+                "observed": [0.02, 0.2, 2.0],
+                "fitted": [0.01, 0.1, 1.0],
+                "gaia_observed": [0.03, 0.3, 3.0],
+                "gaia_fitted": [0.02, 0.2, 2.0],
+                "fit_ranges": {"q1": [18.0, 23.0], "gaia": [12.0, 18.0]},
+                "unit": "stars / arcmin² / mag",
             },
             "parameters": {
                 "vis_y": color,
@@ -116,3 +135,5 @@ def test_star_population_calibration_exports_raster_and_vector_formats():
     assert b"Estimated true colours of observed stars" in svg
     assert b"Estimated colours with simulated Euclid noise" in svg
     assert b"Raw Euclid catalogue colours" in svg
+    assert b"Q1-normalized straight law" in svg
+    assert b"native Gaia G" in svg

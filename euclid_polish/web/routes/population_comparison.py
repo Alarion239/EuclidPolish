@@ -132,8 +132,12 @@ def register(app):
             abort(400)
         try:
             dpi = int(request.args.get("dpi", "300"))
+            candidate = joint_galaxy_state().get("candidate") or {}
             payload = render_population_atlas(
-                fit, output_format=output_format, dpi=dpi,
+                fit,
+                magnitude_plot=candidate.get("magnitude_plot"),
+                output_format=output_format,
+                dpi=dpi,
             )
         except (TypeError, ValueError):
             abort(400)

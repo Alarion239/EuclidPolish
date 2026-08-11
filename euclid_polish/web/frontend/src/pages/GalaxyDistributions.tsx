@@ -22,6 +22,9 @@ type BrightnessCurve = Curve & {
   estimator: string;
   selection: string;
   default_on?: boolean;
+  fit_interval?: [number, number];
+  sampling_interval?: [number, number];
+  extrapolated_interval?: [number, number];
 };
 type RadiusCurve = Curve & {
   label: string;
@@ -257,12 +260,23 @@ function ApparentBrightnessPlot({ parameter }: { parameter: Parameter }) {
     const lo = Math.floor(Math.min(...logValues) * 2) / 2;
     const hi = Math.ceil(Math.max(...logValues) * 2) / 2;
     const yDomain: [number, number] = [lo, hi <= lo ? lo + 1 : hi];
+    const guides = visible.flatMap(([, curve]) => [
+      ...(curve.fit_interval ?? []).map((value) => ({
+        axis: "x" as const, v: value, color: "#2478d4",
+        dash: [3, 4], width: 1, alpha: 0.65,
+      })),
+      ...(curve.extrapolated_interval ? [{
+        axis: "x" as const, v: curve.extrapolated_interval[0],
+        color: "#e25543", dash: [7, 4], width: 1.2, alpha: 0.75,
+      }] : []),
+    ]);
     plot = <>
       <Plot
         xDomain={xDomain} yDomain={yDomain}
         xTicks={ticks(xDomain, 6)} yTicks={physicalLogTicks(yDomain, 6)}
         xLabel={parameter.x_label}
         yLabel={`${parameter.density_unit} (log scale)`}
+        guides={guides}
         series={visible.map(([key, curve]) => ({
           x: curve.x,
           y: curve.density.map((value) => value > 0 ? Math.log10(value) : null),
@@ -277,7 +291,9 @@ function ApparentBrightnessPlot({ parameter }: { parameter: Parameter }) {
         {visible.map(([key, curve]) => <div key={key}>
           <i style={{ background: colorByKey[key] }} />
           <span><b>{curve.label}</b><small>{curve.band} · {curve.estimator}</small></span>
-          <em>{compact(curve.weighted_count)} weighted objects</em>
+          <em>{curve.fit_interval
+            ? `fit ${curve.fit_interval[0].toFixed(2)}–${curve.fit_interval[1].toFixed(2)} · sample ${curve.sampling_interval?.[0].toFixed(0)}–${curve.sampling_interval?.[1].toFixed(0)}`
+            : `${compact(curve.weighted_count)} weighted objects`}</em>
         </div>)}
       </div>
     </>;
@@ -286,7 +302,7 @@ function ApparentBrightnessPlot({ parameter }: { parameter: Parameter }) {
   return <div className="brightness-comparison">
     <div className="brightness-warning">
       <strong>Same AB convention, different measurements.</strong>
-      <span>VIS and F814W passbands, aperture diameters, PSF treatment, and total-flux models remain distinct. Horizontal alignment is descriptive only.</span>
+      <span>The default is the Q1 MER + PHZ VIS 2FWHM raw count and its straight log-density law over 14–29; 28–29 is explicit extrapolation. Optional VIS/F814W diagnostics retain their native estimators.</span>
     </div>
     <div className="brightness-controls">
       {(["euclid", "cosmos", "fit"] as const).map((survey) => {

@@ -80,7 +80,7 @@ export default function VisualizationPage() {
       <div className="presentation-plate-stack">
         <Card className="presentation-plate">
           <CardHead title="Galaxy population calibration"
-            sub="COSMOS × Euclid × TNG50 · magnitude, redshift, and angular-radius density"
+            sub="Q1 VIS 2FWHM straight brightness law × brightness-marginalized TNG50 geometry"
             right={<div className="presentation-plate__formats">
               <a href="/view/population-atlas?format=pdf" download>PDF</a>
               <a href="/view/population-atlas?format=svg" download>SVG</a>
@@ -97,7 +97,7 @@ export default function VisualizationPage() {
 
         <Card className="presentation-plate">
           <CardHead title="Stellar population calibration"
-            sub="Gaia DR3 × Euclid MER · fitted, inferred, simulated-noise, and catalogue stellar colours"
+            sub="Q1 VIS × Gaia G_AB shared-slope straight counts · fitted and noise-tested colours"
             right={<div className="presentation-plate__formats">
               <a href="/view/star-population-calibration?format=pdf" download>PDF</a>
               <a href="/view/star-population-calibration?format=svg" download>SVG</a>
