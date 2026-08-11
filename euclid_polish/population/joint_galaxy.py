@@ -23,6 +23,7 @@ from typing import Any
 
 import numpy as np
 from astropy.cosmology import Planck15
+from scipy.ndimage import gaussian_filter
 from scipy.optimize import least_squares, minimize, minimize_scalar
 from scipy.special import gammaln, ndtr
 
@@ -188,6 +189,14 @@ def read_cosmos_population(path: str | Path) -> dict[str, np.ndarray]:
         redshift = np.asarray(data["z_phot"], dtype=np.float64)
         radius = np.asarray(data["re_combined_arcsec"], dtype=np.float64)
         logssfr = np.asarray(data["logssfr_lephare"], dtype=np.float64)
+        mass_key = next(
+            (name for name in ("logmass_lephare", "logmass") if name in data.files),
+            None,
+        )
+        mass = (
+            np.asarray(data[mass_key], dtype=np.float64)
+            if mass_key is not None else np.full(magnitude.shape, np.nan)
+        )
 
     population = (
         np.isfinite(magnitude) & np.isfinite(redshift)
@@ -201,6 +210,7 @@ def read_cosmos_population(path: str | Path) -> dict[str, np.ndarray]:
         "redshift": redshift[population],
         "radius_arcsec": radius[population],
         "logssfr": logssfr[population],
+        "logmass": mass[population],
         "has_radius": (
             np.isfinite(radius[population]) & (radius[population] > 0.0)
         ),
@@ -294,6 +304,608 @@ def read_euclid_population(
             "0.1 arcsec/pixel * SEMIMAJOR_AXIS * sqrt(1-ELLIPTICITY); "
             "a MER detection proxy, not a fitted half-light radius"
         ),
+    }
+
+
+def read_phz_population(
+    catalog_path: str | Path, pdf_path: str | Path,
+) -> dict[str, np.ndarray | int]:
+    """Read PHZ scalars and align the compact redshift PDFs by object ID."""
+    with np.load(pdf_path, allow_pickle=False) as data:
+        pdf_ids = np.asarray(data["object_id"]).astype(str)
+        pdf_probability = np.asarray(data["probability"], dtype=np.float64)
+        pdf_z_edges = np.asarray(data["z_edges"], dtype=np.float64)
+    if pdf_probability.shape != (pdf_ids.size, pdf_z_edges.size - 1):
+        raise ValueError("PHZ PDF cache arrays are not aligned")
+    if (
+        pdf_probability.size
+        and (
+            not np.isfinite(pdf_probability).all()
+            or np.any(pdf_probability < 0.0)
+        )
+    ):
+        raise ValueError("PHZ PDF cache contains invalid probabilities")
+    if pdf_ids.size != np.unique(pdf_ids).size:
+        raise ValueError("PHZ PDF cache contains duplicate object IDs")
+    if pdf_probability.size and not np.allclose(
+        np.sum(pdf_probability, axis=1), 1.0, rtol=1e-5, atol=1e-6,
+    ):
+        raise ValueError("PHZ PDF cache rows are not normalized")
+    pdf_by_id = {value: index for index, value in enumerate(pdf_ids)}
+    fields = {
+        "magnitude": "mag_vis",
+        "galaxy_probability": "phz_gal_prob",
+        "qso_probability": "phz_qso_prob",
+        "physical_redshift": "phz_pp_median_redshift",
+        "logmass": "phz_pp_median_stellarmass",
+        "logmass_p16": "phz_pp_stellarmass_p16",
+        "logmass_p84": "phz_pp_stellarmass_p84",
+        "logsfr": "phz_pp_median_sfr",
+        "logsfr_p16": "phz_pp_sfr_p16",
+        "logsfr_p84": "phz_pp_sfr_p84",
+        "sfhage": "phz_pp_median_sfhage",
+        "sfhage_p16": "phz_pp_sfhage_p16",
+        "sfhage_p84": "phz_pp_sfhage_p84",
+        "rest_u": "phz_pp_median_mu",
+        "rest_v": "phz_pp_median_mv",
+        "rest_j": "phz_pp_median_mj",
+        "rest_vis": "phz_pp_median_mvis",
+        "physical_flags": "phz_phys_flags",
+        "quality_flag": "phz_phys_quality_flag",
+    }
+    values: dict[str, list[float]] = {key: [] for key in fields}
+    object_ids: list[str] = []
+    cone_index: list[int] = []
+    pdf_index: list[int] = []
+    with Path(catalog_path).open(newline="", encoding="utf-8") as handle:
+        for row in csv.DictReader(handle):
+            object_id = str(row.get("object_id") or "")
+            if not object_id:
+                continue
+            object_ids.append(object_id)
+            try:
+                cone_index.append(int(row.get("cone_index") or 0))
+            except (TypeError, ValueError):
+                cone_index.append(0)
+            pdf_index.append(pdf_by_id.get(object_id, -1))
+            for output, column in fields.items():
+                try:
+                    value = float(row.get(column) or "nan")
+                except (TypeError, ValueError):
+                    value = float("nan")
+                values[output].append(value)
+    aligned_pdf = np.zeros(
+        (len(object_ids), pdf_probability.shape[1]), dtype=np.float64,
+    )
+    has_pdf = np.asarray(pdf_index, dtype=np.int64) >= 0
+    if np.any(has_pdf):
+        aligned_pdf[has_pdf] = pdf_probability[np.asarray(pdf_index)[has_pdf]]
+    return {
+        "object_id": np.asarray(object_ids).astype(str),
+        "cone_index": np.asarray(cone_index, dtype=np.int64),
+        "has_pdf": has_pdf,
+        "pdf_probability": aligned_pdf,
+        "pdf_z_edges": pdf_z_edges,
+        **{
+            key: np.asarray(value, dtype=np.float64)
+            for key, value in values.items()
+        },
+    }
+
+
+def _phz_observed_plane(
+    phz: dict[str, np.ndarray | int], magnitude_edges: np.ndarray,
+    *, cone_mask: np.ndarray | None = None,
+) -> np.ndarray:
+    probability = np.asarray(phz["pdf_probability"], dtype=np.float64)
+    magnitude = np.asarray(phz["magnitude"], dtype=np.float64)
+    weight = np.asarray(phz["galaxy_probability"], dtype=np.float64)
+    valid = (
+        np.asarray(phz["has_pdf"], dtype=bool)
+        & np.isfinite(magnitude) & (magnitude < 24.5)
+        & np.isfinite(weight) & (weight >= 0.0) & (weight <= 1.0)
+    )
+    if cone_mask is not None:
+        valid &= np.asarray(cone_mask, dtype=bool)
+    result = np.zeros(
+        (probability.shape[1], magnitude_edges.size - 1), dtype=np.float64,
+    )
+    magnitude_bin = np.searchsorted(
+        magnitude_edges, magnitude, side="right",
+    ) - 1
+    for index in np.flatnonzero(valid):
+        column = int(magnitude_bin[index])
+        if 0 <= column < result.shape[1]:
+            result[:, column] += weight[index] * probability[index]
+    return result
+
+
+def _rebin_probability_mass(
+    probability: np.ndarray,
+    source_edges: np.ndarray,
+    target_edges: np.ndarray,
+) -> np.ndarray:
+    """Conservatively move binned PDF mass onto another grid.
+
+    The compact PHZ cache uses the luminosity-function redshift grid, while
+    the generation cube uses the finer latent grid.  Treat the probability
+    density as uniform inside each cached bin and distribute its mass by bin
+    overlap.  Both grids must cover the same redshift interval so no posterior
+    mass is silently discarded or invented.
+    """
+    values = np.asarray(probability, dtype=np.float64)
+    source = np.asarray(source_edges, dtype=np.float64)
+    target = np.asarray(target_edges, dtype=np.float64)
+    if values.ndim != 2 or values.shape[1] != source.size - 1:
+        raise ValueError("PHZ probability matrix does not match its redshift grid")
+    if (
+        source.size < 2
+        or target.size < 2
+        or not np.isfinite(source).all()
+        or not np.isfinite(target).all()
+        or np.any(np.diff(source) <= 0.0)
+        or np.any(np.diff(target) <= 0.0)
+    ):
+        raise ValueError("PHZ and analytical redshift grids must be finite and increasing")
+    if not np.allclose(
+        [source[0], source[-1]],
+        [target[0], target[-1]],
+        rtol=0.0,
+        atol=1e-10,
+    ):
+        raise ValueError("PHZ and analytical redshift grids cover different ranges")
+
+    overlap = np.maximum(
+        0.0,
+        np.minimum(source[1:, None], target[None, 1:])
+        - np.maximum(source[:-1, None], target[None, :-1]),
+    )
+    transfer = overlap / np.diff(source)[:, None]
+    rebinned = values @ transfer
+    if not np.allclose(
+        np.sum(rebinned, axis=1),
+        np.sum(values, axis=1),
+        rtol=1e-10,
+        atol=1e-12,
+    ):
+        raise ValueError("PHZ PDF rebinning did not conserve probability mass")
+    return rebinned
+
+
+def _scaled_plane_prediction(
+    baseline: np.ndarray, observed: np.ndarray,
+    correction: np.ndarray | None = None,
+) -> np.ndarray:
+    prediction = np.asarray(baseline, dtype=np.float64).copy()
+    if correction is not None:
+        prediction *= np.asarray(correction, dtype=np.float64)
+    totals = np.sum(prediction, axis=0)
+    observed_totals = np.sum(observed, axis=0)
+    scale = np.divide(
+        observed_totals, totals, out=np.zeros_like(totals), where=totals > 0.0,
+    )
+    return prediction * scale[None, :]
+
+
+def _poisson_deviance(observed: np.ndarray, predicted: np.ndarray) -> float:
+    predicted = np.maximum(np.asarray(predicted, dtype=np.float64), 1e-12)
+    observed = np.asarray(observed, dtype=np.float64)
+    logarithmic = np.zeros_like(observed)
+    positive = observed > 0.0
+    logarithmic[positive] = observed[positive] * np.log(
+        observed[positive] / predicted[positive]
+    )
+    return float(2.0 * np.sum(predicted - observed + logarithmic))
+
+
+def _fit_plane_correction(
+    baseline: np.ndarray, observed: np.ndarray, magnitude_edges: np.ndarray,
+) -> np.ndarray:
+    predicted = _scaled_plane_prediction(baseline, observed)
+    ratio = (observed + 0.5) / (predicted + 0.5)
+    correction = np.exp(gaussian_filter(np.log(ratio), sigma=(1.0, 1.0)))
+    baseline_total = np.sum(baseline, axis=0)
+    corrected_total = np.sum(baseline * correction, axis=0)
+    correction *= np.divide(
+        baseline_total, corrected_total,
+        out=np.ones_like(baseline_total), where=corrected_total > 0.0,
+    )[None, :]
+    centers = 0.5 * (magnitude_edges[:-1] + magnitude_edges[1:])
+    taper = np.clip((24.5 - centers) / 0.5, 0.0, 1.0)
+    correction = np.exp(
+        np.log(np.maximum(correction, 1e-12)) * taper[None, :]
+    )
+    corrected_total = np.sum(baseline * correction, axis=0)
+    correction *= np.divide(
+        baseline_total, corrected_total,
+        out=np.ones_like(baseline_total), where=corrected_total > 0.0,
+    )[None, :]
+    return correction
+
+
+def fit_phz_redshift_correction(
+    draw: dict[str, np.ndarray], phz: dict[str, np.ndarray | int],
+) -> dict[str, Any]:
+    """Fit and cross-validate a density-preserving PHZ redshift correction."""
+    z_edges = np.asarray(draw["z_edges"], dtype=np.float64)
+    magnitude_edges = np.asarray(draw["vis_magnitude_edges"], dtype=np.float64)
+    pdf_edges = np.asarray(phz["pdf_z_edges"], dtype=np.float64)
+    grids_match = z_edges.shape == pdf_edges.shape and np.allclose(
+        z_edges, pdf_edges, rtol=0.0, atol=1e-10,
+    )
+    phz_for_fit = phz
+    if not grids_match:
+        phz_for_fit = {
+            **phz,
+            "pdf_probability": _rebin_probability_mass(
+                np.asarray(phz["pdf_probability"], dtype=np.float64),
+                pdf_edges,
+                z_edges,
+            ),
+            "pdf_z_edges": z_edges,
+        }
+    baseline = np.sum(np.asarray(draw["density"], dtype=np.float64), axis=2)
+    observed = _phz_observed_plane(phz_for_fit, magnitude_edges)
+    correction = _fit_plane_correction(baseline, observed, magnitude_edges)
+    corrected = _scaled_plane_prediction(baseline, observed, correction)
+    baseline_prediction = _scaled_plane_prediction(baseline, observed)
+    supported = observed >= 1.0
+    fractional = np.abs(corrected - observed) / np.maximum(observed, 1.0)
+    median_fractional = (
+        float(np.median(fractional[supported])) if np.any(supported) else float("inf")
+    )
+    cone_index = np.asarray(phz_for_fit["cone_index"], dtype=np.int64)
+    cones = np.unique(cone_index)
+    folds: list[dict[str, Any]] = []
+    for fold_cones in np.array_split(cones, 4) if cones.size >= 4 else []:
+        test = np.isin(cone_index, fold_cones)
+        train_observed = _phz_observed_plane(
+            phz_for_fit, magnitude_edges, cone_mask=~test,
+        )
+        test_observed = _phz_observed_plane(
+            phz_for_fit, magnitude_edges, cone_mask=test,
+        )
+        fold_correction = _fit_plane_correction(
+            baseline, train_observed, magnitude_edges,
+        )
+        baseline_test = _scaled_plane_prediction(baseline, test_observed)
+        corrected_test = _scaled_plane_prediction(
+            baseline, test_observed, fold_correction,
+        )
+        baseline_deviance = _poisson_deviance(test_observed, baseline_test)
+        corrected_deviance = _poisson_deviance(test_observed, corrected_test)
+        folds.append({
+            "test_cones": [int(value) for value in fold_cones],
+            "baseline_deviance": baseline_deviance,
+            "corrected_deviance": corrected_deviance,
+            "improvement_fraction": (
+                (baseline_deviance - corrected_deviance) / baseline_deviance
+                if baseline_deviance > 0.0 else 0.0
+            ),
+        })
+    mean_improvement = (
+        float(np.mean([fold["improvement_fraction"] for fold in folds]))
+        if folds else 0.0
+    )
+    corrected_density = baseline * correction
+    density_change = float(
+        abs(np.sum(corrected_density) - np.sum(baseline))
+        / max(np.sum(baseline), 1e-12)
+    )
+    return {
+        "version": 1,
+        "z_edges": z_edges.tolist(),
+        "input_pdf_z_edges": pdf_edges.tolist(),
+        "pdf_rebinned": not grids_match,
+        "vis_magnitude_edges": magnitude_edges.tolist(),
+        "factor": correction.tolist(),
+        "observed_weighted_counts": observed.tolist(),
+        "baseline_weighted_counts": baseline_prediction.tolist(),
+        "corrected_weighted_counts": corrected.tolist(),
+        "baseline_deviance": _poisson_deviance(observed, baseline_prediction),
+        "corrected_deviance": _poisson_deviance(observed, corrected),
+        "median_absolute_fractional_residual": median_fractional,
+        "density_change_fraction": density_change,
+        "cross_validation": {
+            "folds": folds,
+            "mean_improvement_fraction": mean_improvement,
+        },
+    }
+
+
+def _effective_weight(weight: np.ndarray) -> float:
+    total = float(np.sum(weight))
+    squared = float(np.sum(weight * weight))
+    return total * total / squared if squared > 0.0 else 0.0
+
+
+def _weighted_location_scale(
+    values: np.ndarray, weights: np.ndarray,
+) -> tuple[float, float]:
+    total = float(np.sum(weights))
+    if total <= 0.0:
+        return float("nan"), float("nan")
+    mean = float(np.sum(weights * values) / total)
+    variance = float(np.sum(weights * (values - mean) ** 2) / total)
+    return mean, max(math.sqrt(max(variance, 0.0)), 0.05)
+
+
+def fit_physical_conditionals(
+    cosmos: dict[str, np.ndarray], phz: dict[str, np.ndarray | int],
+    response: EuclidResponseFit,
+    *, minimum_effective_weight: float = 64.0,
+) -> dict[str, Any]:
+    """Fit compact mass/activity conditionals, blending PHZ into COSMOS."""
+    z_edges = np.asarray([0.05, 0.3, 0.6, 1.0, 1.5, 2.0, 3.0, 4.0, 5.5])
+    magnitude_edges = np.asarray([18.0, 20.0, 22.0, 23.0, 24.0, 24.5, 26.0, 28.0, 30.0])
+    phz_magnitude = np.asarray(phz["magnitude"], dtype=np.float64)
+    phz_redshift = np.asarray(phz["physical_redshift"], dtype=np.float64)
+    phz_mass = np.asarray(phz["logmass"], dtype=np.float64)
+    phz_ssfr = np.asarray(phz["logsfr"], dtype=np.float64) - phz_mass
+    phz_mass_p16 = np.asarray(phz["logmass_p16"], dtype=np.float64)
+    phz_mass_p84 = np.asarray(phz["logmass_p84"], dtype=np.float64)
+    phz_sfr_p16 = np.asarray(phz["logsfr_p16"], dtype=np.float64)
+    phz_sfr_p84 = np.asarray(phz["logsfr_p84"], dtype=np.float64)
+    phz_age = np.asarray(phz["sfhage"], dtype=np.float64)
+    phz_age_p16 = np.asarray(phz["sfhage_p16"], dtype=np.float64)
+    phz_age_p84 = np.asarray(phz["sfhage_p84"], dtype=np.float64)
+    phz_weight = np.asarray(phz["galaxy_probability"], dtype=np.float64)
+    phz_flags = np.asarray(phz["physical_flags"], dtype=np.float64)
+    phz_quality = np.asarray(phz["quality_flag"], dtype=np.float64)
+    phz_blend = np.clip((24.5 - phz_magnitude) / 0.5, 0.0, 1.0)
+    phz_valid = (
+        np.isfinite(phz_magnitude) & np.isfinite(phz_redshift)
+        & np.isfinite(phz_mass) & np.isfinite(phz_ssfr)
+        & np.isfinite(phz_mass_p16) & np.isfinite(phz_mass_p84)
+        & np.isfinite(phz_sfr_p16) & np.isfinite(phz_sfr_p84)
+        & np.isfinite(phz_age) & np.isfinite(phz_age_p16)
+        & np.isfinite(phz_age_p84)
+        & (phz_mass_p16 <= phz_mass) & (phz_mass <= phz_mass_p84)
+        & (phz_sfr_p16 <= np.asarray(phz["logsfr"], dtype=np.float64))
+        & (np.asarray(phz["logsfr"], dtype=np.float64) <= phz_sfr_p84)
+        & (phz_age_p16 <= phz_age) & (phz_age <= phz_age_p84)
+        & np.isfinite(phz_weight) & (phz_weight >= 0.0) & (phz_weight <= 1.0)
+        & (phz_flags == 0.0) & (phz_quality == 0.0)
+        & (phz_ssfr < -8.2) & (phz_magnitude < 24.5)
+    )
+    pivot = 24.0
+    cosmos_magnitude = (
+        pivot
+        + response.magnitude_slope
+        * (np.asarray(cosmos["magnitude"], dtype=np.float64) - pivot)
+        + response.vis_minus_f814w_mag
+    )
+    cosmos_redshift = np.asarray(cosmos["redshift"], dtype=np.float64)
+    cosmos_mass = np.asarray(cosmos["logmass"], dtype=np.float64)
+    cosmos_ssfr = np.asarray(cosmos["logssfr"], dtype=np.float64)
+    cosmos_blend = np.clip((cosmos_magnitude - 24.0) / 0.5, 0.0, 1.0)
+    cosmos_valid = (
+        np.isfinite(cosmos_magnitude) & np.isfinite(cosmos_redshift)
+        & np.isfinite(cosmos_mass) & np.isfinite(cosmos_ssfr)
+        & (cosmos_ssfr < -8.2) & (cosmos_blend > 0.0)
+    )
+    magnitude = np.concatenate([
+        phz_magnitude[phz_valid], cosmos_magnitude[cosmos_valid],
+    ])
+    redshift = np.concatenate([
+        phz_redshift[phz_valid], cosmos_redshift[cosmos_valid],
+    ])
+    mass = np.concatenate([phz_mass[phz_valid], cosmos_mass[cosmos_valid]])
+    ssfr = np.concatenate([phz_ssfr[phz_valid], cosmos_ssfr[cosmos_valid]])
+    weight = np.concatenate([
+        phz_weight[phz_valid] * phz_blend[phz_valid],
+        cosmos_blend[cosmos_valid],
+    ])
+    activity = np.where(ssfr < -11.0, "quenched", "star_forming")
+    z_bin = np.searchsorted(z_edges, redshift, side="right") - 1
+    magnitude_bin = np.searchsorted(magnitude_edges, magnitude, side="right") - 1
+    shape = (z_edges.size - 1, magnitude_edges.size - 1)
+    quenched_fraction = np.zeros(shape, dtype=np.float64)
+    pooled_radius = np.zeros(shape, dtype=np.int64)
+    class_payload: dict[str, dict[str, Any]] = {}
+    class_stats: dict[str, dict[str, np.ndarray]] = {}
+    all_cells_valid = True
+    for label in ("quenched", "star_forming"):
+        global_selected = activity == label
+        global_effective = _effective_weight(weight[global_selected])
+        if global_effective < minimum_effective_weight:
+            all_cells_valid = False
+        global_mass_mean, global_mass_sigma = _weighted_location_scale(
+            mass[global_selected], weight[global_selected],
+        )
+        class_payload[label] = {
+            "global_mass_mean": global_mass_mean,
+            "global_mass_sigma": global_mass_sigma,
+            "global_effective_weight": global_effective,
+        }
+        class_stats[label] = {
+            key: np.full(shape, np.nan, dtype=np.float64)
+            for key in (
+                "mass_mean", "mass_sigma", "ssfr_mean", "ssfr_sigma",
+                "effective_weight",
+            )
+        }
+    for zi in range(shape[0]):
+        for mi in range(shape[1]):
+            selected_by_class: dict[str, np.ndarray] = {}
+            selected_all = np.zeros(magnitude.shape, dtype=bool)
+            selected_radius = max(shape)
+            for radius in range(max(shape) + 1):
+                local = (
+                    (np.abs(z_bin - zi) <= radius)
+                    & (np.abs(magnitude_bin - mi) <= radius)
+                    & (z_bin >= 0) & (magnitude_bin >= 0)
+                )
+                candidate = {
+                    label: local & (activity == label)
+                    for label in ("quenched", "star_forming")
+                }
+                if all(
+                    _effective_weight(weight[mask]) >= minimum_effective_weight
+                    for mask in candidate.values()
+                ):
+                    selected_by_class = candidate
+                    selected_all = local
+                    selected_radius = radius
+                    break
+            if not selected_by_class:
+                all_cells_valid = False
+                selected_by_class = {
+                    label: activity == label
+                    for label in ("quenched", "star_forming")
+                }
+                selected_all = np.ones(magnitude.shape, dtype=bool)
+            pooled_radius[zi, mi] = selected_radius
+            total_weight = float(np.sum(weight[selected_all]))
+            quenched_fraction[zi, mi] = (
+                float(np.sum(weight[selected_by_class["quenched"]]))
+                / total_weight if total_weight > 0.0 else 0.5
+            )
+            for label, selected in selected_by_class.items():
+                mass_mean, mass_sigma = _weighted_location_scale(
+                    mass[selected], weight[selected],
+                )
+                ssfr_mean, ssfr_sigma = _weighted_location_scale(
+                    ssfr[selected], weight[selected],
+                )
+                class_stats[label]["mass_mean"][zi, mi] = mass_mean
+                class_stats[label]["mass_sigma"][zi, mi] = mass_sigma
+                class_stats[label]["ssfr_mean"][zi, mi] = ssfr_mean
+                class_stats[label]["ssfr_sigma"][zi, mi] = ssfr_sigma
+                class_stats[label]["effective_weight"][zi, mi] = (
+                    _effective_weight(weight[selected])
+                )
+    for label in class_payload:
+        class_payload[label].update({
+            key: value.tolist() for key, value in class_stats[label].items()
+        })
+    return {
+        "version": 1,
+        "z_edges": z_edges.tolist(),
+        "vis_magnitude_edges": magnitude_edges.tolist(),
+        "activity_threshold_logssfr": -11.0,
+        "pathological_upper_logssfr": -8.2,
+        "minimum_effective_weight": minimum_effective_weight,
+        "phz_rows": int(np.sum(phz_valid)),
+        "cosmos_rows": int(np.sum(cosmos_valid)),
+        "quenched_fraction": quenched_fraction.tolist(),
+        "pooled_radius": pooled_radius.tolist(),
+        "classes": class_payload,
+        "all_cells_valid": all_cells_valid,
+    }
+
+
+def validate_physical_conditionals(
+    draw: dict[str, np.ndarray], correction: dict[str, Any],
+    conditionals: dict[str, Any], *, samples: int = 20_000, seed: int = 731,
+) -> dict[str, Any]:
+    """Fixed-seed Monte Carlo check of the compact physical sampler."""
+    density = np.asarray(draw["density"], dtype=np.float64)
+    factor = np.asarray(correction["factor"], dtype=np.float64)
+    density = density * factor[:, :, None]
+    marginal = np.sum(density, axis=2)
+    fine_z = 0.5 * (
+        np.asarray(draw["z_edges"][:-1]) + np.asarray(draw["z_edges"][1:])
+    )
+    fine_magnitude = 0.5 * (
+        np.asarray(draw["vis_magnitude_edges"][:-1])
+        + np.asarray(draw["vis_magnitude_edges"][1:])
+    )
+    z_edges = np.asarray(conditionals["z_edges"], dtype=np.float64)
+    magnitude_edges = np.asarray(
+        conditionals["vis_magnitude_edges"], dtype=np.float64,
+    )
+    z_lookup = np.clip(
+        np.searchsorted(z_edges, fine_z, side="right") - 1,
+        0, z_edges.size - 2,
+    )
+    magnitude_lookup = np.clip(
+        np.searchsorted(magnitude_edges, fine_magnitude, side="right") - 1,
+        0, magnitude_edges.size - 2,
+    )
+    quenched = np.asarray(conditionals["quenched_fraction"], dtype=np.float64)
+    class_payload = conditionals["classes"]
+    expected_quenched = 0.0
+    expected_mass = 0.0
+    total = float(np.sum(marginal))
+    expected_redshift = np.sum(marginal, axis=1) / total
+    mass_edges = np.linspace(6.0, 13.0, 29)
+    expected_mass_probability = np.zeros(mass_edges.size - 1, dtype=np.float64)
+    for zi in range(marginal.shape[0]):
+        for mi in range(marginal.shape[1]):
+            cell_weight = marginal[zi, mi] / total
+            q = quenched[z_lookup[zi], magnitude_lookup[mi]]
+            expected_quenched += cell_weight * q
+            expected_mass += cell_weight * (
+                q * class_payload["quenched"]["mass_mean"][z_lookup[zi]][magnitude_lookup[mi]]
+                + (1.0 - q)
+                * class_payload["star_forming"]["mass_mean"][z_lookup[zi]][magnitude_lookup[mi]]
+            )
+            for label, class_probability in (
+                ("quenched", q), ("star_forming", 1.0 - q),
+            ):
+                payload = class_payload[label]
+                mean = float(payload["mass_mean"][z_lookup[zi]][magnitude_lookup[mi]])
+                sigma = max(
+                    float(payload["mass_sigma"][z_lookup[zi]][magnitude_lookup[mi]]),
+                    1e-6,
+                )
+                expected_mass_probability += (
+                    cell_weight * class_probability
+                    * np.diff(ndtr((mass_edges - mean) / sigma))
+                )
+    rng = np.random.default_rng(seed)
+    flat_probability = marginal.ravel() / total
+    flat = rng.choice(flat_probability.size, size=samples, p=flat_probability)
+    z_index, magnitude_index = np.unravel_index(flat, marginal.shape)
+    coarse_z = z_lookup[z_index]
+    coarse_magnitude = magnitude_lookup[magnitude_index]
+    q_probability = quenched[coarse_z, coarse_magnitude]
+    is_quenched = rng.random(samples) < q_probability
+    mass_draw = np.empty(samples, dtype=np.float64)
+    for label, class_mask in (
+        ("quenched", is_quenched), ("star_forming", ~is_quenched),
+    ):
+        payload = class_payload[label]
+        mean = np.asarray(payload["mass_mean"])[coarse_z, coarse_magnitude]
+        sigma = np.asarray(payload["mass_sigma"])[coarse_z, coarse_magnitude]
+        mass_draw[class_mask] = rng.normal(mean[class_mask], sigma[class_mask])
+    sampled_redshift = np.bincount(
+        z_index, minlength=marginal.shape[0],
+    ).astype(np.float64) / samples
+    sampled_mass_probability = np.histogram(mass_draw, bins=mass_edges)[0] / samples
+    quenched_error = abs(float(np.mean(is_quenched)) - expected_quenched)
+    mass_error = abs(float(np.mean(mass_draw)) - expected_mass) / max(
+        abs(expected_mass), 1.0,
+    )
+    redshift_marginal_error = float(np.max(np.abs(
+        sampled_redshift - expected_redshift,
+    )))
+    mass_marginal_error = float(np.max(np.abs(
+        sampled_mass_probability - expected_mass_probability,
+    )))
+    maximum_error = max(
+        quenched_error, mass_error, redshift_marginal_error,
+        mass_marginal_error,
+    )
+    return {
+        "samples": int(samples),
+        "seed": int(seed),
+        "expected_quenched_fraction": expected_quenched,
+        "sampled_quenched_fraction": float(np.mean(is_quenched)),
+        "expected_mean_logmass": expected_mass,
+        "sampled_mean_logmass": float(np.mean(mass_draw)),
+        "quenched_fraction_error": quenched_error,
+        "mean_logmass_fractional_error": mass_error,
+        "redshift_marginal_maximum_error": redshift_marginal_error,
+        "mass_marginal_maximum_error": mass_marginal_error,
+        "redshift_expected_probability": expected_redshift.tolist(),
+        "redshift_sampled_probability": sampled_redshift.tolist(),
+        "mass_edges": mass_edges.tolist(),
+        "mass_expected_probability": expected_mass_probability.tolist(),
+        "mass_sampled_probability": sampled_mass_probability.tolist(),
+        "maximum_error": maximum_error,
+        "valid": maximum_error <= 0.02,
     }
 
 

@@ -4,6 +4,7 @@ import csv
 import json
 
 import numpy as np
+import pytest
 from astropy.io import fits
 
 from scripts import fasrc_extract_cosmos_population as mod
@@ -14,7 +15,9 @@ def _table(columns: dict[str, np.ndarray], name: str) -> fits.BinTableHDU:
     cols = []
     for key, values in columns.items():
         values = np.asarray(values)
-        fmt = "K" if values.dtype.kind in "iu" else "D"
+        width = values.shape[1] if values.ndim == 2 else 1
+        base = "K" if values.dtype.kind in "iu" else "D"
+        fmt = f"{width}{base}" if width > 1 else base
         cols.append(fits.Column(name=key, format=fmt, array=values))
     return fits.BinTableHDU.from_columns(cols, name=name)
 
@@ -34,6 +37,10 @@ def _tiny_catalog(path) -> None:
             "mag_model_uvista-j": [21.7, 23.7, 22.7, 24.7, 26.7],
             "mag_model_uvista-h": [21.6, 23.6, 22.6, 24.6, 26.6],
             "mag_auto_hst-f814w": [22.1, 24.1, 23.1, 25.1, 27.1],
+            "mag_aper_hst-f814w": np.asarray([
+                np.linspace(value + 0.5, value + 0.1, 5)
+                for value in [22.0, 24.0, 23.0, 25.0, 27.0]
+            ]),
         },
         "PHOTOMETRY HOTCOLD AND SE++",
     )
@@ -52,7 +59,12 @@ def _tiny_catalog(path) -> None:
         },
         "LEPHARE",
     )
-    blank = _table({"unused": np.zeros(n)}, "SE++APER")
+    blank = _table({
+        "mag_aper_hst-f814w": np.asarray([
+            np.linspace(value + 0.8, value + 0.2, 5)
+            for value in [22.0, 24.0, 23.0, 25.0, 27.0]
+        ]),
+    }, "SE++APER")
     cigale = _table(
         {
             "mass": 10.0 ** np.array([9.0, 9.5, 8.0, 10.0, 8.5]),
@@ -117,6 +129,9 @@ def test_extract_catalog_keeps_counts_separate_from_morphology(tmp_path):
         assert np.isfinite(prior["re_combined_arcsec"][0])
         assert prior["mag_hst_f814w"][0] == 22.0
         assert prior["mag_uvista_y"][0] == 21.8
+        assert prior["mag_aper_hst_f814w"].shape == (4, 5)
+        assert prior["mag_native_aper_hst_f814w"].shape == (4, 5)
+        assert prior["mag_native_aper_hst_f814w"][0, 0] == pytest.approx(22.8)
         assert (
             prior["mag_bd_hst_f814w"][0]
             < prior["mag_bulge_hst_f814w"][0]

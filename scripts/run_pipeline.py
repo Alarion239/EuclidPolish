@@ -520,7 +520,12 @@ def step_generate(args: argparse.Namespace) -> None:
         )
 
     cfg = _generator_config_from_args(args)
-    sim = SkySimulator(cat, cfg)
+    generation_psf_sets = load_all_band_psf_sets(
+        psf_dir=args.psf_dir,
+        require_empirical=args.require_empirical_psf,
+        target_pixel_scale=Config.DEFAULT_PIXEL_SCALE,
+    )
+    sim = SkySimulator(cat, cfg, vis_psf_set=generation_psf_sets["VIS"])
     os.makedirs(args.records_dir, exist_ok=True)
 
     # One master seed for the whole step, recorded on the generation run so it
@@ -1211,6 +1216,10 @@ def _gen_init_worker(prior_path, image_size, psf_dir,
             CosmosTngPrior(prior_path, photometric_transfer=transfer)
             if prior_path and galaxy_density_arcmin2 > 0.0 else None
         )
+    psf_sets = load_all_band_psf_sets(
+        psf_dir=psf_dir, require_empirical=require_empirical_psf,
+        target_pixel_scale=Config.DEFAULT_PIXEL_SCALE,
+    )
     _W_SIM = SkySimulator(
         cat, SkySimulatorConfig(image_size=image_size,
                                       pixel_scale=Config.DEFAULT_PIXEL_SCALE,
@@ -1241,10 +1250,7 @@ def _gen_init_worker(prior_path, image_size, psf_dir,
                                       lens_density_arcmin2=lens_density_arcmin2,
                                       lens_sigma_v_min_kms=lens_sigma_v_min_kms,
                                       lens_sigma_v_max_kms=lens_sigma_v_max_kms),
-    )
-    psf_sets = load_all_band_psf_sets(
-        psf_dir=psf_dir, require_empirical=require_empirical_psf,
-        target_pixel_scale=Config.DEFAULT_PIXEL_SCALE,
+        vis_psf_set=psf_sets["VIS"],
     )
     _W_FWD = ObservationSimulator(
         psf_sets_by_band=psf_sets,

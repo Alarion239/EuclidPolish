@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+import math
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
+from scipy.special import ndtr, ndtri
 
 from euclid_polish.config import Config
 from euclid_polish.photometry import ab_mag_to_electrons
@@ -23,6 +25,7 @@ from euclid_polish.population.joint_galaxy import (
     latent_population_cube,
     tng_draw_population_cube,
 )
+from euclid_polish.population.magnitude_law import StraightMagnitudeLaw
 
 # This is an explicit project calibration choice, not a TNG mass correction.
 # It is used only to keep quenched and star-forming morphology donors separate
@@ -44,7 +47,10 @@ class CosmosTngDraw:
     imputed_size: bool
     brightness_transfer: str
     mass_quantile: float = float("nan")
+    ssfr_quantile: float = float("nan")
     activity_class: str = "unknown"
+    logssfr: float = float("nan")
+    physical_model_fingerprint: str = ""
 
 
 @dataclass(frozen=True)
@@ -125,6 +131,48 @@ def conditional_mass_quantiles(
     return result
 
 
+def conditional_ssfr_quantiles(
+    logssfr: np.ndarray,
+    activity_class: np.ndarray,
+    *,
+    zero_sfr: np.ndarray | None = None,
+) -> np.ndarray:
+    """Within-class sSFR ranks with exact-zero SFR treated as censored low.
+
+    TNG records genuinely zero SFR for some donors.  Those objects have no
+    finite logarithmic sSFR, so they share the midpoint of a lowest-rank point
+    mass instead of receiving an invented logarithmic value.
+    """
+    ssfr = np.asarray(logssfr, dtype=float)
+    classes = np.asarray(activity_class).astype(str)
+    zeros = (
+        np.zeros(ssfr.shape, dtype=bool)
+        if zero_sfr is None else np.asarray(zero_sfr, dtype=bool)
+    )
+    if ssfr.ndim != 1 or classes.shape != ssfr.shape or zeros.shape != ssfr.shape:
+        raise ValueError("sSFR, activity, and zero-SFR arrays must be aligned")
+    if np.any(~zeros & ~np.isfinite(ssfr)):
+        raise ValueError("non-zero SFR donors require finite logarithmic sSFR")
+    result = np.full(ssfr.shape, np.nan, dtype=np.float64)
+    for label in np.unique(classes):
+        indices = np.flatnonzero(classes == label)
+        class_zeros = zeros[indices]
+        n_total = indices.size
+        n_zero = int(np.sum(class_zeros))
+        if n_zero:
+            result[indices[class_zeros]] = n_zero / (2.0 * n_total)
+        finite_indices = indices[~class_zeros]
+        if finite_indices.size:
+            values = ssfr[finite_indices]
+            ordered = np.sort(values, kind="mergesort")
+            left = np.searchsorted(ordered, values, side="left")
+            right = np.searchsorted(ordered, values, side="right")
+            result[finite_indices] = (
+                2.0 * n_zero + left + right
+            ) / (2.0 * n_total)
+    return result
+
+
 def effective_sample_size(weights: np.ndarray) -> float:
     """Effective categorical donor count, ``1 / sum(p_j**2)``."""
     array = np.asarray(weights, dtype=float)
@@ -184,6 +232,71 @@ def quantile_transport_weights(
     probabilities = weights / total
     return probabilities, float(selected_bandwidth), effective_sample_size(
         probabilities
+    )
+
+
+def joint_quantile_transport_weights(
+    donor_mass_quantiles: np.ndarray,
+    donor_ssfr_quantiles: np.ndarray,
+    target_mass_quantile: float,
+    target_ssfr_quantile: float,
+    *,
+    mass_bandwidth: float,
+    ssfr_bandwidth: float,
+    minimum_effective_donors: int = MORPHOLOGY_MIN_EFFECTIVE_DONORS,
+    balance_weights: np.ndarray | None = None,
+) -> tuple[np.ndarray, float, float, float]:
+    """Two-dimensional mass-sSFR rank transport with a diversity floor."""
+    mass = np.asarray(donor_mass_quantiles, dtype=float)
+    ssfr = np.asarray(donor_ssfr_quantiles, dtype=float)
+    target_mass = float(target_mass_quantile)
+    target_ssfr = float(target_ssfr_quantile)
+    initial_mass = float(mass_bandwidth)
+    initial_ssfr = float(ssfr_bandwidth)
+    if (
+        mass.ndim != 1 or not mass.size or ssfr.shape != mass.shape
+        or not np.isfinite(mass).all() or not np.isfinite(ssfr).all()
+        or not np.isfinite(target_mass) or not 0.0 <= target_mass <= 1.0
+        or not np.isfinite(target_ssfr) or not 0.0 <= target_ssfr <= 1.0
+        or not np.isfinite(initial_mass) or initial_mass <= 0.0
+        or not np.isfinite(initial_ssfr) or initial_ssfr <= 0.0
+    ):
+        raise ValueError("invalid joint morphology quantile-transport inputs")
+    if balance_weights is None:
+        balance = np.ones(mass.size, dtype=np.float64)
+    else:
+        balance = np.asarray(balance_weights, dtype=float)
+        if (
+            balance.shape != mass.shape or not np.isfinite(balance).all()
+            or np.any(balance <= 0.0)
+        ):
+            raise ValueError("invalid morphology donor balance weights")
+
+    required = min(max(1, int(minimum_effective_donors)), mass.size)
+    scale = 1.0
+    for _ in range(64):
+        used_mass = min(4.0, initial_mass * scale)
+        used_ssfr = min(4.0, initial_ssfr * scale)
+        distance2 = (
+            ((mass - target_mass) / used_mass) ** 2
+            + ((ssfr - target_ssfr) / used_ssfr) ** 2
+        )
+        weights = np.exp(-0.5 * distance2) * balance
+        effective = effective_sample_size(weights)
+        if effective >= required - 1e-9 or (
+            used_mass >= 4.0 and used_ssfr >= 4.0
+        ):
+            break
+        scale *= 1.25
+    total = float(np.sum(weights))
+    if not np.isfinite(total) or total <= 0.0:
+        raise ValueError("joint morphology quantile transport has zero probability")
+    probabilities = weights / total
+    return (
+        probabilities,
+        float(used_mass),
+        float(used_ssfr),
+        effective_sample_size(probabilities),
     )
 
 
@@ -364,6 +477,9 @@ class CosmosTngPrior:
         self.mass_quantile = conditional_mass_quantiles(
             self.mass, self.activity_class,
         )
+        self.ssfr_quantile = conditional_ssfr_quantiles(
+            self.logssfr, self.activity_class,
+        )
 
     def __len__(self) -> int:
         return len(self.f814w)
@@ -416,7 +532,9 @@ class CosmosTngPrior:
             imputed_size=False,
             brightness_transfer=self.brightness_transfer.source,
             mass_quantile=float(self.mass_quantile[i]),
+            ssfr_quantile=float(self.ssfr_quantile[i]),
             activity_class=str(self.activity_class[i]),
+            logssfr=float(self.logssfr[i]),
         )
 
     def proxy_logmass(self, quantile: float, activity_class: str) -> float:
@@ -430,19 +548,19 @@ class CosmosTngPrior:
 
 
 class JointGalaxyPopulationPrior:
-    """Sample the activated analytical ``p(z, m_VIS, R_e)`` TNG target.
+    """Sample geometry first, then an independent straight brightness law.
 
-    This is deliberately condition-free with respect to morphology: redshift,
-    true VIS magnitude, and angular half-light radius come from the fitted
-    joint population, while the simulator assigns a diversity-balanced random
-    TNG atlas donor.  Random morphology is an explicit model choice, never a
-    fallback for a missing empirical row.
+    Version 3 marginalizes the former joint cube over brightness for geometry:
+    first ``R_e``, then ``z | R_e``. PHZ physical state is likewise marginalized
+    over the old brightness axis. The Q1 2FWHM brightness is drawn independently
+    only after the simulator has resized the selected TNG donor.
     """
 
     morphology_mode = "balanced_random_tng_atlas"
 
     def __init__(self, payload: dict):
-        if payload.get("version") != 1:
+        version = payload.get("version")
+        if version != 3:
             raise ValueError("joint galaxy population has an unsupported version")
         if payload.get("kind") != "joint_analytical_tng_draw":
             raise ValueError("joint galaxy population has the wrong kind")
@@ -464,29 +582,57 @@ class JointGalaxyPopulationPrior:
             lf_fit = SchechterEvolutionFit(**luminosity)
             size_fit = SizeEvolutionFit(**size)
             response_fit = EuclidResponseFit(**response)
-            expected_density = float(
-                payload["generation"]["surface_density_arcmin2"]
+            magnitude_law = StraightMagnitudeLaw.from_payload(
+                payload["magnitude_law"]
             )
+            expected_density = float(payload["generation"]["surface_density_arcmin2"])
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError("joint galaxy population model is incomplete") from exc
         draw = tng_draw_population_cube(
             latent_population_cube(lf_fit, size_fit), response_fit,
         )
         density = np.asarray(draw["density"], dtype=np.float64)
+        self._physical_conditionals: dict | None = None
+        if payload.get("physical_conditionals") is not None:
+            correction = payload.get("phz_redshift_correction") or {}
+            factor = np.asarray(correction.get("factor"), dtype=np.float64)
+            if factor.shape != density.shape[:2]:
+                raise ValueError("PHZ redshift correction shape is invalid")
+            if not np.isfinite(factor).all() or np.any(factor <= 0.0):
+                raise ValueError("PHZ redshift correction contains invalid factors")
+            density *= factor[:, :, None]
+            physical = payload.get("physical_conditionals")
+            if not isinstance(physical, dict) or physical.get("version") != 1:
+                raise ValueError("PHZ physical conditionals are missing")
+            self._physical_conditionals = physical
+            self.morphology_mode = "phz_mass_ssfr_activity_transport"
         if (
             density.ndim != 3 or not np.isfinite(density).all()
             or np.any(density < 0.0) or float(np.sum(density)) <= 0.0
         ):
             raise ValueError("joint galaxy population density cube is invalid")
-        realised_density = float(np.sum(density))
-        if not np.isclose(realised_density, expected_density, rtol=2e-6, atol=1e-9):
+        if not np.isclose(
+            magnitude_law.integrated_density(), expected_density,
+            rtol=2e-8, atol=1e-9,
+        ):
             raise ValueError(
                 "joint galaxy population density does not match its activation"
             )
-        self.surface_density_arcmin2 = realised_density
+        self.magnitude_law = magnitude_law
+        self.surface_density_arcmin2 = magnitude_law.integrated_density()
         self._shape = density.shape
-        self._cdf = np.cumsum(density.ravel())
-        self._cdf /= self._cdf[-1]
+        self._density = density
+        radius_weight = np.sum(density, axis=(0, 1))
+        self._radius_cdf = np.cumsum(radius_weight)
+        self._radius_cdf /= self._radius_cdf[-1]
+        z_radius_weight = np.sum(density, axis=1)
+        self._z_cdf_by_radius = np.cumsum(z_radius_weight, axis=0)
+        totals = self._z_cdf_by_radius[-1, :]
+        self._z_cdf_by_radius = np.divide(
+            self._z_cdf_by_radius, totals[None, :],
+            out=np.zeros_like(self._z_cdf_by_radius),
+            where=totals[None, :] > 0.0,
+        )
         self._z_edges = np.asarray(draw["z_edges"], dtype=np.float64)
         self._magnitude_edges = np.asarray(
             draw["vis_magnitude_edges"], dtype=np.float64,
@@ -495,45 +641,138 @@ class JointGalaxyPopulationPrior:
             draw["log_radius_edges"], dtype=np.float64,
         )
 
-    def __len__(self) -> int:
-        return int(self._cdf.size)
-
-    def sample(self, rng: np.random.Generator) -> CosmosTngDraw:
-        flat_index = min(
-            int(np.searchsorted(self._cdf, rng.random(), side="right")),
-            self._cdf.size - 1,
+    def _sample_physical_marginalized(
+        self, z_index: int, radius_index: int, rng: np.random.Generator,
+    ) -> tuple[float, float, float, float, str]:
+        physical = self._physical_conditionals
+        if physical is None:
+            return (
+                float("nan"), float("nan"), float("nan"), float("nan"),
+                "unconditioned",
+            )
+        magnitude_weight = np.asarray(
+            self._density[z_index, :, radius_index], dtype=np.float64,
         )
-        z_index, magnitude_index, radius_index = np.unravel_index(
-            flat_index, self._shape,
+        if float(np.sum(magnitude_weight)) <= 0.0:
+            raise ValueError("geometry cell has no brightness-marginal support")
+        magnitude_weight /= np.sum(magnitude_weight)
+        quenched = np.asarray(
+            physical["quenched_fraction"][z_index], dtype=np.float64,
+        )
+        if quenched.shape != magnitude_weight.shape:
+            raise ValueError("PHZ physical brightness axis is misaligned")
+        quenched_probability = float(np.sum(magnitude_weight * quenched))
+        label = "quenched" if rng.random() < quenched_probability else "star_forming"
+        class_model = physical["classes"][label]
+        class_probability = quenched if label == "quenched" else 1.0 - quenched
+        conditional_weight = magnitude_weight * class_probability
+        total = float(np.sum(conditional_weight))
+        if total <= 0.0:
+            raise ValueError(f"geometry cell has no {label} PHZ support")
+        conditional_weight /= total
+        mi = int(rng.choice(conditional_weight.size, p=conditional_weight))
+        mass_mean = float(class_model["mass_mean"][z_index][mi])
+        mass_sigma = float(class_model["mass_sigma"][z_index][mi])
+        ssfr_mean = float(class_model["ssfr_mean"][z_index][mi])
+        ssfr_sigma = float(class_model["ssfr_sigma"][z_index][mi])
+        logmass = float(rng.normal(mass_mean, mass_sigma))
+        global_mean = float(class_model["global_mass_mean"])
+        global_sigma = max(float(class_model["global_mass_sigma"]), 1e-6)
+        mass_quantile = 0.5 * (
+            1.0 + math.erf((logmass - global_mean) / (global_sigma * math.sqrt(2.0)))
+        )
+        ssfr_sigma = max(ssfr_sigma, 1e-6)
+        threshold_cdf = float(ndtr(
+            (MORPHOLOGY_ACTIVITY_THRESHOLD_LOGSSFR - ssfr_mean) / ssfr_sigma
+        ))
+        lower_cdf, upper_cdf = (
+            (0.0, threshold_cdf)
+            if label == "quenched" else (threshold_cdf, 1.0)
+        )
+        if upper_cdf - lower_cdf <= 1e-12:
+            raise ValueError(
+                f"physical sSFR model has no support for {label!r} class"
+            )
+        ssfr_quantile = float(rng.random())
+        sampled_cdf = lower_cdf + ssfr_quantile * (upper_cdf - lower_cdf)
+        sampled_cdf = float(np.clip(sampled_cdf, 1e-12, 1.0 - 1e-12))
+        logssfr = float(ssfr_mean + ssfr_sigma * ndtri(sampled_cdf))
+        return (
+            logmass,
+            logssfr,
+            float(np.clip(mass_quantile, 0.0, 1.0)),
+            float(np.clip(ssfr_quantile, 0.0, 1.0)),
+            label,
+        )
+
+    def proxy_logmass(self, quantile: float, activity_class: str) -> float:
+        if self._physical_conditionals is None:
+            return float("nan")
+        model = self._physical_conditionals["classes"][str(activity_class)]
+        # This value is provenance-only; the selected TNG donor still retains
+        # its native mass while the target population mass is saved separately.
+        return float(model["global_mass_mean"])
+
+    def __len__(self) -> int:
+        return int(self._density.size)
+
+    def sample_geometry(self, rng: np.random.Generator) -> CosmosTngDraw:
+        """Draw ``R_e`` first and then ``z | R_e``; brightness remains unset."""
+        radius_index = min(
+            int(np.searchsorted(self._radius_cdf, rng.random(), side="right")),
+            self._radius_cdf.size - 1,
+        )
+        z_cdf = self._z_cdf_by_radius[:, radius_index]
+        z_index = min(
+            int(np.searchsorted(z_cdf, rng.random(), side="right")),
+            z_cdf.size - 1,
         )
         redshift = float(rng.uniform(
             self._z_edges[z_index], self._z_edges[z_index + 1],
-        ))
-        magnitude = float(rng.uniform(
-            self._magnitude_edges[magnitude_index],
-            self._magnitude_edges[magnitude_index + 1],
         ))
         log_radius = float(rng.uniform(
             self._log_radius_edges[radius_index],
             self._log_radius_edges[radius_index + 1],
         ))
+        (
+            logmass, logssfr, mass_quantile, ssfr_quantile, activity_class,
+        ) = self._sample_physical_marginalized(z_index, radius_index, rng)
         return CosmosTngDraw(
             catalog_id=(
                 f"joint:{self.fingerprint[:12]}:{z_index}:"
-                f"{magnitude_index}:{radius_index}"
+                f"marginal:{radius_index}"
             ),
             mag_hst_f814w=float("nan"),
-            target_vis_mag=magnitude,
-            target_vis_flux_e=float(ab_mag_to_electrons(
-                magnitude, Config.get_band("VIS")
-            )),
+            target_vis_mag=float("nan"),
+            target_vis_flux_e=float("nan"),
             z=redshift,
-            logmass=float("nan"),
+            logmass=logmass,
             re_arcsec=float(10.0 ** log_radius),
             imputed_size=False,
             brightness_transfer=(
                 f"joint_analytical_population:{self.fingerprint}:activated"
             ),
-            mass_quantile=float("nan"),
-            activity_class="unconditioned",
+            mass_quantile=mass_quantile,
+            ssfr_quantile=ssfr_quantile,
+            activity_class=activity_class,
+            logssfr=logssfr,
+            physical_model_fingerprint=(
+                self.fingerprint if self._physical_conditionals is not None else ""
+            ),
+        )
+
+    def sample_brightness(self, rng: np.random.Generator) -> tuple[float, float]:
+        """Draw independent goal VIS 2FWHM magnitude and aperture electrons."""
+        magnitude = self.magnitude_law.sample(rng)
+        return (
+            magnitude,
+            float(ab_mag_to_electrons(magnitude, Config.get_band("VIS"))),
+        )
+
+    def sample(self, rng: np.random.Generator) -> CosmosTngDraw:
+        """Compatibility draw; staged generation uses the two methods above."""
+        geometry = self.sample_geometry(rng)
+        magnitude, flux = self.sample_brightness(rng)
+        return replace(
+            geometry, target_vis_mag=magnitude, target_vis_flux_e=flux,
         )

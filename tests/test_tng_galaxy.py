@@ -25,8 +25,10 @@ from euclid_polish.skirt.image import (
     rotate_quarter,
 )
 from euclid_polish.sky.generation.tng_galaxy import (
+    circularize_psf_kernel,
     list_tng_galaxies,
     load_tng_frame,
+    normalise_tng_to_vis_2fwhm,
     prepare_tng_galaxy,
     sample_tng_stamp,
     tng_fits_path,
@@ -89,6 +91,41 @@ def test_mjy_to_electrons_array_is_float32():
     assert out.dtype == np.float32
     assert out[0, 0] == pytest.approx(
         mjy_per_sr_to_electrons_factor(BAND, HR_SCALE), rel=1e-6)
+
+
+def test_2fwhm_normalisation_uses_one_scale_and_preserves_colours():
+    yy, xx = np.indices((81, 81), dtype=np.float64)
+    radius2 = (yy - 40.0) ** 2 + (xx - 40.0) ** 2
+    vis = np.exp(-0.5 * radius2 / 6.0 ** 2).astype(np.float32)
+    stamp = np.stack([vis, 2.0 * vis, 3.0 * vis, 4.0 * vis], axis=-1)
+    psf = np.exp(-0.5 * radius2 / 2.0 ** 2).astype(np.float32)
+    original_totals = np.sum(stamp, axis=(0, 1), dtype=np.float64)
+
+    scaled, meta = normalise_tng_to_vis_2fwhm(
+        stamp.copy(), {}, target_flux_e=1234.5,
+        psf_kernel=psf, psf_fwhm_arcsec=0.2,
+        pixel_scale_arcsec=0.05,
+    )
+
+    totals = np.sum(scaled, axis=(0, 1), dtype=np.float64)
+    np.testing.assert_allclose(
+        totals / totals[0], original_totals / original_totals[0], rtol=2e-6,
+    )
+    assert meta["target_vis_2fwhm_flux_e"] == pytest.approx(1234.5)
+    assert meta["achieved_vis_2fwhm_flux_e"] == pytest.approx(1234.5)
+    assert meta["aperture_radius_arcsec"] == pytest.approx(0.2)
+    assert meta["aperture_diameter_arcsec"] == pytest.approx(0.4)
+    assert meta["shared_photometric_scale"] > 0.0
+    assert circularize_psf_kernel(psf).sum() == pytest.approx(1.0)
+
+
+def test_2fwhm_normalisation_rejects_zero_aperture_stamp():
+    with pytest.raises(ValueError, match="no positive VIS 2FWHM"):
+        normalise_tng_to_vis_2fwhm(
+            np.zeros((21, 21, 4), np.float32), {}, target_flux_e=1.0,
+            psf_kernel=np.ones((5, 5), np.float32),
+            psf_fwhm_arcsec=0.2,
+        )
 
 
 # ------------------------------- rebin -----------------------------------

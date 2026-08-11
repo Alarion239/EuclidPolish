@@ -11,6 +11,15 @@
   <a class="chip" data-group="kind" data-value="dirty_analytic"
      title="sum_rebin(A ⊛ clean_HR) — live: bare analytic differential kernel, no CNN, no noise. Use this to isolate ringing artifacts from the kernel itself.">dirty (analytic A)</a>
   <a class="chip" data-group="kind" data-value="hr">HR target (VIS)</a>
+  <a class="chip" data-group="kind" data-value="bhr"
+     title="HR target convolved with the configured Gaussian target PSF">BHR (blurred HR)</a>
+  <span class="toolbar-label">Target PSF</span>
+  <label class="cv-slider" title="Gaussian FWHM applied to BHR; selectable from 0 to 2 arcsec">
+    <span>BHR FWHM</span>
+    <input id="bhr-fwhm" class="cv-range" type="range" min="0"
+           max="{{ bhr_max_fwhm }}" step="0.005" value="{{ bhr_default_fwhm }}">
+    <span id="bhr-fwhm-value" class="cv-val">{{ '%.3f'|format(bhr_default_fwhm) }}″</span>
+  </label>
   <span class="toolbar-label">Subset</span>
   <a class="chip" data-group="subset" data-value="train">train</a>
   <a class="chip" data-group="subset" data-value="validate">validate</a>
@@ -109,6 +118,8 @@ let totals = {
   hr_train: 0,    hr_validate: 0,
 };
 let curIdx = 0;
+let bhrFwhm = {{ bhr_default_fwhm }};
+let bhrRefreshTimer = null;
 
 function maxIdx() {
   const k = polishUI.viz.get("kind");
@@ -122,6 +133,10 @@ function maxIdx() {
     const ns = [totals[`clean_${s}`], totals[`dirty_${s}`], totals[`hr_${s}`]]
       .map(v => (v == null ? 0 : v));
     return Math.max(0, Math.min(...ns) - 1);
+  }
+  // BHR is computed live from the raw `hr` shard.
+  if (k === "bhr") {
+    return Math.max(0, (totals[`hr_${s}`] || 0) - 1);
   }
   // dirty_analytic is computed live from the `clean` shard, so its
   // navigation cap matches whichever clean record exists locally —
@@ -171,7 +186,8 @@ function _updateFitsLink(sel) {
   // Carry the band chip so single-band selections come down as 2-D
   // (H, W) images; color → full 4-band cube (server default).
   a.href = `/view/hst-pair.fits?subset=${sel.subset}` +
-           `&kind=${sel.kind}&band=${sel.band}&i=${sel.i}`;
+           `&kind=${sel.kind}&band=${sel.band}&i=${sel.i}` +
+           `&bhr_fwhm_arcsec=${bhrFwhm}`;
 }
 
 polishUI.viz.bind({
@@ -181,7 +197,7 @@ polishUI.viz.bind({
   buildUrl:  (sel) => {
     _updateFitsLink(sel);
     return `/view/hst-pair?subset=${sel.subset}&kind=${sel.kind}` +
-           `&band=${sel.band}&i=${sel.i}`;
+           `&band=${sel.band}&i=${sel.i}&bhr_fwhm_arcsec=${bhrFwhm}`;
   },
   // Default to validate because that's what the Sync button pulls by
   // default — train is a separate (slow) opt-in.
@@ -203,6 +219,12 @@ document.getElementById("idx-prev").addEventListener("click",
   () => setIdx(curIdx - 1));
 document.getElementById("idx-next").addEventListener("click",
   () => setIdx(curIdx + 1));
+document.getElementById("bhr-fwhm").addEventListener("input", (event) => {
+  bhrFwhm = Number(event.target.value);
+  document.getElementById("bhr-fwhm-value").textContent = `${bhrFwhm.toFixed(3)}″`;
+  clearTimeout(bhrRefreshTimer);
+  bhrRefreshTimer = setTimeout(() => polishUI.viz.refresh(), 90);
+});
 
 document.getElementById("sync-form").addEventListener("submit", async (e) => {
   e.preventDefault();

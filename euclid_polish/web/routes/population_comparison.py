@@ -36,12 +36,15 @@ from euclid_polish.web.helpers.publication_figures import (
     render_population_atlas,
     render_star_population_calibration,
 )
+from euclid_polish.web.helpers.q1_star_counts import query_q1_phz_star_counts
 from euclid_polish.web.helpers.star_population import (
     fit_star_population,
-    query_gaia_same_cones,
+    query_gaia_field_cones,
 )
 from euclid_polish.web.jobs import REGISTRY
 from euclid_polish.web.remote import ensure_ssh_connected
+
+MAX_POPULATION_CONES = 24
 
 
 def _run_analysis_script(
@@ -306,9 +309,10 @@ def register(app):
             ))
         except (TypeError, ValueError):
             return jsonify({"ok": False, "error": "invalid cone settings"}), 400
-        if not 1 <= count <= 12 or not 0 < radius <= 30:
+        if not 1 <= count <= MAX_POPULATION_CONES or not 0 < radius <= 30:
             return jsonify({"ok": False, "error": (
-                "count must be 1–12 and radius_arcmin must be in (0, 30]"
+                f"count must be 1–{MAX_POPULATION_CONES} and "
+                "radius_arcmin must be in (0, 30]"
             )}), 400
 
         def run(cap):
@@ -406,30 +410,45 @@ def register(app):
         "/api/population-comparison/query-gaia-stars", methods=["POST"]
     )
     def api_population_comparison_query_gaia_stars():
+        catalog = euclid_session.catalog()
+        if catalog is None:
+            return jsonify({"ok": False, "error": (
+                "Log in to the Euclid archive on the Catalog page first."
+            )}), 400
         if not availability().get("euclid_catalog", {}).get("cached"):
             return jsonify({"ok": False, "error": (
                 "Query and cache the Euclid cones first."
             )}), 400
 
         def run(cap):
-            meta = query_gaia_same_cones(
+            q1 = query_q1_phz_star_counts(
+                relogin=catalog.relogin,
                 progress=lambda done, total, label: cap.tick(
                     done, total + 1, label
+                ),
+            )
+            q1_bins = len(q1["bins"])
+            meta = query_gaia_field_cones(
+                progress=lambda done, total, label: cap.tick(
+                    q1_bins + done, q1_bins + total + 1, label
                 )
             )
-            cap.tick(meta["cone_count"], meta["cone_count"] + 1, "fit star prior")
+            cap.tick(q1_bins + meta["cone_count"],
+                     q1_bins + meta["cone_count"] + 1, "fit star prior")
             fit = fit_star_population()
-            cap.tick(meta["cone_count"] + 1, meta["cone_count"] + 1, "star prior ready")
+            cap.tick(q1_bins + meta["cone_count"] + 1,
+                     q1_bins + meta["cone_count"] + 1, "star prior ready")
             cap.write(
-                f"cached {meta['rows']} Gaia DR3 sources; "
+                f"Q1 PHZ expected stars {q1['expected_stars']:.1f}; "
+                f"cached {meta['rows']} Gaia DR3 color sources; "
                 f"matched {fit['euclid_mapping']['matched_stars']} Euclid stars\n"
             )
-            return {"gaia": meta, "fit": fit}
+            return {"q1_phz_counts": q1, "gaia_colors": meta, "fit": fit}
 
         return jsonify({
             "ok": True,
             "job_id": REGISTRY.spawn(
-                label="population comparison: Gaia + stellar prior",
+                label="population comparison: Q1 PHZ + stellar colors",
                 target=run,
             ),
         })

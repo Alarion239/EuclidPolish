@@ -455,7 +455,7 @@ export default function EnsemblePage() {
   const navigate = useNavigate();
   const { mode: modeParam } = useParams<{ mode: string }>();
   const mode: Mode = modeParam === "starless" ? "starless" : "starfull";
-  const [targetFwhm, setTargetFwhm] = useState("0.05");
+  const [targetFwhm, setTargetFwhm] = useState("0.66");
   const setMode = (m: Mode) => navigate(`/ensemble/${m}`);
   const starless = mode === "starless";
   const jointCombinerKind: CombinerModelKind = "raw_incremental_minmeanmax_rbf";
@@ -1450,7 +1450,7 @@ function PredictiveAxesCard(
 export function CombinerCard(
   { comb, loading, mode, theme, fitJob, onFit, evalReady,
     fitUrl = "/ensemble/combiner/fit", title, modelKind: controlledKind,
-    targetFwhm = "0.05" }:
+    targetFwhm = "0.66" }:
   { comb: Combiner | null; loading: boolean; mode: string; theme: string; fitJob: ReturnType<typeof useJob>; onFit: () => void; evalReady: boolean;
     fitUrl?: string; title?: string; modelKind?: CombinerModelKind; targetFwhm?: string },
 ) {

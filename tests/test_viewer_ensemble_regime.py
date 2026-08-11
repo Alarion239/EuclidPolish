@@ -19,32 +19,42 @@ def test_starless_viewer_advertises_clean_goal(tmp_path, monkeypatch):
     meta = vd._ensemble_meta({"mode": "starless"})
 
     goal = next(tier for tier in meta["tiers"] if tier["key"] == "hr")
+    blurred_goal = next(tier for tier in meta["tiers"] if tier["key"] == "bhr")
     assert goal["label"] == "Clean (starless goal)"
-    assert "hr" not in {
+    assert blurred_goal["label"] == "BHR (blurred Clean)"
+    assert {"hr", "bhr"}.isdisjoint({
         tier["key"] for tier in vd._ensemble_meta({"mode": "starfull"})["tiers"]
-    }
+    })
 
 
-def test_ensemble_goal_cube_uses_regime_target(monkeypatch):
-    seen: list[tuple[str, int, str, int]] = []
+def test_ensemble_goal_cubes_use_raw_and_blurred_regime_target(monkeypatch):
+    seen: list[tuple[str, int, str, int, bool]] = []
     monkeypatch.setattr(vd, "_ensemble_manifest", _manifest)
 
-    def record_cube(sub: str, n_read: int, kind: str, rec_index: int):
-        seen.append((sub, n_read, kind, rec_index))
+    def record_cube(sub: str, n_read: int, kind: str, rec_index: int,
+                    *, blurred_fwhm_arcsec: float | None = None):
+        seen.append((sub, n_read, kind, rec_index, blurred_fwhm_arcsec))
         return np.zeros((2, 2, 4), np.float32), 0.05
 
     monkeypatch.setattr(vd, "_ensemble_record_cube", record_cube)
 
     _clean, clean_info = vd._ensemble_cube(
         0, "hr", {"mode": "starless"})
+    _blurred_clean, blurred_clean_info = vd._ensemble_cube(
+        0, "bhr", {"mode": "starless"})
     _hr, hr_info = vd._ensemble_cube(0, "hr", {"mode": "starfull"})
+    _bhr, bhr_info = vd._ensemble_cube(0, "bhr", {"mode": "starfull"})
 
     assert seen == [
-        ("test", 4, "clean", 3),
-        ("test", 4, "hr", 3),
+        ("test", 4, "clean", 3, None),
+        ("test", 4, "clean", 3, 0.66),
+        ("test", 4, "hr", 3, None),
+        ("test", 4, "hr", 3, 0.66),
     ]
     assert clean_info["label"].startswith("Clean (starless goal)")
+    assert blurred_clean_info["label"].startswith("BHR (blurred Clean)")
     assert hr_info["label"].startswith("HR")
+    assert bhr_info["label"].startswith("BHR (blurred HR)")
 
 
 def test_ensemble_sr_tier_serves_primary_combiner(tmp_path, monkeypatch):

@@ -68,6 +68,44 @@ def test_eval_cube_serves_sr_lowercase(tmp_path, monkeypatch):
     assert cube.shape[:2] == (16, 16)
 
 
+def test_eval_viewer_derives_bhr_from_hr(tmp_path, monkeypatch):
+    d = tmp_path / "obj_a"
+    d.mkdir()
+    impulse = np.zeros((4, 16, 16), np.float32)
+    impulse[0, 8, 8] = 1.0
+    fits.PrimaryHDU(impulse).writeto(d / "HR.fits")
+    monkeypatch.setattr(vd.Config, "EVAL_RESULTS_DIR", str(tmp_path))
+    monkeypatch.setattr(vd, "_eval_objects", lambda: [{
+        "subdir": "obj_a", "label": "a", "grade": "A",
+        "tiers": ["HR", "BHR"], "plens": {},
+        "pca_n": 0, "pca_amps": []}])
+
+    meta = vd._eval_meta({})
+    hr, _ = vd._eval_cube(0, "HR", {})
+    bhr, info = vd._eval_cube(0, "BHR", {})
+    zero_blur, _ = vd._eval_cube(0, "BHR", {"bhr_fwhm_arcsec": "0"})
+
+    assert [tier["key"] for tier in meta["tiers"]] == ["HR", "BHR"]
+    assert hr[8, 8, 0] == 1.0
+    assert bhr[8, 8, 0] < hr[8, 8, 0]
+    np.testing.assert_array_equal(zero_blur, hr)
+    assert "BHR (blurred HR)" in info["label"]
+
+
+def test_eval_objects_add_bhr_whenever_hr_exists(tmp_path, monkeypatch):
+    d = tmp_path / "obj_a"
+    d.mkdir()
+    fits.PrimaryHDU(np.zeros((4, 16, 16), np.float32)).writeto(d / "HR.fits")
+    (tmp_path / "manifest.csv").write_text(
+        "id,ok,out_subdir\nobj_a,true,obj_a\n", encoding="utf-8",
+    )
+    monkeypatch.setattr(vd.Config, "EVAL_RESULTS_DIR", str(tmp_path))
+
+    obj = vd._eval_objects()[0]
+
+    assert obj["tiers"] == ["HR", "BHR"]
+
+
 def test_eval_objects_advertise_morph_per_object(tmp_path, monkeypatch):
     """The morph tier must appear in each object's OWN tier list (when its
     disagreement sidecar exists) — the viewer gates tiers per object, so a

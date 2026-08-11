@@ -199,9 +199,10 @@ def parse_args(argv=None) -> argparse.Namespace:
                         "inherit the existing/source member's knee.")
     p.add_argument("--target-psf-fwhm-arcsec", type=float,
                    default=Config.TARGET_PSF_FWHM_ARCSEC,
-                   help="Gaussian FWHM applied to clean/HR training and "
-                        "evaluation targets in arcseconds. Default 0.05 "
-                        "(one HR pixel); 0 disables target smoothing.")
+                   help="Desired Gaussian PSF FWHM of PSF-free clean/HR "
+                        "training and evaluation targets in arcseconds. "
+                        "Default 0.66; 0 disables target smoothing. This "
+                        "does not change the dirty-image PSF.")
     p.add_argument("--icnr", action="store_true",
                    help="ICNR-initialise the sub-pixel (pixel-shuffle) convs "
                         "so the upsampler starts as a checkerboard-free "

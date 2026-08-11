@@ -353,6 +353,7 @@ export function mountCutoutViewer(root, opts = {}) {
   };
   let morphRaf = null;          // requestAnimationFrame id for the "morph" tier
   let paramRefreshToken = 0;    // rejects a slower, superseded PSF warp response
+  let bhrRefreshTimer = null;   // debounce server convolution while dragging
   const brightnessControls = new Map();
 
   // --- DOM scaffold --------------------------------------------------------
@@ -1552,6 +1553,30 @@ export function mountCutoutViewer(root, opts = {}) {
     notify();
   }
 
+  // Refresh one parameter-derived tier without re-fetching the raw target or
+  // any other selected frame. Used by the interactive BHR convolution slider.
+  async function refreshTier(tier) {
+    if (!state.meta || state.meta.count === 0 || !state.tiers.includes(tier)) return;
+    const fr = state.frames.find((frame) => frame.tier === tier);
+    if (!fr || !tierAvail(tier)) return;
+    const token = ++paramRefreshToken;
+    fr.frame.classList.add("cv-loading");
+    try {
+      const rec = await fetchCube(tier, state.index);
+      if (token !== paramRefreshToken) return;
+      state.shown.set(tier, rec);
+      renderInto(fr, rec);
+    } catch {
+      if (token !== paramRefreshToken) return;
+      setFrameMsg(fr, tierAvail(tier)
+        ? (state.meta.missing_tier_labels?.[tier] || "not synced yet")
+        : missingTierLabel(tier));
+    } finally {
+      if (token === paramRefreshToken) fr.frame.classList.remove("cv-loading");
+    }
+    notify();
+  }
+
   // Re-render the already-loaded cubes (slider ticks — no fetch).
   function rerender() {
     for (const fr of state.frames) {
@@ -1635,6 +1660,19 @@ export function mountCutoutViewer(root, opts = {}) {
     return el("div", { class: "cv-slider" }, [el("label", { text: label }), input, out]);
   }
 
+  function linearSlider(label, min, max, step, val, fmt, onInput) {
+    const input = el("input", {
+      type: "range", min, max, step, value: val, class: "cv-range",
+    });
+    const out = el("span", { class: "cv-val", text: fmt(val) });
+    input.addEventListener("input", () => {
+      const value = Number(input.value);
+      out.textContent = fmt(value);
+      onInput(value);
+    });
+    return el("div", { class: "cv-slider" }, [el("label", { text: label }), input, out]);
+  }
+
   function transferGroupLabel(group) {
     return group === "jwst" ? "JWST" : group === "euclid" ? "Euclid" : "";
   }
@@ -1661,6 +1699,29 @@ export function mountCutoutViewer(root, opts = {}) {
         chip("layout", "two-rows", "two rows", "place selected images across two rows"),
       );
       toolbar.append(layoutGroup);
+    }
+    const bhrControl = state.meta.bhr_fwhm_control;
+    if (bhrControl) {
+      const param = bhrControl.param || "bhr_fwhm_arcsec";
+      const fallback = Number(bhrControl.default_arcsec);
+      const current = Number(state.params[param]);
+      const value = Number.isFinite(current) ? current : fallback;
+      toolbar.append(el("span", { class: "cv-grouplabel", text: "Target PSF" }));
+      const blurGroup = el("div", { class: "cv-group cv-sliders" });
+      blurGroup.append(linearSlider(
+        "BHR FWHM",
+        Number(bhrControl.min_arcsec),
+        Number(bhrControl.max_arcsec),
+        Number(bhrControl.step_arcsec),
+        value,
+        (v) => `${v.toFixed(3)}\u2033`,
+        (v) => {
+          state.params[param] = String(Number(v.toFixed(6)));
+          clearTimeout(bhrRefreshTimer);
+          bhrRefreshTimer = setTimeout(() => refreshTier("bhr"), 90);
+        },
+      ));
+      toolbar.append(blurGroup);
     }
     for (const pc of (opts.paramControls || [])) {
       toolbar.append(el("span", { class: "cv-grouplabel", text: pc.label }));
@@ -2225,6 +2286,13 @@ export function mountCutoutViewer(root, opts = {}) {
     const r = await fetch(`/viewer/meta/${collection}?${qs}`);
     if (!r.ok) throw new Error(`meta ${r.status}`);
     state.meta = await r.json();
+    const bhrControl = state.meta.bhr_fwhm_control;
+    if (bhrControl) {
+      const param = bhrControl.param || "bhr_fwhm_arcsec";
+      if (state.params[param] == null) {
+        state.params[param] = String(Number(bhrControl.default_arcsec));
+      }
+    }
     const tierKeys = (state.meta.tiers || []).map((t) => t.key);
     // Keep only still-present, still-enabled tiers; never auto-select a
     // disabled one (e.g. SR before it's been generated).
@@ -2334,6 +2402,7 @@ export function mountCutoutViewer(root, opts = {}) {
     reload() { return loadMeta().then(show); },
     destroy() {
       paramRefreshToken++;
+      clearTimeout(bhrRefreshTimer);
       clearAllLenses();
       hoverLens.popup.remove();
       window.removeEventListener("resize", onViewportChange);

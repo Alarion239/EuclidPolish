@@ -30,7 +30,9 @@ class StaticPrior:
             imputed_size=False,
             brightness_transfer="test",
             mass_quantile=0.5,
+            ssfr_quantile=0.5,
             activity_class="star_forming",
+            logssfr=-10.0,
         )
 
     def proxy_logmass(self, quantile, activity_class):
@@ -96,9 +98,14 @@ def test_joint_population_renders_only_tng(tmp_path):
     assert all(row["catalog_id"] == "cosmos-1" for row in meta["galaxies"])
     assert all(
         row["native_tng_logmass"] == pytest.approx(10.0)
+        and row["native_tng_sfr"] == pytest.approx(1.0)
+        and row["native_tng_logssfr"] == pytest.approx(-10.0)
+        and row["native_tng_zero_sfr"] is False
         and row["morphology_proxy_logmass"] == pytest.approx(8.0)
         and row["morphology_activity_class"] == "star_forming"
         and row["morphology_effective_donors"] == pytest.approx(1.0)
+        and row["target_ssfr_quantile"] == pytest.approx(0.5)
+        and row["tng_ssfr_quantile"] == pytest.approx(0.5)
         for row in meta["galaxies"]
     )
     assert image.data.sum() > 0

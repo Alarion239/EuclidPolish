@@ -190,12 +190,11 @@ def render_population_atlas(
 def render_star_population_calibration(
     calibration: Mapping[str, Any], *, output_format: str = "png", dpi: int = 300,
 ) -> bytes:
-    """Render the active Gaia × Euclid stellar calibration as one plate.
+    """Render the active Q1 PHZ × Gaia × Euclid calibration as one plate.
 
-    The density panel shows field-to-field variation without hiding it behind
-    the fitted mean. The three colour panels separate the fitted true-colour
-    population, inferred true colours, noise-simulated colours, and raw
-    catalogue colours.
+    The density panel shows footprint-normalized PHZ stellar number counts.
+    The three colour panels separate the fitted true-colour population,
+    inferred true colours, noise-simulated colours, and raw catalogue colours.
     """
     fmt = output_format.lower()
     if fmt not in {"png", "pdf", "svg"}:
@@ -229,22 +228,19 @@ def render_star_population_calibration(
 
         ax_density = axes[0, 0]
         x_obs, y_obs = _xy(density, "observed")
-        cone_count = len(x_obs)
         x_fit, y_fit = _xy(density, "fitted")
         ax_density.plot(
             x_obs, y_obs, linestyle="none", marker="o", markersize=7,
             markerfacecolor=PAPER, markeredgecolor=INK, markeredgewidth=1.5,
-            label="probability-weighted cone", zorder=4,
+            label="Q1 PHZ probability-weighted count", zorder=4,
         )
         ax_density.plot(
             x_fit, y_fit, color=STAR_MODEL, linewidth=2.5,
-            linestyle=(0, (6, 3)), label="fitted survey mean", zorder=3,
+            linestyle=(0, (6, 3)), label="fitted generator", zorder=3,
         )
-        ax_density.set_title("Point-source density by Euclid cone", loc="left")
-        ax_density.set_xlabel("cone index")
-        ax_density.set_ylabel(str(density.get("unit") or "point sources arcmin$^{-2}$"))
-        if len(x_obs) <= 16:
-            ax_density.set_xticks(x_obs)
+        ax_density.set_title("Q1 stellar number counts", loc="left")
+        ax_density.set_xlabel(str(density.get("x_label") or "VIS PSF magnitude [AB]"))
+        ax_density.set_ylabel(str(density.get("unit") or "stars arcmin$^{-2}$ mag$^{-1}$"))
         ax_density.set_ylim(bottom=0)
         ax_density.legend(loc="lower left", frameon=False, fontsize=LEGEND_SIZE)
 
@@ -304,8 +300,9 @@ def render_star_population_calibration(
             f"{float(density_value):.2f} arcmin$^{{-2}}$"
             if density_value is not None else "—"
         )
+        provenance = calibration.get("population_provenance") or {}
         fig.suptitle(
-            "Stellar population calibration · Gaia DR3 × Euclid MER",
+            "Stellar population calibration · Q1 PHZ × Gaia DR3 × Euclid MER",
             x=0.075, y=0.985, ha="left",
             fontsize=FIGURE_TITLE_SIZE, fontweight=700, color=INK,
         )
@@ -313,7 +310,7 @@ def render_star_population_calibration(
             0.075, 0.915,
             f"$n_\\star$ = {density_text}  ·  "
             f"$N_\\mathrm{{match}}$ = {int(coverage.get('high_quality_matched_rows', 0)):,}  ·  "
-            f"$N_\\mathrm{{cone}}$ = {cone_count}",
+            f"$A_\\mathrm{{Q1}}$ = {float(provenance.get('area_deg2', 63.1)):g} deg$^2$",
             ha="left", va="center", fontsize=NOTE_SIZE, color=MUTED,
         )
         if legend_handles and legend_labels:

@@ -14,6 +14,7 @@ import numpy as np
 from scipy.ndimage import gaussian_filter1d
 
 from euclid_polish.config import Config
+from euclid_polish.population.magnitude_law import StraightMagnitudeLaw
 from euclid_polish.sky.generation.cosmos_tng_prior import (
     brightness_transfer_payload,
 )
@@ -66,7 +67,7 @@ def joint_galaxy_candidate() -> dict[str, Any] | None:
     """Return a compact generation artifact derived from the joint fit."""
     source_path = Path(Config.JOINT_GALAXY_POPULATION_FIT_PATH)
     source = _read(source_path)
-    if not source or source.get("version") != 2:
+    if not source or source.get("version") not in {2, 3}:
         return None
     if source.get("kind") != "joint_intrinsic_galaxy_population":
         return None
@@ -75,7 +76,7 @@ def joint_galaxy_candidate() -> dict[str, Any] | None:
     diagnostics = source.get("diagnostics") or {}
     tng_full = ((diagnostics.get("tng_draw") or {}).get("full") or {})
     try:
-        density = float(tng_full["surface_density_arcmin2"])
+        geometry_density = float(tng_full["surface_density_arcmin2"])
         luminosity = dict(model["luminosity_function"])
         size = dict(model["size_relation"])
         response = dict(model["euclid_response"])
@@ -86,30 +87,66 @@ def joint_galaxy_candidate() -> dict[str, Any] | None:
     except (KeyError, TypeError, ValueError, IndexError):
         return None
     if (
-        len(fingerprint) != 64 or not math.isfinite(density) or density <= 0.0
+        len(fingerprint) != 64
+        or not math.isfinite(geometry_density) or geometry_density <= 0.0
         or not (math.isfinite(vis_min) and math.isfinite(vis_max)
                 and vis_min < vis_max)
     ):
         return None
     quality = dict(source.get("fit_quality") or {})
+    enhanced = source.get("version") == 3
+    physical_conditionals = source.get("physical_conditionals")
+    phz_correction = source.get("phz_redshift_correction")
+    phz_gates = dict(source.get("phz_quality_gates") or {})
+    if enhanced and (
+        not isinstance(physical_conditionals, dict)
+        or not isinstance(phz_correction, dict)
+        or not phz_gates
+    ):
+        return None
+    try:
+        from euclid_polish.web.helpers.q1_galaxy_counts import (
+            read_q1_galaxy_aperture_fit,
+        )
+        aperture_fit = read_q1_galaxy_aperture_fit()
+        magnitude_law = StraightMagnitudeLaw.from_payload(
+            aperture_fit["apertures"]["f2"]["law"]
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+    combined_fingerprint = hashlib.sha256(json.dumps({
+        "geometry": fingerprint,
+        "magnitude_law": magnitude_law.to_payload(),
+    }, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     return {
-        "version": 1,
+        "version": 3,
         "kind": "joint_analytical_tng_draw",
         "valid": True,
         "validated": bool(quality.get("valid")),
         "warnings": list(quality.get("warnings") or []),
-        "fingerprint": fingerprint,
+        "fingerprint": combined_fingerprint,
+        "geometry_model_fingerprint": fingerprint,
         "source_artifact": str(source_path),
         "model": {
             "luminosity_function": luminosity,
             "size_relation": size,
             "euclid_response": response,
         },
+        **({
+            "phz_redshift_correction": phz_correction,
+            "physical_conditionals": physical_conditionals,
+            "phz_quality_gates": phz_gates,
+        } if enhanced else {}),
+        "magnitude_law": magnitude_law.to_payload(),
         "generation": {
-            "surface_density_arcmin2": density,
-            "vis_magnitude_min": vis_min,
-            "vis_magnitude_max": vis_max,
-            "morphology_assignment": "balanced_random_tng_atlas",
+            "surface_density_arcmin2": magnitude_law.integrated_density(),
+            "geometry_reference_density_arcmin2": geometry_density,
+            "vis_magnitude_min": magnitude_law.mag_bright,
+            "vis_magnitude_max": magnitude_law.mag_faint,
+            "morphology_assignment": (
+                "phz_mass_activity_quantile_transport"
+                if enhanced else "balanced_random_tng_atlas"
+            ),
             "position_process": "homogeneous_poisson",
         },
         "fit_quality": {
@@ -142,6 +179,10 @@ def activate_joint_galaxy_candidate() -> dict[str, Any]:
     candidate = joint_galaxy_candidate()
     if not candidate or not candidate.get("valid"):
         raise ValueError("No structurally valid joint galaxy fit is available")
+    if candidate.get("physical_conditionals") and not candidate.get("validated"):
+        raise ValueError(
+            "The PHZ-enhanced joint galaxy fit has not passed activation gates"
+        )
     payload = {**candidate, "active": True}
     _write(active_joint_galaxy_path(), payload)
     from euclid_polish.web import job_config
@@ -938,26 +979,44 @@ def activate_galaxy_recommendation() -> dict[str, Any]:
 def star_state() -> dict[str, Any]:
     candidate = _read(star_candidate_path())
     active = _read(active_star_path())
+    candidate_current = _current_star_artifact(candidate)
+    active_current = _current_star_artifact(active)
+    if candidate and not candidate_current:
+        candidate = {
+            **candidate,
+            "valid": False,
+            "warnings": list(candidate.get("warnings") or []) + [
+                "refit required: stellar counts must come from Q1 PHZ_STAR_PROB"
+            ],
+        }
     return {
         "candidate": candidate,
-        "active": active,
+        "active": active if active_current else None,
         "is_active": bool(
-            candidate and active
-            and candidate.get("version") == 3
-            and active.get("version") == 3
+            candidate_current and active_current
             and candidate.get("valid")
             and candidate.get("fingerprint") == active.get("fingerprint")
         ),
     }
 
 
+def _current_star_artifact(payload: dict[str, Any] | None) -> bool:
+    return bool(
+        payload
+        and payload.get("version") == 4
+        and (payload.get("fingerprint_inputs") or {}).get("fit_version")
+        == "q1-phz-gaia-shared-straight-counts-latent-locus-v3"
+    )
+
+
 def active_star() -> dict[str, Any] | None:
-    return _read(active_star_path())
+    payload = _read(active_star_path())
+    return payload if _current_star_artifact(payload) else None
 
 
 def activate_star_candidate() -> dict[str, Any]:
     candidate = _read(star_candidate_path())
-    if not candidate or not candidate.get("valid"):
+    if not _current_star_artifact(candidate) or not candidate.get("valid"):
         raise ValueError("No valid fitted stellar population is available")
     payload = {**candidate, "active": True}
     _write(active_star_path(), payload)

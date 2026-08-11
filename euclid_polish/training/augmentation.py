@@ -12,6 +12,7 @@ from tensorflow.python.data.experimental import AUTOTUNE
 from euclid_polish.config import Config
 from euclid_polish.image.tfio import parse_example
 from euclid_polish.training.target_blur import (
+    target_kernel_radius_pixels,
     target_sigma_pixels,
     validate_target_fwhm_arcsec,
 )
@@ -83,15 +84,16 @@ def blur_target_tf(
 ) -> tf.Tensor:
     """Apply the target Gaussian PSF to an ``(H, W, C)`` HR tensor.
 
-    The kernel is depthwise, so bands remain independent. Reflective padding
-    keeps the operation equivalent to the NumPy target transform while the
-    whole-field tensor is still available before random crops are selected.
+    The kernel is depthwise and has a 7-sigma radius, so bands remain
+    independent. Reflective padding keeps the operation equivalent to the
+    NumPy target transform while the whole-field tensor is still available
+    before random crops are selected.
     """
     fwhm = validate_target_fwhm_arcsec(fwhm_arcsec)
     if fwhm == 0.0:
         return x
     sigma = target_sigma_pixels(fwhm, pixel_scale_arcsec)
-    radius = max(1, int(round(4.0 * sigma)))
+    radius = target_kernel_radius_pixels(fwhm, pixel_scale_arcsec)
     coords = np.arange(-radius, radius + 1, dtype=np.float32)
     kernel_1d = np.exp(-0.5 * (coords / float(sigma)) ** 2)
     kernel_1d /= np.sum(kernel_1d)

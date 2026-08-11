@@ -89,6 +89,7 @@ PHYSICAL_FILTER_KEYS = {
 HDU_INDEX = {
     "photometry": 1,
     "lephare": 2,
+    "aperture": 3,
     "cigale": 4,
     "ml_morphology": 5,
     "bulge_disk": 6,
@@ -116,6 +117,21 @@ def _optional(
     if name in (table.names or ()):
         return _native(table[name], dtype)
     return np.full(len(table), fill, dtype=dtype)
+
+
+def _optional_vector(
+    table: Any,
+    name: str,
+    width: int,
+    *,
+    dtype: np.dtype | type = np.float32,
+) -> np.ndarray:
+    """Read a fixed-width FITS vector column or return an all-NaN matrix."""
+    if name in (table.names or ()):
+        values = _native(table[name], dtype)
+        if values.shape == (len(table), width):
+            return values
+    return np.full((len(table), width), np.nan, dtype=dtype)
 
 
 def _valid_mag(values: np.ndarray) -> np.ndarray:
@@ -452,6 +468,7 @@ def extract_catalog(
         }
         photo = hdul[HDU_INDEX["photometry"]].data
         lephare = hdul[HDU_INDEX["lephare"]].data
+        aperture = hdul[HDU_INDEX["aperture"]].data
         cigale = hdul[HDU_INDEX["cigale"]].data
         ml = hdul[HDU_INDEX["ml_morphology"]].data
         bd = hdul[HDU_INDEX["bulge_disk"]].data
@@ -459,7 +476,7 @@ def extract_catalog(
         row_count = len(photo)
         if not all(
             len(table) == row_count
-            for table in (lephare, cigale, ml, bd, galfitm)
+            for table in (lephare, aperture, cigale, ml, bd, galfitm)
         ):
             raise ValueError("COSMOS2025 HDUs do not have aligned row counts")
 
@@ -477,11 +494,18 @@ def extract_catalog(
         mag_auto_vis = _optional(
             photo, "mag_auto_hst-f814w", dtype=np.float32
         )
+        mag_aper_vis = _optional_vector(
+            photo, "mag_aper_hst-f814w", 5, dtype=np.float32,
+        )
+        mag_native_aper_vis = _optional_vector(
+            aperture, "mag_aper_hst-f814w", 5, dtype=np.float32,
+        )
         consumed["photometry"] = [
             "id", "ra", "dec", "flag_star", "flag_blend", "warn_flag",
-            "mag_auto_hst-f814w",
+            "mag_auto_hst-f814w", "mag_aper_hst-f814w",
             *(f"mag_model_{column}" for column in COSMOS_FILTER_COLUMNS.values()),
         ]
+        consumed["aperture"] = ["mag_aper_hst-f814w"]
 
         obj_type = _native(lephare["type"], np.int16)
         z_phot = _native(lephare["zfinal"], np.float32)
@@ -637,6 +661,8 @@ def extract_catalog(
         "generator_ready": generator_ready[selected],
         "mag_hst_f814w": mag_vis[selected],
         "mag_auto_hst_f814w": mag_auto_vis[selected],
+        "mag_aper_hst_f814w": mag_aper_vis[selected],
+        "mag_native_aper_hst_f814w": mag_native_aper_vis[selected],
         "z_phot": z_phot[selected],
         "z_pdf_median": z_med[selected],
         "z_pdf_l68": z_l68[selected],

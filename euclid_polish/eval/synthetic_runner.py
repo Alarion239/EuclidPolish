@@ -130,7 +130,8 @@ def run_synthetic_eval(
 
     Returns ``{"rows": [...], "n_ok", "n_skip", "groups": {...}}``. Requires the
     sidecar source catalog; if absent returns no rows and logs a clear message
-    (the grouped runner then runs A/B/C only). Writes LR/SR/HR FITS per stamp.
+    (the grouped runner then runs A/B/C only). Writes LR/SR/raw-HR/BHR FITS per
+    stamp, where BHR is the PSF-stabilised supervision target.
     """
     import numpy as np
     from astropy.io import fits
@@ -178,6 +179,10 @@ def run_synthetic_eval(
                                        num_images=window)
     hr_recs = read_images(tfrecord_path(rdir, f"hr_{sub}"),
                           num_images=window)
+    raw_hr_by = {
+        rec.index: np.array(rec.data, dtype=np.float32, copy=True)
+        for rec in hr_recs
+    }
     for rec in hr_recs:
         rec.data = blur_target_array(
             rec.data,
@@ -277,18 +282,24 @@ def run_synthetic_eval(
                     sr_arr = np.asarray(sr_data, dtype=np.float32)     # (2H,2W,C)
                     _emit(f"  field {idx}: inference")
                 cur_idx = idx
-            hr_raw = np.asarray(hr_by[idx].data, dtype=np.float32)
+            bhr_raw = np.asarray(hr_by[idx].data, dtype=np.float32)
+            hr_raw = raw_hr_by[idx]
 
             cx, cy = float(src["x_pix"]), float(src["y_pix"])
             # HR & SR live on the HR grid; the LR cube is half-resolution.
-            if hr_raw.ndim == 3:
+            if bhr_raw.ndim == 3:
                 hr_cube_st = np.stack(
+                    [crop_stamp(bhr_raw[..., b], cx=cx, cy=cy, m=m)
+                     for b in range(bhr_raw.shape[-1])], axis=-1)
+                raw_hr_cube_st = np.stack(
                     [crop_stamp(hr_raw[..., b], cx=cx, cy=cy, m=m)
                      for b in range(hr_raw.shape[-1])], axis=-1)
                 hr_vis_st = hr_cube_st[..., 0]
             else:                                   # legacy VIS-only HR record
-                hr_vis_st = crop_stamp(hr_raw, cx=cx, cy=cy, m=m)
+                hr_vis_st = crop_stamp(bhr_raw, cx=cx, cy=cy, m=m)
                 hr_cube_st = hr_vis_st[..., None]
+                raw_hr_cube_st = crop_stamp(
+                    hr_raw, cx=cx, cy=cy, m=m)[..., None]
             if sr_arr.ndim == 3:
                 sr_cube_st = np.stack(
                     [crop_stamp(sr_arr[..., b], cx=cx, cy=cy, m=m)
@@ -322,10 +333,15 @@ def run_synthetic_eval(
                 f"{grade} SR stamp (WDSR)",
                 {"BANDS": (bands, "NAXIS3 plane order (band 0 = VIS)")})
             _wr(os.path.join(obj_dir, "HR.fits"),
-                np.moveaxis(hr_cube_st, -1, 0) if hr_cube_st.ndim == 3
-                else hr_cube_st,
+                np.moveaxis(raw_hr_cube_st, -1, 0),
                 f"{grade} HR truth (electrons)",
                 {"BANDS": (bands, "NAXIS3 plane order (band 0 = VIS)")})
+            _wr(os.path.join(obj_dir, "BHR.fits"),
+                np.moveaxis(hr_cube_st, -1, 0),
+                f"{grade} blurred HR target (electrons)",
+                {"BANDS": (bands, "NAXIS3 plane order (band 0 = VIS)"),
+                 "TARGFWH": (float(Config.TARGET_PSF_FWHM_ARCSEC),
+                              "Gaussian target PSF FWHM [arcsec]")})
 
             # Ensemble disagreement cubes, cropped to the SAME source stamp as
             # SR.fits (crop_stamp at cx,cy) so the movie overlays exactly. No-op

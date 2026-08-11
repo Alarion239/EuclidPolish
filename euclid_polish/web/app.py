@@ -44,6 +44,7 @@ from euclid_polish.web.routes import (
     fasrc,
     files,
     git,
+    galaxy_distributions,
     hst,
     hstpairs,
     jwst_euclid,
@@ -54,6 +55,7 @@ from euclid_polish.web.routes import (
     poster,
     psfs,
     sky,
+    star_distribution,
     tng,
     tracking,
     viewer,
@@ -143,6 +145,8 @@ def create_app() -> Flask:
         "/api/fasrc/",            # connect/settings/login/etc.
         "/static/",
         "/api/status",
+        "/auth/",                # laptop-side Euclid archive session; does
+                                 # not depend on the FASRC SSH connection
         "/tracking",             # lab notebook is local-first; works offline
         "/api/tracking/",        # (only /api/tracking/sync needs SSH, and it
                                  #  degrades gracefully when disconnected)
@@ -164,6 +168,10 @@ def create_app() -> Flask:
         "/inference/",           # local recache/reapply jobs reuse archive data
         "/api/population-comparison",
         "/population-comparison",
+        "/galaxy-distributions",
+        "/api/galaxy-distributions",
+        "/api/star-distribution",
+        "/star-distribution",
         "/view/",                # cached, read-only presentation/diagnostic PNGs
         "/api/vis/",             # local data/vis gallery metadata
         "/eval-files/",          # serve already-pulled PNG/FITS offline
@@ -187,6 +195,8 @@ def create_app() -> Flask:
         "/tng",
         "/synthetic-real",
         "/population-comparison",
+        "/galaxy-distributions",
+        "/star-distribution",
         "/inference",
         "/ensemble",
         "/ensemble/starfull",
@@ -324,6 +334,8 @@ def create_app() -> Flask:
     tng.register(app)
     poster.register(app)
     population_comparison.register(app)
+    galaxy_distributions.register(app)
+    star_distribution.register(app)
     model.register(app)
     ensemble.register(app)
     evaluation.register(app)

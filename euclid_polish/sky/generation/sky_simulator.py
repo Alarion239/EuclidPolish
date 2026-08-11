@@ -25,6 +25,8 @@ from euclid_polish.image import Image, Role
 from euclid_polish.photometry import ab_mag_to_electrons
 from euclid_polish.provenance.defaults import mint_id
 from euclid_polish.provenance.records import Stamp
+from euclid_polish.psf.psf_library import make_gaussian_psf
+from euclid_polish.psf.psf_set import PSFSet
 from euclid_polish.skirt.image import composite_stamp
 from euclid_polish.sky.generation.cosmos_tng_prior import (
     MORPHOLOGY_ACTIVITY_THRESHOLD_LOGSSFR,
@@ -33,8 +35,9 @@ from euclid_polish.sky.generation.cosmos_tng_prior import (
     CosmosTngPrior,
     JointGalaxyPopulationPrior,
     conditional_mass_quantiles,
+    conditional_ssfr_quantiles,
     cross_validated_mass_bandwidth,
-    quantile_transport_weights,
+    joint_quantile_transport_weights,
 )
 from euclid_polish.sky.generation.lens_population import (
     render_lens_to_multiband_canvas,
@@ -55,6 +58,7 @@ from euclid_polish.sky.generation.tng_galaxy import (
     N_ORIENTATIONS,
     list_tng_galaxies,
     native_halflight_px,
+    normalise_tng_to_vis_2fwhm,
     predict_vis_flux_e,
     predict_visible_radius_arcsec,
     sample_tng_stamp,
@@ -257,9 +261,12 @@ class SkySimulator:
         self,
         population_prior: CosmosTngPrior | JointGalaxyPopulationPrior | None,
         config: SkySimulatorConfig | None = None,
+        *,
+        vis_psf_set: PSFSet | None = None,
     ):
         self.population_prior = population_prior
         self.config  = config or SkySimulatorConfig()
+        self.vis_psf_set = vis_psf_set
         ok, why = self.config.validate()
         if not ok:
             raise ValueError(f"Invalid generator config: {why}")
@@ -340,9 +347,14 @@ class SkySimulator:
         # TNG properties for mass → σ_v mapping (redshift mode).
         self.tng_properties: dict = {}
         self._atlas_logm: np.ndarray | None = None
+        self._atlas_sfr: np.ndarray | None = None
+        self._atlas_logssfr: np.ndarray | None = None
+        self._atlas_zero_sfr: np.ndarray | None = None
         self._atlas_activity_class: np.ndarray | None = None
         self._atlas_mass_quantile: np.ndarray | None = None
+        self._atlas_ssfr_quantile: np.ndarray | None = None
         self._mass_kernel_bandwidth_by_class: dict[str, float] = {}
+        self._ssfr_kernel_bandwidth_by_class: dict[str, float] = {}
         self._morphology_use_counts = np.zeros(
             len(self.tng_galaxies), dtype=np.int64,
         )
@@ -374,24 +386,65 @@ class SkySimulator:
             if not np.isfinite(self._atlas_logm).any():
                 self._atlas_logm = None
             elif np.isfinite(self._atlas_logm).all() and np.isfinite(sfr).all():
+                self._atlas_sfr = sfr.astype(np.float64)
+                self._atlas_zero_sfr = sfr == 0.0
                 with np.errstate(divide="ignore", invalid="ignore"):
-                    logssfr = np.where(
-                        sfr > 0.0, np.log10(sfr) - self._atlas_logm, -np.inf,
+                    self._atlas_logssfr = np.where(
+                        sfr > 0.0, np.log10(sfr) - self._atlas_logm, np.nan,
                     )
                 self._atlas_activity_class = np.where(
-                    logssfr < MORPHOLOGY_ACTIVITY_THRESHOLD_LOGSSFR,
+                    self._atlas_zero_sfr | (
+                        self._atlas_logssfr
+                        < MORPHOLOGY_ACTIVITY_THRESHOLD_LOGSSFR
+                    ),
                     "quenched", "star_forming",
                 )
                 self._atlas_mass_quantile = conditional_mass_quantiles(
                     self._atlas_logm, self._atlas_activity_class,
                 )
+                self._atlas_ssfr_quantile = conditional_ssfr_quantiles(
+                    self._atlas_logssfr,
+                    self._atlas_activity_class,
+                    zero_sfr=self._atlas_zero_sfr,
+                )
                 for label in np.unique(self._atlas_activity_class):
                     class_quantiles = self._atlas_mass_quantile[
+                        self._atlas_activity_class == label
+                    ]
+                    class_ssfr_quantiles = self._atlas_ssfr_quantile[
                         self._atlas_activity_class == label
                     ]
                     self._mass_kernel_bandwidth_by_class[str(label)] = float(
                         cross_validated_mass_bandwidth(class_quantiles)
                     )
+                    self._ssfr_kernel_bandwidth_by_class[str(label)] = float(
+                        cross_validated_mass_bandwidth(class_ssfr_quantiles)
+                    )
+
+    def _draw_aperture_psf(
+        self, rng: np.random.Generator,
+    ) -> tuple[np.ndarray, float, str]:
+        """Draw an orientation-free VIS PSF for 2FWHM normalization only."""
+        if self.vis_psf_set is None:
+            psf = make_gaussian_psf(
+                Config.get_band("VIS").psf_fwhm_arcsec,
+                self.config.pixel_scale,
+            )
+            source = "configured_gaussian_fallback"
+        else:
+            sample = self.vis_psf_set.draw_sample(
+                rng, use_unrotated_prob=1.0, warp_prob=0.0,
+            )
+            psf = self.vis_psf_set.apply_sample(sample)
+            source = f"empirical_vis_psf:{sample.index}"
+        fwhm = (
+            float(psf.fwhm_arcsec)
+            if psf.fwhm_arcsec is not None
+            else float(psf.fwhm_pixels("radial") * psf.pixel_scale)
+        )
+        if not np.isfinite(fwhm) or fwhm <= 0.0:
+            raise ValueError("sampled VIS PSF has no measurable positive FWHM")
+        return np.asarray(psf.data, dtype=np.float32), fwhm, source
 
     # ------------------------------------------------------------------ #
     def _field_area_arcmin2(self) -> float:
@@ -406,60 +459,84 @@ class SkySimulator:
     def _pick_field_galaxy(
         self,
         rng: np.random.Generator,
-        target_quantile: float,
+        target_mass_quantile: float,
+        target_ssfr_quantile: float,
         activity_class: str,
     ) -> tuple[list[tuple[str, str]], dict[str, float | int | str]]:
-        """Choose a TNG donor by stochastic conditional mass-rank transport."""
+        """Choose a TNG donor by conditional mass-sSFR rank transport."""
         if (
             self._atlas_logm is None
             or self._atlas_activity_class is None
             or self._atlas_mass_quantile is None
+            or self._atlas_ssfr_quantile is None
+            or self._atlas_sfr is None
+            or self._atlas_logssfr is None
+            or self._atlas_zero_sfr is None
         ):
             raise ValueError(
                 "TNG morphology quantile transport requires mass and SFR "
                 "properties for every donor"
             )
-        target = float(target_quantile)
+        target_mass = float(target_mass_quantile)
+        target_ssfr = float(target_ssfr_quantile)
         label = str(activity_class)
-        if not np.isfinite(target) or not 0.0 <= target <= 1.0:
+        if not np.isfinite(target_mass) or not 0.0 <= target_mass <= 1.0:
             raise ValueError("COSMOS morphology target mass quantile is invalid")
+        if not np.isfinite(target_ssfr) or not 0.0 <= target_ssfr <= 1.0:
+            raise ValueError("COSMOS morphology target sSFR quantile is invalid")
         candidates = np.flatnonzero(self._atlas_activity_class == label)
         if not candidates.size:
             raise ValueError(f"TNG atlas has no {label!r} morphology donors")
-        bandwidth = self._mass_kernel_bandwidth_by_class.get(label)
-        if bandwidth is None:
+        mass_bandwidth = self._mass_kernel_bandwidth_by_class.get(label)
+        ssfr_bandwidth = self._ssfr_kernel_bandwidth_by_class.get(label)
+        if mass_bandwidth is None or ssfr_bandwidth is None:
             raise ValueError(f"TNG atlas lacks a {label!r} transport bandwidth")
         balance = np.power(
             1.0 + self._morphology_use_counts[candidates].astype(np.float64),
             -MORPHOLOGY_BALANCE_POWER,
         )
-        probabilities, used_bandwidth, effective_donors = (
-            quantile_transport_weights(
-                self._atlas_mass_quantile[candidates], target,
-                bandwidth=bandwidth,
-                minimum_effective_donors=MORPHOLOGY_MIN_EFFECTIVE_DONORS,
-                balance_weights=balance,
-            )
+        (
+            probabilities, used_mass_bandwidth, used_ssfr_bandwidth,
+            effective_donors,
+        ) = joint_quantile_transport_weights(
+            self._atlas_mass_quantile[candidates],
+            self._atlas_ssfr_quantile[candidates],
+            target_mass,
+            target_ssfr,
+            mass_bandwidth=mass_bandwidth,
+            ssfr_bandwidth=ssfr_bandwidth,
+            minimum_effective_donors=MORPHOLOGY_MIN_EFFECTIVE_DONORS,
+            balance_weights=balance,
         )
         local_index = int(rng.choice(candidates.size, p=probabilities))
         selected = int(candidates[local_index])
         use_count = int(self._morphology_use_counts[selected]) + 1
         self._morphology_use_counts[selected] = use_count
-        donor_quantile = float(self._atlas_mass_quantile[selected])
+        donor_mass_quantile = float(self._atlas_mass_quantile[selected])
+        donor_ssfr_quantile = float(self._atlas_ssfr_quantile[selected])
         proxy_logmass = (
-            float(self.population_prior.proxy_logmass(donor_quantile, label))
+            float(self.population_prior.proxy_logmass(donor_mass_quantile, label))
             if hasattr(self.population_prior, "proxy_logmass")
             else float("nan")
         )
         return [self.tng_galaxies[selected]], {
             "activity_class": label,
-            "target_mass_quantile": target,
-            "tng_mass_quantile": donor_quantile,
+            "target_mass_quantile": target_mass,
+            "target_ssfr_quantile": target_ssfr,
+            "tng_mass_quantile": donor_mass_quantile,
+            "tng_ssfr_quantile": donor_ssfr_quantile,
             "native_tng_logmass": float(self._atlas_logm[selected]),
+            "native_tng_sfr": float(self._atlas_sfr[selected]),
+            "native_tng_logssfr": float(self._atlas_logssfr[selected]),
+            "native_tng_zero_sfr": bool(self._atlas_zero_sfr[selected]),
             "morphology_proxy_logmass": proxy_logmass,
+            "mass_quantile_delta": donor_mass_quantile - target_mass,
+            "ssfr_quantile_delta": donor_ssfr_quantile - target_ssfr,
             "selection_probability": float(probabilities[local_index]),
             "effective_donors": float(effective_donors),
-            "kernel_bandwidth_quantile": float(used_bandwidth),
+            "kernel_bandwidth_quantile": float(used_mass_bandwidth),
+            "mass_kernel_bandwidth_quantile": float(used_mass_bandwidth),
+            "ssfr_kernel_bandwidth_quantile": float(used_ssfr_bandwidth),
             "worker_donor_use_count": use_count,
         }
 
@@ -471,6 +548,10 @@ class SkySimulator:
             self._atlas_logm is None
             or self._atlas_activity_class is None
             or self._atlas_mass_quantile is None
+            or self._atlas_ssfr_quantile is None
+            or self._atlas_sfr is None
+            or self._atlas_logssfr is None
+            or self._atlas_zero_sfr is None
         ):
             raise ValueError(
                 "random TNG morphology assignment requires complete mass and "
@@ -484,48 +565,99 @@ class SkySimulator:
         selected = int(rng.choice(len(self.tng_galaxies), p=probabilities))
         use_count = int(self._morphology_use_counts[selected]) + 1
         self._morphology_use_counts[selected] = use_count
+
         return [self.tng_galaxies[selected]], {
             "activity_class": str(self._atlas_activity_class[selected]),
             "target_mass_quantile": float("nan"),
+            "target_ssfr_quantile": float("nan"),
             "tng_mass_quantile": float(self._atlas_mass_quantile[selected]),
+            "tng_ssfr_quantile": float(self._atlas_ssfr_quantile[selected]),
             "native_tng_logmass": float(self._atlas_logm[selected]),
+            "native_tng_sfr": float(self._atlas_sfr[selected]),
+            "native_tng_logssfr": float(self._atlas_logssfr[selected]),
+            "native_tng_zero_sfr": bool(self._atlas_zero_sfr[selected]),
             "morphology_proxy_logmass": float("nan"),
+            "mass_quantile_delta": float("nan"),
+            "ssfr_quantile_delta": float("nan"),
             "selection_probability": float(probabilities[selected]),
             "effective_donors": float(
                 1.0 / np.sum(probabilities * probabilities)
             ),
             "kernel_bandwidth_quantile": float("nan"),
+            "mass_kernel_bandwidth_quantile": float("nan"),
+            "ssfr_kernel_bandwidth_quantile": float("nan"),
             "worker_donor_use_count": use_count,
         }
 
     # ------------------------------------------------------------------ #
     def _add_tng_galaxy(
         self, canvas_4ch: np.ndarray, rng: np.random.Generator,
+        *, _attempt: int = 0,
     ) -> dict | None:
-        """Inject one TNG SED conditioned on COSMOS z/mass/size/brightness."""
+        """Resolve TNG geometry/donor before drawing independent brightness."""
         if self.population_prior is None:
             return None
-        draw = self.population_prior.sample(rng)
+        staged = isinstance(self.population_prior, JointGalaxyPopulationPrior)
+        draw = (
+            self.population_prior.sample_geometry(rng)
+            if staged else self.population_prior.sample(rng)
+        )
         if getattr(self.population_prior, "morphology_mode", "") == (
             "balanced_random_tng_atlas"
         ):
             galaxies, morphology = self._pick_random_field_galaxy(rng)
         else:
             galaxies, morphology = self._pick_field_galaxy(
-                rng, draw.mass_quantile, draw.activity_class,
+                rng,
+                draw.mass_quantile,
+                draw.ssfr_quantile,
+                draw.activity_class,
             )
         res = sample_tng_stamp(
                                galaxies, rng,
                                pixel_scale_arcsec=self.config.pixel_scale,
                                target_re_arcsec=draw.re_arcsec, z=draw.z,
-                               target_vis_flux_e=draw.target_vis_flux_e,
+                               target_vis_flux_e=(
+                                   None if staged else draw.target_vis_flux_e
+                               ),
                                radius_lookup_map=self._radius_lookup,
                                radius_manifest_fingerprint=(
                                    self._radius_manifest_fingerprint
                                ))
         if res is None:
-            raise RuntimeError("TNG population returned no stamp")
+            if staged and _attempt < 31:
+                return self._add_tng_galaxy(
+                    canvas_4ch, rng, _attempt=_attempt + 1,
+                )
+            raise RuntimeError("TNG population returned no usable stamp")
         stamp, tmeta = res
+        if staged:
+            magnitude, target_aperture_flux = (
+                self.population_prior.sample_brightness(rng)
+            )
+            psf_kernel, psf_fwhm, psf_source = self._draw_aperture_psf(rng)
+            try:
+                stamp, tmeta = normalise_tng_to_vis_2fwhm(
+                    stamp, tmeta,
+                    target_flux_e=target_aperture_flux,
+                    psf_kernel=psf_kernel,
+                    psf_fwhm_arcsec=psf_fwhm,
+                    pixel_scale_arcsec=self.config.pixel_scale,
+                )
+            except ValueError as exc:
+                if _attempt < 31:
+                    return self._add_tng_galaxy(
+                        canvas_4ch, rng, _attempt=_attempt + 1,
+                    )
+                raise RuntimeError(
+                    "TNG population produced 32 unusable 2FWHM stamps"
+                ) from exc
+            tmeta["aperture_psf_source"] = psf_source
+            draw = replace(
+                draw,
+                target_vis_mag=magnitude,
+                target_vis_flux_e=target_aperture_flux,
+            )
         x_pix, y_pix = self._random_pix(rng)
         composite_stamp(canvas_4ch, stamp, x_pix, y_pix)
         return {
@@ -541,15 +673,36 @@ class SkySimulator:
             "z":            draw.z,
             "mass_scale":   1.0,
             "native_tng_logmass": morphology["native_tng_logmass"],
+            "native_tng_sfr": morphology["native_tng_sfr"],
+            "native_tng_logssfr": morphology["native_tng_logssfr"],
+            "native_tng_zero_sfr": morphology["native_tng_zero_sfr"],
             "morphology_proxy_logmass": morphology["morphology_proxy_logmass"],
             "target_mass_quantile": morphology["target_mass_quantile"],
+            "target_ssfr_quantile": morphology["target_ssfr_quantile"],
+            "target_logmass": draw.logmass,
+            "target_logssfr": draw.logssfr,
+            "logmass": draw.logmass,
+            "physical_model_fingerprint": draw.physical_model_fingerprint,
             "tng_mass_quantile": morphology["tng_mass_quantile"],
+            "tng_ssfr_quantile": morphology["tng_ssfr_quantile"],
+            "morphology_mass_quantile_delta": morphology[
+                "mass_quantile_delta"
+            ],
+            "morphology_ssfr_quantile_delta": morphology[
+                "ssfr_quantile_delta"
+            ],
             "morphology_selection_probability": morphology[
                 "selection_probability"
             ],
             "morphology_effective_donors": morphology["effective_donors"],
             "morphology_kernel_bandwidth_quantile": morphology[
                 "kernel_bandwidth_quantile"
+            ],
+            "morphology_mass_kernel_bandwidth_quantile": morphology[
+                "mass_kernel_bandwidth_quantile"
+            ],
+            "morphology_ssfr_kernel_bandwidth_quantile": morphology[
+                "ssfr_kernel_bandwidth_quantile"
             ],
             "morphology_worker_use_count": morphology[
                 "worker_donor_use_count"
@@ -560,13 +713,43 @@ class SkySimulator:
                 self.population_prior,
                 "population_label",
                 (
-                    "joint_analytical_v1"
-                    if isinstance(self.population_prior, JointGalaxyPopulationPrior)
-                    else "cosmos2025_joint"
+                    "joint_analytical_staged_2fwhm_v3"
+                    if getattr(
+                        self.population_prior, "_physical_conditionals", None
+                    ) is not None
+                    else (
+                        "joint_analytical_staged_v3"
+                        if isinstance(
+                            self.population_prior, JointGalaxyPopulationPrior,
+                        )
+                        else "cosmos2025_joint"
+                    )
                 ),
             ),
             "mag_hst_f814w": draw.mag_hst_f814w,
             "target_vis_mag": draw.target_vis_mag,
+            "magnitude_fit_fingerprint": str(
+                getattr(self.population_prior, "fingerprint", "")
+            ),
+            "target_vis_2fwhm_mag": float(
+                tmeta.get("target_vis_2fwhm_mag", float("nan"))
+            ),
+            "target_vis_2fwhm_flux_e": float(
+                tmeta.get("target_vis_2fwhm_flux_e", float("nan"))
+            ),
+            "achieved_vis_2fwhm_mag": float(
+                tmeta.get("achieved_vis_2fwhm_mag", float("nan"))
+            ),
+            "achieved_vis_2fwhm_flux_e": float(
+                tmeta.get("achieved_vis_2fwhm_flux_e", float("nan"))
+            ),
+            "aperture_psf_fwhm_arcsec": float(
+                tmeta.get("aperture_psf_fwhm_arcsec", float("nan"))
+            ),
+            "aperture_radius_arcsec": float(
+                tmeta.get("aperture_radius_arcsec", float("nan"))
+            ),
+            "aperture_psf_source": str(tmeta.get("aperture_psf_source", "")),
             "brightness_transfer": draw.brightness_transfer,
             "brightness_scale": float(
                 tmeta.get("brightness_scale", float("nan"))
@@ -574,10 +757,10 @@ class SkySimulator:
             "drift_eps":    float(tmeta.get("drift_eps", float("nan"))),
             "target_re_arcsec":   float(tmeta.get("target_re_arcsec", float("nan"))),
             "apparent_re_arcsec": float(tmeta.get("apparent_re_arcsec", float("nan"))),
+            "achieved_re_arcsec": float(tmeta.get("achieved_re_arcsec", float("nan"))),
             # Unified half-light radius + log stellar mass persisted to the
             # source catalog for later analysis.
             "re_arcsec":    draw.re_arcsec,
-            "logmass":      draw.logmass,
             "imputed_size": draw.imputed_size,
             "flux_e_per_band": [float(tmeta["flux_e_per_band"][b])
                                 for b in Config.LR_INPUT_BAND_NAMES],

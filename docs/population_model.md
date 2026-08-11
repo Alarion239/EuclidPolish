@@ -16,13 +16,42 @@ assumption, not a fitted claim about galaxy clustering.
 
 ## Stars
 
-The active Gaia+Euclid-v3 artifact supplies an empirical VIS-magnitude CDF and
-a magnitude-conditioned latent stellar-locus mixture. The generator samples
-the CDF and then the latent colour model for the four Euclid bands. Euclid
-flux errors use the fitted heavy-tailed likelihood; `POINT_LIKE_PROB` is used
-as a fractional membership weight when fitting the locus. No exponential
-magnitude law, blackbody SED, polynomial colour map, or legacy fitter is used
-for current generation. The photometric basis follows the Gaia DR3 synthetic
+The active stellar artifact uses one straight differential-count law,
+
+\[
+\log_{10}(dN/dA/dm)=a_\star m+b_\star,
+\]
+
+over VIS 12--25. It first requires `POINT_LIKE_PROB >= 0.9`; in each
+0.1-mag VIS PSF-flux bin it reports both `SUM(POINT_LIKE_PROB)` as the expected
+number of point sources without PHZ and `SUM(PHZ_STAR_PROB)` as the PHZ stellar
+expectation. Both are divided by the released 63.1 deg² Q1 deep-field footprint
+and the bin width. The raw number passing the point-source cut is retained
+separately. The three deep fields are included; the separate
+LDN 1641 commissioning field is excluded. No Gaia count enters this
+normalization. Consecutive positive-count bins are searched automatically for
+the widest interval spanning at least 2.5 mag with (R^2\geq0.99). Native Gaia
+`G_AB` and Q1 PHZ VIS intervals are fitted with one shared slope and separate
+intercepts; the Q1 intercept alone normalizes the final VIS law. Its analytical
+12--25 integral sets the generator surface density.
+
+The WebUI magnitude-density diagnostic additionally overlays the cached-cone
+Gaia G distribution. It applies only the Gaia (E)DR3 Vega-to-AB zero-point
+offset and does not transform Gaia G into VIS. Its surface density uses the
+area of the field-centred Gaia cones. Gaia informs the shared count slope but
+not the active Q1 normalization.
+
+Gaia remains useful for a different quantity: matched Gaia--Euclid sources
+constrain the temperature/colour locus. Gaia sampling uses twelve 0.35-degree
+cones centred by spherical k-means on the cached Euclid sources with
+`POINT_LIKE_PROB >= 0.9`; these geometric centres are not removed from the
+query. The cones are retrieved synchronously from the ARI Gaia DR3 TAP mirror;
+any TAP overflow fails closed instead of caching a truncated sample. Euclid flux errors use the fitted
+heavy-tailed likelihood, and local `POINT_LIKE_PROB` weights the colour-locus
+fit. The generator inverse-CDF samples the fitted finite-domain straight law
+and then the magnitude-conditioned latent colour model for the four Euclid
+bands. No empirical magnitude CDF, blackbody SED, polynomial colour map, or
+legacy magnitude fitter is used for current generation. The photometric basis follows the Gaia DR3 synthetic
 photometry work ([Gaia DR3 synthetic photometry](https://arxiv.org/abs/2206.06215));
 the exact artifact version and cuts are project validation choices.
 
@@ -63,6 +92,9 @@ These additions retain one evolving Schechter luminosity function and one
 conditional lognormal size law; they introduce neither galaxy classes nor a
 morphology mixture. COSMOS supplies
 \((m_{\rm F814W},z,R_e)\), so it constrains the redshift and size evolution.
+Here \(m_{\rm F814W}\) is the COSMOS2025 SourceXtractor++ single-Sérsic
+total-model magnitude (`mag_model_hst-f814w`), not the separate bulge+disk
+total magnitude stored for the morphology-ready subset.
 The compact local COSMOS artifact does not contain rest-frame magnitudes or
 per-object K-corrections. The current coordinate is therefore
 \(M_{\rm eff}=m_{\rm F814W}-DM(z)\), and the fitted evolution of
@@ -124,9 +156,34 @@ deterministic robust clipping and a heteroscedastic Gaussian likelihood. The loc
 standard errors reported by the interface come from the optimizer Jacobian;
 they are curvature diagnostics, not full systematic uncertainties.
 
-## Pre-observation TNG draw target
+## Staged TNG draw target
 
-The distribution used to condition TNG rendering is
+The fitted COSMOS--Euclid cube is now used only for geometry and physical
+conditioning. It is marginalized over its former brightness axis to draw
+(R_e) first and then (z\mid R_e). PHZ activity, mass, and sSFR conditionals
+are also marginalized over brightness before choosing a TNG donor. The Q1
+MER+PHZ `FLUX_VIS_2FWHM_APER` law is independent:
+
+\[
+\log_{10}(dN/dA/dm_{2\mathrm{FWHM}})=a_gm_{2\mathrm{FWHM}}+b_g,
+\qquad 14\leq m_{2\mathrm{FWHM}}<29.
+\]
+
+The straight region is the widest consecutive positive-count interval spanning
+at least 4 mag with (R^2\geq0.998). The checked Q1 input ends at 28, so 28--29
+is explicitly an extrapolation. The law's analytical 14--29 integral sets the
+galaxy surface density.
+
+After donor selection, redshift transport, and resizing to the requested
+half-light radius, the generator draws the independent 2FWHM magnitude. It
+draws a separate empirical VIS PSF member, circularizes its radial profile,
+convolves the resized VIS stamp, and measures a circular aperture of radius one
+FWHM (diameter (2\times\mathrm{FWHM})). One shared scalar then sets that
+aperture flux and preserves all four TNG colours. The dirty-image forward model
+still draws its own fresh PSF. Zero or non-finite aperture stamps are rejected
+and resampled; total-flux fallback is not used.
+
+The legacy geometry cube reconstructed for this staging is
 
 \[
 p_{\rm draw}(z,m_{\rm VIS,true},R_e)
@@ -135,15 +192,15 @@ p_{\rm draw}(z,m_{\rm VIS,true},R_e)
 d m_{\rm F814W}.
 \]
 
-It includes the fitted Euclid field normalization and intrinsic band-transfer
-scatter. It excludes the MER size floor, measurement error, catalogue
-completeness and radius censoring. Those are observation effects applied only
-after rendering. TNG supplies morphology; its native population distribution
-is not the statistical target.
+It supplies geometry and conditional physical state, not the final brightness
+or scene normalization. TNG supplies morphology; its native population
+distribution is not the statistical target.
 
 ## Current scope and validation status
 
-The version-2 artifact now records and plots the pre-observation TNG draw
+The version-3 activation combines a fingerprinted geometry model with the
+versioned Q1 straight magnitude law. Older empirical-CDF and cubic artifacts
+fail closed. The calibration interface records and plots the geometry
 target. It also produces comparisons of
 apparent magnitude, redshift, angular size, median size at fixed magnitude,
 derived mean surface brightness, the fitted Euclid completeness surface, and

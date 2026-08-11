@@ -7,6 +7,7 @@ result is a small JSON artifact consumed by the React comparison page.
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import math
 import os
@@ -20,9 +21,11 @@ from typing import Any
 import numpy as np
 from astropy.io import fits
 from astroquery.esa.euclid import Euclid
+from scipy.special import ndtr
 
 from euclid_polish.config import Config
 from euclid_polish.photometry import electrons_to_ab_mag, uJy_to_ab_mag
+from euclid_polish.population.joint_galaxy import LF_Z_EDGES
 from euclid_polish.sky.generation.source_catalog import read_sources
 from euclid_polish.web import job_config
 from euclid_polish.web.helpers.paths import _sky_records_local_dir
@@ -32,9 +35,85 @@ from euclid_polish.web.helpers.tng_prior import (
     tng_prior_payload,
 )
 
-VERSION = 8
-CATALOG_VERSION = 4
+VERSION = 9
+CATALOG_VERSION = 7
+PHZ_PDF_GRID = np.linspace(0.0, 6.0, 601, dtype=np.float64)
 BANDS = ("VIS", "Y_E", "J_E", "H_E")
+APERTURE_BANDS = ("vis", "y", "j", "h")
+APERTURE_FWHM_MULTIPLES = (1, 2, 3, 4)
+
+# Curated archive columns retained for later science even when the active
+# population fit does not consume them yet. Keys are stable cache-column names;
+# values are the Q1 archive column names. Keep this explicit rather than using
+# SELECT * (the MER main and morphology tables contain hundreds of columns).
+EUCLID_MER_STUDY_COLUMNS = {
+    "flag_vis": "flag_vis",
+    "point_like_flag": "point_like_flag",
+    "extended_flag": "extended_flag",
+    "spurious_flag": "spurious_flag",
+    "deblended_flag": "deblended_flag",
+    "flux_segmentation_uJy": "flux_segmentation",
+    "fluxerr_segmentation_uJy": "fluxerr_segmentation",
+    "flux_y_sersic_uJy": "flux_y_sersic",
+    "fluxerr_y_sersic_uJy": "fluxerr_y_sersic",
+    "flux_j_sersic_uJy": "flux_j_sersic",
+    "fluxerr_j_sersic_uJy": "fluxerr_j_sersic",
+    "flux_h_sersic_uJy": "flux_h_sersic",
+    "fluxerr_h_sersic_uJy": "fluxerr_h_sersic",
+    "semimajor_axis_err": "semimajor_axis_err",
+    "position_angle_deg": "position_angle",
+    "position_angle_err_deg": "position_angle_err",
+    "ellipticity_err": "ellipticity_err",
+    "kron_radius_err": "kron_radius_err",
+    "gal_ebv_err": "gal_ebv_err",
+}
+
+EUCLID_MORPHOLOGY_STUDY_COLUMNS = {
+    "morph_concentration": "concentration",
+    "morph_concentration_err": "concentration_err",
+    "morph_asymmetry": "asymmetry",
+    "morph_asymmetry_err": "asymmetry_err",
+    "morph_smoothness": "smoothness",
+    "morph_smoothness_err": "smoothness_err",
+    "morph_gini": "gini",
+    "morph_gini_err": "gini_err",
+    "morph_moment_20": "moment_20",
+    "morph_moment_20_err": "moment_20_err",
+    "morph_sersic_visnir_reduced_chi2": "sersic_visnir_reduced_chi2",
+    "morph_sersic_visnir_flags": "sersic_visnir_flags",
+    "morph_sersic_vis_radius_arcsec": "sersic_sersic_vis_radius",
+    "morph_sersic_vis_radius_err_arcsec": "sersic_sersic_vis_radius_err",
+    "morph_sersic_vis_axis_ratio": "sersic_sersic_vis_axis_ratio",
+    "morph_sersic_vis_axis_ratio_err": "sersic_sersic_vis_axis_ratio_err",
+    "morph_sersic_vis_index": "sersic_sersic_vis_index",
+    "morph_sersic_vis_index_err": "sersic_sersic_vis_index_err",
+    "morph_sersic_nir_radius_arcsec": "sersic_sersic_nir_radius",
+    "morph_sersic_nir_radius_err_arcsec": "sersic_sersic_nir_radius_err",
+    "morph_sersic_nir_axis_ratio": "sersic_sersic_nir_axis_ratio",
+    "morph_sersic_nir_axis_ratio_err": "sersic_sersic_nir_axis_ratio_err",
+    "morph_sersic_nir_index": "sersic_sersic_nir_index",
+    "morph_sersic_nir_index_err": "sersic_sersic_nir_index_err",
+    "morph_sersic_angle_deg": "sersic_angle",
+    "morph_sersic_angle_err_deg": "sersic_angle_err",
+    "morph_disk_sersic_reduced_chi2": "disk_sersic_reduced_chi2",
+    "morph_disk_sersic_flags": "disk_sersic_flags",
+    "morph_disk_sersic_bulge_radius_arcsec": "disk_sersic_sersic_radius",
+    "morph_disk_sersic_bulge_radius_err_arcsec": (
+        "disk_sersic_sersic_radius_err"
+    ),
+    "morph_disk_sersic_bulge_axis_ratio": "disk_sersic_sersic_axis_ratio",
+    "morph_disk_sersic_bulge_axis_ratio_err": (
+        "disk_sersic_sersic_axis_ratio_err"
+    ),
+    "morph_disk_sersic_bulge_index": "disk_sersic_sersic_index",
+    "morph_disk_sersic_bulge_index_err": "disk_sersic_sersic_index_err",
+    "morph_disk_sersic_disk_radius_arcsec": "disk_sersic_disk_radius",
+    "morph_disk_sersic_disk_radius_err_arcsec": "disk_sersic_disk_radius_err",
+    "morph_disk_sersic_disk_axis_ratio": "disk_sersic_disk_axis_ratio",
+    "morph_disk_sersic_disk_axis_ratio_err": "disk_sersic_disk_axis_ratio_err",
+    "morph_disk_sersic_angle_deg": "disk_sersic_angle",
+    "morph_disk_sersic_angle_err_deg": "disk_sersic_angle_err",
+}
 TILE_SIZE = 256
 ANALYSIS_SIZE = 255
 PIXEL_SCALE_ARCSEC = float(Config.VIS_PIXEL_SCALE_ARCSEC)
@@ -66,8 +145,33 @@ _PARAM_META = {
     "y_j_color": ("Y − J colour", "AB mag"),
     "j_h_color": ("J − H colour", "AB mag"),
     "flux_vis_e": ("VIS source flux", "e⁻ / stack"),
+    "flux_y_e": ("Y source flux", "e⁻ / stack"),
+    "flux_j_e": ("J source flux", "e⁻ / stack"),
+    "flux_h_e": ("H source flux", "e⁻ / stack"),
     "flux_vis_psf_uJy": ("VIS PSF flux", "µJy"),
     "fluxerr_vis_psf_uJy": ("VIS PSF flux error", "µJy"),
+    **{
+        f"flux_{band}_{multiple}fwhm_aper_uJy": (
+            f"{band.upper()} {multiple}-FWHM aperture flux", "µJy",
+        )
+        for band in APERTURE_BANDS
+        for multiple in APERTURE_FWHM_MULTIPLES
+    },
+    **{
+        f"fluxerr_{band}_{multiple}fwhm_aper_uJy": (
+            f"{band.upper()} {multiple}-FWHM aperture flux error", "µJy",
+        )
+        for band in APERTURE_BANDS
+        for multiple in APERTURE_FWHM_MULTIPLES
+    },
+    "flux_detection_total_uJy": ("detection-band Kron total flux", "µJy"),
+    "fluxerr_detection_total_uJy": (
+        "detection-band Kron total flux error", "µJy",
+    ),
+    "flux_vis_sersic_uJy": ("VIS Sérsic-model total flux", "µJy"),
+    "fluxerr_vis_sersic_uJy": ("VIS Sérsic-model total flux error", "µJy"),
+    "vis_det": ("VIS detection", "0 / 1"),
+    "det_quality_flag": ("detection photometry quality", "bit mask"),
     "flux_vis_aper_uJy": ("VIS 3-FWHM aperture flux", "µJy"),
     "fluxerr_vis_aper_uJy": ("VIS 3-FWHM aperture flux error", "µJy"),
     "flux_y_aper_uJy": ("Y 3-FWHM aperture flux", "µJy"),
@@ -96,6 +200,44 @@ _PARAM_META = {
     "gaia_match_quality": ("Gaia match quality", "score"),
     "gaia_matched": ("Gaia counterpart", "0 / 1"),
     "deblended": ("deblended source", "0 / 1"),
+    "phz_star_prob": ("PHZ star probability", "probability"),
+    "phz_gal_prob": ("PHZ galaxy probability", "probability"),
+    "phz_qso_prob": ("PHZ QSO probability", "probability"),
+    "phz_classification": ("PHZ accepted classes", "bit mask"),
+    "phz_median": ("PHZ redshift median", "z"),
+    "phz_mode_1": ("PHZ primary redshift mode", "z"),
+    "phz_mode_1_area": ("PHZ primary-mode probability", "probability"),
+    "phz_mode_2": ("PHZ secondary redshift mode", "z"),
+    "phz_mode_2_area": ("PHZ secondary-mode probability", "probability"),
+    "phz_flags": ("PHZ redshift flags", "bit mask"),
+    "phz_pdf_valid": ("valid PHZ redshift PDF", "0 / 1"),
+    "phz_pdf_retained_mass": ("PHZ PDF mass in model range", "probability"),
+    "phz_phys_flags": ("PHZ physical-parameter flags", "bit mask"),
+    "phz_phys_quality_flag": ("PHZ physical quality flag", "bit mask"),
+    "phz_pp_median_redshift": ("PHZ physical redshift median", "z"),
+    "phz_pp_redshift_p16": ("PHZ physical redshift 16th percentile", "z"),
+    "phz_pp_redshift_p84": ("PHZ physical redshift 84th percentile", "z"),
+    "phz_pp_median_stellarmass": ("PHZ stellar mass median", "log₁₀ M☉"),
+    "phz_pp_stellarmass_p16": ("PHZ stellar mass 16th percentile", "log₁₀ M☉"),
+    "phz_pp_stellarmass_p84": ("PHZ stellar mass 84th percentile", "log₁₀ M☉"),
+    "phz_pp_median_sfr": ("PHZ SFR median", "log₁₀ M☉ / yr"),
+    "phz_pp_sfr_p16": ("PHZ SFR 16th percentile", "log₁₀ M☉ / yr"),
+    "phz_pp_sfr_p84": ("PHZ SFR 84th percentile", "log₁₀ M☉ / yr"),
+    "phz_pp_median_sfhage": ("PHZ stellar age median", "yr"),
+    "phz_pp_sfhage_p16": ("PHZ stellar age 16th percentile", "yr"),
+    "phz_pp_sfhage_p84": ("PHZ stellar age 84th percentile", "yr"),
+    "phz_pp_median_mu": ("PHZ rest-frame U magnitude", "AB mag"),
+    "phz_pp_mu_p16": ("PHZ rest-frame U magnitude 16th percentile", "AB mag"),
+    "phz_pp_mu_p84": ("PHZ rest-frame U magnitude 84th percentile", "AB mag"),
+    "phz_pp_median_mv": ("PHZ rest-frame V magnitude", "AB mag"),
+    "phz_pp_mv_p16": ("PHZ rest-frame V magnitude 16th percentile", "AB mag"),
+    "phz_pp_mv_p84": ("PHZ rest-frame V magnitude 84th percentile", "AB mag"),
+    "phz_pp_median_mj": ("PHZ rest-frame J magnitude", "AB mag"),
+    "phz_pp_mj_p16": ("PHZ rest-frame J magnitude 16th percentile", "AB mag"),
+    "phz_pp_mj_p84": ("PHZ rest-frame J magnitude 84th percentile", "AB mag"),
+    "phz_pp_median_mvis": ("PHZ rest-frame VIS magnitude", "AB mag"),
+    "phz_pp_mvis_p16": ("PHZ rest-frame VIS magnitude 16th percentile", "AB mag"),
+    "phz_pp_mvis_p84": ("PHZ rest-frame VIS magnitude 84th percentile", "AB mag"),
     "z": ("redshift", "z"),
     "re_arcsec": ("half-light radius", "arcsec"),
     "logmass": ("stellar mass", "log₁₀ M☉"),
@@ -131,6 +273,10 @@ def euclid_catalog_meta_path() -> Path:
     return cache_dir() / "euclid_population_meta.json"
 
 
+def euclid_phz_pdf_path() -> Path:
+    return cache_dir() / "euclid_population_phz_pdf.npz"
+
+
 def cosmos_euclid_fit_path() -> Path:
     return Path(Config.JOINT_GALAXY_POPULATION_FIT_PATH)
 
@@ -150,7 +296,7 @@ def read_comparison() -> dict[str, Any] | None:
 
 def read_cosmos_euclid_fit() -> dict[str, Any] | None:
     payload = _read_json(cosmos_euclid_fit_path())
-    return payload if payload and payload.get("version") == 2 else None
+    return payload if payload and payload.get("version") in {2, 3} else None
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -159,6 +305,277 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
     with temporary.open("w") as handle:
         json.dump(payload, handle, indent=2, sort_keys=True)
     os.replace(temporary, path)
+
+
+def _result_vector(raw: Any, key: str, length: int) -> np.ndarray | None:
+    """Return one finite archive vector without leaking masked values."""
+    try:
+        value = raw[key]
+    except (KeyError, IndexError, TypeError):
+        return None
+    if value is None or np.ma.is_masked(value):
+        return None
+    try:
+        if isinstance(value, (str, bytes, np.bytes_)):
+            text = (
+                value.decode("utf-8")
+                if isinstance(value, (bytes, np.bytes_)) else value
+            ).strip()
+            if len(text) >= 2 and (text[0], text[-1]) in {
+                ("[", "]"), ("(", ")"), ("{", "}"),
+            }:
+                text = text[1:-1]
+            tokens = text.replace(",", " ").split()
+            array = np.asarray(tokens, dtype=np.float64).reshape(-1)
+        else:
+            array = np.asarray(value, dtype=np.float64).reshape(-1)
+    except (TypeError, ValueError):
+        return None
+    if array.size != length or not np.isfinite(array).all():
+        return None
+    return array
+
+
+def _rebin_phz_pdf(value: np.ndarray | None) -> tuple[np.ndarray | None, float]:
+    """Compress the fixed Q1 601-point redshift PDF onto the fit grid."""
+    if value is None or np.any(value < 0.0):
+        return None, 0.0
+    total = float(np.sum(value))
+    if not math.isfinite(total) or total <= 0.0:
+        return None, 0.0
+    probability = value / total
+    rebinned = np.histogram(
+        PHZ_PDF_GRID, bins=LF_Z_EDGES, weights=probability,
+    )[0].astype(np.float64)
+    retained = float(np.sum(rebinned))
+    if not math.isfinite(retained) or retained <= 0.0:
+        return None, 0.0
+    rebinned /= retained
+    if not np.isfinite(rebinned).all() or np.any(rebinned < 0.0):
+        return None, 0.0
+    return rebinned.astype(np.float32), retained
+
+
+def _write_phz_pdf_cache(
+    path: Path, object_ids: list[str], probability: list[np.ndarray],
+) -> str:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    matrix = (
+        np.stack(probability).astype(np.float32)
+        if probability else np.empty((0, len(LF_Z_EDGES) - 1), np.float32)
+    )
+    with temporary.open("wb") as handle:
+        np.savez_compressed(
+            handle,
+            object_id=np.asarray(object_ids, dtype=str),
+            probability=matrix,
+            z_edges=np.asarray(LF_Z_EDGES, dtype=np.float64),
+        )
+    digest = hashlib.sha256(temporary.read_bytes()).hexdigest()
+    os.replace(temporary, path)
+    return digest
+
+
+def _summary_redshift_pdf(row: dict[str, Any]) -> np.ndarray | None:
+    """Approximate one PDF from cached PHZ modes without archive access."""
+    components: list[tuple[float, float]] = []
+    for center_key, area_key in (
+        ("phz_mode_1", "phz_mode_1_area"),
+        ("phz_mode_2", "phz_mode_2_area"),
+    ):
+        center = _finite(row.get(center_key))
+        area = _finite(row.get(area_key))
+        if (
+            center is not None and LF_Z_EDGES[0] <= center <= LF_Z_EDGES[-1]
+            and area is not None and area > 0.0
+        ):
+            components.append((center, area))
+    median = _finite(row.get("phz_median"))
+    if not components and median is not None and LF_Z_EDGES[0] <= median <= LF_Z_EDGES[-1]:
+        components.append((median, 1.0))
+    if not components:
+        return None
+
+    result = np.zeros(LF_Z_EDGES.size - 1, dtype=np.float64)
+    total_weight = sum(weight for _center, weight in components)
+    for center, weight in components:
+        # This is deliberately broader than one cached bin. It is a diagnostic
+        # approximation, not a replacement for the archived 601-point PDF.
+        sigma = max(0.05 * (1.0 + center), 0.5 * np.median(np.diff(LF_Z_EDGES)))
+        result += (weight / total_weight) * (
+            ndtr((LF_Z_EDGES[1:] - center) / sigma)
+            - ndtr((LF_Z_EDGES[:-1] - center) / sigma)
+        )
+    retained = float(np.sum(result))
+    if not math.isfinite(retained) or retained <= 0.0:
+        return None
+    result /= retained
+    return result.astype(np.float32)
+
+
+def recover_phz_pdf_cache_from_summaries(
+    progress: Callable[[int, int, str], None] | None = None,
+) -> dict[str, Any]:
+    """Build diagnostic PDFs from the PHZ scalar summaries already cached.
+
+    This performs no archive request. Reconstructed PDFs remain explicitly
+    ineligible for activation because their within-mode shapes are assumed.
+    """
+    catalog_path = euclid_catalog_path()
+    meta_path = euclid_catalog_meta_path()
+    meta = _read_json(meta_path)
+    if not catalog_path.is_file() or not meta:
+        raise FileNotFoundError("No cached Euclid MER + PHZ catalogue is available")
+    total = int(meta.get("rows") or 0)
+    object_ids: list[str] = []
+    probability: list[np.ndarray] = []
+    recovered_weight = 0.0
+    with catalog_path.open(newline="", encoding="utf-8") as handle:
+        for index, row in enumerate(csv.DictReader(handle), start=1):
+            magnitude = _finite(row.get("mag_vis"))
+            galaxy_probability = _finite(row.get("phz_gal_prob"))
+            point_probability = _finite(row.get("point_like_prob"))
+            if (
+                magnitude is not None and magnitude < 24.5
+                and galaxy_probability is not None
+                and 0.0 <= galaxy_probability <= 1.0
+                and point_probability is not None
+                and 0.0 <= point_probability <= 1.0
+            ):
+                reconstructed = _summary_redshift_pdf(row)
+                object_id = str(row.get("object_id") or "")
+                if reconstructed is not None and object_id:
+                    object_ids.append(object_id)
+                    probability.append(reconstructed)
+                    recovered_weight += galaxy_probability
+            if progress and index % 50_000 == 0:
+                progress(index, total, "recover PHZ PDFs from cached summaries")
+    if not object_ids:
+        raise ValueError("The cache contains no usable PHZ redshift summaries")
+
+    digest = _write_phz_pdf_cache(
+        euclid_phz_pdf_path(), object_ids, probability,
+    )
+    galaxy_weight = float((meta.get("phz_coverage") or {}).get("phz_galaxy_weight") or 0.0)
+    updated = {
+        **meta,
+        "phz_pdf_cache": str(euclid_phz_pdf_path()),
+        "phz_pdf_sha256": digest,
+        "phz_pdf_rows": len(object_ids),
+        "phz_pdf_source": "summary_reconstruction",
+        "phz_pdf_activation_eligible": False,
+        "phz_pdf_recovery": {
+            "method": "Gaussian mixture from cached PHZ modes",
+            "archive_query_performed": False,
+            "recovered_galaxy_weight": recovered_weight,
+            "recovered_fraction": (
+                recovered_weight / galaxy_weight if galaxy_weight > 0.0 else 0.0
+            ),
+            "limitation": "mode widths are assumed; full 601-point PDFs were not available",
+        },
+    }
+    _write_json(meta_path, updated)
+    if progress:
+        progress(total, total, "cached PHZ summary recovery complete")
+    return updated
+
+
+def read_phz_pdf_cache(path: str | Path | None = None) -> dict[str, np.ndarray]:
+    source = Path(path) if path is not None else euclid_phz_pdf_path()
+    with np.load(source, allow_pickle=False) as data:
+        object_id = np.asarray(data["object_id"]).astype(str)
+        probability = np.asarray(data["probability"], dtype=np.float64)
+        z_edges = np.asarray(data["z_edges"], dtype=np.float64)
+    if probability.shape != (object_id.size, z_edges.size - 1):
+        raise ValueError("PHZ PDF cache arrays are not aligned")
+    if (
+        probability.size
+        and (not np.isfinite(probability).all() or np.any(probability < 0.0))
+    ):
+        raise ValueError("PHZ PDF cache contains invalid probabilities")
+    if probability.size and not np.allclose(
+        np.sum(probability, axis=1), 1.0, rtol=1e-5, atol=1e-6,
+    ):
+        raise ValueError("PHZ PDF cache rows are not normalized")
+    return {
+        "object_id": object_id,
+        "probability": probability,
+        "z_edges": z_edges,
+    }
+
+
+def _phz_coverage(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    eligible_weight = 0.0
+    classified_weight = 0.0
+    galaxy_weight = 0.0
+    pdf_weight = 0.0
+    physical_weight = 0.0
+    qso_overlap_weight = 0.0
+    pathological_weight = 0.0
+    for row in rows:
+        magnitude = _finite(row.get("mag_vis"))
+        point_probability = _finite(row.get("point_like_prob"))
+        if (
+            magnitude is None or magnitude >= 24.5
+            or point_probability is None or not 0.0 <= point_probability <= 1.0
+        ):
+            continue
+        mer_weight = 1.0 - point_probability
+        eligible_weight += mer_weight
+        galaxy_probability = _finite(row.get("phz_gal_prob"))
+        if galaxy_probability is None or not 0.0 <= galaxy_probability <= 1.0:
+            continue
+        classified_weight += mer_weight
+        galaxy_weight += galaxy_probability
+        if _finite(row.get("phz_pdf_valid")) == 1.0:
+            pdf_weight += galaxy_probability
+        qso_probability = _finite(row.get("phz_qso_prob"))
+        if qso_probability is not None and 0.0 <= qso_probability <= 1.0:
+            qso_overlap_weight += galaxy_probability * qso_probability
+        mass = _finite(row.get("phz_pp_median_stellarmass"))
+        sfr = _finite(row.get("phz_pp_median_sfr"))
+        age = _finite(row.get("phz_pp_median_sfhage"))
+        flags = _finite(row.get("phz_phys_flags"))
+        quality = _finite(row.get("phz_phys_quality_flag"))
+        intervals = [
+            _finite(row.get(key))
+            for key in (
+                "phz_pp_stellarmass_p16", "phz_pp_stellarmass_p84",
+                "phz_pp_sfr_p16", "phz_pp_sfr_p84",
+                "phz_pp_sfhage_p16", "phz_pp_sfhage_p84",
+            )
+        ]
+        if (
+            mass is None or sfr is None or age is None
+            or any(value is None for value in intervals)
+            or flags != 0.0 or quality != 0.0
+        ):
+            continue
+        specific_sfr = sfr - mass
+        if specific_sfr >= -8.2:
+            pathological_weight += galaxy_probability
+            continue
+        physical_weight += galaxy_probability
+    return {
+        "eligible_mer_galaxy_weight": eligible_weight,
+        "classification_covered_mer_weight": classified_weight,
+        "classification_fraction": (
+            classified_weight / eligible_weight if eligible_weight > 0.0 else 0.0
+        ),
+        "phz_galaxy_weight": galaxy_weight,
+        "valid_pdf_galaxy_weight": pdf_weight,
+        "valid_pdf_fraction": pdf_weight / galaxy_weight if galaxy_weight > 0.0 else 0.0,
+        "valid_physical_galaxy_weight": physical_weight,
+        "valid_physical_fraction": (
+            physical_weight / galaxy_weight if galaxy_weight > 0.0 else 0.0
+        ),
+        "pathological_ssfr_weight": pathological_weight,
+        "qso_overlap_weight": qso_overlap_weight,
+        "qso_overlap_fraction": (
+            qso_overlap_weight / galaxy_weight if galaxy_weight > 0.0 else 0.0
+        ),
+    }
 
 
 def _synthetic_paths(
@@ -209,8 +626,19 @@ def availability() -> dict[str, Any]:
     catalog_current = (
         meta is not None and meta.get("catalog_version") == CATALOG_VERSION
     )
+    phz_path = euclid_phz_pdf_path()
+    expected_phz_digest = str((meta or {}).get("phz_pdf_sha256") or "")
+    phz_current = False
+    if catalog_current and phz_path.is_file() and len(expected_phz_digest) == 64:
+        try:
+            actual_digest = hashlib.sha256(phz_path.read_bytes()).hexdigest()
+            read_phz_pdf_cache(phz_path)
+            phz_current = actual_digest == expected_phz_digest
+        except (OSError, ValueError):
+            phz_current = False
     catalog_usable = bool(
         catalog_current
+        and phz_current
         and meta.get("rows", 0) > 0
         and sum(
             int(meta.get("counts", {}).get(kind, 0))
@@ -242,6 +670,7 @@ def availability() -> dict[str, Any]:
         "euclid_catalog": {
             "cached": euclid_catalog_path().is_file() and catalog_usable,
             "meta": meta if catalog_current else None,
+            "phz_pdf_current": phz_current,
         },
         "field_area_arcmin2": FIELD_AREA_ARCMIN2,
         "default_cone": {
@@ -771,6 +1200,12 @@ def _read_synthetic_sources(paths: Iterable[Path]) -> list[dict[str, Any]]:
                     "type": "galaxy" if source_type == "lens" else source_type,
                     "render": str(raw.get("render", "")).strip().lower(),
                     "field_index": field_index,
+                    "population_prior": str(
+                        raw.get("population_prior", "")
+                    ).strip(),
+                    "morphology_activity_class": str(
+                        raw.get("morphology_activity_class", "")
+                    ).strip(),
                 }
                 for key in _PARAM_META:
                     if key == "objects_per_field":
@@ -782,10 +1217,16 @@ def _read_synthetic_sources(paths: Iterable[Path]) -> list[dict[str, Any]]:
                     "tng_mf_alpha",
                 ):
                     row[key] = _finite(raw.get(key))
-                if row.get("mag_vis") is None and row.get("flux_vis_e"):
-                    row["mag_vis"] = _finite(electrons_to_ab_mag(
-                        row["flux_vis_e"], Config.BAND_VIS
-                    ))
+                for band, flux_key, magnitude_key in (
+                    ("VIS", "flux_vis_e", "mag_vis"),
+                    ("Y_E", "flux_y_e", "mag_y_e"),
+                    ("J_E", "flux_j_e", "mag_j_e"),
+                    ("H_E", "flux_h_e", "mag_h_e"),
+                ):
+                    if row.get(magnitude_key) is None and row.get(flux_key):
+                        row[magnitude_key] = _finite(electrons_to_ab_mag(
+                            row[flux_key], Config.get_band(band)
+                        ))
                 _derive_colours(row)
                 rows.append(row)
         offset += local_max + 1
@@ -996,6 +1437,107 @@ def _shared_parameter_payload(
     }
 
 
+def _phz_probability_relation(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Compact MER-galaxy versus PHZ-galaxy classification diagnostic."""
+    pairs = [
+        (1.0 - point, phz)
+        for row in rows
+        if (point := _finite(row.get("point_like_prob"))) is not None
+        if (phz := _finite(row.get("phz_gal_prob"))) is not None
+        if 0.0 <= point <= 1.0 and 0.0 <= phz <= 1.0
+    ]
+    if not pairs:
+        return None
+    values = np.asarray(pairs, dtype=np.float64)
+    edges = np.linspace(0.0, 1.0, 11)
+    index = np.clip(np.digitize(values[:, 0], edges) - 1, 0, 9)
+    counts = np.bincount(index, minlength=10)
+    summed = np.bincount(index, weights=values[:, 1], minlength=10)
+    mean = np.divide(
+        summed, counts, out=np.full(10, np.nan), where=counts > 0,
+    )
+    correlation = (
+        float(np.corrcoef(values[:, 0], values[:, 1])[0, 1])
+        if values.shape[0] > 2
+        and np.std(values[:, 0]) > 0.0 and np.std(values[:, 1]) > 0.0
+        else None
+    )
+    return {
+        "mer_galaxy_probability": (0.5 * (edges[:-1] + edges[1:])).tolist(),
+        "mean_phz_galaxy_probability": _json_curve(mean),
+        "objects": counts.astype(int).tolist(),
+        "correlation": correlation,
+        "interpretation": (
+            "MER uses 1-POINT_LIKE_PROB; PHZ_GAL_PROB is shown only as a "
+            "classification diagnostic and does not renormalize density"
+        ),
+    }
+
+
+def _tng_colour_conditioning_payload(
+    rows: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Compare rendered TNG colours before and after PHZ conditioning."""
+    groups = {
+        "current": [
+            row for row in rows
+            if row.get("render") == "tng"
+            and row.get("population_prior") != "joint_analytical_phz_v2"
+        ],
+        "phz_conditioned": [
+            row for row in rows
+            if row.get("render") == "tng"
+            and row.get("population_prior") == "joint_analytical_phz_v2"
+        ],
+    }
+    result: dict[str, Any] = {}
+    for key, label in (
+        ("vis_y_color", "VIS - Y"),
+        ("y_j_color", "Y - J"),
+        ("j_h_color", "J - H"),
+    ):
+        values = {
+            group: [
+                value for row in selected
+                if (value := _finite(row.get(key))) is not None
+            ]
+            for group, selected in groups.items()
+        }
+        combined = np.asarray([
+            value for group_values in values.values() for value in group_values
+        ], dtype=np.float64)
+        if not combined.size:
+            continue
+        low, high = np.percentile(combined, [0.5, 99.5])
+        if high <= low:
+            low, high = float(low) - 0.5, float(high) + 0.5
+        edges = np.linspace(float(low), float(high), 31)
+        series = {}
+        for group, group_values in values.items():
+            counts, _ = np.histogram(group_values, bins=edges)
+            series[group] = {
+                "probability": (
+                    counts / counts.sum() if counts.sum() else counts.astype(float)
+                ).tolist(),
+                "count": len(group_values),
+            }
+        result[key] = {
+            "label": label,
+            "x": (0.5 * (edges[:-1] + edges[1:])).tolist(),
+            "series": series,
+        }
+    return {
+        "colours": result,
+        "available": bool(
+            result and all(groups[group] for group in groups)
+        ),
+        "note": (
+            "The PHZ-conditioned curve appears after generating v2 fields; "
+            "PHZ never supplies rendered colours"
+        ),
+    } if result else None
+
+
 def _population_payload(source_csvs: Iterable[Path],
                         synthetic_field_count: int,
                         source_detection: dict[str, Any] | None = None,
@@ -1029,6 +1571,10 @@ def _population_payload(source_csvs: Iterable[Path],
                 euclid_area,
             )
             if euclid_rows and euclid_area > 0 else None
+        ),
+        "phz_probability_relation": _phz_probability_relation(euclid_rows),
+        "tng_colour_conditioning": _tng_colour_conditioning_payload(
+            synthetic_rows
         ),
         "tng_prior": (
             tng_prior_payload(
@@ -1199,36 +1745,84 @@ def query_euclid_population(
     relogin: Callable[[], bool] | None = None,
     _catalog_path: Path | None = None,
     _meta_path: Path | None = None,
+    _phz_pdf_path: Path | None = None,
     _require_nonstellar: bool = True,
 ) -> dict[str, Any]:
-    """Query clean MER sources in a cone and cache generation-facing columns.
+    """Query clean MER+PHZ sources and cache generation-facing columns.
 
     MER's point-like probability is retained as a fractional membership value;
     hard flags remain available for provenance and single-cone summaries.
     """
     radius_deg = radius_arcmin / 60.0
+    aperture_columns = ",\n        ".join(
+        f"mer.flux_{band}_{multiple}fwhm_aper, "
+        f"mer.fluxerr_{band}_{multiple}fwhm_aper"
+        for band in APERTURE_BANDS
+        for multiple in APERTURE_FWHM_MULTIPLES
+    )
+    mer_study_columns = ",\n        ".join(
+        f"mer.{archive_name} AS {cache_name}"
+        for cache_name, archive_name in EUCLID_MER_STUDY_COLUMNS.items()
+    )
+    morphology_study_columns = ",\n        ".join(
+        f"morph.{archive_name} AS {cache_name}"
+        for cache_name, archive_name in EUCLID_MORPHOLOGY_STUDY_COLUMNS.items()
+    )
     query = f"""
     SELECT TOP {int(limit)}
-        object_id, right_ascension, declination,
-        point_like_flag, point_like_prob, extended_flag, extended_prob,
-        spurious_prob, blended_prob, deblended_flag,
-        segmentation_area, semimajor_axis, ellipticity, kron_radius, fwhm,
-        mu_max, mumax_minus_mag, gal_ebv, gaia_id, gaia_match_quality,
-        flux_vis_psf, fluxerr_vis_psf,
-        flux_vis_3fwhm_aper, fluxerr_vis_3fwhm_aper,
-        flux_y_3fwhm_aper, fluxerr_y_3fwhm_aper,
-        flux_j_3fwhm_aper, fluxerr_j_3fwhm_aper,
-        flux_h_3fwhm_aper, fluxerr_h_3fwhm_aper
-    FROM catalogue.mer_catalogue
+        mer.object_id, mer.right_ascension, mer.declination,
+        mer.point_like_prob, mer.extended_prob,
+        mer.spurious_prob, mer.blended_prob,
+        mer.segmentation_area, mer.semimajor_axis, mer.ellipticity,
+        mer.kron_radius, mer.fwhm, mer.mu_max, mer.mumax_minus_mag,
+        mer.gal_ebv, mer.gaia_id, mer.gaia_match_quality,
+        mer.flux_vis_psf, mer.fluxerr_vis_psf,
+        {aperture_columns},
+        mer.flux_detection_total, mer.fluxerr_detection_total,
+        mer.flux_vis_sersic, mer.fluxerr_vis_sersic,
+        mer.vis_det, mer.det_quality_flag,
+        {mer_study_columns},
+        {morphology_study_columns},
+        cls.phz_star_prob, cls.phz_gal_prob, cls.phz_qso_prob,
+        cls.phz_classification,
+        pz.phz_pdf, pz.phz_median, pz.phz_mode_1, pz.phz_mode_1_area,
+        pz.phz_mode_2, pz.phz_mode_2_area, pz.phz_flags,
+        phys.phys_param_flags AS phz_phys_flags,
+        phys.quality_flag AS phz_phys_quality_flag,
+        phys.phz_pp_median_redshift,
+        phys.phz_pp_68_redshift,
+        phys.phz_pp_median_stellarmass,
+        phys.phz_pp_68_stellarmass,
+        phys.phz_pp_median_sfr,
+        phys.phz_pp_68_sfr,
+        phys.phz_pp_median_sfhage,
+        phys.phz_pp_68_sfhage,
+        phys.phz_pp_median_mu,
+        phys.phz_pp_68_mu,
+        phys.phz_pp_median_mv,
+        phys.phz_pp_68_mv,
+        phys.phz_pp_median_mj,
+        phys.phz_pp_68_mj,
+        phys.phz_pp_median_mvis,
+        phys.phz_pp_68_mvis
+    FROM catalogue.mer_catalogue AS mer
+    LEFT OUTER JOIN catalogue.mer_morphology AS morph
+      ON mer.object_id = morph.object_id
+    LEFT OUTER JOIN catalogue.phz_classification AS cls
+      ON mer.object_id = cls.object_id
+    LEFT OUTER JOIN catalogue.phz_photo_z AS pz
+      ON mer.object_id = pz.object_id
+    LEFT OUTER JOIN catalogue.phz_physical_parameters AS phys
+      ON mer.object_id = phys.object_id
     WHERE CONTAINS(
-        POINT('ICRS', right_ascension, declination),
+        POINT('ICRS', mer.right_ascension, mer.declination),
         CIRCLE('ICRS', {float(ra)}, {float(dec)}, {radius_deg})
     ) = 1
-      AND det_quality_flag = 0
-      AND flag_vis = 0
-      AND (spurious_flag IS NULL OR spurious_flag = 0)
-      AND flux_vis_psf IS NOT NULL
-      AND flux_vis_psf > 0
+      AND mer.det_quality_flag = 0
+      AND mer.flag_vis = 0
+      AND (mer.spurious_flag IS NULL OR mer.spurious_flag = 0)
+      AND mer.flux_vis_psf IS NOT NULL
+      AND mer.flux_vis_psf > 0
     """
     job = Euclid.launch_job_async(query)
     if job is None and relogin is not None:
@@ -1250,6 +1844,8 @@ def query_euclid_population(
             "The previous population cache was preserved."
         )
     rows: list[dict[str, Any]] = []
+    pdf_object_ids: list[str] = []
+    pdf_probability: list[np.ndarray] = []
 
     def value(raw: Any, key: str) -> float | None:
         try:
@@ -1267,6 +1863,12 @@ def query_euclid_population(
             if flux is not None and error is not None and error > 0 else None
         )
 
+    def interval(raw: Any, key: str) -> tuple[float | None, float | None]:
+        values = _result_vector(raw, key, 2)
+        if values is None:
+            return None, None
+        return float(values[0]), float(values[1])
+
     for raw in ([] if results is None else results):
         flux = value(raw, "flux_vis_psf")
         flux_error = value(raw, "fluxerr_vis_psf")
@@ -1280,24 +1882,45 @@ def query_euclid_population(
             else "unknown"
         )
         aperture_fluxes = {
-            band: value(raw, f"flux_{band}_3fwhm_aper")
-            for band in ("vis", "y", "j", "h")
+            (band, multiple): value(
+                raw, f"flux_{band}_{multiple}fwhm_aper",
+            )
+            for band in APERTURE_BANDS
+            for multiple in APERTURE_FWHM_MULTIPLES
         }
         aperture_errors = {
-            band: value(raw, f"fluxerr_{band}_3fwhm_aper")
-            for band in ("vis", "y", "j", "h")
+            (band, multiple): value(
+                raw, f"fluxerr_{band}_{multiple}fwhm_aper",
+            )
+            for band in APERTURE_BANDS
+            for multiple in APERTURE_FWHM_MULTIPLES
         }
         magnitudes = {
-            band: magnitude(aperture_fluxes[band])
-            for band in ("vis", "y", "j", "h")
+            band: magnitude(aperture_fluxes[band, 3])
+            for band in APERTURE_BANDS
         }
         try:
             gaia_text = str(raw["gaia_id"]).strip()
         except (KeyError, IndexError, TypeError):
             gaia_text = ""
         gaia_id = gaia_text if gaia_text and gaia_text not in {"--", "nan"} else None
+        object_id = str(raw["object_id"])
+        rebinned_pdf, retained_pdf_mass = _rebin_phz_pdf(
+            _result_vector(raw, "phz_pdf", PHZ_PDF_GRID.size)
+        )
+        if rebinned_pdf is not None:
+            pdf_object_ids.append(object_id)
+            pdf_probability.append(rebinned_pdf)
+        redshift_interval = interval(raw, "phz_pp_68_redshift")
+        mass_interval = interval(raw, "phz_pp_68_stellarmass")
+        sfr_interval = interval(raw, "phz_pp_68_sfr")
+        age_interval = interval(raw, "phz_pp_68_sfhage")
+        u_interval = interval(raw, "phz_pp_68_mu")
+        v_interval = interval(raw, "phz_pp_68_mv")
+        j_interval = interval(raw, "phz_pp_68_mj")
+        vis_interval = interval(raw, "phz_pp_68_mvis")
         rows.append({
-            "object_id": str(raw["object_id"]),
+            "object_id": object_id,
             "gaia_id": gaia_id,
             "type": source_type,
             "ra": value(raw, "right_ascension"),
@@ -1324,19 +1947,41 @@ def query_euclid_population(
             "flux_vis_psf_uJy": flux,
             "fluxerr_vis_psf_uJy": flux_error,
             **{
-                f"flux_{band}_aper_uJy": aperture_fluxes[band]
-                for band in ("vis", "y", "j", "h")
+                f"flux_{band}_{multiple}fwhm_aper_uJy": (
+                    aperture_fluxes[band, multiple]
+                )
+                for band in APERTURE_BANDS
+                for multiple in APERTURE_FWHM_MULTIPLES
             },
             **{
-                f"fluxerr_{band}_aper_uJy": aperture_errors[band]
-                for band in ("vis", "y", "j", "h")
+                f"fluxerr_{band}_{multiple}fwhm_aper_uJy": (
+                    aperture_errors[band, multiple]
+                )
+                for band in APERTURE_BANDS
+                for multiple in APERTURE_FWHM_MULTIPLES
             },
+            **{
+                f"flux_{band}_aper_uJy": aperture_fluxes[band, 3]
+                for band in APERTURE_BANDS
+            },
+            **{
+                f"fluxerr_{band}_aper_uJy": aperture_errors[band, 3]
+                for band in APERTURE_BANDS
+            },
+            "flux_detection_total_uJy": value(raw, "flux_detection_total"),
+            "fluxerr_detection_total_uJy": value(
+                raw, "fluxerr_detection_total",
+            ),
+            "flux_vis_sersic_uJy": value(raw, "flux_vis_sersic"),
+            "fluxerr_vis_sersic_uJy": value(raw, "fluxerr_vis_sersic"),
+            "vis_det": value(raw, "vis_det"),
+            "det_quality_flag": value(raw, "det_quality_flag"),
             "vis_snr": signal_to_noise(flux, flux_error),
             **{
                 f"aper_{band}_snr": signal_to_noise(
-                    aperture_fluxes[band], aperture_errors[band]
+                    aperture_fluxes[band, 3], aperture_errors[band, 3]
                 )
-                for band in ("vis", "y", "j", "h")
+                for band in APERTURE_BANDS
             },
             "point_like_prob": value(raw, "point_like_prob"),
             "extended_prob": value(raw, "extended_prob"),
@@ -1355,6 +2000,58 @@ def query_euclid_population(
             "deblended": (
                 1.0 if value(raw, "deblended_flag") == 1 else 0.0
             ),
+            **{
+                cache_name: value(raw, cache_name)
+                for cache_name in EUCLID_MER_STUDY_COLUMNS
+            },
+            **{
+                cache_name: value(raw, cache_name)
+                for cache_name in EUCLID_MORPHOLOGY_STUDY_COLUMNS
+            },
+            "phz_star_prob": value(raw, "phz_star_prob"),
+            "phz_gal_prob": value(raw, "phz_gal_prob"),
+            "phz_qso_prob": value(raw, "phz_qso_prob"),
+            "phz_classification": value(raw, "phz_classification"),
+            "phz_median": value(raw, "phz_median"),
+            "phz_mode_1": value(raw, "phz_mode_1"),
+            "phz_mode_1_area": value(raw, "phz_mode_1_area"),
+            "phz_mode_2": value(raw, "phz_mode_2"),
+            "phz_mode_2_area": value(raw, "phz_mode_2_area"),
+            "phz_flags": value(raw, "phz_flags"),
+            "phz_pdf_valid": 1.0 if rebinned_pdf is not None else 0.0,
+            "phz_pdf_retained_mass": (
+                retained_pdf_mass if rebinned_pdf is not None else None
+            ),
+            "phz_phys_flags": value(raw, "phz_phys_flags"),
+            "phz_phys_quality_flag": value(raw, "phz_phys_quality_flag"),
+            "phz_pp_median_redshift": value(
+                raw, "phz_pp_median_redshift"
+            ),
+            "phz_pp_redshift_p16": redshift_interval[0],
+            "phz_pp_redshift_p84": redshift_interval[1],
+            "phz_pp_median_stellarmass": value(
+                raw, "phz_pp_median_stellarmass"
+            ),
+            "phz_pp_stellarmass_p16": mass_interval[0],
+            "phz_pp_stellarmass_p84": mass_interval[1],
+            "phz_pp_median_sfr": value(raw, "phz_pp_median_sfr"),
+            "phz_pp_sfr_p16": sfr_interval[0],
+            "phz_pp_sfr_p84": sfr_interval[1],
+            "phz_pp_median_sfhage": value(raw, "phz_pp_median_sfhage"),
+            "phz_pp_sfhage_p16": age_interval[0],
+            "phz_pp_sfhage_p84": age_interval[1],
+            "phz_pp_median_mu": value(raw, "phz_pp_median_mu"),
+            "phz_pp_mu_p16": u_interval[0],
+            "phz_pp_mu_p84": u_interval[1],
+            "phz_pp_median_mv": value(raw, "phz_pp_median_mv"),
+            "phz_pp_mv_p16": v_interval[0],
+            "phz_pp_mv_p84": v_interval[1],
+            "phz_pp_median_mj": value(raw, "phz_pp_median_mj"),
+            "phz_pp_mj_p16": j_interval[0],
+            "phz_pp_mj_p84": j_interval[1],
+            "phz_pp_median_mvis": value(raw, "phz_pp_median_mvis"),
+            "phz_pp_mvis_p16": vis_interval[0],
+            "phz_pp_mvis_p84": vis_interval[1],
         })
 
     usable_nonstellar = sum(
@@ -1371,17 +2068,27 @@ def query_euclid_population(
     out = _catalog_path or euclid_catalog_path()
     out.parent.mkdir(parents=True, exist_ok=True)
     temporary = out.with_suffix(".tmp")
-    columns = ["object_id", "gaia_id", "type", "ra", "dec", *[
-        key for key in _PARAM_META if key not in {
-            "objects_per_field", "flux_vis_e", "z", "re_arcsec", "logmass",
-            "mass_scale", "temperature_k", "extinction_av",
-        }
-    ]]
+    columns = [
+        "object_id", "gaia_id", "type", "ra", "dec",
+        *[
+            key for key in _PARAM_META if key not in {
+                "objects_per_field", "flux_vis_e", "z", "re_arcsec",
+                "logmass", "mass_scale", "temperature_k", "extinction_av",
+            }
+        ],
+        *EUCLID_MER_STUDY_COLUMNS,
+        *EUCLID_MORPHOLOGY_STUDY_COLUMNS,
+    ]
     with temporary.open("w", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=columns)
         writer.writeheader()
         writer.writerows(rows)
+    phz_out = _phz_pdf_path or out.with_name("euclid_population_phz_pdf.npz")
+    phz_digest = _write_phz_pdf_cache(
+        phz_out, pdf_object_ids, pdf_probability,
+    )
     os.replace(temporary, out)
+    phz_coverage = _phz_coverage(rows)
 
     meta = {
         "catalog_version": CATALOG_VERSION,
@@ -1405,9 +2112,18 @@ def query_euclid_population(
             "low-completeness; unknown rows must not be counted as galaxies."
         ),
         "photometry": (
-            "3 FWHM PSF-matched aperture magnitudes, raw fluxes/errors, and "
-            "colours; VIS PSF flux is retained separately"
+            "1, 2, 3, and 4 FWHM PSF-matched aperture fluxes/errors in VIS, "
+            "Y, J, and H; legacy magnitudes and colours use 3 FWHM; VIS PSF, "
+            "segmentation, detection-band Kron total, and four-band Sérsic "
+            "fluxes are retained"
         ),
+        "study_schema": {
+            "mer_table": "catalogue.mer_catalogue",
+            "morphology_table": "catalogue.mer_morphology",
+            "mer_columns": dict(EUCLID_MER_STUDY_COLUMNS),
+            "morphology_columns": dict(EUCLID_MORPHOLOGY_STUDY_COLUMNS),
+            "missing_values": "retained as empty CSV cells",
+        },
         "probability_coverage": {
             "field": "point_like_prob",
             "valid_rows": sum(
@@ -1420,6 +2136,15 @@ def query_euclid_population(
                 or not 0.0 <= float(row["point_like_prob"]) <= 1.0
                 for row in rows
             ),
+        },
+        "phz_pdf_cache": str(phz_out),
+        "phz_pdf_sha256": phz_digest,
+        "phz_pdf_rows": len(pdf_object_ids),
+        "phz_coverage": phz_coverage,
+        "phz_quality": {
+            "classification_gate": phz_coverage["classification_fraction"] >= 0.90,
+            "redshift_pdf_gate": phz_coverage["valid_pdf_fraction"] >= 0.80,
+            "all_retained_pdfs_normalized": True,
         },
     }
     _write_json(_meta_path or euclid_catalog_meta_path(), meta)
@@ -1527,6 +2252,7 @@ def query_euclid_population_multi(
             raise ValueError("same-footprint refresh has no saved centers")
         count = len(centers)
     combined: dict[str, dict[str, Any]] = {}
+    combined_pdf: dict[str, np.ndarray] = {}
     cone_meta: list[dict[str, Any]] = []
     out = euclid_catalog_path()
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -1535,6 +2261,7 @@ def query_euclid_population_multi(
     ) as temporary_dir:
         cone_catalog = Path(temporary_dir) / "cone.csv"
         cone_meta_path = Path(temporary_dir) / "cone.json"
+        cone_phz_path = Path(temporary_dir) / "cone_phz.npz"
         for index, center in enumerate(centers):
             if progress:
                 progress(
@@ -1546,12 +2273,18 @@ def query_euclid_population_multi(
                 relogin=relogin,
                 _catalog_path=cone_catalog,
                 _meta_path=cone_meta_path,
+                _phz_pdf_path=cone_phz_path,
                 _require_nonstellar=False,
             )
             with cone_catalog.open(newline="", encoding="utf-8") as handle:
                 for row in csv.DictReader(handle):
                     row["cone_index"] = index
                     combined.setdefault(str(row["object_id"]), row)
+            cone_phz = read_phz_pdf_cache(cone_phz_path)
+            for object_id, probability in zip(
+                cone_phz["object_id"], cone_phz["probability"], strict=True,
+            ):
+                combined_pdf.setdefault(str(object_id), probability)
             cone_meta.append({**center, "rows": meta["rows"]})
 
     rows = list(combined.values())
@@ -1569,7 +2302,17 @@ def query_euclid_population_multi(
         writer = csv.DictWriter(handle, fieldnames=columns)
         writer.writeheader()
         writer.writerows(rows)
+    pdf_ids = [
+        str(row["object_id"]) for row in rows
+        if str(row["object_id"]) in combined_pdf
+    ]
+    phz_out = out.with_name("euclid_population_phz_pdf.npz")
+    phz_digest = _write_phz_pdf_cache(
+        phz_out, pdf_ids,
+        [combined_pdf[object_id] for object_id in pdf_ids],
+    )
     os.replace(temporary, out)
+    phz_coverage = _phz_coverage(rows)
     meta = {
         "catalog_version": CATALOG_VERSION,
         "cone_count": len(centers),
@@ -1593,8 +2336,9 @@ def query_euclid_population_multi(
             "saved Euclid stars; object_id duplicates are removed."
         ),
         "photometry": (
-            "3 FWHM PSF-matched aperture magnitudes, raw fluxes/errors, and "
-            "colours; VIS PSF flux is retained separately"
+            "1, 2, 3, and 4 FWHM PSF-matched aperture fluxes/errors in VIS, "
+            "Y, J, and H; legacy magnitudes and colours use 3 FWHM; VIS PSF, "
+            "detection-band Kron total, and VIS Sérsic fluxes are retained"
         ),
         "probability_coverage": {
             "field": "point_like_prob",
@@ -1608,6 +2352,15 @@ def query_euclid_population_multi(
                 or not 0.0 <= float(row["point_like_prob"]) <= 1.0
                 for row in rows
             ),
+        },
+        "phz_pdf_cache": str(phz_out),
+        "phz_pdf_sha256": phz_digest,
+        "phz_pdf_rows": len(pdf_ids),
+        "phz_coverage": phz_coverage,
+        "phz_quality": {
+            "classification_gate": phz_coverage["classification_fraction"] >= 0.90,
+            "redshift_pdf_gate": phz_coverage["valid_pdf_fraction"] >= 0.80,
+            "all_retained_pdfs_normalized": True,
         },
     }
     _write_json(euclid_catalog_meta_path(), meta)

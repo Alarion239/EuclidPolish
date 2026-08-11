@@ -183,6 +183,9 @@ def test_cutout_viewer_exports_capture_all_visible_frames():
     assert "function publicationFigureCanvas()" in source
     assert "function publicationCrop(fr)" in source
     assert "let publicationRegion = null" in source
+    assert "function syncPublicationRegionToFrozenLenses()" in source
+    assert "rememberPublicationRegion" not in source
+    assert "A selected magnification region exports as matched crops" in source
     assert "publicationTransferSummary" not in source
     assert "PUBLICATION_GOLD" not in source
     assert "panelHeader = 64" in source
@@ -193,10 +196,14 @@ def test_cutout_viewer_exports_capture_all_visible_frames():
     assert 'asinh knee: ${Math.round(info.knee)} e⁻' in source
     assert 'Pixel signal (e⁻)' in source
     assert 'input-equivalent signal' not in source
-    assert "cropFraction < 0.5" in source
-    assert "const inset = Math.round(side * 0.3825);" in source
-    assert "crop.angularSide.toFixed" in source
+    assert "const inset =" not in source
+    assert "const displayedSidePixels = crop ? crop.side : fr.canvas.width;" in source
+    assert "ctx.drawImage(fr.canvas, crop.x, crop.y, crop.side, crop.side," in source
+    assert "crop.angularSide" not in source
     assert "exportFigure()" in source
+    assert '"BHR FWHM"' in source
+    assert 'refreshTier("bhr")' in source
+    assert 'state.meta.bhr_fwhm_control' in source
 
 
 def test_population_atlas_download_route(client, monkeypatch):
@@ -336,16 +343,24 @@ def test_viewer_meta_sky_uses_starfull_hr_record(tmp_path, monkeypatch):
     monkeypatch.setattr(vd, "_record_count", lambda *_args: 1)
     monkeypatch.setattr(vd.sky_records, "sr_count", lambda _subset: 0)
 
-    m = vd._sky_meta({"subset": "validate"})
+    m = vd.get_meta("sky", {"subset": "validate"})
     keys = [t["key"] for t in m["tiers"]]
     assert "hr" in keys
+    assert "bhr" in keys
     assert "clean" not in keys
     assert "sr" in keys
     sr = next(t for t in m["tiers"] if t["key"] == "sr")
     assert isinstance(sr.get("disabled"), bool)
+    assert m["bhr_fwhm_control"] == {
+        "param": "bhr_fwhm_arcsec",
+        "default_arcsec": 0.66,
+        "min_arcsec": 0.0,
+        "max_arcsec": 2.0,
+        "step_arcsec": 0.005,
+    }
 
 
-def test_viewer_sky_hr_cube_reads_starfull_record(tmp_path, monkeypatch):
+def test_viewer_sky_hr_and_bhr_cubes_read_starfull_record(tmp_path, monkeypatch):
     import types
 
     import numpy as np
@@ -358,8 +373,10 @@ def test_viewer_sky_hr_cube_reads_starfull_record(tmp_path, monkeypatch):
 
     def fake_read_images(path, num_images):
         read_paths.append((path, num_images))
+        data = np.zeros((8, 8, 4), dtype=np.float32)
+        data[4, 4, 0] = 1.0
         record = types.SimpleNamespace(
-            data=np.ones((8, 8, 4), dtype=np.float32),
+            data=data,
             index=0,
             pixel_scale_arcsec=0.025,
         )
@@ -368,11 +385,31 @@ def test_viewer_sky_hr_cube_reads_starfull_record(tmp_path, monkeypatch):
     monkeypatch.setattr(vd, "_sky_records_local_dir", lambda: str(tmp_path))
     monkeypatch.setattr(vd, "read_images", fake_read_images)
 
-    cube, info = vd._sky_cube(0, "hr", {"subset": "validate"})
+    hr, hr_info = vd._sky_cube(0, "hr", {"subset": "validate"})
+    bhr, bhr_info = vd._sky_cube(0, "bhr", {"subset": "validate"})
+    zero_blur, _ = vd._sky_cube(
+        0, "bhr", {"subset": "validate", "bhr_fwhm_arcsec": "0"},
+    )
 
-    assert read_paths == [(str(hr_path), 1)]
-    assert cube.shape == (8, 8, 4)
-    assert info["label"] == "hr · validate · idx 0"
+    assert read_paths == [(str(hr_path), 1)] * 3
+    assert hr.shape == bhr.shape == (8, 8, 4)
+    assert hr[4, 4, 0] == 1.0
+    assert bhr[4, 4, 0] < hr[4, 4, 0]
+    np.testing.assert_array_equal(zero_blur, hr)
+    assert hr_info["label"] == "hr · validate · idx 0"
+    assert bhr_info["label"] == "BHR (blurred HR) · validate · idx 0"
+
+
+def test_bhr_fwhm_uses_full_target_selection_range():
+    from euclid_polish.web.helpers import viewer_data as vd
+
+    assert vd._bhr_fwhm_arcsec({
+        "bhr_fwhm_arcsec": str(Config.BAND_VIS.psf_fwhm_arcsec),
+    }) == Config.BAND_VIS.psf_fwhm_arcsec
+    assert vd._bhr_fwhm_arcsec({"bhr_fwhm_arcsec": "0.66"}) == 0.66
+    with pytest.raises(vd.ViewerError) as error:
+        vd._bhr_fwhm_arcsec({"bhr_fwhm_arcsec": "2.001"})
+    assert error.value.code == 400
 
 
 def test_viewer_meta_sky_accepts_test_subset(client):
@@ -526,6 +563,33 @@ def test_euclid_auth_status_reports_presence(client, monkeypatch):
     assert r.status_code == 200
     body = r.get_json()
     assert body["present"] is True and body["user"] == "alice"
+
+
+def test_local_euclid_login_is_reachable_without_fasrc(client, monkeypatch):
+    """The laptop-side archive session must not be gated on FASRC SSH."""
+    from euclid_polish.web import euclid_session
+    from euclid_polish.web import remote as web_remote
+
+    class _Down:
+        def is_connected(self): return False
+
+    seen = {}
+
+    def fake_login(user, password):
+        seen["credentials"] = (user, password)
+
+    monkeypatch.setattr(web_remote.STATE, "ssh", _Down())
+    monkeypatch.setattr(euclid_session, "login", fake_login)
+    monkeypatch.setattr(euclid_session, "current_user", lambda: "alice")
+
+    r = client.post(
+        "/auth/login",
+        data={"username": "alice", "password": "opaque password"},
+    )
+
+    assert r.status_code == 200
+    assert r.get_json() == {"ok": True, "user": "alice"}
+    assert seen["credentials"] == ("alice", "opaque password")
 
 
 def test_tng_auth_save_writes_remote_token(client, monkeypatch):

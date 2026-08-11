@@ -1,0 +1,269 @@
+.star-query-strip {
+  margin-bottom: var(--s7);
+}
+
+.star-query-strip__content {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s5);
+}
+
+.star-query-strip__stats,
+.star-query-strip__actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--s5);
+}
+
+.star-query-strip__actions {
+  justify-content: flex-end;
+  gap: var(--s2);
+}
+
+.star-query-strip__note {
+  margin: var(--s3) 0 0;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.star-colour-section__head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--s4);
+  padding-bottom: var(--s3);
+  border-bottom: 1px solid var(--border);
+}
+
+.star-colour-section__head h2 {
+  margin-top: 2px;
+  font-size: 20px;
+}
+
+.star-colour-section__head p {
+  margin: 4px 0 0;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.star-colour-key {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--s3);
+  color: var(--text-faint);
+  font: 11px/1 var(--font-mono);
+}
+
+.star-colour-key span {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.star-colour-key i {
+  display: inline-block;
+  flex: 0 0 auto;
+}
+
+.star-colour-key__points {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--series-mean);
+  opacity: .55;
+}
+
+.star-colour-key__unmatched,
+.star-colour-key__matched,
+.star-colour-key__euclid {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.star-colour-key__unmatched {
+  background: var(--series-muted);
+  opacity: .55;
+}
+
+.star-colour-key__matched {
+  border: 2px solid var(--series-comb);
+}
+
+.star-colour-key__euclid {
+  background: var(--series-mean);
+  opacity: .7;
+}
+
+.star-density-key__euclid,
+.star-density-key__point-source,
+.star-density-key__gaia,
+.star-density-key__model {
+  width: 20px;
+  border-top: 2px solid;
+}
+
+.star-density-key__euclid {
+  border-color: var(--series-mean);
+}
+
+.star-density-key__point-source {
+  border-color: var(--cat-1);
+}
+
+.star-density-key__gaia {
+  border-color: var(--series-comb);
+}
+
+.star-density-key__model {
+  border-color: var(--cat-3);
+  border-top-style: dashed;
+}
+
+.star-colour-key__trend {
+  width: 20px;
+  border-top: 2px solid var(--series-comb);
+}
+
+.star-colour-key__one-sigma,
+.star-colour-key__two-sigma {
+  width: 20px;
+  height: 9px;
+  border: 1px solid color-mix(in srgb, var(--series-comb) 45%, transparent);
+}
+
+.star-colour-key__one-sigma {
+  background: color-mix(in srgb, var(--series-comb) 16%, transparent);
+}
+
+.star-colour-key__two-sigma {
+  background: color-mix(in srgb, var(--series-comb) 7%, transparent);
+}
+
+.star-colour-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: var(--s6);
+  row-gap: var(--s5);
+  margin-top: var(--s4);
+}
+
+.star-cmd-section {
+  margin-bottom: var(--s7);
+}
+
+.star-euclid-projection {
+  margin-bottom: var(--s7);
+}
+
+.star-density-comparison {
+  margin-bottom: var(--s7);
+}
+
+.star-density-summary {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--s2) var(--s5);
+  padding: var(--s3) 2px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-faint);
+  font: 11px/1.4 var(--font-mono);
+}
+
+.star-density-summary b {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.star-density-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--s5) var(--s6);
+  margin-top: var(--s4);
+}
+
+.star-density-plot--vis {
+  grid-column: 1 / -1;
+}
+
+.star-euclid-projection__grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--s5);
+  margin-top: var(--s4);
+}
+
+.star-euclid-projection__grid .star-colour-plot header {
+  min-height: 42px;
+  align-items: flex-start;
+  flex-direction: column;
+  justify-content: flex-start;
+  gap: 4px;
+}
+
+.star-euclid-projection__grid .star-colour-plot header span {
+  white-space: normal;
+}
+
+.star-cmd-plot {
+  margin-top: var(--s3);
+  padding-bottom: var(--s4);
+  border-bottom: 1px solid var(--border);
+}
+
+.star-colour-plot {
+  min-width: 0;
+  padding-bottom: var(--s4);
+  border-bottom: 1px solid var(--border);
+}
+
+.star-colour-plot header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s3);
+  padding: 0 2px var(--s2);
+}
+
+.star-colour-plot h3 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.star-colour-plot header span {
+  color: var(--text-faint);
+  font: 11px/1 var(--font-mono);
+  white-space: nowrap;
+}
+
+@media (max-width: 900px) {
+  .star-query-strip__content,
+  .star-colour-section__head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .star-query-strip__actions,
+  .star-colour-key {
+    justify-content: flex-start;
+  }
+  .star-euclid-projection__grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 720px) {
+  .star-colour-grid {
+    grid-template-columns: 1fr;
+  }
+  .star-density-grid {
+    grid-template-columns: 1fr;
+  }
+  .star-density-plot--vis {
+    grid-column: auto;
+  }
+}

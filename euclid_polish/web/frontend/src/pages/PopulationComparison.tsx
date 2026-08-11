@@ -79,6 +79,23 @@ type SharedPopulation = {
   class_labels: Record<ComparisonClass, string>;
   density_unit: string;
 };
+type PhzProbabilityRelation = {
+  mer_galaxy_probability: number[];
+  mean_phz_galaxy_probability: (number | null)[];
+  objects: number[];
+  correlation: number | null;
+  interpretation: string;
+};
+type TngColourConditioning = {
+  available: boolean;
+  note: string;
+  colours: Record<string, {
+    label: string; x: number[];
+    series: Record<"current" | "phz_conditioned", {
+      probability: number[]; count: number;
+    }>;
+  }>;
+};
 type PriorInterval = { median: number; p16: number; p84: number };
 type CatalogPrior = {
   method: string;
@@ -137,6 +154,7 @@ type TngPrior = {
   }>;
 };
 type CalibrationArtifact = {
+  version?: number;
   valid?: boolean;
   validated?: boolean;
   warnings?: string[];
@@ -167,6 +185,7 @@ type CalibrationArtifact = {
   diagnostics?: {
     star_density_per_cone: {
       x: number[]; observed: number[]; fitted: number[]; label: string; unit: string;
+      x_label?: string;
       statistics?: { mean?: number | null; std?: number | null;
         p16?: number | null; p50?: number | null; p84?: number | null };
     };
@@ -259,8 +278,15 @@ type TngDrawMarginals = {
   angular_radius: JointFitDensity;
   surface_density_arcmin2: number;
 };
+type PhzCoverage = {
+  classification_fraction: number;
+  valid_pdf_fraction: number;
+  valid_physical_fraction: number;
+  pathological_ssfr_weight: number;
+  qso_overlap_fraction: number;
+};
 type CosmosEuclidFit = {
-  version: 2;
+  version: 2 | 3;
   fingerprint: string;
   interpretation: string;
   inputs: {
@@ -273,11 +299,48 @@ type CosmosEuclidFit = {
   };
   fit_quality: {
     valid: boolean;
+    phz_valid?: boolean;
+    phz_quality_gates?: Record<string, boolean>;
     cosmos_reduced_poisson_deviance: number;
     cosmos_reduced_negative_binomial_deviance?: number;
     euclid_reduced_poisson_deviance: number;
     warnings: string[];
   };
+  phz_redshift_correction?: {
+    z_edges: number[];
+    vis_magnitude_edges: number[];
+    observed_weighted_counts: number[][];
+    baseline_weighted_counts: number[][];
+    corrected_weighted_counts: number[][];
+    median_absolute_fractional_residual: number;
+    density_change_fraction: number;
+    cross_validation: {
+      mean_improvement_fraction: number;
+      folds: Array<{
+        test_cones: number[];
+        baseline_deviance: number;
+        corrected_deviance: number;
+        improvement_fraction: number;
+      }>;
+    };
+  };
+  physical_conditionals?: {
+    z_edges: number[];
+    vis_magnitude_edges: number[];
+    phz_rows: number;
+    cosmos_rows: number;
+    quenched_fraction: number[][];
+    classes: Record<"quenched" | "star_forming", {
+      mass_mean: number[][]; mass_sigma: number[][];
+      ssfr_mean: number[][]; ssfr_sigma: number[][];
+      effective_weight: number[][];
+    }>;
+  };
+  phz_inputs?: {
+    coverage: PhzCoverage;
+    pdf_rows: number;
+  };
+  phz_quality_gates?: Record<string, boolean>;
   model: {
     luminosity_function: Record<string, number | number[]>;
     size_relation: Record<string, number | number[]>;
@@ -336,6 +399,8 @@ type Comparison = {
     synthetic_field_count: number;
     euclid: Population | null;
     shared: SharedPopulation | null;
+    phz_probability_relation?: PhzProbabilityRelation | null;
+    tng_colour_conditioning?: TngColourConditioning | null;
     tng_prior?: TngPrior | null;
     cosmos_euclid_fit?: CosmosEuclidFit | null;
     synthetic_splits?: string[];
@@ -349,6 +414,8 @@ type Comparison = {
       counts: Record<string, number>;
       classification_note: string;
       photometry: string;
+      phz_coverage?: PhzCoverage;
+      phz_quality?: Record<string, boolean>;
     } | null;
   };
 };
@@ -364,7 +431,11 @@ type Availability = {
     fields: number; area_arcmin2: number;
     inference_fields: number; jwst_overlap_fields: number;
   };
-  euclid_catalog: { cached: boolean; meta: Comparison["population"]["euclid_meta"] };
+  euclid_catalog: {
+    cached: boolean;
+    meta: Comparison["population"]["euclid_meta"];
+    phz_pdf_current?: boolean;
+  };
   field_area_arcmin2: number;
   default_cone: { ra: number; dec: number; radius_arcmin: number; area_arcmin2: number };
 };
@@ -1038,6 +1109,147 @@ function PopulationSummary({ title, eyebrow, population, tone }: {
   );
 }
 
+function PhzCalibrationPanel({
+  fit, probabilityRelation, colourConditioning,
+}: {
+  fit: CosmosEuclidFit;
+  probabilityRelation?: PhzProbabilityRelation | null;
+  colourConditioning?: TngColourConditioning | null;
+}) {
+  const correction = fit.phz_redshift_correction;
+  const physical = fit.physical_conditionals;
+  const coverage = fit.phz_inputs?.coverage;
+  if (!correction || !physical || !coverage) return null;
+  const z = correction.z_edges.slice(0, -1).map(
+    (lower, index) => 0.5 * (lower + correction.z_edges[index + 1]),
+  );
+  const sumMagnitude = (plane: number[][]) => plane.map(
+    (row) => row.reduce((total, value) => total + value, 0),
+  );
+  const observed = sumMagnitude(correction.observed_weighted_counts);
+  const baseline = sumMagnitude(correction.baseline_weighted_counts);
+  const corrected = sumMagnitude(correction.corrected_weighted_counts);
+  const physicalZ = physical.z_edges.slice(0, -1).map(
+    (lower, index) => 0.5 * (lower + physical.z_edges[index + 1]),
+  );
+  const brightColumns = physical.vis_magnitude_edges.slice(0, -1)
+    .map((lower, index) => ({ lower, upper: physical.vis_magnitude_edges[index + 1], index }))
+    .filter(({ upper }) => upper <= 24.5);
+  const averageColumns = (plane: number[][]) => plane.map((row) => {
+    const values = brightColumns.map(({ index }) => row[index]).filter(Number.isFinite);
+    return values.length
+      ? values.reduce((total, value) => total + value, 0) / values.length
+      : 0;
+  });
+  const gateEntries = Object.entries(fit.phz_quality_gates ?? {});
+  const colour = colourConditioning?.colours.vis_y_color;
+  return (
+    <section className="atlas-section">
+      <div className="section-head">
+        <div><span className="eyebrow">Euclid PHZ</span>
+          <h2>Redshift and physical-population calibration</h2></div>
+        <p>PHZ changes conditional galaxy properties; MER still fixes total density and measured-size response.</p>
+      </div>
+      <div className="calibration-status-grid">
+        <div><span className="eyebrow">classification</span>
+          <strong>{(100 * coverage.classification_fraction).toFixed(1)}%</strong>
+          <small>eligible MER galaxy weight with PHZ probabilities</small></div>
+        <div><span className="eyebrow">redshift PDFs</span>
+          <strong>{(100 * coverage.valid_pdf_fraction).toFixed(1)}%</strong>
+          <small>{fit.phz_inputs?.pdf_rows.toLocaleString()} compacted PDFs</small></div>
+        <div><span className="eyebrow">physical properties</span>
+          <strong>{(100 * coverage.valid_physical_fraction).toFixed(1)}%</strong>
+          <small>{physical.phz_rows.toLocaleString()} PHZ · {physical.cosmos_rows.toLocaleString()} COSMOS rows</small></div>
+        <div><span className="eyebrow">activation gates</span>
+          <strong>{fit.fit_quality.phz_valid ? "passed" : "blocked"}</strong>
+          <small>{gateEntries.filter(([, passed]) => passed).length}/{gateEntries.length} PHZ gates passed</small></div>
+      </div>
+      <div className="parameter-atlas">
+        <Card className="parameter-card">
+          <CardHead title="PHZ redshift constraint"
+            sub="probability-weighted Q1 PDFs · baseline and density-preserving correction" />
+          <CardBody>
+            <AdjustablePlot boundsLabel="PHZ redshift calibration"
+              xDomain={domain(z)} yDomain={domain([...observed, ...baseline, ...corrected], true)}
+              xLabel="photometric redshift" yLabel="weighted objects"
+              series={[
+                { x: z, y: observed, color: "#1267d6", mode: "scatter", marker: "ring", width: 2 },
+                { x: z, y: baseline, color: "#242424", width: 2, dash: [6, 4] },
+                { x: z, y: corrected, color: "#cf3d2e", width: 2.8 },
+              ]} aspect={0.62} />
+            <Legend items={[
+              { color: "#1267d6", label: "Euclid PHZ PDFs", marker: "ring" },
+              { color: "#242424", label: "uncorrected model", line: true, dash: true },
+              { color: "#cf3d2e", label: "PHZ-corrected model", line: true },
+            ]} />
+          </CardBody>
+        </Card>
+        <Card className="parameter-card">
+          <CardHead title="Galaxy activity and mass"
+            sub="VIS<24.5 PHZ conditionals; COSMOS carries the faint continuation" />
+          <CardBody>
+            <AdjustablePlot boundsLabel="PHZ physical conditionals"
+              xDomain={domain(physicalZ)} yDomain={[0, 1]}
+              xLabel="redshift" yLabel="quenched fraction"
+              series={[{
+                x: physicalZ, y: averageColumns(physical.quenched_fraction),
+                color: "#7a3db8", width: 2.8,
+              }]} aspect={0.62} />
+            <p className="scale-score__note">
+              Pathological high-sSFR weight excluded: {coverage.pathological_ssfr_weight.toFixed(1)}.
+              QSO overlap is diagnostic only: {(100 * coverage.qso_overlap_fraction).toFixed(1)}%.
+            </p>
+          </CardBody>
+        </Card>
+        {probabilityRelation && <Card className="parameter-card">
+          <CardHead title="MER versus PHZ classification"
+            sub="PHZ is diagnostic here; MER retains the generation density normalization" />
+          <CardBody>
+            <AdjustablePlot boundsLabel="MER and PHZ galaxy probabilities"
+              xDomain={[0, 1]} yDomain={[0, 1]}
+              xLabel="MER galaxy probability · 1 - POINT_LIKE_PROB"
+              yLabel="mean PHZ_GAL_PROB"
+              series={[{
+                x: probabilityRelation.mer_galaxy_probability,
+                y: probabilityRelation.mean_phz_galaxy_probability,
+                color: "#008c68", width: 2.6, dots: true, marker: "filled",
+              }]} aspect={0.62} />
+            <p className="scale-score__note">
+              Correlation: {probabilityRelation.correlation == null
+                ? "not estimable" : probabilityRelation.correlation.toFixed(3)}.
+            </p>
+          </CardBody>
+        </Card>}
+        {colour && <Card className="parameter-card">
+          <CardHead title="Rendered TNG colour response"
+            sub="current donor assignment versus PHZ-conditioned activity and mass transport" />
+          <CardBody>
+            <AdjustablePlot boundsLabel="TNG colour conditioning"
+              xDomain={domain(colour.x)}
+              yDomain={domain([
+                ...colour.series.current.probability,
+                ...colour.series.phz_conditioned.probability,
+              ], true)}
+              xLabel={`${colour.label} rendered colour (AB mag)`}
+              yLabel="fraction of TNG galaxies / bin"
+              series={[
+                { x: colour.x, y: colour.series.current.probability,
+                  color: "#242424", width: 2, dash: [6, 4] },
+                { x: colour.x, y: colour.series.phz_conditioned.probability,
+                  color: "#7a3db8", width: 2.8 },
+              ]} aspect={0.62} />
+            <Legend items={[
+              { color: "#242424", label: `current · ${colour.series.current.count}`, line: true, dash: true },
+              { color: "#7a3db8", label: `PHZ-conditioned · ${colour.series.phz_conditioned.count}`, line: true },
+            ]} />
+            <p className="scale-score__note">{colourConditioning?.note}</p>
+          </CardBody>
+        </Card>}
+      </div>
+    </section>
+  );
+}
+
 function CosmosEuclidDensityPanel({ fit }: { fit: CosmosEuclidFit }) {
   const diagnostics = fit.diagnostics;
   const tngFull = diagnostics.tng_draw.full;
@@ -1113,7 +1325,9 @@ function CosmosEuclidDensityPanel({ fit }: { fit: CosmosEuclidFit }) {
       </Card>
       <Card className="parameter-card">
         <CardHead title="Redshift distribution"
-          sub="COSMOS constrains z; the cached Euclid table has no PHZ column" />
+          sub={fit.phz_redshift_correction
+            ? "COSMOS latent fit; Euclid PHZ correction is shown below"
+            : "COSMOS constrains z; refresh the Euclid cache to add PHZ"} />
         <CardBody>
           <AdjustablePlot boundsLabel="COSMOS redshift distribution"
             xDomain={domain(diagnostics.redshift.x)}
@@ -1335,7 +1549,9 @@ function GalaxyCalibrationControls({ api, onChanged }: {
               {}, { onDone: refresh },
             )}>{localFit.busy ? "Fitting locally…" : "Refit joint distribution + plots"}</Button>
           <Button variant="primary"
-            disabled={!candidate?.valid || activate.busy || localFit.busy}
+            disabled={!candidate?.valid
+              || (candidate.version === 2 && !candidate.validated)
+              || activate.busy || localFit.busy}
             onClick={() => activate.run(
               "/api/population-comparison/activate-joint-galaxy",
               {}, { onDone: refresh },
@@ -1355,7 +1571,9 @@ function GalaxyCalibrationControls({ api, onChanged }: {
           <p className="calibration-plain-note">
             Submission draws {candidate.generation.surface_density_arcmin2.toFixed(2)} galaxies / arcmin²
             from the fitted z × true-VIS × R<sub>e</sub> distribution over VIS {candidate.generation.vis_magnitude_min.toFixed(0)}–{candidate.generation.vis_magnitude_max.toFixed(0)}.
-            TNG morphology is assigned independently with diversity balancing.
+            {candidate.version === 2
+              ? " TNG morphology is conditioned on PHZ/COSMOS activity and mass rank."
+              : " TNG morphology is assigned independently with diversity balancing."}
           </p>
         )}
         <JobProgressView job={localFit.job} error={localFit.error} />
@@ -1374,9 +1592,10 @@ function GalaxyCalibrationControls({ api, onChanged }: {
             </div>
             {!starsActive && (
               <p className="fit-caution">
-                <strong>Before submission:</strong> re-activate the current
-                Gaia + Euclid stellar prior below. No job will be queued while
-                that calibration is stale.
+                <strong>Before submission:</strong> re-activate the current Gaia +
+                Euclid stellar prior on the <NavLink to="/star-distribution">Star
+                distribution page</NavLink>. No job will be queued while that
+                calibration is stale.
               </p>
             )}
             <StepById stepId="synthetic_generate" embedded showHistory />
@@ -1423,21 +1642,21 @@ function StarCalibrationControls({ api, onChanged }: {
           <Button variant="primary" disabled={query.busy || !api.availability.euclid_catalog.cached}
             onClick={() => query.run(
               "/api/population-comparison/query-gaia-stars", {}, { onDone: refresh },
-            )}>{query.busy ? "Querying + fitting…" : "Query Gaia + fit star prior"}</Button>
+            )}>{query.busy ? "Querying + fitting…" : "Query Q1 counts + fit star colours"}</Button>
           <Button disabled={!candidate?.valid || activate.busy}
             onClick={() => activate.run(
               "/api/population-comparison/activate-star-prior", {}, { onDone: refresh },
             )}>{state.is_active ? "Re-activate calibration" : "Activate calibration"}</Button>
         </div>
         <p className="calibration-plain-note">
-          Gaia supplies the bright point-source side and latent colour/temperature population; Euclid point-like probabilities supply the faint count shape and weighted validation statistics.
+          Q1 objects with POINT_LIKE_PROB ≥ 0.9 supply the 0.1-mag VIS count distribution, weighted by PHZ_STAR_PROB and normalized over the 63.1 deg² footprint. Matched Gaia sources supply only the latent colour/temperature relation.
         </p>
         {diagnostics && (
           <div className="publication-atlas-export">
             <div>
               <div className="eyebrow">presentation figure</div>
-              <strong>Gaia × Euclid stellar population calibration</strong>
-              <span>Per-cone density and fitted, inferred, simulated-noise, and catalogue stellar colours.</span>
+              <strong>Q1 PHZ × Gaia × Euclid stellar calibration</strong>
+              <span>Footprint-normalized VIS counts and fitted, inferred, simulated-noise, and catalogue stellar colours.</span>
             </div>
             <div className="publication-atlas-export__actions">
               <a className="ui-btn ui-btn--primary"
@@ -1457,15 +1676,16 @@ function StarCalibrationControls({ api, onChanged }: {
           <div className="parameter-atlas" style={{ marginTop: "var(--s4)" }}>
             <Card className="parameter-card">
               <CardHead title={diagnostics.star_density_per_cone.label}
-                sub="selected central star excluded from every cone" />
+                sub="POINT_LIKE_PROB ≥ 0.9; sum of PHZ_STAR_PROB divided by Q1 area and 0.1-mag bin width" />
               <CardBody>
-                <AdjustablePlot boundsLabel="Gaia density per cone"
+                <AdjustablePlot boundsLabel="Q1 PHZ stellar density"
                   xDomain={domain(diagnostics.star_density_per_cone.x)}
                   yDomain={domain([
                     ...diagnostics.star_density_per_cone.observed,
                     ...diagnostics.star_density_per_cone.fitted,
                   ], true)}
-                  xLabel="cone" yLabel={diagnostics.star_density_per_cone.unit}
+                  xLabel={diagnostics.star_density_per_cone.x_label ?? "VIS [AB mag]"}
+                  yLabel={diagnostics.star_density_per_cone.unit}
                   series={[
                     { x: diagnostics.star_density_per_cone.x,
                       y: diagnostics.star_density_per_cone.observed,
@@ -1605,6 +1825,8 @@ function StarCalibrationControls({ api, onChanged }: {
   );
 }
 
+const MAX_POPULATION_CONES = 24;
+
 function ConeQuery({ api, onQueried }: { api: ApiPayload; onQueried: () => void }) {
   const defaults = api.availability.default_cone;
   const [count, setCount] = useState("6");
@@ -1614,7 +1836,8 @@ function ConeQuery({ api, onQueried }: { api: ApiPayload; onQueried: () => void 
   const analysis = useJob();
   const countNumber = Number(count);
   const radiusNumber = Number(radius);
-  const valid = Number.isInteger(countNumber) && countNumber >= 1 && countNumber <= 12
+  const valid = Number.isInteger(countNumber) && countNumber >= 1
+    && countNumber <= MAX_POPULATION_CONES
     && Number.isFinite(radiusNumber) && radiusNumber > 0 && radiusNumber <= 30;
   const area = valid ? countNumber * Math.PI * radiusNumber ** 2 : 0;
   const cachedConeCount = api.availability.euclid_catalog.meta?.cone_count ?? 0;
@@ -1631,7 +1854,7 @@ function ConeQuery({ api, onQueried }: { api: ApiPayload; onQueried: () => void 
       <CardBody>
         <div className="cone-query__form">
           <Field label="Number of cones"><Input value={count} type="number"
-            onChange={setCount} min={1} max={12} step={1} /></Field>
+            onChange={setCount} min={1} max={MAX_POPULATION_CONES} step={1} /></Field>
           <Field label="Radius · arcmin"><Input value={radius} type="number"
             onChange={setRadius} min={0.01} max={30} step={0.01} /></Field>
           <div className="cone-query__area">
@@ -1674,7 +1897,8 @@ function ConeQuery({ api, onQueried }: { api: ApiPayload; onQueried: () => void 
         <p className="cone-query__login">
           Each run draws a fresh set of saved stars. Cones are kept at least
           two radii apart; the selected centers and random seed are saved with
-          the catalog metadata.
+          the catalog metadata. Up to {MAX_POPULATION_CONES} cones may be queried
+          in one run.
         </p>
         {cachedConeCount > 0 && (
           <p className="cone-query__login">
@@ -1826,13 +2050,19 @@ export default function PopulationComparisonPage() {
             <GalaxyCalibrationControls api={api} onChanged={resource.reload} />
 
             {comparison.population.cosmos_euclid_fit && (
-              <CosmosEuclidDensityPanel
-                fit={comparison.population.cosmos_euclid_fit} />
+              <>
+                <PhzCalibrationPanel
+                  fit={comparison.population.cosmos_euclid_fit}
+                  probabilityRelation={comparison.population.phz_probability_relation}
+                  colourConditioning={comparison.population.tng_colour_conditioning}
+                />
+                <CosmosEuclidDensityPanel
+                  fit={comparison.population.cosmos_euclid_fit} />
+              </>
             )}
 
             <ConeQuery api={api} onQueried={resource.reload} />
 
-            <StarCalibrationControls api={api} onChanged={resource.reload} />
           </section>
         </>
       )}

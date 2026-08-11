@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 from euclid_polish.config import Config
+from euclid_polish.population.magnitude_law import StraightMagnitudeLaw
 from euclid_polish.sky.generation.sky_simulator import (
     SkySimulator,
     SkySimulatorConfig,
@@ -18,6 +19,7 @@ from euclid_polish.sky.generation.tng_radius_manifest import (
 from euclid_polish.web.helpers.population_calibration import (
     activate_galaxy_recommendation,
     activate_joint_galaxy_candidate,
+    activate_star_candidate,
     active_joint_galaxy_path,
     active_transfer_path,
     density_calibration_path,
@@ -25,6 +27,13 @@ from euclid_polish.web.helpers.population_calibration import (
     fit_local_catalog_density,
     galaxy_recommendation_state,
     joint_galaxy_state,
+    star_candidate_path,
+    star_state,
+)
+from euclid_polish.web.helpers.q1_star_counts import (
+    Q1_DEEP_FIELD_AREA_ARCMIN2,
+    Q1_STAR_COUNT_VERSION,
+    q1_star_counts_path,
 )
 from euclid_polish.web.helpers.star_population import (
     _weighted_summary,
@@ -32,7 +41,40 @@ from euclid_polish.web.helpers.star_population import (
 )
 
 
-def test_probability_weighted_summary_and_empirical_magnitude_cdf():
+def _straight_law_payload(
+    density: float = 1.0, *, bright: float = 20.0, faint: float = 22.0,
+    slope: float = float(np.log10(3.0)),
+) -> dict:
+    beta = slope * np.log(10.0)
+    integral_without_normalisation = (
+        np.exp(beta * faint) - np.exp(beta * bright)
+    ) / beta
+    return StraightMagnitudeLaw(
+        slope=slope,
+        intercept=float(np.log10(density / integral_without_normalisation)),
+        mag_bright=bright,
+        mag_faint=faint,
+        fit_bright=bright,
+        fit_faint=faint,
+        covariance=((1.0e-4, 0.0), (0.0, 1.0e-3)),
+        r_squared=1.0,
+        rms_log10_density=0.0,
+        source="fixture",
+    ).to_payload()
+
+
+def _use_q1_law(monkeypatch, density: float) -> None:
+    monkeypatch.setattr(
+        "euclid_polish.web.helpers.q1_galaxy_counts.read_q1_galaxy_aperture_fit",
+        lambda: {"apertures": {"f2": {
+            "law": _straight_law_payload(
+                density, bright=14.0, faint=29.0, slope=0.2,
+            ),
+        }}},
+    )
+
+
+def test_probability_weighted_summary_and_straight_magnitude_law():
     values = np.asarray([20.0, 22.0])
     weights = np.asarray([0.25, 0.75])
     summary = _weighted_summary(
@@ -56,9 +98,17 @@ def test_probability_weighted_summary_and_empirical_magnitude_cdf():
             },
             "residual_covariance": np.eye(4).tolist(),
         },
-        "population": {"magnitude_distribution": {
-            "edges": [20.0, 21.0, 22.0], "cdf": [0.0, 0.25, 1.0],
-        }},
+        "population": {"magnitude_distribution": _straight_law_payload()},
+        "color_model": {
+            "kind": "gaia_euclid_latent_locus_v1",
+            "bp_rp_edges": [0.0, 0.75, 1.5],
+            "bp_rp_nodes": [0.4, 1.1],
+            "temperature_nodes_k": [6500.0, 4500.0],
+            "locus_colors": [[0.2, 0.1, 0.05], [0.8, 0.3, 0.1]],
+            "intrinsic_color_covariance": (np.eye(3) * 0.01).tolist(),
+            "magnitude_edges": [20.0, 21.0, 22.0],
+            "magnitude_node_weights": [[0.5, 0.5], [0.5, 0.5]],
+        },
     })
     draws = np.asarray([
         prior.sample_magnitude(
@@ -70,10 +120,30 @@ def test_probability_weighted_summary_and_empirical_magnitude_cdf():
     assert np.mean(draws < 21.0) == pytest.approx(0.25, abs=0.04)
 
 
+def test_stale_gaia_count_artifact_cannot_remain_active(tmp_path, monkeypatch):
+    monkeypatch.setattr(Config, "DATA_DIR", str(tmp_path))
+    candidate = star_candidate_path()
+    candidate.parent.mkdir(parents=True)
+    candidate.write_text(json.dumps({
+        "version": 3,
+        "valid": True,
+        "fingerprint": "a" * 64,
+        "fingerprint_inputs": {"fit_version": "latent-locus-v1"},
+    }))
+
+    state = star_state()
+    assert not state["candidate"]["valid"]
+    assert "Q1 PHZ_STAR_PROB" in state["candidate"]["warnings"][-1]
+    assert not state["is_active"]
+    with pytest.raises(ValueError, match="No valid fitted stellar"):
+        activate_star_candidate()
+
+
 def test_joint_galaxy_fit_activates_atomically_for_generation(
     tmp_path, monkeypatch,
 ):
     monkeypatch.setattr(Config, "DATA_DIR", str(tmp_path))
+    _use_q1_law(monkeypatch, 207.3388649567)
     fit_path = tmp_path / "joint_population_fit.json"
     monkeypatch.setattr(
         Config, "JOINT_GALAXY_POPULATION_FIT_PATH", str(fit_path),
@@ -103,10 +173,43 @@ def test_joint_galaxy_fit_activates_atomically_for_generation(
     assert activated["valid"]
     assert not activated["validated"]
     assert joint_galaxy_state()["is_active"]
-    assert json.loads(active_joint_galaxy_path().read_text())["fingerprint"] == (
-        "b" * 64
+    stored = json.loads(active_joint_galaxy_path().read_text())
+    assert stored["fingerprint"] == activated["fingerprint"]
+    assert stored["geometry_model_fingerprint"] == "b" * 64
+    assert updates[0]["galaxy_density_arcmin2"] == pytest.approx(
+        207.3388649567,
     )
-    assert updates == [{"galaxy_density_arcmin2": 207.3388649567}]
+
+
+def test_phz_joint_fit_requires_all_gates_before_activation(tmp_path, monkeypatch):
+    monkeypatch.setattr(Config, "DATA_DIR", str(tmp_path))
+    _use_q1_law(monkeypatch, 200.0)
+    fit_path = tmp_path / "joint_population_fit.json"
+    monkeypatch.setattr(
+        Config, "JOINT_GALAXY_POPULATION_FIT_PATH", str(fit_path),
+    )
+    fit_path.write_text(json.dumps({
+        "version": 3,
+        "kind": "joint_intrinsic_galaxy_population",
+        "fingerprint": "e" * 64,
+        "model": {
+            "luminosity_function": {"one": 1},
+            "size_relation": {"two": 2},
+            "euclid_response": {"three": 3},
+        },
+        "phz_redshift_correction": {"factor": [[1.0]]},
+        "physical_conditionals": {"version": 1},
+        "phz_quality_gates": {"classification_coverage": True},
+        "fit_quality": {"valid": False, "warnings": ["gate failed"]},
+        "diagnostics": {"tng_draw": {"full": {
+            "surface_density_arcmin2": 200.0,
+        }}},
+    }))
+
+    with pytest.raises(ValueError, match="has not passed activation gates"):
+        activate_joint_galaxy_candidate()
+
+    assert not active_joint_galaxy_path().exists()
 
 
 def test_density_response_is_reproducible_and_rejects_wrong_transfer():
@@ -260,7 +363,7 @@ def test_nested_thinning_keeps_nuisance_population_identical(monkeypatch):
             image_size=10, pixel_scale=6.0,
             galaxy_density_arcmin2=density,
             galaxy_thinning_max_density_arcmin2=8.0,
-            star_density_arcmin2=4.0, lens_density_arcmin2=0.0,
+            star_density_arcmin2=0.0, lens_density_arcmin2=0.0,
         ))
         simulator._add_tng_galaxy = lambda _canvas, rng: {
             "proposal": int(rng.integers(0, 2**31)),
@@ -344,14 +447,14 @@ def _write_csv(path, rows):
         writer.writerows(rows)
 
 
-def test_star_fit_excludes_centres_and_samples_correlated_euclid_colors(
+def test_star_fit_uses_q1_phz_counts_and_gaia_only_for_correlated_colors(
     tmp_path, monkeypatch,
 ):
     monkeypatch.setattr(Config, "DATA_DIR", str(tmp_path))
     root = tmp_path / "population_comparison"
     gaia = []
     euclid = []
-    for index in range(24):
+    for index in range(40):
         cone = index % 2
         source_id = str(1000 + index)
         color = 0.5 + 0.05 * index
@@ -363,43 +466,125 @@ def test_star_fit_excludes_centres_and_samples_correlated_euclid_colors(
             "temperature_k": 8000 - 150 * index, "extinction_g_mag": 0.1,
             "central_selected_star": 1 if index < 2 else 0,
         })
+        magnitudes = {
+            "vis": g_mag + 0.2 * color,
+            "y": g_mag - 0.4 * color,
+            "j": g_mag - 0.55 * color,
+            "h": g_mag - 0.60 * color,
+        }
+        fluxes = {
+            band: 10 ** ((23.9 - magnitude) / 2.5)
+            for band, magnitude in magnitudes.items()
+        }
         euclid.append({
             "object_id": index, "gaia_id": source_id, "type": "star",
             "point_like_prob": "1.0",
-            "mag_vis": g_mag + 0.2 * color,
-            "mag_y_e": g_mag - 0.4 * color,
-            "mag_j_e": g_mag - 0.55 * color,
-            "mag_h_e": g_mag - 0.60 * color,
+            "mag_vis": magnitudes["vis"],
+            "mag_y_e": magnitudes["y"],
+            "mag_j_e": magnitudes["j"],
+            "mag_h_e": magnitudes["h"],
+            **{
+                f"flux_{band}_aper_uJy": flux
+                for band, flux in fluxes.items()
+            },
+            **{
+                f"fluxerr_{band}_aper_uJy": flux / 20.0
+                for band, flux in fluxes.items()
+            },
         })
+    # Deterministic native-G count law for straight-region detection; these
+    # additional Gaia rows inform shape but have no Euclid match.
+    for bin_index, magnitude in enumerate(np.arange(12.05, 25.0, 0.1)):
+        count = max(2, int(round(
+            8.0 * 10 ** (0.15 * (magnitude - 12.0))
+        )))
+        for repeat in range(count):
+            color = 0.5 + 0.01 * ((bin_index + repeat) % 120)
+            gaia.append({
+                "source_id": f"extra-{bin_index}-{repeat}",
+                "cone_index": repeat % 12,
+                "ra": 1, "dec": 2, "g_mag": magnitude,
+                "bp_mag": magnitude + color / 2,
+                "rp_mag": magnitude - color / 2,
+                "bp_rp": color,
+                "temperature_k": 6500 - 500 * color,
+                "extinction_g_mag": 0.1,
+                "central_selected_star": 0,
+            })
     _write_csv(root / "gaia_population.csv", gaia)
     _write_csv(root / "euclid_population.csv", euclid)
     (root / "gaia_population.meta.json").write_text(json.dumps({
         "cone_count": 2, "radius_arcmin": 2.0,
         "area_arcmin2": 8 * np.pi, "euclid_cone_selection_seed": 7,
     }))
+    edges = np.linspace(12.0, 25.0, 131)
+    q1_bins = []
+    for lower, upper in zip(edges[:-1], edges[1:], strict=True):
+        centre = 0.5 * (lower + upper)
+        expected = float(round(20.0 * 10 ** (0.15 * (centre - 12.0))))
+        q1_bins.append({
+            "mag_lo": float(lower),
+            "mag_hi": float(upper),
+            "classified_rows": int(expected * 2),
+            "selected_point_sources": int(expected * 2),
+            "expected_point_sources": expected * 1.1,
+            "expected_stars": expected,
+            "classification_variance": expected * 0.1,
+            "point_source_density_arcmin2_mag": (
+                expected * 1.1 / Q1_DEEP_FIELD_AREA_ARCMIN2 / 0.1
+            ),
+            "density_arcmin2_mag": (
+                expected / Q1_DEEP_FIELD_AREA_ARCMIN2 / 0.1
+            ),
+        })
+    expected_total = float(sum(item["expected_stars"] for item in q1_bins))
+    q1_star_counts_path().write_text(json.dumps({
+        "version": Q1_STAR_COUNT_VERSION,
+        "survey": "Euclid Q1 deep fields",
+        "fields": ["EDF-N", "EDF-S", "EDF-F"],
+        "footprint_area_deg2": 63.1,
+        "footprint_area_arcmin2": Q1_DEEP_FIELD_AREA_ARCMIN2,
+        "magnitude_field": "MER FLUX_VIS_PSF",
+        "classification_field": "PHZ_STAR_PROB",
+        "selection": "POINT_LIKE_PROB >= 0.9 test Q1 selection",
+        "edges": edges.tolist(),
+        "bins": q1_bins,
+        "expected_stars": expected_total,
+        "selected_point_sources": int(sum(
+            item["selected_point_sources"] for item in q1_bins
+        )),
+        "expected_point_sources": float(sum(
+            item["expected_point_sources"] for item in q1_bins
+        )),
+        "classification_variance": float(sum(
+            item["classification_variance"] for item in q1_bins
+        )),
+    }))
+    monkeypatch.setattr(
+        "euclid_polish.web.helpers.star_population._require_current_gaia_field_sampling",
+        lambda _meta, _rows: None,
+    )
 
     fit = fit_star_population()
-    assert fit["valid"]
-    assert fit["cone_provenance"]["central_sources_excluded"] == 2
-    assert fit["euclid_mapping"]["matched_stars"] == 24
-    assert fit["diagnostics"]["star_density_per_cone"]["observed"] == pytest.approx([
-        11 / (4 * np.pi), 11 / (4 * np.pi),
+    assert fit["color_cone_provenance"]["role"].endswith("locus only")
+    assert fit["euclid_mapping"]["matched_stars"] == 38
+    assert fit["population_provenance"]["classification_field"] == "PHZ_STAR_PROB"
+    magnitude = fit["population"]["magnitude_distribution"]
+    assert magnitude["kind"] == "straight_log10_differential_counts"
+    assert magnitude["mag_bright"] == 12.0
+    assert magnitude["mag_faint"] == 25.0
+    assert magnitude["phz_expected_count"] == pytest.approx(expected_total)
+    assert magnitude["expected_count_per_bin"] == pytest.approx([
+        item["expected_stars"] for item in q1_bins
     ])
-    magnitude = fit["diagnostics"]["parameters"]["mag_vis"]
-    assert magnitude["density_unit"] == "point sources / arcmin² / mag"
-    assert magnitude["observed_count"] == 22
-    assert magnitude["weighted_count"] == pytest.approx(22.0)
-    assert sum(magnitude["euclid_weighted"]) == pytest.approx(0.0)
-    assert sum(value for value in magnitude["observed"] if value is not None) * 0.5 \
-        == pytest.approx(22 / (8 * np.pi))
-    assert fit["population"]["magnitude_distribution"][
-        "euclid_faint_expected_count"
-    ] == pytest.approx(0.0)
-    assert any(
-        value > 0.0
-        for centre, value in zip(magnitude["x"], magnitude["observed"], strict=True)
-        if centre > magnitude["observed_limit_mag"]
-    ) is False
+    assert fit["population"]["density_arcmin2"] == pytest.approx(
+        magnitude["surface_density_arcmin2"],
+    )
+    density = fit["diagnostics"]["star_density_per_cone"]
+    assert density["x_label"] == "VIS PSF magnitude [AB]"
+    assert density["observed"] == pytest.approx([
+        item["density_arcmin2_mag"] for item in q1_bins
+    ])
 
     prior = EmpiricalStellarPrior.from_payload(fit)
     sed = prior.sample(np.random.default_rng(8), 21.5)

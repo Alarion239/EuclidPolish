@@ -19,11 +19,18 @@ from scipy.signal import fftconvolve
 from euclid_polish.config import Config
 from euclid_polish.image import Image
 from euclid_polish.image.tfio import read_images, tfrecord_path
+from euclid_polish.training.target_blur import blur_target_array
 from euclid_polish.web import experimental, fasrc_config
 from euclid_polish.web import fasrc_fetcher as _fasrc_fetcher
 from euclid_polish.web.fasrc_fetcher import _local_path_for
 from euclid_polish.web.helpers.fits_render import _arrays_to_fits_bytes
 from euclid_polish.web.helpers.status import _record_count, _tfrecords_status
+from euclid_polish.web.helpers.viewer_data import (
+    BHR_FWHM_MAX_ARCSEC,
+    BHR_FWHM_PARAM,
+    ViewerError,
+    _bhr_fwhm_arcsec,
+)
 
 
 def register(app):
@@ -62,6 +69,8 @@ def register(app):
             # set is multi-GB. Default the index nav to validate so the
             # page works the moment the user clicks Sync.
             default_subset="validate",
+            bhr_default_fwhm=Config.TARGET_PSF_FWHM_ARCSEC,
+            bhr_max_fwhm=BHR_FWHM_MAX_ARCSEC,
         )
 
     def _load_diff_kernel_local() -> np.ndarray | None:
@@ -114,7 +123,7 @@ def register(app):
         """
         if subset not in ("train", "validate"):
             abort(400)
-        if kind not in ("clean", "dirty", "hr", "pair", "dirty_analytic"):
+        if kind not in ("clean", "dirty", "hr", "bhr", "pair", "dirty_analytic"):
             abort(400)
 
         def _load(name):
@@ -162,9 +171,25 @@ def register(app):
                  "PXSCALEC": float(clean.pixel_scale_arcsec)},
             )
 
-        rec = _load(f"{kind}_{subset}")
+        record_kind = "hr" if kind == "bhr" else kind
+        rec = _load(f"{record_kind}_{subset}")
+        data = np.asarray(rec.data, dtype=np.float32)
+        if kind == "bhr":
+            try:
+                fwhm = _bhr_fwhm_arcsec({
+                    BHR_FWHM_PARAM: request.args.get(
+                        BHR_FWHM_PARAM,
+                        str(Config.TARGET_PSF_FWHM_ARCSEC),
+                    ),
+                })
+            except ViewerError as exc:
+                abort(exc.code)
+            data = blur_target_array(
+                data, fwhm,
+                pixel_scale_arcsec=rec.pixel_scale_arcsec,
+            )
         return (
-            {kind.upper(): np.asarray(rec.data, dtype=np.float32)},
+            {kind.upper(): data},
             {**meta_base, "PXSCALE": float(rec.pixel_scale_arcsec)},
         )
 

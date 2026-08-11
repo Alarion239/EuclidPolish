@@ -1,10 +1,11 @@
-"""HR.fits is persisted 4-band (heavy deps monkeypatched; no torch/TF)."""
+"""Raw HR and blurred BHR FITS persist 4-band (heavy deps monkeypatched)."""
 
 from __future__ import annotations
 
 import numpy as np
 from astropy.io import fits
 
+from euclid_polish.config import Config
 from euclid_polish.eval import synthetic_runner as sr
 from euclid_polish.eval.catalog_runner import EVAL_HR_SIZE, EVAL_LR_SIZE
 
@@ -36,7 +37,9 @@ def test_hr_fits_written_four_band(tmp_path, monkeypatch):
     def fake_read(path, num_images=0):
         if "dirty" in str(path):
             return [_Img(0, np.zeros((64, 64, 4), np.float32))]
-        return [_Img(0, np.ones((128, 128, 4), np.float32))]
+        target = np.zeros((128, 128, 4), np.float32)
+        target[64, 64, 0] = 1.0
+        return [_Img(0, target)]
 
     monkeypatch.setattr("euclid_polish.image.tfio.read_images",
                         fake_read)
@@ -54,8 +57,16 @@ def test_hr_fits_written_four_band(tmp_path, monkeypatch):
     base = f"{out_dir}/syn-lens_0000_0"
     # Canonical geometry: LR EVAL_LR_SIZE², SR/HR EVAL_HR_SIZE², all 4-band.
     with fits.open(f"{base}/HR.fits") as hdul:
-        assert np.asarray(hdul[0].data).shape == (4, EVAL_HR_SIZE, EVAL_HR_SIZE)
+        raw_hr = np.asarray(hdul[0].data)
+        assert raw_hr.shape == (4, EVAL_HR_SIZE, EVAL_HR_SIZE)
         assert "VIS" in hdul[0].header.get("BANDS", "")
+    with fits.open(f"{base}/BHR.fits") as hdul:
+        blurred_hr = np.asarray(hdul[0].data)
+        assert blurred_hr.shape == (4, EVAL_HR_SIZE, EVAL_HR_SIZE)
+        assert hdul[0].header["TARGFWH"] == Config.TARGET_PSF_FWHM_ARCSEC
+    center = EVAL_HR_SIZE // 2
+    assert raw_hr[0, center, center] == 1.0
+    assert blurred_hr[0, center, center] < raw_hr[0, center, center]
     with fits.open(f"{base}/SR.fits") as hdul:
         assert np.asarray(hdul[0].data).shape == (4, EVAL_HR_SIZE, EVAL_HR_SIZE)
     with fits.open(f"{base}/original_stack.fits") as hdul:

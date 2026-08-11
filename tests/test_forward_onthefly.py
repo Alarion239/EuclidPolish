@@ -17,6 +17,7 @@ from euclid_polish.config import Config
 from euclid_polish.image import Image
 from euclid_polish.image.tfio import tfrecord_path, write_images
 from euclid_polish.model import Model
+from euclid_polish.population.magnitude_law import StraightMagnitudeLaw
 from euclid_polish.psf.psf_library import load_all_band_psf_sets
 from euclid_polish.training.forward_onthefly import (
     DEFAULT_CROPS_PER_FIELD,
@@ -42,6 +43,40 @@ def _field(seed=0, n=FIELD):
     f = np.abs(rng.normal(20, 5, (n, n, 4))).astype(np.float32)
     f[n // 3, n // 3, :] += 5e4              # a bright star with wings
     return f
+
+
+def _stellar_prior_payload():
+    law = StraightMagnitudeLaw(
+        slope=0.15, intercept=-3.5,
+        mag_bright=12.0, mag_faint=25.0,
+        fit_bright=15.0, fit_faint=22.0,
+        covariance=((1e-4, 0.0), (0.0, 1e-3)),
+        r_squared=1.0, rms_log10_density=0.0, source="fixture",
+    )
+    return {
+        "gaia": {
+            "bp_rp_quantiles": [0.0, 2.0],
+            "temperature_quantiles_k": [7500.0, 4000.0],
+        },
+        "euclid_mapping": {
+            "g_to_band_offset_coefficients": {
+                key: [0.0, 0.0, 0.0]
+                for key in ("mag_vis", "mag_y_e", "mag_j_e", "mag_h_e")
+            },
+            "residual_covariance": np.eye(4).tolist(),
+        },
+        "population": {"magnitude_distribution": law.to_payload()},
+        "color_model": {
+            "kind": "gaia_euclid_latent_locus_v1",
+            "bp_rp_edges": [0.0, 1.0, 2.0],
+            "bp_rp_nodes": [0.5, 1.5],
+            "temperature_nodes_k": [7000.0, 4200.0],
+            "locus_colors": [[0.2, 0.1, 0.05], [0.8, 0.3, 0.1]],
+            "intrinsic_color_covariance": (np.eye(3) * 0.01).tolist(),
+            "magnitude_edges": [12.0, 18.5, 25.0],
+            "magnitude_node_weights": [[0.5, 0.5], [0.5, 0.5]],
+        },
+    }
 
 
 def test_crop_shapes_and_count(gaussian_sets):
@@ -112,6 +147,7 @@ def test_inject_stars_adds_flux_before_forward(gaussian_sets):
     (HR deltas, pre-PSF) — directly, without the crop-offset RNG in play."""
     fwd = OnTheFlyForward(gaussian_sets, seed=5, inject_stars=True,
                           star_density_arcmin2=500.0,
+                          star_prior_payload=_stellar_prior_payload(),
                           target_fwhm_arcsec=0.0)
     field = _field()
     scene = field.copy()
@@ -131,7 +167,9 @@ def test_crops_target_is_starless_even_with_injection(gaussian_sets):
                           hr_crop_size=CROP,
                           add_noise=False, add_artifacts=False,
                           add_saturation=False, inject_stars=True,
-                          star_density_arcmin2=500.0)
+                          star_density_arcmin2=500.0,
+                          star_prior_payload=_stellar_prior_payload(),
+                          target_fwhm_arcsec=0.0)
     _lr, hr_crops = fwd.crops(field)
     for k in range(hr_crops.shape[0]):
         found = any(
@@ -149,6 +187,7 @@ def test_both_regimes_inject_stars_only_target_differs(gaussian_sets):
           "add_noise": False,
           "add_artifacts": False, "add_saturation": False, "inject_stars": True,
           "star_density_arcmin2": 500.0,
+          "star_prior_payload": _stellar_prior_payload(),
           "target_fwhm_arcsec": 0.0}
     lr_less, hr_less = OnTheFlyForward(gaussian_sets, starless=True, **kw).crops(field)
     lr_full, hr_full = OnTheFlyForward(gaussian_sets, starless=False, **kw).crops(field)
@@ -254,7 +293,9 @@ def test_new_onthefly_geometry_defaults(gaussian_sets):
     assert args.batch_size == 4
     assert args.crops_per_field == 8
     assert args.hr_crop_size == 256
-    assert args.target_psf_fwhm_arcsec == pytest.approx(0.05)
+    assert args.target_psf_fwhm_arcsec == pytest.approx(0.66)
+    custom = parse_args(["--target-psf-fwhm-arcsec", "1.25"])
+    assert custom.target_psf_fwhm_arcsec == pytest.approx(1.25)
 
 
 def test_build_specs_forward_flags(tmp_path):

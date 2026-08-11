@@ -8,6 +8,7 @@ import CutoutsPage from "./Cutouts";
 import EnsemblePage from "./Ensemble";
 import EvaluationPage from "./Evaluation";
 import FasrcPage from "./Fasrc";
+import GalaxyDistributionsPage from "./GalaxyDistributions";
 import GitPage from "./Git";
 import InferencePage from "./Inference";
 import InspectPage from "./Inspect";
@@ -17,6 +18,7 @@ import LensIsolationPage from "./LensIsolation";
 import PopulationComparisonPage from "./PopulationComparison";
 import PsfsPage from "./Psfs";
 import SkyPage from "./Sky";
+import StarDistributionPage from "./StarDistribution";
 import SyntheticRealPage from "./SyntheticReal";
 import TngPage from "./Tng";
 import TrackingPage from "./Tracking";
@@ -36,6 +38,8 @@ export const PAGES: PageDef[] = [
   { label: "TNG", path: "/tng", component: TngPage },
   { label: "Synthetic–Real", path: "/synthetic-real", component: SyntheticRealPage },
   { label: "Field statistics", path: "/population-comparison", component: PopulationComparisonPage },
+  { label: "Galaxy distributions", path: "/galaxy-distributions", component: GalaxyDistributionsPage },
+  { label: "Star distribution", path: "/star-distribution", component: StarDistributionPage },
   { label: "JWST × Euclid", path: "/jwst-euclid", component: JwstEuclidPage },
   { label: "Inference", path: "/inference", component: InferencePage },
   { label: "FITS inspector", path: "/inspect", component: InspectPage },
@@ -56,7 +60,7 @@ const item = (label: string) => ({ label, path: path(label) });
 /** Sidebar sections in the reading order of a run: setup → data → model → ops. */
 export const NAV: NavGroup[] = [
   { title: "Setup", items: [item("Config"), item("Catalog"), item("PSFs")] },
-  { title: "Data", items: [item("Sky"), item("Cutouts"), item("TNG"), item("Synthetic–Real"), item("Field statistics"), item("JWST × Euclid")] },
+  { title: "Data", items: [item("Sky"), item("Cutouts"), item("TNG"), item("Synthetic–Real"), item("Field statistics"), item("Galaxy distributions"), item("Star distribution"), item("JWST × Euclid")] },
   { title: "Model", items: [item("Inference"), item("Ensemble"), item("Train members"), item("Evaluation"), item("Lens finder"), item("Lens isolation")] },
   { title: "Ops", items: [item("Tracking"), item("Figures"), item("FASRC"), item("Git")] },
 ];

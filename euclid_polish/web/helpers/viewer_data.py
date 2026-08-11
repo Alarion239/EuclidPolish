@@ -19,7 +19,7 @@ Three collections are registered:
 ==============  =========  ======================================  ==========
 collection      params     tiers                                    source
 ==============  =========  ======================================  ==========
-``sky``         subset     dirty→LR, hr→HR                           TFRecords
+``sky``         subset     dirty→LR, hr→HR, bhr→BHR                  TFRecords
 ``cutouts``     —          real→Euclid                               per-band FITS
 ``evaluation``  —          LR / SR / HR (per object)                 object FITS
 ``psfs``        —          VIS / Y_E / J_E / H_E cluster kernels     FASRC ePSF FITS
@@ -65,6 +65,26 @@ from euclid_polish.web.helpers.status import (
 
 #: Band names + channel order shared by every collection.
 BAND_NAMES: tuple[str, ...] = tuple(Config.LR_INPUT_BAND_NAMES)
+BHR_FWHM_PARAM = "bhr_fwhm_arcsec"
+BHR_FWHM_MAX_ARCSEC = float(Config.TARGET_PSF_FWHM_MAX_ARCSEC)
+
+
+def _bhr_fwhm_arcsec(
+    params: Mapping[str, str],
+    default: float = Config.TARGET_PSF_FWHM_ARCSEC,
+) -> float:
+    """Validated viewer-controlled target-preview FWHM."""
+    raw = params.get(BHR_FWHM_PARAM)
+    try:
+        fwhm = validate_target_fwhm_arcsec(default if raw is None else raw)
+    except (TypeError, ValueError) as exc:
+        raise ViewerError(400, f"invalid {BHR_FWHM_PARAM}") from exc
+    if fwhm > BHR_FWHM_MAX_ARCSEC:
+        raise ViewerError(
+            400,
+            f"{BHR_FWHM_PARAM} must be <= {BHR_FWHM_MAX_ARCSEC:g}",
+        )
+    return fwhm
 
 
 def receptive_field_constants() -> list[dict[str, Any]]:
@@ -149,10 +169,11 @@ def _as_hwc(arr: np.ndarray) -> np.ndarray:
 # sky — multi-band TFRecords (FASRC-synced cache)
 # ---------------------------------------------------------------------------
 
-# Tiers offered for sky records: LR (the dirty record), HR (the starfull
-# target), and SR (model output, generated on demand by the /sky button —
-# disabled until at least one SR cube exists). The clean record is the
-# deliberately starless target and must not be substituted for HR.
+# Tiers offered for sky records: LR (the dirty record), raw HR (the starfull
+# scene), BHR (that scene with the target PSF), and SR (model output, generated
+# on demand by the /sky button — disabled until at least one SR cube exists).
+# The clean record is the deliberately starless target and must not be
+# substituted for HR.
 _SKY_RECORD_TIERS = [
     {"key": "dirty", "label": "LR"},
     {"key": "hr", "label": "HR"},
@@ -174,6 +195,13 @@ def _sky_meta(params: dict[str, str]) -> dict[str, Any]:
              if os.path.exists(tfrecord_path(records_dir, f"{t['key']}_{subset}"))]
     counts = {t["key"]: (_record_count(f"{t['key']}_{subset}", records_dir) or 0)
               for t in tiers}
+    if "hr" in counts:
+        hr_position = next(i for i, tier in enumerate(tiers)
+                           if tier["key"] == "hr")
+        tiers.insert(hr_position + 1, {
+            "key": "bhr", "label": "BHR (blurred HR)",
+        })
+        counts["bhr"] = counts["hr"]
     count = max(counts.values()) if counts else 0
     # SR is always offered so the user can see it exists; it's disabled until
     # the model has been run over the records (the "Generate SR" button).
@@ -203,9 +231,10 @@ def _sky_cube(index: int, tier: str, params: dict[str, str]):
             "asinh": float(Config.STRETCH_SCALE_E),
             "pixscale": float(Config.DEFAULT_PIXEL_SCALE),
         }
-    if tier not in ("dirty", "hr"):
+    if tier not in ("dirty", "hr", "bhr"):
         raise ViewerError(400, "bad tier")
-    path = tfrecord_path(_sky_records_local_dir(), f"{tier}_{subset}")
+    record_kind = "hr" if tier == "bhr" else tier
+    path = tfrecord_path(_sky_records_local_dir(), f"{record_kind}_{subset}")
     if not os.path.exists(path):
         raise ViewerError(404, "records not synced")
     records = read_images(path, num_images=max(index + 1, 1))
@@ -213,13 +242,14 @@ def _sky_cube(index: int, tier: str, params: dict[str, str]):
         raise ViewerError(404, "index out of range")
     rec = records[index]
     cube = _as_hwc(rec.data)
-    if tier == "hr":
+    if tier == "bhr":
         cube = blur_target_array(
-            cube, Config.TARGET_PSF_FWHM_ARCSEC,
+            cube, _bhr_fwhm_arcsec(params),
             pixel_scale_arcsec=rec.pixel_scale_arcsec,
         )
+    label = "BHR (blurred HR)" if tier == "bhr" else tier
     info = {
-        "label": f"{tier} · {subset} · idx {rec.index}",
+        "label": f"{label} · {subset} · idx {rec.index}",
         "asinh": float(Config.STRETCH_SCALE_E),
         "pixscale": float(getattr(rec, "pixel_scale_arcsec", 0.0) or 0.0),
     }
@@ -311,6 +341,10 @@ def _eval_objects() -> list[dict[str, Any]]:
         obj_dir = os.path.join(root, sub)
         tiers = [k for k, fn in _EVAL_TIER_FILES.items()
                  if os.path.isfile(os.path.join(obj_dir, fn))]
+        # BHR is persisted by new synthetic evaluations and can be derived from
+        # HR for older raw-target results, so it follows every available HR.
+        if "HR" in tiers:
+            tiers.insert(tiers.index("HR") + 1, "BHR")
         if not tiers:
             continue
         grade = (r.get("grade") or "").strip()
@@ -347,8 +381,8 @@ def _eval_objects() -> list[dict[str, Any]]:
 
 def _eval_meta(params: dict[str, str]) -> dict[str, Any]:
     objs = _eval_objects()
-    # All tiers seen across the run, ordered LR→SR→HR→std, for the chip strip.
-    order = ["LR", "SR", "HR", "std"]
+    # All tiers seen across the run, ordered LR→SR→HR→BHR→std, for the chip strip.
+    order = ["LR", "SR", "HR", "BHR", "std"]
     seen = {t for o in objs for t in o["tiers"]}
     tiers = [{"key": k, "label": ("stdSR" if k == "std" else k)}
              for k in order if k in seen]
@@ -381,6 +415,7 @@ def _eval_cube(index: int, tier: str, params: dict[str, str]):
     obj = objs[index]
     root = os.path.abspath(Config.EVAL_RESULTS_DIR)
     asinh = float(Config.STRETCH_SCALE_E)
+    key = None
     if tier.startswith("pca") and tier[3:].isdigit():
         path = os.path.join(root, obj["subdir"], f"{tier}.fits")
         if not os.path.isfile(path):
@@ -389,19 +424,32 @@ def _eval_cube(index: int, tier: str, params: dict[str, str]):
         # The shared morph animation fetches the ensemble mean as lower-case
         # "sr", but eval tier keys are upper-case (LR/SR/HR); resolve case-
         # insensitively so the disagreement movie works on the eval page too.
-        key = next((k for k in _EVAL_TIER_FILES if k.lower() == tier.lower()), None)
+        key = next((k for k in (*_EVAL_TIER_FILES, "BHR")
+                    if k.lower() == tier.lower()), None)
         if key is None or key not in obj["tiers"]:
             raise ViewerError(404, f"{tier} not available for this object")
-        path = os.path.join(root, obj["subdir"], _EVAL_TIER_FILES[key])
+        if key == "BHR":
+            # Always derive the interactive BHR from raw HR. A persisted
+            # BHR.fits records the evaluation target, but cannot respond to the
+            # viewer slider.
+            path = os.path.join(root, obj["subdir"], _EVAL_TIER_FILES["HR"])
+        else:
+            path = os.path.join(root, obj["subdir"], _EVAL_TIER_FILES[key])
     with fits.open(path, memmap=False) as hdul:
         data = hdul[0].data
         with contextlib.suppress(TypeError, ValueError):
             asinh = float(hdul[0].header.get("ASINH", asinh))
     cube = _as_hwc(data)
+    if key == "BHR":
+        cube = blur_target_array(
+            cube, _bhr_fwhm_arcsec(params),
+            pixel_scale_arcsec=Config.DEFAULT_PIXEL_SCALE,
+        )
     tier_scale = (Config.VIS_PIXEL_SCALE_ARCSEC
                   if tier.lower() in {"lr", "original", "original_stack"}
                   else Config.DEFAULT_PIXEL_SCALE)
-    info = {"label": f"{obj['label']} · {tier}", "asinh": asinh,
+    display_tier = "BHR (blurred HR)" if key == "BHR" else tier
+    info = {"label": f"{obj['label']} · {display_tier}", "asinh": asinh,
             "pixscale": float(tier_scale)}
     return cube, info
 
@@ -423,6 +471,7 @@ _ENSEMBLE_TIERS = [
     # is hidden from the chip row per the trimmed tier set.
     {"key": "std", "label": "stdSR", "hidden": True},
     {"key": "hr", "label": "HR"},
+    {"key": "bhr", "label": "BHR (blurred HR)"},
 ]
 
 #: How many PCA components the on-the-fly (member-subset) disagreement movie
@@ -441,6 +490,12 @@ def _ensemble_target(starless: bool) -> tuple[str, str]:
     """Return the record kind and viewer label for one ensemble regime."""
     return (("clean", "Clean (starless goal)")
             if starless else ("hr", "HR"))
+
+
+def _blurred_target_label(target_label: str) -> str:
+    """Viewer label for the PSF-stabilised form of a raw target."""
+    source = "Clean" if target_label.startswith("Clean") else "HR"
+    return f"BHR (blurred {source})"
 
 
 def _ensemble_cubes_dir(starless: bool) -> str:
@@ -465,9 +520,14 @@ def _ensemble_meta(params: dict[str, str]) -> dict[str, Any]:
     rdir = _sky_records_local_dir()
     has_target = bool(sub) and bool(rdir) and os.path.exists(
         tfrecord_path(rdir, f"{target_kind}_{sub}"))
-    tiers = [({**t, "label": target_label} if t["key"] == "hr" else dict(t))
+    target_labels = {
+        "hr": target_label,
+        "bhr": _blurred_target_label(target_label),
+    }
+    tiers = [({**t, "label": target_labels[t["key"]]}
+              if t["key"] in target_labels else dict(t))
              for t in _ENSEMBLE_TIERS
-             if t["key"] != "hr" or has_target]
+             if t["key"] not in target_labels or has_target]
     member_labels0 = man.get("member_labels", []) or []
     primary_available = bool(
         man.get(f"has_combiner_{RAW_INCREMENTAL_MINMEANMAX_RBF_KIND}")
@@ -522,7 +582,8 @@ def _ensemble_meta(params: dict[str, str]) -> dict[str, Any]:
     }
 
 
-def _ensemble_record_cube(sub: str, n_read: int, kind: str, rec_index: int):
+def _ensemble_record_cube(sub: str, n_read: int, kind: str, rec_index: int,
+                          *, blurred_fwhm_arcsec: float | None = None):
     """LR/goal record matched by ``.index`` (dirty, clean, or hr)."""
     rdir = _sky_records_local_dir()
     path = tfrecord_path(rdir, f"{kind}_{sub}") if rdir else ""
@@ -533,15 +594,11 @@ def _ensemble_record_cube(sub: str, n_read: int, kind: str, rec_index: int):
     if rec is None:
         raise ViewerError(404, f"record {rec_index} not found")
     data = _as_hwc(rec.data)
-    if kind in {"clean", "hr"}:
-        manifest = _ensemble_manifest(_ensemble_starless({
-            "mode": "starless" if kind == "clean" else "starfull",
-        }))
-        fwhm = validate_target_fwhm_arcsec(
-            manifest.get("target_psf_fwhm_arcsec",
-                        Config.TARGET_PSF_FWHM_ARCSEC))
+    if blurred_fwhm_arcsec is not None:
         data = blur_target_array(
-            data, fwhm, pixel_scale_arcsec=rec.pixel_scale_arcsec)
+            data, blurred_fwhm_arcsec,
+            pixel_scale_arcsec=rec.pixel_scale_arcsec,
+        )
     return (data,
             float(getattr(rec, "pixel_scale_arcsec", 0.0) or 0.0))
 
@@ -723,13 +780,18 @@ def _ensemble_cube(index: int, tier: str, params: dict[str, str]):
         cube, pix = _as_hwc(np.load(path)), float(Config.DEFAULT_PIXEL_SCALE)
     elif tier == "lr":
         cube, pix = _ensemble_record_cube(sub, n_read, "dirty", rec_index)
-    elif tier == "hr":
+    elif tier in {"hr", "bhr"}:
         cube, pix = _ensemble_record_cube(
-            sub, n_read, target_kind, rec_index)
+            sub, n_read, target_kind, rec_index,
+            blurred_fwhm_arcsec=(
+                _bhr_fwhm_arcsec(params) if tier == "bhr" else None
+            ),
+        )
     else:
         raise ViewerError(400, "bad tier")
     labels = {"lr": "LR", "sr": "SR (ensemble mean)",
               "std": "stdSR (member std)", "hr": target_label,
+              "bhr": _blurred_target_label(target_label),
               "comb": "SR (combiner)"}
     if tier.startswith("member") and tier[6:].isdigit():
         mlabels = man.get("member_labels", []) or []
@@ -995,10 +1057,14 @@ def _lens_isolation_meta(_params: dict[str, str]) -> dict[str, Any]:
     has_target = bool(subset) and os.path.isfile(
         tfrecord_path(records_dir(), f"lens_{subset}")
     )
-    tiers = [dict(t) for t in _ENSEMBLE_TIERS if t["key"] != "hr" or has_target]
+    target_keys = {"hr", "bhr"}
+    tiers = [dict(t) for t in _ENSEMBLE_TIERS
+             if t["key"] not in target_keys or has_target]
     for tier in tiers:
         if tier["key"] == "hr":
             tier["label"] = "lens target"
+        elif tier["key"] == "bhr":
+            tier["label"] = "BHR (blurred lens target)"
     member_labels = list(manifest.get("member_labels", []) or [])
     if manifest.get("has_combiner") or _load_lens_isolation_combiner(member_labels) is not None:
         tiers.insert(2, {"key": "comb", "label": "combiner"})
@@ -1142,10 +1208,15 @@ def _lens_isolation_cube(index: int, tier: str, params: dict[str, str]):
         cube, pixel_scale = _lens_isolation_record_cube(
             subset_name, n_read, "dirty", rec_index
         )
-    elif tier == "hr":
+    elif tier in {"hr", "bhr"}:
         cube, pixel_scale = _lens_isolation_record_cube(
             subset_name, n_read, "lens", rec_index
         )
+        if tier == "bhr":
+            cube = blur_target_array(
+                cube, _bhr_fwhm_arcsec(params),
+                pixel_scale_arcsec=pixel_scale,
+            )
     else:
         raise ViewerError(400, "bad tier")
     labels = {
@@ -1153,6 +1224,7 @@ def _lens_isolation_cube(index: int, tier: str, params: dict[str, str]):
         "sr": "SR (ensemble mean)",
         "std": "stdSR (member std)",
         "hr": "lens target",
+        "bhr": "BHR (blurred lens target)",
     }
     if tier.startswith("member") and tier[6:].isdigit():
         member_index = int(tier[6:])
@@ -1839,6 +1911,16 @@ def get_meta(collection: str, params: dict[str, str]) -> dict[str, Any]:
         raise ViewerError(404, "unknown collection")
     meta = _REGISTRY[collection][0](params)
     meta["collection"] = collection
+    if any(str(tier.get("key", "")).lower() == "bhr"
+           for tier in meta.get("tiers", [])):
+        _bhr_fwhm_arcsec(params)
+        meta["bhr_fwhm_control"] = {
+            "param": BHR_FWHM_PARAM,
+            "default_arcsec": float(Config.TARGET_PSF_FWHM_ARCSEC),
+            "min_arcsec": 0.0,
+            "max_arcsec": BHR_FWHM_MAX_ARCSEC,
+            "step_arcsec": 0.005,
+        }
     # This is shared metadata rather than collection-specific UI state: the
     # generic Tile viewer is mounted by all routes and must annotate every
     # tile at the same physical/angular receptive-field sizes.

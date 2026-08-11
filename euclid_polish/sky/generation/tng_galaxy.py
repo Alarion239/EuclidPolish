@@ -39,10 +39,12 @@ from __future__ import annotations
 import os
 
 import numpy as np
+from scipy.signal import fftconvolve
 
 from euclid_polish.config import BandConfig, Config
 from euclid_polish.photometry import (
     ab_mag_to_electrons,
+    electrons_to_ab_mag,
     mjy_per_sr_to_electrons,
     mjy_per_sr_to_electrons_factor,
 )
@@ -447,6 +449,90 @@ def _record_target_vis_normalisation(
     return brightness_scale
 
 
+def circularize_psf_kernel(kernel: np.ndarray) -> np.ndarray:
+    """Return an azimuthally averaged, unit-sum copy of an empirical PSF."""
+    values = np.asarray(kernel, dtype=np.float64)
+    if values.ndim != 2 or min(values.shape) < 3 or not np.all(np.isfinite(values)):
+        raise ValueError("aperture PSF kernel must be a finite 2-D array")
+    yy, xx = np.indices(values.shape, dtype=np.float64)
+    cy, cx = 0.5 * (values.shape[0] - 1), 0.5 * (values.shape[1] - 1)
+    radius = np.floor(np.hypot(yy - cy, xx - cx) + 0.5).astype(np.int64)
+    radial_sum = np.bincount(radius.ravel(), weights=values.ravel())
+    radial_count = np.bincount(radius.ravel())
+    profile = np.divide(
+        radial_sum, radial_count,
+        out=np.zeros_like(radial_sum), where=radial_count > 0,
+    )
+    circular = profile[radius]
+    total = float(np.sum(circular))
+    if not np.isfinite(total) or total <= 0.0:
+        raise ValueError("aperture PSF kernel has non-positive total flux")
+    return np.asarray(circular / total, dtype=np.float32)
+
+
+def normalise_tng_to_vis_2fwhm(
+    stamp: np.ndarray,
+    meta: dict,
+    *,
+    target_flux_e: float,
+    psf_kernel: np.ndarray,
+    psf_fwhm_arcsec: float,
+    pixel_scale_arcsec: float = Config.DEFAULT_PIXEL_SCALE,
+) -> tuple[np.ndarray, dict]:
+    """Scale a geometry-final TNG cube to a goal VIS 2FWHM aperture flux."""
+    cube = np.asarray(stamp, dtype=np.float32)
+    target = float(target_flux_e)
+    fwhm = float(psf_fwhm_arcsec)
+    scale = float(pixel_scale_arcsec)
+    if cube.ndim != 3 or cube.shape[-1] != len(Config.LR_INPUT_BAND_NAMES):
+        raise ValueError("TNG aperture normalization requires an (H,W,4) stamp")
+    if not np.isfinite(target) or target <= 0.0:
+        raise ValueError("goal VIS 2FWHM aperture flux must be positive")
+    if not np.isfinite(fwhm) or fwhm <= 0.0 or not np.isfinite(scale) or scale <= 0.0:
+        raise ValueError("VIS aperture PSF FWHM and pixel scale must be positive")
+    circular_psf = circularize_psf_kernel(psf_kernel)
+    blurred = fftconvolve(
+        np.asarray(cube[..., 0], dtype=np.float64),
+        np.asarray(circular_psf, dtype=np.float64),
+        mode="same",
+    )
+    yy, xx = np.indices(blurred.shape, dtype=np.float64)
+    cy, cx = 0.5 * (blurred.shape[0] - 1), 0.5 * (blurred.shape[1] - 1)
+    aperture_radius_pix = fwhm / scale
+    aperture = np.hypot(yy - cy, xx - cx) <= aperture_radius_pix
+    measured = float(np.sum(blurred[aperture], dtype=np.float64))
+    if not np.isfinite(measured) or measured <= 0.0:
+        raise ValueError("resized TNG has no positive VIS 2FWHM aperture flux")
+    brightness_scale = target / measured
+    if not np.isfinite(brightness_scale) or brightness_scale <= 0.0:
+        raise ValueError("VIS 2FWHM brightness scale is invalid")
+    cube *= np.float32(brightness_scale)
+    achieved = measured * brightness_scale
+    updated = dict(meta)
+    updated.update({
+        "brightness_scale": float(brightness_scale),
+        "shared_photometric_scale": float(brightness_scale),
+        "photometric_scaling": "vis_2fwhm_after_redshift_and_size_match",
+        "target_vis_2fwhm_flux_e": target,
+        "achieved_vis_2fwhm_flux_e": float(achieved),
+        "target_vis_2fwhm_mag": float(electrons_to_ab_mag(
+            target, Config.get_band("VIS"),
+        )),
+        "achieved_vis_2fwhm_mag": float(electrons_to_ab_mag(
+            achieved, Config.get_band("VIS"),
+        )),
+        "aperture_psf_fwhm_arcsec": fwhm,
+        "aperture_radius_arcsec": fwhm,
+        "aperture_diameter_arcsec": 2.0 * fwhm,
+        "aperture_psf_model": "circularized_empirical_vis_psf",
+        "flux_e_per_band": {
+            band: float(cube[..., index].sum(dtype=np.float64))
+            for index, band in enumerate(Config.LR_INPUT_BAND_NAMES)
+        },
+    })
+    return cube, updated
+
+
 def _render_target_re(
     galaxy_dir: str,
     subhalo_id: int | str,
@@ -685,6 +771,30 @@ def tng_stamp_at_redshift(
             rot_angle=rot_angle,
             target_vis_flux_e=target_vis_flux_e,
         )
+        # Geometry is final before brightness. Apply only the redshift-driven
+        # relative band drift here; the later 2FWHM normalization supplies the
+        # independent common flux anchor and therefore cancels any common
+        # luminosity-distance factor.
+        sed_fnu = [
+            meta["flux_e_per_band"][band]
+            / mjy_per_sr_to_electrons_factor(
+                Config.get_band(band), pixel_scale_arcsec,
+            )
+            for band in Config.LR_INPUT_BAND_NAMES
+        ]
+        factors, dmeta = band_drift_factors(sed_fnu, z, rng)
+        stamp *= np.asarray(factors, dtype=np.float32)[None, None, :]
+        # The staged generator deliberately supplies no target here and applies
+        # its independent 2FWHM anchor later.  Preserve the legacy total-VIS
+        # request, however, by restoring it after the colour drift.
+        if target_vis_flux_e is not None:
+            _record_target_vis_normalisation(
+                stamp, meta, target_vis_flux_e,
+            )
+        meta["flux_e_per_band"] = {
+            band: float(stamp[..., index].sum(dtype=np.float64))
+            for index, band in enumerate(Config.LR_INPUT_BAND_NAMES)
+        }
         meta.update({
             "native_halflight_px": float(re_px),
             "target_re_arcsec": float(target_re_arcsec),
@@ -694,9 +804,11 @@ def tng_stamp_at_redshift(
             "scale_factor": float(scale),
             "z": float(z),
             "native_tng_sed_preserved": True,
-            "physical_redshift_rescaling_applied": False,
+            "physical_redshift_rescaling_applied": True,
+            "redshift_band_factors": [float(value) for value in factors],
             "radius_manifest_fingerprint": str(radius_manifest_fingerprint),
         })
+        meta.update(dmeta)
         return stamp, meta
     if (
         target_re_arcsec is not None and target_re_arcsec > 0.0

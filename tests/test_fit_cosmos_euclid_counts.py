@@ -8,7 +8,23 @@ import numpy as np
 import pytest
 
 from euclid_polish.population import joint_galaxy
+from euclid_polish.population.magnitude_law import StraightMagnitudeLaw
 from euclid_polish.sky.generation import cosmos_tng_prior
+
+
+def _magnitude_law_payload(surface_density: float) -> dict:
+    return StraightMagnitudeLaw(
+        slope=0.0,
+        intercept=float(np.log10(surface_density / 15.0)),
+        mag_bright=14.0,
+        mag_faint=29.0,
+        fit_bright=19.0,
+        fit_faint=25.0,
+        covariance=((1.0e-4, 0.0), (0.0, 1.0e-3)),
+        r_squared=1.0,
+        rms_log10_density=0.0,
+        source="Q1 2FWHM fixture",
+    ).to_payload()
 
 
 def test_euclid_catalog_uses_fractional_membership_and_size_proxy(tmp_path):
@@ -86,6 +102,136 @@ def test_size_relation_recovers_luminosity_and_redshift_trends():
     assert abs(fitted.magnitude_redshift_interaction - 0.08) < 0.04
     assert abs(fitted.scatter_dex - 0.18) < 0.01
     assert abs(fitted.scatter_magnitude_slope + 0.015) < 0.01
+
+
+def test_phz_redshift_correction_preserves_density_and_improves_shape():
+    z_edges = np.asarray([0.05, 0.5, 1.0, 1.5])
+    magnitude_edges = np.asarray([20.0, 22.0, 24.0])
+    density = np.ones((3, 2, 2), dtype=np.float64)
+    rows = 240
+    pdf = np.zeros((rows, 3), dtype=np.float64)
+    pdf[:120, 0] = 1.0
+    pdf[120:, 2] = 1.0
+    phz = {
+        "pdf_probability": pdf,
+        "pdf_z_edges": z_edges,
+        "has_pdf": np.ones(rows, dtype=bool),
+        "magnitude": np.repeat([21.0, 23.0], rows // 2),
+        "galaxy_probability": np.ones(rows),
+        "cone_index": np.arange(rows) % 8,
+    }
+    fitted = joint_galaxy.fit_phz_redshift_correction({
+        "density": density,
+        "z_edges": z_edges,
+        "vis_magnitude_edges": magnitude_edges,
+    }, phz)
+    factor = np.asarray(fitted["factor"])
+
+    np.testing.assert_allclose(
+        np.sum(density * factor[:, :, None]), np.sum(density), rtol=1e-12,
+    )
+    assert fitted["corrected_deviance"] < fitted["baseline_deviance"]
+    assert len(fitted["cross_validation"]["folds"]) == 4
+
+
+def test_phz_redshift_correction_rebins_pdf_mass_to_generation_grid():
+    pdf_edges = np.asarray([0.05, 0.50, 1.00, 1.50])
+    generation_edges = np.asarray([0.05, 0.25, 0.75, 1.25, 1.50])
+    magnitude_edges = np.asarray([20.0, 22.0, 24.0])
+    rows = 128
+    pdf = np.zeros((rows, 3), dtype=np.float64)
+    pdf[:64, 0] = 1.0
+    pdf[64:, 2] = 1.0
+    phz = {
+        "pdf_probability": pdf,
+        "pdf_z_edges": pdf_edges,
+        "has_pdf": np.ones(rows, dtype=bool),
+        "magnitude": np.repeat([21.0, 23.0], rows // 2),
+        "galaxy_probability": np.ones(rows),
+        "cone_index": np.arange(rows) % 8,
+    }
+
+    fitted = joint_galaxy.fit_phz_redshift_correction({
+        "density": np.ones((4, 2, 2), dtype=np.float64),
+        "z_edges": generation_edges,
+        "vis_magnitude_edges": magnitude_edges,
+    }, phz)
+    observed = np.asarray(fitted["observed_weighted_counts"])
+
+    assert fitted["pdf_rebinned"] is True
+    assert fitted["input_pdf_z_edges"] == pdf_edges.tolist()
+    assert observed.shape == (4, 2)
+    assert np.sum(observed) == pytest.approx(float(rows))
+
+
+def test_phz_probability_rebin_splits_mass_by_bin_overlap():
+    rebinned = joint_galaxy._rebin_probability_mass(
+        np.asarray([[1.0, 0.0], [0.0, 1.0]]),
+        np.asarray([0.0, 0.5, 1.0]),
+        np.asarray([0.0, 0.25, 0.5, 0.75, 1.0]),
+    )
+
+    np.testing.assert_allclose(rebinned, [
+        [0.5, 0.5, 0.0, 0.0],
+        [0.0, 0.0, 0.5, 0.5],
+    ])
+    np.testing.assert_allclose(np.sum(rebinned, axis=1), 1.0)
+
+
+def test_physical_conditionals_blend_phz_bright_and_cosmos_faint():
+    per_class = 96
+    phz_mass = np.concatenate([
+        np.full(per_class, 10.8), np.full(per_class, 9.7),
+    ])
+    phz_ssfr = np.concatenate([
+        np.full(per_class, -11.5), np.full(per_class, -9.5),
+    ])
+    phz = {
+        "magnitude": np.full(2 * per_class, 22.5),
+        "physical_redshift": np.linspace(0.1, 3.5, 2 * per_class),
+        "logmass": phz_mass,
+        "logmass_p16": phz_mass - 0.2,
+        "logmass_p84": phz_mass + 0.2,
+        "logsfr": phz_mass + phz_ssfr,
+        "logsfr_p16": phz_mass + phz_ssfr - 0.2,
+        "logsfr_p84": phz_mass + phz_ssfr + 0.2,
+        "sfhage": np.full(2 * per_class, 9.0),
+        "sfhage_p16": np.full(2 * per_class, 8.8),
+        "sfhage_p84": np.full(2 * per_class, 9.2),
+        "galaxy_probability": np.ones(2 * per_class),
+        "physical_flags": np.zeros(2 * per_class),
+        "quality_flag": np.zeros(2 * per_class),
+    }
+    cosmos_mass = np.concatenate([
+        np.full(per_class, 10.6), np.full(per_class, 9.5),
+    ])
+    cosmos = {
+        "magnitude": np.full(2 * per_class, 27.0),
+        "redshift": np.linspace(0.1, 5.0, 2 * per_class),
+        "logmass": cosmos_mass,
+        "logssfr": np.concatenate([
+            np.full(per_class, -11.6), np.full(per_class, -9.6),
+        ]),
+    }
+    response = joint_galaxy.EuclidResponseFit(
+        population_scale=1.0, vis_minus_f814w_mag=0.0,
+        magnitude_slope=1.0, scatter_mag=0.1,
+        measurement_flux_error_uJy=0.05, size_scale=1.0,
+        size_floor_arcsec=0.1, completeness_m50=25.0,
+        completeness_width_mag=0.4, surface_brightness_penalty=0.2,
+        bright_transfer_magnitude_max=24.0, bright_poisson_deviance=1.0,
+        bright_dof=1, poisson_deviance=1.0, dof=1,
+        standard_errors=(0.0,) * 9,
+    )
+
+    fitted = joint_galaxy.fit_physical_conditionals(
+        cosmos, phz, response, minimum_effective_weight=32.0,
+    )
+
+    assert fitted["all_cells_valid"]
+    assert fitted["phz_rows"] == 2 * per_class
+    assert fitted["cosmos_rows"] == 2 * per_class
+    assert 0.0 < np.mean(fitted["quenched_fraction"]) < 1.0
 
 
 def test_euclid_response_is_surface_brightness_dependent():
@@ -243,20 +389,122 @@ def test_activated_joint_population_samples_z_vis_and_radius(monkeypatch):
         },
     )
     prior = cosmos_tng_prior.JointGalaxyPopulationPrior({
-        "version": 1, "kind": "joint_analytical_tng_draw",
+        "version": 3, "kind": "joint_analytical_tng_draw",
         "valid": True, "active": True, "fingerprint": "c" * 64,
         "model": {
             "luminosity_function": asdict(luminosity),
             "size_relation": asdict(size),
             "euclid_response": asdict(response),
         },
+        "magnitude_law": _magnitude_law_payload(float(np.sum(density))),
         "generation": {"surface_density_arcmin2": float(np.sum(density))},
     })
 
     draws = [prior.sample(np.random.default_rng(seed)) for seed in range(200)]
 
+    first_rng = np.random.default_rng(918)
+    first_geometry = prior.sample_geometry(first_rng)
+    prior.sample_brightness(first_rng)
+    second_geometry = prior.sample_geometry(np.random.default_rng(918))
+    assert first_geometry.catalog_id == second_geometry.catalog_id
+    assert first_geometry.z == pytest.approx(second_geometry.z)
+    assert first_geometry.re_arcsec == pytest.approx(second_geometry.re_arcsec)
+    assert first_geometry.activity_class == second_geometry.activity_class
+    assert np.isnan(first_geometry.target_vis_mag)
+
     assert prior.surface_density_arcmin2 == pytest.approx(36.0)
     assert all(0.1 <= draw.z < 1.0 for draw in draws)
-    assert all(20.0 <= draw.target_vis_mag < 28.0 for draw in draws)
+    assert all(14.0 <= draw.target_vis_mag < 29.0 for draw in draws)
     assert all(0.05 <= draw.re_arcsec < 0.8 for draw in draws)
     assert all(draw.activity_class == "unconditioned" for draw in draws)
+
+
+def test_phz_joint_population_samples_physical_targets(monkeypatch):
+    density = np.ones((2, 2, 2), dtype=float)
+    monkeypatch.setattr(
+        cosmos_tng_prior, "latent_population_cube", lambda *_args: {},
+    )
+    monkeypatch.setattr(
+        cosmos_tng_prior, "tng_draw_population_cube", lambda *_args: {
+            "density": density.copy(),
+            "z_edges": np.asarray([0.1, 0.5, 1.0]),
+            "vis_magnitude_edges": np.asarray([20.0, 24.0, 28.0]),
+            "log_radius_edges": np.log10(np.asarray([0.05, 0.2, 0.8])),
+        },
+    )
+    classes = {
+        label: {
+            "mass_mean": [[mean, mean], [mean, mean]],
+            "mass_sigma": [[0.1, 0.1], [0.1, 0.1]],
+            "ssfr_mean": [[ssfr, ssfr], [ssfr, ssfr]],
+            "ssfr_sigma": [[0.1, 0.1], [0.1, 0.1]],
+            "global_mass_mean": mean, "global_mass_sigma": 0.5,
+        }
+        for label, mean, ssfr in (
+            ("quenched", 10.8, -11.8),
+            ("star_forming", 9.8, -9.8),
+        )
+    }
+    prior = cosmos_tng_prior.JointGalaxyPopulationPrior({
+        "version": 3, "kind": "joint_analytical_tng_draw",
+        "valid": True, "active": True, "fingerprint": "d" * 64,
+        "model": {
+            "luminosity_function": {
+                "log_phi_star": -3.0, "m_star_0": -21.0, "alpha": -1.2,
+                "m_star_log1pz_slope": 0.0,
+                "log_phi_log1pz_slope": 0.0,
+                "alpha_log1pz_slope": 0.0,
+                "m_star_log1pz_quadratic": 0.0,
+                "log_phi_log1pz_quadratic": 0.0,
+                "cosmic_variance_fractional_scatter": 0.1,
+                "poisson_deviance": 1.0,
+                "negative_binomial_deviance": 1.0, "dof": 1,
+                "standard_errors": [0.0] * 8,
+            },
+            "size_relation": {
+                "log10_r0_kpc": 0.5, "magnitude_slope": -0.1,
+                "log1pz_slope": -0.5, "magnitude_curvature": 0.0,
+                "magnitude_redshift_interaction": 0.0,
+                "scatter_dex": 0.2, "scatter_magnitude_slope": 0.0,
+                "residual_rms_dex": 0.2, "fitted_rows": 100,
+                "clipped_rows": 0, "standard_errors": [0.0] * 7,
+            },
+            "euclid_response": {
+                "population_scale": 1.0, "vis_minus_f814w_mag": 0.0,
+                "magnitude_slope": 1.0, "scatter_mag": 0.2,
+                "measurement_flux_error_uJy": 0.07, "size_scale": 1.0,
+                "size_floor_arcsec": 0.1, "completeness_m50": 25.0,
+                "completeness_width_mag": 0.4,
+                "surface_brightness_penalty": 0.2,
+                "bright_transfer_magnitude_max": 24.0,
+                "bright_poisson_deviance": 1.0, "bright_dof": 1,
+                "poisson_deviance": 1.0, "dof": 1,
+                "standard_errors": [0.0] * 9,
+            },
+        },
+        "phz_redshift_correction": {"factor": np.ones((2, 2)).tolist()},
+        "physical_conditionals": {
+            "version": 1, "z_edges": [0.0, 2.0],
+            "vis_magnitude_edges": [18.0, 30.0],
+            "quenched_fraction": [[0.5, 0.5], [0.5, 0.5]],
+            "classes": classes,
+        },
+        "magnitude_law": _magnitude_law_payload(8.0),
+        "generation": {"surface_density_arcmin2": 8.0},
+    })
+
+    draws = [prior.sample(np.random.default_rng(seed)) for seed in range(100)]
+
+    assert prior.morphology_mode == "phz_mass_ssfr_activity_transport"
+    assert {draw.activity_class for draw in draws} == {
+        "quenched", "star_forming",
+    }
+    assert all(np.isfinite(draw.logmass) for draw in draws)
+    assert all(np.isfinite(draw.logssfr) for draw in draws)
+    assert all(
+        (draw.logssfr < -11.0) == (draw.activity_class == "quenched")
+        for draw in draws
+    )
+    assert all(0.0 <= draw.mass_quantile <= 1.0 for draw in draws)
+    assert all(0.0 <= draw.ssfr_quantile <= 1.0 for draw in draws)
+    assert all(draw.physical_model_fingerprint == "d" * 64 for draw in draws)

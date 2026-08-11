@@ -80,7 +80,7 @@ export default function TrainMembersPage() {
   const [psfWarpAlphaMax, setPsfWarpAlphaMax] = useState("20");
   const [psfWarpSigma, setPsfWarpSigma] = useState("3");
   const [saturationMaskProb, setSaturationMaskProb] = useState("0.2");
-  const [targetPsfFwhm, setTargetPsfFwhm] = useState("0.05");
+  const [targetPsfFwhm, setTargetPsfFwhm] = useState("0.66");
   const [rows, setRows] = useState<SpecRow[]>([newRow(true)]);
   const [steps, setSteps] = useState("60000");
   const [continueBasis, setContinueBasis] = useState<ContinueBasis>("extra");

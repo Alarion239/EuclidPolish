@@ -28,6 +28,7 @@ def _params() -> dict:
     out = {}
     for key in (
         "subset", "mode", "members", "field", "jwst_band",
+        viewer_data.BHR_FWHM_PARAM,
         # PSF-page live preview: the client changes only the replay seed every
         # few seconds.  These remain harmless for every other collection.
         "psf_warp", "psf_warp_seed",

@@ -9,12 +9,23 @@ from scipy.ndimage import gaussian_filter
 
 from euclid_polish.config import Config
 
+# Finite support for the otherwise infinite Gaussian. The discrete radius is
+# the nearest whole pixel to 7 sigma (with a one-pixel minimum for non-zero
+# blur), matching scipy.ndimage's truncate convention.
+TARGET_GAUSSIAN_RADIUS_SIGMA = 7.0
+
 
 def validate_target_fwhm_arcsec(value: float) -> float:
     """Validate and normalise a target Gaussian FWHM in arcseconds."""
     fwhm = float(value)
-    if not math.isfinite(fwhm) or fwhm < 0.0:
-        raise ValueError("target_psf_fwhm_arcsec must be finite and >= 0")
+    if (
+        not math.isfinite(fwhm) or fwhm < 0.0
+        or fwhm > Config.TARGET_PSF_FWHM_MAX_ARCSEC
+    ):
+        raise ValueError(
+            "target_psf_fwhm_arcsec must be finite and in [0, "
+            f"{Config.TARGET_PSF_FWHM_MAX_ARCSEC:g}]"
+        )
     return fwhm
 
 
@@ -30,6 +41,17 @@ def target_sigma_pixels(
     return fwhm / scale / (2.0 * math.sqrt(2.0 * math.log(2.0)))
 
 
+def target_kernel_radius_pixels(
+    fwhm_arcsec: float = Config.TARGET_PSF_FWHM_ARCSEC,
+    pixel_scale_arcsec: float = Config.DEFAULT_PIXEL_SCALE,
+) -> int:
+    """Discrete Gaussian support radius corresponding to 7 sigma."""
+    sigma = target_sigma_pixels(fwhm_arcsec, pixel_scale_arcsec)
+    if sigma <= 0.0:
+        return 0
+    return max(1, int(TARGET_GAUSSIAN_RADIUS_SIGMA * sigma + 0.5))
+
+
 def blur_target_array(
     data: np.ndarray,
     fwhm_arcsec: float = Config.TARGET_PSF_FWHM_ARCSEC,
@@ -39,8 +61,9 @@ def blur_target_array(
     """Apply a per-channel, normalized Gaussian target PSF.
 
     ``data`` is ``(H, W, C)`` (or a 2-D single-channel plane). The blur is
-    applied only over spatial axes with reflective boundaries; channels never
-    mix. A zero FWHM returns a float32 copy without modifying the input.
+    applied only over spatial axes with reflective boundaries and truncated at
+    a radius of 7 sigma; channels never mix. A zero FWHM returns a float32 copy
+    without modifying the input.
     """
     arr = np.asarray(data, dtype=np.float32)
     if arr.ndim not in (2, 3):
@@ -52,6 +75,11 @@ def blur_target_array(
     return np.asarray(
         # ``mirror`` matches TensorFlow's REFLECT padding (the edge sample is
         # not duplicated), keeping the NumPy and graph paths identical.
-        gaussian_filter(arr, sigma=axes_sigma, mode="mirror"),
+        gaussian_filter(
+            arr,
+            sigma=axes_sigma,
+            mode="mirror",
+            truncate=TARGET_GAUSSIAN_RADIUS_SIGMA,
+        ),
         dtype=np.float32,
     )

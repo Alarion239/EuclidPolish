@@ -186,9 +186,10 @@ class Config:
     # Sky generation defaults
     DEFAULT_IMAGE_SIZE           = 256
     DEFAULT_PIXEL_SCALE          = 0.05     # arcsec / pixel
-    # Gaussian target PSF used when constructing training/evaluation goals.
-    # The default is one pixel on the super-resolved (0.05"/pixel) grid.
-    TARGET_PSF_FWHM_ARCSEC      = 0.05
+    # Desired Gaussian PSF of PSF-free synthetic training/evaluation goals.
+    # This is supervision only; it never changes the dirty-image PSF.
+    TARGET_PSF_FWHM_ARCSEC      = 0.66
+    TARGET_PSF_FWHM_MAX_ARCSEC  = 2.0
     # Project fallback until a multi-cone Euclid observation fit updates the
     # persisted job configuration. This is not the COSMOS surface density.
     GALAXY_DENSITY_ARCMIN2 = 200.0

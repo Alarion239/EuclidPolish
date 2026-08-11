@@ -17,23 +17,39 @@ import os
 from typing import Any
 
 SOURCE_COLS = ["field_index", "type", "render", "x_pix", "y_pix",
-               "flux_vis_e", "z", "subhalo_id", "theta_E_arcsec",
+               "flux_vis_e", "flux_y_e", "flux_j_e", "flux_h_e",
+               "z", "subhalo_id", "theta_E_arcsec",
                # Extra galaxy truth persisted for later analysis (empty for
                # lenses, and for whichever render path doesn't provide it):
                "re_arcsec", "logmass", "mass_scale",
-               # Conditional empirical mass-rank transport provenance.  The
-               # proxy is selection-only; it never rescales flux or size.
-               "native_tng_logmass", "morphology_proxy_logmass",
-               "target_mass_quantile", "tng_mass_quantile",
+               # Conditional empirical mass-sSFR rank transport provenance.
+               # The proxy is selection-only; it never rescales flux or size.
+               "native_tng_logmass", "native_tng_sfr",
+               "native_tng_logssfr", "native_tng_zero_sfr",
+               "morphology_proxy_logmass",
+               "target_logmass", "target_logssfr",
+               "target_mass_quantile", "target_ssfr_quantile",
+               "tng_mass_quantile", "tng_ssfr_quantile",
+               "morphology_mass_quantile_delta",
+               "morphology_ssfr_quantile_delta",
                "morphology_selection_probability",
                "morphology_effective_donors",
                "morphology_kernel_bandwidth_quantile",
+               "morphology_mass_kernel_bandwidth_quantile",
+               "morphology_ssfr_kernel_bandwidth_quantile",
                "morphology_worker_use_count", "morphology_activity_class",
+               "physical_model_fingerprint",
                # TNG population configuration saved with every rendered TNG
                # row so analysis can distinguish legacy and regenerated data.
                "tng_density_arcmin2", "tng_mf_alpha",
                "galaxy_density_arcmin2", "population_prior",
-               "mag_hst_f814w", "target_vis_mag", "brightness_scale",
+               "mag_hst_f814w", "target_vis_mag",
+               "target_re_arcsec", "achieved_re_arcsec",
+               "magnitude_fit_fingerprint",
+               "target_vis_2fwhm_mag", "target_vis_2fwhm_flux_e",
+               "achieved_vis_2fwhm_mag", "achieved_vis_2fwhm_flux_e",
+               "aperture_psf_fwhm_arcsec", "aperture_radius_arcsec",
+               "aperture_psf_source", "brightness_scale",
                "brightness_transfer",
                # Per-band stellar magnitudes (empty for galaxies/lenses); the
                # forward op re-injects fixed stars with their sampled colour.
@@ -46,6 +62,11 @@ def _flux_vis(src: dict[str, Any]):
     return float(f[0]) if f else ""
 
 
+def _flux_band(src: dict[str, Any], index: int):
+    flux = src.get("flux_e_per_band")
+    return float(flux[index]) if flux and len(flux) > index else ""
+
+
 def _num(v: Any):
     """A finite float for the CSV, or '' for None/NaN/unparseable."""
     if v is None:
@@ -54,7 +75,7 @@ def _num(v: Any):
         f = float(v)
     except (TypeError, ValueError):
         return ""
-    return "" if math.isnan(f) else f
+    return "" if not math.isfinite(f) else f
 
 
 def _z(src: dict[str, Any]):
@@ -70,7 +91,11 @@ def _galaxy_row(field_index: int, g: dict[str, Any]) -> dict[str, Any]:
         "field_index": field_index, "type": "galaxy",
         "render": g.get("render", ""),
         "x_pix": float(g["x_pix"]), "y_pix": float(g["y_pix"]),
-        "flux_vis_e": _flux_vis(g), "z": _z(g),
+        "flux_vis_e": _flux_vis(g),
+        "flux_y_e": _flux_band(g, 1),
+        "flux_j_e": _flux_band(g, 2),
+        "flux_h_e": _flux_band(g, 3),
+        "z": _z(g),
         "subhalo_id": g.get("subhalo_id", ""), "theta_E_arcsec": "",
         # Half-light radius (arcsec): TNG apparent R_e, or the Sersic
         # circularized combined R_e; log10 stellar mass (Msun) where known
@@ -79,11 +104,24 @@ def _galaxy_row(field_index: int, g: dict[str, Any]) -> dict[str, Any]:
         "logmass":    _num(g.get("logmass")),
         "mass_scale": _num(g.get("mass_scale")),
         "native_tng_logmass": _num(g.get("native_tng_logmass")),
+        "native_tng_sfr": _num(g.get("native_tng_sfr")),
+        "native_tng_logssfr": _num(g.get("native_tng_logssfr")),
+        "native_tng_zero_sfr": _num(g.get("native_tng_zero_sfr")),
         "morphology_proxy_logmass": _num(
             g.get("morphology_proxy_logmass")
         ),
+        "target_logmass": _num(g.get("target_logmass")),
+        "target_logssfr": _num(g.get("target_logssfr")),
         "target_mass_quantile": _num(g.get("target_mass_quantile")),
+        "target_ssfr_quantile": _num(g.get("target_ssfr_quantile")),
         "tng_mass_quantile": _num(g.get("tng_mass_quantile")),
+        "tng_ssfr_quantile": _num(g.get("tng_ssfr_quantile")),
+        "morphology_mass_quantile_delta": _num(
+            g.get("morphology_mass_quantile_delta")
+        ),
+        "morphology_ssfr_quantile_delta": _num(
+            g.get("morphology_ssfr_quantile_delta")
+        ),
         "morphology_selection_probability": _num(
             g.get("morphology_selection_probability")
         ),
@@ -93,11 +131,20 @@ def _galaxy_row(field_index: int, g: dict[str, Any]) -> dict[str, Any]:
         "morphology_kernel_bandwidth_quantile": _num(
             g.get("morphology_kernel_bandwidth_quantile")
         ),
+        "morphology_mass_kernel_bandwidth_quantile": _num(
+            g.get("morphology_mass_kernel_bandwidth_quantile")
+        ),
+        "morphology_ssfr_kernel_bandwidth_quantile": _num(
+            g.get("morphology_ssfr_kernel_bandwidth_quantile")
+        ),
         "morphology_worker_use_count": _num(
             g.get("morphology_worker_use_count")
         ),
         "morphology_activity_class": g.get(
             "morphology_activity_class", ""
+        ),
+        "physical_model_fingerprint": g.get(
+            "physical_model_fingerprint", ""
         ),
         "tng_density_arcmin2": _num(g.get("tng_density_arcmin2")),
         "tng_mf_alpha": _num(g.get("tng_mf_alpha")),
@@ -105,6 +152,20 @@ def _galaxy_row(field_index: int, g: dict[str, Any]) -> dict[str, Any]:
         "population_prior": g.get("population_prior", ""),
         "mag_hst_f814w": _num(g.get("mag_hst_f814w")),
         "target_vis_mag": _num(g.get("target_vis_mag")),
+        "target_re_arcsec": _num(g.get("target_re_arcsec")),
+        "achieved_re_arcsec": _num(g.get(
+            "achieved_re_arcsec", g.get("apparent_re_arcsec")
+        )),
+        "magnitude_fit_fingerprint": g.get(
+            "magnitude_fit_fingerprint", ""
+        ),
+        "target_vis_2fwhm_mag": _num(g.get("target_vis_2fwhm_mag")),
+        "target_vis_2fwhm_flux_e": _num(g.get("target_vis_2fwhm_flux_e")),
+        "achieved_vis_2fwhm_mag": _num(g.get("achieved_vis_2fwhm_mag")),
+        "achieved_vis_2fwhm_flux_e": _num(g.get("achieved_vis_2fwhm_flux_e")),
+        "aperture_psf_fwhm_arcsec": _num(g.get("aperture_psf_fwhm_arcsec")),
+        "aperture_radius_arcsec": _num(g.get("aperture_radius_arcsec")),
+        "aperture_psf_source": g.get("aperture_psf_source", ""),
         "brightness_scale": _num(g.get("brightness_scale")),
         "brightness_transfer": g.get("brightness_transfer", ""),
     }
@@ -120,13 +181,22 @@ def _lens_row(field_index: int, lens: dict[str, Any]) -> dict[str, Any]:
         "theta_E_arcsec": float(theta) if theta is not None else "",
         # Galaxy-truth columns are not meaningful for the lens row.
         "re_arcsec": "", "logmass": "", "mass_scale": "",
-        "native_tng_logmass": "", "morphology_proxy_logmass": "",
-        "target_mass_quantile": "", "tng_mass_quantile": "",
+        "native_tng_logmass": "", "native_tng_sfr": "",
+        "native_tng_logssfr": "", "native_tng_zero_sfr": "",
+        "morphology_proxy_logmass": "",
+        "target_logmass": "", "target_logssfr": "",
+        "target_mass_quantile": "", "target_ssfr_quantile": "",
+        "tng_mass_quantile": "", "tng_ssfr_quantile": "",
+        "morphology_mass_quantile_delta": "",
+        "morphology_ssfr_quantile_delta": "",
         "morphology_selection_probability": "",
         "morphology_effective_donors": "",
         "morphology_kernel_bandwidth_quantile": "",
+        "morphology_mass_kernel_bandwidth_quantile": "",
+        "morphology_ssfr_kernel_bandwidth_quantile": "",
         "morphology_worker_use_count": "",
         "morphology_activity_class": "",
+        "physical_model_fingerprint": "",
         "tng_density_arcmin2": "", "tng_mf_alpha": "",
         "galaxy_density_arcmin2": "", "population_prior": "",
         "mag_hst_f814w": "", "target_vis_mag": "", "brightness_scale": "",
@@ -140,13 +210,22 @@ def _star_row(field_index: int, star: dict[str, Any]) -> dict[str, Any]:
         "x_pix": float(star["x_pix"]), "y_pix": float(star["y_pix"]),
         "flux_vis_e": "", "z": "", "subhalo_id": "", "theta_E_arcsec": "",
         "re_arcsec": "", "logmass": "", "mass_scale": "",
-        "native_tng_logmass": "", "morphology_proxy_logmass": "",
-        "target_mass_quantile": "", "tng_mass_quantile": "",
+        "native_tng_logmass": "", "native_tng_sfr": "",
+        "native_tng_logssfr": "", "native_tng_zero_sfr": "",
+        "morphology_proxy_logmass": "",
+        "target_logmass": "", "target_logssfr": "",
+        "target_mass_quantile": "", "target_ssfr_quantile": "",
+        "tng_mass_quantile": "", "tng_ssfr_quantile": "",
+        "morphology_mass_quantile_delta": "",
+        "morphology_ssfr_quantile_delta": "",
         "morphology_selection_probability": "",
         "morphology_effective_donors": "",
         "morphology_kernel_bandwidth_quantile": "",
+        "morphology_mass_kernel_bandwidth_quantile": "",
+        "morphology_ssfr_kernel_bandwidth_quantile": "",
         "morphology_worker_use_count": "",
         "morphology_activity_class": "",
+        "physical_model_fingerprint": "",
         "tng_density_arcmin2": "", "tng_mf_alpha": "",
         "galaxy_density_arcmin2": "", "population_prior": "",
         "mag_hst_f814w": "", "target_vis_mag": "", "brightness_scale": "",
@@ -191,25 +270,46 @@ def _parse(row: dict[str, str]) -> dict[str, Any]:
     out: dict[str, Any] = {"type": row["type"], "render": row["render"],
                            "subhalo_id": row["subhalo_id"] or None}
     out["field_index"] = int(row["field_index"])
-    for k in ("x_pix", "y_pix", "flux_vis_e", "z", "theta_E_arcsec",
+    for k in ("x_pix", "y_pix", "flux_vis_e", "flux_y_e", "flux_j_e",
+              "flux_h_e", "z", "theta_E_arcsec",
               "re_arcsec", "logmass", "mass_scale", "mag_vis",
-              "native_tng_logmass", "morphology_proxy_logmass",
-              "target_mass_quantile", "tng_mass_quantile",
+              "native_tng_logmass", "native_tng_sfr",
+              "native_tng_logssfr", "native_tng_zero_sfr",
+              "morphology_proxy_logmass",
+              "target_logmass", "target_logssfr",
+              "target_mass_quantile", "target_ssfr_quantile",
+              "tng_mass_quantile", "tng_ssfr_quantile",
+              "morphology_mass_quantile_delta",
+              "morphology_ssfr_quantile_delta",
               "morphology_selection_probability",
               "morphology_effective_donors",
               "morphology_kernel_bandwidth_quantile",
+              "morphology_mass_kernel_bandwidth_quantile",
+              "morphology_ssfr_kernel_bandwidth_quantile",
               "morphology_worker_use_count",
               "tng_density_arcmin2", "tng_mf_alpha",
               "galaxy_density_arcmin2",
-              "mag_hst_f814w", "target_vis_mag", "brightness_scale",
+              "mag_hst_f814w", "target_vis_mag",
+              "target_re_arcsec", "achieved_re_arcsec",
+              "target_vis_2fwhm_mag", "target_vis_2fwhm_flux_e",
+              "achieved_vis_2fwhm_mag", "achieved_vis_2fwhm_flux_e",
+              "aperture_psf_fwhm_arcsec", "aperture_radius_arcsec",
+              "brightness_scale",
               "mag_y_e", "mag_j_e", "mag_h_e", "temperature_k",
               "extinction_av"):
         v = row.get(k, "")
         out[k] = float(v) if v not in ("", None) else None
     out["population_prior"] = row.get("population_prior") or None
     out["brightness_transfer"] = row.get("brightness_transfer") or None
+    out["magnitude_fit_fingerprint"] = (
+        row.get("magnitude_fit_fingerprint") or None
+    )
+    out["aperture_psf_source"] = row.get("aperture_psf_source") or None
     out["morphology_activity_class"] = (
         row.get("morphology_activity_class") or None
+    )
+    out["physical_model_fingerprint"] = (
+        row.get("physical_model_fingerprint") or None
     )
     return out
 

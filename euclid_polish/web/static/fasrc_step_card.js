@@ -478,9 +478,9 @@ large cutout don't leak across train/validate."></label>`;
           PSF subset
           <input type="number" name="psf_subset" value="" placeholder="64"
                  min="1" max="1000"></label>
-        <label title="Gaussian FWHM applied to clean/HR supervision and evaluation targets in arcseconds. Default 0.05 = one HR pixel; 0 disables.">
+        <label title="Desired Gaussian PSF FWHM of PSF-free clean/HR supervision and evaluation targets. Default 0.66 arcsec; 0 disables. Dirty-image PSFs are unchanged.">
           Target PSF FWHM [arcsec]
-          <input type="number" name="target_psf_fwhm_arcsec" value="0.05"
+          <input type="number" name="target_psf_fwhm_arcsec" value="0.66"
                  min="0" max="2" step="0.005"></label>
       </span>
       <div data-mode-group="add fork" style="flex-basis:100%;">

@@ -20,6 +20,7 @@ from typing import Any
 import numpy as np
 
 from euclid_polish.config import Config
+from euclid_polish.population.magnitude_law import StraightMagnitudeLaw
 
 _SECOND_RADIATION_CONSTANT_UM_K = 14387.77
 _BAND_NAMES = Config.LR_INPUT_BAND_NAMES
@@ -44,8 +45,7 @@ class EmpiricalStellarPrior:
     temperature_quantiles_k: np.ndarray
     band_coefficients: np.ndarray
     residual_covariance: np.ndarray
-    magnitude_edges: np.ndarray | None = None
-    magnitude_cdf: np.ndarray | None = None
+    magnitude_law: StraightMagnitudeLaw | None = None
     color_model: dict[str, np.ndarray] | None = None
 
     @classmethod
@@ -67,20 +67,12 @@ class EmpiricalStellarPrior:
         if coefficients.shape != (4, 3) or covariance.shape != (4, 4):
             raise ValueError("stellar prior has invalid Euclid mapping dimensions")
         distribution = payload.get("population", {}).get("magnitude_distribution", {})
-        edges = np.asarray(distribution.get("edges") or [], dtype=np.float64)
-        cdf = np.asarray(distribution.get("cdf") or [], dtype=np.float64)
-        if edges.size < 2 or cdf.size != edges.size:
-            raise ValueError("stellar prior requires an empirical magnitude CDF")
-        else:
-            if (not np.all(np.isfinite(edges)) or not np.all(np.isfinite(cdf))
-                    or np.any(np.diff(edges) <= 0)
-                    or cdf[0] < -1e-9 or cdf[-1] <= 0.0
-                    or np.any(np.diff(cdf) < -1e-9)):
-                raise ValueError("stellar prior has an invalid magnitude CDF")
-            else:
-                cdf = np.clip(cdf / cdf[-1], 0.0, 1.0)
-                cdf[0] = 0.0
-                cdf[-1] = 1.0
+        try:
+            magnitude_law = StraightMagnitudeLaw.from_payload(distribution)
+        except ValueError as exc:
+            raise ValueError(
+                "stellar prior requires a straight magnitude-count law"
+            ) from exc
         color_model_payload = payload.get("color_model") or {}
         color_model: dict[str, np.ndarray] | None = None
         if color_model_payload.get("kind") == "gaia_euclid_latent_locus_v1":
@@ -129,27 +121,22 @@ class EmpiricalStellarPrior:
                 color_model = None
         if color_model is None:
             raise ValueError("stellar prior requires a valid latent colour model")
-        return cls(colors, temperatures, coefficients, covariance, edges, cdf,
-                   color_model)
+        return cls(
+            colors, temperatures, coefficients, covariance,
+            magnitude_law, color_model,
+        )
 
     def sample_magnitude(
         self, rng: np.random.Generator, *, slope: float,
         m_bright: float, m_faint: float,
     ) -> float:
-        """Sample VIS magnitude from the fitted empirical CDF."""
-        if self.magnitude_edges is None or self.magnitude_cdf is None:
-            raise ValueError("stellar prior has no empirical magnitude CDF")
-        u = float(rng.random())
-        index = int(np.searchsorted(self.magnitude_cdf, u, side="right") - 1)
-        index = max(0, min(index, self.magnitude_edges.size - 2))
-        lo = float(self.magnitude_cdf[index])
-        hi = float(self.magnitude_cdf[index + 1])
-        fraction = 0.0 if hi <= lo else (u - lo) / (hi - lo)
-        return float(
-            self.magnitude_edges[index]
-            + fraction * (self.magnitude_edges[index + 1]
-                          - self.magnitude_edges[index])
-        )
+        """Sample VIS magnitude from the activated straight count law."""
+        if self.magnitude_law is None:
+            raise ValueError("stellar prior has no straight magnitude-count law")
+        # The activated, fingerprinted law is authoritative. The scalar
+        # arguments remain in the public call for legacy non-empirical paths
+        # and job metadata, but cannot reshape an active calibrated prior.
+        return self.magnitude_law.sample(rng)
 
     def sample(self, rng: np.random.Generator, mag_vis: float) -> StellarSED:
         if self.color_model is None:

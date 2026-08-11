@@ -7,7 +7,9 @@ from euclid_polish.sky.generation.cosmos_tng_prior import (
     CosmosTngPrior,
     F814WToVisTransfer,
     conditional_mass_quantiles,
+    conditional_ssfr_quantiles,
     cross_validated_mass_bandwidth,
+    joint_quantile_transport_weights,
     quantile_transport_weights,
 )
 
@@ -38,6 +40,8 @@ def test_prior_requires_strict_generator_ready_rows_and_fit(tmp_path):
     assert all(not draw.imputed_size for draw in draws)
     assert {draw.catalog_id for draw in draws}.issubset({"0", "1", "3"})
     assert all(0.0 < draw.mass_quantile < 1.0 for draw in draws)
+    assert all(0.0 < draw.ssfr_quantile < 1.0 for draw in draws)
+    assert all(np.isfinite(draw.logssfr) for draw in draws)
     assert {draw.activity_class for draw in draws} <= {
         "quenched", "star_forming",
     }
@@ -159,3 +163,42 @@ def test_conditional_quantile_transport_preserves_classes_and_diversity():
     assert used_bandwidth > 0.03
     assert effective >= 64.0 - 1e-6
     assert np.argmax(weights) == 0
+
+
+def test_ssfr_quantiles_keep_zero_sfr_as_censored_point_mass():
+    logssfr = np.array([np.nan, np.nan, -12.0, -11.5, -10.0, -9.0])
+    classes = np.array([
+        "quenched", "quenched", "quenched", "quenched",
+        "star_forming", "star_forming",
+    ])
+    zero_sfr = np.array([True, True, False, False, False, False])
+
+    quantiles = conditional_ssfr_quantiles(
+        logssfr, classes, zero_sfr=zero_sfr,
+    )
+
+    assert quantiles[:4] == pytest.approx([0.25, 0.25, 0.625, 0.875])
+    assert quantiles[4:] == pytest.approx([0.25, 0.75])
+
+
+def test_joint_mass_ssfr_transport_uses_both_ranks_and_diversity_floor():
+    mass = np.tile((np.arange(10) + 0.5) / 10, 10)
+    ssfr = np.repeat((np.arange(10) + 0.5) / 10, 10)
+
+    weights, mass_bandwidth, ssfr_bandwidth, effective = (
+        joint_quantile_transport_weights(
+            mass,
+            ssfr,
+            0.05,
+            0.95,
+            mass_bandwidth=0.03,
+            ssfr_bandwidth=0.03,
+            minimum_effective_donors=64,
+        )
+    )
+
+    assert weights.sum() == pytest.approx(1.0)
+    assert mass_bandwidth > 0.03
+    assert ssfr_bandwidth > 0.03
+    assert effective >= 64.0 - 1e-6
+    assert int(np.argmax(weights)) == 90

@@ -304,8 +304,14 @@ def test_euclid_population_query_keeps_classifier_uncertainty_and_photometry(
             "point_like_flag": 1, "extended_flag": None,
             "point_like_prob": 0.99, "extended_prob": 0.01,
             "flux_vis_psf": 10.0, "fluxerr_vis_psf": 1.0,
+            "flux_vis_1fwhm_aper": 7.0, "fluxerr_vis_1fwhm_aper": 0.5,
+            "flux_vis_2fwhm_aper": 10.0, "fluxerr_vis_2fwhm_aper": 0.7,
             "flux_vis_3fwhm_aper": 12.0, "flux_y_3fwhm_aper": 10.0,
             "flux_j_3fwhm_aper": 8.0, "flux_h_3fwhm_aper": 6.0,
+            "flux_vis_4fwhm_aper": 13.0, "fluxerr_vis_4fwhm_aper": 1.0,
+            "flux_detection_total": 14.0, "fluxerr_detection_total": 1.1,
+            "flux_vis_sersic": 14.5, "fluxerr_vis_sersic": 1.2,
+            "vis_det": 1, "det_quality_flag": 0,
         },
         {
             "object_id": 2, "right_ascension": 10.1, "declination": 20.1,
@@ -342,10 +348,87 @@ def test_euclid_population_query_keeps_classifier_uncertainty_and_photometry(
     assert meta["catalog_version"] == CATALOG_VERSION
     assert meta["counts"] == {"star": 1, "galaxy": 1, "unknown": 1}
     assert "point_like_prob" in captured["query"]
-    assert "flux_h_3fwhm_aper" in captured["query"]
+    for multiple in (1, 2, 3, 4):
+        assert f"flux_h_{multiple}fwhm_aper" in captured["query"]
     written = list(csv.DictReader(catalog_path.open()))
     assert [row["type"] for row in written] == ["star", "galaxy", "unknown"]
     assert float(written[0]["vis_y_color"]) != 0
+    assert float(written[0]["flux_vis_1fwhm_aper_uJy"]) == 7.0
+    assert float(written[0]["flux_vis_4fwhm_aper_uJy"]) == 13.0
+    assert float(written[0]["flux_vis_aper_uJy"]) == 12.0
+    assert float(written[0]["flux_detection_total_uJy"]) == 14.0
+    assert float(written[0]["flux_vis_sersic_uJy"]) == 14.5
+
+
+def test_euclid_population_query_retains_curated_mer_and_morphology_schema(
+    tmp_path, monkeypatch,
+):
+    from euclid_polish.web.helpers import population_comparison as comparison
+
+    row = {
+        "object_id": 7,
+        "right_ascension": 10.0,
+        "declination": 20.0,
+        "point_like_prob": 0.05,
+        "extended_prob": 0.95,
+        "flux_vis_psf": 5.0,
+        "fluxerr_vis_psf": 0.5,
+        "flux_vis_3fwhm_aper": 5.0,
+        "fluxerr_vis_3fwhm_aper": 0.5,
+    }
+    row.update({
+        key: float(index + 1)
+        for index, key in enumerate(comparison.EUCLID_MER_STUDY_COLUMNS)
+    })
+    row.update({
+        key: float(index + 101)
+        for index, key in enumerate(
+            comparison.EUCLID_MORPHOLOGY_STUDY_COLUMNS
+        )
+    })
+    # Preserve meaningful classifier flags after filling the numeric contract.
+    row.update({
+        "point_like_flag": None,
+        "extended_flag": 1,
+        "spurious_flag": 0,
+        "deblended_flag": 1,
+        "flag_vis": 0,
+    })
+
+    class FakeJob:
+        def get_results(self):
+            return [row]
+
+    queries = []
+    catalog_path = tmp_path / "euclid_population.csv"
+    meta_path = tmp_path / "euclid_population_meta.json"
+    monkeypatch.setattr(
+        comparison.Euclid, "launch_job_async",
+        lambda query: queries.append(query) or FakeJob(),
+    )
+
+    meta = query_euclid_population(
+        10.0, 20.0, 1.0,
+        _catalog_path=catalog_path,
+        _meta_path=meta_path,
+    )
+    query = queries[0]
+    written = next(csv.DictReader(catalog_path.open()))
+
+    assert "LEFT OUTER JOIN catalogue.mer_morphology AS morph" in query
+    for cache_name, archive_name in comparison.EUCLID_MER_STUDY_COLUMNS.items():
+        assert f"mer.{archive_name} AS {cache_name}" in query
+        assert cache_name in written
+    for cache_name, archive_name in (
+        comparison.EUCLID_MORPHOLOGY_STUDY_COLUMNS.items()
+    ):
+        assert f"morph.{archive_name} AS {cache_name}" in query
+        assert cache_name in written
+    assert float(written["morph_sersic_vis_radius_arcsec"]) > 0.0
+    assert float(written["morph_disk_sersic_disk_radius_arcsec"]) > 0.0
+    assert meta["study_schema"]["morphology_table"] == (
+        "catalogue.mer_morphology"
+    )
 
 
 def test_euclid_population_query_preserves_cache_on_silent_archive_failure(
@@ -370,6 +453,149 @@ def test_euclid_population_query_preserves_cache_on_silent_archive_failure(
 
     assert catalog_path.read_text() == "object_id,type,mag_vis\nold,galaxy,22\n"
     assert json.loads(meta_path.read_text()) == {"sentinel": "old"}
+
+
+def test_euclid_population_query_compacts_phz_pdf_and_physical_columns(
+    tmp_path, monkeypatch,
+):
+    from euclid_polish.web.helpers import population_comparison as comparison
+
+    pdf = np.exp(-0.5 * ((comparison.PHZ_PDF_GRID - 1.2) / 0.15) ** 2)
+    rows = [{
+        "object_id": 42,
+        "right_ascension": 10.0,
+        "declination": 20.0,
+        "point_like_flag": None,
+        "point_like_prob": 0.05,
+        "extended_flag": 1,
+        "flux_vis_psf": 5.0,
+        "fluxerr_vis_psf": 0.5,
+        "flux_vis_3fwhm_aper": 5.0,
+        "fluxerr_vis_3fwhm_aper": 0.5,
+        "phz_star_prob": 0.01,
+        "phz_gal_prob": 0.98,
+        "phz_qso_prob": 0.08,
+        "phz_classification": 2,
+        "phz_pdf": pdf,
+        "phz_median": 1.2,
+        "phz_flags": 0,
+        "phz_phys_flags": 0,
+        "phz_phys_quality_flag": 0,
+        "phz_pp_median_redshift": 1.19,
+        "phz_pp_68_redshift": np.asarray([1.05, 1.34]),
+        "phz_pp_median_stellarmass": 10.2,
+        "phz_pp_68_stellarmass": np.asarray([10.0, 10.4]),
+        "phz_pp_median_sfr": 0.2,
+        "phz_pp_68_sfr": np.asarray([0.0, 0.4]),
+        "phz_pp_median_sfhage": 2.0e9,
+        "phz_pp_68_sfhage": np.asarray([1.5e9, 2.5e9]),
+        "phz_pp_median_mu": -20.0,
+        "phz_pp_68_mu": np.asarray([-20.2, -19.8]),
+    }]
+
+    class FakeJob:
+        def get_results(self):
+            return rows
+
+    catalog_path = tmp_path / "euclid_population.csv"
+    meta_path = tmp_path / "euclid_population_meta.json"
+    queries = []
+    monkeypatch.setattr(
+        comparison.Euclid, "launch_job_async",
+        lambda query: queries.append(query) or FakeJob(),
+    )
+    monkeypatch.setattr(comparison, "euclid_catalog_path", lambda: catalog_path)
+    monkeypatch.setattr(comparison, "euclid_catalog_meta_path", lambda: meta_path)
+
+    meta = query_euclid_population(10.0, 20.0, 1.0)
+    compact = comparison.read_phz_pdf_cache(
+        tmp_path / "euclid_population_phz_pdf.npz"
+    )
+    written = next(csv.DictReader(catalog_path.open()))
+
+    assert "catalogue.phz_classification" in queries[0]
+    assert "catalogue.phz_photo_z" in queries[0]
+    assert "catalogue.phz_physical_parameters" in queries[0]
+    assert compact["object_id"].tolist() == ["42"]
+    assert compact["probability"].shape == (1, len(comparison.LF_Z_EDGES) - 1)
+    assert compact["probability"].sum() == pytest.approx(1.0)
+    assert float(written["phz_gal_prob"]) == pytest.approx(0.98)
+    assert float(written["phz_pp_stellarmass_p16"]) == pytest.approx(10.0)
+    assert float(written["phz_pp_sfhage_p84"]) == pytest.approx(2.5e9)
+    assert float(written["phz_pp_mu_p16"]) == pytest.approx(-20.2)
+    assert meta["phz_pdf_rows"] == 1
+    assert meta["phz_quality"]["all_retained_pdfs_normalized"]
+
+
+def test_archive_vector_parser_accepts_tap_string_arrays():
+    from euclid_polish.web.helpers import population_comparison as comparison
+
+    np.testing.assert_allclose(
+        comparison._result_vector({"value": "[1.0, 2.5]"}, "value", 2),
+        [1.0, 2.5],
+    )
+    np.testing.assert_allclose(
+        comparison._result_vector({"value": b"{3.0 4.0}"}, "value", 2),
+        [3.0, 4.0],
+    )
+    assert comparison._result_vector(
+        {"value": "[1.0, missing]"}, "value", 2,
+    ) is None
+    assert comparison._result_vector(
+        {"value": "[1.0, 2.0, 3.0]"}, "value", 2,
+    ) is None
+
+
+def test_cached_phz_summary_recovery_requires_no_archive_query(
+    tmp_path, monkeypatch,
+):
+    from euclid_polish.web.helpers import population_comparison as comparison
+
+    catalog_path = tmp_path / "euclid_population.csv"
+    meta_path = tmp_path / "euclid_population_meta.json"
+    pdf_path = tmp_path / "euclid_population_phz_pdf.npz"
+    with catalog_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=(
+            "object_id", "mag_vis", "phz_gal_prob", "phz_median",
+            "point_like_prob",
+            "phz_mode_1", "phz_mode_1_area", "phz_mode_2",
+            "phz_mode_2_area",
+        ))
+        writer.writeheader()
+        writer.writerows([
+            {
+                "object_id": "bright", "mag_vis": 22.0,
+                "phz_gal_prob": 0.8, "point_like_prob": 0.1,
+                "phz_median": 1.0,
+                "phz_mode_1": 0.9, "phz_mode_1_area": 0.7,
+                "phz_mode_2": 1.8, "phz_mode_2_area": 0.3,
+            },
+            {
+                "object_id": "faint", "mag_vis": 25.0,
+                "phz_gal_prob": 0.9, "point_like_prob": 0.1,
+                "phz_median": 2.0,
+            },
+        ])
+    meta_path.write_text(json.dumps({
+        "rows": 2,
+        "phz_coverage": {"phz_galaxy_weight": 0.8},
+    }))
+    monkeypatch.setattr(comparison, "euclid_catalog_path", lambda: catalog_path)
+    monkeypatch.setattr(comparison, "euclid_catalog_meta_path", lambda: meta_path)
+    monkeypatch.setattr(comparison, "euclid_phz_pdf_path", lambda: pdf_path)
+    monkeypatch.setattr(
+        comparison.Euclid, "launch_job_async",
+        lambda _query: pytest.fail("recovery must not query the archive"),
+    )
+
+    recovered = comparison.recover_phz_pdf_cache_from_summaries()
+    compact = comparison.read_phz_pdf_cache(pdf_path)
+
+    assert compact["object_id"].tolist() == ["bright"]
+    np.testing.assert_allclose(np.sum(compact["probability"], axis=1), 1.0)
+    assert recovered["phz_pdf_source"] == "summary_reconstruction"
+    assert recovered["phz_pdf_activation_eligible"] is False
+    assert recovered["phz_pdf_recovery"]["archive_query_performed"] is False
 
 
 def test_euclid_population_query_retries_after_session_refresh(
@@ -583,7 +809,7 @@ def test_population_comparison_page_and_status_route(monkeypatch):
     }
 
 
-def test_random_cone_route_accepts_one_cone_and_rejects_zero(monkeypatch):
+def test_random_cone_route_enforces_supported_count_range(monkeypatch):
     from euclid_polish.web.app import create_app
     from euclid_polish.web.routes import population_comparison as routes
 
@@ -593,19 +819,31 @@ def test_random_cone_route_accepts_one_cone_and_rejects_zero(monkeypatch):
     )
     client = create_app().test_client()
 
-    accepted = client.post(
+    accepted_minimum = client.post(
         "/api/population-comparison/query-euclid-multi",
         data={"count": "1", "radius_arcmin": "3.5"},
     )
-    rejected = client.post(
+    accepted_maximum = client.post(
+        "/api/population-comparison/query-euclid-multi",
+        data={"count": "24", "radius_arcmin": "3.5"},
+    )
+    rejected_minimum = client.post(
         "/api/population-comparison/query-euclid-multi",
         data={"count": "0", "radius_arcmin": "3.5"},
     )
+    rejected_maximum = client.post(
+        "/api/population-comparison/query-euclid-multi",
+        data={"count": "25", "radius_arcmin": "3.5"},
+    )
 
-    assert accepted.status_code == 200
-    assert accepted.get_json()["job_id"] == "random-cones-job"
-    assert rejected.status_code == 400
-    assert "count must be 1–12" in rejected.get_json()["error"]
+    assert accepted_minimum.status_code == 200
+    assert accepted_minimum.get_json()["job_id"] == "random-cones-job"
+    assert accepted_maximum.status_code == 200
+    assert accepted_maximum.get_json()["job_id"] == "random-cones-job"
+    assert rejected_minimum.status_code == 400
+    assert "count must be 1–24" in rejected_minimum.get_json()["error"]
+    assert rejected_maximum.status_code == 400
+    assert "count must be 1–24" in rejected_maximum.get_json()["error"]
 
 
 def test_fit_cached_cones_route_does_not_require_archive_session(monkeypatch):

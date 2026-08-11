@@ -49,19 +49,24 @@ from euclid_polish.population.joint_galaxy import (
     LF_Z_EDGES,
     fit_euclid_response,
     fit_payload,
+    fit_physical_conditionals,
+    fit_phz_redshift_correction,
     fit_schechter_evolution,
     fit_size_evolution,
     latent_population_cube,
     predict_euclid_histogram,
     read_cosmos_population,
     read_euclid_population,
+    read_phz_population,
     signed_poisson_residual,
     tng_draw_population_cube,
+    validate_physical_conditionals,
 )
 
 DEFAULT_COSMOS = Config.COSMOS_POPULATION_PRIOR_PATH
 DEFAULT_EUCLID = "data/population_comparison/euclid_population.csv"
 DEFAULT_EUCLID_META = "data/population_comparison/euclid_population_meta.json"
+DEFAULT_EUCLID_PHZ_PDF = "data/population_comparison/euclid_population_phz_pdf.npz"
 DEFAULT_OUTPUT_DIR = "data/population_comparison/cosmos2025"
 OUTPUT_JSON = "joint_population_fit.json"
 OUTPUT_OVERVIEW = "joint_population_fit.png"
@@ -82,6 +87,18 @@ def _read_area(path: Path) -> tuple[float, dict[str, Any]]:
     if area <= 0.0:
         raise ValueError(f"No positive area_arcmin2 in {path}")
     return area, payload
+
+
+def _verify_phz_sidecar(path: Path, meta: dict[str, Any]) -> None:
+    expected = str(meta.get("phz_pdf_sha256") or "")
+    if len(expected) != 64:
+        raise ValueError("Euclid cache metadata has no PHZ PDF checksum")
+    actual = hashlib.sha256(path.read_bytes()).hexdigest()
+    if actual != expected:
+        raise ValueError(
+            "PHZ PDF checksum mismatch; the existing fit and active calibration "
+            "were preserved"
+        )
 
 
 def _fingerprint(paths: list[Path], identity: dict[str, Any]) -> str:
@@ -980,15 +997,18 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     cosmos_path = Path(args.cosmos)
     euclid_path = Path(args.euclid)
     euclid_meta_path = Path(args.euclid_meta)
+    euclid_phz_pdf_path = Path(args.euclid_phz_pdf)
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     euclid_area, euclid_meta = _read_area(euclid_meta_path)
+    _verify_phz_sidecar(euclid_phz_pdf_path, euclid_meta)
 
     cosmos = read_cosmos_population(cosmos_path)
     euclid = read_euclid_population(
         euclid_path,
         maximum_spurious_probability=args.maximum_spurious_probability,
     )
+    phz = read_phz_population(euclid_path, euclid_phz_pdf_path)
     lf_fit, lf_observed, lf_predicted = fit_schechter_evolution(
         np.asarray(cosmos["magnitude"]), np.asarray(cosmos["redshift"]),
     )
@@ -1002,6 +1022,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         unresolved_policy="censor",
         unresolved_radius_arcsec=EUCLID_UNRESOLVED_RADIUS_ARCSEC,
         log_radius_edges=EUCLID_CENSORED_LOG_RE_EDGES,
+    )
+    generation_draw = tng_draw_population_cube(cube, response_fit)
+    phz_redshift = fit_phz_redshift_correction(generation_draw, phz)
+    physical_conditionals = fit_physical_conditionals(
+        cosmos, phz, response_fit,
+    )
+    physical_monte_carlo = validate_physical_conditionals(
+        generation_draw, phz_redshift, physical_conditionals,
     )
     cross_validation = _cross_validate_euclid_response(
         cube, euclid, euclid_area,
@@ -1086,6 +1114,50 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         ),
         "warnings": warnings,
     }
+    phz_coverage = dict(euclid_meta.get("phz_coverage") or {})
+    phz_cache_quality = dict(euclid_meta.get("phz_quality") or {})
+    phz_gates = {
+        "classification_coverage": bool(
+            float(phz_coverage.get("classification_fraction") or 0.0) >= 0.90
+        ),
+        "redshift_pdf_coverage": bool(
+            float(phz_coverage.get("valid_pdf_fraction") or 0.0) >= 0.80
+        ),
+        "archive_pdf_provenance": bool(
+            euclid_meta.get("phz_pdf_activation_eligible", True)
+        ),
+        "pdf_normalization": bool(
+            phz_cache_quality.get("all_retained_pdfs_normalized")
+        ),
+        "cross_validated_improvement": bool(
+            float(
+                (phz_redshift.get("cross_validation") or {}).get(
+                    "mean_improvement_fraction"
+                ) or 0.0
+            ) >= 0.10
+        ),
+        "redshift_cell_residual": bool(
+            float(phz_redshift["median_absolute_fractional_residual"]) <= 0.20
+        ),
+        "physical_effective_weight": bool(
+            physical_conditionals.get("all_cells_valid")
+        ),
+        "physical_posterior_inputs": bool(
+            float(phz_coverage.get("valid_physical_fraction") or 0.0) > 0.0
+        ),
+        "monte_carlo_reproduction": bool(physical_monte_carlo.get("valid")),
+        "density_preservation": bool(
+            float(phz_redshift["density_change_fraction"]) <= 0.01
+        ),
+        "existing_joint_fit": bool(quality["valid"]),
+    }
+    phz_valid = all(phz_gates.values())
+    quality["phz_valid"] = phz_valid
+    quality["phz_quality_gates"] = phz_gates
+    quality["valid"] = bool(quality["valid"] and phz_valid)
+    if not phz_valid:
+        failed = ", ".join(key for key, passed in phz_gates.items() if not passed)
+        warnings.append(f"PHZ activation gates failed: {failed}")
     parameters = _parameter_rows(lf_fit, size_fit, response_fit)
     overview_path = output_dir / OUTPUT_OVERVIEW
     planes_path = output_dir / OUTPUT_PLANES
@@ -1101,7 +1173,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
 
     algorithm = {
         "name": "flexibly evolving Schechter x lognormal size joint survey fit",
-        "version": 5,
+        "version": 6,
         "cosmology": "Planck15",
         "cosmos_fit_window": {
             "magnitude": [COSMOS_FIT_MAG_MIN, COSMOS_FIT_MAG_MAX],
@@ -1128,14 +1200,15 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         ),
         "validation": (
             "four folds across twelve cached Euclid cones using the same "
-            "left-censored radius likelihood"
+            "left-censored radius likelihood, plus a four-fold PHZ "
+            "redshift-magnitude correction and fixed-seed physical sampler check"
         ),
     }
     fingerprint = _fingerprint(
-        [cosmos_path, euclid_path, euclid_meta_path], algorithm,
+        [cosmos_path, euclid_path, euclid_meta_path, euclid_phz_pdf_path], algorithm,
     )
     payload: dict[str, Any] = {
-        "version": 2,
+        "version": 3,
         "kind": "joint_intrinsic_galaxy_population",
         "fingerprint": fingerprint,
         "method": algorithm,
@@ -1152,6 +1225,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "cosmos_measured_size_rows": int(np.sum(cosmos["has_radius"])),
             "euclid_catalog_csv": str(euclid_path),
             "euclid_meta_json": str(euclid_meta_path),
+            "euclid_phz_pdf_npz": str(euclid_phz_pdf_path),
             "euclid_area_arcmin2": euclid_area,
             "euclid_cone_count": int(euclid_meta.get("cone_count", 1)),
             "euclid_catalog_rows": int(euclid["catalog_rows"]),
@@ -1182,6 +1256,26 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "size_relation": fit_payload(size_fit),
             "euclid_response": fit_payload(response_fit),
         },
+        "phz_redshift_correction": phz_redshift,
+        "physical_conditionals": physical_conditionals,
+        "phz_inputs": {
+            "coverage": phz_coverage,
+            "pdf_rows": int(np.sum(np.asarray(phz["has_pdf"], dtype=bool))),
+            "pdf_source": euclid_meta.get(
+                "phz_pdf_source", "archive_full_pdf",
+            ),
+            "pdf_activation_eligible": bool(
+                euclid_meta.get("phz_pdf_activation_eligible", True)
+            ),
+            "qso_probability_treatment": "diagnostic_only_not_renormalized",
+            "full_pdf_compaction": (
+                "601-point PDF rebinned to LF_Z_EDGES"
+                if euclid_meta.get("phz_pdf_source") != "summary_reconstruction"
+                else "diagnostic Gaussian mixture reconstructed from cached PHZ modes"
+            ),
+        },
+        "phz_quality_gates": phz_gates,
+        "phz_monte_carlo": physical_monte_carlo,
         "parameters": parameters,
         "fit_quality": quality,
         "diagnostics": diagnostics,
@@ -1210,6 +1304,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--cosmos", default=DEFAULT_COSMOS)
     parser.add_argument("--euclid", default=DEFAULT_EUCLID)
     parser.add_argument("--euclid-meta", default=DEFAULT_EUCLID_META)
+    parser.add_argument("--euclid-phz-pdf", default=DEFAULT_EUCLID_PHZ_PDF)
     parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--maximum-spurious-probability", type=float, default=0.5)
     parser.add_argument("--no-plot", action="store_true")

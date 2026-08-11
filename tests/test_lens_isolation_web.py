@@ -167,9 +167,32 @@ def test_lens_isolation_viewer_has_independent_target_and_cubes(tmp_path, monkey
     assert meta["collection"] == "lens-isolation"
     assert meta["target_label"] == "lens target"
     assert "hr" in [tier["key"] for tier in meta["tiers"]]
+    assert "bhr" in [tier["key"] for tier in meta["tiers"]]
     cube, info = vd.get_cube("lens-isolation", 0, "sr", {})
     assert cube.shape == (4, 4, 4)
     assert "ensemble mean" in info["label"]
+
+
+def test_lens_isolation_bhr_blurs_raw_lens_target(monkeypatch):
+    from euclid_polish.web.helpers import viewer_data as vd
+
+    impulse = np.zeros((9, 9, 4), np.float32)
+    impulse[4, 4, 0] = 1.0
+    monkeypatch.setattr(vd, "_lens_isolation_manifest", lambda: {
+        "subset": "test", "indices": [3], "member_labels": [],
+        "target_psf_fwhm_arcsec": 0.05,
+    })
+    monkeypatch.setattr(
+        vd, "_lens_isolation_record_cube",
+        lambda *_args: (impulse.copy(), 0.05),
+    )
+
+    raw, _ = vd._lens_isolation_cube(0, "hr", {})
+    blurred, info = vd._lens_isolation_cube(0, "bhr", {})
+
+    assert raw[4, 4, 0] == 1.0
+    assert blurred[4, 4, 0] < raw[4, 4, 0]
+    assert "BHR (blurred lens target)" in info["label"]
 
 
 def test_react_generation_card_uses_only_fasrc_cpu_resources():
