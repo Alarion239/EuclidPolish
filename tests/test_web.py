@@ -209,16 +209,15 @@ def test_cutout_viewer_exports_capture_all_visible_frames():
 def test_population_atlas_download_route(client, monkeypatch):
     from euclid_polish.web.routes import population_comparison as route
 
-    monkeypatch.setattr(route, "read_cosmos_euclid_fit", lambda: {"diagnostics": {}})
     monkeypatch.setattr(
         route, "joint_galaxy_state",
-        lambda: {"candidate": {"magnitude_plot": {"law": "straight"}}},
+        lambda: {"candidate": {"kind": "euclid_joint"}},
     )
     monkeypatch.setattr(
         route,
         "render_population_atlas",
-        lambda _fit, magnitude_plot, output_format, dpi: (
-            b"%PDF-atlas" if magnitude_plot == {"law": "straight"}
+        lambda calibration, output_format, dpi: (
+            b"%PDF-atlas" if calibration == {"kind": "euclid_joint"}
             and output_format == "pdf" else b"<svg/>"
         ),
     )

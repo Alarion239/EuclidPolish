@@ -14,6 +14,13 @@ import numpy as np
 from scipy.ndimage import gaussian_filter1d
 
 from euclid_polish.config import Config
+from euclid_polish.photometry import uJy_to_ab_mag
+from euclid_polish.population.euclid_galaxy_prior import (
+    JOINT_EUCLID_GALAXY_VERSION,
+    ConditionalRadiusLaw,
+    fit_conditional_radius_law,
+    joint_density_grid,
+)
 from euclid_polish.population.magnitude_law import StraightMagnitudeLaw
 from euclid_polish.sky.generation.cosmos_tng_prior import (
     brightness_transfer_payload,
@@ -48,6 +55,10 @@ def active_joint_galaxy_path() -> Path:
     return calibration_dir() / "joint_galaxy_population_active.json"
 
 
+def joint_galaxy_candidate_path() -> Path:
+    return calibration_dir() / "euclid_galaxy_population_candidate.json"
+
+
 def _read(path: Path) -> dict[str, Any] | None:
     try:
         value = json.loads(path.read_text())
@@ -64,148 +75,227 @@ def _write(path: Path, payload: dict[str, Any]) -> None:
 
 
 def joint_galaxy_candidate() -> dict[str, Any] | None:
-    """Return a compact generation artifact derived from the joint fit."""
-    source_path = Path(Config.JOINT_GALAXY_POPULATION_FIT_PATH)
-    source = _read(source_path)
-    if not source or source.get("version") not in {2, 3}:
-        return None
-    if source.get("kind") != "joint_intrinsic_galaxy_population":
-        return None
-    fingerprint = str(source.get("fingerprint") or "")
-    model = source.get("model") or {}
-    diagnostics = source.get("diagnostics") or {}
-    tng_full = ((diagnostics.get("tng_draw") or {}).get("full") or {})
-    try:
-        geometry_density = float(tng_full["surface_density_arcmin2"])
-        luminosity = dict(model["luminosity_function"])
-        size = dict(model["size_relation"])
-        response = dict(model["euclid_response"])
-        vis_edges = ((source.get("method") or {}).get("tng_draw_window") or [
-            18.0, 30.0,
-        ])
-        vis_min, vis_max = (float(vis_edges[0]), float(vis_edges[1]))
-    except (KeyError, TypeError, ValueError, IndexError):
-        return None
-    if (
-        len(fingerprint) != 64
-        or not math.isfinite(geometry_density) or geometry_density <= 0.0
-        or not (math.isfinite(vis_min) and math.isfinite(vis_max)
-                and vis_min < vis_max)
-    ):
-        return None
-    quality = dict(source.get("fit_quality") or {})
-    enhanced = source.get("version") == 3
-    physical_conditionals = source.get("physical_conditionals")
-    phz_correction = source.get("phz_redshift_correction")
-    phz_gates = dict(source.get("phz_quality_gates") or {})
-    if enhanced and (
-        not isinstance(physical_conditionals, dict)
-        or not isinstance(phz_correction, dict)
-        or not phz_gates
-    ):
+    """Return the persisted Euclid-only brightness-radius candidate."""
+    source = _read(joint_galaxy_candidate_path())
+    if not source:
         return None
     try:
-        from euclid_polish.web.helpers.q1_galaxy_counts import (
-            read_q1_galaxy_aperture_counts,
-            read_q1_galaxy_aperture_fit,
+        magnitude_law = StraightMagnitudeLaw.from_payload(
+            source["magnitude_law"]
         )
-        aperture_fit = read_q1_galaxy_aperture_fit()
-        aperture_curve = aperture_fit["apertures"]["f2"]
-        magnitude_law = StraightMagnitudeLaw.from_payload(aperture_curve["law"])
+        ConditionalRadiusLaw.from_payload(source["radius_law"])
+        density = float(source["generation"]["surface_density_arcmin2"])
+        magnitude_plot = source["magnitude_plot"]
+        radius_plot = source["plots"]["radius"]
+        relation_plot = source["plots"]["conditional_radius"]
+        magnitude_x = np.asarray(magnitude_plot["law"]["x"], dtype=np.float64)
+        magnitude_density = np.asarray(
+            magnitude_plot["law"]["density"], dtype=np.float64,
+        )
+        radius_x = np.asarray(radius_plot["x"], dtype=np.float64)
+        radius_density = np.asarray(radius_plot["density"], dtype=np.float64)
+        relation_x = np.asarray(relation_plot["magnitude"], dtype=np.float64)
+        relation_mean = np.asarray(
+            relation_plot["model_mean_log10_arcsec"], dtype=np.float64,
+        )
     except (KeyError, TypeError, ValueError):
         return None
-    plot_grid = np.asarray(aperture_curve.get("x", []), dtype=np.float64)
-    plot_density = np.asarray(
-        aperture_curve.get("density", []), dtype=np.float64,
+    if (
+        source.get("version") != JOINT_EUCLID_GALAXY_VERSION
+        or source.get("kind") != "euclid_vis2fwhm_sersic_re_joint"
+        or len(str(source.get("fingerprint") or "")) != 64
+        or not source.get("valid")
+        or not np.isclose(density, magnitude_law.integrated_density())
+        or magnitude_x.size < 2
+        or magnitude_x.shape != magnitude_density.shape
+        or radius_x.size < 2
+        or radius_x.shape != radius_density.shape
+        or relation_x.size < 2
+        or relation_x.shape != relation_mean.shape
+        or not np.all(np.isfinite(magnitude_x))
+        or not np.all(np.isfinite(magnitude_density) & (magnitude_density > 0.0))
+        or not np.all(np.isfinite(radius_x))
+        or not np.all(np.isfinite(radius_density) & (radius_density >= 0.0))
+        or not np.all(np.isfinite(relation_x))
+        or not np.all(np.isfinite(relation_mean))
+    ):
+        return None
+    return source
+
+
+def fit_euclid_joint_galaxy_candidate() -> dict[str, Any]:
+    """Fit the minimal Euclid VIS-2FWHM × Sérsic-R_e population model."""
+    from euclid_polish.web.helpers.population_comparison import (
+        euclid_catalog_meta_path,
+        euclid_catalog_path,
     )
-    if (
-        plot_grid.size < 2 or plot_density.shape != plot_grid.shape
-        or not np.all(np.isfinite(plot_grid))
-        or not np.all(np.isfinite(plot_density))
-    ):
-        plot_grid = np.linspace(
-            magnitude_law.mag_bright, magnitude_law.mag_faint, 301,
-        )
-        plot_density = magnitude_law.density(plot_grid)
-    magnitude_plot: dict[str, Any] = {
-        "law": {
-            "x": plot_grid.tolist(),
-            "density": plot_density.tolist(),
-        },
-        "fit_interval": [
-            magnitude_law.fit_bright, magnitude_law.fit_faint,
-        ],
-        "sampling_interval": [
-            magnitude_law.mag_bright, magnitude_law.mag_faint,
-        ],
-        "extrapolated_interval": list(
-            aperture_curve.get("extrapolated_faint_interval") or [28.0, 29.0]
-        ),
-        "label": "Q1 MER + PHZ VIS 2FWHM straight law",
-    }
+    from euclid_polish.web.helpers.q1_galaxy_counts import (
+        read_q1_galaxy_aperture_counts,
+        read_q1_galaxy_aperture_fit,
+    )
+
+    fit_payload = read_q1_galaxy_aperture_fit()
+    count_payload = read_q1_galaxy_aperture_counts()
     try:
-        aperture_counts = read_q1_galaxy_aperture_counts()["apertures"]["f2"]
-        magnitude_plot["observed"] = {
-            "x": [
-                0.5 * (float(item["mag_lo"]) + float(item["mag_hi"]))
-                for item in aperture_counts["bins"]
-            ],
-            "density": [
-                float(item["density_arcmin2_mag"])
-                for item in aperture_counts["bins"]
-            ],
-        }
-    except (KeyError, TypeError, ValueError):
-        # The law remains sufficient for generation and for a fail-closed
-        # calibration plot; raw points appear whenever the matching cache is
-        # present.
-        pass
-    combined_fingerprint = hashlib.sha256(json.dumps({
-        "geometry": fingerprint,
-        "magnitude_law": magnitude_law.to_payload(),
-    }, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-    return {
-        "version": 3,
-        "kind": "joint_analytical_tng_draw",
+        magnitude_curve = fit_payload["apertures"]["f2"]
+        magnitude_law = StraightMagnitudeLaw.from_payload(magnitude_curve["law"])
+        count_bins = count_payload["apertures"]["f2"]["bins"]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("Fit the Q1 VIS 2FWHM straight line first") from exc
+    path = euclid_catalog_path()
+    meta = _read(euclid_catalog_meta_path()) or {}
+    if not path.is_file() or int(meta.get("catalog_version") or 0) < 7:
+        raise ValueError(
+            "Refresh the MER + PHZ catalogue to version 7 so its VIS Sérsic "
+            "half-light radii are available"
+        )
+    required = {
+        "flux_vis_2fwhm_aper_uJy", "morph_sersic_vis_radius_arcsec",
+        "morph_sersic_visnir_flags", "phz_gal_prob", "spurious_prob",
+    }
+    magnitudes: list[float] = []
+    radii: list[float] = []
+    weights: list[float] = []
+    with path.open(newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        missing = sorted(required - set(reader.fieldnames or ()))
+        if missing:
+            raise ValueError(
+                "MER + PHZ cache lacks required joint-fit columns: "
+                + ", ".join(missing)
+            )
+        for row in reader:
+            try:
+                flux = float(row["flux_vis_2fwhm_aper_uJy"])
+                radius = float(row["morph_sersic_vis_radius_arcsec"])
+                flags = float(row["morph_sersic_visnir_flags"])
+                probability = float(row["phz_gal_prob"])
+                spurious = float(row["spurious_prob"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if not (
+                np.isfinite(flux) and flux > 0.0
+                and np.isfinite(radius) and radius > 0.0
+                and flags == 0.0
+                and np.isfinite(probability) and probability >= 0.5
+                and np.isfinite(spurious) and spurious <= 0.5
+            ):
+                continue
+            magnitude = float(uJy_to_ab_mag(flux))
+            if magnitude_law.mag_bright <= magnitude < magnitude_law.mag_faint:
+                magnitudes.append(magnitude)
+                radii.append(radius)
+                weights.append(probability)
+    radius_law = fit_conditional_radius_law(
+        np.asarray(magnitudes), np.asarray(radii), np.asarray(weights),
+    )
+    area_arcmin2 = float(meta.get("area_arcmin2") or 0.0)
+    if not np.isfinite(area_arcmin2) or area_arcmin2 <= 0.0:
+        raise ValueError("MER + PHZ catalogue has no positive footprint area")
+    magnitude_values = np.asarray(magnitudes, dtype=np.float64)
+    radius_values = np.asarray(radii, dtype=np.float64)
+    weight_values = np.asarray(weights, dtype=np.float64)
+    grid = joint_density_grid(magnitude_law, radius_law)
+    radius_density = (
+        np.sum(grid["density"], axis=0)
+        / np.diff(grid["log_radius_edges"])
+    )
+    observed_radius_density = np.histogram(
+        np.log10(radius_values), bins=grid["log_radius_edges"],
+        weights=weight_values,
+    )[0] / area_arcmin2 / np.diff(grid["log_radius_edges"])
+    relation_edges = np.linspace(
+        magnitude_law.mag_bright, magnitude_law.mag_faint, 31,
+    )
+    relation_x = 0.5 * (relation_edges[:-1] + relation_edges[1:])
+    relation_observed: list[float | None] = []
+    for lower, upper in zip(relation_edges[:-1], relation_edges[1:], strict=True):
+        selected = (magnitude_values >= lower) & (magnitude_values < upper)
+        selected_weight = weight_values[selected]
+        if int(np.sum(selected)) < 3 or float(np.sum(selected_weight)) <= 0.0:
+            relation_observed.append(None)
+            continue
+        relation_observed.append(float(np.average(
+            np.log10(radius_values[selected]), weights=selected_weight,
+        )))
+    relation_model = radius_law.mean(relation_x)
+    observed_magnitude_x = [
+        0.5 * (float(item["mag_lo"]) + float(item["mag_hi"]))
+        for item in count_bins
+    ]
+    observed_magnitude_density = [
+        float(item["density_arcmin2_mag"]) for item in count_bins
+    ]
+    core = {
+        "version": JOINT_EUCLID_GALAXY_VERSION,
+        "kind": "euclid_vis2fwhm_sersic_re_joint",
         "valid": True,
-        "validated": bool(quality.get("valid")),
-        "warnings": list(quality.get("warnings") or []),
-        "fingerprint": combined_fingerprint,
-        "geometry_model_fingerprint": fingerprint,
-        "source_artifact": str(source_path),
-        "model": {
-            "luminosity_function": luminosity,
-            "size_relation": size,
-            "euclid_response": response,
-        },
-        **({
-            "phz_redshift_correction": phz_correction,
-            "physical_conditionals": physical_conditionals,
-            "phz_quality_gates": phz_gates,
-        } if enhanced else {}),
+        "validated": True,
         "magnitude_law": magnitude_law.to_payload(),
-        "magnitude_plot": magnitude_plot,
+        "radius_law": radius_law.to_payload(),
+        "magnitude_plot": {
+            "label": "Q1 MER + PHZ VIS 2FWHM",
+            "law": {
+                "x": list(magnitude_curve["x"]),
+                "density": list(magnitude_curve["density"]),
+            },
+            "observed": {
+                "x": observed_magnitude_x,
+                "density": observed_magnitude_density,
+            },
+            "fit_interval": [
+                magnitude_law.fit_bright, magnitude_law.fit_faint,
+            ],
+            "sampling_interval": [
+                magnitude_law.mag_bright, magnitude_law.mag_faint,
+            ],
+            "extrapolated_interval": [
+                float(count_payload["faint"]), magnitude_law.mag_faint,
+            ],
+        },
+        "plots": {
+            "radius": {
+                "x": grid["log_radius"].tolist(),
+                "density": radius_density.tolist(),
+                "observed_density": observed_radius_density.tolist(),
+                "unit": "objects / arcmin2 / dex",
+            },
+            "conditional_radius": {
+                "magnitude": relation_x.tolist(),
+                "observed_mean_log10_arcsec": relation_observed,
+                "model_mean_log10_arcsec": relation_model.tolist(),
+                "model_low_log10_arcsec": (
+                    relation_model - radius_law.scatter_dex
+                ).tolist(),
+                "model_high_log10_arcsec": (
+                    relation_model + radius_law.scatter_dex
+                ).tolist(),
+            },
+        },
         "generation": {
             "surface_density_arcmin2": magnitude_law.integrated_density(),
-            "geometry_reference_density_arcmin2": geometry_density,
             "vis_magnitude_min": magnitude_law.mag_bright,
             "vis_magnitude_max": magnitude_law.mag_faint,
-            "morphology_assignment": (
-                "phz_mass_activity_quantile_transport"
-                if enhanced else "balanced_random_tng_atlas"
-            ),
+            "radius_min_arcsec": 10.0 ** radius_law.log_radius_min,
+            "radius_max_arcsec": 10.0 ** radius_law.log_radius_max,
+            "sampling_order": "radius_marginal_then_brightness_given_radius",
+            "morphology_assignment": "balanced_random_tng_atlas",
             "position_process": "homogeneous_poisson",
         },
-        "fit_quality": {
-            key: quality.get(key)
-            for key in (
-                "valid", "cosmos_reduced_negative_binomial_deviance",
-                "euclid_bright_transfer_reduced_poisson_deviance",
-                "euclid_reduced_poisson_deviance",
-                "euclid_cross_validated_reduced_poisson_deviance",
-            )
+        "provenance": {
+            "brightness": "Q1 MER + PHZ VIS 2FWHM aggregate counts",
+            "radius": "MER morphology VIS Sérsic radius joined to PHZ",
+            "cosmos_used": False,
+            "catalog_version": meta.get("catalog_version"),
+            "catalog_rows": meta.get("rows"),
         },
     }
+    fingerprint = hashlib.sha256(json.dumps(
+        core, sort_keys=True, separators=(",", ":"),
+    ).encode()).hexdigest()
+    payload = {**core, "fingerprint": fingerprint, "active": False}
+    _write(joint_galaxy_candidate_path(), payload)
+    return payload
 
 
 def joint_galaxy_state() -> dict[str, Any]:
@@ -222,14 +312,10 @@ def joint_galaxy_state() -> dict[str, Any]:
 
 
 def activate_joint_galaxy_candidate() -> dict[str, Any]:
-    """Atomically activate the fitted joint draw model for future jobs."""
+    """Atomically activate the Euclid-only joint draw model."""
     candidate = joint_galaxy_candidate()
     if not candidate or not candidate.get("valid"):
         raise ValueError("No structurally valid joint galaxy fit is available")
-    if candidate.get("physical_conditionals") and not candidate.get("validated"):
-        raise ValueError(
-            "The PHZ-enhanced joint galaxy fit has not passed activation gates"
-        )
     payload = {**candidate, "active": True}
     _write(active_joint_galaxy_path(), payload)
     from euclid_polish.web import job_config

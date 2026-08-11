@@ -102,8 +102,8 @@ type SourceKey = "euclid" | "cosmos" | "fit";
 
 const SOURCE: Record<SourceKey, { label: string; kicker: string; color: string }> = {
   euclid: { label: "Euclid MER + PHZ", kicker: "observed layer", color: "#2478d4" },
-  cosmos: { label: "COSMOS2025", kicker: "faint latent prior", color: "#00a078" },
-  fit: { label: "Fitted distribution", kicker: "generator candidate", color: "#e25543" },
+  cosmos: { label: "COSMOS2025", kicker: "diagnostic only", color: "#00a078" },
+  fit: { label: "Euclid joint fit", kicker: "generator candidate", color: "#e25543" },
 };
 const ORDER: SourceKey[] = ["euclid", "cosmos", "fit"];
 const PARAMETER_ORDER = ["redshift", "magnitude", "radius", "stellar_mass", "specific_sfr"];
@@ -387,12 +387,12 @@ function RadiusPlot({ parameter }: { parameter: Parameter }) {
   return <div className="radius-comparison">
     <div className="radius-warning">
       <strong>Catalogue size concepts, kept separate.</strong>
-      <span>Detection a and Kron radius are Euclid measurement scales. The PHZ/MER VIS Sérsic Rₑ is a catalogue model fit; COSMOS Rₑ and the analytic latent Rₑ retain their own definitions.</span>
+      <span>The generator fits only PHZ/MER VIS Sérsic Rₑ jointly with VIS 2FWHM brightness. Detection, Kron, and COSMOS curves are labeled diagnostics and do not affect sampling.</span>
     </div>
     <div className="radius-controls">
       {grouped.map(([radiusType, group]) => <section key={radiusType}>
         <header>
-          <div><span>{RADIUS_TYPE_LABEL[radiusType]}</span><small>{radiusType === "detection" ? "Euclid raw catalogue" : radiusType === "kron" ? "Euclid raw catalogue" : "Euclid PHZ/MER + COSMOS + analytic model"}</small></div>
+          <div><span>{RADIUS_TYPE_LABEL[radiusType]}</span><small>{radiusType === "detection" ? "diagnostic only" : radiusType === "kron" ? "diagnostic only" : "Euclid data + Euclid fit; COSMOS diagnostic"}</small></div>
           <div>
             <Button size="sm" variant="ghost" onClick={() => setSelected((current) => Array.from(new Set([...current, ...group.map(([key]) => key)])))}>all</Button>
             <Button size="sm" variant="ghost" onClick={() => setSelected((current) => current.filter((key) => !group.some(([candidate]) => candidate === key)))}>none</Button>

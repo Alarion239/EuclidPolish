@@ -1435,17 +1435,19 @@ class SyntheticGenerateStep(RunPipelineStep):
         )
 
     def prepare_params(self, params: dict[str, Any]) -> dict[str, Any]:
-        """Freeze the empirical Euclid PHZ/Kron/size population into the job."""
-        from euclid_polish.sky.generation.phz_galaxy_prior import (
-            build_phz_galaxy_population_payload,
+        """Freeze the active Euclid brightness-radius population into the job."""
+        from euclid_polish.web.helpers.population_calibration import (
+            joint_galaxy_state,
         )
 
         prepared = super().prepare_params(params)
-        joint = build_phz_galaxy_population_payload(
-            Config.EUCLID_POPULATION_CATALOG_PATH,
-            Config.EUCLID_PHZ_PDF_PATH,
-            Config.EUCLID_POPULATION_META_PATH,
-        )
+        joint_status = joint_galaxy_state()
+        joint = joint_status.get("active") or {}
+        if not joint_status.get("is_active") or not joint:
+            raise ValueError(
+                "activate the Euclid VIS 2FWHM × Sérsic-R_e galaxy fit before "
+                "generating fields"
+            )
         prepared["_joint_galaxy_population_json"] = json.dumps(
             joint, separators=(",", ":"), sort_keys=True,
         )

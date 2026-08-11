@@ -17,6 +17,7 @@ from euclid_polish.web.helpers.population_calibration import (
     activate_photometric_transfer,
     activate_star_candidate,
     density_state,
+    fit_euclid_joint_galaxy_candidate,
     galaxy_recommendation_state,
     joint_galaxy_state,
     star_state,
@@ -72,31 +73,18 @@ def _run_analysis_script(
 def _fit_and_evaluate_cached_cones(
     cap, *, progress_start: int = 0, progress_total: int = 1,
 ) -> dict:
-    """Fit the shared analytical population to cached local catalogues."""
-    project_root = Path(__file__).resolve().parents[3]
-    cap.tick(progress_start, progress_total, "fit joint COSMOS + Euclid population")
-    _run_analysis_script(
-        project_root, "scripts/fit_cosmos_euclid_counts.py"
-    )
-    fit_payload = read_cosmos_euclid_fit()
-    if fit_payload is None:
-        raise RuntimeError("fit completed without a readable fit artifact")
-    quality = fit_payload.get("fit_quality") or {}
-    response = ((fit_payload.get("model") or {}).get("euclid_response") or {})
-    cosmos_deviance = quality.get(
-        "cosmos_reduced_negative_binomial_deviance",
-        quality.get("cosmos_reduced_poisson_deviance", 0.0),
-    )
+    """Fit the Euclid-only straight-brightness × Sérsic-radius law."""
+    cap.tick(progress_start, progress_total, "fit Euclid brightness × Sérsic R_e")
+    fit_payload = fit_euclid_joint_galaxy_candidate()
+    radius = fit_payload["radius_law"]
     cap.write(
-        "COSMOS reduced deviance "
-        f"{float(cosmos_deviance):.2f}; "
-        "Euclid reduced deviance "
-        f"{float(quality.get('euclid_reduced_poisson_deviance', 0.0)):.2f}; "
-        "VIS m50 "
-        f"{float(response.get('completeness_m50', 0.0)):.2f}\n"
+        f"Radius slope {float(radius['slope_log10_arcsec_per_mag']):.4f} "
+        f"dex/mag; scatter {float(radius['scatter_dex']):.4f} dex; "
+        f"{int(radius['fitted_rows'])} fitted rows.\n"
     )
+    cap.write("COSMOS was not read and does not enter this fit.\n")
     cap.write("No TNG catalogue or image was read.\n")
-    cap.tick(progress_start + 1, progress_total, "joint population fit ready")
+    cap.tick(progress_start + 1, progress_total, "Euclid joint fit ready")
     return {
         "fit": fit_payload,
         "tng_used": False,
@@ -123,19 +111,17 @@ def register(app):
 
     @app.route("/view/population-atlas")
     def view_population_atlas():
-        """Download the reviewed joint population diagnostics as one figure."""
-        fit = read_cosmos_euclid_fit()
-        if fit is None:
-            abort(404)
+        """Download the reviewed Euclid brightness-radius fit as one figure."""
         output_format = (request.args.get("format") or "png").strip().lower()
         if output_format not in {"png", "pdf", "svg"}:
             abort(400)
+        candidate = joint_galaxy_state().get("candidate")
+        if not candidate:
+            abort(404)
         try:
             dpi = int(request.args.get("dpi", "300"))
-            candidate = joint_galaxy_state().get("candidate") or {}
             payload = render_population_atlas(
-                fit,
-                magnitude_plot=candidate.get("magnitude_plot"),
+                candidate,
                 output_format=output_format,
                 dpi=dpi,
             )
@@ -406,7 +392,7 @@ def register(app):
     )
     def api_population_comparison_activate_joint_galaxy():
         return activation_job(
-            "activate joint analytical TNG population",
+            "activate Euclid brightness-radius population",
             activate_joint_galaxy_candidate,
         )
 

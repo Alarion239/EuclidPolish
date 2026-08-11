@@ -8,9 +8,6 @@ N_\star\sim\operatorname{Poisson}(A\lambda_\star),\qquad
 N_g\sim\operatorname{Poisson}(A\lambda_g).
 \]
 
-The binned galaxy-count calibration uses the Poisson likelihood (reported as
-Cash deviance), rather than least-squares errors on counts. This is the
-appropriate likelihood for independent low-count bins ([Cash 1979](https://doi.org/10.1086/156922)).
 Positions are a homogeneous Poisson process: this is an explicit simulation
 assumption, not a fitted claim about galaxy clustering.
 
@@ -55,177 +52,65 @@ legacy magnitude fitter is used for current generation. The photometric basis fo
 photometry work ([Gaia DR3 synthetic photometry](https://arxiv.org/abs/2206.06215));
 the exact artifact version and cuts are project validation choices.
 
-## Galaxies
+## Active Euclid-only galaxy model
 
-Galaxy calibration now starts from one analytical latent distribution shared
-by COSMOS and Euclid. It is not a splice of bright Euclid rows and faint COSMOS
-rows, and it does not select or inspect any TNG galaxy.
-
-The latent intensity uses the classical luminosity--size construction of
-[de Jong & Lacey (2000)](https://arxiv.org/abs/astro-ph/9910066): an evolving
-[Schechter (1976)](https://doi.org/10.1086/154079) luminosity function multiplied
-by a lognormal size distribution at fixed luminosity and redshift,
+The active galaxy model uses exactly two Euclid quantities:
 
 \[
-\begin{aligned}
-\Phi(M,z) &= 0.4\ln 10\,\phi_\star(z)
-  10^{0.4[\alpha(z)+1][M_\star(z)-M]}
-  \exp[-10^{0.4(M_\star(z)-M)}],\\
-\log_{10}R_{e,\rm kpc}\mid M,z &\sim
-  \mathcal N\!\left(\mu_R(M,z),\sigma_R(M)^2\right).
-\end{aligned}
+m=m_{\rm VIS,2FWHM},\qquad
+r=\log_{10}(R_{e,\rm VIS\,Sersic}/{\rm arcsec}).
 \]
 
-Writing \(u=\log_{10}(1+z)\) and \(x=M+20\), the current smooth extension is
+Q1 MER+PHZ aggregate counts set the straight brightness density
 
 \[
-\begin{aligned}
-M_\star(z)&=M_{\star,0}+Q_1u+Q_2u^2,\\
-\alpha(z)&=\alpha_0+\alpha_zu,\\
-\phi_\star(z)&=\phi_{\star,0}(1+z)^{P_1+P_2u},\\
-\mu_R(M,z)&=a+bx+cu+b_2x^2+b_zxu,\\
-\sigma_R(M)&=\sigma_{R,0}\exp(s_Mx).
-\end{aligned}
+\log_{10}(dN/dA/dm)=a m+b,\qquad 14\le m<29.
 \]
 
-These additions retain one evolving Schechter luminosity function and one
-conditional lognormal size law; they introduce neither galaxy classes nor a
-morphology mixture. COSMOS supplies
-\((m_{\rm F814W},z,R_e)\), so it constrains the redshift and size evolution.
-Here \(m_{\rm F814W}\) is the COSMOS2025 SourceXtractor++ single-Sérsic
-total-model magnitude (`mag_model_hst-f814w`), not the separate bulge+disk
-total magnitude stored for the morphology-ready subset.
-The compact local COSMOS artifact does not contain rest-frame magnitudes or
-per-object K-corrections. The current coordinate is therefore
-\(M_{\rm eff}=m_{\rm F814W}-DM(z)\), and the fitted evolution of
-\(M_\star\) absorbs the mean F814W K-correction. It must not be interpreted as
-a rest-frame luminosity function. COSMOS2025 supplies the catalogue context
-and measured quantities ([Shuntov et al. 2025](https://arxiv.org/abs/2506.03243)).
-Observed size--luminosity and size--redshift trends motivate the smooth size
-law ([Shen et al. 2003](https://arxiv.org/abs/astro-ph/0301527);
-[Shibuya et al. 2015](https://arxiv.org/abs/1503.07481)).
-
-Euclid observes the same latent population through a deliberately small
-response model:
+Clean object-level MER morphology rows set one conditional radius law,
 
 \[
-\begin{aligned}
-m_{\rm VIS,true}&=24+s_m(m_{\rm F814W}-24)+\Delta_m
-             +\epsilon_{\rm int},\quad
-             \epsilon_{\rm int}\sim\mathcal N(0,\sigma_{\rm int}^2),\\
-F_{\rm VIS,MER}&=F(m_{\rm VIS,true})+\epsilon_F,\quad
-             \epsilon_F\sim\mathcal N(0,\sigma_F^2),\\
-r_{\rm E}&=\sqrt{(s_rR_e)^2+r_0^2},\\
-P({\rm detected})&=\operatorname{logit}^{-1}\!\left[
- \frac{m_{50}-m_{\rm VIS}}{w}-\eta(\langle\mu\rangle_e-24)\right],\\
-\langle\mu\rangle_e&=m_{\rm VIS}+2.5\log_{10}(2\pi r_{\rm E}^2).
-\end{aligned}
+r\mid m\sim\mathcal N\left[\alpha+\beta(m-23),\sigma_r^2\right].
 \]
 
-The normalization, affine F814W-to-VIS transfer, and its intrinsic scatter are
-fitted first using only the high-S/N \(m_{\rm VIS}<24\) counts. They are then
-frozen while the size response and faint completeness are fitted to the full
-magnitude--size plane. The measurement term is not a second free scatter:
-\(\sigma_F\) is the galaxy-probability-weighted median of
-\(\mathtt{FLUXERR\_VIS\_APER}\) from the cached MER catalogue. The likelihood
-integrates the intrinsic magnitude scatter and then adds Gaussian noise in
-flux space, where the catalogue uncertainty is approximately homoscedastic.
-This avoids the invalid faint-source approximation
-\((2.5/\ln 10)\sigma_F/F_{\rm observed}\). The pre-observation TNG target uses
-only \(\sigma_{\rm int}\), so the renderer and detector model do not receive
-Euclid catalogue noise twice. The bright threshold is a project validation
-choice, not a literature constant.
+The radius rows require `PHZ_GAL_PROB >= 0.5`, positive VIS 2FWHM flux,
+positive `SERSIC_SERSIC_VIS_RADIUS`, and `SERSIC_VISNIR_FLAGS = 0`; each row
+is weighted by `PHZ_GAL_PROB`. No COSMOS value, redshift, stellar mass, sSFR,
+detection semi-major axis, or Kron radius enters these fitted coefficients.
 
-Here \(r_{\rm E}\) is the circularized MER detection proxy
-`0.1 arcsec/pixel * SEMIMAJOR_AXIS * sqrt(1-ELLIPTICITY)`, not a fitted Euclid
-half-light radius. Euclid galaxies contribute fractional count
-\(1-\mathtt{POINT\_LIKE\_PROB}\). The surface-brightness term is an explicit
-selection model, motivated by the general fact that detectability is joint in
-flux and apparent size; its exact form, pivots and bounds are project choices.
-The Euclid Q1 MER paper defines the relevant catalogue context
-([Euclid Collaboration 2025](https://arxiv.org/abs/2503.15305)).
+Generation marginalizes the two-dimensional law over brightness and draws
+VIS Sérsic \(R_e\) first. It resizes a random TNG donor to that radius, then
+draws \(m\mid R_e\) from the same joint law. A separate empirical VIS PSF is
+used to measure the resized stamp and one shared four-band factor matches the
+drawn 2FWHM flux. COSMOS, detection-radius, and Kron-radius plots are diagnostic
+overlays only.
 
-The mean Schechter parameters and Euclid response are estimated by the Poisson
-likelihood in binned two-dimensional planes. After fitting the COSMOS mean, an
-extra-Poisson fractional-scatter parameter \(\tau\) is estimated with
-\(\operatorname{Var}(N)=\mu+(\tau\mu)^2\). It changes the uncertainty model,
-not the fitted mean. Because COSMOS is one field and the model is imperfect,
-\(\tau\) is count overdispersion rather than a measurement of pure cosmic
-variance. The conditional size parameters are estimated in log space with
-deterministic robust clipping and a heteroscedastic Gaussian likelihood. The local
-standard errors reported by the interface come from the optimizer Jacobian;
-they are curvature diagnostics, not full systematic uncertainties.
-
-## Staged TNG draw target
-
-The fitted COSMOS--Euclid cube is now used only for geometry and physical
-conditioning. It is marginalized over its former brightness axis to draw
-(R_e) first and then (z\mid R_e). PHZ activity, mass, and sSFR conditionals
-are also marginalized over brightness before choosing a TNG donor. The Q1
-MER+PHZ `FLUX_VIS_2FWHM_APER` law is independent:
+For a donor with native VIS half-light radius \(R_{e,\rm native}\) pixels on
+the 0.05-arcsec grid, the initial spatial resize is
 
 \[
-\log_{10}(dN/dA/dm_{2\mathrm{FWHM}})=a_gm_{2\mathrm{FWHM}}+b_g,
-\qquad 14\leq m_{2\mathrm{FWHM}}<29.
+s_0=\frac{R_{e,\rm requested}}
+          {0.05\,R_{e,\rm native}}.
 \]
 
-The straight region is the widest consecutive positive-count interval spanning
-at least 4 mag with (R^2\geq0.998). The checked Q1 input ends at 28, so 28--29
-is explicitly an extrapolation. The law's analytical 14--29 integral sets the
-galaxy surface density.
-
-After donor selection, redshift transport, and resizing to the requested
-half-light radius, the generator draws the independent 2FWHM magnitude. It
-draws a separate empirical VIS PSF member, circularizes its radial profile,
-convolves the resized VIS stamp, and measures a circular aperture of radius one
-FWHM (diameter (2\times\mathrm{FWHM})). One shared scalar then sets that
-aperture flux and preserves all four TNG colours. The dirty-image forward model
-still draws its own fresh PSF. Zero or non-finite aperture stamps are rejected
-and resampled; total-flux fallback is not used.
-
-The legacy geometry cube reconstructed for this staging is
-
-\[
-p_{\rm draw}(z,m_{\rm VIS,true},R_e)
-=a_{\rm field}\int p_{\rm latent}(z,m_{\rm F814W},R_e)\,
-\mathcal N(m_{\rm VIS,true}\mid\bar m_{\rm VIS},\sigma_{\rm int}^2)\,
-d m_{\rm F814W}.
-\]
-
-It supplies geometry and conditional physical state, not the final brightness
-or scene normalization. TNG supplies morphology; its native population
-distribution is not the statistical target.
+The renderer remeasures the resized stamp and iterates this factor until its
+achieved half-light radius matches the request. Spatial resizing does not set
+brightness. After resizing, the independent common four-band flux factor is
+\(c=F_{\rm goal,2FWHM}/F_{\rm measured,2FWHM}\).
 
 ## Current scope and validation status
 
-The version-3 activation combines a fingerprinted geometry model with the
-versioned Q1 straight magnitude law. Older empirical-CDF and cubic artifacts
-fail closed. The calibration interface plots the brightness-marginalized
-geometry target beside the independent Q1 VIS 2FWHM straight brightness law.
-It also retains observation-response diagnostics for survey apparent
-magnitude, redshift, angular size, median size at fixed magnitude, derived mean
-surface brightness, the fitted Euclid completeness surface, and
-four-fold held-out validation across the twelve cached Euclid cones.
-The fitting step itself neither reads a TNG catalogue nor renders an image.
-After explicit WebUI activation, synthetic jobs embed a compact fingerprinted
-copy of the fitted parameters, reconstruct this same three-dimensional draw
-cube on each worker, and sample its cells. TNG atlas morphologies are assigned
-independently with diversity balancing; this is an explicit randomness model,
-not an inferred COSMOS--TNG morphology relation. The old empirical-row/TNG
-population artifact is not accepted as this new fit.
-
-A one-component Schechter × lognormal law is a scientific baseline, not a
-guarantee of adequacy. A poor posterior-predictive comparison means the model
-must be expanded, for example to separate star-forming and quiescent
-components or a mixture model. Flexible forward-model approaches such as
-[GalSBI](https://arxiv.org/abs/2412.08701) provide a relevant next-step
-reference, but are not part of the current standard fit.
+Version-4 activation contains only the straight brightness law and conditional
+Sérsic-radius law. All earlier COSMOS, empirical-Kron, redshift, physical-state,
+and cubic artifacts fail closed. The fitting step reads no TNG image; TNG is
+used only after activation as a random morphology donor. This deliberately
+modest model aims for plausible source counts and sizes rather than an exact
+catalogue replica.
 
 ## What is fitted versus imposed
 
-The galaxy luminosity function, conditional size relation, photometric
-transfer, size response and surface-brightness-dependent completeness are
-fitted. The analytical families, cosmology, fitting windows, binning, clipping,
-response pivots and quality thresholds are imposed choices. Homogeneous
-positions and Poisson scene counts remain simulation assumptions. No TNG
-morphology distribution is fitted in this stage.
+Only the straight Q1 brightness coefficients \((a,b)\) and conditional
+radius coefficients \((\alpha,\beta,\sigma_r)\) are fitted. The finite
+14--29 magnitude range, radius bounds, Gaussian scatter, clipping rule,
+homogeneous positions, Poisson scene counts, and random TNG donor assignment
+are imposed choices. No COSMOS or TNG distribution is fitted.

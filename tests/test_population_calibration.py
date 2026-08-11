@@ -18,15 +18,12 @@ from euclid_polish.sky.generation.tng_radius_manifest import (
 )
 from euclid_polish.web.helpers.population_calibration import (
     activate_galaxy_recommendation,
-    activate_joint_galaxy_candidate,
     activate_star_candidate,
-    active_joint_galaxy_path,
     active_transfer_path,
     density_calibration_path,
     fit_density_response,
     fit_local_catalog_density,
     galaxy_recommendation_state,
-    joint_galaxy_state,
     star_candidate_path,
     star_state,
 )
@@ -61,17 +58,6 @@ def _straight_law_payload(
         rms_log10_density=0.0,
         source="fixture",
     ).to_payload()
-
-
-def _use_q1_law(monkeypatch, density: float) -> None:
-    monkeypatch.setattr(
-        "euclid_polish.web.helpers.q1_galaxy_counts.read_q1_galaxy_aperture_fit",
-        lambda: {"apertures": {"f2": {
-            "law": _straight_law_payload(
-                density, bright=14.0, faint=29.0, slope=0.2,
-            ),
-        }}},
-    )
 
 
 def test_probability_weighted_summary_and_straight_magnitude_law():
@@ -137,84 +123,6 @@ def test_stale_gaia_count_artifact_cannot_remain_active(tmp_path, monkeypatch):
     assert not state["is_active"]
     with pytest.raises(ValueError, match="No valid fitted stellar"):
         activate_star_candidate()
-
-
-def test_joint_galaxy_fit_activates_atomically_for_generation(
-    tmp_path, monkeypatch,
-):
-    monkeypatch.setattr(Config, "DATA_DIR", str(tmp_path))
-    _use_q1_law(monkeypatch, 207.3388649567)
-    fit_path = tmp_path / "joint_population_fit.json"
-    monkeypatch.setattr(
-        Config, "JOINT_GALAXY_POPULATION_FIT_PATH", str(fit_path),
-    )
-    fit_path.write_text(json.dumps({
-        "version": 2,
-        "kind": "joint_intrinsic_galaxy_population",
-        "fingerprint": "b" * 64,
-        "model": {
-            "luminosity_function": {"one": 1},
-            "size_relation": {"two": 2},
-            "euclid_response": {"three": 3},
-        },
-        "fit_quality": {"valid": False, "warnings": ["diagnostic warning"]},
-        "diagnostics": {"tng_draw": {"full": {
-            "surface_density_arcmin2": 207.3388649567,
-        }}},
-    }))
-    updates = []
-    monkeypatch.setattr(
-        "euclid_polish.web.job_config.update", lambda patch: updates.append(patch),
-    )
-
-    activated = activate_joint_galaxy_candidate()
-
-    assert activated["active"]
-    assert activated["valid"]
-    assert not activated["validated"]
-    state = joint_galaxy_state()
-    assert state["is_active"]
-    assert state["candidate"]["magnitude_plot"]["sampling_interval"] == [
-        14.0, 29.0,
-    ]
-    assert len(state["candidate"]["magnitude_plot"]["law"]["x"]) == 301
-    stored = json.loads(active_joint_galaxy_path().read_text())
-    assert stored["fingerprint"] == activated["fingerprint"]
-    assert stored["geometry_model_fingerprint"] == "b" * 64
-    assert updates[0]["galaxy_density_arcmin2"] == pytest.approx(
-        207.3388649567,
-    )
-
-
-def test_phz_joint_fit_requires_all_gates_before_activation(tmp_path, monkeypatch):
-    monkeypatch.setattr(Config, "DATA_DIR", str(tmp_path))
-    _use_q1_law(monkeypatch, 200.0)
-    fit_path = tmp_path / "joint_population_fit.json"
-    monkeypatch.setattr(
-        Config, "JOINT_GALAXY_POPULATION_FIT_PATH", str(fit_path),
-    )
-    fit_path.write_text(json.dumps({
-        "version": 3,
-        "kind": "joint_intrinsic_galaxy_population",
-        "fingerprint": "e" * 64,
-        "model": {
-            "luminosity_function": {"one": 1},
-            "size_relation": {"two": 2},
-            "euclid_response": {"three": 3},
-        },
-        "phz_redshift_correction": {"factor": [[1.0]]},
-        "physical_conditionals": {"version": 1},
-        "phz_quality_gates": {"classification_coverage": True},
-        "fit_quality": {"valid": False, "warnings": ["gate failed"]},
-        "diagnostics": {"tng_draw": {"full": {
-            "surface_density_arcmin2": 200.0,
-        }}},
-    }))
-
-    with pytest.raises(ValueError, match="has not passed activation gates"):
-        activate_joint_galaxy_candidate()
-
-    assert not active_joint_galaxy_path().exists()
 
 
 def test_density_response_is_reproducible_and_rejects_wrong_transfer():

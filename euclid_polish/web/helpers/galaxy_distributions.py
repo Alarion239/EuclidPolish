@@ -8,12 +8,10 @@ import heapq
 import json
 import os
 from collections.abc import Callable
-from dataclasses import fields
 from pathlib import Path
 from typing import Any
 
 import numpy as np
-from scipy.special import ndtr
 
 from euclid_polish.config import Config
 from euclid_polish.photometry import uJy_to_ab_mag
@@ -22,14 +20,12 @@ from euclid_polish.population.joint_galaxy import (
     COSMOS_FIT_MAG_MIN,
     COSMOS_FIT_Z_MAX,
     COSMOS_FIT_Z_MIN,
-    EuclidResponseFit,
-    SchechterEvolutionFit,
-    SizeEvolutionFit,
-    latent_population_cube,
     read_cosmos_population,
-    tng_draw_population_cube,
 )
-from euclid_polish.web.helpers.population_calibration import joint_galaxy_state
+from euclid_polish.web.helpers.population_calibration import (
+    joint_galaxy_candidate,
+    joint_galaxy_state,
+)
 from euclid_polish.web.helpers.population_comparison import (
     euclid_catalog_meta_path,
     euclid_catalog_path,
@@ -43,7 +39,7 @@ from euclid_polish.web.helpers.q1_galaxy_counts import (
     read_q1_galaxy_aperture_fit,
 )
 
-ARTIFACT_VERSION = 10
+ARTIFACT_VERSION = 11
 MAG_EDGES = np.arange(14.0, 30.0001, 0.25)
 RADIUS_MAX_VIS_PIXELS = 100.0
 RADIUS_MAX_ARCSEC = RADIUS_MAX_VIS_PIXELS * float(Config.VIS_PIXEL_SCALE_ARCSEC)
@@ -335,10 +331,9 @@ def _empty_parameters() -> dict[str, dict[str, Any]]:
             ],
             "density_unit": "objects / arcmin² / dex",
             "note": (
-                "Choose among the Euclid detection semi-major axis, Euclid Kron "
-                "radius, the PHZ/MER VIS Sérsic effective radius, and the "
-                "COSMOS/analytic half-light radius. These are different "
-                "observables, not interchangeable size estimates. "
+                "The fitted quantity is the PHZ/MER VIS Sérsic effective "
+                "radius. Detection, Kron, and COSMOS curves are diagnostics "
+                "only and do not enter the generator fit. "
                 "The displayed range reaches 10 arcsec, or 100 native VIS pixels."
             ),
             "series": {},
@@ -756,7 +751,7 @@ def _read_euclid(parameters: dict[str, Any], progress: Callable[[int, int, str],
         radius_type="detection",
         definition="VIS detection/deblender semi-major axis, 0.1 arcsec/pixel",
         weights=np.asarray(radius_weights["euclid_detection"]),
-        default_on=True,
+        default_on=False,
     )
     parameters["radius"]["radius_series"]["euclid_kron"] = _radius_curve(
         np.asarray(radius_values["euclid_kron"]),
@@ -766,7 +761,7 @@ def _read_euclid(parameters: dict[str, Any], progress: Callable[[int, int, str],
         radius_type="kron",
         definition="VIS Kron radius reported by the MER photometry catalogue, 0.1 arcsec/pixel",
         weights=np.asarray(radius_weights["euclid_kron"]),
-        default_on=True,
+        default_on=False,
     )
     if radius_values["euclid_sersic_re"]:
         parameters["radius"]["radius_series"]["euclid_sersic_re"] = (
@@ -875,7 +870,7 @@ def _read_cosmos(parameters: dict[str, Any]) -> dict[str, Any]:
         source="cosmos",
         radius_type="half_light",
         definition="COSMOS2025 combined circularized bulge+disk half-light radius",
-        default_on=True,
+        default_on=False,
     )
     with np.load(path, allow_pickle=False) as prior:
         available = set(prior.files)
@@ -966,113 +961,43 @@ def _read_cosmos(parameters: dict[str, Any]) -> dict[str, Any]:
         "rows": int(len(cosmos["magnitude"])),
         "area_arcmin2": COSMOS_AREA_ARCMIN2,
         "measured_size_rows": int(np.sum(cosmos["has_radius"])),
-        "detail": "COSMOS2025 faint latent-population prior",
+        "detail": "COSMOS2025 diagnostic only; excluded from all fitting",
     }
 
 
-def _dataclass_from(payload: dict[str, Any], cls):
-    values = {field.name: payload[field.name] for field in fields(cls)}
-    values["standard_errors"] = tuple(values["standard_errors"])
-    return cls(**values)
-
-
 def _read_fit(parameters: dict[str, Any]) -> dict[str, Any]:
-    source = _json(Path(Config.JOINT_GALAXY_POPULATION_FIT_PATH))
+    source = joint_galaxy_candidate()
     if not source:
-        return {"available": False, "detail": "Fit the cached COSMOS + Euclid data first."}
+        return {
+            "available": False,
+            "detail": "Fit the Euclid VIS 2FWHM × Sérsic Rₑ model first.",
+        }
     try:
-        model = source["model"]
-        latent = latent_population_cube(
-            _dataclass_from(model["luminosity_function"], SchechterEvolutionFit),
-            _dataclass_from(model["size_relation"], SizeEvolutionFit),
-        )
-        draw = tng_draw_population_cube(latent, _dataclass_from(model["euclid_response"], EuclidResponseFit))
+        radius_plot = source["plots"]["radius"]
+        radius_x = np.asarray(radius_plot["x"], dtype=np.float64)
+        radius_density = np.asarray(radius_plot["density"], dtype=np.float64)
     except (KeyError, TypeError, ValueError) as exc:
         return {"available": False, "detail": f"Fit artifact cannot be reconstructed: {exc}"}
-    density = np.asarray(draw["density"], dtype=np.float64)
-    correction = source.get("phz_redshift_correction") or {}
-    factor = np.asarray(correction.get("factor", []), dtype=np.float64)
-    if factor.shape == density.shape[:2]:
-        density *= factor[:, :, None]
-    parameters["redshift"]["series"]["fit"] = _curve(
-        np.asarray(draw["z_edges"]),
-        np.sum(density, axis=(1, 2)),
-        1.0,
-        "analytical population after PHZ correction",
-    )
-    parameters["magnitude"]["series"]["fit"] = _curve(
-        np.asarray(draw["vis_magnitude_edges"]),
-        np.sum(density, axis=(0, 2)),
-        1.0,
-        "true-VIS analytical draw target",
-    )
-    parameters["radius"]["series"]["fit"] = _curve(
-        np.asarray(draw["log_radius_edges"]), np.sum(density, axis=(0, 1)), 1.0, "latent half-light radius"
-    )
-    fit_radius_edges = np.asarray(draw["log_radius_edges"])
-    fit_radius_counts = np.sum(density, axis=(0, 1))
-    fit_radius_curve = _curve(
-        fit_radius_edges, fit_radius_counts, 1.0, "latent half-light radius"
-    )
     parameters["radius"]["radius_series"]["fit_re"] = {
-        **fit_radius_curve,
-        "label": "Analytic · latent Rₑ",
+        "x": radius_x.tolist(),
+        "density": radius_density.tolist(),
+        "weighted_count": float(source["generation"]["surface_density_arcmin2"]),
+        "definition": "Euclid joint fit marginalized over VIS 2FWHM brightness",
+        "label": "Fit · Euclid Sérsic Rₑ",
         "source": "fit",
         "radius_type": "half_light",
         "units": "arcsec",
         "default_on": True,
     }
-
-    physical = source.get("physical_conditionals") or {}
-    if physical.get("classes") and physical.get("quenched_fraction"):
-        zc = np.clip(
-            np.searchsorted(np.asarray(physical["z_edges"]), draw["z"], side="right") - 1,
-            0,
-            len(physical["z_edges"]) - 2,
-        )
-        mc = np.clip(
-            np.searchsorted(np.asarray(physical["vis_magnitude_edges"]), draw["vis_magnitude"], side="right")
-            - 1,
-            0,
-            len(physical["vis_magnitude_edges"]) - 2,
-        )
-        zm = np.sum(density, axis=2)
-        qfrac = np.asarray(physical["quenched_fraction"])
-        for parameter, edges, mean_key, sigma_key in (
-            ("stellar_mass", MASS_EDGES, "mass_mean", "mass_sigma"),
-            ("specific_sfr", SSFR_EDGES, "ssfr_mean", "ssfr_sigma"),
-        ):
-            counts = np.zeros(len(edges) - 1)
-            for label, fraction in (("quenched", qfrac), ("star_forming", 1.0 - qfrac)):
-                cls = physical["classes"][label]
-                mean = np.asarray(cls[mean_key])[np.ix_(zc, mc)]
-                sigma = np.maximum(np.asarray(cls[sigma_key])[np.ix_(zc, mc)], 1e-3)
-                mix_weight = zm * fraction[np.ix_(zc, mc)]
-                counts += np.sum(
-                    mix_weight[:, :, None]
-                    * (
-                        ndtr((edges[1:] - mean[:, :, None]) / sigma[:, :, None])
-                        - ndtr((edges[:-1] - mean[:, :, None]) / sigma[:, :, None])
-                    ),
-                    axis=(0, 1),
-                )
-            physical_definition = (
-                "PHZ-conditioned two-class analytical model"
-                if int(physical.get("phz_rows") or 0) > 0
-                else "COSMOS-only physical fallback; PHZ intervals unavailable"
-            )
-            parameters[parameter]["series"]["fit"] = _curve(
-                edges, counts, 1.0, physical_definition,
-            )
     state = joint_galaxy_state()
     return {
         "available": True,
         "version": source.get("version"),
         "fingerprint": source.get("fingerprint"),
-        "validated": bool((source.get("fit_quality") or {}).get("valid", False)),
+        "validated": bool(source.get("validated")),
         "is_active": bool(state.get("is_active")),
         "active_fingerprint": ((state.get("active") or {}).get("fingerprint")),
-        "detail": "candidate analytical distribution; activation is separate",
+        "detail": "Euclid-only straight brightness × Sérsic-radius fit",
     }
 
 

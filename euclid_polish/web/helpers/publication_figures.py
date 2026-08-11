@@ -27,7 +27,6 @@ PAPER = "#ffffff"
 INK = "#172033"
 MUTED = "#5f6b7c"
 GRID = "#d8dee8"
-COSMOS_MODEL = "#008c68"
 EUCLID_OBS = "#1267d6"
 TNG = "#7a3db8"
 STAR_MODEL = "#1267d6"
@@ -85,6 +84,7 @@ def _line(
 
 def _finish_axis(
     ax, title: str, xlabel: str, ylabel: str, *, logarithmic_y: bool = False,
+    zero_floor: bool = True,
 ) -> None:
     ax.set_title(
         title, loc="left", fontsize=PANEL_TITLE_SIZE,
@@ -94,7 +94,7 @@ def _finish_axis(
     ax.set_ylabel(ylabel)
     if logarithmic_y:
         ax.set_yscale("log")
-    else:
+    elif zero_floor:
         ax.set_ylim(bottom=0)
     ax.grid(True, color=GRID, linewidth=0.55, alpha=0.8)
     ax.set_axisbelow(True)
@@ -103,27 +103,20 @@ def _finish_axis(
 
 
 def render_population_atlas(
-    fit: Mapping[str, Any], *, magnitude_plot: Mapping[str, Any] | None = None,
-    output_format: str = "png", dpi: int = 300,
+    calibration: Mapping[str, Any], *, output_format: str = "png", dpi: int = 300,
 ) -> bytes:
-    """Render independent Q1 brightness and staged geometry in one figure.
-
-    Unavailable bins remain missing. The joint cube contributes only the
-    brightness-marginalized geometry; final brightness is the Q1 2FWHM law.
-    """
+    """Render the active Euclid-only brightness-radius calibration."""
     fmt = output_format.lower()
     if fmt not in {"png", "pdf", "svg"}:
         raise ValueError("output_format must be png, pdf, or svg")
     dpi = max(120, min(int(dpi), 600))
-    diagnostics = fit.get("diagnostics") or {}
-    redshift = diagnostics.get("redshift") or {}
-    radius = diagnostics.get("angular_radius") or {}
-    tng = diagnostics.get("tng_draw") or {}
-    tng_full = tng.get("full") or {}
-    brightness = magnitude_plot or {}
+    brightness = calibration.get("magnitude_plot") or {}
     brightness_law = brightness.get("law") or {}
-    if not brightness_law or not redshift or not radius:
-        raise ValueError("joint population fit has no publication diagnostics")
+    plots = calibration.get("plots") or {}
+    radius = plots.get("radius") or {}
+    relation = plots.get("conditional_radius") or {}
+    if not brightness_law or not radius or not relation:
+        raise ValueError("Euclid joint fit has no publication diagnostics")
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -170,35 +163,60 @@ def render_population_atlas(
             )
         axes[0].set_xlim(14, 29)
         _finish_axis(
-            axes[0], "Independent goal brightness",
+            axes[0], "Straight brightness law",
             "VIS 2FWHM aperture magnitude [AB]",
             "objects arcmin$^{-2}$ mag$^{-1}$",
             logarithmic_y=True,
         )
 
-        _observed(axes[1], redshift, color=COSMOS_MODEL, label="COSMOS data")
-        _line(axes[1], redshift, "model", color=COSMOS_MODEL, label="COSMOS fit")
-        _line(axes[1], tng_full.get("redshift") or {}, "density",
-              color=TNG, label="staged geometry target", width=2.5)
+        radius_x, radius_observed = _xy(radius, "observed_density")
+        if radius_x.size:
+            axes[1].plot(
+                radius_x, radius_observed, linestyle="none", marker="o",
+                markersize=4.6, markerfacecolor=PAPER,
+                markeredgecolor=EUCLID_OBS, markeredgewidth=1.2,
+                label="Euclid PHZ/MER measured Sérsic $R_e$", zorder=4,
+            )
+        _line(
+            axes[1], radius, "density", color=TNG,
+            label="joint-fit $R_e$ marginal", width=2.7,
+        )
         _finish_axis(
-            axes[1], "Redshift density", "photometric redshift",
-            r"objects arcmin$^{-2}$ $\Delta z^{-1}$",
+            axes[1], "Euclid half-light radius",
+            r"log$_{10}(R_{e,\mathrm{VIS\ S\acute{e}rsic}}/\mathrm{arcsec})$",
+            r"objects arcmin$^{-2}$ dex$^{-1}$",
+            logarithmic_y=True,
         )
 
-        cosmos_radius = radius.get("cosmos") or {}
-        euclid_radius = radius.get("euclid") or {}
-        _observed(axes[2], cosmos_radius, color=COSMOS_MODEL, label="COSMOS data")
-        _line(axes[2], cosmos_radius, "model", color=COSMOS_MODEL,
-              label="COSMOS fit")
-        _observed(axes[2], euclid_radius, color=EUCLID_OBS, label="Euclid data")
-        _line(axes[2], euclid_radius, "model", color=EUCLID_OBS,
-              label="Euclid fit")
-        _line(axes[2], tng_full.get("angular_radius") or {}, "density",
-              color=TNG, label="staged geometry target", width=2.5)
+        relation_payload = {
+            "x": relation.get("magnitude") or [],
+            "observed": relation.get("observed_mean_log10_arcsec") or [],
+            "model": relation.get("model_mean_log10_arcsec") or [],
+            "low": relation.get("model_low_log10_arcsec") or [],
+            "high": relation.get("model_high_log10_arcsec") or [],
+        }
+        relation_x, relation_low = _xy(relation_payload, "low")
+        _, relation_high = _xy(relation_payload, "high")
+        if relation_x.size and relation_x.size == relation_high.size:
+            axes[2].fill_between(
+                relation_x, relation_low, relation_high,
+                color=TNG, alpha=0.14, linewidth=0,
+                label=r"constant 1$\sigma$ scatter",
+            )
+        _observed(
+            axes[2], relation_payload, color=EUCLID_OBS,
+            label="Euclid binned mean",
+        )
+        _line(
+            axes[2], relation_payload, "model", color=TNG,
+            label="joint conditional mean", width=2.7,
+        )
+        axes[2].set_xlim(14, 29)
         _finish_axis(
-            axes[2], "Angular-radius density",
-            "log$_{10}$ angular radius / arcsec",
-            "objects arcmin$^{-2}$ dex$^{-1}$",
+            axes[2], "Joint brightness-size relation",
+            "VIS 2FWHM aperture magnitude [AB]",
+            r"mean log$_{10}(R_e/\mathrm{arcsec})$",
+            zero_floor=False,
         )
 
         handles, labels = [], []

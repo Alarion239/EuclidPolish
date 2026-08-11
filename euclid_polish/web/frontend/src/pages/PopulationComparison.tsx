@@ -167,6 +167,16 @@ type CalibrationArtifact = {
     morphology_assignment: string;
     position_process: string;
   };
+  radius_law?: {
+    pivot_mag: number;
+    intercept_log10_arcsec: number;
+    slope_log10_arcsec_per_mag: number;
+    scatter_dex: number;
+    fitted_rows: number;
+    clipped_rows: number;
+    r_squared: number;
+  };
+  provenance?: { cosmos_used?: boolean; brightness?: string; radius?: string };
   magnitude_plot?: {
     label: string;
     law: { x: number[]; density: number[] };
@@ -174,6 +184,19 @@ type CalibrationArtifact = {
     fit_interval: [number, number];
     sampling_interval: [number, number];
     extrapolated_interval: [number, number];
+  };
+  plots?: {
+    radius: {
+      x: number[]; density: number[]; observed_density: number[];
+      unit: string;
+    };
+    conditional_radius: {
+      magnitude: number[];
+      observed_mean_log10_arcsec: Array<number | null>;
+      model_mean_log10_arcsec: number[];
+      model_low_log10_arcsec: number[];
+      model_high_log10_arcsec: number[];
+    };
   };
   calibration_fingerprint?: string;
   recommended_density_arcmin2?: number | null;
@@ -1261,7 +1284,125 @@ function PhzCalibrationPanel({
   );
 }
 
-function CosmosEuclidDensityPanel({ fit, calibration }: {
+function EuclidJointDensityPanel({ calibration }: {
+  calibration: CalibrationArtifact;
+}) {
+  const magnitude = calibration.magnitude_plot;
+  const radius = calibration.plots?.radius;
+  const relation = calibration.plots?.conditional_radius;
+  const magnitudeDensity = [
+    ...(magnitude?.observed?.density ?? []), ...(magnitude?.law.density ?? []),
+  ];
+  const radiusDensity = [
+    ...(radius?.observed_density ?? []), ...(radius?.density ?? []),
+  ];
+  return (
+    <>
+      <div className="publication-atlas-export">
+        <div>
+          <div className="eyebrow">presentation figure</div>
+          <strong>Euclid brightness × half-light-radius atlas</strong>
+          <span>Q1 VIS 2FWHM brightness and measured MER Sérsic Rₑ; no COSMOS fit.</span>
+        </div>
+        <div className="publication-atlas-export__actions">
+          <a className="ui-btn ui-btn--primary"
+            href="/view/population-atlas?format=png&dpi=300" download>
+            Download PNG
+          </a>
+          <a className="ui-btn" href="/view/population-atlas?format=pdf" download>PDF</a>
+          <a className="ui-btn" href="/view/population-atlas?format=svg" download>SVG</a>
+        </div>
+      </div>
+      <div className="parameter-atlas">
+        <Card className="parameter-card">
+          <CardHead title="Straight goal 2FWHM brightness"
+            sub="Q1 MER + PHZ VIS; one straight line in log density over 14–29" />
+          <CardBody>
+            {magnitude ? <>
+              <AdjustablePlot boundsLabel="Q1 2FWHM brightness law"
+                xDomain={magnitude.sampling_interval}
+                yDomain={domain(log10(magnitudeDensity))}
+                yTicksForDomain={(value) => ticks(value).map((tick) => ({
+                  ...tick, label: `10^${tick.label}`,
+                }))}
+                xLabel="VIS 2FWHM aperture magnitude [AB]"
+                yLabel="objects / arcmin² / mag (log scale)"
+                series={[
+                  ...(magnitude.observed ? [{
+                    x: magnitude.observed.x, y: log10(magnitude.observed.density),
+                    color: "#1267d6", mode: "scatter" as const,
+                    marker: "ring" as const, width: 2,
+                  }] : []),
+                  { x: magnitude.law.x, y: log10(magnitude.law.density),
+                    color: "#7a3db8", width: 3 },
+                ]} aspect={0.62} />
+              <Legend items={[
+                { color: "#1267d6", label: "Q1 MER + PHZ 2FWHM counts", marker: "ring" },
+                { color: "#7a3db8", label: "straight log-density law", line: true },
+              ]} />
+            </> : <Empty>Fit the Q1 VIS 2FWHM counts first.</Empty>}
+          </CardBody>
+        </Card>
+        <Card className="parameter-card">
+          <CardHead title="Euclid-measured half-light radius"
+            sub="Clean PHZ/MER VIS Sérsic Rₑ measurements and the joint-fit marginal" />
+          <CardBody>
+            {radius ? <>
+              <AdjustablePlot boundsLabel="Euclid VIS Sérsic half-light radius"
+                xDomain={domain(radius.x)} yDomain={domain(log10(radiusDensity))}
+                yTicksForDomain={(value) => ticks(value).map((tick) => ({
+                  ...tick, label: `10^${tick.label}`,
+                }))}
+                xLabel="log₁₀(Rₑ / arcsec)"
+                yLabel="objects / arcmin² / dex (log scale)"
+                series={[
+                  { x: radius.x, y: log10(radius.observed_density), color: "#1267d6",
+                    mode: "scatter", marker: "ring", width: 2 },
+                  { x: radius.x, y: log10(radius.density),
+                    color: "#7a3db8", width: 3 },
+                ]} aspect={0.62} />
+              <Legend items={[
+                { color: "#1267d6", label: "Euclid PHZ/MER measured Sérsic Rₑ", marker: "ring" },
+                { color: "#7a3db8", label: "joint-fit Rₑ marginal", line: true },
+              ]} />
+            </> : <Empty>Fit the Euclid joint model to add the measured Rₑ plot.</Empty>}
+          </CardBody>
+        </Card>
+        <Card className="parameter-card">
+          <CardHead title="Joint brightness–size relation"
+            sub="Straight mean log₁₀ Rₑ versus VIS 2FWHM magnitude with constant scatter" />
+          <CardBody>
+            {relation ? <>
+              <AdjustablePlot boundsLabel="Euclid conditional half-light radius"
+                xDomain={domain(relation.magnitude)}
+                yDomain={domain([
+                  ...relation.observed_mean_log10_arcsec,
+                  ...relation.model_low_log10_arcsec,
+                  ...relation.model_high_log10_arcsec,
+                ])}
+                xLabel="VIS 2FWHM aperture magnitude [AB]"
+                yLabel="mean log₁₀(Rₑ / arcsec)"
+                series={[
+                  { x: relation.magnitude, y: relation.observed_mean_log10_arcsec,
+                    color: "#1267d6", mode: "scatter", marker: "ring", width: 2 },
+                  { x: relation.magnitude, y: relation.model_mean_log10_arcsec,
+                    low: relation.model_low_log10_arcsec,
+                    high: relation.model_high_log10_arcsec,
+                    color: "#7a3db8", width: 3, fillAlpha: 0.14 },
+                ]} aspect={0.62} />
+              <Legend items={[
+                { color: "#1267d6", label: "Euclid binned mean", marker: "ring" },
+                { color: "#7a3db8", label: "conditional mean ± scatter", line: true },
+              ]} />
+            </> : <Empty>Fit the Euclid joint model to add the conditional relation.</Empty>}
+          </CardBody>
+        </Card>
+      </div>
+    </>
+  );
+}
+
+function LegacyCosmosDiagnosticPanel({ fit, calibration }: {
   fit: CosmosEuclidFit; calibration: CalibrationArtifact | null;
 }) {
   const diagnostics = fit.diagnostics;
@@ -1279,8 +1420,8 @@ function CosmosEuclidDensityPanel({ fit, calibration }: {
       <div className="publication-atlas-export">
         <div>
           <div className="eyebrow">presentation figure</div>
-          <strong>Q1 brightness × staged TNG50 geometry atlas</strong>
-          <span>Independent VIS 2FWHM brightness, redshift, and half-light-radius density.</span>
+          <strong>Retired COSMOS response diagnostics</strong>
+          <span>Visual comparison only; none of these curves enters the active fit.</span>
         </div>
         <div className="publication-atlas-export__actions">
           <a className="ui-btn ui-btn--primary"
@@ -1340,8 +1481,8 @@ function CosmosEuclidDensityPanel({ fit, calibration }: {
       <Card className="parameter-card">
         <CardHead title="Redshift distribution"
           sub={fit.phz_redshift_correction
-            ? "COSMOS latent fit; Euclid PHZ correction is shown below"
-            : "COSMOS constrains z; refresh the Euclid cache to add PHZ"} />
+            ? "retired COSMOS/PHZ response diagnostic; excluded from generation"
+            : "retired COSMOS diagnostic; excluded from generation"} />
         <CardBody>
           <AdjustablePlot boundsLabel="COSMOS redshift distribution"
             xDomain={domain(diagnostics.redshift.x)}
@@ -1368,7 +1509,7 @@ function CosmosEuclidDensityPanel({ fit, calibration }: {
       </Card>
       <Card className="parameter-card">
         <CardHead title="Angular-radius density"
-          sub="COSMOS fitted Re · Euclid MER proxy · brightness-marginalized staged geometry" />
+          sub="retired COSMOS/Euclid proxy comparison; excluded from the active Sérsic Rₑ fit" />
         <CardBody>
           <AdjustablePlot boundsLabel="Joint angular-size distribution"
             xDomain={domain([
@@ -1475,7 +1616,6 @@ function GalaxyCalibrationControls({ api, onChanged }: {
 }) {
   const localFit = useJob();
   const activate = useJob();
-  const fit = api.comparison?.population.cosmos_euclid_fit;
   const state = api.calibrations?.joint_galaxy ?? EMPTY_CALIBRATION;
   const starsActive = api.calibrations?.stars?.is_active ?? false;
   const candidate = state.candidate;
@@ -1484,28 +1624,28 @@ function GalaxyCalibrationControls({ api, onChanged }: {
   };
   return (
     <Card className="calibration-workflow">
-      <CardHead title="Joint analytical galaxy population"
-        sub="One smooth Schechter × lognormal distribution, observed through separate COSMOS and Euclid response models." />
+      <CardHead title="Euclid brightness × half-light radius"
+        sub="One straight VIS 2FWHM count law and one conditional VIS Sérsic Rₑ law. COSMOS is diagnostic only." />
       <CardBody>
         <div className="population-flow" aria-label="Galaxy calibration flow">
           <div className="population-flow__step">
-            <span>1 · latent distribution</span>
-            <strong>Evolving Schechter LF</strong>
-            <small>redshift × absolute-like F814W magnitude</small>
+            <span>1 · brightness</span>
+            <strong>Straight log-density</strong>
+            <small>Q1 PHZ/MER VIS 2FWHM counts</small>
           </div>
           <div className="population-flow__step">
-            <span>2 · intrinsic sizes</span>
-            <strong>Lognormal R<sub>e</sub></strong>
-            <small>smooth luminosity and redshift evolution</small>
+            <span>2 · measured size</span>
+            <strong>VIS Sérsic R<sub>e</sub></strong>
+            <small>straight mean versus magnitude + constant scatter</small>
           </div>
           <div className="population-flow__step">
-            <span>3 · two surveys</span>
-            <strong>COSMOS + {fit?.inputs.euclid_cone_count ?? "—"} Euclid cones</strong>
-            <small>different bandpass, resolution and selection responses</small>
+            <span>3 · joint draw</span>
+            <strong>R<sub>e</sub> first, then m | R<sub>e</sub></strong>
+            <small>same two Euclid quantities used for fitting and generation</small>
           </div>
           <div className="population-flow__step population-flow__step--result">
             <span>4 · current result</span>
-            <strong>{fit ? (fit.fit_quality.valid ? "quality gate passed" : "diagnostic warnings") : "not fitted"}</strong>
+            <strong>{candidate?.valid ? "fit ready" : "not fitted"}</strong>
             <small>{state.is_active
               ? "active for future synthetic jobs"
               : "review and activate before generation"}</small>
@@ -1513,45 +1653,26 @@ function GalaxyCalibrationControls({ api, onChanged }: {
         </div>
         <div className="calibration-explainer">
           <p>
-            COSMOS constrains the redshift, luminosity and physical-size evolution.
-            Euclid constrains the projected magnitude–size response and a
-            surface-brightness-dependent completeness function used to recover
-            geometry. Final brightness is drawn independently from the Q1 VIS
-            2FWHM straight law; there is no row-by-row donor matching.
+            Nothing is transferred from COSMOS into this model. Q1 counts set
+            the brightness density; clean MER morphology fits set the conditional
+            half-light-radius relation. COSMOS plots remain available only for
+            visual comparison.
           </p>
-          {fit && (
+          {candidate?.radius_law && (
             <p className="fit-caution">
-              <strong>Classification coverage:</strong>{" "}
-              {fit.inputs.missing_probability_rows} Euclid rows without
-              POINT_LIKE_PROB and {fit.inputs.missing_size_rows} without a usable
-              size proxy were excluded; galaxy weight = 1 − POINT_LIKE_PROB.
+              <strong>Radius fit:</strong>{" "}
+              slope {candidate.radius_law.slope_log10_arcsec_per_mag.toFixed(4)} dex/mag,
+              scatter {candidate.radius_law.scatter_dex.toFixed(4)} dex from {" "}
+              {candidate.radius_law.fitted_rows.toLocaleString()} PHZ-weighted rows.
             </p>
           )}
         </div>
-        {fit && <div className="calibration-table-wrap">
-          <table className="calibration-table">
-            <thead><tr><th>Group</th><th>Parameter</th><th>Fit ± local SE</th><th>Unit</th></tr></thead>
-            <tbody>
-              {fit.parameters.map((parameter, index) => <tr key={parameter.key}>
-                <td>{index === 0 || fit.parameters[index - 1].group !== parameter.group
-                  ? parameter.group : ""}</td>
-                <td>{parameter.label}</td>
-                <td className="mono">{parameter.value.toPrecision(5)}{parameter.standard_error != null
-                  ? ` ± ${parameter.standard_error.toPrecision(3)}` : ""}</td>
-                <td>{parameter.unit || "—"}</td>
-              </tr>)}
-            </tbody>
-          </table>
-        </div>}
-        {fit?.fit_quality.warnings.map((warning) => (
-          <p className="fit-caution" key={warning}><strong>Fit note:</strong> {warning}</p>
-        ))}
         <div className="calibration-actions">
           <Button disabled={localFit.busy}
             onClick={() => localFit.run(
               "/api/population-comparison/run-local-galaxy-calibration",
               {}, { onDone: refresh },
-            )}>{localFit.busy ? "Fitting locally…" : "Refit joint distribution + plots"}</Button>
+            )}>{localFit.busy ? "Fitting locally…" : "Fit Euclid brightness × Rₑ"}</Button>
           <Button variant="primary"
             disabled={!candidate?.valid
               || (candidate.version === 2 && !candidate.validated)
@@ -1573,11 +1694,11 @@ function GalaxyCalibrationControls({ api, onChanged }: {
         </div>
         {candidate?.generation && (
           <p className="calibration-plain-note">
-            Submission draws {candidate.generation.surface_density_arcmin2.toFixed(2)} galaxies / arcmin²
-            by first sampling brightness-marginalized R<sub>e</sub> and z, then
-            drawing an independent Q1 2FWHM goal magnitude over VIS {candidate.generation.vis_magnitude_min.toFixed(0)}–{candidate.generation.vis_magnitude_max.toFixed(0)}.
-            TNG morphology is conditioned on the staged geometry and PHZ/COSMOS
-            physical state before one shared four-band aperture scale is applied.
+            Submission draws {candidate.generation.surface_density_arcmin2.toFixed(2)} galaxies / arcmin².
+            It draws Euclid Sérsic R<sub>e</sub>, resizes a random TNG morphology,
+            then draws the jointly fitted conditional VIS 2FWHM magnitude over {" "}
+            {candidate.generation.vis_magnitude_min.toFixed(0)}–{candidate.generation.vis_magnitude_max.toFixed(0)}
+            and applies one shared four-band aperture scale.
           </p>
         )}
         <JobProgressView job={localFit.job} error={localFit.error} />
@@ -2080,17 +2201,23 @@ export default function PopulationComparisonPage() {
 
             <GalaxyCalibrationControls api={api} onChanged={resource.reload} />
 
+            {api.calibrations?.joint_galaxy.candidate?.valid && (
+              <EuclidJointDensityPanel
+                calibration={api.calibrations.joint_galaxy.candidate} />
+            )}
+
             {comparison.population.cosmos_euclid_fit && (
-              <>
+              <details className="calibration-diagnostic-disclosure">
+                <summary>COSMOS and retired-response diagnostics (not fitted)</summary>
                 <PhzCalibrationPanel
                   fit={comparison.population.cosmos_euclid_fit}
                   probabilityRelation={comparison.population.phz_probability_relation}
                   colourConditioning={comparison.population.tng_colour_conditioning}
                 />
-                <CosmosEuclidDensityPanel
+                <LegacyCosmosDiagnosticPanel
                   fit={comparison.population.cosmos_euclid_fit}
                   calibration={api.calibrations?.joint_galaxy.candidate ?? null} />
-              </>
+              </details>
             )}
 
             <ConeQuery api={api} onQueried={resource.reload} />

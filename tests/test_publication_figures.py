@@ -18,56 +18,46 @@ def _density(x, observed=None, model=None):
     return payload
 
 
-def _fit():
-    observed = [0.5, None, 1.5]  # missing stays missing; it must not become zero
-    model = [0.6, 1.1, 1.4]
+def _galaxy_calibration():
     return {
-        "diagnostics": {
-            "magnitude_counts": {
-                "cosmos": _density([20.0, 21.0, 22.0], observed, model),
-                "euclid": _density([20.0, 21.0, 22.0], observed, model),
+        "magnitude_plot": {
+            "observed": {
+                "x": [14.5, 20.5, 27.5], "density": [0.1, 2.0, 50.0],
             },
-            "redshift": _density([0.25, 0.75, 1.25], observed, model),
-            "angular_radius": {
-                "cosmos": _density([-1.5, -1.0, -0.5], observed, model),
-                "euclid": _density([-1.5, -1.0, -0.5], observed, model),
+            "law": {
+                "x": [14.0, 21.5, 29.0], "density": [0.08, 3.0, 100.0],
             },
-            "tng_draw": {
-                "full": {
-                    "magnitude": _density([20.0, 21.0, 22.0]),
-                    "redshift": _density([0.25, 0.75, 1.25]),
-                    "angular_radius": _density([-1.5, -1.0, -0.5]),
-                },
-                "comparison_window": {
-                    "magnitude": _density([20.0, 21.0, 22.0]),
-                    "redshift": _density([0.25, 0.75, 1.25]),
-                    "angular_radius": _density([-1.5, -1.0, -0.5]),
-                },
+            "fit_interval": [19.5, 25.0],
+            "sampling_interval": [14.0, 29.0],
+            "extrapolated_interval": [28.0, 29.0],
+        },
+        "plots": {
+            "radius": {
+                "x": [-1.5, -1.0, -0.5],
+                "observed_density": [0.5, None, 1.5],
+                "density": [0.6, 1.1, 1.4],
+            },
+            "conditional_radius": {
+                "magnitude": [16.0, 21.0, 26.0],
+                "observed_mean_log10_arcsec": [-0.1, None, -0.5],
+                "model_mean_log10_arcsec": [-0.12, -0.3, -0.48],
+                "model_low_log10_arcsec": [-0.3, -0.48, -0.66],
+                "model_high_log10_arcsec": [0.06, -0.12, -0.3],
             },
         }
     }
 
 
 def test_population_atlas_exports_raster_and_vector_formats():
-    fit = _fit()
-    magnitude_plot = {
-        "observed": {
-            "x": [14.5, 20.5, 27.5], "density": [0.1, 2.0, 50.0],
-        },
-        "law": {
-            "x": [14.0, 21.5, 29.0], "density": [0.08, 3.0, 100.0],
-        },
-        "fit_interval": [19.5, 25.0],
-        "extrapolated_interval": [28.0, 29.0],
-    }
+    calibration = _galaxy_calibration()
     png = render_population_atlas(
-        fit, magnitude_plot=magnitude_plot, output_format="png", dpi=120,
+        calibration, output_format="png", dpi=120,
     )
     pdf = render_population_atlas(
-        fit, magnitude_plot=magnitude_plot, output_format="pdf", dpi=120,
+        calibration, output_format="pdf", dpi=120,
     )
     svg = render_population_atlas(
-        fit, magnitude_plot=magnitude_plot, output_format="svg", dpi=120,
+        calibration, output_format="svg", dpi=120,
     )
 
     assert png.startswith(b"\x89PNG\r\n\x1a\n")
@@ -79,7 +69,10 @@ def test_population_atlas_exports_raster_and_vector_formats():
     assert b"Galaxy population calibration" not in svg
     assert b"Q1 MER + PHZ 2FWHM counts" in svg
     assert b"Q1 2FWHM straight law" in svg
-    assert b"staged geometry target" in svg
+    assert b"Euclid PHZ/MER measured" in svg
+    assert b"joint-fit" in svg
+    assert b"joint conditional mean" in svg
+    assert b"COSMOS" not in svg
     assert b"TNG truth" not in svg
     assert b"20&lt;VIS&lt;28" not in svg
 

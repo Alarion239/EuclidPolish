@@ -2,9 +2,10 @@
 Multi-band clean-HR scene generator.
 
 Every field galaxy uses a resolved TNG50 SKIRT morphology and its native
-VIS/NISP proportions. A COSMOS2025 row supplies photometric redshift, stellar
-mass, apparent half-light radius, and an F814W brightness anchor. One shared
-brightness scale is applied to all TNG bands after the fitted F814W→VIS transfer.
+VIS/NISP proportions. The active Euclid prior supplies a VIS Sérsic half-light
+radius and a jointly conditioned VIS 2FWHM aperture brightness. One shared
+brightness factor is applied to all TNG bands after the morphology is resized.
+The legacy COSMOS sampler remains readable only for replaying old records.
 
 The output of :meth:`SkySimulator.simulate_field` is a single :class:`Image`
 with ``data`` of shape ``(H, W, 4)`` in **raw electrons** on the 0.05″ HR
@@ -616,7 +617,8 @@ class SkySimulator:
         res = sample_tng_stamp(
                                galaxies, rng,
                                pixel_scale_arcsec=self.config.pixel_scale,
-                               target_re_arcsec=draw.re_arcsec, z=draw.z,
+                               target_re_arcsec=draw.re_arcsec,
+                               z=(draw.z if np.isfinite(draw.z) else None),
                                target_vis_flux_e=(
                                    None if staged else draw.target_vis_flux_e
                                ),
@@ -633,7 +635,9 @@ class SkySimulator:
         stamp, tmeta = res
         if staged:
             magnitude, target_aperture_flux = (
-                self.population_prior.sample_brightness(rng)
+                self.population_prior.sample_brightness(
+                    rng, radius_arcsec=draw.re_arcsec,
+                )
             )
             psf_kernel, psf_fwhm, psf_source = self._draw_aperture_psf(rng)
             try:
