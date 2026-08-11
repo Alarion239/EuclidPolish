@@ -160,6 +160,81 @@ def test_euclid_aperture_scatter_uses_phz_galaxies_when_extended_flag_is_unset(
     assert "PHZ_GAL_PROB >= 0.5" in source["aperture_scatter"]["selection"]
 
 
+def test_euclid_radius_plot_adds_clean_phz_mer_sersic_re(
+    tmp_path, monkeypatch,
+):
+    catalog = tmp_path / "euclid.csv"
+    meta = tmp_path / "euclid.json"
+    fieldnames = (
+        "object_id", "type", "point_like_prob", "spurious_prob", "mag_vis",
+        "semimajor_axis", "ellipticity", "kron_radius", "phz_gal_prob",
+        "morph_sersic_vis_radius_arcsec", "morph_sersic_visnir_flags",
+    )
+    with catalog.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerow({
+            "object_id": "clean", "type": "galaxy", "point_like_prob": 0.1,
+            "spurious_prob": 0.0, "mag_vis": 21.0,
+            "semimajor_axis": 3.0, "ellipticity": 0.2,
+            "kron_radius": 4.0, "phz_gal_prob": 0.8,
+            "morph_sersic_vis_radius_arcsec": 0.35,
+            "morph_sersic_visnir_flags": 0,
+        })
+        writer.writerow({
+            "object_id": "flagged", "type": "galaxy",
+            "point_like_prob": 0.1, "spurious_prob": 0.0, "mag_vis": 21.0,
+            "semimajor_axis": 3.0, "ellipticity": 0.2,
+            "kron_radius": 4.0, "phz_gal_prob": 0.9,
+            "morph_sersic_vis_radius_arcsec": 1.2,
+            "morph_sersic_visnir_flags": 1,
+        })
+    meta.write_text(json.dumps({
+        "area_arcmin2": 2.0, "rows": 2, "catalog_version": 7,
+    }))
+    monkeypatch.setattr(helper, "euclid_catalog_path", lambda: catalog)
+    monkeypatch.setattr(helper, "euclid_catalog_meta_path", lambda: meta)
+    monkeypatch.setattr(
+        helper, "read_phz_pdf_cache", lambda: (_ for _ in ()).throw(OSError()),
+    )
+
+    parameters = helper._empty_parameters()
+    helper._read_euclid(parameters, lambda *_: None)
+
+    curve = parameters["radius"]["radius_series"]["euclid_sersic_re"]
+    assert curve["label"] == "Euclid PHZ/MER · VIS Sérsic Rₑ"
+    assert curve["radius_type"] == "half_light"
+    assert curve["weighted_count"] == pytest.approx(0.8)
+    assert parameters["radius"]["radius_missing"] == []
+    occupied = np.asarray(curve["x"])[np.asarray(curve["density"]) > 0]
+    assert occupied.tolist() == pytest.approx([np.log10(0.35)], abs=0.06)
+
+
+def test_euclid_radius_plot_explains_stale_cache_without_sersic_re(
+    tmp_path, monkeypatch,
+):
+    catalog = tmp_path / "euclid.csv"
+    meta = tmp_path / "euclid.json"
+    catalog.write_text(
+        "object_id,type,point_like_prob,spurious_prob,mag_vis\n"
+        "old,galaxy,0.1,0.0,21.0\n"
+    )
+    meta.write_text(json.dumps({
+        "area_arcmin2": 1.0, "rows": 1, "catalog_version": 6,
+    }))
+    monkeypatch.setattr(helper, "euclid_catalog_path", lambda: catalog)
+    monkeypatch.setattr(helper, "euclid_catalog_meta_path", lambda: meta)
+    monkeypatch.setattr(
+        helper, "read_phz_pdf_cache", lambda: (_ for _ in ()).throw(OSError()),
+    )
+
+    parameters = helper._empty_parameters()
+    helper._read_euclid(parameters, lambda *_: None)
+
+    assert "euclid_sersic_re" not in parameters["radius"]["radius_series"]
+    assert "version-7" in parameters["radius"]["radius_missing"][0]
+
+
 def test_cosmos_brightness_keeps_native_estimators_separate(tmp_path, monkeypatch):
     rows = 1100
     path = tmp_path / "cosmos.npz"

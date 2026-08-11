@@ -43,7 +43,7 @@ from euclid_polish.web.helpers.q1_galaxy_counts import (
     read_q1_galaxy_aperture_fit,
 )
 
-ARTIFACT_VERSION = 9
+ARTIFACT_VERSION = 10
 MAG_EDGES = np.arange(14.0, 30.0001, 0.25)
 RADIUS_MAX_VIS_PIXELS = 100.0
 RADIUS_MAX_ARCSEC = RADIUS_MAX_VIS_PIXELS * float(Config.VIS_PIXEL_SCALE_ARCSEC)
@@ -336,12 +336,14 @@ def _empty_parameters() -> dict[str, dict[str, Any]]:
             "density_unit": "objects / arcmin² / dex",
             "note": (
                 "Choose among the Euclid detection semi-major axis, Euclid Kron "
-                "radius, and the COSMOS/analytic half-light radius. These are "
-                "different observables, not interchangeable size estimates. "
+                "radius, the PHZ/MER VIS Sérsic effective radius, and the "
+                "COSMOS/analytic half-light radius. These are different "
+                "observables, not interchangeable size estimates. "
                 "The displayed range reaches 10 arcsec, or 100 native VIS pixels."
             ),
             "series": {},
             "radius_series": {},
+            "radius_missing": [],
         },
         "stellar_mass": {
             "label": "Stellar mass",
@@ -503,11 +505,21 @@ def _read_euclid(parameters: dict[str, Any], progress: Callable[[int, int, str],
     ]
     brightness_magnitudes = {key: [] for key in MER_BRIGHTNESS_SERIES}
     brightness_weights = {key: [] for key in MER_BRIGHTNESS_SERIES}
-    radius_values = {key: [] for key in ("euclid_detection", "euclid_kron")}
+    radius_values = {
+        key: []
+        for key in (
+            "euclid_detection", "euclid_kron", "euclid_sersic_re",
+        )
+    }
     radius_weights = {key: [] for key in radius_values}
     rows = phz_rows = physical_rows = 0
     with path.open(newline="", encoding="utf-8") as handle:
-        for row in csv.DictReader(handle):
+        reader = csv.DictReader(handle)
+        has_sersic_re = {
+            "morph_sersic_vis_radius_arcsec",
+            "morph_sersic_visnir_flags",
+        }.issubset(reader.fieldnames or ())
+        for row in reader:
             rows += 1
             try:
                 point = float(row.get("point_like_prob", "nan"))
@@ -518,6 +530,10 @@ def _read_euclid(parameters: dict[str, Any], progress: Callable[[int, int, str],
             if not (np.isfinite(point) and 0 <= point <= 1 and np.isfinite(spurious) and spurious <= 0.5):
                 continue
             mer_weight = 1.0 - point
+            try:
+                gal_weight = float(row.get("phz_gal_prob", "nan"))
+            except ValueError:
+                gal_weight = np.nan
             if np.isfinite(magnitude):
                 mag += np.histogram([magnitude], MAG_EDGES, weights=[mer_weight])[0]
             for brightness_key, (column, _label, _estimator) in MER_BRIGHTNESS_SERIES.items():
@@ -558,6 +574,24 @@ def _read_euclid(parameters: dict[str, Any], progress: Callable[[int, int, str],
             if np.isfinite(kron_radius_arcsec) and kron_radius_arcsec > 0.0:
                 radius_values["euclid_kron"].append(kron_radius_arcsec)
                 radius_weights["euclid_kron"].append(mer_weight)
+            try:
+                sersic_re_arcsec = float(row.get(
+                    "morph_sersic_vis_radius_arcsec", "nan",
+                ))
+                sersic_flags = float(row.get(
+                    "morph_sersic_visnir_flags", "nan",
+                ))
+            except ValueError:
+                sersic_re_arcsec = sersic_flags = np.nan
+            if (
+                sersic_flags == 0.0
+                and np.isfinite(sersic_re_arcsec)
+                and sersic_re_arcsec > 0.0
+                and np.isfinite(gal_weight)
+                and 0.0 < gal_weight <= 1.0
+            ):
+                radius_values["euclid_sersic_re"].append(sersic_re_arcsec)
+                radius_weights["euclid_sersic_re"].append(gal_weight)
 
             try:
                 fwhm = float(row.get("fwhm", "nan"))
@@ -661,10 +695,6 @@ def _read_euclid(parameters: dict[str, Any], progress: Callable[[int, int, str],
                     aperture_histograms[key][size_bin, delta_bin] += mer_weight
                     aperture_counts[key][size_bin] += mer_weight
 
-            try:
-                gal_weight = float(row.get("phz_gal_prob", "nan"))
-            except ValueError:
-                gal_weight = np.nan
             object_pdf = pdf_by_id.get(str(row.get("object_id", "")))
             if (
                 object_pdf is not None
@@ -738,6 +768,32 @@ def _read_euclid(parameters: dict[str, Any], progress: Callable[[int, int, str],
         weights=np.asarray(radius_weights["euclid_kron"]),
         default_on=True,
     )
+    if radius_values["euclid_sersic_re"]:
+        parameters["radius"]["radius_series"]["euclid_sersic_re"] = (
+            _radius_curve(
+                np.asarray(radius_values["euclid_sersic_re"]),
+                area,
+                label="Euclid PHZ/MER · VIS Sérsic Rₑ",
+                source="euclid",
+                radius_type="half_light",
+                definition=(
+                    "MER morphology VIS Sérsic effective radius in arcsec; "
+                    "SERSIC_VISNIR_FLAGS = 0; weighted by PHZ_GAL_PROB"
+                ),
+                weights=np.asarray(radius_weights["euclid_sersic_re"]),
+                default_on=True,
+            )
+        )
+    elif not has_sersic_re:
+        parameters["radius"]["radius_missing"].append(
+            "Euclid PHZ/MER VIS Sérsic Rₑ requires a version-7 MER + "
+            "morphology cache; re-query the catalogue to add it."
+        )
+    else:
+        parameters["radius"]["radius_missing"].append(
+            "The MER morphology cache contains no clean positive VIS Sérsic "
+            "Rₑ values with PHZ_GAL_PROB > 0."
+        )
     if redshift is not None and pdf_edges is not None:
         pdf_source = str(meta.get("phz_pdf_source") or "archive_full_pdf")
         definition = (

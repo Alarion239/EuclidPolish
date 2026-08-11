@@ -43,6 +43,7 @@ type Parameter = {
   photometry_series?: Record<string, BrightnessCurve>;
   photometry_missing?: string[];
   radius_series?: Record<string, RadiusCurve>;
+  radius_missing?: string[];
 };
 type Source = {
   available?: boolean;
@@ -119,6 +120,7 @@ const BRIGHTNESS_COLORS = {
 const RADIUS_COLORS: Record<string, string> = {
   euclid_detection: "#2478d4",
   euclid_kron: "#786fd4",
+  euclid_sersic_re: "#31a7d8",
   cosmos_re: "#00a078",
   fit_re: "#e25543",
 };
@@ -384,13 +386,13 @@ function RadiusPlot({ parameter }: { parameter: Parameter }) {
 
   return <div className="radius-comparison">
     <div className="radius-warning">
-      <strong>Three size concepts, kept separate.</strong>
-      <span>Detection a and Kron radius are Euclid measurement scales. Rₑ is a fitted half-light radius; the analytic curve is defined only for that latent observable.</span>
+      <strong>Catalogue size concepts, kept separate.</strong>
+      <span>Detection a and Kron radius are Euclid measurement scales. The PHZ/MER VIS Sérsic Rₑ is a catalogue model fit; COSMOS Rₑ and the analytic latent Rₑ retain their own definitions.</span>
     </div>
     <div className="radius-controls">
       {grouped.map(([radiusType, group]) => <section key={radiusType}>
         <header>
-          <div><span>{RADIUS_TYPE_LABEL[radiusType]}</span><small>{radiusType === "detection" ? "Euclid raw catalogue" : radiusType === "kron" ? "Euclid raw catalogue" : "COSMOS raw + analytic model"}</small></div>
+          <div><span>{RADIUS_TYPE_LABEL[radiusType]}</span><small>{radiusType === "detection" ? "Euclid raw catalogue" : radiusType === "kron" ? "Euclid raw catalogue" : "Euclid PHZ/MER + COSMOS + analytic model"}</small></div>
           <div>
             <Button size="sm" variant="ghost" onClick={() => setSelected((current) => Array.from(new Set([...current, ...group.map(([key]) => key)])))}>all</Button>
             <Button size="sm" variant="ghost" onClick={() => setSelected((current) => current.filter((key) => !group.some(([candidate]) => candidate === key)))}>none</Button>
@@ -401,6 +403,8 @@ function RadiusPlot({ parameter }: { parameter: Parameter }) {
           dot={RADIUS_COLORS[key] ?? SOURCE[curve.source].color}
           title={`${curve.units}; ${curve.definition}`}
         >{curve.label}</Chip>)}</div>
+        {radiusType === "half_light" && parameter.radius_missing?.map((message) =>
+          <p className="brightness-controls__missing" key={message}>{message}</p>)}
       </section>)}
     </div>
     <div className="radius-plot">{plot}</div>
