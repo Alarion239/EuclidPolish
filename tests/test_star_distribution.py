@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 from pathlib import Path
 
 import pytest
@@ -292,6 +293,26 @@ def test_star_distribution_page_and_status_route(monkeypatch):
         "distribution": expected_distribution,
         "q1_counts": {"bins": []},
     }
+
+
+def test_checked_in_star_bundle_matches_current_api_contract():
+    """Flask must not serve a stale bundle from before color_sample existed."""
+    from euclid_polish.web.app import create_app
+
+    client = create_app().test_client()
+    page = client.get("/star-distribution")
+    match = re.search(
+        r'<script type="module" crossorigin src="([^"]+\.js)"',
+        page.get_data(as_text=True),
+    )
+
+    assert page.status_code == 200
+    assert match is not None
+    asset = client.get(match.group(1))
+    bundle = asset.get_data(as_text=True)
+    assert asset.status_code == 200
+    assert "color_sample" in bundle
+    assert "availability.euclid_catalog" not in bundle
 
 
 def test_star_page_uses_the_single_galaxy_page_mer_phz_query():
