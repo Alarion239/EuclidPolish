@@ -1142,9 +1142,9 @@ def star_state() -> dict[str, Any]:
 def _current_star_artifact(payload: dict[str, Any] | None) -> bool:
     return bool(
         payload
-        and payload.get("version") == 5
+        and payload.get("version") == 6
         and (payload.get("fingerprint_inputs") or {}).get("fit_version")
-        == "q1-phz-gaia-shared-straight-counts-latent-locus-v4"
+        == "q1-phz-gaia-shared-straight-counts-latent-locus-v5"
     )
 
 

@@ -46,7 +46,8 @@ _GAIA_COUNT_LIMIT_MAG = 20.5
 # 25.6873668671 mag, respectively.  The archive's phot_g_mean_mag is Vega.
 _GAIA_G_AB_MINUS_VEGA_MAG = 25.8010446445 - 25.6873668671
 _GAIA_TAP_PROVIDER = "ARI Gaia TAP"
-_STAR_POPULATION_VERSION = 5
+_STAR_POPULATION_VERSION = 6
+_GAIA_COUNT_FIT_BIN_WIDTH_MAG = 0.5
 
 
 def gaia_catalog_path() -> Path:
@@ -405,13 +406,19 @@ def _stellar_density_comparison(
     )
     gaia_fit_diagnostics = magnitude_diagnostics.get("gaia") or {}
     q1_fit_diagnostics = magnitude_diagnostics.get("q1") or {}
+    gaia_bin_width = float(
+        gaia_fit_diagnostics.get("bin_width_mag")
+        or _GAIA_COUNT_FIT_BIN_WIDTH_MAG
+    )
+    gaia_edges = _fixed_width_edges(bright, faint, gaia_bin_width)
+    gaia_centres = 0.5 * (gaia_edges[:-1] + gaia_edges[1:])
     gaia_fit_density = None
     try:
         gaia_intercept = float(gaia_fit_diagnostics["intercept"])
         gaia_fit_density = np.power(
             10.0,
             model_magnitude_law.slope
-            * (0.5 * (magnitude_edges[:-1] + magnitude_edges[1:]))
+            * gaia_centres
             + gaia_intercept,
         ).tolist()
     except (KeyError, TypeError, ValueError):
@@ -429,8 +436,9 @@ def _stellar_density_comparison(
             "point_sources": q1_point_source_density,
             # This is the native Gaia G band on the AB system, with only the
             # release zero-point conversion. It is not projected into VIS.
+            "gaia_x": gaia_centres.tolist(),
             "gaia": _density_series(
-                gaia_g_ab, magnitude_edges, area_arcmin2=gaia_area_arcmin2,
+                gaia_g_ab, gaia_edges, area_arcmin2=gaia_area_arcmin2,
             ),
             "model": model_magnitude_law.density(
                 0.5 * (magnitude_edges[:-1] + magnitude_edges[1:])
@@ -527,7 +535,25 @@ def _positive_semidefinite_covariance(
     matrix = np.asarray(values, dtype=np.float64)
     matrix = 0.5 * (matrix + matrix.T)
     eigenvalues, eigenvectors = np.linalg.eigh(matrix)
-    return (eigenvectors * np.maximum(eigenvalues, float(floor))) @ eigenvectors.T
+    projected = (
+        (eigenvectors * np.maximum(eigenvalues, float(floor)))
+        @ eigenvectors.T
+    )
+    # Roundoff in the eigensystem reconstruction can leave an antisymmetric
+    # component large enough for NumPy's covariance validity check to warn.
+    return 0.5 * (projected + projected.T)
+
+
+def _draw_zero_mean_gaussian(
+    rng: np.random.Generator, covariance: np.ndarray,
+) -> np.ndarray:
+    """Draw from an explicitly projected PSD covariance."""
+    covariance = _positive_semidefinite_covariance(covariance, floor=0.0)
+    eigenvalues, eigenvectors = np.linalg.eigh(covariance)
+    return eigenvectors @ (
+        np.sqrt(np.maximum(eigenvalues, 0.0))
+        * rng.standard_normal(covariance.shape[0])
+    )
 
 
 def _raw_measurement(row: dict[str, str], band: str) -> tuple[float, float] | None:
@@ -1151,9 +1177,27 @@ def _fit_straight_star_magnitude_law(
         if str(row.get("central_selected_star") or "0").strip() != "1"
         and (value := _finite(row.get("g_mag"))) is not None
     ], dtype=np.float64)
-    gaia_counts, _ = np.histogram(gaia_magnitudes, bins=edges)
-    gaia_density = gaia_counts / (gaia_area * widths)
-    gaia_sigma = np.sqrt(gaia_counts) / (gaia_area * widths)
+    # The fixed Gaia fields contain only a few thousand sources.  Searching
+    # for a 2.5-mag straight region in 0.1-mag cells makes Poisson structure,
+    # rather than the broad count law, decide whether activation succeeds.
+    # Gaia informs the shared slope only, so fit it at a stable 0.5-mag
+    # resolution while retaining the native Q1 0.1-mag bins and normalization.
+    gaia_edges = np.arange(
+        float(Config.STAR_MAG_BRIGHT),
+        float(Config.STAR_MAG_FAINT) + 0.5 * _GAIA_COUNT_FIT_BIN_WIDTH_MAG,
+        _GAIA_COUNT_FIT_BIN_WIDTH_MAG,
+        dtype=np.float64,
+    )
+    if not math.isclose(
+        float(gaia_edges[-1]), float(Config.STAR_MAG_FAINT),
+        rel_tol=0.0, abs_tol=1e-9,
+    ):
+        raise ValueError("Gaia fit limits must divide into 0.5-mag brackets")
+    gaia_centres = 0.5 * (gaia_edges[:-1] + gaia_edges[1:])
+    gaia_widths = np.diff(gaia_edges)
+    gaia_counts, _ = np.histogram(gaia_magnitudes, bins=gaia_edges)
+    gaia_density = gaia_counts / (gaia_area * gaia_widths)
+    gaia_sigma = np.sqrt(gaia_counts) / (gaia_area * gaia_widths)
 
     q1_expected = np.asarray([
         float(item["expected_stars"]) for item in q1_counts["bins"]
@@ -1167,19 +1211,31 @@ def _fit_straight_star_magnitude_law(
         for item, width in zip(q1_counts["bins"], widths, strict=True)
     ], dtype=np.float64)
 
-    gaia_region = fit_straight_region(
-        centres, gaia_density, gaia_sigma,
-        minimum_span_mag=2.5, minimum_r_squared=0.99,
-    )
-    q1_region = fit_straight_region(
-        centres, q1_density, q1_sigma,
-        minimum_span_mag=2.5, minimum_r_squared=0.99,
-    )
+    try:
+        gaia_region = fit_straight_region(
+            gaia_centres, gaia_density, gaia_sigma,
+            minimum_span_mag=2.5, minimum_r_squared=0.99,
+        )
+    except ValueError as exc:
+        raise ValueError(
+            "Gaia G_AB counts have no 2.5-mag straight region at 0.5-mag "
+            "resolution with R² >= 0.99"
+        ) from exc
+    try:
+        q1_region = fit_straight_region(
+            centres, q1_density, q1_sigma,
+            minimum_span_mag=2.5, minimum_r_squared=0.99,
+        )
+    except ValueError as exc:
+        raise ValueError(
+            "Q1 PHZ_STAR_PROB VIS counts have no 2.5-mag straight region "
+            "at 0.1-mag resolution with R² >= 0.99"
+        ) from exc
     gaia_slice = slice(gaia_region.start, gaia_region.stop)
     q1_slice = slice(q1_region.start, q1_region.stop)
     slope, intercepts, covariance, r_squared, rms = fit_shared_slope([
         (
-            centres[gaia_slice], gaia_density[gaia_slice],
+            gaia_centres[gaia_slice], gaia_density[gaia_slice],
             gaia_sigma[gaia_slice],
         ),
         (
@@ -1210,14 +1266,16 @@ def _fit_straight_star_magnitude_law(
     diagnostics = {
         "gaia": {
             "band": "Gaia G_AB",
-            "fit_bright": float(centres[gaia_region.start]),
-            "fit_faint": float(centres[gaia_region.stop - 1]),
+            "bin_width_mag": _GAIA_COUNT_FIT_BIN_WIDTH_MAG,
+            "fit_bright": float(gaia_centres[gaia_region.start]),
+            "fit_faint": float(gaia_centres[gaia_region.stop - 1]),
             "r_squared": float(gaia_region.r_squared),
             "rms_log10_density": float(gaia_region.rms),
             "intercept": float(intercepts[0]),
         },
         "q1": {
             "band": "Euclid VIS",
+            "bin_width_mag": float(np.median(widths)),
             "fit_bright": float(centres[q1_region.start]),
             "fit_faint": float(centres[q1_region.stop - 1]),
             "r_squared": float(q1_region.r_squared),
@@ -1478,8 +1536,8 @@ def _fit_star_population_latent() -> dict[str, Any]:
         if likelihood is None:
             continue
         posterior = _softmax(np.log(np.maximum(node_weights[bin_index], 1e-20)) + likelihood)
-        latent_base = posterior @ locus + diagnostic_rng.multivariate_normal(
-            np.zeros(3), intrinsic_covariance,
+        latent_base = posterior @ locus + _draw_zero_mean_gaussian(
+            diagnostic_rng, intrinsic_covariance,
         )
         latent_colors.append(latent_base)
         latent_weights.append(float(record["probability"]))
@@ -1499,8 +1557,8 @@ def _fit_star_population_latent() -> dict[str, Any]:
                 predictive_covariance = _positive_semidefinite_covariance(
                     intrinsic_covariance + measurement_covariance, floor=0.0,
                 )
-                predictive_noise = diagnostic_rng.multivariate_normal(
-                    np.zeros(3), predictive_covariance,
+                predictive_noise = _draw_zero_mean_gaussian(
+                    diagnostic_rng, predictive_covariance,
                 )
                 predictive_colors.append(
                     latent_base + predictive_noise
@@ -1667,7 +1725,7 @@ def _fit_star_population_latent() -> dict[str, Any]:
                     "area_deg2", "fields", "random_centres",
                 )
             },
-            "fit_version": "q1-phz-gaia-shared-straight-counts-latent-locus-v4",
+            "fit_version": "q1-phz-gaia-shared-straight-counts-latent-locus-v5",
             "selection": {
                 "bright_limit": bright,
                 "faint_limit": faint,
@@ -1705,16 +1763,19 @@ def _fit_star_population_latent() -> dict[str, Any]:
         if str(row.get("central_selected_star") or "0").strip() != "1"
         and (value := _finite(row.get("g_mag"))) is not None
     ], dtype=np.float64)
-    gaia_counts, _ = np.histogram(gaia_g_ab, bins=magnitude_bins)
+    gaia_fit = magnitude_fit_diagnostics["gaia"]
+    gaia_bin_width = float(gaia_fit["bin_width_mag"])
+    gaia_edges = _fixed_width_edges(bright, faint, gaia_bin_width)
+    gaia_centres = 0.5 * (gaia_edges[:-1] + gaia_edges[1:])
+    gaia_counts, _ = np.histogram(gaia_g_ab, bins=gaia_edges)
     gaia_density = (
         gaia_counts.astype(np.float64)
         / float(meta["area_arcmin2"])
-        / np.diff(magnitude_bins)
+        / np.diff(gaia_edges)
     )
-    gaia_fit = magnitude_fit_diagnostics["gaia"]
     gaia_fitted_density = np.power(
         10.0,
-        magnitude_law.slope * magnitude_centres + float(gaia_fit["intercept"]),
+        magnitude_law.slope * gaia_centres + float(gaia_fit["intercept"]),
     )
     latent_array = np.asarray(latent_colors)
     latent_weight_array = np.asarray(latent_weights)
@@ -1729,6 +1790,7 @@ def _fit_star_population_latent() -> dict[str, Any]:
                 counts / area / np.diff(magnitude_bins)
             ).tolist(),
             "fitted": fitted_vis_density.tolist(),
+            "gaia_x": gaia_centres.tolist(),
             "gaia_observed": gaia_density.tolist(),
             "gaia_fitted": gaia_fitted_density.tolist(),
             "fit_ranges": {

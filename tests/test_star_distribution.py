@@ -211,8 +211,9 @@ def test_stellar_density_comparison_uses_area_density_and_all_six_colours(
     assert result["gaia_count"] == 2
     assert result["gaia_native_g_count"] == 1
     magnitude = result["parameters"]["vis"]
-    bin_width = magnitude["x"][1] - magnitude["x"][0]
-    assert sum(magnitude["gaia"]) * bin_width == pytest.approx(0.05)
+    gaia_bin_width = magnitude["gaia_x"][1] - magnitude["gaia_x"][0]
+    assert gaia_bin_width == pytest.approx(0.5)
+    assert sum(magnitude["gaia"]) * gaia_bin_width == pytest.approx(0.05)
     assert magnitude["gaia_fit"] is not None
     assert magnitude["fit_ranges"] == {
         "gaia": [12.0, 18.0], "q1": [18.0, 23.0],
@@ -314,6 +315,7 @@ def test_checked_in_star_bundle_matches_current_api_contract():
     assert "color_sample" in bundle
     assert "/api/star-distribution/query" in bundle
     assert "Open Query MER + PHZ" not in bundle
+    assert "Gaia shape sample at 0.5 mag" in bundle
     assert "availability.euclid_catalog" not in bundle
 
 
@@ -393,6 +395,10 @@ def test_star_page_uses_its_own_stellar_query():
 
     assert '"/api/star-distribution/query"' in source
     assert "Query stars · MER + PHZ + Gaia" in source
+    assert "Fit stellar prior from cached data" in source
+    assert "Q1 at 0.1-mag" in source
+    assert "Gaia shape sample at 0.5 mag" in source
+    assert "Q1 0.1 mag · Gaia fit 0.5 mag" in source
     assert 'to="/galaxy-distributions"' not in source
     assert "No galaxy selection is used" in source
     assert "Random Euclid population cones" not in source
@@ -441,4 +447,4 @@ def test_cached_stellar_fit_does_not_query_gaia_or_require_euclid_login(monkeypa
 
     assert response.status_code == 200
     assert response.get_json() == {"ok": True, "job_id": "gaia-job"}
-    assert calls == ["star distribution: fit cached stellar colours"]
+    assert calls == ["star distribution: fit cached stellar prior"]

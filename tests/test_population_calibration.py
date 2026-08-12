@@ -33,6 +33,8 @@ from euclid_polish.web.helpers.q1_star_counts import (
     q1_star_counts_path,
 )
 from euclid_polish.web.helpers.star_population import (
+    _GAIA_G_AB_MINUS_VEGA_MAG,
+    _fit_straight_star_magnitude_law,
     _weighted_summary,
     fit_star_population,
 )
@@ -128,12 +130,12 @@ def test_stale_gaia_count_artifact_cannot_remain_active(tmp_path, monkeypatch):
 def test_fixed_q1_stellar_colour_artifact_can_activate(tmp_path, monkeypatch):
     monkeypatch.setattr(Config, "DATA_DIR", str(tmp_path))
     candidate = {
-        "version": 5,
+        "version": 6,
         "valid": True,
         "fingerprint": "b" * 64,
         "fingerprint_inputs": {
             "fit_version": (
-                "q1-phz-gaia-shared-straight-counts-latent-locus-v4"
+                "q1-phz-gaia-shared-straight-counts-latent-locus-v5"
             ),
         },
     }
@@ -145,6 +147,50 @@ def test_fixed_q1_stellar_colour_artifact_can_activate(tmp_path, monkeypatch):
 
     assert active["active"] is True
     assert star_state()["is_active"] is True
+
+
+def test_gaia_shape_fit_rebins_sparse_point_one_mag_counts():
+    edges = np.linspace(12.0, 25.0, 131)
+    q1_bins = []
+    for lower, upper in zip(edges[:-1], edges[1:], strict=True):
+        centre = 0.5 * (lower + upper)
+        expected = 50.0 * 10.0 ** (0.15 * (centre - 12.0))
+        q1_bins.append({
+            "expected_stars": expected,
+            "classified_rows": int(round(2.0 * expected)),
+            "classification_variance": 0.1 * expected,
+        })
+
+    # Strong within-0.5-mag structure makes the raw 0.1-mag histogram fail a
+    # straightness gate, while each five-bin sum follows one clean count law.
+    gaia_rows = []
+    subbin_weights = np.asarray([0.2, 1.8, 0.3, 1.7, 1.0])
+    for group, group_centre in enumerate(np.arange(12.25, 25.0, 0.5)):
+        group_total = int(round(20.0 * 10.0 ** (0.15 * (group_centre - 12.0))))
+        counts = np.maximum(
+            1, np.rint(group_total * subbin_weights / subbin_weights.sum()),
+        ).astype(int)
+        for subbin, count in enumerate(counts):
+            g_ab = 12.05 + 0.5 * group + 0.1 * subbin
+            gaia_rows.extend({
+                "g_mag": str(g_ab - _GAIA_G_AB_MINUS_VEGA_MAG),
+                "central_selected_star": "0",
+            } for _ in range(int(count)))
+
+    law, diagnostics = _fit_straight_star_magnitude_law(
+        gaia_rows,
+        {"area_arcmin2": 100.0},
+        {
+            "edges": edges.tolist(),
+            "bins": q1_bins,
+            "footprint_area_arcmin2": Q1_DEEP_FIELD_AREA_ARCMIN2,
+        },
+    )
+
+    assert law.slope == pytest.approx(0.15, abs=0.01)
+    assert diagnostics["gaia"]["bin_width_mag"] == 0.5
+    assert diagnostics["gaia"]["r_squared"] >= 0.99
+    assert diagnostics["q1"]["bin_width_mag"] == pytest.approx(0.1)
 
 
 def test_density_response_is_reproducible_and_rejects_wrong_transfer():
@@ -516,6 +562,8 @@ def test_star_fit_uses_q1_phz_counts_and_gaia_only_for_correlated_colors(
     assert magnitude["mag_bright"] == 12.0
     assert magnitude["mag_faint"] == 25.0
     assert magnitude["phz_expected_count"] == pytest.approx(expected_total)
+    assert magnitude["fit_diagnostics"]["gaia"]["bin_width_mag"] == 0.5
+    assert magnitude["fit_diagnostics"]["q1"]["bin_width_mag"] == pytest.approx(0.1)
     assert magnitude["expected_count_per_bin"] == pytest.approx([
         item["expected_stars"] for item in q1_bins
     ])
@@ -524,8 +572,9 @@ def test_star_fit_uses_q1_phz_counts_and_gaia_only_for_correlated_colors(
     )
     density = fit["diagnostics"]["stellar_density_by_magnitude"]
     assert density["x_label"] == "native survey magnitude [AB]"
-    assert len(density["gaia_observed"]) == len(density["x"])
-    assert len(density["gaia_fitted"]) == len(density["x"])
+    assert len(density["gaia_observed"]) == len(density["gaia_x"])
+    assert len(density["gaia_fitted"]) == len(density["gaia_x"])
+    assert density["gaia_x"][1] - density["gaia_x"][0] == pytest.approx(0.5)
     assert density["fit_ranges"]["q1"][0] >= 12.0
     assert density["fit_ranges"]["gaia"][1] <= 25.0
     assert density["observed"] == pytest.approx([

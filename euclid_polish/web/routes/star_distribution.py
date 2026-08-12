@@ -153,7 +153,7 @@ def register(app):
             }), 400
 
         def run(cap):
-            cap.tick(0, 1, "fit stellar distribution from cached colours")
+            cap.tick(0, 1, "fit stellar counts and colours from cached data")
             fit = fit_star_population()
             cap.tick(1, 1, "stellar distribution ready")
             cap.write(
@@ -167,7 +167,7 @@ def register(app):
         return jsonify({
             "ok": True,
             "job_id": REGISTRY.spawn(
-                label="star distribution: fit cached stellar colours",
+                label="star distribution: fit cached stellar prior",
                 target=run,
             ),
         })

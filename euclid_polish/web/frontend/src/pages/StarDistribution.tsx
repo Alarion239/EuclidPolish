@@ -17,6 +17,7 @@ type DensityParameter = {
   x: number[];
   x_domain: [number, number];
   euclid: number[];
+  gaia_x?: number[];
   gaia: number[];
   model: number[];
   point_sources?: number[] | null;
@@ -367,7 +368,7 @@ function StellarDensityComparison({ distribution }: { distribution: Distribution
               <header>
                 <h3>{parameter.label}</h3>
                 <span>{key === "vis"
-                  ? "straight in log density · vertical guides mark fitted regions"
+                  ? "Q1 0.1 mag · Gaia fit 0.5 mag · guides mark fitted regions"
                   : "log density · no simulated noise"}</span>
               </header>
               <Plot
@@ -383,9 +384,9 @@ function StellarDensityComparison({ distribution }: { distribution: Distribution
                     color: categorical(1), width: 2.2,
                   }] : []),
                   { x: parameter.x, y: logDensity(parameter.euclid), color: C.mean, width: 2.2 },
-                  { x: parameter.x, y: logDensity(parameter.gaia), color: C.comb, width: 2.2 },
+                  { x: parameter.gaia_x ?? parameter.x, y: logDensity(parameter.gaia), color: C.comb, width: 2.2 },
                   ...(parameter.gaia_fit ? [{
-                    x: parameter.x, y: logDensity(parameter.gaia_fit),
+                    x: parameter.gaia_x ?? parameter.x, y: logDensity(parameter.gaia_fit),
                     color: C.comb, width: 2.2, dash: [4, 3],
                   }] : []),
                   { x: parameter.x, y: logDensity(parameter.model), color: categorical(3), width: 2.2, dash: [6, 4] },
@@ -539,7 +540,7 @@ export default function StarDistributionPage() {
             <div className="star-query-strip__actions">
               <Button disabled={!q1Counts || !api.color_sample.cached || fit.busy}
                 onClick={() => fit.run("/api/star-distribution/fit", {}, { onDone: refresh })}>
-                {fit.busy ? "Fitting cached colours…" : "Fit cached stellar colours"}
+                {fit.busy ? "Fitting stellar prior…" : "Fit stellar prior from cached data"}
               </Button>
               <Button disabled={!candidate?.valid || activate.busy}
                 onClick={() => activate.run("/api/star-distribution/activate", {}, { onDone: refresh })}>
@@ -550,7 +551,9 @@ export default function StarDistributionPage() {
           <p className="star-query-strip__note">
             The fixed Q1 fields supply a magnitude-stratified colour/temperature sample only.
             They do not set the stellar surface density or magnitude law. The query above is
-            independent of the galaxy workflow; after it completes, fit these stellar caches.
+            independent of the galaxy workflow. The straight count fit keeps Q1 at 0.1-mag
+            resolution and bins the smaller Gaia shape sample at 0.5 mag; after the query
+            completes, fit these stellar caches.
           </p>
           {candidate?.warnings?.[0] && <p className="star-query-strip__note"><strong>Fit note:</strong> {candidate.warnings[0]}</p>}
           {candidate?.coverage_notes?.[0] && <p className="star-query-strip__note"><strong>Coverage:</strong> {candidate.coverage_notes[0]}</p>}

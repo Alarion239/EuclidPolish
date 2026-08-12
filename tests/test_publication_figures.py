@@ -92,6 +92,7 @@ def _star_calibration():
         "diagnostics": {
             "stellar_density_by_magnitude": {
                 "x": [12.0, 18.5, 25.0],
+                "gaia_x": [12.25, 18.75, 24.75],
                 "observed": [0.02, 0.2, 2.0],
                 "fitted": [0.01, 0.1, 1.0],
                 "gaia_observed": [0.03, 0.3, 3.0],

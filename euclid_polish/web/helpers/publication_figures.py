@@ -34,9 +34,11 @@ STAR_PREDICTION = "#d95f02"
 STAR_MEASURED = "#7a3db8"
 
 
-def _xy(payload: Mapping[str, Any], field: str) -> tuple[np.ndarray, np.ndarray]:
+def _xy(
+    payload: Mapping[str, Any], field: str, *, x_field: str = "x",
+) -> tuple[np.ndarray, np.ndarray]:
     """Return finite x/y pairs without turning unavailable bins into zero."""
-    x = np.asarray(payload.get("x", []), dtype=float)
+    x = np.asarray(payload.get(x_field, payload.get("x", [])), dtype=float)
     raw = payload.get(field, [])
     y = np.asarray([np.nan if value is None else value for value in raw], dtype=float)
     count = min(len(x), len(y))
@@ -290,8 +292,12 @@ def render_star_population_calibration(
             x_fit, y_fit, color=STAR_MODEL, linewidth=2.5,
             label="Q1-normalized straight law", zorder=3,
         )
-        x_gaia, y_gaia = _xy(density, "gaia_observed")
-        x_gaia_fit, y_gaia_fit = _xy(density, "gaia_fitted")
+        x_gaia, y_gaia = _xy(
+            density, "gaia_observed", x_field="gaia_x",
+        )
+        x_gaia_fit, y_gaia_fit = _xy(
+            density, "gaia_fitted", x_field="gaia_x",
+        )
         if x_gaia.size:
             ax_density.plot(
                 x_gaia, y_gaia, linestyle="none", marker="s", markersize=4.2,
