@@ -312,22 +312,89 @@ def test_checked_in_star_bundle_matches_current_api_contract():
     bundle = asset.get_data(as_text=True)
     assert asset.status_code == 200
     assert "color_sample" in bundle
+    assert "/api/star-distribution/query" in bundle
+    assert "Open Query MER + PHZ" not in bundle
     assert "availability.euclid_catalog" not in bundle
 
 
-def test_star_page_uses_the_single_galaxy_page_mer_phz_query():
+def test_star_query_requires_euclid_login(monkeypatch):
     from euclid_polish.web.app import create_app
+    from euclid_polish.web.routes import star_distribution as routes
+
+    monkeypatch.setattr(routes.euclid_session, "catalog", lambda: None)
+
+    response = create_app().test_client().post("/api/star-distribution/query")
+
+    assert response.status_code == 400
+    assert "Log in" in response.get_json()["error"]
+
+
+def test_star_query_runs_only_stellar_counts_and_colours(monkeypatch):
+    from euclid_polish.web.app import create_app
+    from euclid_polish.web.routes import star_distribution as routes
+
+    events = []
+
+    class Catalog:
+        @staticmethod
+        def relogin():
+            return True
+
+    class Capture:
+        def tick(self, *_args):
+            pass
+
+        def write(self, _message):
+            pass
+
+    monkeypatch.setattr(routes.euclid_session, "catalog", lambda: Catalog())
+    monkeypatch.setattr(routes, "q1_stellar_color_query_count", lambda: 29)
+    monkeypatch.setattr(
+        routes,
+        "query_q1_phz_star_counts",
+        lambda **_kwargs: events.append("star counts") or {
+            "expected_stars": 42.0,
+            "footprint_area_deg2": 63.1,
+        },
+    )
+    monkeypatch.setattr(
+        routes,
+        "query_q1_stellar_color_sample",
+        lambda **_kwargs: events.append("star colours") or {
+            "euclid": {"rows": 20},
+            "gaia": {"rows": 30},
+        },
+    )
+
+    def spawn(*, label, target):
+        events.append(label)
+        result = target(Capture())
+        assert set(result) == {"q1_counts", "color_sample"}
+        return "star-query-job"
+
+    monkeypatch.setattr(routes.REGISTRY, "spawn", spawn)
+
+    response = create_app().test_client().post("/api/star-distribution/query")
+
+    assert response.status_code == 200
+    assert response.get_json() == {"ok": True, "job_id": "star-query-job"}
+    assert events == [
+        "star distribution: MER + PHZ and Gaia queries",
+        "star counts",
+        "star colours",
+    ]
+
+
+def test_star_page_uses_its_own_stellar_query():
     source = (
         Path(__file__).parents[1]
         / "euclid_polish/web/frontend/src/pages/StarDistribution.tsx"
     ).read_text()
 
-    assert create_app().test_client().post(
-        "/api/star-distribution/query-q1-counts"
-    ).status_code == 404
-    assert 'to="/galaxy-distributions"' in source
-    assert "Open Query MER + PHZ" in source
-    assert "/api/star-distribution/query-q1-counts" not in source
+    assert '"/api/star-distribution/query"' in source
+    assert "Query stars · MER + PHZ + Gaia" in source
+    assert 'to="/galaxy-distributions"' not in source
+    assert "No galaxy selection is used" in source
     assert "Random Euclid population cones" not in source
 
 

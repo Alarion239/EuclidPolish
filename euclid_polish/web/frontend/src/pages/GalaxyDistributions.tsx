@@ -82,16 +82,6 @@ type Payload = {
     magnitude_bins: unknown[];
     radius_bins: unknown[];
   };
-  q1_stars?: null | {
-    expected_stars: number;
-    expected_point_sources: number;
-    bins: unknown[];
-  };
-  stellar_colors?: {
-    cached: boolean;
-    euclid?: null | { rows?: number; field_count?: number };
-    gaia?: null | { rows?: number; field_count?: number };
-  };
   calibration: {
     candidate: null | {
       valid?: boolean;
@@ -556,8 +546,8 @@ export default function GalaxyDistributionsPage() {
 
     <Card className="galaxy-q1-counts galaxy-actions">
       <CardHead
-        title="Q1 MER + PHZ population workflow"
-        sub="One run queries every galaxy-brightness, Sérsic-radius, and stellar magnitude bracket, fits the galaxy model, and rebuilds all affected plots."
+        title="Q1 MER + PHZ galaxy workflow"
+        sub="One run queries galaxy-brightness and Sérsic-radius brackets, fits the galaxy model, and rebuilds the galaxy plots."
       />
       <CardBody>
         <div className="galaxy-q1-counts__content">
@@ -567,10 +557,6 @@ export default function GalaxyDistributionsPage() {
             <Stat k="bin width" v={`${(api.q1_counts?.bin_width ?? 0.1).toFixed(1)} mag`} />
             <Stat k="checkpoints" v={`${api.q1_counts?.completed_queries ?? api.q1_counts?.query_count ?? 0}/${api.q1_counts?.total_queries ?? 560}`} />
             <Stat k="Rₑ brackets" v={`${api.q1_radius?.completed_queries ?? 0}/${api.q1_radius?.total_queries ?? 170}`} />
-            <Stat k="stellar bins" v={(api.q1_stars?.bins.length ?? 0).toLocaleString()} />
-            <Stat k="stellar colours" v={api.stellar_colors?.cached
-              ? `${(api.stellar_colors.euclid?.rows ?? 0).toLocaleString()} matched candidates`
-              : "not queried"} />
             <Stat k="passes" v={`${api.q1_counts?.phases_completed ?? 0}/${api.q1_counts?.phase_count ?? 5}`} />
             <Stat k="F₁ PHZ weight" v={compact(api.q1_counts?.apertures.f1.expected_galaxies)} />
             <Stat k="F₄ PHZ weight" v={compact(api.q1_counts?.apertures.f4.expected_galaxies)} />
@@ -601,7 +587,7 @@ export default function GalaxyDistributionsPage() {
                 { onDone: refresh },
               )}
             >
-              {q1Query.busy ? "Querying + fitting populations…" : "Query MER + PHZ"}
+              {q1Query.busy ? "Querying + fitting galaxies…" : "Query MER + PHZ"}
             </Button>
             <Button variant="ghost" onClick={resource.reload}>Refresh view</Button>
             {!api.authenticated && <NavLink className="ui-btn" to="/catalog">Log in to Euclid archive</NavLink>}
@@ -611,9 +597,11 @@ export default function GalaxyDistributionsPage() {
           <strong>Single acquisition path:</strong> exact 0.1-mag bins are queried at 0.5-mag spacing first,
           then revisited at offsets of 0.1, 0.2, 0.3, and 0.4 mag. Each F₁–F₄ result
           and aggregate Sérsic-R<sub>e</sub> result is stored immediately and skipped on later runs.
-          The same button also refreshes Q1 stellar magnitude brackets and the fixed-field,
-          magnitude-stratified Gaia–Euclid colour sample used on Star distributions. Both
-          density fits use aggregate brackets rather than downloaded object catalogues.
+          This action applies only the galaxy selection: POINT_LIKE_FLAG IS NULL and
+          PHZ_GAL_PROB ≥ 0.5. It never refreshes star caches.
+          Stellar counts and Gaia–Euclid colours have their own query action on Star
+          distribution. The galaxy density fit uses aggregate brackets rather than a
+          downloaded object catalogue.
         </p>
         <JobProgressView job={q1Query.job} error={q1Query.error} />
       </CardBody>

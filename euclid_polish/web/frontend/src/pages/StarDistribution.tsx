@@ -1,4 +1,4 @@
-import { NavLink } from "react-router-dom";
+import { useEffect } from "react";
 import Plot, { type Tick } from "../charts/Plot";
 import { C, categorical } from "../colors";
 import { useResource } from "../hooks";
@@ -451,12 +451,19 @@ function CorrelationPlot({ distribution, colorKey }: {
 
 export default function StarDistributionPage() {
   const resource = useResource<ApiPayload>("/api/star-distribution", [], { ttl: 10_000 });
+  const query = useJob();
   const fit = useJob();
   const activate = useJob();
   const api = resource.data;
   const refresh = (job: { status: string }) => {
     if (job.status !== "failed") resource.reload();
   };
+  useEffect(() => {
+    if (!query.busy) return;
+    resource.reload();
+    const timer = window.setInterval(resource.reload, 1500);
+    return () => window.clearInterval(timer);
+  }, [query.busy, resource.reload]);
 
   if (resource.loading && !api) {
     return <Page><Empty><Spinner /> reading matched stellar colours…</Empty></Page>;
@@ -481,7 +488,7 @@ export default function StarDistributionPage() {
 
       <Card className="star-query-strip">
         <CardHead title="Q1 point-source and stellar counts"
-          sub="Queried by the single MER + PHZ workflow · aggregate Q1 normalization" />
+          sub="Independent stellar MER + PHZ brackets and fixed-field Gaia colours" />
         <CardBody>
           <div className="star-query-strip__content">
             <div className="star-query-strip__stats">
@@ -493,17 +500,24 @@ export default function StarDistributionPage() {
               <Stat k="bins" v={(q1Counts?.bins.length ?? 0).toLocaleString()} />
             </div>
             <div className="star-query-strip__actions">
-              <NavLink className="ui-btn ui-btn--primary" to="/galaxy-distributions">
-                Open Query MER + PHZ
-              </NavLink>
+              <Button variant="primary" disabled={!api.authenticated || query.busy}
+                onClick={() => query.run(
+                  "/api/star-distribution/query", {}, { onDone: refresh },
+                )}>
+                {query.busy ? "Querying stars…" : "Query stars · MER + PHZ + Gaia"}
+              </Button>
             </div>
           </div>
           <p className="star-query-strip__note">
             <strong>Selection:</strong> 0.1-mag VIS PSF bins, POINT_LIKE_PROB ≥ 0.9,
             showing both Σ POINT_LIKE_PROB and Σ PHZ_STAR_PROB divided by the 63.1 deg² Q1 footprint.
-            The Galaxy distributions button refreshes these brackets together with galaxy
-            brightness and Sérsic-R<sub>e</sub> brackets.
+            The fixed-field colour query uses the same stellar point-like threshold and Gaia
+            matches. No galaxy selection is used by this action.
           </p>
+          {!api.authenticated && <p className="star-query-strip__note">
+            Log in to the Euclid archive on Catalog before running this query.
+          </p>}
+          <JobProgressView job={query.job} error={query.error} />
         </CardBody>
       </Card>
 
@@ -535,8 +549,8 @@ export default function StarDistributionPage() {
           </div>
           <p className="star-query-strip__note">
             The fixed Q1 fields supply a magnitude-stratified colour/temperature sample only.
-            They do not set the stellar surface density or magnitude law. This page launches no
-            query; the one Query MER + PHZ action refreshes every required population cache.
+            They do not set the stellar surface density or magnitude law. The query above is
+            independent of the galaxy workflow; after it completes, fit these stellar caches.
           </p>
           {candidate?.warnings?.[0] && <p className="star-query-strip__note"><strong>Fit note:</strong> {candidate.warnings[0]}</p>}
           {candidate?.coverage_notes?.[0] && <p className="star-query-strip__note"><strong>Coverage:</strong> {candidate.coverage_notes[0]}</p>}
@@ -573,7 +587,7 @@ export default function StarDistributionPage() {
         </section>
       ) : (
         <Empty>
-          Press Query MER + PHZ on Galaxy distributions, then fit the cached colours here
+          Query the stellar MER + PHZ and Gaia data above, then fit the cached colours
           to create the six matched-colour plots.
         </Empty>
       )}

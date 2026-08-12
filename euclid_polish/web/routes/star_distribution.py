@@ -14,10 +14,13 @@ from euclid_polish.web.helpers.publication_figures import (
     render_star_population_calibration,
 )
 from euclid_polish.web.helpers.q1_star_counts import (
+    query_q1_phz_star_counts,
     read_q1_phz_star_counts,
 )
 from euclid_polish.web.helpers.q1_stellar_colors import (
+    q1_stellar_color_query_count,
     q1_stellar_color_sample_state,
+    query_q1_stellar_color_sample,
 )
 from euclid_polish.web.helpers.star_population import (
     fit_star_population,
@@ -75,6 +78,62 @@ def register(app):
             "q1_counts": _q1_counts_state(),
         })
 
+    @app.post("/api/star-distribution/query")
+    def api_star_distribution_query():
+        catalog = euclid_session.catalog()
+        if catalog is None:
+            return jsonify({
+                "ok": False,
+                "error": "Log in to the Euclid archive on the Catalog page first.",
+            }), 400
+
+        def run(cap):
+            count_total = 260
+            color_total = q1_stellar_color_query_count()
+            grand_total = count_total + color_total
+
+            def stage(offset, size):
+                def report(done, total, label):
+                    fraction = (
+                        0.0 if total <= 0
+                        else min(max(done / total, 0.0), 1.0)
+                    )
+                    cap.tick(
+                        offset + int(round(size * fraction)),
+                        grand_total,
+                        label,
+                    )
+                return report
+
+            counts = query_q1_phz_star_counts(
+                relogin=catalog.relogin,
+                progress=stage(0, count_total),
+            )
+            colors = query_q1_stellar_color_sample(
+                relogin=catalog.relogin,
+                progress=stage(count_total, color_total),
+            )
+            cap.tick(grand_total, grand_total, "stellar query caches ready")
+            cap.write(
+                f"Q1 stellar counts: {counts['expected_stars']:.1f} expected "
+                f"PHZ stars over {counts['footprint_area_deg2']:.1f} deg²\n"
+            )
+            cap.write(
+                "Fixed-Q1 Gaia-Euclid colour sample: "
+                f"{colors['euclid']['rows']} Euclid rows and "
+                f"{colors['gaia']['rows']} Gaia rows; "
+                "density still comes only from Q1 magnitude brackets\n"
+            )
+            return {"q1_counts": counts, "color_sample": colors}
+
+        return jsonify({
+            "ok": True,
+            "job_id": REGISTRY.spawn(
+                label="star distribution: MER + PHZ and Gaia queries",
+                target=run,
+            ),
+        })
+
     @app.route("/api/star-distribution/fit", methods=["POST"])
     def api_star_distribution_fit():
         if not q1_stellar_color_sample_state().get("cached"):
@@ -82,7 +141,7 @@ def register(app):
                 "ok": False,
                 "error": (
                     "No current fixed-Q1 Euclid-Gaia colour sample is cached. "
-                    "Press Query MER + PHZ on Galaxy Distributions first."
+                    "Query the stellar MER + PHZ and Gaia data on this page first."
                 ),
             }), 400
         try:

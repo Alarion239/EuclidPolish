@@ -24,15 +24,6 @@ from euclid_polish.web.helpers.q1_galaxy_radius_statistics import (
     query_q1_galaxy_radius_statistics,
     read_q1_galaxy_radius_statistics,
 )
-from euclid_polish.web.helpers.q1_star_counts import (
-    query_q1_phz_star_counts,
-    read_q1_phz_star_counts,
-)
-from euclid_polish.web.helpers.q1_stellar_colors import (
-    q1_stellar_color_query_count,
-    q1_stellar_color_sample_state,
-    query_q1_stellar_color_sample,
-)
 from euclid_polish.web.jobs import REGISTRY
 
 
@@ -46,13 +37,6 @@ def _q1_counts_state():
 def _q1_radius_state():
     try:
         return read_q1_galaxy_radius_statistics()
-    except ValueError:
-        return None
-
-
-def _q1_star_state():
-    try:
-        return read_q1_phz_star_counts()
     except ValueError:
         return None
 
@@ -93,8 +77,6 @@ def register(app):
             "authenticated": euclid_session.is_authenticated(),
             "q1_counts": _q1_counts_state(),
             "q1_radius": _q1_radius_state(),
-            "q1_stars": _q1_star_state(),
-            "stellar_colors": q1_stellar_color_sample_state(),
             "calibration": joint_galaxy_state(),
         })
 
@@ -108,17 +90,12 @@ def register(app):
             }), 400
 
         def run(cap):
-            # One acquisition action owns every population query.  Each
-            # helper still checkpoints its own versioned aggregate artifact.
+            # This action owns only galaxy-selected aggregate queries.  Star
+            # counts and colours have a separate action on Star Distribution.
             aperture_total = 560
             radius_total = 170
-            star_total = 260
-            stellar_color_total = q1_stellar_color_query_count()
             fit_steps = 3
-            grand_total = (
-                aperture_total + radius_total + star_total
-                + stellar_color_total + fit_steps
-            )
+            grand_total = aperture_total + radius_total + fit_steps
 
             def stage(offset, size):
                 def report(done, total, label):
@@ -134,23 +111,14 @@ def register(app):
                 relogin=catalog.relogin,
                 progress=stage(aperture_total, radius_total),
             )
-            stars = query_q1_phz_star_counts(
-                relogin=catalog.relogin,
-                progress=stage(aperture_total + radius_total, star_total),
-            )
-            color_offset = aperture_total + radius_total + star_total
-            stellar_colors = query_q1_stellar_color_sample(
-                relogin=catalog.relogin,
-                progress=stage(color_offset, stellar_color_total),
-            )
-            fit_offset = color_offset + stellar_color_total
+            fit_offset = aperture_total + radius_total
             cap.tick(fit_offset, grand_total, "fit Q1 VIS 2FWHM straight line")
             brightness_fit = fit_q1_galaxy_aperture_counts()
             cap.tick(fit_offset + 1, grand_total, "fit aggregate Sersic R_e relation")
             joint_fit = fit_euclid_joint_galaxy_candidate()
             cap.tick(fit_offset + 2, grand_total, "rebuild galaxy-distribution plots")
             plots = build_galaxy_distributions()
-            cap.tick(grand_total, grand_total, "MER + PHZ populations ready")
+            cap.tick(grand_total, grand_total, "MER + PHZ galaxy population ready")
             cap.write(
                 f"Q1 MER + PHZ galaxy brightness ready from "
                 f"VIS {result['bright']:.1f} to {result['faint']:.1f}: "
@@ -164,24 +132,12 @@ def register(app):
                 "brackets; no object rows or random field sampling\n"
             )
             cap.write(
-                f"Q1 stellar counts: {stars['expected_stars']:.1f} expected "
-                f"PHZ stars over {stars['footprint_area_deg2']:.1f} deg²\n"
-            )
-            cap.write(
-                "Fixed-Q1 Gaia-Euclid colour sample: "
-                f"{stellar_colors['euclid']['rows']} Euclid rows and "
-                f"{stellar_colors['gaia']['rows']} Gaia rows; "
-                "density still comes only from Q1 magnitude brackets\n"
-            )
-            cap.write(
                 f"Joint galaxy candidate {joint_fit['fingerprint'][:12]}… ready; "
                 "review the plots before activation\n"
             )
             return {
                 "galaxy_counts": result,
                 "galaxy_radius": radii,
-                "star_counts": stars,
-                "stellar_colors": stellar_colors,
                 "brightness_fit": brightness_fit,
                 "joint_galaxy_fit": joint_fit,
                 "plots": {"version": plots["version"]},
@@ -190,10 +146,7 @@ def register(app):
         return jsonify({
             "ok": True,
             "job_id": REGISTRY.spawn(
-                label=(
-                    "population distributions: all MER + PHZ queries "
-                    "and galaxy fits"
-                ),
+                label="galaxy distributions: MER + PHZ queries and fits",
                 target=run,
             ),
         })

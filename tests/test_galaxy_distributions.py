@@ -431,8 +431,11 @@ def test_status_route_returns_plot_payload(monkeypatch):
     response = app.test_client().get("/api/galaxy-distributions")
 
     assert response.status_code == 200
-    assert response.get_json()["stale"] is False
-    assert response.get_json()["authenticated"] is True
+    payload = response.get_json()
+    assert payload["stale"] is False
+    assert payload["authenticated"] is True
+    assert "q1_stars" not in payload
+    assert "stellar_colors" not in payload
 
 
 def test_recover_phz_route_is_removed():
@@ -457,7 +460,7 @@ def test_q1_galaxy_query_requires_login(monkeypatch):
     assert "Log in" in response.get_json()["error"]
 
 
-def test_query_mer_phz_runs_all_population_brackets_and_galaxy_fits(monkeypatch):
+def test_query_mer_phz_runs_only_galaxy_brackets_and_fits(monkeypatch):
     app = Flask(__name__)
     events = []
 
@@ -491,21 +494,6 @@ def test_query_mer_phz_runs_all_population_brackets_and_galaxy_fits(monkeypatch)
         },
     )
     monkeypatch.setattr(
-        routes,
-        "query_q1_phz_star_counts",
-        lambda **_kwargs: events.append("stars") or {
-            "expected_stars": 42.0, "footprint_area_deg2": 63.1,
-        },
-    )
-    monkeypatch.setattr(routes, "q1_stellar_color_query_count", lambda: 29)
-    monkeypatch.setattr(
-        routes,
-        "query_q1_stellar_color_sample",
-        lambda **_kwargs: events.append("stellar colours") or {
-            "euclid": {"rows": 20}, "gaia": {"rows": 30},
-        },
-    )
-    monkeypatch.setattr(
         routes, "fit_q1_galaxy_aperture_counts",
         lambda: events.append("brightness fit") or {"apertures": {"f2": {}}},
     )
@@ -532,10 +520,9 @@ def test_query_mer_phz_runs_all_population_brackets_and_galaxy_fits(monkeypatch)
 
     assert response.status_code == 200
     assert response.get_json()["job_id"] == "all-mer-phz"
-    assert events[:7] == [
-        "population distributions: all MER + PHZ queries and galaxy fits",
-        "galaxy brightness", "galaxy radius", "stars", "stellar colours",
-        "brightness fit", "joint fit",
+    assert events[:5] == [
+        "galaxy distributions: MER + PHZ queries and fits",
+        "galaxy brightness", "galaxy radius", "brightness fit", "joint fit",
     ]
     assert events[-1] == "plots"
 
@@ -599,7 +586,7 @@ def test_galaxy_distribution_page_is_registered_in_spa():
     assert 'id="root"' in response.get_data(as_text=True)
 
 
-def test_galaxy_distribution_controls_use_one_progressive_query_action():
+def test_galaxy_distribution_controls_use_one_galaxy_query_action():
     source = (
         Path(__file__).parents[1]
         / "euclid_polish/web/frontend/src/pages/GalaxyDistributions.tsx"
@@ -614,7 +601,10 @@ def test_galaxy_distribution_controls_use_one_progressive_query_action():
     assert "Fit cached aperture curves" not in source
     assert '"/api/galaxy-distributions/activate"' in source
     assert "Rₑ brackets" in source
-    assert "stellar bins" in source
+    assert "stellar bins" not in source
+    assert "stellar colours" not in source
+    assert "POINT_LIKE_FLAG IS NULL" in source
+    assert "never refreshes star caches" in source
     assert "Joint brightness–radius relation" in source
     assert "observed_mean_log10_arcsec" in source
     assert 'label="random cones"' not in source
