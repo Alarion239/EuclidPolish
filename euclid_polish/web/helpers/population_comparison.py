@@ -27,15 +27,13 @@ from euclid_polish.config import Config
 from euclid_polish.photometry import electrons_to_ab_mag, uJy_to_ab_mag
 from euclid_polish.population.joint_galaxy import LF_Z_EDGES
 from euclid_polish.sky.generation.source_catalog import read_sources
-from euclid_polish.web import job_config
 from euclid_polish.web.helpers.paths import _sky_records_local_dir
 from euclid_polish.web.helpers.tng_prior import (
     DetectionAccumulator,
     detection_payload,
-    tng_prior_payload,
 )
 
-VERSION = 9
+VERSION = 10
 CATALOG_VERSION = 7
 PHZ_PDF_GRID = np.linspace(0.0, 6.0, 601, dtype=np.float64)
 BANDS = ("VIS", "Y_E", "J_E", "H_E")
@@ -622,29 +620,6 @@ def availability() -> dict[str, Any]:
     )
     inference_fields = 100 * len(inference)
     real_fields = inference_fields + len(overlap)
-    meta = _read_json(euclid_catalog_meta_path())
-    catalog_current = (
-        meta is not None and meta.get("catalog_version") == CATALOG_VERSION
-    )
-    phz_path = euclid_phz_pdf_path()
-    expected_phz_digest = str((meta or {}).get("phz_pdf_sha256") or "")
-    phz_current = False
-    if catalog_current and phz_path.is_file() and len(expected_phz_digest) == 64:
-        try:
-            actual_digest = hashlib.sha256(phz_path.read_bytes()).hexdigest()
-            read_phz_pdf_cache(phz_path)
-            phz_current = actual_digest == expected_phz_digest
-        except (OSError, ValueError):
-            phz_current = False
-    catalog_usable = bool(
-        catalog_current
-        and phz_current
-        and meta.get("rows", 0) > 0
-        and sum(
-            int(meta.get("counts", {}).get(kind, 0))
-            for kind in ("galaxy", "unknown")
-        ) > 0
-    )
     return {
         "synthetic": {
             "fields": synthetic_fields,
@@ -667,18 +642,7 @@ def availability() -> dict[str, Any]:
             "inference_fields": inference_fields,
             "jwst_overlap_fields": len(overlap),
         },
-        "euclid_catalog": {
-            "cached": euclid_catalog_path().is_file() and catalog_usable,
-            "meta": meta if catalog_current else None,
-            "phz_pdf_current": phz_current,
-        },
         "field_area_arcmin2": FIELD_AREA_ARCMIN2,
-        "default_cone": {
-            "ra": DEFAULT_CONE_RA,
-            "dec": DEFAULT_CONE_DEC,
-            "radius_arcmin": DEFAULT_CONE_RADIUS_ARCMIN,
-            "area_arcmin2": math.pi * DEFAULT_CONE_RADIUS_ARCMIN**2,
-        },
     }
 
 
@@ -1538,102 +1502,43 @@ def _tng_colour_conditioning_payload(
     } if result else None
 
 
-def _population_payload(source_csvs: Iterable[Path],
-                        synthetic_field_count: int,
-                        source_detection: dict[str, Any] | None = None,
-                        *,
-                        calibrate_tng_prior: bool = True,
-                        ) -> dict[str, Any]:
+def _population_payload(
+    source_csvs: Iterable[Path], synthetic_field_count: int,
+) -> dict[str, Any]:
     paths = list(source_csvs)
     synthetic_rows = _read_synthetic_sources(paths)
-    euclid_rows, euclid_meta = _read_euclid_sources()
-    dataset_tng_prior = _synthetic_dataset_tng_prior(synthetic_rows)
     population_fields = _source_field_count(paths) or synthetic_field_count
     synthetic_area = population_fields * FIELD_AREA_ARCMIN2
-    euclid_area = float(euclid_meta.get("area_arcmin2", 0.0)) if euclid_meta else 0.0
     return {
         "synthetic": _parameter_payload(
             synthetic_rows, synthetic_area, include_per_field=True
         ),
         "synthetic_field_count": population_fields,
-        "euclid": (
-            _parameter_payload(euclid_rows, euclid_area, include_per_field=False)
-            if euclid_rows and euclid_area > 0 else None
-        ),
-        # Expose the shared parameters as a selection-mismatched diagnostic.
-        # This must remain separate from the matched-detection calibration:
-        # synthetic sidecars are complete truth, while Euclid MER is selected.
-        "shared": (
-            _shared_parameter_payload(
-                synthetic_rows,
-                euclid_rows,
-                synthetic_area,
-                euclid_area,
-            )
-            if euclid_rows and euclid_area > 0 else None
-        ),
-        "phz_probability_relation": _phz_probability_relation(euclid_rows),
-        "tng_colour_conditioning": _tng_colour_conditioning_payload(
-            synthetic_rows
-        ),
-        "tng_prior": (
-            tng_prior_payload(
-                synthetic_rows,
-                euclid_rows,
-                synthetic_area,
-                euclid_area,
-                FIELD_AREA_ARCMIN2,
-                source_detection,
-                dataset_prior=dataset_tng_prior,
-                configured_prior=float(
-                    job_config.load().galaxy_density_arcmin2
-                ),
-            )
-            if calibrate_tng_prior and euclid_rows and euclid_area > 0
-            else None
-        ),
-        "euclid_meta": euclid_meta,
     }
 
 
 def _population_variants(
     synthetic_field_count: int,
-    source_detection: dict[str, Any] | None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Current-prior population and optional legacy-training-inclusive view.
+    """Test/validation source census and optional training-inclusive view.
 
-    Pixel statistics and TNG calibration always use regenerated test+validate
-    fields. The training toggle changes only catalog histograms/counts because
-    the cached training truth was produced with the legacy generator prior.
+    The training toggle changes only generated-source histograms and counts.
+    Survey population fitting is owned by the dedicated distribution pages.
     """
     _, current_paths = _synthetic_paths()
     _, all_paths = _synthetic_paths(include_training=True)
-    current = _population_payload(
-        current_paths,
-        synthetic_field_count,
-        source_detection,
-    )
+    current = _population_payload(current_paths, synthetic_field_count)
     current["synthetic_splits"] = ["test", "validate"]
     current["training_included"] = False
-    current["calibration_splits"] = ["test", "validate"]
 
     if all_paths == current_paths:
         with_training = dict(current)
         with_training["training_included"] = False
         return current, with_training
 
-    with_training = _population_payload(
-        all_paths,
-        synthetic_field_count,
-        source_detection,
-        calibrate_tng_prior=False,
-    )
-    # Never reinterpret the legacy training catalog using the current raw
-    # prior. The calibration remains the matched 200-field test+validate one.
-    with_training["tng_prior"] = current["tng_prior"]
+    with_training = _population_payload(all_paths, synthetic_field_count)
     with_training["synthetic_splits"] = ["train", "test", "validate"]
     with_training["training_included"] = True
-    with_training["calibration_splits"] = ["test", "validate"]
     return current, with_training
 
 
@@ -1647,7 +1552,6 @@ def refresh_population_comparison() -> dict[str, Any] | None:
     )
     population, population_with_training = _population_variants(
         synthetic_field_count,
-        payload.get("fields", {}).get("source_detection"),
     )
     payload["population"] = population
     payload["population_with_training"] = population_with_training
@@ -1705,7 +1609,6 @@ def build_comparison(
 
     population, population_with_training = _population_variants(
         synthetic_acc.count,
-        detections,
     )
     payload = {
         "version": VERSION,

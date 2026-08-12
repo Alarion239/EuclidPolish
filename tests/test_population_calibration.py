@@ -125,6 +125,28 @@ def test_stale_gaia_count_artifact_cannot_remain_active(tmp_path, monkeypatch):
         activate_star_candidate()
 
 
+def test_fixed_q1_stellar_colour_artifact_can_activate(tmp_path, monkeypatch):
+    monkeypatch.setattr(Config, "DATA_DIR", str(tmp_path))
+    candidate = {
+        "version": 5,
+        "valid": True,
+        "fingerprint": "b" * 64,
+        "fingerprint_inputs": {
+            "fit_version": (
+                "q1-phz-gaia-shared-straight-counts-latent-locus-v4"
+            ),
+        },
+    }
+    path = star_candidate_path()
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(candidate))
+
+    active = activate_star_candidate()
+
+    assert active["active"] is True
+    assert star_state()["is_active"] is True
+
+
 def test_density_response_is_reproducible_and_rejects_wrong_transfer():
     densities = [240.0, 280.0, 320.0, 360.0, 400.0]
     fields = [[density / 10 + offset for offset in (-1, 0, 1, 0)]
@@ -368,12 +390,12 @@ def test_star_fit_uses_q1_phz_counts_and_gaia_only_for_correlated_colors(
     gaia = []
     euclid = []
     for index in range(40):
-        cone = index % 2
+        field_index = index % 2
         source_id = str(1000 + index)
         color = 0.5 + 0.05 * index
         g_mag = 16.0 + 0.18 * index
         gaia.append({
-            "source_id": source_id, "cone_index": cone, "ra": 1,
+            "source_id": source_id, "field_index": field_index, "ra": 1,
             "dec": 2, "g_mag": g_mag, "bp_mag": g_mag + color / 2,
             "rp_mag": g_mag - color / 2, "bp_rp": color,
             "temperature_k": 8000 - 150 * index, "extinction_g_mag": 0.1,
@@ -415,7 +437,7 @@ def test_star_fit_uses_q1_phz_counts_and_gaia_only_for_correlated_colors(
             color = 0.5 + 0.01 * ((bin_index + repeat) % 120)
             gaia.append({
                 "source_id": f"extra-{bin_index}-{repeat}",
-                "cone_index": repeat % 12,
+                "field_index": repeat % 3,
                 "ra": 1, "dec": 2, "g_mag": magnitude,
                 "bp_mag": magnitude + color / 2,
                 "rp_mag": magnitude - color / 2,
@@ -425,10 +447,16 @@ def test_star_fit_uses_q1_phz_counts_and_gaia_only_for_correlated_colors(
                 "central_selected_star": 0,
             })
     _write_csv(root / "gaia_population.csv", gaia)
-    _write_csv(root / "euclid_population.csv", euclid)
+    _write_csv(root / "q1_stellar_color_sample.csv", euclid)
     (root / "gaia_population.meta.json").write_text(json.dumps({
-        "cone_count": 2, "radius_arcmin": 2.0,
-        "area_arcmin2": 8 * np.pi, "euclid_cone_selection_seed": 7,
+        "field_count": 3, "radius_deg": 0.35,
+        "area_arcmin2": 8 * np.pi,
+        "random_centres": False,
+    }))
+    (root / "q1_stellar_color_sample.meta.json").write_text(json.dumps({
+        "field_count": 3, "radius_deg": 0.35,
+        "area_arcmin2": 8 * np.pi,
+        "random_centres": False,
     }))
     edges = np.linspace(12.0, 25.0, 131)
     q1_bins = []
@@ -479,7 +507,8 @@ def test_star_fit_uses_q1_phz_counts_and_gaia_only_for_correlated_colors(
     )
 
     fit = fit_star_population()
-    assert fit["color_cone_provenance"]["role"].endswith("locus only")
+    assert fit["color_sample_provenance"]["role"].endswith("locus only")
+    assert fit["color_sample_provenance"]["random_centres"] is False
     assert fit["euclid_mapping"]["matched_stars"] == 38
     assert fit["population_provenance"]["classification_field"] == "PHZ_STAR_PROB"
     magnitude = fit["population"]["magnitude_distribution"]
@@ -493,7 +522,7 @@ def test_star_fit_uses_q1_phz_counts_and_gaia_only_for_correlated_colors(
     assert fit["population"]["density_arcmin2"] == pytest.approx(
         magnitude["surface_density_arcmin2"],
     )
-    density = fit["diagnostics"]["star_density_per_cone"]
+    density = fit["diagnostics"]["stellar_density_by_magnitude"]
     assert density["x_label"] == "native survey magnitude [AB]"
     assert len(density["gaia_observed"]) == len(density["x"])
     assert len(density["gaia_fitted"]) == len(density["x"])

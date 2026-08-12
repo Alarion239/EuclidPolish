@@ -14,11 +14,10 @@ import numpy as np
 from scipy.ndimage import gaussian_filter1d
 
 from euclid_polish.config import Config
-from euclid_polish.photometry import uJy_to_ab_mag
 from euclid_polish.population.euclid_galaxy_prior import (
     JOINT_EUCLID_GALAXY_VERSION,
     ConditionalRadiusLaw,
-    fit_conditional_radius_law,
+    fit_conditional_radius_law_from_aggregate_moments,
     joint_density_grid,
 )
 from euclid_polish.population.magnitude_law import StraightMagnitudeLaw
@@ -124,100 +123,88 @@ def joint_galaxy_candidate() -> dict[str, Any] | None:
 
 
 def fit_euclid_joint_galaxy_candidate() -> dict[str, Any]:
-    """Fit the minimal Euclid VIS-2FWHM × Sérsic-R_e population model."""
-    from euclid_polish.web.helpers.population_comparison import (
-        euclid_catalog_meta_path,
-        euclid_catalog_path,
-    )
+    """Fit the minimal aggregate Euclid VIS-2FWHM x Sersic-R_e model."""
     from euclid_polish.web.helpers.q1_galaxy_counts import (
+        q1_galaxy_counts_path,
+        q1_galaxy_fit_path,
         read_q1_galaxy_aperture_counts,
         read_q1_galaxy_aperture_fit,
+    )
+    from euclid_polish.web.helpers.q1_galaxy_radius_statistics import (
+        q1_galaxy_radius_statistics_path,
+        read_q1_galaxy_radius_statistics,
     )
 
     fit_payload = read_q1_galaxy_aperture_fit()
     count_payload = read_q1_galaxy_aperture_counts()
+    radius_payload = read_q1_galaxy_radius_statistics()
     try:
         magnitude_curve = fit_payload["apertures"]["f2"]
         magnitude_law = StraightMagnitudeLaw.from_payload(magnitude_curve["law"])
         count_bins = count_payload["apertures"]["f2"]["bins"]
-    except (KeyError, TypeError, ValueError) as exc:
-        raise ValueError("Fit the Q1 VIS 2FWHM straight line first") from exc
-    path = euclid_catalog_path()
-    meta = _read(euclid_catalog_meta_path()) or {}
-    if not path.is_file() or int(meta.get("catalog_version") or 0) < 7:
-        raise ValueError(
-            "Refresh the MER + PHZ catalogue to version 7 so its VIS Sérsic "
-            "half-light radii are available"
+        moment_bins = radius_payload["magnitude_bins"]
+        radius_bins = radius_payload["radius_bins"]
+        radius_edges = np.asarray(
+            radius_payload["radius_edges_arcsec"], dtype=np.float64,
         )
-    required = {
-        "flux_vis_2fwhm_aper_uJy", "morph_sersic_vis_radius_arcsec",
-        "morph_sersic_visnir_flags", "phz_gal_prob", "spurious_prob",
-    }
-    magnitudes: list[float] = []
-    radii: list[float] = []
-    weights: list[float] = []
-    with path.open(newline="", encoding="utf-8") as handle:
-        reader = csv.DictReader(handle)
-        missing = sorted(required - set(reader.fieldnames or ()))
-        if missing:
-            raise ValueError(
-                "MER + PHZ cache lacks required joint-fit columns: "
-                + ", ".join(missing)
-            )
-        for row in reader:
-            try:
-                flux = float(row["flux_vis_2fwhm_aper_uJy"])
-                radius = float(row["morph_sersic_vis_radius_arcsec"])
-                flags = float(row["morph_sersic_visnir_flags"])
-                probability = float(row["phz_gal_prob"])
-                spurious = float(row["spurious_prob"])
-            except (KeyError, TypeError, ValueError):
-                continue
-            if not (
-                np.isfinite(flux) and flux > 0.0
-                and np.isfinite(radius) and radius > 0.0
-                and flags == 0.0
-                and np.isfinite(probability) and probability >= 0.5
-                and np.isfinite(spurious) and spurious <= 0.5
-            ):
-                continue
-            magnitude = float(uJy_to_ab_mag(flux))
-            if magnitude_law.mag_bright <= magnitude < magnitude_law.mag_faint:
-                magnitudes.append(magnitude)
-                radii.append(radius)
-                weights.append(probability)
-    radius_law = fit_conditional_radius_law(
-        np.asarray(magnitudes), np.asarray(radii), np.asarray(weights),
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(
+            "Query the complete Q1 VIS 2FWHM and Sersic-radius brackets first"
+        ) from exc
+    if not count_payload.get("complete") or not radius_payload.get("complete"):
+        raise ValueError(
+            "Complete all Q1 VIS 2FWHM and Sersic-radius brackets before fitting"
+        )
+
+    magnitude_values = np.asarray([
+        0.5 * (float(item["mag_lo"]) + float(item["mag_hi"]))
+        for item in moment_bins
+    ], dtype=np.float64)
+    selected_values = np.asarray([
+        float(item["selected_radii"]) for item in moment_bins
+    ], dtype=np.float64)
+    weight_values = np.asarray([
+        float(item["expected_radii"]) for item in moment_bins
+    ], dtype=np.float64)
+    radius_sum_values = np.asarray([
+        float(item["weighted_radius_sum_arcsec"]) for item in moment_bins
+    ], dtype=np.float64)
+    radius2_sum_values = np.asarray([
+        float(item["weighted_radius2_sum_arcsec2"]) for item in moment_bins
+    ], dtype=np.float64)
+    radius_law = fit_conditional_radius_law_from_aggregate_moments(
+        magnitude_values,
+        selected_values,
+        weight_values,
+        radius_sum_values,
+        radius2_sum_values,
     )
-    area_arcmin2 = float(meta.get("area_arcmin2") or 0.0)
-    if not np.isfinite(area_arcmin2) or area_arcmin2 <= 0.0:
-        raise ValueError("MER + PHZ catalogue has no positive footprint area")
-    magnitude_values = np.asarray(magnitudes, dtype=np.float64)
-    radius_values = np.asarray(radii, dtype=np.float64)
-    weight_values = np.asarray(weights, dtype=np.float64)
-    grid = joint_density_grid(magnitude_law, radius_law)
+    log_radius_edges = np.log10(radius_edges)
+    grid = joint_density_grid(
+        magnitude_law, radius_law, log_radius_edges=log_radius_edges,
+    )
     radius_density = (
         np.sum(grid["density"], axis=0)
         / np.diff(grid["log_radius_edges"])
     )
-    observed_radius_density = np.histogram(
-        np.log10(radius_values), bins=grid["log_radius_edges"],
-        weights=weight_values,
-    )[0] / area_arcmin2 / np.diff(grid["log_radius_edges"])
-    relation_edges = np.linspace(
-        magnitude_law.mag_bright, magnitude_law.mag_faint, 31,
-    )
-    relation_x = 0.5 * (relation_edges[:-1] + relation_edges[1:])
+    observed_radius_density = np.asarray([
+        float(item["density_arcmin2_dex"]) for item in radius_bins
+    ], dtype=np.float64)
+    relation_x = magnitude_values
     relation_observed: list[float | None] = []
-    for lower, upper in zip(relation_edges[:-1], relation_edges[1:], strict=True):
-        selected = (magnitude_values >= lower) & (magnitude_values < upper)
-        selected_weight = weight_values[selected]
-        if int(np.sum(selected)) < 3 or float(np.sum(selected_weight)) <= 0.0:
+    for expected, first, second in zip(
+        weight_values, radius_sum_values, radius2_sum_values, strict=True,
+    ):
+        if expected <= 0.0 or first <= 0.0 or second <= 0.0:
             relation_observed.append(None)
             continue
-        relation_observed.append(float(np.average(
-            np.log10(radius_values[selected]), weights=selected_weight,
-        )))
+        mean_radius = first / expected
+        mean_radius2 = second / expected
+        variance_ln = math.log(mean_radius2 / mean_radius**2)
+        relation_observed.append(
+            (math.log(mean_radius) - 0.5 * variance_ln) / math.log(10.0)
+            if variance_ln > 0.0 else None
+        )
     relation_model = radius_law.mean(relation_x)
     observed_magnitude_x = [
         0.5 * (float(item["mag_lo"]) + float(item["mag_hi"]))
@@ -288,10 +275,24 @@ def fit_euclid_joint_galaxy_candidate() -> dict[str, Any]:
         },
         "provenance": {
             "brightness": "Q1 MER + PHZ VIS 2FWHM aggregate counts",
-            "radius": "MER morphology VIS Sérsic radius joined to PHZ",
+            "radius": (
+                "Q1 MER morphology VIS Sersic radius aggregate moments and "
+                "radius brackets joined to PHZ"
+            ),
             "cosmos_used": False,
-            "catalog_version": meta.get("catalog_version"),
-            "catalog_rows": meta.get("rows"),
+            "object_catalog_used": False,
+            "random_cones_used": False,
+            "q1_counts_sha256": hashlib.sha256(
+                q1_galaxy_counts_path().read_bytes()
+            ).hexdigest(),
+            "q1_brightness_fit_sha256": hashlib.sha256(
+                q1_galaxy_fit_path().read_bytes()
+            ).hexdigest(),
+            "q1_radius_statistics_sha256": hashlib.sha256(
+                q1_galaxy_radius_statistics_path().read_bytes()
+            ).hexdigest(),
+            "radius_brackets": len(moment_bins),
+            "radius_histogram_bins": len(radius_bins),
         },
     }
     fingerprint = hashlib.sha256(json.dumps(
@@ -1123,7 +1124,8 @@ def star_state() -> dict[str, Any]:
             **candidate,
             "valid": False,
             "warnings": list(candidate.get("warnings") or []) + [
-                "refit required: stellar counts must come from Q1 PHZ_STAR_PROB"
+                "refit required: stellar counts must come from Q1 "
+                "PHZ_STAR_PROB and colours from the fixed-Q1 sample"
             ],
         }
     return {
@@ -1140,9 +1142,9 @@ def star_state() -> dict[str, Any]:
 def _current_star_artifact(payload: dict[str, Any] | None) -> bool:
     return bool(
         payload
-        and payload.get("version") == 4
+        and payload.get("version") == 5
         and (payload.get("fingerprint_inputs") or {}).get("fit_version")
-        == "q1-phz-gaia-shared-straight-counts-latent-locus-v3"
+        == "q1-phz-gaia-shared-straight-counts-latent-locus-v4"
     )
 
 

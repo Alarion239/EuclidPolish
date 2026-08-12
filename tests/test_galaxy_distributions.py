@@ -457,6 +457,89 @@ def test_q1_galaxy_query_requires_login(monkeypatch):
     assert "Log in" in response.get_json()["error"]
 
 
+def test_query_mer_phz_runs_all_population_brackets_and_galaxy_fits(monkeypatch):
+    app = Flask(__name__)
+    events = []
+
+    class Catalog:
+        @staticmethod
+        def relogin():
+            return True
+
+    class Capture:
+        def tick(self, *_args):
+            pass
+
+        def write(self, _message):
+            pass
+
+    monkeypatch.setattr(routes.euclid_session, "catalog", lambda: Catalog())
+    monkeypatch.setattr(
+        routes,
+        "query_q1_galaxy_aperture_counts",
+        lambda **_kwargs: events.append("galaxy brightness") or {
+            "bright": 14.0, "faint": 28.0,
+            "completed_queries": 560, "total_queries": 560,
+            "footprint_area_deg2": 63.1,
+        },
+    )
+    monkeypatch.setattr(
+        routes,
+        "query_q1_galaxy_radius_statistics",
+        lambda **_kwargs: events.append("galaxy radius") or {
+            "completed_queries": 170, "total_queries": 170,
+        },
+    )
+    monkeypatch.setattr(
+        routes,
+        "query_q1_phz_star_counts",
+        lambda **_kwargs: events.append("stars") or {
+            "expected_stars": 42.0, "footprint_area_deg2": 63.1,
+        },
+    )
+    monkeypatch.setattr(routes, "q1_stellar_color_query_count", lambda: 29)
+    monkeypatch.setattr(
+        routes,
+        "query_q1_stellar_color_sample",
+        lambda **_kwargs: events.append("stellar colours") or {
+            "euclid": {"rows": 20}, "gaia": {"rows": 30},
+        },
+    )
+    monkeypatch.setattr(
+        routes, "fit_q1_galaxy_aperture_counts",
+        lambda: events.append("brightness fit") or {"apertures": {"f2": {}}},
+    )
+    monkeypatch.setattr(
+        routes, "fit_euclid_joint_galaxy_candidate",
+        lambda: events.append("joint fit") or {"fingerprint": "a" * 64},
+    )
+    monkeypatch.setattr(
+        routes, "build_galaxy_distributions",
+        lambda: events.append("plots") or {"version": 12},
+    )
+
+    def spawn(*, label, target):
+        events.append(label)
+        target(Capture())
+        return "all-mer-phz"
+
+    monkeypatch.setattr(routes.REGISTRY, "spawn", spawn)
+    routes.register(app)
+
+    response = app.test_client().post(
+        "/api/galaxy-distributions/query-q1-counts"
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["job_id"] == "all-mer-phz"
+    assert events[:7] == [
+        "population distributions: all MER + PHZ queries and galaxy fits",
+        "galaxy brightness", "galaxy radius", "stars", "stellar colours",
+        "brightness fit", "joint fit",
+    ]
+    assert events[-1] == "plots"
+
+
 def test_q1_aperture_fit_route_uses_count_cache_not_cones(monkeypatch):
     app = Flask(__name__)
     monkeypatch.setattr(
@@ -527,8 +610,13 @@ def test_galaxy_distribution_controls_use_one_progressive_query_action():
     assert "/api/galaxy-distributions/recover-phz" not in source
     assert "/api/population-comparison/query-euclid-multi" not in source
     assert "/api/population-comparison/fit-euclid" not in source
-    assert "/api/galaxy-distributions/fit-q1-counts" in source
-    assert "Fit cached aperture curves" in source
+    assert "/api/galaxy-distributions/fit-q1-counts" not in source
+    assert "Fit cached aperture curves" not in source
+    assert '"/api/galaxy-distributions/activate"' in source
+    assert "Rₑ brackets" in source
+    assert "stellar bins" in source
+    assert "Joint brightness–radius relation" in source
+    assert "observed_mean_log10_arcsec" in source
     assert 'label="random cones"' not in source
     assert 'label="radius (arcmin)"' not in source
     assert "galaxy-q1-phases" in source

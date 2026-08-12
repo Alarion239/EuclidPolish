@@ -90,7 +90,7 @@ def _star_calibration():
         "fit": {"selection": {"gaia_bright_g_max": 20.5}},
         "population": {"density_arcmin2": 4.5},
         "diagnostics": {
-            "star_density_per_cone": {
+            "stellar_density_by_magnitude": {
                 "x": [12.0, 18.5, 25.0],
                 "observed": [0.02, 0.2, 2.0],
                 "fitted": [0.01, 0.1, 1.0],

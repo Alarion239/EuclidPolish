@@ -101,14 +101,13 @@ type Distribution = {
   gaia_sampling?: null | {
     sampling_kind?: string;
     field_count?: number;
-    cone_count: number;
     radius_deg?: number;
     radius_arcmin: number;
     tap_provider?: string;
     query_mode?: string;
     area_deg2?: number;
     area_arcmin2: number;
-    cones?: Array<{ ra: number; dec: number; member_stars?: number }>;
+    fields?: Array<{ name?: string; ra: number; dec: number; rows?: number }>;
   };
 };
 type Calibration = {
@@ -139,7 +138,11 @@ type Q1Counts = {
 };
 type ApiPayload = {
   authenticated: boolean;
-  availability: { euclid_catalog: { cached: boolean; meta?: { cone_count?: number } | null } };
+  color_sample: {
+    cached: boolean;
+    euclid: null | { rows?: number; field_count?: number };
+    gaia: null | { rows?: number; field_count?: number };
+  };
   calibration: Calibration;
   distribution: Distribution | null;
   q1_counts: Q1Counts | null;
@@ -262,7 +265,7 @@ function EuclidProjectionPlots({ distribution }: { distribution: Distribution })
         <div className="star-colour-key" aria-label="Projected population legend">
           <span><i className="star-colour-key__unmatched" />unmatched Gaia</span>
           <span><i className="star-colour-key__matched" />Euclid counterpart</span>
-          <span><i className="star-colour-key__euclid" />measured Euclid cone star</span>
+          <span><i className="star-colour-key__euclid" />measured fixed-Q1 star</span>
         </div>
       </header>
       <div className="star-euclid-projection__grid">
@@ -448,8 +451,7 @@ function CorrelationPlot({ distribution, colorKey }: {
 
 export default function StarDistributionPage() {
   const resource = useResource<ApiPayload>("/api/star-distribution", [], { ttl: 10_000 });
-  const q1Query = useJob();
-  const query = useJob();
+  const fit = useJob();
   const activate = useJob();
   const api = resource.data;
   const refresh = (job: { status: string }) => {
@@ -466,8 +468,6 @@ export default function StarDistributionPage() {
   const candidate = api.calibration.candidate;
   const distribution = api.distribution;
   const q1Counts = api.q1_counts;
-  const coneCount = api.availability.euclid_catalog.meta?.cone_count ?? 0;
-  const gaiaSampling = distribution?.gaia_sampling;
   return (
     <Page>
       <PageHead
@@ -481,7 +481,7 @@ export default function StarDistributionPage() {
 
       <Card className="star-query-strip">
         <CardHead title="Q1 point-source and stellar counts"
-          sub="Direct Euclid archive query · no random cones and no Gaia normalization" />
+          sub="Queried by the single MER + PHZ workflow · aggregate Q1 normalization" />
         <CardBody>
           <div className="star-query-strip__content">
             <div className="star-query-strip__stats">
@@ -493,53 +493,54 @@ export default function StarDistributionPage() {
               <Stat k="bins" v={(q1Counts?.bins.length ?? 0).toLocaleString()} />
             </div>
             <div className="star-query-strip__actions">
-              <Button variant="primary" disabled={!api.authenticated || q1Query.busy}
-                onClick={() => q1Query.run("/api/star-distribution/query-q1-counts", {}, { onDone: refresh })}>
-                {q1Query.busy ? "Querying Q1 counts…" : q1Counts ? "Re-query Q1 counts" : "Query Q1 counts"}
-              </Button>
-              {!api.authenticated && <NavLink className="ui-btn" to="/catalog">Log in to Euclid archive</NavLink>}
+              <NavLink className="ui-btn ui-btn--primary" to="/galaxy-distributions">
+                Open Query MER + PHZ
+              </NavLink>
             </div>
           </div>
           <p className="star-query-strip__note">
             <strong>Selection:</strong> 0.1-mag VIS PSF bins, POINT_LIKE_PROB ≥ 0.9,
             showing both Σ POINT_LIKE_PROB and Σ PHZ_STAR_PROB divided by the 63.1 deg² Q1 footprint.
+            The Galaxy distributions button refreshes these brackets together with galaxy
+            brightness and Sérsic-R<sub>e</sub> brackets.
           </p>
-          <JobProgressView job={q1Query.job} error={q1Query.error} />
         </CardBody>
       </Card>
 
       <Card className="star-query-strip">
-        <CardHead title="Matched-star sample"
-          sub={gaiaSampling?.sampling_kind === "spherical_kmeans_euclid_point_sources"
-            ? `${gaiaSampling.cone_count} spherical k-means field centres · ${gaiaSampling.radius_deg?.toFixed(2) ?? "0.35"}° Gaia DR3 cones · ${gaiaSampling.tap_provider ?? "ARI Gaia TAP"} ${gaiaSampling.query_mode ?? "sync"}`
-            : coneCount
-            ? `${coneCount} cached Euclid cones · next query uses 12 field centres, 0.35° cones, and ARI synchronous TAP`
-            : "Cache Euclid cones on Field statistics before querying Gaia"} />
+        <CardHead title="Stellar fit and activation"
+          sub="Q1 brackets set the magnitude density; a cached matched Gaia-Euclid sample supplies colours only." />
         <CardBody>
           <div className="star-query-strip__content">
             <div className="star-query-strip__stats">
               <Stat k="matched stars" v={(distribution?.matched_stars ?? candidate?.euclid_mapping?.matched_stars ?? 0).toLocaleString()} />
               <Stat k="all-band S/N ≥ 5" v={(distribution?.high_quality_stars ?? 0).toLocaleString()} />
               <Stat k="POINT_LIKE_PROB ≥ 0.9" v={(distribution?.pointlike_over_0_9 ?? 0).toLocaleString()} />
-              <Stat k="Gaia sampling" v={gaiaSampling
-                ? `${gaiaSampling.cone_count} × ${(gaiaSampling.radius_deg ?? gaiaSampling.radius_arcmin / 60).toFixed(2)}°`
-                : "12 × 0.35° on next query"} />
+              <Stat k="colour sample" v={api.color_sample.cached
+                ? `${(api.color_sample.euclid?.rows ?? 0).toLocaleString()} Euclid candidates`
+                : "not cached"} />
+              <Stat k="Gaia rows" v={(api.color_sample.gaia?.rows ?? 0).toLocaleString()} />
+              <Stat k="fixed Q1 fields" v={(api.color_sample.gaia?.field_count ?? 0).toLocaleString()} />
             </div>
             <div className="star-query-strip__actions">
-              <Button disabled={!q1Counts || !api.availability.euclid_catalog.cached || query.busy}
-                onClick={() => query.run("/api/star-distribution/query", {}, { onDone: refresh })}>
-                {query.busy ? "Querying ARI field cones + fitting…" : "Query 12 × 0.35° Gaia cones via ARI sync + fit colours"}
+              <Button disabled={!q1Counts || !api.color_sample.cached || fit.busy}
+                onClick={() => fit.run("/api/star-distribution/fit", {}, { onDone: refresh })}>
+                {fit.busy ? "Fitting cached colours…" : "Fit cached stellar colours"}
               </Button>
               <Button disabled={!candidate?.valid || activate.busy}
                 onClick={() => activate.run("/api/star-distribution/activate", {}, { onDone: refresh })}>
                 {api.calibration.is_active ? "Re-activate stellar prior" : "Activate stellar prior"}
               </Button>
-              <NavLink className="ui-btn" to="/population-comparison">Euclid cone queries</NavLink>
             </div>
           </div>
+          <p className="star-query-strip__note">
+            The fixed Q1 fields supply a magnitude-stratified colour/temperature sample only.
+            They do not set the stellar surface density or magnitude law. This page launches no
+            query; the one Query MER + PHZ action refreshes every required population cache.
+          </p>
           {candidate?.warnings?.[0] && <p className="star-query-strip__note"><strong>Fit note:</strong> {candidate.warnings[0]}</p>}
           {candidate?.coverage_notes?.[0] && <p className="star-query-strip__note"><strong>Coverage:</strong> {candidate.coverage_notes[0]}</p>}
-          <JobProgressView job={query.job} error={query.error} />
+          <JobProgressView job={fit.job} error={fit.error} />
           <JobProgressView job={activate.job} error={activate.error} />
         </CardBody>
       </Card>
@@ -572,7 +573,8 @@ export default function StarDistributionPage() {
         </section>
       ) : (
         <Empty>
-          Query Gaia and fit the stellar distribution to create the six matched-colour plots.
+          Press Query MER + PHZ on Galaxy distributions, then fit the cached colours here
+          to create the six matched-colour plots.
         </Empty>
       )}
     </Page>

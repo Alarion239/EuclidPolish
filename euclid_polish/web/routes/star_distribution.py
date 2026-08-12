@@ -1,21 +1,26 @@
 """Routes for the Q1 PHZ × Gaia × Euclid stellar workspace."""
 from __future__ import annotations
 
-from flask import jsonify
+import io
+
+from flask import abort, jsonify, request, send_file
 
 from euclid_polish.web import euclid_session
 from euclid_polish.web.helpers.population_calibration import (
     activate_star_candidate,
     star_state,
 )
-from euclid_polish.web.helpers.population_comparison import availability
+from euclid_polish.web.helpers.publication_figures import (
+    render_star_population_calibration,
+)
 from euclid_polish.web.helpers.q1_star_counts import (
-    query_q1_phz_star_counts,
     read_q1_phz_star_counts,
+)
+from euclid_polish.web.helpers.q1_stellar_colors import (
+    q1_stellar_color_sample_state,
 )
 from euclid_polish.web.helpers.star_population import (
     fit_star_population,
-    query_gaia_field_cones,
     star_distribution_payload,
 )
 from euclid_polish.web.jobs import REGISTRY
@@ -29,55 +34,56 @@ def _q1_counts_state():
 
 
 def register(app):
+    @app.route("/view/star-population-calibration")
+    def view_star_population_calibration():
+        """Render the reviewed Gaia-Euclid stellar-prior diagnostics."""
+        state = star_state()
+        calibration = state.get("active") or state.get("candidate")
+        if not calibration:
+            abort(404)
+        output_format = (request.args.get("format") or "png").strip().lower()
+        if output_format not in {"png", "pdf", "svg"}:
+            abort(400)
+        try:
+            dpi = int(request.args.get("dpi", "300"))
+            payload = render_star_population_calibration(
+                calibration, output_format=output_format, dpi=dpi,
+            )
+        except (TypeError, ValueError):
+            abort(400)
+        mimetype = {
+            "png": "image/png", "pdf": "application/pdf", "svg": "image/svg+xml",
+        }[output_format]
+        inline = request.args.get("inline", "").strip().lower() in {
+            "1", "true", "yes", "on",
+        }
+        return send_file(
+            io.BytesIO(payload), mimetype=mimetype, as_attachment=not inline,
+            download_name=(
+                f"euclidpolish_star_population_calibration.{output_format}"
+            ),
+            max_age=0,
+        )
+
     @app.route("/api/star-distribution")
     def api_star_distribution():
         return jsonify({
             "authenticated": euclid_session.is_authenticated(),
-            "availability": availability(),
+            "color_sample": q1_stellar_color_sample_state(),
             "calibration": star_state(),
             "distribution": star_distribution_payload(),
             "q1_counts": _q1_counts_state(),
         })
 
-    @app.route("/api/star-distribution/query-q1-counts", methods=["POST"])
-    def api_star_distribution_query_q1_counts():
-        catalog = euclid_session.catalog()
-        if catalog is None:
+    @app.route("/api/star-distribution/fit", methods=["POST"])
+    def api_star_distribution_fit():
+        if not q1_stellar_color_sample_state().get("cached"):
             return jsonify({
                 "ok": False,
-                "error": "Log in to the Euclid archive on the Catalog page first.",
-            }), 400
-
-        def run(cap):
-            q1 = query_q1_phz_star_counts(
-                relogin=catalog.relogin,
-                progress=lambda done, total, label: cap.tick(
-                    done, total, label
+                "error": (
+                    "No current fixed-Q1 Euclid-Gaia colour sample is cached. "
+                    "Press Query MER + PHZ on Galaxy Distributions first."
                 ),
-            )
-            cap.write(
-                f"Q1 expected point sources "
-                f"{q1['expected_point_sources']:.1f}; PHZ expected stars "
-                f"{q1['expected_stars']:.1f} over "
-                f"{q1['footprint_area_deg2']:.1f} deg² in "
-                f"{len(q1['bins'])} VIS bins\n"
-            )
-            return q1
-
-        return jsonify({
-            "ok": True,
-            "job_id": REGISTRY.spawn(
-                label="star distribution: direct Q1 point-source + PHZ counts",
-                target=run,
-            ),
-        })
-
-    @app.route("/api/star-distribution/query", methods=["POST"])
-    def api_star_distribution_query():
-        if not availability().get("euclid_catalog", {}).get("cached"):
-            return jsonify({
-                "ok": False,
-                "error": "Query and cache at least one Euclid cone first.",
             }), 400
         try:
             q1 = read_q1_phz_star_counts()
@@ -88,28 +94,21 @@ def register(app):
             }), 400
 
         def run(cap):
-            meta = query_gaia_field_cones(
-                progress=lambda done, total, label: cap.tick(
-                    done, total + 1, label
-                )
-            )
-            cap.tick(meta["cone_count"], meta["cone_count"] + 1,
-                     "fit stellar distribution")
+            cap.tick(0, 1, "fit stellar distribution from cached colours")
             fit = fit_star_population()
-            cap.tick(meta["cone_count"] + 1, meta["cone_count"] + 1,
-                     "stellar distribution ready")
+            cap.tick(1, 1, "stellar distribution ready")
             cap.write(
                 f"Q1 PHZ expected stars {q1['expected_stars']:.1f} over "
                 f"{q1['footprint_area_deg2']:.1f} deg²; "
-                f"cached {meta['rows']} Gaia DR3 sources for colours; "
-                f"matched {fit['euclid_mapping']['matched_stars']} Euclid stars\n"
+                f"matched {fit['euclid_mapping']['matched_stars']} cached "
+                "Euclid-Gaia stars for colours only\n"
             )
-            return {"q1_phz_counts": q1, "gaia_colors": meta, "fit": fit}
+            return {"q1_phz_counts": q1, "fit": fit}
 
         return jsonify({
             "ok": True,
             "job_id": REGISTRY.spawn(
-                label="star distribution: Gaia field-cone color fit",
+                label="star distribution: fit cached stellar colours",
                 target=run,
             ),
         })

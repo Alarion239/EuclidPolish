@@ -253,7 +253,7 @@ def render_star_population_calibration(
         raise ValueError("output_format must be png, pdf, or svg")
     dpi = max(120, min(int(dpi), 600))
     diagnostics = calibration.get("diagnostics") or {}
-    density = diagnostics.get("star_density_per_cone") or {}
+    density = diagnostics.get("stellar_density_by_magnitude") or {}
     parameters = diagnostics.get("parameters") or {}
     colors = [parameters.get(key) or {} for key in ("vis_y", "y_j", "j_h")]
     if not density or any(not payload for payload in colors):

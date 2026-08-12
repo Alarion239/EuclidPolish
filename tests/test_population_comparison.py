@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import csv
 import json
-import subprocess
 import warnings
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -208,24 +208,21 @@ def test_population_refresh_preserves_field_statistics(tmp_path, monkeypatch):
         "fields": {"sentinel": "unchanged"},
         "population": {},
     }))
-    current = {"synthetic_field_count": 2, "euclid": {"objects": 2}}
-    with_training = {
-        "synthetic_field_count": 12,
-        "euclid": {"objects": 2},
-    }
+    current = {"synthetic_field_count": 2}
+    with_training = {"synthetic_field_count": 12}
     monkeypatch.setattr(comparison, "comparison_path", lambda: comparison_file)
     monkeypatch.setattr(
         comparison,
         "_population_variants",
-        lambda field_count, detection: (current, with_training),
+        lambda field_count: (current, with_training),
     )
 
     refreshed = refresh_population_comparison()
     saved = json.loads(comparison_file.read_text())
 
     assert refreshed is not None
-    assert refreshed["euclid"]["objects"] == 2
     assert refreshed["synthetic_field_count"] == 2
+    assert "euclid" not in refreshed
     assert saved["fields"] == {"sentinel": "unchanged"}
     assert saved["population"] == refreshed
     assert saved["population_with_training"] == with_training
@@ -260,7 +257,7 @@ def test_synthetic_paths_exclude_training_by_default(tmp_path, monkeypatch):
     ]
 
 
-def test_population_variants_keep_calibration_on_current_splits(monkeypatch):
+def test_population_variants_only_switch_the_synthetic_census(monkeypatch):
     from pathlib import Path
 
     from euclid_polish.web.helpers import population_comparison as comparison
@@ -276,21 +273,22 @@ def test_population_variants_keep_calibration_on_current_splits(monkeypatch):
         ),
     )
 
-    def fake_payload(paths, field_count, detection, *, calibrate_tng_prior=True):
+    def fake_payload(paths, field_count):
         return {
             "synthetic_field_count": len(paths),
-            "tng_prior": "current calibration" if calibrate_tng_prior else None,
         }
 
     monkeypatch.setattr(comparison, "_population_payload", fake_payload)
-    current, with_training = comparison._population_variants(200, {})
+    current, with_training = comparison._population_variants(200)
 
     assert current["synthetic_field_count"] == 2
     assert current["training_included"] is False
     assert with_training["synthetic_field_count"] == 3
     assert with_training["training_included"] is True
-    assert with_training["tng_prior"] == "current calibration"
-    assert with_training["calibration_splits"] == ["test", "validate"]
+    assert "tng_prior" not in current
+    assert "tng_prior" not in with_training
+    assert "calibration_splits" not in current
+    assert "calibration_splits" not in with_training
 
 
 def test_euclid_population_query_keeps_classifier_uncertainty_and_photometry(
@@ -782,9 +780,6 @@ def test_population_comparison_page_and_status_route(monkeypatch):
         "synthetic": {"fields": 200},
         "real": {"fields": 302},
         "field_area_arcmin2": 0.18,
-        "default_cone": {"ra": 1.0, "dec": 2.0, "radius_arcmin": 3.0,
-                         "area_arcmin2": 28.27},
-        "euclid_catalog": {"cached": False, "meta": None},
     }
     monkeypatch.setattr(routes, "availability",
                         lambda: expected_availability)
@@ -803,131 +798,32 @@ def test_population_comparison_page_and_status_route(monkeypatch):
     assert payload["comparison"] is None
     assert payload["availability"] == expected_availability
     assert payload["authenticated"] is False
-    assert set(payload["calibrations"]) == {
-        "brightness_transfer", "galaxy_density", "stars",
-        "galaxy_recommendation", "joint_galaxy",
-    }
+    assert "calibrations" not in payload
 
 
-def test_random_cone_route_enforces_supported_count_range(monkeypatch):
+def test_field_statistics_has_no_population_query_or_fit_routes():
     from euclid_polish.web.app import create_app
-    from euclid_polish.web.routes import population_comparison as routes
 
-    monkeypatch.setattr(routes.euclid_session, "catalog", lambda: object())
-    monkeypatch.setattr(
-        routes.REGISTRY, "spawn", lambda *args, **kwargs: "random-cones-job",
-    )
     client = create_app().test_client()
-
-    accepted_minimum = client.post(
+    obsolete = (
+        "/api/population-comparison/query-euclid",
         "/api/population-comparison/query-euclid-multi",
-        data={"count": "1", "radius_arcmin": "3.5"},
+        "/api/population-comparison/fit-euclid",
+        "/api/population-comparison/query-gaia-stars",
+        "/api/population-comparison/activate-joint-galaxy",
+        "/api/population-comparison/activate-star-prior",
     )
-    accepted_maximum = client.post(
-        "/api/population-comparison/query-euclid-multi",
-        data={"count": "24", "radius_arcmin": "3.5"},
-    )
-    rejected_minimum = client.post(
-        "/api/population-comparison/query-euclid-multi",
-        data={"count": "0", "radius_arcmin": "3.5"},
-    )
-    rejected_maximum = client.post(
-        "/api/population-comparison/query-euclid-multi",
-        data={"count": "25", "radius_arcmin": "3.5"},
-    )
+    assert all(client.post(endpoint).status_code == 404 for endpoint in obsolete)
 
-    assert accepted_minimum.status_code == 200
-    assert accepted_minimum.get_json()["job_id"] == "random-cones-job"
-    assert accepted_maximum.status_code == 200
-    assert accepted_maximum.get_json()["job_id"] == "random-cones-job"
-    assert rejected_minimum.status_code == 400
-    assert "count must be 1–24" in rejected_minimum.get_json()["error"]
-    assert rejected_maximum.status_code == 400
-    assert "count must be 1–24" in rejected_maximum.get_json()["error"]
-
-
-def test_fit_cached_cones_route_does_not_require_archive_session(monkeypatch):
-    from euclid_polish.web.app import create_app
-    from euclid_polish.web.routes import population_comparison as routes
-
-    monkeypatch.setattr(
-        routes,
-        "availability",
-        lambda: {"euclid_catalog": {"cached": True}},
-    )
-    monkeypatch.setattr(
-        routes.REGISTRY, "spawn", lambda *args, **kwargs: "fit-cones-job",
-    )
-    client = create_app().test_client()
-
-    response = client.post("/api/population-comparison/fit-euclid")
-
-    assert response.status_code == 200
-    assert response.get_json()["job_id"] == "fit-cones-job"
-
-
-def test_fit_cached_cones_runs_joint_analysis_without_tng(
-    monkeypatch,
-):
-    from euclid_polish.web.routes import population_comparison as routes
-
-    class Capture:
-        def __init__(self):
-            self.ticks = []
-            self.output = []
-
-        def tick(self, done, total, label):
-            self.ticks.append((done, total, label))
-
-        def write(self, message):
-            self.output.append(message)
-
-    fit_payload = {
-        "version": 2,
-        "fit_quality": {
-            "cosmos_reduced_poisson_deviance": 2.4,
-            "euclid_reduced_poisson_deviance": 3.1,
-        },
-        "model": {
-            "euclid_response": {"completeness_m50": 25.12},
-        },
-    }
-    commands = []
-    monkeypatch.setattr(
-        routes.subprocess,
-        "run",
-        lambda argv, **kwargs: commands.append(argv),
-    )
-    monkeypatch.setattr(
-        routes, "read_cosmos_euclid_fit", lambda: fit_payload,
-    )
-    cap = Capture()
-
-    result = routes._fit_and_evaluate_cached_cones(cap)
-
-    assert [command[1] for command in commands] == [
-        "scripts/fit_cosmos_euclid_counts.py",
-    ]
-    assert result == {"fit": fit_payload, "tng_used": False}
-    assert cap.ticks[-1] == (1, 1, "joint population fit ready")
-    assert any("No TNG catalogue or image was read" in line for line in cap.output)
-    assert any("COSMOS reduced deviance 2.40" in line for line in cap.output)
-
-
-def test_analysis_script_failure_includes_stderr(monkeypatch, tmp_path):
-    from euclid_polish.web.routes import population_comparison as routes
-
-    error = subprocess.CalledProcessError(
-        1,
-        ["python", "broken.py"],
-        stderr="ValueError: useful scientific failure",
-    )
-    monkeypatch.setattr(
-        routes.subprocess, "run", lambda *args, **kwargs: (_ for _ in ()).throw(error)
-    )
-
-    with pytest.raises(RuntimeError, match="useful scientific failure"):
-        routes._run_analysis_script(tmp_path, "broken.py")
+    source = (
+        Path(__file__).parents[1]
+        / "euclid_polish/web/frontend/src/pages/PopulationComparison.tsx"
+    ).read_text()
+    assert "Random Euclid population cones" not in source
+    assert "GalaxyCalibrationControls" not in source
+    assert "StarCalibrationControls" not in source
+    assert "comparison.population.euclid" not in source
+    assert "the fit that connects them" not in source
 
 
 def test_population_comparison_status_selects_training_variant(monkeypatch):
@@ -938,25 +834,15 @@ def test_population_comparison_status_selects_training_variant(monkeypatch):
         "version": VERSION,
         "population": {
             "synthetic_field_count": 200,
-            "tng_prior": {"configured_prior_arcmin2": 200.0},
         },
         "population_with_training": {
             "synthetic_field_count": 6600,
-            "tng_prior": {"configured_prior_arcmin2": 200.0},
         },
     }
     monkeypatch.setattr(routes, "availability", lambda: {})
     monkeypatch.setattr(routes, "read_comparison", lambda: cached)
     monkeypatch.setattr(
-        routes, "read_cosmos_euclid_fit", lambda: {"version": 2}
-    )
-    monkeypatch.setattr(
         routes.euclid_session, "is_authenticated", lambda: False
-    )
-    monkeypatch.setattr(
-        routes.job_config,
-        "load",
-        lambda: type("Config", (), {"galaxy_density_arcmin2": 320.0})(),
     )
     client = create_app().test_client()
 
@@ -970,13 +856,6 @@ def test_population_comparison_status_selects_training_variant(monkeypatch):
         with_training["comparison"]["population"]["synthetic_field_count"]
         == 6600
     )
-    assert current["comparison"]["population"]["cosmos_euclid_fit"] == {
-        "version": 2
-    }
-    assert (
-        current["comparison"]["population"]["tng_prior"][
-            "configured_prior_arcmin2"
-        ]
-        == 320.0
-    )
+    assert "cosmos_euclid_fit" not in current["comparison"]["population"]
+    assert "tng_prior" not in current["comparison"]["population"]
     assert "population_with_training" not in with_training["comparison"]

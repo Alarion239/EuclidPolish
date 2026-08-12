@@ -75,6 +75,54 @@ type Payload = {
   authenticated?: boolean;
   sources: Partial<Record<SourceKey, Source>>;
   q1_counts?: Q1Counts | null;
+  q1_radius?: null | {
+    complete: boolean;
+    completed_queries: number;
+    total_queries: number;
+    magnitude_bins: unknown[];
+    radius_bins: unknown[];
+  };
+  q1_stars?: null | {
+    expected_stars: number;
+    expected_point_sources: number;
+    bins: unknown[];
+  };
+  stellar_colors?: {
+    cached: boolean;
+    euclid?: null | { rows?: number; field_count?: number };
+    gaia?: null | { rows?: number; field_count?: number };
+  };
+  calibration: {
+    candidate: null | {
+      valid?: boolean;
+      version: number;
+      fingerprint: string;
+      radius_law: {
+        slope_log10_arcsec_per_mag: number;
+        scatter_dex: number;
+        fitted_rows: number;
+      };
+      generation: {
+        surface_density_arcmin2: number;
+        vis_magnitude_min: number;
+        vis_magnitude_max: number;
+      };
+      plots?: {
+        conditional_radius?: {
+          magnitude: number[];
+          observed_mean_log10_arcsec: Array<number | null>;
+          model_mean_log10_arcsec: number[];
+          model_low_log10_arcsec: number[];
+          model_high_log10_arcsec: number[];
+        };
+      };
+      provenance?: {
+        object_catalog_used?: boolean;
+      };
+    };
+    is_active: boolean;
+    active?: null | { fingerprint?: string };
+  };
   parameters: Record<string, Parameter>;
 };
 type Q1Counts = {
@@ -480,19 +528,9 @@ function ApertureLadder({ data }: { data?: ApertureScatter }) {
 export default function GalaxyDistributionsPage() {
   const resource = useResource<Payload>("/api/galaxy-distributions", [], { ttl: 10_000 });
   const q1Query = useJob();
-  const fit = useJob();
-  const build = useJob();
+  const activate = useJob();
   const api = resource.data;
   const refresh = (job: { status: string }) => { if (job.status !== "failed") resource.reload(); };
-  const rebuildAfter = (job: { status: string }) => {
-    if (job.status !== "failed") {
-      build.run("/api/galaxy-distributions/build", {}, { onDone: refresh });
-    }
-  };
-  const rebuildAfterCounts = (job: { status: string }) => {
-    resource.reload();
-    rebuildAfter(job);
-  };
   useEffect(() => {
     if (!q1Query.busy) return;
     resource.reload();
@@ -502,12 +540,6 @@ export default function GalaxyDistributionsPage() {
   const parameters = useMemo(() => api ? PARAMETER_ORDER.flatMap((key) => (
     api.parameters[key] ? [[key, api.parameters[key]] as const] : []
   )) : [], [api]);
-  const q1FitReady = Boolean(api?.q1_counts && (
-    api.q1_counts.fit_ready
-    || Object.values(api.q1_counts.apertures).some((aperture) => (
-      (aperture.queried_bins ?? 0) >= 4
-    ))
-  ));
 
   if (resource.loading && !api) return <Page><Empty><Spinner /> reading galaxy distributions…</Empty></Page>;
   if (!api) return <Page><Empty>Galaxy-distribution status is unavailable.</Empty></Page>;
@@ -524,8 +556,8 @@ export default function GalaxyDistributionsPage() {
 
     <Card className="galaxy-q1-counts galaxy-actions">
       <CardHead
-        title="Q1 bright galaxies · data and plot controls"
-        sub="One run checkpoints progressive 0.1-mag MER + PHZ aperture counts and rebuilds these plots. No cone sampling is required."
+        title="Q1 MER + PHZ population workflow"
+        sub="One run queries every galaxy-brightness, Sérsic-radius, and stellar magnitude bracket, fits the galaxy model, and rebuilds all affected plots."
       />
       <CardBody>
         <div className="galaxy-q1-counts__content">
@@ -534,6 +566,11 @@ export default function GalaxyDistributionsPage() {
             <Stat k="VIS range" v={api.q1_counts ? `${api.q1_counts.bright.toFixed(1)}–${api.q1_counts.faint.toFixed(1)}` : "14.0–28.0"} />
             <Stat k="bin width" v={`${(api.q1_counts?.bin_width ?? 0.1).toFixed(1)} mag`} />
             <Stat k="checkpoints" v={`${api.q1_counts?.completed_queries ?? api.q1_counts?.query_count ?? 0}/${api.q1_counts?.total_queries ?? 560}`} />
+            <Stat k="Rₑ brackets" v={`${api.q1_radius?.completed_queries ?? 0}/${api.q1_radius?.total_queries ?? 170}`} />
+            <Stat k="stellar bins" v={(api.q1_stars?.bins.length ?? 0).toLocaleString()} />
+            <Stat k="stellar colours" v={api.stellar_colors?.cached
+              ? `${(api.stellar_colors.euclid?.rows ?? 0).toLocaleString()} matched candidates`
+              : "not queried"} />
             <Stat k="passes" v={`${api.q1_counts?.phases_completed ?? 0}/${api.q1_counts?.phase_count ?? 5}`} />
             <Stat k="F₁ PHZ weight" v={compact(api.q1_counts?.apertures.f1.expected_galaxies)} />
             <Stat k="F₄ PHZ weight" v={compact(api.q1_counts?.apertures.f4.expected_galaxies)} />
@@ -557,36 +594,120 @@ export default function GalaxyDistributionsPage() {
           <div className="galaxy-actions__buttons">
             <Button
               variant="primary"
-              disabled={!api.authenticated || q1Query.busy || build.busy}
+              disabled={!api.authenticated || q1Query.busy}
               onClick={() => q1Query.run(
                 "/api/galaxy-distributions/query-q1-counts",
                 {},
-                { onDone: rebuildAfterCounts },
+                { onDone: refresh },
               )}
             >
-              {q1Query.busy ? "Querying progressive bins…" : build.busy ? "Building plots…" : "Query MER + PHZ"}
+              {q1Query.busy ? "Querying + fitting populations…" : "Query MER + PHZ"}
             </Button>
-            <Button disabled={fit.busy || build.busy || q1Query.busy || !q1FitReady} onClick={() => fit.run(
-              "/api/galaxy-distributions/fit-q1-counts", {}, { onDone: rebuildAfter },
-            )}>{fit.busy ? "Fitting aperture curves…" : "Fit cached aperture curves"}</Button>
-            <Button disabled={build.busy} onClick={() => build.run(
-              "/api/galaxy-distributions/build", {}, { onDone: refresh },
-            )}>{build.busy ? "Building plots…" : "Build density plots"}</Button>
             <Button variant="ghost" onClick={resource.reload}>Refresh view</Button>
             {!api.authenticated && <NavLink className="ui-btn" to="/catalog">Log in to Euclid archive</NavLink>}
           </div>
         </div>
         <p className="galaxy-q1-counts__note">
-          <strong>Progressive cache:</strong> exact 0.1-mag bins are queried at 0.5-mag spacing first,
+          <strong>Single acquisition path:</strong> exact 0.1-mag bins are queried at 0.5-mag spacing first,
           then revisited at offsets of 0.1, 0.2, 0.3, and 0.4 mag. Each F₁–F₄ result
-          is stored immediately and is skipped on later runs. Sources must have POINT_LIKE_FLAG
-          unset and PHZ_GAL_PROB ≥ 0.5; density remains probability-weighted.
+          and aggregate Sérsic-R<sub>e</sub> result is stored immediately and skipped on later runs.
+          The same button also refreshes Q1 stellar magnitude brackets and the fixed-field,
+          magnitude-stratified Gaia–Euclid colour sample used on Star distributions. Both
+          density fits use aggregate brackets rather than downloaded object catalogues.
         </p>
         <JobProgressView job={q1Query.job} error={q1Query.error} />
-        <JobProgressView job={fit.job} error={fit.error} />
-        <JobProgressView job={build.job} error={build.error} />
       </CardBody>
     </Card>
+
+    <Card className="calibration-workflow">
+      <CardHead title="Euclid VIS 2FWHM × Sérsic Rₑ model"
+        sub="Straight log-density brightness plus a straight conditional log-radius relation. COSMOS remains diagnostic only."
+        right={<Badge tone={api.calibration.is_active ? "good" : api.calibration.candidate?.valid ? "warn" : undefined}>
+          {api.calibration.is_active ? "active for generation" : api.calibration.candidate?.valid ? "candidate ready" : "not fitted"}
+        </Badge>} />
+      <CardBody>
+        <div className="galaxy-q1-counts__stats">
+          <Stat k="brightness" v="Q1 VIS 2FWHM · 14–29" />
+          <Stat k="radius source" v="Q1 aggregate Sérsic Rₑ" />
+          <Stat k="COSMOS in fit" v="no" />
+          <Stat k="slope" v={api.calibration.candidate
+            ? `${api.calibration.candidate.radius_law.slope_log10_arcsec_per_mag.toFixed(4)} dex/mag`
+            : "—"} />
+          <Stat k="scatter" v={api.calibration.candidate
+            ? `${api.calibration.candidate.radius_law.scatter_dex.toFixed(4)} dex`
+            : "—"} />
+        </div>
+        <div className="galaxy-actions__row">
+          <div className="galaxy-actions__buttons">
+            <Button variant="primary"
+              disabled={!api.calibration.candidate?.valid || activate.busy || q1Query.busy}
+              onClick={() => activate.run(
+                "/api/galaxy-distributions/activate", {}, { onDone: refresh },
+              )}>
+              {activate.busy ? "Activating…" : api.calibration.is_active
+                ? "Re-activate this TNG model" : "Use this TNG model"}
+            </Button>
+            {api.calibration.is_active && <NavLink className="ui-btn" to="/sky">Open Sky jobs</NavLink>}
+          </div>
+        </div>
+        {api.calibration.candidate && <p className="galaxy-q1-counts__note">
+          The candidate contains {api.calibration.candidate.radius_law.fitted_rows.toLocaleString()} clean
+          aggregate-weighted radii and generates {api.calibration.candidate.generation.surface_density_arcmin2.toFixed(2)} galaxies / arcmin².
+          Its fingerprint is <code>{api.calibration.candidate.fingerprint.slice(0, 12)}…</code>.
+        </p>}
+        <JobProgressView job={activate.job} error={activate.error} />
+      </CardBody>
+    </Card>
+
+    {api.calibration.candidate?.plots?.conditional_radius && (() => {
+      const relation = api.calibration.candidate.plots!.conditional_radius!;
+      const observed = relation.observed_mean_log10_arcsec.filter(
+        (value): value is number => value != null && Number.isFinite(value),
+      );
+      const yDomain = paddedDomain([
+        ...observed,
+        ...relation.model_low_log10_arcsec,
+        ...relation.model_high_log10_arcsec,
+      ], 0.5);
+      const xDomain = paddedDomain(relation.magnitude, 1.0);
+      return <Card className="parameter-card">
+        <CardHead title="Joint brightness–radius relation"
+          sub="Aggregate Q1 Sérsic-Rₑ moments in each VIS 2FWHM magnitude bracket and the fitted straight conditional mean." />
+        <CardBody>
+          <Plot
+            xDomain={xDomain} yDomain={yDomain}
+            xTicks={ticks(xDomain, 7)} yTicks={physicalLogTicks(yDomain, 6)}
+            xLabel="VIS 2FWHM AB magnitude"
+            yLabel="Sérsic Rₑ (arcsec, log scale)"
+            series={[
+              {
+                x: relation.magnitude,
+                y: relation.model_mean_log10_arcsec,
+                low: relation.model_low_log10_arcsec,
+                high: relation.model_high_log10_arcsec,
+                color: "#e25543", fillAlpha: 0.12, alpha: 0, width: 0,
+              },
+              {
+                x: relation.magnitude,
+                y: relation.observed_mean_log10_arcsec,
+                color: "#31a7d8", mode: "scatter", marker: "ring", width: 1.7,
+              },
+              {
+                x: relation.magnitude,
+                y: relation.model_mean_log10_arcsec,
+                color: "#e25543", width: 2.6,
+              },
+            ]}
+            aspect={0.46}
+          />
+          <p className="galaxy-q1-counts__note">
+            Blue points are bracket-level Euclid measurements; the red line and band are
+            the fitted mean and one-scatter interval. COSMOS and object-level samples
+            are absent from this fit.
+          </p>
+        </CardBody>
+      </Card>;
+    })()}
 
     <ApertureLadder data={api.sources.euclid?.aperture_scatter} />
 

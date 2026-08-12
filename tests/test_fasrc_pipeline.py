@@ -49,6 +49,29 @@ def _mock_population_calibrations(monkeypatch):
             "activated_density_arcmin2": 255.0,
         }},
     )
+    joint = {
+        "version": 5,
+        "kind": "euclid_vis2fwhm_sersic_re_joint",
+        "valid": True,
+        "active": True,
+        "fingerprint": "j" * 64,
+        "generation": {"surface_density_arcmin2": 207.0},
+    }
+    monkeypatch.setattr(
+        "euclid_polish.web.helpers.population_calibration.joint_galaxy_state",
+        lambda: {"active": joint, "candidate": joint, "is_active": True},
+    )
+    monkeypatch.setattr(
+        "euclid_polish.web.helpers.population_calibration.star_state",
+        lambda: {"active": {
+            "population": {
+                "density_arcmin2": 3.0,
+                "magnitude_slope": 0.25,
+                "mag_bright": 12.0,
+                "mag_faint": 25.0,
+            },
+        }, "is_active": True},
+    )
     monkeypatch.setattr(
         "euclid_polish.web.helpers.population_comparison.read_comparison",
         lambda: {
@@ -533,7 +556,7 @@ class TestRegistry:
         """FASRC jobs embed the activated Euclid brightness-radius law."""
         del tmp_path
         joint = {
-            "version": 4,
+            "version": 5,
             "kind": "euclid_vis2fwhm_sersic_re_joint",
             "valid": True,
             "active": True,
@@ -585,7 +608,7 @@ class TestRegistry:
         self, monkeypatch,
     ):
         joint = {
-            "version": 4,
+            "version": 5,
             "kind": "euclid_vis2fwhm_sersic_re_joint",
             "valid": True,
             "validated": False,
@@ -637,7 +660,8 @@ class TestRegistry:
         scratch); absent / falsey → resume (no --force)."""
         step = REGISTRY.get("synthetic_generate")
         base = {"n_train": 10, "n_valid": 2, "image_size": 252,
-                "batch_size": 4, "steps": 100}
+                "batch_size": 4, "steps": 100,
+                "galaxy_density_arcmin2": 207.0}
         assert "--force" not in step.build_command(base)
         assert "--force" in step.build_command({**base, "force": "1"})
         assert "--force" in step.build_command({**base, "force": True})
@@ -648,7 +672,8 @@ class TestRegistry:
         """Star field knobs from /config reach run_pipeline; absent → omitted."""
         step = REGISTRY.get("synthetic_generate")
         base = {"n_train": 10, "n_valid": 2, "image_size": 252,
-                "batch_size": 4, "steps": 100}
+                "batch_size": 4, "steps": 100,
+                "galaxy_density_arcmin2": 207.0}
         argv = step.build_command({
             **base, "star_density_arcmin2": "3", "star_mag_slope": "0.25",
             "star_mag_bright": "10", "star_mag_faint": "24"})
@@ -666,7 +691,8 @@ class TestRegistry:
         """Lens density + σ_v range from /config reach run_pipeline."""
         step = REGISTRY.get("synthetic_generate")
         base = {"n_train": 10, "n_valid": 2, "image_size": 252,
-                "batch_size": 4, "steps": 100}
+                "batch_size": 4, "steps": 100,
+                "galaxy_density_arcmin2": 207.0}
         argv = step.build_command({
             **base, "lens_density_arcmin2": "8", "lens_sigma_v_min_kms": "180",
             "lens_sigma_v_max_kms": "400"})

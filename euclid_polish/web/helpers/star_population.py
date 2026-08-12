@@ -7,7 +7,6 @@ import hashlib
 import json
 import math
 import os
-from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -24,33 +23,38 @@ from euclid_polish.web.helpers.population_calibration import (
     star_candidate_path,
     write_star_candidate,
 )
-from euclid_polish.web.helpers.population_comparison import (
-    euclid_catalog_meta_path,
-    euclid_catalog_path,
-)
 from euclid_polish.web.helpers.q1_star_counts import (
     q1_star_counts_path,
     read_q1_phz_star_counts,
+)
+from euclid_polish.web.helpers.q1_stellar_colors import (
+    Q1_STELLAR_COLOR_FIELD_RADIUS_DEG,
+    Q1_STELLAR_COLOR_FIELDS,
+    Q1_STELLAR_COLOR_SAMPLE_VERSION,
+    q1_gaia_color_catalog_path,
+    q1_gaia_color_meta_path,
+)
+from euclid_polish.web.helpers.q1_stellar_colors import (
+    q1_stellar_color_catalog_path as euclid_catalog_path,
+)
+from euclid_polish.web.helpers.q1_stellar_colors import (
+    q1_stellar_color_meta_path as euclid_catalog_meta_path,
 )
 
 _GAIA_COUNT_LIMIT_MAG = 20.5
 # Gaia (E)DR3 G-band AB and Vega zero points are 25.8010446445 and
 # 25.6873668671 mag, respectively.  The archive's phot_g_mean_mag is Vega.
 _GAIA_G_AB_MINUS_VEGA_MAG = 25.8010446445 - 25.6873668671
-_GAIA_FIELD_COUNT = 12
-_GAIA_FIELD_RADIUS_DEG = 0.35
 _GAIA_TAP_PROVIDER = "ARI Gaia TAP"
-_GAIA_TAP_URL = "https://gaia.ari.uni-heidelberg.de/tap"
-_GAIA_SYNC_MAXREC = 10_000
-_STAR_POPULATION_VERSION = 4
+_STAR_POPULATION_VERSION = 5
 
 
 def gaia_catalog_path() -> Path:
-    return Path(Config.DATA_DIR) / "population_comparison" / "gaia_population.csv"
+    return q1_gaia_color_catalog_path()
 
 
 def gaia_catalog_meta_path() -> Path:
-    return gaia_catalog_path().with_suffix(".meta.json")
+    return q1_gaia_color_meta_path()
 
 
 def star_distribution_path() -> Path:
@@ -70,235 +74,46 @@ def _finite(value: Any) -> float | None:
     return result if math.isfinite(result) else None
 
 
-def _spherical_kmeans_field_centers(
-    rows: list[dict[str, str]], *, cluster_count: int = _GAIA_FIELD_COUNT,
-) -> list[dict[str, float | int]]:
-    """Infer field centres from high-purity Euclid stars on the unit sphere."""
-    positions: list[tuple[float, float]] = []
-    for row in rows:
-        probability = _finite(row.get("point_like_prob"))
-        ra, dec = _finite(row.get("ra")), _finite(row.get("dec"))
-        if (
-            probability is not None and probability >= 0.9
-            and ra is not None and dec is not None
-            and 0.0 <= ra < 360.0 and -90.0 <= dec <= 90.0
-        ):
-            positions.append((ra, dec))
-    if len(positions) < cluster_count or cluster_count < 1:
-        raise ValueError(
-            f"Need at least {cluster_count} high-purity Euclid stars to "
-            "infer Gaia field centres"
-        )
-
-    coordinates = np.asarray(positions, dtype=np.float64)
-    ra_rad, dec_rad = np.deg2rad(coordinates).T
-    vectors = np.column_stack([
-        np.cos(dec_rad) * np.cos(ra_rad),
-        np.cos(dec_rad) * np.sin(ra_rad),
-        np.sin(dec_rad),
-    ])
-
-    # Deterministic farthest-first initialization followed by spherical
-    # k-means. Dot-product assignment is angular nearest-centre assignment.
-    centres = [vectors[int(np.argmax(vectors[:, 2]))]]
-    while len(centres) < cluster_count:
-        similarities = vectors @ np.asarray(centres).T
-        centres.append(vectors[int(np.argmin(np.max(similarities, axis=1)))])
-    centre_vectors = np.asarray(centres, dtype=np.float64)
-    labels = np.zeros(vectors.shape[0], dtype=np.int64)
-    for _iteration in range(100):
-        new_labels = np.argmax(vectors @ centre_vectors.T, axis=1)
-        updated = np.empty_like(centre_vectors)
-        for index in range(cluster_count):
-            members = vectors[new_labels == index]
-            if members.size == 0:
-                distance = 1.0 - np.max(vectors @ centre_vectors.T, axis=1)
-                updated[index] = vectors[int(np.argmax(distance))]
-                continue
-            mean = np.mean(members, axis=0)
-            updated[index] = mean / np.linalg.norm(mean)
-        if np.array_equal(new_labels, labels) and np.allclose(
-            updated, centre_vectors, rtol=0.0, atol=1e-12,
-        ):
-            centre_vectors = updated
-            labels = new_labels
-            break
-        centre_vectors = updated
-        labels = new_labels
-
-    output: list[dict[str, float | int]] = []
-    for index, vector in enumerate(centre_vectors):
-        output.append({
-            "ra": float(np.degrees(np.arctan2(vector[1], vector[0])) % 360.0),
-            "dec": float(np.degrees(np.arcsin(np.clip(vector[2], -1.0, 1.0)))),
-            "member_stars": int(np.sum(labels == index)),
-        })
-    return sorted(output, key=lambda item: float(item["ra"]))
-
-
-def query_gaia_field_cones(
-    *,
-    radius_deg: float = _GAIA_FIELD_RADIUS_DEG,
-    field_count: int = _GAIA_FIELD_COUNT,
-    progress: Callable[[int, int, str], None] | None = None,
-) -> dict[str, Any]:
-    """Query Gaia DR3 in field-centred cones inferred from Euclid stars."""
-    if not 0.0 < radius_deg <= 2.0:
-        raise ValueError("Gaia field-cone radius must be in (0, 2] degrees")
-    try:
-        euclid_rows = _read_rows(euclid_catalog_path())
-    except OSError as exc:
-        raise ValueError("Query Euclid population stars first") from exc
-    centres = _spherical_kmeans_field_centers(
-        euclid_rows, cluster_count=field_count,
-    )
-
-    from pyvo.dal import TAPService
-
-    tap_service = TAPService(_GAIA_TAP_URL)
-    rows: list[dict[str, Any]] = []
-
-    def field(raw: Any, name: str) -> float | None:
-        try:
-            return _finite(raw[name])
-        except (KeyError, IndexError, TypeError):
-            return None
-
-    for index, centre in enumerate(centres):
-        if progress:
-            progress(
-                index, len(centres),
-                f"Gaia field cone {index + 1}/{len(centres)}",
-            )
-        ra, dec = float(centre["ra"]), float(centre["dec"])
-        query = f"""
-        SELECT source_id, ra, dec, phot_g_mean_mag, phot_bp_mean_mag,
-               phot_rp_mean_mag, phot_g_mean_flux, phot_g_mean_flux_error,
-               phot_bp_mean_flux, phot_bp_mean_flux_error,
-               phot_rp_mean_flux, phot_rp_mean_flux_error,
-               bp_rp, teff_gspphot, ag_gspphot
-        FROM gaiadr3.gaia_source
-        WHERE CONTAINS(
-          POINT('ICRS', ra, dec),
-          CIRCLE('ICRS', {ra}, {dec}, {radius_deg})
-        ) = 1
-          AND phot_g_mean_mag IS NOT NULL
-        """
-        result = tap_service.run_sync(query, maxrec=_GAIA_SYNC_MAXREC)
-        query_status = str(result.query_status or "").upper()
-        if query_status != "OK":
-            raise RuntimeError(
-                f"{_GAIA_TAP_PROVIDER} returned {query_status or 'no'} "
-                f"status for cone {index + 1}; refusing a possibly "
-                "truncated Gaia cache"
-            )
-        cone_rows: list[dict[str, Any]] = []
-        for raw in result:
-            source_id = str(raw["source_id"]).strip()
-            source_ra = float(raw["ra"])
-            source_dec = float(raw["dec"])
-            cone_rows.append({
-                "source_id": source_id,
-                "cone_index": index,
-                "ra": source_ra,
-                "dec": source_dec,
-                "g_mag": _finite(raw["phot_g_mean_mag"]),
-                "bp_mag": _finite(raw["phot_bp_mean_mag"]),
-                "rp_mag": _finite(raw["phot_rp_mean_mag"]),
-                "g_flux": field(raw, "phot_g_mean_flux"),
-                "g_flux_error": field(raw, "phot_g_mean_flux_error"),
-                "bp_flux": field(raw, "phot_bp_mean_flux"),
-                "bp_flux_error": field(raw, "phot_bp_mean_flux_error"),
-                "rp_flux": field(raw, "phot_rp_mean_flux"),
-                "rp_flux_error": field(raw, "phot_rp_mean_flux_error"),
-                "bp_rp": _finite(raw["bp_rp"]),
-                "temperature_k": _finite(raw["teff_gspphot"]),
-                "extinction_g_mag": _finite(raw["ag_gspphot"]),
-                "central_selected_star": 0,
-            })
-        rows.extend(cone_rows)
-
-    output = gaia_catalog_path()
-    output.parent.mkdir(parents=True, exist_ok=True)
-    temporary = output.with_suffix(".tmp")
-    columns = [
-        "source_id", "cone_index", "ra", "dec", "g_mag", "bp_mag",
-        "rp_mag", "g_flux", "g_flux_error", "bp_flux", "bp_flux_error",
-        "rp_flux", "rp_flux_error", "bp_rp", "temperature_k",
-        "extinction_g_mag",
-        "central_selected_star",
-    ]
-    with temporary.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=columns)
-        writer.writeheader()
-        writer.writerows(rows)
-    os.replace(temporary, output)
-    meta = {
-        "version": 4,
-        "gaia_table": "gaiadr3.gaia_source",
-        "tap_provider": _GAIA_TAP_PROVIDER,
-        "tap_url": _GAIA_TAP_URL,
-        "query_mode": "sync",
-        "sync_maxrec": _GAIA_SYNC_MAXREC,
-        "sampling_kind": "spherical_kmeans_euclid_point_sources",
-        "clustering": "spherical_kmeans_unit_vectors",
-        "point_source_probability_min": 0.9,
-        "field_count": len(centres),
-        "cone_count": len(centres),
-        "cones": centres,
-        "radius_deg": radius_deg,
-        "radius_arcmin": 60.0 * radius_deg,
-        "area_deg2": len(centres) * math.pi * radius_deg ** 2,
-        "area_arcmin2": len(centres) * math.pi * (60.0 * radius_deg) ** 2,
-        "rows": len(rows),
-        "central_sources_excluded_from_density": 0,
-    }
-    meta_path = gaia_catalog_meta_path()
-    temporary_meta = meta_path.with_suffix(meta_path.suffix + ".tmp")
-    temporary_meta.write_text(json.dumps(meta, indent=2, sort_keys=True))
-    os.replace(temporary_meta, meta_path)
-    if progress:
-        progress(len(centres), len(centres), "Gaia field cones cached")
-    return meta
-
-
 def _require_current_gaia_field_sampling(
     meta: dict[str, Any], euclid_rows: list[dict[str, str]],
 ) -> None:
-    """Reject Gaia caches built from another footprint or sampling policy."""
+    """Reject legacy random-centre caches and incomplete fixed-Q1 samples."""
+    del euclid_rows
     if (
         meta.get("sampling_kind")
-        != "spherical_kmeans_euclid_point_sources"
-        or int(meta.get("field_count") or 0) != _GAIA_FIELD_COUNT
+        != "fixed_q1_magnitude_stratified_color_fields"
+        or int(meta.get("version") or 0) != Q1_STELLAR_COLOR_SAMPLE_VERSION
+        or int(meta.get("field_count") or 0) != len(Q1_STELLAR_COLOR_FIELDS)
         or meta.get("tap_provider") != _GAIA_TAP_PROVIDER
         or meta.get("query_mode") != "sync"
+        or meta.get("random_centres") is not False
         or not math.isclose(
             float(meta.get("radius_deg") or 0.0),
-            _GAIA_FIELD_RADIUS_DEG,
+            Q1_STELLAR_COLOR_FIELD_RADIUS_DEG,
             rel_tol=0.0,
             abs_tol=1e-12,
         )
     ):
         raise ValueError(
-            "Gaia cache is stale; query the twelve 0.35-degree field-centred "
-            "cones again"
+            "Stellar colour cache is stale; press Query MER + PHZ to refresh "
+            "the fixed Q1 magnitude-stratified sample"
         )
-    expected = _spherical_kmeans_field_centers(
-        euclid_rows, cluster_count=_GAIA_FIELD_COUNT,
-    )
-    cached = meta.get("cones") or []
+    expected = Q1_STELLAR_COLOR_FIELDS
+    cached = meta.get("fields") or []
     if len(cached) != len(expected):
-        raise ValueError("Gaia field-centre provenance is incomplete")
-    for wanted, found in zip(expected, cached, strict=True):
-        ra_delta = abs(float(wanted["ra"]) - float(found["ra"]))
+        raise ValueError("Fixed Q1 stellar-colour field provenance is incomplete")
+    for (wanted_ra, wanted_dec, wanted_name), found in zip(
+        expected, cached, strict=True,
+    ):
+        ra_delta = abs(wanted_ra - float(found["ra"]))
         ra_delta = min(ra_delta, 360.0 - ra_delta)
         if ra_delta > 1e-9 or not math.isclose(
-            float(wanted["dec"]), float(found["dec"]),
+            wanted_dec, float(found["dec"]),
             rel_tol=0.0, abs_tol=1e-9,
-        ):
+        ) or str(found.get("name")) != wanted_name:
             raise ValueError(
-                "Gaia field centres no longer match the cached Euclid stars; "
-                "query Gaia again"
+                "Stellar colour cache no longer matches the fixed Q1 fields; "
+                "press Query MER + PHZ again"
             )
 
 
@@ -691,439 +506,14 @@ def _stellar_density_comparison(
             )
             + "The magnitude panel also shows native Gaia G converted from "
             "the archive Vega magnitude to AB with the Gaia (E)DR3 zero-point "
-            "offset and divided by the cached Gaia-cone area. Gaia and Q1 are "
+            "offset and divided by the fixed Q1 Gaia-field area. Gaia and Q1 are "
             "fit over independently selected straight regions with one shared "
             "slope and separate intercepts; the Q1 intercept normalizes the "
             "12–25 VIS generator. Colour curves "
-            "remain matched-cone fit diagnostics; model curves are intrinsic "
+            "remain matched-field fit diagnostics; model curves are intrinsic "
             "generator draws without Euclid measurement noise."
         ),
     }
-
-
-def _fit_star_population_legacy(
-    *, faint_limit: float | None = None, bright_limit: float | None = None,
-) -> dict[str, Any]:
-    """Fit counts and correlated Euclid colours from cached Gaia/Euclid rows."""
-    faint = float(faint_limit or Config.STAR_MAG_FAINT)
-    bright = float(bright_limit or Config.STAR_MAG_BRIGHT)
-    gaia_rows = _read_rows(gaia_catalog_path())
-    euclid_rows = _read_rows(euclid_catalog_path())
-    try:
-        meta = json.loads(gaia_catalog_meta_path().read_text())
-    except (OSError, json.JSONDecodeError) as exc:
-        raise ValueError("Gaia cone metadata is unavailable") from exc
-    _require_current_gaia_field_sampling(meta, euclid_rows)
-
-    euclid_point_rows: list[tuple[dict[str, str], float]] = []
-    missing_probability = 0
-    invalid_probability = 0
-    for row in euclid_rows:
-        probability = _finite(row.get("point_like_prob"))
-        if probability is None:
-            missing_probability += 1
-            continue
-        if not 0.0 <= probability <= 1.0:
-            invalid_probability += 1
-            continue
-        euclid_point_rows.append((row, probability))
-
-    usable_gaia = [row for row in gaia_rows if _finite(row.get("g_mag")) is not None]
-    by_id = {str(row["source_id"]): row for row in usable_gaia}
-    matches: list[tuple[dict[str, str], dict[str, str]]] = []
-    for euclid in euclid_rows:
-        identifier = str(euclid.get("gaia_id") or "").strip()
-        gaia = by_id.get(identifier)
-        if gaia is None or euclid.get("type") != "star":
-            continue
-        values = [
-            _finite(euclid.get(key))
-            for key in ("mag_vis", "mag_y_e", "mag_j_e", "mag_h_e")
-        ]
-        if all(value is not None for value in values) and _finite(gaia.get("bp_rp")) is not None:
-            matches.append((euclid, gaia))
-
-    warnings: list[str] = []
-    if len(matches) < 8:
-        warnings.append("fewer than 8 clean Euclid-Gaia stellar matches")
-    mapping: dict[str, list[float]] = {}
-    residual_columns: list[np.ndarray] = []
-    if matches:
-        g = np.asarray([float(pair[1]["g_mag"]) for pair in matches])
-        color = np.asarray([float(pair[1]["bp_rp"]) for pair in matches])
-        design = np.column_stack([np.ones(len(matches)), color, g - 20.0])
-        for key in ("mag_vis", "mag_y_e", "mag_j_e", "mag_h_e"):
-            target = np.asarray([float(pair[0][key]) for pair in matches]) - g
-            coefficients, residual = _robust_fit(design, target)
-            mapping[key] = [float(value) for value in coefficients]
-            residual_columns.append(residual)
-        residual_matrix = np.column_stack(residual_columns)
-        covariance = np.cov(residual_matrix, rowvar=False)
-        covariance += np.eye(4) * 1e-4
-    else:
-        covariance = np.eye(4) * 0.04
-
-    area_per_cone = math.pi * float(meta["radius_arcmin"]) ** 2
-    density_counts: list[int] = []
-    for cone_index in range(int(meta["cone_count"])):
-        density_counts.append(sum(
-            int(row.get("cone_index", -1)) == cone_index
-            and row.get("central_selected_star") != "1"
-            and float(row["g_mag"]) <= _GAIA_COUNT_LIMIT_MAG
-            for row in usable_gaia
-        ))
-    bright_density = float(np.mean(density_counts) / area_per_cone)
-
-    predicted_vis: list[float] = []
-    comparison_gaia_vis: list[float] = []
-    gaia_bright_by_cone: list[list[float]] = [
-        [] for _ in range(int(meta["cone_count"]))
-    ]
-    if mapping:
-        coeff = np.asarray(mapping["mag_vis"])
-        for row in usable_gaia:
-            bp_rp = _finite(row.get("bp_rp"))
-            if bp_rp is None or row.get("central_selected_star") == "1":
-                continue
-            g_mag = float(row["g_mag"])
-            vis_mag = g_mag + float(np.dot(coeff, [1.0, bp_rp, g_mag - 20.0]))
-            predicted_vis.append(vis_mag)
-            # Gaia supplies the bright side only. Keeping the transformed VIS
-            # cut here makes Gaia and Euclid components disjoint at the splice;
-            # G<=20.5 remains the normalization convention for Gaia counts.
-            if (
-                g_mag <= _GAIA_COUNT_LIMIT_MAG
-                and bright <= vis_mag <= _GAIA_COUNT_LIMIT_MAG
-            ):
-                comparison_gaia_vis.append(vis_mag)
-                cone_index = int(row.get("cone_index") or -1)
-                if 0 <= cone_index < len(gaia_bright_by_cone) \
-                        and vis_mag <= _GAIA_COUNT_LIMIT_MAG:
-                    gaia_bright_by_cone[cone_index].append(vis_mag)
-    count_mags = np.asarray(predicted_vis, dtype=np.float64)
-    hist, edges = np.histogram(count_mags, bins=np.arange(14.0, 21.01, 0.5))
-    centres = 0.5 * (edges[:-1] + edges[1:])
-    selected = hist >= 2
-    slope = 0.2
-    if np.count_nonzero(selected) >= 4:
-        slope = float(np.polyfit(centres[selected], np.log10(hist[selected]), 1)[0])
-    slope = float(np.clip(slope, 0.02, 0.45))
-    # Normalize to the directly counted Gaia bright side, then extrapolate one
-    # continuous magnitude law to the configured faint limit.
-    beta = slope * math.log(10.0)
-    bright_integral = math.expm1(beta * (_GAIA_COUNT_LIMIT_MAG - bright))
-    full_integral = math.expm1(beta * (faint - bright))
-    # ``slope`` remains a compatibility diagnostic.  The active generator
-    # samples the empirical distribution below whenever it is present.
-    density = bright_density * full_integral / max(bright_integral, 1e-9)
-
-    colors = np.asarray([
-        float(row["bp_rp"]) for row in usable_gaia
-        if _finite(row.get("bp_rp")) is not None
-        and row.get("central_selected_star") != "1"
-    ])
-    temperatures = np.asarray([
-        float(row["temperature_k"]) for row in usable_gaia
-        if _finite(row.get("temperature_k")) is not None
-        and row.get("central_selected_star") != "1"
-    ])
-    total_area = float(meta["area_arcmin2"])
-    try:
-        euclid_area = float(json.loads(
-            euclid_catalog_meta_path().read_text()
-        )["area_arcmin2"])
-    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
-        euclid_area = total_area
-    magnitude_bins = _fixed_width_edges(bright, faint, 0.5)
-    euclid_faint_values: list[float] = []
-    euclid_faint_weights: list[float] = []
-    euclid_faint_by_cone: list[list[tuple[float, float]]] = [
-        [] for _ in range(int(meta["cone_count"]))
-    ]
-    for row, probability in euclid_point_rows:
-        magnitude = _finite(row.get("mag_vis"))
-        if magnitude is None or not _GAIA_COUNT_LIMIT_MAG < magnitude <= faint:
-            continue
-        euclid_faint_values.append(magnitude)
-        euclid_faint_weights.append(probability)
-        cone_index = int(row.get("cone_index") or -1)
-        if 0 <= cone_index < len(euclid_faint_by_cone):
-            euclid_faint_by_cone[cone_index].append((magnitude, probability))
-
-    gaia_values = np.asarray(comparison_gaia_vis, dtype=np.float64)
-    gaia_weights = np.ones(gaia_values.size, dtype=np.float64)
-    euclid_values = np.asarray(euclid_faint_values, dtype=np.float64)
-    euclid_weights = np.asarray(euclid_faint_weights, dtype=np.float64)
-    combined_values = np.concatenate([gaia_values, euclid_values])
-    combined_weights = np.concatenate([gaia_weights, euclid_weights])
-    combined_counts, _ = np.histogram(
-        combined_values, bins=magnitude_bins, weights=combined_weights,
-    )
-    expected_count = float(np.sum(combined_weights))
-    if expected_count > 0.0:
-        density = expected_count / total_area
-        cdf = np.concatenate([[0.0], np.cumsum(combined_counts) / expected_count])
-    else:
-        density = float("nan")
-        cdf = np.zeros(magnitude_bins.size, dtype=np.float64)
-    slope_bins = combined_counts > 0.0
-    if np.count_nonzero(slope_bins) >= 4:
-        slope = float(np.polyfit(
-            0.5 * (magnitude_bins[:-1] + magnitude_bins[1:])[slope_bins],
-            np.log10(combined_counts[slope_bins] / np.diff(magnitude_bins)[slope_bins]),
-            1,
-        )[0])
-    slope = float(np.clip(slope, 0.02, 0.45))
-    combined_summary = _weighted_summary(
-        combined_values, combined_weights, area_arcmin2=total_area,
-        classification_variance=float(np.sum(euclid_weights * (1.0 - euclid_weights))),
-    )
-    per_cone_density: list[float] = []
-    for cone_index in range(int(meta["cone_count"])):
-        count = float(len(gaia_bright_by_cone[cone_index]))
-        count += float(sum(weight for _value, weight in euclid_faint_by_cone[cone_index]))
-        per_cone_density.append(count / (total_area / int(meta["cone_count"])))
-    per_cone = np.asarray(per_cone_density, dtype=np.float64)
-    if len(colors) < 20:
-        warnings.append("too few Gaia BP-RP measurements for a stable colour CDF")
-    if len(temperatures) < 2:
-        warnings.append("too few Gaia temperature estimates for stellar sampling")
-    if not mapping:
-        warnings.append("no Euclid-Gaia band mapping could be fitted")
-    if not math.isfinite(density) or density <= 0:
-        warnings.append("invalid probability-weighted point-source density")
-    coverage_notes: list[str] = []
-    if missing_probability:
-        coverage_notes.append(
-            f"excluded {missing_probability:,} Euclid rows without point-like probability"
-        )
-    if invalid_probability:
-        coverage_notes.append(
-            f"excluded {invalid_probability:,} Euclid rows with invalid point-like probability"
-        )
-
-    payload: dict[str, Any] = {
-        "version": _STAR_POPULATION_VERSION,
-        "kind": "star_population_fit",
-        "valid": not warnings,
-        "warnings": warnings,
-        "coverage_notes": coverage_notes,
-        "cone_provenance": {
-            "count": int(meta["cone_count"]),
-            "radius_arcmin": float(meta["radius_arcmin"]),
-            "area_arcmin2": float(meta["area_arcmin2"]),
-            "sampling_kind": meta.get("sampling_kind"),
-            "centres": meta.get("cones"),
-            "selection_seed": meta.get("euclid_cone_selection_seed"),
-            "central_sources_excluded": int(
-                meta.get("central_sources_excluded_from_density") or 0
-            ),
-        },
-        "population": {
-            "density_arcmin2": density,
-            "bright_gaia_density_arcmin2": bright_density,
-            "bright_count_per_cone": density_counts,
-            "magnitude_slope": slope,
-            "mag_bright": bright,
-            "mag_faint": faint,
-            "magnitude_distribution": {
-                "edges": magnitude_bins.tolist(),
-                "cdf": cdf.tolist(),
-                "splice_mag": _GAIA_COUNT_LIMIT_MAG,
-                "gaia_bright_expected_count": float(gaia_values.size),
-                "euclid_faint_expected_count": float(np.sum(euclid_weights)),
-            },
-            "weighted_statistics": combined_summary,
-            "per_cone_density_arcmin2": per_cone_density,
-            "per_cone_mean_density_arcmin2": float(np.mean(per_cone)) if per_cone.size else None,
-            "per_cone_std_density_arcmin2": float(np.std(per_cone)) if per_cone.size else None,
-        },
-        "euclid_point_source_weights": {
-            "rows": len(euclid_point_rows),
-            "missing_probability_rows": missing_probability,
-            "invalid_probability_rows": invalid_probability,
-            "weight_sum": float(np.sum([weight for _row, weight in euclid_point_rows])),
-            "classification_variance": float(np.sum(
-                euclid_weights * (1.0 - euclid_weights)
-            )),
-            "selection": {
-                "mag_min": bright,
-                "mag_max": faint,
-                "faint_component_min_exclusive": _GAIA_COUNT_LIMIT_MAG,
-            },
-        },
-        "gaia": {
-            "rows": len(usable_gaia),
-            "bp_rp_quantiles": _quantiles(colors),
-            "temperature_quantiles_k": _quantiles(temperatures),
-        },
-        "euclid_mapping": {
-            "matched_stars": len(matches),
-            "feature_order": ["intercept", "bp_rp", "g_minus_20"],
-            "g_to_band_offset_coefficients": mapping,
-            "band_order": ["VIS", "Y_E", "J_E", "H_E"],
-            "residual_covariance": covariance.tolist(),
-        },
-    }
-    if mapping and colors.size:
-        model = EmpiricalStellarPrior.from_payload(payload)
-        rng = np.random.default_rng(71033)
-        sample_count = 10_000
-        sample_mags = np.asarray([
-            model.sample_magnitude(
-                rng, slope=slope, m_bright=bright, m_faint=faint,
-            )
-            for _ in range(sample_count)
-        ], dtype=np.float64)
-        fitted_seds = [model.sample(rng, value) for value in sample_mags]
-        fitted_band = {
-            name: np.asarray([sed.magnitudes[name] for sed in fitted_seds])
-            for name in ("VIS", "Y_E", "J_E", "H_E")
-        }
-        euclid_color_values: dict[str, tuple[np.ndarray, np.ndarray]] = {}
-        for color_key, left, right in (
-            ("vis_y", "mag_vis", "mag_y_e"),
-            ("y_j", "mag_y_e", "mag_j_e"),
-            ("j_h", "mag_j_e", "mag_h_e"),
-        ):
-            values: list[float] = []
-            weights: list[float] = []
-            for row, probability in euclid_point_rows:
-                first, second = _finite(row.get(left)), _finite(row.get(right))
-                if first is not None and second is not None:
-                    values.append(first - second)
-                    weights.append(probability)
-            euclid_color_values[color_key] = (
-                np.asarray(values, dtype=np.float64),
-                np.asarray(weights, dtype=np.float64),
-            )
-        diagnostics: dict[str, Any] = {
-            "star_density_per_cone": {
-                "x": list(range(1, len(density_counts) + 1)),
-                "observed": per_cone_density,
-                "fitted": [density] * len(per_cone_density),
-                "label": "probability-weighted point-source density per cone",
-                "unit": "point sources / arcmin²",
-                "statistics": {
-                    "mean": float(np.mean(per_cone)) if per_cone.size else None,
-                    "std": float(np.std(per_cone)) if per_cone.size else None,
-                    "p16": float(np.percentile(per_cone, 16)) if per_cone.size else None,
-                    "p50": float(np.percentile(per_cone, 50)) if per_cone.size else None,
-                    "p84": float(np.percentile(per_cone, 84)) if per_cone.size else None,
-                },
-            },
-            "parameters": {},
-        }
-        magnitude_diagnostic = _weighted_histogram(
-            combined_values, combined_weights, bins=magnitude_bins,
-            area_arcmin2=total_area,
-        )
-        fitted_counts, _ = np.histogram(fitted_band["VIS"], bins=magnitude_bins)
-        magnitude_diagnostic["fitted"] = (
-            fitted_counts.astype(np.float64) * density / sample_count
-            / np.diff(magnitude_bins)
-        ).tolist()
-        magnitude_diagnostic["fitted_count"] = sample_count
-        magnitude_diagnostic["gaia_bright"] = _weighted_histogram(
-            gaia_values, gaia_weights, bins=magnitude_bins,
-            area_arcmin2=total_area,
-        )["observed"]
-        magnitude_diagnostic["euclid_weighted"] = _weighted_histogram(
-            euclid_values, euclid_weights, bins=magnitude_bins,
-            area_arcmin2=total_area,
-        )["observed"]
-        magnitude_diagnostic["observed_limit_mag"] = _GAIA_COUNT_LIMIT_MAG
-        diagnostics["parameters"]["mag_vis"] = {
-            **magnitude_diagnostic,
-            "label": "point-source density versus VIS magnitude",
-            "unit": "AB mag",
-            "density_unit": "point sources / arcmin² / mag",
-            "observed_label": "Gaia bright + Euclid probability-weighted faint",
-            "gaia_bright_label": "same-footprint Gaia transformed to VIS",
-            "euclid_weighted_label": "Euclid weighted by POINT_LIKE_PROB",
-            "statistics": combined_summary,
-            "extrapolation_note": (
-                "Gaia contributes the bright side through G≤20.5; the faint side "
-                "is the Euclid point-like probability-weighted population."
-            ),
-        }
-        for key, fitted_values, label in (
-            ("vis_y", fitted_band["VIS"] - fitted_band["Y_E"], "VIS − Y"),
-            ("y_j", fitted_band["Y_E"] - fitted_band["J_E"], "Y − J"),
-            ("j_h", fitted_band["J_E"] - fitted_band["H_E"], "J − H"),
-        ):
-            observed_values, observed_weights = euclid_color_values[key]
-            if observed_values.size == 0:
-                continue
-            lo = min(float(np.percentile(observed_values, 1)), float(np.percentile(fitted_values, 1)))
-            hi = max(float(np.percentile(observed_values, 99)), float(np.percentile(fitted_values, 99)))
-            bins = np.linspace(lo, hi, 25)
-            weighted = _weighted_histogram(
-                observed_values, observed_weights, bins=bins,
-                area_arcmin2=float(np.sum(observed_weights)),
-            )
-            fitted_counts, _ = np.histogram(fitted_values, bins=bins)
-            widths = np.diff(bins)
-            diagnostics["parameters"][key] = {
-                **weighted,
-                "fitted": (fitted_counts / sample_count / widths).tolist(),
-                "fitted_count": sample_count,
-                "label": label,
-                "unit": "AB mag",
-                "density_unit": "probability density",
-                "observed_label": "Euclid point-like probability-weighted",
-                "statistics": _weighted_summary(
-                    observed_values, observed_weights, area_arcmin2=1.0,
-                    classification_variance=float(np.sum(
-                        observed_weights * (1.0 - observed_weights)
-                    )),
-                ),
-            }
-        fitted_colors = np.asarray([
-            float(np.interp(rng.random(), np.linspace(0, 1, colors.size), np.sort(colors)))
-            for _ in range(sample_count)
-        ])
-        diagnostics["parameters"]["bp_rp"] = {
-            **_histogram(
-                colors, fitted_colors,
-                bins=np.linspace(float(np.min(colors)), float(np.max(colors)), 25),
-                observed_scale=1.0 / len(colors), fitted_scale=1.0 / sample_count,
-            ),
-            "label": "Gaia BP − RP", "unit": "mag",
-            "density_unit": "probability density",
-            "statistics": _weighted_summary(
-                colors, np.ones(colors.size), area_arcmin2=1.0,
-            ),
-        }
-        if temperatures.size:
-            fitted_temperature = np.asarray([sed.temperature_k for sed in fitted_seds])
-            diagnostics["parameters"]["temperature_k"] = {
-                **_histogram(
-                    temperatures, fitted_temperature,
-                    bins=np.linspace(float(np.min(temperatures)), float(np.max(temperatures)), 25),
-                    observed_scale=1.0 / len(temperatures), fitted_scale=1.0 / sample_count,
-                ),
-                "label": "Gaia temperature", "unit": "K",
-                "density_unit": "probability density",
-                "statistics": _weighted_summary(
-                    temperatures, np.ones(temperatures.size), area_arcmin2=1.0,
-                ),
-            }
-        payload["diagnostics"] = diagnostics
-    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
-    payload["fingerprint"] = hashlib.sha256(canonical.encode()).hexdigest()
-    write_star_candidate(payload)
-    _write_star_distribution(_star_distribution_from_rows(
-        euclid_rows,
-        gaia_rows,
-        calibration_fingerprint=payload["fingerprint"],
-        color_model=payload.get("color_model"),
-        stellar_model=payload,
-        area_arcmin2=euclid_area,
-        gaia_area_arcmin2=total_area,
-        gaia_sampling=meta,
-    ))
-    return payload
 
 
 _LATENT_NODE_COUNT = 17
@@ -1474,7 +864,7 @@ def _star_distribution_from_rows(
             "note": (
                 "Each point is a fit-derived central prediction: Gaia G is "
                 "mapped to VIS and Gaia BP−RP is mapped to the three Euclid "
-                "colours. The Euclid-cone overlay shows measured catalogue "
+                "colours. The fixed-Q1 Euclid overlay shows measured catalogue "
                 "stars with valid VIS and the comparison band. No random "
                 "scatter or simulated noise is added to the Gaia projection."
             ),
@@ -2016,7 +1406,7 @@ def _fit_star_population_latent() -> dict[str, Any]:
 
     # The flux likelihood is independent of the magnitude-bin mixture weights.
     # Cache it once; recomputing 17 node scores for every EM iteration makes a
-    # large cached cone set needlessly expensive.
+    # large cached fixed-field sample needlessly expensive.
     for record in euclid_records:
         magnitude = _finite(record["row"].get("mag_vis"))
         record["likelihood"] = (
@@ -2176,13 +1566,13 @@ def _fit_star_population_latent() -> dict[str, Any]:
                 ) for row in euclid_rows
             )),
         },
-        "color_cone_provenance": {
-            "count": int(meta["cone_count"]),
-            "radius_arcmin": float(meta["radius_arcmin"]),
+        "color_sample_provenance": {
+            "field_count": int(meta["field_count"]),
+            "radius_deg": float(meta["radius_deg"]),
             "area_arcmin2": float(meta["area_arcmin2"]),
             "sampling_kind": meta.get("sampling_kind"),
-            "centres": meta.get("cones"),
-            "selection_seed": meta.get("euclid_cone_selection_seed"),
+            "fields": meta.get("fields"),
+            "random_centres": meta.get("random_centres"),
             "role": "Gaia-Euclid color and temperature locus only",
         },
         "population_provenance": {
@@ -2236,7 +1626,9 @@ def _fit_star_population_latent() -> dict[str, Any]:
         "classification_weighting": {
             "population_selection": "POINT_LIKE_PROB >= 0.9 over Q1",
             "population_star_weight": "PHZ_STAR_PROB over selected Q1 rows",
-            "color_locus_star_weight": "POINT_LIKE_PROB in matched cones",
+            "color_locus_star_weight": (
+                "POINT_LIKE_PROB in the fixed Q1 matched sample"
+            ),
             "missing_probability_rows": missing_probability,
             "invalid_probability_rows": invalid_probability,
             "usable_probability_rows": usable_probability_rows,
@@ -2263,7 +1655,7 @@ def _fit_star_population_latent() -> dict[str, Any]:
             },
         },
         "fingerprint_inputs": {
-            "euclid_catalog_version": meta.get("catalog_version"),
+            "euclid_catalog_version": Q1_STELLAR_COLOR_SAMPLE_VERSION,
             "euclid_rows": len(euclid_rows),
             "gaia_rows": len(gaia_rows),
             "q1_area_arcmin2": area,
@@ -2271,11 +1663,11 @@ def _fit_star_population_latent() -> dict[str, Any]:
             "gaia_sampling": {
                 key: meta.get(key)
                 for key in (
-                    "version", "sampling_kind", "clustering", "field_count",
-                    "radius_deg", "area_deg2", "cones",
+                    "version", "sampling_kind", "field_count", "radius_deg",
+                    "area_deg2", "fields", "random_centres",
                 )
             },
-            "fit_version": "q1-phz-gaia-shared-straight-counts-latent-locus-v3",
+            "fit_version": "q1-phz-gaia-shared-straight-counts-latent-locus-v4",
             "selection": {
                 "bright_limit": bright,
                 "faint_limit": faint,
@@ -2331,9 +1723,7 @@ def _fit_star_population_latent() -> dict[str, Any]:
     predictive_array = np.asarray(predictive_colors)
     predictive_weight_array = np.asarray(predictive_weights)
     diagnostics: dict[str, Any] = {
-        # Keep the established key so existing cached-plot consumers can read
-        # the new diagnostic; its axis is now VIS magnitude, not cone index.
-        "star_density_per_cone": {
+        "stellar_density_by_magnitude": {
             "x": magnitude_centres.tolist(),
             "observed": (
                 counts / area / np.diff(magnitude_bins)

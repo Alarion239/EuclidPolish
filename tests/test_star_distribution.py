@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
 
 import pytest
 
@@ -222,53 +223,34 @@ def test_stellar_density_comparison_uses_area_density_and_all_six_colours(
     assert sum(result["parameters"]["vis"]["model"]) * 0.5 == pytest.approx(2.0)
 
 
-def test_spherical_kmeans_finds_fields_across_ra_wrap():
+def test_stellar_colour_cache_rejects_legacy_random_fields():
+    from euclid_polish.web.helpers.q1_stellar_colors import (
+        GAIA_TAP_PROVIDER,
+        Q1_STELLAR_COLOR_FIELD_RADIUS_DEG,
+        Q1_STELLAR_COLOR_FIELDS,
+        Q1_STELLAR_COLOR_SAMPLE_VERSION,
+    )
     from euclid_polish.web.helpers.star_population import (
         _require_current_gaia_field_sampling,
-        _spherical_kmeans_field_centers,
     )
 
-    rows = [
-        {"ra": str(ra), "dec": str(dec), "point_like_prob": "0.95"}
-        for ra, dec in (
-            (359.8, 10.0), (0.2, 10.1), (0.0, 9.9),
-            (119.8, -30.0), (120.2, -30.1), (120.0, -29.9),
-            (239.8, 55.0), (240.2, 55.1), (240.0, 54.9),
-        )
-    ]
-    rows.append({"ra": "80", "dec": "0", "point_like_prob": "0.5"})
-
-    centres = _spherical_kmeans_field_centers(rows, cluster_count=3)
-
-    assert [item["member_stars"] for item in centres] == [3, 3, 3]
-    centre_ras = [float(item["ra"]) for item in centres]
-    assert any(min(ra, 360.0 - ra) < 0.1 for ra in centre_ras)
-    assert any(abs(ra - 120.0) < 0.1 for ra in centre_ras)
-    assert any(abs(ra - 240.0) < 0.1 for ra in centre_ras)
-
-    current_rows = [
-        {
-            "ra": str(15.0 + 30.0 * index),
-            "dec": str(-30.0 + 5.0 * (index % 4)),
-            "point_like_prob": "0.95",
-        }
-        for index in range(12)
-    ]
-    current_centres = _spherical_kmeans_field_centers(
-        current_rows, cluster_count=12,
-    )
     meta = {
-        "sampling_kind": "spherical_kmeans_euclid_point_sources",
-        "field_count": 12,
-        "radius_deg": 0.35,
-        "tap_provider": "ARI Gaia TAP",
+        "version": Q1_STELLAR_COLOR_SAMPLE_VERSION,
+        "sampling_kind": "fixed_q1_magnitude_stratified_color_fields",
+        "field_count": len(Q1_STELLAR_COLOR_FIELDS),
+        "radius_deg": Q1_STELLAR_COLOR_FIELD_RADIUS_DEG,
+        "tap_provider": GAIA_TAP_PROVIDER,
         "query_mode": "sync",
-        "cones": current_centres,
+        "random_centres": False,
+        "fields": [
+            {"ra": ra, "dec": dec, "name": name}
+            for ra, dec, name in Q1_STELLAR_COLOR_FIELDS
+        ],
     }
-    _require_current_gaia_field_sampling(meta, current_rows)
-    meta["radius_deg"] = 0.5
+    _require_current_gaia_field_sampling(meta, [])
+    meta["random_centres"] = True
     with pytest.raises(ValueError, match="cache is stale"):
-        _require_current_gaia_field_sampling(meta, current_rows)
+        _require_current_gaia_field_sampling(meta, [])
 
 
 def test_star_distribution_page_and_status_route(monkeypatch):
@@ -279,7 +261,10 @@ def test_star_distribution_page_and_status_route(monkeypatch):
         "matched_stars": 2772,
         "colors": {"vis_j": {"values": [0.4]}},
     }
-    monkeypatch.setattr(routes, "availability", lambda: {"ready": True})
+    monkeypatch.setattr(
+        routes, "q1_stellar_color_sample_state",
+        lambda: {"cached": True, "euclid": {"rows": 12}, "gaia": {"rows": 20}},
+    )
     monkeypatch.setattr(routes, "star_state", lambda: {"status": "candidate"})
     monkeypatch.setattr(routes.euclid_session, "is_authenticated", lambda: True)
     monkeypatch.setattr(routes, "_q1_counts_state", lambda: {"bins": []})
@@ -298,65 +283,34 @@ def test_star_distribution_page_and_status_route(monkeypatch):
     assert status.status_code == 200
     assert status.get_json() == {
         "authenticated": True,
-        "availability": {"ready": True},
+        "color_sample": {
+            "cached": True,
+            "euclid": {"rows": 12},
+            "gaia": {"rows": 20},
+        },
         "calibration": {"status": "candidate"},
         "distribution": expected_distribution,
         "q1_counts": {"bins": []},
     }
 
 
-def test_direct_q1_query_requires_login_but_not_cached_cones(monkeypatch):
+def test_star_page_uses_the_single_galaxy_page_mer_phz_query():
     from euclid_polish.web.app import create_app
-    from euclid_polish.web.routes import star_distribution as routes
+    source = (
+        Path(__file__).parents[1]
+        / "euclid_polish/web/frontend/src/pages/StarDistribution.tsx"
+    ).read_text()
 
-    class Catalog:
-        @staticmethod
-        def relogin():
-            return True
-
-    class Capture:
-        def tick(self, *_args):
-            pass
-
-        def write(self, _message):
-            pass
-
-    calls = []
-
-    def query(**kwargs):
-        calls.append(kwargs)
-        return {
-            "expected_point_sources": 18.0,
-            "expected_stars": 12.5,
-            "footprint_area_deg2": 63.1,
-            "bins": [{"mag_lo": 12.0, "mag_hi": 12.1}],
-        }
-
-    def spawn(*, label, target):
-        calls.append(label)
-        target(Capture())
-        return "q1-job"
-
-    monkeypatch.setattr(routes.euclid_session, "catalog", lambda: Catalog())
-    monkeypatch.setattr(routes, "query_q1_phz_star_counts", query)
-    monkeypatch.setattr(routes.REGISTRY, "spawn", spawn)
-    monkeypatch.setattr(
-        routes,
-        "availability",
-        lambda: pytest.fail("direct Q1 query must not inspect cone cache"),
-    )
-
-    response = create_app().test_client().post(
+    assert create_app().test_client().post(
         "/api/star-distribution/query-q1-counts"
-    )
+    ).status_code == 404
+    assert 'to="/galaxy-distributions"' in source
+    assert "Open Query MER + PHZ" in source
+    assert "/api/star-distribution/query-q1-counts" not in source
+    assert "Random Euclid population cones" not in source
 
-    assert response.status_code == 200
-    assert response.get_json() == {"ok": True, "job_id": "q1-job"}
-    assert calls[0] == "star distribution: direct Q1 point-source + PHZ counts"
-    assert calls[1]["relogin"]() is True
 
-
-def test_gaia_field_query_does_not_require_euclid_login(monkeypatch):
+def test_cached_stellar_fit_does_not_query_gaia_or_require_euclid_login(monkeypatch):
     from euclid_polish.web.app import create_app
     from euclid_polish.web.routes import star_distribution as routes
 
@@ -369,19 +323,13 @@ def test_gaia_field_query_does_not_require_euclid_login(monkeypatch):
 
     calls = []
     monkeypatch.setattr(
-        routes,
-        "availability",
-        lambda: {"euclid_catalog": {"cached": True}},
+        routes, "q1_stellar_color_sample_state",
+        lambda: {"cached": True},
     )
     monkeypatch.setattr(
         routes,
         "read_q1_phz_star_counts",
         lambda: {"expected_stars": 12.0, "footprint_area_deg2": 63.1},
-    )
-    monkeypatch.setattr(
-        routes,
-        "query_gaia_field_cones",
-        lambda **_kwargs: {"cone_count": 3, "rows": 90},
     )
     monkeypatch.setattr(
         routes,
@@ -401,8 +349,8 @@ def test_gaia_field_query_does_not_require_euclid_login(monkeypatch):
         lambda: pytest.fail("Gaia query must not require Euclid login"),
     )
 
-    response = create_app().test_client().post("/api/star-distribution/query")
+    response = create_app().test_client().post("/api/star-distribution/fit")
 
     assert response.status_code == 200
     assert response.get_json() == {"ok": True, "job_id": "gaia-job"}
-    assert calls == ["star distribution: Gaia field-cone color fit"]
+    assert calls == ["star distribution: fit cached stellar colours"]

@@ -6,6 +6,7 @@ import csv
 import hashlib
 import heapq
 import json
+import math
 import os
 from collections.abc import Callable
 from pathlib import Path
@@ -24,6 +25,7 @@ from euclid_polish.population.joint_galaxy import (
 )
 from euclid_polish.web.helpers.population_calibration import (
     joint_galaxy_candidate,
+    joint_galaxy_candidate_path,
     joint_galaxy_state,
 )
 from euclid_polish.web.helpers.population_comparison import (
@@ -38,8 +40,12 @@ from euclid_polish.web.helpers.q1_galaxy_counts import (
     read_q1_galaxy_aperture_counts,
     read_q1_galaxy_aperture_fit,
 )
+from euclid_polish.web.helpers.q1_galaxy_radius_statistics import (
+    q1_galaxy_radius_statistics_path,
+    read_q1_galaxy_radius_statistics,
+)
 
-ARTIFACT_VERSION = 11
+ARTIFACT_VERSION = 12
 MAG_EDGES = np.arange(14.0, 30.0001, 0.25)
 RADIUS_MAX_VIS_PIXELS = 100.0
 RADIUS_MAX_ARCSEC = RADIUS_MAX_VIS_PIXELS * float(Config.VIS_PIXEL_SCALE_ARCSEC)
@@ -101,6 +107,8 @@ def _inputs() -> dict[str, Any]:
         "euclid_phz_pdf": _signature(euclid_phz_pdf_path()),
         "q1_galaxy_counts": _signature(q1_galaxy_counts_path()),
         "q1_galaxy_fit": _signature(q1_galaxy_fit_path()),
+        "q1_galaxy_radius": _signature(q1_galaxy_radius_statistics_path()),
+        "joint_galaxy_candidate": _signature(joint_galaxy_candidate_path()),
         "cosmos": _signature(Path(Config.COSMOS_POPULATION_PRIOR_PATH)),
         "fit": _signature(Path(Config.JOINT_GALAXY_POPULATION_FIT_PATH)),
     }
@@ -457,6 +465,67 @@ def _read_q1_bright_counts(parameters: dict[str, Any]) -> dict[str, Any]:
             for key, aperture in payload["apertures"].items()
         },
         "detail": "progressive Q1 MER + PHZ bright-galaxy aperture counts",
+    }
+
+
+def _read_q1_radius_statistics(parameters: dict[str, Any]) -> dict[str, Any]:
+    """Use only aggregate Q1 brackets for the fitted Sersic-radius curve."""
+    radius_parameter = parameters["radius"]
+    radius_series = radius_parameter["radius_series"]
+    # An old field/cone catalogue may still provide detection and Kron
+    # diagnostics, but it must never masquerade as the fitted Sersic sample.
+    radius_series.pop("euclid_sersic_re", None)
+    radius_parameter["radius_missing"] = [
+        message for message in radius_parameter["radius_missing"]
+        if "Sersic" not in message and "Sérsic" not in message
+    ]
+    try:
+        payload = read_q1_galaxy_radius_statistics()
+    except ValueError:
+        radius_parameter["radius_missing"].append(
+            "Press Query MER + PHZ to cache aggregate VIS 2FWHM x Sersic-R_e "
+            "brackets. Random population cones are not used."
+        )
+        return {
+            "available": False,
+            "detail": "Query aggregate Q1 Sersic-radius brackets.",
+        }
+    bins = payload["radius_bins"]
+    x = [
+        0.5 * (
+            math.log10(float(item["radius_lo_arcsec"]))
+            + math.log10(float(item["radius_hi_arcsec"]))
+        )
+        for item in bins
+    ]
+    density = [float(item["density_arcmin2_dex"]) for item in bins]
+    radius_series["euclid_sersic_re"] = {
+        "x": x,
+        "density": density,
+        "weighted_count": float(sum(
+            float(item["expected_radii"]) for item in bins
+        )),
+        "definition": (
+            "aggregate Q1 MER morphology VIS Sersic effective-radius "
+            "brackets; SERSIC_VISNIR_FLAGS = 0; weighted by PHZ_GAL_PROB"
+        ),
+        "label": "Q1 PHZ/MER · VIS Sersic R_e",
+        "source": "euclid",
+        "radius_type": "half_light",
+        "units": "arcsec",
+        "default_on": True,
+    }
+    return {
+        "available": True,
+        "complete": bool(payload["complete"]),
+        "completed_queries": int(payload["completed_queries"]),
+        "total_queries": int(payload["total_queries"]),
+        "magnitude_brackets": len(payload["magnitude_bins"]),
+        "radius_brackets": len(bins),
+        "footprint_area_deg2": float(payload["footprint_area_deg2"]),
+        "selection": str(payload["selection"]),
+        "acquisition": str(payload["acquisition"]),
+        "detail": "aggregate Q1 VIS 2FWHM x Sersic-R_e statistics",
     }
 
 
@@ -1014,6 +1083,7 @@ def build_galaxy_distributions(progress: Callable[[int, int, str], None] | None 
     euclid = _read_euclid(parameters, tick)
     tick(2, 5, "read progressive Q1 MER + PHZ bright-galaxy counts")
     q1_counts = _read_q1_bright_counts(parameters)
+    q1_radius = _read_q1_radius_statistics(parameters)
     tick(3, 5, "read COSMOS2025")
     cosmos = _read_cosmos(parameters)
     tick(4, 5, "reconstruct fitted distribution")
@@ -1021,8 +1091,12 @@ def build_galaxy_distributions(progress: Callable[[int, int, str], None] | None 
     payload = {
         "version": ARTIFACT_VERSION,
         "inputs": _inputs(),
-        "sources": {"euclid": euclid, "cosmos": cosmos, "fit": fit},
+        "sources": {
+            "euclid": euclid, "cosmos": cosmos, "fit": fit,
+            "q1_radius": q1_radius,
+        },
         "q1_counts": q1_counts,
+        "q1_radius": q1_radius,
         "parameters": parameters,
     }
     path = artifact_path()
@@ -1042,6 +1116,7 @@ def read_galaxy_distributions() -> dict[str, Any]:
             "version": ARTIFACT_VERSION,
             "sources": {},
             "q1_counts": {"available": False},
+            "q1_radius": {"available": False},
             "parameters": _empty_parameters(),
         }
     # The archive job checkpoints after every aperture/bin request. Overlay
@@ -1055,4 +1130,5 @@ def read_galaxy_distributions() -> dict[str, Any]:
             for key in [item for item in series if item.startswith("q1_vis_")]:
                 del series[key]
         payload["q1_counts"] = _read_q1_bright_counts(parameters)
+        payload["q1_radius"] = _read_q1_radius_statistics(parameters)
     return {**payload, "stale": stale, "artifact_path": str(artifact_path())}

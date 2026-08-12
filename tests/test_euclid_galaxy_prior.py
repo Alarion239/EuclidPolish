@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import csv
 import json
 from types import SimpleNamespace
 
@@ -8,10 +7,10 @@ import numpy as np
 import pytest
 
 from euclid_polish.config import Config
-from euclid_polish.photometry import ab_mag_to_uJy
 from euclid_polish.population.euclid_galaxy_prior import (
     ConditionalRadiusLaw,
     fit_conditional_radius_law,
+    fit_conditional_radius_law_from_aggregate_moments,
     joint_density_grid,
 )
 from euclid_polish.population.magnitude_law import StraightMagnitudeLaw
@@ -52,7 +51,7 @@ def radius_law() -> ConditionalRadiusLaw:
 def active_payload() -> dict:
     mag = magnitude_law()
     return {
-        "version": 4, "kind": "euclid_vis2fwhm_sersic_re_joint",
+        "version": 5, "kind": "euclid_vis2fwhm_sersic_re_joint",
         "valid": True, "active": True, "fingerprint": "b" * 64,
         "magnitude_law": mag.to_payload(),
         "radius_law": radius_law().to_payload(),
@@ -97,6 +96,25 @@ def test_joint_grid_integrates_to_straight_brightness_density():
     assert np.sum(grid["density"]) == pytest.approx(
         mag.integrated_density(), rel=2e-3,
     )
+
+
+def test_aggregate_radius_moments_recover_straight_relation():
+    magnitude = np.linspace(18.0, 27.0, 40)
+    expected_intercept, expected_slope, expected_scatter = -0.35, -0.075, 0.16
+    mean_log10 = expected_intercept + expected_slope * (magnitude - 23.0)
+    sigma_ln = expected_scatter * np.log(10.0)
+    mean_ln = mean_log10 * np.log(10.0)
+    expected = np.full(magnitude.shape, 80.0)
+    first = expected * np.exp(mean_ln + 0.5 * sigma_ln**2)
+    second = expected * np.exp(2.0 * mean_ln + 2.0 * sigma_ln**2)
+
+    law = fit_conditional_radius_law_from_aggregate_moments(
+        magnitude, np.full(magnitude.shape, 100), expected, first, second,
+    )
+
+    assert law.intercept_log10_arcsec == pytest.approx(expected_intercept)
+    assert law.slope_log10_arcsec_per_mag == pytest.approx(expected_slope)
+    assert law.scatter_dex == pytest.approx(expected_scatter)
 
 
 def test_prior_draws_radius_first_then_brightness_conditioned_on_radius():
@@ -194,42 +212,47 @@ def test_euclid_candidate_activates_atomically(tmp_path, monkeypatch):
     }]
 
 
-def test_candidate_fit_uses_only_euclid_brightness_and_sersic_radius(
+def test_candidate_fit_uses_only_aggregate_euclid_brightness_and_sersic_radius(
     tmp_path, monkeypatch,
 ):
     monkeypatch.setattr(Config, "DATA_DIR", str(tmp_path))
-    catalog = tmp_path / "euclid.csv"
-    meta = tmp_path / "euclid.json"
-    fieldnames = [
-        "flux_vis_2fwhm_aper_uJy", "morph_sersic_vis_radius_arcsec",
-        "morph_sersic_visnir_flags", "phz_gal_prob", "spurious_prob",
+    from euclid_polish.web.helpers.q1_galaxy_counts import (
+        q1_galaxy_counts_path,
+        q1_galaxy_fit_path,
+    )
+    from euclid_polish.web.helpers.q1_galaxy_radius_statistics import (
+        q1_galaxy_radius_statistics_path,
+    )
+
+    for path in (
+        q1_galaxy_counts_path(), q1_galaxy_fit_path(),
+        q1_galaxy_radius_statistics_path(),
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{}")
+    magnitude = np.linspace(14.05, 27.95, 140)
+    expected = np.full(magnitude.shape, 8.0)
+    mean_log10 = -0.4 - 0.06 * (magnitude - 23.0)
+    sigma_ln = 0.12 * np.log(10.0)
+    mean_ln = mean_log10 * np.log(10.0)
+    first = expected * np.exp(mean_ln + 0.5 * sigma_ln**2)
+    second = expected * np.exp(2.0 * mean_ln + 2.0 * sigma_ln**2)
+    moment_bins = [
+        {
+            "mag_lo": float(value - 0.05), "mag_hi": float(value + 0.05),
+            "selected_radii": 10, "expected_radii": float(weight),
+            "weighted_radius_sum_arcsec": float(first_sum),
+            "weighted_radius2_sum_arcsec2": float(second_sum),
+        }
+        for value, weight, first_sum, second_sum in zip(
+            magnitude, expected, first, second, strict=True,
+        )
     ]
-    rng = np.random.default_rng(9)
-    with catalog.open("w", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
-        writer.writeheader()
-        for magnitude in np.linspace(18.0, 27.0, 500):
-            writer.writerow({
-                "flux_vis_2fwhm_aper_uJy": float(ab_mag_to_uJy(magnitude)),
-                "morph_sersic_vis_radius_arcsec": 10.0 ** (
-                    -0.4 - 0.06 * (magnitude - 23.0)
-                    + rng.normal(0.0, 0.12)
-                ),
-                "morph_sersic_visnir_flags": 0,
-                "phz_gal_prob": 0.8,
-                "spurious_prob": 0.0,
-            })
-    meta.write_text(json.dumps({
-        "catalog_version": 7, "rows": 500, "area_arcmin2": 100.0,
-    }))
-    monkeypatch.setattr(
-        "euclid_polish.web.helpers.population_comparison.euclid_catalog_path",
-        lambda: catalog,
-    )
-    monkeypatch.setattr(
-        "euclid_polish.web.helpers.population_comparison.euclid_catalog_meta_path",
-        lambda: meta,
-    )
+    radius_edges = np.geomspace(0.03, 10.0, 31)
+    radius_bins = [
+        {"density_arcmin2_dex": float(index + 1), "expected_radii": 5.0}
+        for index in range(30)
+    ]
     monkeypatch.setattr(
         "euclid_polish.web.helpers.q1_galaxy_counts."
         "read_q1_galaxy_aperture_fit",
@@ -243,6 +266,7 @@ def test_candidate_fit_uses_only_euclid_brightness_and_sersic_radius(
         "euclid_polish.web.helpers.q1_galaxy_counts."
         "read_q1_galaxy_aperture_counts",
         lambda: {
+            "complete": True,
             "faint": 28.0,
             "apertures": {"f2": {"bins": [
                 {"mag_lo": 14.0, "mag_hi": 15.0,
@@ -252,11 +276,24 @@ def test_candidate_fit_uses_only_euclid_brightness_and_sersic_radius(
             ]}},
         },
     )
+    monkeypatch.setattr(
+        "euclid_polish.web.helpers.q1_galaxy_radius_statistics."
+        "read_q1_galaxy_radius_statistics",
+        lambda: {
+            "complete": True,
+            "footprint_area_arcmin2": 100.0,
+            "magnitude_bins": moment_bins,
+            "radius_bins": radius_bins,
+            "radius_edges_arcsec": radius_edges.tolist(),
+        },
+    )
 
     payload = fit_euclid_joint_galaxy_candidate()
 
-    assert payload["version"] == 4
+    assert payload["version"] == 5
     assert payload["provenance"]["cosmos_used"] is False
+    assert payload["provenance"]["random_cones_used"] is False
+    assert payload["provenance"]["object_catalog_used"] is False
     assert payload["radius_law"]["slope_log10_arcsec_per_mag"] == pytest.approx(
         -0.06, abs=0.01,
     )
