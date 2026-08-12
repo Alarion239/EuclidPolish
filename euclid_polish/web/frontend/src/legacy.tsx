@@ -22,7 +22,7 @@ export type ViewerApi = {
   getIndex(): number;
   isReady(): boolean;
   getState(): ViewerState;
-  /** Export a fixed-resolution annotated figure with the matched cursor inset. */
+  /** Export full panels, or matched crops when a magnification is selected. */
   exportFigure(): void;
   reload(): Promise<void>;
   destroy(): void;

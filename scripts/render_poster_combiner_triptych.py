@@ -65,9 +65,10 @@ def _member_id(label: str) -> str:
     return match.group(1)
 
 
-def _run_members(lr: np.ndarray, *, ckpt_root: str, combiner) -> np.ndarray:
+def _run_members(lr: np.ndarray, *, ckpt_root: str,
+                 labels: list[str]) -> np.ndarray:
     predictions = []
-    for label in combiner.member_labels:
+    for label in labels:
         member_id = _member_id(label)
         member_dir = os.path.join(ckpt_root, f"member_{int(member_id):02d}")
         if not os.path.isfile(os.path.join(member_dir, "checkpoint")):
@@ -191,13 +192,20 @@ def _render_individual_members(
                     pad_inches=0.04)
         plt.close(fig)
 
-    fig, axes = plt.subplots(2, 5, figsize=(15.0, 6.8), dpi=220,
-                             facecolor="black")
-    for ax, image, label in zip(axes.flat, vis, labels, strict=True):
+    ncols = min(5, max(1, len(labels)))
+    nrows = (len(labels) + ncols - 1) // ncols
+    fig, axes = plt.subplots(
+        nrows, ncols, figsize=(ncols * 3.0, nrows * 3.4),
+        dpi=220, facecolor="black", squeeze=False,
+    )
+    flat_axes = axes.flat
+    for ax, image, label in zip(flat_axes, vis, labels, strict=True):
         ax.imshow(_asinh_display_shared(image, vis), origin="lower", cmap="gray",
                   interpolation="nearest", vmin=0.0, vmax=1.0)
         ax.set_title(label, color="white", fontsize=12, fontweight="bold", pad=7)
         ax.set_axis_off()
+    for ax in list(axes.flat)[len(labels):]:
+        ax.set_visible(False)
     fig.subplots_adjust(left=0.01, right=0.99, bottom=0.01, top=0.94,
                         wspace=0.025, hspace=0.12)
     fig.savefig(contact_path, dpi=220, facecolor="black", edgecolor="none",
@@ -224,6 +232,10 @@ def main() -> int:
     parser.add_argument("--out-png", default="poster/fig/poster/result_triptych_combiner.png")
     parser.add_argument("--individual-dir", default="poster/fig/poster/individual_sr")
     parser.add_argument("--individual-contact", default="poster/fig/poster/individual_sr_grid.png")
+    parser.add_argument(
+        "--members", default="",
+        help="explicit comma-separated member IDs; bypasses the stored combiner",
+    )
     args = parser.parse_args()
 
     lr, source_header, metadata = _load_lr(args.source, args.side)
@@ -232,19 +244,31 @@ def main() -> int:
     print(f"source={args.source}  cropped LR={lr.shape}  "
           f"RA={metadata['RA']:.6f} Dec={metadata['DEC']:+.6f}")
 
-    combiner = load_combiner(args.combiner_root)
-    if combiner is None:
-        raise RuntimeError(f"no compatible combiner under {args.combiner_root}")
-    print(f"combiner={combiner.kind}  members={combiner.member_labels}")
-    members = _run_members(lr, ckpt_root=args.ckpt_root, combiner=combiner)
+    combiner = None
+    if args.members.strip():
+        ids = [item.strip() for item in args.members.split(",") if item.strip()]
+        labels = [f"{int(item)}·psnr" for item in ids]
+        combine_kind = "mean_explicit_members"
+        print(f"explicit members={labels}")
+    else:
+        combiner = load_combiner(args.combiner_root)
+        if combiner is None:
+            raise RuntimeError(f"no compatible combiner under {args.combiner_root}")
+        labels = combiner.member_labels
+        combine_kind = combiner.kind
+        print(f"combiner={combiner.kind}  members={labels}")
+    members = _run_members(lr, ckpt_root=args.ckpt_root, labels=labels)
     _render_individual_members(args.individual_dir, args.individual_contact,
-                               members, combiner.member_labels)
-    sr = np.asarray(combiner.apply_field(members), dtype=np.float32)
+                               members, labels)
+    if combiner is None:
+        sr = np.asarray(np.mean(members, axis=0), dtype=np.float32)
+    else:
+        sr = np.asarray(combiner.apply_field(members), dtype=np.float32)
     print(f"combiner output: {sr.shape}")
 
     metadata.update({
-        "COMB_KIND": combiner.kind,
-        "N_MEMBER": len(combiner.member_labels),
+        "COMB_KIND": combine_kind,
+        "N_MEMBER": len(labels),
         "LRSIDE": int(args.side),
     })
     _write_fits(args.out_fits, lr, sr, source_header, metadata=metadata)
@@ -257,8 +281,8 @@ def main() -> int:
         json.dump({
             "source": os.path.abspath(args.source),
             "hubble_reference": os.path.abspath(args.hubble),
-            "combiner": combiner.kind,
-            "members": combiner.member_labels,
+            "combiner": combine_kind,
+            "members": labels,
             "target_ra_deg": args.target_ra,
             "target_dec_deg": args.target_dec,
             "lr_shape": list(lr.shape),

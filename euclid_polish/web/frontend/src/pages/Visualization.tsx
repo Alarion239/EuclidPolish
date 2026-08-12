@@ -64,11 +64,11 @@ export default function VisualizationPage() {
       <section className="presentation-hero" aria-label="Figure export workflow">
         <div>
           <span className="eyebrow">viewer export</span>
-          <h2>Inspect the feature. Keep the pointer there. Export the figure.</h2>
-          <p>The last inspected sky position becomes the same bottom-left magnification window in every selected tier.</p>
+          <h2>Select the feature. Export matched crops.</h2>
+          <p>Click to freeze a magnification region. Figure then exports only that matched crop from every selected tier.</p>
         </div>
         <div className="presentation-hero__sequence" aria-label="Pointer to figure workflow">
-          <span>select tiers</span><b>→</b><span>place pointer</span><b>→</b><span>⬇ Figure</span>
+          <span>select tiers</span><b>→</b><span>click region</span><b>→</b><span>⬇ Figure</span>
         </div>
       </section>
 
@@ -168,7 +168,7 @@ export default function VisualizationPage() {
 
       <div className="presentation-section-head">
         <div><span className="eyebrow">interactive builders</span><h2>Image comparisons</h2></div>
-        <p>Open a viewer, select the listed tiers, place the magnification window, then choose Figure.</p>
+        <p>Select the listed tiers and click a region for matched crop-only export; leave it unselected for full images.</p>
       </div>
 
       <div className="figure-builder-grid">

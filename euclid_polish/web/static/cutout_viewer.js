@@ -382,10 +382,8 @@ export function mountCutoutViewer(root, opts = {}) {
     relativeSide: null,
     visible: false,
   };
-  // Last inspected sky location, retained after the pointer leaves a canvas.
-  // Publication export projects this normalized position and physical crop
-  // size onto every selected tier, so LR/SR/HR/JWST insets compare the same
-  // patch instead of unrelated pixel coordinates.
+  // Explicitly selected (frozen) magnification region. Hover alone must not
+  // switch a publication export from full panels to matched crops.
   let publicationRegion = null;
   // Compact mode (e.g. the morphology hover preview): hide the toolbar/nav
   // chrome so only the image frame shows.
@@ -686,6 +684,20 @@ export function mountCutoutViewer(root, opts = {}) {
   function clearFrozenLenses() {
     for (const frozen of frozenLenses.values()) frozen.popup.remove();
     frozenLenses.clear();
+    publicationRegion = null;
+  }
+
+  function syncPublicationRegionToFrozenLenses() {
+    const selected = [...frozenLenses.values()]
+      .sort((a, b) => (a.order || 0) - (b.order || 0))
+      .at(-1);
+    publicationRegion = selected ? {
+      u: selected.u,
+      v: selected.v,
+      zoom: selected.zoom,
+      angularSide: selected.angularSide,
+      relativeSide: selected.relativeSide,
+    } : null;
   }
 
   function snapshotFrozenLenses() {
@@ -721,6 +733,7 @@ export function mountCutoutViewer(root, opts = {}) {
         ctx: popup.ctx,
       });
     }
+    syncPublicationRegionToFrozenLenses();
   }
 
   function clearAllLenses() {
@@ -775,20 +788,6 @@ export function mountCutoutViewer(root, opts = {}) {
     const extent = Math.min(fr.canvas.width, fr.canvas.height);
     const sourceSide = Math.min(extent, Math.max(1, lensSide() / zoom));
     return sourceSide / extent;
-  }
-
-  function rememberPublicationRegion(fr, x, y) {
-    const rect = fr.canvas.getBoundingClientRect();
-    if (!(rect.width > 0 && rect.height > 0)) return;
-    const u = Math.max(0, Math.min(1, (x - rect.left) / rect.width));
-    const v = Math.max(0, Math.min(1, (y - rect.top) / rect.height));
-    publicationRegion = {
-      u,
-      v,
-      zoom: lensState.zoom,
-      angularSide: currentAngularSide(fr, lensState.zoom),
-      relativeSide: currentRelativeSide(fr, lensState.zoom),
-    };
   }
 
   function zoomForAngularSide(fr, angularSide) {
@@ -1080,7 +1079,6 @@ export function mountCutoutViewer(root, opts = {}) {
     } else if (lensState.relativeSide != null) {
       lensState.zoom = zoomForRelativeSide(fr, lensState.relativeSide);
     }
-    rememberPublicationRegion(fr, event.clientX, event.clientY);
     refreshLens(fr);
     resolveLensOverlaps();
   }
@@ -1092,7 +1090,6 @@ export function mountCutoutViewer(root, opts = {}) {
     }
     lensState.x = event.clientX;
     lensState.y = event.clientY;
-    rememberPublicationRegion(fr, event.clientX, event.clientY);
     refreshLens(fr);
     resolveLensOverlaps();
   }
@@ -1127,7 +1124,6 @@ export function mountCutoutViewer(root, opts = {}) {
     if (angularSide != null) lensState.angularSide = angularSide;
     const relativeSide = currentRelativeSide(fr, lensState.zoom);
     if (relativeSide != null) lensState.relativeSide = relativeSide;
-    rememberPublicationRegion(fr, event.clientX, event.clientY);
     refreshLens(fr);
     resolveLensOverlaps();
   }
@@ -1136,6 +1132,7 @@ export function mountCutoutViewer(root, opts = {}) {
     if (frozenLenses.has(fr)) {
       frozenLenses.get(fr).popup.remove();
       frozenLenses.delete(fr);
+      syncPublicationRegionToFrozenLenses();
       hideHoverLens();
       refreshAllLenses();
       return;
@@ -1155,14 +1152,8 @@ export function mountCutoutViewer(root, opts = {}) {
       order,
       popup: popup.popup, canvas: popup.canvas, label: popup.label, ctx: popup.ctx,
     };
-    publicationRegion = {
-      u,
-      v,
-      zoom: frozen.zoom,
-      angularSide: frozen.angularSide,
-      relativeSide: frozen.relativeSide,
-    };
     frozenLenses.set(fr, frozen);
+    syncPublicationRegionToFrozenLenses();
     hideHoverLens();
     refreshAllLenses();
   }
@@ -1832,7 +1823,7 @@ export function mountCutoutViewer(root, opts = {}) {
       title: "Save the current view (all selected tiers, side by side) as a PNG",
       onclick: savePNG });
     const figure = el("button", { class: "cv-navbtn cv-figure", type: "button", text: "⬇ Figure",
-      title: "Export a high-resolution publication plate. The last inspected region becomes a matched bottom-left inset in every panel.",
+      title: "Export a high-resolution publication plate. A selected magnification region exports as matched crops; without one, full images are exported.",
       onclick: savePublicationFigure });
     const rec = el("button", { class: "cv-navbtn cv-rec", type: "button", text: "⏺ video",
       title: "Record the current view (all selected tiers, side by side) — click to start, click again to stop and download a .webm clip",
@@ -1958,8 +1949,6 @@ export function mountCutoutViewer(root, opts = {}) {
       x: cx - sourceSide / 2,
       y: cy - sourceSide / 2,
       side: sourceSide,
-      zoom: Math.max(1, Math.min(fr.canvas.width, fr.canvas.height) / sourceSide),
-      angularSide: pixscale ? sourceSide * pixscale : null,
     };
   }
 
@@ -2060,62 +2049,20 @@ export function mountCutoutViewer(root, opts = {}) {
     // Keep detector/reconstruction pixels literal. Browser interpolation can
     // make an upscaled science image look smoother than the sampled data.
     ctx.imageSmoothingEnabled = false;
-    ctx.drawImage(fr.canvas, x, y, side, side);
-
     const crop = publicationCrop(fr);
     if (crop) {
-      const cropFraction = crop.side / Math.min(fr.canvas.width, fr.canvas.height);
-      if (cropFraction < 0.5) {
-        const sx = x + crop.x / fr.canvas.width * side;
-        const sy = y + crop.y / fr.canvas.height * side;
-        const sw = crop.side / fr.canvas.width * side;
-        const sh = crop.side / fr.canvas.height * side;
-        ctx.strokeStyle = "rgba(0, 0, 0, .88)";
-        ctx.lineWidth = Math.max(4, side * 0.004);
-        ctx.strokeRect(sx, sy, sw, sh);
-        ctx.strokeStyle = "rgba(255, 255, 255, .92)";
-        ctx.lineWidth = Math.max(1.5, side * 0.0015);
-        ctx.setLineDash([Math.max(5, side * 0.006), Math.max(4, side * 0.004)]);
-        ctx.strokeRect(sx, sy, sw, sh);
-        ctx.setLineDash([]);
-      }
-
-      // The inset is deliberately embedded at bottom-left in every panel.
-      // This makes the comparison survive slide reflow and keeps all panels
-      // registered to the same cursor-selected sky location.
-      const inset = Math.round(side * 0.3825);
-      const pad = Math.round(side * 0.022);
-      const ix = x + pad;
-      const iy = y + side - inset - pad;
-      ctx.fillStyle = "#05070d";
-      const insetHalo = Math.max(4, side * 0.004);
-      ctx.fillRect(ix - insetHalo, iy - insetHalo,
-        inset + 2 * insetHalo, inset + 2 * insetHalo);
-      ctx.imageSmoothingEnabled = false;
       ctx.drawImage(fr.canvas, crop.x, crop.y, crop.side, crop.side,
-        ix, iy, inset, inset);
-      ctx.strokeStyle = "#ffffff";
-      ctx.lineWidth = Math.max(2, side * 0.002);
-      ctx.strokeRect(ix, iy, inset, inset);
-      if (crop.angularSide > 0) {
-        const angular = crop.angularSide < 1
-          ? crop.angularSide.toFixed(2) : crop.angularSide.toFixed(1);
-        const insetLabel = `${angular}″ × ${angular}″`;
-        ctx.font = `600 ${Math.max(20, side * 0.020)}px Arial, Helvetica, sans-serif`;
-        ctx.textAlign = "left";
-        ctx.textBaseline = "top";
-        ctx.lineWidth = Math.max(3, side * 0.0035);
-        ctx.strokeStyle = "rgba(0, 0, 0, .9)";
-        ctx.strokeText(insetLabel, ix + inset * 0.045, iy + inset * 0.04);
-        ctx.fillStyle = "#ffffff";
-        ctx.fillText(insetLabel, ix + inset * 0.045, iy + inset * 0.04);
-      }
+        x, y, side, side);
+    } else {
+      ctx.drawImage(fr.canvas, x, y, side, side);
     }
 
     const pixscale = validPixscale(fr);
     if (pixscale) {
-      const barArcsec = niceAngularScale(fr.canvas.width * pixscale);
-      const barWidth = barArcsec / (fr.canvas.width * pixscale) * side;
+      const displayedSidePixels = crop ? crop.side : fr.canvas.width;
+      const displayedSideArcsec = displayedSidePixels * pixscale;
+      const barArcsec = niceAngularScale(displayedSideArcsec);
+      const barWidth = barArcsec / displayedSideArcsec * side;
       const right = x + side - side * 0.035;
       const bottom = y + side - side * 0.035;
       ctx.strokeStyle = "rgba(0, 0, 0, .9)";

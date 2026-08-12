@@ -15,15 +15,15 @@ Every shared image viewer has a **Figure** button. A reliable workflow is:
 
 1. Select the tiers that belong in the comparison.
 2. Move the pointer to the feature that should be magnified. Scroll vertically
-   over the image to change the crop size; click to freeze it if useful.
-3. Choose **Figure**. The last inspected region is projected onto every tier
-   and rendered as a matched inset at the bottom-left.
+   over the image to change the crop size, then click to select and freeze it.
+3. Choose **Figure**. The selected region is projected onto every tier, and
+   only those matched crops are exported. With no selection, full images are
+   exported instead.
 
 The output is a fixed high-resolution PNG with descriptive panel names outside
-the image, matched angular crop labels, and physical scale bars when pixel scale
-is known. Each panel includes its displayed band, asinh knee, and a heatbar whose
-ticks invert the viewer transfer into input-equivalent electron signal. Titles,
-parameters, heatbar ticks, and inset annotations use a large presentation type
+the image and physical scale bars when pixel scale is known. Each panel includes
+its displayed band, asinh knee, and a heatbar whose ticks are labelled with the
+pixel signal in electrons. Titles, parameters, and heatbar ticks use a large presentation type
 scale that remains readable after the plate is placed on a slide. The plate
 deliberately omits field identifiers and pixel dimensions; keep those in the
 slide caption or manuscript caption.
