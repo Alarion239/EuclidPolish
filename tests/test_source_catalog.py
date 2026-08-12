@@ -18,6 +18,11 @@ def _meta():
              "morphology_ssfr_quantile_delta": -0.02,
              "morphology_ssfr_kernel_bandwidth_quantile": 0.2,
              "target_re_arcsec": 0.31, "achieved_re_arcsec": 0.30,
+             "nominal_re_arcsec": 0.31, "native_halflight_px": 12.4,
+             "radius_scale_factor": 0.5,
+             "radius_rendering": "euclid_sersic_nominal_similarity_v1",
+             "radius_renderer_fingerprint": "r" * 64,
+             "radius_remeasured": False, "render_support_clipped": True,
              "target_vis_2fwhm_mag": 23.1,
              "achieved_vis_2fwhm_mag": 23.1,
              "aperture_psf_fwhm_arcsec": 0.16,
@@ -64,7 +69,15 @@ def test_writer_then_reader_roundtrip(tmp_path):
     assert tng["tng_ssfr_quantile"] == 0.08
     assert tng["morphology_ssfr_quantile_delta"] == -0.02
     assert tng["target_re_arcsec"] == 0.31
-    assert tng["achieved_re_arcsec"] == 0.30
+    assert tng["achieved_re_arcsec"] is None
+    assert tng["nominal_re_arcsec"] == 0.31
+    assert tng["native_halflight_px"] == 12.4
+    assert tng["radius_scale_factor"] == 0.5
+    assert tng["radius_rendering"] == "euclid_sersic_nominal_similarity_v1"
+    assert tng["radius_renderer_fingerprint"] == "r" * 64
+    assert tng["radius_remeasured"] is False
+    assert tng["render_support_clipped"] is True
+    assert tng["tng_render_record_version"] == 2
     assert tng["target_vis_2fwhm_mag"] == 23.1
     assert tng["achieved_vis_2fwhm_mag"] == 23.1
     assert tng["aperture_psf_fwhm_arcsec"] == 0.16
@@ -97,6 +110,27 @@ def test_stars_are_recorded(tmp_path):
 
 def test_read_sources_missing_file(tmp_path):
     assert sc.read_sources(str(tmp_path / "nope.csv")) == {}
+
+
+def test_one_pass_tng_record_leaves_legacy_achieved_radius_blank(tmp_path):
+    path = str(tmp_path / "sources_train.csv")
+    with sc.SourceCatalogWriter(path) as writer:
+        writer.add_field(0, {"galaxies": [{
+            "type": "galaxy", "render": "tng", "x_pix": 1.0, "y_pix": 2.0,
+            "re_arcsec": 0.03, "target_re_arcsec": 0.03,
+            "nominal_re_arcsec": 0.03, "native_halflight_px": 20.0,
+            "radius_scale_factor": 0.03,
+            "radius_rendering": "euclid_sersic_nominal_similarity_v1",
+            "radius_renderer_fingerprint": "a" * 64,
+            "radius_remeasured": False, "render_support_clipped": False,
+            "flux_e_per_band": [1.0, 1.0, 1.0, 1.0],
+        }]})
+
+    row = sc.read_sources(path)[0][0]
+    assert row["re_arcsec"] == 0.03
+    assert row["nominal_re_arcsec"] == 0.03
+    assert row["achieved_re_arcsec"] is None
+    assert row["radius_remeasured"] is False
 
 
 def test_concat_source_csvs_preserves_order(tmp_path):

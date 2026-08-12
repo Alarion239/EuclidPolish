@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -17,6 +18,7 @@ from euclid_polish.population.magnitude_law import StraightMagnitudeLaw
 from euclid_polish.sky.generation.cosmos_tng_prior import (
     JointGalaxyPopulationPrior,
 )
+from euclid_polish.sky.generation.sky_simulator import SkySimulator
 from euclid_polish.web.helpers.population_calibration import (
     activate_joint_galaxy_candidate,
     active_joint_galaxy_path,
@@ -110,6 +112,55 @@ def test_prior_draws_radius_first_then_brightness_conditioned_on_radius():
     assert 14.0 <= magnitude < 29.0
     assert flux > 0.0
     assert prior.morphology_mode == "balanced_random_tng_atlas"
+
+
+def test_staged_generator_selects_and_renders_donor_before_brightness(
+    monkeypatch,
+):
+    import euclid_polish.sky.generation.sky_simulator as module
+
+    prior = JointGalaxyPopulationPrior(active_payload())
+    events = []
+    original_brightness = prior.sample_brightness
+
+    def sample_brightness(rng, *, radius_arcsec=None):
+        events.append("brightness")
+        return original_brightness(rng, radius_arcsec=radius_arcsec)
+
+    prior.sample_brightness = sample_brightness
+    simulator = object.__new__(SkySimulator)
+    simulator.population_prior = prior
+    simulator.config = SimpleNamespace(pixel_scale=0.05)
+    simulator._radius_lookup = {("42", 1): 5.0}
+    simulator._radius_manifest_fingerprint = "r" * 64
+    simulator._tng_max_output_side = 65
+
+    def pick_donor(_rng):
+        events.append("donor")
+        return [("atlas", "42")], {}
+
+    def render_donor(*_args, **_kwargs):
+        events.append("render")
+        return np.ones((3, 3, 4), dtype=np.float32), {}
+
+    class StopAfterBrightness(Exception):
+        pass
+
+    def stop_at_psf(_rng):
+        events.append("psf")
+        raise StopAfterBrightness
+
+    simulator._pick_random_field_galaxy = pick_donor
+    simulator._draw_aperture_psf = stop_at_psf
+    monkeypatch.setattr(module, "sample_tng_stamp", render_donor)
+
+    with pytest.raises(StopAfterBrightness):
+        simulator._add_tng_galaxy(
+            np.zeros((8, 8, 4), dtype=np.float32),
+            np.random.default_rng(19),
+        )
+
+    assert events == ["donor", "render", "brightness", "psf"]
 
 
 def test_old_cosmos_joint_artifacts_fail_closed():
@@ -210,6 +261,9 @@ def test_candidate_fit_uses_only_euclid_brightness_and_sersic_radius(
         -0.06, abs=0.01,
     )
     assert payload["plots"]["radius"]["observed_density"]
+    assert "nominal continuous-space" in (
+        payload["plots"]["radius"]["model_semantics"]
+    )
     assert payload["plots"]["conditional_radius"]["model_mean_log10_arcsec"]
     assert payload["magnitude_plot"]["extrapolated_interval"] == [28.0, 29.0]
     assert "model" not in payload

@@ -8,27 +8,21 @@ band ∈ {VIS, Y, J, H} and orientation k ∈ {1..5}. Each frame is a 1600×1600
 (``CDELT = 100 pc/pixel``) — there is no instrument PSF, noise, or angular WCS;
 these are idealized, dust-attenuated intrinsic images.
 
-To place a galaxy into a synthetic field we run three steps (in this order):
+For Euclid-conditioned field galaxies, the validated native VIS half-light
+radius comes from the offline radius manifest.  Generation applies the direct
+similarity scale ``R_e,draw / (R_e,native * pixel_scale)``: rotate once, resize
+the registered four-band cube once, and never remeasure the pixelized output.
+The sampled Euclid Sersic radius is therefore explicitly a nominal
+continuous-space value.  The native cube is cached per process and rendering
+is bounded to pixels that can affect the field or central normalization
+aperture.
 
-1. **Rebin** by an integer factor with a *block-mean*, which keeps the
-   surface brightness (MJy/sr is intensive). The output pixel maps to a fixed
-   angular scale (the 0.05″ HR grid), so the rebin factor acts as a distance
-   knob: a coarser rebin makes the galaxy both smaller and fainter, as a more
-   distant galaxy would appear. In redshift mode
-   (:func:`tng_stamp_at_redshift`) the factor is computed from
-   D_A(z) — see :mod:`euclid_polish.sky.generation.redshift_model`.
-2. **Rotate** for orientation augmentation on top of the atlas's 5 physical
-   viewpoints. When the rebin factor is ≥ ``ARBITRARY_ROTATION_MIN_REBIN`` (4)
-   an *arbitrary* 0–360° cubic-spline rotation is applied at native resolution
-   *before* the rebin — the ≥4× downsample averages out the interpolation blur
-   (validated by ``scripts/check_tng_rotation_downsample.py``), multiplying the
-   effective galaxy set by continuous orientation. Below the threshold an exact
-   ``np.rot90`` quarter-turn is used after the rebin (lossless, artefact-free).
-3. **Convert to electrons** over the Euclid stack via
-   :func:`~euclid_polish.photometry.mjy_per_sr_to_electrons`, using the
-   assigned HR pixel scale to turn MJy/sr into electrons-per-pixel. The result
-   is a clean, pre-PSF source ready to drop onto the HR sky; the existing
-   forward model supplies the Euclid PSF, noise, and LR rebin.
+After redshift-dependent colour drift, a shared four-band scalar sets the
+drawn VIS 2FWHM flux.  Its aperture flux is evaluated with the compact adjoint
+aperture response rather than a full-stamp convolution.  The result remains a
+clean, pre-PSF source; the existing forward model independently supplies the
+dirty-image Euclid PSF, noise, and LR rebin.  The legacy physical-redshift and
+integer-rebin helpers remain available for strong-lens rendering.
 
 The returned stamp is ``(H, W, 4)`` in ``Config.LR_INPUT_BAND_NAMES`` order
 (VIS, Y_E, J_E, H_E), float32 electrons.
@@ -36,10 +30,13 @@ The returned stamp is ``(H, W, 4)`` in ``Config.LR_INPUT_BAND_NAMES`` order
 
 from __future__ import annotations
 
+import hashlib
+import math
 import os
+from collections import OrderedDict
 
 import numpy as np
-from scipy.signal import fftconvolve
+from scipy.signal import convolve2d
 
 from euclid_polish.config import BandConfig, Config
 from euclid_polish.photometry import (
@@ -117,6 +114,35 @@ ARBITRARY_ROTATION_MIN_REBIN = 4
 TNG_ROTATION_CROP_ENCLOSED_FRACTION = 0.99
 TNG_ROTATION_CROP_PADDING = 1.05
 TNG_MAX_REBIN_FACTOR = 64
+
+# The native-radius manifest remains an offline measurement artifact.  This
+# separate renderer identity records how that measurement is transported to a
+# sampled Euclid Sersic R_e at generation time.
+TNG_RADIUS_RENDERER_VERSION = 1
+TNG_RADIUS_RENDERING = "euclid_sersic_nominal_similarity_v1"
+TNG_RADIUS_RENDERER_FINGERPRINT = hashlib.sha256(
+    (
+        f"{TNG_RADIUS_RENDERING}|version={TNG_RADIUS_RENDERER_VERSION}|"
+        "one_resize|no_output_remeasurement|bounded_support|adjoint_2fwhm"
+    ).encode("ascii")
+).hexdigest()
+
+# A worker repeatedly draws from a small atlas.  Cache the registered,
+# unrotated four-band source rather than reopening four 1600-square FITS files
+# for every galaxy.  The byte cap is per process, matching generation's
+# process-level parallelism.
+_TNG_SOURCE_CACHE_MAX_BYTES = 256 * 1024 * 1024
+_TNG_SOURCE_CACHE: OrderedDict[tuple, np.ndarray] = OrderedDict()
+_TNG_SOURCE_CACHE_BYTES = 0
+
+# Aperture-response kernels are tiny, but keep their cache bounded as well so
+# a long job drawing many empirical PSFs cannot grow without limit.
+_APERTURE_RESPONSE_CACHE_MAX_BYTES = 16 * 1024 * 1024
+_APERTURE_RESPONSE_CACHE: OrderedDict[tuple, np.ndarray] = OrderedDict()
+_APERTURE_RESPONSE_CACHE_BYTES = 0
+_CIRCULAR_PSF_CACHE_MAX_BYTES = 16 * 1024 * 1024
+_CIRCULAR_PSF_CACHE: OrderedDict[tuple, np.ndarray] = OrderedDict()
+_CIRCULAR_PSF_CACHE_BYTES = 0
 
 
 def surface_brightness_to_electrons(arr_mjy_sr: np.ndarray, band: BandConfig,
@@ -210,6 +236,70 @@ def prepare_tng_galaxy(
     return stamp, meta
 
 
+def _registered_source_key(
+    galaxy_dir: str,
+    subhalo_id: int | str,
+    orientation: int,
+    *,
+    fits_bands: tuple[str, ...],
+    radius_manifest_fingerprint: str,
+) -> tuple:
+    """Return a cache key that changes when any contributing FITS changes."""
+    config_to_fits = {v: k for k, v in _FITS_BAND_TO_CONFIG.items()}
+    identities: list[tuple[str, int, int]] = []
+    for cfg_name in Config.LR_INPUT_BAND_NAMES:
+        fband = config_to_fits[cfg_name]
+        if fband not in fits_bands:
+            raise ValueError(
+                f"band {fband} not in requested fits_bands={fits_bands}"
+            )
+        path = os.path.realpath(tng_fits_path(
+            galaxy_dir, subhalo_id, orientation, fband,
+        ))
+        status = os.stat(path)
+        identities.append((path, int(status.st_size), int(status.st_mtime_ns)))
+    return (
+        os.path.realpath(galaxy_dir), str(subhalo_id), int(orientation),
+        tuple(fits_bands), str(radius_manifest_fingerprint), tuple(identities),
+    )
+
+
+def _clear_tng_source_cache() -> None:
+    """Clear the process-local registered-source cache (mainly for tests)."""
+    global _TNG_SOURCE_CACHE_BYTES
+    _TNG_SOURCE_CACHE.clear()
+    _TNG_SOURCE_CACHE_BYTES = 0
+
+
+def _cache_registered_source(key: tuple, source: np.ndarray) -> np.ndarray:
+    global _TNG_SOURCE_CACHE_BYTES
+    values = np.ascontiguousarray(source, dtype=np.float32)
+    values.setflags(write=False)
+    if values.nbytes > _TNG_SOURCE_CACHE_MAX_BYTES:
+        return values
+
+    # A changed file identity or manifest fingerprint should replace, rather
+    # than coexist with, the stale copy of the same donor/orientation.
+    logical_key = key[:3]
+    for old_key in list(_TNG_SOURCE_CACHE):
+        if old_key[:3] == logical_key and old_key != key:
+            evicted = _TNG_SOURCE_CACHE.pop(old_key)
+            _TNG_SOURCE_CACHE_BYTES -= int(evicted.nbytes)
+    cached = _TNG_SOURCE_CACHE.pop(key, None)
+    if cached is not None:
+        _TNG_SOURCE_CACHE_BYTES -= int(cached.nbytes)
+    while (
+        _TNG_SOURCE_CACHE
+        and _TNG_SOURCE_CACHE_BYTES + values.nbytes
+        > _TNG_SOURCE_CACHE_MAX_BYTES
+    ):
+        _, evicted = _TNG_SOURCE_CACHE.popitem(last=False)
+        _TNG_SOURCE_CACHE_BYTES -= int(evicted.nbytes)
+    _TNG_SOURCE_CACHE[key] = values
+    _TNG_SOURCE_CACHE_BYTES += int(values.nbytes)
+    return values
+
+
 def _prepare_tng_continuous_source(
     galaxy_dir: str,
     subhalo_id: int | str,
@@ -217,8 +307,18 @@ def _prepare_tng_continuous_source(
     *,
     rot_angle: float | None = None,
     fits_bands: tuple[str, ...] = TNG_FITS_BANDS,
+    radius_manifest_fingerprint: str = "",
 ) -> tuple[np.ndarray, bool]:
-    """Load, crop, and rotate one registered native four-band source once."""
+    """Return one cached, cropped, unrotated registered four-band source."""
+    key = _registered_source_key(
+        galaxy_dir, subhalo_id, orientation, fits_bands=fits_bands,
+        radius_manifest_fingerprint=radius_manifest_fingerprint,
+    )
+    cached = _TNG_SOURCE_CACHE.pop(key, None)
+    if cached is not None:
+        _TNG_SOURCE_CACHE[key] = cached
+        return cached, rot_angle is not None
+
     config_to_fits = {v: k for k, v in _FITS_BAND_TO_CONFIG.items()}
     native_channels: list[np.ndarray] = []
     for cfg_name in Config.LR_INPUT_BAND_NAMES:
@@ -232,11 +332,62 @@ def _prepare_tng_continuous_source(
         native_cube[..., 0], 1, enclosed_fraction=0.999,
         padding=TNG_ROTATION_CROP_PADDING,
     )
-    source = native_cube[crop]
-    use_angle = rot_angle is not None
+    source = _cache_registered_source(key, native_cube[crop])
+    return source, rot_angle is not None
+
+
+def _center_crop_for_limit(
+    values: np.ndarray,
+    max_height: int,
+    max_width: int,
+) -> np.ndarray:
+    """Centre-crop without moving an integer or half-integer image centre."""
+    height, width = values.shape[:2]
+
+    def _bounded_side(current: int, limit: int) -> int:
+        side = min(current, max(1, int(limit)))
+        if side < current and side % 2 != current % 2:
+            side = max(1, side - 1)
+        return side
+
+    out_height = _bounded_side(height, max_height)
+    out_width = _bounded_side(width, max_width)
+    y0 = (height - out_height) // 2
+    x0 = (width - out_width) // 2
+    return values[y0:y0 + out_height, x0:x0 + out_width]
+
+
+def _source_for_bounded_render(
+    source: np.ndarray,
+    *,
+    scale: float,
+    use_angle: bool,
+    max_output_side: int | None,
+) -> tuple[np.ndarray, bool]:
+    """Pre-crop only when an enlarged output would exceed field support."""
+    if max_output_side is None:
+        return source, False
+    limit = max(1, int(max_output_side))
+    output_height = max(1, int(round(source.shape[0] * scale)))
+    output_width = max(1, int(round(source.shape[1] * scale)))
+    if output_height <= limit and output_width <= limit:
+        return source, False
+
+    # Shrinkage never allocates more than the native source.  Preserve its
+    # validated rotate-then-area-resample path exactly and crop only afterward.
+    if scale < 1.0:
+        return source, True
+
+    # For enlargement, the inverse of a rotated square is bounded by sqrt(2)
+    # times its side.  Cubic interpolation needs two pixels of support; retain
+    # four to make the bound conservative under centre/parity rounding.
+    inverse_side = math.ceil(limit / scale)
     if use_angle:
-        source = rotate_arbitrary(source, float(rot_angle))
-    return source, use_angle
+        inverse_side = math.ceil(math.sqrt(2.0) * inverse_side)
+    inverse_side += 8
+    return _center_crop_for_limit(
+        source, inverse_side, inverse_side,
+    ), True
 
 
 def _render_tng_continuous_source(
@@ -249,13 +400,26 @@ def _render_tng_continuous_source(
     orientation: int,
     rot_angle: float | None,
     pixel_scale_arcsec: float,
+    max_output_side: int | None = None,
 ) -> tuple[np.ndarray, dict]:
     """Apply one shared spatial scale to an already prepared TNG source."""
     if not np.isfinite(scale) or scale <= 0.0:
         raise ValueError(f"scale must be finite and positive, got {scale!r}")
-    cube = resample_surface_brightness(source, scale)
-    if not use_angle:
-        cube = rotate_quarter(cube, rot_k)
+    render_source, support_clipped = _source_for_bounded_render(
+        source, scale=scale, use_angle=use_angle,
+        max_output_side=max_output_side,
+    )
+    if use_angle:
+        render_source = rotate_arbitrary(render_source, float(rot_angle))
+    else:
+        render_source = rotate_quarter(render_source, rot_k)
+    cube = resample_surface_brightness(render_source, scale)
+    if max_output_side is not None:
+        bounded = _center_crop_for_limit(
+            cube, int(max_output_side), int(max_output_side),
+        )
+        support_clipped = support_clipped or bounded.shape != cube.shape
+        cube = bounded
 
     channels: list[np.ndarray] = []
     flux_e: dict[str, float] = {}
@@ -275,6 +439,10 @@ def _render_tng_continuous_source(
         "rot_k": int(rot_k) % 4,
         "rot_angle": float(rot_angle) % 360.0 if use_angle else None,
         "arbitrary_rotation": bool(use_angle),
+        "render_support_clipped": bool(support_clipped),
+        "max_output_side": (
+            int(max_output_side) if max_output_side is not None else None
+        ),
         "pixel_scale_arcsec": float(pixel_scale_arcsec),
         "shape": tuple(stamp.shape),
         "flux_e_per_band": flux_e,
@@ -292,6 +460,8 @@ def prepare_tng_galaxy_continuous(
     rot_angle: float | None = None,
     pixel_scale_arcsec: float = Config.DEFAULT_PIXEL_SCALE,
     fits_bands: tuple[str, ...] = TNG_FITS_BANDS,
+    radius_manifest_fingerprint: str = "",
+    max_output_side: int | None = None,
 ) -> tuple[np.ndarray, dict]:
     """Render the registered four-band cube with one linear scale.
 
@@ -305,6 +475,7 @@ def prepare_tng_galaxy_continuous(
     source, use_angle = _prepare_tng_continuous_source(
         galaxy_dir, subhalo_id, orientation,
         rot_angle=rot_angle, fits_bands=fits_bands,
+        radius_manifest_fingerprint=radius_manifest_fingerprint,
     )
     return _render_tng_continuous_source(
         source,
@@ -315,6 +486,7 @@ def prepare_tng_galaxy_continuous(
         orientation=orientation,
         rot_angle=rot_angle,
         pixel_scale_arcsec=pixel_scale_arcsec,
+        max_output_side=max_output_side,
     )
 
 
@@ -414,10 +586,6 @@ def truncate_below_sb(
     return stamp[y0:y1, x0:x1]
 
 
-def _target_re_tolerance(target_re_arcsec: float, pixel_scale_arcsec: float) -> float:
-    return max(0.05 * float(target_re_arcsec), 0.5 * float(pixel_scale_arcsec))
-
-
 def _normalise_target_vis(
     stamp: np.ndarray,
     target_vis_flux_e: float | None,
@@ -441,7 +609,7 @@ def _record_target_vis_normalisation(
     brightness_scale = _normalise_target_vis(stamp, target_vis_flux_e)
     meta["brightness_scale"] = float(brightness_scale)
     meta["shared_photometric_scale"] = float(brightness_scale)
-    meta["photometric_scaling"] = "single_shared_vis_anchor_after_size_match"
+    meta["photometric_scaling"] = "single_shared_vis_anchor_after_nominal_scale"
     meta["flux_e_per_band"] = {
         band: float(stamp[..., index].sum(dtype=np.float64))
         for index, band in enumerate(Config.LR_INPUT_BAND_NAMES)
@@ -470,6 +638,154 @@ def circularize_psf_kernel(kernel: np.ndarray) -> np.ndarray:
     return np.asarray(circular / total, dtype=np.float32)
 
 
+def _array_fingerprint(values: np.ndarray) -> str:
+    contiguous = np.ascontiguousarray(values)
+    digest = hashlib.sha256()
+    digest.update(str(contiguous.shape).encode("ascii"))
+    digest.update(contiguous.dtype.str.encode("ascii"))
+    digest.update(contiguous.view(np.uint8))
+    return digest.hexdigest()
+
+
+def _cached_circularized_psf(
+    kernel: np.ndarray,
+    *,
+    psf_identity: str,
+) -> tuple[np.ndarray, str]:
+    """Return a byte-bounded cached circularization and its fingerprint."""
+    global _CIRCULAR_PSF_CACHE_BYTES
+    values = np.ascontiguousarray(kernel, dtype=np.float32)
+    input_fingerprint = _array_fingerprint(values)
+    key = (str(psf_identity), input_fingerprint)
+    cached = _CIRCULAR_PSF_CACHE.pop(key, None)
+    if cached is not None:
+        _CIRCULAR_PSF_CACHE[key] = cached
+        return cached, _array_fingerprint(cached)
+    circular = circularize_psf_kernel(values)
+    circular.setflags(write=False)
+    if circular.nbytes <= _CIRCULAR_PSF_CACHE_MAX_BYTES:
+        while (
+            _CIRCULAR_PSF_CACHE
+            and _CIRCULAR_PSF_CACHE_BYTES + circular.nbytes
+            > _CIRCULAR_PSF_CACHE_MAX_BYTES
+        ):
+            _, evicted = _CIRCULAR_PSF_CACHE.popitem(last=False)
+            _CIRCULAR_PSF_CACHE_BYTES -= int(evicted.nbytes)
+        _CIRCULAR_PSF_CACHE[key] = circular
+        _CIRCULAR_PSF_CACHE_BYTES += int(circular.nbytes)
+    return circular, _array_fingerprint(circular)
+
+
+def _aperture_response(
+    aperture: np.ndarray,
+    circular_psf: np.ndarray,
+    *,
+    psf_identity: str,
+    psf_fwhm_arcsec: float,
+    pixel_scale_arcsec: float,
+    centre_parity: tuple[int, int],
+) -> np.ndarray:
+    """Return cached ``A * K[::-1]`` on its compact, full support."""
+    global _APERTURE_RESPONSE_CACHE_BYTES
+    aperture_values = np.ascontiguousarray(aperture, dtype=np.uint8)
+    psf_values = np.ascontiguousarray(circular_psf, dtype=np.float32)
+    key = (
+        str(psf_identity), _array_fingerprint(psf_values),
+        float(psf_fwhm_arcsec), float(pixel_scale_arcsec),
+        tuple(int(value) for value in centre_parity),
+        aperture_values.shape, aperture_values.tobytes(),
+    )
+    cached = _APERTURE_RESPONSE_CACHE.pop(key, None)
+    if cached is not None:
+        _APERTURE_RESPONSE_CACHE[key] = cached
+        return cached
+    response = convolve2d(
+        aperture_values.astype(np.float64),
+        np.asarray(psf_values[::-1, ::-1], dtype=np.float64),
+        mode="full",
+    )
+    response = np.asarray(response, dtype=np.float64)
+    response.setflags(write=False)
+    if response.nbytes <= _APERTURE_RESPONSE_CACHE_MAX_BYTES:
+        while (
+            _APERTURE_RESPONSE_CACHE
+            and _APERTURE_RESPONSE_CACHE_BYTES + response.nbytes
+            > _APERTURE_RESPONSE_CACHE_MAX_BYTES
+        ):
+            _, evicted = _APERTURE_RESPONSE_CACHE.popitem(last=False)
+            _APERTURE_RESPONSE_CACHE_BYTES -= int(evicted.nbytes)
+        _APERTURE_RESPONSE_CACHE[key] = response
+        _APERTURE_RESPONSE_CACHE_BYTES += int(response.nbytes)
+    return response
+
+
+def measure_vis_2fwhm_aperture_flux(
+    vis: np.ndarray,
+    *,
+    circular_psf: np.ndarray,
+    psf_fwhm_arcsec: float,
+    pixel_scale_arcsec: float,
+    psf_identity: str = "",
+) -> float:
+    """Measure the centred 2FWHM flux through a compact adjoint response.
+
+    This is algebraically identical to summing a circular aperture after
+    ``fftconvolve(vis, circular_psf, mode='same')``.  The aperture has diameter
+    ``2 * FWHM`` and therefore radius ``FWHM``.  Only the input pixels within
+    the aperture-plus-PSF support enter the dot product.
+    """
+    image = np.asarray(vis, dtype=np.float64)
+    kernel = np.asarray(circular_psf, dtype=np.float32)
+    if image.ndim != 2 or min(image.shape) < 1:
+        raise ValueError("VIS aperture measurement requires a non-empty 2-D image")
+    if kernel.ndim != 2 or min(kernel.shape) < 1:
+        raise ValueError("VIS aperture measurement requires a 2-D PSF")
+    fwhm = float(psf_fwhm_arcsec)
+    scale = float(pixel_scale_arcsec)
+    if not np.isfinite(fwhm) or fwhm <= 0.0 or not np.isfinite(scale) or scale <= 0.0:
+        raise ValueError("VIS aperture FWHM and pixel scale must be positive")
+
+    height, width = image.shape
+    cy, cx = 0.5 * (height - 1), 0.5 * (width - 1)
+    radius = fwhm / scale
+    y0 = max(0, int(math.ceil(cy - radius)))
+    y1 = min(height - 1, int(math.floor(cy + radius)))
+    x0 = max(0, int(math.ceil(cx - radius)))
+    x1 = min(width - 1, int(math.floor(cx + radius)))
+    yy, xx = np.indices((y1 - y0 + 1, x1 - x0 + 1), dtype=np.float64)
+    aperture = np.hypot(yy + y0 - cy, xx + x0 - cx) <= radius
+    if not np.any(aperture):
+        return 0.0
+    response = _aperture_response(
+        aperture, kernel,
+        psf_identity=psf_identity,
+        psf_fwhm_arcsec=fwhm,
+        pixel_scale_arcsec=scale,
+        centre_parity=(height % 2, width % 2),
+    )
+
+    kernel_height, kernel_width = kernel.shape
+    same_y0 = (kernel_height - 1) // 2
+    same_x0 = (kernel_width - 1) // 2
+    input_y0 = y0 + same_y0 - (kernel_height - 1)
+    input_x0 = x0 + same_x0 - (kernel_width - 1)
+    response_y0 = max(0, -input_y0)
+    response_x0 = max(0, -input_x0)
+    response_y1 = min(response.shape[0], height - input_y0)
+    response_x1 = min(response.shape[1], width - input_x0)
+    if response_y1 <= response_y0 or response_x1 <= response_x0:
+        return 0.0
+    image_y0 = input_y0 + response_y0
+    image_x0 = input_x0 + response_x0
+    image_y1 = input_y0 + response_y1
+    image_x1 = input_x0 + response_x1
+    return float(np.sum(
+        image[image_y0:image_y1, image_x0:image_x1]
+        * response[response_y0:response_y1, response_x0:response_x1],
+        dtype=np.float64,
+    ))
+
+
 def normalise_tng_to_vis_2fwhm(
     stamp: np.ndarray,
     meta: dict,
@@ -478,6 +794,7 @@ def normalise_tng_to_vis_2fwhm(
     psf_kernel: np.ndarray,
     psf_fwhm_arcsec: float,
     pixel_scale_arcsec: float = Config.DEFAULT_PIXEL_SCALE,
+    psf_identity: str = "",
 ) -> tuple[np.ndarray, dict]:
     """Scale a geometry-final TNG cube to a goal VIS 2FWHM aperture flux."""
     cube = np.asarray(stamp, dtype=np.float32)
@@ -490,17 +807,14 @@ def normalise_tng_to_vis_2fwhm(
         raise ValueError("goal VIS 2FWHM aperture flux must be positive")
     if not np.isfinite(fwhm) or fwhm <= 0.0 or not np.isfinite(scale) or scale <= 0.0:
         raise ValueError("VIS aperture PSF FWHM and pixel scale must be positive")
-    circular_psf = circularize_psf_kernel(psf_kernel)
-    blurred = fftconvolve(
-        np.asarray(cube[..., 0], dtype=np.float64),
-        np.asarray(circular_psf, dtype=np.float64),
-        mode="same",
+    circular_psf, psf_fingerprint = _cached_circularized_psf(
+        psf_kernel, psf_identity=psf_identity,
     )
-    yy, xx = np.indices(blurred.shape, dtype=np.float64)
-    cy, cx = 0.5 * (blurred.shape[0] - 1), 0.5 * (blurred.shape[1] - 1)
-    aperture_radius_pix = fwhm / scale
-    aperture = np.hypot(yy - cy, xx - cx) <= aperture_radius_pix
-    measured = float(np.sum(blurred[aperture], dtype=np.float64))
+    measured = measure_vis_2fwhm_aperture_flux(
+        cube[..., 0], circular_psf=circular_psf,
+        psf_fwhm_arcsec=fwhm, pixel_scale_arcsec=scale,
+        psf_identity=psf_identity or psf_fingerprint,
+    )
     if not np.isfinite(measured) or measured <= 0.0:
         raise ValueError("resized TNG has no positive VIS 2FWHM aperture flux")
     brightness_scale = target / measured
@@ -512,7 +826,7 @@ def normalise_tng_to_vis_2fwhm(
     updated.update({
         "brightness_scale": float(brightness_scale),
         "shared_photometric_scale": float(brightness_scale),
-        "photometric_scaling": "vis_2fwhm_after_redshift_and_size_match",
+        "photometric_scaling": "vis_2fwhm_after_redshift_and_nominal_scale",
         "target_vis_2fwhm_flux_e": target,
         "achieved_vis_2fwhm_flux_e": float(achieved),
         "target_vis_2fwhm_mag": float(electrons_to_ab_mag(
@@ -525,6 +839,8 @@ def normalise_tng_to_vis_2fwhm(
         "aperture_radius_arcsec": fwhm,
         "aperture_diameter_arcsec": 2.0 * fwhm,
         "aperture_psf_model": "circularized_empirical_vis_psf",
+        "aperture_response_method": "compact_adjoint_v1",
+        "aperture_psf_fingerprint": psf_fingerprint,
         "flux_e_per_band": {
             band: float(cube[..., index].sum(dtype=np.float64))
             for index, band in enumerate(Config.LR_INPUT_BAND_NAMES)
@@ -533,128 +849,29 @@ def normalise_tng_to_vis_2fwhm(
     return cube, updated
 
 
-def _render_target_re(
-    galaxy_dir: str,
-    subhalo_id: int | str,
-    orientation: int,
+def _record_nominal_radius(
+    meta: dict,
     *,
+    native_re_px: float,
+    target_re_arcsec: float,
     scale: float,
     pixel_scale_arcsec: float,
-    rot_k: int,
-    rot_angle: float | None,
-    target_vis_flux_e: float | None,
-    prepared_source: np.ndarray | None = None,
-    use_angle: bool | None = None,
-) -> tuple[np.ndarray, dict, float]:
-    """Render one trial using one geometry scale and one shared flux scale."""
-    if prepared_source is None:
-        stamp, meta = prepare_tng_galaxy_continuous(
-            galaxy_dir, subhalo_id, orientation, scale=scale,
-            rot_k=rot_k, rot_angle=rot_angle,
-            pixel_scale_arcsec=pixel_scale_arcsec,
-        )
-    else:
-        stamp, meta = _render_tng_continuous_source(
-            prepared_source,
-            scale=scale,
-            rot_k=rot_k,
-            use_angle=bool(use_angle),
-            subhalo_id=subhalo_id,
-            orientation=orientation,
-            rot_angle=rot_angle,
-            pixel_scale_arcsec=pixel_scale_arcsec,
-        )
-    # Exactly one scalar multiplication is applied to the complete cube.
-    _record_target_vis_normalisation(stamp, meta, target_vis_flux_e)
-    achieved_px = measure_halflight_radius_px(stamp[..., 0])
-    achieved = float(achieved_px * pixel_scale_arcsec)
-    meta["shape"] = tuple(stamp.shape)
-    return stamp, meta, achieved
-
-
-def _match_target_re(
-    galaxy_dir: str,
-    subhalo_id: int | str,
-    orientation: int,
-    *,
-    initial_scale: float,
-    target_re_arcsec: float,
-    pixel_scale_arcsec: float,
-    rot_k: int,
-    rot_angle: float | None,
-    target_vis_flux_e: float | None,
-    max_iterations: int = 12,
-) -> tuple[np.ndarray, dict, float, float]:
-    """Bracket a target radius while reusing one loaded and rotated source.
-
-    Half-light measurements become quantised near the output pixel scale, so
-    the former unconstrained multiplicative update could bounce between two
-    scales and eventually run away.  A log-space bracket is monotonic-safe for
-    the continuous size transform and never compounds interpolation: every
-    trial is resized from the same prepared native source.
-    """
-    source, use_angle = _prepare_tng_continuous_source(
-        galaxy_dir, subhalo_id, orientation, rot_angle=rot_angle,
-    )
-    scale = float(initial_scale)
-    tolerance = _target_re_tolerance(target_re_arcsec, pixel_scale_arcsec)
-    lower: tuple[float, float] | None = None
-    upper: tuple[float, float] | None = None
-    best_error = float("inf")
-    best_achieved = float("nan")
-
-    for iteration in range(1, int(max_iterations) + 1):
-        stamp, meta, achieved = _render_target_re(
-            galaxy_dir, subhalo_id, orientation,
-            scale=scale,
-            pixel_scale_arcsec=pixel_scale_arcsec,
-            rot_k=rot_k,
-            rot_angle=rot_angle,
-            # Geometry is resolved first.  Brightness cannot affect a
-            # half-light radius, and the requested PHZ/Kron contract is clearer
-            # when its single shared normalization is applied only to the
-            # accepted final stamp.
-            target_vis_flux_e=None,
-            prepared_source=source,
-            use_angle=use_angle,
-        )
-        if not np.isfinite(achieved) or achieved <= 0.0:
-            raise ValueError("continuous TNG render has no measurable achieved R_e")
-        error = abs(achieved - float(target_re_arcsec))
-        if error < best_error:
-            best_error = error
-            best_achieved = achieved
-        if error <= tolerance:
-            _record_target_vis_normalisation(
-                stamp, meta, target_vis_flux_e,
-            )
-            meta["radius_refinement_iterations"] = int(iteration)
-            return stamp, meta, achieved, scale
-
-        if achieved < target_re_arcsec:
-            if lower is None or scale > lower[0]:
-                lower = (scale, achieved)
-        else:
-            if upper is None or scale < upper[0]:
-                upper = (scale, achieved)
-
-        if lower is not None and upper is not None and lower[0] < upper[0]:
-            # Positive scales span orders of magnitude, so bisect in log space.
-            scale = float(np.sqrt(lower[0] * upper[0]))
-        elif achieved < target_re_arcsec:
-            # Find an upper bracket without permitting a single noisy radius
-            # estimate to launch an enormous output allocation.
-            factor = float(np.clip(target_re_arcsec / achieved, 1.25, 2.0))
-            scale *= factor
-        else:
-            factor = float(np.clip(target_re_arcsec / achieved, 0.5, 0.8))
-            scale *= factor
-
-    raise ValueError(
-        f"TNG R_e matching failed: target={target_re_arcsec:.6g}, "
-        f"best_achieved={best_achieved:.6g} arcsec after "
-        f"{max_iterations} bracketed trials"
-    )
+    radius_manifest_fingerprint: str,
+) -> None:
+    nominal = float(native_re_px) * float(pixel_scale_arcsec) * float(scale)
+    meta.update({
+        "native_halflight_px": float(native_re_px),
+        "target_re_arcsec": float(target_re_arcsec),
+        "nominal_re_arcsec": nominal,
+        "radius_scale_factor": float(scale),
+        "scale_factor": float(scale),
+        "radius_rendering": TNG_RADIUS_RENDERING,
+        "radius_renderer_version": TNG_RADIUS_RENDERER_VERSION,
+        "radius_renderer_fingerprint": TNG_RADIUS_RENDERER_FINGERPRINT,
+        "radius_remeasured": False,
+        "native_tng_sed_preserved": True,
+        "radius_manifest_fingerprint": str(radius_manifest_fingerprint),
+    })
 
 
 def tng_stamp_to_target_re(
@@ -668,12 +885,17 @@ def tng_stamp_to_target_re(
     target_vis_flux_e: float | None = None,
     native_re_px: float | None = None,
     radius_manifest_fingerprint: str = "",
+    max_output_side: int | None = None,
 ) -> tuple[np.ndarray, dict]:
-    """Render a TNG stamp whose final VIS half-light radius matches a target."""
+    """Render one TNG stamp at a nominal continuous-space Euclid Sersic R_e."""
     if not np.isfinite(target_re_arcsec) or target_re_arcsec <= 0.0:
         raise ValueError(f"target_re_arcsec must be positive, got {target_re_arcsec!r}")
-    native = (float(native_re_px) if native_re_px is not None
-              else native_halflight_px(galaxy_dir, subhalo_id, orientation))
+    if native_re_px is None:
+        raise ValueError(
+            "one-pass Euclid radius rendering requires native_re_px from "
+            "the validated radius manifest"
+        )
+    native = float(native_re_px)
     if not np.isfinite(native) or native <= 0.0:
         raise ValueError("TNG VIS frame has no measurable native half-light radius")
     rot_k = int(rng.integers(0, 4)) if rng is not None else 0
@@ -681,26 +903,20 @@ def tng_stamp_to_target_re(
                  if rng is not None else None)
     scale = float(target_re_arcsec) / (float(native) * pixel_scale_arcsec)
     if not np.isfinite(scale) or scale <= 0.0:
-        raise ValueError("computed TNG-to-COSMOS scale is invalid")
-    stamp, meta, achieved, scale = _match_target_re(
-        galaxy_dir, subhalo_id, orientation,
-        initial_scale=scale,
-        target_re_arcsec=target_re_arcsec,
+        raise ValueError("computed TNG-to-Euclid scale is invalid")
+    stamp, meta = prepare_tng_galaxy_continuous(
+        galaxy_dir, subhalo_id, orientation, scale=scale,
+        rot_k=rot_k, rot_angle=rot_angle,
         pixel_scale_arcsec=pixel_scale_arcsec,
-        rot_k=rot_k,
-        rot_angle=rot_angle,
-        target_vis_flux_e=target_vis_flux_e,
+        radius_manifest_fingerprint=radius_manifest_fingerprint,
+        max_output_side=max_output_side,
     )
-    meta.update({
-        "native_halflight_px": float(native),
-        "target_re_arcsec": float(target_re_arcsec),
-        "apparent_re_arcsec": float(achieved),
-        "achieved_re_arcsec": float(achieved),
-        "re_residual_arcsec": float(achieved - target_re_arcsec),
-        "scale_factor": float(scale),
-        "native_tng_sed_preserved": True,
-        "radius_manifest_fingerprint": str(radius_manifest_fingerprint),
-    })
+    _record_target_vis_normalisation(stamp, meta, target_vis_flux_e)
+    _record_nominal_radius(
+        meta, native_re_px=native, target_re_arcsec=target_re_arcsec,
+        scale=scale, pixel_scale_arcsec=pixel_scale_arcsec,
+        radius_manifest_fingerprint=radius_manifest_fingerprint,
+    )
     return stamp, meta
 
 
@@ -720,6 +936,7 @@ def tng_stamp_at_redshift(
     target_vis_flux_e: float | None = None,
     native_re_px: float | None = None,
     radius_manifest_fingerprint: str = "",
+    max_output_side: int | None = None,
 ) -> tuple[np.ndarray, dict]:
     """Build one TNG stamp **as it would appear at redshift ``z``**.
 
@@ -729,7 +946,7 @@ def tng_stamp_at_redshift(
     as s^(1-2α), the observed trend. Distinct from the fixed-mass
     compactness correction, which conserves flux.
 
-    When no COSMOS target radius/flux is supplied, a single ``z`` drives all
+    When no explicit target radius/flux is supplied, a single ``z`` drives all
     three observables (see :mod:`euclid_polish.sky.generation.redshift_model`):
 
     * the block-mean factor comes from the angular size of the 100 pc native
@@ -750,9 +967,15 @@ def tng_stamp_at_redshift(
         raise ValueError(f"mass_scale must be in (0, 1], got {mass_scale}")
     squeeze = compact * mass_scale ** -Config.TNG_MASS_SIZE_ALPHA
     f_geo = rebin_factor_for_redshift(z, pixel_scale_arcsec=pixel_scale_arcsec)
-    re_px = (float(native_re_px) if native_re_px is not None
-             else native_halflight_px(galaxy_dir, subhalo_id, orientation))
+    re_px = (
+        float(native_re_px) if native_re_px is not None else float("nan")
+    )
     if target_re_arcsec is not None:
+        if native_re_px is None:
+            raise ValueError(
+                "one-pass Euclid radius rendering requires native_re_px from "
+                "the validated radius manifest"
+            )
         if not np.isfinite(target_re_arcsec) or target_re_arcsec <= 0.0:
             raise ValueError(f"target_re_arcsec must be positive, got {target_re_arcsec!r}")
         if not np.isfinite(re_px) or re_px <= 0.0:
@@ -762,14 +985,14 @@ def tng_stamp_at_redshift(
         rot_angle = (float(rng.uniform(0.0, 360.0))
                      if rng is not None else None)
         scale = float(target_re_arcsec) / (float(re_px) * pixel_scale_arcsec)
-        stamp, meta, achieved, scale = _match_target_re(
-            galaxy_dir, subhalo_id, orientation,
-            initial_scale=scale,
-            target_re_arcsec=target_re_arcsec,
+        if not np.isfinite(scale) or scale <= 0.0:
+            raise ValueError("computed TNG-to-Euclid scale is invalid")
+        stamp, meta = prepare_tng_galaxy_continuous(
+            galaxy_dir, subhalo_id, orientation, scale=scale,
+            rot_k=int(rot_k), rot_angle=rot_angle,
             pixel_scale_arcsec=pixel_scale_arcsec,
-            rot_k=int(rot_k),
-            rot_angle=rot_angle,
-            target_vis_flux_e=target_vis_flux_e,
+            radius_manifest_fingerprint=radius_manifest_fingerprint,
+            max_output_side=max_output_side,
         )
         # Geometry is final before brightness. Apply only the redshift-driven
         # relative band drift here; the later 2FWHM normalization supplies the
@@ -795,31 +1018,19 @@ def tng_stamp_at_redshift(
             band: float(stamp[..., index].sum(dtype=np.float64))
             for index, band in enumerate(Config.LR_INPUT_BAND_NAMES)
         }
+        _record_nominal_radius(
+            meta, native_re_px=re_px, target_re_arcsec=target_re_arcsec,
+            scale=scale, pixel_scale_arcsec=pixel_scale_arcsec,
+            radius_manifest_fingerprint=radius_manifest_fingerprint,
+        )
         meta.update({
-            "native_halflight_px": float(re_px),
-            "target_re_arcsec": float(target_re_arcsec),
-            "apparent_re_arcsec": float(achieved),
-            "achieved_re_arcsec": float(achieved),
-            "re_residual_arcsec": float(achieved - target_re_arcsec),
-            "scale_factor": float(scale),
             "z": float(z),
-            "native_tng_sed_preserved": True,
             "physical_redshift_rescaling_applied": True,
             "redshift_band_factors": [float(value) for value in factors],
-            "radius_manifest_fingerprint": str(radius_manifest_fingerprint),
         })
         meta.update(dmeta)
         return stamp, meta
-    if (
-        target_re_arcsec is not None and target_re_arcsec > 0.0
-        and np.isfinite(re_px) and re_px > 0.0
-    ):
-        f_cont = min(
-            float(f_max),
-            max(1.0, float(re_px) * pixel_scale_arcsec / target_re_arcsec),
-        )
-    else:
-        f_cont = min(float(f_max), f_geo * squeeze)
+    f_cont = min(float(f_max), f_geo * squeeze)
     rebin = stochastic_round_factor(f_cont, rng)
     if rot_k is None:
         rot_k = int(rng.integers(0, 4)) if rng is not None else 0
@@ -884,8 +1095,6 @@ def tng_stamp_at_redshift(
             else physical_pc_to_arcsec(
                 re_px * TNG_NATIVE_PC_PER_PIXEL, z) / squeeze
         )
-    if target_re_arcsec is not None:
-        meta["target_re_arcsec"] = float(target_re_arcsec)
     if target_vis_flux_e is not None:
         meta["target_vis_flux_e"] = float(target_vis_flux_e)
         meta["brightness_scale"] = float(brightness_scale)
@@ -984,6 +1193,7 @@ def sample_tng_stamp(
     native_re_px: float | None = None,
     radius_manifest_fingerprint: str = "",
     radius_lookup_map: dict[tuple[str, int], float] | None = None,
+    max_output_side: int | None = None,
 ) -> tuple[np.ndarray, dict] | None:
     """Pick a random galaxy / orientation / downsample / quarter-rotation and
     return its injectable ``(H,W,4)`` electron stamp + meta (None if it can't
@@ -991,9 +1201,9 @@ def sample_tng_stamp(
 
     Sizing (first match wins):
 
-    * ``z`` and ``target_re_arcsec`` given → the COSMOS-conditioned path uses
-      one cube-wide geometric scale and one cube-wide VIS normalization. TNG
-      inter-band ratios are unchanged.
+    * ``z`` and ``target_re_arcsec`` given → the Euclid-conditioned path uses
+      one nominal similarity scale and one cube-wide VIS normalization. TNG
+      inter-band ratios are unchanged and the rendered radius is not remeasured.
     * ``z`` alone → the explicit physical-redshift path applies D_A(z),
       dimming, and spectral drift for strong-lens rendering.
     * ``target_re_arcsec`` alone → the same single-scale cube path without the
@@ -1022,7 +1232,8 @@ def sample_tng_stamp(
             target_re_arcsec=target_re_arcsec,
             target_vis_flux_e=target_vis_flux_e,
             native_re_px=selected_native_re,
-            radius_manifest_fingerprint=radius_manifest_fingerprint)
+            radius_manifest_fingerprint=radius_manifest_fingerprint,
+            max_output_side=max_output_side)
 
     if target_re_arcsec is not None:
         return tng_stamp_to_target_re(
@@ -1031,6 +1242,7 @@ def sample_tng_stamp(
             target_vis_flux_e=target_vis_flux_e,
             native_re_px=selected_native_re,
             radius_manifest_fingerprint=radius_manifest_fingerprint,
+            max_output_side=max_output_side,
         )
 
     rot_k = int(rng.integers(0, 4))

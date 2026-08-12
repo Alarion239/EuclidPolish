@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import math
 import os
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 
@@ -57,8 +57,10 @@ from euclid_polish.sky.generation.stellar_sed import (
 )
 from euclid_polish.sky.generation.tng_galaxy import (
     N_ORIENTATIONS,
+    TNG_RADIUS_RENDERER_FINGERPRINT,
+    TNG_RADIUS_RENDERER_VERSION,
+    TNG_RADIUS_RENDERING,
     list_tng_galaxies,
-    native_halflight_px,
     normalise_tng_to_vis_2fwhm,
     predict_vis_flux_e,
     predict_visible_radius_arcsec,
@@ -93,6 +95,16 @@ class SkySimulatorConfig:
     tng_properties_csv:       str   = ""
     tng_radius_manifest_path: str   = os.path.join(
         Config.DATA_DIR, "_tng_infographics", "tng_radius_manifest.json"
+    )
+    # Frozen into generation provenance; not a user-selectable setting.
+    tng_radius_rendering: str = field(
+        default=TNG_RADIUS_RENDERING, init=False,
+    )
+    tng_radius_renderer_version: int = field(
+        default=TNG_RADIUS_RENDERER_VERSION, init=False,
+    )
+    tng_radius_renderer_fingerprint: str = field(
+        default=TNG_RADIUS_RENDERER_FINGERPRINT, init=False,
     )
     strict_population_artifacts: bool = False
     # Stars
@@ -271,12 +283,23 @@ class SkySimulator:
         ok, why = self.config.validate()
         if not ok:
             raise ValueError(f"Invalid generator config: {why}")
+        response_radius = self._maximum_aperture_response_radius_pixels()
+        self._tng_max_output_side = int(
+            2 * max(self.config.image_size, response_radius + 2) + 1
+        )
         self.stellar_prior = (
             EmpiricalStellarPrior.from_payload(self.config.star_prior_payload)
             if self.config.star_prior_payload else None
         )
         self._radius_lookup: dict[tuple[str, int], float] | None = None
         self._radius_manifest_fingerprint = ""
+        if (
+            population_prior is None
+            and self.config.galaxy_density_arcmin2 > 0.0
+        ):
+            raise ValueError(
+                "population_prior=None requires galaxy_density_arcmin2=0"
+            )
 
         if self.config.strict_population_artifacts:
             if self.config.star_density_arcmin2 > 0.0 and self.stellar_prior is None:
@@ -284,43 +307,47 @@ class SkySimulator:
                     "strict population generation requires an active empirical "
                     "stellar prior"
                 )
-            if (self.config.galaxy_density_arcmin2 > 0.0
-                    or self.config.lens_density_arcmin2 > 0.0):
-                if population_prior is None:
-                    raise ValueError(
-                        "strict population generation requires a COSMOS prior"
-                    )
-                status = validate_manifest(
-                    self.config.tng_galaxy_dir,
-                    properties_path=self.config.tng_properties_csv or None,
-                    manifest_path_value=(
-                        self.config.tng_radius_manifest_path or None
-                    ),
+            if (
+                population_prior is None
+                and (
+                    self.config.galaxy_density_arcmin2 > 0.0
+                    or self.config.lens_density_arcmin2 > 0.0
                 )
-                if not status.get("valid"):
-                    raise ValueError(
-                        "TNG radius manifest is not submit-ready: "
-                        + "; ".join(status.get("reasons", []))
-                    )
-                manifest_path = (
-                    self.config.tng_radius_manifest_path
-                    or os.path.join(self.config.tng_galaxy_dir,
-                                    "tng_radius_manifest.json")
-                )
-                payload = load_manifest(manifest_path)
-                if payload is None:
-                    raise ValueError("validated TNG radius manifest disappeared")
-                self._radius_lookup = radius_lookup(payload)
-                self._radius_manifest_fingerprint = str(
-                    payload.get("manifest_fingerprint", "")
+            ):
+                raise ValueError(
+                    "strict population generation requires a galaxy "
+                    "population prior"
                 )
 
-        if (
-            population_prior is None
-            and self.config.galaxy_density_arcmin2 > 0.0
-        ):
-            raise ValueError(
-                "population_prior=None requires galaxy_density_arcmin2=0")
+        # One-pass rendering never measures a donor after selection, including
+        # in non-strict interactive runs.  Every TNG-enabled simulator must
+        # therefore load the same validated offline native-radius manifest.
+        if (self.config.galaxy_density_arcmin2 > 0.0
+                or self.config.lens_density_arcmin2 > 0.0):
+            status = validate_manifest(
+                self.config.tng_galaxy_dir,
+                properties_path=self.config.tng_properties_csv or None,
+                manifest_path_value=(
+                    self.config.tng_radius_manifest_path or None
+                ),
+            )
+            if not status.get("valid"):
+                raise ValueError(
+                    "TNG radius manifest is not submit-ready: "
+                    + "; ".join(status.get("reasons", []))
+                )
+            manifest_path = (
+                self.config.tng_radius_manifest_path
+                or os.path.join(self.config.tng_galaxy_dir,
+                                "tng_radius_manifest.json")
+            )
+            payload = load_manifest(manifest_path)
+            if payload is None:
+                raise ValueError("validated TNG radius manifest disappeared")
+            self._radius_lookup = radius_lookup(payload)
+            self._radius_manifest_fingerprint = str(
+                payload.get("manifest_fingerprint", "")
+            )
 
         # Load TNG galaxies when the TNG population is enabled OR when TNG
         # stamps may be used for lens/source light.
@@ -422,6 +449,39 @@ class SkySimulator:
                         cross_validated_mass_bandwidth(class_ssfr_quantiles)
                     )
 
+    @staticmethod
+    def _psf_fwhm_arcsec(psf) -> float:
+        return (
+            float(psf.fwhm_arcsec)
+            if psf.fwhm_arcsec is not None
+            else float(psf.fwhm_pixels("radial") * psf.pixel_scale)
+        )
+
+    def _maximum_aperture_response_radius_pixels(self) -> int:
+        """Conservative aperture-plus-PSF support for bounded TNG renders."""
+        if self.vis_psf_set is None:
+            psfs = [make_gaussian_psf(
+                Config.get_band("VIS").psf_fwhm_arcsec,
+                self.config.pixel_scale,
+            )]
+        else:
+            psfs = self.vis_psf_set.psfs
+        radius = 0
+        for psf in psfs:
+            fwhm = self._psf_fwhm_arcsec(psf)
+            if not np.isfinite(fwhm) or fwhm <= 0.0:
+                raise ValueError("VIS PSF set contains a non-positive FWHM")
+            kernel_half_support = max(
+                int(math.ceil((psf.shape[0] - 1) / 2.0)),
+                int(math.ceil((psf.shape[1] - 1) / 2.0)),
+            )
+            radius = max(
+                radius,
+                int(math.ceil(fwhm / self.config.pixel_scale))
+                + kernel_half_support,
+            )
+        return radius
+
     def _draw_aperture_psf(
         self, rng: np.random.Generator,
     ) -> tuple[np.ndarray, float, str]:
@@ -438,11 +498,7 @@ class SkySimulator:
             )
             psf = self.vis_psf_set.apply_sample(sample)
             source = f"empirical_vis_psf:{sample.index}"
-        fwhm = (
-            float(psf.fwhm_arcsec)
-            if psf.fwhm_arcsec is not None
-            else float(psf.fwhm_pixels("radial") * psf.pixel_scale)
-        )
+        fwhm = self._psf_fwhm_arcsec(psf)
         if not np.isfinite(fwhm) or fwhm <= 0.0:
             raise ValueError("sampled VIS PSF has no measurable positive FWHM")
         return np.asarray(psf.data, dtype=np.float32), fwhm, source
@@ -625,7 +681,8 @@ class SkySimulator:
                                radius_lookup_map=self._radius_lookup,
                                radius_manifest_fingerprint=(
                                    self._radius_manifest_fingerprint
-                               ))
+                               ),
+                               max_output_side=self._tng_max_output_side)
         if res is None:
             if staged and _attempt < 31:
                 return self._add_tng_galaxy(
@@ -647,6 +704,7 @@ class SkySimulator:
                     psf_kernel=psf_kernel,
                     psf_fwhm_arcsec=psf_fwhm,
                     pixel_scale_arcsec=self.config.pixel_scale,
+                    psf_identity=psf_source,
                 )
             except ValueError as exc:
                 if _attempt < 31:
@@ -762,6 +820,25 @@ class SkySimulator:
             "target_re_arcsec":   float(tmeta.get("target_re_arcsec", float("nan"))),
             "apparent_re_arcsec": float(tmeta.get("apparent_re_arcsec", float("nan"))),
             "achieved_re_arcsec": float(tmeta.get("achieved_re_arcsec", float("nan"))),
+            "nominal_re_arcsec": float(
+                tmeta.get("nominal_re_arcsec", float("nan"))
+            ),
+            "native_halflight_px": float(
+                tmeta.get("native_halflight_px", float("nan"))
+            ),
+            "radius_scale_factor": float(
+                tmeta.get("radius_scale_factor", float("nan"))
+            ),
+            "radius_rendering": str(tmeta.get("radius_rendering", "")),
+            "radius_renderer_fingerprint": str(
+                tmeta.get("radius_renderer_fingerprint", "")
+            ),
+            "radius_remeasured": bool(
+                tmeta.get("radius_remeasured", False)
+            ),
+            "render_support_clipped": bool(
+                tmeta.get("render_support_clipped", False)
+            ),
             # Unified half-light radius + log stellar mass persisted to the
             # source catalog for later analysis.
             "re_arcsec":    draw.re_arcsec,
@@ -822,8 +899,8 @@ class SkySimulator:
             lp = sample_lens_geometry(rng, sigma_v)
             if lp is None:
                 continue
-            re_px = native_halflight_px(gdir, gid, orientation)
-            if not (np.isfinite(re_px) and re_px > 0.0):
+            re_px = self._radius_lookup.get((str(gid), orientation))
+            if re_px is None or not (np.isfinite(re_px) and re_px > 0.0):
                 continue
             re_app = physical_pc_to_arcsec(
                 re_px * TNG_NATIVE_PC_PER_PIXEL,

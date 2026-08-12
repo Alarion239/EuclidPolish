@@ -9,12 +9,18 @@ from astropy.io import fits
 
 from euclid_polish.config import Config
 from euclid_polish.image import Image
+from euclid_polish.provenance import ConfigSnapshot
 from euclid_polish.sky.generation.cosmos_tng_prior import CosmosTngDraw
 from euclid_polish.sky.generation.sky_simulator import (
     SkySimulator,
     SkySimulatorConfig,
     _sample_star_band_magnitudes,
 )
+from euclid_polish.sky.generation.tng_galaxy import (
+    TNG_RADIUS_RENDERER_FINGERPRINT,
+    TNG_RADIUS_RENDERING,
+)
+from euclid_polish.sky.generation.tng_radius_manifest import build_manifest
 
 
 class StaticPrior:
@@ -66,6 +72,11 @@ def _simulator(tmp_path):
     properties.write_text(
         "id,sfr,mass_stars,m_halo,reff\n111,1,1e10,1e12,2\n"
     )
+    radius_manifest = tmp_path / "tng_radius_manifest.json"
+    build_manifest(
+        tng, properties_path=str(properties),
+        output_path=str(radius_manifest),
+    )
     return SkySimulator(
         StaticPrior(),
         SkySimulatorConfig(
@@ -76,6 +87,7 @@ def _simulator(tmp_path):
             lens_density_arcmin2=0.0,
             tng_galaxy_dir=tng,
             tng_properties_csv=str(properties),
+            tng_radius_manifest_path=str(radius_manifest),
         ),
     )
 
@@ -96,6 +108,28 @@ def test_joint_population_renders_only_tng(tmp_path):
         "cosmos2025_joint"
     }
     assert all(row["catalog_id"] == "cosmos-1" for row in meta["galaxies"])
+    assert simulator._tng_max_output_side == 129
+    assert simulator.config.tng_radius_rendering == TNG_RADIUS_RENDERING
+    assert (
+        simulator.config.tng_radius_renderer_fingerprint
+        == TNG_RADIUS_RENDERER_FINGERPRINT
+    )
+    config_snapshot = ConfigSnapshot.from_dataclass(simulator.config)
+    assert config_snapshot.fields["tng_radius_rendering"] == TNG_RADIUS_RENDERING
+    assert (
+        config_snapshot.fields["tng_radius_renderer_fingerprint"]
+        == TNG_RADIUS_RENDERER_FINGERPRINT
+    )
+    assert all(
+        row["target_re_arcsec"] == pytest.approx(0.2)
+        and row["nominal_re_arcsec"] == pytest.approx(0.2)
+        and np.isnan(row["achieved_re_arcsec"])
+        and row["radius_remeasured"] is False
+        and row["radius_rendering"] == TNG_RADIUS_RENDERING
+        and row["radius_renderer_fingerprint"]
+        == TNG_RADIUS_RENDERER_FINGERPRINT
+        for row in meta["galaxies"]
+    )
     assert all(
         row["native_tng_logmass"] == pytest.approx(10.0)
         and row["native_tng_sfr"] == pytest.approx(1.0)

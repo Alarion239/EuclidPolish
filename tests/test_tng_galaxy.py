@@ -8,6 +8,7 @@ import os
 import numpy as np
 import pytest
 from astropy.io import fits as _fits
+from scipy.signal import fftconvolve
 
 from euclid_polish.config import Config
 from euclid_polish.photometry import (
@@ -28,6 +29,8 @@ from euclid_polish.sky.generation.tng_galaxy import (
     circularize_psf_kernel,
     list_tng_galaxies,
     load_tng_frame,
+    measure_vis_2fwhm_aperture_flux,
+    native_halflight_px,
     normalise_tng_to_vis_2fwhm,
     prepare_tng_galaxy,
     sample_tng_stamp,
@@ -126,6 +129,66 @@ def test_2fwhm_normalisation_rejects_zero_aperture_stamp():
             psf_kernel=np.ones((5, 5), np.float32),
             psf_fwhm_arcsec=0.2,
         )
+
+
+@pytest.mark.parametrize(
+    ("image_shape", "psf_shape"),
+    [((81, 81), (9, 9)), ((80, 80), (8, 8)), ((80, 81), (7, 10))],
+)
+def test_compact_aperture_response_matches_full_fft(image_shape, psf_shape):
+    rng = np.random.default_rng(81)
+    vis = rng.random(image_shape, dtype=np.float32)
+    psf = circularize_psf_kernel(rng.random(psf_shape, dtype=np.float32))
+    blurred = fftconvolve(
+        np.asarray(vis, dtype=np.float64),
+        np.asarray(psf, dtype=np.float64),
+        mode="same",
+    )
+    yy, xx = np.indices(image_shape, dtype=np.float64)
+    cy, cx = 0.5 * (image_shape[0] - 1), 0.5 * (image_shape[1] - 1)
+    aperture = np.hypot(yy - cy, xx - cx) <= 4.0
+    expected = float(np.sum(blurred[aperture], dtype=np.float64))
+
+    actual = measure_vis_2fwhm_aperture_flux(
+        vis, circular_psf=psf, psf_fwhm_arcsec=0.2,
+        pixel_scale_arcsec=0.05, psf_identity="fixture",
+    )
+
+    assert actual == pytest.approx(expected, rel=1e-6, abs=1e-8)
+
+
+def test_circular_psf_and_response_caches_reuse_identity_and_track_parity(
+    monkeypatch,
+):
+    from euclid_polish.sky.generation import tng_galaxy
+
+    monkeypatch.setattr(
+        tng_galaxy, "_CIRCULAR_PSF_CACHE",
+        type(tng_galaxy._CIRCULAR_PSF_CACHE)(),
+    )
+    monkeypatch.setattr(tng_galaxy, "_CIRCULAR_PSF_CACHE_BYTES", 0)
+    monkeypatch.setattr(
+        tng_galaxy, "_APERTURE_RESPONSE_CACHE",
+        type(tng_galaxy._APERTURE_RESPONSE_CACHE)(),
+    )
+    monkeypatch.setattr(tng_galaxy, "_APERTURE_RESPONSE_CACHE_BYTES", 0)
+    psf = np.ones((7, 7), dtype=np.float32)
+    for side in (21, 21, 20):
+        normalise_tng_to_vis_2fwhm(
+            np.ones((side, side, 4), dtype=np.float32), {},
+            target_flux_e=10.0, psf_kernel=psf,
+            psf_fwhm_arcsec=0.2, pixel_scale_arcsec=0.05,
+            psf_identity="empirical_vis_psf:3",
+        )
+
+    assert len(tng_galaxy._CIRCULAR_PSF_CACHE) == 1
+    assert len(tng_galaxy._APERTURE_RESPONSE_CACHE) == 2
+    assert tng_galaxy._CIRCULAR_PSF_CACHE_BYTES <= (
+        tng_galaxy._CIRCULAR_PSF_CACHE_MAX_BYTES
+    )
+    assert tng_galaxy._APERTURE_RESPONSE_CACHE_BYTES <= (
+        tng_galaxy._APERTURE_RESPONSE_CACHE_MAX_BYTES
+    )
 
 
 # ------------------------------- rebin -----------------------------------
@@ -450,13 +513,20 @@ def test_rebin_stochastic_rounding_is_unbiased():
 
 
 def test_sample_tng_stamp_with_target_size_records_meta(tmp_path):
-    # A bigger target apparent size ⇒ a smaller (more resolved) rebin factor.
+    # The sampled Euclid radius is a nominal continuous-space similarity scale.
     tng = str(tmp_path)
     _write_fake_galaxy(tng, "111", size=240)        # measurable core
     gals = list_tng_galaxies(tng)
-    res = sample_tng_stamp(gals, np.random.default_rng(0), target_re_arcsec=1.0)
+    native = native_halflight_px(gals[0][0], "111", 1)
+    radius_lookup = {("111", orientation): native for orientation in range(1, 6)}
+    res = sample_tng_stamp(
+        gals, np.random.default_rng(0), target_re_arcsec=1.0,
+        radius_lookup_map=radius_lookup,
+    )
     assert res is not None
     _stamp, meta = res
     assert "target_re_arcsec" in meta and meta["target_re_arcsec"] == 1.0
-    assert "apparent_re_arcsec" in meta and "native_halflight_px" in meta
-    assert meta["rebin_factor"] >= 1
+    assert meta["nominal_re_arcsec"] == pytest.approx(1.0)
+    assert "native_halflight_px" in meta
+    assert meta["radius_remeasured"] is False
+    assert "achieved_re_arcsec" not in meta

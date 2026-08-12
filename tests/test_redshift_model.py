@@ -31,6 +31,7 @@ from euclid_polish.sky.generation.sky_simulator import (
     SkySimulatorConfig,
 )
 from euclid_polish.sky.generation.tng_galaxy import (
+    native_halflight_px,
     sample_tng_stamp,
     tng_stamp_at_redshift,
 )
@@ -228,7 +229,10 @@ def test_tng_stamp_at_redshift_size_and_dimming(tmp_path):
     gdir = os.path.join(tng, "111")
 
     z = 0.5
-    stamp, meta = tng_stamp_at_redshift(gdir, "111", 1, z, rng=None)
+    native_re_px = native_halflight_px(gdir, "111", 1)
+    stamp, meta = tng_stamp_at_redshift(
+        gdir, "111", 1, z, rng=None, native_re_px=native_re_px,
+    )
     expected_rebin = int(round(
         rebin_factor_for_redshift(z) * compactness_factor(z)))
     assert meta["rebin_factor"] == expected_rebin

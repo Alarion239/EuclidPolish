@@ -259,6 +259,10 @@ def fit_euclid_joint_galaxy_candidate() -> dict[str, Any]:
                 "density": radius_density.tolist(),
                 "observed_density": observed_radius_density.tolist(),
                 "unit": "objects / arcmin2 / dex",
+                "model_semantics": (
+                    "nominal continuous-space Euclid Sersic R_e; TNG output "
+                    "pixels are not remeasured during generation"
+                ),
             },
             "conditional_radius": {
                 "magnitude": relation_x.tolist(),
