@@ -197,7 +197,7 @@ def test_broken_radius_counts_recover_plateau_jump_slope_and_tail():
         magnitude_edges, radius_edges, selected, expected,
     )
 
-    assert law.version == 2
+    assert law.version == 3
     assert law.bright_intercept_log10_arcsec == pytest.approx(bright, abs=0.02)
     assert law.break_magnitude == pytest.approx(18.0, abs=0.11)
     assert law.intercept_log10_arcsec == pytest.approx(intercept, abs=0.02)
@@ -205,6 +205,12 @@ def test_broken_radius_counts_recover_plateau_jump_slope_and_tail():
     assert law.scatter_dex == pytest.approx(scatter, abs=0.02)
     assert law.tail_fraction == pytest.approx(tail, abs=0.02)
     assert law.tail_distribution == "uniform_log_radius"
+    assert law.fit_faint_magnitude == 25.5
+    assert law.tail_taper_start_magnitude == 25.5
+    assert law.tail_taper_end_magnitude == 27.0
+    assert law.tail_fraction_at(25.5) == pytest.approx(tail, abs=0.02)
+    assert law.tail_fraction_at(26.25) == pytest.approx(tail / 2.0, abs=0.01)
+    assert law.tail_fraction_at(27.0) == pytest.approx(0.0)
 
 
 def test_prior_draws_radius_first_then_brightness_conditioned_on_radius():
@@ -477,6 +483,8 @@ def test_candidate_fit_uses_only_aggregate_euclid_brightness_and_sersic_radius(
     assert payload["radius_law"]["tail_fraction"] == pytest.approx(
         0.1, abs=0.02,
     )
+    assert payload["radius_law"]["tail_taper_start_magnitude"] == 25.5
+    assert payload["radius_law"]["tail_taper_end_magnitude"] == 27.0
     assert payload["plots"]["radius"]["observed_density"]
     assert payload["plots"]["radius"]["q1_weighted_density"]
     assert "nominal continuous-space" in (

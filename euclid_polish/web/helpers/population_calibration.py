@@ -264,6 +264,7 @@ def fit_euclid_joint_galaxy_candidate() -> dict[str, Any]:
     fit_row_mask = np.sum(selected_grid, axis=1) >= (
         radius_law.fit_min_selected_per_magnitude_bin
     )
+    fit_row_mask &= relation_x <= float(radius_law.fit_faint_magnitude)
     conditional_fit_interval = [
         float(relation_x[fit_row_mask][0]),
         float(relation_x[fit_row_mask][-1]),
@@ -373,6 +374,15 @@ def fit_euclid_joint_galaxy_candidate() -> dict[str, Any]:
                         - observed_radius_probability
                     ))
                 ),
+                "generation_density_re_ge_1_arcsec": float(np.sum(
+                    grid["density"][:, 10.0 ** grid["log_radius"] >= 1.0]
+                )),
+                "generation_density_re_ge_2_arcsec": float(np.sum(
+                    grid["density"][:, 10.0 ** grid["log_radius"] >= 2.0]
+                )),
+                "generation_density_re_ge_5_arcsec": float(np.sum(
+                    grid["density"][:, 10.0 ** grid["log_radius"] >= 5.0]
+                )),
             },
         },
         "generation": {
@@ -402,8 +412,8 @@ def fit_euclid_joint_galaxy_candidate() -> dict[str, Any]:
             ),
             "radius_model": (
                 "bright constant Gaussian core; discontinuous magnitude "
-                "break; declining faint core; magnitude-independent "
-                "uniform log-radius tail"
+                "break; declining faint core; uniform log-radius tail "
+                "through VIS 25.5, tapered to zero at VIS 27"
             ),
             "cosmos_used": False,
             "object_catalog_used": False,

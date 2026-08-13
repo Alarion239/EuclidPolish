@@ -14,16 +14,19 @@ from euclid_polish.population.magnitude_law import (
     StraightMagnitudeLaw,
 )
 
-JOINT_EUCLID_GALAXY_VERSION = 8
-SUPPORTED_JOINT_EUCLID_GALAXY_VERSIONS = frozenset({7, 8})
+JOINT_EUCLID_GALAXY_VERSION = 9
+SUPPORTED_JOINT_EUCLID_GALAXY_VERSIONS = frozenset({7, 8, 9})
 LINEAR_RADIUS_MODEL_VERSION = 1
-RADIUS_MODEL_VERSION = 2
+CONSTANT_TAIL_RADIUS_MODEL_VERSION = 2
+RADIUS_MODEL_VERSION = 3
 RADIUS_PIVOT_MAG = 23.0
 LOG_RADIUS_MIN = float(np.log10(0.03))
 LOG_RADIUS_MAX = float(np.log10(10.0))
 GALAXY_FAINT_DENSITY_CAP_ARCMIN2_MAG = 100.0
 RADIUS_FIT_MIN_SELECTED_PER_MAG_BIN = 20
 RADIUS_FIT_EFFECTIVE_WEIGHT_CAP = 1000.0
+RADIUS_FIT_FAINT_MAGNITUDE = 25.5
+RADIUS_TAIL_TAPER_END_MAGNITUDE = 27.0
 
 
 def generation_magnitude_law(
@@ -60,6 +63,9 @@ class ConditionalRadiusLaw:
     tail_distribution: str = "none"
     fit_min_selected_per_magnitude_bin: int = 0
     fit_effective_weight_cap: float = 0.0
+    fit_faint_magnitude: float | None = None
+    tail_taper_start_magnitude: float | None = None
+    tail_taper_end_magnitude: float | None = None
 
     @classmethod
     def from_payload(cls, payload: dict) -> ConditionalRadiusLaw:
@@ -70,13 +76,18 @@ class ConditionalRadiusLaw:
         values.setdefault("tail_distribution", "none")
         values.setdefault("fit_min_selected_per_magnitude_bin", 0)
         values.setdefault("fit_effective_weight_cap", 0.0)
+        values.setdefault("fit_faint_magnitude", None)
+        values.setdefault("tail_taper_start_magnitude", None)
+        values.setdefault("tail_taper_end_magnitude", None)
         values["covariance"] = tuple(
             tuple(float(item) for item in row)
             for row in values["covariance"]
         )
         law = cls(**values)
         if law.version not in {
-            LINEAR_RADIUS_MODEL_VERSION, RADIUS_MODEL_VERSION,
+            LINEAR_RADIUS_MODEL_VERSION,
+            CONSTANT_TAIL_RADIUS_MODEL_VERSION,
+            RADIUS_MODEL_VERSION,
         }:
             raise ValueError("Euclid radius law has an unsupported version")
         if not (
@@ -88,7 +99,9 @@ class ConditionalRadiusLaw:
             and law.fitted_rows >= 100
         ):
             raise ValueError("Euclid radius law is invalid")
-        if law.version == RADIUS_MODEL_VERSION and not (
+        if law.version in {
+            CONSTANT_TAIL_RADIUS_MODEL_VERSION, RADIUS_MODEL_VERSION,
+        } and not (
             law.bright_intercept_log10_arcsec is not None
             and np.isfinite(law.bright_intercept_log10_arcsec)
             and law.break_magnitude is not None
@@ -99,6 +112,20 @@ class ConditionalRadiusLaw:
             and law.fit_effective_weight_cap > 0.0
         ):
             raise ValueError("Euclid broken radius law is invalid")
+        if law.version == RADIUS_MODEL_VERSION and not (
+            law.fit_faint_magnitude is not None
+            and np.isfinite(law.fit_faint_magnitude)
+            and law.tail_taper_start_magnitude is not None
+            and np.isfinite(law.tail_taper_start_magnitude)
+            and law.tail_taper_end_magnitude is not None
+            and np.isfinite(law.tail_taper_end_magnitude)
+            and law.tail_taper_start_magnitude < law.tail_taper_end_magnitude
+            and np.isclose(
+                law.fit_faint_magnitude,
+                law.tail_taper_start_magnitude,
+            )
+        ):
+            raise ValueError("Euclid radius-tail taper is invalid")
         return law
 
     def to_payload(self) -> dict:
@@ -123,28 +150,42 @@ class ConditionalRadiusLaw:
     def mean(self, magnitude: np.ndarray | float) -> np.ndarray:
         """Return the conditional mean log10 radius."""
         core = self.core_mean(magnitude)
-        if self.tail_fraction <= 0.0:
+        tail_fraction = self.tail_fraction_at(magnitude)
+        if not np.any(tail_fraction > 0.0):
             return core
         uniform_mean = 0.5 * (self.log_radius_min + self.log_radius_max)
-        return (1.0 - self.tail_fraction) * core + self.tail_fraction * uniform_mean
+        return (1.0 - tail_fraction) * core + tail_fraction * uniform_mean
+
+    def tail_fraction_at(self, magnitude: np.ndarray | float) -> np.ndarray:
+        """Return the broad-component fraction at each magnitude."""
+        values = np.asarray(magnitude, dtype=np.float64)
+        if self.tail_fraction <= 0.0:
+            return np.zeros_like(values)
+        if self.version < RADIUS_MODEL_VERSION:
+            return np.full_like(values, self.tail_fraction)
+        start = float(self.tail_taper_start_magnitude)
+        end = float(self.tail_taper_end_magnitude)
+        taper = np.clip((end - values) / (end - start), 0.0, 1.0)
+        return self.tail_fraction * taper
 
     def bin_probability(
         self, magnitude: np.ndarray, log_radius_edges: np.ndarray,
     ) -> np.ndarray:
         """Return bounded conditional probability in each log-radius bin."""
-        values = np.asarray(magnitude, dtype=np.float64)
+        values = np.atleast_1d(np.asarray(magnitude, dtype=np.float64))
         edges = np.asarray(log_radius_edges, dtype=np.float64)
         mean = self.core_mean(values)
         upper = (edges[None, 1:] - mean[:, None]) / self.scatter_dex
         lower = (edges[None, :-1] - mean[:, None]) / self.scatter_dex
         core = ndtr(upper) - ndtr(lower)
         core /= np.sum(core, axis=1, keepdims=True)
-        if self.tail_fraction <= 0.0:
+        tail_fraction = self.tail_fraction_at(values)
+        if not np.any(tail_fraction > 0.0):
             return core
         tail = np.diff(edges) / (edges[-1] - edges[0])
         return (
-            (1.0 - self.tail_fraction) * core
-            + self.tail_fraction * tail[None, :]
+            (1.0 - tail_fraction[:, None]) * core
+            + tail_fraction[:, None] * tail[None, :]
         )
 
 
@@ -467,15 +508,17 @@ def fit_broken_conditional_radius_law_from_binned_counts(
     *,
     minimum_selected_per_bin: int = RADIUS_FIT_MIN_SELECTED_PER_MAG_BIN,
     effective_weight_cap: float = RADIUS_FIT_EFFECTIVE_WEIGHT_CAP,
+    fit_faint_magnitude: float = RADIUS_FIT_FAINT_MAGNITUDE,
+    tail_taper_end_magnitude: float = RADIUS_TAIL_TAPER_END_MAGNITUDE,
 ) -> ConditionalRadiusLaw:
     """Fit a broken Gaussian core plus a broad log-radius tail to Q1 bins.
 
     Every sufficiently populated magnitude bracket contributes at most
     ``effective_weight_cap`` to the conditional likelihood.  This prevents the
     millions of faint detections from erasing the measured bright plateau and
-    sharp transition.  A single magnitude-independent uniform component in
-    log radius represents the broad Q1 Sersic tail without changing the radius
-    domain or adding object-level catalogue inputs.
+    sharp transition.  A uniform component in log radius represents the broad
+    Q1 Sersic tail through the count turnover, then tapers to zero so the
+    incompleteness-dominated faint upturn is not extrapolated.
     """
     mag_edges = np.asarray(magnitude_edges, dtype=np.float64)
     radius_edges = np.asarray(log_radius_edges, dtype=np.float64)
@@ -498,6 +541,9 @@ def fit_broken_conditional_radius_law_from_binned_counts(
         or int(minimum_selected_per_bin) < 1
         or not np.isfinite(effective_weight_cap)
         or effective_weight_cap <= 0.0
+        or not np.isfinite(fit_faint_magnitude)
+        or not np.isfinite(tail_taper_end_magnitude)
+        or tail_taper_end_magnitude <= fit_faint_magnitude
     ):
         raise ValueError("Broken binned radius-fit inputs are malformed")
     magnitude = 0.5 * (mag_edges[:-1] + mag_edges[1:])
@@ -506,6 +552,7 @@ def fit_broken_conditional_radius_law_from_binned_counts(
     fit_rows = (
         (selected_by_magnitude >= int(minimum_selected_per_bin))
         & (expected_by_magnitude > 0.0)
+        & (magnitude <= float(fit_faint_magnitude))
     )
     selected_fit = selected[fit_rows]
     counts_fit = counts[fit_rows]
@@ -586,7 +633,7 @@ def fit_broken_conditional_radius_law_from_binned_counts(
         upper = (radius_edges[None, 1:] - core_mean[:, None]) / scatter
         lower = (radius_edges[None, :-1] - core_mean[:, None]) / scatter
         core = ndtr(upper) - ndtr(lower)
-        core /= np.sum(core, axis=1, keepdims=True)
+        core /= np.maximum(np.sum(core, axis=1, keepdims=True), 1e-300)
         return (
             (1.0 - tail_fraction) * core
             + tail_fraction * uniform_probability[None, :]
@@ -599,21 +646,31 @@ def fit_broken_conditional_radius_law_from_binned_counts(
             / effective_total
         )
 
-    result = minimize(
-        objective,
-        initial,
-        method="Nelder-Mead",
-        bounds=bounds,
-        options={"xatol": 1e-10, "fatol": 1e-11, "maxiter": 20_000},
-    )
+    starts = []
+    for break_start in np.unique(np.clip(
+        initial_break + np.linspace(-0.3, 0.4, 8), 17.4, 19.2,
+    )):
+        start = initial.copy()
+        start[2] = break_start
+        starts.append(minimize(
+            objective,
+            start,
+            method="Nelder-Mead",
+            bounds=bounds,
+            options={"xatol": 1e-10, "fatol": 1e-11, "maxiter": 20_000},
+        ))
+    successful = [candidate for candidate in starts if candidate.success]
+    result = min(successful, key=lambda candidate: candidate.fun) if successful else starts[0]
     if result.success:
-        result = minimize(
+        refined = minimize(
             objective,
             result.x,
             method="L-BFGS-B",
             bounds=bounds,
             options={"ftol": 1e-14, "gtol": 1e-9, "maxiter": 5000},
         )
+        if refined.success and refined.fun <= result.fun:
+            result = refined
     if not result.success or not np.all(np.isfinite(result.x)):
         raise ValueError(f"Broken conditional-radius fit failed: {result.message}")
     bright, peak, break_magnitude, slope, scatter, tail_fraction = (
@@ -669,7 +726,9 @@ def fit_broken_conditional_radius_law_from_binned_counts(
             "bounded aggregate Q1 magnitude x log-radius bins; at least "
             f"{int(minimum_selected_per_bin)} selected radii per magnitude "
             f"bin; each magnitude bin capped at {effective_weight_cap:g} "
-            "effective PHZ weight; PHZ_GAL_PROB >= 0.5; 0.03 <= MER "
+            f"effective PHZ weight; fit stops at VIS {fit_faint_magnitude:g} "
+            f"and broad tail tapers to zero by VIS {tail_taper_end_magnitude:g}; "
+            "PHZ_GAL_PROB >= 0.5; 0.03 <= MER "
             "morphology VIS Sersic R_e < 10 arcsec; "
             "SERSIC_VISNIR_FLAGS = 0"
         ),
@@ -679,6 +738,9 @@ def fit_broken_conditional_radius_law_from_binned_counts(
         tail_distribution="uniform_log_radius",
         fit_min_selected_per_magnitude_bin=int(minimum_selected_per_bin),
         fit_effective_weight_cap=float(effective_weight_cap),
+        fit_faint_magnitude=float(fit_faint_magnitude),
+        tail_taper_start_magnitude=float(fit_faint_magnitude),
+        tail_taper_end_magnitude=float(tail_taper_end_magnitude),
     )
 
 
