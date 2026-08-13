@@ -1509,7 +1509,12 @@ class SyntheticGenerateStep(RunPipelineStep):
             ) from exc
         if not (0.0 <= tng_density < float("inf")):
             raise ValueError(f"invalid TNG density: {raw_tng_density!r}")
-        cmd += ["--galaxy-density-arcmin2", f"{tng_density:g}"]
+        # This value is also embedded at full precision in the activated
+        # population payload and checked as a hard upper bound by the remote
+        # simulator.  The default ``:g`` precision can round the CLI value up
+        # past that identical bound (for example 372.831718745... becomes
+        # 372.832), so preserve enough digits for an exact float round trip.
+        cmd += ["--galaxy-density-arcmin2", f"{tng_density:.17g}"]
         joint_population = str(
             params.get("_joint_galaxy_population_json", "") or ""
         ).strip()

@@ -173,6 +173,33 @@ def test_simulator_rejects_density_above_activated_magnitude_law():
         )
 
 
+def test_simulator_accepts_density_equal_to_activated_magnitude_law(
+    monkeypatch,
+):
+    import euclid_polish.sky.generation.sky_simulator as module
+
+    monkeypatch.setattr(
+        module, "validate_manifest", lambda *args, **kwargs: {"valid": True},
+    )
+    monkeypatch.setattr(
+        module, "load_manifest",
+        lambda *args, **kwargs: {"manifest_fingerprint": "r" * 64},
+    )
+    monkeypatch.setattr(module, "radius_lookup", lambda payload: {})
+    monkeypatch.setattr(module, "list_tng_galaxies", lambda path: [("o", "1")])
+    monkeypatch.setattr(module, "load_tng_properties", lambda path: {})
+    prior = JointGalaxyPopulationPrior(active_payload())
+
+    SkySimulator(
+        prior,
+        SkySimulatorConfig(
+            galaxy_density_arcmin2=prior.surface_density_arcmin2,
+            star_density_arcmin2=0.0,
+            lens_density_arcmin2=0.0,
+        ),
+    )
+
+
 def test_staged_generator_selects_and_renders_donor_before_brightness(
     monkeypatch,
 ):

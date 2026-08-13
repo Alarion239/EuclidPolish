@@ -541,7 +541,7 @@ class TestRegistry:
                 "galaxy_density_arcmin2": Config.GALAXY_DENSITY_ARCMIN2}
         argv = step.build_command(base)
         assert (argv[argv.index("--galaxy-density-arcmin2") + 1]
-                == f"{Config.GALAXY_DENSITY_ARCMIN2:g}")
+                == f"{Config.GALAXY_DENSITY_ARCMIN2:.17g}")
         custom = step.build_command({
             **base, "galaxy_density_arcmin2": "175",
         })
@@ -549,6 +549,17 @@ class TestRegistry:
             custom.index("--galaxy-density-arcmin2") + 1
         ] == "175"
         assert "--sersic-density-arcmin2" not in argv
+
+    def test_synthetic_generate_preserves_galaxy_density_precision(self):
+        """The CLI density must not round above its embedded prior limit."""
+        density = 372.83171874532775
+        step = REGISTRY.get("synthetic_generate")
+
+        argv = step.build_command({"galaxy_density_arcmin2": density})
+        serialized = argv[argv.index("--galaxy-density-arcmin2") + 1]
+
+        assert serialized == "372.83171874532775"
+        assert float(serialized) == density
 
     def test_synthetic_generate_embeds_active_euclid_joint_population(
         self, monkeypatch, tmp_path,
