@@ -207,7 +207,7 @@ def test_cutout_viewer_exports_capture_all_visible_frames():
 
 
 def test_population_atlas_download_route(client, monkeypatch):
-    from euclid_polish.web.routes import population_comparison as route
+    from euclid_polish.web.routes import galaxy_distributions as route
 
     monkeypatch.setattr(
         route, "joint_galaxy_state",
@@ -231,7 +231,7 @@ def test_population_atlas_download_route(client, monkeypatch):
 
 
 def test_star_population_calibration_download_route(client, monkeypatch):
-    from euclid_polish.web.routes import population_comparison as route
+    from euclid_polish.web.routes import star_distribution as route
 
     monkeypatch.setattr(
         route, "star_state",
@@ -672,6 +672,38 @@ def test_tng_auth_status_reports_presence_without_leaking_token(client, monkeypa
     assert "token" not in body and "tng_token" not in body
 
 
+def test_tng_radius_status_uses_activated_remote_python(client, monkeypatch):
+    from euclid_polish.web.routes import tng
+
+    calls = []
+
+    def run_remote_python(ssh, *, cfg, argv, timeout):
+        calls.append((ssh, cfg, argv, timeout))
+        return 2, (
+            '{"valid": false, "expected_count": 5770, '
+            '"valid_count": 5700, "reasons": ["stale"]}\n'
+        ), "stale"
+
+    monkeypatch.setattr(tng.fasrc_jobs, "run_remote_python", run_remote_python)
+    response = client.get("/api/tng/radii/status")
+    payload = response.get_json()
+
+    assert response.status_code == 200
+    assert payload["connected"] is True
+    assert payload["expected_count"] == 5770
+    assert payload["valid_count"] == 5700
+    assert calls[0][2][0] == "scripts/validate_tng_radius_manifest.py"
+    properties_index = calls[0][2].index("--properties") + 1
+    manifest_index = calls[0][2].index("--manifest") + 1
+    assert calls[0][2][properties_index].endswith(
+        "/_tng_infographics/tng_properties.csv"
+    )
+    assert calls[0][2][manifest_index].endswith(
+        "/_tng_infographics/tng_radius_manifest.json"
+    )
+    assert calls[0][3] == 180
+
+
 # ---------------------------------------------------------------------------
 # TNG infographics (rendered on FASRC, streamed back)
 # ---------------------------------------------------------------------------
@@ -769,18 +801,16 @@ def test_post_inference_refresh_combiners_returns_job_id(client, monkeypatch):
 
 
 def test_login_node_generate_cmd_injects_tng_density():
-    """The inference login-node generation always runs all-TNG mode with
-    redshift realism: COSMOS off, pure-TNG density, --tng-redshift-mode."""
+    """Inference login-node generation forwards the fitted galaxy density."""
     from euclid_polish.web.fasrc_config import FasrcConfig
     from euclid_polish.web.helpers.jobs_impl import _login_node_generate_cmd
     cfg = FasrcConfig(data_dir="/n/d", conda_env_path="/n/env", repo_path="/n/repo")
     base = _login_node_generate_cmd(
-        cfg, "/n/tmp", 510, 2, tng_density_arcmin2=175
+        cfg, "/n/tmp", 510, 2, galaxy_density_arcmin2=175
     )
     assert "scripts/run_pipeline.py" in base
-    assert "--sersic-density-arcmin2 0" in base
-    assert "--tng-density-arcmin2 175" in base
-    assert "--tng-redshift-mode" in base
+    assert "--galaxy-density-arcmin2 175" in base
+    assert "--tng-density-arcmin2" not in base
 
 
 # ---------------------------------------------------------------------------

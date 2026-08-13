@@ -36,7 +36,7 @@ import os
 from collections import OrderedDict
 
 import numpy as np
-from scipy.signal import convolve2d
+from scipy.signal import fftconvolve
 
 from euclid_polish.config import BandConfig, Config
 from euclid_polish.photometry import (
@@ -699,7 +699,11 @@ def _aperture_response(
     if cached is not None:
         _APERTURE_RESPONSE_CACHE[key] = cached
         return cached
-    response = convolve2d(
+    # Empirical VIS kernels are commonly about 1,000 px across.  Direct
+    # convolution makes this one-time response build take many CPU minutes
+    # even though both inputs are compact; FFT convolution is algebraically
+    # identical here and completes in well under a second.
+    response = fftconvolve(
         aperture_values.astype(np.float64),
         np.asarray(psf_values[::-1, ::-1], dtype=np.float64),
         mode="full",

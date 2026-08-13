@@ -190,6 +190,13 @@ def test_load_tng_properties(tmp_path):
     props = load_tng_properties(csv_path)
     assert props["111"]["mass_stars"] == pytest.approx(1.0e11)
     assert props["222"]["reff"] == pytest.approx(3.0)
+    _write_props_csv(
+        csv_path,
+        [("111", 1.0e11), ("222", 5.0e10), ("333", 2.5e10)],
+    )
+    assert load_tng_properties(csv_path)["333"]["mass_stars"] == pytest.approx(
+        2.5e10
+    )
     assert load_tng_properties(str(tmp_path / "missing.csv")) == {}
 
 

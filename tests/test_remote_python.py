@@ -33,6 +33,7 @@ def test_command_is_login_shell_and_well_formed():
     # netscratch paths exported so the remote script reads/writes the
     # shared data dir, and the env is activated before python runs.
     assert "export EUCLID_POLISH_DATA_DIR=/n/netscratch/DATA" in inner
+    assert "export PYTHONPATH=/n/holylabs/REPO:${PYTHONPATH:-}" in inner
     # mamba preferred, conda fallback — both reference the env prefix.
     assert "mamba activate /n/holylabs/ENV" in inner
     assert "conda activate /n/holylabs/ENV" in inner

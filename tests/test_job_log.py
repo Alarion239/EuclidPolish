@@ -38,6 +38,16 @@ class TestConstruction:
         JobLog(str(p))
         assert _rows(p) and _rows(p)[0]["jobid"] == "42"
 
+    def test_reopens_embedded_population_larger_than_csv_default(self, tmp_path):
+        p = tmp_path / "log.csv"
+        payload = '{"calibration":"' + ("x" * 200_000) + '"}'
+        log = JobLog(str(p))
+        log.record_submission(JobRecord(jobid="large", params_json=payload))
+
+        reopened = JobLog(str(p))
+
+        assert reopened.get("large")["params_json"] == payload
+
 
 # ---------------------------------------------------------------------------
 # Submission append

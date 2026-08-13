@@ -19,16 +19,16 @@ from typing import Any
 import numpy as np
 
 from euclid_polish.config import Config
+from euclid_polish.skirt.image import measure_halflight_radius_px
+from euclid_polish.sky.generation.redshift_model import (
+    TNG_NATIVE_PC_PER_PIXEL,
+    load_tng_properties,
+)
 from euclid_polish.sky.generation.tng_galaxy import (
     N_ORIENTATIONS,
     list_tng_galaxies,
     load_tng_frame,
     tng_fits_path,
-)
-from euclid_polish.skirt.image import measure_halflight_radius_px
-from euclid_polish.sky.generation.redshift_model import (
-    TNG_NATIVE_PC_PER_PIXEL,
-    load_tng_properties,
 )
 
 MANIFEST_VERSION = 1
@@ -106,6 +106,7 @@ def build_manifest(
     properties_path: str | None = None,
     output_path: str | None = None,
     workers: int = 1,
+    reuse_existing: bool = True,
 ) -> dict[str, Any]:
     """Measure every completed atlas orientation and return a report.
 
@@ -117,6 +118,25 @@ def build_manifest(
         Config.DATA_DIR, "_tng_infographics", "tng_properties.csv"
     )
     properties = load_tng_properties(properties_path)
+    reusable: dict[tuple[str, int], dict[str, Any]] = {}
+    if reuse_existing and output_path:
+        previous = load_manifest(output_path)
+        if (
+            previous
+            and previous.get("version") == MANIFEST_VERSION
+            and previous.get("algorithm_version") == ALGORITHM_VERSION
+        ):
+            for entry in previous.get("entries", []):
+                if not isinstance(entry, dict) or not entry.get("valid"):
+                    continue
+                try:
+                    key = (
+                        str(entry["subhalo_id"]),
+                        int(entry["orientation"]),
+                    )
+                except (KeyError, TypeError, ValueError):
+                    continue
+                reusable[key] = dict(entry)
     tasks: list[tuple[str, str, int, bool]] = []
     for gdir, gid in galaxies:
         props = properties.get(str(gid), {})
@@ -125,7 +145,9 @@ def build_manifest(
         for orientation in range(1, N_ORIENTATIONS + 1):
             tasks.append((gdir, str(gid), orientation, has_properties))
 
-    def measure(task: tuple[str, str, int, bool]) -> tuple[dict[str, Any], dict[str, str] | None]:
+    def measure(
+        task: tuple[str, str, int, bool],
+    ) -> tuple[dict[str, Any], dict[str, str] | None, bool]:
         gdir, gid, orientation, has_properties = task
         vis_path = tng_fits_path(gdir, gid, orientation, "VIS")
         row: dict[str, Any] = {
@@ -137,6 +159,14 @@ def build_manifest(
         failure = None
         try:
             identity = _file_identity(vis_path)
+            previous = reusable.get((gid, orientation))
+            if (
+                has_properties
+                and previous is not None
+                and previous.get("vis_file") == identity
+            ):
+                previous["vis_path"] = os.path.abspath(vis_path)
+                return previous, None, True
             frame = load_tng_frame(vis_path)
             re_px = float(measure_halflight_radius_px(frame))
             if not has_properties:
@@ -156,7 +186,7 @@ def build_manifest(
                 "orientation": str(orientation),
                 "error": str(exc),
             }
-        return row, failure
+        return row, failure, False
 
     worker_count = max(1, int(workers))
     if worker_count == 1:
@@ -165,8 +195,11 @@ def build_manifest(
     else:
         with ThreadPoolExecutor(max_workers=worker_count) as pool:
             measured_rows = list(pool.map(measure, tasks))
-    entries = [row for row, _ in measured_rows]
-    failures = [failure for _, failure in measured_rows if failure is not None]
+    entries = [row for row, _, _ in measured_rows]
+    failures = [
+        failure for _, failure, _ in measured_rows if failure is not None
+    ]
+    reused_count = sum(reused for _, _, reused in measured_rows)
 
     inventory = _inventory(tng_dir, galaxies, properties_path)
     inventory_fingerprint = _fingerprint({
@@ -185,6 +218,8 @@ def build_manifest(
         "expected_count": int(expected_count),
         "valid_count": int(valid_count),
         "failed_count": int(len(failures)),
+        "reused_count": int(reused_count),
+        "measured_count": int(len(entries) - reused_count),
         "valid": bool(expected_count > 0 and valid_count == expected_count),
         "failures": failures,
         "entries": entries,
@@ -425,6 +460,58 @@ def validate_manifest(
         "failed_count": payload.get("failed_count", 0),
         "reasons": reasons,
     }
+
+
+def ensure_manifest(
+    tng_dir: str,
+    *,
+    properties_path: str | None = None,
+    manifest_path_value: str | None = None,
+    workers: int = 1,
+) -> dict[str, Any]:
+    """Return a valid manifest, incrementally repairing it when necessary.
+
+    Existing rows are reused only when their VIS file identity still matches.
+    Atlas additions therefore measure just the new orientations, while a
+    replaced VIS frame is remeasured before any generation worker starts.
+    """
+    path = manifest_path(tng_dir, manifest_path_value)
+    initial = validate_manifest(
+        tng_dir,
+        properties_path=properties_path,
+        manifest_path_value=path,
+    )
+    if initial.get("valid"):
+        return dict(initial, repaired=False, reused_count=0, measured_count=0)
+
+    report = build_manifest(
+        tng_dir,
+        properties_path=properties_path,
+        output_path=path,
+        workers=workers,
+        reuse_existing=True,
+    )
+    result = validate_manifest(
+        tng_dir,
+        properties_path=properties_path,
+        manifest_path_value=path,
+    )
+    result.update({
+        "repaired": True,
+        "repair_reasons": list(initial.get("reasons") or []),
+        "reused_count": int(report.get("reused_count", 0)),
+        "measured_count": int(report.get("measured_count", 0)),
+    })
+    if not result.get("valid"):
+        failures = [
+            str(item.get("error") or "unknown radius measurement failure")
+            for item in report.get("failures", [])[:3]
+        ]
+        detail = list(result.get("reasons") or []) + failures
+        raise ValueError(
+            "TNG radius manifest repair failed: " + "; ".join(detail)
+        )
+    return result
 
 
 def radius_lookup(manifest: dict[str, Any]) -> dict[tuple[str, int], float]:

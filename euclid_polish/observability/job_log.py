@@ -35,6 +35,18 @@ from dataclasses import asdict, dataclass, fields
 from datetime import UTC, datetime
 from typing import Any
 
+# Embedded population calibrations can make ``params_json`` substantially
+# larger than Python's conservative 128 KiB CSV default.  Every JobLog read
+# must accept rows that JobLog itself can write; keep a bounded allowance
+# rather than requiring each server entry point to change process-global CSV
+# state before importing the web application.
+_CSV_FIELD_SIZE_LIMIT = 16 * 1024 * 1024
+
+
+def _ensure_csv_field_size_limit() -> None:
+    if csv.field_size_limit() < _CSV_FIELD_SIZE_LIMIT:
+        csv.field_size_limit(_CSV_FIELD_SIZE_LIMIT)
+
 
 def _utc_now_iso() -> str:
     """ISO 8601 timestamp in UTC, second precision. Stable for CSV diffs."""
@@ -132,6 +144,7 @@ class JobLog:
     COLUMNS: list[str] = [f.name for f in fields(JobRecord)]
 
     def __init__(self, csv_path: str) -> None:
+        _ensure_csv_field_size_limit()
         self.csv_path = csv_path
         self._lock = threading.Lock()
         os.makedirs(os.path.dirname(csv_path) or ".", exist_ok=True)

@@ -191,6 +191,39 @@ def test_circular_psf_and_response_caches_reuse_identity_and_track_parity(
     )
 
 
+def test_aperture_response_uses_fft_for_empirical_psf(monkeypatch):
+    from euclid_polish.sky.generation import tng_galaxy
+
+    calls = []
+
+    def fake_fftconvolve(left, right, *, mode):
+        calls.append((left.shape, right.shape, mode))
+        return np.ones(
+            (left.shape[0] + right.shape[0] - 1,
+             left.shape[1] + right.shape[1] - 1),
+            dtype=np.float64,
+        )
+
+    monkeypatch.setattr(tng_galaxy, "fftconvolve", fake_fftconvolve)
+    monkeypatch.setattr(
+        tng_galaxy, "_APERTURE_RESPONSE_CACHE",
+        type(tng_galaxy._APERTURE_RESPONSE_CACHE)(),
+    )
+    monkeypatch.setattr(tng_galaxy, "_APERTURE_RESPONSE_CACHE_BYTES", 0)
+
+    response = tng_galaxy._aperture_response(
+        np.ones((9, 9), dtype=bool),
+        np.ones((101, 101), dtype=np.float32),
+        psf_identity="large-empirical-fixture",
+        psf_fwhm_arcsec=0.2,
+        pixel_scale_arcsec=0.05,
+        centre_parity=(1, 1),
+    )
+
+    assert calls == [((9, 9), (101, 101), "full")]
+    assert response.shape == (109, 109)
+
+
 # ------------------------------- rebin -----------------------------------
 
 def test_block_mean_preserves_surface_brightness():

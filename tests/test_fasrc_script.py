@@ -106,6 +106,7 @@ def test_paths_route_through_user_config():
             or "export EUCLID_POLISH_CKPT_DIR='/n/somewhere/ckpt'" in body)
     assert ("mamba activate /n/lab/conda-env" in body
             or "mamba activate '/n/lab/conda-env'" in body)
+    assert 'export PYTHONPATH="$(pwd):${PYTHONPATH:-}"' in body
 
 
 def test_extra_flags_appended_verbatim():

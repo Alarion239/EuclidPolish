@@ -351,6 +351,7 @@ def build_remote_python_command(
         # ``cd`` is the one strict step — bail loudly (127) if the repo
         # path is wrong rather than running python in the wrong place.
         f"cd {shlex.quote(cfg.repo_path)} || exit 127; "
+        f"export PYTHONPATH={shlex.quote(cfg.repo_path)}:${{PYTHONPATH:-}}; "
         f"export EUCLID_POLISH_DATA_DIR={shlex.quote(cfg.data_dir)}; "
         f"export EUCLID_POLISH_CKPT_DIR={shlex.quote(cfg.ckpt_dir)}; "
         # Match the sbatch template: load python, then source conda+mamba

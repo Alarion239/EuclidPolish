@@ -14,6 +14,7 @@ from euclid_polish.sky.generation.tng_galaxy import (
 )
 from euclid_polish.sky.generation.tng_radius_manifest import (
     build_manifest,
+    ensure_manifest,
     load_parameter_summary,
     validate_manifest,
     write_parameter_summary,
@@ -56,6 +57,49 @@ def test_manifest_is_atomic_and_validates_inventory(tmp_path):
                                manifest_path_value=str(output))
     assert not status["valid"]
     assert any("changed" in reason for reason in status["reasons"])
+
+
+def test_ensure_manifest_measures_only_new_atlas_orientations(
+    tmp_path, monkeypatch,
+):
+    import euclid_polish.sky.generation.tng_radius_manifest as module
+
+    atlas = tmp_path / "tng_skirt"
+    atlas.mkdir()
+    _atlas(atlas, gid="42")
+    properties = tmp_path / "props.csv"
+    properties.write_text("id,sfr,mass_stars,m_halo,reff\n42,1,1e10,1e12,2\n")
+    output = tmp_path / "manifest.json"
+    build_manifest(
+        str(atlas), properties_path=str(properties), output_path=str(output),
+    )
+
+    _atlas(atlas, gid="43")
+    properties.write_text(
+        "id,sfr,mass_stars,m_halo,reff\n"
+        "42,1,1e10,1e12,2\n43,2,2e10,2e12,3\n"
+    )
+    loaded = []
+    original_load = module.load_tng_frame
+
+    def counted_load(path):
+        loaded.append(path)
+        return original_load(path)
+
+    monkeypatch.setattr(module, "load_tng_frame", counted_load)
+    result = ensure_manifest(
+        str(atlas), properties_path=str(properties),
+        manifest_path_value=str(output), workers=2,
+    )
+
+    assert result["valid"] and result["repaired"]
+    assert result["reused_count"] == 5
+    assert result["measured_count"] == 5
+    assert len(loaded) == 5
+    assert validate_manifest(
+        str(atlas), properties_path=str(properties),
+        manifest_path_value=str(output),
+    )["valid"]
 
 
 def test_zero_padded_atlas_filenames_are_not_excluded(tmp_path):

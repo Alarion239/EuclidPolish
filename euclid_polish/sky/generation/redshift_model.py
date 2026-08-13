@@ -358,8 +358,13 @@ def default_tng_properties_csv() -> str:
                         "tng_properties.csv")
 
 
-#: Per-path property cache: {csv_path: {subhalo_id: {field: value}}}.
-_TNG_PROPS_CACHE: dict[str, dict[str, dict[str, float]]] = {}
+#: Per-path property cache keyed by the current file identity. Atlas refreshes
+#: can append new galaxy rows while the web server remains alive, so a
+#: path-only cache would hide them until process restart.
+_TNG_PROPS_CACHE: dict[
+    str,
+    tuple[tuple[int, int, int], dict[str, dict[str, float]]],
+] = {}
 
 
 def load_tng_properties(csv_path: str | None = None,
@@ -368,10 +373,15 @@ def load_tng_properties(csv_path: str | None = None,
     reff}}`` (floats, NaN where missing). Missing file → empty dict. Cached
     per path; the generator looks masses up per lens draw.
     """
-    path = csv_path or default_tng_properties_csv()
+    path = os.path.abspath(csv_path or default_tng_properties_csv())
+    try:
+        stat = os.stat(path)
+        identity = (int(stat.st_ino), int(stat.st_size), int(stat.st_mtime_ns))
+    except OSError:
+        identity = (0, 0, 0)
     cached = _TNG_PROPS_CACHE.get(path)
-    if cached is not None:
-        return cached
+    if cached is not None and cached[0] == identity:
+        return cached[1]
     rows: dict[str, dict[str, float]] = {}
     if os.path.isfile(path):
         with open(path, newline="", encoding="utf-8") as f:
@@ -388,7 +398,7 @@ def load_tng_properties(csv_path: str | None = None,
                     except (TypeError, ValueError):
                         props[k] = float("nan")
                 rows[gid] = props
-    _TNG_PROPS_CACHE[path] = rows
+    _TNG_PROPS_CACHE[path] = (identity, rows)
     return rows
 
 

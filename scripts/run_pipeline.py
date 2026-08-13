@@ -85,6 +85,7 @@ from euclid_polish.sky.generation.source_catalog import (
     concat_source_csvs,
     read_sources,
 )
+from euclid_polish.sky.generation.tng_radius_manifest import ensure_manifest
 from euclid_polish.sky.observation.observation_simulator import (
     ObservationSimulator,
     ObservationSimulatorConfig,
@@ -1275,12 +1276,50 @@ def _gen_convolve_shard(task) -> tuple[str, int, int]:
     )
 
 
+def _ensure_generation_radius_manifest(
+    args: argparse.Namespace,
+    *,
+    workers: int,
+    reporter: Reporter,
+) -> dict | None:
+    """Validate or repair the TNG radius prerequisite in the parent process."""
+    if (
+        float(getattr(args, "galaxy_density_arcmin2", None) or 0.0) <= 0.0
+        and float(getattr(args, "lens_density_arcmin2", None) or 0.0) <= 0.0
+    ):
+        return None
+    config = _generator_config_from_args(args)
+    reporter.set_stage("prepare TNG radius manifest")
+    result = ensure_manifest(
+        config.tng_galaxy_dir,
+        properties_path=config.tng_properties_csv or None,
+        manifest_path_value=config.tng_radius_manifest_path,
+        workers=workers,
+    )
+    if result.get("repaired"):
+        _log(
+            "  TNG radius manifest repaired: "
+            f"{result.get('reused_count', 0)} reused, "
+            f"{result.get('measured_count', 0)} measured"
+        )
+    else:
+        _log("  TNG radius manifest validated")
+    return result
+
+
 def step_generate_and_convolve_parallel(args: argparse.Namespace) -> None:
     _banner(f"STEP 1+2 (parallel ×{args.gen_workers}): generate clean HR + "
             f"forward-model to dirty Euclid LR")
     reporter = Reporter.from_env()
     os.makedirs(args.records_dir, exist_ok=True)
     workers = max(1, int(args.gen_workers))
+
+    # Fail or repair once in the parent, before destructive --force cleanup
+    # and before launching a process pool. This prevents every worker from
+    # discovering the same stale atlas prerequisite independently.
+    _ensure_generation_radius_manifest(
+        args, workers=workers, reporter=reporter,
+    )
 
     # Process workers must all see the exact same empirical draw grid.  Build
     # it once in the parent and embed the compact compressed payload, just as

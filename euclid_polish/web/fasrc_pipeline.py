@@ -391,6 +391,7 @@ def render_sbatch_body(
 
         set -euo pipefail
         cd "$SLURM_SUBMIT_DIR"
+        export PYTHONPATH="$(pwd):${{PYTHONPATH:-}}"
         mkdir -p {relative_log_dir}
         __FASRC_EXIT_PATH__={exit_runtime_rel}
         trap '__FASRC_RC__=$?; printf "%s\\n" "$__FASRC_RC__" > "$__FASRC_EXIT_PATH__"' EXIT

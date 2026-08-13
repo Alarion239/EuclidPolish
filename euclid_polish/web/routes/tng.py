@@ -21,7 +21,7 @@ from flask import jsonify, render_template, request, send_file
 
 from euclid_polish.config import Config
 from euclid_polish.tng.properties import render_histograms_for_ids
-from euclid_polish.web import fasrc_config
+from euclid_polish.web import fasrc_config, fasrc_jobs
 from euclid_polish.web.fasrc_fetcher import fetch_one_file, list_remote_dir
 from euclid_polish.web.remote import STATE
 
@@ -31,8 +31,11 @@ from euclid_polish.web.remote import STATE
 # list pulled from FASRC + the TNG API.
 _INFOGRAPHIC_SUBDIR = "_infographics"
 _INFOGRAPHIC_NAMES = {"grid": "grid.png", "stack": "stack.fits"}
+# Radius/property calibration artifacts live beside the other population
+# caches, not inside the display-only infographic directory.
+_CALIBRATION_SUBDIR = "_tng_infographics"
 # Local working dir for the histogram's property cache (CSV + groupcat arrays).
-_LOCAL_TNG_DIR = os.path.join(Config.DATA_DIR, "_tng_infographics")
+_LOCAL_TNG_DIR = os.path.join(Config.DATA_DIR, _CALIBRATION_SUBDIR)
 
 # TNG Atlas images (the FASRC-pulled grid + the histogram drawn from the
 # FASRC-pulled id list) are also archived under here so they appear in the
@@ -86,20 +89,28 @@ def register(app):
                             "reasons": ["not connected to FASRC"]})
         cfg = fasrc_config.load()
         tng_dir = os.path.join(cfg.data_dir, Config.Tng.SKIRT_SUBDIR)
-        props = os.path.join(cfg.data_dir, _INFOGRAPHIC_SUBDIR,
+        props = os.path.join(cfg.data_dir, _CALIBRATION_SUBDIR,
                              "tng_properties.csv")
-        manifest = os.path.join(cfg.data_dir, _INFOGRAPHIC_SUBDIR,
+        manifest = os.path.join(cfg.data_dir, _CALIBRATION_SUBDIR,
                                 "tng_radius_manifest.json")
-        cmd = (
-            f"cd {shlex.quote(cfg.repo_path)} && "
-            "python scripts/validate_tng_radius_manifest.py "
-            f"--tng-dir {shlex.quote(tng_dir)} "
-            f"--properties {shlex.quote(props)} "
-            f"--manifest {shlex.quote(manifest)}"
-        )
         try:
-            rc, out, err = STATE.ssh.run(cmd, timeout=90)
-            payload = json.loads((out or "").strip().splitlines()[-1])
+            rc, out, err = fasrc_jobs.run_remote_python(
+                STATE.ssh,
+                cfg=cfg,
+                argv=[
+                    "scripts/validate_tng_radius_manifest.py",
+                    "--tng-dir", tng_dir,
+                    "--properties", props,
+                    "--manifest", manifest,
+                ],
+                timeout=180,
+            )
+            lines = [line for line in (out or "").splitlines() if line.strip()]
+            if not lines:
+                raise ValueError(
+                    (err or "radius-manifest validator returned no output").strip()
+                )
+            payload = json.loads(lines[-1])
         except Exception as exc:
             return jsonify({"valid": False, "connected": True,
                             "reasons": [str(exc)]})

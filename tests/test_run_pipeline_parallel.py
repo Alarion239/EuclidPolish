@@ -19,6 +19,7 @@ import tensorflow as tf
 from euclid_polish.config import Config
 from euclid_polish.image import Image, ImageSet
 from euclid_polish.image.tfio import read_images, tfrecord_path
+from euclid_polish.population.magnitude_law import StraightMagnitudeLaw
 from euclid_polish.psf.psf_library import load_all_band_psfs
 from euclid_polish.sky.generation.sky_simulator import (
     SkySimulator,
@@ -82,6 +83,60 @@ def test_resolve_run_seed_honours_arg_else_entropy():
     s1 = rp._resolve_run_seed(argparse.Namespace(seed=-1))
     s2 = rp._resolve_run_seed(argparse.Namespace(seed=-1))
     assert s1 != s2                                       # -1 -> fresh entropy
+
+
+def test_generation_repairs_radius_manifest_once_in_parent(monkeypatch):
+    calls = []
+
+    def ensure(tng_dir, **kwargs):
+        calls.append((tng_dir, kwargs))
+        return {"valid": True, "repaired": True,
+                "reused_count": 5700, "measured_count": 70}
+
+    class ReporterStub:
+        def set_stage(self, stage):
+            calls.append(("stage", stage))
+
+    monkeypatch.setattr(rp, "ensure_manifest", ensure)
+    args = rp.parse_args([
+        "--tng-dir", "/atlas",
+        "--tng-properties", "/atlas/properties.csv",
+        "--tng-radius-manifest", "/atlas/radii.json",
+    ])
+
+    result = rp._ensure_generation_radius_manifest(
+        args, workers=20, reporter=ReporterStub(),
+    )
+
+    assert result["valid"]
+    assert calls[0] == ("stage", "prepare TNG radius manifest")
+    assert calls[1] == ("/atlas", {
+        "properties_path": "/atlas/properties.csv",
+        "manifest_path_value": "/atlas/radii.json",
+        "workers": 20,
+    })
+
+
+def test_generation_manifest_preflight_precedes_force_cleanup(
+    tmp_path, monkeypatch,
+):
+    args = rp.parse_args([
+        "--records-dir", str(tmp_path), "--force",
+        "--ntrain", "1", "--nvalid", "0", "--ntest", "0",
+    ])
+    cleaned = []
+
+    def fail_preflight(*args, **kwargs):
+        raise ValueError("manifest repair failed")
+
+    monkeypatch.setattr(rp, "_ensure_generation_radius_manifest", fail_preflight)
+    monkeypatch.setattr(
+        rp, "_cleanup_parts", lambda *args, **kwargs: cleaned.append(args),
+    )
+
+    with pytest.raises(ValueError, match="manifest repair failed"):
+        rp.step_generate_and_convolve_parallel(args)
+    assert cleaned == []
 
 
 def test_generation_warp_cli_configures_shared_forward_for_all_splits():
@@ -247,6 +302,37 @@ def test_onthefly_shard_writes_clean_only(tmp_path):
 # ---------------------------------------------------------------------------
 
 def _sim_fwd_dense_stars():
+    law = StraightMagnitudeLaw(
+        slope=0.15, intercept=-3.5,
+        mag_bright=12.0, mag_faint=25.0,
+        fit_bright=15.0, fit_faint=22.0,
+        covariance=((1e-4, 0.0), (0.0, 1e-3)),
+        r_squared=1.0, rms_log10_density=0.0, source="fixture",
+    )
+    star_prior = {
+        "gaia": {
+            "bp_rp_quantiles": [0.0, 2.0],
+            "temperature_quantiles_k": [7500.0, 4000.0],
+        },
+        "euclid_mapping": {
+            "g_to_band_offset_coefficients": {
+                key: [0.0, 0.0, 0.0]
+                for key in ("mag_vis", "mag_y_e", "mag_j_e", "mag_h_e")
+            },
+            "residual_covariance": np.eye(4).tolist(),
+        },
+        "population": {"magnitude_distribution": law.to_payload()},
+        "color_model": {
+            "kind": "gaia_euclid_latent_locus_v1",
+            "bp_rp_edges": [0.0, 1.0, 2.0],
+            "bp_rp_nodes": [0.5, 1.5],
+            "temperature_nodes_k": [7000.0, 4200.0],
+            "locus_colors": [[0.2, 0.1, 0.05], [0.8, 0.3, 0.1]],
+            "intrinsic_color_covariance": (np.eye(3) * 0.01).tolist(),
+            "magnitude_edges": [12.0, 18.5, 25.0],
+            "magnitude_node_weights": [[0.5, 0.5], [0.5, 0.5]],
+        },
+    }
     sim = SkySimulator(
         None,
         SkySimulatorConfig(
@@ -255,6 +341,7 @@ def _sim_fwd_dense_stars():
             galaxy_density_arcmin2=0.0,
             lens_density_arcmin2=0.0,
             star_density_arcmin2=5000.0,
+            star_prior_payload=star_prior,
         ))       # guarantee stars
     fwd = ObservationSimulator(
         psfs_by_band=load_all_band_psfs(psf_dir="/nonexistent_dir_for_test"),
@@ -395,7 +482,8 @@ def test_subset_incomplete_while_parts_remain(tmp_path):
 def test_synthetic_step_forwards_onthefly_flag():
     from euclid_polish.web.fasrc_pipeline import REGISTRY
     step = REGISTRY.get("synthetic_generate")
-    base = {"n_train": 10, "n_valid": 2, "n_test": 2, "image_size": 96}
+    base = {"n_train": 10, "n_valid": 2, "n_test": 2, "image_size": 96,
+            "galaxy_density_arcmin2": 100.0}
     assert "--onthefly-train" in step.build_command(
         {**base, "onthefly_train": "1"})
     assert "--onthefly-train" not in step.build_command(base)
@@ -405,6 +493,7 @@ def test_synthetic_steps_forward_generation_warp_knobs():
     from euclid_polish.web.fasrc_pipeline import REGISTRY
     params = {
         "n_train": 10, "n_valid": 2, "n_test": 2, "image_size": 96,
+        "galaxy_density_arcmin2": 100.0,
         "psf_warp_prob": "0.75", "psf_warp_alpha_max": "12",
         "psf_warp_sigma": "4", "saturation_mask_prob": "0.3",
     }
@@ -421,7 +510,8 @@ def test_synthetic_step_forwards_targeted_regeneration_splits():
 
     from euclid_polish.web.fasrc_pipeline import REGISTRY
     step = REGISTRY.get("synthetic_generate")
-    base = {"n_train": 10, "n_valid": 2, "n_test": 2, "image_size": 96}
+    base = {"n_train": 10, "n_valid": 2, "n_test": 2, "image_size": 96,
+            "galaxy_density_arcmin2": 100.0}
     command = step.build_command({
         **base, "regenerate_splits": " validate,test,validate ",
     })
@@ -450,22 +540,32 @@ def test_synthetic_step_is_standalone_no_training_knobs():
     and NONE of the training-only knobs (--batch-size / --steps)."""
     from euclid_polish.web.fasrc_pipeline import REGISTRY
     step = REGISTRY.get("synthetic_generate")
-    cmd = step.build_command({"n_train": 10, "n_valid": 2, "n_test": 2,
-                              "image_size": 96})
+    cmd = step.build_command({
+        "n_train": 10, "n_valid": 2, "n_test": 2, "image_size": 96,
+        "galaxy_density_arcmin2": 100.0,
+    })
     assert "--skip-train" in cmd
     assert "--batch-size" not in cmd
     assert "--steps" not in cmd
 
 
-def test_tng_density_with_empty_atlas_is_fatal(tmp_path):
+def test_tng_density_with_empty_atlas_is_fatal(tmp_path, monkeypatch):
     """An empty/purged TNG atlas must ABORT generation, not silently render
     star-only fields (netscratch purge incident, 2026-07-06)."""
-    import pytest
-
+    import euclid_polish.sky.generation.sky_simulator as module
     from euclid_polish.sky.generation.sky_simulator import (
         SkySimulator,
         SkySimulatorConfig,
     )
+
+    monkeypatch.setattr(
+        module, "validate_manifest", lambda *args, **kwargs: {"valid": True},
+    )
+    monkeypatch.setattr(
+        module, "load_manifest",
+        lambda *args, **kwargs: {"valid": True, "entries": []},
+    )
+    monkeypatch.setattr(module, "radius_lookup", lambda payload: {})
 
     with pytest.raises(RuntimeError, match="ZERO usable TNG galaxies"):
         SkySimulator(object(), SkySimulatorConfig(
