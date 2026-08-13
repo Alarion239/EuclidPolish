@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from scipy.special import ndtr
 
 from euclid_polish.config import Config
 from euclid_polish.population.euclid_galaxy_prior import (
@@ -13,6 +14,7 @@ from euclid_polish.population.euclid_galaxy_prior import (
     ConditionalRadiusLaw,
     fit_conditional_radius_law,
     fit_conditional_radius_law_from_aggregate_moments,
+    fit_conditional_radius_law_from_binned_counts,
     generation_magnitude_law,
     joint_density_grid,
 )
@@ -140,6 +142,34 @@ def test_aggregate_radius_moments_recover_straight_relation():
     assert law.intercept_log10_arcsec == pytest.approx(expected_intercept)
     assert law.slope_log10_arcsec_per_mag == pytest.approx(expected_slope)
     assert law.scatter_dex == pytest.approx(expected_scatter)
+
+
+def test_binned_radius_counts_recover_bounded_conditional_relation():
+    magnitude_edges = np.linspace(18.0, 27.0, 91)
+    radius_edges = np.linspace(np.log10(0.03), np.log10(10.0), 51)
+    magnitude = 0.5 * (magnitude_edges[:-1] + magnitude_edges[1:])
+    expected_intercept, expected_slope, expected_scatter = -0.35, -0.075, 0.16
+    mean = expected_intercept + expected_slope * (magnitude - 23.0)
+    upper = (radius_edges[None, 1:] - mean[:, None]) / expected_scatter
+    lower = (radius_edges[None, :-1] - mean[:, None]) / expected_scatter
+    probability = ndtr(upper) - ndtr(lower)
+    probability /= np.sum(probability, axis=1, keepdims=True)
+    expected = 1000.0 * probability
+    selected = np.rint(1250.0 * probability)
+
+    law = fit_conditional_radius_law_from_binned_counts(
+        magnitude_edges,
+        radius_edges,
+        selected,
+        expected,
+        fit_bright=18.0,
+        fit_faint=27.0,
+    )
+
+    assert law.intercept_log10_arcsec == pytest.approx(expected_intercept, abs=2e-3)
+    assert law.slope_log10_arcsec_per_mag == pytest.approx(expected_slope, abs=2e-3)
+    assert law.scatter_dex == pytest.approx(expected_scatter, abs=2e-3)
+    assert "bounded aggregate" in law.selection
 
 
 def test_prior_draws_radius_first_then_brightness_conditioned_on_radius():
@@ -306,27 +336,41 @@ def test_candidate_fit_uses_only_aggregate_euclid_brightness_and_sersic_radius(
     ):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("{}")
-    magnitude = np.linspace(14.05, 27.95, 140)
-    expected = np.full(magnitude.shape, 8.0)
+    magnitude_edges = np.linspace(14.0, 28.0, 141)
+    magnitude = 0.5 * (magnitude_edges[:-1] + magnitude_edges[1:])
+    radius_edges = np.geomspace(0.03, 10.0, 31)
+    log_radius_edges = np.log10(radius_edges)
     mean_log10 = -0.4 - 0.06 * (magnitude - 23.0)
-    sigma_ln = 0.12 * np.log(10.0)
-    mean_ln = mean_log10 * np.log(10.0)
-    first = expected * np.exp(mean_ln + 0.5 * sigma_ln**2)
-    second = expected * np.exp(2.0 * mean_ln + 2.0 * sigma_ln**2)
-    moment_bins = [
+    upper = (log_radius_edges[None, 1:] - mean_log10[:, None]) / 0.12
+    lower = (log_radius_edges[None, :-1] - mean_log10[:, None]) / 0.12
+    probability = ndtr(upper) - ndtr(lower)
+    probability /= np.sum(probability, axis=1, keepdims=True)
+    expected_grid = 80.0 * probability
+    selected_grid = np.rint(100.0 * probability)
+    magnitude_bins = [
         {
             "mag_lo": float(value - 0.05), "mag_hi": float(value + 0.05),
-            "selected_radii": 10, "expected_radii": float(weight),
-            "weighted_radius_sum_arcsec": float(first_sum),
-            "weighted_radius2_sum_arcsec2": float(second_sum),
+            "selected_radii": int(np.sum(selected_grid[index])),
+            "expected_radii": float(np.sum(expected_grid[index])),
         }
-        for value, weight, first_sum, second_sum in zip(
-            magnitude, expected, first, second, strict=True,
-        )
+        for index, value in enumerate(magnitude)
     ]
-    radius_edges = np.geomspace(0.03, 10.0, 31)
+    joint_bins = [
+        {
+            "magnitude_bin": mag_index,
+            "radius_bin": radius_index,
+            "selected_radii": int(selected_grid[mag_index, radius_index]),
+            "expected_radii": float(expected_grid[mag_index, radius_index]),
+        }
+        for mag_index in range(expected_grid.shape[0])
+        for radius_index in range(expected_grid.shape[1])
+        if expected_grid[mag_index, radius_index] > 0.0
+    ]
     radius_bins = [
-        {"density_arcmin2_dex": float(index + 1), "expected_radii": 5.0}
+        {
+            "density_arcmin2_dex": float(index + 1),
+            "expected_radii": float(np.sum(expected_grid[:, index])),
+        }
         for index in range(30)
     ]
     monkeypatch.setattr(
@@ -358,7 +402,9 @@ def test_candidate_fit_uses_only_aggregate_euclid_brightness_and_sersic_radius(
         lambda: {
             "complete": True,
             "footprint_area_arcmin2": 100.0,
-            "magnitude_bins": moment_bins,
+            "magnitude_edges": magnitude_edges.tolist(),
+            "magnitude_bins": magnitude_bins,
+            "joint_bins": joint_bins,
             "radius_bins": radius_bins,
             "radius_edges_arcsec": radius_edges.tolist(),
         },

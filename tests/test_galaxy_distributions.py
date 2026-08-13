@@ -541,7 +541,7 @@ def test_query_mer_phz_runs_only_galaxy_brackets_and_fits(monkeypatch):
         routes,
         "query_q1_galaxy_radius_statistics",
         lambda **_kwargs: events.append("galaxy radius") or {
-            "completed_queries": 170, "total_queries": 170,
+            "completed_queries": 4, "total_queries": 4,
         },
     )
     monkeypatch.setattr(

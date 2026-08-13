@@ -21,6 +21,7 @@ from euclid_polish.web.helpers.q1_galaxy_counts import (
     read_q1_galaxy_aperture_counts,
 )
 from euclid_polish.web.helpers.q1_galaxy_radius_statistics import (
+    Q1_GALAXY_RADIUS_TOTAL_QUERIES,
     query_q1_galaxy_radius_statistics,
     read_q1_galaxy_radius_statistics,
 )
@@ -93,7 +94,7 @@ def register(app):
             # This action owns only galaxy-selected aggregate queries.  Star
             # counts and colours have a separate action on Star Distribution.
             aperture_total = 560
-            radius_total = 170
+            radius_total = Q1_GALAXY_RADIUS_TOTAL_QUERIES
             fit_steps = 3
             grand_total = aperture_total + radius_total + fit_steps
 
@@ -129,7 +130,7 @@ def register(app):
             cap.write(
                 f"Q1 aggregate Sersic R_e statistics: "
                 f"{radii['completed_queries']}/{radii['total_queries']} "
-                "brackets; no object rows or random field sampling\n"
+                "grouped queries; no object rows or random field sampling\n"
             )
             cap.write(
                 f"Joint galaxy candidate {joint_fit['fingerprint'][:12]}… ready; "

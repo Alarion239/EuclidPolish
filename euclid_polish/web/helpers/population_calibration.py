@@ -18,7 +18,7 @@ from euclid_polish.population.euclid_galaxy_prior import (
     GALAXY_FAINT_DENSITY_CAP_ARCMIN2_MAG,
     JOINT_EUCLID_GALAXY_VERSION,
     ConditionalRadiusLaw,
-    fit_conditional_radius_law_from_aggregate_moments,
+    fit_conditional_radius_law_from_binned_counts,
     generation_magnitude_law,
     joint_density_grid,
 )
@@ -175,7 +175,11 @@ def fit_euclid_joint_galaxy_candidate() -> dict[str, Any]:
             magnitude_curve["law"]
         )
         count_bins = count_payload["apertures"]["f2"]["bins"]
-        moment_bins = radius_payload["magnitude_bins"]
+        magnitude_bins = radius_payload["magnitude_bins"]
+        joint_bins = radius_payload["joint_bins"]
+        magnitude_edges = np.asarray(
+            radius_payload["magnitude_edges"], dtype=np.float64,
+        )
         radius_bins = radius_payload["radius_bins"]
         radius_edges = np.asarray(
             radius_payload["radius_edges_arcsec"], dtype=np.float64,
@@ -189,28 +193,22 @@ def fit_euclid_joint_galaxy_candidate() -> dict[str, Any]:
             "Complete all Q1 VIS 2FWHM and Sersic-radius brackets before fitting"
         )
 
-    magnitude_values = np.asarray([
-        0.5 * (float(item["mag_lo"]) + float(item["mag_hi"]))
-        for item in moment_bins
-    ], dtype=np.float64)
-    selected_values = np.asarray([
-        float(item["selected_radii"]) for item in moment_bins
-    ], dtype=np.float64)
-    weight_values = np.asarray([
-        float(item["expected_radii"]) for item in moment_bins
-    ], dtype=np.float64)
-    radius_sum_values = np.asarray([
-        float(item["weighted_radius_sum_arcsec"]) for item in moment_bins
-    ], dtype=np.float64)
-    radius2_sum_values = np.asarray([
-        float(item["weighted_radius2_sum_arcsec2"]) for item in moment_bins
-    ], dtype=np.float64)
-    radius_law = fit_conditional_radius_law_from_aggregate_moments(
-        magnitude_values,
-        selected_values,
-        weight_values,
-        radius_sum_values,
-        radius2_sum_values,
+    selected_grid = np.zeros(
+        (magnitude_edges.size - 1, radius_edges.size - 1), dtype=np.float64,
+    )
+    weight_grid = np.zeros_like(selected_grid)
+    for item in joint_bins:
+        mag_index = int(item["magnitude_bin"])
+        radius_index = int(item["radius_bin"])
+        selected_grid[mag_index, radius_index] = float(item["selected_radii"])
+        weight_grid[mag_index, radius_index] = float(item["expected_radii"])
+    radius_law = fit_conditional_radius_law_from_binned_counts(
+        magnitude_edges,
+        np.log10(radius_edges),
+        selected_grid,
+        weight_grid,
+        fit_bright=fitted_magnitude_law.fit_bright,
+        fit_faint=fitted_magnitude_law.fit_faint,
     )
     log_radius_edges = np.log10(radius_edges)
     magnitude_law = generation_magnitude_law(fitted_magnitude_law)
@@ -232,21 +230,19 @@ def fit_euclid_joint_galaxy_candidate() -> dict[str, Any]:
     observed_radius_density = np.asarray([
         float(item["density_arcmin2_dex"]) for item in radius_bins
     ], dtype=np.float64)
-    relation_x = magnitude_values
+    relation_x = 0.5 * (magnitude_edges[:-1] + magnitude_edges[1:])
     relation_observed: list[float | None] = []
-    for expected, first, second in zip(
-        weight_values, radius_sum_values, radius2_sum_values, strict=True,
-    ):
-        if expected <= 0.0 or first <= 0.0 or second <= 0.0:
+    log_radius_centers = 0.5 * (
+        log_radius_edges[:-1] + log_radius_edges[1:]
+    )
+    for row in weight_grid:
+        expected = float(np.sum(row))
+        if expected <= 0.0:
             relation_observed.append(None)
             continue
-        mean_radius = first / expected
-        mean_radius2 = second / expected
-        variance_ln = math.log(mean_radius2 / mean_radius**2)
-        relation_observed.append(
-            (math.log(mean_radius) - 0.5 * variance_ln) / math.log(10.0)
-            if variance_ln > 0.0 else None
-        )
+        relation_observed.append(float(
+            np.sum(row * log_radius_centers) / expected
+        ))
     relation_model = radius_law.mean(relation_x)
     observed_magnitude_x = [
         0.5 * (float(item["mag_lo"]) + float(item["mag_hi"]))
@@ -342,8 +338,8 @@ def fit_euclid_joint_galaxy_candidate() -> dict[str, Any]:
         "provenance": {
             "brightness": "Q1 MER + PHZ VIS 2FWHM aggregate counts",
             "radius": (
-                "Q1 MER morphology VIS Sersic radius aggregate moments and "
-                "radius brackets joined to PHZ"
+                "Q1 MER morphology VIS Sersic radius bounded joint "
+                "magnitude x log-radius bins joined to PHZ"
             ),
             "cosmos_used": False,
             "object_catalog_used": False,
@@ -357,8 +353,9 @@ def fit_euclid_joint_galaxy_candidate() -> dict[str, Any]:
             "q1_radius_statistics_sha256": hashlib.sha256(
                 q1_galaxy_radius_statistics_path().read_bytes()
             ).hexdigest(),
-            "radius_brackets": len(moment_bins),
+            "radius_magnitude_bins": len(magnitude_bins),
             "radius_histogram_bins": len(radius_bins),
+            "joint_populated_bins": len(joint_bins),
         },
     }
     fingerprint = hashlib.sha256(json.dumps(

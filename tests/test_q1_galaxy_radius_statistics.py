@@ -17,14 +17,16 @@ def test_radius_statistics_query_uses_only_aggregate_brackets(
 
     def launch(query, _relogin):
         queries.append(query)
-        if "weighted_radius_sum" in query:
-            return {
+        return [
+            {
+                "magnitude_bin": mag_index,
+                "radius_bin": radius_index,
                 "selected_radii": 20,
                 "expected_radii": 16.0,
-                "weighted_radius_sum": 8.0,
-                "weighted_radius2_sum": 5.0,
             }
-        return {"selected_radii": 30, "expected_radii": 24.0}
+            for mag_index in range(2)
+            for radius_index in range(2)
+        ]
 
     monkeypatch.setattr(radius_stats, "_launch_with_relogin", launch)
     progress = []
@@ -40,14 +42,18 @@ def test_radius_statistics_query_uses_only_aggregate_brackets(
     )
 
     assert payload["complete"] is True
-    assert payload["completed_queries"] == payload["total_queries"] == 4
+    assert payload["completed_queries"] == payload["total_queries"] == 1
+    assert len(payload["joint_bins"]) == 4
     assert len(payload["magnitude_bins"]) == 2
     assert len(payload["radius_bins"]) == 2
     assert "no object rows and no random sky-position" in payload["acquisition"]
     assert all("JOIN catalogue.mer_morphology AS morph" in query for query in queries)
     assert all("COUNT(*) AS selected_radii" in query for query in queries)
+    assert all("GROUP BY magnitude_bin, radius_bin" in query for query in queries)
+    assert all("sersic_sersic_vis_radius >= 0.03" in query for query in queries)
+    assert all("sersic_sersic_vis_radius < 10" in query for query in queries)
     assert all("SELECT TOP" not in query for query in queries)
-    assert progress[-1][:2] == (4, 4)
+    assert progress[-1][:2] == (1, 1)
     assert radius_stats.read_q1_galaxy_radius_statistics()["complete"] is True
 
 

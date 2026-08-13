@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import asdict, dataclass
 
 import numpy as np
+from scipy.optimize import minimize
 from scipy.special import ndtr
 
 from euclid_polish.population.magnitude_law import (
@@ -248,6 +250,147 @@ def fit_conditional_radius_law_from_aggregate_moments(
             "aggregate Q1 magnitude brackets; PHZ_GAL_PROB >= 0.5; "
             "positive VIS 2FWHM flux; positive MER morphology VIS Sersic "
             "R_e; SERSIC_VISNIR_FLAGS = 0; weighted by PHZ_GAL_PROB"
+        ),
+    )
+
+
+def fit_conditional_radius_law_from_binned_counts(
+    magnitude_edges: np.ndarray,
+    log_radius_edges: np.ndarray,
+    selected_counts: np.ndarray,
+    expected_counts: np.ndarray,
+    *,
+    fit_bright: float,
+    fit_faint: float,
+) -> ConditionalRadiusLaw:
+    """Fit the conditional lognormal law to bounded joint Q1 counts.
+
+    The likelihood uses the probability integrated over each log-radius bin
+    and normalizes it over the unchanged 0.03--10 arcsec draw domain.  This
+    avoids inferring a global lognormal scatter from outlier-sensitive linear
+    radius moments.
+    """
+    mag_edges = np.asarray(magnitude_edges, dtype=np.float64)
+    radius_edges = np.asarray(log_radius_edges, dtype=np.float64)
+    selected = np.asarray(selected_counts, dtype=np.float64)
+    counts = np.asarray(expected_counts, dtype=np.float64)
+    expected_shape = (mag_edges.size - 1, radius_edges.size - 1)
+    if (
+        mag_edges.ndim != 1
+        or radius_edges.ndim != 1
+        or mag_edges.size < 3
+        or radius_edges.size < 3
+        or selected.shape != expected_shape
+        or counts.shape != expected_shape
+        or not np.all(np.isfinite(mag_edges))
+        or not np.all(np.isfinite(radius_edges))
+        or not np.all(np.diff(mag_edges) > 0.0)
+        or not np.all(np.diff(radius_edges) > 0.0)
+        or not np.all(np.isfinite(selected) & (selected >= 0.0))
+        or not np.all(np.isfinite(counts) & (counts >= 0.0))
+    ):
+        raise ValueError("Binned radius-fit inputs are malformed")
+    magnitude = 0.5 * (mag_edges[:-1] + mag_edges[1:])
+    fit_rows = (
+        (magnitude >= float(fit_bright))
+        & (magnitude <= float(fit_faint))
+        & (np.sum(counts, axis=1) > 0.0)
+    )
+    selected_fit = selected[fit_rows]
+    counts_fit = counts[fit_rows]
+    magnitude_fit = magnitude[fit_rows]
+    total_selected = int(round(float(np.sum(selected_fit))))
+    total_weight = float(np.sum(counts_fit))
+    if magnitude_fit.size < 8 or total_selected < 100 or total_weight <= 0.0:
+        raise ValueError(
+            "At least eight populated magnitude bins and 100 bounded "
+            "PHZ/MER Sersic radii are required"
+        )
+
+    radius_center = 0.5 * (radius_edges[:-1] + radius_edges[1:])
+    row_weight = np.sum(counts_fit, axis=1)
+    row_mean = np.sum(counts_fit * radius_center[None, :], axis=1) / row_weight
+    x = magnitude_fit - RADIUS_PIVOT_MAG
+    design = np.column_stack((np.ones_like(x), x))
+    root_weight = np.sqrt(row_weight)
+    initial_coefficients, *_ = np.linalg.lstsq(
+        design * root_weight[:, None], row_mean * root_weight, rcond=None,
+    )
+    initial_residual = (
+        radius_center[None, :] - design @ initial_coefficients[:, None]
+    )
+    initial_scatter = float(np.sqrt(
+        np.sum(counts_fit * np.square(initial_residual)) / total_weight
+    ))
+    initial = np.asarray([
+        float(initial_coefficients[0]),
+        float(initial_coefficients[1]),
+        math.log(min(max(initial_scatter, 0.05), 1.0)),
+    ])
+
+    def objective(parameters: np.ndarray) -> float:
+        intercept, slope, log_scatter = parameters
+        scatter = math.exp(float(log_scatter))
+        mean = intercept + slope * x
+        upper = (radius_edges[None, 1:] - mean[:, None]) / scatter
+        lower = (radius_edges[None, :-1] - mean[:, None]) / scatter
+        probability = ndtr(upper) - ndtr(lower)
+        normalization = np.sum(probability, axis=1, keepdims=True)
+        probability = probability / np.maximum(normalization, 1e-300)
+        return -float(
+            np.sum(counts_fit * np.log(np.maximum(probability, 1e-300)))
+            / total_weight
+        )
+
+    result = minimize(
+        objective,
+        initial,
+        method="L-BFGS-B",
+        bounds=(
+            (float(radius_edges[0] - 1.0), float(radius_edges[-1] + 1.0)),
+            (-1.0, 1.0),
+            (math.log(0.03), math.log(1.5)),
+        ),
+        options={"ftol": 1e-12, "gtol": 1e-8, "maxiter": 2000},
+    )
+    if not result.success or not np.all(np.isfinite(result.x)):
+        raise ValueError(f"Binned conditional-radius fit failed: {result.message}")
+    intercept, slope, log_scatter = (float(value) for value in result.x)
+    scatter = math.exp(log_scatter)
+    modeled_row_mean = intercept + slope * x
+    residual = row_mean - modeled_row_mean
+    centered = row_mean - float(np.average(row_mean, weights=row_weight))
+    total = float(np.sum(row_weight * np.square(centered)))
+    residual_total = float(np.sum(row_weight * np.square(residual)))
+    r_squared = 1.0 - residual_total / total if total > 0.0 else 0.0
+    covariance = scatter**2 * np.linalg.pinv(
+        (design * root_weight[:, None]).T
+        @ (design * root_weight[:, None])
+    )
+    return ConditionalRadiusLaw(
+        version=RADIUS_MODEL_VERSION,
+        pivot_mag=RADIUS_PIVOT_MAG,
+        intercept_log10_arcsec=intercept,
+        slope_log10_arcsec_per_mag=slope,
+        scatter_dex=scatter,
+        log_radius_min=float(radius_edges[0]),
+        log_radius_max=float(radius_edges[-1]),
+        fitted_rows=total_selected,
+        clipped_rows=0,
+        weighted_rows=total_weight,
+        residual_rms_dex=float(np.sqrt(
+            np.sum(row_weight * np.square(residual)) / total_weight
+        )),
+        r_squared=float(r_squared),
+        covariance=tuple(
+            tuple(float(value) for value in row) for row in covariance
+        ),
+        selection=(
+            "bounded aggregate Q1 magnitude x log-radius bins; "
+            f"{float(fit_bright):g} <= VIS 2FWHM <= "
+            f"{float(fit_faint):g}; PHZ_GAL_PROB >= 0.5; 0.03 <= MER "
+            "morphology VIS Sersic R_e < 10 arcsec; "
+            "SERSIC_VISNIR_FLAGS = 0; weighted by PHZ_GAL_PROB"
         ),
     )
 
