@@ -15,14 +15,17 @@ from scipy.ndimage import gaussian_filter1d
 
 from euclid_polish.config import Config
 from euclid_polish.population.euclid_galaxy_prior import (
-    GALAXY_GENERATION_DENSITY_CAP_ARCMIN2,
+    GALAXY_FAINT_DENSITY_CAP_ARCMIN2_MAG,
     JOINT_EUCLID_GALAXY_VERSION,
     ConditionalRadiusLaw,
     fit_conditional_radius_law_from_aggregate_moments,
     generation_magnitude_law,
     joint_density_grid,
 )
-from euclid_polish.population.magnitude_law import StraightMagnitudeLaw
+from euclid_polish.population.magnitude_law import (
+    FaintCappedMagnitudeLaw,
+    StraightMagnitudeLaw,
+)
 from euclid_polish.sky.generation.cosmos_tng_prior import (
     brightness_transfer_payload,
 )
@@ -84,18 +87,27 @@ def joint_galaxy_candidate() -> dict[str, Any] | None:
         fitted_magnitude_law = StraightMagnitudeLaw.from_payload(
             source["fitted_magnitude_law"]
         )
-        magnitude_law = StraightMagnitudeLaw.from_payload(
+        magnitude_law = FaintCappedMagnitudeLaw.from_payload(
             source["magnitude_law"]
         )
         ConditionalRadiusLaw.from_payload(source["radius_law"])
         density = float(source["generation"]["surface_density_arcmin2"])
-        density_cap = float(source["generation"]["density_cap_arcmin2"])
+        density_cap = float(
+            source["generation"]["differential_density_cap_arcmin2_mag"]
+        )
+        break_magnitude = float(source["generation"]["break_magnitude"])
         magnitude_plot = source["magnitude_plot"]
         radius_plot = source["plots"]["radius"]
         relation_plot = source["plots"]["conditional_radius"]
         magnitude_x = np.asarray(magnitude_plot["law"]["x"], dtype=np.float64)
         magnitude_density = np.asarray(
             magnitude_plot["law"]["density"], dtype=np.float64,
+        )
+        generation_x = np.asarray(
+            magnitude_plot["generation_law"]["x"], dtype=np.float64,
+        )
+        generation_density = np.asarray(
+            magnitude_plot["generation_law"]["density"], dtype=np.float64,
         )
         radius_x = np.asarray(radius_plot["x"], dtype=np.float64)
         radius_density = np.asarray(radius_plot["density"], dtype=np.float64)
@@ -112,30 +124,26 @@ def joint_galaxy_candidate() -> dict[str, Any] | None:
         or not source.get("valid")
         or not np.isclose(density, magnitude_law.integrated_density())
         or not np.isclose(
-            density,
-            min(
-                fitted_magnitude_law.integrated_density(),
-                GALAXY_GENERATION_DENSITY_CAP_ARCMIN2,
-            ),
-        )
-        or not np.isclose(
             density_cap,
-            GALAXY_GENERATION_DENSITY_CAP_ARCMIN2,
+            GALAXY_FAINT_DENSITY_CAP_ARCMIN2_MAG,
         )
-        or not np.isclose(magnitude_law.slope, fitted_magnitude_law.slope)
-        or not np.isclose(magnitude_law.intercept, fitted_magnitude_law.intercept)
-        or not np.isclose(
-            magnitude_law.mag_bright, fitted_magnitude_law.mag_bright
-        )
-        or magnitude_law.mag_faint > fitted_magnitude_law.mag_faint
+        or not np.isclose(break_magnitude, magnitude_law.break_magnitude)
+        or magnitude_law.straight_law != fitted_magnitude_law
         or magnitude_x.size < 2
         or magnitude_x.shape != magnitude_density.shape
+        or generation_x.size < 3
+        or generation_x.shape != generation_density.shape
         or radius_x.size < 2
         or radius_x.shape != radius_density.shape
         or relation_x.size < 2
         or relation_x.shape != relation_mean.shape
         or not np.all(np.isfinite(magnitude_x))
         or not np.all(np.isfinite(magnitude_density) & (magnitude_density > 0.0))
+        or not np.all(np.isfinite(generation_x))
+        or not np.all(
+            np.isfinite(generation_density) & (generation_density > 0.0)
+        )
+        or not np.allclose(generation_density, magnitude_law.density(generation_x))
         or not np.all(np.isfinite(radius_x))
         or not np.all(np.isfinite(radius_density) & (radius_density >= 0.0))
         or not np.all(np.isfinite(relation_x))
@@ -206,6 +214,14 @@ def fit_euclid_joint_galaxy_candidate() -> dict[str, Any]:
     )
     log_radius_edges = np.log10(radius_edges)
     magnitude_law = generation_magnitude_law(fitted_magnitude_law)
+    generation_x = np.unique(np.concatenate([
+        np.linspace(
+            magnitude_law.mag_bright, magnitude_law.mag_faint, 301,
+            dtype=np.float64,
+        ),
+        np.asarray([magnitude_law.break_magnitude], dtype=np.float64),
+    ]))
+    generation_density = magnitude_law.density(generation_x)
     grid = joint_density_grid(
         magnitude_law, radius_law, log_radius_edges=log_radius_edges,
     )
@@ -253,6 +269,10 @@ def fit_euclid_joint_galaxy_candidate() -> dict[str, Any]:
                 "x": list(magnitude_curve["x"]),
                 "density": list(magnitude_curve["density"]),
             },
+            "generation_law": {
+                "x": generation_x.tolist(),
+                "density": generation_density.tolist(),
+            },
             "observed": {
                 "x": observed_magnitude_x,
                 "density": observed_magnitude_density,
@@ -268,6 +288,10 @@ def fit_euclid_joint_galaxy_candidate() -> dict[str, Any]:
             "generation_interval": [
                 magnitude_law.mag_bright, magnitude_law.mag_faint,
             ],
+            "break_magnitude": magnitude_law.break_magnitude,
+            "differential_density_cap_arcmin2_mag": (
+                magnitude_law.density_cap_arcmin2_mag
+            ),
             "extrapolated_interval": [
                 float(count_payload["faint"]),
                 fitted_magnitude_law.mag_faint,
@@ -298,14 +322,17 @@ def fit_euclid_joint_galaxy_candidate() -> dict[str, Any]:
         },
         "generation": {
             "surface_density_arcmin2": magnitude_law.integrated_density(),
-            "density_cap_arcmin2": GALAXY_GENERATION_DENSITY_CAP_ARCMIN2,
+            "differential_density_cap_arcmin2_mag": (
+                GALAXY_FAINT_DENSITY_CAP_ARCMIN2_MAG
+            ),
+            "break_magnitude": magnitude_law.break_magnitude,
             "fitted_surface_density_arcmin2": (
                 fitted_magnitude_law.integrated_density()
             ),
             "vis_magnitude_min": magnitude_law.mag_bright,
             "vis_magnitude_max": magnitude_law.mag_faint,
             "fitted_vis_magnitude_max": fitted_magnitude_law.mag_faint,
-            "faint_end_policy": "truncate_straight_law_at_density_cap",
+            "faint_end_policy": "cap_differential_counts_after_break",
             "radius_min_arcsec": 10.0 ** radius_law.log_radius_min,
             "radius_max_arcsec": 10.0 ** radius_law.log_radius_max,
             "sampling_order": "radius_marginal_then_brightness_given_radius",

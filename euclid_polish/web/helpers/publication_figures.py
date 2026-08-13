@@ -114,10 +114,11 @@ def render_population_atlas(
     dpi = max(120, min(int(dpi), 600))
     brightness = calibration.get("magnitude_plot") or {}
     brightness_law = brightness.get("law") or {}
+    generation_law = brightness.get("generation_law") or {}
     plots = calibration.get("plots") or {}
     radius = plots.get("radius") or {}
     relation = plots.get("conditional_radius") or {}
-    if not brightness_law or not radius or not relation:
+    if not brightness_law or not generation_law or not radius or not relation:
         raise ValueError("Euclid joint fit has no publication diagnostics")
 
     matplotlib.use("Agg")
@@ -143,6 +144,10 @@ def render_population_atlas(
             axes[0], brightness_law, "density", color=TNG,
             label="Q1 2FWHM straight law", width=2.7,
         )
+        _line(
+            axes[0], generation_law, "density", color="#168f65",
+            label="generation law: straight then flat", width=3.0,
+        )
         observed_x, observed_y = _xy(observed_brightness, "density")
         if observed_x.size:
             axes[0].plot(
@@ -163,12 +168,12 @@ def render_population_atlas(
                 float(extrapolated[0]), float(extrapolated[1]),
                 color=TNG, alpha=0.08, linewidth=0,
             )
-        generation_interval = brightness.get("generation_interval") or []
-        if len(generation_interval) == 2:
+        break_magnitude = brightness.get("break_magnitude")
+        if break_magnitude is not None:
             axes[0].axvline(
-                float(generation_interval[1]), color="#168f65",
-                linewidth=2.0, linestyle=(0, (2, 3)),
-                label=r"generation faint cutoff ($n_\mathrm{gal}=100$ arcmin$^{-2}$)",
+                float(break_magnitude), color="#168f65",
+                linewidth=1.3, linestyle=(0, (2, 3)), alpha=0.75,
+                label=r"break; faint tail = 100 arcmin$^{-2}$ mag$^{-1}$",
             )
         axes[0].set_xlim(14, 29)
         _finish_axis(
@@ -221,11 +226,11 @@ def render_population_atlas(
             label="joint conditional mean", width=2.7,
         )
         axes[2].set_xlim(14, 29)
-        if len(generation_interval) == 2:
+        if break_magnitude is not None:
             axes[2].axvline(
-                float(generation_interval[1]), color="#168f65",
+                float(break_magnitude), color="#168f65",
                 linewidth=2.0, linestyle=(0, (2, 3)),
-                label="generation faint cutoff",
+                label="generation-law break",
             )
         _finish_axis(
             axes[2], "Joint brightness-size relation",

@@ -162,6 +162,158 @@ class StraightMagnitudeLaw:
 
 
 @dataclass(frozen=True)
+class FaintCappedMagnitudeLaw:
+    """A straight log-count law capped at a constant faint-end density.
+
+    This preserves the fitted bright-end line but prevents its exponential
+    rise in linear number density from continuing through the faint end.  The
+    cap is a *differential* density in objects / arcmin2 / mag, so the resulting
+    curve has a visible knee and horizontal tail.
+    """
+
+    straight_law: StraightMagnitudeLaw
+    density_cap_arcmin2_mag: float
+
+    def __post_init__(self) -> None:
+        cap = float(self.density_cap_arcmin2_mag)
+        if not math.isfinite(cap) or cap <= 0.0:
+            raise ValueError("faint magnitude-law density cap must be positive")
+        if self.straight_law.slope <= 0.0:
+            raise ValueError("faint-capped magnitude law requires a positive slope")
+        if not self.mag_bright < self.break_magnitude < self.mag_faint:
+            raise ValueError(
+                "faint magnitude-law density cap must break inside the output domain"
+            )
+
+    @property
+    def mag_bright(self) -> float:
+        return self.straight_law.mag_bright
+
+    @property
+    def mag_faint(self) -> float:
+        return self.straight_law.mag_faint
+
+    @property
+    def fit_bright(self) -> float:
+        return self.straight_law.fit_bright
+
+    @property
+    def fit_faint(self) -> float:
+        return self.straight_law.fit_faint
+
+    @property
+    def slope(self) -> float:
+        return self.straight_law.slope
+
+    @property
+    def intercept(self) -> float:
+        return self.straight_law.intercept
+
+    @property
+    def source(self) -> str:
+        return self.straight_law.source
+
+    @property
+    def break_magnitude(self) -> float:
+        return float(
+            (math.log10(self.density_cap_arcmin2_mag) - self.intercept)
+            / self.slope
+        )
+
+    def log10_density(self, magnitude: np.ndarray | float) -> np.ndarray:
+        return np.minimum(
+            self.straight_law.log10_density(magnitude),
+            math.log10(self.density_cap_arcmin2_mag),
+        )
+
+    def density(self, magnitude: np.ndarray | float) -> np.ndarray:
+        return np.minimum(
+            self.straight_law.density(magnitude),
+            self.density_cap_arcmin2_mag,
+        )
+
+    def _straight_integral(self, bright: float, faint: float) -> float:
+        beta = self.slope * math.log(10.0)
+        normalization = 10.0 ** self.intercept
+        return float(
+            normalization
+            * math.exp(beta * bright)
+            * math.expm1(beta * (faint - bright))
+            / beta
+        )
+
+    def integrated_density(self) -> float:
+        """Surface density under the straight segment and flat faint tail."""
+        straight = self._straight_integral(
+            self.mag_bright, self.break_magnitude,
+        )
+        flat = self.density_cap_arcmin2_mag * (
+            self.mag_faint - self.break_magnitude
+        )
+        return float(straight + flat)
+
+    def sample(self, rng: np.random.Generator) -> float:
+        """Draw one magnitude from the exact piecewise inverse CDF."""
+        straight_mass = self._straight_integral(
+            self.mag_bright, self.break_magnitude,
+        )
+        target = float(rng.random()) * self.integrated_density()
+        if target >= straight_mass:
+            return float(
+                self.break_magnitude
+                + (target - straight_mass) / self.density_cap_arcmin2_mag
+            )
+        beta = self.slope * math.log(10.0)
+        normalization = 10.0 ** self.intercept
+        bright_term = math.exp(beta * self.mag_bright)
+        return float(
+            math.log(bright_term + target * beta / normalization) / beta
+        )
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "kind": "faint_capped_straight_log10_differential_counts",
+            "equation": (
+                "dN_dA_dm = min(10 ** (slope * magnitude + intercept), "
+                "density_cap_arcmin2_mag)"
+            ),
+            "straight_law": self.straight_law.to_payload(),
+            "density_cap_arcmin2_mag": float(self.density_cap_arcmin2_mag),
+            "break_magnitude": self.break_magnitude,
+            "surface_density_arcmin2": self.integrated_density(),
+        }
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, Any]) -> FaintCappedMagnitudeLaw:
+        if payload.get("kind") != (
+            "faint_capped_straight_log10_differential_counts"
+        ):
+            raise ValueError("magnitude distribution is not a faint-capped law")
+        try:
+            law = cls(
+                straight_law=StraightMagnitudeLaw.from_payload(
+                    payload["straight_law"]
+                ),
+                density_cap_arcmin2_mag=float(
+                    payload["density_cap_arcmin2_mag"]
+                ),
+            )
+            saved_break = float(payload["break_magnitude"])
+            saved_density = float(payload["surface_density_arcmin2"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("faint-capped magnitude-law payload is malformed") from exc
+        if not math.isclose(
+            saved_break, law.break_magnitude, rel_tol=2e-8, abs_tol=1e-10,
+        ):
+            raise ValueError("faint-capped magnitude-law break is inconsistent")
+        if not math.isclose(
+            saved_density, law.integrated_density(), rel_tol=2e-8, abs_tol=1e-10,
+        ):
+            raise ValueError("faint-capped magnitude-law density is inconsistent")
+        return law
+
+
+@dataclass(frozen=True)
 class StraightRegionFit:
     """Selected consecutive straight region plus its fitted law diagnostics."""
 

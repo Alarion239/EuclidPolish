@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from euclid_polish.population.magnitude_law import (
+    FaintCappedMagnitudeLaw,
     StraightMagnitudeLaw,
     fit_shared_slope,
     fit_straight_region,
@@ -62,6 +63,36 @@ def test_density_cap_preserves_bright_law_and_moves_only_faint_limit():
 def test_density_cap_leaves_already_sparse_law_unchanged():
     fitted = _law(intercept=-20.0)
     assert fitted.truncated_to_density(100.0) is fitted
+
+
+def test_faint_capped_law_breaks_then_stays_flat_and_samples_full_domain():
+    fitted = _law(intercept=-8.0)
+    generated = FaintCappedMagnitudeLaw(fitted, 100.0)
+
+    assert generated.break_magnitude == pytest.approx(25.0)
+    assert generated.density([24.0, 25.0, 27.0]) == pytest.approx([
+        fitted.density(24.0), 100.0, 100.0,
+    ])
+    # Integral to the knee plus the rectangular faint tail.
+    beta = fitted.slope * np.log(10.0)
+    straight = (
+        10.0 ** fitted.intercept
+        * (np.exp(beta * 25.0) - np.exp(beta * 14.0))
+        / beta
+    )
+    assert generated.integrated_density() == pytest.approx(straight + 400.0)
+
+    draws = np.asarray([
+        generated.sample(np.random.default_rng(seed)) for seed in range(6000)
+    ])
+    assert np.all((draws >= 14.0) & (draws < 29.0))
+    expected_tail_fraction = 400.0 / generated.integrated_density()
+    assert np.mean(draws >= 25.0) == pytest.approx(
+        expected_tail_fraction, abs=0.015,
+    )
+
+    restored = FaintCappedMagnitudeLaw.from_payload(generated.to_payload())
+    assert restored == generated
 
 
 def test_straight_region_selects_widest_passing_consecutive_window():

@@ -190,9 +190,9 @@ class Config:
     # This is supervision only; it never changes the dirty-image PSF.
     TARGET_PSF_FWHM_ARCSEC      = 0.66
     TARGET_PSF_FWHM_MAX_ARCSEC  = 2.0
-    # Project-wide ceiling for generated field galaxies.  The activated Q1
-    # straight count law preserves its bright end and truncates the faint end
-    # where the integral reaches this density.
+    # Fallback used only when no activated population calibration overrides
+    # the generated field density.  The active Q1 law supplies its own exact
+    # integral from the straight-then-flat magnitude distribution.
     GALAXY_DENSITY_ARCMIN2 = 100.0
     DEFAULT_GAL_DENSITY_ARCMIN2 = GALAXY_DENSITY_ARCMIN2
     # Reverted to the 5dece6f ("worked") density: ~1.389/arcmin² (the real

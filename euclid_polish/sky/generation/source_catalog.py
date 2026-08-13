@@ -16,7 +16,7 @@ import math
 import os
 from typing import Any
 
-TNG_RENDER_RECORD_VERSION = 3
+TNG_RENDER_RECORD_VERSION = 4
 
 SOURCE_COLS = ["field_index", "type", "render", "x_pix", "y_pix",
                "flux_vis_e", "flux_y_e", "flux_j_e", "flux_h_e",
@@ -45,7 +45,8 @@ SOURCE_COLS = ["field_index", "type", "render", "x_pix", "y_pix",
                # row so analysis can distinguish legacy and regenerated data.
                "tng_density_arcmin2", "tng_mf_alpha",
                "galaxy_density_arcmin2", "galaxy_prior_density_arcmin2",
-               "galaxy_vis_magnitude_max", "population_prior",
+               "galaxy_vis_magnitude_max", "galaxy_magnitude_break",
+               "galaxy_faint_density_cap_arcmin2_mag", "population_prior",
                "mag_hst_f814w", "target_vis_mag",
                "target_re_arcsec", "achieved_re_arcsec",
                "nominal_re_arcsec", "native_halflight_px",
@@ -165,6 +166,10 @@ def _galaxy_row(field_index: int, g: dict[str, Any]) -> dict[str, Any]:
         ),
         "galaxy_vis_magnitude_max": _num(
             g.get("galaxy_vis_magnitude_max")
+        ),
+        "galaxy_magnitude_break": _num(g.get("galaxy_magnitude_break")),
+        "galaxy_faint_density_cap_arcmin2_mag": _num(
+            g.get("galaxy_faint_density_cap_arcmin2_mag")
         ),
         "population_prior": g.get("population_prior", ""),
         "mag_hst_f814w": _num(g.get("mag_hst_f814w")),
@@ -318,7 +323,8 @@ def _parse(row: dict[str, str]) -> dict[str, Any]:
               "morphology_worker_use_count",
               "tng_density_arcmin2", "tng_mf_alpha",
               "galaxy_density_arcmin2", "galaxy_prior_density_arcmin2",
-              "galaxy_vis_magnitude_max",
+              "galaxy_vis_magnitude_max", "galaxy_magnitude_break",
+              "galaxy_faint_density_cap_arcmin2_mag",
               "mag_hst_f814w", "target_vis_mag",
               "target_re_arcsec", "achieved_re_arcsec",
               "nominal_re_arcsec", "native_halflight_px",

@@ -17,7 +17,7 @@ type Curve = {
 };
 type BrightnessCurve = Curve & {
   label: string;
-  survey: "euclid" | "cosmos" | "fit";
+  survey: "euclid" | "cosmos" | "fit" | "generation";
   band: string;
   estimator: string;
   selection: string;
@@ -26,7 +26,8 @@ type BrightnessCurve = Curve & {
   sampling_interval?: [number, number];
   extrapolated_interval?: [number, number];
   generation_interval?: [number, number];
-  generation_density_cap_arcmin2?: number;
+  generation_break_magnitude?: number;
+  generation_density_cap_arcmin2_mag?: number;
 };
 type RadiusCurve = Curve & {
   label: string;
@@ -96,7 +97,8 @@ type Payload = {
       };
       generation: {
         surface_density_arcmin2: number;
-        density_cap_arcmin2: number;
+        differential_density_cap_arcmin2_mag: number;
+        break_magnitude: number;
         fitted_surface_density_arcmin2: number;
         vis_magnitude_min: number;
         vis_magnitude_max: number;
@@ -160,6 +162,7 @@ const BRIGHTNESS_COLORS = {
   euclid: ["#2478d4", "#31a7d8", "#33c4c9", "#786fd4", "#ad6bd8", "#e268a7"],
   cosmos: ["#00a078", "#35b45f", "#83b93d", "#c2a82f", "#dd843c", "#df5f51", "#c95285", "#9e68c7", "#697fd0", "#3c9eb9", "#4b8c70", "#8c8751", "#ad6d69", "#88738e", "#5f8290"],
   fit: ["#e25543", "#ef754b", "#c94d68", "#9f518d"],
+  generation: ["#168f65"],
 };
 const RADIUS_COLORS: Record<string, string> = {
   euclid_detection: "#2478d4",
@@ -282,7 +285,7 @@ function ApparentBrightnessPlot({ parameter }: { parameter: Parameter }) {
     .filter(([, curve]) => curve.default_on)
     .map(([key]) => key));
   const colorByKey = useMemo(() => {
-    const indices = { euclid: 0, cosmos: 0, fit: 0 };
+    const indices = { euclid: 0, cosmos: 0, fit: 0, generation: 0 };
     return Object.fromEntries(entries.map(([key, curve]) => {
       const palette = BRIGHTNESS_COLORS[curve.survey];
       const color = palette[indices[curve.survey] % palette.length];
@@ -315,8 +318,8 @@ function ApparentBrightnessPlot({ parameter }: { parameter: Parameter }) {
         axis: "x" as const, v: curve.extrapolated_interval[0],
         color: "#e25543", dash: [7, 4], width: 1.2, alpha: 0.75,
       }] : []),
-      ...(curve.generation_interval ? [{
-        axis: "x" as const, v: curve.generation_interval[1],
+      ...(curve.generation_break_magnitude != null ? [{
+        axis: "x" as const, v: curve.generation_break_magnitude,
         color: "#168f65", dash: [2, 3], width: 1.8, alpha: 0.95,
       }] : []),
     ]);
@@ -331,7 +334,8 @@ function ApparentBrightnessPlot({ parameter }: { parameter: Parameter }) {
           x: curve.x,
           y: curve.density.map((value) => value > 0 ? Math.log10(value) : null),
           color: colorByKey[key],
-          width: curve.survey === "fit" ? 2.7 : 2.0,
+          width: curve.survey === "generation" ? 3.2
+            : curve.survey === "fit" ? 2.7 : 2.0,
           dash: curve.survey === "cosmos" ? [7, 4]
             : curve.survey === "fit" ? [3, 3] : undefined,
         }))}
@@ -342,8 +346,8 @@ function ApparentBrightnessPlot({ parameter }: { parameter: Parameter }) {
           <i style={{ background: colorByKey[key] }} />
           <span><b>{curve.label}</b><small>{curve.band} · {curve.estimator}</small></span>
           <em>{curve.fit_interval
-            ? curve.generation_interval
-              ? `fit ${curve.fit_interval[0].toFixed(2)}–${curve.fit_interval[1].toFixed(2)} · generate ${curve.generation_interval[0].toFixed(0)}–${curve.generation_interval[1].toFixed(2)} (${curve.generation_density_cap_arcmin2?.toFixed(0)} arcmin⁻²)`
+            ? curve.generation_break_magnitude != null
+              ? `break VIS ${curve.generation_break_magnitude.toFixed(2)} · flat at ${curve.generation_density_cap_arcmin2_mag?.toFixed(0)} arcmin⁻² mag⁻¹ to VIS ${curve.generation_interval?.[1].toFixed(0)}`
               : `fit ${curve.fit_interval[0].toFixed(2)}–${curve.fit_interval[1].toFixed(2)} · law ${curve.sampling_interval?.[0].toFixed(0)}–${curve.sampling_interval?.[1].toFixed(0)}`
             : `${compact(curve.weighted_count)} weighted objects`}</em>
         </div>)}
@@ -354,15 +358,15 @@ function ApparentBrightnessPlot({ parameter }: { parameter: Parameter }) {
   return <div className="brightness-comparison">
     <div className="brightness-warning">
       <strong>Same AB convention, different measurements.</strong>
-      <span>The default is the Q1 MER + PHZ VIS 2FWHM raw count and its straight log-density fit over 14–29; 28–29 is explicit extrapolation. The green guide marks the faint cutoff used to limit generated galaxies to 100 arcmin⁻². Optional VIS/F814W diagnostics retain their native estimators.</span>
+      <span>The default shows the Q1 MER + PHZ VIS 2FWHM counts, their straight log-density fit, and the actual green generation law. The green law follows the fit to its break, then stays flat at 100 galaxies / arcmin² / mag through VIS 29. Optional VIS/F814W diagnostics retain their native estimators.</span>
     </div>
     <div className="brightness-controls">
-      {(["euclid", "cosmos", "fit"] as const).map((survey) => {
+      {(["euclid", "cosmos", "fit", "generation"] as const).map((survey) => {
         const group = surveyEntries(survey);
         if (!group.length) return null;
         return <section key={survey}>
           <header>
-            <div><span>{survey === "euclid" ? "Euclid MER" : survey === "cosmos" ? "COSMOS2025" : "Q1 curve fits"}</span><small>{survey === "euclid" ? "VIS · solid measurements" : survey === "cosmos" ? "HST/ACS F814W · long dashes" : "VIS · short-dashed local fits"}</small></div>
+            <div><span>{survey === "euclid" ? "Euclid MER" : survey === "cosmos" ? "COSMOS2025" : survey === "fit" ? "Q1 curve fits" : "Generation law"}</span><small>{survey === "euclid" ? "VIS · solid measurements" : survey === "cosmos" ? "HST/ACS F814W · long dashes" : survey === "fit" ? "VIS · short-dashed local fits" : "VIS · solid green straight-to-flat law"}</small></div>
             <div>
               <Button size="sm" variant="ghost" onClick={() => setSelected((current) => Array.from(new Set([...current, ...group.map(([key]) => key)])))}>all</Button>
               <Button size="sm" variant="ghost" onClick={() => setSelected((current) => current.filter((key) => !group.some(([candidate]) => candidate === key)))}>none</Button>
@@ -628,11 +632,14 @@ export default function GalaxyDistributionsPage() {
       <CardBody>
         <div className="galaxy-q1-counts__stats">
           <Stat k="brightness" v="Q1 VIS 2FWHM · 14–29" />
-          <Stat k="generated density" v={api.calibration.candidate
+          <Stat k="integrated density" v={api.calibration.candidate
             ? `${api.calibration.candidate.generation.surface_density_arcmin2.toFixed(0)} arcmin⁻²`
-            : "100 arcmin⁻²"} />
-          <Stat k="generation faint limit" v={api.calibration.candidate
-            ? `VIS ${api.calibration.candidate.generation.vis_magnitude_max.toFixed(2)}`
+            : "—"} />
+          <Stat k="faint plateau" v={api.calibration.candidate
+            ? `${api.calibration.candidate.generation.differential_density_cap_arcmin2_mag.toFixed(0)} arcmin⁻² mag⁻¹`
+            : "100 arcmin⁻² mag⁻¹"} />
+          <Stat k="brightness break" v={api.calibration.candidate
+            ? `VIS ${api.calibration.candidate.generation.break_magnitude.toFixed(2)}`
             : "—"} />
           <Stat k="radius source" v="Q1 aggregate Sérsic Rₑ" />
           <Stat k="COSMOS in fit" v="no" />
@@ -659,9 +666,10 @@ export default function GalaxyDistributionsPage() {
         {api.calibration.candidate && <p className="galaxy-q1-counts__note">
           The candidate contains {api.calibration.candidate.radius_law.fitted_rows.toLocaleString()} clean
           aggregate-weighted radii. The observational straight line remains defined to VIS 29,
-          while generation keeps its bright end and truncates at VIS {api.calibration.candidate.generation.vis_magnitude_max.toFixed(2)}
-          to generate {api.calibration.candidate.generation.surface_density_arcmin2.toFixed(2)} galaxies / arcmin².
-          Its fingerprint is <code>{api.calibration.candidate.fingerprint.slice(0, 12)}…</code>.
+          while the green generation law follows it to VIS {api.calibration.candidate.generation.break_magnitude.toFixed(2)}{" "}
+          and then stays flat at {api.calibration.candidate.generation.differential_density_cap_arcmin2_mag.toFixed(0)} galaxies / arcmin² / mag through VIS {api.calibration.candidate.generation.vis_magnitude_max.toFixed(0)}.
+          {" "}Its integral is {api.calibration.candidate.generation.surface_density_arcmin2.toFixed(2)} galaxies / arcmin².
+          {" "}Its fingerprint is <code>{api.calibration.candidate.fingerprint.slice(0, 12)}…</code>.
         </p>}
         <JobProgressView job={activate.job} error={activate.error} />
       </CardBody>
@@ -689,7 +697,7 @@ export default function GalaxyDistributionsPage() {
             yLabel="Sérsic Rₑ (arcsec, log scale)"
             guides={[{
               axis: "x",
-              v: api.calibration.candidate!.generation.vis_magnitude_max,
+              v: api.calibration.candidate!.generation.break_magnitude,
               color: "#168f65", dash: [2, 3], width: 1.8, alpha: 0.95,
             }]}
             series={[

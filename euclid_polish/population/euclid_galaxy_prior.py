@@ -7,22 +7,26 @@ from dataclasses import asdict, dataclass
 import numpy as np
 from scipy.special import ndtr
 
-from euclid_polish.population.magnitude_law import StraightMagnitudeLaw
+from euclid_polish.population.magnitude_law import (
+    FaintCappedMagnitudeLaw,
+    StraightMagnitudeLaw,
+)
 
-JOINT_EUCLID_GALAXY_VERSION = 6
+JOINT_EUCLID_GALAXY_VERSION = 7
 RADIUS_MODEL_VERSION = 1
 RADIUS_PIVOT_MAG = 23.0
 LOG_RADIUS_MIN = float(np.log10(0.03))
 LOG_RADIUS_MAX = float(np.log10(10.0))
-GALAXY_GENERATION_DENSITY_CAP_ARCMIN2 = 100.0
+GALAXY_FAINT_DENSITY_CAP_ARCMIN2_MAG = 100.0
 
 
 def generation_magnitude_law(
     fitted_law: StraightMagnitudeLaw,
-) -> StraightMagnitudeLaw:
-    """Return the bright-preserving, faint-truncated generation law."""
-    return fitted_law.truncated_to_density(
-        GALAXY_GENERATION_DENSITY_CAP_ARCMIN2
+) -> FaintCappedMagnitudeLaw:
+    """Return the fitted bright line with a flat faint-count tail."""
+    return FaintCappedMagnitudeLaw(
+        straight_law=fitted_law,
+        density_cap_arcmin2_mag=GALAXY_FAINT_DENSITY_CAP_ARCMIN2_MAG,
     )
 
 
@@ -249,7 +253,7 @@ def fit_conditional_radius_law_from_aggregate_moments(
 
 
 def joint_density_grid(
-    magnitude_law: StraightMagnitudeLaw,
+    magnitude_law: StraightMagnitudeLaw | FaintCappedMagnitudeLaw,
     radius_law: ConditionalRadiusLaw,
     *,
     magnitude_edges: np.ndarray | None = None,

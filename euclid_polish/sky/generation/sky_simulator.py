@@ -295,7 +295,7 @@ class SkySimulator:
                 )
             if max(requested_densities) > maximum_density + 1e-9:
                 raise ValueError(
-                    "galaxy density exceeds the activated faint-truncated "
+                    "galaxy density exceeds the activated magnitude-law "
                     f"population limit of {maximum_density:g} arcmin^-2"
                 )
         response_radius = self._maximum_aperture_response_radius_pixels()
@@ -800,6 +800,20 @@ class SkySimulator:
                     float("nan"),
                 )
             ),
+            "galaxy_magnitude_break": float(
+                getattr(
+                    getattr(self.population_prior, "magnitude_law", None),
+                    "break_magnitude",
+                    float("nan"),
+                )
+            ),
+            "galaxy_faint_density_cap_arcmin2_mag": float(
+                getattr(
+                    getattr(self.population_prior, "magnitude_law", None),
+                    "density_cap_arcmin2_mag",
+                    float("nan"),
+                )
+            ),
             "population_prior": getattr(
                 self.population_prior,
                 "population_label",
@@ -1128,6 +1142,20 @@ class SkySimulator:
                 getattr(
                     getattr(self.population_prior, "magnitude_law", None),
                     "mag_faint",
+                    float("nan"),
+                )
+            ),
+            "galaxy_magnitude_break": float(
+                getattr(
+                    getattr(self.population_prior, "magnitude_law", None),
+                    "break_magnitude",
+                    float("nan"),
+                )
+            ),
+            "galaxy_faint_density_cap_arcmin2_mag": float(
+                getattr(
+                    getattr(self.population_prior, "magnitude_law", None),
+                    "density_cap_arcmin2_mag",
                     float("nan"),
                 )
             ),

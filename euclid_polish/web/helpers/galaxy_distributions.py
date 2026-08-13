@@ -1047,20 +1047,48 @@ def _read_fit(parameters: dict[str, Any]) -> dict[str, Any]:
         radius_plot = source["plots"]["radius"]
         radius_x = np.asarray(radius_plot["x"], dtype=np.float64)
         radius_density = np.asarray(radius_plot["density"], dtype=np.float64)
+        generation_plot = source["magnitude_plot"]["generation_law"]
+        generation_x = np.asarray(generation_plot["x"], dtype=np.float64)
+        generation_density = np.asarray(
+            generation_plot["density"], dtype=np.float64,
+        )
         generation = source["generation"]
         generation_interval = [
             float(generation["vis_magnitude_min"]),
             float(generation["vis_magnitude_max"]),
         ]
-        density_cap = float(generation["density_cap_arcmin2"])
+        density_cap = float(
+            generation["differential_density_cap_arcmin2_mag"]
+        )
+        break_magnitude = float(generation["break_magnitude"])
     except (KeyError, TypeError, ValueError) as exc:
         return {"available": False, "detail": f"Fit artifact cannot be reconstructed: {exc}"}
-    brightness_fit = parameters["magnitude"]["photometry_series"].get(
-        "q1_fit_vis_f2"
-    )
-    if brightness_fit is not None:
-        brightness_fit["generation_interval"] = generation_interval
-        brightness_fit["generation_density_cap_arcmin2"] = density_cap
+    parameters["magnitude"]["photometry_series"]["generator_vis_f2"] = {
+        "x": generation_x.tolist(),
+        "density": generation_density.tolist(),
+        "weighted_count": float(generation["surface_density_arcmin2"]),
+        "definition": (
+            "activated generation law: the fitted Q1 VIS 2FWHM straight "
+            "counts up to the break, then a constant differential density "
+            "through VIS 29"
+        ),
+        "label": "Generator · straight then flat",
+        "survey": "generation",
+        "band": "Euclid VIS",
+        "estimator": "2FWHM aperture magnitude; generated count law",
+        "selection": (
+            "Q1 MER + PHZ galaxy fit; faint differential density capped at "
+            f"{density_cap:g} objects / arcmin2 / mag"
+        ),
+        "default_on": True,
+        "fit_interval": [
+            float(source["fitted_magnitude_law"]["fit_bright"]),
+            float(source["fitted_magnitude_law"]["fit_faint"]),
+        ],
+        "generation_interval": generation_interval,
+        "generation_break_magnitude": break_magnitude,
+        "generation_density_cap_arcmin2_mag": density_cap,
+    }
     parameters["radius"]["radius_series"]["fit_re"] = {
         "x": radius_x.tolist(),
         "density": radius_density.tolist(),
@@ -1086,7 +1114,8 @@ def _read_fit(parameters: dict[str, Any]) -> dict[str, Any]:
         "active_fingerprint": ((state.get("active") or {}).get("fingerprint")),
         "detail": (
             "Euclid-only straight brightness × Sérsic-radius fit; generation "
-            f"truncates the faint end at {density_cap:g} galaxies / arcmin²"
+            f"flattens at {density_cap:g} galaxies / arcmin² / mag after "
+            f"VIS {break_magnitude:.2f}"
         ),
     }
 

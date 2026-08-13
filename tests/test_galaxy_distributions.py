@@ -351,20 +351,28 @@ def test_q1_bright_counts_extend_aperture_curves_to_fourteen(monkeypatch):
     assert state["fit_available"] is True
 
 
-def test_fit_plot_marks_faint_generation_cutoff_and_uses_capped_radius_curve(
+def test_fit_plot_adds_straight_then_flat_generation_and_radius_curves(
     monkeypatch,
 ):
     parameters = helper._empty_parameters()
     parameters["magnitude"]["photometry_series"]["q1_fit_vis_f2"] = {}
     candidate = {
-        "version": 6,
+        "version": 7,
         "fingerprint": "f" * 64,
         "validated": True,
+        "fitted_magnitude_law": {
+            "fit_bright": 19.0, "fit_faint": 25.0,
+        },
+        "magnitude_plot": {"generation_law": {
+            "x": [14.0, 26.35, 29.0],
+            "density": [0.01, 100.0, 100.0],
+        }},
         "generation": {
-            "surface_density_arcmin2": 100.0,
-            "density_cap_arcmin2": 100.0,
+            "surface_density_arcmin2": 372.83,
+            "differential_density_cap_arcmin2_mag": 100.0,
+            "break_magnitude": 26.35,
             "vis_magnitude_min": 14.0,
-            "vis_magnitude_max": 26.27,
+            "vis_magnitude_max": 29.0,
         },
         "plots": {"radius": {
             "x": [-1.0, 0.0], "density": [40.0, 60.0],
@@ -379,14 +387,16 @@ def test_fit_plot_marks_faint_generation_cutoff_and_uses_capped_radius_curve(
 
     state = helper._read_fit(parameters)
     brightness = parameters["magnitude"]["photometry_series"][
-        "q1_fit_vis_f2"
+        "generator_vis_f2"
     ]
     radius = parameters["radius"]["radius_series"]["fit_re"]
 
     assert state["available"] is True
-    assert brightness["generation_interval"] == [14.0, 26.27]
-    assert brightness["generation_density_cap_arcmin2"] == 100.0
-    assert radius["weighted_count"] == 100.0
+    assert brightness["generation_interval"] == [14.0, 29.0]
+    assert brightness["generation_break_magnitude"] == 26.35
+    assert brightness["generation_density_cap_arcmin2_mag"] == 100.0
+    assert brightness["density"][-2:] == [100.0, 100.0]
+    assert radius["weighted_count"] == 372.83
 
 
 def test_build_writes_compact_artifact_transactionally(tmp_path, monkeypatch):
