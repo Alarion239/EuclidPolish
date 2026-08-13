@@ -28,6 +28,9 @@ def _meta():
              "aperture_psf_fwhm_arcsec": 0.16,
              "aperture_radius_arcsec": 0.16,
              "magnitude_fit_fingerprint": "m" * 64,
+             "galaxy_density_arcmin2": 100.0,
+             "galaxy_prior_density_arcmin2": 100.0,
+             "galaxy_vis_magnitude_max": 26.27,
              "flux_e_per_band": [800.0, 1, 2, 3]},
         ],
         "lenses": [
@@ -77,7 +80,10 @@ def test_writer_then_reader_roundtrip(tmp_path):
     assert tng["radius_renderer_fingerprint"] == "r" * 64
     assert tng["radius_remeasured"] is False
     assert tng["render_support_clipped"] is True
-    assert tng["tng_render_record_version"] == 2
+    assert tng["tng_render_record_version"] == 3
+    assert tng["galaxy_density_arcmin2"] == 100.0
+    assert tng["galaxy_prior_density_arcmin2"] == 100.0
+    assert tng["galaxy_vis_magnitude_max"] == 26.27
     assert tng["target_vis_2fwhm_mag"] == 23.1
     assert tng["achieved_vis_2fwhm_mag"] == 23.1
     assert tng["aperture_psf_fwhm_arcsec"] == 0.16

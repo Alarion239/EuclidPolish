@@ -12,7 +12,7 @@ galaxies and stars cannot silently implement different conventions.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 import numpy as np
@@ -72,6 +72,33 @@ class StraightMagnitudeLaw:
             * math.expm1(beta * (self.mag_faint - self.mag_bright))
             / beta
         )
+
+    def truncated_to_density(self, density_arcmin2: float) -> StraightMagnitudeLaw:
+        """Keep the bright end and shorten the faint limit to a density cap.
+
+        The fitted slope and normalization remain untouched.  If the full
+        configured interval already integrates below ``density_arcmin2``, the
+        law is returned unchanged.
+        """
+        target = float(density_arcmin2)
+        if not math.isfinite(target) or target <= 0.0:
+            raise ValueError("straight magnitude-law density cap must be positive")
+        if self.integrated_density() <= target:
+            return self
+
+        beta = self.slope * math.log(10.0)
+        normalization = 10.0 ** self.intercept
+        if abs(beta) < 1e-12:
+            faint = self.mag_bright + target / normalization
+        else:
+            bright_term = math.exp(beta * self.mag_bright)
+            faint_term = bright_term + target * beta / normalization
+            if faint_term <= 0.0 or not math.isfinite(faint_term):
+                raise ValueError("density cap cannot be represented on this magnitude law")
+            faint = math.log(faint_term) / beta
+        if not self.mag_bright < faint < self.mag_faint:
+            raise ValueError("density cap produced an invalid faint magnitude limit")
+        return replace(self, mag_faint=float(faint))
 
     def sample(self, rng: np.random.Generator) -> float:
         """Draw one magnitude from the exact finite-domain inverse CDF."""

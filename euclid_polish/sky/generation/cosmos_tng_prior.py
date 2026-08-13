@@ -17,8 +17,10 @@ import numpy as np
 from euclid_polish.config import Config
 from euclid_polish.photometry import ab_mag_to_electrons
 from euclid_polish.population.euclid_galaxy_prior import (
+    GALAXY_GENERATION_DENSITY_CAP_ARCMIN2,
     JOINT_EUCLID_GALAXY_VERSION,
     ConditionalRadiusLaw,
+    generation_magnitude_law,
     joint_density_grid,
 )
 from euclid_polish.population.magnitude_law import StraightMagnitudeLaw
@@ -547,7 +549,7 @@ class JointGalaxyPopulationPrior:
     """Minimal Euclid joint prior: radius first, brightness given radius."""
 
     morphology_mode = "balanced_random_tng_atlas"
-    population_label = "euclid_vis2fwhm_sersic_re_joint_v4"
+    population_label = "euclid_vis2fwhm_sersic_re_joint_v6_faint_capped"
 
     def __init__(self, payload: dict):
         if payload.get("version") != JOINT_EUCLID_GALAXY_VERSION:
@@ -560,6 +562,9 @@ class JointGalaxyPopulationPrior:
         if len(self.fingerprint) != 64:
             raise ValueError("joint galaxy population fingerprint is invalid")
         try:
+            self.fitted_magnitude_law = StraightMagnitudeLaw.from_payload(
+                payload["fitted_magnitude_law"]
+            )
             self.magnitude_law = StraightMagnitudeLaw.from_payload(
                 payload["magnitude_law"]
             )
@@ -567,10 +572,34 @@ class JointGalaxyPopulationPrior:
                 payload["radius_law"]
             )
             expected = float(payload["generation"]["surface_density_arcmin2"])
+            density_cap = float(payload["generation"]["density_cap_arcmin2"])
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError("joint galaxy population model is incomplete") from exc
         if not np.isclose(self.magnitude_law.integrated_density(), expected):
             raise ValueError("joint galaxy population density does not match activation")
+        expected_law = generation_magnitude_law(self.fitted_magnitude_law)
+        if not (
+            np.isclose(
+                density_cap, GALAXY_GENERATION_DENSITY_CAP_ARCMIN2
+            )
+            and np.isclose(
+                self.magnitude_law.slope, self.fitted_magnitude_law.slope
+            )
+            and np.isclose(
+                self.magnitude_law.intercept,
+                self.fitted_magnitude_law.intercept,
+            )
+            and np.isclose(
+                self.magnitude_law.mag_bright,
+                self.fitted_magnitude_law.mag_bright,
+            )
+            and self.magnitude_law.mag_faint
+            <= self.fitted_magnitude_law.mag_faint
+            and np.isclose(self.magnitude_law.mag_faint, expected_law.mag_faint)
+        ):
+            raise ValueError(
+                "joint galaxy generation law is not a faint truncation of the fit"
+            )
         grid = joint_density_grid(self.magnitude_law, self.radius_law)
         self._density = np.asarray(grid["density"], dtype=np.float64)
         self._magnitude_edges = np.asarray(grid["magnitude_edges"])

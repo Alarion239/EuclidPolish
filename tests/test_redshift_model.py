@@ -375,7 +375,7 @@ def test_target_logmass_schechter():
     assert (lm > 10.5).mean() < 0.05
     assert (lm > 11.0).mean() < 0.015
     assert pytest.approx(-1.76) == Config.TNG_MF_ALPHA
-    assert pytest.approx(200.0) == Config.TNG_GAL_DENSITY_ARCMIN2
+    assert pytest.approx(100.0) == Config.TNG_GAL_DENSITY_ARCMIN2
 
 
 def test_sample_tng_stamp_z_mode(tmp_path):

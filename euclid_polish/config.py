@@ -190,9 +190,10 @@ class Config:
     # This is supervision only; it never changes the dirty-image PSF.
     TARGET_PSF_FWHM_ARCSEC      = 0.66
     TARGET_PSF_FWHM_MAX_ARCSEC  = 2.0
-    # Project fallback until a multi-cone Euclid observation fit updates the
-    # persisted job configuration. This is not the COSMOS surface density.
-    GALAXY_DENSITY_ARCMIN2 = 200.0
+    # Project-wide ceiling for generated field galaxies.  The activated Q1
+    # straight count law preserves its bright end and truncates the faint end
+    # where the integral reaches this density.
+    GALAXY_DENSITY_ARCMIN2 = 100.0
     DEFAULT_GAL_DENSITY_ARCMIN2 = GALAXY_DENSITY_ARCMIN2
     # Reverted to the 5dece6f ("worked") density: ~1.389/arcmin² (the real
     # Wide-Survey stellar density). The 10/arcmin² inflation was paired with

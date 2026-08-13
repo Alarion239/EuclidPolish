@@ -25,6 +25,8 @@ type BrightnessCurve = Curve & {
   fit_interval?: [number, number];
   sampling_interval?: [number, number];
   extrapolated_interval?: [number, number];
+  generation_interval?: [number, number];
+  generation_density_cap_arcmin2?: number;
 };
 type RadiusCurve = Curve & {
   label: string;
@@ -94,8 +96,12 @@ type Payload = {
       };
       generation: {
         surface_density_arcmin2: number;
+        density_cap_arcmin2: number;
+        fitted_surface_density_arcmin2: number;
         vis_magnitude_min: number;
         vis_magnitude_max: number;
+        fitted_vis_magnitude_max: number;
+        faint_end_policy: string;
       };
       plots?: {
         conditional_radius?: {
@@ -309,6 +315,10 @@ function ApparentBrightnessPlot({ parameter }: { parameter: Parameter }) {
         axis: "x" as const, v: curve.extrapolated_interval[0],
         color: "#e25543", dash: [7, 4], width: 1.2, alpha: 0.75,
       }] : []),
+      ...(curve.generation_interval ? [{
+        axis: "x" as const, v: curve.generation_interval[1],
+        color: "#168f65", dash: [2, 3], width: 1.8, alpha: 0.95,
+      }] : []),
     ]);
     plot = <>
       <Plot
@@ -332,7 +342,9 @@ function ApparentBrightnessPlot({ parameter }: { parameter: Parameter }) {
           <i style={{ background: colorByKey[key] }} />
           <span><b>{curve.label}</b><small>{curve.band} · {curve.estimator}</small></span>
           <em>{curve.fit_interval
-            ? `fit ${curve.fit_interval[0].toFixed(2)}–${curve.fit_interval[1].toFixed(2)} · sample ${curve.sampling_interval?.[0].toFixed(0)}–${curve.sampling_interval?.[1].toFixed(0)}`
+            ? curve.generation_interval
+              ? `fit ${curve.fit_interval[0].toFixed(2)}–${curve.fit_interval[1].toFixed(2)} · generate ${curve.generation_interval[0].toFixed(0)}–${curve.generation_interval[1].toFixed(2)} (${curve.generation_density_cap_arcmin2?.toFixed(0)} arcmin⁻²)`
+              : `fit ${curve.fit_interval[0].toFixed(2)}–${curve.fit_interval[1].toFixed(2)} · law ${curve.sampling_interval?.[0].toFixed(0)}–${curve.sampling_interval?.[1].toFixed(0)}`
             : `${compact(curve.weighted_count)} weighted objects`}</em>
         </div>)}
       </div>
@@ -342,7 +354,7 @@ function ApparentBrightnessPlot({ parameter }: { parameter: Parameter }) {
   return <div className="brightness-comparison">
     <div className="brightness-warning">
       <strong>Same AB convention, different measurements.</strong>
-      <span>The default is the Q1 MER + PHZ VIS 2FWHM raw count and its straight log-density law over 14–29; 28–29 is explicit extrapolation. Optional VIS/F814W diagnostics retain their native estimators.</span>
+      <span>The default is the Q1 MER + PHZ VIS 2FWHM raw count and its straight log-density fit over 14–29; 28–29 is explicit extrapolation. The green guide marks the faint cutoff used to limit generated galaxies to 100 arcmin⁻². Optional VIS/F814W diagnostics retain their native estimators.</span>
     </div>
     <div className="brightness-controls">
       {(["euclid", "cosmos", "fit"] as const).map((survey) => {
@@ -616,6 +628,12 @@ export default function GalaxyDistributionsPage() {
       <CardBody>
         <div className="galaxy-q1-counts__stats">
           <Stat k="brightness" v="Q1 VIS 2FWHM · 14–29" />
+          <Stat k="generated density" v={api.calibration.candidate
+            ? `${api.calibration.candidate.generation.surface_density_arcmin2.toFixed(0)} arcmin⁻²`
+            : "100 arcmin⁻²"} />
+          <Stat k="generation faint limit" v={api.calibration.candidate
+            ? `VIS ${api.calibration.candidate.generation.vis_magnitude_max.toFixed(2)}`
+            : "—"} />
           <Stat k="radius source" v="Q1 aggregate Sérsic Rₑ" />
           <Stat k="COSMOS in fit" v="no" />
           <Stat k="slope" v={api.calibration.candidate
@@ -640,7 +658,9 @@ export default function GalaxyDistributionsPage() {
         </div>
         {api.calibration.candidate && <p className="galaxy-q1-counts__note">
           The candidate contains {api.calibration.candidate.radius_law.fitted_rows.toLocaleString()} clean
-          aggregate-weighted radii and generates {api.calibration.candidate.generation.surface_density_arcmin2.toFixed(2)} galaxies / arcmin².
+          aggregate-weighted radii. The observational straight line remains defined to VIS 29,
+          while generation keeps its bright end and truncates at VIS {api.calibration.candidate.generation.vis_magnitude_max.toFixed(2)}
+          to generate {api.calibration.candidate.generation.surface_density_arcmin2.toFixed(2)} galaxies / arcmin².
           Its fingerprint is <code>{api.calibration.candidate.fingerprint.slice(0, 12)}…</code>.
         </p>}
         <JobProgressView job={activate.job} error={activate.error} />
@@ -667,6 +687,11 @@ export default function GalaxyDistributionsPage() {
             xTicks={ticks(xDomain, 7)} yTicks={physicalLogTicks(yDomain, 6)}
             xLabel="VIS 2FWHM AB magnitude"
             yLabel="Sérsic Rₑ (arcsec, log scale)"
+            guides={[{
+              axis: "x",
+              v: api.calibration.candidate!.generation.vis_magnitude_max,
+              color: "#168f65", dash: [2, 3], width: 1.8, alpha: 0.95,
+            }]}
             series={[
               {
                 x: relation.magnitude,

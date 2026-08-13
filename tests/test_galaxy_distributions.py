@@ -351,6 +351,44 @@ def test_q1_bright_counts_extend_aperture_curves_to_fourteen(monkeypatch):
     assert state["fit_available"] is True
 
 
+def test_fit_plot_marks_faint_generation_cutoff_and_uses_capped_radius_curve(
+    monkeypatch,
+):
+    parameters = helper._empty_parameters()
+    parameters["magnitude"]["photometry_series"]["q1_fit_vis_f2"] = {}
+    candidate = {
+        "version": 6,
+        "fingerprint": "f" * 64,
+        "validated": True,
+        "generation": {
+            "surface_density_arcmin2": 100.0,
+            "density_cap_arcmin2": 100.0,
+            "vis_magnitude_min": 14.0,
+            "vis_magnitude_max": 26.27,
+        },
+        "plots": {"radius": {
+            "x": [-1.0, 0.0], "density": [40.0, 60.0],
+        }},
+    }
+    monkeypatch.setattr(helper, "joint_galaxy_candidate", lambda: candidate)
+    monkeypatch.setattr(
+        helper,
+        "joint_galaxy_state",
+        lambda: {"is_active": True, "active": candidate},
+    )
+
+    state = helper._read_fit(parameters)
+    brightness = parameters["magnitude"]["photometry_series"][
+        "q1_fit_vis_f2"
+    ]
+    radius = parameters["radius"]["radius_series"]["fit_re"]
+
+    assert state["available"] is True
+    assert brightness["generation_interval"] == [14.0, 26.27]
+    assert brightness["generation_density_cap_arcmin2"] == 100.0
+    assert radius["weighted_count"] == 100.0
+
+
 def test_build_writes_compact_artifact_transactionally(tmp_path, monkeypatch):
     monkeypatch.setattr(Config, "DATA_DIR", str(tmp_path))
     monkeypatch.setattr(helper, "_inputs", lambda: {"fixture": 1})
@@ -405,6 +443,9 @@ def test_read_overlays_progressive_q1_checkpoints_without_full_rebuild(
         return {"available": True, "completed_queries": 2}
 
     monkeypatch.setattr(helper, "_read_q1_bright_counts", overlay)
+    monkeypatch.setattr(
+        helper, "_read_fit", lambda _parameters: {"available": False}
+    )
 
     result = helper.read_galaxy_distributions()
 

@@ -29,6 +29,7 @@ def _galaxy_calibration():
             },
             "fit_interval": [19.5, 25.0],
             "sampling_interval": [14.0, 29.0],
+            "generation_interval": [14.0, 26.3],
             "extrapolated_interval": [28.0, 29.0],
         },
         "plots": {
@@ -72,6 +73,7 @@ def test_population_atlas_exports_raster_and_vector_formats():
     assert b"Euclid PHZ/MER measured" in svg
     assert b"joint-fit" in svg
     assert b"joint conditional mean" in svg
+    assert b"generation faint cutoff" in svg
     assert b"COSMOS" not in svg
     assert b"TNG truth" not in svg
     assert b"20&lt;VIS&lt;28" not in svg

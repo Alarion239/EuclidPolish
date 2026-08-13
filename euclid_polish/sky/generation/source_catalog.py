@@ -16,7 +16,7 @@ import math
 import os
 from typing import Any
 
-TNG_RENDER_RECORD_VERSION = 2
+TNG_RENDER_RECORD_VERSION = 3
 
 SOURCE_COLS = ["field_index", "type", "render", "x_pix", "y_pix",
                "flux_vis_e", "flux_y_e", "flux_j_e", "flux_h_e",
@@ -44,7 +44,8 @@ SOURCE_COLS = ["field_index", "type", "render", "x_pix", "y_pix",
                # TNG population configuration saved with every rendered TNG
                # row so analysis can distinguish legacy and regenerated data.
                "tng_density_arcmin2", "tng_mf_alpha",
-               "galaxy_density_arcmin2", "population_prior",
+               "galaxy_density_arcmin2", "galaxy_prior_density_arcmin2",
+               "galaxy_vis_magnitude_max", "population_prior",
                "mag_hst_f814w", "target_vis_mag",
                "target_re_arcsec", "achieved_re_arcsec",
                "nominal_re_arcsec", "native_halflight_px",
@@ -159,6 +160,12 @@ def _galaxy_row(field_index: int, g: dict[str, Any]) -> dict[str, Any]:
         "tng_density_arcmin2": _num(g.get("tng_density_arcmin2")),
         "tng_mf_alpha": _num(g.get("tng_mf_alpha")),
         "galaxy_density_arcmin2": _num(g.get("galaxy_density_arcmin2")),
+        "galaxy_prior_density_arcmin2": _num(
+            g.get("galaxy_prior_density_arcmin2")
+        ),
+        "galaxy_vis_magnitude_max": _num(
+            g.get("galaxy_vis_magnitude_max")
+        ),
         "population_prior": g.get("population_prior", ""),
         "mag_hst_f814w": _num(g.get("mag_hst_f814w")),
         "target_vis_mag": _num(g.get("target_vis_mag")),
@@ -310,7 +317,8 @@ def _parse(row: dict[str, str]) -> dict[str, Any]:
               "morphology_ssfr_kernel_bandwidth_quantile",
               "morphology_worker_use_count",
               "tng_density_arcmin2", "tng_mf_alpha",
-              "galaxy_density_arcmin2",
+              "galaxy_density_arcmin2", "galaxy_prior_density_arcmin2",
+              "galaxy_vis_magnitude_max",
               "mag_hst_f814w", "target_vis_mag",
               "target_re_arcsec", "achieved_re_arcsec",
               "nominal_re_arcsec", "native_halflight_px",

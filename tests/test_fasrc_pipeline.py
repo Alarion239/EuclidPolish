@@ -50,12 +50,12 @@ def _mock_population_calibrations(monkeypatch):
         }},
     )
     joint = {
-        "version": 5,
+        "version": 6,
         "kind": "euclid_vis2fwhm_sersic_re_joint",
         "valid": True,
         "active": True,
         "fingerprint": "j" * 64,
-        "generation": {"surface_density_arcmin2": 207.0},
+        "generation": {"surface_density_arcmin2": 100.0},
     }
     monkeypatch.setattr(
         "euclid_polish.web.helpers.population_calibration.joint_galaxy_state",
@@ -556,12 +556,12 @@ class TestRegistry:
         """FASRC jobs embed the activated Euclid brightness-radius law."""
         del tmp_path
         joint = {
-            "version": 5,
+            "version": 6,
             "kind": "euclid_vis2fwhm_sersic_re_joint",
             "valid": True,
             "active": True,
             "fingerprint": "a" * 64,
-            "generation": {"surface_density_arcmin2": 66.4398137},
+            "generation": {"surface_density_arcmin2": 100.0},
             "radius_law": {},
         }
         monkeypatch.setattr(
@@ -589,7 +589,7 @@ class TestRegistry:
         })
         argv = step.build_command(prepared)
 
-        assert argv[argv.index("--galaxy-density-arcmin2") + 1] == "66.4398"
+        assert argv[argv.index("--galaxy-density-arcmin2") + 1] == "100"
         embedded = json.loads(
             argv[argv.index("--joint-galaxy-population-json") + 1]
         )
@@ -608,13 +608,13 @@ class TestRegistry:
         self, monkeypatch,
     ):
         joint = {
-            "version": 5,
+            "version": 6,
             "kind": "euclid_vis2fwhm_sersic_re_joint",
             "valid": True,
             "validated": False,
             "active": True,
             "fingerprint": "b" * 64,
-            "generation": {"surface_density_arcmin2": 66.0},
+            "generation": {"surface_density_arcmin2": 100.0},
             "provenance": {
                 "brightness": "Q1 VIS 2FWHM",
                 "radius": "MER morphology VIS Sérsic radius",

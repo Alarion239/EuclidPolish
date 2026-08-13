@@ -46,6 +46,24 @@ def test_integral_and_inverse_cdf_respect_full_domain_boundaries():
     assert np.mean(draws < 25.0) == pytest.approx(expected_cdf_25, abs=0.015)
 
 
+def test_density_cap_preserves_bright_law_and_moves_only_faint_limit():
+    fitted = _law()
+    generated = fitted.truncated_to_density(100.0)
+
+    assert generated.slope == fitted.slope
+    assert generated.intercept == fitted.intercept
+    assert generated.mag_bright == fitted.mag_bright
+    assert generated.mag_faint < fitted.mag_faint
+    assert generated.integrated_density() == pytest.approx(100.0)
+    probe = np.linspace(fitted.mag_bright, generated.mag_faint, 20)
+    assert generated.density(probe) == pytest.approx(fitted.density(probe))
+
+
+def test_density_cap_leaves_already_sparse_law_unchanged():
+    fitted = _law(intercept=-20.0)
+    assert fitted.truncated_to_density(100.0) is fitted
+
+
 def test_straight_region_selects_widest_passing_consecutive_window():
     magnitude = np.arange(14.05, 24.05, 0.1)
     density = 10.0 ** (0.35 * magnitude - 7.0)

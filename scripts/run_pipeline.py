@@ -209,7 +209,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                     default=None,
                     help=(
                         "TNG galaxies per arcmin². By default, use the "
-                        "integrated density of the empirical PHZ population."
+                        "faint-truncated density of the activated Q1 prior."
                     ))
     ap.add_argument("--galaxy-thinning-max-density-arcmin2", type=float,
                     default=None,

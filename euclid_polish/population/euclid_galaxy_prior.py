@@ -9,11 +9,21 @@ from scipy.special import ndtr
 
 from euclid_polish.population.magnitude_law import StraightMagnitudeLaw
 
-JOINT_EUCLID_GALAXY_VERSION = 5
+JOINT_EUCLID_GALAXY_VERSION = 6
 RADIUS_MODEL_VERSION = 1
 RADIUS_PIVOT_MAG = 23.0
 LOG_RADIUS_MIN = float(np.log10(0.03))
 LOG_RADIUS_MAX = float(np.log10(10.0))
+GALAXY_GENERATION_DENSITY_CAP_ARCMIN2 = 100.0
+
+
+def generation_magnitude_law(
+    fitted_law: StraightMagnitudeLaw,
+) -> StraightMagnitudeLaw:
+    """Return the bright-preserving, faint-truncated generation law."""
+    return fitted_law.truncated_to_density(
+        GALAXY_GENERATION_DENSITY_CAP_ARCMIN2
+    )
 
 
 @dataclass(frozen=True)

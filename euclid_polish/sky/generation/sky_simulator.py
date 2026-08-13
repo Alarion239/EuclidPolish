@@ -283,6 +283,21 @@ class SkySimulator:
         ok, why = self.config.validate()
         if not ok:
             raise ValueError(f"Invalid generator config: {why}")
+        prior_density = getattr(
+            population_prior, "surface_density_arcmin2", None
+        )
+        if prior_density is not None:
+            maximum_density = float(prior_density)
+            requested_densities = [self.config.galaxy_density_arcmin2]
+            if self.config.galaxy_thinning_max_density_arcmin2 is not None:
+                requested_densities.append(
+                    self.config.galaxy_thinning_max_density_arcmin2
+                )
+            if max(requested_densities) > maximum_density + 1e-9:
+                raise ValueError(
+                    "galaxy density exceeds the activated faint-truncated "
+                    f"population limit of {maximum_density:g} arcmin^-2"
+                )
         response_radius = self._maximum_aperture_response_radius_pixels()
         self._tng_max_output_side = int(
             2 * max(self.config.image_size, response_radius + 2) + 1
@@ -771,6 +786,20 @@ class SkySimulator:
             ],
             "morphology_activity_class": morphology["activity_class"],
             "galaxy_density_arcmin2": float(self.config.galaxy_density_arcmin2),
+            "galaxy_prior_density_arcmin2": float(
+                getattr(
+                    self.population_prior,
+                    "surface_density_arcmin2",
+                    self.config.galaxy_density_arcmin2,
+                )
+            ),
+            "galaxy_vis_magnitude_max": float(
+                getattr(
+                    getattr(self.population_prior, "magnitude_law", None),
+                    "mag_faint",
+                    float("nan"),
+                )
+            ),
             "population_prior": getattr(
                 self.population_prior,
                 "population_label",
@@ -1088,6 +1117,20 @@ class SkySimulator:
         meta = {
             "field_area_arcmin2":      float(area),
             "galaxy_density_arcmin2":  float(cfg.galaxy_density_arcmin2),
+            "galaxy_prior_density_arcmin2": float(
+                getattr(
+                    self.population_prior,
+                    "surface_density_arcmin2",
+                    cfg.galaxy_density_arcmin2,
+                )
+            ),
+            "galaxy_vis_magnitude_max": float(
+                getattr(
+                    getattr(self.population_prior, "magnitude_law", None),
+                    "mag_faint",
+                    float("nan"),
+                )
+            ),
             "galaxy_thinning_max_density_arcmin2": (
                 float(cfg.galaxy_thinning_max_density_arcmin2)
                 if cfg.galaxy_thinning_max_density_arcmin2 is not None

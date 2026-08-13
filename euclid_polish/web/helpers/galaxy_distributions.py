@@ -1047,8 +1047,20 @@ def _read_fit(parameters: dict[str, Any]) -> dict[str, Any]:
         radius_plot = source["plots"]["radius"]
         radius_x = np.asarray(radius_plot["x"], dtype=np.float64)
         radius_density = np.asarray(radius_plot["density"], dtype=np.float64)
+        generation = source["generation"]
+        generation_interval = [
+            float(generation["vis_magnitude_min"]),
+            float(generation["vis_magnitude_max"]),
+        ]
+        density_cap = float(generation["density_cap_arcmin2"])
     except (KeyError, TypeError, ValueError) as exc:
         return {"available": False, "detail": f"Fit artifact cannot be reconstructed: {exc}"}
+    brightness_fit = parameters["magnitude"]["photometry_series"].get(
+        "q1_fit_vis_f2"
+    )
+    if brightness_fit is not None:
+        brightness_fit["generation_interval"] = generation_interval
+        brightness_fit["generation_density_cap_arcmin2"] = density_cap
     parameters["radius"]["radius_series"]["fit_re"] = {
         "x": radius_x.tolist(),
         "density": radius_density.tolist(),
@@ -1072,7 +1084,10 @@ def _read_fit(parameters: dict[str, Any]) -> dict[str, Any]:
         "validated": bool(source.get("validated")),
         "is_active": bool(state.get("is_active")),
         "active_fingerprint": ((state.get("active") or {}).get("fingerprint")),
-        "detail": "Euclid-only straight brightness × Sérsic-radius fit",
+        "detail": (
+            "Euclid-only straight brightness × Sérsic-radius fit; generation "
+            f"truncates the faint end at {density_cap:g} galaxies / arcmin²"
+        ),
     }
 
 
@@ -1131,4 +1146,7 @@ def read_galaxy_distributions() -> dict[str, Any]:
                 del series[key]
         payload["q1_counts"] = _read_q1_bright_counts(parameters)
         payload["q1_radius"] = _read_q1_radius_statistics(parameters)
+        sources = payload.setdefault("sources", {})
+        if isinstance(sources, dict):
+            sources["fit"] = _read_fit(parameters)
     return {**payload, "stale": stale, "artifact_path": str(artifact_path())}

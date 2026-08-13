@@ -163,6 +163,13 @@ def render_population_atlas(
                 float(extrapolated[0]), float(extrapolated[1]),
                 color=TNG, alpha=0.08, linewidth=0,
             )
+        generation_interval = brightness.get("generation_interval") or []
+        if len(generation_interval) == 2:
+            axes[0].axvline(
+                float(generation_interval[1]), color="#168f65",
+                linewidth=2.0, linestyle=(0, (2, 3)),
+                label=r"generation faint cutoff ($n_\mathrm{gal}=100$ arcmin$^{-2}$)",
+            )
         axes[0].set_xlim(14, 29)
         _finish_axis(
             axes[0], "Straight brightness law",
@@ -214,6 +221,12 @@ def render_population_atlas(
             label="joint conditional mean", width=2.7,
         )
         axes[2].set_xlim(14, 29)
+        if len(generation_interval) == 2:
+            axes[2].axvline(
+                float(generation_interval[1]), color="#168f65",
+                linewidth=2.0, linestyle=(0, (2, 3)),
+                label="generation faint cutoff",
+            )
         _finish_axis(
             axes[2], "Joint brightness-size relation",
             "VIS 2FWHM aperture magnitude [AB]",

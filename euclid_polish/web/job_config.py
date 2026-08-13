@@ -123,8 +123,8 @@ class JobConfig:
     # HR scene side in 0.05″/pix pixels — feeds both synthetic generation
     # and inference. Kept a multiple of 6 (the NISP rebin factor).
     hr_image_size: int = 510
-    # Raw TNG draw density, calibrated from separated Euclid cones. COSMOS
-    # supplies the latent population shape but not this normalization.
+    # Generated TNG-galaxy density. The activated Q1 straight count law owns
+    # the exact value and caps it by truncating only the faint end.
     galaxy_density_arcmin2: float = Config.GALAXY_DENSITY_ARCMIN2
     # Brightness knee (e⁻) for the asinh display panels in inference.
     asinh_scale:   float = 1000.0
