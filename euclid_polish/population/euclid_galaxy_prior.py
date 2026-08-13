@@ -14,12 +14,16 @@ from euclid_polish.population.magnitude_law import (
     StraightMagnitudeLaw,
 )
 
-JOINT_EUCLID_GALAXY_VERSION = 7
-RADIUS_MODEL_VERSION = 1
+JOINT_EUCLID_GALAXY_VERSION = 8
+SUPPORTED_JOINT_EUCLID_GALAXY_VERSIONS = frozenset({7, 8})
+LINEAR_RADIUS_MODEL_VERSION = 1
+RADIUS_MODEL_VERSION = 2
 RADIUS_PIVOT_MAG = 23.0
 LOG_RADIUS_MIN = float(np.log10(0.03))
 LOG_RADIUS_MAX = float(np.log10(10.0))
 GALAXY_FAINT_DENSITY_CAP_ARCMIN2_MAG = 100.0
+RADIUS_FIT_MIN_SELECTED_PER_MAG_BIN = 20
+RADIUS_FIT_EFFECTIVE_WEIGHT_CAP = 1000.0
 
 
 def generation_magnitude_law(
@@ -34,7 +38,7 @@ def generation_magnitude_law(
 
 @dataclass(frozen=True)
 class ConditionalRadiusLaw:
-    """Straight mean relation with constant Gaussian scatter in log radius."""
+    """Bounded conditional law for Euclid Sersic radius in log space."""
 
     version: int
     pivot_mag: float
@@ -50,16 +54,30 @@ class ConditionalRadiusLaw:
     r_squared: float
     covariance: tuple[tuple[float, float], tuple[float, float]]
     selection: str
+    bright_intercept_log10_arcsec: float | None = None
+    break_magnitude: float | None = None
+    tail_fraction: float = 0.0
+    tail_distribution: str = "none"
+    fit_min_selected_per_magnitude_bin: int = 0
+    fit_effective_weight_cap: float = 0.0
 
     @classmethod
     def from_payload(cls, payload: dict) -> ConditionalRadiusLaw:
         values = dict(payload)
+        values.setdefault("bright_intercept_log10_arcsec", None)
+        values.setdefault("break_magnitude", None)
+        values.setdefault("tail_fraction", 0.0)
+        values.setdefault("tail_distribution", "none")
+        values.setdefault("fit_min_selected_per_magnitude_bin", 0)
+        values.setdefault("fit_effective_weight_cap", 0.0)
         values["covariance"] = tuple(
             tuple(float(item) for item in row)
             for row in values["covariance"]
         )
         law = cls(**values)
-        if law.version != RADIUS_MODEL_VERSION:
+        if law.version not in {
+            LINEAR_RADIUS_MODEL_VERSION, RADIUS_MODEL_VERSION,
+        }:
             raise ValueError("Euclid radius law has an unsupported version")
         if not (
             np.isfinite(law.intercept_log10_arcsec)
@@ -70,17 +88,63 @@ class ConditionalRadiusLaw:
             and law.fitted_rows >= 100
         ):
             raise ValueError("Euclid radius law is invalid")
+        if law.version == RADIUS_MODEL_VERSION and not (
+            law.bright_intercept_log10_arcsec is not None
+            and np.isfinite(law.bright_intercept_log10_arcsec)
+            and law.break_magnitude is not None
+            and np.isfinite(law.break_magnitude)
+            and 0.0 <= law.tail_fraction < 1.0
+            and law.tail_distribution == "uniform_log_radius"
+            and law.fit_min_selected_per_magnitude_bin >= 1
+            and law.fit_effective_weight_cap > 0.0
+        ):
+            raise ValueError("Euclid broken radius law is invalid")
         return law
 
     def to_payload(self) -> dict:
         return asdict(self)
 
-    def mean(self, magnitude: np.ndarray | float) -> np.ndarray:
+    def core_mean(self, magnitude: np.ndarray | float) -> np.ndarray:
+        """Return the Gaussian-core location in log10 arcsec."""
         values = np.asarray(magnitude, dtype=np.float64)
-        return (
+        faint = (
             self.intercept_log10_arcsec
             + self.slope_log10_arcsec_per_mag
             * (values - self.pivot_mag)
+        )
+        if self.version == LINEAR_RADIUS_MODEL_VERSION:
+            return faint
+        return np.where(
+            values < float(self.break_magnitude),
+            float(self.bright_intercept_log10_arcsec),
+            faint,
+        )
+
+    def mean(self, magnitude: np.ndarray | float) -> np.ndarray:
+        """Return the conditional mean log10 radius."""
+        core = self.core_mean(magnitude)
+        if self.tail_fraction <= 0.0:
+            return core
+        uniform_mean = 0.5 * (self.log_radius_min + self.log_radius_max)
+        return (1.0 - self.tail_fraction) * core + self.tail_fraction * uniform_mean
+
+    def bin_probability(
+        self, magnitude: np.ndarray, log_radius_edges: np.ndarray,
+    ) -> np.ndarray:
+        """Return bounded conditional probability in each log-radius bin."""
+        values = np.asarray(magnitude, dtype=np.float64)
+        edges = np.asarray(log_radius_edges, dtype=np.float64)
+        mean = self.core_mean(values)
+        upper = (edges[None, 1:] - mean[:, None]) / self.scatter_dex
+        lower = (edges[None, :-1] - mean[:, None]) / self.scatter_dex
+        core = ndtr(upper) - ndtr(lower)
+        core /= np.sum(core, axis=1, keepdims=True)
+        if self.tail_fraction <= 0.0:
+            return core
+        tail = np.diff(edges) / (edges[-1] - edges[0])
+        return (
+            (1.0 - self.tail_fraction) * core
+            + self.tail_fraction * tail[None, :]
         )
 
 
@@ -136,7 +200,7 @@ def fit_conditional_radius_law(
         (dk * root_weight[:, None]).T @ (dk * root_weight[:, None])
     )
     return ConditionalRadiusLaw(
-        version=RADIUS_MODEL_VERSION,
+        version=LINEAR_RADIUS_MODEL_VERSION,
         pivot_mag=RADIUS_PIVOT_MAG,
         intercept_log10_arcsec=float(coefficients[0]),
         slope_log10_arcsec_per_mag=float(coefficients[1]),
@@ -231,7 +295,7 @@ def fit_conditional_radius_law_from_aggregate_moments(
         @ (design * root_weight[:, None])
     )
     return ConditionalRadiusLaw(
-        version=RADIUS_MODEL_VERSION,
+        version=LINEAR_RADIUS_MODEL_VERSION,
         pivot_mag=RADIUS_PIVOT_MAG,
         intercept_log10_arcsec=float(coefficients[0]),
         slope_log10_arcsec_per_mag=float(coefficients[1]),
@@ -368,7 +432,7 @@ def fit_conditional_radius_law_from_binned_counts(
         @ (design * root_weight[:, None])
     )
     return ConditionalRadiusLaw(
-        version=RADIUS_MODEL_VERSION,
+        version=LINEAR_RADIUS_MODEL_VERSION,
         pivot_mag=RADIUS_PIVOT_MAG,
         intercept_log10_arcsec=intercept,
         slope_log10_arcsec_per_mag=slope,
@@ -395,6 +459,229 @@ def fit_conditional_radius_law_from_binned_counts(
     )
 
 
+def fit_broken_conditional_radius_law_from_binned_counts(
+    magnitude_edges: np.ndarray,
+    log_radius_edges: np.ndarray,
+    selected_counts: np.ndarray,
+    expected_counts: np.ndarray,
+    *,
+    minimum_selected_per_bin: int = RADIUS_FIT_MIN_SELECTED_PER_MAG_BIN,
+    effective_weight_cap: float = RADIUS_FIT_EFFECTIVE_WEIGHT_CAP,
+) -> ConditionalRadiusLaw:
+    """Fit a broken Gaussian core plus a broad log-radius tail to Q1 bins.
+
+    Every sufficiently populated magnitude bracket contributes at most
+    ``effective_weight_cap`` to the conditional likelihood.  This prevents the
+    millions of faint detections from erasing the measured bright plateau and
+    sharp transition.  A single magnitude-independent uniform component in
+    log radius represents the broad Q1 Sersic tail without changing the radius
+    domain or adding object-level catalogue inputs.
+    """
+    mag_edges = np.asarray(magnitude_edges, dtype=np.float64)
+    radius_edges = np.asarray(log_radius_edges, dtype=np.float64)
+    selected = np.asarray(selected_counts, dtype=np.float64)
+    counts = np.asarray(expected_counts, dtype=np.float64)
+    expected_shape = (mag_edges.size - 1, radius_edges.size - 1)
+    if (
+        mag_edges.ndim != 1
+        or radius_edges.ndim != 1
+        or mag_edges.size < 3
+        or radius_edges.size < 3
+        or selected.shape != expected_shape
+        or counts.shape != expected_shape
+        or not np.all(np.isfinite(mag_edges))
+        or not np.all(np.isfinite(radius_edges))
+        or not np.all(np.diff(mag_edges) > 0.0)
+        or not np.all(np.diff(radius_edges) > 0.0)
+        or not np.all(np.isfinite(selected) & (selected >= 0.0))
+        or not np.all(np.isfinite(counts) & (counts >= 0.0))
+        or int(minimum_selected_per_bin) < 1
+        or not np.isfinite(effective_weight_cap)
+        or effective_weight_cap <= 0.0
+    ):
+        raise ValueError("Broken binned radius-fit inputs are malformed")
+    magnitude = 0.5 * (mag_edges[:-1] + mag_edges[1:])
+    selected_by_magnitude = np.sum(selected, axis=1)
+    expected_by_magnitude = np.sum(counts, axis=1)
+    fit_rows = (
+        (selected_by_magnitude >= int(minimum_selected_per_bin))
+        & (expected_by_magnitude > 0.0)
+    )
+    selected_fit = selected[fit_rows]
+    counts_fit = counts[fit_rows]
+    magnitude_fit = magnitude[fit_rows]
+    row_weight = np.sum(counts_fit, axis=1)
+    total_selected = int(round(float(np.sum(selected_fit))))
+    total_weight = float(np.sum(counts_fit))
+    if magnitude_fit.size < 20 or total_selected < 100 or total_weight <= 0.0:
+        raise ValueError(
+            "At least 20 populated magnitude bins and 100 bounded PHZ/MER "
+            "Sersic radii are required"
+        )
+    effective_row_weight = np.minimum(row_weight, float(effective_weight_cap))
+    effective_counts = counts_fit * (
+        effective_row_weight / row_weight
+    )[:, None]
+    effective_total = float(np.sum(effective_counts))
+    radius_center = 0.5 * (radius_edges[:-1] + radius_edges[1:])
+    row_mean = np.sum(counts_fit * radius_center[None, :], axis=1) / row_weight
+    uniform_probability = np.diff(radius_edges) / (
+        radius_edges[-1] - radius_edges[0]
+    )
+
+    transition_candidates = (
+        (magnitude_fit[:-1] >= 16.5)
+        & (magnitude_fit[1:] <= 19.5)
+    )
+    difference = np.diff(row_mean)
+    difference[~transition_candidates] = -np.inf
+    if np.any(np.isfinite(difference)):
+        transition_index = int(np.nanargmax(difference))
+        initial_break = float(
+            0.5 * (magnitude_fit[transition_index] + magnitude_fit[transition_index + 1])
+        )
+    else:
+        initial_break = 18.0
+    initial_break = float(np.clip(initial_break, 17.4, 19.2))
+    bright_rows = magnitude_fit < initial_break - 0.2
+    peak_rows = (
+        (magnitude_fit >= initial_break + 0.5)
+        & (magnitude_fit <= initial_break + 1.5)
+    )
+    initial_bright = float(np.median(row_mean[bright_rows]))
+    initial_peak = float(np.median(row_mean[peak_rows]))
+    faint_rows = magnitude_fit >= initial_break + 1.0
+    faint_x = magnitude_fit[faint_rows] - initial_break
+    faint_design = np.column_stack((np.ones_like(faint_x), faint_x))
+    faint_root_weight = np.sqrt(effective_row_weight[faint_rows])
+    faint_coefficients, *_ = np.linalg.lstsq(
+        faint_design * faint_root_weight[:, None],
+        row_mean[faint_rows] * faint_root_weight,
+        rcond=None,
+    )
+    initial = np.asarray([
+        initial_bright,
+        initial_peak,
+        initial_break,
+        float(np.clip(faint_coefficients[1], -0.4, 0.05)),
+        0.2,
+        0.12,
+    ])
+    bounds = (
+        (float(radius_edges[0]), 0.3),
+        (-0.5, 0.7),
+        (17.4, 19.2),
+        (-0.4, 0.05),
+        (0.03, 1.0),
+        (0.0, 0.5),
+    )
+
+    def probabilities(parameters: np.ndarray) -> np.ndarray:
+        bright, peak, break_magnitude, slope, scatter, tail_fraction = parameters
+        core_mean = np.where(
+            magnitude_fit < break_magnitude,
+            bright,
+            peak + slope * (magnitude_fit - break_magnitude),
+        )
+        upper = (radius_edges[None, 1:] - core_mean[:, None]) / scatter
+        lower = (radius_edges[None, :-1] - core_mean[:, None]) / scatter
+        core = ndtr(upper) - ndtr(lower)
+        core /= np.sum(core, axis=1, keepdims=True)
+        return (
+            (1.0 - tail_fraction) * core
+            + tail_fraction * uniform_probability[None, :]
+        )
+
+    def objective(parameters: np.ndarray) -> float:
+        probability = probabilities(parameters)
+        return -float(
+            np.sum(effective_counts * np.log(np.maximum(probability, 1e-300)))
+            / effective_total
+        )
+
+    result = minimize(
+        objective,
+        initial,
+        method="Nelder-Mead",
+        bounds=bounds,
+        options={"xatol": 1e-10, "fatol": 1e-11, "maxiter": 20_000},
+    )
+    if result.success:
+        result = minimize(
+            objective,
+            result.x,
+            method="L-BFGS-B",
+            bounds=bounds,
+            options={"ftol": 1e-14, "gtol": 1e-9, "maxiter": 5000},
+        )
+    if not result.success or not np.all(np.isfinite(result.x)):
+        raise ValueError(f"Broken conditional-radius fit failed: {result.message}")
+    bright, peak, break_magnitude, slope, scatter, tail_fraction = (
+        float(value) for value in result.x
+    )
+    intercept = peak + slope * (RADIUS_PIVOT_MAG - break_magnitude)
+    uniform_mean = 0.5 * (radius_edges[0] + radius_edges[-1])
+    core_model = np.where(
+        magnitude_fit < break_magnitude,
+        bright,
+        intercept + slope * (magnitude_fit - RADIUS_PIVOT_MAG),
+    )
+    modeled_row_mean = (
+        (1.0 - tail_fraction) * core_model + tail_fraction * uniform_mean
+    )
+    residual = row_mean - modeled_row_mean
+    centered = row_mean - float(np.average(
+        row_mean, weights=effective_row_weight,
+    ))
+    total = float(np.sum(effective_row_weight * np.square(centered)))
+    residual_total = float(np.sum(
+        effective_row_weight * np.square(residual),
+    ))
+    r_squared = 1.0 - residual_total / total if total > 0.0 else 0.0
+    faint_design = np.column_stack((
+        np.ones(int(np.sum(faint_rows))),
+        magnitude_fit[faint_rows] - RADIUS_PIVOT_MAG,
+    ))
+    faint_root_weight = np.sqrt(effective_row_weight[faint_rows])
+    covariance = scatter**2 * np.linalg.pinv(
+        (faint_design * faint_root_weight[:, None]).T
+        @ (faint_design * faint_root_weight[:, None])
+    )
+    return ConditionalRadiusLaw(
+        version=RADIUS_MODEL_VERSION,
+        pivot_mag=RADIUS_PIVOT_MAG,
+        intercept_log10_arcsec=intercept,
+        slope_log10_arcsec_per_mag=slope,
+        scatter_dex=scatter,
+        log_radius_min=float(radius_edges[0]),
+        log_radius_max=float(radius_edges[-1]),
+        fitted_rows=total_selected,
+        clipped_rows=0,
+        weighted_rows=total_weight,
+        residual_rms_dex=float(np.sqrt(
+            residual_total / float(np.sum(effective_row_weight))
+        )),
+        r_squared=float(r_squared),
+        covariance=tuple(
+            tuple(float(value) for value in row) for row in covariance
+        ),
+        selection=(
+            "bounded aggregate Q1 magnitude x log-radius bins; at least "
+            f"{int(minimum_selected_per_bin)} selected radii per magnitude "
+            f"bin; each magnitude bin capped at {effective_weight_cap:g} "
+            "effective PHZ weight; PHZ_GAL_PROB >= 0.5; 0.03 <= MER "
+            "morphology VIS Sersic R_e < 10 arcsec; "
+            "SERSIC_VISNIR_FLAGS = 0"
+        ),
+        bright_intercept_log10_arcsec=bright,
+        break_magnitude=break_magnitude,
+        tail_fraction=tail_fraction,
+        tail_distribution="uniform_log_radius",
+        fit_min_selected_per_magnitude_bin=int(minimum_selected_per_bin),
+        fit_effective_weight_cap=float(effective_weight_cap),
+    )
+
+
 def joint_density_grid(
     magnitude_law: StraightMagnitudeLaw | FaintCappedMagnitudeLaw,
     radius_law: ConditionalRadiusLaw,
@@ -418,15 +705,7 @@ def joint_density_grid(
     magnitude = 0.5 * (mag_edges[:-1] + mag_edges[1:])
     log_radius = 0.5 * (radius_edges[:-1] + radius_edges[1:])
     magnitude_density = magnitude_law.density(magnitude)
-    mean = radius_law.mean(magnitude)
-    upper = (
-        radius_edges[None, 1:] - mean[:, None]
-    ) / radius_law.scatter_dex
-    lower = (
-        radius_edges[None, :-1] - mean[:, None]
-    ) / radius_law.scatter_dex
-    probability = ndtr(upper) - ndtr(lower)
-    probability /= np.sum(probability, axis=1, keepdims=True)
+    probability = radius_law.bin_probability(magnitude, radius_edges)
     density = magnitude_density[:, None] * np.diff(mag_edges)[:, None] * probability
     return {
         "density": density,

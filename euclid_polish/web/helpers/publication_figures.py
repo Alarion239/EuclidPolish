@@ -134,9 +134,9 @@ def render_population_atlas(
         "axes.labelsize": AXIS_LABEL_SIZE,
     }
     with presentation_rc(style):
-        fig, axes = plt.subplots(1, 3, figsize=(16.8, 5.8))
+        fig, axes = plt.subplots(1, 3, figsize=(16.8, 6.7))
         fig.subplots_adjust(
-            left=0.062, right=0.992, bottom=0.23, top=0.93, wspace=0.30,
+            left=0.062, right=0.992, bottom=0.30, top=0.93, wspace=0.30,
         )
 
         observed_brightness = brightness.get("observed") or {}
@@ -191,10 +191,28 @@ def render_population_atlas(
                 markeredgecolor=EUCLID_OBS, markeredgewidth=1.2,
                 label="Euclid PHZ/MER measured Sérsic $R_e$", zorder=4,
             )
-        _line(
-            axes[1], radius, "density", color=TNG,
-            label="joint-fit $R_e$ marginal", width=2.7,
+        q1_weighted_x, q1_weighted_density = _xy(
+            radius, "q1_weighted_density",
         )
+        if q1_weighted_x.size:
+            axes[1].plot(
+                q1_weighted_x, q1_weighted_density,
+                color=TNG, linewidth=2.7,
+                label="conditional fit × Q1 magnitude counts", zorder=3,
+            )
+            generation_radius_x, generation_radius_density = _xy(
+                radius, "density",
+            )
+            axes[1].plot(
+                generation_radius_x, generation_radius_density,
+                color="#168f65", linewidth=2.2, linestyle=(0, (4, 3)),
+                label="generation marginal (VIS 14–29)", zorder=2,
+            )
+        else:
+            _line(
+                axes[1], radius, "density", color=TNG,
+                label="joint-fit $R_e$ marginal", width=2.7,
+            )
         _finish_axis(
             axes[1], "Euclid half-light radius",
             r"log$_{10}(R_{e,\mathrm{VIS\ S\acute{e}rsic}}/\mathrm{arcsec})$",
@@ -206,8 +224,14 @@ def render_population_atlas(
             "x": relation.get("magnitude") or [],
             "observed": relation.get("observed_mean_log10_arcsec") or [],
             "model": relation.get("model_mean_log10_arcsec") or [],
-            "low": relation.get("model_low_log10_arcsec") or [],
-            "high": relation.get("model_high_log10_arcsec") or [],
+            "low": (
+                relation.get("model_core_low_log10_arcsec")
+                or relation.get("model_low_log10_arcsec") or []
+            ),
+            "high": (
+                relation.get("model_core_high_log10_arcsec")
+                or relation.get("model_high_log10_arcsec") or []
+            ),
         }
         relation_x, relation_low = _xy(relation_payload, "low")
         _, relation_high = _xy(relation_payload, "high")
@@ -215,7 +239,14 @@ def render_population_atlas(
             axes[2].fill_between(
                 relation_x, relation_low, relation_high,
                 color=TNG, alpha=0.14, linewidth=0,
-                label=r"constant 1$\sigma$ scatter",
+                label=r"Gaussian core 1$\sigma$ scatter",
+            )
+        conditional_fit_interval = relation.get("fit_interval") or []
+        if len(conditional_fit_interval) == 2:
+            axes[2].axvspan(
+                float(conditional_fit_interval[0]),
+                float(conditional_fit_interval[1]),
+                color=EUCLID_OBS, alpha=0.05, linewidth=0,
             )
         _observed(
             axes[2], relation_payload, color=EUCLID_OBS,
@@ -223,7 +254,7 @@ def render_population_atlas(
         )
         _line(
             axes[2], relation_payload, "model", color=TNG,
-            label="joint conditional mean", width=2.7,
+            label="broken conditional mean", width=2.7,
         )
         axes[2].set_xlim(14, 29)
         if break_magnitude is not None:
@@ -231,6 +262,13 @@ def render_population_atlas(
                 float(break_magnitude), color="#168f65",
                 linewidth=2.0, linestyle=(0, (2, 3)),
                 label="generation-law break",
+            )
+        radius_break_magnitude = relation.get("break_magnitude")
+        if radius_break_magnitude is not None:
+            axes[2].axvline(
+                float(radius_break_magnitude), color=TNG,
+                linewidth=1.4, linestyle=(0, (1, 2)),
+                label="radius-law break",
             )
         _finish_axis(
             axes[2], "Joint brightness-size relation",
@@ -250,7 +288,7 @@ def render_population_atlas(
         fig.legend(
             handles, labels, loc="lower center", ncol=4, frameon=False,
             fontsize=LEGEND_SIZE, handlelength=2.2,
-            bbox_to_anchor=(0.5, 0.035), columnspacing=2.0,
+            bbox_to_anchor=(0.5, 0.02), columnspacing=2.0,
         )
 
         buffer = io.BytesIO()

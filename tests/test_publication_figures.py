@@ -76,7 +76,7 @@ def test_population_atlas_exports_raster_and_vector_formats():
     assert b"Q1 2FWHM straight law" in svg
     assert b"Euclid PHZ/MER measured" in svg
     assert b"joint-fit" in svg
-    assert b"joint conditional mean" in svg
+    assert b"broken conditional mean" in svg
     assert b"generation law: straight then flat" in svg
     assert b"faint tail = 100" in svg
     assert b"COSMOS" not in svg

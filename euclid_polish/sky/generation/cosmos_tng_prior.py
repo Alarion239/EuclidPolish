@@ -18,7 +18,7 @@ from euclid_polish.config import Config
 from euclid_polish.photometry import ab_mag_to_electrons
 from euclid_polish.population.euclid_galaxy_prior import (
     GALAXY_FAINT_DENSITY_CAP_ARCMIN2_MAG,
-    JOINT_EUCLID_GALAXY_VERSION,
+    SUPPORTED_JOINT_EUCLID_GALAXY_VERSIONS,
     ConditionalRadiusLaw,
     generation_magnitude_law,
     joint_density_grid,
@@ -552,10 +552,9 @@ class JointGalaxyPopulationPrior:
     """Minimal Euclid joint prior: radius first, brightness given radius."""
 
     morphology_mode = "balanced_random_tng_atlas"
-    population_label = "euclid_vis2fwhm_sersic_re_joint_v7_flat_faint_counts"
-
     def __init__(self, payload: dict):
-        if payload.get("version") != JOINT_EUCLID_GALAXY_VERSION:
+        version = int(payload.get("version") or 0)
+        if version not in SUPPORTED_JOINT_EUCLID_GALAXY_VERSIONS:
             raise ValueError("joint galaxy population has an unsupported version")
         if payload.get("kind") != "euclid_vis2fwhm_sersic_re_joint":
             raise ValueError("joint galaxy population has the wrong kind")
@@ -564,6 +563,9 @@ class JointGalaxyPopulationPrior:
         self.fingerprint = str(payload.get("fingerprint") or "")
         if len(self.fingerprint) != 64:
             raise ValueError("joint galaxy population fingerprint is invalid")
+        self.population_label = (
+            f"euclid_vis2fwhm_sersic_re_joint_v{version}_flat_faint_counts"
+        )
         try:
             self.fitted_magnitude_law = StraightMagnitudeLaw.from_payload(
                 payload["fitted_magnitude_law"]

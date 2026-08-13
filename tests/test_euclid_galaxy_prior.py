@@ -12,6 +12,7 @@ from euclid_polish.population.euclid_galaxy_prior import (
     GALAXY_FAINT_DENSITY_CAP_ARCMIN2_MAG,
     JOINT_EUCLID_GALAXY_VERSION,
     ConditionalRadiusLaw,
+    fit_broken_conditional_radius_law_from_binned_counts,
     fit_conditional_radius_law,
     fit_conditional_radius_law_from_aggregate_moments,
     fit_conditional_radius_law_from_binned_counts,
@@ -77,6 +78,7 @@ def active_payload() -> dict:
         "plots": {
             "radius": {
                 "x": [-1.0, 0.0], "density": [1.0, 1.0],
+                "q1_weighted_density": [1.0, 1.0],
                 "observed_density": [1.0, 1.0],
             },
             "conditional_radius": {
@@ -170,6 +172,39 @@ def test_binned_radius_counts_recover_bounded_conditional_relation():
     assert law.slope_log10_arcsec_per_mag == pytest.approx(expected_slope, abs=2e-3)
     assert law.scatter_dex == pytest.approx(expected_scatter, abs=2e-3)
     assert "bounded aggregate" in law.selection
+
+
+def test_broken_radius_counts_recover_plateau_jump_slope_and_tail():
+    magnitude_edges = np.linspace(14.0, 28.0, 141)
+    radius_edges = np.linspace(np.log10(0.03), np.log10(10.0), 41)
+    magnitude = 0.5 * (magnitude_edges[:-1] + magnitude_edges[1:])
+    bright, intercept, slope, scatter, tail = -0.8, -0.35, -0.08, 0.16, 0.12
+    core_mean = np.where(
+        magnitude < 18.0,
+        bright,
+        intercept + slope * (magnitude - 23.0),
+    )
+    upper = (radius_edges[None, 1:] - core_mean[:, None]) / scatter
+    lower = (radius_edges[None, :-1] - core_mean[:, None]) / scatter
+    core = ndtr(upper) - ndtr(lower)
+    core /= np.sum(core, axis=1, keepdims=True)
+    uniform = np.diff(radius_edges) / (radius_edges[-1] - radius_edges[0])
+    probability = (1.0 - tail) * core + tail * uniform[None, :]
+    expected = 1000.0 * probability
+    selected = np.rint(1250.0 * probability)
+
+    law = fit_broken_conditional_radius_law_from_binned_counts(
+        magnitude_edges, radius_edges, selected, expected,
+    )
+
+    assert law.version == 2
+    assert law.bright_intercept_log10_arcsec == pytest.approx(bright, abs=0.02)
+    assert law.break_magnitude == pytest.approx(18.0, abs=0.11)
+    assert law.intercept_log10_arcsec == pytest.approx(intercept, abs=0.02)
+    assert law.slope_log10_arcsec_per_mag == pytest.approx(slope, abs=0.01)
+    assert law.scatter_dex == pytest.approx(scatter, abs=0.02)
+    assert law.tail_fraction == pytest.approx(tail, abs=0.02)
+    assert law.tail_distribution == "uniform_log_radius"
 
 
 def test_prior_draws_radius_first_then_brightness_conditioned_on_radius():
@@ -295,6 +330,15 @@ def test_hard_truncation_version_six_artifacts_fail_closed():
         JointGalaxyPopulationPrior(payload)
 
 
+def test_previous_version_seven_active_prior_remains_loadable():
+    payload = active_payload()
+    payload["version"] = 7
+
+    prior = JointGalaxyPopulationPrior(payload)
+
+    assert "_v7_" in prior.population_label
+
+
 def test_euclid_candidate_activates_atomically(tmp_path, monkeypatch):
     monkeypatch.setattr(Config, "DATA_DIR", str(tmp_path))
     payload = active_payload()
@@ -340,11 +384,19 @@ def test_candidate_fit_uses_only_aggregate_euclid_brightness_and_sersic_radius(
     magnitude = 0.5 * (magnitude_edges[:-1] + magnitude_edges[1:])
     radius_edges = np.geomspace(0.03, 10.0, 31)
     log_radius_edges = np.log10(radius_edges)
-    mean_log10 = -0.4 - 0.06 * (magnitude - 23.0)
+    mean_log10 = np.where(
+        magnitude < 18.0,
+        -0.8,
+        -0.4 - 0.06 * (magnitude - 23.0),
+    )
     upper = (log_radius_edges[None, 1:] - mean_log10[:, None]) / 0.12
     lower = (log_radius_edges[None, :-1] - mean_log10[:, None]) / 0.12
     probability = ndtr(upper) - ndtr(lower)
     probability /= np.sum(probability, axis=1, keepdims=True)
+    uniform_probability = np.diff(log_radius_edges) / (
+        log_radius_edges[-1] - log_radius_edges[0]
+    )
+    probability = 0.9 * probability + 0.1 * uniform_probability[None, :]
     expected_grid = 80.0 * probability
     selected_grid = np.rint(100.0 * probability)
     magnitude_bins = [
@@ -419,7 +471,14 @@ def test_candidate_fit_uses_only_aggregate_euclid_brightness_and_sersic_radius(
     assert payload["radius_law"]["slope_log10_arcsec_per_mag"] == pytest.approx(
         -0.06, abs=0.01,
     )
+    assert payload["radius_law"]["break_magnitude"] == pytest.approx(
+        18.0, abs=0.11,
+    )
+    assert payload["radius_law"]["tail_fraction"] == pytest.approx(
+        0.1, abs=0.02,
+    )
     assert payload["plots"]["radius"]["observed_density"]
+    assert payload["plots"]["radius"]["q1_weighted_density"]
     assert "nominal continuous-space" in (
         payload["plots"]["radius"]["model_semantics"]
     )

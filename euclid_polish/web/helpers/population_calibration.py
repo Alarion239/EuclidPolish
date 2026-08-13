@@ -18,7 +18,7 @@ from euclid_polish.population.euclid_galaxy_prior import (
     GALAXY_FAINT_DENSITY_CAP_ARCMIN2_MAG,
     JOINT_EUCLID_GALAXY_VERSION,
     ConditionalRadiusLaw,
-    fit_conditional_radius_law_from_binned_counts,
+    fit_broken_conditional_radius_law_from_binned_counts,
     generation_magnitude_law,
     joint_density_grid,
 )
@@ -111,6 +111,9 @@ def joint_galaxy_candidate() -> dict[str, Any] | None:
         )
         radius_x = np.asarray(radius_plot["x"], dtype=np.float64)
         radius_density = np.asarray(radius_plot["density"], dtype=np.float64)
+        q1_weighted_radius_density = np.asarray(
+            radius_plot["q1_weighted_density"], dtype=np.float64,
+        )
         relation_x = np.asarray(relation_plot["magnitude"], dtype=np.float64)
         relation_mean = np.asarray(
             relation_plot["model_mean_log10_arcsec"], dtype=np.float64,
@@ -135,6 +138,7 @@ def joint_galaxy_candidate() -> dict[str, Any] | None:
         or generation_x.shape != generation_density.shape
         or radius_x.size < 2
         or radius_x.shape != radius_density.shape
+        or radius_x.shape != q1_weighted_radius_density.shape
         or relation_x.size < 2
         or relation_x.shape != relation_mean.shape
         or not np.all(np.isfinite(magnitude_x))
@@ -146,6 +150,10 @@ def joint_galaxy_candidate() -> dict[str, Any] | None:
         or not np.allclose(generation_density, magnitude_law.density(generation_x))
         or not np.all(np.isfinite(radius_x))
         or not np.all(np.isfinite(radius_density) & (radius_density >= 0.0))
+        or not np.all(
+            np.isfinite(q1_weighted_radius_density)
+            & (q1_weighted_radius_density >= 0.0)
+        )
         or not np.all(np.isfinite(relation_x))
         or not np.all(np.isfinite(relation_mean))
     ):
@@ -202,13 +210,11 @@ def fit_euclid_joint_galaxy_candidate() -> dict[str, Any]:
         radius_index = int(item["radius_bin"])
         selected_grid[mag_index, radius_index] = float(item["selected_radii"])
         weight_grid[mag_index, radius_index] = float(item["expected_radii"])
-    radius_law = fit_conditional_radius_law_from_binned_counts(
+    radius_law = fit_broken_conditional_radius_law_from_binned_counts(
         magnitude_edges,
         np.log10(radius_edges),
         selected_grid,
         weight_grid,
-        fit_bright=fitted_magnitude_law.fit_bright,
-        fit_faint=fitted_magnitude_law.fit_faint,
     )
     log_radius_edges = np.log10(radius_edges)
     magnitude_law = generation_magnitude_law(fitted_magnitude_law)
@@ -230,6 +236,16 @@ def fit_euclid_joint_galaxy_candidate() -> dict[str, Any]:
     observed_radius_density = np.asarray([
         float(item["density_arcmin2_dex"]) for item in radius_bins
     ], dtype=np.float64)
+    q1_probability = radius_law.bin_probability(
+        0.5 * (magnitude_edges[:-1] + magnitude_edges[1:]),
+        log_radius_edges,
+    )
+    q1_expected_by_magnitude = np.sum(weight_grid, axis=1)
+    q1_weighted_radius_density = (
+        np.sum(q1_expected_by_magnitude[:, None] * q1_probability, axis=0)
+        / float(radius_payload["footprint_area_arcmin2"])
+        / np.diff(log_radius_edges)
+    )
     relation_x = 0.5 * (magnitude_edges[:-1] + magnitude_edges[1:])
     relation_observed: list[float | None] = []
     log_radius_centers = 0.5 * (
@@ -244,6 +260,35 @@ def fit_euclid_joint_galaxy_candidate() -> dict[str, Any]:
             np.sum(row * log_radius_centers) / expected
         ))
     relation_model = radius_law.mean(relation_x)
+    relation_core = radius_law.core_mean(relation_x)
+    fit_row_mask = np.sum(selected_grid, axis=1) >= (
+        radius_law.fit_min_selected_per_magnitude_bin
+    )
+    conditional_fit_interval = [
+        float(relation_x[fit_row_mask][0]),
+        float(relation_x[fit_row_mask][-1]),
+    ]
+    observed_radius_probability = (
+        observed_radius_density * np.diff(log_radius_edges)
+    )
+    observed_radius_probability /= np.sum(observed_radius_probability)
+    modeled_radius_probability = (
+        q1_weighted_radius_density * np.diff(log_radius_edges)
+    )
+    modeled_radius_probability /= np.sum(modeled_radius_probability)
+    fit_expected = weight_grid[fit_row_mask]
+    fit_expected_by_magnitude = np.sum(fit_expected, axis=1)
+    fit_effective_by_magnitude = np.minimum(
+        fit_expected_by_magnitude,
+        radius_law.fit_effective_weight_cap,
+    )
+    fit_effective_counts = fit_expected * (
+        fit_effective_by_magnitude / fit_expected_by_magnitude
+    )[:, None]
+    conditional_cross_entropy = float(-np.sum(
+        fit_effective_counts
+        * np.log(np.maximum(q1_probability[fit_row_mask], 1e-300))
+    ) / np.sum(fit_effective_counts))
     observed_magnitude_x = [
         0.5 * (float(item["mag_lo"]) + float(item["mag_hi"]))
         for item in count_bins
@@ -297,6 +342,7 @@ def fit_euclid_joint_galaxy_candidate() -> dict[str, Any]:
             "radius": {
                 "x": grid["log_radius"].tolist(),
                 "density": radius_density.tolist(),
+                "q1_weighted_density": q1_weighted_radius_density.tolist(),
                 "observed_density": observed_radius_density.tolist(),
                 "unit": "objects / arcmin2 / dex",
                 "model_semantics": (
@@ -308,12 +354,25 @@ def fit_euclid_joint_galaxy_candidate() -> dict[str, Any]:
                 "magnitude": relation_x.tolist(),
                 "observed_mean_log10_arcsec": relation_observed,
                 "model_mean_log10_arcsec": relation_model.tolist(),
-                "model_low_log10_arcsec": (
-                    relation_model - radius_law.scatter_dex
+                "model_core_log10_arcsec": relation_core.tolist(),
+                "model_core_low_log10_arcsec": (
+                    relation_core - radius_law.scatter_dex
                 ).tolist(),
-                "model_high_log10_arcsec": (
-                    relation_model + radius_law.scatter_dex
+                "model_core_high_log10_arcsec": (
+                    relation_core + radius_law.scatter_dex
                 ).tolist(),
+                "fit_interval": conditional_fit_interval,
+                "break_magnitude": radius_law.break_magnitude,
+                "tail_fraction": radius_law.tail_fraction,
+            },
+            "fit_diagnostics": {
+                "conditional_cross_entropy": conditional_cross_entropy,
+                "q1_marginal_total_variation": float(
+                    0.5 * np.sum(np.abs(
+                        modeled_radius_probability
+                        - observed_radius_probability
+                    ))
+                ),
             },
         },
         "generation": {
@@ -340,6 +399,11 @@ def fit_euclid_joint_galaxy_candidate() -> dict[str, Any]:
             "radius": (
                 "Q1 MER morphology VIS Sersic radius bounded joint "
                 "magnitude x log-radius bins joined to PHZ"
+            ),
+            "radius_model": (
+                "bright constant Gaussian core; discontinuous magnitude "
+                "break; declining faint core; magnitude-independent "
+                "uniform log-radius tail"
             ),
             "cosmos_used": False,
             "object_catalog_used": False,
