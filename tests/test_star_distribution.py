@@ -224,6 +224,7 @@ def test_stellar_density_comparison_uses_area_density_and_all_six_colours(
     assert result["synthetic_star_count"] == 2
     assert result["synthetic_color_count"] == 2
     assert result["synthetic_area_arcmin2"] == pytest.approx(4.0)
+    assert "selected synthetic test + validation" in result["note"]
     magnitude = result["parameters"]["vis"]
     gaia_bin_width = magnitude["gaia_x"][1] - magnitude["gaia_x"][0]
     assert gaia_bin_width == pytest.approx(0.5)
@@ -288,8 +289,9 @@ def test_star_distribution_page_and_status_route(monkeypatch):
     monkeypatch.setattr(
         routes,
         "star_distribution_payload",
-        lambda: expected_distribution,
+        lambda **_kwargs: expected_distribution,
     )
+    monkeypatch.setattr(routes, "availability", lambda: {"synthetic": {}})
     client = create_app().test_client()
 
     page = client.get("/star-distribution")
@@ -308,6 +310,7 @@ def test_star_distribution_page_and_status_route(monkeypatch):
         "calibration": {"status": "candidate"},
         "distribution": expected_distribution,
         "q1_counts": {"bins": []},
+        "availability": {"synthetic": {}},
     }
 
 
@@ -416,6 +419,9 @@ def test_star_page_uses_its_own_stellar_query():
     assert "Q1 0.1 mag · Gaia fit 0.5 mag" in source
     assert 'to="/galaxy-distributions"' not in source
     assert "No galaxy selection is used" in source
+    assert "include training catalog" in source
+    assert "sources_train.csv" in source
+    assert "no training" in source.lower()
     assert "Random Euclid population cones" not in source
 
 

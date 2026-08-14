@@ -14,6 +14,7 @@ from euclid_polish.web.helpers.population_calibration import (
     fit_euclid_joint_galaxy_candidate,
     joint_galaxy_state,
 )
+from euclid_polish.web.helpers.population_comparison import availability
 from euclid_polish.web.helpers.publication_figures import (
     render_galaxy_distribution_plate,
     render_population_atlas,
@@ -45,6 +46,12 @@ def _q1_radius_state():
         return None
 
 
+def _include_training_requested() -> bool:
+    return request.args.get("include_training", "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
 def register(app):
     @app.route("/view/galaxy-distribution-plate")
     def view_galaxy_distribution_plate():
@@ -55,7 +62,9 @@ def register(app):
         try:
             dpi = int(request.args.get("dpi", "300"))
             figure = render_galaxy_distribution_plate(
-                read_galaxy_distributions(),
+                read_galaxy_distributions(
+                    include_training=_include_training_requested(),
+                ),
                 output_format=output_format,
                 dpi=dpi,
             )
@@ -108,7 +117,10 @@ def register(app):
     @app.get("/api/galaxy-distributions")
     def api_galaxy_distributions():
         return jsonify({
-            **read_galaxy_distributions(),
+            **read_galaxy_distributions(
+                include_training=_include_training_requested(),
+            ),
+            "availability": availability(),
             "authenticated": euclid_session.is_authenticated(),
             "q1_counts": _q1_counts_state(),
             "q1_radius": _q1_radius_state(),

@@ -2,6 +2,16 @@
   margin-bottom: var(--s7);
 }
 
+.star-training-note {
+  margin: 0 0 var(--s5);
+  padding: 10px 12px;
+  border-left: 3px solid var(--warn);
+  background: var(--warn-soft);
+  color: var(--text-dim);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .star-query-strip__content {
   display: flex;
   align-items: center;

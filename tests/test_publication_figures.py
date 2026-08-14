@@ -344,6 +344,17 @@ def test_galaxy_distribution_plate_uses_current_generated_measurements():
     assert b"50/80/95%" in svg
     assert b"Q1 aggregate" not in svg
 
+    payload["training_included"] = True
+    payload["joint_maps"]["maps"][1]["label"] = (
+        "Current generated galaxies - exact 2FWHM subset"
+    )
+    all_split_svg = render_galaxy_distribution_plate(
+        payload, output_format="svg", dpi=120,
+    )
+    assert b"test + validation VIS 2FWHM" in all_split_svg
+    assert b"all-catalogue requested" in all_split_svg
+    assert b"test + validation clean-image" in all_split_svg
+
 
 def _star_calibration():
     color = {

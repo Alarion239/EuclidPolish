@@ -87,6 +87,61 @@ def test_actual_synthetic_catalogue_draws_are_added_to_every_parameter(
     assert radius["synthetic_clean_half_light"]["weighted_count"] == 0
 
 
+def test_training_catalog_is_optional_and_never_substitutes_total_vis_for_2fwhm(
+    tmp_path, monkeypatch,
+):
+    test_source = tmp_path / "sources_test.csv"
+    train_source = tmp_path / "sources_train.csv"
+    header = (
+        "field_index,type,flux_vis_e,z,re_arcsec,logmass,"
+        "target_vis_2fwhm_mag,mag_vis,mag_y_e,mag_j_e,mag_h_e\n"
+    )
+    test_source.write_text(
+        header + "0,galaxy,1000,0.8,0.2,9.5,24.0,23.5,23.0,22.8,22.6\n"
+    )
+    train_source.write_text(
+        header + "0,galaxy,500,1.1,0.4,9.0,,25.0,24.5,24.3,24.1\n"
+    )
+    (tmp_path / "clean_train.tfrecord").write_bytes(
+        b"this training image record must never be opened"
+    )
+
+    def paths(*, include_training=False):
+        sources = [test_source]
+        if include_training:
+            sources.append(train_source)
+        return [], sources
+
+    monkeypatch.setattr(helper, "_synthetic_paths", paths)
+    parameters = helper._empty_parameters()
+    result = helper._read_synthetic(
+        parameters,
+        include_training=True,
+        measure_clean_images=True,
+    )
+
+    assert result["training_included"] is True
+    assert result["training_catalog_only"] is True
+    assert result["fields"] == 2
+    assert result["rows"] == 2
+    assert result["parameter_coverage"]["requested_re"]["splits"] == [
+        "train", "test",
+    ]
+    assert result["parameter_coverage"]["vis_2fwhm"]["splits"] == ["test"]
+    assert result["_joint_area_arcmin2"] == pytest.approx(
+        helper.FIELD_AREA_ARCMIN2,
+    )
+    assert "not substituted with total VIS" in result["_joint_detail"]
+    assert (
+        parameters["radius"]["radius_series"]["synthetic_requested_re"]
+        ["weighted_count"]
+    ) == 2
+    assert (
+        parameters["magnitude"]["photometry_series"]["synthetic_vis_2fwhm"]
+        ["weighted_count"]
+    ) == 1
+
+
 def test_q1_radius_plot_exposes_normalized_clean_shape(monkeypatch):
     payload = {
         "complete": True,
@@ -587,6 +642,7 @@ def test_build_writes_compact_artifact_transactionally(tmp_path, monkeypatch):
         "_joint_magnitude_radius_maps",
         lambda synthetic: {"available": True, "maps": []},
     )
+    monkeypatch.setattr(helper, "_training_variant", lambda *_args: None)
 
     payload = helper.build_galaxy_distributions()
     stored = json.loads(helper.artifact_path().read_text())
@@ -640,8 +696,9 @@ def test_status_route_returns_plot_payload(monkeypatch):
     monkeypatch.setattr(
         routes,
         "read_galaxy_distributions",
-        lambda: {"version": 1, "stale": False, "parameters": {}},
+        lambda **_kwargs: {"version": 1, "stale": False, "parameters": {}},
     )
+    monkeypatch.setattr(routes, "availability", lambda: {"synthetic": {}})
     monkeypatch.setattr(routes, "_q1_counts_state", lambda: None)
     monkeypatch.setattr(
         routes.euclid_session,
@@ -656,6 +713,7 @@ def test_status_route_returns_plot_payload(monkeypatch):
     payload = response.get_json()
     assert payload["stale"] is False
     assert payload["authenticated"] is True
+    assert payload["availability"] == {"synthetic": {}}
     assert "q1_stars" not in payload
     assert "stellar_colors" not in payload
 
@@ -663,7 +721,7 @@ def test_status_route_returns_plot_payload(monkeypatch):
 def test_galaxy_distribution_plate_route_serves_inline_svg(monkeypatch):
     app = Flask(__name__)
     monkeypatch.setattr(
-        routes, "read_galaxy_distributions", lambda: {"version": 16},
+        routes, "read_galaxy_distributions", lambda **_kwargs: {"version": 17},
     )
     monkeypatch.setattr(
         routes,
@@ -868,10 +926,12 @@ def test_galaxy_distribution_controls_use_one_galaxy_query_action():
     assert "JointDensityMaps" in source
     assert "one shared Q1 plot" in source
     assert "Q1 MER + PHZ density image" in source
-    assert "Gold dashed contours show the current generated galaxies" in source
+    assert "Gold dashed contours show" in source
     assert 'map.key === "synthetic" ? [7, 4]' in source
     assert "data.maps.map" not in source
-    assert 'const endpoint = "/view/galaxy-distribution-plate"' in source
+    assert "include_training=${includeTraining" in source
+    assert "include training catalog" in source
+    assert "no training" in source.lower()
     assert "Download {format.toUpperCase()}" in source
     assert "paper figure · fixed layout" in source
     assert "broken conditional log-radius law" not in source

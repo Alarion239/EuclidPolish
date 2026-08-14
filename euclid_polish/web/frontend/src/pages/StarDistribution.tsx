@@ -1,10 +1,10 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import Plot, { type Tick } from "../charts/Plot";
 import { C, categorical } from "../colors";
 import { useResource } from "../hooks";
 import { JobProgressView, useJob } from "../jobs";
 import {
-  Badge, Button, Card, CardBody, CardHead, Empty, Page, PageHead, Spinner, Stat,
+  Badge, Button, Card, CardBody, CardHead, Checkbox, Empty, Page, PageHead, Spinner, Stat,
 } from "../ui";
 import "./star-distribution.css";
 
@@ -53,6 +53,9 @@ type Distribution = {
   colors: Record<ColorKey, ColorPlot>;
   axis_note: string;
   fit_note: string | null;
+  training_included?: boolean;
+  training_catalog_only?: boolean;
+  synthetic_splits?: string[];
   gaia_cmd: {
     cached_stars: number;
     plotted_stars: number;
@@ -151,6 +154,13 @@ type ApiPayload = {
   calibration: Calibration;
   distribution: Distribution | null;
   q1_counts: Q1Counts | null;
+  availability?: {
+    synthetic: {
+      train_source_catalog: boolean;
+      population_fields: number;
+      population_fields_with_training: number;
+    };
+  };
 };
 
 const COLOR_ORDER: ColorKey[] = [
@@ -340,7 +350,7 @@ function StellarDensityComparison({ distribution }: { distribution: Distribution
           <span><i className="star-density-key__euclid" />Q1 PHZ (VIS)</span>
           <span><i className="star-density-key__gaia" />native Gaia G<sub>AB</sub> + shared-slope fit</span>
           <span><i className="star-density-key__model" />Q1-normalized straight law / colour draw</span>
-          <span><i className="star-density-key__synthetic" />actual generated test + validation stars</span>
+          <span><i className="star-density-key__synthetic" />actual generated {distribution.training_included ? "train + test + validation" : "test + validation"} stars</span>
         </div>
       </header>
       <div className="star-density-summary" aria-label="Density comparison sample sizes">
@@ -458,14 +468,25 @@ function CorrelationPlot({ distribution, colorKey }: {
 }
 
 export default function StarDistributionPage() {
-  const resource = useResource<ApiPayload>("/api/star-distribution", [], { ttl: 10_000 });
+  const [includeTraining, setIncludeTraining] = useState(false);
+  const resource = useResource<ApiPayload>(
+    `/api/star-distribution?include_training=${includeTraining ? "1" : "0"}`,
+    [includeTraining],
+    { ttl: 10_000 },
+  );
   const query = useJob();
   const fit = useJob();
   const activate = useJob();
+  const trainingCatalog = useJob();
   const api = resource.data;
   const refresh = (job: { status: string }) => {
     if (job.status !== "failed") resource.reload();
   };
+  const syncTrainingCatalog = () => trainingCatalog.run(
+    "/api/population-comparison/sync-training-catalog",
+    {},
+    { onDone: refresh },
+  );
   useEffect(() => {
     if (!query.busy) return;
     resource.reload();
@@ -489,10 +510,28 @@ export default function StarDistributionPage() {
         eyebrow="stellar calibration · Q1 PHZ × Gaia × Euclid"
         title="Star distribution"
         sub="Select POINT_LIKE_PROB ≥ 0.9, show both point-source and PHZ-weighted 0.1-mag VIS counts over the 63.1 deg² Q1 footprint, and use matched Gaia only for the colour/temperature locus."
-        right={<Badge tone={api.calibration.is_active ? "good" : candidate ? "warn" : undefined}>
-          {api.calibration.is_active ? "active stellar prior" : candidate ? "candidate ready" : "not fitted"}
-        </Badge>}
+        right={<div className="star-query-strip__actions">
+          <Checkbox
+            checked={includeTraining}
+            disabled={!api.availability?.synthetic.train_source_catalog}
+            onChange={setIncludeTraining}
+          >include training catalog</Checkbox>
+          <Badge tone={distribution?.training_included ? "warn" : api.calibration.is_active ? "good" : candidate ? "warn" : undefined}>
+            {distribution?.training_included ? "catalog-only all splits" : api.calibration.is_active ? "active stellar prior" : candidate ? "candidate ready" : "not fitted"}
+          </Badge>
+          {!api.availability?.synthetic.train_source_catalog && <Button
+            size="sm" disabled={trainingCatalog.busy}
+            onClick={syncTrainingCatalog}
+          >{trainingCatalog.busy ? "Syncing catalog…" : "Sync training catalog only"}</Button>}
+        </div>}
       />
+
+      {distribution?.training_included && <p className="star-training-note">
+        Training stars come only from <code>sources_train.csv</code>; no training
+        TFRecords are downloaded or read. The 6,400-field legacy catalogue is
+        shown as an optional historical census, separate from the active prior.
+      </p>}
+      <JobProgressView job={trainingCatalog.job} error={trainingCatalog.error} />
 
       <Card className="star-query-strip">
         <CardHead title="Q1 point-source and stellar counts"

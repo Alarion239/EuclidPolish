@@ -10,6 +10,7 @@ from euclid_polish.web.helpers.population_calibration import (
     activate_star_candidate,
     star_state,
 )
+from euclid_polish.web.helpers.population_comparison import availability
 from euclid_polish.web.helpers.publication_figures import (
     render_star_population_calibration,
 )
@@ -34,6 +35,12 @@ def _q1_counts_state():
         return read_q1_phz_star_counts()
     except ValueError:
         return None
+
+
+def _include_training_requested() -> bool:
+    return request.args.get("include_training", "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
 
 
 def register(app):
@@ -74,7 +81,10 @@ def register(app):
             "authenticated": euclid_session.is_authenticated(),
             "color_sample": q1_stellar_color_sample_state(),
             "calibration": star_state(),
-            "distribution": star_distribution_payload(),
+            "distribution": star_distribution_payload(
+                include_training=_include_training_requested(),
+            ),
+            "availability": availability(),
             "q1_counts": _q1_counts_state(),
         })
 

@@ -1035,6 +1035,19 @@ def render_galaxy_distribution_plate(
         "axes.labelsize": AXIS_LABEL_SIZE,
     }
     with presentation_rc(style):
+        training_included = bool(payload.get("training_included"))
+        generated_f2_label = (
+            "test + validation VIS 2FWHM"
+            if training_included else "current generated VIS 2FWHM"
+        )
+        requested_radius_label = (
+            "all-catalogue requested Sérsic $R_e$"
+            if training_included else "generated requested Sérsic $R_e$"
+        )
+        clean_radius_label = (
+            "test + validation clean-image half light"
+            if training_included else "generated clean-image half light"
+        )
         fig, axes = plt.subplots(2, 2, figsize=(12.4, 10.1))
         fig.subplots_adjust(
             left=0.085, right=0.955, bottom=0.075, top=0.965,
@@ -1046,7 +1059,7 @@ def render_galaxy_distribution_plate(
             ("q1_vis_f2", EUCLID_OBS, "Q1 VIS 2FWHM", "o", "none"),
             (
                 "synthetic_vis_2fwhm", "#d39b32",
-                "current generated VIS 2FWHM", "o", "full",
+                generated_f2_label, "o", "full",
             ),
             (
                 "generator_vis_f2", CANDIDATE_MODEL,
@@ -1087,11 +1100,11 @@ def render_galaxy_distribution_plate(
             ),
             (
                 "synthetic_requested_re", "#d39b32",
-                "generated requested Sérsic $R_e$", "o", "full", "none",
+                requested_radius_label, "o", "full", "none",
             ),
             (
                 "synthetic_clean_half_light", "#f0b45b",
-                "generated clean-image half light", "s", "full", "none",
+                clean_radius_label, "s", "full", "none",
             ),
             (
                 "fit_re", CANDIDATE_MODEL,
@@ -1213,7 +1226,9 @@ def render_galaxy_distribution_plate(
                 linestyle=linestyle,
                 label=(
                     {
-                        "synthetic": "current generated",
+                        "synthetic": str(
+                            item.get("label") or "current generated"
+                        ),
                         "model": "active model",
                     }[key]
                     + " · 50/80/95%"

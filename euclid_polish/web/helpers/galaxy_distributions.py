@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import csv
 import hashlib
 import heapq
@@ -55,7 +56,7 @@ from euclid_polish.web.helpers.q1_galaxy_radius_statistics import (
     read_q1_galaxy_radius_statistics,
 )
 
-ARTIFACT_VERSION = 16
+ARTIFACT_VERSION = 17
 MAG_EDGES = np.arange(14.0, 30.0001, 0.25)
 RADIUS_MAX_VIS_PIXELS = 100.0
 RADIUS_MAX_ARCSEC = RADIUS_MAX_VIS_PIXELS * float(Config.VIS_PIXEL_SCALE_ARCSEC)
@@ -113,6 +114,13 @@ def _signature(path: Path) -> dict[str, int] | None:
 
 def _inputs() -> dict[str, Any]:
     _records, synthetic_sources = _synthetic_paths()
+    _, synthetic_sources_with_training = _synthetic_paths(
+        include_training=True,
+    )
+    training_sources = [
+        path for path in synthetic_sources_with_training
+        if path.stem == "sources_train"
+    ]
     synthetic_clean = [
         path.with_name(path.name.replace("sources_", "clean_").replace(".csv", ".tfrecord"))
         for path in synthetic_sources
@@ -129,6 +137,9 @@ def _inputs() -> dict[str, Any]:
         "fit": _signature(Path(Config.JOINT_GALAXY_POPULATION_FIT_PATH)),
         "synthetic_sources": {
             path.name: _signature(path) for path in synthetic_sources
+        },
+        "synthetic_training_sources": {
+            path.name: _signature(path) for path in training_sources
         },
         "synthetic_clean": {
             path.name: _signature(path) for path in synthetic_clean
@@ -349,7 +360,11 @@ def _joint_magnitude_radius_maps(
     synthetic_radius = np.asarray(
         synthetic.pop("_joint_re_arcsec", []), dtype=np.float64,
     )
-    synthetic_area = float(synthetic.get("area_arcmin2") or 0.0)
+    synthetic_area = float(
+        synthetic.get("_joint_area_arcmin2")
+        or synthetic.get("area_arcmin2")
+        or 0.0
+    )
     valid = (
         np.isfinite(synthetic_magnitude)
         & np.isfinite(synthetic_radius)
@@ -363,10 +378,16 @@ def _joint_magnitude_radius_maps(
         )[0]
         maps.append(_joint_map(
             key="synthetic",
-            label="Current generated galaxies",
-            detail=(
-                "Actual test + validation VIS 2FWHM source-record magnitude × "
-                "requested circularized Sérsic Rₑ draws"
+            label=str(
+                synthetic.get("_joint_label")
+                or "Current generated galaxies"
+            ),
+            detail=str(
+                synthetic.get("_joint_detail")
+                or (
+                    "Actual test + validation VIS 2FWHM source-record "
+                    "magnitude × requested circularized Sérsic Rₑ draws"
+                )
             ),
             color="#d39b32",
             magnitude_edges=magnitude_edges,
@@ -595,18 +616,30 @@ def _measure_field_half_light_radii(
 def _read_synthetic(
     parameters: dict[str, Any],
     progress: Callable[[int, int, str], None] | None = None,
+    *,
+    include_training: bool = False,
+    measure_clean_images: bool = True,
 ) -> dict[str, Any]:
-    """Add the actual test/validation draws and clean-image measurements."""
-    _records, source_paths = _synthetic_paths()
+    """Add generated draws, optionally including catalog-only training rows.
+
+    Training image records are never read here.  The optional training layer
+    comes exclusively from ``sources_train.csv``; quantities missing from that
+    legacy catalogue retain the area of the splits that actually provide them.
+    """
+    _records, source_paths = (
+        _synthetic_paths(include_training=True)
+        if include_training else _synthetic_paths()
+    )
     if not source_paths:
         return {
             "available": False,
-            "detail": "No generated test/validation source catalogues are cached.",
+            "detail": "No generated source catalogues are cached.",
         }
 
     galaxies: list[dict[str, Any]] = []
     fields = 0
     split_rows: dict[str, dict[int, list[dict[str, Any]]]] = {}
+    split_field_counts: dict[str, int] = {}
     for path in source_paths:
         split = path.stem.removeprefix("sources_")
         by_field: dict[int, list[dict[str, Any]]] = {}
@@ -620,7 +653,8 @@ def _read_synthetic(
                 by_field[field_index].append(row)
                 if str(raw.get("type", "")).lower() == "galaxy":
                     galaxies.append(row)
-        fields += len(by_field)
+        split_field_counts[split] = len(by_field)
+        fields += split_field_counts[split]
         split_rows[split] = by_field
 
     area = fields * FIELD_AREA_ARCMIN2
@@ -629,33 +663,47 @@ def _read_synthetic(
             "available": False,
             "detail": "Generated source catalogues contain no galaxies.",
         }
+    training_fields = int(split_field_counts.get("train", 0))
+    training_included = bool(include_training and training_fields)
+    catalogue_scope = (
+        "training/test/validation" if training_included else "test/validation"
+    )
 
     measured_by_identity: dict[tuple[str, int, int], float] = {}
     measured_fields = 0
-    for source_path in source_paths:
-        split = source_path.stem.removeprefix("sources_")
-        clean_path = source_path.with_name(f"clean_{split}.tfrecord")
-        if not clean_path.is_file():
-            continue
-        import tensorflow as tf
+    if measure_clean_images:
+        for source_path in source_paths:
+            split = source_path.stem.removeprefix("sources_")
+            # Training is intentionally catalogue-only even if a training
+            # TFRecord happens to be present in a developer cache.
+            if split == "train":
+                continue
+            clean_path = source_path.with_name(f"clean_{split}.tfrecord")
+            if not clean_path.is_file():
+                continue
+            import tensorflow as tf
 
-        from euclid_polish.image.core import Image
+            from euclid_polish.image.core import Image
 
-        for field_index, raw_record in enumerate(
-            tf.data.TFRecordDataset([str(clean_path)])
-        ):
-            image = Image.from_tfrecord(raw_record)
-            field_rows = split_rows[split].get(field_index, [])
-            field_measurements = _measure_field_half_light_radii(
-                np.asarray(image.data)[..., 0],
-                field_rows,
-                pixel_scale_arcsec=float(image.pixel_scale_arcsec),
-            )
-            for row_index, radius in field_measurements.items():
-                measured_by_identity[(split, field_index, row_index)] = radius
-            measured_fields += 1
-            if progress:
-                progress(4, 6, f"measure clean generated galaxies · {measured_fields}/{fields}")
+            for field_index, raw_record in enumerate(
+                tf.data.TFRecordDataset([str(clean_path)])
+            ):
+                image = Image.from_tfrecord(raw_record)
+                field_rows = split_rows[split].get(field_index, [])
+                field_measurements = _measure_field_half_light_radii(
+                    np.asarray(image.data)[..., 0],
+                    field_rows,
+                    pixel_scale_arcsec=float(image.pixel_scale_arcsec),
+                )
+                for row_index, radius in field_measurements.items():
+                    measured_by_identity[(split, field_index, row_index)] = radius
+                measured_fields += 1
+                if progress:
+                    progress(
+                        4, 6,
+                        "measure clean generated galaxies · "
+                        f"{measured_fields}/{fields}",
+                    )
 
     def values(*keys: str) -> np.ndarray:
         output = []
@@ -671,75 +719,124 @@ def _read_synthetic(
             output.append(value)
         return np.asarray(output, dtype=np.float64)
 
+    def ordered_splits(names: set[str]) -> list[str]:
+        preferred = [
+            split for split in ("train", "test", "validate")
+            if split in names
+        ]
+        return preferred + sorted(names.difference(preferred))
+
+    def contributing_splits(valid: np.ndarray) -> list[str]:
+        mask = np.asarray(valid, dtype=bool)
+        return ordered_splits({
+            str(row["_split"])
+            for row, keep in zip(galaxies, mask, strict=True)
+            if keep
+        })
+
+    def effective_area(valid: np.ndarray) -> tuple[float, list[str]]:
+        splits = contributing_splits(valid)
+        contributor_fields = sum(split_field_counts[split] for split in splits)
+        return contributor_fields * FIELD_AREA_ARCMIN2, splits
+
     redshift = values("z")
     mass = values("target_logmass", "logmass")
     ssfr = values("target_logssfr", "native_tng_logssfr")
     requested_radius = values("re_arcsec", "target_re_arcsec")
     achieved_f2 = values("achieved_vis_2fwhm_mag", "target_vis_2fwhm_mag")
     redshift_edges = np.linspace(0.0, 6.0, 49)
+    parameter_coverage: dict[str, Any] = {}
     for key, data, edges, definition in (
         (
             "redshift", redshift, redshift_edges,
-            "actual generated test/validation galaxy redshift draws",
+            f"actual generated {catalogue_scope} galaxy redshift draws",
         ),
         (
             "stellar_mass", mass, MASS_EDGES,
-            "actual generated target stellar-mass draws",
+            f"actual generated {catalogue_scope} target stellar-mass draws",
         ),
         (
             "specific_sfr", ssfr, SSFR_EDGES,
-            "actual generated target specific-SFR draws",
+            f"actual generated {catalogue_scope} target specific-SFR draws",
         ),
     ):
         valid = np.isfinite(data)
         if key == "specific_sfr":
             valid &= data < -8.2
+        parameter_area, contributor_splits = effective_area(valid)
         parameters[key]["series"]["synthetic"] = _curve(
             edges,
             np.histogram(data[valid], edges)[0],
-            area,
+            parameter_area or area,
             definition,
         )
+        parameter_coverage[key] = {
+            "splits": contributor_splits,
+            "area_arcmin2": parameter_area,
+        }
 
     photometry = parameters["magnitude"]["photometry_series"]
+    achieved_f2_valid = np.isfinite(achieved_f2)
+    achieved_f2_area, achieved_f2_splits = effective_area(achieved_f2_valid)
     photometry["synthetic_vis_2fwhm"] = _brightness_curve(
         achieved_f2,
-        area,
+        achieved_f2_area or area,
         label="Generated fields · VIS 2FWHM",
         survey="synthetic",
         band="Euclid VIS",
         estimator="achieved 2FWHM-diameter aperture magnitude from source record",
-        selection="all galaxies in regenerated test + validation fields",
+        selection=(
+            "galaxies in source catalogues that store an exact VIS 2FWHM "
+            "magnitude; legacy training rows are excluded when unavailable"
+        ),
         default_on=True,
     )
-    for band, flux_key, label in (
-        ("VIS", "flux_vis_e", "VIS total stamp"),
-        ("Y_E", "flux_y_e", "Y total stamp"),
-        ("J_E", "flux_j_e", "J total stamp"),
-        ("H_E", "flux_h_e", "H total stamp"),
+    parameter_coverage["vis_2fwhm"] = {
+        "splits": achieved_f2_splits,
+        "area_arcmin2": achieved_f2_area,
+    }
+    for band, flux_key, magnitude_key, label in (
+        ("VIS", "flux_vis_e", "mag_vis", "VIS total stamp"),
+        ("Y_E", "flux_y_e", "mag_y_e", "Y total stamp"),
+        ("J_E", "flux_j_e", "mag_j_e", "J total stamp"),
+        ("H_E", "flux_h_e", "mag_h_e", "H total stamp"),
     ):
         flux = values(flux_key)
-        magnitudes = np.full(flux.shape, np.nan, dtype=np.float64)
-        valid = np.isfinite(flux) & (flux > 0.0)
-        magnitudes[valid] = [
+        magnitudes = values(magnitude_key)
+        flux_valid = np.isfinite(flux) & (flux > 0.0)
+        magnitudes[flux_valid] = [
             electrons_to_ab_mag(item, Config.get_band(band))
-            for item in flux[valid]
+            for item in flux[flux_valid]
         ]
+        valid = np.isfinite(magnitudes)
+        magnitude_area, magnitude_splits = effective_area(valid)
         photometry[f"synthetic_{band.lower()}_total"] = _brightness_curve(
             magnitudes,
-            area,
+            magnitude_area or area,
             label=f"Generated fields · {label}",
             survey="synthetic",
             band=f"Euclid {band.replace('_E', '')}",
-            estimator="total clean rendered-stamp flux recorded in source CSV",
-            selection="all galaxies in regenerated test + validation fields",
+            estimator=(
+                "total rendered-stamp flux or its stored AB magnitude in the "
+                "source catalogue"
+            ),
+            selection=(
+                "all galaxies in the selected source-catalogue splits with "
+                "this band available"
+            ),
             default_on=band == "VIS",
         )
+        parameter_coverage[f"{band.lower()}_total"] = {
+            "splits": magnitude_splits,
+            "area_arcmin2": magnitude_area,
+        }
 
     radius_series = parameters["radius"]["radius_series"]
+    requested_valid = np.isfinite(requested_radius) & (requested_radius > 0.0)
+    requested_area, requested_splits = effective_area(requested_valid)
     radius_series["synthetic_requested_re"] = _radius_curve(
         requested_radius,
-        area,
+        requested_area or area,
         label="Generated fields · requested Sérsic Rₑ",
         source="synthetic",
         radius_type="half_light",
@@ -749,6 +846,10 @@ def _read_synthetic(
         ),
         default_on=True,
     )
+    parameter_coverage["requested_re"] = {
+        "splits": requested_splits,
+        "area_arcmin2": requested_area,
+    }
     achieved_radius = np.asarray([
         measured_by_identity.get(
             (str(row["_split"]), int(row["_field_index"]), int(row["_field_row"])),
@@ -756,36 +857,80 @@ def _read_synthetic(
         )
         for row in galaxies
     ], dtype=np.float64)
-    radius_series["synthetic_clean_half_light"] = _radius_curve(
-        achieved_radius,
-        area,
-        label="Generated fields · clean-image half-light radius",
-        source="synthetic",
-        radius_type="rendered_half_light",
-        definition=(
-            "circular curve-of-growth half-light radius measured directly on "
-            "starless clean VIS images; catalogue total flux sets the endpoint; "
-            "neighbour-contamination bound <= 10%; resolution floor is one "
-            "0.05 arcsec clean-image pixel"
-        ),
-        default_on=True,
-    )
+    if measure_clean_images:
+        achieved_valid = np.isfinite(achieved_radius)
+        achieved_area, achieved_splits = effective_area(achieved_valid)
+        radius_series["synthetic_clean_half_light"] = _radius_curve(
+            achieved_radius,
+            achieved_area or area,
+            label="Generated fields · clean-image half-light radius",
+            source="synthetic",
+            radius_type="rendered_half_light",
+            definition=(
+                "circular curve-of-growth half-light radius measured directly "
+                "on starless clean VIS images; catalogue total flux sets the "
+                "endpoint; neighbour-contamination bound <= 10%; resolution "
+                "floor is one 0.05 arcsec clean-image pixel"
+            ),
+            default_on=True,
+        )
+        parameter_coverage["clean_half_light"] = {
+            "splits": achieved_splits,
+            "area_arcmin2": achieved_area,
+        }
     measured_count = int(np.count_nonzero(np.isfinite(achieved_radius)))
+    joint_valid = achieved_f2_valid & requested_valid
+    joint_area, joint_splits = effective_area(joint_valid)
+    if training_included and "train" not in joint_splits:
+        joint_detail = (
+            "Exact test + validation VIS 2FWHM source-record magnitude × "
+            "requested circularized Sérsic Rₑ draws. The legacy training "
+            "catalogue has no 2FWHM magnitude, so it is not substituted with "
+            "total VIS in this estimator-matched contour."
+        )
+        joint_label = "Current generated galaxies · exact 2FWHM subset"
+    elif training_included:
+        joint_detail = (
+            "Training + test + validation VIS 2FWHM source-record magnitude × "
+            "requested circularized Sérsic Rₑ draws"
+        )
+        joint_label = "Generated galaxies · all catalogued splits"
+    else:
+        joint_detail = (
+            "Actual test + validation VIS 2FWHM source-record magnitude × "
+            "requested circularized Sérsic Rₑ draws"
+        )
+        joint_label = "Current generated galaxies"
     return {
         "available": True,
         "rows": len(galaxies),
         "fields": fields,
         "area_arcmin2": area,
+        "splits": ordered_splits(set(split_rows)),
+        "training_included": training_included,
+        "training_catalog_only": training_included,
+        "training_fields": training_fields,
+        "parameter_coverage": parameter_coverage,
         "measured_radius_rows": measured_count,
         "measured_radius_fraction": measured_count / len(galaxies),
         "detail": (
-            f"Current regenerated test + validation draws; {measured_count:,} "
-            "isolated galaxy radii measured directly on clean VIS images"
+            (
+                f"Training + test + validation source catalogues ({fields:,} "
+                "fields); training is catalogue-only and no training image "
+                "records are local or read"
+            ) if training_included else (
+                f"Current regenerated test + validation draws; "
+                f"{measured_count:,} isolated galaxy radii measured directly "
+                "on clean VIS images"
+            )
         ),
         # Consumed by ``build_galaxy_distributions`` to make the joint map,
         # then removed before the compact source ledger is serialized.
         "_joint_vis_2fwhm_mag": achieved_f2.tolist(),
         "_joint_re_arcsec": requested_radius.tolist(),
+        "_joint_area_arcmin2": joint_area,
+        "_joint_label": joint_label,
+        "_joint_detail": joint_detail,
     }
 
 
@@ -1835,6 +1980,41 @@ def _read_fit(parameters: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _training_variant(
+    parameters: dict[str, Any],
+    current_synthetic: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Build the catalogue-only all-split overlay without training images."""
+    _, source_paths = _synthetic_paths(include_training=True)
+    if not any(path.stem == "sources_train" for path in source_paths):
+        return None
+    training_parameters = copy.deepcopy(parameters)
+    synthetic = _read_synthetic(
+        training_parameters,
+        include_training=True,
+        measure_clean_images=False,
+    )
+    if not synthetic.get("training_included"):
+        return None
+    # Direct clean-image radii are deliberately kept from test+validation.
+    # They remain a valid curve with their own area; the all-split catalogue
+    # pass must not erase or renormalize them over the training footprint.
+    for key in (
+        "measured_radius_rows", "measured_radius_fraction",
+    ):
+        synthetic[key] = current_synthetic.get(key, 0)
+    coverage = synthetic.setdefault("parameter_coverage", {})
+    current_coverage = current_synthetic.get("parameter_coverage", {})
+    if "clean_half_light" in current_coverage:
+        coverage["clean_half_light"] = current_coverage["clean_half_light"]
+    joint_maps = _joint_magnitude_radius_maps(synthetic)
+    return {
+        "sources": {"synthetic": synthetic},
+        "parameters": training_parameters,
+        "joint_maps": joint_maps,
+    }
+
+
 def build_galaxy_distributions(progress: Callable[[int, int, str], None] | None = None) -> dict[str, Any]:
     tick = progress or (lambda _done, _total, _label: None)
     parameters = _empty_parameters()
@@ -1850,6 +2030,7 @@ def build_galaxy_distributions(progress: Callable[[int, int, str], None] | None 
     tick(5, 6, "reconstruct fitted distribution")
     fit = _read_fit(parameters)
     joint_maps = _joint_magnitude_radius_maps(synthetic)
+    training_variant = _training_variant(parameters, synthetic)
     payload = {
         "version": ARTIFACT_VERSION,
         "inputs": _inputs(),
@@ -1862,6 +2043,7 @@ def build_galaxy_distributions(progress: Callable[[int, int, str], None] | None 
         "q1_radius": q1_radius,
         "joint_maps": joint_maps,
         "parameters": parameters,
+        "training_variant": training_variant,
     }
     path = artifact_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1872,7 +2054,9 @@ def build_galaxy_distributions(progress: Callable[[int, int, str], None] | None 
     return payload
 
 
-def read_galaxy_distributions() -> dict[str, Any]:
+def read_galaxy_distributions(
+    *, include_training: bool = False,
+) -> dict[str, Any]:
     payload = _json(artifact_path())
     stale = not payload or payload.get("version") != ARTIFACT_VERSION or payload.get("inputs") != _inputs()
     if not payload:
@@ -1884,6 +2068,19 @@ def read_galaxy_distributions() -> dict[str, Any]:
             "joint_maps": {"available": False},
             "parameters": _empty_parameters(),
         }
+    training_variant = payload.pop("training_variant", None)
+    training_available = isinstance(training_variant, dict)
+    if include_training and training_available:
+        variant_sources = training_variant.get("sources")
+        if isinstance(variant_sources, dict):
+            payload.setdefault("sources", {}).update(variant_sources)
+        if isinstance(training_variant.get("parameters"), dict):
+            payload["parameters"] = training_variant["parameters"]
+        if isinstance(training_variant.get("joint_maps"), dict):
+            payload["joint_maps"] = training_variant["joint_maps"]
+    payload["training_included"] = bool(include_training and training_available)
+    payload["training_variant_available"] = training_available
+
     # The archive job checkpoints after every aperture/bin request. Overlay
     # that small cache at read time so the plot can advance while the longer
     # query is still running, without rebuilding the other population layers.

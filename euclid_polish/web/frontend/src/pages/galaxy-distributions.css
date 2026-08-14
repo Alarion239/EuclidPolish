@@ -27,6 +27,15 @@
 .galaxy-actions__row { display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap; }
 .galaxy-actions__row .ui-field { width: 118px; }
 .galaxy-actions__buttons { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding-bottom: 1px; }
+.galaxy-training-note {
+  margin: -6px 0 18px;
+  padding: 10px 12px;
+  border-left: 3px solid var(--warn);
+  background: var(--warn-soft);
+  color: var(--text-dim);
+  font-size: 12px;
+  line-height: 1.5;
+}
 
 .galaxy-q1-counts { margin-bottom: 12px; }
 .galaxy-q1-counts__content {

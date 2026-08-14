@@ -51,7 +51,7 @@ _GAIA_COUNT_LIMIT_MAG = 20.5
 _GAIA_G_AB_MINUS_VEGA_MAG = 25.8010446445 - 25.6873668671
 _GAIA_TAP_PROVIDER = "ARI Gaia TAP"
 _STAR_POPULATION_VERSION = 6
-_STAR_DISTRIBUTION_VERSION = 11
+_STAR_DISTRIBUTION_VERSION = 12
 _GAIA_COUNT_FIT_BIN_WIDTH_MAG = 0.5
 
 
@@ -63,10 +63,13 @@ def gaia_catalog_meta_path() -> Path:
     return q1_gaia_color_meta_path()
 
 
-def star_distribution_path() -> Path:
+def star_distribution_path(*, include_training: bool = False) -> Path:
     return (
         Path(Config.DATA_DIR) / "population_comparison"
-        / "star_distribution.json"
+        / (
+            "star_distribution_with_training.json"
+            if include_training else "star_distribution.json"
+        )
     )
 
 
@@ -283,6 +286,7 @@ def _stellar_density_comparison(
     gaia_area_arcmin2: float,
     synthetic_rows: list[dict[str, str]] | None = None,
     synthetic_area_arcmin2: float = 0.0,
+    synthetic_scope: str = "test + validation",
     sample_count: int = 50_000,
 ) -> dict[str, Any] | None:
     """Compare measured, Gaia-projected, and generator stellar densities."""
@@ -569,8 +573,9 @@ def _stellar_density_comparison(
             "12–25 VIS generator. Colour curves "
             "remain matched-field fit diagnostics; model curves are intrinsic "
             "generator draws without Euclid measurement noise. Magenta points are "
-            "the actual stars stored in the current synthetic test and validation "
-            "source catalogues, normalized by their rendered field area."
+            "the actual stars stored in the selected synthetic "
+            f"{synthetic_scope} source catalogues, normalized by their "
+            "rendered field area."
         ),
     }
 
@@ -634,7 +639,9 @@ _STAR_COLOR_PROJECTIONS = {
 }
 
 
-def _distribution_source_signature() -> dict[str, int | None]:
+def _distribution_source_signature(
+    *, include_training: bool = False,
+) -> dict[str, int | None]:
     def modified(path: Path) -> int | None:
         try:
             return path.stat().st_mtime_ns
@@ -648,7 +655,10 @@ def _distribution_source_signature() -> dict[str, int | None]:
         "gaia_meta_mtime_ns": modified(gaia_catalog_meta_path()),
         "q1_phz_star_counts_mtime_ns": modified(q1_star_counts_path()),
     }
-    _records, synthetic_sources = _synthetic_paths()
+    _records, synthetic_sources = (
+        _synthetic_paths(include_training=True)
+        if include_training else _synthetic_paths()
+    )
     signature.update({
         f"synthetic_{path.name}_mtime_ns": modified(path)
         for path in synthetic_sources
@@ -668,6 +678,7 @@ def _star_distribution_from_rows(
     gaia_sampling: dict[str, Any] | None = None,
     synthetic_rows: list[dict[str, str]] | None = None,
     synthetic_area_arcmin2: float = 0.0,
+    synthetic_scope: str = "test + validation",
 ) -> dict[str, Any]:
     """Build all six measured Euclid colours against matched Gaia BP−RP."""
     euclid_counterpart_ids = {
@@ -967,6 +978,7 @@ def _star_distribution_from_rows(
                 gaia_area_arcmin2=gaia_area_arcmin2,
                 synthetic_rows=synthetic_rows,
                 synthetic_area_arcmin2=synthetic_area_arcmin2,
+                synthetic_scope=synthetic_scope,
             )
 
     return {
@@ -1014,16 +1026,20 @@ def _star_distribution_from_rows(
     }
 
 
-def _write_star_distribution(payload: dict[str, Any]) -> None:
-    output = star_distribution_path()
+def _write_star_distribution(
+    payload: dict[str, Any], *, include_training: bool = False,
+) -> None:
+    output = star_distribution_path(include_training=include_training)
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary = output.with_suffix(output.suffix + ".tmp")
     temporary.write_text(json.dumps(payload, separators=(",", ":")))
     os.replace(temporary, output)
 
 
-def star_distribution_payload() -> dict[str, Any] | None:
-    """Read the matched-colour cache, rebuilding it when catalogues changed."""
+def star_distribution_payload(
+    *, include_training: bool = False,
+) -> dict[str, Any] | None:
+    """Read stellar diagnostics for current or catalogue-only all splits."""
     try:
         candidate = json.loads(star_candidate_path().read_text())
     except (OSError, json.JSONDecodeError):
@@ -1033,10 +1049,14 @@ def star_distribution_payload() -> dict[str, Any] | None:
         if isinstance(candidate, dict) and candidate.get("fingerprint") else None
     )
     try:
-        cached = json.loads(star_distribution_path().read_text())
+        cached = json.loads(star_distribution_path(
+            include_training=include_training,
+        ).read_text())
     except (OSError, json.JSONDecodeError):
         cached = None
-    signature = _distribution_source_signature()
+    signature = _distribution_source_signature(
+        include_training=include_training,
+    )
     if (
         isinstance(cached, dict)
         and cached.get("version") == _STAR_DISTRIBUTION_VERSION
@@ -1057,7 +1077,10 @@ def star_distribution_payload() -> dict[str, Any] | None:
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
         gaia_meta = None
         gaia_area_arcmin2 = 0.0
-    _records, synthetic_paths = _synthetic_paths()
+    _records, synthetic_paths = (
+        _synthetic_paths(include_training=True)
+        if include_training else _synthetic_paths()
+    )
     synthetic_rows: list[dict[str, str]] = []
     synthetic_fields = 0
     for path in synthetic_paths:
@@ -1082,8 +1105,21 @@ def star_distribution_payload() -> dict[str, Any] | None:
         gaia_sampling=gaia_meta,
         synthetic_rows=synthetic_rows,
         synthetic_area_arcmin2=synthetic_fields * FIELD_AREA_ARCMIN2,
+        synthetic_scope=(
+            "training + test + validation" if include_training
+            else "test + validation"
+        ),
     )
-    _write_star_distribution(payload)
+    payload["source_signature"] = signature
+    payload["synthetic_splits"] = [
+        split for split in ("train", "test", "validate")
+        if any(path.stem == f"sources_{split}" for path in synthetic_paths)
+    ]
+    payload["training_included"] = bool(
+        include_training and "train" in payload["synthetic_splits"]
+    )
+    payload["training_catalog_only"] = payload["training_included"]
+    _write_star_distribution(payload, include_training=include_training)
     return payload
 
 

@@ -4,7 +4,7 @@ import Plot, { type Series, type Tick } from "../charts/Plot";
 import { useResource } from "../hooks";
 import { JobProgressView, useJob } from "../jobs";
 import {
-  Badge, Button, Card, CardBody, CardHead, Chip, Empty,
+  Badge, Button, Card, CardBody, CardHead, Checkbox, Chip, Empty,
   Page, PageHead, Spinner, Stat,
 } from "../ui";
 import "./galaxy-distributions.css";
@@ -130,6 +130,15 @@ type Payload = {
   };
   parameters: Record<string, Parameter>;
   joint_maps?: JointMaps;
+  training_included?: boolean;
+  training_variant_available?: boolean;
+  availability?: {
+    synthetic: {
+      train_source_catalog: boolean;
+      population_fields: number;
+      population_fields_with_training: number;
+    };
+  };
 };
 type JointContour = {
   mass_fraction: number;
@@ -181,7 +190,7 @@ type SourceKey = "euclid" | "synthetic" | "cosmos" | "fit";
 
 const SOURCE: Record<SourceKey, { label: string; kicker: string; color: string }> = {
   euclid: { label: "Euclid MER + PHZ", kicker: "observed layer", color: "#2478d4" },
-  synthetic: { label: "Generated test + validation", kicker: "actual rendered draws", color: "#d39b32" },
+  synthetic: { label: "Generated source catalogues", kicker: "actual rendered draws", color: "#d39b32" },
   cosmos: { label: "COSMOS2025", kicker: "diagnostic only", color: "#00a078" },
   fit: { label: "Euclid joint fit", kicker: "generator candidate", color: "#e25543" },
 };
@@ -268,7 +277,12 @@ const paddedDomain = (values: number[], minimumSpan: number): [number, number] =
   return [lo - pad, hi + pad];
 };
 
-function SourceLedger({ sources }: { sources: Payload["sources"] }) {
+function SourceLedger({
+  sources, includeTraining,
+}: {
+  sources: Payload["sources"];
+  includeTraining: boolean;
+}) {
   return <section className="galaxy-ledger" aria-label="Galaxy distribution data layers">
     {ORDER.map((key, index) => {
       const source = sources[key] ?? {};
@@ -277,7 +291,9 @@ function SourceLedger({ sources }: { sources: Payload["sources"] }) {
         <div className="galaxy-ledger__number">0{index + 1}</div>
         <div>
           <div className="galaxy-ledger__kicker">{SOURCE[key].kicker}</div>
-          <h2>{SOURCE[key].label}</h2>
+          <h2>{key === "synthetic"
+            ? includeTraining ? "Generated train + test + validation" : "Generated test + validation"
+            : SOURCE[key].label}</h2>
           <p>{source.detail ?? "No cached product yet."}</p>
         </div>
         <div className="galaxy-ledger__metrics">
@@ -423,7 +439,7 @@ function ApparentBrightnessPlot({ parameter }: { parameter: Parameter }) {
         if (!group.length) return null;
         return <section key={survey}>
           <header>
-            <div><span>{survey === "euclid" ? "Euclid MER" : survey === "synthetic" ? "Generated fields" : survey === "cosmos" ? "COSMOS2025" : survey === "fit" ? "Q1 curve fits" : "Generation law"}</span><small>{survey === "euclid" ? "VIS · solid measurements" : survey === "synthetic" ? "actual test + validation source records · point markers" : survey === "cosmos" ? "HST/ACS F814W · long dashes" : survey === "fit" ? "VIS · short-dashed local fits" : "VIS · three-segment bright bridge/main/flat law"}</small></div>
+            <div><span>{survey === "euclid" ? "Euclid MER" : survey === "synthetic" ? "Generated fields" : survey === "cosmos" ? "COSMOS2025" : survey === "fit" ? "Q1 curve fits" : "Generation law"}</span><small>{survey === "euclid" ? "VIS · solid measurements" : survey === "synthetic" ? "selected source catalogues · point markers · curve-specific coverage" : survey === "cosmos" ? "HST/ACS F814W · long dashes" : survey === "fit" ? "VIS · short-dashed local fits" : "VIS · three-segment bright bridge/main/flat law"}</small></div>
             <div>
               <Button size="sm" variant="ghost" onClick={() => setSelected((current) => Array.from(new Set([...current, ...group.map(([key]) => key)])))}>all</Button>
               <Button size="sm" variant="ghost" onClick={() => setSelected((current) => current.filter((key) => !group.some(([candidate]) => candidate === key)))}>none</Button>
@@ -641,7 +657,7 @@ function JointDensityMaps({ data }: { data?: JointMaps }) {
       <div>
         <div className="eyebrow">joint population comparison</div>
         <h2 id="joint-atlas-title">Q1 MER + PHZ density with generated/model contours</h2>
-        <p>The image is the PHZ-weighted Q1 magnitude–radius density. Gold dashed contours show the current generated galaxies; red solid contours show the active generation law.</p>
+        <p>The image is the PHZ-weighted Q1 magnitude–radius density. Gold dashed contours show {synthetic?.label.toLowerCase() ?? "the generated galaxies"}; red solid contours show the active generation law.</p>
       </div>
       <Badge tone="good">one shared Q1 plot</Badge>
     </header>
@@ -686,8 +702,13 @@ function JointDensityMaps({ data }: { data?: JointMaps }) {
   </section>;
 }
 
-function PublicationPlate({ version }: { version: number }) {
-  const endpoint = "/view/galaxy-distribution-plate";
+function PublicationPlate({
+  version, includeTraining,
+}: {
+  version: number;
+  includeTraining: boolean;
+}) {
+  const endpoint = `/view/galaxy-distribution-plate?include_training=${includeTraining ? "1" : "0"}`;
   return <section className="publication-plate" aria-labelledby="publication-plate-title">
     <header className="publication-plate__head">
       <div>
@@ -698,14 +719,14 @@ function PublicationPlate({ version }: { version: number }) {
       <div className="publication-plate__downloads">
         {(["svg", "pdf", "png"] as const).map((format) => <a
           className="ui-btn" key={format}
-          href={`${endpoint}?format=${format}&dpi=300`}
+          href={`${endpoint}&format=${format}&dpi=300`}
           download={`euclidpolish_galaxy_distributions_2x2.${format}`}
         >Download {format.toUpperCase()}</a>)}
       </div>
     </header>
     <div className="publication-plate__preview">
       <img
-        src={`${endpoint}?format=svg&inline=1&v=${version}`}
+        src={`${endpoint}&format=svg&inline=1&v=${version}`}
         alt="Four-panel paper figure comparing Q1, current generated galaxies, and the active galaxy population model"
       />
     </div>
@@ -713,11 +734,28 @@ function PublicationPlate({ version }: { version: number }) {
 }
 
 export default function GalaxyDistributionsPage() {
-  const resource = useResource<Payload>("/api/galaxy-distributions", [], { ttl: 10_000 });
+  const [includeTraining, setIncludeTraining] = useState(false);
+  const resource = useResource<Payload>(
+    `/api/galaxy-distributions?include_training=${includeTraining ? "1" : "0"}`,
+    [includeTraining],
+    { ttl: 10_000 },
+  );
   const q1Query = useJob();
   const activate = useJob();
+  const plotBuild = useJob();
+  const trainingCatalog = useJob();
   const api = resource.data;
   const refresh = (job: { status: string }) => { if (job.status !== "failed") resource.reload(); };
+  const rebuildPlots = () => plotBuild.run(
+    "/api/galaxy-distributions/build", {}, { onDone: refresh },
+  );
+  const syncTrainingCatalog = () => trainingCatalog.run(
+    "/api/population-comparison/sync-training-catalog",
+    {},
+    { onDone: (job) => {
+      if (job.status !== "failed") rebuildPlots();
+    } },
+  );
   useEffect(() => {
     if (!q1Query.busy) return;
     resource.reload();
@@ -735,11 +773,33 @@ export default function GalaxyDistributionsPage() {
     <PageHead
       eyebrow="population laboratory · fitted observables only"
       title="Galaxy distributions"
-      sub="Compare Q1, the galaxies actually present in the current fields, and the active VIS 2FWHM × circularized-size model."
-      right={<Badge tone={api.stale ? "warn" : "good"}>{api.stale ? "plots need rebuild" : "plots current"}</Badge>}
+      sub={`Compare Q1, galaxies in ${api.training_included ? "the training + test + validation source catalogues" : "the current test + validation fields"}, and the active VIS 2FWHM × circularized-size model.`}
+      right={<div className="galaxy-actions__buttons">
+        <Checkbox
+          checked={includeTraining}
+          disabled={!api.availability?.synthetic.train_source_catalog}
+          onChange={setIncludeTraining}
+        >include training catalog</Checkbox>
+        <Badge tone={api.training_included ? "warn" : api.stale ? "warn" : "good"}>
+          {api.training_included ? "catalog-only all splits" : api.stale ? "plots need rebuild" : "test + validation"}
+        </Badge>
+        {!api.availability?.synthetic.train_source_catalog && <Button
+          size="sm" disabled={trainingCatalog.busy || plotBuild.busy}
+          onClick={syncTrainingCatalog}
+        >{trainingCatalog.busy ? "Syncing catalog…" : "Sync training catalog only"}</Button>}
+      </div>}
     />
 
-    <SourceLedger sources={api.sources} />
+    <SourceLedger sources={api.sources} includeTraining={!!api.training_included} />
+
+    {api.training_included && <p className="galaxy-training-note">
+      Training contributes from <code>sources_train.csv</code> only. No training
+      TFRecords are downloaded or read. Exact VIS 2FWHM and clean-image radius
+      curves retain their test + validation area because those measurements are
+      absent from the legacy training catalogue.
+    </p>}
+    <JobProgressView job={trainingCatalog.job} error={trainingCatalog.error} />
+    <JobProgressView job={plotBuild.job} error={plotBuild.error} />
 
     <Card className="galaxy-q1-counts galaxy-actions">
       <CardHead
@@ -787,6 +847,10 @@ export default function GalaxyDistributionsPage() {
               {q1Query.busy ? "Querying + fitting galaxies…" : "Query MER + PHZ"}
             </Button>
             <Button variant="ghost" onClick={resource.reload}>Refresh view</Button>
+            <Button variant="ghost" disabled={plotBuild.busy || q1Query.busy}
+              onClick={rebuildPlots}>
+              {plotBuild.busy ? "Rebuilding plots…" : "Rebuild cached plots"}
+            </Button>
             {!api.authenticated && <NavLink className="ui-btn" to="/catalog">Log in to Euclid archive</NavLink>}
           </div>
         </div>
@@ -922,7 +986,7 @@ export default function GalaxyDistributionsPage() {
       <header className="galaxy-density-section__head">
         <div>
           <div className="eyebrow">fitted one-dimensional observables</div>
-          <h2>Q1 aggregates, current generated galaxies, and the active law</h2>
+          <h2>Q1 aggregates, {api.training_included ? "all catalogued generated fields" : "current generated galaxies"}, and the active law</h2>
           <p>Only VIS 2FWHM brightness and circularized half-light size are retained. Every diagnostic occupies its own full-width row.</p>
         </div>
         <div className="galaxy-key">
@@ -959,6 +1023,6 @@ export default function GalaxyDistributionsPage() {
 
     <JointDensityMaps data={api.joint_maps} />
 
-    <PublicationPlate version={api.version} />
+    <PublicationPlate version={api.version} includeTraining={!!api.training_included} />
   </Page>;
 }
