@@ -360,7 +360,7 @@ function ApparentBrightnessPlot({ parameter }: { parameter: Parameter }) {
   return <div className="brightness-comparison">
     <div className="brightness-warning">
       <strong>Same AB convention, different measurements.</strong>
-      <span>The default shows the Q1 MER + PHZ VIS 2FWHM counts, their straight log-density fit, and the actual green generation law. The green law follows the fit to its break, then stays flat at 100 galaxies / arcmin² / mag through VIS 29. Optional VIS/F814W diagnostics retain their native estimators.</span>
+      <span>The default shows the Q1 MER + PHZ VIS 2FWHM counts and the actual green generation law: empirical bright bins, the fitted middle, then 100 galaxies / arcmin² / mag through VIS 29. Optional VIS/F814W diagnostics retain their native estimators.</span>
     </div>
     <div className="brightness-controls">
       {(["euclid", "cosmos", "fit", "generation"] as const).map((survey) => {
@@ -368,7 +368,7 @@ function ApparentBrightnessPlot({ parameter }: { parameter: Parameter }) {
         if (!group.length) return null;
         return <section key={survey}>
           <header>
-            <div><span>{survey === "euclid" ? "Euclid MER" : survey === "cosmos" ? "COSMOS2025" : survey === "fit" ? "Q1 curve fits" : "Generation law"}</span><small>{survey === "euclid" ? "VIS · solid measurements" : survey === "cosmos" ? "HST/ACS F814W · long dashes" : survey === "fit" ? "VIS · short-dashed local fits" : "VIS · solid green straight-to-flat law"}</small></div>
+            <div><span>{survey === "euclid" ? "Euclid MER" : survey === "cosmos" ? "COSMOS2025" : survey === "fit" ? "Q1 curve fits" : "Generation law"}</span><small>{survey === "euclid" ? "VIS · solid measurements" : survey === "cosmos" ? "HST/ACS F814W · long dashes" : survey === "fit" ? "VIS · short-dashed local fits" : "VIS · solid green empirical/fitted/flat law"}</small></div>
             <div>
               <Button size="sm" variant="ghost" onClick={() => setSelected((current) => Array.from(new Set([...current, ...group.map(([key]) => key)])))}>all</Button>
               <Button size="sm" variant="ghost" onClick={() => setSelected((current) => current.filter((key) => !group.some(([candidate]) => candidate === key)))}>none</Button>
@@ -443,7 +443,7 @@ function RadiusPlot({ parameter }: { parameter: Parameter }) {
   return <div className="radius-comparison">
     <div className="radius-warning">
       <strong>Catalogue size concepts, kept separate.</strong>
-      <span>The generator fits only PHZ/MER VIS Sérsic Rₑ jointly with VIS 2FWHM brightness. Detection, Kron, and COSMOS curves are labeled diagnostics and do not affect sampling.</span>
+      <span>The generator fits only the science-clean circularized PHZ/MER VIS Sérsic Rₑ = Rₑ,major√q jointly with VIS 2FWHM brightness. Detection, Kron, and COSMOS curves are labeled diagnostics and do not affect sampling.</span>
     </div>
     <div className="radius-controls">
       {grouped.map(([radiusType, group]) => <section key={radiusType}>
@@ -626,8 +626,8 @@ export default function GalaxyDistributionsPage() {
     </Card>
 
     <Card className="calibration-workflow">
-      <CardHead title="Euclid VIS 2FWHM × Sérsic Rₑ model"
-        sub="Straight log-density brightness plus a straight conditional log-radius relation. COSMOS remains diagnostic only."
+      <CardHead title="Euclid VIS 2FWHM × circularized Sérsic Rₑ model"
+        sub="Empirical/fitted/flat brightness plus a broken conditional log-radius law; added faint galaxies use the compact core only."
         right={<Badge tone={api.calibration.is_active ? "good" : api.calibration.candidate?.valid ? "warn" : undefined}>
           {api.calibration.is_active ? "active for generation" : api.calibration.candidate?.valid ? "candidate ready" : "not fitted"}
         </Badge>} />
@@ -643,7 +643,7 @@ export default function GalaxyDistributionsPage() {
           <Stat k="brightness break" v={api.calibration.candidate
             ? `VIS ${api.calibration.candidate.generation.break_magnitude.toFixed(2)}`
             : "—"} />
-          <Stat k="radius source" v="Q1 aggregate Sérsic Rₑ" />
+          <Stat k="radius source" v="Q1 cleaned circularized Sérsic Rₑ" />
           <Stat k="COSMOS in fit" v="no" />
           <Stat k="slope" v={api.calibration.candidate
             ? `${api.calibration.candidate.radius_law.slope_log10_arcsec_per_mag.toFixed(4)} dex/mag`
@@ -667,9 +667,9 @@ export default function GalaxyDistributionsPage() {
         </div>
         {api.calibration.candidate && <p className="galaxy-q1-counts__note">
           The candidate contains {api.calibration.candidate.radius_law.fitted_rows.toLocaleString()} clean
-          aggregate-weighted radii. The observational straight line remains defined to VIS 29,
-          while the green generation law follows it to VIS {api.calibration.candidate.generation.break_magnitude.toFixed(2)}{" "}
-          and then stays flat at {api.calibration.candidate.generation.differential_density_cap_arcmin2_mag.toFixed(0)} galaxies / arcmin² / mag through VIS {api.calibration.candidate.generation.vis_magnitude_max.toFixed(0)}.
+          aggregate-weighted radii. Bright counts are empirical, the middle follows the fitted law,
+          and counts then stay flat at {api.calibration.candidate.generation.differential_density_cap_arcmin2_mag.toFixed(0)} galaxies / arcmin² / mag through VIS {api.calibration.candidate.generation.vis_magnitude_max.toFixed(0)}.
+          {" "}Added galaxies fainter than VIS 25.5 use the compact radius core only.
           {" "}Its integral is {api.calibration.candidate.generation.surface_density_arcmin2.toFixed(2)} galaxies / arcmin².
           {" "}Its fingerprint is <code>{api.calibration.candidate.fingerprint.slice(0, 12)}…</code>.
         </p>}
@@ -696,13 +696,13 @@ export default function GalaxyDistributionsPage() {
       const xDomain = paddedDomain(relation.magnitude, 1.0);
       return <Card className="parameter-card">
         <CardHead title="Joint brightness–radius relation"
-          sub="Aggregate Q1 Sérsic-Rₑ moments in each VIS 2FWHM magnitude bracket and the fitted broken conditional law." />
+          sub="Aggregate Q1 circularized Sérsic-Rₑ moments in each VIS 2FWHM magnitude bracket and the fitted broken conditional law." />
         <CardBody>
           <Plot
             xDomain={xDomain} yDomain={yDomain}
             xTicks={ticks(xDomain, 7)} yTicks={physicalLogTicks(yDomain, 6)}
             xLabel="VIS 2FWHM AB magnitude"
-            yLabel="Sérsic Rₑ (arcsec, log scale)"
+            yLabel="Circularized Sérsic Rₑ (arcsec, log scale)"
             guides={[{
               axis: "x",
               v: api.calibration.candidate!.generation.break_magnitude,

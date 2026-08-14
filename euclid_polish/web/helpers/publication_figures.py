@@ -13,6 +13,15 @@ from typing import Any
 import matplotlib
 import numpy as np
 
+from euclid_polish.population.euclid_galaxy_prior import (
+    ConditionalRadiusLaw,
+    joint_density_grid,
+)
+from euclid_polish.population.magnitude_law import (
+    EmpiricalBrightFaintCappedMagnitudeLaw,
+    FaintCappedMagnitudeLaw,
+    StraightMagnitudeLaw,
+)
 from euclid_polish.visualization.presentation_style import (
     AXIS_LABEL_SIZE,
     FIGURE_TITLE_SIZE,
@@ -32,6 +41,8 @@ TNG = "#7a3db8"
 STAR_MODEL = "#1267d6"
 STAR_PREDICTION = "#d95f02"
 STAR_MEASURED = "#7a3db8"
+PREVIOUS_MODEL = "#7a3db8"
+CANDIDATE_MODEL = "#168f65"
 
 
 def _xy(
@@ -104,6 +115,144 @@ def _finish_axis(
     ax.tick_params(colors=INK, labelsize=TICK_LABEL_SIZE, width=1.0, length=4.5)
 
 
+def _comparison_laws(
+    calibration: Mapping[str, Any], *, label: str,
+) -> tuple[
+    StraightMagnitudeLaw
+    | FaintCappedMagnitudeLaw
+    | EmpiricalBrightFaintCappedMagnitudeLaw,
+    ConditionalRadiusLaw,
+]:
+    """Reconstruct one explicit brightness-radius calibration payload."""
+    try:
+        magnitude_payload = calibration["magnitude_law"]
+        if magnitude_payload.get("kind") == (
+            "empirical_bright_straight_middle_flat_faint_counts"
+        ):
+            magnitude_law = (
+                EmpiricalBrightFaintCappedMagnitudeLaw.from_payload(
+                    magnitude_payload,
+                )
+            )
+        elif magnitude_payload.get("kind") == (
+            "faint_capped_straight_log10_differential_counts"
+        ):
+            magnitude_law = FaintCappedMagnitudeLaw.from_payload(
+                magnitude_payload,
+            )
+        else:
+            magnitude_law = StraightMagnitudeLaw.from_payload(
+                magnitude_payload,
+            )
+        radius_law = ConditionalRadiusLaw.from_payload(
+            calibration["radius_law"],
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(f"{label} galaxy calibration is malformed") from exc
+    return magnitude_law, radius_law
+
+
+def _aggregate_radius_grid(
+    radius_aggregate: Mapping[str, Any],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, float]:
+    """Return Q1 joint PHZ weight on its native magnitude-radius grid."""
+    try:
+        magnitude_edges = np.asarray(
+            radius_aggregate["magnitude_edges"], dtype=np.float64,
+        )
+        radius_edges = np.asarray(
+            radius_aggregate["radius_edges_arcsec"], dtype=np.float64,
+        )
+        area_arcmin2 = float(radius_aggregate["footprint_area_arcmin2"])
+        joint_bins = radius_aggregate["joint_bins"]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("Q1 radius aggregate is malformed") from exc
+    if (
+        magnitude_edges.ndim != 1
+        or radius_edges.ndim != 1
+        or magnitude_edges.size < 3
+        or radius_edges.size < 3
+        or not np.all(np.isfinite(magnitude_edges))
+        or not np.all(np.isfinite(radius_edges) & (radius_edges > 0.0))
+        or not np.all(np.diff(magnitude_edges) > 0.0)
+        or not np.all(np.diff(radius_edges) > 0.0)
+        or not np.isfinite(area_arcmin2)
+        or area_arcmin2 <= 0.0
+        or not isinstance(joint_bins, list)
+    ):
+        raise ValueError("Q1 radius aggregate is malformed")
+    weight = np.zeros(
+        (magnitude_edges.size - 1, radius_edges.size - 1),
+        dtype=np.float64,
+    )
+    try:
+        for item in joint_bins:
+            magnitude_index = int(item["magnitude_bin"])
+            radius_index = int(item["radius_bin"])
+            value = float(item["expected_radii"])
+            if (
+                not 0 <= magnitude_index < weight.shape[0]
+                or not 0 <= radius_index < weight.shape[1]
+                or not np.isfinite(value)
+                or value < 0.0
+            ):
+                raise ValueError
+            weight[magnitude_index, radius_index] += value
+    except (KeyError, TypeError, ValueError, IndexError) as exc:
+        raise ValueError("Q1 radius aggregate has malformed joint bins") from exc
+    if not np.any(weight > 0.0):
+        raise ValueError("Q1 radius aggregate contains no positive PHZ weight")
+    return magnitude_edges, np.log10(radius_edges), weight, area_arcmin2
+
+
+def _mass_contour_levels(
+    density_per_unit: np.ndarray, cell_density: np.ndarray,
+) -> np.ndarray:
+    """Return density thresholds enclosing 95, 80, and 50 percent of mass."""
+    density = np.asarray(density_per_unit, dtype=np.float64).ravel()
+    mass = np.asarray(cell_density, dtype=np.float64).ravel()
+    keep = np.isfinite(density) & np.isfinite(mass) & (density > 0.0) & (mass > 0.0)
+    density, mass = density[keep], mass[keep]
+    if density.size < 2 or float(np.sum(mass)) <= 0.0:
+        raise ValueError("joint galaxy model has no positive density")
+    order = np.argsort(density)[::-1]
+    cumulative = np.cumsum(mass[order]) / np.sum(mass)
+    thresholds = [
+        density[order[min(np.searchsorted(cumulative, fraction), len(order) - 1)]]
+        for fraction in (0.95, 0.80, 0.50)
+    ]
+    levels = np.unique(np.asarray(sorted(thresholds), dtype=np.float64))
+    if levels.size < 2:
+        low = float(np.min(density))
+        high = float(np.max(density))
+        if np.isclose(low, high):
+            high = low * 1.001
+        levels = np.linspace(low, high, 3, dtype=np.float64)
+    return levels
+
+
+def _physical_radius_ticks(
+    ax, log_radius_edges: np.ndarray, *, axis: str = "y",
+) -> None:
+    """Label a log-radius coordinate with radii in arcseconds."""
+    values = np.asarray((0.03, 0.1, 0.3, 1.0, 3.0, 10.0), dtype=np.float64)
+    log_values = np.log10(values)
+    keep = (
+        (log_values >= float(log_radius_edges[0]) - 1e-9)
+        & (log_values <= float(log_radius_edges[-1]) + 1e-9)
+    )
+    ticks = log_values[keep]
+    labels = [f"{value:g}" for value in values[keep]]
+    if axis == "x":
+        ax.set_xticks(ticks)
+        ax.set_xticklabels(labels)
+    elif axis == "y":
+        ax.set_yticks(ticks)
+        ax.set_yticklabels(labels)
+    else:
+        raise ValueError("radius tick axis must be x or y")
+
+
 def render_population_atlas(
     calibration: Mapping[str, Any], *, output_format: str = "png", dpi: int = 300,
 ) -> bytes:
@@ -120,6 +269,11 @@ def render_population_atlas(
     relation = plots.get("conditional_radius") or {}
     if not brightness_law or not generation_law or not radius or not relation:
         raise ValueError("Euclid joint fit has no publication diagnostics")
+    empirical_bright = (
+        (calibration.get("magnitude_law") or {}).get("kind")
+        == "empirical_bright_straight_middle_flat_faint_counts"
+    )
+    circularized_radius = "circularized" in str(calibration.get("kind") or "")
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -142,11 +296,15 @@ def render_population_atlas(
         observed_brightness = brightness.get("observed") or {}
         _line(
             axes[0], brightness_law, "density", color=TNG,
-            label="Q1 2FWHM straight law", width=2.7,
+            label="Q1 2FWHM fitted middle law", width=2.7,
         )
         _line(
             axes[0], generation_law, "density", color="#168f65",
-            label="generation law: straight then flat", width=3.0,
+            label=(
+                "generation law: empirical + fitted + flat"
+                if empirical_bright else "generation law: straight then flat"
+            ),
+            width=3.0,
         )
         observed_x, observed_y = _xy(observed_brightness, "density")
         if observed_x.size:
@@ -177,7 +335,7 @@ def render_population_atlas(
             )
         axes[0].set_xlim(14, 29)
         _finish_axis(
-            axes[0], "Straight brightness law",
+            axes[0], "VIS 2FWHM count distribution",
             "VIS 2FWHM aperture magnitude [AB]",
             "objects arcmin$^{-2}$ mag$^{-1}$",
             logarithmic_y=True,
@@ -189,7 +347,12 @@ def render_population_atlas(
                 radius_x, radius_observed, linestyle="none", marker="o",
                 markersize=4.6, markerfacecolor=PAPER,
                 markeredgecolor=EUCLID_OBS, markeredgewidth=1.2,
-                label="Euclid PHZ/MER measured Sérsic $R_e$", zorder=4,
+                label=(
+                    "Euclid PHZ/MER cleaned circularized Sérsic $R_e$"
+                    if circularized_radius
+                    else "Euclid PHZ/MER measured Sérsic $R_e$"
+                ),
+                zorder=4,
             )
         q1_weighted_x, q1_weighted_density = _xy(
             radius, "q1_weighted_density",
@@ -215,7 +378,11 @@ def render_population_atlas(
             )
         _finish_axis(
             axes[1], "Euclid half-light radius",
-            r"log$_{10}(R_{e,\mathrm{VIS\ S\acute{e}rsic}}/\mathrm{arcsec})$",
+            (
+                r"log$_{10}(R_{e,\mathrm{circ}}/\mathrm{arcsec})$"
+                if circularized_radius else
+                r"log$_{10}(R_{e,\mathrm{VIS\ S\acute{e}rsic}}/\mathrm{arcsec})$"
+            ),
             r"objects arcmin$^{-2}$ dex$^{-1}$",
             logarithmic_y=True,
         )
@@ -273,7 +440,11 @@ def render_population_atlas(
         _finish_axis(
             axes[2], "Joint brightness-size relation",
             "VIS 2FWHM aperture magnitude [AB]",
-            r"mean log$_{10}(R_e/\mathrm{arcsec})$",
+            (
+                r"mean log$_{10}(R_{e,\mathrm{circ}}/\mathrm{arcsec})$"
+                if circularized_radius else
+                r"mean log$_{10}(R_e/\mathrm{arcsec})$"
+            ),
             zero_floor=False,
         )
 
@@ -289,6 +460,375 @@ def render_population_atlas(
             handles, labels, loc="lower center", ncol=4, frameon=False,
             fontsize=LEGEND_SIZE, handlelength=2.2,
             bbox_to_anchor=(0.5, 0.02), columnspacing=2.0,
+        )
+
+        buffer = io.BytesIO()
+        fig.savefig(buffer, format=fmt, dpi=dpi, bbox_inches="tight")
+        plt.close(fig)
+    return buffer.getvalue()
+
+
+def render_population_fit_comparison(
+    previous: Mapping[str, Any],
+    candidate: Mapping[str, Any],
+    radius_aggregate: Mapping[str, Any],
+    *,
+    output_format: str = "png",
+    dpi: int = 300,
+) -> bytes:
+    """Render an old-versus-new galaxy-prior comparison without refitting.
+
+    The caller supplies both calibration artifacts and the aggregate Q1
+    magnitude-radius brackets explicitly.  The renderer performs no file I/O,
+    archive query, activation, or field generation.
+    """
+    fmt = output_format.lower()
+    if fmt not in {"png", "pdf", "svg"}:
+        raise ValueError("output_format must be png, pdf, or svg")
+    dpi = max(120, min(int(dpi), 600))
+    previous_magnitude, previous_radius = _comparison_laws(
+        previous, label="previous",
+    )
+    candidate_magnitude, candidate_radius = _comparison_laws(
+        candidate, label="candidate",
+    )
+    magnitude_edges, log_radius_edges, observed_weight, area_arcmin2 = (
+        _aggregate_radius_grid(radius_aggregate)
+    )
+    for label, law in (
+        ("previous", previous_radius), ("candidate", candidate_radius),
+    ):
+        if not (
+            np.isclose(log_radius_edges[0], law.log_radius_min)
+            and np.isclose(log_radius_edges[-1], law.log_radius_max)
+        ):
+            raise ValueError(
+                f"{label} radius support differs from the Q1 aggregate",
+            )
+    for label, law in (
+        ("previous", previous_magnitude),
+        ("candidate", candidate_magnitude),
+    ):
+        if (
+            magnitude_edges[0] < law.mag_bright - 1e-9
+            or magnitude_edges[-1] > law.mag_faint + 1e-9
+        ):
+            raise ValueError(
+                f"{label} magnitude support does not cover the Q1 aggregate",
+            )
+
+    magnitude_width = np.diff(magnitude_edges)
+    log_radius_width = np.diff(log_radius_edges)
+    magnitude_center = 0.5 * (magnitude_edges[:-1] + magnitude_edges[1:])
+    log_radius_center = 0.5 * (
+        log_radius_edges[:-1] + log_radius_edges[1:]
+    )
+    observed_density = (
+        observed_weight
+        / area_arcmin2
+        / magnitude_width[:, None]
+        / log_radius_width[None, :]
+    )
+    observed_radius_density = (
+        np.sum(observed_weight, axis=0)
+        / area_arcmin2
+        / log_radius_width
+    )
+    observed_by_magnitude = np.sum(observed_weight, axis=1)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        observed_conditional_mean = (
+            np.sum(observed_weight * log_radius_center[None, :], axis=1)
+            / observed_by_magnitude
+        )
+    observed_conditional_mean[observed_by_magnitude <= 0.0] = np.nan
+
+    previous_joint = joint_density_grid(
+        previous_magnitude,
+        previous_radius,
+        magnitude_edges=magnitude_edges,
+        log_radius_edges=log_radius_edges,
+    )
+    candidate_joint = joint_density_grid(
+        candidate_magnitude,
+        candidate_radius,
+        magnitude_edges=magnitude_edges,
+        log_radius_edges=log_radius_edges,
+    )
+    previous_joint_density = (
+        previous_joint["density"]
+        / magnitude_width[:, None]
+        / log_radius_width[None, :]
+    )
+    candidate_joint_density = (
+        candidate_joint["density"]
+        / magnitude_width[:, None]
+        / log_radius_width[None, :]
+    )
+    previous_marginal = joint_density_grid(
+        previous_magnitude,
+        previous_radius,
+        log_radius_edges=log_radius_edges,
+    )
+    candidate_marginal = joint_density_grid(
+        candidate_magnitude,
+        candidate_radius,
+        log_radius_edges=log_radius_edges,
+    )
+    previous_radius_density = (
+        np.sum(previous_marginal["density"], axis=0) / log_radius_width
+    )
+    candidate_radius_density = (
+        np.sum(candidate_marginal["density"], axis=0) / log_radius_width
+    )
+    observed_radius_shape = observed_radius_density / np.sum(
+        observed_radius_density * log_radius_width,
+    )
+    previous_radius_shape = previous_radius_density / np.sum(
+        previous_radius_density * log_radius_width,
+    )
+    candidate_radius_shape = candidate_radius_density / np.sum(
+        candidate_radius_density * log_radius_width,
+    )
+    previous_radius_definition = (
+        "circularized"
+        if "circularized" in str(previous.get("kind") or "").lower()
+        else "major-axis"
+    )
+    candidate_radius_definition = (
+        "circularized"
+        if "circularized" in str(candidate.get("kind") or "").lower()
+        else "major-axis"
+    )
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import LogNorm
+
+    style = {
+        "figure.facecolor": PAPER,
+        "axes.facecolor": PAPER,
+        "savefig.facecolor": PAPER,
+        "text.color": INK,
+        "axes.labelcolor": INK,
+        "axes.edgecolor": MUTED,
+        "axes.labelsize": AXIS_LABEL_SIZE,
+    }
+    with presentation_rc(style):
+        fig, axes = plt.subplots(2, 2, figsize=(15.8, 11.6))
+        fig.subplots_adjust(
+            left=0.075, right=0.965, bottom=0.075, top=0.875,
+            wspace=0.25, hspace=0.34,
+        )
+
+        ax_magnitude = axes[0, 0]
+        observed_magnitude = (
+            (candidate.get("magnitude_plot") or {}).get("observed") or {}
+        )
+        observed_x, observed_y = _xy(observed_magnitude, "density")
+        observed_keep = observed_y > 0.0
+        if np.any(observed_keep):
+            ax_magnitude.plot(
+                observed_x[observed_keep], observed_y[observed_keep],
+                linestyle="none", marker="o", markersize=4.4,
+                markerfacecolor=PAPER, markeredgecolor=EUCLID_OBS,
+                markeredgewidth=1.15, label="Q1 VIS 2FWHM counts", zorder=4,
+            )
+        previous_magnitude_x = np.linspace(
+            previous_magnitude.mag_bright,
+            previous_magnitude.mag_faint,
+            301,
+            dtype=np.float64,
+        )
+        candidate_magnitude_x = np.linspace(
+            candidate_magnitude.mag_bright,
+            candidate_magnitude.mag_faint,
+            301,
+            dtype=np.float64,
+        )
+        ax_magnitude.plot(
+            previous_magnitude_x,
+            previous_magnitude.density(previous_magnitude_x),
+            color=PREVIOUS_MODEL, linewidth=2.3, linestyle=(0, (6, 3)),
+            label="Previous generation law",
+        )
+        ax_magnitude.plot(
+            candidate_magnitude_x,
+            candidate_magnitude.density(candidate_magnitude_x),
+            color=CANDIDATE_MODEL, linewidth=2.8,
+            label="Candidate generation law",
+        )
+        ax_magnitude.set_xlim(
+            min(previous_magnitude.mag_bright, candidate_magnitude.mag_bright),
+            max(previous_magnitude.mag_faint, candidate_magnitude.mag_faint),
+        )
+        _finish_axis(
+            ax_magnitude, "VIS 2FWHM magnitude density",
+            "VIS 2FWHM aperture magnitude [AB]",
+            "objects arcmin$^{-2}$ mag$^{-1}$",
+            logarithmic_y=True,
+        )
+        ax_magnitude.legend(frameon=False, fontsize=LEGEND_SIZE)
+
+        ax_radius = axes[0, 1]
+        radius_keep = observed_radius_density > 0.0
+        ax_radius.plot(
+            log_radius_center[radius_keep],
+            observed_radius_shape[radius_keep],
+            linestyle="none", marker="o", markersize=4.5,
+            markerfacecolor=PAPER, markeredgecolor=EUCLID_OBS,
+            markeredgewidth=1.15,
+            label="Q1 circularized shape · clean morphology subset",
+            zorder=4,
+        )
+        ax_radius.plot(
+            log_radius_center, previous_radius_shape,
+            color=PREVIOUS_MODEL, linewidth=2.3, linestyle=(0, (6, 3)),
+            label=f"Previous {previous_radius_definition} model shape",
+        )
+        ax_radius.plot(
+            log_radius_center, candidate_radius_shape,
+            color=CANDIDATE_MODEL, linewidth=2.8,
+            label=f"Candidate {candidate_radius_definition} model shape",
+        )
+        ax_radius.set_xlim(log_radius_edges[0], log_radius_edges[-1])
+        _finish_axis(
+            ax_radius, "Normalized half-light-radius marginal shape",
+            "$R_e$ [arcsec; logarithmic axis]",
+            "probability density [dex$^{-1}$]",
+            logarithmic_y=True,
+        )
+        _physical_radius_ticks(ax_radius, log_radius_edges, axis="x")
+        ax_radius.legend(frameon=False, fontsize=LEGEND_SIZE)
+
+        ax_conditional = axes[1, 0]
+        conditional_keep = np.isfinite(observed_conditional_mean)
+        ax_conditional.plot(
+            magnitude_center[conditional_keep],
+            observed_conditional_mean[conditional_keep],
+            linestyle="none", marker="o", markersize=4.4,
+            markerfacecolor=PAPER, markeredgecolor=EUCLID_OBS,
+            markeredgewidth=1.15,
+            label="Q1 circularized binned mean", zorder=4,
+        )
+        conditional_x = np.linspace(
+            magnitude_edges[0], magnitude_edges[-1], 301, dtype=np.float64,
+        )
+        previous_core = previous_radius.core_mean(conditional_x)
+        candidate_core = candidate_radius.core_mean(conditional_x)
+        ax_conditional.fill_between(
+            conditional_x,
+            previous_core - previous_radius.scatter_dex,
+            previous_core + previous_radius.scatter_dex,
+            color=PREVIOUS_MODEL, alpha=0.08, linewidth=0,
+        )
+        ax_conditional.fill_between(
+            conditional_x,
+            candidate_core - candidate_radius.scatter_dex,
+            candidate_core + candidate_radius.scatter_dex,
+            color=CANDIDATE_MODEL, alpha=0.12, linewidth=0,
+        )
+        ax_conditional.plot(
+            conditional_x, previous_radius.mean(conditional_x),
+            color=PREVIOUS_MODEL, linewidth=2.3, linestyle=(0, (6, 3)),
+            label=f"Previous {previous_radius_definition} mean",
+        )
+        ax_conditional.plot(
+            conditional_x, candidate_radius.mean(conditional_x),
+            color=CANDIDATE_MODEL, linewidth=2.8,
+            label=f"Candidate {candidate_radius_definition} mean",
+        )
+        ax_conditional.set_xlim(magnitude_edges[0], magnitude_edges[-1])
+        ax_conditional.set_ylim(log_radius_edges[0], log_radius_edges[-1])
+        _finish_axis(
+            ax_conditional, "Conditional Sérsic size",
+            "VIS 2FWHM aperture magnitude [AB]",
+            r"$R_e$ [arcsec; logarithmic coordinate]",
+            zero_floor=False,
+        )
+        _physical_radius_ticks(ax_conditional, log_radius_edges)
+        ax_conditional.legend(frameon=False, fontsize=LEGEND_SIZE)
+
+        ax_joint = axes[1, 1]
+        observed_positive = observed_density[
+            np.isfinite(observed_density) & (observed_density > 0.0)
+        ]
+        lower = float(np.percentile(observed_positive, 5.0))
+        upper = float(np.percentile(observed_positive, 99.5))
+        if np.isclose(lower, upper):
+            lower = max(upper / 10.0, np.finfo(np.float64).tiny)
+        image = ax_joint.pcolormesh(
+            magnitude_edges,
+            log_radius_edges,
+            np.ma.masked_less_equal(observed_density.T, 0.0),
+            shading="auto", cmap="magma", norm=LogNorm(vmin=lower, vmax=upper),
+            rasterized=True,
+        )
+        ax_joint.contour(
+            magnitude_center,
+            log_radius_center,
+            previous_joint_density.T,
+            levels=_mass_contour_levels(
+                previous_joint_density, previous_joint["density"],
+            ),
+            colors=PREVIOUS_MODEL, linewidths=1.8, linestyles="dashed",
+        )
+        ax_joint.contour(
+            magnitude_center,
+            log_radius_center,
+            candidate_joint_density.T,
+            levels=_mass_contour_levels(
+                candidate_joint_density, candidate_joint["density"],
+            ),
+            colors=CANDIDATE_MODEL, linewidths=2.0, linestyles="solid",
+        )
+        ax_joint.plot(
+            [], [], color=PREVIOUS_MODEL, linewidth=1.8,
+            linestyle=(0, (6, 3)),
+            label=f"Previous {previous_radius_definition} model",
+        )
+        ax_joint.plot(
+            [], [], color=CANDIDATE_MODEL, linewidth=2.0,
+            label=f"Candidate {candidate_radius_definition} model",
+        )
+        ax_joint.set_xlim(magnitude_edges[0], magnitude_edges[-1])
+        ax_joint.set_ylim(log_radius_edges[0], log_radius_edges[-1])
+        _finish_axis(
+            ax_joint, "Q1 circularized density · model mass contours",
+            "VIS 2FWHM aperture magnitude [AB]",
+            r"$R_e$ [arcsec; logarithmic coordinate]",
+            zero_floor=False,
+        )
+        _physical_radius_ticks(ax_joint, log_radius_edges)
+        ax_joint.legend(
+            frameon=True, framealpha=0.9, facecolor=PAPER, edgecolor="none",
+            fontsize=NOTE_SIZE, loc="upper left",
+        )
+        colorbar = fig.colorbar(image, ax=ax_joint, pad=0.018, fraction=0.052)
+        colorbar.set_label(
+            "Q1 objects arcmin$^{-2}$ mag$^{-1}$ dex$^{-1}$",
+            fontsize=AXIS_LABEL_SIZE,
+        )
+        colorbar.ax.tick_params(labelsize=TICK_LABEL_SIZE)
+
+        previous_fingerprint = str(previous.get("fingerprint") or "unknown")[:12]
+        candidate_fingerprint = str(candidate.get("fingerprint") or "unknown")[:12]
+        fig.suptitle(
+            "Galaxy population fit · previous versus candidate",
+            x=0.075, y=0.975, ha="left",
+            fontsize=FIGURE_TITLE_SIZE, fontweight=700, color=INK,
+        )
+        fig.text(
+            0.075, 0.943,
+            f"previous {previous_fingerprint}  →  candidate "
+            f"{candidate_fingerprint}  ·  no field regeneration",
+            ha="left", va="center", fontsize=NOTE_SIZE, color=MUTED,
+        )
+        fig.text(
+            0.075, 0.915,
+            f"purple = previous {previous_radius_definition} $R_e$  ·  "
+            f"green and Q1 = candidate {candidate_radius_definition} $R_e$  "
+            "·  Q1 morphology subset is incomplete",
+            ha="left", va="center", fontsize=NOTE_SIZE, color=MUTED,
         )
 
         buffer = io.BytesIO()

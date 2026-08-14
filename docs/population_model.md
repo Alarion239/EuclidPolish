@@ -58,28 +58,32 @@ The active galaxy model uses exactly two Euclid quantities:
 
 \[
 m=m_{\rm VIS,2FWHM},\qquad
-r=\log_{10}(R_{e,\rm VIS\,Sersic}/{\rm arcsec}).
+r=\log_{10}(R_{e,\rm circ}/{\rm arcsec}),\qquad
+R_{e,\rm circ}=R_{e,\rm major}\sqrt q.
 \]
 
-Q1 MER+PHZ aggregate counts set the straight brightness density
+Q1 MER+PHZ aggregate counts set a three-part brightness density: measured
+0.1-mag bins at the bright end, the fitted straight log-density law through
+its break, and a flat imposed tail of 100 objects arcmin\(^{-2}\) mag\(^{-1}\)
+through VIS 29.
 
-\[
-\log_{10}(dN/dA/dm)=a m+b,\qquad 14\le m<29.
-\]
+The radius calibration is also a bounded aggregate, not an object catalogue.
+It fits a broken Gaussian core in \(\log_{10}R_{e,\rm circ}\) plus a small
+uniform-log-radius component. The broad component is used only through VIS
+25.5; added fainter galaxies draw from the compact core.
 
-Clean object-level MER morphology rows set one conditional radius law,
-
-\[
-r\mid m\sim\mathcal N\left[\alpha+\beta(m-23),\sigma_r^2\right].
-\]
-
-The radius rows require `PHZ_GAL_PROB >= 0.5`, positive VIS 2FWHM flux,
-positive `SERSIC_SERSIC_VIS_RADIUS`, and `SERSIC_VISNIR_FLAGS = 0`; each row
-is weighted by `PHZ_GAL_PROB`. No COSMOS value, redshift, stellar mass, sSFR,
-detection semi-major axis, or Kron radius enters these fitted coefficients.
+The science-clean radius selection requires `VIS_DET = 1`, positive VIS
+Sérsic flux, `POINT_LIKE_FLAG IS NULL`, `SPURIOUS_FLAG = 0`,
+`DET_QUALITY_FLAG < 4`,
+`PHZ_GAL_PROB >= 0.5`, `SERSIC_VISNIR_FLAGS = 0`,
+\(0.05<q<1\), \(0.302<n<5.45\), and
+\(R_{e,\rm major}<2a_{\rm detection}\). The last cut uses the documented
+0.1-arcsec VIS pixel scale for `SEMIMAJOR_AXIS`. No lower
+\(R_e>0.16\) cut is imposed, so unresolved faint galaxies remain available.
+Every grouped bin is weighted by `PHZ_GAL_PROB`.
 
 Generation marginalizes the two-dimensional law over brightness and draws
-VIS Sérsic \(R_e\) first. It resizes a random TNG donor to that radius, then
+circularized VIS Sérsic \(R_e\) first. It resizes a random TNG donor to that radius, then
 draws \(m\mid R_e\) from the same joint law. A separate empirical VIS PSF is
 used to measure the resized stamp and one shared four-band factor matches the
 drawn 2FWHM flux. COSMOS, detection-radius, and Kron-radius plots are diagnostic
@@ -100,17 +104,18 @@ brightness. After resizing, the independent common four-band flux factor is
 
 ## Current scope and validation status
 
-Version-4 activation contains only the straight brightness law and conditional
-Sérsic-radius law. All earlier COSMOS, empirical-Kron, redshift, physical-state,
-and cubic artifacts fail closed. The fitting step reads no TNG image; TNG is
-used only after activation as a random morphology donor. This deliberately
-modest model aims for plausible source counts and sizes rather than an exact
-catalogue replica.
+Version-10 activation contains only the empirical/fitted/flat brightness law
+and the cleaned circularized-Sérsic-radius law. Versions 7--9 remain loadable
+for reproducibility, but mixed old/new contracts fail closed. The fitting step
+reads no TNG image; TNG is used only after activation as a random morphology
+donor. This deliberately modest model aims for plausible source counts and
+sizes rather than an exact catalogue replica.
 
 ## What is fitted versus imposed
 
-Only the straight Q1 brightness coefficients \((a,b)\) and conditional
-radius coefficients \((\alpha,\beta,\sigma_r)\) are fitted. The finite
-14--29 magnitude range, radius bounds, Gaussian scatter, clipping rule,
-homogeneous positions, Poisson scene counts, and random TNG donor assignment
-are imposed choices. No COSMOS or TNG distribution is fitted.
+The middle Q1 brightness coefficients, broken radius-core coefficients,
+scatter, and broad-component fraction are fitted. The empirical bright bins,
+finite 14--29 magnitude range, flat faint count density, compact-only
+faint-radius policy, radius bounds, homogeneous positions, Poisson scene
+counts, and random TNG donor assignment are imposed choices. No COSMOS or TNG
+distribution is fitted.

@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from euclid_polish.population.magnitude_law import (
+    EmpiricalBrightFaintCappedMagnitudeLaw,
     FaintCappedMagnitudeLaw,
     StraightMagnitudeLaw,
     fit_shared_slope,
@@ -28,6 +29,17 @@ def _law(**overrides) -> StraightMagnitudeLaw:
     }
     values.update(overrides)
     return StraightMagnitudeLaw(**values)
+
+
+def _empirical_law(**overrides) -> EmpiricalBrightFaintCappedMagnitudeLaw:
+    values = {
+        "straight_law": _law(intercept=-8.0),
+        "empirical_edges": (14.0, 16.0, 19.0),
+        "empirical_density_arcmin2_mag": (0.25, 1.5),
+        "density_cap_arcmin2_mag": 100.0,
+    }
+    values.update(overrides)
+    return EmpiricalBrightFaintCappedMagnitudeLaw(**values)
 
 
 def test_integral_and_inverse_cdf_respect_full_domain_boundaries():
@@ -93,6 +105,96 @@ def test_faint_capped_law_breaks_then_stays_flat_and_samples_full_domain():
 
     restored = FaintCappedMagnitudeLaw.from_payload(generated.to_payload())
     assert restored == generated
+
+
+def test_empirical_bright_law_uses_bins_then_straight_then_flat():
+    law = _empirical_law()
+    straight = law.straight_law
+
+    assert law.mag_bright == 14.0
+    assert law.mag_faint == 29.0
+    assert law.fit_bright == 19.0
+    assert law.fit_faint == 25.0
+    assert law.empirical_faint == 19.0
+    assert law.break_magnitude == pytest.approx(25.0)
+    assert law.density_cap_arcmin2_mag == 100.0
+    assert law.source == "fixture"
+    assert law.density([
+        14.0, 15.999, 16.0, 18.999, 19.0, 24.0, 25.0, 28.0,
+    ]) == pytest.approx([
+        0.25, 0.25, 1.5, 1.5,
+        straight.density(19.0), straight.density(24.0), 100.0, 100.0,
+    ])
+    assert law.density(17.0) == pytest.approx(1.5)
+
+    beta = straight.slope * np.log(10.0)
+    straight_middle = (
+        10.0 ** straight.intercept
+        * (np.exp(beta * 25.0) - np.exp(beta * 19.0))
+        / beta
+    )
+    empirical = 2.0 * 0.25 + 3.0 * 1.5
+    assert law.integrated_density() == pytest.approx(
+        empirical + straight_middle + 400.0
+    )
+
+
+def test_empirical_bright_law_inverse_cdf_samples_all_three_components():
+    law = _empirical_law()
+    empirical, straight, faint = law._component_masses()
+    total = float(np.sum(empirical) + straight + faint)
+
+    class FixedRng:
+        def __init__(self, target: float):
+            self.value = target / total
+
+        def random(self) -> float:
+            return self.value
+
+    # Halfway through the first empirical bin.
+    assert law.sample(FixedRng(0.25)) == pytest.approx(15.0)
+    # Halfway through the analytical straight component.
+    middle_draw = law.sample(FixedRng(float(np.sum(empirical)) + straight / 2.0))
+    assert law.empirical_faint < middle_draw < law.break_magnitude
+    # Halfway through the constant faint component.
+    faint_draw = law.sample(FixedRng(
+        float(np.sum(empirical)) + straight + faint / 2.0
+    ))
+    assert faint_draw == pytest.approx(27.0)
+
+    draws = np.asarray([
+        law.sample(np.random.default_rng(seed)) for seed in range(6000)
+    ])
+    assert np.all((draws >= law.mag_bright) & (draws < law.mag_faint))
+    assert np.mean(draws >= law.break_magnitude) == pytest.approx(
+        faint / total, abs=0.015,
+    )
+
+
+def test_empirical_bright_law_round_trips_and_rejects_bad_payloads():
+    law = _empirical_law()
+    assert EmpiricalBrightFaintCappedMagnitudeLaw.from_payload(
+        law.to_payload()
+    ) == law
+
+    payload = law.to_payload()
+    payload["surface_density_arcmin2"] *= 2.0
+    with pytest.raises(ValueError, match="inconsistent"):
+        EmpiricalBrightFaintCappedMagnitudeLaw.from_payload(payload)
+
+    payload = law.to_payload()
+    payload["source"] = "different source"
+    with pytest.raises(ValueError, match="inconsistent"):
+        EmpiricalBrightFaintCappedMagnitudeLaw.from_payload(payload)
+
+    with pytest.raises(ValueError, match="bins are invalid"):
+        _empirical_law(empirical_edges=(14.0, 16.0, 15.0))
+    with pytest.raises(ValueError, match="bins are invalid"):
+        _empirical_law(empirical_density_arcmin2_mag=(0.25, -1.0))
+    with pytest.raises(ValueError, match="bright limit"):
+        _empirical_law(empirical_edges=(14.1, 16.0, 19.0))
+    with pytest.raises(ValueError, match="inside the output domain"):
+        _empirical_law(empirical_edges=(14.0, 20.0, 25.0))
 
 
 def test_straight_region_selects_widest_passing_consecutive_window():

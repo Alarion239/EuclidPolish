@@ -16,14 +16,16 @@ from scipy.ndimage import gaussian_filter1d
 from euclid_polish.config import Config
 from euclid_polish.population.euclid_galaxy_prior import (
     GALAXY_FAINT_DENSITY_CAP_ARCMIN2_MAG,
+    JOINT_EUCLID_GALAXY_KIND,
     JOINT_EUCLID_GALAXY_VERSION,
+    RADIUS_MODEL_VERSION,
     ConditionalRadiusLaw,
     fit_broken_conditional_radius_law_from_binned_counts,
-    generation_magnitude_law,
+    generation_magnitude_law_from_q1_bins,
     joint_density_grid,
 )
 from euclid_polish.population.magnitude_law import (
-    FaintCappedMagnitudeLaw,
+    EmpiricalBrightFaintCappedMagnitudeLaw,
     StraightMagnitudeLaw,
 )
 from euclid_polish.sky.generation.cosmos_tng_prior import (
@@ -87,10 +89,10 @@ def joint_galaxy_candidate() -> dict[str, Any] | None:
         fitted_magnitude_law = StraightMagnitudeLaw.from_payload(
             source["fitted_magnitude_law"]
         )
-        magnitude_law = FaintCappedMagnitudeLaw.from_payload(
+        magnitude_law = EmpiricalBrightFaintCappedMagnitudeLaw.from_payload(
             source["magnitude_law"]
         )
-        ConditionalRadiusLaw.from_payload(source["radius_law"])
+        radius_law = ConditionalRadiusLaw.from_payload(source["radius_law"])
         density = float(source["generation"]["surface_density_arcmin2"])
         density_cap = float(
             source["generation"]["differential_density_cap_arcmin2_mag"]
@@ -122,7 +124,8 @@ def joint_galaxy_candidate() -> dict[str, Any] | None:
         return None
     if (
         source.get("version") != JOINT_EUCLID_GALAXY_VERSION
-        or source.get("kind") != "euclid_vis2fwhm_sersic_re_joint"
+        or source.get("kind") != JOINT_EUCLID_GALAXY_KIND
+        or radius_law.version != RADIUS_MODEL_VERSION
         or len(str(source.get("fingerprint") or "")) != 64
         or not source.get("valid")
         or not np.isclose(density, magnitude_law.integrated_density())
@@ -145,8 +148,9 @@ def joint_galaxy_candidate() -> dict[str, Any] | None:
         or not np.all(np.isfinite(magnitude_density) & (magnitude_density > 0.0))
         or not np.all(np.isfinite(generation_x))
         or not np.all(
-            np.isfinite(generation_density) & (generation_density > 0.0)
+            np.isfinite(generation_density) & (generation_density >= 0.0)
         )
+        or not np.any(generation_density > 0.0)
         or not np.allclose(generation_density, magnitude_law.density(generation_x))
         or not np.all(np.isfinite(radius_x))
         or not np.all(np.isfinite(radius_density) & (radius_density >= 0.0))
@@ -217,7 +221,11 @@ def fit_euclid_joint_galaxy_candidate() -> dict[str, Any]:
         weight_grid,
     )
     log_radius_edges = np.log10(radius_edges)
-    magnitude_law = generation_magnitude_law(fitted_magnitude_law)
+    fit_bin_start = int(magnitude_curve["fit_bin_start"])
+    magnitude_law = generation_magnitude_law_from_q1_bins(
+        fitted_magnitude_law,
+        list(count_bins[:fit_bin_start]),
+    )
     generation_x = np.unique(np.concatenate([
         np.linspace(
             magnitude_law.mag_bright, magnitude_law.mag_faint, 301,
@@ -299,7 +307,7 @@ def fit_euclid_joint_galaxy_candidate() -> dict[str, Any]:
     ]
     core = {
         "version": JOINT_EUCLID_GALAXY_VERSION,
-        "kind": "euclid_vis2fwhm_sersic_re_joint",
+        "kind": JOINT_EUCLID_GALAXY_KIND,
         "valid": True,
         "validated": True,
         "fitted_magnitude_law": fitted_magnitude_law.to_payload(),
@@ -330,6 +338,9 @@ def fit_euclid_joint_galaxy_candidate() -> dict[str, Any]:
             "generation_interval": [
                 magnitude_law.mag_bright, magnitude_law.mag_faint,
             ],
+            "empirical_bright_interval": [
+                magnitude_law.mag_bright, magnitude_law.empirical_faint,
+            ],
             "break_magnitude": magnitude_law.break_magnitude,
             "differential_density_cap_arcmin2_mag": (
                 magnitude_law.density_cap_arcmin2_mag
@@ -347,8 +358,9 @@ def fit_euclid_joint_galaxy_candidate() -> dict[str, Any]:
                 "observed_density": observed_radius_density.tolist(),
                 "unit": "objects / arcmin2 / dex",
                 "model_semantics": (
-                    "nominal continuous-space Euclid Sersic R_e; TNG output "
-                    "pixels are not remeasured during generation"
+                    "nominal continuous-space circularized Euclid VIS "
+                    "Sersic R_e = R_e,major sqrt(q); TNG output pixels are "
+                    "not remeasured during generation"
                 ),
             },
             "conditional_radius": {
@@ -365,6 +377,7 @@ def fit_euclid_joint_galaxy_candidate() -> dict[str, Any]:
                 "fit_interval": conditional_fit_interval,
                 "break_magnitude": radius_law.break_magnitude,
                 "tail_fraction": radius_law.tail_fraction,
+                "tail_cutoff_magnitude": radius_law.tail_cutoff_magnitude,
             },
             "fit_diagnostics": {
                 "conditional_cross_entropy": conditional_cross_entropy,
@@ -397,7 +410,11 @@ def fit_euclid_joint_galaxy_candidate() -> dict[str, Any]:
             "vis_magnitude_min": magnitude_law.mag_bright,
             "vis_magnitude_max": magnitude_law.mag_faint,
             "fitted_vis_magnitude_max": fitted_magnitude_law.mag_faint,
-            "faint_end_policy": "cap_differential_counts_after_break",
+            "faint_end_policy": (
+                "empirical_bright_bins_then_fitted_middle_then_flat_faint"
+            ),
+            "faint_radius_policy": "compact_core_only_above_vis_25_5",
+            "radius_semantics": "circularized_sersic_half_light_radius",
             "radius_min_arcsec": 10.0 ** radius_law.log_radius_min,
             "radius_max_arcsec": 10.0 ** radius_law.log_radius_max,
             "sampling_order": "radius_marginal_then_brightness_given_radius",
@@ -405,16 +422,23 @@ def fit_euclid_joint_galaxy_candidate() -> dict[str, Any]:
             "position_process": "homogeneous_poisson",
         },
         "provenance": {
-            "brightness": "Q1 MER + PHZ VIS 2FWHM aggregate counts",
+            "brightness": (
+                "Q1 MER + PHZ VIS 2FWHM empirical bright bins, fitted "
+                "middle counts, and flat added faint tail"
+            ),
             "radius": (
-                "Q1 MER morphology VIS Sersic radius bounded joint "
-                "magnitude x log-radius bins joined to PHZ"
+                "Q1 MER morphology circularized VIS Sersic radius "
+                "R_e,major sqrt(q), bounded joint magnitude x log-radius "
+                "bins joined to PHZ"
             ),
             "radius_model": (
                 "bright constant Gaussian core; discontinuous magnitude "
                 "break; declining faint core; uniform log-radius tail "
-                "through VIS 25.5, tapered to zero at VIS 27"
+                "through VIS 25.5; compact core only for added fainter "
+                "galaxies"
             ),
+            "radius_selection": str(radius_payload["selection"]),
+            "radius_acquisition": str(radius_payload["acquisition"]),
             "cosmos_used": False,
             "object_catalog_used": False,
             "random_cones_used": False,

@@ -47,11 +47,34 @@ def test_radius_statistics_query_uses_only_aggregate_brackets(
     assert len(payload["magnitude_bins"]) == 2
     assert len(payload["radius_bins"]) == 2
     assert "no object rows and no random sky-position" in payload["acquisition"]
+    assert payload["version"] == payload["selection_version"] == 3
+    assert payload["archive_provider"] == "ESA Euclid Science Archive"
+    assert payload["archive_environment"] == "PDR"
+    assert "public anonymous-compatible" in payload["archive_access"]
+    assert "R_e,circ = R_e,major * sqrt(q)" in payload["radius_definition"]
+    assert payload["vis_pixel_scale_arcsec"] == pytest.approx(0.1)
     assert all("JOIN catalogue.mer_morphology AS morph" in query for query in queries)
     assert all("COUNT(*) AS selected_radii" in query for query in queries)
     assert all("GROUP BY magnitude_bin, radius_bin" in query for query in queries)
-    assert all("sersic_sersic_vis_radius >= 0.03" in query for query in queries)
-    assert all("sersic_sersic_vis_radius < 10" in query for query in queries)
+    circularized = (
+        "(morph.sersic_sersic_vis_radius * "
+        "SQRT(morph.sersic_sersic_vis_axis_ratio))"
+    )
+    assert all(f"LOG10({circularized})" in query for query in queries)
+    assert all(f"{circularized} >= 0.03" in query for query in queries)
+    assert all(f"{circularized} < 10" in query for query in queries)
+    assert all("mer.vis_det = 1" in query for query in queries)
+    assert all("mer.flux_vis_sersic > 0" in query for query in queries)
+    assert all("mer.spurious_flag = 0" in query for query in queries)
+    assert all("mer.det_quality_flag < 4" in query for query in queries)
+    assert all("mer.flag_vis" not in query for query in queries)
+    assert all("sersic_sersic_vis_axis_ratio > 0.05" in query for query in queries)
+    assert all("sersic_sersic_vis_axis_ratio < 1.0" in query for query in queries)
+    assert all("sersic_sersic_vis_index > 0.302" in query for query in queries)
+    assert all("sersic_sersic_vis_index < 5.45" in query for query in queries)
+    assert all("< 0.2 * mer.semimajor_axis" in query for query in queries)
+    # Preserve compact sources: do not adopt the optional lower R_e/a cut.
+    assert all("0.001 * mer.semimajor_axis" not in query for query in queries)
     assert all("SELECT TOP" not in query for query in queries)
     assert progress[-1][:2] == (1, 1)
     assert radius_stats.read_q1_galaxy_radius_statistics()["complete"] is True
@@ -65,3 +88,72 @@ def test_radius_statistics_rejects_stale_contract(tmp_path, monkeypatch):
 
     with pytest.raises(ValueError, match="stale|first"):
         radius_stats.read_q1_galaxy_radius_statistics()
+
+
+def test_radius_statistics_payload_can_be_rebuilt_from_grouped_bins():
+    payload = radius_stats._build_radius_statistics_payload(
+        [
+            {
+                "magnitude_bin": 0,
+                "radius_bin": 1,
+                "selected_radii": 5,
+                "expected_radii": 4.25,
+            },
+        ],
+        magnitude_edges=[14.0, 14.1, 14.2],
+        radius_edges_arcsec=[0.03, 0.3, 3.0],
+        progressive_stride=0.1,
+        completed_queries=4,
+        total_queries=4,
+    )
+
+    assert payload["complete"] is True
+    assert payload["joint_bins"][0]["expected_radii"] == pytest.approx(4.25)
+    assert payload["magnitude_bins"][0]["selected_radii"] == 5
+    assert payload["magnitude_bins"][1]["selected_radii"] == 0
+    assert payload["radius_bins"][1]["expected_radii"] == pytest.approx(4.25)
+
+
+def test_radius_statistics_launch_retries_after_successful_relogin(monkeypatch):
+    class Job:
+        @staticmethod
+        def get_results():
+            return [{"selected_radii": 1}]
+
+    launches = iter([None, Job()])
+    queries: list[str] = []
+    relogins = 0
+
+    def launch(query):
+        queries.append(query)
+        return next(launches)
+
+    def relogin():
+        nonlocal relogins
+        relogins += 1
+        return True
+
+    monkeypatch.setattr(radius_stats.Euclid, "launch_job_async", launch)
+
+    assert list(radius_stats._launch_with_relogin("SELECT 1", relogin)) == [
+        {"selected_radii": 1},
+    ]
+    assert queries == ["SELECT 1", "SELECT 1"]
+    assert relogins == 1
+
+
+def test_radius_statistics_launch_allows_anonymous_public_success(monkeypatch):
+    class Job:
+        @staticmethod
+        def get_results():
+            return [{"selected_radii": 1}]
+
+    monkeypatch.setattr(
+        radius_stats.Euclid,
+        "launch_job_async",
+        lambda query: Job(),
+    )
+
+    assert list(radius_stats._launch_with_relogin("SELECT 1", None)) == [
+        {"selected_radii": 1},
+    ]

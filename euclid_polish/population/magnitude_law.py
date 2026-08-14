@@ -314,6 +314,270 @@ class FaintCappedMagnitudeLaw:
 
 
 @dataclass(frozen=True)
+class EmpiricalBrightFaintCappedMagnitudeLaw:
+    """Empirical bright bins, a fitted straight middle, and a flat faint tail.
+
+    ``empirical_edges`` and ``empirical_density_arcmin2_mag`` define a
+    piecewise-constant differential count law from ``mag_bright`` through the
+    last empirical edge.  The nested straight law takes over there and is
+    capped at ``density_cap_arcmin2_mag`` through ``mag_faint``.
+    """
+
+    straight_law: StraightMagnitudeLaw
+    empirical_edges: tuple[float, ...]
+    empirical_density_arcmin2_mag: tuple[float, ...]
+    density_cap_arcmin2_mag: float
+
+    def __post_init__(self) -> None:
+        edges = np.asarray(self.empirical_edges, dtype=np.float64)
+        density = np.asarray(
+            self.empirical_density_arcmin2_mag, dtype=np.float64,
+        )
+        cap = float(self.density_cap_arcmin2_mag)
+        if (
+            edges.ndim != 1
+            or edges.size < 2
+            or density.ndim != 1
+            or density.size != edges.size - 1
+            or not np.all(np.isfinite(edges))
+            or not np.all(np.diff(edges) > 0.0)
+            or not np.all(np.isfinite(density) & (density >= 0.0))
+            or not np.any(density > 0.0)
+        ):
+            raise ValueError("empirical bright magnitude bins are invalid")
+        if not math.isfinite(cap) or cap <= 0.0:
+            raise ValueError("faint magnitude-law density cap must be positive")
+        if self.straight_law.slope <= 0.0:
+            raise ValueError(
+                "empirical-bright magnitude law requires a positive straight slope"
+            )
+        if not math.isclose(
+            float(edges[0]), self.straight_law.mag_bright,
+            rel_tol=0.0, abs_tol=1e-10,
+        ):
+            raise ValueError(
+                "empirical bright bins must start at the magnitude-law bright limit"
+            )
+        break_magnitude = (
+            math.log10(cap) - self.straight_law.intercept
+        ) / self.straight_law.slope
+        if not float(edges[-1]) < break_magnitude < self.straight_law.mag_faint:
+            raise ValueError(
+                "straight middle and flat faint tail must lie inside the output domain"
+            )
+        object.__setattr__(
+            self, "empirical_edges", tuple(float(value) for value in edges),
+        )
+        object.__setattr__(
+            self,
+            "empirical_density_arcmin2_mag",
+            tuple(float(value) for value in density),
+        )
+        object.__setattr__(self, "density_cap_arcmin2_mag", cap)
+
+    @property
+    def mag_bright(self) -> float:
+        return self.straight_law.mag_bright
+
+    @property
+    def mag_faint(self) -> float:
+        return self.straight_law.mag_faint
+
+    @property
+    def fit_bright(self) -> float:
+        return self.straight_law.fit_bright
+
+    @property
+    def fit_faint(self) -> float:
+        return self.straight_law.fit_faint
+
+    @property
+    def slope(self) -> float:
+        return self.straight_law.slope
+
+    @property
+    def intercept(self) -> float:
+        return self.straight_law.intercept
+
+    @property
+    def source(self) -> str:
+        return self.straight_law.source
+
+    @property
+    def empirical_faint(self) -> float:
+        return self.empirical_edges[-1]
+
+    @property
+    def break_magnitude(self) -> float:
+        return float(
+            (math.log10(self.density_cap_arcmin2_mag) - self.intercept)
+            / self.slope
+        )
+
+    def density(self, magnitude: np.ndarray | float) -> np.ndarray:
+        """Evaluate the piecewise differential density."""
+        values = np.asarray(magnitude, dtype=np.float64)
+        result = np.minimum(
+            self.straight_law.density(values),
+            self.density_cap_arcmin2_mag,
+        )
+        empirical = values < self.empirical_faint
+        if np.any(empirical):
+            edges = np.asarray(self.empirical_edges, dtype=np.float64)
+            density = np.asarray(
+                self.empirical_density_arcmin2_mag, dtype=np.float64,
+            )
+            indices = np.clip(
+                np.searchsorted(edges, values[empirical], side="right") - 1,
+                0,
+                density.size - 1,
+            )
+            result = np.asarray(result, dtype=np.float64)
+            result[empirical] = density[indices]
+        return result
+
+    def log10_density(self, magnitude: np.ndarray | float) -> np.ndarray:
+        with np.errstate(divide="ignore"):
+            return np.log10(self.density(magnitude))
+
+    def _straight_integral(self, bright: float, faint: float) -> float:
+        beta = self.slope * math.log(10.0)
+        normalization = 10.0 ** self.intercept
+        return float(
+            normalization
+            * math.exp(beta * bright)
+            * math.expm1(beta * (faint - bright))
+            / beta
+        )
+
+    def _component_masses(self) -> tuple[np.ndarray, float, float]:
+        empirical_mass = (
+            np.diff(np.asarray(self.empirical_edges, dtype=np.float64))
+            * np.asarray(
+                self.empirical_density_arcmin2_mag, dtype=np.float64,
+            )
+        )
+        straight_mass = self._straight_integral(
+            self.empirical_faint, self.break_magnitude,
+        )
+        faint_mass = self.density_cap_arcmin2_mag * (
+            self.mag_faint - self.break_magnitude
+        )
+        return empirical_mass, straight_mass, faint_mass
+
+    def integrated_density(self) -> float:
+        """Return the exact mass of all three finite-domain components."""
+        empirical, straight, faint = self._component_masses()
+        return float(np.sum(empirical) + straight + faint)
+
+    def sample(self, rng: np.random.Generator) -> float:
+        """Draw from the exact piecewise inverse CDF."""
+        empirical, straight_mass, faint_mass = self._component_masses()
+        empirical_total = float(np.sum(empirical))
+        target = float(rng.random()) * (
+            empirical_total + straight_mass + faint_mass
+        )
+        if target < empirical_total:
+            cumulative = np.cumsum(empirical)
+            index = min(
+                int(np.searchsorted(cumulative, target, side="right")),
+                empirical.size - 1,
+            )
+            before = 0.0 if index == 0 else float(cumulative[index - 1])
+            density = self.empirical_density_arcmin2_mag[index]
+            return float(self.empirical_edges[index] + (target - before) / density)
+        target -= empirical_total
+        if target < straight_mass:
+            beta = self.slope * math.log(10.0)
+            normalization = 10.0 ** self.intercept
+            bright_term = math.exp(beta * self.empirical_faint)
+            return float(
+                math.log(bright_term + target * beta / normalization) / beta
+            )
+        target -= straight_mass
+        return float(
+            self.break_magnitude + target / self.density_cap_arcmin2_mag
+        )
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "kind": "empirical_bright_straight_middle_flat_faint_counts",
+            "equation": (
+                "empirical bright histogram; 10 ** (slope * magnitude + "
+                "intercept) in the middle; constant faint density cap"
+            ),
+            "straight_law": self.straight_law.to_payload(),
+            "empirical_edges": list(self.empirical_edges),
+            "empirical_density_arcmin2_mag": list(
+                self.empirical_density_arcmin2_mag
+            ),
+            "empirical_faint": self.empirical_faint,
+            "density_cap_arcmin2_mag": self.density_cap_arcmin2_mag,
+            "break_magnitude": self.break_magnitude,
+            "surface_density_arcmin2": self.integrated_density(),
+            "source": self.source,
+        }
+
+    @classmethod
+    def from_payload(
+        cls, payload: dict[str, Any],
+    ) -> EmpiricalBrightFaintCappedMagnitudeLaw:
+        if payload.get("kind") != (
+            "empirical_bright_straight_middle_flat_faint_counts"
+        ):
+            raise ValueError(
+                "magnitude distribution is not an empirical-bright count law"
+            )
+        try:
+            law = cls(
+                straight_law=StraightMagnitudeLaw.from_payload(
+                    payload["straight_law"]
+                ),
+                empirical_edges=tuple(
+                    float(value) for value in payload["empirical_edges"]
+                ),
+                empirical_density_arcmin2_mag=tuple(
+                    float(value)
+                    for value in payload["empirical_density_arcmin2_mag"]
+                ),
+                density_cap_arcmin2_mag=float(
+                    payload["density_cap_arcmin2_mag"]
+                ),
+            )
+            saved_empirical_faint = float(payload["empirical_faint"])
+            saved_break = float(payload["break_magnitude"])
+            saved_density = float(payload["surface_density_arcmin2"])
+            saved_source = str(payload["source"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(
+                "empirical-bright magnitude-law payload is malformed"
+            ) from exc
+        checks = (
+            math.isfinite(saved_empirical_faint)
+            and math.isclose(
+                saved_empirical_faint, law.empirical_faint,
+                rel_tol=2e-8, abs_tol=1e-10,
+            )
+            and math.isfinite(saved_break)
+            and math.isclose(
+                saved_break, law.break_magnitude,
+                rel_tol=2e-8, abs_tol=1e-10,
+            )
+            and math.isfinite(saved_density)
+            and math.isclose(
+                saved_density, law.integrated_density(),
+                rel_tol=2e-8, abs_tol=1e-10,
+            )
+            and saved_source == law.source
+        )
+        if not checks:
+            raise ValueError(
+                "empirical-bright magnitude-law payload is inconsistent"
+            )
+        return law
+
+
+@dataclass(frozen=True)
 class StraightRegionFit:
     """Selected consecutive straight region plus its fitted law diagnostics."""
 

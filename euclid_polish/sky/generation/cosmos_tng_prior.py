@@ -18,12 +18,17 @@ from euclid_polish.config import Config
 from euclid_polish.photometry import ab_mag_to_electrons
 from euclid_polish.population.euclid_galaxy_prior import (
     GALAXY_FAINT_DENSITY_CAP_ARCMIN2_MAG,
+    JOINT_EUCLID_GALAXY_KIND,
+    JOINT_EUCLID_GALAXY_VERSION,
+    LEGACY_JOINT_EUCLID_GALAXY_KIND,
+    RADIUS_MODEL_VERSION,
     SUPPORTED_JOINT_EUCLID_GALAXY_VERSIONS,
     ConditionalRadiusLaw,
     generation_magnitude_law,
     joint_density_grid,
 )
 from euclid_polish.population.magnitude_law import (
+    EmpiricalBrightFaintCappedMagnitudeLaw,
     FaintCappedMagnitudeLaw,
     StraightMagnitudeLaw,
 )
@@ -556,23 +561,33 @@ class JointGalaxyPopulationPrior:
         version = int(payload.get("version") or 0)
         if version not in SUPPORTED_JOINT_EUCLID_GALAXY_VERSIONS:
             raise ValueError("joint galaxy population has an unsupported version")
-        if payload.get("kind") != "euclid_vis2fwhm_sersic_re_joint":
+        expected_kind = (
+            JOINT_EUCLID_GALAXY_KIND
+            if version == JOINT_EUCLID_GALAXY_VERSION
+            else LEGACY_JOINT_EUCLID_GALAXY_KIND
+        )
+        if payload.get("kind") != expected_kind:
             raise ValueError("joint galaxy population has the wrong kind")
         if not payload.get("active") or not payload.get("valid"):
             raise ValueError("joint galaxy population is not active and valid")
         self.fingerprint = str(payload.get("fingerprint") or "")
         if len(self.fingerprint) != 64:
             raise ValueError("joint galaxy population fingerprint is invalid")
-        self.population_label = (
-            f"euclid_vis2fwhm_sersic_re_joint_v{version}_flat_faint_counts"
-        )
+        self.population_label = f"{expected_kind}_v{version}_flat_faint_counts"
         try:
             self.fitted_magnitude_law = StraightMagnitudeLaw.from_payload(
                 payload["fitted_magnitude_law"]
             )
-            self.magnitude_law = FaintCappedMagnitudeLaw.from_payload(
-                payload["magnitude_law"]
-            )
+            if version == JOINT_EUCLID_GALAXY_VERSION:
+                self.magnitude_law = (
+                    EmpiricalBrightFaintCappedMagnitudeLaw.from_payload(
+                        payload["magnitude_law"]
+                    )
+                )
+            else:
+                self.magnitude_law = FaintCappedMagnitudeLaw.from_payload(
+                    payload["magnitude_law"]
+                )
             self.radius_law = ConditionalRadiusLaw.from_payload(
                 payload["radius_law"]
             )
@@ -585,15 +600,38 @@ class JointGalaxyPopulationPrior:
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError("joint galaxy population model is incomplete") from exc
+        if (
+            version == JOINT_EUCLID_GALAXY_VERSION
+            and self.radius_law.version != RADIUS_MODEL_VERSION
+        ) or (
+            version != JOINT_EUCLID_GALAXY_VERSION
+            and self.radius_law.version == RADIUS_MODEL_VERSION
+        ):
+            raise ValueError(
+                "joint galaxy population mixes incompatible model versions"
+            )
         if not np.isclose(self.magnitude_law.integrated_density(), expected):
             raise ValueError("joint galaxy population density does not match activation")
-        expected_law = generation_magnitude_law(self.fitted_magnitude_law)
-        if not (
-            np.isclose(
-                density_cap, GALAXY_FAINT_DENSITY_CAP_ARCMIN2_MAG
+        if version == JOINT_EUCLID_GALAXY_VERSION:
+            magnitude_contract_valid = (
+                self.magnitude_law.straight_law == self.fitted_magnitude_law
+                and np.isclose(
+                    self.magnitude_law.density_cap_arcmin2_mag,
+                    GALAXY_FAINT_DENSITY_CAP_ARCMIN2_MAG,
+                )
+                and np.isclose(
+                    break_magnitude, self.magnitude_law.break_magnitude,
+                )
             )
-            and np.isclose(break_magnitude, expected_law.break_magnitude)
-            and self.magnitude_law == expected_law
+        else:
+            expected_law = generation_magnitude_law(self.fitted_magnitude_law)
+            magnitude_contract_valid = (
+                np.isclose(break_magnitude, expected_law.break_magnitude)
+                and self.magnitude_law == expected_law
+            )
+        if not (
+            np.isclose(density_cap, GALAXY_FAINT_DENSITY_CAP_ARCMIN2_MAG)
+            and magnitude_contract_valid
         ):
             raise ValueError(
                 "joint galaxy generation law is not the fitted straight-then-flat law"

@@ -10,15 +10,21 @@ from scipy.optimize import minimize
 from scipy.special import ndtr
 
 from euclid_polish.population.magnitude_law import (
+    EmpiricalBrightFaintCappedMagnitudeLaw,
     FaintCappedMagnitudeLaw,
     StraightMagnitudeLaw,
 )
 
-JOINT_EUCLID_GALAXY_VERSION = 9
-SUPPORTED_JOINT_EUCLID_GALAXY_VERSIONS = frozenset({7, 8, 9})
+JOINT_EUCLID_GALAXY_VERSION = 10
+SUPPORTED_JOINT_EUCLID_GALAXY_VERSIONS = frozenset({7, 8, 9, 10})
+LEGACY_JOINT_EUCLID_GALAXY_KIND = "euclid_vis2fwhm_sersic_re_joint"
+JOINT_EUCLID_GALAXY_KIND = (
+    "euclid_vis2fwhm_circularized_sersic_re_joint"
+)
 LINEAR_RADIUS_MODEL_VERSION = 1
 CONSTANT_TAIL_RADIUS_MODEL_VERSION = 2
-RADIUS_MODEL_VERSION = 3
+TAPERED_TAIL_RADIUS_MODEL_VERSION = 3
+RADIUS_MODEL_VERSION = 4
 RADIUS_PIVOT_MAG = 23.0
 LOG_RADIUS_MIN = float(np.log10(0.03))
 LOG_RADIUS_MAX = float(np.log10(10.0))
@@ -26,7 +32,7 @@ GALAXY_FAINT_DENSITY_CAP_ARCMIN2_MAG = 100.0
 RADIUS_FIT_MIN_SELECTED_PER_MAG_BIN = 20
 RADIUS_FIT_EFFECTIVE_WEIGHT_CAP = 1000.0
 RADIUS_FIT_FAINT_MAGNITUDE = 25.5
-RADIUS_TAIL_TAPER_END_MAGNITUDE = 27.0
+RADIUS_TAIL_CUTOFF_MAGNITUDE = 25.5
 
 
 def generation_magnitude_law(
@@ -35,6 +41,39 @@ def generation_magnitude_law(
     """Return the fitted bright line with a flat faint-count tail."""
     return FaintCappedMagnitudeLaw(
         straight_law=fitted_law,
+        density_cap_arcmin2_mag=GALAXY_FAINT_DENSITY_CAP_ARCMIN2_MAG,
+    )
+
+
+def generation_magnitude_law_from_q1_bins(
+    fitted_law: StraightMagnitudeLaw,
+    bright_bins: list[dict],
+) -> EmpiricalBrightFaintCappedMagnitudeLaw:
+    """Use measured Q1 bright counts before the fitted straight interval."""
+    if not bright_bins:
+        raise ValueError("Q1 empirical bright-count bins are required")
+    try:
+        lower = [float(item["mag_lo"]) for item in bright_bins]
+        upper = [float(item["mag_hi"]) for item in bright_bins]
+        density = [
+            float(item["density_arcmin2_mag"]) for item in bright_bins
+        ]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("Q1 empirical bright-count bins are malformed") from exc
+    edges = np.asarray([lower[0], *upper], dtype=np.float64)
+    if (
+        not np.all(np.isfinite(lower))
+        or not np.all(np.isfinite(upper))
+        or not np.all(np.isfinite(density))
+        or not np.allclose(lower[1:], upper[:-1], atol=1e-10, rtol=0.0)
+        or not np.isclose(edges[0], fitted_law.mag_bright)
+        or edges[-1] > fitted_law.fit_bright + 1e-10
+    ):
+        raise ValueError("Q1 empirical bright-count bins are not contiguous")
+    return EmpiricalBrightFaintCappedMagnitudeLaw(
+        straight_law=fitted_law,
+        empirical_edges=tuple(float(value) for value in edges),
+        empirical_density_arcmin2_mag=tuple(density),
         density_cap_arcmin2_mag=GALAXY_FAINT_DENSITY_CAP_ARCMIN2_MAG,
     )
 
@@ -66,6 +105,7 @@ class ConditionalRadiusLaw:
     fit_faint_magnitude: float | None = None
     tail_taper_start_magnitude: float | None = None
     tail_taper_end_magnitude: float | None = None
+    tail_cutoff_magnitude: float | None = None
 
     @classmethod
     def from_payload(cls, payload: dict) -> ConditionalRadiusLaw:
@@ -79,6 +119,7 @@ class ConditionalRadiusLaw:
         values.setdefault("fit_faint_magnitude", None)
         values.setdefault("tail_taper_start_magnitude", None)
         values.setdefault("tail_taper_end_magnitude", None)
+        values.setdefault("tail_cutoff_magnitude", None)
         values["covariance"] = tuple(
             tuple(float(item) for item in row)
             for row in values["covariance"]
@@ -87,6 +128,7 @@ class ConditionalRadiusLaw:
         if law.version not in {
             LINEAR_RADIUS_MODEL_VERSION,
             CONSTANT_TAIL_RADIUS_MODEL_VERSION,
+            TAPERED_TAIL_RADIUS_MODEL_VERSION,
             RADIUS_MODEL_VERSION,
         }:
             raise ValueError("Euclid radius law has an unsupported version")
@@ -100,7 +142,9 @@ class ConditionalRadiusLaw:
         ):
             raise ValueError("Euclid radius law is invalid")
         if law.version in {
-            CONSTANT_TAIL_RADIUS_MODEL_VERSION, RADIUS_MODEL_VERSION,
+            CONSTANT_TAIL_RADIUS_MODEL_VERSION,
+            TAPERED_TAIL_RADIUS_MODEL_VERSION,
+            RADIUS_MODEL_VERSION,
         } and not (
             law.bright_intercept_log10_arcsec is not None
             and np.isfinite(law.bright_intercept_log10_arcsec)
@@ -112,7 +156,7 @@ class ConditionalRadiusLaw:
             and law.fit_effective_weight_cap > 0.0
         ):
             raise ValueError("Euclid broken radius law is invalid")
-        if law.version == RADIUS_MODEL_VERSION and not (
+        if law.version == TAPERED_TAIL_RADIUS_MODEL_VERSION and not (
             law.fit_faint_magnitude is not None
             and np.isfinite(law.fit_faint_magnitude)
             and law.tail_taper_start_magnitude is not None
@@ -126,6 +170,19 @@ class ConditionalRadiusLaw:
             )
         ):
             raise ValueError("Euclid radius-tail taper is invalid")
+        if law.version == RADIUS_MODEL_VERSION and not (
+            law.fit_faint_magnitude is not None
+            and np.isfinite(law.fit_faint_magnitude)
+            and law.tail_cutoff_magnitude is not None
+            and np.isfinite(law.tail_cutoff_magnitude)
+            and np.isclose(
+                law.fit_faint_magnitude,
+                law.tail_cutoff_magnitude,
+            )
+            and law.tail_taper_start_magnitude is None
+            and law.tail_taper_end_magnitude is None
+        ):
+            raise ValueError("Euclid compact-only faint-radius policy is invalid")
         return law
 
     def to_payload(self) -> dict:
@@ -161,8 +218,11 @@ class ConditionalRadiusLaw:
         values = np.asarray(magnitude, dtype=np.float64)
         if self.tail_fraction <= 0.0:
             return np.zeros_like(values)
-        if self.version < RADIUS_MODEL_VERSION:
+        if self.version < TAPERED_TAIL_RADIUS_MODEL_VERSION:
             return np.full_like(values, self.tail_fraction)
+        if self.version == RADIUS_MODEL_VERSION:
+            cutoff = float(self.tail_cutoff_magnitude)
+            return np.where(values <= cutoff, self.tail_fraction, 0.0)
         start = float(self.tail_taper_start_magnitude)
         end = float(self.tail_taper_end_magnitude)
         taper = np.clip((end - values) / (end - start), 0.0, 1.0)
@@ -509,7 +569,7 @@ def fit_broken_conditional_radius_law_from_binned_counts(
     minimum_selected_per_bin: int = RADIUS_FIT_MIN_SELECTED_PER_MAG_BIN,
     effective_weight_cap: float = RADIUS_FIT_EFFECTIVE_WEIGHT_CAP,
     fit_faint_magnitude: float = RADIUS_FIT_FAINT_MAGNITUDE,
-    tail_taper_end_magnitude: float = RADIUS_TAIL_TAPER_END_MAGNITUDE,
+    tail_cutoff_magnitude: float = RADIUS_TAIL_CUTOFF_MAGNITUDE,
 ) -> ConditionalRadiusLaw:
     """Fit a broken Gaussian core plus a broad log-radius tail to Q1 bins.
 
@@ -517,8 +577,9 @@ def fit_broken_conditional_radius_law_from_binned_counts(
     ``effective_weight_cap`` to the conditional likelihood.  This prevents the
     millions of faint detections from erasing the measured bright plateau and
     sharp transition.  A uniform component in log radius represents the broad
-    Q1 Sersic tail through the count turnover, then tapers to zero so the
-    incompleteness-dominated faint upturn is not extrapolated.
+    Q1 Sersic tail only where morphology is measured reliably.  The added
+    faint population above the fit limit draws from the compact Gaussian core,
+    rather than extrapolating uncertain large-radius fits.
     """
     mag_edges = np.asarray(magnitude_edges, dtype=np.float64)
     radius_edges = np.asarray(log_radius_edges, dtype=np.float64)
@@ -542,8 +603,8 @@ def fit_broken_conditional_radius_law_from_binned_counts(
         or not np.isfinite(effective_weight_cap)
         or effective_weight_cap <= 0.0
         or not np.isfinite(fit_faint_magnitude)
-        or not np.isfinite(tail_taper_end_magnitude)
-        or tail_taper_end_magnitude <= fit_faint_magnitude
+        or not np.isfinite(tail_cutoff_magnitude)
+        or not np.isclose(tail_cutoff_magnitude, fit_faint_magnitude)
     ):
         raise ValueError("Broken binned radius-fit inputs are malformed")
     magnitude = 0.5 * (mag_edges[:-1] + mag_edges[1:])
@@ -615,7 +676,7 @@ def fit_broken_conditional_radius_law_from_binned_counts(
         0.12,
     ])
     bounds = (
-        (float(radius_edges[0]), 0.3),
+        (float(radius_edges[0]), 0.7),
         (-0.5, 0.7),
         (17.4, 19.2),
         (-0.4, 0.05),
@@ -727,10 +788,10 @@ def fit_broken_conditional_radius_law_from_binned_counts(
             f"{int(minimum_selected_per_bin)} selected radii per magnitude "
             f"bin; each magnitude bin capped at {effective_weight_cap:g} "
             f"effective PHZ weight; fit stops at VIS {fit_faint_magnitude:g} "
-            f"and broad tail tapers to zero by VIS {tail_taper_end_magnitude:g}; "
-            "PHZ_GAL_PROB >= 0.5; 0.03 <= MER "
-            "morphology VIS Sersic R_e < 10 arcsec; "
-            "SERSIC_VISNIR_FLAGS = 0"
+            "and fainter added galaxies use the compact core only; "
+            "PHZ_GAL_PROB >= 0.5; literature-style MER quality and "
+            "morphology-fit cuts; 0.03 <= circularized VIS Sersic R_e "
+            "< 10 arcsec"
         ),
         bright_intercept_log10_arcsec=bright,
         break_magnitude=break_magnitude,
@@ -739,13 +800,18 @@ def fit_broken_conditional_radius_law_from_binned_counts(
         fit_min_selected_per_magnitude_bin=int(minimum_selected_per_bin),
         fit_effective_weight_cap=float(effective_weight_cap),
         fit_faint_magnitude=float(fit_faint_magnitude),
-        tail_taper_start_magnitude=float(fit_faint_magnitude),
-        tail_taper_end_magnitude=float(tail_taper_end_magnitude),
+        tail_taper_start_magnitude=None,
+        tail_taper_end_magnitude=None,
+        tail_cutoff_magnitude=float(tail_cutoff_magnitude),
     )
 
 
 def joint_density_grid(
-    magnitude_law: StraightMagnitudeLaw | FaintCappedMagnitudeLaw,
+    magnitude_law: (
+        StraightMagnitudeLaw
+        | FaintCappedMagnitudeLaw
+        | EmpiricalBrightFaintCappedMagnitudeLaw
+    ),
     radius_law: ConditionalRadiusLaw,
     *,
     magnitude_edges: np.ndarray | None = None,

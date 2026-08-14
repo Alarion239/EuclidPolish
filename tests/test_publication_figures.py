@@ -1,8 +1,20 @@
 """Focused checks for the presentation-quality population atlas."""
 from __future__ import annotations
 
+import numpy as np
+import pytest
+
+from euclid_polish.population.euclid_galaxy_prior import (
+    ConditionalRadiusLaw,
+    joint_density_grid,
+)
+from euclid_polish.population.magnitude_law import (
+    FaintCappedMagnitudeLaw,
+    StraightMagnitudeLaw,
+)
 from euclid_polish.web.helpers.publication_figures import (
     render_population_atlas,
+    render_population_fit_comparison,
     render_star_population_calibration,
 )
 
@@ -73,7 +85,7 @@ def test_population_atlas_exports_raster_and_vector_formats():
     assert b"Missing bins are" not in svg
     assert b"Galaxy population calibration" not in svg
     assert b"Q1 MER + PHZ 2FWHM counts" in svg
-    assert b"Q1 2FWHM straight law" in svg
+    assert b"Q1 2FWHM fitted middle law" in svg
     assert b"Euclid PHZ/MER measured" in svg
     assert b"joint-fit" in svg
     assert b"broken conditional mean" in svg
@@ -82,6 +94,159 @@ def test_population_atlas_exports_raster_and_vector_formats():
     assert b"COSMOS" not in svg
     assert b"TNG truth" not in svg
     assert b"20&lt;VIS&lt;28" not in svg
+
+
+def _comparison_calibration(
+    *, fingerprint: str, tail_fraction: float, radius_intercept: float,
+    magnitude_intercept: float,
+    kind: str = "euclid_vis2fwhm_sersic_re_joint",
+):
+    straight = StraightMagnitudeLaw(
+        slope=0.2,
+        intercept=magnitude_intercept,
+        mag_bright=14.0,
+        mag_faint=29.0,
+        fit_bright=19.5,
+        fit_faint=25.0,
+        covariance=((1e-4, 0.0), (0.0, 1e-3)),
+        r_squared=0.99,
+        rms_log10_density=0.03,
+        source="fixture",
+    )
+    magnitude = FaintCappedMagnitudeLaw(
+        straight_law=straight,
+        density_cap_arcmin2_mag=100.0,
+    )
+    radius = ConditionalRadiusLaw(
+        version=3,
+        pivot_mag=23.0,
+        intercept_log10_arcsec=radius_intercept,
+        slope_log10_arcsec_per_mag=-0.07,
+        scatter_dex=0.18,
+        log_radius_min=float(np.log10(0.03)),
+        log_radius_max=float(np.log10(10.0)),
+        fitted_rows=1000,
+        clipped_rows=0,
+        weighted_rows=800.0,
+        residual_rms_dex=0.08,
+        r_squared=0.9,
+        covariance=((1e-4, 0.0), (0.0, 1e-5)),
+        selection="fixture",
+        bright_intercept_log10_arcsec=-0.9,
+        break_magnitude=18.0,
+        tail_fraction=tail_fraction,
+        tail_distribution="uniform_log_radius",
+        fit_min_selected_per_magnitude_bin=20,
+        fit_effective_weight_cap=1000.0,
+        fit_faint_magnitude=25.5,
+        tail_taper_start_magnitude=25.5,
+        tail_taper_end_magnitude=27.0,
+    )
+    observed_x = np.asarray((15.0, 19.0, 23.0, 27.0))
+    return {
+        "kind": kind,
+        "fingerprint": fingerprint,
+        "magnitude_law": magnitude.to_payload(),
+        "radius_law": radius.to_payload(),
+        "magnitude_plot": {
+            "observed": {
+                "x": observed_x.tolist(),
+                "density": magnitude.density(observed_x).tolist(),
+            },
+        },
+    }
+
+
+def _radius_aggregate(calibration):
+    magnitude_edges = np.linspace(14.0, 28.0, 15)
+    radius_edges = np.geomspace(0.03, 10.0, 9)
+    magnitude = FaintCappedMagnitudeLaw.from_payload(
+        calibration["magnitude_law"],
+    )
+    radius = ConditionalRadiusLaw.from_payload(calibration["radius_law"])
+    grid = joint_density_grid(
+        magnitude,
+        radius,
+        magnitude_edges=magnitude_edges,
+        log_radius_edges=np.log10(radius_edges),
+    )
+    area_arcmin2 = 100.0
+    expected = grid["density"] * area_arcmin2
+    return {
+        "magnitude_edges": magnitude_edges.tolist(),
+        "radius_edges_arcsec": radius_edges.tolist(),
+        "footprint_area_arcmin2": area_arcmin2,
+        "joint_bins": [
+            {
+                "magnitude_bin": magnitude_index,
+                "radius_bin": radius_index,
+                "expected_radii": float(expected[magnitude_index, radius_index]),
+            }
+            for magnitude_index in range(expected.shape[0])
+            for radius_index in range(expected.shape[1])
+        ],
+    }
+
+
+def test_population_fit_comparison_exports_four_panel_raster_and_vector_plate():
+    previous = _comparison_calibration(
+        fingerprint="a" * 64,
+        tail_fraction=0.15,
+        radius_intercept=-0.30,
+        magnitude_intercept=-3.0,
+    )
+    candidate = _comparison_calibration(
+        fingerprint="b" * 64,
+        tail_fraction=0.02,
+        radius_intercept=-0.48,
+        magnitude_intercept=-3.1,
+        kind="euclid_vis2fwhm_circularized_sersic_re_joint",
+    )
+    aggregate = _radius_aggregate(candidate)
+
+    png = render_population_fit_comparison(
+        previous, candidate, aggregate, output_format="png", dpi=120,
+    )
+    pdf = render_population_fit_comparison(
+        previous, candidate, aggregate, output_format="pdf", dpi=120,
+    )
+    svg = render_population_fit_comparison(
+        previous, candidate, aggregate, output_format="svg", dpi=120,
+    )
+
+    assert png.startswith(b"\x89PNG\r\n\x1a\n")
+    assert pdf.startswith(b"%PDF")
+    assert b"<svg" in svg[:1000]
+    assert b"Galaxy population fit" in svg
+    assert b"VIS 2FWHM magnitude density" in svg
+    assert b"Normalized half-light-radius marginal shape" in svg
+    assert b"Conditional S\xc3\xa9rsic size" in svg
+    assert b"Q1 circularized density" in svg
+    assert b"Previous generation law" in svg
+    assert b"Candidate generation law" in svg
+    assert b"Previous major-axis model shape" in svg
+    assert b"Candidate circularized model shape" in svg
+    assert b"Q1 circularized shape" in svg
+    assert b"Q1 morphology subset is incomplete" in svg
+    assert b"no field regeneration" in svg
+
+
+def test_population_fit_comparison_rejects_malformed_aggregate():
+    previous = _comparison_calibration(
+        fingerprint="a" * 64,
+        tail_fraction=0.15,
+        radius_intercept=-0.30,
+        magnitude_intercept=-3.0,
+    )
+    candidate = _comparison_calibration(
+        fingerprint="b" * 64,
+        tail_fraction=0.02,
+        radius_intercept=-0.48,
+        magnitude_intercept=-3.1,
+    )
+
+    with pytest.raises(ValueError, match="Q1 radius aggregate"):
+        render_population_fit_comparison(previous, candidate, {})
 
 
 def _star_calibration():
