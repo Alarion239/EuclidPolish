@@ -17,7 +17,7 @@ type Curve = {
 };
 type BrightnessCurve = Curve & {
   label: string;
-  survey: "euclid" | "cosmos" | "fit" | "generation";
+  survey: "euclid" | "synthetic" | "cosmos" | "fit" | "generation";
   band: string;
   estimator: string;
   selection: string;
@@ -35,7 +35,7 @@ type BrightnessCurve = Curve & {
 type RadiusCurve = Curve & {
   label: string;
   source: SourceKey;
-  radius_type: "detection" | "kron" | "half_light" | "half_light_shape";
+  radius_type: "detection" | "kron" | "half_light" | "rendered_half_light" | "half_light_shape";
   units: string;
   normalization?: "surface_density" | "probability_density";
   default_on?: boolean;
@@ -66,6 +66,9 @@ type Source = {
   is_active?: boolean;
   validated?: boolean;
   version?: number;
+  fields?: number;
+  measured_radius_rows?: number;
+  measured_radius_fraction?: number;
   aperture_scatter?: ApertureScatter;
 };
 type FluxKey = "f1" | "f2" | "f3" | "f4";
@@ -156,14 +159,15 @@ type Q1Counts = {
     queried_bins?: number;
   }>;
 };
-type SourceKey = "euclid" | "cosmos" | "fit";
+type SourceKey = "euclid" | "synthetic" | "cosmos" | "fit";
 
 const SOURCE: Record<SourceKey, { label: string; kicker: string; color: string }> = {
   euclid: { label: "Euclid MER + PHZ", kicker: "observed layer", color: "#2478d4" },
+  synthetic: { label: "Generated test + validation", kicker: "actual rendered draws", color: "#d39b32" },
   cosmos: { label: "COSMOS2025", kicker: "diagnostic only", color: "#00a078" },
   fit: { label: "Euclid joint fit", kicker: "generator candidate", color: "#e25543" },
 };
-const ORDER: SourceKey[] = ["euclid", "cosmos", "fit"];
+const ORDER: SourceKey[] = ["euclid", "synthetic", "cosmos", "fit"];
 const PARAMETER_ORDER = ["redshift", "magnitude", "radius", "stellar_mass", "specific_sfr"];
 const GROWTH: Record<GrowthKey, { label: string; color: string }> = {
   g1: { label: "g₁ = m₁ − m₄", color: "#31a7d8" },
@@ -172,6 +176,7 @@ const GROWTH: Record<GrowthKey, { label: string; color: string }> = {
 };
 const BRIGHTNESS_COLORS = {
   euclid: ["#2478d4", "#31a7d8", "#33c4c9", "#786fd4", "#ad6bd8", "#e268a7"],
+  synthetic: ["#d39b32", "#e1ad45", "#b98028", "#9d7134", "#7d6445"],
   cosmos: ["#00a078", "#35b45f", "#83b93d", "#c2a82f", "#dd843c", "#df5f51", "#c95285", "#9e68c7", "#697fd0", "#3c9eb9", "#4b8c70", "#8c8751", "#ad6d69", "#88738e", "#5f8290"],
   fit: ["#e25543", "#ef754b", "#c94d68", "#9f518d"],
   generation: ["#168f65"],
@@ -181,6 +186,8 @@ const RADIUS_COLORS: Record<string, string> = {
   euclid_kron: "#786fd4",
   euclid_sersic_re: "#31a7d8",
   cosmos_re: "#00a078",
+  synthetic_requested_re: "#d39b32",
+  synthetic_clean_half_light: "#f0b45b",
   fit_re: "#e25543",
   euclid_sersic_re_shape: "#2478d4",
   fit_re_q1_weighted_shape: "#e25543",
@@ -190,6 +197,7 @@ const RADIUS_TYPE_LABEL: Record<RadiusCurve["radius_type"], string> = {
   detection: "Detection / deblender",
   kron: "Kron photometry",
   half_light: "Half-light radius",
+  rendered_half_light: "Rendered image half-light",
   half_light_shape: "Normalized half-light shape",
 };
 
@@ -252,6 +260,7 @@ function SourceLedger({ sources }: { sources: Payload["sources"] }) {
           {source.available ? <Badge tone={fitted && !source.validated ? "warn" : "good"}>{fitted ? (source.is_active ? "active" : "candidate") : "cached"}</Badge> : <Badge tone="warn">missing</Badge>}
           {!fitted && <span><b>{compact(source.rows)}</b> objects</span>}
           {!fitted && <span><b>{source.area_arcmin2?.toFixed(1) ?? "—"}</b> arcmin²</span>}
+          {key === "synthetic" && <span><b>{compact(source.measured_radius_rows)}</b> image-measured radii</span>}
           {key === "euclid" && <span><b>{compact(source.phz_pdf_rows)}</b> {source.phz_pdf_source === "summary_reconstruction" ? "reconstructed PDFs" : "PHZ PDFs"}</span>}
           {fitted && source.fingerprint && <span title={source.fingerprint}><b>{source.fingerprint.slice(0, 10)}</b> fingerprint</span>}
         </div>
@@ -276,8 +285,8 @@ function DensityPlot({ parameter }: { parameter: Parameter }) {
     color: SOURCE[key].color,
     width: key === "fit" ? 2.7 : 1.8,
     dash: key === "cosmos" ? [7, 4] : undefined,
-    marker: key === "euclid" ? "ring" : undefined,
-    dots: key === "euclid",
+    marker: key === "euclid" ? "ring" : key === "synthetic" ? "filled" : undefined,
+    dots: key === "euclid" || key === "synthetic",
     markerEvery: Math.max(1, Math.ceil(curve.x.length / 18)),
   }));
   return <>
@@ -301,7 +310,7 @@ function ApparentBrightnessPlot({ parameter }: { parameter: Parameter }) {
     .filter(([, curve]) => curve.default_on)
     .map(([key]) => key));
   const colorByKey = useMemo(() => {
-    const indices = { euclid: 0, cosmos: 0, fit: 0, generation: 0 };
+    const indices = { euclid: 0, synthetic: 0, cosmos: 0, fit: 0, generation: 0 };
     return Object.fromEntries(entries.map(([key, curve]) => {
       const palette = BRIGHTNESS_COLORS[curve.survey];
       const color = palette[indices[curve.survey] % palette.length];
@@ -358,6 +367,9 @@ function ApparentBrightnessPlot({ parameter }: { parameter: Parameter }) {
             : curve.survey === "fit" ? 2.7 : 2.0,
           dash: curve.survey === "cosmos" ? [7, 4]
             : curve.survey === "fit" ? [3, 3] : undefined,
+          marker: curve.survey === "synthetic" ? "filled" : undefined,
+          dots: curve.survey === "synthetic",
+          markerEvery: Math.max(1, Math.ceil(curve.x.length / 18)),
         }))}
         aspect={0.54}
       />
@@ -381,12 +393,12 @@ function ApparentBrightnessPlot({ parameter }: { parameter: Parameter }) {
       <span>The default shows the Q1 MER + PHZ VIS 2FWHM counts and the actual green generation law: three fitted continuous bright-bridge segments at fixed joins, the fitted main line, then 100 galaxies / arcmin² / mag through VIS 29. Optional VIS/F814W diagnostics retain their native estimators.</span>
     </div>
     <div className="brightness-controls">
-      {(["euclid", "cosmos", "fit", "generation"] as const).map((survey) => {
+      {(["euclid", "synthetic", "cosmos", "fit", "generation"] as const).map((survey) => {
         const group = surveyEntries(survey);
         if (!group.length) return null;
         return <section key={survey}>
           <header>
-            <div><span>{survey === "euclid" ? "Euclid MER" : survey === "cosmos" ? "COSMOS2025" : survey === "fit" ? "Q1 curve fits" : "Generation law"}</span><small>{survey === "euclid" ? "VIS · solid measurements" : survey === "cosmos" ? "HST/ACS F814W · long dashes" : survey === "fit" ? "VIS · short-dashed local fits" : "VIS · three-segment bright bridge/main/flat law"}</small></div>
+            <div><span>{survey === "euclid" ? "Euclid MER" : survey === "synthetic" ? "Generated fields" : survey === "cosmos" ? "COSMOS2025" : survey === "fit" ? "Q1 curve fits" : "Generation law"}</span><small>{survey === "euclid" ? "VIS · solid measurements" : survey === "synthetic" ? "actual test + validation source records · point markers" : survey === "cosmos" ? "HST/ACS F814W · long dashes" : survey === "fit" ? "VIS · short-dashed local fits" : "VIS · three-segment bright bridge/main/flat law"}</small></div>
             <div>
               <Button size="sm" variant="ghost" onClick={() => setSelected((current) => Array.from(new Set([...current, ...group.map(([key]) => key)])))}>all</Button>
               <Button size="sm" variant="ghost" onClick={() => setSelected((current) => current.filter((key) => !group.some(([candidate]) => candidate === key)))}>none</Button>
@@ -412,10 +424,15 @@ function RadiusPlot({ parameter }: { parameter: Parameter }) {
   const normalizationOf = (curve?: RadiusCurve) => curve?.normalization ?? "surface_density";
   const [selected, setSelected] = useState<string[]>(() => {
     const defaults = entries.filter(([, curve]) => curve.default_on);
+    const generated = defaults.filter(
+      ([, curve]) => curve.source === "synthetic"
+        && normalizationOf(curve) === "surface_density",
+    );
     const normalized = defaults.filter(
       ([, curve]) => normalizationOf(curve) === "probability_density",
     );
-    return (normalized.length ? normalized : defaults).map(([key]) => key);
+    return (generated.length ? generated : normalized.length ? normalized : defaults)
+      .map(([key]) => key);
   });
   const visible = entries.filter(([key]) => selected.includes(key));
   const toggle = (key: string) => setSelected((current) => {
@@ -429,7 +446,7 @@ function RadiusPlot({ parameter }: { parameter: Parameter }) {
     ];
   });
   const grouped = ([
-    "detection", "kron", "half_light", "half_light_shape",
+    "detection", "kron", "half_light", "rendered_half_light", "half_light_shape",
   ] as RadiusCurve["radius_type"][])
     .map((radiusType) => [radiusType, entries.filter(([, curve]) => curve.radius_type === radiusType)] as const)
     .filter(([, group]) => group.length);
@@ -472,8 +489,9 @@ function RadiusPlot({ parameter }: { parameter: Parameter }) {
           width: curve.source === "fit" ? 2.7 : 1.9,
           dash: key === "fit_re_full_generation_shape" ? [3, 3]
             : curve.source === "cosmos" ? [7, 4] : undefined,
-          marker: curve.source === "euclid" ? "ring" : undefined,
-          dots: curve.source === "euclid",
+          marker: curve.source === "euclid" ? "ring"
+            : curve.source === "synthetic" ? "filled" : undefined,
+          dots: curve.source === "euclid" || curve.source === "synthetic",
           markerEvery: Math.max(1, Math.ceil(curve.x.length / 18)),
         }))}
         aspect={0.58}
@@ -493,12 +511,12 @@ function RadiusPlot({ parameter }: { parameter: Parameter }) {
   return <div className="radius-comparison">
     <div className="radius-warning">
       <strong>Catalogue size concepts, kept separate.</strong>
-      <span>The generator fits only the science-clean circularized PHZ/MER VIS Sérsic Rₑ = Rₑ,major√q jointly with VIS 2FWHM brightness. The normalized controls separate the Q1 magnitude mix from the full faint-extended generation mix; detection, Kron, and COSMOS remain diagnostics.</span>
+      <span>The requested generated Sérsic Rₑ and the clean-image curve-of-growth half-light radius are deliberately separate. The latter is measured only for isolated sources and has a 0.05″ resolution floor. The normalized controls separately compare the Q1 magnitude mix with the full faint-extended generation mix; detection, Kron, and COSMOS remain diagnostics.</span>
     </div>
     <div className="radius-controls">
       {grouped.map(([radiusType, group]) => <section key={radiusType}>
         <header>
-          <div><span>{RADIUS_TYPE_LABEL[radiusType]}</span><small>{radiusType === "detection" ? "diagnostic only" : radiusType === "kron" ? "diagnostic only" : radiusType === "half_light_shape" ? "normalized Q1 and candidate magnitude mixes" : "Euclid data + Euclid fit; COSMOS diagnostic"}</small></div>
+          <div><span>{RADIUS_TYPE_LABEL[radiusType]}</span><small>{radiusType === "detection" ? "diagnostic only" : radiusType === "kron" ? "diagnostic only" : radiusType === "rendered_half_light" ? "measured on clean generated images · isolated subset" : radiusType === "half_light_shape" ? "normalized Q1 and candidate magnitude mixes" : "catalogue and requested geometry"}</small></div>
           <div>
             <Button size="sm" variant="ghost" onClick={() => selectGroup([...group])}>all</Button>
             <Button size="sm" variant="ghost" onClick={() => setSelected((current) => current.filter((key) => !group.some(([candidate]) => candidate === key)))}>none</Button>
@@ -795,8 +813,8 @@ export default function GalaxyDistributionsPage() {
       <header className="galaxy-density-section__head">
         <div>
           <div className="eyebrow">surface-density marginals</div>
-          <h2>Where the three population layers agree—and where they do not</h2>
-          <p>Catalogue controls retain sky-density units; the normalized radius-shape controls use unit-integral probability per dex. Log scaling keeps faint and bright populations legible.</p>
+          <h2>Where the observed, generated, and fitted populations agree—and where they do not</h2>
+          <p>The gold points are the sources actually present in the current test and validation fields. Catalogue controls retain sky-density units; the normalized radius-shape controls use unit-integral probability per dex.</p>
         </div>
         <div className="galaxy-key">
           {ORDER.map((key) => <span key={key}><i style={{ background: SOURCE[key].color }} />{SOURCE[key].label}</span>)}

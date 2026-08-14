@@ -24,7 +24,11 @@ from astroquery.esa.euclid import Euclid
 from scipy.special import ndtr
 
 from euclid_polish.config import Config
-from euclid_polish.photometry import electrons_to_ab_mag, uJy_to_ab_mag
+from euclid_polish.photometry import (
+    adu_per_s_to_electrons_factor,
+    electrons_to_ab_mag,
+    uJy_to_ab_mag,
+)
 from euclid_polish.population.joint_galaxy import LF_Z_EDGES
 from euclid_polish.sky.generation.source_catalog import read_sources
 from euclid_polish.web.helpers.paths import _sky_records_local_dir
@@ -687,8 +691,17 @@ def _real_fields(inference: Iterable[Path],
         hdus = [fits.open(raw_dir / f"{band}.fits", memmap=True) for band in BANDS]
         try:
             planes = [
-                _center_crop(np.asarray(hdu[0].data, dtype=np.float32), 2560)
-                for hdu in hdus
+                _center_crop(
+                    np.asarray(hdu[0].data, dtype=np.float32)
+                    * adu_per_s_to_electrons_factor(
+                        float(hdu[0].header.get(
+                            "MAGZERO", Config.get_band(band).sim_zeropoint_e,
+                        )),
+                        Config.get_band(band),
+                    ),
+                    2560,
+                )
+                for band, hdu in zip(BANDS, hdus, strict=True)
             ]
             for row in range(10):
                 for col in range(10):

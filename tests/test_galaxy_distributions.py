@@ -41,6 +41,52 @@ def test_radius_plot_spans_one_hundred_native_vis_pixels():
     assert "100 native VIS pixels" in radius["note"]
 
 
+def test_clean_image_half_light_measurement_uses_pixels_and_rejects_blends():
+    yy, xx = np.indices((81, 81), dtype=np.float64)
+    image = np.exp(-0.5 * ((xx - 40) ** 2 + (yy - 40) ** 2) / 3.0**2)
+    rows = [{
+        "type": "galaxy", "x_pix": 40.0, "y_pix": 40.0,
+        "flux_vis_e": float(np.sum(image)), "re_arcsec": 0.18,
+    }]
+
+    measured = helper._measure_field_half_light_radii(
+        image, rows, pixel_scale_arcsec=0.05,
+    )
+
+    assert set(measured) == {0}
+    assert measured[0] == pytest.approx(0.18, abs=0.04)
+
+
+def test_actual_synthetic_catalogue_draws_are_added_to_every_parameter(
+    tmp_path, monkeypatch,
+):
+    source = tmp_path / "sources_test.csv"
+    source.write_text(
+        "field_index,type,render,x_pix,y_pix,flux_vis_e,flux_y_e,"
+        "flux_j_e,flux_h_e,z,re_arcsec,target_logmass,target_logssfr,"
+        "achieved_vis_2fwhm_mag\n"
+        "0,galaxy,tng,10,10,1000,900,800,700,0.8,0.2,9.5,-9.8,24.0\n"
+        "0,galaxy,tng,20,20,500,450,400,350,1.2,0.1,8.8,-10.2,25.0\n"
+    )
+    monkeypatch.setattr(helper, "_synthetic_paths", lambda: ([], [source]))
+
+    parameters = helper._empty_parameters()
+    result = helper._read_synthetic(parameters)
+
+    assert result["available"] is True
+    assert result["rows"] == 2
+    assert result["fields"] == 1
+    assert result["measured_radius_rows"] == 0
+    for key in ("redshift", "stellar_mass", "specific_sfr"):
+        assert parameters[key]["series"]["synthetic"]["weighted_count"] == 2
+    brightness = parameters["magnitude"]["photometry_series"]
+    assert brightness["synthetic_vis_2fwhm"]["weighted_count"] == 2
+    assert brightness["synthetic_vis_total"]["survey"] == "synthetic"
+    radius = parameters["radius"]["radius_series"]
+    assert radius["synthetic_requested_re"]["weighted_count"] == 2
+    assert radius["synthetic_clean_half_light"]["weighted_count"] == 0
+
+
 def test_q1_radius_plot_exposes_normalized_clean_shape(monkeypatch):
     payload = {
         "complete": True,

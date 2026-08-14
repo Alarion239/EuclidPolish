@@ -15,7 +15,7 @@ from typing import Any
 import numpy as np
 
 from euclid_polish.config import Config
-from euclid_polish.photometry import uJy_to_ab_mag
+from euclid_polish.photometry import electrons_to_ab_mag, uJy_to_ab_mag
 from euclid_polish.population.joint_galaxy import (
     COSMOS_AREA_ARCMIN2,
     COSMOS_FIT_MAG_MIN,
@@ -29,6 +29,8 @@ from euclid_polish.web.helpers.population_calibration import (
     joint_galaxy_state,
 )
 from euclid_polish.web.helpers.population_comparison import (
+    FIELD_AREA_ARCMIN2,
+    _synthetic_paths,
     euclid_catalog_meta_path,
     euclid_catalog_path,
     euclid_phz_pdf_path,
@@ -45,7 +47,7 @@ from euclid_polish.web.helpers.q1_galaxy_radius_statistics import (
     read_q1_galaxy_radius_statistics,
 )
 
-ARTIFACT_VERSION = 14
+ARTIFACT_VERSION = 15
 MAG_EDGES = np.arange(14.0, 30.0001, 0.25)
 RADIUS_MAX_VIS_PIXELS = 100.0
 RADIUS_MAX_ARCSEC = RADIUS_MAX_VIS_PIXELS * float(Config.VIS_PIXEL_SCALE_ARCSEC)
@@ -101,6 +103,11 @@ def _signature(path: Path) -> dict[str, int] | None:
 
 
 def _inputs() -> dict[str, Any]:
+    _records, synthetic_sources = _synthetic_paths()
+    synthetic_clean = [
+        path.with_name(path.name.replace("sources_", "clean_").replace(".csv", ".tfrecord"))
+        for path in synthetic_sources
+    ]
     return {
         "euclid_csv": _signature(euclid_catalog_path()),
         "euclid_meta": _signature(euclid_catalog_meta_path()),
@@ -111,6 +118,12 @@ def _inputs() -> dict[str, Any]:
         "joint_galaxy_candidate": _signature(joint_galaxy_candidate_path()),
         "cosmos": _signature(Path(Config.COSMOS_POPULATION_PRIOR_PATH)),
         "fit": _signature(Path(Config.JOINT_GALAXY_POPULATION_FIT_PATH)),
+        "synthetic_sources": {
+            path.name: _signature(path) for path in synthetic_sources
+        },
+        "synthetic_clean": {
+            path.name: _signature(path) for path in synthetic_clean
+        },
     }
 
 
@@ -232,6 +245,289 @@ def _valid_ab_magnitude(values: np.ndarray) -> np.ndarray:
     )
 
 
+def _finite_number(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _measure_field_half_light_radii(
+    vis_image: np.ndarray,
+    rows: list[dict[str, Any]],
+    *,
+    pixel_scale_arcsec: float,
+) -> dict[int, float]:
+    """Measure rendered circular half-light radii in one clean VIS scene.
+
+    The clean record is starless and noiseless but contains every galaxy in
+    the field.  Catalogue total flux supplies the otherwise ambiguous
+    curve-of-growth endpoint.  We reject sources whose half-light aperture
+    could contain more than ten per cent catalogue flux from neighbouring
+    galaxies, so this achieved-size diagnostic is deliberately an isolated
+    subset rather than a deblender measurement.
+    """
+    image = np.asarray(vis_image, dtype=np.float64)
+    if image.ndim != 2 or pixel_scale_arcsec <= 0.0:
+        return {}
+    usable: list[tuple[int, float, float, float, float]] = []
+    for index, row in enumerate(rows):
+        if str(row.get("type", "")).lower() not in {"galaxy", "lens"}:
+            continue
+        x = _finite_number(row.get("x_pix"))
+        y = _finite_number(row.get("y_pix"))
+        flux = _finite_number(row.get("flux_vis_e"))
+        radius = _finite_number(row.get("re_arcsec"))
+        if x is None or y is None or flux is None or flux <= 0.0:
+            continue
+        usable.append((index, round(x), round(y), flux, radius or pixel_scale_arcsec))
+    if not usable:
+        return {}
+
+    positions = np.asarray([(item[1], item[2]) for item in usable], dtype=np.float64)
+    fluxes = np.asarray([item[3] for item in usable], dtype=np.float64)
+    nominal_radii = np.asarray([item[4] for item in usable], dtype=np.float64)
+    measured: dict[int, float] = {}
+    height, width = image.shape
+    for local_index, (row_index, x, y, flux, nominal_radius) in enumerate(usable):
+        edge_radius = min(x, y, width - 1 - x, height - 1 - y)
+        maximum_radius = min(
+            edge_radius,
+            max(12.0, 8.0 * nominal_radius / pixel_scale_arcsec),
+            120.0,
+        )
+        if maximum_radius < 2.0:
+            continue
+        x_lo = max(0, int(math.floor(x - maximum_radius)))
+        x_hi = min(width, int(math.ceil(x + maximum_radius)) + 1)
+        y_lo = max(0, int(math.floor(y - maximum_radius)))
+        y_hi = min(height, int(math.ceil(y + maximum_radius)) + 1)
+        yy, xx = np.indices((y_hi - y_lo, x_hi - x_lo), dtype=np.float64)
+        radius_pixels = np.hypot(xx + x_lo - x, yy + y_lo - y)
+        inside = radius_pixels <= maximum_radius
+        radii = radius_pixels[inside]
+        values = np.maximum(image[y_lo:y_hi, x_lo:x_hi][inside], 0.0)
+        order = np.argsort(radii)
+        radii = radii[order]
+        cumulative = np.cumsum(values[order])
+        crossing = int(np.searchsorted(cumulative, 0.5 * flux))
+        if crossing >= radii.size:
+            continue
+        achieved = float(radii[crossing] * pixel_scale_arcsec)
+
+        distances = np.hypot(
+            positions[:, 0] - x,
+            positions[:, 1] - y,
+        ) * pixel_scale_arcsec
+        neighbours = np.arange(len(usable)) != local_index
+        # Four nominal radii is a conservative light-support proxy.  The
+        # ten-per-cent cut removes blends without discarding a bright, large
+        # source merely because many much fainter objects share its field.
+        overlaps = neighbours & (
+            distances - 4.0 * np.maximum(nominal_radii, pixel_scale_arcsec)
+            <= achieved
+        )
+        contamination_bound = float(np.sum(fluxes[overlaps])) / flux
+        if contamination_bound > 0.10:
+            continue
+        measured[row_index] = max(achieved, pixel_scale_arcsec)
+    return measured
+
+
+def _read_synthetic(
+    parameters: dict[str, Any],
+    progress: Callable[[int, int, str], None] | None = None,
+) -> dict[str, Any]:
+    """Add the actual test/validation draws and clean-image measurements."""
+    _records, source_paths = _synthetic_paths()
+    if not source_paths:
+        return {
+            "available": False,
+            "detail": "No generated test/validation source catalogues are cached.",
+        }
+
+    galaxies: list[dict[str, Any]] = []
+    fields = 0
+    split_rows: dict[str, dict[int, list[dict[str, Any]]]] = {}
+    for path in source_paths:
+        split = path.stem.removeprefix("sources_")
+        by_field: dict[int, list[dict[str, Any]]] = {}
+        with path.open(newline="", encoding="utf-8") as handle:
+            for raw in csv.DictReader(handle):
+                field_index = int(raw["field_index"])
+                row = dict(raw)
+                row["_split"] = split
+                row["_field_index"] = field_index
+                row["_field_row"] = len(by_field.setdefault(field_index, []))
+                by_field[field_index].append(row)
+                if str(raw.get("type", "")).lower() == "galaxy":
+                    galaxies.append(row)
+        fields += len(by_field)
+        split_rows[split] = by_field
+
+    area = fields * FIELD_AREA_ARCMIN2
+    if not galaxies or area <= 0.0:
+        return {
+            "available": False,
+            "detail": "Generated source catalogues contain no galaxies.",
+        }
+
+    measured_by_identity: dict[tuple[str, int, int], float] = {}
+    measured_fields = 0
+    for source_path in source_paths:
+        split = source_path.stem.removeprefix("sources_")
+        clean_path = source_path.with_name(f"clean_{split}.tfrecord")
+        if not clean_path.is_file():
+            continue
+        import tensorflow as tf
+
+        from euclid_polish.image.core import Image
+
+        for field_index, raw_record in enumerate(
+            tf.data.TFRecordDataset([str(clean_path)])
+        ):
+            image = Image.from_tfrecord(raw_record)
+            field_rows = split_rows[split].get(field_index, [])
+            field_measurements = _measure_field_half_light_radii(
+                np.asarray(image.data)[..., 0],
+                field_rows,
+                pixel_scale_arcsec=float(image.pixel_scale_arcsec),
+            )
+            for row_index, radius in field_measurements.items():
+                measured_by_identity[(split, field_index, row_index)] = radius
+            measured_fields += 1
+            if progress:
+                progress(4, 6, f"measure clean generated galaxies · {measured_fields}/{fields}")
+
+    def values(*keys: str) -> np.ndarray:
+        output = []
+        for row in galaxies:
+            value = next(
+                (
+                    candidate
+                    for key in keys
+                    if (candidate := _finite_number(row.get(key))) is not None
+                ),
+                math.nan,
+            )
+            output.append(value)
+        return np.asarray(output, dtype=np.float64)
+
+    redshift = values("z")
+    mass = values("target_logmass", "logmass")
+    ssfr = values("target_logssfr", "native_tng_logssfr")
+    requested_radius = values("re_arcsec", "target_re_arcsec")
+    achieved_f2 = values("achieved_vis_2fwhm_mag", "target_vis_2fwhm_mag")
+    redshift_edges = np.linspace(0.0, 6.0, 49)
+    for key, data, edges, definition in (
+        (
+            "redshift", redshift, redshift_edges,
+            "actual generated test/validation galaxy redshift draws",
+        ),
+        (
+            "stellar_mass", mass, MASS_EDGES,
+            "actual generated target stellar-mass draws",
+        ),
+        (
+            "specific_sfr", ssfr, SSFR_EDGES,
+            "actual generated target specific-SFR draws",
+        ),
+    ):
+        valid = np.isfinite(data)
+        if key == "specific_sfr":
+            valid &= data < -8.2
+        parameters[key]["series"]["synthetic"] = _curve(
+            edges,
+            np.histogram(data[valid], edges)[0],
+            area,
+            definition,
+        )
+
+    photometry = parameters["magnitude"]["photometry_series"]
+    photometry["synthetic_vis_2fwhm"] = _brightness_curve(
+        achieved_f2,
+        area,
+        label="Generated fields · VIS 2FWHM",
+        survey="synthetic",
+        band="Euclid VIS",
+        estimator="achieved 2FWHM-diameter aperture magnitude from source record",
+        selection="all galaxies in regenerated test + validation fields",
+        default_on=True,
+    )
+    for band, flux_key, label in (
+        ("VIS", "flux_vis_e", "VIS total stamp"),
+        ("Y_E", "flux_y_e", "Y total stamp"),
+        ("J_E", "flux_j_e", "J total stamp"),
+        ("H_E", "flux_h_e", "H total stamp"),
+    ):
+        flux = values(flux_key)
+        magnitudes = np.full(flux.shape, np.nan, dtype=np.float64)
+        valid = np.isfinite(flux) & (flux > 0.0)
+        magnitudes[valid] = [
+            electrons_to_ab_mag(item, Config.get_band(band))
+            for item in flux[valid]
+        ]
+        photometry[f"synthetic_{band.lower()}_total"] = _brightness_curve(
+            magnitudes,
+            area,
+            label=f"Generated fields · {label}",
+            survey="synthetic",
+            band=f"Euclid {band.replace('_E', '')}",
+            estimator="total clean rendered-stamp flux recorded in source CSV",
+            selection="all galaxies in regenerated test + validation fields",
+            default_on=band == "VIS",
+        )
+
+    radius_series = parameters["radius"]["radius_series"]
+    radius_series["synthetic_requested_re"] = _radius_curve(
+        requested_radius,
+        area,
+        label="Generated fields · requested Sérsic Rₑ",
+        source="synthetic",
+        radius_type="half_light",
+        definition=(
+            "actual nominal circularized Sérsic Rₑ draws stored in the source CSV; "
+            "continuous-space generator geometry, not an image measurement"
+        ),
+        default_on=True,
+    )
+    achieved_radius = np.asarray([
+        measured_by_identity.get(
+            (str(row["_split"]), int(row["_field_index"]), int(row["_field_row"])),
+            math.nan,
+        )
+        for row in galaxies
+    ], dtype=np.float64)
+    radius_series["synthetic_clean_half_light"] = _radius_curve(
+        achieved_radius,
+        area,
+        label="Generated fields · clean-image half-light radius",
+        source="synthetic",
+        radius_type="rendered_half_light",
+        definition=(
+            "circular curve-of-growth half-light radius measured directly on "
+            "starless clean VIS images; catalogue total flux sets the endpoint; "
+            "neighbour-contamination bound <= 10%; resolution floor is one "
+            "0.05 arcsec clean-image pixel"
+        ),
+        default_on=True,
+    )
+    measured_count = int(np.count_nonzero(np.isfinite(achieved_radius)))
+    return {
+        "available": True,
+        "rows": len(galaxies),
+        "fields": fields,
+        "area_arcmin2": area,
+        "measured_radius_rows": measured_count,
+        "measured_radius_fraction": measured_count / len(galaxies),
+        "detail": (
+            f"Current regenerated test + validation draws; {measured_count:,} "
+            "isolated galaxy radii measured directly on clean VIS images"
+        ),
+    }
+
+
 def _aperture_columns(values: np.ndarray, count: int) -> np.ndarray | None:
     """Normalize a FITS vector column saved in the compact NPZ to (row, aperture)."""
     array = np.asarray(values, dtype=np.float64)
@@ -333,7 +629,8 @@ def _empty_parameters() -> dict[str, dict[str, Any]]:
             "density_unit": "objects / arcmin² / redshift",
             "note": (
                 "Euclid uses probability-weighted PHZ PDFs; COSMOS uses "
-                "catalogue photo-z; the fit is the corrected latent draw model."
+                "catalogue photo-z; the fit is the corrected latent draw model; "
+                "generated points are the actual test/validation draws."
             ),
             "series": {},
         },
@@ -344,7 +641,8 @@ def _empty_parameters() -> dict[str, dict[str, Any]]:
             "note": (
                 "Direct catalogue measurements only. Curves retain their native "
                 "VIS or HST/F814W passband, PSF treatment, and flux estimator; "
-                "no F814W-to-VIS transfer is drawn."
+                "no F814W-to-VIS transfer is drawn. Generated curves come from "
+                "the current source records, not the analytic law."
             ),
             "series": {},
             "photometry_series": {},
@@ -365,7 +663,9 @@ def _empty_parameters() -> dict[str, dict[str, Any]]:
                 "only and do not enter the generator fit. "
                 "Generated Rₑ is nominal continuous-space geometry over "
                 "0.03–10 arcsec (up to 100 native VIS pixels), including "
-                "values below one 0.05 arcsec HR pixel. Normalized shape "
+                "values below one 0.05 arcsec HR pixel. The separately labelled "
+                "clean-image half-light curve is measured after rendering and "
+                "has a one-pixel resolution floor. Normalized shape "
                 "controls are unit-integral probability densities per dex "
                 "and remain separate from catalogue sky-density controls."
             ),
@@ -1277,20 +1577,23 @@ def _read_fit(parameters: dict[str, Any]) -> dict[str, Any]:
 def build_galaxy_distributions(progress: Callable[[int, int, str], None] | None = None) -> dict[str, Any]:
     tick = progress or (lambda _done, _total, _label: None)
     parameters = _empty_parameters()
-    tick(0, 5, "read Euclid MER + PHZ")
+    tick(0, 6, "read Euclid MER + PHZ")
     euclid = _read_euclid(parameters, tick)
-    tick(2, 5, "read progressive Q1 MER + PHZ bright-galaxy counts")
+    tick(2, 6, "read progressive Q1 MER + PHZ bright-galaxy counts")
     q1_counts = _read_q1_bright_counts(parameters)
     q1_radius = _read_q1_radius_statistics(parameters)
-    tick(3, 5, "read COSMOS2025")
+    tick(3, 6, "read COSMOS2025")
     cosmos = _read_cosmos(parameters)
-    tick(4, 5, "reconstruct fitted distribution")
+    tick(4, 6, "measure current generated fields")
+    synthetic = _read_synthetic(parameters, tick)
+    tick(5, 6, "reconstruct fitted distribution")
     fit = _read_fit(parameters)
     payload = {
         "version": ARTIFACT_VERSION,
         "inputs": _inputs(),
         "sources": {
-            "euclid": euclid, "cosmos": cosmos, "fit": fit,
+            "euclid": euclid, "synthetic": synthetic,
+            "cosmos": cosmos, "fit": fit,
             "q1_radius": q1_radius,
         },
         "q1_counts": q1_counts,
@@ -1302,7 +1605,7 @@ def build_galaxy_distributions(progress: Callable[[int, int, str], None] | None 
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(json.dumps(payload, separators=(",", ":")))
     os.replace(temporary, path)
-    tick(5, 5, "galaxy-distribution plots ready")
+    tick(6, 6, "galaxy-distribution plots ready")
     return payload
 
 

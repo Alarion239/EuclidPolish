@@ -19,6 +19,7 @@ from euclid_polish.web.helpers.population_comparison import (
     _normalise_field,
     _parameter_payload,
     _read_synthetic_sources,
+    _real_fields,
     _shared_parameter_payload,
     _synthetic_dataset_tng_prior,
     query_euclid_population,
@@ -129,6 +130,42 @@ def test_population_field_normalisation_accepts_fits_plane_order():
     normalized = _normalise_field(cube)
     assert normalized.shape == (255, 255, 4)
     np.testing.assert_array_equal(normalized[..., 2], cube[2, :255, :255])
+
+
+def test_inference_fits_are_converted_from_adu_rate_to_stack_electrons(
+    monkeypatch,
+):
+    from euclid_polish.web.helpers import population_comparison as comparison
+
+    class Plane:
+        def __init__(self, value: float):
+            self.data = np.full((10, 10), value, dtype=np.float32)
+            self.header = {"MAGZERO": value + 20.0}
+
+    class HDUList(list):
+        def close(self):
+            pass
+
+    values = {"VIS": 1.0, "Y_E": 2.0, "J_E": 3.0, "H_E": 4.0}
+    monkeypatch.setattr(comparison, "TILE_SIZE", 1)
+    monkeypatch.setattr(
+        comparison.fits,
+        "open",
+        lambda path, memmap=True: HDUList([Plane(values[Path(path).stem])]),
+    )
+    monkeypatch.setattr(
+        comparison,
+        "adu_per_s_to_electrons_factor",
+        lambda magzero, _band: magzero,
+    )
+
+    fields = list(_real_fields([Path("field/raw/VIS.fits")], []))
+
+    assert len(fields) == 100
+    assert fields[0].shape == (1, 1, 4)
+    assert fields[0][0, 0].tolist() == pytest.approx([
+        21.0, 44.0, 69.0, 96.0,
+    ])
 
 
 def test_population_parameter_payload_plots_every_available_parameter():

@@ -20,6 +20,7 @@ type DensityParameter = {
   gaia_x?: number[];
   gaia: number[];
   model: number[];
+  synthetic: number[];
   point_sources?: number[] | null;
   gaia_fit?: number[] | null;
   fit_ranges?: {
@@ -96,6 +97,9 @@ type Distribution = {
     euclid_color_count: number;
     gaia_count: number;
     gaia_native_g_count?: number;
+    synthetic_area_arcmin2?: number | null;
+    synthetic_star_count?: number;
+    synthetic_color_count?: number;
     parameters: Record<DensityKey, DensityParameter>;
     note: string;
   };
@@ -179,7 +183,7 @@ function logDensity(values: number[]): (number | null)[] {
 
 function densityDomain(parameter: DensityParameter): [number, number] {
   const positive = [
-    parameter.euclid, parameter.gaia, parameter.model,
+    parameter.euclid, parameter.gaia, parameter.model, parameter.synthetic,
     parameter.gaia_fit ?? [], parameter.point_sources ?? [],
   ]
     .flat().filter((value) => Number.isFinite(value) && value > 0);
@@ -336,6 +340,7 @@ function StellarDensityComparison({ distribution }: { distribution: Distribution
           <span><i className="star-density-key__euclid" />Q1 PHZ (VIS)</span>
           <span><i className="star-density-key__gaia" />native Gaia G<sub>AB</sub> + shared-slope fit</span>
           <span><i className="star-density-key__model" />Q1-normalized straight law / colour draw</span>
+          <span><i className="star-density-key__synthetic" />actual generated test + validation stars</span>
         </div>
       </header>
       <div className="star-density-summary" aria-label="Density comparison sample sizes">
@@ -346,6 +351,7 @@ function StellarDensityComparison({ distribution }: { distribution: Distribution
         <span>Euclid four-band <b>{comparison.euclid_color_count.toLocaleString()}</b></span>
         <span>native Gaia G<sub>AB</sub> <b>{comparison.gaia_native_g_count?.toLocaleString() ?? "—"}</b></span>
         <span>Gaia colour projection <b>{comparison.gaia_count.toLocaleString()}</b></span>
+        <span>generated stars <b>{comparison.synthetic_star_count?.toLocaleString() ?? "—"}</b> / <b>{comparison.synthetic_area_arcmin2?.toFixed(1) ?? "—"}</b> arcmin²</span>
         <span>model density <b>{comparison.model_density_arcmin2.toFixed(3)}</b> arcmin⁻²</span>
       </div>
       <div className="star-density-grid">
@@ -390,6 +396,7 @@ function StellarDensityComparison({ distribution }: { distribution: Distribution
                     color: C.comb, width: 2.2, dash: [4, 3],
                   }] : []),
                   { x: parameter.x, y: logDensity(parameter.model), color: categorical(3), width: 2.2, dash: [6, 4] },
+                  { x: parameter.x, y: logDensity(parameter.synthetic), color: categorical(4), width: 1.8, marker: "filled", dots: true, markerEvery: 2 },
                 ]}
                 guides={fitGuides}
                 aspect={key === "vis" ? 0.34 : 0.62}

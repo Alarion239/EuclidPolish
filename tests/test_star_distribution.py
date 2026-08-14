@@ -202,6 +202,17 @@ def test_stellar_density_comparison_uses_area_density_and_all_six_colours(
         stellar_model,
         euclid_area_arcmin2=10.0,
         gaia_area_arcmin2=20.0,
+        synthetic_rows=[
+            {
+                "type": "star", "mag_vis": "20", "mag_y_e": "19.5",
+                "mag_j_e": "19.0", "mag_h_e": "18.5",
+            },
+            {
+                "type": "star", "mag_vis": "21", "mag_y_e": "20.4",
+                "mag_j_e": "19.8", "mag_h_e": "19.2",
+            },
+        ],
+        synthetic_area_arcmin2=4.0,
         sample_count=500,
     )
 
@@ -210,6 +221,9 @@ def test_stellar_density_comparison_uses_area_density_and_all_six_colours(
     assert result["euclid_color_count"] == 1
     assert result["gaia_count"] == 2
     assert result["gaia_native_g_count"] == 1
+    assert result["synthetic_star_count"] == 2
+    assert result["synthetic_color_count"] == 2
+    assert result["synthetic_area_arcmin2"] == pytest.approx(4.0)
     magnitude = result["parameters"]["vis"]
     gaia_bin_width = magnitude["gaia_x"][1] - magnitude["gaia_x"][0]
     assert gaia_bin_width == pytest.approx(0.5)
@@ -223,6 +237,7 @@ def test_stellar_density_comparison_uses_area_density_and_all_six_colours(
         "vis", "vis_y", "vis_j", "vis_h", "y_j", "y_h", "j_h",
     }
     assert sum(result["parameters"]["vis"]["model"]) * 0.5 == pytest.approx(2.0)
+    assert sum(result["parameters"]["vis"]["synthetic"]) * 0.5 == pytest.approx(0.5)
 
 
 def test_stellar_colour_cache_rejects_legacy_random_fields():

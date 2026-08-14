@@ -102,7 +102,8 @@
 .star-density-key__euclid,
 .star-density-key__point-source,
 .star-density-key__gaia,
-.star-density-key__model {
+.star-density-key__model,
+.star-density-key__synthetic {
   width: 20px;
   border-top: 2px solid;
 }
@@ -122,6 +123,10 @@
 .star-density-key__model {
   border-color: var(--cat-3);
   border-top-style: dashed;
+}
+
+.star-density-key__synthetic {
+  border-color: var(--cat-4);
 }
 
 .star-colour-key__trend {

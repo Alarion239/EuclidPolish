@@ -23,6 +23,10 @@ from euclid_polish.web.helpers.population_calibration import (
     star_candidate_path,
     write_star_candidate,
 )
+from euclid_polish.web.helpers.population_comparison import (
+    FIELD_AREA_ARCMIN2,
+    _synthetic_paths,
+)
 from euclid_polish.web.helpers.q1_star_counts import (
     q1_star_counts_path,
     read_q1_phz_star_counts,
@@ -47,6 +51,7 @@ _GAIA_COUNT_LIMIT_MAG = 20.5
 _GAIA_G_AB_MINUS_VEGA_MAG = 25.8010446445 - 25.6873668671
 _GAIA_TAP_PROVIDER = "ARI Gaia TAP"
 _STAR_POPULATION_VERSION = 6
+_STAR_DISTRIBUTION_VERSION = 11
 _GAIA_COUNT_FIT_BIN_WIDTH_MAG = 0.5
 
 
@@ -276,6 +281,8 @@ def _stellar_density_comparison(
     *,
     euclid_area_arcmin2: float,
     gaia_area_arcmin2: float,
+    synthetic_rows: list[dict[str, str]] | None = None,
+    synthetic_area_arcmin2: float = 0.0,
     sample_count: int = 50_000,
 ) -> dict[str, Any] | None:
     """Compare measured, Gaia-projected, and generator stellar densities."""
@@ -371,6 +378,36 @@ def _stellar_density_comparison(
         "y_h": np.asarray([row["Y_E"] - row["H_E"] for row in euclid_color_rows]),
         "j_h": np.asarray([row["J_E"] - row["H_E"] for row in euclid_color_rows]),
     }
+    synthetic_bands = {
+        name: np.asarray([
+            value
+            for row in (synthetic_rows or [])
+            if str(row.get("type", "")).strip().lower() == "star"
+            if (value := _finite(row.get(field))) is not None
+        ], dtype=np.float64)
+        for name, field in euclid_fields.items()
+    }
+    synthetic_complete = []
+    for row in synthetic_rows or []:
+        if str(row.get("type", "")).strip().lower() != "star":
+            continue
+        magnitudes = {
+            name: _finite(row.get(field))
+            for name, field in euclid_fields.items()
+        }
+        if all(value is not None for value in magnitudes.values()):
+            synthetic_complete.append({
+                name: float(value) for name, value in magnitudes.items()
+                if value is not None
+            })
+    synthetic_colors = {
+        "vis_y": np.asarray([row["VIS"] - row["Y_E"] for row in synthetic_complete]),
+        "vis_j": np.asarray([row["VIS"] - row["J_E"] for row in synthetic_complete]),
+        "vis_h": np.asarray([row["VIS"] - row["H_E"] for row in synthetic_complete]),
+        "y_j": np.asarray([row["Y_E"] - row["J_E"] for row in synthetic_complete]),
+        "y_h": np.asarray([row["Y_E"] - row["H_E"] for row in synthetic_complete]),
+        "j_h": np.asarray([row["J_E"] - row["H_E"] for row in synthetic_complete]),
+    }
     labels = {key: label for key, label, _left, _right in _STAR_COLOR_PAIRS}
 
     try:
@@ -443,6 +480,10 @@ def _stellar_density_comparison(
             "model": model_magnitude_law.density(
                 0.5 * (magnitude_edges[:-1] + magnitude_edges[1:])
             ).tolist(),
+            "synthetic": _density_series(
+                synthetic_bands["VIS"], magnitude_edges,
+                area_arcmin2=synthetic_area_arcmin2,
+            ) if synthetic_area_arcmin2 > 0.0 else [],
             "gaia_fit": gaia_fit_density,
             "fit_ranges": {
                 "q1": [
@@ -459,6 +500,7 @@ def _stellar_density_comparison(
     for key in ("vis_y", "vis_j", "vis_h", "y_j", "y_h", "j_h"):
         edges = _shared_color_edges([
             euclid_colors[key], gaia_colors[key], model_colors[key],
+            synthetic_colors[key],
         ])
         parameters[key] = {
             "label": labels[key],
@@ -476,6 +518,10 @@ def _stellar_density_comparison(
             "model": _density_series(
                 model_colors[key], edges, total_density_arcmin2=model_density,
             ),
+            "synthetic": _density_series(
+                synthetic_colors[key], edges,
+                area_arcmin2=synthetic_area_arcmin2,
+            ) if synthetic_area_arcmin2 > 0.0 else [],
         }
     return {
         "area_arcmin2": euclid_area_arcmin2,
@@ -502,6 +548,9 @@ def _stellar_density_comparison(
         "euclid_color_count": len(euclid_color_rows),
         "gaia_count": int(gaia_vis.size),
         "gaia_native_g_count": int(gaia_g_ab.size),
+        "synthetic_area_arcmin2": synthetic_area_arcmin2 or None,
+        "synthetic_star_count": int(synthetic_bands["VIS"].size),
+        "synthetic_color_count": len(synthetic_complete),
         "parameters": parameters,
         "note": (
             (
@@ -519,7 +568,9 @@ def _stellar_density_comparison(
             "slope and separate intercepts; the Q1 intercept normalizes the "
             "12–25 VIS generator. Colour curves "
             "remain matched-field fit diagnostics; model curves are intrinsic "
-            "generator draws without Euclid measurement noise."
+            "generator draws without Euclid measurement noise. Magenta points are "
+            "the actual stars stored in the current synthetic test and validation "
+            "source catalogues, normalized by their rendered field area."
         ),
     }
 
@@ -590,13 +641,19 @@ def _distribution_source_signature() -> dict[str, int | None]:
         except OSError:
             return None
 
-    return {
+    signature = {
         "euclid_mtime_ns": modified(euclid_catalog_path()),
         "euclid_meta_mtime_ns": modified(euclid_catalog_meta_path()),
         "gaia_mtime_ns": modified(gaia_catalog_path()),
         "gaia_meta_mtime_ns": modified(gaia_catalog_meta_path()),
         "q1_phz_star_counts_mtime_ns": modified(q1_star_counts_path()),
     }
+    _records, synthetic_sources = _synthetic_paths()
+    signature.update({
+        f"synthetic_{path.name}_mtime_ns": modified(path)
+        for path in synthetic_sources
+    })
+    return signature
 
 
 def _star_distribution_from_rows(
@@ -609,6 +666,8 @@ def _star_distribution_from_rows(
     area_arcmin2: float | None = None,
     gaia_area_arcmin2: float | None = None,
     gaia_sampling: dict[str, Any] | None = None,
+    synthetic_rows: list[dict[str, str]] | None = None,
+    synthetic_area_arcmin2: float = 0.0,
 ) -> dict[str, Any]:
     """Build all six measured Euclid colours against matched Gaia BP−RP."""
     euclid_counterpart_ids = {
@@ -906,10 +965,12 @@ def _star_distribution_from_rows(
                 stellar_model,
                 euclid_area_arcmin2=area_arcmin2,
                 gaia_area_arcmin2=gaia_area_arcmin2,
+                synthetic_rows=synthetic_rows,
+                synthetic_area_arcmin2=synthetic_area_arcmin2,
             )
 
     return {
-        "version": 9,
+        "version": _STAR_DISTRIBUTION_VERSION,
         "calibration_fingerprint": calibration_fingerprint,
         "source_signature": _distribution_source_signature(),
         "matched_stars": int(x.size),
@@ -978,7 +1039,7 @@ def star_distribution_payload() -> dict[str, Any] | None:
     signature = _distribution_source_signature()
     if (
         isinstance(cached, dict)
-        and cached.get("version") == 9
+        and cached.get("version") == _STAR_DISTRIBUTION_VERSION
         and cached.get("calibration_fingerprint") == fingerprint
         and cached.get("source_signature") == signature
     ):
@@ -996,6 +1057,17 @@ def star_distribution_payload() -> dict[str, Any] | None:
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
         gaia_meta = None
         gaia_area_arcmin2 = 0.0
+    _records, synthetic_paths = _synthetic_paths()
+    synthetic_rows: list[dict[str, str]] = []
+    synthetic_fields = 0
+    for path in synthetic_paths:
+        rows = _read_rows(path)
+        synthetic_rows.extend(rows)
+        synthetic_fields += len({
+            int(row["field_index"])
+            for row in rows
+            if str(row.get("field_index", "")).strip()
+        })
     payload = _star_distribution_from_rows(
         _read_rows(euclid_catalog_path()),
         _read_rows(gaia_catalog_path()),
@@ -1008,6 +1080,8 @@ def star_distribution_payload() -> dict[str, Any] | None:
         area_arcmin2=area_arcmin2,
         gaia_area_arcmin2=gaia_area_arcmin2,
         gaia_sampling=gaia_meta,
+        synthetic_rows=synthetic_rows,
+        synthetic_area_arcmin2=synthetic_fields * FIELD_AREA_ARCMIN2,
     )
     _write_star_distribution(payload)
     return payload
