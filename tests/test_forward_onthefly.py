@@ -293,7 +293,7 @@ def test_new_onthefly_geometry_defaults(gaussian_sets):
     assert args.batch_size == 4
     assert args.crops_per_field == 8
     assert args.hr_crop_size == 256
-    assert args.target_psf_fwhm_arcsec == pytest.approx(0.66)
+    assert args.target_psf_fwhm_arcsec == pytest.approx(0.066)
     custom = parse_args(["--target-psf-fwhm-arcsec", "1.25"])
     assert custom.target_psf_fwhm_arcsec == pytest.approx(1.25)
 

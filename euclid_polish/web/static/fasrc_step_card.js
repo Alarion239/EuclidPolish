@@ -478,10 +478,10 @@ large cutout don't leak across train/validate."></label>`;
           PSF subset
           <input type="number" name="psf_subset" value="" placeholder="64"
                  min="1" max="1000"></label>
-        <label title="Desired Gaussian PSF FWHM of PSF-free clean/HR supervision and evaluation targets. Default 0.66 arcsec; 0 disables. Dirty-image PSFs are unchanged.">
+        <label title="Desired Gaussian PSF FWHM of PSF-free clean/HR supervision and evaluation targets. Default 0.066 arcsec; 0 disables. Dirty-image PSFs are unchanged.">
           Target PSF FWHM [arcsec]
-          <input type="number" name="target_psf_fwhm_arcsec" value="0.66"
-                 min="0" max="2" step="0.005"></label>
+          <input type="number" name="target_psf_fwhm_arcsec" value="0.066"
+                 min="0" max="2" step="0.001"></label>
       </span>
       <div data-mode-group="add fork" style="flex-basis:100%;">
         <div style="font-weight:600;margin:8px 0 2px;">Models to train

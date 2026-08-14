@@ -14,16 +14,16 @@ from euclid_polish.training.target_blur import (
 )
 
 
-def test_default_fwhm_is_point_sixty_six_arcsec():
-    assert Config.TARGET_PSF_FWHM_ARCSEC == 0.66
+def test_default_fwhm_is_point_zero_six_six_arcsec():
+    assert Config.TARGET_PSF_FWHM_ARCSEC == 0.066
     assert target_sigma_pixels() == pytest.approx(
-        0.66 / Config.DEFAULT_PIXEL_SCALE / 2.354820045,
+        0.066 / Config.DEFAULT_PIXEL_SCALE / 2.354820045,
     )
 
 
 def test_gaussian_kernel_radius_is_seven_sigma():
     assert TARGET_GAUSSIAN_RADIUS_SIGMA == 7.0
-    assert target_kernel_radius_pixels() == 39
+    assert target_kernel_radius_pixels() == 4
     assert target_kernel_radius_pixels(
         Config.BAND_VIS.psf_fwhm_arcsec,
     ) == 10

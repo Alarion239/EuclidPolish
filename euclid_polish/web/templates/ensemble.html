@@ -220,7 +220,7 @@
       <input type="number" name="num_images" value="100" min="1" max="2000"></label>
     <label title="Gaussian PSF FWHM applied to clean/HR targets before scoring.">
       Target PSF FWHM [arcsec]
-      <input type="number" name="target_psf_fwhm_arcsec" value="0.66" min="0" max="2" step="0.005"></label>
+      <input type="number" name="target_psf_fwhm_arcsec" value="0.066" min="0" max="2" step="0.001"></label>
     <p class="hint" style="flex-basis:100%;">Per-member + ensemble PSNR and
        disagreement stats on the held-out <code>{{ eval_subset }}</code> set,
        for the <b id="ens-eval-mode-label">starfull</b> members only (target
@@ -246,7 +246,7 @@
     <input type="hidden" name="model_kind" value="raw_incremental_minmeanmax_rbf">
     <label title="Gaussian PSF FWHM applied to clean/HR targets before fitting and scoring.">
       Target PSF FWHM [arcsec]
-      <input type="number" name="target_psf_fwhm_arcsec" value="0.66" min="0" max="2" step="0.005"></label>
+      <input type="number" name="target_psf_fwhm_arcsec" value="0.066" min="0" max="2" step="0.001"></label>
     <label title="Number of convex-gate RBF kernels. Larger K automatically uses smaller minibatches.">
       Kernels (K)
       <input type="number" name="n_kernels" value="128" min="2"></label>

@@ -455,7 +455,7 @@ export default function EnsemblePage() {
   const navigate = useNavigate();
   const { mode: modeParam } = useParams<{ mode: string }>();
   const mode: Mode = modeParam === "starless" ? "starless" : "starfull";
-  const [targetFwhm, setTargetFwhm] = useState("0.66");
+  const [targetFwhm, setTargetFwhm] = useState("0.066");
   const setMode = (m: Mode) => navigate(`/ensemble/${m}`);
   const starless = mode === "starless";
   const jointCombinerKind: CombinerModelKind = "raw_incremental_minmeanmax_rbf";
@@ -538,7 +538,7 @@ function Controls(
         <div className="row" style={{ alignItems: "flex-end", gap: "var(--s3)" }}>
           <NumberField label="test fields" value={n} onChange={setN} min={1} max={2000} />
           <NumberField label="target PSF FWHM [arcsec]" value={targetFwhm}
-            onChange={onTargetFwhm} min={0} max={2} step={0.005} />
+            onChange={onTargetFwhm} min={0} max={2} step={0.001} />
           <Button variant="primary" disabled={evalJob.busy || !s?.test_present}
             onClick={() => evalJob.run("/ensemble/evaluate", {
               num_images: n, mode, target_psf_fwhm_arcsec: targetFwhm,
@@ -1450,7 +1450,7 @@ function PredictiveAxesCard(
 export function CombinerCard(
   { comb, loading, mode, theme, fitJob, onFit, evalReady,
     fitUrl = "/ensemble/combiner/fit", title, modelKind: controlledKind,
-    targetFwhm = "0.66" }:
+    targetFwhm = "0.066" }:
   { comb: Combiner | null; loading: boolean; mode: string; theme: string; fitJob: ReturnType<typeof useJob>; onFit: () => void; evalReady: boolean;
     fitUrl?: string; title?: string; modelKind?: CombinerModelKind; targetFwhm?: string },
 ) {

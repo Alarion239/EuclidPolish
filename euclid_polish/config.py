@@ -188,7 +188,7 @@ class Config:
     DEFAULT_PIXEL_SCALE          = 0.05     # arcsec / pixel
     # Desired Gaussian PSF of PSF-free synthetic training/evaluation goals.
     # This is supervision only; it never changes the dirty-image PSF.
-    TARGET_PSF_FWHM_ARCSEC      = 0.66
+    TARGET_PSF_FWHM_ARCSEC      = 0.066
     TARGET_PSF_FWHM_MAX_ARCSEC  = 2.0
     # Fallback used only when no activated population calibration overrides
     # the generated field density.  The active Q1 law supplies its own exact

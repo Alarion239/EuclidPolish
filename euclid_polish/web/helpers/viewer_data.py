@@ -1919,7 +1919,7 @@ def get_meta(collection: str, params: dict[str, str]) -> dict[str, Any]:
             "default_arcsec": float(Config.TARGET_PSF_FWHM_ARCSEC),
             "min_arcsec": 0.0,
             "max_arcsec": BHR_FWHM_MAX_ARCSEC,
-            "step_arcsec": 0.005,
+            "step_arcsec": 0.001,
         }
     # This is shared metadata rather than collection-specific UI state: the
     # generic Tile viewer is mounted by all routes and must annotate every

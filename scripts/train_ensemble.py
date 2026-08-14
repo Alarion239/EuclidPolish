@@ -201,7 +201,7 @@ def parse_args(argv=None) -> argparse.Namespace:
                    default=Config.TARGET_PSF_FWHM_ARCSEC,
                    help="Desired Gaussian PSF FWHM of PSF-free clean/HR "
                         "training and evaluation targets in arcseconds. "
-                        "Default 0.66; 0 disables target smoothing. This "
+                        "Default 0.066; 0 disables target smoothing. This "
                         "does not change the dirty-image PSF.")
     p.add_argument("--icnr", action="store_true",
                    help="ICNR-initialise the sub-pixel (pixel-shuffle) convs "

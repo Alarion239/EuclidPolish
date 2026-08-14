@@ -357,10 +357,10 @@ def test_viewer_meta_sky_uses_starfull_hr_record(tmp_path, monkeypatch):
     assert isinstance(sr.get("disabled"), bool)
     assert m["bhr_fwhm_control"] == {
         "param": "bhr_fwhm_arcsec",
-        "default_arcsec": 0.66,
+        "default_arcsec": 0.066,
         "min_arcsec": 0.0,
         "max_arcsec": 2.0,
-        "step_arcsec": 0.005,
+        "step_arcsec": 0.001,
     }
 
 

@@ -47,9 +47,9 @@ def test_ensemble_goal_cubes_use_raw_and_blurred_regime_target(monkeypatch):
 
     assert seen == [
         ("test", 4, "clean", 3, None),
-        ("test", 4, "clean", 3, 0.66),
+        ("test", 4, "clean", 3, 0.066),
         ("test", 4, "hr", 3, None),
-        ("test", 4, "hr", 3, 0.66),
+        ("test", 4, "hr", 3, 0.066),
     ]
     assert clean_info["label"].startswith("Clean (starless goal)")
     assert blurred_clean_info["label"].startswith("BHR (blurred Clean)")

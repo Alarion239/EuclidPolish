@@ -80,7 +80,7 @@ export default function TrainMembersPage() {
   const [psfWarpAlphaMax, setPsfWarpAlphaMax] = useState("20");
   const [psfWarpSigma, setPsfWarpSigma] = useState("3");
   const [saturationMaskProb, setSaturationMaskProb] = useState("0.2");
-  const [targetPsfFwhm, setTargetPsfFwhm] = useState("0.66");
+  const [targetPsfFwhm, setTargetPsfFwhm] = useState("0.066");
   const [rows, setRows] = useState<SpecRow[]>([newRow(true)]);
   const [steps, setSteps] = useState("60000");
   const [continueBasis, setContinueBasis] = useState<ContinueBasis>("extra");
@@ -322,7 +322,7 @@ export default function TrainMembersPage() {
             <NumberField label="saturation mask probability" value={saturationMaskProb}
               onChange={setSaturationMaskProb} min={0} max={0.5} step={0.05} />
             <NumberField label="target PSF FWHM [arcsec]" value={targetPsfFwhm}
-              onChange={setTargetPsfFwhm} min={0} max={2} step={0.005} />
+              onChange={setTargetPsfFwhm} min={0} max={2} step={0.001} />
           </div>
         </CardBody>
       </Card>
