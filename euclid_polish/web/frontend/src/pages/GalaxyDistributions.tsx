@@ -207,6 +207,10 @@ const USEFUL_SHAPE_KEYS = new Set([
   "euclid_sersic_re_shape", "fit_re_q1_weighted_shape",
   "fit_re_full_generation_shape",
 ]);
+const JOINT_DENSITY_COLOR = (t: number): string => {
+  const value = Math.round(34 + 190 * Math.max(0, Math.min(1, t)));
+  return `rgb(${value}, ${value}, ${value})`;
+};
 const BRIGHTNESS_COLORS = {
   euclid: ["#2478d4", "#31a7d8", "#33c4c9", "#786fd4", "#ad6bd8", "#e268a7"],
   synthetic: ["#d39b32", "#e1ad45", "#b98028", "#9d7134", "#7d6445"],
@@ -648,7 +652,7 @@ function JointDensityMaps({ data }: { data?: JointMaps }) {
       x: path.x,
       y: path.y,
       color: map.color,
-      width: 1.35 + index * 0.45,
+      width: 1.25 + index * 0.25,
       dash: map.key === "synthetic" ? [7, 4] : undefined,
     })))
   ));
@@ -657,7 +661,7 @@ function JointDensityMaps({ data }: { data?: JointMaps }) {
       <div>
         <div className="eyebrow">joint population comparison</div>
         <h2 id="joint-atlas-title">Q1 MER + PHZ density with generated/model contours</h2>
-        <p>The image is the PHZ-weighted Q1 magnitude–radius density. Gold dashed contours show {synthetic?.label.toLowerCase() ?? "the generated galaxies"}; red solid contours show the active generation law.</p>
+        <p>The image is the PHZ-weighted Q1 magnitude–radius density in neutral grayscale. Blue dashed contours show {synthetic?.label.toLowerCase() ?? "the generated galaxies"}; vermillion solid contours show the active generation law.</p>
       </div>
       <Badge tone="good">one shared Q1 plot</Badge>
     </header>
@@ -681,6 +685,7 @@ function JointDensityMaps({ data }: { data?: JointMaps }) {
             yEdges: data.log_radius_edges,
             max: maximum,
             scale: "log",
+            color: JOINT_DENSITY_COLOR,
             colorTicks,
             colorLabel: data.density_unit,
           }}
@@ -691,7 +696,7 @@ function JointDensityMaps({ data }: { data?: JointMaps }) {
           <span><i style={{ background: q1.color }} />Q1 MER + PHZ density image</span>
           {overlays.map((map) => <span key={map.key}>
             <i style={{ background: map.color }} />
-            {map.label} · {map.key === "synthetic" ? "dashed" : "solid"} 50 / 80 / 95% contours
+            {map.label} · {map.key === "synthetic" ? "dashed" : "solid"} 10 / 25 / 50 / 80 / 95% contours
           </span>)}
           {synthetic?.rows != null && <span>
             {synthetic.rows.toLocaleString()} generated galaxies

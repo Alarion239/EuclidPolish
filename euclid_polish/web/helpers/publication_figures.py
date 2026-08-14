@@ -218,7 +218,7 @@ def _aggregate_radius_grid(
 def _mass_contour_levels(
     density_per_unit: np.ndarray, cell_density: np.ndarray,
 ) -> np.ndarray:
-    """Return density thresholds enclosing 95, 80, and 50 percent of mass."""
+    """Return density thresholds enclosing 95, 80, 50, 25, and 10 percent."""
     density = np.asarray(density_per_unit, dtype=np.float64).ravel()
     mass = np.asarray(cell_density, dtype=np.float64).ravel()
     keep = np.isfinite(density) & np.isfinite(mass) & (density > 0.0) & (mass > 0.0)
@@ -229,7 +229,7 @@ def _mass_contour_levels(
     cumulative = np.cumsum(mass[order]) / np.sum(mass)
     thresholds = [
         density[order[min(np.searchsorted(cumulative, fraction), len(order) - 1)]]
-        for fraction in (0.95, 0.80, 0.50)
+        for fraction in (0.95, 0.80, 0.50, 0.25, 0.10)
     ]
     levels = np.unique(np.asarray(sorted(thresholds), dtype=np.float64))
     if levels.size < 2:
@@ -848,7 +848,7 @@ def render_population_fit_comparison(
             magnitude_edges,
             log_radius_edges,
             np.ma.masked_less_equal(observed_density.T, 0.0),
-            shading="auto", cmap="magma", norm=LogNorm(vmin=lower, vmax=upper),
+            shading="auto", cmap="Greys", norm=LogNorm(vmin=lower, vmax=upper),
             rasterized=True,
         )
         ax_joint.contour(
@@ -892,7 +892,7 @@ def render_population_fit_comparison(
             bright_edges,
             log_radius_edges,
             np.ma.masked_less_equal(bright_observed_density.T, 0.0),
-            shading="auto", cmap="magma",
+            shading="auto", cmap="Greys",
             norm=LogNorm(vmin=bright_lower, vmax=bright_upper),
             rasterized=True,
         )
@@ -921,7 +921,7 @@ def render_population_fit_comparison(
         ax_bright.set_title(
             f"Bright Q1 · {bright_edges[0]:g}≤VIS<{bright_edges[-1]:g}"
             " · locally scaled\n"
-            "50/80/95% mass contours normalized within window",
+            "10/25/50/80/95% mass contours normalized within window",
             loc="left", fontsize=max(NOTE_SIZE * 0.48, 6.5), pad=2,
             fontweight=600,
             bbox={"facecolor": PAPER, "edgecolor": "none", "alpha": 0.88},
@@ -1191,7 +1191,7 @@ def render_galaxy_distribution_plate(
         image = ax_joint.pcolormesh(
             magnitude_edges, log_radius_edges,
             np.ma.masked_less_equal(q1_density.T, 0.0),
-            shading="auto", cmap="magma", norm=LogNorm(lower, upper),
+            shading="auto", cmap="Greys", norm=LogNorm(lower, upper),
             rasterized=True,
         )
         magnitude_center = 0.5 * (
@@ -1231,7 +1231,7 @@ def render_galaxy_distribution_plate(
                         ),
                         "model": "active model",
                     }[key]
-                    + " · 50/80/95%"
+                    + " · 10/25/50/80/95%"
                 ),
             )
         ax_joint.set_xlim(magnitude_edges[0], magnitude_edges[-1])

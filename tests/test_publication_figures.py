@@ -322,9 +322,9 @@ def test_galaxy_distribution_plate_uses_current_generated_measurements():
                     ("q1", "Q1 MER + PHZ", "#1267d6"),
                     (
                         "synthetic", "Current generated galaxies",
-                        "#d39b32",
+                        "#0072b2",
                     ),
-                    ("model", "Active generation law", "#168f65"),
+                    ("model", "Active generation law", "#d55e00"),
                 )
             ],
         },
@@ -341,7 +341,9 @@ def test_galaxy_distribution_plate_uses_current_generated_measurements():
     assert b"Q1 density + generated/model contours" in svg
     assert b"current generated VIS 2FWHM" in svg
     assert b"generated requested" in svg
-    assert b"50/80/95%" in svg
+    assert b"10/25/50/80/95%" in svg
+    assert b"#0072b2" in svg
+    assert b"#d55e00" in svg
     assert b"Q1 aggregate" not in svg
 
     payload["training_included"] = True

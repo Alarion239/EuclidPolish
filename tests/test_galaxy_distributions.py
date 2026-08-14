@@ -221,6 +221,11 @@ def test_joint_maps_compare_q1_and_actual_synthetic_draws_on_one_grid(
         np.log10(q1["radius_edges_arcsec"]),
     )
     assert "arcmin⁻²" in result["density_unit"]
+    assert result["contour_mass_fractions"] == [
+        0.95, 0.80, 0.50, 0.25, 0.10,
+    ]
+    assert result["maps"][0]["color"] == "#737373"
+    assert result["maps"][1]["color"] == "#0072b2"
     assert not any(key.startswith("_joint") for key in synthetic)
     for item in result["maps"]:
         density = np.asarray(item["density"])
@@ -926,7 +931,11 @@ def test_galaxy_distribution_controls_use_one_galaxy_query_action():
     assert "JointDensityMaps" in source
     assert "one shared Q1 plot" in source
     assert "Q1 MER + PHZ density image" in source
-    assert "Gold dashed contours show" in source
+    assert "neutral grayscale" in source
+    assert "Blue dashed contours show" in source
+    assert "vermillion solid contours" in source
+    assert "10 / 25 / 50 / 80 / 95% contours" in source
+    assert "color: JOINT_DENSITY_COLOR" in source
     assert 'map.key === "synthetic" ? [7, 4]' in source
     assert "data.maps.map" not in source
     assert "include_training=${includeTraining" in source

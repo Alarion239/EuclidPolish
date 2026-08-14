@@ -56,7 +56,7 @@ from euclid_polish.web.helpers.q1_galaxy_radius_statistics import (
     read_q1_galaxy_radius_statistics,
 )
 
-ARTIFACT_VERSION = 17
+ARTIFACT_VERSION = 18
 MAG_EDGES = np.arange(14.0, 30.0001, 0.25)
 RADIUS_MAX_VIS_PIXELS = 100.0
 RADIUS_MAX_ARCSEC = RADIUS_MAX_VIS_PIXELS * float(Config.VIS_PIXEL_SCALE_ARCSEC)
@@ -71,7 +71,7 @@ APERTURE_SIZE_EDGES = np.asarray([
 APERTURE_DELTA_MAG_EDGES = np.linspace(-1.0, 4.0, 251)
 APERTURE_SCATTER_MAG_EDGES = np.arange(14.0, 30.0001, 0.5)
 APERTURE_SCATTER_PER_MAG_BIN = 250
-JOINT_CONTOUR_MASS_FRACTIONS = (0.95, 0.80, 0.50)
+JOINT_CONTOUR_MASS_FRACTIONS = (0.95, 0.80, 0.50, 0.25, 0.10)
 
 MER_BRIGHTNESS_SERIES = {
     "mer_vis_1fwhm": (
@@ -224,7 +224,7 @@ def _joint_contours(
     magnitude_center: np.ndarray,
     log_radius_center: np.ndarray,
 ) -> list[dict[str, Any]]:
-    """Trace plot-ready 50/80/95-percent mass contours on one density map."""
+    """Trace plot-ready 10/25/50/80/95-percent mass contours."""
     generator = contourpy.contour_generator(
         x=np.asarray(magnitude_center, dtype=np.float64),
         y=np.asarray(log_radius_center, dtype=np.float64),
@@ -347,7 +347,7 @@ def _joint_magnitude_radius_maps(
                 "Aggregate PHZ-weighted VIS 2FWHM magnitude × clean "
                 "circularized VIS Sérsic Rₑ brackets"
             ),
-            color="#2478d4",
+            color="#737373",
             magnitude_edges=magnitude_edges,
             log_radius_edges=log_radius_edges,
             cell_mass_arcmin2=q1_mass,
@@ -389,7 +389,7 @@ def _joint_magnitude_radius_maps(
                     "magnitude × requested circularized Sérsic Rₑ draws"
                 )
             ),
-            color="#d39b32",
+            color="#0072b2",
             magnitude_edges=magnitude_edges,
             log_radius_edges=log_radius_edges,
             cell_mass_arcmin2=synthetic_count / synthetic_area,
@@ -420,7 +420,7 @@ def _joint_magnitude_radius_maps(
                     "Analytical VIS 2FWHM count law × conditional "
                     "circularized Sérsic Rₑ probability"
                 ),
-                color="#e25543",
+                color="#d55e00",
                 magnitude_edges=magnitude_edges,
                 log_radius_edges=log_radius_edges,
                 cell_mass_arcmin2=model_mass,
@@ -442,8 +442,8 @@ def _joint_magnitude_radius_maps(
         "shared_density_max": float(np.max(positive)) if positive.size else 1.0,
         "maps": maps,
         "detail": (
-            "All maps use the Q1 bin grid; contours enclose 50%, 80%, and "
-            "95% of each map's own surface-density mass."
+            "All maps use the Q1 bin grid; contours enclose 10%, 25%, 50%, "
+            "80%, and 95% of each map's own surface-density mass."
         ),
     }
 
