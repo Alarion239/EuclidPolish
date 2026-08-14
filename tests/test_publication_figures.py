@@ -14,6 +14,7 @@ from euclid_polish.population.magnitude_law import (
     StraightMagnitudeLaw,
 )
 from euclid_polish.web.helpers.publication_figures import (
+    render_galaxy_distribution_plate,
     render_population_atlas,
     render_population_fit_comparison,
     render_star_population_calibration,
@@ -271,6 +272,76 @@ def test_population_fit_comparison_rejects_malformed_aggregate():
 
     with pytest.raises(ValueError, match="Q1 radius aggregate"):
         render_population_fit_comparison(previous, candidate, {})
+
+
+def test_galaxy_distribution_plate_uses_current_generated_measurements():
+    magnitude_edges = [20.0, 21.0, 22.0, 23.0]
+    log_radius_edges = [-1.5, -1.0, -0.5, 0.0]
+    density = [
+        [2.0, 4.0, 1.0],
+        [3.0, 8.0, 2.0],
+        [1.0, 5.0, 3.0],
+    ]
+    curve_x = [20.5, 21.5, 22.5]
+    radius_x = [-1.25, -0.75, -0.25]
+    payload = {
+        "parameters": {
+            "magnitude": {"photometry_series": {
+                key: {"x": curve_x, "density": values}
+                for key, values in {
+                    "q1_vis_f2": [2.0, 5.0, 9.0],
+                    "synthetic_vis_2fwhm": [1.8, 4.8, 8.4],
+                    "generator_vis_f2": [2.1, 5.2, 8.8],
+                }.items()
+            }},
+            "radius": {"radius_series": {
+                key: {"x": radius_x, "density": values}
+                for key, values in {
+                    "euclid_sersic_re": [3.0, 8.0, 2.0],
+                    "synthetic_requested_re": [4.0, 7.0, 1.5],
+                    "synthetic_clean_half_light": [2.5, 6.0, 2.0],
+                    "fit_re": [3.2, 7.7, 1.8],
+                    "euclid_sersic_re_shape": [0.4, 1.1, 0.3],
+                    "fit_re_q1_weighted_shape": [0.5, 1.0, 0.3],
+                    "fit_re_full_generation_shape": [0.7, 0.9, 0.2],
+                }.items()
+            }},
+        },
+        "joint_maps": {
+            "available": True,
+            "magnitude_edges": magnitude_edges,
+            "log_radius_edges": log_radius_edges,
+            "maps": [
+                {
+                    "key": key,
+                    "label": label,
+                    "color": color,
+                    "density": density,
+                }
+                for key, label, color in (
+                    ("q1", "Q1 MER + PHZ", "#1267d6"),
+                    (
+                        "synthetic", "Current generated galaxies",
+                        "#d39b32",
+                    ),
+                    ("model", "Active generation law", "#168f65"),
+                )
+            ],
+        },
+    }
+
+    svg = render_galaxy_distribution_plate(
+        payload, output_format="svg", dpi=120,
+    )
+
+    assert b"<svg" in svg[:1000]
+    assert b"VIS 2FWHM magnitude density" in svg
+    assert b"Half-light-radius surface density" in svg
+    assert b"Normalized half-light shape" in svg
+    assert b"Joint magnitude" in svg
+    assert b"current generated VIS 2FWHM" in svg
+    assert b"generated requested" in svg
+    assert b"50/80/95%" in svg
 
 
 def _star_calibration():

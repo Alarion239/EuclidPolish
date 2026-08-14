@@ -989,6 +989,264 @@ def render_population_fit_comparison(
     return buffer.getvalue()
 
 
+def render_galaxy_distribution_plate(
+    payload: Mapping[str, Any], *, output_format: str = "png", dpi: int = 300,
+) -> bytes:
+    """Render the reviewed galaxy-distribution page as a fixed 2 × 2 plate.
+
+    The figure consumes only the compact WebUI artifact: Q1 aggregates, actual
+    generated-source measurements, and the active analytical law.  It never
+    queries the archive, re-fits the population, or regenerates fields.
+    """
+    fmt = output_format.lower()
+    if fmt not in {"png", "pdf", "svg"}:
+        raise ValueError("output_format must be png, pdf, or svg")
+    dpi = max(120, min(int(dpi), 600))
+    try:
+        parameters = payload["parameters"]
+        brightness = parameters["magnitude"]["photometry_series"]
+        radius = parameters["radius"]["radius_series"]
+        joint = payload["joint_maps"]
+        joint_maps = {
+            str(item["key"]): item for item in joint["maps"]
+        }
+        magnitude_edges = np.asarray(
+            joint["magnitude_edges"], dtype=np.float64,
+        )
+        log_radius_edges = np.asarray(
+            joint["log_radius_edges"], dtype=np.float64,
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("galaxy-distribution artifact is malformed") from exc
+    if not joint.get("available") or "q1" not in joint_maps:
+        raise ValueError("galaxy-distribution joint maps are unavailable")
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import LogNorm
+
+    style = {
+        "figure.facecolor": PAPER,
+        "axes.facecolor": PAPER,
+        "savefig.facecolor": PAPER,
+        "text.color": INK,
+        "axes.labelcolor": INK,
+        "axes.edgecolor": MUTED,
+        "axes.labelsize": AXIS_LABEL_SIZE,
+    }
+    with presentation_rc(style):
+        fig, axes = plt.subplots(2, 2, figsize=(12.4, 10.1))
+        fig.subplots_adjust(
+            left=0.085, right=0.955, bottom=0.075, top=0.965,
+            wspace=0.29, hspace=0.34,
+        )
+
+        ax_brightness = axes[0, 0]
+        brightness_specs = (
+            ("q1_vis_f2", EUCLID_OBS, "Q1 VIS 2FWHM", "o", "none"),
+            (
+                "synthetic_vis_2fwhm", "#d39b32",
+                "current generated VIS 2FWHM", "o", "full",
+            ),
+            (
+                "generator_vis_f2", CANDIDATE_MODEL,
+                "active generation law", None, None,
+            ),
+        )
+        for key, color, label, marker, marker_fill in brightness_specs:
+            curve = brightness.get(key) or {}
+            x, y = _xy(curve, "density")
+            keep = y > 0.0
+            if not np.any(keep):
+                continue
+            if marker:
+                ax_brightness.plot(
+                    x[keep], y[keep], linestyle="-", linewidth=1.35,
+                    marker=marker, markersize=3.8,
+                    markerfacecolor=(color if marker_fill == "full" else PAPER),
+                    markeredgecolor=color, markeredgewidth=1.0,
+                    color=color, label=label,
+                )
+            else:
+                ax_brightness.plot(
+                    x[keep], y[keep], color=color, linewidth=2.6,
+                    label=label,
+                )
+        _finish_axis(
+            ax_brightness, "A · VIS 2FWHM magnitude density",
+            "VIS 2FWHM aperture magnitude [AB]",
+            "objects arcmin$^{-2}$ mag$^{-1}$", logarithmic_y=True,
+        )
+        ax_brightness.legend(frameon=False, fontsize=NOTE_SIZE)
+
+        ax_radius = axes[0, 1]
+        radius_specs = (
+            (
+                "euclid_sersic_re", EUCLID_OBS,
+                "Q1 circularized Sérsic $R_e$", "o", "none", "none",
+            ),
+            (
+                "synthetic_requested_re", "#d39b32",
+                "generated requested Sérsic $R_e$", "o", "full", "none",
+            ),
+            (
+                "synthetic_clean_half_light", "#f0b45b",
+                "generated clean-image half light", "s", "full", "none",
+            ),
+            (
+                "fit_re", CANDIDATE_MODEL,
+                "active $R_e$ marginal", None, None, "solid",
+            ),
+        )
+        for key, color, label, marker, marker_fill, linestyle in radius_specs:
+            curve = radius.get(key) or {}
+            x, y = _xy(curve, "density")
+            keep = y > 0.0
+            if not np.any(keep):
+                continue
+            ax_radius.plot(
+                x[keep], y[keep], color=color,
+                linewidth=2.3 if marker is None else 1.25,
+                linestyle=linestyle,
+                marker=marker, markersize=3.7,
+                markerfacecolor=(
+                    color if marker_fill == "full" else PAPER
+                ),
+                markeredgecolor=color, markeredgewidth=0.95,
+                label=label,
+            )
+        ax_radius.set_xlim(log_radius_edges[0], log_radius_edges[-1])
+        _finish_axis(
+            ax_radius, "B · Half-light-radius surface density",
+            "$R_e$ [arcsec; logarithmic axis]",
+            "objects arcmin$^{-2}$ dex$^{-1}$", logarithmic_y=True,
+        )
+        _physical_radius_ticks(ax_radius, log_radius_edges, axis="x")
+        ax_radius.legend(frameon=False, fontsize=NOTE_SIZE)
+
+        ax_shape = axes[1, 0]
+        shape_specs = (
+            (
+                "euclid_sersic_re_shape", EUCLID_OBS,
+                "Q1 clean circularized shape", "o", "none", "none",
+            ),
+            (
+                "fit_re_q1_weighted_shape", CANDIDATE_MODEL,
+                "model · Q1-magnitude weighted", None, None, "solid",
+            ),
+            (
+                "fit_re_full_generation_shape", CANDIDATE_MODEL,
+                "model · full generation", None, None, "--",
+            ),
+        )
+        for key, color, label, marker, marker_fill, linestyle in shape_specs:
+            curve = radius.get(key) or {}
+            x, y = _xy(curve, "density")
+            keep = y > 0.0
+            if not np.any(keep):
+                continue
+            ax_shape.plot(
+                x[keep], y[keep], color=color,
+                linewidth=2.35 if marker is None else 1.25,
+                linestyle=linestyle, marker=marker, markersize=3.8,
+                markerfacecolor=(
+                    color if marker_fill == "full" else PAPER
+                ),
+                markeredgecolor=color, markeredgewidth=0.95,
+                label=label,
+            )
+        ax_shape.set_xlim(log_radius_edges[0], log_radius_edges[-1])
+        _finish_axis(
+            ax_shape, "C · Normalized half-light shape",
+            "$R_e$ [arcsec; logarithmic axis]",
+            "probability density [dex$^{-1}$]", logarithmic_y=True,
+        )
+        _physical_radius_ticks(ax_shape, log_radius_edges, axis="x")
+        ax_shape.legend(frameon=False, fontsize=NOTE_SIZE)
+
+        ax_joint = axes[1, 1]
+        q1_density = np.asarray(
+            joint_maps["q1"]["density"], dtype=np.float64,
+        )
+        q1_positive = q1_density[
+            np.isfinite(q1_density) & (q1_density > 0.0)
+        ]
+        if q1_positive.size < 2:
+            raise ValueError("Q1 joint magnitude-radius map is empty")
+        lower = max(float(np.percentile(q1_positive, 5.0)), 1e-6)
+        upper = float(np.max(q1_positive))
+        image = ax_joint.pcolormesh(
+            magnitude_edges, log_radius_edges,
+            np.ma.masked_less_equal(q1_density.T, 0.0),
+            shading="auto", cmap="magma", norm=LogNorm(lower, upper),
+            rasterized=True,
+        )
+        magnitude_center = 0.5 * (
+            magnitude_edges[:-1] + magnitude_edges[1:]
+        )
+        log_radius_center = 0.5 * (
+            log_radius_edges[:-1] + log_radius_edges[1:]
+        )
+        magnitude_width = np.diff(magnitude_edges)
+        log_radius_width = np.diff(log_radius_edges)
+        for key, linestyle in (
+            ("q1", "solid"), ("synthetic", "dashed"), ("model", "solid"),
+        ):
+            item = joint_maps.get(key)
+            if not item:
+                continue
+            density = np.asarray(item["density"], dtype=np.float64)
+            cell_mass = (
+                density * magnitude_width[:, None]
+                * log_radius_width[None, :]
+            )
+            try:
+                levels = _mass_contour_levels(density, cell_mass)
+                ax_joint.contour(
+                    magnitude_center, log_radius_center, density.T,
+                    levels=levels, colors=str(item["color"]),
+                    linewidths=1.8 if key != "model" else 2.1,
+                    linestyles=linestyle,
+                )
+            except ValueError:
+                continue
+            ax_joint.plot(
+                [], [], color=str(item["color"]), linewidth=2.0,
+                linestyle=linestyle,
+                label=(
+                    {
+                        "q1": "Q1 aggregate",
+                        "synthetic": "current generated",
+                        "model": "active model",
+                    }[key]
+                    + " · 50/80/95%"
+                ),
+            )
+        ax_joint.set_xlim(magnitude_edges[0], magnitude_edges[-1])
+        ax_joint.set_ylim(log_radius_edges[0], log_radius_edges[-1])
+        _finish_axis(
+            ax_joint, "D · Joint magnitude–radius density",
+            "VIS 2FWHM aperture magnitude [AB]",
+            "$R_e$ [arcsec; logarithmic coordinate]", zero_floor=False,
+        )
+        _physical_radius_ticks(ax_joint, log_radius_edges)
+        ax_joint.legend(
+            frameon=True, framealpha=0.88, facecolor=PAPER,
+            edgecolor="none", fontsize=8.5, loc="upper left",
+        )
+        colorbar = fig.colorbar(image, ax=ax_joint, pad=0.018, fraction=0.052)
+        colorbar.set_label(
+            "Q1 objects arcmin$^{-2}$ mag$^{-1}$ dex$^{-1}$",
+            fontsize=AXIS_LABEL_SIZE,
+        )
+        colorbar.ax.tick_params(labelsize=TICK_LABEL_SIZE)
+
+        buffer = io.BytesIO()
+        fig.savefig(buffer, format=fmt, dpi=dpi, bbox_inches="tight")
+        plt.close(fig)
+    return buffer.getvalue()
+
+
 def render_star_population_calibration(
     calibration: Mapping[str, Any], *, output_format: str = "png", dpi: int = 300,
 ) -> bytes:

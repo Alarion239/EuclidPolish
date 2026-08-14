@@ -5,7 +5,7 @@ import { useResource } from "../hooks";
 import { JobProgressView, useJob } from "../jobs";
 import {
   Badge, Button, Card, CardBody, CardHead, Chip, Empty,
-  Page, PageHead, Segmented, Spinner, Stat,
+  Page, PageHead, Spinner, Stat,
 } from "../ui";
 import "./galaxy-distributions.css";
 
@@ -69,18 +69,10 @@ type Source = {
   fields?: number;
   measured_radius_rows?: number;
   measured_radius_fraction?: number;
-  aperture_scatter?: ApertureScatter;
 };
 type FluxKey = "f1" | "f2" | "f3" | "f4";
-type GrowthKey = "g1" | "g2" | "g3";
-type ApertureScatter = {
-  count: number;
-  magnitudes: Record<FluxKey, number[]>;
-  growth: Record<GrowthKey, number[]>;
-  definitions: Record<GrowthKey, string>;
-  selection: string;
-};
 type Payload = {
+  version: number;
   stale: boolean;
   authenticated?: boolean;
   sources: Partial<Record<SourceKey, Source>>;
@@ -137,6 +129,32 @@ type Payload = {
     active?: null | { fingerprint?: string };
   };
   parameters: Record<string, Parameter>;
+  joint_maps?: JointMaps;
+};
+type JointContour = {
+  mass_fraction: number;
+  level: number;
+  paths: Array<{ x: number[]; y: number[] }>;
+};
+type JointMap = {
+  key: "q1" | "synthetic" | "model";
+  label: string;
+  detail: string;
+  color: string;
+  density: number[][];
+  surface_density_arcmin2: number;
+  rows?: number | null;
+  contours: JointContour[];
+};
+type JointMaps = {
+  available: boolean;
+  detail?: string;
+  magnitude_edges: number[];
+  log_radius_edges: number[];
+  density_unit: string;
+  contour_mass_fractions: number[];
+  shared_density_max: number;
+  maps: JointMap[];
 };
 type Q1Counts = {
   footprint_area_deg2: number;
@@ -167,13 +185,19 @@ const SOURCE: Record<SourceKey, { label: string; kicker: string; color: string }
   cosmos: { label: "COSMOS2025", kicker: "diagnostic only", color: "#00a078" },
   fit: { label: "Euclid joint fit", kicker: "generator candidate", color: "#e25543" },
 };
-const ORDER: SourceKey[] = ["euclid", "synthetic", "cosmos", "fit"];
-const PARAMETER_ORDER = ["redshift", "magnitude", "radius", "stellar_mass", "specific_sfr"];
-const GROWTH: Record<GrowthKey, { label: string; color: string }> = {
-  g1: { label: "g₁ = m₁ − m₄", color: "#31a7d8" },
-  g2: { label: "g₂ = m₂ − m₄", color: "#d39b32" },
-  g3: { label: "g₃ = m₃ − m₄", color: "#dc6658" },
-};
+const ORDER: SourceKey[] = ["euclid", "synthetic", "fit"];
+const PARAMETER_ORDER = ["magnitude", "radius"];
+const USEFUL_BRIGHTNESS_KEYS = new Set([
+  "q1_vis_f2", "synthetic_vis_2fwhm", "generator_vis_f2",
+]);
+const USEFUL_RADIUS_KEYS = new Set([
+  "euclid_sersic_re", "synthetic_requested_re",
+  "synthetic_clean_half_light", "fit_re",
+]);
+const USEFUL_SHAPE_KEYS = new Set([
+  "euclid_sersic_re_shape", "fit_re_q1_weighted_shape",
+  "fit_re_full_generation_shape",
+]);
 const BRIGHTNESS_COLORS = {
   euclid: ["#2478d4", "#31a7d8", "#33c4c9", "#786fd4", "#ad6bd8", "#e268a7"],
   synthetic: ["#d39b32", "#e1ad45", "#b98028", "#9d7134", "#7d6445"],
@@ -305,7 +329,8 @@ function DensityPlot({ parameter }: { parameter: Parameter }) {
 }
 
 function ApparentBrightnessPlot({ parameter }: { parameter: Parameter }) {
-  const entries = Object.entries(parameter.photometry_series ?? {});
+  const entries = Object.entries(parameter.photometry_series ?? {})
+    .filter(([key]) => USEFUL_BRIGHTNESS_KEYS.has(key));
   const [selected, setSelected] = useState<string[]>(() => entries
     .filter(([, curve]) => curve.default_on)
     .map(([key]) => key));
@@ -371,7 +396,7 @@ function ApparentBrightnessPlot({ parameter }: { parameter: Parameter }) {
           dots: curve.survey === "synthetic",
           markerEvery: Math.max(1, Math.ceil(curve.x.length / 18)),
         }))}
-        aspect={0.54}
+        aspect={0.36}
       />
       <div className="brightness-disclosure">
         {visible.map(([key, curve]) => <div key={key}>
@@ -389,8 +414,8 @@ function ApparentBrightnessPlot({ parameter }: { parameter: Parameter }) {
 
   return <div className="brightness-comparison">
     <div className="brightness-warning">
-      <strong>Same AB convention, different measurements.</strong>
-      <span>The default shows the Q1 MER + PHZ VIS 2FWHM counts and the actual green generation law: three fitted continuous bright-bridge segments at fixed joins, the fitted main line, then 100 galaxies / arcmin² / mag through VIS 29. Optional VIS/F814W diagnostics retain their native estimators.</span>
+      <strong>One fitted brightness coordinate.</strong>
+      <span>Only VIS 2FWHM is shown: the PHZ-weighted Q1 aggregate, the actual galaxies in the current test and validation fields, and the active generation law. Total-flux, Kron, other-aperture, and F814W diagnostics are intentionally omitted here.</span>
     </div>
     <div className="brightness-controls">
       {(["euclid", "synthetic", "cosmos", "fit", "generation"] as const).map((survey) => {
@@ -419,21 +444,13 @@ function ApparentBrightnessPlot({ parameter }: { parameter: Parameter }) {
 }
 
 function RadiusPlot({ parameter }: { parameter: Parameter }) {
-  const entries = Object.entries(parameter.radius_series ?? {});
+  const entries = Object.entries(parameter.radius_series ?? {})
+    .filter(([key]) => USEFUL_RADIUS_KEYS.has(key));
   const curveByKey = Object.fromEntries(entries) as Record<string, RadiusCurve>;
   const normalizationOf = (curve?: RadiusCurve) => curve?.normalization ?? "surface_density";
-  const [selected, setSelected] = useState<string[]>(() => {
-    const defaults = entries.filter(([, curve]) => curve.default_on);
-    const generated = defaults.filter(
-      ([, curve]) => curve.source === "synthetic"
-        && normalizationOf(curve) === "surface_density",
-    );
-    const normalized = defaults.filter(
-      ([, curve]) => normalizationOf(curve) === "probability_density",
-    );
-    return (generated.length ? generated : normalized.length ? normalized : defaults)
-      .map(([key]) => key);
-  });
+  const [selected, setSelected] = useState<string[]>(() => (
+    entries.map(([key]) => key)
+  ));
   const visible = entries.filter(([key]) => selected.includes(key));
   const toggle = (key: string) => setSelected((current) => {
     if (current.includes(key)) return current.filter((item) => item !== key);
@@ -446,7 +463,7 @@ function RadiusPlot({ parameter }: { parameter: Parameter }) {
     ];
   });
   const grouped = ([
-    "detection", "kron", "half_light", "rendered_half_light", "half_light_shape",
+    "half_light", "rendered_half_light",
   ] as RadiusCurve["radius_type"][])
     .map((radiusType) => [radiusType, entries.filter(([, curve]) => curve.radius_type === radiusType)] as const)
     .filter(([, group]) => group.length);
@@ -494,7 +511,7 @@ function RadiusPlot({ parameter }: { parameter: Parameter }) {
           dots: curve.source === "euclid" || curve.source === "synthetic",
           markerEvery: Math.max(1, Math.ceil(curve.x.length / 18)),
         }))}
-        aspect={0.58}
+        aspect={0.38}
       />
       <div className="radius-disclosure">
         {visible.map(([key, curve]) => <div key={key}>
@@ -510,8 +527,8 @@ function RadiusPlot({ parameter }: { parameter: Parameter }) {
 
   return <div className="radius-comparison">
     <div className="radius-warning">
-      <strong>Catalogue size concepts, kept separate.</strong>
-      <span>The requested generated Sérsic Rₑ and the clean-image curve-of-growth half-light radius are deliberately separate. The latter is measured only for isolated sources and has a 0.05″ resolution floor. The normalized controls separately compare the Q1 magnitude mix with the full faint-extended generation mix; detection, Kron, and COSMOS remain diagnostics.</span>
+      <strong>Surface-density radii only.</strong>
+      <span>The Q1 circularized Sérsic Rₑ, requested generated Sérsic Rₑ, clean-image curve-of-growth half-light radius, and active model marginal stay distinct. Detection, Kron, COSMOS, and normalized shapes are excluded from this panel.</span>
     </div>
     <div className="radius-controls">
       {grouped.map(([radiusType, group]) => <section key={radiusType}>
@@ -535,69 +552,151 @@ function RadiusPlot({ parameter }: { parameter: Parameter }) {
   </div>;
 }
 
-function ApertureLadder({ data }: { data?: ApertureScatter }) {
-  const [flux, setFlux] = useState<FluxKey>("f4");
-  const [growth, setGrowth] = useState<GrowthKey[]>(["g1", "g2", "g3"]);
-  const selected = (["g1", "g2", "g3"] as GrowthKey[]).filter((key) => growth.includes(key));
-  const x = data?.magnitudes[flux] ?? [];
-  const xDomain = paddedDomain(x, 1);
-  const yValues = selected.flatMap((key) => data?.growth[key] ?? []);
-  const yDomain = paddedDomain(yValues, 0.1);
-  const toggle = (key: GrowthKey) => setGrowth((current) => (
-    current.includes(key) ? current.filter((item) => item !== key) : [...current, key]
-  ));
-  const series: Series[] = selected.map((key) => ({
-    x,
-    y: data?.growth[key] ?? [],
-    color: GROWTH[key].color,
-    mode: "scatter",
-    marker: "filled",
-    width: 0.7,
-    alpha: 0.24,
-  }));
-
-  return <section className="aperture-ladder" aria-labelledby="aperture-ladder-title">
-    <header className="aperture-ladder__head">
-      <div>
-        <div className="eyebrow">VIS aperture ladder · catalogue galaxies</div>
-        <h2 id="aperture-ladder-title">How the enclosed-light curve changes with brightness</h2>
-        <p>Choose the aperture magnitude on the horizontal axis, then overlay any combination of flux-growth ratios.</p>
-      </div>
-      <Badge tone={data?.count ? "good" : "warn"}>{compact(data?.count)} plotted galaxies</Badge>
-    </header>
-    <div className="aperture-ladder__controls">
-      <div className="aperture-ladder__control">
-        <span>magnitude axis</span>
-        <Segmented<FluxKey> value={flux} onChange={setFlux} options={([
-          "f1", "f2", "f3", "f4",
-        ] as FluxKey[]).map((value) => ({ value, label: value.toUpperCase() }))} />
-      </div>
-      <div className="aperture-ladder__control aperture-ladder__growth-controls">
-        <span>growth ratios</span>
-        <div>
-          {(["g1", "g2", "g3"] as GrowthKey[]).map((key) => <Chip
-            key={key} on={growth.includes(key)} onClick={() => toggle(key)}
-            dot={GROWTH[key].color} title={data?.definitions[key] ?? GROWTH[key].label}
-          >{GROWTH[key].label}</Chip>)}
-        </div>
+function RadiusShapePlot({ parameter }: { parameter: Parameter }) {
+  const entries = Object.entries(parameter.radius_series ?? {})
+    .filter(([key]) => USEFUL_SHAPE_KEYS.has(key));
+  const logValues = entries.flatMap(([, curve]) => curve.density
+    .filter((value) => value > 0).map(Math.log10));
+  if (!entries.length || !logValues.length) {
+    return <Empty>Build the Q1 radius aggregate and candidate model first.</Empty>;
+  }
+  const xValues = entries.flatMap(([, curve]) => curve.x);
+  const xDomain: [number, number] = parameter.x_domain
+    ? [parameter.x_domain[0], parameter.x_domain[1]]
+    : [Math.min(...xValues), Math.max(...xValues)];
+  const lo = Math.floor(Math.min(...logValues) * 2) / 2;
+  const hi = Math.ceil(Math.max(...logValues) * 2) / 2;
+  const yDomain: [number, number] = [lo, hi <= lo ? lo + 1 : hi];
+  return <div className="shape-comparison">
+    <div className="radius-warning">
+      <strong>Shape comparison, normalized separately.</strong>
+      <span>Each curve integrates to one over log-radius. The solid model uses the observed Q1 magnitude mix; the dashed model includes the full faint extension used for generation.</span>
+    </div>
+    <div className="radius-plot">
+      <Plot
+        xDomain={xDomain} yDomain={yDomain}
+        xTicks={physicalLogTicks(xDomain, 6)} yTicks={physicalLogTicks(yDomain, 6)}
+        xLabel={physicalLogAxisLabel(parameter.x_label)}
+        yLabel="normalized probability / dex (log scale)"
+        series={entries.map(([key, curve]) => ({
+          x: curve.x,
+          y: curve.density.map((value) => value > 0 ? Math.log10(value) : null),
+          color: RADIUS_COLORS[key] ?? SOURCE[curve.source].color,
+          width: curve.source === "fit" ? 2.7 : 1.9,
+          dash: key === "fit_re_full_generation_shape" ? [4, 4] : undefined,
+          marker: curve.source === "euclid" ? "ring" : undefined,
+          dots: curve.source === "euclid",
+          markerEvery: Math.max(1, Math.ceil(curve.x.length / 18)),
+        }))}
+        aspect={0.36}
+      />
+      <div className="radius-disclosure">
+        {entries.map(([key, curve]) => <div key={key}>
+          <i style={{ background: RADIUS_COLORS[key] ?? SOURCE[curve.source].color }} />
+          <span><b>{curve.label}</b><small>{curve.definition}</small></span>
+          <em>unit integral</em>
+        </div>)}
       </div>
     </div>
-    {!data?.count ? <Empty>Build the density plots after refreshing the Euclid catalogue with F1–F4 aperture fluxes.</Empty>
-      : !selected.length ? <Empty>Select at least one growth ratio to draw.</Empty>
-      : <div className="aperture-ladder__plot">
-        <Plot
-          xDomain={xDomain} yDomain={yDomain}
-          xTicks={ticks(xDomain, 6)} yTicks={ticks(yDomain, 6)}
-          xLabel={`VIS ${flux.toUpperCase()} aperture magnitude (AB)`}
-          yLabel="aperture AB magnitude difference to F₄"
-          series={series} aspect={0.48}
-          guides={[{ axis: "y", v: 0, color: "#7e8da5", dash: [5, 5], alpha: 0.75 }]}
-        />
-      </div>}
-    <footer className="aperture-ladder__foot">
-      <span>More positive means more light lies outside that aperture.</span>
-      {data?.selection && <span>{data.selection}</span>}
-    </footer>
+  </div>;
+}
+
+function JointDensityMaps({ data }: { data?: JointMaps }) {
+  if (!data?.available || !data.maps?.length) {
+    return <Empty>Rebuild the galaxy statistics to make the joint maps.</Empty>;
+  }
+  const xDomain: [number, number] = [
+    data.magnitude_edges[0], data.magnitude_edges[data.magnitude_edges.length - 1],
+  ];
+  const yDomain: [number, number] = [
+    data.log_radius_edges[0], data.log_radius_edges[data.log_radius_edges.length - 1],
+  ];
+  const maximum = Math.max(data.shared_density_max, 10);
+  const maximumPower = Math.max(1, Math.floor(Math.log10(maximum)));
+  const colorTicks = Array.from({ length: maximumPower + 1 }, (_, power) => ({
+    v: 10 ** power,
+    label: power === 0 ? "1" : `1e${power}`,
+  }));
+  return <section className="joint-atlas" aria-labelledby="joint-atlas-title">
+    <header className="joint-atlas__head">
+      <div>
+        <div className="eyebrow">joint population atlas</div>
+        <h2 id="joint-atlas-title">VIS 2FWHM magnitude × circularized Sérsic Rₑ</h2>
+        <p>{data.detail}</p>
+      </div>
+      <Badge tone="good">shared Q1 bin grid</Badge>
+    </header>
+    <div className="joint-atlas__maps">
+      {data.maps.map((map) => {
+        const contourSeries: Series[] = map.contours.flatMap((contour, index) => (
+          contour.paths.map((path) => ({
+            x: path.x,
+            y: path.y,
+            color: "#f7fbff",
+            width: 1.25 + index * 0.35,
+            dash: contour.mass_fraction >= 0.94 ? [7, 4]
+              : contour.mass_fraction >= 0.79 ? [3, 3] : undefined,
+          }))
+        ));
+        return <article className="joint-map" key={map.key} style={{ "--map-source": map.color } as React.CSSProperties}>
+          <header>
+            <div><span>{map.label}</span><small>{map.detail}</small></div>
+            <div>
+              <b>{map.surface_density_arcmin2.toFixed(1)}</b>
+              <small>objects arcmin⁻² in map</small>
+            </div>
+          </header>
+          <Plot
+            xDomain={xDomain} yDomain={yDomain}
+            xTicks={ticks(xDomain, 8)} yTicks={physicalLogTicks(yDomain, 6)}
+            xLabel="VIS 2FWHM AB magnitude"
+            yLabel="Circularized Sérsic Rₑ (arcsec, log scale)"
+            heat={{
+              z: map.density,
+              xEdges: data.magnitude_edges,
+              yEdges: data.log_radius_edges,
+              max: maximum,
+              scale: "log",
+              colorTicks,
+              colorLabel: data.density_unit,
+            }}
+            series={contourSeries}
+            aspect={0.43}
+          />
+          <footer>
+            <span><i style={{ background: map.color }} />{map.label}</span>
+            <span>white contours enclose 50 / 80 / 95% of this population</span>
+            {map.rows != null && <span>{map.rows.toLocaleString()} plotted galaxies</span>}
+          </footer>
+        </article>;
+      })}
+    </div>
+  </section>;
+}
+
+function PublicationPlate({ version }: { version: number }) {
+  const endpoint = "/view/galaxy-distribution-plate";
+  return <section className="publication-plate" aria-labelledby="publication-plate-title">
+    <header className="publication-plate__head">
+      <div>
+        <div className="eyebrow">paper figure · fixed layout</div>
+        <h2 id="publication-plate-title">Galaxy population diagnostics · 2 × 2</h2>
+        <p>Rendered from the cached numerical arrays at publication resolution—not from a browser screenshot.</p>
+      </div>
+      <div className="publication-plate__downloads">
+        {(["svg", "pdf", "png"] as const).map((format) => <a
+          className="ui-btn" key={format}
+          href={`${endpoint}?format=${format}&dpi=300`}
+          download={`euclidpolish_galaxy_distributions_2x2.${format}`}
+        >Download {format.toUpperCase()}</a>)}
+      </div>
+    </header>
+    <div className="publication-plate__preview">
+      <img
+        src={`${endpoint}?format=svg&inline=1&v=${version}`}
+        alt="Four-panel paper figure comparing Q1, current generated galaxies, and the active galaxy population model"
+      />
+    </div>
   </section>;
 }
 
@@ -622,9 +721,9 @@ export default function GalaxyDistributionsPage() {
 
   return <Page>
     <PageHead
-      eyebrow="population laboratory · observed → latent → generated"
+      eyebrow="population laboratory · fitted observables only"
       title="Galaxy distributions"
-      sub="Query the catalogues, rebuild the analytical fit, and compare surface density against the same physical and observational coordinates."
+      sub="Compare Q1, the galaxies actually present in the current fields, and the active VIS 2FWHM × circularized-size model."
       right={<Badge tone={api.stale ? "warn" : "good"}>{api.stale ? "plots need rebuild" : "plots current"}</Badge>}
     />
 
@@ -795,7 +894,7 @@ export default function GalaxyDistributionsPage() {
                 color: "#e25543", width: 2.6,
               },
             ]}
-            aspect={0.46}
+            aspect={0.36}
           />
           <p className="galaxy-q1-counts__note">
             Blue points are bracket-level Euclid measurements; the red line and band are
@@ -807,21 +906,19 @@ export default function GalaxyDistributionsPage() {
       </Card>;
     })()}
 
-    <ApertureLadder data={api.sources.euclid?.aperture_scatter} />
-
     <section className="galaxy-density-section">
       <header className="galaxy-density-section__head">
         <div>
-          <div className="eyebrow">surface-density marginals</div>
-          <h2>Where the observed, generated, and fitted populations agree—and where they do not</h2>
-          <p>The gold points are the sources actually present in the current test and validation fields. Catalogue controls retain sky-density units; the normalized radius-shape controls use unit-integral probability per dex.</p>
+          <div className="eyebrow">fitted one-dimensional observables</div>
+          <h2>Q1 aggregates, current generated galaxies, and the active law</h2>
+          <p>Only VIS 2FWHM brightness and circularized half-light size are retained. Every diagnostic occupies its own full-width row.</p>
         </div>
         <div className="galaxy-key">
           {ORDER.map((key) => <span key={key}><i style={{ background: SOURCE[key].color }} />{SOURCE[key].label}</span>)}
         </div>
       </header>
       <div className="galaxy-plot-grid">
-        {parameters.map(([key, parameter]) => <article className={`galaxy-plot${key === "magnitude" ? " galaxy-plot--brightness" : ""}`} key={key}>
+        {parameters.map(([key, parameter]) => <article className="galaxy-plot" key={key}>
           <header><span>{parameter.label}</span><small>{parameter.note}</small></header>
           {key === "magnitude"
             ? <ApparentBrightnessPlot
@@ -835,7 +932,21 @@ export default function GalaxyDistributionsPage() {
                 />
             : <DensityPlot parameter={parameter} />}
         </article>)}
+        {api.parameters.radius && <article className="galaxy-plot galaxy-plot--shape">
+          <header>
+            <span>Normalized half-light shape</span>
+            <small>Unit-integral Q1 and model radius densities are kept off the surface-density axis.</small>
+          </header>
+          <RadiusShapePlot
+            key={Object.keys(api.parameters.radius.radius_series ?? {}).join("|")}
+            parameter={api.parameters.radius}
+          />
+        </article>}
       </div>
     </section>
+
+    <JointDensityMaps data={api.joint_maps} />
+
+    <PublicationPlate version={api.version} />
   </Page>;
 }

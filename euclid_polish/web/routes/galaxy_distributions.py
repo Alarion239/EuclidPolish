@@ -14,7 +14,10 @@ from euclid_polish.web.helpers.population_calibration import (
     fit_euclid_joint_galaxy_candidate,
     joint_galaxy_state,
 )
-from euclid_polish.web.helpers.publication_figures import render_population_atlas
+from euclid_polish.web.helpers.publication_figures import (
+    render_galaxy_distribution_plate,
+    render_population_atlas,
+)
 from euclid_polish.web.helpers.q1_galaxy_counts import (
     fit_q1_galaxy_aperture_counts,
     query_q1_galaxy_aperture_counts,
@@ -43,6 +46,37 @@ def _q1_radius_state():
 
 
 def register(app):
+    @app.route("/view/galaxy-distribution-plate")
+    def view_galaxy_distribution_plate():
+        """Download the four-panel galaxy population diagnostic."""
+        output_format = (request.args.get("format") or "png").strip().lower()
+        if output_format not in {"png", "pdf", "svg"}:
+            abort(400)
+        try:
+            dpi = int(request.args.get("dpi", "300"))
+            figure = render_galaxy_distribution_plate(
+                read_galaxy_distributions(),
+                output_format=output_format,
+                dpi=dpi,
+            )
+        except (TypeError, ValueError):
+            abort(400)
+        mimetype = {
+            "png": "image/png", "pdf": "application/pdf",
+            "svg": "image/svg+xml",
+        }[output_format]
+        inline = request.args.get("inline", "").strip().lower() in {
+            "1", "true", "yes", "on",
+        }
+        return send_file(
+            io.BytesIO(figure), mimetype=mimetype,
+            as_attachment=not inline,
+            download_name=(
+                f"euclidpolish_galaxy_distributions_2x2.{output_format}"
+            ),
+            max_age=0,
+        )
+
     @app.route("/view/population-atlas")
     def view_population_atlas():
         """Download the reviewed Euclid brightness-radius fit."""

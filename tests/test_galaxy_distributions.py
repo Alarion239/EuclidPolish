@@ -128,6 +128,53 @@ def test_q1_radius_plot_exposes_normalized_clean_shape(monkeypatch):
     assert np.sum(np.asarray(shape["density"]) * widths) == pytest.approx(1.0)
 
 
+def test_joint_maps_compare_q1_and_actual_synthetic_draws_on_one_grid(
+    monkeypatch,
+):
+    q1 = {
+        "magnitude_edges": [20.0, 21.0, 22.0, 23.0, 24.0],
+        "radius_edges_arcsec": [0.03, 0.1, 0.3, 1.0],
+        "footprint_area_arcmin2": 10.0,
+        "joint_bins": [
+            {
+                "magnitude_bin": magnitude_bin,
+                "radius_bin": radius_bin,
+                "expected_radii": float(
+                    1 + 5 * (magnitude_bin + 1) * (radius_bin + 1)
+                ),
+            }
+            for magnitude_bin in range(4)
+            for radius_bin in range(3)
+        ],
+    }
+    monkeypatch.setattr(
+        helper, "read_q1_galaxy_radius_statistics", lambda: q1,
+    )
+    monkeypatch.setattr(helper, "joint_galaxy_candidate", lambda: None)
+    synthetic = {
+        "area_arcmin2": 2.0,
+        "_joint_vis_2fwhm_mag": [20.2, 20.8, 21.4, 22.1, 22.8, 23.6],
+        "_joint_re_arcsec": [0.05, 0.08, 0.12, 0.2, 0.4, 0.8],
+    }
+
+    result = helper._joint_magnitude_radius_maps(synthetic)
+
+    assert result["available"] is True
+    assert [item["key"] for item in result["maps"]] == ["q1", "synthetic"]
+    assert result["magnitude_edges"] == q1["magnitude_edges"]
+    assert result["log_radius_edges"] == pytest.approx(
+        np.log10(q1["radius_edges_arcsec"]),
+    )
+    assert "arcmin⁻²" in result["density_unit"]
+    assert not any(key.startswith("_joint") for key in synthetic)
+    for item in result["maps"]:
+        density = np.asarray(item["density"])
+        assert density.shape == (4, 3)
+        assert item["surface_density_arcmin2"] > 0.0
+        assert item["contours"]
+        assert all(contour["paths"] for contour in item["contours"])
+
+
 def test_euclid_aperture_growth_compares_all_vis_apertures_to_total_proxies(
     tmp_path, monkeypatch,
 ):
@@ -530,12 +577,23 @@ def test_build_writes_compact_artifact_transactionally(tmp_path, monkeypatch):
         "_read_fit",
         lambda parameters: {"available": True, "fingerprint": "abc"},
     )
+    monkeypatch.setattr(
+        helper,
+        "_read_synthetic",
+        lambda parameters, progress: {"available": True, "rows": 2},
+    )
+    monkeypatch.setattr(
+        helper,
+        "_joint_magnitude_radius_maps",
+        lambda synthetic: {"available": True, "maps": []},
+    )
 
     payload = helper.build_galaxy_distributions()
     stored = json.loads(helper.artifact_path().read_text())
 
     assert stored == payload
     assert stored["sources"]["euclid"]["rows"] == 3
+    assert stored["joint_maps"]["available"] is True
     assert not helper.artifact_path().with_suffix(".json.tmp").exists()
     assert helper.read_galaxy_distributions()["stale"] is False
 
@@ -600,6 +658,28 @@ def test_status_route_returns_plot_payload(monkeypatch):
     assert payload["authenticated"] is True
     assert "q1_stars" not in payload
     assert "stellar_colors" not in payload
+
+
+def test_galaxy_distribution_plate_route_serves_inline_svg(monkeypatch):
+    app = Flask(__name__)
+    monkeypatch.setattr(
+        routes, "read_galaxy_distributions", lambda: {"version": 16},
+    )
+    monkeypatch.setattr(
+        routes,
+        "render_galaxy_distribution_plate",
+        lambda payload, **kwargs: b"<svg>fixture</svg>",
+    )
+    routes.register(app)
+
+    response = app.test_client().get(
+        "/view/galaxy-distribution-plate?format=svg&inline=1",
+    )
+
+    assert response.status_code == 200
+    assert response.mimetype == "image/svg+xml"
+    assert response.get_data().startswith(b"<svg>")
+    assert "attachment" not in response.headers.get("Content-Disposition", "")
 
 
 def test_recover_phz_route_is_removed():
@@ -780,15 +860,32 @@ def test_galaxy_distribution_controls_use_one_galaxy_query_action():
     assert "three-segment bright bridge/main/flat" in source
     assert "one fitted straight truncated-Gaussian conditional law" in source
     assert "Q1 magnitude mix" in source
-    assert "full faint-extended generation mix" in source
+    assert "full faint extension" in source
     assert "half_light_shape" in source
     assert "normalized probability / dex" in source
+    assert 'const PARAMETER_ORDER = ["magnitude", "radius"]' in source
+    assert "ApertureLadder" not in source
+    assert "JointDensityMaps" in source
+    assert "white contours enclose 50 / 80 / 95%" in source
+    assert 'const endpoint = "/view/galaxy-distribution-plate"' in source
+    assert "Download {format.toUpperCase()}" in source
+    assert "paper figure · fixed layout" in source
     assert "broken conditional log-radius law" not in source
     assert "Added galaxies fainter than VIS 25.5" not in source
     assert "fitted mixture mean" not in source
     assert 'label="random cones"' not in source
     assert 'label="radius (arcmin)"' not in source
     assert "galaxy-q1-phases" in source
+
+    css = (
+        Path(__file__).parents[1]
+        / "euclid_polish/web/frontend/src/pages/galaxy-distributions.css"
+    ).read_text()
+    assert (
+        ".galaxy-plot-grid { display: grid; grid-template-columns: "
+        "minmax(0, 1fr)"
+    ) in css
+    assert ".publication-plate__preview" in css
 
 
 def test_logarithmic_plots_label_ticks_in_physical_units():

@@ -12,16 +12,24 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import contourpy
 import numpy as np
 
 from euclid_polish.config import Config
 from euclid_polish.photometry import electrons_to_ab_mag, uJy_to_ab_mag
+from euclid_polish.population.euclid_galaxy_prior import (
+    ConditionalRadiusLaw,
+    joint_density_grid,
+)
 from euclid_polish.population.joint_galaxy import (
     COSMOS_AREA_ARCMIN2,
     COSMOS_FIT_MAG_MIN,
     COSMOS_FIT_Z_MAX,
     COSMOS_FIT_Z_MIN,
     read_cosmos_population,
+)
+from euclid_polish.population.magnitude_law import (
+    ContinuousBrightBridgeFaintCappedMagnitudeLaw,
 )
 from euclid_polish.web.helpers.population_calibration import (
     joint_galaxy_candidate,
@@ -47,7 +55,7 @@ from euclid_polish.web.helpers.q1_galaxy_radius_statistics import (
     read_q1_galaxy_radius_statistics,
 )
 
-ARTIFACT_VERSION = 15
+ARTIFACT_VERSION = 16
 MAG_EDGES = np.arange(14.0, 30.0001, 0.25)
 RADIUS_MAX_VIS_PIXELS = 100.0
 RADIUS_MAX_ARCSEC = RADIUS_MAX_VIS_PIXELS * float(Config.VIS_PIXEL_SCALE_ARCSEC)
@@ -62,6 +70,7 @@ APERTURE_SIZE_EDGES = np.asarray([
 APERTURE_DELTA_MAG_EDGES = np.linspace(-1.0, 4.0, 251)
 APERTURE_SCATTER_MAG_EDGES = np.arange(14.0, 30.0001, 0.5)
 APERTURE_SCATTER_PER_MAG_BIN = 250
+JOINT_CONTOUR_MASS_FRACTIONS = (0.95, 0.80, 0.50)
 
 MER_BRIGHTNESS_SERIES = {
     "mer_vis_1fwhm": (
@@ -168,6 +177,254 @@ def _normalized_density(
     if not np.isfinite(total) or total <= 0.0:
         raise ValueError("radius density cannot be normalized")
     return values / total
+
+
+def _mass_contour_thresholds(
+    density: np.ndarray,
+    cell_mass: np.ndarray,
+) -> list[tuple[float, float]]:
+    """Density thresholds enclosing fixed fractions of joint population mass."""
+    values = np.asarray(density, dtype=np.float64).ravel()
+    mass = np.asarray(cell_mass, dtype=np.float64).ravel()
+    keep = (
+        np.isfinite(values) & np.isfinite(mass)
+        & (values > 0.0) & (mass > 0.0)
+    )
+    values, mass = values[keep], mass[keep]
+    if values.size < 2 or float(np.sum(mass)) <= 0.0:
+        return []
+    order = np.argsort(values)[::-1]
+    cumulative = np.cumsum(mass[order]) / np.sum(mass)
+    return [
+        (
+            fraction,
+            float(values[order[min(
+                int(np.searchsorted(cumulative, fraction)),
+                len(order) - 1,
+            )]]),
+        )
+        for fraction in JOINT_CONTOUR_MASS_FRACTIONS
+    ]
+
+
+def _joint_contours(
+    density: np.ndarray,
+    cell_mass: np.ndarray,
+    magnitude_center: np.ndarray,
+    log_radius_center: np.ndarray,
+) -> list[dict[str, Any]]:
+    """Trace plot-ready 50/80/95-percent mass contours on one density map."""
+    generator = contourpy.contour_generator(
+        x=np.asarray(magnitude_center, dtype=np.float64),
+        y=np.asarray(log_radius_center, dtype=np.float64),
+        z=np.asarray(density, dtype=np.float64).T,
+        corner_mask=True,
+    )
+    contours = []
+    seen: set[float] = set()
+    for mass_fraction, level in _mass_contour_thresholds(density, cell_mass):
+        # Sparse histograms can assign more than one enclosed-mass fraction to
+        # the same density threshold.  One geometric line is sufficient; its
+        # label retains every represented fraction.
+        rounded = round(level, 12)
+        if rounded in seen:
+            continue
+        seen.add(rounded)
+        paths = []
+        for vertices in generator.lines(level):
+            if vertices.shape[0] < 2:
+                continue
+            paths.append({
+                "x": vertices[:, 0].astype(float).tolist(),
+                "y": vertices[:, 1].astype(float).tolist(),
+            })
+        if paths:
+            contours.append({
+                "mass_fraction": mass_fraction,
+                "level": level,
+                "paths": paths,
+            })
+    return contours
+
+
+def _joint_map(
+    *,
+    key: str,
+    label: str,
+    detail: str,
+    color: str,
+    magnitude_edges: np.ndarray,
+    log_radius_edges: np.ndarray,
+    cell_mass_arcmin2: np.ndarray,
+    rows: int | None = None,
+) -> dict[str, Any]:
+    """Convert one joint population histogram to a common map contract."""
+    mass = np.asarray(cell_mass_arcmin2, dtype=np.float64)
+    expected_shape = (
+        magnitude_edges.size - 1,
+        log_radius_edges.size - 1,
+    )
+    if mass.shape != expected_shape or not np.all(
+        np.isfinite(mass) & (mass >= 0.0)
+    ):
+        raise ValueError(f"{key} joint magnitude-radius grid is malformed")
+    magnitude_width = np.diff(magnitude_edges)
+    log_radius_width = np.diff(log_radius_edges)
+    density = np.divide(
+        mass,
+        magnitude_width[:, None] * log_radius_width[None, :],
+        out=np.zeros_like(mass),
+        where=(
+            magnitude_width[:, None] * log_radius_width[None, :]
+        ) > 0.0,
+    )
+    magnitude_center = 0.5 * (magnitude_edges[:-1] + magnitude_edges[1:])
+    log_radius_center = 0.5 * (
+        log_radius_edges[:-1] + log_radius_edges[1:]
+    )
+    return {
+        "key": key,
+        "label": label,
+        "detail": detail,
+        "color": color,
+        "density": density.tolist(),
+        "surface_density_arcmin2": float(np.sum(mass)),
+        "rows": rows,
+        "contours": _joint_contours(
+            density,
+            mass,
+            magnitude_center,
+            log_radius_center,
+        ),
+    }
+
+
+def _joint_magnitude_radius_maps(
+    synthetic: dict[str, Any],
+) -> dict[str, Any]:
+    """Build Q1, current-field, and active-model maps on the native Q1 grid."""
+    try:
+        q1 = read_q1_galaxy_radius_statistics()
+        magnitude_edges = np.asarray(q1["magnitude_edges"], dtype=np.float64)
+        radius_edges = np.asarray(q1["radius_edges_arcsec"], dtype=np.float64)
+        area_arcmin2 = float(q1["footprint_area_arcmin2"])
+        joint_bins = q1["joint_bins"]
+    except (KeyError, TypeError, ValueError) as exc:
+        return {
+            "available": False,
+            "detail": f"Q1 joint magnitude-radius aggregate unavailable: {exc}",
+        }
+    log_radius_edges = np.log10(radius_edges)
+    shape = (magnitude_edges.size - 1, radius_edges.size - 1)
+    q1_mass = np.zeros(shape, dtype=np.float64)
+    try:
+        for item in joint_bins:
+            q1_mass[
+                int(item["magnitude_bin"]), int(item["radius_bin"]),
+            ] += float(item["expected_radii"]) / area_arcmin2
+    except (IndexError, KeyError, TypeError, ValueError) as exc:
+        return {
+            "available": False,
+            "detail": f"Q1 joint magnitude-radius aggregate is malformed: {exc}",
+        }
+
+    maps = [
+        _joint_map(
+            key="q1",
+            label="Q1 MER + PHZ",
+            detail=(
+                "Aggregate PHZ-weighted VIS 2FWHM magnitude × clean "
+                "circularized VIS Sérsic Rₑ brackets"
+            ),
+            color="#2478d4",
+            magnitude_edges=magnitude_edges,
+            log_radius_edges=log_radius_edges,
+            cell_mass_arcmin2=q1_mass,
+        ),
+    ]
+
+    synthetic_magnitude = np.asarray(
+        synthetic.pop("_joint_vis_2fwhm_mag", []), dtype=np.float64,
+    )
+    synthetic_radius = np.asarray(
+        synthetic.pop("_joint_re_arcsec", []), dtype=np.float64,
+    )
+    synthetic_area = float(synthetic.get("area_arcmin2") or 0.0)
+    valid = (
+        np.isfinite(synthetic_magnitude)
+        & np.isfinite(synthetic_radius)
+        & (synthetic_radius > 0.0)
+    )
+    if synthetic_area > 0.0 and np.any(valid):
+        synthetic_count = np.histogram2d(
+            synthetic_magnitude[valid],
+            np.log10(synthetic_radius[valid]),
+            bins=(magnitude_edges, log_radius_edges),
+        )[0]
+        maps.append(_joint_map(
+            key="synthetic",
+            label="Current generated galaxies",
+            detail=(
+                "Actual test + validation VIS 2FWHM source-record magnitude × "
+                "requested circularized Sérsic Rₑ draws"
+            ),
+            color="#d39b32",
+            magnitude_edges=magnitude_edges,
+            log_radius_edges=log_radius_edges,
+            cell_mass_arcmin2=synthetic_count / synthetic_area,
+            rows=int(np.count_nonzero(valid)),
+        ))
+
+    candidate = joint_galaxy_candidate()
+    if candidate:
+        try:
+            magnitude_law = (
+                ContinuousBrightBridgeFaintCappedMagnitudeLaw.from_payload(
+                    candidate["magnitude_law"],
+                )
+            )
+            radius_law = ConditionalRadiusLaw.from_payload(
+                candidate["radius_law"],
+            )
+            model_mass = joint_density_grid(
+                magnitude_law,
+                radius_law,
+                magnitude_edges=magnitude_edges,
+                log_radius_edges=log_radius_edges,
+            )["density"]
+            maps.append(_joint_map(
+                key="model",
+                label="Active generation law",
+                detail=(
+                    "Analytical VIS 2FWHM count law × conditional "
+                    "circularized Sérsic Rₑ probability"
+                ),
+                color="#e25543",
+                magnitude_edges=magnitude_edges,
+                log_radius_edges=log_radius_edges,
+                cell_mass_arcmin2=model_mass,
+            ))
+        except (KeyError, TypeError, ValueError):
+            pass
+
+    positive = np.concatenate([
+        np.asarray(item["density"], dtype=np.float64).ravel()
+        for item in maps
+    ])
+    positive = positive[np.isfinite(positive) & (positive > 0.0)]
+    return {
+        "available": len(maps) >= 2,
+        "magnitude_edges": magnitude_edges.tolist(),
+        "log_radius_edges": log_radius_edges.tolist(),
+        "density_unit": "objects arcmin⁻² mag⁻¹ dex⁻¹",
+        "contour_mass_fractions": list(JOINT_CONTOUR_MASS_FRACTIONS),
+        "shared_density_max": float(np.max(positive)) if positive.size else 1.0,
+        "maps": maps,
+        "detail": (
+            "All maps use the Q1 bin grid; contours enclose 50%, 80%, and "
+            "95% of each map's own surface-density mass."
+        ),
+    }
 
 
 def _brightness_curve(
@@ -525,6 +782,10 @@ def _read_synthetic(
             f"Current regenerated test + validation draws; {measured_count:,} "
             "isolated galaxy radii measured directly on clean VIS images"
         ),
+        # Consumed by ``build_galaxy_distributions`` to make the joint map,
+        # then removed before the compact source ledger is serialized.
+        "_joint_vis_2fwhm_mag": achieved_f2.tolist(),
+        "_joint_re_arcsec": requested_radius.tolist(),
     }
 
 
@@ -1588,6 +1849,7 @@ def build_galaxy_distributions(progress: Callable[[int, int, str], None] | None 
     synthetic = _read_synthetic(parameters, tick)
     tick(5, 6, "reconstruct fitted distribution")
     fit = _read_fit(parameters)
+    joint_maps = _joint_magnitude_radius_maps(synthetic)
     payload = {
         "version": ARTIFACT_VERSION,
         "inputs": _inputs(),
@@ -1598,6 +1860,7 @@ def build_galaxy_distributions(progress: Callable[[int, int, str], None] | None 
         },
         "q1_counts": q1_counts,
         "q1_radius": q1_radius,
+        "joint_maps": joint_maps,
         "parameters": parameters,
     }
     path = artifact_path()
@@ -1618,6 +1881,7 @@ def read_galaxy_distributions() -> dict[str, Any]:
             "sources": {},
             "q1_counts": {"available": False},
             "q1_radius": {"available": False},
+            "joint_maps": {"available": False},
             "parameters": _empty_parameters(),
         }
     # The archive job checkpoints after every aperture/bin request. Overlay
