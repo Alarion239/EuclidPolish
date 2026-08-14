@@ -658,6 +658,10 @@ def test_galaxy_distribution_controls_use_one_galaxy_query_action():
     assert "never refreshes star caches" in source
     assert "Joint brightness–radius relation" in source
     assert "observed_mean_log10_arcsec" in source
+    assert "model_core_low_log10_arcsec" in source
+    assert "model_core_high_log10_arcsec" in source
+    assert "?? relation.model_low_log10_arcsec" in source
+    assert "?? relation.model_high_log10_arcsec" in source
     assert 'label="random cones"' not in source
     assert 'label="radius (arcmin)"' not in source
     assert "galaxy-q1-phases" in source

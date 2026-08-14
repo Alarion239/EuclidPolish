@@ -110,8 +110,10 @@ type Payload = {
           magnitude: number[];
           observed_mean_log10_arcsec: Array<number | null>;
           model_mean_log10_arcsec: number[];
-          model_low_log10_arcsec: number[];
-          model_high_log10_arcsec: number[];
+          model_core_low_log10_arcsec?: number[];
+          model_core_high_log10_arcsec?: number[];
+          model_low_log10_arcsec?: number[];
+          model_high_log10_arcsec?: number[];
         };
       };
       provenance?: {
@@ -677,18 +679,24 @@ export default function GalaxyDistributionsPage() {
 
     {api.calibration.candidate?.plots?.conditional_radius && (() => {
       const relation = api.calibration.candidate.plots!.conditional_radius!;
+      const modelLow = relation.model_core_low_log10_arcsec
+        ?? relation.model_low_log10_arcsec
+        ?? [];
+      const modelHigh = relation.model_core_high_log10_arcsec
+        ?? relation.model_high_log10_arcsec
+        ?? [];
       const observed = relation.observed_mean_log10_arcsec.filter(
         (value): value is number => value != null && Number.isFinite(value),
       );
       const yDomain = paddedDomain([
         ...observed,
-        ...relation.model_low_log10_arcsec,
-        ...relation.model_high_log10_arcsec,
+        ...modelLow,
+        ...modelHigh,
       ], 0.5);
       const xDomain = paddedDomain(relation.magnitude, 1.0);
       return <Card className="parameter-card">
         <CardHead title="Joint brightness–radius relation"
-          sub="Aggregate Q1 Sérsic-Rₑ moments in each VIS 2FWHM magnitude bracket and the fitted straight conditional mean." />
+          sub="Aggregate Q1 Sérsic-Rₑ moments in each VIS 2FWHM magnitude bracket and the fitted broken conditional law." />
         <CardBody>
           <Plot
             xDomain={xDomain} yDomain={yDomain}
@@ -704,8 +712,8 @@ export default function GalaxyDistributionsPage() {
               {
                 x: relation.magnitude,
                 y: relation.model_mean_log10_arcsec,
-                low: relation.model_low_log10_arcsec,
-                high: relation.model_high_log10_arcsec,
+                low: modelLow,
+                high: modelHigh,
                 color: "#e25543", fillAlpha: 0.12, alpha: 0, width: 0,
               },
               {
@@ -723,8 +731,8 @@ export default function GalaxyDistributionsPage() {
           />
           <p className="galaxy-q1-counts__note">
             Blue points are bracket-level Euclid measurements; the red line and band are
-            the fitted mean and one-scatter interval. COSMOS and object-level samples
-            are absent from this fit.
+            the fitted mixture mean and the Gaussian-core one-scatter interval. COSMOS
+            and object-level samples are absent from this fit.
           </p>
         </CardBody>
       </Card>;
