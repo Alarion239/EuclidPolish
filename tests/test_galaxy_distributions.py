@@ -222,10 +222,12 @@ def test_joint_maps_compare_q1_and_actual_synthetic_draws_on_one_grid(
     )
     assert "arcmin⁻²" in result["density_unit"]
     assert result["contour_mass_fractions"] == [
-        0.95, 0.80, 0.50, 0.25, 0.10,
+        0.995, 0.99, 0.95, 0.80, 0.50, 0.25, 0.10,
     ]
     assert result["maps"][0]["color"] == "#737373"
     assert result["maps"][1]["color"] == "#0072b2"
+    assert result["maps"][1]["contour_smoothing_sigma_bins"] == 1.0
+    assert "one-bin smoothing" in result["maps"][1]["detail"]
     assert not any(key.startswith("_joint") for key in synthetic)
     for item in result["maps"]:
         density = np.asarray(item["density"])
@@ -233,6 +235,40 @@ def test_joint_maps_compare_q1_and_actual_synthetic_draws_on_one_grid(
         assert item["surface_density_arcmin2"] > 0.0
         assert item["contours"]
         assert all(contour["paths"] for contour in item["contours"])
+
+
+def test_smoothed_joint_map_keeps_99_and_99_5_percent_contours():
+    magnitude_edges = np.linspace(20.0, 28.0, 41)
+    log_radius_edges = np.linspace(-1.5, 0.5, 31)
+    magnitude_center = 0.5 * (
+        magnitude_edges[:-1] + magnitude_edges[1:]
+    )
+    log_radius_center = 0.5 * (
+        log_radius_edges[:-1] + log_radius_edges[1:]
+    )
+    x, y = np.meshgrid(
+        magnitude_center, log_radius_center, indexing="ij",
+    )
+    mass = np.exp(
+        -0.5 * ((x - 25.0) / 1.2) ** 2
+        -0.5 * ((y + 0.5 + 0.12 * (x - 25.0)) / 0.22) ** 2
+    )
+
+    result = helper._joint_map(
+        key="synthetic",
+        label="generated",
+        detail="test",
+        color="#0072b2",
+        magnitude_edges=magnitude_edges,
+        log_radius_edges=log_radius_edges,
+        cell_mass_arcmin2=mass,
+        contour_smoothing_sigma_bins=1.0,
+    )
+
+    fractions = {
+        contour["mass_fraction"] for contour in result["contours"]
+    }
+    assert {0.99, 0.995} <= fractions
 
 
 def test_euclid_aperture_growth_compares_all_vis_apertures_to_total_proxies(
@@ -934,7 +970,7 @@ def test_galaxy_distribution_controls_use_one_galaxy_query_action():
     assert "neutral grayscale" in source
     assert "Blue dashed contours show" in source
     assert "vermillion solid contours" in source
-    assert "10 / 25 / 50 / 80 / 95% contours" in source
+    assert "10 / 25 / 50 / 80 / 95 / 99 / 99.5% contours" in source
     assert "color: JOINT_DENSITY_COLOR" in source
     assert 'map.key === "synthetic" ? [7, 4]' in source
     assert "data.maps.map" not in source

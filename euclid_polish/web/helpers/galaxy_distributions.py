@@ -15,6 +15,7 @@ from typing import Any
 
 import contourpy
 import numpy as np
+from scipy.ndimage import gaussian_filter
 
 from euclid_polish.config import Config
 from euclid_polish.photometry import electrons_to_ab_mag, uJy_to_ab_mag
@@ -56,7 +57,7 @@ from euclid_polish.web.helpers.q1_galaxy_radius_statistics import (
     read_q1_galaxy_radius_statistics,
 )
 
-ARTIFACT_VERSION = 18
+ARTIFACT_VERSION = 19
 MAG_EDGES = np.arange(14.0, 30.0001, 0.25)
 RADIUS_MAX_VIS_PIXELS = 100.0
 RADIUS_MAX_ARCSEC = RADIUS_MAX_VIS_PIXELS * float(Config.VIS_PIXEL_SCALE_ARCSEC)
@@ -71,7 +72,9 @@ APERTURE_SIZE_EDGES = np.asarray([
 APERTURE_DELTA_MAG_EDGES = np.linspace(-1.0, 4.0, 251)
 APERTURE_SCATTER_MAG_EDGES = np.arange(14.0, 30.0001, 0.5)
 APERTURE_SCATTER_PER_MAG_BIN = 250
-JOINT_CONTOUR_MASS_FRACTIONS = (0.95, 0.80, 0.50, 0.25, 0.10)
+JOINT_CONTOUR_MASS_FRACTIONS = (
+    0.995, 0.99, 0.95, 0.80, 0.50, 0.25, 0.10,
+)
 
 MER_BRIGHTNESS_SERIES = {
     "mer_vis_1fwhm": (
@@ -224,7 +227,7 @@ def _joint_contours(
     magnitude_center: np.ndarray,
     log_radius_center: np.ndarray,
 ) -> list[dict[str, Any]]:
-    """Trace plot-ready 10/25/50/80/95-percent mass contours."""
+    """Trace plot-ready 10/25/50/80/95/99/99.5-percent mass contours."""
     generator = contourpy.contour_generator(
         x=np.asarray(magnitude_center, dtype=np.float64),
         y=np.asarray(log_radius_center, dtype=np.float64),
@@ -268,6 +271,7 @@ def _joint_map(
     log_radius_edges: np.ndarray,
     cell_mass_arcmin2: np.ndarray,
     rows: int | None = None,
+    contour_smoothing_sigma_bins: float = 0.0,
 ) -> dict[str, Any]:
     """Convert one joint population histogram to a common map contract."""
     mass = np.asarray(cell_mass_arcmin2, dtype=np.float64)
@@ -289,6 +293,27 @@ def _joint_map(
             magnitude_width[:, None] * log_radius_width[None, :]
         ) > 0.0,
     )
+    contour_mass = mass
+    contour_density = density
+    if contour_smoothing_sigma_bins > 0.0:
+        contour_mass = gaussian_filter(
+            mass,
+            sigma=float(contour_smoothing_sigma_bins),
+            mode="constant",
+            cval=0.0,
+        )
+        smoothed_total = float(np.sum(contour_mass))
+        if smoothed_total <= 0.0 or not np.isfinite(smoothed_total):
+            raise ValueError(f"{key} smoothed contour grid is malformed")
+        contour_mass *= float(np.sum(mass)) / smoothed_total
+        contour_density = np.divide(
+            contour_mass,
+            magnitude_width[:, None] * log_radius_width[None, :],
+            out=np.zeros_like(contour_mass),
+            where=(
+                magnitude_width[:, None] * log_radius_width[None, :]
+            ) > 0.0,
+        )
     magnitude_center = 0.5 * (magnitude_edges[:-1] + magnitude_edges[1:])
     log_radius_center = 0.5 * (
         log_radius_edges[:-1] + log_radius_edges[1:]
@@ -301,9 +326,10 @@ def _joint_map(
         "density": density.tolist(),
         "surface_density_arcmin2": float(np.sum(mass)),
         "rows": rows,
+        "contour_smoothing_sigma_bins": contour_smoothing_sigma_bins,
         "contours": _joint_contours(
-            density,
-            mass,
+            contour_density,
+            contour_mass,
             magnitude_center,
             log_radius_center,
         ),
@@ -382,18 +408,23 @@ def _joint_magnitude_radius_maps(
                 synthetic.get("_joint_label")
                 or "Current generated galaxies"
             ),
-            detail=str(
-                synthetic.get("_joint_detail")
-                or (
-                    "Actual test + validation VIS 2FWHM source-record "
-                    "magnitude × requested circularized Sérsic Rₑ draws"
+            detail=(
+                str(
+                    synthetic.get("_joint_detail")
+                    or (
+                        "Actual test + validation VIS 2FWHM source-record "
+                        "magnitude × requested circularized Sérsic Rₑ draws"
+                    )
                 )
+                + "; contours use one-bin smoothing to resolve the sparse "
+                "empirical outskirts"
             ),
             color="#0072b2",
             magnitude_edges=magnitude_edges,
             log_radius_edges=log_radius_edges,
             cell_mass_arcmin2=synthetic_count / synthetic_area,
             rows=int(np.count_nonzero(valid)),
+            contour_smoothing_sigma_bins=1.0,
         ))
 
     candidate = joint_galaxy_candidate()
@@ -443,7 +474,8 @@ def _joint_magnitude_radius_maps(
         "maps": maps,
         "detail": (
             "All maps use the Q1 bin grid; contours enclose 10%, 25%, 50%, "
-            "80%, and 95% of each map's own surface-density mass."
+            "80%, 95%, 99%, and 99.5% of each map's own surface-density "
+            "mass."
         ),
     }
 

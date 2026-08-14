@@ -652,7 +652,7 @@ function JointDensityMaps({ data }: { data?: JointMaps }) {
       x: path.x,
       y: path.y,
       color: map.color,
-      width: 1.25 + index * 0.25,
+      width: 1.15 + index * 0.20,
       dash: map.key === "synthetic" ? [7, 4] : undefined,
     })))
   ));
@@ -696,7 +696,7 @@ function JointDensityMaps({ data }: { data?: JointMaps }) {
           <span><i style={{ background: q1.color }} />Q1 MER + PHZ density image</span>
           {overlays.map((map) => <span key={map.key}>
             <i style={{ background: map.color }} />
-            {map.label} · {map.key === "synthetic" ? "dashed" : "solid"} 10 / 25 / 50 / 80 / 95% contours
+            {map.label} · {map.key === "synthetic" ? "dashed" : "solid"} 10 / 25 / 50 / 80 / 95 / 99 / 99.5% contours
           </span>)}
           {synthetic?.rows != null && <span>
             {synthetic.rows.toLocaleString()} generated galaxies
