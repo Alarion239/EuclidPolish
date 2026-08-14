@@ -866,7 +866,11 @@ def test_galaxy_distribution_controls_use_one_galaxy_query_action():
     assert 'const PARAMETER_ORDER = ["magnitude", "radius"]' in source
     assert "ApertureLadder" not in source
     assert "JointDensityMaps" in source
-    assert "white contours enclose 50 / 80 / 95%" in source
+    assert "one shared Q1 plot" in source
+    assert "Q1 MER + PHZ density image" in source
+    assert "Gold dashed contours show the current generated galaxies" in source
+    assert 'map.key === "synthetic" ? [7, 4]' in source
+    assert "data.maps.map" not in source
     assert 'const endpoint = "/view/galaxy-distribution-plate"' in source
     assert "Download {format.toUpperCase()}" in source
     assert "paper figure · fixed layout" in source

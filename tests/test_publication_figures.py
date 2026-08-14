@@ -338,10 +338,11 @@ def test_galaxy_distribution_plate_uses_current_generated_measurements():
     assert b"VIS 2FWHM magnitude density" in svg
     assert b"Half-light-radius surface density" in svg
     assert b"Normalized half-light shape" in svg
-    assert b"Joint magnitude" in svg
+    assert b"Q1 density + generated/model contours" in svg
     assert b"current generated VIS 2FWHM" in svg
     assert b"generated requested" in svg
     assert b"50/80/95%" in svg
+    assert b"Q1 aggregate" not in svg
 
 
 def _star_calibration():

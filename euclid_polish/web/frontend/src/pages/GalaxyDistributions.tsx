@@ -605,71 +605,83 @@ function JointDensityMaps({ data }: { data?: JointMaps }) {
   if (!data?.available || !data.maps?.length) {
     return <Empty>Rebuild the galaxy statistics to make the joint maps.</Empty>;
   }
+  const q1 = data.maps.find((map) => map.key === "q1");
+  const overlays = data.maps.filter(
+    (map) => map.key === "synthetic" || map.key === "model",
+  );
+  const synthetic = overlays.find((map) => map.key === "synthetic");
+  if (!q1 || !overlays.length) {
+    return <Empty>The Q1 density or generated/model contour layers are unavailable.</Empty>;
+  }
   const xDomain: [number, number] = [
     data.magnitude_edges[0], data.magnitude_edges[data.magnitude_edges.length - 1],
   ];
   const yDomain: [number, number] = [
     data.log_radius_edges[0], data.log_radius_edges[data.log_radius_edges.length - 1],
   ];
-  const maximum = Math.max(data.shared_density_max, 10);
+  const maximum = Math.max(
+    ...q1.density.flat().filter((value) => Number.isFinite(value)), 10,
+  );
   const maximumPower = Math.max(1, Math.floor(Math.log10(maximum)));
   const colorTicks = Array.from({ length: maximumPower + 1 }, (_, power) => ({
     v: 10 ** power,
     label: power === 0 ? "1" : `1e${power}`,
   }));
+  const contourSeries: Series[] = overlays.flatMap((map) => (
+    map.contours.flatMap((contour, index) => contour.paths.map((path) => ({
+      x: path.x,
+      y: path.y,
+      color: map.color,
+      width: 1.35 + index * 0.45,
+      dash: map.key === "synthetic" ? [7, 4] : undefined,
+    })))
+  ));
   return <section className="joint-atlas" aria-labelledby="joint-atlas-title">
     <header className="joint-atlas__head">
       <div>
-        <div className="eyebrow">joint population atlas</div>
-        <h2 id="joint-atlas-title">VIS 2FWHM magnitude × circularized Sérsic Rₑ</h2>
-        <p>{data.detail}</p>
+        <div className="eyebrow">joint population comparison</div>
+        <h2 id="joint-atlas-title">Q1 MER + PHZ density with generated/model contours</h2>
+        <p>The image is the PHZ-weighted Q1 magnitude–radius density. Gold dashed contours show the current generated galaxies; red solid contours show the active generation law.</p>
       </div>
-      <Badge tone="good">shared Q1 bin grid</Badge>
+      <Badge tone="good">one shared Q1 plot</Badge>
     </header>
     <div className="joint-atlas__maps">
-      {data.maps.map((map) => {
-        const contourSeries: Series[] = map.contours.flatMap((contour, index) => (
-          contour.paths.map((path) => ({
-            x: path.x,
-            y: path.y,
-            color: "#f7fbff",
-            width: 1.25 + index * 0.35,
-            dash: contour.mass_fraction >= 0.94 ? [7, 4]
-              : contour.mass_fraction >= 0.79 ? [3, 3] : undefined,
-          }))
-        ));
-        return <article className="joint-map" key={map.key} style={{ "--map-source": map.color } as React.CSSProperties}>
-          <header>
-            <div><span>{map.label}</span><small>{map.detail}</small></div>
-            <div>
-              <b>{map.surface_density_arcmin2.toFixed(1)}</b>
-              <small>objects arcmin⁻² in map</small>
-            </div>
-          </header>
-          <Plot
-            xDomain={xDomain} yDomain={yDomain}
-            xTicks={ticks(xDomain, 8)} yTicks={physicalLogTicks(yDomain, 6)}
-            xLabel="VIS 2FWHM AB magnitude"
-            yLabel="Circularized Sérsic Rₑ (arcsec, log scale)"
-            heat={{
-              z: map.density,
-              xEdges: data.magnitude_edges,
-              yEdges: data.log_radius_edges,
-              max: maximum,
-              scale: "log",
-              colorTicks,
-              colorLabel: data.density_unit,
-            }}
-            series={contourSeries}
-            aspect={0.43}
-          />
-          <footer>
-            <span><i style={{ background: map.color }} />{map.label}</span>
-            <span>white contours enclose 50 / 80 / 95% of this population</span>
-            {map.rows != null && <span>{map.rows.toLocaleString()} plotted galaxies</span>}
-          </footer>
-        </article>;
-      })}
+      <article className="joint-map" style={{ "--map-source": q1.color } as React.CSSProperties}>
+        <header>
+          <div><span>{q1.label}</span><small>{q1.detail}</small></div>
+          <div>
+            <b>{q1.surface_density_arcmin2.toFixed(1)}</b>
+            <small>Q1 objects arcmin⁻² in map</small>
+          </div>
+        </header>
+        <Plot
+          xDomain={xDomain} yDomain={yDomain}
+          xTicks={ticks(xDomain, 8)} yTicks={physicalLogTicks(yDomain, 6)}
+          xLabel="VIS 2FWHM AB magnitude"
+          yLabel="Circularized Sérsic Rₑ (arcsec, log scale)"
+          heat={{
+            z: q1.density,
+            xEdges: data.magnitude_edges,
+            yEdges: data.log_radius_edges,
+            max: maximum,
+            scale: "log",
+            colorTicks,
+            colorLabel: data.density_unit,
+          }}
+          series={contourSeries}
+          aspect={0.43}
+        />
+        <footer>
+          <span><i style={{ background: q1.color }} />Q1 MER + PHZ density image</span>
+          {overlays.map((map) => <span key={map.key}>
+            <i style={{ background: map.color }} />
+            {map.label} · {map.key === "synthetic" ? "dashed" : "solid"} 50 / 80 / 95% contours
+          </span>)}
+          {synthetic?.rows != null && <span>
+            {synthetic.rows.toLocaleString()} generated galaxies
+          </span>}
+        </footer>
+      </article>
     </div>
   </section>;
 }

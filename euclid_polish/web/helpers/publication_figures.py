@@ -1189,9 +1189,7 @@ def render_galaxy_distribution_plate(
         )
         magnitude_width = np.diff(magnitude_edges)
         log_radius_width = np.diff(log_radius_edges)
-        for key, linestyle in (
-            ("q1", "solid"), ("synthetic", "dashed"), ("model", "solid"),
-        ):
+        for key, linestyle in (("synthetic", "dashed"), ("model", "solid")):
             item = joint_maps.get(key)
             if not item:
                 continue
@@ -1215,7 +1213,6 @@ def render_galaxy_distribution_plate(
                 linestyle=linestyle,
                 label=(
                     {
-                        "q1": "Q1 aggregate",
                         "synthetic": "current generated",
                         "model": "active model",
                     }[key]
@@ -1225,7 +1222,7 @@ def render_galaxy_distribution_plate(
         ax_joint.set_xlim(magnitude_edges[0], magnitude_edges[-1])
         ax_joint.set_ylim(log_radius_edges[0], log_radius_edges[-1])
         _finish_axis(
-            ax_joint, "D · Joint magnitude–radius density",
+            ax_joint, "D · Q1 density + generated/model contours",
             "VIS 2FWHM aperture magnitude [AB]",
             "$R_e$ [arcsec; logarithmic coordinate]", zero_floor=False,
         )
