@@ -9,6 +9,7 @@ from euclid_polish.population.euclid_galaxy_prior import (
     joint_density_grid,
 )
 from euclid_polish.population.magnitude_law import (
+    ContinuousBrightBridgeFaintCappedMagnitudeLaw,
     FaintCappedMagnitudeLaw,
     StraightMagnitudeLaw,
 )
@@ -160,8 +161,14 @@ def _comparison_calibration(
 def _radius_aggregate(calibration):
     magnitude_edges = np.linspace(14.0, 28.0, 15)
     radius_edges = np.geomspace(0.03, 10.0, 9)
-    magnitude = FaintCappedMagnitudeLaw.from_payload(
-        calibration["magnitude_law"],
+    magnitude_payload = calibration["magnitude_law"]
+    magnitude = (
+        ContinuousBrightBridgeFaintCappedMagnitudeLaw.from_payload(
+            magnitude_payload,
+        )
+        if magnitude_payload.get("kind")
+        == "continuous_three_slope_bright_bridge_main_flat_faint_counts"
+        else FaintCappedMagnitudeLaw.from_payload(magnitude_payload)
     )
     radius = ConditionalRadiusLaw.from_payload(calibration["radius_law"])
     grid = joint_density_grid(
@@ -202,6 +209,17 @@ def test_population_fit_comparison_exports_four_panel_raster_and_vector_plate():
         magnitude_intercept=-3.1,
         kind="euclid_vis2fwhm_circularized_sersic_re_joint",
     )
+    candidate_straight = StraightMagnitudeLaw.from_payload(
+        candidate["magnitude_law"]["straight_law"],
+    )
+    candidate["magnitude_law"] = (
+        ContinuousBrightBridgeFaintCappedMagnitudeLaw(
+            straight_law=candidate_straight,
+            bright_slopes=(0.8, 0.3, 0.5),
+            bright_join_magnitudes=(16.4, 19.0, 20.9),
+            density_cap_arcmin2_mag=100.0,
+        ).to_payload()
+    )
     aggregate = _radius_aggregate(candidate)
 
     png = render_population_fit_comparison(
@@ -219,15 +237,21 @@ def test_population_fit_comparison_exports_four_panel_raster_and_vector_plate():
     assert b"<svg" in svg[:1000]
     assert b"Galaxy population fit" in svg
     assert b"VIS 2FWHM magnitude density" in svg
-    assert b"Normalized half-light-radius marginal shape" in svg
+    assert b"Radius shape" in svg
+    assert b"Q1-weighted versus full generation" in svg
     assert b"Conditional S\xc3\xa9rsic size" in svg
     assert b"Q1 circularized density" in svg
+    assert b"global model mass contours" in svg
+    assert b"Bright Q1" in svg
+    assert b"normalized within window" in svg
     assert b"Previous generation law" in svg
     assert b"Candidate generation law" in svg
-    assert b"Previous major-axis model shape" in svg
-    assert b"Candidate circularized model shape" in svg
-    assert b"Q1 circularized shape" in svg
-    assert b"Q1 morphology subset is incomplete" in svg
+    assert b"Previous major-axis shape" in svg
+    assert b"full generation" in svg
+    assert b"Candidate circularized shape" in svg
+    assert b"Q1-magnitude weighted" in svg
+    assert b"Q1 clean circularized shape" in svg
+    assert b"blue Q1 = clean circularized morphology subset" in svg
     assert b"no field regeneration" in svg
 
 

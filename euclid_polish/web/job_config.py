@@ -123,8 +123,8 @@ class JobConfig:
     # HR scene side in 0.05″/pix pixels — feeds both synthetic generation
     # and inference. Kept a multiple of 6 (the NISP rebin factor).
     hr_image_size: int = 510
-    # Generated TNG-galaxy density. The activated Q1 empirical/fitted/flat
-    # count law owns the exact value.
+    # Generated TNG-galaxy density. The activated Q1 continuous
+    # bright/main/flat count law owns the exact value.
     galaxy_density_arcmin2: float = Config.GALAXY_DENSITY_ARCMIN2
     # Brightness knee (e⁻) for the asinh display panels in inference.
     asinh_scale:   float = 1000.0

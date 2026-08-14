@@ -62,15 +62,53 @@ r=\log_{10}(R_{e,\rm circ}/{\rm arcsec}),\qquad
 R_{e,\rm circ}=R_{e,\rm major}\sqrt q.
 \]
 
-Q1 MER+PHZ aggregate counts set a three-part brightness density: measured
-0.1-mag bins at the bright end, the fitted straight log-density law through
-its break, and a flat imposed tail of 100 objects arcmin\(^{-2}\) mag\(^{-1}\)
-through VIS 29.
+Q1 MER+PHZ aggregate counts set a continuous brightness density with a
+three-segment bright bridge, the well-constrained main log-linear count law,
+and a flat faint cap. The bridge ends at the fixed VIS joins
+\(j_1=16.4\), \(j_2=19.0\), and \(j_3=20.9\). The main law then reaches an
+imposed density of 100 objects arcmin\(^{-2}\) mag\(^{-1}\), which is held
+constant through VIS 29. In log-density coordinates,
+
+\[
+\ell(m)=
+\begin{cases}
+a_1m+b_1, & 14\leq m<j_1,\\
+a_2m+b_2, & j_1\leq m<j_2,\\
+a_3m+b_3, & j_2\leq m<j_3,\\
+a_m m+b_m, & j_3\leq m<m_{\rm flat},\\
+\log_{10}(100), & m\geq m_{\rm flat}.
+\end{cases}
+\]
+
+The three bridge slopes \(a_1,a_2,a_3\) are fitted to the bright 0.1-mag
+brackets with bin-integrated Poisson deviance, including zero-count bins. The
+three joins are fixed, not fitted. Continuity with the main line determines
+all bridge intercepts recursively,
+
+\[
+b_3=(a_m-a_3)j_3+b_m,\qquad
+b_2=(a_3-a_2)j_2+b_3,\qquad
+b_1=(a_2-a_1)j_1+b_2.
+\]
+
+Thus the bright bridge contributes only three fitted degrees of freedom: its
+three slopes.
 
 The radius calibration is also a bounded aggregate, not an object catalogue.
-It fits a broken Gaussian core in \(\log_{10}R_{e,\rm circ}\) plus a small
-uniform-log-radius component. The broad component is used only through VIS
-25.5; added fainter galaxies draw from the compact core.
+It uses one straight conditional mean and one scatter at every magnitude,
+
+\[
+r\mid m\sim
+\mathcal N\!\left(\mu_{23}+s(m-23),\,\sigma_r^2\right)
+\quad\hbox{truncated to}\quad
+\log_{10}(0.03)\leq r\leq\log_{10}(10).
+\]
+
+There is no bright-radius plateau, magnitude break, or separate broad
+log-radius tail. Magnitude brackets with enough clean measurements enter the
+fit through VIS 25.5, with each bracket capped in effective weight so the
+millions of faint measurements do not erase the bright relation. The fitted
+straight law itself applies across the complete VIS 14--29 generation range.
 
 The science-clean radius selection requires `VIS_DET = 1`, positive VIS
 Sérsic flux, `POINT_LIKE_FLAG IS NULL`, `SPURIOUS_FLAG = 0`,
@@ -83,11 +121,14 @@ Sérsic flux, `POINT_LIKE_FLAG IS NULL`, `SPURIOUS_FLAG = 0`,
 Every grouped bin is weighted by `PHZ_GAL_PROB`.
 
 Generation marginalizes the two-dimensional law over brightness and draws
-circularized VIS Sérsic \(R_e\) first. It resizes a random TNG donor to that radius, then
-draws \(m\mid R_e\) from the same joint law. A separate empirical VIS PSF is
-used to measure the resized stamp and one shared four-band factor matches the
-drawn 2FWHM flux. COSMOS, detection-radius, and Kron-radius plots are diagnostic
-overlays only.
+circularized VIS Sérsic \(R_e\) first. It resizes a random TNG donor to that
+radius, then draws \(m\mid R_e\) from the same joint law. The normalized WebUI
+radius diagnostics keep two model marginals separate: one weights the
+conditional radius law by the clean Q1 magnitude brackets, while the other
+uses the complete generation law including its flat faint extension. A
+separate empirical VIS PSF is used to measure the resized stamp and one shared
+four-band factor matches the drawn 2FWHM flux. COSMOS, detection-radius, and
+Kron-radius plots are diagnostic overlays only.
 
 For a donor with native VIS half-light radius \(R_{e,\rm native}\) pixels on
 the 0.05-arcsec grid, the initial spatial resize is
@@ -97,25 +138,30 @@ s_0=\frac{R_{e,\rm requested}}
           {0.05\,R_{e,\rm native}}.
 \]
 
-The renderer remeasures the resized stamp and iterates this factor until its
-achieved half-light radius matches the request. Spatial resizing does not set
-brightness. After resizing, the independent common four-band flux factor is
+The renderer applies this nominal similarity scale from the donor's
+pre-measured native radius; it does not remeasure the final rendered
+half-light radius. Finite render support can therefore clip especially large
+requests, and the source catalog records both `radius_remeasured = false` and
+`render_support_clipped` so a requested radius is not mistaken for an achieved
+measurement. Spatial resizing does not set brightness. After resizing, the
+independent common four-band flux factor is
 \(c=F_{\rm goal,2FWHM}/F_{\rm measured,2FWHM}\).
 
 ## Current scope and validation status
 
-Version-10 activation contains only the empirical/fitted/flat brightness law
-and the cleaned circularized-Sérsic-radius law. Versions 7--9 remain loadable
-for reproducibility, but mixed old/new contracts fail closed. The fitting step
-reads no TNG image; TNG is used only after activation as a random morphology
-donor. This deliberately modest model aims for plausible source counts and
-sizes rather than an exact catalogue replica.
+Version 11 contains the continuous three-slope bright bridge/main/flat
+brightness law and the single straight, no-tail circularized-Sérsic-radius
+law. Versions 7--10 remain loadable for reproducibility, but mixed old/new
+contracts fail closed. The fitting step reads no TNG image; TNG is used only
+after activation as a random morphology donor. This deliberately modest model
+aims for plausible source counts and sizes rather than an exact catalogue
+replica.
 
 ## What is fitted versus imposed
 
-The middle Q1 brightness coefficients, broken radius-core coefficients,
-scatter, and broad-component fraction are fitted. The empirical bright bins,
-finite 14--29 magnitude range, flat faint count density, compact-only
-faint-radius policy, radius bounds, homogeneous positions, Poisson scene
-counts, and random TNG donor assignment are imposed choices. No COSMOS or TNG
-distribution is fitted.
+The main Q1 brightness coefficients, three bright-bridge slopes, straight
+radius intercept and slope, and radius scatter are fitted. The fixed VIS joins
+16.4, 19.0, and 20.9, finite 14--29 magnitude range, flat faint count density,
+radius bounds, homogeneous positions, Poisson scene counts, and random TNG
+donor assignment are imposed choices. No COSMOS or TNG distribution is
+fitted.

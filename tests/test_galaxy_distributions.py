@@ -41,6 +41,47 @@ def test_radius_plot_spans_one_hundred_native_vis_pixels():
     assert "100 native VIS pixels" in radius["note"]
 
 
+def test_q1_radius_plot_exposes_normalized_clean_shape(monkeypatch):
+    payload = {
+        "complete": True,
+        "completed_queries": 2,
+        "total_queries": 2,
+        "magnitude_bins": [{}, {}],
+        "footprint_area_deg2": 63.1,
+        "selection": "clean circularized fixture",
+        "acquisition": "aggregate fixture",
+        "radius_bins": [
+            {
+                "radius_lo_arcsec": 0.1,
+                "radius_hi_arcsec": 0.2,
+                "density_arcmin2_dex": 2.0,
+                "expected_radii": 20.0,
+            },
+            {
+                "radius_lo_arcsec": 0.2,
+                "radius_hi_arcsec": 0.8,
+                "density_arcmin2_dex": 1.0,
+                "expected_radii": 10.0,
+            },
+        ],
+    }
+    monkeypatch.setattr(
+        helper, "read_q1_galaxy_radius_statistics", lambda: payload,
+    )
+
+    parameters = helper._empty_parameters()
+    state = helper._read_q1_radius_statistics(parameters)
+    curves = parameters["radius"]["radius_series"]
+    shape = curves["euclid_sersic_re_shape"]
+    widths = np.log10([0.2 / 0.1, 0.8 / 0.2])
+
+    assert state["available"] is True
+    assert curves["euclid_sersic_re"]["default_on"] is False
+    assert shape["default_on"] is True
+    assert shape["normalization"] == "probability_density"
+    assert np.sum(np.asarray(shape["density"]) * widths) == pytest.approx(1.0)
+
+
 def test_euclid_aperture_growth_compares_all_vis_apertures_to_total_proxies(
     tmp_path, monkeypatch,
 ):
@@ -351,18 +392,27 @@ def test_q1_bright_counts_extend_aperture_curves_to_fourteen(monkeypatch):
     assert state["fit_available"] is True
 
 
-def test_fit_plot_adds_straight_then_flat_generation_and_radius_curves(
+def test_fit_plot_adds_continuous_generation_and_separate_radius_shapes(
     monkeypatch,
 ):
     parameters = helper._empty_parameters()
     parameters["magnitude"]["photometry_series"]["q1_fit_vis_f2"] = {}
     candidate = {
-        "version": 7,
+        "version": 11,
         "fingerprint": "f" * 64,
         "validated": True,
         "fitted_magnitude_law": {
-            "fit_bright": 19.0, "fit_faint": 25.0,
+            "fit_bright": 19.0, "fit_faint": 25.0, "slope": 0.4,
         },
+        "magnitude_law": {
+            "kind": (
+                "continuous_three_slope_bright_bridge_main_flat_faint_counts"
+            ),
+            "bright_join_magnitudes": [16.4, 19.0, 20.9],
+            "bright_slopes": [1.3, 0.7, 0.5],
+            "straight_law": {"slope": 0.4},
+        },
+        "radius_law": {"log_radius_min": -1.5, "log_radius_max": 0.5},
         "magnitude_plot": {"generation_law": {
             "x": [14.0, 26.35, 29.0],
             "density": [0.01, 100.0, 100.0],
@@ -375,7 +425,9 @@ def test_fit_plot_adds_straight_then_flat_generation_and_radius_curves(
             "vis_magnitude_max": 29.0,
         },
         "plots": {"radius": {
-            "x": [-1.0, 0.0], "density": [40.0, 60.0],
+            "x": [-1.0, 0.0],
+            "density": [40.0, 60.0],
+            "q1_weighted_density": [80.0, 20.0],
         }},
     }
     monkeypatch.setattr(helper, "joint_galaxy_candidate", lambda: candidate)
@@ -389,14 +441,29 @@ def test_fit_plot_adds_straight_then_flat_generation_and_radius_curves(
     brightness = parameters["magnitude"]["photometry_series"][
         "generator_vis_f2"
     ]
-    radius = parameters["radius"]["radius_series"]["fit_re"]
+    radius = parameters["radius"]["radius_series"]
 
     assert state["available"] is True
     assert brightness["generation_interval"] == [14.0, 29.0]
+    assert brightness["generation_bright_join_magnitudes"] == [
+        16.4, 19.0, 20.9,
+    ]
+    assert brightness["generation_bright_slopes"] == [1.3, 0.7, 0.5]
+    assert brightness["generation_main_slope"] == 0.4
     assert brightness["generation_break_magnitude"] == 26.35
     assert brightness["generation_density_cap_arcmin2_mag"] == 100.0
     assert brightness["density"][-2:] == [100.0, 100.0]
-    assert radius["weighted_count"] == 372.83
+    assert radius["fit_re"]["weighted_count"] == 372.83
+    assert radius["fit_re"]["default_on"] is False
+    q1_shape = radius["fit_re_q1_weighted_shape"]
+    full_shape = radius["fit_re_full_generation_shape"]
+    assert q1_shape["density"] == pytest.approx([0.8, 0.2])
+    assert full_shape["density"] == pytest.approx([0.4, 0.6])
+    assert q1_shape["normalization"] == "probability_density"
+    assert full_shape["normalization"] == "probability_density"
+    assert q1_shape["radius_type"] == "half_light_shape"
+    assert "Q1-magnitude-weighted" in q1_shape["label"]
+    assert "faint extension" in full_shape["label"]
 
 
 def test_build_writes_compact_artifact_transactionally(tmp_path, monkeypatch):
@@ -662,6 +729,17 @@ def test_galaxy_distribution_controls_use_one_galaxy_query_action():
     assert "model_core_high_log10_arcsec" in source
     assert "?? relation.model_low_log10_arcsec" in source
     assert "?? relation.model_high_log10_arcsec" in source
+    assert "generation_bright_join_magnitudes" in source
+    assert "generation_bright_slopes" in source
+    assert "three-segment bright bridge/main/flat" in source
+    assert "one fitted straight truncated-Gaussian conditional law" in source
+    assert "Q1 magnitude mix" in source
+    assert "full faint-extended generation mix" in source
+    assert "half_light_shape" in source
+    assert "normalized probability / dex" in source
+    assert "broken conditional log-radius law" not in source
+    assert "Added galaxies fainter than VIS 25.5" not in source
+    assert "fitted mixture mean" not in source
     assert 'label="random cones"' not in source
     assert 'label="radius (arcmin)"' not in source
     assert "galaxy-q1-phases" in source

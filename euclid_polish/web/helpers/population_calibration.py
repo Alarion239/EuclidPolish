@@ -15,17 +15,18 @@ from scipy.ndimage import gaussian_filter1d
 
 from euclid_polish.config import Config
 from euclid_polish.population.euclid_galaxy_prior import (
+    BRIGHT_BRIDGE_JOIN_MAGNITUDES,
     GALAXY_FAINT_DENSITY_CAP_ARCMIN2_MAG,
     JOINT_EUCLID_GALAXY_KIND,
     JOINT_EUCLID_GALAXY_VERSION,
     RADIUS_MODEL_VERSION,
     ConditionalRadiusLaw,
-    fit_broken_conditional_radius_law_from_binned_counts,
-    generation_magnitude_law_from_q1_bins,
+    fit_continuous_generation_magnitude_law,
+    fit_linear_conditional_radius_law_from_binned_counts,
     joint_density_grid,
 )
 from euclid_polish.population.magnitude_law import (
-    EmpiricalBrightFaintCappedMagnitudeLaw,
+    ContinuousBrightBridgeFaintCappedMagnitudeLaw,
     StraightMagnitudeLaw,
 )
 from euclid_polish.sky.generation.cosmos_tng_prior import (
@@ -89,8 +90,10 @@ def joint_galaxy_candidate() -> dict[str, Any] | None:
         fitted_magnitude_law = StraightMagnitudeLaw.from_payload(
             source["fitted_magnitude_law"]
         )
-        magnitude_law = EmpiricalBrightFaintCappedMagnitudeLaw.from_payload(
-            source["magnitude_law"]
+        magnitude_law = (
+            ContinuousBrightBridgeFaintCappedMagnitudeLaw.from_payload(
+                source["magnitude_law"]
+            )
         )
         radius_law = ConditionalRadiusLaw.from_payload(source["radius_law"])
         density = float(source["generation"]["surface_density_arcmin2"])
@@ -135,6 +138,12 @@ def joint_galaxy_candidate() -> dict[str, Any] | None:
         )
         or not np.isclose(break_magnitude, magnitude_law.break_magnitude)
         or magnitude_law.straight_law != fitted_magnitude_law
+        or not np.allclose(
+            magnitude_law.bright_join_magnitudes,
+            BRIGHT_BRIDGE_JOIN_MAGNITUDES,
+            rtol=0.0,
+            atol=1e-12,
+        )
         or magnitude_x.size < 2
         or magnitude_x.shape != magnitude_density.shape
         or generation_x.size < 3
@@ -214,29 +223,81 @@ def fit_euclid_joint_galaxy_candidate() -> dict[str, Any]:
         radius_index = int(item["radius_bin"])
         selected_grid[mag_index, radius_index] = float(item["selected_radii"])
         weight_grid[mag_index, radius_index] = float(item["expected_radii"])
-    radius_law = fit_broken_conditional_radius_law_from_binned_counts(
+    radius_law = fit_linear_conditional_radius_law_from_binned_counts(
         magnitude_edges,
         np.log10(radius_edges),
         selected_grid,
         weight_grid,
     )
     log_radius_edges = np.log10(radius_edges)
-    fit_bin_start = int(magnitude_curve["fit_bin_start"])
-    magnitude_law = generation_magnitude_law_from_q1_bins(
-        fitted_magnitude_law,
-        list(count_bins[:fit_bin_start]),
+    magnitude_law, bright_fit_diagnostics = (
+        fit_continuous_generation_magnitude_law(
+            fitted_magnitude_law,
+            list(count_bins),
+            footprint_area_arcmin2=float(
+                count_payload["footprint_area_arcmin2"]
+            ),
+        )
     )
-    generation_x = np.unique(np.concatenate([
+    generation_x = np.unique(np.concatenate((
         np.linspace(
-            magnitude_law.mag_bright, magnitude_law.mag_faint, 301,
+            magnitude_law.mag_bright,
+            magnitude_law.mag_faint,
+            301,
             dtype=np.float64,
         ),
-        np.asarray([magnitude_law.break_magnitude], dtype=np.float64),
-    ]))
+        np.asarray(
+            [
+                *magnitude_law.bright_join_magnitudes,
+                magnitude_law.break_magnitude,
+            ],
+            dtype=np.float64,
+        ),
+    )))
     generation_density = magnitude_law.density(generation_x)
     grid = joint_density_grid(
         magnitude_law, radius_law, log_radius_edges=log_radius_edges,
     )
+    diagnostic_magnitude_edges = np.unique(np.concatenate((
+        np.linspace(
+            magnitude_law.mag_bright,
+            magnitude_law.mag_faint,
+            6001,
+            dtype=np.float64,
+        ),
+        np.asarray(
+            [
+                *magnitude_law.bright_join_magnitudes,
+                magnitude_law.break_magnitude,
+                float(radius_law.fit_faint_magnitude),
+            ],
+            dtype=np.float64,
+        ),
+    )))
+    diagnostic_magnitude = 0.5 * (
+        diagnostic_magnitude_edges[:-1]
+        + diagnostic_magnitude_edges[1:]
+    )
+    diagnostic_magnitude_mass = (
+        magnitude_law.density(diagnostic_magnitude)
+        * np.diff(diagnostic_magnitude_edges)
+    )
+
+    def density_above_radius(radius_arcsec: float) -> float:
+        threshold = float(np.log10(radius_arcsec))
+        probability = radius_law.bin_probability(
+            diagnostic_magnitude,
+            np.asarray(
+                [
+                    radius_law.log_radius_min,
+                    threshold,
+                    radius_law.log_radius_max,
+                ],
+                dtype=np.float64,
+            ),
+        )[:, 1]
+        return float(np.sum(diagnostic_magnitude_mass * probability))
+
     radius_density = (
         np.sum(grid["density"], axis=0)
         / np.diff(grid["log_radius_edges"])
@@ -338,9 +399,15 @@ def fit_euclid_joint_galaxy_candidate() -> dict[str, Any]:
             "generation_interval": [
                 magnitude_law.mag_bright, magnitude_law.mag_faint,
             ],
-            "empirical_bright_interval": [
-                magnitude_law.mag_bright, magnitude_law.empirical_faint,
+            "continuous_bright_interval": [
+                magnitude_law.mag_bright,
+                magnitude_law.bright_join_magnitudes[-1],
             ],
+            "bright_join_magnitudes": list(
+                magnitude_law.bright_join_magnitudes
+            ),
+            "bright_slopes": list(magnitude_law.bright_slopes),
+            "bright_fit_diagnostics": bright_fit_diagnostics,
             "break_magnitude": magnitude_law.break_magnitude,
             "differential_density_cap_arcmin2_mag": (
                 magnitude_law.density_cap_arcmin2_mag
@@ -375,6 +442,7 @@ def fit_euclid_joint_galaxy_candidate() -> dict[str, Any]:
                     relation_core + radius_law.scatter_dex
                 ).tolist(),
                 "fit_interval": conditional_fit_interval,
+                "model_kind": "straight_truncated_gaussian_no_tail",
                 "break_magnitude": radius_law.break_magnitude,
                 "tail_fraction": radius_law.tail_fraction,
                 "tail_cutoff_magnitude": radius_law.tail_cutoff_magnitude,
@@ -387,15 +455,28 @@ def fit_euclid_joint_galaxy_candidate() -> dict[str, Any]:
                         - observed_radius_probability
                     ))
                 ),
-                "generation_density_re_ge_1_arcsec": float(np.sum(
-                    grid["density"][:, 10.0 ** grid["log_radius"] >= 1.0]
-                )),
-                "generation_density_re_ge_2_arcsec": float(np.sum(
-                    grid["density"][:, 10.0 ** grid["log_radius"] >= 2.0]
-                )),
-                "generation_density_re_ge_5_arcsec": float(np.sum(
-                    grid["density"][:, 10.0 ** grid["log_radius"] >= 5.0]
-                )),
+                "generation_density_re_ge_1_arcsec": density_above_radius(1.0),
+                "generation_density_re_ge_2_arcsec": density_above_radius(2.0),
+                "generation_density_re_ge_5_arcsec": density_above_radius(5.0),
+                "generation_density_re_ge_8_arcsec": density_above_radius(8.0),
+                "generation_fraction_fainter_than_radius_fit": float(
+                    np.sum(
+                        diagnostic_magnitude_mass[
+                            diagnostic_magnitude
+                            > float(radius_law.fit_faint_magnitude)
+                        ]
+                    )
+                    / np.sum(diagnostic_magnitude_mass)
+                ),
+                "q1_fraction_fainter_than_radius_fit": float(
+                    np.sum(
+                        q1_expected_by_magnitude[
+                            relation_x > radius_law.fit_faint_magnitude
+                        ]
+                    )
+                    / np.sum(q1_expected_by_magnitude)
+                ),
+                **bright_fit_diagnostics,
             },
         },
         "generation": {
@@ -411,9 +492,12 @@ def fit_euclid_joint_galaxy_candidate() -> dict[str, Any]:
             "vis_magnitude_max": magnitude_law.mag_faint,
             "fitted_vis_magnitude_max": fitted_magnitude_law.mag_faint,
             "faint_end_policy": (
-                "empirical_bright_bins_then_fitted_middle_then_flat_faint"
+                "continuous_three_slope_bright_bridge_then_fitted_main_"
+                "then_flat_faint"
             ),
-            "faint_radius_policy": "compact_core_only_above_vis_25_5",
+            "faint_radius_policy": (
+                "straight_truncated_gaussian_at_all_magnitudes_no_tail"
+            ),
             "radius_semantics": "circularized_sersic_half_light_radius",
             "radius_min_arcsec": 10.0 ** radius_law.log_radius_min,
             "radius_max_arcsec": 10.0 ** radius_law.log_radius_max,
@@ -423,8 +507,9 @@ def fit_euclid_joint_galaxy_candidate() -> dict[str, Any]:
         },
         "provenance": {
             "brightness": (
-                "Q1 MER + PHZ VIS 2FWHM empirical bright bins, fitted "
-                "middle counts, and flat added faint tail"
+                "Q1 MER + PHZ VIS 2FWHM continuous three-slope bright "
+                "bridge with fixed joins, fitted main count line, and flat "
+                "added faint tail"
             ),
             "radius": (
                 "Q1 MER morphology circularized VIS Sersic radius "
@@ -432,10 +517,9 @@ def fit_euclid_joint_galaxy_candidate() -> dict[str, Any]:
                 "bins joined to PHZ"
             ),
             "radius_model": (
-                "bright constant Gaussian core; discontinuous magnitude "
-                "break; declining faint core; uniform log-radius tail "
-                "through VIS 25.5; compact core only for added fainter "
-                "galaxies"
+                "one straight magnitude-dependent truncated Gaussian in "
+                "log10 circularized Sersic radius over 0.03--10 arcsec; "
+                "no bright break and no generated broad tail"
             ),
             "radius_selection": str(radius_payload["selection"]),
             "radius_acquisition": str(radius_payload["acquisition"]),

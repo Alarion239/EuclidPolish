@@ -192,7 +192,7 @@ class Config:
     TARGET_PSF_FWHM_MAX_ARCSEC  = 2.0
     # Fallback used only when no activated population calibration overrides
     # the generated field density.  The active Q1 law supplies its own exact
-    # integral from the straight-then-flat magnitude distribution.
+    # integral from the continuous bright/main/flat magnitude distribution.
     GALAXY_DENSITY_ARCMIN2 = 100.0
     DEFAULT_GAL_DENSITY_ARCMIN2 = GALAXY_DENSITY_ARCMIN2
     # Reverted to the 5dece6f ("worked") density: ~1.389/arcmin² (the real

@@ -9,21 +9,28 @@ from scipy.special import ndtr
 
 from euclid_polish.config import Config
 from euclid_polish.population.euclid_galaxy_prior import (
+    BRIGHT_BRIDGE_JOIN_MAGNITUDES,
+    COMPACT_FAINT_BROKEN_RADIUS_MODEL_VERSION,
     GALAXY_FAINT_DENSITY_CAP_ARCMIN2_MAG,
     JOINT_EUCLID_GALAXY_KIND,
     JOINT_EUCLID_GALAXY_VERSION,
     LEGACY_JOINT_EUCLID_GALAXY_KIND,
     RADIUS_MODEL_VERSION,
+    V10_JOINT_EUCLID_GALAXY_VERSION,
     ConditionalRadiusLaw,
     fit_broken_conditional_radius_law_from_binned_counts,
     fit_conditional_radius_law,
     fit_conditional_radius_law_from_aggregate_moments,
     fit_conditional_radius_law_from_binned_counts,
+    fit_linear_conditional_radius_law_from_binned_counts,
     generation_magnitude_law,
     generation_magnitude_law_from_q1_bins,
     joint_density_grid,
 )
-from euclid_polish.population.magnitude_law import StraightMagnitudeLaw
+from euclid_polish.population.magnitude_law import (
+    ContinuousBrightBridgeFaintCappedMagnitudeLaw,
+    StraightMagnitudeLaw,
+)
 from euclid_polish.sky.generation.cosmos_tng_prior import (
     JointGalaxyPopulationPrior,
 )
@@ -77,6 +84,28 @@ def current_radius_law() -> ConditionalRadiusLaw:
         r_squared=0.3,
         covariance=((1e-4, 0.0), (0.0, 1e-5)),
         selection="fixture",
+        fit_min_selected_per_magnitude_bin=20,
+        fit_effective_weight_cap=1000.0,
+        fit_faint_magnitude=25.5,
+    )
+
+
+def v10_radius_law() -> ConditionalRadiusLaw:
+    return ConditionalRadiusLaw(
+        version=COMPACT_FAINT_BROKEN_RADIUS_MODEL_VERSION,
+        pivot_mag=23.0,
+        intercept_log10_arcsec=-0.4,
+        slope_log10_arcsec_per_mag=-0.08,
+        scatter_dex=0.18,
+        log_radius_min=np.log10(0.03),
+        log_radius_max=np.log10(10.0),
+        fitted_rows=1000,
+        clipped_rows=0,
+        weighted_rows=800.0,
+        residual_rms_dex=0.18,
+        r_squared=0.3,
+        covariance=((1e-4, 0.0), (0.0, 1e-5)),
+        selection="fixture v10",
         bright_intercept_log10_arcsec=-0.8,
         break_magnitude=18.0,
         tail_fraction=0.02,
@@ -89,6 +118,47 @@ def current_radius_law() -> ConditionalRadiusLaw:
 
 
 def current_magnitude_law():
+    return ContinuousBrightBridgeFaintCappedMagnitudeLaw(
+        straight_law=magnitude_law(),
+        bright_slopes=(0.8, 0.3, 0.5),
+        bright_join_magnitudes=BRIGHT_BRIDGE_JOIN_MAGNITUDES,
+        density_cap_arcmin2_mag=GALAXY_FAINT_DENSITY_CAP_ARCMIN2_MAG,
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("pivot_mag", float("nan")),
+        ("pivot_mag", float("inf")),
+        ("log_radius_min", float("-inf")),
+        ("log_radius_max", float("inf")),
+    ],
+)
+def test_radius_law_rejects_nonfinite_geometry(field, value):
+    payload = current_radius_law().to_payload()
+    payload[field] = value
+
+    with pytest.raises(ValueError, match="radius law is invalid"):
+        ConditionalRadiusLaw.from_payload(payload)
+
+
+@pytest.mark.parametrize(
+    "covariance",
+    [
+        ((1e-4, 0.0), (0.0, float("nan"))),
+        ((1e-4, 0.0, 0.0), (0.0, 1e-5, 0.0)),
+    ],
+)
+def test_radius_law_rejects_malformed_covariance(covariance):
+    payload = current_radius_law().to_payload()
+    payload["covariance"] = covariance
+
+    with pytest.raises(ValueError, match="radius law is invalid"):
+        ConditionalRadiusLaw.from_payload(payload)
+
+
+def v10_magnitude_law():
     return generation_magnitude_law_from_q1_bins(
         magnitude_law(),
         [
@@ -173,6 +243,34 @@ def legacy_active_payload(version: int = 7) -> dict:
     return payload
 
 
+def v10_active_payload() -> dict:
+    payload = active_payload()
+    mag = v10_magnitude_law()
+    plot_x = [
+        mag.mag_bright,
+        mag.empirical_faint,
+        mag.break_magnitude,
+        mag.mag_faint,
+    ]
+    payload.update({
+        "version": V10_JOINT_EUCLID_GALAXY_VERSION,
+        "magnitude_law": mag.to_payload(),
+        "radius_law": v10_radius_law().to_payload(),
+    })
+    payload["magnitude_plot"]["generation_law"] = {
+        "x": plot_x,
+        "density": mag.density(plot_x).tolist(),
+    }
+    payload["generation"].update({
+        "surface_density_arcmin2": mag.integrated_density(),
+        "break_magnitude": mag.break_magnitude,
+        "faint_end_policy": (
+            "empirical_bright_bins_then_fitted_middle_then_flat_faint"
+        ),
+    })
+    return payload
+
+
 def test_radius_fit_recovers_straight_conditional_relation():
     rng = np.random.default_rng(7)
     magnitude = rng.uniform(18.0, 27.0, 4000)
@@ -246,6 +344,48 @@ def test_binned_radius_counts_recover_bounded_conditional_relation():
     assert "bounded aggregate" in law.selection
 
 
+def test_linear_binned_radius_fit_has_no_bright_break_or_generated_tail():
+    magnitude_edges = np.linspace(14.0, 28.0, 141)
+    radius_edges = np.linspace(np.log10(0.03), np.log10(10.0), 51)
+    magnitude = 0.5 * (magnitude_edges[:-1] + magnitude_edges[1:])
+    expected_intercept, expected_slope, expected_scatter = -0.42, -0.09, 0.17
+    mean = expected_intercept + expected_slope * (magnitude - 23.0)
+    upper = (radius_edges[None, 1:] - mean[:, None]) / expected_scatter
+    lower = (radius_edges[None, :-1] - mean[:, None]) / expected_scatter
+    probability = ndtr(upper) - ndtr(lower)
+    probability /= np.sum(probability, axis=1, keepdims=True)
+    expected = 800.0 * probability
+    selected = np.rint(1000.0 * probability)
+
+    law = fit_linear_conditional_radius_law_from_binned_counts(
+        magnitude_edges,
+        radius_edges,
+        selected,
+        expected,
+    )
+
+    assert law.version == RADIUS_MODEL_VERSION
+    assert law.intercept_log10_arcsec == pytest.approx(
+        expected_intercept, abs=2e-3,
+    )
+    assert law.slope_log10_arcsec_per_mag == pytest.approx(
+        expected_slope, abs=2e-3,
+    )
+    assert law.scatter_dex == pytest.approx(expected_scatter, abs=2e-3)
+    assert law.bright_intercept_log10_arcsec is None
+    assert law.break_magnitude is None
+    assert law.tail_fraction == 0.0
+    assert law.tail_distribution == "none"
+    assert law.tail_cutoff_magnitude is None
+    assert law.tail_taper_start_magnitude is None
+    assert law.tail_taper_end_magnitude is None
+    assert law.core_mean([15.0, 23.0, 27.0]) == pytest.approx(
+        expected_intercept
+        + expected_slope * (np.asarray([15.0, 23.0, 27.0]) - 23.0),
+        abs=2e-3,
+    )
+
+
 def test_broken_radius_counts_recover_plateau_jump_slope_and_tail():
     magnitude_edges = np.linspace(14.0, 28.0, 141)
     radius_edges = np.linspace(np.log10(0.03), np.log10(10.0), 41)
@@ -269,7 +409,7 @@ def test_broken_radius_counts_recover_plateau_jump_slope_and_tail():
         magnitude_edges, radius_edges, selected, expected,
     )
 
-    assert law.version == RADIUS_MODEL_VERSION
+    assert law.version == COMPACT_FAINT_BROKEN_RADIUS_MODEL_VERSION
     assert law.bright_intercept_log10_arcsec == pytest.approx(bright, abs=0.02)
     assert law.break_magnitude == pytest.approx(18.0, abs=0.11)
     assert law.intercept_log10_arcsec == pytest.approx(intercept, abs=0.02)
@@ -300,6 +440,13 @@ def test_prior_draws_radius_first_then_brightness_conditioned_on_radius():
     assert 14.0 <= magnitude < prior.magnitude_law.mag_faint
     assert flux > 0.0
     assert prior.morphology_mode == "balanced_random_tng_atlas"
+    assert isinstance(
+        prior.magnitude_law,
+        ContinuousBrightBridgeFaintCappedMagnitudeLaw,
+    )
+    assert prior.radius_law.version == RADIUS_MODEL_VERSION
+    assert prior.radius_law.break_magnitude is None
+    assert prior.radius_law.tail_fraction == 0.0
     assert prior.surface_density_arcmin2 == pytest.approx(
         current_magnitude_law().integrated_density()
     )
@@ -418,15 +565,66 @@ def test_previous_version_seven_active_prior_remains_loadable():
     assert "_v7_" in prior.population_label
 
 
-@pytest.mark.parametrize("current", [True, False])
-def test_joint_prior_rejects_mixed_radius_contracts(current):
-    payload = active_payload() if current else legacy_active_payload()
-    payload["radius_law"] = (
-        radius_law().to_payload()
-        if current else current_radius_law().to_payload()
-    )
+def test_previous_version_ten_active_prior_remains_loadable():
+    prior = JointGalaxyPopulationPrior(v10_active_payload())
+
+    assert "_v10_" in prior.population_label
+    assert prior.radius_law.version == COMPACT_FAINT_BROKEN_RADIUS_MODEL_VERSION
+    assert prior.magnitude_law == v10_magnitude_law()
+
+
+@pytest.mark.parametrize(
+    ("payload_factory", "incompatible_radius"),
+    [
+        (active_payload, v10_radius_law),
+        (active_payload, radius_law),
+        (v10_active_payload, current_radius_law),
+        (v10_active_payload, radius_law),
+        (legacy_active_payload, current_radius_law),
+        (legacy_active_payload, v10_radius_law),
+    ],
+)
+def test_joint_prior_rejects_mixed_radius_contracts(
+    payload_factory, incompatible_radius,
+):
+    payload = payload_factory()
+    payload["radius_law"] = incompatible_radius().to_payload()
 
     with pytest.raises(ValueError, match="incompatible model versions"):
+        JointGalaxyPopulationPrior(payload)
+
+
+@pytest.mark.parametrize(
+    ("payload_factory", "incompatible_magnitude"),
+    [
+        (active_payload, v10_magnitude_law),
+        (v10_active_payload, current_magnitude_law),
+    ],
+)
+def test_joint_prior_rejects_mixed_circularized_magnitude_contracts(
+    payload_factory, incompatible_magnitude,
+):
+    payload = payload_factory()
+    payload["magnitude_law"] = incompatible_magnitude().to_payload()
+
+    with pytest.raises(ValueError, match="model is incomplete"):
+        JointGalaxyPopulationPrior(payload)
+
+
+def test_joint_prior_rejects_shifted_v11_bright_joins():
+    payload = active_payload()
+    shifted = ContinuousBrightBridgeFaintCappedMagnitudeLaw(
+        straight_law=magnitude_law(),
+        bright_slopes=(0.8, 0.3, 0.5),
+        bright_join_magnitudes=(16.5, 19.1, 20.8),
+        density_cap_arcmin2_mag=GALAXY_FAINT_DENSITY_CAP_ARCMIN2_MAG,
+    )
+    payload["magnitude_law"] = shifted.to_payload()
+    payload["generation"]["surface_density_arcmin2"] = (
+        shifted.integrated_density()
+    )
+
+    with pytest.raises(ValueError, match="brightness contract"):
         JointGalaxyPopulationPrior(payload)
 
 
@@ -475,19 +673,11 @@ def test_candidate_fit_uses_only_aggregate_euclid_brightness_and_sersic_radius(
     magnitude = 0.5 * (magnitude_edges[:-1] + magnitude_edges[1:])
     radius_edges = np.geomspace(0.03, 10.0, 31)
     log_radius_edges = np.log10(radius_edges)
-    mean_log10 = np.where(
-        magnitude < 18.0,
-        -0.8,
-        -0.4 - 0.06 * (magnitude - 23.0),
-    )
+    mean_log10 = -0.4 - 0.06 * (magnitude - 23.0)
     upper = (log_radius_edges[None, 1:] - mean_log10[:, None]) / 0.12
     lower = (log_radius_edges[None, :-1] - mean_log10[:, None]) / 0.12
     probability = ndtr(upper) - ndtr(lower)
     probability /= np.sum(probability, axis=1, keepdims=True)
-    uniform_probability = np.diff(log_radius_edges) / (
-        log_radius_edges[-1] - log_radius_edges[0]
-    )
-    probability = 0.9 * probability + 0.1 * uniform_probability[None, :]
     expected_grid = 80.0 * probability
     selected_grid = np.rint(100.0 * probability)
     magnitude_bins = [
@@ -516,6 +706,29 @@ def test_candidate_fit_uses_only_aggregate_euclid_brightness_and_sersic_radius(
         }
         for index in range(30)
     ]
+    bright_count_law = current_magnitude_law()
+    bright_edges = np.linspace(14.0, 21.0, 71)
+    bright_count_bins = []
+    for mag_lo, mag_hi in zip(bright_edges[:-1], bright_edges[1:], strict=True):
+        mass = 0.0
+        for bright, faint, slope, intercept in (
+            bright_count_law._line_components()
+        ):
+            overlap_bright = max(float(mag_lo), bright)
+            overlap_faint = min(float(mag_hi), faint)
+            if overlap_faint > overlap_bright:
+                mass += bright_count_law._line_integral(
+                    slope,
+                    intercept,
+                    overlap_bright,
+                    overlap_faint,
+                )
+        bright_count_bins.append({
+            "mag_lo": float(mag_lo),
+            "mag_hi": float(mag_hi),
+            "density_arcmin2_mag": float(mass / (mag_hi - mag_lo)),
+            "expected_galaxies": float(100.0 * mass),
+        })
     monkeypatch.setattr(
         "euclid_polish.web.helpers.q1_galaxy_counts."
         "read_q1_galaxy_aperture_fit",
@@ -523,7 +736,7 @@ def test_candidate_fit_uses_only_aggregate_euclid_brightness_and_sersic_radius(
             "law": magnitude_law().to_payload(),
             "x": [14.0, 21.5, 29.0],
             "density": [0.1, 3.0, 100.0],
-            "fit_bin_start": 2,
+            "fit_bin_start": 59,
         }}},
     )
     monkeypatch.setattr(
@@ -532,12 +745,8 @@ def test_candidate_fit_uses_only_aggregate_euclid_brightness_and_sersic_radius(
         lambda: {
             "complete": True,
             "faint": 28.0,
-            "apertures": {"f2": {"bins": [
-                {"mag_lo": 14.0, "mag_hi": 16.0,
-                 "density_arcmin2_mag": 0.1},
-                {"mag_lo": 16.0, "mag_hi": 18.0,
-                 "density_arcmin2_mag": 0.4},
-            ]}},
+            "footprint_area_arcmin2": 100.0,
+            "apertures": {"f2": {"bins": bright_count_bins}},
         },
     )
     monkeypatch.setattr(
@@ -565,13 +774,12 @@ def test_candidate_fit_uses_only_aggregate_euclid_brightness_and_sersic_radius(
     assert payload["radius_law"]["slope_log10_arcsec_per_mag"] == pytest.approx(
         -0.06, abs=0.01,
     )
-    assert payload["radius_law"]["break_magnitude"] == pytest.approx(
-        18.0, abs=0.11,
-    )
-    assert payload["radius_law"]["tail_fraction"] == pytest.approx(
-        0.1, abs=0.02,
-    )
-    assert payload["radius_law"]["tail_cutoff_magnitude"] == 25.5
+    assert payload["radius_law"]["version"] == RADIUS_MODEL_VERSION
+    assert payload["radius_law"]["bright_intercept_log10_arcsec"] is None
+    assert payload["radius_law"]["break_magnitude"] is None
+    assert payload["radius_law"]["tail_fraction"] == 0.0
+    assert payload["radius_law"]["tail_distribution"] == "none"
+    assert payload["radius_law"]["tail_cutoff_magnitude"] is None
     assert payload["radius_law"]["tail_taper_start_magnitude"] is None
     assert payload["radius_law"]["tail_taper_end_magnitude"] is None
     assert payload["plots"]["radius"]["observed_density"]
@@ -587,12 +795,35 @@ def test_candidate_fit_uses_only_aggregate_euclid_brightness_and_sersic_radius(
     assert payload["generation"]["vis_magnitude_max"] == 29.0
     assert 14.0 < payload["generation"]["break_magnitude"] < 29.0
     assert payload["magnitude_plot"]["generation_interval"] == [14.0, 29.0]
-    assert payload["magnitude_plot"]["empirical_bright_interval"] == [14.0, 18.0]
+    assert payload["magnitude_plot"]["continuous_bright_interval"][0] == 14.0
+    assert payload["magnitude_plot"]["continuous_bright_interval"][1] == (
+        pytest.approx(BRIGHT_BRIDGE_JOIN_MAGNITUDES[-1])
+    )
+    fitted_bright_bins = [
+        item for item in bright_count_bins
+        if item["mag_lo"] < BRIGHT_BRIDGE_JOIN_MAGNITUDES[-1] - 1e-10
+    ]
+    assert payload["magnitude_plot"]["bright_fit_diagnostics"] == {
+        "bright_fit_bin_count": len(fitted_bright_bins),
+        "bright_fit_zero_bin_count": 0,
+        "bright_fit_expected_galaxies": pytest.approx(sum(
+            item["expected_galaxies"] for item in fitted_bright_bins
+        )),
+        "bright_fit_poisson_deviance": pytest.approx(0.0, abs=1e-5),
+        "bright_fit_deviance_per_bin": pytest.approx(0.0, abs=1e-7),
+        "bright_fit_parameter_count": 3,
+        "bright_bridge_join_magnitudes": list(
+            BRIGHT_BRIDGE_JOIN_MAGNITUDES
+        ),
+        "bright_bridge_slopes": pytest.approx(
+            bright_count_law.bright_slopes, abs=1e-5,
+        ),
+    }
     assert payload["magnitude_law"]["kind"] == (
-        "empirical_bright_straight_middle_flat_faint_counts"
+        "continuous_three_slope_bright_bridge_main_flat_faint_counts"
     )
     assert payload["generation"]["faint_radius_policy"] == (
-        "compact_core_only_above_vis_25_5"
+        "straight_truncated_gaussian_at_all_magnitudes_no_tail"
     )
     generated_density = payload["magnitude_plot"]["generation_law"]["density"]
     assert generated_density[-1] == pytest.approx(

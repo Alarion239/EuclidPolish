@@ -26,14 +26,18 @@ type BrightnessCurve = Curve & {
   sampling_interval?: [number, number];
   extrapolated_interval?: [number, number];
   generation_interval?: [number, number];
+  generation_bright_join_magnitudes?: [number, number, number];
+  generation_bright_slopes?: [number, number, number];
+  generation_main_slope?: number;
   generation_break_magnitude?: number;
   generation_density_cap_arcmin2_mag?: number;
 };
 type RadiusCurve = Curve & {
   label: string;
   source: SourceKey;
-  radius_type: "detection" | "kron" | "half_light";
+  radius_type: "detection" | "kron" | "half_light" | "half_light_shape";
   units: string;
+  normalization?: "surface_density" | "probability_density";
   default_on?: boolean;
 };
 type Parameter = {
@@ -90,6 +94,12 @@ type Payload = {
       valid?: boolean;
       version: number;
       fingerprint: string;
+      magnitude_law: {
+        bright_join_magnitudes: [number, number, number];
+        bright_slopes: [number, number, number];
+        break_magnitude: number;
+        straight_law: { slope: number };
+      };
       radius_law: {
         slope_log10_arcsec_per_mag: number;
         scatter_dex: number;
@@ -172,11 +182,15 @@ const RADIUS_COLORS: Record<string, string> = {
   euclid_sersic_re: "#31a7d8",
   cosmos_re: "#00a078",
   fit_re: "#e25543",
+  euclid_sersic_re_shape: "#2478d4",
+  fit_re_q1_weighted_shape: "#e25543",
+  fit_re_full_generation_shape: "#168f65",
 };
 const RADIUS_TYPE_LABEL: Record<RadiusCurve["radius_type"], string> = {
   detection: "Detection / deblender",
   kron: "Kron photometry",
   half_light: "Half-light radius",
+  half_light_shape: "Normalized half-light shape",
 };
 
 const compact = (value?: number) => value == null ? "—" : new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 }).format(value);
@@ -320,6 +334,10 @@ function ApparentBrightnessPlot({ parameter }: { parameter: Parameter }) {
         axis: "x" as const, v: curve.extrapolated_interval[0],
         color: "#e25543", dash: [7, 4], width: 1.2, alpha: 0.75,
       }] : []),
+      ...(curve.generation_bright_join_magnitudes ?? []).map((join) => ({
+        axis: "x" as const, v: join,
+        color: "#d39b32", dash: [5, 3], width: 1.5, alpha: 0.9,
+      })),
       ...(curve.generation_break_magnitude != null ? [{
         axis: "x" as const, v: curve.generation_break_magnitude,
         color: "#168f65", dash: [2, 3], width: 1.8, alpha: 0.95,
@@ -348,8 +366,8 @@ function ApparentBrightnessPlot({ parameter }: { parameter: Parameter }) {
           <i style={{ background: colorByKey[key] }} />
           <span><b>{curve.label}</b><small>{curve.band} · {curve.estimator}</small></span>
           <em>{curve.fit_interval
-            ? curve.generation_break_magnitude != null
-              ? `break VIS ${curve.generation_break_magnitude.toFixed(2)} · flat at ${curve.generation_density_cap_arcmin2_mag?.toFixed(0)} arcmin⁻² mag⁻¹ to VIS ${curve.generation_interval?.[1].toFixed(0)}`
+            ? curve.generation_bright_join_magnitudes?.length
+              ? `fixed joins VIS ${curve.generation_bright_join_magnitudes.map((value) => value.toFixed(2)).join(" / ")} · bridge slopes ${curve.generation_bright_slopes?.map((value) => value.toFixed(3)).join(" / ") ?? "—"}; main ${curve.generation_main_slope?.toFixed(3) ?? "—"} dex mag⁻¹ · flat from VIS ${curve.generation_break_magnitude?.toFixed(2)} to ${curve.generation_interval?.[1].toFixed(0)}`
               : `fit ${curve.fit_interval[0].toFixed(2)}–${curve.fit_interval[1].toFixed(2)} · law ${curve.sampling_interval?.[0].toFixed(0)}–${curve.sampling_interval?.[1].toFixed(0)}`
             : `${compact(curve.weighted_count)} weighted objects`}</em>
         </div>)}
@@ -360,7 +378,7 @@ function ApparentBrightnessPlot({ parameter }: { parameter: Parameter }) {
   return <div className="brightness-comparison">
     <div className="brightness-warning">
       <strong>Same AB convention, different measurements.</strong>
-      <span>The default shows the Q1 MER + PHZ VIS 2FWHM counts and the actual green generation law: empirical bright bins, the fitted middle, then 100 galaxies / arcmin² / mag through VIS 29. Optional VIS/F814W diagnostics retain their native estimators.</span>
+      <span>The default shows the Q1 MER + PHZ VIS 2FWHM counts and the actual green generation law: three fitted continuous bright-bridge segments at fixed joins, the fitted main line, then 100 galaxies / arcmin² / mag through VIS 29. Optional VIS/F814W diagnostics retain their native estimators.</span>
     </div>
     <div className="brightness-controls">
       {(["euclid", "cosmos", "fit", "generation"] as const).map((survey) => {
@@ -368,7 +386,7 @@ function ApparentBrightnessPlot({ parameter }: { parameter: Parameter }) {
         if (!group.length) return null;
         return <section key={survey}>
           <header>
-            <div><span>{survey === "euclid" ? "Euclid MER" : survey === "cosmos" ? "COSMOS2025" : survey === "fit" ? "Q1 curve fits" : "Generation law"}</span><small>{survey === "euclid" ? "VIS · solid measurements" : survey === "cosmos" ? "HST/ACS F814W · long dashes" : survey === "fit" ? "VIS · short-dashed local fits" : "VIS · solid green empirical/fitted/flat law"}</small></div>
+            <div><span>{survey === "euclid" ? "Euclid MER" : survey === "cosmos" ? "COSMOS2025" : survey === "fit" ? "Q1 curve fits" : "Generation law"}</span><small>{survey === "euclid" ? "VIS · solid measurements" : survey === "cosmos" ? "HST/ACS F814W · long dashes" : survey === "fit" ? "VIS · short-dashed local fits" : "VIS · three-segment bright bridge/main/flat law"}</small></div>
             <div>
               <Button size="sm" variant="ghost" onClick={() => setSelected((current) => Array.from(new Set([...current, ...group.map(([key]) => key)])))}>all</Button>
               <Button size="sm" variant="ghost" onClick={() => setSelected((current) => current.filter((key) => !group.some(([candidate]) => candidate === key)))}>none</Button>
@@ -390,19 +408,46 @@ function ApparentBrightnessPlot({ parameter }: { parameter: Parameter }) {
 
 function RadiusPlot({ parameter }: { parameter: Parameter }) {
   const entries = Object.entries(parameter.radius_series ?? {});
-  const [selected, setSelected] = useState<string[]>(() => entries
-    .filter(([, curve]) => curve.default_on)
-    .map(([key]) => key));
+  const curveByKey = Object.fromEntries(entries) as Record<string, RadiusCurve>;
+  const normalizationOf = (curve?: RadiusCurve) => curve?.normalization ?? "surface_density";
+  const [selected, setSelected] = useState<string[]>(() => {
+    const defaults = entries.filter(([, curve]) => curve.default_on);
+    const normalized = defaults.filter(
+      ([, curve]) => normalizationOf(curve) === "probability_density",
+    );
+    return (normalized.length ? normalized : defaults).map(([key]) => key);
+  });
   const visible = entries.filter(([key]) => selected.includes(key));
-  const toggle = (key: string) => setSelected((current) => (
-    current.includes(key) ? current.filter((item) => item !== key) : [...current, key]
-  ));
-  const grouped = (["detection", "kron", "half_light"] as RadiusCurve["radius_type"][])
+  const toggle = (key: string) => setSelected((current) => {
+    if (current.includes(key)) return current.filter((item) => item !== key);
+    const normalization = normalizationOf(curveByKey[key]);
+    return [
+      ...current.filter(
+        (item) => normalizationOf(curveByKey[item]) === normalization,
+      ),
+      key,
+    ];
+  });
+  const grouped = ([
+    "detection", "kron", "half_light", "half_light_shape",
+  ] as RadiusCurve["radius_type"][])
     .map((radiusType) => [radiusType, entries.filter(([, curve]) => curve.radius_type === radiusType)] as const)
     .filter(([, group]) => group.length);
   const logValues = visible.flatMap(([, curve]) => curve.density
     .filter((value) => value > 0).map(Math.log10));
   const xValues = visible.flatMap(([, curve]) => curve.x);
+  const probabilityDensity = visible.length > 0 && visible.every(
+    ([, curve]) => normalizationOf(curve) === "probability_density",
+  );
+  const selectGroup = (group: [string, RadiusCurve][]) => {
+    const normalization = normalizationOf(group[0]?.[1]);
+    setSelected((current) => Array.from(new Set([
+      ...current.filter(
+        (key) => normalizationOf(curveByKey[key]) === normalization,
+      ),
+      ...group.map(([key]) => key),
+    ])));
+  };
 
   let plot = <Empty>Select at least one radius observable to draw.</Empty>;
   if (visible.length && logValues.length && xValues.length) {
@@ -417,13 +462,16 @@ function RadiusPlot({ parameter }: { parameter: Parameter }) {
         xDomain={xDomain} yDomain={yDomain}
         xTicks={physicalLogTicks(xDomain, 6)} yTicks={physicalLogTicks(yDomain, 6)}
         xLabel={physicalLogAxisLabel(parameter.x_label)}
-        yLabel={`${parameter.density_unit} (log scale)`}
+        yLabel={probabilityDensity
+          ? "normalized probability / dex (log scale)"
+          : `${parameter.density_unit} (log scale)`}
         series={visible.map(([key, curve]) => ({
           x: curve.x,
           y: curve.density.map((value) => value > 0 ? Math.log10(value) : null),
           color: RADIUS_COLORS[key] ?? SOURCE[curve.source].color,
           width: curve.source === "fit" ? 2.7 : 1.9,
-          dash: curve.source === "cosmos" ? [7, 4] : undefined,
+          dash: key === "fit_re_full_generation_shape" ? [3, 3]
+            : curve.source === "cosmos" ? [7, 4] : undefined,
           marker: curve.source === "euclid" ? "ring" : undefined,
           dots: curve.source === "euclid",
           markerEvery: Math.max(1, Math.ceil(curve.x.length / 18)),
@@ -434,7 +482,9 @@ function RadiusPlot({ parameter }: { parameter: Parameter }) {
         {visible.map(([key, curve]) => <div key={key}>
           <i style={{ background: RADIUS_COLORS[key] ?? SOURCE[curve.source].color }} />
           <span><b>{curve.label}</b><small>{curve.definition}</small></span>
-          <em>{compact(curve.weighted_count)} weighted objects</em>
+          <em>{normalizationOf(curve) === "probability_density"
+            ? "unit integral"
+            : `${compact(curve.weighted_count)} weighted objects`}</em>
         </div>)}
       </div>
     </>;
@@ -443,14 +493,14 @@ function RadiusPlot({ parameter }: { parameter: Parameter }) {
   return <div className="radius-comparison">
     <div className="radius-warning">
       <strong>Catalogue size concepts, kept separate.</strong>
-      <span>The generator fits only the science-clean circularized PHZ/MER VIS Sérsic Rₑ = Rₑ,major√q jointly with VIS 2FWHM brightness. Detection, Kron, and COSMOS curves are labeled diagnostics and do not affect sampling.</span>
+      <span>The generator fits only the science-clean circularized PHZ/MER VIS Sérsic Rₑ = Rₑ,major√q jointly with VIS 2FWHM brightness. The normalized controls separate the Q1 magnitude mix from the full faint-extended generation mix; detection, Kron, and COSMOS remain diagnostics.</span>
     </div>
     <div className="radius-controls">
       {grouped.map(([radiusType, group]) => <section key={radiusType}>
         <header>
-          <div><span>{RADIUS_TYPE_LABEL[radiusType]}</span><small>{radiusType === "detection" ? "diagnostic only" : radiusType === "kron" ? "diagnostic only" : "Euclid data + Euclid fit; COSMOS diagnostic"}</small></div>
+          <div><span>{RADIUS_TYPE_LABEL[radiusType]}</span><small>{radiusType === "detection" ? "diagnostic only" : radiusType === "kron" ? "diagnostic only" : radiusType === "half_light_shape" ? "normalized Q1 and candidate magnitude mixes" : "Euclid data + Euclid fit; COSMOS diagnostic"}</small></div>
           <div>
-            <Button size="sm" variant="ghost" onClick={() => setSelected((current) => Array.from(new Set([...current, ...group.map(([key]) => key)])))}>all</Button>
+            <Button size="sm" variant="ghost" onClick={() => selectGroup([...group])}>all</Button>
             <Button size="sm" variant="ghost" onClick={() => setSelected((current) => current.filter((key) => !group.some(([candidate]) => candidate === key)))}>none</Button>
           </div>
         </header>
@@ -627,7 +677,7 @@ export default function GalaxyDistributionsPage() {
 
     <Card className="calibration-workflow">
       <CardHead title="Euclid VIS 2FWHM × circularized Sérsic Rₑ model"
-        sub="Empirical/fitted/flat brightness plus a broken conditional log-radius law; added faint galaxies use the compact core only."
+        sub="Continuous three-segment bright bridge/main/flat counts plus one straight truncated-Gaussian conditional log-radius law, with no radius tail or break."
         right={<Badge tone={api.calibration.is_active ? "good" : api.calibration.candidate?.valid ? "warn" : undefined}>
           {api.calibration.is_active ? "active for generation" : api.calibration.candidate?.valid ? "candidate ready" : "not fitted"}
         </Badge>} />
@@ -640,7 +690,13 @@ export default function GalaxyDistributionsPage() {
           <Stat k="faint plateau" v={api.calibration.candidate
             ? `${api.calibration.candidate.generation.differential_density_cap_arcmin2_mag.toFixed(0)} arcmin⁻² mag⁻¹`
             : "100 arcmin⁻² mag⁻¹"} />
-          <Stat k="brightness break" v={api.calibration.candidate
+          <Stat k="bright joins" v={api.calibration.candidate
+            ? `VIS ${api.calibration.candidate.magnitude_law.bright_join_magnitudes.map((value) => value.toFixed(2)).join(" / ")}`
+            : "—"} />
+          <Stat k="bridge slopes" v={api.calibration.candidate
+            ? `${api.calibration.candidate.magnitude_law.bright_slopes.map((value) => value.toFixed(3)).join(" / ")} dex/mag`
+            : "—"} />
+          <Stat k="faint plateau starts" v={api.calibration.candidate
             ? `VIS ${api.calibration.candidate.generation.break_magnitude.toFixed(2)}`
             : "—"} />
           <Stat k="radius source" v="Q1 cleaned circularized Sérsic Rₑ" />
@@ -667,9 +723,8 @@ export default function GalaxyDistributionsPage() {
         </div>
         {api.calibration.candidate && <p className="galaxy-q1-counts__note">
           The candidate contains {api.calibration.candidate.radius_law.fitted_rows.toLocaleString()} clean
-          aggregate-weighted radii. Bright counts are empirical, the middle follows the fitted law,
-          and counts then stay flat at {api.calibration.candidate.generation.differential_density_cap_arcmin2_mag.toFixed(0)} galaxies / arcmin² / mag through VIS {api.calibration.candidate.generation.vis_magnitude_max.toFixed(0)}.
-          {" "}Added galaxies fainter than VIS 25.5 use the compact radius core only.
+          aggregate-weighted radii. Three fitted bright-bridge slopes meet continuously at fixed VIS joins {api.calibration.candidate.magnitude_law.bright_join_magnitudes.map((value) => value.toFixed(2)).join(", ")}, then join the main Q1 line continuously; counts stay flat at {api.calibration.candidate.generation.differential_density_cap_arcmin2_mag.toFixed(0)} galaxies / arcmin² / mag through VIS {api.calibration.candidate.generation.vis_magnitude_max.toFixed(0)}.
+          {" "}All magnitudes use the same straight truncated-Gaussian conditional radius law; there is no separate broad tail or radius break.
           {" "}Its integral is {api.calibration.candidate.generation.surface_density_arcmin2.toFixed(2)} galaxies / arcmin².
           {" "}Its fingerprint is <code>{api.calibration.candidate.fingerprint.slice(0, 12)}…</code>.
         </p>}
@@ -696,18 +751,13 @@ export default function GalaxyDistributionsPage() {
       const xDomain = paddedDomain(relation.magnitude, 1.0);
       return <Card className="parameter-card">
         <CardHead title="Joint brightness–radius relation"
-          sub="Aggregate Q1 circularized Sérsic-Rₑ moments in each VIS 2FWHM magnitude bracket and the fitted broken conditional law." />
+          sub="Aggregate Q1 circularized Sérsic-Rₑ moments in each VIS 2FWHM magnitude bracket and one fitted straight truncated-Gaussian conditional law." />
         <CardBody>
           <Plot
             xDomain={xDomain} yDomain={yDomain}
             xTicks={ticks(xDomain, 7)} yTicks={physicalLogTicks(yDomain, 6)}
             xLabel="VIS 2FWHM AB magnitude"
             yLabel="Circularized Sérsic Rₑ (arcsec, log scale)"
-            guides={[{
-              axis: "x",
-              v: api.calibration.candidate!.generation.break_magnitude,
-              color: "#168f65", dash: [2, 3], width: 1.8, alpha: 0.95,
-            }]}
             series={[
               {
                 x: relation.magnitude,
@@ -731,8 +781,9 @@ export default function GalaxyDistributionsPage() {
           />
           <p className="galaxy-q1-counts__note">
             Blue points are bracket-level Euclid measurements; the red line and band are
-            the fitted mixture mean and the Gaussian-core one-scatter interval. COSMOS
-            and object-level samples are absent from this fit.
+            the single straight conditional mean and its one-scatter truncated-Gaussian
+            interval. There is no magnitude break or broad radius tail; COSMOS and
+            object-level samples are absent from this fit.
           </p>
         </CardBody>
       </Card>;
@@ -745,7 +796,7 @@ export default function GalaxyDistributionsPage() {
         <div>
           <div className="eyebrow">surface-density marginals</div>
           <h2>Where the three population layers agree—and where they do not</h2>
-          <p>Every vertical axis is a sky density. Log scaling keeps faint and bright populations legible on the same panel.</p>
+          <p>Catalogue controls retain sky-density units; the normalized radius-shape controls use unit-integral probability per dex. Log scaling keeps faint and bright populations legible.</p>
         </div>
         <div className="galaxy-key">
           {ORDER.map((key) => <span key={key}><i style={{ background: SOURCE[key].color }} />{SOURCE[key].label}</span>)}

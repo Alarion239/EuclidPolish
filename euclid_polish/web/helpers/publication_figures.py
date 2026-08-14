@@ -18,6 +18,7 @@ from euclid_polish.population.euclid_galaxy_prior import (
     joint_density_grid,
 )
 from euclid_polish.population.magnitude_law import (
+    ContinuousBrightBridgeFaintCappedMagnitudeLaw,
     EmpiricalBrightFaintCappedMagnitudeLaw,
     FaintCappedMagnitudeLaw,
     StraightMagnitudeLaw,
@@ -120,13 +121,22 @@ def _comparison_laws(
 ) -> tuple[
     StraightMagnitudeLaw
     | FaintCappedMagnitudeLaw
-    | EmpiricalBrightFaintCappedMagnitudeLaw,
+    | EmpiricalBrightFaintCappedMagnitudeLaw
+    | ContinuousBrightBridgeFaintCappedMagnitudeLaw,
     ConditionalRadiusLaw,
 ]:
     """Reconstruct one explicit brightness-radius calibration payload."""
     try:
         magnitude_payload = calibration["magnitude_law"]
         if magnitude_payload.get("kind") == (
+            "continuous_three_slope_bright_bridge_main_flat_faint_counts"
+        ):
+            magnitude_law = (
+                ContinuousBrightBridgeFaintCappedMagnitudeLaw.from_payload(
+                    magnitude_payload,
+                )
+            )
+        elif magnitude_payload.get("kind") == (
             "empirical_bright_straight_middle_flat_faint_counts"
         ):
             magnitude_law = (
@@ -231,6 +241,24 @@ def _mass_contour_levels(
     return levels
 
 
+def _bright_magnitude_slice(
+    magnitude_edges: np.ndarray,
+    observed_weight: np.ndarray,
+    *,
+    maximum_magnitude: float = 22.0,
+) -> slice:
+    """Return a contiguous, observed bright window with at least two bins."""
+    magnitude_center = 0.5 * (magnitude_edges[:-1] + magnitude_edges[1:])
+    observed_by_magnitude = np.sum(observed_weight, axis=1)
+    positive = np.flatnonzero(observed_by_magnitude > 0.0)
+    start = int(positive[0]) if positive.size else 0
+    stop = int(np.searchsorted(magnitude_center, maximum_magnitude, side="left"))
+    stop = min(len(magnitude_center), max(stop, start + 2))
+    if stop - start < 2:
+        start = max(0, stop - 2)
+    return slice(start, stop)
+
+
 def _physical_radius_ticks(
     ax, log_radius_edges: np.ndarray, *, axis: str = "y",
 ) -> None:
@@ -269,9 +297,8 @@ def render_population_atlas(
     relation = plots.get("conditional_radius") or {}
     if not brightness_law or not generation_law or not radius or not relation:
         raise ValueError("Euclid joint fit has no publication diagnostics")
-    empirical_bright = (
-        (calibration.get("magnitude_law") or {}).get("kind")
-        == "empirical_bright_straight_middle_flat_faint_counts"
+    magnitude_kind = str(
+        (calibration.get("magnitude_law") or {}).get("kind") or ""
     )
     circularized_radius = "circularized" in str(calibration.get("kind") or "")
 
@@ -296,13 +323,32 @@ def render_population_atlas(
         observed_brightness = brightness.get("observed") or {}
         _line(
             axes[0], brightness_law, "density", color=TNG,
-            label="Q1 2FWHM fitted middle law", width=2.7,
+            label=(
+                "Q1 2FWHM fitted main law"
+                if magnitude_kind
+                == (
+                    "continuous_three_slope_bright_bridge_main_flat_"
+                    "faint_counts"
+                )
+                else "Q1 2FWHM fitted middle law"
+            ),
+            width=2.7,
         )
         _line(
             axes[0], generation_law, "density", color="#168f65",
             label=(
-                "generation law: empirical + fitted + flat"
-                if empirical_bright else "generation law: straight then flat"
+                "generation law: continuous bright bridge + main + flat"
+                if magnitude_kind
+                == (
+                    "continuous_three_slope_bright_bridge_main_flat_"
+                    "faint_counts"
+                )
+                else (
+                    "generation law: empirical + fitted + flat"
+                    if magnitude_kind
+                    == "empirical_bright_straight_middle_flat_faint_counts"
+                    else "generation law: straight then flat"
+                )
             ),
             width=3.0,
         )
@@ -421,7 +467,13 @@ def render_population_atlas(
         )
         _line(
             axes[2], relation_payload, "model", color=TNG,
-            label="broken conditional mean", width=2.7,
+            label=(
+                "straight conditional mean"
+                if relation.get("model_kind")
+                == "straight_truncated_gaussian_no_tail"
+                else "broken conditional mean"
+            ),
+            width=2.7,
         )
         axes[2].set_xlim(14, 29)
         if break_magnitude is not None:
@@ -580,6 +632,24 @@ def render_population_fit_comparison(
     candidate_radius_density = (
         np.sum(candidate_marginal["density"], axis=0) / log_radius_width
     )
+    candidate_joint_mass = np.asarray(
+        candidate_joint["density"], dtype=np.float64,
+    )
+    candidate_mass_by_magnitude = np.sum(candidate_joint_mass, axis=1)
+    candidate_conditional_radius_mass = np.divide(
+        candidate_joint_mass,
+        candidate_mass_by_magnitude[:, None],
+        out=np.zeros_like(candidate_joint_mass),
+        where=candidate_mass_by_magnitude[:, None] > 0.0,
+    )
+    candidate_q1_weighted_radius_density = (
+        np.sum(
+            candidate_conditional_radius_mass
+            * observed_by_magnitude[:, None],
+            axis=0,
+        )
+        / log_radius_width
+    )
     observed_radius_shape = observed_radius_density / np.sum(
         observed_radius_density * log_radius_width,
     )
@@ -588,6 +658,10 @@ def render_population_fit_comparison(
     )
     candidate_radius_shape = candidate_radius_density / np.sum(
         candidate_radius_density * log_radius_width,
+    )
+    candidate_q1_weighted_radius_shape = (
+        candidate_q1_weighted_radius_density
+        / np.sum(candidate_q1_weighted_radius_density * log_radius_width)
     )
     previous_radius_definition = (
         "circularized"
@@ -677,22 +751,36 @@ def render_population_fit_comparison(
             linestyle="none", marker="o", markersize=4.5,
             markerfacecolor=PAPER, markeredgecolor=EUCLID_OBS,
             markeredgewidth=1.15,
-            label="Q1 circularized shape · clean morphology subset",
+            label="Q1 clean circularized shape · normalized",
             zorder=4,
         )
         ax_radius.plot(
             log_radius_center, previous_radius_shape,
             color=PREVIOUS_MODEL, linewidth=2.3, linestyle=(0, (6, 3)),
-            label=f"Previous {previous_radius_definition} model shape",
+            label=(
+                f"Previous {previous_radius_definition} shape · "
+                "full generation"
+            ),
+        )
+        ax_radius.plot(
+            log_radius_center, candidate_q1_weighted_radius_shape,
+            color=CANDIDATE_MODEL, linewidth=2.8,
+            label=(
+                f"Candidate {candidate_radius_definition} shape · "
+                "Q1-magnitude weighted"
+            ),
         )
         ax_radius.plot(
             log_radius_center, candidate_radius_shape,
-            color=CANDIDATE_MODEL, linewidth=2.8,
-            label=f"Candidate {candidate_radius_definition} model shape",
+            color=CANDIDATE_MODEL, linewidth=2.0, linestyle=(0, (2, 2)),
+            label=(
+                f"Candidate {candidate_radius_definition} shape · "
+                "full generation"
+            ),
         )
         ax_radius.set_xlim(log_radius_edges[0], log_radius_edges[-1])
         _finish_axis(
-            ax_radius, "Normalized half-light-radius marginal shape",
+            ax_radius, "Radius shape · Q1-weighted versus full generation",
             "$R_e$ [arcsec; logarithmic axis]",
             "probability density [dex$^{-1}$]",
             logarithmic_y=True,
@@ -781,6 +869,70 @@ def render_population_fit_comparison(
             ),
             colors=CANDIDATE_MODEL, linewidths=2.0, linestyles="solid",
         )
+        bright_slice = _bright_magnitude_slice(
+            magnitude_edges, observed_weight,
+        )
+        bright_edges = magnitude_edges[
+            bright_slice.start:bright_slice.stop + 1
+        ]
+        bright_center = magnitude_center[bright_slice]
+        bright_observed_density = observed_density[bright_slice]
+        bright_positive = bright_observed_density[
+            np.isfinite(bright_observed_density)
+            & (bright_observed_density > 0.0)
+        ]
+        bright_lower = float(np.percentile(bright_positive, 5.0))
+        bright_upper = float(np.percentile(bright_positive, 99.5))
+        if np.isclose(bright_lower, bright_upper):
+            bright_lower = max(
+                bright_upper / 10.0, np.finfo(np.float64).tiny,
+            )
+        ax_bright = ax_joint.inset_axes([0.055, 0.075, 0.47, 0.40])
+        ax_bright.pcolormesh(
+            bright_edges,
+            log_radius_edges,
+            np.ma.masked_less_equal(bright_observed_density.T, 0.0),
+            shading="auto", cmap="magma",
+            norm=LogNorm(vmin=bright_lower, vmax=bright_upper),
+            rasterized=True,
+        )
+        ax_bright.contour(
+            bright_center,
+            log_radius_center,
+            previous_joint_density[bright_slice].T,
+            levels=_mass_contour_levels(
+                previous_joint_density[bright_slice],
+                previous_joint["density"][bright_slice],
+            ),
+            colors=PREVIOUS_MODEL, linewidths=1.25, linestyles="dashed",
+        )
+        ax_bright.contour(
+            bright_center,
+            log_radius_center,
+            candidate_joint_density[bright_slice].T,
+            levels=_mass_contour_levels(
+                candidate_joint_density[bright_slice],
+                candidate_joint["density"][bright_slice],
+            ),
+            colors=CANDIDATE_MODEL, linewidths=1.4, linestyles="solid",
+        )
+        ax_bright.set_xlim(bright_edges[0], bright_edges[-1])
+        ax_bright.set_ylim(log_radius_edges[0], log_radius_edges[-1])
+        ax_bright.set_title(
+            f"Bright Q1 · {bright_edges[0]:g}≤VIS<{bright_edges[-1]:g}"
+            " · locally scaled\n"
+            "50/80/95% mass contours normalized within window",
+            loc="left", fontsize=max(NOTE_SIZE * 0.48, 6.5), pad=2,
+            fontweight=600,
+            bbox={"facecolor": PAPER, "edgecolor": "none", "alpha": 0.88},
+        )
+        ax_bright.grid(True, color=GRID, linewidth=0.4, alpha=0.65)
+        ax_bright.set_axisbelow(True)
+        ax_bright.tick_params(
+            colors=INK, labelsize=max(NOTE_SIZE * 0.42, 6),
+            width=0.8, length=3,
+        )
+        _physical_radius_ticks(ax_bright, log_radius_edges)
         ax_joint.plot(
             [], [], color=PREVIOUS_MODEL, linewidth=1.8,
             linestyle=(0, (6, 3)),
@@ -793,7 +945,7 @@ def render_population_fit_comparison(
         ax_joint.set_xlim(magnitude_edges[0], magnitude_edges[-1])
         ax_joint.set_ylim(log_radius_edges[0], log_radius_edges[-1])
         _finish_axis(
-            ax_joint, "Q1 circularized density · model mass contours",
+            ax_joint, "Q1 circularized density · global model mass contours",
             "VIS 2FWHM aperture magnitude [AB]",
             r"$R_e$ [arcsec; logarithmic coordinate]",
             zero_floor=False,
@@ -825,9 +977,9 @@ def render_population_fit_comparison(
         )
         fig.text(
             0.075, 0.915,
-            f"purple = previous {previous_radius_definition} $R_e$  ·  "
-            f"green and Q1 = candidate {candidate_radius_definition} $R_e$  "
-            "·  Q1 morphology subset is incomplete",
+            f"purple model = previous {previous_radius_definition} $R_e$  ·  "
+            f"green candidate = {candidate_radius_definition} $R_e$  ·  "
+            "blue Q1 = clean circularized morphology subset",
             ha="left", va="center", fontsize=NOTE_SIZE, color=MUTED,
         )
 

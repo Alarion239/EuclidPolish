@@ -80,7 +80,7 @@ export default function VisualizationPage() {
       <div className="presentation-plate-stack">
         <Card className="presentation-plate">
           <CardHead title="Galaxy population calibration"
-            sub="Q1 VIS 2FWHM empirical/fitted/flat counts × cleaned circularized VIS Sérsic Rₑ"
+            sub="Q1 VIS 2FWHM continuous three-segment bright bridge/main/flat counts × one straight truncated-Gaussian circularized VIS Sérsic Rₑ law"
             right={<div className="presentation-plate__formats">
               <a href="/view/population-atlas?format=pdf" download>PDF</a>
               <a href="/view/population-atlas?format=svg" download>SVG</a>

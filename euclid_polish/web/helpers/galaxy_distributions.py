@@ -45,7 +45,7 @@ from euclid_polish.web.helpers.q1_galaxy_radius_statistics import (
     read_q1_galaxy_radius_statistics,
 )
 
-ARTIFACT_VERSION = 13
+ARTIFACT_VERSION = 14
 MAG_EDGES = np.arange(14.0, 30.0001, 0.25)
 RADIUS_MAX_VIS_PIXELS = 100.0
 RADIUS_MAX_ARCSEC = RADIUS_MAX_VIS_PIXELS * float(Config.VIS_PIXEL_SCALE_ARCSEC)
@@ -138,6 +138,25 @@ def _curve(edges: np.ndarray, counts: np.ndarray, area: float, definition: str) 
     }
 
 
+def _normalized_density(
+    density: np.ndarray, bin_width: np.ndarray,
+) -> np.ndarray:
+    """Normalize a non-negative per-unit density to unit integrated mass."""
+    values = np.asarray(density, dtype=np.float64)
+    width = np.asarray(bin_width, dtype=np.float64)
+    if (
+        values.ndim != 1
+        or values.shape != width.shape
+        or not np.all(np.isfinite(values) & (values >= 0.0))
+        or not np.all(np.isfinite(width) & (width > 0.0))
+    ):
+        raise ValueError("radius density cannot be normalized")
+    total = float(np.sum(values * width))
+    if not np.isfinite(total) or total <= 0.0:
+        raise ValueError("radius density cannot be normalized")
+    return values / total
+
+
 def _brightness_curve(
     values: np.ndarray,
     area: float,
@@ -199,6 +218,7 @@ def _radius_curve(
         "source": source,
         "radius_type": radius_type,
         "units": "arcsec",
+        "normalization": "surface_density",
         "default_on": default_on,
     }
 
@@ -345,7 +365,9 @@ def _empty_parameters() -> dict[str, dict[str, Any]]:
                 "only and do not enter the generator fit. "
                 "Generated Rₑ is nominal continuous-space geometry over "
                 "0.03–10 arcsec (up to 100 native VIS pixels), including "
-                "values below one 0.05 arcsec HR pixel."
+                "values below one 0.05 arcsec HR pixel. Normalized shape "
+                "controls are unit-integral probability densities per dex "
+                "and remain separate from catalogue sky-density controls."
             ),
             "series": {},
             "radius_series": {},
@@ -476,6 +498,7 @@ def _read_q1_radius_statistics(parameters: dict[str, Any]) -> dict[str, Any]:
     # An old field/cone catalogue may still provide detection and Kron
     # diagnostics, but it must never masquerade as the fitted Sersic sample.
     radius_series.pop("euclid_sersic_re", None)
+    radius_series.pop("euclid_sersic_re_shape", None)
     radius_parameter["radius_missing"] = [
         message for message in radius_parameter["radius_missing"]
         if "Sersic" not in message and "Sérsic" not in message
@@ -500,13 +523,22 @@ def _read_q1_radius_statistics(parameters: dict[str, Any]) -> dict[str, Any]:
         )
         for item in bins
     ]
-    density = [float(item["density_arcmin2_dex"]) for item in bins]
+    density = np.asarray([
+        float(item["density_arcmin2_dex"]) for item in bins
+    ], dtype=np.float64)
+    log_radius_width = np.asarray([
+        math.log10(float(item["radius_hi_arcsec"]))
+        - math.log10(float(item["radius_lo_arcsec"]))
+        for item in bins
+    ], dtype=np.float64)
+    normalized_density = _normalized_density(density, log_radius_width)
+    weighted_count = float(sum(
+        float(item["expected_radii"]) for item in bins
+    ))
     radius_series["euclid_sersic_re"] = {
         "x": x,
-        "density": density,
-        "weighted_count": float(sum(
-            float(item["expected_radii"]) for item in bins
-        )),
+        "density": density.tolist(),
+        "weighted_count": weighted_count,
         "definition": (
             "aggregate science-clean Q1 MER morphology circularized VIS "
             "Sersic effective-radius brackets, R_e,circ = R_e,major sqrt(q); "
@@ -516,6 +548,22 @@ def _read_q1_radius_statistics(parameters: dict[str, Any]) -> dict[str, Any]:
         "source": "euclid",
         "radius_type": "half_light",
         "units": "arcsec",
+        "normalization": "surface_density",
+        "default_on": False,
+    }
+    radius_series["euclid_sersic_re_shape"] = {
+        "x": x,
+        "density": normalized_density.tolist(),
+        "weighted_count": weighted_count,
+        "definition": (
+            "science-clean Q1 circularized VIS Sérsic Rₑ marginal, "
+            "normalized to unit probability over log-radius"
+        ),
+        "label": "Q1 clean · normalized circularized Sérsic Rₑ shape",
+        "source": "euclid",
+        "radius_type": "half_light_shape",
+        "units": "arcsec",
+        "normalization": "probability_density",
         "default_on": True,
     }
     return {
@@ -1043,6 +1091,14 @@ def _read_cosmos(parameters: dict[str, Any]) -> dict[str, Any]:
 
 
 def _read_fit(parameters: dict[str, Any]) -> dict[str, Any]:
+    photometry_series = parameters["magnitude"]["photometry_series"]
+    photometry_series.pop("generator_vis_f2", None)
+    radius_series = parameters["radius"]["radius_series"]
+    for key in [
+        item for item, curve in radius_series.items()
+        if item.startswith("fit_re") or curve.get("source") == "fit"
+    ]:
+        del radius_series[key]
     source = joint_galaxy_candidate()
     if not source:
         return {
@@ -1053,6 +1109,12 @@ def _read_fit(parameters: dict[str, Any]) -> dict[str, Any]:
         radius_plot = source["plots"]["radius"]
         radius_x = np.asarray(radius_plot["x"], dtype=np.float64)
         radius_density = np.asarray(radius_plot["density"], dtype=np.float64)
+        q1_weighted_radius_density = np.asarray(
+            radius_plot["q1_weighted_density"], dtype=np.float64,
+        )
+        radius_law = source["radius_law"]
+        radius_min = float(radius_law["log_radius_min"])
+        radius_max = float(radius_law["log_radius_max"])
         generation_plot = source["magnitude_plot"]["generation_law"]
         generation_x = np.asarray(generation_plot["x"], dtype=np.float64)
         generation_density = np.asarray(
@@ -1067,18 +1129,59 @@ def _read_fit(parameters: dict[str, Any]) -> dict[str, Any]:
             generation["differential_density_cap_arcmin2_mag"]
         )
         break_magnitude = float(generation["break_magnitude"])
+        magnitude_law = source["magnitude_law"]
+        if magnitude_law.get("kind") != (
+            "continuous_three_slope_bright_bridge_main_flat_faint_counts"
+        ):
+            raise ValueError("candidate does not use the v11 magnitude law")
+        bright_join_magnitudes = [
+            float(value) for value in magnitude_law["bright_join_magnitudes"]
+        ]
+        bright_slopes = [
+            float(value) for value in magnitude_law["bright_slopes"]
+        ]
+        if len(bright_join_magnitudes) != 3 or len(bright_slopes) != 3:
+            raise ValueError("candidate bright bridge must have three segments")
+        main_slope = float(magnitude_law["straight_law"]["slope"])
     except (KeyError, TypeError, ValueError) as exc:
         return {"available": False, "detail": f"Fit artifact cannot be reconstructed: {exc}"}
-    parameters["magnitude"]["photometry_series"]["generator_vis_f2"] = {
+    if (
+        radius_x.ndim != 1
+        or radius_x.size < 2
+        or radius_density.shape != radius_x.shape
+        or q1_weighted_radius_density.shape != radius_x.shape
+        or not np.all(np.diff(radius_x) > 0.0)
+        or not radius_min < radius_x[0] < radius_x[-1] < radius_max
+    ):
+        return {
+            "available": False,
+            "detail": "Fit artifact cannot be reconstructed: radius grid is malformed",
+        }
+    radius_edges = np.empty(radius_x.size + 1, dtype=np.float64)
+    radius_edges[0] = radius_min
+    radius_edges[-1] = radius_max
+    radius_edges[1:-1] = 0.5 * (radius_x[:-1] + radius_x[1:])
+    radius_width = np.diff(radius_edges)
+    try:
+        full_radius_shape = _normalized_density(radius_density, radius_width)
+        q1_weighted_radius_shape = _normalized_density(
+            q1_weighted_radius_density, radius_width,
+        )
+    except ValueError as exc:
+        return {
+            "available": False,
+            "detail": f"Fit artifact cannot be reconstructed: {exc}",
+        }
+    photometry_series["generator_vis_f2"] = {
         "x": generation_x.tolist(),
         "density": generation_density.tolist(),
         "weighted_count": float(generation["surface_density_arcmin2"]),
         "definition": (
-            "generation law: empirical Q1 bright bins, the fitted VIS "
-            "2FWHM middle counts, then a constant differential density "
-            "through VIS 29"
+            "generation law: three fitted continuous bright-bridge segments "
+            "ending at fixed joins, followed by the main Q1 VIS 2FWHM line "
+            "and constant differential density through VIS 29"
         ),
-        "label": "Generator · empirical + fitted + flat",
+        "label": "Generator · three-segment bright bridge + main + flat",
         "survey": "generation",
         "band": "Euclid VIS",
         "estimator": "2FWHM aperture magnitude; generated count law",
@@ -1092,10 +1195,13 @@ def _read_fit(parameters: dict[str, Any]) -> dict[str, Any]:
             float(source["fitted_magnitude_law"]["fit_faint"]),
         ],
         "generation_interval": generation_interval,
+        "generation_bright_join_magnitudes": bright_join_magnitudes,
+        "generation_bright_slopes": bright_slopes,
+        "generation_main_slope": main_slope,
         "generation_break_magnitude": break_magnitude,
         "generation_density_cap_arcmin2_mag": density_cap,
     }
-    parameters["radius"]["radius_series"]["fit_re"] = {
+    radius_series["fit_re"] = {
         "x": radius_x.tolist(),
         "density": radius_density.tolist(),
         "weighted_count": float(source["generation"]["surface_density_arcmin2"]),
@@ -1108,6 +1214,47 @@ def _read_fit(parameters: dict[str, Any]) -> dict[str, Any]:
         "source": "fit",
         "radius_type": "half_light",
         "units": "arcsec",
+        "normalization": "surface_density",
+        "default_on": False,
+    }
+    radius_series["fit_re_q1_weighted_shape"] = {
+        "x": radius_x.tolist(),
+        "density": q1_weighted_radius_shape.tolist(),
+        "weighted_count": float(np.sum(
+            q1_weighted_radius_density * radius_width
+        )),
+        "definition": (
+            "candidate straight truncated-Gaussian circularized Sérsic Rₑ "
+            "law weighted by the clean Q1 VIS 2FWHM magnitude brackets, "
+            "then normalized to unit probability"
+        ),
+        "label": (
+            "Candidate · Q1-magnitude-weighted circularized Sérsic Rₑ"
+        ),
+        "source": "fit",
+        "radius_type": "half_light_shape",
+        "units": "arcsec",
+        "normalization": "probability_density",
+        "default_on": True,
+    }
+    radius_series["fit_re_full_generation_shape"] = {
+        "x": radius_x.tolist(),
+        "density": full_radius_shape.tolist(),
+        "weighted_count": float(source["generation"]["surface_density_arcmin2"]),
+        "definition": (
+            "candidate straight truncated-Gaussian circularized Sérsic Rₑ "
+            "law marginalized over the complete VIS 14-29 generation law, "
+            "including the flat faint extension, then normalized to unit "
+            "probability"
+        ),
+        "label": (
+            "Candidate · full-generation circularized Sérsic Rₑ "
+            "(faint extension)"
+        ),
+        "source": "fit",
+        "radius_type": "half_light_shape",
+        "units": "arcsec",
+        "normalization": "probability_density",
         "default_on": True,
     }
     state = joint_galaxy_state()
@@ -1119,9 +1266,10 @@ def _read_fit(parameters: dict[str, Any]) -> dict[str, Any]:
         "is_active": bool(state.get("is_active")),
         "active_fingerprint": ((state.get("active") or {}).get("fingerprint")),
         "detail": (
-            "Euclid empirical/fitted/flat brightness × cleaned circularized-"
-            "Sérsic-radius fit; the added faint population is compact-core "
-            f"only and counts flatten at VIS {break_magnitude:.2f}"
+            "Euclid continuous three-segment bright bridge/main/flat "
+            "brightness × one straight truncated-Gaussian "
+            "circularized-Sérsic-radius fit with no radius tail or break; "
+            f"counts flatten at VIS {break_magnitude:.2f}"
         ),
     }
 

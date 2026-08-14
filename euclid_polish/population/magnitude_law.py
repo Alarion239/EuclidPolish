@@ -314,6 +314,294 @@ class FaintCappedMagnitudeLaw:
 
 
 @dataclass(frozen=True)
+class ContinuousBrightBridgeFaintCappedMagnitudeLaw:
+    """Three continuous bright count lines, a main line, and a faint cap.
+
+    ``bright_slopes`` describes three consecutive log10-density lines ending
+    at ``bright_join_magnitudes``.  The final bright line joins the nested,
+    well-constrained main count law continuously.  Every intercept is derived
+    recursively from those joins, so the bridge adds only three fitted
+    parameters and cannot acquire per-bin degrees of freedom.
+    """
+
+    straight_law: StraightMagnitudeLaw
+    bright_slopes: tuple[float, float, float]
+    bright_join_magnitudes: tuple[float, float, float]
+    density_cap_arcmin2_mag: float
+
+    def __post_init__(self) -> None:
+        slopes = np.asarray(self.bright_slopes, dtype=np.float64)
+        joins = np.asarray(self.bright_join_magnitudes, dtype=np.float64)
+        cap = float(self.density_cap_arcmin2_mag)
+        if (
+            slopes.shape != (3,)
+            or not np.all(np.isfinite(slopes) & (slopes > 0.0))
+        ):
+            raise ValueError(
+                "continuous bright-bridge magnitude-law slopes are invalid"
+            )
+        if (
+            joins.shape != (3,)
+            or not np.all(np.isfinite(joins))
+            or not np.all(np.diff(joins) > 0.0)
+        ):
+            raise ValueError(
+                "continuous bright-bridge magnitude-law joins are invalid"
+            )
+        if not math.isfinite(cap) or cap <= 0.0:
+            raise ValueError("faint magnitude-law density cap must be positive")
+        if self.straight_law.slope <= 0.0:
+            raise ValueError(
+                "continuous bright-bridge law requires a positive main slope"
+            )
+        object.__setattr__(
+            self, "bright_slopes", tuple(float(value) for value in slopes),
+        )
+        object.__setattr__(
+            self,
+            "bright_join_magnitudes",
+            tuple(float(value) for value in joins),
+        )
+        object.__setattr__(self, "density_cap_arcmin2_mag", cap)
+        if not (
+            self.mag_bright < self.bright_join_magnitudes[0]
+            and self.bright_join_magnitudes[-1] < self.break_magnitude
+        ):
+            raise ValueError(
+                "continuous bright-bridge joins must lie before the faint cap"
+            )
+        if not self.break_magnitude < self.mag_faint:
+            raise ValueError(
+                "continuous bright-bridge faint cap must lie inside the domain"
+            )
+
+    @property
+    def mag_bright(self) -> float:
+        return self.straight_law.mag_bright
+
+    @property
+    def mag_faint(self) -> float:
+        return self.straight_law.mag_faint
+
+    @property
+    def fit_bright(self) -> float:
+        return self.straight_law.fit_bright
+
+    @property
+    def fit_faint(self) -> float:
+        return self.straight_law.fit_faint
+
+    @property
+    def slope(self) -> float:
+        return self.straight_law.slope
+
+    @property
+    def intercept(self) -> float:
+        return self.straight_law.intercept
+
+    @property
+    def source(self) -> str:
+        return self.straight_law.source
+
+    @property
+    def bright_intercepts(self) -> tuple[float, float, float]:
+        """Return all three bridge intercepts implied by continuity."""
+        slope1, slope2, slope3 = self.bright_slopes
+        join1, join2, join3 = self.bright_join_magnitudes
+        intercept3 = (self.slope - slope3) * join3 + self.intercept
+        intercept2 = (slope3 - slope2) * join2 + intercept3
+        intercept1 = (slope2 - slope1) * join1 + intercept2
+        return float(intercept1), float(intercept2), float(intercept3)
+
+    @property
+    def break_magnitude(self) -> float:
+        """Magnitude where the main line reaches the flat faint cap."""
+        return float(
+            (math.log10(self.density_cap_arcmin2_mag) - self.intercept)
+            / self.slope
+        )
+
+    def log10_density(self, magnitude: np.ndarray | float) -> np.ndarray:
+        values = np.asarray(magnitude, dtype=np.float64)
+        result = np.minimum(
+            self.straight_law.log10_density(values),
+            math.log10(self.density_cap_arcmin2_mag),
+        )
+        for slope, intercept, join in reversed(tuple(zip(
+            self.bright_slopes,
+            self.bright_intercepts,
+            self.bright_join_magnitudes,
+            strict=True,
+        ))):
+            result = np.where(values < join, slope * values + intercept, result)
+        return result
+
+    def density(self, magnitude: np.ndarray | float) -> np.ndarray:
+        return np.power(10.0, self.log10_density(magnitude))
+
+    @staticmethod
+    def _line_integral(
+        slope: float, intercept: float, bright: float, faint: float,
+    ) -> float:
+        beta = slope * math.log(10.0)
+        normalization = 10.0 ** intercept
+        if abs(beta) < 1e-12:
+            return float(normalization * (faint - bright))
+        return float(
+            normalization
+            * math.exp(beta * bright)
+            * math.expm1(beta * (faint - bright))
+            / beta
+        )
+
+    def _line_components(
+        self,
+    ) -> tuple[tuple[float, float, float, float], ...]:
+        edges = (
+            self.mag_bright,
+            *self.bright_join_magnitudes,
+            self.break_magnitude,
+        )
+        slopes = (*self.bright_slopes, self.slope)
+        intercepts = (*self.bright_intercepts, self.intercept)
+        return tuple(
+            (float(edges[index]), float(edges[index + 1]), slope, intercept)
+            for index, (slope, intercept) in enumerate(zip(
+                slopes, intercepts, strict=True,
+            ))
+        )
+
+    def _component_masses(self) -> tuple[float, ...]:
+        line_masses = tuple(
+            self._line_integral(slope, intercept, bright, faint)
+            for bright, faint, slope, intercept in self._line_components()
+        )
+        faint = self.density_cap_arcmin2_mag * (
+            self.mag_faint - self.break_magnitude
+        )
+        return (*line_masses, faint)
+
+    def integrated_density(self) -> float:
+        """Return the exact mass of every bridge, main, and faint component."""
+        return float(sum(self._component_masses()))
+
+    @staticmethod
+    def _invert_line_mass(
+        target: float, slope: float, intercept: float, bright: float,
+    ) -> float:
+        beta = slope * math.log(10.0)
+        normalization = 10.0 ** intercept
+        if abs(beta) < 1e-12:
+            return float(bright + target / normalization)
+        bright_term = math.exp(beta * bright)
+        return float(
+            math.log(bright_term + target * beta / normalization) / beta
+        )
+
+    def sample(self, rng: np.random.Generator) -> float:
+        """Draw from the exact five-component finite-domain inverse CDF."""
+        masses = self._component_masses()
+        target = float(rng.random()) * sum(masses)
+        for mass, (bright, _faint, slope, intercept) in zip(
+            masses[:-1], self._line_components(), strict=True,
+        ):
+            if target < mass:
+                return self._invert_line_mass(
+                    target, slope, intercept, bright,
+                )
+            target -= mass
+        return float(
+            self.break_magnitude + target / self.density_cap_arcmin2_mag
+        )
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "kind": (
+                "continuous_three_slope_bright_bridge_main_flat_faint_counts"
+            ),
+            "equation": (
+                "three continuous bright log10-linear count segments; fitted "
+                "main line; constant faint density cap"
+            ),
+            "straight_law": self.straight_law.to_payload(),
+            "bright_slopes": list(self.bright_slopes),
+            "bright_intercepts": list(self.bright_intercepts),
+            "bright_join_magnitudes": list(self.bright_join_magnitudes),
+            "density_cap_arcmin2_mag": self.density_cap_arcmin2_mag,
+            "break_magnitude": self.break_magnitude,
+            "surface_density_arcmin2": self.integrated_density(),
+            "source": self.source,
+        }
+
+    @classmethod
+    def from_payload(
+        cls, payload: dict[str, Any],
+    ) -> ContinuousBrightBridgeFaintCappedMagnitudeLaw:
+        if payload.get("kind") != (
+            "continuous_three_slope_bright_bridge_main_flat_faint_counts"
+        ):
+            raise ValueError(
+                "magnitude distribution is not a continuous bright-bridge law"
+            )
+        try:
+            law = cls(
+                straight_law=StraightMagnitudeLaw.from_payload(
+                    payload["straight_law"]
+                ),
+                bright_slopes=tuple(
+                    float(value) for value in payload["bright_slopes"]
+                ),
+                bright_join_magnitudes=tuple(
+                    float(value)
+                    for value in payload["bright_join_magnitudes"]
+                ),
+                density_cap_arcmin2_mag=float(
+                    payload["density_cap_arcmin2_mag"]
+                ),
+            )
+            saved_bright_intercepts = np.asarray(
+                payload["bright_intercepts"], dtype=np.float64,
+            )
+            saved_break = float(payload["break_magnitude"])
+            saved_density = float(payload["surface_density_arcmin2"])
+            saved_source = str(payload["source"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(
+                "continuous bright-bridge magnitude-law payload is malformed"
+            ) from exc
+        checks = (
+            saved_bright_intercepts.shape == (3,)
+            and np.all(np.isfinite(saved_bright_intercepts))
+            and np.allclose(
+                saved_bright_intercepts,
+                law.bright_intercepts,
+                rtol=2e-8,
+                atol=1e-10,
+            )
+            and math.isfinite(saved_break)
+            and math.isclose(
+                saved_break,
+                law.break_magnitude,
+                rel_tol=2e-8,
+                abs_tol=1e-10,
+            )
+            and math.isfinite(saved_density)
+            and math.isclose(
+                saved_density,
+                law.integrated_density(),
+                rel_tol=2e-8,
+                abs_tol=1e-10,
+            )
+            and saved_source == law.source
+        )
+        if not checks:
+            raise ValueError(
+                "continuous bright-bridge magnitude-law payload is inconsistent"
+            )
+        return law
+
+
+@dataclass(frozen=True)
 class EmpiricalBrightFaintCappedMagnitudeLaw:
     """Empirical bright bins, a fitted straight middle, and a flat faint tail.
 
