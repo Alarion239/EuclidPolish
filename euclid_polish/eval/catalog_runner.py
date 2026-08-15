@@ -39,9 +39,8 @@ _SAFE_ID = re.compile(r"[^A-Za-z0-9._-]+")
 
 #: Canonical evaluation stamp sizes (px). The LR cutout lives on the VIS grid;
 #: SR and HR live on the 2× grid. Every eval object is center-cropped to these
-#: (or dropped when smaller — see :func:`enforce_object_sizes`) so the gallery,
-#: the Zoobot representations and the lens-finder all see one coherent geometry —
-#: the same 53/106 the lens-finder training stamps use.
+#: (or dropped when smaller — see :func:`enforce_object_sizes`) so the gallery
+#: and quantitative summaries see one coherent 53/106 geometry.
 EVAL_LR_SIZE = 53
 EVAL_HR_SIZE = 2 * EVAL_LR_SIZE   # 106
 

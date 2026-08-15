@@ -200,8 +200,7 @@ class FASRCPipelineStep(ABC):
     experimental: bool = False
     #: Conda env to activate for this step. ``None`` uses the cluster default
     #: (``cfg.conda_env_path``). Set to an absolute env path or a named env
-    #: when a step needs an isolated environment — e.g. the PyTorch-based
-    #: Zoobot morphology step, which would clash with the main TensorFlow env.
+    #: when a step needs an isolated environment.
     conda_env: str | None = None
 
     @abstractmethod
@@ -801,12 +800,6 @@ class PSFRotationPoolStep(FASRCPipelineStep):
         if crop > 0:
             cmd += ["--crop", str(crop)]
         return cmd
-
-
-# NOTE: catalog evaluation and Zoobot morphology are NOT FASRC steps — they
-# run LOCALLY as background jobs (the SR model in-process, Zoobot in its own
-# torch env). See euclid_polish/web/routes/evaluation.py and the /evaluation
-# page's local "Run evaluation" / "Run Zoobot" forms.
 
 
 class TngSkirtAtlasDownloadStep(FASRCPipelineStep):
@@ -1552,170 +1545,6 @@ class SyntheticGenerateStep(RunPipelineStep):
         return cmd
 
 
-class LensfinderGenerateStep(SyntheticGenerateStep):
-    """Generate the lens-finder field set into a dedicated records dir.
-
-    Same generator as ``synthetic-data`` (TNG scenes + stars + strong lenses,
-    forward-modelled to dirty LR) but with fewer/bigger fields, written to
-    ``data/images/records_lensfinder`` so the main 6400×510 training set is never
-    overwritten. The lens-finder stamps are cut from these fields.
-    """
-
-    RECORDS_DIR: ClassVar[str] = "data/images/records_lensfinder"
-
-    def __init__(self) -> None:
-        # Initialise the RunPipelineStep dataclass base directly so this gets a
-        # distinct identity (SyntheticGenerateStep.__init__ hardcodes the main
-        # 'synthetic_generate' id); the gen knobs come from the config panel's
-        # dedicated lens-finder section via FASRC_STEP_PARAMS.
-        RunPipelineStep.__init__(
-            self,
-            step_id="lensfinder_generate",
-            label="Generate lens-finder fields (CPU)",
-            job_name="lensfinder-data",
-            defaults=StepResources(
-                partition="shared", n_cpus=16, n_gpus=0,
-                memory="64G", time_limit="6:00:00",
-            ),
-            skip_flags=("--skip-train",),
-        )
-
-    def build_command(self, params: dict[str, Any]) -> list[str]:
-        cmd = super().build_command(params)          # gen + star/lens density flags
-        cmd += ["--records-dir", self.RECORDS_DIR]
-        return cmd
-
-
-class LensfinderBuildStampsStep(FASRCPipelineStep):
-    """Cut LR/SR/HR lens-finder stamps from simulated fields (main TF env, CPU).
-
-    Runs the SR model over the generated big fields and crops source-centered
-    lens + galaxy stamps into a catalog the Zoobot finetune step consumes. Uses
-    the main TensorFlow env (``conda_env=None``) because it calls ``reconstruct``.
-    This is SR *inference* (one forward pass per field), not training, so it runs
-    on the CPU ``shared`` partition — slower than a GPU but far cheaper/shorter to
-    queue. Raise ``--gres``/partition on the card if a GPU run is wanted.
-    The big fields come from the existing ``synthetic-data`` step submitted with a
-    large ``--image-size`` into a dedicated records dir.
-    """
-
-    def __init__(self) -> None:
-        super().__init__(
-            step_id="lensfinder_build_stamps",
-            label="Build lens-finder stamps (CPU)",
-            job_name="lensfinder-stamps",
-            defaults=StepResources(
-                # Fields are streamed one at a time (see lensfinder_build_stamps),
-                # so peak RSS is ~one field's cubes + the catalog rows (~2-3 GB),
-                # not the full record set. 16 GB is ample.
-                partition="shared", n_cpus=4, n_gpus=0,
-                memory="16G", time_limit="12:00:00",
-            ),
-            needs_gpu=False,
-        )
-
-    def build_command(self, params: dict[str, Any]) -> list[str]:
-        cmd = [
-            "scripts/lensfinder_build_stamps.py",
-            "--records-dir", str(params.get("records_dir",
-                                            "data/images/records_lensfinder")),
-            "--subset", str(params.get("subset", "train")),
-            "--out-dir", str(params.get("out_dir", "data/lensfinder/stamps")),
-            "--stamp-m", str(int(params.get("stamp_m", 106))),   # 424/4; LR = 53
-            "--neg-per-lens", str(int(params.get("neg_per_lens", 2))),
-        ]
-        for key, flag in (("png_size", "--png-size"),
-                          ("max_fields", "--max-fields"),
-                          ("lupton_stretch", "--lupton-stretch"),
-                          ("lupton_q", "--lupton-q")):
-            v = params.get(key)
-            if v not in (None, ""):
-                cmd += [flag, str(v)]
-        return cmd
-
-
-class LensfinderSRInferStep(FASRCPipelineStep):
-    """Run SR over lens-finder fields, persist sr_{subset} records (GPU, main TF env).
-
-    The GPU half of the (former) fused stamp build: one forward pass per field,
-    written to ``sr_{subset}.tfrecord`` for the CPU ``lensfinder_build_stamps``
-    step to crop. Resumable (skips a complete subset)."""
-
-    def __init__(self) -> None:
-        super().__init__(
-            step_id="lensfinder_sr_infer",
-            label="Lens-finder SR inference (GPU, PyTorch-free TF)",
-            job_name="lensfinder-sr-infer",
-            defaults=StepResources(
-                partition="gpu", n_cpus=8, n_gpus=1,
-                memory="48G", time_limit="6:00:00",
-            ),
-            needs_gpu=True,
-        )
-
-    def build_command(self, params: dict[str, Any]) -> list[str]:
-        cmd = [
-            "scripts/lensfinder_sr_infer.py",
-            "--records-dir", str(params.get("records_dir",
-                                            "data/images/records_lensfinder")),
-        ]
-        sub = str(params.get("subset", "")).strip()
-        if sub:
-            cmd += ["--subset", sub]
-        for key, flag in (("checkpoint", "--checkpoint"),
-                          ("num_res_blocks", "--num-res-blocks")):
-            v = params.get(key)
-            if v not in (None, ""):
-                cmd += [flag, str(v)]
-        return cmd
-
-
-class LensfinderTrainStep(FASRCPipelineStep):
-    """Finetune the Zoobot lens classifier per reconstruction (GPU, PyTorch).
-
-    Runs in the ``EuclidPolishZoobot`` env (isolated from the main TensorFlow
-    env). Trains LR / SR / HR heads from the stamp catalog and writes per-recon
-    ``predictions.csv``; the TPR-vs-θ_E evaluation is CPU/torch-free and runs
-    locally (``scripts/lensfinder_evaluate.py``).
-    """
-
-    def __init__(self) -> None:
-        super().__init__(
-            step_id="lensfinder_train",
-            label="Train lens-finder (GPU, PyTorch)",
-            job_name="lensfinder-train",
-            defaults=StepResources(
-                partition="gpu", n_cpus=8, n_gpus=1,
-                memory="32G", time_limit="12:00:00",
-            ),
-            needs_gpu=True,
-            conda_env="EuclidPolishZoobot",
-        )
-
-    def build_command(self, params: dict[str, Any]) -> list[str]:
-        cmd = [
-            "scripts/lensfinder_train.py",
-            "--catalog", str(params.get("catalog",
-                                        "data/lensfinder/stamps/catalog.csv")),
-            "--out-dir", str(params.get("out_dir", "data/lensfinder/heads")),
-            "--recon", str(params.get("recon", "all")),
-            "--epochs", str(int(params.get("epochs", 10))),
-        ]
-        for key, flag in (("patience", "--patience"),
-                          ("batch_size", "--batch-size"),
-                          ("learning_rate", "--learning-rate"),
-                          ("training_mode", "--training-mode")):
-            v = params.get(key)
-            if v not in (None, ""):
-                cmd += [flag, str(v)]
-        # Match dataloader workers to the allocated CPUs (reserve one for the
-        # main/GPU-feeding process), so a 1-CPU job doesn't oversubscribe and
-        # risk the DataLoader freeze Lightning warns about.
-        n_cpus = int(params.get("n_cpus", 8) or 8)
-        cmd += ["--num-workers", str(max(0, n_cpus - 1))]
-        return cmd
-
-
 # ---------------------------------------------------------------------------
 # Registry — single source of truth for which steps exist
 # ---------------------------------------------------------------------------
@@ -1748,10 +1577,6 @@ STEP_CLASSES: tuple[type[FASRCPipelineStep], ...] = (
     EuclidStarAnchorTFRecordStep,
     SyntheticGenerateStep,
     EnsembleTrainStep,
-    LensfinderGenerateStep,
-    LensfinderSRInferStep,
-    LensfinderBuildStampsStep,
-    LensfinderTrainStep,
     *_LENS_ISOLATION_STEP_CLASSES,
 )
 

@@ -473,10 +473,8 @@ def reconstruct_cutout_at(
     # committed VIS PSF, but the true Euclid PSF is position-dependent and
     # unknown at an arbitrary (RA, Dec) — so a "predicted LR" and its residual
     # measure the PSF mismatch, not the reconstruction, and are misleading.
-    # The quantitative signal for real targets is the Zoobot morphology
-    # comparison; the only pixel-level check that survives an unknown PSF is
-    # flux conservation (total counts are invariant under a *normalised* PSF),
-    # computed directly below.
+    # The pixel-level check that survives an unknown PSF is flux conservation
+    # (total counts are invariant under a *normalised* PSF), computed below.
     _tick(len(band_names) + 1, "rendering")
 
     # Save SR with the 2× magnified VIS WCS so it overlays the stacked

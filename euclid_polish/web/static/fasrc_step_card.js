@@ -805,7 +805,6 @@ large cutout don't leak across train/validate."></label>`;
     // Legacy rows predate the persisted /config TNG density and used 60.
     switch (stepId) {
       case 'synthetic_generate':
-      case 'lensfinder_generate':
         return [field('nfields', historySum(params, ['n_train', 'n_valid', 'n_test'])),
           field('galaxies / arcmin²', historyText(
             params, 'galaxy_density_arcmin2',
@@ -837,12 +836,6 @@ large cutout don't leak across train/validate."></label>`;
         return [field('stars', historyCount(params, 'num_stars')), field('mag range', `${historyText(params, 'magnitude_min')}–${historyText(params, 'magnitude_limit')}`), field('min SNR', historyCount(params, 'snr_min'))];
       case 'euclid_verify_photometry':
         return [field('stars', historyCount(params, 'n')), field('cutout px', historyCount(params, 'size'))];
-      case 'lensfinder_build_stamps':
-        return [field('fields', historyCount(params, 'max_fields', 'all')), field('neg / lens', historyCount(params, 'neg_per_lens')), field('stamp px', historyCount(params, 'stamp_m'))];
-      case 'lensfinder_sr_infer':
-        return [field('subset', historyText(params, 'subset', 'all'))];
-      case 'lensfinder_train':
-        return [field('epochs', historyCount(params, 'epochs')), field('batch', historyCount(params, 'batch_size')), field('mode', historyText(params, 'training_mode'))];
       case 'ensemble_train':
         return [field('total steps', ensembleTotalSteps(params))];
       case 'download':

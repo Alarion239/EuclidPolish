@@ -1,6 +1,5 @@
-/* Evaluation — browse real+synthetic reconstructions in the cutout viewer, run
-   the grouped analysis / Zoobot / lens-finder pipeline (local jobs), and view
-   the four server summary figures. */
+/* Evaluation — browse real+synthetic reconstructions, run the grouped analysis
+   locally, and inspect the pixel-level summary figures. */
 import { useState } from "react";
 import { postForm } from "../api";
 import { useResource } from "../hooks";
@@ -14,7 +13,6 @@ import {
 type RunRow = {
   ok: boolean; id?: string; out_subdir?: string;
   flux_ratio_sr_over_lr?: number | string | null; grade?: string;
-  morph?: { closer_to_ref?: boolean; mode?: string } | null;
 };
 
 const num = (v: unknown): number | null => {
@@ -25,8 +23,6 @@ type RunsResp = { n: number; n_ok: number; run?: string; rows: RunRow[] };
 
 const FIGURES: { key: string; label: string; url: string }[] = [
   { key: "transformation", label: "SR→HR recovery", url: "/api/evaluation/transformation" },
-  { key: "morphology", label: "Morphology (Zoobot)", url: "/api/evaluation/morphology" },
-  { key: "lensfinder-summary", label: "Lens identification", url: "/api/evaluation/lensfinder-summary" },
   { key: "angular-power-spectrum", label: "Angular power spectrum", url: "/api/evaluation/angular-power-spectrum" },
 ];
 
@@ -34,7 +30,6 @@ const RUN_COLS: Column<RunRow>[] = [
   { header: "id", cell: (r) => <code className="mono">{r.id ?? r.out_subdir ?? "—"}</code> },
   { header: "grade", cell: (r) => r.grade ? <Badge tone={r.grade === "A" ? "good" : r.grade === "C" ? "warn" : undefined}>{r.grade}</Badge> : "—" },
   { header: "flux SR/LR", cell: (r) => { const f = num(r.flux_ratio_sr_over_lr); return f != null ? f.toFixed(3) : "—"; }, align: "right" },
-  { header: "morph", cell: (r) => r.morph?.mode ? <span className="muted">{r.morph.closer_to_ref ? "→ ref " : ""}{r.morph.mode}</span> : "—" },
 ];
 
 export default function EvaluationPage() {
@@ -56,8 +51,8 @@ export default function EvaluationPage() {
   async function plainPost(url: string, body?: Record<string, string>) {
     setBusy(url); setNote(null);
     try {
-      const r = await postForm<{ ok?: boolean; error?: string; stdout?: string; rows?: number; n_heads?: number }>(url, body ?? {});
-      setNote(r.error ? `✗ ${r.error}` : `✓ ${r.stdout ?? (r.rows != null ? `${r.rows} rows` : r.n_heads != null ? `${r.n_heads} heads` : "done")}`);
+      const r = await postForm<{ ok?: boolean; error?: string; stdout?: string; rows?: number }>(url, body ?? {});
+      setNote(r.error ? `✗ ${r.error}` : `✓ ${r.stdout ?? (r.rows != null ? `${r.rows} rows` : "done")}`);
       runs.reload();
     } catch (e) { setNote(`✗ ${e instanceof Error ? e.message : String(e)}`); }
     finally { setBusy(null); }
@@ -91,10 +86,8 @@ export default function EvaluationPage() {
               <Checkbox checked={synthetic} onChange={setSynthetic}>include synthetic</Checkbox>
               <Button variant="primary" disabled={job.busy}
                 onClick={() => job.run("/api/evaluation/run-grouped", { n: nPer, synthetic: synthetic ? 1 : 0 }, { onDone })}>
-                ① Grouped analysis
+                Grouped analysis
               </Button>
-              <Button disabled={job.busy} onClick={() => job.run("/api/evaluation/run-zoobot", {}, { onDone })}>③ Run Zoobot</Button>
-              <Button disabled={job.busy} onClick={() => job.run("/api/evaluation/run-lensfinder", {}, { onDone })}>④ Run lens-finder</Button>
             </div>
             <JobProgressView job={job.job} error={job.error} />
           </CardBody>
@@ -118,18 +111,17 @@ export default function EvaluationPage() {
               <Checkbox checked={regen} onChange={setRegen}>regenerate</Checkbox>
               <Button disabled={!loggedIn || job.busy}
                 onClick={() => job.run("/api/evaluation/query-galaxies", { n_galaxies: nGal, regenerate: regen ? 1 : 0 }, { onDone })}>
-                ② Query galaxies
+                Query galaxies
               </Button>
             </div>
           </CardBody>
         </Card>
 
         <Card>
-          <CardHead title="Data sync" sub="pull results + heads from FASRC, fetch the lens catalog" />
+          <CardHead title="Data sync" sub="pull results from FASRC and fetch the lens catalog" />
           <CardBody>
             <div className="row" style={{ gap: "var(--s2)" }}>
               <Button onClick={() => plainPost("/api/evaluation/sync")} disabled={busy != null}>⟳ Sync results (FASRC)</Button>
-              <Button onClick={() => plainPost("/api/evaluation/sync-heads")} disabled={busy != null}>⟳ Sync lens-finder heads</Button>
               <Button onClick={() => plainPost("/api/evaluation/fetch-catalog")} disabled={busy != null}>Fetch Q1 lens catalog</Button>
               <Button variant="ghost" size="sm" onClick={() => plainPost("/api/evaluation/rerender")} disabled={busy != null}>drop cached PNGs</Button>
             </div>

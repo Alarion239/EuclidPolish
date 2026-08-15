@@ -976,6 +976,6 @@ document.querySelectorAll(".ens-fork-btn").forEach((b) =>
 
 ### Task 9: Full sweep + push
 
-- [x] **Step 1:** `~/miniforge3/envs/EuclidPolishEnv/bin/python -m pytest tests/ -q --ignore=tests/test_zoobot_morphology.py` → all green (fix fallout; expected: the old `test_ensemble_train_step_build_command` expectations).
+- [x] **Step 1:** `~/miniforge3/envs/EuclidPolishEnv/bin/python -m pytest tests/ -q` → all green (fix fallout; expected: the old `test_ensemble_train_step_build_command` expectations).
 - [x] **Step 2:** Update the memory note + check the spec's job-label item: `EnsembleTrainStep` label — the submit route builds labels from step metadata; if a per-mode label is trivial (label param in build_sbatch_body callers), set it; otherwise skip (job history already shows the argv).
 - [x] **Step 3:** Commit remaining changes, push. FASRC validation of an actual add/continue/fork run stays pending (like the LR-schedule work) — note in the final report.

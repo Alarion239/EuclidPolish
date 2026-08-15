@@ -80,7 +80,7 @@ Each sub-project is its own plan → implementation cycle. Implementation is del
 - **SP2 — eval on `Model`:** implement `Model.eval_catalog` / `eval_grouped` absorbing `catalog_runner`/`grouped_runner` (incl. the new real-galaxy group + power-spectrum panels).
 - **SP3 — CLI migration:** `cli/main.py` generate/convolve/reconstruct/train menus → thin OO calls.
 - **SP4 — WebUI migration:** `jobs_impl.reconstruct_cutout_at` / `_job_generate_reconstruct` → `EuclidLRCutout.fetch` + `model.upsample` + `sr.save_*`.
-- **SP5 — FASRC scripts:** `run_pipeline.py`, `infer_euclid_cutout.py`, `lensfinder_sr_infer.py`, etc.
+- **SP5 — FASRC scripts:** `run_pipeline.py`, `infer_euclid_cutout.py`, and related entry points.
 
 ## Provenance integration
 

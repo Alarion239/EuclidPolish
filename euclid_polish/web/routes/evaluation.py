@@ -15,10 +15,7 @@ sbatch are all shared). This module only adds read-only views:
 from __future__ import annotations
 
 import csv
-import glob
 import os
-import re
-import subprocess
 from typing import Any
 
 from flask import abort, jsonify, render_template, request, send_file
@@ -27,53 +24,6 @@ from euclid_polish.config import Config
 from euclid_polish.web import euclid_session, fasrc_config
 from euclid_polish.web.jobs import REGISTRY as JOB_REGISTRY
 from euclid_polish.web.remote import STATE
-
-#: Repo root (…/euclid_polish/web/routes/evaluation.py → up 4).
-_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
-    os.path.dirname(os.path.abspath(__file__)))))
-
-#: STEP: cur/tot — emitted by the eval scripts via Reporter; we parse it from a
-#: subprocess job's output to drive the local progress bar.
-_STEP_RE = re.compile(r"STEP:\s*([\d,]+)\s*/\s*([\d,]+)")
-
-
-def _zoobot_python() -> str | None:
-    """Locate the isolated EuclidPolishZoobot env's Python (torch is not in the
-    main env). ``EUCLID_POLISH_ZOOBOT_PYTHON`` overrides; else probe the usual
-    conda locations. Returns the interpreter path or ``None``."""
-    override = os.environ.get("EUCLID_POLISH_ZOOBOT_PYTHON")
-    if override and os.path.exists(override):
-        return override
-    for base in ("~/miniforge3", "~/mambaforge", "~/miniconda3", "~/anaconda3",
-                 "/opt/miniforge3", "/opt/anaconda3", "/opt/miniconda3"):
-        cand = os.path.expanduser(
-            os.path.join(base, "envs", "EuclidPolishZoobot", "bin", "python"))
-        if os.path.exists(cand):
-            return cand
-    return None
-
-
-def _spawn_subprocess_job(label: str, cmd: list, result: dict):
-    """Spawn a local background job running ``cmd``; stream stdout to the job
-    log and parse ``STEP: cur/tot`` lines into the progress bar. Returns the
-    job id. Raises (→ job 'failed') on non-zero exit."""
-    def _run(cap):
-        cap.write("$ " + " ".join(cmd) + "\n")
-        proc = subprocess.Popen(
-            cmd, cwd=_REPO_ROOT, env=os.environ.copy(),
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-            bufsize=1)
-        for line in proc.stdout:
-            cap.write(line)
-            m = _STEP_RE.search(line)
-            if m:
-                cap.tick(int(m.group(1).replace(",", "")),
-                         int(m.group(2).replace(",", "")), "")
-        rc = proc.wait()
-        if rc != 0:
-            raise RuntimeError(f"{os.path.basename(cmd[1])} exited {rc}")
-        return result
-    return JOB_REGISTRY.spawn(label, _run)
 
 
 def _list_catalogs() -> list[dict[str, Any]]:
@@ -118,21 +68,8 @@ def _read_csv(path: str) -> list[dict[str, str]]:
 
 
 def _read_manifest(run_dir: str) -> list[dict[str, Any]]:
-    """Manifest rows for a run, with Zoobot morphology deltas merged in by id.
-
-    When ``morphology_manifest.csv`` (from the Zoobot step) is present, each
-    object's row gets a ``morph`` dict so the gallery can show the before/after
-    morphology delta alongside the pixel-level residual.
-    """
-    rows = _read_csv(os.path.join(run_dir, "manifest.csv"))
-    morph = {m.get("id"): m
-             for m in _read_csv(os.path.join(run_dir, "morphology_manifest.csv"))}
-    if morph:
-        for r in rows:
-            m = morph.get(r.get("id"))
-            if m:
-                r["morph"] = m
-    return rows
+    """Return manifest rows for an evaluation run."""
+    return _read_csv(os.path.join(run_dir, "manifest.csv"))
 
 
 #: Gallery PNG prefix → plot_reconstruction rgb_mode. Rendering is done LOCALLY
@@ -374,57 +311,6 @@ def register(app):
         job_id = JOB_REGISTRY.spawn("galaxies: eval_results", _run)
         return jsonify({"ok": True, "job_id": job_id})
 
-    @app.route("/api/evaluation/run-zoobot", methods=["POST"])
-    def api_evaluation_run_zoobot():
-        """Score Zoobot morphology for a run LOCALLY (CPU) as a background job.
-
-        Runs the published Zoobot encoder over each cutout (stretched to 424²)
-        and saves the representation vectors — no heads required. Zoobot is
-        PyTorch (separate env), so this runs scripts/zoobot_morphology.py in the
-        EuclidPolishZoobot env as a subprocess, streaming its output to the job
-        log. Returns a job id, or 400 with an install hint if the env is missing.
-        """
-        run = (request.form.get("run") or "").strip()
-        run_dir, run_name = _resolve_run_dir(run, required_file="manifest.csv")
-        py = _zoobot_python()
-        if py is None:
-            return jsonify({"ok": False, "error": (
-                "Zoobot env not found. Create it once with "
-                "`mamba env create -f environment-zoobot.yml`, or set "
-                "EUCLID_POLISH_ZOOBOT_PYTHON to its python.")}), 400
-        cmd = [py, os.path.join(_REPO_ROOT, "scripts", "zoobot_morphology.py"),
-               "--run-dir", run_dir, "--device", "cpu"]
-        job_id = _spawn_subprocess_job(
-            f"zoobot: {run_name}", cmd, {"run": run_name})
-        return jsonify({"ok": True, "job_id": job_id})
-
-    @app.route("/api/evaluation/run-lensfinder", methods=["POST"])
-    def api_evaluation_run_lensfinder():
-        """Score eval objects with the trained lens-finder heads LOCALLY (CPU).
-
-        Runs scripts/lensfinder_score_eval.py in the EuclidPolishZoobot env over
-        the shared store, writing ``lens_scores.csv`` (P(lens) per object/recon)
-        that the PCA opacity + lens-identification panel consume. Scores with the
-        heads under the default ``data/lensfinder/heads`` (use "Load heads" to
-        rsync them from FASRC). Returns a job id, or 400 with an install hint if
-        the env is missing.
-        """
-        run_dir, run_name = _resolve_run_dir(
-            request.form.get("run"), required_file="manifest.csv"
-        )
-        py = _zoobot_python()
-        if py is None:
-            return jsonify({"ok": False, "error": (
-                "Zoobot env not found. Create it once with "
-                "`mamba env create -f environment-zoobot.yml`.")}), 400
-        heads = os.path.join(Config.DATA_DIR, "lensfinder", "heads")
-        cmd = [py, os.path.join(_REPO_ROOT, "scripts", "lensfinder_score_eval.py"),
-               "--run-dir", run_dir, "--heads-dir", heads,
-               "--device", "cpu"]
-        job_id = _spawn_subprocess_job(
-            f"lensfinder: {run_name}", cmd, {"run": run_name})
-        return jsonify({"ok": True, "job_id": job_id})
-
     @app.route("/api/evaluation/runs")
     def api_evaluation_runs():
         run_dir, run_name = _resolve_run_dir(
@@ -498,47 +384,6 @@ def register(app):
             "runs":   runs,
         })
 
-    @app.route("/api/evaluation/sync-heads", methods=["POST"])
-    def api_evaluation_sync_heads():
-        """Pull the trained lens-finder heads down from FASRC.
-
-        The heads are written by ``lensfinder_train --out-dir data/lensfinder/heads``
-        — a path relative to the SLURM workdir, which is the repo
-        (``<repo_path>/data/lensfinder/heads/{lr,sr,hr}/checkpoints/*.ckpt`` on
-        holylabs), NOT the separate ``data_dir`` (netscratch). This rsyncs them
-        into the local ``data/lensfinder/heads`` so "Run lens-finder" can score
-        with them, reusing the same ControlMaster transport as the eval-results
-        sync. Recons whose checkpoint never arrives are simply skipped at score
-        time, so a partial set of heads is fine. Returns the recons that now have
-        a checkpoint so the page can report what loaded.
-        """
-        if STATE.ssh is None or not STATE.ssh.is_connected():
-            return jsonify({"ok": False, "error": "not connected"}), 400
-        cfg = fasrc_config.load()
-        remote = cfg.repo_path.rstrip("/") + "/data/lensfinder/heads/"
-        local = os.path.join(Config.DATA_DIR, "lensfinder", "heads")
-        os.makedirs(local, exist_ok=True)
-        try:
-            rc, out, err = STATE.ssh.rsync_pull(
-                remote, local, extra_args=["--delete-after"], timeout=600)
-        except Exception as e:  # noqa: BLE001 — surface any transport error to UI
-            return jsonify({"ok": False,
-                            "error": f"{type(e).__name__}: {e}"}), 500
-        recons = [r for r in ("lr", "sr", "hr")
-                  if glob.glob(os.path.join(local, r, "checkpoints", "*.ckpt"))]
-        if rc != 0:
-            # A missing/empty remote heads dir (heads simply not trained yet) is
-            # not a transport failure — report it as "no heads" so the UI can say
-            # "train them first" instead of surfacing a raw rsync error.
-            low = (err or "").lower()
-            benign = ("no such file or directory" in low
-                      or "empty file list" in low)
-            if not benign:
-                return jsonify({"ok": False,
-                                "error": err.strip() or f"rsync exit {rc}"}), 500
-        return jsonify({"ok": True, "stdout": out.strip()[-2000:],
-                        "recons": recons, "n_heads": len(recons)})
-
     @app.route("/api/evaluation/rerender", methods=["POST"])
     def api_evaluation_rerender():
         """Drop a run's cached eye/solar PNGs so they re-render from the FITS.
@@ -565,49 +410,6 @@ def register(app):
                         pass
         return jsonify({"ok": True, "removed": removed})
 
-    @app.route("/api/evaluation/morphology")
-    def api_evaluation_morphology():
-        """Render + serve the run-level Zoobot morphology summary PNG.
-
-        404 when the run has no ``morphology_manifest.csv`` yet (Zoobot hasn't
-        been run). Rendered locally from the manifest + raw predictions and
-        cached to ``<run>/morphology_summary.png``; ``?fresh=1`` re-renders.
-        """
-        run = (request.args.get("run") or "").strip()
-        run_dir, _run_name = _resolve_run_dir(
-            run, required_file="morphology_manifest.csv"
-        )
-        out_png = os.path.join(run_dir, "morphology_summary.png")
-        fresh = request.args.get("fresh", "").lower() in ("1", "true", "yes")
-        if fresh or not os.path.isfile(out_png):
-            from euclid_polish.eval import zoobot_morph
-            if zoobot_morph.render_morphology_summary(run_dir, out_png) is None:
-                abort(404)
-        return send_file(out_png, mimetype="image/png", max_age=0)
-
-    @app.route("/api/evaluation/morphology-embedding")
-    def api_evaluation_morphology_embedding():
-        """Return 3-D PCA and MDS coordinates for Zoobot feature vectors.
-
-        ``?groups=A,syn-lens`` re-fits every PCA on just those classes (the
-        Morphology-space class checkboxes). Absent → fit over all classes; a
-        present-but-empty value → empty payload (every class unchecked).
-        """
-        run = (request.args.get("run") or "").strip()
-        run_dir, run_name = _resolve_run_dir(
-            run, required_file="zoobot_predictions.csv"
-        )
-        raw_groups = request.args.get("groups")
-        groups = None if raw_groups is None else {
-            g for g in (s.strip() for s in raw_groups.split(",")) if g
-        }
-        from euclid_polish.eval import zoobot_morph
-        payload = zoobot_morph.morphology_embedding_payload(run_dir, groups=groups)
-        if payload is None:
-            abort(404)
-        payload["run"] = run_name
-        return jsonify(payload)
-
     @app.route("/api/evaluation/transformation")
     def api_evaluation_transformation():
         """Render + serve the run-level SR-transformation summary PNG.
@@ -620,25 +422,9 @@ def register(app):
         out_png = os.path.join(run_dir, "transformation_summary.png")
         fresh = request.args.get("fresh", "").lower() in ("1", "true", "yes")
         if fresh or not os.path.isfile(out_png):
-            from euclid_polish.eval import zoobot_morph
-            if zoobot_morph.render_transformation_summary(run_dir, out_png) is None:
-                abort(404)
-        return send_file(out_png, mimetype="image/png", max_age=0)
-
-    @app.route("/api/evaluation/lensfinder-summary")
-    def api_evaluation_lensfinder_summary():
-        """Render + serve the lens-identification analysis PNG.
-
-        404 until the lens-finder has scored this run (``lens_scores.csv``).
-        Cached to ``<run>/lensfinder_summary.png``; ``?fresh=1`` re-renders.
-        """
-        run = (request.args.get("run") or "").strip()
-        run_dir, _run_name = _resolve_run_dir(run, required_file="lens_scores.csv")
-        out_png = os.path.join(run_dir, "lensfinder_summary.png")
-        fresh = request.args.get("fresh", "").lower() in ("1", "true", "yes")
-        if fresh or not os.path.isfile(out_png):
-            from euclid_polish.eval import lensfinder_eval
-            if lensfinder_eval.render_lensfinder_summary(run_dir, out_png) is None:
+            from euclid_polish.eval import transformation_summary
+            if transformation_summary.render_transformation_summary(
+                    run_dir, out_png) is None:
                 abort(404)
         return send_file(out_png, mimetype="image/png", max_age=0)
 

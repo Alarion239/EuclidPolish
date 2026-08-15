@@ -451,7 +451,7 @@ def register(app):
                     resolved_step = STEP_REGISTRY.get(step_ref).step_id
                 except KeyError:
                     resolved_step = "synthetic_generate"
-            if resolved_step in {"synthetic_generate", "lensfinder_generate"}:
+            if resolved_step == "synthetic_generate":
                 STEP_REGISTRY.get(resolved_step).prepare_params(dict(form))
         except ValueError as exc:
             return jsonify({"ok": False, "error": str(exc)}), 400

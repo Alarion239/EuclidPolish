@@ -581,7 +581,6 @@ export function mountCutoutViewer(root, opts = {}) {
     fr.overlay.textContent = rec.label + magLabel(rec);
     fr.legendWrap.style.display = prep.mode === "temp" ? "flex" : "none";
     setFrameMsg(fr, "");
-    showPlens(fr);
     addSigmaToSR(fr, rec);
     refreshAllLenses();
   }
@@ -646,26 +645,12 @@ export function mountCutoutViewer(root, opts = {}) {
       `${rec.label} · ${mi.name} ${mi.mag.toFixed(2)} ± ${dm.toFixed(2)} AB`;
   }
 
-  /** Show the headed lens-finder's P(lens) for this frame's tier (eval only). */
-  function showPlens(fr) {
-    const obj = state.meta && state.meta.objects && state.meta.objects[state.index];
-    const p = obj && obj.plens ? obj.plens[fr.tier] : undefined;
-    if (p == null || !isFinite(p)) { fr.plens.style.display = "none"; return; }
-    const t = Math.max(0, Math.min(1, p));
-    const hue = Math.round(120 * t);                 // 0 → red (galaxy), 120 → green (lens)
-    fr.plens.textContent = `P(lens) ${p.toFixed(2)}`;
-    fr.plens.style.borderLeftColor = `hsl(${hue}, 65%, 52%)`;
-    fr.plens.style.color = `hsl(${hue}, 72%, 82%)`;
-    fr.plens.style.display = "block";
-  }
-
   function setFrameMsg(fr, text) {
     fr.msg.textContent = text || "";
     fr.msg.style.display = text ? "flex" : "none";
     if (text) {
       fr.overlay.textContent = "";
       fr.legendWrap.style.display = "none";
-      fr.plens.style.display = "none";
     }
   }
 
@@ -1168,10 +1153,9 @@ export function mountCutoutViewer(root, opts = {}) {
     ]);
     const lensBox = el("div", { class: "cv-lens-box", "aria-hidden": "true" });
     const overlay = el("div", { class: "cv-overlay" });
-    const plens = el("div", { class: "cv-plens" });   // headed-model P(lens) for this tier
     const msg = el("div", { class: "cv-msg" });
     const frame = el("div", { class: "cv-frame" }, [
-      canvas, lensBox, legendWrap, overlay, plens, msg,
+      canvas, lensBox, legendWrap, overlay, msg,
     ]);
     canvas.addEventListener("mouseenter", (event) => enterLens(fr, event));
     canvas.addEventListener("mousemove", (event) => moveLens(fr, event));
@@ -1181,7 +1165,7 @@ export function mountCutoutViewer(root, opts = {}) {
     canvas.addEventListener("wheel", (event) => zoomLens(fr, event), { passive: false });
     canvas.addEventListener("click", (event) => toggleFrozen(fr, event));
     const fr = { tier, frame, canvas, ctx: canvas.getContext("2d"), pixscale: null,
-                 legendWrap, legendCanvas, lensBox, overlay, plens, msg };
+                 legendWrap, legendCanvas, lensBox, overlay, msg };
     drawLegend(fr);
     return fr;
   }
@@ -1901,14 +1885,6 @@ export function mountCutoutViewer(root, opts = {}) {
       ctx.fillRect(x, y, rect.width, rect.height);
       ctx.drawImage(fr.canvas, x, y, rect.width, rect.height);
       drawLabel(ctx, fr.overlay.textContent, x + 9, y + 8, rect.width);
-      if (fr.plens.style.display !== "none") {
-        drawLabel(ctx, fr.plens.textContent, x + 9, y + rect.height - 27,
-          rect.width, {
-            font: '600 12px "JetBrains Mono", Menlo, monospace',
-            background: "rgba(6, 9, 16, 0.74)",
-            color: "#e6ecf7",
-          });
-      }
       if (fr.msg.style.display !== "none") {
         drawLabel(ctx, fr.msg.textContent, x + 20, y + rect.height / 2 - 8,
           rect.width - 40, { background: "rgba(6, 9, 16, 0.82)" });

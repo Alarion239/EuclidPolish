@@ -9,7 +9,7 @@ import react from "@vitejs/plugin-react";
 const FLASK = process.env.FLASK_ORIGIN || "http://localhost:9777";
 const API_PREFIXES = [
   "/ensemble", "/viewer", "/api", "/view", "/vis", "/inspect",
-  "/sky", "/tng", "/inference", "/evaluation", "/lensfinder",
+  "/sky", "/tng", "/inference", "/evaluation",
   "/catalog", "/psfs", "/tracking", "/git", "/fasrc", "/cutouts",
 ];
 

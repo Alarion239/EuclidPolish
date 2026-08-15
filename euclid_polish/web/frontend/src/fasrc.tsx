@@ -1,7 +1,7 @@
 /* FASRC pipeline: typed React components for the SLURM step registry + live
    job monitoring. `<StepCard>` submits one pipeline step with editable
    resources; `<SlurmMonitor>` folds the event stream into stage/progress/
-   warnings/errors. Shared by Catalog, PSFs, TNG, Lens-finder and the FASRC
+   warnings/errors. Shared by Catalog, PSFs, TNG, and the FASRC
    page — the DRY replacement for the classic `fasrc_step_card.js`. */
 import { useMemo, useState, type ReactNode } from "react";
 import { getJSON, postForm } from "./api";
@@ -505,12 +505,6 @@ function taskColumnsFor(stepId: string): Column<HistoryRow>[] {
         taskColumn("galaxies / arcmin²", (p) => paramText(p, "galaxy_density_arcmin2", paramText(p, "tng_density_arcmin2", String(LEGACY_TNG_GALAXY_DENSITY))), 128),
         taskColumn("lenses / arcmin²", (p) => paramText(p, "lens_density_arcmin2"), 122),
       ];
-    case "lensfinder_generate":
-      return [
-        taskColumn("nfields", (p) => paramSum(p, ["n_train", "n_valid", "n_test"]), 92),
-        taskColumn("galaxies / arcmin²", (p) => paramText(p, "galaxy_density_arcmin2", paramText(p, "tng_density_arcmin2", String(LEGACY_TNG_GALAXY_DENSITY))), 128),
-        taskColumn("lenses / arcmin²", (p) => paramText(p, "lens_density_arcmin2"), 122),
-      ];
     case "lens_isolation_generate":
       return [taskColumn("nfields", (p) => paramSum(p, ["ntrain", "nvalid", "ntest"]), 92)];
     case "lens_isolation_train":
@@ -535,12 +529,6 @@ function taskColumnsFor(stepId: string): Column<HistoryRow>[] {
       return [taskColumn("stars", (p) => paramCount(p, "num_stars"), 82), taskColumn("mag range", (p) => `${paramText(p, "magnitude_min")}–${paramText(p, "magnitude_limit")}`, 110), taskColumn("min SNR", (p) => paramCount(p, "snr_min"), 82)];
     case "euclid_verify_photometry":
       return [taskColumn("stars", (p) => paramCount(p, "n"), 72), taskColumn("cutout px", (p) => paramCount(p, "size"), 92)];
-    case "lensfinder_build_stamps":
-      return [taskColumn("fields", (p) => paramCount(p, "max_fields", "all"), 82), taskColumn("neg / lens", (p) => paramCount(p, "neg_per_lens"), 92), taskColumn("stamp px", (p) => paramCount(p, "stamp_m"), 88)];
-    case "lensfinder_sr_infer":
-      return [taskColumn("subset", (p) => paramText(p, "subset", "all"), 82)];
-    case "lensfinder_train":
-      return [taskColumn("epochs", (p) => paramCount(p, "epochs"), 76), taskColumn("batch", (p) => paramCount(p, "batch_size"), 70), taskColumn("mode", (p) => paramText(p, "training_mode"), 104)];
     case "ensemble_train":
       return [
         taskColumn("total steps", ensembleTotalSteps, 104),

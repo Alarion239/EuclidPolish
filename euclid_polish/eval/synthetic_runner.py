@@ -2,8 +2,7 @@
 
 Synthetic validation fields have HR truth, so we can measure whether SR moved a
 source *toward* the truth. Unlike real lens cutouts these fields are crowded, so
-instead of scoring the whole field (out of distribution for Zoobot) we crop M×M
-HR-pixel postage stamps centered on one known source per field — a lens
+we crop M×M HR-pixel postage stamps centered on one known source per field — a lens
 (``syn-lens``) or a field galaxy (``syn-gal``) — using the sidecar source
 catalog written at generation time. Every stamp is then a centered single object,
 comparable to the real A/B/C lens cutouts. No network; needs the cached

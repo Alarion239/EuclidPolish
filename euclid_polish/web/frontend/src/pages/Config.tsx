@@ -21,16 +21,6 @@ interface JobConfig {
   n_test: number;
   hr_image_size: number;
   galaxy_density_arcmin2: number;
-  // Lens-finder dataset
-  lensfinder_n_fields: number;
-  lensfinder_n_valid: number;
-  lensfinder_image_size: number;
-  // Lens-finder training
-  lensfinder_epochs: number;
-  lensfinder_patience: number;
-  lensfinder_batch_size: number;
-  lensfinder_learning_rate: number;
-  lensfinder_training_mode: "head_only" | "full";
   // Star field
   star_density_arcmin2: number;
   star_mag_slope: number;
@@ -72,9 +62,6 @@ type SaveResp = { ok: boolean; config: Record<string, number | string>; note?: s
 const FIELDS: Field[] = [
   "vis_pixels",
   "n_train", "n_valid", "n_test", "hr_image_size", "galaxy_density_arcmin2",
-  "lensfinder_n_fields", "lensfinder_n_valid", "lensfinder_image_size",
-  "lensfinder_epochs", "lensfinder_patience", "lensfinder_batch_size",
-  "lensfinder_learning_rate", "lensfinder_training_mode",
   "star_density_arcmin2", "star_mag_slope", "star_mag_bright", "star_mag_faint",
   "psf_warp_prob", "psf_warp_alpha_max", "psf_warp_sigma",
   "saturation_mask_prob",
@@ -95,10 +82,6 @@ function toForm(config: Record<string, number | string>): FormState {
   return out;
 }
 
-const TRAINING_MODE_OPTS: { value: "head_only" | "full"; label: string }[] = [
-  { value: "head_only", label: "head_only (freeze encoder)" },
-  { value: "full", label: "full (fine-tune all)" },
-];
 const METRIC_OPTS: { value: "combined_loss" | "psnr_stretched"; label: string }[] = [
   { value: "combined_loss", label: "combined_loss (min)" },
   { value: "psnr_stretched", label: "psnr_stretched (max)" },
@@ -204,7 +187,7 @@ export default function ConfigPage() {
 
           <Card>
             <CardHead title="Synthetic scenes & population"
-              sub="→ /sky and lens-finder generation; HR size also feeds /inference." />
+              sub="→ /sky generation; HR size also feeds /inference." />
             <CardBody>
               <div className="grid" style={{ gridTemplateColumns: GRID, gap: "var(--s3)" }}>
                 {num("n_train", "Train scenes", { min: 1, max: 50000 })}
@@ -218,50 +201,6 @@ export default function ConfigPage() {
                 {num("galaxy_density_arcmin2", "Galaxies (/arcmin²)",
                   { min: 0, max: 1000, step: 1,
                     hint: "Raw TNG draw density. Use the multi-cone Euclid fit recommendation to set it; COSMOS does not set its normalization." })}
-              </div>
-            </CardBody>
-          </Card>
-
-          <Card>
-            <CardHead title="Lens-finder dataset"
-              sub="→ the lensfinder-data FASRC step (fewer, bigger fields; own records dir)." />
-            <CardBody>
-              <div className="grid" style={{ gridTemplateColumns: GRID, gap: "var(--s3)" }}>
-                {num("lensfinder_n_fields", "Fields",
-                  { min: 1, max: 50000,
-                    hint: "Large fields for the lens-finder, into a dedicated records dir (records_lensfinder) — separate from the main training set." })}
-                {num("lensfinder_n_valid", "Validate fields",
-                  { min: 0, max: 5000, hint: "Validation fields for the lens-finder dataset." })}
-                {num("lensfinder_image_size", "Field size (px)",
-                  { min: 120, max: 2048, step: 6,
-                    hint: "Lens-finder field side in 0.05″/pix HR pixels. Bigger fields → more sources + realistic crowding. Multiple of 6." })}
-              </div>
-            </CardBody>
-          </Card>
-
-          <Card>
-            <CardHead title="Lens-finder training (Zoobot)"
-              sub="→ the lensfinder-train FASRC step. Early-stopping-driven: max epochs is just the ceiling." />
-            <CardBody>
-              <div className="grid" style={{ gridTemplateColumns: GRID, gap: "var(--s3)" }}>
-                {num("lensfinder_epochs", "Max epochs",
-                  { min: 1, max: 1000,
-                    hint: "Maximum training epochs (the ceiling). Early stopping via patience usually halts sooner. We ship 10." })}
-                {num("lensfinder_patience", "Patience (early stop)",
-                  { min: 1, max: 100,
-                    hint: "Halt if validation loss does not improve for this many epochs. We ship 6." })}
-                {num("lensfinder_batch_size", "Batch size",
-                  { min: 1, max: 512,
-                    hint: "Training batch size per GPU. Larger = faster but more GPU memory." })}
-                {num("lensfinder_learning_rate", "Learning rate",
-                  { min: 0, max: 1, step: 0.0001,
-                    hint: "Initial learning rate for the optimizer. Default 1e-4. Lower = steadier fine-tuning." })}
-                <div className="ui-field">
-                  <span title="head_only freezes the Zoobot encoder and trains only the linear head. full fine-tunes all 15M encoder params (slower, overfit-prone).">Fine-tune depth</span>
-                  <Select value={form.lensfinder_training_mode as "head_only" | "full"}
-                    options={TRAINING_MODE_OPTS}
-                    onChange={(v) => set("lensfinder_training_mode", v)} />
-                </div>
               </div>
             </CardBody>
           </Card>

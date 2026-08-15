@@ -390,12 +390,6 @@ button.secondary:hover { background: #565e64; }
   background: rgba(6, 9, 16, 0.62); padding: 3px 8px; border-radius: 4px;
   max-width: calc(100% - 60px); pointer-events: none;
 }
-.cv-plens {
-  position: absolute; bottom: 8px; left: 9px; z-index: 2; display: none;
-  font: 600 12px/1.2 "JetBrains Mono", Menlo, monospace; color: #e6ecf7;
-  background: rgba(6, 9, 16, 0.72); padding: 3px 9px; border-radius: 4px;
-  border-left: 3px solid #888; pointer-events: none;
-}
 .cv-msg {
   position: absolute; inset: 0; z-index: 3; display: none;
   align-items: center; justify-content: center; text-align: center;

@@ -14,7 +14,39 @@ import numpy as np
 from euclid_polish.config import Config
 from euclid_polish.experiments.lens_isolation.ensemble import LensIsolationEnsemble
 from euclid_polish.image.tfio import read_images, tfrecord_path
-from euclid_polish.lensfinder.metrics import auc, roc_curve
+
+
+def roc_curve(
+    scores: list[float], labels: list[int]
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return FPR, TPR, and thresholds for binary scores."""
+    score_array = np.asarray(scores, dtype=float)
+    label_array = np.asarray(labels, dtype=int)
+    if score_array.size == 0:
+        return (
+            np.array([0.0, 1.0]),
+            np.array([0.0, 1.0]),
+            np.array([np.inf, -np.inf]),
+        )
+    order = np.argsort(-score_array, kind="mergesort")
+    score_array = score_array[order]
+    label_array = label_array[order]
+    positives = max(int((label_array == 1).sum()), 1)
+    negatives = max(int((label_array == 0).sum()), 1)
+    true_positives = np.cumsum(label_array == 1)
+    false_positives = np.cumsum(label_array == 0)
+    distinct = np.r_[np.diff(score_array) != 0, True]
+    tpr = np.r_[0.0, true_positives[distinct] / positives]
+    fpr = np.r_[0.0, false_positives[distinct] / negatives]
+    thresholds = np.r_[np.inf, score_array[distinct]]
+    return fpr, tpr, thresholds
+
+
+def auc(fpr: np.ndarray, tpr: np.ndarray) -> float:
+    """Return trapezoidal area under a ROC curve."""
+    x = np.asarray(fpr, dtype=float)
+    y = np.asarray(tpr, dtype=float)
+    return float(np.sum(np.diff(x) * (y[:-1] + y[1:]) / 2.0))
 
 
 def sample_random_crop_coordinates(

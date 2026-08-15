@@ -43,13 +43,12 @@ from euclid_polish.web.routes import (
     evaluation,
     fasrc,
     files,
-    git,
     galaxy_distributions,
+    git,
     hst,
     hstpairs,
     jwst_euclid,
     lens_isolation,
-    lensfinder,
     model,
     population_comparison,
     poster,
@@ -203,7 +202,6 @@ def create_app() -> Flask:
         "/ensemble/starless",
         "/train-members",
         "/evaluation",
-        "/lensfinder",
         "/lens-isolation",
         "/tracking",
         "/visualization",
@@ -339,7 +337,6 @@ def create_app() -> Flask:
     model.register(app)
     ensemble.register(app)
     evaluation.register(app)
-    lensfinder.register(app)
     lens_isolation.register(app)
     views.register(app)
     hstpairs.register(app)

@@ -82,8 +82,7 @@ in-memory row round trip and the full CSV write/read path.
 Separators, dot segments, symlink escapes, missing directories, and directories
 without the required manifest/data file are rejected with the route-appropriate
 400 or 404 response. The resolver replaces ad hoc root selection across run
-summary, rerender, morphology, morphology embedding, transformation,
-lens-finder summary, and other endpoints that already accept `run`.
+summary, rerender, transformation, and other endpoints that already accept `run`.
 
 The response reports the selected run name, and tests seed different root and
 child manifests to prove that `?run=child` returns child data.

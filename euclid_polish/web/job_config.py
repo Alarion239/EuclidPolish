@@ -46,26 +46,6 @@ FASRC_STEP_PARAMS: dict[str, dict[str, str]] = {
                                 "psf_warp_alpha_max": "psf_warp_alpha_max",
                                 "psf_warp_sigma": "psf_warp_sigma",
                                 "saturation_mask_prob": "saturation_mask_prob"},
-    "lensfinder_generate":     {"n_train": "lensfinder_n_fields",
-                                "n_valid": "lensfinder_n_valid",
-                                "image_size": "lensfinder_image_size",
-                                "galaxy_density_arcmin2": "galaxy_density_arcmin2",
-                                "star_density_arcmin2": "star_density_arcmin2",
-                                "star_mag_slope": "star_mag_slope",
-                                "star_mag_bright": "star_mag_bright",
-                                "star_mag_faint": "star_mag_faint",
-                                "lens_density_arcmin2": "lens_density_arcmin2",
-                                "lens_sigma_v_min_kms": "lens_sigma_v_min_kms",
-                                "lens_sigma_v_max_kms": "lens_sigma_v_max_kms",
-                                "psf_warp_prob": "psf_warp_prob",
-                                "psf_warp_alpha_max": "psf_warp_alpha_max",
-                                "psf_warp_sigma": "psf_warp_sigma",
-                                "saturation_mask_prob": "saturation_mask_prob"},
-    "lensfinder_train":        {"epochs": "lensfinder_epochs",
-                                "patience": "lensfinder_patience",
-                                "batch_size": "lensfinder_batch_size",
-                                "learning_rate": "lensfinder_learning_rate",
-                                "training_mode": "lensfinder_training_mode"},
     # WDSR SR training: LR schedule (warmup → cosine) + reduce-LR-on-plateau
     # guard. build_command translates these into --lr-* / --plateau-lr-* flags.
     "ensemble_train":          {"lr_peak": "lr_peak",
@@ -161,25 +141,6 @@ class JobConfig:
     lens_density_arcmin2: float = Config.LENS_DENSITY_ARCMIN2
     lens_sigma_v_min_kms: float = Config.LENS_SIGMA_V_MIN_KMS
     lens_sigma_v_max_kms: float = Config.LENS_SIGMA_V_MAX_KMS
-    # Lens-finder dataset: fewer, bigger fields generated into a dedicated
-    # records dir (``data/images/records_lensfinder``) so the main 6400×510
-    # training set is never clobbered. Stamps for the SR-vs-LR lens-finder are
-    # cut from these. (Reuses the star/lens-density knobs above.)
-    lensfinder_n_fields:   int = 800
-    lensfinder_n_valid:    int = 80
-    lensfinder_image_size: int = 2040
-    # Lens-finder Zoobot fine-tuning knobs. ``epochs`` is the max-epoch ceiling;
-    # ``patience`` drives early stopping on validation loss (training usually
-    # stops well before the ceiling). Defaults mirror scripts/lensfinder_train.py.
-    lensfinder_epochs:        int   = 10
-    lensfinder_patience:      int   = 6
-    lensfinder_batch_size:    int   = 64
-    lensfinder_learning_rate: float = 1e-4
-    # Zoobot fine-tune depth: "head_only" freezes the encoder and trains only
-    # the linear head (fast, clean probe of the pretrained features);
-    # "full" fine-tunes all encoder params (layer-decayed LR).
-    lensfinder_training_mode: str   = "head_only"
-
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 

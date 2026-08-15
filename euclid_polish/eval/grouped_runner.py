@@ -238,8 +238,8 @@ def run_grouped_analysis(
                 produced, err = bool(r0.get("ok")), r0.get("error", "")
             # Hold the canonical geometry (LR EVAL_LR_SIZE², SR EVAL_HR_SIZE²),
             # then read the flux metrics off the cropped FITS so they describe
-            # the stamp the gallery and Zoobot actually see. A stamp that came
-            # out smaller than the target is dropped.
+            # the stamp shown in the gallery. A stamp that came out smaller
+            # than the target is dropped.
             if produced and catalog_runner.enforce_object_sizes(obj_dir, log=_emit):
                 rec = catalog_runner.reuse_catalog_object(
                     obj, out_dir, grade=g, from_cache=from_cache, log=_emit)

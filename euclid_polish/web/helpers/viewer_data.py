@@ -48,7 +48,6 @@ from euclid_polish.eval.combiner import (
     COMBINER_MODELS,
     RAW_INCREMENTAL_MINMEANMAX_RBF_KIND,
 )
-from euclid_polish.eval.lensfinder_eval import per_object_plens
 from euclid_polish.image.tfio import read_images, tfrecord_path
 from euclid_polish.psf.core import PSF
 from euclid_polish.training.target_blur import (
@@ -313,24 +312,12 @@ _EVAL_TIER_FILES = {
     "HR": "HR.fits",
     "std": "std.fits",
 }
-#: Viewer tier key → ``lens_scores.csv`` recon column for the P(lens) lookup.
-_EVAL_TIER_PLENS = {"LR": "lr", "SR": "sr", "HR": "hr"}
-
-
 def _eval_objects() -> list[dict[str, Any]]:
-    """Manifest objects (ok rows) with on-disk tiers, label/grade, and P(lens).
-
-    ``plens`` carries the headed lens-finder's prediction per tier (``{"LR":
-    0.12, "SR": 0.87, ...}``) so the viewer can show what the model thinks for
-    each render. Only finite scores present in ``lens_scores.csv`` are included;
-    a tier with no score (e.g. an unscored run, or HR for a real lens) is simply
-    absent and the viewer shows no badge for it.
-    """
+    """Return manifest objects with their available on-disk tiers and grade."""
     from euclid_polish.web.routes.evaluation import _read_manifest  # local: avoid cycle
 
     root = os.path.abspath(Config.EVAL_RESULTS_DIR)
     rows = _read_manifest(root)
-    plens_by_id = per_object_plens(root)        # {id: {"lr": P, "sr": P, "hr": P}}
     objs: list[dict[str, Any]] = []
     for r in rows:
         if str(r.get("ok", "")).lower() != "true":
@@ -348,10 +335,6 @@ def _eval_objects() -> list[dict[str, Any]]:
         if not tiers:
             continue
         grade = (r.get("grade") or "").strip()
-        scores = plens_by_id.get(r.get("id") or sub, {})
-        plens = {tier: float(scores[col])
-                 for tier, col in _EVAL_TIER_PLENS.items()
-                 if math.isfinite(scores.get(col, float("nan")))}
         pca_n, pca_amps, pca_var = 0, [], []
         dj = os.path.join(obj_dir, "disagreement.json")
         if os.path.isfile(dj):
@@ -371,7 +354,6 @@ def _eval_objects() -> list[dict[str, Any]]:
             "label": (f"{r.get('id', sub)}" + (f" · {grade}" if grade else "")),
             "grade": grade,
             "tiers": tiers,
-            "plens": plens,
             "pca_n": pca_n,
             "pca_amps": pca_amps,
             "pca_var": pca_var,
@@ -402,8 +384,7 @@ def _eval_meta(params: dict[str, str]) -> dict[str, Any]:
         "pca_amps": pca_amps,
         "pca_var": pca_var,
         "objects": [{"label": o["label"], "grade": o["grade"],
-                     "tiers": o["tiers"], "subdir": o["subdir"],
-                     "plens": o["plens"]}
+                     "tiers": o["tiers"], "subdir": o["subdir"]}
                     for o in objs],
     }
 

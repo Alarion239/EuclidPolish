@@ -156,8 +156,6 @@ class TestRegistry:
             "tng_grid", "tng_stack", "poster_cutout",
             "synthetic_generate",
             "ensemble_train",
-            "lensfinder_generate", "lensfinder_sr_infer",
-            "lensfinder_build_stamps", "lensfinder_train",
             "lens_isolation_generate", "lens_isolation_train",
             "lens_isolation_evaluate",
         }
@@ -727,7 +725,6 @@ class TestRegistry:
         """Only model inference/training/evaluation steps request GPUs."""
         gpu_steps = {s.step_id for s in REGISTRY.all() if s.needs_gpu}
         assert gpu_steps == {"ensemble_train",
-                             "lensfinder_sr_infer", "lensfinder_train",
                              "lens_isolation_train", "lens_isolation_evaluate"}
 
     def test_extract_psf_is_single_threaded(self):
@@ -844,10 +841,6 @@ class TestSbatchRendering:
             "euclid_roundtrip_tfrecords":   "roundtrip-tfrecords",
             "euclid_star_anchor_tfrecords": "anchor-tfrecords",
             "psf_rotation_pool":            "psf-rotpool",
-            "lensfinder_generate":          "lensfinder-data",
-            "lensfinder_sr_infer":          "lensfinder-sr-infer",
-            "lensfinder_build_stamps":      "lensfinder-stamps",
-            "lensfinder_train":             "lensfinder-train",
             "lens_isolation_generate":      "lens-isolation-generate",
             "lens_isolation_train":         "lens-isolation-train",
             "lens_isolation_evaluate":      "lens-isolation-evaluate",

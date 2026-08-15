@@ -26,8 +26,7 @@ def register(app):
     def api_config_save():
         # Forward the whole form; ``update`` ignores unknown keys and blanks, so
         # every JobConfig field on the page persists without a hand-maintained
-        # allowlist here (which previously silently dropped the lens-finder
-        # dataset + training fields).
+        # allowlist here.
         cfg = job_config.update(request.form.to_dict())
         note = None
         try:

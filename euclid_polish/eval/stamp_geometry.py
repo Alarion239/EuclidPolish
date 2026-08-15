@@ -1,10 +1,8 @@
 """Pixel-stamp cropping geometry — pure numpy, no ML / archive deps.
 
 ``crop_stamp`` used to live in :mod:`euclid_polish.eval.synthetic_runner`, but
-that module imports the astroquery-backed euclid stack at module scope. Keeping
-the crop primitive here (a *pure* building block, matching this package's stated
-purpose) lets the lean lensfinder rendering path crop stamps in the PyTorch-only
-``EuclidPolishZoobot`` env — which has no astroquery — without dragging it in.
+that module imports the astroquery-backed Euclid stack at module scope. Keeping
+the crop primitive here provides a lightweight, reusable geometry helper.
 """
 
 from __future__ import annotations

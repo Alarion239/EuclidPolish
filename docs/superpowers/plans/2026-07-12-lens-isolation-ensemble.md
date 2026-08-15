@@ -139,7 +139,7 @@
 - [ ] Add pure-array tests for ROC AUC, TPR at requested FPRs, theta-E bins, positive flux retention, positive PSNR/MAE, hard-negative residual flux, disagreement summaries, and all-zero baseline zero recall.
 - [ ] Add fake-ensemble integration tests proving member, ensemble, source-model, and zero baselines appear in `predictions.csv`/`metrics.json`, plus expected plot/gallery files.
 - [ ] Run focused files and confirm failures.
-- [ ] Reuse pure `euclid_polish.lensfinder.metrics` primitives, stream aligned fixed test records/manifests, compute raw metrics, and render reports with Matplotlib/Astropy only.
+- [ ] Keep the small ROC/AUC primitives local, stream aligned fixed test records/manifests, compute raw metrics, and render reports with Matplotlib/Astropy only.
 - [ ] Rerun until green.
 
 ### Task 8: Dedicated FASRC step registration

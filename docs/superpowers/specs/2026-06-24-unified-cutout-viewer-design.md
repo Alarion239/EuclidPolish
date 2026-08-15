@@ -108,8 +108,7 @@ pixels.
 - `/sky`, `/cutouts`: replace the `toolbar` + `viz-area` blocks with a
   viewer mount; keep the sync forms / action cards / inspect links.
 - `/evaluation`: add the viewer as the primary LR/SR/HR cutout browser at
-  the top of the results; existing thumbnails jump the viewer to that
-  object; analysis panels (morphology, lens-finder) untouched.
+  the top of the results; existing thumbnails jump the viewer to that object.
 
 ## Out of scope (this pass)
 

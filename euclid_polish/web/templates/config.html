@@ -54,63 +54,7 @@
                  min="0" max="1000" step="1" required>
         </label>
       </div>
-      <p class="hint">→ <code>/sky</code> and lens-finder generation; HR size also feeds <code>/inference</code>.</p>
-    </fieldset>
-
-    <fieldset style="border:1px solid #e2e5ea; border-radius:6px; margin:10px 0; padding:10px 14px;">
-      <legend style="font-size:12px; font-weight:600; color:#555; text-transform:uppercase; letter-spacing:.04em;">Lens-finder dataset</legend>
-      <div class="form-row">
-        <label title="Number of large fields generated for the lens-finder, into a dedicated records dir (data/images/records_lensfinder) — separate from the main training set, so it is never clobbered.">
-          Fields
-          <input type="number" name="lensfinder_n_fields" value="{{ cfg.lensfinder_n_fields }}"
-                 min="1" max="50000" required>
-        </label>
-        <label title="Validation fields for the lens-finder dataset.">
-          Validate fields
-          <input type="number" name="lensfinder_n_valid" value="{{ cfg.lensfinder_n_valid }}"
-                 min="0" max="5000" required>
-        </label>
-        <label title="Lens-finder field side in 0.05″/pix HR pixels. Bigger fields → more sources + realistic neighbour crowding. Multiple of 6 (the NISP rebin factor).">
-          Field size (px)
-          <input type="number" name="lensfinder_image_size" value="{{ cfg.lensfinder_image_size }}"
-                 min="120" max="2048" step="6" required>
-        </label>
-      </div>
-      <p class="hint">→ the <code>lensfinder-data</code> FASRC step (fewer, bigger fields; own records dir).</p>
-    </fieldset>
-
-    <fieldset style="border:1px solid #e2e5ea; border-radius:6px; margin:10px 0; padding:10px 14px;">
-      <legend style="font-size:12px; font-weight:600; color:#555; text-transform:uppercase; letter-spacing:.04em;">Lens-finder training (Zoobot)</legend>
-      <div class="form-row">
-        <label title="Maximum training epochs (the ceiling). Early stopping via patience usually halts sooner. Zoobot's own default is 100; we ship 10.">
-          Max epochs
-          <input type="number" name="lensfinder_epochs" value="{{ cfg.lensfinder_epochs }}"
-                 min="1" max="1000" required>
-        </label>
-        <label title="Early stopping: halt if validation loss (finetuning/val_loss) does not improve for this many epochs. Zoobot default 10; we ship 6.">
-          Patience (early stop)
-          <input type="number" name="lensfinder_patience" value="{{ cfg.lensfinder_patience }}"
-                 min="1" max="100" required>
-        </label>
-        <label title="Training batch size per GPU. Larger = faster but more GPU memory; watch the GPU gauge during the run.">
-          Batch size
-          <input type="number" name="lensfinder_batch_size" value="{{ cfg.lensfinder_batch_size }}"
-                 min="1" max="512" required>
-        </label>
-        <label title="Initial learning rate for the optimizer. Default 1e-4. Lower = slower but steadier fine-tuning.">
-          Learning rate
-          <input type="number" name="lensfinder_learning_rate" value="{{ cfg.lensfinder_learning_rate }}"
-                 min="0" max="1" step="any" required>
-        </label>
-        <label title="Fine-tune depth. head_only freezes the Zoobot encoder and trains only the linear head (fast, won't overfit, clean probe of the pretrained features). full fine-tunes all 15M encoder params (slower, more capacity, overfit-prone).">
-          Fine-tune depth
-          <select name="lensfinder_training_mode">
-            <option value="head_only" {{ 'selected' if cfg.lensfinder_training_mode == 'head_only' else '' }}>head_only (freeze encoder)</option>
-            <option value="full" {{ 'selected' if cfg.lensfinder_training_mode == 'full' else '' }}>full (fine-tune all)</option>
-          </select>
-        </label>
-      </div>
-      <p class="hint">→ the <code>lensfinder-train</code> FASRC step (Zoobot fine-tuning). Training is early-stopping-driven: <code>max epochs</code> is just the ceiling.</p>
+      <p class="hint">→ <code>/sky</code> generation; HR size also feeds <code>/inference</code>.</p>
     </fieldset>
 
     <fieldset style="border:1px solid #e2e5ea; border-radius:6px; margin:10px 0; padding:10px 14px;">

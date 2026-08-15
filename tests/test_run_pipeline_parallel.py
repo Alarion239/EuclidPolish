@@ -497,12 +497,11 @@ def test_synthetic_steps_forward_generation_warp_knobs():
         "psf_warp_prob": "0.75", "psf_warp_alpha_max": "12",
         "psf_warp_sigma": "4", "saturation_mask_prob": "0.3",
     }
-    for step_id in ("synthetic_generate", "lensfinder_generate"):
-        cmd = " ".join(REGISTRY.get(step_id).build_command(params))
-        assert "--psf-warp-prob 0.75" in cmd
-        assert "--psf-warp-alpha-max 12" in cmd
-        assert "--psf-warp-sigma 4" in cmd
-        assert "--saturation-mask-prob 0.3" in cmd
+    cmd = " ".join(REGISTRY.get("synthetic_generate").build_command(params))
+    assert "--psf-warp-prob 0.75" in cmd
+    assert "--psf-warp-alpha-max 12" in cmd
+    assert "--psf-warp-sigma 4" in cmd
+    assert "--saturation-mask-prob 0.3" in cmd
 
 
 def test_synthetic_step_forwards_targeted_regeneration_splits():

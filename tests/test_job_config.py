@@ -108,86 +108,25 @@ def test_galaxy_density_defaults_updates_and_maps_to_generators(cfg_path):
     c = job_config.update({"galaxy_density_arcmin2": "175"})
     assert c.galaxy_density_arcmin2 == 175.0
     assert job_config.load().galaxy_density_arcmin2 == 175.0
-    for step_id in ("synthetic_generate", "lensfinder_generate"):
-        assert (
-            job_config.FASRC_STEP_PARAMS[step_id]["galaxy_density_arcmin2"]
-            == "galaxy_density_arcmin2"
-        )
+    assert (
+        job_config.FASRC_STEP_PARAMS["synthetic_generate"]["galaxy_density_arcmin2"]
+        == "galaxy_density_arcmin2"
+    )
 
 
 def test_psf_warp_mapped_for_all_generation_and_training_steps():
     keys = ("psf_warp_prob", "psf_warp_alpha_max", "psf_warp_sigma",
             "saturation_mask_prob")
-    for step_id in (
-        "synthetic_generate", "lensfinder_generate", "ensemble_train",
-    ):
+    for step_id in ("synthetic_generate", "ensemble_train"):
         mapping = job_config.FASRC_STEP_PARAMS[step_id]
         for key in keys:
             assert mapping[key] == key
-
-
-def test_lensfinder_training_defaults_and_update(cfg_path):
-    c = job_config.load()
-    assert c.lensfinder_epochs == 10          # mirrors scripts/lensfinder_train.py
-    assert c.lensfinder_patience == 6
-    assert c.lensfinder_batch_size == 64
-    assert c.lensfinder_learning_rate == 1e-4
-    c = job_config.update({"lensfinder_epochs": "100", "lensfinder_patience": "10",
-                           "lensfinder_batch_size": "32",
-                           "lensfinder_learning_rate": "5e-5"})
-    assert c.lensfinder_epochs == 100 and c.lensfinder_patience == 10
-    assert c.lensfinder_batch_size == 32
-    assert c.lensfinder_learning_rate == 5e-5   # coerced as float, not int
-    assert job_config.load().lensfinder_epochs == 100   # persisted
-
-
-def test_lensfinder_training_mapped_for_train_step():
-    m = job_config.FASRC_STEP_PARAMS["lensfinder_train"]
-    assert m == {"epochs": "lensfinder_epochs",
-                 "patience": "lensfinder_patience",
-                 "batch_size": "lensfinder_batch_size",
-                 "learning_rate": "lensfinder_learning_rate",
-                 "training_mode": "lensfinder_training_mode"}
-
-
-def test_save_endpoint_persists_lensfinder_fields(client, cfg_path):
-    # These fields were previously dropped by the route's hand-maintained
-    # allowlist; the whole form is now forwarded to update().
-    r = client.post("/api/config/save", data={
-        "lensfinder_n_fields": "1200", "lensfinder_epochs": "80",
-        "lensfinder_patience": "9", "lensfinder_learning_rate": "2e-4",
-    })
-    assert r.status_code == 200 and r.get_json()["ok"] is True
-    c = job_config.load()
-    assert c.lensfinder_n_fields == 1200      # dataset field now persists too
-    assert c.lensfinder_epochs == 80
-    assert c.lensfinder_patience == 9
-    assert c.lensfinder_learning_rate == 2e-4
 
 
 def test_config_page_renders_training_section(client, cfg_path):
     r = client.get("/config")
     assert r.status_code == 200
     assert b'id="root"' in r.data
-
-
-def test_training_mode_default_and_string_update(cfg_path):
-    c = job_config.load()
-    assert c.lensfinder_training_mode == "head_only"      # default
-    # String fields must persist through update() — previously dropped because
-    # update() coerced every value to int/float.
-    c = job_config.update({"lensfinder_training_mode": "full"})
-    assert c.lensfinder_training_mode == "full"
-    assert job_config.load().lensfinder_training_mode == "full"   # persisted
-    # numeric fields still coerce alongside a string field
-    c = job_config.update({"lensfinder_training_mode": "head_only",
-                           "lensfinder_epochs": "50"})
-    assert c.lensfinder_training_mode == "head_only" and c.lensfinder_epochs == 50
-
-
-def test_training_mode_mapped_for_train_step():
-    m = job_config.FASRC_STEP_PARAMS["lensfinder_train"]
-    assert m["training_mode"] == "lensfinder_training_mode"
 
 
 # -- WDSR LR schedule + plateau guard knobs -------------------------------- #

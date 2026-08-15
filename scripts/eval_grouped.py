@@ -15,7 +15,7 @@ instead of re-downloaded.
 Usage (in the EuclidPolishEnv env)::
 
     python scripts/eval_grouped.py --n 100 \
-        --lens-source data/eval_results --out data/eval_zoobot500
+        --lens-source data/eval_results --out data/eval_grouped500
 """
 
 from __future__ import annotations
