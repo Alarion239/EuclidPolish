@@ -121,7 +121,6 @@ def run_synthetic_eval(
     asinh_scale: float | None = None,
     stamp_m: int = EVAL_HR_SIZE,
     seed: int = 0,
-    unique_fields: bool = True,
     on_progress: Callable[[int, int, str], None] | None = None,
     log: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
@@ -205,9 +204,8 @@ def run_synthetic_eval(
     # Plan up to N stamps per subgroup. To hit the target we take MULTIPLE
     # sources per field (crowded fields host many galaxies) — the brightest
     # first — distributed round-robin across fields, so on average ≈ N / #fields
-    # come from each. (``unique_fields`` is retained for back-compat but no
-    # longer caps to one-per-field; lens fields carry ~one lens, so syn-lens is
-    # still bounded by the number of lens-bearing fields.)
+    # come from each. Lens fields carry about one lens, so syn-lens is still
+    # bounded by the number of lens-bearing fields.
     rng = np.random.default_rng(seed)
     order = list(common)
     rng.shuffle(order)

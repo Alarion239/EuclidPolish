@@ -99,10 +99,7 @@ def test_probability_weighted_summary_and_straight_magnitude_law():
         },
     })
     draws = np.asarray([
-        prior.sample_magnitude(
-            np.random.default_rng(seed), slope=0.2,
-            m_bright=20.0, m_faint=22.0,
-        )
+        prior.sample_magnitude(np.random.default_rng(seed))
         for seed in range(2000)
     ])
     assert np.mean(draws < 21.0) == pytest.approx(0.25, abs=0.04)
@@ -232,8 +229,12 @@ def test_local_catalog_fit_recovers_raw_density_without_rendering(
     prior_path = root / "cosmos2025" / "prior.npz"
     fit_path = root / "cosmos2025" / "fit.json"
     prior_path.parent.mkdir(parents=True)
-    monkeypatch.setattr(Config, "COSMOS_TNG_PRIOR_PATH", str(prior_path))
-    monkeypatch.setattr(Config, "COSMOS_EUCLID_FIT_PATH", str(fit_path))
+    monkeypatch.setattr(
+        Config, "COSMOS_POPULATION_PRIOR_PATH", str(prior_path),
+    )
+    monkeypatch.setattr(
+        Config, "JOINT_GALAXY_POPULATION_FIT_PATH", str(fit_path),
+    )
     atlas_summary_path = root / "tng_atlas_parameters.csv"
     monkeypatch.setattr(
         Config, "TNG_ATLAS_PARAMETERS_PATH", str(atlas_summary_path),
@@ -338,6 +339,14 @@ def test_nested_thinning_keeps_nuisance_population_identical(monkeypatch):
 
     monkeypatch.setattr(module, "list_tng_galaxies", lambda _path: [("x", "1")])
     monkeypatch.setattr(module, "load_tng_properties", lambda _path: {})
+    monkeypatch.setattr(module, "validate_manifest", lambda *args, **kwargs: {
+        "valid": True,
+    })
+    monkeypatch.setattr(module, "load_manifest", lambda _path: {
+        "valid": True,
+        "entries": [],
+        "manifest_fingerprint": "test",
+    })
 
     def build(density: float) -> dict:
         simulator = SkySimulator(object(), SkySimulatorConfig(
@@ -365,7 +374,9 @@ def test_complete_generator_recommendation_can_activate_with_fit_warnings(
 ):
     monkeypatch.setattr(Config, "DATA_DIR", str(tmp_path))
     fit_path = tmp_path / "fit.json"
-    monkeypatch.setattr(Config, "COSMOS_EUCLID_FIT_PATH", str(fit_path))
+    monkeypatch.setattr(
+        Config, "JOINT_GALAXY_POPULATION_FIT_PATH", str(fit_path),
+    )
     fit_path.write_text(json.dumps({
         "inputs": {"euclid_cone_count": 6},
         "fit": {

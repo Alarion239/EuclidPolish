@@ -32,7 +32,6 @@ interface SyncResult {
   ok: boolean;
   files: Record<string, SyncFileResult>;
   include_train?: boolean;
-  include_validate?: boolean;
 }
 
 export default function SkyPage() {

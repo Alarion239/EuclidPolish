@@ -116,9 +116,6 @@ class OnTheFlyForward:
         starless: bool = True,
         inject_stars: bool = True,
         star_density_arcmin2: float = Config.DEFAULT_STAR_DENSITY_ARCMIN2,
-        star_mag_slope: float = Config.STAR_MAG_SLOPE,
-        star_mag_bright: float = Config.STAR_MAG_BRIGHT,
-        star_mag_faint: float = Config.STAR_MAG_FAINT,
         star_prior_payload: dict | None = None,
         pixel_scale_arcsec: float = Config.DEFAULT_PIXEL_SCALE,
         psf_warp_prob: float = Config.TRAIN_PSF_WARP_PROB,
@@ -133,17 +130,23 @@ class OnTheFlyForward:
         # Stars-as-artifacts: a FRESH star realization is drawn and deposited
         # (HR deltas, before the PSF) on every visit in BOTH regimes. ``starless``
         # picks the TARGET — the starless scene (erase the injected stars) vs the
-        # with-stars scene (reconstruct them). Densities/mags mirror generation.
+        # with-stars scene (reconstruct them). Density mirrors generation; the
+        # activated stellar prior owns the magnitude law and colour locus.
         self.starless = bool(starless)
         self.inject_stars = bool(inject_stars)
         self.star_density_arcmin2 = float(star_density_arcmin2)
-        self.star_mag_slope = float(star_mag_slope)
-        self.star_mag_bright = float(star_mag_bright)
-        self.star_mag_faint = float(star_mag_faint)
         self.stellar_prior = (
             EmpiricalStellarPrior.from_payload(star_prior_payload)
             if star_prior_payload else None
         )
+        if (
+            self.inject_stars
+            and self.star_density_arcmin2 > 0.0
+            and self.stellar_prior is None
+        ):
+            raise ValueError(
+                "star injection requires an active empirical stellar prior"
+            )
         self.pixel_scale_arcsec = float(pixel_scale_arcsec)
         self.target_fwhm_arcsec = validate_target_fwhm_arcsec(
             target_fwhm_arcsec)
@@ -191,9 +194,9 @@ class OnTheFlyForward:
             return
         side_arcmin = canvas.shape[0] * self.pixel_scale_arcsec / 60.0
         n_stars = int(rng.poisson(self.star_density_arcmin2 * side_arcmin ** 2))
+        assert self.stellar_prior is not None
         inject_random_stars(
-            canvas, rng, n_stars=n_stars, mag_slope=self.star_mag_slope,
-            mag_bright=self.star_mag_bright, mag_faint=self.star_mag_faint,
+            canvas, rng, n_stars=n_stars,
             stellar_prior=self.stellar_prior)
 
     def crops(self, field: np.ndarray) -> tuple[np.ndarray, np.ndarray]:

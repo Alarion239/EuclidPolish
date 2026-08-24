@@ -72,16 +72,22 @@ def test_multiband_pipeline_components_wired():
         ObservationSimulator,
         ObservationSimulatorConfig,
     )
-    from tests._tiny_catalog import TinyCosmosCatalog
-
-    cat = TinyCosmosCatalog(n_galaxies=200, seed=0)
-    sim = SkySimulator(cat, SkySimulatorConfig(image_size=96))
+    sim = SkySimulator(
+        None,
+        SkySimulatorConfig(
+            image_size=96,
+            galaxy_density_arcmin2=0.0,
+            star_density_arcmin2=0.0,
+            lens_density_arcmin2=0.0,
+        ),
+    )
     psfs = load_all_band_psfs(psf_dir="/nonexistent_for_test")
     fwd = ObservationSimulator(psfs_by_band=psfs,
                            config=ObservationSimulatorConfig(add_noise=False))
 
     rng = np.random.default_rng(0)
-    hr, _ = sim.simulate_field(rng, n_sersic=3, n_stars=1, n_lenses=0)
+    hr, _ = sim.simulate_field(rng, n_galaxies=0, n_stars=0, n_lenses=0)
+    hr.data[48, 48, :] = 1_000.0
     lr, hr_target = fwd.process(hr, rng=rng)
 
     assert lr.shape[-1] == Config.NUM_LR_CHANNELS

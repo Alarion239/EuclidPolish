@@ -153,9 +153,8 @@ def register(app):
 
         The held-out **test** split is the eval set and **validate** is what the
         ensemble combiner fits on, so both are pulled by default; only the large
-        ``train`` split is opt-in via ``include_train`` (``include_validate`` is
-        kept for backward-compat but validate is now always included). Missing
-        shards (e.g. a dataset generated before the test split) just report
+        ``train`` split is opt-in via ``include_train``. Missing shards (for
+        example, a dataset generated before the test split) just report
         not-ok and are skipped. Lifts the fetcher's 50 MB cap to 5 GB since
         TFRecords are large and this is an explicit user-requested transfer."""
         remote_dir = _sky_records_remote_dir()
@@ -165,7 +164,6 @@ def register(app):
                 "1", "true", "yes", "on")
 
         include_train = _flag("include_train")
-        include_validate = _flag("include_validate")   # kept for back-compat
         subsets = ["test", "validate"]                 # combiner fits on validate
         if include_train:
             subsets.append("train")
@@ -197,9 +195,11 @@ def register(app):
             else:
                 entry["error"] = r.error
             results[key] = entry
-        return jsonify({"ok": any_ok, "files": results,
-                        "include_train": include_train,
-                        "include_validate": include_validate})
+        return jsonify({
+            "ok": any_ok,
+            "files": results,
+            "include_train": include_train,
+        })
 
     @app.route("/api/sky/sr-status")
     def api_sky_sr_status():

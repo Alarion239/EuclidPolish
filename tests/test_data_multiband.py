@@ -57,14 +57,6 @@ def test_wdsr_multiband_shape():
     assert tuple(y.shape) == (1, 16, 16, 1)
 
 
-def test_wdsr_backcompat_via_nchan_kwarg():
-    """Calling with the legacy ``nchan=1`` keyword still works."""
-    model = wdsr(scale=2, nchan=1, num_res_blocks=2)
-    x = tf.zeros((1, 8, 8, 1), dtype=tf.float32)
-    y = model(x)
-    assert tuple(y.shape) == (1, 16, 16, 1)
-
-
 def test_wdsr_trainable_params_nonzero():
     model = wdsr(scale=2, nchan_in=4, nchan_out=1, num_res_blocks=2)
     n = sum(int(np.prod(v.shape)) for v in model.trainable_variables)

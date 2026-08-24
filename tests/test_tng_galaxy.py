@@ -21,16 +21,13 @@ from euclid_polish.skirt import image as skirt_image
 from euclid_polish.skirt.image import (
     block_mean,
     measure_halflight_radius_px,
-    rebin_for_target_size,
     rotate_arbitrary,
     rotate_quarter,
 )
 from euclid_polish.sky.generation.tng_galaxy import (
     circularize_psf_kernel,
     list_tng_galaxies,
-    load_tng_frame,
     measure_vis_2fwhm_aperture_flux,
-    native_halflight_px,
     normalise_tng_to_vis_2fwhm,
     prepare_tng_galaxy,
     sample_tng_stamp,
@@ -252,8 +249,6 @@ def test_block_mean_trims_remainder():
     arr = np.ones((5, 5), dtype=np.float32)
     out = block_mean(arr, 2)            # trims to 4x4
     assert out.shape == (2, 2)
-    with pytest.raises(ValueError):
-        block_mean(arr, 2, trim_remainder=False)
 
 
 # ------------------------------ rotate -----------------------------------
@@ -322,8 +317,10 @@ def test_prepare_arbitrary_rotation_gated_on_rebin(tmp_path):
 # --------------------------- end-to-end ----------------------------------
 
 @_needs_local
-def test_load_tng_frame_native_float32():
-    arr = load_tng_frame(tng_fits_path(_GAL_DIR, _GAL_ID, 1, "VIS"))
+def test_load_skirt_frame_native_float32():
+    arr = skirt_image.load_skirt_frame(
+        tng_fits_path(_GAL_DIR, _GAL_ID, 1, "VIS")
+    )
     assert arr.dtype == np.float32 and arr.shape == (1600, 1600)
     assert arr.dtype.byteorder in ("=", "|")     # native endianness
     assert np.isfinite(arr).all()
@@ -406,21 +403,6 @@ def test_list_tng_galaxies(tmp_path):
     assert all(os.path.isdir(g[0]) for g in gals)
     assert list_tng_galaxies(str(tmp_path / "nope")) == []
 
-
-def test_sample_tng_stamp(tmp_path):
-    tng = str(tmp_path)
-    _write_fake_galaxy(tng, "111")
-    gals = list_tng_galaxies(tng)
-    res = sample_tng_stamp(gals, np.random.default_rng(0))
-    assert res is not None
-    stamp, meta = res
-    assert stamp.ndim == 3 and stamp.shape[2] == 4 and stamp.dtype == np.float32
-    assert meta["subhalo_id"] == "111"
-    assert meta["orientation"] in (1, 2, 3, 4, 5)
-    assert meta["rebin_factor"] in (1, 2, 3, 4)
-    assert meta["rot_k"] in (0, 1, 2, 3)
-    # empty pool → None
-    assert sample_tng_stamp([], np.random.default_rng(0)) is None
 
 
 def test_vis_brightness_normalization_preserves_tng_band_ratios(tmp_path):
@@ -522,35 +504,14 @@ def test_radius_grid_larger_than_budget_is_never_retained(monkeypatch):
     assert skirt_image._RADIUS_INT_GRID_BYTES == 0
 
 
-def test_rebin_for_target_size_geometry():
-    # apparent = hr_scale · re_native / F  →  F = hr_scale · re_native / target.
-    # re_native=200 px, hr=0.05″, target=0.5″ → F = 0.05·200/0.5 = 20.
-    f = rebin_for_target_size(200.0, 0.5, 0.05)
-    assert f == 20
-    # Bigger target ⇒ smaller F (more resolved). target=2″ → F=5.
-    assert rebin_for_target_size(200.0, 2.0, 0.05) == 5
-    # Never upsamples below native, never exceeds f_max, never < 1.
-    assert rebin_for_target_size(10.0, 50.0, 0.05) == 1     # F<1 → clip 1
-    assert rebin_for_target_size(1e6, 0.01, 0.05, f_max=64) == 64
-    assert rebin_for_target_size(0.0, 0.5, 0.05) == 1       # unmeasurable
-    assert rebin_for_target_size(200.0, 0.0, 0.05) == 1
-
-
-def test_rebin_stochastic_rounding_is_unbiased():
-    # F target = 2.7 → stochastic rounds to 2 (30%) or 3 (70%); mean ≈ 2.7.
-    rng = np.random.default_rng(0)
-    # choose re_native/target/hr so hr·re/target = 2.7
-    fs = [rebin_for_target_size(54.0, 1.0, 0.05, rng=rng) for _ in range(4000)]
-    assert set(fs) <= {2, 3}
-    assert abs(np.mean(fs) - 2.7) < 0.05
-
-
 def test_sample_tng_stamp_with_target_size_records_meta(tmp_path):
     # The sampled Euclid radius is a nominal continuous-space similarity scale.
     tng = str(tmp_path)
     _write_fake_galaxy(tng, "111", size=240)        # measurable core
     gals = list_tng_galaxies(tng)
-    native = native_halflight_px(gals[0][0], "111", 1)
+    native = measure_halflight_radius_px(skirt_image.load_skirt_frame(
+        tng_fits_path(gals[0][0], "111", 1, "VIS")
+    ))
     radius_lookup = {("111", orientation): native for orientation in range(1, 6)}
     res = sample_tng_stamp(
         gals, np.random.default_rng(0), target_re_arcsec=1.0,

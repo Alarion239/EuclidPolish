@@ -48,7 +48,6 @@ from euclid_polish.web.routes import (
     hst,
     hstpairs,
     jwst_euclid,
-    lens_isolation,
     model,
     population_comparison,
     poster,
@@ -175,8 +174,6 @@ def create_app() -> Flask:
         "/api/vis/",             # local data/vis gallery metadata
         "/eval-files/",          # serve already-pulled PNG/FITS offline
         "/viewer/",              # unified cutout viewer reads local caches
-        "/lens-isolation",       # additive experiment status works offline
-        "/api/lens-isolation/",
         "/jwst-euclid",
         "/api/jwst-euclid",
     )
@@ -202,7 +199,6 @@ def create_app() -> Flask:
         "/ensemble/starless",
         "/train-members",
         "/evaluation",
-        "/lens-isolation",
         "/tracking",
         "/visualization",
         "/fasrc",
@@ -337,7 +333,6 @@ def create_app() -> Flask:
     model.register(app)
     ensemble.register(app)
     evaluation.register(app)
-    lens_isolation.register(app)
     views.register(app)
     hstpairs.register(app)
     jwst_euclid.register(app)

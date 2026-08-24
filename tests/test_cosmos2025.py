@@ -81,13 +81,6 @@ def test_effective_radius_combined_below_disk():
     assert out[0] > 0.05 * 0.9     # but at least near the bulge scale
 
 
-def test_catalog_effective_re_property(cat: TinyCosmosCatalog):
-    re = cat.effective_re_arcsec
-    assert re.shape == (len(cat),)
-    assert np.all(np.isfinite(re)) and np.all(re > 0)
-    assert cat.effective_re_arcsec is cat.effective_re_arcsec   # cached
-
-
 def test_tiny_sample_galaxy_returns_params(cat: TinyCosmosCatalog):
     rng = np.random.default_rng(0)
     g = cat.sample_galaxy(rng)
@@ -109,22 +102,6 @@ def test_tiny_galaxy_geometry_valid(cat: TinyCosmosCatalog):
             for f in flux_tuple:
                 assert np.isfinite(f)
                 assert f >= 0
-
-
-def test_tiny_lens_galaxy_in_redshift_range(cat: TinyCosmosCatalog):
-    rng = np.random.default_rng(0)
-    z_lo, z_hi = Config.LENS_Z_LENS_MIN, Config.LENS_Z_LENS_MAX
-    for _ in range(20):
-        g = cat.sample_lens_galaxy(rng, (z_lo, z_hi))
-        assert z_lo <= g.z_phot <= z_hi
-
-
-def test_tiny_source_galaxy_beyond_lens(cat: TinyCosmosCatalog):
-    rng = np.random.default_rng(0)
-    z_lens = 0.5
-    for _ in range(20):
-        s = cat.sample_source_galaxy(rng, z_lens)
-        assert s.z_phot >= z_lens + Config.LENS_Z_SOURCE_OFFSET
 
 
 def test_tiny_total_flux_matches_components(cat: TinyCosmosCatalog):
@@ -167,12 +144,6 @@ def test_tiny_reproducible_with_same_seed():
     b = TinyCosmosCatalog(n_galaxies=100, seed=7)
     np.testing.assert_array_equal(a.z_phot, b.z_phot)
     np.testing.assert_array_equal(a.bulge_flux_e, b.bulge_flux_e)
-
-
-def test_tiny_empty_lens_range_raises():
-    c = TinyCosmosCatalog(n_galaxies=10, seed=0)
-    with pytest.raises(RuntimeError):
-        c.sample_lens_galaxy(np.random.default_rng(0), (100.0, 200.0))
 
 
 # ---------------------------------------------------------------------------
@@ -221,22 +192,6 @@ def test_real_catalog_sample_galaxy(real_catalog: Cosmos2025Catalog):
     for k in range(Config.NUM_LR_CHANNELS):
         assert g.bulge_flux_e[k] >= 0
         assert g.disk_flux_e[k]  >= 0
-
-
-@pytest.mark.skipif(not _HAVE_REAL, reason="real catalog FITS not on disk")
-def test_real_catalog_lens_z_range(real_catalog: Cosmos2025Catalog):
-    rng = np.random.default_rng(0)
-    g = real_catalog.sample_lens_galaxy(
-        rng, (Config.LENS_Z_LENS_MIN, Config.LENS_Z_LENS_MAX)
-    )
-    assert Config.LENS_Z_LENS_MIN <= g.z_phot <= Config.LENS_Z_LENS_MAX
-
-
-@pytest.mark.skipif(not _HAVE_REAL, reason="real catalog FITS not on disk")
-def test_real_catalog_source_beyond_lens(real_catalog: Cosmos2025Catalog):
-    rng = np.random.default_rng(0)
-    s = real_catalog.sample_source_galaxy(rng, z_lens=0.5)
-    assert s.z_phot >= 0.5 + Config.LENS_Z_SOURCE_OFFSET
 
 
 # ---------------------------------------------------------------------------

@@ -9,9 +9,8 @@ single object of the requested kind, centred in the field, and renders the
 ground-truth object, the same clean scene the training generator produces
 before convolution + noise.
 
-Five modes (one object per mode, chosen at random — except ``field``):
+Four modes (one object per mode, chosen at random — except ``field``):
 
-  --mode sersic   a single analytic Sérsic bulge+disk galaxy (COSMOS row)
   --mode star     a single point source (PSF-free delta; median stellar colour)
   --mode lens     a gravitational lens system — SIE + shear deflection with a
                   real TNG50 deflector and lensed source, the same pure-TNG
@@ -38,12 +37,13 @@ overwrites the previous result the WebUI then fetches):
 Usage
 -----
     python scripts/fasrc_poster_cutout.py --mode lens --save
-    python scripts/fasrc_poster_cutout.py --mode sersic --seed 7 --image-size 256
+    python scripts/fasrc_poster_cutout.py --mode tng --seed 7 --image-size 256
 """
 from __future__ import annotations
 
 import argparse
 import io
+import json
 import os
 import sys
 
@@ -82,6 +82,7 @@ from euclid_polish.training.inference import (
     reconstruct,
 )
 from euclid_polish.visualization.color import eye_rgb
+from euclid_polish.web.helpers.population_calibration import active_star
 
 MODES = ("star", "lens", "tng", "field")
 # Output band order matches the generator's channel order.
@@ -155,7 +156,7 @@ LENS_MIN_SOURCE_VIS_E = Config.LENS_SHOWABLE_MIN_SRC_VIS_E
 def _lens_is_showable(rec: dict) -> bool:
     r_vis = rec.get("lens_visible_r_arcsec")
     src_e = rec.get("source_flux_vis_e")
-    if r_vis is None or src_e is None:      # legacy/Sersic record → no check
+    if r_vis is None or src_e is None:
         return True
     return (rec["theta_E_arcsec"] >= LENS_MIN_THETA_E_VISIBLE_FRAC * r_vis
             and src_e >= LENS_MIN_SOURCE_VIS_E)
@@ -164,9 +165,8 @@ def _lens_is_showable(rec: dict) -> bool:
 def _record_ok(mode: str, meta: dict) -> bool:
     """Did the scene actually contain the requested object?
 
-    A lens sample can fail (``_add_lens`` returns None on a RuntimeError) and a
-    TNG slot silently falls back to Sérsic if its stamp can't load — so we don't
-    just trust the requested count, we check the rendered records."""
+    A lens sample can fail (``_add_lens`` returns ``None`` on a runtime error),
+    so do not trust the requested count alone."""
     if mode == "star":
         return meta["n_stars"] == 1
     if mode == "lens":
@@ -183,7 +183,12 @@ def _record_ok(mode: str, meta: dict) -> bool:
 
 
 def generate_cutout(
-    mode: str, *, seed: int, image_size: int, max_tries: int = 16,
+    mode: str,
+    *,
+    seed: int,
+    image_size: int,
+    max_tries: int = 16,
+    star_prior_payload: dict | None = None,
 ) -> tuple[np.ndarray, dict, int]:
     """Render one centred random object's clean 4-band HR field.
 
@@ -193,6 +198,10 @@ def generate_cutout(
     """
     if mode not in MODES:
         raise ValueError(f"unknown mode {mode!r}; choose from {MODES}")
+    if mode in {"star", "field"} and star_prior_payload is None:
+        raise ValueError(
+            f"'{mode}' mode requires the active empirical stellar prior"
+        )
 
     # TNG-stamp modes (tng, lens, field) use real TNG50 stamps matching the
     tng_mode = mode in ("tng", "lens", "field")
@@ -207,11 +216,17 @@ def generate_cutout(
         lens_require_showable=(mode == "lens"),
         # Field showcase: a few stars per field (training keeps its own
         # pinned density).
-        star_density_arcmin2=(FIELD_STAR_DENSITY_ARCMIN2 if mode == "field"
-                              else Config.DEFAULT_STAR_DENSITY_ARCMIN2),
+        star_density_arcmin2=(
+            FIELD_STAR_DENSITY_ARCMIN2
+            if mode == "field"
+            else Config.DEFAULT_STAR_DENSITY_ARCMIN2
+            if mode == "star"
+            else 0.0
+        ),
+        star_prior_payload=star_prior_payload,
     )
     cat = (
-        CosmosTngPrior(Config.COSMOS_TNG_PRIOR_PATH)
+        CosmosTngPrior(Config.COSMOS_POPULATION_PRIOR_PATH)
         if mode in ("tng", "field") else None
     )
     sim = SkySimulator(cat, cfg)
@@ -246,8 +261,11 @@ def generate_cutout(
                        ("field_area_arcmin2", "n_galaxies",
                         "n_stars", "n_lenses")}
             else:
-                rec = {"sersic": meta["galaxies"], "tng": meta["galaxies"],
-                       "star": meta["stars"], "lens": meta["lenses"]}[mode][0]
+                rec = {
+                    "tng": meta["galaxies"],
+                    "star": meta["stars"],
+                    "lens": meta["lenses"],
+                }[mode][0]
             return np.asarray(img.data, dtype=np.float32), rec, used
     raise RuntimeError(
         f"could not generate a '{mode}' object in {max_tries} tries "
@@ -494,6 +512,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--psf-dir", default=Config.EUCLID_PSF_DIR,
                    help="Per-band ePSF dir for the field-mode forward model "
                         "(Gaussian fallback where a band's file is missing).")
+    p.add_argument(
+        "--star-prior-json",
+        default="",
+        help="Activated empirical stellar-population artifact as JSON.",
+    )
     return p.parse_args(argv)
 
 
@@ -502,8 +525,18 @@ def main(argv: list[str] | None = None) -> int:
     size = max(16, int(args.image_size))
     print(f"[poster] mode={args.mode} seed={args.seed} image_size={size}")
 
+    star_prior_payload = (
+        json.loads(args.star_prior_json)
+        if args.star_prior_json.strip()
+        else active_star()
+    )
+
     data, source_meta, used_seed = generate_cutout(
-        args.mode, seed=args.seed, image_size=size)
+        args.mode,
+        seed=args.seed,
+        image_size=size,
+        star_prior_payload=star_prior_payload,
+    )
     print(f"[poster] generated '{args.mode}' (used seed {used_seed}); "
           f"total flux = {float(data.sum()):.3e} e⁻")
 

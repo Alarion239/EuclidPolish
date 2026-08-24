@@ -295,11 +295,10 @@ large cutout don't leak across train/validate."></label>`;
         return `
           <label>Mode
             <select name="mode"
-                    title="Which random object to render as a clean 4-band cutout. Sérsic = analytic bulge+disk galaxy; Star = point source; Lens = SIE+shear gravitational lens; TNG = real TNG50 SKIRT galaxy (needs the atlas downloaded).">
-              <option value="sersic">Sérsic galaxy</option>
+                    title="Which random object to render as a clean 4-band cutout. Star = point source; Lens = SIE+shear gravitational lens; TNG = real TNG50 SKIRT galaxy (needs the atlas downloaded).">
+              <option value="tng">TNG50 galaxy</option>
               <option value="star">Star (point source)</option>
               <option value="lens">Gravitational lens</option>
-              <option value="tng">TNG50 galaxy</option>
               <option value="field">Random field (clean + dirty + SR)</option>
             </select></label>
           <label>HR image size (px) <span class="muted">(blank = 256)</span>
@@ -379,26 +378,6 @@ large cutout don't leak across train/validate."></label>`;
         return _hstTrainFields();
       case 'ensemble_train':
         return _ensembleTrainFields();
-      case 'lens_isolation_generate':
-        return `
-          <label>Train examples <input type="number" name="ntrain" value="6400" min="2" step="2"></label>
-          <label>Validation examples <input type="number" name="nvalid" value="100" min="2" step="2"></label>
-          <label>Test examples <input type="number" name="ntest" value="100" min="2" step="2"></label>
-          <label>Seed <input type="number" name="seed" value="-1"></label>
-          <label class="checkbox-field" style="flex-basis:100%;"><input type="checkbox" name="force" value="1"> Replace complete experiment records</label>`;
-      case 'lens_isolation_train':
-        return `
-          <label style="flex-basis:100%;">Source members
-            <input type="text" name="sources" placeholder="member_01,member_04" required
-                   title="Existing starless SR members to fork one-to-one. Production checkpoints remain read-only."></label>
-          <label>Steps <input type="number" name="steps" value="50000" min="1"></label>
-          <label>Batch size <input type="number" name="batch_size" value="16" min="1"></label>
-          <label>Evaluate every <input type="number" name="evaluate_every" value="500" min="1"></label>
-          <label class="checkbox-field" style="flex-basis:100%;" title="Current experiment members stay available until every replacement finishes training.">
-            <input type="checkbox" name="force" value="1"> Retrain and replace existing lens-isolation members
-          </label>`;
-      case 'lens_isolation_evaluate':
-        return `<label class="checkbox-field"><input type="checkbox" name="no_source_baselines" value="1"> Skip source-model baselines</label>`;
       default:
         return '';
     }
@@ -679,9 +658,6 @@ large cutout don't leak across train/validate."></label>`;
       extract_euclid_psf:      'euclid_psf',
       euclid_star_anchor_tfrecords: 'star_anchor_records',
       synthetic_generate:      'synthetic_records',
-      lens_isolation_generate: 'lens_isolation_records',
-      lens_isolation_train:    'lens_isolation_ensemble',
-      lens_isolation_evaluate: 'lens_isolation_evaluation',
       download_tng_skirt:      'tng_skirt',
     }[step.step_id];
     const status = artifactStatus[produces];
@@ -811,13 +787,6 @@ large cutout don't leak across train/validate."></label>`;
             historyText(params, 'tng_density_arcmin2', '60')
           )),
           field('lenses / arcmin²', historyText(params, 'lens_density_arcmin2'))];
-      case 'lens_isolation_generate':
-        return [field('nfields', historySum(params, ['ntrain', 'nvalid', 'ntest']))];
-      case 'lens_isolation_train':
-        return [field('source members', historyText(params, 'sources')),
-          field('steps', historyCount(params, 'steps')), field('batch', historyCount(params, 'batch_size'))];
-      case 'lens_isolation_evaluate':
-        return [field('fields', historyCount(params, 'limit')), field('crop px', historyCount(params, 'crop_size'))];
       case 'download_euclid_cutouts':
         return [field('VIS px', historyCount(params, 'vis_pixels')), field('workers', historyCount(params, 'workers'))];
       case 'extract_euclid_psf':

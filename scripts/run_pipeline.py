@@ -216,7 +216,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                     default=None,
                     help="Calibration-only master density. Shared seeds make "
                          "lower densities exact nested source thinnings.")
-    ap.add_argument("--cosmos-prior", default=Config.COSMOS_TNG_PRIOR_PATH,
+    ap.add_argument("--cosmos-prior", default=Config.COSMOS_POPULATION_PRIOR_PATH,
                     help="Joint COSMOS2025 population-prior NPZ.")
     ap.add_argument("--tng-dir", default=Config.TNG_SKIRT_DIR,
                     help="Downloaded TNG SKIRT atlas directory.")
@@ -254,13 +254,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--star-density-arcmin2", type=float,
                     default=Config.DEFAULT_STAR_DENSITY_ARCMIN2,
                     help="Stellar surface density (stars/arcmin²).")
-    ap.add_argument("--star-mag-slope", type=float, default=Config.STAR_MAG_SLOPE,
-                    help="Star-count slope α in dN/dm ∝ 10^(α·m) "
-                         "(high-Galactic-latitude value ~0.14–0.35).")
-    ap.add_argument("--star-mag-bright", type=float, default=Config.STAR_MAG_BRIGHT,
-                    help="Brightest synthetic star (VIS mag).")
-    ap.add_argument("--star-mag-faint", type=float, default=Config.STAR_MAG_FAINT,
-                    help="Faintest synthetic star (VIS mag).")
     ap.add_argument("--star-prior-json", default="",
                     help="Activated versioned Gaia/Euclid stellar-prior JSON.")
     ap.add_argument("--lens-density-arcmin2", type=float,
@@ -365,7 +358,6 @@ def _generator_config_from_args(args: argparse.Namespace) -> SkySimulatorConfig:
         galaxy_thinning_max_density_arcmin2=getattr(
             args, "galaxy_thinning_max_density_arcmin2", None,
         ),
-        cosmos_prior_path=args.cosmos_prior,
         tng_galaxy_dir=getattr(args, "tng_dir", Config.TNG_SKIRT_DIR),
         tng_properties_csv=getattr(args, "tng_properties", ""),
         tng_radius_manifest_path=(
@@ -375,9 +367,6 @@ def _generator_config_from_args(args: argparse.Namespace) -> SkySimulatorConfig:
         ),
         strict_population_artifacts=True,
         star_density_arcmin2=args.star_density_arcmin2,
-        star_mag_slope=args.star_mag_slope,
-        star_mag_bright=args.star_mag_bright,
-        star_mag_faint=args.star_mag_faint,
         star_prior_payload=(
             json.loads(args.star_prior_json) if args.star_prior_json else None
         ),
@@ -1175,9 +1164,6 @@ def _gen_init_worker(prior_path, image_size, psf_dir,
                      galaxy_density_arcmin2=Config.GALAXY_DENSITY_ARCMIN2,
                      galaxy_thinning_max_density_arcmin2=None,
                      star_density_arcmin2=Config.DEFAULT_STAR_DENSITY_ARCMIN2,
-                     star_mag_slope=Config.STAR_MAG_SLOPE,
-                     star_mag_bright=Config.STAR_MAG_BRIGHT,
-                     star_mag_faint=Config.STAR_MAG_FAINT,
                      star_prior_json="",
                      lens_density_arcmin2=Config.LENS_DENSITY_ARCMIN2,
                      lens_sigma_v_min_kms=Config.LENS_SIGMA_V_MIN_KMS,
@@ -1228,7 +1214,6 @@ def _gen_init_worker(prior_path, image_size, psf_dir,
                                       galaxy_thinning_max_density_arcmin2=(
                                           galaxy_thinning_max_density_arcmin2
                                       ),
-                                      cosmos_prior_path=prior_path or "",
                                       tng_galaxy_dir=tng_galaxy_dir,
                                       tng_properties_csv=tng_properties_csv,
                                       tng_radius_manifest_path=(
@@ -1241,9 +1226,6 @@ def _gen_init_worker(prior_path, image_size, psf_dir,
                                       ),
                                       strict_population_artifacts=True,
                                       star_density_arcmin2=star_density_arcmin2,
-                                      star_mag_slope=star_mag_slope,
-                                      star_mag_bright=star_mag_bright,
-                                      star_mag_faint=star_mag_faint,
                                       star_prior_payload=(
                                           json.loads(star_prior_json)
                                           if star_prior_json else None
@@ -1466,8 +1448,7 @@ def step_generate_and_convolve_parallel(args: argparse.Namespace) -> None:
                               None,
                           ),
                           args.star_density_arcmin2,
-                          args.star_mag_slope, args.star_mag_bright,
-                          args.star_mag_faint, args.star_prior_json,
+                          args.star_prior_json,
                           args.lens_density_arcmin2,
                           args.lens_sigma_v_min_kms, args.lens_sigma_v_max_kms,
                           getattr(args, "psf_warp_prob",

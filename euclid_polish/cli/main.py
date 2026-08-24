@@ -67,7 +67,6 @@ from euclid_polish.sky.observation.observation_simulator import (
 from euclid_polish.training import Trainer
 from euclid_polish.training.inference import (
     load_model_from_checkpoint,
-    load_model_from_weights,
     plot_reconstruction,
     reconstruct,
 )
@@ -83,6 +82,7 @@ from euclid_polish.visualization.methods import (
     draw_dirty_image,
     draw_star_positions,
 )
+from euclid_polish.web.helpers.population_calibration import active_star
 
 
 class InteractiveCLI:
@@ -490,13 +490,7 @@ class InteractiveCLI:
             return
         band = Config.get_band(band_name)
 
-        # New layout: data/euclid_stars/cutouts/<band>/. Falls back to the
-        # legacy flat VIS layout if no per-band subdir exists yet.
         default_cutout_dir = Config.cutout_dir_for_band(band_name)
-        if not os.path.isdir(default_cutout_dir) and band_name == "VIS":
-            legacy = os.path.join(Config.DEFAULT_OUTPUT_DIR, "cutouts")
-            if os.path.isdir(legacy):
-                default_cutout_dir = legacy
 
         cutout_dir_choice = select(
             "Select cutout source directory:",
@@ -1024,7 +1018,13 @@ class InteractiveCLI:
             return
 
         try:
-            catalog = CosmosTngPrior(Config.COSMOS_TNG_PRIOR_PATH)
+            catalog = CosmosTngPrior(Config.COSMOS_POPULATION_PRIOR_PATH)
+            stellar_prior = active_star()
+            if stellar_prior is None:
+                raise RuntimeError(
+                    "activate the Gaia+Euclid stellar calibration before "
+                    "generating fields"
+                )
             print(
                 f"\nCOSMOS joint prior: {len(catalog)} latent galaxies"
             )
@@ -1032,6 +1032,7 @@ class InteractiveCLI:
             cfg = SkySimulatorConfig(
                 image_size=image_size_val,
                 pixel_scale=pixel_scale_val,
+                star_prior_payload=stellar_prior,
             )
             sim = SkySimulator(catalog, cfg)
             os.makedirs(Config.RECORDS_DIR_V2, exist_ok=True)
@@ -1179,13 +1180,6 @@ class InteractiveCLI:
                     f"  PSNR (stretched, loss-aligned): {float(metrics['psnr_stretched']):.3f} dB\n"
                     f"  PSNR (raw e⁻):                 {float(metrics['psnr_raw']):.3f} dB"
                 )
-
-                # Offer to export weights
-                if confirm("\nExport trained weights to .h5 file?", default=True).ask():
-                    weights_dir = os.path.dirname(checkpoint_dir) or "."
-                    weights_path = os.path.join(weights_dir, f"wdsr_x{scale_val}.h5")
-                    m._tf_model.save_weights(weights_path)
-                    print(f"  ✓ Weights saved to: {weights_path}")
 
                 print("\n✓ Training completed!")
 
@@ -1367,14 +1361,6 @@ class InteractiveCLI:
             lr_data_input = lr_file
             lr_path = lr_file
 
-        source = select(
-            "Load model from:",
-            choices=[
-                {"name": "Checkpoint directory", "value": "checkpoint"},
-                {"name": ".h5 weights file", "value": "weights"},
-            ]
-        ).ask()
-
         scale = (input(f"Scale factor (default {Config.DEFAULT_REBIN_FACTOR}): ").strip()
                  or str(Config.DEFAULT_REBIN_FACTOR))
         num_res_blocks = (
@@ -1390,75 +1376,83 @@ class InteractiveCLI:
 
         try:
 
-            if source == "checkpoint":
-                ckpt_dir = (input(f"Checkpoint directory (default {Config.DEFAULT_CHECKPOINT_DIR}): ").strip()
-                            or Config.DEFAULT_CHECKPOINT_DIR)
-                if not tf.train.latest_checkpoint(ckpt_dir):
-                    print(f"\n✗ No checkpoints found in {ckpt_dir}")
-                    return
-                print(f"\nLoading model from checkpoint {ckpt_dir}...")
-                if input_source == "tfrecord":
-                    model = Model(ckpt_dir, scale=scale_val, num_res_blocks=num_res_blocks_val)
-                    hr_for_render = [h for h in chosen_hr if h is not None]
-                    saved = reconstruct_and_render(
-                        chosen_lr, model, Config.VIS_RECONSTRUCTION_DIR,
-                        hr_images=hr_for_render if len(hr_for_render) == len(chosen_lr) else None,
-                    )
-                    for p in saved:
-                        print(f"  saved {p}")
-                    print(f"\n✓ {len(saved)} reconstructions saved to {Config.VIS_RECONSTRUCTION_DIR}")
-                    return
-                else:
-                    model = load_model_from_checkpoint(
-                        ckpt_dir, scale_val, num_res_blocks_val,
-                        nchan_out=Config.NUM_HR_CHANNELS,   # nchan_in inferred from ckpt
-                    )
-            else:
-                weights_path = input("Path to .h5 weights file: ").strip()
-                if not weights_path or not os.path.exists(weights_path):
-                    print(f"\n✗ Weights file not found: {weights_path}")
-                    return
-                print(f"\nLoading model from {weights_path}...")
-                model = load_model_from_weights(
-                    weights_path, scale_val, num_res_blocks_val,
-                    nchan=Config.NUM_LR_CHANNELS,
+            ckpt_dir = (
+                input(
+                    "Checkpoint directory "
+                    f"(default {Config.DEFAULT_CHECKPOINT_DIR}): "
+                ).strip()
+                or Config.DEFAULT_CHECKPOINT_DIR
+            )
+            if not tf.train.latest_checkpoint(ckpt_dir):
+                print(f"\n✗ No checkpoints found in {ckpt_dir}")
+                return
+            print(f"\nLoading model from checkpoint {ckpt_dir}...")
+            if input_source == "tfrecord":
+                model = Model(
+                    ckpt_dir,
+                    scale=scale_val,
+                    num_res_blocks=num_res_blocks_val,
                 )
+                hr_for_render = [h for h in chosen_hr if h is not None]
+                saved = reconstruct_and_render(
+                    chosen_lr,
+                    model,
+                    Config.VIS_RECONSTRUCTION_DIR,
+                    hr_images=(
+                        hr_for_render
+                        if len(hr_for_render) == len(chosen_lr)
+                        else None
+                    ),
+                )
+                for path in saved:
+                    print(f"  saved {path}")
+                print(
+                    f"\n✓ {len(saved)} reconstructions saved to "
+                    f"{Config.VIS_RECONSTRUCTION_DIR}"
+                )
+                return
+            model = load_model_from_checkpoint(
+                ckpt_dir,
+                scale_val,
+                num_res_blocks_val,
+                nchan_out=Config.NUM_HR_CHANNELS,
+            )
 
             os.makedirs(Config.VIS_RECONSTRUCTION_DIR, exist_ok=True)
             vmax = self._ask_vmax()
 
-            if input_source == "tfrecord":
-                print(f"Running super-resolution on {num_reconstruct} images...")
-                for i, lr_img in enumerate(chosen_lr):
-                    lr_data, sr_data = reconstruct(model, lr_img.data)
-                    hr_data = chosen_hr[i].data if chosen_hr[i] is not None else None
-                    output_path = os.path.join(
-                        Config.VIS_RECONSTRUCTION_DIR,
-                        f"reconstruct_idx{lr_img.index}.png",
-                    )
-                    plot_reconstruction(lr_data, sr_data, hr_data=hr_data, output_path=output_path, vmax=vmax)
-                    print(f"  ✓ [{i+1}/{num_reconstruct}] Index {lr_img.index} → {output_path}")
-                print(f"\n✓ {num_reconstruct} reconstructions saved to {Config.VIS_RECONSTRUCTION_DIR}")
-            else:
-                hr_data = None
-                hr_path = input("Path to HR ground truth (optional, press Enter to skip): ").strip() or None
-                if hr_path:
-                    if not os.path.exists(hr_path):
-                        print(f"  ⚠️  HR file not found, skipping: {hr_path}")
-                    elif hr_path.endswith(".npy"):
-                        hr_data = np.load(hr_path)
-                    elif hr_path.endswith(".png"):
-                        raw = tf.io.read_file(hr_path)
-                        hr_data = tf.image.decode_png(raw, dtype=tf.uint16).numpy().astype(np.float32)
-                        if hr_data.ndim == 3 and hr_data.shape[-1] == 1:
-                            hr_data = hr_data[..., 0]
+            hr_data = None
+            hr_path = input(
+                "Path to HR ground truth (optional, press Enter to skip): "
+            ).strip() or None
+            if hr_path:
+                if not os.path.exists(hr_path):
+                    print(f"  ⚠️  HR file not found, skipping: {hr_path}")
+                elif hr_path.endswith(".npy"):
+                    hr_data = np.load(hr_path)
+                elif hr_path.endswith(".png"):
+                    raw = tf.io.read_file(hr_path)
+                    hr_data = tf.image.decode_png(
+                        raw, dtype=tf.uint16,
+                    ).numpy().astype(np.float32)
+                    if hr_data.ndim == 3 and hr_data.shape[-1] == 1:
+                        hr_data = hr_data[..., 0]
 
-                print("Running super-resolution...")
-                lr_data, sr_data = reconstruct(model, lr_data_input)
-                basename = os.path.basename(lr_path).replace(".", "_")
-                output_path = os.path.join(Config.VIS_RECONSTRUCTION_DIR, f"reconstruct_{basename}.png")
-                plot_reconstruction(lr_data, sr_data, hr_data=hr_data, output_path=output_path)
-                print(f"\n✓ Reconstruction saved to: {output_path}")
+            print("Running super-resolution...")
+            lr_data, sr_data = reconstruct(model, lr_data_input)
+            basename = os.path.basename(lr_path).replace(".", "_")
+            output_path = os.path.join(
+                Config.VIS_RECONSTRUCTION_DIR,
+                f"reconstruct_{basename}.png",
+            )
+            plot_reconstruction(
+                lr_data,
+                sr_data,
+                hr_data=hr_data,
+                output_path=output_path,
+                vmax=vmax,
+            )
+            print(f"\n✓ Reconstruction saved to: {output_path}")
 
         except Exception as e:
             print(f"\n✗ Reconstruction failed: {e}")
@@ -1628,7 +1622,7 @@ class InteractiveCLI:
                 visualizer = BaseVisualizer(rows=1, cols=3, figsize=(18, 6),
                                             vmin=float(np.min(data)), vmax=float(np.max(data)))
                 visualizer.add_scale_panel(data)
-                visualizer.add_scale_panel(data, log_scale=True)
+                visualizer.add_scale_panel(data, stretch="log10")
 
                 mag_str = f"{star.magnitude:.2f}" if star.magnitude is not None else "N/A"
                 visualizer.add_statistics_panel(data, {
@@ -1687,7 +1681,7 @@ class InteractiveCLI:
                                     vmin=float(np.min(psf_data)), vmax=float(np.max(psf_data)))
 
         visualizer.add_scale_panel(psf_data, title_suffix='\nEuclid VIS PSF')
-        visualizer.add_scale_panel(psf_data, log_scale=True)
+        visualizer.add_scale_panel(psf_data, stretch="log10")
 
         center_y, center_x = psf_data.shape[0] // 2, psf_data.shape[1] // 2
         x_slice = psf_data[center_y, :]

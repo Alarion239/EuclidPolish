@@ -19,7 +19,10 @@ from typing import Any
 import numpy as np
 
 from euclid_polish.config import Config
-from euclid_polish.skirt.image import measure_halflight_radius_px
+from euclid_polish.skirt.image import (
+    load_skirt_frame,
+    measure_halflight_radius_px,
+)
 from euclid_polish.sky.generation.redshift_model import (
     TNG_NATIVE_PC_PER_PIXEL,
     load_tng_properties,
@@ -27,7 +30,6 @@ from euclid_polish.sky.generation.redshift_model import (
 from euclid_polish.sky.generation.tng_galaxy import (
     N_ORIENTATIONS,
     list_tng_galaxies,
-    load_tng_frame,
     tng_fits_path,
 )
 
@@ -167,7 +169,7 @@ def build_manifest(
             ):
                 previous["vis_path"] = os.path.abspath(vis_path)
                 return previous, None, True
-            frame = load_tng_frame(vis_path)
+            frame = load_skirt_frame(vis_path)
             re_px = float(measure_halflight_radius_px(frame))
             if not has_properties:
                 raise ValueError("missing finite positive mass_stars property")

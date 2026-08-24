@@ -1,13 +1,11 @@
 """
-Strong-lens population sampling and rasterisation.
+Strong-lens geometry sampling and rasterisation.
 
 Implements the Collett 2015 (arXiv:1507.02657) galaxy-galaxy lens population:
-each lens is a Singular Isothermal Ellipsoid (SIE) lens galaxy plus a small
-external shear, lensing a Sersic source. ``lenstronomy`` provides *only* the
-ray-tracing (``LensModel(['SIE','SHEAR']).ray_shooting``); the rasterisation
-of light (both the lens-galaxy's own light and the lensed source) uses the
-project's custom Sersic implementation in :mod:`euclid_polish.sky.profiles`.
-A single Sersic implementation is shared across galaxies and lenses.
+each lens is a Singular Isothermal Ellipsoid (SIE) plus a small external
+shear, lensing a real TNG galaxy stamp. ``lenstronomy`` provides the
+ray-tracing (``LensModel(['SIE','SHEAR']).ray_shooting``); the deflector and
+source light both come from the current SKIRT/TNG atlas.
 
 Coordinate conventions:
   * The HR canvas is in pixels at ``Config.DEFAULT_PIXEL_SCALE`` (0.05″/pix).
@@ -26,15 +24,7 @@ from scipy.ndimage import map_coordinates
 
 from euclid_polish.config import Config
 from euclid_polish.skirt.image import composite_stamp
-from euclid_polish.sky.generation.cosmos2025 import CosmosCatalog, GalaxyParams
-from euclid_polish.sky.generation.profiles import (
-    add_sersic_to_bands,
-    evaluate_sersic_at_coords,
-)
-from euclid_polish.sky.generation.redshift_model import (
-    angular_diameter_distance,
-    comoving_distance_mpc,
-)
+from euclid_polish.sky.generation.redshift_model import angular_diameter_distance
 
 # ---------------------------------------------------------------------------
 # Per-lens parameter dataclass
@@ -42,10 +32,7 @@ from euclid_polish.sky.generation.redshift_model import (
 
 @dataclass(frozen=True)
 class LensParams:
-    """All physical parameters describing one realised lens system.
-
-    The lens-galaxy light and lensed-source light are both rasterised; both
-    use the per-band fluxes stored in the underlying :class:`GalaxyParams`.
+    """Physical geometry for one realised TNG-backed lens system.
 
     ``centre_x_pix`` and ``centre_y_pix`` are the lens-galaxy centroid in
     HR pixel coordinates on the simulator canvas.
@@ -64,12 +51,6 @@ class LensParams:
     src_dx_arcsec:    float
     src_dy_arcsec:    float
 
-    # Lens-galaxy and source-galaxy parametric descriptions. None in the
-    # pure-TNG (catalog-free) path, where both lights are real stamps and
-    # there is no Sersic fallback.
-    lens_galaxy:      GalaxyParams | None
-    source_galaxy:    GalaxyParams | None
-
     # Placement on the simulator canvas (HR pixel coords).
     # None means "use the canvas centre" (the default before placement).
     centre_x_pix:     float | None = None
@@ -79,12 +60,6 @@ class LensParams:
 # ---------------------------------------------------------------------------
 # Cosmological distance helpers (flat ΛCDM, Collett-2015 cosmology)
 # ---------------------------------------------------------------------------
-
-# The distance helpers live in :mod:`euclid_polish.sky.generation.redshift_model`
-# (shared with the TNG redshift model); these private aliases keep them
-# importable from here.
-_comoving_distance_mpc = comoving_distance_mpc
-_angular_diameter_distance = angular_diameter_distance
 
 #: Observable Einstein-radius window (arcsec): smaller and the arcs are
 #: unresolved at Euclid resolution; larger is rarer than the simulated sky.
@@ -98,8 +73,8 @@ def einstein_radius_sis(sigma_v_kms: float, z_lens: float, z_source: float) -> f
     θ_E = 4π σ_v² / c² · D_ls / D_s   (radians) → arcsec.
     """
     c_kms = 299_792.458
-    D_s  = _angular_diameter_distance(z_source)
-    D_ls = _angular_diameter_distance(z_lens, z_source)
+    D_s = angular_diameter_distance(z_source)
+    D_ls = angular_diameter_distance(z_lens, z_source)
     if D_ls <= 0 or D_s <= 0:
         return 0.0
     theta_E_rad = 4.0 * math.pi * (sigma_v_kms / c_kms) ** 2 * D_ls / D_s
@@ -107,8 +82,7 @@ def einstein_radius_sis(sigma_v_kms: float, z_lens: float, z_source: float) -> f
 
 
 # ---------------------------------------------------------------------------
-# Module-level sampling helpers (shared by LensPopulation and
-# sample_lens_geometry so the logic lives in exactly one place)
+# Module-level sampling helpers
 # ---------------------------------------------------------------------------
 
 def _sample_shear(rng: np.random.Generator) -> tuple[float, float]:
@@ -132,108 +106,6 @@ def _sample_disk_offset(
     return r * math.cos(phi), r * math.sin(phi)
 
 
-# ---------------------------------------------------------------------------
-# Lens-population sampler
-# ---------------------------------------------------------------------------
-
-class LensPopulation:
-    """Draws strong-lens realisations from the Collett 2015 priors.
-
-    Each call to :meth:`sample` returns a :class:`LensParams` whose lens galaxy
-    and source galaxy come from the supplied :class:`CosmosCatalog`. Strict
-    failure modes (no source available at z > z_lens + offset, etc.) raise
-    ``RuntimeError`` — the caller can retry a few times.
-    """
-
-    def __init__(
-        self, catalog: CosmosCatalog, *,
-        sigma_v_min_kms: float = Config.LENS_SIGMA_V_MIN_KMS,
-        sigma_v_max_kms: float = Config.LENS_SIGMA_V_MAX_KMS,
-    ):
-        self.catalog = catalog
-        self.sigma_v_min_kms = float(sigma_v_min_kms)
-        self.sigma_v_max_kms = float(sigma_v_max_kms)
-
-    def _sample_sigma_v(self, rng: np.random.Generator) -> float:
-        """Velocity dispersion — uniform in σ_v over the truncation range.
-
-        Uniform σ_v ∈ [min, max] km/s (default [150, 350]) gives θ_E ∈
-        roughly [0.3″, 2.0″] at typical lens redshifts. σ_v² sets θ_E via
-        the SIS law, so this is the knob on the θ_E spread.
-        """
-        return float(rng.uniform(self.sigma_v_min_kms, self.sigma_v_max_kms))
-
-    def _sample_shear(self, rng: np.random.Generator) -> tuple[float, float]:
-        return _sample_shear(rng)
-
-    def _sample_source_offset(
-        self, rng: np.random.Generator, theta_E: float,
-    ) -> tuple[float, float]:
-        return _sample_disk_offset(rng, theta_E)
-
-    def sample(
-        self,
-        rng: np.random.Generator,
-        *,
-        max_retries: int = 16,
-        sigma_v_kms: float | None = None,
-    ) -> LensParams:
-        """Sample one fully populated :class:`LensParams`.
-
-        ``sigma_v_kms`` overrides the uniform σ_v prior — used when the lens
-        galaxy is a TNG stamp whose σ_v is derived from the subhalo's stellar
-        mass, so the deflector strength matches the light on the canvas.
-        """
-        last_error: Exception | None = None
-        for _ in range(max_retries):
-            try:
-                lens_gal = self.catalog.sample_lens_galaxy(
-                    rng, (Config.LENS_Z_LENS_MIN, Config.LENS_Z_LENS_MAX),
-                )
-                src_gal  = self.catalog.sample_source_galaxy(rng, lens_gal.z_phot)
-
-                sigma_v = (sigma_v_kms if sigma_v_kms is not None
-                           else self._sample_sigma_v(rng))
-                theta_E = einstein_radius_sis(
-                    sigma_v_kms=sigma_v,
-                    z_lens=lens_gal.z_phot,
-                    z_source=src_gal.z_phot,
-                )
-                if not (THETA_E_RANGE_ARCSEC[0] < theta_E
-                        < THETA_E_RANGE_ARCSEC[1]):
-                    continue   # outside the regime where lensing is observable
-
-                # Lens-galaxy axis ratio: prefer the catalog's bulge_q (the
-                # bulge dominates the central mass) clipped to Collett's range.
-                q = max(
-                    Config.LENS_AXIS_RATIO_MIN,
-                    min(Config.LENS_AXIS_RATIO_MAX, lens_gal.bulge_axis_ratio),
-                )
-                pa = lens_gal.angle_rad
-                g1, g2 = self._sample_shear(rng)
-                dx, dy = self._sample_source_offset(rng, theta_E)
-                return LensParams(
-                    z_lens         = lens_gal.z_phot,
-                    z_source       = src_gal.z_phot,
-                    theta_E_arcsec = theta_E,
-                    lens_q         = q,
-                    lens_pa_rad    = pa,
-                    shear_gamma1   = g1,
-                    shear_gamma2   = g2,
-                    src_dx_arcsec  = dx,
-                    src_dy_arcsec  = dy,
-                    lens_galaxy    = lens_gal,
-                    source_galaxy  = src_gal,
-                )
-            except RuntimeError as e:
-                last_error = e
-                continue
-        raise RuntimeError(
-            f"LensPopulation.sample exhausted {max_retries} retries; "
-            f"last error: {last_error}"
-        )
-
-
 def sample_lens_geometry(
     rng: np.random.Generator,
     sigma_v_kms: float,
@@ -242,11 +114,9 @@ def sample_lens_geometry(
 ) -> LensParams | None:
     """Catalog-free lens-system geometry from the Collett-2015 priors.
 
-    The pure-TNG path: both lights are real stamps, so no COSMOS rows are
-    needed — only the geometry. Redshifts and axis ratio come straight from
-    the configured priors, θ_E from the SIS law at ``sigma_v_kms``, PA
-    uniform. ``lens_galaxy``/``source_galaxy`` are None — the caller must
-    supply stamps for both lights. Returns None if no draw lands in the
+    Both lights are real stamps, so no COSMOS rows are needed. Redshifts and
+    axis ratio come from the configured priors, θ_E from the SIS law at
+    ``sigma_v_kms``, and PA is uniform. Returns None if no draw lands in the
     observable θ_E window.
     """
     for _ in range(max_retries):
@@ -273,8 +143,6 @@ def sample_lens_geometry(
             shear_gamma2   = g2,
             src_dx_arcsec  = dx,
             src_dy_arcsec  = dy,
-            lens_galaxy    = None,
-            source_galaxy  = None,
         )
     return None
 
@@ -339,16 +207,14 @@ def render_lens_to_multiband_canvas(
     *,
     params: LensParams,
     pixel_scale: float = Config.DEFAULT_PIXEL_SCALE,
-    lens_light_stamp: np.ndarray | None = None,
-    source_stamp: np.ndarray | None = None,
+    lens_light_stamp: np.ndarray,
+    source_stamp: np.ndarray,
 ) -> np.ndarray:
     """Add one lens system to a 4-channel canvas in a single pass.
 
-    Renders the morphology *once* (band-independent geometry) and scales
-    it into every band by the corresponding per-band flux. This is the
-    fast path used by :class:`SkySimulator`; cuts cost from
-    ``4 × (2 Sersic + ray-shoot + 2 source-evals)`` down to
-    ``2 Sersic + 1 ray-shoot + 2 source-evals`` per lens system.
+    This is the only lens renderer used by :class:`SkySimulator`: it places
+    the foreground TNG stamp, ray-shoots once, and samples the four-band
+    source stamp at the mapped source-plane coordinates.
 
     Parameters
     ----------
@@ -356,37 +222,17 @@ def render_lens_to_multiband_canvas(
     params      : :class:`LensParams` instance (already placed with
                   ``centre_x_pix`` / ``centre_y_pix`` if non-zero).
     pixel_scale : arcsec/pixel of ``canvas_4ch``.
-    lens_light_stamp : optional ``(Hs,Ws,4)`` TNG stamp — when given, the
-                  foreground lens-galaxy light is this real-morphology stamp
-                  (composited at the lens centre) instead of the analytic B+D
-                  Sersic.
-    source_stamp : optional ``(Hs,Ws,4)`` TNG stamp — when given, the lensed
-                  background source is this real-morphology stamp (ray-shot +
-                  bilinear-sampled) instead of the analytic B+D Sersic.
+    lens_light_stamp : ``(Hs,Ws,4)`` foreground TNG stamp.
+    source_stamp : ``(Hs,Ws,4)`` background TNG stamp.
 
     Returns the updated canvas.
     """
-    H, W, C = canvas_4ch.shape
+    H, W, _ = canvas_4ch.shape
     cx_pix = params.centre_x_pix if params.centre_x_pix is not None else W / 2.0
     cy_pix = params.centre_y_pix if params.centre_y_pix is not None else H / 2.0
 
-    # --- 1. Lens galaxy's own light: real TNG stamp or analytic B+D Sersic ---
-    lg = params.lens_galaxy
-    if lens_light_stamp is not None:
-        composite_stamp(canvas_4ch, lens_light_stamp, cx_pix, cy_pix)
-    elif lg is not None:
-        add_sersic_to_bands(
-            canvas_4ch, flux_per_band=lg.bulge_flux_e, n=4.0,
-            r_e=lg.bulge_r_e_arcsec, q=lg.bulge_axis_ratio,
-            theta_rad=lg.angle_rad, x0=cx_pix, y0=cy_pix,
-            pixel_scale=pixel_scale,
-        )
-        add_sersic_to_bands(
-            canvas_4ch, flux_per_band=lg.disk_flux_e, n=1.0,
-            r_e=lg.disk_r_e_arcsec, q=lg.disk_axis_ratio,
-            theta_rad=lg.angle_rad, x0=cx_pix, y0=cy_pix,
-            pixel_scale=pixel_scale,
-        )
+    # --- 1. Foreground lens-galaxy light ---
+    composite_stamp(canvas_4ch, lens_light_stamp, cx_pix, cy_pix)
 
     # --- 2. Ray-shooting (band-independent) ---
     lens_model, kw = _build_lenstronomy_lens(params)
@@ -399,55 +245,8 @@ def render_lens_to_multiband_canvas(
     src_x = src_x_flat.reshape(H, W)
     src_y = src_y_flat.reshape(H, W)
 
-    # --- 3. Lensed source: real TNG stamp (ray-shot + sampled) or B+D Sersic
-    #        evaluated at the ray-shot coords. Morphology band-independent for
-    #        Sersic; per-band for the TNG stamp. ---
-    sg = params.source_galaxy
+    # --- 3. Lensed source stamp (ray-shot + sampled) ---
     dx = src_x - params.src_dx_arcsec
     dy = src_y - params.src_dy_arcsec
-
-    if source_stamp is not None:
-        canvas_4ch += _lensed_source_from_stamp(source_stamp, dx, dy, pixel_scale)
-        return canvas_4ch
-    if sg is None:
-        # Catalog-free geometry with no source stamp: nothing to lens.
-        return canvas_4ch
-
-    bulge_unit = evaluate_sersic_at_coords(
-        dx, dy, flux=1.0, n=4.0,
-        r_e_arcsec=sg.bulge_r_e_arcsec, q=sg.bulge_axis_ratio,
-        theta_rad=sg.angle_rad, pixel_scale=pixel_scale,
-    ).astype(np.float32)
-    disk_unit = evaluate_sersic_at_coords(
-        dx, dy, flux=1.0, n=1.0,
-        r_e_arcsec=sg.disk_r_e_arcsec, q=sg.disk_axis_ratio,
-        theta_rad=sg.angle_rad, pixel_scale=pixel_scale,
-    ).astype(np.float32)
-
-    bulge_flux = np.asarray(sg.bulge_flux_e, dtype=np.float32)
-    disk_flux  = np.asarray(sg.disk_flux_e,  dtype=np.float32)
-    # Broadcast: (H, W) × (4,) → (H, W, 4)
-    canvas_4ch += bulge_unit[:, :, None] * bulge_flux[None, None, :]
-    canvas_4ch += disk_unit [:, :, None] * disk_flux [None, None, :]
+    canvas_4ch += _lensed_source_from_stamp(source_stamp, dx, dy, pixel_scale)
     return canvas_4ch
-
-
-def render_lens_to_canvas(
-    canvas: np.ndarray,
-    *,
-    params: LensParams,
-    band_index: int,
-    pixel_scale: float = Config.DEFAULT_PIXEL_SCALE,
-) -> np.ndarray:
-    """Single-band wrapper for tests & inspection.
-
-    Production code uses :func:`render_lens_to_multiband_canvas` —
-    rendering 4 bands at once is ~4× faster because the morphology is
-    band-independent. This wrapper synthesises a 4-channel canvas, calls
-    the multi-band path, then copies the requested channel back.
-    """
-    H, W = canvas.shape
-    tmp = np.zeros((H, W, Config.NUM_LR_CHANNELS), dtype=np.float32)
-    render_lens_to_multiband_canvas(tmp, params=params, pixel_scale=pixel_scale)
-    canvas += tmp[..., band_index]
-    return canvas

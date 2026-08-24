@@ -48,8 +48,6 @@ from ._utils import _now_iso, _read_json, _write_json
 _PROJECT_ROOT = os.path.dirname(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 )
-#: Public alias for the local repo root (callers push from / worktree off it).
-PROJECT_ROOT = _PROJECT_ROOT
 
 #: Read-mostly input subtrees (relative to the data dir) that are symlinked
 #: into a sandbox so a replay reads live inputs without copying GBs. Anything

@@ -47,9 +47,8 @@ any TAP overflow fails closed instead of caching a truncated sample. Euclid flux
 heavy-tailed likelihood, and local `POINT_LIKE_PROB` weights the colour-locus
 fit. The generator inverse-CDF samples the fitted finite-domain straight law
 and then the magnitude-conditioned latent colour model for the four Euclid
-bands. No empirical magnitude CDF, blackbody SED, polynomial colour map, or
-legacy magnitude fitter is used for current generation. The photometric basis follows the Gaia DR3 synthetic
-photometry work ([Gaia DR3 synthetic photometry](https://arxiv.org/abs/2206.06215));
+bands. The photometric basis follows the Gaia DR3 synthetic photometry work
+([Gaia DR3 synthetic photometry](https://arxiv.org/abs/2206.06215));
 the exact artifact version and cuts are project validation choices.
 
 ## Active Euclid-only galaxy model
@@ -151,8 +150,8 @@ independent common four-band flux factor is
 
 Version 11 contains the continuous three-slope bright bridge/main/flat
 brightness law and the single straight, no-tail circularized-Sérsic-radius
-law. Versions 7--10 remain loadable for reproducibility, but mixed old/new
-contracts fail closed. The fitting step reads no TNG image; TNG is used only
+law. It is the only supported population artifact contract; older versions
+must be refitted before use. The fitting step reads no TNG image; TNG is used only
 after activation as a random morphology donor. This deliberately modest model
 aims for plausible source counts and sizes rather than an exact catalogue
 replica.

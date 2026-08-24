@@ -67,24 +67,11 @@ from euclid_polish.psf.psf_extractor import (
 
 
 def _cutout_dir_for_band(band: BandConfig) -> str:
-    """Per-band cutout directory.
-
-    Resolution order:
-      1. New layout: ``data/euclid_stars/cutouts/<band_name>/``.
-      2. Legacy flat VIS layout: ``data/euclid_stars/cutouts/`` (for
-         existing checkouts where the migration script has not yet run).
-    """
-    new_path = Config.cutout_dir_for_band(
+    """Return the current per-band cutout directory."""
+    return Config.cutout_dir_for_band(
         band.name,
         root=os.path.join(Config.DEFAULT_OUTPUT_DIR, "cutouts"),
     )
-    if os.path.isdir(new_path):
-        return new_path
-    if band.name == "VIS":
-        legacy = os.path.join(Config.DEFAULT_OUTPUT_DIR, "cutouts")
-        if os.path.isdir(legacy):
-            return legacy
-    return new_path
 
 
 def _load_star_positions(stars_csv: str) -> dict[int, tuple[float, float]]:

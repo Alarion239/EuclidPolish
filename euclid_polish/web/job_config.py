@@ -36,9 +36,6 @@ FASRC_STEP_PARAMS: dict[str, dict[str, str]] = {
                                 "image_size": "hr_image_size",
                                 "galaxy_density_arcmin2": "galaxy_density_arcmin2",
                                 "star_density_arcmin2": "star_density_arcmin2",
-                                "star_mag_slope": "star_mag_slope",
-                                "star_mag_bright": "star_mag_bright",
-                                "star_mag_faint": "star_mag_faint",
                                 "lens_density_arcmin2": "lens_density_arcmin2",
                                 "lens_sigma_v_min_kms": "lens_sigma_v_min_kms",
                                 "lens_sigma_v_max_kms": "lens_sigma_v_max_kms",
@@ -130,12 +127,8 @@ class JobConfig:
     plateau_lr_cooldown:  int   = Config.PLATEAU_LR_COOLDOWN
     plateau_lr_min_lr:    float = Config.PLATEAU_LR_MIN_LR
     plateau_lr_metric:    str   = Config.PLATEAU_LR_METRIC
-    # Star field: surface density (stars/arcmin²) + the smooth magnitude
-    # distribution dN/dm ∝ 10^(slope·m) over [bright, faint] VIS mag.
+    # Star field surface density; the activated calibration owns magnitudes.
     star_density_arcmin2: float = Config.DEFAULT_STAR_DENSITY_ARCMIN2
-    star_mag_slope:       float = Config.STAR_MAG_SLOPE
-    star_mag_bright:      float = Config.STAR_MAG_BRIGHT
-    star_mag_faint:       float = Config.STAR_MAG_FAINT
     # Strong lenses: surface density + velocity-dispersion range (σ_v² sets the
     # Einstein radius θ_E via the SIS law).
     lens_density_arcmin2: float = Config.LENS_DENSITY_ARCMIN2

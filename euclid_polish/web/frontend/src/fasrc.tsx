@@ -505,12 +505,6 @@ function taskColumnsFor(stepId: string): Column<HistoryRow>[] {
         taskColumn("galaxies / arcmin²", (p) => paramText(p, "galaxy_density_arcmin2", paramText(p, "tng_density_arcmin2", String(LEGACY_TNG_GALAXY_DENSITY))), 128),
         taskColumn("lenses / arcmin²", (p) => paramText(p, "lens_density_arcmin2"), 122),
       ];
-    case "lens_isolation_generate":
-      return [taskColumn("nfields", (p) => paramSum(p, ["ntrain", "nvalid", "ntest"]), 92)];
-    case "lens_isolation_train":
-      return [taskColumn("source members", (p) => paramText(p, "sources"), 150), taskColumn("steps", (p) => paramCount(p, "steps"), 76), taskColumn("batch", (p) => paramCount(p, "batch_size"), 70)];
-    case "lens_isolation_evaluate":
-      return [taskColumn("fields", (p) => paramCount(p, "limit"), 76), taskColumn("crop px", (p) => paramCount(p, "crop_size"), 82)];
     case "download_euclid_cutouts":
       return [taskColumn("VIS px", (p) => paramCount(p, "vis_pixels"), 76), taskColumn("workers", (p) => paramCount(p, "workers"), 82)];
     case "extract_euclid_psf":

@@ -47,10 +47,9 @@ if _PROJECT_ROOT not in sys.path:
 
 from euclid_polish.config import Config
 from euclid_polish.observability.reporter import Reporter
-from euclid_polish.skirt.image import block_mean
+from euclid_polish.skirt.image import block_mean, load_skirt_frame
 from euclid_polish.sky.generation.tng_galaxy import (
     TNG_FITS_BANDS,
-    load_tng_frame,
     tng_fits_path,
 )
 from euclid_polish.tng.properties import (
@@ -144,7 +143,7 @@ def _load_cell_band(gdir: str, gid: str, orient: int, fits_band: str,
     path = tng_fits_path(gdir, gid, orient, fits_band)
     if not os.path.isfile(path):
         return None
-    arr = load_tng_frame(path)
+    arr = load_skirt_frame(path)
     if downsample > 1:
         arr = block_mean(arr, downsample)
     return arr

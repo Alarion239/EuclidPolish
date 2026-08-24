@@ -115,12 +115,3 @@ def test_train_members_empty_specs_raises(tmp_path):
     with pytest.raises(ValueError, match="no member specs"):
         EnsembleModel(str(tmp_path / "e"), _models=[]).train_members(
             "lr", "hr", [])
-
-
-def test_legacy_train_wraps_add_specs(tmp_path):
-    base = str(tmp_path / "ensemble")
-    EnsembleModel(base, _models=[]).train("lr", "hr", n_members=2,
-                                          base_seed=100, steps=50)
-    assert [os.path.basename(c["dir"]) for c in _FakeModel.calls] == \
-        ["member_00", "member_01"]
-    assert [c["seed"] for c in _FakeModel.calls] == [100, 101]

@@ -10,21 +10,12 @@ from scipy.special import ndtr
 from euclid_polish.config import Config
 from euclid_polish.population.euclid_galaxy_prior import (
     BRIGHT_BRIDGE_JOIN_MAGNITUDES,
-    COMPACT_FAINT_BROKEN_RADIUS_MODEL_VERSION,
     GALAXY_FAINT_DENSITY_CAP_ARCMIN2_MAG,
     JOINT_EUCLID_GALAXY_KIND,
     JOINT_EUCLID_GALAXY_VERSION,
-    LEGACY_JOINT_EUCLID_GALAXY_KIND,
     RADIUS_MODEL_VERSION,
-    V10_JOINT_EUCLID_GALAXY_VERSION,
     ConditionalRadiusLaw,
-    fit_broken_conditional_radius_law_from_binned_counts,
-    fit_conditional_radius_law,
-    fit_conditional_radius_law_from_aggregate_moments,
-    fit_conditional_radius_law_from_binned_counts,
     fit_linear_conditional_radius_law_from_binned_counts,
-    generation_magnitude_law,
-    generation_magnitude_law_from_q1_bins,
     joint_density_grid,
 )
 from euclid_polish.population.magnitude_law import (
@@ -57,17 +48,6 @@ def magnitude_law() -> StraightMagnitudeLaw:
     )
 
 
-def radius_law() -> ConditionalRadiusLaw:
-    return ConditionalRadiusLaw(
-        version=1, pivot_mag=23.0, intercept_log10_arcsec=-0.4,
-        slope_log10_arcsec_per_mag=-0.08, scatter_dex=0.18,
-        log_radius_min=np.log10(0.03), log_radius_max=np.log10(10.0),
-        fitted_rows=1000, clipped_rows=4, weighted_rows=800.0,
-        residual_rms_dex=0.18, r_squared=0.3,
-        covariance=((1e-4, 0.0), (0.0, 1e-5)), selection="fixture",
-    )
-
-
 def current_radius_law() -> ConditionalRadiusLaw:
     return ConditionalRadiusLaw(
         version=RADIUS_MODEL_VERSION,
@@ -90,34 +70,7 @@ def current_radius_law() -> ConditionalRadiusLaw:
     )
 
 
-def v10_radius_law() -> ConditionalRadiusLaw:
-    return ConditionalRadiusLaw(
-        version=COMPACT_FAINT_BROKEN_RADIUS_MODEL_VERSION,
-        pivot_mag=23.0,
-        intercept_log10_arcsec=-0.4,
-        slope_log10_arcsec_per_mag=-0.08,
-        scatter_dex=0.18,
-        log_radius_min=np.log10(0.03),
-        log_radius_max=np.log10(10.0),
-        fitted_rows=1000,
-        clipped_rows=0,
-        weighted_rows=800.0,
-        residual_rms_dex=0.18,
-        r_squared=0.3,
-        covariance=((1e-4, 0.0), (0.0, 1e-5)),
-        selection="fixture v10",
-        bright_intercept_log10_arcsec=-0.8,
-        break_magnitude=18.0,
-        tail_fraction=0.02,
-        tail_distribution="uniform_log_radius",
-        fit_min_selected_per_magnitude_bin=20,
-        fit_effective_weight_cap=1000.0,
-        fit_faint_magnitude=25.5,
-        tail_cutoff_magnitude=25.5,
-    )
-
-
-def current_magnitude_law():
+def current_magnitude_law() -> ContinuousBrightBridgeFaintCappedMagnitudeLaw:
     return ContinuousBrightBridgeFaintCappedMagnitudeLaw(
         straight_law=magnitude_law(),
         bright_slopes=(0.8, 0.3, 0.5),
@@ -125,6 +78,54 @@ def current_magnitude_law():
         density_cap_arcmin2_mag=GALAXY_FAINT_DENSITY_CAP_ARCMIN2_MAG,
     )
 
+
+def active_payload() -> dict:
+    fitted_mag = magnitude_law()
+    mag = current_magnitude_law()
+    plot_x = [14.0, mag.break_magnitude, 29.0]
+    return {
+        "version": JOINT_EUCLID_GALAXY_VERSION,
+        "kind": JOINT_EUCLID_GALAXY_KIND,
+        "valid": True,
+        "active": True,
+        "fingerprint": "b" * 64,
+        "fitted_magnitude_law": fitted_mag.to_payload(),
+        "magnitude_law": mag.to_payload(),
+        "radius_law": current_radius_law().to_payload(),
+        "magnitude_plot": {
+            "law": {"x": [14.0, 29.0], "density": [0.1, 100.0]},
+            "generation_law": {
+                "x": plot_x,
+                "density": mag.density(plot_x).tolist(),
+            },
+        },
+        "plots": {
+            "radius": {
+                "x": [-1.0, 0.0],
+                "density": [1.0, 1.0],
+                "q1_weighted_density": [1.0, 1.0],
+                "observed_density": [1.0, 1.0],
+            },
+            "conditional_radius": {
+                "magnitude": [14.0, 29.0],
+                "model_mean_log10_arcsec": [0.32, -0.88],
+            },
+        },
+        "generation": {
+            "surface_density_arcmin2": mag.integrated_density(),
+            "differential_density_cap_arcmin2_mag": (
+                GALAXY_FAINT_DENSITY_CAP_ARCMIN2_MAG
+            ),
+            "break_magnitude": mag.break_magnitude,
+            "fitted_surface_density_arcmin2": (
+                fitted_mag.integrated_density()
+            ),
+            "vis_magnitude_min": mag.mag_bright,
+            "vis_magnitude_max": mag.mag_faint,
+            "fitted_vis_magnitude_max": fitted_mag.mag_faint,
+            "faint_end_policy": "cap_differential_counts_after_break",
+        },
+    }
 
 @pytest.mark.parametrize(
     ("field", "value"),
@@ -158,190 +159,13 @@ def test_radius_law_rejects_malformed_covariance(covariance):
         ConditionalRadiusLaw.from_payload(payload)
 
 
-def v10_magnitude_law():
-    return generation_magnitude_law_from_q1_bins(
-        magnitude_law(),
-        [
-            {
-                "mag_lo": 14.0,
-                "mag_hi": 16.0,
-                "density_arcmin2_mag": 0.1,
-            },
-            {
-                "mag_lo": 16.0,
-                "mag_hi": 18.0,
-                "density_arcmin2_mag": 0.4,
-            },
-        ],
-    )
-
-
-def active_payload() -> dict:
-    fitted_mag = magnitude_law()
+def test_joint_grid_integrates_to_current_brightness_density():
     mag = current_magnitude_law()
-    plot_x = [14.0, mag.break_magnitude, 29.0]
-    return {
-        "version": JOINT_EUCLID_GALAXY_VERSION,
-        "kind": JOINT_EUCLID_GALAXY_KIND,
-        "valid": True, "active": True, "fingerprint": "b" * 64,
-        "fitted_magnitude_law": fitted_mag.to_payload(),
-        "magnitude_law": mag.to_payload(),
-        "radius_law": current_radius_law().to_payload(),
-        "magnitude_plot": {
-            "law": {"x": [14.0, 29.0], "density": [0.1, 100.0]},
-            "generation_law": {
-                "x": plot_x,
-                "density": mag.density(plot_x).tolist(),
-            },
-        },
-        "plots": {
-            "radius": {
-                "x": [-1.0, 0.0], "density": [1.0, 1.0],
-                "q1_weighted_density": [1.0, 1.0],
-                "observed_density": [1.0, 1.0],
-            },
-            "conditional_radius": {
-                "magnitude": [14.0, 29.0],
-                "model_mean_log10_arcsec": [0.32, -0.88],
-            },
-        },
-        "generation": {
-            "surface_density_arcmin2": mag.integrated_density(),
-            "differential_density_cap_arcmin2_mag": (
-                GALAXY_FAINT_DENSITY_CAP_ARCMIN2_MAG
-            ),
-            "break_magnitude": mag.break_magnitude,
-            "fitted_surface_density_arcmin2": fitted_mag.integrated_density(),
-            "vis_magnitude_min": mag.mag_bright,
-            "vis_magnitude_max": mag.mag_faint,
-            "fitted_vis_magnitude_max": fitted_mag.mag_faint,
-            "faint_end_policy": "cap_differential_counts_after_break",
-        },
-    }
-
-
-def legacy_active_payload(version: int = 7) -> dict:
-    payload = active_payload()
-    fitted_mag = magnitude_law()
-    mag = generation_magnitude_law(fitted_mag)
-    plot_x = [mag.mag_bright, mag.break_magnitude, mag.mag_faint]
-    payload.update({
-        "version": version,
-        "kind": LEGACY_JOINT_EUCLID_GALAXY_KIND,
-        "magnitude_law": mag.to_payload(),
-        "radius_law": radius_law().to_payload(),
-    })
-    payload["magnitude_plot"]["generation_law"] = {
-        "x": plot_x,
-        "density": mag.density(plot_x).tolist(),
-    }
-    payload["generation"].update({
-        "surface_density_arcmin2": mag.integrated_density(),
-        "break_magnitude": mag.break_magnitude,
-        "faint_end_policy": "cap_differential_counts_after_break",
-    })
-    return payload
-
-
-def v10_active_payload() -> dict:
-    payload = active_payload()
-    mag = v10_magnitude_law()
-    plot_x = [
-        mag.mag_bright,
-        mag.empirical_faint,
-        mag.break_magnitude,
-        mag.mag_faint,
-    ]
-    payload.update({
-        "version": V10_JOINT_EUCLID_GALAXY_VERSION,
-        "magnitude_law": mag.to_payload(),
-        "radius_law": v10_radius_law().to_payload(),
-    })
-    payload["magnitude_plot"]["generation_law"] = {
-        "x": plot_x,
-        "density": mag.density(plot_x).tolist(),
-    }
-    payload["generation"].update({
-        "surface_density_arcmin2": mag.integrated_density(),
-        "break_magnitude": mag.break_magnitude,
-        "faint_end_policy": (
-            "empirical_bright_bins_then_fitted_middle_then_flat_faint"
-        ),
-    })
-    return payload
-
-
-def test_radius_fit_recovers_straight_conditional_relation():
-    rng = np.random.default_rng(7)
-    magnitude = rng.uniform(18.0, 27.0, 4000)
-    expected_intercept, expected_slope = -0.35, -0.075
-    log_radius = (
-        expected_intercept + expected_slope * (magnitude - 23.0)
-        + rng.normal(0.0, 0.16, magnitude.size)
-    )
-    law = fit_conditional_radius_law(
-        magnitude, 10.0**log_radius, np.ones(magnitude.size),
-    )
-
-    assert law.intercept_log10_arcsec == pytest.approx(expected_intercept, abs=0.01)
-    assert law.slope_log10_arcsec_per_mag == pytest.approx(expected_slope, abs=0.005)
-    assert law.scatter_dex == pytest.approx(0.16, abs=0.01)
-
-
-def test_joint_grid_integrates_to_straight_brightness_density():
-    mag = magnitude_law()
-    grid = joint_density_grid(mag, radius_law())
+    grid = joint_density_grid(mag, current_radius_law())
 
     assert np.sum(grid["density"]) == pytest.approx(
         mag.integrated_density(), rel=2e-3,
     )
-
-
-def test_aggregate_radius_moments_recover_straight_relation():
-    magnitude = np.linspace(18.0, 27.0, 40)
-    expected_intercept, expected_slope, expected_scatter = -0.35, -0.075, 0.16
-    mean_log10 = expected_intercept + expected_slope * (magnitude - 23.0)
-    sigma_ln = expected_scatter * np.log(10.0)
-    mean_ln = mean_log10 * np.log(10.0)
-    expected = np.full(magnitude.shape, 80.0)
-    first = expected * np.exp(mean_ln + 0.5 * sigma_ln**2)
-    second = expected * np.exp(2.0 * mean_ln + 2.0 * sigma_ln**2)
-
-    law = fit_conditional_radius_law_from_aggregate_moments(
-        magnitude, np.full(magnitude.shape, 100), expected, first, second,
-    )
-
-    assert law.intercept_log10_arcsec == pytest.approx(expected_intercept)
-    assert law.slope_log10_arcsec_per_mag == pytest.approx(expected_slope)
-    assert law.scatter_dex == pytest.approx(expected_scatter)
-
-
-def test_binned_radius_counts_recover_bounded_conditional_relation():
-    magnitude_edges = np.linspace(18.0, 27.0, 91)
-    radius_edges = np.linspace(np.log10(0.03), np.log10(10.0), 51)
-    magnitude = 0.5 * (magnitude_edges[:-1] + magnitude_edges[1:])
-    expected_intercept, expected_slope, expected_scatter = -0.35, -0.075, 0.16
-    mean = expected_intercept + expected_slope * (magnitude - 23.0)
-    upper = (radius_edges[None, 1:] - mean[:, None]) / expected_scatter
-    lower = (radius_edges[None, :-1] - mean[:, None]) / expected_scatter
-    probability = ndtr(upper) - ndtr(lower)
-    probability /= np.sum(probability, axis=1, keepdims=True)
-    expected = 1000.0 * probability
-    selected = np.rint(1250.0 * probability)
-
-    law = fit_conditional_radius_law_from_binned_counts(
-        magnitude_edges,
-        radius_edges,
-        selected,
-        expected,
-        fit_bright=18.0,
-        fit_faint=27.0,
-    )
-
-    assert law.intercept_log10_arcsec == pytest.approx(expected_intercept, abs=2e-3)
-    assert law.slope_log10_arcsec_per_mag == pytest.approx(expected_slope, abs=2e-3)
-    assert law.scatter_dex == pytest.approx(expected_scatter, abs=2e-3)
-    assert "bounded aggregate" in law.selection
 
 
 def test_linear_binned_radius_fit_has_no_bright_break_or_generated_tail():
@@ -372,59 +196,11 @@ def test_linear_binned_radius_fit_has_no_bright_break_or_generated_tail():
         expected_slope, abs=2e-3,
     )
     assert law.scatter_dex == pytest.approx(expected_scatter, abs=2e-3)
-    assert law.bright_intercept_log10_arcsec is None
-    assert law.break_magnitude is None
-    assert law.tail_fraction == 0.0
-    assert law.tail_distribution == "none"
-    assert law.tail_cutoff_magnitude is None
-    assert law.tail_taper_start_magnitude is None
-    assert law.tail_taper_end_magnitude is None
-    assert law.core_mean([15.0, 23.0, 27.0]) == pytest.approx(
+    assert law.mean([15.0, 23.0, 27.0]) == pytest.approx(
         expected_intercept
         + expected_slope * (np.asarray([15.0, 23.0, 27.0]) - 23.0),
         abs=2e-3,
     )
-
-
-def test_broken_radius_counts_recover_plateau_jump_slope_and_tail():
-    magnitude_edges = np.linspace(14.0, 28.0, 141)
-    radius_edges = np.linspace(np.log10(0.03), np.log10(10.0), 41)
-    magnitude = 0.5 * (magnitude_edges[:-1] + magnitude_edges[1:])
-    bright, intercept, slope, scatter, tail = -0.8, -0.35, -0.08, 0.16, 0.12
-    core_mean = np.where(
-        magnitude < 18.0,
-        bright,
-        intercept + slope * (magnitude - 23.0),
-    )
-    upper = (radius_edges[None, 1:] - core_mean[:, None]) / scatter
-    lower = (radius_edges[None, :-1] - core_mean[:, None]) / scatter
-    core = ndtr(upper) - ndtr(lower)
-    core /= np.sum(core, axis=1, keepdims=True)
-    uniform = np.diff(radius_edges) / (radius_edges[-1] - radius_edges[0])
-    probability = (1.0 - tail) * core + tail * uniform[None, :]
-    expected = 1000.0 * probability
-    selected = np.rint(1250.0 * probability)
-
-    law = fit_broken_conditional_radius_law_from_binned_counts(
-        magnitude_edges, radius_edges, selected, expected,
-    )
-
-    assert law.version == COMPACT_FAINT_BROKEN_RADIUS_MODEL_VERSION
-    assert law.bright_intercept_log10_arcsec == pytest.approx(bright, abs=0.02)
-    assert law.break_magnitude == pytest.approx(18.0, abs=0.11)
-    assert law.intercept_log10_arcsec == pytest.approx(intercept, abs=0.02)
-    assert law.slope_log10_arcsec_per_mag == pytest.approx(slope, abs=0.01)
-    assert law.scatter_dex == pytest.approx(scatter, abs=0.02)
-    assert law.tail_fraction == pytest.approx(tail, abs=0.02)
-    assert law.tail_distribution == "uniform_log_radius"
-    assert law.fit_faint_magnitude == 25.5
-    assert law.tail_taper_start_magnitude is None
-    assert law.tail_taper_end_magnitude is None
-    assert law.tail_cutoff_magnitude == 25.5
-    assert law.tail_fraction_at(25.5) == pytest.approx(tail, abs=0.02)
-    assert law.tail_fraction_at(25.5001) == pytest.approx(0.0)
-    assert law.tail_fraction_at(26.25) == pytest.approx(0.0)
-    assert law.tail_fraction_at(27.0) == pytest.approx(0.0)
 
 
 def test_prior_draws_radius_first_then_brightness_conditioned_on_radius():
@@ -445,8 +221,6 @@ def test_prior_draws_radius_first_then_brightness_conditioned_on_radius():
         ContinuousBrightBridgeFaintCappedMagnitudeLaw,
     )
     assert prior.radius_law.version == RADIUS_MODEL_VERSION
-    assert prior.radius_law.break_magnitude is None
-    assert prior.radius_law.tail_fraction == 0.0
     assert prior.surface_density_arcmin2 == pytest.approx(
         current_magnitude_law().integrated_density()
     )
@@ -545,7 +319,7 @@ def test_old_cosmos_joint_artifacts_fail_closed():
     payload = active_payload()
     payload.update({"version": 3, "kind": "joint_analytical_tng_draw"})
 
-    with pytest.raises(ValueError, match="unsupported version"):
+    with pytest.raises(ValueError, match="current version"):
         JointGalaxyPopulationPrior(payload)
 
 
@@ -553,61 +327,7 @@ def test_hard_truncation_version_six_artifacts_fail_closed():
     payload = active_payload()
     payload["version"] = 6
 
-    with pytest.raises(ValueError, match="unsupported version"):
-        JointGalaxyPopulationPrior(payload)
-
-
-def test_previous_version_seven_active_prior_remains_loadable():
-    payload = legacy_active_payload()
-
-    prior = JointGalaxyPopulationPrior(payload)
-
-    assert "_v7_" in prior.population_label
-
-
-def test_previous_version_ten_active_prior_remains_loadable():
-    prior = JointGalaxyPopulationPrior(v10_active_payload())
-
-    assert "_v10_" in prior.population_label
-    assert prior.radius_law.version == COMPACT_FAINT_BROKEN_RADIUS_MODEL_VERSION
-    assert prior.magnitude_law == v10_magnitude_law()
-
-
-@pytest.mark.parametrize(
-    ("payload_factory", "incompatible_radius"),
-    [
-        (active_payload, v10_radius_law),
-        (active_payload, radius_law),
-        (v10_active_payload, current_radius_law),
-        (v10_active_payload, radius_law),
-        (legacy_active_payload, current_radius_law),
-        (legacy_active_payload, v10_radius_law),
-    ],
-)
-def test_joint_prior_rejects_mixed_radius_contracts(
-    payload_factory, incompatible_radius,
-):
-    payload = payload_factory()
-    payload["radius_law"] = incompatible_radius().to_payload()
-
-    with pytest.raises(ValueError, match="incompatible model versions"):
-        JointGalaxyPopulationPrior(payload)
-
-
-@pytest.mark.parametrize(
-    ("payload_factory", "incompatible_magnitude"),
-    [
-        (active_payload, v10_magnitude_law),
-        (v10_active_payload, current_magnitude_law),
-    ],
-)
-def test_joint_prior_rejects_mixed_circularized_magnitude_contracts(
-    payload_factory, incompatible_magnitude,
-):
-    payload = payload_factory()
-    payload["magnitude_law"] = incompatible_magnitude().to_payload()
-
-    with pytest.raises(ValueError, match="model is incomplete"):
+    with pytest.raises(ValueError, match="current version"):
         JointGalaxyPopulationPrior(payload)
 
 
@@ -775,13 +495,6 @@ def test_candidate_fit_uses_only_aggregate_euclid_brightness_and_sersic_radius(
         -0.06, abs=0.01,
     )
     assert payload["radius_law"]["version"] == RADIUS_MODEL_VERSION
-    assert payload["radius_law"]["bright_intercept_log10_arcsec"] is None
-    assert payload["radius_law"]["break_magnitude"] is None
-    assert payload["radius_law"]["tail_fraction"] == 0.0
-    assert payload["radius_law"]["tail_distribution"] == "none"
-    assert payload["radius_law"]["tail_cutoff_magnitude"] is None
-    assert payload["radius_law"]["tail_taper_start_magnitude"] is None
-    assert payload["radius_law"]["tail_taper_end_magnitude"] is None
     assert payload["plots"]["radius"]["observed_density"]
     assert payload["plots"]["radius"]["q1_weighted_density"]
     assert "circularized" in (

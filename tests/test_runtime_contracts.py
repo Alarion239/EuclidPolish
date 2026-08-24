@@ -2,38 +2,9 @@
 
 from __future__ import annotations
 
-import os
-import subprocess
-import sys
 from pathlib import Path
 
-import pytest
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
-LENS_ISOLATION_SCRIPTS = (
-    "lens_isolation_generate.py",
-    "lens_isolation_train.py",
-    "lens_isolation_evaluate.py",
-    "lens_isolation_infer.py",
-)
-
-
-@pytest.mark.parametrize("script_name", LENS_ISOLATION_SCRIPTS)
-def test_lens_isolation_scripts_run_outside_repo(script_name, tmp_path):
-    """Cluster scripts must import the in-place package from any cwd."""
-    env = os.environ.copy()
-    env["PYTHONPATH"] = ""
-    result = subprocess.run(
-        [sys.executable, str(REPO_ROOT / "scripts" / script_name), "--help"],
-        cwd=tmp_path,
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
-    )
-
-    assert result.returncode == 0, result.stderr
 
 
 def test_environment_pins_supported_photutils_release():

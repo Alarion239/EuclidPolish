@@ -219,14 +219,13 @@ def _anchor_valid_dataset(n: int = 2, lr_side: int = 8, seed: int = 1,
 
 
 # ---------------------------------------------------------------------------
-# 1. Backward compatibility — the legacy 2-tuple supervised path
+# 1. Supervised 2-tuple path
 # ---------------------------------------------------------------------------
 
-class TestSupervisedBackwardCompat:
+class TestSupervisedTraining:
 
     def test_supervised_train_step_returns_finite_loss(self, tiny_trainer):
-        """The pre-round-trip API ``train_step(lr, hr)`` must keep working
-        identically. Existing scripts call it without setting forward_op."""
+        """The supervised ``train_step(lr, hr)`` path stays finite."""
         lr, hr = _rand_batch()
         loss, gnorm = tiny_trainer.train_step(lr, hr)
         assert np.isfinite(float(loss.numpy()))

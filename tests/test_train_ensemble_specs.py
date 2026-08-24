@@ -225,12 +225,6 @@ def test_fork_requires_source_checkpoint(tmp_path):
         build_specs(args, str(tmp_path / "ens"))
 
 
-def test_n_members_is_add_count_alias(tmp_path):
-    args = parse_args(["--n-members", "3", "--steps", "10"])
-    specs = build_specs(args, str(tmp_path / "ens"))
-    assert len(specs) == 3 and all(s.op == "add" for s in specs)
-
-
 def test_required_record_names_drops_dirty_when_all_onthefly(tmp_path):
     from scripts.train_ensemble import required_record_names
 

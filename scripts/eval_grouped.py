@@ -51,10 +51,6 @@ def _parse_args(argv=None) -> argparse.Namespace:
                         "of re-downloading (they are merely re-cropped)")
     p.add_argument("--no-synthetic", action="store_true",
                    help="skip the syn-lens / syn-gal subgroups")
-    p.add_argument("--unique-fields", action="store_true",
-                   help="use each synthetic field for at most one subgroup "
-                        "(default: allow a field to host both a syn-lens and a "
-                        "syn-gal stamp, maximizing yield)")
     p.add_argument("--catalog", default=None,
                    help="lens catalog CSV (default: the bundled lens catalog)")
     p.add_argument("--ensemble-dir", default=None,
@@ -75,7 +71,6 @@ def main(argv=None) -> int:
         seed=args.seed,
         include_synthetic=not args.no_synthetic,
         lens_source_dir=args.lens_source,
-        unique_fields=args.unique_fields,
     )
     print(f"\ngroups: {res.get('groups')}  → {res.get('manifest')}")
     return 0

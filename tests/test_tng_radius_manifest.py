@@ -5,6 +5,11 @@ import pytest
 from astropy.io import fits
 
 from euclid_polish.config import Config
+from euclid_polish.skirt.image import (
+    composite_stamp,
+    load_skirt_frame,
+    measure_halflight_radius_px,
+)
 from euclid_polish.sky.generation import tng_galaxy
 from euclid_polish.sky.generation.tng_galaxy import (
     list_tng_galaxies,
@@ -34,6 +39,12 @@ def _atlas(root, gid="42", size=64):
                 folder / f"TNG{gid}_O{orientation}_Euclid_{band}.fits"
             )
     (folder / Config.Tng.DONE_MARKER).touch()
+
+
+def _native_radius(folder: str, gid: str, orientation: int) -> float:
+    return measure_halflight_radius_px(load_skirt_frame(
+        tng_fits_path(folder, gid, orientation, "VIS")
+    ))
 
 
 def test_manifest_is_atomic_and_validates_inventory(tmp_path):
@@ -80,13 +91,13 @@ def test_ensure_manifest_measures_only_new_atlas_orientations(
         "42,1,1e10,1e12,2\n43,2,2e10,2e12,3\n"
     )
     loaded = []
-    original_load = module.load_tng_frame
+    original_load = module.load_skirt_frame
 
     def counted_load(path):
         loaded.append(path)
         return original_load(path)
 
-    monkeypatch.setattr(module, "load_tng_frame", counted_load)
+    monkeypatch.setattr(module, "load_skirt_frame", counted_load)
     result = ensure_manifest(
         str(atlas), properties_path=str(properties),
         manifest_path_value=str(output), workers=2,
@@ -124,10 +135,10 @@ def test_nominal_radius_scale_ignores_atlas_frame_side(tmp_path):
     atlas_a.mkdir(); atlas_b.mkdir()
     _atlas(atlas_a, size=64)
     _atlas(atlas_b, size=128)
-    native_a = tng_galaxy.native_halflight_px(
+    native_a = _native_radius(
         str(atlas_a / "42"), "42", 1,
     )
-    native_b = tng_galaxy.native_halflight_px(
+    native_b = _native_radius(
         str(atlas_b / "42"), "42", 1,
     )
     stamp_a, meta_a = tng_stamp_to_target_re(
@@ -190,7 +201,7 @@ def test_target_re_uses_one_shared_cube_scale(tmp_path):
     native, _ = prepare_tng_galaxy_continuous(
         folder, "42", 1, scale=1.0,
     )
-    native_re_px = tng_galaxy.native_halflight_px(folder, "42", 1)
+    native_re_px = _native_radius(folder, "42", 1)
     scaled, meta = tng_stamp_to_target_re(
         folder, "42", 1, 0.20, target_vis_flux_e=1e5,
         native_re_px=native_re_px,
@@ -218,8 +229,8 @@ def test_subpixel_radius_uses_one_resize_and_cached_native_source(
 ):
     atlas = tmp_path / "tng_skirt"
     atlas.mkdir(); _atlas(atlas)
-    original_load = tng_galaxy.load_tng_frame
-    native_re_px = tng_galaxy.measure_halflight_radius_px(original_load(
+    original_load = tng_galaxy.load_skirt_frame
+    native_re_px = measure_halflight_radius_px(original_load(
         str(atlas / "42" / "TNG42_O1_Euclid_VIS.fits")
     ))
     loaded_paths = []
@@ -235,16 +246,10 @@ def test_subpixel_radius_uses_one_resize_and_cached_native_source(
         resize_count += 1
         return original_resize(values, scale, **kwargs)
 
-    def forbidden_remeasurement(*_args, **_kwargs):
-        raise AssertionError("one-pass rendering must not remeasure output R_e")
-
     tng_galaxy._clear_tng_source_cache()
-    monkeypatch.setattr(tng_galaxy, "load_tng_frame", counted_load)
+    monkeypatch.setattr(tng_galaxy, "load_skirt_frame", counted_load)
     monkeypatch.setattr(
         tng_galaxy, "resample_surface_brightness", counted_resize,
-    )
-    monkeypatch.setattr(
-        tng_galaxy, "measure_halflight_radius_px", forbidden_remeasurement,
     )
     _stamp, meta = tng_stamp_to_target_re(
         str(atlas / "42"), "42", 1, 0.055,
@@ -290,7 +295,7 @@ def test_registered_source_cache_invalidates_replaced_fits(
     atlas = tmp_path / "tng_skirt"
     atlas.mkdir(); _atlas(atlas)
     folder = str(atlas / "42")
-    original_load = tng_galaxy.load_tng_frame
+    original_load = tng_galaxy.load_skirt_frame
     loaded_paths = []
 
     def counted_load(path):
@@ -298,7 +303,7 @@ def test_registered_source_cache_invalidates_replaced_fits(
         return original_load(path)
 
     tng_galaxy._clear_tng_source_cache()
-    monkeypatch.setattr(tng_galaxy, "load_tng_frame", counted_load)
+    monkeypatch.setattr(tng_galaxy, "load_skirt_frame", counted_load)
     tng_stamp_to_target_re(folder, "42", 1, 0.20, native_re_px=5.0)
     path = atlas / "42" / "TNG42_O1_Euclid_VIS.fits"
     fits.PrimaryHDU(np.ones((64, 64), dtype="f4")).writeto(
@@ -362,8 +367,8 @@ def test_bounded_arbitrary_rotation_preserves_field_pixels(tmp_path, position):
     )
     full_canvas = np.zeros((96, 96, 4), dtype=np.float32)
     bounded_canvas = np.zeros_like(full_canvas)
-    tng_galaxy.composite_stamp(full_canvas, full, *position)
-    tng_galaxy.composite_stamp(bounded_canvas, bounded, *position)
+    composite_stamp(full_canvas, full, *position)
+    composite_stamp(bounded_canvas, bounded, *position)
     residual = bounded_canvas - full_canvas
 
     assert np.linalg.norm(residual) / np.linalg.norm(full_canvas) < 5e-4

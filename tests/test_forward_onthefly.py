@@ -82,6 +82,7 @@ def _stellar_prior_payload():
 def test_crop_shapes_and_count(gaussian_sets):
     fwd = OnTheFlyForward(
         gaussian_sets, seed=1, crops_per_field=4, hr_crop_size=CROP,
+        inject_stars=False,
     )
     lr, hr = fwd.crops(_field())
     assert lr.shape == (4, CROP // 2, CROP // 2, 4)
@@ -215,16 +216,28 @@ def test_inject_stars_off_reproduces_plain_forward(gaussian_sets):
     np.testing.assert_array_equal(a[0], b[0])
 
 
+def test_star_injection_requires_current_empirical_prior(gaussian_sets):
+    with pytest.raises(ValueError, match="active empirical stellar prior"):
+        OnTheFlyForward(
+            gaussian_sets,
+            inject_stars=True,
+            star_density_arcmin2=1.0,
+        )
+
+
 def test_seeded_draws_reproduce_and_differ(gaussian_sets):
     field = _field()
     a1 = OnTheFlyForward(
         gaussian_sets, seed=7, crops_per_field=2, hr_crop_size=CROP,
+        inject_stars=False,
     ).crops(field)
     a2 = OnTheFlyForward(
         gaussian_sets, seed=7, crops_per_field=2, hr_crop_size=CROP,
+        inject_stars=False,
     ).crops(field)
     b = OnTheFlyForward(
         gaussian_sets, seed=8, crops_per_field=2, hr_crop_size=CROP,
+        inject_stars=False,
     ).crops(field)
     np.testing.assert_array_equal(a1[0], a2[0])
     np.testing.assert_array_equal(a1[1], a2[1])
@@ -234,6 +247,7 @@ def test_seeded_draws_reproduce_and_differ(gaussian_sets):
 def test_revisits_redraw_noise(gaussian_sets):
     fwd = OnTheFlyForward(
         gaussian_sets, seed=3, crops_per_field=1, hr_crop_size=CROP,
+        inject_stars=False,
     )
     field = _field()
     first = fwd.crops(field)[0]
@@ -274,6 +288,7 @@ def test_onthefly_pipeline_yields_batches(gaussian_sets, tmp_path):
     m = Model(str(tmp_path / "ckpt"), scale=2, num_res_blocks=1)
     fwd = OnTheFlyForward(
         gaussian_sets, seed=4, crops_per_field=4, hr_crop_size=CROP,
+        inject_stars=False,
     )
     ds = m._build_onthefly_pipeline(
         tfrecord_path(str(tmp_path), "clean_train"), 8, fwd)
@@ -286,7 +301,7 @@ def test_onthefly_pipeline_yields_batches(gaussian_sets, tmp_path):
 
 
 def test_new_onthefly_geometry_defaults(gaussian_sets):
-    fwd = OnTheFlyForward(gaussian_sets, seed=1)
+    fwd = OnTheFlyForward(gaussian_sets, seed=1, inject_stars=False)
     assert fwd.crops_per_field == DEFAULT_CROPS_PER_FIELD == 8
     assert fwd.hr_crop_size == DEFAULT_ONTHEFLY_HR_CROP_SIZE == 256
     args = parse_args([])

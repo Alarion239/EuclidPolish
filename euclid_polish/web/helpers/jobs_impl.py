@@ -23,7 +23,7 @@ from euclid_polish.catalog.downloader import fetch_cutout_at
 from euclid_polish.config import Config
 from euclid_polish.ensemble import default_ensemble_dir
 from euclid_polish.eval.ensemble_infer import load_eval_ensemble, sr_from_model
-from euclid_polish.eval.sr_provenance import stamp_sr_fits
+from euclid_polish.eval.sr_provenance import write_sr_provenance
 from euclid_polish.image.tfio import read_images, tfrecord_path
 from euclid_polish.photometry import adu_per_s_to_electrons_factor
 from euclid_polish.psf.psf_library import load_all_band_psfs
@@ -504,7 +504,7 @@ def reconstruct_cutout_at(
                                  "asinh stretch knee used for plot")
     # Provenance: stamp the SR with its model lineage (best-effort, before write).
     try:
-        stamp_sr_fits(
+        write_sr_provenance(
             sr_hdu.header, checkpoint_dir=str(checkpoint_dir),
             sr_fits_path=sr_fits_path,
             descriptors={"ra": float(ra), "dec": float(dec),

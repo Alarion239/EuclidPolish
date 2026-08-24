@@ -1347,11 +1347,7 @@ def register(app):
             # not the single-model ckpt dir — so the read above finds nothing in
             # this window. Fall back to the ACTIVE member (the most-recently
             # modified member log) so the live curve works during ensemble runs.
-            ens_dir = (
-                f"{cfg.data_dir.rstrip('/')}/experiments/lens_isolation/ensemble"
-                if step_id == "lens_isolation_train"
-                else f"{os.path.dirname(base)}/ensemble"
-            )
+            ens_dir = f"{os.path.dirname(base)}/ensemble"
             pick = (f"ls -t {shlex.quote(ens_dir)}/member_*/"
                     f"{shlex.quote(TrainingLog.FILENAME)} 2>/dev/null | head -n1; "
                     f"exit 0")

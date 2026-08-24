@@ -214,7 +214,6 @@ def load_model_from_checkpoint(
     checkpoint_dir: str,
     scale: int,
     num_res_blocks: int = Config.DEFAULT_NUM_RES_BLOCKS,
-    nchan: int = None,           # back-compat alias for nchan_in
     nchan_in: int = None,
     nchan_out: int = None,
 ):
@@ -228,9 +227,6 @@ def load_model_from_checkpoint(
     checkpoint wins (building a mismatched model would silently leave the input
     layer at random init under ``expect_partial``).
     """
-    if nchan is not None and nchan_in is None:
-        nchan_in = nchan
-
     ckpt_nchan_in = infer_checkpoint_nchan_in(checkpoint_dir)
     if ckpt_nchan_in is not None:
         if nchan_in is not None and nchan_in != ckpt_nchan_in:
@@ -279,35 +275,6 @@ def load_model_from_checkpoint(
     checkpoint.restore(latest).expect_partial()
     print(f"Model restored from checkpoint at {latest} "
           f"(nchan_in={nchan_in}, nchan_out={nchan_out}).")
-    return model
-
-
-def load_model_from_weights(
-    weights_path: str,
-    scale: int,
-    num_res_blocks: int = Config.DEFAULT_NUM_RES_BLOCKS,
-    nchan: int = 1,
-):
-    """
-    Build a WDSR model and load saved .h5 weights.
-
-    Parameters
-    ----------
-    weights_path : str
-        Path to a .h5 weights file.
-    scale : int
-        Super-resolution scale factor.
-    num_res_blocks : int
-        Number of residual blocks.
-    nchan : int
-        Number of image channels.
-
-    Returns
-    -------
-    tf.keras.Model
-    """
-    model = wdsr(scale=scale, num_res_blocks=num_res_blocks, nchan=nchan)
-    model.load_weights(weights_path)
     return model
 
 
@@ -420,7 +387,6 @@ def reconstruct(
         lr_display = lr_data
 
     return lr_display, sr_data
-
 
 
 

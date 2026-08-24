@@ -312,9 +312,7 @@ def _stellar_density_comparison(
     seed = int(hashlib.sha256(fingerprint.encode()).hexdigest()[:16], 16)
     rng = np.random.default_rng(seed)
     model_vis = np.asarray([
-        prior.sample_magnitude(
-            rng, slope=0.0, m_bright=bright, m_faint=faint,
-        )
+        prior.sample_magnitude(rng)
         for _ in range(sample_count)
     ], dtype=np.float64)
     model_seds = [prior.sample(rng, magnitude) for magnitude in model_vis]
@@ -1854,9 +1852,8 @@ def _fit_star_population_latent() -> dict[str, Any]:
     model = EmpiricalStellarPrior.from_payload(payload)
     rng = np.random.default_rng(71033)
     fitted = [
-        model.sample(rng, model.sample_magnitude(
-            rng, slope=0.15, m_bright=bright, m_faint=faint,
-        )) for _ in range(10_000)
+        model.sample(rng, model.sample_magnitude(rng))
+        for _ in range(10_000)
     ]
     fitted_colors = np.asarray([
         [

@@ -23,9 +23,6 @@ interface JobConfig {
   galaxy_density_arcmin2: number;
   // Star field
   star_density_arcmin2: number;
-  star_mag_slope: number;
-  star_mag_bright: number;
-  star_mag_faint: number;
   // SR training · PSF distribution
   psf_warp_prob: number;
   psf_warp_alpha_max: number;
@@ -62,7 +59,7 @@ type SaveResp = { ok: boolean; config: Record<string, number | string>; note?: s
 const FIELDS: Field[] = [
   "vis_pixels",
   "n_train", "n_valid", "n_test", "hr_image_size", "galaxy_density_arcmin2",
-  "star_density_arcmin2", "star_mag_slope", "star_mag_bright", "star_mag_faint",
+  "star_density_arcmin2",
   "psf_warp_prob", "psf_warp_alpha_max", "psf_warp_sigma",
   "saturation_mask_prob",
   "lens_density_arcmin2", "lens_sigma_v_min_kms", "lens_sigma_v_max_kms",
@@ -207,21 +204,12 @@ export default function ConfigPage() {
 
           <Card>
             <CardHead title="Star field"
-              sub="→ /sky (synthetic generation): dN/dm ∝ 10^(α·m) over [bright, faint]." />
+              sub="→ /sky: magnitudes and colours come from the activated stellar calibration." />
             <CardBody>
               <div className="grid" style={{ gridTemplateColumns: GRID, gap: "var(--s3)" }}>
                 {num("star_density_arcmin2", "Star density (/arcmin²)",
                   { min: 0, step: 0.001,
                     hint: "Stellar surface density (stars per arcmin²). Per-scene count is Poisson(density × field area). Default ≈ 5000/deg²." })}
-                {num("star_mag_slope", "Mag slope α",
-                  { min: 0, max: 1, step: 0.001,
-                    hint: "Differential star-count slope α in dN/dm ∝ 10^(α·m). Larger = relatively more faint stars." })}
-                {num("star_mag_bright", "Brightest star (VIS mag)",
-                  { min: 6, max: 24, step: 0.1,
-                    hint: "Brightest synthetic star (VIS mag). Lower = brighter. Very bright single-pixel stars saturate." })}
-                {num("star_mag_faint", "Faintest star (VIS mag)",
-                  { min: 16, max: 30, step: 0.1,
-                    hint: "Faintest synthetic star (VIS mag) — roughly the VIS noise floor." })}
               </div>
             </CardBody>
           </Card>

@@ -55,10 +55,9 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from euclid_polish.config import Config  # noqa: E402
-from euclid_polish.skirt.image import block_mean  # noqa: E402
+from euclid_polish.skirt.image import block_mean, load_skirt_frame  # noqa: E402
 from euclid_polish.sky.generation.tng_galaxy import (  # noqa: E402
     list_tng_galaxies,
-    load_tng_frame,
     tng_fits_path,
 )
 
@@ -198,7 +197,7 @@ def main() -> int:
         if not os.path.isfile(path):
             print(f"  ⚠ {gid}: missing {os.path.basename(path)} — skipping")
             continue
-        frame = load_tng_frame(path)
+        frame = load_skirt_frame(path)
         rms, flux, side = analyse_galaxy(
             frame, k_list=k_list, angle_step=args.angle_step, n_rot=args.n_rot,
             order=args.order, crop_frac=args.crop_frac, margin=args.margin)

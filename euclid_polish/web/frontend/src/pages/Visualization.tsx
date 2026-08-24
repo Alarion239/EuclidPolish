@@ -21,8 +21,6 @@ const FIGURE_BUILDERS = [
     note: "Export cached real-field reconstructions without implying an unavailable truth image." },
   { label: "Euclid × JWST", path: "/jwst-euclid", tiers: ["Euclid Image", "Super-resolved Image", "JWST reference"],
     note: "Compare registered native-band Euclid and JWST views." },
-  { label: "Lens isolation", path: "/lens-isolation", tiers: ["Euclid Image", "Super-resolved Image"],
-    note: "Build LR–SR lens-isolation figures from the selected record." },
   { label: "Selected ePSFs", path: "/psfs", tiers: ["VIS", "Y_E", "J_E", "H_E"],
     note: "Choose the empirical PSF and place the magnified region with the pointer." },
 ] as const;

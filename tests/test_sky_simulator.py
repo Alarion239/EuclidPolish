@@ -14,7 +14,6 @@ from euclid_polish.sky.generation.cosmos_tng_prior import CosmosTngDraw
 from euclid_polish.sky.generation.sky_simulator import (
     SkySimulator,
     SkySimulatorConfig,
-    _sample_star_band_magnitudes,
 )
 from euclid_polish.sky.generation.tng_galaxy import (
     TNG_RADIUS_RENDERER_FINGERPRINT,
@@ -166,9 +165,3 @@ def test_prior_required_for_nonzero_density(tmp_path):
                 tng_galaxy_dir=str(tmp_path),
             ),
         )
-
-
-def test_star_colours_remain_correlated():
-    rng = np.random.default_rng(123)
-    with pytest.raises(ValueError, match="empirical stellar prior"):
-        _sample_star_band_magnitudes(rng, 20.0)

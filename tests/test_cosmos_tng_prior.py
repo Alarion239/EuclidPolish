@@ -10,7 +10,6 @@ from euclid_polish.sky.generation.cosmos_tng_prior import (
     conditional_ssfr_quantiles,
     cross_validated_mass_bandwidth,
     joint_quantile_transport_weights,
-    quantile_transport_weights,
 )
 
 
@@ -116,25 +115,6 @@ def test_embedded_transfer_does_not_need_fit_file(tmp_path):
     assert draw.brightness_transfer == "embedded:test-fit"
 
 
-def test_mass_supported_sampling_never_draws_unsupported_cosmos_rows(tmp_path):
-    path = tmp_path / "prior.npz"
-    _write_prior(path)
-    prior = CosmosTngPrior(
-        path,
-        photometric_transfer=F814WToVisTransfer(source="embedded:test"),
-    )
-    eligible = prior.mass_support_indices(9.8, 10.2)
-
-    draws = [
-        prior.sample(np.random.default_rng(seed), eligible_indices=eligible)
-        for seed in range(50)
-    ]
-
-    assert {draw.catalog_id for draw in draws} == {"1"}
-    with pytest.raises(ValueError, match="no rows"):
-        prior.mass_support_indices(11.0, 12.0)
-
-
 def test_mass_bandwidth_cross_validation_includes_kernel_normalization():
     rng = np.random.default_rng(91)
     logmass = rng.normal(10.2, 0.18, size=300)
@@ -144,7 +124,7 @@ def test_mass_bandwidth_cross_validation_includes_kernel_normalization():
     assert 0.03 <= bandwidth < 0.3
 
 
-def test_conditional_quantile_transport_preserves_classes_and_diversity():
+def test_conditional_mass_quantiles_preserve_classes():
     masses = np.array([8.0, 9.0, 10.0, 10.5, 11.0, 11.5])
     classes = np.array([
         "star_forming", "star_forming", "star_forming",
@@ -153,16 +133,6 @@ def test_conditional_quantile_transport_preserves_classes_and_diversity():
     quantiles = conditional_mass_quantiles(masses, classes)
     assert quantiles[:3] == pytest.approx([1 / 6, 3 / 6, 5 / 6])
     assert quantiles[3:] == pytest.approx([1 / 6, 3 / 6, 5 / 6])
-
-    donor_quantiles = (np.arange(100) + 0.5) / 100
-    weights, used_bandwidth, effective = quantile_transport_weights(
-        donor_quantiles, 0.0, bandwidth=0.03,
-        minimum_effective_donors=64,
-    )
-    assert weights.sum() == pytest.approx(1.0)
-    assert used_bandwidth > 0.03
-    assert effective >= 64.0 - 1e-6
-    assert np.argmax(weights) == 0
 
 
 def test_ssfr_quantiles_keep_zero_sfr_as_censored_point_mass():

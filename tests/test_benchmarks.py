@@ -224,60 +224,31 @@ def test_bench_catalog_sample():
 
 
 # ---------------------------------------------------------------------------
-# Scene generator
-# ---------------------------------------------------------------------------
-
-def test_bench_scene_generator_small():
-    """Generate one 96² 4-channel HR clean field with a few galaxies + stars.
-
-    Baseline ~1.4 s. Cost is dominated by bulge rendering across 4 bands
-    for ~3 galaxies (each bulge Sersic call ≈ 60-130 ms on the 96² canvas,
-    × 4 bands × 3 galaxies ≈ 1.4 s). Reducing the high-n csub heuristic
-    would speed this up at the cost of flux conservation accuracy.
-    """
-    from euclid_polish.sky.generation.sky_simulator import (
-        SkySimulator,
-        SkySimulatorConfig,
-    )
-    from tests._tiny_catalog import TinyCosmosCatalog
-    cat = TinyCosmosCatalog(n_galaxies=500, seed=0)
-    sim = SkySimulator(cat, SkySimulatorConfig(image_size=96))
-    rng = np.random.default_rng(0)
-
-    def call():
-        sim.simulate_field(rng, n_sersic=3, n_stars=2, n_lenses=0)
-
-    best, _ = _bench("simulate_field 96² (3 gal + 2 stars)", call)
-    assert best < 4000.0, f"scene generator too slow: {best:.1f} ms"
-
-
-# ---------------------------------------------------------------------------
 # Lens render
 # ---------------------------------------------------------------------------
 
-def test_bench_lens_render_one_band():
-    """Single lens system rendered into one band on a 128² canvas.
-
-    Lenstronomy ray-shooting is the dominant cost; the Sersic call is a
-    smaller fraction of the total.
-    """
+def test_bench_lens_render_multiband():
+    """One current TNG-backed lens system on a 128² four-band canvas."""
     from euclid_polish.sky.generation.lens_population import (
-        LensPopulation,
-        render_lens_to_canvas,
+        render_lens_to_multiband_canvas,
+        sample_lens_geometry,
     )
-    from tests._tiny_catalog import TinyCosmosCatalog
 
-    cat = TinyCosmosCatalog(n_galaxies=2_000, seed=0)
-    pop = LensPopulation(cat)
-    lp  = pop.sample(np.random.default_rng(0))
+    params = sample_lens_geometry(np.random.default_rng(0), 250.0)
+    assert params is not None
+    lens_stamp = np.ones((48, 48, Config.NUM_LR_CHANNELS), dtype=np.float32)
+    source_stamp = np.ones((32, 32, Config.NUM_LR_CHANNELS), dtype=np.float32)
 
     def call():
-        canvas = np.zeros((128, 128), dtype=np.float32)
-        render_lens_to_canvas(canvas, params=lp, band_index=0)
+        canvas = np.zeros((128, 128, Config.NUM_LR_CHANNELS), dtype=np.float32)
+        render_lens_to_multiband_canvas(
+            canvas,
+            params=params,
+            lens_light_stamp=lens_stamp,
+            source_stamp=source_stamp,
+        )
 
-    best, _ = _bench("render_lens_to_canvas 128² (one band)", call)
-    # Baseline ~200 ms. Dominated by lenstronomy.LensModel.ray_shooting
-    # over 16k pixels and the analytic Sersic evaluation at those coords.
+    best, _ = _bench("render_lens_to_multiband_canvas 128²", call)
     assert best < 600.0, f"lens render too slow: {best:.1f} ms"
 
 
@@ -364,50 +335,6 @@ def test_bench_evaluate_sersic_at_coords():
     assert best < 200.0
 
 
-def test_bench_scene_generator_252():
-    """Scene generator at the default 252² HR size with realistic densities.
-
-    Baseline ~100-300 ms / field (Poisson-fluctuating between ~3-7 galaxies
-    per arcmin² on this canvas size).
-    """
-    from euclid_polish.sky.generation.sky_simulator import (
-        SkySimulator,
-        SkySimulatorConfig,
-    )
-    from tests._tiny_catalog import TinyCosmosCatalog
-    cat = TinyCosmosCatalog(n_galaxies=2_000, seed=0)
-    sim = SkySimulator(cat, SkySimulatorConfig(image_size=252))
-    sim.simulate_field(np.random.default_rng(0))
-
-    def call():
-        sim.simulate_field(np.random.default_rng(0))
-
-    best, _ = _bench("simulate_field 252² (default densities)", call)
-    assert best < 1000.0
-
-
-def test_bench_scene_generator_512():
-    """Scene generator at 512² — the production HR size.
-
-    Baseline ~250-400 ms / field. Scales the throughput estimate for
-    full training-set generation.
-    """
-    from euclid_polish.sky.generation.sky_simulator import (
-        SkySimulator,
-        SkySimulatorConfig,
-    )
-    from tests._tiny_catalog import TinyCosmosCatalog
-    cat = TinyCosmosCatalog(n_galaxies=2_000, seed=0)
-    sim = SkySimulator(cat, SkySimulatorConfig(image_size=512))
-    sim.simulate_field(np.random.default_rng(0))
-
-    def call():
-        sim.simulate_field(np.random.default_rng(0))
-
-    best, _ = _bench("simulate_field 512² (default densities)", call, n_repeats=3)
-    assert best < 2000.0
-
-
 def test_bench_forward_512_production():
     """Forward model at the production HR size (512²).
 
@@ -433,34 +360,6 @@ def test_bench_forward_512_production():
 
     best, _ = _bench("ObservationSimulator.process 512² noise=True", call, n_repeats=3)
     assert best < 300.0
-
-
-def test_bench_end_to_end_one_pair_252():
-    """Generate one clean field + forward to LR — what the pipeline does per row.
-
-    Baseline ~200-500 ms. Multiply by your training-set size to estimate
-    full-pipeline wall time.
-    """
-    from euclid_polish.sky.generation.sky_simulator import (
-        SkySimulator,
-        SkySimulatorConfig,
-    )
-    from euclid_polish.sky.observation.observation_simulator import (
-        ObservationSimulator,
-        ObservationSimulatorConfig,
-    )
-    from tests._tiny_catalog import TinyCosmosCatalog
-    cat = TinyCosmosCatalog(n_galaxies=2_000, seed=0)
-    sim = SkySimulator(cat, SkySimulatorConfig(image_size=252))
-    fwd = ObservationSimulator(config=ObservationSimulatorConfig(add_noise=True))
-    sim.simulate_field(np.random.default_rng(0))  # warmup
-
-    def call():
-        sky, _ = sim.simulate_field(np.random.default_rng(0))
-        fwd.process(sky, rng=np.random.default_rng(1))
-
-    best, _ = _bench("end-to-end generate+forward 252²", call, n_repeats=3)
-    assert best < 1200.0
 
 
 def test_bench_tfrecord_roundtrip(tmp_path):

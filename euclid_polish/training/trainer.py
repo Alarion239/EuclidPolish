@@ -235,7 +235,6 @@ class Trainer:
         loss=MeanAbsoluteError(),
         learning_rate=PiecewiseConstantDecay(boundaries=[200000], values=[1e-3, 5e-4]),
         checkpoint_dir='./ckpt/wdsr',
-        forward_op=None,
         hst_forward_op=None,
         synthetic_loss_weight: float = 1.0,
         hst_loss_weight: float = 1.0,
@@ -268,12 +267,6 @@ class Trainer:
             Learning rate schedule.
         checkpoint_dir : str
             Directory for saving checkpoints.
-        forward_op : tf.keras.layers.Layer, optional
-            Differentiable Euclid VIS forward op (PSF + 2× sum-rebin).
-            Retained for back-compat; the star-anchor objective is
-            operator-free, so this is no longer used by training (the
-            ``EuclidVISForwardOp`` class still backs the ``/inference``
-            forward(SR) panel). ``None`` (default).
         synthetic_loss_weight, hst_loss_weight, star_anchor_loss_weight : float
             Per-source multipliers on the per-example loss before the
             batch mean. Each lane (synthetic / HST / star-anchor) is
@@ -308,7 +301,6 @@ class Trainer:
         """
         self.now = None
         self.loss = loss
-        self.forward_op = forward_op
         # HST forward op (H ⊛ SR, no rebin) for the SR=sky objective —
         # the HST supervised loss compares H⊛SR to the observed HST image.
         self.hst_forward_op = hst_forward_op

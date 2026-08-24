@@ -359,7 +359,14 @@ def test_forward_with_stars_puts_stars_in_lr_and_hr():
     sky = Image(data=field, pixel_scale_arcsec=Config.DEFAULT_PIXEL_SCALE,
                 band_names=Config.LR_INPUT_BAND_NAMES, is_clean=True,
                 index=0, subset="validate")
-    star = [{"x_pix": 48.0, "y_pix": 48.0, "mag_vis": 17.0}]
+    star = [{
+        "x_pix": 48.0,
+        "y_pix": 48.0,
+        "mag_vis": 17.0,
+        "mag_y_e": 17.2,
+        "mag_j_e": 17.3,
+        "mag_h_e": 17.4,
+    }]
     lr_s, hr_s = rp._forward_with_stars(fwd, sky, star, np.random.default_rng(1))
     lr_0, hr_0 = rp._forward_with_stars(fwd, sky, None, np.random.default_rng(1))
     # the star lifts BOTH the LR and the (starfull) HR target vs the star-free

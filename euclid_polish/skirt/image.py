@@ -38,8 +38,6 @@ def load_skirt_frame(path: str) -> np.ndarray:
 def block_mean(
     arr: np.ndarray,
     factor: int,
-    *,
-    trim_remainder: bool = True,
 ) -> np.ndarray:
     """Average each ``factor x factor`` block without changing surface brightness.
 
@@ -55,10 +53,6 @@ def block_mean(
         raise ValueError(f"expected a 2-D array, got shape {a.shape}")
     height, width = a.shape
     if height % factor != 0 or width % factor != 0:
-        if not trim_remainder:
-            raise ValueError(
-                f"spatial dims {(height, width)} not divisible by factor={factor}"
-            )
         height = (height // factor) * factor
         width = (width // factor) * factor
         a = a[:height, :width]
@@ -69,8 +63,6 @@ def block_mean(
 def resample_surface_brightness(
     arr: np.ndarray,
     scale: float,
-    *,
-    order: int = 3,
 ) -> np.ndarray:
     """Resample a surface-brightness image by an arbitrary linear scale.
 
@@ -98,9 +90,7 @@ def resample_surface_brightness(
     interpolation = (
         cv2.INTER_AREA
         if scale < 1.0
-        else (cv2.INTER_NEAREST if order <= 0
-              else cv2.INTER_LINEAR if order == 1
-              else cv2.INTER_CUBIC)
+        else cv2.INTER_CUBIC
     )
     out = cv2.resize(a, (out_width, out_height), interpolation=interpolation)
     # OpenCV drops a singleton channel axis.  Preserve this function's input
@@ -119,8 +109,6 @@ def rotate_quarter(arr: np.ndarray, k: int) -> np.ndarray:
 def rotate_arbitrary(
     arr: np.ndarray,
     angle_deg: float,
-    *,
-    order: int = 3,
 ) -> np.ndarray:
     """Rotate in place-sized coordinates and clip interpolation undershoot.
 
@@ -135,16 +123,11 @@ def rotate_arbitrary(
     height, width = a.shape[:2]
     centre = ((width - 1) / 2.0, (height - 1) / 2.0)
     matrix = cv2.getRotationMatrix2D(centre, float(angle_deg), 1.0)
-    interpolation = (
-        cv2.INTER_NEAREST if order <= 0
-        else cv2.INTER_LINEAR if order == 1
-        else cv2.INTER_CUBIC
-    )
     out = cv2.warpAffine(
         a,
         matrix,
         (width, height),
-        flags=interpolation,
+        flags=cv2.INTER_CUBIC,
         borderMode=cv2.BORDER_CONSTANT,
         borderValue=0.0,
     )
@@ -274,24 +257,6 @@ def stochastic_round_factor(
     if rng is not None and remainder > 0.0:
         return max(1, lower + (1 if rng.random() < remainder else 0))
     return max(1, int(round(factor)))
-
-
-def rebin_for_target_size(
-    re_native_px: float,
-    target_re_arcsec: float,
-    pixel_scale_arcsec: float,
-    *,
-    rng: np.random.Generator | None = None,
-    f_max: int | None = None,
-) -> int:
-    """Integer block factor placing a native radius at a target angular radius."""
-    if not (re_native_px > 0.0) or not (target_re_arcsec > 0.0):
-        return 1
-    factor = pixel_scale_arcsec * re_native_px / target_re_arcsec
-    factor = max(factor, 1.0)
-    if f_max is not None:
-        factor = min(factor, float(f_max))
-    return stochastic_round_factor(factor, rng)
 
 
 def composite_stamp(

@@ -18,23 +18,15 @@ from euclid_polish.config import Config
 from euclid_polish.photometry import ab_mag_to_electrons
 from euclid_polish.population.euclid_galaxy_prior import (
     BRIGHT_BRIDGE_JOIN_MAGNITUDES,
-    CIRCULARIZED_JOINT_EUCLID_GALAXY_VERSIONS,
-    COMPACT_FAINT_BROKEN_RADIUS_MODEL_VERSION,
     GALAXY_FAINT_DENSITY_CAP_ARCMIN2_MAG,
     JOINT_EUCLID_GALAXY_KIND,
     JOINT_EUCLID_GALAXY_VERSION,
-    LEGACY_JOINT_EUCLID_GALAXY_KIND,
     RADIUS_MODEL_VERSION,
-    SUPPORTED_JOINT_EUCLID_GALAXY_VERSIONS,
-    V10_JOINT_EUCLID_GALAXY_VERSION,
     ConditionalRadiusLaw,
-    generation_magnitude_law,
     joint_density_grid,
 )
 from euclid_polish.population.magnitude_law import (
     ContinuousBrightBridgeFaintCappedMagnitudeLaw,
-    EmpiricalBrightFaintCappedMagnitudeLaw,
-    FaintCappedMagnitudeLaw,
     StraightMagnitudeLaw,
 )
 
@@ -193,57 +185,6 @@ def effective_sample_size(weights: np.ndarray) -> float:
     probabilities = array / total
     return float(1.0 / np.sum(probabilities * probabilities))
 
-
-def quantile_transport_weights(
-    donor_quantiles: np.ndarray,
-    target_quantile: float,
-    *,
-    bandwidth: float,
-    minimum_effective_donors: int = MORPHOLOGY_MIN_EFFECTIVE_DONORS,
-    balance_weights: np.ndarray | None = None,
-) -> tuple[np.ndarray, float, float]:
-    """Gaussian rank-transport probabilities with an adaptive diversity floor.
-
-    The cross-validated bandwidth is widened only when an edge draw would have
-    too few effective donors.  Optional balance weights downweight donors that
-    have already been used frequently by the current generator worker.
-    """
-    quantiles = np.asarray(donor_quantiles, dtype=float)
-    target = float(target_quantile)
-    initial = float(bandwidth)
-    if (
-        quantiles.ndim != 1 or not quantiles.size
-        or not np.isfinite(quantiles).all()
-        or not np.isfinite(target) or not 0.0 <= target <= 1.0
-        or not np.isfinite(initial) or initial <= 0.0
-    ):
-        raise ValueError("invalid morphology quantile-transport inputs")
-    if balance_weights is None:
-        balance = np.ones(quantiles.size, dtype=np.float64)
-    else:
-        balance = np.asarray(balance_weights, dtype=float)
-        if (
-            balance.shape != quantiles.shape or not np.isfinite(balance).all()
-            or np.any(balance <= 0.0)
-        ):
-            raise ValueError("invalid morphology donor balance weights")
-
-    required = min(max(1, int(minimum_effective_donors)), quantiles.size)
-    selected_bandwidth = initial
-    for _ in range(64):
-        distance = (quantiles - target) / selected_bandwidth
-        weights = np.exp(-0.5 * distance * distance) * balance
-        effective = effective_sample_size(weights)
-        if effective >= required - 1e-9 or selected_bandwidth >= 4.0:
-            break
-        selected_bandwidth = min(4.0, selected_bandwidth * 1.25)
-    total = float(np.sum(weights))
-    if not np.isfinite(total) or total <= 0.0:
-        raise ValueError("morphology quantile transport has zero probability")
-    probabilities = weights / total
-    return probabilities, float(selected_bandwidth), effective_sample_size(
-        probabilities
-    )
 
 
 def joint_quantile_transport_weights(
@@ -425,7 +366,9 @@ class CosmosTngPrior:
         self,
         path: str | Path,
         *,
-        photometric_fit_path: str | Path = Config.COSMOS_EUCLID_FIT_PATH,
+        photometric_fit_path: str | Path = (
+            Config.JOINT_GALAXY_POPULATION_FIT_PATH
+        ),
         photometric_transfer: F814WToVisTransfer | None = None,
         mag_min: float | None = None,
         mag_max: float | None = None,
@@ -433,25 +376,22 @@ class CosmosTngPrior:
         self.path = str(path)
         with np.load(self.path, allow_pickle=False) as data:
             keys = set(data.files)
-
-            def take(*names: str) -> np.ndarray:
-                for name in names:
-                    if name in keys:
-                        return np.asarray(data[name])
-                raise KeyError(f"{self.path} has none of {names!r}")
-
-            catalog_id = take("catalog_id")
-            # Old artifacts are accepted for replay, but all newly extracted
-            # files use the physical filter name.
-            f814w = take("mag_hst_f814w", "mag_vis", "mag_VIS")
-            z = take("z_phot")
-            mass = take("logmass_lephare", "logmass")
-            logssfr = take("logssfr_lephare")
-            re = take("re_combined_arcsec", "disk_re_arcsec")
-            if "generator_ready" not in keys:
+            required = {
+                "catalog_id", "mag_hst_f814w", "z_phot",
+                "logmass_lephare", "logssfr_lephare",
+                "re_combined_arcsec", "generator_ready",
+            }
+            missing = sorted(required - keys)
+            if missing:
                 raise ValueError(
-                    f"{self.path} predates the strict generator-ready schema"
+                    f"{self.path} is missing current schema fields: {missing}"
                 )
+            catalog_id = np.asarray(data["catalog_id"])
+            f814w = np.asarray(data["mag_hst_f814w"])
+            z = np.asarray(data["z_phot"])
+            mass = np.asarray(data["logmass_lephare"])
+            logssfr = np.asarray(data["logssfr_lephare"])
+            re = np.asarray(data["re_combined_arcsec"])
             generator_ready = np.asarray(data["generator_ready"], dtype=bool)
 
         valid = (
@@ -494,21 +434,6 @@ class CosmosTngPrior:
 
     def __len__(self) -> int:
         return len(self.f814w)
-
-    def mass_support_indices(
-        self, lower_logmass: float, upper_logmass: float,
-    ) -> np.ndarray:
-        """Indices whose stellar masses are supported by the local atlas."""
-        lower = float(lower_logmass)
-        upper = float(upper_logmass)
-        if not (np.isfinite(lower) and np.isfinite(upper) and lower <= upper):
-            raise ValueError("TNG morphology mass support is invalid")
-        indices = np.flatnonzero((self.mass >= lower) & (self.mass <= upper))
-        if not indices.size:
-            raise ValueError(
-                "COSMOS prior has no rows inside the TNG morphology mass support"
-            )
-        return indices
 
     def sample(
         self,
@@ -565,104 +490,81 @@ class JointGalaxyPopulationPrior:
 
     def __init__(self, payload: dict):
         version = int(payload.get("version") or 0)
-        if version not in SUPPORTED_JOINT_EUCLID_GALAXY_VERSIONS:
-            raise ValueError("joint galaxy population has an unsupported version")
-        expected_kind = (
-            JOINT_EUCLID_GALAXY_KIND
-            if version in CIRCULARIZED_JOINT_EUCLID_GALAXY_VERSIONS
-            else LEGACY_JOINT_EUCLID_GALAXY_KIND
-        )
-        if payload.get("kind") != expected_kind:
+        if version != JOINT_EUCLID_GALAXY_VERSION:
+            raise ValueError(
+                "joint galaxy population is not the current version"
+            )
+        if payload.get("kind") != JOINT_EUCLID_GALAXY_KIND:
             raise ValueError("joint galaxy population has the wrong kind")
         if not payload.get("active") or not payload.get("valid"):
             raise ValueError("joint galaxy population is not active and valid")
         self.fingerprint = str(payload.get("fingerprint") or "")
         if len(self.fingerprint) != 64:
             raise ValueError("joint galaxy population fingerprint is invalid")
-        self.population_label = f"{expected_kind}_v{version}_flat_faint_counts"
+        self.population_label = (
+            f"{JOINT_EUCLID_GALAXY_KIND}_v{version}_flat_faint_counts"
+        )
         try:
             self.fitted_magnitude_law = StraightMagnitudeLaw.from_payload(
                 payload["fitted_magnitude_law"]
             )
-            if version == JOINT_EUCLID_GALAXY_VERSION:
-                self.magnitude_law = (
-                    ContinuousBrightBridgeFaintCappedMagnitudeLaw.from_payload(
-                        payload["magnitude_law"]
-                    )
-                )
-            elif version == V10_JOINT_EUCLID_GALAXY_VERSION:
-                self.magnitude_law = (
-                    EmpiricalBrightFaintCappedMagnitudeLaw.from_payload(
-                        payload["magnitude_law"]
-                    )
-                )
-            else:
-                self.magnitude_law = FaintCappedMagnitudeLaw.from_payload(
+            self.magnitude_law = (
+                ContinuousBrightBridgeFaintCappedMagnitudeLaw.from_payload(
                     payload["magnitude_law"]
                 )
+            )
             self.radius_law = ConditionalRadiusLaw.from_payload(
                 payload["radius_law"]
             )
-            expected = float(payload["generation"]["surface_density_arcmin2"])
+            expected = float(
+                payload["generation"]["surface_density_arcmin2"]
+            )
             density_cap = float(
-                payload["generation"]["differential_density_cap_arcmin2_mag"]
+                payload["generation"][
+                    "differential_density_cap_arcmin2_mag"
+                ]
             )
             break_magnitude = float(
                 payload["generation"]["break_magnitude"]
             )
         except (KeyError, TypeError, ValueError) as exc:
-            raise ValueError("joint galaxy population model is incomplete") from exc
-        if version == JOINT_EUCLID_GALAXY_VERSION:
-            radius_contract_valid = self.radius_law.version == RADIUS_MODEL_VERSION
-        elif version == V10_JOINT_EUCLID_GALAXY_VERSION:
-            radius_contract_valid = (
-                self.radius_law.version
-                == COMPACT_FAINT_BROKEN_RADIUS_MODEL_VERSION
-            )
-        else:
-            radius_contract_valid = self.radius_law.version not in {
-                COMPACT_FAINT_BROKEN_RADIUS_MODEL_VERSION,
-                RADIUS_MODEL_VERSION,
-            }
-        if not radius_contract_valid:
             raise ValueError(
-                "joint galaxy population mixes incompatible model versions"
+                "joint galaxy population model is incomplete"
+            ) from exc
+        if self.radius_law.version != RADIUS_MODEL_VERSION:
+            raise ValueError(
+                "joint galaxy population has the wrong radius model"
             )
-        if not np.isclose(self.magnitude_law.integrated_density(), expected):
-            raise ValueError("joint galaxy population density does not match activation")
-        if version in CIRCULARIZED_JOINT_EUCLID_GALAXY_VERSIONS:
-            magnitude_contract_valid = (
-                self.magnitude_law.straight_law == self.fitted_magnitude_law
-                and np.isclose(
-                    self.magnitude_law.density_cap_arcmin2_mag,
-                    GALAXY_FAINT_DENSITY_CAP_ARCMIN2_MAG,
-                )
-                and np.isclose(
-                    break_magnitude, self.magnitude_law.break_magnitude,
-                )
+        if not np.isclose(
+            self.magnitude_law.integrated_density(), expected
+        ):
+            raise ValueError(
+                "joint galaxy population density does not match activation"
             )
-            if version == JOINT_EUCLID_GALAXY_VERSION:
-                magnitude_contract_valid = (
-                    magnitude_contract_valid
-                    and np.allclose(
-                        self.magnitude_law.bright_join_magnitudes,
-                        BRIGHT_BRIDGE_JOIN_MAGNITUDES,
-                        rtol=0.0,
-                        atol=1e-12,
-                    )
-                )
-        else:
-            expected_law = generation_magnitude_law(self.fitted_magnitude_law)
-            magnitude_contract_valid = (
-                np.isclose(break_magnitude, expected_law.break_magnitude)
-                and self.magnitude_law == expected_law
+        magnitude_contract_valid = (
+            self.magnitude_law.straight_law == self.fitted_magnitude_law
+            and np.isclose(
+                self.magnitude_law.density_cap_arcmin2_mag,
+                GALAXY_FAINT_DENSITY_CAP_ARCMIN2_MAG,
             )
+            and np.isclose(
+                break_magnitude, self.magnitude_law.break_magnitude,
+            )
+            and np.allclose(
+                self.magnitude_law.bright_join_magnitudes,
+                BRIGHT_BRIDGE_JOIN_MAGNITUDES,
+                rtol=0.0,
+                atol=1e-12,
+            )
+        )
         if not (
-            np.isclose(density_cap, GALAXY_FAINT_DENSITY_CAP_ARCMIN2_MAG)
+            np.isclose(
+                density_cap, GALAXY_FAINT_DENSITY_CAP_ARCMIN2_MAG
+            )
             and magnitude_contract_valid
         ):
             raise ValueError(
-                "joint galaxy generation law does not match its versioned "
+                "joint galaxy generation law does not match the current "
                 "brightness contract"
             )
         grid = joint_density_grid(self.magnitude_law, self.radius_law)
@@ -671,7 +573,9 @@ class JointGalaxyPopulationPrior:
         self._log_radius_edges = np.asarray(grid["log_radius_edges"])
         radius_weight = np.sum(self._density, axis=0)
         self._radius_cdf = np.cumsum(radius_weight) / np.sum(radius_weight)
-        self.surface_density_arcmin2 = self.magnitude_law.integrated_density()
+        self.surface_density_arcmin2 = (
+            self.magnitude_law.integrated_density()
+        )
 
     def proxy_logmass(self, quantile: float, activity_class: str) -> float:
         return float("nan")

@@ -13,7 +13,6 @@ import GitPage from "./Git";
 import InferencePage from "./Inference";
 import InspectPage from "./Inspect";
 import JwstEuclidPage from "./JwstEuclid";
-import LensIsolationPage from "./LensIsolation";
 import PopulationComparisonPage from "./PopulationComparison";
 import PsfsPage from "./Psfs";
 import SkyPage from "./Sky";
@@ -45,7 +44,6 @@ export const PAGES: PageDef[] = [
   { label: "Ensemble", path: "/ensemble", component: EnsemblePage },
   { label: "Train members", path: "/train-members", component: TrainMembersPage },
   { label: "Evaluation", path: "/evaluation", component: EvaluationPage },
-  { label: "Lens isolation", path: "/lens-isolation", component: LensIsolationPage },
   { label: "Tracking", path: "/tracking", component: TrackingPage },
   { label: "Figures", path: "/visualization", component: VisualizationPage },
   { label: "FASRC", path: "/fasrc", component: FasrcPage },
@@ -59,6 +57,6 @@ const item = (label: string) => ({ label, path: path(label) });
 export const NAV: NavGroup[] = [
   { title: "Setup", items: [item("Config"), item("Catalog"), item("PSFs")] },
   { title: "Data", items: [item("Sky"), item("Cutouts"), item("TNG"), item("Synthetic–Real"), item("Field statistics"), item("Galaxy distributions"), item("Star distribution"), item("JWST × Euclid")] },
-  { title: "Model", items: [item("Inference"), item("Ensemble"), item("Train members"), item("Evaluation"), item("Lens isolation")] },
+  { title: "Model", items: [item("Inference"), item("Ensemble"), item("Train members"), item("Evaluation")] },
   { title: "Ops", items: [item("Tracking"), item("Figures"), item("FASRC"), item("Git")] },
 ];

@@ -39,8 +39,6 @@ def _parse_args(argv=None) -> argparse.Namespace:
                         "the lens catalog under Config.EVAL_CATALOG_DIR)")
     p.add_argument("--out", default=None,
                    help="output dir (default: Config.EVAL_RESULTS_DIR)")
-    p.add_argument("--run-name", default="run",
-                   help="deprecated; evaluation now accumulates in Config.EVAL_RESULTS_DIR")
     p.add_argument("--ensemble-dir", default=None,
                    help="ensemble base dir (default: <ckpt parent>/ensemble)")
     p.add_argument("--num-res-blocks", type=int,

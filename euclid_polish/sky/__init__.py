@@ -11,12 +11,7 @@ _EXPORTS = {
     "GalaxyParams": ("euclid_polish.sky.generation.cosmos2025", "GalaxyParams"),
     "open_cosmos2025": ("euclid_polish.sky.generation.cosmos2025", "open_cosmos2025"),
     "LensParams": ("euclid_polish.sky.generation.lens_population", "LensParams"),
-    "LensPopulation": ("euclid_polish.sky.generation.lens_population", "LensPopulation"),
     "einstein_radius_sis": ("euclid_polish.sky.generation.lens_population", "einstein_radius_sis"),
-    "render_lens_to_canvas": (
-        "euclid_polish.sky.generation.lens_population",
-        "render_lens_to_canvas",
-    ),
     "render_lens_to_multiband_canvas": (
         "euclid_polish.sky.generation.lens_population",
         "render_lens_to_multiband_canvas",

@@ -154,12 +154,8 @@ def test_lens_population_ranges_consistent():
     assert Config.LENS_DENSITY_ARCMIN2 > 0.0
 
 
-def test_nisp_resampling_constants_legacy():
-    # NISP_RESAMPLE_KERNEL / NISP_LR_TO_VIS_LR_RATIO survive as constants
-    # for back-compat but are unused on the uniform-0.10″ pipeline (every
-    # band's resample factor is 1).
+def test_nisp_resampling_kernel_is_supported():
     assert Config.NISP_RESAMPLE_KERNEL in ("lanczos3", "cubic")
-    assert Config.NISP_LR_TO_VIS_LR_RATIO == 3
 
 
 def test_cosmos2025_paths_and_hdus():
@@ -184,10 +180,6 @@ def test_star_band_offsets_cover_all_bands():
         assert isinstance(offsets[band], float)
     # m_band - m_VIS is negative for the NIR-brighter stellar locus.
     assert all(offsets[band] < 0.0 for band in ("Y_E", "J_E", "H_E"))
-    assert set(Config.STAR_BANDPASS_UM) == set(Config.LR_INPUT_BAND_NAMES)
-    assert sum(
-        c[0] for c in Config.STAR_TEMPERATURE_COMPONENTS
-    ) == pytest.approx(1.0)
 
 
 # ---------------------------------------------------------------------------

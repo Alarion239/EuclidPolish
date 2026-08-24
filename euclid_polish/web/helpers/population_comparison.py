@@ -279,10 +279,6 @@ def euclid_phz_pdf_path() -> Path:
     return cache_dir() / "euclid_population_phz_pdf.npz"
 
 
-def cosmos_euclid_fit_path() -> Path:
-    return Path(Config.JOINT_GALAXY_POPULATION_FIT_PATH)
-
-
 def _read_json(path: Path) -> dict[str, Any] | None:
     try:
         with path.open() as handle:
@@ -294,11 +290,6 @@ def _read_json(path: Path) -> dict[str, Any] | None:
 def read_comparison() -> dict[str, Any] | None:
     payload = _read_json(comparison_path())
     return payload if payload and payload.get("version") == VERSION else None
-
-
-def read_cosmos_euclid_fit() -> dict[str, Any] | None:
-    payload = _read_json(cosmos_euclid_fit_path())
-    return payload if payload and payload.get("version") in {2, 3} else None
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:

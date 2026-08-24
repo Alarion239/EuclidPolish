@@ -62,17 +62,16 @@
     Euclid cutout in all four bands (<b>VIS · Y · J · H</b>) on the HR
     0.05″/pix grid — the idealised ground-truth scene. Toggle the
     <b>Mode</b> to pick the object kind, then submit; a blank seed re-rolls a
-    fresh random object each time. Runs as a FASRC job (it needs the real
-    COSMOS2025 catalog on the node; <b>TNG</b> mode also needs the SKIRT atlas
-    downloaded). Writes <code>poster_cutout.fits</code> +
+    fresh random object each time. Runs as a FASRC job; galaxy and lens modes
+    need the TNG SKIRT atlas downloaded. Writes <code>poster_cutout.fits</code> +
     <code>poster_cutout.png</code> to <code>_poster/</code> — load the preview,
     then download the FITS.
   </p>
   <ul class="muted" style="margin-top:0;">
-    <li><b>Sérsic galaxy</b> — analytic bulge+disk from a random COSMOS row.</li>
-    <li><b>Star</b> — a single point source (median stellar-locus colour).</li>
-    <li><b>Gravitational lens</b> — SIE + external shear lensing a source galaxy.</li>
+    <li><b>Star</b> — a point source drawn from the active empirical stellar prior.</li>
+    <li><b>Gravitational lens</b> — SIE + external shear with TNG light stamps.</li>
     <li><b>TNG50 galaxy</b> — a real TNG50 SKIRT stamp (random galaxy + viewpoint).</li>
+    <li><b>Random field</b> — the current clean scene plus dirty and SR products.</li>
   </ul>
   {% with step_id="poster_cutout" %}{% include "_step_card_mount.html" %}{% endwith %}
   <div style="margin-top:10px;">

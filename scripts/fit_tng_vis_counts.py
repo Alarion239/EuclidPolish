@@ -468,7 +468,7 @@ def weighted_draft_density(
     *,
     knots: np.ndarray = WEIGHT_KNOTS,
     bins: np.ndarray = MAG_BINS,
-    raw_density: float = Config.TNG_GAL_DENSITY_ARCMIN2,
+    raw_density: float = Config.GALAXY_DENSITY_ARCMIN2,
 ) -> tuple[np.ndarray, np.ndarray]:
     log_weight = np.interp(
         predicted_mean_mag,
@@ -499,7 +499,7 @@ def fit_log_weights(
     bins: np.ndarray = MAG_BINS,
     fit_min: float = COSMOS_FIT_MIN,
     fit_max: float = COSMOS_FIT_MAX,
-    raw_density: float = Config.TNG_GAL_DENSITY_ARCMIN2,
+    raw_density: float = Config.GALAXY_DENSITY_ARCMIN2,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     centers = 0.5 * (bins[:-1] + bins[1:])
     free = np.arange(3, len(knots))
@@ -812,7 +812,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--raw-density",
         type=float,
-        default=Config.TNG_GAL_DENSITY_ARCMIN2,
+        default=Config.GALAXY_DENSITY_ARCMIN2,
         help="Raw TNG proposals per arcmin2 for the catalog-only fit.",
     )
     return parser

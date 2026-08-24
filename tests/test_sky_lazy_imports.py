@@ -26,11 +26,11 @@ print(json.dumps(blocked))
     assert json.loads(result.stdout) == []
 
 
-def test_legacy_sky_reexports_resolve_lazily():
+def test_sky_reexports_resolve_lazily():
     import euclid_polish.sky as sky
     import euclid_polish.sky.generation as generation
 
     assert sky.ObservationSimulator.__module__.endswith("observation_simulator")
-    assert sky.LensPopulation.__module__.endswith("lens_population")
+    assert sky.LensParams.__module__.endswith("lens_population")
     assert generation.SourceCatalogWriter.__module__.endswith("source_catalog")
     assert generation.SkySimulator.__module__.endswith("sky_simulator")

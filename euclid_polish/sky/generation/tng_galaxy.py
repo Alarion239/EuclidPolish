@@ -21,8 +21,9 @@ After redshift-dependent colour drift, a shared four-band scalar sets the
 drawn VIS 2FWHM flux.  Its aperture flux is evaluated with the compact adjoint
 aperture response rather than a full-stamp convolution.  The result remains a
 clean, pre-PSF source; the existing forward model independently supplies the
-dirty-image Euclid PSF, noise, and LR rebin.  The legacy physical-redshift and
-integer-rebin helpers remain available for strong-lens rendering.
+dirty-image Euclid PSF, noise, and LR rebin. Strong lenses use the physical-
+redshift integer-rebin path because both their deflector and source redshifts
+are part of the lens geometry.
 
 The returned stamp is ``(H, W, 4)`` in ``Config.LR_INPUT_BAND_NAMES`` order
 (VIS, Y_E, J_E, H_E), float32 electrons.
@@ -38,7 +39,7 @@ from collections import OrderedDict
 import numpy as np
 from scipy.signal import fftconvolve
 
-from euclid_polish.config import BandConfig, Config
+from euclid_polish.config import Config
 from euclid_polish.photometry import (
     ab_mag_to_electrons,
     electrons_to_ab_mag,
@@ -49,15 +50,11 @@ from euclid_polish.skirt.image import (
     block_mean,
     centered_rotation_crop_slices,
     load_skirt_frame,
-    measure_halflight_radius_px,
     radius_int_grid,
     resample_surface_brightness,
     rotate_arbitrary,
     rotate_quarter,
     stochastic_round_factor,
-)
-from euclid_polish.skirt.image import (
-    composite_stamp as _composite_stamp,
 )
 from euclid_polish.sky.generation.redshift_model import (
     TNG_NATIVE_PC_PER_PIXEL,
@@ -75,11 +72,6 @@ _FITS_BAND_TO_CONFIG: dict[str, str] = {
     "VIS": "VIS", "Y": "Y_E", "J": "J_E", "H": "H_E",
 }
 
-# Backward-compatible import for callers that historically obtained this
-# generic operation from ``tng_galaxy``.
-composite_stamp = _composite_stamp
-
-
 def tng_fits_path(galaxy_dir: str, subhalo_id: int | str,
                   orientation: int, fits_band: str) -> str:
     """Path of one atlas frame, e.g. ``…/167396/TNG167396_O4_Euclid_VIS.fits``."""
@@ -95,15 +87,6 @@ def tng_fits_path(galaxy_dir: str, subhalo_id: int | str,
         return path
     padded_path = os.path.join(galaxy_dir, padded_name)
     return padded_path if os.path.isfile(padded_path) else path
-
-
-def load_tng_frame(path: str) -> np.ndarray:
-    """Read a TNG-SKIRT FITS as a native-endian float32 MJy/sr array.
-
-    This compatibility wrapper keeps the established TNG API while the generic
-    FITS mechanics live in :mod:`euclid_polish.skirt.image`.
-    """
-    return load_skirt_frame(path)
 
 
 #: TNG-policy threshold at/above which an arbitrary-angle rotation may precede
@@ -145,14 +128,6 @@ _CIRCULAR_PSF_CACHE: OrderedDict[tuple, np.ndarray] = OrderedDict()
 _CIRCULAR_PSF_CACHE_BYTES = 0
 
 
-def surface_brightness_to_electrons(arr_mjy_sr: np.ndarray, band: BandConfig,
-                                    pixel_scale_arcsec: float) -> np.ndarray:
-    """MJy/sr → electrons-per-pixel over ``band``'s stack at the HR pixel
-    scale. Thin wrapper over the photometry primitive, kept here so the
-    three-step recipe reads top-to-bottom."""
-    return mjy_per_sr_to_electrons(arr_mjy_sr, band, pixel_scale_arcsec)
-
-
 def prepare_tng_galaxy(
     galaxy_dir: str,
     subhalo_id: int | str,
@@ -161,9 +136,7 @@ def prepare_tng_galaxy(
     rebin_factor: int = 2,
     rot_k: int = 0,
     rot_angle: float | None = None,
-    min_rebin_for_angle: int = ARBITRARY_ROTATION_MIN_REBIN,
     pixel_scale_arcsec: float = Config.DEFAULT_PIXEL_SCALE,
-    fits_bands: tuple[str, ...] = TNG_FITS_BANDS,
 ) -> tuple[np.ndarray, dict]:
     """Build a 4-band, electron-calibrated TNG stamp ready to inject.
 
@@ -171,7 +144,7 @@ def prepare_tng_galaxy(
     MJy/sr → electrons at ``pixel_scale_arcsec`` (the HR clean-sky grid, 0.05″ by
     default). Rotation depends on the downsample:
 
-    * ``rot_angle`` given **and** ``rebin_factor >= min_rebin_for_angle`` →
+    * ``rot_angle`` given and ``rebin_factor`` at the validated threshold →
       arbitrary-angle cubic-spline rotation at native resolution *before* the
       block-mean (the ≥K× averaging washes out the interpolation blur — see
       :func:`rotate_arbitrary`). This is the orientation-augmentation path.
@@ -191,7 +164,7 @@ def prepare_tng_galaxy(
     # Arbitrary-angle rotation only when requested AND enough downsample follows
     # to wash out the spline blur; else the exact quarter-turn.
     use_angle = (rot_angle is not None
-                 and rebin_factor >= int(min_rebin_for_angle))
+                 and rebin_factor >= ARBITRARY_ROTATION_MIN_REBIN)
     # Assemble in canonical model-band order so channel c is LR band c.
     config_to_fits = {v: k for k, v in _FITS_BAND_TO_CONFIG.items()}
     channels: list[np.ndarray] = []
@@ -199,11 +172,9 @@ def prepare_tng_galaxy(
     rot_crop = None     # centred crop slices, computed once (from VIS) for all bands
     for cfg_name in Config.LR_INPUT_BAND_NAMES:
         fband = config_to_fits[cfg_name]
-        if fband not in fits_bands:
-            raise ValueError(f"band {fband} not in requested fits_bands={fits_bands}")
         band = Config.get_band(cfg_name)
         path = tng_fits_path(galaxy_dir, subhalo_id, orientation, fband)
-        sb = load_tng_frame(path)                       # MJy/sr, 1600²
+        sb = load_skirt_frame(path)                     # MJy/sr, 1600²
         if use_angle:
             if rot_crop is None:                        # size from the first (VIS) frame
                 rot_crop = centered_rotation_crop_slices(
@@ -217,7 +188,7 @@ def prepare_tng_galaxy(
         sb = block_mean(sb, rebin_factor)               # still MJy/sr
         if not use_angle:
             sb = rotate_quarter(sb, rot_k)              # exact 90° fallback
-        e = surface_brightness_to_electrons(sb, band, pixel_scale_arcsec)
+        e = mjy_per_sr_to_electrons(sb, band, pixel_scale_arcsec)
         channels.append(e)
         flux_e[cfg_name] = float(e.sum())
     stamp = np.stack(channels, axis=-1).astype(np.float32)
@@ -241,7 +212,6 @@ def _registered_source_key(
     subhalo_id: int | str,
     orientation: int,
     *,
-    fits_bands: tuple[str, ...],
     radius_manifest_fingerprint: str,
 ) -> tuple:
     """Return a cache key that changes when any contributing FITS changes."""
@@ -249,10 +219,6 @@ def _registered_source_key(
     identities: list[tuple[str, int, int]] = []
     for cfg_name in Config.LR_INPUT_BAND_NAMES:
         fband = config_to_fits[cfg_name]
-        if fband not in fits_bands:
-            raise ValueError(
-                f"band {fband} not in requested fits_bands={fits_bands}"
-            )
         path = os.path.realpath(tng_fits_path(
             galaxy_dir, subhalo_id, orientation, fband,
         ))
@@ -260,7 +226,7 @@ def _registered_source_key(
         identities.append((path, int(status.st_size), int(status.st_mtime_ns)))
     return (
         os.path.realpath(galaxy_dir), str(subhalo_id), int(orientation),
-        tuple(fits_bands), str(radius_manifest_fingerprint), tuple(identities),
+        str(radius_manifest_fingerprint), tuple(identities),
     )
 
 
@@ -306,12 +272,11 @@ def _prepare_tng_continuous_source(
     orientation: int,
     *,
     rot_angle: float | None = None,
-    fits_bands: tuple[str, ...] = TNG_FITS_BANDS,
     radius_manifest_fingerprint: str = "",
 ) -> tuple[np.ndarray, bool]:
     """Return one cached, cropped, unrotated registered four-band source."""
     key = _registered_source_key(
-        galaxy_dir, subhalo_id, orientation, fits_bands=fits_bands,
+        galaxy_dir, subhalo_id, orientation,
         radius_manifest_fingerprint=radius_manifest_fingerprint,
     )
     cached = _TNG_SOURCE_CACHE.pop(key, None)
@@ -323,9 +288,7 @@ def _prepare_tng_continuous_source(
     native_channels: list[np.ndarray] = []
     for cfg_name in Config.LR_INPUT_BAND_NAMES:
         fband = config_to_fits[cfg_name]
-        if fband not in fits_bands:
-            raise ValueError(f"band {fband} not in requested fits_bands={fits_bands}")
-        native_channels.append(load_tng_frame(tng_fits_path(
+        native_channels.append(load_skirt_frame(tng_fits_path(
             galaxy_dir, subhalo_id, orientation, fband)))
     native_cube = np.stack(native_channels, axis=-1).astype(np.float32)
     crop = centered_rotation_crop_slices(
@@ -424,7 +387,7 @@ def _render_tng_continuous_source(
     channels: list[np.ndarray] = []
     flux_e: dict[str, float] = {}
     for index, cfg_name in enumerate(Config.LR_INPUT_BAND_NAMES):
-        electrons = surface_brightness_to_electrons(
+        electrons = mjy_per_sr_to_electrons(
             cube[..., index], Config.get_band(cfg_name), pixel_scale_arcsec,
         )
         channels.append(electrons)
@@ -459,7 +422,6 @@ def prepare_tng_galaxy_continuous(
     rot_k: int = 0,
     rot_angle: float | None = None,
     pixel_scale_arcsec: float = Config.DEFAULT_PIXEL_SCALE,
-    fits_bands: tuple[str, ...] = TNG_FITS_BANDS,
     radius_manifest_fingerprint: str = "",
     max_output_side: int | None = None,
 ) -> tuple[np.ndarray, dict]:
@@ -474,7 +436,7 @@ def prepare_tng_galaxy_continuous(
     """
     source, use_angle = _prepare_tng_continuous_source(
         galaxy_dir, subhalo_id, orientation,
-        rot_angle=rot_angle, fits_bands=fits_bands,
+        rot_angle=rot_angle,
         radius_manifest_fingerprint=radius_manifest_fingerprint,
     )
     return _render_tng_continuous_source(
@@ -495,9 +457,6 @@ def prepare_tng_galaxy_continuous(
 # ---------------------------------------------------------------------------
 
 N_ORIENTATIONS = 5                              # SKIRT viewpoints O1..O5
-DOWNSAMPLE_CHOICES: tuple[int, ...] = (1, 2, 3, 4)
-
-
 def list_tng_galaxies(tng_dir: str) -> list[tuple[str, str]]:
     """List ``(galaxy_dir, subhalo_id)`` for downloaded galaxies ready to inject.
 
@@ -515,34 +474,6 @@ def list_tng_galaxies(tng_dir: str) -> list[tuple[str, str]]:
         return sorted(out, key=lambda t: int(t[1]))
     except ValueError:
         return sorted(out)
-
-
-#: Per-(dir, galaxy, orientation) native VIS half-light radius cache (pixels).
-#: Filled lazily the first time a galaxy is sized; one entry per orientation, so
-#: repeat draws skip the FITS read + curve-of-growth entirely. Keyed on the
-#: directory too, so distinct galaxy sets (e.g. test fixtures reusing ids) never
-#: alias.
-_HALFLIGHT_PX_CACHE: dict[tuple[str, str, int], float] = {}
-
-
-def native_halflight_px(
-    galaxy_dir: str, subhalo_id: int | str, orientation: int,
-    *, fits_band: str = "VIS",
-) -> float:
-    """Cached native half-light radius (px) of one galaxy/orientation's VIS
-    frame. NaN if the frame can't be read or carries no flux."""
-    key = (str(galaxy_dir), str(subhalo_id), int(orientation))
-    cached = _HALFLIGHT_PX_CACHE.get(key)
-    if cached is not None:
-        return cached
-    try:
-        frame = load_tng_frame(
-            tng_fits_path(galaxy_dir, subhalo_id, orientation, fits_band))
-        re_px = measure_halflight_radius_px(frame)
-    except Exception:
-        re_px = float("nan")
-    _HALFLIGHT_PX_CACHE[key] = re_px
-    return re_px
 
 
 def truncate_below_sb(
@@ -932,10 +863,7 @@ def tng_stamp_at_redshift(
     rng: np.random.Generator | None = None,
     *,
     pixel_scale_arcsec: float = Config.DEFAULT_PIXEL_SCALE,
-    rot_k: int | None = None,
-    f_max: int = TNG_MAX_REBIN_FACTOR,
     sb_cut_mag_arcsec2: float = Config.TNG_SB_TRUNCATE_MAG_ARCSEC2,
-    mass_scale: float = 1.0,
     target_re_arcsec: float | None = None,
     target_vis_flux_e: float | None = None,
     native_re_px: float | None = None,
@@ -943,12 +871,6 @@ def tng_stamp_at_redshift(
     max_output_side: int | None = None,
 ) -> tuple[np.ndarray, dict]:
     """Build one TNG stamp **as it would appear at redshift ``z``**.
-
-    ``mass_scale`` < 1 re-uses the stamp as a *smaller galaxy of similar
-    morphology*: flux × s (L ∝ M) and an extra size squeeze s^-α along the
-    observed mass-size relation R ∝ M^α — so its surface brightness drops
-    as s^(1-2α), the observed trend. Distinct from the fixed-mass
-    compactness correction, which conserves flux.
 
     When no explicit target radius/flux is supplied, a single ``z`` drives all
     three observables (see :mod:`euclid_polish.sky.generation.redshift_model`):
@@ -967,9 +889,7 @@ def tng_stamp_at_redshift(
     Raises on unreadable frames, like :func:`prepare_tng_galaxy`.
     """
     compact = compactness_factor(z)
-    if not (0.0 < mass_scale <= 1.0):
-        raise ValueError(f"mass_scale must be in (0, 1], got {mass_scale}")
-    squeeze = compact * mass_scale ** -Config.TNG_MASS_SIZE_ALPHA
+    squeeze = compact
     f_geo = rebin_factor_for_redshift(z, pixel_scale_arcsec=pixel_scale_arcsec)
     re_px = (
         float(native_re_px) if native_re_px is not None else float("nan")
@@ -984,8 +904,7 @@ def tng_stamp_at_redshift(
             raise ValueError(f"target_re_arcsec must be positive, got {target_re_arcsec!r}")
         if not np.isfinite(re_px) or re_px <= 0.0:
             raise ValueError("TNG VIS frame has no measurable native half-light radius")
-        if rot_k is None:
-            rot_k = int(rng.integers(0, 4)) if rng is not None else 0
+        rot_k = int(rng.integers(0, 4)) if rng is not None else 0
         rot_angle = (float(rng.uniform(0.0, 360.0))
                      if rng is not None else None)
         scale = float(target_re_arcsec) / (float(re_px) * pixel_scale_arcsec)
@@ -1012,8 +931,8 @@ def tng_stamp_at_redshift(
         factors, dmeta = band_drift_factors(sed_fnu, z, rng)
         stamp *= np.asarray(factors, dtype=np.float32)[None, None, :]
         # The staged generator deliberately supplies no target here and applies
-        # its independent 2FWHM anchor later.  Preserve the legacy total-VIS
-        # request, however, by restoring it after the colour drift.
+        # its independent 2FWHM anchor later. Direct PHZ generation can still
+        # request a total-VIS anchor, restored after the colour drift.
         if target_vis_flux_e is not None:
             _record_target_vis_normalisation(
                 stamp, meta, target_vis_flux_e,
@@ -1034,10 +953,9 @@ def tng_stamp_at_redshift(
         })
         meta.update(dmeta)
         return stamp, meta
-    f_cont = min(float(f_max), f_geo * squeeze)
+    f_cont = min(float(TNG_MAX_REBIN_FACTOR), f_geo * squeeze)
     rebin = stochastic_round_factor(f_cont, rng)
-    if rot_k is None:
-        rot_k = int(rng.integers(0, 4)) if rng is not None else 0
+    rot_k = int(rng.integers(0, 4)) if rng is not None else 0
     # Arbitrary orientation for the dataset-multiplying augmentation (applied by
     # prepare_tng_galaxy only when rebin ≥ ARBITRARY_ROTATION_MIN_REBIN); rng=None
     # → no angle → exact quarter-turn, preserving the deterministic path.
@@ -1059,10 +977,10 @@ def tng_stamp_at_redshift(
     factors, dmeta = band_drift_factors(sed_fnu, z, rng)
     # Flux: the block-mean keeps surface brightness while the pixel count
     # shrinks, so (rebin/f_geo)² pins the total to the *continuous
-    # geometric* prediction (covering the compactness squeeze and the
-    # integer rounding); mass_scale then dims the rescaled galaxy (L ∝ M).
+    # geometric* prediction (covering the compactness squeeze and integer
+    # rounding).
     stamp *= (np.asarray(factors, dtype=np.float32)[None, None, :]
-              * np.float32((rebin / f_geo) ** 2 * mass_scale))
+              * np.float32((rebin / f_geo) ** 2))
     brightness_scale = 1.0
     if target_vis_flux_e is not None:
         current_vis = float(stamp[..., 0].sum(dtype=np.float64))
@@ -1088,7 +1006,6 @@ def tng_stamp_at_redshift(
     meta["z"] = float(z)
     meta["rebin_factor_continuous"] = float(f_cont)
     meta["compactness"] = float(compact)
-    meta["mass_scale"] = float(mass_scale)
     meta["redshift_band_factors"] = [float(f) for f in factors]
     meta.update(dmeta)
     if np.isfinite(re_px) and re_px > 0.0:
@@ -1123,7 +1040,7 @@ def native_photometry(galaxy_dir: str, subhalo_id: int | str,
     sums = []
     profile = None
     for fband in TNG_FITS_BANDS:
-        frame = load_tng_frame(
+        frame = load_skirt_frame(
             tng_fits_path(galaxy_dir, subhalo_id, orientation, fband))
         sums.append(float(frame.sum()))
         if fband == "VIS":
@@ -1168,96 +1085,68 @@ def predict_vis_flux_e(
     galaxy_dir: str, subhalo_id: int | str, orientation: int, z: float,
     *,
     pixel_scale_arcsec: float = Config.DEFAULT_PIXEL_SCALE,
-    mass_scale: float = 1.0,
 ) -> float:
     """Analytic prediction of a stamp's total VIS flux at redshift ``z``
     (electrons; truncation losses ignored). The flux-conservation boost makes
     the total independent of the integer rebin: native sum × conversion ×
-    (dimming · drift) / f_geo² × mass_scale.
+    (dimming · drift) / f_geo².
     """
     _, sums = native_photometry(galaxy_dir, subhalo_id, orientation)
     factors, _ = band_drift_factors(sums, z, None)
     f_geo = rebin_factor_for_redshift(z, pixel_scale_arcsec=pixel_scale_arcsec)
     fac = mjy_per_sr_to_electrons_factor(
         Config.get_band("VIS"), pixel_scale_arcsec)
-    return float(sums[0] * fac * factors[0] / f_geo ** 2 * mass_scale)
+    return float(sums[0] * fac * factors[0] / f_geo ** 2)
 
 
 def sample_tng_stamp(
     galaxies: list[tuple[str, str]],
     rng: np.random.Generator,
     *,
+    target_re_arcsec: float,
+    radius_lookup_map: dict[tuple[str, int], float],
     pixel_scale_arcsec: float = Config.DEFAULT_PIXEL_SCALE,
-    downsample_choices: tuple[int, ...] = DOWNSAMPLE_CHOICES,
-    target_re_arcsec: float | None = None,
     z: float | None = None,
-    mass_scale: float = 1.0,
-    f_max: int = TNG_MAX_REBIN_FACTOR,
     target_vis_flux_e: float | None = None,
-    native_re_px: float | None = None,
     radius_manifest_fingerprint: str = "",
-    radius_lookup_map: dict[tuple[str, int], float] | None = None,
     max_output_side: int | None = None,
-) -> tuple[np.ndarray, dict] | None:
-    """Pick a random galaxy / orientation / downsample / quarter-rotation and
-    return its injectable ``(H,W,4)`` electron stamp + meta (None if it can't
-    load).
-
-    Sizing (first match wins):
-
-    * ``z`` and ``target_re_arcsec`` given → the Euclid-conditioned path uses
-      one nominal similarity scale and one cube-wide VIS normalization. TNG
-      inter-band ratios are unchanged and the rendered radius is not remeasured.
-    * ``z`` alone → the explicit physical-redshift path applies D_A(z),
-      dimming, and spectral drift for strong-lens rendering.
-    * ``target_re_arcsec`` alone → the same single-scale cube path without the
-      physical-redshift metadata.
-    * otherwise → uniform draw from ``downsample_choices`` (×1/×2/×3/×4);
-      coarser = smaller and fainter, like a more distant galaxy.
-    """
+) -> tuple[np.ndarray, dict]:
+    """Render a random atlas donor at a requested Euclid Sersic radius."""
     if not galaxies:
-        return None
+        raise ValueError("TNG galaxy pool is empty")
     gdir, gid = galaxies[int(rng.integers(0, len(galaxies)))]
-    orientation = int(rng.integers(1, N_ORIENTATIONS + 1))      # O1..O5
-    selected_native_re = (
-        radius_lookup_map.get((str(gid), orientation))
-        if radius_lookup_map is not None else native_re_px
-    )
-    if radius_lookup_map is not None and selected_native_re is None:
+    orientation = int(rng.integers(1, N_ORIENTATIONS + 1))
+    native_re_px = radius_lookup_map.get((str(gid), orientation))
+    if native_re_px is None:
         raise ValueError(
-            f"radius manifest has no entry for TNG {gid} orientation {orientation}"
+            f"radius manifest has no entry for TNG {gid} orientation "
+            f"{orientation}"
         )
 
     if z is not None:
         return tng_stamp_at_redshift(
-            gdir, gid, orientation, z, rng,
-            pixel_scale_arcsec=pixel_scale_arcsec, f_max=f_max,
-            mass_scale=mass_scale,
+            gdir,
+            gid,
+            orientation,
+            z,
+            rng,
+            pixel_scale_arcsec=pixel_scale_arcsec,
             target_re_arcsec=target_re_arcsec,
             target_vis_flux_e=target_vis_flux_e,
-            native_re_px=selected_native_re,
-            radius_manifest_fingerprint=radius_manifest_fingerprint,
-            max_output_side=max_output_side)
-
-    if target_re_arcsec is not None:
-        return tng_stamp_to_target_re(
-            gdir, gid, orientation, target_re_arcsec,
-            rng=rng, pixel_scale_arcsec=pixel_scale_arcsec,
-            target_vis_flux_e=target_vis_flux_e,
-            native_re_px=selected_native_re,
+            native_re_px=native_re_px,
             radius_manifest_fingerprint=radius_manifest_fingerprint,
             max_output_side=max_output_side,
         )
 
-    rot_k = int(rng.integers(0, 4))
-    rot_angle = float(rng.uniform(0.0, 360.0))   # used when rebin ≥ threshold
-
-    rebin = int(downsample_choices[
-        int(rng.integers(0, len(downsample_choices)))])
-
-    stamp, meta = prepare_tng_galaxy(
-        gdir, gid, orientation,
-        rebin_factor=rebin, rot_k=rot_k, rot_angle=rot_angle,
+    return tng_stamp_to_target_re(
+        gdir,
+        gid,
+        orientation,
+        target_re_arcsec,
+        rng=rng,
         pixel_scale_arcsec=pixel_scale_arcsec,
+        target_vis_flux_e=target_vis_flux_e,
+        native_re_px=native_re_px,
+        radius_manifest_fingerprint=radius_manifest_fingerprint,
+        max_output_side=max_output_side,
     )
-    return stamp, meta

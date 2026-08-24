@@ -1015,11 +1015,11 @@ class TngStackStep(FASRCPipelineStep):
 
 
 class PosterCutoutStep(FASRCPipelineStep):
-    """Generate ONE random object (Sérsic galaxy / star / lens / TNG galaxy) as
+    """Generate one random star, lens, TNG galaxy, or full field as
     a clean 4-band HR FITS → ``_poster/poster_cutout.fits`` (+ a preview PNG).
     For the poster — the idealised, PSF-free, noise-free ground-truth object.
-    Needs the real COSMOS2025 catalog (and, for ``tng``, the downloaded SKIRT
-    atlas), which is why it runs on the node. Blank seed re-rolls each submit."""
+    TNG-backed modes need the downloaded SKIRT atlas, which is why the job runs
+    on the node. Blank seed re-rolls each submit."""
 
     def __init__(self):
         super().__init__(
@@ -1027,19 +1027,36 @@ class PosterCutoutStep(FASRCPipelineStep):
             label="Poster — random object cutout (clean 4-band FITS)",
             job_name="poster-cutout",
             defaults=StepResources(
-                # The first run pre-filters the 10 GB COSMOS2025 master FITS to a
-                # cached .npz (the memory driver); after that it's a single cheap
-                # scene. 48 G covers the prefilter; repeat runs use a fraction.
                 partition="shared", n_cpus=2, n_gpus=0,
                 memory="48G", time_limit="0:45:00",
             ),
             needs_gpu=False,
         )
 
+    def prepare_params(self, params: dict[str, Any]) -> dict[str, Any]:
+        from euclid_polish.web.helpers.population_calibration import active_star
+
+        prepared = dict(params)
+        mode = str(prepared.get("mode", "tng") or "tng").lower()
+        if mode not in ("star", "lens", "tng", "field"):
+            mode = "tng"
+        prepared["mode"] = mode
+        if mode in ("star", "field"):
+            stars = active_star()
+            if not stars:
+                raise ValueError(
+                    "activate a valid Gaia+Euclid stellar calibration before "
+                    f"rendering a poster {mode}"
+                )
+            prepared["_star_prior_json"] = json.dumps(
+                stars, separators=(",", ":"), sort_keys=True,
+            )
+        return prepared
+
     def build_command(self, params: dict[str, Any]) -> list[str]:
-        mode = str(params.get("mode", "sersic") or "sersic").lower()
-        if mode not in ("sersic", "star", "lens", "tng", "field"):
-            mode = "sersic"
+        mode = str(params.get("mode", "tng") or "tng").lower()
+        if mode not in ("star", "lens", "tng", "field"):
+            mode = "tng"
         cmd = [
             "scripts/fasrc_poster_cutout.py",
             "--mode", mode, "--save",
@@ -1049,6 +1066,8 @@ class PosterCutoutStep(FASRCPipelineStep):
             cmd += ["--image-size", str(int(float(size)))]
         seed = str(params.get("seed", "")).strip()
         cmd += ["--seed", seed if seed != "" else "-1"]
+        if params.get("_star_prior_json"):
+            cmd += ["--star-prior-json", str(params["_star_prior_json"])]
         return cmd
 
 
@@ -1155,6 +1174,13 @@ class EnsembleTrainStep(FASRCPipelineStep):
         if stars:
             prepared["_star_prior_json"] = json.dumps(
                 stars, separators=(",", ":"), sort_keys=True,
+            )
+        elif str(prepared.get("forward_onthefly", "")).strip().lower() in (
+            "1", "true", "yes", "on",
+        ):
+            raise ValueError(
+                "activate a valid Gaia+Euclid stellar calibration before "
+                "on-the-fly training"
             )
         return prepared
 
@@ -1469,13 +1495,6 @@ class SyntheticGenerateStep(RunPipelineStep):
             prepared["star_density_arcmin2"] = float(
                 population["density_arcmin2"]
             )
-        for source, target in (
-            ("magnitude_slope", "star_mag_slope"),
-            ("mag_bright", "star_mag_bright"),
-            ("mag_faint", "star_mag_faint"),
-        ):
-            if population.get(source) is not None:
-                prepared[target] = float(population[source])
         return prepared
 
     def build_command(self, params: dict[str, Any]) -> list[str]:
@@ -1527,9 +1546,6 @@ class SyntheticGenerateStep(RunPipelineStep):
         # defaults. The warp is realised while each dirty exposure is rendered;
         # no warped kernels are precomputed or stored.
         for param, flag in (("star_density_arcmin2", "--star-density-arcmin2"),
-                            ("star_mag_slope",       "--star-mag-slope"),
-                            ("star_mag_bright",      "--star-mag-bright"),
-                            ("star_mag_faint",       "--star-mag-faint"),
                             ("lens_density_arcmin2", "--lens-density-arcmin2"),
                             ("lens_sigma_v_min_kms", "--lens-sigma-v-min-kms"),
                             ("lens_sigma_v_max_kms", "--lens-sigma-v-max-kms"),
@@ -1548,14 +1564,6 @@ class SyntheticGenerateStep(RunPipelineStep):
 # ---------------------------------------------------------------------------
 # Registry — single source of truth for which steps exist
 # ---------------------------------------------------------------------------
-
-from euclid_polish.experiments.lens_isolation.fasrc_steps import (  # noqa: E402
-    build_step_classes as _lens_isolation_step_classes,
-)
-
-_LENS_ISOLATION_STEP_CLASSES = _lens_isolation_step_classes(
-    FASRCPipelineStep, StepResources
-)
 
 STEP_CLASSES: tuple[type[FASRCPipelineStep], ...] = (
     HSTDownloadStep,
@@ -1577,7 +1585,6 @@ STEP_CLASSES: tuple[type[FASRCPipelineStep], ...] = (
     EuclidStarAnchorTFRecordStep,
     SyntheticGenerateStep,
     EnsembleTrainStep,
-    *_LENS_ISOLATION_STEP_CLASSES,
 )
 
 

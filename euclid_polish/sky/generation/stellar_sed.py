@@ -1,16 +1,4 @@
-"""Temperature-driven stellar colours for synthetic point sources.
-
-The simulator knows a star's VIS magnitude but needs a diverse, correlated
-four-band SED.  We draw a temperature from a cool-dwarf-dominated mixture,
-integrate a Planck ``f_nu`` spectrum over lightweight top-hat approximations
-to the Euclid VIS/Y/J/H passbands, and add modest extinction plus per-band
-scatter for line blanketing/metallicity not represented by a blackbody.
-
-This is intentionally an approximation, not a detailed stellar-photosphere
-library. It removes the far more damaging fixed-colour shortcut while
-remaining cheap enough for fresh on-the-fly star draws during every training
-visit. No terrestrial atmospheric term is present: Euclid is space based.
-"""
+"""Empirical Gaia-to-Euclid stellar colours for synthetic point sources."""
 
 from __future__ import annotations
 
@@ -19,13 +7,7 @@ from typing import Any
 
 import numpy as np
 
-from euclid_polish.config import Config
 from euclid_polish.population.magnitude_law import StraightMagnitudeLaw
-
-_SECOND_RADIATION_CONSTANT_UM_K = 14387.77
-_BAND_NAMES = Config.LR_INPUT_BAND_NAMES
-_TEMPERATURE_MIN_K = min(c[3] for c in Config.STAR_TEMPERATURE_COMPONENTS)
-_TEMPERATURE_MAX_K = max(c[4] for c in Config.STAR_TEMPERATURE_COMPONENTS)
 
 
 @dataclass(frozen=True)
@@ -126,16 +108,10 @@ class EmpiricalStellarPrior:
             magnitude_law, color_model,
         )
 
-    def sample_magnitude(
-        self, rng: np.random.Generator, *, slope: float,
-        m_bright: float, m_faint: float,
-    ) -> float:
+    def sample_magnitude(self, rng: np.random.Generator) -> float:
         """Sample VIS magnitude from the activated straight count law."""
         if self.magnitude_law is None:
             raise ValueError("stellar prior has no straight magnitude-count law")
-        # The activated, fingerprinted law is authoritative. The scalar
-        # arguments remain in the public call for legacy non-empirical paths
-        # and job metadata, but cannot reshape an active calibrated prior.
         return self.magnitude_law.sample(rng)
 
     def sample(self, rng: np.random.Generator, mag_vis: float) -> StellarSED:
@@ -182,20 +158,6 @@ class EmpiricalStellarPrior:
         )
 
 
-def _sample_exponential_magnitude(
-    rng: np.random.Generator, *, slope: float,
-    m_bright: float, m_faint: float,
-) -> float:
-    """Sample ``dN/dm ∝ 10^(slope·m)`` for legacy priors."""
-    span = float(m_faint) - float(m_bright)
-    if span <= 0.0:
-        return float(m_bright)
-    beta = float(slope) * np.log(10.0)
-    u = float(rng.random())
-    t = (u * span if abs(beta) < 1e-9
-         else np.log1p(u * np.expm1(beta * span)) / beta)
-    return float(m_bright + t)
-
 
 def _normalise_rows(values: np.ndarray) -> np.ndarray:
     values = np.maximum(np.asarray(values, dtype=np.float64), 0.0)
@@ -214,68 +176,6 @@ def _positive_semidefinite_covariance(
     eigenvalues, eigenvectors = np.linalg.eigh(matrix)
     return (eigenvectors * np.maximum(eigenvalues, float(floor))) @ eigenvectors.T
 
-
-def _planck_fnu(wavelength_um: np.ndarray, temperature_k: float) -> np.ndarray:
-    """Planck ``f_nu`` at wavelength in microns, arbitrary normalisation."""
-    wavelength = np.asarray(wavelength_um, dtype=np.float64)
-    x = _SECOND_RADIATION_CONSTANT_UM_K / (wavelength * float(temperature_k))
-    return np.power(1.0 / wavelength, 3) / np.expm1(x)
-
-
-def _band_mean_fnu(temperature_k: float, band_name: str) -> float:
-    """Photon-counting AB-like mean ``f_nu`` over one top-hat passband."""
-    lo, hi = Config.STAR_BANDPASS_UM[band_name]
-    wavelength = np.geomspace(float(lo), float(hi), 64)
-    fnu = _planck_fnu(wavelength, temperature_k)
-    # A flat f_nu AB source stays flat under the d(lambda)/lambda weighting
-    # appropriate to a photon-counting response.
-    return float(np.trapezoid(fnu, x=np.log(wavelength)) / np.log(hi / lo))
-
-
-def blackbody_band_offsets_mag(temperature_k: float) -> dict[str, float]:
-    """Return integrated ``m_band - m_VIS`` for a blackbody temperature."""
-    temperature = float(temperature_k)
-    if not _TEMPERATURE_MIN_K <= temperature <= _TEMPERATURE_MAX_K:
-        raise ValueError(
-            f"temperature_k must be in [{_TEMPERATURE_MIN_K:g}, "
-            f"{_TEMPERATURE_MAX_K:g}]"
-        )
-    flux = np.asarray([
-        _band_mean_fnu(temperature, name) for name in _BAND_NAMES
-    ])
-    offsets = -2.5 * np.log10(flux / flux[0])
-    return {name: float(offsets[k]) for k, name in enumerate(_BAND_NAMES)}
-
-
-# Integrate once, then interpolate per star. This keeps on-the-fly sampling at
-# a few scalar RNG/interpolation operations rather than four numerical
-# integrations per visit.
-_TEMPERATURE_GRID_K = np.geomspace(
-    _TEMPERATURE_MIN_K, _TEMPERATURE_MAX_K, 512,
-)
-_OFFSET_GRID_MAG = np.asarray([
-    [blackbody_band_offsets_mag(t)[name] for name in _BAND_NAMES]
-    for t in _TEMPERATURE_GRID_K
-])
-
-
-def _draw_temperature(rng: np.random.Generator) -> float:
-    components = Config.STAR_TEMPERATURE_COMPONENTS
-    weights = np.asarray([component[0] for component in components], dtype=float)
-    weights /= weights.sum()
-    index = int(rng.choice(len(components), p=weights))
-    _weight, median_k, sigma_log, lower_k, upper_k = components[index]
-    value = float(np.exp(rng.normal(np.log(median_k), sigma_log)))
-    return float(np.clip(value, lower_k, upper_k))
-
-
-def _temperature_offsets(temperature_k: float) -> np.ndarray:
-    log_grid = np.log(_TEMPERATURE_GRID_K)
-    log_t = np.log(float(temperature_k))
-    return np.asarray([
-        np.interp(log_t, log_grid, _OFFSET_GRID_MAG[:, k])
-        for k in range(len(_BAND_NAMES))
-    ])
 
 
 def sample_stellar_sed(

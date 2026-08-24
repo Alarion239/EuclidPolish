@@ -105,12 +105,7 @@ def make_gaussian_psf(
     )
 
 
-# Backward-compatible private alias for callers that imported the underscore
-# name during development. New code should call ``make_gaussian_psf``.
-_gaussian_psf = make_gaussian_psf
-
-
-def load_band_psf_raw(
+def load_band_psf(
     band: BandConfig,
     *,
     target_pixel_scale: float = Config.DEFAULT_PIXEL_SCALE,
@@ -150,10 +145,6 @@ def load_band_psf_raw(
                              size=target_side)
 
 
-# Backward-compatible alias — new code should call ``load_band_psf_raw``.
-load_band_psf = load_band_psf_raw
-
-
 def load_all_band_psfs(
     *,
     target_pixel_scale: float = Config.DEFAULT_PIXEL_SCALE,
@@ -166,7 +157,7 @@ def load_all_band_psfs(
     pass to :class:`euclid_polish.sky.observation_simulator.ObservationSimulator`.
     """
     return {
-        band.name: load_band_psf_raw(
+        band.name: load_band_psf(
             band,
             target_pixel_scale=target_pixel_scale,
             psf_dir=psf_dir,

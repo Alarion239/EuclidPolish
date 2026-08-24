@@ -6,8 +6,7 @@ current tracking campaign via ``TrackingStore.archive_model_zip``, logs a
 campaign note (incl. the FASRC-side cleanup reminder), then deletes the local
 dirs. Idempotent: already-missing dirs are skipped. Run once after the
 ensemble-only refactor lands — from then on THE model is the ensemble
-(a single model is an ensemble of 1: ``scripts/train_ensemble.py
---n-members 1``).
+(a single model is an ensemble of 1: ``scripts/train_ensemble.py --count 1``).
 """
 
 from __future__ import annotations

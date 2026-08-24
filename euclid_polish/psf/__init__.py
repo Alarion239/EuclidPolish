@@ -6,10 +6,6 @@ disk into a kernel ready to convolve a scene with:
   * :class:`PSF` (in :mod:`.core`) — the metadata-carrying object.
     Every operation (resample, crop, recentre, normalise, convolve,
     measure) is a method that returns a new ``PSF`` so they chain.
-  * Loaders (in :mod:`.loaders`) — ``load_hst_f814w_psf`` and
-    ``load_euclid_band_psf`` build ``PSF`` instances from the on-disk
-    formats both instruments produce, with the right
-    pixel-scale-fallback policy.
   * Measurements (in :mod:`.measurements`) — pure functions for FWHM
     (1-D row, 2-D area-equivalent, radial-profile), flux centroid,
     radial profile. Available as ``PSF`` methods AND standalone for
@@ -23,10 +19,6 @@ and synthetic Gaussian PSFs).
 from euclid_polish.psf.core import (
     DEFAULT_HR_PIXEL_SCALE,
     PSF,
-)
-from euclid_polish.psf.loaders import (
-    load_euclid_band_psf,
-    load_hst_f814w_psf,
 )
 from euclid_polish.psf.measurements import (
     estimate_fwhm_pixels_1d,
@@ -49,6 +41,4 @@ __all__ = [
     "flux_centroid",
     "peak_offset_from_centre",
     "radial_profile",
-    "load_hst_f814w_psf",
-    "load_euclid_band_psf",
 ]

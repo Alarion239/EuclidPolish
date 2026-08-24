@@ -156,8 +156,6 @@ class TestRegistry:
             "tng_grid", "tng_stack", "poster_cutout",
             "synthetic_generate",
             "ensemble_train",
-            "lens_isolation_generate", "lens_isolation_train",
-            "lens_isolation_evaluate",
         }
 
     def test_measure_tng_radii_can_write_parameter_summary(self):
@@ -200,6 +198,20 @@ class TestRegistry:
         assert argv[argv.index("--batch-size") + 1] == "2"
         assert argv[argv.index("--crops-per-field") + 1] == "1"
         assert argv[argv.index("--hr-crop-size") + 1] == "510"
+
+    def test_ensemble_onthefly_requires_active_stellar_prior(
+            self, monkeypatch):
+        monkeypatch.setattr(
+            "euclid_polish.web.helpers.population_calibration.active_star",
+            lambda: None,
+        )
+        step = REGISTRY.get("ensemble_train")
+        with pytest.raises(ValueError, match="stellar calibration"):
+            step.prepare_params({
+                "mode": "add",
+                "count": 1,
+                "forward_onthefly": "1",
+            })
 
     def test_ensemble_train_step_entropy_seed_omits_flag(self, monkeypatch):
         monkeypatch.setattr(
@@ -512,13 +524,24 @@ class TestRegistry:
         assert argv[argv.index("--seed") + 1] == "-1"
 
     def test_poster_cutout_modes(self):
-        """All five modes pass through; unknown modes fall back to sersic."""
+        """All current modes pass through; unknown modes fall back to TNG."""
         step = REGISTRY.get("poster_cutout")
-        for mode in ("sersic", "star", "lens", "tng", "field"):
+        for mode in ("star", "lens", "tng", "field"):
             argv = step.build_command({"mode": mode})
             assert argv[argv.index("--mode") + 1] == mode
         argv = step.build_command({"mode": "bogus"})
-        assert argv[argv.index("--mode") + 1] == "sersic"
+        assert argv[argv.index("--mode") + 1] == "tng"
+
+    def test_poster_star_freezes_active_stellar_prior(self, monkeypatch):
+        stars = {"version": 6, "fingerprint": "s" * 64}
+        monkeypatch.setattr(
+            "euclid_polish.web.helpers.population_calibration.active_star",
+            lambda: stars,
+        )
+        step = REGISTRY.get("poster_cutout")
+        prepared = step.prepare_params({"mode": "star"})
+        argv = step.build_command(prepared)
+        assert json.loads(argv[argv.index("--star-prior-json") + 1]) == stars
 
     def test_poster_field_mode_helpers(self):
         """`field` overrides no counts and accepts any non-empty scene."""
@@ -678,23 +701,16 @@ class TestRegistry:
         assert "--force" not in step.build_command({**base, "force": ""})
 
     def test_synthetic_generate_star_field_flags(self):
-        """Star field knobs from /config reach run_pipeline; absent → omitted."""
+        """Star density from /config reaches run_pipeline; absent is omitted."""
         step = REGISTRY.get("synthetic_generate")
         base = {"n_train": 10, "n_valid": 2, "image_size": 252,
                 "batch_size": 4, "steps": 100,
                 "galaxy_density_arcmin2": 207.0}
-        argv = step.build_command({
-            **base, "star_density_arcmin2": "3", "star_mag_slope": "0.25",
-            "star_mag_bright": "10", "star_mag_faint": "24"})
+        argv = step.build_command({**base, "star_density_arcmin2": "3"})
         assert argv[argv.index("--star-density-arcmin2") + 1] == "3"
-        assert argv[argv.index("--star-mag-slope") + 1] == "0.25"
-        assert argv[argv.index("--star-mag-bright") + 1] == "10"
-        assert argv[argv.index("--star-mag-faint") + 1] == "24"
         # absent → no flags
         plain = step.build_command(base)
-        for flag in ("--star-density-arcmin2", "--star-mag-slope",
-                     "--star-mag-bright", "--star-mag-faint"):
-            assert flag not in plain
+        assert "--star-density-arcmin2" not in plain
 
     def test_synthetic_generate_lens_field_flags(self):
         """Lens density + σ_v range from /config reach run_pipeline."""
@@ -724,8 +740,7 @@ class TestRegistry:
     def test_gpu_steps_are_the_expected_set(self):
         """Only model inference/training/evaluation steps request GPUs."""
         gpu_steps = {s.step_id for s in REGISTRY.all() if s.needs_gpu}
-        assert gpu_steps == {"ensemble_train",
-                             "lens_isolation_train", "lens_isolation_evaluate"}
+        assert gpu_steps == {"ensemble_train"}
 
     def test_extract_psf_is_single_threaded(self):
         step = REGISTRY.get("extract_psf")
@@ -841,9 +856,6 @@ class TestSbatchRendering:
             "euclid_roundtrip_tfrecords":   "roundtrip-tfrecords",
             "euclid_star_anchor_tfrecords": "anchor-tfrecords",
             "psf_rotation_pool":            "psf-rotpool",
-            "lens_isolation_generate":      "lens-isolation-generate",
-            "lens_isolation_train":         "lens-isolation-train",
-            "lens_isolation_evaluate":      "lens-isolation-evaluate",
         }
         _mock_population_calibrations(monkeypatch)
         for step in REGISTRY.all():
@@ -851,11 +863,7 @@ class TestSbatchRendering:
                 f"{step.step_id}: job_name {step.job_name!r}"
             )
             out = step.build_sbatch_body(
-                params=(
-                    {"sources": "member_00"}
-                    if step.step_id == "lens_isolation_train"
-                    else {}
-                ),
+                params={},
                 resources=step.defaults,
                 cfg=cfg,
                 label="x",
@@ -953,11 +961,7 @@ class TestSbatchRendering:
             for n_gpus in (0, 1, 2):
                 resources = replace(step.defaults, n_gpus=n_gpus)
                 out = step.build_sbatch_body(
-                    params=(
-                        {"sources": "member_00"}
-                        if step.step_id == "lens_isolation_train"
-                        else {}
-                    ),
+                    params={},
                     resources=resources, cfg=cfg,
                     label=f"shebang test {step.step_id} n_gpus={n_gpus}",
                 )

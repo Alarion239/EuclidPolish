@@ -309,7 +309,9 @@ def main() -> int:
     from euclid_polish.training.forward_onthefly import OnTheFlyForward
 
     print("— design C: OnTheFlyForward thread scaling (K=16 crops/field) —")
-    fwd_hook = OnTheFlyForward(psf_sets, seed=0, crops_per_field=16)
+    fwd_hook = OnTheFlyForward(
+        psf_sets, seed=0, crops_per_field=16, inject_stars=False,
+    )
     fld = np.asarray(fields[0].data, np.float32)
     fwd_hook.crops(fld)                                    # warm-up / traces
     base_rate = None

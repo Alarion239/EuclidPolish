@@ -139,7 +139,6 @@ class BaseVisualizer:
         stretch: str = "linear",
         asinh_scale: float | None = None,
         colorbar_label: str = "Electrons",
-        log_scale: bool | None = None,    # legacy — prefer ``stretch``
         cmap: str = "viridis",
         colorbar_inset: bool = False,
         hi_percentile: float | None = None,
@@ -169,17 +168,12 @@ class BaseVisualizer:
         asinh_scale : float, optional
             ``scale`` parameter for the asinh stretch. ``None`` uses
             ``Config.STRETCH_SCALE_E`` — the training-aligned global constant.
-        log_scale : bool, optional
-            Deprecated. ``True`` is equivalent to ``stretch="log10"``.
         cmap : str
             Matplotlib colormap. Default ``"viridis"``; pass ``"gray"`` or
             ``"gray_r"`` to render a panel as true grayscale (used for the
             VIS-only SR cells in the reconstruction plot, since the model
             has no multi-band information to colour with).
         """
-        if log_scale is not None:
-            stretch = "log10" if log_scale else stretch
-
         ax = self._fig.add_subplot(self._next_gs_position())
         _hi = hi_percentile if hi_percentile is not None else 99.5
 

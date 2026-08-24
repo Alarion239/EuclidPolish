@@ -86,7 +86,7 @@ budget — Y/J/H accumulate 4 × 112 s).
 
 | Class | Magnitude source per band | Flux assignment |
 |---|---|---|
-| **Stars** (point sources) | VIS drawn from a smooth differential star-count law dN/dm ∝ 10^(slope·m) over [bright, faint] (`Config.STAR_MAG_SLOPE=0.20`, `STAR_MAG_BRIGHT=12.0`, `STAR_MAG_FAINT=25.0`); each star draws a cool-dwarf-dominated temperature mixture, whose Planck `f_ν` is integrated over approximate VIS/Y/J/H passbands, plus modest interstellar extinction and stellar-population colour scatter | `flux_e_B` is deposited as a single HR pixel per channel (`sky_simulator.py:_deposit_star`); temperature, extinction, and four-band magnitudes are persisted for fixed validate/test stars and redrawn per visit on-the-fly; the PSF is applied later by the forward model |
+| **Stars** (point sources) | VIS magnitude and four-band colour are sampled from the activated Q1/Gaia empirical stellar calibration: a finite-domain count law plus a magnitude-conditioned latent colour locus | Each band is deposited as a single HR-pixel electron flux (`sky_simulator.py:_deposit_star`); four-band magnitudes are persisted for fixed validate/test stars and redrawn per visit on-the-fly; the PSF is applied later by the forward model |
 | **Galaxies** | One COSMOS2025 row supplies HST F814W, photo-z, stellar mass, and apparent R_e; missing size values use a nearby COSMOS donor in (F814W,z) | A mass-near TNG50 SKIRT morphology is resized to the COSMOS R_e. Its existing redshift/SED treatment is retained, then all four bands receive one shared brightness normalization so TNG VIS/NISP colours are unchanged. |
 | **Strong lenses** | TNG subhalo masses and the lens geometry prior | SIE + external-shear mass model from lenstronomy; deflector and source light are both TNG stamps. |
 
@@ -140,7 +140,7 @@ That single draw sets everything:
 - **Physical number density** — in pure-TNG mode the field-galaxy count follows
   the real sky density of the rendered (log M★ ≥ 9) population, ≈ 33/arcmin²
   (Baldry+ 2012 φ₀ × the same weighted volume integral), not the full COSMOS
-  111/arcmin² that counts undetectable dwarfs (`TNG_GAL_DENSITY_ARCMIN2`).
+  111/arcmin² that counts undetectable dwarfs (`GALAXY_DENSITY_ARCMIN2`).
 - **Lens masses** — in the catalog-free pure-TNG path, a deflector takes σ_v from
   its subhalo's stellar mass when
   `data/_tng_infographics/tng_properties.csv` is available (otherwise it falls
@@ -464,14 +464,6 @@ python scripts/run_pipeline.py --sersic-density-arcmin2 0 --tng-density-arcmin2 
 # Generate / convolve only (skip training), or train only:
 python scripts/run_pipeline.py --skip-train          # data only
 python scripts/run_pipeline.py --skip-generate --skip-convolve   # train on existing records
-
-# Additive lens-system isolation experiment: complete lens systems are the
-# clean target, while ordinary TNG galaxies and stars remain only in the input.
-# For direct CLI runs, choose workers explicitly; FASRC derives them from the
-# CPU allocation configured for its generation step.
-python scripts/lens_isolation_generate.py --workers 16
-python scripts/lens_isolation_train.py --sources member_01,member_04
-python scripts/lens_isolation_evaluate.py
 
 # Extract per-band empirical PSFs (clusters stars valid in all four bands):
 python scripts/extract_all_band_psfs.py

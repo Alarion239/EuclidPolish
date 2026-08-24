@@ -119,7 +119,6 @@ def run_grouped_analysis(
     include_synthetic: bool = True,
     include_galaxies: bool = True,
     lens_source_dir: str | None = None,
-    unique_fields: bool = True,
     on_progress: Callable[[int, int, str], None] | None = None,
     log: Callable[[str], None] | None = None,
     model: Any = None,
@@ -133,10 +132,8 @@ def run_grouped_analysis(
     :func:`~euclid_polish.eval.catalog_runner.enforce_object_sizes` then only trims
     a rare archive-rounding overhang or drops a stamp truncated at a survey edge. A
     larger ``cutout_size`` still works (it is center-cropped down). ``lens_source_dir``
-    seeds real-lens FITS from an existing run dir so cached cutouts are reused (and
-    merely re-cropped) instead of re-downloaded. ``unique_fields=False`` lets a
-    synthetic field host both a syn-lens and a syn-gal stamp, maximizing yield from
-    a small validation set.
+    seeds real-lens FITS from an existing run dir so cached cutouts are reused
+    and merely re-cropped instead of re-downloaded.
     """
     def _emit(m): (log or print)(m)
 
@@ -265,7 +262,7 @@ def run_grouped_analysis(
             syn = synthetic_runner.run_synthetic_eval(
                 out_dir, CLASS_MULT * n,            # 3N syn-lens + 3N syn-gal
                 model=model, asinh_scale=asinh_scale, stamp_m=stamp_m,
-                seed=seed, unique_fields=unique_fields,
+                seed=seed,
                 on_progress=(lambda i, t, lbl: on_progress(base + i, base + t, lbl))
                 if on_progress else None,
                 log=_emit)

@@ -329,7 +329,6 @@ def fit_euclid_joint_galaxy_candidate() -> dict[str, Any]:
             np.sum(row * log_radius_centers) / expected
         ))
     relation_model = radius_law.mean(relation_x)
-    relation_core = radius_law.core_mean(relation_x)
     fit_row_mask = np.sum(selected_grid, axis=1) >= (
         radius_law.fit_min_selected_per_magnitude_bin
     )
@@ -434,18 +433,14 @@ def fit_euclid_joint_galaxy_candidate() -> dict[str, Any]:
                 "magnitude": relation_x.tolist(),
                 "observed_mean_log10_arcsec": relation_observed,
                 "model_mean_log10_arcsec": relation_model.tolist(),
-                "model_core_log10_arcsec": relation_core.tolist(),
                 "model_core_low_log10_arcsec": (
-                    relation_core - radius_law.scatter_dex
+                    relation_model - radius_law.scatter_dex
                 ).tolist(),
                 "model_core_high_log10_arcsec": (
-                    relation_core + radius_law.scatter_dex
+                    relation_model + radius_law.scatter_dex
                 ).tolist(),
                 "fit_interval": conditional_fit_interval,
                 "model_kind": "straight_truncated_gaussian_no_tail",
-                "break_magnitude": radius_law.break_magnitude,
-                "tail_fraction": radius_law.tail_fraction,
-                "tail_cutoff_magnitude": radius_law.tail_cutoff_magnitude,
             },
             "fit_diagnostics": {
                 "conditional_cross_entropy": conditional_cross_entropy,
@@ -609,7 +604,7 @@ def _catalog_weighted_fingerprint() -> str | None:
 
 
 def photometric_candidate() -> dict[str, Any] | None:
-    return brightness_transfer_payload(Config.COSMOS_EUCLID_FIT_PATH)
+    return brightness_transfer_payload(Config.JOINT_GALAXY_POPULATION_FIT_PATH)
 
 
 def active_transfer() -> dict[str, Any] | None:
@@ -911,8 +906,8 @@ def fit_local_catalog_density(
         raise ValueError("Local calibration needs at least 100 bootstraps")
 
     prior = CosmosTngPrior(
-        Config.COSMOS_TNG_PRIOR_PATH,
-        photometric_fit_path=Config.COSMOS_EUCLID_FIT_PATH,
+        Config.COSMOS_POPULATION_PRIOR_PATH,
+        photometric_fit_path=Config.JOINT_GALAXY_POPULATION_FIT_PATH,
     )
     if len(prior) < 1_000:
         raise ValueError("COSMOS/TNG prior has too few generator-ready rows")

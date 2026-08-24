@@ -65,23 +65,8 @@
           <input type="number" name="star_density_arcmin2" value="{{ cfg.star_density_arcmin2 }}"
                  min="0" step="any" required>
         </label>
-        <label title="Differential star-count slope α in dN/dm ∝ 10^(α·m). High-Galactic-latitude value ~0.14–0.35 (Euclid observes away from the plane). Larger = relatively more faint stars.">
-          Mag slope α
-          <input type="number" name="star_mag_slope" value="{{ cfg.star_mag_slope }}"
-                 min="0" max="1" step="any" required>
-        </label>
-        <label title="Brightest synthetic star (VIS mag). Lower = brighter. Real fields have a few bright stars; the power law keeps them rare. Very bright single-pixel stars saturate and are hard to super-resolve.">
-          Brightest star (VIS mag)
-          <input type="number" name="star_mag_bright" value="{{ cfg.star_mag_bright }}"
-                 min="6" max="24" step="any" required>
-        </label>
-        <label title="Faintest synthetic star (VIS mag) — roughly the VIS noise floor.">
-          Faintest star (VIS mag)
-          <input type="number" name="star_mag_faint" value="{{ cfg.star_mag_faint }}"
-                 min="16" max="30" step="any" required>
-        </label>
       </div>
-      <p class="hint">→ <code>/sky</code> (synthetic generation): dN/dm ∝ 10<sup>α·m</sup> over [bright, faint].</p>
+      <p class="hint">→ <code>/sky</code>: magnitudes and colours come from the activated stellar calibration.</p>
     </fieldset>
 
     <fieldset style="border:1px solid #e2e5ea; border-radius:6px; margin:10px 0; padding:10px 14px;">

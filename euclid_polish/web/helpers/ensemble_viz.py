@@ -651,7 +651,7 @@ def job_ensemble_render(cap, *, index: int) -> dict:
     if ens.n_members == 0:
         raise RuntimeError(
             f"no ensemble members under {base}/{_MEMBER_GLOB}; train an ensemble "
-            "first (EnsembleModel.train / scripts/train_ensemble.py).")
+            "first (EnsembleModel.train_members / scripts/train_ensemble.py).")
     rdir = _sky_records_local_dir()
     if not rdir:
         raise RuntimeError("no local sky records — sync them on the /sky page.")

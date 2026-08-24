@@ -9,7 +9,7 @@ import os
 
 from astropy.io import fits
 
-from euclid_polish.eval.sr_provenance import stamp_sr_fits
+from euclid_polish.eval.sr_provenance import write_sr_provenance
 from euclid_polish.provenance.checkpoint import write_checkpoint_provenance
 from euclid_polish.provenance.fits import read_stamp_cards
 from euclid_polish.provenance.ids import ProvId
@@ -17,7 +17,7 @@ from euclid_polish.provenance.records import Format, Stamp
 from euclid_polish.provenance.store import ProvStore
 
 
-def test_stamp_sr_fits_cards_and_artifact(tmp_path):
+def test_write_sr_provenance_cards_and_artifact(tmp_path):
     ckpt = tmp_path / "ckpt"
     write_checkpoint_provenance(str(ckpt), Stamp(id=ProvId("2f9c81aa")))
     store = ProvStore(str(tmp_path / "store"))
@@ -25,7 +25,7 @@ def test_stamp_sr_fits_cards_and_artifact(tmp_path):
     os.makedirs(os.path.dirname(sr_path), exist_ok=True)
     hdr = fits.Header()
 
-    stamp = stamp_sr_fits(hdr, checkpoint_dir=str(ckpt), sr_fits_path=sr_path,
+    stamp = write_sr_provenance(hdr, checkpoint_dir=str(ckpt), sr_fits_path=sr_path,
                           store=store, git=None, descriptors={"ra": 10.0})
     assert stamp is not None
 
@@ -39,13 +39,13 @@ def test_stamp_sr_fits_cards_and_artifact(tmp_path):
     assert art.descriptors["ra"] == 10.0
 
 
-def test_stamp_sr_fits_legacy_checkpoint_has_no_model_parent(tmp_path):
+def test_write_sr_provenance_checkpoint_without_model_has_no_parent(tmp_path):
     """No checkpoint sidecar → SR still stamped, just with no model parent."""
     store = ProvStore(str(tmp_path / "store"))
     sr_path = str(tmp_path / "obj" / "SR.fits")
     os.makedirs(os.path.dirname(sr_path), exist_ok=True)
     hdr = fits.Header()
-    stamp = stamp_sr_fits(hdr, checkpoint_dir=str(tmp_path / "nockpt"),
+    stamp = write_sr_provenance(hdr, checkpoint_dir=str(tmp_path / "nockpt"),
                           sr_fits_path=sr_path, store=store, git=None)
     assert stamp is not None
     assert stamp.parents == ()           # unknown model → no parent

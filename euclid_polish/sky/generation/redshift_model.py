@@ -24,9 +24,8 @@ The same module derives the lens **velocity dispersion from the TNG mass
 catalog** (``tng_properties.csv``) via the Faber–Jackson relation, so a
 TNG-lit lens galaxy bends light according to its own subhalo's mass.
 
-The cosmological-distance helpers (flat ΛCDM, Collett-2015 parameters) live
-here and are re-exported by
-:mod:`euclid_polish.sky.generation.lens_population`.
+The cosmological-distance helpers use the flat ΛCDM Collett-2015 parameters
+and are shared with the strong-lens geometry sampler.
 """
 
 from __future__ import annotations
@@ -136,77 +135,6 @@ def compactness_factor(
     return float(c0 * (1.0 + z) ** beta)
 
 
-# ---------------------------------------------------------------------------
-# Field redshift distribution
-# ---------------------------------------------------------------------------
-
-#: Inverse-CDF grids keyed by the sampler parameters; built once per set.
-_ZCDF_CACHE: dict[tuple, tuple[np.ndarray, np.ndarray]] = {}
-
-
-def _z_inverse_cdf_grid(form: str, z0: float, phi_scale: float,
-                        z_min: float, z_max: float,
-                        n: int = 2048) -> tuple[np.ndarray, np.ndarray]:
-    key = (str(form), float(z0), float(phi_scale), float(z_min), float(z_max))
-    grid = _ZCDF_CACHE.get(key)
-    if grid is None:
-        zs = np.linspace(z_min, z_max, n)
-        if form == "smail":
-            pdf = zs ** 2 * np.exp(-((zs / z0) ** 1.5))
-        elif form == "volume":
-            # dV_c/dz ∝ D_C(z)²/E(z) (Hogg 1999, eq. 28), times the declining
-            # comoving number density of massive galaxies.
-            E = np.sqrt(Config.LENS_COSMOLOGY_OMEGA_M * (1.0 + zs) ** 3
-                        + Config.LENS_COSMOLOGY_OMEGA_L)
-            # D_C (Mpc) up to each grid point: the exact value at z_min plus
-            # a cumulative trapezoid of the Hubble distance over the grid.
-            DH = 299_792.458 / Config.LENS_COSMOLOGY_H0
-            dc0 = comoving_distance_mpc(z_min)
-            dz = zs[1] - zs[0]
-            dc = dc0 + DH * np.concatenate(
-                ([0.0], np.cumsum((1.0 / E[1:] + 1.0 / E[:-1]) * 0.5 * dz)))
-            pdf = dc ** 2 / E * np.exp(-((zs / phi_scale) ** 2))
-        else:
-            raise ValueError(f"unknown n(z) form {form!r}")
-        cdf = np.cumsum(pdf)
-        cdf -= cdf[0]
-        cdf /= cdf[-1]
-        grid = (cdf, zs)
-        _ZCDF_CACHE[key] = grid
-    return grid
-
-
-def sample_galaxy_redshift(
-    rng: np.random.Generator,
-    *,
-    form: str = Config.TNG_Z_FORM,
-    z0: float = Config.TNG_Z0,
-    phi_scale: float = Config.TNG_Z_PHI_SCALE,
-    z_min: float = Config.TNG_Z_MIN,
-    z_max: float = Config.TNG_Z_MAX,
-) -> float:
-    """Draw one redshift for a TNG stamp, truncated to ``[z_min, z_max]``.
-
-    ``form="volume"`` (default): ``dN/dz ∝ dV_c/dz · exp(-(z/phi_scale)²)``
-    — our default prior for the atlas's massive galaxies, which are visible
-    across a large survey volume: comoving volume element times a smooth
-    approximation to the Muzzin+ 2013 decline of the log M*≳11 number
-    density. It is not a fitted TNG light cone. Median z ≈ 1.15; about 5%
-    of draws land below z = 0.4
-    (where atlas giants
-    appear arcsec-sized).
-
-    ``form="smail"``: ``n(z) ∝ z² exp(-(z/z0)^1.5)`` — the full
-    flux-limited population (Smail+ 1995; Euclid Red Book median 0.9 with
-    z0 = 0.65). Over-draws low z for the massive-only atlas.
-
-    Sampling is by inverse CDF on a cached grid; ``z_min = 0.10`` is where
-    the 100 pc native pixel matches the 0.05″ HR grid (rebin factor 1).
-    """
-    cdf, zs = _z_inverse_cdf_grid(form, z0, phi_scale, z_min, z_max)
-    return float(np.interp(rng.random(), cdf, zs))
-
-
 #: VIS-magnitude anchor: atlas subhalo 167396 (log M* = 10.55) measures
 #: m_VIS = 21.36 through the full pipeline at z = 0.5.
 _MAG_ANCHOR_LOGM = 10.55
@@ -225,41 +153,6 @@ def predicted_vis_mag(logm: float, z: float) -> float:
     return (_MAG_ANCHOR_VIS + 2.5 * (_MAG_ANCHOR_LOGM - logm)
             + 5.0 * math.log10(dl / dl0))
 
-
-#: Inverse-CDF grid for the Schechter mass draw, keyed by its parameters.
-_MFCDF_CACHE: dict[tuple, tuple[np.ndarray, np.ndarray]] = {}
-
-
-def sample_target_logmass(
-    rng: np.random.Generator,
-    *,
-    logm_star: float = Config.TNG_MF_LOGM_STAR,
-    alpha: float = Config.TNG_MF_ALPHA,
-    logm_min: float = Config.TNG_MF_LOGM_MIN,
-    logm_max: float = Config.TNG_MF_LOGM_MAX,
-) -> float:
-    """Draw one log10 stellar mass from the Schechter mass function,
-    ``φ dlogM ∝ (M/M*)^(α+1) e^(-M/M*)`` (Baldry+ 2012 / Muzzin+ 2013),
-    truncated to ``[logm_min, logm_max]``. The mass-rescaled TNG field
-    population follows the observed mass distribution: giants only in the
-    rare exponential tail.
-    """
-    key = (float(logm_star), float(alpha), float(logm_min), float(logm_max))
-    grid = _MFCDF_CACHE.get(key)
-    if grid is None:
-        lm = np.linspace(logm_min, logm_max, 2048)
-        x = 10.0 ** (lm - logm_star)
-        pdf = x ** (alpha + 1.0) * np.exp(-x)
-        cdf = np.cumsum(pdf)
-        cdf -= cdf[0]
-        cdf /= cdf[-1]
-        grid = (cdf, lm)
-        _MFCDF_CACHE[key] = grid
-    cdf, lm = grid
-    return float(np.interp(rng.random(), cdf, lm))
-
-
-# ---------------------------------------------------------------------------
 # 2) Photometric response to redshift: dimming + randomized spectral drift
 # ---------------------------------------------------------------------------
 

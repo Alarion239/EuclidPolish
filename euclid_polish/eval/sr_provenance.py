@@ -34,7 +34,6 @@ def write_sr_provenance(header, *, checkpoint_dir: str, sr_fits_path: str,
     when the checkpoint carries one — becomes the SR's parent, so staleness can
     be checked later.
 
-    ``stamp_sr_fits`` is a deprecated alias for this function.
     """
     store = store if store is not None else default_store()
     if git is None:
@@ -56,7 +55,3 @@ def write_sr_provenance(header, *, checkpoint_dir: str, sr_fits_path: str,
     )
     store.put(art, sidecar_dir=os.path.dirname(sr_fits_path) or None)
     return stamp
-
-
-# Deprecated alias so callers outside this file still work.
-stamp_sr_fits = write_sr_provenance

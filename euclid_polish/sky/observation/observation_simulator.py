@@ -49,10 +49,7 @@ from euclid_polish.sky.observation.field_variations import (
     draw_distant_star_wings,
     draw_noise_scale_map,
 )
-from euclid_polish.sky.observation.noise import (  # noqa: F401
-    apply_archive_noise,
-    apply_band_noise,
-)
+from euclid_polish.sky.observation.noise import apply_archive_noise
 from euclid_polish.sky.observation.resample import upsample as resample_upsample
 from euclid_polish.sky.observation.saturation import (
     StarSaturationModel,
@@ -205,10 +202,6 @@ def default_psf_for_band(band: BandConfig, hr_pixel_scale: float) -> PSF:
 # ---------------------------------------------------------------------------
 # Forward model
 # ---------------------------------------------------------------------------
-
-# Noise operators are defined in :mod:`euclid_polish.sky.observation.noise`;
-# the detector-grid primitive remains re-exported for legacy callers.
-
 
 class ObservationSimulator:
     """Apply per-band PSF plus detector/MER noise to a 4-band HR field."""

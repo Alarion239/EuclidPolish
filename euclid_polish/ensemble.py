@@ -311,39 +311,6 @@ class EnsembleModel:
 
     # -- training -- #
 
-    def train(
-        self,
-        lr_path: str,
-        hr_path: str,
-        *,
-        n_members: int,
-        base_seed: int | None = None,
-        steps: int = 300_000,
-        batch_size: int = 16,
-        on_member: Callable[[int, int, Model], None] | None = None,
-        **train_kwargs,
-    ) -> EnsembleModel:
-        """Sequentially train ``n_members`` on the same data with distinct seeds.
-
-        Member ``i`` is trained in ``<base_dir>/member_i/`` seeded ``base_seed +
-        i`` (a fresh entropy ``base_seed`` is drawn when ``None``); the seed is
-        recorded on that member's ``Process.training`` provenance. Extra
-        ``train_kwargs`` (e.g. ``evaluate_every``) pass straight to
-        :meth:`Model.train`. ``on_member(i, n, model)`` is called after each
-        member finishes (progress hook). Returns ``self``.
-        """
-        if n_members < 1:
-            raise ValueError(f"n_members must be >= 1, got {n_members}")
-        if base_seed is None:
-            base_seed = int.from_bytes(os.urandom(4), "little")
-        specs = [MemberTrainSpec(
-                     name=MEMBER_DIR_FMT.format(i), seed=int(base_seed) + i,
-                     target_steps=int(steps), op="add", run_steps=int(steps))
-                 for i in range(int(n_members))]
-        return self.train_members(lr_path, hr_path, specs,
-                                  batch_size=batch_size,
-                                  on_member=on_member, **train_kwargs)
-
     def train_members(
         self,
         lr_path: str,
@@ -356,9 +323,8 @@ class EnsembleModel:
     ) -> EnsembleModel:
         """Run an explicit list of member training jobs sequentially.
 
-        Unlike the legacy :meth:`train` (which blindly loops member_00..N-1),
-        each spec names its member, seed, absolute step target and optional
-        fork source. Members CREATED here (op add/fork) get an
+        Each spec names its member, seed, absolute step target, and optional
+        fork source. Members created here (add/fork) get an
         ``origin.json`` provenance sidecar that syncs down with the member.
         """
         if not specs:

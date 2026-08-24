@@ -49,7 +49,7 @@ def res_block(x_in, num_filters, expansion, kernel_size, scaling):
 def wdsr(scale, num_filters=32, num_res_blocks=8, res_block_expansion=6,
          res_block_scaling=None, nchan_in=1, nchan_out=None,
          entry_kernel_size=3, skip_kernel_size=5,
-         nchan=None, per_band_skip=None, icnr=False):
+         per_band_skip=None, icnr=False):
     """WDSR-A model with potentially asymmetric input/output channels.
 
     Parameters
@@ -66,8 +66,6 @@ def wdsr(scale, num_filters=32, num_res_blocks=8, res_block_expansion=6,
                    Defaults to ``nchan_in`` for backward compatibility.
     entry_kernel_size : 2-D kernel size for the first trunk conv.
     skip_kernel_size : kernel of the skip branch's conv(s).
-    nchan        : back-compat alias for ``nchan_in`` (also sets
-                   ``nchan_out = nchan`` if ``nchan_out`` is None).
     icnr         : initialise the three pre-``pixel_shuffle`` convs with
                    :class:`~euclid_polish.training.models.common.ICNR` so the
                    upsampler starts as a checkerboard-free nearest-neighbour
@@ -88,10 +86,6 @@ def wdsr(scale, num_filters=32, num_res_blocks=8, res_block_expansion=6,
     Input  : asinh-stretched LR tensor, shape ``(B, H, W, nchan_in)``.
     Output : asinh-stretched SR tensor, shape ``(B, scale*H, scale*W, nchan_out)``.
     """
-    if nchan is not None:
-        nchan_in = nchan
-        if nchan_out is None:
-            nchan_out = nchan
     if nchan_out is None:
         nchan_out = nchan_in
     if per_band_skip is None:

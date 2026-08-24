@@ -29,20 +29,28 @@ from euclid_polish.sky.observation.observation_simulator import (
     ObservationSimulatorConfig,
 )
 from euclid_polish.training.models.wdsr import wdsr
-from tests._tiny_catalog import TinyCosmosCatalog
 
 
 def test_full_pipeline_round_trip(tmp_path):
     """Phase 0–7 wired together: generate → forward-model → load → train one step."""
     # 1. Generate clean HR fields (multi-band).
-    cat = TinyCosmosCatalog(n_galaxies=200, seed=0)
     sim = SkySimulator(
-        cat, SkySimulatorConfig(image_size=96, pixel_scale=Config.DEFAULT_PIXEL_SCALE),
+        None,
+        SkySimulatorConfig(
+            image_size=96,
+            pixel_scale=Config.DEFAULT_PIXEL_SCALE,
+            galaxy_density_arcmin2=0.0,
+            star_density_arcmin2=0.0,
+            lens_density_arcmin2=0.0,
+        ),
     )
     clean_imgs = []
     for i in range(3):
         rng = np.random.default_rng(i)
-        sky, _ = sim.simulate_field(rng, n_sersic=2, n_stars=1, n_lenses=0)
+        sky, _ = sim.simulate_field(
+            rng, n_galaxies=0, n_stars=0, n_lenses=0,
+        )
+        sky.data[32 + i, 32 + i, :] = 1_000.0
         sky.index = i
         clean_imgs.append(sky)
 

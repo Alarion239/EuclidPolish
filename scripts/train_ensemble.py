@@ -76,8 +76,6 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--count", type=int, default=None,
                    help="add/fork: how many new members "
                         "(default 5 for add, 1 for fork).")
-    p.add_argument("--n-members", type=int, default=None,
-                   help="DEPRECATED alias for --count (add mode).")
     p.add_argument("--member-names", default="",
                    help="Explicit new-member names (comma-separated), "
                         "allocated by the WebUI from the registry. Absent → "
@@ -471,7 +469,7 @@ def build_specs(args, base: str) -> list[MemberTrainSpec]:
                 **_diversity_kwargs(args, overrides[i])))
         return specs
 
-    k = int(args.count or args.n_members or (1 if args.mode == "fork" else 5))
+    k = int(args.count or (1 if args.mode == "fork" else 5))
     array_index = _array_index(args, k)
     init_from = forked_from = None
     fork_starless = None
@@ -675,6 +673,15 @@ def main() -> int:
         if not isinstance(star_prior_payload, dict):
             print("✗ --star-prior-json must contain a JSON object")
             return 2
+    if (
+        star_prior_payload is None
+        and any(spec.forward_onthefly for spec in specs)
+    ):
+        print(
+            "✗ on-the-fly training requires the active empirical stellar "
+            "prior via --star-prior-json"
+        )
+        return 2
     try:
         ens.train_members(
             lr, hr, specs,

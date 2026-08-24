@@ -124,15 +124,10 @@ class Config:
         DATA_DIR, "population_comparison", "cosmos2025",
         "cosmos2025_population_prior.npz",
     )
-    COSMOS_TNG_PRIOR_PATH = COSMOS_POPULATION_PRIOR_PATH
     JOINT_GALAXY_POPULATION_FIT_PATH = os.path.join(
         DATA_DIR, "population_comparison", "cosmos2025",
         "joint_population_fit.json",
     )
-    # Kept as a compatibility name for historical affine-transfer readers.
-    # Current WebUI jobs instead embed the explicitly activated compact joint
-    # population artifact and reconstruct its draw cube on each worker.
-    COSMOS_EUCLID_FIT_PATH = JOINT_GALAXY_POPULATION_FIT_PATH
     EUCLID_POPULATION_CATALOG_PATH = os.path.join(
         DATA_DIR, "population_comparison", "euclid_population.csv",
     )
@@ -194,7 +189,6 @@ class Config:
     # the generated field density.  The active Q1 law supplies its own exact
     # integral from the continuous bright/main/flat magnitude distribution.
     GALAXY_DENSITY_ARCMIN2 = 100.0
-    DEFAULT_GAL_DENSITY_ARCMIN2 = GALAXY_DENSITY_ARCMIN2
     # Reverted to the 5dece6f ("worked") density: ~1.389/arcmin² (the real
     # Wide-Survey stellar density). The 10/arcmin² inflation was paired with
     # the 192px crop to guarantee point sources per crop; with the crop back
@@ -408,7 +402,6 @@ class Config:
     # Lanczos-3 matches the SWarp/MER pipeline; spline-cubic is a faster
     # near-equivalent if profiling shows Lanczos to be a bottleneck.
     NISP_RESAMPLE_KERNEL    = "lanczos3"        # one of {"lanczos3", "cubic"}
-    NISP_LR_TO_VIS_LR_RATIO = 3                 # 0.30" → 0.10"
 
     # Fallback median stellar locus for old source catalogs that only persist
     # mag_vis. New stars use a temperature-driven SED (see stellar_sed.py).
@@ -420,36 +413,6 @@ class Config:
         "J_E": -1.00,
         "H_E": -1.10,
     }
-    # Approximate Euclid passband limits used to integrate Planck f_nu. The
-    # public throughput curves are not bundled with the training runtime, so
-    # top-hat bands are an intentionally lightweight approximation.
-    STAR_BANDPASS_UM = {
-        "VIS": (0.55, 0.90),
-        "Y_E": (0.92, 1.146),
-        "J_E": (1.146, 1.372),
-        "H_E": (1.372, 2.00),
-    }
-    # Apparent high-latitude star-count mixture: component weight, median
-    # temperature [K], log-temperature sigma, and hard temperature limits.
-    # It is deliberately cool-dwarf dominated, matching the compact-source
-    # colours measured on the cached real comparison field, while retaining
-    # solar-type and rare hot-star tails.
-    STAR_TEMPERATURE_COMPONENTS = (
-        (0.78, 3300.0, 0.15, 2400.0, 4800.0),
-        (0.19, 5400.0, 0.15, 3800.0, 8000.0),
-        (0.03, 10000.0, 0.22, 7000.0, 25000.0),
-    )
-    STAR_EXTINCTION_AV_SCALE_MAG = 0.12
-    STAR_EXTINCTION_AV_MAX_MAG   = 0.8
-    # Small empirical stellar-population/passband correction that aligns the
-    # simple top-hat blackbody locus with compact sources in the real field.
-    STAR_SED_BAND_CORRECTION_MAG = {
-        "VIS": 0.0, "Y_E": -0.05, "J_E": 0.0, "H_E": -0.10,
-    }
-    STAR_SED_BAND_SCATTER_MAG    = 0.06
-    STAR_COLOR_OFFSET_MIN_MAG    = -2.75
-    STAR_COLOR_OFFSET_MAX_MAG    = 1.80
-
     # --- Detector saturation masking (synthetic LR dirty image) ----------------
     # Any pixel at/above the band well depth saturates; the forward model masks a
     # blocky rectangular patch around it to ~0 (the Euclid/MER behaviour), for
@@ -484,7 +447,6 @@ class Config:
     STAR_SATURATION_FWHM_ARCSEC  = 2.0
     STAR_SATURATION_CALIB_MAG    = {"VIS": 14.0, "Y_E": 17.0,
                                     "J_E": 17.5, "H_E": 16.5}
-    STAR_SATURATION_JITTER_DEX   = 0.15
     STAR_SATURATION_RECT_MIN_PX  = 3
     STAR_SATURATION_RECT_MAX_PX  = 6
     STAR_SATURATION_MAX_RECTS    = 3        # 1..3 overlapping rectangles
@@ -512,20 +474,11 @@ class Config:
     PSNR_PEAK_E                  = 10 ** (-0.4 * (PSNR_PEAK_MAG - SIM_VIS_ZEROPOINT_E))
     PSNR_PEAK_STRETCHED          = math.asinh(PSNR_PEAK_E / STRETCH_SCALE_E)
 
-    # Star magnitude distribution: the standard differential stellar number-count
-    # law  dN/dm ∝ 10^(STAR_MAG_SLOPE · m)  over [STAR_MAG_BRIGHT, STAR_MAG_FAINT],
-    # sampled smoothly by inverse-CDF (replaces the old 3-bin prior). The slope is
-    # the high-Galactic-latitude star-count slope d log N/dm — Euclid observes far
-    # from the plane, where it is shallow (~0.14–0.35 in the optical/NIR; e.g.
-    # ~0.14 in 18<I<21.5, arXiv:0704.1182). 0.20 ≈ the effective slope the old
-    # bins encoded. STAR_MAG_BRIGHT is the brightest star drawn: it was capped at
-    # 16 to avoid ill-posed saturated deltas, but real fields contain a few bright
-    # stars, so it now extends to 12 (the power law keeps them rare — a few per
-    # many stamps). Faint limit ≈ the VIS noise floor. All three are tunable per
-    # run (web /config; SkySimulatorConfig.star_mag_*).
-    STAR_MAG_SLOPE               = 0.20     # d log N / dm (high Galactic latitude)
-    STAR_MAG_BRIGHT              = 12.0     # brightest synthetic star (was a 16 cap)
-    STAR_MAG_FAINT               = 25.0     # faint limit (≈ VIS 5σ point-source)
+    # Stellar-calibration query interval. Generation uses the magnitude law
+    # embedded in the activated stellar artifact; these bounds are not runtime
+    # scene controls.
+    STAR_MAG_BRIGHT              = 12.0
+    STAR_MAG_FAINT               = 25.0
 
 
     # ---------------------------------------------------------------------
@@ -777,17 +730,6 @@ class Config:
     LENS_Z_LENS_MAX         = 1.20
     LENS_Z_SOURCE_OFFSET    = 0.30      # minimum z_s - z_l
     LENS_Z_SOURCE_MAX       = 3.50
-    # Physical half-light-radius cap on the lensed *source* galaxy (kpc).
-    # Sources are drawn from COSMOS by redshift only; without a size cut a
-    # genuinely large, nearby-ish galaxy can be selected and rendered at its
-    # full catalog angular size, producing an unphysically big lensed source.
-    # A *physical* ceiling (vs. an angular one) is the right cut: at fixed
-    # physical size the rendered angular size is r_phys / D_A(z_source), so a
-    # more distant source automatically appears smaller — exactly the regime
-    # real strong-lensing sources occupy (compact, high-z star-forming
-    # galaxies, r_e ~ 1–4 kpc). Loosen to keep more big galaxies; tighten for
-    # only the most compact sources. Set ≤0 to disable the cut.
-    LENS_SOURCE_MAX_PHYS_RE_KPC = 5.0
     LENS_SIGMA_V_MIN_KMS    = 150.0     # velocity-dispersion truncation
     LENS_SIGMA_V_MAX_KMS    = 350.0
     LENS_AXIS_RATIO_MIN     = 0.50      # lens-galaxy axis ratio q
@@ -835,8 +777,6 @@ class Config:
     #
     # This is a project training prior, not a claim that 200 is the observed
     # density of a particular Euclid catalog selection.
-    # Backward-compatible alias for old saved job metadata.
-    TNG_GAL_DENSITY_ARCMIN2 = GALAXY_DENSITY_ARCMIN2
     # Legacy records without an explicit saved draw budget were generated at
     # 60/arcmin². Field Statistics uses this to avoid reinterpreting old pixels
     # as though they had already been generated with the new 200 prior.
@@ -847,14 +787,6 @@ class Config:
     # exist but contribute nothing detectable (per-pixel 1σ ≈ 25.5,
     # per-arcsec² ≈ 28). ≤ 0 disables.
     TNG_FAINT_SKIP_MAG_VIS = 28.0
-    # Optional faint-dwarf Sersic backfill (COSMOS rows with circularized
-    # R_e ≤ the cut). Default 0 = OFF: the mass-function-rescaled TNG
-    # population covers the small end with real morphology, and pure-TNG
-    # stays fully catalog-free. Set > 0 (e.g. 102) to mix analytic Sersic
-    # dwarfs back in (then run_pipeline loads COSMOS again).
-    TNG_DWARF_SERSIC_DENSITY_ARCMIN2 = 0.0
-    TNG_DWARF_MAX_RE_ARCSEC          = 0.5
-
     # Compactness correction C(z) = C0·(1+z)^BETA applied as extra
     # downsampling on top of the geometric F(z), flux-conserving (surface
     # brightness × C²) — a fixed-mass size correction: the stars and the
@@ -893,7 +825,6 @@ class Config:
     TNG_MF_LOGM_MIN      = 8.5
     TNG_MF_LOGM_MAX      = 12.0
     TNG_MASS_WINDOW      = 30.0
-    TNG_MASS_RESCALE_MIN = 0.1
     TNG_MASS_SIZE_ALPHA  = 0.25
 
     # Surface-brightness truncation of redshifted TNG stamps (mag/arcsec²,
@@ -1015,7 +946,6 @@ class Config:
     # sidecars next to the data; ``PROV_DIR`` only holds the derived,
     # rebuildable index cache (never the source of truth).
     PROV_DIR            = os.path.join(DATA_DIR, "_prov")
-    PROV_SCHEMA_VERSION = 1
 
     # ---------------------------------------------------------------------
     # Per-band PSF kernel sizing

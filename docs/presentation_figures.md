@@ -38,7 +38,6 @@ Suggested viewer presets:
 | real Euclid reconstruction | Inference | LR and available SR tiers |
 | Euclid–JWST reference | Inference or JWST × Euclid | LR, SR, JWST |
 | empirical PSFs | PSFs | VIS, Y_E, J_E, H_E |
-| lens isolation | Lens isolation | LR, SR (and lens target when wanted) |
 
 Changing the index and repeating the workflow produces a consistent series of
 roughly ten publication-ready figures without a separate plotting script.

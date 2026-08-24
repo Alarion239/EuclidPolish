@@ -45,7 +45,7 @@ def load_eval_ensemble(base_dir: str | None = None,
     if ens.n_members < 1:
         raise RuntimeError(
             "no active ensemble members — train one "
-            "(scripts/train_ensemble.py --n-members 1 works) or pull members "
+            "(scripts/train_ensemble.py --count 1 works) or pull members "
             "on the /ensemble page.")
     emit(f"using ensemble mean ({ens.n_members} models)")
     return ens

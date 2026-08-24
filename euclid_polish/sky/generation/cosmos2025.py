@@ -15,8 +15,7 @@ UltraVISTA Y/J/H ↦ Euclid NISP Y_E/J_E/H_E (close-bandpass proxies).
 
 :class:`Cosmos2025Catalog` reads the real FITS file, filters to galaxies
 with viable B+D fits and finite per-band magnitudes, and indexes the catalog
-by redshift for fast lens/source sampling. The catalog is mandatory — the
-pipeline does not run without it.
+for the manual HST-derived TFRecord workflow.
 """
 
 from __future__ import annotations
@@ -26,21 +25,16 @@ import tempfile
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
-import astropy.units as u
 import numpy as np
-from astropy.cosmology import Planck15 as _COSMO
 from astropy.io import fits
 from scipy.special import gammainc, gammaincinv
 
 from euclid_polish.config import Config
 from euclid_polish.photometry import ab_mag_to_electrons, electrons_to_ab_mag
 
-#: Radians subtended by 1 arcsec — for the arcsec → proper-kpc conversion.
-_RAD_PER_ARCSEC = np.pi / 180.0 / 3600.0
-
 #: Filtered per-galaxy arrays a :class:`Cosmos2025Catalog` needs to sample —
-#: everything ``_row_to_params`` / the lens+source samplers read. Persisting just
-#: these (post-quality-cut) gives a few-MB ``.npz`` that loads much faster than
+#: Persisting these post-quality-cut arrays gives a few-MB ``.npz`` that loads
+#: much faster than
 #: re-parsing the 10 GB master FITS, which matters when every parallel worker
 #: rebuilds the catalog.
 _FILTERED_ARRAYS = (
@@ -123,77 +117,6 @@ class CosmosCatalog(ABC):
     @abstractmethod
     def _row_to_params(self, i: int) -> GalaxyParams:
         """Build :class:`GalaxyParams` from filtered-array row ``i``."""
-
-    def sample_lens_galaxy(
-        self, rng: np.random.Generator, z_lens_range: tuple[float, float],
-    ) -> GalaxyParams:
-        """Draw a foreground lens galaxy uniformly within ``z_lens_range``."""
-        lo, hi = z_lens_range
-        mask = (self.z_phot >= lo) & (self.z_phot <= hi)
-        cand = np.flatnonzero(mask)
-        if cand.size == 0:
-            raise RuntimeError(f"No galaxies in z range {z_lens_range}")
-        return self._row_to_params(int(rng.choice(cand)))
-
-    def sample_source_galaxy(
-        self, rng: np.random.Generator, z_lens: float,
-    ) -> GalaxyParams:
-        """Draw a background source galaxy for a lens at ``z_lens``.
-
-        Candidates must sit behind the lens (``z ≥ z_lens + offset``), within
-        ``LENS_Z_SOURCE_MAX``, and be **physically small** (a real lensed
-        source is a compact background galaxy). Capping the *physical*
-        half-light radius (``LENS_SOURCE_MAX_PHYS_RE_KPC``) rather than the
-        angular one means the rendered angular size ``r_phys / d_A(z)`` shrinks
-        with distance, so a more distant source appears smaller."""
-        z_min = z_lens + Config.LENS_Z_SOURCE_OFFSET
-        z_max = Config.LENS_Z_SOURCE_MAX
-        mask = (self.z_phot >= z_min) & (self.z_phot <= z_max)
-        re_cap_kpc = float(Config.LENS_SOURCE_MAX_PHYS_RE_KPC)
-        if re_cap_kpc > 0.0:
-            mask &= self.effective_re_kpc <= re_cap_kpc
-        cand = np.flatnonzero(mask)
-        if cand.size == 0:
-            raise RuntimeError(
-                f"No source galaxies with z > {z_min} and "
-                f"physical R_e ≤ {re_cap_kpc} kpc"
-            )
-        return self._row_to_params(int(rng.choice(cand)))
-
-    @property
-    def effective_re_arcsec(self) -> np.ndarray:
-        """Per-galaxy circularized combined bulge+disk half-light radius (arcsec),
-        in VIS — the realistic on-sky size of each catalog galaxy. Computed once
-        and cached. Used to size injected TNG stamps so they match the catalog's
-        own size distribution. Requires the geometry/flux arrays every concrete
-        catalog exposes (``bulge_re_arcsec``/``disk_re_arcsec``/``*_q``/``*_flux_e``)."""
-        cached = getattr(self, "_effective_re_arcsec", None)
-        if cached is None:
-            cached = circularized_effective_radius_arcsec(
-                self.bulge_re_arcsec, self.bulge_q, self.bulge_flux_e[:, 0],
-                self.disk_re_arcsec,  self.disk_q,  self.disk_flux_e[:, 0])
-            self._effective_re_arcsec = cached
-        return cached
-
-    @property
-    def effective_re_kpc(self) -> np.ndarray:
-        """Per-galaxy **physical** circularized half-light radius (proper kpc).
-
-        ``r_phys = θ_e · d_A(z)`` — the angular size :attr:`effective_re_arcsec`
-        times the proper kpc subtended by 1 arcsec at the galaxy's redshift
-        (Planck15 angular-diameter distance, the same cosmology the apparent-size
-        model uses). This is the redshift-independent intrinsic size, used to cap
-        the lensed-source population to physically small galaxies. Computed once
-        and cached."""
-        cached = getattr(self, "_effective_re_kpc", None)
-        if cached is None:
-            kpc_per_arcsec = (
-                _COSMO.angular_diameter_distance(self.z_phot).to(u.kpc).value
-                * _RAD_PER_ARCSEC
-            )
-            cached = self.effective_re_arcsec * kpc_per_arcsec
-            self._effective_re_kpc = cached
-        return cached
 
     def typical_band_electron_ratios(self) -> np.ndarray:
         """Median per-source ``e_band / e_VIS`` after the catalog's
@@ -450,10 +373,6 @@ class Cosmos2025Catalog(CosmosCatalog):
     def sample_galaxy(self, rng: np.random.Generator) -> GalaxyParams:
         idx = int(rng.integers(0, len(self)))
         return self._row_to_params(idx)
-
-    # ``sample_lens_galaxy`` / ``sample_source_galaxy`` are inherited from
-    # :class:`CosmosCatalog` so the real and stub catalogs share one
-    # implementation (and the same source size cut).
 
     # ------------------------------------------------------------------ #
     # Fast (de)serialisation of the *filtered* catalog

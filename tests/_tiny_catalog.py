@@ -77,6 +77,3 @@ class TinyCosmosCatalog(CosmosCatalog):
 
     def sample_galaxy(self, rng: np.random.Generator) -> GalaxyParams:
         return self._row_to_params(int(rng.integers(0, len(self))))
-
-    # ``sample_lens_galaxy`` / ``sample_source_galaxy`` (incl. the source
-    # physical-size cut) are inherited from :class:`CosmosCatalog`.

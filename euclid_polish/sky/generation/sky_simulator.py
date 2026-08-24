@@ -5,7 +5,6 @@ Every field galaxy uses a resolved TNG50 SKIRT morphology and its native
 VIS/NISP proportions. The active Euclid prior supplies a VIS Sérsic half-light
 radius and a jointly conditioned VIS 2FWHM aperture brightness. One shared
 brightness factor is applied to all TNG bands after the morphology is resized.
-The legacy COSMOS sampler remains readable only for replaying old records.
 
 The output of :meth:`SkySimulator.simulate_field` is a single :class:`Image`
 with ``data`` of shape ``(H, W, 4)`` in **raw electrons** on the 0.05″ HR
@@ -90,7 +89,6 @@ class SkySimulatorConfig:
     # Calibration-only master density. With a shared field seed, lower-density
     # runs are exact nested thinnings of the same master source proposals.
     galaxy_thinning_max_density_arcmin2: float | None = None
-    cosmos_prior_path:        str   = Config.COSMOS_TNG_PRIOR_PATH
     tng_galaxy_dir:           str   = Config.TNG_SKIRT_DIR
     tng_properties_csv:       str   = ""
     tng_radius_manifest_path: str   = os.path.join(
@@ -109,15 +107,9 @@ class SkySimulatorConfig:
     strict_population_artifacts: bool = False
     # Stars
     star_density_arcmin2:     float = Config.DEFAULT_STAR_DENSITY_ARCMIN2
-    star_mag_slope:           float = Config.STAR_MAG_SLOPE
-    star_mag_bright:          float = Config.STAR_MAG_BRIGHT
-    star_mag_faint:           float = Config.STAR_MAG_FAINT
     star_prior_payload:       dict | None = None
     # Lenses
     lens_density_arcmin2:     float = Config.LENS_DENSITY_ARCMIN2
-    # Keep the foreground lens-galaxy light compact: cap its effective radius at
-    # this multiple of the Einstein radius θ_E so arcs are not buried.
-    lens_light_re_factor:     float = 0.7
     lens_sigma_v_min_kms:     float = Config.LENS_SIGMA_V_MIN_KMS
     lens_sigma_v_max_kms:     float = Config.LENS_SIGMA_V_MAX_KMS
     lens_theta_e_min_re_ratio: float = Config.LENS_THETA_E_MIN_RE_RATIO
@@ -140,13 +132,9 @@ class SkySimulatorConfig:
                 "galaxy_thinning_max_density_arcmin2 must be >= "
                 "galaxy_density_arcmin2"
             )
-        if self.lens_light_re_factor <= 0.0:
-            return False, "lens_light_re_factor must be > 0"
         if not (0.0 < self.lens_sigma_v_min_kms < self.lens_sigma_v_max_kms):
             return False, ("lens_sigma_v_min_kms must be in "
                            "(0, lens_sigma_v_max_kms)")
-        if self.star_mag_bright >= self.star_mag_faint:
-            return False, "star_mag_bright must be < star_mag_faint"
         if self.lens_theta_e_min_re_ratio <= 0.0:
             return False, "lens_theta_e_min_re_ratio must be > 0"
         return True, None
@@ -156,21 +144,6 @@ class SkySimulatorConfig:
 # Stars (point sources on a correlated stellar-colour locus)
 # ---------------------------------------------------------------------------
 
-def _sample_star_mag(
-    rng: np.random.Generator, *,
-    slope: float, m_bright: float, m_faint: float,
-    stellar_prior: EmpiricalStellarPrior | None = None,
-) -> float:
-    """Sample one VIS magnitude from the differential stellar number-count law
-    ``dN/dm ∝ 10^(slope · m)`` over ``[m_bright, m_faint]``, by inverse-CDF.
-    """
-    if stellar_prior is None:
-        raise ValueError("an active empirical stellar prior is required")
-    return stellar_prior.sample_magnitude(
-        rng, slope=slope, m_bright=m_bright, m_faint=m_faint,
-    )
-
-
 _STAR_MAG_KEYS = {
     "VIS": "mag_vis",
     "Y_E": "mag_y_e",
@@ -179,24 +152,12 @@ _STAR_MAG_KEYS = {
 }
 
 
-def _sample_star_band_magnitudes(
-    rng: np.random.Generator, mag_vis: float,
-) -> dict[str, float]:
-    """Compatibility wrapper returning a temperature-driven four-band SED."""
-    return sample_stellar_sed(rng, mag_vis).magnitudes
-
-
 def star_band_magnitudes_from_record(star: dict) -> dict[str, float]:
-    """Read persisted star magnitudes, with old-catalog compatibility."""
-    mag_vis = float(star["mag_vis"])
-    mags = {"VIS": mag_vis}
-    for band_name in Config.LR_INPUT_BAND_NAMES[1:]:
-        value = star.get(_STAR_MAG_KEYS[band_name])
-        mags[band_name] = (
-            float(value) if value is not None
-            else mag_vis + Config.STAR_BAND_OFFSETS_MAG[band_name]
-        )
-    return mags
+    """Read the current persisted four-band stellar magnitudes."""
+    return {
+        band_name: float(star[_STAR_MAG_KEYS[band_name]])
+        for band_name in Config.LR_INPUT_BAND_NAMES
+    }
 
 
 def _deposit_star(
@@ -205,7 +166,7 @@ def _deposit_star(
     y_pix: float,
     mag_vis: float,
     *,
-    band_magnitudes: dict[str, float] | None = None,
+    band_magnitudes: dict[str, float],
 ) -> None:
     """Drop a point source at the nearest HR pixel in all four bands."""
     H, W, C = canvas_4ch.shape
@@ -215,18 +176,13 @@ def _deposit_star(
         return
     for k, band_name in enumerate(Config.LR_INPUT_BAND_NAMES):
         band = Config.get_band(band_name)
-        mag_k = (
-            float(band_magnitudes[band_name])
-            if band_magnitudes is not None and band_name in band_magnitudes
-            else mag_vis + Config.STAR_BAND_OFFSETS_MAG[band_name]
-        )
+        mag_k = float(band_magnitudes[band_name])
         canvas_4ch[iy, ix, k] += np.float32(ab_mag_to_electrons(mag_k, band))
 
 
 def inject_random_stars(
     canvas_4ch: np.ndarray, rng: np.random.Generator, *,
-    n_stars: int, mag_slope: float, mag_bright: float, mag_faint: float,
-    stellar_prior: EmpiricalStellarPrior | None = None,
+    n_stars: int, stellar_prior: EmpiricalStellarPrior,
 ) -> list[dict]:
     """Draw ``n_stars`` random point sources and DEPOSIT them onto ``canvas_4ch``.
 
@@ -243,9 +199,7 @@ def inject_random_stars(
     for _ in range(int(n_stars)):
         x_pix = float(rng.uniform(0.0, N - 1))
         y_pix = float(rng.uniform(0.0, N - 1))
-        mag = _sample_star_mag(rng, slope=mag_slope,
-                               m_bright=mag_bright, m_faint=mag_faint,
-                               stellar_prior=stellar_prior)
+        mag = stellar_prior.sample_magnitude(rng)
         sed = sample_stellar_sed(rng, mag, stellar_prior)
         band_mags = sed.magnitudes
         _deposit_star(
@@ -698,12 +652,6 @@ class SkySimulator:
                                    self._radius_manifest_fingerprint
                                ),
                                max_output_side=self._tng_max_output_side)
-        if res is None:
-            if staged and _attempt < 31:
-                return self._add_tng_galaxy(
-                    canvas_4ch, rng, _attempt=_attempt + 1,
-                )
-            raise RuntimeError("TNG population returned no usable stamp")
         stamp, tmeta = res
         if staged:
             magnitude, target_aperture_flux = (
@@ -897,11 +845,9 @@ class SkySimulator:
         (stars are re-added in the forward op — fresh per visit on-the-fly, or
         from this recorded metadata for the fixed validate/test fields)."""
         x_pix, y_pix = self._random_pix(rng)
-        cfg = self.config
-        mag = _sample_star_mag(
-            rng, slope=cfg.star_mag_slope,
-            m_bright=cfg.star_mag_bright, m_faint=cfg.star_mag_faint,
-            stellar_prior=self.stellar_prior)
+        if self.stellar_prior is None:
+            raise ValueError("an active empirical stellar prior is required")
+        mag = self.stellar_prior.sample_magnitude(rng)
         sed = sample_stellar_sed(rng, mag, self.stellar_prior)
         band_mags = sed.magnitudes
         return {
@@ -1170,7 +1116,7 @@ class SkySimulator:
             "star_density_arcmin2":    float(cfg.star_density_arcmin2),
             "star_population_fingerprint": (
                 str(cfg.star_prior_payload.get("fingerprint", ""))
-                if cfg.star_prior_payload else "legacy"
+                if cfg.star_prior_payload else "none"
             ),
             "lens_density_arcmin2":    float(cfg.lens_density_arcmin2),
             "n_galaxies": len(galaxies),

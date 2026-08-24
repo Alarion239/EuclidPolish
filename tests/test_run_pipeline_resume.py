@@ -20,7 +20,6 @@ from euclid_polish.sky.observation.observation_simulator import (
     ObservationSimulator,
     ObservationSimulatorConfig,
 )
-from tests._tiny_catalog import TinyCosmosCatalog
 
 
 def _load_run_pipeline():
@@ -148,10 +147,16 @@ def test_cleanup_parts_removes_only_subset_parts(tmp_path):
 # --------------------------------------------------------------------------
 
 def _sim_fwd():
-    cat = TinyCosmosCatalog(n_galaxies=200, seed=0)
     sim = SkySimulator(
-        cat, SkySimulatorConfig(image_size=96,
-                                      pixel_scale=Config.DEFAULT_PIXEL_SCALE))
+        None,
+        SkySimulatorConfig(
+            image_size=96,
+            pixel_scale=Config.DEFAULT_PIXEL_SCALE,
+            galaxy_density_arcmin2=0.0,
+            star_density_arcmin2=0.0,
+            lens_density_arcmin2=0.0,
+        ),
+    )
     psfs = load_all_band_psfs(psf_dir="/nonexistent_dir_for_test")  # Gaussian
     fwd = ObservationSimulator(psfs_by_band=psfs,
                            config=ObservationSimulatorConfig(add_noise=True))

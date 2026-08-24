@@ -6,7 +6,6 @@ Multi-band training pipeline (4-channel LR input, 1-channel VIS HR target).
 
 from euclid_polish.training.inference import (
     load_model_from_checkpoint,
-    load_model_from_weights,
     plot_reconstruction,
     reconstruct,
 )
@@ -20,6 +19,5 @@ __all__ = [
     "reconstruct",
     "plot_reconstruction",
     "load_model_from_checkpoint",
-    "load_model_from_weights",
     "blur_target_array",
 ]
