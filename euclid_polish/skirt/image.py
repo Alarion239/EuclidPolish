@@ -28,7 +28,10 @@ def load_skirt_frame(path: str) -> np.ndarray:
     for checking the FITS ``BUNIT`` and interpreting the image calibration.
     """
     with fits.open(path) as hdul:
-        data = hdul[0].data
+        primary = hdul[0]
+        if not isinstance(primary, fits.PrimaryHDU):
+            raise ValueError(f"first FITS extension is not a primary HDU: {path}")
+        data = primary.data
     if data is None:
         raise ValueError(f"empty primary HDU: {path}")
     arr = np.asarray(data, dtype=np.float32)
