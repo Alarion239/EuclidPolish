@@ -1,11 +1,10 @@
-"""Instrument-independent image mechanics for SKIRT FITS products.
+"""Private image mechanics for native TNG atlas products.
 
 SKIRT broadband images are commonly stored as surface brightness in MJy/sr.
 The helpers here load those products into validated image cubes, preserve their
-intensive units while rebinning, provide controlled rotation augmentation,
-measure centred curves of growth, and composite prepared stamps onto a canvas.
-They do not assign a distance or redshift, or convert into detector-specific
-units.
+intensive units while rebinning, provide controlled rotation augmentation, and
+measure centred curves of growth.  They do not assign a distance or redshift,
+or convert into detector-specific units.
 """
 
 from __future__ import annotations
@@ -27,7 +26,7 @@ from euclid_polish.image.cube import ImageCube, PhysicalGrid, PixelUnit
 cv2.setNumThreads(1)
 
 
-def load_skirt_image(
+def _load_tng_plane(
     path: str | PathLike[str],
     band_name: str,
 ) -> ImageCube:
@@ -114,7 +113,7 @@ def _physical_pixel_scale_pc(
     return scales_pc[0]
 
 
-def block_mean(
+def _block_mean(
     image: ImageCube,
     factor: int,
 ) -> ImageCube:
@@ -124,7 +123,7 @@ def block_mean(
     intensive MJy/sr values; it is not a flux-conserving sum rebin.  The output
     physical pixel scale is multiplied by ``factor``.
     """
-    physical_grid = _require_skirt_image(image)
+    physical_grid = _require_tng_plane(image)
     rebinned = _block_mean_array(image.as_array(), factor)
     return image.with_data(
         rebinned,
@@ -158,7 +157,7 @@ def _block_mean_array(arr: np.ndarray, factor: int) -> np.ndarray:
     return np.asarray(result, dtype=np.float32)
 
 
-def downsample_surface_brightness(
+def _downsample_surface_brightness(
     image: ImageCube,
     scale: float,
 ) -> ImageCube:
@@ -174,7 +173,7 @@ def downsample_surface_brightness(
     The output remains MJy/sr, while its physical pixel scale is divided by
     ``scale`` so the grid continues to describe the same physical scene.
     """
-    physical_grid = _require_skirt_image(image)
+    physical_grid = _require_tng_plane(image)
     downsampled = _downsample_surface_brightness_array(image.as_array(), scale)
     return image.with_data(
         downsampled,
@@ -212,7 +211,7 @@ def _downsample_surface_brightness_array(
     return np.asarray(out, dtype=np.float32)
 
 
-def rotate_surface_brightness(
+def _rotate_surface_brightness(
     image: ImageCube,
     angle_deg: float,
 ) -> ImageCube:
@@ -223,7 +222,7 @@ def rotate_surface_brightness(
     non-negative.  Whether interpolation is scientifically acceptable at the
     requested resolution is a policy decision for the caller.
     """
-    _require_skirt_image(image)
+    _require_tng_plane(image)
     return image.with_data(
         _rotate_arbitrary_array(image.as_array(), angle_deg)
     )
@@ -255,7 +254,7 @@ def _rotate_arbitrary_array(
     return out.astype(np.float32)
 
 
-def _require_skirt_image(image: ImageCube) -> PhysicalGrid:
+def _require_tng_plane(image: ImageCube) -> PhysicalGrid:
     if not isinstance(image, ImageCube):
         raise TypeError(
             f"expected ImageCube, got {type(image).__name__}"
@@ -286,7 +285,7 @@ _RADIUS_INT_GRID_SEEN: OrderedDict[tuple[int, int], None] = OrderedDict()
 _RADIUS_INT_GRID_BYTES = 0
 
 
-def radius_int_grid(shape: tuple[int, int]) -> np.ndarray:
+def _radius_int_grid(shape: tuple[int, int]) -> np.ndarray:
     """Integer-radius grid with bounded reuse for recurring image shapes.
 
     First-use shapes are returned without caching.  A second request admits
@@ -328,7 +327,7 @@ def radius_int_grid(shape: tuple[int, int]) -> np.ndarray:
     return grid
 
 
-def measure_halflight_radius_px(
+def _measure_halflight_radius_px(
     image: ImageCube,
     *,
     band: str | None = None,
@@ -341,7 +340,7 @@ def measure_halflight_radius_px(
     ``band`` may be omitted only for a single-channel cube.  Empty or
     non-positive images return NaN.
     """
-    _require_skirt_image(image)
+    _require_tng_plane(image)
     return _measure_halflight_radius_px_array(image.plane(band), frac=frac)
 
 
@@ -362,7 +361,7 @@ def _measure_halflight_radius_px_array(
     total = float(a.sum())
     if total <= 0.0:
         return float("nan")
-    radii = radius_int_grid(a.shape)
+    radii = _radius_int_grid(a.shape)
     profile = np.bincount(radii.ravel(), weights=a.ravel())
     cumulative = np.cumsum(profile)
     target = fraction * total
@@ -374,7 +373,7 @@ def _measure_halflight_radius_px_array(
     return float(index - 1 + subpixel)
 
 
-def centered_rotation_crop_slices(
+def _centered_rotation_crop_slices(
     image: ImageCube,
     rebin: int,
     *,
@@ -388,7 +387,7 @@ def centered_rotation_crop_slices(
     ``padding``.  Its side is snapped to a multiple of ``rebin`` for subsequent
     block averaging.
     """
-    _require_skirt_image(image)
+    _require_tng_plane(image)
     plane = image.plane(band)
     return _centered_rotation_crop_slices_array(
         plane,
@@ -438,7 +437,7 @@ def _centered_rotation_crop_slices_array(
     )
 
 
-def stochastic_round_factor(
+def _stochastic_round_factor(
     factor: float,
     rng: np.random.Generator | None,
 ) -> int:
@@ -448,27 +447,3 @@ def stochastic_round_factor(
     if rng is not None and remainder > 0.0:
         return max(1, lower + (1 if rng.random() < remainder else 0))
     return max(1, int(round(factor)))
-
-
-def composite_stamp(
-    canvas: np.ndarray,
-    stamp: np.ndarray,
-    x0: float,
-    y0: float,
-) -> None:
-    """Add a centred ``(height, width, channels)`` stamp, clipped to the canvas."""
-    height, width = canvas.shape[:2]
-    stamp_height, stamp_width = stamp.shape[:2]
-    row0 = int(round(y0)) - stamp_height // 2
-    col0 = int(round(x0)) - stamp_width // 2
-    canvas_row_lo, canvas_row_hi = max(0, row0), min(height, row0 + stamp_height)
-    canvas_col_lo, canvas_col_hi = max(0, col0), min(width, col0 + stamp_width)
-    if canvas_row_lo >= canvas_row_hi or canvas_col_lo >= canvas_col_hi:
-        return
-    stamp_row_lo = canvas_row_lo - row0
-    stamp_col_lo = canvas_col_lo - col0
-    canvas[canvas_row_lo:canvas_row_hi, canvas_col_lo:canvas_col_hi, :] += stamp[
-        stamp_row_lo : stamp_row_lo + (canvas_row_hi - canvas_row_lo),
-        stamp_col_lo : stamp_col_lo + (canvas_col_hi - canvas_col_lo),
-        :,
-    ]

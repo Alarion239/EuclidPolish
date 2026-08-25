@@ -9,7 +9,7 @@ import os
 import sys
 
 from euclid_polish.config import Config
-from euclid_polish.sky.generation.tng_radius_manifest import (
+from euclid_polish.tng.radius_manifest import (
     build_manifest,
     write_parameter_summary,
 )

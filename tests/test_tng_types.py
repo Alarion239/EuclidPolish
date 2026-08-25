@@ -16,7 +16,7 @@ from euclid_polish.image.cube import (
     PhysicalGrid,
     PixelUnit,
 )
-from euclid_polish.sky.generation.tng_types import (
+from euclid_polish.tng.types import (
     NativePhotometry,
     NominalRadiusGeometry,
     PhysicalRedshiftGeometry,

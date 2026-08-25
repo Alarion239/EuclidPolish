@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import replace
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -16,11 +17,17 @@ from euclid_polish.sky.generation.sky_simulator import (
     SkySimulator,
     SkySimulatorConfig,
 )
-from euclid_polish.sky.generation.tng_galaxy import (
+from euclid_polish.tng import (
+    TNGAtlas,
+    TNGGalaxy,
+    TNGPropertyCatalog,
+    TNGRadiusManifest,
+)
+from euclid_polish.tng.radius_manifest import build_manifest
+from euclid_polish.tng.renderer import (
     TNG_RADIUS_RENDERER_FINGERPRINT,
     TNG_RADIUS_RENDERING,
 )
-from euclid_polish.sky.generation.tng_radius_manifest import build_manifest
 
 
 class StaticPrior:
@@ -81,7 +88,7 @@ def _write_fake_tng_galaxy(tng_dir, gid, *, size=24):
     open(os.path.join(directory, Config.Tng.DONE_MARKER), "w").close()
 
 
-def _simulator(tmp_path):
+def _simulator(tmp_path, *, galaxy_density_arcmin2: float = 1.0):
     tng = str(tmp_path / "tng")
     _write_fake_tng_galaxy(tng, "111")
     properties = tmp_path / "tng_properties.csv"
@@ -98,7 +105,7 @@ def _simulator(tmp_path):
         SkySimulatorConfig(
             image_size=64,
             pixel_scale=Config.DEFAULT_PIXEL_SCALE,
-            galaxy_density_arcmin2=1.0,
+            galaxy_density_arcmin2=galaxy_density_arcmin2,
             star_density_arcmin2=0.0,
             lens_density_arcmin2=0.0,
             tng_galaxy_dir=tng,
@@ -124,6 +131,11 @@ def test_joint_population_renders_only_tng(tmp_path):
         "cosmos2025_joint"
     }
     assert all(row["catalog_id"] == "cosmos-1" for row in meta["galaxies"])
+    assert all(row["radius_manifest_fingerprint"] for row in meta["galaxies"])
+    assert all(
+        row["tng_render_trace"]["subhalo_id"] == "111"
+        for row in meta["galaxies"]
+    )
     assert simulator._tng_max_output_side == 129
     assert simulator.config.tng_radius_rendering == TNG_RADIUS_RENDERING
     assert (
@@ -161,6 +173,20 @@ def test_joint_population_renders_only_tng(tmp_path):
     assert image.data.sum() > 0
 
 
+def test_explicit_galaxies_open_atlas_when_configured_density_is_zero(tmp_path):
+    simulator = _simulator(tmp_path, galaxy_density_arcmin2=0.0)
+
+    _image, meta = simulator.simulate_field(
+        np.random.default_rng(17),
+        n_galaxies=1,
+        n_stars=0,
+        n_lenses=0,
+    )
+
+    assert simulator.tng_atlas is not None
+    assert len(meta["galaxies"]) == 1
+
+
 def test_oversized_radius_draw_is_rejected_and_redrawn(tmp_path):
     simulator = _simulator(tmp_path)
     prior = OneOversizedDrawPrior()
@@ -181,8 +207,21 @@ def test_random_morphology_selection_excludes_donors_that_need_enlargement(
     tmp_path,
 ):
     simulator = _simulator(tmp_path)
-    simulator.tng_galaxies = [("small", "1"), ("large", "2")]
-    simulator._atlas_max_native_re_px = np.asarray([2.0, 20.0])
+    small = TNGGalaxy(Path(tmp_path, "small"), "1")
+    large = TNGGalaxy(Path(tmp_path, "large"), "2")
+    simulator.tng_atlas = TNGAtlas(
+        root=tmp_path,
+        galaxies=(small, large),
+        properties=TNGPropertyCatalog({}, (None, 0, 0)),
+        radii=TNGRadiusManifest(
+            {
+                (galaxy.subhalo_id, orientation): radius
+                for galaxy, radius in ((small, 2.0), (large, 20.0))
+                for orientation in range(1, 6)
+            },
+            "r" * 64,
+        ),
+    )
     simulator._atlas_logm = np.asarray([9.0, 10.0])
     simulator._atlas_sfr = np.asarray([1.0, 1.0])
     simulator._atlas_logssfr = np.asarray([-9.0, -10.0])
@@ -194,11 +233,11 @@ def test_random_morphology_selection_excludes_donors_that_need_enlargement(
     simulator._atlas_ssfr_quantile = np.asarray([0.0, 1.0])
     simulator._morphology_use_counts = np.zeros(2, dtype=np.int64)
 
-    galaxies, metadata = simulator._pick_random_field_galaxy(
+    galaxy, metadata = simulator._pick_random_field_galaxy(
         np.random.default_rng(9), target_re_arcsec=0.5,
     )
 
-    assert galaxies == [("large", "2")]
+    assert galaxy == large
     assert metadata["selection_probability"] == pytest.approx(1.0)
     assert metadata["effective_donors"] == pytest.approx(1.0)
 

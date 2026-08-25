@@ -1,4 +1,4 @@
-"""Render validated TNG SKIRT atlas views onto the Euclid clean-sky grid.
+"""Render validated TNG atlas views onto the Euclid clean-sky grid.
 
 The public boundary is deliberately typed. :class:`TNGView` identifies one
 native atlas orientation, :class:`TNGRenderer` owns the expensive caches and
@@ -13,8 +13,7 @@ from __future__ import annotations
 import hashlib
 import math
 from collections import OrderedDict
-from collections.abc import Iterable, Mapping, Sequence
-from pathlib import Path
+from collections.abc import Iterable
 from typing import cast
 
 import numpy as np
@@ -26,20 +25,20 @@ from euclid_polish.photometry import (
     ab_mag_to_electrons,
     mjy_per_sr_to_electrons_factor,
 )
-from euclid_polish.skirt.image import (
-    block_mean,
-    centered_rotation_crop_slices,
-    downsample_surface_brightness,
-    radius_int_grid,
-    stochastic_round_factor,
+from euclid_polish.tng._image import (
+    _block_mean,
+    _centered_rotation_crop_slices,
+    _downsample_surface_brightness,
+    _radius_int_grid,
+    _stochastic_round_factor,
 )
-from euclid_polish.sky.generation.redshift_model import (
+from euclid_polish.tng.redshift import (
     band_drift_factors,
     compactness_factor,
     physical_pc_to_arcsec,
     rebin_factor_for_redshift,
 )
-from euclid_polish.sky.generation.tng_types import (
+from euclid_polish.tng.types import (
     TNG_MODEL_BANDS,
     TNG_NATIVE_PC_PER_PIXEL,
     NativePhotometry,
@@ -53,7 +52,6 @@ from euclid_polish.sky.generation.tng_types import (
     VIS2FWHMNormalization,
 )
 
-N_ORIENTATIONS = 5
 ARBITRARY_ROTATION_MIN_REBIN = 4
 TNG_ROTATION_CROP_ENCLOSED_FRACTION = 0.99
 TNG_ROTATION_CROP_PADDING = 1.05
@@ -88,50 +86,6 @@ def _four_floats(
     if len(result) != 4:
         raise ValueError(f"expected four TNG band values, got {len(result)}")
     return cast(tuple[float, float, float, float], result)
-
-
-def tng_fits_path(
-    galaxy_dir: str | Path,
-    subhalo_id: int | str,
-    orientation: int,
-    fits_band: str,
-) -> str:
-    """Resolve one atlas filename, including its zero-padded variant."""
-    directory = Path(galaxy_dir)
-    band = str(fits_band).strip().upper()
-    if band not in ("VIS", "Y", "J", "H"):
-        raise ValueError(f"unknown TNG FITS band {fits_band!r}")
-    unpadded = directory / (
-        f"TNG{subhalo_id}_O{int(orientation)}_Euclid_{band}.fits"
-    )
-    if unpadded.is_file():
-        return str(unpadded)
-    try:
-        padded_id = f"{int(subhalo_id):06d}"
-    except (TypeError, ValueError):
-        return str(unpadded)
-    padded = directory / (
-        f"TNG{padded_id}_O{int(orientation)}_Euclid_{band}.fits"
-    )
-    return str(padded if padded.is_file() else unpadded)
-
-
-def list_tng_galaxies(tng_dir: str | Path) -> list[tuple[str, str]]:
-    """List completed atlas galaxies that have at least their VIS O1 frame."""
-    root = Path(tng_dir)
-    if not root.is_dir():
-        return []
-    galaxies = [
-        (str(folder), folder.name)
-        for folder in root.iterdir()
-        if folder.is_dir()
-        and (folder / Config.Tng.DONE_MARKER).is_file()
-        and Path(tng_fits_path(folder, folder.name, 1, "VIS")).is_file()
-    ]
-    try:
-        return sorted(galaxies, key=lambda item: int(item[1]))
-    except ValueError:
-        return sorted(galaxies)
 
 
 def _array_fingerprint(values: np.ndarray) -> str:
@@ -248,45 +202,7 @@ class TNGRenderer:
             "circular_psf_bytes": self._circular_psf_cache_bytes,
         }
 
-    def choose_view(
-        self,
-        galaxies: Sequence[tuple[str, str]],
-        radius_lookup: Mapping[tuple[str, int], float],
-        target_re_arcsec: float,
-        rng: np.random.Generator,
-        *,
-        radius_manifest_fingerprint: str = "",
-    ) -> TNGView:
-        """Choose a donor orientation that reaches a radius without enlargement."""
-        target = _positive_finite(target_re_arcsec, "target_re_arcsec")
-        eligible: list[TNGView] = []
-        for galaxy_dir, subhalo_id in galaxies:
-            for orientation in range(1, N_ORIENTATIONS + 1):
-                native_re_px = radius_lookup.get((str(subhalo_id), orientation))
-                if native_re_px is None:
-                    continue
-                try:
-                    view = TNGView(
-                        galaxy_dir=Path(galaxy_dir),
-                        subhalo_id=str(subhalo_id),
-                        orientation=orientation,
-                        native_re_px=float(native_re_px),
-                        radius_manifest_fingerprint=(
-                            radius_manifest_fingerprint
-                        ),
-                    )
-                except (TypeError, ValueError):
-                    continue
-                if view.can_render(target, self.pixel_scale_arcsec):
-                    eligible.append(view)
-        if not eligible:
-            raise ValueError(
-                f"no supplied TNG donor orientation can render R_e={target:g} "
-                "arcsec without enlargement"
-            )
-        return eligible[int(rng.integers(0, len(eligible)))]
-
-    def render_for_radius(
+    def render_observed_radius(
         self,
         view: TNGView,
         target_re_arcsec: float,
@@ -295,12 +211,12 @@ class TNGRenderer:
         target_vis_flux_e: float | None = None,
     ) -> RenderedTNG:
         """Shrink one donor to a nominal Euclid radius on the angular grid."""
-        rendered = self._render_nominal_geometry(view, target_re_arcsec, rng)
+        rendered = self._render_observed_geometry(view, target_re_arcsec, rng)
         if target_vis_flux_e is not None:
             rendered = rendered.normalised_to_total_vis(target_vis_flux_e)
         return rendered
 
-    def render_for_radius_at_redshift(
+    def render_observed_radius_at_redshift(
         self,
         view: TNGView,
         target_re_arcsec: float,
@@ -310,7 +226,7 @@ class TNGRenderer:
         target_vis_flux_e: float | None = None,
     ) -> RenderedTNG:
         """Render nominal radius geometry and then apply redshift photometry."""
-        rendered = self._render_nominal_geometry(view, target_re_arcsec, rng)
+        rendered = self._render_observed_geometry(view, target_re_arcsec, rng)
         sed_fnu = self._native_sed_from_render(rendered)
         factors, metadata = band_drift_factors(sed_fnu, redshift, rng)
         transform = TNGRedshiftTransform(
@@ -325,7 +241,7 @@ class TNGRenderer:
             rendered = rendered.normalised_to_total_vis(target_vis_flux_e)
         return rendered
 
-    def render_for_physical_redshift(
+    def render_physical_at_redshift(
         self,
         view: TNGView,
         redshift: float,
@@ -345,13 +261,13 @@ class TNGRenderer:
         continuous_rebin = min(
             float(TNG_MAX_REBIN_FACTOR), geometric_rebin * compactness
         )
-        rebin = stochastic_round_factor(continuous_rebin, rng)
+        rebin = _stochastic_round_factor(continuous_rebin, rng)
         rotation = self._draw_physical_rotation(rng, rebin)
 
         native = self._native_source(view)
         source = native
         if rotation.is_arbitrary:
-            rows, columns = centered_rotation_crop_slices(
+            rows, columns = _centered_rotation_crop_slices(
                 native,
                 rebin,
                 band="VIS",
@@ -360,9 +276,9 @@ class TNGRenderer:
             )
             source = native.cropped(rows, columns)
             source = rotation.apply(source)
-            surface_brightness = block_mean(source, rebin)
+            surface_brightness = _block_mean(source, rebin)
         else:
-            surface_brightness = block_mean(source, rebin)
+            surface_brightness = _block_mean(source, rebin)
             surface_brightness = rotation.apply(surface_brightness)
 
         electron_cube = self._surface_brightness_to_electrons(surface_brightness)
@@ -466,7 +382,7 @@ class TNGRenderer:
             return cached
         source = self._native_source(view)
         vis = np.asarray(source.plane("VIS"), dtype=np.float64)
-        radii = radius_int_grid(vis.shape)
+        radii = _radius_int_grid(vis.shape)
         flux = np.bincount(radii.ravel(), weights=vis.ravel())
         count = np.bincount(radii.ravel()).astype(np.float64)
         profile = flux / np.maximum(count, 1.0)
@@ -541,7 +457,7 @@ class TNGRenderer:
             / geometric_rebin**2
         )
 
-    def _render_nominal_geometry(
+    def _render_observed_geometry(
         self,
         view: TNGView,
         target_re_arcsec: float,
@@ -557,7 +473,7 @@ class TNGRenderer:
         scale = target / view.native_re_arcsec(self.pixel_scale_arcsec)
         rotation = self._draw_nominal_rotation(rng)
         native = self._native_source(view)
-        rows, columns = centered_rotation_crop_slices(
+        rows, columns = _centered_rotation_crop_slices(
             native,
             1,
             band="VIS",
@@ -566,7 +482,7 @@ class TNGRenderer:
         )
         source = native.cropped(rows, columns)
         source = rotation.apply(source)
-        surface_brightness = downsample_surface_brightness(source, scale)
+        surface_brightness = _downsample_surface_brightness(source, scale)
         support_clipped = False
         if self.max_output_side is not None and (
             surface_brightness.shape[0] > self.max_output_side
@@ -715,7 +631,7 @@ class TNGRenderer:
         if not keep.any():
             return RenderedTNG(rendered.cube.with_data(data), rendered.trace)
         total = data.sum(axis=2, dtype=np.float64)
-        radii = radius_int_grid(total.shape)
+        radii = _radius_int_grid(total.shape)
         profile = np.bincount(radii.ravel(), weights=total.ravel())
         cumulative = np.cumsum(profile)
         radius = int(np.searchsorted(cumulative, 0.995 * cumulative[-1])) + 4

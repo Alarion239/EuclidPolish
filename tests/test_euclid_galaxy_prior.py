@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -28,6 +29,12 @@ from euclid_polish.sky.generation.cosmos_tng_prior import (
 from euclid_polish.sky.generation.sky_simulator import (
     SkySimulator,
     SkySimulatorConfig,
+)
+from euclid_polish.tng import (
+    TNGAtlas,
+    TNGGalaxy,
+    TNGPropertyCatalog,
+    TNGRadiusManifest,
 )
 from euclid_polish.web.helpers.population_calibration import (
     activate_joint_galaxy_candidate,
@@ -244,22 +251,21 @@ def test_simulator_accepts_density_equal_to_activated_magnitude_law(
 ):
     import euclid_polish.sky.generation.sky_simulator as module
 
-    monkeypatch.setattr(
-        module, "validate_manifest", lambda *args, **kwargs: {"valid": True},
+    galaxy = TNGGalaxy(Path("o"), "1")
+    atlas = TNGAtlas(
+        root=Path("o"),
+        galaxies=(galaxy,),
+        properties=TNGPropertyCatalog({}, (None, 0, 0)),
+        radii=TNGRadiusManifest(
+            {("1", orientation): 20.0 for orientation in range(1, 6)},
+            "r" * 64,
+        ),
     )
     monkeypatch.setattr(
-        module, "load_manifest",
-        lambda *args, **kwargs: {"manifest_fingerprint": "r" * 64},
+        module.TNGAtlas,
+        "open",
+        classmethod(lambda cls, *args, **kwargs: atlas),
     )
-    monkeypatch.setattr(
-        module,
-        "radius_lookup",
-        lambda payload: {
-            ("1", orientation): 20.0 for orientation in range(1, 6)
-        },
-    )
-    monkeypatch.setattr(module, "list_tng_galaxies", lambda path: [("o", "1")])
-    monkeypatch.setattr(module, "load_tng_properties", lambda path: {})
     prior = JointGalaxyPopulationPrior(active_payload())
 
     SkySimulator(
@@ -285,24 +291,24 @@ def test_staged_generator_selects_and_renders_donor_before_brightness():
     simulator = object.__new__(SkySimulator)
     simulator.population_prior = prior
     simulator.config = SimpleNamespace(pixel_scale=0.05)
-    simulator._radius_lookup = {("42", 1): 5.0}
-    simulator._radius_manifest_fingerprint = "r" * 64
     simulator._tng_max_output_side = 65
+    galaxy = TNGGalaxy(Path("atlas"), "42")
+    view = object()
+    simulator.tng_atlas = SimpleNamespace(
+        eligible_views=lambda *_args, **_kwargs: (view,),
+    )
 
     def pick_donor(_rng, target_re_arcsec):
         assert target_re_arcsec > 0.0
         events.append("donor")
-        return [("atlas", "42")], {}
+        return galaxy, {}
 
     class Renderer:
-        def choose_view(self, *_args, **_kwargs):
-            return object()
-
-        def render_for_radius(self, *_args, **_kwargs):
+        def render_observed_radius(self, *_args, **_kwargs):
             events.append("render")
             return object()
 
-        def render_for_radius_at_redshift(self, *_args, **_kwargs):
+        def render_observed_radius_at_redshift(self, *_args, **_kwargs):
             events.append("render")
             return object()
 

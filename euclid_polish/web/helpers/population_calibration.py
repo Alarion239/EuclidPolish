@@ -879,7 +879,7 @@ def fit_local_catalog_density(
         conditional_mass_quantiles,
         cross_validated_mass_bandwidth,
     )
-    from euclid_polish.sky.generation.tng_radius_manifest import (
+    from euclid_polish.tng.radius_manifest import (
         load_parameter_summary,
     )
     from euclid_polish.web.helpers.population_comparison import (
@@ -1242,7 +1242,7 @@ def density_state() -> dict[str, Any]:
             "brightness-transfer candidate changed after the sweep"
         ]
     active = _read(active_density_path())
-    from euclid_polish.sky.generation.tng_radius_manifest import validate_manifest
+    from euclid_polish.tng.radius_manifest import validate_manifest
     radius_status = validate_manifest(Config.TNG_SKIRT_DIR)
     current_radius_fingerprint = (
         radius_status.get("manifest_fingerprint") if radius_status.get("valid")

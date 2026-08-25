@@ -12,21 +12,20 @@ import pytest
 from astropy.io import fits
 
 from euclid_polish.config import Config
-from euclid_polish.sky.generation.redshift_model import (
+from euclid_polish.tng.catalog import TNGPropertyCatalog
+from euclid_polish.tng.redshift import (
     PIVOT_WAVELENGTH_UM,
     TNG_NATIVE_PC_PER_PIXEL,
     angular_diameter_distance,
     band_drift_factors,
     compactness_factor,
-    load_tng_properties,
     physical_pc_to_arcsec,
-    predicted_vis_mag,
     rebin_factor_for_redshift,
     sigma_v_from_stellar_mass,
     tolman_dimming_factor,
 )
-from euclid_polish.sky.generation.tng_galaxy import TNGRenderer
-from euclid_polish.sky.generation.tng_types import PhysicalRedshiftGeometry, TNGView
+from euclid_polish.tng.renderer import TNGRenderer
+from euclid_polish.tng.types import PhysicalRedshiftGeometry, TNGView
 
 
 def test_angular_diameter_distance_reference_values():
@@ -134,32 +133,32 @@ def _write_props_csv(path: Path, rows: list[tuple[str, float]]) -> None:
     path.write_text("\n".join(lines) + "\n")
 
 
-def test_load_tng_properties_refreshes_when_file_changes(tmp_path):
+def test_property_catalog_read_reflects_file_changes(tmp_path):
     csv_path = tmp_path / "tng_properties.csv"
     _write_props_csv(csv_path, [("111", 1.0e11), ("222", 5.0e10)])
-    properties = load_tng_properties(str(csv_path))
-    assert properties["111"]["mass_stars"] == pytest.approx(1.0e11)
-    assert properties["222"]["reff"] == pytest.approx(3.0)
+    properties = TNGPropertyCatalog.read(csv_path)
+    assert properties["111"].stellar_mass_msun == pytest.approx(1.0e11)
+    assert properties["222"].stellar_halfmass_radius_kpc == pytest.approx(3.0)
     _write_props_csv(
         csv_path,
         [("111", 1.0e11), ("222", 5.0e10), ("333", 2.5e10)],
     )
-    assert load_tng_properties(str(csv_path))["333"]["mass_stars"] == (
+    assert TNGPropertyCatalog.read(csv_path)["333"].stellar_mass_msun == (
         pytest.approx(2.5e10)
     )
-    assert load_tng_properties(str(tmp_path / "missing.csv")) == {}
+    assert len(TNGPropertyCatalog.read(tmp_path / "missing.csv")) == 0
 
 
-def test_load_tng_properties_real_repo_csv():
+def test_property_catalog_reads_real_repo_csv():
     path = os.path.join("data", "_tng_infographics", "tng_properties.csv")
     if not os.path.isfile(path):
         pytest.skip("local tng_properties.csv not present")
-    properties = load_tng_properties(path)
+    properties = TNGPropertyCatalog.read(path)
     assert len(properties) > 100
     masses = [
-        row["mass_stars"]
+        row.stellar_mass_msun
         for row in properties.values()
-        if np.isfinite(row.get("mass_stars", float("nan")))
+        if np.isfinite(row.stellar_mass_msun)
     ]
     assert all(mass > 1e8 for mass in masses)
 
@@ -201,7 +200,7 @@ def test_physical_redshift_render_records_geometry_and_dimming(tmp_path):
     renderer = TNGRenderer(pixel_scale_arcsec=0.05)
     redshift = 0.5
 
-    rendered = renderer.render_for_physical_redshift(
+    rendered = renderer.render_physical_at_redshift(
         view,
         redshift,
         rng=None,
@@ -242,16 +241,16 @@ def test_compactness_factor_size_evolution():
 def test_compactness_squeeze_conserves_flux(tmp_path):
     view = _write_fake_tng_galaxy(tmp_path, "888", size=96)
     redshift = 0.5
-    squeezed = TNGRenderer().render_for_physical_redshift(
+    squeezed = TNGRenderer().render_physical_at_redshift(
         view,
         redshift,
         surface_brightness_cut_mag_arcsec2=0.0,
     )
     with mock.patch(
-        "euclid_polish.sky.generation.tng_galaxy.compactness_factor",
+        "euclid_polish.tng.renderer.compactness_factor",
         lambda redshift: 1.0,
     ):
-        plain = TNGRenderer().render_for_physical_redshift(
+        plain = TNGRenderer().render_physical_at_redshift(
             view,
             redshift,
             surface_brightness_cut_mag_arcsec2=0.0,
@@ -272,8 +271,8 @@ def test_surface_brightness_truncation_crops_faint_outskirts(tmp_path):
     )
     renderer = TNGRenderer()
 
-    cropped = renderer.render_for_physical_redshift(view, 0.5)
-    full = renderer.render_for_physical_redshift(
+    cropped = renderer.render_physical_at_redshift(view, 0.5)
+    full = renderer.render_physical_at_redshift(
         view, 0.5, surface_brightness_cut_mag_arcsec2=0.0
     )
 
@@ -285,19 +284,13 @@ def test_analytic_showability_predictors_track_render(tmp_path):
     view = _write_fake_tng_galaxy(tmp_path, "555", size=96)
     renderer = TNGRenderer()
     redshift = 0.7
-    rendered = renderer.render_for_physical_redshift(view, redshift)
+    rendered = renderer.render_physical_at_redshift(view, redshift)
 
     predicted_flux = renderer.predict_vis_flux_e(view, redshift)
     predicted_radius = renderer.predict_visible_radius_arcsec(view, redshift)
 
     assert predicted_flux == pytest.approx(rendered.flux_e("VIS"), rel=0.1)
     assert 0.0 < predicted_radius <= rendered.shape[0] * 0.05 / 2.0 * 1.2
-
-
-def test_predicted_vis_mag_faint_skip():
-    assert predicted_vis_mag(10.55, 0.5) == pytest.approx(21.36, abs=0.01)
-    assert predicted_vis_mag(9.0, 2.0) > Config.TNG_FAINT_SKIP_MAG_VIS
-    assert predicted_vis_mag(10.5, 0.3) < 22.0
 
 
 def test_poster_lens_showability_cut():

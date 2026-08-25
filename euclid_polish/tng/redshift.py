@@ -1,4 +1,4 @@
-"""Redshift realism for TNG SKIRT stamps: one z draw drives every observable.
+"""Redshift transformations for TNG atlas stamps.
 
 The SKIRT atlas frames are *intrinsic* (z = 0) physical images — 100 pc/pixel
 surface brightness in MJy/sr with no assumed distance. To place one at
@@ -20,9 +20,9 @@ redshift ``z`` every observable is derived from that single draw:
    extrapolation). The randomness broadens the colour distribution around the
    deterministic four-point estimate.
 
-The same module derives the lens **velocity dispersion from the TNG mass
-catalog** (``tng_properties.csv``) via the Faber–Jackson relation, so a
-TNG-lit lens galaxy bends light according to its own subhalo's mass.
+The same module derives lens velocity dispersion from a supplied stellar mass
+through the Faber--Jackson relation. Atlas catalog ownership stays in
+:mod:`euclid_polish.tng.catalog`.
 
 The cosmological-distance helpers use the flat ΛCDM Collett-2015 parameters
 and are shared with the strong-lens geometry sampler.
@@ -30,16 +30,14 @@ and are shared with the strong-lens geometry sampler.
 
 from __future__ import annotations
 
-import csv
 import math
-import os
 from collections.abc import Sequence
 
 import numpy as np
 from scipy.integrate import trapezoid
 
 from euclid_polish.config import Config
-from euclid_polish.sky.generation.tng_types import TNG_NATIVE_PC_PER_PIXEL
+from euclid_polish.tng.types import TNG_NATIVE_PC_PER_PIXEL
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -95,7 +93,7 @@ def physical_pc_to_arcsec(length_pc: float, z: float) -> float:
 
 
 # ---------------------------------------------------------------------------
-# 0) Downsample factor from redshift
+# Downsample factor from redshift
 # ---------------------------------------------------------------------------
 
 def rebin_factor_for_redshift(
@@ -133,25 +131,7 @@ def compactness_factor(
     return float(c0 * (1.0 + z) ** beta)
 
 
-#: VIS-magnitude anchor: atlas subhalo 167396 (log M* = 10.55) measures
-#: m_VIS = 21.36 through the full pipeline at z = 0.5.
-_MAG_ANCHOR_LOGM = 10.55
-_MAG_ANCHOR_Z    = 0.5
-_MAG_ANCHOR_VIS  = 21.36
-
-
-def predicted_vis_mag(logm: float, z: float) -> float:
-    """Coarse VIS magnitude of a ``logm`` galaxy at redshift ``z``:
-    L ∝ M plus the luminosity-distance modulus relative to the measured
-    anchor (no K-correction). Used to skip undetectably faint field draws
-    before the expensive 4-band stamp load.
-    """
-    dl = (1.0 + z) * comoving_distance_mpc(z)
-    dl0 = (1.0 + _MAG_ANCHOR_Z) * comoving_distance_mpc(_MAG_ANCHOR_Z)
-    return (_MAG_ANCHOR_VIS + 2.5 * (_MAG_ANCHOR_LOGM - logm)
-            + 5.0 * math.log10(dl / dl0))
-
-# 2) Photometric response to redshift: dimming + randomized spectral drift
+# Photometric response to redshift: dimming + randomized spectral drift
 # ---------------------------------------------------------------------------
 
 def tolman_dimming_factor(z: float) -> float:
@@ -241,57 +221,6 @@ def band_drift_factors(
 # ---------------------------------------------------------------------------
 # 1) Lens velocity dispersion from the TNG mass catalog
 # ---------------------------------------------------------------------------
-
-def default_tng_properties_csv() -> str:
-    """The property cache written by the TNG-infographic render
-    (``euclid_polish.tng.properties.gather_properties``)."""
-    return os.path.join(Config.DATA_DIR, "_tng_infographics",
-                        "tng_properties.csv")
-
-
-#: Per-path property cache keyed by the current file identity. Atlas refreshes
-#: can append new galaxy rows while the web server remains alive, so a
-#: path-only cache would hide them until process restart.
-_TNG_PROPS_CACHE: dict[
-    str,
-    tuple[tuple[int, int, int], dict[str, dict[str, float]]],
-] = {}
-
-
-def load_tng_properties(csv_path: str | None = None,
-                        ) -> dict[str, dict[str, float]]:
-    """Read ``tng_properties.csv`` → ``{subhalo_id: {sfr, mass_stars, m_halo,
-    reff}}`` (floats, NaN where missing). Missing file → empty dict. Cached
-    per path; the generator looks masses up per lens draw.
-    """
-    path = os.path.abspath(csv_path or default_tng_properties_csv())
-    try:
-        stat = os.stat(path)
-        identity = (int(stat.st_ino), int(stat.st_size), int(stat.st_mtime_ns))
-    except OSError:
-        identity = (0, 0, 0)
-    cached = _TNG_PROPS_CACHE.get(path)
-    if cached is not None and cached[0] == identity:
-        return cached[1]
-    rows: dict[str, dict[str, float]] = {}
-    if os.path.isfile(path):
-        with open(path, newline="", encoding="utf-8") as f:
-            for row in csv.DictReader(f):
-                gid = str(row.get("id", "")).strip()
-                if not gid:
-                    continue
-                props: dict[str, float] = {}
-                for k, v in row.items():
-                    if k == "id":
-                        continue
-                    try:
-                        props[k] = float(v)
-                    except (TypeError, ValueError):
-                        props[k] = float("nan")
-                rows[gid] = props
-    _TNG_PROPS_CACHE[path] = (identity, rows)
-    return rows
-
 
 def sigma_v_from_stellar_mass(
     mstar_msun: float,

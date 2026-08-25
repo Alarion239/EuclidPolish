@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -30,6 +31,7 @@ from euclid_polish.sky.observation.observation_simulator import (
     ObservationSimulator,
     ObservationSimulatorConfig,
 )
+from euclid_polish.tng import TNGAtlas, TNGPropertyCatalog, TNGRadiusManifest
 
 
 def _load_run_pipeline():
@@ -564,14 +566,17 @@ def test_tng_density_with_empty_atlas_is_fatal(tmp_path, monkeypatch):
         SkySimulatorConfig,
     )
 
-    monkeypatch.setattr(
-        module, "validate_manifest", lambda *args, **kwargs: {"valid": True},
+    atlas = TNGAtlas(
+        root=Path(tmp_path, "empty_atlas"),
+        galaxies=(),
+        properties=TNGPropertyCatalog({}, (None, 0, 0)),
+        radii=TNGRadiusManifest({}, "test"),
     )
     monkeypatch.setattr(
-        module, "load_manifest",
-        lambda *args, **kwargs: {"valid": True, "entries": []},
+        module.TNGAtlas,
+        "open",
+        classmethod(lambda cls, *args, **kwargs: atlas),
     )
-    monkeypatch.setattr(module, "radius_lookup", lambda payload: {})
 
     with pytest.raises(RuntimeError, match="ZERO usable TNG galaxies"):
         SkySimulator(object(), SkySimulatorConfig(

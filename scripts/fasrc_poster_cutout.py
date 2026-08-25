@@ -230,7 +230,7 @@ def generate_cutout(
         if mode in ("tng", "field") else None
     )
     sim = SkySimulator(cat, cfg)
-    if tng_mode and not sim.tng_galaxies:
+    if tng_mode and not sim.tng_atlas:
         raise RuntimeError(
             f"no downloaded TNG galaxies under {cfg.tng_galaxy_dir} — run the "
             f"TNG atlas download first ('{mode}' uses TNG stamps to match "

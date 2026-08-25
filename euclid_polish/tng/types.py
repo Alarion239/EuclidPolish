@@ -1,8 +1,8 @@
-"""Typed value objects for TNG SKIRT donors and rendered stamps.
+"""Typed value objects for TNG atlas views and rendered stamps.
 
 The numerical renderer deliberately has two distinct image domains:
 
-* native SKIRT cubes are surface brightness in MJy/sr on a physical pc/pixel
+* native TNG atlas cubes are surface brightness in MJy/sr on a physical pc/pixel
   grid; and
 * rendered TNG stamps are electrons/pixel on the simulation's angular grid.
 
@@ -32,7 +32,9 @@ from euclid_polish.photometry import electrons_to_ab_mag
 
 TNG_FITS_BANDS: tuple[str, ...] = ("VIS", "Y", "J", "H")
 TNG_MODEL_BANDS: tuple[str, ...] = tuple(Config.LR_INPUT_BAND_NAMES)
-#: Native physical pixel pitch of every supported SKIRT atlas plane.
+#: Every atlas galaxy has these five viewing orientations.
+N_ORIENTATIONS = 5
+#: Native physical pixel pitch of every supported TNG atlas plane.
 TNG_NATIVE_PC_PER_PIXEL = 100.0
 
 type FileIdentity = tuple[tuple[str, int, int], ...]
@@ -53,7 +55,10 @@ def _nonnegative_finite(value: float, name: str) -> float:
     return number
 
 
-def _four_positive(values: Sequence[float], name: str) -> tuple[float, float, float, float]:
+def _four_positive(
+    values: Sequence[float],
+    name: str,
+) -> tuple[float, float, float, float]:
     result = tuple(float(value) for value in values)
     if len(result) != len(TNG_MODEL_BANDS):
         raise ValueError(f"{name} must contain four values, got {len(result)}")
@@ -100,22 +105,14 @@ class TNGView:
 
     def fits_path(self, fits_band: str) -> Path:
         """Resolve one atlas band, including the archive's zero-padded variant."""
-        band = str(fits_band).strip().upper()
-        if band not in TNG_FITS_BANDS:
-            raise ValueError(f"unknown TNG FITS band {fits_band!r}")
-        unpadded = self.galaxy_dir / (
-            f"TNG{self.subhalo_id}_O{self.orientation}_Euclid_{band}.fits"
+        from euclid_polish.tng.atlas import _resolve_fits_path
+
+        return _resolve_fits_path(
+            self.galaxy_dir,
+            self.subhalo_id,
+            self.orientation,
+            fits_band,
         )
-        if unpadded.is_file():
-            return unpadded
-        try:
-            padded_id = f"{int(self.subhalo_id):06d}"
-        except ValueError:
-            return unpadded
-        padded = self.galaxy_dir / (
-            f"TNG{padded_id}_O{self.orientation}_Euclid_{band}.fits"
-        )
-        return padded if padded.is_file() else unpadded
 
     def native_re_arcsec(self, pixel_scale_arcsec: float) -> float:
         """Nominal native half-light radius when assigned to an angular grid."""
@@ -140,10 +137,10 @@ class TNGView:
 
     def load_surface_brightness(self) -> ImageCube:
         """Load and register the four native MJy/sr planes in model-band order."""
-        from euclid_polish.skirt.image import load_skirt_image
+        from euclid_polish.tng._image import _load_tng_plane
 
         planes = tuple(
-            load_skirt_image(self.fits_path(fits_band), model_band)
+            _load_tng_plane(self.fits_path(fits_band), model_band)
             for fits_band, model_band in zip(
                 TNG_FITS_BANDS, TNG_MODEL_BANDS, strict=True
             )
@@ -198,9 +195,9 @@ class TNGRotation:
             # TNG augmentation uses the validated cubic surface-brightness
             # rotation; the common cube's generic rotation is intentionally
             # only a dependency-light bilinear convenience.
-            from euclid_polish.skirt.image import rotate_surface_brightness
+            from euclid_polish.tng._image import _rotate_surface_brightness
 
-            return rotate_surface_brightness(cube, self.angle_deg)
+            return _rotate_surface_brightness(cube, self.angle_deg)
         return cube.rotated_quarter(self.quarter_turns)
 
     def record_fields(self) -> dict[str, Any]:
@@ -583,6 +580,7 @@ class RenderedTNG:
                     "nominal radius is inconsistent with donor radius, angular "
                     "pixel scale, and shrink factor"
                 )
+
     def __repr__(self) -> str:
         return (
             f"RenderedTNG(shape={self.shape!r}, bands={self.bands!r}, "
@@ -625,8 +623,8 @@ class RenderedTNG:
     def num_channels(self) -> int:
         return self.cube.num_channels
 
-    def band_index(self, band: str) -> int:
-        return self.cube.band_index(band)
+    def band_index(self, name: str) -> int:
+        return self.cube.band_index(name)
 
     def plane(self, band: str | None = None) -> np.ndarray:
         return self.cube.plane(band)

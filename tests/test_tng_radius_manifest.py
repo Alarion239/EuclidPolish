@@ -10,20 +10,15 @@ import pytest
 from astropy.io import fits
 
 from euclid_polish.config import Config
-from euclid_polish.sky.generation.tng_galaxy import (
-    TNGRenderer,
-    list_tng_galaxies,
-    tng_fits_path,
-)
-from euclid_polish.sky.generation.tng_radius_manifest import (
+from euclid_polish.tng import TNGAtlas, TNGGalaxy, TNGRadiusManifest
+from euclid_polish.tng.radius_manifest import (
     build_manifest,
     ensure_manifest,
     load_parameter_summary,
-    radius_lookup,
     validate_manifest,
     write_parameter_summary,
 )
-from euclid_polish.sky.generation.tng_types import TNGView
+from euclid_polish.tng.renderer import TNGRenderer
 
 
 def _write_frame(path: Path, data: np.ndarray) -> None:
@@ -99,8 +94,29 @@ def test_manifest_is_atomic_and_validates_inventory(tmp_path):
     assert any("changed" in reason for reason in status["reasons"])
 
 
+def test_manifest_rejects_radius_rows_edited_under_stale_fingerprint(tmp_path):
+    atlas = tmp_path / "tng_skirt"
+    atlas.mkdir()
+    _atlas(atlas)
+    properties = tmp_path / "props.csv"
+    _properties(properties, "42")
+    report = build_manifest(str(atlas), properties_path=str(properties))
+    report["entries"][0]["native_re_px"] *= 2.0
+
+    status = validate_manifest(
+        str(atlas),
+        properties_path=str(properties),
+        manifest=report,
+    )
+
+    assert not status["valid"]
+    assert any("fingerprint" in reason for reason in status["reasons"])
+    with pytest.raises(ValueError, match="fingerprint"):
+        TNGRadiusManifest.from_payload(report)
+
+
 def test_ensure_manifest_measures_only_new_orientations(tmp_path, monkeypatch):
-    import euclid_polish.sky.generation.tng_radius_manifest as module
+    import euclid_polish.tng.radius_manifest as module
 
     atlas = tmp_path / "tng_skirt"
     atlas.mkdir()
@@ -117,13 +133,13 @@ def test_ensure_manifest_measures_only_new_orientations(tmp_path, monkeypatch):
     _atlas(atlas, "43")
     _properties(properties, "42", "43")
     loaded: list[str] = []
-    original_load = module.load_skirt_image
+    original_load = module._load_tng_plane
 
     def counted_load(path, band_name):
         loaded.append(str(path))
         return original_load(path, band_name)
 
-    monkeypatch.setattr(module, "load_skirt_image", counted_load)
+    monkeypatch.setattr(module, "_load_tng_plane", counted_load)
     result = ensure_manifest(
         str(atlas),
         properties_path=str(properties),
@@ -144,10 +160,10 @@ def test_zero_padded_atlas_filenames_are_not_excluded(tmp_path):
     for path in list(folder.glob("TNG1_*.fits")):
         path.rename(folder / path.name.replace("TNG1_", "TNG000001_"))
 
-    galaxies = list_tng_galaxies(atlas)
+    galaxies = TNGGalaxy.discover(atlas)
 
     assert len(galaxies) == 1
-    assert tng_fits_path(folder, "1", 1, "VIS").endswith(
+    assert galaxies[0].fits_path(1, "VIS").name == (
         "TNG000001_O1_Euclid_VIS.fits"
     )
 
@@ -192,28 +208,34 @@ def test_parameter_summary_joins_properties_without_reopening_pixels(tmp_path):
         load_parameter_summary(summary)
 
 
-def test_manifest_radius_constructs_view_and_drives_typed_render(tmp_path):
-    atlas = tmp_path / "tng_skirt"
-    atlas.mkdir()
-    folder = _atlas(atlas)
+def test_typed_atlas_opens_manifest_and_drives_typed_render(tmp_path):
+    atlas_root = tmp_path / "tng_skirt"
+    atlas_root.mkdir()
+    _atlas(atlas_root)
     properties = tmp_path / "props.csv"
     _properties(properties, "42")
-    report = build_manifest(str(atlas), properties_path=str(properties))
-    radii = radius_lookup(report)
-    native_re_px = radii[("42", 1)]
-    view = TNGView(
-        galaxy_dir=folder,
-        subhalo_id="42",
-        orientation=1,
-        native_re_px=native_re_px,
-        radius_manifest_fingerprint=report["manifest_fingerprint"],
+    manifest = tmp_path / "manifest.json"
+    report = build_manifest(
+        str(atlas_root),
+        properties_path=str(properties),
+        output_path=str(manifest),
     )
-    target = 0.5 * native_re_px * Config.DEFAULT_PIXEL_SCALE
+    radii = TNGRadiusManifest.from_payload(report)
+    atlas = TNGAtlas.open(
+        atlas_root,
+        properties_path=properties,
+        manifest_path=manifest,
+    )
+    galaxy = next(iter(atlas))
+    view = atlas.view(galaxy, 1)
+    target = 0.5 * radii.radius("42", 1) * Config.DEFAULT_PIXEL_SCALE
 
-    rendered = TNGRenderer().render_for_radius(
+    rendered = TNGRenderer().render_observed_radius(
         view, target, target_vis_flux_e=1e5
     )
 
+    assert atlas.fingerprint == radii.fingerprint
+    assert atlas.properties["42"].stellar_mass_msun == pytest.approx(1e10)
     assert rendered.trace.view.radius_manifest_fingerprint == (
         report["manifest_fingerprint"]
     )

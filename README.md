@@ -96,60 +96,32 @@ photo-z, stellar-mass, HST F814W, and apparent-size measurements. UltraVISTA
 Y/J/H columns are retained under their physical filter names for diagnostics,
 but they do not replace the TNG Euclid-band colours.
 
-### 1.5 COSMOS-conditioned TNG population
+### 1.4 TNG morphology rendering
 
-The SKIRT atlas frames are intrinsic z = 0 images on a physical 100 pc/pixel grid.
-In redshift mode (`sky/generation/redshift_model.py`) each injected stamp draws one z from
-`dN/dz ∝ dV_c/dz · exp(-(z/1.5)²)` on [0.10, 2.5] — the comoving volume element
-times a smooth approximation to the declining number density of massive galaxies
-(motivated by Muzzin+ 2013). This is a project prior for the atlas's intrinsically
-luminous population, not a fitted TNG light cone (median z ≈ 1.15;
-a Smail-form `n(z) ∝ z² exp(-(z/0.65)^1.5)` is available via `TNG_Z_FORM`).
-That single draw sets everything:
+The TNG atlas is a morphology library, not a population model. The active
+Euclid joint prior independently samples each field galaxy's observed VIS
+half-light radius and 2FWHM brightness. Scene generation then asks
+`TNGAtlas` for a donor with a natively large-enough orientation and asks
+`TNGRenderer` to produce the corresponding `RenderedTNG` electron cube.
 
-- **Angular size** — the block-mean factor is `F(z) = θ_HR[rad] · D_A(z) / 100 pc`
-  (≈3 at z = 0.5, capped at ≈4.3 by the D_A turnover near z ≈ 1.6). No separate
-  "big galaxy" population is needed: nearby draws produce the resolved giants.
-- **Tolman dimming** — surface brightness × (1+z)⁻³ (per-frequency intensity).
-- **Compactness correction** — the atlas frames are z = 0 morphologies, but real
-  galaxies at the drawn z were smaller at fixed mass (R_e ∝ (1+z)^−0.75…−1.5,
-  van der Wel+ 2014): an extra flux-conserving squeeze C(z) = C₀(1+z)^β shrinks
-  the stamp and boosts its surface brightness by C². C₀ = 1.3 is measured: the
-  atlas runs 1.24–1.41× the observed z≈0.1 mass–size relation
-  (`TNG_COMPACT_C0`/`TNG_COMPACT_BETA`).
-- **Mass-function-weighted rescaling** — the atlas is a *morphology library*,
-  not a population sample: each field stamp draws its target mass from the real
-  Schechter mass function (α = −1.2, log M* = 10.97) over [10⁸·⁵, 10¹²], matches
-  an atlas galaxy within ×30 in mass, and is rescaled down — flux × s (L ∝ M),
-  size ÷ s^0.25 (the observed mass–size slope), so surface brightness falls as
-  s^0.5 (Kormendy-like). The rendered population follows the observed mass
-  distribution by construction, down to log M★ = 8.5 at 60/arcmin²: ~11 draws
-  per 510 px field, of which ~8 render (median m_VIS ≈ 25.7) — draws predicted
-  fainter than m_VIS = 28 are skipped before the stamp load
-  (`TNG_FAINT_SKIP_MAG_VIS`). An R_e > 1″ giant appears in ~1 of 30 fields.
-  Lens deflectors are never rescaled (`TNG_MF_*`, `TNG_MASS_WINDOW`,
-  `TNG_MASS_SIZE_ALPHA`).
-- **Surface-brightness truncation** — the SKIRT box carries faint light over all
-  160 kpc; pixels below μ = 28 mag/arcsec² (≈ the VIS stack's 1σ per arcsec²) are
-  zeroed and the stamp cropped, so apparent sizes are the detectable isophotal
-  ones (`TNG_SB_TRUNCATE_MAG_ARCSEC2`).
-- **Spectral drift** — observed band b samples the rest SED at λ_b/(1+z): a
-  deterministic part interpolates the stamp's own 4-point SED, and a stochastic
-  tilt `exp(ε·ln(λ_b/λ_H))`, `ε ~ N(0, 0.15 + 0.35·ln(1+z))`, randomizes the
-  colours around that deterministic estimate.
-- **Physical number density** — in pure-TNG mode the field-galaxy count follows
-  the real sky density of the rendered (log M★ ≥ 9) population, ≈ 33/arcmin²
-  (Baldry+ 2012 φ₀ × the same weighted volume integral), not the full COSMOS
-  111/arcmin² that counts undetectable dwarfs (`GALAXY_DENSITY_ARCMIN2`).
-- **Lens masses** — in the catalog-free pure-TNG path, a deflector takes σ_v from
-  its subhalo's stellar mass when
-  `data/_tng_infographics/tng_properties.csv` is available (otherwise it falls
-  back to the configured uniform prior). The system is rejected unless
-  θ_E ≥ 1.2 × the lens's apparent half-light radius. In the mixed
-  COSMOS/TNG path, COSMOS sets the lens geometry and TNG supplies only the light
-  morphology.
+- **Field galaxies** use shrink-only observed-radius rendering: the selected
+  surface-brightness cube may be rotated and area-downsampled, but is never
+  enlarged. One shared normalization matches the requested VIS brightness and
+  preserves the atlas's four-band colours.
+- **Strong-lens light** uses physical-redshift rendering. The intrinsic
+  100 pc/pixel atlas grid is mapped to the assigned angular distance, followed
+  by the configured compactness, Tolman-dimming, spectral-drift, and
+  surface-brightness-cut transformations. The lens population and placement
+  remain in `sky/generation`, outside the TNG domain.
+- **Euclid observation** remains a later stage: TNG produces clean
+  electrons/pixel on the high-resolution angular grid, while PSF convolution,
+  detector sampling, sky, and noise live under `sky/observation`.
 
-### 1.4 Sky background
+The typed TNG API lives in `euclid_polish.tng`; raw array kernels are private to
+that package. The source files are still SKIRT radiative-transfer products, but
+there is no separate `euclid_polish.skirt` software package.
+
+### 1.5 Sky background
 
 The diffuse Wide-Survey sky brightness
 ([Euclid Collaboration: Scaramella+ 2022](https://arxiv.org/abs/2108.01201), §3.4) is
@@ -456,10 +428,6 @@ negative residuals from sky/dark subtraction. Each record carries explicit `chan
 # End-to-end on the synthetic lane (needs the real COSMOS2025 master FITS when
 # the configured Sérsic density is positive; there is no stub catalog):
 python scripts/run_pipeline.py --image-size 252 --ntrain 64 --nvalid 16 --steps 1000
-
-# Pure-TNG generation (redshift-realistic stamps, no COSMOS catalog needed;
-# requires the TNG50 SKIRT atlas under $DATA_DIR/tng_skirt/):
-python scripts/run_pipeline.py --sersic-density-arcmin2 0 --tng-density-arcmin2 60 --tng-redshift-mode --skip-train
 
 # Generate / convolve only (skip training), or train only:
 python scripts/run_pipeline.py --skip-train          # data only

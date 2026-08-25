@@ -17,18 +17,15 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from euclid_polish.config import Config
-from euclid_polish.skirt.image import radius_int_grid
-from euclid_polish.sky.generation.tng_galaxy import (
+from euclid_polish.tng._image import _radius_int_grid
+from euclid_polish.tng.atlas import TNGGalaxy
+from euclid_polish.tng.radius_manifest import TNGRadiusManifest
+from euclid_polish.tng.renderer import (
     TNG_RADIUS_RENDERER_FINGERPRINT,
     TNG_RADIUS_RENDERING,
     TNGRenderer,
-    list_tng_galaxies,
 )
-from euclid_polish.sky.generation.tng_radius_manifest import (
-    load_manifest,
-    radius_lookup,
-)
-from euclid_polish.sky.generation.tng_types import (
+from euclid_polish.tng.types import (
     NominalRadiusGeometry,
     RenderedTNG,
     TNGView,
@@ -52,7 +49,7 @@ def _halflight_radius_px(rendered: RenderedTNG, band: str = "VIS") -> float:
     if total <= 0.0:
         return float("nan")
     profile = np.bincount(
-        radius_int_grid(positive.shape).ravel(),
+        _radius_int_grid(positive.shape).ravel(),
         weights=positive.ravel(),
     )
     cumulative = np.cumsum(profile)
@@ -74,11 +71,8 @@ def build_diagnostic(
     targets: tuple[float, ...],
     image_size: int,
 ) -> dict:
-    manifest = load_manifest(manifest_path)
-    if not manifest or not manifest.get("valid"):
-        raise ValueError("a valid TNG radius manifest is required")
-    lookup = radius_lookup(manifest)
-    galaxies = list_tng_galaxies(tng_dir)
+    manifest = TNGRadiusManifest.read(manifest_path)
+    galaxies = TNGGalaxy.discover(tng_dir)
     if not galaxies:
         raise ValueError(f"no complete TNG galaxies under {tng_dir!r}")
     max_output_side = 2 * int(image_size) + 1
@@ -86,20 +80,17 @@ def build_diagnostic(
         pixel_scale_arcsec=Config.DEFAULT_PIXEL_SCALE,
         max_output_side=max_output_side,
     )
-    manifest_fingerprint = str(manifest.get("manifest_fingerprint", ""))
     rows: list[dict] = []
     skipped_enlargements = 0
-    for galaxy_index, (galaxy_dir, subhalo_id) in enumerate(galaxies):
+    for galaxy_index, galaxy in enumerate(galaxies):
+        subhalo_id = galaxy.subhalo_id
         for orientation in range(1, 6):
-            native_re = lookup.get((str(subhalo_id), orientation))
-            if native_re is None:
-                continue
             view = TNGView(
-                galaxy_dir=Path(galaxy_dir),
+                galaxy_dir=galaxy.directory,
                 subhalo_id=str(subhalo_id),
                 orientation=orientation,
-                native_re_px=native_re,
-                radius_manifest_fingerprint=manifest_fingerprint,
+                native_re_px=manifest.radius(subhalo_id, orientation),
+                radius_manifest_fingerprint=manifest.fingerprint,
             )
             for target_index, target in enumerate(targets):
                 if not view.can_render(target, renderer.pixel_scale_arcsec):
@@ -108,7 +99,7 @@ def build_diagnostic(
                 seed = (
                     10_000 * galaxy_index + 100 * orientation + target_index
                 )
-                rendered = renderer.render_for_radius(
+                rendered = renderer.render_observed_radius(
                     view,
                     target,
                     rng=np.random.default_rng(seed),
@@ -129,7 +120,7 @@ def build_diagnostic(
     return {
         "radius_rendering": TNG_RADIUS_RENDERING,
         "radius_renderer_fingerprint": TNG_RADIUS_RENDERER_FINGERPRINT,
-        "radius_manifest_fingerprint": manifest.get("manifest_fingerprint"),
+        "radius_manifest_fingerprint": manifest.fingerprint,
         "pixel_scale_arcsec": Config.DEFAULT_PIXEL_SCALE,
         "image_size": int(image_size),
         "max_output_side": max_output_side,

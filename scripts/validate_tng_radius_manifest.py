@@ -8,7 +8,7 @@ import json
 import sys
 
 from euclid_polish.config import Config
-from euclid_polish.sky.generation.tng_radius_manifest import validate_manifest
+from euclid_polish.tng.radius_manifest import validate_manifest
 
 
 def main(argv: list[str] | None = None) -> int:

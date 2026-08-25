@@ -33,6 +33,7 @@ import os
 import random
 import sys
 import warnings
+from pathlib import Path
 
 import matplotlib
 
@@ -48,15 +49,15 @@ if _PROJECT_ROOT not in sys.path:
 from euclid_polish.config import Config
 from euclid_polish.image import ImageCube
 from euclid_polish.observability.reporter import Reporter
-from euclid_polish.skirt.image import block_mean, load_skirt_image
-from euclid_polish.sky.generation.tng_galaxy import tng_fits_path
-from euclid_polish.sky.generation.tng_types import TNG_FITS_BANDS
+from euclid_polish.tng._image import _block_mean, _load_tng_plane
+from euclid_polish.tng.atlas import TNGGalaxy
 from euclid_polish.tng.properties import (
     _fig_to_png,
     load_api_key,
     placeholder_png,
     render_histograms_for_ids,
 )
+from euclid_polish.tng.types import TNG_FITS_BANDS
 
 ORIENTATIONS: tuple[int, ...] = (1, 2, 3, 4, 5)
 GRID_GALAXIES = 5
@@ -139,12 +140,12 @@ def _grayscale_norm(arr: np.ndarray) -> np.ndarray:
 
 def _load_cell_band(gdir: str, gid: str, orient: int, fits_band: str,
                     downsample: int) -> ImageCube | None:
-    path = tng_fits_path(gdir, gid, orient, fits_band)
-    if not os.path.isfile(path):
+    path = TNGGalaxy(Path(gdir), gid).fits_path(orient, fits_band)
+    if not path.is_file():
         return None
-    image = load_skirt_image(path, fits_band)
+    image = _load_tng_plane(path, fits_band)
     if downsample > 1:
-        image = block_mean(image, downsample)
+        image = _block_mean(image, downsample)
     return image
 
 
@@ -222,9 +223,10 @@ def build_stack_hdul(tng_dir: str, gid: str, band: str) -> fits.HDUList:
     primary.header["BAND"] = (band, "Euclid band of the stacked frames")
     primary.header["NORIENT"] = (len(ORIENTATIONS), "number of viewpoints")
     hdul = fits.HDUList([primary])
+    galaxy = TNGGalaxy(Path(gdir), gid)
     for orient in ORIENTATIONS:
-        path = tng_fits_path(gdir, gid, orient, band)
-        if not os.path.isfile(path):
+        path = galaxy.fits_path(orient, band)
+        if not path.is_file():
             continue
         with fits.open(path, memmap=False) as src:
             source_primary = src[0]

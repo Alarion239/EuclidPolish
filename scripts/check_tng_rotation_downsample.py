@@ -57,11 +57,8 @@ if _PROJECT_ROOT not in sys.path:
 
 from euclid_polish.config import Config  # noqa: E402
 from euclid_polish.image import ImageCube  # noqa: E402
-from euclid_polish.skirt.image import block_mean, load_skirt_image  # noqa: E402
-from euclid_polish.sky.generation.tng_galaxy import (  # noqa: E402
-    list_tng_galaxies,
-    tng_fits_path,
-)
+from euclid_polish.tng._image import _block_mean, _load_tng_plane  # noqa: E402
+from euclid_polish.tng.atlas import TNGGalaxy  # noqa: E402
 
 DEFAULT_K_LIST = (1, 2, 3, 4, 5, 6, 8, 10, 12, 16, 20, 24, 32)
 type SplineOrder = Literal[0, 1, 2, 3, 4, 5]
@@ -153,8 +150,8 @@ def analyse_galaxy(image: ImageCube, *, k_list, angle_step, n_rot,
     rotated = _cumulative_rotate(win, angle_step, n_rot, order)
     rms, flux = [], []
     for k in k_list:
-        d_direct = block_mean(win, int(k))
-        d_rot = block_mean(rotated, int(k))
+        d_direct = _block_mean(win, int(k))
+        d_rot = _block_mean(rotated, int(k))
         rms.append(_rel_rms(d_rot, d_direct))
         flux.append(_flux_err(d_rot, d_direct))
     return np.array(rms), np.array(flux), win.shape[0]
@@ -196,7 +193,7 @@ def main() -> int:
     args = parse_args()
     k_list = [int(x) for x in args.k_list.split(",") if x.strip()]
 
-    galaxies = list_tng_galaxies(args.tng_dir)
+    galaxies = TNGGalaxy.discover(args.tng_dir)
     if args.max_galaxies > 0:
         galaxies = galaxies[: args.max_galaxies]
     if not galaxies:
@@ -208,12 +205,13 @@ def main() -> int:
           f"rotation = {args.n_rot}×{args.angle_step}° (spline order {args.order})")
 
     results = []  # (label, rms_array, flux_array, win_side)
-    for gdir, gid in galaxies:
-        path = tng_fits_path(gdir, gid, args.orientation, args.band)
-        if not os.path.isfile(path):
-            print(f"  ⚠ {gid}: missing {os.path.basename(path)} — skipping")
+    for galaxy in galaxies:
+        gid = galaxy.subhalo_id
+        path = galaxy.fits_path(args.orientation, args.band)
+        if not path.is_file():
+            print(f"  ⚠ {gid}: missing {path.name} — skipping")
             continue
-        image = load_skirt_image(path, args.band)
+        image = _load_tng_plane(path, args.band)
         rms, flux, side = analyse_galaxy(
             image, k_list=k_list, angle_step=args.angle_step, n_rot=args.n_rot,
             order=args.order, crop_frac=args.crop_frac, margin=args.margin)

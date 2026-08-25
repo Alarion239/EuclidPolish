@@ -1,7 +1,7 @@
 import os
 
 from euclid_polish.sky.generation import source_catalog as sc
-from euclid_polish.sky.generation.tng_galaxy import TNG_RADIUS_RENDERING
+from euclid_polish.tng.renderer import TNG_RADIUS_RENDERING
 
 
 def _meta():
@@ -12,7 +12,7 @@ def _meta():
              "target_logmass": 10.3, "target_logssfr": -10.4,
              "physical_model_fingerprint": "f" * 64},
             {"type": "galaxy", "render": "tng", "x_pix": 40.0, "y_pix": 200.0,
-             "z": float("nan"), "subhalo_id": 99,
+             "z": float("nan"), "subhalo_id": 99, "orientation": 3,
              "native_tng_sfr": 0.0, "native_tng_logssfr": float("nan"),
              "native_tng_zero_sfr": True,
              "target_ssfr_quantile": 0.1, "tng_ssfr_quantile": 0.08,
@@ -24,6 +24,8 @@ def _meta():
              "radius_scale_factor": 0.5,
              "radius_rendering": TNG_RADIUS_RENDERING,
              "radius_renderer_fingerprint": "r" * 64,
+             "radius_manifest_fingerprint": "a" * 64,
+             "tng_render_trace": {"subhalo_id": "99", "orientation": 3},
              "render_support_clipped": True,
              "target_vis_2fwhm_mag": 23.1,
              "achieved_vis_2fwhm_mag": 23.1,
@@ -39,6 +41,10 @@ def _meta():
         "lenses": [
             {"type": "lens", "x_pix": 128.0, "y_pix": 130.0, "z_lens": 0.5,
              "z_source": 2.0, "theta_E_arcsec": 1.3, "lens_subhalo_id": "g7",
+             "lens_orientation": 2, "source_subhalo_id": "g8",
+             "source_orientation": 5, "radius_manifest_fingerprint": "a" * 64,
+             "lens_tng_trace": {"subhalo_id": "g7", "orientation": 2},
+             "source_tng_trace": {"subhalo_id": "g8", "orientation": 5},
              "flux_e_per_band": [5000.0, 1, 2, 3]},
         ],
     }
@@ -66,8 +72,14 @@ def test_writer_then_reader_roundtrip(tmp_path):
     assert sersic["physical_model_fingerprint"] == "f" * 64
     lens = next(r for r in rows if r["type"] == "lens")
     assert lens["theta_E_arcsec"] == 1.3 and lens["subhalo_id"] == "g7"
+    assert lens["lens_orientation"] == 2.0
+    assert lens["source_subhalo_id"] == "g8"
+    assert lens["source_orientation"] == 5.0
+    assert lens["lens_tng_trace"] == {"subhalo_id": "g7", "orientation": 2}
+    assert lens["source_tng_trace"] == {"subhalo_id": "g8", "orientation": 5}
     tng = next(r for r in rows if r["render"] == "tng")
     assert tng["subhalo_id"] == "99" and tng["z"] is None   # NaN -> None
+    assert tng["orientation"] == 3.0
     assert tng["native_tng_sfr"] == 0.0
     assert tng["native_tng_logssfr"] is None
     assert tng["native_tng_zero_sfr"] == 1.0
@@ -82,6 +94,8 @@ def test_writer_then_reader_roundtrip(tmp_path):
     assert tng["radius_scale_factor"] == 0.5
     assert tng["radius_rendering"] == TNG_RADIUS_RENDERING
     assert tng["radius_renderer_fingerprint"] == "r" * 64
+    assert tng["radius_manifest_fingerprint"] == "a" * 64
+    assert tng["tng_render_trace"] == {"subhalo_id": "99", "orientation": 3}
     assert tng["render_support_clipped"] is True
     assert tng["galaxy_density_arcmin2"] == 100.0
     assert tng["galaxy_prior_density_arcmin2"] == 100.0

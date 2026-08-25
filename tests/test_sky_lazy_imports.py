@@ -34,3 +34,33 @@ def test_sky_reexports_resolve_lazily():
     assert sky.LensParams.__module__.endswith("lens_population")
     assert generation.SourceCatalogWriter.__module__.endswith("source_catalog")
     assert generation.SkySimulator.__module__.endswith("sky_simulator")
+
+
+def test_tng_domain_api_resolves_lazily():
+    code = """
+import json
+import sys
+import euclid_polish.tng as tng
+before = [name for name in sys.modules if name in {'astropy', 'cv2', 'scipy', 'matplotlib'}]
+resolved = [
+    tng.TNGAtlas.__name__,
+    tng.TNGRenderer.__name__,
+    tng.TNGView.__name__,
+    tng.RenderedTNG.__name__,
+]
+print(json.dumps({'before': before, 'resolved': resolved}))
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    payload = json.loads(result.stdout)
+    assert payload["before"] == []
+    assert payload["resolved"] == [
+        "TNGAtlas",
+        "TNGRenderer",
+        "TNGView",
+        "RenderedTNG",
+    ]

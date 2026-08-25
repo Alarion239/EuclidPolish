@@ -52,7 +52,7 @@ def test_galaxy_row_persists_size_and_mass(tmp_path):
     path = str(tmp_path / "sources_train.csv")
     tng = {"type": "galaxy", "render": "tng", "x_pix": 10.0, "y_pix": 20.0,
            "subhalo_id": "99", "flux_e_per_band": [123.0, 1, 2, 3],
-           "apparent_re_arcsec": 0.85, "logmass": 10.4, "mass_scale": 0.7,
+           "re_arcsec": 0.85, "logmass": 10.4, "mass_scale": 0.7,
            "native_tng_logmass": 11.1, "morphology_proxy_logmass": 8.2,
            "target_mass_quantile": 0.3, "tng_mass_quantile": 0.31,
            "morphology_selection_probability": 0.02,

@@ -24,9 +24,8 @@ from scipy.ndimage import map_coordinates
 
 from euclid_polish.config import Config
 from euclid_polish.image.cube import AngularGrid, CubeLike, PixelUnit
-from euclid_polish.skirt.image import composite_stamp
-from euclid_polish.sky.generation.redshift_model import angular_diameter_distance
-from euclid_polish.sky.generation.tng_types import RenderedTNG
+from euclid_polish.sky.generation.compositing import composite_stamp
+from euclid_polish.tng.redshift import angular_diameter_distance
 
 # ---------------------------------------------------------------------------
 # Per-lens parameter dataclass
@@ -182,7 +181,7 @@ def _build_lenstronomy_lens(params: LensParams):
     return lens_model, [kwargs_sie, kwargs_shear]
 
 
-LensStamp = CubeLike | RenderedTNG
+LensStamp = CubeLike
 
 
 def _validated_stamp_data(
@@ -192,16 +191,12 @@ def _validated_stamp_data(
     pixel_scale: float,
 ) -> np.ndarray:
     """Return one validated rendered-stamp array for the lensing kernel."""
-    cube: CubeLike
-    if isinstance(stamp, RenderedTNG):
-        cube = stamp.cube
-    elif isinstance(stamp, CubeLike):
-        cube = stamp
-    else:
+    if not isinstance(stamp, CubeLike):
         raise TypeError(
-            f"{name} must be a CubeLike image or RenderedTNG, "
+            f"{name} must be a CubeLike image, "
             f"got {type(stamp).__name__}"
         )
+    cube = stamp
 
     if cube.unit is not PixelUnit.ELECTRONS_PER_PIXEL:
         raise ValueError(
@@ -276,10 +271,9 @@ def render_lens_to_multiband_canvas(
     params      : :class:`LensParams` instance (already placed with
                   ``centre_x_pix`` / ``centre_y_pix`` if non-zero).
     pixel_scale : arcsec/pixel of ``canvas_4ch``.
-    lens_light_stamp : foreground electron :class:`~euclid_polish.image.CubeLike`
-                       or :class:`~euclid_polish.sky.generation.tng_types.RenderedTNG`.
-    source_stamp : background electron cube or rendered TNG stamp. Both stamps
-                   must use the canvas angular grid and canonical band order.
+    lens_light_stamp : foreground electron :class:`~euclid_polish.image.CubeLike`.
+    source_stamp : background electron cube. Both stamps must use the canvas
+                   angular grid and canonical band order.
 
     Returns the updated canvas.
     """

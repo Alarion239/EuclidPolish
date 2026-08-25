@@ -738,55 +738,17 @@ class Config:
     LENS_SOURCE_OFFSET_FRAC = 0.7       # source impact parameter in units of θ_E
 
     # ---------------------------------------------------------------------
-    # TNG redshift realism (sky/generation/redshift_model.py)
+    # TNG physical-redshift rendering (euclid_polish.tng.redshift)
     # ---------------------------------------------------------------------
     #
-    # When the generator's ``tng_redshift_mode`` is on, each injected TNG
-    # stamp gets one redshift draw that sets its angular size (rebin factor
-    # via D_A), Tolman dimming, and a randomized spectral drift;
-    # In the catalog-free pure-TNG lens path, deflectors additionally derive
-    # σ_v from the subhalo's stellar mass (Faber–Jackson) instead of the
-    # uniform prior when the property cache is available.
+    # TNG lens/source stamps use their population-assigned redshifts to set
+    # angular size, Tolman dimming, and spectral drift. Deflectors additionally
+    # derive σ_v from their subhalo stellar mass through Faber–Jackson.
 
-    # Field n(z) for TNG stamps, truncated to [TNG_Z_MIN, TNG_Z_MAX]
-    # (z_min=0.10 is where the 100 pc native pixel matches the 0.05″ HR grid).
-    #
-    # "volume" (default): dN/dz ∝ dV_c/dz · exp(-(z/TNG_Z_PHI_SCALE)²) —
-    # the atlas holds only MASSIVE galaxies, so our project prior uses the
-    # comoving volume element (Hogg 1999) times a smooth approximation to the
-    # declining number density of log M*≳11 galaxies
-    # (×~10 drop from z≈0.35 to z≈2.25, Muzzin+ 2013 — matched by the
-    # Gaussian factor with scale 1.5). This is not a fitted TNG light cone.
-    # Median z ≈ 1.15, ~5% below z = 0.4.
-    #
-    # "smail": n(z) ∝ z² exp(-(z/TNG_Z0)^1.5) — the full flux-limited-survey
-    # population (Smail+ 1995; Euclid Red Book z_m≈0.9 with z0=0.65). Kept
-    # for comparison; for the massive-only atlas it over-draws low z (≈8%
-    # below z = 0.4 → far too many arcsec-scale giants per field).
-    TNG_Z_FORM      = "volume"
-    TNG_Z_PHI_SCALE = 1.5
-    TNG_Z0    = 0.65
-    TNG_Z_MIN = 0.10
-    TNG_Z_MAX = 2.50
-    # Raw field-galaxy draw budget in PURE-TNG mode. The Field Statistics
-    # Euclid comparison calls for ≈200 candidates/arcmin² but rejects a
-    # uniform 200/60 multiplication across magnitude. The smooth Schechter
-    # draw below is therefore steepened instead of adding a second population:
-    # current-data importance reweighting keeps the m_VIS<22.5 density at
-    # ≈4.3/arcmin² while adding the missing faint/small population.
-    #
-    # This is a project training prior, not a claim that 200 is the observed
-    # density of a particular Euclid catalog selection.
-    # Legacy records without an explicit saved draw budget were generated at
-    # 60/arcmin². Field Statistics uses this to avoid reinterpreting old pixels
-    # as though they had already been generated with the new 200 prior.
+    # Historical field records without an explicit saved TNG draw budget were
+    # generated at 60/arcmin². Population diagnostics still need that value to
+    # interpret those immutable artifacts; it is not a current generator knob.
     TNG_LEGACY_DATASET_DENSITY_ARCMIN2 = 60.0
-    # Skip a field draw (before the expensive 4-band stamp load) when its
-    # predicted VIS magnitude (L ∝ M + luminosity distance, anchored on
-    # measured atlas photometry) is fainter than this — those galaxies
-    # exist but contribute nothing detectable (per-pixel 1σ ≈ 25.5,
-    # per-arcsec² ≈ 28). ≤ 0 disables.
-    TNG_FAINT_SKIP_MAG_VIS = 28.0
     # Compactness correction C(z) = C0·(1+z)^BETA applied as extra
     # downsampling on top of the geometric F(z), flux-conserving (surface
     # brightness × C²) — a fixed-mass size correction: the stars and the
@@ -800,33 +762,6 @@ class Config:
     #     TNG's known ~0.1-0.2 dex size excess.
     TNG_COMPACT_C0   = 1.3
     TNG_COMPACT_BETA = 1.0
-    # Mass rescaling: the atlas selection is top-heavy (log M* ≥ 9.8,
-    # median 10.3), so each FIELD stamp is re-used as a smaller galaxy of
-    # similar morphology — flux × s (L ∝ M) and an extra size squeeze
-    # s^-ALPHA along the observed mass-size relation R ∝ M^0.25 (van der
-    # Wel+ 2014); surface brightness then falls as s^0.5, the Kormendy-
-    # like trend. Lens deflectors are never rescaled.
-    #
-    # The target mass is drawn from one smooth Schechter-like training prior
-    # (per dlogM ∝ (M/M*)^(α+1) e^(-M/M*)). logM*=10.97 and the original
-    # α=-1.2 came from Baldry+ 2012 / Muzzin+ 2013; α=-1.76 is the
-    # data-calibrated sampling slope needed when the draw budget rises
-    # 60→200. It is a generator importance prior, not a new measurement of the
-    # physical stellar-mass function. The draw spans [LOGM_MIN, LOGM_MAX] and
-    # is then matched to an
-    # atlas galaxy with mass within ×MASS_WINDOW above it (closest-decade
-    # morphology; caps the shrink at s ≥ 1/MASS_WINDOW). The resulting
-    # field population follows the observed mass distribution by
-    # construction: many small galaxies, the giants only in the rare
-    # Schechter tail. If the property CSV is unavailable, falls back to
-    # s ~ log-uniform[RESCALE_MIN, 1] (RESCALE_MIN ≥ 1 disables).
-    TNG_MF_LOGM_STAR     = 10.97
-    TNG_MF_ALPHA         = -1.76
-    TNG_MF_LOGM_MIN      = 8.5
-    TNG_MF_LOGM_MAX      = 12.0
-    TNG_MASS_WINDOW      = 30.0
-    TNG_MASS_SIZE_ALPHA  = 0.25
-
     # Surface-brightness truncation of redshifted TNG stamps (mag/arcsec²,
     # AB, per band). The SKIRT frames carry nonzero light over the whole
     # 160 kpc box, so without a cut every stamp visually fills the field in

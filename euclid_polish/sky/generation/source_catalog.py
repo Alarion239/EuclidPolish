@@ -12,13 +12,15 @@ galaxy, per lens, and per star.
 from __future__ import annotations
 
 import csv
+import json
 import math
 import os
 from typing import Any
 
 SOURCE_COLS = ["field_index", "type", "render", "x_pix", "y_pix",
                "flux_vis_e", "flux_y_e", "flux_j_e", "flux_h_e",
-               "z", "subhalo_id", "theta_E_arcsec",
+               "z", "subhalo_id", "orientation", "theta_E_arcsec",
+               "lens_orientation", "source_subhalo_id", "source_orientation",
                # Extra galaxy truth persisted for later analysis (empty for
                # lenses, and for whichever render path doesn't provide it):
                "re_arcsec", "logmass", "mass_scale",
@@ -49,8 +51,9 @@ SOURCE_COLS = ["field_index", "type", "render", "x_pix", "y_pix",
                "native_halflight_px",
                "rot_angle", "arbitrary_rotation",
                "radius_scale_factor", "radius_rendering",
-               "radius_renderer_fingerprint",
+               "radius_renderer_fingerprint", "radius_manifest_fingerprint",
                "render_support_clipped",
+               "tng_render_trace", "lens_tng_trace", "source_tng_trace",
                "magnitude_fit_fingerprint",
                "target_vis_2fwhm_mag", "target_vis_2fwhm_flux_e",
                "achieved_vis_2fwhm_mag", "achieved_vis_2fwhm_flux_e",
@@ -84,6 +87,30 @@ def _num(v: Any):
     return "" if not math.isfinite(f) else f
 
 
+def _json_record(value: Any) -> str:
+    """Serialize one typed render record for lossless CSV provenance."""
+    if value in (None, ""):
+        return ""
+    if not isinstance(value, dict):
+        raise TypeError("TNG render provenance must be a dictionary")
+    return json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+
+
+def _parse_json_record(value: str | None) -> dict[str, Any] | None:
+    if not value:
+        return None
+    try:
+        record = json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    return record if isinstance(record, dict) else None
+
+
 def _z(src: dict[str, Any]):
     z = src.get("z_phot", src.get("z_lens", src.get("z")))
     if z is None:
@@ -102,7 +129,9 @@ def _galaxy_row(field_index: int, g: dict[str, Any]) -> dict[str, Any]:
         "flux_j_e": _flux_band(g, 2),
         "flux_h_e": _flux_band(g, 3),
         "z": _z(g),
-        "subhalo_id": g.get("subhalo_id", ""), "theta_E_arcsec": "",
+        "subhalo_id": g.get("subhalo_id", ""),
+        "orientation": _num(g.get("orientation")),
+        "theta_E_arcsec": "",
         # Sampled Euclid Sersic R_e (arcsec) and log10 stellar mass where known.
         "re_arcsec":  _num(g.get("re_arcsec")),
         "logmass":    _num(g.get("logmass")),
@@ -176,9 +205,13 @@ def _galaxy_row(field_index: int, g: dict[str, Any]) -> dict[str, Any]:
         "radius_renderer_fingerprint": g.get(
             "radius_renderer_fingerprint", ""
         ),
+        "radius_manifest_fingerprint": g.get(
+            "radius_manifest_fingerprint", ""
+        ),
         "render_support_clipped": int(bool(
             g.get("render_support_clipped", False)
         )),
+        "tng_render_trace": _json_record(g.get("tng_render_trace")),
         "magnitude_fit_fingerprint": g.get(
             "magnitude_fit_fingerprint", ""
         ),
@@ -200,7 +233,16 @@ def _lens_row(field_index: int, lens: dict[str, Any]) -> dict[str, Any]:
         "x_pix": float(lens["x_pix"]), "y_pix": float(lens["y_pix"]),
         "flux_vis_e": _flux_vis(lens), "z": _z(lens),
         "subhalo_id": lens.get("lens_subhalo_id", ""),
+        "orientation": "",
         "theta_E_arcsec": float(theta) if theta is not None else "",
+        "lens_orientation": _num(lens.get("lens_orientation")),
+        "source_subhalo_id": lens.get("source_subhalo_id", ""),
+        "source_orientation": _num(lens.get("source_orientation")),
+        "radius_manifest_fingerprint": lens.get(
+            "radius_manifest_fingerprint", ""
+        ),
+        "lens_tng_trace": _json_record(lens.get("lens_tng_trace")),
+        "source_tng_trace": _json_record(lens.get("source_tng_trace")),
         # Galaxy-truth columns are not meaningful for the lens row.
         "re_arcsec": "", "logmass": "", "mass_scale": "",
         "native_tng_logmass": "", "native_tng_sfr": "",
@@ -294,6 +336,7 @@ def _parse(row: dict[str, str]) -> dict[str, Any]:
     out["field_index"] = int(row["field_index"])
     for k in ("x_pix", "y_pix", "flux_vis_e", "flux_y_e", "flux_j_e",
               "flux_h_e", "z", "theta_E_arcsec",
+              "orientation", "lens_orientation", "source_orientation",
               "re_arcsec", "logmass", "mass_scale", "mag_vis",
               "native_tng_logmass", "native_tng_sfr",
               "native_tng_logssfr", "native_tng_zero_sfr",
@@ -336,6 +379,12 @@ def _parse(row: dict[str, str]) -> dict[str, Any]:
     out["radius_renderer_fingerprint"] = (
         row.get("radius_renderer_fingerprint") or None
     )
+    out["radius_manifest_fingerprint"] = (
+        row.get("radius_manifest_fingerprint") or None
+    )
+    out["source_subhalo_id"] = row.get("source_subhalo_id") or None
+    for key in ("tng_render_trace", "lens_tng_trace", "source_tng_trace"):
+        out[key] = _parse_json_record(row.get(key))
     for key in (
         "arbitrary_rotation", "render_support_clipped",
     ):

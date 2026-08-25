@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -13,7 +14,13 @@ from euclid_polish.sky.generation.sky_simulator import (
     SkySimulatorConfig,
 )
 from euclid_polish.sky.generation.stellar_sed import EmpiricalStellarPrior
-from euclid_polish.sky.generation.tng_radius_manifest import (
+from euclid_polish.tng import (
+    TNGAtlas,
+    TNGGalaxy,
+    TNGPropertyCatalog,
+    TNGRadiusManifest,
+)
+from euclid_polish.tng.radius_manifest import (
     write_parameter_summary,
 )
 from euclid_polish.web.helpers.population_calibration import (
@@ -337,22 +344,20 @@ def test_local_catalog_fit_recovers_raw_density_without_rendering(
 def test_nested_thinning_keeps_nuisance_population_identical(monkeypatch):
     import euclid_polish.sky.generation.sky_simulator as module
 
-    monkeypatch.setattr(module, "list_tng_galaxies", lambda _path: [("x", "1")])
-    monkeypatch.setattr(module, "load_tng_properties", lambda _path: {})
-    monkeypatch.setattr(module, "validate_manifest", lambda *args, **kwargs: {
-        "valid": True,
-    })
-    monkeypatch.setattr(module, "load_manifest", lambda _path: {
-        "valid": True,
-        "entries": [],
-        "manifest_fingerprint": "test",
-    })
+    galaxy = TNGGalaxy(Path("x"), "1")
+    atlas = TNGAtlas(
+        root=Path("x"),
+        galaxies=(galaxy,),
+        properties=TNGPropertyCatalog({}, (None, 0, 0)),
+        radii=TNGRadiusManifest(
+            {("1", orientation): 20.0 for orientation in range(1, 6)},
+            "test",
+        ),
+    )
     monkeypatch.setattr(
-        module,
-        "radius_lookup",
-        lambda _payload: {
-            ("1", orientation): 20.0 for orientation in range(1, 6)
-        },
+        module.TNGAtlas,
+        "open",
+        classmethod(lambda cls, *args, **kwargs: atlas),
     )
 
     def build(density: float) -> dict:

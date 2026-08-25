@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import math
 from dataclasses import replace
-from pathlib import Path
 from typing import cast
 
 import numpy as np
@@ -12,20 +11,13 @@ import pytest
 
 from euclid_polish.config import Config
 from euclid_polish.image.cube import AngularGrid, ImageCube, PhysicalGrid, PixelUnit
-from euclid_polish.skirt.image import composite_stamp
+from euclid_polish.sky.generation.compositing import composite_stamp
 from euclid_polish.sky.generation.lens_population import (
     LensParams,
     LensStamp,
     einstein_radius_sis,
     render_lens_to_multiband_canvas,
     sample_lens_geometry,
-)
-from euclid_polish.sky.generation.tng_types import (
-    NominalRadiusGeometry,
-    RenderedTNG,
-    TNGRenderTrace,
-    TNGRotation,
-    TNGView,
 )
 
 
@@ -93,30 +85,7 @@ def _bright_stamp(n: int = 80, core: int = 8, value: float = 50.0) -> ImageCube:
     return _electron_cube(stamp)
 
 
-def _rendered_tng(cube: ImageCube) -> RenderedTNG:
-    view = TNGView(
-        galaxy_dir=Path("."),
-        subhalo_id="1",
-        orientation=1,
-        native_re_px=20.0,
-    )
-    geometry = NominalRadiusGeometry(
-        target_re_arcsec=0.5,
-        scale_factor=0.5,
-        radius_rendering="test",
-        radius_renderer_fingerprint="test",
-    )
-    return RenderedTNG(
-        cube=cube,
-        trace=TNGRenderTrace(
-            view=view,
-            rotation=TNGRotation(),
-            geometry=geometry,
-        ),
-    )
-
-
-def test_tng_source_stamp_is_lensed_and_magnified():
+def test_cube_source_stamp_is_lensed_and_magnified():
     params = sample_lens_geometry(np.random.default_rng(7), 250.0)
     assert params is not None
     params = replace(
@@ -127,7 +96,7 @@ def test_tng_source_stamp_is_lensed_and_magnified():
         src_dy_arcsec=0.0,
     )
     lens = _bright_stamp(core=6, value=30.0)
-    source = _rendered_tng(_bright_stamp())
+    source = _bright_stamp()
     canvas = np.zeros((128, 128, Config.NUM_LR_CHANNELS), np.float32)
     render_lens_to_multiband_canvas(
         canvas,
@@ -201,7 +170,7 @@ def test_lens_renderer_rejects_raw_array_stamps() -> None:
     assert params is not None
     raw = np.ones((8, 8, Config.NUM_LR_CHANNELS), np.float32)
     canvas = np.zeros((16, 16, Config.NUM_LR_CHANNELS), np.float32)
-    with pytest.raises(TypeError, match="CubeLike image or RenderedTNG"):
+    with pytest.raises(TypeError, match="CubeLike image"):
         render_lens_to_multiband_canvas(
             canvas,
             params=params,

@@ -895,9 +895,9 @@ class MeasureTngRadiiStep(FASRCPipelineStep):
         return cmd
 
 
-# Galaxy-selection modes for the grid/stack (mirrors euclid_polish.tng.selection
-# .MODES). The pick happens *locally* (where the histogram property cache lives)
-# and the chosen ids ride to the FASRC job via --ids/--id.
+# Galaxy-selection modes for the grid/stack. The pick happens locally (where
+# the histogram property cache lives), and the chosen ids ride to the FASRC job
+# via --ids/--id.
 _TNG_MODES = ("random", "most_massive", "least_massive", "most_star_forming",
               "least_star_forming", "biggest_radius", "smallest_radius")
 

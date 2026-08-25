@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import io
 import os
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -143,9 +144,9 @@ def test_build_stack_hdul_preserves_frames(tmp_path):
     assert [h.name for h in hdul[1:]] == ["O1", "O2", "O3", "O4", "O5"]
     assert all(hdul[i].data.shape == (16, 16) for i in range(1, 6))
     assert hdul[0].header["TNGID"] == "111"
-    on_disk = mod.load_skirt_image(
-        mod.tng_fits_path(os.path.join(tng, "111"), "111", 1, "VIS"),
-        "VIS",
+    galaxy = mod.TNGGalaxy(Path(tng) / "111", "111")
+    on_disk = mod._load_tng_plane(
+        galaxy.fits_path(1, "VIS"), "VIS"
     ).plane("VIS")
     np.testing.assert_allclose(np.asarray(hdul[1].data), on_disk, rtol=0, atol=0)
 

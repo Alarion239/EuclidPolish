@@ -85,11 +85,11 @@ from euclid_polish.sky.generation.source_catalog import (
     concat_source_csvs,
     read_sources,
 )
-from euclid_polish.sky.generation.tng_radius_manifest import ensure_manifest
 from euclid_polish.sky.observation.observation_simulator import (
     ObservationSimulator,
     ObservationSimulatorConfig,
 )
+from euclid_polish.tng.radius_manifest import ensure_manifest
 from euclid_polish.training.stage_timer import StageTimer
 
 # ---------------------------------------------------------------------------

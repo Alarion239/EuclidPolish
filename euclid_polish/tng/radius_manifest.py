@@ -12,32 +12,28 @@ import csv
 import hashlib
 import json
 import os
+from collections.abc import Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, cast
 
 import numpy as np
 
 from euclid_polish.config import Config
-from euclid_polish.skirt.image import (
-    load_skirt_image,
-    measure_halflight_radius_px,
+from euclid_polish.tng._image import (
+    _load_tng_plane,
+    _measure_halflight_radius_px,
 )
-from euclid_polish.sky.generation.redshift_model import (
-    TNG_NATIVE_PC_PER_PIXEL,
-    load_tng_properties,
-)
-from euclid_polish.sky.generation.tng_galaxy import (
-    N_ORIENTATIONS,
-    list_tng_galaxies,
-    tng_fits_path,
-)
+from euclid_polish.tng.atlas import TNGGalaxy, _scan_complete_galaxies
+from euclid_polish.tng.catalog import TNGPropertyCatalog
+from euclid_polish.tng.types import N_ORIENTATIONS, TNG_FITS_BANDS, TNG_NATIVE_PC_PER_PIXEL
 
 MANIFEST_VERSION = 1
 ALGORITHM_VERSION = "centered-vis-cog-v1"
 DEFAULT_MANIFEST_NAME = "tng_radius_manifest.json"
 PARAMETER_SUMMARY_VERSION = 1
-DEFAULT_PARAMETER_SUMMARY_NAME = "tng_atlas_parameters.csv"
 PARAMETER_SUMMARY_FIELDS = (
     "subhalo_id", "orientation", "native_re_px", "native_re_kpc",
     "frame_height_px", "frame_width_px", "mass_stars_msun",
@@ -46,7 +42,119 @@ PARAMETER_SUMMARY_FIELDS = (
 )
 
 
-def manifest_path(tng_dir: str, path: str | None = None) -> str:
+@dataclass(frozen=True, slots=True)
+class TNGRadiusManifest(Mapping[tuple[str, int], float]):
+    """Immutable native VIS half-light radii indexed by atlas orientation."""
+
+    _radii: Mapping[tuple[str, int], float] = field(repr=False)
+    fingerprint: str
+    _max_radii: Mapping[str, float] = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        radii: dict[tuple[str, int], float] = {}
+        for raw_key, raw_radius in self._radii.items():
+            try:
+                raw_subhalo_id, raw_orientation = raw_key
+                subhalo_id = str(raw_subhalo_id).strip()
+                orientation = int(raw_orientation)
+                radius = float(raw_radius)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("malformed TNG radius-manifest entry") from exc
+            if not subhalo_id:
+                raise ValueError("TNG radius manifest contains an empty subhalo id")
+            if orientation not in range(1, N_ORIENTATIONS + 1):
+                raise ValueError(
+                    f"TNG radius orientation must be in 1..{N_ORIENTATIONS}, "
+                    f"got {orientation!r}"
+                )
+            if not np.isfinite(radius) or radius <= 0.0:
+                raise ValueError("TNG radius manifest contains a non-positive R_e")
+            key = (subhalo_id, orientation)
+            if key in radii:
+                raise ValueError(f"duplicate TNG radius-manifest entry {key!r}")
+            radii[key] = radius
+        fingerprint = str(self.fingerprint).strip()
+        if not fingerprint:
+            raise ValueError("TNG radius manifest has no fingerprint")
+        object.__setattr__(self, "_radii", MappingProxyType(radii))
+        object.__setattr__(self, "fingerprint", fingerprint)
+        max_radii: dict[str, float] = {}
+        for (subhalo_id, _), radius in radii.items():
+            max_radii[subhalo_id] = max(max_radii.get(subhalo_id, 0.0), radius)
+        object.__setattr__(self, "_max_radii", MappingProxyType(max_radii))
+
+    @classmethod
+    def from_payload(cls, payload: Mapping[str, Any]) -> TNGRadiusManifest:
+        """Validate and materialize the live radius-manifest JSON schema."""
+        if payload.get("version") != MANIFEST_VERSION:
+            raise ValueError("unsupported TNG radius-manifest version")
+        if payload.get("algorithm_version") != ALGORITHM_VERSION:
+            raise ValueError("unsupported TNG radius-measurement algorithm")
+        if not payload.get("valid"):
+            raise ValueError("cannot load an invalid TNG radius manifest")
+        claimed_fingerprint = str(payload.get("manifest_fingerprint", ""))
+        if claimed_fingerprint != _manifest_fingerprint(payload):
+            raise ValueError("TNG radius-manifest fingerprint does not match its rows")
+        entries = payload.get("entries")
+        if not isinstance(entries, list):
+            raise ValueError("TNG radius manifest entries must be a list")
+
+        radii: dict[tuple[str, int], float] = {}
+        for entry in entries:
+            if not isinstance(entry, Mapping) or not entry.get("valid"):
+                raise ValueError("TNG radius manifest contains an invalid entry")
+            try:
+                key = (str(entry["subhalo_id"]), int(entry["orientation"]))
+                radius = float(entry["native_re_px"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError("malformed TNG radius-manifest entry") from exc
+            if key in radii:
+                raise ValueError(f"duplicate TNG radius-manifest entry {key!r}")
+            radii[key] = radius
+
+        try:
+            expected_count = int(payload.get("expected_count", len(radii)))
+            valid_count = int(payload.get("valid_count", len(radii)))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("invalid TNG radius-manifest row counts") from exc
+        if expected_count != len(radii) or valid_count != len(radii):
+            raise ValueError("TNG radius manifest is incomplete")
+        return cls(radii, claimed_fingerprint)
+
+    @classmethod
+    def read(cls, path: str | Path) -> TNGRadiusManifest:
+        """Read a valid existing manifest without measuring or repairing it."""
+        payload = load_manifest(str(path))
+        if payload is None:
+            raise ValueError(f"missing or malformed TNG radius manifest: {path}")
+        return cls.from_payload(payload)
+
+    def __getitem__(self, key: tuple[str, int]) -> float:
+        subhalo_id, orientation = key
+        return self._radii[(str(subhalo_id), int(orientation))]
+
+    def __iter__(self) -> Iterator[tuple[str, int]]:
+        return iter(self._radii)
+
+    def __len__(self) -> int:
+        return len(self._radii)
+
+    def radius(self, subhalo_id: str, orientation: int) -> float:
+        """Return the native half-light radius for one atlas view."""
+        return self[(str(subhalo_id), int(orientation))]
+
+    def max_radius(self, subhalo_id: str) -> float:
+        """Return the largest native radius among one galaxy's orientations."""
+        return self._max_radii[str(subhalo_id)]
+
+    def __repr__(self) -> str:
+        return (
+            f"TNGRadiusManifest(entries={len(self)}, "
+            f"fingerprint={self.fingerprint!r})"
+        )
+
+
+def manifest_path(path: str | None = None) -> str:
     return str(path or os.path.join(
         Config.DATA_DIR, "_tng_infographics", DEFAULT_MANIFEST_NAME
     ))
@@ -75,6 +183,26 @@ def _fingerprint(payload: Any) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+_MANIFEST_FINGERPRINT_FIELDS = (
+    "version",
+    "algorithm_version",
+    "properties_file",
+    "atlas_inventory_fingerprint",
+    "expected_count",
+    "valid_count",
+    "entries",
+)
+
+
+def _manifest_fingerprint(payload: Mapping[str, Any]) -> str:
+    """Recompute the canonical digest covering every rendered-radius row."""
+    try:
+        covered = {key: payload[key] for key in _MANIFEST_FINGERPRINT_FIELDS}
+        return _fingerprint(covered)
+    except (KeyError, TypeError, ValueError):
+        return ""
+
+
 def _file_sha256(path: str | Path) -> str:
     digest = hashlib.sha256()
     with Path(path).open("rb") as handle:
@@ -84,17 +212,15 @@ def _file_sha256(path: str | Path) -> str:
 
 
 def _inventory(
-    tng_dir: str,
-    galaxies: list[tuple[str, str]],
-    properties_path: str | None,
+    galaxies: Sequence[TNGGalaxy],
 ) -> list[dict[str, Any]]:
     entries: list[dict[str, Any]] = []
-    for gdir, gid in galaxies:
+    for galaxy in galaxies:
         for orientation in range(1, N_ORIENTATIONS + 1):
-            for band in ("VIS", "Y", "J", "H"):
-                path = tng_fits_path(gdir, gid, orientation, band)
-                if os.path.isfile(path):
-                    entries.append(_file_identity(path))
+            for band in TNG_FITS_BANDS:
+                path = galaxy.fits_path(orientation, band)
+                if path.is_file():
+                    entries.append(_file_identity(str(path)))
                 else:
                     entries.append({"path": os.path.abspath(path),
                                     "size": 0, "mtime_ns": 0})
@@ -115,11 +241,11 @@ def build_manifest(
     A report is written atomically when ``output_path`` is supplied, including
     invalid entries, so the UI can show exactly why a job is not submit-ready.
     """
-    galaxies = list_tng_galaxies(tng_dir)
+    galaxies = _scan_complete_galaxies(Path(tng_dir))
     properties_path = properties_path or os.path.join(
         Config.DATA_DIR, "_tng_infographics", "tng_properties.csv"
     )
-    properties = load_tng_properties(properties_path)
+    properties = TNGPropertyCatalog.read(properties_path)
     reusable: dict[tuple[str, int], dict[str, Any]] = {}
     if reuse_existing and output_path:
         previous = load_manifest(output_path)
@@ -127,6 +253,8 @@ def build_manifest(
             previous
             and previous.get("version") == MANIFEST_VERSION
             and previous.get("algorithm_version") == ALGORITHM_VERSION
+            and previous.get("manifest_fingerprint")
+            == _manifest_fingerprint(previous)
         ):
             for entry in previous.get("entries", []):
                 if not isinstance(entry, dict) or not entry.get("valid"):
@@ -139,19 +267,22 @@ def build_manifest(
                 except (KeyError, TypeError, ValueError):
                     continue
                 reusable[key] = dict(entry)
-    tasks: list[tuple[str, str, int, bool]] = []
-    for gdir, gid in galaxies:
-        props = properties.get(str(gid), {})
-        mass = float(props.get("mass_stars", float("nan")))
+    tasks: list[tuple[TNGGalaxy, int, bool]] = []
+    for galaxy in galaxies:
+        props = properties.get(galaxy.subhalo_id)
+        mass = (
+            props.stellar_mass_msun if props is not None else float("nan")
+        )
         has_properties = bool(np.isfinite(mass) and mass > 0.0)
         for orientation in range(1, N_ORIENTATIONS + 1):
-            tasks.append((gdir, str(gid), orientation, has_properties))
+            tasks.append((galaxy, orientation, has_properties))
 
     def measure(
-        task: tuple[str, str, int, bool],
+        task: tuple[TNGGalaxy, int, bool],
     ) -> tuple[dict[str, Any], dict[str, str] | None, bool]:
-        gdir, gid, orientation, has_properties = task
-        vis_path = tng_fits_path(gdir, gid, orientation, "VIS")
+        galaxy, orientation, has_properties = task
+        gid = galaxy.subhalo_id
+        vis_path = galaxy.fits_path(orientation, "VIS")
         row: dict[str, Any] = {
             "subhalo_id": gid,
             "orientation": int(orientation),
@@ -160,7 +291,7 @@ def build_manifest(
         }
         failure = None
         try:
-            identity = _file_identity(vis_path)
+            identity = _file_identity(str(vis_path))
             previous = reusable.get((gid, orientation))
             if (
                 has_properties
@@ -169,8 +300,8 @@ def build_manifest(
             ):
                 previous["vis_path"] = os.path.abspath(vis_path)
                 return previous, None, True
-            frame = load_skirt_image(vis_path, "VIS")
-            re_px = float(measure_halflight_radius_px(frame, band="VIS"))
+            frame = _load_tng_plane(vis_path, "VIS")
+            re_px = float(_measure_halflight_radius_px(frame, band="VIS"))
             if not has_properties:
                 raise ValueError("missing finite positive mass_stars property")
             if not np.isfinite(re_px) or re_px <= 0.0:
@@ -203,7 +334,7 @@ def build_manifest(
     ]
     reused_count = sum(reused for _, _, reused in measured_rows)
 
-    inventory = _inventory(tng_dir, galaxies, properties_path)
+    inventory = _inventory(galaxies)
     inventory_fingerprint = _fingerprint({
         "algorithm_version": ALGORITHM_VERSION,
         "inventory": inventory,
@@ -226,13 +357,7 @@ def build_manifest(
         "failures": failures,
         "entries": entries,
     }
-    report["manifest_fingerprint"] = _fingerprint({
-        key: report[key] for key in (
-            "version", "algorithm_version", "properties_file",
-            "atlas_inventory_fingerprint", "expected_count", "valid_count",
-            "entries",
-        )
-    })
+    report["manifest_fingerprint"] = _manifest_fingerprint(report)
     if output_path:
         write_manifest(output_path, report)
     return report
@@ -261,15 +386,17 @@ def write_parameter_summary(
     """Flatten a complete radius manifest and TNG properties into one CSV."""
     if not manifest.get("valid"):
         raise ValueError("cannot summarize an invalid TNG radius manifest")
-    properties = load_tng_properties(properties_path)
+    properties = TNGPropertyCatalog.read(properties_path)
     rows: list[dict[str, int | float | str]] = []
     galaxy_ids: set[str] = set()
     for entry in manifest.get("entries", []):
         if not entry.get("valid"):
             raise ValueError("radius manifest contains an invalid entry")
         gid = str(entry["subhalo_id"])
-        props = properties.get(gid) or {}
-        mass = float(props.get("mass_stars", float("nan")))
+        props = properties.get(gid)
+        mass = (
+            props.stellar_mass_msun if props is not None else float("nan")
+        )
         native_re_px = float(entry["native_re_px"])
         shape = entry.get("shape") or []
         if (
@@ -289,9 +416,16 @@ def write_parameter_summary(
             "frame_width_px": int(shape[1]),
             "mass_stars_msun": mass,
             "logmass_stars": float(np.log10(mass)),
-            "sfr_msun_yr": float(props.get("sfr", float("nan"))),
-            "m_halo_msun": float(props.get("m_halo", float("nan"))),
-            "groupcat_reff_kpc": float(props.get("reff", float("nan"))),
+            "sfr_msun_yr": (
+                props.sfr_msun_yr if props is not None else float("nan")
+            ),
+            "m_halo_msun": (
+                props.halo_mass_msun if props is not None else float("nan")
+            ),
+            "groupcat_reff_kpc": (
+                props.stellar_halfmass_radius_kpc
+                if props is not None else float("nan")
+            ),
         }
         rows.append(row)
         galaxy_ids.add(gid)
@@ -417,13 +551,13 @@ def validate_manifest(
     properties_path = properties_path or os.path.join(
         Config.DATA_DIR, "_tng_infographics", "tng_properties.csv"
     )
-    path = manifest_path(tng_dir, manifest_path_value)
+    path = manifest_path(manifest_path_value)
     payload = manifest if manifest is not None else load_manifest(path)
     if payload is None:
         return {"valid": False, "reason": f"missing radius manifest: {path}",
                 "path": path}
-    galaxies = list_tng_galaxies(tng_dir)
-    inventory = _inventory(tng_dir, galaxies, properties_path)
+    galaxies = _scan_complete_galaxies(Path(tng_dir))
+    inventory = _inventory(galaxies)
     current_fp = _fingerprint({
         "algorithm_version": ALGORITHM_VERSION,
         "inventory": inventory,
@@ -438,6 +572,8 @@ def validate_manifest(
         reasons.append("manifest contains invalid or incomplete measurements")
     if payload.get("atlas_inventory_fingerprint") != current_fp:
         reasons.append("atlas files or TNG properties changed since measurement")
+    if payload.get("manifest_fingerprint") != _manifest_fingerprint(payload):
+        reasons.append("radius-manifest fingerprint does not match its rows")
     expected = len(galaxies) * N_ORIENTATIONS
     try:
         manifest_expected = int(payload.get("expected_count", -1))
@@ -477,7 +613,7 @@ def ensure_manifest(
     Atlas additions therefore measure just the new orientations, while a
     replaced VIS frame is remeasured before any generation worker starts.
     """
-    path = manifest_path(tng_dir, manifest_path_value)
+    path = manifest_path(manifest_path_value)
     initial = validate_manifest(
         tng_dir,
         properties_path=properties_path,
@@ -514,18 +650,3 @@ def ensure_manifest(
             "TNG radius manifest repair failed: " + "; ".join(detail)
         )
     return result
-
-
-def radius_lookup(manifest: dict[str, Any]) -> dict[tuple[str, int], float]:
-    """Return validated ``(subhalo_id, orientation) -> native R_e`` rows."""
-    if not manifest.get("valid"):
-        raise ValueError("cannot use an invalid TNG radius manifest")
-    lookup: dict[tuple[str, int], float] = {}
-    for row in manifest.get("entries", []):
-        if not row.get("valid"):
-            raise ValueError("radius manifest contains an invalid entry")
-        value = float(row["native_re_px"])
-        if not np.isfinite(value) or value <= 0.0:
-            raise ValueError("radius manifest contains a non-positive R_e")
-        lookup[(str(row["subhalo_id"]), int(row["orientation"]))] = value
-    return lookup

@@ -17,15 +17,19 @@ from euclid_polish.photometry import (
     pixel_solid_angle_sr,
     uJy_to_electrons,
 )
-from euclid_polish.skirt.image import load_skirt_image
-from euclid_polish.sky.generation.tng_galaxy import (
+from euclid_polish.tng import (
+    TNGAtlas,
+    TNGGalaxy,
+    TNGPropertyCatalog,
+    TNGRadiusManifest,
+)
+from euclid_polish.tng._image import _load_tng_plane
+from euclid_polish.tng.renderer import (
     TNG_RADIUS_RENDERING,
     TNGRenderer,
     _circularize_psf_kernel,
-    list_tng_galaxies,
-    tng_fits_path,
 )
-from euclid_polish.sky.generation.tng_types import (
+from euclid_polish.tng.types import (
     PhysicalRedshiftGeometry,
     RenderedTNG,
     TNGView,
@@ -89,13 +93,13 @@ def test_surface_brightness_conversion_matches_ujy_route():
     ) == pytest.approx(4.0 * expected, rel=1e-9)
 
 
-def test_skirt_loader_rejects_invalid_units_grids_and_shape(tmp_path):
+def test_tng_plane_loader_rejects_invalid_units_grids_and_shape(tmp_path):
     wrong_unit = tmp_path / "wrong_unit.fits"
     _write_frame(wrong_unit, np.ones((4, 4), dtype=np.float32))
     with fits.open(wrong_unit, mode="update") as hdul:
         hdul[0].header["BUNIT"] = "Jy/sr"
     with pytest.raises(ValueError, match="BUNIT must be"):
-        load_skirt_image(wrong_unit, "VIS")
+        _load_tng_plane(wrong_unit, "VIS")
 
     angular_grid = tmp_path / "angular_grid.fits"
     _write_frame(angular_grid, np.ones((4, 4), dtype=np.float32))
@@ -103,36 +107,36 @@ def test_skirt_loader_rejects_invalid_units_grids_and_shape(tmp_path):
         hdul[0].header["CUNIT1"] = "arcsec"
         hdul[0].header["CUNIT2"] = "arcsec"
     with pytest.raises(ValueError, match="physical pixel scale"):
-        load_skirt_image(angular_grid, "VIS")
+        _load_tng_plane(angular_grid, "VIS")
 
     rectangular_grid = tmp_path / "rectangular_grid.fits"
     _write_frame(rectangular_grid, np.ones((4, 4), dtype=np.float32))
     with fits.open(rectangular_grid, mode="update") as hdul:
         hdul[0].header["CDELT2"] = 200.0
     with pytest.raises(ValueError, match="must be square"):
-        load_skirt_image(rectangular_grid, "VIS")
+        _load_tng_plane(rectangular_grid, "VIS")
 
     cube = tmp_path / "cube.fits"
     _write_frame(cube, np.ones((2, 4, 4), dtype=np.float32))
     with pytest.raises(ValueError, match="two-dimensional"):
-        load_skirt_image(cube, "VIS")
+        _load_tng_plane(cube, "VIS")
 
 
-def test_list_tng_galaxies_and_padded_path(tmp_path):
+def test_tng_galaxy_discovers_complete_inventory_and_resolves_paths(tmp_path):
     _write_fake_galaxy(tmp_path, "111")
     _write_fake_galaxy(tmp_path, "222")
     _write_fake_galaxy(tmp_path, "333", done=False)
 
-    galaxies = list_tng_galaxies(tmp_path)
+    galaxies = TNGGalaxy.discover(tmp_path)
 
-    assert [subhalo_id for _, subhalo_id in galaxies] == ["111", "222"]
-    assert Path(tng_fits_path(galaxies[0][0], "111", 1, "VIS")).is_file()
-    assert list_tng_galaxies(tmp_path / "missing") == []
+    assert [galaxy.subhalo_id for galaxy in galaxies] == ["111", "222"]
+    assert galaxies[0].fits_path(1, "VIS").is_file()
+    assert TNGGalaxy.discover(tmp_path / "missing") == ()
 
 
-def test_choose_view_filters_orientations_that_would_enlarge(tmp_path):
+def test_atlas_filters_orientations_that_would_enlarge(tmp_path):
     directory = _write_fake_galaxy(tmp_path, "111")
-    renderer = TNGRenderer(pixel_scale_arcsec=0.05)
+    galaxy = TNGGalaxy(directory=directory, subhalo_id="111")
     radii = {
         ("111", 1): 2.0,
         ("111", 2): 12.0,
@@ -140,30 +144,30 @@ def test_choose_view_filters_orientations_that_would_enlarge(tmp_path):
         ("111", 4): 12.0,
         ("111", 5): 12.0,
     }
-
-    view = renderer.choose_view(
-        [(str(directory), "111")],
-        radii,
-        0.5,
-        np.random.default_rng(4),
+    atlas = TNGAtlas(
+        root=tmp_path,
+        galaxies=(galaxy,),
+        properties=TNGPropertyCatalog({}, (None, 0, 0)),
+        radii=TNGRadiusManifest(radii, "fixture-manifest"),
     )
 
-    assert view.orientation in {2, 3, 4, 5}
-    with pytest.raises(ValueError, match="without enlargement"):
-        renderer.choose_view(
-            [(str(directory), "111")],
-            {("111", orientation): 2.0 for orientation in range(1, 6)},
-            0.5,
-            np.random.default_rng(5),
-        )
+    views = atlas.eligible_views(
+        galaxy,
+        target_re_arcsec=0.5,
+        pixel_scale_arcsec=0.05,
+    )
+
+    assert tuple(view.orientation for view in views) == (2, 3, 4, 5)
+    assert atlas.eligible_galaxies(0.5, 0.05) == (galaxy,)
+    assert atlas.eligible_views(galaxy, 0.7, 0.05) == ()
 
 
-def test_render_for_radius_returns_typed_electron_cube_and_trace(tmp_path):
+def test_render_observed_radius_returns_typed_electron_cube_and_trace(tmp_path):
     directory = _write_fake_galaxy(tmp_path, "111")
     renderer = TNGRenderer(pixel_scale_arcsec=0.05)
     view = _view(directory)
 
-    rendered = renderer.render_for_radius(
+    rendered = renderer.render_observed_radius(
         view, 0.5, rng=np.random.default_rng(8)
     )
     fields = rendered.record_fields()
@@ -179,24 +183,24 @@ def test_render_for_radius_returns_typed_electron_cube_and_trace(tmp_path):
     assert fields["radius_rendering"] == TNG_RADIUS_RENDERING
 
 
-def test_render_for_radius_rejects_enlargement(tmp_path):
+def test_render_observed_radius_rejects_enlargement(tmp_path):
     directory = _write_fake_galaxy(tmp_path, "111")
     renderer = TNGRenderer(pixel_scale_arcsec=0.05)
 
     with pytest.raises(ValueError, match="cannot be enlarged"):
-        renderer.render_for_radius(_view(directory, native_re_px=2.0), 0.5)
+        renderer.render_observed_radius(_view(directory, native_re_px=2.0), 0.5)
 
 
-def test_render_for_radius_normalizes_only_after_geometry(tmp_path):
+def test_render_observed_radius_normalizes_only_after_geometry(tmp_path):
     directory = _write_fake_galaxy(tmp_path, "111")
     renderer = TNGRenderer(pixel_scale_arcsec=0.05)
     view = _view(directory)
-    unscaled = renderer.render_for_radius(
+    unscaled = renderer.render_observed_radius(
         view, 0.5, rng=np.random.default_rng(8)
     )
     target_vis = 2.5 * unscaled.flux_e("VIS")
 
-    normalized = renderer.render_for_radius(
+    normalized = renderer.render_observed_radius(
         view,
         0.5,
         rng=np.random.default_rng(8),
@@ -212,11 +216,11 @@ def test_render_for_radius_normalizes_only_after_geometry(tmp_path):
     )
 
 
-def test_render_for_radius_bounds_support_and_preserves_centre_parity(tmp_path):
+def test_render_observed_radius_bounds_support_and_preserves_centre_parity(tmp_path):
     directory = _write_fake_galaxy(tmp_path, "111", size=96)
     renderer = TNGRenderer(pixel_scale_arcsec=0.05, max_output_side=15)
 
-    rendered = renderer.render_for_radius(_view(directory), 0.9)
+    rendered = renderer.render_observed_radius(_view(directory), 0.9)
 
     assert rendered.shape[0] <= 15 and rendered.shape[1] <= 15
     assert rendered.trace.render_support_clipped is True
@@ -243,7 +247,7 @@ def test_physical_redshift_render_supports_typed_total_vis_normalization(tmp_pat
     directory = _write_fake_galaxy(tmp_path, "111", size=96)
     renderer = TNGRenderer(pixel_scale_arcsec=0.05)
     view = _view(directory)
-    native = renderer.render_for_physical_redshift(
+    native = renderer.render_physical_at_redshift(
         view,
         0.8,
         rng=np.random.default_rng(9),
@@ -266,7 +270,7 @@ def test_nominal_redshift_render_records_typed_photometry(tmp_path):
     directory = _write_fake_galaxy(tmp_path, "111")
     renderer = TNGRenderer(pixel_scale_arcsec=0.05)
 
-    rendered = renderer.render_for_radius_at_redshift(
+    rendered = renderer.render_observed_radius_at_redshift(
         _view(directory), 0.5, 1.0, rng=np.random.default_rng(10)
     )
 
@@ -278,7 +282,7 @@ def test_nominal_redshift_render_records_typed_photometry(tmp_path):
 def test_2fwhm_normalization_uses_one_scale_and_preserves_colours(tmp_path):
     directory = _write_fake_galaxy(tmp_path, "111", size=128)
     renderer = TNGRenderer(pixel_scale_arcsec=0.05)
-    rendered = renderer.render_for_radius(_view(directory), 0.8)
+    rendered = renderer.render_observed_radius(_view(directory), 0.8)
     original_ratios = np.asarray(rendered.fluxes_e) / rendered.flux_e("VIS")
     yy, xx = np.indices((17, 17), dtype=np.float64)
     psf = np.exp(-0.5 * ((yy - 8.0) ** 2 + (xx - 8.0) ** 2) / 2.0**2)
@@ -336,7 +340,7 @@ def test_compact_aperture_response_matches_full_fft(image_shape, psf_shape):
 def test_psf_caches_are_instance_owned_and_parity_sensitive(tmp_path):
     directory = _write_fake_galaxy(tmp_path, "111", size=128)
     renderer = TNGRenderer(pixel_scale_arcsec=0.05)
-    stamp = renderer.render_for_radius(_view(directory), 0.8)
+    stamp = renderer.render_observed_radius(_view(directory), 0.8)
     psf = np.ones((7, 7), dtype=np.float32)
 
     renderer.normalize_vis_2fwhm(

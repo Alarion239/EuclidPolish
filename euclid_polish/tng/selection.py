@@ -36,8 +36,6 @@ _MODE_PROPERTY = {
     "biggest_radius":     ("reff",       True),
     "smallest_radius":    ("reff",       False),
 }
-#: All selectable modes, ``random`` first.
-MODES = ("random", *_MODE_PROPERTY.keys())
 #: Rank weight scale at temperature = 1 (≈ how many of the top get real weight).
 _SOFTNESS = 20.0
 
