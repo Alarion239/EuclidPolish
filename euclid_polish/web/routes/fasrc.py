@@ -12,7 +12,7 @@ import tempfile
 import threading as _t
 import time
 import traceback
-from typing import Any
+from typing import Any, cast
 
 from flask import Response, abort, jsonify, render_template, request, stream_with_context
 
@@ -31,6 +31,29 @@ from euclid_polish.web.fasrc_pipeline import REGISTRY as STEP_REGISTRY
 from euclid_polish.web.fasrc_pipeline import StepResources
 from euclid_polish.web.job_status import JobStatusFetcher
 from euclid_polish.web.remote import STATE, SSHConfig, SSHError, SSHSession
+
+
+class _JobStatusSSHAdapter:
+    """Expose the text-only subset of ``SSHSession`` used for job events."""
+
+    def __init__(self, session: SSHSession) -> None:
+        self._session = session
+
+    def run(
+        self, cmd: str, *, timeout: float = 60.0,
+    ) -> tuple[int, str, str]:
+        return_code, output, error = self._session.run(
+            cmd, timeout=int(timeout))
+        return return_code, cast(str, output), error
+
+    def is_connected(self) -> bool:
+        return self._session.is_connected()
+
+
+def _job_status_ssh(
+    session: SSHSession | None,
+) -> _JobStatusSSHAdapter | None:
+    return _JobStatusSSHAdapter(session) if session is not None else None
 
 
 def register(app):
@@ -109,7 +132,8 @@ def register(app):
 
     @app.route("/api/fasrc/git-status")
     def api_fasrc_git_status():
-        if not STATE.ssh or not STATE.ssh.is_connected():
+        ssh = STATE.ssh
+        if ssh is None or not ssh.is_connected():
             return jsonify({"ok": False, "error": "not connected"}), 400
         cfg = fasrc_config.load()
         repo = cfg.repo_path
@@ -120,7 +144,7 @@ def register(app):
             f"git rev-list --left-right --count HEAD...@{{u}} 2>/dev/null && "
             f"git log -1 --pretty=format:'%h%x09%s%x09%cr'"
         )
-        rc, out, err = STATE.ssh.run(cmds, timeout=30)
+        rc, out, err = ssh.run(cmds, timeout=30)
         if rc != 0:
             return jsonify({"ok": False, "error": err.strip() or out.strip()}), 500
         lines = out.strip().splitlines()
@@ -562,7 +586,8 @@ def register(app):
         can still render its forms.
         """
         cfg_loaded = fasrc_config.load()
-        ssh_ok = bool(STATE.ssh and STATE.ssh.is_connected())
+        ssh = STATE.ssh
+        ssh_ok = ssh is not None and ssh.is_connected()
 
         steps_payload = []
         for step in STEP_REGISTRY.all():
@@ -608,7 +633,7 @@ def register(app):
             # Synthetic generation (/sky page).
             "synthetic_records": None,
         }
-        if ssh_ok:
+        if ssh_ok and ssh is not None:
             paths = {
                 "ckpt":    f"{cfg_loaded.ckpt_dir}/checkpoint",
                 "euclid_cutouts":
@@ -637,7 +662,7 @@ def register(app):
                 for k, p in paths.items()
             )
             try:
-                rc, out, _err = STATE.ssh.run(probe, timeout=10)
+                rc, out, _err = ssh.run(probe, timeout=10)
                 if rc == 0:
                     for line in out.splitlines():
                         line = line.strip()
@@ -672,7 +697,8 @@ def register(app):
         Any failure returns 400 and DOES NOT touch the SSH session,
         so no sbatch call, no script write, nothing reaches FASRC."""
 
-        if not STATE.ssh or not STATE.ssh.is_connected():
+        ssh = STATE.ssh
+        if ssh is None or not ssh.is_connected():
             return jsonify({"ok": False, "error": "not connected"}), 400
         try:
             step = STEP_REGISTRY.get(step_id)
@@ -851,7 +877,8 @@ def register(app):
         case; the training-status endpoint stays for the trainer's own
         live-metrics view.
         """
-        if not STATE.ssh or not STATE.ssh.is_connected():
+        ssh = STATE.ssh
+        if ssh is None or not ssh.is_connected():
             return jsonify({"ok": False, "error": "not connected"}), 400
 
         # Reconcile DB rows against squeue first — without this, a job
@@ -862,7 +889,7 @@ def register(app):
         # than 500 the poll; the next tick retries.
         stale = False
         try:
-            rc_q, out_q, _err_q = STATE.ssh.run(
+            rc_q, out_q, _err_q = ssh.run(
                 f"squeue -r -h -u $USER --format='{fasrc_jobs.SQUEUE_FMT}'",
                 timeout=15,
             )
@@ -871,7 +898,7 @@ def register(app):
         squeue_rows: list[dict[str, Any]] = []
         if rc_q == 0:
             squeue_rows = fasrc_jobs.parse_squeue(out_q)
-            fasrc_jobs.reconcile_with_squeue(squeue_rows, ssh=STATE.ssh)
+            fasrc_jobs.reconcile_with_squeue(squeue_rows, ssh=ssh)
             # Advance the local queue (promote on success / halt on failure)
             # off the same reconcile that just refreshed job states.
             _queue_tick()
@@ -915,7 +942,7 @@ def register(app):
         # Fold the live event stream into a JobStatus. Array submissions have
         # one Reporter stream per model; expose them separately rather than
         # inventing a misleading aggregate training curve.
-        fetcher = JobStatusFetcher(ssh=STATE.ssh)
+        fetcher = JobStatusFetcher(ssh=_job_status_ssh(ssh))
         try:
             stored_params = json.loads(current_row.get("params_json") or "{}")
         except (TypeError, json.JSONDecodeError):
@@ -963,7 +990,7 @@ def register(app):
         # polls frequently.  The helper applies a 30-second per-job TTL and
         # only gets called for a job that is actually running.
         live_accounting = (
-            fasrc_jobs.fetch_live_jobstats(STATE.ssh, jid)
+            fasrc_jobs.fetch_live_jobstats(ssh, jid)
             if current_row.get("state") == "RUNNING" and array_count <= 1
             else None
         )
@@ -995,7 +1022,7 @@ def register(app):
         row = fasrc_jobs.DB.get(jobid)
         if not row:
             return jsonify({"ok": False, "error": "unknown jobid"}), 404
-        fetcher = JobStatusFetcher(ssh=STATE.ssh)
+        fetcher = JobStatusFetcher(ssh=_job_status_ssh(STATE.ssh))
         try:
             params = json.loads(row.get("params_json") or "{}")
         except (TypeError, json.JSONDecodeError):
@@ -1317,6 +1344,9 @@ def register(app):
         endpoints. The trainer writes ``training_log.csv`` (append-only across
         sessions sharing the ckpt dir); we fetch it over SSH (cap 50k lines) and
         keep only rows inside ``[started_at, ended_at]``."""
+        ssh = STATE.ssh
+        if ssh is None:
+            raise SSHError("not connected")
         cfg = fasrc_config.load()
         base = cfg.ckpt_dir.rstrip("/")
         csv_path   = f"{base}/{TrainingLog.FILENAME}"
@@ -1330,8 +1360,8 @@ def register(app):
                              f"head -n 50000 {shlex.quote(jsonl_p)};")
             parts.append(" fi")
             try:
-                rc, text, _err = STATE.ssh.run("{" + "".join(parts) + " ; }; exit 0",
-                                               timeout=30)
+                rc, text, _err = ssh.run(
+                    "{" + "".join(parts) + " ; }; exit 0", timeout=30)
             except (subprocess.TimeoutExpired, SSHError):
                 return []
             if rc != 0 or not text.strip():
@@ -1352,7 +1382,7 @@ def register(app):
                     f"{shlex.quote(TrainingLog.FILENAME)} 2>/dev/null | head -n1; "
                     f"exit 0")
             with contextlib.suppress(subprocess.TimeoutExpired, SSHError):
-                _rc, picked, _e = STATE.ssh.run(pick, timeout=15)
+                _rc, picked, _e = ssh.run(pick, timeout=15)
                 member_csv = (picked.strip().splitlines()[0].strip()
                               if picked.strip() else "")
                 if member_csv:
@@ -1580,9 +1610,12 @@ def register(app):
 
     def _build_training_status():
         cfg = fasrc_config.load()
+        ssh = STATE.ssh
+        if ssh is None:
+            raise SSHError("not connected")
 
         # 1. Identify the running job. Trust live squeue > sqlite.
-        rc, sq_out, _err = STATE.ssh.run(
+        rc, sq_out, _err = ssh.run(
             f"squeue -r -h -u $USER --format='{fasrc_jobs.SQUEUE_FMT}'",
             timeout=10,
         )
@@ -1591,7 +1624,7 @@ def register(app):
         # the user isn't on the Current-Submission tab.
         if rc == 0:
             fasrc_jobs.reconcile_with_squeue(
-                fasrc_jobs.parse_squeue(sq_out), ssh=STATE.ssh)
+                fasrc_jobs.parse_squeue(sq_out), ssh=ssh)
             _queue_tick()
         running_rows = []
         if rc == 0:
@@ -1634,7 +1667,7 @@ def register(app):
         # the checkpoint marker all come from the events file the trainer
         # writes via :class:`Reporter`.
         elapsed_s = fasrc_jobs.parse_slurm_time(live.get("time"))
-        status = JobStatusFetcher(ssh=STATE.ssh).fetch(
+        status = JobStatusFetcher(ssh=_job_status_ssh(ssh)).fetch(
             events_path=events_path)
 
         # Map JobStatus → the dashboard's existing field shape.
@@ -1872,7 +1905,8 @@ def register(app):
 
     @app.route("/api/fasrc/env-update")
     def api_fasrc_env_update():
-        if not STATE.ssh or not STATE.ssh.is_connected():
+        ssh = STATE.ssh
+        if ssh is None or not ssh.is_connected():
             return Response(
                 "event: error\ndata: not connected\n\n",
                 mimetype="text/event-stream", status=400,
@@ -1886,7 +1920,7 @@ def register(app):
             yield (f"data: $ yes | mamba env update -p "
                    f"{cfg.conda_env_path} -f environment.yml\n\n")
             try:
-                for line in STATE.ssh.stream(cmd):
+                for line in ssh.stream(cmd):
                     yield f"data: {line.replace(chr(13), '')}\n\n"
                 yield "event: done\ndata: complete\n\n"
             except SSHError as e:

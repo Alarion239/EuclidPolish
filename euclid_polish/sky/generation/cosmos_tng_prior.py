@@ -226,6 +226,9 @@ def joint_quantile_transport_weights(
 
     required = min(max(1, int(minimum_effective_donors)), mass.size)
     scale = 1.0
+    used_mass = initial_mass
+    used_ssfr = initial_ssfr
+    weights = np.zeros_like(mass, dtype=np.float64)
     for _ in range(64):
         used_mass = min(4.0, initial_mass * scale)
         used_ssfr = min(4.0, initial_ssfr * scale)
@@ -233,7 +236,10 @@ def joint_quantile_transport_weights(
             ((mass - target_mass) / used_mass) ** 2
             + ((ssfr - target_ssfr) / used_ssfr) ** 2
         )
-        weights = np.exp(-0.5 * distance2) * balance
+        weights = np.asarray(
+            np.exp(-0.5 * distance2) * balance,
+            dtype=np.float64,
+        )
         effective = effective_sample_size(weights)
         if effective >= required - 1e-9 or (
             used_mass >= 4.0 and used_ssfr >= 4.0

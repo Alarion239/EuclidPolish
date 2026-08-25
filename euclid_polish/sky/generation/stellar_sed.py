@@ -139,6 +139,7 @@ class EmpiricalStellarPrior:
             for index in range(3)
         ])
         covariance = model["intrinsic_color_covariance"]
+        residual = np.zeros(3, dtype=np.float64)
         for _ in range(12):
             residual = rng.multivariate_normal(np.zeros(3), covariance)
             mahalanobis = float(residual @ np.linalg.solve(covariance, residual))

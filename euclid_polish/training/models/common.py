@@ -127,7 +127,8 @@ class ICNR(Initializer):
         self.scale = int(scale)
         self.base = base if base is not None else GlorotUniform()
 
-    def __call__(self, shape, dtype=None):
+    def __call__(self, shape, dtype=None, **kwargs):
+        del kwargs
         scale2 = self.scale * self.scale
         out = int(shape[-1])
         if out % scale2 != 0:

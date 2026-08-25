@@ -20,7 +20,7 @@ import os
 import re
 import traceback
 from collections.abc import Callable
-from typing import Any
+from typing import Any, cast
 
 from euclid_polish.config import Config
 from euclid_polish.ensemble import default_ensemble_dir
@@ -132,9 +132,11 @@ def reuse_catalog_object(obj, out_dir: str, *, grade: str | None = None,
     obj_dir = object_output_dir(out_dir, obj["id"])
     try:
         with fits.open(os.path.join(obj_dir, "original_stack.fits")) as hdul:
-            lr_vis = _vis_plane(hdul[0].data)
+            primary = cast(fits.PrimaryHDU, hdul[0])
+            lr_vis = _vis_plane(primary.data)
         with fits.open(os.path.join(obj_dir, "SR.fits")) as hdul:
-            sr_vis = _vis_plane(hdul[0].data)
+            primary = cast(fits.PrimaryHDU, hdul[0])
+            sr_vis = _vis_plane(primary.data)
         lr_sum = float(np.sum(lr_vis))
         sr_sum = float(np.sum(sr_vis))
         rec.update({
@@ -211,8 +213,9 @@ def enforce_object_sizes(obj_dir: str, *,
                 return False
             continue
         with fits.open(path) as hdul:
-            data = np.asarray(hdul[0].data)
-            header = hdul[0].header.copy()
+            primary = cast(fits.PrimaryHDU, hdul[0])
+            data = np.asarray(primary.data)
+            header = primary.header.copy()
         h, w = data.shape[-2], data.shape[-1]
         if h < size or w < size:
             emit(f"  ✗ {tag}: {name} {w}×{h} < {size}×{size} — dropping")

@@ -1,6 +1,8 @@
 """FITS file validation utilities used by the cutout downloader."""
 
 
+from typing import Any, cast
+
 import numpy as np
 from astropy.io import fits
 
@@ -68,10 +70,11 @@ class FitsValidator:
             return False, error_msg
         try:
             with fits.open(filepath) as hdul:
-                header = hdul[0].header
+                header = cast(fits.PrimaryHDU, hdul[0]).header
                 if 'CRVAL1' in header and 'CRVAL2' in header:
                     sep = angular_separation_arcsec(
-                        float(header['CRVAL1']), float(header['CRVAL2']),
+                        float(cast(Any, header['CRVAL1'])),
+                        float(cast(Any, header['CRVAL2'])),
                         expected_ra, expected_dec)
                     if sep >= tolerance_arcsec:
                         return False, f"Center displaced: {sep:.2f} arcsec from expected"
@@ -91,7 +94,7 @@ class FitsValidator:
         """Safely return the primary HDU header as a plain dict."""
         try:
             with fits.open(filepath) as hdul:
-                return dict(hdul[0].header)
+                return dict(cast(fits.PrimaryHDU, hdul[0]).header)
         except Exception:
             return None
 

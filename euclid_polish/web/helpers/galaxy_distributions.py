@@ -245,7 +245,10 @@ def _joint_contours(
             continue
         seen.add(rounded)
         paths = []
-        for vertices in generator.lines(level):
+        for raw_vertices in generator.lines(level):
+            vertices = np.asarray(raw_vertices, dtype=np.float64)
+            if vertices.ndim != 2 or vertices.shape[1] < 2:
+                continue
             if vertices.shape[0] < 2:
                 continue
             paths.append({
@@ -1556,11 +1559,12 @@ def _read_euclid(parameters: dict[str, Any], progress: Callable[[int, int, str],
             object_pdf = pdf_by_id.get(str(row.get("object_id", "")))
             if (
                 object_pdf is not None
+                and redshift is not None
                 and np.isfinite(gal_weight)
                 and 0 <= gal_weight <= 1
                 and magnitude < 24.5
             ):
-                redshift += gal_weight * object_pdf  # type: ignore[operator]
+                redshift += gal_weight * object_pdf
                 phz_rows += 1
             try:
                 flags = float(row.get("phz_phys_flags", "nan"))

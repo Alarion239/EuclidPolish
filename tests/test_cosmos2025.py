@@ -213,6 +213,14 @@ def test_filtered_npz_round_trip(tmp_path):
     assert np.isfinite(back.typical_band_electron_ratios()).all()
 
 
+def test_row_rejects_non_vector_four_band_fluxes():
+    cat = _tiny_real_catalog(1)
+    cat.bulge_flux_e = np.arange(4, dtype=np.float64).reshape(1, 2, 2)
+
+    with pytest.raises(ValueError, match="expected four band fluxes"):
+        cat._row_to_params(0)
+
+
 def test_open_cosmos2025_reads_npz(tmp_path):
     cat = _tiny_real_catalog(4)
     p = str(tmp_path / "filtered.npz")

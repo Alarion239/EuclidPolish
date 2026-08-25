@@ -32,6 +32,7 @@ from __future__ import annotations
 import os
 from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor
+from typing import Any, cast
 
 import numpy as np
 from astropy.io import fits
@@ -223,16 +224,19 @@ def load_band_rotpool(
     psfs: list[PSF] = []
     counts: list[int] = []
     with fits.open(path, memmap=True) as hdul:
-        n_src = int(hdul[0].header["NSRCCLU"])
+        primary = cast(fits.PrimaryHDU, hdul[0])
+        n_src = int(cast(Any, primary.header["NSRCCLU"]))
         chosen: set[int] | None = None
         if subset_clusters is not None and 0 < int(subset_clusters) < n_src:
             rng = np.random.default_rng(subset_seed)
             chosen = set(rng.choice(n_src, size=int(subset_clusters),
                                     replace=False).tolist())
-        for h in hdul[1:]:
+        for raw_hdu in hdul[1:]:
+            h = cast(fits.ImageHDU, raw_hdu)
             if h.data is None or "SRCIDX" not in h.header:
                 continue
-            if chosen is not None and int(h.header["SRCIDX"]) not in chosen:
+            source_index = int(cast(Any, h.header["SRCIDX"]))
+            if chosen is not None and source_index not in chosen:
                 continue
             data = np.asarray(h.data, np.float32)
             if crop_to is not None and data.shape[0] > crop_to:
@@ -242,8 +246,8 @@ def load_band_rotpool(
                 if s > 0:
                     data = (data / s).astype(np.float32)
             psfs.append(PSF(data=data.copy(),
-                            pixel_scale=float(h.header["PXSCALE"])))
-            counts.append(int(h.header.get("NSTARS", 0)))
+                            pixel_scale=float(cast(Any, h.header["PXSCALE"]))))
+            counts.append(int(cast(Any, h.header.get("NSTARS", 0))))
     pset = PSFSet.from_psfs(psfs, n_stars=counts if any(counts) else None)
     if abs(pset.pixel_scale - target_pixel_scale) > 1e-6:
         pset = pset.resampled_to(target_pixel_scale)

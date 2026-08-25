@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import os
-from typing import Any
+from typing import Any, cast
 
 import tensorflow as tf
 from astropy.io import fits
@@ -71,7 +71,7 @@ def _valid_4band_stars(force: bool = False):
     for o in objects:
         # Sizes valid in EVERY band = intersection of each band's valid sizes;
         # any band with no valid size disqualifies the star.
-        per_band: list[set] = []
+        per_band: list[set[int]] | None = []
         for bn in band_names:
             sizes = set(o.valid_sizes(bn))
             if not sizes:
@@ -205,7 +205,10 @@ def _psf_status() -> dict[str, Any]:
                 # (NPSF header on the multi-extension format; 1 for a legacy
                 # single-PSF FITS).
                 with fits.open(path) as _hdul:
-                    item["n_psf"] = int(_hdul[0].header.get("NPSF", 1))
+                    primary = cast(fits.PrimaryHDU, _hdul[0])
+                    item["n_psf"] = int(cast(
+                        str | int, primary.header.get("NPSF", 1),
+                    ))
             except Exception as e:
                 item["error"] = str(e)
         bands.append(item)

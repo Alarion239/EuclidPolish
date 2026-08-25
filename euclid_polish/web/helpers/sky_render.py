@@ -4,6 +4,7 @@ from __future__ import annotations
 import io
 import json
 import os
+from typing import cast
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -235,11 +236,13 @@ def _render_psf_clusters_png(output_dir: str | None,
             cra, cdec = [], []                     # corrupt → FITS fallback
     if not cra and psf_path and os.path.isfile(psf_path):
         with fits.open(psf_path) as hdul:
-            for hdu in hdul[1:]:                   # HDU0 = mean PSF
+            for raw_hdu in hdul[1:]:               # HDU0 = mean PSF
+                hdu = cast(fits.ImageHDU, raw_hdu)
                 ra = hdu.header.get("RA")
                 dec = hdu.header.get("DEC")
                 if ra is not None and dec is not None:
-                    cra.append(float(ra)); cdec.append(float(dec))
+                    cra.append(float(cast(str | float, ra)))
+                    cdec.append(float(cast(str | float, dec)))
     if not cra:
         abort(404)
     cra, cdec = np.asarray(cra), np.asarray(cdec)

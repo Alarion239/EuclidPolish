@@ -14,9 +14,9 @@ import os
 import random
 import tempfile
 import warnings
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 from astropy.io import fits
@@ -683,16 +683,21 @@ def _real_fields(inference: Iterable[Path],
         try:
             planes = [
                 _center_crop(
-                    np.asarray(hdu[0].data, dtype=np.float32)
+                    np.asarray(primary.data, dtype=np.float32)
                     * adu_per_s_to_electrons_factor(
-                        float(hdu[0].header.get(
-                            "MAGZERO", Config.get_band(band).sim_zeropoint_e,
+                        float(cast(
+                            float | int,
+                            primary.header.get(
+                                "MAGZERO",
+                                Config.get_band(band).sim_zeropoint_e,
+                            ),
                         )),
                         Config.get_band(band),
                     ),
                     2560,
                 )
                 for band, hdu in zip(BANDS, hdus, strict=True)
+                for primary in [cast(fits.PrimaryHDU, hdu[0])]
             ]
             for row in range(10):
                 for col in range(10):
@@ -707,7 +712,9 @@ def _real_fields(inference: Iterable[Path],
                 hdu.close()
     for path in overlap:
         with fits.open(path, memmap=True) as hdul:
-            data = np.asarray(hdul[0].data, dtype=np.float32)
+            data = np.asarray(
+                cast(fits.PrimaryHDU, hdul[0]).data, dtype=np.float32,
+            )
             if data.ndim == 3 and data.shape[0] == len(BANDS):
                 data = np.moveaxis(data, 0, -1)
             yield data
@@ -1245,7 +1252,7 @@ def _read_euclid_sources() -> tuple[list[dict[str, Any]], dict[str, Any] | None]
     return rows, meta
 
 
-def _histogram(values: list[float]) -> dict[str, Any]:
+def _histogram(values: Sequence[float]) -> dict[str, Any]:
     data = np.asarray(values, dtype=np.float64)
     data = data[np.isfinite(data)]
     if not data.size:
@@ -1761,7 +1768,7 @@ def query_euclid_population(
             return None
 
     def magnitude(flux: float | None) -> float | None:
-        return uJy_to_ab_mag(flux) if flux is not None and flux > 0 else None
+        return float(uJy_to_ab_mag(flux)) if flux is not None and flux > 0 else None
 
     def signal_to_noise(flux: float | None,
                         error: float | None) -> float | None:
@@ -2225,7 +2232,7 @@ def query_euclid_population_multi(
         "cone_count": len(centers),
         "cones": cone_meta,
         "selection_method": "random saved stars without replacement",
-        "selection_seed": int(selection_seed),
+        "selection_seed": int(selection_seed) if selection_seed is not None else None,
         "minimum_center_separation_arcmin": 2.0 * float(radius_arcmin),
         "radius_arcmin": float(radius_arcmin),
         "area_arcmin2": len(centers) * math.pi * float(radius_arcmin) ** 2,

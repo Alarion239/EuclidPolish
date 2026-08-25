@@ -365,7 +365,7 @@ def stop_server(short: str) -> dict[str, Any]:
     if not meta:
         raise TimeTravelError(f"no sandbox {short!r}")
     pid = meta.get("pid")
-    if _pid_alive(pid):
+    if isinstance(pid, int) and _pid_alive(pid):
         try:
             os.killpg(os.getpgid(pid), signal.SIGTERM)
         except (OSError, ProcessLookupError):

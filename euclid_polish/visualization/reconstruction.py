@@ -216,10 +216,8 @@ def plot_reconstruction(
         #
         #   (b) default → 2 × 2 LR (colour or VIS gray) + SR (gray).
         nbands = len(Config.LR_INPUT_BAND_NAMES)
-        has_cube = (lr_cube is not None and lr_cube.ndim == 3
-                    and lr_cube.shape[-1] == nbands)
-
-        if show_all_bands and has_cube:
+        if (show_all_bands and lr_cube is not None and lr_cube.ndim == 3
+                and lr_cube.shape[-1] == nbands):
             # Third row for the per-band SR planes when the model emits
             # all four bands.
             nrows = 3 if sr_cube is not None else 2
@@ -345,16 +343,19 @@ def plot_reconstruction(
     # the user wants to inspect the VIS channel the network targets.
     # HR (clean truth) keeps the 4-band colour composite since it's
     # noise-free and the colour informs galaxy-SED interpretation.
-    hr_color = (hr_cube is not None and hr_cube.ndim == 3
-                and hr_cube.shape[-1] == nbands)
+    hr_color_cube = (
+        hr_cube
+        if hr_cube is not None and hr_cube.ndim == 3 and hr_cube.shape[-1] == nbands
+        else None
+    )
 
     # ---- Row 1: linear (raw electrons) ----
     vis.add_scale_panel(lr_data, stretch="linear",
                         title_suffix="\nDirty (LR, VIS)",
                         cmap="gray")
     _add_sr_panel(vis, "linear")
-    if hr_color:
-        vis.add_rgb_scale_panel(hr_cube, stretch="linear",
+    if hr_color_cube is not None:
+        vis.add_rgb_scale_panel(hr_color_cube, stretch="linear",
                                 title_suffix="\nTrue Sky (HR)",
                                 rgb_mode=rgb_mode)
     else:
@@ -371,10 +372,10 @@ def plot_reconstruction(
                         title_suffix="\nDirty (LR, VIS)",
                         cmap="gray")
     _add_sr_panel(vis, "asinh")
-    if hr_color:
+    if hr_color_cube is not None:
         # Temperature legend on the asinh HR panel (eye regime only) —
         # one hue ↔ T_eff dictionary serves every eye panel.
-        vis.add_rgb_scale_panel(hr_cube, stretch="asinh",
+        vis.add_rgb_scale_panel(hr_color_cube, stretch="asinh",
                                 asinh_scale=shared_scale,
                                 title_suffix="\nTrue Sky (HR)",
                                 rgb_mode=rgb_mode,

@@ -7,13 +7,15 @@ These were previously grouped under stateless ``ValidationResult`` /
 functions.
 """
 
+from typing import Literal
+
 from euclid_polish.config import Config
 
 # ---------------------------------------------------------------------------
 # Input validation — each returns ``True`` if valid, else an error-message str.
 # ---------------------------------------------------------------------------
 
-def validate_ra(value: str) -> bool | str:
+def validate_ra(value: str) -> Literal[True] | str:
     """Validate a Right Ascension string. ``True`` if valid, else an error message."""
     if len(value) == 0:
         return 'RA is required'
@@ -26,7 +28,7 @@ def validate_ra(value: str) -> bool | str:
     return True
 
 
-def validate_dec(value: str) -> bool | str:
+def validate_dec(value: str) -> Literal[True] | str:
     """Validate a Declination string. ``True`` if valid, else an error message."""
     if len(value) == 0:
         return 'Dec is required'
@@ -39,7 +41,7 @@ def validate_dec(value: str) -> bool | str:
     return True
 
 
-def validate_positive_number(value: str, field_name: str = "Value") -> bool | str:
+def validate_positive_number(value: str, field_name: str = "Value") -> Literal[True] | str:
     """Validate that ``value`` parses to a positive number.
 
     ``True`` if valid, else an error message naming ``field_name``.

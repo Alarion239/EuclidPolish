@@ -41,6 +41,7 @@ deconvolution regime that amplifies noise, and is not supported.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any, Literal, cast
 
 import numpy as np
 from astropy.io import fits
@@ -215,6 +216,7 @@ def compute_differential_kernel(
 
     e_in = psf_euclid.astype(np.float64)
     h_in = psf_hubble.astype(np.float64)
+    cy_e = cx_e = cy_h = cx_h = 0.0
     if recenter:
         # Centroids of the originals, used to undo the net shift on the
         # kernel below. Same flux-weighted positive centroid
@@ -273,7 +275,7 @@ def compute_differential_kernel(
 
 
 def apply_kernel(image: np.ndarray, kernel: np.ndarray,
-                 *, mode: str = "same") -> np.ndarray:
+                 *, mode: Literal["full", "same", "valid"] = "same") -> np.ndarray:
     """Convolve ``image`` with ``kernel`` (FFT-based, same shape out).
 
     Wraps :func:`scipy.signal.fftconvolve` so callers don't have to
@@ -326,18 +328,21 @@ class DifferentialKernel:
     @classmethod
     def from_fits(cls, path: str) -> DifferentialKernel:
         with fits.open(path, memmap=False) as hdul:
-            sci = next(
-                (e for e in hdul if e.is_image and e.data is not None), None,
-            )
+            sci: fits.PrimaryHDU | fits.ImageHDU | None = None
+            for raw_hdu in hdul:
+                candidate = cast(fits.PrimaryHDU | fits.ImageHDU, raw_hdu)
+                if candidate.is_image and candidate.data is not None:
+                    sci = candidate
+                    break
             if sci is None:
                 raise OSError(f"no image HDU in {path}")
             h = sci.header
             return cls(
                 data               = np.asarray(sci.data, dtype=np.float32),
-                pixel_scale_arcsec = float(h.get("PIXSCALE", 0.05)),
+                pixel_scale_arcsec = float(cast(Any, h.get("PIXSCALE", 0.05))),
                 euclid_band        = str(h.get("EUCLBAND", "VIS")),
                 hst_filter         = str(h.get("HSTFILT", "F814W")),
-                regularisation     = float(h.get("WIENERR", 1e-3)),
+                regularisation     = float(cast(Any, h.get("WIENERR", 1e-3))),
             )
 
     @property

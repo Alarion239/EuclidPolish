@@ -37,7 +37,7 @@ import re
 import warnings
 from collections import OrderedDict
 from collections.abc import Callable, Mapping
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 from astropy.io import fits
@@ -68,6 +68,15 @@ BHR_FWHM_PARAM = "bhr_fwhm_arcsec"
 BHR_FWHM_MAX_ARCSEC = float(Config.TARGET_PSF_FWHM_MAX_ARCSEC)
 
 
+def _image_hdu(
+    hdu: object,
+) -> fits.PrimaryHDU | fits.ImageHDU | fits.CompImageHDU | None:
+    """Narrow one heterogeneous HDUList member to an image HDU."""
+    if isinstance(hdu, (fits.PrimaryHDU, fits.ImageHDU, fits.CompImageHDU)):
+        return hdu
+    return None
+
+
 def _bhr_fwhm_arcsec(
     params: Mapping[str, str],
     default: float = Config.TARGET_PSF_FWHM_ARCSEC,
@@ -75,7 +84,9 @@ def _bhr_fwhm_arcsec(
     """Validated viewer-controlled target-preview FWHM."""
     raw = params.get(BHR_FWHM_PARAM)
     try:
-        fwhm = validate_target_fwhm_arcsec(default if raw is None else raw)
+        fwhm = validate_target_fwhm_arcsec(
+            default if raw is None else float(raw),
+        )
     except (TypeError, ValueError) as exc:
         raise ViewerError(400, f"invalid {BHR_FWHM_PARAM}") from exc
     if fwhm > BHR_FWHM_MAX_ARCSEC:
@@ -190,8 +201,10 @@ def _sky_subset(params: dict[str, str]) -> str:
 def _sky_meta(params: dict[str, str]) -> dict[str, Any]:
     subset = _sky_subset(params)
     records_dir = _sky_records_local_dir()
-    tiers = [dict(t) for t in _SKY_RECORD_TIERS
-             if os.path.exists(tfrecord_path(records_dir, f"{t['key']}_{subset}"))]
+    tiers: list[dict[str, Any]] = [
+        dict(t) for t in _SKY_RECORD_TIERS
+        if os.path.exists(tfrecord_path(records_dir, f"{t['key']}_{subset}"))
+    ]
     counts = {t["key"]: (_record_count(f"{t['key']}_{subset}", records_dir) or 0)
               for t in tiers}
     if "hr" in counts:
@@ -271,8 +284,9 @@ def _cutouts_meta(params: dict[str, str]) -> dict[str, Any]:
 
 def _read_fits_plane(path: str) -> np.ndarray:
     with fits.open(path, memmap=False) as hdul:
-        for hdu in hdul:
-            if hdu.data is not None and getattr(hdu.data, "ndim", 0) == 2:
+        for raw_hdu in hdul:
+            hdu = _image_hdu(raw_hdu)
+            if hdu is not None and hdu.data is not None and hdu.data.ndim == 2:
                 return np.asarray(hdu.data, dtype=np.float32)
     raise ViewerError(415, "no 2-D plane in FITS")
 
@@ -417,9 +431,14 @@ def _eval_cube(index: int, tier: str, params: dict[str, str]):
         else:
             path = os.path.join(root, obj["subdir"], _EVAL_TIER_FILES[key])
     with fits.open(path, memmap=False) as hdul:
-        data = hdul[0].data
+        primary = cast(fits.PrimaryHDU, hdul[0])
+        data = primary.data
         with contextlib.suppress(TypeError, ValueError):
-            asinh = float(hdul[0].header.get("ASINH", asinh))
+            asinh = float(cast(
+                str | float, primary.header.get("ASINH", asinh),
+            ))
+    if data is None:
+        raise ViewerError(415, "primary FITS HDU contains no image")
     cube = _as_hwc(data)
     if key == "BHR":
         cube = blur_target_array(
@@ -902,9 +921,10 @@ def _psf_paths() -> dict[str, str]:
 def _psf_count(path: str) -> int:
     """Read the cluster count from FITS headers without materialising pixels."""
     with fits.open(path, memmap=True) as hdul:
-        header_count = hdul[0].header.get("NPSF")
+        primary = cast(fits.PrimaryHDU, hdul[0])
+        header_count = primary.header.get("NPSF")
         if header_count is not None:
-            return max(1, int(header_count))
+            return max(1, int(cast(str | int, header_count)))
         image_hdus = [h for h in hdul if getattr(h, "data", None) is not None]
         return max(1, len(image_hdus) - 1) if len(image_hdus) > 1 else 1
 
@@ -952,19 +972,25 @@ def _psf_cube(index: int, tier: str, params: dict[str, str]):
         raise ViewerError(404, f"{tier} PSF not synchronised")
 
     with fits.open(path, memmap=True) as hdul:
-        image_hdus = [h for h in hdul if getattr(h, "data", None) is not None]
+        image_hdus = [
+            image_hdu for raw_hdu in hdul
+            if (image_hdu := _image_hdu(raw_hdu)) is not None
+            and image_hdu.data is not None
+        ]
         cluster_hdus = image_hdus[1:] if len(image_hdus) > 1 else image_hdus
         if index < 0 or index >= len(cluster_hdus):
             raise ViewerError(404, "PSF cluster out of range")
         hdu = cluster_hdus[index]
         data = np.asarray(hdu.data, dtype=np.float32).copy()
         header = hdu.header
-        pixel_scale = float(header.get(
-            "PXSCALE", header.get("PIXSCALE", 0.0)))
+        pixel_scale = float(cast(
+            str | float,
+            header.get("PXSCALE", header.get("PIXSCALE", 0.0)),
+        ))
         n_stars = header.get("NSTARS")
         label = f"{tier} PSF · cluster {index + 1:03d}"
         if n_stars is not None:
-            label += f" · {int(n_stars):,} stars"
+            label += f" · {int(cast(str | int, n_stars)):,} stars"
 
     if params.get("psf_warp") == "1":
         try:
@@ -1050,9 +1076,12 @@ def _pair_image(path: str) -> tuple[np.ndarray, Any, Any]:
 
     try:
         with fits.open(path, memmap=False) as hdul:
-            primary = hdul[0].header
-            for hdu in hdul:
-                data = getattr(hdu, "data", None)
+            primary = cast(fits.PrimaryHDU, hdul[0]).header
+            for raw_hdu in hdul:
+                hdu = _image_hdu(raw_hdu)
+                if hdu is None:
+                    continue
+                data = hdu.data
                 if data is None or np.ndim(data) != 2:
                     continue
                 header = hdu.header.copy()

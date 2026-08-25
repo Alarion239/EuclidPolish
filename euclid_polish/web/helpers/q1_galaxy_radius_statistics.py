@@ -12,7 +12,7 @@ import os
 import threading
 from collections.abc import Callable, Iterable
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 from astroquery.esa.euclid import Euclid
@@ -185,7 +185,7 @@ def _launch_with_relogin(
     results = job.get_results()
     if results is None:
         raise RuntimeError("The Q1 radius query returned no grouped result")
-    return results
+    return cast(Iterable[Any], results)
 
 
 def _build_radius_statistics_payload(

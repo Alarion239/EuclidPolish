@@ -10,7 +10,7 @@ import shutil
 import textwrap
 import uuid
 from collections.abc import Callable
-from typing import Any
+from typing import Any, cast
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -177,6 +177,9 @@ def _job_generate_reconstruct(
         os.makedirs(out_dir, exist_ok=True)
         out_paths = []
         for k, lr_img in enumerate(lr_records):
+            scene_index = lr_img.index
+            if scene_index is None:
+                raise RuntimeError("synthetic reconstruction records must carry an index")
             # Keep the full 4-band LR cube for the color composite — the
             # 2-D ``lr_data`` returned by reconstruct() is VIS-only.
             lr_cube_for_color = (lr_img.data
@@ -213,7 +216,7 @@ def _job_generate_reconstruct(
             except Exception as e:  # noqa: BLE001 — panel is best-effort
                 print(f"  ⚠ forward(SR) failed: {e}")
 
-            stem = f"gensynth_{hr_image_size}px_idx{lr_img.index:04d}"
+            stem = f"gensynth_{hr_image_size}px_idx{scene_index:04d}"
             # TWO colored reconstructions per scene — the same LR | SR | HR
             # figure rendered once per color regime: "eye" (physical
             # blackbody-T colors, absolute) and "solar" (solar-balanced
@@ -231,7 +234,9 @@ def _job_generate_reconstruct(
                                     rgb_mode=mode)
                 scene_pngs.append(out)
 
-            def _write_fits(path: str, data2d, label: str, *, lr_img=lr_img) -> None:
+            def _write_fits(
+                path: str, data2d, label: str, *, scene_index: int = scene_index,
+            ) -> None:
                 if data2d is None:
                     return
                 arr = np.ascontiguousarray(np.asarray(data2d, dtype=np.float32))
@@ -248,7 +253,7 @@ def _job_generate_reconstruct(
                         "NAXIS3 plane order (band 0 = VIS)")
                 hdu.header["OBJECT"] = (f"EuclidPolish {label} ({band_note})",
                                         "panel label")
-                hdu.header["IDX"]    = (int(lr_img.index), "scene index")
+                hdu.header["IDX"]    = (scene_index, "scene index")
                 hdu.header["HRSIZE"] = (int(hr_image_size), "HR side px (0.05in/px)")
                 hdu.header["CKPT"]   = (str(default_ensemble_dir())[:60],
                                         "ensemble dir")
@@ -276,7 +281,7 @@ def _job_generate_reconstruct(
                 sh["BUNIT"]  = "electron"
                 sh["BANDS"]  = (",".join(Config.LR_INPUT_BAND_NAMES),
                                 "NAXIS3 plane order (band 0 = VIS)")
-                sh["IDX"]    = (int(lr_img.index), "scene index")
+                sh["IDX"]    = (scene_index, "scene index")
                 _fits.PrimaryHDU(stack, header=sh).writeto(
                     os.path.join(syn_dir, "original_stack.fits"),
                     overwrite=True, output_verify="silentfix")
@@ -325,10 +330,15 @@ def _forward_model_sr_residual(
     sr_data = np.asarray(sr_data)
     if sr_data.ndim == 3:
         sr_data = sr_data[..., 0]
-    psfs = load_all_band_psfs(
-        target_pixel_scale=Config.DEFAULT_PIXEL_SCALE,
-        **({"psf_dir": psf_dir} if psf_dir else {}),
-    )
+    if psf_dir:
+        psfs = load_all_band_psfs(
+            psf_dir=psf_dir,
+            target_pixel_scale=Config.DEFAULT_PIXEL_SCALE,
+        )
+    else:
+        psfs = load_all_band_psfs(
+            target_pixel_scale=Config.DEFAULT_PIXEL_SCALE,
+        )
     vis_psf = psfs[Config.BAND_VIS.name]
     sr_hr = scipy_signal.fftconvolve(
         sr_data, vis_psf.data, mode="same",
@@ -407,11 +417,14 @@ def reconstruct_cutout_at(
             if not ok:
                 raise RuntimeError(f"{band_name}: {err}")
         with fits.open(outf) as hdul:
-            arr = hdul[0].data.astype(np.float32)
-            header = hdul[0].header
+            primary = cast(fits.PrimaryHDU, hdul[0])
+            arr = np.asarray(primary.data, dtype=np.float32)
+            header = primary.header
         if band_name == "VIS":
             vis_header = header.copy()
-        magzero = float(header.get("MAGZERO", band.sim_zeropoint_e))
+        magzero = float(cast(str | float, header.get(
+            "MAGZERO", band.sim_zeropoint_e,
+        )))
         # Single source of truth for archive ADU/s → electrons-over-stack.
         adu_to_e = adu_per_s_to_electrons_factor(magzero, band)
         data_e = (arr * adu_to_e).astype(np.float32)
@@ -681,7 +694,7 @@ def _job_roundtrip_inspect(
     remote = f"{cfg.data_dir}/euclid_sky/cutouts/sky_{int(pos_id):04d}.fits"
     cap.tick(0, 4, f"fetching sky_{int(pos_id):04d}.fits from FASRC")
     res = _fasrc_fetcher.fetch_one_file(remote)
-    if not res.ok:
+    if not res.ok or res.local_path is None:
         raise RuntimeError(f"could not fetch {remote}: {res.error}")
     local = res.local_path
 
@@ -689,8 +702,11 @@ def _job_roundtrip_inspect(
     bands_data: dict[str, np.ndarray] = {}
     bands_info: dict[str, dict[str, Any]] = {}
     with fits.open(local) as hdul:
-        names_present = {h.name for h in hdul if getattr(h, "name", "")}
-        primary_hdr = hdul[0].header
+        names_present = {
+            str(name) for hdu in hdul
+            if (name := getattr(hdu, "name", ""))
+        }
+        primary_hdr = cast(fits.PrimaryHDU, hdul[0]).header
         for band_name in Config.LR_INPUT_BAND_NAMES:
             if band_name not in names_present:
                 raise RuntimeError(
@@ -703,11 +719,13 @@ def _job_roundtrip_inspect(
             # direct-cutout reconstruct and the round-trip TFRecord
             # generator (verify_star_photometry-validated). MAGZERO is
             # preserved per band in the sky bundle.
-            band_hdr = hdul[band_name].header
-            magzero = float(band_hdr.get("MAGZERO", band.sim_zeropoint_e))
+            band_hdu = cast(fits.ImageHDU, hdul[band_name])
+            band_hdr = band_hdu.header
+            magzero = float(cast(str | float, band_hdr.get(
+                "MAGZERO", band.sim_zeropoint_e,
+            )))
             adu_to_e = adu_per_s_to_electrons_factor(magzero, band)
-            data_e = (np.asarray(hdul[band_name].data, dtype=np.float32)
-                      * adu_to_e)
+            data_e = np.asarray(band_hdu.data, dtype=np.float32) * adu_to_e
             bands_data[band_name] = data_e
             bands_info[band_name] = {
                 "shape":    list(data_e.shape),
@@ -716,8 +734,8 @@ def _job_roundtrip_inspect(
                 "pix_mean": float(np.mean(data_e)),
                 "pix_std":  float(np.std(data_e)),
             }
-    ra  = float(primary_hdr.get("RA",  float("nan")))
-    dec = float(primary_hdr.get("DEC", float("nan")))
+    ra = float(cast(str | float, primary_hdr.get("RA", float("nan"))))
+    dec = float(cast(str | float, primary_hdr.get("DEC", float("nan"))))
 
     shapes = {n: bands_data[n].shape for n in Config.LR_INPUT_BAND_NAMES}
     if len(set(shapes.values())) != 1:

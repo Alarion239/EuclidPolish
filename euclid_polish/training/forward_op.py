@@ -31,6 +31,7 @@ boundary effects).
 from __future__ import annotations
 
 import os
+from typing import cast
 
 import numpy as np
 import tensorflow as tf
@@ -82,7 +83,8 @@ def _load_vis_psf_kernel(
     if psf_fits_path is None:
         psf_fits_path = _default_vis_psf_path()
     with fits.open(psf_fits_path) as hdul:
-        psf = np.asarray(hdul[0].data, dtype=np.float32)
+        primary = cast(fits.PrimaryHDU, hdul[0])
+        psf = np.asarray(primary.data, dtype=np.float32)
     if psf.ndim != 2:
         raise ValueError(
             f"VIS PSF FITS must be 2-D; got shape {psf.shape}"
@@ -158,7 +160,10 @@ class EuclidVISForwardOp(tf.keras.layers.Layer):
     @property
     def psf_kernel_size(self) -> int:
         """Side length of the active PSF kernel (after optional crop)."""
-        return int(self._psf_kernel.shape[0])
+        size = self._psf_kernel.shape[0]
+        if size is None:
+            raise RuntimeError("PSF kernel has no statically known size")
+        return int(size)
 
     def call(self, hr_vis_linear: tf.Tensor) -> tf.Tensor:
         """Apply PSF + sum-rebin to a batch of HR VIS images.
@@ -184,10 +189,12 @@ class EuclidVISForwardOp(tf.keras.layers.Layer):
         in linear electron units (sum-rebin preserves photometric flux).
         """
         psf = self._psf_kernel                       # [Kh, Kw], unit-sum
-        kh = int(psf.shape[0])
-        kw = int(psf.shape[1])
+        kh_raw, kw_raw = psf.shape[0], psf.shape[1]
+        if kh_raw is None or kw_raw is None:
+            raise RuntimeError("PSF kernel has no statically known spatial shape")
+        kh, kw = int(kh_raw), int(kw_raw)
 
-        img = hr_vis_linear[..., 0]                  # [B, H, W]
+        img = tf.gather(hr_vis_linear, 0, axis=-1)   # [B, H, W]
         h = tf.shape(img)[1]
         w = tf.shape(img)[2]
         # Linear (not circular) convolution: zero-pad both operands to at
@@ -209,7 +216,7 @@ class EuclidVISForwardOp(tf.keras.layers.Layer):
         sh = (kh - 1) // 2
         sw = (kw - 1) // 2
         same = full[:, sh:sh + h, sw:sw + w]         # [B, H, W]
-        x = same[..., tf.newaxis]                    # [B, H, W, 1]
+        x = tf.expand_dims(same, axis=-1)             # [B, H, W, 1]
 
         # Sum-rebin via avg_pool × area. ``padding='VALID'`` trims
         # trailing pixels that don't fit a whole bin — matches

@@ -20,7 +20,7 @@ import tempfile
 from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from urllib.request import urlopen
 
 import numpy as np
@@ -397,12 +397,16 @@ def _location_components(rows: list[dict[str, Any]], link_arcsec: float = 1.0) -
 
     coordinates = [field_coordinates(row) for row in rows]
     for index, coordinate in enumerate(coordinates):
-        if coordinate[0] is None or coordinate[1] is None:
+        coordinate_ra, coordinate_dec = coordinate
+        if coordinate_ra is None or coordinate_dec is None:
             continue
         for other_index, other in enumerate(coordinates[:index]):
-            if other[0] is None or other[1] is None:
+            other_ra, other_dec = other
+            if other_ra is None or other_dec is None:
                 continue
-            if _angular_separation_arcsec(coordinate, other) <= link_arcsec:
+            if _angular_separation_arcsec(
+                (coordinate_ra, coordinate_dec), (other_ra, other_dec),
+            ) <= link_arcsec:
                 join(index, other_index)
     grouped: dict[int, list[int]] = {}
     for index in range(len(rows)):
@@ -529,7 +533,10 @@ def euclid_tile(
     job = Euclid.launch_job_async(query)
     if job is None:
         raise RuntimeError(f"Euclid archive returned no query job for tile {tile_index}")
-    rows = _table_rows(job.get_results())
+    results = job.get_results()
+    if results is None:
+        raise RuntimeError(f"Euclid archive returned no results for tile {tile_index}")
+    rows = _table_rows(cast(Iterable[Any], results))
     if not rows:
         raise RuntimeError(f"Euclid archive has no VIS mosaic product for tile {tile_index}")
     return rows[0]
@@ -569,7 +576,12 @@ def euclid_tiles_covering(ra: float, dec: float, *, strict: bool = False) -> lis
         if strict:
             raise RuntimeError("Euclid coverage query returned no TAP job")
         return []
-    return _table_rows(job.get_results())
+    results = job.get_results()
+    if results is None:
+        if strict:
+            raise RuntimeError("Euclid coverage query returned no TAP results")
+        return []
+    return _table_rows(cast(Iterable[Any], results))
 
 
 def _probe_euclid_tiles(
@@ -735,13 +747,17 @@ def _find_image(path: Path) -> tuple[np.ndarray, Any, Any, str]:
     from astropy.wcs import WCS
 
     with fits.open(path, memmap=False) as hdul:
-        primary_header = hdul[0].header.copy()
-        for hdu in hdul:
-            data = getattr(hdu, "data", None)
+        primary_hdu = cast(fits.PrimaryHDU, hdul[0])
+        primary_header = primary_hdu.header.copy()
+        for raw_hdu in hdul:
+            if not isinstance(raw_hdu, (fits.PrimaryHDU, fits.ImageHDU, fits.CompImageHDU)):
+                continue
+            hdu = raw_hdu
+            data = hdu.data
             if data is None or np.ndim(data) != 2:
                 continue
             image = np.asarray(data, dtype=np.float32)
-            headers = [hdu.header, primary_header] if hdu is not hdul[0] else [hdu.header]
+            headers = [hdu.header, primary_header] if hdu is not primary_hdu else [hdu.header]
             for header in headers:
                 try:
                     wcs = WCS(header).celestial
@@ -1333,8 +1349,9 @@ def _cache_nexus_tile_lr(directory: Path, tile: dict[str, Any]) -> tuple[np.ndar
     lr_path = directory / lr_relative
     if _is_readable_fits(lr_path):
         with fits.open(lr_path, memmap=False) as hdul:
-            data = np.asarray(hdul[0].data, dtype=np.float32)
-            header = hdul[0].header.copy()
+            primary = cast(fits.PrimaryHDU, hdul[0])
+            data = np.asarray(primary.data, dtype=np.float32)
+            header = primary.header.copy()
         if data.ndim == 3 and data.shape[0] == len(Config.LR_INPUT_BAND_NAMES):
             tile["lr_file"] = lr_relative
             return np.moveaxis(data, 0, -1), header
@@ -1746,7 +1763,11 @@ def _download_jwst_esa(observation_id: str, destination: Path) -> str:
         # and let ``_choose_jwst_product`` prefer the best available image.
         observation_id=observation_id, cal_level="ALL", product_type="science",
     )
-    product_name = _choose_jwst_product(_table_rows(products))
+    if products is None:
+        raise RuntimeError("ESA returned no JWST product table")
+    product_name = _choose_jwst_product(
+        _table_rows(cast(Iterable[Any], products)),
+    )
     # astroquery's ESA JWST client writes the requested filename in the
     # process working directory; copy it immediately into our transaction.
     downloaded = Jwst.get_product(file_name=product_name)
@@ -1759,8 +1780,10 @@ def _download_jwst_esa(observation_id: str, destination: Path) -> str:
 def _download_jwst_mast(observation_id: str, destination: Path) -> str:
     from astroquery.mast import Observations
 
-    products = Observations.get_product_list(observation_id)
-    rows = _table_rows(products)
+    products = cast(Any, Observations).get_product_list(observation_id)
+    if products is None:
+        raise RuntimeError("MAST returned no JWST product table")
+    rows = _table_rows(cast(Iterable[Any], products))
     product_name = _choose_jwst_product(rows)
     selected = [
         row for row in products
@@ -1769,6 +1792,8 @@ def _download_jwst_mast(observation_id: str, destination: Path) -> str:
     downloaded = Observations.download_products(
         selected or products[:1], download_dir=str(destination.parent), mrp_only=False,
     )
+    if downloaded is None:
+        raise RuntimeError("MAST returned no download manifest")
     paths = [Path(str(value)) for value in downloaded["Local Path"] if Path(str(value)).exists()]
     if not paths:
         raise RuntimeError("MAST returned no local JWST product path")

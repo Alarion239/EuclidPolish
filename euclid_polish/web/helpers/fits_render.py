@@ -26,6 +26,16 @@ from euclid_polish.web.helpers._const import _CUTOUT_FNAME_RE
 from euclid_polish.web.helpers.status import _cached_fasrc_psf_dir
 
 
+def _two_dimensional_image_data(hdu: object) -> np.ndarray | None:
+    """Return data from a concrete image HDU when it is two-dimensional."""
+    if not isinstance(hdu, (fits.PrimaryHDU, fits.ImageHDU, fits.CompImageHDU)):
+        return None
+    data = hdu.data
+    if data is None or data.ndim != 2:
+        return None
+    return np.asarray(data)
+
+
 def _resolve_cutout_path(band_name: str, filename: str,
                          output_dir: str) -> str:
     """Map ``(band, filename)`` → safe absolute FITS path.
@@ -79,8 +89,9 @@ def _render_fits_to_png_adaptive(fits_path: str, size: int) -> bytes:
     with fits.open(fits_path, memmap=False) as hdul:
         data = None
         for hdu in hdul:
-            if hdu.data is not None and getattr(hdu.data, "ndim", 0) == 2:
-                data = np.asarray(hdu.data, dtype=np.float64)
+            image_data = _two_dimensional_image_data(hdu)
+            if image_data is not None:
+                data = np.asarray(image_data, dtype=np.float64)
                 break
     if data is None:
         abort(415)
@@ -100,7 +111,7 @@ def _render_fits_to_png_adaptive(fits_path: str, size: int) -> bytes:
     img8 = np.flipud(img8)                            # FITS lower-origin → PIL
     pil = Image.fromarray(img8, mode="L")
     if size and size != pil.size[0]:
-        pil = pil.resize((int(size), int(size)), Image.NEAREST)
+        pil = pil.resize((int(size), int(size)), Image.Resampling.NEAREST)
     buf = io.BytesIO()
     pil.save(buf, format="PNG", optimize=True)
     return buf.getvalue()
@@ -124,8 +135,9 @@ def _render_fits_to_png(fits_path: str, band: BandConfig,
     with fits.open(fits_path, memmap=False) as hdul:
         data = None
         for hdu in hdul:
-            if hdu.data is not None and getattr(hdu.data, "ndim", 0) == 2:
-                data = np.asarray(hdu.data, dtype=np.float32)
+            image_data = _two_dimensional_image_data(hdu)
+            if image_data is not None:
+                data = np.asarray(image_data, dtype=np.float32)
                 break
     if data is None:
         abort(415)
@@ -145,7 +157,7 @@ def _render_fits_to_png(fits_path: str, band: BandConfig,
     img8 = np.flipud(img8)
     pil = Image.fromarray(img8, mode="L")
     if size is not None and size > 0 and size != pil.size[0]:
-        pil = pil.resize((int(size), int(size)), Image.NEAREST)
+        pil = pil.resize((int(size), int(size)), Image.Resampling.NEAREST)
     buf = io.BytesIO()
     pil.save(buf, format="PNG", optimize=True)
     return buf.getvalue()
@@ -248,6 +260,7 @@ def _render_psf_panel_png(band: str | None, dpi: int = 110) -> bytes:
             pad=12,
         )
         ax.set_xticks([]); ax.set_yticks([])
+    assert image is not None
     colorbar = fig.colorbar(image, ax=axes[0].tolist(), shrink=0.82, pad=0.02)
     colorbar.set_label("log₁₀ normalized PSF intensity", fontsize=AXIS_LABEL_SIZE)
     colorbar.ax.tick_params(labelsize=TICK_LABEL_SIZE)

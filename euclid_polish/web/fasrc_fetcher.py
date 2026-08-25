@@ -292,8 +292,11 @@ def fetch_one_file(
                 )
 
         _ensure_parent_dir(local)
+        ssh = STATE.ssh
+        if ssh is None:
+            return FetchResult(ok=False, error="ssh not connected")
         try:
-            rc, _out, err = STATE.ssh.rsync_pull(
+            rc, _out, err = ssh.rsync_pull(
                 remote_path,
                 os.path.dirname(local),
                 # NO ``-t``: we deliberately let the local copy take the

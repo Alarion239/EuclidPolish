@@ -36,7 +36,6 @@ from euclid_polish.config import Config
 from euclid_polish.eval.combiner import load_combiner
 from euclid_polish.model import Model
 
-
 BANDS = tuple(Config.LR_INPUT_BAND_NAMES)
 MEMBER_RE = re.compile(r"^(\d+)·psnr$")
 

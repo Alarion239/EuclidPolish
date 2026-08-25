@@ -16,6 +16,11 @@ Entry points:
     python scripts/serve.py
 """
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from euclid_polish.web.app import create_app
+
 __all__ = ["create_app"]
 
 

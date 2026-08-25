@@ -292,10 +292,12 @@ def resolve_mosaics(
     for i, obj in enumerate(objects):
         if sep[i] > max_sep:
             continue
+        if obj.id is None:
+            continue
         m = mosaics[int(idx[i])]
         out[obj.id] = {
             'file_path': f"{m['file_path']}/{m['file_name']}",
-            'tile_index': int(m['tile_index']),
+            'tile_index': int(np.asarray(m['tile_index']).item()),
         }
     return out
 
@@ -391,9 +393,12 @@ def fetch_cutout_at(
         frame="icrs",
     )
     idx, sep, _ = star_coord.match_to_catalog_sky(tile_coords)
-    if sep > 0.5 * u.degree:
+    separation_deg = float(
+        np.asarray(sep.to_value(u.degree)).reshape(-1)[0]
+    )
+    if separation_deg > 0.5:
         return False, (
-            f"closest {band_name} tile is {sep[0].to_value(u.degree):.2f}° away "
+            f"closest {band_name} tile is {separation_deg:.2f}° away "
             f"— position likely outside Euclid Q1 coverage"
         )
 
@@ -403,7 +408,7 @@ def fetch_cutout_at(
         Euclid.get_cutout(
             file_path=file_path,
             instrument=cfg.instrument,
-            id=int(m["tile_index"]),
+            id=int(np.asarray(m["tile_index"]).item()),
             coordinate=star_coord,
             radius=cutout_radius_arcmin * u.arcmin,
             output_file=output_file,

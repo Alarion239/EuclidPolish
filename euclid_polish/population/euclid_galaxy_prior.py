@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import asdict, dataclass
+from typing import cast
 
 import numpy as np
 from scipy.optimize import minimize
@@ -25,6 +26,8 @@ RADIUS_FIT_MIN_SELECTED_PER_MAG_BIN = 20
 RADIUS_FIT_EFFECTIVE_WEIGHT_CAP = 1000.0
 RADIUS_FIT_FAINT_MAGNITUDE = 25.5
 BRIGHT_BRIDGE_JOIN_MAGNITUDES = (16.4, 19.0, 20.9)
+
+type _Covariance2x2 = tuple[tuple[float, float], tuple[float, float]]
 
 
 def fit_continuous_generation_magnitude_law(
@@ -207,6 +210,10 @@ class ConditionalRadiusLaw:
     def from_payload(cls, payload: dict) -> ConditionalRadiusLaw:
         """Load the current radius law, ignoring surplus keys in v11 artifacts."""
         try:
+            covariance = tuple(
+                tuple(float(item) for item in row)
+                for row in payload["covariance"]
+            )
             law = cls(
                 version=int(payload["version"]),
                 pivot_mag=float(payload["pivot_mag"]),
@@ -224,10 +231,7 @@ class ConditionalRadiusLaw:
                 weighted_rows=float(payload["weighted_rows"]),
                 residual_rms_dex=float(payload["residual_rms_dex"]),
                 r_squared=float(payload["r_squared"]),
-                covariance=tuple(
-                    tuple(float(item) for item in row)
-                    for row in payload["covariance"]
-                ),
+                covariance=cast(_Covariance2x2, covariance),
                 selection=str(payload["selection"]),
                 fit_min_selected_per_magnitude_bin=int(
                     payload["fit_min_selected_per_magnitude_bin"]
@@ -455,8 +459,9 @@ def fit_linear_conditional_radius_law_from_binned_counts(
             residual_total / float(np.sum(effective_row_weight))
         )),
         r_squared=float(r_squared),
-        covariance=tuple(
-            tuple(float(value) for value in row) for row in covariance
+        covariance=(
+            (float(covariance[0, 0]), float(covariance[0, 1])),
+            (float(covariance[1, 0]), float(covariance[1, 1])),
         ),
         selection=(
             "bounded aggregate Q1 magnitude x log-radius bins; at least "

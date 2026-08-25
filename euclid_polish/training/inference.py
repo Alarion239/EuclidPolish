@@ -214,8 +214,8 @@ def load_model_from_checkpoint(
     checkpoint_dir: str,
     scale: int,
     num_res_blocks: int = Config.DEFAULT_NUM_RES_BLOCKS,
-    nchan_in: int = None,
-    nchan_out: int = None,
+    nchan_in: int | None = None,
+    nchan_out: int | None = None,
 ):
     """Build a WDSR model and restore weights from a TF checkpoint directory.
 
@@ -387,6 +387,5 @@ def reconstruct(
         lr_display = lr_data
 
     return lr_display, sr_data
-
 
 

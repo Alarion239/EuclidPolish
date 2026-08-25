@@ -12,6 +12,7 @@ instead of asinh.
 """
 
 import os
+from typing import Any, cast
 
 import astropy.units as u
 import matplotlib.pyplot as plt
@@ -201,8 +202,12 @@ def plot_star_positions(stars: list[dict], fig=None):
     coords = SkyCoord(ra=ra * u.deg, dec=dec * u.deg, frame="icrs")
     # Negate wrapped longitude so right ascension increases to the left, as
     # required for conventional astronomical sky maps.
-    ra_rad  = -coords.ra.wrap_at(180 * u.deg).radian
-    dec_rad = coords.dec.radian
+    # Astropy exposes frame attributes dynamically, so its static type is much
+    # wider than the concrete Longitude/Latitude values created above.
+    ra_angle = cast(Any, coords.ra)
+    dec_angle = cast(Any, coords.dec)
+    ra_rad = -np.asarray(ra_angle.wrap_at(180 * u.deg).radian, dtype=np.float64)
+    dec_rad = np.asarray(dec_angle.radian, dtype=np.float64)
     # Visual sizing — brighter stars (lower mag) → larger dots, capped.
     # Range floored so even faint stars are visible against the sky grid.
     crowding_scale = max(0.22, min(1.0, (5000.0 / len(stars)) ** 0.5))

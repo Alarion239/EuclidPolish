@@ -19,7 +19,7 @@ import csv
 import math
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol, cast
 
 import numpy as np
 from astropy.cosmology import Planck15
@@ -46,6 +46,18 @@ EUCLID_MAG_EDGES = np.arange(20.0, 28.0001, 0.25)
 EUCLID_LOG_RE_EDGES = np.arange(np.log10(0.075), np.log10(1.5001), 0.10)
 TNG_DRAW_VIS_MAG_EDGES = np.arange(18.0, 30.0001, 0.20)
 BRIGHT_TRANSFER_MAG_MAX = 24.0
+
+class _FLRWCosmology(Protocol):
+    """Subset of the FLRW API used by this calibration."""
+
+    def distmod(self, z: Any) -> Any: ...
+
+    def differential_comoving_volume(self, z: Any) -> Any: ...
+
+    def kpc_proper_per_arcmin(self, z: Any) -> Any: ...
+
+
+_COSMOLOGY = cast(_FLRWCosmology, Planck15)
 
 
 @dataclass(frozen=True)
@@ -929,7 +941,7 @@ def _lf_expected_counts(
         + q_quadratic * log1pz**2
     )
     alpha = alpha_0 + alpha_evolution * log1pz
-    absolute_like = mm - Planck15.distmod(z).value[:, None]
+    absolute_like = mm - _COSMOLOGY.distmod(z).value[:, None]
     ratio = np.power(
         10.0, np.clip(0.4 * (m_star - absolute_like), -20.0, 20.0)
     )
@@ -942,7 +954,7 @@ def _lf_expected_counts(
     )
     steradian_to_arcmin2 = ((180.0 / np.pi) * 60.0) ** 2
     volume = (
-        Planck15.differential_comoving_volume(z).value
+        _COSMOLOGY.differential_comoving_volume(z).value
         / steradian_to_arcmin2
     )[:, None]
     return (
@@ -1032,9 +1044,9 @@ def fit_size_evolution(
     magnitude = magnitude[valid]
     redshift = redshift[valid]
     radius_arcsec = radius_arcsec[valid]
-    distance_modulus = Planck15.distmod(redshift).value
+    distance_modulus = _COSMOLOGY.distmod(redshift).value
     absolute_like = magnitude - distance_modulus
-    kpc_per_arcsec = Planck15.kpc_proper_per_arcmin(redshift).value / 60.0
+    kpc_per_arcsec = _COSMOLOGY.kpc_proper_per_arcmin(redshift).value / 60.0
     log_radius = np.log10(radius_arcsec * kpc_per_arcsec)
     magnitude_coordinate = absolute_like + 20.0
     redshift_coordinate = np.log10(1.0 + redshift)
@@ -1128,7 +1140,7 @@ def _schechter_density(
         + fit.m_star_log1pz_quadratic * log1pz**2
     )
     alpha = fit.alpha + fit.alpha_log1pz_slope * log1pz
-    absolute_like = mm - Planck15.distmod(z).value[:, None]
+    absolute_like = mm - _COSMOLOGY.distmod(z).value[:, None]
     ratio = np.power(
         10.0, np.clip(0.4 * (m_star - absolute_like), -20.0, 20.0)
     )
@@ -1158,7 +1170,7 @@ def latent_population_cube(
     lf_density = _schechter_density(lf_fit, z, magnitude)
     steradian_to_arcmin2 = ((180.0 / np.pi) * 60.0) ** 2
     volume = (
-        Planck15.differential_comoving_volume(z).value
+        _COSMOLOGY.differential_comoving_volume(z).value
         / steradian_to_arcmin2
     )[:, None]
     zm_density = (
@@ -1166,7 +1178,7 @@ def latent_population_cube(
         * np.diff(magnitude_edges)[None, :]
     )
     absolute_like = (
-        magnitude[None, :] - Planck15.distmod(z).value[:, None]
+        magnitude[None, :] - _COSMOLOGY.distmod(z).value[:, None]
     )
     magnitude_coordinate = absolute_like + 20.0
     redshift_coordinate = np.log10(1.0 + z)[:, None]
@@ -1184,7 +1196,7 @@ def latent_population_cube(
             -3.0, 3.0,
         )
     )
-    kpc_per_arcsec = Planck15.kpc_proper_per_arcmin(z).value / 60.0
+    kpc_per_arcsec = _COSMOLOGY.kpc_proper_per_arcmin(z).value / 60.0
     mean_log_arcsec = mean_log_kpc - np.log10(kpc_per_arcsec)[:, None]
     upper = (
         log_radius_edges[None, None, 1:] - mean_log_arcsec[:, :, None]

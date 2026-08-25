@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import io
 import os
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 from astropy.io import fits
@@ -86,7 +86,9 @@ def register(app):
         if not os.path.isfile(krn_path):
             return None
         with fits.open(krn_path) as hdul:
-            return np.asarray(hdul[0].data, dtype=np.float32)
+            return np.asarray(
+                cast(fits.PrimaryHDU, hdul[0]).data, dtype=np.float32,
+            )
 
     def _hst_analytic_lr_cube(
         clean_hr_data: np.ndarray, kernel: np.ndarray, *, rebin: int = 2,

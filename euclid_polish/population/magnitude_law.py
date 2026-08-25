@@ -357,16 +357,27 @@ class ContinuousBrightBridgeFaintCappedMagnitudeLaw:
                 "magnitude distribution is not a continuous bright-bridge law"
             )
         try:
+            bright_slopes_values = [
+                float(value) for value in payload["bright_slopes"]
+            ]
+            bright_join_values = [
+                float(value) for value in payload["bright_join_magnitudes"]
+            ]
+            if len(bright_slopes_values) != 3 or len(bright_join_values) != 3:
+                raise ValueError("bright-bridge parameters must each have length 3")
             law = cls(
                 straight_law=StraightMagnitudeLaw.from_payload(
                     payload["straight_law"]
                 ),
-                bright_slopes=tuple(
-                    float(value) for value in payload["bright_slopes"]
+                bright_slopes=(
+                    bright_slopes_values[0],
+                    bright_slopes_values[1],
+                    bright_slopes_values[2],
                 ),
-                bright_join_magnitudes=tuple(
-                    float(value)
-                    for value in payload["bright_join_magnitudes"]
+                bright_join_magnitudes=(
+                    bright_join_values[0],
+                    bright_join_values[1],
+                    bright_join_values[2],
                 ),
                 density_cap_arcmin2_mag=float(
                     payload["density_cap_arcmin2_mag"]

@@ -70,7 +70,7 @@ def _sync_clusters_meta(cfg) -> dict[str, Any]:
     r = _fasrc_fetcher.fetch_one_file(
         f"{cfg.data_dir}/euclid_psf/{PSF_CLUSTERS_META}",
         force=True, max_bytes=16 * 1024 * 1024)
-    if not r.ok:
+    if not r.ok or r.local_path is None:
         return {"ok": False, "error": r.error or "rsync of the metadata failed"}
     import json
 

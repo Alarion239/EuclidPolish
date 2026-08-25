@@ -250,14 +250,17 @@ def register(app):
         return (f"{cfg.data_dir}/{Config.Tng.SKIRT_SUBDIR}/"
                 f"{_INFOGRAPHIC_SUBDIR}/{_INFOGRAPHIC_NAMES[kind]}")
 
-    def _serve_artifact(kind: str, mimetype: str, *, as_attachment=False,
-                        download_name=None, max_bytes=None):
+    def _serve_artifact(kind: str, mimetype: str, *, as_attachment: bool = False,
+                        download_name: str | None = None,
+                        max_bytes: int | None = None):
         # force=True so a freshly-rendered job result isn't masked by the
         # fetcher's TTL cache. The PNGs are tiny; the FITS needs the larger cap.
-        kw = {"force": True}
-        if max_bytes is not None:
-            kw["max_bytes"] = max_bytes
-        result = fetch_one_file(_artifact_remote(kind), **kw)
+        if max_bytes is None:
+            result = fetch_one_file(_artifact_remote(kind), force=True)
+        else:
+            result = fetch_one_file(
+                _artifact_remote(kind), force=True, max_bytes=max_bytes,
+            )
         if not result.ok or not result.local_path:
             hint = ("no result yet — submit the job above, then load the result "
                     "once it completes.")

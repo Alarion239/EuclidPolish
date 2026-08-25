@@ -11,6 +11,7 @@ from __future__ import annotations
 import glob as _glob
 import os as _os
 from collections.abc import Callable
+from typing import cast
 
 import numpy as np
 import tensorflow as tf
@@ -260,7 +261,7 @@ class Model:
                     return u < keep
 
                 ds = (ds.enumerate()
-                        .filter(_keep)
+                        .filter(cast(Callable[..., tf.Tensor], _keep))
                         .map(lambda _i, pair: pair))
             scale = self._scale
             hr_crop = Config.DEFAULT_HR_CROP_SIZE
@@ -326,7 +327,9 @@ class Model:
                                        tf.cast(i, tf.int32)]))
                 return u < keep
 
-            ds = ds.enumerate().filter(_keep).map(lambda _i, f: f)
+            ds = (ds.enumerate()
+                  .filter(cast(Callable[..., tf.Tensor], _keep))
+                  .map(lambda _i, f: f))
 
         def _fwd(field):
             lr, hr = tf.numpy_function(

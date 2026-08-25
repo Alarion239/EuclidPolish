@@ -12,6 +12,7 @@ import glob
 import os
 import sys
 import traceback
+from typing import cast
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -787,7 +788,7 @@ class InteractiveCLI:
                 (dec, validate_dec(dec), "Dec"),
                 (radius, validate_positive_number(radius, "Radius"), "Radius"),
             ):
-                if check is not True:
+                if isinstance(check, str):
                     print_error(check)
                     return
             ra_val, dec_val, radius_val = float(ra), float(dec), float(radius)
@@ -1170,8 +1171,12 @@ class InteractiveCLI:
                 eval_sub = eval_subset(records_dir)
                 lr_val = ImageSet.read(tfrecord_path(records_dir, f"dirty_{eval_sub}"))
                 hr_val = ImageSet.read(tfrecord_path(records_dir, f"clean_{eval_sub}"))
+                lr_source = lr_val.source_path
+                hr_source = hr_val.source_path
+                if lr_source is None or hr_source is None:
+                    raise RuntimeError("TFRecord image sets must retain their source paths")
                 valid_ds = m._build_training_pipeline(
-                    lr_val.source_path, hr_val.source_path, 1, augment=False
+                    lr_source, hr_source, 1, augment=False
                 )
                 metrics = Trainer(model=m._tf_model,
                                   checkpoint_dir=checkpoint_dir).evaluate(valid_ds)
@@ -1225,8 +1230,12 @@ class InteractiveCLI:
                       num_res_blocks=num_res_blocks_val)
             lr_val = ImageSet.read(tfrecord_path(records_dir, f"dirty_{eval_sub}"))
             hr_val = ImageSet.read(tfrecord_path(records_dir, f"clean_{eval_sub}"))
+            lr_source = lr_val.source_path
+            hr_source = hr_val.source_path
+            if lr_source is None or hr_source is None:
+                raise RuntimeError("TFRecord image sets must retain their source paths")
             valid_ds = m._build_training_pipeline(
-                lr_val.source_path, hr_val.source_path, 1, augment=False
+                lr_source, hr_source, 1, augment=False
             )
 
             print(f"Evaluating on {eval_sub} set...")
@@ -1298,7 +1307,8 @@ class InteractiveCLI:
         """Apply super-resolution to a single LR image."""
         # Branch-local inputs, pre-bound so the later `input_source`-guarded
         # reads are always defined (one of the two branches below fills them).
-        chosen_lr = chosen_hr = None
+        chosen_lr: list[Image] | None = None
+        chosen_hr: list[Image | None] | None = None
         num_reconstruct = 0
         lr_data_input = lr_path = None
         input_source = select(
@@ -1338,14 +1348,14 @@ class InteractiveCLI:
 
             # Also try to load matching HR for comparison
             clean_file = tfr_path.replace("dirty_", "clean_")
-            chosen_hr = [None] * num_reconstruct
+            matched_hr = [cast(Image | None, None)] * num_reconstruct
             if os.path.exists(clean_file):
                 clean_images = read_images(clean_file, num_images=9999)
                 clean_by_idx = {img.index: img for img in clean_images}
                 for i, lr_img in enumerate(chosen_lr):
                     hr_match = clean_by_idx.get(lr_img.index)
                     if hr_match is not None:
-                        chosen_hr[i] = dataclasses.replace(
+                        matched_hr[i] = dataclasses.replace(
                             hr_match,
                             data=blur_target_array(
                                 hr_match.data,
@@ -1353,6 +1363,7 @@ class InteractiveCLI:
                                 pixel_scale_arcsec=hr_match.pixel_scale_arcsec,
                             ),
                         )
+            chosen_hr = matched_hr
         else:
             lr_file = input("Path to LR image (.npy or .png): ").strip()
             if not lr_file or not os.path.exists(lr_file):
@@ -1388,6 +1399,8 @@ class InteractiveCLI:
                 return
             print(f"\nLoading model from checkpoint {ckpt_dir}...")
             if input_source == "tfrecord":
+                if chosen_lr is None or chosen_hr is None:
+                    raise RuntimeError("TFRecord reconstruction inputs were not loaded")
                 model = Model(
                     ckpt_dir,
                     scale=scale_val,
@@ -1411,6 +1424,8 @@ class InteractiveCLI:
                     f"{Config.VIS_RECONSTRUCTION_DIR}"
                 )
                 return
+            if lr_data_input is None or lr_path is None:
+                raise RuntimeError("file reconstruction input was not loaded")
             model = load_model_from_checkpoint(
                 ckpt_dir,
                 scale_val,
@@ -1535,7 +1550,7 @@ class InteractiveCLI:
             elif choice == "viz_star_positions":
                 self._visualize_star_positions()
 
-    def _visualize_star_positions(self, output_dir: str = None):
+    def _visualize_star_positions(self, output_dir: str | None = None):
         """Visualize star positions from the catalog."""
         if output_dir is None:
             output_dir = select(
@@ -1547,6 +1562,9 @@ class InteractiveCLI:
             ).ask()
             if output_dir == "custom":
                 output_dir = input("Enter path: ").strip()
+        if output_dir is None:
+            print_cancelled()
+            return
 
         catalog_path = os.path.join(output_dir, Config.CATALOG_FILE)
         if not os.path.exists(catalog_path):
@@ -1617,7 +1635,10 @@ class InteractiveCLI:
 
             try:
                 with fits.open(fits_files[0]) as hdul:
-                    data = hdul[0].data
+                    primary_data = cast(fits.PrimaryHDU, hdul[0]).data
+                    if primary_data is None:
+                        raise ValueError("primary FITS HDU contains no image")
+                    data = np.asarray(primary_data)
 
                 visualizer = BaseVisualizer(rows=1, cols=3, figsize=(18, 6),
                                             vmin=float(np.min(data)), vmax=float(np.max(data)))

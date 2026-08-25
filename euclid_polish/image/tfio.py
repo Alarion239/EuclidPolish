@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextlib
 import glob as _glob
 import os
+from collections.abc import Iterable
 
 import tensorflow as tf
 from tqdm import tqdm
@@ -53,14 +54,14 @@ def parse_example(raw_record: tf.Tensor, num_channels: int) -> tf.Tensor:
 
 
 def write_images(
-    images: list[Image],
+    images: Iterable[Image],
     name: str,
     records_dir: str = Config.RECORDS_DIR_V2,
 ) -> str:
     """Write ``Image`` objects to a single TFRecord file; return its path.
 
-    Materialises the whole list in RAM; for large datasets prefer
-    :func:`open_writer` and stream one image at a time.
+    Consumes ``images`` once and writes each record immediately; callers may
+    therefore pass either an in-memory collection or a lazy iterable.
     """
     os.makedirs(records_dir, exist_ok=True)
     path = tfrecord_path(records_dir, name)

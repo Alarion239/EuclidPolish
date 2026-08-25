@@ -126,3 +126,25 @@ def test_nonfinite_coordinates_are_skipped_without_aborting_band(tmp_path):
     assert result["invalid_coordinate_ids"] == [1, 2]
     reloaded = CatalogObject.read(catalog_path)
     assert all(o.is_download_failed(_SIZE, band="VIS") for o in reloaded)
+
+
+def test_missing_id_is_skipped_and_marked_failed(tmp_path):
+    output_dir = str(tmp_path)
+    missing_id = CatalogObject(ra=150.0, dec=2.0, id=None, magnitude=18.0)
+    catalog_path = os.path.join(output_dir, Config.CATALOG_FILE)
+    CatalogObject.write([missing_id], catalog_path)
+    cat = EuclidCatalog._unauthenticated()
+
+    seen = []
+
+    def fake_resolve(objs, config, *, relogin):
+        seen.extend(objs)
+        return {}
+
+    with patch("euclid_polish.catalog.client.resolve_mosaics", fake_resolve):
+        result = cat.download_cutouts(
+            [missing_id], output_dir, _cfg(), show_progress=False)
+
+    assert seen == []
+    assert result["failed"] == 1
+    assert missing_id.is_download_failed(_SIZE, band="VIS")

@@ -218,7 +218,10 @@ class CatalogObject:
             except OSError:
                 pass
             return []
-        return [cls.from_row(row.to_dict()) for _, row in df.iterrows()]
+        return [
+            cls.from_row({str(column): value for column, value in row.items()})
+            for _, row in df.iterrows()
+        ]
 
     @classmethod
     def write(cls, objects: list[CatalogObject], path: str) -> None:

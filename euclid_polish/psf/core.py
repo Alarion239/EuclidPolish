@@ -24,7 +24,7 @@ from __future__ import annotations
 import os
 import warnings
 from dataclasses import dataclass, replace
-from typing import ClassVar
+from typing import Any, ClassVar, Literal, cast
 
 import numpy as np
 from astropy.io import fits
@@ -51,6 +51,8 @@ from euclid_polish.psf import measurements as _meas
 # resamples PSFs to this scale before convolution. Exposed here so
 # loaders / scripts share one constant instead of hard-coding 0.05.
 DEFAULT_HR_PIXEL_SCALE: float = float(Config.DEFAULT_PIXEL_SCALE)
+
+_SplineOrder = Literal[0, 1, 2, 3, 4, 5]
 
 
 @dataclass
@@ -370,9 +372,10 @@ class PSF(StampCarrier):
             # Exact quarter-turn: index remap, no interpolation.
             out = np.rot90(np.asarray(self.data), k=int(round(angle / 90.0)) % 4)
         else:
+            interpolation_order = cast(_SplineOrder, int(order))
             out = ndi_rotate(
                 self.data.astype(np.float64), angle,
-                reshape=False, order=int(order),
+                reshape=False, order=interpolation_order,
                 mode="constant", cval=0.0,
             )
             if clip_negative:
@@ -439,8 +442,9 @@ class PSF(StampCarrier):
                     f"dy={dy.shape}, dx={dx.shape}, PSF={data.shape}"
                 )
         yy, xx = np.indices(data.shape, dtype=np.float64)
+        interpolation_order = cast(_SplineOrder, int(order))
         out = map_coordinates(
-            data, (yy + dy, xx + dx), order=int(order), mode="reflect",
+            data, (yy + dy, xx + dx), order=interpolation_order, mode="reflect",
         )
         if clip_negative:
             out = np.clip(out, 0.0, None)
@@ -470,22 +474,26 @@ class PSF(StampCarrier):
         avoids repeating the two Gaussian filters four times while preserving
         exactly the same geometry across bands.
         """
-        shape = tuple(int(v) for v in shape)
+        if len(shape) != 2:
+            raise ValueError(f"shape must contain two positive sizes, got {shape}")
+        validated_shape = (int(shape[0]), int(shape[1]))
         alpha = float(alpha)
         sigma = float(sigma)
-        if len(shape) != 2 or any(v <= 0 for v in shape):
-            raise ValueError(f"shape must contain two positive sizes, got {shape}")
+        if any(v <= 0 for v in validated_shape):
+            raise ValueError(
+                f"shape must contain two positive sizes, got {validated_shape}"
+            )
         if alpha < 0.0:
             raise ValueError(f"alpha must be >= 0, got {alpha}")
         if sigma <= 0.0:
             raise ValueError(f"sigma must be > 0, got {sigma}")
         rng = np.random.default_rng(seed)
         dy = gaussian_filter(
-            rng.uniform(-1.0, 1.0, size=shape), sigma,
+            rng.uniform(-1.0, 1.0, size=validated_shape), sigma,
             mode="reflect",
         ) * alpha
         dx = gaussian_filter(
-            rng.uniform(-1.0, 1.0, size=shape), sigma,
+            rng.uniform(-1.0, 1.0, size=validated_shape), sigma,
             mode="reflect",
         ) * alpha
         return dy, dx
@@ -561,15 +569,18 @@ class PSF(StampCarrier):
         purposes).
         """
         with fits.open(fits_path) as hdul:
-            header = hdul[0].header
-            data = np.asarray(hdul[0].data, dtype=np.float32)
+            primary = cast(fits.PrimaryHDU, hdul[0])
+            header = primary.header
+            if primary.data is None:
+                raise OSError(f"PSF FITS has no image data: {fits_path}")
+            data = np.asarray(primary.data, dtype=np.float32)
         stamp = read_stamp_cards(header)
         # Two historical FITS conventions — PXSCALE (our save) and
         # PIXSCALE (HST extractor + HLSP WCS). Accept either.
         pix = header.get("PXSCALE", None)
         if pix is None:
             pix = header.get("PIXSCALE", 0.0)
-        pixel_scale = float(pix)
+        pixel_scale = float(cast(Any, pix))
         if pixel_scale == 0.0:
             warnings.warn(
                 f"PSF loaded from {fits_path!r} has pixel_scale=0.0 "
@@ -578,8 +589,14 @@ class PSF(StampCarrier):
                 UserWarning,
                 stacklevel=2,
             )
-        oversampling = int(header["OVERSAMP"]) if "OVERSAMP" in header else None
-        fwhm_arcsec  = float(header["FWHM"])   if "FWHM"    in header else None
+        oversampling = (
+            int(cast(Any, header["OVERSAMP"]))
+            if "OVERSAMP" in header else None
+        )
+        fwhm_arcsec = (
+            float(cast(Any, header["FWHM"]))
+            if "FWHM" in header else None
+        )
         psf = cls(
             data=data,
             pixel_scale=pixel_scale,

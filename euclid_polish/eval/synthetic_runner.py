@@ -178,21 +178,22 @@ def run_synthetic_eval(
     hr_recs = read_images(tfrecord_path(rdir, f"hr_{sub}"),
                           num_images=window)
     raw_hr_by = {
-        rec.index: np.array(rec.data, dtype=np.float32, copy=True)
-        for rec in hr_recs
+        image.index: np.array(image.data, dtype=np.float32, copy=True)
+        for image in hr_recs
+        if image.index is not None
     }
-    for rec in hr_recs:
-        rec.data = blur_target_array(
-            rec.data,
+    for image in hr_recs:
+        image.data = blur_target_array(
+            image.data,
             Config.TARGET_PSF_FWHM_ARCSEC,
             pixel_scale_arcsec=getattr(
-                rec, "pixel_scale_arcsec", Config.DEFAULT_PIXEL_SCALE),
+                image, "pixel_scale_arcsec", Config.DEFAULT_PIXEL_SCALE),
         )
     if not hr_recs:
         _emit(f"no HR {sub} records read.")
         return {"rows": [], "n_ok": 0, "n_skip": 0, "groups": {}}
-    hr_by = {h.index: h for h in hr_recs}
-    lr_by = {r.index: r for r in lr_recs}
+    hr_by = {h.index: h for h in hr_recs if h.index is not None}
+    lr_by = {r.index: r for r in lr_recs if r.index is not None}
     common = sorted(set(lr_by) & set(hr_by) & set(by_field))
     if not common:
         _emit("no validation fields with matching LR/HR + source catalog.")
@@ -279,6 +280,8 @@ def run_synthetic_eval(
                     sr_arr = np.asarray(sr_data, dtype=np.float32)     # (2H,2W,C)
                     _emit(f"  field {idx}: inference")
                 cur_idx = idx
+            if lr_cube is None or sr_arr is None:
+                raise RuntimeError(f"field {idx} reconstruction arrays were not initialized")
             bhr_raw = np.asarray(hr_by[idx].data, dtype=np.float32)
             hr_raw = raw_hr_by[idx]
 

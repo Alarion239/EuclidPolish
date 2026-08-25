@@ -22,6 +22,7 @@ non-lens catalogs.
 from __future__ import annotations
 
 import csv
+from collections.abc import Sequence
 from typing import Any
 
 # Accepted source-column aliases → canonical name. Matched case-insensitively
@@ -37,7 +38,7 @@ class CatalogError(ValueError):
     """Raised when a catalog CSV is missing required columns or has bad rows."""
 
 
-def _resolve_column(header: list[str], aliases: tuple) -> str | None:
+def _resolve_column(header: Sequence[str], aliases: Sequence[str]) -> str | None:
     """Return the first header entry whose lower-case form is in ``aliases``."""
     lower = {h.lower().strip(): h for h in header}
     for alias in aliases:
@@ -101,9 +102,8 @@ def read_eval_catalog(
         want_grade = grade.strip().lower() if grade is not None else None
         rows: list[dict[str, Any]] = []
         for lineno, raw in enumerate(reader, start=2):
-            row_grade = (raw.get(grade_col).strip()
-                         if grade_col and raw.get(grade_col) is not None
-                         else None)
+            raw_grade = raw.get(grade_col) if grade_col else None
+            row_grade = raw_grade.strip() if isinstance(raw_grade, str) else None
             if want_grade is not None and (
                 row_grade is None or row_grade.lower() != want_grade
             ):

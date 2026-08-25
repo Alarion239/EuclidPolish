@@ -3,6 +3,43 @@
 from __future__ import annotations
 
 from importlib import import_module
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from euclid_polish.image import Image
+    from euclid_polish.sky.generation.cosmos2025 import (
+        Cosmos2025Catalog,
+        CosmosCatalog,
+        GalaxyParams,
+        open_cosmos2025,
+    )
+    from euclid_polish.sky.generation.lens_population import (
+        LensParams,
+        einstein_radius_sis,
+        render_lens_to_multiband_canvas,
+    )
+    from euclid_polish.sky.generation.profiles import (
+        add_sersic_to_bands,
+        compute_sersic_stamp,
+        draw_bulge_disk,
+        draw_sersic,
+        evaluate_sersic_at_coords,
+        sersic_amp_from_flux,
+        sersic_b_n,
+    )
+    from euclid_polish.sky.generation.sky_simulator import (
+        SkySimulator,
+        SkySimulatorConfig,
+    )
+    from euclid_polish.sky.observation.observation_simulator import (
+        ObservationSimulator,
+        ObservationSimulatorConfig,
+    )
+    from euclid_polish.sky.observation.resample import (
+        cubic_upsample,
+        lanczos3_upsample,
+        upsample,
+    )
 
 _EXPORTS = {
     "Image": ("euclid_polish.image", "Image"),
@@ -41,7 +78,30 @@ _EXPORTS = {
     "cubic_upsample": ("euclid_polish.sky.observation.resample", "cubic_upsample"),
 }
 
-__all__ = list(_EXPORTS)
+__all__ = (
+    "Image",
+    "Cosmos2025Catalog",
+    "CosmosCatalog",
+    "GalaxyParams",
+    "open_cosmos2025",
+    "LensParams",
+    "einstein_radius_sis",
+    "render_lens_to_multiband_canvas",
+    "add_sersic_to_bands",
+    "compute_sersic_stamp",
+    "draw_bulge_disk",
+    "draw_sersic",
+    "evaluate_sersic_at_coords",
+    "sersic_amp_from_flux",
+    "sersic_b_n",
+    "SkySimulator",
+    "SkySimulatorConfig",
+    "ObservationSimulator",
+    "ObservationSimulatorConfig",
+    "upsample",
+    "lanczos3_upsample",
+    "cubic_upsample",
+)
 
 
 def __getattr__(name: str):

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import warnings
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 
@@ -43,7 +43,9 @@ def _segment_centroids(
         data,
         (DETECTION_BOX_SIZE, DETECTION_BOX_SIZE),
         filter_size=(3, 3),
-        sigma_clip=SigmaClip(sigma=3.0, maxiters=5),
+        # Photutils leaves this parameter unannotated and Pyright infers the
+        # private default-sentinel type instead of the documented SigmaClip.
+        sigma_clip=cast(Any, SigmaClip(sigma=3.0, maxiters=5)),
         bkg_estimator=MedianBackground(),
     )
     residual = data - background.background

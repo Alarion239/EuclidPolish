@@ -1368,14 +1368,17 @@ def star_state() -> dict[str, Any]:
                 "PHZ_STAR_PROB and colours from the fixed-Q1 sample"
             ],
         }
+    is_active = False
+    if (candidate is not None and active is not None
+            and candidate_current and active_current):
+        is_active = bool(
+            candidate.get("valid")
+            and candidate.get("fingerprint") == active.get("fingerprint")
+        )
     return {
         "candidate": candidate,
         "active": active if active_current else None,
-        "is_active": bool(
-            candidate_current and active_current
-            and candidate.get("valid")
-            and candidate.get("fingerprint") == active.get("fingerprint")
-        ),
+        "is_active": is_active,
     }
 
 
@@ -1395,7 +1398,8 @@ def active_star() -> dict[str, Any] | None:
 
 def activate_star_candidate() -> dict[str, Any]:
     candidate = _read(star_candidate_path())
-    if not _current_star_artifact(candidate) or not candidate.get("valid"):
+    if (candidate is None or not _current_star_artifact(candidate)
+            or not candidate.get("valid")):
         raise ValueError("No valid fitted stellar population is available")
     payload = {**candidate, "active": True}
     _write(active_star_path(), payload)

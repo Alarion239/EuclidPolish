@@ -55,7 +55,7 @@ def _ab_flux_norm(band_name: str) -> float:
     historical ``1 / (t_total_s · 10^(0.4·zp_rate))`` — same anchor, now
     routed through the canonical conversion.)
     """
-    return 1.0 / ab_mag_to_electrons(0.0, Config.get_band(band_name))
+    return 1.0 / float(ab_mag_to_electrons(0.0, Config.get_band(band_name)))
 
 
 def _solar_balance(band_name: str) -> float:

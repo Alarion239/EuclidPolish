@@ -431,9 +431,10 @@ class EnsembleDiagnosticsAccumulator:
                 med = error_centers[median_idx].astype(float)
                 med[totals <= 0] = np.nan
                 all_medians.extend(med[np.isfinite(med)].tolist())
+                median_values = med.astype(object)
+                median_values[~np.isfinite(med)] = None
                 models[kind] = {
-                    "median_log_error": np.where(
-                        np.isfinite(med), med, None).tolist(),
+                    "median_log_error": median_values.tolist(),
                     "counts": totals.astype(int).tolist(),
                 }
             axes[axis_mode] = {
@@ -628,7 +629,8 @@ def render_std_vs_brightness(out_png: str,
             label="median std per brightness bin")
     # asinh axis, ticks labelled in electrons
     tick_e = np.array([0.0, 100, 1e3, 1e4, 1e5, 1e6])
-    ax.xaxis.set_major_locator(FixedLocator(np.arcsinh(tick_e / acc.stretch)))
+    ax.xaxis.set_major_locator(FixedLocator(
+        np.arcsinh(tick_e / acc.stretch).tolist()))
     ax.xaxis.set_major_formatter(FixedFormatter(
         ["0", "100", "10³", "10⁴", "10⁵", "10⁶"]))
     ax.set_xlim(acc.bright_edges[0], acc.bright_edges[-1])

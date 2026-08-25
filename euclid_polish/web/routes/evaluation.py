@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import csv
 import os
-from typing import Any
+from typing import Any, cast
 
 from flask import abort, jsonify, render_template, request, send_file
 
@@ -107,10 +107,15 @@ def _render_object_png(obj_dir: str, rgb_mode: str, out_png: str,
     from euclid_polish.training.inference import plot_reconstruction
 
     with fits.open(sr_fits) as h:
-        sr = np.asarray(h[0].data, dtype=np.float32)
-        header_asinh = float(h[0].header.get("ASINH", Config.STRETCH_SCALE_E))
+        primary = cast(fits.PrimaryHDU, h[0])
+        sr = np.asarray(primary.data, dtype=np.float32)
+        header_asinh = float(cast(
+            str | float,
+            primary.header.get("ASINH", Config.STRETCH_SCALE_E),
+        ))
     with fits.open(stack_fits) as h:
-        stack = np.asarray(h[0].data, dtype=np.float32)   # (4, H, W) or (H, W)
+        primary = cast(fits.PrimaryHDU, h[0])
+        stack = np.asarray(primary.data, dtype=np.float32)  # (4, H, W) or (H, W)
 
     lr_cube = np.moveaxis(stack, 0, -1) if stack.ndim == 3 else stack
     lr_vis = lr_cube[..., 0] if lr_cube.ndim == 3 else lr_cube

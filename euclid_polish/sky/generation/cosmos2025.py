@@ -24,6 +24,7 @@ import os
 import tempfile
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from typing import cast
 
 import numpy as np
 from astropy.io import fits
@@ -42,6 +43,19 @@ _FILTERED_ARRAYS = (
     "disk_re_arcsec", "bulge_re_arcsec", "disk_q", "bulge_q",
     "bulge_flux_e", "disk_flux_e",
 )
+
+
+def _four_band_fluxes(values: object) -> tuple[float, float, float, float]:
+    """Materialize one catalog row in the project's fixed four-band order."""
+    fluxes = np.asarray(values, dtype=np.float64)
+    if fluxes.shape != (4,):
+        raise ValueError(f"expected four band fluxes, got shape {fluxes.shape}")
+    return (
+        float(fluxes[0]),
+        float(fluxes[1]),
+        float(fluxes[2]),
+        float(fluxes[3]),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -258,9 +272,18 @@ class Cosmos2025Catalog(CosmosCatalog):
             print(f"[cosmos2025] loading {path} ...")
 
         with fits.open(path, memmap=True) as hdul:
-            photo  = hdul[Config.COSMOS2025_HDU_PHOTOMETRY].data
-            leph   = hdul[Config.COSMOS2025_HDU_LEPHARE].data
-            bd     = hdul[Config.COSMOS2025_HDU_BD].data
+            photo_hdu = cast(
+                fits.BinTableHDU, hdul[Config.COSMOS2025_HDU_PHOTOMETRY]
+            )
+            leph_hdu = cast(
+                fits.BinTableHDU, hdul[Config.COSMOS2025_HDU_LEPHARE]
+            )
+            bd_hdu = cast(fits.BinTableHDU, hdul[Config.COSMOS2025_HDU_BD])
+            photo = photo_hdu.data
+            leph = leph_hdu.data
+            bd = bd_hdu.data
+            if photo is None or leph is None or bd is None:
+                raise OSError("COSMOS2025 catalog is missing a required table")
 
             # Photo (sky position + flags)
             ids       = np.asarray(photo["id"], dtype=np.int64)
@@ -366,8 +389,8 @@ class Cosmos2025Catalog(CosmosCatalog):
             bulge_axis_ratio  = float(self.bulge_q[i]),
             disk_r_e_arcsec   = float(self.disk_re_arcsec[i]),
             disk_axis_ratio   = float(self.disk_q[i]),
-            bulge_flux_e      = tuple(float(v) for v in self.bulge_flux_e[i]),
-            disk_flux_e       = tuple(float(v) for v in self.disk_flux_e[i]),
+            bulge_flux_e      = _four_band_fluxes(self.bulge_flux_e[i]),
+            disk_flux_e       = _four_band_fluxes(self.disk_flux_e[i]),
         )
 
     def sample_galaxy(self, rng: np.random.Generator) -> GalaxyParams:

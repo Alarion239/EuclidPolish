@@ -13,7 +13,7 @@ import os
 import warnings
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 from astropy.io import fits
@@ -234,8 +234,9 @@ def _load_or_download_lr(ra: float, dec: float, root: Path,
         else:
             tick(index, 4 + GRID_SIDE * GRID_SIDE, f"reusing {name} field")
         with fits.open(path, memmap=False) as hdul:
-            data = np.asarray(hdul[0].data, np.float32)
-            header = hdul[0].header.copy()
+            primary = cast(fits.PrimaryHDU, hdul[0])
+            data = np.asarray(primary.data, np.float32)
+            header = primary.header.copy()
         if data.shape != (FIELD_SIZE, FIELD_SIZE):
             print(f"  {name}: archive returned {data.shape}; center-cropping to "
                   f"{FIELD_SIZE}x{FIELD_SIZE}")
@@ -384,7 +385,7 @@ def cache_real_field(ra: float, dec: float, *,
         "field_size": FIELD_SIZE, "tile_size": TILE_SIZE, "grid_side": GRID_SIDE,
         "count": GRID_SIDE * GRID_SIDE, "member_labels": labels,
         "combiner_kinds": sorted(combiners), "combiner_state": combiner_state,
-        "pca_n": min(3, max(0, ensemble.n_members - 1)),
+        "pca_n": min(3, max(0, n_members - 1)),
         "pca_amps": pca_amps, "pca_var": pca_var,
     }
     _write_json(manifest_path(identifier), manifest)

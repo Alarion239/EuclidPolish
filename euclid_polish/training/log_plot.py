@@ -186,11 +186,11 @@ def plot_training_records(
         except (TypeError, ValueError):
             return None
 
-    def _smoothed(x: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    def _smoothed(x: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray] | None:
         if smooth_window and smooth_window > 1 and y.size >= smooth_window:
             k = np.ones(smooth_window) / smooth_window
             return x[smooth_window - 1:], np.convolve(y, k, mode="valid")
-        return None, None
+        return None
 
     # Stacked panels (shared x): PSNR always; per-band PSNR when ≥ 2 bands
     # are logged; per-lane Loss when logged; the composite save-best score
@@ -221,12 +221,14 @@ def plot_training_records(
         ax_psnr.plot(hst_x, hst_y, color="tab:green", lw=1.6, alpha=0.9,
                      label="HST PSNR")
     # Optional smoothed overlays.
-    sx, sy = _smoothed(steps, psnr_syn)
-    if sx is not None:
+    smoothed = _smoothed(steps, psnr_syn)
+    if smoothed is not None:
+        sx, sy = smoothed
         ax_psnr.plot(sx, sy, color="tab:red", lw=2.6, label="Synthetic PSNR (MA)")
     if hst_x.size:
-        sx, sy = _smoothed(hst_x, hst_y)
-        if sx is not None:
+        smoothed = _smoothed(hst_x, hst_y)
+        if smoothed is not None:
+            sx, sy = smoothed
             ax_psnr.plot(sx, sy, color="tab:green", lw=2.6, label="HST PSNR (MA)")
     ax_psnr.set_ylabel("PSNR (dB)  ·  higher better")
 
@@ -235,8 +237,9 @@ def plot_training_records(
     if anc_x.size:
         ax_psnr.plot(anc_x, anc_y, color="tab:purple", lw=1.6, ls="--",
                      alpha=0.9, label="Star-anchor PSNR")
-        sx, sy = _smoothed(anc_x, anc_y)
-        if sx is not None:
+        smoothed = _smoothed(anc_x, anc_y)
+        if smoothed is not None:
+            sx, sy = smoothed
             ax_psnr.plot(sx, sy, color="tab:purple", lw=2.6, ls="--",
                          label="Star-anchor PSNR (MA)")
 
@@ -266,8 +269,9 @@ def plot_training_records(
         for bx, by, bcolor, blabel, bcol in band_data:
             ax_bands.plot(bx, by, color=bcolor, lw=1.4, alpha=0.9,
                           label=f"{blabel} PSNR")
-            sx, sy = _smoothed(bx, by)
-            if sx is not None:
+            smoothed = _smoothed(bx, by)
+            if smoothed is not None:
+                sx, sy = smoothed
                 ax_bands.plot(sx, sy, color=bcolor, lw=2.4,
                               label=f"{blabel} PSNR (MA)")
             b_band = _baseline_val(bcol)
@@ -286,8 +290,9 @@ def plot_training_records(
     if ax_loss is not None:
         for lx, ly, color, lab in loss_data:
             ax_loss.plot(lx, ly, color=color, lw=1.6, alpha=0.9, label=lab)
-            sx, sy = _smoothed(lx, ly)
-            if sx is not None:
+            smoothed = _smoothed(lx, ly)
+            if smoothed is not None:
+                sx, sy = smoothed
                 ax_loss.plot(sx, sy, color=color, lw=2.6, label=f"{lab} (MA)")
         ax_loss.set_yscale("log")
         ax_loss.set_ylabel("Loss  ·  lower better (log)")
@@ -304,8 +309,9 @@ def plot_training_records(
         running_best = np.maximum.accumulate(score_y)
         ax_score.plot(score_x, running_best, color="black", lw=1.2, ls="--",
                       drawstyle="steps-post", label="best so far (save threshold)")
-        sx, sy = _smoothed(score_x, score_y)
-        if sx is not None:
+        smoothed = _smoothed(score_x, score_y)
+        if smoothed is not None:
+            sx, sy = smoothed
             ax_score.plot(sx, sy, color="tab:blue", lw=2.6,
                           label="save-best score (MA)")
         b_score = _baseline_val("save_best_score")
@@ -331,8 +337,9 @@ def plot_training_records(
             running_min = np.minimum.accumulate(cl_y)
             ax_cl.plot(cl_x, running_min, color="darkorange", lw=1.2, ls="--",
                        drawstyle="steps-post", label="loss best so far")
-            sx, sy = _smoothed(cl_x, cl_y)
-            if sx is not None:
+            smoothed = _smoothed(cl_x, cl_y)
+            if smoothed is not None:
+                sx, sy = smoothed
                 ax_cl.plot(sx, sy, color="tab:orange", lw=2.6,
                            label="combined val loss (MA)")
             b_loss = _baseline_val("combined_loss")
@@ -429,5 +436,4 @@ def ensemble_training_series(base_dir: str) -> list[dict]:
         if psnr or loss:
             out.append({"name": os.path.basename(d), "psnr": psnr, "loss": loss})
     return out
-
 

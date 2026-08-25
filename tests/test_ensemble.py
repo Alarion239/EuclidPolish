@@ -80,6 +80,18 @@ def test_evaluate_without_hr_still_reports_disagreement():
     assert out["disagreement"]["mean_std_e"] > 0.0
 
 
+def test_evaluate_unindexed_image_without_callback():
+    """An index is optional when no per-field persistence callback needs it."""
+    ens = EnsembleModel("x", _models=[
+        _Stub(lambda a, c=c: a + c) for c in (0.0, 5.0)])
+    image = _img(np.ones((4, 4, 1), np.float32), index=None)
+
+    out = ens.evaluate([image])
+
+    assert out["n_fields"] == 1
+    assert out["n_scored"] == 0
+
+
 def test_predict_images_shapes_and_roles():
     from euclid_polish.image import Role
     ens = EnsembleModel("x", _models=[_Stub(lambda a: a), _Stub(lambda a: a + 1)])

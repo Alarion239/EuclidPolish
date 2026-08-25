@@ -130,7 +130,10 @@ def _dither_phases(
     )
     order = rng.permutation(len(all_phases))
     return [
-        tuple(int(v) for v in all_phases[order[i % len(order)]])
+        (
+            int(all_phases[order[i % len(order)], 0]),
+            int(all_phases[order[i % len(order)], 1]),
+        )
         for i in range(n_exposures)
     ]
 

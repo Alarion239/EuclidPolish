@@ -294,8 +294,8 @@ def fold_events(text: str) -> JobStatus:
         value = ev.get("value")
         ts    = ev.get("ts")
         try:
-            ts_f = float(ts)
-        except (TypeError, ValueError):
+            ts_f = float(ts) if isinstance(ts, (str, int, float)) else 0.0
+        except ValueError:
             ts_f = 0.0
         saw_any = True
 

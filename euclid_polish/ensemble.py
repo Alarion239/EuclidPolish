@@ -568,7 +568,12 @@ class EnsembleModel:
             # SR, per-pixel std and HR so a caller can persist cubes + the PCA
             # disagreement basis for the client-side viewer/animation.
             if on_field is not None:
-                on_field(int(lr.index), np.asarray(lr.data, np.float32),
+                field_index = lr.index
+                if field_index is None:
+                    raise ValueError(
+                        "The per-field ensemble callback requires indexed LR images"
+                    )
+                on_field(field_index, np.asarray(lr.data, np.float32),
                          preds, mean, std, hr_data)
 
             if on_progress is not None:

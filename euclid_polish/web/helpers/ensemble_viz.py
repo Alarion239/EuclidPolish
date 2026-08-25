@@ -45,10 +45,12 @@ from euclid_polish.eval.ensemble_diagnostics import (
 from euclid_polish.eval.power_spectrum import (
     LR_NYQUIST_CYC_ARCSEC,
     EnsembleSpectrumAccumulator,
+    EnsembleSpectrumCurves,
     ensemble_ps_plot_curves,
     render_ensemble_power_spectrum,
 )
 from euclid_polish.eval.subsets import eval_subset
+from euclid_polish.image import Image
 from euclid_polish.image.tfio import read_images, tfrecord_path
 from euclid_polish.model import _checkpoint_exists
 from euclid_polish.provenance.checkpoint import read_checkpoint_provenance
@@ -66,6 +68,15 @@ from euclid_polish.visualization.base import BaseVisualizer
 from euclid_polish.web import fasrc_config
 from euclid_polish.web.helpers.paths import _sky_records_local_dir
 from euclid_polish.web.remote import STATE
+
+
+def _record_index(record: Image) -> int:
+    """Return the required persisted index of one TFRecord image."""
+    index = record.index
+    if index is None:
+        raise RuntimeError("cached evaluation records must carry an index")
+    return index
+
 
 _MEMBER_GLOB = "member_*"
 
@@ -799,6 +810,7 @@ class _CombinerMetricAcc:
         if self.mem is None:
             self.mem = np.zeros(len(mem_v))
             self.mem_l1 = np.zeros(len(mem_v))
+        assert self.mem_l1 is not None
         for i, m in enumerate(mem_v):
             self.mem[i] += _vis_stretched_psnr(m, hr_v)
             self.mem_l1[i] += _vis_stretched_l1(m, hr_v)
@@ -834,7 +846,8 @@ class _CombinerMetricAcc:
         }
 
 
-def _evals_payload(ps_curves: dict | None, diag: EnsembleDiagnosticsAccumulator,
+def _evals_payload(ps_curves: EnsembleSpectrumCurves | None,
+                   diag: EnsembleDiagnosticsAccumulator,
                    member_labels: list, subset: str,
                    combiner: dict | None = None,
                    model_combiners: dict[str, dict | None] | None = None,
@@ -886,15 +899,20 @@ def _evals_payload(ps_curves: dict | None, diag: EnsembleDiagnosticsAccumulator,
                                   if 0 <= pos < len(member_labels)
                                   else sid.replace("_", " "))
             else:
-                item["label"] = {
+                fallback_label = {
                     "ensemble_mean": "ensemble mean",
                     "lr_baseline": "LR baseline",
                     "combiner": "combiner",
                     "model_agreement": "model agreement",
-                }.get(sid, (COMBINER_MODELS.get(sid.removesuffix("_combiner"))
-                             .label if sid.endswith("_combiner") and
-                             sid.removesuffix("_combiner") in COMBINER_MODELS
-                             else sid.replace("_", " ")))
+                }.get(sid)
+                combiner_spec = COMBINER_MODELS.get(sid.removesuffix("_combiner"))
+                item["label"] = (
+                    fallback_label
+                    if fallback_label is not None
+                    else combiner_spec.label
+                    if sid.endswith("_combiner") and combiner_spec is not None
+                    else sid.replace("_", " ")
+                )
             score_rows.append(item)
         c["scores"] = score_rows
         payload["coherence"] = c
@@ -1193,9 +1211,9 @@ def _collect_bounded_ablation_patches(
     vis_scale = float(Config.get_band("VIS").asinh_stretch_scale_e)
 
     for idx in wanted:
-        while current is not None and int(current.index) < idx:
+        while current is not None and _record_index(current) < idx:
             current = next(target_iter, None)
-        record = current if current is not None and int(current.index) == idx else None
+        record = current if current is not None and _record_index(current) == idx else None
         stack = load_cached_member_stack(
             idx, subset="validate", cubes_dir=val_dir, active=labels)
         if record is None or stack is None:
@@ -1336,12 +1354,12 @@ def job_combiner_fit(cap, *, num_images: int, n_kernels: int = 128,
         current_target = next(target_iter, None)
         for index in wanted:
             while (current_target is not None
-                   and int(current_target.index) < int(index)):
+                   and _record_index(current_target) < int(index)):
                 current_target = next(target_iter, None)
             target_record = (
                 current_target
                 if current_target is not None
-                and int(current_target.index) == int(index)
+                and _record_index(current_target) == int(index)
                 else None)
             stack = load_cached_member_stack(
                 index, subset="validate", cubes_dir=validate_dir, active=labels)
@@ -2478,14 +2496,15 @@ def _iter_cached_fields(starless: bool):
     current_lr = next(lr_iter, None) if lr_iter is not None else None
     for rec in sorted(idxs):
         while (current_target is not None
-               and int(current_target.index) < int(rec)):
+               and _record_index(current_target) < int(rec)):
             current_target = next(target_iter, None)
         hr = (current_target if current_target is not None
-              and int(current_target.index) == int(rec) else None)
-        while (current_lr is not None and int(current_lr.index) < int(rec)):
+              and _record_index(current_target) == int(rec) else None)
+        while (lr_iter is not None and current_lr is not None
+               and _record_index(current_lr) < int(rec)):
             current_lr = next(lr_iter, None)
         lr_rec = (current_lr if current_lr is not None
-                  and int(current_lr.index) == int(rec) else None)
+                  and _record_index(current_lr) == int(rec) else None)
         sr_f = os.path.join(cubes_dir, f"sr_{rec:05d}.npy")
         if not os.path.isfile(sr_f) or hr is None:
             continue

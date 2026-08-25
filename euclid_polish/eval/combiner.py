@@ -231,11 +231,13 @@ class FitBufferAccumulator:
                 np.asarray(raw[mi, ..., vis_index], np.float64) / knee)
             mse = float(np.mean((pred_vis - truth_vis) ** 2))
             member_psnr[mi] = _stretched_psnr_from_mse(mse)
-        if self._member_vis_psnr_sum is None:
-            self._member_vis_psnr_sum = np.zeros(m, np.float64)
-        if len(self._member_vis_psnr_sum) != m:
+        member_vis_psnr_sum = self._member_vis_psnr_sum
+        if member_vis_psnr_sum is None:
+            member_vis_psnr_sum = np.zeros(m, np.float64)
+            self._member_vis_psnr_sum = member_vis_psnr_sum
+        if len(member_vis_psnr_sum) != m:
             raise ValueError("fit-buffer member count changed between fields")
-        self._member_vis_psnr_sum += member_psnr
+        member_vis_psnr_sum += member_psnr
         band_scales = np.asarray(
             [_band_scale(name) for name in self.band_names], np.float64)
         members_asinh = np.arcsinh(
@@ -244,9 +246,11 @@ class FitBufferAccumulator:
             np.asarray(target, np.float64) / band_scales[None, None, :])
         member_l1 = np.mean(
             np.abs(members_asinh - target_asinh[None, ...]), axis=(1, 2, 3))
-        if self._member_asinh_l1_sum is None:
-            self._member_asinh_l1_sum = np.zeros(m, np.float64)
-        self._member_asinh_l1_sum += member_l1
+        member_asinh_l1_sum = self._member_asinh_l1_sum
+        if member_asinh_l1_sum is None:
+            member_asinh_l1_sum = np.zeros(m, np.float64)
+            self._member_asinh_l1_sum = member_asinh_l1_sum
+        member_asinh_l1_sum += member_l1
         self._n_psnr_fields += 1
         if raw.shape[1] == raw.shape[2]:
             from euclid_polish.eval.power_spectrum import EnsembleSpectrumAccumulator
@@ -366,9 +370,12 @@ def _weighted_kmeans(rows: np.ndarray, sample_weight: np.ndarray,
             result[start:stop] = np.sum(delta * delta, axis=2)
         return result
 
+    anchor_distance: np.ndarray | None = None
     if len(anchors):
-        anchor_distance = np.min(distance_matrix(points, anchors), axis=1)
-        first_score = weights * anchor_distance
+        computed_anchor_distance = np.min(
+            distance_matrix(points, anchors), axis=1)
+        anchor_distance = computed_anchor_distance
+        first_score = weights * computed_anchor_distance
     else:
         first_score = weights
     if float(first_score.sum()) <= 0:
@@ -377,7 +384,7 @@ def _weighted_kmeans(rows: np.ndarray, sample_weight: np.ndarray,
     centers[0] = points[first]
     chosen.append(first)
     nearest = np.sum((points - centers[0]) ** 2, axis=1)
-    if len(anchors):
+    if anchor_distance is not None:
         nearest = np.minimum(nearest, anchor_distance)
     for ci in range(1, k):
         score = weights * nearest
@@ -733,7 +740,7 @@ class RawIncrementalMinMeanMaxRBFCombiner:
                             - feature_mean[None, :]) / scales[None, :])
         center_scores = (center_geometry @ components.T if len(center_geometry)
                          else np.empty((0, 2), np.float64))
-        bounds = []
+        bounds: list[tuple[float, float]] = []
         for ci in range(2):
             lo, hi = np.quantile(scores[:, ci], (0.005, 0.995))
             if len(center_scores):
@@ -756,11 +763,12 @@ class RawIncrementalMinMeanMaxRBFCombiner:
         from scipy.spatial import cKDTree
         neighbor_count = min(
             len(scores), max(1, int(integration_neighbors)))
-        distances, neighbors = cKDTree(scores).query(
+        raw_distances, raw_neighbors = cKDTree(scores).query(
             projected_grid, k=neighbor_count, workers=1)
-        if neighbor_count == 1:
-            distances = distances[:, None]
-            neighbors = neighbors[:, None]
+        distances = np.asarray(raw_distances, np.float64).reshape(
+            len(projected_grid), neighbor_count)
+        neighbors = np.asarray(raw_neighbors, np.intp).reshape(
+            len(projected_grid), neighbor_count)
         bandwidth = np.maximum(distances[:, -1], 1e-8)
         kernel = np.exp(
             -0.5 * (distances / bandwidth[:, None]) ** 2)
@@ -863,7 +871,7 @@ def _fit_raw_incremental_minmeanmax_rbf(
     train_basis = np.empty((len(Xtr), 0), np.float32)
     val_basis = np.empty((len(Xval), 0), np.float32)
     coefficients = np.empty((0, len(labels)), np.float64)
-    history: list[dict[str, float | int | str | bool]] = []
+    history: list[dict[str, object]] = []
     best_val_l1 = initial_val_l1
     best_val_vis_mse = initial_val_vis_mse
     best_k = 0
@@ -932,6 +940,8 @@ def _fit_raw_incremental_minmeanmax_rbf(
             x = np.asarray(result.x, np.float64)
             if bool(result.success) or int(result.status) != 1:
                 break
+        if result is None:
+            raise RuntimeError("joint optimizer did not run")
         final_loss, final_gradient = objective(x)
         return (
             x.reshape(k, members), bool(result.success), [total_iterations],
@@ -1423,7 +1433,7 @@ def fit_combiner_minibatched(
     accepted_kernel_mask = np.empty((0,), bool)
     best_accepted_kernel_mask = accepted_kernel_mask.copy()
     best_stage = 0
-    history: list[dict] = []
+    history: list[dict[str, object]] = []
     optimizer_rng = np.random.default_rng(int(seed) + 307)
     abort_reason = "kernel_limit"
     stage = 0
@@ -1484,10 +1494,8 @@ def fit_combiner_minibatched(
         optimized_theta = theta[used:] if freeze_previous_blocks else theta
         theta_first = np.zeros_like(optimized_theta)
         theta_second = np.zeros_like(optimized_theta)
-        global_first = (None if freeze_previous_blocks
-                        else np.zeros_like(global_logits))
-        global_second = (None if freeze_previous_blocks
-                         else np.zeros_like(global_logits))
+        global_first = np.zeros_like(global_logits)
+        global_second = np.zeros_like(global_logits)
         frozen_prefix_before = theta[:used].copy()
         frozen_global_before = global_logits.copy()
         adam_step = 0
@@ -1536,6 +1544,7 @@ def fit_combiner_minibatched(
                         theta_gradient = (
                             phi[:, used:].T @ logit_gradient
                             + float(ridge) * theta[used:])
+                        global_gradient = np.zeros_like(global_logits)
                     else:
                         theta_gradient = (
                             phi.T @ logit_gradient + float(ridge) * theta)

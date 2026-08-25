@@ -13,7 +13,7 @@ import importlib.util
 import io
 import json
 import os
-from typing import Any
+from typing import Any, TypedDict, cast
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -36,6 +36,12 @@ from euclid_polish.web.helpers.fits_render import _render_fits_to_png
 from euclid_polish.web.helpers.paths import _safe_relpath
 
 
+class _RemoteEntry(TypedDict):
+    name: str
+    size: int
+    mtime: float
+
+
 def register(app):
     # EXPERIMENTAL lane — disabled for now. Attribute read at call time
     # so tests can flip the flag before app creation.
@@ -54,7 +60,8 @@ def register(app):
             glob_pattern="*.fits",
         )
         files: list[dict[str, Any]] = []
-        for e in (entries or []):
+        remote_entries = cast(list[_RemoteEntry], entries or [])
+        for e in remote_entries:
             files.append({
                 "name":         e["name"],
                 "size_mb":      round(e["size"] / (1024 * 1024), 2),
@@ -88,7 +95,8 @@ def register(app):
             max_entries=2000,
         )
         # Newest tile run is the most interesting; sort by mtime desc.
-        entries = sorted(entries or [], key=lambda e: -float(e["mtime"]))
+        remote_entries = cast(list[_RemoteEntry], entries or [])
+        entries = sorted(remote_entries, key=lambda e: -e["mtime"])
         total = len(entries)
         n_pages = max(1, (total + per_page - 1) // per_page)
         page = min(page, n_pages)
@@ -120,7 +128,7 @@ def register(app):
         remote = f"{cfg_loaded.data_dir}/hst_psf/F814W.fits"
         force = request.args.get("force") in ("1", "true", "True")
         result = _fasrc_fetcher.fetch_one_file(remote, force=force)
-        if not result.ok:
+        if not result.ok or result.local_path is None:
             abort(404)
         png = _render_fits_to_png(result.local_path, Config.BAND_VIS, size=320)
         # When forced, also disable HTTP-level caching so the browser
@@ -158,14 +166,19 @@ def register(app):
         script = os.path.join(repo_root, "scripts",
                               "fasrc_compute_differential_kernel.py")
         spec = importlib.util.spec_from_file_location("_fdk", script)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"cannot load differential-kernel helpers: {script}")
         fdk  = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(fdk)
 
         # 3. Load FITS arrays + pixel scales.
-        def _read(path):
+        def _read(path: str) -> tuple[np.ndarray, float]:
             with fits.open(path, memmap=False) as hdul:
-                return (np.asarray(hdul[0].data, dtype=np.float64),
-                        float(hdul[0].header.get("PIXSCALE", 0.05)))
+                primary = cast(fits.PrimaryHDU, hdul[0])
+                pixel_scale = cast(
+                    float | int, primary.header.get("PIXSCALE", 0.05))
+                return (np.asarray(primary.data, dtype=np.float64),
+                        float(pixel_scale))
         hst_raw, hst_scale = _read(hst_path)
         euc_raw, euc_scale = _read(euc_path)
         krn,     _         = _read(krn_path)
@@ -387,7 +400,7 @@ def register(app):
         if size < 16 or size > 1024:
             abort(400)
         result = _fasrc_fetcher.fetch_one_file(remote)
-        if not result.ok:
+        if not result.ok or result.local_path is None:
             abort(404)
         png = _render_fits_to_png(result.local_path, Config.BAND_VIS, size=size)
         return send_file(io.BytesIO(png), mimetype="image/png", max_age=3600)
@@ -410,8 +423,9 @@ def register(app):
         # De-duplicate by basename, preferring the larger size (catches
         # the brief window where a file exists both flat and nested
         # mid-flatten — flat is the canonical copy when it's complete).
-        best: dict[str, dict[str, Any]] = {}
-        for e in (entries or []):
+        best: dict[str, _RemoteEntry] = {}
+        remote_entries = cast(list[_RemoteEntry], entries or [])
+        for e in remote_entries:
             name = e["name"]
             prev = best.get(name)
             if prev is None or e["size"] > prev["size"]:
@@ -443,11 +457,12 @@ def register(app):
             ["--path", path, "--mode", "header"],
             binary=False, timeout=20,
         )
+        out_text = cast(str, out)
         if rc != 0:
             return jsonify({"ok": False,
-                            "error": err.strip() or out[:500]}), 502
+                            "error": err.strip() or out_text[:500]}), 502
         try:
-            payload = json.loads(out)
+            payload = json.loads(out_text)
         except json.JSONDecodeError as e:
             return jsonify({"ok": False,
                             "error": f"bad header JSON: {e}"}), 502
@@ -481,12 +496,13 @@ def register(app):
              "--size", str(size), "--seed", str(seed)],
             binary=True, timeout=30,
         )
-        if rc != 0 or not out_bytes:
+        png_bytes = cast(bytes, out_bytes)
+        if rc != 0 or not png_bytes:
             return jsonify({"ok": False,
                             "error": (err if isinstance(err, str)
                                       else err.decode(errors="replace")).strip() or "empty cutout"}), 502
         resp = send_file(
-            io.BytesIO(out_bytes), mimetype="image/png", max_age=0,
+            io.BytesIO(png_bytes), mimetype="image/png", max_age=0,
         )
         # err contains the JSON sidecar; pass it through as a header so
         # the page JS can render it without a second SSH round-trip.

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import os
+from typing import Any, cast
 
 import numpy as np
 
@@ -26,7 +27,8 @@ def _load_vis_plane(fits_path: str) -> np.ndarray:
     from astropy.io import fits
 
     with fits.open(fits_path) as hdul:
-        data = np.asarray(hdul[0].data, dtype=np.float32)
+        primary = cast(fits.PrimaryHDU, hdul[0])
+        data = np.asarray(primary.data, dtype=np.float32)
     return data[0] if data.ndim == 3 else data
 
 
@@ -65,7 +67,7 @@ def _group_triptych(run_dir: str, obj_id: str, asinh: float, height: int = 110):
             _stretch_to_uint8(_load_vis_plane(path), asinh_scale=asinh),
             mode="L",
         ).convert("RGB")
-        image = image.resize((height, height), Image.BILINEAR)
+        image = image.resize((height, height), Image.Resampling.BILINEAR)
         parts.append(np.asarray(image, dtype=np.uint8))
     if not parts:
         return None
@@ -96,7 +98,7 @@ def render_transformation_summary(run_dir: str, out_png: str) -> str | None:
         return None
     groups = list(dict.fromkeys(row.get("grade", "") for row in rows))
 
-    def _float(row, key):
+    def _float(row: dict[str, Any], key: str) -> float | None:
         try:
             return float(row.get(key, ""))
         except (TypeError, ValueError):
@@ -111,8 +113,10 @@ def render_transformation_summary(run_dir: str, out_png: str) -> str | None:
         and _float(row, "psnr_sr_hr") is not None
     ]
     if synthetic:
-        lr_psnr = [_float(row, "psnr_lr_hr") for row in synthetic]
-        sr_psnr = [_float(row, "psnr_sr_hr") for row in synthetic]
+        lr_psnr = [value for row in synthetic
+                   if (value := _float(row, "psnr_lr_hr")) is not None]
+        sr_psnr = [value for row in synthetic
+                   if (value := _float(row, "psnr_sr_hr")) is not None]
         axes[0].scatter(
             lr_psnr,
             sr_psnr,
@@ -143,10 +147,10 @@ def render_transformation_summary(run_dir: str, out_png: str) -> str | None:
     populated_groups = [group for group in groups if group]
     for index, group in enumerate(populated_groups):
         ratios = [
-            _float(row, "flux_ratio_sr_over_lr")
+            value
             for row in rows
             if row.get("grade") == group
-            and _float(row, "flux_ratio_sr_over_lr") is not None
+            and (value := _float(row, "flux_ratio_sr_over_lr")) is not None
         ]
         if not ratios:
             continue

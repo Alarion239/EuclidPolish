@@ -29,6 +29,17 @@ def test_write_read_roundtrip(tmp_path):
     assert sorted(im.data[0, 0, 0] for im in back) == [0.0, 1.0, 2.0]
 
 
+def test_lazy_write_streams_without_materialising(tmp_path):
+    source = ImageSet.from_images([_img(0), _img(1), _img(2)])
+    source_path = source.write(str(tmp_path), "source")
+    lazy = ImageSet.read(source_path)
+
+    copied_path = lazy.write(str(tmp_path), "copy")
+
+    copied = list(ImageSet.read(copied_path))
+    assert [image.data[0, 0, 0] for image in copied] == [0.0, 1.0, 2.0]
+
+
 def test_read_limit(tmp_path):
     s = ImageSet.from_images([_img(i) for i in range(5)])
     path = s.write(str(tmp_path), "hr_train")

@@ -23,6 +23,8 @@ from typing import Any
 
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.colors import LogNorm
+from matplotlib.figure import Figure
 from matplotlib.gridspec import GridSpec
 
 from euclid_polish.config import Config
@@ -126,11 +128,23 @@ class BaseVisualizer:
         self._fig = plt.figure(figsize=figsize)
         self._gs = GridSpec(rows, cols, figure=self._fig, hspace=hspace, wspace=wspace)
 
+    def _require_figure(self) -> Figure:
+        fig = self._fig
+        if fig is None:
+            raise RuntimeError("This visualizer's figure has already been closed")
+        return fig
+
+    def _require_gridspec(self) -> GridSpec:
+        gridspec = self._gs
+        if gridspec is None:
+            raise RuntimeError("This visualizer's figure has already been closed")
+        return gridspec
+
     def _next_gs_position(self):
         row = self._next_panel // self._ncols
         col = self._next_panel % self._ncols
         self._next_panel += 1
-        return self._gs[row, col]
+        return self._require_gridspec()[row, col]
 
     def add_scale_panel(
         self,
@@ -174,7 +188,8 @@ class BaseVisualizer:
             VIS-only SR cells in the reconstruction plot, since the model
             has no multi-band information to colour with).
         """
-        ax = self._fig.add_subplot(self._next_gs_position())
+        fig = self._require_figure()
+        ax = fig.add_subplot(self._next_gs_position())
         _hi = hi_percentile if hi_percentile is not None else 99.5
 
         if stretch == "log10":
@@ -212,15 +227,15 @@ class BaseVisualizer:
         if colorbar_inset:
             # Slim inset to the right — does NOT shrink the image axes, so the
             # panel stays the same size as a colorbar-less RGB panel beside it.
-            cax = ax.inset_axes([1.03, 0.0, 0.05, 1.0])
-            self._fig.colorbar(im, cax=cax, label=cbar_label)
+            cax = ax.inset_axes((1.03, 0.0, 0.05, 1.0))
+            fig.colorbar(im, cax=cax, label=cbar_label)
         else:
             plt.colorbar(im, ax=ax, label=cbar_label)
 
     def add_rgb_scale_panel(
         self,
         cube: np.ndarray,
-        band_names: tuple = None,
+        band_names: tuple[str, ...] | None = None,
         stretch: str = "asinh",
         asinh_scale: float | None = None,
         title_suffix: str = "",
@@ -270,7 +285,7 @@ class BaseVisualizer:
             raise ValueError(
                 f"rgb_mode must be 'calibrated' or 'eye'; got {rgb_mode!r}"
             )
-        ax = self._fig.add_subplot(self._next_gs_position())
+        ax = self._require_figure().add_subplot(self._next_gs_position())
         ax.imshow(np.clip(rgb, 0.0, 1.0), origin="lower",
                   interpolation="nearest")
         ax.set_title(title, fontsize=12)
@@ -285,9 +300,9 @@ class BaseVisualizer:
             # planck_color_strip returns (1, n, 3); transpose to a column
             # (n, 1, 3) so the bar runs vertically with origin="lower".
             strip_col = np.transpose(strip, (1, 0, 2))
-            lax = ax.inset_axes([1.03, 0.0, 0.05, 1.0])
+            lax = ax.inset_axes((1.03, 0.0, 0.05, 1.0))
             lax.imshow(strip_col, aspect="auto", origin="lower",
-                       extent=[0, 1, 0, len(temps) - 1])
+                       extent=(0.0, 1.0, 0.0, float(len(temps) - 1)))
             ticks_k = [3000, 4000, 6000, 10000, 20000]
             log_t = np.log(temps)
             lax.set_yticks([
@@ -341,7 +356,7 @@ class BaseVisualizer:
         if v <= 0:
             v = 1.0
 
-        ax = self._fig.add_subplot(self._next_gs_position())
+        ax = self._require_figure().add_subplot(self._next_gs_position())
         im = ax.imshow(display, cmap="RdBu_r", origin="lower",
                        interpolation="nearest", vmin=-v, vmax=+v)
         ax.set_title(title, fontsize=12)
@@ -388,9 +403,9 @@ class BaseVisualizer:
         rel = np.abs(residual) / (denom + eps)
         rel = np.clip(rel, clip[0], clip[1])
 
-        ax = self._fig.add_subplot(self._next_gs_position())
+        ax = self._require_figure().add_subplot(self._next_gs_position())
         im = ax.imshow(rel, cmap=cmap, origin="lower", interpolation="nearest",
-                       norm=plt.matplotlib.colors.LogNorm(vmin=clip[0], vmax=clip[1]))
+                       norm=LogNorm(vmin=clip[0], vmax=clip[1]))
         ax.set_title(
             f"|residual| / max(|signal|, floor)  (floor={floor:.3g}){title_suffix}",
             fontsize=12,
@@ -408,7 +423,7 @@ class BaseVisualizer:
         floats / ints are auto-formatted (``.4e`` for floats, ``d`` for
         ints); pre-formatted strings are passed through unchanged.
         """
-        ax = self._fig.add_subplot(self._next_gs_position())
+        ax = self._require_figure().add_subplot(self._next_gs_position())
         ax.axis("off")
 
         title = stats_dict.get("title", "Statistics:")
@@ -462,8 +477,9 @@ class BaseVisualizer:
 
     def save_figure(self, output_path: str, dpi: int = 150, close: bool = True) -> None:
         os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-        self._fig.savefig(output_path, dpi=dpi, bbox_inches="tight")
+        fig = self._require_figure()
+        fig.savefig(output_path, dpi=dpi, bbox_inches="tight")
         if close:
-            plt.close(self._fig)
+            plt.close(fig)
             self._fig = None
             self._gs = None

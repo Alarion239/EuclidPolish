@@ -14,6 +14,13 @@ from euclid_polish.web.jobs import REGISTRY
 from euclid_polish.web.remote import STATE
 
 
+def _int_value(value: object) -> int:
+    """Convert a JSON/form scalar to int without admitting arbitrary objects."""
+    if isinstance(value, (str, bytes, bytearray, int, float)):
+        return int(value)
+    raise TypeError(f"expected an integer-like scalar, got {type(value).__name__}")
+
+
 def register(app):
 
     # ---------------- Sky generation + forward ----------------
@@ -33,7 +40,7 @@ def register(app):
             for e in sorted(entries, key=lambda r: str(r.get("name", ""))):
                 tfrecords.append({
                     "name":    e["name"],
-                    "size_mb": f"{int(e.get('size', 0)) / 1e6:.1f}",
+                    "size_mb": f"{_int_value(e.get('size', 0)) / 1e6:.1f}",
                 })
         return render_template("sky.html",
                                records_dir=records_dir,
@@ -74,7 +81,7 @@ def register(app):
         )
         if ok and entries:
             n = len(entries)
-            size_gb = sum(int(e.get("size", 0)) for e in entries) / 1e9
+            size_gb = sum(_int_value(e.get("size", 0)) for e in entries) / 1e9
             cutouts_summary.append({
                 "band":    "all 4 bands (bundled)",
                 "n":       n,
@@ -90,7 +97,7 @@ def register(app):
             for e in sorted(entries, key=lambda r: str(r.get("name", ""))):
                 tfrecords.append({
                     "name":    e["name"],
-                    "size_gb": f"{int(e.get('size', 0)) / 1e9:.2f}",
+                    "size_gb": f"{_int_value(e.get('size', 0)) / 1e9:.2f}",
                 })
 
         return render_template(

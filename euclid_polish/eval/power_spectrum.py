@@ -37,6 +37,7 @@ from __future__ import annotations
 import dataclasses
 import os
 import warnings
+from typing import TypedDict
 
 import numpy as np
 
@@ -50,6 +51,65 @@ BAND_COLORS: dict[str, str] = {
 
 #: LR sampling Nyquist on the 0.10" grid — the super-resolution boundary.
 LR_NYQUIST_CYC_ARCSEC = 1.0 / (2.0 * Config.VIS_PIXEL_SCALE_ARCSEC)  # 5.0
+
+
+class ModelCombinerSpectrum(TypedDict):
+    P: np.ndarray
+    r: np.ndarray
+
+
+class EnsembleSpectrumCurves(TypedDict, total=False):
+    k: np.ndarray
+    P_hr: np.ndarray
+    P_sr: np.ndarray
+    P_disagree: np.ndarray
+    r: np.ndarray
+    T: np.ndarray
+    rho: np.ndarray
+    r_members: np.ndarray
+    P_members: np.ndarray
+    r_pairs: np.ndarray
+    r_cross: np.ndarray
+    r_lr: np.ndarray
+    model_combiners: dict[str, ModelCombinerSpectrum]
+
+
+class ModelCombinerPlotCurves(TypedDict):
+    r: np.ndarray
+    T: np.ndarray
+
+
+class EnsemblePlotCurves(TypedDict):
+    theta: np.ndarray
+    T: np.ndarray
+    T_members: np.ndarray
+    r: np.ndarray
+    r_members: np.ndarray
+    r_pairs: np.ndarray
+    r_cross: np.ndarray
+    r_lr: np.ndarray
+    model_combiners: dict[str, ModelCombinerPlotCurves]
+
+
+class BandSpectrum(TypedDict):
+    k: np.ndarray
+    T: np.ndarray
+    r: np.ndarray
+    T_lo: np.ndarray
+    T_hi: np.ndarray
+    r_lo: np.ndarray
+    r_hi: np.ndarray
+    count: np.ndarray
+    n_obj: int
+
+
+class StackedSpectrum(TypedDict):
+    k: np.ndarray
+    T: np.ndarray
+    r: np.ndarray
+    p_hr: np.ndarray
+    p_sr: np.ndarray
+    count: np.ndarray
 
 
 # --------------------------------------------------------------------------- #
@@ -263,12 +323,12 @@ class EnsembleSpectrumAccumulator:
         # once here rather than averaging transformed members.
         a_mean = self._asinh(mean)
         members = np.asarray(members, np.float64)
-        have = members.ndim == 3 and members.shape[1:] == hr.shape and len(members)
+        have = bool(members.ndim == 3 and members.shape[1:] == hr.shape and len(members))
         # A separate transformed-member mean is retained for the disagreement
         # decomposition below. It is not the primary plotted prediction:
         # mean(asinh(member)) != asinh(mean(member)) in general.
-        am = [self._asinh(m) for m in members] if have else None
-        a_member_mean = np.mean(np.stack(am, 0), 0) if have else a_mean
+        am = [self._asinh(m) for m in members] if have else []
+        a_member_mean = np.mean(np.stack(am, 0), 0) if am else a_mean
 
         bh, bs, bx, bc = bin_powers(ah, a_mean, self.pix, self.k_edges, self.window)
         self.bc += bc
@@ -278,7 +338,7 @@ class EnsembleSpectrumAccumulator:
 
         p_dis = np.full(self.nbins, np.nan)
         rho = np.full(self.nbins, np.nan)
-        if have:
+        if am:
             mm = len(am)
             dacc = np.zeros(self.nbins)
             r_rows, p_rows = [], []
@@ -356,12 +416,14 @@ class EnsembleSpectrumAccumulator:
             warnings.simplefilter("ignore", RuntimeWarning)   # all-NaN low-k bins
             return np.nanmedian(np.vstack(rows), axis=0)
 
-    def curves(self) -> dict[str, np.ndarray]:
-        out = {"k": self.k_cen,
-               "P_hr": self._med(self._p_hr), "P_sr": self._med(self._p_sr),
-               "P_disagree": self._med(self._p_dis),
-               "r": self._med(self._r), "T": self._med(self._t),
-               "rho": self._med(self._rho)}
+    def curves(self) -> EnsembleSpectrumCurves:
+        out: EnsembleSpectrumCurves = {
+            "k": self.k_cen,
+            "P_hr": self._med(self._p_hr), "P_sr": self._med(self._p_sr),
+            "P_disagree": self._med(self._p_dis),
+            "r": self._med(self._r), "T": self._med(self._t),
+            "rho": self._med(self._rho),
+        }
         if self._r_members:
             with np.errstate(all="ignore"), warnings.catch_warnings():
                 warnings.simplefilter("ignore", RuntimeWarning)
@@ -488,12 +550,11 @@ def normalized_log_scale_mean(k: np.ndarray, y: np.ndarray, *,
     order = np.argsort(kk[mask])
     x = np.log(kk[mask][order])
     values = np.clip(yy[mask][order], -1.0, 1.0)
-    integral = (np.trapezoid(values, x) if hasattr(np, "trapezoid")
-                else np.trapz(values, x))
+    integral = np.trapezoid(values, x)
     return float(integral / np.log(k_max / k_min))
 
 
-def ensemble_ps_plot_curves(curves: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+def ensemble_ps_plot_curves(curves: EnsembleSpectrumCurves) -> EnsemblePlotCurves:
     """Derive the VIS T(k)/r(k) plot arrays (per-member + displayed mean).
 
     Pure transform of an :meth:`EnsembleSpectrumAccumulator.curves` dict. Returns
@@ -520,8 +581,8 @@ def ensemble_ps_plot_curves(curves: dict[str, np.ndarray]) -> dict[str, np.ndarr
         t_mean = np.sqrt(p_sr / p_hr)
         t_members = (np.sqrt(p_members / p_hr[None, :])
                      if p_members.size else np.empty((0, k.size)))
-    model_combiners = {}
-    for kind, model in (curves.get("model_combiners", {}) or {}).items():
+    model_combiners: dict[str, ModelCombinerPlotCurves] = {}
+    for kind, model in curves.get("model_combiners", {}).items():
         p_model = np.asarray(model.get("P", nan_k), float)
         model_combiners[str(kind)] = {
             "r": np.asarray(model.get("r", nan_k), float),
@@ -577,7 +638,7 @@ def _member_group_colors(member_meta, color_by):
     return out
 
 
-def render_ensemble_power_spectrum(out_png: str, curves: dict[str, np.ndarray],
+def render_ensemble_power_spectrum(out_png: str, curves: EnsembleSpectrumCurves,
                                    *, n_fields: int = 0,
                                    member_meta: list[dict] | None = None,
                                    color_by: str | None = None) -> str | None:
@@ -721,7 +782,7 @@ class _SpectrumAccumulator:
         self.count += bc
         self.n_obj += 1
 
-    def finalize(self) -> dict[str, np.ndarray]:
+    def finalize(self) -> StackedSpectrum:
         """Return ``{k, T, r, p_hr, p_sr, count}``; empty bins are NaN."""
         kc = np.sqrt(self.k_edges[:-1] * self.k_edges[1:])
         t, r = ratios_from_powers(
@@ -764,7 +825,7 @@ class BandStat:
         self._t_rows.append(t)
         self._r_rows.append(r)
 
-    def finalize(self) -> dict[str, np.ndarray]:
+    def finalize(self) -> BandSpectrum:
         nb = len(self.kc)
         if not self._t_rows:
             nan = np.full(nb, np.nan)
@@ -777,21 +838,26 @@ class BandStat:
         count = np.sum(np.isfinite(R), axis=0).astype(float)
         with np.errstate(all="ignore"), warnings.catch_warnings():
             warnings.simplefilter("ignore", RuntimeWarning)  # all-NaN low-k bins
-            out = {
-                "k": self.kc,
-                "T": np.nanmedian(T, axis=0),
-                "T_lo": np.nanpercentile(T, 16, axis=0),
-                "T_hi": np.nanpercentile(T, 84, axis=0),
-                "r": np.nanmedian(R, axis=0),
-                "r_lo": np.nanpercentile(R, 16, axis=0),
-                "r_hi": np.nanpercentile(R, 84, axis=0),
-                "count": count,
-                "n_obj": self.n_obj,
-            }
+            t_med = np.nanmedian(T, axis=0)
+            t_lo = np.nanpercentile(T, 16, axis=0)
+            t_hi = np.nanpercentile(T, 84, axis=0)
+            r_med = np.nanmedian(R, axis=0)
+            r_lo = np.nanpercentile(R, 16, axis=0)
+            r_hi = np.nanpercentile(R, 84, axis=0)
         empty = count <= 0
-        for key in ("T", "T_lo", "T_hi", "r", "r_lo", "r_hi"):
-            out[key][empty] = np.nan
-        return out
+        for curve in (t_med, t_lo, t_hi, r_med, r_lo, r_hi):
+            curve[empty] = np.nan
+        return {
+            "k": self.kc,
+            "T": t_med,
+            "T_lo": t_lo,
+            "T_hi": t_hi,
+            "r": r_med,
+            "r_lo": r_lo,
+            "r_hi": r_hi,
+            "count": count,
+            "n_obj": self.n_obj,
+        }
 
 
 # --------------------------------------------------------------------------- #

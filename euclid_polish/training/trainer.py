@@ -5,10 +5,11 @@ import os
 import random
 import re
 import time
+from collections.abc import Callable
 
 import numpy as np
 import tensorflow as tf
-from tf_keras.losses import MeanAbsoluteError
+from tf_keras.losses import Loss, MeanAbsoluteError
 from tf_keras.metrics import Mean
 from tf_keras.optimizers import Adam
 from tf_keras.optimizers.schedules import PiecewiseConstantDecay
@@ -232,9 +233,11 @@ class Trainer:
     def __init__(
         self,
         model,
-        loss=MeanAbsoluteError(),
-        learning_rate=PiecewiseConstantDecay(boundaries=[200000], values=[1e-3, 5e-4]),
-        checkpoint_dir='./ckpt/wdsr',
+        loss: Loss | Callable[[tf.Tensor, tf.Tensor], tf.Tensor] = MeanAbsoluteError(),
+        learning_rate: float | Callable[[tf.Tensor], float | tf.Tensor] = (
+            PiecewiseConstantDecay(boundaries=[200000], values=[1e-3, 5e-4])
+        ),
+        checkpoint_dir: str = './ckpt/wdsr',
         hst_forward_op=None,
         synthetic_loss_weight: float = 1.0,
         hst_loss_weight: float = 1.0,
@@ -353,9 +356,9 @@ class Trainer:
         # save-best). max_val for PSNR is set in models/common.py from
         # Config.PSNR_PEAK_STRETCHED ≈ asinh(mag-17 star / k).
         self.checkpoint = tf.train.Checkpoint(
-            step=tf.Variable(0),
-            psnr=tf.Variable(-1.0),
-            best_loss=tf.Variable(float("inf")),
+            step=tf.Variable(tf.constant(0)),
+            psnr=tf.Variable(tf.constant(-1.0)),
+            best_loss=tf.Variable(tf.constant(float("inf"))),
             optimizer=Adam(self._initial_lr),
             model=model,
         )
@@ -661,7 +664,7 @@ class Trainer:
         active_hst    = lane_counts is not None and lane_counts[1] > 0
         active_anchor = lane_counts is not None and lane_counts[2] > 0
         gnorm_mean = Mean()
-        gnorm_max  = tf.Variable(0.0, trainable=False)
+        gnorm_max  = tf.Variable(tf.constant(0.0), trainable=False)
 
         ckpt_mgr = self.checkpoint_manager
         ckpt = self.checkpoint
@@ -1227,7 +1230,8 @@ class Trainer:
         per-lane *unweighted* mean losses (0.0 for an off lane) for the
         metrics CSV.
         """
-        if n_hst > 0 and self.hst_forward_op is None:
+        hst_forward_op = self.hst_forward_op
+        if n_hst > 0 and hst_forward_op is None:
             raise ValueError(
                 "train_step_sky: n_hst > 0 requires hst_forward_op to be set "
                 "(HSTForwardOp); the HST lane convolves SR with the HST PSF"
@@ -1251,12 +1255,16 @@ class Trainer:
                 syn_loss = tf.reduce_mean(d)
                 i += n_syn
             if n_hst > 0:
+                if hst_forward_op is None:  # narrowed from the lane invariant above
+                    raise RuntimeError("HST forward operator unexpectedly unavailable")
                 s = slice(i, i + n_hst)
                 # F814W ≈ VIS only: forward-model SR's VIS channel and
                 # compare against the (zero-padded) target's channel 0.
+                sr_vis = tf.gather(sr_lin[s], [0], axis=-1)
                 hconv = asinh_stretch_hr(
-                    self.hst_forward_op(sr_lin[s][..., :1]))
-                d = tf.reduce_mean(tf.abs(hconv - hr[s][..., :1]),
+                    hst_forward_op(sr_vis))
+                hr_vis = tf.gather(hr[s], [0], axis=-1)
+                d = tf.reduce_mean(tf.abs(hconv - hr_vis),
                                    axis=[1, 2, 3])
                 per_example.append(self.hst_loss_weight * d)
                 hst_loss = tf.reduce_mean(d)

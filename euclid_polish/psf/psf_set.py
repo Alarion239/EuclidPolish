@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import Any, ClassVar, cast
 
 import numpy as np
 from astropy.io import fits
@@ -355,7 +355,7 @@ class PSFSet(StampCarrier):
         if self.stamp is not None:
             write_stamp_cards(primary.header, self.stamp)
 
-        hdus = [primary]
+        hdus: list[fits.PrimaryHDU | fits.ImageHDU] = [primary]
         for i, psf in enumerate(self.psfs):
             unit = psf.with_unit_sum()
             hdu = fits.ImageHDU(data=unit.data.astype(np.float32),
@@ -396,25 +396,39 @@ class PSFSet(StampCarrier):
         have_counts = False
         stamp = None
         with fits.open(fits_path) as hdul:
-            stamp = read_stamp_cards(hdul[0].header)
-            image_hdus = [h for h in hdul
-                          if getattr(h, "data", None) is not None]
+            primary = cast(fits.PrimaryHDU, hdul[0])
+            stamp = read_stamp_cards(primary.header)
+            image_hdus: list[fits.PrimaryHDU | fits.ImageHDU] = []
+            for raw_hdu in hdul:
+                hdu = cast(fits.PrimaryHDU | fits.ImageHDU, raw_hdu)
+                if hdu.data is not None:
+                    image_hdus.append(hdu)
             cluster_hdus = image_hdus[1:] if len(image_hdus) > 1 else image_hdus
             for h in cluster_hdus:
                 data = np.asarray(h.data, dtype=np.float32)
                 pix = h.header.get("PXSCALE", h.header.get("PIXSCALE", 0.0))
-                oversamp = int(h.header["OVERSAMP"]) if "OVERSAMP" in h.header else None
-                fwhm = float(h.header["FWHM"]) if "FWHM" in h.header else None
-                members.append(PSF(data=data, pixel_scale=float(pix),
+                oversamp = (
+                    int(cast(Any, h.header["OVERSAMP"]))
+                    if "OVERSAMP" in h.header else None
+                )
+                fwhm = (
+                    float(cast(Any, h.header["FWHM"]))
+                    if "FWHM" in h.header else None
+                )
+                members.append(PSF(
+                    data=data,
+                    pixel_scale=float(cast(Any, pix)),
                                    fwhm_arcsec=fwhm, oversampling=oversamp))
                 if "RA" in h.header and "DEC" in h.header:
-                    centroids.append((float(h.header["RA"]),
-                                      float(h.header["DEC"])))
+                    centroids.append((
+                        float(cast(Any, h.header["RA"])),
+                        float(cast(Any, h.header["DEC"])),
+                    ))
                     have_centroids = True
                 else:
                     centroids.append((float("nan"), float("nan")))
                 if "NSTARS" in h.header:
-                    star_counts.append(int(h.header["NSTARS"]))
+                    star_counts.append(int(cast(Any, h.header["NSTARS"])))
                     have_counts = True
                 else:
                     star_counts.append(0)

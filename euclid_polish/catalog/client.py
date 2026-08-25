@@ -21,7 +21,7 @@ import tempfile
 import threading
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 from astropy.io import fits as _fits
@@ -191,12 +191,17 @@ class EuclidCatalog:
         objs: list[CatalogObject] = []
         for row in results or []:
             flux = _finite_float(row["flux_vis_psf"])
-            if flux is None or flux <= 0:
+            ra_value = _finite_float(row["right_ascension"])
+            dec_value = _finite_float(row["declination"])
+            if (
+                flux is None or flux <= 0
+                or ra_value is None or dec_value is None
+            ):
                 continue
             ferr = _finite_float(row["fluxerr_vis_psf"])
             objs.append(CatalogObject(
-                ra=float(row["right_ascension"]), dec=float(row["declination"]),
-                magnitude=uJy_to_ab_mag(flux), flux_psf_uJy=flux,
+                ra=ra_value, dec=dec_value,
+                magnitude=float(uJy_to_ab_mag(flux)), flux_psf_uJy=flux,
                 fluxerr_psf_uJy=ferr if ferr is not None else float("nan"),
                 kind="star"))
         return objs
@@ -242,7 +247,7 @@ class EuclidCatalog:
             flux = _finite_float(row["flux_vis_psf"])
             if r is None or d is None or flux is None or flux <= 0:
                 continue
-            mag = uJy_to_ab_mag(flux)
+            mag = float(uJy_to_ab_mag(flux))
             if mag >= mag_floor:
                 continue
             objs.append(CatalogObject(ra=r, dec=d, magnitude=mag,
@@ -295,11 +300,17 @@ class EuclidCatalog:
                     raise RuntimeError(
                         f"EuclidCatalog.fetch: band {band_name} failed: {err}")
                 with _fits.open(tmp_path) as hdul:
-                    arr = hdul[0].data.astype(np.float32)
+                    primary = cast(_fits.PrimaryHDU, hdul[0])
+                    if primary.data is None:
+                        raise OSError(f"FITS cutout has no image data: {tmp_path}")
+                    arr = np.asarray(primary.data, dtype=np.float32)
                     magzero = float(
-                        hdul[0].header.get("MAGZERO", band.sim_zeropoint_e))
+                        cast(Any, primary.header.get(
+                            "MAGZERO", band.sim_zeropoint_e,
+                        ))
+                    )
                     if band_name == "VIS":
-                        vis_wcs = FitsWCS.from_header(hdul[0].header)
+                        vis_wcs = FitsWCS.from_header(primary.header)
                 factor = np.float32(adu_per_s_to_electrons_factor(magzero, band))
                 planes.append((arr * factor).astype(np.float32))
             finally:
@@ -415,25 +426,36 @@ class EuclidCatalog:
         # Recovered/orphaned catalog rows can lack usable WCS coordinates.  Do
         # not let one such row abort SkyCoord matching for the entire band;
         # record it as failed for this (band, size) and resolve the rest.
-        invalid_coord_objects = [
+        invalid_objects = [
             o for o in needing
-            if _finite_float(o.ra) is None or _finite_float(o.dec) is None
+            if (
+                o.id is None
+                or _finite_float(o.ra) is None
+                or _finite_float(o.dec) is None
+            )
         ]
         resolvable = [
             o for o in needing
-            if _finite_float(o.ra) is not None and _finite_float(o.dec) is not None
+            if (
+                o.id is not None
+                and _finite_float(o.ra) is not None
+                and _finite_float(o.dec) is not None
+            )
         ]
-        if invalid_coord_objects:
-            print(f"  ⚠️  {len(invalid_coord_objects)} stars have non-finite "
-                  f"RA/Dec — skipping and marking failed for {band} "
+        if invalid_objects:
+            print(f"  ⚠️  {len(invalid_objects)} stars have a missing id or "
+                  f"non-finite RA/Dec — skipping and marking failed for {band} "
                   f"size {cutout_size}")
-            for o in invalid_coord_objects:
+            for o in invalid_objects:
                 o.set_download_failed(cutout_size, band=band)
 
         # Resolve every usable object → mosaic tile in ONE ADQL query.
         print(f"  Resolving mosaic tiles for {len(resolvable)} stars...")
         mosaic_lookup = resolve_mosaics(resolvable, config, relogin=self.relogin)
-        unmatched_ids = {o.id for o in resolvable if o.id not in mosaic_lookup}
+        unmatched_ids = {
+            o.id for o in resolvable
+            if o.id is not None and o.id not in mosaic_lookup
+        }
         if unmatched_ids:
             print(f"  ⚠️  {len(unmatched_ids)} stars not covered by any "
                   f"{band} tile — marking failed")
@@ -442,9 +464,12 @@ class EuclidCatalog:
         rejected_ids: list[int] = []
 
         def _download_and_validate(o: CatalogObject) -> tuple[int, bool]:
-            mosaic = mosaic_lookup[o.id]
+            object_id = o.id
+            if object_id is None:
+                raise ValueError("catalog object has no id")
+            mosaic = mosaic_lookup[object_id]
             output_file = os.path.join(
-                cutout_dir, f"star_{o.id:04d}_{cutout_size}.fits")
+                cutout_dir, f"star_{object_id:04d}_{cutout_size}.fits")
             for _ in range(2):     # one retry on validation failure
                 if not download_one_cutout(o.ra, o.dec, config,
                                            cutout_radius_arcmin, output_file,
@@ -456,14 +481,18 @@ class EuclidCatalog:
                     # Reject oversaturated / clipped cores (MER zeros the peak
                     # of bright stars) — same check the PSF extractor applies.
                     data = validator.get_data(output_file)
+                    if data is None:
+                        with contextlib.suppress(OSError):
+                            os.unlink(output_file)
+                        return object_id, False
                     if core_is_saturated(data, config.saturation_core_size):
                         with contextlib.suppress(OSError):
                             os.unlink(output_file)
-                        return o.id, False
-                    return o.id, True
+                        return object_id, False
+                    return object_id, True
                 with contextlib.suppress(OSError):
                     os.unlink(output_file)
-            return o.id, False
+            return object_id, False
 
         if with_mosaics:
             with ThreadPoolExecutor(max_workers=config.max_workers) as pool:
@@ -506,7 +535,7 @@ class EuclidCatalog:
             'rejected_ids': rejected_ids,
             'unmatched_ids': sorted(unmatched_ids),
             'invalid_coordinate_ids': sorted(
-                o.id for o in invalid_coord_objects if o.id is not None),
+                o.id for o in invalid_objects if o.id is not None),
             'cutout_size': cutout_size,
             'band': band,
         }

@@ -10,7 +10,7 @@ Callers see a uniform collection interface regardless of which mode is active.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 
 import numpy as np
 import tensorflow as tf
@@ -52,7 +52,7 @@ class ImageSet:
     # -- construction -- #
 
     @classmethod
-    def from_images(cls, images, *, stamp: Stamp | None = None) -> ImageSet:
+    def from_images(cls, images: Iterable[Image], *, stamp: Stamp | None = None) -> ImageSet:
         """Build an eager set from an iterable of :class:`Image`."""
         return cls(images=list(images), stamp=stamp)
 
@@ -83,7 +83,10 @@ class ImageSet:
             else:
                 yield from self._images
         else:
-            for count, raw in enumerate(tf.data.TFRecordDataset(self._path)):
+            path = self._path
+            if path is None:  # guarded by the constructor invariant
+                raise RuntimeError("Lazy ImageSet has no TFRecord path")
+            for count, raw in enumerate(tf.data.TFRecordDataset(path)):
                 if self._max_images is not None and count >= self._max_images:
                     break
                 yield Image.from_tfrecord(raw.numpy())

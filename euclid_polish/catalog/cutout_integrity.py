@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import glob
 import os
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 from astropy.io import fits
@@ -39,7 +39,8 @@ def cutout_openable(path: str) -> bool:
     corrupted rather than crashing the pass."""
     try:
         with fits.open(path, memmap=False) as hdul:
-            data = hdul[0].data
+            primary = cast(fits.PrimaryHDU, hdul[0])
+            data = primary.data
         arr = np.asarray(data, dtype=np.float32)
         return arr.size > 0 and bool(np.isfinite(arr).any())
     except Exception:
@@ -51,8 +52,9 @@ def _radec_from_header(path: str):
     position the downloader centred on. ``(None, None)`` if unreadable."""
     try:
         with fits.open(path, memmap=False) as hdul:
-            h = hdul[0].header
-        ra, dec = float(h["CRVAL1"]), float(h["CRVAL2"])
+            h = cast(fits.PrimaryHDU, hdul[0]).header
+        ra = float(cast(Any, h["CRVAL1"]))
+        dec = float(cast(Any, h["CRVAL2"]))
         if np.isfinite(ra) and np.isfinite(dec):
             return ra, dec
     except Exception:

@@ -17,6 +17,8 @@ from euclid_polish.web import fasrc_config
 from euclid_polish.web.helpers.paths import _resolve_trackable_ckpt, _resolve_trackable_file
 from euclid_polish.web.remote import STATE
 
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+
 
 def register(app):
 
@@ -219,7 +221,7 @@ def register(app):
         remote_res = None
         if want_remote:
             cfg = fasrc_config.load()
-            push_cmd = ["git", "-C", tracking_timetravel.PROJECT_ROOT, "push",
+            push_cmd = ["git", "-C", _PROJECT_ROOT, "push",
                         "origin", f"{commit}:refs/heads/timetravel/{short}"]
             remote_res = tracking_timetravel.prepare_remote_sandbox(
                 STATE.ssh, repo_path=cfg.repo_path, data_dir=cfg.data_dir,

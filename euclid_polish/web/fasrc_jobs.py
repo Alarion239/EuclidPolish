@@ -28,8 +28,9 @@ import shlex
 import sqlite3
 import statistics
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 from euclid_polish.observability import JobLog, JobRecord
 from euclid_polish.tracking import default_store
@@ -385,7 +386,7 @@ def run_remote_python(
 
 
 def submit_sbatch_script(
-    ssh,
+    ssh: Any,
     *,
     cfg:      fasrc_config.FasrcConfig,
     built:    dict[str, str],
@@ -443,7 +444,10 @@ def submit_sbatch_script(
         return None, {"ok": False,
                       "error": f"failed to create script directory: {err.strip()}"}
 
-    write_text = getattr(ssh, "write_text", None)
+    write_text = cast(
+        Callable[..., tuple[int, str, str]] | None,
+        getattr(ssh, "write_text", None),
+    )
     if callable(write_text):
         rc, _out, err = write_text(
             remote_script, built["body"], executable=True, timeout=20,
@@ -872,6 +876,7 @@ def reconcile_with_squeue(squeue_rows: list[dict[str, Any]],
             resurrecting = False
 
         if matching_rows:
+            assert live is not None
             if live == "RUNNING":
                 target_db.update_state(
                     jobid, state="RUNNING",

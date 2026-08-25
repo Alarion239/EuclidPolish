@@ -35,6 +35,7 @@ import shlex
 import textwrap
 import time
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
@@ -1565,7 +1566,7 @@ class SyntheticGenerateStep(RunPipelineStep):
 # Registry — single source of truth for which steps exist
 # ---------------------------------------------------------------------------
 
-STEP_CLASSES: tuple[type[FASRCPipelineStep], ...] = (
+STEP_CLASSES: tuple[Callable[[], FASRCPipelineStep], ...] = (
     HSTDownloadStep,
     HSTPSFExtractStep,
     DifferentialKernelStep,

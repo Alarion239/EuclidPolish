@@ -426,6 +426,7 @@ def fit_q1_galaxy_aperture_counts() -> dict[str, Any]:
         minimum_span_mag=4.0,
         minimum_r_squared=0.998,
     )
+    covariance = region.covariance
     law = StraightMagnitudeLaw(
         slope=region.slope,
         intercept=region.intercept,
@@ -433,9 +434,9 @@ def fit_q1_galaxy_aperture_counts() -> dict[str, Any]:
         mag_faint=Q1_GALAXY_LAW_FAINT,
         fit_bright=float(x[region.start]),
         fit_faint=float(x[region.stop - 1]),
-        covariance=tuple(
-            tuple(float(value) for value in row)
-            for row in region.covariance
+        covariance=(
+            (float(covariance[0][0]), float(covariance[0][1])),
+            (float(covariance[1][0]), float(covariance[1][1])),
         ),
         r_squared=region.r_squared,
         rms_log10_density=region.rms,

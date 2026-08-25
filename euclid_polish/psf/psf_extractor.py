@@ -5,19 +5,29 @@ This module provides an object-oriented interface for extracting effective PSF
 from Euclid FITS cutouts using photutils.
 """
 
+from __future__ import annotations
+
 import dataclasses
 import glob
 import os
 from dataclasses import dataclass
+from typing import Any, Literal, Protocol, cast, overload
 
 import numpy as np
 from astropy.io import fits
-from photutils.psf import EPSFBuilder, EPSFModel, EPSFStar, EPSFStars
+from photutils.psf import EPSFBuilder, EPSFStar, EPSFStars
 from tqdm import tqdm
 
 from euclid_polish.config import Config
 from euclid_polish.psf import PSF
 from euclid_polish.psf.fast_epsf import FastEPSFBuilder
+
+
+class _EPSFImageModel(Protocol):
+    """Photutils ePSF attributes consumed by this module."""
+
+    data: np.ndarray
+    oversampling: Any
 
 
 @dataclass
@@ -102,8 +112,8 @@ class PSFExtractor:
         valid, msg = self.config.validate()
         if not valid:
             raise ValueError(f"Invalid PSFExtractionConfig: {msg}")
-        self.epsf: EPSFModel | None = None
-        self.fitted_stars = None
+        self.epsf: _EPSFImageModel | None = None
+        self.fitted_stars: EPSFStars | None = None
         # Per-run rejection counts populated by extract_psf_stars_from_files.
         self.n_rejected_saturated: int = 0
         self.n_rejected_edge:      int = 0
@@ -209,9 +219,10 @@ class PSFExtractor:
         """
         try:
             with fits.open(filepath) as hdul:
-                for hdu in hdul:
+                for raw_hdu in hdul:
+                    hdu = cast(fits.PrimaryHDU | fits.ImageHDU, raw_hdu)
                     if hdu.data is not None:
-                        return hdu.data
+                        return np.asarray(hdu.data)
         except Exception:
             return None
         return None
@@ -296,6 +307,22 @@ class PSFExtractor:
 
         return epsf_star
 
+    @overload
+    def _extract_accepted(
+        self,
+        cutout_files: list[tuple[int, str]],
+        *,
+        keep_stars: Literal[True],
+    ) -> list[tuple[int, EPSFStar]]: ...
+
+    @overload
+    def _extract_accepted(
+        self,
+        cutout_files: list[tuple[int, str]],
+        *,
+        keep_stars: Literal[False],
+    ) -> list[tuple[int, str]]: ...
+
     def _extract_accepted(
         self,
         cutout_files: list[tuple[int, str]],
@@ -316,7 +343,8 @@ class PSFExtractor:
         self.n_rejected_load = 0
         self.n_rejected_edge = 0
         self.n_rejected_saturated = 0
-        accepted = []
+        accepted_stars: list[tuple[int, EPSFStar]] = []
+        accepted_files: list[tuple[int, str]] = []
 
         iterator = tqdm(
             cutout_files,
@@ -347,9 +375,10 @@ class PSFExtractor:
                     self.n_rejected_edge += 1
                     continue
 
-                accepted.append(
-                    (index, epsf_star) if keep_stars else (index, filepath)
-                )
+                if keep_stars:
+                    accepted_stars.append((index, epsf_star))
+                else:
+                    accepted_files.append((index, filepath))
                 # Validation must never retain a star stamp. In extraction
                 # mode ``accepted`` owns ``epsf_star``; either way the full
                 # loaded FITS image can be released before the next file.
@@ -372,7 +401,7 @@ class PSFExtractor:
         if self.n_rejected_load:
             print(f"  rejected {self.n_rejected_load} stars (FITS load error)")
 
-        return accepted
+        return accepted_stars if keep_stars else accepted_files
 
     def extract_accepted_stars(
         self,
@@ -404,7 +433,7 @@ class PSFExtractor:
     def build_epsf(
         self,
         cutout_files: list[tuple[int, str]]
-    ) -> tuple[EPSFModel, EPSFStars]:
+    ) -> tuple[_EPSFImageModel, EPSFStars]:
         """
         Build effective PSF from cutout files.
 
@@ -416,7 +445,7 @@ class PSFExtractor:
         Returns:
         --------
         tuple
-            (EPSFModel, EPSFStars) - The built ePSF and fitted stars.
+            (ImagePSF, EPSFStars) - The built ePSF and fitted stars.
         """
         # Extract PSF stars from cutouts
         all_epsf_stars = self.extract_psf_stars_from_files(cutout_files)
@@ -426,7 +455,7 @@ class PSFExtractor:
     def build_epsf_from_stars(
         self,
         epsf_stars: list[EPSFStar],
-    ) -> tuple[EPSFModel, EPSFStars]:
+    ) -> tuple[_EPSFImageModel, EPSFStars]:
         """Run EPSFBuilder on already-extracted ``EPSFStar`` objects.
 
         Split out of :meth:`build_epsf` so the per-cluster extraction
@@ -459,11 +488,11 @@ class PSFExtractor:
 
         epsf, fitted_stars = epsf_builder(epsf_star_container)
 
-        return epsf, fitted_stars
+        return cast(_EPSFImageModel, epsf), cast(EPSFStars, fitted_stars)
 
     @staticmethod
-    def psf_from_epsf(epsf: EPSFModel, pixel_scale: float) -> PSF:
-        """Wrap an ``EPSFModel`` in a typed :class:`PSF` (FWHM measured).
+    def psf_from_epsf(epsf: _EPSFImageModel, pixel_scale: float) -> PSF:
+        """Wrap an ``ImagePSF`` in a typed :class:`PSF` (FWHM measured).
 
         Parametrised on ``epsf`` so the per-cluster loop can wrap each
         cluster's model; :meth:`to_psf` uses ``self.epsf``.

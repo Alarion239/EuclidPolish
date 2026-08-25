@@ -29,7 +29,7 @@ The output of :meth:`ObservationSimulator.process_hr_to_lr` is a pair of
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal, cast
 
 import numpy as np
 
@@ -58,6 +58,8 @@ from euclid_polish.sky.observation.saturation import (
 
 if TYPE_CHECKING:
     from euclid_polish.sky.observation.artifacts import ArtifactConfig
+
+_ResampleKernel = Literal["lanczos3", "cubic"]
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -310,7 +312,7 @@ class ObservationSimulator:
         if (warp_displacements is not None
                 and psf_spec.warp_seed is not None
                 and psf_spec.warp_alpha > 0.0):
-            shape = tuple(int(v) for v in pset.shape)
+            shape = (int(pset.shape[0]), int(pset.shape[1]))
             displacement = warp_displacements.get(shape)
             if displacement is None:
                 displacement = PSF.elastic_displacement(
@@ -372,6 +374,9 @@ class ObservationSimulator:
         # optionally elastically deformed observation PSF.
         psf = self._psf_for_sample(band, psf_spec, warp_displacements)
         target_scale = self.target_lr_pixel_scale_arcsec
+        resample_kernel = cast(
+            _ResampleKernel, self.config.nisp_resample_kernel,
+        )
 
         # 1. PSF convolution on HR plane via PSF.convolved_with (sum=1-normalises
         #    the kernel and runs fftconvolve mode="same" + float32 cast).
@@ -394,7 +399,7 @@ class ObservationSimulator:
                 lr_signal_e, band, rng,
                 add_artifacts=self.config.add_artifacts,
                 artifact_config=self.config.artifact_config,
-                resample_kernel=self.config.nisp_resample_kernel,
+                resample_kernel=resample_kernel,
                 noise_scale_map=noise_scale_map,
             )
         else:
@@ -404,12 +409,12 @@ class ObservationSimulator:
         upsample_factor = int(round(band.pixel_scale_lr_arcsec / target_scale))
         if upsample_factor > 1:
             lr_e = resample_upsample(
-                lr_e, factor=upsample_factor, kernel=self.config.nisp_resample_kernel,
+                lr_e, factor=upsample_factor, kernel=resample_kernel,
             )
             lr_signal_e = resample_upsample(
                 lr_signal_e,
                 factor=upsample_factor,
-                kernel=self.config.nisp_resample_kernel,
+                kernel=resample_kernel,
             )
         if distant_star_wings:
             residual = lr_e - lr_signal_e

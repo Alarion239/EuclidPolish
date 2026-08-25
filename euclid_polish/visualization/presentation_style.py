@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, cast
 
 import matplotlib as mpl
+from matplotlib.typing import RcKeyType
 
 FIGURE_TITLE_SIZE = 20
 PANEL_TITLE_SIZE = 17
@@ -13,7 +14,7 @@ TICK_LABEL_SIZE = 12.5
 LEGEND_SIZE = 11.5
 NOTE_SIZE = 11.5
 
-PRESENTATION_RC: dict[str, Any] = {
+PRESENTATION_RC: dict[RcKeyType, Any] = {
     "font.family": "DejaVu Sans",
     "font.size": 13,
     "axes.titlesize": PANEL_TITLE_SIZE,
@@ -32,7 +33,8 @@ def presentation_rc(extra: Mapping[str, Any] | None = None):
     """Return a Matplotlib context with slide-readable typography."""
     style = dict(PRESENTATION_RC)
     if extra:
-        style.update(extra)
+        for key, value in extra.items():
+            style[cast(RcKeyType, key)] = value
     return mpl.rc_context(style)
 
 

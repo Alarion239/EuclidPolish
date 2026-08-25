@@ -34,11 +34,15 @@ def register(app):
     @app.route("/sky/fits")
     def sky_fits():
         """Export one sky-record band+index as FITS and return the file."""
+        try:
+            index = int(request.args.get("i", "0"))
+        except ValueError:
+            abort(400)
         path = _export_sky_record_fits(
             subset=request.args.get("subset", ""),
             kind=request.args.get("kind", ""),
             band=request.args.get("band", ""),
-            index=request.args.get("i", "0"),
+            index=index,
             records_dir=_sky_records_local_dir(),
         )
         return send_file(path, as_attachment=True,
@@ -48,11 +52,15 @@ def register(app):
     @app.route("/sky/inspect")
     def sky_inspect():
         """Export the requested record then redirect into the inspector."""
+        try:
+            index = int(request.args.get("i", "0"))
+        except ValueError:
+            abort(400)
         path = _export_sky_record_fits(
             subset=request.args.get("subset", ""),
             kind=request.args.get("kind", ""),
             band=request.args.get("band", ""),
-            index=request.args.get("i", "0"),
+            index=index,
             records_dir=_sky_records_local_dir(),
         )
         return redirect(url_for("inspect_fits_page",
@@ -170,7 +178,7 @@ def register(app):
         if not remote:
             abort(400)
         result = _fasrc_fetcher.fetch_one_file(remote)
-        if not result.ok:
+        if not result.ok or result.local_path is None:
             return render_template(
                 "fasrc_fetch_error.html", remote=remote, error=result.error,
             ), 502
@@ -187,7 +195,7 @@ def register(app):
         if not remote:
             abort(400)
         result = _fasrc_fetcher.fetch_one_file(remote)
-        if not result.ok:
+        if not result.ok or result.local_path is None:
             return jsonify({"ok": False, "error": result.error}), 502
         return send_file(
             result.local_path, as_attachment=True,

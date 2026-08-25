@@ -81,8 +81,8 @@ def register(app):
         starless = (request.form.get("mode", "starless").lower() != "starfull")
         try:
             target_fwhm = validate_target_fwhm_arcsec(
-                request.form.get("target_psf_fwhm_arcsec",
-                                 Config.TARGET_PSF_FWHM_ARCSEC))
+                float(request.form.get("target_psf_fwhm_arcsec",
+                                       Config.TARGET_PSF_FWHM_ARCSEC)))
         except (TypeError, ValueError):
             abort(400, description="invalid target_psf_fwhm_arcsec")
         regime = "starless" if starless else "starfull"
@@ -102,8 +102,8 @@ def register(app):
         starless = _mode_starless(default="starfull")
         try:
             target_fwhm = validate_target_fwhm_arcsec(
-                request.form.get("target_psf_fwhm_arcsec",
-                                 Config.TARGET_PSF_FWHM_ARCSEC))
+                float(request.form.get("target_psf_fwhm_arcsec",
+                                       Config.TARGET_PSF_FWHM_ARCSEC)))
         except (TypeError, ValueError):
             abort(400, description="invalid target_psf_fwhm_arcsec")
         try:

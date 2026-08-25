@@ -736,19 +736,27 @@ def _star_distribution_from_rows(
         ]
         if any(item is None for item in measurements):
             continue
-        magnitudes = {
+        valid_measurements = [
+            measurement for measurement in measurements
+            if measurement is not None
+        ]
+        optional_magnitudes = {
             key: _finite(row.get(key))
             for key in ("mag_vis", "mag_y_e", "mag_j_e", "mag_h_e")
         }
-        if any(value is None for value in magnitudes.values()):
+        if any(value is None for value in optional_magnitudes.values()):
             continue
+        magnitudes = {
+            key: value
+            for key, value in optional_magnitudes.items()
+            if value is not None
+        }
         bp_rp.append(float(gaia["bp_rp"]))
         for key, _label, left, right in _STAR_COLOR_PAIRS:
             colors[key].append(float(magnitudes[left] - magnitudes[right]))
         signal_to_noise = [
             abs(flux / error)
-            for measurement in measurements
-            for flux, error in [measurement]  # type: ignore[misc]
+            for flux, error in valid_measurements
         ]
         is_high_quality = min(signal_to_noise) >= 5.0
         high_quality += int(is_high_quality)
@@ -1143,10 +1151,14 @@ def _color_measurement_covariance(
     measurements = [_raw_measurement(row, band) for band in ("vis", "y", "j", "h")]
     if any(item is None for item in measurements):
         return None
+    valid_measurements = [
+        measurement for measurement in measurements
+        if measurement is not None
+    ]
     sigma_mag = np.asarray([
         1.0857362047581296 * abs(error / flux)
         if abs(flux) > 0.0 else np.inf
-        for flux, error in measurements  # type: ignore[misc]
+        for flux, error in valid_measurements
     ])
     if not np.all(np.isfinite(sigma_mag)):
         return None
@@ -1587,6 +1599,7 @@ def _fit_star_population_latent() -> dict[str, Any]:
     converged = False
     objective_change = float("inf")
     previous_objective: float | None = None
+    _iteration = -1
     for _iteration in range(50):
         accum = np.full_like(node_weights, 0.5)
         objective = 0.0
