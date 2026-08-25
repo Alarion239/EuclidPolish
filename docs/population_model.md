@@ -120,29 +120,41 @@ Sérsic flux, `POINT_LIKE_FLAG IS NULL`, `SPURIOUS_FLAG = 0`,
 Every grouped bin is weighted by `PHZ_GAL_PROB`.
 
 Generation marginalizes the two-dimensional law over brightness and draws
-circularized VIS Sérsic \(R_e\) first. It resizes a random TNG donor to that
-radius, then draws \(m\mid R_e\) from the same joint law. The normalized WebUI
-radius diagnostics keep two model marginals separate: one weights the
-conditional radius law by the clean Q1 magnitude brackets, while the other
-uses the complete generation law including its flat faint extension. A
-separate empirical VIS PSF is used to measure the resized stamp and one shared
-four-band factor matches the drawn 2FWHM flux. COSMOS, detection-radius, and
-Kron-radius plots are diagnostic overlays only.
+circularized VIS Sérsic \(R_e\) first. It chooses a diversity-balanced TNG donor
+only from galaxies with at least one natively large-enough orientation, then
+area-downsamples an eligible orientation to that radius. It never enlarges a
+TNG stamp. The generator then draws \(m\mid R_e\) from the same joint law. The
+normalized WebUI radius diagnostics keep two model marginals separate: one
+weights the conditional radius law by the clean Q1 magnitude brackets, while
+the other uses the complete generation law including its flat faint extension.
+A separate empirical VIS PSF is used to measure the resized stamp and one
+shared four-band factor matches the drawn 2FWHM flux. COSMOS,
+detection-radius, and Kron-radius plots are diagnostic overlays only.
+
+The image boundary is explicit throughout this path: `TNGView` identifies one
+atlas orientation without loading its pixels, `TNGRenderer` owns the caches and
+scientific transforms, and `RenderedTNG` pairs a read-only electron
+`ImageCube` with typed render provenance. Native SKIRT cubes remain MJy/sr on a
+physical pc/pixel grid until the renderer converts them to the Euclid angular
+grid.
 
 For a donor with native VIS half-light radius \(R_{e,\rm native}\) pixels on
-the 0.05-arcsec grid, the initial spatial resize is
+the 0.05-arcsec grid, the spatial downsampling factor is
 
 \[
 s_0=\frac{R_{e,\rm requested}}
-          {0.05\,R_{e,\rm native}}.
+          {0.05\,R_{e,\rm native}} \leq 1.
 \]
 
-The renderer applies this nominal similarity scale from the donor's
-pre-measured native radius; it does not remeasure the final rendered
-half-light radius. Finite render support can therefore clip especially large
-requests, and the source catalog records both `radius_remeasured = false` and
-`render_support_clipped` so a requested radius is not mistaken for an achieved
-measurement. Spatial resizing does not set brightness. After resizing, the
+The renderer applies this nominal shrink-only scale from the donor's
+pre-measured native radius; it does not remeasure the final rendered half-light
+radius. If a sampled radius exceeds the available donor support, generation
+rejects and redraws that geometry within a bounded retry instead of
+interpolating or clamping it. Finite render support can still clip a large
+native footprint, and the source catalog
+records `render_support_clipped` so bounded image support remains explicit.
+The requested radius is a model parameter, not a post-render measurement.
+Spatial downsampling does not set brightness. After downsampling, the
 independent common four-band flux factor is
 \(c=F_{\rm goal,2FWHM}/F_{\rm measured,2FWHM}\).
 

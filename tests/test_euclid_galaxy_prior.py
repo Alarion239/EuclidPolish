@@ -251,7 +251,13 @@ def test_simulator_accepts_density_equal_to_activated_magnitude_law(
         module, "load_manifest",
         lambda *args, **kwargs: {"manifest_fingerprint": "r" * 64},
     )
-    monkeypatch.setattr(module, "radius_lookup", lambda payload: {})
+    monkeypatch.setattr(
+        module,
+        "radius_lookup",
+        lambda payload: {
+            ("1", orientation): 20.0 for orientation in range(1, 6)
+        },
+    )
     monkeypatch.setattr(module, "list_tng_galaxies", lambda path: [("o", "1")])
     monkeypatch.setattr(module, "load_tng_properties", lambda path: {})
     prior = JointGalaxyPopulationPrior(active_payload())
@@ -266,11 +272,7 @@ def test_simulator_accepts_density_equal_to_activated_magnitude_law(
     )
 
 
-def test_staged_generator_selects_and_renders_donor_before_brightness(
-    monkeypatch,
-):
-    import euclid_polish.sky.generation.sky_simulator as module
-
+def test_staged_generator_selects_and_renders_donor_before_brightness():
     prior = JointGalaxyPopulationPrior(active_payload())
     events = []
     original_brightness = prior.sample_brightness
@@ -287,13 +289,22 @@ def test_staged_generator_selects_and_renders_donor_before_brightness(
     simulator._radius_manifest_fingerprint = "r" * 64
     simulator._tng_max_output_side = 65
 
-    def pick_donor(_rng):
+    def pick_donor(_rng, target_re_arcsec):
+        assert target_re_arcsec > 0.0
         events.append("donor")
         return [("atlas", "42")], {}
 
-    def render_donor(*_args, **_kwargs):
-        events.append("render")
-        return np.ones((3, 3, 4), dtype=np.float32), {}
+    class Renderer:
+        def choose_view(self, *_args, **_kwargs):
+            return object()
+
+        def render_for_radius(self, *_args, **_kwargs):
+            events.append("render")
+            return object()
+
+        def render_for_radius_at_redshift(self, *_args, **_kwargs):
+            events.append("render")
+            return object()
 
     class StopAfterBrightness(Exception):
         pass
@@ -304,7 +315,7 @@ def test_staged_generator_selects_and_renders_donor_before_brightness(
 
     simulator._pick_random_field_galaxy = pick_donor
     simulator._draw_aperture_psf = stop_at_psf
-    monkeypatch.setattr(module, "sample_tng_stamp", render_donor)
+    simulator.tng_renderer = Renderer()
 
     with pytest.raises(StopAfterBrightness):
         simulator._add_tng_galaxy(

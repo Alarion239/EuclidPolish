@@ -39,13 +39,11 @@ import numpy as np
 from scipy.integrate import trapezoid
 
 from euclid_polish.config import Config
+from euclid_polish.sky.generation.tng_types import TNG_NATIVE_PC_PER_PIXEL
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-
-#: SKIRT atlas native pixel pitch (physical).
-TNG_NATIVE_PC_PER_PIXEL = 100.0
 
 #: Pivot wavelengths (µm) of the four Euclid bands, in
 #: ``Config.LR_INPUT_BAND_NAMES`` order (VIS, Y_E, J_E, H_E) — monotonically

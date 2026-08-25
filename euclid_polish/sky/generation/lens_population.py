@@ -23,8 +23,10 @@ import numpy as np
 from scipy.ndimage import map_coordinates
 
 from euclid_polish.config import Config
+from euclid_polish.image.cube import AngularGrid, CubeLike, PixelUnit
 from euclid_polish.skirt.image import composite_stamp
 from euclid_polish.sky.generation.redshift_model import angular_diameter_distance
+from euclid_polish.sky.generation.tng_types import RenderedTNG
 
 # ---------------------------------------------------------------------------
 # Per-lens parameter dataclass
@@ -180,6 +182,58 @@ def _build_lenstronomy_lens(params: LensParams):
     return lens_model, [kwargs_sie, kwargs_shear]
 
 
+LensStamp = CubeLike | RenderedTNG
+
+
+def _validated_stamp_data(
+    stamp: LensStamp,
+    *,
+    name: str,
+    pixel_scale: float,
+) -> np.ndarray:
+    """Return one validated rendered-stamp array for the lensing kernel."""
+    cube: CubeLike
+    if isinstance(stamp, RenderedTNG):
+        cube = stamp.cube
+    elif isinstance(stamp, CubeLike):
+        cube = stamp
+    else:
+        raise TypeError(
+            f"{name} must be a CubeLike image or RenderedTNG, "
+            f"got {type(stamp).__name__}"
+        )
+
+    if cube.unit is not PixelUnit.ELECTRONS_PER_PIXEL:
+        raise ValueError(
+            f"{name} must contain electrons/pixel, got {cube.unit.value!r}"
+        )
+    if not isinstance(cube.grid, AngularGrid):
+        raise ValueError(f"{name} must use an angular grid")
+    if not np.isclose(
+        cube.grid.pixel_scale_arcsec,
+        pixel_scale,
+        rtol=0.0,
+        atol=1e-12,
+    ):
+        raise ValueError(
+            f"{name} pixel scale {cube.grid.pixel_scale_arcsec!r} arcsec/pixel "
+            f"does not match canvas pixel scale {pixel_scale!r} arcsec/pixel"
+        )
+    expected_bands = tuple(Config.LR_INPUT_BAND_NAMES)
+    if cube.bands != expected_bands:
+        raise ValueError(
+            f"{name} bands must be {expected_bands!r}, got {cube.bands!r}"
+        )
+
+    data = np.asarray(cube.data)
+    if data.ndim != 3 or data.shape[-1] != len(expected_bands):
+        raise ValueError(
+            f"{name} must have shape (H, W, {len(expected_bands)}), "
+            f"got {data.shape!r}"
+        )
+    return data
+
+
 def _lensed_source_from_stamp(
     stamp: np.ndarray, dx: np.ndarray, dy: np.ndarray, pixel_scale: float,
 ) -> np.ndarray:
@@ -207,8 +261,8 @@ def render_lens_to_multiband_canvas(
     *,
     params: LensParams,
     pixel_scale: float = Config.DEFAULT_PIXEL_SCALE,
-    lens_light_stamp: np.ndarray,
-    source_stamp: np.ndarray,
+    lens_light_stamp: LensStamp,
+    source_stamp: LensStamp,
 ) -> np.ndarray:
     """Add one lens system to a 4-channel canvas in a single pass.
 
@@ -222,17 +276,29 @@ def render_lens_to_multiband_canvas(
     params      : :class:`LensParams` instance (already placed with
                   ``centre_x_pix`` / ``centre_y_pix`` if non-zero).
     pixel_scale : arcsec/pixel of ``canvas_4ch``.
-    lens_light_stamp : ``(Hs,Ws,4)`` foreground TNG stamp.
-    source_stamp : ``(Hs,Ws,4)`` background TNG stamp.
+    lens_light_stamp : foreground electron :class:`~euclid_polish.image.CubeLike`
+                       or :class:`~euclid_polish.sky.generation.tng_types.RenderedTNG`.
+    source_stamp : background electron cube or rendered TNG stamp. Both stamps
+                   must use the canvas angular grid and canonical band order.
 
     Returns the updated canvas.
     """
     H, W, _ = canvas_4ch.shape
+    lens_light_data = _validated_stamp_data(
+        lens_light_stamp,
+        name="lens_light_stamp",
+        pixel_scale=pixel_scale,
+    )
+    source_data = _validated_stamp_data(
+        source_stamp,
+        name="source_stamp",
+        pixel_scale=pixel_scale,
+    )
     cx_pix = params.centre_x_pix if params.centre_x_pix is not None else W / 2.0
     cy_pix = params.centre_y_pix if params.centre_y_pix is not None else H / 2.0
 
     # --- 1. Foreground lens-galaxy light ---
-    composite_stamp(canvas_4ch, lens_light_stamp, cx_pix, cy_pix)
+    composite_stamp(canvas_4ch, lens_light_data, cx_pix, cy_pix)
 
     # --- 2. Ray-shooting (band-independent) ---
     lens_model, kw = _build_lenstronomy_lens(params)
@@ -248,5 +314,5 @@ def render_lens_to_multiband_canvas(
     # --- 3. Lensed source stamp (ray-shot + sampled) ---
     dx = src_x - params.src_dx_arcsec
     dy = src_y - params.src_dy_arcsec
-    canvas_4ch += _lensed_source_from_stamp(source_stamp, dx, dy, pixel_scale)
+    canvas_4ch += _lensed_source_from_stamp(source_data, dx, dy, pixel_scale)
     return canvas_4ch

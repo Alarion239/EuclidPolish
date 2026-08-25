@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 from euclid_polish.config import Config
+from euclid_polish.image.cube import AngularGrid, ImageCube, PixelUnit
 from euclid_polish.sky.generation.lens_population import (
     render_lens_to_multiband_canvas,
     sample_lens_geometry,
@@ -19,11 +20,20 @@ def lens_case():
     params = sample_lens_geometry(np.random.default_rng(7), 250.0)
     assert params is not None
     params = replace(params, centre_x_pix=64.0, centre_y_pix=64.0)
-    lens = np.zeros((48, 48, Config.NUM_LR_CHANNELS), np.float32)
-    source = np.zeros_like(lens)
-    lens[18:30, 18:30, :] = np.arange(1, 5, dtype=np.float32) * 20.0
-    source[20:28, 20:28, :] = np.arange(1, 5, dtype=np.float32) * 40.0
-    return params, lens, source
+    lens_data = np.zeros((48, 48, Config.NUM_LR_CHANNELS), np.float32)
+    source_data = np.zeros_like(lens_data)
+    lens_data[18:30, 18:30, :] = np.arange(1, 5, dtype=np.float32) * 20.0
+    source_data[20:28, 20:28, :] = np.arange(1, 5, dtype=np.float32) * 40.0
+    cube_kwargs = {
+        "bands": Config.LR_INPUT_BAND_NAMES,
+        "unit": PixelUnit.ELECTRONS_PER_PIXEL,
+        "grid": AngularGrid(Config.DEFAULT_PIXEL_SCALE),
+    }
+    return (
+        params,
+        ImageCube(data=lens_data, **cube_kwargs),
+        ImageCube(data=source_data, **cube_kwargs),
+    )
 
 
 def _render(lens_case) -> np.ndarray:

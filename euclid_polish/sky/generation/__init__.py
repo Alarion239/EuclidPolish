@@ -43,12 +43,14 @@ _EXPORTS = {
     "SkySimulatorConfig": ("sky_simulator", "SkySimulatorConfig"),
     "SourceCatalogWriter": ("source_catalog", "SourceCatalogWriter"),
     "read_sources": ("source_catalog", "read_sources"),
+    "TNGRenderer": ("tng_galaxy", "TNGRenderer"),
     "list_tng_galaxies": ("tng_galaxy", "list_tng_galaxies"),
-    "sample_tng_stamp": ("tng_galaxy", "sample_tng_stamp"),
-    "tng_stamp_at_redshift": ("tng_galaxy", "tng_stamp_at_redshift"),
+    "RenderedTNG": ("tng_types", "RenderedTNG"),
+    "TNGRenderTrace": ("tng_types", "TNGRenderTrace"),
+    "TNGView": ("tng_types", "TNGView"),
 }
 
-__all__ = list(_EXPORTS)
+__all__ = list(_EXPORTS)  # pyright: ignore[reportUnsupportedDunderAll]
 
 
 def __getattr__(name: str):

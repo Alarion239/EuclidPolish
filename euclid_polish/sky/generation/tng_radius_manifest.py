@@ -14,13 +14,13 @@ import json
 import os
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 
 from euclid_polish.config import Config
 from euclid_polish.skirt.image import (
-    load_skirt_frame,
+    load_skirt_image,
     measure_halflight_radius_px,
 )
 from euclid_polish.sky.generation.redshift_model import (
@@ -65,7 +65,7 @@ def _property_identity(path: str | None) -> dict[str, int | str | None]:
     if not path or not os.path.isfile(path):
         return {"path": os.path.abspath(path) if path else None,
                 "size": 0, "mtime_ns": 0}
-    return _file_identity(path)
+    return cast(dict[str, int | str | None], _file_identity(path))
 
 
 def _fingerprint(payload: Any) -> str:
@@ -169,8 +169,8 @@ def build_manifest(
             ):
                 previous["vis_path"] = os.path.abspath(vis_path)
                 return previous, None, True
-            frame = load_skirt_frame(vis_path)
-            re_px = float(measure_halflight_radius_px(frame))
+            frame = load_skirt_image(vis_path, "VIS")
+            re_px = float(measure_halflight_radius_px(frame, band="VIS"))
             if not has_properties:
                 raise ValueError("missing finite positive mass_stars property")
             if not np.isfinite(re_px) or re_px <= 0.0:
@@ -303,7 +303,7 @@ def write_parameter_summary(
     with temporary.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=PARAMETER_SUMMARY_FIELDS)
         writer.writeheader()
-        writer.writerows(rows)
+        writer.writerows(cast(Any, rows))
     os.replace(temporary, target)
     meta = {
         "version": PARAMETER_SUMMARY_VERSION,

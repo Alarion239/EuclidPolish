@@ -347,6 +347,13 @@ def test_nested_thinning_keeps_nuisance_population_identical(monkeypatch):
         "entries": [],
         "manifest_fingerprint": "test",
     })
+    monkeypatch.setattr(
+        module,
+        "radius_lookup",
+        lambda _payload: {
+            ("1", orientation): 20.0 for orientation in range(1, 6)
+        },
+    )
 
     def build(density: float) -> dict:
         simulator = SkySimulator(object(), SkySimulatorConfig(

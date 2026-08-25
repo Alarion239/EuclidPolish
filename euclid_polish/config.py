@@ -860,8 +860,8 @@ class Config:
     # population): θ_E must clear this fraction of the deflector's VISIBLE
     # (μ-truncated) radius, and the lensed source must keep at least this
     # much VIS flux after cosmological dimming. Enforced analytically
-    # before rendering via the cached native-photometry predictors
-    # (tng_galaxy.predict_visible_radius_arcsec / predict_vis_flux_e),
+    # before rendering via TNGRenderer's cached native-photometry predictors
+    # (predict_visible_radius_arcsec / predict_vis_flux_e),
     # with a post-render check as backstop.
     LENS_SHOWABLE_THETA_E_FRAC  = 0.5
     LENS_SHOWABLE_MIN_SRC_VIS_E = 1000.0

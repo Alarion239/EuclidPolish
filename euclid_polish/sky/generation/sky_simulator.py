@@ -16,7 +16,10 @@ from __future__ import annotations
 
 import math
 import os
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
+from pathlib import Path
+from typing import cast
 
 import numpy as np
 
@@ -57,20 +60,21 @@ from euclid_polish.sky.generation.stellar_sed import (
 from euclid_polish.sky.generation.tng_galaxy import (
     N_ORIENTATIONS,
     TNG_RADIUS_RENDERER_FINGERPRINT,
-    TNG_RADIUS_RENDERER_VERSION,
     TNG_RADIUS_RENDERING,
+    TNGRenderer,
     list_tng_galaxies,
-    normalise_tng_to_vis_2fwhm,
-    predict_vis_flux_e,
-    predict_visible_radius_arcsec,
-    sample_tng_stamp,
-    tng_stamp_at_redshift,
 )
 from euclid_polish.sky.generation.tng_radius_manifest import (
     load_manifest,
     radius_lookup,
     validate_manifest,
 )
+from euclid_polish.sky.generation.tng_types import TNGView
+
+
+class _NoRenderableTNGDonorError(ValueError):
+    """A sampled field-galaxy geometry exceeds the available donor support."""
+
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -97,9 +101,6 @@ class SkySimulatorConfig:
     # Frozen into generation provenance; not a user-selectable setting.
     tng_radius_rendering: str = field(
         default=TNG_RADIUS_RENDERING, init=False,
-    )
-    tng_radius_renderer_version: int = field(
-        default=TNG_RADIUS_RENDERER_VERSION, init=False,
     )
     tng_radius_renderer_fingerprint: str = field(
         default=TNG_RADIUS_RENDERER_FINGERPRINT, init=False,
@@ -256,6 +257,10 @@ class SkySimulator:
         self._tng_max_output_side = int(
             2 * max(self.config.image_size, response_radius + 2) + 1
         )
+        self.tng_renderer = TNGRenderer(
+            pixel_scale_arcsec=self.config.pixel_scale,
+            max_output_side=self._tng_max_output_side,
+        )
         self.stellar_prior = (
             EmpiricalStellarPrior.from_payload(self.config.star_prior_payload)
             if self.config.star_prior_payload else None
@@ -341,6 +346,26 @@ class SkySimulator:
                 "TNG atlas page's download step, or set "
                 "galaxy_density_arcmin2=0 for star-only fields.")
 
+        self._atlas_max_native_re_px: np.ndarray | None = None
+        if self.tng_galaxies and self._radius_lookup is not None:
+            self._atlas_max_native_re_px = np.asarray([
+                max(
+                    (
+                        float(value)
+                        for orientation in range(1, N_ORIENTATIONS + 1)
+                        if (value := self._radius_lookup.get(
+                            (str(gid), orientation)
+                        )) is not None
+                    ),
+                    default=float("nan"),
+                )
+                for _, gid in self.tng_galaxies
+            ], dtype=np.float64)
+            if not np.isfinite(self._atlas_max_native_re_px).all():
+                raise ValueError(
+                    "TNG radius manifest is missing a donor orientation"
+                )
+
         # TNG properties for mass → σ_v mapping (redshift mode).
         self.tng_properties: dict = {}
         self._atlas_logm: np.ndarray | None = None
@@ -383,24 +408,29 @@ class SkySimulator:
             if not np.isfinite(self._atlas_logm).any():
                 self._atlas_logm = None
             elif np.isfinite(self._atlas_logm).all() and np.isfinite(sfr).all():
+                atlas_logm = self._atlas_logm
+                if atlas_logm is None:  # narrowed above; keeps type explicit
+                    raise RuntimeError("TNG mass array disappeared during setup")
                 self._atlas_sfr = sfr.astype(np.float64)
-                self._atlas_zero_sfr = sfr == 0.0
+                atlas_zero_sfr = sfr == 0.0
+                self._atlas_zero_sfr = atlas_zero_sfr
                 with np.errstate(divide="ignore", invalid="ignore"):
-                    self._atlas_logssfr = np.where(
-                        sfr > 0.0, np.log10(sfr) - self._atlas_logm, np.nan,
+                    atlas_logssfr = np.where(
+                        sfr > 0.0, np.log10(sfr) - atlas_logm, np.nan,
                     )
+                self._atlas_logssfr = atlas_logssfr
                 self._atlas_activity_class = np.where(
-                    self._atlas_zero_sfr | (
-                        self._atlas_logssfr
+                    atlas_zero_sfr | (
+                        atlas_logssfr
                         < MORPHOLOGY_ACTIVITY_THRESHOLD_LOGSSFR
                     ),
                     "quenched", "star_forming",
                 )
                 self._atlas_mass_quantile = conditional_mass_quantiles(
-                    self._atlas_logm, self._atlas_activity_class,
+                    atlas_logm, self._atlas_activity_class,
                 )
                 self._atlas_ssfr_quantile = conditional_ssfr_quantiles(
-                    self._atlas_logssfr,
+                    atlas_logssfr,
                     self._atlas_activity_class,
                     zero_sfr=self._atlas_zero_sfr,
                 )
@@ -481,6 +511,33 @@ class SkySimulator:
         N = self.config.image_size
         return float(rng.uniform(0.0, N - 1)), float(rng.uniform(0.0, N - 1))
 
+    def _eligible_morphology_indices(
+        self,
+        target_re_arcsec: float,
+    ) -> np.ndarray:
+        """Return donors with at least one orientation large enough to shrink."""
+        if (
+            self._atlas_max_native_re_px is None
+            or not np.isfinite(target_re_arcsec)
+            or target_re_arcsec <= 0.0
+        ):
+            raise ValueError("TNG shrink-only donor selection is unavailable")
+        minimum_native_re_px = target_re_arcsec / self.config.pixel_scale
+        eligible = np.flatnonzero(
+            self._atlas_max_native_re_px >= minimum_native_re_px
+        )
+        if not eligible.size:
+            maximum_arcsec = float(
+                np.max(self._atlas_max_native_re_px)
+                * self.config.pixel_scale
+            )
+            raise _NoRenderableTNGDonorError(
+                f"no TNG donor can render R_e={target_re_arcsec:g} arcsec "
+                f"without enlargement; atlas maximum is {maximum_arcsec:g} "
+                "arcsec"
+            )
+        return eligible
+
     # ------------------------------------------------------------------ #
     def _pick_field_galaxy(
         self,
@@ -488,6 +545,7 @@ class SkySimulator:
         target_mass_quantile: float,
         target_ssfr_quantile: float,
         activity_class: str,
+        target_re_arcsec: float,
     ) -> tuple[list[tuple[str, str]], dict[str, float | int | str]]:
         """Choose a TNG donor by conditional mass-sSFR rank transport."""
         if (
@@ -510,9 +568,17 @@ class SkySimulator:
             raise ValueError("COSMOS morphology target mass quantile is invalid")
         if not np.isfinite(target_ssfr) or not 0.0 <= target_ssfr <= 1.0:
             raise ValueError("COSMOS morphology target sSFR quantile is invalid")
-        candidates = np.flatnonzero(self._atlas_activity_class == label)
+        renderable = self._eligible_morphology_indices(target_re_arcsec)
+        candidates = np.intersect1d(
+            np.flatnonzero(self._atlas_activity_class == label),
+            renderable,
+            assume_unique=True,
+        )
         if not candidates.size:
-            raise ValueError(f"TNG atlas has no {label!r} morphology donors")
+            raise _NoRenderableTNGDonorError(
+                f"TNG atlas has no shrink-only {label!r} morphology donor "
+                f"for R_e={target_re_arcsec:g} arcsec"
+            )
         mass_bandwidth = self._mass_kernel_bandwidth_by_class.get(label)
         ssfr_bandwidth = self._ssfr_kernel_bandwidth_by_class.get(label)
         if mass_bandwidth is None or ssfr_bandwidth is None:
@@ -540,9 +606,16 @@ class SkySimulator:
         self._morphology_use_counts[selected] = use_count
         donor_mass_quantile = float(self._atlas_mass_quantile[selected])
         donor_ssfr_quantile = float(self._atlas_ssfr_quantile[selected])
+        proxy_logmass_method = getattr(
+            self.population_prior, "proxy_logmass", None
+        )
         proxy_logmass = (
-            float(self.population_prior.proxy_logmass(donor_mass_quantile, label))
-            if hasattr(self.population_prior, "proxy_logmass")
+            float(
+                cast(Callable[[float, str], float], proxy_logmass_method)(
+                    donor_mass_quantile, label
+                )
+            )
+            if callable(proxy_logmass_method)
             else float("nan")
         )
         return [self.tng_galaxies[selected]], {
@@ -567,7 +640,9 @@ class SkySimulator:
         }
 
     def _pick_random_field_galaxy(
-        self, rng: np.random.Generator,
+        self,
+        rng: np.random.Generator,
+        target_re_arcsec: float,
     ) -> tuple[list[tuple[str, str]], dict[str, float | int | str]]:
         """Choose an explicitly unconditioned, diversity-balanced TNG donor."""
         if (
@@ -583,12 +658,14 @@ class SkySimulator:
                 "random TNG morphology assignment requires complete mass and "
                 "SFR properties for every donor"
             )
+        candidates = self._eligible_morphology_indices(target_re_arcsec)
         balance = np.power(
-            1.0 + self._morphology_use_counts.astype(np.float64),
+            1.0 + self._morphology_use_counts[candidates].astype(np.float64),
             -MORPHOLOGY_BALANCE_POWER,
         )
         probabilities = balance / np.sum(balance)
-        selected = int(rng.choice(len(self.tng_galaxies), p=probabilities))
+        local_index = int(rng.choice(candidates.size, p=probabilities))
+        selected = int(candidates[local_index])
         use_count = int(self._morphology_use_counts[selected]) + 1
         self._morphology_use_counts[selected] = use_count
 
@@ -605,7 +682,7 @@ class SkySimulator:
             "morphology_proxy_logmass": float("nan"),
             "mass_quantile_delta": float("nan"),
             "ssfr_quantile_delta": float("nan"),
-            "selection_probability": float(probabilities[selected]),
+            "selection_probability": float(probabilities[local_index]),
             "effective_donors": float(
                 1.0 / np.sum(probabilities * probabilities)
             ),
@@ -623,50 +700,75 @@ class SkySimulator:
         """Resolve TNG geometry/donor before drawing independent brightness."""
         if self.population_prior is None:
             return None
-        staged = isinstance(self.population_prior, JointGalaxyPopulationPrior)
-        draw = (
-            self.population_prior.sample_geometry(rng)
-            if staged else self.population_prior.sample(rng)
-        )
-        if getattr(self.population_prior, "morphology_mode", "") == (
-            "balanced_random_tng_atlas"
-        ):
-            galaxies, morphology = self._pick_random_field_galaxy(rng)
+        prior = self.population_prior
+        staged = isinstance(prior, JointGalaxyPopulationPrior)
+        if isinstance(prior, JointGalaxyPopulationPrior):
+            draw = prior.sample_geometry(rng)
         else:
-            galaxies, morphology = self._pick_field_galaxy(
-                rng,
-                draw.mass_quantile,
-                draw.ssfr_quantile,
-                draw.activity_class,
+            draw = prior.sample(rng)
+        try:
+            if getattr(prior, "morphology_mode", "") == (
+                "balanced_random_tng_atlas"
+            ):
+                galaxies, morphology = self._pick_random_field_galaxy(
+                    rng, draw.re_arcsec,
+                )
+            else:
+                galaxies, morphology = self._pick_field_galaxy(
+                    rng,
+                    draw.mass_quantile,
+                    draw.ssfr_quantile,
+                    draw.activity_class,
+                    draw.re_arcsec,
+                )
+        except _NoRenderableTNGDonorError as exc:
+            if _attempt < 31:
+                return self._add_tng_galaxy(
+                    canvas_4ch, rng, _attempt=_attempt + 1,
+                )
+            raise RuntimeError(
+                "TNG population produced 32 geometries outside the "
+                "shrink-only donor support"
+            ) from exc
+        view = self.tng_renderer.choose_view(
+            galaxies,
+            self._radius_lookup or {},
+            draw.re_arcsec,
+            rng,
+            radius_manifest_fingerprint=self._radius_manifest_fingerprint,
+        )
+        if np.isfinite(draw.z):
+            rendered = self.tng_renderer.render_for_radius_at_redshift(
+                view,
+                draw.re_arcsec,
+                draw.z,
+                rng=rng,
+                target_vis_flux_e=(
+                    None if staged else draw.target_vis_flux_e
+                ),
             )
-        res = sample_tng_stamp(
-                               galaxies, rng,
-                               pixel_scale_arcsec=self.config.pixel_scale,
-                               target_re_arcsec=draw.re_arcsec,
-                               z=(draw.z if np.isfinite(draw.z) else None),
-                               target_vis_flux_e=(
-                                   None if staged else draw.target_vis_flux_e
-                               ),
-                               radius_lookup_map=self._radius_lookup,
-                               radius_manifest_fingerprint=(
-                                   self._radius_manifest_fingerprint
-                               ),
-                               max_output_side=self._tng_max_output_side)
-        stamp, tmeta = res
-        if staged:
+        else:
+            rendered = self.tng_renderer.render_for_radius(
+                view,
+                draw.re_arcsec,
+                rng=rng,
+                target_vis_flux_e=(
+                    None if staged else draw.target_vis_flux_e
+                ),
+            )
+        if isinstance(prior, JointGalaxyPopulationPrior):
             magnitude, target_aperture_flux = (
-                self.population_prior.sample_brightness(
+                prior.sample_brightness(
                     rng, radius_arcsec=draw.re_arcsec,
                 )
             )
             psf_kernel, psf_fwhm, psf_source = self._draw_aperture_psf(rng)
             try:
-                stamp, tmeta = normalise_tng_to_vis_2fwhm(
-                    stamp, tmeta,
+                rendered = self.tng_renderer.normalize_vis_2fwhm(
+                    rendered,
                     target_flux_e=target_aperture_flux,
                     psf_kernel=psf_kernel,
                     psf_fwhm_arcsec=psf_fwhm,
-                    pixel_scale_arcsec=self.config.pixel_scale,
                     psf_identity=psf_source,
                 )
             except ValueError as exc:
@@ -677,14 +779,14 @@ class SkySimulator:
                 raise RuntimeError(
                     "TNG population produced 32 unusable 2FWHM stamps"
                 ) from exc
-            tmeta["aperture_psf_source"] = psf_source
             draw = replace(
                 draw,
                 target_vis_mag=magnitude,
                 target_vis_flux_e=target_aperture_flux,
             )
         x_pix, y_pix = self._random_pix(rng)
-        composite_stamp(canvas_4ch, stamp, x_pix, y_pix)
+        composite_stamp(canvas_4ch, rendered.data, x_pix, y_pix)
+        tmeta = rendered.record_fields()
         return {
             "type": "galaxy",
             "render": "tng",
@@ -693,7 +795,8 @@ class SkySimulator:
             "subhalo_id":   tmeta["subhalo_id"],
             "orientation":  tmeta["orientation"],
             "rebin_factor": tmeta["rebin_factor"],
-            "rot_k":        tmeta["rot_k"],
+            "rot_angle": tmeta["rot_angle"],
+            "arbitrary_rotation": tmeta["arbitrary_rotation"],
             "catalog_id":   draw.catalog_id,
             "z":            draw.z,
             "mass_scale":   1.0,
@@ -799,9 +902,6 @@ class SkySimulator:
             "aperture_psf_fwhm_arcsec": float(
                 tmeta.get("aperture_psf_fwhm_arcsec", float("nan"))
             ),
-            "aperture_radius_arcsec": float(
-                tmeta.get("aperture_radius_arcsec", float("nan"))
-            ),
             "aperture_psf_source": str(tmeta.get("aperture_psf_source", "")),
             "brightness_transfer": draw.brightness_transfer,
             "brightness_scale": float(
@@ -811,9 +911,6 @@ class SkySimulator:
             "target_re_arcsec":   float(tmeta.get("target_re_arcsec", float("nan"))),
             "apparent_re_arcsec": float(tmeta.get("apparent_re_arcsec", float("nan"))),
             "achieved_re_arcsec": float(tmeta.get("achieved_re_arcsec", float("nan"))),
-            "nominal_re_arcsec": float(
-                tmeta.get("nominal_re_arcsec", float("nan"))
-            ),
             "native_halflight_px": float(
                 tmeta.get("native_halflight_px", float("nan"))
             ),
@@ -823,9 +920,6 @@ class SkySimulator:
             "radius_rendering": str(tmeta.get("radius_rendering", "")),
             "radius_renderer_fingerprint": str(
                 tmeta.get("radius_renderer_fingerprint", "")
-            ),
-            "radius_remeasured": bool(
-                tmeta.get("radius_remeasured", False)
             ),
             "render_support_clipped": bool(
                 tmeta.get("render_support_clipped", False)
@@ -871,6 +965,9 @@ class SkySimulator:
         """
         cfg = self.config
         kappa = cfg.lens_theta_e_min_re_ratio
+        radius_lookup_map = self._radius_lookup
+        if radius_lookup_map is None:
+            raise ValueError("TNG lens rendering requires a radius manifest")
         for _ in range(max_tries):
             gdir, gid = self.tng_galaxies[
                 int(rng.integers(0, len(self.tng_galaxies)))]
@@ -888,7 +985,7 @@ class SkySimulator:
             lp = sample_lens_geometry(rng, sigma_v)
             if lp is None:
                 continue
-            re_px = self._radius_lookup.get((str(gid), orientation))
+            re_px = radius_lookup_map.get((str(gid), orientation))
             if re_px is None or not (np.isfinite(re_px) and re_px > 0.0):
                 continue
             re_app = physical_pc_to_arcsec(
@@ -899,41 +996,57 @@ class SkySimulator:
             sgdir, sgid = self.tng_galaxies[
                 int(rng.integers(0, len(self.tng_galaxies)))]
             sori = int(rng.integers(1, N_ORIENTATIONS + 1))
+            source_re_px = radius_lookup_map.get((str(sgid), sori))
+            if source_re_px is None or not (
+                np.isfinite(source_re_px) and source_re_px > 0.0
+            ):
+                continue
+            lens_view = TNGView(
+                galaxy_dir=Path(gdir),
+                subhalo_id=gid,
+                orientation=orientation,
+                native_re_px=float(re_px),
+                radius_manifest_fingerprint=(
+                    self._radius_manifest_fingerprint
+                ),
+            )
+            source_view = TNGView(
+                galaxy_dir=Path(sgdir),
+                subhalo_id=sgid,
+                orientation=sori,
+                native_re_px=float(source_re_px),
+                radius_manifest_fingerprint=(
+                    self._radius_manifest_fingerprint
+                ),
+            )
             if cfg.lens_require_showable:
-                r_vis = predict_visible_radius_arcsec(
-                    gdir, gid, orientation, lp.z_lens,
-                    pixel_scale_arcsec=cfg.pixel_scale)
+                r_vis = self.tng_renderer.predict_visible_radius_arcsec(
+                    lens_view, lp.z_lens
+                )
                 if (lp.theta_E_arcsec
                         < Config.LENS_SHOWABLE_THETA_E_FRAC * r_vis):
                     continue
-                if (predict_vis_flux_e(sgdir, sgid, sori, lp.z_source,
-                                       pixel_scale_arcsec=cfg.pixel_scale)
+                if (self.tng_renderer.predict_vis_flux_e(
+                        source_view, lp.z_source)
                         < Config.LENS_SHOWABLE_MIN_SRC_VIS_E):
                     continue
             try:
-                lens_light_stamp, _ = tng_stamp_at_redshift(
-                    gdir, gid, orientation, lp.z_lens, rng,
-                    pixel_scale_arcsec=cfg.pixel_scale,
-                    native_re_px=(self._radius_lookup or {}).get(
-                        (str(gid), orientation)),
-                    radius_manifest_fingerprint=(
-                        self._radius_manifest_fingerprint
-                    ))
-                src = tng_stamp_at_redshift(
-                    sgdir, sgid, sori, lp.z_source, rng,
-                    pixel_scale_arcsec=cfg.pixel_scale,
-                    native_re_px=(self._radius_lookup or {}).get(
-                        (str(sgid), sori)),
-                    radius_manifest_fingerprint=(
-                        self._radius_manifest_fingerprint
-                    ))
-            except Exception:
+                lens_light_stamp = (
+                    self.tng_renderer.render_for_physical_redshift(
+                        lens_view, lp.z_lens, rng=rng
+                    )
+                )
+                source_stamp = self.tng_renderer.render_for_physical_redshift(
+                    source_view, lp.z_source, rng=rng
+                )
+            except (OSError, TypeError, ValueError):
                 continue
             x_pix, y_pix = self._random_pix(rng)
             lp = replace(lp, centre_x_pix=x_pix, centre_y_pix=y_pix)
             render_lens_to_multiband_canvas(
                 canvas_4ch, params=lp, pixel_scale=cfg.pixel_scale,
-                lens_light_stamp=lens_light_stamp, source_stamp=src[0],
+                lens_light_stamp=lens_light_stamp,
+                source_stamp=source_stamp,
             )
             return {
                 "type": "lens",
@@ -952,7 +1065,7 @@ class SkySimulator:
                 "lens_subhalo_id": str(gid),
                 "lens_visible_r_arcsec": float(
                     lens_light_stamp.shape[0] * cfg.pixel_scale / 2.0),
-                "source_flux_vis_e": float(src[0][..., 0].sum()),
+                "source_flux_vis_e": source_stamp.flux_e("VIS"),
             }
         return None
 

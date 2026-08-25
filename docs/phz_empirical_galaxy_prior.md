@@ -28,11 +28,13 @@ and large tails remain in the sampling grid. Positions are drawn from a
 homogeneous Poisson process at the grid's integrated surface density.
 
 For a sampled cell, the generator draws (z), (m_{\rm Kron}), and (r)
-uniformly inside that cell, selects a diversity-balanced TNG morphology, first
-resizes it to (r), and only then applies one scalar to all four bands so the
-integrated clean VIS flux equals the sampled Kron flux. This last equality is a
-brightness-anchor convention. It is not yet a claim that a post-PSF, noisy
-source-extraction run would remeasure exactly the same Kron magnitude.
+uniformly inside that cell, selects a diversity-balanced TNG morphology with at
+least one orientation natively large enough for (r), area-downsamples that
+orientation to (r), and only then applies one scalar to all four bands so the
+integrated clean VIS flux equals the sampled Kron flux. TNG stamps are never
+enlarged. This last equality is a brightness-anchor convention. It is not yet a
+claim that a post-PSF, noisy source-extraction run would remeasure exactly the
+same Kron magnitude.
 
 The population artifact is marked `validated: false` until rendered fields are
 run through a Kron measurement and compared with the MER distribution.

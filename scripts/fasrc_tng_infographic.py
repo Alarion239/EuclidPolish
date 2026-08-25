@@ -46,12 +46,11 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from euclid_polish.config import Config
+from euclid_polish.image import ImageCube
 from euclid_polish.observability.reporter import Reporter
-from euclid_polish.skirt.image import block_mean, load_skirt_frame
-from euclid_polish.sky.generation.tng_galaxy import (
-    TNG_FITS_BANDS,
-    tng_fits_path,
-)
+from euclid_polish.skirt.image import block_mean, load_skirt_image
+from euclid_polish.sky.generation.tng_galaxy import tng_fits_path
+from euclid_polish.sky.generation.tng_types import TNG_FITS_BANDS
 from euclid_polish.tng.properties import (
     _fig_to_png,
     load_api_key,
@@ -139,14 +138,14 @@ def _grayscale_norm(arr: np.ndarray) -> np.ndarray:
 
 
 def _load_cell_band(gdir: str, gid: str, orient: int, fits_band: str,
-                    downsample: int) -> np.ndarray | None:
+                    downsample: int) -> ImageCube | None:
     path = tng_fits_path(gdir, gid, orient, fits_band)
     if not os.path.isfile(path):
         return None
-    arr = load_skirt_frame(path)
+    image = load_skirt_image(path, fits_band)
     if downsample > 1:
-        arr = block_mean(arr, downsample)
-    return arr
+        image = block_mean(image, downsample)
+    return image
 
 
 def render_cell(gdir: str, gid: str, orient: int, band: str,
@@ -155,17 +154,23 @@ def render_cell(gdir: str, gid: str, orient: int, band: str,
     if band == "RGB":
         chans = []
         for tok in RGB_FITS_BANDS:                 # H, J, VIS
-            a = _load_cell_band(gdir, gid, orient, tok, downsample)
-            if a is None:
+            image = _load_cell_band(gdir, gid, orient, tok, downsample)
+            if image is None:
                 return None
-            chans.append(np.clip(a, 0.0, None))
+            chans.append(np.clip(image.plane(tok), 0.0, None))
         r, g, b = chans
         from astropy.visualization import make_lupton_rgb
         ref = float(np.percentile(
             np.concatenate([r.ravel(), g.ravel(), b.ravel()]), 99.5))
-        return make_lupton_rgb(r, g, b, Q=8, stretch=max(ref, 1e-12))
-    a = _load_cell_band(gdir, gid, orient, band, downsample)
-    return None if a is None else _grayscale_norm(a)
+        return make_lupton_rgb(
+            r,
+            g,
+            b,
+            Q=8,
+            stretch=max(ref, 1e-12),  # pyright: ignore[reportArgumentType]
+        )
+    image = _load_cell_band(gdir, gid, orient, band, downsample)
+    return None if image is None else _grayscale_norm(image.plane(band))
 
 
 def render_grid(tng_dir: str, band: str, downsample: int, seed: int, *,
@@ -222,8 +227,13 @@ def build_stack_hdul(tng_dir: str, gid: str, band: str) -> fits.HDUList:
         if not os.path.isfile(path):
             continue
         with fits.open(path, memmap=False) as src:
-            data = np.asarray(src[0].data)
-            hdr = src[0].header.copy(strip=True)
+            source_primary = src[0]
+            if not isinstance(source_primary, fits.PrimaryHDU):
+                raise ValueError(f"first FITS extension is not primary: {path}")
+            if source_primary.data is None:
+                raise ValueError(f"empty TNG FITS primary image: {path}")
+            data = np.asarray(source_primary.data)
+            hdr = source_primary.header.copy(strip=True)
         hdr["EXTNAME"] = f"O{orient}"
         hdr["TNGID"] = str(gid)
         hdr["ORIENT"] = (orient, "SKIRT viewpoint index")

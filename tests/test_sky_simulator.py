@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 
 import numpy as np
 import pytest
@@ -46,15 +47,31 @@ class StaticPrior:
         return 8.0
 
 
+class OneOversizedDrawPrior(StaticPrior):
+    def __init__(self):
+        self.calls = 0
+
+    def sample(self, rng):
+        self.calls += 1
+        draw = super().sample(rng)
+        return replace(draw, re_arcsec=10.0) if self.calls == 1 else draw
+
+
 def _write_fake_tng_galaxy(tng_dir, gid, *, size=24):
     directory = os.path.join(tng_dir, gid)
     os.makedirs(directory, exist_ok=True)
     for orientation in range(1, 6):
         for band in ("VIS", "Y", "J", "H"):
             frame = np.zeros((size, size), dtype=">f4")
-            frame[size // 2 - 2:size // 2 + 2,
-                  size // 2 - 2:size // 2 + 2] = 500.0
-            fits.PrimaryHDU(frame).writeto(
+            frame[size // 2 - 8:size // 2 + 8,
+                  size // 2 - 8:size // 2 + 8] = 500.0
+            hdu = fits.PrimaryHDU(frame)
+            hdu.header["BUNIT"] = "MJy/sr"
+            hdu.header["CDELT1"] = 100.0
+            hdu.header["CUNIT1"] = "pc"
+            hdu.header["CDELT2"] = 100.0
+            hdu.header["CUNIT2"] = "pc"
+            hdu.writeto(
                 os.path.join(
                     directory,
                     f"TNG{gid}_O{orientation}_Euclid_{band}.fits",
@@ -121,9 +138,9 @@ def test_joint_population_renders_only_tng(tmp_path):
     )
     assert all(
         row["target_re_arcsec"] == pytest.approx(0.2)
-        and row["nominal_re_arcsec"] == pytest.approx(0.2)
+        and row["arbitrary_rotation"] is True
+        and np.isfinite(row["rot_angle"])
         and np.isnan(row["achieved_re_arcsec"])
-        and row["radius_remeasured"] is False
         and row["radius_rendering"] == TNG_RADIUS_RENDERING
         and row["radius_renderer_fingerprint"]
         == TNG_RADIUS_RENDERER_FINGERPRINT
@@ -142,6 +159,48 @@ def test_joint_population_renders_only_tng(tmp_path):
         for row in meta["galaxies"]
     )
     assert image.data.sum() > 0
+
+
+def test_oversized_radius_draw_is_rejected_and_redrawn(tmp_path):
+    simulator = _simulator(tmp_path)
+    prior = OneOversizedDrawPrior()
+    simulator.population_prior = prior
+
+    record = simulator._add_tng_galaxy(
+        np.zeros((64, 64, 4), dtype=np.float32),
+        np.random.default_rng(31),
+    )
+
+    assert prior.calls == 2
+    assert record is not None
+    assert record["target_re_arcsec"] == pytest.approx(0.2)
+    assert record["radius_scale_factor"] <= 1.0
+
+
+def test_random_morphology_selection_excludes_donors_that_need_enlargement(
+    tmp_path,
+):
+    simulator = _simulator(tmp_path)
+    simulator.tng_galaxies = [("small", "1"), ("large", "2")]
+    simulator._atlas_max_native_re_px = np.asarray([2.0, 20.0])
+    simulator._atlas_logm = np.asarray([9.0, 10.0])
+    simulator._atlas_sfr = np.asarray([1.0, 1.0])
+    simulator._atlas_logssfr = np.asarray([-9.0, -10.0])
+    simulator._atlas_zero_sfr = np.asarray([False, False])
+    simulator._atlas_activity_class = np.asarray([
+        "star_forming", "star_forming",
+    ])
+    simulator._atlas_mass_quantile = np.asarray([0.0, 1.0])
+    simulator._atlas_ssfr_quantile = np.asarray([0.0, 1.0])
+    simulator._morphology_use_counts = np.zeros(2, dtype=np.int64)
+
+    galaxies, metadata = simulator._pick_random_field_galaxy(
+        np.random.default_rng(9), target_re_arcsec=0.5,
+    )
+
+    assert galaxies == [("large", "2")]
+    assert metadata["selection_probability"] == pytest.approx(1.0)
+    assert metadata["effective_donors"] == pytest.approx(1.0)
 
 
 def test_explicit_zero_sources_is_empty(tmp_path):

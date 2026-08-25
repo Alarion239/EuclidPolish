@@ -8,7 +8,6 @@ import pytest
 
 from euclid_polish.config import Config
 from euclid_polish.photometry import ab_mag_to_uJy, electrons_to_ab_mag
-from euclid_polish.sky.generation import tng_galaxy
 from euclid_polish.sky.generation.phz_galaxy_prior import (
     PHZ_EMPIRICAL_KIND,
     PhzGalaxyPopulationPrior,
@@ -114,34 +113,3 @@ def test_payload_is_deterministic_and_compact(tmp_path):
     first["grid"]["density_sha256"] = "0" * 64
     with pytest.raises(ValueError, match="density fingerprint"):
         PhzGalaxyPopulationPrior(first)
-
-
-def test_size_is_resolved_before_single_vis_normalisation(monkeypatch):
-    calls: list[float | None] = []
-
-    monkeypatch.setattr(
-        tng_galaxy,
-        "_prepare_tng_continuous_source",
-        lambda *_args, **_kwargs: (np.ones((2, 2, 4)), False),
-    )
-
-    def fake_render(*_args, **kwargs):
-        calls.append(kwargs["target_vis_flux_e"])
-        return np.ones((2, 2, 4), dtype=np.float32), {}, 0.2
-
-    monkeypatch.setattr(tng_galaxy, "_render_target_re", fake_render)
-    stamp, meta, achieved, _scale = tng_galaxy._match_target_re(
-        "unused", "1", 1,
-        initial_scale=1.0,
-        target_re_arcsec=0.2,
-        pixel_scale_arcsec=0.05,
-        rot_k=0,
-        rot_angle=None,
-        target_vis_flux_e=20.0,
-    )
-
-    assert calls == [None]
-    assert achieved == pytest.approx(0.2)
-    assert stamp[..., 0].sum() == pytest.approx(20.0)
-    assert meta["brightness_scale"] == pytest.approx(5.0)
-    assert meta["photometric_scaling"].endswith("after_size_match")

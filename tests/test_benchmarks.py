@@ -229,6 +229,7 @@ def test_bench_catalog_sample():
 
 def test_bench_lens_render_multiband():
     """One current TNG-backed lens system on a 128² four-band canvas."""
+    from euclid_polish.image import AngularGrid, ImageCube, PixelUnit
     from euclid_polish.sky.generation.lens_population import (
         render_lens_to_multiband_canvas,
         sample_lens_geometry,
@@ -236,8 +237,18 @@ def test_bench_lens_render_multiband():
 
     params = sample_lens_geometry(np.random.default_rng(0), 250.0)
     assert params is not None
-    lens_stamp = np.ones((48, 48, Config.NUM_LR_CHANNELS), dtype=np.float32)
-    source_stamp = np.ones((32, 32, Config.NUM_LR_CHANNELS), dtype=np.float32)
+    lens_stamp = ImageCube(
+        data=np.ones((48, 48, Config.NUM_LR_CHANNELS), dtype=np.float32),
+        bands=tuple(Config.LR_INPUT_BAND_NAMES),
+        unit=PixelUnit.ELECTRONS_PER_PIXEL,
+        grid=AngularGrid(Config.DEFAULT_PIXEL_SCALE),
+    )
+    source_stamp = ImageCube(
+        data=np.ones((32, 32, Config.NUM_LR_CHANNELS), dtype=np.float32),
+        bands=tuple(Config.LR_INPUT_BAND_NAMES),
+        unit=PixelUnit.ELECTRONS_PER_PIXEL,
+        grid=AngularGrid(Config.DEFAULT_PIXEL_SCALE),
+    )
 
     def call():
         canvas = np.zeros((128, 128, Config.NUM_LR_CHANNELS), dtype=np.float32)

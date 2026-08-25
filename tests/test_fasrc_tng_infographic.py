@@ -25,7 +25,13 @@ def _make_galaxy(tng_dir, gid, *, bands=("VIS", "Y", "J", "H"), size=16,
     for o in (1, 2, 3, 4, 5):
         for b in bands:
             arr = np.abs(np.random.randn(size, size)).astype(">f4")
-            fits.PrimaryHDU(arr).writeto(
+            hdu = fits.PrimaryHDU(arr)
+            hdu.header["BUNIT"] = "MJy/sr"
+            hdu.header["CDELT1"] = 100.0
+            hdu.header["CDELT2"] = 100.0
+            hdu.header["CUNIT1"] = "pc"
+            hdu.header["CUNIT2"] = "pc"
+            hdu.writeto(
                 os.path.join(d, f"TNG{gid}_O{o}_Euclid_{b}.fits"),
                 overwrite=True)
     if done:
@@ -137,8 +143,10 @@ def test_build_stack_hdul_preserves_frames(tmp_path):
     assert [h.name for h in hdul[1:]] == ["O1", "O2", "O3", "O4", "O5"]
     assert all(hdul[i].data.shape == (16, 16) for i in range(1, 6))
     assert hdul[0].header["TNGID"] == "111"
-    on_disk = mod.load_skirt_frame(
-        mod.tng_fits_path(os.path.join(tng, "111"), "111", 1, "VIS"))
+    on_disk = mod.load_skirt_image(
+        mod.tng_fits_path(os.path.join(tng, "111"), "111", 1, "VIS"),
+        "VIS",
+    ).plane("VIS")
     np.testing.assert_allclose(np.asarray(hdul[1].data), on_disk, rtol=0, atol=0)
 
 

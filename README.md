@@ -87,7 +87,7 @@ budget — Y/J/H accumulate 4 × 112 s).
 | Class | Magnitude source per band | Flux assignment |
 |---|---|---|
 | **Stars** (point sources) | VIS magnitude and four-band colour are sampled from the activated Q1/Gaia empirical stellar calibration: a finite-domain count law plus a magnitude-conditioned latent colour locus | Each band is deposited as a single HR-pixel electron flux (`sky_simulator.py:_deposit_star`); four-band magnitudes are persisted for fixed validate/test stars and redrawn per visit on-the-fly; the PSF is applied later by the forward model |
-| **Galaxies** | One COSMOS2025 row supplies HST F814W, photo-z, stellar mass, and apparent R_e; missing size values use a nearby COSMOS donor in (F814W,z) | A mass-near TNG50 SKIRT morphology is resized to the COSMOS R_e. Its existing redshift/SED treatment is retained, then all four bands receive one shared brightness normalization so TNG VIS/NISP colours are unchanged. |
+| **Galaxies** | The activated Euclid joint prior supplies circularized VIS Sérsic R_e and 2FWHM VIS brightness | A diversity-balanced TNG50 SKIRT donor is chosen only when at least one orientation is natively large enough, then area-downsampled to the requested R_e. Stamps are never enlarged. All four bands receive one shared brightness normalization so TNG VIS/NISP colours are unchanged. |
 | **Strong lenses** | TNG subhalo masses and the lens geometry prior | SIE + external-shear mass model from lenstronomy; deflector and source light are both TNG stamps. |
 
 The COSMOS2025 master catalog (COSMOS-Web v1.1,

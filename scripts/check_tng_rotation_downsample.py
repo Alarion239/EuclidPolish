@@ -4,12 +4,12 @@
 
 Motivation
 ----------
-The TNG injector currently rotates a SKIRT stamp only by exact quarter-turns
-(``np.rot90``, lossless). We want arbitrary orientations (any 0–360°), which
-needs spline interpolation — and interpolation blurs. The intuition is that a
+The physical-redshift renderer uses exact quarter-turns at small integer rebin
+factors and arbitrary orientations once the rebin is large enough. Arbitrary
+rotation needs spline interpolation, which blurs. The intuition is that a
 *large enough* downsample factor K averages that blur away, so rotate-then-
 downsample becomes indistinguishable from a clean direct downsample. This
-script measures where that holds.
+script validates where that policy is safe.
 
 The experiment (per galaxy, per K)
 ----------------------------------
@@ -42,6 +42,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from typing import Literal
 
 import matplotlib
 import numpy as np
@@ -55,17 +56,20 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from euclid_polish.config import Config  # noqa: E402
-from euclid_polish.skirt.image import block_mean, load_skirt_frame  # noqa: E402
+from euclid_polish.image import ImageCube  # noqa: E402
+from euclid_polish.skirt.image import block_mean, load_skirt_image  # noqa: E402
 from euclid_polish.sky.generation.tng_galaxy import (  # noqa: E402
     list_tng_galaxies,
     tng_fits_path,
 )
 
 DEFAULT_K_LIST = (1, 2, 3, 4, 5, 6, 8, 10, 12, 16, 20, 24, 32)
+type SplineOrder = Literal[0, 1, 2, 3, 4, 5]
 
 
-def _growth_radius_px(frame: np.ndarray, frac: float) -> float:
+def _growth_radius_px(image: ImageCube, frac: float) -> float:
     """Radius (px) about the frame centre enclosing ``frac`` of the positive flux."""
+    frame = image.plane()
     a = np.where(np.isfinite(frame) & (frame > 0.0), frame, 0.0).astype(np.float64)
     total = a.sum()
     if total <= 0.0:
@@ -79,14 +83,15 @@ def _growth_radius_px(frame: np.ndarray, frac: float) -> float:
     return float(np.searchsorted(cum, frac * total))
 
 
-def _central_window(frame: np.ndarray, frac: float, margin: float) -> np.ndarray:
+def _central_window(image: ImageCube, frac: float, margin: float) -> ImageCube:
     """Crop a centred square holding the galaxy inside its inscribed circle.
 
     Half-side = ``r_frac · √2 · margin`` so the flux-enclosing disk of radius
     ``r_frac`` stays within the window's inscribed circle even after rotation —
     i.e. rotation never clips real flux, only (near-zero) sky in the corners.
     """
-    r = _growth_radius_px(frame, frac)
+    frame = image.plane()
+    r = _growth_radius_px(image, frac)
     half = int(np.ceil(r * np.sqrt(2.0) * margin))
     H, W = frame.shape
     cy, cx = H // 2, W // 2
@@ -95,11 +100,11 @@ def _central_window(frame: np.ndarray, frac: float, margin: float) -> np.ndarray
     # Even side keeps the centre on a pixel boundary and eases block_mean.
     if win.shape[0] % 2:
         win = win[:-1, :-1]
-    return np.ascontiguousarray(win, dtype=np.float32)
+    return image.with_data(np.ascontiguousarray(win[..., None], dtype=np.float32))
 
 
-def _cumulative_rotate(img: np.ndarray, angle_step: float, n_rot: int,
-                       order: int) -> np.ndarray:
+def _cumulative_rotate(image: ImageCube, angle_step: float, n_rot: int,
+                       order: SplineOrder) -> ImageCube:
     """Apply ``n_rot`` successive ``angle_step``-degree spline rotations.
 
     ``reshape=False`` keeps the array size; ``mode='constant'`` (cval 0) treats
@@ -107,33 +112,44 @@ def _cumulative_rotate(img: np.ndarray, angle_step: float, n_rot: int,
     step (surface brightness is non-negative), matching how a rendered stamp
     would be used.
     """
-    out = img.astype(np.float32, copy=True)
+    out = image.as_array(copy=True)
     for _ in range(n_rot):
-        out = ndi_rotate(out, angle_step, reshape=False, order=order,
-                         mode="constant", cval=0.0, prefilter=True)
+        out = ndi_rotate(
+            out,
+            angle_step,
+            axes=(1, 0),
+            reshape=False,
+            order=order,
+            mode="constant",
+            cval=0.0,
+            prefilter=True,
+        )
         np.maximum(out, 0.0, out=out)
-    return out
+    return image.with_data(out)
 
 
-def _rel_rms(a: np.ndarray, b: np.ndarray) -> float:
+def _rel_rms(a: ImageCube, b: ImageCube) -> float:
     """Relative RMS error ``‖a − b‖ / ‖b‖`` (0 = identical)."""
-    denom = float(np.sqrt(np.mean(b * b)))
+    a_values = a.as_array()
+    b_values = b.as_array()
+    denom = float(np.sqrt(np.mean(b_values * b_values)))
     if denom <= 0.0:
         return float("nan")
-    return float(np.sqrt(np.mean((a - b) ** 2)) / denom)
+    return float(np.sqrt(np.mean((a_values - b_values) ** 2)) / denom)
 
 
-def _flux_err(a: np.ndarray, b: np.ndarray) -> float:
+def _flux_err(a: ImageCube, b: ImageCube) -> float:
     """Fractional flux difference ``|Σa − Σb| / Σb`` (block_mean conserves SB,
     so this also tracks total-flux drift after the pixel-count change)."""
-    sb = float(b.sum())
-    return float(abs(a.sum() - sb) / sb) if sb > 0 else float("nan")
+    sb = float(b.data.sum())
+    return float(abs(a.data.sum() - sb) / sb) if sb > 0 else float("nan")
 
 
-def analyse_galaxy(frame: np.ndarray, *, k_list, angle_step, n_rot, order,
+def analyse_galaxy(image: ImageCube, *, k_list, angle_step, n_rot,
+                   order: SplineOrder,
                    crop_frac, margin):
     """Return ``(rel_rms[K], flux_err[K])`` arrays for one galaxy frame."""
-    win = _central_window(frame, crop_frac, margin)
+    win = _central_window(image, crop_frac, margin)
     rotated = _cumulative_rotate(win, angle_step, n_rot, order)
     rms, flux = [], []
     for k in k_list:
@@ -197,9 +213,9 @@ def main() -> int:
         if not os.path.isfile(path):
             print(f"  ⚠ {gid}: missing {os.path.basename(path)} — skipping")
             continue
-        frame = load_skirt_frame(path)
+        image = load_skirt_image(path, args.band)
         rms, flux, side = analyse_galaxy(
-            frame, k_list=k_list, angle_step=args.angle_step, n_rot=args.n_rot,
+            image, k_list=k_list, angle_step=args.angle_step, n_rot=args.n_rot,
             order=args.order, crop_frac=args.crop_frac, margin=args.margin)
         k_crit = next((k for k, e in zip(k_list, rms, strict=True)
                        if np.isfinite(e) and e < args.tol), None)

@@ -38,6 +38,7 @@ import tensorflow as tf
 from astropy.io import fits as _fits
 
 from euclid_polish.config import Config
+from euclid_polish.image.cube import AngularGrid, PixelUnit
 from euclid_polish.provenance.fits import read_stamp_cards, write_stamp_cards
 from euclid_polish.provenance.persistable import StampCarrier
 from euclid_polish.provenance.records import Format, Stamp
@@ -158,10 +159,23 @@ class Image(StampCarrier):
         if self.data.ndim != 3:
             raise ValueError(
                 f"Image.data must be (H, W, C); got shape {self.data.shape}")
-        if len(self.band_names) != self.data.shape[-1]:
+        scale = float(self.pixel_scale_arcsec)
+        if not np.isfinite(scale) or scale <= 0.0:
             raise ValueError(
-                f"band_names has {len(self.band_names)} entries but data has "
+                "pixel_scale_arcsec must be finite and positive, "
+                f"got {self.pixel_scale_arcsec!r}"
+            )
+        self.pixel_scale_arcsec = scale
+        bands = tuple(str(name) for name in self.band_names)
+        if len(bands) != self.data.shape[-1]:
+            raise ValueError(
+                f"band_names has {len(bands)} entries but data has "
                 f"{self.data.shape[-1]} channels")
+        if any(not name.strip() for name in bands):
+            raise ValueError("band_names must contain non-empty strings")
+        if len(set(bands)) != len(bands):
+            raise ValueError(f"band_names must be unique, got {bands!r}")
+        self.band_names = bands
         # Tolerate a plain string role (e.g. from older constructors).
         if not isinstance(self.role, Role):
             self.role = Role(str(self.role))
@@ -171,8 +185,27 @@ class Image(StampCarrier):
         return self.data.shape  # type: ignore[return-value]
 
     @property
+    def bands(self) -> tuple[str, ...]:
+        """Band-name spelling shared with dependency-light image cubes."""
+        return self.band_names
+
+    @property
+    def spatial_shape(self) -> tuple[int, int]:
+        return self.data.shape[:2]  # type: ignore[return-value]
+
+    @property
     def num_channels(self) -> int:
         return self.data.shape[-1]
+
+    @property
+    def unit(self) -> PixelUnit:
+        """Pixel calibration used by persisted and simulated project images."""
+        return PixelUnit.ELECTRONS_PER_PIXEL
+
+    @property
+    def grid(self) -> AngularGrid:
+        """Angular sampling represented by ``pixel_scale_arcsec``."""
+        return AngularGrid(self.pixel_scale_arcsec)
 
     # ------------------------------------------------------------------
     # TFRecord serialization
@@ -289,18 +322,24 @@ class Image(StampCarrier):
     def from_fits(cls, path: str) -> Image:
         """Read an Image written by :meth:`save_fits` (recovers role + stamp)."""
         with _fits.open(path) as hdul:
-            hdr = hdul[0].header
-            arr = np.asarray(hdul[0].data, dtype=np.float32)
+            primary = hdul[0]
+            if not isinstance(primary, _fits.PrimaryHDU):
+                raise ValueError(f"first FITS extension is not primary: {path}")
+            if primary.data is None:
+                raise ValueError(f"empty primary FITS image: {path}")
+            hdr = primary.header
+            arr = np.asarray(primary.data, dtype=np.float32)
             if arr.ndim == 3:
                 arr = np.ascontiguousarray(np.moveaxis(arr, 0, -1))
             bands_card = hdr.get("BANDS")
-            ps = float(hdr.get("PIXSCALE", Config.DEFAULT_PIXEL_SCALE))
+            ps = float(str(hdr.get("PIXSCALE", Config.DEFAULT_PIXEL_SCALE)))
             clean = bool(hdr.get("ISCLEAN", True))
             role = Role(str(hdr.get("IMGROLE", "unknown")).strip())
             stamp = read_stamp_cards(hdr)
             fits_wcs = FitsWCS.from_header(hdr)
         c = arr.shape[-1] if arr.ndim == 3 else 1
-        bands = tuple(bands_card.split(",")) if bands_card else None
+        bands_text = str(bands_card) if bands_card is not None else ""
+        bands = tuple(bands_text.split(",")) if bands_text else None
         if bands is None or len(bands) != c:
             bands = ("VIS",) if c == 1 else tuple(f"b{i}" for i in range(c))
         return cls(data=arr, pixel_scale_arcsec=ps, band_names=bands,
@@ -359,9 +398,15 @@ class Image(StampCarrier):
         return self.band_names.index(name)
 
     def plane(self, band: str | None = None) -> np.ndarray:
-        """A 2-D view of one channel, or the full ``(H, W, C)`` when ``band is None``."""
+        """Return one 2-D channel plane without copying it.
+
+        The band may be omitted only for a single-channel image, matching the
+        dependency-light :class:`~euclid_polish.image.ImageCube` contract.
+        """
         if band is None:
-            return self.data
+            if self.num_channels != 1:
+                raise ValueError("band is required for a multi-channel image")
+            return self.data[..., 0]
         return self.data[..., self.band_index(band)]
 
     def with_role(self, role: Role) -> Image:

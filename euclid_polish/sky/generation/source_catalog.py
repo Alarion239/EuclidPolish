@@ -16,8 +16,6 @@ import math
 import os
 from typing import Any
 
-TNG_RENDER_RECORD_VERSION = 4
-
 SOURCE_COLS = ["field_index", "type", "render", "x_pix", "y_pix",
                "flux_vis_e", "flux_y_e", "flux_j_e", "flux_h_e",
                "z", "subhalo_id", "theta_E_arcsec",
@@ -41,22 +39,22 @@ SOURCE_COLS = ["field_index", "type", "render", "x_pix", "y_pix",
                "morphology_ssfr_kernel_bandwidth_quantile",
                "morphology_worker_use_count", "morphology_activity_class",
                "physical_model_fingerprint",
-               # TNG population configuration saved with every rendered TNG
-               # row so analysis can distinguish legacy and regenerated data.
+               # TNG population configuration saved with every rendered row.
                "tng_density_arcmin2", "tng_mf_alpha",
                "galaxy_density_arcmin2", "galaxy_prior_density_arcmin2",
                "galaxy_vis_magnitude_max", "galaxy_magnitude_break",
                "galaxy_faint_density_cap_arcmin2_mag", "population_prior",
                "mag_hst_f814w", "target_vis_mag",
                "target_re_arcsec", "achieved_re_arcsec",
-               "nominal_re_arcsec", "native_halflight_px",
+               "native_halflight_px",
+               "rot_angle", "arbitrary_rotation",
                "radius_scale_factor", "radius_rendering",
-               "radius_renderer_fingerprint", "radius_remeasured",
-               "render_support_clipped", "tng_render_record_version",
+               "radius_renderer_fingerprint",
+               "render_support_clipped",
                "magnitude_fit_fingerprint",
                "target_vis_2fwhm_mag", "target_vis_2fwhm_flux_e",
                "achieved_vis_2fwhm_mag", "achieved_vis_2fwhm_flux_e",
-               "aperture_psf_fwhm_arcsec", "aperture_radius_arcsec",
+               "aperture_psf_fwhm_arcsec",
                "aperture_psf_source", "brightness_scale",
                "brightness_transfer",
                # Per-band stellar magnitudes (empty for galaxies/lenses); the
@@ -95,11 +93,6 @@ def _z(src: dict[str, Any]):
 
 
 def _galaxy_row(field_index: int, g: dict[str, Any]) -> dict[str, Any]:
-    one_pass_radius = bool(g.get("radius_rendering"))
-    achieved_re = (
-        None if one_pass_radius
-        else g.get("achieved_re_arcsec", g.get("apparent_re_arcsec"))
-    )
     return {
         "field_index": field_index, "type": "galaxy",
         "render": g.get("render", ""),
@@ -110,9 +103,8 @@ def _galaxy_row(field_index: int, g: dict[str, Any]) -> dict[str, Any]:
         "flux_h_e": _flux_band(g, 3),
         "z": _z(g),
         "subhalo_id": g.get("subhalo_id", ""), "theta_E_arcsec": "",
-        # Sampled nominal Euclid Sersic R_e (arcsec), or the legacy apparent
-        # radius for old records; log10 stellar mass (Msun) where known.
-        "re_arcsec":  _num(g.get("re_arcsec", g.get("apparent_re_arcsec"))),
+        # Sampled Euclid Sersic R_e (arcsec) and log10 stellar mass where known.
+        "re_arcsec":  _num(g.get("re_arcsec")),
         "logmass":    _num(g.get("logmass")),
         "mass_scale": _num(g.get("mass_scale")),
         "native_tng_logmass": _num(g.get("native_tng_logmass")),
@@ -175,21 +167,18 @@ def _galaxy_row(field_index: int, g: dict[str, Any]) -> dict[str, Any]:
         "mag_hst_f814w": _num(g.get("mag_hst_f814w")),
         "target_vis_mag": _num(g.get("target_vis_mag")),
         "target_re_arcsec": _num(g.get("target_re_arcsec")),
-        "achieved_re_arcsec": _num(achieved_re),
-        "nominal_re_arcsec": _num(g.get("nominal_re_arcsec")),
+        "achieved_re_arcsec": _num(g.get("achieved_re_arcsec")),
         "native_halflight_px": _num(g.get("native_halflight_px")),
+        "rot_angle": _num(g.get("rot_angle")),
+        "arbitrary_rotation": int(bool(g.get("arbitrary_rotation", False))),
         "radius_scale_factor": _num(g.get("radius_scale_factor")),
         "radius_rendering": g.get("radius_rendering", ""),
         "radius_renderer_fingerprint": g.get(
             "radius_renderer_fingerprint", ""
         ),
-        "radius_remeasured": int(bool(g.get("radius_remeasured", False))),
         "render_support_clipped": int(bool(
             g.get("render_support_clipped", False)
         )),
-        "tng_render_record_version": (
-            TNG_RENDER_RECORD_VERSION if g.get("render") == "tng" else ""
-        ),
         "magnitude_fit_fingerprint": g.get(
             "magnitude_fit_fingerprint", ""
         ),
@@ -198,7 +187,6 @@ def _galaxy_row(field_index: int, g: dict[str, Any]) -> dict[str, Any]:
         "achieved_vis_2fwhm_mag": _num(g.get("achieved_vis_2fwhm_mag")),
         "achieved_vis_2fwhm_flux_e": _num(g.get("achieved_vis_2fwhm_flux_e")),
         "aperture_psf_fwhm_arcsec": _num(g.get("aperture_psf_fwhm_arcsec")),
-        "aperture_radius_arcsec": _num(g.get("aperture_radius_arcsec")),
         "aperture_psf_source": g.get("aperture_psf_source", ""),
         "brightness_scale": _num(g.get("brightness_scale")),
         "brightness_transfer": g.get("brightness_transfer", ""),
@@ -327,12 +315,13 @@ def _parse(row: dict[str, str]) -> dict[str, Any]:
               "galaxy_faint_density_cap_arcmin2_mag",
               "mag_hst_f814w", "target_vis_mag",
               "target_re_arcsec", "achieved_re_arcsec",
-              "nominal_re_arcsec", "native_halflight_px",
-              "radius_scale_factor", "radius_remeasured",
-              "render_support_clipped", "tng_render_record_version",
+              "native_halflight_px",
+              "rot_angle", "arbitrary_rotation",
+              "radius_scale_factor",
+              "render_support_clipped",
               "target_vis_2fwhm_mag", "target_vis_2fwhm_flux_e",
               "achieved_vis_2fwhm_mag", "achieved_vis_2fwhm_flux_e",
-              "aperture_psf_fwhm_arcsec", "aperture_radius_arcsec",
+              "aperture_psf_fwhm_arcsec",
               "brightness_scale",
               "mag_y_e", "mag_j_e", "mag_h_e", "temperature_k",
               "extinction_av"):
@@ -347,7 +336,9 @@ def _parse(row: dict[str, str]) -> dict[str, Any]:
     out["radius_renderer_fingerprint"] = (
         row.get("radius_renderer_fingerprint") or None
     )
-    for key in ("radius_remeasured", "render_support_clipped"):
+    for key in (
+        "arbitrary_rotation", "render_support_clipped",
+    ):
         if out[key] is not None:
             out[key] = bool(out[key])
     out["aperture_psf_source"] = row.get("aperture_psf_source") or None
