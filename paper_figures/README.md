@@ -1,13 +1,26 @@
 # EuclidPolish manuscript figures — first pass
 
 This directory contains nine candidate manuscript figures assembled on
-2026-08-12. They are deliberately broader than a final paper set so that we
-can decide together what belongs in the main text, supplement, or discard pile.
+2026-08-12, plus separate synthetic and real-data reconstruction grids added on
+2026-08-26. They are deliberately broader than a final paper set so that we can
+decide together what belongs in the main text, supplement, or discard pile.
 
 Run `MPLCONFIGDIR=/private/tmp/euclidpolish-matplotlib python3 paper_figures/build_figures.py`
 from the repository root to rebuild every PNG. Set
 `EUCLIDPOLISH_FIGURE_EXPORTS` if the presentation exports are not in
 `/Users/alarion239/Downloads`.
+
+Run
+`MPLCONFIGDIR=/private/tmp/euclidpolish-matplotlib python3 paper_figures/build_sr_result_prototype.py`
+to rebuild the title-only portrait-A4 synthetic and real-data grids as PNG and
+PDF. The synthetic grid uses local evaluation FITS. The real grid uses matched
+field-16 VIS and H_E browser exports in `EUCLIDPOLISH_FIGURE_EXPORTS`, repeating
+the available selections to fill the page.
+
+Run
+`pdflatex -output-directory=tmp/pdfs paper_figures/sr_reconstruction_grids_a4.tex`
+from the repository root to combine the two page PDFs into one LaTeX-ready A4
+document.
 
 | File | Proposed role | Current status |
 | --- | --- | --- |
@@ -20,6 +33,8 @@ from the repository root to rebuild every PNG. Set
 | `fig07_nexus_closeup_comparisons.png` | Matched close-ups of internal structure in two real fields. | Main-text or supplement candidate. Euclid temperature/VIS and JWST F200W are not identical bandpasses; the caption must avoid a pixel-truth claim. |
 | `fig08_stress_and_limitations.png` | Saturated-star and compact-source stress cases. | Limitations candidate. Keep this separate from positive examples so the model's current failure modes are explicit. |
 | `fig09_ensemble_diagnostics.png` | Spatial-frequency fidelity, member-disagreement versus error, and z-score calibration. | Quantitative-results candidate. Rendered from the current star-containing cache: 14 models and 100 test fields. |
+| `fig10_synthetic_reconstruction_grid.png` / `.pdf` | Five-row table of Euclid-like VIS/H_E inputs, SR composites, and known HR truth. | Title-only portrait-A4 synthetic-results page. |
+| `fig11_real_reconstruction_grid.png` / `.pdf` | Five-row table of Euclid VIS/H_E inputs, SR composites, and NEXUS F200W comparisons. | Title-only portrait-A4 real-data page. NEXUS remains an external reference, not ground truth. |
 
 ## Source policy
 
@@ -31,5 +46,8 @@ from the repository root to rebuild every PNG. Set
 - NEXUS images are useful external morphological references in the Euclid Deep
   Field North overlap. They do not by themselves establish WCS, PSF,
   photometric, or bandpass equivalence.
+- Figure 11's real VIS/H_E composites combine matched, display-stretched browser
+  exports with VIS mapped to cyan and H_E mapped to amber. They are display-only
+  false colour, not photometric colour measurements.
 - Figure 05 is intentionally marked incomplete because LR–SR alone cannot
   validate synthetic reconstruction fidelity when an HR truth image exists.
