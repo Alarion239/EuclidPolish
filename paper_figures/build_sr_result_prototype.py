@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Build title-only A4 image grids for synthetic and real SR results.
 
-The two regimes are intentionally separate.  Each portrait A4 page contains a
-page title, one set of column titles, and a dense table of astronomical images.
-There are no arrows, captions, row labels, scale bars, or display notes.
+The two regimes are intentionally separate.  Each portrait A4 page contains
+one set of column titles and a dense table of astronomical images.  There are
+no arrows, captions, row labels, scale bars, or display notes.
 
 Synthetic panels are rendered from local four-band LR/SR/HR FITS triplets.
 Real panels are clean crops of local Euclid/SR/NEXUS browser exports; no
@@ -32,7 +32,14 @@ DEFAULT_EXPORTS = Path(
 
 A4_WIDTH_IN = 210.0 / 25.4
 A4_HEIGHT_IN = 297.0 / 25.4
+A4_WIDTH_MM = 210.0
+A4_HEIGHT_MM = 297.0
 DPI = 300
+
+SIDE_MARGIN_MM = 7.0
+GRID_GUTTER_MM = 4.0
+UNTITLED_GRID_TOP_MM = 23.0
+TITLED_GRID_TOP_MM = 29.5
 
 BANDS = ("VIS", "Y_E", "J_E", "H_E")
 VIS_INDEX = BANDS.index("VIS")
@@ -206,7 +213,7 @@ def _available_real_rows(exports: Path, count: int) -> list[tuple[np.ndarray, ..
 def _render_page(
     rows: Sequence[Sequence[np.ndarray]],
     *,
-    page_title: str,
+    page_title: str | None,
     column_titles: Sequence[str],
     output_stem: Path,
     origin: str,
@@ -217,6 +224,21 @@ def _render_page(
     if any(len(row) != len(column_titles) for row in rows):
         raise ValueError("Every image row must match the number of column titles")
 
+    column_count = len(column_titles)
+    panel_side_mm = (
+        A4_WIDTH_MM
+        - 2.0 * SIDE_MARGIN_MM
+        - (column_count - 1) * GRID_GUTTER_MM
+    ) / column_count
+    grid_height_mm = (
+        len(rows) * panel_side_mm
+        + (len(rows) - 1) * GRID_GUTTER_MM
+    )
+    grid_top_mm = TITLED_GRID_TOP_MM if page_title else UNTITLED_GRID_TOP_MM
+    grid_bottom_mm = A4_HEIGHT_MM - grid_top_mm - grid_height_mm
+    if grid_bottom_mm < 0.0:
+        raise ValueError("The requested image grid does not fit on an A4 page")
+
     figure = plt.figure(
         figsize=(A4_WIDTH_IN, A4_HEIGHT_IN),
         dpi=DPI,
@@ -225,12 +247,12 @@ def _render_page(
     grid = figure.add_gridspec(
         len(rows),
         len(column_titles),
-        left=7.0 / 210.0,
-        right=1.0 - 7.0 / 210.0,
-        bottom=7.0 / 297.0,
-        top=1.0 - 29.5 / 297.0,
-        wspace=2.0 / 47.5,
-        hspace=5.75 / 47.5,
+        left=SIDE_MARGIN_MM / A4_WIDTH_MM,
+        right=1.0 - SIDE_MARGIN_MM / A4_WIDTH_MM,
+        bottom=grid_bottom_mm / A4_HEIGHT_MM,
+        top=1.0 - grid_top_mm / A4_HEIGHT_MM,
+        wspace=GRID_GUTTER_MM / panel_side_mm,
+        hspace=GRID_GUTTER_MM / panel_side_mm,
     )
     top_axes: list[plt.Axes] = []
     for row_index, row in enumerate(rows):
@@ -252,21 +274,23 @@ def _render_page(
             axis.set_axis_off()
 
     figure.canvas.draw()
-    figure.text(
-        0.5,
-        0.973,
-        page_title,
-        ha="center",
-        va="top",
-        color="#172033",
-        fontsize=17.0,
-        fontweight="bold",
-    )
+    if page_title:
+        figure.text(
+            0.5,
+            0.973,
+            page_title,
+            ha="center",
+            va="top",
+            color="#172033",
+            fontsize=17.0,
+            fontweight="bold",
+        )
+    column_title_y = 1.0 - (grid_top_mm - 5.5) / A4_HEIGHT_MM
     for axis, title in zip(top_axes, column_titles, strict=True):
         position = axis.get_position()
         figure.text(
             (position.x0 + position.x1) / 2.0,
-            0.918,
+            column_title_y,
             title,
             ha="center",
             va="bottom",
@@ -295,7 +319,7 @@ def build_pages(
     real_stem = output_directory / REAL_OUTPUT_STEM.name
     synthetic_png, synthetic_pdf = _render_page(
         synthetic_rows,
-        page_title="Synthetic reconstructions",
+        page_title=None,
         column_titles=(
             "Euclid-like VIS",
             r"Euclid-like H$_E$",
