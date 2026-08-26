@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { NavLink } from "react-router-dom";
-import Plot, { type Series, type Tick } from "../charts/Plot";
+import Plot, { type Band, type Guide, type Series, type Tick } from "../charts/Plot";
 import { useResource } from "../hooks";
 import { JobProgressView, useJob } from "../jobs";
 import {
@@ -31,6 +31,21 @@ type BrightnessCurve = Curve & {
   generation_main_slope?: number;
   generation_break_magnitude?: number;
   generation_density_cap_arcmin2_mag?: number;
+  trust_boundary?: {
+    kind: "empirical_5sigma";
+    magnitude: number;
+    lower_magnitude: number;
+    upper_magnitude: number;
+    snr: number;
+    sample_size: number;
+    estimator: string;
+    selection: string;
+    caveat: string;
+  };
+  observed_density_cap_arcmin2_mag?: number;
+  observed_density_cap_magnitude?: number;
+  observed_cumulative_density_to_boundary_arcmin2?: number;
+  observed_cumulative_density_all_queried_bins_arcmin2?: number;
 };
 type RadiusCurve = Curve & {
   label: string;
@@ -372,6 +387,18 @@ function ApparentBrightnessPlot({ parameter }: { parameter: Parameter }) {
   ));
   const surveyEntries = (survey: BrightnessCurve["survey"]) => entries
     .filter(([, curve]) => curve.survey === survey);
+  const q1Curve = entries.find(([key]) => key === "q1_vis_f2")?.[1];
+  const generationCurve = entries.find(([key]) => key === "generator_vis_f2")?.[1];
+  const trustBoundary = q1Curve?.trust_boundary ?? generationCurve?.trust_boundary;
+  const observedPeak = q1Curve?.observed_density_cap_arcmin2_mag
+    ?? generationCurve?.observed_density_cap_arcmin2_mag;
+  const observedPeakMagnitude = q1Curve?.observed_density_cap_magnitude
+    ?? generationCurve?.observed_density_cap_magnitude;
+  const observedCumulativeToBoundary = q1Curve?.observed_cumulative_density_to_boundary_arcmin2
+    ?? generationCurve?.observed_cumulative_density_to_boundary_arcmin2;
+  const observedCumulativeAll = q1Curve?.observed_cumulative_density_all_queried_bins_arcmin2
+    ?? generationCurve?.observed_cumulative_density_all_queried_bins_arcmin2;
+  const generationCap = generationCurve?.generation_density_cap_arcmin2_mag;
 
   let plot = <Empty>Select at least one catalogue measurement to draw.</Empty>;
   if (visible.length && logValues.length && xValues.length) {
@@ -379,7 +406,7 @@ function ApparentBrightnessPlot({ parameter }: { parameter: Parameter }) {
     const lo = Math.floor(Math.min(...logValues) * 2) / 2;
     const hi = Math.ceil(Math.max(...logValues) * 2) / 2;
     const yDomain: [number, number] = [lo, hi <= lo ? lo + 1 : hi];
-    const guides = visible.flatMap(([, curve]) => [
+    const guides: Guide[] = visible.flatMap(([, curve]) => [
       ...(curve.fit_interval ?? []).map((value) => ({
         axis: "x" as const, v: value, color: "#2478d4",
         dash: [3, 4], width: 1, alpha: 0.65,
@@ -397,12 +424,61 @@ function ApparentBrightnessPlot({ parameter }: { parameter: Parameter }) {
         color: "#168f65", dash: [2, 3], width: 1.8, alpha: 0.95,
       }] : []),
     ]);
+    if (trustBoundary && trustBoundary.magnitude >= xDomain[0]
+      && trustBoundary.magnitude <= xDomain[1]) {
+      guides.push({
+        axis: "x", v: trustBoundary.magnitude,
+        color: "#31a7d8", width: 2.2, alpha: 1,
+        label: `MER ${trustBoundary.snr}σ median ${trustBoundary.magnitude.toFixed(2)}`,
+        labelSide: "after",
+      });
+    }
+    if (observedPeak && observedPeak > 0) {
+      const peakLog = Math.log10(observedPeak);
+      if (peakLog >= yDomain[0] && peakLog <= yDomain[1]) guides.push({
+        axis: "y", v: peakLog,
+        color: "#2478d4", dash: [6, 3], width: 1.2, alpha: 0.85,
+        label: `Q1 observed max ${observedPeak.toFixed(1)}`,
+        labelSide: "before",
+      });
+    }
+    const bands: Band[] = [];
+    if (trustBoundary) {
+      const lower = Math.max(xDomain[0], Math.min(xDomain[1], trustBoundary.lower_magnitude));
+      const upper = Math.max(xDomain[0], Math.min(xDomain[1], trustBoundary.upper_magnitude));
+      const turnover = Math.max(xDomain[0], Math.min(
+        xDomain[1], observedPeakMagnitude ?? trustBoundary.magnitude,
+      ));
+      if (turnover > xDomain[0]) bands.push({
+        axis: "x", from: xDomain[0], to: turnover,
+        color: "#2478d4", alpha: 0.07, label: "Q1 COUNT SUPPORT TO TURNOVER",
+      });
+      if (upper > lower) bands.push({
+        axis: "x", from: lower, to: upper,
+        color: "#31a7d8", alpha: 0.16, label: "MER 5σ P16–P84",
+      });
+      if (upper < xDomain[1]) bands.push({
+        axis: "x", from: upper, to: xDomain[1],
+        color: "#e25543", alpha: 0.05, hatch: true, label: `BEYOND MER ${trustBoundary.snr}σ RANGE`,
+      });
+    } else if (observedPeakMagnitude != null) {
+      const turnover = Math.max(xDomain[0], Math.min(xDomain[1], observedPeakMagnitude));
+      if (turnover > xDomain[0]) bands.push({
+        axis: "x", from: xDomain[0], to: turnover,
+        color: "#2478d4", alpha: 0.07, label: "Q1 COUNT-SUPPORTED",
+      });
+      if (turnover < xDomain[1]) bands.push({
+        axis: "x", from: turnover, to: xDomain[1],
+        color: "#e25543", alpha: 0.05, hatch: true, label: "BEYOND Q1 TURNOVER",
+      });
+    }
     plot = <>
       <Plot
         xDomain={xDomain} yDomain={yDomain}
         xTicks={ticks(xDomain, 6)} yTicks={physicalLogTicks(yDomain, 6)}
         xLabel={parameter.x_label}
         yLabel={`${parameter.density_unit} (log scale)`}
+        bands={bands}
         guides={guides}
         series={visible.map(([key, curve]) => ({
           x: curve.x,
@@ -437,6 +513,27 @@ function ApparentBrightnessPlot({ parameter }: { parameter: Parameter }) {
       <strong>One fitted brightness coordinate.</strong>
       <span>Only VIS 2FWHM is shown: the PHZ-weighted Q1 aggregate, the actual galaxies in the current test and validation fields, and the active generation law. Total-flux, Kron, other-aperture, and F814W diagnostics are intentionally omitted here.</span>
     </div>
+    {trustBoundary && observedPeak != null && observedPeakMagnitude != null && <div className="brightness-trust" aria-label="Euclid magnitude support and five-sigma boundary">
+      <section className="brightness-trust__observed">
+        <small>Q1 count turnover</small>
+        <b>VIS {observedPeakMagnitude.toFixed(2)}</b>
+        <span>The observed differential density peaks at {observedPeak.toFixed(1)} galaxies / arcmin² / mag, then turns over.</span>
+        {observedCumulativeToBoundary != null && <span><strong>Integrated:</strong> {observedCumulativeToBoundary.toFixed(1)} galaxies / arcmin² through the median 5σ boundary{observedCumulativeAll != null ? `; ${observedCumulativeAll.toFixed(1)} across all queried bins` : ""}.</span>}
+      </section>
+      <section className="brightness-trust__depth">
+        <small>empirical MER {trustBoundary.snr}σ limit</small>
+        <b>VIS {trustBoundary.magnitude.toFixed(2)} <i>({trustBoundary.lower_magnitude.toFixed(2)}–{trustBoundary.upper_magnitude.toFixed(2)})</i></b>
+        <span>Median and 16th–84th percentiles from {compact(trustBoundary.sample_size)} selected rows using {trustBoundary.estimator}. {trustBoundary.caveat}</span>
+        <span><strong>Selection:</strong> {trustBoundary.selection}.</span>
+      </section>
+      <section className="brightness-trust__ceiling">
+        <small>generation-law ceiling</small>
+        <b>{generationCap?.toFixed(1) ?? "—"} galaxies / arcmin² / mag</b>
+        <span>{generationCap != null && generationCap > observedPeak
+          ? `The current law reaches ${(generationCap / observedPeak).toFixed(1)}× the observed Q1 peak; the trust overlay does not change the sampler.`
+          : "The ceiling matches the observed Q1 peak; its plateau beyond the MER 5σ range remains an explicit unsupported extrapolation."}</span>
+      </section>
+    </div>}
     <div className="brightness-controls">
       {(["euclid", "synthetic", "cosmos", "fit", "generation"] as const).map((survey) => {
         const group = surveyEntries(survey);

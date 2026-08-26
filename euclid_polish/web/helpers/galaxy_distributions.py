@@ -57,7 +57,7 @@ from euclid_polish.web.helpers.q1_galaxy_radius_statistics import (
     read_q1_galaxy_radius_statistics,
 )
 
-ARTIFACT_VERSION = 19
+ARTIFACT_VERSION = 20
 MAG_EDGES = np.arange(14.0, 30.0001, 0.25)
 RADIUS_MAX_VIS_PIXELS = 100.0
 RADIUS_MAX_ARCSEC = RADIUS_MAX_VIS_PIXELS * float(Config.VIS_PIXEL_SCALE_ARCSEC)
@@ -172,6 +172,78 @@ def _curve(edges: np.ndarray, counts: np.ndarray, area: float, definition: str) 
         "weighted_count": float(np.sum(counts)),
         "definition": definition,
     }
+
+
+def _empirical_five_sigma_boundary(
+    limiting_magnitudes: np.ndarray,
+) -> dict[str, Any] | None:
+    """Summarize the reported MER 2-FWHM flux errors as a depth band."""
+    values = np.asarray(limiting_magnitudes, dtype=np.float64)
+    values = values[np.isfinite(values)]
+    if values.size == 0:
+        return None
+    lower, median, upper = np.percentile(values, [16.0, 50.0, 84.0])
+    return {
+        "kind": "empirical_5sigma",
+        "magnitude": float(median),
+        "lower_magnitude": float(lower),
+        "upper_magnitude": float(upper),
+        "snr": 5.0,
+        "sample_size": int(values.size),
+        "estimator": "5 × MER FLUXERR_VIS_2FWHM_APER",
+        "selection": (
+            "cached MER rows with SPURIOUS_PROB <= 0.5, "
+            "0 <= POINT_LIKE_PROB <= 1, and PHZ_GAL_PROB >= 0.5"
+        ),
+        "caveat": (
+            "Per-object reported-flux-error distribution; this is an empirical "
+            "noise limit for the selected 2-FWHM aperture sample, not an "
+            "extended-galaxy completeness guarantee."
+        ),
+    }
+
+
+def _observed_count_support(
+    bins: list[dict[str, Any]],
+    trust_boundary: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Return the measured peak and cumulative Q1 density support."""
+    if not bins:
+        return {}
+    lower = np.asarray([float(item["mag_lo"]) for item in bins])
+    upper = np.asarray([float(item["mag_hi"]) for item in bins])
+    density = np.asarray([
+        float(item["density_arcmin2_mag"]) for item in bins
+    ])
+    valid = (
+        np.isfinite(lower)
+        & np.isfinite(upper)
+        & np.isfinite(density)
+        & (upper > lower)
+        & (density >= 0.0)
+    )
+    if not np.any(valid):
+        return {}
+    lower, upper, density = lower[valid], upper[valid], density[valid]
+    centers = 0.5 * (lower + upper)
+    peak = int(np.argmax(density))
+    result: dict[str, Any] = {
+        "observed_density_cap_arcmin2_mag": float(density[peak]),
+        "observed_density_cap_magnitude": float(centers[peak]),
+        "observed_cumulative_density_all_queried_bins_arcmin2": float(
+            np.sum(density * (upper - lower))
+        ),
+    }
+    if trust_boundary is not None:
+        boundary = float(trust_boundary["magnitude"])
+        supported_width = np.maximum(
+            0.0, np.minimum(upper, boundary) - lower,
+        )
+        result["observed_cumulative_density_to_boundary_arcmin2"] = float(
+            np.sum(density * supported_width)
+        )
+        result["trust_boundary"] = copy.deepcopy(trust_boundary)
+    return result
 
 
 def _normalized_density(
@@ -1148,11 +1220,16 @@ def _read_q1_bright_counts(parameters: dict[str, Any]) -> dict[str, Any]:
         }
 
     selection = str(payload["selection"])
+    mer_f2 = parameters["magnitude"]["photometry_series"].get(
+        "mer_vis_2fwhm", {},
+    )
+    trust_boundary = mer_f2.get("trust_boundary")
+    f2_support: dict[str, Any] = {}
     for key, aperture in payload["apertures"].items():
         bins = aperture["bins"]
         if not bins:
             continue
-        parameters["magnitude"]["photometry_series"][f"q1_vis_{key}"] = {
+        curve = {
             "x": [
                 0.5 * (float(item["mag_lo"]) + float(item["mag_hi"]))
                 for item in bins
@@ -1167,6 +1244,10 @@ def _read_q1_bright_counts(parameters: dict[str, Any]) -> dict[str, Any]:
             "selection": selection,
             "default_on": key == "f2",
         }
+        if key == "f2":
+            f2_support = _observed_count_support(bins, trust_boundary)
+            curve.update(copy.deepcopy(f2_support))
+        parameters["magnitude"]["photometry_series"][f"q1_vis_{key}"] = curve
     fitted_apertures: set[str] = set()
     try:
         fitted = read_q1_galaxy_aperture_fit()
@@ -1175,9 +1256,7 @@ def _read_q1_bright_counts(parameters: dict[str, Any]) -> dict[str, Any]:
     if fitted:
         for key, curve in fitted["apertures"].items():
             fitted_apertures.add(key)
-            parameters["magnitude"]["photometry_series"][
-                f"q1_fit_vis_{key}"
-            ] = {
+            fit_curve = {
                 "x": [float(value) for value in curve["x"]],
                 "density": [float(value) for value in curve["density"]],
                 "weighted_count": float(
@@ -1208,6 +1287,11 @@ def _read_q1_bright_counts(parameters: dict[str, Any]) -> dict[str, Any]:
                     for value in curve["extrapolated_faint_interval"]
                 ],
             }
+            if key == "f2":
+                fit_curve.update(copy.deepcopy(f2_support))
+            parameters["magnitude"]["photometry_series"][
+                f"q1_fit_vis_{key}"
+            ] = fit_curve
     return {
         "available": True,
         "footprint_area_deg2": float(payload["footprint_area_deg2"]),
@@ -1366,6 +1450,7 @@ def _read_euclid(parameters: dict[str, Any], progress: Callable[[int, int, str],
     ]
     brightness_magnitudes = {key: [] for key in MER_BRIGHTNESS_SERIES}
     brightness_weights = {key: [] for key in MER_BRIGHTNESS_SERIES}
+    vis_2fwhm_five_sigma_limits: list[float] = []
     radius_values = {
         key: []
         for key in (
@@ -1385,16 +1470,30 @@ def _read_euclid(parameters: dict[str, Any], progress: Callable[[int, int, str],
             try:
                 point = float(row.get("point_like_prob", "nan"))
                 spurious = float(row.get("spurious_prob", "nan"))
-                magnitude = float(row.get("mag_vis", "nan"))
             except ValueError:
                 continue
             if not (np.isfinite(point) and 0 <= point <= 1 and np.isfinite(spurious) and spurious <= 0.5):
                 continue
-            mer_weight = 1.0 - point
             try:
                 gal_weight = float(row.get("phz_gal_prob", "nan"))
             except ValueError:
                 gal_weight = np.nan
+            if np.isfinite(gal_weight) and gal_weight >= 0.5:
+                try:
+                    flux_error = float(row.get(
+                        "fluxerr_vis_2fwhm_aper_uJy", "nan",
+                    ))
+                except ValueError:
+                    flux_error = np.nan
+                if np.isfinite(flux_error) and flux_error > 0.0:
+                    limiting_magnitude = float(uJy_to_ab_mag(5.0 * flux_error))
+                    if np.isfinite(limiting_magnitude):
+                        vis_2fwhm_five_sigma_limits.append(limiting_magnitude)
+            try:
+                magnitude = float(row.get("mag_vis", "nan"))
+            except ValueError:
+                continue
+            mer_weight = 1.0 - point
             if np.isfinite(magnitude):
                 mag += np.histogram([magnitude], MAG_EDGES, weights=[mer_weight])[0]
             for brightness_key, (column, _label, _estimator) in MER_BRIGHTNESS_SERIES.items():
@@ -1607,6 +1706,13 @@ def _read_euclid(parameters: dict[str, Any], progress: Callable[[int, int, str],
             weights=np.asarray(brightness_weights[key]),
             default_on=key in {"mer_vis_1fwhm", "mer_vis_4fwhm"},
         )
+    trust_boundary = _empirical_five_sigma_boundary(
+        np.asarray(vis_2fwhm_five_sigma_limits),
+    )
+    if trust_boundary is not None:
+        parameters["magnitude"]["photometry_series"]["mer_vis_2fwhm"][
+            "trust_boundary"
+        ] = trust_boundary
     parameters["radius"]["series"]["euclid"] = _curve(
         LOG_RADIUS_EDGES, radius, area, "MER circularized size proxy, galaxy-weighted"
     )
@@ -1921,14 +2027,16 @@ def _read_fit(parameters: dict[str, Any]) -> dict[str, Any]:
         "definition": (
             "generation law: three fitted continuous bright-bridge segments "
             "ending at fixed joins, followed by the main Q1 VIS 2FWHM line "
-            "and constant differential density through VIS 29"
+            "and a plateau at the observed Q1 differential-density maximum "
+            "through VIS 29"
         ),
         "label": "Generator · three-segment bright bridge + main + flat",
         "survey": "generation",
         "band": "Euclid VIS",
         "estimator": "2FWHM aperture magnitude; generated count law",
         "selection": (
-            "Q1 MER + PHZ galaxy fit; faint differential density capped at "
+            "Q1 MER + PHZ galaxy fit; faint differential density held at "
+            "the observed Q1 maximum of "
             f"{density_cap:g} objects / arcmin2 / mag"
         ),
         "default_on": True,
@@ -1943,6 +2051,18 @@ def _read_fit(parameters: dict[str, Any]) -> dict[str, Any]:
         "generation_break_magnitude": break_magnitude,
         "generation_density_cap_arcmin2_mag": density_cap,
     }
+    q1_support = photometry_series.get("q1_vis_f2", {})
+    for key in (
+        "trust_boundary",
+        "observed_density_cap_arcmin2_mag",
+        "observed_density_cap_magnitude",
+        "observed_cumulative_density_to_boundary_arcmin2",
+        "observed_cumulative_density_all_queried_bins_arcmin2",
+    ):
+        if key in q1_support:
+            photometry_series["generator_vis_f2"][key] = copy.deepcopy(
+                q1_support[key]
+            )
     radius_series["fit_re"] = {
         "x": radius_x.tolist(),
         "density": radius_density.tolist(),

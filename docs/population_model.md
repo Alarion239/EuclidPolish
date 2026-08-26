@@ -65,8 +65,11 @@ Q1 MER+PHZ aggregate counts set a continuous brightness density with a
 three-segment bright bridge, the well-constrained main log-linear count law,
 and a flat faint cap. The bridge ends at the fixed VIS joins
 \(j_1=16.4\), \(j_2=19.0\), and \(j_3=20.9\). The main law then reaches an
-imposed density of 100 objects arcmin\(^{-2}\) mag\(^{-1}\), which is held
-constant through VIS 29. In log-density coordinates,
+empirical ceiling \(\rho_{\max}\), defined as the maximum observed Q1
+VIS-2FWHM differential density. That density is held constant through VIS 29
+rather than allowing the fitted count slope to keep rising beyond the MER
+turnover. The plateau beyond the empirical 5\(\sigma\) range remains an
+explicit, unsupported extrapolation. In log-density coordinates,
 
 \[
 \ell(m)=
@@ -75,7 +78,7 @@ a_1m+b_1, & 14\leq m<j_1,\\
 a_2m+b_2, & j_1\leq m<j_2,\\
 a_3m+b_3, & j_2\leq m<j_3,\\
 a_m m+b_m, & j_3\leq m<m_{\rm flat},\\
-\log_{10}(100), & m\geq m_{\rm flat}.
+\log_{10}(\rho_{\max}), & m\geq m_{\rm flat}.
 \end{cases}
 \]
 
@@ -161,19 +164,21 @@ independent common four-band flux factor is
 
 ## Current scope and validation status
 
-Version 11 contains the continuous three-slope bright bridge/main/flat
-brightness law and the single straight, no-tail circularized-Sérsic-radius
-law. It is the only supported population artifact contract; older versions
-must be refitted before use. The fitting step reads no TNG image; TNG is used only
-after activation as a random morphology donor. This deliberately modest model
-aims for plausible source counts and sizes rather than an exact catalogue
-replica.
+Version 12 contains the continuous three-slope bright bridge/main/flat
+brightness law, whose flat level is re-derived from the observed Q1 count
+peak, and the single straight, no-tail circularized-Sérsic-radius law. It is
+the only supported population artifact contract; older versions must be
+refitted before use. The fitting step reads no TNG image; TNG is used only
+after activation as a random morphology donor. This deliberately modest
+model aims for plausible source counts and sizes rather than an exact
+catalogue replica.
 
 ## What is fitted versus imposed
 
-The main Q1 brightness coefficients, three bright-bridge slopes, straight
-radius intercept and slope, and radius scatter are fitted. The fixed VIS joins
-16.4, 19.0, and 20.9, finite 14--29 magnitude range, flat faint count density,
-radius bounds, homogeneous positions, Poisson scene counts, and random TNG
-donor assignment are imposed choices. No COSMOS or TNG distribution is
-fitted.
+The main Q1 brightness coefficients, three bright-bridge slopes, Q1
+differential-density peak, straight radius intercept and slope, and radius
+scatter are data-derived. The fixed VIS joins 16.4, 19.0, and 20.9, finite
+14--29 magnitude range, policy of holding the count density flat at the
+observed peak, radius bounds, homogeneous positions, Poisson scene counts,
+and random TNG donor assignment are imposed choices. No COSMOS or TNG
+distribution is fitted.

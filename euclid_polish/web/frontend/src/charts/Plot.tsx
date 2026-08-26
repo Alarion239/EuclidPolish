@@ -1,5 +1,5 @@
 /* Plot — one reusable canvas line-chart. Every figure in the app is expressed
-   as {domain, ticks, series, guides}; no page hand-rolls axes again. Retina
+   as {domain, ticks, bands, series, guides}; no page hand-rolls axes again. Retina
    crisp, resizes with its container, themed from CSS tokens. */
 import { useEffect, useRef, type MouseEvent } from "react";
 import { viridis } from "../colors";
@@ -27,6 +27,17 @@ export type Guide = {
   dash?: number[];
   width?: number;
   alpha?: number;
+  label?: string;
+  labelSide?: "before" | "after";
+};
+export type Band = {
+  axis: "x" | "y";
+  from: number;
+  to: number;
+  color: string;
+  alpha?: number;
+  hatch?: boolean;
+  label?: string;
 };
 export type Tick = { v: number; label: string };
 
@@ -61,6 +72,7 @@ export type PlotProps = {
   yLabel?: string;
   title?: string;
   series: Series[];
+  bands?: Band[];
   guides?: Guide[];
   heat?: Heat;
   /* When set (heat plots only) a click reports the histogram cell under the
@@ -245,6 +257,35 @@ function render(ctx: CanvasRenderingContext2D, W: number, H: number, p: PlotProp
     ctx.restore();
   }
 
+  // Trust/selection bands sit below the grid and data. Optional hatching keeps
+  // unsupported regions legible without relying on colour alone.
+  for (const band of p.bands ?? []) {
+    const a = band.axis === "x" ? tx(band.from) : ty(band.from);
+    const b = band.axis === "x" ? tx(band.to) : ty(band.to);
+    const x = band.axis === "x" ? Math.min(a, b) : m.l;
+    const y = band.axis === "y" ? Math.min(a, b) : m.t;
+    const w = band.axis === "x" ? Math.abs(b - a) : iw;
+    const h = band.axis === "y" ? Math.abs(b - a) : ih;
+    ctx.save();
+    ctx.beginPath(); ctx.rect(m.l, m.t, iw, ih); ctx.clip();
+    ctx.fillStyle = band.color;
+    ctx.globalAlpha = band.alpha ?? 0.08;
+    ctx.fillRect(x, y, w, h);
+    if (band.hatch && w > 0 && h > 0) {
+      ctx.strokeStyle = band.color;
+      ctx.globalAlpha = Math.max(0.15, (band.alpha ?? 0.08) * 2.2);
+      ctx.lineWidth = 0.8;
+      const step = 9;
+      for (let offset = -h; offset < w; offset += step) {
+        ctx.beginPath();
+        ctx.moveTo(x + offset, y + h);
+        ctx.lineTo(x + offset + h, y);
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+  }
+
   // grid + ticks
   ctx.font = '11px "IBM Plex Mono", monospace';
   ctx.textAlign = "center";
@@ -278,6 +319,46 @@ function render(ctx: CanvasRenderingContext2D, W: number, H: number, p: PlotProp
     if (g.axis === "x") { const x = tx(g.v); ctx.moveTo(x, m.t); ctx.lineTo(x, m.t + ih); }
     else { const y = ty(g.v); ctx.moveTo(m.l, y); ctx.lineTo(m.l + iw, y); }
     ctx.stroke();
+    ctx.restore();
+  }
+
+  // Short in-plot labels make scientific limits identifiable without forcing
+  // the caller to duplicate them in a separate legend.
+  for (const band of (p.bands ?? []).filter((candidate) => candidate.label)) {
+    const a = band.axis === "x" ? tx(band.from) : ty(band.from);
+    const b = band.axis === "x" ? tx(band.to) : ty(band.to);
+    ctx.save();
+    ctx.beginPath(); ctx.rect(m.l, m.t, iw, ih); ctx.clip();
+    ctx.font = '600 9px "IBM Plex Mono", monospace';
+    ctx.fillStyle = band.color;
+    ctx.globalAlpha = 0.9;
+    ctx.textBaseline = "top";
+    if (band.axis === "x") {
+      ctx.textAlign = "center";
+      ctx.fillText(band.label!, (a + b) / 2, m.t + 7);
+    } else {
+      ctx.textAlign = "left";
+      ctx.fillText(band.label!, m.l + 7, Math.min(a, b) + 7);
+    }
+    ctx.restore();
+  }
+  for (const g of (p.guides ?? []).filter((candidate) => candidate.label)) {
+    const side = g.labelSide ?? "after";
+    ctx.save();
+    ctx.beginPath(); ctx.rect(m.l, m.t, iw, ih); ctx.clip();
+    ctx.font = '600 9px "IBM Plex Mono", monospace';
+    ctx.fillStyle = g.color ?? gridS;
+    ctx.globalAlpha = Math.max(0.8, g.alpha ?? 1);
+    ctx.textBaseline = "top";
+    if (g.axis === "x") {
+      const x = tx(g.v);
+      ctx.textAlign = side === "before" ? "right" : "left";
+      ctx.fillText(g.label!, x + (side === "before" ? -6 : 6), m.t + 20);
+    } else {
+      const y = ty(g.v);
+      ctx.textAlign = "left";
+      ctx.fillText(g.label!, m.l + 7, y + (side === "before" ? -15 : 5));
+    }
     ctx.restore();
   }
 

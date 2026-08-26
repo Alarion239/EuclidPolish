@@ -16,7 +16,6 @@ from scipy.ndimage import gaussian_filter1d
 from euclid_polish.config import Config
 from euclid_polish.population.euclid_galaxy_prior import (
     BRIGHT_BRIDGE_JOIN_MAGNITUDES,
-    GALAXY_FAINT_DENSITY_CAP_ARCMIN2_MAG,
     JOINT_EUCLID_GALAXY_KIND,
     JOINT_EUCLID_GALAXY_VERSION,
     RADIUS_MODEL_VERSION,
@@ -134,7 +133,7 @@ def joint_galaxy_candidate() -> dict[str, Any] | None:
         or not np.isclose(density, magnitude_law.integrated_density())
         or not np.isclose(
             density_cap,
-            GALAXY_FAINT_DENSITY_CAP_ARCMIN2_MAG,
+            magnitude_law.density_cap_arcmin2_mag,
         )
         or not np.isclose(break_magnitude, magnitude_law.break_magnitude)
         or magnitude_law.straight_law != fitted_magnitude_law
@@ -214,6 +213,34 @@ def fit_euclid_joint_galaxy_candidate() -> dict[str, Any]:
             "Complete all Q1 VIS 2FWHM and Sersic-radius brackets before fitting"
         )
 
+    try:
+        observed_magnitude_x = np.asarray([
+            0.5 * (float(item["mag_lo"]) + float(item["mag_hi"]))
+            for item in count_bins
+        ], dtype=np.float64)
+        observed_magnitude_density = np.asarray([
+            float(item["density_arcmin2_mag"])
+            for item in count_bins
+        ], dtype=np.float64)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("Q1 VIS 2FWHM count bins are malformed") from exc
+    if (
+        observed_magnitude_x.size == 0
+        or observed_magnitude_x.shape != observed_magnitude_density.shape
+        or not np.all(np.isfinite(observed_magnitude_x))
+        or not np.all(
+            np.isfinite(observed_magnitude_density)
+            & (observed_magnitude_density >= 0.0)
+        )
+        or not np.any(observed_magnitude_density > 0.0)
+    ):
+        raise ValueError("Q1 VIS 2FWHM count bins are malformed")
+    observed_peak_index = int(np.argmax(observed_magnitude_density))
+    observed_peak_magnitude = float(observed_magnitude_x[observed_peak_index])
+    observed_peak_density = float(
+        observed_magnitude_density[observed_peak_index]
+    )
+
     selected_grid = np.zeros(
         (magnitude_edges.size - 1, radius_edges.size - 1), dtype=np.float64,
     )
@@ -237,6 +264,7 @@ def fit_euclid_joint_galaxy_candidate() -> dict[str, Any]:
             footprint_area_arcmin2=float(
                 count_payload["footprint_area_arcmin2"]
             ),
+            density_cap_arcmin2_mag=observed_peak_density,
         )
     )
     generation_x = np.unique(np.concatenate((
@@ -358,13 +386,6 @@ def fit_euclid_joint_galaxy_candidate() -> dict[str, Any]:
         fit_effective_counts
         * np.log(np.maximum(q1_probability[fit_row_mask], 1e-300))
     ) / np.sum(fit_effective_counts))
-    observed_magnitude_x = [
-        0.5 * (float(item["mag_lo"]) + float(item["mag_hi"]))
-        for item in count_bins
-    ]
-    observed_magnitude_density = [
-        float(item["density_arcmin2_mag"]) for item in count_bins
-    ]
     core = {
         "version": JOINT_EUCLID_GALAXY_VERSION,
         "kind": JOINT_EUCLID_GALAXY_KIND,
@@ -384,8 +405,18 @@ def fit_euclid_joint_galaxy_candidate() -> dict[str, Any]:
                 "density": generation_density.tolist(),
             },
             "observed": {
-                "x": observed_magnitude_x,
-                "density": observed_magnitude_density,
+                "x": observed_magnitude_x.tolist(),
+                "density": observed_magnitude_density.tolist(),
+            },
+            "observed_support": {
+                "turnover_magnitude": observed_peak_magnitude,
+                "peak_differential_density_arcmin2_mag": (
+                    observed_peak_density
+                ),
+                "density_cap_policy": (
+                    "hold the generation law at the maximum observed Q1 "
+                    "VIS 2FWHM differential density"
+                ),
             },
             "fit_interval": [
                 fitted_magnitude_law.fit_bright,
@@ -477,8 +508,12 @@ def fit_euclid_joint_galaxy_candidate() -> dict[str, Any]:
         "generation": {
             "surface_density_arcmin2": magnitude_law.integrated_density(),
             "differential_density_cap_arcmin2_mag": (
-                GALAXY_FAINT_DENSITY_CAP_ARCMIN2_MAG
+                magnitude_law.density_cap_arcmin2_mag
             ),
+            "differential_density_cap_source": (
+                "maximum_observed_q1_vis_2fwhm_differential_density"
+            ),
+            "density_cap_observed_magnitude": observed_peak_magnitude,
             "break_magnitude": magnitude_law.break_magnitude,
             "fitted_surface_density_arcmin2": (
                 fitted_magnitude_law.integrated_density()
@@ -488,7 +523,7 @@ def fit_euclid_joint_galaxy_candidate() -> dict[str, Any]:
             "fitted_vis_magnitude_max": fitted_magnitude_law.mag_faint,
             "faint_end_policy": (
                 "continuous_three_slope_bright_bridge_then_fitted_main_"
-                "then_flat_faint"
+                "then_flat_at_observed_q1_peak"
             ),
             "faint_radius_policy": (
                 "straight_truncated_gaussian_at_all_magnitudes_no_tail"
@@ -503,8 +538,9 @@ def fit_euclid_joint_galaxy_candidate() -> dict[str, Any]:
         "provenance": {
             "brightness": (
                 "Q1 MER + PHZ VIS 2FWHM continuous three-slope bright "
-                "bridge with fixed joins, fitted main count line, and flat "
-                "added faint tail"
+                "bridge with fixed joins, fitted main count line, and a "
+                "faint tail held at the maximum observed Q1 differential "
+                "density"
             ),
             "radius": (
                 "Q1 MER morphology circularized VIS Sersic radius "

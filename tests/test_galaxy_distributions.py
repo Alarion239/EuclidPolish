@@ -28,6 +28,27 @@ def test_curve_is_surface_density_per_parameter_width():
     assert curve["definition"] == "test counts"
 
 
+def test_observed_count_support_integrates_partial_boundary_bin():
+    trust_boundary = {"kind": "empirical_5sigma", "magnitude": 25.25}
+    support = helper._observed_count_support(
+        [
+            {"mag_lo": 24.0, "mag_hi": 25.0, "density_arcmin2_mag": 2.0},
+            {"mag_lo": 25.0, "mag_hi": 26.0, "density_arcmin2_mag": 4.0},
+        ],
+        trust_boundary,
+    )
+
+    assert support["observed_density_cap_arcmin2_mag"] == 4.0
+    assert support["observed_density_cap_magnitude"] == 25.5
+    assert support[
+        "observed_cumulative_density_to_boundary_arcmin2"
+    ] == pytest.approx(3.0)
+    assert support[
+        "observed_cumulative_density_all_queried_bins_arcmin2"
+    ] == pytest.approx(6.0)
+    assert support["trust_boundary"] == trust_boundary
+
+
 def test_radius_plot_spans_one_hundred_native_vis_pixels():
     expected_arcsec = 100.0 * float(Config.VIS_PIXEL_SCALE_ARCSEC)
     radius = helper._empty_parameters()["radius"]
@@ -350,7 +371,7 @@ def test_euclid_aperture_scatter_uses_phz_galaxies_when_extended_flag_is_unset(
         "semimajor_axis", "ellipticity", "fwhm", "phz_gal_prob",
         "flux_vis_1fwhm_aper_uJy", "flux_vis_2fwhm_aper_uJy",
         "flux_vis_3fwhm_aper_uJy", "flux_vis_4fwhm_aper_uJy",
-        "fluxerr_vis_4fwhm_aper_uJy",
+        "fluxerr_vis_2fwhm_aper_uJy", "fluxerr_vis_4fwhm_aper_uJy",
     )
     with catalog.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
@@ -364,6 +385,7 @@ def test_euclid_aperture_scatter_uses_phz_galaxies_when_extended_flag_is_unset(
             "flux_vis_2fwhm_aper_uJy": 20.0,
             "flux_vis_3fwhm_aper_uJy": 30.0,
             "flux_vis_4fwhm_aper_uJy": 40.0,
+            "fluxerr_vis_2fwhm_aper_uJy": 0.02,
             "fluxerr_vis_4fwhm_aper_uJy": 2.0,
         })
         writer.writerow({
@@ -375,6 +397,7 @@ def test_euclid_aperture_scatter_uses_phz_galaxies_when_extended_flag_is_unset(
             "flux_vis_2fwhm_aper_uJy": 20.0,
             "flux_vis_3fwhm_aper_uJy": 30.0,
             "flux_vis_4fwhm_aper_uJy": 40.0,
+            "fluxerr_vis_2fwhm_aper_uJy": 0.03,
             "fluxerr_vis_4fwhm_aper_uJy": 2.0,
         })
     meta.write_text(json.dumps({"area_arcmin2": 1.0, "rows": 2}))
@@ -384,10 +407,22 @@ def test_euclid_aperture_scatter_uses_phz_galaxies_when_extended_flag_is_unset(
         helper, "read_phz_pdf_cache", lambda: (_ for _ in ()).throw(OSError()),
     )
 
-    source = helper._read_euclid(helper._empty_parameters(), lambda *_: None)
+    parameters = helper._empty_parameters()
+    source = helper._read_euclid(parameters, lambda *_: None)
 
     assert source["aperture_scatter"]["count"] == 1
     assert "PHZ_GAL_PROB >= 0.5" in source["aperture_scatter"]["selection"]
+    boundary = parameters["magnitude"]["photometry_series"][
+        "mer_vis_2fwhm"
+    ]["trust_boundary"]
+    assert boundary["kind"] == "empirical_5sigma"
+    assert boundary["sample_size"] == 1
+    assert boundary["magnitude"] == pytest.approx(
+        float(helper.uJy_to_ab_mag(5.0 * 0.02))
+    )
+    assert "not an extended-galaxy completeness guarantee" in (
+        boundary["caveat"]
+    )
 
 
 def test_euclid_radius_plot_adds_clean_phz_mer_sersic_re(
@@ -563,11 +598,18 @@ def test_q1_bright_counts_extend_aperture_curves_to_fourteen(monkeypatch):
     )
 
     parameters = helper._empty_parameters()
+    parameters["magnitude"]["photometry_series"]["mer_vis_2fwhm"] = {
+        "trust_boundary": {
+            "kind": "empirical_5sigma",
+            "magnitude": 14.12,
+        },
+    }
     state = helper._read_q1_bright_counts(parameters)
     brightness = parameters["magnitude"]["photometry_series"]
 
     assert state["available"] is True
     assert set(brightness) == {
+        "mer_vis_2fwhm",
         "q1_vis_f1", "q1_vis_f2", "q1_vis_f3", "q1_vis_f4",
         "q1_fit_vis_f2",
     }
@@ -578,6 +620,18 @@ def test_q1_bright_counts_extend_aperture_curves_to_fourteen(monkeypatch):
     assert brightness["q1_vis_f2"]["default_on"] is True
     assert brightness["q1_fit_vis_f2"]["default_on"] is True
     assert brightness["q1_fit_vis_f2"]["survey"] == "fit"
+    assert brightness["q1_vis_f2"][
+        "observed_density_cap_arcmin2_mag"
+    ] == pytest.approx(0.02)
+    assert brightness["q1_vis_f2"][
+        "observed_density_cap_magnitude"
+    ] == pytest.approx(14.15)
+    assert brightness["q1_vis_f2"][
+        "observed_cumulative_density_to_boundary_arcmin2"
+    ] == pytest.approx(0.0014)
+    assert brightness["q1_fit_vis_f2"]["trust_boundary"] == (
+        brightness["q1_vis_f2"]["trust_boundary"]
+    )
     assert state["fit_available"] is True
 
 
@@ -586,8 +640,18 @@ def test_fit_plot_adds_continuous_generation_and_separate_radius_shapes(
 ):
     parameters = helper._empty_parameters()
     parameters["magnitude"]["photometry_series"]["q1_fit_vis_f2"] = {}
+    parameters["magnitude"]["photometry_series"]["q1_vis_f2"] = {
+        "trust_boundary": {
+            "kind": "empirical_5sigma",
+            "magnitude": 25.53,
+        },
+        "observed_density_cap_arcmin2_mag": 30.2,
+        "observed_density_cap_magnitude": 25.55,
+        "observed_cumulative_density_to_boundary_arcmin2": 46.5,
+        "observed_cumulative_density_all_queried_bins_arcmin2": 74.4,
+    }
     candidate = {
-        "version": 11,
+        "version": 12,
         "fingerprint": "f" * 64,
         "validated": True,
         "fitted_magnitude_law": {
@@ -642,6 +706,11 @@ def test_fit_plot_adds_continuous_generation_and_separate_radius_shapes(
     assert brightness["generation_break_magnitude"] == 26.35
     assert brightness["generation_density_cap_arcmin2_mag"] == 100.0
     assert brightness["density"][-2:] == [100.0, 100.0]
+    assert brightness["trust_boundary"]["magnitude"] == 25.53
+    assert brightness["observed_density_cap_arcmin2_mag"] == 30.2
+    assert brightness[
+        "observed_cumulative_density_to_boundary_arcmin2"
+    ] == 46.5
     assert radius["fit_re"]["weighted_count"] == 372.83
     assert radius["fit_re"]["default_on"] is False
     q1_shape = radius["fit_re_q1_weighted_shape"]

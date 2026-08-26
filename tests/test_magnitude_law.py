@@ -214,6 +214,7 @@ def test_continuous_bright_bridge_fit_recovers_three_slopes_and_diagnostics():
         source_law.straight_law,
         bins,
         footprint_area_arcmin2=area,
+        density_cap_arcmin2_mag=source_law.density_cap_arcmin2_mag,
     )
 
     assert fitted.bright_join_magnitudes == BRIGHT_BRIDGE_JOIN_MAGNITUDES

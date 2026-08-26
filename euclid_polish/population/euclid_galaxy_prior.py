@@ -15,13 +15,12 @@ from euclid_polish.population.magnitude_law import (
     StraightMagnitudeLaw,
 )
 
-JOINT_EUCLID_GALAXY_VERSION = 11
+JOINT_EUCLID_GALAXY_VERSION = 12
 JOINT_EUCLID_GALAXY_KIND = (
     "euclid_vis2fwhm_circularized_sersic_re_joint"
 )
 RADIUS_MODEL_VERSION = 5
 RADIUS_PIVOT_MAG = 23.0
-GALAXY_FAINT_DENSITY_CAP_ARCMIN2_MAG = 100.0
 RADIUS_FIT_MIN_SELECTED_PER_MAG_BIN = 20
 RADIUS_FIT_EFFECTIVE_WEIGHT_CAP = 1000.0
 RADIUS_FIT_FAINT_MAGNITUDE = 25.5
@@ -35,6 +34,7 @@ def fit_continuous_generation_magnitude_law(
     bright_bins: list[dict],
     *,
     footprint_area_arcmin2: float,
+    density_cap_arcmin2_mag: float,
 ) -> tuple[
     ContinuousBrightBridgeFaintCappedMagnitudeLaw,
     dict[str, float | int | list[float]],
@@ -46,7 +46,9 @@ def fit_continuous_generation_magnitude_law(
     slopes cover fixed, interpretable intervals ending at VIS 16.4, 19.0, and
     20.9, then join the well-measured main line continuously.  Bin-integrated
     Poisson deviance includes empty bins through their finite modeled-count
-    penalty and therefore needs no logarithmic pseudo-count.
+    penalty and therefore needs no logarithmic pseudo-count.  The caller
+    supplies the faint cap from the observed Q1 differential-count peak so
+    this law cannot silently extrapolate to a fixed project-wide ceiling.
     """
     if not bright_bins:
         raise ValueError("Q1 bright-count bins are required")
@@ -63,6 +65,7 @@ def fit_continuous_generation_magnitude_law(
     except (KeyError, TypeError, ValueError) as exc:
         raise ValueError("Q1 bright-count bins are malformed") from exc
     area = float(footprint_area_arcmin2)
+    density_cap = float(density_cap_arcmin2_mag)
     joins = BRIGHT_BRIDGE_JOIN_MAGNITUDES
     if (
         lower.size < 30
@@ -77,6 +80,8 @@ def fit_continuous_generation_magnitude_law(
         or upper[-1] < joins[-1] - 1e-10
         or not np.isfinite(area)
         or area <= 0.0
+        or not np.isfinite(density_cap)
+        or density_cap <= 0.0
     ):
         raise ValueError("Q1 bright-count bins are malformed")
 
@@ -94,7 +99,7 @@ def fit_continuous_generation_magnitude_law(
             straight_law=fitted_law,
             bright_slopes=bright_slopes,
             bright_join_magnitudes=joins,
-            density_cap_arcmin2_mag=GALAXY_FAINT_DENSITY_CAP_ARCMIN2_MAG,
+            density_cap_arcmin2_mag=density_cap,
         )
         result = np.empty_like(lower)
         for index, (lo, hi) in enumerate(zip(lower, upper, strict=True)):
@@ -160,7 +165,7 @@ def fit_continuous_generation_magnitude_law(
         straight_law=fitted_law,
         bright_slopes=bright_slopes,
         bright_join_magnitudes=joins,
-        density_cap_arcmin2_mag=GALAXY_FAINT_DENSITY_CAP_ARCMIN2_MAG,
+        density_cap_arcmin2_mag=density_cap,
     )
     modeled = area * interval_density(bright_slopes)
     with np.errstate(divide="ignore", invalid="ignore"):

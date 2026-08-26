@@ -11,7 +11,6 @@ from scipy.special import ndtr
 from euclid_polish.config import Config
 from euclid_polish.population.euclid_galaxy_prior import (
     BRIGHT_BRIDGE_JOIN_MAGNITUDES,
-    GALAXY_FAINT_DENSITY_CAP_ARCMIN2_MAG,
     JOINT_EUCLID_GALAXY_KIND,
     JOINT_EUCLID_GALAXY_VERSION,
     RADIUS_MODEL_VERSION,
@@ -42,6 +41,8 @@ from euclid_polish.web.helpers.population_calibration import (
     fit_euclid_joint_galaxy_candidate,
     joint_galaxy_candidate_path,
 )
+
+TEST_DENSITY_CAP_ARCMIN2_MAG = 37.0
 
 
 def magnitude_law() -> StraightMagnitudeLaw:
@@ -82,7 +83,7 @@ def current_magnitude_law() -> ContinuousBrightBridgeFaintCappedMagnitudeLaw:
         straight_law=magnitude_law(),
         bright_slopes=(0.8, 0.3, 0.5),
         bright_join_magnitudes=BRIGHT_BRIDGE_JOIN_MAGNITUDES,
-        density_cap_arcmin2_mag=GALAXY_FAINT_DENSITY_CAP_ARCMIN2_MAG,
+        density_cap_arcmin2_mag=TEST_DENSITY_CAP_ARCMIN2_MAG,
     )
 
 
@@ -121,7 +122,7 @@ def active_payload() -> dict:
         "generation": {
             "surface_density_arcmin2": mag.integrated_density(),
             "differential_density_cap_arcmin2_mag": (
-                GALAXY_FAINT_DENSITY_CAP_ARCMIN2_MAG
+                TEST_DENSITY_CAP_ARCMIN2_MAG
             ),
             "break_magnitude": mag.break_magnitude,
             "fitted_surface_density_arcmin2": (
@@ -348,13 +349,13 @@ def test_hard_truncation_version_six_artifacts_fail_closed():
         JointGalaxyPopulationPrior(payload)
 
 
-def test_joint_prior_rejects_shifted_v11_bright_joins():
+def test_joint_prior_rejects_shifted_current_bright_joins():
     payload = active_payload()
     shifted = ContinuousBrightBridgeFaintCappedMagnitudeLaw(
         straight_law=magnitude_law(),
         bright_slopes=(0.8, 0.3, 0.5),
         bright_join_magnitudes=(16.5, 19.1, 20.8),
-        density_cap_arcmin2_mag=GALAXY_FAINT_DENSITY_CAP_ARCMIN2_MAG,
+        density_cap_arcmin2_mag=TEST_DENSITY_CAP_ARCMIN2_MAG,
     )
     payload["magnitude_law"] = shifted.to_payload()
     payload["generation"]["surface_density_arcmin2"] = (
@@ -444,7 +445,7 @@ def test_candidate_fit_uses_only_aggregate_euclid_brightness_and_sersic_radius(
         for index in range(30)
     ]
     bright_count_law = current_magnitude_law()
-    bright_edges = np.linspace(14.0, 21.0, 71)
+    bright_edges = np.linspace(14.0, 28.0, 141)
     bright_count_bins = []
     for mag_lo, mag_hi in zip(bright_edges[:-1], bright_edges[1:], strict=True):
         mass = 0.0
@@ -460,6 +461,15 @@ def test_candidate_fit_uses_only_aggregate_euclid_brightness_and_sersic_radius(
                     overlap_bright,
                     overlap_faint,
                 )
+        flat_bright = max(
+            float(mag_lo), bright_count_law.break_magnitude,
+        )
+        flat_faint = min(float(mag_hi), bright_count_law.mag_faint)
+        if flat_faint > flat_bright:
+            mass += (
+                bright_count_law.density_cap_arcmin2_mag
+                * (flat_faint - flat_bright)
+            )
         bright_count_bins.append({
             "mag_lo": float(mag_lo),
             "mag_hi": float(mag_hi),
@@ -520,8 +530,14 @@ def test_candidate_fit_uses_only_aggregate_euclid_brightness_and_sersic_radius(
     assert payload["plots"]["conditional_radius"]["model_mean_log10_arcsec"]
     assert payload["magnitude_plot"]["extrapolated_interval"] == [28.0, 29.0]
     assert payload["generation"]["differential_density_cap_arcmin2_mag"] == (
-        GALAXY_FAINT_DENSITY_CAP_ARCMIN2_MAG
+        pytest.approx(TEST_DENSITY_CAP_ARCMIN2_MAG)
     )
+    assert payload["generation"]["differential_density_cap_source"] == (
+        "maximum_observed_q1_vis_2fwhm_differential_density"
+    )
+    assert payload["magnitude_plot"]["observed_support"][
+        "peak_differential_density_arcmin2_mag"
+    ] == pytest.approx(TEST_DENSITY_CAP_ARCMIN2_MAG)
     assert payload["generation"]["vis_magnitude_max"] == 29.0
     assert 14.0 < payload["generation"]["break_magnitude"] < 29.0
     assert payload["magnitude_plot"]["generation_interval"] == [14.0, 29.0]
@@ -557,10 +573,10 @@ def test_candidate_fit_uses_only_aggregate_euclid_brightness_and_sersic_radius(
     )
     generated_density = payload["magnitude_plot"]["generation_law"]["density"]
     assert generated_density[-1] == pytest.approx(
-        GALAXY_FAINT_DENSITY_CAP_ARCMIN2_MAG
+        TEST_DENSITY_CAP_ARCMIN2_MAG
     )
     assert generated_density[-20:] == pytest.approx(
-        [GALAXY_FAINT_DENSITY_CAP_ARCMIN2_MAG] * 20
+        [TEST_DENSITY_CAP_ARCMIN2_MAG] * 20
     )
     assert "model" not in payload
     assert "redshift" not in json.dumps(payload).lower()

@@ -18,7 +18,6 @@ from euclid_polish.config import Config
 from euclid_polish.photometry import ab_mag_to_electrons
 from euclid_polish.population.euclid_galaxy_prior import (
     BRIGHT_BRIDGE_JOIN_MAGNITUDES,
-    GALAXY_FAINT_DENSITY_CAP_ARCMIN2_MAG,
     JOINT_EUCLID_GALAXY_KIND,
     JOINT_EUCLID_GALAXY_VERSION,
     RADIUS_MODEL_VERSION,
@@ -508,7 +507,7 @@ class JointGalaxyPopulationPrior:
         if len(self.fingerprint) != 64:
             raise ValueError("joint galaxy population fingerprint is invalid")
         self.population_label = (
-            f"{JOINT_EUCLID_GALAXY_KIND}_v{version}_flat_faint_counts"
+            f"{JOINT_EUCLID_GALAXY_KIND}_v{version}_observed_peak_capped_counts"
         )
         try:
             self.fitted_magnitude_law = StraightMagnitudeLaw.from_payload(
@@ -551,7 +550,7 @@ class JointGalaxyPopulationPrior:
             self.magnitude_law.straight_law == self.fitted_magnitude_law
             and np.isclose(
                 self.magnitude_law.density_cap_arcmin2_mag,
-                GALAXY_FAINT_DENSITY_CAP_ARCMIN2_MAG,
+                density_cap,
             )
             and np.isclose(
                 break_magnitude, self.magnitude_law.break_magnitude,
@@ -563,12 +562,7 @@ class JointGalaxyPopulationPrior:
                 atol=1e-12,
             )
         )
-        if not (
-            np.isclose(
-                density_cap, GALAXY_FAINT_DENSITY_CAP_ARCMIN2_MAG
-            )
-            and magnitude_contract_valid
-        ):
+        if not magnitude_contract_valid:
             raise ValueError(
                 "joint galaxy generation law does not match the current "
                 "brightness contract"
