@@ -9,13 +9,8 @@ import pytest
 from astropy.io import fits
 
 from euclid_polish.config import Config
-from euclid_polish.image.cube import (
-    AngularGrid,
-    CubeLike,
-    ImageCube,
-    PhysicalGrid,
-    PixelUnit,
-)
+from euclid_polish.image import Image, Role
+from euclid_polish.tng.image import TNGSurfaceBrightnessImage
 from euclid_polish.tng.types import (
     NativePhotometry,
     NominalRadiusGeometry,
@@ -90,16 +85,17 @@ def _nominal_trace(*, target_re_arcsec: float = 0.5) -> TNGRenderTrace:
 def _rendered(*, trace: TNGRenderTrace | None = None) -> RenderedTNG:
     base = np.ones((6, 8, 4), dtype=np.float32)
     base *= np.arange(1, 5, dtype=np.float32)[None, None, :]
-    cube = ImageCube(
+    image = Image(
         data=base,
-        bands=BANDS,
-        unit=PixelUnit.ELECTRONS_PER_PIXEL,
-        grid=AngularGrid(pixel_scale_arcsec=0.05),
+        pixel_scale_arcsec=0.05,
+        band_names=BANDS,
+        is_clean=True,
+        role=Role.CLEAN,
     )
-    return RenderedTNG(cube=cube, trace=trace or _nominal_trace())
+    return RenderedTNG(image=image, trace=trace or _nominal_trace())
 
 
-def test_tng_view_resolves_padded_paths_and_loads_registered_cube(tmp_path):
+def test_tng_view_resolves_padded_paths_and_loads_native_image(tmp_path):
     view = _write_view(tmp_path, padded=True)
 
     assert view.fits_path("VIS").name == "TNG000007_O2_Euclid_VIS.fits"
@@ -108,12 +104,12 @@ def test_tng_view_resolves_padded_paths_and_loads_registered_cube(tmp_path):
     assert view.can_render(1.0, 0.05)
     assert not view.can_render(1.001, 0.05)
 
-    cube = view.load_surface_brightness()
-    assert cube.shape == (8, 10, 4)
-    assert cube.bands == BANDS
-    assert cube.unit is PixelUnit.MJY_PER_SR
-    assert cube.grid == PhysicalGrid(pixel_scale_pc=100.0)
-    np.testing.assert_allclose(cube.plane("H_E"), 4.0)
+    image = view.load_surface_brightness()
+    assert isinstance(image, TNGSurfaceBrightnessImage)
+    assert image.shape == (8, 10, 4)
+    assert image.bands == BANDS
+    assert image.pixel_scale_pc == pytest.approx(100.0)
+    np.testing.assert_allclose(image.plane("H_E"), 4.0)
 
 
 def test_tng_view_validates_identity_and_render_query(tmp_path):
@@ -131,16 +127,18 @@ def test_tng_view_validates_identity_and_render_query(tmp_path):
 
 def test_rotation_represents_one_applied_transform():
     data = np.arange(3 * 5, dtype=np.float32).reshape(3, 5, 1)
-    cube = ImageCube(
+    image = TNGSurfaceBrightnessImage(
         data=data,
         bands=("VIS",),
-        unit=PixelUnit.MJY_PER_SR,
-        grid=PhysicalGrid(pixel_scale_pc=100.0),
+        pixel_scale_pc=100.0,
     )
 
     quarter = TNGRotation(quarter_turns=5)
     assert quarter.quarter_turns == 1
-    np.testing.assert_array_equal(quarter.apply(cube).data, np.rot90(cube.data, 1))
+    np.testing.assert_array_equal(
+        quarter.apply(image).data,
+        np.rot90(image.data, 1),
+    )
 
     arbitrary = TNGRotation(angle_deg=370.0)
     assert arbitrary.angle_deg == pytest.approx(10.0)
@@ -189,40 +187,120 @@ def test_native_photometry_is_compact_read_only_and_band_addressable():
 def test_rendered_tng_validates_semantics_and_exposes_derived_fluxes():
     stamp = _rendered()
 
-    assert isinstance(stamp, CubeLike)
+    assert isinstance(stamp.image, Image)
+    assert stamp.image.is_clean is True
+    assert stamp.image.role is Role.CLEAN
     assert stamp.shape == (6, 8, 4)
     assert stamp.bands == BANDS
     assert stamp.pixel_scale_arcsec == pytest.approx(0.05)
-    assert stamp.band_index("Y_E") == 1
     assert stamp.fluxes_e == pytest.approx((48.0, 96.0, 144.0, 192.0))
     assert stamp.flux_e_per_band["H_E"] == pytest.approx(192.0)
     assert not stamp.data.flags.writeable
     assert not stamp.as_array().flags.writeable
+    assert stamp.as_array() is stamp.data
     assert stamp.as_array(copy=True).flags.writeable
     assert "array" not in repr(stamp)
     with pytest.raises(ValueError, match="band is required"):
         stamp.plane()
 
-    wrong_unit = ImageCube(
+    dirty = Image(
         data=np.ones((2, 2, 4), np.float32),
-        bands=BANDS,
-        unit=PixelUnit.MJY_PER_SR,
-        grid=PhysicalGrid(100.0),
+        pixel_scale_arcsec=0.05,
+        band_names=BANDS,
+        is_clean=False,
+        role=Role.LR,
     )
-    with pytest.raises(ValueError, match="electrons/pixel"):
-        RenderedTNG(wrong_unit, _nominal_trace(target_re_arcsec=0.5))
+    with pytest.raises(ValueError, match="clean images with Role.CLEAN"):
+        RenderedTNG(
+            image=dirty,
+            trace=_nominal_trace(target_re_arcsec=0.5),
+        )
 
-    negative = ImageCube(
+    wrong_role = Image(
+        data=np.ones((2, 2, 4), np.float32),
+        pixel_scale_arcsec=0.05,
+        band_names=BANDS,
+        is_clean=True,
+        role=Role.HR,
+    )
+    with pytest.raises(ValueError, match="clean images with Role.CLEAN"):
+        RenderedTNG(image=wrong_role, trace=_nominal_trace())
+
+    negative = Image(
         data=-np.ones((2, 2, 4), np.float32),
-        bands=BANDS,
-        unit=PixelUnit.ELECTRONS_PER_PIXEL,
-        grid=AngularGrid(0.05),
+        pixel_scale_arcsec=0.05,
+        band_names=BANDS,
+        is_clean=True,
+        role=Role.CLEAN,
     )
     with pytest.raises(ValueError, match="non-negative"):
-        RenderedTNG(negative, _nominal_trace())
+        RenderedTNG(image=negative, trace=_nominal_trace())
+
+    wrong_dtype = Image(
+        data=np.ones((2, 2, 4), np.float64),
+        pixel_scale_arcsec=0.05,
+        band_names=BANDS,
+        is_clean=True,
+        role=Role.CLEAN,
+    )
+    with pytest.raises(ValueError, match="float32"):
+        RenderedTNG(image=wrong_dtype, trace=_nominal_trace())
+
+    nonfinite = Image(
+        data=np.full((2, 2, 4), np.nan, np.float32),
+        pixel_scale_arcsec=0.05,
+        band_names=BANDS,
+        is_clean=True,
+        role=Role.CLEAN,
+    )
+    with pytest.raises(ValueError, match="finite"):
+        RenderedTNG(image=nonfinite, trace=_nominal_trace())
+
+    wrong_bands = Image(
+        data=np.ones((2, 2, 4), np.float32),
+        pixel_scale_arcsec=0.05,
+        band_names=("VIS", "Y", "J", "H"),
+        is_clean=True,
+        role=Role.CLEAN,
+    )
+    with pytest.raises(ValueError, match="bands must be"):
+        RenderedTNG(image=wrong_bands, trace=_nominal_trace())
 
     with pytest.raises(ValueError, match="nominal radius is inconsistent"):
         _rendered(trace=_nominal_trace(target_re_arcsec=0.4))
+
+
+def test_rendered_tng_owns_an_immutable_image_snapshot() -> None:
+    source = Image(
+        data=np.ones((6, 8, 4), dtype=np.float32),
+        pixel_scale_arcsec=0.05,
+        band_names=BANDS,
+        is_clean=True,
+        role=Role.CLEAN,
+        metadata={"origin": "caller"},
+    )
+    stamp = RenderedTNG(image=source, trace=_nominal_trace())
+
+    source.data[...] = 9.0
+    source.role = Role.LR
+    source.metadata["origin"] = "mutated"
+    np.testing.assert_array_equal(stamp.data, 1.0)
+    assert stamp.image.role is Role.CLEAN
+    assert stamp.image.metadata == {"origin": "caller"}
+
+    detached = stamp.image
+    detached.role = Role.LR
+    detached.metadata["origin"] = "detached"
+    detached.data = np.zeros_like(detached.data)
+    assert stamp.image.role is Role.CLEAN
+    assert stamp.image.metadata == {"origin": "caller"}
+    np.testing.assert_array_equal(stamp.data, 1.0)
+    stamp.validate()
+
+    with pytest.raises(ValueError, match="WRITEABLE"):
+        stamp.data.setflags(write=True)
+    with pytest.raises(ValueError, match="read-only"):
+        stamp.data[0, 0, 0] = 0.0
 
 
 def test_rendered_tng_scaling_and_total_vis_normalization():

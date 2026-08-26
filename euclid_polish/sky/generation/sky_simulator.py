@@ -1003,8 +1003,8 @@ class SkySimulator:
             lp = replace(lp, centre_x_pix=x_pix, centre_y_pix=y_pix)
             render_lens_to_multiband_canvas(
                 canvas_4ch, params=lp, pixel_scale=cfg.pixel_scale,
-                lens_light_stamp=lens_light_stamp.cube,
-                source_stamp=source_stamp.cube,
+                lens_light_stamp=lens_light_stamp,
+                source_stamp=source_stamp,
             )
             lens_trace = lens_light_stamp.record_fields()
             source_trace = source_stamp.record_fields()

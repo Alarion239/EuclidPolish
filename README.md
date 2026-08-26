@@ -102,10 +102,10 @@ The TNG atlas is a morphology library, not a population model. The active
 Euclid joint prior independently samples each field galaxy's observed VIS
 half-light radius and 2FWHM brightness. Scene generation then asks
 `TNGAtlas` for a donor with a natively large-enough orientation and asks
-`TNGRenderer` to produce the corresponding `RenderedTNG` electron cube.
+`TNGRenderer` to produce the corresponding `RenderedTNG` electron image.
 
 - **Field galaxies** use shrink-only observed-radius rendering: the selected
-  surface-brightness cube may be rotated and area-downsampled, but is never
+  `TNGSurfaceBrightnessImage` may be rotated and area-downsampled, but is never
   enlarged. One shared normalization matches the requested VIS brightness and
   preserves the atlas's four-band colours.
 - **Strong-lens light** uses physical-redshift rendering. The intrinsic

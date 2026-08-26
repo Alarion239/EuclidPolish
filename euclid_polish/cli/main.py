@@ -44,6 +44,7 @@ from euclid_polish.config import Config
 from euclid_polish.eval.subsets import eval_subset
 from euclid_polish.image import Image, ImageSet
 from euclid_polish.image.tfio import (
+    deserialize_image,
     open_writer,
     read_images,
     tfrecord_path,
@@ -948,7 +949,7 @@ class InteractiveCLI:
                                 total=n_images, desc=f"Forward {subset}",
                                 unit="img"):
                     try:
-                        hr_4ch = Image.from_tfrecord(raw)
+                        hr_4ch = deserialize_image(raw)
                         lr, hr = forward.process(hr_4ch, rng=rng)
                         hr_w.write(hr, index=n_ok)
                         lr_w.write(lr, index=n_ok)

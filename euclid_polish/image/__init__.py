@@ -1,23 +1,13 @@
-"""The image data layer: lightweight cubes plus persistent project images.
+"""Persistent project image types.
 
-The cube vocabulary is imported eagerly and has no TensorFlow dependency.
-Persistent ``Image``/``ImageSet`` types are resolved lazily so lightweight
-scientific utilities can use :class:`ImageCube` without importing the training
-stack.
+``Image`` and ``ImageSet`` are resolved lazily so importing the package does
+not initialize the TensorFlow persistence stack.
 """
 
 from __future__ import annotations
 
 from importlib import import_module
 from typing import TYPE_CHECKING
-
-from euclid_polish.image.cube import (
-    AngularGrid,
-    CubeLike,
-    ImageCube,
-    PhysicalGrid,
-    PixelUnit,
-)
 
 if TYPE_CHECKING:
     from euclid_polish.image.collection import ImageSet
@@ -31,14 +21,9 @@ _EXPORTS = {
 }
 
 __all__ = [
-    "AngularGrid",
-    "CubeLike",
     "FitsWCS",
     "Image",
-    "ImageCube",
     "ImageSet",
-    "PhysicalGrid",
-    "PixelUnit",
     "Role",
 ]
 

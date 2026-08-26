@@ -2,11 +2,12 @@
 
 ``Image`` is the central multi-band sky-image type for the whole project and it
 sits at the *bottom* of the import graph: it depends only on third-party libs
-(numpy, tensorflow, astropy) plus :mod:`euclid_polish.config` and the pure
+(numpy and astropy) plus :mod:`euclid_polish.config` and the pure
 provenance value-types. It never imports an operator (simulator, forward
 model, trained model, archive). Everything ``Image`` owns is self-contained —
-(de)serialization, crop/rebin, measurements, metrics — so the same work reads
-identically from the CLI, the WebUI, the eval runners and scripts.
+FITS/raw-byte serialization, crop/rebin, and metrics — so the same work reads
+identically from the CLI, the WebUI, the eval runners and scripts. TensorFlow
+persistence lives separately in :mod:`euclid_polish.image.tfio`.
 
 Transforms that need an operator live on the operator:
 
@@ -34,11 +35,9 @@ from enum import Enum
 from typing import ClassVar
 
 import numpy as np
-import tensorflow as tf
 from astropy.io import fits as _fits
 
 from euclid_polish.config import Config
-from euclid_polish.image.cube import AngularGrid, PixelUnit
 from euclid_polish.provenance.fits import read_stamp_cards, write_stamp_cards
 from euclid_polish.provenance.persistable import StampCarrier
 from euclid_polish.provenance.records import Format, Stamp
@@ -185,106 +184,12 @@ class Image(StampCarrier):
         return self.data.shape  # type: ignore[return-value]
 
     @property
-    def bands(self) -> tuple[str, ...]:
-        """Band-name spelling shared with dependency-light image cubes."""
-        return self.band_names
-
-    @property
     def spatial_shape(self) -> tuple[int, int]:
         return self.data.shape[:2]  # type: ignore[return-value]
 
     @property
     def num_channels(self) -> int:
         return self.data.shape[-1]
-
-    @property
-    def unit(self) -> PixelUnit:
-        """Pixel calibration used by persisted and simulated project images."""
-        return PixelUnit.ELECTRONS_PER_PIXEL
-
-    @property
-    def grid(self) -> AngularGrid:
-        """Angular sampling represented by ``pixel_scale_arcsec``."""
-        return AngularGrid(self.pixel_scale_arcsec)
-
-    # ------------------------------------------------------------------
-    # TFRecord serialization
-    # ------------------------------------------------------------------
-    #
-    # One fixed schema, every field always written. ``prov_id``/``prov_stamp``
-    # are empty strings for an unstamped image. The graph training path uses a
-    # smaller feature subset (see ``image.tfio.parse_example``).
-    _TFRECORD_FEATURES = {
-        'image':       tf.io.FixedLenFeature([], tf.string),
-        'index':       tf.io.FixedLenFeature([], tf.int64),
-        'height':      tf.io.FixedLenFeature([], tf.int64),
-        'width':       tf.io.FixedLenFeature([], tf.int64),
-        'channels':    tf.io.FixedLenFeature([], tf.int64),
-        'pixel_scale': tf.io.FixedLenFeature([], tf.float32),
-        'is_clean':    tf.io.FixedLenFeature([], tf.int64),
-        'band_names':  tf.io.FixedLenFeature([], tf.string),
-        'role':        tf.io.FixedLenFeature([], tf.string),
-        'prov_id':     tf.io.FixedLenFeature([], tf.string),
-        'prov_stamp':  tf.io.FixedLenFeature([], tf.string),
-    }
-
-    def to_tfrecord(self, index: int | None = None) -> bytes:
-        """Serialize to a TFRecord Example (bytes). Stores data as float32."""
-        h, w, c = self.shape
-        idx = index if index is not None else (self.index or 0)
-        if self.stamp is not None:
-            emb = self.stamp
-            if emb.subset is None and self.subset is not None:
-                emb = dataclasses.replace(emb, subset=self.subset)
-            prov_id = str(emb.id).encode("utf-8")
-            prov_stamp = emb.to_json().encode("utf-8")
-        else:
-            prov_id = prov_stamp = b""
-
-        def _b(v):
-            return tf.train.Feature(bytes_list=tf.train.BytesList(value=[v]))
-
-        def _i(v):
-            return tf.train.Feature(int64_list=tf.train.Int64List(value=[v]))
-
-        feature = {
-            'image':       _b(np.ascontiguousarray(self.data, dtype=np.float32).tobytes()),
-            'index':       _i(idx),
-            'height':      _i(h),
-            'width':       _i(w),
-            'channels':    _i(c),
-            'pixel_scale': tf.train.Feature(
-                float_list=tf.train.FloatList(value=[self.pixel_scale_arcsec])),
-            'is_clean':    _i(int(self.is_clean)),
-            'band_names':  _b(",".join(self.band_names).encode("utf-8")),
-            'role':        _b(self.role.value.encode("utf-8")),
-            'prov_id':     _b(prov_id),
-            'prov_stamp':  _b(prov_stamp),
-        }
-        return tf.train.Example(
-            features=tf.train.Features(feature=feature)).SerializeToString()
-
-    @classmethod
-    def from_tfrecord(cls, raw_record) -> Image:
-        """Parse a single TFRecord example (eager mode)."""
-        ex = tf.io.parse_single_example(raw_record, cls._TFRECORD_FEATURES)
-        h = int(ex['height'].numpy())
-        w = int(ex['width'].numpy())
-        c = int(ex['channels'].numpy())
-        data = tf.reshape(tf.io.decode_raw(ex['image'], tf.float32),
-                          [h, w, c]).numpy()
-        role = Role(ex['role'].numpy().decode("utf-8"))
-        stamp = subset = None
-        prov_stamp_bytes = ex['prov_stamp'].numpy()
-        if prov_stamp_bytes:
-            stamp = Stamp.from_json(prov_stamp_bytes.decode("utf-8"))
-            subset = stamp.subset
-        return cls(
-            data=data,
-            pixel_scale_arcsec=round(float(ex['pixel_scale'].numpy()), 6),
-            band_names=tuple(ex['band_names'].numpy().decode("utf-8").split(",")),
-            is_clean=bool(ex['is_clean'].numpy()),
-            role=role, index=int(ex['index'].numpy()), subset=subset, stamp=stamp)
 
     # ------------------------------------------------------------------
     # FITS serialization (self-contained, round-trips role + provenance)
@@ -388,27 +293,6 @@ class Image(StampCarrier):
             "pixel_scale_arcsec": float(self.pixel_scale_arcsec),
         }
 
-    # ------------------------------------------------------------------
-    # Band convenience accessors
-    # ------------------------------------------------------------------
-
-    def band_index(self, name: str) -> int:
-        if name not in self.band_names:
-            raise ValueError(f"band {name!r} not in {self.band_names}")
-        return self.band_names.index(name)
-
-    def plane(self, band: str | None = None) -> np.ndarray:
-        """Return one 2-D channel plane without copying it.
-
-        The band may be omitted only for a single-channel image, matching the
-        dependency-light :class:`~euclid_polish.image.ImageCube` contract.
-        """
-        if band is None:
-            if self.num_channels != 1:
-                raise ValueError("band is required for a multi-channel image")
-            return self.data[..., 0]
-        return self.data[..., self.band_index(band)]
-
     def with_role(self, role: Role) -> Image:
         """A copy tagged with ``role`` (the original is unchanged).
 
@@ -489,17 +373,8 @@ class Image(StampCarrier):
             pixel_scale_arcsec=self.pixel_scale_arcsec * float(factor))
 
     # ------------------------------------------------------------------
-    # Measurements & metrics (self-contained)
+    # Metrics (self-contained)
     # ------------------------------------------------------------------
-
-    def peak(self, band: str | None = None) -> float:
-        return float(self.plane(band).max())
-
-    def mean(self, band: str | None = None) -> float:
-        return float(self.plane(band).mean())
-
-    def total_flux(self, band: str | None = None) -> float:
-        return float(self.plane(band).sum())
 
     def psnr_against(self, other: Image, *, data_range: float | None = None) -> float:
         """Peak signal-to-noise ratio (dB) of ``self`` vs ``other``.

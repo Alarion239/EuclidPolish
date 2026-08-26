@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -11,7 +12,7 @@ from astropy.io import fits
 from scipy.signal import fftconvolve
 
 from euclid_polish.config import Config
-from euclid_polish.image import AngularGrid, PixelUnit
+from euclid_polish.image import Image, Role
 from euclid_polish.photometry import (
     mjy_per_sr_to_electrons_factor,
     pixel_solid_angle_sr,
@@ -162,7 +163,7 @@ def test_atlas_filters_orientations_that_would_enlarge(tmp_path):
     assert atlas.eligible_views(galaxy, 0.7, 0.05) == ()
 
 
-def test_render_observed_radius_returns_typed_electron_cube_and_trace(tmp_path):
+def test_render_observed_radius_returns_clean_image_and_trace(tmp_path):
     directory = _write_fake_galaxy(tmp_path, "111")
     renderer = TNGRenderer(pixel_scale_arcsec=0.05)
     view = _view(directory)
@@ -173,8 +174,10 @@ def test_render_observed_radius_returns_typed_electron_cube_and_trace(tmp_path):
     fields = rendered.record_fields()
 
     assert isinstance(rendered, RenderedTNG)
-    assert rendered.unit is PixelUnit.ELECTRONS_PER_PIXEL
-    assert rendered.grid == AngularGrid(0.05)
+    assert isinstance(rendered.image, Image)
+    assert rendered.image.is_clean is True
+    assert rendered.image.role is Role.CLEAN
+    assert rendered.pixel_scale_arcsec == pytest.approx(0.05)
     assert rendered.bands == tuple(Config.LR_INPUT_BAND_NAMES)
     assert rendered.data.dtype == np.float32
     assert np.isfinite(rendered.data).all() and (rendered.data >= 0.0).all()
@@ -352,7 +355,10 @@ def test_psf_caches_are_instance_owned_and_parity_sensitive(tmp_path):
     )
     renderer.normalize_vis_2fwhm(
         RenderedTNG(
-            cube=stamp.cube.cropped(slice(0, -1), slice(0, -1)),
+            image=replace(
+                stamp.image,
+                data=stamp.data[:-1, :-1, :],
+            ),
             trace=stamp.trace,
         ),
         target_flux_e=10.0,

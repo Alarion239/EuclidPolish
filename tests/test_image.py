@@ -3,6 +3,7 @@ import numpy as np
 import pytest
 
 from euclid_polish.image import Image, Role
+from euclid_polish.image.tfio import deserialize_image, serialize_image
 from euclid_polish.provenance.ids import ProvId
 from euclid_polish.provenance.records import Stamp
 
@@ -26,28 +27,43 @@ def test_unknown_role_value_falls_back():
 
 def test_dropped_physics_methods_are_gone():
     im = _img()
-    for gone in ("convolved_with", "convolved_per_band", "with_band_noise"):
+    for gone in (
+        "bands",
+        "unit",
+        "grid",
+        "band_index",
+        "plane",
+        "peak",
+        "mean",
+        "total_flux",
+        "to_tfrecord",
+        "from_tfrecord",
+        "convolved_with",
+        "convolved_per_band",
+        "with_band_noise",
+    ):
         assert not hasattr(im, gone), f"{gone} should have moved to an operator"
 
 
 def test_role_roundtrips_through_tfrecord():
     im = _img(role=Role.LR)
-    back = Image.from_tfrecord(im.to_tfrecord(index=3))
+    back = deserialize_image(serialize_image(im, index=3))
     assert back.role is Role.LR
+    assert back.index == 3
     np.testing.assert_array_equal(back.data, im.data)
 
 
 def test_legacy_record_without_role_parses_unknown():
     im = Image(data=np.zeros((4, 4, 4), np.float32), pixel_scale_arcsec=0.10,
                band_names=("VIS", "Y_E", "J_E", "H_E"), is_clean=False)
-    back = Image.from_tfrecord(im.to_tfrecord(index=0))
+    back = deserialize_image(serialize_image(im, index=0))
     assert back.role is Role.UNKNOWN
 
 
 def test_stamp_rides_in_tfrecord():
     sid = ProvId("abcd1234")
     im = _img().with_stamp(Stamp(id=sid, schema_version=3))
-    back = Image.from_tfrecord(im.to_tfrecord())
+    back = deserialize_image(serialize_image(im))
     assert back.stamp is not None and back.stamp.id == sid
 
 

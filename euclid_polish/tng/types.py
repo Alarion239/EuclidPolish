@@ -2,7 +2,7 @@
 
 The numerical renderer deliberately has two distinct image domains:
 
-* native TNG atlas cubes are surface brightness in MJy/sr on a physical pc/pixel
+* native TNG atlas images are surface brightness in MJy/sr on a physical pc/pixel
   grid; and
 * rendered TNG stamps are electrons/pixel on the simulation's angular grid.
 
@@ -22,13 +22,9 @@ from typing import Any, ClassVar, Literal
 import numpy as np
 
 from euclid_polish.config import Config
-from euclid_polish.image.cube import (
-    AngularGrid,
-    ImageCube,
-    PhysicalGrid,
-    PixelUnit,
-)
+from euclid_polish.image import Image, Role
 from euclid_polish.photometry import electrons_to_ab_mag
+from euclid_polish.tng.image import TNGSurfaceBrightnessImage
 
 TNG_FITS_BANDS: tuple[str, ...] = ("VIS", "Y", "J", "H")
 TNG_MODEL_BANDS: tuple[str, ...] = tuple(Config.LR_INPUT_BAND_NAMES)
@@ -135,7 +131,7 @@ class TNGView:
             )
         return tuple(identities)
 
-    def load_surface_brightness(self) -> ImageCube:
+    def load_surface_brightness(self) -> TNGSurfaceBrightnessImage:
         """Load and register the four native MJy/sr planes in model-band order."""
         from euclid_polish.tng._image import _load_tng_plane
 
@@ -145,24 +141,20 @@ class TNGView:
                 TNG_FITS_BANDS, TNG_MODEL_BANDS, strict=True
             )
         )
-        cube = ImageCube.stack(planes)
-        if cube.unit is not PixelUnit.MJY_PER_SR:
-            raise ValueError(f"TNG source must be in MJy/sr, got {cube.unit.value!r}")
-        if not isinstance(cube.grid, PhysicalGrid):
-            raise ValueError("TNG source must use a physical pc/pixel grid")
+        image = TNGSurfaceBrightnessImage.stack(planes)
         if not np.isclose(
-            cube.grid.pixel_scale_pc,
+            image.pixel_scale_pc,
             TNG_NATIVE_PC_PER_PIXEL,
             rtol=0.0,
             atol=1e-12,
         ):
             raise ValueError(
                 "TNG atlas source must use the native 100 pc/pixel grid, got "
-                f"{cube.grid.pixel_scale_pc!r}"
+                f"{image.pixel_scale_pc!r}"
             )
-        if cube.bands != TNG_MODEL_BANDS:
-            raise ValueError(f"unexpected TNG band order {cube.bands!r}")
-        return cube
+        if image.bands != TNG_MODEL_BANDS:
+            raise ValueError(f"unexpected TNG band order {image.bands!r}")
+        return image
 
 
 @dataclass(frozen=True, slots=True)
@@ -189,16 +181,18 @@ class TNGRotation:
     def is_arbitrary(self) -> bool:
         return self.angle_deg is not None
 
-    def apply(self, cube: ImageCube) -> ImageCube:
+    def apply(
+        self,
+        image: TNGSurfaceBrightnessImage,
+    ) -> TNGSurfaceBrightnessImage:
         """Apply exactly the rotation represented by this record."""
         if self.angle_deg is not None:
-            # TNG augmentation uses the validated cubic surface-brightness
-            # rotation; the common cube's generic rotation is intentionally
-            # only a dependency-light bilinear convenience.
+            # TNG augmentation uses its validated cubic surface-brightness
+            # rotation rather than a generic image interpolation policy.
             from euclid_polish.tng._image import _rotate_surface_brightness
 
-            return _rotate_surface_brightness(cube, self.angle_deg)
-        return cube.rotated_quarter(self.quarter_turns)
+            return _rotate_surface_brightness(image, self.angle_deg)
+        return image.rotated_quarter(self.quarter_turns)
 
     def record_fields(self) -> dict[str, Any]:
         return {
@@ -536,32 +530,66 @@ class NativePhotometry:
         return self.band_sums_mjy_sr[index]
 
 
-@dataclass(frozen=True, slots=True, eq=False, repr=False)
+@dataclass(frozen=True, slots=True, eq=False, repr=False, init=False)
 class RenderedTNG:
-    """A clean four-band electron stamp paired with typed render provenance."""
+    """An immutable clean four-band :class:`Image` plus render provenance.
 
-    cube: ImageCube = field(repr=False, compare=False)
+    The constructor snapshots the supplied ``Image``.  Pixel storage is owned
+    by this value and exposed read-only; :attr:`image` returns a detached
+    ``Image`` record so changing its metadata cannot invalidate the render
+    trace stored here.
+    """
+
+    _image: Image = field(repr=False, compare=False)
     trace: TNGRenderTrace
 
-    def __post_init__(self) -> None:
-        if not isinstance(self.cube, ImageCube):
-            raise TypeError("cube must be an ImageCube")
-        if self.cube.unit is not PixelUnit.ELECTRONS_PER_PIXEL:
+    def __init__(self, image: Image, trace: TNGRenderTrace) -> None:
+        self._validate_image(image)
+        if not isinstance(trace, TNGRenderTrace):
+            raise TypeError("trace must be a TNGRenderTrace")
+
+        # Keep the owning base read-only as well as the public view.  A caller
+        # therefore cannot re-enable writes through ``setflags`` on the view.
+        pixels_owner = np.array(image.data, order="C", copy=True)
+        pixels_owner.setflags(write=False)
+        pixels = pixels_owner.view()
+        pixels.setflags(write=False)
+        snapshot = replace(
+            image,
+            data=pixels,
+            metadata=dict(image.metadata),
+        )
+        object.__setattr__(self, "_image", snapshot)
+        object.__setattr__(self, "trace", trace)
+        self.validate()
+
+    @staticmethod
+    def _validate_image(image: Image) -> None:
+        if not isinstance(image, Image):
+            raise TypeError("image must be an Image")
+        if image.is_clean is not True or image.role is not Role.CLEAN:
             raise ValueError(
-                "rendered TNG pixels must be electrons/pixel, got "
-                f"{self.cube.unit.value!r}"
+                "rendered TNG stamps must be clean images with Role.CLEAN"
             )
-        if not isinstance(self.cube.grid, AngularGrid):
-            raise ValueError("rendered TNG stamps must use an angular grid")
-        if self.cube.bands != TNG_MODEL_BANDS:
+        if image.band_names != TNG_MODEL_BANDS:
             raise ValueError(
                 f"rendered TNG bands must be {TNG_MODEL_BANDS!r}, "
-                f"got {self.cube.bands!r}"
+                f"got {image.band_names!r}"
             )
-        if self.cube.data.dtype != np.float32:
+        if image.data.dtype != np.float32:
             raise ValueError("rendered TNG pixels must be float32")
-        if np.any(self.cube.data < 0.0):
+        if not np.all(np.isfinite(image.data)):
+            raise ValueError("rendered TNG pixels must be finite")
+        if np.any(image.data < 0.0):
             raise ValueError("clean rendered TNG pixels must be non-negative")
+        _positive_finite(
+            image.pixel_scale_arcsec,
+            "rendered TNG pixel_scale_arcsec",
+        )
+
+    def validate(self) -> None:
+        """Recheck the complete rendered-image and trace contract."""
+        self._validate_image(self._image)
         if not isinstance(self.trace, TNGRenderTrace):
             raise TypeError("trace must be a TNGRenderTrace")
         if isinstance(self.trace.geometry, NominalRadiusGeometry):
@@ -581,6 +609,15 @@ class RenderedTNG:
                     "pixel scale, and shrink factor"
                 )
 
+    @property
+    def image(self) -> Image:
+        """Return a detached ``Image`` view of the rendered pixels."""
+        return replace(
+            self._image,
+            data=self._image.data,
+            metadata=dict(self._image.metadata),
+        )
+
     def __repr__(self) -> str:
         return (
             f"RenderedTNG(shape={self.shape!r}, bands={self.bands!r}, "
@@ -591,43 +628,30 @@ class RenderedTNG:
 
     @property
     def data(self) -> np.ndarray:
-        return self.cube.data
+        return self._image.data
 
     @property
     def shape(self) -> tuple[int, int, int]:
-        return self.cube.shape
+        return self._image.shape
 
     @property
     def pixel_scale_arcsec(self) -> float:
-        grid = self.cube.grid
-        if not isinstance(grid, AngularGrid):  # guarded by __post_init__
-            raise TypeError("rendered TNG cube does not have an angular grid")
-        return grid.pixel_scale_arcsec
+        return self._image.pixel_scale_arcsec
 
     @property
     def bands(self) -> tuple[str, ...]:
-        return self.cube.bands
-
-    @property
-    def unit(self) -> PixelUnit:
-        return self.cube.unit
-
-    @property
-    def grid(self) -> AngularGrid:
-        grid = self.cube.grid
-        if not isinstance(grid, AngularGrid):  # guarded by __post_init__
-            raise TypeError("rendered TNG cube does not have an angular grid")
-        return grid
-
-    @property
-    def num_channels(self) -> int:
-        return self.cube.num_channels
-
-    def band_index(self, name: str) -> int:
-        return self.cube.band_index(name)
+        return self._image.band_names
 
     def plane(self, band: str | None = None) -> np.ndarray:
-        return self.cube.plane(band)
+        if band is None:
+            if self.shape[-1] != 1:
+                raise ValueError("band is required for a multi-channel image")
+            return self.data[..., 0]
+        try:
+            index = self.bands.index(band)
+        except ValueError as exc:
+            raise ValueError(f"band {band!r} not in {self.bands!r}") from exc
+        return self.data[..., index]
 
     def flux_e(self, band: str) -> float:
         return float(np.sum(self.plane(band), dtype=np.float64))
@@ -644,7 +668,10 @@ class RenderedTNG:
         """Return a stamp multiplied by one positive, band-shared scalar."""
         scale = _positive_finite(factor, "factor")
         return type(self)(
-            cube=self.cube.with_data(self.data * np.float32(scale)),
+            image=replace(
+                self._image,
+                data=self.data * np.float32(scale),
+            ),
             trace=self.trace,
         )
 
@@ -652,10 +679,13 @@ class RenderedTNG:
         """Return a stamp multiplied by four positive per-band factors."""
         values = _four_positive(factors, "factors")
         multiplier = np.asarray(values, dtype=np.float32)[None, None, :]
-        return type(self)(cube=self.cube.with_data(self.data * multiplier), trace=self.trace)
+        return type(self)(
+            image=replace(self._image, data=self.data * multiplier),
+            trace=self.trace,
+        )
 
     def with_trace(self, trace: TNGRenderTrace) -> RenderedTNG:
-        return type(self)(cube=self.cube, trace=trace)
+        return type(self)(image=self._image, trace=trace)
 
     def transformed_at_redshift(
         self,
@@ -684,7 +714,7 @@ class RenderedTNG:
         return scaled.with_trace(self.trace.with_normalization(normalization))
 
     def as_array(self, *, copy: bool = False) -> np.ndarray:
-        return self.cube.as_array(copy=copy)
+        return self.data.copy() if copy else self.data
 
     def record_fields(self) -> dict[str, Any]:
         """Materialize the serializable render record at the catalog boundary."""

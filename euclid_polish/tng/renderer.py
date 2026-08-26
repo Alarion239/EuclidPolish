@@ -14,13 +14,14 @@ import hashlib
 import math
 from collections import OrderedDict
 from collections.abc import Iterable
+from dataclasses import replace
 from typing import cast
 
 import numpy as np
 from scipy.signal import fftconvolve
 
 from euclid_polish.config import Config
-from euclid_polish.image import AngularGrid, ImageCube, PhysicalGrid, PixelUnit
+from euclid_polish.image import Image, Role
 from euclid_polish.photometry import (
     ab_mag_to_electrons,
     mjy_per_sr_to_electrons_factor,
@@ -32,6 +33,7 @@ from euclid_polish.tng._image import (
     _radius_int_grid,
     _stochastic_round_factor,
 )
+from euclid_polish.tng.image import TNGSurfaceBrightnessImage
 from euclid_polish.tng.redshift import (
     band_drift_factors,
     compactness_factor,
@@ -172,7 +174,9 @@ class TNGRenderer:
         self._circular_psf_cache_max_bytes = max(
             0, int(circular_psf_cache_max_bytes)
         )
-        self._source_cache: OrderedDict[tuple, ImageCube] = OrderedDict()
+        self._source_cache: OrderedDict[
+            tuple, TNGSurfaceBrightnessImage
+        ] = OrderedDict()
         self._source_cache_bytes = 0
         self._native_photometry_cache: dict[tuple, NativePhotometry] = {}
         self._aperture_cache: OrderedDict[tuple, np.ndarray] = OrderedDict()
@@ -281,13 +285,20 @@ class TNGRenderer:
             surface_brightness = _block_mean(source, rebin)
             surface_brightness = rotation.apply(surface_brightness)
 
-        electron_cube = self._surface_brightness_to_electrons(surface_brightness)
+        electron_image = self._surface_brightness_to_electrons(surface_brightness)
         sed_fnu = _four_floats(
-            float(np.sum(electron_cube.plane(band), dtype=np.float64))
+            float(
+                np.sum(
+                    electron_image.data[
+                        ..., electron_image.band_names.index(band)
+                    ],
+                    dtype=np.float64,
+                )
+            )
             / mjy_per_sr_to_electrons_factor(
                 Config.get_band(band), self.pixel_scale_arcsec
             )
-            for band in electron_cube.bands
+            for band in electron_image.band_names
         )
         factors, metadata = band_drift_factors(
             sed_fnu, redshift_value, rng
@@ -323,8 +334,9 @@ class TNGRenderer:
         combined = np.asarray(factors, dtype=np.float32)
         combined *= np.float32((rebin / geometric_rebin) ** 2)
         rendered = RenderedTNG(
-            cube=electron_cube.with_data(
-                electron_cube.data * combined[None, None, :]
+            image=replace(
+                electron_image,
+                data=electron_image.data * combined[None, None, :],
             ),
             trace=trace,
         )
@@ -509,11 +521,11 @@ class TNGRenderer:
             max_output_side=self.max_output_side,
         )
         return RenderedTNG(
-            cube=self._surface_brightness_to_electrons(surface_brightness),
+            image=self._surface_brightness_to_electrons(surface_brightness),
             trace=trace,
         )
 
-    def _native_source(self, view: TNGView) -> ImageCube:
+    def _native_source(self, view: TNGView) -> TNGSurfaceBrightnessImage:
         key = self._source_key(view)
         cached = self._source_cache.pop(key, None)
         if cached is not None:
@@ -550,12 +562,11 @@ class TNGRenderer:
         )
 
     def _surface_brightness_to_electrons(
-        self, source: ImageCube
-    ) -> ImageCube:
-        if source.unit is not PixelUnit.MJY_PER_SR:
-            raise ValueError("TNG source must be in MJy/sr")
-        if not isinstance(source.grid, PhysicalGrid):
-            raise ValueError("TNG source must use a physical parsec grid")
+        self,
+        source: TNGSurfaceBrightnessImage,
+    ) -> Image:
+        if not isinstance(source, TNGSurfaceBrightnessImage):
+            raise TypeError("TNG source must be a TNGSurfaceBrightnessImage")
         if source.bands != TNG_MODEL_BANDS:
             raise ValueError(
                 f"TNG source bands must be {TNG_MODEL_BANDS!r}, "
@@ -570,11 +581,12 @@ class TNGRenderer:
             ],
             dtype=np.float32,
         )
-        return ImageCube(
+        return Image(
             data=source.data * factors[None, None, :],
-            bands=source.bands,
-            unit=PixelUnit.ELECTRONS_PER_PIXEL,
-            grid=AngularGrid(self.pixel_scale_arcsec),
+            pixel_scale_arcsec=self.pixel_scale_arcsec,
+            band_names=source.bands,
+            is_clean=True,
+            role=Role.CLEAN,
         )
 
     def _native_sed_from_render(
@@ -629,7 +641,10 @@ class TNGRenderer:
             channel[channel < threshold] = 0.0
             keep |= channel > 0.0
         if not keep.any():
-            return RenderedTNG(rendered.cube.with_data(data), rendered.trace)
+            return RenderedTNG(
+                image=replace(rendered.image, data=data),
+                trace=rendered.trace,
+            )
         total = data.sum(axis=2, dtype=np.float64)
         radii = _radius_int_grid(total.shape)
         profile = np.bincount(radii.ravel(), weights=total.ravel())
@@ -644,8 +659,11 @@ class TNGRenderer:
         col0, col1 = max(0, centre_x - radius), min(
             width, centre_x + radius + 1
         )
-        cube = rendered.cube.with_data(data[row0:row1, col0:col1, :])
-        return RenderedTNG(cube=cube, trace=rendered.trace)
+        image = replace(
+            rendered.image,
+            data=data[row0:row1, col0:col1, :],
+        )
+        return RenderedTNG(image=image, trace=rendered.trace)
 
     def _cached_circularized_psf(
         self,

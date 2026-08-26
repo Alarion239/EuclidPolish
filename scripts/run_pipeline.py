@@ -54,6 +54,7 @@ from tqdm import tqdm
 from euclid_polish.config import Config
 from euclid_polish.image import Image
 from euclid_polish.image.tfio import (
+    deserialize_image,
     open_writer,
     tfrecord_path,
 )
@@ -717,7 +718,7 @@ def step_convolve(args: argparse.Namespace) -> None:
         clean_parent = None
         if conv_ctx is not None:
             try:
-                first = Image.from_tfrecord(next(iter(clean_ds)))
+                first = deserialize_image(next(iter(clean_ds)))
                 cs = first.prov_stamp()
                 clean_parent = cs.id if cs is not None else None
             except Exception:
@@ -736,7 +737,7 @@ def step_convolve(args: argparse.Namespace) -> None:
              open_writer(f"dirty_{subset}", records_dir=args.records_dir) as lr_w:
             for i, raw in enumerate(tqdm(clean_ds, desc=f"  {subset}",
                                          unit="img", total=n_total)):
-                hr_4ch = Image.from_tfrecord(raw)
+                hr_4ch = deserialize_image(raw)
                 lr, hr = _forward_with_stars(
                     fwd, hr_4ch, stars_by_field.get(i), rng)
                 lr.index = hr.index = i

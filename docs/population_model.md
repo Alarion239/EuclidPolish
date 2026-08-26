@@ -133,10 +133,11 @@ detection-radius, and Kron-radius plots are diagnostic overlays only.
 
 The image boundary is explicit throughout this path: `TNGView` identifies one
 atlas orientation without loading its pixels, `TNGRenderer` owns the caches and
-scientific transforms, and `RenderedTNG` pairs a read-only electron
-`ImageCube` with typed render provenance. Native SKIRT cubes remain MJy/sr on a
-physical pc/pixel grid until the renderer converts them to the Euclid angular
-grid.
+scientific transforms, and `RenderedTNG` pairs a clean electron `Image` with
+typed render provenance. Native SKIRT data lives in a
+`TNGSurfaceBrightnessImage` in MJy/sr at a physical pc/pixel scale until the
+renderer converts it to the project-wide electron image at the Euclid angular
+pixel scale.
 
 For a donor with native VIS half-light radius \(R_{e,\rm native}\) pixels on
 the 0.05-arcsec grid, the spatial downsampling factor is

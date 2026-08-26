@@ -3,16 +3,48 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from pathlib import Path
 
 import numpy as np
 import pytest
 
 from euclid_polish.config import Config
-from euclid_polish.image.cube import AngularGrid, ImageCube, PixelUnit
+from euclid_polish.image import Image, Role
 from euclid_polish.sky.generation.lens_population import (
     render_lens_to_multiband_canvas,
     sample_lens_geometry,
 )
+from euclid_polish.tng.types import (
+    NominalRadiusGeometry,
+    RenderedTNG,
+    TNGRenderTrace,
+    TNGRotation,
+    TNGView,
+)
+
+
+def _rendered_stamp(data: np.ndarray) -> RenderedTNG:
+    pixel_scale = Config.DEFAULT_PIXEL_SCALE
+    native_re_px = 20.0
+    scale_factor = 0.5
+    image = Image(
+        data=data,
+        pixel_scale_arcsec=pixel_scale,
+        band_names=tuple(Config.LR_INPUT_BAND_NAMES),
+        is_clean=True,
+        role=Role.CLEAN,
+    )
+    trace = TNGRenderTrace(
+        view=TNGView(Path("unused"), "fixture", 1, native_re_px),
+        rotation=TNGRotation(),
+        geometry=NominalRadiusGeometry(
+            target_re_arcsec=native_re_px * pixel_scale * scale_factor,
+            scale_factor=scale_factor,
+            radius_rendering="test_shrink_only",
+            radius_renderer_fingerprint="test-fixture",
+        ),
+    )
+    return RenderedTNG(image=image, trace=trace)
 
 
 @pytest.fixture
@@ -24,15 +56,10 @@ def lens_case():
     source_data = np.zeros_like(lens_data)
     lens_data[18:30, 18:30, :] = np.arange(1, 5, dtype=np.float32) * 20.0
     source_data[20:28, 20:28, :] = np.arange(1, 5, dtype=np.float32) * 40.0
-    cube_kwargs = {
-        "bands": Config.LR_INPUT_BAND_NAMES,
-        "unit": PixelUnit.ELECTRONS_PER_PIXEL,
-        "grid": AngularGrid(Config.DEFAULT_PIXEL_SCALE),
-    }
     return (
         params,
-        ImageCube(data=lens_data, **cube_kwargs),
-        ImageCube(data=source_data, **cube_kwargs),
+        _rendered_stamp(lens_data),
+        _rendered_stamp(source_data),
     )
 
 

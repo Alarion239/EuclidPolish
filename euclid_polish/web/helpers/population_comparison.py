@@ -662,11 +662,11 @@ def _count_tfrecord(path: Path) -> int:
 def _synthetic_fields(paths: Iterable[Path]) -> Iterator[np.ndarray]:
     import tensorflow as tf
 
-    from euclid_polish.image.core import Image
+    from euclid_polish.image.tfio import deserialize_image
 
     for path in paths:
         for raw in tf.data.TFRecordDataset([str(path)]):
-            yield np.asarray(Image.from_tfrecord(raw).data, dtype=np.float32)
+            yield np.asarray(deserialize_image(raw).data, dtype=np.float32)
 
 
 def _center_crop(array: np.ndarray, size: int) -> np.ndarray:

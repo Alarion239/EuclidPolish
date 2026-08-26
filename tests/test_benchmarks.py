@@ -229,26 +229,55 @@ def test_bench_catalog_sample():
 
 def test_bench_lens_render_multiband():
     """One current TNG-backed lens system on a 128² four-band canvas."""
-    from euclid_polish.image import AngularGrid, ImageCube, PixelUnit
+    from pathlib import Path
+
+    from euclid_polish.image import Image, Role
     from euclid_polish.sky.generation.lens_population import (
         render_lens_to_multiband_canvas,
         sample_lens_geometry,
     )
+    from euclid_polish.tng.types import (
+        NominalRadiusGeometry,
+        RenderedTNG,
+        TNGRenderTrace,
+        TNGRotation,
+        TNGView,
+    )
 
     params = sample_lens_geometry(np.random.default_rng(0), 250.0)
     assert params is not None
-    lens_stamp = ImageCube(
-        data=np.ones((48, 48, Config.NUM_LR_CHANNELS), dtype=np.float32),
-        bands=tuple(Config.LR_INPUT_BAND_NAMES),
-        unit=PixelUnit.ELECTRONS_PER_PIXEL,
-        grid=AngularGrid(Config.DEFAULT_PIXEL_SCALE),
+    native_re_px = 20.0
+    scale_factor = 0.5
+    trace = TNGRenderTrace(
+        view=TNGView(Path("unused"), "benchmark", 1, native_re_px),
+        rotation=TNGRotation(),
+        geometry=NominalRadiusGeometry(
+            target_re_arcsec=(
+                native_re_px * Config.DEFAULT_PIXEL_SCALE * scale_factor
+            ),
+            scale_factor=scale_factor,
+            radius_rendering="benchmark_shrink_only",
+            radius_renderer_fingerprint="benchmark-fixture",
+        ),
     )
-    source_stamp = ImageCube(
-        data=np.ones((32, 32, Config.NUM_LR_CHANNELS), dtype=np.float32),
-        bands=tuple(Config.LR_INPUT_BAND_NAMES),
-        unit=PixelUnit.ELECTRONS_PER_PIXEL,
-        grid=AngularGrid(Config.DEFAULT_PIXEL_SCALE),
-    )
+
+    def rendered_stamp(side: int) -> RenderedTNG:
+        return RenderedTNG(
+            image=Image(
+                data=np.ones(
+                    (side, side, Config.NUM_LR_CHANNELS),
+                    dtype=np.float32,
+                ),
+                pixel_scale_arcsec=Config.DEFAULT_PIXEL_SCALE,
+                band_names=tuple(Config.LR_INPUT_BAND_NAMES),
+                is_clean=True,
+                role=Role.CLEAN,
+            ),
+            trace=trace,
+        )
+
+    lens_stamp = rendered_stamp(48)
+    source_stamp = rendered_stamp(32)
 
     def call():
         canvas = np.zeros((128, 128, Config.NUM_LR_CHANNELS), dtype=np.float32)

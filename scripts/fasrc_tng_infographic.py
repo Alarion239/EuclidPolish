@@ -47,10 +47,10 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from euclid_polish.config import Config
-from euclid_polish.image import ImageCube
 from euclid_polish.observability.reporter import Reporter
 from euclid_polish.tng._image import _block_mean, _load_tng_plane
 from euclid_polish.tng.atlas import TNGGalaxy
+from euclid_polish.tng.image import TNGSurfaceBrightnessImage
 from euclid_polish.tng.properties import (
     _fig_to_png,
     load_api_key,
@@ -139,7 +139,7 @@ def _grayscale_norm(arr: np.ndarray) -> np.ndarray:
 
 
 def _load_cell_band(gdir: str, gid: str, orient: int, fits_band: str,
-                    downsample: int) -> ImageCube | None:
+                    downsample: int) -> TNGSurfaceBrightnessImage | None:
     path = TNGGalaxy(Path(gdir), gid).fits_path(orient, fits_band)
     if not path.is_file():
         return None

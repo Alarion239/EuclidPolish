@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from euclid_polish.tng.atlas import TNGAtlas, TNGGalaxy
     from euclid_polish.tng.catalog import TNGGalaxyProperties, TNGPropertyCatalog
+    from euclid_polish.tng.image import TNGSurfaceBrightnessImage
     from euclid_polish.tng.radius_manifest import TNGRadiusManifest
     from euclid_polish.tng.renderer import TNGRenderer
     from euclid_polish.tng.types import RenderedTNG, TNGRenderTrace, TNGView
@@ -26,6 +27,7 @@ _EXPORTS = {
     "TNGRadiusManifest": ("radius_manifest", "TNGRadiusManifest"),
     "TNGRenderer": ("renderer", "TNGRenderer"),
     "TNGRenderTrace": ("types", "TNGRenderTrace"),
+    "TNGSurfaceBrightnessImage": ("image", "TNGSurfaceBrightnessImage"),
     "TNGView": ("types", "TNGView"),
 }
 

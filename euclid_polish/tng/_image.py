@@ -1,7 +1,7 @@
 """Private image mechanics for native TNG atlas products.
 
 SKIRT broadband images are commonly stored as surface brightness in MJy/sr.
-The helpers here load those products into validated image cubes, preserve their
+The helpers here load those products into validated native images, preserve their
 intensive units while rebinning, provide controlled rotation augmentation, and
 measure centred curves of growth.  They do not assign a distance or redshift,
 or convert into detector-specific units.
@@ -18,7 +18,7 @@ import numpy as np
 from astropy import units as u
 from astropy.io import fits
 
-from euclid_polish.image.cube import ImageCube, PhysicalGrid, PixelUnit
+from euclid_polish.tng.image import TNGSurfaceBrightnessImage
 
 # Generation already parallelises over one process per allocated CPU.  OpenCV
 # otherwise creates a thread pool in every worker and oversubscribes the outer
@@ -29,13 +29,13 @@ cv2.setNumThreads(1)
 def _load_tng_plane(
     path: str | PathLike[str],
     band_name: str,
-) -> ImageCube:
+) -> TNGSurfaceBrightnessImage:
     """Load one SKIRT surface-brightness FITS plane on its physical grid.
 
     A supported SKIRT product is a two-dimensional primary image whose
     ``BUNIT`` is exactly MJy/sr and whose two FITS axes describe the same
     physical pixel scale through ``CDELT1/2`` and ``CUNIT1/2``.  The returned
-    cube is always native-endian float32 in ``(height, width, 1)`` layout.
+    image is always native-endian float32 in ``(height, width, 1)`` layout.
     Non-finite input samples are replaced with zero before construction.
     """
     with fits.open(path) as hdul:
@@ -62,18 +62,17 @@ def _load_tng_plane(
     expected_bunit = u.MJy / u.sr
     if parsed_bunit != expected_bunit:
         raise ValueError(
-            f"SKIRT BUNIT must be {PixelUnit.MJY_PER_SR.value!r}, "
+            "SKIRT BUNIT must be 'MJy/sr', "
             f"got {bunit!r}: {path}"
         )
 
     pixel_scale_pc = _physical_pixel_scale_pc(header, path)
     arr = np.asarray(data, dtype=np.float32)
     arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
-    return ImageCube(
+    return TNGSurfaceBrightnessImage(
         data=arr[..., None],
         bands=(band_name,),
-        unit=PixelUnit.MJY_PER_SR,
-        grid=PhysicalGrid(pixel_scale_pc=pixel_scale_pc),
+        pixel_scale_pc=pixel_scale_pc,
     )
 
 
@@ -114,22 +113,20 @@ def _physical_pixel_scale_pc(
 
 
 def _block_mean(
-    image: ImageCube,
+    image: TNGSurfaceBrightnessImage,
     factor: int,
-) -> ImageCube:
+) -> TNGSurfaceBrightnessImage:
     """Average each ``factor x factor`` block without changing surface brightness.
 
-    ``factor == 1`` returns an independent cube.  This is appropriate for
+    ``factor == 1`` returns an independent image.  This is appropriate for
     intensive MJy/sr values; it is not a flux-conserving sum rebin.  The output
     physical pixel scale is multiplied by ``factor``.
     """
-    physical_grid = _require_tng_plane(image)
+    _require_tng_image(image)
     rebinned = _block_mean_array(image.as_array(), factor)
     return image.with_data(
         rebinned,
-        grid=PhysicalGrid(
-            pixel_scale_pc=physical_grid.pixel_scale_pc * int(factor)
-        ),
+        pixel_scale_pc=image.pixel_scale_pc * int(factor),
     )
 
 
@@ -158,9 +155,9 @@ def _block_mean_array(arr: np.ndarray, factor: int) -> np.ndarray:
 
 
 def _downsample_surface_brightness(
-    image: ImageCube,
+    image: TNGSurfaceBrightnessImage,
     scale: float,
-) -> ImageCube:
+) -> TNGSurfaceBrightnessImage:
     """Area-resample a surface-brightness image without enlarging it.
 
     ``scale`` is the output-to-input image side ratio.  It must be at most one:
@@ -173,13 +170,11 @@ def _downsample_surface_brightness(
     The output remains MJy/sr, while its physical pixel scale is divided by
     ``scale`` so the grid continues to describe the same physical scene.
     """
-    physical_grid = _require_tng_plane(image)
+    _require_tng_image(image)
     downsampled = _downsample_surface_brightness_array(image.as_array(), scale)
     return image.with_data(
         downsampled,
-        grid=PhysicalGrid(
-            pixel_scale_pc=physical_grid.pixel_scale_pc / float(scale)
-        ),
+        pixel_scale_pc=image.pixel_scale_pc / float(scale),
     )
 
 
@@ -212,9 +207,9 @@ def _downsample_surface_brightness_array(
 
 
 def _rotate_surface_brightness(
-    image: ImageCube,
+    image: TNGSurfaceBrightnessImage,
     angle_deg: float,
-) -> ImageCube:
+) -> TNGSurfaceBrightnessImage:
     """Rotate in place-sized coordinates and clip interpolation undershoot.
 
     The returned image has the input shape.  Values outside the frame are zero;
@@ -222,7 +217,7 @@ def _rotate_surface_brightness(
     non-negative.  Whether interpolation is scientifically acceptable at the
     requested resolution is a policy decision for the caller.
     """
-    _require_tng_plane(image)
+    _require_tng_image(image)
     return image.with_data(
         _rotate_arbitrary_array(image.as_array(), angle_deg)
     )
@@ -254,22 +249,12 @@ def _rotate_arbitrary_array(
     return out.astype(np.float32)
 
 
-def _require_tng_plane(image: ImageCube) -> PhysicalGrid:
-    if not isinstance(image, ImageCube):
+def _require_tng_image(image: TNGSurfaceBrightnessImage) -> None:
+    if not isinstance(image, TNGSurfaceBrightnessImage):
         raise TypeError(
-            f"expected ImageCube, got {type(image).__name__}"
+            "expected TNGSurfaceBrightnessImage, "
+            f"got {type(image).__name__}"
         )
-    if image.unit is not PixelUnit.MJY_PER_SR:
-        raise ValueError(
-            "SKIRT image operations require MJy/sr pixels, "
-            f"got {image.unit.value!r}"
-        )
-    if not isinstance(image.grid, PhysicalGrid):
-        raise ValueError(
-            "SKIRT image operations require a physical parsec grid, "
-            f"got {type(image.grid).__name__}"
-        )
-    return image.grid
 
 
 # Radius grids are expensive enough to cache for repeated native atlas shapes,
@@ -328,7 +313,7 @@ def _radius_int_grid(shape: tuple[int, int]) -> np.ndarray:
 
 
 def _measure_halflight_radius_px(
-    image: ImageCube,
+    image: TNGSurfaceBrightnessImage,
     *,
     band: str | None = None,
     frac: float = 0.5,
@@ -337,10 +322,10 @@ def _measure_halflight_radius_px(
 
     SKIRT atlas products centre their target galaxies geometrically.  For other
     products, callers should centre the source before using this helper.
-    ``band`` may be omitted only for a single-channel cube.  Empty or
+    ``band`` may be omitted only for a single-channel image.  Empty or
     non-positive images return NaN.
     """
-    _require_tng_plane(image)
+    _require_tng_image(image)
     return _measure_halflight_radius_px_array(image.plane(band), frac=frac)
 
 
@@ -374,7 +359,7 @@ def _measure_halflight_radius_px_array(
 
 
 def _centered_rotation_crop_slices(
-    image: ImageCube,
+    image: TNGSurfaceBrightnessImage,
     rebin: int,
     *,
     band: str | None = None,
@@ -387,7 +372,7 @@ def _centered_rotation_crop_slices(
     ``padding``.  Its side is snapped to a multiple of ``rebin`` for subsequent
     block averaging.
     """
-    _require_tng_plane(image)
+    _require_tng_image(image)
     plane = image.plane(band)
     return _centered_rotation_crop_slices_array(
         plane,

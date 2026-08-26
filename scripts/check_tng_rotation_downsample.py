@@ -56,15 +56,15 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from euclid_polish.config import Config  # noqa: E402
-from euclid_polish.image import ImageCube  # noqa: E402
 from euclid_polish.tng._image import _block_mean, _load_tng_plane  # noqa: E402
 from euclid_polish.tng.atlas import TNGGalaxy  # noqa: E402
+from euclid_polish.tng.image import TNGSurfaceBrightnessImage  # noqa: E402
 
 DEFAULT_K_LIST = (1, 2, 3, 4, 5, 6, 8, 10, 12, 16, 20, 24, 32)
 type SplineOrder = Literal[0, 1, 2, 3, 4, 5]
 
 
-def _growth_radius_px(image: ImageCube, frac: float) -> float:
+def _growth_radius_px(image: TNGSurfaceBrightnessImage, frac: float) -> float:
     """Radius (px) about the frame centre enclosing ``frac`` of the positive flux."""
     frame = image.plane()
     a = np.where(np.isfinite(frame) & (frame > 0.0), frame, 0.0).astype(np.float64)
@@ -80,7 +80,11 @@ def _growth_radius_px(image: ImageCube, frac: float) -> float:
     return float(np.searchsorted(cum, frac * total))
 
 
-def _central_window(image: ImageCube, frac: float, margin: float) -> ImageCube:
+def _central_window(
+    image: TNGSurfaceBrightnessImage,
+    frac: float,
+    margin: float,
+) -> TNGSurfaceBrightnessImage:
     """Crop a centred square holding the galaxy inside its inscribed circle.
 
     Half-side = ``r_frac · √2 · margin`` so the flux-enclosing disk of radius
@@ -100,8 +104,12 @@ def _central_window(image: ImageCube, frac: float, margin: float) -> ImageCube:
     return image.with_data(np.ascontiguousarray(win[..., None], dtype=np.float32))
 
 
-def _cumulative_rotate(image: ImageCube, angle_step: float, n_rot: int,
-                       order: SplineOrder) -> ImageCube:
+def _cumulative_rotate(
+    image: TNGSurfaceBrightnessImage,
+    angle_step: float,
+    n_rot: int,
+    order: SplineOrder,
+) -> TNGSurfaceBrightnessImage:
     """Apply ``n_rot`` successive ``angle_step``-degree spline rotations.
 
     ``reshape=False`` keeps the array size; ``mode='constant'`` (cval 0) treats
@@ -125,7 +133,10 @@ def _cumulative_rotate(image: ImageCube, angle_step: float, n_rot: int,
     return image.with_data(out)
 
 
-def _rel_rms(a: ImageCube, b: ImageCube) -> float:
+def _rel_rms(
+    a: TNGSurfaceBrightnessImage,
+    b: TNGSurfaceBrightnessImage,
+) -> float:
     """Relative RMS error ``‖a − b‖ / ‖b‖`` (0 = identical)."""
     a_values = a.as_array()
     b_values = b.as_array()
@@ -135,16 +146,26 @@ def _rel_rms(a: ImageCube, b: ImageCube) -> float:
     return float(np.sqrt(np.mean((a_values - b_values) ** 2)) / denom)
 
 
-def _flux_err(a: ImageCube, b: ImageCube) -> float:
+def _flux_err(
+    a: TNGSurfaceBrightnessImage,
+    b: TNGSurfaceBrightnessImage,
+) -> float:
     """Fractional flux difference ``|Σa − Σb| / Σb`` (block_mean conserves SB,
     so this also tracks total-flux drift after the pixel-count change)."""
     sb = float(b.data.sum())
     return float(abs(a.data.sum() - sb) / sb) if sb > 0 else float("nan")
 
 
-def analyse_galaxy(image: ImageCube, *, k_list, angle_step, n_rot,
-                   order: SplineOrder,
-                   crop_frac, margin):
+def analyse_galaxy(
+    image: TNGSurfaceBrightnessImage,
+    *,
+    k_list,
+    angle_step,
+    n_rot,
+    order: SplineOrder,
+    crop_frac,
+    margin,
+):
     """Return ``(rel_rms[K], flux_err[K])`` arrays for one galaxy frame."""
     win = _central_window(image, crop_frac, margin)
     rotated = _cumulative_rotate(win, angle_step, n_rot, order)

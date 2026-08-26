@@ -17,7 +17,7 @@ import tensorflow as tf
 
 from euclid_polish.config import Config
 from euclid_polish.image.core import Image, Role
-from euclid_polish.image.tfio import write_images
+from euclid_polish.image.tfio import deserialize_image, write_images
 from euclid_polish.provenance.records import Stamp
 
 
@@ -89,7 +89,9 @@ class ImageSet:
             for count, raw in enumerate(tf.data.TFRecordDataset(path)):
                 if self._max_images is not None and count >= self._max_images:
                     break
-                yield Image.from_tfrecord(raw.numpy())
+                yield deserialize_image(
+                    tf.convert_to_tensor(raw, dtype=tf.string)
+                )
 
     def __len__(self) -> int:
         if self._images is not None:

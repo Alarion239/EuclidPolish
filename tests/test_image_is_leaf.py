@@ -48,3 +48,24 @@ def test_no_upward_imports(path):
             assert not mod.startswith(bad), (
                 f"{os.path.basename(path)} imports {mod}: image/ must not depend "
                 f"on operators/CLI/web/eval/training")
+
+
+def test_image_core_does_not_import_tensorflow():
+    path = os.path.join(_PKG, "core.py")
+    tree = ast.parse(open(path).read(), filename=path)
+    modules = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module:
+            modules.append(node.module)
+        elif isinstance(node, ast.Import):
+            modules.extend(alias.name for alias in node.names)
+    assert not any(module == "tensorflow" or module.startswith("tensorflow.")
+                   for module in modules)
+
+
+def test_image_package_does_not_export_cube_types():
+    import euclid_polish.image as image_package
+
+    for name in ("AngularGrid", "CubeLike", "ImageCube", "PhysicalGrid", "PixelUnit"):
+        assert name not in image_package.__all__
+        assert not hasattr(image_package, name)

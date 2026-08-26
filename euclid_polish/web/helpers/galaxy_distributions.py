@@ -718,12 +718,12 @@ def _read_synthetic(
                 continue
             import tensorflow as tf
 
-            from euclid_polish.image.core import Image
+            from euclid_polish.image.tfio import deserialize_image
 
             for field_index, raw_record in enumerate(
                 tf.data.TFRecordDataset([str(clean_path)])
             ):
-                image = Image.from_tfrecord(raw_record)
+                image = deserialize_image(raw_record)
                 field_rows = split_rows[split].get(field_index, [])
                 field_measurements = _measure_field_half_light_radii(
                     np.asarray(image.data)[..., 0],
