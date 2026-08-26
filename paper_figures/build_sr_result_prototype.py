@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Build tightly cropped image grids for synthetic and real SR results.
+"""Build tightly framed image grids for synthetic and real SR results.
 
 The two regimes are intentionally separate.  Each layout uses A4-derived
-physical dimensions, then trims the exported canvas exactly to its content.
-There are no arrows, captions, row labels, scale bars, or display notes.
+physical dimensions, then trims the exported canvas to one gutter-width around
+its content.  There are no arrows, captions, row labels, scale bars, or display
+notes.
 
 Synthetic panels are rendered from local four-band LR/SR/HR FITS triplets.
 Real panels are clean crops of local Euclid/SR/NEXUS browser exports; no
@@ -305,7 +306,7 @@ def _render_page(
     save_options = {
         "bbox_inches": "tight",
         "facecolor": "white",
-        "pad_inches": 0,
+        "pad_inches": GRID_GUTTER_MM / 25.4,
     }
     figure.savefig(png_path, dpi=DPI, **save_options)
     figure.savefig(pdf_path, **save_options)
@@ -362,7 +363,7 @@ def main() -> None:
         "--output-directory",
         type=Path,
         default=OUT,
-        help="Destination for the two tightly cropped grids",
+        help="Destination for the two tightly framed grids",
     )
     args = parser.parse_args()
     outputs = build_pages(args.exports_directory, args.output_directory)
