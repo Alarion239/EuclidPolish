@@ -12,17 +12,17 @@ from the repository root to rebuild every PNG. Set
 
 Run
 `MPLCONFIGDIR=/private/tmp/euclidpolish-matplotlib python3 paper_figures/build_sr_result_prototype.py`
-to rebuild the title-only portrait-A4 synthetic and real-data grids as PNG and
-PDF. The synthetic grid uses local evaluation FITS. The real grid uses matched
+to rebuild the tightly cropped synthetic and real-data grids as PNG and PDF.
+The synthetic grid uses local evaluation FITS. The real grid uses matched
 field-16 VIS and H_E browser exports in `EUCLIDPOLISH_FIGURE_EXPORTS`, repeating
-the available selections to fill the page. Both five-row grids use equal 4 mm
-horizontal and vertical gutters. The synthetic page heading is intentionally
-omitted so that the manuscript's LaTeX caption can supply it below the figure.
+the available selections to fill five rows. Both grids use equal 4 mm horizontal
+and vertical gutters and zero outer padding. The synthetic page heading is
+intentionally omitted so that the manuscript's LaTeX caption can supply it.
 
 Run
 `pdflatex -output-directory=tmp/pdfs paper_figures/sr_reconstruction_grids_a4.tex`
-from the repository root to combine the two page PDFs into one LaTeX-ready A4
-document.
+from the repository root to center the two trimmed PDFs on separate pages of
+one LaTeX-ready A4 document.
 
 | File | Proposed role | Current status |
 | --- | --- | --- |
@@ -35,8 +35,8 @@ document.
 | `fig07_nexus_closeup_comparisons.png` | Matched close-ups of internal structure in two real fields. | Main-text or supplement candidate. Euclid temperature/VIS and JWST F200W are not identical bandpasses; the caption must avoid a pixel-truth claim. |
 | `fig08_stress_and_limitations.png` | Saturated-star and compact-source stress cases. | Limitations candidate. Keep this separate from positive examples so the model's current failure modes are explicit. |
 | `fig09_ensemble_diagnostics.png` | Spatial-frequency fidelity, member-disagreement versus error, and z-score calibration. | Quantitative-results candidate. Rendered from the current star-containing cache: 14 models and 100 test fields. |
-| `fig10_synthetic_reconstruction_grid.png` / `.pdf` | Five-row table of Euclid-like VIS/H_E inputs, SR composites, and known HR truth. | Portrait-A4 synthetic-results page with column titles only; the figure title belongs in the LaTeX caption. |
-| `fig11_real_reconstruction_grid.png` / `.pdf` | Five-row table of Euclid VIS/H_E inputs, SR composites, and NEXUS F200W comparisons. | Title-only portrait-A4 real-data page. NEXUS remains an external reference, not ground truth. |
+| `fig10_synthetic_reconstruction_grid.png` / `.pdf` | Five-row table of Euclid-like VIS/H_E inputs, SR composites, and known HR truth. | Tightly cropped synthetic-results figure with column titles only; the figure title belongs in the LaTeX caption. |
+| `fig11_real_reconstruction_grid.png` / `.pdf` | Five-row table of Euclid VIS/H_E inputs, SR composites, and NEXUS F200W comparisons. | Tightly cropped real-data figure. NEXUS remains an external reference, not ground truth. |
 
 ## Source policy
 

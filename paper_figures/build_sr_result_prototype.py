@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Build title-only A4 image grids for synthetic and real SR results.
+"""Build tightly cropped image grids for synthetic and real SR results.
 
-The two regimes are intentionally separate.  Each portrait A4 page contains
-one set of column titles and a dense table of astronomical images.  There are
-no arrows, captions, row labels, scale bars, or display notes.
+The two regimes are intentionally separate.  Each layout uses A4-derived
+physical dimensions, then trims the exported canvas exactly to its content.
+There are no arrows, captions, row labels, scale bars, or display notes.
 
 Synthetic panels are rendered from local four-band LR/SR/HR FITS triplets.
 Real panels are clean crops of local Euclid/SR/NEXUS browser exports; no
@@ -302,8 +302,13 @@ def _render_page(
     output_stem.parent.mkdir(parents=True, exist_ok=True)
     png_path = output_stem.with_suffix(".png")
     pdf_path = output_stem.with_suffix(".pdf")
-    figure.savefig(png_path, dpi=DPI, facecolor="white")
-    figure.savefig(pdf_path, facecolor="white")
+    save_options = {
+        "bbox_inches": "tight",
+        "facecolor": "white",
+        "pad_inches": 0,
+    }
+    figure.savefig(png_path, dpi=DPI, **save_options)
+    figure.savefig(pdf_path, **save_options)
     plt.close(figure)
     return png_path, pdf_path
 
@@ -357,7 +362,7 @@ def main() -> None:
         "--output-directory",
         type=Path,
         default=OUT,
-        help="Destination for the two title-only A4 grids",
+        help="Destination for the two tightly cropped grids",
     )
     args = parser.parse_args()
     outputs = build_pages(args.exports_directory, args.output_directory)
