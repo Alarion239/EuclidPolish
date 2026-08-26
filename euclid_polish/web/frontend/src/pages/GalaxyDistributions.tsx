@@ -406,31 +406,12 @@ function ApparentBrightnessPlot({ parameter }: { parameter: Parameter }) {
     const lo = Math.floor(Math.min(...logValues) * 2) / 2;
     const hi = Math.ceil(Math.max(...logValues) * 2) / 2;
     const yDomain: [number, number] = [lo, hi <= lo ? lo + 1 : hi];
-    const guides: Guide[] = visible.flatMap(([, curve]) => [
-      ...(curve.fit_interval ?? []).map((value) => ({
-        axis: "x" as const, v: value, color: "#2478d4",
-        dash: [3, 4], width: 1, alpha: 0.65,
-      })),
-      ...(curve.extrapolated_interval ? [{
-        axis: "x" as const, v: curve.extrapolated_interval[0],
-        color: "#e25543", dash: [7, 4], width: 1.2, alpha: 0.75,
-      }] : []),
-      ...(curve.generation_bright_join_magnitudes ?? []).map((join) => ({
-        axis: "x" as const, v: join,
-        color: "#d39b32", dash: [5, 3], width: 1.5, alpha: 0.9,
-      })),
-      ...(curve.generation_break_magnitude != null ? [{
-        axis: "x" as const, v: curve.generation_break_magnitude,
-        color: "#168f65", dash: [2, 3], width: 1.8, alpha: 0.95,
-      }] : []),
-    ]);
+    const guides: Guide[] = [];
     if (trustBoundary && trustBoundary.magnitude >= xDomain[0]
       && trustBoundary.magnitude <= xDomain[1]) {
       guides.push({
         axis: "x", v: trustBoundary.magnitude,
         color: "#31a7d8", width: 2.2, alpha: 1,
-        label: `MER ${trustBoundary.snr}σ median ${trustBoundary.magnitude.toFixed(2)}`,
-        labelSide: "after",
       });
     }
     if (observedPeak && observedPeak > 0) {
@@ -455,7 +436,7 @@ function ApparentBrightnessPlot({ parameter }: { parameter: Parameter }) {
       });
       if (upper > lower) bands.push({
         axis: "x", from: lower, to: upper,
-        color: "#31a7d8", alpha: 0.16, label: "MER 5σ P16–P84",
+        color: "#31a7d8", alpha: 0.16,
       });
       if (upper < xDomain[1]) bands.push({
         axis: "x", from: upper, to: xDomain[1],

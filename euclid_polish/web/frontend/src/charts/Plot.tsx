@@ -272,6 +272,7 @@ function render(ctx: CanvasRenderingContext2D, W: number, H: number, p: PlotProp
     ctx.globalAlpha = band.alpha ?? 0.08;
     ctx.fillRect(x, y, w, h);
     if (band.hatch && w > 0 && h > 0) {
+      ctx.beginPath(); ctx.rect(x, y, w, h); ctx.clip();
       ctx.strokeStyle = band.color;
       ctx.globalAlpha = Math.max(0.15, (band.alpha ?? 0.08) * 2.2);
       ctx.lineWidth = 0.8;
