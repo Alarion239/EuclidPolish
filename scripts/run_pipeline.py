@@ -58,9 +58,9 @@ from euclid_polish.image.tfio import (
     open_writer,
     tfrecord_path,
 )
-from euclid_polish.model import Model
 from euclid_polish.observability.reporter import Reporter
 from euclid_polish.observability.resource_sampler import ResourceSampler
+from euclid_polish.observability.stage_timer import StageTimer
 from euclid_polish.psf.psf_library import load_all_band_psf_sets
 from euclid_polish.sky.generation.cosmos_tng_prior import (
     CosmosTngPrior,
@@ -91,7 +91,6 @@ from euclid_polish.sky.observation.observation_simulator import (
     ObservationSimulatorConfig,
 )
 from euclid_polish.tng.radius_manifest import ensure_manifest
-from euclid_polish.training.stage_timer import StageTimer
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -1505,6 +1504,11 @@ def step_generate_and_convolve_parallel(args: argparse.Namespace) -> None:
 # ---------------------------------------------------------------------------
 
 def step_train(args: argparse.Namespace) -> None:
+    # Training is optional for generation jobs. Importing Model earlier pulls
+    # in the complete training and visualization graph, so keep that graph
+    # behind the only stage that actually needs it.
+    from euclid_polish.model import Model
+
     _banner(f"STEP 3: Train WDSR  ({args.steps} steps, batch {args.batch_size}, "
             f"eval every {args.evaluate_every})")
 

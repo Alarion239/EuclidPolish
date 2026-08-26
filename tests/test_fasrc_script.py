@@ -164,6 +164,8 @@ def test_cpu_only_step_omits_gres():
     )
     body = built["body"]
     assert "--gres" not in body, body
+    assert "module load cuda" not in body
+    assert 'export CUDA_VISIBLE_DEVICES=""' in body
     assert "--cpus-per-task=" in body
     # synthetic_generate always appends --skip-train via the step's argv.
     assert "--skip-train" in body
@@ -175,7 +177,10 @@ def test_gpu_step_keeps_gres_line():
         params={"n_members": 2}, resources=_resources(n_gpus=1, partition="gpu"),
         cfg=FasrcConfig(), label="x",
     )
-    assert "#SBATCH --gres=gpu:1" in built["body"]
+    body = built["body"]
+    assert "#SBATCH --gres=gpu:1" in body
+    assert "module load cuda" in body
+    assert 'export CUDA_VISIBLE_DEVICES=""' not in body
 
 
 def test_run_pipeline_step_banner_says_web_submitted():

@@ -7,7 +7,7 @@ import time
 
 import pytest
 
-from euclid_polish.training.stage_timer import StageTimer
+from euclid_polish.observability.stage_timer import StageTimer
 
 EXPECTED_HEADER = [
     "jobid", "stage", "started_at", "ended_at", "duration_seconds",

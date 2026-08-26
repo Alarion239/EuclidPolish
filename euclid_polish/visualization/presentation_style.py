@@ -2,10 +2,17 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import matplotlib as mpl
-from matplotlib.typing import RcKeyType
+
+if TYPE_CHECKING:
+    from matplotlib.typing import RcKeyType
+else:
+    # RcKeyType is only needed by static analysis and is not exported by every
+    # Matplotlib release used by EuclidPolish.  rcParams keys are strings at
+    # runtime, so keep imports compatible without weakening local type checks.
+    RcKeyType = str
 
 FIGURE_TITLE_SIZE = 20
 PANEL_TITLE_SIZE = 17

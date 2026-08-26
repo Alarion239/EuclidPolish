@@ -378,7 +378,12 @@ def render_sbatch_body(
     )
 
     _conda_block = _conda_activate_snippet(
-        conda_env_path or cfg.conda_env_path, load_cuda=True)
+        conda_env_path or cfg.conda_env_path,
+        load_cuda=n_gpus > 0,
+    )
+    cuda_visibility = (
+        'export CUDA_VISIBLE_DEVICES=""' if n_gpus == 0 else ""
+    )
     body = textwrap.dedent(f"""\
         #!/bin/bash
         #SBATCH --job-name={shlex.quote(job_name)}
@@ -420,6 +425,7 @@ def render_sbatch_body(
         mkdir -p "$EUCLID_POLISH_DATA_DIR" "$EUCLID_POLISH_CKPT_DIR"
 
         module purge
+        {cuda_visibility}
         __CONDA_BLOCK__
         # ``module load`` puts the system (old) libstdc++ on LD_LIBRARY_PATH;
         # prepend the activated env's lib so its newer libstdc++ wins —
