@@ -154,7 +154,7 @@ def apply_archive_noise(
     *,
     add_artifacts: bool = False,
     artifact_config: ArtifactConfig | None = None,
-    resample_kernel: Literal["lanczos3", "cubic"] = "lanczos3",
+    resample_kernel: Literal["bilinear", "cubic"] = "bilinear",
     noise_scale_map: np.ndarray | None = None,
 ) -> np.ndarray:
     """Add detector noise as it appears in the delivered 0.10" MER mosaic.
@@ -162,12 +162,12 @@ def apply_archive_noise(
     VIS is native at the archive scale and therefore uses
     :func:`apply_band_noise` unchanged. NISP Y/J/H are different: four
     independent 0.30" H2RG exposures are sky/dark/read-noised on their native
-    detector cells, Lanczos-resampled at their dither phases, converted from
+    detector cells, bilinearly resampled at their dither phases, converted from
     native-cell integrated electrons to 0.10"-cell electrons (``/ 3**2``),
     and co-added. This reproduces the strong short-range covariance and much
     lower per-output-pixel RMS of real MER NISP mosaics. Sparse artifacts are
     post-rejection MER residuals, so they are injected only after resampling;
-    they must not acquire Lanczos lobes that resemble an optical PSF.
+    they must not acquire interpolation footprints around individual hits.
 
     ``signal_e`` remains on the delivered archive grid. Empirical MER ePSFs
     already contain detector sampling and resampling, so reprocessing the

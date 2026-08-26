@@ -368,8 +368,7 @@ def test_forward_model_runs_with_extracted_psfs(extracted_psfs):
     assert hr_target.shape[-1] == Config.NUM_HR_CHANNELS
 
     # Flux conservation (noise off) — each channel's total e⁻ should match
-    # the HR input total, modulo the NISP Lanczos upsample which preserves
-    # mean rather than sum.
+    # the HR input total within convolution-edge tolerance.
     vis_in  = data[..., 0].sum()
     vis_out = lr.data[..., 0].sum()
     assert vis_out == pytest.approx(vis_in, rel=2e-2)

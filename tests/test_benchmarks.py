@@ -111,30 +111,28 @@ def test_bench_bulge_disk_typical_galaxy():
 
 
 # ---------------------------------------------------------------------------
-# Lanczos-3 upsample
+# Bilinear upsample
 # ---------------------------------------------------------------------------
 
-def test_bench_lanczos3_upsample_3x():
-    """NISP native (84²) → VIS LR (252²) via Lanczos-3 — one call per NISP band.
+def test_bench_bilinear_upsample_3x():
+    """NISP native (84²) → VIS LR (252²) via bilinear interpolation.
 
-    Baseline ~0.6 ms. The Lanczos weight matrices are LRU-cached after
-    first construction so steady-state cost is just the matrix multiplies.
+    One call is made per NISP band in the forward model.
     """
-    from euclid_polish.sky.observation.resample import lanczos3_upsample
+    from euclid_polish.sky.observation.resample import bilinear_upsample
     rng = np.random.default_rng(0)
     img = rng.normal(size=(84, 84)).astype(np.float32)
     def call():
-        lanczos3_upsample(img, factor=3)
-    best, _ = _bench("lanczos3_upsample 84² → 252²", call)
-    assert best < 20.0, f"lanczos3_upsample too slow: {best:.1f} ms"
+        bilinear_upsample(img, factor=3)
+    best, _ = _bench("bilinear_upsample 84² → 252²", call)
+    assert best < 20.0, f"bilinear_upsample too slow: {best:.1f} ms"
 
 
 def test_bench_cubic_upsample_3x():
     """Cubic-spline alternative for the same case.
 
-    Baseline ~2.5 ms. Surprisingly *slower* than Lanczos-3 here because
-    ``scipy.ndimage.zoom`` does generic spline interpolation on every call
-    rather than amortising the kernel across calls.
+    This remains available as an experimental alternative to the Q1-matched
+    bilinear default.
     """
     from euclid_polish.sky.observation.resample import cubic_upsample
     rng = np.random.default_rng(0)

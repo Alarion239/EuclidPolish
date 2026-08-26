@@ -206,9 +206,10 @@ hr_target = hr_4ch                                                    # 4 channe
 ```
 
 `sum_rebin` is **photometric**: each LR pixel is the *sum* of its (n × n) HR sub-pixels,
-conserving total electron count. Only the stochastic NISP residual is Lanczos-resampled;
-the optical signal is not blurred twice. Sparse CR/hot/dead residuals are injected after
-that MER resampling, so they do not acquire PSF-like Lanczos wings.
+conserving total electron count. Only the stochastic NISP residual is bilinearly resampled,
+matching the Q1 CT_SWarp configuration; the optical signal is not blurred twice. Sparse
+CR/hot/dead residuals are injected after that MER resampling, so individual hits do not
+acquire interpolation footprints.
 
 ---
 

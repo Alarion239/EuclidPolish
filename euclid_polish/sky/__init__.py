@@ -36,8 +36,8 @@ if TYPE_CHECKING:
         ObservationSimulatorConfig,
     )
     from euclid_polish.sky.observation.resample import (
+        bilinear_upsample,
         cubic_upsample,
-        lanczos3_upsample,
         upsample,
     )
 
@@ -74,7 +74,7 @@ _EXPORTS = {
         "ObservationSimulatorConfig",
     ),
     "upsample": ("euclid_polish.sky.observation.resample", "upsample"),
-    "lanczos3_upsample": ("euclid_polish.sky.observation.resample", "lanczos3_upsample"),
+    "bilinear_upsample": ("euclid_polish.sky.observation.resample", "bilinear_upsample"),
     "cubic_upsample": ("euclid_polish.sky.observation.resample", "cubic_upsample"),
 }
 
@@ -99,7 +99,7 @@ __all__ = (
     "ObservationSimulator",
     "ObservationSimulatorConfig",
     "upsample",
-    "lanczos3_upsample",
+    "bilinear_upsample",
     "cubic_upsample",
 )
 

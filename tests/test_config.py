@@ -155,7 +155,7 @@ def test_lens_population_ranges_consistent():
 
 
 def test_nisp_resampling_kernel_is_supported():
-    assert Config.NISP_RESAMPLE_KERNEL in ("lanczos3", "cubic")
+    assert Config.NISP_RESAMPLE_KERNEL == "bilinear"
 
 
 def test_cosmos2025_paths_and_hdus():

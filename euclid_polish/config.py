@@ -398,10 +398,10 @@ class Config:
         "H_E": "uvista-h",
     }
 
-    # NISP → VIS-LR resampling kernel for the forward model.
-    # Lanczos-3 matches the SWarp/MER pipeline; spline-cubic is a faster
-    # near-equivalent if profiling shows Lanczos to be a bottleneck.
-    NISP_RESAMPLE_KERNEL    = "lanczos3"        # one of {"lanczos3", "cubic"}
+    # NISP → VIS-LR resampling kernel for the forward model. Euclid Q1 MER
+    # mosaics use CT_SWarp's BILINEAR interpolation; spline-cubic remains an
+    # optional experimental alternative.
+    NISP_RESAMPLE_KERNEL    = "bilinear"        # one of {"bilinear", "cubic"}
 
     # Fallback median stellar locus for old source catalogs that only persist
     # mag_vis. New stars use a temperature-driven SED (see stellar_sed.py).

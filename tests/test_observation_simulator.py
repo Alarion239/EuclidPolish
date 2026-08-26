@@ -248,8 +248,9 @@ def test_nisp_archive_noise_has_mer_covariance_and_scale():
     assert 0.30 < lag2 < 0.65
     # Real blank-sky RMS is ~2 e-/0.10" pixel, not the old ~17 e- white RMS.
     assert 1.2 < sigma < 4.0
-    # Four balanced dither phases must not create a modulo-3 checkerboard.
-    assert float(phase_sigma.max() / phase_sigma.min()) < 1.12
+    # Four bilinear-resampled dither phases retain bounded modulo-3 variance
+    # modulation without producing a severe checkerboard.
+    assert float(phase_sigma.max() / phase_sigma.min()) < 1.23
 
 
 def test_nisp_archive_noise_preserves_non_multiple_of_three_shape():
@@ -265,7 +266,7 @@ def test_nisp_archive_noise_preserves_non_multiple_of_three_shape():
 
 
 def test_nisp_sparse_hot_pixels_are_injected_after_mer_resampling():
-    """A surviving hot pixel must not acquire Lanczos wings or negative lobes."""
+    """A surviving hot pixel must not acquire a bilinear interpolation footprint."""
     from euclid_polish.sky.observation.artifacts import ArtifactConfig
 
     signal = np.zeros((96, 96), dtype=np.float32)
@@ -343,9 +344,10 @@ def test_default_psf_pixel_scale():
     assert psf.data.sum() == pytest.approx(1.0)
 
 
-def test_invalid_kernel_raises():
+@pytest.mark.parametrize("kernel", ["lanczos3", "bogus"])
+def test_invalid_kernel_raises(kernel):
     with pytest.raises(ValueError):
-        ObservationSimulatorConfig(nisp_resample_kernel="bogus")
+        ObservationSimulatorConfig(nisp_resample_kernel=kernel)
 
 
 @pytest.mark.parametrize("kwargs", [

@@ -11,7 +11,7 @@ detector sampling and mosaic interpolation. Noise follows the detector:
       → sum-rebin round(0.10 / 0.05) = 2× → 0.10″
       → VIS: Poisson/read/artifacts directly at native 0.10″
       → NISP: four independent native 0.30″ noise residuals
-             → dithered Lanczos-3 MER resample → flux-area scale /9
+             → dithered bilinear MER resample → flux-area scale /9
       → LR (0.10″, e⁻)
 
 Bright-star saturation is then applied to the assembled dirty LR stack.
@@ -59,7 +59,7 @@ from euclid_polish.sky.observation.saturation import (
 if TYPE_CHECKING:
     from euclid_polish.sky.observation.artifacts import ArtifactConfig
 
-_ResampleKernel = Literal["lanczos3", "cubic"]
+_ResampleKernel = Literal["bilinear", "cubic"]
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -70,7 +70,7 @@ class ObservationSimulatorConfig:
     add_noise: bool = True
     add_artifacts: bool = True       # cosmic rays + hot pixels
     add_saturation: bool = True      # bright-star detector saturation (per band)
-    nisp_resample_kernel: str = Config.NISP_RESAMPLE_KERNEL  # "lanczos3" or "cubic"
+    nisp_resample_kernel: str = Config.NISP_RESAMPLE_KERNEL  # "bilinear" or "cubic"
     hr_pixel_scale: float = Config.DEFAULT_PIXEL_SCALE        # 0.05 arcsec
     artifact_config: ArtifactConfig | None = None
     # Position-dependent PSF: when ``randomize_psf`` is on, each scene draws one
@@ -121,9 +121,9 @@ class ObservationSimulatorConfig:
     noise_region_scale_max: float = 1.50
 
     def __post_init__(self) -> None:
-        if self.nisp_resample_kernel not in ("lanczos3", "cubic"):
+        if self.nisp_resample_kernel not in ("bilinear", "cubic"):
             raise ValueError(
-                f"nisp_resample_kernel must be 'lanczos3' or 'cubic'; "
+                f"nisp_resample_kernel must be 'bilinear' or 'cubic'; "
                 f"got {self.nisp_resample_kernel!r}"
             )
         if self.hr_pixel_scale <= 0:
