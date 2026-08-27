@@ -19,6 +19,8 @@ export type Series = {
   hatch?: boolean;
   alpha?: number;
   fillAlpha?: number;
+  label?: string;
+  labelAt?: number;
 };
 export type Guide = {
   axis: "x" | "y";
@@ -484,6 +486,60 @@ function render(ctx: CanvasRenderingContext2D, W: number, H: number, p: PlotProp
         );
       }
     }
+  }
+
+  // Labels sit directly on their line, matching conventional labeled
+  // scientific contours. Erasing the short line segment beneath the text
+  // exposes the card background and therefore works in both page themes.
+  for (const s of p.series.filter((candidate) => candidate.label)) {
+    const points = s.x.flatMap((x, index) => {
+      const y = s.y[index];
+      return Number.isFinite(x) && y != null && Number.isFinite(y)
+        ? [{ x: tx(x), y: ty(y) }]
+        : [];
+    });
+    if (points.length < 2) continue;
+    const lengths = points.slice(1).map((point, index) => Math.hypot(
+      point.x - points[index].x,
+      point.y - points[index].y,
+    ));
+    const totalLength = lengths.reduce((total, length) => total + length, 0);
+    if (!(totalLength > 0)) continue;
+    const target = totalLength * Math.max(
+      0.05, Math.min(0.95, s.labelAt ?? 0.55),
+    );
+    let cumulative = 0;
+    let segment = lengths.length - 1;
+    for (let index = 0; index < lengths.length; index++) {
+      if (cumulative + lengths[index] >= target) {
+        segment = index;
+        break;
+      }
+      cumulative += lengths[index];
+    }
+    const start = points[segment], end = points[segment + 1];
+    const fraction = lengths[segment] > 0
+      ? (target - cumulative) / lengths[segment]
+      : 0.5;
+    const x = start.x + fraction * (end.x - start.x);
+    const y = start.y + fraction * (end.y - start.y);
+    let angle = Math.atan2(end.y - start.y, end.x - start.x);
+    if (angle > Math.PI / 2) angle -= Math.PI;
+    if (angle < -Math.PI / 2) angle += Math.PI;
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(angle);
+    ctx.font = '600 9px "IBM Plex Mono", monospace';
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    const width = ctx.measureText(s.label!).width;
+    ctx.globalCompositeOperation = "destination-out";
+    ctx.globalAlpha = 1;
+    ctx.fillRect(-width / 2 - 3, -6, width + 6, 12);
+    ctx.globalCompositeOperation = "source-over";
+    ctx.fillStyle = s.color;
+    ctx.fillText(s.label!, 0, 0);
+    ctx.restore();
   }
   ctx.restore();
 

@@ -57,7 +57,7 @@ from euclid_polish.web.helpers.q1_galaxy_radius_statistics import (
     read_q1_galaxy_radius_statistics,
 )
 
-ARTIFACT_VERSION = 20
+ARTIFACT_VERSION = 21
 MAG_EDGES = np.arange(14.0, 30.0001, 0.25)
 RADIUS_MAX_VIS_PIXELS = 100.0
 RADIUS_MAX_ARCSEC = RADIUS_MAX_VIS_PIXELS * float(Config.VIS_PIXEL_SCALE_ARCSEC)
@@ -73,7 +73,7 @@ APERTURE_DELTA_MAG_EDGES = np.linspace(-1.0, 4.0, 251)
 APERTURE_SCATTER_MAG_EDGES = np.arange(14.0, 30.0001, 0.5)
 APERTURE_SCATTER_PER_MAG_BIN = 250
 JOINT_CONTOUR_MASS_FRACTIONS = (
-    0.995, 0.99, 0.95, 0.80, 0.50, 0.25, 0.10,
+    0.999, 0.995, 0.99, 0.95, 0.80, 0.50, 0.10,
 )
 
 MER_BRIGHTNESS_SERIES = {
@@ -299,7 +299,7 @@ def _joint_contours(
     magnitude_center: np.ndarray,
     log_radius_center: np.ndarray,
 ) -> list[dict[str, Any]]:
-    """Trace plot-ready 10/25/50/80/95/99/99.5-percent mass contours."""
+    """Trace plot-ready 10/50/80/95/99/99.5/99.9-percent contours."""
     generator = contourpy.contour_generator(
         x=np.asarray(magnitude_center, dtype=np.float64),
         y=np.asarray(log_radius_center, dtype=np.float64),
@@ -548,8 +548,8 @@ def _joint_magnitude_radius_maps(
         "shared_density_max": float(np.max(positive)) if positive.size else 1.0,
         "maps": maps,
         "detail": (
-            "All maps use the Q1 bin grid; contours enclose 10%, 25%, 50%, "
-            "80%, 95%, 99%, and 99.5% of each map's own surface-density "
+            "All maps use the Q1 bin grid; contours enclose 10%, 50%, 80%, "
+            "95%, 99%, 99.5%, and 99.9% of each map's own surface-density "
             "mass."
         ),
     }

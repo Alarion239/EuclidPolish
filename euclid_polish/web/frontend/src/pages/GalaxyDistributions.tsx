@@ -229,10 +229,6 @@ const USEFUL_SHAPE_KEYS = new Set([
   "euclid_sersic_re_shape", "fit_re_q1_weighted_shape",
   "fit_re_full_generation_shape",
 ]);
-const JOINT_DENSITY_COLOR = (t: number): string => {
-  const value = Math.round(34 + 190 * Math.max(0, Math.min(1, t)));
-  return `rgb(${value}, ${value}, ${value})`;
-};
 const BRIGHTNESS_COLORS = {
   euclid: ["#2478d4", "#31a7d8", "#33c4c9", "#786fd4", "#ad6bd8", "#e268a7"],
   synthetic: ["#d39b32", "#e1ad45", "#b98028", "#9d7134", "#7d6445"],
@@ -301,6 +297,13 @@ const paddedDomain = (values: number[], minimumSpan: number): [number, number] =
   const span = Math.max(hi - lo, minimumSpan);
   const pad = 0.045 * span;
   return [lo - pad, hi + pad];
+};
+
+const contourMassLabel = (fraction: number): string => {
+  const percentage = 100 * fraction;
+  return `${Number.isInteger(percentage)
+    ? percentage.toFixed(0)
+    : percentage.toFixed(1)}%`;
 };
 
 function SourceLedger({
@@ -724,29 +727,34 @@ function JointDensityMaps({ data }: { data?: JointMaps }) {
   const yDomain: [number, number] = [
     data.log_radius_edges[0], data.log_radius_edges[data.log_radius_edges.length - 1],
   ];
-  const maximum = Math.max(
-    ...q1.density.flat().filter((value) => Number.isFinite(value)), 10,
-  );
-  const maximumPower = Math.max(1, Math.floor(Math.log10(maximum)));
-  const colorTicks = Array.from({ length: maximumPower + 1 }, (_, power) => ({
-    v: 10 ** power,
-    label: power === 0 ? "1" : `1e${power}`,
-  }));
-  const contourSeries: Series[] = overlays.flatMap((map) => (
-    map.contours.flatMap((contour, index) => contour.paths.map((path) => ({
-      x: path.x,
-      y: path.y,
-      color: map.color,
-      width: 1.15 + index * 0.20,
-      dash: map.key === "synthetic" ? [7, 4] : undefined,
-    })))
+  const contourMaps = [q1, ...overlays];
+  const contourSeries: Series[] = contourMaps.flatMap((map, mapIndex) => (
+    map.contours.flatMap((contour, contourIndex) => {
+      const mainPath = contour.paths.reduce((longest, path) => (
+        path.x.length > longest.x.length ? path : longest
+      ));
+      return contour.paths.map((path) => ({
+        x: path.x,
+        y: path.y,
+        color: map.color,
+        width: 1.15 + contourIndex * 0.18,
+        dash: map.key === "synthetic" ? [7, 4] : undefined,
+        label: path === mainPath
+          ? contourMassLabel(contour.mass_fraction)
+          : undefined,
+        labelAt: path === mainPath
+          ? Math.min(0.84, 0.22 + 0.27 * mapIndex
+            + 0.035 * (contourIndex % 3))
+          : undefined,
+      }));
+    })
   ));
   return <section className="joint-atlas" aria-labelledby="joint-atlas-title">
     <header className="joint-atlas__head">
       <div>
         <div className="eyebrow">joint population comparison</div>
-        <h2 id="joint-atlas-title">Q1 MER + PHZ density with generated/model contours</h2>
-        <p>The image is the PHZ-weighted Q1 magnitude–radius density in neutral grayscale. Blue dashed contours show {synthetic?.label.toLowerCase() ?? "the generated galaxies"}; vermillion solid contours show the active generation law.</p>
+        <h2 id="joint-atlas-title">Q1 MER + PHZ, generated, and model contours</h2>
+        <p>Gray contours show the PHZ-weighted Q1 magnitude–radius density; blue dashed contours show {synthetic?.label.toLowerCase() ?? "the generated galaxies"}; vermillion solid contours show the active generation law. Every contour is labeled by its enclosed population mass.</p>
       </div>
       <Badge tone="good">one shared Q1 plot</Badge>
     </header>
@@ -764,24 +772,13 @@ function JointDensityMaps({ data }: { data?: JointMaps }) {
           xTicks={ticks(xDomain, 8)} yTicks={physicalLogTicks(yDomain, 6)}
           xLabel="VIS 2FWHM AB magnitude"
           yLabel="Circularized Sérsic Rₑ (arcsec, log scale)"
-          heat={{
-            z: q1.density,
-            xEdges: data.magnitude_edges,
-            yEdges: data.log_radius_edges,
-            max: maximum,
-            scale: "log",
-            color: JOINT_DENSITY_COLOR,
-            colorTicks,
-            colorLabel: data.density_unit,
-          }}
           series={contourSeries}
           aspect={0.43}
         />
         <footer>
-          <span><i style={{ background: q1.color }} />Q1 MER + PHZ density image</span>
-          {overlays.map((map) => <span key={map.key}>
+          {contourMaps.map((map) => <span key={map.key}>
             <i style={{ background: map.color }} />
-            {map.label} · {map.key === "synthetic" ? "dashed" : "solid"} 10 / 25 / 50 / 80 / 95 / 99 / 99.5% contours
+            {map.label} · {map.key === "synthetic" ? "dashed" : "solid"} 10 / 50 / 80 / 95 / 99 / 99.5 / 99.9% contours
           </span>)}
           {synthetic?.rows != null && <span>
             {synthetic.rows.toLocaleString()} generated galaxies

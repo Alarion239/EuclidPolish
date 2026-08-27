@@ -243,7 +243,7 @@ def test_joint_maps_compare_q1_and_actual_synthetic_draws_on_one_grid(
     )
     assert "arcmin⁻²" in result["density_unit"]
     assert result["contour_mass_fractions"] == [
-        0.995, 0.99, 0.95, 0.80, 0.50, 0.25, 0.10,
+        0.999, 0.995, 0.99, 0.95, 0.80, 0.50, 0.10,
     ]
     assert result["maps"][0]["color"] == "#737373"
     assert result["maps"][1]["color"] == "#0072b2"
@@ -258,7 +258,7 @@ def test_joint_maps_compare_q1_and_actual_synthetic_draws_on_one_grid(
         assert all(contour["paths"] for contour in item["contours"])
 
 
-def test_smoothed_joint_map_keeps_99_and_99_5_percent_contours():
+def test_smoothed_joint_map_keeps_outer_tail_contours_distinct():
     magnitude_edges = np.linspace(20.0, 28.0, 41)
     log_radius_edges = np.linspace(-1.5, 0.5, 31)
     magnitude_center = 0.5 * (
@@ -289,7 +289,7 @@ def test_smoothed_joint_map_keeps_99_and_99_5_percent_contours():
     fractions = {
         contour["mass_fraction"] for contour in result["contours"]
     }
-    assert {0.99, 0.995} <= fractions
+    assert {0.99, 0.995, 0.999} <= fractions
 
 
 def test_euclid_aperture_growth_compares_all_vis_apertures_to_total_proxies(
@@ -1040,12 +1040,17 @@ def test_galaxy_distribution_controls_use_one_galaxy_query_action():
     assert "ApertureLadder" not in source
     assert "JointDensityMaps" in source
     assert "one shared Q1 plot" in source
-    assert "Q1 MER + PHZ density image" in source
-    assert "neutral grayscale" in source
-    assert "Blue dashed contours show" in source
+    assert "Q1 MER + PHZ, generated, and model contours" in source
+    assert "Every contour is labeled by its enclosed population mass" in source
+    assert "const contourMaps = [q1, ...overlays]" in source
+    assert "contourMassLabel(contour.mass_fraction)" in source
+    assert "z: q1.density" not in source
+    assert "neutral grayscale" not in source
+    assert "Gray contours show" in source
+    assert "blue dashed contours show" in source
     assert "vermillion solid contours" in source
-    assert "10 / 25 / 50 / 80 / 95 / 99 / 99.5% contours" in source
-    assert "color: JOINT_DENSITY_COLOR" in source
+    assert "10 / 50 / 80 / 95 / 99 / 99.5 / 99.9% contours" in source
+    assert "JOINT_DENSITY_COLOR" not in source
     assert 'map.key === "synthetic" ? [7, 4]' in source
     assert "data.maps.map" not in source
     assert "include_training=${includeTraining" in source
