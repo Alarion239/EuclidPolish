@@ -135,6 +135,13 @@ type Payload = {
           model_low_log10_arcsec?: number[];
           model_high_log10_arcsec?: number[];
         };
+        conditional_aperture_fwhm?: {
+          magnitude: number[];
+          observed_mean_arcsec: Array<number | null>;
+          model_mean_arcsec: number[];
+          model_kind: string;
+          out_of_support_policy: string;
+        };
       };
       provenance?: {
         object_catalog_used?: boolean;
@@ -1060,6 +1067,52 @@ export default function GalaxyDistributionsPage() {
             the single straight conditional mean and its one-scatter truncated-Gaussian
             interval. There is no magnitude break or broad radius tail; COSMOS and
             object-level samples are absent from this fit.
+          </p>
+        </CardBody>
+      </Card>;
+    })()}
+
+    {api.calibration.candidate?.plots?.conditional_aperture_fwhm && (() => {
+      const relation = api.calibration.candidate.plots!
+        .conditional_aperture_fwhm!;
+      const observed = relation.observed_mean_arcsec.filter(
+        (value): value is number => value != null && Number.isFinite(value),
+      );
+      const yDomain = paddedDomain([
+        ...observed,
+        ...relation.model_mean_arcsec,
+      ], 0.25);
+      const xDomain = paddedDomain(relation.magnitude, 1.0);
+      return <Card className="parameter-card">
+        <CardHead title="VIS magnitude–MER aperture FWHM relation"
+          sub="Aggregate Q1 catalogue-FWHM means in each VIS 2FWHM magnitude bin and the active empirical conditional model used for synthetic aperture photometry." />
+        <CardBody>
+          <Plot
+            xDomain={xDomain} yDomain={yDomain}
+            xTicks={ticks(xDomain, 7)} yTicks={ticks(yDomain, 6)}
+            xLabel="VIS 2FWHM AB magnitude"
+            yLabel="MER catalogue FWHM (arcsec)"
+            series={[
+              {
+                x: relation.magnitude,
+                y: relation.observed_mean_arcsec,
+                color: "#31a7d8", mode: "scatter", marker: "ring",
+                width: 1.7,
+              },
+              {
+                x: relation.magnitude,
+                y: relation.model_mean_arcsec,
+                color: "#e25543", width: 2.6,
+              },
+            ]}
+            aspect={0.36}
+          />
+          <p className="galaxy-q1-counts__note">
+            Blue rings are weighted mean MER catalogue FWHM values in populated
+            Q1 magnitude bins; the red curve is the mean of our active empirical
+            FWHM | VIS 2FWHM model. This is not a separate analytic regression:
+            the model preserves the measured magnitude-bin histograms and uses
+            the nearest populated bin where direct Q1 support is absent.
           </p>
         </CardBody>
       </Card>;

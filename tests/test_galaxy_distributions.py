@@ -1023,6 +1023,11 @@ def test_galaxy_distribution_controls_use_one_galaxy_query_action():
     assert "model_core_high_log10_arcsec" in source
     assert "?? relation.model_low_log10_arcsec" in source
     assert "?? relation.model_high_log10_arcsec" in source
+    assert "VIS magnitude–MER aperture FWHM relation" in source
+    assert "observed_mean_arcsec" in source
+    assert "model_mean_arcsec" in source
+    assert "MER catalogue FWHM (arcsec)" in source
+    assert "nearest populated bin where direct Q1 support is absent" in source
     assert "generation_bright_join_magnitudes" in source
     assert "generation_bright_slopes" in source
     assert "three-segment bright bridge/main/flat" in source
