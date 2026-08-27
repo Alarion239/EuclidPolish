@@ -17,8 +17,8 @@ The synthetic grid uses local evaluation FITS. The real grid uses matched
 field-16 VIS and H_E browser exports in `EUCLIDPOLISH_FIGURE_EXPORTS`, repeating
 the available selections to fill five rows. Both grids use equal 4 mm horizontal
 and vertical gutters, with the same 4 mm margin on every outer edge. The
-synthetic page heading is intentionally omitted so that the manuscript's LaTeX
-caption can supply it.
+synthetic and real-data page headings are intentionally omitted so that the
+manuscript's LaTeX captions can supply them.
 
 Run
 `pdflatex -output-directory=tmp/pdfs paper_figures/sr_reconstruction_grids_a4.tex`

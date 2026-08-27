@@ -338,7 +338,7 @@ def build_pages(
     )
     real_png, real_pdf = _render_page(
         real_rows,
-        page_title="Real-data reconstructions",
+        page_title=None,
         column_titles=(
             "Euclid VIS",
             r"Euclid H$_E$",
