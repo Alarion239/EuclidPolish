@@ -305,11 +305,19 @@ const LENS_DEFAULT_ZOOM = 3.0;
 const LENS_ZOOM_STEP = 1.18;
 const LENS_SIDE = 280;
 const LENS_LAYOUT_GAP = 12;
+const RESULT_MAX_TIERS = 4;
+const RESULT_SAVEABLE_TIERS = new Set([
+  "dirty", "lr", "real", "original", "original_stack", "sr", "hr", "jwst",
+]);
 const PUBLICATION_MAX_WIDTH = 4800;
 const PUBLICATION_PAPER = "#ffffff";
 const PUBLICATION_INK = "#111111";
 const COLOR_KEYS = ["q", "w", "e", "r", "t", "y"];
 const VIEW_LAYOUT_STORAGE_KEY = "euclid-polish.cutout-viewer.layout";
+const NATIVE_F200W_SAVE_REASON = "Choose native F200W first.";
+// A few diagnostics mount two viewers on one page. Only the most recently
+// hovered/focused instance may respond to document-level keyboard shortcuts.
+let activeKeyboardViewer = null;
 
 function savedViewLayout() {
   try {
@@ -326,6 +334,7 @@ function saveViewLayout(value) {
 
 export function mountCutoutViewer(root, opts = {}) {
   const collection = opts.collection;
+  const keyboardViewer = {};
   const state = {
     meta: null,
     params: Object.assign({}, opts.params || {}),
@@ -353,6 +362,8 @@ export function mountCutoutViewer(root, opts = {}) {
   };
   let morphRaf = null;          // requestAnimationFrame id for the "morph" tier
   let paramRefreshToken = 0;    // rejects a slower, superseded PSF warp response
+  let showRevision = 0;         // rejects cubes from older index/tier loads
+  const tierRefreshRevisions = new Map(); // one derived-tier refresh must not cancel its peers
   let bhrRefreshTimer = null;   // debounce server convolution while dragging
   const brightnessControls = new Map();
 
@@ -370,21 +381,20 @@ export function mountCutoutViewer(root, opts = {}) {
     document.body.appendChild(popup);
     return { popup, canvas, label, ctx: canvas.getContext("2d") };
   };
-  const hoverLens = makeLensPopup();
-  const frozenLenses = new Map(); // frame → {u, v, zoom, popup}
-  let frozenSequence = 0;
-  const lensState = {
-    frame: null,
-    x: 0,
-    y: 0,
-    zoom: LENS_DEFAULT_ZOOM,
-    angularSide: null,
-    relativeSide: null,
-    visible: false,
-  };
-  // Explicitly selected (frozen) magnification region. Hover alone must not
-  // switch a publication export from full panels to matched crops.
-  let publicationRegion = null;
+  // Geometry is shared by every open frame. Popup maps contain presentation
+  // state only (DOM nodes, source rectangles and collision-layout corners).
+  // Hover is deliberately separate from the explicit frozen selection used by
+  // publication export and science-cube saving.
+  const hoverLenses = new Map();
+  const frozenLenses = new Map();
+  let hoverSelection = null;
+  let frozenSelection = null;
+  let selectionRevision = 0;
+  let saveButton = null;
+  let saveStatus = null;
+  let saveInFlight = false;
+  let saveController = null;
+  let destroyed = false;
   // Compact mode (e.g. the morphology hover preview): hide the toolbar/nav
   // chrome so only the image frame shows.
   if (opts.compact) { toolbar.style.display = "none"; nav.style.display = "none"; }
@@ -395,11 +405,11 @@ export function mountCutoutViewer(root, opts = {}) {
     refreshAllLenses();
   });
   const onDocumentMouseMove = (event) => {
-    if (!lensState.frame || !lensState.visible) return;
-    const rect = lensState.frame.canvas.getBoundingClientRect();
+    if (!hoverSelection || frozenSelection || !hoverSelection.sourceFrame) return;
+    const rect = hoverSelection.sourceFrame.canvas.getBoundingClientRect();
     if (event.clientX < rect.left || event.clientX > rect.right
         || event.clientY < rect.top || event.clientY > rect.bottom) {
-      hideHoverLens();
+      hideHoverSelection();
     }
   };
   const scrollParents = [];
@@ -658,75 +668,79 @@ export function mountCutoutViewer(root, opts = {}) {
     return Math.max(160, Math.min(LENS_SIDE, window.innerWidth - 24, window.innerHeight - 24));
   }
 
-  function hideHoverLens() {
-    lensState.visible = false;
-    const oldFrame = lensState.frame;
-    lensState.frame = null;
-    hoverLens.popup.style.display = "none";
-    if (oldFrame && !frozenLenses.has(oldFrame)) oldFrame.lensBox.style.display = "none";
+  function frameReady(fr) {
+    return !!fr && fr.canvas.width > 1 && fr.canvas.height > 1
+      && fr.msg.style.display === "none";
   }
 
-  function clearFrozenLenses() {
-    for (const frozen of frozenLenses.values()) frozen.popup.remove();
-    frozenLenses.clear();
-    publicationRegion = null;
+  function readyFrames() {
+    return state.frames.filter(frameReady);
   }
 
-  function syncPublicationRegionToFrozenLenses() {
-    const selected = [...frozenLenses.values()]
-      .sort((a, b) => (a.order || 0) - (b.order || 0))
-      .at(-1);
-    publicationRegion = selected ? {
-      u: selected.u,
-      v: selected.v,
-      zoom: selected.zoom,
-      angularSide: selected.angularSide,
-      relativeSide: selected.relativeSide,
-    } : null;
+  function removeLensMap(lenses) {
+    for (const lens of lenses.values()) lens.popup.remove();
+    lenses.clear();
   }
 
-  function snapshotFrozenLenses() {
-    const snapshot = new Map();
-    for (const [fr, frozen] of frozenLenses) {
-      snapshot.set(fr.tier, {
-        u: frozen.u,
-        v: frozen.v,
-        zoom: frozen.zoom,
-        angularSide: frozen.angularSide,
-        relativeSide: frozen.relativeSide,
-        corner: frozen.corner,
-        order: frozen.order,
-      });
+  // Freezing promotes the already-visible popup records instead of rebuilding
+  // them. Their remembered corners therefore stay where the user placed them
+  // during hover; only the shared crop selection becomes immutable.
+  function promoteHoverLensesToFrozen() {
+    removeLensMap(frozenLenses);
+    for (const [fr, lens] of hoverLenses) {
+      // Capture the exact already-visible position before fixed -> absolute
+      // positioning changes its coordinate system. Frozen lenses deliberately
+      // keep this position; overlap with surrounding page chrome is allowed.
+      lens.frozenRect = popupDocumentRect(lens.popup);
+      frozenLenses.set(fr, lens);
     }
-    return snapshot;
+    hoverLenses.clear();
   }
 
-  function restoreFrozenLenses(snapshot) {
-    if (!snapshot || !snapshot.size) return;
-    for (const fr of state.frames) {
-      const position = snapshot.get(fr.tier);
-      if (!position) continue;
-      const popup = makeLensPopup();
-      const order = Number.isFinite(position.order) ? position.order : ++frozenSequence;
-      frozenSequence = Math.max(frozenSequence, order);
-      popup.popup.style.zIndex = String(1000 + order);
-      frozenLenses.set(fr, {
-        ...position,
-        popup: popup.popup,
-        canvas: popup.canvas,
-        label: popup.label,
-        ctx: popup.ctx,
+  function hideLensMap(lenses) {
+    for (const lens of lenses.values()) lens.popup.style.display = "none";
+  }
+
+  function ensureFrameLens(lenses, fr, pinned) {
+    let lens = lenses.get(fr);
+    if (!lens) {
+      lens = Object.assign(makeLensPopup(), {
+        frame: fr, sourceRect: null, corner: null, frozenRect: null,
       });
+      lenses.set(fr, lens);
     }
-    syncPublicationRegionToFrozenLenses();
+    lens.popup.classList.toggle("cv-lens--frozen", pinned);
+    lens.popup.style.zIndex = String(1000 + Math.max(0, state.frames.indexOf(fr)));
+    return lens;
+  }
+
+  function hideHoverSelection() {
+    hoverSelection = null;
+    removeLensMap(hoverLenses);
+    if (!frozenSelection) {
+      for (const fr of state.frames) fr.lensBox.style.display = "none";
+    }
+    updateSaveControls();
+  }
+
+  function clearFrozenSelection() {
+    frozenSelection = null;
+    removeLensMap(frozenLenses);
+    for (const fr of state.frames) fr.lensBox.style.display = "none";
+    setSaveStatus("");
+    if (!state.hot && activeKeyboardViewer === keyboardViewer) activeKeyboardViewer = null;
+    updateSaveControls();
   }
 
   function clearAllLenses() {
-    hideHoverLens();
-    clearFrozenLenses();
-    lensState.angularSide = null;
-    lensState.relativeSide = null;
-    lensState.zoom = LENS_DEFAULT_ZOOM;
+    hoverSelection = null;
+    frozenSelection = null;
+    removeLensMap(hoverLenses);
+    removeLensMap(frozenLenses);
+    for (const fr of state.frames) fr.lensBox.style.display = "none";
+    setSaveStatus("");
+    if (!state.hot && activeKeyboardViewer === keyboardViewer) activeKeyboardViewer = null;
+    updateSaveControls();
   }
 
   function placeLensPopup(popup, side, x, y) {
@@ -757,49 +771,151 @@ export function mountCutoutViewer(root, opts = {}) {
     return Number.isFinite(fr.pixscale) && fr.pixscale > 0 ? fr.pixscale : null;
   }
 
-  function currentAngularSide(fr, zoom) {
+  function requestedSourceSide(fr, selection) {
+    if (!fr || !selection || !(fr.canvas.width > 0 && fr.canvas.height > 0)) return null;
     const pixscale = validPixscale(fr);
-    if (!pixscale) return null;
-    const sourceSide = Math.min(
-      fr.canvas.width,
-      fr.canvas.height,
-      Math.max(1, lensSide() / zoom),
-    );
-    return sourceSide * pixscale;
-  }
-
-  function currentRelativeSide(fr, zoom) {
-    if (!(fr.canvas.width > 0 && fr.canvas.height > 0)) return null;
     const extent = Math.min(fr.canvas.width, fr.canvas.height);
-    const sourceSide = Math.min(extent, Math.max(1, lensSide() / zoom));
-    return sourceSide / extent;
+    const requested = pixscale && selection.angularSideArcsec > 0
+      ? selection.angularSideArcsec / pixscale
+      : selection.relativeSide > 0
+        ? selection.relativeSide * extent
+        : extent / LENS_DEFAULT_ZOOM;
+    return Math.min(extent, Math.max(1, requested));
   }
 
-  function zoomForAngularSide(fr, angularSide) {
+  /** Resolve one shared selection onto one frame without mutating either. */
+  function resolveCrop(fr, selection) {
+    const sourceSide = requestedSourceSide(fr, selection);
+    if (!(sourceSide > 0)) return null;
+    const u = Math.max(0, Math.min(1, Number(selection.u)));
+    const v = Math.max(0, Math.min(1, Number(selection.v)));
+    const cx = Math.max(sourceSide / 2,
+      Math.min(fr.canvas.width - sourceSide / 2, u * fr.canvas.width));
+    const cy = Math.max(sourceSide / 2,
+      Math.min(fr.canvas.height - sourceSide / 2, v * fr.canvas.height));
     const pixscale = validPixscale(fr);
-    if (!pixscale || !(angularSide > 0)) return lensState.zoom;
-    const sourceSide = Math.min(
-      fr.canvas.width,
-      fr.canvas.height,
-      Math.max(1, angularSide / pixscale),
-    );
-    return Math.max(LENS_MIN_ZOOM,
-      Math.min(LENS_MAX_ZOOM, lensSide() / sourceSide));
+    return {
+      x: cx - sourceSide / 2,
+      y: cy - sourceSide / 2,
+      side: sourceSide,
+      cx,
+      cy,
+      angularSideArcsec: pixscale ? sourceSide * pixscale : null,
+      relativeSide: sourceSide / Math.min(fr.canvas.width, fr.canvas.height),
+    };
   }
 
-  function zoomForRelativeSide(fr, relativeSide) {
-    if (!(relativeSide > 0)) return lensState.zoom;
+  function normalizeSelectionScale(selection) {
+    const frames = readyFrames();
+    const originalAngular = Number(selection.angularSideArcsec);
+    let angularSideArcsec = originalAngular > 0 ? originalAngular : null;
+    let relativeSide = Number(selection.relativeSide);
+    if (!(relativeSide > 0)) relativeSide = null;
+
+    if (angularSideArcsec) {
+      let maximum = Infinity;
+      let minimum = 0;
+      for (const fr of frames) {
+        const pixscale = validPixscale(fr);
+        if (!pixscale) continue;
+        maximum = Math.min(maximum,
+          Math.min(fr.canvas.width, fr.canvas.height) * pixscale);
+        minimum = Math.max(minimum, pixscale);
+      }
+      if (Number.isFinite(maximum)) {
+        angularSideArcsec = Math.min(angularSideArcsec, maximum);
+        if (minimum <= maximum) angularSideArcsec = Math.max(angularSideArcsec, minimum);
+      }
+      if (relativeSide && originalAngular > 0) {
+        relativeSide *= angularSideArcsec / originalAngular;
+      }
+    }
+
+    if (relativeSide) {
+      let minimum = 0;
+      for (const fr of frames) {
+        minimum = Math.max(minimum,
+          1 / Math.min(fr.canvas.width, fr.canvas.height));
+      }
+      relativeSide = Math.max(minimum, Math.min(1, relativeSide));
+    }
+    return Object.assign({}, selection, { angularSideArcsec, relativeSide });
+  }
+
+  /** Clamp the canonical centre once to the intersection valid in every frame. */
+  function clampSelectionToReadyFrames(selection) {
+    const normalized = normalizeSelectionScale(selection);
+    let uMin = 0, uMax = 1, vMin = 0, vMax = 1;
+    for (const fr of readyFrames()) {
+      const sourceSide = requestedSourceSide(fr, normalized);
+      if (!(sourceSide > 0)) continue;
+      // The save endpoint rounds crop sides to source pixels. Ceil here keeps
+      // the shared centre valid under that later integer conversion as well.
+      const boundedSide = Math.min(
+        Math.min(fr.canvas.width, fr.canvas.height), Math.ceil(sourceSide),
+      );
+      const halfU = boundedSide / (2 * fr.canvas.width);
+      const halfV = boundedSide / (2 * fr.canvas.height);
+      uMin = Math.max(uMin, halfU);
+      uMax = Math.min(uMax, 1 - halfU);
+      vMin = Math.max(vMin, halfV);
+      vMax = Math.min(vMax, 1 - halfV);
+    }
+    const u = Math.max(uMin, Math.min(uMax, Number(normalized.u)));
+    const v = Math.max(vMin, Math.min(vMax, Number(normalized.v)));
+    return Object.assign({}, normalized, { u, v });
+  }
+
+  function selectionFromEvent(fr, event, previous = null) {
+    const rect = fr.canvas.getBoundingClientRect();
+    if (!(rect.width > 0 && rect.height > 0)) return previous;
+    const u = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
+    const v = Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height));
     const extent = Math.min(fr.canvas.width, fr.canvas.height);
-    const sourceSide = Math.min(extent, Math.max(1, relativeSide * extent));
-    return Math.max(LENS_MIN_ZOOM,
-      Math.min(LENS_MAX_ZOOM, lensSide() / sourceSide));
+    const pixscale = validPixscale(fr);
+    let angularSideArcsec = previous && previous.angularSideArcsec > 0
+      ? previous.angularSideArcsec : null;
+    let relativeSide = previous && previous.relativeSide > 0
+      ? previous.relativeSide : null;
+    if (!(relativeSide > 0)) {
+      const sourceSide = Math.min(extent, Math.max(1, lensSide() / LENS_DEFAULT_ZOOM));
+      relativeSide = sourceSide / extent;
+      if (pixscale) angularSideArcsec = sourceSide * pixscale;
+    } else if (!(angularSideArcsec > 0) && pixscale) {
+      angularSideArcsec = Math.min(extent, relativeSide * extent) * pixscale;
+    }
+    return clampSelectionToReadyFrames({
+      u, v, angularSideArcsec, relativeSide, sourceTier: fr.tier, sourceFrame: fr,
+    });
   }
 
-  function receptiveFieldLabels(fr, position) {
+  function zoomSelection(fr, selection, factor) {
+    const crop = resolveCrop(fr, selection);
+    if (!crop) return selection;
+    const oldZoom = lensSide() / crop.side;
+    const nextZoom = Math.max(LENS_MIN_ZOOM,
+      Math.min(LENS_MAX_ZOOM, oldZoom * factor));
+    const nextSide = Math.min(
+      Math.min(fr.canvas.width, fr.canvas.height),
+      Math.max(1, lensSide() / nextZoom),
+    );
+    const ratio = nextSide / crop.side;
+    const pixscale = validPixscale(fr);
+    const angularSideArcsec = pixscale
+      ? nextSide * pixscale
+      : selection.angularSideArcsec > 0 ? selection.angularSideArcsec * ratio : null;
+    return clampSelectionToReadyFrames(Object.assign({}, selection, {
+      angularSideArcsec,
+      relativeSide: nextSide / Math.min(fr.canvas.width, fr.canvas.height),
+      sourceTier: fr.tier,
+      sourceFrame: fr,
+    }));
+  }
+
+  function receptiveFieldLabels(angularSideArcsec) {
     const fields = state.meta && Array.isArray(state.meta.receptive_fields)
       ? state.meta.receptive_fields : [];
-    const angularSide = validPixscale(fr) ? position.angularSide : null;
-    if (!(angularSide > 0) || !fields.length) return [];
+    if (!(angularSideArcsec > 0) || !fields.length) return [];
     // Wheel zoom is discrete. Treat the two neighboring wheel positions as
     // the valid match for a field that lies between them, using log-space so
     // the tolerance is symmetric for zooming in and out.
@@ -808,90 +924,97 @@ export function mountCutoutViewer(root, opts = {}) {
       .filter((field) => {
         const target = Number(field && field.angular_side_arcsec);
         return target > 0
-          && Math.abs(Math.log(angularSide / target)) <= tolerance;
+          && Math.abs(Math.log(angularSideArcsec / target)) <= tolerance;
       })
-      .sort((a, b) => Math.abs(Math.log(angularSide / a.angular_side_arcsec))
-        - Math.abs(Math.log(angularSide / b.angular_side_arcsec)))
+      .sort((a, b) => Math.abs(Math.log(angularSideArcsec / a.angular_side_arcsec))
+        - Math.abs(Math.log(angularSideArcsec / b.angular_side_arcsec)))
       .map((field) => String(field.label || `${field.blocks}b`));
   }
 
-  function drawLens(fr, lens, position, pinned) {
-    if (fr.canvas.width <= 1 || fr.canvas.height <= 1) return;
+  function drawLens(fr, lens, selection, pinned) {
+    if (!frameReady(fr)) return false;
     const canvasRect = fr.canvas.getBoundingClientRect();
-    if (!(canvasRect.width > 0 && canvasRect.height > 0)) return;
+    if (!(canvasRect.width > 0 && canvasRect.height > 0)) return false;
+    const crop = resolveCrop(fr, selection);
+    if (!crop) return false;
     const side = lensSide();
-    const x = position.u == null
-      ? position.x : canvasRect.left + position.u * canvasRect.width;
-    const y = position.v == null
-      ? position.y : canvasRect.top + position.v * canvasRect.height;
-    const pixscale = validPixscale(fr);
-    const extent = Math.min(fr.canvas.width, fr.canvas.height);
-    const requestedSourceSide = pixscale && position.angularSide != null
-      ? position.angularSide / pixscale
-      : position.relativeSide != null
-        ? position.relativeSide * extent
-      : side / position.zoom;
-    const sourceSide = Math.min(
-      fr.canvas.width,
-      fr.canvas.height,
-      Math.max(1, requestedSourceSide),
-    );
-    const effectiveZoom = side / sourceSide;
-    position.zoom = effectiveZoom;
-    if (pixscale) position.angularSide = sourceSide * pixscale;
-    position.relativeSide = sourceSide / extent;
-    const px = ((x - canvasRect.left) / canvasRect.width) * fr.canvas.width;
-    const py = ((y - canvasRect.top) / canvasRect.height) * fr.canvas.height;
-    const cx = Math.max(sourceSide / 2,
-      Math.min(fr.canvas.width - sourceSide / 2, px));
-    const cy = Math.max(sourceSide / 2,
-      Math.min(fr.canvas.height - sourceSide / 2, py));
-    const cropX = cx - sourceSide / 2;
-    const cropY = cy - sourceSide / 2;
+    const x = canvasRect.left + selection.u * canvasRect.width;
+    const y = canvasRect.top + selection.v * canvasRect.height;
+    const effectiveZoom = side / crop.side;
     lens.ctx.clearRect(0, 0, lens.canvas.width, lens.canvas.height);
     lens.ctx.imageSmoothingEnabled = false;
-    lens.ctx.drawImage(fr.canvas, cropX, cropY, sourceSide, sourceSide,
+    lens.ctx.drawImage(fr.canvas, crop.x, crop.y, crop.side, crop.side,
       0, 0, lens.canvas.width, lens.canvas.height);
 
     const frameRect = fr.frame.getBoundingClientRect();
     const cropLeft = canvasRect.left - frameRect.left
-      + (cropX / fr.canvas.width) * canvasRect.width;
+      + (crop.x / fr.canvas.width) * canvasRect.width;
     const cropTop = canvasRect.top - frameRect.top
-      + (cropY / fr.canvas.height) * canvasRect.height;
+      + (crop.y / fr.canvas.height) * canvasRect.height;
     fr.lensBox.style.display = "block";
     fr.lensBox.style.left = `${cropLeft}px`;
     fr.lensBox.style.top = `${cropTop}px`;
-    fr.lensBox.style.width = `${(sourceSide / fr.canvas.width) * canvasRect.width}px`;
-    fr.lensBox.style.height = `${(sourceSide / fr.canvas.height) * canvasRect.height}px`;
-    position.sourceRect = {
-      left: canvasRect.left + (cropX / fr.canvas.width) * canvasRect.width,
-      top: canvasRect.top + (cropY / fr.canvas.height) * canvasRect.height,
-      width: (sourceSide / fr.canvas.width) * canvasRect.width,
-      height: (sourceSide / fr.canvas.height) * canvasRect.height,
+    fr.lensBox.style.width = `${(crop.side / fr.canvas.width) * canvasRect.width}px`;
+    fr.lensBox.style.height = `${(crop.side / fr.canvas.height) * canvasRect.height}px`;
+    lens.sourceRect = {
+      left: canvasRect.left + (crop.x / fr.canvas.width) * canvasRect.width,
+      top: canvasRect.top + (crop.y / fr.canvas.height) * canvasRect.height,
+      width: (crop.side / fr.canvas.width) * canvasRect.width,
+      height: (crop.side / fr.canvas.height) * canvasRect.height,
     };
-    const rfLabels = receptiveFieldLabels(fr, position);
+    const rfLabels = receptiveFieldLabels(crop.angularSideArcsec);
     const labelParts = [`${effectiveZoom.toFixed(1)}×`, ...rfLabels.map((label) => `${label} RF`)];
     if (pinned) labelParts.push("click to unfreeze");
     lens.label.textContent = labelParts.join(" · ");
     lens.popup.classList.toggle("cv-lens--frozen", pinned);
-    placeLensPopup(lens.popup, side, x, y);
-    lens.popup.style.display = "block";
-  }
-
-  function refreshLens(fr) {
-    const frozen = frozenLenses.get(fr);
-    if (frozen) {
-      drawLens(fr, frozen, frozen, true);
-    } else if (lensState.visible && lensState.frame === fr) {
-      drawLens(fr, hoverLens, lensState, false);
+    if (pinned && lens.frozenRect) {
+      lens.popup.style.width = `${side}px`;
+      lens.popup.style.height = `${side}px`;
+      applyLensPosition(lens.popup, lens.frozenRect);
     } else {
-      fr.lensBox.style.display = "none";
+      placeLensPopup(lens.popup, side, x, y);
     }
+    lens.popup.style.display = "block";
+    return true;
   }
 
   function refreshAllLenses() {
-    for (const fr of state.frames) refreshLens(fr);
-    resolveLensOverlaps();
+    if (frozenSelection) {
+      frozenSelection = Object.freeze(Object.assign(
+        clampSelectionToReadyFrames(frozenSelection),
+        { revision: frozenSelection.revision },
+      ));
+    } else if (hoverSelection) {
+      hoverSelection = clampSelectionToReadyFrames(hoverSelection);
+    }
+    const selection = frozenSelection || hoverSelection;
+    const lenses = frozenSelection ? frozenLenses : hoverLenses;
+    const inactive = frozenSelection ? hoverLenses : frozenLenses;
+    hideLensMap(inactive);
+    for (const [fr, lens] of lenses) {
+      if (!state.frames.includes(fr)) {
+        lens.popup.remove();
+        lenses.delete(fr);
+      }
+    }
+    for (const fr of state.frames) {
+      if (!selection || !frameReady(fr)) {
+        fr.lensBox.style.display = "none";
+        const lens = lenses.get(fr);
+        if (lens) lens.popup.style.display = "none";
+        continue;
+      }
+      const lens = ensureFrameLens(lenses, fr, !!frozenSelection);
+      if (!drawLens(fr, lens, selection, !!frozenSelection)) {
+        lens.popup.style.display = "none";
+        fr.lensBox.style.display = "none";
+      }
+    }
+    // Hover popups are collision-laid-out continuously. Once frozen, their
+    // captured screen arrangement is authoritative and must not jump merely
+    // because the positioning mode or surrounding page chrome changed.
+    if (!frozenSelection) resolveLensOverlaps();
+    updateSaveControls();
   }
 
   function popupDocumentRect(popup) {
@@ -979,11 +1102,14 @@ export function mountCutoutViewer(root, opts = {}) {
       placed.every((other) => !lensRectsOverlap(candidate, other)));
     if (!free.length) return null;
 
+    // Preserve an existing corner even when it overlaps surrounding page
+    // chrome. Freezing an already-open comparison must not make it jump.
+    if (position.corner) {
+      const saved = free.find((candidate) => candidate.corner === position.corner);
+      if (saved) return saved;
+    }
+
     const preferred = (items) => {
-      if (position.corner) {
-        const saved = items.find((candidate) => candidate.corner === position.corner);
-        if (saved) return saved;
-      }
       return items.slice().sort((a, b) => {
         const da = Math.hypot(a.left - current.left, a.top - current.top);
         const db = Math.hypot(b.left - current.left, b.top - current.top);
@@ -1016,67 +1142,36 @@ export function mountCutoutViewer(root, opts = {}) {
     popup.style.top = `${rect.top - (documentPosition ? 0 : scrollY)}px`;
   }
 
-  // Frozen popups are authoritative: each one uses one of the four corners
-  // around its source square. If that angle collides, choose another corner;
-  // the live hover popup is the flexible one and moves around frozen popups.
+  // Every popup is a derived view of the one shared selection. Place them in
+  // canonical frame order and avoid collisions without changing geometry.
   function resolveLensOverlaps() {
     const placed = [];
-    const frozen = [...frozenLenses.values()]
-      .sort((a, b) => (a.order || 0) - (b.order || 0));
-    for (const position of frozen) {
+    const active = frozenSelection ? frozenLenses : hoverLenses;
+    const positions = state.frames.map((fr) => active.get(fr)).filter(Boolean);
+    for (const position of positions) {
       if (position.popup.style.display === "none") continue;
       const current = popupDocumentRect(position.popup);
       const chosen = chooseLensPosition(current, placed, position);
-      // If every corner is occupied, keep the newest popup source-attached
-      // and let its higher z-index make it the visible one.
+      // If every corner is occupied, retain a source-attached fallback.
       const fallback = chooseLensPosition(current, [], position) || current;
       const finalPosition = chosen || fallback;
       position.corner = finalPosition.corner || null;
       applyLensPosition(position.popup, finalPosition);
       placed.push(finalPosition);
     }
-    if (hoverLens.popup.style.display !== "none") {
-      const chosen = chooseLensPosition(
-        popupDocumentRect(hoverLens.popup), placed, lensState,
-      );
-      if (chosen) applyLensPosition(hoverLens.popup, chosen);
-    }
   }
 
   function enterLens(fr, event) {
-    if (frozenLenses.has(fr)) return;
-    if (lensState.frame && lensState.frame !== fr) {
-      const angularSide = currentAngularSide(lensState.frame, lensState.zoom);
-      if (angularSide != null) lensState.angularSide = angularSide;
-      const relativeSide = currentRelativeSide(lensState.frame, lensState.zoom);
-      if (relativeSide != null) lensState.relativeSide = relativeSide;
-      hideHoverLens();
-    }
     state.hot = true;
-    lensState.frame = fr;
-    lensState.visible = true;
-    lensState.x = event.clientX;
-    lensState.y = event.clientY;
-    if (lensState.angularSide != null) {
-      lensState.zoom = validPixscale(fr)
-        ? zoomForAngularSide(fr, lensState.angularSide)
-        : zoomForRelativeSide(fr, lensState.relativeSide);
-    } else if (lensState.relativeSide != null) {
-      lensState.zoom = zoomForRelativeSide(fr, lensState.relativeSide);
-    }
-    refreshLens(fr);
-    resolveLensOverlaps();
+    if (frozenSelection || !frameReady(fr)) return;
+    hoverSelection = selectionFromEvent(fr, event, hoverSelection);
+    refreshAllLenses();
   }
 
   function moveLens(fr, event) {
-    if (lensState.frame !== fr) {
-      enterLens(fr, event);
-      return;
-    }
-    lensState.x = event.clientX;
-    lensState.y = event.clientY;
-    refreshLens(fr);
-    resolveLensOverlaps();
+    if (frozenSelection || !frameReady(fr)) return;
+    hoverSelection = selectionFromEvent(fr, event, hoverSelection);
+    refreshAllLenses();
   }
 
   function zoomLens(fr, event) {
@@ -1100,47 +1195,35 @@ export function mountCutoutViewer(root, opts = {}) {
       notify();
       return;
     }
-    if (frozenLenses.has(fr)) return;
-    if (lensState.frame !== fr) enterLens(fr, event);
+    if (frozenSelection || !frameReady(fr)) return;
+    hoverSelection = selectionFromEvent(fr, event, hoverSelection);
     const factor = event.deltaY < 0 ? LENS_ZOOM_STEP : 1 / LENS_ZOOM_STEP;
-    lensState.zoom = Math.max(LENS_MIN_ZOOM,
-      Math.min(LENS_MAX_ZOOM, lensState.zoom * factor));
-    const angularSide = currentAngularSide(fr, lensState.zoom);
-    if (angularSide != null) lensState.angularSide = angularSide;
-    const relativeSide = currentRelativeSide(fr, lensState.zoom);
-    if (relativeSide != null) lensState.relativeSide = relativeSide;
-    refreshLens(fr);
-    resolveLensOverlaps();
+    hoverSelection = zoomSelection(fr, hoverSelection, factor);
+    refreshAllLenses();
   }
 
   function toggleFrozen(fr, event) {
-    if (frozenLenses.has(fr)) {
-      frozenLenses.get(fr).popup.remove();
-      frozenLenses.delete(fr);
-      syncPublicationRegionToFrozenLenses();
-      hideHoverLens();
+    if (frozenSelection) {
+      clearFrozenSelection();
+      hideHoverSelection();
       refreshAllLenses();
+      notify();
       return;
     }
-    const rect = fr.canvas.getBoundingClientRect();
-    const u = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
-    const v = Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height));
-    const popup = makeLensPopup();
-    const order = ++frozenSequence;
-    popup.popup.style.zIndex = String(1000 + order);
-    const frozen = {
-      u, v,
-      zoom: lensState.frame === fr ? lensState.zoom : LENS_DEFAULT_ZOOM,
-      angularSide: lensState.frame === fr ? lensState.angularSide : null,
-      relativeSide: lensState.frame === fr ? lensState.relativeSide : null,
-      corner: null,
-      order,
-      popup: popup.popup, canvas: popup.canvas, label: popup.label, ctx: popup.ctx,
-    };
-    frozenLenses.set(fr, frozen);
-    syncPublicationRegionToFrozenLenses();
-    hideHoverLens();
+    // Freeze the selection the user can already see. Recomputing it from the
+    // click event can introduce a small centre shift between mousemove/click.
+    const selected = hoverSelection || selectionFromEvent(fr, event, null);
+    if (!selected) return;
+    const { sourceFrame: _sourceFrame, ...serializable } = selected;
+    frozenSelection = Object.freeze(Object.assign(serializable, {
+      revision: ++selectionRevision,
+    }));
+    activeKeyboardViewer = keyboardViewer;
+    hoverSelection = null;
+    promoteHoverLensesToFrozen();
+    setSaveStatus("");
     refreshAllLenses();
+    notify();
   }
 
   function makeFrame(tier) {
@@ -1160,7 +1243,9 @@ export function mountCutoutViewer(root, opts = {}) {
     canvas.addEventListener("mouseenter", (event) => enterLens(fr, event));
     canvas.addEventListener("mousemove", (event) => moveLens(fr, event));
     canvas.addEventListener("mouseleave", () => {
-      if (lensState.frame === fr && !frozenLenses.has(fr)) hideHoverLens();
+      if (hoverSelection && hoverSelection.sourceFrame === fr && !frozenSelection) {
+        hideHoverSelection();
+      }
     });
     canvas.addEventListener("wheel", (event) => zoomLens(fr, event), { passive: false });
     canvas.addEventListener("click", (event) => toggleFrozen(fr, event));
@@ -1194,7 +1279,7 @@ export function mountCutoutViewer(root, opts = {}) {
     const want = orderedSelected().map((t) => t.key);
     const have = state.frames.map((f) => f.tier);
     if (want.length === have.length && want.every((t, i) => t === have[i])) return;
-    const frozenSnapshot = preserveFrozen ? snapshotFrozenLenses() : null;
+    const frozenSnapshot = preserveFrozen ? frozenSelection : null;
     clearAllLenses();
     stopMorph();               // frames are being recreated → drop the old loop
     framesRow.innerHTML = "";
@@ -1204,7 +1289,8 @@ export function mountCutoutViewer(root, opts = {}) {
       return fr;
     });
     framesRow.classList.toggle("cv-multi", state.frames.length > 1);
-    restoreFrozenLenses(frozenSnapshot);
+    if (frozenSnapshot) frozenSelection = frozenSnapshot;
+    refreshAllLenses();
     requestAnimationFrame(fitFramesToViewport);
   }
 
@@ -1405,7 +1491,7 @@ export function mountCutoutViewer(root, opts = {}) {
       fr.overlay.textContent = entry.label;           // magLabel="" for morph
       fr.legendWrap.style.display = entry.mode === "temp" ? "flex" : "none";
       setFrameMsg(fr, "");
-      refreshLens(fr);
+      if (frozenSelection || hoverSelection) refreshAllLenses();
     };
     drawSlot(0);                                       // instant first frame
     const tick = (now) => {
@@ -1461,6 +1547,7 @@ export function mountCutoutViewer(root, opts = {}) {
 
   // --- load + show current index across all selected tiers -----------------
   async function show({ preserveFrozen = false } = {}) {
+    const revision = ++showRevision;
     if (!preserveFrozen) clearAllLenses();
     if (!state.meta || state.meta.count === 0) {
       rebuildFrames({ preserveFrozen });
@@ -1475,26 +1562,38 @@ export function mountCutoutViewer(root, opts = {}) {
       state.params.jwst_band = "colour";
       syncChips();
     }
+    buildToken++;
     stopMorph();
     rebuildFrames({ preserveFrozen });
     state.shown.clear();
+    updateSaveControls();
+    const index = state.index;
     await Promise.all(state.frames.map(async (fr) => {
       if (!tierAvail(fr.tier)) { setFrameMsg(fr, missingTierLabel(fr.tier)); return; }
-      if (fr.tier === "morph") { await startMorph(fr, state.index); return; }
+      if (fr.tier === "morph") { await startMorph(fr, index); return; }
+      const tierRevision = tierRefreshRevisions.get(fr.tier) || 0;
       fr.frame.classList.add("cv-loading");
       try {
-        const rec = await fetchCube(fr.tier, state.index);
+        const rec = await fetchCube(fr.tier, index);
+        if (revision !== showRevision || state.index !== index || !state.frames.includes(fr)
+            || (tierRefreshRevisions.get(fr.tier) || 0) !== tierRevision) return;
         state.shown.set(fr.tier, rec);
         renderInto(fr, rec);
       } catch (e) {
+        if (revision !== showRevision || state.index !== index || !state.frames.includes(fr)
+            || (tierRefreshRevisions.get(fr.tier) || 0) !== tierRevision) return;
         setFrameMsg(fr, tierAvail(fr.tier) ? (state.meta.missing_tier_labels?.[fr.tier] || "not synced yet")
           : missingTierLabel(fr.tier));
       } finally {
-        fr.frame.classList.remove("cv-loading");
+        if (revision === showRevision
+            && (tierRefreshRevisions.get(fr.tier) || 0) === tierRevision) {
+          fr.frame.classList.remove("cv-loading");
+        }
       }
     }));
+    if (revision !== showRevision || state.index !== index) return;
     updateNav();
-    prefetch(state.index);
+    prefetch(index);
     notify();
   }
 
@@ -1504,28 +1603,36 @@ export function mountCutoutViewer(root, opts = {}) {
   async function refreshVisible() {
     if (!state.meta || state.meta.count === 0) return;
     const token = ++paramRefreshToken;
+    const revision = ++showRevision;
+    const index = state.index;
+    buildToken++;
     stopMorph();
     state.cubeCache.clear();
     state.prepCache.clear();
     state.shown.clear();
+    updateSaveControls();
     await Promise.all(state.frames.map(async (fr) => {
       if (!tierAvail(fr.tier)) return;
-      if (fr.tier === "morph") { await startMorph(fr, state.index); return; }
+      if (fr.tier === "morph") { await startMorph(fr, index); return; }
       fr.frame.classList.add("cv-loading");
       try {
-        const rec = await fetchCube(fr.tier, state.index);
-        if (token !== paramRefreshToken) return;
+        const rec = await fetchCube(fr.tier, index);
+        if (token !== paramRefreshToken || revision !== showRevision
+            || state.index !== index || !state.frames.includes(fr)) return;
         state.shown.set(fr.tier, rec);
         renderInto(fr, rec);
       } catch {
-        if (token !== paramRefreshToken) return;
+        if (token !== paramRefreshToken || revision !== showRevision
+            || state.index !== index || !state.frames.includes(fr)) return;
         setFrameMsg(fr, tierAvail(fr.tier) ? (state.meta.missing_tier_labels?.[fr.tier] || "not synced yet")
           : missingTierLabel(fr.tier));
       } finally {
-        if (token === paramRefreshToken) fr.frame.classList.remove("cv-loading");
+        if (token === paramRefreshToken && revision === showRevision) {
+          fr.frame.classList.remove("cv-loading");
+        }
       }
     }));
-    notify();
+    if (token === paramRefreshToken && revision === showRevision && state.index === index) notify();
   }
 
   // Refresh one parameter-derived tier without re-fetching the raw target or
@@ -1535,21 +1642,35 @@ export function mountCutoutViewer(root, opts = {}) {
     const fr = state.frames.find((frame) => frame.tier === tier);
     if (!fr || !tierAvail(tier)) return;
     const token = ++paramRefreshToken;
+    const revision = showRevision;
+    const tierRevision = (tierRefreshRevisions.get(tier) || 0) + 1;
+    tierRefreshRevisions.set(tier, tierRevision);
+    const index = state.index;
+    state.shown.delete(tier);
+    updateSaveControls();
     fr.frame.classList.add("cv-loading");
     try {
-      const rec = await fetchCube(tier, state.index);
-      if (token !== paramRefreshToken) return;
+      const rec = await fetchCube(tier, index);
+      if (token !== paramRefreshToken || revision !== showRevision
+          || state.index !== index || !state.frames.includes(fr)
+          || tierRefreshRevisions.get(tier) !== tierRevision) return;
       state.shown.set(tier, rec);
       renderInto(fr, rec);
     } catch {
-      if (token !== paramRefreshToken) return;
+      if (token !== paramRefreshToken || revision !== showRevision
+          || state.index !== index || !state.frames.includes(fr)
+          || tierRefreshRevisions.get(tier) !== tierRevision) return;
       setFrameMsg(fr, tierAvail(tier)
         ? (state.meta.missing_tier_labels?.[tier] || "not synced yet")
         : missingTierLabel(tier));
     } finally {
-      if (token === paramRefreshToken) fr.frame.classList.remove("cv-loading");
+      if (token === paramRefreshToken && revision === showRevision
+          && tierRefreshRevisions.get(tier) === tierRevision) {
+        fr.frame.classList.remove("cv-loading");
+      }
     }
-    notify();
+    if (token === paramRefreshToken && revision === showRevision
+        && tierRefreshRevisions.get(tier) === tierRevision && state.index === index) notify();
   }
 
   // Re-render the already-loaded cubes (slider ticks — no fetch).
@@ -1776,6 +1897,118 @@ export function mountCutoutViewer(root, opts = {}) {
 
   // --- nav (prev / editable index / next / play) ---------------------------
   let idxInput, idxTotal;
+
+  function saveBlockReason() {
+    if (saveInFlight) return "A crop is already being saved.";
+    if (!frozenSelection) return "Click an image to freeze a matched crop first.";
+    if (state.tiers.includes("morph")) return "Animated morph frames cannot be saved as science cubes.";
+    if (!state.frames.length) return "No image frames are open.";
+    if (state.frames.length > RESULT_MAX_TIERS) return `Select at most ${RESULT_MAX_TIERS} result tiers.`;
+    const unsupported = state.frames.find(
+      (fr) => !RESULT_SAVEABLE_TIERS.has(String(fr.tier).toLowerCase()),
+    );
+    if (unsupported) return `${unsupported.tier} is a display-only tier and cannot be saved.`;
+    if (collection === "jwst-euclid"
+        && state.frames.some((fr) => String(fr.tier).toLowerCase() === "jwst")
+        && String(state.params.jwst_band || "").toUpperCase() !== "F200W") {
+      return NATIVE_F200W_SAVE_REASON;
+    }
+    if (state.frames.some((fr) => !frameReady(fr) || !state.shown.has(fr.tier))) {
+      return "Wait for every selected image cube to finish loading.";
+    }
+    return "";
+  }
+
+  function setSaveStatus(text, tone = "", kind = "") {
+    if (!saveStatus) return;
+    saveStatus.textContent = text || "";
+    saveStatus.dataset.tone = tone;
+    saveStatus.dataset.kind = kind;
+  }
+
+  function updateSaveControls() {
+    if (!saveButton) return;
+    const reason = saveBlockReason();
+    saveButton.disabled = !!reason;
+    saveButton.textContent = saveInFlight ? "Saving crop…" : "Save crop to results";
+    saveButton.title = reason || "Save the frozen matched raw cubes and manifest to the results area";
+    if (reason === NATIVE_F200W_SAVE_REASON) {
+      setSaveStatus(reason, "error", "save-blocker");
+    } else if (saveStatus && saveStatus.dataset.kind === "save-blocker") {
+      setSaveStatus("");
+    }
+  }
+
+  function serializedFrozenSelection() {
+    if (!frozenSelection) return null;
+    const selection = {
+      u: frozenSelection.u,
+      v: frozenSelection.v,
+      angular_side_arcsec: frozenSelection.angularSideArcsec,
+      relative_side: frozenSelection.relativeSide,
+      revision: frozenSelection.revision,
+    };
+    if (!(frozenSelection.angularSideArcsec > 0)) selection.relative_fallback_safe = true;
+    return selection;
+  }
+
+  async function requestSaveCropToResults() {
+    if (saveBlockReason()) {
+      updateSaveControls();
+      return;
+    }
+    const payload = {
+      collection,
+      index: state.index,
+      tiers: state.frames.map((fr) => fr.tier),
+      params: Object.assign({}, state.params),
+      selection: serializedFrozenSelection(),
+      display: {
+        color: state.color,
+        layout: state.layout,
+        knee: state.knee,
+        gain: state.gain,
+        transfers: copiedTransferSettings(),
+      },
+    };
+    saveInFlight = true;
+    saveController = new AbortController();
+    setSaveStatus("Saving matched raw cubes…", "busy");
+    updateSaveControls();
+    const controller = saveController;
+    try {
+      const response = await fetch("/viewer/results", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+      const responseText = await response.text();
+      let result = {};
+      try { result = responseText ? JSON.parse(responseText) : {}; } catch (_) { /* plain-text error */ }
+      if (!response.ok) {
+        const detail = typeof result.error === "string" ? result.error
+          : result.error && result.error.message ? result.error.message
+            : result.message || responseText || `request failed (${response.status})`;
+        throw new Error(detail);
+      }
+      if (!destroyed) {
+        const resultId = result.result_id || result.id || "result";
+        setSaveStatus(`Saved ${resultId}`, "saved");
+      }
+    } catch (error) {
+      if (!destroyed && error && error.name !== "AbortError") {
+        setSaveStatus(`Save failed: ${error.message || error}`, "error");
+      }
+    } finally {
+      if (saveController === controller) {
+        saveController = null;
+        saveInFlight = false;
+      }
+      if (!destroyed) updateSaveControls();
+    }
+  }
+
   function buildNav() {
     nav.innerHTML = "";
     const prev = el("button", { class: "cv-navbtn", type: "button", text: "◀", title: "Previous (←)",
@@ -1802,17 +2035,26 @@ export function mountCutoutViewer(root, opts = {}) {
       (v) => `${v.toFixed(1)} s`, (v) => setPlaySpeed(v * 1000));
     speed.classList.add("cv-speed");
     speed.title = "auto-run cadence — seconds per slide";
-    const hint = el("span", { class: "cv-kbd", text: "← →  ·  Space to run" });
+    const hint = el("span", { class: "cv-kbd", text: "← →  ·  Space to run  ·  S save" });
     const png = el("button", { class: "cv-navbtn", type: "button", text: "⬇ PNG",
       title: "Save the current view (all selected tiers, side by side) as a PNG",
       onclick: savePNG });
     const figure = el("button", { class: "cv-navbtn cv-figure", type: "button", text: "⬇ Figure",
       title: "Export a high-resolution publication plate. A selected magnification region exports as matched crops; without one, full images are exported.",
       onclick: savePublicationFigure });
+    saveButton = el("button", {
+      class: "cv-navbtn cv-save-result", type: "button", text: "Save crop to results",
+      title: "Click an image to freeze a matched crop first; press S to save.",
+      onclick: requestSaveCropToResults,
+    });
+    saveStatus = el("span", {
+      class: "cv-save-status", role: "status", "aria-live": "polite",
+    });
     const rec = el("button", { class: "cv-navbtn cv-rec", type: "button", text: "⏺ video",
       title: "Record the current view (all selected tiers, side by side) — click to start, click again to stop and download a .webm clip",
       onclick: () => toggleRecord(rec) });
-    nav.append(prev, idxWrap, next, play, speed, hint, png, figure, rec);
+    nav.append(prev, idxWrap, next, play, speed, hint, png, figure, saveButton, saveStatus, rec);
+    updateSaveControls();
   }
 
   // --- save PNG / record video ----------------------------------------------
@@ -1909,23 +2151,9 @@ export function mountCutoutViewer(root, opts = {}) {
   }
 
   function publicationCrop(fr) {
-    const region = publicationRegion;
-    if (!region || !(fr.canvas.width > 1) || !(fr.canvas.height > 1)) return null;
-    const extent = Math.min(fr.canvas.width, fr.canvas.height);
-    const pixscale = validPixscale(fr);
-    let sourceSide = pixscale && region.angularSide > 0
-      ? region.angularSide / pixscale
-      : region.relativeSide > 0 ? region.relativeSide * extent : extent / LENS_DEFAULT_ZOOM;
-    sourceSide = Math.max(1, Math.min(extent, sourceSide));
-    const cx = Math.max(sourceSide / 2,
-      Math.min(fr.canvas.width - sourceSide / 2, region.u * fr.canvas.width));
-    const cy = Math.max(sourceSide / 2,
-      Math.min(fr.canvas.height - sourceSide / 2, region.v * fr.canvas.height));
-    return {
-      x: cx - sourceSide / 2,
-      y: cy - sourceSide / 2,
-      side: sourceSide,
-    };
+    // Hover is preview-only. A publication crop exists only after the shared
+    // selection has been explicitly frozen with a click.
+    return frozenSelection ? resolveCrop(fr, frozenSelection) : null;
   }
 
   function publicationPanelName(fr) {
@@ -2149,6 +2377,7 @@ export function mountCutoutViewer(root, opts = {}) {
     if (!idxInput) return;
     if (document.activeElement !== idxInput) idxInput.value = state.index;
     idxTotal.textContent = ` / ${Math.max(0, state.meta.count - 1)}`;
+    updateSaveControls();
   }
 
   function go(i, wrap = true) {
@@ -2179,9 +2408,21 @@ export function mountCutoutViewer(root, opts = {}) {
   }
 
   function onKey(e) {
-    if (!state.hot) return;     // only when the viewer is hovered/focused
     if (e.target.matches("input, textarea, select") || e.ctrlKey || e.metaKey || e.altKey) return;
     const key = e.key.toLowerCase();
+    // A frozen viewer retains ownership of S even after the pointer leaves its
+    // tile (for example when a popup overlaps the left navigation). Other
+    // shortcuts still require the pointer/focus to be inside this viewer.
+    if (key === "s") {
+      if (activeKeyboardViewer === keyboardViewer && frozenSelection) {
+        requestSaveCropToResults();
+        e.preventDefault();
+      }
+      return;
+    }
+    // Only the most recently hovered/focused viewer responds. This matters on
+    // comparison pages where two mounted viewers both listen on `document`.
+    if (!state.hot || activeKeyboardViewer !== keyboardViewer) return;
     const colorIndex = COLOR_KEYS.indexOf(key);
     if (colorIndex >= 0 && state.meta && state.meta.render_mode !== "log") {
       const colors = [...(state.meta.band_names || []), ...COLOR_MODES_EXTRA.map((m) => m.key)];
@@ -2199,9 +2440,25 @@ export function mountCutoutViewer(root, opts = {}) {
     else if (e.key === "ArrowRight") { go(state.index + 1); e.preventDefault(); }
     else if (e.key === " ") { togglePlay(); e.preventDefault(); }
   }
-  root.addEventListener("mouseenter", () => { state.hot = true; });
-  root.addEventListener("mouseleave", () => { state.hot = false; hideHoverLens(); });
-  root.addEventListener("focusin", () => { state.hot = true; });
+  const activateKeyboardViewer = () => {
+    state.hot = true;
+    activeKeyboardViewer = keyboardViewer;
+  };
+  const deactivateKeyboardViewer = () => {
+    state.hot = false;
+    if (!frozenSelection && activeKeyboardViewer === keyboardViewer) {
+      activeKeyboardViewer = null;
+    }
+  };
+  root.addEventListener("mouseenter", activateKeyboardViewer);
+  root.addEventListener("mouseleave", () => {
+    deactivateKeyboardViewer();
+    hideHoverSelection();
+  });
+  root.addEventListener("focusin", activateKeyboardViewer);
+  root.addEventListener("focusout", (event) => {
+    if (!root.contains(event.relatedTarget)) deactivateKeyboardViewer();
+  });
 
   // --- meta + lifecycle ----------------------------------------------------
   async function loadMeta() {
@@ -2317,17 +2574,22 @@ export function mountCutoutViewer(root, opts = {}) {
                tiers: state.tiers.slice(), color: state.color, layout: state.layout,
                knee: state.knee, gain: state.gain,
                transfers: copiedTransferSettings(),
-               params: Object.assign({}, state.params) };
+               params: Object.assign({}, state.params),
+               selection: serializedFrozenSelection() };
     },
     /** Download the same fixed-resolution, annotated figure as the viewer's
      *  Figure button. Useful to external React controls without DOM capture. */
     exportFigure() { savePublicationFigure(); },
+    saveCropToResults() { return requestSaveCropToResults(); },
     reload() { return loadMeta().then(show); },
     destroy() {
       paramRefreshToken++;
+      showRevision++;
+      tierRefreshRevisions.clear();
       clearTimeout(bhrRefreshTimer);
+      destroyed = true;
+      if (saveController) saveController.abort();
       clearAllLenses();
-      hoverLens.popup.remove();
       window.removeEventListener("resize", onViewportChange);
       window.removeEventListener("scroll", onViewportChange);
       for (const parent of scrollParents) {
@@ -2336,6 +2598,7 @@ export function mountCutoutViewer(root, opts = {}) {
       window.visualViewport?.removeEventListener("resize", onViewportChange);
       document.removeEventListener("mousemove", onDocumentMouseMove);
       document.removeEventListener("keydown", onKey);
+      if (activeKeyboardViewer === keyboardViewer) activeKeyboardViewer = null;
       if (state.playTimer) clearInterval(state.playTimer);
       stopMorph();
       buildToken++;                 // abort any in-flight movie build

@@ -10,6 +10,10 @@ type ViewerState = {
   knee: number; gain: number;
   transfers: Record<string, { knee: number; gain: number }>;
   params: Record<string, string>;
+  selection: {
+    u: number; v: number; angular_side_arcsec: number | null;
+    relative_side: number; relative_fallback_safe?: true; revision: number;
+  } | null;
 };
 export type ViewerApi = {
   goTo(i: number): void;
@@ -24,6 +28,8 @@ export type ViewerApi = {
   getState(): ViewerState;
   /** Export full panels, or matched crops when a magnification is selected. */
   exportFigure(): void;
+  /** Persist the frozen matched raw cubes and their manifest. */
+  saveCropToResults(): Promise<void>;
   reload(): Promise<void>;
   destroy(): void;
 };
@@ -50,7 +56,7 @@ function loadViewer(): Promise<ViewerModule> {
   // by Vite and not statically resolved by TS (the engine ships with classic UI).
   // Bump this token whenever the standalone engine changes: the browser caches
   // dynamic module imports by URL, independently of the rebuilt Vite bundle.
-  const url = "/static/cutout_viewer.js?v=20260810-bhr-fwhm-slider-v1";
+  const url = "/static/cutout_viewer.js?v=20260827-shared-lens-save-v4";
   if (!viewerMod) viewerMod = import(/* @vite-ignore */ url) as Promise<ViewerModule>;
   return viewerMod;
 }

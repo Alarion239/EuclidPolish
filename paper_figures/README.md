@@ -25,6 +25,33 @@ Run
 from the repository root to center the two trimmed PDFs on separate pages of
 one LaTeX-ready A4 document.
 
+Five alternative title-only layouts are declared in
+`paper_figures/build_sr_template_variants.py`. Run it from the repository root
+to write same-stem PNG previews and JSON provenance sidecars here, plus five
+standalone PDFs under `output/pdf/`. Then run
+`pdflatex -output-directory=output/pdf paper_figures/sr_template_variants_a4.tex`
+to assemble `output/pdf/sr_template_variants_a4.pdf`. These variants leave the
+existing Figure 10/11 grids untouched; every template has five rows, square
+science panels, 4 mm gutters, and 4 mm padding around its title-only content.
+
+The VIS-H_E false colour is a display product, not the network input or a
+photometric colour measurement. The model reconstructs a four-plane
+`(VIS, Y_E, J_E, H_E)` SR cube. After the per-band asinh display transfer, the
+two selected output planes are mixed as
+`R = H_E + 0.08 VIS`, `G = 0.54 (VIS + H_E)`, and
+`B = VIS + 0.08 H_E`, then clipped and raised to the power `0.92`. Thus VIS is
+cyan-blue and H_E is amber-red; the same mixing rule is used for Dirty, SR, and
+HR panels. Each JSON sidecar records the exact transfer and source hashes.
+
+The WebUI's **Figures** page also provides a result-grid assembler. Freeze a
+matched region in any cutout viewer, then choose **Save crop to results** or
+press **S**. The synchronized magnification windows keep their visible
+positions when frozen. In the JWST x Euclid viewer, select native F200W before
+saving a JWST comparison. The assembler uses saved crops as columns and
+tier/band recipes as rows. Saved FITS cubes remain raw; the PNG/PDF renderer
+applies its fixed absolute asinh transfer only while drawing the requested
+grid.
+
 | File | Proposed role | Current status |
 | --- | --- | --- |
 | `fig01_pipeline.png` | Six-panel overview of source construction, empirical PSFs, mock Euclid formation, and the network output. | Main-text candidate. It uses established poster assets; the caption must state that this is a schematic/example realization. |

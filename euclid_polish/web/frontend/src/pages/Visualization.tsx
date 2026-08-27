@@ -8,6 +8,7 @@ import {
   Button, Card, CardBody, CardHead, Empty, Field, Gallery, Input, Page,
   PageHead, PngFigure, Spinner,
 } from "../ui";
+import FigureGridBuilder from "./figure-grid/FigureGridBuilder";
 import "./presentation-figures.css";
 
 type VisPng = { rel: string; mtime: number; size_kb: number; inspect_fits: string | null };
@@ -59,11 +60,13 @@ export default function VisualizationPage() {
         sub="One index for calibrated population plots, catalog and PSF plates, and every cursor-driven image comparison."
       />
 
+      <FigureGridBuilder />
+
       <section className="presentation-hero" aria-label="Figure export workflow">
         <div>
           <span className="eyebrow">viewer export</span>
           <h2>Select the feature. Export matched crops.</h2>
-          <p>Click to freeze a magnification region. Figure then exports only that matched crop from every selected tier.</p>
+          <p>Click to freeze a matched region, then press S or use Save crop to results. Figure exports the same crop from every selected tier.</p>
         </div>
         <div className="presentation-hero__sequence" aria-label="Pointer to figure workflow">
           <span>select tiers</span><b>→</b><span>click region</span><b>→</b><span>⬇ Figure</span>

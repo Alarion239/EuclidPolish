@@ -426,6 +426,14 @@ button.secondary:hover { background: #565e64; }
 }
 .cv-navbtn:hover { background: #dfe6f3; border-color: #2a5db0; }
 .cv-navbtn.active { background: #2a5db0; border-color: #1f4a96; color: #fff; }
+.cv-navbtn:disabled { opacity: .42; cursor: not-allowed; }
+.cv-save-status {
+  min-width: 0; max-width: 280px;
+  color: #66738a; font: 11px/1.3 "JetBrains Mono", Menlo, monospace;
+}
+.cv-save-status[data-tone="busy"] { color: #a76a00; }
+.cv-save-status[data-tone="saved"] { color: #237a4b; }
+.cv-save-status[data-tone="error"] { color: #b43b3b; }
 .cv-idx {
   display: inline-flex; align-items: center;
   font: 12px/1 "JetBrains Mono", Menlo, monospace; color: #333;

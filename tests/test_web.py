@@ -182,8 +182,23 @@ def test_cutout_viewer_exports_capture_all_visible_frames():
     assert 'text: "⬇ Figure"' in source
     assert "function publicationFigureCanvas()" in source
     assert "function publicationCrop(fr)" in source
-    assert "let publicationRegion = null" in source
-    assert "function syncPublicationRegionToFrozenLenses()" in source
+    assert "let hoverSelection = null" in source
+    assert "let frozenSelection = null" in source
+    assert "const hoverLenses = new Map()" in source
+    assert "const frozenLenses = new Map()" in source
+    assert "function promoteHoverLensesToFrozen()" in source
+    assert "for (const [fr, lens] of hoverLenses)" in source
+    assert "frozenLenses.set(fr, lens)" in source
+    assert "lens.frozenRect = popupDocumentRect(lens.popup)" in source
+    assert "if (!frozenSelection) resolveLensOverlaps()" in source
+    assert "const selected = hoverSelection || selectionFromEvent(fr, event, null)" in source
+    assert "function resolveCrop(fr, selection)" in source
+    assert "function clampSelectionToReadyFrames(selection)" in source
+    assert "const selection = frozenSelection || hoverSelection" in source
+    assert "frozenSelection = Object.freeze" in source
+    assert "position.zoom =" not in source
+    assert "return frozenSelection ? resolveCrop(fr, frozenSelection) : null" in source
+    assert "publicationRegion" not in source
     assert "rememberPublicationRegion" not in source
     assert "A selected magnification region exports as matched crops" in source
     assert "publicationTransferSummary" not in source
@@ -199,8 +214,20 @@ def test_cutout_viewer_exports_capture_all_visible_frames():
     assert "const inset =" not in source
     assert "const displayedSidePixels = crop ? crop.side : fr.canvas.width;" in source
     assert "ctx.drawImage(fr.canvas, crop.x, crop.y, crop.side, crop.side," in source
-    assert "crop.angularSide" not in source
     assert "exportFigure()" in source
+    assert 'text: "Save crop to results"' in source
+    assert 'if (key === "s") {' in source
+    assert "activeKeyboardViewer === keyboardViewer && frozenSelection" in source
+    assert "A frozen viewer retains ownership of S" in source
+    assert "S save" in source
+    assert "activeKeyboardViewer !== keyboardViewer" in source
+    assert 'fetch("/viewer/results"' in source
+    assert 'method: "POST"' in source
+    assert "angular_side_arcsec: frozenSelection.angularSideArcsec" in source
+    assert "selection.relative_fallback_safe = true" in source
+    assert 'NATIVE_F200W_SAVE_REASON = "Choose native F200W first."' in source
+    assert 'collection === "jwst-euclid"' in source
+    assert 'String(state.params.jwst_band || "").toUpperCase() !== "F200W"' in source
     assert '"BHR FWHM"' in source
     assert 'refreshTier("bhr")' in source
     assert 'state.meta.bhr_fwhm_control' in source

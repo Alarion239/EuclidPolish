@@ -107,7 +107,8 @@
   padding: 6px 13px; border-radius: var(--r-md);
   background: var(--surface-2); border: 1px solid var(--border-strong); color: var(--text-dim);
 }
-.cv-navbtn:hover { background: var(--surface-3); border-color: var(--accent); color: var(--text); }
+.cv-navbtn:not(:disabled):hover { background: var(--surface-3); border-color: var(--accent); color: var(--text); }
+.cv-navbtn:disabled { opacity: .42; cursor: not-allowed; }
 .cv-navbtn.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-press); }
 .cv-idx { display: inline-flex; align-items: center; font: 12px/1 var(--font-mono); color: var(--text-dim); }
 .cv-idx-input {
@@ -122,3 +123,10 @@
 .cv-speed { margin-left: 4px; }
 .cv-speed .cv-range { width: 88px; }
 .cv-navbtn.cv-recording { color: var(--bad); border-color: var(--bad); }
+.cv-save-status {
+  min-width: 0; max-width: 280px;
+  font: 11px/1.25 var(--font-mono); color: var(--text-faint);
+}
+.cv-save-status[data-tone="busy"] { color: var(--warn); }
+.cv-save-status[data-tone="saved"] { color: var(--good); }
+.cv-save-status[data-tone="error"] { color: var(--bad); }

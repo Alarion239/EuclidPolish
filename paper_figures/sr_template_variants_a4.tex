@@ -1,0 +1,42 @@
+\pdfinfoomitdate=1
+\pdftrailerid{}
+\pdfsuppressptexinfo=15
+
+\documentclass[a4paper]{article}
+
+\usepackage{pdfpages}
+
+\pagestyle{empty}
+
+\begin{document}
+\includepdf[
+  pages=1,
+  fitpaper=false,
+  noautoscale=true,
+  pagecommand={}
+]{output/pdf/real_vis_h_sr_template.pdf}
+\includepdf[
+  pages=1,
+  fitpaper=false,
+  noautoscale=true,
+  pagecommand={}
+]{output/pdf/real_bandwise_sr_template.pdf}
+\includepdf[
+  pages=1,
+  fitpaper=false,
+  noautoscale=true,
+  pagecommand={}
+]{output/pdf/real_input_composite_template.pdf}
+\includepdf[
+  pages=1,
+  fitpaper=false,
+  noautoscale=true,
+  pagecommand={}
+]{output/pdf/synthetic_bandwise_template.pdf}
+\includepdf[
+  pages=1,
+  fitpaper=false,
+  noautoscale=true,
+  pagecommand={}
+]{output/pdf/synthetic_vis_h_template.pdf}
+\end{document}

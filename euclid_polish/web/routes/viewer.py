@@ -1,10 +1,15 @@
 """Routes feeding the unified client-side cutout viewer.
 
-Two endpoints, both backed by ``helpers/viewer_data`` (the collection
-registry):
+Cube/meta endpoints are backed by ``helpers.viewer_data`` (the collection
+registry), while durable crop and figure endpoints use
+``helpers.viewer_results``:
 
 * ``GET /viewer/meta/<collection>``       — JSON meta + colour constants.
 * ``GET /viewer/cube/<collection>/<i>``    — raw Float32 ``(H, W, C)`` cube.
+* ``GET|POST /viewer/results``             — list or save matched raw crops.
+* ``GET /viewer/results/<id>``             — one saved-result summary.
+* ``GET /viewer/results/<id>/panel.png``   — render one saved panel.
+* ``GET /viewer/results/grid.<png|pdf>``   — render an A4 result grid.
 
 The cube body is little-endian Float32 in C order; shape and per-cube
 metadata travel in ``X-Cube-*`` response headers so the browser can
@@ -17,7 +22,7 @@ from __future__ import annotations
 from flask import Response, abort, jsonify, request
 
 from euclid_polish.image import Image
-from euclid_polish.web.helpers import viewer_data
+from euclid_polish.web.helpers import viewer_data, viewer_results
 from euclid_polish.web.helpers.viewer_data import ViewerError
 
 
@@ -40,6 +45,74 @@ def _params() -> dict:
 
 
 def register(app):
+
+    @app.get("/viewer/results")
+    def viewer_result_list():
+        return jsonify(viewer_results.list_results())
+
+    @app.post("/viewer/results")
+    def viewer_result_save():
+        if request.is_json:
+            payload = request.get_json(silent=True)
+            if not isinstance(payload, dict):
+                return jsonify({"error": "request body must be a JSON object"}), 400
+        else:
+            payload = request.form.to_dict(flat=True)
+        try:
+            result = viewer_results.save_result(payload)
+        except viewer_results.ViewerResultError as exc:
+            return jsonify({"error": str(exc)}), exc.code
+        response = jsonify({"id": result["id"], "result_id": result["id"], "result": result})
+        response.status_code = 201
+        response.headers["Location"] = f"/viewer/results/{result['id']}"
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+    @app.get("/viewer/results/<result_id>")
+    def viewer_result_get(result_id: str):
+        try:
+            result = viewer_results.get_result_summary(result_id)
+        except viewer_results.ViewerResultError as exc:
+            return jsonify({"error": str(exc)}), exc.code
+        response = jsonify({"result": result})
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+    @app.get("/viewer/results/<result_id>/panel.png")
+    def viewer_result_panel(result_id: str):
+        try:
+            body = viewer_results.render_panel(
+                result_id,
+                request.args.get("tier", ""),
+                request.args.get("mode", ""),
+            )
+        except viewer_results.ViewerResultError as exc:
+            return jsonify({"error": str(exc)}), exc.code
+        response = Response(body, mimetype="image/png")
+        response.headers["Content-Disposition"] = (
+            f'inline; filename="{result_id}_{request.args.get("tier", "panel")}.png"'
+        )
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+    @app.get("/viewer/results/grid.<output_format>")
+    def viewer_result_grid(output_format: str):
+        try:
+            body = viewer_results.render_grid(
+                request.args.getlist("result"),
+                request.args.getlist("row"),
+                output_format,
+                request.args.get("dpi", str(viewer_results.DEFAULT_GRID_DPI)),
+            )
+        except viewer_results.ViewerResultError as exc:
+            return jsonify({"error": str(exc)}), exc.code
+        mimetype = "image/png" if output_format == "png" else "application/pdf"
+        response = Response(body, mimetype=mimetype)
+        response.headers["Content-Disposition"] = (
+            f'inline; filename="viewer_results_grid.{output_format}"'
+        )
+        response.headers["Cache-Control"] = "no-cache"
+        return response
 
     @app.route("/viewer/meta/<collection>")
     def viewer_meta(collection: str):

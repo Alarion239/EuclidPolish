@@ -1,0 +1,141 @@
+{
+  "schema_version": 1,
+  "template": "synthetic_vis_h_template",
+  "regime": "synthetic",
+  "columns": [
+    {
+      "title": "VIS + H$_E$ Dirty",
+      "panel_key": "vis_h_dirty",
+      "grayscale": false
+    },
+    {
+      "title": "VIS + H$_E$ SR",
+      "panel_key": "vis_h_sr",
+      "grayscale": false
+    },
+    {
+      "title": "VIS + H$_E$ HR",
+      "panel_key": "vis_h_hr",
+      "grayscale": false
+    }
+  ],
+  "row_count": 5,
+  "row_sources": [
+    [
+      "data/eval_results/syn-lens_0036_0/original_stack.fits",
+      "data/eval_results/syn-lens_0036_0/SR.fits",
+      "data/eval_results/syn-lens_0036_0/HR.fits"
+    ],
+    [
+      "data/eval_results/syn-gal_0086_0/original_stack.fits",
+      "data/eval_results/syn-gal_0086_0/SR.fits",
+      "data/eval_results/syn-gal_0086_0/HR.fits"
+    ],
+    [
+      "data/eval_results/syn-lens_0035_0/original_stack.fits",
+      "data/eval_results/syn-lens_0035_0/SR.fits",
+      "data/eval_results/syn-lens_0035_0/HR.fits"
+    ],
+    [
+      "data/eval_results/syn-lens_0037_0/original_stack.fits",
+      "data/eval_results/syn-lens_0037_0/SR.fits",
+      "data/eval_results/syn-lens_0037_0/HR.fits"
+    ],
+    [
+      "data/eval_results/syn-lens_0004_0/original_stack.fits",
+      "data/eval_results/syn-lens_0004_0/SR.fits",
+      "data/eval_results/syn-lens_0004_0/HR.fits"
+    ]
+  ],
+  "sources": [
+    {
+      "path": "data/eval_results/syn-lens_0036_0/original_stack.fits",
+      "sha256": "e01b1a68025cbbad05a23cf7b251f4f6fac00ea4d487088951e09aa8fca6dd31"
+    },
+    {
+      "path": "data/eval_results/syn-lens_0036_0/SR.fits",
+      "sha256": "488c5af1c1837b226a99b37e85345c9a0d4ae85ecf6c26f3393062c3aff0e427"
+    },
+    {
+      "path": "data/eval_results/syn-lens_0036_0/HR.fits",
+      "sha256": "4777d32937dbf4fce7f2125c2a44bfba939e674eaeb13bede502504e289f7a13"
+    },
+    {
+      "path": "data/eval_results/syn-gal_0086_0/original_stack.fits",
+      "sha256": "1576775d57a7c4c66ef417c498a577c7e78324f17135f40c3219af8d6b3cf015"
+    },
+    {
+      "path": "data/eval_results/syn-gal_0086_0/SR.fits",
+      "sha256": "d23982632135e9160f9c259399c931ff720c5da5e37716e7b9181672c9c6026a"
+    },
+    {
+      "path": "data/eval_results/syn-gal_0086_0/HR.fits",
+      "sha256": "e881dd1c5ff12de42cbd61927cedd249ff6cf91de53c6b2bb9817662de15e3f1"
+    },
+    {
+      "path": "data/eval_results/syn-lens_0035_0/original_stack.fits",
+      "sha256": "aa02f99a55440138df29978469fe2e7be7aef2f3bbbcfdcbf20a9def2e2ae94f"
+    },
+    {
+      "path": "data/eval_results/syn-lens_0035_0/SR.fits",
+      "sha256": "e124cdb91d2690602953cc87598ff084e423fbfc16b9faea2ac7dad4af2a8247"
+    },
+    {
+      "path": "data/eval_results/syn-lens_0035_0/HR.fits",
+      "sha256": "bc1bfc594fe5d257363eff46b734391a71062f8f628fd73101738d906c1c5070"
+    },
+    {
+      "path": "data/eval_results/syn-lens_0037_0/original_stack.fits",
+      "sha256": "8396a479f0f713f4d6766d25196efee146bd914891072e0333c410c257d61358"
+    },
+    {
+      "path": "data/eval_results/syn-lens_0037_0/SR.fits",
+      "sha256": "9f07c078339e8de6f34bfe1d0fd5050e831734b391b9514c10d8f0da3e6d818b"
+    },
+    {
+      "path": "data/eval_results/syn-lens_0037_0/HR.fits",
+      "sha256": "c880370b8194bde69b7f2bbaa7521be66c3ff8c0af474e3c9ffbc72aa74767bb"
+    },
+    {
+      "path": "data/eval_results/syn-lens_0004_0/original_stack.fits",
+      "sha256": "c5b65e0f9d0a7c17eb5dc0a47e7384059632165d52edb5d134e076426504b1e1"
+    },
+    {
+      "path": "data/eval_results/syn-lens_0004_0/SR.fits",
+      "sha256": "1f82bdf00eb33869d63f3de31f5ff56f77aaa2b983953a9a79d565bb45b94e5f"
+    },
+    {
+      "path": "data/eval_results/syn-lens_0004_0/HR.fits",
+      "sha256": "bca5bec015cad0e03200f67487136932fe12730d160bf9daddd830c3ad293861"
+    }
+  ],
+  "display": {
+    "false_colour": {
+      "red": "H_E + 0.08 * VIS",
+      "green": "0.54 * (VIS + H_E)",
+      "blue": "VIS + 0.08 * H_E",
+      "post_clip_power": 0.92,
+      "role": "display-only, non-photometric"
+    },
+    "synthetic_band_transfer": {
+      "formula": "asinh(max(pixel_e, 0) / knee_e) / shared_p99.7",
+      "knee_e": 100.0,
+      "percentile": 99.7,
+      "shared_across": "LR, SR, and HR within each row and band"
+    },
+    "real_band_transfer": "preserved from matched 8-bit browser publication exports"
+  },
+  "layout_mm": {
+    "standalone_width": 173.8,
+    "standalone_height": 297.0,
+    "panel_side": 52.6,
+    "horizontal_gap": 4.0,
+    "vertical_gap": 4.0,
+    "outer_padding": 4.0,
+    "column_title_height": 10.0
+  },
+  "outputs": {
+    "png": "paper_figures/synthetic_vis_h_template.png",
+    "pdf": "output/pdf/synthetic_vis_h_template.pdf"
+  }
+}

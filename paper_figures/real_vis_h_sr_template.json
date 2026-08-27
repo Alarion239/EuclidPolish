@@ -1,0 +1,97 @@
+{
+  "schema_version": 1,
+  "template": "real_vis_h_sr_template",
+  "regime": "real",
+  "columns": [
+    {
+      "title": "VIS Dirty",
+      "panel_key": "vis_dirty",
+      "grayscale": false
+    },
+    {
+      "title": "H$_E$ Dirty",
+      "panel_key": "h_dirty",
+      "grayscale": false
+    },
+    {
+      "title": "VIS + H$_E$ SR",
+      "panel_key": "vis_h_sr",
+      "grayscale": false
+    },
+    {
+      "title": "NEXUS F200W",
+      "panel_key": "nexus",
+      "grayscale": false
+    }
+  ],
+  "row_count": 5,
+  "row_sources": [
+    [
+      "/Users/alarion239/Downloads/nexus-field_idx16_lr-sr-jwst_VIS_figure.png",
+      "/Users/alarion239/Downloads/nexus-field_idx16_lr-sr-jwst_H_E_figure.png"
+    ],
+    [
+      "/Users/alarion239/Downloads/nexus-field_idx16_lr-sr-jwst_VIS_figure (1).png",
+      "/Users/alarion239/Downloads/nexus-field_idx16_lr-sr-jwst_H_E_figure (1).png"
+    ],
+    [
+      "/Users/alarion239/Downloads/nexus-field_idx16_lr-sr-jwst_VIS_figure.png",
+      "/Users/alarion239/Downloads/nexus-field_idx16_lr-sr-jwst_H_E_figure.png"
+    ],
+    [
+      "/Users/alarion239/Downloads/nexus-field_idx16_lr-sr-jwst_VIS_figure (1).png",
+      "/Users/alarion239/Downloads/nexus-field_idx16_lr-sr-jwst_H_E_figure (1).png"
+    ],
+    [
+      "/Users/alarion239/Downloads/nexus-field_idx16_lr-sr-jwst_VIS_figure.png",
+      "/Users/alarion239/Downloads/nexus-field_idx16_lr-sr-jwst_H_E_figure.png"
+    ]
+  ],
+  "sources": [
+    {
+      "path": "/Users/alarion239/Downloads/nexus-field_idx16_lr-sr-jwst_VIS_figure.png",
+      "sha256": "dddfcc941322e212b5403740db35b1b84addc7fb0cd444332bf8c1478b5b4eed"
+    },
+    {
+      "path": "/Users/alarion239/Downloads/nexus-field_idx16_lr-sr-jwst_H_E_figure.png",
+      "sha256": "884f8cd8a5ad8f0a503b32df582c089a3c3246c83848b885f0eef4ce51254638"
+    },
+    {
+      "path": "/Users/alarion239/Downloads/nexus-field_idx16_lr-sr-jwst_VIS_figure (1).png",
+      "sha256": "0d194ede24161fbd18a843215194c14b9fe0b9ac2e2a60b6ca46fcdee885ceae"
+    },
+    {
+      "path": "/Users/alarion239/Downloads/nexus-field_idx16_lr-sr-jwst_H_E_figure (1).png",
+      "sha256": "e8f3087d3d0cb36c91a4e3d1349b80cf8ea0c57890977d1c0c9892ba585a9e8b"
+    }
+  ],
+  "display": {
+    "false_colour": {
+      "red": "H_E + 0.08 * VIS",
+      "green": "0.54 * (VIS + H_E)",
+      "blue": "VIS + 0.08 * H_E",
+      "post_clip_power": 0.92,
+      "role": "display-only, non-photometric"
+    },
+    "synthetic_band_transfer": {
+      "formula": "asinh(max(pixel_e, 0) / knee_e) / shared_p99.7",
+      "knee_e": 100.0,
+      "percentile": 99.7,
+      "shared_across": "LR, SR, and HR within each row and band"
+    },
+    "real_band_transfer": "preserved from matched 8-bit browser publication exports"
+  },
+  "layout_mm": {
+    "standalone_width": 210.0,
+    "standalone_height": 271.5,
+    "panel_side": 47.5,
+    "horizontal_gap": 4.0,
+    "vertical_gap": 4.0,
+    "outer_padding": 4.0,
+    "column_title_height": 10.0
+  },
+  "outputs": {
+    "png": "paper_figures/real_vis_h_sr_template.png",
+    "pdf": "output/pdf/real_vis_h_sr_template.pdf"
+  }
+}
