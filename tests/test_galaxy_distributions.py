@@ -1027,6 +1027,10 @@ def test_galaxy_distribution_controls_use_one_galaxy_query_action():
     assert "observed_mean_arcsec" in source
     assert "model_mean_arcsec" in source
     assert "MER catalogue FWHM (arcsec)" in source
+    assert "conditionalFwhmInterval" in source
+    assert "errorLow: interval.low" in source
+    assert "errorHigh: interval.high" in source
+    assert "weighted 16th–84th" in source
     assert "nearest populated bin where direct Q1 support is absent" in source
     assert "generation_bright_join_magnitudes" in source
     assert "generation_bright_slopes" in source

@@ -7,6 +7,7 @@ import {
   Badge, Button, Card, CardBody, CardHead, Checkbox, Chip, Empty,
   Page, PageHead, Spinner, Stat,
 } from "../ui";
+import { conditionalFwhmInterval } from "./galaxyFwhm";
 import "./galaxy-distributions.css";
 
 type Curve = {
@@ -124,6 +125,13 @@ type Payload = {
         vis_magnitude_max: number;
         fitted_vis_magnitude_max: number;
         faint_end_policy: string;
+      };
+      aperture_fwhm_distribution?: {
+        magnitude_edges: number[];
+        fwhm_edges_arcsec: number[];
+        probability: number[][];
+        source_magnitude_bin: number[];
+        out_of_support_policy: string;
       };
       plots?: {
         conditional_radius?: {
@@ -1072,11 +1080,22 @@ export default function GalaxyDistributionsPage() {
     {api.calibration.candidate?.plots?.conditional_aperture_fwhm && (() => {
       const relation = api.calibration.candidate.plots!
         .conditional_aperture_fwhm!;
+      const distribution = api.calibration.candidate
+        .aperture_fwhm_distribution;
+      const interval = conditionalFwhmInterval(
+        relation.observed_mean_arcsec,
+        distribution?.probability ?? [],
+        distribution?.fwhm_edges_arcsec ?? [],
+      );
       const observed = relation.observed_mean_arcsec.filter(
+        (value): value is number => value != null && Number.isFinite(value),
+      );
+      const intervalBounds = [...interval.low, ...interval.high].filter(
         (value): value is number => value != null && Number.isFinite(value),
       );
       const yDomain = paddedDomain([
         ...observed,
+        ...intervalBounds,
         ...relation.model_mean_arcsec,
       ], 0.25);
       const xDomain = paddedDomain(relation.magnitude, 1.0);
@@ -1093,6 +1112,8 @@ export default function GalaxyDistributionsPage() {
               {
                 x: relation.magnitude,
                 y: relation.observed_mean_arcsec,
+                errorLow: interval.low,
+                errorHigh: interval.high,
                 color: "#31a7d8", mode: "scatter", marker: "ring",
                 width: 1.7,
               },
@@ -1106,10 +1127,11 @@ export default function GalaxyDistributionsPage() {
           />
           <p className="galaxy-q1-counts__note">
             Blue rings are weighted mean MER catalogue FWHM values in populated
-            Q1 magnitude bins; the red curve is the mean of our active empirical
-            FWHM | VIS 2FWHM model. This is not a separate analytic regression:
-            the model preserves the measured magnitude-bin histograms and uses
-            the nearest populated bin where direct Q1 support is absent.
+            Q1 magnitude bins; vertical blue bars span the weighted 16th–84th
+            percentiles. The red curve is the mean of our active empirical FWHM
+            | VIS 2FWHM model. This is not a separate analytic regression: the
+            model preserves the measured magnitude-bin histograms and uses the
+            nearest populated bin where direct Q1 support is absent.
           </p>
         </CardBody>
       </Card>;

@@ -9,6 +9,8 @@ export type Series = {
   y: (number | null)[];
   low?: (number | null)[];
   high?: (number | null)[];
+  errorLow?: (number | null)[];
+  errorHigh?: (number | null)[];
   color: string;
   mode?: "line" | "histogram" | "scatter";
   marker?: "filled" | "ring" | "diamond";
@@ -446,6 +448,21 @@ function render(ctx: CanvasRenderingContext2D, W: number, H: number, p: PlotProp
     }
     if (s.mode === "scatter") {
       ctx.setLineDash([]);
+      const capHalfWidth = 3.5;
+      if (s.errorLow && s.errorHigh) {
+        ctx.lineWidth = Math.max(1, (s.width ?? 1.5) * 0.8);
+        for (let i = 0; i < s.x.length; i++) {
+          const low = s.errorLow[i], high = s.errorHigh[i];
+          if (low == null || high == null || !isFinite(low) || !isFinite(high)
+            || !isFinite(s.x[i])) continue;
+          const x = tx(s.x[i]), yLow = ty(low), yHigh = ty(high);
+          ctx.beginPath();
+          ctx.moveTo(x, yLow); ctx.lineTo(x, yHigh);
+          ctx.moveTo(x - capHalfWidth, yLow); ctx.lineTo(x + capHalfWidth, yLow);
+          ctx.moveTo(x - capHalfWidth, yHigh); ctx.lineTo(x + capHalfWidth, yHigh);
+          ctx.stroke();
+        }
+      }
       for (let i = 0; i < s.x.length; i++) {
         const yv = s.y[i];
         if (yv == null || !isFinite(yv) || !isFinite(s.x[i])) continue;
