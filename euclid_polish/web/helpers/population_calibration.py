@@ -15,11 +15,14 @@ from scipy.ndimage import gaussian_filter1d
 
 from euclid_polish.config import Config
 from euclid_polish.population.euclid_galaxy_prior import (
+    APERTURE_FWHM_MODEL_VERSION,
     BRIGHT_BRIDGE_JOIN_MAGNITUDES,
     JOINT_EUCLID_GALAXY_KIND,
     JOINT_EUCLID_GALAXY_VERSION,
     RADIUS_MODEL_VERSION,
+    ConditionalApertureFWHMDistribution,
     ConditionalRadiusLaw,
+    fit_conditional_aperture_fwhm_distribution,
     fit_continuous_generation_magnitude_law,
     fit_linear_conditional_radius_law_from_binned_counts,
     joint_density_grid,
@@ -95,6 +98,9 @@ def joint_galaxy_candidate() -> dict[str, Any] | None:
             )
         )
         radius_law = ConditionalRadiusLaw.from_payload(source["radius_law"])
+        aperture_fwhm = ConditionalApertureFWHMDistribution.from_payload(
+            source["aperture_fwhm_distribution"]
+        )
         density = float(source["generation"]["surface_density_arcmin2"])
         density_cap = float(
             source["generation"]["differential_density_cap_arcmin2_mag"]
@@ -122,12 +128,20 @@ def joint_galaxy_candidate() -> dict[str, Any] | None:
         relation_mean = np.asarray(
             relation_plot["model_mean_log10_arcsec"], dtype=np.float64,
         )
+        fwhm_plot = source["plots"]["conditional_aperture_fwhm"]
+        fwhm_magnitude = np.asarray(
+            fwhm_plot["magnitude"], dtype=np.float64,
+        )
+        fwhm_mean = np.asarray(
+            fwhm_plot["model_mean_arcsec"], dtype=np.float64,
+        )
     except (KeyError, TypeError, ValueError):
         return None
     if (
         source.get("version") != JOINT_EUCLID_GALAXY_VERSION
         or source.get("kind") != JOINT_EUCLID_GALAXY_KIND
         or radius_law.version != RADIUS_MODEL_VERSION
+        or aperture_fwhm.version != APERTURE_FWHM_MODEL_VERSION
         or len(str(source.get("fingerprint") or "")) != 64
         or not source.get("valid")
         or not np.isclose(density, magnitude_law.integrated_density())
@@ -152,6 +166,8 @@ def joint_galaxy_candidate() -> dict[str, Any] | None:
         or radius_x.shape != q1_weighted_radius_density.shape
         or relation_x.size < 2
         or relation_x.shape != relation_mean.shape
+        or fwhm_magnitude.size < 2
+        or fwhm_magnitude.shape != fwhm_mean.shape
         or not np.all(np.isfinite(magnitude_x))
         or not np.all(np.isfinite(magnitude_density) & (magnitude_density > 0.0))
         or not np.all(np.isfinite(generation_x))
@@ -168,6 +184,8 @@ def joint_galaxy_candidate() -> dict[str, Any] | None:
         )
         or not np.all(np.isfinite(relation_x))
         or not np.all(np.isfinite(relation_mean))
+        or not np.all(np.isfinite(fwhm_magnitude))
+        or not np.all(np.isfinite(fwhm_mean) & (fwhm_mean > 0.0))
     ):
         return None
     return source
@@ -197,12 +215,17 @@ def fit_euclid_joint_galaxy_candidate() -> dict[str, Any]:
         count_bins = count_payload["apertures"]["f2"]["bins"]
         magnitude_bins = radius_payload["magnitude_bins"]
         joint_bins = radius_payload["joint_bins"]
+        magnitude_fwhm_bins = radius_payload["magnitude_fwhm_bins"]
         magnitude_edges = np.asarray(
             radius_payload["magnitude_edges"], dtype=np.float64,
         )
         radius_bins = radius_payload["radius_bins"]
         radius_edges = np.asarray(
             radius_payload["radius_edges_arcsec"], dtype=np.float64,
+        )
+        fwhm_bins = radius_payload["fwhm_bins"]
+        fwhm_edges = np.asarray(
+            radius_payload["fwhm_edges_arcsec"], dtype=np.float64,
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise ValueError(
@@ -255,6 +278,24 @@ def fit_euclid_joint_galaxy_candidate() -> dict[str, Any]:
         np.log10(radius_edges),
         selected_grid,
         weight_grid,
+    )
+    fwhm_weight_grid = np.zeros(
+        (magnitude_edges.size - 1, fwhm_edges.size - 1), dtype=np.float64,
+    )
+    for item in magnitude_fwhm_bins:
+        mag_index = int(item["magnitude_bin"])
+        fwhm_index = int(item["fwhm_bin"])
+        fwhm_weight_grid[mag_index, fwhm_index] = float(
+            item["expected_fwhm"]
+        )
+    aperture_fwhm = fit_conditional_aperture_fwhm_distribution(
+        magnitude_edges,
+        fwhm_edges,
+        fwhm_weight_grid,
+        selection=(
+            f"{radius_payload['selection']}; "
+            f"{radius_payload['fwhm_selection']}"
+        ),
     )
     log_radius_edges = np.log10(radius_edges)
     magnitude_law, bright_fit_diagnostics = (
@@ -357,6 +398,17 @@ def fit_euclid_joint_galaxy_candidate() -> dict[str, Any]:
             np.sum(row * log_radius_centers) / expected
         ))
     relation_model = radius_law.mean(relation_x)
+    fwhm_centers = 0.5 * (fwhm_edges[:-1] + fwhm_edges[1:])
+    fwhm_observed_mean: list[float | None] = []
+    for row in fwhm_weight_grid:
+        expected = float(np.sum(row))
+        if expected <= 0.0:
+            fwhm_observed_mean.append(None)
+            continue
+        fwhm_observed_mean.append(float(
+            np.sum(row * fwhm_centers) / expected
+        ))
+    fwhm_model_mean = aperture_fwhm.mean(relation_x)
     fit_row_mask = np.sum(selected_grid, axis=1) >= (
         radius_law.fit_min_selected_per_magnitude_bin
     )
@@ -394,6 +446,7 @@ def fit_euclid_joint_galaxy_candidate() -> dict[str, Any]:
         "fitted_magnitude_law": fitted_magnitude_law.to_payload(),
         "magnitude_law": magnitude_law.to_payload(),
         "radius_law": radius_law.to_payload(),
+        "aperture_fwhm_distribution": aperture_fwhm.to_payload(),
         "magnitude_plot": {
             "label": "Q1 MER + PHZ VIS 2FWHM",
             "law": {
@@ -473,6 +526,15 @@ def fit_euclid_joint_galaxy_candidate() -> dict[str, Any]:
                 "fit_interval": conditional_fit_interval,
                 "model_kind": "straight_truncated_gaussian_no_tail",
             },
+            "conditional_aperture_fwhm": {
+                "magnitude": relation_x.tolist(),
+                "observed_mean_arcsec": fwhm_observed_mean,
+                "model_mean_arcsec": fwhm_model_mean.tolist(),
+                "model_kind": "empirical_mer_fwhm_given_vis_2fwhm_magnitude",
+                "out_of_support_policy": (
+                    aperture_fwhm.out_of_support_policy
+                ),
+            },
             "fit_diagnostics": {
                 "conditional_cross_entropy": conditional_cross_entropy,
                 "q1_marginal_total_variation": float(
@@ -532,6 +594,11 @@ def fit_euclid_joint_galaxy_candidate() -> dict[str, Any]:
             "radius_min_arcsec": 10.0 ** radius_law.log_radius_min,
             "radius_max_arcsec": 10.0 ** radius_law.log_radius_max,
             "sampling_order": "radius_marginal_then_brightness_given_radius",
+            "aperture_fwhm_sampling": (
+                "MER_FWHM_given_sampled_VIS_2FWHM_magnitude"
+            ),
+            "aperture_fwhm_min_arcsec": aperture_fwhm.minimum_arcsec,
+            "aperture_fwhm_max_arcsec": aperture_fwhm.maximum_arcsec,
             "morphology_assignment": "balanced_random_tng_atlas",
             "position_process": "homogeneous_poisson",
         },
@@ -552,6 +619,15 @@ def fit_euclid_joint_galaxy_candidate() -> dict[str, Any]:
                 "log10 circularized Sersic radius over 0.03--10 arcsec; "
                 "no bright break and no generated broad tail"
             ),
+            "aperture_fwhm": (
+                "Q1 MER catalogue FWHM used by A-PHOT, sampled from the "
+                "aggregate magnitude x FWHM histogram conditional on the "
+                "same VIS 2FWHM brightness assigned to the synthetic galaxy"
+            ),
+            "aperture_fwhm_model": (
+                "empirical 0.025-arcsec bins with nearest observed "
+                "magnitude-bin continuation outside populated support"
+            ),
             "radius_selection": str(radius_payload["selection"]),
             "radius_acquisition": str(radius_payload["acquisition"]),
             "cosmos_used": False,
@@ -569,6 +645,8 @@ def fit_euclid_joint_galaxy_candidate() -> dict[str, Any]:
             "radius_magnitude_bins": len(magnitude_bins),
             "radius_histogram_bins": len(radius_bins),
             "joint_populated_bins": len(joint_bins),
+            "fwhm_histogram_bins": len(fwhm_bins),
+            "magnitude_fwhm_populated_bins": len(magnitude_fwhm_bins),
         },
     }
     fingerprint = hashlib.sha256(json.dumps(

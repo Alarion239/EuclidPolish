@@ -5,6 +5,8 @@ Every field galaxy uses a resolved TNG50 SKIRT morphology and its native
 VIS/NISP proportions. The active Euclid prior supplies a VIS Sérsic half-light
 radius and a jointly conditioned VIS 2FWHM aperture brightness. One shared
 brightness factor is applied to all TNG bands after the morphology is resized.
+The same brightness draw supplies the MER photometric FWHM that defines the
+aperture radius and target PSF used by the normalization.
 
 The output of :meth:`SkySimulator.simulate_field` is a single :class:`Image`
 with ``data`` of shape ``(H, W, 4)`` in **raw electrons** on the 0.05″ HR
@@ -64,6 +66,9 @@ from euclid_polish.tng.types import N_ORIENTATIONS, TNG_NATIVE_PC_PER_PIXEL
 
 class _NoRenderableTNGDonorError(ValueError):
     """A sampled field-galaxy geometry exceeds the available donor support."""
+
+
+_MER_APERTURE_GAUSSIAN_SIGMA_SUPPORT = 5.0
 
 
 # ---------------------------------------------------------------------------
@@ -410,6 +415,22 @@ class SkySimulator:
 
     def _maximum_aperture_response_radius_pixels(self) -> int:
         """Conservative aperture-plus-PSF support for bounded TNG renders."""
+        if isinstance(self.population_prior, JointGalaxyPopulationPrior):
+            fwhm = (
+                self.population_prior.aperture_fwhm_distribution.maximum_arcsec
+            )
+            sigma_pixels = (
+                fwhm
+                / self.config.pixel_scale
+                / (2.0 * math.sqrt(2.0 * math.log(2.0)))
+            )
+            kernel_half_support = int(math.ceil(
+                _MER_APERTURE_GAUSSIAN_SIGMA_SUPPORT * sigma_pixels
+            ))
+            return (
+                int(math.ceil(fwhm / self.config.pixel_scale))
+                + kernel_half_support
+            )
         if self.vis_psf_set is None:
             psfs = [make_gaussian_psf(
                 Config.get_band("VIS").psf_fwhm_arcsec,
@@ -433,26 +454,31 @@ class SkySimulator:
             )
         return radius
 
-    def _draw_aperture_psf(
-        self, rng: np.random.Generator,
+    def _build_mer_aperture_psf(
+        self, fwhm_arcsec: float,
     ) -> tuple[np.ndarray, float, str]:
-        """Draw an orientation-free VIS PSF for 2FWHM normalization only."""
-        if self.vis_psf_set is None:
-            psf = make_gaussian_psf(
-                Config.get_band("VIS").psf_fwhm_arcsec,
-                self.config.pixel_scale,
-            )
-            source = "configured_gaussian_fallback"
-        else:
-            sample = self.vis_psf_set.draw_sample(
-                rng, use_unrotated_prob=1.0, warp_prob=0.0,
-            )
-            psf = self.vis_psf_set.apply_sample(sample)
-            source = f"empirical_vis_psf:{sample.index}"
-        fwhm = self._psf_fwhm_arcsec(psf)
+        """Build the circular target PSF represented by the MER FWHM."""
+        fwhm = float(fwhm_arcsec)
         if not np.isfinite(fwhm) or fwhm <= 0.0:
-            raise ValueError("sampled VIS PSF has no measurable positive FWHM")
-        return np.asarray(psf.data, dtype=np.float32), fwhm, source
+            raise ValueError("MER aperture FWHM must be finite and positive")
+        sigma_pixels = (
+            fwhm
+            / self.config.pixel_scale
+            / (2.0 * math.sqrt(2.0 * math.log(2.0)))
+        )
+        half_support = max(1, int(math.ceil(
+            _MER_APERTURE_GAUSSIAN_SIGMA_SUPPORT * sigma_pixels
+        )))
+        psf = make_gaussian_psf(
+            fwhm,
+            self.config.pixel_scale,
+            size=2 * half_support + 1,
+        )
+        return (
+            np.asarray(psf.data, dtype=np.float32),
+            fwhm,
+            "q1_mer_photometric_fwhm_gaussian",
+        )
 
     # ------------------------------------------------------------------ #
     def _field_area_arcmin2(self) -> float:
@@ -735,7 +761,12 @@ class SkySimulator:
                     rng, radius_arcsec=draw.re_arcsec,
                 )
             )
-            psf_kernel, psf_fwhm, psf_source = self._draw_aperture_psf(rng)
+            aperture_fwhm = prior.sample_aperture_fwhm(
+                rng, magnitude=magnitude,
+            )
+            psf_kernel, psf_fwhm, psf_source = (
+                self._build_mer_aperture_psf(aperture_fwhm)
+            )
             try:
                 rendered = self.tng_renderer.normalize_vis_2fwhm(
                     rendered,
@@ -871,6 +902,15 @@ class SkySimulator:
             ),
             "achieved_vis_2fwhm_flux_e": float(
                 tmeta.get("achieved_vis_2fwhm_flux_e", float("nan"))
+            ),
+            "mer_photometric_fwhm_arcsec": float(
+                tmeta.get("mer_photometric_fwhm_arcsec", float("nan"))
+            ),
+            "aperture_radius_arcsec": float(
+                tmeta.get("aperture_radius_arcsec", float("nan"))
+            ),
+            "aperture_diameter_arcsec": float(
+                tmeta.get("aperture_diameter_arcsec", float("nan"))
             ),
             "aperture_psf_fwhm_arcsec": float(
                 tmeta.get("aperture_psf_fwhm_arcsec", float("nan"))

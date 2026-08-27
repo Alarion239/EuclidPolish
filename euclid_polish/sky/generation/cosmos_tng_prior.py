@@ -21,6 +21,7 @@ from euclid_polish.population.euclid_galaxy_prior import (
     JOINT_EUCLID_GALAXY_KIND,
     JOINT_EUCLID_GALAXY_VERSION,
     RADIUS_MODEL_VERSION,
+    ConditionalApertureFWHMDistribution,
     ConditionalRadiusLaw,
     joint_density_grid,
 )
@@ -521,6 +522,11 @@ class JointGalaxyPopulationPrior:
             self.radius_law = ConditionalRadiusLaw.from_payload(
                 payload["radius_law"]
             )
+            self.aperture_fwhm_distribution = (
+                ConditionalApertureFWHMDistribution.from_payload(
+                    payload["aperture_fwhm_distribution"]
+                )
+            )
             expected = float(
                 payload["generation"]["surface_density_arcmin2"]
             )
@@ -632,6 +638,12 @@ class JointGalaxyPopulationPrior:
         return magnitude, float(ab_mag_to_electrons(
             magnitude, Config.get_band("VIS"),
         ))
+
+    def sample_aperture_fwhm(
+        self, rng: np.random.Generator, *, magnitude: float,
+    ) -> float:
+        """Draw the MER aperture FWHM conditional on VIS-2FWHM brightness."""
+        return self.aperture_fwhm_distribution.sample(magnitude, rng)
 
     def sample(self, rng: np.random.Generator) -> CosmosTngDraw:
         geometry = self.sample_geometry(rng)

@@ -29,7 +29,10 @@ def _meta():
              "render_support_clipped": True,
              "target_vis_2fwhm_mag": 23.1,
              "achieved_vis_2fwhm_mag": 23.1,
-             "aperture_psf_fwhm_arcsec": 0.16,
+             "mer_photometric_fwhm_arcsec": 1.3,
+             "aperture_radius_arcsec": 1.3,
+             "aperture_diameter_arcsec": 2.6,
+             "aperture_psf_fwhm_arcsec": 1.3,
              "magnitude_fit_fingerprint": "m" * 64,
              "galaxy_density_arcmin2": 100.0,
              "galaxy_prior_density_arcmin2": 100.0,
@@ -104,7 +107,10 @@ def test_writer_then_reader_roundtrip(tmp_path):
     assert tng["galaxy_faint_density_cap_arcmin2_mag"] == 100.0
     assert tng["target_vis_2fwhm_mag"] == 23.1
     assert tng["achieved_vis_2fwhm_mag"] == 23.1
-    assert tng["aperture_psf_fwhm_arcsec"] == 0.16
+    assert tng["mer_photometric_fwhm_arcsec"] == 1.3
+    assert tng["aperture_radius_arcsec"] == 1.3
+    assert tng["aperture_diameter_arcsec"] == 2.6
+    assert tng["aperture_psf_fwhm_arcsec"] == 1.3
     assert tng["magnitude_fit_fingerprint"] == "m" * 64
 
 

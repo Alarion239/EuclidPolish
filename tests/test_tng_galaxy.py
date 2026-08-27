@@ -340,6 +340,29 @@ def test_compact_aperture_response_matches_full_fft(image_shape, psf_shape):
     assert actual == pytest.approx(expected, rel=1e-6, abs=1e-8)
 
 
+def test_mer_2fwhm_radius_uses_catalogue_fwhm_on_render_grid():
+    pixel_scale = 0.1
+    mer_fwhm_arcsec = 1.3
+    vis = np.ones((101, 101), dtype=np.float32)
+    yy, xx = np.indices(vis.shape, dtype=np.float64)
+    expected_radius_pixels = mer_fwhm_arcsec / pixel_scale
+    expected = float(np.sum(
+        np.hypot(yy - 50.0, xx - 50.0) <= expected_radius_pixels
+    ))
+
+    actual = TNGRenderer(
+        pixel_scale_arcsec=pixel_scale
+    )._measure_vis_2fwhm_aperture_flux(
+        vis,
+        circular_psf=np.ones((1, 1), dtype=np.float32),
+        psf_fwhm_arcsec=mer_fwhm_arcsec,
+        psf_identity="mer-fwhm-fixture",
+    )
+
+    assert expected_radius_pixels == pytest.approx(13.0)
+    assert actual == pytest.approx(expected)
+
+
 def test_psf_caches_are_instance_owned_and_parity_sensitive(tmp_path):
     directory = _write_fake_galaxy(tmp_path, "111", size=128)
     renderer = TNGRenderer(pixel_scale_arcsec=0.05)

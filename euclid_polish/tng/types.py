@@ -347,7 +347,7 @@ class TotalVISNormalization:
 
 @dataclass(frozen=True, slots=True)
 class VIS2FWHMNormalization:
-    """Shared scalar fixing the centred VIS two-FWHM aperture flux."""
+    """Shared scalar fixing the centred MER VIS two-FWHM aperture flux."""
 
     target_flux_e: float
     achieved_flux_e: float
@@ -356,8 +356,10 @@ class VIS2FWHMNormalization:
     psf_source: str
     psf_fingerprint: str
 
-    APERTURE_PSF_MODEL: ClassVar[str] = "circularized_empirical_vis_psf"
-    APERTURE_RESPONSE_METHOD: ClassVar[str] = "compact_adjoint_v1"
+    APERTURE_PSF_MODEL: ClassVar[str] = (
+        "circular_gaussian_mer_photometric_fwhm"
+    )
+    APERTURE_RESPONSE_METHOD: ClassVar[str] = "compact_adjoint_v2_mer_fwhm"
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -396,6 +398,9 @@ class VIS2FWHMNormalization:
             ),
             "brightness_scale": self.brightness_scale,
             "photometric_scaling": "vis_2fwhm_after_redshift_and_nominal_scale",
+            "mer_photometric_fwhm_arcsec": self.psf_fwhm_arcsec,
+            "aperture_radius_arcsec": self.psf_fwhm_arcsec,
+            "aperture_diameter_arcsec": 2.0 * self.psf_fwhm_arcsec,
             "aperture_psf_fwhm_arcsec": self.psf_fwhm_arcsec,
             "aperture_psf_source": self.psf_source,
             "aperture_psf_fingerprint": self.psf_fingerprint,

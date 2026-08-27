@@ -13,10 +13,22 @@ def test_radius_statistics_query_uses_only_aggregate_brackets(
 ):
     monkeypatch.setattr(Config, "DATA_DIR", str(tmp_path))
     monkeypatch.setattr(radius_stats, "Q1_GALAXY_RADIUS_BIN_COUNT", 2)
+    monkeypatch.setattr(radius_stats, "Q1_GALAXY_FWHM_BIN_COUNT", 2)
     queries: list[str] = []
 
     def launch(query, _relogin):
         queries.append(query)
+        if "AS fwhm_bin" in query:
+            return [
+                {
+                    "magnitude_bin": mag_index,
+                    "fwhm_bin": fwhm_index,
+                    "selected_fwhm": 20,
+                    "expected_fwhm": 16.0,
+                }
+                for mag_index in range(2)
+                for fwhm_index in range(2)
+            ]
         return [
             {
                 "magnitude_bin": mag_index,
@@ -42,25 +54,39 @@ def test_radius_statistics_query_uses_only_aggregate_brackets(
     )
 
     assert payload["complete"] is True
-    assert payload["completed_queries"] == payload["total_queries"] == 1
+    assert payload["completed_queries"] == payload["total_queries"] == 2
     assert len(payload["joint_bins"]) == 4
+    assert len(payload["magnitude_fwhm_bins"]) == 4
     assert len(payload["magnitude_bins"]) == 2
     assert len(payload["radius_bins"]) == 2
+    assert len(payload["fwhm_bins"]) == 2
     assert "no object rows and no random sky-position" in payload["acquisition"]
-    assert payload["version"] == payload["selection_version"] == 3
+    assert payload["version"] == 4
+    assert payload["selection_version"] == 3
     assert payload["archive_provider"] == "ESA Euclid Science Archive"
     assert payload["archive_environment"] == "PDR"
     assert "public anonymous-compatible" in payload["archive_access"]
     assert "R_e,circ = R_e,major * sqrt(q)" in payload["radius_definition"]
     assert payload["vis_pixel_scale_arcsec"] == pytest.approx(0.1)
     assert all("JOIN catalogue.mer_morphology AS morph" in query for query in queries)
-    assert all("COUNT(*) AS selected_radii" in query for query in queries)
-    assert all("GROUP BY magnitude_bin, radius_bin" in query for query in queries)
+    radius_queries = [query for query in queries if "AS radius_bin" in query]
+    fwhm_queries = [query for query in queries if "AS fwhm_bin" in query]
+    assert all("COUNT(*) AS selected_radii" in query for query in radius_queries)
+    assert all(
+        "GROUP BY magnitude_bin, radius_bin" in query
+        for query in radius_queries
+    )
+    assert all("COUNT(*) AS selected_fwhm" in query for query in fwhm_queries)
+    assert all(
+        "GROUP BY magnitude_bin, fwhm_bin" in query for query in fwhm_queries
+    )
+    assert all("mer.fwhm >= 0.5" in query for query in fwhm_queries)
+    assert all("mer.fwhm < 3" in query for query in fwhm_queries)
     circularized = (
         "(morph.sersic_sersic_vis_radius * "
         "SQRT(morph.sersic_sersic_vis_axis_ratio))"
     )
-    assert all(f"LOG10({circularized})" in query for query in queries)
+    assert all(f"LOG10({circularized})" in query for query in radius_queries)
     assert all(f"{circularized} >= 0.03" in query for query in queries)
     assert all(f"{circularized} < 10" in query for query in queries)
     assert all("mer.vis_det = 1" in query for query in queries)
@@ -76,7 +102,7 @@ def test_radius_statistics_query_uses_only_aggregate_brackets(
     # Preserve compact sources: do not adopt the optional lower R_e/a cut.
     assert all("0.001 * mer.semimajor_axis" not in query for query in queries)
     assert all("SELECT TOP" not in query for query in queries)
-    assert progress[-1][:2] == (1, 1)
+    assert progress[-1][:2] == (2, 2)
     assert radius_stats.read_q1_galaxy_radius_statistics()["complete"] is True
 
 
@@ -100,11 +126,22 @@ def test_radius_statistics_payload_can_be_rebuilt_from_grouped_bins():
                 "expected_radii": 4.25,
             },
         ],
+        [
+            {
+                "magnitude_bin": 0,
+                "fwhm_bin": 1,
+                "selected_fwhm": 5,
+                "expected_fwhm": 4.25,
+            },
+        ],
         magnitude_edges=[14.0, 14.1, 14.2],
         radius_edges_arcsec=[0.03, 0.3, 3.0],
+        fwhm_edges_arcsec=[0.5, 1.0, 1.5],
         progressive_stride=0.1,
-        completed_queries=4,
-        total_queries=4,
+        completed_radius_queries=4,
+        total_radius_queries=4,
+        completed_fwhm_queries=2,
+        total_fwhm_queries=2,
     )
 
     assert payload["complete"] is True
@@ -112,6 +149,7 @@ def test_radius_statistics_payload_can_be_rebuilt_from_grouped_bins():
     assert payload["magnitude_bins"][0]["selected_radii"] == 5
     assert payload["magnitude_bins"][1]["selected_radii"] == 0
     assert payload["radius_bins"][1]["expected_radii"] == pytest.approx(4.25)
+    assert payload["fwhm_bins"][1]["expected_fwhm"] == pytest.approx(4.25)
 
 
 def test_radius_statistics_launch_retries_after_successful_relogin(monkeypatch):

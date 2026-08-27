@@ -161,7 +161,11 @@ def register(app):
             fit_offset = aperture_total + radius_total
             cap.tick(fit_offset, grand_total, "fit Q1 VIS 2FWHM straight line")
             brightness_fit = fit_q1_galaxy_aperture_counts()
-            cap.tick(fit_offset + 1, grand_total, "fit aggregate Sersic R_e relation")
+            cap.tick(
+                fit_offset + 1,
+                grand_total,
+                "fit aggregate Sersic R_e and MER FWHM relations",
+            )
             joint_fit = fit_euclid_joint_galaxy_candidate()
             cap.tick(fit_offset + 2, grand_total, "rebuild galaxy-distribution plots")
             plots = build_galaxy_distributions()
@@ -174,7 +178,7 @@ def register(app):
                 f"{result['footprint_area_deg2']:.1f} deg²\n"
             )
             cap.write(
-                f"Q1 aggregate Sersic R_e statistics: "
+                f"Q1 aggregate Sersic R_e + MER FWHM statistics: "
                 f"{radii['completed_queries']}/{radii['total_queries']} "
                 "grouped queries; no object rows or random field sampling\n"
             )

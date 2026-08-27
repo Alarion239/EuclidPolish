@@ -15,11 +15,12 @@ from euclid_polish.population.magnitude_law import (
     StraightMagnitudeLaw,
 )
 
-JOINT_EUCLID_GALAXY_VERSION = 12
+JOINT_EUCLID_GALAXY_VERSION = 13
 JOINT_EUCLID_GALAXY_KIND = (
     "euclid_vis2fwhm_circularized_sersic_re_joint"
 )
 RADIUS_MODEL_VERSION = 5
+APERTURE_FWHM_MODEL_VERSION = 1
 RADIUS_PIVOT_MAG = 23.0
 RADIUS_FIT_MIN_SELECTED_PER_MAG_BIN = 20
 RADIUS_FIT_EFFECTIVE_WEIGHT_CAP = 1000.0
@@ -299,6 +300,177 @@ class ConditionalRadiusLaw:
         lower = (edges[None, :-1] - mean[:, None]) / self.scatter_dex
         probability = ndtr(upper) - ndtr(lower)
         return probability / np.sum(probability, axis=1, keepdims=True)
+
+
+@dataclass(frozen=True)
+class ConditionalApertureFWHMDistribution:
+    """Empirical MER photometric FWHM distribution conditioned on brightness."""
+
+    version: int
+    magnitude_edges: tuple[float, ...]
+    fwhm_edges_arcsec: tuple[float, ...]
+    probability: tuple[tuple[float, ...], ...]
+    source_magnitude_bin: tuple[int, ...]
+    selection: str
+    out_of_support_policy: str
+
+    @classmethod
+    def from_payload(
+        cls, payload: dict,
+    ) -> ConditionalApertureFWHMDistribution:
+        try:
+            distribution = cls(
+                version=int(payload["version"]),
+                magnitude_edges=tuple(
+                    float(value) for value in payload["magnitude_edges"]
+                ),
+                fwhm_edges_arcsec=tuple(
+                    float(value) for value in payload["fwhm_edges_arcsec"]
+                ),
+                probability=tuple(
+                    tuple(float(value) for value in row)
+                    for row in payload["probability"]
+                ),
+                source_magnitude_bin=tuple(
+                    int(value) for value in payload["source_magnitude_bin"]
+                ),
+                selection=str(payload["selection"]),
+                out_of_support_policy=str(payload["out_of_support_policy"]),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(
+                "MER aperture-FWHM distribution payload is malformed"
+            ) from exc
+        magnitude_edges = np.asarray(
+            distribution.magnitude_edges, dtype=np.float64,
+        )
+        fwhm_edges = np.asarray(
+            distribution.fwhm_edges_arcsec, dtype=np.float64,
+        )
+        probability = np.asarray(
+            distribution.probability, dtype=np.float64,
+        )
+        source = np.asarray(
+            distribution.source_magnitude_bin, dtype=np.int64,
+        )
+        expected_shape = (magnitude_edges.size - 1, fwhm_edges.size - 1)
+        if not (
+            distribution.version == APERTURE_FWHM_MODEL_VERSION
+            and magnitude_edges.size >= 2
+            and fwhm_edges.size >= 2
+            and probability.shape == expected_shape
+            and source.shape == (expected_shape[0],)
+            and np.all(np.isfinite(magnitude_edges))
+            and np.all(np.diff(magnitude_edges) > 0.0)
+            and np.all(np.isfinite(fwhm_edges) & (fwhm_edges > 0.0))
+            and np.all(np.diff(fwhm_edges) > 0.0)
+            and np.all(np.isfinite(probability) & (probability >= 0.0))
+            and np.allclose(
+                np.sum(probability, axis=1), 1.0, rtol=0.0, atol=1e-10,
+            )
+            and np.all((source >= 0) & (source < expected_shape[0]))
+            and bool(distribution.selection.strip())
+            and distribution.out_of_support_policy
+            == "nearest_observed_magnitude_bin"
+        ):
+            raise ValueError("MER aperture-FWHM distribution is invalid")
+        return distribution
+
+    def to_payload(self) -> dict:
+        return asdict(self)
+
+    @property
+    def minimum_arcsec(self) -> float:
+        return float(self.fwhm_edges_arcsec[0])
+
+    @property
+    def maximum_arcsec(self) -> float:
+        return float(self.fwhm_edges_arcsec[-1])
+
+    def _magnitude_bin(self, magnitude: float) -> int:
+        value = float(magnitude)
+        if not math.isfinite(value):
+            raise ValueError("VIS 2FWHM magnitude must be finite")
+        return int(np.clip(
+            np.searchsorted(self.magnitude_edges, value, side="right") - 1,
+            0,
+            len(self.magnitude_edges) - 2,
+        ))
+
+    def sample(
+        self, magnitude: float, rng: np.random.Generator,
+    ) -> float:
+        """Draw the MER FWHM paired with a sampled VIS-2FWHM magnitude."""
+        magnitude_bin = self._magnitude_bin(magnitude)
+        probability = np.asarray(
+            self.probability[magnitude_bin], dtype=np.float64,
+        )
+        fwhm_bin = int(rng.choice(probability.size, p=probability))
+        return float(rng.uniform(
+            self.fwhm_edges_arcsec[fwhm_bin],
+            self.fwhm_edges_arcsec[fwhm_bin + 1],
+        ))
+
+    def mean(self, magnitude: np.ndarray | float) -> np.ndarray:
+        values = np.atleast_1d(np.asarray(magnitude, dtype=np.float64))
+        if not np.all(np.isfinite(values)):
+            raise ValueError("VIS 2FWHM magnitudes must be finite")
+        indices = np.clip(
+            np.searchsorted(self.magnitude_edges, values, side="right") - 1,
+            0,
+            len(self.magnitude_edges) - 2,
+        )
+        centres = 0.5 * (
+            np.asarray(self.fwhm_edges_arcsec[:-1])
+            + np.asarray(self.fwhm_edges_arcsec[1:])
+        )
+        probability = np.asarray(self.probability, dtype=np.float64)
+        return probability[indices] @ centres
+
+
+def fit_conditional_aperture_fwhm_distribution(
+    magnitude_edges: np.ndarray,
+    fwhm_edges_arcsec: np.ndarray,
+    expected_counts: np.ndarray,
+    *,
+    selection: str,
+) -> ConditionalApertureFWHMDistribution:
+    """Normalize grouped Q1 magnitude-FWHM counts without breaking pairing."""
+    mag_edges = np.asarray(magnitude_edges, dtype=np.float64)
+    fwhm_edges = np.asarray(fwhm_edges_arcsec, dtype=np.float64)
+    counts = np.asarray(expected_counts, dtype=np.float64)
+    expected_shape = (mag_edges.size - 1, fwhm_edges.size - 1)
+    if not (
+        mag_edges.size >= 2
+        and fwhm_edges.size >= 2
+        and counts.shape == expected_shape
+        and np.all(np.isfinite(mag_edges))
+        and np.all(np.diff(mag_edges) > 0.0)
+        and np.all(np.isfinite(fwhm_edges) & (fwhm_edges > 0.0))
+        and np.all(np.diff(fwhm_edges) > 0.0)
+        and np.all(np.isfinite(counts) & (counts >= 0.0))
+        and bool(str(selection).strip())
+    ):
+        raise ValueError("MER aperture-FWHM fit inputs are malformed")
+    weight = np.sum(counts, axis=1)
+    populated = np.flatnonzero(weight > 0.0)
+    if not populated.size or float(np.sum(weight)) <= 0.0:
+        raise ValueError("MER aperture-FWHM histogram is empty")
+    source = np.arange(weight.size, dtype=np.int64)
+    for index in np.flatnonzero(weight <= 0.0):
+        source[index] = int(populated[np.argmin(np.abs(populated - index))])
+    probability = counts[source] / weight[source, None]
+    return ConditionalApertureFWHMDistribution(
+        version=APERTURE_FWHM_MODEL_VERSION,
+        magnitude_edges=tuple(float(value) for value in mag_edges),
+        fwhm_edges_arcsec=tuple(float(value) for value in fwhm_edges),
+        probability=tuple(
+            tuple(float(value) for value in row) for row in probability
+        ),
+        source_magnitude_bin=tuple(int(value) for value in source),
+        selection=str(selection),
+        out_of_support_policy="nearest_observed_magnitude_bin",
+    )
 
 
 

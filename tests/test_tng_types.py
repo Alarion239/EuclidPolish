@@ -348,3 +348,9 @@ def test_redshift_and_aperture_normalizations_are_typed_trace_updates():
     assert normalized.trace.normalization is aperture
     assert fields["target_vis_2fwhm_flux_e"] == pytest.approx(240.0)
     assert np.isfinite(fields["target_vis_2fwhm_mag"])
+    assert fields["mer_photometric_fwhm_arcsec"] == pytest.approx(0.16)
+    assert fields["aperture_radius_arcsec"] == pytest.approx(0.16)
+    assert fields["aperture_diameter_arcsec"] == pytest.approx(0.32)
+    assert fields["aperture_psf_model"] == (
+        "circular_gaussian_mer_photometric_fwhm"
+    )

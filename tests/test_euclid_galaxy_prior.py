@@ -100,6 +100,15 @@ def active_payload() -> dict:
         "fitted_magnitude_law": fitted_mag.to_payload(),
         "magnitude_law": mag.to_payload(),
         "radius_law": current_radius_law().to_payload(),
+        "aperture_fwhm_distribution": {
+            "version": 1,
+            "magnitude_edges": [14.0, 29.0],
+            "fwhm_edges_arcsec": [0.5, 1.0, 1.5, 3.0],
+            "probability": [[0.0, 1.0, 0.0]],
+            "source_magnitude_bin": [0],
+            "selection": "fixture MER photometric FWHM",
+            "out_of_support_policy": "nearest_observed_magnitude_bin",
+        },
         "magnitude_plot": {
             "law": {"x": [14.0, 29.0], "density": [0.1, 100.0]},
             "generation_law": {
@@ -117,6 +126,10 @@ def active_payload() -> dict:
             "conditional_radius": {
                 "magnitude": [14.0, 29.0],
                 "model_mean_log10_arcsec": [0.32, -0.88],
+            },
+            "conditional_aperture_fwhm": {
+                "magnitude": [14.0, 29.0],
+                "model_mean_arcsec": [1.25, 1.25],
             },
         },
         "generation": {
@@ -218,11 +231,13 @@ def test_prior_draws_radius_first_then_brightness_conditioned_on_radius():
     magnitude, flux = prior.sample_brightness(
         rng, radius_arcsec=geometry.re_arcsec,
     )
+    aperture_fwhm = prior.sample_aperture_fwhm(rng, magnitude=magnitude)
 
     assert np.isnan(geometry.target_vis_mag)
     assert 0.03 <= geometry.re_arcsec < 10.0
     assert 14.0 <= magnitude < prior.magnitude_law.mag_faint
     assert flux > 0.0
+    assert 1.0 <= aperture_fwhm < 1.5
     assert prior.morphology_mode == "balanced_random_tng_atlas"
     assert isinstance(
         prior.magnitude_law,
@@ -316,12 +331,13 @@ def test_staged_generator_selects_and_renders_donor_before_brightness():
     class StopAfterBrightness(Exception):
         pass
 
-    def stop_at_psf(_rng):
+    def stop_at_psf(fwhm_arcsec):
+        assert 1.0 <= fwhm_arcsec < 1.5
         events.append("psf")
         raise StopAfterBrightness
 
     simulator._pick_random_field_galaxy = pick_donor
-    simulator._draw_aperture_psf = stop_at_psf
+    simulator._build_mer_aperture_psf = stop_at_psf
     simulator.tng_renderer = Renderer()
 
     with pytest.raises(StopAfterBrightness):
@@ -444,6 +460,25 @@ def test_candidate_fit_uses_only_aggregate_euclid_brightness_and_sersic_radius(
         }
         for index in range(30)
     ]
+    fwhm_edges = np.asarray([0.5, 1.0, 1.5, 2.0, 3.0])
+    magnitude_fwhm_bins = [
+        {
+            "magnitude_bin": mag_index,
+            "fwhm_bin": 1 + (mag_index % 2),
+            "selected_fwhm": 100,
+            "expected_fwhm": 80.0,
+        }
+        for mag_index in range(magnitude.size)
+    ]
+    fwhm_bins = [
+        {
+            "fwhm_lo_arcsec": float(lo),
+            "fwhm_hi_arcsec": float(hi),
+            "selected_fwhm": 100,
+            "expected_fwhm": 80.0,
+        }
+        for lo, hi in zip(fwhm_edges[:-1], fwhm_edges[1:], strict=True)
+    ]
     bright_count_law = current_magnitude_law()
     bright_edges = np.linspace(14.0, 28.0, 141)
     bright_count_bins = []
@@ -505,9 +540,13 @@ def test_candidate_fit_uses_only_aggregate_euclid_brightness_and_sersic_radius(
             "magnitude_edges": magnitude_edges.tolist(),
             "magnitude_bins": magnitude_bins,
             "joint_bins": joint_bins,
+            "magnitude_fwhm_bins": magnitude_fwhm_bins,
             "radius_bins": radius_bins,
             "radius_edges_arcsec": radius_edges.tolist(),
+            "fwhm_bins": fwhm_bins,
+            "fwhm_edges_arcsec": fwhm_edges.tolist(),
             "selection": "fixture circularized morphology-quality selection",
+            "fwhm_selection": "0.5 <= MER FWHM < 3 arcsec",
             "acquisition": "fixture grouped aggregate",
         },
     )
@@ -522,6 +561,10 @@ def test_candidate_fit_uses_only_aggregate_euclid_brightness_and_sersic_radius(
         -0.06, abs=0.01,
     )
     assert payload["radius_law"]["version"] == RADIUS_MODEL_VERSION
+    assert payload["aperture_fwhm_distribution"]["version"] == 1
+    assert payload["plots"]["conditional_aperture_fwhm"][
+        "model_mean_arcsec"
+    ]
     assert payload["plots"]["radius"]["observed_density"]
     assert payload["plots"]["radius"]["q1_weighted_density"]
     assert "circularized" in (

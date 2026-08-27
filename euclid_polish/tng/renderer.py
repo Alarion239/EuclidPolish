@@ -65,7 +65,7 @@ TNG_RADIUS_RENDERER_FINGERPRINT = hashlib.sha256(
         f"{TNG_RADIUS_RENDERING}|"
         "typed_cube_boundary|shrink_only|eligible_orientation|"
         "one_area_resample|no_output_remeasurement|bounded_support|"
-        "adjoint_2fwhm"
+        "mer_photometric_fwhm_adjoint_2fwhm"
     ).encode("ascii")
 ).hexdigest()
 

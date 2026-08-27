@@ -1,7 +1,7 @@
-"""Aggregate Q1 VIS-2FWHM x circularized Sersic-radius statistics.
+"""Aggregate Q1 VIS-2FWHM, Sersic-radius, and aperture-FWHM statistics.
 
-The archive returns only a bounded, two-dimensional histogram.  No object
-catalogue or random sky-position sample is materialized by this workflow.
+The archive returns only bounded grouped histograms.  No object catalogue or
+random sky-position sample is materialized by this workflow.
 """
 
 from __future__ import annotations
@@ -30,19 +30,33 @@ from euclid_polish.web.helpers.q1_star_counts import (
     Q1_DEEP_FIELD_AREA_DEG2,
 )
 
-Q1_GALAXY_RADIUS_VERSION = 3
+Q1_GALAXY_RADIUS_VERSION = 4
 Q1_GALAXY_RADIUS_SELECTION_VERSION = 3
 Q1_GALAXY_RADIUS_MIN_ARCSEC = 0.03
 Q1_GALAXY_RADIUS_MAX_ARCSEC = 10.0
 Q1_GALAXY_RADIUS_BIN_COUNT = 30
+Q1_GALAXY_FWHM_MIN_ARCSEC = 0.5
+Q1_GALAXY_FWHM_MAX_ARCSEC = 3.0
+Q1_GALAXY_FWHM_BIN_COUNT = 100
 # Keep every grouped TAP response below the common 2,000-row archive limit.
 Q1_GALAXY_RADIUS_MAG_BINS_PER_QUERY = 35
-Q1_GALAXY_RADIUS_TOTAL_QUERIES = math.ceil(
+Q1_GALAXY_FWHM_MAG_BINS_PER_QUERY = 18
+_Q1_GALAXY_RADIUS_QUERY_COUNT = math.ceil(
     round(
         (Q1_GALAXY_MAG_FAINT - Q1_GALAXY_MAG_BRIGHT)
         / Q1_GALAXY_MAG_BIN_WIDTH
     )
     / Q1_GALAXY_RADIUS_MAG_BINS_PER_QUERY
+)
+_Q1_GALAXY_FWHM_QUERY_COUNT = math.ceil(
+    round(
+        (Q1_GALAXY_MAG_FAINT - Q1_GALAXY_MAG_BRIGHT)
+        / Q1_GALAXY_MAG_BIN_WIDTH
+    )
+    / Q1_GALAXY_FWHM_MAG_BINS_PER_QUERY
+)
+Q1_GALAXY_RADIUS_TOTAL_QUERIES = (
+    _Q1_GALAXY_RADIUS_QUERY_COUNT + _Q1_GALAXY_FWHM_QUERY_COUNT
 )
 
 _QUERY_LOCK = threading.Lock()
@@ -168,6 +182,49 @@ def _joint_histogram_query(
     """
 
 
+def _fwhm_histogram_query(
+    *,
+    bright: float,
+    chunk_bright: float,
+    chunk_faint: float,
+    bin_width: float,
+    fwhm_bin_count: int,
+) -> str:
+    faint_flux = float(ab_mag_to_uJy(chunk_faint))
+    bright_flux = float(ab_mag_to_uJy(chunk_bright))
+    fwhm_bin_width = (
+        Q1_GALAXY_FWHM_MAX_ARCSEC - Q1_GALAXY_FWHM_MIN_ARCSEC
+    ) / fwhm_bin_count
+    magnitude_bin = (
+        f"FLOOR(({float(Config.AB_ZP_UJY):.16g} - "
+        "2.5 * LOG10(mer.flux_vis_2fwhm_aper) - "
+        f"{bright:.16g}) / {bin_width:.16g})"
+    )
+    fwhm_bin = (
+        f"FLOOR((mer.fwhm - {Q1_GALAXY_FWHM_MIN_ARCSEC:.16g}) / "
+        f"{fwhm_bin_width:.16g})"
+    )
+    return f"""
+    SELECT
+        {magnitude_bin} AS magnitude_bin,
+        {fwhm_bin} AS fwhm_bin,
+        COUNT(*) AS selected_fwhm,
+        SUM(cls.phz_gal_prob) AS expected_fwhm
+    FROM catalogue.mer_catalogue AS mer
+    JOIN catalogue.phz_classification AS cls
+      ON mer.object_id = cls.object_id
+    JOIN catalogue.mer_morphology AS morph
+      ON mer.object_id = morph.object_id
+    WHERE {_deep_field_predicate()}
+      AND mer.flux_vis_2fwhm_aper > {faint_flux:.16g}
+      AND mer.flux_vis_2fwhm_aper <= {bright_flux:.16g}
+      AND mer.fwhm >= {Q1_GALAXY_FWHM_MIN_ARCSEC:.16g}
+      AND mer.fwhm < {Q1_GALAXY_FWHM_MAX_ARCSEC:.16g}
+      {_base_selection()}
+    GROUP BY magnitude_bin, fwhm_bin
+    """
+
+
 def _launch_with_relogin(
     query: str,
     relogin: Callable[[], bool] | None,
@@ -190,42 +247,55 @@ def _launch_with_relogin(
 
 def _build_radius_statistics_payload(
     joint_bins: Iterable[dict[str, Any]],
+    magnitude_fwhm_bins: Iterable[dict[str, Any]],
     *,
     magnitude_edges: Iterable[float],
     radius_edges_arcsec: Iterable[float],
+    fwhm_edges_arcsec: Iterable[float],
     progressive_stride: float = Q1_GALAXY_PROGRESSIVE_STRIDE,
-    completed_queries: int,
-    total_queries: int,
+    completed_radius_queries: int,
+    total_radius_queries: int,
+    completed_fwhm_queries: int,
+    total_fwhm_queries: int,
 ) -> dict[str, Any]:
-    """Build the v3 cache payload from already-grouped archive bins."""
+    """Build the current cache payload from already-grouped archive bins."""
     mag_edges = np.asarray(list(magnitude_edges), dtype=np.float64)
     radius_edges = np.asarray(list(radius_edges_arcsec), dtype=np.float64)
+    fwhm_edges = np.asarray(list(fwhm_edges_arcsec), dtype=np.float64)
     if (
         mag_edges.ndim != 1
         or radius_edges.ndim != 1
+        or fwhm_edges.ndim != 1
         or mag_edges.size < 2
         or radius_edges.size < 2
+        or fwhm_edges.size < 2
         or not np.all(np.isfinite(mag_edges))
         or not np.all(np.isfinite(radius_edges) & (radius_edges > 0.0))
+        or not np.all(np.isfinite(fwhm_edges) & (fwhm_edges > 0.0))
         or not np.all(np.diff(mag_edges) > 0.0)
         or not np.all(np.diff(radius_edges) > 0.0)
+        or not np.all(np.diff(fwhm_edges) > 0.0)
     ):
-        raise ValueError("Q1 radius-cache edges are invalid")
+        raise ValueError("Q1 radius/FWHM-cache edges are invalid")
     magnitude_widths = np.diff(mag_edges)
     width = float(magnitude_widths[0])
     stride = float(progressive_stride)
     stride_bins = int(round(stride / width))
-    completed = int(completed_queries)
-    total = int(total_queries)
+    completed_radius = int(completed_radius_queries)
+    total_radius = int(total_radius_queries)
+    completed_fwhm = int(completed_fwhm_queries)
+    total_fwhm = int(total_fwhm_queries)
     if (
         not np.allclose(magnitude_widths, width, rtol=0.0, atol=1e-9)
         or not math.isfinite(stride)
         or stride < width
         or not math.isclose(stride_bins * width, stride, abs_tol=1e-9)
-        or total <= 0
-        or not 0 <= completed <= total
+        or total_radius <= 0
+        or total_fwhm <= 0
+        or not 0 <= completed_radius <= total_radius
+        or not 0 <= completed_fwhm <= total_fwhm
     ):
-        raise ValueError("Q1 radius-cache binning or progress is invalid")
+        raise ValueError("Q1 radius/FWHM-cache binning or progress is invalid")
 
     bin_count = mag_edges.size - 1
     radius_bin_count = radius_edges.size - 1
@@ -290,11 +360,54 @@ def _build_radius_statistics_payload(
                 / dex_width
             ),
         })
+
+    fwhm_bin_count = fwhm_edges.size - 1
+    normalized_fwhm: dict[tuple[int, int], dict[str, Any]] = {}
+    fwhm_selected = np.zeros(fwhm_bin_count, dtype=np.int64)
+    fwhm_expected = np.zeros(fwhm_bin_count, dtype=np.float64)
+    for item in magnitude_fwhm_bins:
+        try:
+            mag_index = int(item["magnitude_bin"])
+            fwhm_index = int(item["fwhm_bin"])
+            selected = int(item["selected_fwhm"])
+            expected = float(item["expected_fwhm"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("Q1 magnitude-FWHM histogram is malformed") from exc
+        key = (mag_index, fwhm_index)
+        if (
+            key in normalized_fwhm
+            or not 0 <= mag_index < bin_count
+            or not 0 <= fwhm_index < fwhm_bin_count
+            or selected < 0
+            or not math.isfinite(expected)
+            or expected < 0.0
+        ):
+            raise ValueError("Q1 magnitude-FWHM histogram is malformed")
+        normalized_fwhm[key] = {
+            "magnitude_bin": mag_index,
+            "fwhm_bin": fwhm_index,
+            "selected_fwhm": selected,
+            "expected_fwhm": expected,
+        }
+        fwhm_selected[fwhm_index] += selected
+        fwhm_expected[fwhm_index] += expected
+    fwhm_bins = [
+        {
+            "bin_index": index,
+            "fwhm_lo_arcsec": float(fwhm_edges[index]),
+            "fwhm_hi_arcsec": float(fwhm_edges[index + 1]),
+            "selected_fwhm": int(fwhm_selected[index]),
+            "expected_fwhm": float(fwhm_expected[index]),
+        }
+        for index in range(fwhm_bin_count)
+    ]
+    completed = completed_radius + completed_fwhm
+    total = total_radius + total_fwhm
     return {
         "version": Q1_GALAXY_RADIUS_VERSION,
         "selection_version": Q1_GALAXY_RADIUS_SELECTION_VERSION,
         "kind": (
-            "q1_mer_phz_vis2fwhm_sersic_circularized_re_joint_aggregate"
+            "q1_mer_phz_vis2fwhm_sersic_re_aperture_fwhm_aggregate"
         ),
         "survey": "Euclid Q1 deep fields",
         "fields": ["EDF-N", "EDF-S", "EDF-F"],
@@ -307,12 +420,24 @@ def _build_radius_statistics_payload(
         "stride_bins": stride_bins,
         "magnitude_edges": mag_edges.tolist(),
         "radius_edges_arcsec": radius_edges.tolist(),
+        "fwhm_edges_arcsec": fwhm_edges.tolist(),
         "joint_bins": [normalized[key] for key in sorted(normalized)],
+        "magnitude_fwhm_bins": [
+            normalized_fwhm[key] for key in sorted(normalized_fwhm)
+        ],
         "magnitude_bins": magnitude_bins,
         "radius_bins": radius_bins,
+        "fwhm_bins": fwhm_bins,
+        "completed_radius_queries": completed_radius,
+        "total_radius_queries": total_radius,
+        "completed_fwhm_queries": completed_fwhm,
+        "total_fwhm_queries": total_fwhm,
         "completed_queries": completed,
         "total_queries": total,
-        "complete": completed == total,
+        "complete": (
+            completed_radius == total_radius
+            and completed_fwhm == total_fwhm
+        ),
         "selection": (
             "Q1 deep fields; VIS 2FWHM magnitude; VIS_DET = 1; positive "
             "VIS Sersic flux; POINT_LIKE_FLAG IS NULL; SPURIOUS_FLAG = "
@@ -327,6 +452,14 @@ def _build_radius_statistics_payload(
             "R_e,circ = R_e,major * sqrt(q)"
         ),
         "radius_adql_expression": _circularized_radius_expression(),
+        "fwhm_definition": (
+            "MER catalogue FWHM in arcsec used by A-PHOT to define the "
+            "1/2/3/4-FWHM-diameter apertures"
+        ),
+        "fwhm_selection": (
+            f"{Q1_GALAXY_FWHM_MIN_ARCSEC:g} <= MER FWHM < "
+            f"{Q1_GALAXY_FWHM_MAX_ARCSEC:g} arcsec"
+        ),
         "catalogue_radius_unit": "arcsec",
         "detection_semimajor_axis_unit": "VIS pixels",
         "vis_pixel_scale_arcsec": float(Config.VIS_PIXEL_SCALE_ARCSEC),
@@ -354,8 +487,8 @@ def _build_radius_statistics_payload(
         ],
         "acquisition": (
             "public-PDR-compatible grouped aggregate magnitude x "
-            "circularized-log-radius bins; no object rows and no random "
-            "sky-position sampling"
+            "circularized-log-radius and magnitude x MER-FWHM bins; no "
+            "object rows and no random sky-position sampling"
         ),
     }
 
@@ -369,7 +502,7 @@ def query_q1_galaxy_radius_statistics(
     relogin: Callable[[], bool] | None = None,
     progress: Callable[[int, int, str], None] | None = None,
 ) -> dict[str, Any]:
-    """Query bounded joint magnitude-radius bins in compact TAP chunks."""
+    """Query bounded magnitude-radius and magnitude-FWHM grouped bins."""
     lower, upper, width = float(bright), float(faint), float(bin_width)
     stride = float(progressive_stride)
     if not (
@@ -393,10 +526,20 @@ def query_q1_galaxy_radius_statistics(
         Q1_GALAXY_RADIUS_MAX_ARCSEC,
         Q1_GALAXY_RADIUS_BIN_COUNT + 1,
     )
-    chunk_starts = list(range(
+    fwhm_edges = np.linspace(
+        Q1_GALAXY_FWHM_MIN_ARCSEC,
+        Q1_GALAXY_FWHM_MAX_ARCSEC,
+        Q1_GALAXY_FWHM_BIN_COUNT + 1,
+    )
+    radius_chunk_starts = list(range(
         0, bin_count, Q1_GALAXY_RADIUS_MAG_BINS_PER_QUERY,
     ))
-    total_queries = len(chunk_starts)
+    fwhm_chunk_starts = list(range(
+        0, bin_count, Q1_GALAXY_FWHM_MAG_BINS_PER_QUERY,
+    ))
+    total_radius_queries = len(radius_chunk_starts)
+    total_fwhm_queries = len(fwhm_chunk_starts)
+    total_queries = total_radius_queries + total_fwhm_queries
     output = q1_galaxy_radius_statistics_path()
 
     def checkpoint(payload: dict[str, Any]) -> None:
@@ -407,7 +550,8 @@ def query_q1_galaxy_radius_statistics(
 
     with _QUERY_LOCK:
         joint: dict[tuple[int, int], dict[str, Any]] = {}
-        for query_index, start in enumerate(chunk_starts):
+        fwhm_joint: dict[tuple[int, int], dict[str, Any]] = {}
+        for query_index, start in enumerate(radius_chunk_starts):
             stop = min(start + Q1_GALAXY_RADIUS_MAG_BINS_PER_QUERY, bin_count)
             chunk_bright = float(magnitude_edges[start])
             chunk_faint = float(magnitude_edges[stop])
@@ -457,53 +601,135 @@ def query_q1_galaxy_radius_statistics(
                 }
             checkpoint(_build_radius_statistics_payload(
                 joint.values(),
+                fwhm_joint.values(),
                 magnitude_edges=magnitude_edges,
                 radius_edges_arcsec=radius_edges,
+                fwhm_edges_arcsec=fwhm_edges,
                 progressive_stride=stride,
-                completed_queries=query_index + 1,
-                total_queries=total_queries,
+                completed_radius_queries=query_index + 1,
+                total_radius_queries=total_radius_queries,
+                completed_fwhm_queries=0,
+                total_fwhm_queries=total_fwhm_queries,
+            ))
+        for query_index, start in enumerate(fwhm_chunk_starts):
+            stop = min(start + Q1_GALAXY_FWHM_MAG_BINS_PER_QUERY, bin_count)
+            chunk_bright = float(magnitude_edges[start])
+            chunk_faint = float(magnitude_edges[stop])
+            completed_before = total_radius_queries + query_index
+            if progress:
+                progress(
+                    completed_before,
+                    total_queries,
+                    f"MER aperture FWHM histogram · {chunk_bright:g} <= "
+                    f"VIS 2FWHM < {chunk_faint:g}",
+                )
+            rows = _launch_with_relogin(
+                _fwhm_histogram_query(
+                    bright=lower,
+                    chunk_bright=chunk_bright,
+                    chunk_faint=chunk_faint,
+                    bin_width=width,
+                    fwhm_bin_count=Q1_GALAXY_FWHM_BIN_COUNT,
+                ),
+                relogin,
+            )
+            for row in rows:
+                mag_value = _result_value(row, "magnitude_bin")
+                fwhm_value = _result_value(row, "fwhm_bin")
+                selected = _result_value(row, "selected_fwhm")
+                expected = _result_value(row, "expected_fwhm")
+                if mag_value is None or fwhm_value is None:
+                    raise RuntimeError(
+                        "Q1 magnitude-FWHM histogram returned an invalid bin"
+                    )
+                mag_index = int(round(mag_value))
+                fwhm_index = int(round(fwhm_value))
+                if (
+                    not math.isclose(mag_value, mag_index, abs_tol=1e-9)
+                    or not math.isclose(fwhm_value, fwhm_index, abs_tol=1e-9)
+                    or not start <= mag_index < stop
+                    or not 0 <= fwhm_index < Q1_GALAXY_FWHM_BIN_COUNT
+                    or selected is None or selected < 0.0
+                    or (expected is not None and expected < 0.0)
+                ):
+                    raise RuntimeError(
+                        "Q1 magnitude-FWHM histogram returned an invalid row"
+                    )
+                key = (mag_index, fwhm_index)
+                if key in fwhm_joint:
+                    raise RuntimeError(
+                        "Q1 magnitude-FWHM histogram duplicated a bin"
+                    )
+                fwhm_joint[key] = {
+                    "magnitude_bin": mag_index,
+                    "fwhm_bin": fwhm_index,
+                    "selected_fwhm": int(round(selected)),
+                    "expected_fwhm": 0.0 if expected is None else expected,
+                }
+            checkpoint(_build_radius_statistics_payload(
+                joint.values(),
+                fwhm_joint.values(),
+                magnitude_edges=magnitude_edges,
+                radius_edges_arcsec=radius_edges,
+                fwhm_edges_arcsec=fwhm_edges,
+                progressive_stride=stride,
+                completed_radius_queries=total_radius_queries,
+                total_radius_queries=total_radius_queries,
+                completed_fwhm_queries=query_index + 1,
+                total_fwhm_queries=total_fwhm_queries,
             ))
         payload = _build_radius_statistics_payload(
             joint.values(),
+            fwhm_joint.values(),
             magnitude_edges=magnitude_edges,
             radius_edges_arcsec=radius_edges,
+            fwhm_edges_arcsec=fwhm_edges,
             progressive_stride=stride,
-            completed_queries=total_queries,
-            total_queries=total_queries,
+            completed_radius_queries=total_radius_queries,
+            total_radius_queries=total_radius_queries,
+            completed_fwhm_queries=total_fwhm_queries,
+            total_fwhm_queries=total_fwhm_queries,
         )
         if progress:
             progress(
                 total_queries,
                 total_queries,
-                "Q1 joint circularized-Sersic-radius histogram cached",
+                "Q1 joint radius and MER-aperture-FWHM histograms cached",
             )
         return payload
 
 
 def read_q1_galaxy_radius_statistics() -> dict[str, Any]:
-    """Read the bounded joint histogram only when its contract is current."""
+    """Read the bounded grouped histograms only when their contract is current."""
     try:
         payload = json.loads(q1_galaxy_radius_statistics_path().read_text())
         magnitude_edges = np.asarray(payload["magnitude_edges"], dtype=np.float64)
         radius_edges = np.asarray(payload["radius_edges_arcsec"], dtype=np.float64)
+        fwhm_edges = np.asarray(payload["fwhm_edges_arcsec"], dtype=np.float64)
         joint_bins = payload["joint_bins"]
+        magnitude_fwhm_bins = payload["magnitude_fwhm_bins"]
         magnitude_bins = payload["magnitude_bins"]
         radius_bins = payload["radius_bins"]
+        fwhm_bins = payload["fwhm_bins"]
     except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
         raise ValueError("Query Q1 aggregate Sersic-radius statistics first") from exc
     if (
         payload.get("version") != Q1_GALAXY_RADIUS_VERSION
         or payload.get("selection_version") != Q1_GALAXY_RADIUS_SELECTION_VERSION
         or payload.get("kind")
-        != "q1_mer_phz_vis2fwhm_sersic_circularized_re_joint_aggregate"
+        != "q1_mer_phz_vis2fwhm_sersic_re_aperture_fwhm_aggregate"
         or magnitude_edges.size < 2
         or radius_edges.size < 2
+        or fwhm_edges.size < 2
         or len(magnitude_bins) != magnitude_edges.size - 1
         or len(radius_bins) != radius_edges.size - 1
+        or len(fwhm_bins) != fwhm_edges.size - 1
         or not np.all(np.isfinite(magnitude_edges))
         or not np.all(np.isfinite(radius_edges) & (radius_edges > 0.0))
+        or not np.all(np.isfinite(fwhm_edges) & (fwhm_edges > 0.0))
         or not np.all(np.diff(magnitude_edges) > 0.0)
         or not np.all(np.diff(radius_edges) > 0.0)
+        or not np.all(np.diff(fwhm_edges) > 0.0)
         or int(payload.get("completed_queries", -1))
         != int(payload.get("total_queries", -2))
         or not payload.get("complete")
@@ -527,4 +753,22 @@ def read_q1_galaxy_radius_statistics() -> dict[str, Any]:
         ):
             raise ValueError("Q1 joint histogram is malformed")
         keys.add(key)
+    fwhm_keys: set[tuple[int, int]] = set()
+    for item in magnitude_fwhm_bins:
+        try:
+            key = (int(item["magnitude_bin"]), int(item["fwhm_bin"]))
+            selected = int(item["selected_fwhm"])
+            expected = float(item["expected_fwhm"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("Q1 magnitude-FWHM histogram is malformed") from exc
+        if (
+            key in fwhm_keys
+            or not 0 <= key[0] < magnitude_edges.size - 1
+            or not 0 <= key[1] < fwhm_edges.size - 1
+            or selected < 0
+            or not math.isfinite(expected)
+            or expected < 0.0
+        ):
+            raise ValueError("Q1 magnitude-FWHM histogram is malformed")
+        fwhm_keys.add(key)
     return payload
