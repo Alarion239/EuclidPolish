@@ -237,6 +237,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--joint-galaxy-population-json", default="",
                     help="Compact activated galaxy-population draw artifact.")
     ap.add_argument(
+        "--joint-galaxy-population-file",
+        default="",
+        help="Path to the activated galaxy-population JSON artifact.",
+    )
+    ap.add_argument(
         "--phz-galaxy-catalog",
         default=Config.EUCLID_POPULATION_CATALOG_PATH,
         help="Cached Euclid MER+PHZ population CSV used by the default prior.",
@@ -256,6 +261,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                     help="Stellar surface density (stars/arcmin²).")
     ap.add_argument("--star-prior-json", default="",
                     help="Activated versioned Gaia/Euclid stellar-prior JSON.")
+    ap.add_argument(
+        "--star-prior-file",
+        default="",
+        help="Path to the activated Gaia/Euclid stellar-prior JSON artifact.",
+    )
     ap.add_argument("--lens-density-arcmin2", type=float,
                     default=Config.LENS_DENSITY_ARCMIN2,
                     help="Strong-lens surface density (lenses/arcmin²).")
@@ -434,6 +444,58 @@ def _embedded_population_payload(args: argparse.Namespace) -> dict:
             args, "phz_population_meta", Config.EUCLID_POPULATION_META_PATH,
         ),
     )
+
+
+def _resolve_json_payload_file(
+    inline_json: str,
+    file_path: str,
+    *,
+    label: str,
+) -> str:
+    """Load one CLI JSON object while keeping large payloads out of argv."""
+    inline = str(inline_json or "").strip()
+    path = str(file_path or "").strip()
+    if inline and path:
+        raise ValueError(f"{label} JSON and file are mutually exclusive")
+    if path:
+        try:
+            with open(path, encoding="utf-8") as handle:
+                inline = handle.read().strip()
+        except OSError as exc:
+            raise ValueError(f"could not read {label} file {path!r}") from exc
+    if not inline:
+        return ""
+    try:
+        payload = json.loads(inline)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{label} is malformed JSON") from exc
+    if not isinstance(payload, dict):
+        raise ValueError(f"{label} must contain a JSON object")
+    return json.dumps(payload, separators=(",", ":"), sort_keys=True)
+
+
+def _resolve_population_payload_files(args: argparse.Namespace) -> None:
+    """Resolve staged population files once in the parent process."""
+    args.joint_galaxy_population_json = _resolve_json_payload_file(
+        getattr(args, "joint_galaxy_population_json", ""),
+        getattr(args, "joint_galaxy_population_file", ""),
+        label="joint galaxy population",
+    )
+    args.star_prior_json = _resolve_json_payload_file(
+        getattr(args, "star_prior_json", ""),
+        getattr(args, "star_prior_file", ""),
+        label="stellar prior",
+    )
+
+
+def _args_for_log(args: argparse.Namespace) -> dict:
+    """Return CLI arguments without dumping frozen artifacts into stdout."""
+    values = dict(vars(args))
+    for key in ("joint_galaxy_population_json", "star_prior_json"):
+        payload = str(values.get(key, "") or "")
+        if payload:
+            values[key] = f"<embedded JSON: {len(payload)} chars>"
+    return values
 
 
 def _population_prior_from_args(args: argparse.Namespace):
@@ -1542,10 +1604,11 @@ def main() -> int:
     t_script_start = time.time()
     t0_perf = time.perf_counter()
     args = parse_args()
+    _resolve_population_payload_files(args)
     if not args.skip_generate:
         _freeze_generation_population(args)
     print(f"Pipeline started at {time.strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"  args = {vars(args)}")
+    print(f"  args = {_args_for_log(args)}")
 
     # Per-stage timings CSV — default sits next to the SLURM .out file
     # via ``$EUCLID_POLISH_DATA_DIR/images/records_v2/stages_<jobid>.csv``

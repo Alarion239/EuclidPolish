@@ -142,6 +142,9 @@ def test_submit_writes_sbatch_script_with_correct_contents(fake_remote, client):
     scripts  = sorted(jobs_dir.glob("*.sh"))
     assert len(scripts) == 1, f"expected one script, got {scripts}"
     body = scripts[0].read_text()
+    payloads = sorted(jobs_dir.glob("*population.*.json"))
+    assert len(payloads) == 2
+    assert all(isinstance(json.loads(path.read_text()), dict) for path in payloads)
 
     # Resources made it into the SBATCH header.
     assert "#SBATCH --gres=gpu:2" in body
@@ -158,8 +161,12 @@ def test_submit_writes_sbatch_script_with_correct_contents(fake_remote, client):
         "--image-size", "60",
         "--skip-generate",
         "--skip-train",
+        "--joint-galaxy-population-file",
+        "--star-prior-file",
     ):
         assert token in body, f"missing argv token: {token!r}"
+    assert "--joint-galaxy-population-json" not in body
+    assert "--star-prior-json" not in body
     # Standalone generation: the training-only knobs are gone.
     assert "--batch-size" not in body
     assert "--steps" not in body

@@ -29,6 +29,7 @@ compatibility; new code uses this module instead.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import secrets
 import shlex
@@ -223,6 +224,22 @@ class FASRCPipelineStep(ABC):
         """
         return dict(params)
 
+    def prepare_payload_files(
+        self,
+        params: dict[str, Any],
+        *,
+        job_name: str,
+        relative_log_dir: str,
+    ) -> dict[str, str]:
+        """Stage large immutable inputs beside the generated job script.
+
+        Implementations may replace large in-memory parameters with short
+        repo-relative file paths in ``params``.  The submission helper writes
+        the returned path/content pairs over SSH before calling ``sbatch``.
+        """
+        del params, job_name, relative_log_dir
+        return {}
+
     def array_shape(self, params: dict[str, Any]) -> tuple[int, int] | None:
         """Return ``(task_count, max_parallel)`` for an array submission."""
         return None
@@ -263,6 +280,11 @@ class FASRCPipelineStep(ABC):
         ts        = time.strftime("%Y%m%d-%H%M%S")
         job_name  = f"{self.job_name or self.step_id}-{ts}"
         prepared = self.prepare_params(params)
+        payload_files = self.prepare_payload_files(
+            prepared,
+            job_name=job_name,
+            relative_log_dir=log_dir,
+        )
         built = render_sbatch_body(
             job_name=job_name,
             relative_log_dir=log_dir,
@@ -276,6 +298,7 @@ class FASRCPipelineStep(ABC):
             array_shape=self.array_shape(prepared),
         )
         built["params"] = prepared
+        built["payload_files"] = payload_files
         return built
 
 
@@ -1504,6 +1527,53 @@ class SyntheticGenerateStep(RunPipelineStep):
             )
         return prepared
 
+    def prepare_payload_files(
+        self,
+        params: dict[str, Any],
+        *,
+        job_name: str,
+        relative_log_dir: str,
+    ) -> dict[str, str]:
+        """Move frozen population artifacts out of the process argv.
+
+        Linux limits each individual ``execve`` argument to roughly 128 KiB.
+        The magnitude-conditioned Euclid population artifact is larger than
+        that, so embedding it in ``--joint-galaxy-population-json`` prevents
+        Python from starting.  Persist both population inputs next to the job
+        script and pass only their short paths to ``run_pipeline.py``.
+        """
+        payload_files: dict[str, str] = {}
+        for source_key, path_key, hash_key, fingerprint_key, suffix in (
+            (
+                "_joint_galaxy_population_json",
+                "_joint_galaxy_population_file",
+                "_joint_galaxy_population_sha256",
+                "_joint_galaxy_population_fingerprint",
+                "galaxy-population",
+            ),
+            (
+                "_star_prior_json",
+                "_star_prior_file",
+                "_star_prior_sha256",
+                "_star_prior_fingerprint",
+                "star-population",
+            ),
+        ):
+            content = str(params.pop(source_key, "") or "").strip()
+            if not content:
+                continue
+            digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+            payload = json.loads(content)
+            relative_path = (
+                f"{relative_log_dir}/{job_name}.{suffix}.{digest[:12]}.json"
+            )
+            params[path_key] = relative_path
+            params[hash_key] = digest
+            if payload.get("fingerprint"):
+                params[fingerprint_key] = str(payload["fingerprint"])
+            payload_files[relative_path] = content + "\n"
+        return payload_files
+
     def build_command(self, params: dict[str, Any]) -> list[str]:
         # Parallelise generation across the allocated CPUs: one process per
         # CPU runs the combined generate+forward pass on its index range.
@@ -1535,10 +1605,15 @@ class SyntheticGenerateStep(RunPipelineStep):
         # past that identical bound (for example 372.831718745... becomes
         # 372.832), so preserve enough digits for an exact float round trip.
         cmd += ["--galaxy-density-arcmin2", f"{tng_density:.17g}"]
+        joint_population_file = str(
+            params.get("_joint_galaxy_population_file", "") or ""
+        ).strip()
         joint_population = str(
             params.get("_joint_galaxy_population_json", "") or ""
         ).strip()
-        if joint_population:
+        if joint_population_file:
+            cmd += ["--joint-galaxy-population-file", joint_population_file]
+        elif joint_population:
             cmd += ["--joint-galaxy-population-json", joint_population]
         for key, flag in (("tng_dir", "--tng-dir"),
                           ("tng_properties", "--tng-properties"),
@@ -1546,7 +1621,12 @@ class SyntheticGenerateStep(RunPipelineStep):
             value = str(params.get(key, "") or "").strip()
             if value:
                 cmd += [flag, value]
-        if params.get("_star_prior_json"):
+        star_prior_file = str(
+            params.get("_star_prior_file", "") or ""
+        ).strip()
+        if star_prior_file:
+            cmd += ["--star-prior-file", star_prior_file]
+        elif params.get("_star_prior_json"):
             cmd += ["--star-prior-json", str(params["_star_prior_json"])]
         # Scene-population and forward-PSF knobs (from /config). Emit only when
         # supplied so direct programmatic callers can still rely on CLI

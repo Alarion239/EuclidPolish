@@ -801,6 +801,59 @@ def cfg():
 
 class TestSbatchRendering:
 
+    def test_synthetic_generation_stages_large_population_payloads(
+        self, cfg, monkeypatch,
+    ):
+        joint = {
+            "version": 13,
+            "fingerprint": "j" * 64,
+            "generation": {"surface_density_arcmin2": 151.5},
+            "large_histogram": "x" * 150_000,
+        }
+        stars = {
+            "version": 6,
+            "fingerprint": "s" * 64,
+            "population": {"density_arcmin2": 3.0},
+            "large_locus": "y" * 140_000,
+        }
+        monkeypatch.setattr(
+            "euclid_polish.web.helpers.population_calibration.joint_galaxy_state",
+            lambda: {"active": joint, "candidate": joint, "is_active": True},
+        )
+        monkeypatch.setattr(
+            "euclid_polish.web.helpers.population_calibration.star_state",
+            lambda: {"active": stars, "is_active": True},
+        )
+
+        step = REGISTRY.get("synthetic_generate")
+        built = step.build_sbatch_body(
+            params={"n_train": 10, "n_valid": 2, "n_test": 1},
+            resources=step.defaults,
+            cfg=cfg,
+            label="large payload regression",
+        )
+
+        assert "--joint-galaxy-population-file" in built["body"]
+        assert "--star-prior-file" in built["body"]
+        assert "--joint-galaxy-population-json" not in built["body"]
+        assert "--star-prior-json" not in built["body"]
+        assert "x" * 1_000 not in built["body"]
+        assert "y" * 1_000 not in built["body"]
+        assert len(built["body"].encode("utf-8")) < 20_000
+
+        galaxy_path = built["params"]["_joint_galaxy_population_file"]
+        star_path = built["params"]["_star_prior_file"]
+        assert galaxy_path in built["payload_files"]
+        assert star_path in built["payload_files"]
+        assert json.loads(built["payload_files"][galaxy_path]) == joint
+        assert json.loads(built["payload_files"][star_path]) == stars
+        assert built["params"]["_joint_galaxy_population_fingerprint"] == "j" * 64
+        assert built["params"]["_star_prior_fingerprint"] == "s" * 64
+        assert len(built["params"]["_joint_galaxy_population_sha256"]) == 64
+        assert len(built["params"]["_star_prior_sha256"]) == 64
+        assert "_joint_galaxy_population_json" not in built["params"]
+        assert "_star_prior_json" not in built["params"]
+
     def test_kernel_step_renders_one_argument(self, cfg):
         step = REGISTRY.get("kernel")
         out = step.build_sbatch_body(

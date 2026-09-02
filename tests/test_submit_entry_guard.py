@@ -20,6 +20,8 @@ class _FakeSSH:
         self.commands.append(cmd)
         if cmd.startswith("stat "):
             return self.stat_rc, "", ""
+        if cmd.startswith("mkdir -p "):
+            return 0, "", ""
         raise AssertionError(f"unexpected command past the guard: {cmd!r}")
 
 
@@ -46,3 +48,20 @@ def test_missing_entry_fails_before_sbatch():
     assert "pregenerate_psf_rotations.py" in payload["error"]
     # exactly one remote command ran (the stat) — no script write, no sbatch
     assert len(ssh.commands) == 1 and ssh.commands[0].startswith("stat ")
+
+
+def test_large_payload_requires_streaming_ssh_writer():
+    ssh = _FakeSSH(stat_rc=0)
+    built = _built()
+    built["payload_files"] = {
+        "logs/jobs/frozen-population.json": "x" * 150_000,
+    }
+
+    slurm_id, payload = submit_sbatch_script(
+        ssh, cfg=fasrc_config.load(), built=built, label="test", params={},
+    )
+
+    assert slurm_id is None
+    assert not payload["ok"]
+    assert "cannot stream large job payload" in payload["error"]
+    assert not any("sbatch" in command for command in ssh.commands)

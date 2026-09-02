@@ -389,7 +389,7 @@ def submit_sbatch_script(
     ssh: Any,
     *,
     cfg:      fasrc_config.FasrcConfig,
-    built:    dict[str, str],
+    built:    dict[str, Any],
     label:    str,
     params:   dict[str, Any],
     step_id:  str | None = None,
@@ -437,8 +437,42 @@ def submit_sbatch_script(
     remote_script_dir = (
         f"{cfg.repo_path}/{os.path.dirname(built['script'])}"
     )
+    payload_files = built.get("payload_files") or {}
+    if not isinstance(payload_files, dict):
+        return None, {"ok": False, "error": "job payload files are malformed"}
+    remote_payloads: list[tuple[str, str]] = []
+    repo_root = os.path.normpath(cfg.repo_path)
+    for relative_path, content in payload_files.items():
+        if not isinstance(relative_path, str) or not isinstance(content, str):
+            return None, {
+                "ok": False, "error": "job payload files are malformed",
+            }
+        remote_path = os.path.normpath(
+            os.path.join(repo_root, relative_path)
+        )
+        try:
+            inside_repo = os.path.commonpath((repo_root, remote_path)) == repo_root
+        except ValueError:
+            inside_repo = False
+        if (
+            not relative_path
+            or os.path.isabs(relative_path)
+            or not inside_repo
+        ):
+            return None, {
+                "ok": False,
+                "error": f"invalid job payload path: {relative_path!r}",
+            }
+        remote_payloads.append((remote_path, content))
+    remote_dirs = {
+        remote_script_dir,
+        *(os.path.dirname(path) for path, _content in remote_payloads),
+    }
     rc, _out, err = ssh.run(
-        f"mkdir -p {shlex.quote(remote_script_dir)}", timeout=20,
+        "mkdir -p " + " ".join(
+            shlex.quote(path) for path in sorted(remote_dirs)
+        ),
+        timeout=20,
     )
     if rc != 0:
         return None, {"ok": False,
@@ -448,6 +482,21 @@ def submit_sbatch_script(
         Callable[..., tuple[int, str, str]] | None,
         getattr(ssh, "write_text", None),
     )
+    if remote_payloads and not callable(write_text):
+        return None, {"ok": False, "error": (
+            "the SSH connection cannot stream large job payload files; "
+            "reconnect with the current WebUI server and resubmit"
+        )}
+    for remote_payload, content in remote_payloads:
+        assert callable(write_text)
+        rc, _out, err = write_text(
+            remote_payload, content, executable=False, timeout=60,
+        )
+        if rc != 0:
+            return None, {"ok": False, "error": (
+                "failed to write job payload "
+                f"{os.path.basename(remote_payload)}: {err.strip()}"
+            )}
     if callable(write_text):
         rc, _out, err = write_text(
             remote_script, built["body"], executable=True, timeout=20,
