@@ -1933,6 +1933,23 @@ def refresh_population_comparison() -> dict[str, Any] | None:
     payload = read_comparison()
     if payload is None:
         return None
+    previous_inputs = payload.get("provenance", {}).get("inputs")
+    current_inputs = _comparison_input_state()
+    if isinstance(previous_inputs, dict):
+        previous_synthetic = previous_inputs.get("synthetic", {})
+        current_synthetic = current_inputs.get("synthetic", {})
+        field_identity_unchanged = (
+            previous_inputs.get("archive", {}).get("collection_fingerprint")
+            == current_inputs.get("archive", {}).get("collection_fingerprint")
+            and previous_synthetic.get("records") == current_synthetic.get("records")
+            and previous_synthetic.get("current_sources")
+            == current_synthetic.get("current_sources")
+        )
+        if not field_identity_unchanged:
+            raise RuntimeError(
+                "image fields or current source catalogs changed; rebuild the full "
+                "population comparison"
+            )
     synthetic_field_count = int(
         payload.get("samples", {}).get("synthetic", {}).get("fields", 0)
     )
@@ -1941,6 +1958,13 @@ def refresh_population_comparison() -> dict[str, Any] | None:
     )
     payload["population"] = population
     payload["population_with_training"] = population_with_training
+    provenance = dict(payload.get("provenance") or {})
+    provenance.update({
+        "input_fingerprint": current_inputs["fingerprint"],
+        "inputs": current_inputs,
+        "population_refreshed_at": datetime.now(UTC).isoformat(),
+    })
+    payload["provenance"] = provenance
     _write_json(comparison_path(), payload)
     return population
 

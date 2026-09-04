@@ -168,6 +168,7 @@ def create_app() -> Flask:
         "/api/population-comparison",
         "/api/archive-fields",
         "/population-comparison",
+        "/synthetic-real",
         "/galaxy-distributions",
         "/api/galaxy-distributions",
         "/api/star-distribution",

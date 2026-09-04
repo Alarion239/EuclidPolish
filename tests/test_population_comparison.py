@@ -442,12 +442,35 @@ def test_population_refresh_preserves_field_statistics(tmp_path, monkeypatch):
     }))
     current = {"synthetic_field_count": 2}
     with_training = {"synthetic_field_count": 12}
+    refreshed_inputs = {
+        "fingerprint": "new-input-fingerprint",
+        "archive": {"collection_fingerprint": "archive-a"},
+        "synthetic": {
+            "records": [{"role": "dirty_test", "sha256": "a"}],
+            "current_sources": [{"role": "sources_test", "sha256": "b"}],
+            "training_sources": [{"role": "sources_train", "sha256": "new"}],
+        },
+    }
+    original_payload = json.loads(comparison_file.read_text())
+    original_payload["provenance"] = {
+        "input_fingerprint": "old-input-fingerprint",
+        "inputs": {
+            "archive": {"collection_fingerprint": "archive-a"},
+            "synthetic": {
+                "records": [{"role": "dirty_test", "sha256": "a"}],
+                "current_sources": [{"role": "sources_test", "sha256": "b"}],
+                "training_sources": [{"role": "sources_train", "sha256": "old"}],
+            },
+        },
+    }
+    comparison_file.write_text(json.dumps(original_payload))
     monkeypatch.setattr(comparison, "comparison_path", lambda: comparison_file)
     monkeypatch.setattr(
         comparison,
         "_population_variants",
         lambda field_count: (current, with_training),
     )
+    monkeypatch.setattr(comparison, "_comparison_input_state", lambda: refreshed_inputs)
 
     refreshed = refresh_population_comparison()
     saved = json.loads(comparison_file.read_text())
@@ -458,6 +481,9 @@ def test_population_refresh_preserves_field_statistics(tmp_path, monkeypatch):
     assert saved["fields"] == {"sentinel": "unchanged"}
     assert saved["population"] == refreshed
     assert saved["population_with_training"] == with_training
+    assert saved["provenance"]["input_fingerprint"] == "new-input-fingerprint"
+    assert saved["provenance"]["inputs"] == refreshed_inputs
+    assert saved["provenance"]["population_refreshed_at"]
 
 
 def test_synthetic_paths_exclude_training_by_default(tmp_path, monkeypatch):
