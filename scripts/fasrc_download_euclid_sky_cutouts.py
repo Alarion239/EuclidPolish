@@ -955,8 +955,14 @@ def _write_bundle(
 
     os.makedirs(os.path.dirname(target_path), exist_ok=True)
     temporary_path = target_path + ".tmp"
-    hdul.writeto(temporary_path, overwrite=True)
-    os.replace(temporary_path, target_path)
+    try:
+        hdul.writeto(temporary_path, overwrite=True, output_verify="exception")
+        with fits.open(temporary_path, memmap=True) as written:
+            written.verify("exception")
+        os.replace(temporary_path, target_path)
+    finally:
+        with contextlib.suppress(OSError):
+            os.remove(temporary_path)
 
 
 def _fetch_position_bundle(
@@ -1054,7 +1060,12 @@ def _fetch_planned_vis_bundle(
             if ok:
                 try:
                     with fits.open(raw_path, memmap=True) as hdul:
-                        hdul.verify("exception")
+                        # Q1 raw products can carry a non-string EXTNAME in
+                        # HDU 0.  The science array is still readable, and
+                        # `_write_bundle` replaces EXTNAME before strictly
+                        # verifying the normalized output.  Do not reject the
+                        # usable archive payload at this pre-normalization
+                        # boundary.
                         image_hdu = next(
                             (
                                 candidate for candidate in hdul

@@ -231,6 +231,48 @@ def test_planned_vis_download_retries_and_removes_partial_files(
         assert hdul["VIS"].shape == (8, 8)
 
 
+def test_planned_vis_download_normalizes_raw_non_string_extname(
+    tmp_path, monkeypatch,
+):
+    def fake_download(
+        _ra, _dec, _config, _radius, output_file, _parent,
+    ):
+        raw = fits.PrimaryHDU(np.ones((8, 8), dtype=np.float32))
+        raw.header["EXTNAME"] = 7
+        raw.writeto(output_file, output_verify="ignore")
+        return True
+
+    monkeypatch.setattr(sampling, "download_one_cutout", fake_download)
+    parent = {
+        "parent_id": "parent-2",
+        "release_name": "Q1_R1",
+        "product_type": "DpdMerBksMosaic",
+        "mosaic_product_oid": "oid-2",
+        "tile_index": "1008",
+        "file_path": "/archive/q1/oid-2.fits",
+    }
+    result = sampling._fetch_planned_vis_bundle(
+        {
+            "sample_id": 2,
+            "parent_id": "parent-2",
+            "parent": parent,
+            "ra": 11.0,
+            "dec": 21.0,
+        },
+        vis_pixels=8,
+        arcsec_side=0.8,
+        output_dir=str(tmp_path),
+        source_release="Q1_R1",
+    )
+
+    assert result["status"] == "written"
+    target = sampling.bundle_path_for_id(str(tmp_path), 2)
+    with fits.open(target) as hdul:
+        hdul.verify("exception")
+        assert hdul["VIS"].header["EXTNAME"] == "VIS"
+        assert hdul["VIS"].shape == (8, 8)
+
+
 def test_plan_fingerprint_freezes_stars_and_every_selection_input(tmp_path):
     stars = tmp_path / "stars.csv"
     stars.write_text("ra,dec\n10,20\n")
