@@ -13,15 +13,21 @@ from euclid_polish.config import Config
 from euclid_polish.web.helpers.population_comparison import (
     CATALOG_VERSION,
     VERSION,
+    _archive_fields,
+    _cluster_bootstrap_indices,
+    _comparison_cache_state,
+    _comparison_input_state,
     _field_payload,
     _FieldAccumulator,
     _finite,
+    _grouped_scalar_interval,
     _normalise_field,
     _parameter_payload,
     _read_synthetic_sources,
-    _real_fields,
+    _scale_similarity,
     _shared_parameter_payload,
     _synthetic_dataset_tng_prior,
+    availability,
     query_euclid_population,
     refresh_population_comparison,
     select_star_cone_centers,
@@ -66,6 +72,12 @@ def test_population_field_payload_is_json_safe_and_keeps_four_bands():
     assert len(payload["relations"]["mean_std"]["VIS"]["synthetic"]["x"]) == 3
     assert len(payload["relations"]["median_robust_std"]["VIS"]["real"]["y"]) == 3
     assert len(payload["band_correlation"]["pairs"]) == 6
+    assert payload["sampling"]["synthetic_independent_parents"] == 3
+    assert payload["sampling"]["real_independent_parents"] == 3
+    assert payload["power"]["VIS"]["real"]["independent_parents"] == 3
+    assert "median_ci" in payload["power"]["VIS"]["real"]
+    assert "median_ci" in payload["band_correlation"]["real"]
+    assert "median_ci" in payload["summary"]["real"]["VIS"]["robust_std"]
     assert set(payload["summary"]["synthetic"]["VIS"]) >= {
         "mean", "median", "std", "robust_std", "zero_fraction",
         "negative_fraction",
@@ -125,6 +137,152 @@ def test_scale_similarity_ignores_unrelated_fourier_phase():
         )
 
 
+def test_scale_similarity_bootstraps_parent_clusters_not_cutouts():
+    k = np.geomspace(0.1, 1.0, 6)
+    synthetic = [
+        np.asarray([1, 2, 3, 4, 5, 6], dtype=float),
+        np.asarray([2, 3, 4, 5, 6, 7], dtype=float),
+    ]
+    parent_one = np.asarray([3, 4, 6, 8, 10, 12], dtype=float)
+    parent_two = np.asarray([1, 3, 5, 7, 9, 11], dtype=float)
+    payload = _scale_similarity(
+        synthetic,
+        [parent_one, parent_one * 1.1, parent_two, parent_two * 0.9],
+        k,
+        seed=37,
+        synthetic_parents=["s0", "s1"],
+        real_parents=["p0", "p0", "p1", "p1"],
+    )
+    selected = _cluster_bootstrap_indices(
+        ["p0", "p0", "p1", "p1"], np.random.default_rng(37),
+    )
+    counts = np.bincount(selected, minlength=4)
+
+    assert counts[0] == counts[1]
+    assert counts[2] == counts[3]
+    assert payload["bootstrap"] == {
+        "draws": 256,
+        "unit": "parent cluster",
+        "synthetic_parents": 2,
+        "real_parents": 2,
+    }
+
+
+def test_field_interval_keeps_empirical_spread_and_clusters_median_ci():
+    values = [0.0, 10.0, 20.0, 30.0]
+    interval = _grouped_scalar_interval(
+        values, ["p0", "p0", "p1", "p1"], seed=19,
+    )
+
+    assert interval["median"] == pytest.approx(np.median(values))
+    assert interval["p16"] == pytest.approx(np.percentile(values, 16))
+    assert interval["p84"] == pytest.approx(np.percentile(values, 84))
+    assert set(interval["median_ci"]) == {"p16", "p84"}
+
+
+def test_comparison_fingerprint_changes_when_equal_count_input_bytes_change(
+    monkeypatch, tmp_path,
+):
+    from euclid_polish.web.helpers import population_comparison as comparison
+
+    record = tmp_path / "dirty_test.tfrecord"
+    source = tmp_path / "sources_test.csv"
+    record.write_bytes(b"first")
+    source.write_text("field_index,type\n0,galaxy\n")
+
+    def paths(*, include_training=False):
+        del include_training
+        return [record], [source]
+
+    monkeypatch.setattr(comparison, "_synthetic_paths", paths)
+    archive = {
+        "ready": True,
+        "collection_fingerprint": "a" * 64,
+        "manifest_fingerprint": "m" * 64,
+    }
+    before = _comparison_input_state(archive)
+    record.write_bytes(b"other")
+    after = _comparison_input_state(archive)
+
+    assert before["synthetic"]["records"][0]["size_bytes"] == (
+        after["synthetic"]["records"][0]["size_bytes"]
+    )
+    assert before["synthetic"]["records"][0]["sha256"] != (
+        after["synthetic"]["records"][0]["sha256"]
+    )
+    assert before["fingerprint"] != after["fingerprint"]
+
+
+def test_comparison_cache_freshness_uses_input_fingerprint(
+    monkeypatch, tmp_path,
+):
+    from euclid_polish.web.helpers import population_comparison as comparison
+
+    cache = tmp_path / "comparison.json"
+    cache.write_text(json.dumps({
+        "version": VERSION,
+        "provenance": {"input_fingerprint": "old"},
+    }))
+    monkeypatch.setattr(comparison, "comparison_path", lambda: cache)
+    state = _comparison_cache_state({
+        "fingerprint": "new",
+        "archive": {"ready": True, "collection_fingerprint": "archive"},
+    })
+
+    assert state["fresh"] is False
+    assert state["reason"] == "comparison inputs changed"
+
+
+def test_availability_exposes_multipoint_readiness_and_exact_fingerprint(
+    monkeypatch, tmp_path,
+):
+    from euclid_polish.web.helpers import population_comparison as comparison
+
+    record = tmp_path / "dirty_test.tfrecord"
+    source = tmp_path / "sources_test.csv"
+    record.write_bytes(b"")
+    source.write_text("field_index,type\n0,galaxy\n")
+    monkeypatch.setattr(
+        comparison,
+        "_synthetic_paths",
+        lambda **_kwargs: ([record], [source]),
+    )
+    monkeypatch.setattr(
+        comparison,
+        "_archive_collection_state",
+        lambda: {
+            "available": True,
+            "valid": True,
+            "ready": True,
+            "complete": True,
+            "current": True,
+            "sample_count": 220,
+            "planned_sample_count": 220,
+            "parent_count": 44,
+            "fields": {"EDF-F": 95, "EDF-N": 80, "EDF-S": 45},
+            "bands": ["VIS", "Y_E", "J_E", "H_E"],
+            "tile_size": 256,
+            "collection_fingerprint": "a" * 64,
+            "manifest_fingerprint": "b" * 64,
+            "source_release": "Q1",
+            "source_plan_fingerprint": "c" * 64,
+            "source_manifest_sha256": "d" * 64,
+        },
+    )
+    monkeypatch.setattr(
+        comparison, "comparison_path", lambda: tmp_path / "missing.json",
+    )
+
+    state = availability()
+
+    assert state["real"]["fields"] == 220
+    assert state["real"]["independent_parents"] == 44
+    assert state["real"]["ready"] is True
+    assert state["real"]["collection_fingerprint"] == "a" * 64
+    assert len(state["input_fingerprint"]) == 64
+    assert state["comparison_cache"]["fresh"] is False
+
+
 def test_population_field_normalisation_accepts_fits_plane_order():
     cube = np.arange(4 * 256 * 256, dtype=np.float32).reshape(4, 256, 256)
     normalized = _normalise_field(cube)
@@ -132,40 +290,77 @@ def test_population_field_normalisation_accepts_fits_plane_order():
     np.testing.assert_array_equal(normalized[..., 2], cube[2, :255, :255])
 
 
-def test_inference_fits_are_converted_from_adu_rate_to_stack_electrons(
-    monkeypatch,
+def test_archive_field_provider_preserves_parent_and_sample_metadata(monkeypatch):
+    from euclid_polish.web.helpers import population_comparison as comparison
+
+    class Sample:
+        sample_id = 12
+        source_sample_id = 3
+        parent_id = "archive-parent-3"
+        field = "EDF-N"
+        ra = 17.2
+        dec = 66.1
+        source_release = "Q1"
+        source_plan_fingerprint = "p" * 64
+
+    class Provider:
+        @staticmethod
+        def iter_fields(manifest):
+            assert manifest == {"kind": "euclid_archive_fields"}
+            yield Sample()
+
+        @staticmethod
+        def load_field(sample, manifest):
+            assert isinstance(sample, Sample)
+            assert manifest == {"kind": "euclid_archive_fields"}
+            return np.ones((256, 256, 4), dtype=np.float32)
+
+    monkeypatch.setattr(comparison, "_archive_provider", lambda: Provider)
+    fields = list(_archive_fields({"kind": "euclid_archive_fields"}))
+
+    assert len(fields) == 1
+    field, metadata = fields[0]
+    assert field.shape == (256, 256, 4)
+    assert metadata["sample_id"] == 12
+    assert metadata["parent_id"] == "archive-parent-3"
+    assert metadata["field"] == "EDF-N"
+
+
+def test_build_requires_ready_multipoint_archive_without_legacy_fallback(
+    monkeypatch, tmp_path,
 ):
     from euclid_polish.web.helpers import population_comparison as comparison
 
-    class Plane:
-        def __init__(self, value: float):
-            self.data = np.full((10, 10), value, dtype=np.float32)
-            self.header = {"MAGZERO": value + 20.0}
-
-    class HDUList(list):
-        def close(self):
-            pass
-
-    values = {"VIS": 1.0, "Y_E": 2.0, "J_E": 3.0, "H_E": 4.0}
-    monkeypatch.setattr(comparison, "TILE_SIZE", 1)
+    record = tmp_path / "dirty_test.tfrecord"
+    record.write_bytes(b"")
     monkeypatch.setattr(
-        comparison.fits,
-        "open",
-        lambda path, memmap=True: HDUList([Plane(values[Path(path).stem])]),
+        comparison,
+        "_synthetic_paths",
+        lambda **_kwargs: ([record], []),
     )
     monkeypatch.setattr(
         comparison,
-        "adu_per_s_to_electrons_factor",
-        lambda magzero, _band: magzero,
+        "_archive_collection_state",
+        lambda: {
+            "ready": False,
+            "reasons": ["archive_fields_manifest.json is missing"],
+            "sample_count": 0,
+        },
     )
 
-    fields = list(_real_fields([Path("field/raw/VIS.fits")], []))
+    with pytest.raises(FileNotFoundError, match="multipoint Euclid archive"):
+        comparison.build_comparison()
 
-    assert len(fields) == 100
-    assert fields[0].shape == (1, 1, 4)
-    assert fields[0][0, 0].tolist() == pytest.approx([
-        21.0, 44.0, 69.0, 96.0,
-    ])
+
+def test_generic_comparison_has_no_legacy_single_point_or_nexus_discovery():
+    source = (
+        Path(__file__).parents[1]
+        / "euclid_polish/web/helpers/population_comparison.py"
+    ).read_text()
+
+    assert "EUCLID_INFERENCE_DIR" not in source
+    assert "jwst_euclid_overlap" not in source
+    assert "nexus_fields" not in source
 
 
 def test_population_parameter_payload_plots_every_available_parameter():

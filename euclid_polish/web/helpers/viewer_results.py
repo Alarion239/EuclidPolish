@@ -74,6 +74,7 @@ _PARAMS_BY_COLLECTION: dict[str, frozenset[str]] = {
     "cutouts": frozenset(),
     "evaluation": frozenset({viewer_data.BHR_FWHM_PARAM}),
     "ensemble": frozenset({"mode", "members", viewer_data.BHR_FWHM_PARAM}),
+    "archive-fields": frozenset(),
     "real-field": frozenset({"field"}),
     "jwst-euclid": frozenset({"jwst_band"}),
     "nexus-field": frozenset({"field"}),
@@ -91,7 +92,9 @@ _ALIASES = {
     "jwst": "jwst",
 }
 
-_REAL_COLLECTIONS = frozenset({"cutouts", "real-field", "jwst-euclid", "nexus-field"})
+_REAL_COLLECTIONS = frozenset({
+    "archive-fields", "cutouts", "real-field", "jwst-euclid", "nexus-field",
+})
 
 _SHA_CACHE: OrderedDict[tuple[str, int, int, int, int, int], str] = OrderedDict()
 

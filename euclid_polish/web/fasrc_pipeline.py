@@ -686,6 +686,46 @@ class VISNoiseSampleStep(FASRCPipelineStep):
         return cmd
 
 
+class ArchiveFieldSampleStep(FASRCPipelineStep):
+    """Derive compact matched four-band fields from the frozen VIS parents."""
+
+    def __init__(self):
+        super().__init__(
+            step_id="archive_field_sample",
+            label="Download matched multipoint Euclid archive fields (44 × 5)",
+            job_name="archive-fields",
+            defaults=StepResources(
+                partition="shared", n_cpus=1, n_gpus=0,
+                memory="8G", time_limit="4:00:00",
+            ),
+            needs_gpu=False,
+        )
+
+    def build_command(self, params: dict[str, Any]) -> list[str]:
+        cmd = [
+            "scripts/fasrc_download_euclid_sky_cutouts.py",
+            "--sampling-mode", "archive-fields",
+            "--vis-pixels", "256",
+            "--workers", str(max(1, int(params.get("workers", 1) or 1))),
+            "--source-release", str(
+                params.get("source_release", "Q1_R1") or "Q1_R1"
+            ),
+        ]
+        for key, flag in (
+            ("source_sampling_manifest", "--source-sampling-manifest"),
+            ("sampling_manifest", "--sampling-manifest"),
+            ("output_dir", "--output-dir"),
+        ):
+            value = str(params.get(key, "") or "").strip()
+            if value:
+                cmd += [flag, value]
+        if str(params.get("regenerate_catalog", "")).strip().lower() in (
+            "1", "true", "yes", "on",
+        ):
+            cmd.append("--regenerate-catalog")
+        return cmd
+
+
 class EuclidRoundtripTFRecordStep(FASRCPipelineStep):
     """EXPERIMENTAL (round-trip lane) — disabled for now, kept for future work."""
 
@@ -1833,6 +1873,7 @@ STEP_CLASSES: tuple[Callable[[], FASRCPipelineStep], ...] = (
     HSTTFRecordStep,
     EuclidSkyDownloadStep,
     VISNoiseSampleStep,
+    ArchiveFieldSampleStep,
     EuclidRoundtripTFRecordStep,
     EuclidQueryStep,
     EuclidVerifyPhotometryStep,

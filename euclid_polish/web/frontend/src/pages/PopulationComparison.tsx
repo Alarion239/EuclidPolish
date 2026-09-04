@@ -71,7 +71,7 @@ type Comparison = {
     synthetic: { fields: number; area_arcmin2: number; splits: string[] };
     real: {
       fields: number; area_arcmin2: number;
-      inference_fields: number; jwst_overlap_fields: number;
+      independent_parents: number;
     };
   };
   fields: FieldComparison;
@@ -92,9 +92,20 @@ type Availability = {
   };
   real: {
     fields: number; area_arcmin2: number;
-    inference_fields: number; jwst_overlap_fields: number;
+    independent_parents: number;
+    available: boolean; valid: boolean; ready: boolean;
+    complete: boolean; current: boolean;
+    unavailable_reason?: string | null;
+    collection_fingerprint?: string | null;
   };
   field_area_arcmin2: number;
+  input_fingerprint: string;
+  comparison_cache: {
+    present: boolean;
+    schema_current: boolean;
+    fresh: boolean;
+    reason?: string | null;
+  };
 };
 type MaybeNumber = number | null;
 type VisNoiseRmsValidation = {
@@ -436,8 +447,8 @@ function DatasetRuler({ availability, comparison }: {
   const synthetic = comparison?.samples.synthetic.fields ?? availability.synthetic.fields;
   const real = comparison?.samples.real.fields ?? availability.real.fields;
   const max = Math.max(synthetic, real, 1);
-  const inference = comparison?.samples.real.inference_fields ?? availability.real.inference_fields;
-  const overlap = comparison?.samples.real.jwst_overlap_fields ?? availability.real.jwst_overlap_fields;
+  const parents = comparison?.samples.real.independent_parents
+    ?? availability.real.independent_parents;
   return (
     <section className="survey-ruler" aria-label="Compared field census">
       <div className="survey-ruler__axis">
@@ -462,7 +473,7 @@ function DatasetRuler({ availability, comparison }: {
       <div className="survey-ruler__row survey-ruler__row--real">
         <div className="survey-ruler__label">
           <strong>Real Euclid LR</strong>
-          <span>{inference} inference + {overlap} JWST-overlap</span>
+          <span>{parents} independent Q1 pointings</span>
         </div>
         <div className="survey-ruler__track">
           <span style={{ width: `${100 * real / max}%` }} />
@@ -1180,15 +1191,7 @@ export default function PopulationComparisonPage() {
   const api = resource.data;
   const comparison = api?.comparison ?? null;
   const visNoise = api?.vis_noise_calibration ?? EMPTY_VIS_NOISE_STATE;
-  const stale = !!comparison && !!api && (
-    comparison.samples.synthetic.fields !== api.availability.synthetic.fields
-    || comparison.samples.real.fields !== api.availability.real.fields
-    || comparison.population.synthetic_field_count !== (
-      includeTraining
-        ? api.availability.synthetic.population_fields_with_training
-        : api.availability.synthetic.population_fields
-    )
-  );
+  const stale = !!api && !api.availability.comparison_cache.fresh;
 
   const rebuild = () => build.run("/api/population-comparison/build", {}, {
     onDone: (job) => { if (job.status !== "failed") resource.reload(); },
@@ -1230,7 +1233,9 @@ export default function PopulationComparisonPage() {
         title="Field statistics"
         sub="Compare the image domain and the source populations that train the model against cached Euclid sky."
         right={<div className="comparison-actions">
-          {stale && <Badge tone="warn">cache is behind local data</Badge>}
+          {stale && <Badge tone="warn">
+            {api.availability.comparison_cache.reason ?? "cache is behind local data"}
+          </Badge>}
           <Button variant={comparison ? "default" : "primary"} disabled={build.busy}
             onClick={rebuild}>
             {build.busy ? "Measuring…" : comparison ? "Rebuild statistics" : "Measure local fields"}
@@ -1239,6 +1244,7 @@ export default function PopulationComparisonPage() {
 
       <DatasetRuler availability={api.availability} comparison={comparison} />
       <JobProgressView job={build.job} error={build.error} />
+      <StepById stepId="archive_field_sample" />
       <StepById stepId="vis_noise_sample" />
       <VisNoiseCalibrationPanel
         state={visNoise}
@@ -1256,9 +1262,17 @@ export default function PopulationComparisonPage() {
       {!comparison ? (
         <Empty>
           <div className="comparison-empty">
-            <strong>The local fields are ready; the compact statistics cache has not been built.</strong>
-            <span>The pass streams {api.availability.synthetic.fields + api.availability.real.fields} fields one at a time and leaves the source FITS/TFRecords unchanged.</span>
-            <Button variant="primary" onClick={rebuild} disabled={build.busy}>Measure local fields</Button>
+            <strong>{api.availability.real.ready
+              ? "The multipoint fields are ready; the compact statistics cache has not been built."
+              : "The multipoint Euclid reference is not ready."}</strong>
+            <span>{api.availability.real.ready
+              ? `The pass streams ${api.availability.synthetic.fields + api.availability.real.fields} fields one at a time and leaves the source FITS/TFRecords unchanged.`
+              : api.availability.real.unavailable_reason
+                ?? "Generate and synchronize the four-band archive fields first."}</span>
+            <Button variant="primary" onClick={rebuild}
+              disabled={build.busy || !api.availability.real.ready}>
+              Measure local fields
+            </Button>
           </div>
         </Empty>
       ) : (

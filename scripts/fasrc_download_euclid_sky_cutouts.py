@@ -56,10 +56,13 @@ from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
+import astropy.units as u
 import numpy as np
 import pandas as pd
+from astropy.coordinates import SkyCoord, SkyOffsetFrame
 from astropy.io import fits
 from astropy.io.fits.verify import VerifyError
+from astropy.wcs import WCS
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJECT_ROOT not in sys.path:
@@ -75,6 +78,10 @@ from euclid_polish.catalog.downloader import (
 )
 from euclid_polish.config import Config
 from euclid_polish.observability.reporter import Reporter
+from euclid_polish.web.helpers.archive_fields import (
+    compute_collection_fingerprint,
+    compute_plan_fingerprint,
+)
 
 # Sky-catalog location, catalogue filename, and cutouts subdir now live in
 # Config — see Config.EUCLID_SKY_DIR, Config.EuclidSky.SKY_CATALOG_FILENAME,
@@ -87,6 +94,27 @@ VIS_NOISE_DEFAULT_WORKERS = 1
 VIS_NOISE_DOWNLOAD_ATTEMPTS = 3
 VIS_NOISE_DOWNLOAD_RETRY_DELAYS_SECONDS = (2.0, 5.0)
 VIS_NOISE_MAX_OVERSIZE_FRACTION = 0.01
+ARCHIVE_FIELDS_MANIFEST_VERSION = 1
+ARCHIVE_FIELDS_MANIFEST_KIND = "euclid_archive_fields"
+ARCHIVE_FIELDS_SOURCE_KIND = "euclid_vis_noise_sampling"
+ARCHIVE_FIELDS_POSITIONS_PER_PARENT = 5
+ARCHIVE_FIELDS_VIS_PIXELS = 256
+ARCHIVE_FIELDS_OFFSET_ARCSEC = 80.0
+# Five tiles need 2 * (80" centre offset + 12.8" tile half-side) =
+# 185.6".  Request 192.0" to leave 3.2" of rounding/WCS safety per edge
+# while transferring only 56.25% as many NISP pixels as a 256.0" source field.
+ARCHIVE_FIELDS_PARENT_DOWNLOAD_VIS_PIXELS = 1920
+ARCHIVE_FIELDS_MINIMUM_PARENT_VIS_PIXELS = 1856
+ARCHIVE_FIELDS_WCS_TOLERANCE_PIXELS = 1.0e-3
+ARCHIVE_FIELDS_DOWNLOAD_ATTEMPTS = 3
+ARCHIVE_FIELDS_DOWNLOAD_RETRY_DELAYS_SECONDS = (2.0, 5.0)
+ARCHIVE_FIELDS_PATTERN = (
+    ("center", 0.0, 0.0),
+    ("southwest", -ARCHIVE_FIELDS_OFFSET_ARCSEC, -ARCHIVE_FIELDS_OFFSET_ARCSEC),
+    ("southeast", ARCHIVE_FIELDS_OFFSET_ARCSEC, -ARCHIVE_FIELDS_OFFSET_ARCSEC),
+    ("northwest", -ARCHIVE_FIELDS_OFFSET_ARCSEC, ARCHIVE_FIELDS_OFFSET_ARCSEC),
+    ("northeast", ARCHIVE_FIELDS_OFFSET_ARCSEC, ARCHIVE_FIELDS_OFFSET_ARCSEC),
+)
 Q1_SUPPORT_REGIONS = (
     ("EDF-N", 269.733, 66.018, 6.0),
     ("EDF-F", 61.241, -48.423, 6.0),
@@ -114,7 +142,11 @@ def _worker_count(sampling_mode: str, requested: int | None) -> int:
     independent VIS-noise sampling serial unless a caller explicitly opts in.
     """
     if requested is None:
-        return VIS_NOISE_DEFAULT_WORKERS if sampling_mode == "star-support" else 8
+        return (
+            VIS_NOISE_DEFAULT_WORKERS
+            if sampling_mode in {"star-support", "archive-fields"}
+            else 8
+        )
     return max(1, int(requested))
 
 
@@ -694,6 +726,125 @@ def exact_vis_parents(
     return [], f"no {requested_release} DpdMerBksMosaic parent intersected the request"
 
 
+def exact_band_parent_query(
+    ra: float,
+    dec: float,
+    cutout_radius_deg: float,
+    band_name: str,
+    source_release: str = "Q1_R1",
+) -> str:
+    """ADQL prefilter for an exact-release parent in one Euclid band."""
+    band = Config.get_band(band_name)
+    release = str(source_release).strip()
+    if not release:
+        raise ValueError("source_release must be non-empty")
+    escaped_release = release.replace("'", "''")
+    where = [
+        f"instrument_name = '{band.archive_instrument}'",
+        "technique = 'IMAGE'",
+        "product_type = 'DpdMerBksMosaic'",
+        f"release_name = '{escaped_release}'",
+    ]
+    if band.archive_filter:
+        escaped_filter = str(band.archive_filter).replace("'", "''")
+        where.append(f"filter_name = '{escaped_filter}'")
+    return (
+        "SELECT mosaic_product_oid, release_name, product_type, fov, "
+        "file_path, file_name, tile_index, instrument_name, filter_name, "
+        "technique, ra, dec FROM sedm.mosaic_product WHERE "
+        + " AND ".join(where)
+        + " AND INTERSECTS(mosaic_product.fov, CIRCLE('ICRS', "
+        + f"{float(ra):.10f}, {float(dec):.10f}, "
+        + f"{float(cutout_radius_deg):.10f})) = 1"
+    )
+
+
+def exact_band_parents(
+    ra: float,
+    dec: float,
+    cutout_radius_deg: float,
+    band_name: str,
+    *,
+    source_release: str = "Q1_R1",
+    query_runner: Callable[..., tuple[Any, str]] = query_mosaic_tiles,
+) -> tuple[list[dict[str, Any]], str]:
+    """Resolve fully containing, release-frozen mosaic parents for a band."""
+    band = Config.get_band(band_name)
+    requested_release = str(source_release).strip()
+    rows, error = query_runner(exact_band_parent_query(
+        ra,
+        dec,
+        cutout_radius_deg,
+        band_name,
+        source_release=requested_release,
+    ))
+    if rows is None:
+        return [], error or "archive parent query failed"
+    parents: list[dict[str, Any]] = []
+    rejected_fov = 0
+    for row in rows:
+        tile_index = _text(_row_value(row, "tile_index", ""))
+        file_path = _text(_row_value(row, "file_path", ""))
+        file_name = _text(_row_value(row, "file_name", ""))
+        product_oid = _text(_row_value(row, "mosaic_product_oid", ""))
+        release_name = _text(_row_value(row, "release_name", ""))
+        product_type = _text(_row_value(row, "product_type", ""))
+        instrument_name = _text(_row_value(row, "instrument_name", ""))
+        filter_name = _text(_row_value(row, "filter_name", ""))
+        technique = _text(_row_value(row, "technique", ""))
+        fov = _text(_row_value(row, "fov", ""))
+        if (
+            not tile_index
+            or not file_path
+            or not file_name
+            or not product_oid
+            or release_name != requested_release
+            or product_type != "DpdMerBksMosaic"
+            or instrument_name != band.archive_instrument
+            or technique != "IMAGE"
+            or (band.archive_filter and filter_name != band.archive_filter)
+        ):
+            continue
+        clearance_deg = _circle_clearance_in_convex_fov_deg(fov, ra, dec)
+        if clearance_deg is None or clearance_deg < float(cutout_radius_deg):
+            rejected_fov += 1
+            continue
+        full_path = f"{file_path.rstrip('/')}/{file_name}"
+        parent_key = f"{band_name}:{release_name}:{product_oid}"
+        parents.append({
+            "parent_id": hashlib.sha256(parent_key.encode("utf-8")).hexdigest()[:20],
+            "mosaic_product_oid": product_oid,
+            "release_name": release_name,
+            "product_type": product_type,
+            "tile_index": tile_index,
+            "file_path": full_path,
+            "file_name": file_name,
+            "instrument_name": instrument_name,
+            "filter_name": filter_name,
+            "technique": technique,
+            "mosaic_ra": _optional_float(_row_value(row, "ra")),
+            "mosaic_dec": _optional_float(_row_value(row, "dec")),
+            "fov": fov,
+            "coverage_clearance_deg": clearance_deg,
+            "coverage_method": (
+                "INTERSECTS TAP prefilter plus convex spherical FOV "
+                "half-space containment"
+            ),
+        })
+    parents.sort(key=lambda item: (
+        item["release_name"], item["mosaic_product_oid"],
+        item["tile_index"], item["file_path"],
+    ))
+    if parents:
+        return parents, ""
+    if rejected_fov:
+        return [], "intersecting parents did not fully contain the requested cutout"
+    return [], (
+        f"no {requested_release} {band_name} DpdMerBksMosaic parent "
+        "intersected the request"
+    )
+
+
 def assign_unique_parents(
     candidates: pd.DataFrame,
     *,
@@ -857,6 +1008,214 @@ def bundle_path_for_id(output_dir: str, pos_id: int) -> str:
 def default_vis_noise_output_dir() -> str:
     """Dedicated root that cannot collide with round-trip sky cutouts."""
     return os.path.join(Config.EUCLID_SKY_DIR, VIS_NOISE_SAMPLING_SUBDIR)
+
+
+def default_archive_fields_output_dir() -> str:
+    """Dedicated derived root for compact matched four-band fields."""
+    return str(Config.EUCLID_ARCHIVE_FIELDS_DIR)
+
+
+def default_archive_fields_source_manifest() -> str:
+    """Return the immutable VIS-parent sampling manifest used as anchors."""
+    return os.path.join(
+        Config.EUCLID_SKY_DIR,
+        VIS_NOISE_SAMPLING_SUBDIR,
+        SAMPLING_MANIFEST_NAME,
+    )
+
+
+def archive_field_bundle_path(output_dir: str | os.PathLike[str], sample_id: int) -> str:
+    """Stable output path for one compact four-band archive sample."""
+    return os.path.join(
+        os.fspath(output_dir), "cutouts", f"field_{int(sample_id):04d}.fits",
+    )
+
+
+def _archive_source_manifest(
+    source_path: str | os.PathLike[str],
+) -> tuple[dict[str, Any], str]:
+    """Load and strictly validate the frozen 44-parent VIS sampling plan."""
+    path = Path(source_path)
+    try:
+        raw = path.read_bytes()
+        source = json.loads(raw)
+    except OSError as exc:
+        raise ValueError(f"Cannot read source VIS sampling manifest {path}: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Source VIS sampling manifest is invalid JSON: {path}") from exc
+    if not isinstance(source, dict):
+        raise ValueError("Source VIS sampling manifest must be a JSON object")
+    if source.get("kind") != ARCHIVE_FIELDS_SOURCE_KIND:
+        raise ValueError(
+            f"Source manifest kind must be {ARCHIVE_FIELDS_SOURCE_KIND!r}"
+        )
+    if source.get("version") != SAMPLING_MANIFEST_VERSION:
+        raise ValueError(
+            f"Source manifest version must be {SAMPLING_MANIFEST_VERSION}"
+        )
+    release = str(source.get("source_release") or "").strip()
+    if not release:
+        raise ValueError("Source VIS sampling manifest has no source_release")
+    plan = source.get("plan")
+    if not isinstance(plan, Mapping):
+        raise ValueError("Source VIS sampling manifest has no acquisition plan")
+    source_plan_fingerprint = str(source.get("plan_fingerprint") or "")
+    if source_plan_fingerprint != _plan_fingerprint(plan):
+        raise ValueError("Source VIS sampling plan fingerprint is invalid")
+    samples = source.get("samples")
+    if not isinstance(samples, list) or len(samples) != 44:
+        raise ValueError("Archive-field acquisition requires exactly 44 VIS parent samples")
+    complete_statuses = {"written", "cached", "complete", "completed"}
+    parent_ids: set[str] = set()
+    for expected_id, sample in enumerate(samples):
+        if not isinstance(sample, Mapping):
+            raise ValueError(f"Source VIS sample {expected_id} is not an object")
+        try:
+            sample_id = int(sample["sample_id"])
+            ra = float(sample["ra"])
+            dec = float(sample["dec"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(f"Source VIS sample {expected_id} has invalid identity") from exc
+        if sample_id != expected_id or not (
+            math.isfinite(ra) and math.isfinite(dec) and -90.0 <= dec <= 90.0
+        ):
+            raise ValueError(f"Source VIS sample {expected_id} has invalid identity")
+        if str(sample.get("status") or "").lower() not in complete_statuses:
+            raise ValueError(f"Source VIS sample {sample_id} is not complete")
+        parent_id = str(sample.get("parent_id") or "").strip()
+        parent = sample.get("parent")
+        if not parent_id or not isinstance(parent, Mapping):
+            raise ValueError(f"Source VIS sample {sample_id} has no exact parent")
+        if parent_id in parent_ids:
+            raise ValueError(f"Source VIS parent {parent_id!r} is not independent")
+        parent_ids.add(parent_id)
+        if str(parent.get("release_name") or "") != release:
+            raise ValueError(f"Source VIS sample {sample_id} release is inconsistent")
+        if str(parent.get("product_type") or "") != "DpdMerBksMosaic":
+            raise ValueError(f"Source VIS sample {sample_id} is not a MER mosaic")
+        if not str(sample.get("anchor_id") or "").strip():
+            raise ValueError(f"Source VIS sample {sample_id} has no anchor_id")
+        if str(sample.get("field") or "") not in {"EDF-N", "EDF-F", "EDF-S"}:
+            raise ValueError(f"Source VIS sample {sample_id} has no known Q1 field")
+    return source, hashlib.sha256(raw).hexdigest()
+
+
+def _archive_field_plan(
+    source: Mapping[str, Any], source_manifest_sha256: str,
+) -> dict[str, Any]:
+    """Build the immutable, relocatable 44-by-5 acquisition plan."""
+    source_plan = source["plan"]
+    assert isinstance(source_plan, Mapping)
+    return {
+        "source_manifest_sha256": str(source_manifest_sha256),
+        "source_plan_fingerprint": str(source["plan_fingerprint"]),
+        "source_release": str(source["source_release"]),
+        "source_sample_count": len(source["samples"]),
+        "positions_per_parent": ARCHIVE_FIELDS_POSITIONS_PER_PARENT,
+        "cutout_size_vis_pixels": ARCHIVE_FIELDS_VIS_PIXELS,
+        "source_vis_size_vis_pixels": int(source_plan["cutout_size_vis_pixels"]),
+        "minimum_parent_download_size_vis_pixels": (
+            ARCHIVE_FIELDS_MINIMUM_PARENT_VIS_PIXELS
+        ),
+        "parent_download_size_vis_pixels": (
+            ARCHIVE_FIELDS_PARENT_DOWNLOAD_VIS_PIXELS
+        ),
+        "parent_download_safety_margin_arcsec_per_edge": 3.2,
+        "bands": list(Config.LR_INPUT_BAND_NAMES),
+        "offset_pattern_arcsec": [
+            {
+                "position_index": index,
+                "name": name,
+                "east": east,
+                "north": north,
+            }
+            for index, (name, east, north) in enumerate(ARCHIVE_FIELDS_PATTERN)
+        ],
+        "registration_method": (
+            "exact celestial-WCS integer translation and common crop; no interpolation"
+        ),
+        "wcs_tolerance_pixels": ARCHIVE_FIELDS_WCS_TOLERANCE_PIXELS,
+    }
+
+
+def _offset_coordinate(
+    ra: float, dec: float, east_arcsec: float, north_arcsec: float,
+) -> tuple[float, float]:
+    """Apply a deterministic ICRS tangent-plane offset."""
+    origin = SkyCoord(float(ra) * u.deg, float(dec) * u.deg, frame="icrs")
+    frame = SkyOffsetFrame(origin=origin)
+    offset = SkyCoord(
+        lon=float(east_arcsec) * u.arcsec,
+        lat=float(north_arcsec) * u.arcsec,
+        frame=frame,
+    ).icrs
+    return float(offset.ra.deg % 360.0), float(offset.dec.deg)
+
+
+def _new_archive_fields_manifest(
+    source: Mapping[str, Any], source_manifest_sha256: str,
+) -> dict[str, Any]:
+    """Derive 220 deterministic positions without changing the source plan."""
+    plan = _archive_field_plan(source, source_manifest_sha256)
+    source_plan_fingerprint = str(source["plan_fingerprint"])
+    source_release = str(source["source_release"])
+    samples: list[dict[str, Any]] = []
+    for source_sample in source["samples"]:
+        source_sample_id = int(source_sample["sample_id"])
+        source_ra = float(source_sample["ra"])
+        source_dec = float(source_sample["dec"])
+        for position_index, (position_name, east, north) in enumerate(
+            ARCHIVE_FIELDS_PATTERN
+        ):
+            sample_id = (
+                source_sample_id * ARCHIVE_FIELDS_POSITIONS_PER_PARENT
+                + position_index
+            )
+            ra, dec = _offset_coordinate(source_ra, source_dec, east, north)
+            samples.append({
+                "sample_id": sample_id,
+                "field_id": sample_id,
+                "source_sample_id": source_sample_id,
+                "anchor_id": str(source_sample["anchor_id"]),
+                "source_slot": int(source_sample.get("slot", 0)),
+                "parent_id": str(source_sample["parent_id"]),
+                "field": str(source_sample["field"]),
+                "position_index": position_index,
+                "position_name": position_name,
+                "offset_east_arcsec": east,
+                "offset_north_arcsec": north,
+                "source_ra": source_ra,
+                "source_dec": source_dec,
+                "ra": ra,
+                "dec": dec,
+                "source_release": source_release,
+                "source_plan_fingerprint": source_plan_fingerprint,
+                "archive_parents": {"VIS": dict(source_sample["parent"])},
+                "status": "planned",
+                "error": None,
+                "output_path": None,
+                "bands": {},
+            })
+    plan_fingerprint = compute_plan_fingerprint(plan)
+    for sample in samples:
+        sample["plan_fingerprint"] = plan_fingerprint
+    manifest: dict[str, Any] = {
+        "version": ARCHIVE_FIELDS_MANIFEST_VERSION,
+        "kind": ARCHIVE_FIELDS_MANIFEST_KIND,
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "source_release": source_release,
+        "source": {
+            "manifest_kind": str(source["kind"]),
+            "manifest_version": int(source["version"]),
+            "manifest_sha256": str(source_manifest_sha256),
+            "plan_fingerprint": source_plan_fingerprint,
+        },
+        "plan": plan,
+        "plan_fingerprint": plan_fingerprint,
+        "samples": samples,
+    }
+    manifest["collection_fingerprint"] = compute_collection_fingerprint(manifest)
+    return manifest
 
 
 def _cached_planned_bundle_matches(
@@ -1141,22 +1500,622 @@ def _fetch_planned_vis_bundle(
             os.rmdir(temp_dir)
 
 
+def _source_vis_bundle_path(
+    source_manifest_path: str | os.PathLike[str],
+    source_sample: Mapping[str, Any],
+) -> Path:
+    """Resolve a source bundle after remote/local manifest relocation."""
+    recorded = Path(str(source_sample.get("output_path") or ""))
+    if recorded.is_file():
+        return recorded
+    return (
+        Path(source_manifest_path).parent
+        / "cutouts"
+        / f"sky_{int(source_sample['sample_id']):04d}.fits"
+    )
+
+
+def _read_archive_image(
+    path: str | os.PathLike[str], band_name: str,
+) -> tuple[np.ndarray, fits.Header]:
+    """Read one unmodified archive-rate image and its full science header."""
+    target = Path(path)
+    try:
+        with fits.open(target, memmap=False) as hdul:
+            hdul.verify("exception")
+            try:
+                candidate = hdul[band_name]
+            except (KeyError, IndexError):
+                candidate = next((hdu for hdu in hdul if hdu.data is not None), None)
+            if candidate is None or candidate.data is None:
+                raise ValueError(f"{target} has no image data for {band_name}")
+            data = np.array(candidate.data, copy=True)
+            header = candidate.header.copy(strip=True)
+    except (OSError, ValueError, VerifyError) as exc:
+        raise ValueError(f"Cannot read {band_name} archive cutout {target}: {exc}") from exc
+    if data.ndim != 2 or min(data.shape) < ARCHIVE_FIELDS_VIS_PIXELS:
+        raise ValueError(
+            f"{band_name} archive cutout has unusable shape {data.shape}"
+        )
+    try:
+        zeropoint = float(header["MAGZERO"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(f"{band_name} archive cutout has no finite MAGZERO") from exc
+    if not math.isfinite(zeropoint):
+        raise ValueError(f"{band_name} archive cutout has no finite MAGZERO")
+    unit = "".join(str(header.get("BUNIT") or "").strip().lower().split())
+    archive_rate_units = {
+        "", "adu/s", "adu/sec", "count/s", "count/sec", "counts/s",
+        "counts/sec", "electron/s", "electron/sec", "electrons/s",
+        "electrons/sec", "e-/s", "e-/sec",
+    }
+    if unit not in archive_rate_units:
+        raise ValueError(f"{band_name} archive cutout has unsupported BUNIT {unit!r}")
+    wcs = WCS(header).celestial
+    if not wcs.has_celestial or wcs.pixel_n_dim != 2 or wcs.world_n_dim != 2:
+        raise ValueError(f"{band_name} archive cutout has no two-axis celestial WCS")
+    return data, header
+
+
+def _validate_source_vis_bundle(
+    path: Path,
+    source_sample: Mapping[str, Any],
+    source_release: str,
+) -> tuple[np.ndarray, fits.Header]:
+    """Bind the reused full-size VIS image to its immutable source record."""
+    if not path.is_file():
+        raise ValueError(f"Source VIS bundle is unavailable: {path}")
+    try:
+        with fits.open(path, memmap=False) as hdul:
+            primary = hdul[0].header
+            if int(primary.get("POS_ID", -1)) != int(source_sample["sample_id"]):
+                raise ValueError("POS_ID disagrees with source manifest")
+            if str(primary.get("PARENT") or "") != str(source_sample["parent_id"]):
+                raise ValueError("PARENT disagrees with source manifest")
+            if str(primary.get("RELEASE") or "").strip() != str(source_release):
+                raise ValueError("RELEASE disagrees with source manifest")
+            if not math.isclose(
+                float(primary.get("RA")), float(source_sample["ra"]), abs_tol=1e-8,
+            ) or not math.isclose(
+                float(primary.get("DEC")), float(source_sample["dec"]), abs_tol=1e-8,
+            ):
+                raise ValueError("RA/DEC disagree with source manifest")
+    except (OSError, TypeError, ValueError, VerifyError) as exc:
+        raise ValueError(f"Invalid source VIS bundle {path}: {exc}") from exc
+    return _read_archive_image(path, "VIS")
+
+
+def _download_parent_band(
+    *,
+    band_name: str,
+    ra: float,
+    dec: float,
+    parent_download_vis_pixels: int,
+    parent: Mapping[str, Any],
+    output_path: str,
+) -> None:
+    """Download one full parent-centred NISP cutout with bounded retries."""
+    config = DownloadConfig.for_band(
+        band_name,
+        cutout_size_vis_pixels=int(parent_download_vis_pixels),
+        saturation_core_size=0,
+    )
+    arcsec_side = (
+        int(parent_download_vis_pixels) * Config.BAND_VIS.pixel_scale_lr_arcsec
+    )
+    radius_arcmin = (arcsec_side / 2.0) / 60.0
+    last_error = f"{band_name} parent cutout download failed"
+    for attempt in range(ARCHIVE_FIELDS_DOWNLOAD_ATTEMPTS):
+        with contextlib.suppress(OSError):
+            os.remove(output_path)
+        if download_one_cutout(
+            float(ra), float(dec), config, radius_arcmin, output_path, dict(parent),
+        ):
+            try:
+                _read_archive_image(output_path, band_name)
+                return
+            except ValueError as exc:
+                last_error = str(exc)
+        if attempt < ARCHIVE_FIELDS_DOWNLOAD_ATTEMPTS - 1:
+            delay_index = min(
+                attempt, len(ARCHIVE_FIELDS_DOWNLOAD_RETRY_DELAYS_SECONDS) - 1,
+            )
+            time.sleep(ARCHIVE_FIELDS_DOWNLOAD_RETRY_DELAYS_SECONDS[delay_index])
+    raise RuntimeError(
+        f"{last_error} after {ARCHIVE_FIELDS_DOWNLOAD_ATTEMPTS} attempts"
+    )
+
+
+def _registration_control_pixels(size: int) -> tuple[np.ndarray, np.ndarray]:
+    """Corners, edge centres, and centre constrain the complete output grid."""
+    edge = float(size - 1)
+    middle = edge / 2.0
+    points = (
+        (0.0, 0.0), (middle, 0.0), (edge, 0.0),
+        (0.0, middle), (middle, middle), (edge, middle),
+        (0.0, edge), (middle, edge), (edge, edge),
+    )
+    return (
+        np.asarray([point[0] for point in points], dtype=np.float64),
+        np.asarray([point[1] for point in points], dtype=np.float64),
+    )
+
+
+def _aligned_archive_crops(
+    raw_bands: Mapping[str, tuple[np.ndarray, fits.Header]],
+    *,
+    ra: float,
+    dec: float,
+    output_size: int = ARCHIVE_FIELDS_VIS_PIXELS,
+) -> dict[str, tuple[np.ndarray, fits.Header]]:
+    """Crop common-grid tiles and reject any resampling requirement."""
+    expected_bands = list(Config.LR_INPUT_BAND_NAMES)
+    if list(raw_bands) != expected_bands:
+        raise ValueError(f"Raw bands must be ordered as {expected_bands!r}")
+    _reference_data, reference_header = raw_bands["VIS"]
+    reference_wcs = WCS(reference_header).celestial
+    target = SkyCoord(float(ra) * u.deg, float(dec) * u.deg, frame="icrs")
+    target_x, target_y = reference_wcs.world_to_pixel(target)
+    if not (math.isfinite(float(target_x)) and math.isfinite(float(target_y))):
+        raise ValueError("Requested field centre is outside the VIS WCS")
+    centre = (int(output_size) - 1) / 2.0
+    reference_x0 = int(math.floor(float(target_x) - centre + 0.5))
+    reference_y0 = int(math.floor(float(target_y) - centre + 0.5))
+    control_x, control_y = _registration_control_pixels(int(output_size))
+    reference_world = reference_wcs.pixel_to_world(
+        control_x + reference_x0, control_y + reference_y0,
+    )
+    crops: dict[str, tuple[np.ndarray, fits.Header]] = {}
+    for band_name in expected_bands:
+        data, source_header = raw_bands[band_name]
+        source_wcs = WCS(source_header).celestial
+        mapped_x, mapped_y = source_wcs.world_to_pixel(reference_world)
+        if not (
+            np.all(np.isfinite(mapped_x)) and np.all(np.isfinite(mapped_y))
+        ):
+            raise ValueError(f"{band_name} WCS cannot map the VIS output grid")
+        delta_x = np.asarray(mapped_x, dtype=np.float64) - control_x
+        delta_y = np.asarray(mapped_y, dtype=np.float64) - control_y
+        x0 = int(np.rint(np.median(delta_x)))
+        y0 = int(np.rint(np.median(delta_y)))
+        residual = max(
+            float(np.max(np.abs(delta_x - x0))),
+            float(np.max(np.abs(delta_y - y0))),
+        )
+        if residual > ARCHIVE_FIELDS_WCS_TOLERANCE_PIXELS:
+            raise ValueError(
+                f"{band_name} is not on the VIS pixel grid: maximum WCS "
+                f"residual {residual:.6g}px"
+            )
+        y1 = y0 + int(output_size)
+        x1 = x0 + int(output_size)
+        if x0 < 0 or y0 < 0 or y1 > data.shape[0] or x1 > data.shape[1]:
+            raise ValueError(
+                f"{band_name} does not cover the requested {output_size}px crop "
+                f"at source origin ({x0}, {y0}) in shape {data.shape}"
+            )
+        tile = np.array(data[y0:y1, x0:x1], copy=True)
+        if tile.shape != (int(output_size), int(output_size)):
+            raise ValueError(f"{band_name} crop has unexpected shape {tile.shape}")
+        if not np.all(np.isfinite(tile)):
+            raise ValueError(f"{band_name} crop contains non-finite pixels")
+        output_header = source_header.copy(strip=True)
+        try:
+            output_header["CRPIX1"] = float(source_header["CRPIX1"]) - x0
+            output_header["CRPIX2"] = float(source_header["CRPIX2"]) - y0
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(f"{band_name} cannot adjust its crop WCS") from exc
+        output_header["EXTNAME"] = band_name
+        if not str(output_header.get("BUNIT") or "").strip():
+            output_header["BUNIT"] = ("adu/s", "Archive mosaic rate units")
+        output_header["SRCNX"] = (int(data.shape[1]), "Source cutout width")
+        output_header["SRCNY"] = (int(data.shape[0]), "Source cutout height")
+        output_header["CROPX0"] = (x0, "Zero-based source crop x origin")
+        output_header["CROPY0"] = (y0, "Zero-based source crop y origin")
+        output_wcs = WCS(output_header).celestial
+        check_x, check_y = output_wcs.world_to_pixel(reference_world)
+        check_residual = max(
+            float(np.max(np.abs(np.asarray(check_x) - control_x))),
+            float(np.max(np.abs(np.asarray(check_y) - control_y))),
+        )
+        if check_residual > ARCHIVE_FIELDS_WCS_TOLERANCE_PIXELS:
+            raise ValueError(
+                f"{band_name} crop header loses alignment by "
+                f"{check_residual:.6g}px"
+            )
+        crops[band_name] = (tile, output_header)
+    return crops
+
+
+_ARCHIVE_HEADER_MANIFEST_KEYS = (
+    "BUNIT", "MAGZERO", "FILTER", "INSTRUME", "RADESYS", "EQUINOX",
+    "CTYPE1", "CTYPE2", "CUNIT1", "CUNIT2", "CRVAL1", "CRVAL2",
+    "CRPIX1", "CRPIX2", "CD1_1", "CD1_2", "CD2_1", "CD2_2",
+    "PC1_1", "PC1_2", "PC2_1", "PC2_2", "CDELT1", "CDELT2",
+    "SRCNX", "SRCNY", "CROPX0", "CROPY0",
+)
+
+
+def _json_header_value(value: Any) -> str | int | float | bool:
+    if isinstance(value, (bool, np.bool_)):
+        return bool(value)
+    if isinstance(value, (int, np.integer)):
+        return int(value)
+    if isinstance(value, (float, np.floating)):
+        return float(value)
+    return str(value)
+
+
+def _archive_band_metadata(
+    hdu: fits.ImageHDU | fits.CompImageHDU,
+    archive_parent: Mapping[str, Any],
+) -> dict[str, Any]:
+    header = hdu.header
+    header_text = header.tostring(sep="\n", endcard=True, padding=False)
+    assert hdu.data is not None
+    return {
+        "shape": [int(side) for side in hdu.data.shape],
+        "source_shape": [int(header["SRCNY"]), int(header["SRCNX"])],
+        "crop_origin_xy": [int(header["CROPX0"]), int(header["CROPY0"])],
+        "header": {
+            key: _json_header_value(header[key])
+            for key in _ARCHIVE_HEADER_MANIFEST_KEYS
+            if key in header
+        },
+        "header_sha256": hashlib.sha256(header_text.encode("utf-8")).hexdigest(),
+        "archive_parent_id": str(archive_parent["parent_id"]),
+        "archive_parent_oid": str(archive_parent["mosaic_product_oid"]),
+    }
+
+
+def _validate_archive_field_bundle(
+    path: str | os.PathLike[str],
+    sample: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Validate identity, pixels, and exact four-band WCS alignment."""
+    target = Path(path)
+    expected_primary = {
+        "SAMPLEID": int(sample["sample_id"]),
+        "SRC_ID": int(sample["source_sample_id"]),
+        "PARENT": str(sample["parent_id"]),
+        "Q1FIELD": str(sample["field"]),
+        "RELEASE": str(sample["source_release"]),
+        "SRCPLAN": str(sample["source_plan_fingerprint"]),
+        "PLANHASH": str(sample["plan_fingerprint"]),
+    }
+    band_metadata: dict[str, Any] = {}
+    try:
+        with fits.open(target, memmap=False) as hdul:
+            hdul.verify("exception")
+            if len(hdul) != len(Config.LR_INPUT_BAND_NAMES) + 1:
+                raise ValueError("expected one primary plus four image HDUs")
+            if hdul[0].data is not None:
+                raise ValueError("primary HDU must be dataless")
+            primary = hdul[0].header
+            for key, wanted in expected_primary.items():
+                if str(primary.get(key)) != str(wanted):
+                    raise ValueError(f"{key} disagrees with the acquisition plan")
+            for key, sample_key in (("RA", "ra"), ("DEC", "dec")):
+                if not math.isclose(
+                    float(primary.get(key)), float(sample[sample_key]), abs_tol=1e-8,
+                ):
+                    raise ValueError(f"{key} disagrees with the acquisition plan")
+            names = [str(hdu.name) for hdu in hdul[1:]]
+            if names != list(Config.LR_INPUT_BAND_NAMES):
+                raise ValueError(
+                    f"image HDUs must be ordered as {list(Config.LR_INPUT_BAND_NAMES)!r}"
+                )
+            control_x, control_y = _registration_control_pixels(
+                ARCHIVE_FIELDS_VIS_PIXELS
+            )
+            reference_world: SkyCoord | None = None
+            archive_parents = sample["archive_parents"]
+            for band_name, hdu in zip(
+                Config.LR_INPUT_BAND_NAMES, hdul[1:], strict=True,
+            ):
+                if hdu.data is None or hdu.data.shape != (
+                    ARCHIVE_FIELDS_VIS_PIXELS, ARCHIVE_FIELDS_VIS_PIXELS,
+                ):
+                    raise ValueError(f"{band_name} does not have a 256x256 image")
+                if not np.all(np.isfinite(hdu.data)):
+                    raise ValueError(f"{band_name} contains non-finite pixels")
+                if not math.isfinite(float(hdu.header["MAGZERO"])):
+                    raise ValueError(f"{band_name} has no finite MAGZERO")
+                band_wcs = WCS(hdu.header).celestial
+                if reference_world is None:
+                    reference_world = band_wcs.pixel_to_world(control_x, control_y)
+                else:
+                    mapped_x, mapped_y = band_wcs.world_to_pixel(reference_world)
+                    residual = max(
+                        float(np.max(np.abs(np.asarray(mapped_x) - control_x))),
+                        float(np.max(np.abs(np.asarray(mapped_y) - control_y))),
+                    )
+                    if residual > ARCHIVE_FIELDS_WCS_TOLERANCE_PIXELS:
+                        raise ValueError(
+                            f"{band_name} output WCS differs from VIS by {residual:.6g}px"
+                        )
+                band_metadata[band_name] = _archive_band_metadata(
+                    hdu, archive_parents[band_name],
+                )
+    except (OSError, KeyError, TypeError, ValueError, VerifyError) as exc:
+        raise ValueError(f"Invalid archive-field bundle {target}: {exc}") from exc
+    return {
+        "bands": band_metadata,
+        "bundle_sha256": _sha256_file(target),
+    }
+
+
+def _write_archive_field_bundle(
+    target_path: str,
+    *,
+    sample: Mapping[str, Any],
+    crops: Mapping[str, tuple[np.ndarray, fits.Header]],
+) -> dict[str, Any]:
+    """Atomically write and re-open one compact matched four-band bundle."""
+    primary = fits.Header()
+    primary["SAMPLEID"] = (int(sample["sample_id"]), "Archive-field sample id")
+    primary["FIELD_ID"] = (int(sample["sample_id"]), "Alias of SAMPLEID")
+    primary["SRC_ID"] = (int(sample["source_sample_id"]), "Source VIS sample id")
+    primary["PARENT"] = (str(sample["parent_id"]), "Independent VIS parent id")
+    primary["Q1FIELD"] = (str(sample["field"]), "Euclid Q1 deep field")
+    primary["ANCHOR"] = (str(sample["anchor_id"]), "Source k-means anchor id")
+    primary["POSINDEX"] = (int(sample["position_index"]), "Position within parent")
+    primary["POSNAME"] = (str(sample["position_name"]), "Position pattern name")
+    primary["RA"] = (float(sample["ra"]), "ICRS right ascension (deg)")
+    primary["DEC"] = (float(sample["dec"]), "ICRS declination (deg)")
+    primary["RELEASE"] = (str(sample["source_release"]), "Archive release_name")
+    primary["SRCPLAN"] = str(sample["source_plan_fingerprint"])
+    primary["PLANHASH"] = str(sample["plan_fingerprint"])
+    hdul = fits.HDUList([fits.PrimaryHDU(header=primary)])
+    for band_name in Config.LR_INPUT_BAND_NAMES:
+        tile, header = crops[band_name]
+        hdul.append(fits.ImageHDU(data=tile, header=header, name=band_name))
+    target = Path(target_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_suffix(target.suffix + ".tmp")
+    try:
+        hdul.writeto(
+            temporary, overwrite=True, output_verify="exception", checksum=True,
+        )
+        _validate_archive_field_bundle(temporary, sample)
+        os.replace(temporary, target)
+        return _validate_archive_field_bundle(target, sample)
+    finally:
+        with contextlib.suppress(OSError):
+            temporary.unlink()
+
+
+def _resolve_archive_parents(
+    source_sample: Mapping[str, Any],
+    *,
+    source_release: str,
+    parent_download_vis_pixels: int,
+) -> dict[str, dict[str, Any]]:
+    """Resolve one fully containing parent per band for a complete batch."""
+    half_side_deg = (
+        int(parent_download_vis_pixels)
+        * Config.BAND_VIS.pixel_scale_lr_arcsec
+        / 2.0
+        / 3600.0
+    )
+    required_radius_deg = math.sqrt(2.0) * half_side_deg
+    parents: dict[str, dict[str, Any]] = {"VIS": dict(source_sample["parent"])}
+    for band_name in Config.LR_INPUT_BAND_NAMES[1:]:
+        candidates, error = exact_band_parents(
+            float(source_sample["ra"]),
+            float(source_sample["dec"]),
+            required_radius_deg,
+            band_name,
+            source_release=source_release,
+        )
+        if not candidates:
+            raise RuntimeError(f"{band_name} exact parent: {error}")
+        parents[band_name] = dict(candidates[0])
+    return parents
+
+
+def _archive_manifest_summary(manifest: Mapping[str, Any]) -> dict[str, Any]:
+    samples = list(manifest.get("samples") or [])
+    complete = {"written", "cached", "complete", "completed"}
+    return {
+        "planned_samples": len(samples),
+        "completed_samples": sum(
+            str(sample.get("status") or "").lower() in complete
+            for sample in samples
+        ),
+        "failed_samples": sum(sample.get("status") == "failed" for sample in samples),
+        "independent_parent_count": len({
+            str(sample.get("parent_id"))
+            for sample in samples
+            if str(sample.get("status") or "").lower() in complete
+        }),
+        "collection_fingerprint": manifest.get("collection_fingerprint"),
+    }
+
+
+def _run_archive_fields(args: argparse.Namespace, reporter: Reporter) -> int:
+    """Build compact 44-by-5 fields using only three new downloads per parent."""
+    source_path = str(
+        args.source_sampling_manifest or default_archive_fields_source_manifest()
+    )
+    source, source_sha256 = _archive_source_manifest(source_path)
+    if str(args.source_release) != str(source["source_release"]):
+        raise ValueError(
+            f"Source manifest is frozen to {source['source_release']!r}, not "
+            f"{args.source_release!r}"
+        )
+    output_dir = str(args.output_dir)
+    manifest_path = Path(
+        args.sampling_manifest
+        or os.path.join(output_dir, Config.EuclidSky.ARCHIVE_FIELDS_MANIFEST_FILENAME)
+    )
+    expected_plan = _archive_field_plan(source, source_sha256)
+    expected_plan_fingerprint = compute_plan_fingerprint(expected_plan)
+    if manifest_path.is_file() and not args.regenerate_catalog:
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(f"Cannot reuse archive-field manifest: {exc}") from exc
+        if (
+            manifest.get("kind") != ARCHIVE_FIELDS_MANIFEST_KIND
+            or manifest.get("version") != ARCHIVE_FIELDS_MANIFEST_VERSION
+            or manifest.get("plan") != expected_plan
+            or manifest.get("plan_fingerprint") != expected_plan_fingerprint
+            or len(manifest.get("samples") or [])
+            != len(source["samples"]) * ARCHIVE_FIELDS_POSITIONS_PER_PARENT
+        ):
+            raise ValueError(
+                "Existing archive-field manifest does not match the immutable "
+                "source and 44-by-5 acquisition plan; pass --regenerate-catalog"
+            )
+        reporter.set_stage("reusing matched archive-field manifest")
+    else:
+        manifest = _new_archive_fields_manifest(source, source_sha256)
+        if not args.dry_run:
+            _atomic_write_json(manifest_path, manifest)
+
+    if args.dry_run:
+        print(json.dumps(_archive_manifest_summary(manifest), indent=2, sort_keys=True))
+        print(f"source manifest = {source_path}")
+        print(f"output manifest = {manifest_path}")
+        return 0
+
+    complete_statuses = {"written", "cached", "complete", "completed"}
+    source_by_id = {
+        int(sample["sample_id"]): sample for sample in source["samples"]
+    }
+    samples = list(manifest["samples"])
+    for sample in samples:
+        sample["plan_fingerprint"] = expected_plan_fingerprint
+        target = archive_field_bundle_path(output_dir, int(sample["sample_id"]))
+        try:
+            metadata = _validate_archive_field_bundle(target, sample)
+            recorded_sha = str(sample.get("bundle_sha256") or "")
+            if recorded_sha and recorded_sha != metadata["bundle_sha256"]:
+                raise ValueError("bundle SHA256 disagrees with manifest")
+            sample.update(metadata)
+            sample["status"] = "cached"
+            sample["error"] = None
+            sample["output_path"] = os.path.abspath(target)
+        except (KeyError, TypeError, ValueError):
+            if str(sample.get("status") or "").lower() in complete_statuses:
+                sample["error"] = "cached output missing, corrupt, or stale"
+            sample["status"] = "planned"
+            sample.pop("bundle_sha256", None)
+    manifest["collection_fingerprint"] = compute_collection_fingerprint(manifest)
+    _atomic_write_json(manifest_path, manifest)
+
+    done = sum(sample["status"] == "cached" for sample in samples)
+    reporter.set_step(done, len(samples), "validated cached archive fields")
+    reporter.set_stage("downloading parent-batched matched archive fields")
+    parent_download_pixels = int(expected_plan["parent_download_size_vis_pixels"])
+    for source_sample_id in range(len(source_by_id)):
+        group = [
+            sample for sample in samples
+            if int(sample["source_sample_id"]) == source_sample_id
+        ]
+        pending = [sample for sample in group if sample["status"] != "cached"]
+        if not pending:
+            continue
+        source_sample = source_by_id[source_sample_id]
+        temp_dir = tempfile.mkdtemp(prefix=f"archive_parent_{source_sample_id:04d}_")
+        try:
+            stored_parents = group[0].get("archive_parents")
+            if not isinstance(stored_parents, Mapping) or set(stored_parents) != set(
+                Config.LR_INPUT_BAND_NAMES
+            ):
+                stored_parents = _resolve_archive_parents(
+                    source_sample,
+                    source_release=str(source["source_release"]),
+                    parent_download_vis_pixels=parent_download_pixels,
+                )
+            archive_parents = {
+                band_name: dict(stored_parents[band_name])
+                for band_name in Config.LR_INPUT_BAND_NAMES
+            }
+            for sample in group:
+                sample["archive_parents"] = archive_parents
+
+            vis_path = _source_vis_bundle_path(source_path, source_sample)
+            raw_bands: dict[str, tuple[np.ndarray, fits.Header]] = {
+                "VIS": _validate_source_vis_bundle(
+                    vis_path, source_sample, str(source["source_release"]),
+                ),
+            }
+            for band_name in Config.LR_INPUT_BAND_NAMES[1:]:
+                raw_path = os.path.join(temp_dir, f"{band_name}.fits")
+                _download_parent_band(
+                    band_name=band_name,
+                    ra=float(source_sample["ra"]),
+                    dec=float(source_sample["dec"]),
+                    parent_download_vis_pixels=parent_download_pixels,
+                    parent=archive_parents[band_name],
+                    output_path=raw_path,
+                )
+                raw_bands[band_name] = _read_archive_image(raw_path, band_name)
+
+            prepared: dict[int, dict[str, tuple[np.ndarray, fits.Header]]] = {}
+            for sample in pending:
+                prepared[int(sample["sample_id"])] = _aligned_archive_crops(
+                    raw_bands, ra=float(sample["ra"]), dec=float(sample["dec"]),
+                )
+            for sample in pending:
+                target = archive_field_bundle_path(output_dir, int(sample["sample_id"]))
+                metadata = _write_archive_field_bundle(
+                    target,
+                    sample=sample,
+                    crops=prepared[int(sample["sample_id"])],
+                )
+                sample.update(metadata)
+                sample["status"] = "written"
+                sample["error"] = None
+                sample["output_path"] = os.path.abspath(target)
+                done += 1
+                reporter.set_step(
+                    done, len(samples), f"archive field {int(sample['sample_id']):04d}",
+                )
+        except Exception as exc:  # noqa: BLE001 - persisted for resumable runs
+            error = f"{type(exc).__name__}: {exc}"
+            reporter.warn(f"source VIS sample {source_sample_id}: {error}")
+            for sample in pending:
+                if sample.get("status") != "written":
+                    sample["status"] = "failed"
+                    sample["error"] = error
+        finally:
+            with contextlib.suppress(OSError):
+                for child in Path(temp_dir).iterdir():
+                    child.unlink()
+            with contextlib.suppress(OSError):
+                Path(temp_dir).rmdir()
+            manifest["collection_fingerprint"] = compute_collection_fingerprint(manifest)
+            _atomic_write_json(manifest_path, manifest)
+
+    if _sha256_file(Path(source_path)) != source_sha256:
+        raise RuntimeError("Source VIS sampling manifest changed during acquisition")
+    summary = _archive_manifest_summary(manifest)
+    print(json.dumps(summary, indent=2, sort_keys=True))
+    print(f"manifest = {manifest_path}")
+    return 0 if summary["completed_samples"] == summary["planned_samples"] else 1
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument(
-        "--sampling-mode", choices=("single-disk", "star-support"),
+        "--sampling-mode", choices=("single-disk", "star-support", "archive-fields"),
         default="single-disk",
         help=(
             "single-disk preserves the round-trip downloader; star-support "
             "builds equal-area spherical anchors over the saved Q1 star "
-            "footprint and downloads one VIS field per unique parent mosaic"
+            "footprint and downloads one VIS field per unique parent mosaic; "
+            "archive-fields derives five compact matched four-band fields "
+            "from each frozen VIS parent"
         ),
     )
     p.add_argument("--output-dir", default=None,
                    help="Root for the sky catalogue CSV and bundled "
                         "FITS cutouts. Default: data/euclid_sky for "
-                        "single-disk mode and its dedicated "
-                        "vis_noise_samples subdirectory for star-support.")
+                        "single-disk mode, vis_noise_samples for star-support, "
+                        "and archive_fields for archive-fields.")
     p.add_argument("--n-positions", type=int, default=100,
                    help="Number of random sky positions to generate. "
                         "After per-position 4-band download some will "
@@ -1216,7 +2175,16 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--source-release", default="Q1_R1",
                    help="Exact sedm.mosaic_product.release_name value.")
     p.add_argument("--sampling-manifest", default=None,
-                   help="Manifest path (default <output-dir>/vis_noise_sampling_manifest.json).")
+                   help="Output manifest override for a manifest-driven mode.")
+    p.add_argument(
+        "--source-sampling-manifest",
+        default=None,
+        help=(
+            "Immutable 44-parent VIS sampling manifest used by archive-fields "
+            "(default data/euclid_sky/vis_noise_samples/"
+            "vis_noise_sampling_manifest.json)."
+        ),
+    )
     p.add_argument("--dry-run", action="store_true",
                    help="Print what would be done and exit.")
     return p.parse_args()
@@ -1514,14 +2482,17 @@ def main() -> int:
     if not args.source_release:
         raise ValueError("--source-release must be non-empty")
     if args.output_dir is None:
-        args.output_dir = (
-            default_vis_noise_output_dir()
-            if args.sampling_mode == "star-support"
-            else Config.EUCLID_SKY_DIR
-        )
+        if args.sampling_mode == "star-support":
+            args.output_dir = default_vis_noise_output_dir()
+        elif args.sampling_mode == "archive-fields":
+            args.output_dir = default_archive_fields_output_dir()
+        else:
+            args.output_dir = Config.EUCLID_SKY_DIR
     reporter = Reporter.from_env()
     if args.sampling_mode == "star-support":
         return _run_star_support_sampling(args, reporter)
+    if args.sampling_mode == "archive-fields":
+        return _run_archive_fields(args, reporter)
     arcsec_side = args.vis_pixels * Config.BAND_VIS.pixel_scale_lr_arcsec
 
     print("=" * 64)

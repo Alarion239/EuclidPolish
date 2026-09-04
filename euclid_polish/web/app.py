@@ -35,6 +35,7 @@ from flask import (
 from euclid_polish.web import experimental, fasrc_config, fasrc_jobs
 from euclid_polish.web.remote import STATE, SSHConfig, SSHError, SSHSession
 from euclid_polish.web.routes import (
+    archive_fields,
     auth,
     catalog,
     config,
@@ -165,6 +166,7 @@ def create_app() -> Flask:
         "/api/inference/",       # cached real-field workspace is local
         "/inference/",           # local recache/reapply jobs reuse archive data
         "/api/population-comparison",
+        "/api/archive-fields",
         "/population-comparison",
         "/galaxy-distributions",
         "/api/galaxy-distributions",
@@ -327,6 +329,7 @@ def create_app() -> Flask:
     sky.register(app)
     tng.register(app)
     poster.register(app)
+    archive_fields.register(app)
     population_comparison.register(app)
     galaxy_distributions.register(app)
     star_distribution.register(app)

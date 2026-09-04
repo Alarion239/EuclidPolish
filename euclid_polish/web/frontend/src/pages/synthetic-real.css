@@ -6,6 +6,7 @@
   background: var(--surface-1);
   box-shadow: var(--shadow-2);
 }
+.domain-workflow { margin-top: var(--s4); }
 
 .domain-transfer {
   position: relative;

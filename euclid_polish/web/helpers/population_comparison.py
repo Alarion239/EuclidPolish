@@ -15,17 +15,17 @@ import random
 import tempfile
 import warnings
 from collections.abc import Callable, Iterable, Iterator, Sequence
+from datetime import UTC, datetime
+from functools import lru_cache
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import numpy as np
-from astropy.io import fits
 from astroquery.esa.euclid import Euclid
 from scipy.special import ndtr
 
 from euclid_polish.config import Config
 from euclid_polish.photometry import (
-    adu_per_s_to_electrons_factor,
     electrons_to_ab_mag,
     uJy_to_ab_mag,
 )
@@ -40,7 +40,7 @@ from euclid_polish.web.helpers.tng_prior import (
     detection_payload,
 )
 
-VERSION = 10
+VERSION = 11
 CATALOG_VERSION = 7
 PHZ_PDF_GRID = np.linspace(0.0, 6.0, 601, dtype=np.float64)
 BANDS = ("VIS", "Y_E", "J_E", "H_E")
@@ -595,29 +595,233 @@ def _synthetic_paths(
     return records, sources
 
 
-def _real_field_sources() -> tuple[list[Path], list[Path]]:
-    inference = sorted(
-        Path(Config.EUCLID_INFERENCE_DIR).glob("real_fields/*/raw/VIS.fits")
+def _archive_provider() -> Any:
+    """Load the shared, manifest-backed archive-field provider lazily.
+
+    Keeping this import narrow lets the comparison page report a missing
+    provider as an unavailable collection instead of silently reverting to
+    the historical one-pointing inference field.
+    """
+    from euclid_polish.web.helpers import archive_fields
+
+    return archive_fields
+
+
+def _archive_collection_state() -> dict[str, Any]:
+    try:
+        raw = _archive_provider().availability()
+    except (ImportError, ModuleNotFoundError) as exc:
+        return {
+            "available": False,
+            "valid": False,
+            "ready": False,
+            "current": False,
+            "reasons": [f"multipoint archive provider is unavailable: {exc}"],
+            "sample_count": 0,
+            "parent_count": 0,
+            "fields": {},
+            "bands": [],
+            "tile_size": TILE_SIZE,
+            "manifest_fingerprint": None,
+            "collection_fingerprint": None,
+        }
+    if not isinstance(raw, dict):
+        raise TypeError("archive_fields.availability() must return a mapping")
+    return dict(raw)
+
+
+def _archive_unavailable_reason(state: dict[str, Any]) -> str | None:
+    if (
+        state.get("valid")
+        and state.get("ready")
+        and state.get("complete")
+        and state.get("current")
+    ):
+        return None
+    reasons = state.get("reasons")
+    if isinstance(reasons, list):
+        text = "; ".join(str(reason) for reason in reasons if reason)
+        if text:
+            return text
+    if not state.get("ready"):
+        return "multipoint Euclid archive collection is not ready"
+    if not state.get("complete"):
+        return "multipoint Euclid archive collection is incomplete"
+    return "multipoint Euclid archive collection is not current"
+
+
+def _archive_source_summary(state: dict[str, Any]) -> dict[str, Any]:
+    summary = state.get("source_summary")
+    if isinstance(summary, dict):
+        return dict(summary)
+    keys = (
+        "source_release",
+        "source_plan_fingerprint",
+        "source_manifest_sha256",
+        "sample_count",
+        "planned_sample_count",
+        "parent_count",
+        "fields",
+        "bands",
+        "tile_size",
     )
-    overlap = sorted(
-        (Path(Config.DATA_DIR) / "jwst_euclid_overlap").glob(
-            "nexus_fields/*/tiles/euclid_lr_vis_y_j_h_*.fits"
-        )
+    return {key: state.get(key) for key in keys if state.get(key) is not None}
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+@lru_cache(maxsize=64)
+def _sha256_file_identity(
+    path: str,
+    device: int,
+    inode: int,
+    size: int,
+    mtime_ns: int,
+    ctime_ns: int,
+) -> str:
+    del device, inode, size, mtime_ns, ctime_ns
+    return _sha256_file(Path(path))
+
+
+def _input_file(path: Path, role: str) -> dict[str, Any]:
+    stat = path.stat()
+    resolved = path.resolve()
+    digest = _sha256_file_identity(
+        os.fspath(resolved),
+        int(stat.st_dev),
+        int(stat.st_ino),
+        int(stat.st_size),
+        int(stat.st_mtime_ns),
+        int(stat.st_ctime_ns),
     )
-    return inference, overlap
+    return {
+        "role": role,
+        "path": os.fspath(resolved),
+        "size_bytes": int(stat.st_size),
+        "sha256": digest,
+    }
+
+
+def _canonical_fingerprint(value: Any) -> str:
+    encoded = json.dumps(
+        value, sort_keys=True, separators=(",", ":"), allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _synthetic_input_state() -> dict[str, Any]:
+    records, current_sources = _synthetic_paths()
+    _, all_sources = _synthetic_paths(include_training=True)
+    record_files = [_input_file(path, path.stem) for path in records]
+    current_source_files = [
+        _input_file(path, path.stem) for path in current_sources
+    ]
+    training_source_files = [
+        _input_file(path, path.stem)
+        for path in all_sources
+        if path not in current_sources
+    ]
+    identity = {
+        "records": [
+            {key: row[key] for key in ("role", "size_bytes", "sha256")}
+            for row in record_files
+        ],
+        "current_sources": [
+            {key: row[key] for key in ("role", "size_bytes", "sha256")}
+            for row in current_source_files
+        ],
+        "training_sources": [
+            {key: row[key] for key in ("role", "size_bytes", "sha256")}
+            for row in training_source_files
+        ],
+    }
+    return {
+        **identity,
+        "records": record_files,
+        "current_sources": current_source_files,
+        "training_sources": training_source_files,
+        "fingerprint": _canonical_fingerprint(identity),
+    }
+
+
+def _comparison_input_state(
+    archive_state: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    archive = archive_state or _archive_collection_state()
+    synthetic = _synthetic_input_state()
+    archive_identity = {
+        "collection_fingerprint": archive.get("collection_fingerprint"),
+    }
+    identity = {
+        "synthetic_fingerprint": synthetic["fingerprint"],
+        "archive": archive_identity,
+    }
+    return {
+        "fingerprint": _canonical_fingerprint(identity),
+        "synthetic": synthetic,
+        "archive": {
+            **archive_identity,
+            "ready": _archive_unavailable_reason(archive) is None,
+            "manifest_fingerprint": archive.get("manifest_fingerprint"),
+            "source_summary": _archive_source_summary(archive),
+        },
+    }
+
+
+def _comparison_cache_state(inputs: dict[str, Any]) -> dict[str, Any]:
+    cached = _read_json(comparison_path())
+    cached_fingerprint = (
+        cached.get("provenance", {}).get("input_fingerprint")
+        if isinstance(cached, dict) else None
+    )
+    schema_current = bool(cached and cached.get("version") == VERSION)
+    archive_ready = bool(
+        inputs["archive"].get("ready")
+        and inputs["archive"].get("collection_fingerprint")
+    )
+    fresh = bool(
+        schema_current
+        and archive_ready
+        and cached_fingerprint == inputs["fingerprint"]
+    )
+    if cached is None:
+        reason = "comparison cache has not been built"
+    elif not schema_current:
+        reason = "comparison cache uses an older schema"
+    elif not archive_ready:
+        reason = "multipoint Euclid archive collection is unavailable"
+    elif cached_fingerprint != inputs["fingerprint"]:
+        reason = "comparison inputs changed"
+    else:
+        reason = None
+    return {
+        "present": cached is not None,
+        "schema_current": schema_current,
+        "fresh": fresh,
+        "reason": reason,
+        "cached_input_fingerprint": cached_fingerprint,
+        "current_input_fingerprint": inputs["fingerprint"],
+    }
 
 
 def availability() -> dict[str, Any]:
     records, source_csvs = _synthetic_paths()
     _, source_csvs_with_training = _synthetic_paths(include_training=True)
-    inference, overlap = _real_field_sources()
+    archive = _archive_collection_state()
+    inputs = _comparison_input_state(archive)
     synthetic_fields = sum(_count_tfrecord(path) for path in records)
     population_fields = _source_field_count(source_csvs)
     population_fields_with_training = _source_field_count(
         source_csvs_with_training
     )
-    inference_fields = 100 * len(inference)
-    real_fields = inference_fields + len(overlap)
+    real_fields = int(archive.get("sample_count") or 0)
+    parent_count = int(archive.get("parent_count") or 0)
     return {
         "synthetic": {
             "fields": synthetic_fields,
@@ -630,6 +834,7 @@ def availability() -> dict[str, Any]:
             ),
             "record_files": len(records),
             "source_catalogs": len(source_csvs_with_training),
+            "input_fingerprint": inputs["synthetic"]["fingerprint"],
             "train_source_catalog": (
                 Path(_sky_records_local_dir()) / "sources_train.csv"
             ).is_file(),
@@ -637,10 +842,21 @@ def availability() -> dict[str, Any]:
         "real": {
             "fields": real_fields,
             "area_arcmin2": real_fields * FIELD_AREA_ARCMIN2,
-            "inference_fields": inference_fields,
-            "jwst_overlap_fields": len(overlap),
+            "independent_parents": parent_count,
+            "available": bool(archive.get("available")),
+            "valid": bool(archive.get("valid")),
+            "ready": _archive_unavailable_reason(archive) is None,
+            "collection_ready": bool(archive.get("ready")),
+            "complete": bool(archive.get("complete")),
+            "current": bool(archive.get("current")),
+            "unavailable_reason": _archive_unavailable_reason(archive),
+            "collection_fingerprint": archive.get("collection_fingerprint"),
+            "manifest_fingerprint": archive.get("manifest_fingerprint"),
+            "source_summary": _archive_source_summary(archive),
         },
         "field_area_arcmin2": FIELD_AREA_ARCMIN2,
+        "input_fingerprint": inputs["fingerprint"],
+        "comparison_cache": _comparison_cache_state(inputs),
     }
 
 
@@ -678,49 +894,36 @@ def _center_crop(array: np.ndarray, size: int) -> np.ndarray:
     return array[y0:y0 + size, x0:x0 + size]
 
 
-def _real_fields(inference: Iterable[Path],
-                 overlap: Iterable[Path]) -> Iterator[np.ndarray]:
-    for vis_path in inference:
-        raw_dir = vis_path.parent
-        hdus = [fits.open(raw_dir / f"{band}.fits", memmap=True) for band in BANDS]
-        try:
-            planes = [
-                _center_crop(
-                    np.asarray(primary.data, dtype=np.float32)
-                    * adu_per_s_to_electrons_factor(
-                        float(cast(
-                            float | int,
-                            primary.header.get(
-                                "MAGZERO",
-                                Config.get_band(band).sim_zeropoint_e,
-                            ),
-                        )),
-                        Config.get_band(band),
-                    ),
-                    2560,
-                )
-                for band, hdu in zip(BANDS, hdus, strict=True)
-                for primary in [cast(fits.PrimaryHDU, hdu[0])]
-            ]
-            for row in range(10):
-                for col in range(10):
-                    y0, x0 = row * TILE_SIZE, col * TILE_SIZE
-                    yield np.stack(
-                        [plane[y0:y0 + TILE_SIZE, x0:x0 + TILE_SIZE]
-                         for plane in planes],
-                        axis=-1,
-                    )
-        finally:
-            for hdu in hdus:
-                hdu.close()
-    for path in overlap:
-        with fits.open(path, memmap=True) as hdul:
-            data = np.asarray(
-                cast(fits.PrimaryHDU, hdul[0]).data, dtype=np.float32,
+def _archive_fields(manifest: dict[str, Any]) -> Iterator[
+    tuple[np.ndarray, dict[str, Any]]
+]:
+    provider = _archive_provider()
+    for sample in provider.iter_fields(manifest):
+        metadata = {
+            key: getattr(sample, key, None)
+            for key in (
+                "sample_id",
+                "source_sample_id",
+                "parent_id",
+                "field",
+                "ra",
+                "dec",
+                "source_release",
+                "source_plan_fingerprint",
+                "position_index",
+                "position_name",
+                "bundle_sha256",
             )
-            if data.ndim == 3 and data.shape[0] == len(BANDS):
-                data = np.moveaxis(data, 0, -1)
-            yield data
+        }
+        if isinstance(sample, dict):
+            metadata.update({key: sample.get(key) for key in metadata})
+        if metadata["sample_id"] is None or not metadata["parent_id"]:
+            raise ValueError(
+                "archive field metadata must include sample_id and parent_id"
+            )
+        yield np.asarray(
+            provider.load_field(sample, manifest), dtype=np.float32,
+        ), metadata
 
 
 def _normalise_field(field: np.ndarray) -> np.ndarray:
@@ -772,12 +975,32 @@ class _FieldAccumulator:
             for left in range(len(BANDS))
             for right in range(left + 1, len(BANDS))
         }
+        self.band_correlation_parents: dict[str, list[str]] = {
+            pair: [] for pair in self.band_correlations
+        }
+        self.parent_ids: list[str] = []
+        self.sample_ids: list[str] = []
         self.count = 0
         self.window = np.outer(np.hanning(ANALYSIS_SIZE),
                                np.hanning(ANALYSIS_SIZE)).astype(np.float32)
 
-    def add(self, field: np.ndarray) -> None:
+    def add(
+        self,
+        field: np.ndarray,
+        *,
+        parent_id: str | int | None = None,
+        sample_id: str | int | None = None,
+    ) -> None:
         data = _normalise_field(field)
+        default_id = f"field-{self.count:06d}"
+        parent = default_id if parent_id is None else str(parent_id)
+        sample = default_id if sample_id is None else str(sample_id)
+        if not parent:
+            raise ValueError("field parent_id cannot be empty")
+        if not sample:
+            raise ValueError("field sample_id cannot be empty")
+        self.parent_ids.append(parent)
+        self.sample_ids.append(sample)
         self.count += 1
         for band in range(len(BANDS)):
             plane = data[..., band]
@@ -823,11 +1046,102 @@ class _FieldAccumulator:
                 if np.isfinite(value):
                     key = f"{BANDS[left]}:{BANDS[right]}"
                     self.band_correlations[key].append(value)
+                    self.band_correlation_parents[key].append(parent)
+
+    @property
+    def independent_parent_count(self) -> int:
+        return len(set(self.parent_ids))
+
+    @property
+    def parent_sample_counts(self) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for parent_id in self.parent_ids:
+            counts[parent_id] = counts.get(parent_id, 0) + 1
+        return counts
 
 
 def _json_curve(values: np.ndarray) -> list[float | None]:
     return [float(value) if np.isfinite(value) else None
             for value in np.asarray(values).reshape(-1)]
+
+
+def _parent_groups(parent_ids: Sequence[str]) -> list[np.ndarray]:
+    grouped: dict[str, list[int]] = {}
+    for index, parent_id in enumerate(parent_ids):
+        grouped.setdefault(str(parent_id), []).append(index)
+    return [np.asarray(indices, dtype=np.int64) for indices in grouped.values()]
+
+
+def _cluster_bootstrap_indices(
+    parent_ids: Sequence[str],
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """Resample parents while retaining every field within each selected parent."""
+    groups = _parent_groups(parent_ids)
+    if not groups:
+        raise ValueError("cannot bootstrap an empty parent collection")
+    selected = rng.integers(0, len(groups), len(groups))
+    return np.concatenate([groups[index] for index in selected])
+
+
+def _grouped_curve_summary(
+    rows: list[np.ndarray],
+    parent_ids: Sequence[str],
+    *,
+    seed: int,
+) -> dict[str, Any]:
+    stacked = np.stack(rows)
+    if len(stacked) != len(parent_ids):
+        raise ValueError("row and parent-id counts differ")
+    rng = np.random.default_rng(seed)
+    boot = np.full((SCALE_BOOTSTRAPS, stacked.shape[1]), np.nan)
+    with np.errstate(invalid="ignore"), warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        p16 = np.nanpercentile(stacked, 16, axis=0)
+        median = np.nanmedian(stacked, axis=0)
+        p84 = np.nanpercentile(stacked, 84, axis=0)
+        for index in range(SCALE_BOOTSTRAPS):
+            selected = _cluster_bootstrap_indices(parent_ids, rng)
+            boot[index] = np.nanmedian(stacked[selected], axis=0)
+        median_p16 = np.nanpercentile(boot, 16, axis=0)
+        median_p84 = np.nanpercentile(boot, 84, axis=0)
+    return {
+        "p16": _json_curve(p16),
+        "median": _json_curve(median),
+        "p84": _json_curve(p84),
+        "median_ci": {
+            "p16": _json_curve(median_p16),
+            "p84": _json_curve(median_p84),
+        },
+        "independent_parents": len(_parent_groups(parent_ids)),
+        "interval": "field-to-field 16–84% range",
+        "median_uncertainty": "16–84% parent-cluster bootstrap interval",
+    }
+
+
+def _grouped_scalar_interval(
+    values: Sequence[float],
+    parent_ids: Sequence[str],
+    *,
+    seed: int,
+) -> dict[str, Any]:
+    array = np.asarray(values, dtype=np.float64)
+    if len(array) != len(parent_ids):
+        raise ValueError("value and parent-id counts differ")
+    rng = np.random.default_rng(seed)
+    boot = np.full(SCALE_BOOTSTRAPS, np.nan)
+    for index in range(SCALE_BOOTSTRAPS):
+        selected = _cluster_bootstrap_indices(parent_ids, rng)
+        boot[index] = float(np.nanmedian(array[selected]))
+    return {
+        "median": float(np.nanmedian(array)),
+        "p16": float(np.nanpercentile(array, 16)),
+        "p84": float(np.nanpercentile(array, 84)),
+        "median_ci": {
+            "p16": float(np.nanpercentile(boot, 16)),
+            "p84": float(np.nanpercentile(boot, 84)),
+        },
+    }
 
 
 def _normalise_scale_curve(values: np.ndarray, k: np.ndarray) -> np.ndarray:
@@ -851,10 +1165,24 @@ def _scale_similarity(
     k: np.ndarray,
     *,
     seed: int,
+    synthetic_parents: Sequence[str] | None = None,
+    real_parents: Sequence[str] | None = None,
 ) -> dict[str, Any]:
-    """Compare phase-free scale allocation and total fluctuation power."""
+    """Compare scale allocation using independent parents as sample units."""
+    if synthetic_parents is None:
+        synthetic_parents = [f"synthetic-{index}" for index in range(
+            len(synthetic_rows)
+        )]
+    if real_parents is None:
+        real_parents = [f"real-{index}" for index in range(len(real_rows))]
     synthetic = np.stack(synthetic_rows)
     real = np.stack(real_rows)
+    if len(synthetic) != len(synthetic_parents):
+        raise ValueError("synthetic row and parent-id counts differ")
+    if len(real) != len(real_parents):
+        raise ValueError("real row and parent-id counts differ")
+    synthetic_parent_count = len(_parent_groups(synthetic_parents))
+    real_parent_count = len(_parent_groups(real_parents))
     synthetic_shapes = np.stack([
         _normalise_scale_curve(row, k) for row in synthetic
     ])
@@ -927,10 +1255,10 @@ def _scale_similarity(
     overlap_boot = np.full(SCALE_BOOTSTRAPS, np.nan)
     variance_boot = np.full(SCALE_BOOTSTRAPS, np.nan)
     for index in range(SCALE_BOOTSTRAPS):
-        synthetic_indices = rng.integers(
-            0, len(synthetic_shapes), len(synthetic_shapes)
+        synthetic_indices = _cluster_bootstrap_indices(
+            synthetic_parents, rng,
         )
-        real_indices = rng.integers(0, len(real_shapes), len(real_shapes))
+        real_indices = _cluster_bootstrap_indices(real_parents, rng)
         boot_ratio, boot_overlap, boot_variance = compare(
             representative(synthetic_shapes[synthetic_indices]),
             representative(real_shapes[real_indices]),
@@ -961,6 +1289,12 @@ def _scale_similarity(
             "median": variance_ratio,
             "p16": float(np.nanpercentile(variance_boot, 16)),
             "p84": float(np.nanpercentile(variance_boot, 84)),
+        },
+        "bootstrap": {
+            "draws": SCALE_BOOTSTRAPS,
+            "unit": "parent cluster",
+            "synthetic_parents": synthetic_parent_count,
+            "real_parents": real_parent_count,
         },
         "x_label": "angular frequency (cycles / arcsec)",
         "y_label": "log₁₀ synthetic / real normalized scale power",
@@ -1028,20 +1362,18 @@ def _field_payload(synthetic: _FieldAccumulator,
             "y_label": "pixel brightness (e⁻ / stack)",
         }
 
-        def power_summary(rows: list[np.ndarray]) -> dict[str, Any]:
-            stacked = np.stack(rows)
-            with np.errstate(invalid="ignore"), warnings.catch_warnings():
-                warnings.simplefilter("ignore", RuntimeWarning)
-                return {
-                    "p16": _json_curve(np.nanpercentile(stacked, 16, axis=0)),
-                    "median": _json_curve(np.nanmedian(stacked, axis=0)),
-                    "p84": _json_curve(np.nanpercentile(stacked, 84, axis=0)),
-                }
-
         power[band] = {
             "k": centers_k.tolist(),
-            "synthetic": power_summary(synthetic.power[band_index]),
-            "real": power_summary(real.power[band_index]),
+            "synthetic": _grouped_curve_summary(
+                synthetic.power[band_index],
+                synthetic.parent_ids,
+                seed=2100 + band_index,
+            ),
+            "real": _grouped_curve_summary(
+                real.power[band_index],
+                real.parent_ids,
+                seed=2200 + band_index,
+            ),
             "x_label": "angular frequency (cycles / arcsec)",
             "y_label": "mean-subtracted power (e⁻²)",
         }
@@ -1050,15 +1382,19 @@ def _field_payload(synthetic: _FieldAccumulator,
             real.power[band_index],
             centers_k,
             seed=1701 + band_index,
+            synthetic_parents=synthetic.parent_ids,
+            real_parents=real.parent_ids,
         )
         relations["mean_std"][band] = {
             "synthetic": {
                 "x": synthetic.field_metrics[band_index]["mean"],
                 "y": synthetic.field_metrics[band_index]["std"],
+                "parent_ids": synthetic.parent_ids,
             },
             "real": {
                 "x": real.field_metrics[band_index]["mean"],
                 "y": real.field_metrics[band_index]["std"],
+                "parent_ids": real.parent_ids,
             },
             "x_label": "field mean (e⁻ / pixel)",
             "y_label": "field standard deviation (e⁻ / pixel)",
@@ -1067,45 +1403,70 @@ def _field_payload(synthetic: _FieldAccumulator,
             "synthetic": {
                 "x": synthetic.field_metrics[band_index]["median"],
                 "y": synthetic.field_metrics[band_index]["robust_std"],
+                "parent_ids": synthetic.parent_ids,
             },
             "real": {
                 "x": real.field_metrics[band_index]["median"],
                 "y": real.field_metrics[band_index]["robust_std"],
+                "parent_ids": real.parent_ids,
             },
             "x_label": "field median (e⁻ / pixel)",
             "y_label": "robust noise, 1.4826 × MAD (e⁻ / pixel)",
         }
 
-    def interval(values: list[float]) -> dict[str, float]:
-        return {
-            "median": float(np.median(values)),
-            "p16": float(np.percentile(values, 16)),
-            "p84": float(np.percentile(values, 84)),
-        }
-
-    def field_summary(acc: _FieldAccumulator) -> dict[str, Any]:
+    def field_summary(
+        acc: _FieldAccumulator,
+        *,
+        seed: int,
+    ) -> dict[str, Any]:
         return {
             band: {
-                metric: interval(acc.field_metrics[index][metric])
-                for metric in FIELD_METRICS
+                metric: _grouped_scalar_interval(
+                    acc.field_metrics[index][metric],
+                    acc.parent_ids,
+                    seed=seed + 100 * index + metric_index,
+                )
+                for metric_index, metric in enumerate(FIELD_METRICS)
             }
             for index, band in enumerate(BANDS)
         }
 
     correlation_pairs = list(synthetic.band_correlations)
+    synthetic_correlation_intervals = [
+        _grouped_scalar_interval(
+            synthetic.band_correlations[pair],
+            synthetic.band_correlation_parents[pair],
+            seed=4100 + pair_index,
+        )
+        for pair_index, pair in enumerate(correlation_pairs)
+    ]
+    real_correlation_intervals = [
+        _grouped_scalar_interval(
+            real.band_correlations[pair],
+            real.band_correlation_parents[pair],
+            seed=4200 + pair_index,
+        )
+        for pair_index, pair in enumerate(correlation_pairs)
+    ]
+
+    def correlation_payload(intervals: list[dict[str, Any]]) -> dict[str, Any]:
+        return {
+            key: [interval[key] for interval in intervals]
+            for key in ("median", "p16", "p84")
+        } | {
+            "median_ci": {
+                key: [interval["median_ci"][key] for interval in intervals]
+                for key in ("p16", "p84")
+            },
+        }
+
     band_correlation = {
         "pairs": [pair.replace("_E", "").replace(":", "–")
                   for pair in correlation_pairs],
-        "synthetic": {
-            key: [interval(synthetic.band_correlations[pair])[key]
-                  for pair in correlation_pairs]
-            for key in ("median", "p16", "p84")
-        },
-        "real": {
-            key: [interval(real.band_correlations[pair])[key]
-                  for pair in correlation_pairs]
-            for key in ("median", "p16", "p84")
-        },
+        "synthetic": correlation_payload(synthetic_correlation_intervals),
+        "real": correlation_payload(real_correlation_intervals),
+        "interval": "field-to-field 16–84% range",
+        "median_uncertainty": "16–84% parent-cluster bootstrap interval",
         "x_label": "band pair",
         "y_label": "within-field pixel correlation",
     }
@@ -1119,8 +1480,17 @@ def _field_payload(synthetic: _FieldAccumulator,
         "relations": relations,
         "band_correlation": band_correlation,
         "summary": {
-            "synthetic": field_summary(synthetic),
-            "real": field_summary(real),
+            "synthetic": field_summary(synthetic, seed=3100),
+            "real": field_summary(real, seed=3200),
+        },
+        "sampling": {
+            "field_distribution_unit": "256-pixel field",
+            "uncertainty_unit": "parent cluster",
+            "bootstrap_draws": SCALE_BOOTSTRAPS,
+            "synthetic_independent_parents": (
+                synthetic.independent_parent_count
+            ),
+            "real_independent_parents": real.independent_parent_count,
         },
     }
 
@@ -1579,13 +1949,27 @@ def build_comparison(
     progress: Callable[[int, int, str], None] | None = None,
 ) -> dict[str, Any]:
     records, _ = _synthetic_paths()
-    inference, overlap = _real_field_sources()
+    archive_state = _archive_collection_state()
     synthetic_count = sum(_count_tfrecord(path) for path in records)
-    real_count = 100 * len(inference) + len(overlap)
     if not records:
         raise FileNotFoundError("no local dirty test/validate TFRecords")
-    if not real_count:
-        raise FileNotFoundError("no cached Euclid inference or JWST-overlap fields")
+    unavailable = _archive_unavailable_reason(archive_state)
+    if unavailable is not None:
+        raise FileNotFoundError(
+            f"multipoint Euclid archive collection unavailable: {unavailable}"
+        )
+    if not archive_state.get("collection_fingerprint"):
+        raise FileNotFoundError(
+            "multipoint Euclid archive collection has no collection fingerprint"
+        )
+    real_count = int(archive_state.get("sample_count") or 0)
+    if real_count <= 0:
+        raise FileNotFoundError(
+            "multipoint Euclid archive collection has no completed samples"
+        )
+    provider = _archive_provider()
+    manifest = provider.load_manifest()
+    inputs_before = _comparison_input_state(archive_state)
 
     total = synthetic_count + real_count
     done = 0
@@ -1600,7 +1984,12 @@ def build_comparison(
         truth_by_field = read_sources(str(source_path))
         for field_index, field in enumerate(_synthetic_fields([record_path])):
             normalized = _normalise_field(field)
-            synthetic_acc.add(normalized)
+            synthetic_id = f"{record_path.stem}:{field_index}"
+            synthetic_acc.add(
+                normalized,
+                parent_id=synthetic_id,
+                sample_id=synthetic_id,
+            )
             synthetic_detection.add(
                 normalized[..., 0],
                 truth_by_field.get(field_index, []),
@@ -1611,13 +2000,24 @@ def build_comparison(
 
     real_acc = _FieldAccumulator()
     real_detection = DetectionAccumulator()
-    for field in _real_fields(inference, overlap):
+    real_sample_metadata: list[dict[str, Any]] = []
+    for field, metadata in _archive_fields(manifest):
         normalized = _normalise_field(field)
-        real_acc.add(normalized)
+        real_acc.add(
+            normalized,
+            parent_id=metadata["parent_id"],
+            sample_id=metadata["sample_id"],
+        )
         real_detection.add(normalized[..., 0])
+        real_sample_metadata.append(metadata)
         done += 1
         if progress:
-            progress(done, total, "real Euclid LR fields + VIS detections")
+            progress(done, total, "multipoint Euclid LR fields + VIS detections")
+    if real_acc.count != real_count:
+        raise RuntimeError(
+            "multipoint archive yielded "
+            f"{real_acc.count} samples; manifest reports {real_count}"
+        )
 
     detections = detection_payload(synthetic_detection, real_detection)
     fields = _field_payload(synthetic_acc, real_acc)
@@ -1626,8 +2026,18 @@ def build_comparison(
     population, population_with_training = _population_variants(
         synthetic_acc.count,
     )
+    inputs_after = _comparison_input_state()
+    if inputs_after["fingerprint"] != inputs_before["fingerprint"]:
+        raise RuntimeError(
+            "comparison inputs changed while statistics were being built; retry"
+        )
     payload = {
         "version": VERSION,
+        "provenance": {
+            "generated_at": datetime.now(UTC).isoformat(),
+            "input_fingerprint": inputs_before["fingerprint"],
+            "inputs": inputs_before,
+        },
         "geometry": {
             "tile_size": TILE_SIZE,
             "analysis_size": ANALYSIS_SIZE,
@@ -1639,12 +2049,22 @@ def build_comparison(
                 "fields": synthetic_acc.count,
                 "area_arcmin2": synthetic_acc.count * FIELD_AREA_ARCMIN2,
                 "splits": ["test", "validate"],
+                "independent_parents": synthetic_acc.independent_parent_count,
             },
             "real": {
                 "fields": real_acc.count,
                 "area_arcmin2": real_acc.count * FIELD_AREA_ARCMIN2,
-                "inference_fields": 100 * len(inference),
-                "jwst_overlap_fields": len(overlap),
+                "independent_parents": real_acc.independent_parent_count,
+                "parent_ids": sorted(real_acc.parent_sample_counts),
+                "parent_sample_counts": real_acc.parent_sample_counts,
+                "archive_collection_fingerprint": archive_state[
+                    "collection_fingerprint"
+                ],
+                "archive_manifest_fingerprint": archive_state.get(
+                    "manifest_fingerprint"
+                ),
+                "source_summary": _archive_source_summary(archive_state),
+                "samples": real_sample_metadata,
             },
         },
         "fields": fields,

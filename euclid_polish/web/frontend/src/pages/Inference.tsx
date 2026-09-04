@@ -1,6 +1,6 @@
-/* Real Euclid inference workspace. Archive data is cached as one field and
-   viewed as its fixed 10x10 grid; cached synthetic evaluation diagnostics are
-   shown beside the real-field diagnostics for direct comparison. */
+/* Ad-hoc real Euclid inference workspace. One explicitly requested pointing is
+   cached as a fixed 10x10 grid for model inspection; the survey-wide reference
+   collection on Synthetic–Real is deliberately separate. */
 import { useEffect, useState, type ReactNode } from "react";
 import Plot, { Legend } from "../charts/Plot";
 import { useResource } from "../hooks";
@@ -342,7 +342,7 @@ export default function InferencePage() {
       <PageHead
         eyebrow="data · real Euclid"
         title="Inference"
-        sub="A field workspace: download one 2560 × 2560 archive cutout, cache 100 tiles for every active STARFULL member and fitted combiner, then inspect them directly."
+        sub="Ad-hoc single-pointing workspace: download one 2560 × 2560 archive cutout, cache 100 tiles for every active STARFULL member and fitted combiner, then inspect them directly. This is not the multipoint survey reference."
         right={field ? <Badge tone="good">{field.count} cached tiles</Badge> : <Badge tone="warn">no field cached</Badge>}
       />
 

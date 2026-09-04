@@ -112,7 +112,9 @@ const MODES: { value: FigureMode; label: string }[] = [
 const FIGURE_TIERS = new Set<string>(TIERS.map((item) => item.value));
 const FIGURE_MODES = new Set<string>(MODES.map((item) => item.value));
 const SYNTHETIC_COLLECTIONS = new Set(["sky", "evaluation", "ensemble"]);
-const REAL_COLLECTIONS = new Set(["real-field", "jwst-euclid", "nexus-field"]);
+const REAL_COLLECTIONS = new Set([
+  "archive-fields", "real-field", "jwst-euclid", "nexus-field",
+]);
 
 let nextRowId = 0;
 const withIds = (rows: FigureRecipe[]): RecipeRow[] => rows.map((row) => ({

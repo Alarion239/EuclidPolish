@@ -14,7 +14,7 @@ collection provides:
 * ``cube(index, tier, params) -> (ndarray (H, W, C) float32, info)`` where
   ``info`` is ``{label, asinh, pixscale}``.
 
-Three collections are registered:
+The principal collections are:
 
 ==============  =========  ======================================  ==========
 collection      params     tiers                                    source
@@ -22,6 +22,7 @@ collection      params     tiers                                    source
 ``sky``         subset     dirty→LR, hr→HR, bhr→BHR                  TFRecords
 ``cutouts``     —          real→Euclid                               per-band FITS
 ``evaluation``  —          LR / SR / HR (per object)                 object FITS
+``archive-fields`` —       LR                                        multipoint FITS
 ``psfs``        —          VIS / Y_E / J_E / H_E cluster kernels     FASRC ePSF FITS
 ==============  =========  ======================================  ==========
 
@@ -54,7 +55,7 @@ from euclid_polish.training.target_blur import (
     blur_target_array,
     validate_target_fwhm_arcsec,
 )
-from euclid_polish.web.helpers import sky_records
+from euclid_polish.web.helpers import archive_fields, sky_records
 from euclid_polish.web.helpers.paths import _sky_records_local_dir
 from euclid_polish.web.helpers.status import (
     _ensure_local_star_cutout,
@@ -816,7 +817,67 @@ def _ensemble_cube(index: int, tier: str, params: dict[str, str]):
 
 
 # ---------------------------------------------------------------------------
-# real-field — cached 10x10 tiles from one real Euclid archive field
+# archive-fields — shared independent-pointing four-band archive samples
+# ---------------------------------------------------------------------------
+
+def _archive_fields_meta(_params: dict[str, str]) -> dict[str, Any]:
+    status = archive_fields.availability()
+    fields = list(archive_fields.iter_fields()) if status["ready"] else []
+    tier = {"key": "lr", "label": "Archive LR"}
+    return {
+        "count": len(fields),
+        "tiers": [tier],
+        "default_tier": "lr",
+        "band_names": list(BAND_NAMES),
+        "archive": status,
+        "objects": [
+            {
+                "label": (
+                    f"{field.field} · pointing {field.source_sample_id + 1} · "
+                    f"{field.position_name} · sample {field.sample_id + 1}"
+                ),
+                "tiers": ["lr"],
+                "sample_id": field.sample_id,
+                "source_sample_id": field.source_sample_id,
+                "parent_id": field.parent_id,
+                "field": field.field,
+                "ra": field.ra,
+                "dec": field.dec,
+                "position_name": field.position_name,
+            }
+            for field in fields
+        ],
+    }
+
+
+def _archive_fields_cube(index: int, tier: str, _params: dict[str, str]):
+    if tier.lower() != "lr":
+        raise ViewerError(400, "archive fields provide only the LR tier")
+    status = archive_fields.availability()
+    if not status["ready"]:
+        raise ViewerError(404, "multipoint archive collection is unavailable")
+    fields = list(archive_fields.iter_fields())
+    if index < 0 or index >= len(fields):
+        raise ViewerError(404, "archive sample index out of range")
+    field = fields[index]
+    try:
+        cube = archive_fields.load_field(field)
+    except archive_fields.ArchiveFieldError as exc:
+        raise ViewerError(415, str(exc)) from exc
+    return cube, {
+        "label": (
+            f"Archive LR · {field.field} · pointing {field.source_sample_id + 1} "
+            f"· {field.position_name} · sample {field.sample_id + 1}"
+        ),
+        "asinh": float(Config.STRETCH_SCALE_E),
+        "pixscale": float(Config.VIS_PIXEL_SCALE_ARCSEC),
+        "bands": list(BAND_NAMES),
+        "transfer_group": "euclid",
+    }
+
+
+# ---------------------------------------------------------------------------
+# real-field — legacy ad-hoc single-pointing inference workspace
 # ---------------------------------------------------------------------------
 
 def _real_field_manifest(params: dict[str, str]) -> dict[str, Any]:
@@ -1684,6 +1745,7 @@ _REGISTRY: dict[str, tuple[_Meta, _Cube]] = {
     "cutouts": (_cutouts_meta, _cutouts_cube),
     "evaluation": (_eval_meta, _eval_cube),
     "ensemble": (_ensemble_meta, _ensemble_cube),
+    "archive-fields": (_archive_fields_meta, _archive_fields_cube),
     "real-field": (_real_field_meta, _real_field_cube),
     "jwst-euclid": (_jwst_euclid_meta, _jwst_euclid_cube),
     "nexus-field": (_nexus_field_meta, _nexus_field_cube),

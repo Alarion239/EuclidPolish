@@ -1030,6 +1030,8 @@ class Config:
         SKY_SUBDIR: str               = "euclid_sky"
         CUTOUTS_SUBDIR: str           = "cutouts"
         SKY_CATALOG_FILENAME: str     = "sky_positions.csv"
+        ARCHIVE_FIELDS_SUBDIR: str    = "archive_fields"
+        ARCHIVE_FIELDS_MANIFEST_FILENAME: str = "archive_fields_manifest.json"
         ROUNDTRIP_RECORDS_SUBDIR: str = "images/records_v2_euclid_roundtrip"
 
     @dataclass(frozen=True)
@@ -1086,6 +1088,13 @@ class Config:
     HST_RECORDS_DIR        = os.path.join(DATA_DIR, HST.RECORDS_SUBDIR)
     EUCLID_SKY_DIR         = os.path.join(DATA_DIR, EuclidSky.SKY_SUBDIR)
     EUCLID_SKY_CUTOUTS_DIR = os.path.join(EUCLID_SKY_DIR, EuclidSky.CUTOUTS_SUBDIR)
+    EUCLID_ARCHIVE_FIELDS_DIR = os.path.join(
+        EUCLID_SKY_DIR, EuclidSky.ARCHIVE_FIELDS_SUBDIR,
+    )
+    EUCLID_ARCHIVE_FIELDS_MANIFEST = os.path.join(
+        EUCLID_ARCHIVE_FIELDS_DIR,
+        EuclidSky.ARCHIVE_FIELDS_MANIFEST_FILENAME,
+    )
     ROUNDTRIP_RECORDS_DIR  = os.path.join(DATA_DIR, EuclidSky.ROUNDTRIP_RECORDS_SUBDIR)
     TNG_SKIRT_DIR          = os.path.join(DATA_DIR, Tng.SKIRT_SUBDIR)
     FASRC_CACHE_DIR        = os.path.join(DATA_DIR, WebFetch.CACHE_SUBDIR)

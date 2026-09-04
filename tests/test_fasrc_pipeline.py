@@ -174,7 +174,7 @@ class TestRegistry:
         assert ids == {
             "download", "extract_psf", "kernel", "tfrecords",
             "euclid_sky_download", "euclid_roundtrip_tfrecords",
-            "vis_noise_sample",
+            "vis_noise_sample", "archive_field_sample",
             "euclid_query", "euclid_verify_photometry",
             "download_euclid_cutouts", "extract_euclid_psf",
             "psf_rotation_pool",
@@ -1024,6 +1024,7 @@ class TestSbatchRendering:
             "tfrecords":                    "hst-tfrecords",
             "euclid_sky_download":          "sky-cutouts",
             "vis_noise_sample":             "vis-noise-samples",
+            "archive_field_sample":         "archive-fields",
             "euclid_roundtrip_tfrecords":   "roundtrip-tfrecords",
             "euclid_star_anchor_tfrecords": "anchor-tfrecords",
             "psf_rotation_pool":            "psf-rotpool",
@@ -1218,6 +1219,23 @@ class TestSbatchRendering:
 
         explicit = step.build_command({"workers": 3})
         assert explicit[explicit.index("--workers") + 1] == "3"
+
+    def test_archive_field_sample_step_is_serial_and_parent_batched(self, cfg):
+        step = REGISTRY.get("archive_field_sample")
+        assert step.defaults.n_cpus == 1
+        assert step.defaults.n_gpus == 0
+        command = step.build_command({})
+        assert command[command.index("--sampling-mode") + 1] == "archive-fields"
+        assert command[command.index("--vis-pixels") + 1] == "256"
+        assert command[command.index("--workers") + 1] == "1"
+        assert command[command.index("--source-release") + 1] == "Q1_R1"
+
+        explicit = step.build_command({
+            "source_sampling_manifest": "/data/source.json",
+            "output_dir": "/data/archive_fields",
+        })
+        assert "/data/source.json" in explicit
+        assert "/data/archive_fields" in explicit
 
     def test_euclid_roundtrip_tfrecords_step_args(self, cfg):
         step = REGISTRY.get("euclid_roundtrip_tfrecords")
