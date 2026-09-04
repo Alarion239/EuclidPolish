@@ -96,6 +96,9 @@ _FOV_POLYGON_CALL_RE = re.compile(
     r"^\s*POLYGON\s*\(\s*['\"]?ICRS['\"]?\s*,\s*(.+?)\s*\)\s*$",
     re.IGNORECASE,
 )
+_FOV_COORDINATE_TUPLE_RE = re.compile(
+    r"^\s*\(\s*(.+?)\s*\)\s*$",
+)
 
 
 def _unit_vectors(ra_deg: np.ndarray, dec_deg: np.ndarray) -> np.ndarray:
@@ -454,9 +457,19 @@ def _optional_float(value: Any) -> float | None:
 
 
 def _polygon_from_fov(value: Any) -> list[tuple[float, float]] | None:
-    """Parse the STC-S polygon representation returned by the TAP service."""
+    """Parse a polygon returned by the Euclid TAP service.
+
+    Depending on the TAP serialization path, ``sedm.mosaic_product.fov`` is
+    returned either as STC-S (``POLYGON ICRS ...``) or as a bare
+    parenthesized coordinate tuple (``(ra, dec, ...)``).  Both forms describe
+    the same polygon and must pass through the same validation below.
+    """
     text = _text(value)
-    match = _FOV_POLYGON_CALL_RE.match(text) or _FOV_POLYGON_RE.match(text)
+    match = (
+        _FOV_POLYGON_CALL_RE.match(text)
+        or _FOV_POLYGON_RE.match(text)
+        or _FOV_COORDINATE_TUPLE_RE.match(text)
+    )
     if match is None:
         return None
     tokens = match.group(1).replace(",", " ").split()

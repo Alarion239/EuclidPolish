@@ -198,6 +198,10 @@ class SSHSession:
         # Sanity-check: did ControlMaster actually persist? With -f -N
         # the socket should exist by the time ssh returns 0; if it
         # doesn't, ControlPersist or a stale socket cleanup raced us.
+        # The initial is_connected() call may have cached ``False`` just
+        # before this command created the socket, so force the sanity check
+        # to probe the newly opened master instead of reusing that answer.
+        self._invalidate_connection_cache()
         if not self.is_connected():
             raise SSHError(
                 "ssh appeared to succeed but the ControlMaster socket is gone"

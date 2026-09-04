@@ -51,6 +51,29 @@ def test_archive_query_freezes_release_product_and_returns_provenance():
     assert parents[0]["coverage_clearance_deg"] > 0.9
 
 
+def test_archive_accepts_bare_coordinate_tuple_returned_for_q1_fov():
+    row = _archive_row()
+    row["fov"] = (
+        "(269.5553362130892, 63.73202611726145, "
+        "268.3126611912968, 63.7320258471468, "
+        "268.3006896425142, 64.26529558745882, "
+        "269.5673065529143, 64.26529586403014)"
+    )
+
+    parents, error = sampling.exact_vis_parents(
+        268.47762656610746,
+        64.20812990727075,
+        0.05028314888437672,
+        source_release="Q1_R1",
+        query_runner=lambda _query: ([row], ""),
+    )
+
+    assert error == ""
+    assert len(parents) == 1
+    assert parents[0]["fov"] == row["fov"]
+    assert np.isclose(parents[0]["coverage_clearance_deg"], 0.057822348645687895)
+
+
 def test_archive_prefilter_hit_is_rejected_when_circle_crosses_fov_edge():
     parents, error = sampling.exact_vis_parents(
         10.9,

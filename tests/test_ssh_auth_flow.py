@@ -58,6 +58,26 @@ def test_connect_succeeds_when_key_auth_works(tmp_path, monkeypatch):
     assert os.path.exists(sock)
 
 
+def test_connect_rechecks_after_cached_disconnected_state(tmp_path, monkeypatch):
+    """A cold connect must not reuse the pre-connect ``False`` cache entry."""
+    sock = tmp_path / "ctrl.sock"
+    body = textwrap.dedent(f"""\
+        #!/usr/bin/env bash
+        if [[ "$*" == *"-O check"* ]]; then
+            [[ -e {sock} ]]
+            exit $?
+        fi
+        touch {sock}
+        exit 0
+    """)
+    tmp = _install_fake_ssh(tmp_path, body)
+    sess = _make_session({"bin": tmp["bin"], "sock": sock}, monkeypatch)
+
+    sess.connect(timeout=5)
+
+    assert sess.is_connected()
+
+
 def test_connect_fails_with_helpful_message_on_publickey_denied(tmp_path,
                                                                  monkeypatch):
     """If the user's key isn't installed yet, ssh exits 255 with
