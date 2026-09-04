@@ -1522,7 +1522,11 @@ def _read_archive_image(
     target = Path(path)
     try:
         with fits.open(target, memmap=False) as hdul:
-            hdul.verify("exception")
+            # Q1 SODA products can carry a numeric EXTNAME in the raw primary
+            # HDU.  The science array and WCS remain valid; the final compact
+            # bundle replaces EXTNAME with the canonical band name and is
+            # strictly verified after writing.  Do not reject usable archive
+            # pixels at this pre-normalization boundary.
             try:
                 candidate = hdul[band_name]
             except (KeyError, IndexError):

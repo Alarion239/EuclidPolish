@@ -236,3 +236,20 @@ def test_parent_download_retries_bounded_and_validates(monkeypatch, tmp_path):
 
     assert len(calls) == 3
     assert target.is_file()
+
+
+def test_raw_archive_reader_accepts_numeric_extname_before_normalization(tmp_path):
+    target = tmp_path / "Y_E.fits"
+    header = _header()
+    header["EXTNAME"] = 7
+    fits.HDUList([
+        fits.PrimaryHDU(
+            data=np.ones((300, 300), dtype=np.float32),
+            header=header,
+        ),
+    ]).writeto(target, output_verify="ignore")
+
+    data, normalized_header = sampling._read_archive_image(target, "Y_E")
+
+    assert data.shape == (300, 300)
+    assert normalized_header["EXTNAME"] == 7
