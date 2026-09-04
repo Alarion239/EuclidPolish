@@ -1,10 +1,11 @@
 """
 Multi-band clean-HR scene generator.
 
-Every field galaxy uses a resolved TNG50 SKIRT morphology and its native
-VIS/NISP proportions. The active Euclid prior supplies a VIS Sérsic half-light
-radius and a jointly conditioned VIS 2FWHM aperture brightness. One shared
-brightness factor is applied to all TNG bands after the morphology is resized.
+Every field galaxy uses a resolved TNG50 SKIRT morphology. The active Euclid
+prior supplies a VIS Sérsic half-light radius, a jointly conditioned VIS 2FWHM
+aperture brightness, and a PHZ redshift conditioned on that brightness. The
+observed radius stays fixed while the TNG band proportions receive the existing
+redshift photometry; one final shared scale sets the exact VIS aperture target.
 The same brightness draw supplies the MER photometric FWHM that defines the
 aperture radius and target PSF used by the normalization.
 
@@ -16,6 +17,7 @@ grid, one channel per band ordered as :attr:`Config.LR_INPUT_BAND_NAMES`
 
 from __future__ import annotations
 
+import hashlib
 import math
 import os
 from collections.abc import Callable
@@ -71,6 +73,18 @@ class _NoRenderableTNGDonorError(ValueError):
 _MER_APERTURE_GAUSSIAN_SIGMA_SUPPORT = 5.0
 _OFF_FIELD_GALAXY_RE_SUPPORT = 4.0
 _OFF_FIELD_GALAXY_SEED_TAG = 0x4F464647  # ``OFFG``
+_GALAXY_REDSHIFT_SEED_TAG = 0x5245445A  # ``REDZ``
+
+
+def _derived_rng_from_state(
+    rng: np.random.Generator, tag: int,
+) -> np.random.Generator:
+    """Derive a deterministic stream without consuming the source stream."""
+    digest = hashlib.sha256(repr(rng.bit_generator.state).encode()).digest()
+    words = np.frombuffer(digest, dtype="<u4").astype(np.uint64)
+    return np.random.default_rng(np.random.SeedSequence([
+        *(int(word) for word in words), int(tag),
+    ]))
 
 
 # ---------------------------------------------------------------------------
@@ -81,7 +95,7 @@ _OFF_FIELD_GALAXY_SEED_TAG = 0x4F464647  # ``OFFG``
 class SkySimulatorConfig:
     """Field-level config for the multi-band simulator.
 
-    ``galaxy_density_arcmin2`` controls a single COSMOS-conditioned TNG
+    ``galaxy_density_arcmin2`` controls a single Euclid-conditioned TNG
     population. There is no analytic Sérsic field-galaxy branch.
     """
     image_size:               int   = Config.DEFAULT_IMAGE_SIZE
@@ -773,13 +787,19 @@ class SkySimulator:
     def _add_tng_galaxy(
         self, canvas_4ch: np.ndarray, rng: np.random.Generator,
         *, position: tuple[float, float] | None = None,
-        off_field: bool = False, _attempt: int = 0,
+        off_field: bool = False,
+        redshift_rng: np.random.Generator | None = None,
+        _attempt: int = 0,
     ) -> dict | None:
         """Resolve TNG geometry/donor before drawing independent brightness."""
         if self.population_prior is None:
             return None
         prior = self.population_prior
         staged = isinstance(prior, JointGalaxyPopulationPrior)
+        if staged and redshift_rng is None:
+            redshift_rng = _derived_rng_from_state(
+                rng, _GALAXY_REDSHIFT_SEED_TAG,
+            )
         if isinstance(prior, JointGalaxyPopulationPrior):
             draw = prior.sample_geometry(rng)
         else:
@@ -810,6 +830,7 @@ class SkySimulator:
             if _attempt < 31:
                 return self._add_tng_galaxy(
                     canvas_4ch, rng, position=position, off_field=off_field,
+                    redshift_rng=redshift_rng,
                     _attempt=_attempt + 1,
                 )
             raise RuntimeError(
@@ -827,7 +848,24 @@ class SkySimulator:
         if not views:
             raise RuntimeError("selected TNG donor has no shrink-only view")
         view = views[int(rng.integers(0, len(views)))]
-        if np.isfinite(draw.z):
+        if staged:
+            rendered = self.tng_renderer.render_observed_radius(
+                view,
+                draw.re_arcsec,
+                rng=rng,
+                target_vis_flux_e=None,
+            )
+            draw = prior.complete_draw(
+                draw,
+                rng,
+                redshift_rng=redshift_rng,
+            )
+            rendered = self.tng_renderer.apply_redshift_photometry(
+                rendered,
+                draw.z,
+                rng=redshift_rng,
+            )
+        elif np.isfinite(draw.z):
             rendered = self.tng_renderer.render_observed_radius_at_redshift(
                 view,
                 draw.re_arcsec,
@@ -847,11 +885,8 @@ class SkySimulator:
                 ),
             )
         if isinstance(prior, JointGalaxyPopulationPrior):
-            magnitude, target_aperture_flux = (
-                prior.sample_brightness(
-                    rng, radius_arcsec=draw.re_arcsec,
-                )
-            )
+            magnitude = draw.target_vis_mag
+            target_aperture_flux = draw.target_vis_flux_e
             aperture_fwhm = prior.sample_aperture_fwhm(
                 rng, magnitude=magnitude,
             )
@@ -870,16 +905,13 @@ class SkySimulator:
                 if _attempt < 31:
                     return self._add_tng_galaxy(
                         canvas_4ch, rng, position=position,
-                        off_field=off_field, _attempt=_attempt + 1,
+                        off_field=off_field,
+                        redshift_rng=redshift_rng,
+                        _attempt=_attempt + 1,
                     )
                 raise RuntimeError(
                     "TNG population produced 32 unusable 2FWHM stamps"
                 ) from exc
-            draw = replace(
-                draw,
-                target_vis_mag=magnitude,
-                target_vis_flux_e=target_aperture_flux,
-            )
         x_pix, y_pix = (
             position if position is not None else self._random_pix(rng)
         )
@@ -1297,7 +1329,8 @@ class SkySimulator:
 
         for source_seed in galaxy_seeds:
             rec = self._add_tng_galaxy(
-                canvas, np.random.default_rng(source_seed)
+                canvas,
+                np.random.default_rng(source_seed),
             )
             if rec is not None:
                 galaxies.append(rec)
@@ -1306,7 +1339,10 @@ class SkySimulator:
             source_rng = np.random.default_rng(source_seed)
             position = self._random_off_field_pix(source_rng)
             rec = self._add_tng_galaxy(
-                canvas, source_rng, position=position, off_field=True,
+                canvas,
+                source_rng,
+                position=position,
+                off_field=True,
             )
             if rec is not None:
                 off_field_galaxies.append(rec)

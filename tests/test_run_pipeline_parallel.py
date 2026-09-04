@@ -175,7 +175,6 @@ def test_vis_noise_calibration_file_configures_shared_forward(tmp_path):
     )
 
     calibration = VISNoiseCalibration.build(
-        coloring_kernel=[[0.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 0.0]],
         residual_scale=19.75,
         owns_field_scale=True,
         source_release="Q1_R1",
@@ -187,6 +186,7 @@ def test_vis_noise_calibration_file_configures_shared_forward(tmp_path):
     rp._resolve_population_payload_files(args)
     configured = rp._observation_config_from_args(args)
     assert configured.vis_noise_calibration is not None
+    assert configured.vis_noise_calibration.mode == "amplitude_only"
     assert configured.vis_noise_calibration.fingerprint == calibration.fingerprint
     assert configured.vis_noise_calibration.residual_scale == 19.75
 

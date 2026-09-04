@@ -35,7 +35,6 @@ def _write_vis_bundle(
 
 def _runtime(*, scale: float) -> dict:
     return VISNoiseCalibration.build(
-        coloring_kernel=((1.0,),),
         residual_scale=scale,
         field_scale_quantiles=(0.8, 0.9, 1.0, 1.1, 1.2),
         owns_field_scale=True,
@@ -367,6 +366,31 @@ def test_field_scale_quantiles_use_independent_parent_medians_not_patch_extrema(
     assert factors[-1] == pytest.approx(1.2)
 
 
+def test_field_scale_endpoints_extrapolate_central_quantiles_not_outliers():
+    parent_rms = np.asarray([
+        2.0, 18.0, 18.5, 19.0, 19.5, 20.0, 20.5, 21.0, 80.0,
+    ])
+    parents = [
+        {"rms_e": rms, "patch_rms_e": np.asarray([rms])}
+        for rms in parent_rms
+    ]
+
+    _, factors = calibration._parent_weighted_rms(parents)
+    p16, p50, p84 = np.quantile(parent_rms, (0.16, 0.5, 0.84))
+    ratio = 0.16 / 0.34
+    expected = np.asarray([
+        p16 - ratio * (p50 - p16),
+        p16,
+        p50,
+        p84,
+        p84 + ratio * (p84 - p50),
+    ]) / p50
+
+    np.testing.assert_allclose(factors, expected)
+    assert factors[0] > parent_rms.min() / p50
+    assert factors[-1] < parent_rms.max() / p50
+
+
 def test_fit_is_parent_grouped_and_emits_strict_runtime(tmp_path, monkeypatch):
     monkeypatch.setattr(Config, "DATA_DIR", str(tmp_path / "data"))
     cutouts = tmp_path / "sample" / Config.EuclidSky.CUTOUTS_SUBDIR
@@ -427,17 +451,20 @@ def test_fit_is_parent_grouped_and_emits_strict_runtime(tmp_path, monkeypatch):
         manifest_file=manifest_path,
         tile_size=64,
         max_lag=4,
-        kernel_side=9,
     )
 
     assert candidate["sample_summary"]["independent_parent_count"] == 6
     assert candidate["sample_summary"]["train_parent_count"] == 3
     assert candidate["sample_summary"]["holdout_parent_count"] == 3
     assert candidate["version"] == calibration.VIS_NOISE_CANDIDATE_VERSION
+    assert candidate["valid"] is True
     assert candidate["quality_gates"]["all_q1_fields_ge_2_parents"] is True
+    assert candidate["quality_gates"]["passed"] is True
     assert candidate["source_release"] == "Q1_R1"
     assert candidate["residual_scale"] > 0.0
     assert candidate["owns_field_scale"] is True
+    assert candidate["runtime"]["mode"] == "amplitude_only"
+    assert candidate["quality_gates"]["spatial_structure_is_diagnostic_only"] is True
     assert candidate["validation"]["power"]["evaluation_range_arcsec"] == [0.25, 8.0]
     power = candidate["validation"]["power"]
     assert power["normalization"] == "unit_integrated_fourier_variance"

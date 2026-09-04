@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -23,6 +23,7 @@ from euclid_polish.population.euclid_galaxy_prior import (
     RADIUS_MODEL_VERSION,
     ConditionalApertureFWHMDistribution,
     ConditionalRadiusLaw,
+    ConditionalRedshiftDistribution,
     joint_density_grid,
 )
 from euclid_polish.population.magnitude_law import (
@@ -54,6 +55,14 @@ class CosmosTngDraw:
     activity_class: str = "unknown"
     logssfr: float = float("nan")
     physical_model_fingerprint: str = ""
+
+
+@dataclass(frozen=True)
+class JointGalaxyGeometry:
+    """Observed radius staged before donor selection and photometry."""
+
+    catalog_id: str
+    re_arcsec: float
 
 
 @dataclass(frozen=True)
@@ -490,7 +499,7 @@ class CosmosTngPrior:
 
 
 class JointGalaxyPopulationPrior:
-    """Minimal Euclid joint prior: radius first, brightness given radius."""
+    """Euclid prior: radius, conditioned brightness, then PHZ redshift."""
 
     morphology_mode = "balanced_random_tng_atlas"
 
@@ -525,6 +534,11 @@ class JointGalaxyPopulationPrior:
             self.aperture_fwhm_distribution = (
                 ConditionalApertureFWHMDistribution.from_payload(
                     payload["aperture_fwhm_distribution"]
+                )
+            )
+            self.redshift_distribution = (
+                ConditionalRedshiftDistribution.from_payload(
+                    payload["redshift_distribution"]
                 )
             )
             expected = float(
@@ -573,6 +587,21 @@ class JointGalaxyPopulationPrior:
                 "joint galaxy generation law does not match the current "
                 "brightness contract"
             )
+        redshift_magnitude_edges = np.asarray(
+            self.redshift_distribution.magnitude_edges, dtype=np.float64,
+        )
+        if not (
+            np.isclose(
+                redshift_magnitude_edges[0], self.magnitude_law.mag_bright,
+            )
+            and np.isclose(
+                redshift_magnitude_edges[-1], self.magnitude_law.mag_faint,
+            )
+        ):
+            raise ValueError(
+                "joint galaxy redshift model does not match the current "
+                "brightness support"
+            )
         grid = joint_density_grid(self.magnitude_law, self.radius_law)
         self._density = np.asarray(grid["density"], dtype=np.float64)
         self._magnitude_edges = np.asarray(grid["magnitude_edges"])
@@ -589,8 +618,8 @@ class JointGalaxyPopulationPrior:
     def __len__(self) -> int:
         return int(self._density.size)
 
-    def sample_geometry(self, rng: np.random.Generator) -> CosmosTngDraw:
-        """Draw the Euclid Sérsic-radius marginal; brightness remains unset."""
+    def sample_geometry(self, rng: np.random.Generator) -> JointGalaxyGeometry:
+        """Draw only the Euclid Sérsic-radius marginal for donor selection."""
         ri = min(
             int(np.searchsorted(self._radius_cdf, rng.random(), side="right")),
             self._radius_cdf.size - 1,
@@ -598,21 +627,9 @@ class JointGalaxyPopulationPrior:
         log_radius = float(rng.uniform(
             self._log_radius_edges[ri], self._log_radius_edges[ri + 1],
         ))
-        return CosmosTngDraw(
+        return JointGalaxyGeometry(
             catalog_id=f"euclid-joint:{self.fingerprint[:12]}:radius:{ri}",
-            mag_hst_f814w=float("nan"),
-            target_vis_mag=float("nan"),
-            target_vis_flux_e=float("nan"),
-            z=float("nan"),
-            logmass=float("nan"),
             re_arcsec=float(10.0 ** log_radius),
-            imputed_size=False,
-            brightness_transfer=f"euclid_joint:{self.fingerprint}:activated",
-            mass_quantile=float("nan"),
-            ssfr_quantile=float("nan"),
-            activity_class="unconditioned",
-            logssfr=float("nan"),
-            physical_model_fingerprint="",
         )
 
     def sample_brightness(
@@ -645,11 +662,46 @@ class JointGalaxyPopulationPrior:
         """Draw the MER aperture FWHM conditional on VIS-2FWHM brightness."""
         return self.aperture_fwhm_distribution.sample(magnitude, rng)
 
-    def sample(self, rng: np.random.Generator) -> CosmosTngDraw:
-        geometry = self.sample_geometry(rng)
+    def sample_redshift(
+        self, rng: np.random.Generator, *, magnitude: float,
+    ) -> float:
+        """Draw the full-PHZ calibrated redshift at the sampled brightness."""
+        return self.redshift_distribution.sample(magnitude, rng)
+
+    def complete_draw(
+        self,
+        geometry: JointGalaxyGeometry,
+        rng: np.random.Generator,
+        *,
+        redshift_rng: np.random.Generator | None = None,
+    ) -> CosmosTngDraw:
+        """Attach jointly sampled VIS brightness and empirical PHZ redshift."""
         magnitude, flux = self.sample_brightness(
             rng, radius_arcsec=geometry.re_arcsec,
         )
-        return replace(
-            geometry, target_vis_mag=magnitude, target_vis_flux_e=flux,
+        redshift = self.sample_redshift(
+            redshift_rng if redshift_rng is not None else rng,
+            magnitude=magnitude,
         )
+        return CosmosTngDraw(
+            catalog_id=geometry.catalog_id,
+            mag_hst_f814w=float("nan"),
+            target_vis_mag=magnitude,
+            target_vis_flux_e=flux,
+            z=redshift,
+            logmass=float("nan"),
+            re_arcsec=geometry.re_arcsec,
+            imputed_size=False,
+            brightness_transfer=f"euclid_joint:{self.fingerprint}:activated",
+            mass_quantile=float("nan"),
+            ssfr_quantile=float("nan"),
+            activity_class="unconditioned",
+            logssfr=float("nan"),
+            physical_model_fingerprint=(
+                self.redshift_distribution.calibration_fingerprint
+            ),
+        )
+
+    def sample(self, rng: np.random.Generator) -> CosmosTngDraw:
+        geometry = self.sample_geometry(rng)
+        return self.complete_draw(geometry, rng)

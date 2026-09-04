@@ -138,6 +138,7 @@ type VisNoiseArtifact = {
   runtime?: {
     version?: number;
     kind?: string;
+    mode?: string;
     fingerprint?: string;
     source_release?: string;
     estimator_version?: string;
@@ -500,7 +501,7 @@ function shortFingerprint(artifact: VisNoiseArtifact | null): string {
   return artifact?.fingerprint ? `${artifact.fingerprint.slice(0, 12)}…` : "none";
 }
 
-type GateState = "pass" | "fail" | "pending";
+type GateState = "pass" | "fail" | "pending" | "diagnostic";
 
 function gateState(value: boolean | undefined): GateState {
   return value == null ? "pending" : value ? "pass" : "fail";
@@ -514,7 +515,11 @@ function ValidationGate({ title, state, value, detail }: {
       <div className="vis-noise-gate__head">
         <strong>{title}</strong>
         <Badge tone={state === "pass" ? "good" : state === "fail" ? "bad" : undefined}>
-          {state === "pass" ? "within gate" : state === "fail" ? "outside gate" : "pending"}
+          {state === "pass"
+            ? "within gate"
+            : state === "fail"
+              ? "outside gate"
+              : state === "diagnostic" ? "not modeled" : "pending"}
         </Badge>
       </div>
       <div className="vis-noise-gate__value">{value}</div>
@@ -544,6 +549,7 @@ function VisNoiseCalibrationPanel({
   const power = validation?.power;
   const sampling = state.sampling;
   const runtime = artifact?.runtime;
+  const amplitudeOnly = runtime?.mode === "amplitude_only";
   const parents = summary?.independent_parent_count
     ?? sampling?.independent_parent_count ?? 0;
   const sampleCount = summary?.sample_count
@@ -615,7 +621,7 @@ function VisNoiseCalibrationPanel({
     <Card className="vis-noise-calibration">
       <CardHead
         title="VIS background-noise calibration"
-        sub="Source-masked Euclid backgrounds, grouped by independent parent mosaic. Fit a candidate first; activation is a separate decision."
+        sub="Source-masked Euclid backgrounds, grouped by independent parent mosaic. The runtime calibrates white-noise amplitude; spatial correlations remain diagnostics."
         right={<Badge tone={status.tone}>{status.label}</Badge>}
       />
       <CardBody>
@@ -680,15 +686,15 @@ function VisNoiseCalibrationPanel({
           />
           <ValidationGate
             title="Lag covariance"
-            state={gateState(lagPass)}
+            state={amplitudeOnly ? "diagnostic" : gateState(lagPass)}
             value={metricLabel(lag?.median_abs_error, 3)}
-            detail={`median |Δρ| · max ${metricLabel(lag?.max_abs_error, 3)} · ${measured(lag?.within_interval_fraction) ? `${(100 * lag.within_interval_fraction).toFixed(0)}%` : "—"} inside interval · gates 0.03 / 0.07 / 80%`}
+            detail={`white-noise diagnostic · median |Δρ| ${metricLabel(lag?.median_abs_error, 3)} · max ${metricLabel(lag?.max_abs_error, 3)} · ${measured(lag?.within_interval_fraction) ? `${(100 * lag.within_interval_fraction).toFixed(0)}%` : "—"} inside interval`}
           />
           <ValidationGate
             title="Angular power"
-            state={gateState(powerPass)}
+            state={amplitudeOnly ? "diagnostic" : gateState(powerPass)}
             value={metricLabel(power?.shape_overlap, 3)}
-            detail={`shape overlap · median / p90 |Δlog₁₀P| ${metricLabel(power?.median_abs_log10_ratio, 3)} / ${metricLabel(power?.p90_abs_log10_ratio, 3)} dex · variance ${metricLabel(power?.variance_ratio, 3)}×`}
+            detail={`white-noise diagnostic · shape overlap · median / p90 |Δlog₁₀P| ${metricLabel(power?.median_abs_log10_ratio, 3)} / ${metricLabel(power?.p90_abs_log10_ratio, 3)} dex · variance ${metricLabel(power?.variance_ratio, 3)}×`}
           />
         </div>
 
@@ -711,7 +717,7 @@ function VisNoiseCalibrationPanel({
                 ]}
               />
               <Legend items={[
-                { color: C.comb, label: "fitted model", line: true, marker: "filled" },
+                { color: C.comb, label: "white-noise reference", line: true, marker: "filled" },
                 { color: C.mean, label: "held-out Euclid", line: true, dash: true, marker: "diamond" },
               ]} />
             </> : <div className="vis-noise-plot__empty">Fit a candidate to measure lag covariance.</div>}
@@ -737,7 +743,7 @@ function VisNoiseCalibrationPanel({
                 ]}
               />
               <Legend items={[
-                { color: C.comb, label: "fitted model", line: true, marker: "filled" },
+                { color: C.comb, label: "white-noise reference", line: true, marker: "filled" },
                 { color: C.mean, label: "held-out Euclid", line: true, dash: true, marker: "diamond" },
               ]} />
             </> : <div className="vis-noise-plot__empty">Fit a candidate to measure background power.</div>}

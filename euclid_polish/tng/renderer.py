@@ -231,6 +231,21 @@ class TNGRenderer:
     ) -> RenderedTNG:
         """Render nominal radius geometry and then apply redshift photometry."""
         rendered = self._render_observed_geometry(view, target_re_arcsec, rng)
+        rendered = self.apply_redshift_photometry(
+            rendered, redshift, rng=rng,
+        )
+        if target_vis_flux_e is not None:
+            rendered = rendered.normalised_to_total_vis(target_vis_flux_e)
+        return rendered
+
+    def apply_redshift_photometry(
+        self,
+        rendered: RenderedTNG,
+        redshift: float,
+        *,
+        rng: np.random.Generator | None = None,
+    ) -> RenderedTNG:
+        """Apply the observed-radius renderer's transform to an existing stamp."""
         sed_fnu = self._native_sed_from_render(rendered)
         factors, metadata = band_drift_factors(sed_fnu, redshift, rng)
         transform = TNGRedshiftTransform(
@@ -240,10 +255,7 @@ class TNGRenderer:
             drift_epsilon=float(metadata["drift_eps"]),
             dimming_factor=float(metadata["dimming"]),
         )
-        rendered = rendered.transformed_at_redshift(transform)
-        if target_vis_flux_e is not None:
-            rendered = rendered.normalised_to_total_vis(target_vis_flux_e)
-        return rendered
+        return rendered.transformed_at_redshift(transform)
 
     def render_physical_at_redshift(
         self,

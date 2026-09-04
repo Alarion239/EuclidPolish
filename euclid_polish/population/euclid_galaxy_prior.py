@@ -1,4 +1,4 @@
-"""Minimal Euclid-only joint brightness and half-light-radius prior."""
+"""Euclid VIS brightness/radius prior with conditional empirical PHZ redshift."""
 
 from __future__ import annotations
 
@@ -15,12 +15,17 @@ from euclid_polish.population.magnitude_law import (
     StraightMagnitudeLaw,
 )
 
-JOINT_EUCLID_GALAXY_VERSION = 13
+JOINT_EUCLID_GALAXY_VERSION = 14
 JOINT_EUCLID_GALAXY_KIND = (
     "euclid_vis2fwhm_circularized_sersic_re_joint"
 )
 RADIUS_MODEL_VERSION = 5
 APERTURE_FWHM_MODEL_VERSION = 1
+REDSHIFT_MODEL_VERSION = 2
+REDSHIFT_TRUSTED_BRIGHT_MAGNITUDE = 20.5
+REDSHIFT_BRIGHT_TERMINAL_POOL_MAGNITUDES = (18.6, 20.5)
+REDSHIFT_TRUSTED_FAINT_MAGNITUDE = 24.5
+REDSHIFT_FAINT_TERMINAL_POOL_MAGNITUDES = (24.4, 24.5)
 RADIUS_PIVOT_MAG = 23.0
 RADIUS_FIT_MIN_SELECTED_PER_MAG_BIN = 20
 RADIUS_FIT_EFFECTIVE_WEIGHT_CAP = 1000.0
@@ -426,6 +431,424 @@ class ConditionalApertureFWHMDistribution:
         )
         probability = np.asarray(self.probability, dtype=np.float64)
         return probability[indices] @ centres
+
+
+@dataclass(frozen=True)
+class ConditionalRedshiftDistribution:
+    """Empirical PHZ redshift PDFs conditioned on VIS 2FWHM magnitude."""
+
+    version: int
+    magnitude_edges: tuple[float, ...]
+    redshift_edges: tuple[float, ...]
+    probability: tuple[tuple[float, ...], ...]
+    source_magnitude_bin: tuple[int, ...]
+    selected_rows_by_magnitude: tuple[int, ...]
+    weighted_rows_by_magnitude: tuple[float, ...]
+    selection: str
+    out_of_support_policy: str
+    bright_terminal_probability: tuple[float, ...]
+    trusted_bright_magnitude: float
+    bright_terminal_pool_magnitude_interval: tuple[float, float]
+    bright_tail_policy: str
+    trusted_faint_magnitude: float
+    faint_terminal_pool_magnitude_interval: tuple[float, float]
+    faint_tail_policy: str
+    calibration_fingerprint: str
+
+    @classmethod
+    def from_payload(
+        cls, payload: dict,
+    ) -> ConditionalRedshiftDistribution:
+        try:
+            distribution = cls(
+                version=int(payload["version"]),
+                magnitude_edges=tuple(
+                    float(value) for value in payload["magnitude_edges"]
+                ),
+                redshift_edges=tuple(
+                    float(value) for value in payload["redshift_edges"]
+                ),
+                probability=tuple(
+                    tuple(float(value) for value in row)
+                    for row in payload["probability"]
+                ),
+                source_magnitude_bin=tuple(
+                    int(value) for value in payload["source_magnitude_bin"]
+                ),
+                selected_rows_by_magnitude=tuple(
+                    int(value)
+                    for value in payload["selected_rows_by_magnitude"]
+                ),
+                weighted_rows_by_magnitude=tuple(
+                    float(value)
+                    for value in payload["weighted_rows_by_magnitude"]
+                ),
+                selection=str(payload["selection"]),
+                out_of_support_policy=str(payload["out_of_support_policy"]),
+                bright_terminal_probability=tuple(
+                    float(value)
+                    for value in payload["bright_terminal_probability"]
+                ),
+                trusted_bright_magnitude=float(
+                    payload["trusted_bright_magnitude"]
+                ),
+                bright_terminal_pool_magnitude_interval=tuple(
+                    float(value)
+                    for value in payload[
+                        "bright_terminal_pool_magnitude_interval"
+                    ]
+                ),
+                bright_tail_policy=str(payload["bright_tail_policy"]),
+                trusted_faint_magnitude=float(
+                    payload["trusted_faint_magnitude"]
+                ),
+                faint_terminal_pool_magnitude_interval=tuple(
+                    float(value)
+                    for value in payload[
+                        "faint_terminal_pool_magnitude_interval"
+                    ]
+                ),
+                faint_tail_policy=str(payload["faint_tail_policy"]),
+                calibration_fingerprint=str(
+                    payload["calibration_fingerprint"]
+                ),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(
+                "PHZ conditional-redshift payload is malformed"
+            ) from exc
+        magnitude_edges = np.asarray(
+            distribution.magnitude_edges, dtype=np.float64,
+        )
+        redshift_edges = np.asarray(
+            distribution.redshift_edges, dtype=np.float64,
+        )
+        probability = np.asarray(
+            distribution.probability, dtype=np.float64,
+        )
+        source = np.asarray(
+            distribution.source_magnitude_bin, dtype=np.int64,
+        )
+        selected = np.asarray(
+            distribution.selected_rows_by_magnitude, dtype=np.int64,
+        )
+        weighted = np.asarray(
+            distribution.weighted_rows_by_magnitude, dtype=np.float64,
+        )
+        bright_probability = np.asarray(
+            distribution.bright_terminal_probability, dtype=np.float64,
+        )
+        expected_shape = (
+            magnitude_edges.size - 1, redshift_edges.size - 1,
+        )
+        bright_interval = np.asarray(
+            distribution.bright_terminal_pool_magnitude_interval,
+            dtype=np.float64,
+        )
+        terminal_interval = np.asarray(
+            distribution.faint_terminal_pool_magnitude_interval,
+            dtype=np.float64,
+        )
+        populated = weighted > 0.0
+        pooled_bright = source == -1
+        direct_source = source[~pooled_bright]
+        expected_pooled_bright = (
+            magnitude_edges[1:]
+            <= distribution.trusted_bright_magnitude + 1e-10
+        )
+        if not (
+            distribution.version == REDSHIFT_MODEL_VERSION
+            and magnitude_edges.size >= 2
+            and redshift_edges.size >= 2
+            and probability.shape == expected_shape
+            and source.shape == (expected_shape[0],)
+            and selected.shape == (expected_shape[0],)
+            and weighted.shape == (expected_shape[0],)
+            and bright_probability.shape == (expected_shape[1],)
+            and np.all(np.isfinite(magnitude_edges))
+            and np.all(np.diff(magnitude_edges) > 0.0)
+            and np.all(np.isfinite(redshift_edges) & (redshift_edges >= 0.0))
+            and np.all(np.diff(redshift_edges) > 0.0)
+            and np.all(np.isfinite(probability) & (probability >= 0.0))
+            and np.allclose(
+                np.sum(probability, axis=1), 1.0, rtol=0.0, atol=1e-10,
+            )
+            and np.all((source >= -1) & (source < expected_shape[0]))
+            and np.all(selected >= 0)
+            and np.all(np.isfinite(weighted) & (weighted >= 0.0))
+            and np.any(populated)
+            and np.all(populated[direct_source])
+            and np.array_equal(pooled_bright, expected_pooled_bright)
+            and np.all(np.isfinite(bright_probability))
+            and np.all(bright_probability >= 0.0)
+            and np.isclose(
+                np.sum(bright_probability), 1.0, rtol=0.0, atol=1e-10,
+            )
+            and np.allclose(
+                probability[pooled_bright], bright_probability,
+                rtol=0.0, atol=1e-10,
+            )
+            and bool(distribution.selection.strip())
+            and np.isfinite(distribution.trusted_bright_magnitude)
+            and magnitude_edges[0] < distribution.trusted_bright_magnitude
+            < distribution.trusted_faint_magnitude
+            and bright_interval.shape == (2,)
+            and np.all(np.isfinite(bright_interval))
+            and magnitude_edges[0] < bright_interval[0]
+            < bright_interval[1] == distribution.trusted_bright_magnitude
+            < distribution.trusted_faint_magnitude
+            and bool(distribution.bright_tail_policy.strip())
+            and np.isfinite(distribution.trusted_faint_magnitude)
+            and magnitude_edges[0] < distribution.trusted_faint_magnitude
+            <= magnitude_edges[-1]
+            and terminal_interval.shape == (2,)
+            and np.all(np.isfinite(terminal_interval))
+            and magnitude_edges[0] <= terminal_interval[0]
+            < terminal_interval[1] == distribution.trusted_faint_magnitude
+            and bool(distribution.faint_tail_policy.strip())
+            and distribution.out_of_support_policy
+            == "pooled_bright_terminal_and_trusted_terminal_faint_bin"
+            and len(distribution.calibration_fingerprint) == 64
+        ):
+            raise ValueError("PHZ conditional-redshift distribution is invalid")
+        bright_start = np.flatnonzero(np.isclose(
+            magnitude_edges, bright_interval[0], rtol=0.0, atol=1e-10,
+        ))
+        bright_stop = np.flatnonzero(np.isclose(
+            magnitude_edges, bright_interval[1], rtol=0.0, atol=1e-10,
+        ))
+        faint_start = np.flatnonzero(np.isclose(
+            magnitude_edges, terminal_interval[0], rtol=0.0, atol=1e-10,
+        ))
+        faint_stop = np.flatnonzero(np.isclose(
+            magnitude_edges, terminal_interval[1], rtol=0.0, atol=1e-10,
+        ))
+        if not (
+            bright_start.size == bright_stop.size
+            == faint_start.size == faint_stop.size == 1
+            and bright_start[0] < bright_stop[0] <= faint_start[0]
+            and faint_stop[0] == faint_start[0] + 1
+        ):
+            raise ValueError(
+                "PHZ terminal pools must align with magnitude-bin edges"
+            )
+        terminal_source = int(faint_start[0])
+        faint_tail = magnitude_edges[:-1] >= (
+            distribution.trusted_faint_magnitude - 1e-10
+        )
+        if not (
+            populated[terminal_source]
+            and np.all(source[faint_tail] == terminal_source)
+            and np.allclose(
+                probability[faint_tail], probability[terminal_source],
+                rtol=0.0, atol=1e-10,
+            )
+        ):
+            raise ValueError("PHZ faint terminal-bin continuation is invalid")
+        return distribution
+
+    def to_payload(self) -> dict:
+        return asdict(self)
+
+    def _magnitude_bins(self, magnitude: np.ndarray | float) -> np.ndarray:
+        values = np.atleast_1d(np.asarray(magnitude, dtype=np.float64))
+        if not np.all(np.isfinite(values)):
+            raise ValueError("VIS 2FWHM magnitudes must be finite")
+        return np.clip(
+            np.searchsorted(self.magnitude_edges, values, side="right") - 1,
+            0,
+            len(self.magnitude_edges) - 2,
+        )
+
+    def sample(self, magnitude: float, rng: np.random.Generator) -> float:
+        """Draw redshift from the calibrated PHZ PDF at this brightness."""
+        magnitude_bin = int(self._magnitude_bins(magnitude)[0])
+        probability = np.asarray(
+            self.probability[magnitude_bin], dtype=np.float64,
+        )
+        redshift_bin = int(rng.choice(probability.size, p=probability))
+        return float(rng.uniform(
+            self.redshift_edges[redshift_bin],
+            self.redshift_edges[redshift_bin + 1],
+        ))
+
+    def mean(self, magnitude: np.ndarray | float) -> np.ndarray:
+        indices = self._magnitude_bins(magnitude)
+        centres = 0.5 * (
+            np.asarray(self.redshift_edges[:-1])
+            + np.asarray(self.redshift_edges[1:])
+        )
+        return np.asarray(self.probability, dtype=np.float64)[indices] @ centres
+
+    def quantile(
+        self, magnitude: np.ndarray | float, probability_level: float,
+    ) -> np.ndarray:
+        """Return quantiles, treating each cached PHZ bin as uniform."""
+        level = float(probability_level)
+        if not 0.0 <= level <= 1.0:
+            raise ValueError("redshift probability level must be in [0, 1]")
+        indices = self._magnitude_bins(magnitude)
+        rows = np.asarray(self.probability, dtype=np.float64)[indices]
+        cumulative = np.cumsum(rows, axis=1)
+        redshift_bin = np.sum(cumulative < level, axis=1)
+        redshift_bin = np.minimum(redshift_bin, rows.shape[1] - 1)
+        previous = np.where(
+            redshift_bin > 0,
+            cumulative[
+                np.arange(rows.shape[0]), np.maximum(redshift_bin - 1, 0)
+            ],
+            0.0,
+        )
+        mass = rows[np.arange(rows.shape[0]), redshift_bin]
+        fraction = np.divide(
+            level - previous,
+            mass,
+            out=np.zeros_like(mass),
+            where=mass > 0.0,
+        )
+        edges = np.asarray(self.redshift_edges, dtype=np.float64)
+        return edges[redshift_bin] + np.clip(fraction, 0.0, 1.0) * (
+            edges[redshift_bin + 1] - edges[redshift_bin]
+        )
+
+
+def fit_conditional_redshift_distribution(
+    magnitude_edges: np.ndarray,
+    redshift_edges: np.ndarray,
+    weighted_probability_mass: np.ndarray,
+    selected_rows_by_magnitude: np.ndarray,
+    *,
+    selection: str,
+    calibration_fingerprint: str,
+    trusted_bright_magnitude: float,
+    bright_terminal_pool_magnitude_interval: tuple[float, float],
+    bright_tail_policy: str,
+    trusted_faint_magnitude: float,
+    faint_terminal_pool_magnitude_interval: tuple[float, float],
+    faint_tail_policy: str,
+) -> ConditionalRedshiftDistribution:
+    """Normalize weighted per-object PHZ PDFs within VIS-magnitude bins."""
+    mag_edges = np.asarray(magnitude_edges, dtype=np.float64)
+    z_edges = np.asarray(redshift_edges, dtype=np.float64)
+    mass = np.asarray(weighted_probability_mass, dtype=np.float64)
+    selected = np.asarray(selected_rows_by_magnitude, dtype=np.int64)
+    expected_shape = (mag_edges.size - 1, z_edges.size - 1)
+    if not (
+        mag_edges.size >= 2
+        and z_edges.size >= 2
+        and mass.shape == expected_shape
+        and selected.shape == (expected_shape[0],)
+        and np.all(np.isfinite(mag_edges))
+        and np.all(np.diff(mag_edges) > 0.0)
+        and np.all(np.isfinite(z_edges) & (z_edges >= 0.0))
+        and np.all(np.diff(z_edges) > 0.0)
+        and np.all(np.isfinite(mass) & (mass >= 0.0))
+        and np.all(selected >= 0)
+        and bool(str(selection).strip())
+        and len(str(calibration_fingerprint)) == 64
+        and np.isfinite(trusted_bright_magnitude)
+        and mag_edges[0] < trusted_bright_magnitude
+        < trusted_faint_magnitude
+        and len(bright_terminal_pool_magnitude_interval) == 2
+        and np.all(np.isfinite(bright_terminal_pool_magnitude_interval))
+        and mag_edges[0] < bright_terminal_pool_magnitude_interval[0]
+        < bright_terminal_pool_magnitude_interval[1]
+        == trusted_bright_magnitude < trusted_faint_magnitude
+        and bool(str(bright_tail_policy).strip())
+        and np.isfinite(trusted_faint_magnitude)
+        and mag_edges[0] < trusted_faint_magnitude <= mag_edges[-1]
+        and len(faint_terminal_pool_magnitude_interval) == 2
+        and np.all(np.isfinite(faint_terminal_pool_magnitude_interval))
+        and mag_edges[0] <= faint_terminal_pool_magnitude_interval[0]
+        < faint_terminal_pool_magnitude_interval[1]
+        == trusted_faint_magnitude
+        and bool(str(faint_tail_policy).strip())
+    ):
+        raise ValueError("PHZ conditional-redshift fit inputs are malformed")
+    weight = np.sum(mass, axis=1)
+    populated = np.flatnonzero(weight > 0.0)
+    if not populated.size or float(np.sum(weight)) <= 0.0:
+        raise ValueError("PHZ conditional-redshift histogram is empty")
+    bright_start = np.flatnonzero(np.isclose(
+        mag_edges, bright_terminal_pool_magnitude_interval[0],
+        rtol=0.0, atol=1e-10,
+    ))
+    bright_stop = np.flatnonzero(np.isclose(
+        mag_edges, bright_terminal_pool_magnitude_interval[1],
+        rtol=0.0, atol=1e-10,
+    ))
+    if bright_start.size != 1 or bright_stop.size != 1:
+        raise ValueError(
+            "PHZ bright terminal pool must align with magnitude-bin edges"
+        )
+    bright_pool_mass = np.sum(
+        mass[int(bright_start[0]):int(bright_stop[0])], axis=0,
+    )
+    bright_pool_weight = float(np.sum(bright_pool_mass))
+    if bright_pool_weight <= 0.0:
+        raise ValueError("PHZ bright terminal magnitude pool is empty")
+    bright_probability = bright_pool_mass / bright_pool_weight
+    faint_start = np.flatnonzero(np.isclose(
+        mag_edges, faint_terminal_pool_magnitude_interval[0],
+        rtol=0.0, atol=1e-10,
+    ))
+    faint_stop = np.flatnonzero(np.isclose(
+        mag_edges, faint_terminal_pool_magnitude_interval[1],
+        rtol=0.0, atol=1e-10,
+    ))
+    if not (
+        faint_start.size == faint_stop.size == 1
+        and faint_stop[0] == faint_start[0] + 1
+    ):
+        raise ValueError(
+            "PHZ faint terminal bin must align with magnitude-bin edges"
+        )
+    faint_source = int(faint_start[0])
+    if (
+        weight[faint_source] <= 0.0
+        or np.any(weight[int(faint_stop[0]):] > 0.0)
+    ):
+        raise ValueError("PHZ faint terminal-bin inputs are invalid")
+    source = np.arange(weight.size, dtype=np.int64)
+    for index in np.flatnonzero(weight <= 0.0):
+        source[index] = int(populated[np.argmin(np.abs(populated - index))])
+    probability = mass[source] / weight[source, None]
+    pooled_bright = mag_edges[1:] <= trusted_bright_magnitude + 1e-10
+    probability[pooled_bright] = bright_probability
+    source[pooled_bright] = -1
+    faint_tail = mag_edges[:-1] >= trusted_faint_magnitude - 1e-10
+    probability[faint_tail] = mass[faint_source] / weight[faint_source]
+    source[faint_tail] = faint_source
+    return ConditionalRedshiftDistribution(
+        version=REDSHIFT_MODEL_VERSION,
+        magnitude_edges=tuple(float(value) for value in mag_edges),
+        redshift_edges=tuple(float(value) for value in z_edges),
+        probability=tuple(
+            tuple(float(value) for value in row) for row in probability
+        ),
+        source_magnitude_bin=tuple(int(value) for value in source),
+        selected_rows_by_magnitude=tuple(int(value) for value in selected),
+        weighted_rows_by_magnitude=tuple(float(value) for value in weight),
+        selection=str(selection),
+        out_of_support_policy=(
+            "pooled_bright_terminal_and_trusted_terminal_faint_bin"
+        ),
+        bright_terminal_probability=tuple(
+            float(value) for value in bright_probability
+        ),
+        trusted_bright_magnitude=float(trusted_bright_magnitude),
+        bright_terminal_pool_magnitude_interval=tuple(
+            float(value)
+            for value in bright_terminal_pool_magnitude_interval
+        ),
+        bright_tail_policy=str(bright_tail_policy),
+        trusted_faint_magnitude=float(trusted_faint_magnitude),
+        faint_terminal_pool_magnitude_interval=tuple(
+            float(value) for value in faint_terminal_pool_magnitude_interval
+        ),
+        faint_tail_policy=str(faint_tail_policy),
+        calibration_fingerprint=str(calibration_fingerprint),
+    )
 
 
 def fit_conditional_aperture_fwhm_distribution(

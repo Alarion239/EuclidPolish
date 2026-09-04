@@ -163,8 +163,9 @@ def apply_archive_noise(
 
     Without ``vis_noise_calibration``, VIS is native at the archive scale and
     uses :func:`apply_band_noise` unchanged (the bitwise-compatible legacy
-    fallback).  With a calibration, its stochastic residual is colored on the
-    MER grid before sparse artifacts are injected. NISP Y/J/H are different:
+    fallback). With a calibration, only its stochastic residual amplitude is
+    set from empirical MER backgrounds before sparse artifacts are injected;
+    no spatial filter is applied. NISP Y/J/H are different:
     four independent 0.30" H2RG exposures are sky/dark/read-noised on their
     native detector cells, bilinearly resampled at their dither phases,
     converted from native-cell integrated electrons to 0.10"-cell electrons
@@ -223,8 +224,8 @@ def apply_archive_noise(
             return observed.astype(np.float32, copy=False)
 
         # The deterministic optical signal is already a delivered-grid ePSF
-        # realization and must not be convolved again. Color only the
-        # Poisson/read residual, using the calibration's padded linear filter.
+        # realization and must not be convolved again. Rescale only the
+        # Poisson/read residual, preserving its native spatial structure.
         observed = apply_band_noise(
             signal, band, rng,
             add_artifacts=False,

@@ -1,10 +1,11 @@
-"""Empirical, parent-grouped calibration of delivered-MER VIS noise.
+"""Empirical, parent-grouped amplitude calibration of delivered-MER VIS noise.
 
 The sampler manifest is the statistical boundary: every retained cutout has
 an exact parent mosaic identity.  Patches within a cutout improve the local
 noise estimate, but only parent mosaics are independent fit/holdout units.
-The active artifact is deliberately the strict runtime payload; the candidate
-keeps source masks, per-parent statistics, validation gates, and provenance.
+The active artifact is deliberately a strict amplitude-only runtime payload;
+the candidate keeps source masks, per-parent statistics, non-modeled spatial
+diagnostics, activation gates, and provenance.
 """
 
 from __future__ import annotations
@@ -28,15 +29,15 @@ from scipy.signal import correlate2d, fftconvolve
 from euclid_polish.config import Config
 from euclid_polish.photometry import adu_per_s_to_electrons_factor
 
-VIS_NOISE_CANDIDATE_VERSION = 2
-VIS_NOISE_RUNTIME_VERSION = 1
+VIS_NOISE_CANDIDATE_VERSION = 3
+VIS_NOISE_RUNTIME_VERSION = 2
 VIS_NOISE_RUNTIME_KIND = "euclid_mer_vis_noise"
-VIS_NOISE_ESTIMATOR_VERSION = "source-masked-plane-mad-pair-covariance-psd-v4"
+VIS_NOISE_RUNTIME_MODE = "amplitude_only"
+VIS_NOISE_ESTIMATOR_VERSION = "source-masked-plane-mad-amplitude-only-v1"
 DEFAULT_MANIFEST_NAME = "vis_noise_sampling_manifest.json"
 VIS_NOISE_SAMPLING_SUBDIR = "vis_noise_samples"
 DEFAULT_TILE_SIZE = 256
 DEFAULT_MAX_LAG = 8
-DEFAULT_KERNEL_SIDE = 9
 _REQUIRED_Q1_FIELDS = ("EDF-N", "EDF-S", "EDF-F")
 _FIELD_SCALE_PROBABILITIES = np.asarray([0.0, 0.16, 0.5, 0.84, 1.0])
 _VIS_NOISE_MAX_OVERSIZE_FRACTION = 0.01
@@ -60,7 +61,7 @@ _ARCHIVE_RATE_UNITS = {
 _RUNTIME_KEYS = {
     "kind",
     "version",
-    "coloring_kernel",
+    "mode",
     "residual_scale",
     "field_scale_quantiles",
     "owns_field_scale",
@@ -772,43 +773,29 @@ def _parent_weighted_rms(parents: Sequence[Mapping[str, Any]]) -> tuple[float, n
     parent_rms = np.asarray(
         [float(parent["rms_e"]) for parent in parents], dtype=np.float64,
     )
-    quantiles = np.quantile(parent_rms, _FIELD_SCALE_PROBABILITIES)
-    parent_median = float(quantiles[2])
+    # Raw minima/maxima each control 16% of the inverse-CDF draw and are too
+    # influential for a 44-parent sample: one saturated-star halo or unusual
+    # coverage mosaic would broaden a large fraction of generated fields.
+    # Preserve the measured p16/p50/p84 exactly, and linearly extrapolate only
+    # the short outer probability intervals from those robust central slopes.
+    p16, parent_median, p84 = np.quantile(parent_rms, (0.16, 0.5, 0.84))
+    tail_probability_ratio = 0.16 / (0.5 - 0.16)
+    lower = p16 - tail_probability_ratio * (parent_median - p16)
+    upper = p84 + tail_probability_ratio * (p84 - parent_median)
+    quantiles = np.asarray([
+        max(float(lower), np.finfo(np.float64).eps),
+        float(p16),
+        float(parent_median),
+        float(p84),
+        float(upper),
+    ])
+    parent_median = float(parent_median)
     factors = np.maximum(
         quantiles / parent_median, np.finfo(np.float64).eps,
     )
     factors[2] = 1.0
     factors = np.maximum.accumulate(factors)
     return residual_scale, factors
-
-
-def _spectral_factor_kernel(covariance: np.ndarray, *, side: int) -> np.ndarray:
-    if side < 1 or side % 2 == 0:
-        raise ValueError("kernel side must be a positive odd integer")
-    covariance = np.asarray(covariance, dtype=np.float64)
-    covariance = np.nan_to_num(
-        0.5 * (covariance + covariance[::-1, ::-1]), nan=0.0,
-    )
-    centre = tuple(np.asarray(covariance.shape) // 2)
-    covariance[centre] = 1.0
-    fft_side = 1
-    while fft_side < max(64, 4 * max(covariance.shape)):
-        fft_side *= 2
-    embedded = np.zeros((fft_side, fft_side), dtype=np.float64)
-    y0 = fft_side // 2 - covariance.shape[0] // 2
-    x0 = fft_side // 2 - covariance.shape[1] // 2
-    embedded[y0:y0 + covariance.shape[0], x0:x0 + covariance.shape[1]] = covariance
-    spectrum = np.real(np.fft.fft2(np.fft.ifftshift(embedded)))
-    spectrum = np.maximum(spectrum, 0.0)
-    amplitude = np.sqrt(spectrum)
-    full = np.fft.fftshift(np.fft.ifft2(amplitude).real)
-    half = side // 2
-    cy, cx = np.asarray(full.shape) // 2
-    kernel = full[cy - half:cy + half + 1, cx - half:cx + half + 1]
-    norm = float(np.linalg.norm(kernel))
-    if not np.isfinite(norm) or norm <= 0.0:
-        raise ValueError("Empirical covariance has no finite spectral factor")
-    return kernel / norm
 
 
 def _kernel_covariance(kernel: np.ndarray, max_lag: int) -> np.ndarray:
@@ -894,11 +881,15 @@ def _fit_validation(
     radial_edges: np.ndarray,
     tile_size: int,
     max_lag: int,
-    kernel_side: int,
-) -> tuple[dict[str, Any], np.ndarray]:
-    train_covariance = _median_parent_array(train, "covariance_2d")
-    train_kernel = _spectral_factor_kernel(train_covariance, side=kernel_side)
-    model_lag = _radial_covariance(_kernel_covariance(train_kernel, max_lag))
+) -> dict[str, Any]:
+    # The selected runtime deliberately retains white detector-noise
+    # structure.  Keep empirical lag/power measurements as explicit
+    # diagnostics, but compare them against the actual identity model rather
+    # than a correlation kernel that will never be applied.
+    amplitude_only_kernel = np.ones((1, 1), dtype=np.float64)
+    model_lag = _radial_covariance(
+        _kernel_covariance(amplitude_only_kernel, max_lag)
+    )
     real_lag = _median_parent_array(holdout, "lag")
     lag_rows = np.stack([np.asarray(parent["lag"]) for parent in holdout])
     lag_p16 = np.percentile(lag_rows, 16, axis=0)
@@ -906,7 +897,7 @@ def _fit_validation(
     lag_error = np.abs(model_lag - real_lag)
     within = (model_lag >= lag_p16) & (model_lag <= lag_p84)
 
-    model_power = _kernel_power(train_kernel, radial_edges, tile_size)
+    model_power = _kernel_power(amplitude_only_kernel, radial_edges, tile_size)
     real_power = _median_parent_array(holdout, "power")
     train_rms, _ = _parent_weighted_rms(train)
     holdout_rms, _ = _parent_weighted_rms(holdout)
@@ -1003,7 +994,7 @@ def _fit_validation(
             "subpixel_lt_0p25_arcsec": subpixel_scale_metrics,
         },
     }
-    return validation, train_kernel
+    return validation
 
 
 def _quality_gates(validation: Mapping[str, Any]) -> dict[str, Any]:
@@ -1028,7 +1019,15 @@ def _quality_gates(validation: Mapping[str, Any]) -> dict[str, Any]:
             0.90 <= float(power["variance_ratio"]) <= 1.10
         ),
     }
-    return {**gates, "passed": all(gates.values())}
+    # Lag covariance and angular power are intentionally not modeled by this
+    # simple white-noise calibration. Retain their pass/fail values for review,
+    # but only absolute RMS is an activation criterion here; Q1 parent coverage
+    # is added by ``fit_vis_noise_candidate`` below.
+    return {
+        **gates,
+        "spatial_structure_is_diagnostic_only": True,
+        "passed": gates["rms_ratio_0p95_1p05"],
+    }
 
 
 def _review_parent(parent: Mapping[str, Any]) -> dict[str, Any]:
@@ -1053,7 +1052,6 @@ def fit_vis_noise_candidate(
     manifest_file: str | os.PathLike[str] | None = None,
     tile_size: int = DEFAULT_TILE_SIZE,
     max_lag: int = DEFAULT_MAX_LAG,
-    kernel_side: int = DEFAULT_KERNEL_SIDE,
     split_seed: int = 28012025,
 ) -> dict[str, Any]:
     """Fit, validate, fingerprint, and atomically persist a VIS-noise candidate."""
@@ -1099,28 +1097,27 @@ def fit_vis_noise_candidate(
             f"found {len(parents)}"
         )
     train, holdout = _parent_split(parents, int(split_seed))
-    validation, _train_kernel = _fit_validation(
+    validation = _fit_validation(
         train,
         holdout,
         radial_edges=radial_edges,
         tile_size=int(tile_size),
         max_lag=int(max_lag),
-        kernel_side=int(kernel_side),
     )
     gates = _quality_gates(validation)
     fields = Counter(str(parent["field"]) for parent in parents)
     gates["all_q1_fields_ge_2_parents"] = _q1_fields_have_fit_and_holdout(fields)
-    gates["passed"] = all(
-        bool(value) for name, value in gates.items() if name != "passed"
+    gates["passed"] = bool(
+        gates["rms_ratio_0p95_1p05"]
+        and gates["all_q1_fields_ge_2_parents"]
     )
 
     final_covariance = _median_parent_array(parents, "covariance_2d")
-    final_kernel = _spectral_factor_kernel(final_covariance, side=int(kernel_side))
     residual_scale, field_scale_quantiles = _parent_weighted_rms(parents)
     runtime_core = {
         "kind": VIS_NOISE_RUNTIME_KIND,
         "version": VIS_NOISE_RUNTIME_VERSION,
-        "coloring_kernel": final_kernel.tolist(),
+        "mode": VIS_NOISE_RUNTIME_MODE,
         "residual_scale": residual_scale,
         "field_scale_quantiles": field_scale_quantiles.tolist(),
         "owns_field_scale": True,
@@ -1146,7 +1143,7 @@ def fit_vis_noise_candidate(
             "EDF-N, EDF-S, and EDF-F"
         )
     if not gates["passed"]:
-        warnings.append("Grouped parent holdout quality gates did not all pass")
+        warnings.append("Amplitude-only RMS/coverage activation gates did not pass")
     parent_rms = np.asarray([parent["rms_e"] for parent in parents])
     radial_edges = _power_edges(int(tile_size))
     radial_mode_counts = _radial_mode_counts(radial_edges, int(tile_size))
@@ -1170,6 +1167,10 @@ def fit_vis_noise_candidate(
         "warnings": warnings,
         "runtime": runtime,
         "runtime_semantics": {
+            "mode": (
+                "amplitude_only: robust-normalize and scale the stochastic "
+                "VIS residual without convolution or neighbouring-pixel mixing"
+            ),
             "residual_scale": (
                 "absolute target 1.4826*MAD RMS in electrons per 0.10 arcsec "
                 "MER pixel after source masking"
@@ -1177,13 +1178,14 @@ def fit_vis_noise_candidate(
             "field_scale_quantiles": {
                 "probabilities": _FIELD_SCALE_PROBABILITIES.tolist(),
                 "weighting": (
-                    "quantiles of per-parent median patch RMS; one value per "
-                    "independent parent mosaic"
+                    "p16/p50/p84 of per-parent median patch RMS, with p0/p100 "
+                    "linearly extrapolated from the adjacent central slope; "
+                    "one value per independent parent mosaic"
                 ),
             },
-            "coloring_kernel": (
-                f"{int(kernel_side)}x{int(kernel_side)} real-space "
-                "L2-normalized spectral factor"
+            "spatial_diagnostics": (
+                "lag covariance and angular power are measured and reported "
+                "but deliberately not modeled or required for activation"
             ),
         },
         "sample_summary": {

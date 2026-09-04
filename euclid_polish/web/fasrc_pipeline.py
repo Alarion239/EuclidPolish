@@ -1747,8 +1747,8 @@ class SyntheticGenerateStep(RunPipelineStep):
         except (TypeError, ValueError):
             workers = self.defaults.n_cpus
         cmd += ["--gen-workers", str(max(1, workers))]
-        # One empirical PHZ-grid draw controls every TNG morphology's redshift,
-        # apparent size, and VIS Kron brightness anchor.
+        # One empirical PHZ draw supplies each TNG morphology's redshift while
+        # preserving the calibrated observed radius and VIS 2FWHM anchor.
         raw_tng_density = params.get("galaxy_density_arcmin2")
         if raw_tng_density in (None, ""):
             raise ValueError(

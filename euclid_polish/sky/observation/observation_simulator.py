@@ -10,7 +10,7 @@ detector sampling and mosaic interpolation. Noise follows the detector:
       → fftconvolve with the band PSF sample (real ePSF / Gaussian fallback)
       → sum-rebin round(0.10 / 0.05) = 2× → 0.10″
       → VIS: Poisson/read at native 0.10″
-             → optional empirical MER residual coloring + artifacts
+             → optional empirical MER residual amplitude scaling + artifacts
       → NISP: four independent native 0.30″ noise residuals
              → dithered bilinear MER resample → flux-area scale /9
       → LR (0.10″, e⁻)
@@ -75,8 +75,8 @@ class ObservationSimulatorConfig:
     nisp_resample_kernel: str = Config.NISP_RESAMPLE_KERNEL  # "bilinear" or "cubic"
     hr_pixel_scale: float = Config.DEFAULT_PIXEL_SCALE        # 0.05 arcsec
     artifact_config: ArtifactConfig | None = None
-    # Optional immutable delivered-MER VIS residual model. None retains the
-    # exact legacy white-noise path. NISP never consumes this calibration.
+    # Optional immutable delivered-MER VIS amplitude model. None retains the
+    # exact legacy white-noise amplitude. NISP never consumes this calibration.
     vis_noise_calibration: VISNoiseCalibration | None = None
     # Position-dependent PSF: when ``randomize_psf`` is on, each scene draws one
     # PSF — a star-count-weighted cluster pick, then with probability

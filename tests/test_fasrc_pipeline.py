@@ -8,6 +8,9 @@ import shlex
 
 import pytest
 
+from euclid_polish.population.euclid_galaxy_prior import (
+    JOINT_EUCLID_GALAXY_VERSION,
+)
 from euclid_polish.web import fasrc_config
 from euclid_polish.web.fasrc_pipeline import (
     REGISTRY,
@@ -24,8 +27,8 @@ from euclid_polish.web.fasrc_pipeline import (
 def _mock_vis_noise_calibration(monkeypatch):
     vis_noise = {
         "kind": "euclid_mer_vis_noise",
-        "version": 1,
-        "coloring_kernel": [[1.0]],
+        "version": 2,
+        "mode": "amplitude_only",
         "residual_scale": 20.0,
         "field_scale_quantiles": [0.9, 0.95, 1.0, 1.05, 1.1],
         "owns_field_scale": True,
@@ -243,7 +246,8 @@ class TestRegistry:
         stars = {"fingerprint": "s" * 64}
         vis_noise = {
             "kind": "euclid_mer_vis_noise",
-            "version": 1,
+            "version": 2,
+            "mode": "amplitude_only",
             "fingerprint": "v" * 64,
         }
         monkeypatch.setattr(
@@ -892,7 +896,7 @@ class TestSbatchRendering:
         self, cfg, monkeypatch,
     ):
         joint = {
-            "version": 13,
+            "version": JOINT_EUCLID_GALAXY_VERSION,
             "fingerprint": "j" * 64,
             "generation": {"surface_density_arcmin2": 151.5},
             "large_histogram": "x" * 150_000,
@@ -913,8 +917,8 @@ class TestSbatchRendering:
         )
         vis_noise = {
             "kind": "euclid_mer_vis_noise",
-            "version": 1,
-            "coloring_kernel": [[1.0]],
+            "version": 2,
+            "mode": "amplitude_only",
             "residual_scale": 20.0,
             "field_scale_quantiles": [0.9, 0.95, 1.0, 1.05, 1.1],
             "owns_field_scale": True,

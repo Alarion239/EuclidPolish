@@ -107,8 +107,8 @@ def fake_remote(tmp_path, monkeypatch):
     # calibration artifacts happen to exist in the developer checkout.
     vis_noise = {
         "kind": "euclid_mer_vis_noise",
-        "version": 1,
-        "coloring_kernel": [[1.0]],
+        "version": 2,
+        "mode": "amplitude_only",
         "residual_scale": 20.0,
         "field_scale_quantiles": [0.9, 0.95, 1.0, 1.05, 1.1],
         "owns_field_scale": True,
@@ -271,8 +271,8 @@ def test_synthetic_submit_persists_prepared_calibration_identities(
     }
     vis_noise = {
         "kind": "euclid_mer_vis_noise",
-        "version": 1,
-        "coloring_kernel": [[1.0]],
+        "version": 2,
+        "mode": "amplitude_only",
         "residual_scale": 20.0,
         "field_scale_quantiles": [0.9, 0.95, 1.0, 1.05, 1.1],
         "owns_field_scale": True,

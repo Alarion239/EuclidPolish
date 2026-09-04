@@ -282,6 +282,21 @@ def test_nominal_redshift_render_records_typed_photometry(tmp_path):
     assert rendered.record_fields()["dimming"] == pytest.approx(0.125)
 
 
+def test_staged_observed_radius_redshift_matches_combined_renderer(tmp_path):
+    directory = _write_fake_galaxy(tmp_path, "111")
+    renderer = TNGRenderer(pixel_scale_arcsec=0.05)
+    view = _view(directory)
+
+    combined = renderer.render_observed_radius_at_redshift(
+        view, 0.5, 1.0, rng=None,
+    )
+    geometry = renderer.render_observed_radius(view, 0.5, rng=None)
+    staged = renderer.apply_redshift_photometry(geometry, 1.0, rng=None)
+
+    np.testing.assert_array_equal(staged.data, combined.data)
+    assert staged.trace == combined.trace
+
+
 def test_2fwhm_normalization_uses_one_scale_and_preserves_colours(tmp_path):
     directory = _write_fake_galaxy(tmp_path, "111", size=128)
     renderer = TNGRenderer(pixel_scale_arcsec=0.05)

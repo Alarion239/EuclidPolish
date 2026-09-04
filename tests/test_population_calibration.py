@@ -367,7 +367,7 @@ def test_nested_thinning_keeps_nuisance_population_identical(monkeypatch):
             galaxy_thinning_max_density_arcmin2=8.0,
             star_density_arcmin2=0.0, lens_density_arcmin2=0.0,
         ))
-        simulator._add_tng_galaxy = lambda _canvas, rng: {
+        simulator._add_tng_galaxy = lambda _canvas, rng, **_kwargs: {
             "proposal": int(rng.integers(0, 2**31)),
         }
         return simulator.simulate_field(np.random.default_rng(91))[1]

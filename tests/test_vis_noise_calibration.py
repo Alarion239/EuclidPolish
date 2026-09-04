@@ -7,6 +7,7 @@ from dataclasses import FrozenInstanceError
 import numpy as np
 import pytest
 
+import euclid_polish.sky.observation.noise as noise_module
 import euclid_polish.sky.observation.observation_simulator as observation_module
 from euclid_polish.config import Config
 from euclid_polish.sky.observation.noise import (
@@ -24,7 +25,6 @@ def _calibration(
     *, residual_scale: float = 11.0, owns_field_scale: bool = True,
 ) -> VISNoiseCalibration:
     return VISNoiseCalibration.build(
-        coloring_kernel=((0.0, 0.5, 0.0), (0.5, 0.0, 0.5), (0.0, 0.5, 0.0)),
         residual_scale=residual_scale,
         owns_field_scale=owns_field_scale,
         source_release="Euclid-Q1-MER",
@@ -67,7 +67,6 @@ def test_vis_noise_calibration_rejects_invalid_field_quantiles(
 ):
     with pytest.raises(ValueError, match=message):
         VISNoiseCalibration.build(
-            coloring_kernel=((1.0,),),
             residual_scale=10.0,
             field_scale_quantiles=quantiles,
             source_release="Euclid-Q1-MER",
@@ -75,29 +74,28 @@ def test_vis_noise_calibration_rejects_invalid_field_quantiles(
         )
 
 
-@pytest.mark.parametrize(
-    "kernel, message",
-    [
-        (((1.0, 0.0),), "dimensions must both be odd"),
-        (((1.0, 1.0, 1.0),), "must be L2-normalized"),
-        (((0.0, np.nan, 0.0),), "only finite values"),
-    ],
-)
-def test_vis_noise_calibration_rejects_invalid_kernel(kernel, message):
-    with pytest.raises(ValueError, match=message):
-        VISNoiseCalibration.build(
-            coloring_kernel=kernel,
-            residual_scale=10.0,
-            source_release="Euclid-Q1-MER",
-            estimator_version="test-v1",
-        )
+def test_vis_noise_calibration_rejects_retired_coloring_schema():
+    payload = _calibration().to_payload()
+    payload["version"] = 1
+    payload["coloring_kernel"] = [[1.0]]
+    payload.pop("mode")
+
+    with pytest.raises(ValueError, match="invalid VIS noise calibration schema"):
+        VISNoiseCalibration.from_payload(payload)
+
+
+def test_vis_noise_calibration_rejects_non_amplitude_mode():
+    payload = _calibration().to_payload()
+    payload["mode"] = "correlated"
+
+    with pytest.raises(ValueError, match="mode must be 'amplitude_only'"):
+        VISNoiseCalibration.from_payload(payload)
 
 
 def test_vis_noise_calibration_sets_absolute_robust_rms_and_preserves_mean():
     rng = np.random.default_rng(41)
     residual = rng.normal(3.25, 27.0, size=(384, 384)).astype(np.float32)
     calibration = VISNoiseCalibration.build(
-        coloring_kernel=((1.0,),),
         residual_scale=9.5,
         source_release="Euclid-Q1-MER",
         estimator_version="test-v1",
@@ -114,7 +112,6 @@ def test_vis_noise_calibration_sets_absolute_robust_rms_and_preserves_mean():
 def test_vis_noise_calibration_draws_interpolated_field_scale():
     residual = np.random.default_rng(8).normal(size=(256, 256)).astype(np.float32)
     calibration = VISNoiseCalibration.build(
-        coloring_kernel=((1.0,),),
         residual_scale=10.0,
         field_scale_quantiles=(0.7, 0.85, 1.0, 1.25, 1.6),
         source_release="Euclid-Q1-MER",
@@ -139,29 +136,32 @@ def test_vis_noise_calibration_draws_interpolated_field_scale():
     )
 
 
-def test_vis_noise_calibration_uses_linear_convolution_without_wrap():
-    residual = np.zeros((31, 31), dtype=np.float32)
-    residual[0, 0] = 1.0
-    root_half = float(np.sqrt(0.5))
+def test_vis_noise_calibration_is_an_affine_scale_without_pixel_mixing():
+    residual = np.random.default_rng(91).normal(
+        2.5, 7.0, size=(31, 31),
+    ).astype(np.float32)
     calibration = VISNoiseCalibration.build(
-        coloring_kernel=(
-            (0.0, 0.0, 0.0),
-            (root_half, -root_half, 0.0),
-            (0.0, 0.0, 0.0),
-        ),
-        residual_scale=1.0,
+        residual_scale=11.0,
         source_release="Euclid-Q1-MER",
         estimator_version="test-v1",
     )
 
-    colored = calibration.apply(residual)
+    scaled = calibration.apply(residual)
+    input_centered = residual.astype(np.float64) - float(residual.mean())
+    output_centered = scaled.astype(np.float64) - float(scaled.mean())
+    expected_factor = calibration.residual_scale / (
+        1.4826 * float(np.median(np.abs(
+            input_centered - np.median(input_centered)
+        )))
+    )
 
-    # The edge impulse affects its local output. Circular convolution would
-    # also create a feature in the last column; linear padded convolution does
-    # not, so the last column remains equal to an interior blank column.
-    assert abs(float(colored[0, 0] - colored[0, 15])) > 1.0
-    np.testing.assert_array_equal(colored[:, -1], colored[:, 15])
-    assert float(colored.mean()) == pytest.approx(float(residual.mean()), abs=1e-7)
+    np.testing.assert_allclose(
+        output_centered,
+        expected_factor * input_centered,
+        rtol=2e-6,
+        atol=2e-6,
+    )
+    assert float(scaled.mean()) == pytest.approx(float(residual.mean()), abs=1e-6)
 
 
 def test_calibrated_archive_noise_changes_only_vis_stochastic_residual():
@@ -185,6 +185,43 @@ def test_calibrated_archive_noise_changes_only_vis_stochastic_residual():
     )
 
     np.testing.assert_array_equal(actual, expected.astype(np.float32))
+
+
+def test_calibrated_archive_noise_injects_artifacts_after_residual_scaling(
+    monkeypatch,
+):
+    signal = np.full((96, 96), 20.0, dtype=np.float32)
+    calibration = _calibration(residual_scale=12.0)
+    seen: dict[str, np.ndarray | float] = {}
+
+    def fake_inject(observed, band, rng, config, *, local_sigma_e):
+        del band, rng, config
+        seen["input"] = np.asarray(observed).copy()
+        seen["sigma"] = float(local_sigma_e)
+        return np.asarray(observed) + np.float32(7.0)
+
+    monkeypatch.setattr(noise_module, "inject_artifacts", fake_inject)
+    expected_rng = np.random.default_rng(44)
+    raw = apply_band_noise(
+        signal,
+        Config.BAND_VIS,
+        expected_rng,
+        add_artifacts=False,
+    )
+    residual = calibration.apply(raw - signal, rng=expected_rng)
+    expected_pre_artifact = signal + residual
+
+    actual = apply_archive_noise(
+        signal,
+        Config.BAND_VIS,
+        np.random.default_rng(44),
+        add_artifacts=True,
+        vis_noise_calibration=calibration,
+    )
+
+    np.testing.assert_array_equal(seen["input"], expected_pre_artifact)
+    np.testing.assert_array_equal(actual, expected_pre_artifact + 7.0)
+    assert float(seen["sigma"]) > 0.0
 
 
 def test_vis_calibration_that_owns_scale_bypasses_generic_noise_map():

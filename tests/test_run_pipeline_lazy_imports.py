@@ -6,6 +6,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+from euclid_polish.population.euclid_galaxy_prior import (
+    JOINT_EUCLID_GALAXY_VERSION,
+)
+
 
 def test_generation_only_startup_does_not_import_training_stack(tmp_path):
     """A generation submission must reach its stage without model imports.
@@ -69,7 +73,11 @@ def test_population_payload_files_are_resolved_before_generation(tmp_path):
     star_path = tmp_path / "stars.json"
     malformed_path = tmp_path / "malformed.json"
     list_path = tmp_path / "list.json"
-    galaxy_path.write_text('{"fingerprint":"galaxy","version":13}')
+    galaxy_path.write_text(
+        '{"fingerprint":"galaxy","version":'
+        f'{JOINT_EUCLID_GALAXY_VERSION}'
+        '}'
+    )
     star_path.write_text('{"fingerprint":"stars","version":6}')
     malformed_path.write_text('{"version":')
     list_path.write_text('[1,2,3]')

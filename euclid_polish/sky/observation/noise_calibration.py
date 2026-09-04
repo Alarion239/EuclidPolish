@@ -1,12 +1,13 @@
-"""Validated, immutable calibration for delivered-MER VIS noise.
+"""Validated, immutable amplitude calibration for delivered-MER VIS noise.
 
-The calibration colors only a stochastic detector-noise residual. Its kernel
-is normalized in L2, so coloring preserves the variance of unit white noise
-away from boundaries; ``residual_scale`` is the calibrated median absolute
-robust RMS in electrons per MER pixel, and ``field_scale_quantiles`` restores
-the measured field-to-field spread. Runtime loading is deliberately strict
-and fingerprinted so generated data cannot silently use a partial or edited
-calibration.
+The calibration rescales only a stochastic detector-noise residual.  It does
+not spatially filter that residual, so the native white-noise structure and
+the relative signal-dependent Poisson variance are retained.
+``residual_scale`` is the calibrated median absolute robust RMS in electrons
+per MER pixel, and ``field_scale_quantiles`` restores the measured
+field-to-field spread. Runtime loading is deliberately strict, versioned, and
+fingerprinted so generated data cannot silently use the retired correlated
+noise schema or a partially edited calibration.
 """
 
 from __future__ import annotations
@@ -19,31 +20,8 @@ from dataclasses import dataclass
 from typing import Any, ClassVar
 
 import numpy as np
-from scipy.signal import convolve2d
 
 _FINGERPRINT_RE = re.compile(r"[0-9a-f]{64}")
-
-
-def _validated_kernel(
-    value: Sequence[Sequence[float]],
-) -> tuple[tuple[float, ...], ...]:
-    try:
-        kernel = np.asarray(value, dtype=np.float64)
-    except (TypeError, ValueError) as exc:
-        raise ValueError("coloring_kernel must be a rectangular 2-D array") from exc
-    if kernel.ndim != 2 or 0 in kernel.shape:
-        raise ValueError("coloring_kernel must be a non-empty 2-D array")
-    if kernel.shape[0] % 2 == 0 or kernel.shape[1] % 2 == 0:
-        raise ValueError("coloring_kernel dimensions must both be odd")
-    if not np.all(np.isfinite(kernel)):
-        raise ValueError("coloring_kernel must contain only finite values")
-    norm = float(np.linalg.norm(kernel.ravel(), ord=2))
-    if not np.isclose(norm, 1.0, rtol=0.0, atol=1e-6):
-        raise ValueError(
-            "coloring_kernel must be L2-normalized; "
-            f"received norm {norm:.12g}"
-        )
-    return tuple(tuple(float(item) for item in row) for row in kernel)
 
 
 def _validated_field_scale_quantiles(
@@ -74,7 +52,7 @@ def _validated_field_scale_quantiles(
 
 def _canonical_payload(
     *,
-    coloring_kernel: tuple[tuple[float, ...], ...],
+    mode: str,
     residual_scale: float,
     field_scale_quantiles: tuple[float, float, float, float, float],
     owns_field_scale: bool,
@@ -84,7 +62,7 @@ def _canonical_payload(
     return {
         "kind": VISNoiseCalibration.KIND,
         "version": VISNoiseCalibration.VERSION,
-        "coloring_kernel": [list(row) for row in coloring_kernel],
+        "mode": mode,
         "residual_scale": residual_scale,
         "field_scale_quantiles": list(field_scale_quantiles),
         "owns_field_scale": owns_field_scale,
@@ -106,10 +84,11 @@ def _fingerprint(payload: Mapping[str, Any]) -> str:
 
 @dataclass(frozen=True)
 class VISNoiseCalibration:
-    """Runtime VIS residual-coloring model with a verified SHA-256 identity."""
+    """Runtime VIS amplitude model with a verified SHA-256 identity."""
 
     KIND: ClassVar[str] = "euclid_mer_vis_noise"
-    VERSION: ClassVar[int] = 1
+    VERSION: ClassVar[int] = 2
+    MODE: ClassVar[str] = "amplitude_only"
     FIELD_SCALE_PROBABILITIES: ClassVar[tuple[float, ...]] = (
         0.0,
         0.16,
@@ -118,7 +97,7 @@ class VISNoiseCalibration:
         1.0,
     )
 
-    coloring_kernel: tuple[tuple[float, ...], ...]
+    mode: str
     residual_scale: float
     field_scale_quantiles: tuple[float, float, float, float, float]
     owns_field_scale: bool
@@ -127,8 +106,10 @@ class VISNoiseCalibration:
     fingerprint: str
 
     def __post_init__(self) -> None:
-        kernel = _validated_kernel(self.coloring_kernel)
-        object.__setattr__(self, "coloring_kernel", kernel)
+        if self.mode != self.MODE:
+            raise ValueError(
+                f"VIS noise calibration mode must be {self.MODE!r}"
+            )
 
         if isinstance(self.residual_scale, bool):
             raise TypeError("residual_scale must be a finite positive number")
@@ -168,7 +149,6 @@ class VISNoiseCalibration:
     def build(
         cls,
         *,
-        coloring_kernel: Sequence[Sequence[float]],
         residual_scale: float,
         field_scale_quantiles: Sequence[float] = (1.0, 1.0, 1.0, 1.0, 1.0),
         owns_field_scale: bool = True,
@@ -176,7 +156,6 @@ class VISNoiseCalibration:
         estimator_version: str,
     ) -> VISNoiseCalibration:
         """Validate behavior fields and mint their canonical fingerprint."""
-        kernel = _validated_kernel(coloring_kernel)
         if isinstance(residual_scale, bool):
             raise TypeError("residual_scale must be a finite positive number")
         scale = float(residual_scale)
@@ -191,7 +170,7 @@ class VISNoiseCalibration:
             raise ValueError("estimator_version must be a non-empty string")
 
         payload = _canonical_payload(
-            coloring_kernel=kernel,
+            mode=cls.MODE,
             residual_scale=scale,
             field_scale_quantiles=quantiles,
             owns_field_scale=owns_field_scale,
@@ -199,7 +178,7 @@ class VISNoiseCalibration:
             estimator_version=estimator_version,
         )
         return cls(
-            coloring_kernel=kernel,
+            mode=cls.MODE,
             residual_scale=scale,
             field_scale_quantiles=quantiles,
             owns_field_scale=owns_field_scale,
@@ -210,13 +189,13 @@ class VISNoiseCalibration:
 
     @classmethod
     def from_payload(cls, payload: Mapping[str, Any]) -> VISNoiseCalibration:
-        """Load a strict version-1 payload and verify its fingerprint."""
+        """Load a strict amplitude-only payload and verify its fingerprint."""
         if not isinstance(payload, Mapping):
             raise TypeError("VIS noise calibration payload must be a mapping")
         expected_keys = {
             "kind",
             "version",
-            "coloring_kernel",
+            "mode",
             "residual_scale",
             "field_scale_quantiles",
             "owns_field_scale",
@@ -241,7 +220,7 @@ class VISNoiseCalibration:
                 f"VIS noise calibration version must be {cls.VERSION}"
             )
         return cls(
-            coloring_kernel=_validated_kernel(payload["coloring_kernel"]),
+            mode=payload["mode"],
             residual_scale=payload["residual_scale"],
             field_scale_quantiles=_validated_field_scale_quantiles(
                 payload["field_scale_quantiles"]
@@ -254,7 +233,7 @@ class VISNoiseCalibration:
 
     def _payload_without_fingerprint(self) -> dict[str, Any]:
         return _canonical_payload(
-            coloring_kernel=self.coloring_kernel,
+            mode=self.mode,
             residual_scale=self.residual_scale,
             field_scale_quantiles=self.field_scale_quantiles,
             owns_field_scale=self.owns_field_scale,
@@ -272,9 +251,9 @@ class VISNoiseCalibration:
         *,
         rng: np.random.Generator | None = None,
     ) -> np.ndarray:
-        """Color one residual with symmetric padding and no circular wrap.
+        """Set one residual's absolute RMS without changing its structure.
 
-        The input mean is restored after convolution and scaling.  This keeps
+        The input mean is restored after scaling.  This keeps
         any realized sky-subtraction offset while changing only its spatial
         fluctuations; callers add the result back to the untouched signal.
         ``residual_scale`` is the median absolute target robust RMS, not a
@@ -311,30 +290,18 @@ class VISNoiseCalibration:
         if input_scale <= np.finfo(np.float64).eps:
             input_scale = float(np.sqrt(np.mean(centered * centered)))
         if input_scale <= np.finfo(np.float64).eps:
-            # A constant residual has no stochastic structure to color. Keep
+            # A constant residual has no stochastic structure to scale. Keep
             # its realized offset rather than manufacturing a random field.
             return np.full(array.shape, input_mean, dtype=np.float32)
-        centered /= input_scale
-        kernel = np.asarray(self.coloring_kernel, dtype=np.float64)
-        pad_y = kernel.shape[0] // 2
-        pad_x = kernel.shape[1] // 2
-        if pad_y or pad_x:
-            padded = np.pad(
-                centered,
-                ((pad_y, pad_y), (pad_x, pad_x)),
-                mode="symmetric",
-            )
-            colored = convolve2d(padded, kernel, mode="valid")
-        else:
-            colored = centered * float(kernel[0, 0])
-
-        # Padding and finite image support can give the filtered realization a
-        # small DC offset.  Remove it explicitly before applying the calibrated
-        # RMS and restore the exact input residual mean.
-        colored -= float(np.mean(colored, dtype=np.float64))
-        colored *= self.residual_scale * field_scale
-        colored += input_mean
-        return colored.astype(np.float32)
+        scaled = centered / input_scale
+        # ``scaled`` is an affine transform of the original residual: no
+        # convolution, resampling, padding, or neighbouring-pixel mixing.
+        # Remove only floating-point DC drift before restoring the exact input
+        # mean, preserving a realized sky-subtraction offset.
+        scaled -= float(np.mean(scaled, dtype=np.float64))
+        scaled *= self.residual_scale * field_scale
+        scaled += input_mean
+        return scaled.astype(np.float32)
 
 
 __all__ = ["VISNoiseCalibration"]

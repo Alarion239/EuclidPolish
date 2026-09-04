@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,7 +15,9 @@ from euclid_polish.population.euclid_galaxy_prior import (
     JOINT_EUCLID_GALAXY_KIND,
     JOINT_EUCLID_GALAXY_VERSION,
     RADIUS_MODEL_VERSION,
+    REDSHIFT_MODEL_VERSION,
     ConditionalRadiusLaw,
+    ConditionalRedshiftDistribution,
     fit_linear_conditional_radius_law_from_binned_counts,
     joint_density_grid,
 )
@@ -87,6 +90,33 @@ def current_magnitude_law() -> ContinuousBrightBridgeFaintCappedMagnitudeLaw:
     )
 
 
+def current_redshift_distribution() -> ConditionalRedshiftDistribution:
+    return ConditionalRedshiftDistribution(
+        version=REDSHIFT_MODEL_VERSION,
+        magnitude_edges=(14.0, 18.6, 20.5, 24.4, 24.5, 29.0),
+        redshift_edges=(0.1, 0.5, 0.9),
+        probability=(
+            (0.25, 0.75), (0.25, 0.75), (0.0, 1.0),
+            (0.0, 1.0), (0.0, 1.0),
+        ),
+        source_magnitude_bin=(-1, -1, 2, 3, 3),
+        selected_rows_by_magnitude=(0, 10, 100, 20, 0),
+        weighted_rows_by_magnitude=(0.0, 8.0, 80.0, 16.0, 0.0),
+        selection="fixture full PHZ PDFs conditional on VIS 2FWHM",
+        out_of_support_policy=(
+            "pooled_bright_terminal_and_trusted_terminal_faint_bin"
+        ),
+        bright_terminal_probability=(0.25, 0.75),
+        trusted_bright_magnitude=20.5,
+        bright_terminal_pool_magnitude_interval=(18.6, 20.5),
+        bright_tail_policy="fixture bright terminal pool",
+        trusted_faint_magnitude=24.5,
+        faint_terminal_pool_magnitude_interval=(24.4, 24.5),
+        faint_tail_policy="fixture native faint terminal bin",
+        calibration_fingerprint="c" * 64,
+    )
+
+
 def active_payload() -> dict:
     fitted_mag = magnitude_law()
     mag = current_magnitude_law()
@@ -109,6 +139,7 @@ def active_payload() -> dict:
             "selection": "fixture MER photometric FWHM",
             "out_of_support_policy": "nearest_observed_magnitude_bin",
         },
+        "redshift_distribution": current_redshift_distribution().to_payload(),
         "magnitude_plot": {
             "law": {"x": [14.0, 29.0], "density": [0.1, 100.0]},
             "generation_law": {
@@ -130,6 +161,10 @@ def active_payload() -> dict:
             "conditional_aperture_fwhm": {
                 "magnitude": [14.0, 29.0],
                 "model_mean_arcsec": [1.25, 1.25],
+            },
+            "conditional_redshift": {
+                "magnitude": [14.0, 29.0],
+                "model_median": [0.7, 0.7],
             },
         },
         "generation": {
@@ -228,15 +263,21 @@ def test_prior_draws_radius_first_then_brightness_conditioned_on_radius():
     prior = JointGalaxyPopulationPrior(active_payload())
     rng = np.random.default_rng(14)
     geometry = prior.sample_geometry(rng)
-    magnitude, flux = prior.sample_brightness(
-        rng, radius_arcsec=geometry.re_arcsec,
+    draw = prior.complete_draw(
+        geometry,
+        rng,
+        redshift_rng=np.random.default_rng(91),
     )
-    aperture_fwhm = prior.sample_aperture_fwhm(rng, magnitude=magnitude)
+    aperture_fwhm = prior.sample_aperture_fwhm(
+        rng, magnitude=draw.target_vis_mag,
+    )
 
-    assert np.isnan(geometry.target_vis_mag)
     assert 0.03 <= geometry.re_arcsec < 10.0
-    assert 14.0 <= magnitude < prior.magnitude_law.mag_faint
-    assert flux > 0.0
+    assert 14.0 <= draw.target_vis_mag < prior.magnitude_law.mag_faint
+    assert draw.target_vis_flux_e > 0.0
+    assert 0.5 <= draw.z < 0.9
+    assert draw.re_arcsec == geometry.re_arcsec
+    assert draw.physical_model_fingerprint == "c" * 64
     assert 1.0 <= aperture_fwhm < 1.5
     assert prior.morphology_mode == "balanced_random_tng_atlas"
     assert isinstance(
@@ -246,6 +287,31 @@ def test_prior_draws_radius_first_then_brightness_conditioned_on_radius():
     assert prior.radius_law.version == RADIUS_MODEL_VERSION
     assert prior.surface_density_arcmin2 == pytest.approx(
         current_magnitude_law().integrated_density()
+    )
+
+
+def test_redshift_draw_does_not_advance_brightness_rng():
+    prior = JointGalaxyPopulationPrior(active_payload())
+    actual_rng = np.random.default_rng(2026)
+    expected_rng = np.random.default_rng(2026)
+    actual_geometry = prior.sample_geometry(actual_rng)
+    expected_geometry = prior.sample_geometry(expected_rng)
+
+    draw = prior.complete_draw(
+        actual_geometry,
+        actual_rng,
+        redshift_rng=np.random.default_rng(404),
+    )
+    expected_magnitude, expected_flux = prior.sample_brightness(
+        expected_rng, radius_arcsec=expected_geometry.re_arcsec,
+    )
+
+    assert draw.target_vis_mag == expected_magnitude
+    assert draw.target_vis_flux_e == expected_flux
+    assert prior.sample_aperture_fwhm(
+        actual_rng, magnitude=draw.target_vis_mag,
+    ) == prior.sample_aperture_fwhm(
+        expected_rng, magnitude=expected_magnitude,
     )
 
 
@@ -294,7 +360,7 @@ def test_simulator_accepts_density_equal_to_activated_magnitude_law(
     )
 
 
-def test_staged_generator_selects_and_renders_donor_before_brightness():
+def test_staged_generator_keeps_geometry_and_brightness_on_original_rng_order():
     prior = JointGalaxyPopulationPrior(active_payload())
     events = []
     original_brightness = prior.sample_brightness
@@ -304,6 +370,13 @@ def test_staged_generator_selects_and_renders_donor_before_brightness():
         return original_brightness(rng, radius_arcsec=radius_arcsec)
 
     prior.sample_brightness = sample_brightness
+    original_redshift = prior.sample_redshift
+
+    def sample_redshift(rng, *, magnitude):
+        events.append("redshift")
+        return original_redshift(rng, magnitude=magnitude)
+
+    prior.sample_redshift = sample_redshift
     simulator = object.__new__(SkySimulator)
     simulator.population_prior = prior
     simulator.config = SimpleNamespace(pixel_scale=0.05)
@@ -325,8 +398,11 @@ def test_staged_generator_selects_and_renders_donor_before_brightness():
             return object()
 
         def render_observed_radius_at_redshift(self, *_args, **_kwargs):
-            events.append("render")
-            return object()
+            raise AssertionError("staged fields must not re-render geometry")
+
+        def apply_redshift_photometry(self, rendered, *_args, **_kwargs):
+            events.append("redshift render")
+            return rendered
 
     class StopAfterBrightness(Exception):
         pass
@@ -344,9 +420,12 @@ def test_staged_generator_selects_and_renders_donor_before_brightness():
         simulator._add_tng_galaxy(
             np.zeros((8, 8, 4), dtype=np.float32),
             np.random.default_rng(19),
+            redshift_rng=np.random.default_rng(23),
         )
 
-    assert events == ["donor", "render", "brightness", "psf"]
+    assert events == [
+        "donor", "render", "brightness", "redshift", "redshift render", "psf",
+    ]
 
 
 def test_old_cosmos_joint_artifacts_fail_closed():
@@ -405,10 +484,15 @@ def test_euclid_candidate_activates_atomically(tmp_path, monkeypatch):
     }]
 
 
-def test_candidate_fit_uses_only_aggregate_euclid_brightness_and_sersic_radius(
+def test_candidate_fit_adds_phz_redshift_without_changing_vis_radius_model(
     tmp_path, monkeypatch,
 ):
     monkeypatch.setattr(Config, "DATA_DIR", str(tmp_path))
+    from euclid_polish.web.helpers.population_comparison import (
+        euclid_catalog_meta_path,
+        euclid_catalog_path,
+        euclid_phz_pdf_path,
+    )
     from euclid_polish.web.helpers.q1_galaxy_counts import (
         q1_galaxy_counts_path,
         q1_galaxy_fit_path,
@@ -423,6 +507,54 @@ def test_candidate_fit_uses_only_aggregate_euclid_brightness_and_sersic_radius(
     ):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("{}")
+    redshift_rows = [
+        ("outside-bright-support", 18.05, 0.9),
+        ("bright-pool-low", 18.65, 0.85),
+        ("bright-pool-middle", 19.55, 0.83),
+        ("bright-pool-high", 20.45, 0.82),
+        ("middle", 22.05, 0.8),
+        ("terminal-low", 24.05, 0.7),
+        ("terminal-high", 24.45, 0.6),
+    ]
+    catalog_path = euclid_catalog_path()
+    catalog_path.parent.mkdir(parents=True, exist_ok=True)
+    catalog_path.write_text(
+        "object_id,flux_vis_2fwhm_aper_uJy,phz_gal_prob,vis_det,"
+        "det_quality_flag,spurious_prob,point_like_prob\n"
+        + "".join(
+            f"{object_id},{10 ** ((Config.AB_ZP_UJY - magnitude) / 2.5)},"
+            f"{galaxy_probability},1,0,0.01,0.01\n"
+            for object_id, magnitude, galaxy_probability in redshift_rows
+        )
+    )
+    pdf_path = euclid_phz_pdf_path()
+    with pdf_path.open("wb") as handle:
+        np.savez_compressed(
+            handle,
+            object_id=np.asarray([row[0] for row in redshift_rows]),
+            probability=np.asarray([
+                [1.0, 0.0, 0.0],
+                [0.8, 0.2, 0.0],
+                [0.7, 0.3, 0.0],
+                [0.6, 0.4, 0.0],
+                [0.2, 0.7, 0.1],
+                [0.0, 0.6, 0.4],
+                [0.0, 0.2, 0.8],
+            ], dtype=np.float32),
+            z_edges=np.asarray([0.05, 0.5, 1.0, 2.0]),
+        )
+    euclid_catalog_meta_path().write_text(json.dumps({
+        "catalog_version": 7,
+        "rows": len(redshift_rows),
+        "area_arcmin2": 10.0,
+        "cones": [{"ra": 1.0, "dec": 2.0}],
+        "phz_pdf_sha256": hashlib.sha256(pdf_path.read_bytes()).hexdigest(),
+        "phz_quality": {
+            "all_retained_pdfs_normalized": True,
+            "classification_gate": True,
+            "redshift_pdf_gate": True,
+        },
+    }))
     magnitude_edges = np.linspace(14.0, 28.0, 141)
     magnitude = 0.5 * (magnitude_edges[:-1] + magnitude_edges[1:])
     radius_edges = np.geomspace(0.03, 10.0, 31)
@@ -555,8 +687,54 @@ def test_candidate_fit_uses_only_aggregate_euclid_brightness_and_sersic_radius(
 
     assert payload["version"] == JOINT_EUCLID_GALAXY_VERSION
     assert payload["provenance"]["cosmos_used"] is False
-    assert payload["provenance"]["random_cones_used"] is False
-    assert payload["provenance"]["object_catalog_used"] is False
+    assert payload["provenance"]["random_cones_used"] is True
+    assert payload["provenance"]["object_catalog_used"] is True
+    assert payload["redshift_distribution"]["version"] == (
+        REDSHIFT_MODEL_VERSION
+    )
+    assert payload["generation"]["redshift_trusted_faint_magnitude"] == 24.5
+    assert payload["generation"]["redshift_trusted_bright_magnitude"] == 20.5
+    assert payload["generation"][
+        "redshift_bright_terminal_pool_magnitude_interval"
+    ] == [18.6, 20.5]
+    assert payload["generation"][
+        "redshift_faint_terminal_pool_magnitude_interval"
+    ] == [24.4, 24.5]
+    assert payload["plots"]["conditional_redshift"]["model_median"]
+    redshift = ConditionalRedshiftDistribution.from_payload(
+        payload["redshift_distribution"]
+    )
+    redshift_edges = np.asarray(redshift.magnitude_edges)
+    terminal_bin = int(np.searchsorted(redshift_edges, 24.5) - 1)
+    faint_bins = np.flatnonzero(redshift_edges[:-1] >= 24.5)
+    assert np.asarray(redshift.source_magnitude_bin)[faint_bins].tolist() == (
+        [terminal_bin] * len(faint_bins)
+    )
+    bright_bins = np.flatnonzero(redshift_edges[1:] <= 20.5)
+    assert np.asarray(redshift.source_magnitude_bin)[bright_bins].tolist() == (
+        [-1] * len(bright_bins)
+    )
+    assert np.allclose(
+        np.asarray(redshift.probability)[bright_bins],
+        np.asarray(redshift.bright_terminal_probability)[None, :],
+    )
+    direct_faint_bin = int(np.searchsorted(redshift_edges, 24.05) - 1)
+    assert redshift.probability[direct_faint_bin] != pytest.approx(
+        redshift.probability[terminal_bin]
+    )
+    assert redshift.selected_rows_by_magnitude[terminal_bin] == 1
+    assert sum(redshift.selected_rows_by_magnitude) == len(redshift_rows)
+    assert sum(redshift.weighted_rows_by_magnitude) == pytest.approx(
+        sum(row[2] for row in redshift_rows), abs=1e-10,
+    )
+    assert payload["provenance"]["redshift_selected_rows"] == len(
+        redshift_rows
+    )
+    assert payload["provenance"]["redshift_binned_selected_rows"] == len(
+        redshift_rows
+    )
+    assert payload["provenance"]["redshift_bright_terminal_pool_rows"] == 3
+    assert payload["provenance"]["redshift_terminal_pool_rows"] == 1
     assert payload["radius_law"]["slope_log10_arcsec_per_mag"] == pytest.approx(
         -0.06, abs=0.01,
     )
@@ -622,4 +800,4 @@ def test_candidate_fit_uses_only_aggregate_euclid_brightness_and_sersic_radius(
         [TEST_DENSITY_CAP_ARCMIN2_MAG] * 20
     )
     assert "model" not in payload
-    assert "redshift" not in json.dumps(payload).lower()
+    assert "redshift_distribution" in payload
