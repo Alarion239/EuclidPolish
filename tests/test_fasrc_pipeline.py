@@ -1229,6 +1229,7 @@ class TestSbatchRendering:
         assert command[command.index("--vis-pixels") + 1] == "256"
         assert command[command.index("--workers") + 1] == "1"
         assert command[command.index("--source-release") + 1] == "Q1_R1"
+        assert "--force-redownload" not in command
 
         explicit = step.build_command({
             "source_sampling_manifest": "/data/source.json",
@@ -1236,6 +1237,9 @@ class TestSbatchRendering:
         })
         assert "/data/source.json" in explicit
         assert "/data/archive_fields" in explicit
+
+        forced = step.build_command({"force_redownload": "1"})
+        assert forced.count("--force-redownload") == 1
 
     def test_euclid_roundtrip_tfrecords_step_args(self, cfg):
         step = REGISTRY.get("euclid_roundtrip_tfrecords")
@@ -1406,6 +1410,42 @@ class TestFixedCpusEnforcement:
         assert writes, "no sbatch write captured containing --workers"
         # 8 appears as the worker count somewhere in the rendered body.
         assert any("8" in c for c in writes)
+
+    def test_archive_redownload_requires_its_stronger_confirmation(
+        self, monkeypatch,
+    ):
+        from euclid_polish.web.app import create_app
+
+        stub = self._stub_ssh(monkeypatch)
+        client = create_app().test_client()
+        form = {
+            "confirm": "yes",
+            "force_redownload": "1",
+            "n_cpus": "1",
+            "n_gpus": "0",
+            "memory": "8G",
+            "time_limit": "4:00:00",
+            "partition": "shared",
+        }
+
+        rejected = client.post(
+            "/api/fasrc/hst/archive_field_sample/submit", data=form,
+        )
+
+        assert rejected.status_code == 400
+        assert "separate confirmation" in rejected.get_json()["error"]
+        assert stub.calls == []
+
+        accepted = client.post(
+            "/api/fasrc/hst/archive_field_sample/submit",
+            data={**form, "confirm_force_redownload": "yes"},
+        )
+        payload = accepted.get_json()
+        assert accepted.status_code == 200
+        assert payload["ok"] is True
+        assert payload["params"]["force_redownload"] == "1"
+        assert "confirm_force_redownload" not in payload["params"]
+        assert any("--force-redownload" in command for command in stub.calls)
 
     def test_partition_forced_to_step_default(self, monkeypatch,
                                               experimental_lanes_on):

@@ -78,3 +78,16 @@ test("Synthetic–Real uses only the multipoint collection and keeps legacy infe
   assert.match(inference, /collection="real-field"/);
   assert.match(inference, /Ad-hoc single-pointing workspace/);
 });
+
+test("archive submission separates cache-preserving resume from confirmed redownload", () => {
+  const fasrc = readFileSync(
+    new URL("../src/fasrc.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(fasrc, /step\.step_id === "archive_field_sample"/);
+  assert.match(fasrc, /Generate \/ resume/);
+  assert.match(fasrc, /Re-download all 220 fields/);
+  assert.match(fasrc, /bypasses reusable remote bundles/);
+  assert.match(fasrc, /force_redownload: forceRedownload \? "1" : "0"/);
+  assert.match(fasrc, /confirm_force_redownload: "yes"/);
+});

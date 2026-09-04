@@ -723,6 +723,10 @@ class ArchiveFieldSampleStep(FASRCPipelineStep):
             "1", "true", "yes", "on",
         ):
             cmd.append("--regenerate-catalog")
+        if str(params.get("force_redownload", "")).strip().lower() in (
+            "1", "true", "yes", "on",
+        ):
+            cmd.append("--force-redownload")
         return cmd
 
 

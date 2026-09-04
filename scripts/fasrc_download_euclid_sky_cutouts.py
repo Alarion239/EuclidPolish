@@ -1937,6 +1937,64 @@ def _archive_manifest_summary(manifest: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+_ARCHIVE_FIELD_REDOWNLOAD_MARKER = "redownload_required"
+
+
+def _reset_archive_sample_for_redownload(sample: dict[str, Any]) -> None:
+    """Mark one bundle for replacement without deleting its last good file.
+
+    The marker is persisted before any network work starts.  A later ordinary
+    resume therefore keeps downloading this sample instead of mistaking the
+    still-present, pre-refresh bundle for completed work.  The old FITS file
+    remains readable until :func:`_write_archive_field_bundle` atomically
+    replaces it.
+    """
+    sample["status"] = "planned"
+    sample["error"] = None
+    sample["output_path"] = None
+    sample["bands"] = {}
+    sample.pop("bundle_sha256", None)
+    sample[_ARCHIVE_FIELD_REDOWNLOAD_MARKER] = True
+
+
+def _prepare_archive_samples_for_download(
+    samples: list[dict[str, Any]],
+    *,
+    output_dir: str,
+    plan_fingerprint: str,
+    force_redownload: bool,
+) -> None:
+    """Validate reusable bundles or persist a resumable forced refresh."""
+    if force_redownload:
+        for sample in samples:
+            _reset_archive_sample_for_redownload(sample)
+
+    complete_statuses = {"written", "cached", "complete", "completed"}
+    for sample in samples:
+        sample["plan_fingerprint"] = plan_fingerprint
+        # A forced refresh is resumable.  Until a replacement is fully written
+        # and validated, do not accept the previous generation that remains at
+        # the stable target path.
+        if sample.get(_ARCHIVE_FIELD_REDOWNLOAD_MARKER) is True:
+            _reset_archive_sample_for_redownload(sample)
+            continue
+        target = archive_field_bundle_path(output_dir, int(sample["sample_id"]))
+        try:
+            metadata = _validate_archive_field_bundle(target, sample)
+            recorded_sha = str(sample.get("bundle_sha256") or "")
+            if recorded_sha and recorded_sha != metadata["bundle_sha256"]:
+                raise ValueError("bundle SHA256 disagrees with manifest")
+            sample.update(metadata)
+            sample["status"] = "cached"
+            sample["error"] = None
+            sample["output_path"] = os.path.abspath(target)
+        except (KeyError, TypeError, ValueError):
+            if str(sample.get("status") or "").lower() in complete_statuses:
+                sample["error"] = "cached output missing, corrupt, or stale"
+            sample["status"] = "planned"
+            sample.pop("bundle_sha256", None)
+
+
 def _run_archive_fields(args: argparse.Namespace, reporter: Reporter) -> int:
     """Build compact 44-by-5 fields using only three new downloads per parent."""
     source_path = str(
@@ -1984,28 +2042,16 @@ def _run_archive_fields(args: argparse.Namespace, reporter: Reporter) -> int:
         print(f"output manifest = {manifest_path}")
         return 0
 
-    complete_statuses = {"written", "cached", "complete", "completed"}
     source_by_id = {
         int(sample["sample_id"]): sample for sample in source["samples"]
     }
     samples = list(manifest["samples"])
-    for sample in samples:
-        sample["plan_fingerprint"] = expected_plan_fingerprint
-        target = archive_field_bundle_path(output_dir, int(sample["sample_id"]))
-        try:
-            metadata = _validate_archive_field_bundle(target, sample)
-            recorded_sha = str(sample.get("bundle_sha256") or "")
-            if recorded_sha and recorded_sha != metadata["bundle_sha256"]:
-                raise ValueError("bundle SHA256 disagrees with manifest")
-            sample.update(metadata)
-            sample["status"] = "cached"
-            sample["error"] = None
-            sample["output_path"] = os.path.abspath(target)
-        except (KeyError, TypeError, ValueError):
-            if str(sample.get("status") or "").lower() in complete_statuses:
-                sample["error"] = "cached output missing, corrupt, or stale"
-            sample["status"] = "planned"
-            sample.pop("bundle_sha256", None)
+    _prepare_archive_samples_for_download(
+        samples,
+        output_dir=output_dir,
+        plan_fingerprint=expected_plan_fingerprint,
+        force_redownload=bool(getattr(args, "force_redownload", False)),
+    )
     manifest["collection_fingerprint"] = compute_collection_fingerprint(manifest)
     _atomic_write_json(manifest_path, manifest)
 
@@ -2074,6 +2120,7 @@ def _run_archive_fields(args: argparse.Namespace, reporter: Reporter) -> int:
                 sample["status"] = "written"
                 sample["error"] = None
                 sample["output_path"] = os.path.abspath(target)
+                sample.pop(_ARCHIVE_FIELD_REDOWNLOAD_MARKER, None)
                 done += 1
                 reporter.set_step(
                     done, len(samples), f"archive field {int(sample['sample_id']):04d}",
@@ -2157,6 +2204,16 @@ def parse_args() -> argparse.Namespace:
                    help="RNG seed for position generation. Only "
                         "matters on the first run (or with "
                         "--regenerate-catalog).")
+    p.add_argument(
+        "--force-redownload",
+        action="store_true",
+        help=(
+            "Archive-fields mode only: ignore reusable four-band bundles, "
+            "download every NISP parent again, and atomically replace all "
+            "220 matched bundles. The forced refresh remains resumable if "
+            "the job is interrupted."
+        ),
+    )
     p.add_argument(
         "--star-support-csv",
         default=os.path.join(Config.DEFAULT_OUTPUT_DIR, Config.CATALOG_FILE),
@@ -2481,6 +2538,8 @@ def _run_star_support_sampling(
 
 def main() -> int:
     args = parse_args()
+    if args.force_redownload and args.sampling_mode != "archive-fields":
+        raise ValueError("--force-redownload requires --sampling-mode archive-fields")
     args.workers = _worker_count(args.sampling_mode, args.workers)
     args.source_release = str(args.source_release).strip()
     if not args.source_release:

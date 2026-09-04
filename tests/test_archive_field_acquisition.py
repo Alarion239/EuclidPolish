@@ -125,6 +125,68 @@ def test_plan_is_44_by_5_deterministic_and_does_not_change_source(tmp_path):
     assert loaded["collection_fingerprint"] == first["collection_fingerprint"]
 
 
+def test_forced_redownload_is_persisted_and_ordinary_resume_does_not_reuse(
+    tmp_path, monkeypatch,
+):
+    source = _source_manifest()
+    source_sha = __import__("hashlib").sha256(
+        json.dumps(source, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    manifest = sampling._new_archive_fields_manifest(source, source_sha)
+    sample = manifest["samples"][0]
+    sample.update({
+        "status": "cached",
+        "output_path": str(tmp_path / "cutouts" / "field_0000.fits"),
+        "bundle_sha256": "a" * 64,
+        "bands": {"old": True},
+    })
+    validations = []
+
+    def validate(target, candidate):
+        validations.append((target, candidate["sample_id"]))
+        return {"bundle_sha256": "b" * 64, "bands": {"new": True}}
+
+    monkeypatch.setattr(sampling, "_validate_archive_field_bundle", validate)
+
+    sampling._prepare_archive_samples_for_download(
+        [sample],
+        output_dir=str(tmp_path),
+        plan_fingerprint=manifest["plan_fingerprint"],
+        force_redownload=True,
+    )
+    assert validations == []
+    assert sample["status"] == "planned"
+    assert sample["redownload_required"] is True
+    assert "bundle_sha256" not in sample
+    assert sample["bands"] == {}
+
+    # This is the next invocation after an interrupted force run.  The normal
+    # resume path must honor the persisted marker and not reclaim the old file.
+    sampling._prepare_archive_samples_for_download(
+        [sample],
+        output_dir=str(tmp_path),
+        plan_fingerprint=manifest["plan_fingerprint"],
+        force_redownload=False,
+    )
+    assert validations == []
+    assert sample["status"] == "planned"
+    assert sample["redownload_required"] is True
+
+    # Successful atomic replacement clears the marker in the acquisition
+    # loop; future ordinary runs can then validate and reuse that new bundle.
+    sample.pop("redownload_required")
+    sampling._prepare_archive_samples_for_download(
+        [sample],
+        output_dir=str(tmp_path),
+        plan_fingerprint=manifest["plan_fingerprint"],
+        force_redownload=False,
+    )
+    assert len(validations) == 1
+    assert sample["status"] == "cached"
+    assert sample["bundle_sha256"] == "b" * 64
+    assert sample["bands"] == {"new": True}
+
+
 def test_crop_requires_exact_common_pixel_grid():
     raw = _raw_bands()
     centre = WCS(raw["VIS"][1]).celestial.pixel_to_world(300.0, 300.0)

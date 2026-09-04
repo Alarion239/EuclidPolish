@@ -674,6 +674,7 @@ export function StepCard(
   const lockedGpus = step.fixed_gpus != null;
   const hasWorkerControl = step.step_id === "download_euclid_cutouts";
   const hasVisNoisePlanControl = step.step_id === "vis_noise_sample";
+  const hasArchiveRedownload = step.step_id === "archive_field_sample";
   const perModel = step.step_id === "ensemble_train" ? " / model" : "";
   const [partition, setPartition] = useState(d.partition);
   const [nCpus, setNCpus] = useState(String(step.fixed_cpus ?? d.n_cpus));
@@ -683,12 +684,19 @@ export function StepCard(
   const [workers, setWorkers] = useState("8");
   const [regeneratePlan, setRegeneratePlan] = useState(false);
   const [jobid, setJobid] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [submissionAction, setSubmissionAction] = useState<"resume" | "redownload" | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const busy = submissionAction != null;
 
-  async function submit() {
-    if (!window.confirm(`Submit “${step.label}” to SLURM?`)) return;
-    setBusy(true); setError(null);
+  async function submit(action: "resume" | "redownload" = "resume") {
+    const forceRedownload = hasArchiveRedownload && action === "redownload";
+    const prompt = forceRedownload
+      ? "Re-download all 220 multipoint archive fields? This bypasses reusable remote bundles, downloads every NISP parent again, and atomically replaces each matched bundle. The fixed 44-point sky plan is preserved."
+      : hasArchiveRedownload
+        ? `Generate or resume “${step.label}”? Existing valid remote bundles will be reused.`
+        : `Submit “${step.label}” to SLURM?`;
+    if (!window.confirm(prompt)) return;
+    setSubmissionAction(action); setError(null);
     try {
       const res = await postForm<{ ok?: boolean; jobid?: string; slurm_id?: string; error?: string }>(
         `/api/fasrc/hst/${step.step_id}/submit`,
@@ -698,13 +706,19 @@ export function StepCard(
           ...(hasWorkerControl ? { workers } : {}),
           ...(hasVisNoisePlanControl && regeneratePlan
             ? { regenerate_catalog: "1" } : {}),
+          ...(hasArchiveRedownload
+            ? {
+              force_redownload: forceRedownload ? "1" : "0",
+              ...(forceRedownload ? { confirm_force_redownload: "yes" } : {}),
+            }
+            : {}),
         },
       );
       if (res.error) setError(res.error);
       else setJobid(res.jobid ?? res.slurm_id ?? null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
-    } finally { setBusy(false); }
+    } finally { setSubmissionAction(null); }
   }
 
   const content = (
@@ -746,13 +760,24 @@ export function StepCard(
           <Field label={`time limit${perModel}`}><Input value={timeLimit} onChange={setTimeLimit} /></Field>
         </div>
         <div className="row" style={{ marginTop: "var(--s3)" }}>
-          <Button variant="primary" onClick={submit}
+          <Button variant="primary" onClick={() => submit("resume")}
             disabled={busy || !sshConnected || submitDisabled}>
-            {busy ? "submitting…" : "Submit to SLURM"}
+            {submissionAction === "resume" ? "submitting…"
+              : hasArchiveRedownload ? "Generate / resume" : "Submit to SLURM"}
           </Button>
+          {hasArchiveRedownload && (
+            <Button variant="ghost" onClick={() => submit("redownload")}
+              disabled={busy || !sshConnected || submitDisabled}
+              title="Keep the fixed sky plan, but re-download every NISP parent and replace all 220 bundles">
+              {submissionAction === "redownload" ? "submitting re-download…"
+                : "Re-download all 220 fields"}
+            </Button>
+          )}
           {!sshConnected && <span className="ui-field__hint">connect to FASRC first</span>}
           {sshConnected && submitDisabled && submitDisabledHint &&
             <span className="ui-field__hint">{submitDisabledHint}</span>}
+          {hasArchiveRedownload && sshConnected && !submitDisabled && !busy &&
+            <span className="ui-field__hint">Generate / resume keeps every valid cached bundle.</span>}
         </div>
         {error && <div className="job-panel job-panel--err"><pre>{error}</pre></div>}
         {jobid && <SlurmMonitor jobid={jobid} />}

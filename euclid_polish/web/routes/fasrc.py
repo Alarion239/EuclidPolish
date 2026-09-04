@@ -733,6 +733,26 @@ def register(app):
         if confirm_err is not None:
             return confirm_err
 
+        force_redownload = str(form.get("force_redownload", "")).strip().lower() in (
+            "1", "true", "yes", "on",
+        )
+        if (
+            step_id == "archive_field_sample"
+            and force_redownload
+            and str(form.get("confirm_force_redownload", "")).strip().lower()
+            not in ("1", "true", "yes")
+        ):
+            return jsonify({
+                "ok": False,
+                "error": (
+                    "forcing a multipoint archive re-download requires its "
+                    "separate confirmation dialog"
+                ),
+            }), 400
+        # This token proves the stronger prompt was shown; it is not a science
+        # parameter and should not become part of job identity/history.
+        form.pop("confirm_force_redownload", None)
+
         # The partition is determined by the job type (gpu for training,
         # shared for everything else) — it is not a form question. Force
         # the step's partition regardless of what the form sent, BEFORE
