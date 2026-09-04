@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -165,6 +166,69 @@ def test_star_support_default_has_dedicated_non_roundtrip_root(monkeypatch, tmp_
     assert sampling.default_vis_noise_output_dir() == str(
         tmp_path / "euclid_sky" / "vis_noise_samples"
     )
+
+
+def test_worker_default_is_serial_only_for_vis_noise_sampling():
+    assert sampling._worker_count("star-support", None) == 1
+    assert sampling._worker_count("single-disk", None) == 8
+    assert sampling._worker_count("star-support", 3) == 3
+
+
+def test_vis_noise_shape_allows_one_percent_oversize_not_missing_sky():
+    assert sampling._vis_noise_shape_matches((2580, 2584), 2560)
+    assert not sampling._vis_noise_shape_matches((2580, 2587), 2560)
+    assert sampling._vis_noise_shape_matches((2550, 2560), 2560)
+    assert not sampling._vis_noise_shape_matches((2549, 2560), 2560)
+
+
+def test_planned_vis_download_retries_and_removes_partial_files(
+    tmp_path, monkeypatch,
+):
+    attempts = []
+    sleeps = []
+
+    def fake_download(
+        _ra, _dec, _config, _radius, output_file, _parent,
+    ):
+        attempts.append(Path(output_file).read_bytes() if Path(output_file).exists() else None)
+        Path(output_file).write_bytes(b"partial")
+        if len(attempts) < 3:
+            return False
+        fits.PrimaryHDU(np.ones((8, 8), dtype=np.float32)).writeto(
+            output_file, overwrite=True,
+        )
+        return True
+
+    monkeypatch.setattr(sampling, "download_one_cutout", fake_download)
+    monkeypatch.setattr(sampling.time, "sleep", sleeps.append)
+    parent = {
+        "parent_id": "parent-1",
+        "release_name": "Q1_R1",
+        "product_type": "DpdMerBksMosaic",
+        "mosaic_product_oid": "oid-1",
+        "tile_index": "1007",
+        "file_path": "/archive/q1/oid-1.fits",
+    }
+    result = sampling._fetch_planned_vis_bundle(
+        {
+            "sample_id": 0,
+            "parent_id": "parent-1",
+            "parent": parent,
+            "ra": 10.0,
+            "dec": 20.0,
+        },
+        vis_pixels=8,
+        arcsec_side=0.8,
+        output_dir=str(tmp_path),
+        source_release="Q1_R1",
+    )
+
+    assert result["status"] == "written"
+    assert result["actual_shape"] == [8, 8]
+    assert attempts == [None, None, None]
+    assert sleeps == list(sampling.VIS_NOISE_DOWNLOAD_RETRY_DELAYS_SECONDS)
+    with fits.open(sampling.bundle_path_for_id(str(tmp_path), 0)) as hdul:
+        assert hdul["VIS"].shape == (8, 8)
 
 
 def test_plan_fingerprint_freezes_stars_and_every_selection_input(tmp_path):

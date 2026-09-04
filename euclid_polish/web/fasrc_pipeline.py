@@ -648,7 +648,7 @@ class VISNoiseSampleStep(FASRCPipelineStep):
             label="Sample real VIS noise fields (star-footprint k-means)",
             job_name="vis-noise-samples",
             defaults=StepResources(
-                partition="shared", n_cpus=8, n_gpus=0,
+                partition="shared", n_cpus=1, n_gpus=0,
                 memory="16G", time_limit="4:00:00",
             ),
             needs_gpu=False,
@@ -664,7 +664,7 @@ class VISNoiseSampleStep(FASRCPipelineStep):
             )),
             "--vis-pixels", str(int(params.get("vis_pixels", 2560) or 2560)),
             "--workers", str(max(1, int(
-                params.get("workers", params.get("n_cpus", 8)) or 8
+                params.get("workers", 1) or 1
             ))),
             "--seed", str(int(params.get("seed", 42) or 42)),
             "--source-release", str(

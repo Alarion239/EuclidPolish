@@ -1191,6 +1191,7 @@ class TestSbatchRendering:
 
     def test_vis_noise_sample_step_uses_spherical_star_support(self, cfg):
         step = REGISTRY.get("vis_noise_sample")
+        assert step.defaults.n_cpus == 1
         out = step.build_sbatch_body(
             params={
                 "n_clusters": 36,
@@ -1208,6 +1209,11 @@ class TestSbatchRendering:
         assert "--n-clusters" in body and "36" in body
         assert "--samples-per-cluster" in body and "2" in body
         assert "--source-release" in body and "Q1_R1" in body
+        default_command = step.build_command({})
+        assert default_command[default_command.index("--workers") + 1] == "1"
+
+        explicit = step.build_command({"workers": 3})
+        assert explicit[explicit.index("--workers") + 1] == "3"
 
     def test_euclid_roundtrip_tfrecords_step_args(self, cfg):
         step = REGISTRY.get("euclid_roundtrip_tfrecords")

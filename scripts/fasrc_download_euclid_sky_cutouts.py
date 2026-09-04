@@ -83,6 +83,10 @@ from euclid_polish.observability.reporter import Reporter
 SAMPLING_MANIFEST_VERSION = 1
 SAMPLING_MANIFEST_NAME = "vis_noise_sampling_manifest.json"
 VIS_NOISE_SAMPLING_SUBDIR = "vis_noise_samples"
+VIS_NOISE_DEFAULT_WORKERS = 1
+VIS_NOISE_DOWNLOAD_ATTEMPTS = 3
+VIS_NOISE_DOWNLOAD_RETRY_DELAYS_SECONDS = (2.0, 5.0)
+VIS_NOISE_MAX_OVERSIZE_FRACTION = 0.01
 Q1_SUPPORT_REGIONS = (
     ("EDF-N", 269.733, 66.018, 6.0),
     ("EDF-F", 61.241, -48.423, 6.0),
@@ -99,6 +103,49 @@ _FOV_POLYGON_CALL_RE = re.compile(
 _FOV_COORDINATE_TUPLE_RE = re.compile(
     r"^\s*\(\s*(.+?)\s*\)\s*$",
 )
+
+
+def _worker_count(sampling_mode: str, requested: int | None) -> int:
+    """Resolve a safe mode-specific download concurrency.
+
+    The archive's cutout endpoint proved unreliable when several large VIS
+    requests arrived together, while the exact same requests succeeded
+    serially.  Keep the legacy four-band downloader at eight workers, but make
+    independent VIS-noise sampling serial unless a caller explicitly opts in.
+    """
+    if requested is None:
+        return VIS_NOISE_DEFAULT_WORKERS if sampling_mode == "star-support" else 8
+    return max(1, int(requested))
+
+
+def _vis_noise_shape_matches(
+    actual_shape: Iterable[int], requested_pixels: int,
+) -> bool:
+    """Accept only tiny undersize or WCS-driven oversize SODA rasters.
+
+    MER cutouts are requested by angular radius, so a nominal 2560-pixel VIS
+    field can contain a few more detector pixels where the local mosaic WCS is
+    finer than 0.10 arcsec/pixel.  A one-percent oversize is harmless because
+    the fitter centrally crops to its complete 256-pixel tile grid.  Undersize
+    remains limited to the repository's stricter generic tolerance because it
+    represents missing requested sky rather than extra sky.
+    """
+    try:
+        dimensions = tuple(int(value) for value in actual_shape)
+        requested = int(requested_pixels)
+    except (TypeError, ValueError):
+        return False
+    if len(dimensions) != 2 or requested <= 0:
+        return False
+    undersize_tolerance = int(Config.Matching.DOWNLOAD_SIZE_TOL_PIXELS)
+    oversize_tolerance = max(
+        undersize_tolerance,
+        int(math.ceil(requested * VIS_NOISE_MAX_OVERSIZE_FRACTION)),
+    )
+    return all(
+        -undersize_tolerance <= actual - requested <= oversize_tolerance
+        for actual in dimensions
+    )
 
 
 def _unit_vectors(ra_deg: np.ndarray, dec_deg: np.ndarray) -> np.ndarray:
@@ -832,7 +879,6 @@ def _cached_planned_bundle_matches(
         return False
     parent = sample.get("parent") or {}
     actual_release = str(parent.get("release_name") or source_release)
-    size_tolerance = int(Config.Matching.DOWNLOAD_SIZE_TOL_PIXELS)
     try:
         return bool(
             actual_release == str(source_release)
@@ -845,11 +891,7 @@ def _cached_planned_bundle_matches(
             and str(header.get("PRODTYPE", ""))
             == str(parent.get("product_type") or "")
             and image_shape is not None
-            and len(image_shape) == 2
-            and all(
-                abs(int(actual) - int(vis_pixels)) <= size_tolerance
-                for actual in image_shape
-            )
+            and _vis_noise_shape_matches(image_shape, int(vis_pixels))
             and math.isclose(
                 float(header.get("RA")), float(sample["ra"]), abs_tol=1e-8,
             )
@@ -997,35 +1039,70 @@ def _fetch_planned_vis_bundle(
     temp_dir = tempfile.mkdtemp(prefix=f"vis_noise_{pos_id:04d}_")
     raw_path = os.path.join(temp_dir, "VIS.fits")
     try:
-        ok = download_one_cutout(
-            float(sample["ra"]), float(sample["dec"]), config,
-            cutout_radius_arcmin, raw_path, parent,
-        )
-        if not ok:
+        last_download_error = "VIS parent cutout download failed"
+        actual_shape: list[int] | None = None
+        for attempt in range(VIS_NOISE_DOWNLOAD_ATTEMPTS):
+            # ``Euclid.get_cutout`` swallows HTTP failures and can leave a
+            # partial output behind.  Never let that partial file make the
+            # next attempt look successful.
+            with contextlib.suppress(OSError):
+                os.remove(raw_path)
+            ok = download_one_cutout(
+                float(sample["ra"]), float(sample["dec"]), config,
+                cutout_radius_arcmin, raw_path, parent,
+            )
+            if ok:
+                try:
+                    with fits.open(raw_path, memmap=True) as hdul:
+                        hdul.verify("exception")
+                        image_hdu = next(
+                            (
+                                candidate for candidate in hdul
+                                if candidate.data is not None
+                            ),
+                            None,
+                        )
+                        if image_hdu is None:
+                            last_download_error = (
+                                "VIS parent cutout has no image data"
+                            )
+                        else:
+                            actual_shape = [int(value) for value in image_hdu.shape]
+                except (OSError, ValueError, VerifyError) as exc:
+                    last_download_error = (
+                        "VIS parent cutout is unreadable: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
+                if actual_shape is not None:
+                    break
+            if attempt < VIS_NOISE_DOWNLOAD_ATTEMPTS - 1:
+                delay_index = min(
+                    attempt,
+                    len(VIS_NOISE_DOWNLOAD_RETRY_DELAYS_SECONDS) - 1,
+                )
+                time.sleep(VIS_NOISE_DOWNLOAD_RETRY_DELAYS_SECONDS[delay_index])
+        if actual_shape is None:
             return {
                 "status": "failed", "id": pos_id,
-                "errors": ["VIS parent cutout download failed"],
+                "errors": [
+                    f"{last_download_error} after "
+                    f"{VIS_NOISE_DOWNLOAD_ATTEMPTS} attempts"
+                ],
             }
-        with fits.open(raw_path, memmap=True) as hdul:
-            image_hdu = next(
-                (candidate for candidate in hdul if candidate.data is not None), None,
+        if not _vis_noise_shape_matches(actual_shape, int(vis_pixels)):
+            undersize_tolerance = int(Config.Matching.DOWNLOAD_SIZE_TOL_PIXELS)
+            oversize_tolerance = max(
+                undersize_tolerance,
+                int(math.ceil(
+                    int(vis_pixels) * VIS_NOISE_MAX_OVERSIZE_FRACTION
+                )),
             )
-            if image_hdu is None:
-                return {
-                    "status": "failed", "id": pos_id,
-                    "errors": ["VIS parent cutout has no image data"],
-                }
-            actual_shape = list(image_hdu.shape)
-        size_tolerance = int(Config.Matching.DOWNLOAD_SIZE_TOL_PIXELS)
-        if len(actual_shape) != 2 or any(
-            abs(int(actual) - int(vis_pixels)) > size_tolerance
-            for actual in actual_shape
-        ):
             return {
                 "status": "failed", "id": pos_id,
                 "errors": [
                     f"VIS cutout shape {tuple(actual_shape)} differs from "
-                    f"{vis_pixels} by more than tolerance {size_tolerance}"
+                    f"{vis_pixels}; allowed undersize is {undersize_tolerance}px "
+                    f"and oversize is {oversize_tolerance}px"
                 ],
             }
         _write_bundle(
@@ -1089,8 +1166,14 @@ def parse_args() -> argparse.Namespace:
                         "training stamps per position; the same "
                         "angular extent gets requested from each band "
                         "at its own native pixel scale.")
-    p.add_argument("--workers", type=int, default=8,
-                   help="Parallel positions in flight at once.")
+    p.add_argument(
+        "--workers", type=int, default=None,
+        help=(
+            "Parallel positions in flight. Defaults to 1 for independent "
+            "VIS-noise sampling (the archive cutout service is unreliable "
+            "under concurrent large requests) and 8 for four-band sky fields."
+        ),
+    )
     p.add_argument("--regenerate-catalog", action="store_true",
                    help="Overwrite the existing sky-positions CSV. "
                         "Without this flag, an existing catalogue is "
@@ -1415,6 +1498,7 @@ def _run_star_support_sampling(
 
 def main() -> int:
     args = parse_args()
+    args.workers = _worker_count(args.sampling_mode, args.workers)
     args.source_release = str(args.source_release).strip()
     if not args.source_release:
         raise ValueError("--source-release must be non-empty")
