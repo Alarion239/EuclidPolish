@@ -31,6 +31,23 @@ class _FakeEnsemble:
         return self._sr[None, ...]
 
 
+def test_source_centering_ignores_off_field_galaxies():
+    sources = [
+        {
+            "type": "galaxy", "x_pix": 64.0, "y_pix": 64.0,
+            "flux_vis_e": 10.0, "off_field": False,
+        },
+        {
+            "type": "galaxy", "x_pix": 64.0, "y_pix": 64.0,
+            "flux_vis_e": 1000.0, "off_field": True,
+        },
+    ]
+
+    selected = sr._fitting_sources(sources, "galaxy", field=128, m=64)
+
+    assert selected == [sources[0]]
+
+
 def test_hr_fits_written_four_band(tmp_path, monkeypatch):
     # dirty_* records are LR half-grid (64²×4); hr_* are HR-grid (128²×4) — large
     # enough to crop the canonical 53² LR / 106² SR·HR stamp centered at (64,64).

@@ -108,6 +108,29 @@ def test_actual_synthetic_catalogue_draws_are_added_to_every_parameter(
     assert radius["synthetic_clean_half_light"]["weighted_count"] == 0
 
 
+def test_off_field_galaxies_do_not_enter_distribution_counts(
+    tmp_path, monkeypatch,
+):
+    source = tmp_path / "sources_test.csv"
+    source.write_text(
+        "field_index,type,off_field,render,x_pix,y_pix,flux_vis_e,z,re_arcsec,"
+        "target_logmass,target_logssfr,achieved_vis_2fwhm_mag\n"
+        "0,galaxy,0,tng,10,10,1000,0.8,0.2,9.5,-9.8,24.0\n"
+        "0,galaxy,1,tng,-4,10,900,0.9,0.3,9.6,-9.7,24.2\n"
+    )
+    monkeypatch.setattr(helper, "_synthetic_paths", lambda: ([], [source]))
+
+    parameters = helper._empty_parameters()
+    result = helper._read_synthetic(parameters)
+
+    assert result["available"] is True
+    assert result["fields"] == 1
+    assert result["rows"] == 1
+    assert parameters["redshift"]["series"]["synthetic"][
+        "weighted_count"
+    ] == 1
+
+
 def test_training_catalog_is_optional_and_never_substitutes_total_vis_for_2fwhm(
     tmp_path, monkeypatch,
 ):

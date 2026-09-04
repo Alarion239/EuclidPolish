@@ -737,6 +737,21 @@ def test_synthetic_lenses_are_merged_into_galaxies(tmp_path):
     assert "theta_E_arcsec" not in payload["parameters"]
 
 
+def test_off_field_galaxies_do_not_enter_population_counts(tmp_path):
+    sources = tmp_path / "sources.csv"
+    sources.write_text(
+        "field_index,type,off_field,mag_vis\n"
+        "0,galaxy,0,21.0\n"
+        "0,galaxy,1,22.0\n"
+        "1,galaxy,true,23.0\n"
+    )
+
+    rows = _read_synthetic_sources([sources])
+
+    assert len(rows) == 1
+    assert rows[0]["mag_vis"] == 21.0
+
+
 def test_synthetic_catalog_derives_shared_colours(tmp_path):
     sources = tmp_path / "sources.csv"
     sources.write_text(

@@ -18,6 +18,7 @@ import os
 from typing import Any
 
 SOURCE_COLS = ["field_index", "type", "render", "x_pix", "y_pix",
+               "off_field",
                "flux_vis_e", "flux_y_e", "flux_j_e", "flux_h_e",
                "z", "subhalo_id", "orientation", "theta_E_arcsec",
                "lens_orientation", "source_subhalo_id", "source_orientation",
@@ -66,6 +67,14 @@ SOURCE_COLS = ["field_index", "type", "render", "x_pix", "y_pix",
                # forward op re-injects fixed stars with their sampled colour.
                "mag_vis", "mag_y_e", "mag_j_e", "mag_h_e",
                "temperature_k", "extinction_av"]
+
+
+def source_is_off_field(source: dict[str, Any]) -> bool:
+    """Read the backward-compatible off-field marker from parsed or CSV rows."""
+    value = source.get("off_field", False)
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
 
 
 def _flux_vis(src: dict[str, Any]):
@@ -126,6 +135,7 @@ def _galaxy_row(field_index: int, g: dict[str, Any]) -> dict[str, Any]:
         "field_index": field_index, "type": "galaxy",
         "render": g.get("render", ""),
         "x_pix": float(g["x_pix"]), "y_pix": float(g["y_pix"]),
+        "off_field": int(bool(g.get("off_field", False))),
         "flux_vis_e": _flux_vis(g),
         "flux_y_e": _flux_band(g, 1),
         "flux_j_e": _flux_band(g, 2),
@@ -322,6 +332,10 @@ class SourceCatalogWriter:
     def add_field(self, field_index: int, meta: dict[str, Any]) -> None:
         for g in meta.get("galaxies", []) or []:
             self._w.writerow(_galaxy_row(field_index, g))
+        for g in meta.get("off_field_galaxies", []) or []:
+            row = dict(g)
+            row["off_field"] = True
+            self._w.writerow(_galaxy_row(field_index, row))
         for lens in meta.get("lenses", []) or []:
             self._w.writerow(_lens_row(field_index, lens))
         for star in meta.get("stars", []) or []:
@@ -344,6 +358,7 @@ def _parse(row: dict[str, str]) -> dict[str, Any]:
     for k in ("x_pix", "y_pix", "flux_vis_e", "flux_y_e", "flux_j_e",
               "flux_h_e", "z", "theta_E_arcsec",
               "orientation", "lens_orientation", "source_orientation",
+              "off_field",
               "re_arcsec", "logmass", "mass_scale", "mag_vis",
               "native_tng_logmass", "native_tng_sfr",
               "native_tng_logssfr", "native_tng_zero_sfr",
@@ -395,7 +410,7 @@ def _parse(row: dict[str, str]) -> dict[str, Any]:
     for key in ("tng_render_trace", "lens_tng_trace", "source_tng_trace"):
         out[key] = _parse_json_record(row.get(key))
     for key in (
-        "arbitrary_rotation", "render_support_clipped",
+        "arbitrary_rotation", "render_support_clipped", "off_field",
     ):
         if out[key] is not None:
             out[key] = bool(out[key])

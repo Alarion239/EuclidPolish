@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 from dataclasses import replace
 from pathlib import Path
+from types import MethodType
 
 import numpy as np
 import pytest
@@ -12,6 +13,7 @@ from astropy.io import fits
 from euclid_polish.config import Config
 from euclid_polish.image import Image
 from euclid_polish.provenance import ConfigSnapshot
+from euclid_polish.sky.generation.compositing import composite_stamp
 from euclid_polish.sky.generation.cosmos_tng_prior import CosmosTngDraw
 from euclid_polish.sky.generation.sky_simulator import (
     SkySimulator,
@@ -88,7 +90,12 @@ def _write_fake_tng_galaxy(tng_dir, gid, *, size=24):
     open(os.path.join(directory, Config.Tng.DONE_MARKER), "w").close()
 
 
-def _simulator(tmp_path, *, galaxy_density_arcmin2: float = 1.0):
+def _simulator(
+    tmp_path,
+    *,
+    galaxy_density_arcmin2: float = 1.0,
+    galaxy_off_field_padding_hr_pix: int = 68,
+):
     tng = str(tmp_path / "tng")
     _write_fake_tng_galaxy(tng, "111")
     properties = tmp_path / "tng_properties.csv"
@@ -106,12 +113,164 @@ def _simulator(tmp_path, *, galaxy_density_arcmin2: float = 1.0):
             image_size=64,
             pixel_scale=Config.DEFAULT_PIXEL_SCALE,
             galaxy_density_arcmin2=galaxy_density_arcmin2,
+            galaxy_off_field_padding_hr_pix=galaxy_off_field_padding_hr_pix,
             star_density_arcmin2=0.0,
             lens_density_arcmin2=0.0,
             tng_galaxy_dir=tng,
             tng_properties_csv=str(properties),
             tng_radius_manifest_path=str(radius_manifest),
         ),
+    )
+
+
+def test_off_field_default_matches_32_block_half_receptive_field():
+    config = SkySimulatorConfig()
+
+    assert config.galaxy_off_field_padding_hr_pix == 68
+    assert 68 * config.pixel_scale == pytest.approx(3.4)
+
+
+def test_composite_stamp_adds_only_the_exact_intersection():
+    canvas = np.zeros((4, 4, 1), dtype=np.float32)
+    stamp = np.arange(25, dtype=np.float32).reshape(5, 5, 1)
+
+    assert composite_stamp(canvas, stamp, x0=-1.0, y0=2.0) is True
+    expected = np.zeros_like(canvas)
+    expected[:4, :2, :] = stamp[:4, 3:5, :]
+    np.testing.assert_array_equal(canvas, expected)
+    assert composite_stamp(canvas, stamp, x0=-20.0, y0=2.0) is False
+
+
+def test_off_field_positions_tile_only_the_exterior_frame(tmp_path):
+    simulator = _simulator(tmp_path)
+    side = simulator.config.image_size
+    padding = simulator.config.galaxy_off_field_padding_hr_pix
+
+    positions = [
+        simulator._random_off_field_pix(np.random.default_rng(seed))
+        for seed in range(200)
+    ]
+
+    assert all(
+        -padding <= x < side + padding
+        and -padding <= y < side + padding
+        and not (0.0 <= x < side and 0.0 <= y < side)
+        for x, y in positions
+    )
+    assert {"left", "right", "top", "bottom"} == {
+        "left" if x < 0.0 else "right" if x >= side
+        else "top" if y < 0.0 else "bottom"
+        for x, y in positions
+    }
+
+
+def test_off_field_reach_rejects_before_donor_selection(tmp_path, monkeypatch):
+    simulator = _simulator(tmp_path)
+    canvas = np.zeros((64, 64, 4), dtype=np.float32)
+
+    monkeypatch.setattr(
+        simulator,
+        "_pick_field_galaxy",
+        lambda *_args, **_kwargs: pytest.fail("donor selection must not run"),
+    )
+    record = simulator._add_tng_galaxy(
+        canvas,
+        np.random.default_rng(4),
+        position=(-17.0, 32.0),
+        off_field=True,
+    )
+
+    assert record is None  # StaticPrior has R_e=0.2": 4 R_e = 16 HR pixels.
+    assert not np.any(canvas)
+
+
+def test_off_field_rng_preserves_existing_streams_and_zero_padding(tmp_path):
+    base = _simulator(
+        tmp_path / "base",
+        galaxy_density_arcmin2=2000.0,
+        galaxy_off_field_padding_hr_pix=0,
+    )
+    extended = _simulator(
+        tmp_path / "extended",
+        galaxy_density_arcmin2=2000.0,
+        galaxy_off_field_padding_hr_pix=68,
+    )
+    for simulator in (base, extended):
+        simulator.config.star_density_arcmin2 = 2000.0
+        simulator.config.lens_density_arcmin2 = 2000.0
+        simulator._draw_star = lambda rng: {"token": float(rng.random())}
+        simulator._add_lens = lambda _canvas, rng: {
+            "token": float(rng.random())
+        }
+
+    base_rng = np.random.default_rng(29)
+    extended_rng = np.random.default_rng(29)
+    _base_image, base_meta = base.simulate_field(base_rng)
+    _extended_image, extended_meta = extended.simulate_field(extended_rng)
+
+    def interior_signature(meta):
+        return [
+            (
+                row["x_pix"], row["y_pix"], row["subhalo_id"],
+                row["orientation"], row["rot_angle"],
+            )
+            for row in meta["galaxies"]
+        ]
+
+    assert interior_signature(base_meta) == interior_signature(extended_meta)
+    assert base_meta["stars"] == extended_meta["stars"]
+    assert base_meta["lenses"] == extended_meta["lenses"]
+    assert base_rng.random() == extended_rng.random()
+    assert base_meta["off_field_galaxies"] == []
+    assert base_meta["n_off_field_galaxy_proposals"] == 0
+    assert extended_meta["n_off_field_galaxies"] == len(
+        extended_meta["off_field_galaxies"]
+    )
+    assert extended_meta["n_off_field_galaxies"] > 0
+    assert all(row["off_field"] for row in extended_meta["off_field_galaxies"])
+
+
+def test_off_field_poisson_thinning_is_nested_and_metadata_is_separate(
+    tmp_path,
+):
+    lower = _simulator(tmp_path / "lower", galaxy_density_arcmin2=500.0)
+    higher = _simulator(tmp_path / "higher", galaxy_density_arcmin2=800.0)
+    for simulator in (lower, higher):
+        simulator.config.galaxy_thinning_max_density_arcmin2 = 1000.0
+
+        def fake_add(
+            self, _canvas, rng, *, position=None, off_field=False, **_kwargs,
+        ):
+            x_pix, y_pix = (
+                position if position is not None else self._random_pix(rng)
+            )
+            return {
+                "x_pix": float(x_pix),
+                "y_pix": float(y_pix),
+                "off_field": bool(off_field),
+                "proposal": int(rng.integers(0, 2**63)),
+            }
+
+        simulator._add_tng_galaxy = MethodType(fake_add, simulator)
+
+    _, lower_meta = lower.simulate_field(
+        np.random.default_rng(7), n_stars=0, n_lenses=0,
+    )
+    _, higher_meta = higher.simulate_field(
+        np.random.default_rng(7), n_stars=0, n_lenses=0,
+    )
+
+    lower_ids = {row["proposal"] for row in lower_meta["off_field_galaxies"]}
+    higher_ids = {row["proposal"] for row in higher_meta["off_field_galaxies"]}
+    assert lower_ids
+    assert lower_ids < higher_ids
+    assert lower_meta["n_galaxies"] == len(lower_meta["galaxies"])
+    assert lower_meta["n_off_field_galaxies"] == len(
+        lower_meta["off_field_galaxies"]
+    )
+    assert all(
+        not (0.0 <= row["x_pix"] < 64 and 0.0 <= row["y_pix"] < 64)
+        for row in lower_meta["off_field_galaxies"]
     )
 
 

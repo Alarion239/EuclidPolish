@@ -69,6 +69,8 @@ class _NoRenderableTNGDonorError(ValueError):
 
 
 _MER_APERTURE_GAUSSIAN_SIGMA_SUPPORT = 5.0
+_OFF_FIELD_GALAXY_RE_SUPPORT = 4.0
+_OFF_FIELD_GALAXY_SEED_TAG = 0x4F464647  # ``OFFG``
 
 
 # ---------------------------------------------------------------------------
@@ -85,6 +87,11 @@ class SkySimulatorConfig:
     image_size:               int   = Config.DEFAULT_IMAGE_SIZE
     pixel_scale:              float = Config.DEFAULT_PIXEL_SCALE     # arcsec/pix
     galaxy_density_arcmin2:   float = Config.GALAXY_DENSITY_ARCMIN2
+    # Galaxy centres outside the saved field are proposed out to half the
+    # 32-block WDSR receptive field (69 LR pixels = 3.4 arcsec = 68 HR
+    # pixels).  A source-specific 4 R_e reach test rejects irrelevant
+    # proposals before donor selection or TNG rendering.
+    galaxy_off_field_padding_hr_pix: int = 68
     # Calibration-only master density. With a shared field seed, lower-density
     # runs are exact nested thinnings of the same master source proposals.
     galaxy_thinning_max_density_arcmin2: float | None = None
@@ -119,6 +126,14 @@ class SkySimulatorConfig:
         if min(self.galaxy_density_arcmin2,
                self.star_density_arcmin2, self.lens_density_arcmin2) < 0:
             return False, "densities must be non-negative"
+        if (
+            isinstance(self.galaxy_off_field_padding_hr_pix, bool)
+            or not isinstance(
+                self.galaxy_off_field_padding_hr_pix, (int, np.integer)
+            )
+            or self.galaxy_off_field_padding_hr_pix < 0
+        ):
+            return False, "galaxy_off_field_padding_hr_pix must be a non-negative integer"
         if (
             self.galaxy_thinning_max_density_arcmin2 is not None
             and self.galaxy_thinning_max_density_arcmin2
@@ -489,6 +504,73 @@ class SkySimulator:
         N = self.config.image_size
         return float(rng.uniform(0.0, N - 1)), float(rng.uniform(0.0, N - 1))
 
+    def _off_field_area_arcmin2(self) -> float:
+        """Area of the bounded exterior proposal frame."""
+        padding = int(self.config.galaxy_off_field_padding_hr_pix)
+        if padding <= 0:
+            return 0.0
+        pixel_area_arcmin2 = (self.config.pixel_scale / 60.0) ** 2
+        side = self.config.image_size
+        return float(((side + 2 * padding) ** 2 - side**2) * pixel_area_arcmin2)
+
+    def _random_off_field_pix(
+        self, rng: np.random.Generator,
+    ) -> tuple[float, float]:
+        """Draw uniformly from the exterior frame, with no rejection loop."""
+        side = float(self.config.image_size)
+        padding = float(self.config.galaxy_off_field_padding_hr_pix)
+        if padding <= 0.0:
+            raise ValueError("off-field galaxy padding is disabled")
+
+        # Top/bottom own the four corners; left/right span only the field
+        # height.  The four rectangles are disjoint and exactly tile the
+        # expanded square minus the saved field.
+        horizontal_area = padding * (side + 2.0 * padding)
+        vertical_area = padding * side
+        selector = float(rng.uniform(
+            0.0, 2.0 * horizontal_area + 2.0 * vertical_area,
+        ))
+        if selector < horizontal_area:
+            return (
+                float(rng.uniform(-padding, side + padding)),
+                float(rng.uniform(-padding, 0.0)),
+            )
+        selector -= horizontal_area
+        if selector < horizontal_area:
+            return (
+                float(rng.uniform(-padding, side + padding)),
+                float(rng.uniform(side, side + padding)),
+            )
+        selector -= horizontal_area
+        if selector < vertical_area:
+            return (
+                float(rng.uniform(-padding, 0.0)),
+                float(rng.uniform(0.0, side)),
+            )
+        return (
+            float(rng.uniform(side, side + padding)),
+            float(rng.uniform(0.0, side)),
+        )
+
+    def _off_field_galaxy_reaches_canvas(
+        self,
+        x_pix: float,
+        y_pix: float,
+        re_arcsec: float,
+    ) -> bool:
+        """Whether the source's bounded 4-R_e support reaches the field."""
+        side = float(self.config.image_size)
+        dx = max(0.0, -float(x_pix), float(x_pix) - side)
+        dy = max(0.0, -float(y_pix), float(y_pix) - side)
+        distance = math.hypot(dx, dy)
+        support = min(
+            float(self.config.galaxy_off_field_padding_hr_pix),
+            _OFF_FIELD_GALAXY_RE_SUPPORT
+            * float(re_arcsec)
+            / self.config.pixel_scale,
+        )
+        return bool(np.isfinite(support) and support > 0.0 and distance <= support)
+
     def _eligible_morphology_indices(
         self,
         target_re_arcsec: float,
@@ -690,7 +772,8 @@ class SkySimulator:
     # ------------------------------------------------------------------ #
     def _add_tng_galaxy(
         self, canvas_4ch: np.ndarray, rng: np.random.Generator,
-        *, _attempt: int = 0,
+        *, position: tuple[float, float] | None = None,
+        off_field: bool = False, _attempt: int = 0,
     ) -> dict | None:
         """Resolve TNG geometry/donor before drawing independent brightness."""
         if self.population_prior is None:
@@ -701,6 +784,13 @@ class SkySimulator:
             draw = prior.sample_geometry(rng)
         else:
             draw = prior.sample(rng)
+        if off_field:
+            if position is None:
+                raise ValueError("an off-field galaxy requires an exterior position")
+            if not self._off_field_galaxy_reaches_canvas(
+                position[0], position[1], draw.re_arcsec,
+            ):
+                return None
         try:
             if getattr(prior, "morphology_mode", "") == (
                 "balanced_random_tng_atlas"
@@ -719,7 +809,8 @@ class SkySimulator:
         except _NoRenderableTNGDonorError as exc:
             if _attempt < 31:
                 return self._add_tng_galaxy(
-                    canvas_4ch, rng, _attempt=_attempt + 1,
+                    canvas_4ch, rng, position=position, off_field=off_field,
+                    _attempt=_attempt + 1,
                 )
             raise RuntimeError(
                 "TNG population produced 32 geometries outside the "
@@ -778,7 +869,8 @@ class SkySimulator:
             except ValueError as exc:
                 if _attempt < 31:
                     return self._add_tng_galaxy(
-                        canvas_4ch, rng, _attempt=_attempt + 1,
+                        canvas_4ch, rng, position=position,
+                        off_field=off_field, _attempt=_attempt + 1,
                     )
                 raise RuntimeError(
                     "TNG population produced 32 unusable 2FWHM stamps"
@@ -788,12 +880,19 @@ class SkySimulator:
                 target_vis_mag=magnitude,
                 target_vis_flux_e=target_aperture_flux,
             )
-        x_pix, y_pix = self._random_pix(rng)
-        composite_stamp(canvas_4ch, rendered.data, x_pix, y_pix)
+        x_pix, y_pix = (
+            position if position is not None else self._random_pix(rng)
+        )
+        intersects = composite_stamp(
+            canvas_4ch, rendered.data, x_pix, y_pix,
+        )
+        if off_field and not intersects:
+            return None
         tmeta = rendered.record_fields()
         return {
             "type": "galaxy",
             "render": "tng",
+            "off_field": bool(off_field),
             "x_pix": float(x_pix),
             "y_pix": float(y_pix),
             "subhalo_id":   tmeta["subhalo_id"],
@@ -1120,6 +1219,7 @@ class SkySimulator:
         cfg  = self.config
         N    = cfg.image_size
         area = self._field_area_arcmin2()
+        sample_population = n_galaxies is None
 
         # Component seeds are consumed once per field. Galaxy-count changes can
         # therefore never shift the star, lens, or forward-model RNG streams.
@@ -1129,6 +1229,13 @@ class SkySimulator:
         galaxy_rng = np.random.default_rng(component_seeds[0])
         star_rng = np.random.default_rng(component_seeds[1])
         lens_rng = np.random.default_rng(component_seeds[2])
+
+        # Derive an independent deterministic stream without consuming another
+        # value from the caller's RNG.  This preserves the in-field galaxy,
+        # star, lens, and subsequent forward-model streams exactly.
+        off_field_rng = np.random.default_rng(np.random.SeedSequence([
+            int(component_seeds[0]), _OFF_FIELD_GALAXY_SEED_TAG,
+        ]))
 
         galaxy_seeds: list[int]
         if n_galaxies is None:
@@ -1159,13 +1266,34 @@ class SkySimulator:
                     size=int(n_galaxies), dtype=np.uint64,
                 )
             ]
+        off_field_galaxy_seeds: list[int] = []
+        if (
+            sample_population
+            and cfg.galaxy_density_arcmin2 > 0.0
+            and cfg.galaxy_off_field_padding_hr_pix > 0
+        ):
+            off_field_master_count = int(off_field_rng.poisson(
+                master_density * self._off_field_area_arcmin2()
+            ))
+            off_field_keep = (
+                off_field_rng.random(off_field_master_count) < keep_probability
+            )
+            off_field_proposals = off_field_rng.integers(
+                0, np.iinfo(np.uint64).max,
+                size=off_field_master_count, dtype=np.uint64,
+            )
+            off_field_galaxy_seeds = [
+                int(seed) for seed, retained
+                in zip(off_field_proposals, off_field_keep, strict=True)
+                if retained
+            ]
         if n_stars is None:
             n_stars = int(star_rng.poisson(cfg.star_density_arcmin2 * area))
         if n_lenses is None:
             n_lenses = int(lens_rng.poisson(cfg.lens_density_arcmin2 * area))
 
         canvas = np.zeros((N, N, Config.NUM_LR_CHANNELS), dtype=np.float32)
-        galaxies, stars, lenses = [], [], []
+        galaxies, off_field_galaxies, stars, lenses = [], [], [], []
 
         for source_seed in galaxy_seeds:
             rec = self._add_tng_galaxy(
@@ -1173,6 +1301,15 @@ class SkySimulator:
             )
             if rec is not None:
                 galaxies.append(rec)
+
+        for source_seed in off_field_galaxy_seeds:
+            source_rng = np.random.default_rng(source_seed)
+            position = self._random_off_field_pix(source_rng)
+            rec = self._add_tng_galaxy(
+                canvas, source_rng, position=position, off_field=True,
+            )
+            if rec is not None:
+                off_field_galaxies.append(rec)
 
         # Stars are DRAWN (recorded) but not deposited — the base stays
         # starless; the forward op re-injects them (see inject_random_stars).
@@ -1239,9 +1376,12 @@ class SkySimulator:
             ),
             "lens_density_arcmin2":    float(cfg.lens_density_arcmin2),
             "n_galaxies": len(galaxies),
+            "n_off_field_galaxy_proposals": len(off_field_galaxy_seeds),
+            "n_off_field_galaxies": len(off_field_galaxies),
             "n_stars":    len(stars),
             "n_lenses":   len(lenses),
             "galaxies":   galaxies,
+            "off_field_galaxies": off_field_galaxies,
             "stars":      stars,
             "lenses":     lenses,
         }

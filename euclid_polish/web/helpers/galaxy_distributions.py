@@ -33,6 +33,7 @@ from euclid_polish.population.joint_galaxy import (
 from euclid_polish.population.magnitude_law import (
     ContinuousBrightBridgeFaintCappedMagnitudeLaw,
 )
+from euclid_polish.sky.generation.source_catalog import source_is_off_field
 from euclid_polish.web.helpers.population_calibration import (
     joint_galaxy_candidate,
     joint_galaxy_candidate_path,
@@ -753,10 +754,13 @@ def _read_synthetic(
         with path.open(newline="", encoding="utf-8") as handle:
             for raw in csv.DictReader(handle):
                 field_index = int(raw["field_index"])
+                by_field.setdefault(field_index, [])
+                if source_is_off_field(raw):
+                    continue
                 row = dict(raw)
                 row["_split"] = split
                 row["_field_index"] = field_index
-                row["_field_row"] = len(by_field.setdefault(field_index, []))
+                row["_field_row"] = len(by_field[field_index])
                 by_field[field_index].append(row)
                 if str(raw.get("type", "")).lower() == "galaxy":
                     galaxies.append(row)

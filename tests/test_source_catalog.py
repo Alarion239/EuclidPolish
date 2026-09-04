@@ -114,6 +114,37 @@ def test_writer_then_reader_roundtrip(tmp_path):
     assert tng["magnitude_fit_fingerprint"] == "m" * 64
 
 
+def test_off_field_galaxy_roundtrips_separately_with_provenance(tmp_path):
+    path = str(tmp_path / "sources_test.csv")
+    off_field = {
+        "type": "galaxy",
+        "render": "tng",
+        "x_pix": -3.5,
+        "y_pix": 42.0,
+        "subhalo_id": "edge",
+        "orientation": 2,
+        "re_arcsec": 0.2,
+        "flux_e_per_band": [10.0, 8.0, 7.0, 6.0],
+        "tng_render_trace": {"shape": [21, 21, 4]},
+    }
+    with sc.SourceCatalogWriter(path) as writer:
+        writer.add_field(4, {
+            "galaxies": [],
+            "off_field_galaxies": [off_field],
+            "lenses": [],
+            "stars": [],
+        })
+
+    row = sc.read_sources(path)[4][0]
+    assert row["type"] == "galaxy"
+    assert row["off_field"] is True
+    assert row["x_pix"] == -3.5
+    assert row["subhalo_id"] == "edge"
+    assert row["tng_render_trace"] == {"shape": [21, 21, 4]}
+    assert sc.source_is_off_field(row)
+    assert not sc.source_is_off_field({})
+
+
 def test_stars_are_recorded(tmp_path):
     """Stars are now persisted (scene is starless → the forward re-injects
     them from these rows for the fixed validate/test fields)."""

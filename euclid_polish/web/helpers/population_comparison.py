@@ -30,7 +30,10 @@ from euclid_polish.photometry import (
     uJy_to_ab_mag,
 )
 from euclid_polish.population.joint_galaxy import LF_Z_EDGES
-from euclid_polish.sky.generation.source_catalog import read_sources
+from euclid_polish.sky.generation.source_catalog import (
+    read_sources,
+    source_is_off_field,
+)
 from euclid_polish.web.helpers.paths import _sky_records_local_dir
 from euclid_polish.web.helpers.tng_prior import (
     DetectionAccumulator,
@@ -1166,6 +1169,8 @@ def _read_synthetic_sources(paths: Iterable[Path]) -> list[dict[str, Any]]:
             for raw in csv.DictReader(handle):
                 field_index = int(raw["field_index"]) + offset
                 local_max = max(local_max, int(raw["field_index"]))
+                if source_is_off_field(raw):
+                    continue
                 source_type = str(raw.get("type", "unknown")).strip().lower()
                 row: dict[str, Any] = {
                     # Lensed galaxies are part of the galaxy population here:

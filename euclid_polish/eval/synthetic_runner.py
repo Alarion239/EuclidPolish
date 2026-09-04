@@ -21,6 +21,7 @@ from euclid_polish.eval.catalog_runner import EVAL_HR_SIZE, EVAL_LR_SIZE, enforc
 from euclid_polish.eval.disagreement import write_disagreement_cubes
 from euclid_polish.eval.ensemble_infer import load_eval_ensemble
 from euclid_polish.eval.stamp_geometry import crop_stamp  # re-export (back-compat)
+from euclid_polish.sky.generation.source_catalog import source_is_off_field
 
 
 def default_records_dir() -> str | None:
@@ -63,7 +64,7 @@ def select_central_source(
     best = None
     best_key = None
     for s in sources:
-        if s.get("type") != want_type:
+        if s.get("type") != want_type or source_is_off_field(s):
             continue
         x, y = float(s["x_pix"]), float(s["y_pix"])
         if x < half or x > field - half or y < half or y > field - half:
@@ -94,7 +95,7 @@ def _fitting_sources(sources, want_type: str, *, field: int, m: int):
     half = m / 2.0
     out = []
     for s in sources:
-        if s.get("type") != want_type:
+        if s.get("type") != want_type or source_is_off_field(s):
             continue
         x, y = float(s["x_pix"]), float(s["y_pix"])
         if x < half or x > field - half or y < half or y > field - half:
