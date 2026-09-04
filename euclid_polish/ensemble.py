@@ -329,8 +329,18 @@ class EnsembleModel:
         """
         if not specs:
             raise ValueError("no member specs to train")
+        vis_noise_payload = train_kwargs.get("vis_noise_calibration_payload")
         self._models = []
         for i, spec in enumerate(specs):
+            member_vis_noise_payload = (
+                vis_noise_payload if spec.forward_onthefly else None
+            )
+            member_vis_noise_fingerprint = (
+                str(member_vis_noise_payload.get("fingerprint"))
+                if isinstance(member_vis_noise_payload, dict)
+                and member_vis_noise_payload.get("fingerprint")
+                else None
+            )
             d = os.path.join(self.base_dir, spec.name)
             created = not (os.path.isdir(d) and _checkpoint_exists(d))
             os.makedirs(d, exist_ok=True)
@@ -346,48 +356,55 @@ class EnsembleModel:
             m = Model(d, **model_kwargs)
             if created and spec.op in ("add", "fork"):
                 commit = (capture_git() or {}).get("short")
+                origin = {
+                    "op": spec.op,
+                    "forked_from": spec.forked_from,
+                    "seed": int(spec.seed),
+                    "target_steps": int(spec.target_steps),
+                    # The ACTUAL depth (a fork inherits its source's).
+                    "num_res_blocks": int(m._num_res_blocks),
+                    # The ACTUAL asinh knee (electrons): None = the per-band
+                    # config default (100 e⁻); a fork inherits its source's.
+                    # Drives the input/output stretch at train + inference.
+                    "asinh_knee": getattr(m, "_asinh_knee", spec.asinh_knee),
+                    "target_psf_fwhm_arcsec": float(
+                        validate_target_fwhm_arcsec(spec.target_fwhm_arcsec)),
+                    # Diversity knobs, recorded so the member's training
+                    # distribution is reconstructible from its sidecar.
+                    "loss_norm": spec.loss_norm,
+                    "noise_aug": float(spec.noise_aug),
+                    "bootstrap": spec.bootstrap,
+                    "forward_onthefly": bool(spec.forward_onthefly),
+                    "batch_size": int(batch_size),
+                    "psf_subset": spec.psf_subset,
+                    "crops_per_field": int(spec.crops_per_field),
+                    "hr_crop_size": int(spec.hr_crop_size),
+                    "psf_warp_prob": float(spec.psf_warp_prob),
+                    "psf_warp_alpha_max": float(spec.psf_warp_alpha_max),
+                    "psf_warp_sigma": float(spec.psf_warp_sigma),
+                    "saturation_mask_prob": float(spec.saturation_mask_prob),
+                    "icnr": bool(spec.icnr),
+                    # Star regime: starless members erase stars (target =
+                    # the starless `clean`), starfull reconstruct them
+                    # (target = the starfull `hr`). Drives the /ensemble
+                    # eval mode + which target record scores each member.
+                    "starless": bool(spec.starless),
+                    "created_at": datetime.now(UTC).isoformat(
+                        timespec="seconds"),
+                    "commit": commit,
+                }
+                if member_vis_noise_fingerprint is not None:
+                    origin["vis_noise_calibration_fingerprint"] = (
+                        member_vis_noise_fingerprint
+                    )
                 with open(os.path.join(d, "origin.json"), "w") as f:
-                    json.dump({
-                        "op": spec.op,
-                        "forked_from": spec.forked_from,
-                        "seed": int(spec.seed),
-                        "target_steps": int(spec.target_steps),
-                        # The ACTUAL depth (a fork inherits its source's).
-                        "num_res_blocks": int(m._num_res_blocks),
-                        # The ACTUAL asinh knee (electrons): None = the per-band
-                        # config default (100 e⁻); a fork inherits its source's.
-                        # Drives the input/output stretch at train + inference.
-                        "asinh_knee": getattr(m, "_asinh_knee", spec.asinh_knee),
-                        "target_psf_fwhm_arcsec": float(
-                            validate_target_fwhm_arcsec(spec.target_fwhm_arcsec)),
-                        # Diversity knobs, recorded so the member's training
-                        # distribution is reconstructible from its sidecar.
-                        "loss_norm": spec.loss_norm,
-                        "noise_aug": float(spec.noise_aug),
-                        "bootstrap": spec.bootstrap,
-                        "forward_onthefly": bool(spec.forward_onthefly),
-                        "batch_size": int(batch_size),
-                        "psf_subset": spec.psf_subset,
-                        "crops_per_field": int(spec.crops_per_field),
-                        "hr_crop_size": int(spec.hr_crop_size),
-                        "psf_warp_prob": float(spec.psf_warp_prob),
-                        "psf_warp_alpha_max": float(spec.psf_warp_alpha_max),
-                        "psf_warp_sigma": float(spec.psf_warp_sigma),
-                        "saturation_mask_prob": float(
-                            spec.saturation_mask_prob),
-                        "icnr": bool(spec.icnr),
-                        # Star regime: starless members erase stars (target =
-                        # the starless `clean`), starfull reconstruct them
-                        # (target = the starfull `hr`). Drives the /ensemble
-                        # eval mode + which target record scores each member.
-                        "starless": bool(spec.starless),
-                        "created_at": datetime.now(UTC).isoformat(
-                            timespec="seconds"),
-                        "commit": commit,
-                    }, f, indent=2)
+                    json.dump(origin, f, indent=2)
             # Continue resumes from the PSNR-best track — the model eval
             # actually uses. Max-step resume would pick loss_best/ when that
             # track ran ahead during a degenerate (skip-only) stretch.
+            member_train_kwargs = dict(train_kwargs)
+            if not spec.forward_onthefly:
+                member_train_kwargs.pop("vis_noise_calibration_payload", None)
             m.train(lr_path, hr_path, steps=int(spec.target_steps),
                     batch_size=batch_size,
                     resume_track=("psnr" if spec.op == "continue"
@@ -405,7 +422,7 @@ class EnsembleModel:
                     saturation_mask_prob=spec.saturation_mask_prob,
                     target_fwhm_arcsec=spec.target_fwhm_arcsec,
                     starless=spec.starless,
-                    **train_kwargs)
+                    **member_train_kwargs)
             self._models.append(m)
             if on_member is not None:
                 on_member(i + 1, len(specs), m)

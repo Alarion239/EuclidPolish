@@ -419,9 +419,17 @@ def register(app):
             label = _spec_label(kind, step_ref, form)
             built = step.build_sbatch_body(
                 params=params, resources=resources, cfg=cfg, label=label)
+            # ``prepare_payload_files`` replaces embedded calibration JSON with
+            # immutable sidecar paths and records each payload's digest and
+            # scientific fingerprint in ``built['params']``.  Persist that
+            # prepared mapping, not the pre-render form mapping, so the job DB,
+            # CSV history, tracking log, and submit response identify exactly
+            # which calibrations the remote command consumed.
+            params_for_db = dict(built.get("params", params))
+            params_for_db.update(resources.to_dict())
             return fasrc_jobs.submit_sbatch_script(
                 STATE.ssh, cfg=cfg, built=built, label=label,
-                params=params, step_id=step.step_id)
+                params=params_for_db, step_id=step.step_id)
         # Pipeline step
         step = STEP_REGISTRY.get(step_ref)
         form2 = dict(form)

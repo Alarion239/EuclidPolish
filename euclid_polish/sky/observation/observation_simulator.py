@@ -9,7 +9,8 @@ detector sampling and mosaic interpolation. Noise follows the detector:
     HR (0.05″, e⁻)
       → fftconvolve with the band PSF sample (real ePSF / Gaussian fallback)
       → sum-rebin round(0.10 / 0.05) = 2× → 0.10″
-      → VIS: Poisson/read/artifacts directly at native 0.10″
+      → VIS: Poisson/read at native 0.10″
+             → optional empirical MER residual coloring + artifacts
       → NISP: four independent native 0.30″ noise residuals
              → dithered bilinear MER resample → flux-area scale /9
       → LR (0.10″, e⁻)
@@ -50,6 +51,7 @@ from euclid_polish.sky.observation.field_variations import (
     draw_noise_scale_map,
 )
 from euclid_polish.sky.observation.noise import apply_archive_noise
+from euclid_polish.sky.observation.noise_calibration import VISNoiseCalibration
 from euclid_polish.sky.observation.resample import upsample as resample_upsample
 from euclid_polish.sky.observation.saturation import (
     StarSaturationModel,
@@ -73,6 +75,9 @@ class ObservationSimulatorConfig:
     nisp_resample_kernel: str = Config.NISP_RESAMPLE_KERNEL  # "bilinear" or "cubic"
     hr_pixel_scale: float = Config.DEFAULT_PIXEL_SCALE        # 0.05 arcsec
     artifact_config: ArtifactConfig | None = None
+    # Optional immutable delivered-MER VIS residual model. None retains the
+    # exact legacy white-noise path. NISP never consumes this calibration.
+    vis_noise_calibration: VISNoiseCalibration | None = None
     # Position-dependent PSF: when ``randomize_psf`` is on, each scene draws one
     # PSF — a star-count-weighted cluster pick, then with probability
     # (1 - psf_unrotated_prob) a random roll rotation (per-pointing telescope
@@ -128,6 +133,13 @@ class ObservationSimulatorConfig:
             )
         if self.hr_pixel_scale <= 0:
             raise ValueError("hr_pixel_scale must be positive")
+        if (
+            self.vis_noise_calibration is not None
+            and not isinstance(self.vis_noise_calibration, VISNoiseCalibration)
+        ):
+            raise TypeError(
+                "vis_noise_calibration must be a VISNoiseCalibration or None"
+            )
         if not 0.0 <= float(self.psf_warp_prob) <= 1.0:
             raise ValueError("psf_warp_prob must be in [0, 1]")
         if float(self.psf_warp_alpha_max) < 0.0:
@@ -395,12 +407,21 @@ class ObservationSimulator:
         # 3. Apply delivered-MER noise. VIS is native on this grid; NISP noise
         #    is generated per 0.30" exposure and dither-resampled to 0.10".
         if self.config.add_noise:
+            vis_calibration = (
+                self.config.vis_noise_calibration if band.name == "VIS" else None
+            )
+            effective_noise_scale_map = noise_scale_map
+            if vis_calibration is not None and vis_calibration.owns_field_scale:
+                # The calibrated absolute RMS already represents field depth;
+                # applying the generic augmentation would scale VIS twice.
+                effective_noise_scale_map = None
             lr_e = apply_archive_noise(
                 lr_signal_e, band, rng,
                 add_artifacts=self.config.add_artifacts,
                 artifact_config=self.config.artifact_config,
                 resample_kernel=resample_kernel,
-                noise_scale_map=noise_scale_map,
+                noise_scale_map=effective_noise_scale_map,
+                vis_noise_calibration=vis_calibration,
             )
         else:
             lr_e = lr_signal_e.astype(np.float32, copy=False)

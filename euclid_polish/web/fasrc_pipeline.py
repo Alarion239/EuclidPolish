@@ -639,6 +639,53 @@ class EuclidSkyDownloadStep(FASRCPipelineStep):
         ]
 
 
+class VISNoiseSampleStep(FASRCPipelineStep):
+    """Download independent source-maskable VIS samples across Q1 support."""
+
+    def __init__(self):
+        super().__init__(
+            step_id="vis_noise_sample",
+            label="Sample real VIS noise fields (star-footprint k-means)",
+            job_name="vis-noise-samples",
+            defaults=StepResources(
+                partition="shared", n_cpus=8, n_gpus=0,
+                memory="16G", time_limit="4:00:00",
+            ),
+            needs_gpu=False,
+        )
+
+    def build_command(self, params: dict[str, Any]) -> list[str]:
+        cmd = [
+            "scripts/fasrc_download_euclid_sky_cutouts.py",
+            "--sampling-mode", "star-support",
+            "--n-clusters", str(int(params.get("n_clusters", 44) or 44)),
+            "--samples-per-cluster", str(int(
+                params.get("samples_per_cluster", 1) or 1
+            )),
+            "--vis-pixels", str(int(params.get("vis_pixels", 2560) or 2560)),
+            "--workers", str(max(1, int(
+                params.get("workers", params.get("n_cpus", 8)) or 8
+            ))),
+            "--seed", str(int(params.get("seed", 42) or 42)),
+            "--source-release", str(
+                params.get("source_release", "Q1_R1") or "Q1_R1"
+            ),
+        ]
+        for key, flag in (
+            ("star_support_csv", "--star-support-csv"),
+            ("sampling_manifest", "--sampling-manifest"),
+            ("output_dir", "--output-dir"),
+        ):
+            value = str(params.get(key, "") or "").strip()
+            if value:
+                cmd += [flag, value]
+        if str(params.get("regenerate_catalog", "")).strip().lower() in (
+            "1", "true", "yes", "on",
+        ):
+            cmd.append("--regenerate-catalog")
+        return cmd
+
+
 class EuclidRoundtripTFRecordStep(FASRCPipelineStep):
     """EXPERIMENTAL (round-trip lane) — disabled for now, kept for future work."""
 
@@ -1177,6 +1224,29 @@ class EnsembleTrainStep(FASRCPipelineStep):
             if name.strip()
         ))
 
+    @staticmethod
+    def _uses_forward_onthefly(params: dict[str, Any]) -> bool:
+        """Whether any run-wide or per-member recipe uses the live forward."""
+        run_wide = str(params.get("forward_onthefly", "")).strip().lower() in (
+            "1", "true", "yes", "on",
+        )
+        raw_spec = str(params.get("member_spec", "") or "").strip()
+        if not raw_spec:
+            return run_wide
+        try:
+            spec = json.loads(raw_spec)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"per-member spec is not valid JSON: {exc}") from exc
+        if not isinstance(spec, list) or not all(
+            isinstance(item, dict) for item in spec
+        ):
+            raise ValueError(
+                "per-member spec must be a JSON list of objects, one per member"
+            )
+        return run_wide or any(
+            bool(item.get("forward_onthefly")) for item in spec
+        )
+
     def prepare_params(self, params: dict[str, Any]) -> dict[str, Any]:
         from euclid_polish.web.helpers.population_calibration import active_star
 
@@ -1200,19 +1270,74 @@ class EnsembleTrainStep(FASRCPipelineStep):
         prepared["array_count"] = len(names)
         requested = int(prepared.get("array_max_parallel", 2) or 2)
         prepared["array_max_parallel"] = max(1, min(requested, len(names)))
+        uses_forward_onthefly = self._uses_forward_onthefly(prepared)
         stars = active_star()
         if stars:
             prepared["_star_prior_json"] = json.dumps(
                 stars, separators=(",", ":"), sort_keys=True,
             )
-        elif str(prepared.get("forward_onthefly", "")).strip().lower() in (
-            "1", "true", "yes", "on",
-        ):
+        elif uses_forward_onthefly:
             raise ValueError(
                 "activate a valid Gaia+Euclid stellar calibration before "
                 "on-the-fly training"
             )
+        if uses_forward_onthefly:
+            from euclid_polish.web.helpers.vis_noise_calibration import (
+                runtime_vis_noise_payload,
+                vis_noise_state,
+            )
+
+            vis_state = vis_noise_state()
+            if not vis_state.get("is_active"):
+                raise ValueError(
+                    "activate a valid multi-field empirical VIS-noise "
+                    "calibration before on-the-fly training"
+                )
+            vis_runtime = runtime_vis_noise_payload(vis_state.get("active"))
+            prepared["_vis_noise_calibration_json"] = json.dumps(
+                vis_runtime, separators=(",", ":"), sort_keys=True,
+            )
         return prepared
+
+    def prepare_payload_files(
+        self,
+        params: dict[str, Any],
+        *,
+        job_name: str,
+        relative_log_dir: str,
+    ) -> dict[str, str]:
+        """Stage immutable live-forward inputs outside the SLURM argv."""
+        payload_files: dict[str, str] = {}
+        for source_key, path_key, hash_key, fingerprint_key, suffix in (
+            (
+                "_star_prior_json",
+                "_star_prior_file",
+                "_star_prior_sha256",
+                "_star_prior_fingerprint",
+                "star-population",
+            ),
+            (
+                "_vis_noise_calibration_json",
+                "_vis_noise_calibration_file",
+                "_vis_noise_calibration_sha256",
+                "_vis_noise_calibration_fingerprint",
+                "vis-noise",
+            ),
+        ):
+            content = str(params.pop(source_key, "") or "").strip()
+            if not content:
+                continue
+            digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+            payload = json.loads(content)
+            relative_path = (
+                f"{relative_log_dir}/{job_name}.{suffix}.{digest[:12]}.json"
+            )
+            params[path_key] = relative_path
+            params[hash_key] = digest
+            if payload.get("fingerprint"):
+                params[fingerprint_key] = str(payload["fingerprint"])
+            payload_files[relative_path] = content + "\n"
+        return payload_files
 
     def array_shape(self, params: dict[str, Any]) -> tuple[int, int] | None:
         count = int(params.get("array_count", 1) or 1)
@@ -1312,12 +1437,28 @@ class EnsembleTrainStep(FASRCPipelineStep):
         if str(params.get("starless", "1")).strip().lower() in (
             "0", "false", "no", "off"):
             cmd += ["--starless", "0"]
-        if params.get("_star_prior_json"):
+        star_prior_file = str(params.get("_star_prior_file", "") or "").strip()
+        if star_prior_file:
+            cmd += ["--star-prior-file", star_prior_file]
+        elif params.get("_star_prior_json"):
             cmd += ["--star-prior-json", str(params["_star_prior_json"])]
         # Live forward model: full-field PSF+noise re-realization per visit.
-        if str(params.get("forward_onthefly", "")).strip().lower() in (
-                "1", "true", "yes", "on"):
+        run_wide_forward = str(
+            params.get("forward_onthefly", "")
+        ).strip().lower() in ("1", "true", "yes", "on")
+        if run_wide_forward:
             cmd += ["--forward-onthefly", "1"]
+        if self._uses_forward_onthefly(params):
+            vis_noise_file = str(
+                params.get("_vis_noise_calibration_file", "") or ""
+            ).strip()
+            if vis_noise_file:
+                cmd += ["--vis-noise-calibration-file", vis_noise_file]
+            elif params.get("_vis_noise_calibration_json"):
+                cmd += [
+                    "--vis-noise-calibration-json",
+                    str(params["_vis_noise_calibration_json"]),
+                ]
             for flag, key in (("--psf-subset", "psf_subset"),
                               ("--crops-per-field", "crops_per_field"),
                               ("--hr-crop-size", "hr_crop_size")):
@@ -1525,6 +1666,22 @@ class SyntheticGenerateStep(RunPipelineStep):
             prepared["star_density_arcmin2"] = float(
                 population["density_arcmin2"]
             )
+        from euclid_polish.web.helpers.vis_noise_calibration import (
+            runtime_vis_noise_payload,
+            vis_noise_state,
+        )
+
+        vis_state = vis_noise_state()
+        if not vis_state.get("is_active"):
+            raise ValueError(
+                "activate a valid multi-field empirical VIS-noise calibration "
+                "before generating fields"
+            )
+        prepared["_vis_noise_calibration_json"] = json.dumps(
+            runtime_vis_noise_payload(vis_state.get("active")),
+            separators=(",", ":"),
+            sort_keys=True,
+        )
         return prepared
 
     def prepare_payload_files(
@@ -1557,6 +1714,13 @@ class SyntheticGenerateStep(RunPipelineStep):
                 "_star_prior_sha256",
                 "_star_prior_fingerprint",
                 "star-population",
+            ),
+            (
+                "_vis_noise_calibration_json",
+                "_vis_noise_calibration_file",
+                "_vis_noise_calibration_sha256",
+                "_vis_noise_calibration_fingerprint",
+                "vis-noise",
             ),
         ):
             content = str(params.pop(source_key, "") or "").strip()
@@ -1628,6 +1792,16 @@ class SyntheticGenerateStep(RunPipelineStep):
             cmd += ["--star-prior-file", star_prior_file]
         elif params.get("_star_prior_json"):
             cmd += ["--star-prior-json", str(params["_star_prior_json"])]
+        vis_noise_file = str(
+            params.get("_vis_noise_calibration_file", "") or ""
+        ).strip()
+        if vis_noise_file:
+            cmd += ["--vis-noise-calibration-file", vis_noise_file]
+        elif params.get("_vis_noise_calibration_json"):
+            cmd += [
+                "--vis-noise-calibration-json",
+                str(params["_vis_noise_calibration_json"]),
+            ]
         # Scene-population and forward-PSF knobs (from /config). Emit only when
         # supplied so direct programmatic callers can still rely on CLI
         # defaults. The warp is realised while each dirty exposure is rendered;
@@ -1658,6 +1832,7 @@ STEP_CLASSES: tuple[Callable[[], FASRCPipelineStep], ...] = (
     DifferentialKernelStep,
     HSTTFRecordStep,
     EuclidSkyDownloadStep,
+    VISNoiseSampleStep,
     EuclidRoundtripTFRecordStep,
     EuclidQueryStep,
     EuclidVerifyPhotometryStep,

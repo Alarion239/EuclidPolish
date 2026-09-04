@@ -392,6 +392,7 @@ class Model:
         saturation_mask_prob: float = Config.TRAIN_SATURATION_MASK_PROB,
         target_fwhm_arcsec: float = Config.TARGET_PSF_FWHM_ARCSEC,
         star_prior_payload: dict | None = None,
+        vis_noise_calibration_payload: dict | None = None,
         starless: bool = True,
         **kwargs,
     ) -> None:
@@ -463,7 +464,10 @@ class Model:
                                   saturation_mask_prob=float(
                                       saturation_mask_prob),
                                   target_fwhm_arcsec=target_fwhm,
-                                  star_prior_payload=star_prior_payload)
+                                  star_prior_payload=star_prior_payload,
+                                  vis_noise_calibration_payload=(
+                                      vis_noise_calibration_payload
+                                  ))
             train_ds = self._build_onthefly_pipeline(
                 hr_path, batch_size, fwd,
                 noise_aug_rn=float(noise_aug),
@@ -509,6 +513,18 @@ class Model:
             print(f"  plateau LR guard OFF for loss={loss_norm} "
                   f"(no degenerate basin off L1 — guard is L1-only)")
             plateau_lr_enabled = False
+        provenance_fields: dict[str, object] = {
+            "forward_onthefly": bool(forward_onthefly),
+        }
+        if forward_onthefly and isinstance(vis_noise_calibration_payload, dict):
+            fingerprint = vis_noise_calibration_payload.get("fingerprint")
+            version = vis_noise_calibration_payload.get("version")
+            if fingerprint:
+                provenance_fields["vis_noise_calibration_fingerprint"] = str(
+                    fingerprint
+                )
+            if version is not None:
+                provenance_fields["vis_noise_calibration_version"] = int(version)
         trainer = Trainer(self._tf_model, learning_rate=lr_schedule,
                           checkpoint_dir=self._checkpoint_dir,
                           loss=build_loss(loss_norm),
@@ -523,7 +539,8 @@ class Model:
                           plateau_lr_metric=plateau_lr_metric,
                           plateau_rollback_min_gap=plateau_rollback_min_gap,
                           plateau_lr_recovery=plateau_lr_recovery,
-                          resume_track=resume_track)
+                          resume_track=resume_track,
+                          provenance_fields=provenance_fields)
         trainer.train(train_ds, valid_ds, steps=steps, **kwargs)
 
         if _checkpoint_exists(self._checkpoint_dir):

@@ -1,6 +1,7 @@
 import { useEffect, useState, type CSSProperties } from "react";
 import Plot, { Legend, type PlotProps, type Series, type Tick } from "../charts/Plot";
 import { C, categorical } from "../colors";
+import { StepById } from "../fasrc";
 import { useResource } from "../hooks";
 import { JobProgressView, useJob } from "../jobs";
 import {
@@ -95,10 +96,106 @@ type Availability = {
   };
   field_area_arcmin2: number;
 };
+type MaybeNumber = number | null;
+type VisNoiseRmsValidation = {
+  model: MaybeNumber;
+  real: MaybeNumber;
+  ratio: MaybeNumber;
+  p16: MaybeNumber;
+  p50: MaybeNumber;
+  p84: MaybeNumber;
+};
+type VisNoiseLagValidation = {
+  lags_pixels: number[];
+  model: (number | null)[];
+  real: (number | null)[];
+  median_abs_error: MaybeNumber;
+  max_abs_error: MaybeNumber;
+  within_interval_fraction: MaybeNumber;
+};
+type VisNoisePowerValidation = {
+  angular_scale_arcsec: number[];
+  model: (number | null)[];
+  real: (number | null)[];
+  log10_ratio: (number | null)[];
+  median_abs_log10_ratio: MaybeNumber;
+  p90_abs_log10_ratio: MaybeNumber;
+  shape_overlap: MaybeNumber;
+  variance_ratio: MaybeNumber;
+};
+type VisNoiseArtifact = {
+  version: number;
+  kind: string;
+  fingerprint: string;
+  valid?: boolean;
+  active?: boolean;
+  fitted_at?: string;
+  warnings?: string[];
+  source_release?: string;
+  estimator_version?: string;
+  residual_scale?: number;
+  owns_field_scale?: boolean;
+  runtime?: {
+    version?: number;
+    kind?: string;
+    fingerprint?: string;
+    source_release?: string;
+    estimator_version?: string;
+    residual_scale?: number;
+    owns_field_scale?: boolean;
+  };
+  sample_summary?: {
+    independent_parent_count: number;
+    sample_count: number;
+    tile_count: number;
+    unmasked_pixels: number;
+    masked_fraction: number;
+    train_parent_count: number;
+    holdout_parent_count: number;
+    fields?: Record<string, number>;
+  };
+  validation?: {
+    rms: VisNoiseRmsValidation;
+    lag: VisNoiseLagValidation;
+    power: VisNoisePowerValidation;
+  };
+};
+type VisNoiseSampling = {
+  manifest_path?: string;
+  exists: boolean;
+  version?: number;
+  seed?: number;
+  source_release?: string;
+  planned_samples: number;
+  completed_samples: number;
+  failed_samples: number;
+  independent_parent_count: number;
+  fields?: Record<string, number>;
+};
+type VisNoiseCalibrationState = {
+  candidate: VisNoiseArtifact | null;
+  active: VisNoiseArtifact | null;
+  is_active: boolean;
+  candidate_is_active: boolean;
+  can_fit: boolean;
+  unavailable_reason?: string | null;
+  sampling?: VisNoiseSampling | null;
+};
 type ApiPayload = {
   comparison: Comparison | null;
   availability: Availability;
   authenticated: boolean;
+  vis_noise_calibration?: VisNoiseCalibrationState;
+};
+
+const EMPTY_VIS_NOISE_STATE: VisNoiseCalibrationState = {
+  candidate: null,
+  active: null,
+  is_active: false,
+  candidate_is_active: false,
+  can_fit: false,
+  unavailable_reason: "VIS noise calibration status is unavailable.",
+  sampling: null,
 };
 
 const BANDS: Band[] = ["VIS", "Y_E", "J_E", "H_E"];
@@ -118,6 +215,15 @@ function domain(values: readonly (number | null)[], includeZero = false): [numbe
   if (lo === hi) return [lo - 0.5, hi + 0.5];
   const pad = (hi - lo) * 0.06;
   return [includeZero ? 0 : lo - pad, hi + pad];
+}
+
+function positiveDomain(values: readonly number[]): [number, number] {
+  const good = values.filter((value) => value > 0 && Number.isFinite(value));
+  if (!good.length) return [0.1, 1];
+  const lo = Math.min(...good), hi = Math.max(...good);
+  if (lo === hi) return [lo / 1.25, hi * 1.25];
+  const pad = (Math.log(hi) - Math.log(lo)) * 0.06;
+  return [Math.exp(Math.log(lo) - pad), Math.exp(Math.log(hi) + pad)];
 }
 
 function ticks([lo, hi]: [number, number], count = 5): Tick[] {
@@ -368,6 +474,317 @@ function DatasetRuler({ availability, comparison }: {
         <span>0</span><span>{Math.round(max / 2)}</span><span>{max} fields</span>
       </div>
     </section>
+  );
+}
+
+function measured(value: MaybeNumber | undefined): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function metricLabel(
+  value: MaybeNumber | undefined,
+  digits = 3,
+  suffix = "",
+): string {
+  return measured(value) ? `${value.toFixed(digits)}${suffix}` : "not measured";
+}
+
+function compactInteger(value: number | null | undefined): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "not measured";
+  return new Intl.NumberFormat(undefined, {
+    notation: "compact", maximumFractionDigits: 1,
+  }).format(value as number);
+}
+
+function shortFingerprint(artifact: VisNoiseArtifact | null): string {
+  return artifact?.fingerprint ? `${artifact.fingerprint.slice(0, 12)}…` : "none";
+}
+
+type GateState = "pass" | "fail" | "pending";
+
+function gateState(value: boolean | undefined): GateState {
+  return value == null ? "pending" : value ? "pass" : "fail";
+}
+
+function ValidationGate({ title, state, value, detail }: {
+  title: string; state: GateState; value: string; detail: string;
+}) {
+  return (
+    <div className={`vis-noise-gate vis-noise-gate--${state}`}>
+      <div className="vis-noise-gate__head">
+        <strong>{title}</strong>
+        <Badge tone={state === "pass" ? "good" : state === "fail" ? "bad" : undefined}>
+          {state === "pass" ? "within gate" : state === "fail" ? "outside gate" : "pending"}
+        </Badge>
+      </div>
+      <div className="vis-noise-gate__value">{value}</div>
+      <p>{detail}</p>
+    </div>
+  );
+}
+
+function VisNoiseCalibrationPanel({
+  state, syncBusy, fitBusy, activateBusy, onSync, onFit, onActivate,
+}: {
+  state: VisNoiseCalibrationState;
+  syncBusy: boolean;
+  fitBusy: boolean;
+  activateBusy: boolean;
+  onSync: () => void;
+  onFit: () => void;
+  onActivate: () => void;
+}) {
+  const candidate = state.candidate;
+  const active = state.active;
+  const artifact = candidate ?? active;
+  const summary = artifact?.sample_summary;
+  const validation = artifact?.validation;
+  const rms = validation?.rms;
+  const lag = validation?.lag;
+  const power = validation?.power;
+  const sampling = state.sampling;
+  const runtime = artifact?.runtime;
+  const parents = summary?.independent_parent_count
+    ?? sampling?.independent_parent_count ?? 0;
+  const sampleCount = summary?.sample_count
+    ?? sampling?.completed_samples ?? 0;
+  const fieldCounts = summary?.fields ?? sampling?.fields ?? {};
+  const fieldCoverage = ["EDF-N", "EDF-S", "EDF-F"]
+    .map((field) => `${field} ${fieldCounts[field] ?? 0}`)
+    .join(" · ");
+  const rmsPass = measured(rms?.ratio)
+    ? rms.ratio >= 0.95 && rms.ratio <= 1.05
+    : undefined;
+  const lagPass = measured(lag?.median_abs_error)
+    && measured(lag?.max_abs_error)
+    && measured(lag?.within_interval_fraction)
+    ? lag.median_abs_error <= 0.03
+      && lag.max_abs_error <= 0.07
+      && lag.within_interval_fraction >= 0.80
+    : undefined;
+  const powerPass = measured(power?.median_abs_log10_ratio)
+    && measured(power?.p90_abs_log10_ratio)
+    && measured(power?.shape_overlap)
+    && measured(power?.variance_ratio)
+    ? power.median_abs_log10_ratio <= 0.05
+      && power.p90_abs_log10_ratio <= 0.10
+      && power.shape_overlap >= 0.98
+      && power.variance_ratio >= 0.90
+      && power.variance_ratio <= 1.10
+    : undefined;
+  const powerOrder = (power?.angular_scale_arcsec ?? [])
+    .map((value, index) => ({ value, index }))
+    .filter(({ value }) => value > 0 && Number.isFinite(value))
+    .sort((left, right) => left.value - right.value);
+  const powerScales = powerOrder.map(({ value }) => value);
+  const powerModel = powerOrder.map(({ index }) => power?.model[index] ?? null);
+  const powerReal = powerOrder.map(({ index }) => power?.real[index] ?? null);
+  const lagReady = !!lag && lag.lags_pixels.length >= 2
+    && lag.model.length === lag.lags_pixels.length
+    && lag.real.length === lag.lags_pixels.length;
+  const powerReady = !!power && powerScales.length >= 2
+    && power.model.length === power.angular_scale_arcsec.length
+    && power.real.length === power.angular_scale_arcsec.length;
+  const lagX = domain(lag?.lags_pixels ?? [], true);
+  const lagY = domain([
+    ...(lag?.model ?? []), ...(lag?.real ?? []),
+  ], true);
+  const powerX = positiveDomain(powerScales);
+  const powerY = domain([
+    ...log10(powerModel), ...log10(powerReal),
+  ]);
+  const canActivate = !!candidate?.valid
+    && !state.candidate_is_active && !fitBusy && !activateBusy;
+  const status = state.candidate_is_active
+    ? { label: "candidate active", tone: "good" as const }
+    : candidate?.valid
+      ? { label: active ? "new candidate ready" : "candidate ready", tone: "warn" as const }
+      : candidate
+        ? { label: "candidate failed gates", tone: "bad" as const }
+        : active
+          ? { label: "active calibration", tone: "good" as const }
+          : { label: "not fitted", tone: undefined };
+
+  const requestActivation = () => {
+    if (window.confirm(
+      "Activate this VIS noise candidate for future synthetic generation? Existing TFRecords will not change until they are regenerated.",
+    )) onActivate();
+  };
+
+  return (
+    <Card className="vis-noise-calibration">
+      <CardHead
+        title="VIS background-noise calibration"
+        sub="Source-masked Euclid backgrounds, grouped by independent parent mosaic. Fit a candidate first; activation is a separate decision."
+        right={<Badge tone={status.tone}>{status.label}</Badge>}
+      />
+      <CardBody>
+        <div className="vis-noise-ledger">
+          <div>
+            <span>independent parents</span>
+            <strong>{parents.toLocaleString()}</strong>
+            <small>{fieldCoverage} · need ≥2 in each field</small>
+          </div>
+          <div>
+            <span>accepted samples</span>
+            <strong>{sampleCount.toLocaleString()}</strong>
+            <small>{sampling?.planned_samples
+              ? `${sampling.completed_samples}/${sampling.planned_samples} cached${sampling.failed_samples ? ` · ${sampling.failed_samples} failed` : ""}`
+              : `${summary?.tile_count ?? 0} analysis tiles`}</small>
+          </div>
+          <div>
+            <span>unmasked background</span>
+            <strong>{compactInteger(summary?.unmasked_pixels)}</strong>
+            <small>{measured(summary?.masked_fraction)
+              ? `${(100 * summary.masked_fraction).toFixed(1)}% masked`
+              : "source mask not fitted"}</small>
+          </div>
+          <div>
+            <span>parent split</span>
+            <strong>{summary
+              ? `${summary.train_parent_count} + ${summary.holdout_parent_count}`
+              : "not fitted"}</strong>
+            <small>fit + held-out validation</small>
+          </div>
+        </div>
+
+        <div className="vis-noise-artifacts" aria-label="VIS noise artifact fingerprints">
+          <div>
+            <span>candidate</span>
+            <code title={candidate?.fingerprint}>{shortFingerprint(candidate)}</code>
+          </div>
+          <div>
+            <span>active</span>
+            <code title={active?.fingerprint}>{shortFingerprint(active)}</code>
+          </div>
+          <div>
+            <span>source release</span>
+            <strong>{runtime?.source_release
+              ?? artifact?.source_release ?? sampling?.source_release ?? "unknown"}</strong>
+          </div>
+          <div>
+            <span>field-scale ownership</span>
+            <strong>{(runtime?.owns_field_scale ?? artifact?.owns_field_scale) == null
+              ? "not fitted"
+              : (runtime?.owns_field_scale ?? artifact?.owns_field_scale)
+                ? "empirical model" : "legacy variation"}</strong>
+          </div>
+        </div>
+
+        <div className="vis-noise-gates" aria-label="Held-out VIS noise validation gates">
+          <ValidationGate
+            title="Robust RMS"
+            state={gateState(rmsPass)}
+            value={measured(rms?.ratio) ? `${rms.ratio.toFixed(3)}×` : "not measured"}
+            detail={`model ${metricLabel(rms?.model, 3)} / held-out ${metricLabel(rms?.real, 3)} e⁻ px⁻¹ · gate 0.95–1.05×`}
+          />
+          <ValidationGate
+            title="Lag covariance"
+            state={gateState(lagPass)}
+            value={metricLabel(lag?.median_abs_error, 3)}
+            detail={`median |Δρ| · max ${metricLabel(lag?.max_abs_error, 3)} · ${measured(lag?.within_interval_fraction) ? `${(100 * lag.within_interval_fraction).toFixed(0)}%` : "—"} inside interval · gates 0.03 / 0.07 / 80%`}
+          />
+          <ValidationGate
+            title="Angular power"
+            state={gateState(powerPass)}
+            value={metricLabel(power?.shape_overlap, 3)}
+            detail={`shape overlap · median / p90 |Δlog₁₀P| ${metricLabel(power?.median_abs_log10_ratio, 3)} / ${metricLabel(power?.p90_abs_log10_ratio, 3)} dex · variance ${metricLabel(power?.variance_ratio, 3)}×`}
+          />
+        </div>
+
+        <div className="vis-noise-plot-grid">
+          <div className="vis-noise-plot">
+            <header>
+              <strong>Normalized lag covariance</strong>
+              <span>held-out radial profile</span>
+            </header>
+            {lagReady ? <>
+              <AdjustablePlot
+                boundsLabel="VIS lag covariance"
+                xDomain={lagX} yDomain={lagY}
+                guides={[{ axis: "y", v: 0, dash: [4, 4] }]}
+                xLabel="pixel lag"
+                yLabel="ρ(lag) = C(lag) / C(0)"
+                series={[
+                  { x: lag!.lags_pixels, y: lag!.model, color: C.comb, width: 2.6, dots: true },
+                  { x: lag!.lags_pixels, y: lag!.real, color: C.mean, width: 2.3, dash: [9, 5], dots: true, marker: "diamond" },
+                ]}
+              />
+              <Legend items={[
+                { color: C.comb, label: "fitted model", line: true, marker: "filled" },
+                { color: C.mean, label: "held-out Euclid", line: true, dash: true, marker: "diamond" },
+              ]} />
+            </> : <div className="vis-noise-plot__empty">Fit a candidate to measure lag covariance.</div>}
+          </div>
+          <div className="vis-noise-plot">
+            <header>
+              <strong>Source-masked angular power</strong>
+              <span>background only</span>
+            </header>
+            {powerReady ? <>
+              <AdjustablePlot
+                boundsLabel="VIS background angular power"
+                xDomain={powerX} yDomain={powerY} xScale="log"
+                xTicksForDomain={logarithmicTicks}
+                yTicksForDomain={(value) => ticks(value).map((tick) => ({
+                  ...tick, label: `10^${tick.label}`,
+                }))}
+                xLabel="angular scale (arcsec / cycle)"
+                yLabel="log₁₀ normalized background power"
+                series={[
+                  { x: powerScales, y: log10(powerModel), color: C.comb, width: 2.6, dots: true },
+                  { x: powerScales, y: log10(powerReal), color: C.mean, width: 2.3, dash: [9, 5], dots: true, marker: "diamond" },
+                ]}
+              />
+              <Legend items={[
+                { color: C.comb, label: "fitted model", line: true, marker: "filled" },
+                { color: C.mean, label: "held-out Euclid", line: true, dash: true, marker: "diamond" },
+              ]} />
+            </> : <div className="vis-noise-plot__empty">Fit a candidate to measure background power.</div>}
+          </div>
+        </div>
+
+        {rms && <p className="vis-noise-calibration__interval">
+          Held-out robust RMS p16 / p50 / p84: {metricLabel(rms.p16, 3)} / {metricLabel(rms.p50, 3)} / {metricLabel(rms.p84, 3)} e⁻ px⁻¹.
+        </p>}
+        {(state.unavailable_reason || artifact?.warnings?.length) && (
+          <div className="vis-noise-calibration__warnings" role="status">
+            {state.unavailable_reason && <p>{state.unavailable_reason}</p>}
+            {artifact?.warnings?.map((warning, index) => (
+              <p key={`${index}-${warning}`}>{warning}</p>
+            ))}
+          </div>
+        )}
+        <div className="vis-noise-calibration__actions">
+          <div>
+            <Button
+              disabled={syncBusy || fitBusy || activateBusy}
+              onClick={onSync}
+            >
+              {syncBusy ? "Syncing VIS fields…" : sampling?.exists
+                ? "Refresh sampled VIS fields" : "Sync sampled VIS fields"}
+            </Button>
+            <Button
+              variant={candidate ? "default" : "primary"}
+              disabled={!state.can_fit || fitBusy || activateBusy}
+              onClick={onFit}
+            >
+              {fitBusy ? "Fitting VIS noise…" : candidate
+                ? "Refit from cached VIS samples" : "Fit cached VIS samples"}
+            </Button>
+            <Button
+              variant="primary"
+              disabled={!canActivate}
+              onClick={requestActivation}
+            >
+              {activateBusy ? "Activating…" : state.candidate_is_active
+                ? "Candidate is active" : "Activate candidate"}
+            </Button>
+          </div>
+          <p>Activation changes the frozen calibration used by future generation jobs; it never rewrites existing records.</p>
+        </div>
+      </CardBody>
+    </Card>
   );
 }
 
@@ -750,9 +1167,13 @@ export default function PopulationComparisonPage() {
     { ttl: 10_000 },
   );
   const build = useJob();
+  const visNoiseSync = useJob();
+  const visNoiseFit = useJob();
+  const visNoiseActivate = useJob();
   const trainingCatalog = useJob();
   const api = resource.data;
   const comparison = api?.comparison ?? null;
+  const visNoise = api?.vis_noise_calibration ?? EMPTY_VIS_NOISE_STATE;
   const stale = !!comparison && !!api && (
     comparison.samples.synthetic.fields !== api.availability.synthetic.fields
     || comparison.samples.real.fields !== api.availability.real.fields
@@ -766,6 +1187,21 @@ export default function PopulationComparisonPage() {
   const rebuild = () => build.run("/api/population-comparison/build", {}, {
     onDone: (job) => { if (job.status !== "failed") resource.reload(); },
   });
+  const fitVisNoise = () => visNoiseFit.run(
+    "/api/population-comparison/fit-vis-noise",
+    {},
+    { onDone: (job) => { if (job.status !== "failed") resource.reload(); } },
+  );
+  const syncVisNoise = () => visNoiseSync.run(
+    "/api/population-comparison/sync-vis-noise-samples",
+    {},
+    { onDone: (job) => { if (job.status !== "failed") resource.reload(); } },
+  );
+  const activateVisNoise = () => visNoiseActivate.run(
+    "/api/population-comparison/activate-vis-noise",
+    {},
+    { onDone: (job) => { if (job.status !== "failed") resource.reload(); } },
+  );
   const syncTrainingCatalog = () => trainingCatalog.run(
     "/api/population-comparison/sync-training-catalog",
     {},
@@ -797,6 +1233,19 @@ export default function PopulationComparisonPage() {
 
       <DatasetRuler availability={api.availability} comparison={comparison} />
       <JobProgressView job={build.job} error={build.error} />
+      <StepById stepId="vis_noise_sample" />
+      <VisNoiseCalibrationPanel
+        state={visNoise}
+        syncBusy={visNoiseSync.busy}
+        fitBusy={visNoiseFit.busy}
+        activateBusy={visNoiseActivate.busy}
+        onSync={syncVisNoise}
+        onFit={fitVisNoise}
+        onActivate={activateVisNoise}
+      />
+      <JobProgressView job={visNoiseSync.job} error={visNoiseSync.error} />
+      <JobProgressView job={visNoiseFit.job} error={visNoiseFit.error} />
+      <JobProgressView job={visNoiseActivate.job} error={visNoiseActivate.error} />
 
       {!comparison ? (
         <Empty>

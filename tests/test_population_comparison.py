@@ -821,6 +821,16 @@ def test_population_comparison_page_and_status_route(monkeypatch):
     monkeypatch.setattr(routes, "availability",
                         lambda: expected_availability)
     monkeypatch.setattr(routes, "read_comparison", lambda: None)
+    noise_state = {
+        "candidate": {"fingerprint": "c" * 64, "valid": True},
+        "active": None,
+        "is_active": False,
+        "candidate_is_active": False,
+        "can_fit": True,
+        "unavailable_reason": None,
+        "sampling": {"independent_parent_count": 4},
+    }
+    monkeypatch.setattr(routes, "vis_noise_state", lambda: noise_state)
     monkeypatch.setattr(routes.euclid_session, "is_authenticated",
                         lambda: False)
     client = create_app().test_client()
@@ -835,7 +845,140 @@ def test_population_comparison_page_and_status_route(monkeypatch):
     assert payload["comparison"] is None
     assert payload["availability"] == expected_availability
     assert payload["authenticated"] is False
+    assert payload["vis_noise_calibration"] == noise_state
     assert "calibrations" not in payload
+
+
+def test_vis_noise_fit_and_activate_routes_are_separate_jobs(monkeypatch):
+    from euclid_polish.web.app import create_app
+    from euclid_polish.web.routes import population_comparison as routes
+
+    events = []
+
+    class Capture:
+        def tick(self, current, total, label):
+            events.append(("tick", current, total, label))
+
+        def write(self, message):
+            events.append(("write", message))
+
+    def fit(*, progress=None):
+        events.append(("fit",))
+        assert progress is not None
+        progress(3, 4, "held-out parent validation")
+        return {"fingerprint": "f" * 64, "valid": True}
+
+    def activate():
+        events.append(("activate",))
+        return {"fingerprint": "f" * 64, "valid": True, "active": True}
+
+    def spawn(*, label, target):
+        events.append(("spawn", label))
+        result = target(Capture())
+        events.append(("result", result))
+        return f"job-{len([event for event in events if event[0] == 'spawn'])}"
+
+    monkeypatch.setattr(routes, "fit_vis_noise_candidate", fit)
+    monkeypatch.setattr(routes, "activate_vis_noise_candidate", activate)
+    monkeypatch.setattr(routes.REGISTRY, "spawn", spawn)
+    client = create_app().test_client()
+
+    fitted = client.post("/api/population-comparison/fit-vis-noise")
+    activated = client.post("/api/population-comparison/activate-vis-noise")
+
+    assert fitted.status_code == 200
+    assert fitted.get_json() == {"ok": True, "job_id": "job-1"}
+    assert activated.status_code == 200
+    assert activated.get_json() == {"ok": True, "job_id": "job-2"}
+    assert ("fit",) in events
+    assert ("activate",) in events
+    assert (
+        "spawn", "population comparison: fit VIS background noise"
+    ) in events
+    assert (
+        "spawn", "population comparison: activate VIS background noise"
+    ) in events
+    assert any(
+        event[:2] == ("tick", 3) and event[3] == "held-out parent validation"
+        for event in events
+    )
+
+
+def test_vis_noise_sample_sync_installs_local_manifest(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    from euclid_polish.web.app import create_app
+    from euclid_polish.web.routes import population_comparison as routes
+
+    remote_manifest = tmp_path / "remote-manifest.json"
+    remote_manifest.write_text(json.dumps({
+        "version": 1,
+        "kind": "euclid_vis_noise_sampling",
+        "source_release": "Q1_R1",
+        "samples": [{
+            "sample_id": 0,
+            "parent_id": "parent-a",
+            "status": "written",
+            "output_path": (
+                "/remote/data/euclid_sky/vis_noise_samples/"
+                "cutouts/sky_0000.fits"
+            ),
+        }],
+    }))
+    cached_fits = tmp_path / "sky_0000.fits"
+    cached_fits.write_bytes(b"FITS")
+    local_manifest = tmp_path / "local" / "vis_noise_sampling_manifest.json"
+    fetched = []
+
+    def fetch(remote, **_kwargs):
+        fetched.append(remote)
+        path = remote_manifest if remote.endswith(".json") else cached_fits
+        return SimpleNamespace(
+            ok=True, local_path=str(path), error=None,
+            size_bytes=path.stat().st_size,
+        )
+
+    class Capture:
+        def tick(self, *_args):
+            pass
+
+        def write(self, *_args):
+            pass
+
+    monkeypatch.setattr(routes.fasrc_config, "load", lambda: SimpleNamespace(
+        data_dir="/remote/data",
+    ))
+    monkeypatch.setattr(routes, "ensure_ssh_connected", lambda: None)
+    monkeypatch.setattr(routes.fasrc_fetcher, "fetch_one_file", fetch)
+    monkeypatch.setattr(
+        routes, "default_sampling_manifest_path", lambda: local_manifest,
+    )
+    monkeypatch.setattr(
+        routes.REGISTRY, "spawn", lambda *, label, target: (
+            target(Capture()), "sync-job"
+        )[1],
+    )
+
+    response = create_app().test_client().post(
+        "/api/population-comparison/sync-vis-noise-samples"
+    )
+
+    assert response.status_code == 200
+    assert response.get_json() == {"ok": True, "job_id": "sync-job"}
+    installed = json.loads(local_manifest.read_text())
+    assert installed["samples"][0]["status"] == "cached"
+    installed_fits = local_manifest.parent / "cutouts" / "sky_0000.fits"
+    assert installed["samples"][0]["output_path"] == str(installed_fits)
+    assert installed_fits.read_bytes() == b"FITS"
+    assert installed["samples"][0]["remote_output_path"].startswith("/remote/")
+    assert installed["sync"]["completed_samples"] == 1
+    assert fetched == [
+        (
+            "/remote/data/euclid_sky/vis_noise_samples/"
+            "vis_noise_sampling_manifest.json"
+        ),
+        "/remote/data/euclid_sky/vis_noise_samples/cutouts/sky_0000.fits",
+    ]
 
 
 def test_field_statistics_has_no_population_query_or_fit_routes():
@@ -863,6 +1006,32 @@ def test_field_statistics_has_no_population_query_or_fit_routes():
     assert "the fit that connects them" not in source
 
 
+def test_field_statistics_exposes_vis_noise_review_and_activation_controls():
+    root = Path(__file__).parents[1] / "euclid_polish/web/frontend/src/pages"
+    source = (root / "PopulationComparison.tsx").read_text()
+    styles = (root / "population-comparison.css").read_text()
+
+    assert '"/api/population-comparison/fit-vis-noise"' in source
+    assert '"/api/population-comparison/activate-vis-noise"' in source
+    assert '"/api/population-comparison/sync-vis-noise-samples"' in source
+    assert 'stepId="vis_noise_sample"' in source
+    assert "VIS background-noise calibration" in source
+    assert "independent parents" in source
+    assert "unmasked background" in source
+    assert "Robust RMS" in source
+    assert "Normalized lag covariance" in source
+    assert "Source-masked angular power" in source
+    assert "runtime?.source_release" in source
+    assert "runtime?.owns_field_scale" in source
+    assert "window.confirm" in source
+    assert source.index("Fit cached VIS samples") < source.index(
+        "Activate candidate"
+    )
+    assert ".vis-noise-ledger" in styles
+    assert ".vis-noise-gates" in styles
+    assert ".vis-noise-plot-grid" in styles
+
+
 def test_population_comparison_status_selects_training_variant(monkeypatch):
     from euclid_polish.web.app import create_app
     from euclid_polish.web.routes import population_comparison as routes
@@ -878,6 +1047,11 @@ def test_population_comparison_status_selects_training_variant(monkeypatch):
     }
     monkeypatch.setattr(routes, "availability", lambda: {})
     monkeypatch.setattr(routes, "read_comparison", lambda: cached)
+    monkeypatch.setattr(
+        routes,
+        "vis_noise_state",
+        lambda: {"candidate": None, "active": None, "is_active": False},
+    )
     monkeypatch.setattr(
         routes.euclid_session, "is_authenticated", lambda: False
     )
@@ -896,3 +1070,4 @@ def test_population_comparison_status_selects_training_variant(monkeypatch):
     assert "cosmos_euclid_fit" not in current["comparison"]["population"]
     assert "tng_prior" not in current["comparison"]["population"]
     assert "population_with_training" not in with_training["comparison"]
+    assert current["vis_noise_calibration"]["is_active"] is False

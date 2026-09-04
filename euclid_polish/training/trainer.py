@@ -256,6 +256,7 @@ class Trainer:
         plateau_rollback_min_gap: float = Config.PLATEAU_ROLLBACK_MIN_GAP,
         plateau_lr_recovery: bool = Config.PLATEAU_LR_RECOVERY,
         resume_track: str = "latest",
+        provenance_fields: dict[str, object] | None = None,
     ):
         """
         Initialize the trainer.
@@ -311,6 +312,7 @@ class Trainer:
         self.hst_loss_weight         = float(hst_loss_weight)
         self.star_anchor_loss_weight = float(star_anchor_loss_weight)
         self.nonneg_sr_weight        = float(nonneg_sr_weight)
+        self._provenance_fields = dict(provenance_fields or {})
         # Build Adam with a CONSTANT, settable learning rate so the divergence
         # guard can halve it on repeated rollbacks (an Adam built with a
         # LearningRateSchedule is not settable). A passed schedule is kept and
@@ -447,6 +449,7 @@ class Trainer:
                     "synthetic_loss_weight": self.synthetic_loss_weight,
                     "hst_loss_weight": self.hst_loss_weight,
                     "star_anchor_loss_weight": self.star_anchor_loss_weight,
+                    **self._provenance_fields,
                 }),
             )
             store.put(run)

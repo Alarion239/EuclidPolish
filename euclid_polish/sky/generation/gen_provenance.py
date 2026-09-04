@@ -14,7 +14,7 @@ from __future__ import annotations
 import os
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from euclid_polish.provenance.defaults import default_store
 from euclid_polish.provenance.gitinfo import capture_git
@@ -27,6 +27,27 @@ from euclid_polish.provenance.records import (
     Stamp,
 )
 from euclid_polish.provenance.store import ProvStore
+
+if TYPE_CHECKING:
+    from euclid_polish.sky.generation.sky_simulator import SkySimulatorConfig
+    from euclid_polish.sky.observation.observation_simulator import (
+        ObservationSimulatorConfig,
+    )
+
+
+@dataclass(frozen=True)
+class GenerateAndConvolveProvenanceConfig:
+    """Frozen inputs for a combined parallel generation/forward pass.
+
+    The combined path produces clean scenes and delivered-grid observations in
+    one run, so its provenance captures both configuration domains.  The
+    flattened VIS-noise fingerprint supports cheap compatibility checks while
+    the nested observation config retains the complete calibration payload.
+    """
+
+    generation: SkySimulatorConfig
+    observation: ObservationSimulatorConfig
+    vis_noise_calibration_fingerprint: str | None
 
 
 @dataclass

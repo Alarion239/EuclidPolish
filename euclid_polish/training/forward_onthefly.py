@@ -44,6 +44,7 @@ from euclid_polish.psf.psf_set import PSFSet
 from euclid_polish.psf.rotpool import load_all_band_rotpools
 from euclid_polish.sky.generation.sky_simulator import inject_random_stars
 from euclid_polish.sky.generation.stellar_sed import EmpiricalStellarPrior
+from euclid_polish.sky.observation.noise_calibration import VISNoiseCalibration
 from euclid_polish.sky.observation.observation_simulator import (
     ObservationSimulator,
     ObservationSimulatorConfig,
@@ -117,6 +118,7 @@ class OnTheFlyForward:
         inject_stars: bool = True,
         star_density_arcmin2: float = Config.DEFAULT_STAR_DENSITY_ARCMIN2,
         star_prior_payload: dict | None = None,
+        vis_noise_calibration_payload: dict | None = None,
         pixel_scale_arcsec: float = Config.DEFAULT_PIXEL_SCALE,
         psf_warp_prob: float = Config.TRAIN_PSF_WARP_PROB,
         psf_warp_alpha_max: float = Config.TRAIN_PSF_WARP_ALPHA_MAX,
@@ -138,6 +140,10 @@ class OnTheFlyForward:
         self.stellar_prior = (
             EmpiricalStellarPrior.from_payload(star_prior_payload)
             if star_prior_payload else None
+        )
+        vis_noise_calibration = (
+            VISNoiseCalibration.from_payload(vis_noise_calibration_payload)
+            if vis_noise_calibration_payload else None
         )
         if (
             self.inject_stars
@@ -177,6 +183,7 @@ class OnTheFlyForward:
                 psf_warp_alpha_max=float(psf_warp_alpha_max),
                 psf_warp_sigma=float(psf_warp_sigma),
                 saturation_mask_prob=float(saturation_mask_prob),
+                vis_noise_calibration=vis_noise_calibration,
             ))
         # tf.data calls from several threads → per-call child RNGs, spawned
         # under a lock (SeedSequence.spawn is not thread-safe), used lock-free.

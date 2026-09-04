@@ -163,12 +163,22 @@ def test_trainer_records_seed_and_links_checkpoint(tiny_model, tmp_path,
     monkeypatch.setattr(trainer_mod, "default_store", lambda: store)
 
     ckpt = str(tmp_path / "ckpt")
-    tr = Trainer(tiny_model, checkpoint_dir=ckpt, seed=12345)
+    tr = Trainer(
+        tiny_model,
+        checkpoint_dir=ckpt,
+        seed=12345,
+        provenance_fields={
+            "vis_noise_calibration_fingerprint": "a" * 64,
+            "vis_noise_calibration_version": 1,
+        },
+    )
     tr._begin_reproducible_run(steps=10, evaluate_every=5)
 
     assert tr._training_run_id is not None
     run = store.get(tr._training_run_id)
     assert run.kind == "trainingrun" and run.seed == 12345
+    assert run.config.fields["vis_noise_calibration_fingerprint"] == "a" * 64
+    assert run.config.fields["vis_noise_calibration_version"] == 1
 
     tr._emit_checkpoint_provenance()
     stamp = read_checkpoint_provenance(ckpt)

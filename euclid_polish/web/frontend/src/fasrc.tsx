@@ -11,7 +11,8 @@ import { useResource, usePolling } from "./hooks";
 import Plot, { Legend } from "./charts/Plot";
 import {
   Badge, Button, Card, CardBody, CardHead, ConnBadge, DefList, Empty, LogTail,
-  NumberField, Field, Input, ProgressBar, Segmented, Spinner, Table, type Column,
+  NumberField, Field, Input, ProgressBar, Segmented, Spinner, Table, Checkbox,
+  type Column,
 } from "./ui";
 
 export type StepDefaults = {
@@ -507,6 +508,13 @@ function taskColumnsFor(stepId: string): Column<HistoryRow>[] {
       ];
     case "download_euclid_cutouts":
       return [taskColumn("VIS px", (p) => paramCount(p, "vis_pixels"), 76), taskColumn("workers", (p) => paramCount(p, "workers"), 82)];
+    case "vis_noise_sample":
+      return [
+        taskColumn("anchors", (p) => paramCount(p, "n_clusters", "44"), 76),
+        taskColumn("samples / anchor", (p) => paramCount(p, "samples_per_cluster", "1"), 108),
+        taskColumn("VIS px", (p) => paramCount(p, "vis_pixels", "2,560"), 76),
+        taskColumn("release", (p) => paramText(p, "source_release", "Q1_R1"), 86),
+      ];
     case "extract_euclid_psf":
       return [taskColumn("stars / PSF", (p) => paramCount(p, "stars_per_psf"), 92), taskColumn("max stars", (p) => paramCount(p, "num_stars"), 88), taskColumn("kernel px", (p) => paramCount(p, "output_size"), 88)];
     case "psf_rotation_pool":
@@ -665,6 +673,7 @@ export function StepCard(
   const lockedCpus = step.fixed_cpus != null;
   const lockedGpus = step.fixed_gpus != null;
   const hasWorkerControl = step.step_id === "download_euclid_cutouts";
+  const hasVisNoisePlanControl = step.step_id === "vis_noise_sample";
   const perModel = step.step_id === "ensemble_train" ? " / model" : "";
   const [partition, setPartition] = useState(d.partition);
   const [nCpus, setNCpus] = useState(String(step.fixed_cpus ?? d.n_cpus));
@@ -672,6 +681,7 @@ export function StepCard(
   const [memory, setMemory] = useState(d.memory);
   const [timeLimit, setTimeLimit] = useState(d.time_limit);
   const [workers, setWorkers] = useState("8");
+  const [regeneratePlan, setRegeneratePlan] = useState(false);
   const [jobid, setJobid] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -686,6 +696,8 @@ export function StepCard(
           partition, n_cpus: nCpus, n_gpus: nGpus, memory, time_limit: timeLimit,
           confirm: "yes", ...extraParams,
           ...(hasWorkerControl ? { workers } : {}),
+          ...(hasVisNoisePlanControl && regeneratePlan
+            ? { regenerate_catalog: "1" } : {}),
         },
       );
       if (res.error) setError(res.error);
@@ -717,6 +729,13 @@ export function StepCard(
               step={1}
               hint="per band; all four bands can run concurrently"
             />
+          </div>
+        )}
+        {hasVisNoisePlanControl && (
+          <div style={{ marginBottom: "var(--s3)" }}>
+            <Checkbox checked={regeneratePlan} onChange={setRegeneratePlan}>
+              rebuild the sky sample plan from the current stars
+            </Checkbox>
           </div>
         )}
         <div className="fasrc-step__res">

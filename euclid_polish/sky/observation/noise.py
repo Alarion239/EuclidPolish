@@ -17,6 +17,7 @@ from euclid_polish.sky.observation.artifacts import (
     ArtifactConfig,
     inject_artifacts,
 )
+from euclid_polish.sky.observation.noise_calibration import VISNoiseCalibration
 from euclid_polish.sky.observation.resample import upsample
 
 # ---------------------------------------------------------------------------
@@ -156,18 +157,22 @@ def apply_archive_noise(
     artifact_config: ArtifactConfig | None = None,
     resample_kernel: Literal["bilinear", "cubic"] = "bilinear",
     noise_scale_map: np.ndarray | None = None,
+    vis_noise_calibration: VISNoiseCalibration | None = None,
 ) -> np.ndarray:
     """Add detector noise as it appears in the delivered 0.10" MER mosaic.
 
-    VIS is native at the archive scale and therefore uses
-    :func:`apply_band_noise` unchanged. NISP Y/J/H are different: four
-    independent 0.30" H2RG exposures are sky/dark/read-noised on their native
-    detector cells, bilinearly resampled at their dither phases, converted from
-    native-cell integrated electrons to 0.10"-cell electrons (``/ 3**2``),
-    and co-added. This reproduces the strong short-range covariance and much
-    lower per-output-pixel RMS of real MER NISP mosaics. Sparse artifacts are
-    post-rejection MER residuals, so they are injected only after resampling;
-    they must not acquire interpolation footprints around individual hits.
+    Without ``vis_noise_calibration``, VIS is native at the archive scale and
+    uses :func:`apply_band_noise` unchanged (the bitwise-compatible legacy
+    fallback).  With a calibration, its stochastic residual is colored on the
+    MER grid before sparse artifacts are injected. NISP Y/J/H are different:
+    four independent 0.30" H2RG exposures are sky/dark/read-noised on their
+    native detector cells, bilinearly resampled at their dither phases,
+    converted from native-cell integrated electrons to 0.10"-cell electrons
+    (``/ 3**2``), and co-added. This reproduces the strong short-range
+    covariance and much lower per-output-pixel RMS of real MER NISP mosaics.
+    Sparse artifacts are post-rejection MER residuals, so they are injected
+    only after resampling; they must not acquire interpolation footprints
+    around individual hits.
 
     ``signal_e`` remains on the delivered archive grid. Empirical MER ePSFs
     already contain detector sampling and resampling, so reprocessing the
@@ -177,7 +182,8 @@ def apply_archive_noise(
     ``noise_scale_map`` optionally scales only the stochastic residual on the
     archive grid.  The observation simulator uses one shared map for all four
     bands to represent a field's depth plus a different-depth pointing
-    intersection.
+    intersection. A calibrated VIS model with ``owns_field_scale=True`` does
+    not apply this generic map a second time; NISP behavior is unchanged.
     """
     signal = np.asarray(signal_e, dtype=np.float32)
     if signal.ndim != 2:
@@ -202,13 +208,40 @@ def apply_archive_noise(
             f"{band.pixel_scale_lr_arcsec:g}={ratio:g} for {band.name}"
         )
     if factor == 1:
+        if vis_noise_calibration is not None and band.name != "VIS":
+            raise ValueError("vis_noise_calibration may only be used for VIS")
+        # Keep this branch byte-for-byte equivalent to the historic VIS path
+        # when no active calibration was supplied.
+        if vis_noise_calibration is None:
+            observed = apply_band_noise(
+                signal, band, rng,
+                add_artifacts=add_artifacts,
+                artifact_config=artifact_config,
+            )
+            if noise_scale is not None:
+                observed = signal + (observed - signal) * noise_scale
+            return observed.astype(np.float32, copy=False)
+
+        # The deterministic optical signal is already a delivered-grid ePSF
+        # realization and must not be convolved again. Color only the
+        # Poisson/read residual, using the calibration's padded linear filter.
         observed = apply_band_noise(
             signal, band, rng,
-            add_artifacts=add_artifacts,
-            artifact_config=artifact_config,
+            add_artifacts=False,
         )
-        if noise_scale is not None:
-            observed = signal + (observed - signal) * noise_scale
+        residual = vis_noise_calibration.apply(observed - signal, rng=rng)
+        if noise_scale is not None and not vis_noise_calibration.owns_field_scale:
+            residual = residual * noise_scale
+        observed = (signal + residual).astype(np.float32, copy=False)
+        if add_artifacts:
+            sigma_e = _robust_sigma(residual)
+            observed = inject_artifacts(
+                observed,
+                band,
+                rng,
+                artifact_config or ArtifactConfig(),
+                local_sigma_e=sigma_e,
+            )
         return observed.astype(np.float32, copy=False)
 
     # The input is the full-stack source expectation. A native detector cell

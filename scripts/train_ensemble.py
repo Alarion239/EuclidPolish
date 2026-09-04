@@ -183,6 +183,12 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--star-prior-json", default="",
                    help="JSON-encoded activated point-source prior for live "
                         "on-the-fly star magnitudes and colours.")
+    p.add_argument("--star-prior-file", default="",
+                   help="Path to the activated point-source prior JSON.")
+    p.add_argument("--vis-noise-calibration-json", default="",
+                   help="Activated empirical MER VIS-noise calibration JSON.")
+    p.add_argument("--vis-noise-calibration-file", default="",
+                   help="Path to the activated empirical VIS-noise JSON.")
     p.add_argument("--asinh-knee", type=float, default=None,
                    help="Per-member asinh stretch knee in ELECTRONS — the "
                         "linear/log crossover of asinh(x/knee) the network "
@@ -537,6 +543,118 @@ def required_record_names(specs) -> list[str]:
     return names
 
 
+def _load_json_object_arg(
+    inline_json: str,
+    file_path: str,
+    *,
+    label: str,
+) -> dict | None:
+    """Resolve one mutually-exclusive inline/file JSON object argument."""
+    inline = str(inline_json or "").strip()
+    path = str(file_path or "").strip()
+    if inline and path:
+        raise ValueError(f"{label} JSON and file are mutually exclusive")
+    if path:
+        try:
+            with open(path, encoding="utf-8") as handle:
+                inline = handle.read().strip()
+        except OSError as exc:
+            raise ValueError(f"could not read {label} file {path!r}") from exc
+    if not inline:
+        return None
+    try:
+        payload = json.loads(inline)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{label} is not valid JSON: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError(f"{label} must contain a JSON object")
+    return payload
+
+
+def _find_vis_noise_fingerprint(value) -> str | None:
+    """Find a generation snapshot's VIS calibration fingerprint recursively."""
+    if isinstance(value, dict):
+        direct = value.get("vis_noise_calibration_fingerprint")
+        if isinstance(direct, str) and direct:
+            return direct
+        calibration = value.get("vis_noise_calibration")
+        if isinstance(calibration, dict):
+            fingerprint = calibration.get("fingerprint")
+            if isinstance(fingerprint, str) and fingerprint:
+                return fingerprint
+        for nested in value.values():
+            fingerprint = _find_vis_noise_fingerprint(nested)
+            if fingerprint:
+                return fingerprint
+    elif isinstance(value, (list, tuple)):
+        for nested in value:
+            fingerprint = _find_vis_noise_fingerprint(nested)
+            if fingerprint:
+                return fingerprint
+    return None
+
+
+def _validation_vis_noise_fingerprint(path: str) -> str | None:
+    """Read the calibration fingerprint that produced a validation TFRecord."""
+    try:
+        from euclid_polish.image.collection import ImageSet
+        from euclid_polish.provenance.defaults import default_store
+
+        image = next(iter(ImageSet.read(path, num_images=1)))
+        stamp = image.prov_stamp()
+        if stamp is None or stamp.produced_by is None:
+            return None
+        process = default_store().get_or_none(stamp.produced_by)
+        config = getattr(process, "config", None)
+        return _find_vis_noise_fingerprint(getattr(config, "fields", None))
+    except Exception:  # noqa: BLE001 - absence/corruption is reported by caller
+        return None
+
+
+def _require_matching_validation_calibration(
+    specs,
+    payload: dict | None,
+    validation_path: str,
+) -> None:
+    """Keep on-the-fly training and record validation on one noise model."""
+    if not any(spec.forward_onthefly for spec in specs):
+        return
+    expected = str((payload or {}).get("fingerprint") or "")
+    observed = _validation_vis_noise_fingerprint(validation_path)
+    if not observed:
+        raise ValueError(
+            "dirty_validate has no VIS-noise calibration provenance; regenerate "
+            "the validation split with the active calibration before on-the-fly training"
+        )
+    if observed != expected:
+        raise ValueError(
+            "dirty_validate was generated with VIS-noise calibration "
+            f"{observed[:12]}..., but on-the-fly training would use "
+            f"{expected[:12]}...; regenerate validation before training"
+        )
+
+
+def _require_compatible_record_calibrations(
+    specs,
+    training_path: str,
+    validation_path: str,
+) -> None:
+    """Reject mixed calibrated/legacy record pairs or two different fits."""
+    if not any(not spec.forward_onthefly for spec in specs):
+        return
+    training = _validation_vis_noise_fingerprint(training_path)
+    validation = _validation_vis_noise_fingerprint(validation_path)
+    if training == validation:
+        return
+    training_label = training[:12] + "..." if training else "legacy/unrecorded"
+    validation_label = validation[:12] + "..." if validation else "legacy/unrecorded"
+    raise ValueError(
+        "dirty_train and dirty_validate use different VIS-noise calibrations "
+        f"({training_label} versus {validation_label}); regenerate both record "
+        "splits with one active calibration before training"
+    )
+
+
 def main() -> int:
     args = parse_args()
     base = args.base_dir or _default_base_dir()
@@ -663,24 +781,58 @@ def main() -> int:
     # are immediately discarded. This handle is used only to train.
     ens = EnsembleModel(base, scale=Config.DEFAULT_REBIN_FACTOR,
                         num_res_blocks=args.num_res_blocks, _models=[])
-    star_prior_payload = None
-    if args.star_prior_json.strip():
-        try:
-            star_prior_payload = json.loads(args.star_prior_json)
-        except json.JSONDecodeError as exc:
-            print(f"✗ --star-prior-json is not valid JSON: {exc}")
-            return 2
-        if not isinstance(star_prior_payload, dict):
-            print("✗ --star-prior-json must contain a JSON object")
-            return 2
+    try:
+        star_prior_payload = _load_json_object_arg(
+            args.star_prior_json,
+            args.star_prior_file,
+            label="stellar prior",
+        )
+        vis_noise_calibration_payload = _load_json_object_arg(
+            args.vis_noise_calibration_json,
+            args.vis_noise_calibration_file,
+            label="VIS noise calibration",
+        )
+        if vis_noise_calibration_payload is not None:
+            from euclid_polish.sky.observation.noise_calibration import (
+                VISNoiseCalibration,
+            )
+
+            # Validate the frozen artifact before allocating/training a model.
+            VISNoiseCalibration.from_payload(vis_noise_calibration_payload)
+    except ValueError as exc:
+        print(f"✗ {exc}")
+        return 2
     if (
         star_prior_payload is None
         and any(spec.forward_onthefly for spec in specs)
     ):
         print(
             "✗ on-the-fly training requires the active empirical stellar "
-            "prior via --star-prior-json"
+            "prior via --star-prior-json/--star-prior-file"
         )
+        return 2
+    if (
+        vis_noise_calibration_payload is None
+        and any(spec.forward_onthefly for spec in specs)
+    ):
+        print(
+            "✗ on-the-fly training requires the active empirical VIS-noise "
+            "calibration via --vis-noise-calibration-json/file"
+        )
+        return 2
+    try:
+        _require_matching_validation_calibration(
+            specs,
+            vis_noise_calibration_payload,
+            tfrecord_path(args.records_dir, "dirty_validate"),
+        )
+        _require_compatible_record_calibrations(
+            specs,
+            tfrecord_path(args.records_dir, "dirty_train"),
+            tfrecord_path(args.records_dir, "dirty_validate"),
+        )
+    except ValueError as exc:
+        print(f"✗ {exc}")
         return 2
     try:
         ens.train_members(
@@ -703,6 +855,7 @@ def main() -> int:
             plateau_rollback_min_gap=args.plateau_rollback_min_gap,
             plateau_lr_recovery=bool(args.plateau_lr_recovery),
             star_prior_payload=star_prior_payload,
+            vis_noise_calibration_payload=vis_noise_calibration_payload,
         )
 
         reporter.set_step(total, total, "ensemble training complete")

@@ -208,8 +208,8 @@ def test_noise_on_yields_negative_pixels():
         assert (lr.data[..., k] < 0).sum() > 0
 
 
-def test_vis_archive_noise_is_unchanged_native_noise():
-    """VIS is already native at 0.10", so the new MER path is identical."""
+def test_vis_archive_noise_legacy_fallback_is_bitwise_unchanged():
+    """Without a calibration, VIS retains the exact native-noise fallback."""
     signal = np.full((48, 48), 20.0, dtype=np.float32)
     direct = apply_band_noise(
         signal, Config.BAND_VIS, np.random.default_rng(21),
