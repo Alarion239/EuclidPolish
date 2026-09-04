@@ -84,9 +84,35 @@ def test_pair_corrected_psd_is_stable_under_structured_source_mask():
     masked, _ = calibration._normalized_psd(
         field, structured_mask, radial_edges=edges,
     )
+    mode_counts = calibration._radial_mode_counts(edges, field.shape[0])
 
-    assert float(np.minimum(baseline, masked).sum()) > 0.96
+    assert float(np.sum(baseline * mode_counts)) == pytest.approx(1.0)
+    assert float(np.sum(masked * mode_counts)) == pytest.approx(1.0)
+    assert float(np.sum(np.minimum(baseline, masked) * mode_counts)) > 0.96
     assert float(np.median(np.abs(np.log10(masked / baseline)))) < 0.04
+
+
+def test_radial_psd_uses_fourier_mode_integrated_variance_normalization():
+    tile_size = 64
+    edges = calibration._power_edges(tile_size)
+    counts = calibration._radial_mode_counts(edges, tile_size)
+    kernel = np.asarray([
+        [0.0, 0.2, 0.0],
+        [0.1, 0.9, 0.1],
+        [0.0, 0.3, 0.0],
+    ])
+    kernel /= np.linalg.norm(kernel)
+
+    model_power = calibration._kernel_power(kernel, edges, tile_size)
+    measured_power, _ = calibration._normalized_psd(
+        np.random.default_rng(11).normal(size=(tile_size, tile_size)),
+        np.zeros((tile_size, tile_size), dtype=bool),
+        radial_edges=edges,
+    )
+
+    assert float(np.sum(model_power * counts)) == pytest.approx(1.0)
+    assert float(np.sum(measured_power * counts)) == pytest.approx(1.0)
+    assert not np.isclose(float(np.sum(model_power)), 1.0)
 
 
 def test_vis_units_are_explicit_and_missing_magzero_never_defaults(tmp_path):
@@ -260,6 +286,7 @@ def test_sampling_readiness_requires_two_parents_in_every_q1_field(
 def test_activation_rejects_invalid_or_too_few_parents(tmp_path, monkeypatch):
     monkeypatch.setattr(Config, "DATA_DIR", str(tmp_path))
     candidate = {
+        "version": calibration.VIS_NOISE_CANDIDATE_VERSION,
         "valid": False,
         "runtime": _runtime(scale=19.0),
         "sample_summary": {"independent_parent_count": 5},
@@ -269,6 +296,12 @@ def test_activation_rejects_invalid_or_too_few_parents(tmp_path, monkeypatch):
         calibration.activate_vis_noise_candidate()
 
     candidate["valid"] = True
+    candidate["version"] = calibration.VIS_NOISE_CANDIDATE_VERSION - 1
+    calibration._write_json(calibration.vis_noise_candidate_path(), candidate)
+    with pytest.raises(ValueError, match="current schema"):
+        calibration.activate_vis_noise_candidate()
+
+    candidate["version"] = calibration.VIS_NOISE_CANDIDATE_VERSION
     candidate["sample_summary"]["independent_parent_count"] = 2
     calibration._write_json(calibration.vis_noise_candidate_path(), candidate)
     with pytest.raises(ValueError, match="at least 3"):
@@ -294,6 +327,44 @@ def test_near_size_cutouts_keep_intended_tile_count_without_duplicate_edges():
 
     large = np.zeros((2561, 2562), dtype=np.float32)
     assert len(calibration._iter_tiles(large, 256)) == 100
+
+    # SODA uses the local mosaic WCS to rasterize an angular request.  The
+    # pilot returned 2580/2584 pixels for two valid nominal 2560-pixel fields.
+    assert calibration._vis_noise_shape_matches((2580, 2584), 2560)
+    assert not calibration._vis_noise_shape_matches((2580, 2587), 2560)
+    oversized = np.zeros((2584, 2580), dtype=np.uint8)
+    oversized[12, 10] = 7
+    oversized_tiles = calibration._iter_tiles(oversized, 256)
+    assert len(oversized_tiles) == 100
+    assert oversized_tiles[0][0, 0] == 7
+
+
+def test_field_scale_quantiles_use_independent_parent_medians_not_patch_extrema():
+    parent_rms = np.asarray([8.0, 9.0, 10.0, 11.0, 12.0])
+    parents = []
+    for index, rms in enumerate(parent_rms):
+        patches = np.asarray([rms - 0.2, rms - 0.1, rms, rms + 0.1, rms + 0.2])
+        if index == len(parent_rms) - 1:
+            patches[-1] = 1000.0
+        parents.append({"rms_e": rms, "patch_rms_e": patches})
+
+    residual_scale, factors = calibration._parent_weighted_rms(parents)
+
+    patch_values = np.concatenate([parent["patch_rms_e"] for parent in parents])
+    patch_weights = np.concatenate([
+        np.full(len(parent["patch_rms_e"]), 1.0 / len(parent["patch_rms_e"]))
+        for parent in parents
+    ])
+    expected_scale = calibration._weighted_quantiles(
+        patch_values, patch_weights, np.asarray([0.5]),
+    )[0]
+    parent_quantiles = np.quantile(
+        parent_rms, calibration._FIELD_SCALE_PROBABILITIES,
+    )
+
+    assert residual_scale == pytest.approx(expected_scale)
+    np.testing.assert_allclose(factors, parent_quantiles / np.median(parent_rms))
+    assert factors[-1] == pytest.approx(1.2)
 
 
 def test_fit_is_parent_grouped_and_emits_strict_runtime(tmp_path, monkeypatch):
@@ -362,12 +433,35 @@ def test_fit_is_parent_grouped_and_emits_strict_runtime(tmp_path, monkeypatch):
     assert candidate["sample_summary"]["independent_parent_count"] == 6
     assert candidate["sample_summary"]["train_parent_count"] == 3
     assert candidate["sample_summary"]["holdout_parent_count"] == 3
+    assert candidate["version"] == calibration.VIS_NOISE_CANDIDATE_VERSION
     assert candidate["quality_gates"]["all_q1_fields_ge_2_parents"] is True
     assert candidate["source_release"] == "Q1_R1"
     assert candidate["residual_scale"] > 0.0
     assert candidate["owns_field_scale"] is True
     assert candidate["validation"]["power"]["evaluation_range_arcsec"] == [0.25, 8.0]
+    power = candidate["validation"]["power"]
+    assert power["normalization"] == "unit_integrated_fourier_variance"
+    assert power["log10_ratio_semantics"].startswith("log10(model_rms^2")
+    np.testing.assert_allclose(
+        np.dot(power["real"], power["fourier_mode_count"]), 1.0,
+    )
+    np.testing.assert_allclose(
+        np.dot(power["model"], power["fourier_mode_count"]), 1.0,
+    )
+    fitted_power = candidate["fit"]["power"]
+    assert fitted_power["normalization"] == "unit_integrated_fourier_variance"
+    np.testing.assert_allclose(
+        np.dot(
+            fitted_power["normalized_psd"],
+            fitted_power["fourier_mode_count"],
+        ),
+        1.0,
+    )
     assert "large_scale_gt_8_arcsec" in candidate["validation"]["power"]
     assert set(candidate["runtime"]) == calibration._RUNTIME_KEYS
     assert calibration.runtime_vis_noise_payload(candidate) == candidate["runtime"]
+    assert (
+        candidate["runtime"]["estimator_version"]
+        == calibration.VIS_NOISE_ESTIMATOR_VERSION
+    )
     assert calibration.vis_noise_candidate_path().is_file()

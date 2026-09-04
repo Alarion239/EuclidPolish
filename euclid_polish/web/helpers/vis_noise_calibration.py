@@ -28,10 +28,10 @@ from scipy.signal import correlate2d, fftconvolve
 from euclid_polish.config import Config
 from euclid_polish.photometry import adu_per_s_to_electrons_factor
 
-VIS_NOISE_CANDIDATE_VERSION = 1
+VIS_NOISE_CANDIDATE_VERSION = 2
 VIS_NOISE_RUNTIME_VERSION = 1
 VIS_NOISE_RUNTIME_KIND = "euclid_mer_vis_noise"
-VIS_NOISE_ESTIMATOR_VERSION = "source-masked-plane-mad-pair-covariance-psd-v2"
+VIS_NOISE_ESTIMATOR_VERSION = "source-masked-plane-mad-pair-covariance-psd-v4"
 DEFAULT_MANIFEST_NAME = "vis_noise_sampling_manifest.json"
 VIS_NOISE_SAMPLING_SUBDIR = "vis_noise_samples"
 DEFAULT_TILE_SIZE = 256
@@ -39,6 +39,7 @@ DEFAULT_MAX_LAG = 8
 DEFAULT_KERNEL_SIDE = 9
 _REQUIRED_Q1_FIELDS = ("EDF-N", "EDF-S", "EDF-F")
 _FIELD_SCALE_PROBABILITIES = np.asarray([0.0, 0.16, 0.5, 0.84, 1.0])
+_VIS_NOISE_MAX_OVERSIZE_FRACTION = 0.01
 _TOTAL_ELECTRON_UNITS = {
     "e-",
     "e-/pixel",
@@ -71,6 +72,28 @@ _RUNTIME_KEYS = {
 
 class _SampleIdentityError(ValueError):
     """A manifest row cannot be proven to describe its local FITS bundle."""
+
+
+def _vis_noise_shape_matches(
+    image_shape: Sequence[int], requested_pixels: int,
+) -> bool:
+    """Apply VIS-noise-specific asymmetric SODA shape tolerances."""
+    try:
+        dimensions = tuple(int(value) for value in image_shape)
+        requested = int(requested_pixels)
+    except (TypeError, ValueError):
+        return False
+    if len(dimensions) != 2 or requested <= 0:
+        return False
+    undersize_tolerance = int(Config.Matching.DOWNLOAD_SIZE_TOL_PIXELS)
+    oversize_tolerance = max(
+        undersize_tolerance,
+        int(math.ceil(requested * _VIS_NOISE_MAX_OVERSIZE_FRACTION)),
+    )
+    return all(
+        -undersize_tolerance <= actual - requested <= oversize_tolerance
+        for actual in dimensions
+    )
 
 
 def vis_noise_candidate_path() -> Path:
@@ -200,10 +223,7 @@ def _validate_sampling_manifest(manifest: Mapping[str, Any]) -> tuple[str, int]:
                 raise ValueError(
                     f"Completed VIS-noise sample {sample_id} has no actual_shape"
                 ) from exc
-            tolerance = int(Config.Matching.DOWNLOAD_SIZE_TOL_PIXELS)
-            if len(dimensions) != 2 or any(
-                abs(dimension - vis_pixels) > tolerance for dimension in dimensions
-            ):
+            if not _vis_noise_shape_matches(dimensions, vis_pixels):
                 raise ValueError(
                     f"Completed VIS-noise sample {sample_id} actual_shape is invalid"
                 )
@@ -379,6 +399,34 @@ def _power_edges(tile_size: int, bins: int = 18) -> np.ndarray:
     return np.geomspace(minimum, 0.5, int(bins) + 1)
 
 
+def _radial_mode_counts(
+    radial_edges: np.ndarray, tile_size: int,
+) -> np.ndarray:
+    """Count Fourier modes represented by each radial PSD-density bin."""
+    spectrum_side = 2 * int(tile_size) - 1
+    frequencies = np.fft.fftfreq(spectrum_side)
+    ky, kx = np.meshgrid(frequencies, frequencies, indexing="ij")
+    counts, _ = np.histogram(np.hypot(kx, ky), bins=radial_edges)
+    return counts.astype(np.float64)
+
+
+def _normalize_radial_psd_density(
+    radial_power: np.ndarray, mode_counts: np.ndarray,
+) -> np.ndarray:
+    """Normalize a radial mean PSD so its mode-integrated variance is one."""
+    radial = np.maximum(
+        np.asarray(radial_power, dtype=np.float64),
+        np.finfo(np.float64).tiny,
+    )
+    counts = np.asarray(mode_counts, dtype=np.float64)
+    if radial.shape != counts.shape:
+        raise ValueError("Radial power and Fourier mode counts must have equal shape")
+    normalization = float(np.sum(radial * counts))
+    if not np.isfinite(normalization) or normalization <= 0.0:
+        raise ValueError("Radial VIS power spectrum is degenerate")
+    return radial / normalization
+
+
 def _normalized_psd(
     residual: np.ndarray,
     mask: np.ndarray,
@@ -421,8 +469,7 @@ def _normalized_psd(
     radial_sum, _ = np.histogram(radius, bins=radial_edges, weights=power)
     radial_count, _ = np.histogram(radius, bins=radial_edges)
     radial = radial_sum / np.maximum(radial_count, 1)
-    radial = np.maximum(radial, np.finfo(np.float64).tiny)
-    radial /= float(np.sum(radial))
+    radial = _normalize_radial_psd_density(radial, radial_count)
     edges_2d = np.linspace(-0.5, 0.5, int(bins_2d) + 1)
     histogram, _, _ = np.histogram2d(
         ky.ravel(), kx.ravel(), bins=(edges_2d, edges_2d),
@@ -447,12 +494,16 @@ def _iter_tiles(image: np.ndarray, tile_size: int) -> list[np.ndarray]:
     # only that tolerance-sized excess around the centre before partitioning;
     # otherwise an appended edge window would overlap its neighbour by 255 of
     # 256 pixels and heavily over-weight a border strip.
-    tolerance = int(Config.Matching.DOWNLOAD_SIZE_TOL_PIXELS)
-
     def normalized_slice(length: int) -> slice:
         nearest_multiple = max(1, int(round(length / side))) * side
         excess = length - nearest_multiple
-        if 0 < excess <= tolerance:
+        crop_tolerance = max(
+            int(Config.Matching.DOWNLOAD_SIZE_TOL_PIXELS),
+            int(math.ceil(
+                nearest_multiple * _VIS_NOISE_MAX_OVERSIZE_FRACTION
+            )),
+        )
+        if 0 < excess <= crop_tolerance:
             start = excess // 2
             return slice(start, start + nearest_multiple)
         return slice(None)
@@ -510,13 +561,10 @@ def _validate_fits_identity(
             raise _SampleIdentityError(
                 f"{path}: FITS {key}={actual!r} does not match manifest {wanted!r}"
             )
-    size_tolerance = int(Config.Matching.DOWNLOAD_SIZE_TOL_PIXELS)
-    if len(image_shape) != 2 or any(
-        abs(int(actual) - vis_pixels) > size_tolerance for actual in image_shape
-    ):
+    if not _vis_noise_shape_matches(image_shape, vis_pixels):
         raise _SampleIdentityError(
             f"{path}: VIS shape {image_shape} does not match "
-            f"VIS_PIX={vis_pixels} within tolerance {size_tolerance}"
+            f"VIS_PIX={vis_pixels} within VIS-noise SODA tolerances"
         )
     actual_shape = sample.get("actual_shape")
     if actual_shape is not None:
@@ -703,6 +751,14 @@ def _weighted_quantiles(
 
 
 def _parent_weighted_rms(parents: Sequence[Mapping[str, Any]]) -> tuple[float, np.ndarray]:
+    """Return robust absolute RMS plus independent-parent field variation.
+
+    Patches estimate each parent's local RMS reliably, but they are not
+    independent fields.  The absolute scale therefore keeps its equal-total-
+    weight-per-parent patch median, while the field-scale inverse CDF uses one
+    robust median per parent.  A single source-contaminated patch can no longer
+    become the maximum field-wide noise draw.
+    """
     values = np.concatenate([
         np.asarray(parent["patch_rms_e"], dtype=np.float64) for parent in parents
     ])
@@ -710,12 +766,20 @@ def _parent_weighted_rms(parents: Sequence[Mapping[str, Any]]) -> tuple[float, n
         np.full(len(parent["patch_rms_e"]), 1.0 / len(parent["patch_rms_e"]))
         for parent in parents
     ])
-    quantiles = _weighted_quantiles(values, weights, _FIELD_SCALE_PROBABILITIES)
-    median = float(quantiles[2])
-    factors = np.maximum(quantiles / median, np.finfo(np.float64).eps)
+    residual_scale = float(_weighted_quantiles(
+        values, weights, np.asarray([0.5], dtype=np.float64),
+    )[0])
+    parent_rms = np.asarray(
+        [float(parent["rms_e"]) for parent in parents], dtype=np.float64,
+    )
+    quantiles = np.quantile(parent_rms, _FIELD_SCALE_PROBABILITIES)
+    parent_median = float(quantiles[2])
+    factors = np.maximum(
+        quantiles / parent_median, np.finfo(np.float64).eps,
+    )
     factors[2] = 1.0
     factors = np.maximum.accumulate(factors)
-    return median, factors
+    return residual_scale, factors
 
 
 def _spectral_factor_kernel(covariance: np.ndarray, *, side: int) -> np.ndarray:
@@ -779,8 +843,7 @@ def _kernel_power(kernel: np.ndarray, radial_edges: np.ndarray, tile_size: int) 
     sums, _ = np.histogram(radius, bins=radial_edges, weights=power)
     counts, _ = np.histogram(radius, bins=radial_edges)
     result = sums / np.maximum(counts, 1)
-    result = np.maximum(result, np.finfo(np.float64).tiny)
-    return result / float(np.sum(result))
+    return _normalize_radial_psd_density(result, counts)
 
 
 def _parent_split(
@@ -845,13 +908,15 @@ def _fit_validation(
 
     model_power = _kernel_power(train_kernel, radial_edges, tile_size)
     real_power = _median_parent_array(holdout, "power")
-    real_power = np.maximum(real_power, np.finfo(np.float64).tiny)
-    real_power /= float(np.sum(real_power))
-    log_ratio = np.log10(model_power / real_power)
-
     train_rms, _ = _parent_weighted_rms(train)
     holdout_rms, _ = _parent_weighted_rms(holdout)
     ratio = train_rms / holdout_rms
+    mode_counts = _radial_mode_counts(radial_edges, tile_size)
+    real_power = _normalize_radial_psd_density(real_power, mode_counts)
+    log_ratio = np.log10(
+        (train_rms * train_rms * model_power)
+        / (holdout_rms * holdout_rms * real_power)
+    )
     angular_scale = (
         Config.BAND_VIS.pixel_scale_lr_arcsec
         / np.sqrt(radial_edges[:-1] * radial_edges[1:])
@@ -860,6 +925,7 @@ def _fit_validation(
     def band_metrics(scale_mask: np.ndarray) -> dict[str, Any]:
         selected_model = model_power[scale_mask]
         selected_real = real_power[scale_mask]
+        selected_counts = mode_counts[scale_mask]
         selected_log_ratio = log_ratio[scale_mask]
         if not len(selected_model):
             return {
@@ -869,10 +935,12 @@ def _fit_validation(
                 "shape_overlap": None,
                 "variance_ratio": None,
             }
-        model_fraction = float(np.sum(selected_model))
-        real_fraction = float(np.sum(selected_real))
-        model_shape = selected_model / model_fraction
-        real_shape = selected_real / real_fraction
+        model_integrated = selected_model * selected_counts
+        real_integrated = selected_real * selected_counts
+        model_fraction = float(np.sum(model_integrated))
+        real_fraction = float(np.sum(real_integrated))
+        model_shape = model_integrated / model_fraction
+        real_shape = real_integrated / real_fraction
         abs_log_ratio = np.abs(selected_log_ratio)
         return {
             "bin_count": int(np.count_nonzero(scale_mask)),
@@ -916,9 +984,19 @@ def _fit_validation(
         },
         "power": {
             "angular_scale_arcsec": angular_scale.tolist(),
+            "fourier_mode_count": mode_counts.astype(int).tolist(),
             "model": model_power.tolist(),
             "real": real_power.tolist(),
             "log10_ratio": log_ratio.tolist(),
+            "normalization": "unit_integrated_fourier_variance",
+            "normalization_equation": "sum(radial_mean_psd * fourier_mode_count) = 1",
+            "log10_ratio_semantics": (
+                "log10(model_rms^2 * model_psd_density / "
+                "heldout_rms^2 * heldout_psd_density)"
+            ),
+            "power_fraction_semantics": (
+                "sum(radial_mean_psd * fourier_mode_count) in the scale band"
+            ),
             "evaluation_range_arcsec": [0.25, 8.0],
             **primary_power_metrics,
             "large_scale_gt_8_arcsec": large_scale_metrics,
@@ -1070,8 +1148,11 @@ def fit_vis_noise_candidate(
     if not gates["passed"]:
         warnings.append("Grouped parent holdout quality gates did not all pass")
     parent_rms = np.asarray([parent["rms_e"] for parent in parents])
-    final_power = _median_parent_array(parents, "power")
-    final_power /= float(np.sum(final_power))
+    radial_edges = _power_edges(int(tile_size))
+    radial_mode_counts = _radial_mode_counts(radial_edges, int(tile_size))
+    final_power = _normalize_radial_psd_density(
+        _median_parent_array(parents, "power"), radial_mode_counts,
+    )
     final_power_2d = _median_parent_array(parents, "power_2d")
     final_power_2d /= float(np.sum(final_power_2d))
     frequency_edges_2d = np.linspace(-0.5, 0.5, final_power_2d.shape[0] + 1)
@@ -1095,7 +1176,10 @@ def fit_vis_noise_candidate(
             ),
             "field_scale_quantiles": {
                 "probabilities": _FIELD_SCALE_PROBABILITIES.tolist(),
-                "weighting": "equal total weight per parent mosaic across its patches",
+                "weighting": (
+                    "quantiles of per-parent median patch RMS; one value per "
+                    "independent parent mosaic"
+                ),
             },
             "coloring_kernel": (
                 f"{int(kernel_side)}x{int(kernel_side)} real-space "
@@ -1138,6 +1222,11 @@ def fit_vis_noise_candidate(
                     Config.BAND_VIS.pixel_scale_lr_arcsec
                     / np.sqrt(radial_edges[:-1] * radial_edges[1:])
                 ).tolist(),
+                "fourier_mode_count": radial_mode_counts.astype(int).tolist(),
+                "normalization": "unit_integrated_fourier_variance",
+                "normalization_equation": (
+                    "sum(radial_mean_psd * fourier_mode_count) = 1"
+                ),
                 "normalized_psd": final_power.tolist(),
             },
         },
@@ -1164,8 +1253,14 @@ def fit_vis_noise_candidate(
 def activate_vis_noise_candidate() -> dict[str, Any]:
     """Atomically activate a valid candidate with at least three parents."""
     candidate = _read_json(vis_noise_candidate_path())
-    if not candidate or not candidate.get("valid"):
-        raise ValueError("No valid fitted VIS noise candidate is available")
+    if (
+        not candidate
+        or candidate.get("version") != VIS_NOISE_CANDIDATE_VERSION
+        or not candidate.get("valid")
+    ):
+        raise ValueError(
+            "No valid fitted VIS noise candidate is available for the current schema"
+        )
     parent_count = int(
         (candidate.get("sample_summary") or {}).get("independent_parent_count", 0)
     )
@@ -1261,6 +1356,7 @@ def vis_noise_state() -> dict[str, Any]:
         )
     candidate_is_active = bool(
         candidate
+        and candidate.get("version") == VIS_NOISE_CANDIDATE_VERSION
         and active_runtime
         and candidate.get("fingerprint") == active_runtime.get("fingerprint")
         and candidate.get("valid")
