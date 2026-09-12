@@ -496,7 +496,9 @@ class Config:
     # in the wings (where pixel-centre sampling is already <1% accurate).
 
     # Core stamp radius in units of R_e (in pixels). Larger → more
-    # accurate, slower. 3.0 captures ~95% of n=4 flux; smaller values
+    # accurate, slower. 3.0 R_e encloses ~96% of an n=1 profile's flux but
+    # only ~79% of an n=4 profile's (the wings are sampled by the outer
+    # tier; see profiles.py); smaller values
     # speed up at the cost of leaving slightly-undersampled pixels at the
     # core boundary.
     SERSIC_CORE_RADIUS_R_E  = 3.0
@@ -808,11 +810,14 @@ class Config:
     # spectrum (Holmes+ 1989 / 2012 SREM calibration; Euclid mission noise
     # budget): ~5 hits/cm²/s. The Q1 MER pipeline paper (Romelli+ 2025,
     # arXiv:2503.15305) reports that ~1.6% of pixels in a single VIS frame
-    # are flagged as CR-affected; cross-dither median rejection across the
-    # 4 ROS dithers cuts the *coincident* hits down to ~0.1% — the figure
-    # we want to reproduce in the simulated stack. Median deposited charge
-    # per surviving hit ~ 1500 e⁻ for a normal-incidence MIP traversing
-    # the 100 µm depleted layer.
+    # are flagged as CR-affected; ramp fitting, masks and cross-dither
+    # rejection remove nearly all of them before the delivered MER mosaic.
+    # The raw L2 rate below is multiplied by each band's
+    # ``BandConfig.cr_rate_factor`` survival fraction (0.002 VIS, 0.015
+    # NISP, calibrated against compact single-band outliers in cached real
+    # MER tiles), which leaves of order ten surviving hits per 510² VIS
+    # stack. Median deposited charge per surviving hit ~ 1500 e⁻ for a
+    # normal-incidence MIP traversing the 100 µm depleted layer.
     CR_RATE_PER_S_PER_CM2  = 5.0
     CR_CHARGE_MEDIAN_E     = 1500.0     # exponential-distribution scale
     # Residual hot-pixel fraction in the delivered MER image. Most detector

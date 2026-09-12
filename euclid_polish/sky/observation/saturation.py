@@ -54,8 +54,9 @@ class StarSaturationModel:
         rect_max_px: int = Config.STAR_SATURATION_RECT_MAX_PX,
         max_rects: int = Config.STAR_SATURATION_MAX_RECTS,
     ):
-        self._well_e = dict(well_e if well_e is not None
-                            else Config.STAR_SATURATION_WELL_E)
+        # A partial override keeps the configured depth for every band it
+        # does not name, so ``well_e={"VIS": ...}`` cannot KeyError on NISP.
+        self._well_e = {**Config.STAR_SATURATION_WELL_E, **(well_e or {})}
         self.rect_min_px = int(rect_min_px)
         self.rect_max_px = int(rect_max_px)
         self.max_rects = int(max_rects)

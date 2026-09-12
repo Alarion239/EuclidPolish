@@ -219,11 +219,11 @@ def inject_random_stars(
     (position + four-band magnitudes), so a caller can persist it to the
     source CSV.
     """
-    N = canvas_4ch.shape[0]
+    height, width = canvas_4ch.shape[:2]
     stars: list[dict] = []
     for _ in range(int(n_stars)):
-        x_pix = float(rng.uniform(0.0, N - 1))
-        y_pix = float(rng.uniform(0.0, N - 1))
+        x_pix = float(rng.uniform(0.0, width - 1))
+        y_pix = float(rng.uniform(0.0, height - 1))
         mag = stellar_prior.sample_magnitude(rng)
         sed = sample_stellar_sed(rng, mag, stellar_prior)
         band_mags = sed.magnitudes
@@ -1116,6 +1116,8 @@ class SkySimulator:
         atlas = self.tng_atlas
         if atlas is None:
             raise ValueError("TNG lens rendering requires an open atlas")
+        n_render_failures = 0
+        last_render_error: Exception | None = None
         for _ in range(max_tries):
             galaxy = atlas.galaxies[int(rng.integers(0, len(atlas)))]
             gid = galaxy.subhalo_id
@@ -1168,7 +1170,12 @@ class SkySimulator:
                 source_stamp = self.tng_renderer.render_physical_at_redshift(
                     source_view, lp.z_source, rng=rng
                 )
-            except (OSError, TypeError, ValueError):
+            except (OSError, TypeError, ValueError) as exc:
+                # One donor may legitimately fail to render at this geometry,
+                # but a purged or malformed atlas fails *every* try. Surface
+                # that instead of silently shipping lens-free fields.
+                n_render_failures += 1
+                last_render_error = exc
                 continue
             x_pix, y_pix = self._random_pix(rng)
             lp = replace(lp, centre_x_pix=x_pix, centre_y_pix=y_pix)
@@ -1204,6 +1211,11 @@ class SkySimulator:
                     lens_light_stamp.shape[0] * cfg.pixel_scale / 2.0),
                 "source_flux_vis_e": source_stamp.flux_e("VIS"),
             }
+        if n_render_failures >= max_tries and last_render_error is not None:
+            raise RuntimeError(
+                f"TNG lens rendering failed on all {max_tries} tries; the "
+                "atlas is probably missing or malformed"
+            ) from last_render_error
         return None
 
     def _add_lens(

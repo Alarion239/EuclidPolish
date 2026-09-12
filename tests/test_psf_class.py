@@ -171,6 +171,21 @@ class TestPSFOperations:
         out = gauss_psf.resampled_to(gauss_psf.pixel_scale)
         assert out is gauss_psf
 
+    @pytest.mark.parametrize("side,scale_in", [(63, 0.30), (31, 0.10), (21, 0.15)])
+    def test_resampled_to_is_odd_sided_and_centred(self, side, scale_in):
+        # zoom() alone would give an even side for these cases (378, 62, 63→
+        # 63 is odd but 21·3=63; the first two are the regression cases) and
+        # shift every mode="same" convolution by half a pixel.
+        psf = PSF(data=_gauss(side, 2.0), pixel_scale=scale_in)
+        out = psf.resampled_to(0.05)
+        assert out.shape[0] % 2 == 1 and out.shape[1] % 2 == 1
+        assert abs(out.shape[0] - side * scale_in / 0.05) <= 1 + 1e-9
+        yy, xx = np.indices(out.shape)
+        cy = float((yy * out.data).sum()); cx = float((xx * out.data).sum())
+        assert cy == pytest.approx((out.shape[0] - 1) / 2, abs=1e-3)
+        assert cx == pytest.approx((out.shape[1] - 1) / 2, abs=1e-3)
+        assert out.total_flux == pytest.approx(1.0, abs=1e-5)
+
     def test_centre_cropped_to_smaller(self):
         psf = PSF(data=_gauss(51, 3.0), pixel_scale=0.05)
         out = psf.centre_cropped_to(21)

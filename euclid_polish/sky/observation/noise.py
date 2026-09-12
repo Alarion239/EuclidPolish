@@ -24,6 +24,17 @@ from euclid_polish.sky.observation.resample import upsample
 # Euclid per-band noise
 # ---------------------------------------------------------------------------
 
+def _sigma_floor_e(band: BandConfig) -> float:
+    """Blank-sky per-pixel RMS (e⁻) of the physical sky + dark + read model."""
+    t_total = band.t_total_s
+    pixel_area = band.pixel_scale_lr_arcsec ** 2
+    sky_e = band.sky_e_per_s_per_arcsec2 * pixel_area * t_total
+    dark_e = band.dark_e_per_s_per_pix * t_total
+    return float(np.sqrt(
+        sky_e + dark_e + band.n_exposures * band.read_noise_e ** 2
+    ))
+
+
 def apply_band_noise(
     signal_e: np.ndarray,
     band: BandConfig,
@@ -39,10 +50,9 @@ def apply_band_noise(
     deposit charge → ramp is read with Gaussian read noise →
     sky-subtracted on the ground.
 
-    Module-level so non-class callers (e.g. the HST→Euclid TFRecord
-    generator at ``scripts/fasrc_generate_hst_tfrecords.py``, the
-    :class:`ObservationSimulator` per-band pipeline, the
-    :meth:`Image.with_band_noise` method) share one noise model.
+    This is the detector-grid primitive; every production caller goes
+    through :func:`apply_archive_noise`, which wraps it for both the
+    native VIS grid and the per-exposure NISP grid.
     """
 
     t_total = band.t_total_s
@@ -57,11 +67,8 @@ def apply_band_noise(
 
     if add_artifacts:
         acfg = artifact_config or ArtifactConfig()
-        sigma_floor_e = float(np.sqrt(
-            sky_e + dark_e + band.n_exposures * band.read_noise_e ** 2
-        ))
         observed = inject_artifacts(
-            observed, band, rng, acfg, local_sigma_e=sigma_floor_e,
+            observed, band, rng, acfg, local_sigma_e=_sigma_floor_e(band),
         ).astype(np.float64)
 
     read_sigma = band.read_noise_e * np.sqrt(band.n_exposures)
@@ -108,10 +115,13 @@ def _dither_phases(
 ) -> list[tuple[int, int]]:
     """Return reproducible detector-to-MER subpixel phases for one stack.
 
-    The four NISP phases are variance-balanced over the 3x3 output phases.
-    A random dihedral transform plus global translation prevents the small
-    residual phase pattern from occupying fixed array coordinates in every
-    training example.
+    The four NISP dithers land on four distinct phases of the 3x3 output
+    phase grid.  Four dithers cannot cover nine phases evenly, so the
+    co-added variance still carries a periodic 3x3 pattern (about 1.4x
+    between the most and least covered phases for bilinear resampling).
+    A random dihedral transform plus global translation prevents that
+    pattern from occupying fixed array coordinates in every training
+    example.
     """
     if factor == 3 and n_exposures == 4:
         phases = np.asarray(_NISP_DITHER_PHASES_4, dtype=np.int64)
@@ -211,16 +221,28 @@ def apply_archive_noise(
     if factor == 1:
         if vis_noise_calibration is not None and band.name != "VIS":
             raise ValueError("vis_noise_calibration may only be used for VIS")
-        # Keep this branch byte-for-byte equivalent to the historic VIS path
-        # when no active calibration was supplied.
         if vis_noise_calibration is None:
-            observed = apply_band_noise(
-                signal, band, rng,
-                add_artifacts=add_artifacts,
-                artifact_config=artifact_config,
-            )
-            if noise_scale is not None:
-                observed = signal + (observed - signal) * noise_scale
+            if noise_scale is None:
+                # Keep this branch byte-for-byte equivalent to the historic
+                # VIS path when no active calibration was supplied.
+                observed = apply_band_noise(
+                    signal, band, rng,
+                    add_artifacts=add_artifacts,
+                    artifact_config=artifact_config,
+                )
+                return observed.astype(np.float32, copy=False)
+            # The map scales only the stochastic residual.  Artifacts are
+            # injected afterwards so that a dead pixel still reads ~0 and a
+            # cosmic-ray charge is not multiplied by the field depth.
+            observed = apply_band_noise(signal, band, rng, add_artifacts=False)
+            observed = signal + (observed - signal) * noise_scale
+            if add_artifacts:
+                sigma_floor_e = _sigma_floor_e(band)
+                observed = inject_artifacts(
+                    observed, band, rng,
+                    artifact_config or ArtifactConfig(),
+                    local_sigma_e=sigma_floor_e,
+                )
             return observed.astype(np.float32, copy=False)
 
         # The deterministic optical signal is already a delivered-grid ePSF
@@ -236,13 +258,14 @@ def apply_archive_noise(
         observed = (signal + residual).astype(np.float32, copy=False)
         if add_artifacts:
             sigma_e = _robust_sigma(residual)
-            observed = inject_artifacts(
-                observed,
-                band,
-                rng,
-                artifact_config or ArtifactConfig(),
-                local_sigma_e=sigma_e,
-            )
+            if sigma_e > 0.0:
+                observed = inject_artifacts(
+                    observed,
+                    band,
+                    rng,
+                    artifact_config or ArtifactConfig(),
+                    local_sigma_e=sigma_e,
+                )
         return observed.astype(np.float32, copy=False)
 
     # The input is the full-stack source expectation. A native detector cell
@@ -290,7 +313,9 @@ def apply_archive_noise(
     observed = (signal + residual).astype(
         np.float32, copy=False)
     if add_artifacts:
-        sigma_e = _robust_sigma(output_residual[:height, :width])
+        # Calibrate streak amplitudes and dead-pixel jitter to the residual
+        # actually present in the image, i.e. after any depth scaling.
+        sigma_e = _robust_sigma(residual)
         if sigma_e > 0.0:
             # A native single-pixel charge was previously spread over roughly
             # factor² MER pixels. Keep the residual peak scale while making

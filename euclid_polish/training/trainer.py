@@ -815,21 +815,31 @@ class Trainer:
             # diverged model, so instead restore the last good checkpoint
             # (model + optimiser state) and continue from before the spike.
             if _is_grad_spike(gnorm, step):
-                n_rollbacks += 1
-                msg = (f"⚠ gradient spike |g|={float(gnorm):.3g} at step {step}"
-                       f" — restored last checkpoint "
-                       f"(rollback {n_rollbacks}/{GRAD_SPIKE_MAX_ROLLBACKS})")
-                tqdm.write("  " + msg)
-                if warn_callback is not None:
-                    warn_callback(msg)
                 if ckpt_mgr.latest_checkpoint:
+                    n_rollbacks += 1
+                    msg = (f"⚠ gradient spike |g|={float(gnorm):.3g} at step "
+                           f"{step} — restored last checkpoint "
+                           f"(rollback {n_rollbacks}/{GRAD_SPIKE_MAX_ROLLBACKS})")
+                    tqdm.write("  " + msg)
+                    if warn_callback is not None:
+                        warn_callback(msg)
                     # ``restore`` rewinds the model, ckpt.step AND the optimiser
                     # LR to the checkpoint. We KEEP the rewound step (honest: the
                     # run re-trains the rolled-back steps so it still does
                     # ``steps`` real forward steps), and re-assert the intended
                     # (possibly halved) LR.
-                    self.checkpoint.restore(
-                        ckpt_mgr.latest_checkpoint).expect_partial()
+                    self._restore_keeping_best_bars(ckpt_mgr.latest_checkpoint)
+                else:
+                    # Nothing to roll back to yet: the spiked update has
+                    # already been applied and is kept. Say so instead of
+                    # claiming a restore, and do not count it toward the
+                    # LR-halving budget.
+                    msg = (f"⚠ gradient spike |g|={float(gnorm):.3g} at step "
+                           f"{step} — no checkpoint saved yet, spiked update "
+                           f"kept")
+                    tqdm.write("  " + msg)
+                    if warn_callback is not None:
+                        warn_callback(msg)
                 step = int(ckpt.step.numpy())   # rewound model step
                 self._apply_lr(step)
                 # Move the progress bar back to the model's real step. The
@@ -869,7 +879,7 @@ class Trainer:
                     tqdm.write("  " + hmsg)
                     if warn_callback is not None:
                         warn_callback(hmsg)
-                    if n_halvings > GRAD_SPIKE_MAX_LR_HALVINGS:
+                    if n_halvings >= GRAD_SPIKE_MAX_LR_HALVINGS:
                         abort = (f"✗ {n_halvings} LR halvings and still "
                                  f"diverging — aborting. The setup is unstable; "
                                  f"check the data/loss scale.")
@@ -1097,8 +1107,8 @@ class Trainer:
                         # checkpoint; the eval-window stats came from the
                         # collapsed model, so discard them; re-arm both
                         # watchers at the rewound step.
-                        self.checkpoint.restore(
-                            ckpt_mgr.latest_checkpoint).expect_partial()
+                        self._restore_keeping_best_bars(
+                            ckpt_mgr.latest_checkpoint)
                         step = int(ckpt.step.numpy())
                         pbar.n = max(0, step)
                         pbar.refresh()
@@ -1151,6 +1161,23 @@ class Trainer:
 
         pbar.close()
 
+    def _restore_keeping_best_bars(self, checkpoint_path: str) -> None:
+        """Restore weights/optimiser/step from ``checkpoint_path`` while
+        keeping the *current* save-best bars.
+
+        ``psnr`` and ``best_loss`` live inside the same ``tf.train.Checkpoint``
+        as the model, so a plain ``restore`` would also rewind them to the
+        values they had when that checkpoint was written.  After a rollback
+        that stale, looser bar would let the next evaluation overwrite a
+        genuinely better ``loss_best/`` or PSNR checkpoint with a worse one.
+        """
+        ckpt = self.checkpoint
+        best_psnr = float(ckpt.psnr.numpy())
+        best_loss = float(ckpt.best_loss.numpy())
+        ckpt.restore(checkpoint_path).expect_partial()
+        ckpt.psnr.assign(best_psnr)
+        ckpt.best_loss.assign(best_loss)
+
     @tf.function
     def train_step(self, lr, hr):
         """
@@ -1167,7 +1194,7 @@ class Trainer:
         """
         with tf.GradientTape() as tape:
             sr = self.checkpoint.model(lr, training=True)
-            loss_value = self.loss(sr, hr)
+            loss_value = self.loss(hr, sr)
             loss_value = self._add_nonneg_penalty(loss_value, sr)
 
         gradients = tape.gradient(loss_value, self.checkpoint.model.trainable_variables)

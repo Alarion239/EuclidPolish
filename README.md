@@ -31,24 +31,24 @@ corresponding output through its own instrument's forward operator (see §5).
 ## 1. Photometry: magnitudes → electrons
 
 All sources are placed on the simulated HR plane in **electrons accumulated over the full
-Wide-Survey stack** (4 dithered exposures × 565 s = 2260 s). This is the natural unit for
+Wide-Survey stack** (4 dithered exposures × 560.52 s ≈ 2242 s). This is the natural unit for
 Poisson statistics: one electron is one detected photoelectron, and the variance of a sum
 of independent counts is the sum itself.
 
 ### 1.1 Per-second AB zeropoint
 
-The Euclid VIS instrument paper ([Cropper+ 2014](https://arxiv.org/abs/1608.08603), §2 and
-Table 1; [Euclid Collaboration: Mellier+ 2024](https://arxiv.org/abs/2405.13491), §6.2) and
-the Q1 release notes give the broadband VIS AB zeropoint as
+The Q1 VIS processing-function paper ([McCracken+ 2025](https://arxiv.org/abs/2503.15303))
+delivers VIS frames in ADU with a zeropoint of 24.57 (1 ADU/s ⇔ m_AB = 24.57) and a gain of
+3.48 e⁻/ADU, so the electron-rate zeropoint is `24.57 + 2.5·log10(3.48)`:
 
 ```
-VIS_AB_ZP_E_PER_S = 25.50          # m_AB of a source giving 1 e⁻/s
+VIS_AB_ZP_E_PER_S = 25.92          # m_AB of a source giving 1 e⁻/s
 ```
 
 i.e. an AB-magnitude *m* source produces
 
 ```
-F(m) = 10^(-0.4 · (m − 25.50))    [e⁻ / s]
+F(m) = 10^(-0.4 · (m − 25.92))    [e⁻ / s]
 ```
 
 at the detector after the full optical chain (mirrors, filter, QE).
@@ -59,9 +59,9 @@ Because we simulate the *coadded* Wide-Survey stack rather than a single exposur
 the integration time into a stack-level zeropoint:
 
 ```
-T_total = N_exp · t_exp = 4 · 565 s = 2260 s
+T_total = N_exp · t_exp = 4 · 560.52 s = 2242.08 s
 SIM_VIS_ZEROPOINT_E = VIS_AB_ZP_E_PER_S + 2.5 · log10(T_total)
-                    ≈ 25.50 + 8.385 = 33.885
+                    ≈ 25.92 + 8.377 = 34.30
 ```
 
 Then, for any magnitude *m*:
@@ -73,7 +73,7 @@ flux_e(m) = 10^(-0.4 · (m − SIM_VIS_ZEROPOINT_E))   [e⁻ over the stack]
 This single conversion rule is applied to every source class. It is the `sim_zeropoint_e`
 property of each `BandConfig` (`euclid_polish/config.py`, the
 `zp_e_per_s + 2.5·log10(t_total)` derivation) and the scalar `Config.SIM_VIS_ZEROPOINT_E`.
-The mag→electron conversion itself lives in `euclid_polish/sky/multiband_generator.py`
+The mag→electron conversion itself lives in `euclid_polish/sky/generation/sky_simulator.py`
 (`10**(-0.4*(mag − band.sim_zeropoint_e))`).
 
 ### 1.3 Per-class application
@@ -81,8 +81,8 @@ The mag→electron conversion itself lives in `euclid_polish/sky/multiband_gener
 Per-band electron flux for source class *X* in band *B*:
 `flux_e_B = 10^(-0.4·(mag_B − band.sim_zeropoint_e))`,
 where `band.sim_zeropoint_e` is each `BandConfig`'s stack-level zeropoint
-(`Config.BAND_VIS.sim_zeropoint_e ≈ 33.885`, with the NISP bands at their own integration
-budget — Y/J/H accumulate 4 × 112 s).
+(`Config.BAND_VIS.sim_zeropoint_e ≈ 34.30`, with the NISP bands at their own integration
+budget — Y/J/H accumulate 4 × 87.2 s of photon-collecting MACC integration).
 
 | Class | Magnitude source per band | Flux assignment |
 |---|---|---|
@@ -133,20 +133,21 @@ SKY_MAG_AB_ARCSEC2 = 22.35   # mag AB / arcsec²
 Converted to electrons per second per arcsec²:
 
 ```
-SKY_E_PER_S_PER_ARCSEC2 = 10^(-0.4 · (22.35 − 25.50)) ≈ 18.20
+SKY_E_PER_S_PER_ARCSEC2 = 10^(-0.4 · (22.35 − 25.92)) ≈ 26.8
 ```
 
 The sky enters only at the noise stage — it is **not** added to the clean target. A 0.10″
-LR pixel collects `18.20 · 0.10² · 2260 ≈ 411 e⁻` of sky over the stack.
+LR pixel collects `26.8 · 0.10² · 2242 ≈ 601 e⁻` of sky over the stack.
 
 ---
 
 ## 2. PSF and HR → LR forward model
 
-**Code:** `euclid_polish/euclid/psf_extractor.py` (extraction, band-agnostic),
-`euclid_polish/euclid/psf_library.py` (per-band loaders, with Gaussian fallback),
+**Code:** `euclid_polish/psf/psf_extractor.py` (extraction, band-agnostic),
+`euclid_polish/psf/psf_library.py` (per-band loaders, with Gaussian fallback),
 `euclid_polish/psf/psf_set.py` (the per-band PSF *ensemble*),
-`euclid_polish/sky/multiband_forward.py` (per-band convolution + rebin + noise).
+`euclid_polish/sky/observation/observation_simulator.py` (per-band convolution + rebin +
+noise).
 
 ### 2.1 PSF: a per-band ensemble, not a single kernel
 
@@ -238,16 +239,16 @@ matches the physical readout chain (charge integrates on-chip → ramp is read o
 noise added). In the production forward model artifacts are **on** by default
 (`MultiBandForwardConfig.add_artifacts = True`).
 
-### 3.1 Constants (Cropper+ 2014, MSSL VIS-PP, Q1 docs)
+### 3.1 Constants (`euclid_polish/config.py`; in-flight values)
 
 | Symbol | Value | Source |
 |---|---|---|
-| `EXPOSURE_TIME_S` | 565 s | Cropper+ 2014, Table 4 (Q1 paper Romelli+ 2025 quotes 566 s nominal; we use 565 s) |
-| `N_EXPOSURES` | 4 (Wide Survey dithers) | [Scaramella+ 2022](https://arxiv.org/abs/2108.01201), reference observing sequence |
-| `READ_NOISE_E` | 4.5 e⁻ RMS / exposure (VIS); 7.5 e⁻ (NISP) | Cropper+ 2014, §4.2 |
-| `DARK_E_PER_S_PER_PIX` | 0.001 e⁻/s/pix (VIS); 0.01 (NISP) | MSSL VIS-PP characterisation |
-| `GAIN_E_PER_ADU` | 3.1 (documentation only) | Cropper+ 2014 |
-| `SKY_MAG_AB_ARCSEC2` | 22.35 mag/arcsec² | [Scaramella+ 2022](https://arxiv.org/abs/2108.01201), §3.4 |
+| `EXPOSURE_TIME_S` | 560.52 s effective per nominal VIS frame (566 s commanded; shutter motion removes ~5.5 s). NISP: 87.2 s MACC(4,16,4) integration per exposure | [Cropper+ 2024](https://arxiv.org/abs/2405.13492) (VIS); [Jahnke+ 2024](https://arxiv.org/abs/2405.13493), Table 4 (NISP) |
+| `N_EXPOSURES` | 4 (Wide Survey dithers, VIS and NISP) | [Scaramella+ 2022](https://arxiv.org/abs/2108.01201), reference observing sequence |
+| `READ_NOISE_E` | 3.6 e⁻ RMS / exposure (VIS; flight chains 2.2–4.1 e⁻); 6.1 e⁻ (NISP, median after MACC slope fitting) | Cropper+ 2024; Jahnke+ 2024, Table 3 |
+| `DARK_E_PER_S_PER_PIX` | 0.001 e⁻/s/pix (VIS); 0.02 (NISP) | Cropper+ 2024; Jahnke+ 2024, §4.1.2 |
+| `VIS_SATURATION_GAIN_E_PER_ADU` | 3.48 e⁻/ADU (sets the electron zeropoint and the saturation well) | [McCracken+ 2025](https://arxiv.org/abs/2503.15303) |
+| `SKY_MAG_AB_ARCSEC2` | 22.35 mag/arcsec² (VIS); 22.3 / 22.1 / 22.4 (Y/J/H) | [Scaramella+ 2022](https://arxiv.org/abs/2108.01201), §3.4 |
 | MAGZERO (Q1 VIS stacks) | 24.57 mag (ADU s⁻¹) | [Romelli+ 2025](https://arxiv.org/abs/2503.15305); verified against the `MAGZERO` keyword in our delivered FITS (24.60) |
 
 ### 3.2 LR noise floor
@@ -256,20 +257,28 @@ For a blank-sky pixel (`s = 0`):
 
 ```
 σ²_pix ≈ sky_e + dark_e + N_exp · σ²_read
-       ≈ 411 + 0.001·2260 + 4·4.5²
-       ≈ 411 + 2.3 + 81
-       ≈ 494
-σ_pix  ≈ 22.2 e⁻
+       ≈ 601 + 0.001·2242 + 4·3.6²
+       ≈ 601 + 2.2 + 52
+       ≈ 655
+σ_pix  ≈ 25.6 e⁻
 ```
 
-This σ_floor ≈ 22 e⁻ is the natural calibration scale for the rest of the pipeline. Any
-source flux of order 22 e⁻ per LR pixel is at S/N ≈ 1; this is why the faint end of the
+This σ_floor ≈ 26 e⁻ is the natural calibration scale for the rest of the pipeline. Any
+source flux of order 26 e⁻ per LR pixel is at S/N ≈ 1; this is why the faint end of the
 catalog is clipped — galaxies fainter than ~mag 26 produce sub-electron peaks and
 contribute only structured shot noise.
 
-We cross-checked this against real Q1 VIS cutouts: sigma-clipped background RMS is
-≈ 0.0025 ADU s⁻¹ in 512² stamps, which converts to ≈ 17 e⁻ RMS over the 2260 s stack via
-the VIS gain (3.1 e⁻/ADU) and integration — same order of magnitude as the model's 22 e⁻.
+The physical floor above is the **uncalibrated fallback**. Production runs activate an
+empirical VIS amplitude calibration (`euclid_polish/sky/observation/noise_calibration.py`,
+fitted by `euclid_polish/web/helpers/vis_noise_calibration.py` from source-masked Q1
+backgrounds grouped by parent mosaic): the Poisson + read residual is drawn as above and
+then affinely rescaled to the measured median robust RMS, with a per-field factor drawn
+from the measured field-to-field quantiles. The calibration changes only the amplitude of
+the VIS residual; its spatial structure stays white. NISP has no such calibration: its
+noise is generated per native 0.30″ exposure (σ ≈ 12–14 e⁻ per native pixel per
+exposure), bilinearly resampled at the dither phases and co-added, which yields
+≈ 1.8–2.1 e⁻ per 0.10″ pixel over the stack with strong short-range covariance
+(lag-1 correlation ≈ 0.84).
 
 ### 3.3 Detector artifacts
 
@@ -295,8 +304,8 @@ we add a dedicated channel of sub-σ additive ridges with random orientation. Se
 
 ### 3.4 Bright-star saturation
 
-**Code:** `euclid_polish/sky/saturation.py`. Applied to the **dirty LR** stack (not at HR
-generation), gated by `MultiBandForwardConfig.add_saturation` (default True). Per-band well
+**Code:** `euclid_polish/sky/observation/saturation.py`. Applied to the **dirty LR** stack (not at
+HR generation), gated by `ObservationSimulatorConfig.add_saturation` (default True). Per-band well
 depths are derived so P(saturate) = 0.5 lands at calibration magnitudes (VIS ≈ 14, NISP
 ≈ 17). Onset is a smooth ~1-mag transition (`Poisson(peak · 10^N(0,0.15)) ≥ well`, drawn
 independently per band); the saturated footprint is the union of 1–3 overlapping
@@ -327,7 +336,7 @@ loader output so the math is one constant-tensor multiply.
   Anscombe transform; asinh extends it sensibly to the negative values from sky
   subtraction).
 
-The stretch is applied in the **data loader** (`training/data_multiband.py`) to both inputs
+The stretch is applied in the **data loader** (`training/augmentation.py`) to both inputs
 and targets, so the network learns in a roughly homoscedastic, range-compressed space. The
 model has no internal normalisation.
 
@@ -335,8 +344,8 @@ model has no internal normalisation.
 
 ## 5. Training
 
-**Code:** `euclid_polish/training/trainer.py`, `training/data_multiband.py`,
-`training/forward_op.py`, `training/models/wdsr.py`.
+**Code:** `euclid_polish/training/trainer.py`, `training/augmentation.py`,
+`training/forward_onthefly.py`, `training/forward_op.py`, `training/models/wdsr.py`.
 
 ### 5.1 Objective: one deconvolved sky, many forward operators
 
@@ -365,10 +374,12 @@ identical to the sky objective.
 
 - **Model:** WDSR-A — 32 residual blocks, 32 filters, wide-activation expansion 6,
   weight-norm convolutions, pixel-shuffle ×2 upsampling. `nchan_in = 4` (VIS, Y_E, J_E,
-  H_E), `nchan_out = 1` (VIS). **No batch-norm** (per-image dynamic range varies by orders
+  H_E), `nchan_out = 4` (VIS, Y_E, J_E, H_E; `Config.NUM_HR_CHANNELS`). **No batch-norm** (per-image dynamic range varies by orders
   of magnitude; the loader-side asinh stretch + weight-norm are the preconditioning).
 - **Loss:** MAE (L1) in asinh-stretched space.
-- **Optimiser:** Adam with a settable LR; `PiecewiseConstantDecay([200000], [1e-3, 5e-4])`.
+- **Optimiser:** Adam with a linear-warmup → cosine-decay schedule (`training/lr_schedule.py`:
+  `LR_WARMUP_STEPS = 2000`, `LR_PEAK = 5e-4`, `LR_FINAL = 2e-5`), plus a reduce-on-plateau guard
+  for L1 members (`Config.PLATEAU_LR_*`).
 - **Gradient clipping:** global-L2-norm clip at `GRAD_CLIP_NORM = 5.0`
   ([Pascanu+ 2013](https://arxiv.org/abs/1211.5063)). A **divergence guard** rolls back to
   the last checkpoint when the post-warmup pre-clip grad norm exceeds 50, halving the LR
@@ -391,7 +402,7 @@ Logged to `training_log.csv`. PSNR uses a physical peak pinned to a **mag-17 ref
 
 ```
 PSNR_PEAK_MAG       = 17.0
-PSNR_PEAK_E         = 10^(-0.4 · (17.0 − SIM_VIS_ZEROPOINT_E)) ≈ 5.68 × 10⁶ e⁻
+PSNR_PEAK_E         = 10^(-0.4 · (17.0 − SIM_VIS_ZEROPOINT_E)) ≈ 8.29 × 10⁶ e⁻
 PSNR_PEAK_STRETCHED = asinh(PSNR_PEAK_E / 100)
 ```
 
@@ -410,8 +421,8 @@ Schema v2 (multi-band), under `Config.RECORDS_DIR_V2 = "./data/images/records_v2
 
 | File | Contents | Used for |
 |---|---|---|
-| `clean_{train,validate}.tfrecord` | HR clean field, `(H_hr, W_hr, 1)` VIS only, raw float32 electrons | Training target (after asinh in loader) |
-| `dirty_{train,validate}.tfrecord` | LR noisy field, `(H_lr, W_lr, 4)` `(VIS, Y_E, J_E, H_E)` @ 0.10″/pix, raw float32 electrons (can be negative) | Training input (after per-band asinh in loader) |
+| `clean_{train,validate,test}.tfrecord` | HR clean field, `(H_hr, W_hr, 4)` `(VIS, Y_E, J_E, H_E)` @ 0.05″/pix, raw float32 electrons | Training target (after asinh in loader); on-the-fly training builds the LR from it live |
+| `dirty_{train,validate,test}.tfrecord` | LR noisy field, `(H_lr, W_lr, 4)` `(VIS, Y_E, J_E, H_E)` @ 0.10″/pix, raw float32 electrons (can be negative) | Training input (after per-band asinh in loader); with `--onthefly-train` only validate/test are written |
 
 The optional real-data lanes use their own records: HST-paired records
 (`fasrc_generate_hst_tfrecords.py`) and star-anchor records
@@ -464,8 +475,9 @@ Heavy jobs run on Harvard's FASRC cluster via SLURM. The typical order:
    `fasrc_generate_star_anchor_tfrecords.py`. (Synthetic records are produced inside
    `run_pipeline.py`.)
 4. **Train:** `sbatch scripts/fasrc_train.sh` (full pipeline) or
-   `sbatch scripts/fasrc_train_only.sh` (records already exist). Mixed-lane training is
-   driven by `scripts/fasrc_train_with_hst.py` (`--n-syn / --n-hst / --n-anchor`).
+   `sbatch scripts/fasrc_train_only.sh` (records already exist); ensembles via
+   `scripts/train_ensemble.py`. Mixed-lane training uses `Trainer.train_step_sky`
+   with the `[n_syn | n_hst | n_anchor]` batch layout.
 
 Experiment tracking lives in `scripts/track.py` (campaign lab notebook — back up
 models/FITS/images, log FASRC jobs, mirror to holylabs) and `scripts/timetravel.py`
@@ -478,7 +490,9 @@ models/FITS/images, log FASRC jobs, mirror to holylabs) and `scripts/timetravel.
 - **POLISH algorithm:** Connor, Bouman, Ravi & Hallinan, [*POLISH: Deep Learning Reconstruction of Low Surface-Brightness Astronomical Sources*](https://arxiv.org/abs/2111.03249), 2022.
 - **POLISH++ (single-image extension consulted for asinh / metric choices):** Wu et al., [arXiv:2603.09162](https://arxiv.org/abs/2603.09162), 2026.
 - **WDSR architecture:** Yu et al., [*Wide Activation for Efficient and Accurate Image Super-Resolution*](https://arxiv.org/abs/1808.08718), 2018.
-- **Euclid VIS instrument:** Cropper et al., [*VIS: the visible imager for Euclid*](https://arxiv.org/abs/1608.08603), SPIE 2014. — exposure time, read noise, gain.
+- **Euclid VIS instrument:** Euclid Collaboration: Cropper et al., [*Euclid. II. The VIS Instrument*](https://arxiv.org/abs/2405.13492), 2024 — effective exposure time, in-flight read noise; Cropper et al., [*VIS: the visible imager for Euclid*](https://arxiv.org/abs/1608.08603), SPIE 2014.
+- **Euclid NISP instrument:** Euclid Collaboration: Jahnke et al., [*Euclid. III. The NISP Instrument*](https://arxiv.org/abs/2405.13493), 2024 — MACC integration time, read noise, dark current.
+- **Euclid Q1 VIS processing (MAGZERO, gain):** Euclid Collaboration: McCracken et al., [*Euclid Quick Data Release (Q1): the VIS processing function*](https://arxiv.org/abs/2503.15303), 2025.
 - **Euclid mission overview:** Euclid Collaboration: Mellier et al., [*Euclid I. Overview of the Euclid mission*](https://arxiv.org/abs/2405.13491), 2024.
 - **Euclid Wide Survey (sky background, dither pattern):** Euclid Collaboration: Scaramella et al., [*Euclid preparation. I. The Euclid Wide Survey*](https://arxiv.org/abs/2108.01201), 2022.
 - **Euclid Q1 MER pipeline (CR-flag fraction, MAGZERO, masking/interpolation):** Euclid Collaboration: Romelli et al., [*Euclid Quick Data Release (Q1): the Euclid MERge Processing Function*](https://arxiv.org/abs/2503.15305), 2025.

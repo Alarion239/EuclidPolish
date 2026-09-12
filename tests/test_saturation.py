@@ -264,3 +264,10 @@ def test_forward_hot_pixels_do_not_trigger_blackout_rectangles():
     for band_index, band_name in enumerate(_BANDS):
         well = StarSaturationModel().well_depth_e(Config.get_band(band_name))
         assert lr.data[..., band_index].max() > well
+
+
+def test_partial_well_override_keeps_other_bands():
+    m = StarSaturationModel(well_e={"VIS": 1234.0})
+    assert m.well_depth_e(Config.BAND_VIS) == 1234.0
+    for b in (Config.BAND_Y_E, Config.BAND_J_E, Config.BAND_H_E):
+        assert m.well_depth_e(b) == Config.STAR_SATURATION_WELL_E[b.name]

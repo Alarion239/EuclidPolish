@@ -662,18 +662,16 @@ class TNGRenderer:
         profile = np.bincount(radii.ravel(), weights=total.ravel())
         cumulative = np.cumsum(profile)
         radius = int(np.searchsorted(cumulative, 0.995 * cumulative[-1])) + 4
-        height, width = total.shape
-        centre_y = int(round((height - 1) / 2.0))
-        centre_x = int(round((width - 1) / 2.0))
-        row0, row1 = max(0, centre_y - radius), min(
-            height, centre_y + radius + 1
-        )
-        col0, col1 = max(0, centre_x - radius), min(
-            width, centre_x + radius + 1
+        # Crop symmetrically about the (possibly half-integer) image centre
+        # so the galaxy stays exactly where the lens model expects it; an
+        # integer-centred crop of an even-sided stamp would shift the light
+        # by half a pixel relative to the mass centre.
+        rows, cols = _bounded_crop_slices(
+            total.shape, max_side=2 * radius + 1,
         )
         image = replace(
             rendered.image,
-            data=data[row0:row1, col0:col1, :],
+            data=data[rows, cols, :],
         )
         return RenderedTNG(image=image, trace=rendered.trace)
 

@@ -968,3 +968,32 @@ def test_ensemble_available_probe(tmp_path):
         f.write(b"x")                                        # a *.index → checkpoint
     assert ensemble_available(str(base)) is True
     assert ensemble_available(str(tmp_path / "missing")) is False
+
+
+def test_run_catalog_eval_all_cached_needs_no_model(tmp_path, monkeypatch):
+    """When every object is reusable, the runner must complete with
+    ``model=None`` instead of dereferencing ``None.n_members``."""
+    from euclid_polish.eval import catalog_runner
+
+    cat = tmp_path / "cat.csv"
+    cat.write_text("id,ra,dec,grade\nobj1,10.0,-5.0,A\n")
+
+    def _boom(*a, **k):
+        raise AssertionError("no model load expected when everything is cached")
+    monkeypatch.setattr(catalog_runner, "load_eval_ensemble", _boom)
+    monkeypatch.setattr(catalog_runner, "can_reuse_eval_object",
+                        lambda *a, **k: True)
+    monkeypatch.setattr(catalog_runner, "enforce_object_sizes",
+                        lambda *a, **k: None)
+
+    def _fake_reuse(obj, out_dir, *, grade=None, log=None):
+        rec = dict.fromkeys(catalog_runner.MANIFEST_COLS, "")
+        rec.update({"id": obj["id"], "ra": obj["ra"], "dec": obj["dec"],
+                    "grade": grade or obj.get("grade", ""), "ok": True,
+                    "out_subdir": obj["id"]})
+        return rec
+    monkeypatch.setattr(catalog_runner, "reuse_catalog_object", _fake_reuse)
+
+    result = catalog_runner.run_catalog_eval(
+        out_dir=str(tmp_path / "out"), catalog_path=str(cat), model=None)
+    assert result["n_ok"] == 1

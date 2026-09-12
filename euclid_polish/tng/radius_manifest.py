@@ -31,7 +31,10 @@ from euclid_polish.tng.catalog import TNGPropertyCatalog
 from euclid_polish.tng.types import N_ORIENTATIONS, TNG_FITS_BANDS, TNG_NATIVE_PC_PER_PIXEL
 
 MANIFEST_VERSION = 1
-ALGORITHM_VERSION = "centered-vis-cog-v1"
+# v2: half-light radius interpolation returns ``index + subpixel`` (v1
+# under-measured every radius by one native pixel). Existing v1 manifests
+# are rejected and must be regenerated.
+ALGORITHM_VERSION = "centered-vis-cog-v2"
 DEFAULT_MANIFEST_NAME = "tng_radius_manifest.json"
 PARAMETER_SUMMARY_VERSION = 1
 PARAMETER_SUMMARY_FIELDS = (

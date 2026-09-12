@@ -418,3 +418,25 @@ def test_forward_model_artifact_off_matches_old_behaviour():
     a, _ = fwd.process(blank, rng=np.random.default_rng(123))
     b, _ = fwd.process(blank, rng=np.random.default_rng(123))
     np.testing.assert_allclose(a.data, b.data)
+
+
+def test_inject_artifacts_sigma_zero_skips_streaks_and_zeroes_dead_pixels():
+    """``local_sigma_e = 0`` is a documented way to run without streaks."""
+    img = np.full((128, 128), 7.0, dtype=np.float32)
+    cfg = ArtifactConfig(
+        add_cosmic_rays=False, add_hot_pixels=False,
+        add_streaks=True, streak_rate_per_kpix2=1000.0,
+        add_dead_pixels=True, dead_pixel_fraction=0.02,
+    )
+    out = inject_artifacts(img, Config.BAND_VIS, np.random.default_rng(0),
+                           cfg, local_sigma_e=0.0)
+    assert set(np.unique(out)) <= {0.0, 7.0}
+    assert 0.005 < np.mean(out == 0.0) < 0.05
+
+
+def test_inject_artifacts_rejects_negative_or_nan_sigma():
+    img = np.zeros((32, 32), dtype=np.float32)
+    for bad in (-1.0, float("nan")):
+        with pytest.raises(ValueError):
+            inject_artifacts(img, Config.BAND_VIS, np.random.default_rng(0),
+                             ArtifactConfig(), local_sigma_e=bad)

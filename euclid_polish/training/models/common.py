@@ -41,11 +41,17 @@ def evaluate(model, dataset):
     dict
         ``psnr_stretched``: mean JOINT PSNR in asinh space — the MSE is
                            pooled over all H×W×C pixels (all bands for
-                           the 4-band model), max_val ≈
-                           asinh(mag17_e / k) ≈ 9.34. Loss-aligned, used
-                           for save-best decisions.
+                           the 4-band model), max_val =
+                           ``Config.PSNR_PEAK_STRETCHED`` (≈ 12.0 for the
+                           mag-17 peak and the 100 e⁻ knee). Loss-aligned,
+                           used for save-best decisions.
         ``psnr_raw``:       mean joint PSNR in raw electrons
-                           (max_val = mag-17 star ≈ 5.68×10⁶ e⁻).
+                           (max_val = ``Config.PSNR_PEAK_E``, the mag-17
+                           star ≈ 8.3×10⁶ e⁻).
+
+    Every statistic is a mean over *images*: each batch contributes one
+    value per image, so batched validation datasets are scored on all of
+    their images, not only the first of every batch.
         ``psnr_band_stretched``: ``(C,)`` tensor of per-band stretched
                            PSNRs (channel k of HR vs channel k of SR) —
                            MONITORING ONLY, never feeds save-best. Lets
@@ -62,22 +68,28 @@ def evaluate(model, dataset):
 
     for lr, hr in dataset:
         sr = model(lr)
-        psnr_str_list.append(tf.image.psnr(hr, sr, max_val=_PSNR_MAX_VAL_STRETCHED)[0])
+        # ``tf.image.psnr`` returns one value per image in the batch; keep
+        # all of them (indexing ``[0]`` would silently score only the first
+        # image of every batch).
+        psnr_str_list.extend(tf.unstack(
+            tf.image.psnr(hr, sr, max_val=_PSNR_MAX_VAL_STRETCHED)))
         # Validation MAE in asinh space — the held-out analogue of the
         # MeanAbsoluteError training loss (same model output + stretch),
         # computed here for free since we already forward ``lr``.
-        mae_str_list.append(tf.reduce_mean(tf.abs(hr - sr)))
+        mae_str_list.extend(tf.unstack(
+            tf.reduce_mean(tf.abs(hr - sr), axis=[1, 2, 3])))
         # Per-band PSNR: MSE over H×W only, one value per channel. Same
         # stretched peak as the joint metric (all bands share the asinh
         # knee, so the stretched values live on one scale).
         mse_band = tf.reduce_mean(tf.square(hr - sr), axis=[1, 2])      # (B, C)
         psnr_band = 10.0 * tf.math.log(
             peak2 / tf.maximum(mse_band, 1e-12)) / ln10
-        psnr_band_list.append(psnr_band[0])
+        psnr_band_list.extend(tf.unstack(psnr_band))                    # rows (C,)
 
         hr_e = _to_electrons(hr)
         sr_e = _to_electrons(sr)
-        psnr_raw_list.append(tf.image.psnr(hr_e, sr_e, max_val=_PSNR_MAX_VAL_RAW)[0])
+        psnr_raw_list.extend(tf.unstack(
+            tf.image.psnr(hr_e, sr_e, max_val=_PSNR_MAX_VAL_RAW)))
 
     return {
         "psnr_stretched": tf.reduce_mean(psnr_str_list),

@@ -76,8 +76,8 @@ class PSFExtractionConfig:
             return False, "Accuracy must be positive"
         if self.output_size is not None and self.output_size <= 0:
             return False, "output_size must be positive when set"
-        if self.output_size is not None and self.output_size % 2 == 0:
-            return False, "output_size must be odd when set"
+        # Even values are accepted and bumped down to odd by
+        # ``effective_output_size`` (documented in the class docstring).
         return True, None
 
     @property

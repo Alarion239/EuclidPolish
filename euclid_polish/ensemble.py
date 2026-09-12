@@ -735,6 +735,10 @@ def evaluate_member_on_records(
 
     sub = subset or eval_subset(records_dir)
     m = Model(mdir, scale=scale, num_res_blocks=num_res_blocks)
+    # Score against the target the member was trained on: a starless member
+    # is asked to erase the injected stars, so ``hr_`` (with stars) would
+    # penalise exactly the behaviour it learned. Mirrors evaluate_on_records.
+    target_kind = "clean" if member_is_starless(mdir) else "hr"
     lr = list(ImageSet.read(tfrecord_path(records_dir, f"dirty_{sub}"),
                             num_images=num_images))
     target_fwhm = validate_target_fwhm_arcsec(target_fwhm_arcsec)
@@ -747,7 +751,7 @@ def evaluate_member_on_records(
             ),
         )
         for h in ImageSet.read(
-            tfrecord_path(records_dir, f"hr_{sub}"),
+            tfrecord_path(records_dir, f"{target_kind}_{sub}"),
             num_images=num_images,
         )
     }

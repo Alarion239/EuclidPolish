@@ -165,3 +165,25 @@ def test_simulator_adds_off_field_wing_without_local_star_or_hr_target():
 def test_invalid_field_variation_config_rejected(kwargs):
     with pytest.raises(ValueError):
         ObservationSimulatorConfig(**kwargs)
+
+
+def test_vis_noise_scale_map_does_not_scale_detector_artifacts():
+    """A dead pixel must still read ~0 under a depth map (the map scales only
+    the stochastic residual, never the artifacts injected on top of it)."""
+    band = Config.BAND_VIS
+    signal = np.full((96, 96), 50_000.0, dtype=np.float32)
+    cfg = ArtifactConfig(
+        add_cosmic_rays=False, add_hot_pixels=False, add_streaks=False,
+        add_dead_pixels=True, dead_pixel_fraction=0.05,
+        dead_pixel_jitter_sigma=0.0,
+    )
+    for scale in (0.5, 1.5):
+        out = apply_archive_noise(
+            signal, band, np.random.default_rng(3),
+            add_artifacts=True, artifact_config=cfg,
+            noise_scale_map=np.full(signal.shape, scale, dtype=np.float32),
+        )
+        dead = out == 0.0
+        assert 0.01 < dead.mean() < 0.10
+        # Nothing may sit half-way between the floor and the signal.
+        assert not np.any((np.abs(out) > 1_000.0) & (np.abs(out) < 40_000.0))

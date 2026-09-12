@@ -205,3 +205,23 @@ def test_tng_arbitrary_rotation_and_half_light_measurement_keep_native_type():
     assert rotated.pixel_scale_pc == source.pixel_scale_pc
     assert np.all(rotated.data >= 0.0)
     assert np.isfinite(_measure_halflight_radius_px(source))
+
+
+def test_halflight_radius_matches_pixel_integrated_sersic():
+    """Regression: the radial-profile interpolation returned ``index - 1``
+    and under-measured every half-light radius by one native pixel."""
+    from scipy.special import gammaincinv
+
+    from euclid_polish.tng._image import _measure_halflight_radius_px_array
+
+    def sersic(n: float, re: float, side: int, sub: int = 8) -> np.ndarray:
+        b = gammaincinv(2.0 * n, 0.5)
+        c = (side - 1) / 2.0
+        yy, xx = np.indices((side * sub, side * sub))
+        r = np.hypot((yy + 0.5) / sub - 0.5 - c, (xx + 0.5) / sub - 0.5 - c)
+        img = np.exp(-b * ((r / re) ** (1.0 / n) - 1.0))
+        return img.reshape(side, sub, side, sub).sum(axis=(1, 3))
+
+    for n, re, tol in ((1.0, 8.0, 0.04), (4.0, 8.0, 0.04), (1.0, 16.0, 0.02)):
+        measured = _measure_halflight_radius_px_array(sersic(n, re, 401), frac=0.5)
+        assert abs(measured - re) / re < tol, (n, re, measured)

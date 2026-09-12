@@ -46,7 +46,10 @@ from euclid_polish.tng.types import TNG_NATIVE_PC_PER_PIXEL
 #: Pivot wavelengths (µm) of the four Euclid bands, in
 #: ``Config.LR_INPUT_BAND_NAMES`` order (VIS, Y_E, J_E, H_E) — monotonically
 #: increasing, which the drift interpolation relies on.
-PIVOT_WAVELENGTH_UM: tuple[float, ...] = (0.715, 1.081, 1.367, 1.773)
+PIVOT_WAVELENGTH_UM: tuple[float, ...] = tuple(
+    float(Config.Color.PIVOT_WAVELENGTH_UM[name])
+    for name in Config.LR_INPUT_BAND_NAMES
+)
 
 _ARCSEC_TO_RAD = math.pi / (180.0 * 3600.0)
 _PC_PER_MPC = 1.0e6

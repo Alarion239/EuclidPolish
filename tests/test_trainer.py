@@ -943,3 +943,35 @@ class TestPerBandPSNRLogging:
         assert np.isfinite(float(rows[-1][PER_BAND_PSNR_COLUMNS[0]]))
         for col in PER_BAND_PSNR_COLUMNS[1:]:
             assert rows[-1][col] == "", f"{col} should be blank for VIS-only"
+
+
+def test_evaluate_scores_every_image_in_a_batch():
+    """Regression: metrics used to keep only ``[0]`` of each batch's PSNR
+    vector, so batched validation scored one image per batch."""
+    import tensorflow as tf
+
+    from euclid_polish.training.models.common import evaluate
+
+    rng = np.random.default_rng(0)
+    hr = rng.uniform(0.0, 2.0, size=(2, 8, 8, 4)).astype(np.float32)
+    sr = hr.copy()
+    sr[0] += 0.01          # image 0: small error  → high PSNR
+    sr[1] += 0.10          # image 1: 10× the error → 20 dB lower
+    ds = tf.data.Dataset.from_tensors((tf.constant(sr), tf.constant(hr)))
+
+    metrics = evaluate(lambda x: x, ds)          # identity "model"
+    psnr = [float(v) for v in tf.image.psnr(hr, sr, max_val=1.0)]
+    # Same max_val cancels in the difference, so the mean of the two
+    # per-image PSNRs sits 10 dB below image 0 — not equal to image 0.
+    got = float(metrics["psnr_stretched"])
+    assert got == pytest.approx(
+        got - 0.0, abs=0.0)  # finite
+    assert abs((psnr[0] - psnr[1]) - 20.0) < 0.5
+    assert float(metrics["psnr_band_stretched"].shape[0]) == 4
+    # ``mae_stretched`` is the plain mean of the two per-image errors.
+    assert float(metrics["mae_stretched"]) == pytest.approx(0.055, abs=1e-4)
+    # A single-image dataset holding only image 0 must score ~10 dB higher
+    # than the two-image mean.
+    ds0 = tf.data.Dataset.from_tensors((tf.constant(sr[:1]), tf.constant(hr[:1])))
+    only0 = float(evaluate(lambda x: x, ds0)["psnr_stretched"])
+    assert only0 - got == pytest.approx(10.0, abs=0.5)

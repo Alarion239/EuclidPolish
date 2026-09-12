@@ -348,6 +348,8 @@ def _measure_halflight_radius_px_array(
         return float("nan")
     radii = _radius_int_grid(a.shape)
     profile = np.bincount(radii.ravel(), weights=a.ravel())
+    # Bin ``k`` collects the pixels whose centre lies at ``k <= r < k + 1``,
+    # so ``cumulative[k]`` is the flux enclosed within radius ``k + 1``.
     cumulative = np.cumsum(profile)
     target = fraction * total
     index = min(int(np.searchsorted(cumulative, target)), cumulative.size - 1)
@@ -355,7 +357,11 @@ def _measure_halflight_radius_px_array(
         return 0.5
     lower, upper = cumulative[index - 1], cumulative[index]
     subpixel = (target - lower) / (upper - lower) if upper > lower else 0.0
-    return float(index - 1 + subpixel)
+    # ``lower`` is enclosed(index) and ``upper`` is enclosed(index + 1); the
+    # interpolated radius therefore lies at ``index + subpixel``.  Returning
+    # ``index - 1`` (the previous behaviour) under-measured every radius by
+    # one native pixel (-18% at R_e = 4 px, -6% at 16 px).
+    return float(index + subpixel)
 
 
 def _centered_rotation_crop_slices(

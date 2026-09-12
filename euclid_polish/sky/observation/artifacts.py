@@ -26,8 +26,10 @@ read noise. For NISP the public MER product has already gone through ramp
 fitting, masking, and dither resampling; :func:`apply_archive_noise` therefore
 injects only the rare surviving residuals on the final 0.10" grid.
 
-Rates are quoted per native detector pixel (12 µm VIS, 18 µm NISP). The
-caller passes the band, which sets the pixel area to scale to.
+Cosmic-ray rates are quoted per native detector pixel (12 µm VIS, 18 µm
+NISP); the caller passes the band, which sets the detector area and the
+delivered-MER survival factor. Hot-, dead-pixel and streak rates are
+quoted directly per delivered 0.10" MER pixel.
 """
 
 from __future__ import annotations
@@ -394,18 +396,21 @@ def inject_artifacts(
 
     ``local_sigma_e`` is the per-pixel noise RMS for the current band's
     LR grid (Poisson sky + dark + read quadrature); needed by
-    :func:`inject_streaks` to calibrate its sub-σ amplitude. Pass 0.0 to
-    disable streaks even if ``cfg.add_streaks`` is True.
+    :func:`inject_streaks` to calibrate its sub-σ amplitude and by
+    :func:`inject_dead_pixels` for its jitter. ``local_sigma_e <= 0``
+    skips streaks entirely (a zero-amplitude streak is a no-op) and makes
+    dead pixels read exactly zero.
     """
     cfg = cfg or ArtifactConfig()
-    if cfg.add_streaks and local_sigma_e <= 0:
+    if local_sigma_e < 0 or not np.isfinite(local_sigma_e):
         raise ValueError(
-            "inject_artifacts: cfg.add_streaks is True but local_sigma_e <= 0; "
-            "provide a positive per-pixel noise RMS or set add_streaks=False."
+            f"inject_artifacts: local_sigma_e must be finite and >= 0, "
+            f"got {local_sigma_e!r}"
         )
     out = inject_cosmic_rays(image_e, band, rng, cfg)
     out = inject_hot_pixels(out, rng, cfg)
-    out = inject_streaks(out, rng, cfg, local_sigma_e)
+    if local_sigma_e > 0:
+        out = inject_streaks(out, rng, cfg, local_sigma_e)
     # Dead pixels LAST: an unresponsive pixel reads ~0 regardless of any CR /
     # hot / streak charge that "landed" on it, so it overwrites them.
     out = inject_dead_pixels(out, rng, cfg, local_sigma_e)

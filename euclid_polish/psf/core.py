@@ -31,7 +31,6 @@ from astropy.io import fits
 from scipy.ndimage import (
     gaussian_filter,
     map_coordinates,
-    zoom,
 )
 from scipy.ndimage import (
     rotate as ndi_rotate,
@@ -213,12 +212,14 @@ class PSF(StampCarrier):
         return replace(self, data=data.astype(self.data.dtype, copy=False))
 
     def resampled_to(self, target_pixel_scale: float) -> PSF:
-        """Resample onto a new pixel grid via cubic-spline ``zoom``.
+        """Resample onto a new pixel grid with a cubic spline.
 
         Preserves the PSF's physical extent in arcsec — the new
         kernel has ``pixel_scale = target_pixel_scale`` and a
-        proportionally rescaled shape. Renormalises to sum=1 to
-        absorb any tiny interpolation drift.
+        proportionally rescaled, always odd-sided shape whose central
+        pixel coincides with the input centre, so ``mode="same"``
+        convolutions stay astrometrically neutral. Renormalises to
+        sum=1 to absorb any tiny interpolation drift.
 
         No-op when the source and target scales already match (within
         1e-6 arcsec).
@@ -233,9 +234,24 @@ class PSF(StampCarrier):
         if abs(self.pixel_scale - target) < 1e-6:
             return self
         factor = float(self.pixel_scale) / target
-        out = zoom(
-            self.data.astype(np.float64), zoom=factor,
-            order=3, mode="constant", grid_mode=False,
+        # Sample the spline on an odd-sided output grid whose central pixel
+        # sits exactly on the input centre.  ``zoom`` alone rounds the side to
+        # ``round(n * factor)``, which is even for e.g. 63 px @ 0.30" -> 0.05"
+        # (378 px) and would shift every ``mode="same"`` convolution by half
+        # an output pixel.
+        out_shape = tuple(
+            n_out if n_out % 2 == 1 else n_out + 1
+            for n_out in (max(1, round(n * factor)) for n in self.data.shape)
+        )
+        grids = [
+            (np.arange(n_out, dtype=np.float64) - (n_out - 1) / 2.0) / factor
+            + (n_in - 1) / 2.0
+            for n_in, n_out in zip(self.data.shape, out_shape, strict=True)
+        ]
+        coords = np.meshgrid(*grids, indexing="ij")
+        out = map_coordinates(
+            self.data.astype(np.float64), coords,
+            order=3, mode="constant", cval=0.0,
         )
         s = float(out.sum())
         if s > 0:

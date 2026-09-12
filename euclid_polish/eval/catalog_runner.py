@@ -316,12 +316,18 @@ def eval_catalog_object(model, obj, out_dir: str, *, cutout_size: int,
     emit = log or (lambda m: None)
     obj_id = obj["id"]
     rec = _base_manifest_row(obj, grade=grade)
+    n_members = int(getattr(model, "n_members", 1)) if model is not None else 1
     if can_reuse_eval_object(object_output_dir(out_dir, obj_id),
-                             require_disagreement=model.n_members > 1,
+                             require_disagreement=n_members > 1,
                              member_labels=(list(model.member_labels)
-                                            if model.n_members > 1 else None)):
+                                            if n_members > 1 else None)):
         enforce_object_sizes(object_output_dir(out_dir, obj_id), log=emit)
         return reuse_catalog_object(obj, out_dir, grade=grade, log=emit)
+    if model is None:
+        raise RuntimeError(
+            f"eval_catalog_object: {obj_id} has no reusable cached output "
+            "and no model was supplied"
+        )
     try:
         from euclid_polish.web.helpers.jobs_impl import reconstruct_cutout_at
 
@@ -400,6 +406,16 @@ def run_catalog_eval(
     elif not needs_model:
         _emit("all catalog outputs already present — reusing cached FITS")
 
+    def _model_for(row: dict[str, Any]):
+        # The pre-check above cannot know the ensemble size without loading
+        # it, so an object whose cache turns out to be incomplete for an
+        # ensemble (missing disagreement cubes) still gets a model here.
+        nonlocal model
+        if model is None and not can_reuse_eval_object(
+                object_output_dir(out_dir, row["id"])):
+            model = load_eval_ensemble(ensemble_dir, num_res_blocks, log=_emit)
+        return model
+
     manifest_path = os.path.join(out_dir, "manifest.csv")
     n_ok = n_skip = 0
     out_rows: list[dict[str, Any]] = []
@@ -408,7 +424,7 @@ def run_catalog_eval(
         _emit(f"[{i + 1}/{n}] {row['id']}  ra={row['ra']:.5f} "
               f"dec={row['dec']:.5f}")
         rec = eval_catalog_object(
-            model, row, out_dir, cutout_size=cutout_size,
+            _model_for(row), row, out_dir, cutout_size=cutout_size,
             asinh_scale=asinh_scale, checkpoint=ensemble_dir,
             render=render, log=_emit)
         n_ok, n_skip = (n_ok + 1, n_skip) if rec["ok"] else (n_ok, n_skip + 1)

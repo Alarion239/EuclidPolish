@@ -70,7 +70,9 @@ _ResampleKernel = Literal["bilinear", "cubic"]
 @dataclass
 class ObservationSimulatorConfig:
     add_noise: bool = True
-    add_artifacts: bool = True       # cosmic rays + hot pixels
+    # Cosmic rays, hot/dead pixels, masked-trail streaks; also gates the
+    # distant bright-star wings below.
+    add_artifacts: bool = True
     add_saturation: bool = True      # bright-star detector saturation (per band)
     nisp_resample_kernel: str = Config.NISP_RESAMPLE_KERNEL  # "bilinear" or "cubic"
     hr_pixel_scale: float = Config.DEFAULT_PIXEL_SCALE        # 0.05 arcsec
@@ -140,6 +142,8 @@ class ObservationSimulatorConfig:
             raise TypeError(
                 "vis_noise_calibration must be a VISNoiseCalibration or None"
             )
+        if not 0.0 <= float(self.psf_unrotated_prob) <= 1.0:
+            raise ValueError("psf_unrotated_prob must be in [0, 1]")
         if not 0.0 <= float(self.psf_warp_prob) <= 1.0:
             raise ValueError("psf_warp_prob must be in [0, 1]")
         if float(self.psf_warp_alpha_max) < 0.0:
