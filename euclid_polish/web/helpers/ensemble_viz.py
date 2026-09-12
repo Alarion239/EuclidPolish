@@ -200,6 +200,11 @@ def _dir_size_mb(d: str) -> float:
 #: Held-out fields per member score. Fixed so cached values stay comparable
 #: across refreshes (a different count would be a different metric).
 MEMBER_PSNR_FIELDS = 100
+#: Identity of the member-scoring rule. Bump it whenever the score of an
+#: unchanged checkpoint would change, so cached scores are recomputed.
+#: "regime-target": starless members are scored against ``clean_``, starfull
+#: members against ``hr_`` (earlier caches scored everyone against ``hr_``).
+MEMBER_PSNR_SCORING = "regime-target"
 
 
 def _member_psnr_cache_path() -> str:
@@ -229,6 +234,21 @@ def _eval_records_fingerprint(records_dir: str | None, subset: str, *,
             return None
         parts.append(f"{kind}:{st.st_size}:{st.st_mtime_ns}")
     return "|".join(parts)
+
+
+def _member_scoring_records_fingerprint(records_dir: str | None,
+                                        subset: str) -> str | None:
+    """Records identity for the per-member score cache.
+
+    Starless members are scored against ``clean_`` and starfull members against
+    ``hr_`` (see :func:`euclid_polish.ensemble.evaluate_member_on_records`), so a
+    regenerated file of either kind must invalidate the cached scores.
+    """
+    starfull = _eval_records_fingerprint(records_dir, subset)
+    starless = _eval_records_fingerprint(records_dir, subset, starless=True)
+    if starfull is None and starless is None:
+        return None
+    return f"{starfull}||{starless}"
 
 
 _RAW_INCREMENTAL_MINMEANMAX_RBF_KIND = RAW_INCREMENTAL_MINMEANMAX_RBF_KIND
@@ -370,11 +390,12 @@ def _load_member_psnr_cache() -> dict:
 def _member_psnr_entry(cache: dict, name: str, mdir: str, subset: str,
                        records_fp: str | None = None) -> dict | None:
     """The member's cached score, or ``None`` when it must be (re)computed —
-    missing, different subset/field count, the checkpoint changed, or the
+    missing, different subset/field count or scoring rule, the checkpoint changed, or the
     EVAL RECORDS themselves changed (a regenerated test set is a different
     metric even though subset/count/checkpoint all stay the same)."""
     if (cache.get("subset") != subset
-            or int(cache.get("num_images", 0) or 0) != MEMBER_PSNR_FIELDS):
+            or int(cache.get("num_images", 0) or 0) != MEMBER_PSNR_FIELDS
+            or cache.get("scoring") != MEMBER_PSNR_SCORING):
         return None
     if records_fp is not None and cache.get("records_fp") != records_fp:
         return None
@@ -398,9 +419,11 @@ def update_member_psnr_cache(scores: dict[str, dict], subset: str,
     cache = _load_member_psnr_cache()
     if (cache.get("subset") != subset
             or int(cache.get("num_images", 0) or 0) != MEMBER_PSNR_FIELDS
-            or cache.get("records_fp") != records_fp):
+            or cache.get("records_fp") != records_fp
+            or cache.get("scoring") != MEMBER_PSNR_SCORING):
         cache = {"subset": subset, "num_images": MEMBER_PSNR_FIELDS,
-                 "records_fp": records_fp, "members": {}}
+                 "records_fp": records_fp, "scoring": MEMBER_PSNR_SCORING,
+                 "members": {}}
     cache.setdefault("members", {}).update(scores)
     path = os.path.join(_ensemble_out_dir(), "member_psnr.json")
     with open(path, "w") as f:
@@ -421,7 +444,7 @@ def training_curves_payload() -> list[dict]:
               for d in ensemble_registry.active_member_dirs(base)}
     rdir = _sky_records_local_dir()
     sub = eval_subset(rdir) if rdir else "test"
-    rec_fp = _eval_records_fingerprint(rdir, sub)
+    rec_fp = _member_scoring_records_fingerprint(rdir, sub)
     cache = _load_member_psnr_cache()
     out = []
     for s in ensemble_training_series(base):
@@ -457,7 +480,7 @@ def job_member_psnr(cap) -> dict:
     if not rdir:
         raise RuntimeError("no local sky records — sync them on the /sky page.")
     sub = eval_subset(rdir)
-    rec_fp = _eval_records_fingerprint(rdir, sub)
+    rec_fp = _member_scoring_records_fingerprint(rdir, sub)
     cache = _load_member_psnr_cache()
     dirs = [d for d in ensemble_registry.active_member_dirs(base)
             if os.path.isdir(d) and _checkpoint_exists(d)]
@@ -503,7 +526,7 @@ def ensemble_status(starless: bool | None = None) -> dict:
     sub = eval_subset(rdir) if rdir else "test"
     test_present = bool(rdir) and os.path.exists(
         tfrecord_path(rdir, f"dirty_{sub}"))
-    status_rec_fp = _eval_records_fingerprint(rdir, sub)
+    status_rec_fp = _member_scoring_records_fingerprint(rdir, sub)
 
     psnr_cache = _load_member_psnr_cache()
     members = []
@@ -2367,7 +2390,8 @@ def job_ensemble_evaluate(cap, *, num_images: int,
                                 "n_scored": int(out["n_scored"])}
         if scores:
             update_member_psnr_cache(
-                scores, sub, records_fp=_eval_records_fingerprint(rdir, sub))
+                scores, sub,
+                records_fp=_member_scoring_records_fingerprint(rdir, sub))
     combiner_block = model_cmet[_RBF_KIND].block(member_labels)
     has_by_kind = {
         kind: bool(models[kind] is not None and cmet.n_comb > 0)
@@ -2535,7 +2559,7 @@ def _member_meta_from_labels(labels) -> list[dict]:
     base = ensemble_dir()
     rdir = _sky_records_local_dir()
     sub = eval_subset(rdir) if rdir else "test"
-    rec_fp = _eval_records_fingerprint(rdir, sub)
+    rec_fp = _member_scoring_records_fingerprint(rdir, sub)
     cache = _load_member_psnr_cache()
     meta = []
     for lbl in labels:

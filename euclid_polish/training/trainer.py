@@ -227,6 +227,19 @@ def _combined_loss(loss_syn, loss_hst, loss_anchor, weights) -> float:
     return sum(w * v for w, v in parts)
 
 
+def restore_keeping_loss_bar(checkpoint: tf.train.Checkpoint, path: str) -> None:
+    """Rewind weights, optimizer and step to ``path`` but keep ``best_loss``.
+
+    Both rollbacks restore the PSNR-track checkpoint. Its saved ``best_loss``
+    is older and higher, so a plain restore would lower the loss-track bar's
+    standard and let ``loss_best/`` overwrite better weights with worse ones.
+    """
+    best_loss = float(checkpoint.best_loss.numpy())
+    checkpoint.restore(path).expect_partial()
+    checkpoint.best_loss.assign(
+        min(best_loss, float(checkpoint.best_loss.numpy())))
+
+
 class Trainer:
     """Trainer for WDSR super-resolution models."""
 
@@ -828,8 +841,8 @@ class Trainer:
                     # run re-trains the rolled-back steps so it still does
                     # ``steps`` real forward steps), and re-assert the intended
                     # (possibly halved) LR.
-                    self.checkpoint.restore(
-                        ckpt_mgr.latest_checkpoint).expect_partial()
+                    restore_keeping_loss_bar(
+                        self.checkpoint, ckpt_mgr.latest_checkpoint)
                 step = int(ckpt.step.numpy())   # rewound model step
                 self._apply_lr(step)
                 # Move the progress bar back to the model's real step. The
@@ -1097,8 +1110,8 @@ class Trainer:
                         # checkpoint; the eval-window stats came from the
                         # collapsed model, so discard them; re-arm both
                         # watchers at the rewound step.
-                        self.checkpoint.restore(
-                            ckpt_mgr.latest_checkpoint).expect_partial()
+                        restore_keeping_loss_bar(
+                            self.checkpoint, ckpt_mgr.latest_checkpoint)
                         step = int(ckpt.step.numpy())
                         pbar.n = max(0, step)
                         pbar.refresh()

@@ -429,6 +429,54 @@ def _diversity_kwargs(args, over: dict) -> dict:
             "starless": bool(over.get("starless", args.starless))}
 
 
+def _read_origin(member_dir: str) -> dict:
+    """A member's ``origin.json``; ``{}`` for legacy members without one."""
+    path = os.path.join(member_dir, "origin.json")
+    try:
+        with open(path, encoding="utf-8") as handle:
+            origin = json.load(handle)
+    except FileNotFoundError:
+        return {}
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"✗ cannot read {path}: {exc}")
+        raise SystemExit(2) from exc
+    if not isinstance(origin, dict):
+        print(f"✗ {path} must contain a JSON object")
+        raise SystemExit(2)
+    return origin
+
+
+def _continue_identity(name: str, member_dir: str, diversity: dict,
+                       override: dict) -> dict:
+    """The recorded knobs that define what a resumed member is learning.
+
+    Continue specs start from run-wide flags, and the WebUI continue form sends
+    only step counts, so flag defaults would otherwise retrain an L2 member as
+    L1, a starfull member as a star eraser, or change its target blur. The
+    member's ``origin.json`` wins for all three. A per-member ``--member-spec``
+    loss may still change the loss on purpose; the star regime never changes,
+    exactly as in fork mode. Legacy members without a recorded regime are
+    starfull.
+    """
+    origin = _read_origin(member_dir)
+    identity: dict = {"starless": bool(origin.get("starless", False))}
+    if "loss" not in override and origin.get("loss_norm") is not None:
+        loss = str(origin["loss_norm"])
+        if loss not in LOSS_NAMES:
+            print(f"✗ {name}: recorded loss {loss!r} is no longer supported; "
+                  "choose one with --member-spec '[{\"loss\": ...}]'")
+            raise SystemExit(2)
+        identity["loss_norm"] = loss
+    if origin.get("target_psf_fwhm_arcsec") is not None:
+        identity["target_fwhm_arcsec"] = validate_target_fwhm_arcsec(
+            origin["target_psf_fwhm_arcsec"])
+    for key, kept in identity.items():
+        if diversity.get(key) != kept:
+            print(f"  ↺ {name}: keeping recorded {key}={kept!r} "
+                  f"(run-wide value was {diversity.get(key)!r})")
+    return identity
+
+
 def build_specs(args, base: str) -> list[MemberTrainSpec]:
     """CLI args → the run's :class:`MemberTrainSpec` list (mode-dispatched)."""
     base_seed = (int.from_bytes(os.urandom(4), "little")
@@ -467,12 +515,15 @@ def build_specs(args, base: str) -> list[MemberTrainSpec]:
                 continue
             run_steps = target - cur if target is not None else extra
             absolute_target = target if target is not None else cur + extra
+            diversity = _diversity_kwargs(args, overrides[i])
+            diversity.update(
+                _continue_identity(name, d, diversity, overrides[i]))
             specs.append(MemberTrainSpec(
                 name=name, seed=int(overrides[i].get("seed", base_seed + i)),
                 op="continue",
                 target_steps=absolute_target,
                 run_steps=run_steps,
-                **_diversity_kwargs(args, overrides[i])))
+                **diversity))
         return specs
 
     k = int(args.count or (1 if args.mode == "fork" else 5))
@@ -536,10 +587,16 @@ def required_record_names(specs) -> list[str]:
     for every member. ``dirty_train`` is only read by RECORD-mode members —
     an ``--onthefly-train`` generation deliberately doesn't produce it (the
     train split is clean-only), so an all-on-the-fly run must not demand it.
+    Starfull members validate against ``hr_validate``; record-mode starfull
+    members also train against ``hr_train``.
     """
     names = ["clean_train", "dirty_validate", "clean_validate"]
     if any(not s.forward_onthefly for s in specs):
         names.insert(0, "dirty_train")
+    if any(not s.starless for s in specs):
+        names.append("hr_validate")
+        if any(not s.starless and not s.forward_onthefly for s in specs):
+            names.append("hr_train")
     return names
 
 

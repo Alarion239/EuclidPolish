@@ -68,6 +68,40 @@ def _checkpoint_exists(checkpoint_dir: str) -> bool:
     )
 
 
+def member_record_paths(
+    lr_path: str,
+    hr_path: str,
+    *,
+    starless: bool,
+    forward_onthefly: bool,
+) -> tuple[str, str, str]:
+    """``(train_hr, valid_lr, valid_hr)`` TFRecord paths for one member.
+
+    Generation writes ``clean_<split>`` (the starless scene, the target of a
+    star-erasing member) and ``hr_<split>`` (that scene with its recorded
+    stars, the target of a starfull member). Starfull members read ``hr_``
+    wherever a record supplies the target. On-the-fly training keeps
+    ``clean_train`` because it is the scene the live forward model consumes;
+    the forward model then picks the regime's target itself.
+    """
+    valid_lr_path = lr_path.replace("_train.", "_validate.")
+    if valid_lr_path == lr_path:
+        raise ValueError(
+            "Cannot derive validation path: expected _train. in filename "
+            f"(got {lr_path!r})"
+        )
+
+    def regime_target(path: str) -> str:
+        head, name = _os.path.split(path)
+        if starless or not name.startswith("clean_"):
+            return path
+        return _os.path.join(head, "hr_" + name[len("clean_"):])
+
+    train_hr_path = hr_path if forward_onthefly else regime_target(hr_path)
+    valid_hr_path = regime_target(hr_path.replace("_train.", "_validate."))
+    return train_hr_path, valid_lr_path, valid_hr_path
+
+
 class Model:
     """The public face of a trained WDSR checkpoint.
 
@@ -404,7 +438,7 @@ class Model:
         (e.g. ``evaluate_every``, ``step_callback``, ``eval_callback``).
 
         Ensemble-diversity knobs: ``loss_norm`` picks the reconstruction
-        loss (``l1``/``l2``/``l3`` p-norms or ``berhu`` reverse-Huber, see
+        loss (``l1``/``l2``/``l3`` p-norms or ``mse``, see
         :func:`~euclid_polish.training.losses.build_loss`); ``noise_aug`` adds
         extra LR noise in read-noise units; ``bootstrap`` ∈ (0, 1) trains on
         that fraction of the fields (deterministic subset keyed by the seed).
@@ -412,7 +446,7 @@ class Model:
         ``loss_norm`` also gates the plateau LR guard: it applies ONLY to
         losses with a degenerate skip-only basin (L1, see
         :func:`~euclid_polish.training.loss_names.plateau_guard_applies`).
-        For L2/L3/BerHu the guard is forced off regardless of
+        For L2/L3/MSE the guard is forced off regardless of
         ``plateau_lr_enabled`` — that basin isn't a low-loss optimum for them,
         so the guard never helps and misfires on their genuine slow climbs.
 
@@ -432,7 +466,8 @@ class Model:
 
         Validation always uses the record-based full set, no noise/forward
         randomness, and the L1 metric-space pipeline — members with
-        different knobs stay comparable.
+        different knobs stay comparable. Its target follows the member's
+        regime (see :func:`member_record_paths`).
         """
         # Re-assert the seed before the data pipeline is defined so its shuffle
         # / augmentation draws are reproducible (the model was already seeded +
@@ -440,6 +475,10 @@ class Model:
         if self._seed is not None:
             seed_everything(self._seed, deterministic=self._deterministic)
         target_fwhm = validate_target_fwhm_arcsec(target_fwhm_arcsec)
+        train_hr_path, valid_lr_path, valid_hr_path = member_record_paths(
+            lr_path, hr_path,
+            starless=bool(starless), forward_onthefly=bool(forward_onthefly),
+        )
         if forward_onthefly:
             psf_sets, note = member_psf_sets(seed=self._seed,
                                              psf_subset=psf_subset)
@@ -475,19 +514,12 @@ class Model:
                 bootstrap_seed=(self._seed if self._seed is not None else 0))
         else:
             train_ds = self._build_training_pipeline(
-                lr_path, hr_path, batch_size,
+                lr_path, train_hr_path, batch_size,
                 noise_aug_rn=float(noise_aug),
                 bootstrap_keep=bootstrap,
                 bootstrap_seed=(self._seed if self._seed is not None else 0),
                 target_fwhm_arcsec=target_fwhm)
 
-        valid_lr_path = lr_path.replace("_train.", "_validate.")
-        valid_hr_path = hr_path.replace("_train.", "_validate.")
-        if valid_lr_path == lr_path:
-            raise ValueError(
-                "Cannot derive validation path: expected _train. in filename "
-                f"(got {lr_path!r})"
-            )
         valid_ds = self._build_training_pipeline(
             valid_lr_path, valid_hr_path, batch_size, augment=False,
             target_fwhm_arcsec=target_fwhm,

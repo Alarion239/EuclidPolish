@@ -220,6 +220,7 @@ def test_regenerated_eval_records_invalidate_cached_psnr(tmp_path, monkeypatch):
     mdir = _member(str(tmp_path), "member_00")
     fp = member_fingerprint(mdir)
     cache = {"subset": "test", "num_images": ev.MEMBER_PSNR_FIELDS,
+             "scoring": ev.MEMBER_PSNR_SCORING,
              "records_fp": "dirty:100:1|hr:100:1",
              "members": {"member_00": {"fingerprint": fp, "psnr": 50.0,
                                        "n_scored": 100}}}
@@ -280,3 +281,34 @@ def test_training_curves_payload_carries_loss_norm(tmp_path, monkeypatch):
     out = ev.training_curves_payload()
     assert {s["name"]: s["loss"] for s in out} == {
         "member_00": "l2", "member_01": "l1"}
+
+
+def test_cache_from_an_older_scoring_rule_is_recomputed(tmp_path, monkeypatch):
+    """Scores made before members were scored on their own regime are stale."""
+    from euclid_polish.ensemble import member_fingerprint
+    ev = _setup(tmp_path, monkeypatch)
+    d = _member(ev.ensemble_dir(), "member_00")
+    entry = {"fingerprint": member_fingerprint(d), "psnr": 40.0, "n_scored": 1}
+    legacy = {"subset": "test", "num_images": ev.MEMBER_PSNR_FIELDS,
+              "records_fp": None, "members": {"member_00": entry}}
+
+    assert ev._member_psnr_entry(legacy, "member_00", d, "test") is None
+    current = {**legacy, "scoring": ev.MEMBER_PSNR_SCORING}
+    assert ev._member_psnr_entry(current, "member_00", d, "test") == entry
+
+
+def test_member_scores_are_keyed_on_both_regime_targets(tmp_path):
+    """A regenerated clean_ file changes starless scores, so it must invalidate."""
+    from euclid_polish.image.tfio import tfrecord_path
+    from euclid_polish.web.helpers import ensemble_viz as ev
+
+    rdir = str(tmp_path)
+    assert ev._member_scoring_records_fingerprint(rdir, "test") is None
+    for kind in ("dirty", "hr", "clean"):
+        with open(tfrecord_path(rdir, f"{kind}_test"), "wb") as f:
+            f.write(b"x" * 10)
+    before = ev._member_scoring_records_fingerprint(rdir, "test")
+    with open(tfrecord_path(rdir, "clean_test"), "ab") as f:
+        f.write(b"yy")
+    assert ev._member_scoring_records_fingerprint(rdir, "test") != before
+

@@ -37,7 +37,9 @@ import numpy as np
 from euclid_polish import ensemble_registry
 from euclid_polish.config import Config
 from euclid_polish.ensemble_registry import default_ensemble_dir  # re-export
+from euclid_polish.eval.subsets import eval_subset
 from euclid_polish.image import Image, ImageSet, Role
+from euclid_polish.image.tfio import tfrecord_path
 from euclid_polish.model import Model, _checkpoint_exists
 from euclid_polish.provenance.gitinfo import capture_git
 from euclid_polish.training.forward_onthefly import (
@@ -682,9 +684,6 @@ def evaluate_on_records(
     Scores each member's PSNR-best checkpoint only; ``include_loss_best=True``
     opts the correlated ``loss_best/`` models back in — see :class:`EnsembleModel`.
     """
-    from euclid_polish.eval.subsets import eval_subset
-    from euclid_polish.image.tfio import tfrecord_path
-
     sub = subset or eval_subset(records_dir)
     ens = EnsembleModel(base_dir, scale=scale, num_res_blocks=num_res_blocks,
                         include_loss_best=include_loss_best, starless=starless)
@@ -727,14 +726,14 @@ def evaluate_member_on_records(
 
     Loads just this member (depth self-corrects from the checkpoint) and scores
     it over the subset's first ``num_images`` LR/HR pairs — so a single changed
-    member can be re-scored without paying for the whole ensemble. Returns
+    member can be re-scored without paying for the whole ensemble. The target
+    follows the member's regime: ``clean_`` for starless members, ``hr_`` for
+    starfull ones. Returns
     ``{"subset", "n_scored", "psnr_stretched"}``.
     """
-    from euclid_polish.eval.subsets import eval_subset
-    from euclid_polish.image.tfio import tfrecord_path
-
     sub = subset or eval_subset(records_dir)
     m = Model(mdir, scale=scale, num_res_blocks=num_res_blocks)
+    target_kind = "clean" if member_is_starless(mdir) else "hr"
     lr = list(ImageSet.read(tfrecord_path(records_dir, f"dirty_{sub}"),
                             num_images=num_images))
     target_fwhm = validate_target_fwhm_arcsec(target_fwhm_arcsec)
@@ -747,7 +746,7 @@ def evaluate_member_on_records(
             ),
         )
         for h in ImageSet.read(
-            tfrecord_path(records_dir, f"hr_{sub}"),
+            tfrecord_path(records_dir, f"{target_kind}_{sub}"),
             num_images=num_images,
         )
     }

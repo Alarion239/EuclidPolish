@@ -39,6 +39,7 @@ def evaluate(model, dataset):
     Returns
     -------
     dict
+        ``mae_stretched``:  mean absolute error in asinh space.
         ``psnr_stretched``: mean JOINT PSNR in asinh space — the MSE is
                            pooled over all H×W×C pixels (all bands for
                            the 4-band model), max_val ≈
@@ -60,9 +61,11 @@ def evaluate(model, dataset):
     ln10  = tf.constant(2.302585092994046, dtype=tf.float32)
     peak2 = _PSNR_MAX_VAL_STRETCHED ** 2
 
+    # Every list holds per-IMAGE values (batch axis kept), so each image
+    # counts once whatever the batch size or the size of the last batch.
     for lr, hr in dataset:
         sr = model(lr)
-        psnr_str_list.append(tf.image.psnr(hr, sr, max_val=_PSNR_MAX_VAL_STRETCHED)[0])
+        psnr_str_list.append(tf.image.psnr(hr, sr, max_val=_PSNR_MAX_VAL_STRETCHED))
         # Validation MAE in asinh space — the held-out analogue of the
         # MeanAbsoluteError training loss (same model output + stretch),
         # computed here for free since we already forward ``lr``.
@@ -73,18 +76,18 @@ def evaluate(model, dataset):
         mse_band = tf.reduce_mean(tf.square(hr - sr), axis=[1, 2])      # (B, C)
         psnr_band = 10.0 * tf.math.log(
             peak2 / tf.maximum(mse_band, 1e-12)) / ln10
-        psnr_band_list.append(psnr_band[0])
+        psnr_band_list.append(psnr_band)
 
         hr_e = _to_electrons(hr)
         sr_e = _to_electrons(sr)
-        psnr_raw_list.append(tf.image.psnr(hr_e, sr_e, max_val=_PSNR_MAX_VAL_RAW)[0])
+        psnr_raw_list.append(tf.image.psnr(hr_e, sr_e, max_val=_PSNR_MAX_VAL_RAW))
 
     return {
-        "psnr_stretched": tf.reduce_mean(psnr_str_list),
-        "psnr_raw":       tf.reduce_mean(psnr_raw_list),
+        "psnr_stretched": tf.reduce_mean(tf.concat(psnr_str_list, axis=0)),
+        "psnr_raw":       tf.reduce_mean(tf.concat(psnr_raw_list, axis=0)),
         "mae_stretched":  tf.reduce_mean(mae_str_list),
         "psnr_band_stretched": tf.reduce_mean(
-            tf.stack(psnr_band_list), axis=0),                          # (C,)
+            tf.concat(psnr_band_list, axis=0), axis=0),                 # (C,)
     }
 
 

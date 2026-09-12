@@ -180,6 +180,58 @@ def test_continue_mode_reads_current_step(tmp_path, monkeypatch):
     assert s.init_from is None
 
 
+def _write_origin(member_dir, **fields):
+    with open(os.path.join(member_dir, "origin.json"), "w") as f:
+        json.dump(fields, f)
+
+
+def test_continue_keeps_member_loss_regime_and_target(tmp_path, monkeypatch):
+    """Run-wide form defaults must not silently retrain a member as another task."""
+    base = str(tmp_path / "ens")
+    d = _mk_member(base, 3)
+    _write_origin(d, loss_norm="l2", starless=False, target_psf_fwhm_arcsec=0.0)
+    monkeypatch.setattr("scripts.train_ensemble.checkpoint_step",
+                        lambda d: 2000)
+    args = parse_args(["--mode", "continue", "--members", "member_03",
+                       "--extra-steps", "500"])
+    (s,) = build_specs(args, base)
+    assert s.loss_norm == "l2"
+    assert s.starless is False
+    assert s.target_fwhm_arcsec == 0.0
+
+
+def test_continue_member_spec_may_change_loss_but_not_regime(
+    tmp_path, monkeypatch,
+):
+    base = str(tmp_path / "ens")
+    d = _mk_member(base, 3)
+    _write_origin(d, loss_norm="l2", starless=True)
+    monkeypatch.setattr("scripts.train_ensemble.checkpoint_step",
+                        lambda d: 2000)
+    args = parse_args([
+        "--mode", "continue", "--members", "member_03",
+        "--extra-steps", "500", "--starless", "0",
+        "--member-spec", json.dumps([{"loss": "l1", "starless": False}]),
+    ])
+    (s,) = build_specs(args, base)
+    assert s.loss_norm == "l1"
+    assert s.starless is True
+
+
+def test_continue_legacy_member_without_origin_is_starfull(
+    tmp_path, monkeypatch,
+):
+    base = str(tmp_path / "ens")
+    _mk_member(base, 3)
+    monkeypatch.setattr("scripts.train_ensemble.checkpoint_step",
+                        lambda d: 2000)
+    args = parse_args(["--mode", "continue", "--members", "member_03",
+                       "--extra-steps", "500"])
+    (s,) = build_specs(args, base)
+    assert s.starless is False
+    assert s.loss_norm == "l1"
+
+
 def test_continue_mode_can_target_one_absolute_step(tmp_path, monkeypatch):
     base = str(tmp_path / "ens")
     _mk_member(base, 3)
@@ -320,3 +372,18 @@ def test_required_record_names_drops_dirty_when_all_onthefly(tmp_path):
                        "--member-spec", '[{"forward_onthefly": false}]'])
     specs = build_specs(args, str(tmp_path / "b"))
     assert "dirty_train" in required_record_names(specs)
+
+
+def test_required_record_names_add_starfull_targets(tmp_path):
+    from scripts.train_ensemble import required_record_names
+
+    args = parse_args(["--count", "1", "--steps", "10",
+                       "--forward-onthefly", "1", "--starless", "0"])
+    names = required_record_names(build_specs(args, str(tmp_path / "a")))
+    assert "hr_validate" in names
+    assert "hr_train" not in names
+
+    args = parse_args(["--count", "1", "--steps", "10",
+                       "--forward-onthefly", "0", "--starless", "0"])
+    names = required_record_names(build_specs(args, str(tmp_path / "b")))
+    assert {"hr_validate", "hr_train"} <= set(names)
