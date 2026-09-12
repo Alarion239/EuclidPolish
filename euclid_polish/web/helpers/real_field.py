@@ -24,7 +24,7 @@ from euclid_polish.config import Config
 from euclid_polish.ensemble import default_ensemble_dir, pca_field
 from euclid_polish.eval.combiner import COMBINER_MODELS, load_combiner
 from euclid_polish.eval.power_spectrum import log_k_edges, pairwise_cross_correlation
-from euclid_polish.photometry import adu_per_s_to_electrons_factor
+from euclid_polish.photometry import adu_per_s_to_electrons_factor, header_magzero
 
 FIELD_SIZE = 2560
 TILE_SIZE = 256
@@ -243,7 +243,7 @@ def _load_or_download_lr(ra: float, dec: float, root: Path,
         data, header = _center_crop_field(data, header, size=FIELD_SIZE)
         band = Config.get_band(name)
         bands.append(data * adu_per_s_to_electrons_factor(
-            float(header.get("MAGZERO", band.sim_zeropoint_e)), band))
+            header_magzero(header, source=f"{name} field"), band))
         headers.append(header)
     cube = np.stack(bands, axis=-1).astype(np.float32)
     stack = np.moveaxis(cube, -1, 0)

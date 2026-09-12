@@ -15,6 +15,7 @@ from euclid_polish.photometry import (
     adu_per_s_to_electrons,
     adu_per_s_to_electrons_factor,
     electrons_to_ab_mag,
+    header_magzero,
     mjy_per_sr_to_electrons_factor,
     pixel_solid_angle_sr,
     uJy_to_ab_mag,
@@ -169,3 +170,18 @@ def test_ab_flux_norm_is_inverse_of_ab_zero_electrons():
         legacy = 1.0 / (band.t_total_s
                         * 10 ** (0.4 * band.zeropoint_ab_e_per_s))
         assert _ab_flux_norm(band.name) == pytest.approx(legacy, rel=1e-12)
+
+
+def test_header_magzero_reads_a_finite_zeropoint():
+    assert header_magzero({"MAGZERO": 24.6}) == pytest.approx(24.6)
+
+
+@pytest.mark.parametrize(
+    "header",
+    [{}, {"MAGZERO": None}, {"MAGZERO": "n/a"}, {"MAGZERO": float("nan")}],
+)
+def test_header_magzero_refuses_missing_or_invalid_values(header):
+    """Falling back to factor one would pass ADU/s pixels off as electrons."""
+    with pytest.raises(ValueError, match="VIS cutout header has no finite MAGZERO"):
+        header_magzero(header, source="VIS cutout")
+

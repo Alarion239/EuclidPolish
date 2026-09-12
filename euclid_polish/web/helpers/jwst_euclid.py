@@ -26,6 +26,7 @@ from urllib.request import urlopen
 import numpy as np
 
 from euclid_polish.config import Config
+from euclid_polish.photometry import adu_per_s_to_electrons_factor, header_magzero
 
 _SAFE = re.compile(r"[^A-Za-z0-9._-]+")
 _IMAGE_SUFFIXES = (".fits", ".fits.gz", ".fit", ".fit.gz")
@@ -1370,9 +1371,8 @@ def _cache_nexus_tile_lr(directory: Path, tile: dict[str, Any]) -> tuple[np.ndar
         if not np.all(np.isfinite(registered)):
             raise RuntimeError(f"{band_name} does not fully cover the VIS tile")
         band = Config.get_band(band_name)
-        from euclid_polish.photometry import adu_per_s_to_electrons_factor
         bands.append(registered * adu_per_s_to_electrons_factor(
-            float(header.get("MAGZERO", band.sim_zeropoint_e)), band,
+            header_magzero(header, source=f"{band_name} tile"), band,
         ))
     cube = np.stack(bands, axis=-1).astype(np.float32)
     header = _primary_image_header(vis_header, vis_wcs, Path(files["VIS"]).name,
@@ -2156,7 +2156,6 @@ def run_starfull_pair_inference(
     from euclid_polish.catalog.downloader import fetch_cutout_at
     from euclid_polish.ensemble import EnsembleModel, default_ensemble_dir
     from euclid_polish.eval.combiner import ACTIVE_COMBINER_KINDS, COMBINER_MODELS, load_combiner
-    from euclid_polish.photometry import adu_per_s_to_electrons_factor
 
     inference_dir = pair_dir / "starfull_inference"
     raw_dir = inference_dir / "raw"
@@ -2218,7 +2217,7 @@ def run_starfull_pair_inference(
             )
         band = Config.get_band(band_name)
         bands.append(registered * adu_per_s_to_electrons_factor(
-            float(header.get("MAGZERO", band.sim_zeropoint_e)), band,
+            header_magzero(header, source=f"{band_name} tile"), band,
         ))
         if band_name == "VIS":
             vis_header = _primary_image_header(

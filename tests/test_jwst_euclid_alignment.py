@@ -108,6 +108,9 @@ def test_nexus_download_reuses_cached_tiles_while_filling_missing_bands(tmp_path
         calls.append(band_name)
         data = np.ones((cutout_size_vis_pixels, cutout_size_vis_pixels), dtype=np.float32)
         cutout_header = header.copy()
+        # Real archive cutouts always carry their ADU/s zeropoint.
+        cutout_header["MAGZERO"] = {"VIS": 24.6, "Y_E": 29.8,
+                                    "J_E": 30.0, "H_E": 29.9}[band_name]
         if band_name != "VIS":
             cutout_header["CRPIX1"] = 5.0
             cutout_header["CRPIX2"] = 5.0

@@ -42,7 +42,7 @@ from euclid_polish.config import Config
 from euclid_polish.image import Image
 from euclid_polish.image.tfio import open_writer
 from euclid_polish.observability.reporter import Reporter
-from euclid_polish.photometry import adu_per_s_to_electrons_factor
+from euclid_polish.photometry import adu_per_s_to_electrons_factor, header_magzero
 
 # Input dir (bundled per-position cutouts), output records dir, and the
 # sky-catalogue filename now live in Config — see
@@ -172,10 +172,10 @@ def _load_4band_cube(
                     # Same archive e⁻/s → total-e⁻ conversion as the
                     # direct-cutout / star-anchor lanes: zeropoint factor
                     # from each band header's MAGZERO (preserved in the
-                    # bundle). Falls back to sim_zeropoint_e (factor 1) only
-                    # if a header somehow lacks MAGZERO.
-                    magzero = float(hdu.header.get("MAGZERO",
-                                                   band.sim_zeropoint_e))
+                    # bundle). A header without MAGZERO raises, so the
+                    # bundle is skipped instead of read in ADU/s units.
+                    magzero = header_magzero(
+                        hdu.header, source=f"{band_name} bundle HDU")
                     arr = arr * adu_per_s_to_electrons_factor(magzero, band)
                 channels.append(arr)
     except Exception:

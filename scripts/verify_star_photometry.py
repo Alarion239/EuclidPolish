@@ -40,6 +40,7 @@ from euclid_polish.config import Config
 from euclid_polish.photometry import (
     ab_mag_to_electrons,
     adu_per_s_to_electrons,
+    header_magzero,
     uJy_to_electrons,
 )
 
@@ -102,7 +103,7 @@ def main() -> int:
             continue
         with fits.open(path) as hdul:
             arr = np.asarray(hdul[0].data, dtype=np.float32)
-            magzero = float(hdul[0].header.get("MAGZERO", band.sim_zeropoint_e))
+            magzero = header_magzero(hdul[0].header, source=path)
         img_e = adu_per_s_to_electrons(arr, magzero, band)
         cat_e = _catalog_electrons(row, band)
         sums = [_aperture_sum(img_e, r) for r in args.radii]

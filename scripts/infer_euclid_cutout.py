@@ -37,6 +37,7 @@ from euclid_polish.config import Config
 from euclid_polish.photometry import (
     adu_per_s_to_electrons,
     adu_per_s_to_electrons_factor,
+    header_magzero,
 )
 from euclid_polish.training.inference import (
     load_model_from_checkpoint,
@@ -99,7 +100,7 @@ def main() -> int:
             header = hdul[0].header
         if band_name == "VIS":
             vis_header = header.copy()
-        magzero = float(header.get("MAGZERO", band.sim_zeropoint_e))
+        magzero = header_magzero(header, source=f"{band_name} cutout")
         adu_to_e = adu_per_s_to_electrons_factor(magzero, band)
         bands_e[band_name] = adu_per_s_to_electrons(arr, magzero, band)
         print(f"    shape={bands_e[band_name].shape}  MAGZERO={magzero:.3f}"

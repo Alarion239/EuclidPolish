@@ -42,6 +42,7 @@ from euclid_polish.config import Config  # config-only: no astroquery
 from euclid_polish.photometry import (  # config+numpy only: no astroquery
     ab_mag_to_electrons,
     adu_per_s_to_electrons_factor,
+    header_magzero,
 )
 
 _FNAME_RE = re.compile(r"star_(\d+)_(\d+)\.fits$")
@@ -55,7 +56,7 @@ def load_cutout_electrons(path: str, band) -> tuple[np.ndarray, float]:
     """Read a star cutout → electrons-over-stack (via the header MAGZERO)."""
     with fits.open(path, memmap=False) as hdul:
         arr = np.asarray(hdul[0].data, dtype=np.float64)
-        magzero = float(hdul[0].header.get("MAGZERO", band.sim_zeropoint_e))
+        magzero = header_magzero(hdul[0].header, source=path)
     return arr * adu_per_s_to_electrons_factor(magzero, band), magzero
 
 

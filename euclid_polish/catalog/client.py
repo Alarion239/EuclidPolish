@@ -44,6 +44,7 @@ from euclid_polish.image import FitsWCS, Image, Role
 from euclid_polish.photometry import (
     ab_mag_to_uJy,
     adu_per_s_to_electrons_factor,
+    header_magzero,
     uJy_to_ab_mag,
 )
 from euclid_polish.provenance.defaults import mint_id
@@ -304,11 +305,8 @@ class EuclidCatalog:
                     if primary.data is None:
                         raise OSError(f"FITS cutout has no image data: {tmp_path}")
                     arr = np.asarray(primary.data, dtype=np.float32)
-                    magzero = float(
-                        cast(Any, primary.header.get(
-                            "MAGZERO", band.sim_zeropoint_e,
-                        ))
-                    )
+                    magzero = header_magzero(
+                        primary.header, source=f"{band_name} cutout")
                     if band_name == "VIS":
                         vis_wcs = FitsWCS.from_header(primary.header)
                 factor = np.float32(adu_per_s_to_electrons_factor(magzero, band))

@@ -50,6 +50,7 @@ display math in JS; it consumes the constants served by
 from __future__ import annotations
 
 import math
+from typing import Any
 
 import numpy as np
 
@@ -129,6 +130,27 @@ def uJy_to_electrons(flux_uJy: float, band: BandConfig) -> float:
 # --------------------------------------------------------------------------- #
 # Archive ADU/s (MAGZERO-calibrated) → electrons over the stack
 # --------------------------------------------------------------------------- #
+
+def header_magzero(header: Any, *, source: str = "image") -> float:
+    """The finite ``MAGZERO`` of an archive ADU/s image header.
+
+    Raises instead of falling back to ``band.sim_zeropoint_e``: that fallback
+    makes :func:`adu_per_s_to_electrons_factor` exactly one, which silently
+    passes ADU/s pixels off as stack electrons (about 7.6e3 times too faint in
+    VIS). ``source`` names the file or band in the error message.
+    """
+    raw = header.get("MAGZERO") if header is not None else None
+    try:
+        magzero = float(raw)
+    except (TypeError, ValueError):
+        magzero = float("nan")
+    if not math.isfinite(magzero):
+        raise ValueError(
+            f"{source} header has no finite MAGZERO (got {raw!r}); "
+            "cannot convert ADU/s to electrons"
+        )
+    return magzero
+
 
 def adu_per_s_to_electrons_factor(magzero: float, band: BandConfig) -> float:
     """Multiplicative factor taking archive ADU/s pixels (calibrated so that
