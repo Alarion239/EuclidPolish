@@ -24,6 +24,24 @@ from euclid_polish.sky.observation.resample import upsample
 # Euclid per-band noise
 # ---------------------------------------------------------------------------
 
+def background_sigma_e(band: BandConfig) -> float:
+    """Expected blank-sky detector RMS per pixel of :func:`apply_band_noise`.
+
+    Sky and dark current contribute Poisson variance over the full stack
+    integration; every exposure adds one read-noise variance. The value is in
+    stack electrons on ``band.pixel_scale_lr_arcsec`` pixels and does not
+    depend on any scene, which makes it the reference level for calibrations
+    and artifact thresholds.
+    """
+    t_total = band.t_total_s
+    pixel_area = band.pixel_scale_lr_arcsec ** 2
+    sky_e = band.sky_e_per_s_per_arcsec2 * pixel_area * t_total
+    dark_e = band.dark_e_per_s_per_pix * t_total
+    return float(np.sqrt(
+        sky_e + dark_e + band.n_exposures * band.read_noise_e ** 2
+    ))
+
+
 def apply_band_noise(
     signal_e: np.ndarray,
     band: BandConfig,
@@ -57,11 +75,8 @@ def apply_band_noise(
 
     if add_artifacts:
         acfg = artifact_config or ArtifactConfig()
-        sigma_floor_e = float(np.sqrt(
-            sky_e + dark_e + band.n_exposures * band.read_noise_e ** 2
-        ))
         observed = inject_artifacts(
-            observed, band, rng, acfg, local_sigma_e=sigma_floor_e,
+            observed, band, rng, acfg, local_sigma_e=background_sigma_e(band),
         ).astype(np.float64)
 
     read_sigma = band.read_noise_e * np.sqrt(band.n_exposures)
@@ -161,11 +176,13 @@ def apply_archive_noise(
 ) -> np.ndarray:
     """Add detector noise as it appears in the delivered 0.10" MER mosaic.
 
-    Without ``vis_noise_calibration``, VIS is native at the archive scale and
-    uses :func:`apply_band_noise` unchanged (the bitwise-compatible legacy
-    fallback). With a calibration, only its stochastic residual amplitude is
-    set from empirical MER backgrounds before sparse artifacts are injected;
-    no spatial filter is applied. NISP Y/J/H are different:
+    Without ``vis_noise_calibration`` or ``noise_scale_map``, VIS is native
+    at the archive scale and uses :func:`apply_band_noise` unchanged (the
+    bitwise-compatible legacy fallback). With a calibration, the stochastic
+    residual is multiplied by the calibrated blank-sky RMS divided by
+    :func:`background_sigma_e`, before sparse artifacts are injected; no
+    spatial filter is applied. The factor is fixed by the band model, so
+    bright sources in a cutout never change its sky-noise level. NISP Y/J/H are different:
     four independent 0.30" H2RG exposures are sky/dark/read-noised on their
     native detector cells, bilinearly resampled at their dither phases,
     converted from native-cell integrated electrons to 0.10"-cell electrons
@@ -211,16 +228,31 @@ def apply_archive_noise(
     if factor == 1:
         if vis_noise_calibration is not None and band.name != "VIS":
             raise ValueError("vis_noise_calibration may only be used for VIS")
-        # Keep this branch byte-for-byte equivalent to the historic VIS path
-        # when no active calibration was supplied.
         if vis_noise_calibration is None:
-            observed = apply_band_noise(
-                signal, band, rng,
-                add_artifacts=add_artifacts,
-                artifact_config=artifact_config,
-            )
-            if noise_scale is not None:
-                observed = signal + (observed - signal) * noise_scale
+            if noise_scale is None:
+                # Byte-for-byte the historic VIS path.
+                observed = apply_band_noise(
+                    signal, band, rng,
+                    add_artifacts=add_artifacts,
+                    artifact_config=artifact_config,
+                )
+                return observed.astype(np.float32, copy=False)
+            # The depth map scales detector noise only. Artifacts are added
+            # afterwards so cosmic rays and dead pixels keep their physical
+            # amplitude instead of being multiplied by the local depth.
+            observed = apply_band_noise(signal, band, rng, add_artifacts=False)
+            observed = signal + (observed - signal) * noise_scale
+            if add_artifacts:
+                observed = inject_artifacts(
+                    observed,
+                    band,
+                    rng,
+                    artifact_config or ArtifactConfig(),
+                    local_sigma_e=(
+                        background_sigma_e(band)
+                        * float(np.median(noise_scale))
+                    ),
+                )
             return observed.astype(np.float32, copy=False)
 
         # The deterministic optical signal is already a delivered-grid ePSF
@@ -230,7 +262,11 @@ def apply_archive_noise(
             signal, band, rng,
             add_artifacts=False,
         )
-        residual = vis_noise_calibration.apply(observed - signal, rng=rng)
+        residual = vis_noise_calibration.apply(
+            observed - signal,
+            background_sigma_e=background_sigma_e(band),
+            rng=rng,
+        )
         if noise_scale is not None and not vis_noise_calibration.owns_field_scale:
             residual = residual * noise_scale
         observed = (signal + residual).astype(np.float32, copy=False)

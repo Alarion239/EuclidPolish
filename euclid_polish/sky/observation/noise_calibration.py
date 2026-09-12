@@ -2,7 +2,9 @@
 
 The calibration rescales only a stochastic detector-noise residual.  It does
 not spatially filter that residual, so the native white-noise structure and
-the relative signal-dependent Poisson variance are retained.
+the relative signal-dependent Poisson variance are retained.  The factor is
+the calibrated sky RMS over the detector model's expected sky RMS, so scene
+content never changes the delivered background level.
 ``residual_scale`` is the calibrated median absolute robust RMS in electrons
 per MER pixel, and ``field_scale_quantiles`` restores the measured
 field-to-field spread. Runtime loading is deliberately strict, versioned, and
@@ -249,15 +251,21 @@ class VISNoiseCalibration:
         self,
         residual: np.ndarray,
         *,
+        background_sigma_e: float,
         rng: np.random.Generator | None = None,
     ) -> np.ndarray:
-        """Set one residual's absolute RMS without changing its structure.
+        """Set one residual's blank-sky RMS without changing its structure.
 
-        The input mean is restored after scaling.  This keeps
-        any realized sky-subtraction offset while changing only its spatial
-        fluctuations; callers add the result back to the untouched signal.
-        ``residual_scale`` is the median absolute target robust RMS, not a
-        multiplier on the detector model's pre-calibration RMS. When this model
+        ``background_sigma_e`` is the detector model's expected blank-sky RMS
+        of ``residual``. Every pixel, sky and source photon noise alike, is
+        multiplied by ``residual_scale * field_scale / background_sigma_e``.
+        The expected value is used on purpose: the realized scatter of a
+        cutout grows with its source content, and normalizing by it would
+        quiet the sky around bright stars and galaxies.
+
+        The input mean is restored after scaling.  This keeps any realized
+        sky-subtraction offset while changing only its spatial fluctuations;
+        callers add the result back to the untouched signal. When this model
         owns field scale and ``rng`` is supplied, one factor is drawn from the
         calibrated inverse CDF; ``rng=None`` uses its median. A model that does
         not own field scale uses factor one and leaves variation to its caller.
@@ -269,6 +277,11 @@ class VISNoiseCalibration:
             raise ValueError("residual must be non-empty")
         if not np.all(np.isfinite(array)):
             raise ValueError("residual must contain only finite values")
+        if isinstance(background_sigma_e, bool):
+            raise ValueError("background_sigma_e must be a finite positive number")
+        sigma = float(background_sigma_e)
+        if not np.isfinite(sigma) or sigma <= 0.0:
+            raise ValueError("background_sigma_e must be a finite positive number")
 
         field_scale = 1.0
         if self.owns_field_scale:
@@ -282,24 +295,10 @@ class VISNoiseCalibration:
 
         work = array.astype(np.float64, copy=False)
         input_mean = float(np.mean(work, dtype=np.float64))
-        centered = work - input_mean
-        centered_median = float(np.median(centered))
-        input_scale = 1.4826 * float(
-            np.median(np.abs(centered - centered_median))
-        )
-        if input_scale <= np.finfo(np.float64).eps:
-            input_scale = float(np.sqrt(np.mean(centered * centered)))
-        if input_scale <= np.finfo(np.float64).eps:
-            # A constant residual has no stochastic structure to scale. Keep
-            # its realized offset rather than manufacturing a random field.
-            return np.full(array.shape, input_mean, dtype=np.float32)
-        scaled = centered / input_scale
-        # ``scaled`` is an affine transform of the original residual: no
-        # convolution, resampling, padding, or neighbouring-pixel mixing.
-        # Remove only floating-point DC drift before restoring the exact input
-        # mean, preserving a realized sky-subtraction offset.
-        scaled -= float(np.mean(scaled, dtype=np.float64))
-        scaled *= self.residual_scale * field_scale
+        # An affine transform of the original residual: no convolution,
+        # resampling, padding, or neighbouring-pixel mixing.
+        scaled = work - input_mean
+        scaled *= self.residual_scale * field_scale / sigma
         scaled += input_mean
         return scaled.astype(np.float32)
 

@@ -13,6 +13,7 @@ from euclid_polish.config import Config
 from euclid_polish.sky.observation.noise import (
     apply_archive_noise,
     apply_band_noise,
+    background_sigma_e,
 )
 from euclid_polish.sky.observation.noise_calibration import VISNoiseCalibration
 from euclid_polish.sky.observation.observation_simulator import (
@@ -101,7 +102,7 @@ def test_vis_noise_calibration_sets_absolute_robust_rms_and_preserves_mean():
         estimator_version="test-v1",
     )
 
-    colored = calibration.apply(residual)
+    colored = calibration.apply(residual, background_sigma_e=27.0)
     median = float(np.median(colored))
     robust_rms = 1.4826 * float(np.median(np.abs(colored - median)))
 
@@ -124,8 +125,10 @@ def test_vis_noise_calibration_draws_interpolated_field_scale():
         calibration.field_scale_quantiles,
     ))
 
-    median_field = calibration.apply(residual)
-    sampled_field = calibration.apply(residual, rng=np.random.default_rng(29))
+    median_field = calibration.apply(residual, background_sigma_e=1.0)
+    sampled_field = calibration.apply(
+        residual, background_sigma_e=1.0, rng=np.random.default_rng(29),
+    )
     mean = float(residual.mean())
 
     np.testing.assert_allclose(
@@ -146,14 +149,10 @@ def test_vis_noise_calibration_is_an_affine_scale_without_pixel_mixing():
         estimator_version="test-v1",
     )
 
-    scaled = calibration.apply(residual)
+    scaled = calibration.apply(residual, background_sigma_e=7.0)
     input_centered = residual.astype(np.float64) - float(residual.mean())
     output_centered = scaled.astype(np.float64) - float(scaled.mean())
-    expected_factor = calibration.residual_scale / (
-        1.4826 * float(np.median(np.abs(
-            input_centered - np.median(input_centered)
-        )))
-    )
+    expected_factor = calibration.residual_scale / 7.0
 
     np.testing.assert_allclose(
         output_centered,
@@ -162,6 +161,86 @@ def test_vis_noise_calibration_is_an_affine_scale_without_pixel_mixing():
         atol=2e-6,
     )
     assert float(scaled.mean()) == pytest.approx(float(residual.mean()), abs=1e-6)
+
+
+def test_vis_noise_calibration_rejects_invalid_background_sigma():
+    residual = np.zeros((8, 8), dtype=np.float32)
+    calibration = _calibration()
+    for bad in (0.0, -1.0, float("nan"), float("inf")):
+        with pytest.raises(ValueError, match="background_sigma_e"):
+            calibration.apply(residual, background_sigma_e=bad)
+
+
+def test_background_sigma_matches_blank_sky_detector_noise():
+    band = Config.BAND_VIS
+    blank = apply_band_noise(
+        np.zeros((512, 512), dtype=np.float32),
+        band,
+        np.random.default_rng(12),
+        add_artifacts=False,
+    ).astype(np.float64)
+    assert float(blank.std()) == pytest.approx(background_sigma_e(band), rel=0.01)
+
+
+def test_calibrated_vis_background_noise_does_not_depend_on_scene_sources():
+    """Bright sources elsewhere in a cutout must not quiet the blank sky."""
+    calibration = _calibration(residual_scale=12.0)
+    blank = np.zeros((256, 256), dtype=np.float32)
+    crowded = blank.copy()
+    crowded[:, 128:] = 3000.0
+
+    def sky_sigma(signal, seed):
+        observed = apply_archive_noise(
+            signal,
+            Config.BAND_VIS,
+            np.random.default_rng(seed),
+            add_artifacts=False,
+            vis_noise_calibration=calibration,
+        )
+        sky = (observed - signal)[:, :128].astype(np.float64)
+        return 1.4826 * float(np.median(np.abs(sky - np.median(sky))))
+
+    blank_sigma = np.median([sky_sigma(blank, seed) for seed in range(4)])
+    crowded_sigma = np.median([sky_sigma(crowded, seed) for seed in range(4)])
+
+    assert blank_sigma == pytest.approx(12.0, rel=0.03)
+    assert crowded_sigma == pytest.approx(blank_sigma, rel=0.03)
+
+
+def test_uncalibrated_vis_noise_map_scales_residual_before_artifacts(
+    monkeypatch,
+):
+    """Depth scaling must not rescale injected cosmic rays or dead pixels."""
+    signal = np.full((96, 96), 20.0, dtype=np.float32)
+    scale = np.full(signal.shape, 0.5, dtype=np.float32)
+    seen: dict[str, np.ndarray | float] = {}
+
+    def fake_inject(observed, band, rng, config, *, local_sigma_e):
+        del band, rng, config
+        seen["input"] = np.asarray(observed).copy()
+        seen["sigma"] = float(local_sigma_e)
+        return np.asarray(observed) + np.float32(7.0)
+
+    monkeypatch.setattr(noise_module, "inject_artifacts", fake_inject)
+    expected_rng = np.random.default_rng(45)
+    raw = apply_band_noise(
+        signal, Config.BAND_VIS, expected_rng, add_artifacts=False,
+    )
+    expected_pre_artifact = signal + (raw - signal) * scale
+
+    actual = apply_archive_noise(
+        signal,
+        Config.BAND_VIS,
+        np.random.default_rng(45),
+        add_artifacts=True,
+        noise_scale_map=scale,
+    )
+
+    np.testing.assert_allclose(seen["input"], expected_pre_artifact, atol=2e-5)
+    np.testing.assert_allclose(actual, expected_pre_artifact + 7.0, atol=2e-5)
+    assert float(seen["sigma"]) == pytest.approx(
+        0.5 * background_sigma_e(Config.BAND_VIS),
+    )
 
 
 def test_calibrated_archive_noise_changes_only_vis_stochastic_residual():
@@ -174,7 +253,11 @@ def test_calibrated_archive_noise_changes_only_vis_stochastic_residual():
         expected_rng,
         add_artifacts=False,
     )
-    expected = signal + calibration.apply(raw - signal, rng=expected_rng)
+    expected = signal + calibration.apply(
+        raw - signal,
+        background_sigma_e=background_sigma_e(Config.BAND_VIS),
+        rng=expected_rng,
+    )
 
     actual = apply_archive_noise(
         signal,
@@ -208,7 +291,11 @@ def test_calibrated_archive_noise_injects_artifacts_after_residual_scaling(
         expected_rng,
         add_artifacts=False,
     )
-    residual = calibration.apply(raw - signal, rng=expected_rng)
+    residual = calibration.apply(
+        raw - signal,
+        background_sigma_e=background_sigma_e(Config.BAND_VIS),
+        rng=expected_rng,
+    )
     expected_pre_artifact = signal + residual
 
     actual = apply_archive_noise(
