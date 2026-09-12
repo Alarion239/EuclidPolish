@@ -39,6 +39,8 @@ if _PROJECT_ROOT not in sys.path:
 from euclid_polish.config import Config
 from euclid_polish.tracking import TrackingError, default_store
 from euclid_polish.tracking import sync as tracking_sync
+from euclid_polish.web import fasrc_config
+from euclid_polish.web.remote import SSHConfig, SSHError, SSHSession
 
 
 def _print_json(obj) -> None:
@@ -47,9 +49,6 @@ def _print_json(obj) -> None:
 
 def _do_sync(store) -> int:
     """Build an SSH session from the FASRC config and push → holylabs."""
-    from euclid_polish.web import fasrc_config
-    from euclid_polish.web.remote import SSHConfig, SSHError, SSHSession
-
     cfg = fasrc_config.load()
     if not cfg.ssh_user:
         print("ssh_user is unset in ~/.euclid_polish/fasrc.json", file=sys.stderr)
@@ -72,9 +71,9 @@ def _do_sync(store) -> int:
     return 0 if res.get("ok") else 1
 
 
-def _maybe_sync(store, args) -> None:
-    if getattr(args, "sync", False):
-        _do_sync(store)
+def _maybe_sync(store, args) -> int:
+    """Push when ``--sync`` was given; the push status becomes the exit code."""
+    return _do_sync(store) if getattr(args, "sync", False) else 0
 
 
 def main() -> int:
@@ -135,15 +134,15 @@ def main() -> int:
         elif args.cmd == "model":
             rec = store.backup_model(args.ckpt_dir, args.comment, args.name)
             _print_json(rec)
-            _maybe_sync(store, args)
+            return _maybe_sync(store, args)
         elif args.cmd == "fits":
             rec = store.backup_fits(args.path, args.comment, args.name)
             _print_json(rec)
-            _maybe_sync(store, args)
+            return _maybe_sync(store, args)
         elif args.cmd == "image":
             rec = store.backup_image(args.path, args.comment, args.name)
             _print_json(rec)
-            _maybe_sync(store, args)
+            return _maybe_sync(store, args)
         elif args.cmd == "sync":
             return _do_sync(store)
     except TrackingError as e:

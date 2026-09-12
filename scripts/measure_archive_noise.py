@@ -6,10 +6,24 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from collections import Counter
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
+# Matplotlib reads its config directory on import; set a writable default first.
+os.environ.setdefault("MPLCONFIGDIR", "/private/tmp/euclid_noise_mpl")
+
+from euclid_polish.noise_assessment.archive import acquire_mer, initialize, read_json  # noqa: E402
+from euclid_polish.noise_assessment.exposures import (  # noqa: E402
+    acquire_exposures,
+    measure_exposures,
+)
+from euclid_polish.noise_assessment.measurement import (  # noqa: E402
+    measure_mer,
+    select_validation,
+)
+from euclid_polish.noise_assessment.report import build_report  # noqa: E402
 
 
 def main():
@@ -50,36 +64,22 @@ def main():
     )
     sub.add_parser("status", help="Show acquisition and measurement coverage without downloading")
     args = parser.parse_args()
-    from euclid_polish.noise_assessment.archive import acquire_mer, initialize, read_json
 
     if args.stage == "init":
         initialize(args.output, args.source_manifest, args.parents_manifest, args.examples, args.size)
     elif args.stage == "acquire-mer":
         acquire_mer(args.output, pilot=args.pilot)
     elif args.stage == "acquire-exposures":
-        from euclid_polish.noise_assessment.exposures import acquire_exposures
-
         acquire_exposures(args.output, pilot=args.pilot)
     elif args.stage == "measure-mer":
-        from euclid_polish.noise_assessment.measurement import measure_mer
-
         measure_mer(args.output)
     elif args.stage == "select":
-        from euclid_polish.noise_assessment.measurement import select_validation
-
         print(select_validation(args.output))
     elif args.stage == "measure-exposures":
-        from euclid_polish.noise_assessment.exposures import measure_exposures
-
         measure_exposures(args.output, draws=args.draws, size=args.size)
     elif args.stage == "report":
-        os.environ.setdefault("MPLCONFIGDIR", "/private/tmp/euclid_noise_mpl")
-        from euclid_polish.noise_assessment.report import build_report
-
         print(build_report(args.output))
     elif args.stage == "status":
-        from collections import Counter
-
         manifest = read_json(args.output / "manifest.json")
         print(
             "MER:",

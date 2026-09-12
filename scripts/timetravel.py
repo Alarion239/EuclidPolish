@@ -35,6 +35,7 @@ from euclid_polish.config import Config
 from euclid_polish.tracking import TrackingError, default_store, dirty_warning
 from euclid_polish.tracking import timetravel as tt
 from euclid_polish.web import fasrc_config
+from euclid_polish.web.remote import SSHConfig, SSHError, SSHSession
 
 
 def _print(obj) -> None:
@@ -88,28 +89,39 @@ def _restore(args) -> int:
     if warn:
         print(f"⚠ {warn}", file=sys.stderr)
 
+    # The local sandbox is still useful when the FASRC half fails, so a remote
+    # failure is reported and turned into a non-zero exit code, not an abort.
+    remote_ok = True
     if args.remote:
-        from euclid_polish.web.remote import SSHConfig, SSHSession
         cfg = fasrc_config.load()
         ssh = SSHSession(SSHConfig(
             user=cfg.ssh_user, host=cfg.ssh_host,
             socket=cfg.control_socket, control_persist=cfg.control_persist))
-        push = ["git", "-C", tt.PROJECT_ROOT, "push", "origin",
-                f"{commit}:refs/heads/timetravel/{short}"]
-        remote = tt.prepare_remote_sandbox(
-            ssh, repo_path=cfg.repo_path, data_dir=cfg.data_dir,
-            commit=commit, short=short, push_origin_cmd=push)
+        try:
+            if not ssh.is_connected():
+                ssh.connect()
+        except SSHError as e:
+            remote = {"ok": False, "error": f"cannot reach FASRC: {e}"}
+        else:
+            push = ["git", "-C", tt.PROJECT_ROOT, "push", "origin",
+                    f"{commit}:refs/heads/timetravel/{short}"]
+            remote = tt.prepare_remote_sandbox(
+                ssh, repo_path=cfg.repo_path, data_dir=cfg.data_dir,
+                commit=commit, short=short, push_origin_cmd=push)
         tt.set_sandbox_remote(short, remote)
         print("FASRC sandbox:", json.dumps(remote))
+        remote_ok = bool(remote.get("ok"))
+        if not remote_ok:
+            print("error: FASRC sandbox was not prepared", file=sys.stderr)
 
     if args.no_open:
         _print(tt.read_sandbox(short))
-        return 0
+        return 0 if remote_ok else 1
     spawn = tt.spawn_server(short)
     _print(spawn)
     if spawn.get("ok"):
         print(f"\n→ old code running at {spawn['url']}\n")
-    return 0 if spawn.get("ok") else 1
+    return 0 if spawn.get("ok") and remote_ok else 1
 
 
 def main() -> int:

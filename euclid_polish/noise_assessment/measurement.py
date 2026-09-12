@@ -11,6 +11,10 @@ from astropy.wcs import WCS
 
 from euclid_polish.config import Config
 from euclid_polish.photometry import adu_per_s_to_electrons_factor
+from euclid_polish.web.helpers.vis_noise_calibration import (
+    _robust_sigma,
+    _source_masked_residual,
+)
 
 from . import BANDS, SCHEMA_VERSION
 from .archive import DPDD, assert_aligned, digest, image_product, read_json, save_json, utc_now
@@ -80,8 +84,6 @@ def crop_to_patch(patch, arrays, header):
 
 def legacy_measurement(science):
     # The existing implementation is the reference, not a reimplementation.
-    from euclid_polish.web.helpers.vis_noise_calibration import _robust_sigma, _source_masked_residual
-
     residual, mask = _source_masked_residual(science)
     return float(_robust_sigma(residual[~mask])), residual, mask
 

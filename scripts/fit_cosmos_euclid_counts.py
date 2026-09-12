@@ -67,12 +67,14 @@ from euclid_polish.web.helpers.q1_galaxy_counts import (
     read_q1_galaxy_aperture_fit,
 )
 
+# Every default resolves under Config.DATA_DIR, so EUCLID_POLISH_DATA_DIR moves
+# inputs and outputs together and the fit lands where its consumers read it.
 DEFAULT_COSMOS = Config.COSMOS_POPULATION_PRIOR_PATH
-DEFAULT_EUCLID = "data/population_comparison/euclid_population.csv"
-DEFAULT_EUCLID_META = "data/population_comparison/euclid_population_meta.json"
-DEFAULT_EUCLID_PHZ_PDF = "data/population_comparison/euclid_population_phz_pdf.npz"
-DEFAULT_OUTPUT_DIR = "data/population_comparison/cosmos2025"
-OUTPUT_JSON = "joint_population_fit.json"
+DEFAULT_EUCLID = Config.EUCLID_POPULATION_CATALOG_PATH
+DEFAULT_EUCLID_META = Config.EUCLID_POPULATION_META_PATH
+DEFAULT_EUCLID_PHZ_PDF = Config.EUCLID_PHZ_PDF_PATH
+DEFAULT_OUTPUT_DIR = os.path.dirname(Config.JOINT_GALAXY_POPULATION_FIT_PATH)
+OUTPUT_JSON = os.path.basename(Config.JOINT_GALAXY_POPULATION_FIT_PATH)
 OUTPUT_OVERVIEW = "joint_population_fit.png"
 OUTPUT_PLANES = "joint_population_joint_planes.png"
 OUTPUT_PARAMETERS = "joint_population_parameters.png"
