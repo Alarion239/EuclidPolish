@@ -380,7 +380,8 @@ def finalize() -> dict:
     if len(rows):
         for i, band in enumerate(BANDS):
             q = np.percentile(levels[:, i], [5, 16, 50, 84, 95])
-            print(f"  {band:4} p5 {q[0]:7.3f}  p16 {q[1]:7.3f}  median {q[2]:7.3f}  p84 {q[3]:7.3f}  p95 {q[4]:7.3f}")
+            print(f"  {band:4} p5 {q[0]:7.3f}  p16 {q[1]:7.3f}  median {q[2]:7.3f}  "
+                  f"p84 {q[3]:7.3f}  p95 {q[4]:7.3f}")
     return table
 
 
