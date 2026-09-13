@@ -41,6 +41,23 @@ SOURCE_COLS = ["field_index", "type", "render", "x_pix", "y_pix",
                "morphology_mass_kernel_bandwidth_quantile",
                "morphology_ssfr_kernel_bandwidth_quantile",
                "morphology_worker_use_count", "morphology_activity_class",
+               # Empirical colour+SFR draw (v15 joint prior): the drawn
+               # deconvolved NISP/VIS 2FWHM flux ratios, their mag-space
+               # colours, and the SFR that steered the donor match.
+               "morphology_target_sfr_rank", "morphology_tng_sfr_rank",
+               "morphology_sfr_rank_delta",
+               "morphology_sfr_kernel_bandwidth_quantile",
+               "target_ratio_y", "target_ratio_j", "target_ratio_h",
+               "vis_minus_y_mag", "y_j_color_mag", "j_h_color_mag",
+               "sfr_log10", "sfr_rank", "sfr_class", "sfr_borrowed",
+               "color_pooling", "color_neighborhood_rows",
+               "color_calibration_fingerprint",
+               # Per-component lens colours (empty for galaxies/stars).
+               "lens_color_policy", "lens_sfr_class", "source_sfr_class",
+               "lens_vis_minus_y_mag", "lens_y_j_color_mag",
+               "lens_j_h_color_mag", "lens_color_pooling",
+               "source_vis_minus_y_mag", "source_y_j_color_mag",
+               "source_j_h_color_mag", "source_color_pooling",
                "physical_model_fingerprint",
                # TNG population configuration saved with every rendered row.
                "tng_density_arcmin2", "tng_mf_alpha",
@@ -188,6 +205,31 @@ def _galaxy_row(field_index: int, g: dict[str, Any]) -> dict[str, Any]:
         "morphology_activity_class": g.get(
             "morphology_activity_class", ""
         ),
+        "morphology_target_sfr_rank": _num(
+            g.get("morphology_target_sfr_rank")
+        ),
+        "morphology_tng_sfr_rank": _num(g.get("morphology_tng_sfr_rank")),
+        "morphology_sfr_rank_delta": _num(
+            g.get("morphology_sfr_rank_delta")
+        ),
+        "morphology_sfr_kernel_bandwidth_quantile": _num(
+            g.get("morphology_sfr_kernel_bandwidth_quantile")
+        ),
+        "target_ratio_y": _num(g.get("target_ratio_y")),
+        "target_ratio_j": _num(g.get("target_ratio_j")),
+        "target_ratio_h": _num(g.get("target_ratio_h")),
+        "vis_minus_y_mag": _num(g.get("vis_minus_y_mag")),
+        "y_j_color_mag": _num(g.get("y_j_color_mag")),
+        "j_h_color_mag": _num(g.get("j_h_color_mag")),
+        "sfr_log10": _num(g.get("sfr_log10")),
+        "sfr_rank": _num(g.get("sfr_rank")),
+        "sfr_class": g.get("sfr_class", ""),
+        "sfr_borrowed": int(bool(g.get("sfr_borrowed", False))),
+        "color_pooling": g.get("color_pooling", ""),
+        "color_neighborhood_rows": _num(g.get("color_neighborhood_rows")),
+        "color_calibration_fingerprint": g.get(
+            "color_calibration_fingerprint", ""
+        ),
         "physical_model_fingerprint": g.get(
             "physical_model_fingerprint", ""
         ),
@@ -260,6 +302,17 @@ def _lens_row(field_index: int, lens: dict[str, Any]) -> dict[str, Any]:
         ),
         "lens_tng_trace": _json_record(lens.get("lens_tng_trace")),
         "source_tng_trace": _json_record(lens.get("source_tng_trace")),
+        "lens_color_policy": lens.get("lens_color_policy", ""),
+        "lens_sfr_class": lens.get("lens_sfr_class", ""),
+        "source_sfr_class": lens.get("source_sfr_class", ""),
+        "lens_vis_minus_y_mag": _num(lens.get("lens_vis_minus_y_mag")),
+        "lens_y_j_color_mag": _num(lens.get("lens_y_j_color_mag")),
+        "lens_j_h_color_mag": _num(lens.get("lens_j_h_color_mag")),
+        "lens_color_pooling": lens.get("lens_color_pooling", ""),
+        "source_vis_minus_y_mag": _num(lens.get("source_vis_minus_y_mag")),
+        "source_y_j_color_mag": _num(lens.get("source_y_j_color_mag")),
+        "source_j_h_color_mag": _num(lens.get("source_j_h_color_mag")),
+        "source_color_pooling": lens.get("source_color_pooling", ""),
         # Galaxy-truth columns are not meaningful for the lens row.
         "re_arcsec": "", "logmass": "", "mass_scale": "",
         "native_tng_logmass": "", "native_tng_sfr": "",
@@ -374,6 +427,17 @@ def _parse(row: dict[str, str]) -> dict[str, Any]:
               "morphology_mass_kernel_bandwidth_quantile",
               "morphology_ssfr_kernel_bandwidth_quantile",
               "morphology_worker_use_count",
+              "morphology_target_sfr_rank", "morphology_tng_sfr_rank",
+              "morphology_sfr_rank_delta",
+              "morphology_sfr_kernel_bandwidth_quantile",
+              "target_ratio_y", "target_ratio_j", "target_ratio_h",
+              "vis_minus_y_mag", "y_j_color_mag", "j_h_color_mag",
+              "sfr_log10", "sfr_rank", "sfr_borrowed",
+              "color_neighborhood_rows",
+              "lens_vis_minus_y_mag", "lens_y_j_color_mag",
+              "lens_j_h_color_mag",
+              "source_vis_minus_y_mag", "source_y_j_color_mag",
+              "source_j_h_color_mag",
               "tng_density_arcmin2", "tng_mf_alpha",
               "galaxy_density_arcmin2", "galaxy_prior_density_arcmin2",
               "galaxy_vis_magnitude_max", "galaxy_magnitude_break",
@@ -421,6 +485,14 @@ def _parse(row: dict[str, str]) -> dict[str, Any]:
     out["physical_model_fingerprint"] = (
         row.get("physical_model_fingerprint") or None
     )
+    for key in (
+        "sfr_class", "color_pooling", "color_calibration_fingerprint",
+        "lens_color_policy", "lens_sfr_class", "source_sfr_class",
+        "lens_color_pooling", "source_color_pooling",
+    ):
+        out[key] = row.get(key) or None
+    if out.get("sfr_borrowed") is not None:
+        out["sfr_borrowed"] = bool(out["sfr_borrowed"])
     return out
 
 

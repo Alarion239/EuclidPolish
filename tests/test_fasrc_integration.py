@@ -40,6 +40,24 @@ from tests._local_ssh import LocalSSHSession
 # Fixtures
 # ---------------------------------------------------------------------------
 
+@pytest.fixture(autouse=True)
+def _active_joint_galaxy_calibration(monkeypatch):
+    """Keep submission tests hermetic from the on-disk artifact.
+
+    ``prepare_params`` fails closed when the activated joint-galaxy artifact
+    is stale (e.g. a pre-v15 fit); these tests exercise the submission
+    plumbing, not calibration validity. Individual tests may override.
+    """
+    joint = {
+        "fingerprint": "j" * 64,
+        "generation": {"surface_density_arcmin2": 123.0},
+    }
+    monkeypatch.setattr(
+        "euclid_polish.web.helpers.population_calibration.joint_galaxy_state",
+        lambda: {"active": joint, "is_active": True},
+    )
+
+
 @pytest.fixture
 def fake_remote(tmp_path, monkeypatch):
     """Set up a fake FASRC root, sqlite, and SSH transport."""

@@ -12,11 +12,11 @@ dependencies:
   - scipy
   - astropy
   - scikit-image
+  # Fit-time only (colour+SFR forest calibration); generation stays NumPy.
+  - scikit-learn
   - tf-keras
   - tqdm
   - astroquery
-  # FastEPSFBuilder subclasses the Photutils 2.3 ePSF implementation.
-  # Photutils 3.0 refactored those internals; migrate with numerical parity tests.
   - photutils=2.3.*
   - questionary
   - pytest

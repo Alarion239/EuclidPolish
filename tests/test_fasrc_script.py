@@ -24,6 +24,24 @@ from euclid_polish.web.fasrc_config import FasrcConfig
 from euclid_polish.web.fasrc_pipeline import REGISTRY, StepResources
 
 
+@pytest.fixture(autouse=True)
+def _active_joint_galaxy_calibration(monkeypatch):
+    """Keep script-rendering tests hermetic from the on-disk artifact.
+
+    ``prepare_params`` fails closed when the activated joint-galaxy artifact
+    is stale (e.g. a pre-v15 fit); these tests exercise sbatch rendering,
+    not calibration validity.
+    """
+    joint = {
+        "fingerprint": "j" * 64,
+        "generation": {"surface_density_arcmin2": 123.0},
+    }
+    monkeypatch.setattr(
+        "euclid_polish.web.helpers.population_calibration.joint_galaxy_state",
+        lambda: {"active": joint, "is_active": True},
+    )
+
+
 def _params(**overrides):
     p = {
         "n_train": 6400, "n_valid": 200, "image_size": 510,

@@ -34,7 +34,7 @@ N_ORIENTATIONS = 5
 TNG_NATIVE_PC_PER_PIXEL = 100.0
 
 type FileIdentity = tuple[tuple[str, int, int], ...]
-type DriftMode = Literal["sed_interp", "parametric"]
+type DriftMode = Literal["sed_interp", "parametric", "achromatic"]
 
 
 def _positive_finite(value: float, name: str) -> float:
@@ -290,8 +290,15 @@ class TNGRedshiftTransform:
     def __post_init__(self) -> None:
         redshift = _nonnegative_finite(self.redshift, "redshift")
         factors = _four_positive(self.band_factors, "band_factors")
-        if self.drift_mode not in ("sed_interp", "parametric"):
+        if self.drift_mode not in ("sed_interp", "parametric", "achromatic"):
             raise ValueError(f"unsupported drift_mode {self.drift_mode!r}")
+        if self.drift_mode == "achromatic" and any(
+            not np.isclose(factor, factors[0], rtol=0.0, atol=0.0)
+            for factor in factors
+        ):
+            raise ValueError(
+                "achromatic redshift factors must be identical in all bands"
+            )
         epsilon = float(self.drift_epsilon)
         if not np.isfinite(epsilon):
             raise ValueError("drift_epsilon must be finite")
@@ -413,6 +420,77 @@ type TNGNormalization = TotalVISNormalization | VIS2FWHMNormalization
 
 
 @dataclass(frozen=True, slots=True)
+class EmpiricalColorTransform:
+    """Per-band scalars anchoring NISP/VIS flux ratios to an empirical draw.
+
+    ``target_ratios`` are the drawn, deconvolved NISP/VIS 2FWHM flux ratios
+    in the AB (µJy) system; ``band_factors`` are the pixel multipliers that
+    realize them on the rendered stamp. The VIS factor is exactly one so the
+    VIS 2FWHM normalization anchor is untouched.
+    """
+
+    target_ratios: tuple[float, float, float]
+    band_factors: tuple[float, float, float, float]
+    color_pooling: str = ""
+    neighborhood_rows: int = 0
+    calibration_fingerprint: str = ""
+
+    def __post_init__(self) -> None:
+        ratios = tuple(float(value) for value in self.target_ratios)
+        if len(ratios) != 3 or not all(
+            np.isfinite(value) and value > 0.0 for value in ratios
+        ):
+            raise ValueError(
+                "target_ratios must be three finite positive flux ratios"
+            )
+        factors = _four_positive(self.band_factors, "band_factors")
+        if factors[0] != 1.0:
+            raise ValueError(
+                "empirical colour scaling must leave the VIS anchor at 1.0"
+            )
+        if isinstance(self.neighborhood_rows, bool) or not isinstance(
+            self.neighborhood_rows, int
+        ):
+            raise TypeError("neighborhood_rows must be an integer")
+        if self.neighborhood_rows < 0:
+            raise ValueError("neighborhood_rows must be non-negative")
+        object.__setattr__(self, "target_ratios", ratios)
+        object.__setattr__(self, "band_factors", factors)
+        object.__setattr__(self, "color_pooling", str(self.color_pooling))
+        object.__setattr__(
+            self,
+            "calibration_fingerprint",
+            str(self.calibration_fingerprint),
+        )
+
+    @property
+    def colors_mag(self) -> tuple[float, float, float]:
+        """AB colours (VIS−Y, Y−J, J−H) implied by the target ratios."""
+        ratio_y, ratio_j, ratio_h = self.target_ratios
+        return (
+            float(2.5 * np.log10(ratio_y)),
+            float(2.5 * np.log10(ratio_j / ratio_y)),
+            float(2.5 * np.log10(ratio_h / ratio_j)),
+        )
+
+    def record_fields(self) -> dict[str, Any]:
+        vis_minus_y, y_minus_j, j_minus_h = self.colors_mag
+        return {
+            "target_ratio_y": self.target_ratios[0],
+            "target_ratio_j": self.target_ratios[1],
+            "target_ratio_h": self.target_ratios[2],
+            "vis_minus_y_mag": vis_minus_y,
+            "y_j_color_mag": y_minus_j,
+            "j_h_color_mag": j_minus_h,
+            "color_band_factors": self.band_factors,
+            "color_pooling": self.color_pooling,
+            "color_neighborhood_rows": self.neighborhood_rows,
+            "color_calibration_fingerprint": self.calibration_fingerprint,
+            "color_scaling": "empirical_nisp_over_vis_2fwhm_flux_ratios",
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class TNGRenderTrace:
     """Complete typed provenance for one rendered TNG stamp."""
 
@@ -421,6 +499,7 @@ class TNGRenderTrace:
     geometry: TNGGeometry
     redshift: TNGRedshiftTransform | None = None
     normalization: TNGNormalization | None = None
+    color: EmpiricalColorTransform | None = None
     render_support_clipped: bool = False
     max_output_side: int | None = None
 
@@ -443,6 +522,10 @@ class TNGRenderTrace:
             self.normalization, (TotalVISNormalization, VIS2FWHMNormalization)
         ):
             raise TypeError("normalization must be a TNG normalization record")
+        if self.color is not None and not isinstance(
+            self.color, EmpiricalColorTransform
+        ):
+            raise TypeError("color must be an EmpiricalColorTransform")
         if self.max_output_side is not None:
             if isinstance(self.max_output_side, bool) or not isinstance(
                 self.max_output_side, int
@@ -459,6 +542,9 @@ class TNGRenderTrace:
         normalization: TNGNormalization,
     ) -> TNGRenderTrace:
         return replace(self, normalization=normalization)
+
+    def with_color(self, color: EmpiricalColorTransform) -> TNGRenderTrace:
+        return replace(self, color=color)
 
     def record_fields(self) -> dict[str, Any]:
         fields: dict[str, Any] = {
@@ -497,6 +583,8 @@ class TNGRenderTrace:
             fields.update(self.redshift.record_fields())
         if self.normalization is not None:
             fields.update(self.normalization.record_fields())
+        if self.color is not None:
+            fields.update(self.color.record_fields())
         return fields
 
 
@@ -698,6 +786,11 @@ class RenderedTNG:
     ) -> RenderedTNG:
         transformed = self.scaled_by_band(transform.band_factors)
         return transformed.with_trace(self.trace.with_redshift(transform))
+
+    def colored(self, transform: EmpiricalColorTransform) -> RenderedTNG:
+        """Apply and record the empirical per-band colour scaling."""
+        colored = self.scaled_by_band(transform.band_factors)
+        return colored.with_trace(self.trace.with_color(transform))
 
     def normalised(self, normalization: TNGNormalization) -> RenderedTNG:
         normalized = self.scaled(normalization.brightness_scale)

@@ -16,6 +16,10 @@ import numpy as np
 
 from euclid_polish.config import Config
 from euclid_polish.photometry import ab_mag_to_electrons
+from euclid_polish.population.conditional_color_sfr import (
+    ColorSFRDraw,
+    ConditionalColorSFRSampler,
+)
 from euclid_polish.population.euclid_galaxy_prior import (
     BRIGHT_BRIDGE_JOIN_MAGNITUDES,
     JOINT_EUCLID_GALAXY_KIND,
@@ -23,7 +27,6 @@ from euclid_polish.population.euclid_galaxy_prior import (
     RADIUS_MODEL_VERSION,
     ConditionalApertureFWHMDistribution,
     ConditionalRadiusLaw,
-    ConditionalRedshiftDistribution,
     joint_density_grid,
 )
 from euclid_polish.population.magnitude_law import (
@@ -55,6 +58,21 @@ class CosmosTngDraw:
     activity_class: str = "unknown"
     logssfr: float = float("nan")
     physical_model_fingerprint: str = ""
+    # Empirical colour+SFR draw (joint prior only; legacy priors keep the
+    # defaults). Ratios are deconvolved NISP/VIS 2FWHM fluxes for the
+    # renderer; the mag-space colours exist for records and plots.
+    ratio_y: float = float("nan")
+    ratio_j: float = float("nan")
+    ratio_h: float = float("nan")
+    vis_minus_y: float = float("nan")
+    y_minus_j: float = float("nan")
+    j_minus_h: float = float("nan")
+    sfr_log10: float = float("nan")
+    sfr_rank: float = float("nan")
+    sfr_class: str = "unknown"
+    sfr_borrowed: bool = False
+    color_pooling: str = ""
+    color_neighborhood_rows: int = 0
 
 
 @dataclass(frozen=True)
@@ -263,6 +281,67 @@ def joint_quantile_transport_weights(
         probabilities,
         float(used_mass),
         float(used_ssfr),
+        effective_sample_size(probabilities),
+    )
+
+
+def sfr_rank_transport_weights(
+    donor_sfr_quantiles: np.ndarray,
+    target_sfr_quantile: float,
+    *,
+    bandwidth: float,
+    minimum_effective_donors: int = MORPHOLOGY_MIN_EFFECTIVE_DONORS,
+    balance_weights: np.ndarray | None = None,
+) -> tuple[np.ndarray, float, float]:
+    """One-dimensional SFR rank transport with the same diversity floor.
+
+    The 1-D counterpart of :func:`joint_quantile_transport_weights`: a
+    Gaussian kernel in SFR percentile-rank space, bandwidth inflated ×1.25
+    until the effective donor count reaches the floor. Rank space makes the
+    match immune to the dynamic-range mismatch between the all-redshift
+    catalogue SFRs and the z = 0 TNG atlas; zero-SFR donors sit in a shared
+    censored bottom rank.
+    """
+    ranks = np.asarray(donor_sfr_quantiles, dtype=float)
+    target = float(target_sfr_quantile)
+    initial = float(bandwidth)
+    if (
+        ranks.ndim != 1 or not ranks.size or not np.isfinite(ranks).all()
+        or not np.isfinite(target) or not 0.0 <= target <= 1.0
+        or not np.isfinite(initial) or initial <= 0.0
+    ):
+        raise ValueError("invalid SFR quantile-transport inputs")
+    if balance_weights is None:
+        balance = np.ones(ranks.size, dtype=np.float64)
+    else:
+        balance = np.asarray(balance_weights, dtype=float)
+        if (
+            balance.shape != ranks.shape or not np.isfinite(balance).all()
+            or np.any(balance <= 0.0)
+        ):
+            raise ValueError("invalid morphology donor balance weights")
+
+    required = min(max(1, int(minimum_effective_donors)), ranks.size)
+    scale = 1.0
+    used = initial
+    weights = np.zeros_like(ranks, dtype=np.float64)
+    for _ in range(64):
+        used = min(4.0, initial * scale)
+        distance2 = ((ranks - target) / used) ** 2
+        weights = np.asarray(
+            np.exp(-0.5 * distance2) * balance, dtype=np.float64,
+        )
+        effective = effective_sample_size(weights)
+        if effective >= required - 1e-9 or used >= 4.0:
+            break
+        scale *= 1.25
+    total = float(np.sum(weights))
+    if not np.isfinite(total) or total <= 0.0:
+        raise ValueError("SFR quantile transport has zero probability")
+    probabilities = weights / total
+    return (
+        probabilities,
+        float(used),
         effective_sample_size(probabilities),
     )
 
@@ -499,7 +578,12 @@ class CosmosTngPrior:
 
 
 class JointGalaxyPopulationPrior:
-    """Euclid prior: radius, conditioned brightness, then PHZ redshift."""
+    """Euclid prior: radius, conditioned brightness, then empirical colours.
+
+    Redshift is not drawn: the redshift dependence of galaxy colours enters
+    implicitly through the empirical colour distributions at each magnitude
+    (the conditional colour+SFR forest resamples real Q1 rows).
+    """
 
     morphology_mode = "balanced_random_tng_atlas"
 
@@ -536,10 +620,8 @@ class JointGalaxyPopulationPrior:
                     payload["aperture_fwhm_distribution"]
                 )
             )
-            self.redshift_distribution = (
-                ConditionalRedshiftDistribution.from_payload(
-                    payload["redshift_distribution"]
-                )
+            self.color_sfr_sampler = ConditionalColorSFRSampler(
+                payload["color_sfr_model"]
             )
             expected = float(
                 payload["generation"]["surface_density_arcmin2"]
@@ -586,21 +668,6 @@ class JointGalaxyPopulationPrior:
             raise ValueError(
                 "joint galaxy generation law does not match the current "
                 "brightness contract"
-            )
-        redshift_magnitude_edges = np.asarray(
-            self.redshift_distribution.magnitude_edges, dtype=np.float64,
-        )
-        if not (
-            np.isclose(
-                redshift_magnitude_edges[0], self.magnitude_law.mag_bright,
-            )
-            and np.isclose(
-                redshift_magnitude_edges[-1], self.magnitude_law.mag_faint,
-            )
-        ):
-            raise ValueError(
-                "joint galaxy redshift model does not match the current "
-                "brightness support"
             )
         grid = joint_density_grid(self.magnitude_law, self.radius_law)
         self._density = np.asarray(grid["density"], dtype=np.float64)
@@ -662,33 +729,38 @@ class JointGalaxyPopulationPrior:
         """Draw the MER aperture FWHM conditional on VIS-2FWHM brightness."""
         return self.aperture_fwhm_distribution.sample(magnitude, rng)
 
-    def sample_redshift(
-        self, rng: np.random.Generator, *, magnitude: float,
-    ) -> float:
-        """Draw the full-PHZ calibrated redshift at the sampled brightness."""
-        return self.redshift_distribution.sample(magnitude, rng)
+    def sample_colors_sfr(
+        self,
+        rng: np.random.Generator,
+        *,
+        magnitude: float,
+        re_arcsec: float,
+    ) -> ColorSFRDraw:
+        """Resample empirical (colours, SFR) at the sampled brightness/size."""
+        return self.color_sfr_sampler.sample(magnitude, re_arcsec, rng)
 
     def complete_draw(
         self,
         geometry: JointGalaxyGeometry,
         rng: np.random.Generator,
         *,
-        redshift_rng: np.random.Generator | None = None,
+        color_rng: np.random.Generator | None = None,
     ) -> CosmosTngDraw:
-        """Attach jointly sampled VIS brightness and empirical PHZ redshift."""
+        """Attach jointly sampled VIS brightness and empirical colours+SFR."""
         magnitude, flux = self.sample_brightness(
             rng, radius_arcsec=geometry.re_arcsec,
         )
-        redshift = self.sample_redshift(
-            redshift_rng if redshift_rng is not None else rng,
+        colors = self.sample_colors_sfr(
+            color_rng if color_rng is not None else rng,
             magnitude=magnitude,
+            re_arcsec=geometry.re_arcsec,
         )
         return CosmosTngDraw(
             catalog_id=geometry.catalog_id,
             mag_hst_f814w=float("nan"),
             target_vis_mag=magnitude,
             target_vis_flux_e=flux,
-            z=redshift,
+            z=float("nan"),
             logmass=float("nan"),
             re_arcsec=geometry.re_arcsec,
             imputed_size=False,
@@ -698,8 +770,20 @@ class JointGalaxyPopulationPrior:
             activity_class="unconditioned",
             logssfr=float("nan"),
             physical_model_fingerprint=(
-                self.redshift_distribution.calibration_fingerprint
+                self.color_sfr_sampler.calibration_fingerprint
             ),
+            ratio_y=colors.ratio_y,
+            ratio_j=colors.ratio_j,
+            ratio_h=colors.ratio_h,
+            vis_minus_y=colors.vis_minus_y,
+            y_minus_j=colors.y_minus_j,
+            j_minus_h=colors.j_minus_h,
+            sfr_log10=colors.log_sfr,
+            sfr_rank=colors.sfr_rank,
+            sfr_class=colors.sfr_class,
+            sfr_borrowed=colors.sfr_borrowed,
+            color_pooling=colors.pooling,
+            color_neighborhood_rows=colors.neighborhood_rows,
         )
 
     def sample(self, rng: np.random.Generator) -> CosmosTngDraw:

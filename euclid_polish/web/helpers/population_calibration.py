@@ -14,23 +14,22 @@ import numpy as np
 from scipy.ndimage import gaussian_filter1d
 
 from euclid_polish.config import Config
-from euclid_polish.photometry import uJy_to_ab_mag
+from euclid_polish.population.conditional_color_sfr import (
+    COLOR_SFR_MODEL_VERSION,
+    ConditionalColorSFRSampler,
+)
+from euclid_polish.population.conditional_color_sfr_fit import (
+    fit_conditional_color_sfr_payload,
+)
 from euclid_polish.population.euclid_galaxy_prior import (
     APERTURE_FWHM_MODEL_VERSION,
     BRIGHT_BRIDGE_JOIN_MAGNITUDES,
     JOINT_EUCLID_GALAXY_KIND,
     JOINT_EUCLID_GALAXY_VERSION,
     RADIUS_MODEL_VERSION,
-    REDSHIFT_BRIGHT_TERMINAL_POOL_MAGNITUDES,
-    REDSHIFT_FAINT_TERMINAL_POOL_MAGNITUDES,
-    REDSHIFT_MODEL_VERSION,
-    REDSHIFT_TRUSTED_BRIGHT_MAGNITUDE,
-    REDSHIFT_TRUSTED_FAINT_MAGNITUDE,
     ConditionalApertureFWHMDistribution,
     ConditionalRadiusLaw,
-    ConditionalRedshiftDistribution,
     fit_conditional_aperture_fwhm_distribution,
-    fit_conditional_redshift_distribution,
     fit_continuous_generation_magnitude_law,
     fit_linear_conditional_radius_law_from_binned_counts,
     joint_density_grid,
@@ -99,257 +98,6 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _fit_cached_phz_conditional_redshift(
-    magnitude_edges: np.ndarray,
-) -> tuple[ConditionalRedshiftDistribution, dict[str, Any]]:
-    """Fit p(z | VIS 2FWHM) from the normalized cached Q1 PHZ PDFs."""
-    from euclid_polish.web.helpers.population_comparison import (
-        euclid_catalog_meta_path,
-        euclid_catalog_path,
-        euclid_phz_pdf_path,
-        read_phz_pdf_cache,
-    )
-
-    catalog_path = euclid_catalog_path()
-    pdf_path = euclid_phz_pdf_path()
-    meta_path = euclid_catalog_meta_path()
-    meta = _read(meta_path)
-    if not meta or not catalog_path.is_file() or not pdf_path.is_file():
-        raise ValueError(
-            "A cached Euclid catalogue and full PHZ PDF cache are required"
-        )
-    phz_quality = meta.get("phz_quality") or {}
-    if (
-        meta.get("phz_pdf_activation_eligible") is False
-        or meta.get("phz_pdf_source") == "summary_reconstruction"
-        or not phz_quality.get("all_retained_pdfs_normalized")
-        or not phz_quality.get("classification_gate")
-        or not phz_quality.get("redshift_pdf_gate")
-    ):
-        raise ValueError(
-            "The cached Euclid PHZ PDFs are not eligible for activation"
-        )
-
-    catalog_sha256 = _sha256_file(catalog_path)
-    pdf_sha256 = _sha256_file(pdf_path)
-    expected_pdf_sha256 = str(meta.get("phz_pdf_sha256") or "")
-    if expected_pdf_sha256 and expected_pdf_sha256 != pdf_sha256:
-        raise ValueError("The cached Euclid PHZ PDF fingerprint is stale")
-    pdf = read_phz_pdf_cache(pdf_path)
-    pdf_ids = np.asarray(pdf["object_id"]).astype(str)
-    pdf_probability = np.asarray(pdf["probability"], dtype=np.float64)
-    redshift_edges = np.asarray(pdf["z_edges"], dtype=np.float64)
-    pdf_probability_sum = np.sum(pdf_probability, axis=1)
-    if not np.all(
-        np.isfinite(pdf_probability_sum) & (pdf_probability_sum > 0.0)
-    ):
-        raise ValueError("The cached Euclid PHZ PDFs contain empty rows")
-    pdf_probability = pdf_probability / pdf_probability_sum[:, None]
-    if pdf_ids.size != np.unique(pdf_ids).size:
-        raise ValueError("The cached Euclid PHZ PDFs contain duplicate IDs")
-    pdf_index = {
-        object_id: index for index, object_id in enumerate(pdf_ids)
-    }
-
-    mag_edges = np.asarray(magnitude_edges, dtype=np.float64)
-    weighted_probability = np.zeros(
-        (mag_edges.size - 1, redshift_edges.size - 1), dtype=np.float64,
-    )
-    selected_rows = np.zeros(mag_edges.size - 1, dtype=np.int64)
-    distinct_selected_rows = 0
-    distinct_selected_weight = 0.0
-    catalog_rows = 0
-    selection = (
-        "cached Q1 MER+PHZ rows with VIS_DET = 1, DET_QUALITY_FLAG < 4, "
-        "non-spurious retained flags/probability, POINT_LIKE_PROB < 0.5, "
-        "no positive point-like flag when retained, positive "
-        "FLUX_VIS_2FWHM_APER, normalized full PHZ PDF, and PHZ_GAL_PROB "
-        ">= 0.5; each PDF is weighted by PHZ_GAL_PROB"
-    )
-
-    def optional_float(row: dict[str, str], key: str) -> float | None:
-        text = str(row.get(key) or "").strip()
-        if not text:
-            return None
-        try:
-            value = float(text)
-        except ValueError:
-            return float("nan")
-        return value
-
-    with catalog_path.open(newline="", encoding="utf-8") as handle:
-        for row in csv.DictReader(handle):
-            catalog_rows += 1
-            pdf_row = pdf_index.get(str(row.get("object_id") or ""))
-            if pdf_row is None:
-                continue
-            try:
-                flux_uJy = float(row["flux_vis_2fwhm_aper_uJy"])
-                galaxy_probability = float(row["phz_gal_prob"])
-                vis_det = float(row["vis_det"])
-                det_quality_flag = float(row["det_quality_flag"])
-                spurious_probability = float(row["spurious_prob"])
-                point_like_probability = float(row["point_like_prob"])
-            except (KeyError, TypeError, ValueError):
-                continue
-            flag_vis = optional_float(row, "flag_vis")
-            spurious_flag = optional_float(row, "spurious_flag")
-            point_like_flag = optional_float(row, "point_like_flag")
-            if not (
-                np.isfinite(flux_uJy)
-                and flux_uJy > 0.0
-                and np.isfinite(galaxy_probability)
-                and 0.5 <= galaxy_probability <= 1.0
-                and vis_det == 1.0
-                and np.isfinite(det_quality_flag)
-                and det_quality_flag < 4.0
-                and np.isfinite(spurious_probability)
-                and spurious_probability <= 0.5
-                and np.isfinite(point_like_probability)
-                and 0.0 <= point_like_probability < 0.5
-                and (flag_vis is None or flag_vis == 0.0)
-                and (spurious_flag is None or spurious_flag == 0.0)
-                and (point_like_flag is None or point_like_flag != 1.0)
-            ):
-                continue
-            magnitude = float(uJy_to_ab_mag(flux_uJy))
-            if magnitude >= REDSHIFT_TRUSTED_FAINT_MAGNITUDE:
-                continue
-            magnitude_bin = int(
-                np.searchsorted(mag_edges, magnitude, side="right") - 1
-            )
-            if magnitude_bin < 0 or magnitude_bin >= mag_edges.size - 1:
-                continue
-            weighted_probability[magnitude_bin] += (
-                galaxy_probability * pdf_probability[pdf_row]
-            )
-            selected_rows[magnitude_bin] += 1
-            distinct_selected_rows += 1
-            distinct_selected_weight += galaxy_probability
-    expected_catalog_rows = int(meta.get("rows") or 0)
-    if expected_catalog_rows and expected_catalog_rows != catalog_rows:
-        raise ValueError("The cached Euclid catalogue row count is stale")
-
-    def aligned_edge_index(value: float, label: str) -> int:
-        matches = np.flatnonzero(np.isclose(
-            mag_edges, value, rtol=0.0, atol=1e-10,
-        ))
-        if matches.size != 1:
-            raise ValueError(
-                f"The PHZ {label} must align with a magnitude-bin edge"
-            )
-        return int(matches[0])
-
-    bright_pool_start = aligned_edge_index(
-        REDSHIFT_BRIGHT_TERMINAL_POOL_MAGNITUDES[0], "bright pool start",
-    )
-    bright_pool_stop = aligned_edge_index(
-        REDSHIFT_BRIGHT_TERMINAL_POOL_MAGNITUDES[1], "bright pool stop",
-    )
-    terminal_source_bin = aligned_edge_index(
-        REDSHIFT_FAINT_TERMINAL_POOL_MAGNITUDES[0], "faint terminal start",
-    )
-    terminal_stop = aligned_edge_index(
-        REDSHIFT_FAINT_TERMINAL_POOL_MAGNITUDES[1], "faint terminal stop",
-    )
-    if terminal_stop != terminal_source_bin + 1:
-        raise ValueError("The PHZ faint continuation must use one native bin")
-    weighted_rows = np.sum(weighted_probability, axis=1)
-    terminal_selected_rows = int(selected_rows[terminal_source_bin])
-    terminal_weight = float(weighted_rows[terminal_source_bin])
-    bright_pool_rows = int(np.sum(
-        selected_rows[bright_pool_start:bright_pool_stop]
-    ))
-    bright_pool_weight = float(np.sum(
-        weighted_rows[bright_pool_start:bright_pool_stop]
-    ))
-    if terminal_weight <= 0.0:
-        raise ValueError("The cached Euclid PHZ terminal magnitude pool is empty")
-    if bright_pool_weight <= 0.0:
-        raise ValueError("The cached Euclid PHZ bright magnitude pool is empty")
-    if (
-        int(np.sum(selected_rows)) != distinct_selected_rows
-        or not np.isclose(
-            float(np.sum(weighted_rows)), distinct_selected_weight,
-            rtol=0.0, atol=1e-10,
-        )
-    ):
-        raise ValueError("PHZ redshift diagnostics count rows more than once")
-
-    mass_sha256 = hashlib.sha256(
-        np.asarray(weighted_probability, dtype="<f8", order="C").tobytes(
-            order="C"
-        )
-    ).hexdigest()
-    identity = {
-        "version": REDSHIFT_MODEL_VERSION,
-        "catalog_version": meta.get("catalog_version"),
-        "catalog_sha256": catalog_sha256,
-        "phz_pdf_sha256": pdf_sha256,
-        "selection": selection,
-        "trusted_bright_magnitude": REDSHIFT_TRUSTED_BRIGHT_MAGNITUDE,
-        "bright_terminal_pool_magnitude_interval": list(
-            REDSHIFT_BRIGHT_TERMINAL_POOL_MAGNITUDES
-        ),
-        "trusted_faint_magnitude": REDSHIFT_TRUSTED_FAINT_MAGNITUDE,
-        "faint_terminal_pool_magnitude_interval": list(
-            REDSHIFT_FAINT_TERMINAL_POOL_MAGNITUDES
-        ),
-        "magnitude_edges": mag_edges.tolist(),
-        "redshift_edges": redshift_edges.tolist(),
-        "weighted_probability_sha256": mass_sha256,
-    }
-    calibration_fingerprint = hashlib.sha256(json.dumps(
-        identity, sort_keys=True, separators=(",", ":"),
-    ).encode()).hexdigest()
-    distribution = fit_conditional_redshift_distribution(
-        mag_edges,
-        redshift_edges,
-        weighted_probability,
-        selected_rows,
-        selection=selection,
-        calibration_fingerprint=calibration_fingerprint,
-        trusted_bright_magnitude=REDSHIFT_TRUSTED_BRIGHT_MAGNITUDE,
-        bright_terminal_pool_magnitude_interval=(
-            REDSHIFT_BRIGHT_TERMINAL_POOL_MAGNITUDES
-        ),
-        bright_tail_policy=(
-            "all generated VIS 2FWHM magnitudes below 20.5 use one PHZ "
-            "PDF pooled over the observed 18.6 <= VIS < 20.5 interval"
-        ),
-        trusted_faint_magnitude=REDSHIFT_TRUSTED_FAINT_MAGNITUDE,
-        faint_terminal_pool_magnitude_interval=(
-            REDSHIFT_FAINT_TERMINAL_POOL_MAGNITUDES
-        ),
-        faint_tail_policy=(
-            "all generated VIS 2FWHM magnitudes at or above 24.5 use the "
-            "well-populated native 24.4 <= VIS < 24.5 PHZ bin"
-        ),
-    )
-    populated = np.flatnonzero(weighted_rows > 0.0)
-    diagnostics = {
-        **identity,
-        "calibration_fingerprint": calibration_fingerprint,
-        "catalog_rows": catalog_rows,
-        "phz_pdf_rows": int(pdf_ids.size),
-        "selected_rows": distinct_selected_rows,
-        "selected_galaxy_weight": distinct_selected_weight,
-        "binned_selected_rows": int(np.sum(selected_rows)),
-        "binned_galaxy_weight": float(np.sum(weighted_rows)),
-        "bright_terminal_pool_rows": bright_pool_rows,
-        "bright_terminal_pool_galaxy_weight": bright_pool_weight,
-        "terminal_pool_rows": terminal_selected_rows,
-        "terminal_pool_galaxy_weight": terminal_weight,
-        "populated_magnitude_bins": int(populated.size),
-        "calibrated_magnitude_interval": [
-            float(mag_edges[populated[0]]),
-            float(mag_edges[populated[-1] + 1]),
-        ],
-        "random_cones": list(meta.get("cones") or []),
-    }
-    return distribution, diagnostics
-
-
 def joint_galaxy_candidate() -> dict[str, Any] | None:
     """Return the persisted Euclid-only brightness-radius candidate."""
     source = _read(joint_galaxy_candidate_path())
@@ -368,9 +116,7 @@ def joint_galaxy_candidate() -> dict[str, Any] | None:
         aperture_fwhm = ConditionalApertureFWHMDistribution.from_payload(
             source["aperture_fwhm_distribution"]
         )
-        redshift_distribution = ConditionalRedshiftDistribution.from_payload(
-            source["redshift_distribution"]
-        )
+        color_sampler = ConditionalColorSFRSampler(source["color_sfr_model"])
         density = float(source["generation"]["surface_density_arcmin2"])
         density_cap = float(
             source["generation"]["differential_density_cap_arcmin2_mag"]
@@ -405,12 +151,12 @@ def joint_galaxy_candidate() -> dict[str, Any] | None:
         fwhm_mean = np.asarray(
             fwhm_plot["model_mean_arcsec"], dtype=np.float64,
         )
-        redshift_plot = source["plots"]["conditional_redshift"]
-        redshift_magnitude = np.asarray(
-            redshift_plot["magnitude"], dtype=np.float64,
+        colors_plot = source["plots"]["conditional_colors"]
+        color_magnitude = np.asarray(
+            colors_plot["magnitude"], dtype=np.float64,
         )
-        redshift_median = np.asarray(
-            redshift_plot["model_median"], dtype=np.float64,
+        color_mean_vis_minus_y = np.asarray(
+            colors_plot["model_mean_vis_minus_y"], dtype=np.float64,
         )
     except (KeyError, TypeError, ValueError):
         return None
@@ -419,7 +165,9 @@ def joint_galaxy_candidate() -> dict[str, Any] | None:
         or source.get("kind") != JOINT_EUCLID_GALAXY_KIND
         or radius_law.version != RADIUS_MODEL_VERSION
         or aperture_fwhm.version != APERTURE_FWHM_MODEL_VERSION
-        or redshift_distribution.version != REDSHIFT_MODEL_VERSION
+        or int(source["color_sfr_model"].get("version") or 0)
+        != COLOR_SFR_MODEL_VERSION
+        or color_sampler.row_count < 2
         or len(str(source.get("fingerprint") or "")) != 64
         or not source.get("valid")
         or not np.isclose(density, magnitude_law.integrated_density())
@@ -446,8 +194,8 @@ def joint_galaxy_candidate() -> dict[str, Any] | None:
         or relation_x.shape != relation_mean.shape
         or fwhm_magnitude.size < 2
         or fwhm_magnitude.shape != fwhm_mean.shape
-        or redshift_magnitude.size < 2
-        or redshift_magnitude.shape != redshift_median.shape
+        or color_magnitude.size < 2
+        or color_magnitude.shape != color_mean_vis_minus_y.shape
         or not np.all(np.isfinite(magnitude_x))
         or not np.all(np.isfinite(magnitude_density) & (magnitude_density > 0.0))
         or not np.all(np.isfinite(generation_x))
@@ -466,15 +214,22 @@ def joint_galaxy_candidate() -> dict[str, Any] | None:
         or not np.all(np.isfinite(relation_mean))
         or not np.all(np.isfinite(fwhm_magnitude))
         or not np.all(np.isfinite(fwhm_mean) & (fwhm_mean > 0.0))
-        or not np.all(np.isfinite(redshift_magnitude))
-        or not np.all(np.isfinite(redshift_median) & (redshift_median >= 0.0))
+        or not np.all(np.isfinite(color_magnitude))
+        or not np.all(np.isfinite(color_mean_vis_minus_y))
     ):
         return None
     return source
 
 
 def fit_euclid_joint_galaxy_candidate() -> dict[str, Any]:
-    """Fit VIS-2FWHM x Sersic-R_e plus empirical p(z | VIS-2FWHM)."""
+    """Fit VIS-2FWHM x Sersic-R_e plus the empirical colour+SFR forest."""
+    from euclid_polish.web.helpers.population_comparison import (
+        CATALOG_VERSION as POPULATION_CATALOG_VERSION,
+    )
+    from euclid_polish.web.helpers.population_comparison import (
+        euclid_catalog_meta_path,
+        euclid_catalog_path,
+    )
     from euclid_polish.web.helpers.q1_galaxy_counts import (
         q1_galaxy_counts_path,
         q1_galaxy_fit_path,
@@ -590,33 +345,14 @@ def fit_euclid_joint_galaxy_candidate() -> dict[str, Any]:
             density_cap_arcmin2_mag=observed_peak_density,
         )
     )
-    redshift_magnitude_bin_width = float(np.median(np.diff(magnitude_edges)))
-    redshift_magnitude_bin_count = int(round(
-        (magnitude_law.mag_faint - magnitude_law.mag_bright)
-        / redshift_magnitude_bin_width
-    ))
-    redshift_magnitude_edges = np.linspace(
-        magnitude_law.mag_bright,
-        magnitude_law.mag_faint,
-        redshift_magnitude_bin_count + 1,
-        dtype=np.float64,
+    color_sfr_model, color_diagnostics = fit_conditional_color_sfr_payload(
+        euclid_catalog_path(),
+        euclid_catalog_meta_path(),
+        radius_law=radius_law,
+        expected_catalog_version=POPULATION_CATALOG_VERSION,
     )
-    redshift_distribution, redshift_diagnostics = (
-        _fit_cached_phz_conditional_redshift(redshift_magnitude_edges)
-    )
-    redshift_magnitude = 0.5 * (
-        redshift_magnitude_edges[:-1] + redshift_magnitude_edges[1:]
-    )
-    redshift_mean = redshift_distribution.mean(redshift_magnitude)
-    redshift_p16 = redshift_distribution.quantile(
-        redshift_magnitude, 0.16,
-    )
-    redshift_median = redshift_distribution.quantile(
-        redshift_magnitude, 0.50,
-    )
-    redshift_p84 = redshift_distribution.quantile(
-        redshift_magnitude, 0.84,
-    )
+    color_meta = _read(euclid_catalog_meta_path()) or {}
+    color_trend = color_diagnostics["mean_colors_by_magnitude"]
     generation_x = np.unique(np.concatenate((
         np.linspace(
             magnitude_law.mag_bright,
@@ -756,7 +492,7 @@ def fit_euclid_joint_galaxy_candidate() -> dict[str, Any]:
         "magnitude_law": magnitude_law.to_payload(),
         "radius_law": radius_law.to_payload(),
         "aperture_fwhm_distribution": aperture_fwhm.to_payload(),
-        "redshift_distribution": redshift_distribution.to_payload(),
+        "color_sfr_model": color_sfr_model,
         "magnitude_plot": {
             "label": "Q1 MER + PHZ VIS 2FWHM",
             "law": {
@@ -845,32 +581,29 @@ def fit_euclid_joint_galaxy_candidate() -> dict[str, Any]:
                     aperture_fwhm.out_of_support_policy
                 ),
             },
-            "conditional_redshift": {
-                "magnitude": redshift_magnitude.tolist(),
-                "model_mean": redshift_mean.tolist(),
-                "model_p16": redshift_p16.tolist(),
-                "model_median": redshift_median.tolist(),
-                "model_p84": redshift_p84.tolist(),
-                "model_kind": "empirical_phz_pdf_given_vis_2fwhm_magnitude",
-                "out_of_support_policy": (
-                    redshift_distribution.out_of_support_policy
+            "conditional_colors": {
+                "magnitude": list(color_trend["magnitude"]),
+                "model_mean_vis_minus_y": list(color_trend["vis_minus_y"]),
+                "model_mean_y_j": list(color_trend["y_minus_j"]),
+                "model_mean_j_h": list(color_trend["j_minus_h"]),
+                "model_kind": (
+                    "conditional_color_sfr_forest_leaf_resampling"
                 ),
-                "trusted_bright_magnitude": (
-                    redshift_distribution.trusted_bright_magnitude
-                ),
-                "bright_terminal_pool_magnitude_interval": list(
-                    redshift_distribution.bright_terminal_pool_magnitude_interval
-                ),
-                "bright_tail_policy": (
-                    redshift_distribution.bright_tail_policy
-                ),
-                "trusted_faint_magnitude": (
-                    redshift_distribution.trusted_faint_magnitude
-                ),
-                "faint_terminal_pool_magnitude_interval": list(
-                    redshift_distribution.faint_terminal_pool_magnitude_interval
-                ),
-                "faint_tail_policy": redshift_distribution.faint_tail_policy,
+                "deconvolution": color_sfr_model["deconvolution"],
+                "magnitude_edges": color_diagnostics["magnitude_edges"],
+                "observed_ratio_variance_by_magnitude": color_diagnostics[
+                    "observed_ratio_variance_by_magnitude"
+                ],
+                "noise_ratio_variance_by_magnitude": color_diagnostics[
+                    "noise_ratio_variance_by_magnitude"
+                ],
+                "sfr_valid_weight_fraction_by_magnitude": color_diagnostics[
+                    "sfr_valid_weight_fraction_by_magnitude"
+                ],
+                "leaf_count_by_tree": color_diagnostics["leaf_count_by_tree"],
+                "median_leaf_rows_by_tree": color_diagnostics[
+                    "median_leaf_rows_by_tree"
+                ],
             },
             "fit_diagnostics": {
                 "conditional_cross_entropy": conditional_cross_entropy,
@@ -900,15 +633,6 @@ def fit_euclid_joint_galaxy_candidate() -> dict[str, Any]:
                         ]
                     )
                     / np.sum(q1_expected_by_magnitude)
-                ),
-                "generation_fraction_fainter_than_redshift_trust": float(
-                    np.sum(
-                        diagnostic_magnitude_mass[
-                            diagnostic_magnitude
-                            >= redshift_distribution.trusted_faint_magnitude
-                        ]
-                    )
-                    / np.sum(diagnostic_magnitude_mass)
                 ),
                 "generation_fraction_fainter_than_vis_25": float(
                     np.sum(
@@ -949,40 +673,34 @@ def fit_euclid_joint_galaxy_candidate() -> dict[str, Any]:
             "radius_max_arcsec": 10.0 ** radius_law.log_radius_max,
             "sampling_order": (
                 "radius_marginal_then_brightness_given_radius_then_"
-                "redshift_given_vis_2fwhm_brightness"
+                "colors_sfr_given_brightness_and_radius"
+            ),
+            "color_sampling": (
+                "empirical_forest_row_resampling_given_vis_2fwhm_and_re"
+            ),
+            "color_deconvolution": (
+                "analytic_neighborhood_single_gaussian_extreme_deconvolution"
+            ),
+            "color_rendering": (
+                "preserve_sampled_observed_Re_then_exact_VIS_2FWHM_"
+                "normalization_then_per_band_nisp_over_vis_ratio_scalars"
             ),
             "redshift_sampling": (
-                "empirical_PHZ_PDF_given_VIS_2FWHM_magnitude"
+                "none_redshift_enters_implicitly_through_empirical_colors"
             ),
-            "redshift_trusted_bright_magnitude": (
-                redshift_distribution.trusted_bright_magnitude
+            "sfr_morphology_matching": (
+                "global_log_sfr_rank_kernel_ess64_balanced"
             ),
-            "redshift_bright_terminal_pool_magnitude_interval": list(
-                redshift_distribution.bright_terminal_pool_magnitude_interval
-            ),
-            "redshift_bright_tail_policy": (
-                redshift_distribution.bright_tail_policy
-            ),
-            "redshift_trusted_faint_magnitude": (
-                redshift_distribution.trusted_faint_magnitude
-            ),
-            "redshift_faint_terminal_pool_magnitude_interval": list(
-                redshift_distribution.faint_terminal_pool_magnitude_interval
-            ),
-            "redshift_faint_tail_policy": (
-                redshift_distribution.faint_tail_policy
-            ),
-            "redshift_rendering": (
-                "preserve_sampled_observed_Re_then_apply_the_same_"
-                "redshift_photometry_as_render_observed_radius_at_redshift_"
-                "then_exact_VIS_2FWHM_normalization"
+            "lens_color_policy": (
+                "achromatic_tolman_dimming_plus_class_conditioned_"
+                "empirical_colors"
             ),
             "aperture_fwhm_sampling": (
                 "MER_FWHM_given_sampled_VIS_2FWHM_magnitude"
             ),
             "aperture_fwhm_min_arcsec": aperture_fwhm.minimum_arcsec,
             "aperture_fwhm_max_arcsec": aperture_fwhm.maximum_arcsec,
-            "morphology_assignment": "balanced_random_tng_atlas",
+            "morphology_assignment": "sfr_rank_matched_tng_atlas",
             "position_process": "homogeneous_poisson",
         },
         "provenance": {
@@ -1011,64 +729,42 @@ def fit_euclid_joint_galaxy_candidate() -> dict[str, Any]:
                 "empirical 0.025-arcsec bins with nearest observed "
                 "magnitude-bin continuation outside populated support"
             ),
-            "redshift": (
-                "full normalized Q1 PHZ redshift PDFs conditioned on the "
-                "same MER VIS 2FWHM aperture magnitude used by generation"
+            "colors": (
+                "empirical NISP/VIS 2FWHM flux ratios plus PHZ SFR "
+                "resampled from real Q1 rows through a conditional forest; "
+                "measurement noise removed by analytic neighbourhood "
+                "deconvolution; no per-galaxy redshift is assigned"
             ),
-            "redshift_selection": redshift_distribution.selection,
-            "redshift_model": (
-                "empirical magnitude-bin conditional; a sampled redshift "
-                "selects the existing observed-radius redshift renderer, "
-                "while the VIS 2FWHM aperture target remains exact"
-            ),
+            "color_selection": color_sfr_model["selection"],
+            "color_weight_policy": color_sfr_model["weight_policy"],
+            "color_catalog_version": color_sfr_model["catalog_version"],
+            "color_catalog_sha256": color_sfr_model["catalog_sha256"],
+            "color_calibration_fingerprint": color_sfr_model[
+                "calibration_fingerprint"
+            ],
+            "color_catalog_rows": color_diagnostics["catalog_rows"],
+            "color_selected_rows": color_diagnostics["selected_rows"],
+            "color_selected_galaxy_weight": color_diagnostics[
+                "selected_galaxy_weight"
+            ],
+            "color_sfr_valid_weight_fraction": color_diagnostics[
+                "sfr_valid_weight_fraction"
+            ],
+            "color_resolved_radius_weight_fraction": color_diagnostics[
+                "resolved_radius_weight_fraction"
+            ],
+            "color_negative_ratio_row_fraction": color_diagnostics[
+                "negative_ratio_row_fraction"
+            ],
+            "color_quenched_weight_fraction": color_diagnostics[
+                "quenched_weight_fraction"
+            ],
+            "color_sklearn_version": color_sfr_model["sklearn_version"],
             "radius_selection": str(radius_payload["selection"]),
             "radius_acquisition": str(radius_payload["acquisition"]),
             "cosmos_used": False,
             "object_catalog_used": True,
-            "random_cones_used": bool(redshift_diagnostics["random_cones"]),
-            "redshift_catalog_version": redshift_diagnostics[
-                "catalog_version"
-            ],
-            "redshift_catalog_sha256": redshift_diagnostics[
-                "catalog_sha256"
-            ],
-            "redshift_pdf_sha256": redshift_diagnostics[
-                "phz_pdf_sha256"
-            ],
-            "redshift_calibration_fingerprint": redshift_diagnostics[
-                "calibration_fingerprint"
-            ],
-            "redshift_catalog_rows": redshift_diagnostics["catalog_rows"],
-            "redshift_pdf_rows": redshift_diagnostics["phz_pdf_rows"],
-            "redshift_selected_rows": redshift_diagnostics["selected_rows"],
-            "redshift_selected_galaxy_weight": redshift_diagnostics[
-                "selected_galaxy_weight"
-            ],
-            "redshift_binned_selected_rows": redshift_diagnostics[
-                "binned_selected_rows"
-            ],
-            "redshift_binned_galaxy_weight": redshift_diagnostics[
-                "binned_galaxy_weight"
-            ],
-            "redshift_populated_magnitude_bins": redshift_diagnostics[
-                "populated_magnitude_bins"
-            ],
-            "redshift_bright_terminal_pool_rows": redshift_diagnostics[
-                "bright_terminal_pool_rows"
-            ],
-            "redshift_bright_terminal_pool_galaxy_weight": (
-                redshift_diagnostics["bright_terminal_pool_galaxy_weight"]
-            ),
-            "redshift_terminal_pool_rows": redshift_diagnostics[
-                "terminal_pool_rows"
-            ],
-            "redshift_terminal_pool_galaxy_weight": redshift_diagnostics[
-                "terminal_pool_galaxy_weight"
-            ],
-            "redshift_calibrated_magnitude_interval": redshift_diagnostics[
-                "calibrated_magnitude_interval"
-            ],
-            "redshift_random_cones": redshift_diagnostics["random_cones"],
+            "random_cones_used": bool(color_meta.get("cones")),
             "q1_counts_sha256": hashlib.sha256(
                 q1_galaxy_counts_path().read_bytes()
             ).hexdigest(),

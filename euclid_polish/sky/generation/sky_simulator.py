@@ -3,10 +3,13 @@ Multi-band clean-HR scene generator.
 
 Every field galaxy uses a resolved TNG50 SKIRT morphology. The active Euclid
 prior supplies a VIS Sérsic half-light radius, a jointly conditioned VIS 2FWHM
-aperture brightness, and a PHZ redshift conditioned on that brightness. The
-observed radius stays fixed while the TNG band proportions receive the existing
-redshift photometry; one final shared scale sets the exact VIS aperture target.
-The same brightness draw supplies the MER photometric FWHM that defines the
+aperture brightness, and an empirical (colours, SFR) draw resampled from real
+Q1 catalogue rows at that brightness and radius. The observed radius stays
+fixed; one shared scale sets the exact VIS aperture target, then three
+per-band scalars set the drawn NISP/VIS flux ratios (no redshift is assigned —
+the z dependence of colours lives inside the empirical colour distributions).
+The SFR steers only the TNG donor choice, through a rank-space kernel. The
+same brightness draw supplies the MER photometric FWHM that defines the
 aperture radius and target PSF used by the normalization.
 
 The output of :meth:`SkySimulator.simulate_field` is a single :class:`Image`
@@ -28,7 +31,7 @@ import numpy as np
 
 from euclid_polish.config import Config
 from euclid_polish.image import Image, Role
-from euclid_polish.photometry import ab_mag_to_electrons
+from euclid_polish.photometry import ab_mag_to_electrons, electrons_to_ab_mag
 from euclid_polish.provenance.defaults import mint_id
 from euclid_polish.provenance.records import Stamp
 from euclid_polish.psf.psf_library import make_gaussian_psf
@@ -44,6 +47,7 @@ from euclid_polish.sky.generation.cosmos_tng_prior import (
     conditional_ssfr_quantiles,
     cross_validated_mass_bandwidth,
     joint_quantile_transport_weights,
+    sfr_rank_transport_weights,
 )
 from euclid_polish.sky.generation.lens_population import (
     render_lens_to_multiband_canvas,
@@ -73,7 +77,10 @@ class _NoRenderableTNGDonorError(ValueError):
 _MER_APERTURE_GAUSSIAN_SIGMA_SUPPORT = 5.0
 _OFF_FIELD_GALAXY_RE_SUPPORT = 4.0
 _OFF_FIELD_GALAXY_SEED_TAG = 0x4F464647  # ``OFFG``
-_GALAXY_REDSHIFT_SEED_TAG = 0x5245445A  # ``REDZ``
+# The colour+SFR draw runs on its own derived stream so its variable RNG
+# consumption can never shift the donor, rotation, or brightness streams.
+_GALAXY_COLOR_SEED_TAG = 0x434F4C52  # ``COLR``
+_LENS_COLOR_SEED_TAG = 0x4C434C52  # ``LCLR``
 
 
 def _derived_rng_from_state(
@@ -358,6 +365,8 @@ class SkySimulator:
         self._atlas_activity_class: np.ndarray | None = None
         self._atlas_mass_quantile: np.ndarray | None = None
         self._atlas_ssfr_quantile: np.ndarray | None = None
+        self._atlas_sfr_rank: np.ndarray | None = None
+        self._sfr_kernel_bandwidth: float | None = None
         self._mass_kernel_bandwidth_by_class: dict[str, float] = {}
         self._ssfr_kernel_bandwidth_by_class: dict[str, float] = {}
         self._morphology_use_counts = np.zeros(
@@ -419,6 +428,19 @@ class SkySimulator:
                     atlas_logssfr,
                     self._atlas_activity_class,
                     zero_sfr=self._atlas_zero_sfr,
+                )
+                # Global (class-free) log-SFR ranks: SFR is the common
+                # currency with the catalogue's PHZ_PP_MEDIAN_SFR, and the
+                # zero-SFR donors share one censored bottom rank.
+                with np.errstate(invalid="ignore"):
+                    atlas_log_sfr = np.log10(np.where(sfr > 0.0, sfr, np.nan))
+                self._atlas_sfr_rank = conditional_ssfr_quantiles(
+                    atlas_log_sfr,
+                    np.full(sfr.shape, "all"),
+                    zero_sfr=atlas_zero_sfr | (sfr <= 0.0),
+                )
+                self._sfr_kernel_bandwidth = float(
+                    cross_validated_mass_bandwidth(self._atlas_sfr_rank)
                 )
                 for label in np.unique(self._atlas_activity_class):
                     class_quantiles = self._atlas_mass_quantile[
@@ -783,22 +805,95 @@ class SkySimulator:
             "worker_donor_use_count": use_count,
         }
 
+    def _pick_sfr_matched_field_galaxy(
+        self,
+        rng: np.random.Generator,
+        target_sfr_rank: float,
+        target_re_arcsec: float,
+    ) -> tuple[TNGGalaxy, dict[str, float | int | str]]:
+        """Choose a TNG donor by a rank-space SFR kernel among eligibles."""
+        if (
+            self._atlas_logm is None
+            or self._atlas_activity_class is None
+            or self._atlas_mass_quantile is None
+            or self._atlas_ssfr_quantile is None
+            or self._atlas_sfr is None
+            or self._atlas_logssfr is None
+            or self._atlas_zero_sfr is None
+            or self._atlas_sfr_rank is None
+            or self._sfr_kernel_bandwidth is None
+        ):
+            raise ValueError(
+                "SFR-matched TNG donor selection requires complete mass and "
+                "SFR properties for every donor"
+            )
+        target = float(target_sfr_rank)
+        if not np.isfinite(target) or not 0.0 <= target <= 1.0:
+            raise ValueError("target SFR rank is invalid")
+        candidates = self._eligible_morphology_indices(target_re_arcsec)
+        balance = np.power(
+            1.0 + self._morphology_use_counts[candidates].astype(np.float64),
+            -MORPHOLOGY_BALANCE_POWER,
+        )
+        probabilities, used_bandwidth, effective_donors = (
+            sfr_rank_transport_weights(
+                self._atlas_sfr_rank[candidates],
+                target,
+                bandwidth=self._sfr_kernel_bandwidth,
+                minimum_effective_donors=MORPHOLOGY_MIN_EFFECTIVE_DONORS,
+                balance_weights=balance,
+            )
+        )
+        local_index = int(rng.choice(candidates.size, p=probabilities))
+        selected = int(candidates[local_index])
+        use_count = int(self._morphology_use_counts[selected]) + 1
+        self._morphology_use_counts[selected] = use_count
+        donor_sfr_rank = float(self._atlas_sfr_rank[selected])
+
+        atlas = self.tng_atlas
+        if atlas is None:
+            raise ValueError("TNG atlas is unavailable")
+        return atlas.galaxies[selected], {
+            "activity_class": str(self._atlas_activity_class[selected]),
+            "target_mass_quantile": float("nan"),
+            "target_ssfr_quantile": float("nan"),
+            "tng_mass_quantile": float(self._atlas_mass_quantile[selected]),
+            "tng_ssfr_quantile": float(self._atlas_ssfr_quantile[selected]),
+            "native_tng_logmass": float(self._atlas_logm[selected]),
+            "native_tng_sfr": float(self._atlas_sfr[selected]),
+            "native_tng_logssfr": float(self._atlas_logssfr[selected]),
+            "native_tng_zero_sfr": bool(self._atlas_zero_sfr[selected]),
+            "morphology_proxy_logmass": float("nan"),
+            "mass_quantile_delta": float("nan"),
+            "ssfr_quantile_delta": float("nan"),
+            "target_sfr_rank": target,
+            "tng_sfr_rank": donor_sfr_rank,
+            "sfr_rank_delta": donor_sfr_rank - target,
+            "selection_probability": float(probabilities[local_index]),
+            "effective_donors": float(effective_donors),
+            "kernel_bandwidth_quantile": float(used_bandwidth),
+            "mass_kernel_bandwidth_quantile": float("nan"),
+            "ssfr_kernel_bandwidth_quantile": float("nan"),
+            "sfr_kernel_bandwidth_quantile": float(used_bandwidth),
+            "worker_donor_use_count": use_count,
+        }
+
     # ------------------------------------------------------------------ #
     def _add_tng_galaxy(
         self, canvas_4ch: np.ndarray, rng: np.random.Generator,
         *, position: tuple[float, float] | None = None,
         off_field: bool = False,
-        redshift_rng: np.random.Generator | None = None,
+        color_rng: np.random.Generator | None = None,
         _attempt: int = 0,
     ) -> dict | None:
-        """Resolve TNG geometry/donor before drawing independent brightness."""
+        """Draw geometry, brightness and colours, then an SFR-matched donor."""
         if self.population_prior is None:
             return None
         prior = self.population_prior
         staged = isinstance(prior, JointGalaxyPopulationPrior)
-        if staged and redshift_rng is None:
-            redshift_rng = _derived_rng_from_state(
-                rng, _GALAXY_REDSHIFT_SEED_TAG,
+        if staged and color_rng is None:
+            color_rng = _derived_rng_from_state(
+                rng, _GALAXY_COLOR_SEED_TAG,
             )
         if isinstance(prior, JointGalaxyPopulationPrior):
             draw = prior.sample_geometry(rng)
@@ -811,8 +906,16 @@ class SkySimulator:
                 position[0], position[1], draw.re_arcsec,
             ):
                 return None
+        if staged:
+            # Brightness and the empirical (colours, SFR) draw come BEFORE
+            # the donor pick: the drawn SFR rank steers the morphology.
+            draw = prior.complete_draw(draw, rng, color_rng=color_rng)
         try:
-            if getattr(prior, "morphology_mode", "") == (
+            if staged:
+                galaxy, morphology = self._pick_sfr_matched_field_galaxy(
+                    rng, draw.sfr_rank, draw.re_arcsec,
+                )
+            elif getattr(prior, "morphology_mode", "") == (
                 "balanced_random_tng_atlas"
             ):
                 galaxy, morphology = self._pick_random_field_galaxy(
@@ -830,7 +933,7 @@ class SkySimulator:
             if _attempt < 31:
                 return self._add_tng_galaxy(
                     canvas_4ch, rng, position=position, off_field=off_field,
-                    redshift_rng=redshift_rng,
+                    color_rng=color_rng,
                     _attempt=_attempt + 1,
                 )
             raise RuntimeError(
@@ -855,34 +958,20 @@ class SkySimulator:
                 rng=rng,
                 target_vis_flux_e=None,
             )
-            draw = prior.complete_draw(
-                draw,
-                rng,
-                redshift_rng=redshift_rng,
-            )
-            rendered = self.tng_renderer.apply_redshift_photometry(
-                rendered,
-                draw.z,
-                rng=redshift_rng,
-            )
         elif np.isfinite(draw.z):
             rendered = self.tng_renderer.render_observed_radius_at_redshift(
                 view,
                 draw.re_arcsec,
                 draw.z,
                 rng=rng,
-                target_vis_flux_e=(
-                    None if staged else draw.target_vis_flux_e
-                ),
+                target_vis_flux_e=draw.target_vis_flux_e,
             )
         else:
             rendered = self.tng_renderer.render_observed_radius(
                 view,
                 draw.re_arcsec,
                 rng=rng,
-                target_vis_flux_e=(
-                    None if staged else draw.target_vis_flux_e
-                ),
+                target_vis_flux_e=draw.target_vis_flux_e,
             )
         if isinstance(prior, JointGalaxyPopulationPrior):
             magnitude = draw.target_vis_mag
@@ -901,12 +990,21 @@ class SkySimulator:
                     psf_fwhm_arcsec=psf_fwhm,
                     psf_identity=psf_source,
                 )
+                rendered = self.tng_renderer.apply_empirical_colors(
+                    rendered,
+                    target_ratios=(
+                        draw.ratio_y, draw.ratio_j, draw.ratio_h,
+                    ),
+                    color_pooling=draw.color_pooling,
+                    neighborhood_rows=draw.color_neighborhood_rows,
+                    calibration_fingerprint=draw.physical_model_fingerprint,
+                )
             except ValueError as exc:
                 if _attempt < 31:
                     return self._add_tng_galaxy(
                         canvas_4ch, rng, position=position,
                         off_field=off_field,
-                        redshift_rng=redshift_rng,
+                        color_rng=color_rng,
                         _attempt=_attempt + 1,
                     )
                 raise RuntimeError(
@@ -971,6 +1069,33 @@ class SkySimulator:
                 "worker_donor_use_count"
             ],
             "morphology_activity_class": morphology["activity_class"],
+            "morphology_target_sfr_rank": morphology.get(
+                "target_sfr_rank", float("nan")
+            ),
+            "morphology_tng_sfr_rank": morphology.get(
+                "tng_sfr_rank", float("nan")
+            ),
+            "morphology_sfr_rank_delta": morphology.get(
+                "sfr_rank_delta", float("nan")
+            ),
+            "morphology_sfr_kernel_bandwidth_quantile": morphology.get(
+                "sfr_kernel_bandwidth_quantile", float("nan")
+            ),
+            "target_ratio_y": float(draw.ratio_y),
+            "target_ratio_j": float(draw.ratio_j),
+            "target_ratio_h": float(draw.ratio_h),
+            "vis_minus_y_mag": float(draw.vis_minus_y),
+            "y_j_color_mag": float(draw.y_minus_j),
+            "j_h_color_mag": float(draw.j_minus_h),
+            "sfr_log10": float(draw.sfr_log10),
+            "sfr_rank": float(draw.sfr_rank),
+            "sfr_class": str(draw.sfr_class),
+            "sfr_borrowed": bool(draw.sfr_borrowed),
+            "color_pooling": str(draw.color_pooling),
+            "color_neighborhood_rows": int(draw.color_neighborhood_rows),
+            "color_calibration_fingerprint": str(
+                tmeta.get("color_calibration_fingerprint", "")
+            ),
             "galaxy_density_arcmin2": float(self.config.galaxy_density_arcmin2),
             "galaxy_prior_density_arcmin2": float(
                 getattr(
@@ -1101,21 +1226,59 @@ class SkySimulator:
             "extinction_av": sed.extinction_av,
         }
 
+    def _colored_lens_component(
+        self,
+        stamp,
+        sfr_class: str,
+        color_rng: np.random.Generator,
+    ):
+        """Give one physically rendered lens component empirical colours."""
+        color_sampler = getattr(
+            self.population_prior, "color_sfr_sampler", None,
+        )
+        if color_sampler is None:
+            raise ValueError("lens colouring requires a colour+SFR sampler")
+        vis_mag = float(electrons_to_ab_mag(
+            stamp.flux_e("VIS"), Config.get_band("VIS"),
+        ))
+        if not math.isfinite(vis_mag):
+            raise ValueError("lens component has no measurable VIS flux")
+        color_draw = color_sampler.sample_class_conditioned(
+            vis_mag, sfr_class, color_rng,
+        )
+        colored = self.tng_renderer.apply_empirical_colors(
+            stamp,
+            target_ratios=color_draw.ratios,
+            color_pooling=color_draw.pooling,
+            neighborhood_rows=color_draw.neighborhood_rows,
+            calibration_fingerprint=color_sampler.calibration_fingerprint,
+        )
+        return colored, color_draw
+
     def _add_lens_pure(
         self, canvas_4ch: np.ndarray, rng: np.random.Generator,
         *, max_tries: int = 32,
     ) -> dict | None:
         """Catalog-free lens system: TNG deflector + TNG source.
 
-        Used when no COSMOS catalog is available (TNG-only mode). Per try:
-        pick a subhalo, derive σ_v from its stellar mass, draw geometry via
-        :func:`sample_lens_geometry`, accept when θ_E ≥ κ × apparent R_e.
+        Per try: pick a subhalo, derive σ_v from its stellar mass, draw
+        geometry via :func:`sample_lens_geometry`, accept when
+        θ_E ≥ κ × apparent R_e. With an active colour+SFR sampler the
+        z-driven GEOMETRY is kept exactly, but photometry becomes achromatic
+        Tolman dimming (the only thing setting apparent lens brightness — the
+        physical path has no normalization scalar) plus class-conditioned
+        empirical colours: the deflector draws from quenched rows, the lensed
+        source from star-forming rows.
         """
         cfg = self.config
         kappa = cfg.lens_theta_e_min_re_ratio
         atlas = self.tng_atlas
         if atlas is None:
             raise ValueError("TNG lens rendering requires an open atlas")
+        empirical_colors = (
+            getattr(self.population_prior, "color_sfr_sampler", None)
+            is not None
+        )
         for _ in range(max_tries):
             galaxy = atlas.galaxies[int(rng.integers(0, len(atlas)))]
             gid = galaxy.subhalo_id
@@ -1150,24 +1313,43 @@ class SkySimulator:
             source_view = atlas.view(source_galaxy, sori)
             if cfg.lens_require_showable:
                 r_vis = self.tng_renderer.predict_visible_radius_arcsec(
-                    lens_view, lp.z_lens
+                    lens_view, lp.z_lens,
+                    chromatic=not empirical_colors,
                 )
                 if (lp.theta_E_arcsec
                         < Config.LENS_SHOWABLE_THETA_E_FRAC * r_vis):
                     continue
                 if (self.tng_renderer.predict_vis_flux_e(
-                        source_view, lp.z_source)
+                        source_view, lp.z_source,
+                        chromatic=not empirical_colors)
                         < Config.LENS_SHOWABLE_MIN_SRC_VIS_E):
                     continue
+            lens_color_draw = source_color_draw = None
             try:
                 lens_light_stamp = (
                     self.tng_renderer.render_physical_at_redshift(
-                        lens_view, lp.z_lens, rng=rng
+                        lens_view, lp.z_lens, rng=rng,
+                        chromatic=not empirical_colors,
                     )
                 )
                 source_stamp = self.tng_renderer.render_physical_at_redshift(
-                    source_view, lp.z_source, rng=rng
+                    source_view, lp.z_source, rng=rng,
+                    chromatic=not empirical_colors,
                 )
+                if empirical_colors:
+                    lens_color_rng = _derived_rng_from_state(
+                        rng, _LENS_COLOR_SEED_TAG,
+                    )
+                    lens_light_stamp, lens_color_draw = (
+                        self._colored_lens_component(
+                            lens_light_stamp, "quenched", lens_color_rng,
+                        )
+                    )
+                    source_stamp, source_color_draw = (
+                        self._colored_lens_component(
+                            source_stamp, "star_forming", lens_color_rng,
+                        )
+                    )
             except (OSError, TypeError, ValueError):
                 continue
             x_pix, y_pix = self._random_pix(rng)
@@ -1203,6 +1385,46 @@ class SkySimulator:
                 "lens_visible_r_arcsec": float(
                     lens_light_stamp.shape[0] * cfg.pixel_scale / 2.0),
                 "source_flux_vis_e": source_stamp.flux_e("VIS"),
+                "lens_color_policy": (
+                    "achromatic_dimming_plus_empirical_class_colors"
+                    if empirical_colors else "legacy_band_drift"
+                ),
+                "lens_sfr_class": "quenched" if empirical_colors else "",
+                "source_sfr_class": (
+                    "star_forming" if empirical_colors else ""
+                ),
+                "lens_vis_minus_y_mag": (
+                    float(lens_color_draw.vis_minus_y)
+                    if lens_color_draw is not None else float("nan")
+                ),
+                "lens_y_j_color_mag": (
+                    float(lens_color_draw.y_minus_j)
+                    if lens_color_draw is not None else float("nan")
+                ),
+                "lens_j_h_color_mag": (
+                    float(lens_color_draw.j_minus_h)
+                    if lens_color_draw is not None else float("nan")
+                ),
+                "lens_color_pooling": (
+                    str(lens_color_draw.pooling)
+                    if lens_color_draw is not None else ""
+                ),
+                "source_vis_minus_y_mag": (
+                    float(source_color_draw.vis_minus_y)
+                    if source_color_draw is not None else float("nan")
+                ),
+                "source_y_j_color_mag": (
+                    float(source_color_draw.y_minus_j)
+                    if source_color_draw is not None else float("nan")
+                ),
+                "source_j_h_color_mag": (
+                    float(source_color_draw.j_minus_h)
+                    if source_color_draw is not None else float("nan")
+                ),
+                "source_color_pooling": (
+                    str(source_color_draw.pooling)
+                    if source_color_draw is not None else ""
+                ),
             }
         return None
 

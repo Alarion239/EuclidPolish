@@ -39,10 +39,12 @@ from euclid_polish.tng.redshift import (
     compactness_factor,
     physical_pc_to_arcsec,
     rebin_factor_for_redshift,
+    tolman_dimming_factor,
 )
 from euclid_polish.tng.types import (
     TNG_MODEL_BANDS,
     TNG_NATIVE_PC_PER_PIXEL,
+    EmpiricalColorTransform,
     NativePhotometry,
     NominalRadiusGeometry,
     PhysicalRedshiftGeometry,
@@ -229,7 +231,12 @@ class TNGRenderer:
         rng: np.random.Generator | None = None,
         target_vis_flux_e: float | None = None,
     ) -> RenderedTNG:
-        """Render nominal radius geometry and then apply redshift photometry."""
+        """Render nominal radius geometry and then apply redshift photometry.
+
+        LEGACY-PRIOR-ONLY: the active joint prior colours stamps from the
+        empirical colour model (``apply_empirical_colors``); this path serves
+        the ``CosmosTngPrior`` / default ``PhzGalaxyPopulationPrior`` branch.
+        """
         rendered = self._render_observed_geometry(view, target_re_arcsec, rng)
         rendered = self.apply_redshift_photometry(
             rendered, redshift, rng=rng,
@@ -245,7 +252,12 @@ class TNGRenderer:
         *,
         rng: np.random.Generator | None = None,
     ) -> RenderedTNG:
-        """Apply the observed-radius renderer's transform to an existing stamp."""
+        """Apply the observed-radius renderer's transform to an existing stamp.
+
+        LEGACY-PRIOR-ONLY: retained for the legacy prior branch and the
+        ``chromatic=True`` lens fallback; the active joint prior never
+        drifts bands with redshift.
+        """
         sed_fnu = self._native_sed_from_render(rendered)
         factors, metadata = band_drift_factors(sed_fnu, redshift, rng)
         transform = TNGRedshiftTransform(
@@ -266,8 +278,15 @@ class TNGRenderer:
         surface_brightness_cut_mag_arcsec2: float = (
             Config.TNG_SB_TRUNCATE_MAG_ARCSEC2
         ),
+        chromatic: bool = True,
     ) -> RenderedTNG:
-        """Place the native 100 pc grid at redshift using integer rebinning."""
+        """Place the native 100 pc grid at redshift using integer rebinning.
+
+        With ``chromatic=False`` only the achromatic Tolman ``(1+z)^-3``
+        dimming is applied — the caller supplies band ratios afterwards from
+        the empirical colour model (``apply_empirical_colors``). The legacy
+        SED-drift photometry stays available for the legacy-prior fallback.
+        """
         redshift_value = float(redshift)
         compactness = compactness_factor(redshift_value)
         geometric_rebin = rebin_factor_for_redshift(
@@ -298,23 +317,32 @@ class TNGRenderer:
             surface_brightness = rotation.apply(surface_brightness)
 
         electron_image = self._surface_brightness_to_electrons(surface_brightness)
-        sed_fnu = _four_floats(
-            float(
-                np.sum(
-                    electron_image.data[
-                        ..., electron_image.band_names.index(band)
-                    ],
-                    dtype=np.float64,
+        if chromatic:
+            sed_fnu = _four_floats(
+                float(
+                    np.sum(
+                        electron_image.data[
+                            ..., electron_image.band_names.index(band)
+                        ],
+                        dtype=np.float64,
+                    )
                 )
+                / mjy_per_sr_to_electrons_factor(
+                    Config.get_band(band), self.pixel_scale_arcsec
+                )
+                for band in electron_image.band_names
             )
-            / mjy_per_sr_to_electrons_factor(
-                Config.get_band(band), self.pixel_scale_arcsec
+            factors, metadata = band_drift_factors(
+                sed_fnu, redshift_value, rng
             )
-            for band in electron_image.band_names
-        )
-        factors, metadata = band_drift_factors(
-            sed_fnu, redshift_value, rng
-        )
+        else:
+            dimming = tolman_dimming_factor(redshift_value)
+            factors = np.full(4, dimming, dtype=np.float64)
+            metadata = {
+                "drift_mode": "achromatic",
+                "drift_eps": 0.0,
+                "dimming": dimming,
+            }
         transform = TNGRedshiftTransform(
             redshift=redshift_value,
             band_factors=_four_floats(factors),
@@ -398,6 +426,56 @@ class TNGRenderer:
         )
         return rendered.normalised(normalization)
 
+    def apply_empirical_colors(
+        self,
+        rendered: RenderedTNG,
+        *,
+        target_ratios: tuple[float, float, float],
+        color_pooling: str = "",
+        neighborhood_rows: int = 0,
+        calibration_fingerprint: str = "",
+    ) -> RenderedTNG:
+        """Scale the NISP planes so the stamp realizes drawn flux ratios.
+
+        ``target_ratios`` are the empirical, deconvolved NISP/VIS 2FWHM flux
+        ratios in the AB (µJy) system. Because the four bands share the
+        electron scale only through their AB zeropoints, the target electron
+        ratio for band ``b`` is ``r_b · 10^(0.4·(zp_b − zp_VIS))``; the VIS
+        plane is untouched (factor exactly one), so a preceding VIS
+        normalization anchor is preserved bitwise.
+        """
+        ratios = tuple(float(value) for value in target_ratios)
+        if len(ratios) != 3 or not all(
+            np.isfinite(value) and value > 0.0 for value in ratios
+        ):
+            raise ValueError(
+                "empirical colour scaling requires three positive flux ratios"
+            )
+        vis_band = Config.get_band("VIS")
+        vis_flux = rendered.flux_e("VIS")
+        if not np.isfinite(vis_flux) or vis_flux <= 0.0:
+            raise ValueError("cannot colour a stamp with no VIS flux")
+        factors = [1.0]
+        for band_name, ratio in zip(rendered.bands[1:], ratios, strict=True):
+            band = Config.get_band(band_name)
+            electron_ratio = ratio * 10.0 ** (
+                0.4 * (band.sim_zeropoint_e - vis_band.sim_zeropoint_e)
+            )
+            band_flux = rendered.flux_e(band_name)
+            if not np.isfinite(band_flux) or band_flux <= 0.0:
+                raise ValueError(
+                    f"cannot colour a stamp with no {band_name} flux"
+                )
+            factors.append(electron_ratio * vis_flux / band_flux)
+        transform = EmpiricalColorTransform(
+            target_ratios=ratios,
+            band_factors=_four_floats(factors),
+            color_pooling=color_pooling,
+            neighborhood_rows=int(neighborhood_rows),
+            calibration_fingerprint=calibration_fingerprint,
+        )
+        return rendered.colored(transform)
+
     def native_photometry(self, view: TNGView) -> NativePhotometry:
         """Return cached native VIS radial profile and four-band sums."""
         key = self._source_key(view)
@@ -428,12 +506,16 @@ class TNGRenderer:
         surface_brightness_cut_mag_arcsec2: float = (
             Config.TNG_SB_TRUNCATE_MAG_ARCSEC2
         ),
+        chromatic: bool = True,
     ) -> float:
         """Predict the detectable VIS radius without rendering a stamp."""
         photometry = self.native_photometry(view)
-        factors, _ = band_drift_factors(
-            photometry.band_sums_mjy_sr, redshift, None
-        )
+        if chromatic:
+            factors, _ = band_drift_factors(
+                photometry.band_sums_mjy_sr, redshift, None
+            )
+        else:
+            factors = np.full(4, tolman_dimming_factor(redshift))
         compactness = compactness_factor(redshift)
         vis_band = Config.get_band("VIS")
         conversion = mjy_per_sr_to_electrons_factor(
@@ -462,12 +544,17 @@ class TNGRenderer:
             / compactness
         )
 
-    def predict_vis_flux_e(self, view: TNGView, redshift: float) -> float:
+    def predict_vis_flux_e(
+        self, view: TNGView, redshift: float, *, chromatic: bool = True,
+    ) -> float:
         """Predict total VIS electrons at redshift, ignoring truncation."""
         photometry = self.native_photometry(view)
-        factors, _ = band_drift_factors(
-            photometry.band_sums_mjy_sr, redshift, None
-        )
+        if chromatic:
+            factors, _ = band_drift_factors(
+                photometry.band_sums_mjy_sr, redshift, None
+            )
+        else:
+            factors = np.full(4, tolman_dimming_factor(redshift))
         geometric_rebin = rebin_factor_for_redshift(
             redshift, pixel_scale_arcsec=self.pixel_scale_arcsec
         )

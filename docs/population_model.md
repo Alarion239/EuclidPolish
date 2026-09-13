@@ -162,6 +162,51 @@ Spatial downsampling does not set brightness. After downsampling, the
 independent common four-band flux factor is
 \(c=F_{\rm goal,2FWHM}/F_{\rm measured,2FWHM}\).
 
+## Empirical colours and SFR (v15)
+
+No per-galaxy redshift is assigned. All remaining photometric and physical
+properties — the three NISP/VIS 2FWHM flux ratios and the star-formation
+rate — are resampled from real Q1 catalogue rows through a conditional
+random forest (quantile-forest construction: Meinshausen 2006; Ćevid et
+al. 2022). Trees partition the \((m_{\rm VIS,2FWHM}, \log_{10}R_e)\) plane
+into regions of homogeneous colours and SFR; a synthetic galaxy adopts the
+measured fluxes and SFR of one catalogue neighbour drawn from its matching
+leaves across trees. Because a forest's leaves are adaptively chosen bins,
+this samples the observed joint \(p(\hbox{colours},{\rm SFR}\mid m,R_e)\)
+with no functional form; out-of-support queries land in the terminal
+leaves (nearest populated data, never an invented trend). The redshift
+dependence of colours enters implicitly through the empirical colour
+distributions at each magnitude.
+
+MER NISP fluxes are forced photometry at the VIS position, so faint rows
+carry unbiased but noisy measurements (negative fluxes are kept — cutting
+them would truncation-bias the faint colours). Colour-training rows do
+require VIS 2FWHM S/N ≥ 5: the VIS flux sits in the ratio denominator, so
+below its own noise the measured ratios blow up non-Gaussianly and carry no
+colour information; fainter generated magnitudes terminal-pool at the
+deepest rows above the floor. Measurement noise is removed by analytic
+one-component extreme deconvolution (Bovy, Hogg & Roweis 2011) within each
+drawn neighbourhood, on robust statistics (weighted-median location, 16–84
+half-width observed spread, and a junk-tail-trimmed mean of the reported
+noise variances — a few percent of MER rows report errors hundreds of times
+the typical σ): the intrinsic variance is observed minus noise, and the
+drawn row's true ratio is sampled from its Gaussian posterior. Bright rows
+come back essentially raw; noise-dominated faint neighbourhoods collapse
+toward the local colour relation, which is all the data identify there.
+
+Rendering anchors the VIS 2FWHM aperture flux with one shared scalar as
+before, then multiplies the three NISP planes by scalars that realize the
+drawn flux ratios exactly. The drawn SFR steers only the TNG donor choice:
+a Gaussian kernel in log-SFR percentile rank (catalogue rank against the
+atlas rank, zero-SFR donors sharing one censored bottom rank), widened
+until at least 64 donors contribute effectively. Strong-lens systems keep
+their redshift-driven geometry and achromatic Tolman dimming, but their
+deflector and source colours come from the same empirical model,
+conditioned on quenched and star-forming rows respectively.
+
+The forest is grown by scikit-learn at fit time only and exported as plain
+arrays into the fingerprinted artifact; generation traverses it in NumPy.
+
 ## Current scope and validation status
 
 Version 12 contains the continuous three-slope bright bridge/main/flat
@@ -176,9 +221,11 @@ catalogue replica.
 ## What is fitted versus imposed
 
 The main Q1 brightness coefficients, three bright-bridge slopes, Q1
-differential-density peak, straight radius intercept and slope, and radius
-scatter are data-derived. The fixed VIS joins 16.4, 19.0, and 20.9, finite
+differential-density peak, straight radius intercept and slope, radius
+scatter, and the entire conditional colour+SFR joint (resampled catalogue
+rows) are data-derived. The fixed VIS joins 16.4, 19.0, and 20.9, finite
 14--29 magnitude range, policy of holding the count density flat at the
 observed peak, radius bounds, homogeneous positions, Poisson scene counts,
-and random TNG donor assignment are imposed choices. No COSMOS or TNG
-distribution is fitted.
+the Gaussian measurement model behind the colour deconvolution, and the
+SFR-rank kernel for TNG donor assignment are imposed choices. No COSMOS or
+TNG distribution is fitted.
