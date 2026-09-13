@@ -8,13 +8,10 @@ from pathlib import Path
 import numpy as np
 from astropy.io import fits
 from astropy.wcs import WCS
+from scipy.ndimage import binary_dilation, gaussian_filter
 
 from euclid_polish.config import Config
 from euclid_polish.photometry import adu_per_s_to_electrons_factor
-from euclid_polish.web.helpers.vis_noise_calibration import (
-    _robust_sigma,
-    _source_masked_residual,
-)
 
 from . import BANDS, SCHEMA_VERSION
 from .archive import DPDD, assert_aligned, digest, image_product, read_json, save_json, utc_now
@@ -82,10 +79,91 @@ def crop_to_patch(patch, arrays, header):
     return cropped, output_header
 
 
+def robust_sigma(values: np.ndarray) -> float:
+    """1.4826 × MAD of the finite values, falling back to their std."""
+    finite = np.asarray(values, dtype=np.float64)
+    finite = finite[np.isfinite(finite)]
+    if not len(finite):
+        return float("nan")
+    median = float(np.median(finite))
+    sigma = 1.4826 * float(np.median(np.abs(finite - median)))
+    if np.isfinite(sigma) and sigma > 0.0:
+        return sigma
+    fallback = float(np.std(finite))
+    return fallback if fallback > 0.0 else float("nan")
+
+
+def source_masked_residual(image: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Data-derived source mask and plane-only background residual.
+
+    A smoothed image is used only to *detect* compact sources.  Noise
+    measurement is performed on the original pixels after an iteratively
+    clipped constant-plus-plane fit, preserving the delivered MER covariance
+    and power on the 0.25--8 arcsec range.
+    """
+    data = np.asarray(image, dtype=np.float64)
+    if data.ndim != 2:
+        raise ValueError(f"image must be 2-D, got {data.shape}")
+    finite = np.isfinite(data)
+    if np.count_nonzero(finite) < max(64, data.size // 4):
+        raise ValueError("patch has too few finite pixels")
+    fill = float(np.median(data[finite]))
+    work = np.where(finite, data, fill)
+    smooth_sigma = max(3.0, min(12.0, min(data.shape) / 24.0))
+    detection_background = gaussian_filter(work, smooth_sigma, mode="reflect")
+    detection_residual = work - detection_background
+    first_sigma = robust_sigma(detection_residual[finite])
+    if not np.isfinite(first_sigma) or first_sigma <= 0.0:
+        raise ValueError("patch has degenerate background variance")
+    # A lower positive threshold catches source wings; the symmetric high
+    # threshold removes cosmic rays, zeroed saturation cores, and bad pixels.
+    seeds = (
+        (detection_residual > 4.0 * first_sigma)
+        | (np.abs(detection_residual) > 8.0 * first_sigma)
+        | ~finite
+    )
+    mask = binary_dilation(seeds, iterations=4)
+    usable = ~mask
+    if np.count_nonzero(usable) < max(64, data.size // 5):
+        raise ValueError("Source mask leaves too few background pixels")
+    yy, xx = np.indices(data.shape, dtype=np.float64)
+    xx = (xx - 0.5 * (data.shape[1] - 1)) / max(1.0, data.shape[1] - 1)
+    yy = (yy - 0.5 * (data.shape[0] - 1)) / max(1.0, data.shape[0] - 1)
+    design = np.column_stack((
+        np.ones(np.count_nonzero(finite)), xx[finite], yy[finite],
+    ))
+    values = work[finite]
+    fit_usable = usable[finite].copy()
+    coefficients = np.asarray([float(np.median(values[fit_usable])), 0.0, 0.0])
+    for _ in range(5):
+        if np.count_nonzero(fit_usable) < 64:
+            break
+        coefficients, *_ = np.linalg.lstsq(
+            design[fit_usable], values[fit_usable], rcond=None,
+        )
+        fit_residual = values - design @ coefficients
+        centre = float(np.median(fit_residual[fit_usable]))
+        sigma = robust_sigma(fit_residual[fit_usable])
+        if not np.isfinite(sigma) or sigma <= 0.0:
+            break
+        clipped = usable[finite] & (np.abs(fit_residual - centre) <= 5.0 * sigma)
+        if np.array_equal(clipped, fit_usable):
+            break
+        fit_usable = clipped
+    final_usable = np.zeros(data.shape, dtype=bool)
+    final_usable[finite] = fit_usable
+    mask = ~final_usable
+    usable = final_usable
+    plane = coefficients[0] + coefficients[1] * xx + coefficients[2] * yy
+    residual = work - plane
+    residual -= float(np.median(residual[usable]))
+    return residual, mask
+
+
 def legacy_measurement(science):
-    # The existing implementation is the reference, not a reimplementation.
-    residual, mask = _source_masked_residual(science)
-    return float(_robust_sigma(residual[~mask])), residual, mask
+    """Source-masked robust background RMS, the method of the retired VIS calibration."""
+    residual, mask = source_masked_residual(science)
+    return float(robust_sigma(residual[~mask])), residual, mask
 
 
 def measure_mer(root):

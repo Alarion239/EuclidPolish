@@ -50,6 +50,7 @@ from euclid_polish.web.routes import (
     hstpairs,
     jwst_euclid,
     model,
+    noise,
     population_comparison,
     poster,
     psfs,
@@ -169,6 +170,8 @@ def create_app() -> Flask:
         "/api/archive-fields",
         "/population-comparison",
         "/synthetic-real",
+        "/noise",                # read-only: committed Q1 noise-level table
+        "/api/noise",
         "/galaxy-distributions",
         "/api/galaxy-distributions",
         "/api/star-distribution",
@@ -194,6 +197,7 @@ def create_app() -> Flask:
         "/tng",
         "/synthetic-real",
         "/population-comparison",
+        "/noise",
         "/galaxy-distributions",
         "/star-distribution",
         "/inference",
@@ -332,6 +336,7 @@ def create_app() -> Flask:
     poster.register(app)
     archive_fields.register(app)
     population_comparison.register(app)
+    noise.register(app)
     galaxy_distributions.register(app)
     star_distribution.register(app)
     model.register(app)
