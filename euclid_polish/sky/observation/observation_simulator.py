@@ -50,6 +50,7 @@ from euclid_polish.sky.observation.field_variations import (
     draw_distant_star_wings,
     draw_noise_scale_map,
 )
+from euclid_polish.sky.observation.mer_noise_levels import load_mer_noise_levels
 from euclid_polish.sky.observation.noise import apply_archive_noise
 from euclid_polish.sky.observation.resample import upsample as resample_upsample
 from euclid_polish.sky.observation.saturation import (
@@ -78,6 +79,10 @@ class ObservationSimulatorConfig:
     # every provenance snapshot of this config so training can refuse records
     # generated under a different noise model.
     noise_model: str = Config.NOISE_MODEL
+    # Draw each scene's four-band sky noise level from the measured Q1
+    # distribution (one real sky position per scene). Off uses every band's
+    # median level.
+    draw_mer_noise_levels: bool = True
     # Position-dependent PSF: when ``randomize_psf`` is on, each scene draws one
     # PSF — a star-count-weighted cluster pick, then with probability
     # (1 - psf_unrotated_prob) a random roll rotation (per-pointing telescope
@@ -376,6 +381,7 @@ class ObservationSimulator:
         star_psf_spec: PSFSample | None = None,
         distant_star_wings: tuple[DistantStarWing, ...] = (),
         noise_scale_map: np.ndarray | None = None,
+        sky_rms_e: float | None = None,
         warp_displacements: dict[
             tuple[int, int], tuple[np.ndarray, np.ndarray]
         ] | None = None,
@@ -411,6 +417,7 @@ class ObservationSimulator:
                 add_artifacts=self.config.add_artifacts,
                 artifact_config=self.config.artifact_config,
                 noise_scale_map=noise_scale_map,
+                sky_rms_e=sky_rms_e,
             )
         else:
             lr_e = lr_signal_e.astype(np.float32, copy=False)
@@ -572,6 +579,10 @@ class ObservationSimulator:
                 region_scale_min=self.config.noise_region_scale_min,
                 region_scale_max=self.config.noise_region_scale_max,
             )
+        # One real Q1 sky position per scene sets all four bands' sky noise.
+        sky_levels: dict[str, float] = {}
+        if self.config.add_noise and self.config.draw_mer_noise_levels:
+            sky_levels = load_mer_noise_levels().draw(rng)
 
         # Draw ONE PSF sample (cluster index + roll) for the whole scene so all
         # four bands share the field position and the telescope roll — one
@@ -603,6 +614,7 @@ class ObservationSimulator:
                 star_psf_spec=star_psf_spec,
                 distant_star_wings=distant_star_wings,
                 noise_scale_map=noise_scale_map,
+                sky_rms_e=sky_levels.get(band.name),
                 warp_displacements=warp_displacements,
             )
             lr_channels.append(lr_channel)

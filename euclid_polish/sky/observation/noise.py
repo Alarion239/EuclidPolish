@@ -200,16 +200,21 @@ def apply_archive_noise(
     add_artifacts: bool = False,
     artifact_config: ArtifactConfig | None = None,
     noise_scale_map: np.ndarray | None = None,
+    sky_rms_e: float | None = None,
 ) -> np.ndarray:
     """Add noise as it appears in the delivered 0.10" MER mosaic.
 
     The local noise level is Euclid's sky level combined with the photon
-    noise of the source, ``sqrt(band.mer_rms_e**2 + signal)``, multiplied by
+    noise of the source, ``sqrt(sky_rms_e**2 + signal)``, multiplied by
     ``noise_scale_map`` when given (field depth and pointing overlaps). The
     level multiplies a :func:`dithered_unit_noise` field, so apertures see
     that level while single pixels show the lower, correlated scatter of a
     resampled stack. The signal itself is untouched: empirical MER ePSFs
     already contain detector sampling and mosaic interpolation.
+
+    ``sky_rms_e`` is the sky level for this scene, normally one draw from the
+    measured Q1 distribution; ``None`` uses the band's median,
+    ``band.mer_rms_e``.
 
     Sparse artifacts are survivors of the pipeline's rejection, so they are
     injected last on the archive grid and are never rescaled.
@@ -217,9 +222,12 @@ def apply_archive_noise(
     signal = np.asarray(signal_e, dtype=np.float32)
     if signal.ndim != 2:
         raise ValueError(f"signal_e must be 2-D, got shape {signal.shape}")
-    sky_rms = float(band.mer_rms_e)
+    sky_rms = float(band.mer_rms_e if sky_rms_e is None else sky_rms_e)
     if not math.isfinite(sky_rms) or sky_rms <= 0.0:
-        raise ValueError(f"{band.name} has no MER noise level (mer_rms_e)")
+        raise ValueError(
+            f"{band.name} needs a positive sky noise level "
+            f"(sky_rms_e or mer_rms_e), got {sky_rms!r}"
+        )
     noise_scale = None
     if noise_scale_map is not None:
         noise_scale = np.asarray(noise_scale_map, dtype=np.float32)
