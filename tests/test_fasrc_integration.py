@@ -102,29 +102,6 @@ def fake_remote(tmp_path, monkeypatch):
     monkeypatch.setattr(STATE, "ssh", sess)
     monkeypatch.setattr(STATE, "connected_at", time.time())
 
-    # Synthetic generation is fail-closed on an activated empirical VIS-noise
-    # calibration. Keep the fake-cluster submit tests independent of whatever
-    # calibration artifacts happen to exist in the developer checkout.
-    vis_noise = {
-        "kind": "euclid_mer_vis_noise",
-        "version": 2,
-        "mode": "amplitude_only",
-        "residual_scale": 20.0,
-        "field_scale_quantiles": [0.9, 0.95, 1.0, 1.05, 1.1],
-        "owns_field_scale": True,
-        "source_release": "Q1_R1",
-        "estimator_version": "test-v1",
-        "fingerprint": "v" * 64,
-    }
-    monkeypatch.setattr(
-        "euclid_polish.web.helpers.vis_noise_calibration.vis_noise_state",
-        lambda: {"active": vis_noise, "candidate": vis_noise, "is_active": True},
-    )
-    monkeypatch.setattr(
-        "euclid_polish.web.helpers.vis_noise_calibration.runtime_vis_noise_payload",
-        lambda payload=None: dict(payload or vis_noise),
-    )
-
     yield {
         "cfg": cfg, "remote_root": remote_root, "repo": repo,
         "data_dir": data_dir, "ckpt_dir": ckpt_dir,
@@ -269,17 +246,6 @@ def test_synthetic_submit_persists_prepared_calibration_identities(
         "fingerprint": "s" * 64,
         "population": {"density_arcmin2": 3.0},
     }
-    vis_noise = {
-        "kind": "euclid_mer_vis_noise",
-        "version": 2,
-        "mode": "amplitude_only",
-        "residual_scale": 20.0,
-        "field_scale_quantiles": [0.9, 0.95, 1.0, 1.05, 1.1],
-        "owns_field_scale": True,
-        "source_release": "Q1_R1",
-        "estimator_version": "test-v1",
-        "fingerprint": "v" * 64,
-    }
     monkeypatch.setattr(
         "euclid_polish.web.helpers.population_calibration.joint_galaxy_state",
         lambda: {"active": joint, "is_active": True},
@@ -287,14 +253,6 @@ def test_synthetic_submit_persists_prepared_calibration_identities(
     monkeypatch.setattr(
         "euclid_polish.web.helpers.population_calibration.star_state",
         lambda: {"active": stars, "is_active": True},
-    )
-    monkeypatch.setattr(
-        "euclid_polish.web.helpers.vis_noise_calibration.vis_noise_state",
-        lambda: {"active": vis_noise, "is_active": True},
-    )
-    monkeypatch.setattr(
-        "euclid_polish.web.helpers.vis_noise_calibration.runtime_vis_noise_payload",
-        lambda payload=None: dict(payload or vis_noise),
     )
     submitted: dict = {}
 
@@ -320,10 +278,7 @@ def test_synthetic_submit_persists_prepared_calibration_identities(
     assert response.status_code == 200, response.get_json()
     assert submitted["_joint_galaxy_population_fingerprint"] == "j" * 64
     assert submitted["_star_prior_fingerprint"] == "s" * 64
-    assert submitted["_vis_noise_calibration_fingerprint"] == "v" * 64
-    assert len(submitted["_vis_noise_calibration_sha256"]) == 64
-    assert submitted["_vis_noise_calibration_file"].endswith(".json")
-    assert "_vis_noise_calibration_json" not in submitted
+    assert not any(key.startswith("_vis_noise") for key in submitted)
 
 
 def test_submit_refuses_when_disconnected(client, monkeypatch):

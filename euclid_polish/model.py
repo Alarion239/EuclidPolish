@@ -426,7 +426,6 @@ class Model:
         saturation_mask_prob: float = Config.TRAIN_SATURATION_MASK_PROB,
         target_fwhm_arcsec: float = Config.TARGET_PSF_FWHM_ARCSEC,
         star_prior_payload: dict | None = None,
-        vis_noise_calibration_payload: dict | None = None,
         starless: bool = True,
         **kwargs,
     ) -> None:
@@ -503,10 +502,7 @@ class Model:
                                   saturation_mask_prob=float(
                                       saturation_mask_prob),
                                   target_fwhm_arcsec=target_fwhm,
-                                  star_prior_payload=star_prior_payload,
-                                  vis_noise_calibration_payload=(
-                                      vis_noise_calibration_payload
-                                  ))
+                                  star_prior_payload=star_prior_payload)
             train_ds = self._build_onthefly_pipeline(
                 hr_path, batch_size, fwd,
                 noise_aug_rn=float(noise_aug),
@@ -548,15 +544,10 @@ class Model:
         provenance_fields: dict[str, object] = {
             "forward_onthefly": bool(forward_onthefly),
         }
-        if forward_onthefly and isinstance(vis_noise_calibration_payload, dict):
-            fingerprint = vis_noise_calibration_payload.get("fingerprint")
-            version = vis_noise_calibration_payload.get("version")
-            if fingerprint:
-                provenance_fields["vis_noise_calibration_fingerprint"] = str(
-                    fingerprint
-                )
-            if version is not None:
-                provenance_fields["vis_noise_calibration_version"] = int(version)
+        if forward_onthefly:
+            # Live training draws noise from the code's noise model; record it
+            # the same way generated records do.
+            provenance_fields["noise_model"] = Config.NOISE_MODEL
         trainer = Trainer(self._tf_model, learning_rate=lr_schedule,
                           checkpoint_dir=self._checkpoint_dir,
                           loss=build_loss(loss_norm),

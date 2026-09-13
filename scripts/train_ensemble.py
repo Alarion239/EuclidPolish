@@ -45,8 +45,10 @@ from euclid_polish.ensemble import (  # noqa: E402
     MemberTrainSpec,
     member_is_starless,
 )
+from euclid_polish.image.collection import ImageSet  # noqa: E402
 from euclid_polish.image.tfio import tfrecord_path  # noqa: E402
 from euclid_polish.observability import Reporter, ResourceSampler  # noqa: E402
+from euclid_polish.provenance.defaults import default_store  # noqa: E402
 from euclid_polish.training.forward_onthefly import (  # noqa: E402
     DEFAULT_CROPS_PER_FIELD,
     DEFAULT_ONTHEFLY_HR_CROP_SIZE,
@@ -185,10 +187,6 @@ def parse_args(argv=None) -> argparse.Namespace:
                         "on-the-fly star magnitudes and colours.")
     p.add_argument("--star-prior-file", default="",
                    help="Path to the activated point-source prior JSON.")
-    p.add_argument("--vis-noise-calibration-json", default="",
-                   help="Activated empirical MER VIS-noise calibration JSON.")
-    p.add_argument("--vis-noise-calibration-file", default="",
-                   help="Path to the activated empirical VIS-noise JSON.")
     p.add_argument("--asinh-knee", type=float, default=None,
                    help="Per-member asinh stretch knee in ELECTRONS — the "
                         "linear/log crossover of asinh(x/knee) the network "
@@ -628,88 +626,66 @@ def _load_json_object_arg(
     return payload
 
 
-def _find_vis_noise_fingerprint(value) -> str | None:
-    """Find a generation snapshot's VIS calibration fingerprint recursively."""
+def _find_noise_model(value) -> str | None:
+    """Find the ``noise_model`` identity anywhere in a config snapshot."""
     if isinstance(value, dict):
-        direct = value.get("vis_noise_calibration_fingerprint")
+        direct = value.get("noise_model")
         if isinstance(direct, str) and direct:
             return direct
-        calibration = value.get("vis_noise_calibration")
-        if isinstance(calibration, dict):
-            fingerprint = calibration.get("fingerprint")
-            if isinstance(fingerprint, str) and fingerprint:
-                return fingerprint
-        for nested in value.values():
-            fingerprint = _find_vis_noise_fingerprint(nested)
-            if fingerprint:
-                return fingerprint
+        values = value.values()
     elif isinstance(value, (list, tuple)):
-        for nested in value:
-            fingerprint = _find_vis_noise_fingerprint(nested)
-            if fingerprint:
-                return fingerprint
+        values = value
+    else:
+        return None
+    for nested in values:
+        found = _find_noise_model(nested)
+        if found:
+            return found
     return None
 
 
-def _validation_vis_noise_fingerprint(path: str) -> str | None:
-    """Read the calibration fingerprint that produced a validation TFRecord."""
+def _record_noise_model(path: str) -> str | None:
+    """The noise model that generated a TFRecord, read from its provenance."""
     try:
-        from euclid_polish.image.collection import ImageSet
-        from euclid_polish.provenance.defaults import default_store
-
         image = next(iter(ImageSet.read(path, num_images=1)))
         stamp = image.prov_stamp()
         if stamp is None or stamp.produced_by is None:
             return None
         process = default_store().get_or_none(stamp.produced_by)
-        config = getattr(process, "config", None)
-        return _find_vis_noise_fingerprint(getattr(config, "fields", None))
-    except Exception:  # noqa: BLE001 - absence/corruption is reported by caller
+    except Exception as exc:  # noqa: BLE001 - reported; callers fail closed
+        print(f"  ⚠ cannot read noise-model provenance of {path}: {exc}")
         return None
+    config = getattr(process, "config", None)
+    return _find_noise_model(getattr(config, "fields", None))
 
 
-def _require_matching_validation_calibration(
-    specs,
-    payload: dict | None,
-    validation_path: str,
-) -> None:
-    """Keep on-the-fly training and record validation on one noise model."""
+def _require_current_validation_noise_model(specs, validation_path: str) -> None:
+    """On-the-fly training must validate on records with the same noise model."""
     if not any(spec.forward_onthefly for spec in specs):
         return
-    expected = str((payload or {}).get("fingerprint") or "")
-    observed = _validation_vis_noise_fingerprint(validation_path)
-    if not observed:
+    observed = _record_noise_model(validation_path)
+    if observed != Config.NOISE_MODEL:
         raise ValueError(
-            "dirty_validate has no VIS-noise calibration provenance; regenerate "
-            "the validation split with the active calibration before on-the-fly training"
-        )
-    if observed != expected:
-        raise ValueError(
-            "dirty_validate was generated with VIS-noise calibration "
-            f"{observed[:12]}..., but on-the-fly training would use "
-            f"{expected[:12]}...; regenerate validation before training"
+            "dirty_validate was generated with noise model "
+            f"{observed or 'unrecorded'}, but on-the-fly training uses "
+            f"{Config.NOISE_MODEL}; regenerate the validation split"
         )
 
 
-def _require_compatible_record_calibrations(
-    specs,
-    training_path: str,
-    validation_path: str,
+def _require_matching_record_noise_models(
+    specs, training_path: str, validation_path: str,
 ) -> None:
-    """Reject mixed calibrated/legacy record pairs or two different fits."""
+    """Record-mode training and validation records must share a noise model."""
     if not any(not spec.forward_onthefly for spec in specs):
         return
-    training = _validation_vis_noise_fingerprint(training_path)
-    validation = _validation_vis_noise_fingerprint(validation_path)
-    if training == validation:
-        return
-    training_label = training[:12] + "..." if training else "legacy/unrecorded"
-    validation_label = validation[:12] + "..." if validation else "legacy/unrecorded"
-    raise ValueError(
-        "dirty_train and dirty_validate use different VIS-noise calibrations "
-        f"({training_label} versus {validation_label}); regenerate both record "
-        "splits with one active calibration before training"
-    )
+    training = _record_noise_model(training_path)
+    validation = _record_noise_model(validation_path)
+    if training != validation:
+        raise ValueError(
+            "dirty_train and dirty_validate use different noise models "
+            f"({training or 'unrecorded'} versus {validation or 'unrecorded'}); "
+            "regenerate both record splits"
+        )
 
 
 def main() -> int:
@@ -844,18 +820,6 @@ def main() -> int:
             args.star_prior_file,
             label="stellar prior",
         )
-        vis_noise_calibration_payload = _load_json_object_arg(
-            args.vis_noise_calibration_json,
-            args.vis_noise_calibration_file,
-            label="VIS noise calibration",
-        )
-        if vis_noise_calibration_payload is not None:
-            from euclid_polish.sky.observation.noise_calibration import (
-                VISNoiseCalibration,
-            )
-
-            # Validate the frozen artifact before allocating/training a model.
-            VISNoiseCalibration.from_payload(vis_noise_calibration_payload)
     except ValueError as exc:
         print(f"✗ {exc}")
         return 2
@@ -868,22 +832,12 @@ def main() -> int:
             "prior via --star-prior-json/--star-prior-file"
         )
         return 2
-    if (
-        vis_noise_calibration_payload is None
-        and any(spec.forward_onthefly for spec in specs)
-    ):
-        print(
-            "✗ on-the-fly training requires the active empirical VIS-noise "
-            "calibration via --vis-noise-calibration-json/file"
-        )
-        return 2
     try:
-        _require_matching_validation_calibration(
+        _require_current_validation_noise_model(
             specs,
-            vis_noise_calibration_payload,
             tfrecord_path(args.records_dir, "dirty_validate"),
         )
-        _require_compatible_record_calibrations(
+        _require_matching_record_noise_models(
             specs,
             tfrecord_path(args.records_dir, "dirty_train"),
             tfrecord_path(args.records_dir, "dirty_validate"),
@@ -912,7 +866,6 @@ def main() -> int:
             plateau_rollback_min_gap=args.plateau_rollback_min_gap,
             plateau_lr_recovery=bool(args.plateau_lr_recovery),
             star_prior_payload=star_prior_payload,
-            vis_noise_calibration_payload=vis_noise_calibration_payload,
         )
 
         reporter.set_step(total, total, "ensemble training complete")

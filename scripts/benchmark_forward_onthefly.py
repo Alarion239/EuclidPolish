@@ -202,7 +202,6 @@ def main() -> int:
         for name in bands:
             apply_archive_noise(
                 reb[name], Config.get_band(name), rng, add_artifacts=False,
-                resample_kernel=Config.NISP_RESAMPLE_KERNEL,
             )
     _row("MER noise (native NISP + resample, 4 bands)",
          *_bench(_noise_all, args.repeats))
@@ -211,7 +210,6 @@ def main() -> int:
         for name in bands:
             apply_archive_noise(
                 reb[name], Config.get_band(name), rng, add_artifacts=True,
-                resample_kernel=Config.NISP_RESAMPLE_KERNEL,
             )
     _row("MER noise + artifacts (4 bands)",
          *_bench(_noise_art_all, args.repeats))
@@ -275,7 +273,6 @@ def main() -> int:
                 lr = ObservationSimulator.sum_rebin(core, 2)
                 apply_archive_noise(
                     lr, Config.get_band(name), rng, add_artifacts=True,
-                    resample_kernel=Config.NISP_RESAMPLE_KERNEL,
                 )
 
         wall, cpu = _bench(_one_example, args.repeats)

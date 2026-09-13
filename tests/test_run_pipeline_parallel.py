@@ -22,6 +22,7 @@ from euclid_polish.config import Config
 from euclid_polish.image import Image, ImageSet
 from euclid_polish.image.tfio import read_images, tfrecord_path
 from euclid_polish.population.magnitude_law import StraightMagnitudeLaw
+from euclid_polish.provenance.records import ConfigSnapshot
 from euclid_polish.psf.psf_library import load_all_band_psfs
 from euclid_polish.sky.generation.sky_simulator import (
     SkySimulator,
@@ -168,40 +169,14 @@ def test_generation_warp_cli_configures_shared_forward_for_all_splits():
         ]))
 
 
-def test_vis_noise_calibration_file_configures_shared_forward(tmp_path):
-    from euclid_polish.provenance.records import ConfigSnapshot
-    from euclid_polish.sky.observation.noise_calibration import (
-        VISNoiseCalibration,
-    )
-
-    calibration = VISNoiseCalibration.build(
-        residual_scale=19.75,
-        owns_field_scale=True,
-        source_release="Q1_R1",
-        estimator_version="test-v1",
-    )
-    path = tmp_path / "vis-noise.json"
-    path.write_text(json.dumps(calibration.to_payload()))
-    args = rp.parse_args(["--vis-noise-calibration-file", str(path)])
+def test_generation_provenance_records_the_noise_model():
+    args = rp.parse_args([])
     rp._resolve_population_payload_files(args)
     configured = rp._observation_config_from_args(args)
-    assert configured.vis_noise_calibration is not None
-    assert configured.vis_noise_calibration.mode == "amplitude_only"
-    assert configured.vis_noise_calibration.fingerprint == calibration.fingerprint
-    assert configured.vis_noise_calibration.residual_scale == 19.75
-
     provenance = rp._generate_and_convolve_provenance_config(args, configured)
     snapshot = ConfigSnapshot.from_dataclass(provenance)
     assert snapshot.config_type == "GenerateAndConvolveProvenanceConfig"
-    assert (
-        snapshot.fields["vis_noise_calibration_fingerprint"]
-        == calibration.fingerprint
-    )
-    assert (
-        snapshot.fields["observation"]["vis_noise_calibration"]["fingerprint"]
-        == calibration.fingerprint
-    )
-
+    assert snapshot.fields["observation"]["noise_model"] == Config.NOISE_MODEL
 
 def test_targeted_regeneration_cli_selects_and_forces_only_named_splits():
     args = rp.parse_args([

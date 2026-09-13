@@ -331,18 +331,8 @@ class EnsembleModel:
         """
         if not specs:
             raise ValueError("no member specs to train")
-        vis_noise_payload = train_kwargs.get("vis_noise_calibration_payload")
         self._models = []
         for i, spec in enumerate(specs):
-            member_vis_noise_payload = (
-                vis_noise_payload if spec.forward_onthefly else None
-            )
-            member_vis_noise_fingerprint = (
-                str(member_vis_noise_payload.get("fingerprint"))
-                if isinstance(member_vis_noise_payload, dict)
-                and member_vis_noise_payload.get("fingerprint")
-                else None
-            )
             d = os.path.join(self.base_dir, spec.name)
             created = not (os.path.isdir(d) and _checkpoint_exists(d))
             os.makedirs(d, exist_ok=True)
@@ -395,18 +385,14 @@ class EnsembleModel:
                         timespec="seconds"),
                     "commit": commit,
                 }
-                if member_vis_noise_fingerprint is not None:
-                    origin["vis_noise_calibration_fingerprint"] = (
-                        member_vis_noise_fingerprint
-                    )
+                if spec.forward_onthefly:
+                    origin["noise_model"] = Config.NOISE_MODEL
                 with open(os.path.join(d, "origin.json"), "w") as f:
                     json.dump(origin, f, indent=2)
             # Continue resumes from the PSNR-best track — the model eval
             # actually uses. Max-step resume would pick loss_best/ when that
             # track ran ahead during a degenerate (skip-only) stretch.
             member_train_kwargs = dict(train_kwargs)
-            if not spec.forward_onthefly:
-                member_train_kwargs.pop("vis_noise_calibration_payload", None)
             m.train(lr_path, hr_path, steps=int(spec.target_steps),
                     batch_size=batch_size,
                     resume_track=("psnr" if spec.op == "continue"

@@ -1,14 +1,16 @@
 """Image-space noise models.
 
-:func:`apply_band_noise` is the low-level detector-grid Poisson/read/artifact
-model. :func:`apply_archive_noise` wraps it with the native NISP exposure and
-MER resampling path used by generated records and on-the-fly training.
+:func:`apply_archive_noise` is the delivered-MER noise used by generated
+records and on-the-fly training: Euclid's own MER noise level with the pixel
+correlation of a dithered, bilinearly resampled stack.
+:func:`apply_band_noise` is the older detector-grid Poisson/read model, still
+used by the HST lane and :meth:`Image.with_band_noise`.
 """
 
 from __future__ import annotations
 
+import math
 from dataclasses import replace
-from typing import Literal
 
 import numpy as np
 
@@ -17,8 +19,6 @@ from euclid_polish.sky.observation.artifacts import (
     ArtifactConfig,
     inject_artifacts,
 )
-from euclid_polish.sky.observation.noise_calibration import VISNoiseCalibration
-from euclid_polish.sky.observation.resample import upsample
 
 # ---------------------------------------------------------------------------
 # Euclid per-band noise
@@ -85,82 +85,111 @@ def apply_band_noise(
 
 
 # ---------------------------------------------------------------------------
-# Delivered-MER noise path
+# Delivered-MER noise
 # ---------------------------------------------------------------------------
-
-_NISP_DITHER_PHASES_4 = ((0, 1), (1, 0), (1, 1), (2, 2))
-
-
-def _sum_rebin_2d(image: np.ndarray, factor: int) -> np.ndarray:
-    """Sum adjacent ``factor x factor`` cells, padding only the far edges."""
-    height, width = image.shape
-    pad_y = (-height) % factor
-    pad_x = (-width) % factor
-    if pad_y or pad_x:
-        image = np.pad(image, ((0, pad_y), (0, pad_x)), mode="constant")
-    out_h, out_w = image.shape[0] // factor, image.shape[1] // factor
-    return image.reshape(out_h, factor, out_w, factor).sum(axis=(1, 3))
+#
+# Level: Euclid's MER RMS maps (``BandConfig.mer_rms_e``) combined with the
+# photon noise of the sources. The maps quote per-pixel noise as if pixels
+# were independent, which is the noise that adds up over an aperture.
+#
+# Texture: the MER pipeline interpolates every exposure onto the 0.10" grid
+# with bilinear weights at some sub-pixel offset, so neighbouring pixels share
+# noise. :func:`dithered_unit_noise` rebuilds exactly that, which gives the
+# lower single-pixel scatter and the neighbour correlation of a real stack
+# without fitting any correlation parameter.
 
 
-def _shift_without_wrap(
-    image: np.ndarray, dy: int, dx: int,
-) -> np.ndarray:
-    """Integer-shift an image using reflected edge samples, never wraparound."""
-    if dy == 0 and dx == 0:
-        return image
-    pad = max(abs(int(dy)), abs(int(dx)))
-    padded = np.pad(image, pad, mode="reflect")
-    height, width = image.shape
-    y0 = pad - int(dy)
-    x0 = pad - int(dx)
-    return padded[y0:y0 + height, x0:x0 + width]
-
-
-def _dither_phases(
-    n_exposures: int,
-    factor: int,
-    rng: np.random.Generator,
-) -> list[tuple[int, int]]:
-    """Return reproducible detector-to-MER subpixel phases for one stack.
-
-    The four NISP phases are variance-balanced over the 3x3 output phases.
-    A random dihedral transform plus global translation prevents the small
-    residual phase pattern from occupying fixed array coordinates in every
-    training example.
-    """
-    if factor == 3 and n_exposures == 4:
-        phases = np.asarray(_NISP_DITHER_PHASES_4, dtype=np.int64)
-        if bool(rng.integers(0, 2)):
-            phases[:, 0] *= -1
-        if bool(rng.integers(0, 2)):
-            phases[:, 1] *= -1
-        if bool(rng.integers(0, 2)):
-            phases = phases[:, ::-1]
-        offset = rng.integers(0, factor, size=2)
-        phases = (phases + offset) % factor
-        return [(int(y), int(x)) for y, x in phases]
-
-    all_phases = np.asarray(
-        [(y, x) for y in range(factor) for x in range(factor)],
-        dtype=np.int64,
-    )
-    order = rng.permutation(len(all_phases))
-    return [
-        (
-            int(all_phases[order[i % len(order)], 0]),
-            int(all_phases[order[i % len(order)], 1]),
+def _detector_factor(band: BandConfig) -> int:
+    """Integer ratio of detector pixel size to archive pixel size."""
+    ratio = band.native_detector_scale_arcsec / band.pixel_scale_lr_arcsec
+    factor = int(round(ratio))
+    if factor < 1 or not math.isclose(ratio, factor, rel_tol=0.0, abs_tol=1e-6):
+        raise ValueError(
+            "native/archive pixel-scale ratio must be a positive integer; "
+            f"got {band.native_detector_scale_arcsec:g}/"
+            f"{band.pixel_scale_lr_arcsec:g}={ratio:g} for {band.name}"
         )
-        for i in range(n_exposures)
-    ]
+    return factor
 
 
-def _robust_sigma(image: np.ndarray) -> float:
-    """Robust background RMS used only to scale faint MER streaks."""
-    arr = np.asarray(image, dtype=np.float64)
-    if min(arr.shape) > 24:
-        arr = arr[6:-6, 6:-6]
-    median = float(np.median(arr))
-    return 1.4826 * float(np.median(np.abs(arr - median)))
+def _bilinear_axis(
+    n_out: int, factor: int, offset: float, pad: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Lower detector index and upper-neighbour weight for one output axis."""
+    position = (
+        (np.arange(n_out, dtype=np.float64) + 0.5) / factor - 0.5
+        + offset + pad
+    )
+    lower = np.floor(position).astype(np.int64)
+    return lower, position - lower
+
+
+def _shifted_bilinear(
+    detector: np.ndarray,
+    factor: int,
+    offset_y: float,
+    offset_x: float,
+    shape: tuple[int, int],
+    pad: int,
+) -> np.ndarray:
+    """Resample a detector-grid image onto the archive grid at a sub-pixel offset.
+
+    Archive pixel ``j`` samples detector coordinate
+    ``(j + 0.5) / factor - 0.5 + offset``. Each output pixel's weights sum to
+    one, so every detector pixel spreads a total weight of ``factor**2`` over
+    the archive grid. ``pad`` detector pixels of margin keep all samples
+    inside the array.
+    """
+    y0, wy = _bilinear_axis(shape[0], factor, offset_y, pad)
+    x0, wx = _bilinear_axis(shape[1], factor, offset_x, pad)
+    rows = (
+        detector[y0] * (1.0 - wy)[:, None]
+        + detector[y0 + 1] * wy[:, None]
+    )
+    return rows[:, x0] * (1.0 - wx) + rows[:, x0 + 1] * wx
+
+
+def dithered_unit_noise(
+    shape: tuple[int, int],
+    band: BandConfig,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """Noise with unit variance on large scales and the texture of a MER stack.
+
+    ``band.n_exposures`` exposures of independent unit white noise are drawn
+    on the detector grid (0.10" VIS, 0.30" NISP). Each is shifted by its own
+    sub-pixel offset, resampled bilinearly onto the 0.10" archive grid, and
+    the exposures are averaged. Offsets are stratified along each axis so the
+    exposures spread over the detector pixel; a draw with all offsets at one
+    phase would leave a fixed period-``factor`` variance pattern.
+
+    Dividing by ``factor * sqrt(n_exposures)`` makes the variance of a sum
+    over a large area equal to its pixel count. Single pixels have lower
+    variance, about (2/3)**2 in VIS and (2/9)**2 in NISP, because
+    interpolation shares each detector pixel's noise with its neighbours.
+    """
+    height, width = int(shape[0]), int(shape[1])
+    if height < 1 or width < 1:
+        raise ValueError(f"shape must be positive, got {shape}")
+    n_exposures = int(band.n_exposures)
+    if n_exposures < 1:
+        raise ValueError(f"{band.name} needs at least one exposure")
+    factor = _detector_factor(band)
+    pad = 2
+    detector_shape = (
+        math.ceil(height / factor) + 2 * pad,
+        math.ceil(width / factor) + 2 * pad,
+    )
+    offsets_y = (rng.permutation(n_exposures) + rng.random(n_exposures)) / n_exposures
+    offsets_x = (rng.permutation(n_exposures) + rng.random(n_exposures)) / n_exposures
+    total = np.zeros((height, width), dtype=np.float64)
+    for offset_y, offset_x in zip(offsets_y, offsets_x, strict=True):
+        white = rng.standard_normal(detector_shape)
+        total += _shifted_bilinear(
+            white, factor, float(offset_y), float(offset_x),
+            (height, width), pad,
+        )
+    return total / (factor * math.sqrt(n_exposures))
 
 
 def apply_archive_noise(
@@ -170,42 +199,27 @@ def apply_archive_noise(
     *,
     add_artifacts: bool = False,
     artifact_config: ArtifactConfig | None = None,
-    resample_kernel: Literal["bilinear", "cubic"] = "bilinear",
     noise_scale_map: np.ndarray | None = None,
-    vis_noise_calibration: VISNoiseCalibration | None = None,
 ) -> np.ndarray:
-    """Add detector noise as it appears in the delivered 0.10" MER mosaic.
+    """Add noise as it appears in the delivered 0.10" MER mosaic.
 
-    Without ``vis_noise_calibration`` or ``noise_scale_map``, VIS is native
-    at the archive scale and uses :func:`apply_band_noise` unchanged (the
-    bitwise-compatible legacy fallback). With a calibration, the stochastic
-    residual is multiplied by the calibrated blank-sky RMS divided by
-    :func:`background_sigma_e`, before sparse artifacts are injected; no
-    spatial filter is applied. The factor is fixed by the band model, so
-    bright sources in a cutout never change its sky-noise level. NISP Y/J/H are different:
-    four independent 0.30" H2RG exposures are sky/dark/read-noised on their
-    native detector cells, bilinearly resampled at their dither phases,
-    converted from native-cell integrated electrons to 0.10"-cell electrons
-    (``/ 3**2``), and co-added. This reproduces the strong short-range
-    covariance and much lower per-output-pixel RMS of real MER NISP mosaics.
-    Sparse artifacts are post-rejection MER residuals, so they are injected
-    only after resampling; they must not acquire interpolation footprints
-    around individual hits.
+    The local noise level is Euclid's sky level combined with the photon
+    noise of the source, ``sqrt(band.mer_rms_e**2 + signal)``, multiplied by
+    ``noise_scale_map`` when given (field depth and pointing overlaps). The
+    level multiplies a :func:`dithered_unit_noise` field, so apertures see
+    that level while single pixels show the lower, correlated scatter of a
+    resampled stack. The signal itself is untouched: empirical MER ePSFs
+    already contain detector sampling and mosaic interpolation.
 
-    ``signal_e`` remains on the delivered archive grid. Empirical MER ePSFs
-    already contain detector sampling and resampling, so reprocessing the
-    deterministic signal through the native grid would blur it twice. Only
-    the stochastic detector residual follows the native path.
-
-    ``noise_scale_map`` optionally scales only the stochastic residual on the
-    archive grid.  The observation simulator uses one shared map for all four
-    bands to represent a field's depth plus a different-depth pointing
-    intersection. A calibrated VIS model with ``owns_field_scale=True`` does
-    not apply this generic map a second time; NISP behavior is unchanged.
+    Sparse artifacts are survivors of the pipeline's rejection, so they are
+    injected last on the archive grid and are never rescaled.
     """
     signal = np.asarray(signal_e, dtype=np.float32)
     if signal.ndim != 2:
         raise ValueError(f"signal_e must be 2-D, got shape {signal.shape}")
+    sky_rms = float(band.mer_rms_e)
+    if not math.isfinite(sky_rms) or sky_rms <= 0.0:
+        raise ValueError(f"{band.name} has no MER noise level (mer_rms_e)")
     noise_scale = None
     if noise_scale_map is not None:
         noise_scale = np.asarray(noise_scale_map, dtype=np.float32)
@@ -217,127 +231,28 @@ def apply_archive_noise(
         if not np.all(np.isfinite(noise_scale)) or np.any(noise_scale <= 0.0):
             raise ValueError("noise_scale_map must contain finite positive values")
 
-    ratio = band.native_detector_scale_arcsec / band.pixel_scale_lr_arcsec
-    factor = int(round(ratio))
-    if factor < 1 or not np.isclose(ratio, factor, rtol=0.0, atol=1e-6):
-        raise ValueError(
-            "native/archive pixel-scale ratio must be a positive integer; "
-            f"got {band.native_detector_scale_arcsec:g}/"
-            f"{band.pixel_scale_lr_arcsec:g}={ratio:g} for {band.name}"
-        )
-    if factor == 1:
-        if vis_noise_calibration is not None and band.name != "VIS":
-            raise ValueError("vis_noise_calibration may only be used for VIS")
-        if vis_noise_calibration is None:
-            if noise_scale is None:
-                # Byte-for-byte the historic VIS path.
-                observed = apply_band_noise(
-                    signal, band, rng,
-                    add_artifacts=add_artifacts,
-                    artifact_config=artifact_config,
-                )
-                return observed.astype(np.float32, copy=False)
-            # The depth map scales detector noise only. Artifacts are added
-            # afterwards so cosmic rays and dead pixels keep their physical
-            # amplitude instead of being multiplied by the local depth.
-            observed = apply_band_noise(signal, band, rng, add_artifacts=False)
-            observed = signal + (observed - signal) * noise_scale
-            if add_artifacts:
-                observed = inject_artifacts(
-                    observed,
-                    band,
-                    rng,
-                    artifact_config or ArtifactConfig(),
-                    local_sigma_e=(
-                        background_sigma_e(band)
-                        * float(np.median(noise_scale))
-                    ),
-                )
-            return observed.astype(np.float32, copy=False)
-
-        # The deterministic optical signal is already a delivered-grid ePSF
-        # realization and must not be convolved again. Rescale only the
-        # Poisson/read residual, preserving its native spatial structure.
-        observed = apply_band_noise(
-            signal, band, rng,
-            add_artifacts=False,
-        )
-        residual = vis_noise_calibration.apply(
-            observed - signal,
-            background_sigma_e=background_sigma_e(band),
-            rng=rng,
-        )
-        if noise_scale is not None and not vis_noise_calibration.owns_field_scale:
-            residual = residual * noise_scale
-        observed = (signal + residual).astype(np.float32, copy=False)
-        if add_artifacts:
-            sigma_e = _robust_sigma(residual)
-            observed = inject_artifacts(
-                observed,
-                band,
-                rng,
-                artifact_config or ArtifactConfig(),
-                local_sigma_e=sigma_e,
-            )
-        return observed.astype(np.float32, copy=False)
-
-    # The input is the full-stack source expectation. A native detector cell
-    # covers factor^2 archive pixels; each dither receives 1/N of that stack.
-    native_signal_stack = _sum_rebin_2d(signal, factor).astype(np.float32)
-    native_signal_one = native_signal_stack / float(band.n_exposures)
-    native_band = replace(
-        band,
-        pixel_scale_lr_arcsec=band.native_detector_scale_arcsec,
-        n_exposures=1,
+    unit = dithered_unit_noise(signal.shape, band, rng)
+    level = np.sqrt(
+        sky_rms * sky_rms + np.clip(signal.astype(np.float64), 0.0, None)
     )
-
-    cfg = artifact_config or ArtifactConfig()
-    phases = _dither_phases(band.n_exposures, factor, rng)
-    output_residual = np.zeros(
-        (native_signal_stack.shape[0] * factor,
-         native_signal_stack.shape[1] * factor),
-        dtype=np.float32,
-    )
-    area_ratio = float(factor * factor)
-    for phase_y, phase_x in phases:
-        native_observed = apply_band_noise(
-            native_signal_one,
-            native_band,
-            rng,
-            # Detector masks/ramp fitting/dither rejection happen before the
-            # delivered MER mosaic.  We model only the sparse survivors below
-            # on the final grid, after the native noise has been resampled.
-            add_artifacts=False,
-        )
-        native_residual = native_observed - native_signal_one
-        archive_residual = upsample(
-            native_residual,
-            factor=factor,
-            kernel=resample_kernel,
-        ) / area_ratio
-        output_residual += _shift_without_wrap(
-            archive_residual, phase_y, phase_x,
-        )
-
-    height, width = signal.shape
-    residual = output_residual[:height, :width]
     if noise_scale is not None:
-        residual = residual * noise_scale
-    observed = (signal + residual).astype(
-        np.float32, copy=False)
+        level = level * noise_scale
+    observed = (signal + level * unit).astype(np.float32)
+
     if add_artifacts:
-        sigma_e = _robust_sigma(output_residual[:height, :width])
-        if sigma_e > 0.0:
-            # A native single-pixel charge was previously spread over roughly
-            # factor² MER pixels. Keep the residual peak scale while making
-            # the surviving artifact genuinely sparse on the delivered grid.
-            archive_cfg = replace(
-                cfg,
-                cr_charge_median_e=cfg.cr_charge_median_e / area_ratio,
-                hot_pixel_charge_mean_e=(
-                    cfg.hot_pixel_charge_mean_e / area_ratio),
-            )
-            observed = inject_artifacts(
-                observed, band, rng, archive_cfg, local_sigma_e=sigma_e,
-            )
-    return observed.astype(np.float32, copy=False)
+        cfg = artifact_config or ArtifactConfig()
+        area_ratio = float(_detector_factor(band) ** 2)
+        # A surviving hit is one detector pixel's charge spread over the
+        # factor**2 archive pixels that cover it; keep it a single sparse
+        # archive pixel at that per-pixel charge.
+        archive_cfg = replace(
+            cfg,
+            cr_charge_median_e=cfg.cr_charge_median_e / area_ratio,
+            hot_pixel_charge_mean_e=cfg.hot_pixel_charge_mean_e / area_ratio,
+        )
+        depth = 1.0 if noise_scale is None else float(np.median(noise_scale))
+        sky_pixel_sigma_e = sky_rms * depth * float(np.std(unit))
+        observed = inject_artifacts(
+            observed, band, rng, archive_cfg, local_sigma_e=sky_pixel_sigma_e,
+        )
+    return np.asarray(observed, dtype=np.float32)

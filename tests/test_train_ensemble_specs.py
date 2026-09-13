@@ -6,11 +6,12 @@ import os
 
 import pytest
 
+from euclid_polish.config import Config
 from scripts.train_ensemble import (
-    _find_vis_noise_fingerprint,
+    _find_noise_model,
     _load_json_object_arg,
-    _require_compatible_record_calibrations,
-    _require_matching_validation_calibration,
+    _require_current_validation_noise_model,
+    _require_matching_record_noise_models,
     build_specs,
     parse_args,
 )
@@ -28,76 +29,62 @@ def _mk_member(base, i, *, starless=None):
 
 
 def test_frozen_forward_payload_can_be_loaded_from_file(tmp_path):
-    payload = {"kind": "euclid_mer_vis_noise", "fingerprint": "a" * 64}
-    path = tmp_path / "vis-noise.json"
+    payload = {"kind": "stellar_prior", "fingerprint": "a" * 64}
+    path = tmp_path / "stars.json"
     path.write_text(json.dumps(payload))
 
-    assert _load_json_object_arg("", str(path), label="VIS noise") == payload
+    assert _load_json_object_arg("", str(path), label="stellar prior") == payload
     with pytest.raises(ValueError, match="mutually exclusive"):
-        _load_json_object_arg("{}", str(path), label="VIS noise")
+        _load_json_object_arg("{}", str(path), label="stellar prior")
 
 
-def test_generation_snapshot_finds_nested_vis_noise_fingerprint():
-    fingerprint = "a" * 64
-    assert _find_vis_noise_fingerprint({
-        "observation": {
-            "vis_noise_calibration": {"fingerprint": fingerprint},
-        },
-    }) == fingerprint
-    assert _find_vis_noise_fingerprint({
-        "vis_noise_calibration_fingerprint": fingerprint,
-    }) == fingerprint
+def test_generation_snapshot_finds_nested_noise_model():
+    assert _find_noise_model({"observation": {"noise_model": "model-a"}}) == "model-a"
+    assert _find_noise_model({"noise_model": "model-b"}) == "model-b"
+    assert _find_noise_model({"observation": {"add_noise": True}}) is None
 
 
-def test_onthefly_requires_matching_validation_noise(monkeypatch):
+def test_onthefly_requires_validation_with_the_current_noise_model(monkeypatch):
     specs = [type("Spec", (), {"forward_onthefly": True})()]
-    payload = {"fingerprint": "a" * 64}
     monkeypatch.setattr(
-        "scripts.train_ensemble._validation_vis_noise_fingerprint",
-        lambda _path: "a" * 64,
+        "scripts.train_ensemble._record_noise_model",
+        lambda _path: Config.NOISE_MODEL,
     )
-    _require_matching_validation_calibration(specs, payload, "dirty_validate")
+    _require_current_validation_noise_model(specs, "dirty_validate")
 
-    monkeypatch.setattr(
-        "scripts.train_ensemble._validation_vis_noise_fingerprint",
-        lambda _path: "b" * 64,
-    )
-    with pytest.raises(ValueError, match="generated with VIS-noise calibration"):
-        _require_matching_validation_calibration(specs, payload, "dirty_validate")
-
-    monkeypatch.setattr(
-        "scripts.train_ensemble._validation_vis_noise_fingerprint",
-        lambda _path: None,
-    )
-    with pytest.raises(ValueError, match="has no VIS-noise calibration provenance"):
-        _require_matching_validation_calibration(specs, payload, "dirty_validate")
+    for recorded in ("an-older-model", None):
+        monkeypatch.setattr(
+            "scripts.train_ensemble._record_noise_model",
+            lambda _path, value=recorded: value,
+        )
+        with pytest.raises(ValueError, match="regenerate the validation split"):
+            _require_current_validation_noise_model(specs, "dirty_validate")
 
 
-def test_record_only_training_does_not_require_vis_validation_provenance():
+def test_record_only_training_skips_the_validation_noise_check(monkeypatch):
     specs = [type("Spec", (), {"forward_onthefly": False})()]
-    _require_matching_validation_calibration(specs, None, "legacy_validate")
+
+    def unreadable(_path):
+        raise AssertionError("record-only runs must not read validation provenance")
+
+    monkeypatch.setattr("scripts.train_ensemble._record_noise_model", unreadable)
+    _require_current_validation_noise_model(specs, "legacy_validate")
 
 
-def test_record_training_requires_one_noise_calibration(monkeypatch):
+def test_record_training_requires_one_noise_model(monkeypatch):
     specs = [type("Spec", (), {"forward_onthefly": False})()]
-    fingerprints = {
-        "dirty_train": "a" * 64,
-        "dirty_validate": "b" * 64,
-    }
+    models = {"dirty_train": "model-a", "dirty_validate": "model-b"}
     monkeypatch.setattr(
-        "scripts.train_ensemble._validation_vis_noise_fingerprint",
-        lambda path: fingerprints[path],
+        "scripts.train_ensemble._record_noise_model",
+        lambda path: models[path],
     )
-    with pytest.raises(ValueError, match="use different VIS-noise calibrations"):
-        _require_compatible_record_calibrations(
+    with pytest.raises(ValueError, match="use different noise models"):
+        _require_matching_record_noise_models(
             specs, "dirty_train", "dirty_validate",
         )
 
-    fingerprints["dirty_validate"] = "a" * 64
-    _require_compatible_record_calibrations(
-        specs, "dirty_train", "dirty_validate",
-    )
-
+    models["dirty_validate"] = "model-a"
+    _require_matching_record_noise_models(specs, "dirty_train", "dirty_validate")
 
 def test_add_mode_uses_passed_names_and_seeds(tmp_path):
     base = str(tmp_path / "ens")

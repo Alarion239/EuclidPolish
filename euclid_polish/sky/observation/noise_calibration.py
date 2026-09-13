@@ -1,4 +1,9 @@
-"""Validated, immutable amplitude calibration for delivered-MER VIS noise.
+"""Validated, immutable VIS noise calibration artifact for the review page.
+
+Generation and training no longer use this artifact: delivered-mosaic noise
+comes from Euclid's MER noise level in :mod:`euclid_polish.sky.observation.noise`.
+The class remains because the population-comparison page still fits, reviews,
+and activates candidates.
 
 The calibration rescales only a stochastic detector-noise residual.  It does
 not spatially filter that residual, so the native white-noise structure and
@@ -247,60 +252,6 @@ class VISNoiseCalibration:
         """Return the JSON-serializable, self-verifying artifact payload."""
         return {**self._payload_without_fingerprint(), "fingerprint": self.fingerprint}
 
-    def apply(
-        self,
-        residual: np.ndarray,
-        *,
-        background_sigma_e: float,
-        rng: np.random.Generator | None = None,
-    ) -> np.ndarray:
-        """Set one residual's blank-sky RMS without changing its structure.
-
-        ``background_sigma_e`` is the detector model's expected blank-sky RMS
-        of ``residual``. Every pixel, sky and source photon noise alike, is
-        multiplied by ``residual_scale * field_scale / background_sigma_e``.
-        The expected value is used on purpose: the realized scatter of a
-        cutout grows with its source content, and normalizing by it would
-        quiet the sky around bright stars and galaxies.
-
-        The input mean is restored after scaling.  This keeps any realized
-        sky-subtraction offset while changing only its spatial fluctuations;
-        callers add the result back to the untouched signal. When this model
-        owns field scale and ``rng`` is supplied, one factor is drawn from the
-        calibrated inverse CDF; ``rng=None`` uses its median. A model that does
-        not own field scale uses factor one and leaves variation to its caller.
-        """
-        array = np.asarray(residual)
-        if array.ndim != 2:
-            raise ValueError(f"residual must be 2-D, got shape {array.shape}")
-        if array.size == 0:
-            raise ValueError("residual must be non-empty")
-        if not np.all(np.isfinite(array)):
-            raise ValueError("residual must contain only finite values")
-        if isinstance(background_sigma_e, bool):
-            raise ValueError("background_sigma_e must be a finite positive number")
-        sigma = float(background_sigma_e)
-        if not np.isfinite(sigma) or sigma <= 0.0:
-            raise ValueError("background_sigma_e must be a finite positive number")
-
-        field_scale = 1.0
-        if self.owns_field_scale:
-            field_scale = self.field_scale_quantiles[2]
-            if rng is not None:
-                field_scale = float(np.interp(
-                    float(rng.random()),
-                    self.FIELD_SCALE_PROBABILITIES,
-                    self.field_scale_quantiles,
-                ))
-
-        work = array.astype(np.float64, copy=False)
-        input_mean = float(np.mean(work, dtype=np.float64))
-        # An affine transform of the original residual: no convolution,
-        # resampling, padding, or neighbouring-pixel mixing.
-        scaled = work - input_mean
-        scaled *= self.residual_scale * field_scale / sigma
-        scaled += input_mean
-        return scaled.astype(np.float32)
 
 
 __all__ = ["VISNoiseCalibration"]

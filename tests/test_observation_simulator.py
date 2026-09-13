@@ -7,10 +7,7 @@ import pytest
 
 from euclid_polish.config import Config
 from euclid_polish.image import Image
-from euclid_polish.sky.observation.noise import (
-    apply_archive_noise,
-    apply_band_noise,
-)
+from euclid_polish.sky.observation.noise import apply_archive_noise
 from euclid_polish.sky.observation.observation_simulator import (
     ObservationSimulator,
     ObservationSimulatorConfig,
@@ -206,20 +203,6 @@ def test_noise_on_yields_negative_pixels():
     # Each LR channel should have many negative pixels (sky-subtracted + read noise).
     for k in range(4):
         assert (lr.data[..., k] < 0).sum() > 0
-
-
-def test_vis_archive_noise_legacy_fallback_is_bitwise_unchanged():
-    """Without a calibration, VIS retains the exact native-noise fallback."""
-    signal = np.full((48, 48), 20.0, dtype=np.float32)
-    direct = apply_band_noise(
-        signal, Config.BAND_VIS, np.random.default_rng(21),
-        add_artifacts=False,
-    )
-    archive = apply_archive_noise(
-        signal, Config.BAND_VIS, np.random.default_rng(21),
-        add_artifacts=False,
-    )
-    np.testing.assert_array_equal(archive, direct)
 
 
 def test_nisp_archive_noise_has_mer_covariance_and_scale():

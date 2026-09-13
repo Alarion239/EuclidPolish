@@ -40,14 +40,13 @@ class GenerateAndConvolveProvenanceConfig:
     """Frozen inputs for a combined parallel generation/forward pass.
 
     The combined path produces clean scenes and delivered-grid observations in
-    one run, so its provenance captures both configuration domains.  The
-    flattened VIS-noise fingerprint supports cheap compatibility checks while
-    the nested observation config retains the complete calibration payload.
+    one run, so its provenance captures both configuration domains. The
+    observation config carries the ``noise_model`` identity that training
+    checks before it uses these records.
     """
 
     generation: SkySimulatorConfig
     observation: ObservationSimulatorConfig
-    vis_noise_calibration_fingerprint: str | None
 
 
 @dataclass

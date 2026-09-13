@@ -7,6 +7,7 @@ import os
 import pytest
 
 from euclid_polish import ensemble as ens_mod
+from euclid_polish.config import Config
 from euclid_polish.ensemble import EnsembleModel, MemberTrainSpec
 
 
@@ -24,10 +25,6 @@ class _FakeModel:
               **kw):
         call = {"dir": self.checkpoint_dir, "steps": steps,
                 "resume_track": resume_track, **self.kwargs}
-        if "vis_noise_calibration_payload" in kw:
-            call["vis_noise_calibration_payload"] = kw[
-                "vis_noise_calibration_payload"
-            ]
         _FakeModel.calls.append(call)
 
 
@@ -99,15 +96,14 @@ def test_train_members_writes_origin_for_created_members(tmp_path):
                              crops_per_field=1, hr_crop_size=510,
                              forward_onthefly=True)]
     EnsembleModel(base, _models=[]).train_members(
-        "lr", "hr", specs, batch_size=2,
-        vis_noise_calibration_payload={"fingerprint": "a" * 64})
+        "lr", "hr", specs, batch_size=2)
     with open(os.path.join(base, "member_09", "origin.json")) as f:
         o = json.load(f)
     assert o["op"] == "fork" and o["forked_from"] == "member_03·loss"
     assert o["seed"] == 7 and o["target_steps"] == 100
     assert o["batch_size"] == 2
     assert o["crops_per_field"] == 1 and o["hr_crop_size"] == 510
-    assert o["vis_noise_calibration_fingerprint"] == "a" * 64
+    assert o["noise_model"] == Config.NOISE_MODEL
     assert "created_at" in o
     assert "num_res_blocks" in o
     # continue never writes/overwrites origin
@@ -118,9 +114,8 @@ def test_train_members_writes_origin_for_created_members(tmp_path):
         assert json.load(f)["op"] == "fork"        # untouched
 
 
-def test_vis_noise_provenance_is_scoped_to_onthefly_members(tmp_path):
+def test_noise_model_provenance_is_scoped_to_onthefly_members(tmp_path):
     base = str(tmp_path / "ensemble")
-    payload = {"version": 1, "fingerprint": "a" * 64}
     specs = [
         MemberTrainSpec(
             name="member_09", seed=9, target_steps=10,
@@ -132,19 +127,14 @@ def test_vis_noise_provenance_is_scoped_to_onthefly_members(tmp_path):
         ),
     ]
 
-    EnsembleModel(base, _models=[]).train_members(
-        "lr", "hr", specs, vis_noise_calibration_payload=payload,
-    )
+    EnsembleModel(base, _models=[]).train_members("lr", "hr", specs)
 
     with open(os.path.join(base, "member_09", "origin.json")) as handle:
         record_origin = json.load(handle)
     with open(os.path.join(base, "member_10", "origin.json")) as handle:
         live_origin = json.load(handle)
-    assert "vis_noise_calibration_fingerprint" not in record_origin
-    assert live_origin["vis_noise_calibration_fingerprint"] == "a" * 64
-    assert "vis_noise_calibration_payload" not in _FakeModel.calls[0]
-    assert _FakeModel.calls[1]["vis_noise_calibration_payload"] == payload
-
+    assert "noise_model" not in record_origin
+    assert live_origin["noise_model"] == Config.NOISE_MODEL
 
 def test_train_members_empty_specs_raises(tmp_path):
     with pytest.raises(ValueError, match="no member specs"):

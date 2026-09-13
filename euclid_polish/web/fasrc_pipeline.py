@@ -1325,22 +1325,6 @@ class EnsembleTrainStep(FASRCPipelineStep):
                 "activate a valid Gaia+Euclid stellar calibration before "
                 "on-the-fly training"
             )
-        if uses_forward_onthefly:
-            from euclid_polish.web.helpers.vis_noise_calibration import (
-                runtime_vis_noise_payload,
-                vis_noise_state,
-            )
-
-            vis_state = vis_noise_state()
-            if not vis_state.get("is_active"):
-                raise ValueError(
-                    "activate a valid multi-field empirical VIS-noise "
-                    "calibration before on-the-fly training"
-                )
-            vis_runtime = runtime_vis_noise_payload(vis_state.get("active"))
-            prepared["_vis_noise_calibration_json"] = json.dumps(
-                vis_runtime, separators=(",", ":"), sort_keys=True,
-            )
         return prepared
 
     def prepare_payload_files(
@@ -1359,13 +1343,6 @@ class EnsembleTrainStep(FASRCPipelineStep):
                 "_star_prior_sha256",
                 "_star_prior_fingerprint",
                 "star-population",
-            ),
-            (
-                "_vis_noise_calibration_json",
-                "_vis_noise_calibration_file",
-                "_vis_noise_calibration_sha256",
-                "_vis_noise_calibration_fingerprint",
-                "vis-noise",
             ),
         ):
             content = str(params.pop(source_key, "") or "").strip()
@@ -1493,16 +1470,6 @@ class EnsembleTrainStep(FASRCPipelineStep):
         if run_wide_forward:
             cmd += ["--forward-onthefly", "1"]
         if self._uses_forward_onthefly(params):
-            vis_noise_file = str(
-                params.get("_vis_noise_calibration_file", "") or ""
-            ).strip()
-            if vis_noise_file:
-                cmd += ["--vis-noise-calibration-file", vis_noise_file]
-            elif params.get("_vis_noise_calibration_json"):
-                cmd += [
-                    "--vis-noise-calibration-json",
-                    str(params["_vis_noise_calibration_json"]),
-                ]
             for flag, key in (("--psf-subset", "psf_subset"),
                               ("--crops-per-field", "crops_per_field"),
                               ("--hr-crop-size", "hr_crop_size")):
@@ -1710,22 +1677,6 @@ class SyntheticGenerateStep(RunPipelineStep):
             prepared["star_density_arcmin2"] = float(
                 population["density_arcmin2"]
             )
-        from euclid_polish.web.helpers.vis_noise_calibration import (
-            runtime_vis_noise_payload,
-            vis_noise_state,
-        )
-
-        vis_state = vis_noise_state()
-        if not vis_state.get("is_active"):
-            raise ValueError(
-                "activate a valid multi-field empirical VIS-noise calibration "
-                "before generating fields"
-            )
-        prepared["_vis_noise_calibration_json"] = json.dumps(
-            runtime_vis_noise_payload(vis_state.get("active")),
-            separators=(",", ":"),
-            sort_keys=True,
-        )
         return prepared
 
     def prepare_payload_files(
@@ -1758,13 +1709,6 @@ class SyntheticGenerateStep(RunPipelineStep):
                 "_star_prior_sha256",
                 "_star_prior_fingerprint",
                 "star-population",
-            ),
-            (
-                "_vis_noise_calibration_json",
-                "_vis_noise_calibration_file",
-                "_vis_noise_calibration_sha256",
-                "_vis_noise_calibration_fingerprint",
-                "vis-noise",
             ),
         ):
             content = str(params.pop(source_key, "") or "").strip()
@@ -1836,16 +1780,6 @@ class SyntheticGenerateStep(RunPipelineStep):
             cmd += ["--star-prior-file", star_prior_file]
         elif params.get("_star_prior_json"):
             cmd += ["--star-prior-json", str(params["_star_prior_json"])]
-        vis_noise_file = str(
-            params.get("_vis_noise_calibration_file", "") or ""
-        ).strip()
-        if vis_noise_file:
-            cmd += ["--vis-noise-calibration-file", vis_noise_file]
-        elif params.get("_vis_noise_calibration_json"):
-            cmd += [
-                "--vis-noise-calibration-json",
-                str(params["_vis_noise_calibration_json"]),
-            ]
         # Scene-population and forward-PSF knobs (from /config). Emit only when
         # supplied so direct programmatic callers can still rely on CLI
         # defaults. The warp is realised while each dirty exposure is rendered;

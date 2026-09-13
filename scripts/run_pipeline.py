@@ -267,16 +267,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="",
         help="Path to the activated Gaia/Euclid stellar-prior JSON artifact.",
     )
-    ap.add_argument(
-        "--vis-noise-calibration-json",
-        default="",
-        help="Activated empirical MER VIS-noise calibration JSON.",
-    )
-    ap.add_argument(
-        "--vis-noise-calibration-file",
-        default="",
-        help="Path to the activated empirical MER VIS-noise calibration JSON.",
-    )
     ap.add_argument("--lens-density-arcmin2", type=float,
                     default=Config.LENS_DENSITY_ARCMIN2,
                     help="Strong-lens surface density (lenses/arcmin²).")
@@ -497,11 +487,6 @@ def _resolve_population_payload_files(args: argparse.Namespace) -> None:
         getattr(args, "star_prior_file", ""),
         label="stellar prior",
     )
-    args.vis_noise_calibration_json = _resolve_json_payload_file(
-        getattr(args, "vis_noise_calibration_json", ""),
-        getattr(args, "vis_noise_calibration_file", ""),
-        label="VIS noise calibration",
-    )
 
 
 def _args_for_log(args: argparse.Namespace) -> dict:
@@ -510,7 +495,6 @@ def _args_for_log(args: argparse.Namespace) -> dict:
     for key in (
         "joint_galaxy_population_json",
         "star_prior_json",
-        "vis_noise_calibration_json",
     ):
         payload = str(values.get(key, "") or "")
         if payload:
@@ -548,22 +532,6 @@ def _freeze_generation_population(args: argparse.Namespace) -> None:
         args.galaxy_density_arcmin2 = resolved_density
 
 
-def _vis_noise_calibration_from_json(raw: str):
-    """Validate one frozen empirical VIS-noise payload, if supplied."""
-    serialized = str(raw or "").strip()
-    if not serialized:
-        return None
-    from euclid_polish.sky.observation.noise_calibration import (
-        VISNoiseCalibration,
-    )
-
-    try:
-        payload = json.loads(serialized)
-    except json.JSONDecodeError as exc:
-        raise ValueError("VIS noise calibration is malformed JSON") from exc
-    return VISNoiseCalibration.from_payload(payload)
-
-
 def _observation_config_from_args(
     args: argparse.Namespace,
 ) -> ObservationSimulatorConfig:
@@ -580,9 +548,6 @@ def _observation_config_from_args(
             "saturation_mask_prob must be in [0, "
             f"{Config.TRAIN_SATURATION_MASK_PROB_MAX:g}] for training data"
         )
-    vis_noise_calibration = _vis_noise_calibration_from_json(getattr(
-        args, "vis_noise_calibration_json", "",
-    ))
     return ObservationSimulatorConfig(
         add_noise=True,
         psf_warp_prob=float(getattr(
@@ -592,7 +557,6 @@ def _observation_config_from_args(
         psf_warp_sigma=float(getattr(
             args, "psf_warp_sigma", Config.TRAIN_PSF_WARP_SIGMA)),
         saturation_mask_prob=saturation_mask_prob,
-        vis_noise_calibration=vis_noise_calibration,
     )
 
 
@@ -601,13 +565,9 @@ def _generate_and_convolve_provenance_config(
     observation: ObservationSimulatorConfig,
 ) -> GenerateAndConvolveProvenanceConfig:
     """Capture every config used by the combined parallel producer."""
-    calibration = observation.vis_noise_calibration
     return GenerateAndConvolveProvenanceConfig(
         generation=_generator_config_from_args(args),
         observation=observation,
-        vis_noise_calibration_fingerprint=(
-            calibration.fingerprint if calibration is not None else None
-        ),
     )
 
 
@@ -760,15 +720,7 @@ def step_convolve(args: argparse.Namespace) -> None:
         "  saturation dark-core probability: "
         f"{fwd.config.saturation_mask_prob:g}"
     )
-    _log(
-        "  NISP noise: 4 native 0.30\" dithers → "
-        f"{fwd.config.nisp_resample_kernel} MER resample → 0.10\" (/9 flux)"
-    )
-    if fwd.config.vis_noise_calibration is not None:
-        _log(
-            "  VIS empirical noise calibration: "
-            f"{fwd.config.vis_noise_calibration.fingerprint}"
-        )
+    _log(f"  noise model: {fwd.config.noise_model}")
 
     # One master seed for the forward step, recorded on its run so the noise /
     # artifact realisations can be replayed via --seed.
@@ -1302,7 +1254,6 @@ def _gen_init_worker(prior_path, image_size, psf_dir,
                      tng_galaxy_dir=Config.TNG_SKIRT_DIR,
                      tng_properties_csv="",
                      tng_radius_manifest_path="",
-                     vis_noise_calibration_json="",
                      ) -> None:
     """ProcessPool initializer: build the (small, filtered) catalog +
     simulator + forward model once per worker. The COSMOS2025 FITS is
@@ -1366,9 +1317,6 @@ def _gen_init_worker(prior_path, image_size, psf_dir,
             psf_warp_alpha_max=float(psf_warp_alpha_max),
             psf_warp_sigma=float(psf_warp_sigma),
             saturation_mask_prob=float(saturation_mask_prob),
-            vis_noise_calibration=_vis_noise_calibration_from_json(
-                vis_noise_calibration_json,
-            ),
         ),
     )
     _W_RECORDS_DIR = records_dir
@@ -1468,15 +1416,7 @@ def step_generate_and_convolve_parallel(args: argparse.Namespace) -> None:
         "  saturation dark-core probability: "
         f"{observation_cfg.saturation_mask_prob:g}"
     )
-    _log(
-        "  NISP noise: 4 native 0.30\" dithers → "
-        f"{observation_cfg.nisp_resample_kernel} MER resample → 0.10\" (/9 flux)"
-    )
-    if observation_cfg.vis_noise_calibration is not None:
-        _log(
-            "  VIS empirical noise calibration: "
-            f"{observation_cfg.vis_noise_calibration.fingerprint}"
-        )
+    _log(f"  noise model: {observation_cfg.noise_model}")
 
     onthefly_train = bool(getattr(args, "onthefly_train", False))
     subsets = (("train", args.ntrain), ("validate", args.nvalid),
@@ -1599,8 +1539,7 @@ def step_generate_and_convolve_parallel(args: argparse.Namespace) -> None:
                           getattr(args, "joint_galaxy_population_json", ""),
                           getattr(args, "tng_dir", Config.TNG_SKIRT_DIR),
                           getattr(args, "tng_properties", ""),
-                          getattr(args, "tng_radius_manifest", ""),
-                          getattr(args, "vis_noise_calibration_json", "")),
+                          getattr(args, "tng_radius_manifest", "")),
             ) as pool:
                 futs = [pool.submit(_gen_convolve_shard, t) for t in tasks]
                 for fut in as_completed(futs):

@@ -476,7 +476,6 @@ def _make_pair(
         # synthetic HST templates).
         lr_cube[..., k] = apply_archive_noise(
             rebinned, band, rng, add_artifacts=False,
-            resample_kernel=Config.NISP_RESAMPLE_KERNEL,
         )
     return lr_cube
 

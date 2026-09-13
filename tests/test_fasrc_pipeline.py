@@ -24,29 +24,6 @@ from euclid_polish.web.fasrc_pipeline import (
 )
 
 
-def _mock_vis_noise_calibration(monkeypatch):
-    vis_noise = {
-        "kind": "euclid_mer_vis_noise",
-        "version": 2,
-        "mode": "amplitude_only",
-        "residual_scale": 20.0,
-        "field_scale_quantiles": [0.9, 0.95, 1.0, 1.05, 1.1],
-        "owns_field_scale": True,
-        "source_release": "Q1_R1",
-        "estimator_version": "test-v1",
-        "fingerprint": "v" * 64,
-    }
-    monkeypatch.setattr(
-        "euclid_polish.web.helpers.vis_noise_calibration.vis_noise_state",
-        lambda: {"active": vis_noise, "candidate": vis_noise, "is_active": True},
-    )
-    monkeypatch.setattr(
-        "euclid_polish.web.helpers.vis_noise_calibration.runtime_vis_noise_payload",
-        lambda payload=None: dict(payload or vis_noise),
-    )
-    return vis_noise
-
-
 def _mock_population_calibrations(monkeypatch):
     transfer = {
         "fingerprint": "a" * 64,
@@ -98,7 +75,6 @@ def _mock_population_calibrations(monkeypatch):
             },
         }, "is_active": True},
     )
-    _mock_vis_noise_calibration(monkeypatch)
     monkeypatch.setattr(
         "euclid_polish.web.helpers.population_comparison.read_comparison",
         lambda: {
@@ -241,26 +217,11 @@ class TestRegistry:
                 "forward_onthefly": "1",
             })
 
-    def test_member_recipe_onthefly_stages_and_forwards_vis_noise(
+    def test_member_recipe_onthefly_needs_no_noise_calibration(
             self, monkeypatch):
-        stars = {"fingerprint": "s" * 64}
-        vis_noise = {
-            "kind": "euclid_mer_vis_noise",
-            "version": 2,
-            "mode": "amplitude_only",
-            "fingerprint": "v" * 64,
-        }
         monkeypatch.setattr(
             "euclid_polish.web.helpers.population_calibration.active_star",
-            lambda: stars,
-        )
-        monkeypatch.setattr(
-            "euclid_polish.web.helpers.vis_noise_calibration.vis_noise_state",
-            lambda: {"active": vis_noise, "is_active": True},
-        )
-        monkeypatch.setattr(
-            "euclid_polish.web.helpers.vis_noise_calibration.runtime_vis_noise_payload",
-            lambda payload=None: dict(payload or vis_noise),
+            lambda: {"fingerprint": "s" * 64},
         )
         step = REGISTRY.get("ensemble_train")
         member_spec = json.dumps([{"forward_onthefly": True}])
@@ -271,16 +232,9 @@ class TestRegistry:
             "member_spec": member_spec,
         })
 
-        assert json.loads(prepared["_vis_noise_calibration_json"]) == vis_noise
-        argv = step.build_command({
-            **prepared,
-            "_vis_noise_calibration_json": "",
-            "_vis_noise_calibration_file": "logs/frozen-vis-noise.json",
-        })
-        assert "--forward-onthefly" not in argv
-        assert argv[argv.index("--vis-noise-calibration-file") + 1] == (
-            "logs/frozen-vis-noise.json"
-        )
+        assert not any(key.startswith("_vis_noise") for key in prepared)
+        argv = step.build_command(prepared)
+        assert not any("vis-noise" in part for part in argv)
 
     def test_ensemble_train_step_entropy_seed_omits_flag(self, monkeypatch):
         monkeypatch.setattr(
@@ -680,7 +634,6 @@ class TestRegistry:
                 },
             }, "is_active": True},
         )
-        _mock_vis_noise_calibration(monkeypatch)
         step = REGISTRY.get("synthetic_generate")
         prepared = step.prepare_params({
             "n_train": 10,
@@ -731,7 +684,6 @@ class TestRegistry:
             "euclid_polish.web.helpers.population_calibration.star_state",
             lambda: {"active": {"population": {}}, "is_active": True},
         )
-        _mock_vis_noise_calibration(monkeypatch)
 
         prepared = REGISTRY.get("synthetic_generate").prepare_params({})
         argv = REGISTRY.get("synthetic_generate").build_command(prepared)
@@ -758,7 +710,7 @@ class TestRegistry:
         with pytest.raises(ValueError, match=r"Gaia\+Euclid stellar"):
             REGISTRY.get("synthetic_generate").prepare_params({})
 
-    def test_synthetic_generate_requires_active_vis_noise_fit(self, monkeypatch):
+    def test_synthetic_generate_needs_no_vis_noise_calibration(self, monkeypatch):
         monkeypatch.setattr(
             "euclid_polish.web.helpers.population_calibration.joint_galaxy_state",
             lambda: {
@@ -770,13 +722,12 @@ class TestRegistry:
             "euclid_polish.web.helpers.population_calibration.star_state",
             lambda: {"active": {"population": {}}, "is_active": True},
         )
-        monkeypatch.setattr(
-            "euclid_polish.web.helpers.vis_noise_calibration.vis_noise_state",
-            lambda: {"active": None, "is_active": False},
-        )
 
-        with pytest.raises(ValueError, match="empirical VIS-noise"):
-            REGISTRY.get("synthetic_generate").prepare_params({})
+        step = REGISTRY.get("synthetic_generate")
+        prepared = step.prepare_params({})
+
+        assert not any(key.startswith("_vis_noise") for key in prepared)
+        assert not any("vis-noise" in part for part in step.build_command(prepared))
 
     def test_synthetic_generate_force_flag(self):
         """The "Override existing data" checkbox adds --force (regenerate from
@@ -915,25 +866,6 @@ class TestSbatchRendering:
             "euclid_polish.web.helpers.population_calibration.star_state",
             lambda: {"active": stars, "is_active": True},
         )
-        vis_noise = {
-            "kind": "euclid_mer_vis_noise",
-            "version": 2,
-            "mode": "amplitude_only",
-            "residual_scale": 20.0,
-            "field_scale_quantiles": [0.9, 0.95, 1.0, 1.05, 1.1],
-            "owns_field_scale": True,
-            "source_release": "Q1_R1",
-            "estimator_version": "test-v1",
-            "fingerprint": "v" * 64,
-        }
-        monkeypatch.setattr(
-            "euclid_polish.web.helpers.vis_noise_calibration.vis_noise_state",
-            lambda: {"active": vis_noise, "is_active": True},
-        )
-        monkeypatch.setattr(
-            "euclid_polish.web.helpers.vis_noise_calibration.runtime_vis_noise_payload",
-            lambda payload=None: dict(payload or vis_noise),
-        )
 
         step = REGISTRY.get("synthetic_generate")
         built = step.build_sbatch_body(
@@ -945,7 +877,7 @@ class TestSbatchRendering:
 
         assert "--joint-galaxy-population-file" in built["body"]
         assert "--star-prior-file" in built["body"]
-        assert "--vis-noise-calibration-file" in built["body"]
+        assert "--vis-noise-calibration" not in built["body"]
         assert "--joint-galaxy-population-json" not in built["body"]
         assert "--star-prior-json" not in built["body"]
         assert "x" * 1_000 not in built["body"]
@@ -954,22 +886,17 @@ class TestSbatchRendering:
 
         galaxy_path = built["params"]["_joint_galaxy_population_file"]
         star_path = built["params"]["_star_prior_file"]
-        vis_noise_path = built["params"]["_vis_noise_calibration_file"]
         assert galaxy_path in built["payload_files"]
         assert star_path in built["payload_files"]
-        assert vis_noise_path in built["payload_files"]
         assert json.loads(built["payload_files"][galaxy_path]) == joint
         assert json.loads(built["payload_files"][star_path]) == stars
-        assert json.loads(built["payload_files"][vis_noise_path]) == vis_noise
         assert built["params"]["_joint_galaxy_population_fingerprint"] == "j" * 64
         assert built["params"]["_star_prior_fingerprint"] == "s" * 64
-        assert built["params"]["_vis_noise_calibration_fingerprint"] == "v" * 64
         assert len(built["params"]["_joint_galaxy_population_sha256"]) == 64
         assert len(built["params"]["_star_prior_sha256"]) == 64
-        assert len(built["params"]["_vis_noise_calibration_sha256"]) == 64
         assert "_joint_galaxy_population_json" not in built["params"]
         assert "_star_prior_json" not in built["params"]
-        assert "_vis_noise_calibration_json" not in built["params"]
+        assert not any(key.startswith("_vis_noise") for key in built["params"])
 
     def test_kernel_step_renders_one_argument(self, cfg):
         step = REGISTRY.get("kernel")
