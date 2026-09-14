@@ -21,7 +21,7 @@ import hashlib
 import json
 import math
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import numpy as np
 import sklearn
@@ -83,43 +83,39 @@ def _optional_float(row: dict[str, str], key: str) -> float | None:
         return float("nan")
 
 
-def fit_conditional_color_sfr_payload(
+class ColorSFRRows(NamedTuple):
+    """The colour-model row selection, one array entry per selected row.
+
+    ``resolved`` marks a usable circularized Sérsic radius; unresolved rows
+    carry the radius-law median in ``log_radius``. Rows without a usable PHZ
+    physical fit carry NaN ``log_sfr`` and class ``SFR_CLASS_UNKNOWN``.
+    """
+
+    magnitude: np.ndarray
+    log_radius: np.ndarray
+    resolved: np.ndarray
+    ratio: np.ndarray
+    ratio_var: np.ndarray
+    weight: np.ndarray
+    log_sfr: np.ndarray
+    sfr_valid: np.ndarray
+    sfr_class: np.ndarray
+    catalog_rows: int
+
+
+def read_color_sfr_rows(
     catalog_path: str | Path,
-    meta_path: str | Path,
     *,
     radius_law: ConditionalRadiusLaw,
-    expected_catalog_version: int = 7,
-    require_catalog_version: bool = True,
-    tree_count: int = COLOR_SFR_FOREST_TREES,
-    min_leaf_weight: float = COLOR_SFR_MIN_LEAF_WEIGHT,
-    fit_seed: int = COLOR_SFR_FIT_SEED,
-    minimum_rows: int = 200,
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Return the ``color_sfr_model`` artifact section plus fit diagnostics.
-
-    ``require_catalog_version`` exists only for local end-to-end smokes on a
-    stale cache (every row lands in the unresolved-radius regime there);
-    production fits must keep it enabled.
-    """
+) -> ColorSFRRows:
+    """Stream the cached catalogue and apply the colour-model row selection."""
     catalog_path = Path(catalog_path)
-    meta_path = Path(meta_path)
-    try:
-        meta = json.loads(meta_path.read_text())
-    except (OSError, json.JSONDecodeError) as exc:
-        raise ValueError("Euclid population metadata is unavailable") from exc
-    catalog_version = int(meta.get("catalog_version") or 0)
-    if require_catalog_version and catalog_version != expected_catalog_version:
-        raise ValueError(
-            f"colour+SFR fit requires catalog_version "
-            f"{expected_catalog_version}, got {catalog_version}; re-run the "
-            "population query to refresh the cache"
-        )
     if not catalog_path.is_file():
         raise ValueError("A cached Euclid population catalogue is required")
 
     magnitude: list[float] = []
     log_radius: list[float] = []
-    resolved: list[float] = []
+    resolved: list[bool] = []
     ratio: list[tuple[float, float, float]] = []
     ratio_var: list[tuple[float, float, float]] = []
     weight: list[float] = []
@@ -232,7 +228,7 @@ def fit_conditional_color_sfr_payload(
 
             magnitude.append(row_magnitude)
             log_radius.append(row_log_radius)
-            resolved.append(1.0 if row_resolved else 0.0)
+            resolved.append(row_resolved)
             ratio.append(row_ratio)
             ratio_var.append(row_variance)
             weight.append(galaxy_weight)
@@ -240,7 +236,54 @@ def fit_conditional_color_sfr_payload(
             sfr_valid.append(row_sfr_valid)
             sfr_class.append(row_class)
 
-    row_count = len(weight)
+    return ColorSFRRows(
+        magnitude=np.asarray(magnitude, dtype=np.float64),
+        log_radius=np.asarray(log_radius, dtype=np.float64),
+        resolved=np.asarray(resolved, dtype=bool),
+        ratio=np.asarray(ratio, dtype=np.float64).reshape(-1, 3),
+        ratio_var=np.asarray(ratio_var, dtype=np.float64).reshape(-1, 3),
+        weight=np.asarray(weight, dtype=np.float64),
+        log_sfr=np.asarray(log_sfr, dtype=np.float64),
+        sfr_valid=np.asarray(sfr_valid, dtype=bool),
+        sfr_class=np.asarray(sfr_class, dtype=np.uint8),
+        catalog_rows=catalog_rows,
+    )
+
+
+def fit_conditional_color_sfr_payload(
+    catalog_path: str | Path,
+    meta_path: str | Path,
+    *,
+    radius_law: ConditionalRadiusLaw,
+    expected_catalog_version: int = 7,
+    require_catalog_version: bool = True,
+    tree_count: int = COLOR_SFR_FOREST_TREES,
+    min_leaf_weight: float = COLOR_SFR_MIN_LEAF_WEIGHT,
+    fit_seed: int = COLOR_SFR_FIT_SEED,
+    minimum_rows: int = 200,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Return the ``color_sfr_model`` artifact section plus fit diagnostics.
+
+    ``require_catalog_version`` exists only for local end-to-end smokes on a
+    stale cache (every row lands in the unresolved-radius regime there);
+    production fits must keep it enabled.
+    """
+    catalog_path = Path(catalog_path)
+    meta_path = Path(meta_path)
+    try:
+        meta = json.loads(meta_path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("Euclid population metadata is unavailable") from exc
+    catalog_version = int(meta.get("catalog_version") or 0)
+    if require_catalog_version and catalog_version != expected_catalog_version:
+        raise ValueError(
+            f"colour+SFR fit requires catalog_version "
+            f"{expected_catalog_version}, got {catalog_version}; re-run the "
+            "population query to refresh the cache"
+        )
+    selected = read_color_sfr_rows(catalog_path, radius_law=radius_law)
+    catalog_rows = selected.catalog_rows
+    row_count = int(selected.weight.size)
     if row_count < int(minimum_rows):
         raise ValueError(
             f"colour+SFR fit selected only {row_count} rows; at least "
@@ -250,15 +293,15 @@ def fit_conditional_color_sfr_payload(
     if expected_catalog_rows and expected_catalog_rows != catalog_rows:
         raise ValueError("The cached Euclid catalogue row count is stale")
 
-    magnitude_array = np.asarray(magnitude, dtype=np.float64)
-    log_radius_array = np.asarray(log_radius, dtype=np.float64)
-    resolved_array = np.asarray(resolved, dtype=np.float64)
-    ratio_array = np.asarray(ratio, dtype=np.float64)
-    ratio_var_array = np.asarray(ratio_var, dtype=np.float64)
-    weight_array = np.asarray(weight, dtype=np.float64)
-    log_sfr_array = np.asarray(log_sfr, dtype=np.float64)
-    sfr_valid_array = np.asarray(sfr_valid, dtype=bool)
-    sfr_class_array = np.asarray(sfr_class, dtype=np.uint8)
+    magnitude_array = selected.magnitude
+    log_radius_array = selected.log_radius
+    resolved_array = selected.resolved.astype(np.float64)
+    ratio_array = selected.ratio
+    ratio_var_array = selected.ratio_var
+    weight_array = selected.weight
+    log_sfr_array = selected.log_sfr
+    sfr_valid_array = selected.sfr_valid
+    sfr_class_array = selected.sfr_class
     if not np.any(sfr_valid_array):
         raise ValueError("colour+SFR fit found no usable PHZ SFR rows")
 

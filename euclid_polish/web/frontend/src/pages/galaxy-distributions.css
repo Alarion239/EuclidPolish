@@ -291,6 +291,19 @@
 }
 .publication-plate__preview img { display: block; width: 100%; height: auto; min-width: 720px; }
 
+.galaxy-corner__frame { overflow-x: auto; }
+.galaxy-corner__frame svg { display: block; width: 100%; height: auto; min-width: 760px; max-width: 1080px; margin: 0 auto; }
+.galaxy-corner__legend { margin-top: 10px; }
+.corner-cell { fill: var(--surface-1); stroke: var(--border-strong); stroke-width: 1; }
+.corner-grid line { stroke: var(--border); stroke-width: 0.6; }
+.corner-title { fill: var(--text-dim); font: 600 11px "IBM Plex Sans", sans-serif; text-anchor: middle; }
+.corner-tick { fill: var(--text-faint); font: 9px "IBM Plex Mono", monospace; dominant-baseline: middle; }
+.corner-tick--bottom { text-anchor: middle; }
+.corner-tick--left { text-anchor: end; }
+.corner-tick--right { text-anchor: start; }
+.corner-count { fill: var(--text-faint); font: 8px "IBM Plex Mono", monospace; }
+.corner-empty { fill: var(--text-faint); font: 10px "IBM Plex Mono", monospace; text-anchor: middle; dominant-baseline: middle; }
+
 @media (max-width: 1050px) {
   .galaxy-ledger { grid-template-columns: 1fr; }
   .galaxy-ledger__source + .galaxy-ledger__source { border-left: 0; border-top-width: 3px; }

@@ -13,7 +13,6 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-import contourpy
 import numpy as np
 from scipy.ndimage import gaussian_filter
 
@@ -34,6 +33,10 @@ from euclid_polish.population.magnitude_law import (
     ContinuousBrightBridgeFaintCappedMagnitudeLaw,
 )
 from euclid_polish.sky.generation.source_catalog import source_is_off_field
+from euclid_polish.web.helpers.galaxy_corner import (
+    build_galaxy_corner,
+    mass_fraction_contours,
+)
 from euclid_polish.web.helpers.population_calibration import (
     joint_galaxy_candidate,
     joint_galaxy_candidate_path,
@@ -57,7 +60,7 @@ from euclid_polish.web.helpers.q1_galaxy_radius_statistics import (
     read_q1_galaxy_radius_statistics,
 )
 
-ARTIFACT_VERSION = 22
+ARTIFACT_VERSION = 23
 MAG_EDGES = np.arange(14.0, 30.0001, 0.25)
 RADIUS_MAX_VIS_PIXELS = 100.0
 RADIUS_MAX_ARCSEC = RADIUS_MAX_VIS_PIXELS * float(Config.VIS_PIXEL_SCALE_ARCSEC)
@@ -285,34 +288,6 @@ def _normalized_density(
     return values / total
 
 
-def _mass_contour_thresholds(
-    density: np.ndarray,
-    cell_mass: np.ndarray,
-) -> list[tuple[float, float]]:
-    """Density thresholds enclosing fixed fractions of joint population mass."""
-    values = np.asarray(density, dtype=np.float64).ravel()
-    mass = np.asarray(cell_mass, dtype=np.float64).ravel()
-    keep = (
-        np.isfinite(values) & np.isfinite(mass)
-        & (values > 0.0) & (mass > 0.0)
-    )
-    values, mass = values[keep], mass[keep]
-    if values.size < 2 or float(np.sum(mass)) <= 0.0:
-        return []
-    order = np.argsort(values)[::-1]
-    cumulative = np.cumsum(mass[order]) / np.sum(mass)
-    return [
-        (
-            fraction,
-            float(values[order[min(
-                int(np.searchsorted(cumulative, fraction)),
-                len(order) - 1,
-            )]]),
-        )
-        for fraction in JOINT_CONTOUR_MASS_FRACTIONS
-    ]
-
-
 def _joint_contours(
     density: np.ndarray,
     cell_mass: np.ndarray,
@@ -320,40 +295,10 @@ def _joint_contours(
     log_radius_center: np.ndarray,
 ) -> list[dict[str, Any]]:
     """Trace plot-ready 10/50/80/95/99/99.5/99.9-percent contours."""
-    generator = contourpy.contour_generator(
-        x=np.asarray(magnitude_center, dtype=np.float64),
-        y=np.asarray(log_radius_center, dtype=np.float64),
-        z=np.asarray(density, dtype=np.float64).T,
-        corner_mask=True,
+    return mass_fraction_contours(
+        density, cell_mass, magnitude_center, log_radius_center,
+        JOINT_CONTOUR_MASS_FRACTIONS,
     )
-    contours = []
-    seen: set[float] = set()
-    for mass_fraction, level in _mass_contour_thresholds(density, cell_mass):
-        # Sparse histograms can assign more than one enclosed-mass fraction to
-        # the same density threshold.  One geometric line is sufficient; its
-        # label retains every represented fraction.
-        rounded = round(level, 12)
-        if rounded in seen:
-            continue
-        seen.add(rounded)
-        paths = []
-        for raw_vertices in generator.lines(level):
-            vertices = np.asarray(raw_vertices, dtype=np.float64)
-            if vertices.ndim != 2 or vertices.shape[1] < 2:
-                continue
-            if vertices.shape[0] < 2:
-                continue
-            paths.append({
-                "x": vertices[:, 0].astype(float).tolist(),
-                "y": vertices[:, 1].astype(float).tolist(),
-            })
-        if paths:
-            contours.append({
-                "mass_fraction": mass_fraction,
-                "level": level,
-                "paths": paths,
-            })
-    return contours
 
 
 def _joint_map(
@@ -2163,6 +2108,12 @@ def build_galaxy_distributions(progress: Callable[[int, int, str], None] | None 
     synthetic = _read_synthetic(parameters, tick)
     tick(5, 6, "reconstruct fitted distribution")
     fit = _read_fit(parameters)
+    try:
+        corner = build_galaxy_corner(
+            euclid_catalog_path(), joint_galaxy_candidate(),
+        )
+    except ValueError as exc:
+        corner = {"available": False, "detail": str(exc)}
     joint_maps = _joint_magnitude_radius_maps(synthetic)
     training_variant = _training_variant(parameters, synthetic)
     payload = {
@@ -2176,6 +2127,7 @@ def build_galaxy_distributions(progress: Callable[[int, int, str], None] | None 
         "q1_counts": q1_counts,
         "q1_radius": q1_radius,
         "joint_maps": joint_maps,
+        "corner": corner,
         "parameters": parameters,
         "training_variant": training_variant,
     }
@@ -2200,6 +2152,7 @@ def read_galaxy_distributions(
             "q1_counts": {"available": False},
             "q1_radius": {"available": False},
             "joint_maps": {"available": False},
+            "corner": {"available": False},
             "parameters": _empty_parameters(),
         }
     training_variant = payload.pop("training_variant", None)

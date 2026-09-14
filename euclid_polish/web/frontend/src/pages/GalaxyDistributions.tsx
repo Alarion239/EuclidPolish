@@ -7,6 +7,7 @@ import {
   Badge, Button, Card, CardBody, CardHead, Checkbox, Chip, Empty,
   Page, PageHead, Spinner, Stat,
 } from "../ui";
+import GalaxyCorner, { type CornerData } from "./GalaxyCorner";
 import { conditionalFwhmInterval } from "./galaxyFwhm";
 import "./galaxy-distributions.css";
 
@@ -181,6 +182,7 @@ type Payload = {
   };
   parameters: Record<string, Parameter>;
   joint_maps?: JointMaps;
+  corner?: CornerData;
   training_included?: boolean;
   training_variant_available?: boolean;
   availability?: {
@@ -1317,6 +1319,14 @@ export default function GalaxyDistributionsPage() {
         </article>}
       </div>
     </section>
+
+    <Card className="parameter-card">
+      <CardHead title="Joint distributions"
+        sub="VIS brightness, SFR, size, and the three NISP/VIS colours against each other: Euclid Q1 rows below the diagonal, fitted-model draws above it." />
+      <CardBody>
+        <GalaxyCorner data={api.corner} />
+      </CardBody>
+    </Card>
 
     <JointDensityMaps data={api.joint_maps} />
 
