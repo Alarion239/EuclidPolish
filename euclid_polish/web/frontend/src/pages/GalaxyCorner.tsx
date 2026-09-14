@@ -43,12 +43,14 @@ const contourStyle = (fraction: number) => fraction <= 0.5
     ? { width: 1.2, opacity: 0.8 }
     : { width: 0.8, opacity: 0.55 };
 
-/* Two to four round ticks inside the domain, with their label precision. */
-function niceTicks([a, b]: [number, number]): { values: number[]; decimals: number } {
+/* About ``target`` round ticks inside the domain, with their label precision. */
+export function niceTicks(
+  [a, b]: [number, number], target = 3,
+): { values: number[]; decimals: number } {
   const span = b - a;
   if (!(span > 0)) return { values: [], decimals: 0 };
-  const power = 10 ** Math.floor(Math.log10(span / 3));
-  const multiple = [1, 2, 2.5, 5, 10].find((m) => span / (m * power) <= 4) ?? 10;
+  const power = 10 ** Math.floor(Math.log10(span / target));
+  const multiple = [1, 2, 2.5, 5, 10].find((m) => span / (m * power) <= target + 1) ?? 10;
   const step = multiple * power;
   const values: number[] = [];
   for (let v = Math.ceil(a / step) * step; v <= b + 1e-9; v += step) {

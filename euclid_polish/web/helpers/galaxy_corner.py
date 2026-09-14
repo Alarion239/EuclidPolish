@@ -45,6 +45,13 @@ CORNER_SMOOTHING_SIGMA_BINS = 1.0
 CORNER_MODEL_DRAWS = 6000
 CORNER_MODEL_SEED = 20260914
 CORNER_MIN_ROWS = 50
+#: The pair explorer re-bins every pair finer and traces more levels; its
+#: smoothing kernel keeps the corner's width in data units.
+EXPLORER_BINS = 64
+EXPLORER_SMOOTHING_SIGMA_BINS = (
+    CORNER_SMOOTHING_SIGMA_BINS * EXPLORER_BINS / CORNER_JOINT_BINS
+)
+EXPLORER_CONTOUR_MASS_FRACTIONS = (0.99, 0.95, 0.80, 0.50, 0.20)
 #: Plot windows span these weighted quantiles of the pooled samples; the
 #: raw Q1 colours have noise-dominated tails that would otherwise flatten
 #: every panel.
@@ -258,45 +265,55 @@ def _rounded_contours(contours: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
-def _cell(
+def _joint_layer(
     matrix: np.ndarray,
     weight: np.ndarray,
     *,
-    row: int,
-    col: int,
-    source: str,
+    x_index: int,
+    y_index: int,
     windows: list[tuple[float, float]],
+    bins: int,
+    sigma_bins: float,
+    fractions: tuple[float, ...],
+    include_density: bool = False,
 ) -> dict[str, Any]:
-    x, y = matrix[:, col], matrix[:, row]
-    x_window, y_window = windows[col], windows[row]
+    """Smoothed joint density of two corner variables inside their windows.
+
+    ``density`` (when requested) is indexed ``[x-bin, y-bin]`` and scaled to
+    a peak of one; the bins are uniform, so it is proportional to cell mass.
+    """
+    x, y = matrix[:, x_index], matrix[:, y_index]
+    x_window, y_window = windows[x_index], windows[y_index]
     inside = (
         np.isfinite(x) & np.isfinite(y)
         & (x >= x_window[0]) & (x <= x_window[1])
         & (y >= y_window[0]) & (y <= y_window[1])
     )
     count = int(np.sum(inside))
-    contours: list[dict[str, Any]] = []
-    if count >= CORNER_MIN_ROWS:
-        mass, x_edges, y_edges = np.histogram2d(
-            x[inside], y[inside],
-            bins=CORNER_JOINT_BINS,
-            range=[x_window, y_window],
-            weights=weight[inside],
-        )
-        smoothed = gaussian_filter(
-            mass, sigma=CORNER_SMOOTHING_SIGMA_BINS,
-            mode="constant", cval=0.0,
-        )
-        contours = _rounded_contours(mass_fraction_contours(
-            smoothed, smoothed,
-            0.5 * (x_edges[:-1] + x_edges[1:]),
-            0.5 * (y_edges[:-1] + y_edges[1:]),
-            CORNER_CONTOUR_MASS_FRACTIONS,
-        ))
-    return {
-        "row": row, "col": col, "source": source,
-        "rows": count, "contours": contours,
-    }
+    layer: dict[str, Any] = {"rows": count, "contours": []}
+    if include_density:
+        layer["density"] = []
+    if count < CORNER_MIN_ROWS:
+        return layer
+    mass, x_edges, y_edges = np.histogram2d(
+        x[inside], y[inside],
+        bins=bins,
+        range=[x_window, y_window],
+        weights=weight[inside],
+    )
+    smoothed = gaussian_filter(
+        mass, sigma=sigma_bins, mode="constant", cval=0.0,
+    )
+    layer["contours"] = _rounded_contours(mass_fraction_contours(
+        smoothed, smoothed,
+        0.5 * (x_edges[:-1] + x_edges[1:]),
+        0.5 * (y_edges[:-1] + y_edges[1:]),
+        fractions,
+    ))
+    peak = float(np.max(smoothed))
+    if include_density and peak > 0.0:
+        layer["density"] = np.round(smoothed / peak, 3).tolist()
+    return layer
 
 
 def build_galaxy_corner(
@@ -349,22 +366,47 @@ def build_galaxy_corner(
                 model[:, index], model_weight, edges,
             ),
         })
+    samples = {"q1": (q1, q1_weight), "model": (model, model_weight)}
     cells = []
     count = len(CORNER_VARIABLES)
     for row in range(count):
         for col in range(count):
             if row == col:
                 continue
-            if row > col:
-                cells.append(_cell(
-                    q1, q1_weight, row=row, col=col,
-                    source="q1", windows=windows,
-                ))
-            else:
-                cells.append(_cell(
-                    model, model_weight, row=row, col=col,
-                    source="model", windows=windows,
-                ))
+            source = "q1" if row > col else "model"
+            matrix, weight = samples[source]
+            cells.append({
+                "row": row, "col": col, "source": source,
+                **_joint_layer(
+                    matrix, weight, x_index=col, y_index=row,
+                    windows=windows, bins=CORNER_JOINT_BINS,
+                    sigma_bins=CORNER_SMOOTHING_SIGMA_BINS,
+                    fractions=CORNER_CONTOUR_MASS_FRACTIONS,
+                ),
+            })
+    keys = [key for key, _label, _unit in CORNER_VARIABLES]
+    pairs = []
+    for low in range(count):
+        for high in range(low + 1, count):
+            pair: dict[str, Any] = {
+                "x": keys[low],
+                "y": keys[high],
+                "x_edges": np.linspace(
+                    windows[low][0], windows[low][1], EXPLORER_BINS + 1,
+                ).tolist(),
+                "y_edges": np.linspace(
+                    windows[high][0], windows[high][1], EXPLORER_BINS + 1,
+                ).tolist(),
+            }
+            for source, (matrix, weight) in samples.items():
+                pair[source] = _joint_layer(
+                    matrix, weight, x_index=low, y_index=high,
+                    windows=windows, bins=EXPLORER_BINS,
+                    sigma_bins=EXPLORER_SMOOTHING_SIGMA_BINS,
+                    fractions=EXPLORER_CONTOUR_MASS_FRACTIONS,
+                    include_density=True,
+                )
+            pairs.append(pair)
     return {
         "available": True,
         "variables": [
@@ -387,7 +429,113 @@ def build_galaxy_corner(
         "contour_mass_fractions": list(CORNER_CONTOUR_MASS_FRACTIONS),
         "diagonal": diagonal,
         "cells": cells,
+        "pairs": pairs,
+        "explorer_contour_mass_fractions": list(
+            EXPLORER_CONTOUR_MASS_FRACTIONS
+        ),
         "q1_rows": int(rows.weight.size),
         "model_draws": int(model.shape[0]),
         "vis_range": [round(vis_low, 3), round(vis_high, 3)],
+    }
+
+
+def split_joint_pairs(
+    corner: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Separate the explorer grids from the page-sized corner payload."""
+    slim = {
+        key: value for key, value in corner.items()
+        if key not in ("pairs", "explorer_contour_mass_fractions")
+    }
+    sidecar = {
+        "available": bool(corner.get("available")) and "pairs" in corner,
+        "detail": corner.get("detail"),
+        "variables": corner.get("variables", []),
+        "diagonal": corner.get("diagonal", []),
+        "pairs": corner.get("pairs", []),
+        "contour_mass_fractions": corner.get(
+            "explorer_contour_mass_fractions", [],
+        ),
+        "q1_rows": corner.get("q1_rows"),
+        "model_draws": corner.get("model_draws"),
+        "vis_range": corner.get("vis_range"),
+    }
+    return slim, sidecar
+
+
+def _transposed(layer: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "rows": layer["rows"],
+        "density": [
+            list(column) for column in zip(*layer["density"], strict=True)
+        ],
+        "contours": [
+            {
+                "mass_fraction": contour["mass_fraction"],
+                "paths": [
+                    {"x": path["y"], "y": path["x"]}
+                    for path in contour["paths"]
+                ],
+            }
+            for contour in layer["contours"]
+        ],
+    }
+
+
+def orient_joint_pair(
+    sidecar: dict[str, Any], x_key: str, y_key: str,
+) -> dict[str, Any]:
+    """One explorer view with ``x_key`` on x and ``y_key`` on y.
+
+    Pairs are stored once (lower variable index on x); the reverse view is
+    the transpose. Choosing the same variable twice returns its 1-D
+    distributions. Unknown keys raise ``ValueError``.
+    """
+    if not sidecar.get("available"):
+        return {
+            "available": False,
+            "detail": sidecar.get("detail")
+            or "Rebuild cached plots to draw the joint distributions.",
+        }
+    variables = sidecar["variables"]
+    keys = [variable["key"] for variable in variables]
+    if x_key not in keys or y_key not in keys:
+        raise ValueError(
+            f"unknown variable; choose from {', '.join(keys)}"
+        )
+    x_index, y_index = keys.index(x_key), keys.index(y_key)
+    view = {
+        "available": True,
+        "x": variables[x_index],
+        "y": variables[y_index],
+        "contour_mass_fractions": sidecar["contour_mass_fractions"],
+        "q1_rows": sidecar["q1_rows"],
+        "model_draws": sidecar["model_draws"],
+        "vis_range": sidecar["vis_range"],
+    }
+    if x_index == y_index:
+        return {
+            **view, "kind": "marginal",
+            "diagonal": sidecar["diagonal"][x_index],
+        }
+    low, high = sorted((x_index, y_index))
+    pair = next(
+        (
+            candidate for candidate in sidecar["pairs"]
+            if candidate["x"] == keys[low] and candidate["y"] == keys[high]
+        ),
+        None,
+    )
+    if pair is None:
+        raise ValueError(f"no stored pair for {keys[low]} × {keys[high]}")
+    if x_index == low:
+        return {
+            **view, "kind": "joint",
+            "x_edges": pair["x_edges"], "y_edges": pair["y_edges"],
+            "q1": pair["q1"], "model": pair["model"],
+        }
+    return {
+        **view, "kind": "joint",
+        "x_edges": pair["y_edges"], "y_edges": pair["x_edges"],
+        "q1": _transposed(pair["q1"]), "model": _transposed(pair["model"]),
     }

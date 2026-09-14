@@ -8,6 +8,7 @@ import {
   Page, PageHead, Spinner, Stat,
 } from "../ui";
 import GalaxyCorner, { type CornerData } from "./GalaxyCorner";
+import JointPairExplorer from "./JointPairExplorer";
 import { conditionalFwhmInterval } from "./galaxyFwhm";
 import "./galaxy-distributions.css";
 
@@ -1325,6 +1326,17 @@ export default function GalaxyDistributionsPage() {
         sub="VIS brightness, SFR, size, and the three NISP/VIS colours against each other: Euclid Q1 rows below the diagonal, fitted-model draws above it." />
       <CardBody>
         <GalaxyCorner data={api.corner} />
+      </CardBody>
+    </Card>
+
+    <Card className="parameter-card">
+      <CardHead title="Joint distribution explorer"
+        sub="Choose any two of the six variables for an enlarged density view of Euclid Q1 and the fitted model." />
+      <CardBody>
+        <JointPairExplorer
+          variables={api.corner?.available ? api.corner.variables : undefined}
+          revision={`${api.version}:${api.corner?.q1_rows ?? 0}:${api.corner?.vis_range?.join(",") ?? ""}`}
+        />
       </CardBody>
     </Card>
 

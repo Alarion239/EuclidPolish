@@ -1,15 +1,22 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
 import pytest
+from flask import Flask
 
+from euclid_polish.web.helpers import galaxy_distributions as distributions
 from euclid_polish.web.helpers.galaxy_corner import (
     CORNER_VARIABLES,
+    EXPLORER_BINS,
     build_galaxy_corner,
     mass_fraction_contours,
+    orient_joint_pair,
+    split_joint_pairs,
 )
+from euclid_polish.web.routes import galaxy_distributions as routes
 from tests.test_conditional_color_sfr import synthetic_rows, write_fixture_catalog
 from tests.test_euclid_galaxy_prior import active_payload
 
@@ -106,3 +113,77 @@ def test_corner_sfr_window_ignores_the_unphysical_phz_tail(tmp_path):
     vis = corner["variables"][0]
     assert vis["domain"][0] < corner["vis_range"][0]
     assert vis["domain"][1] > corner["vis_range"][1]
+
+
+def test_pair_explorer_orients_and_transposes_stored_pairs(tmp_path):
+    catalog_path, _meta = write_fixture_catalog(
+        tmp_path, synthetic_rows(n_rows=400),
+    )
+    corner = build_galaxy_corner(catalog_path, active_payload(), model_draws=400)
+
+    slim, sidecar = split_joint_pairs(corner)
+
+    assert "pairs" not in slim
+    count = len(CORNER_VARIABLES)
+    assert len(sidecar["pairs"]) == count * (count - 1) // 2
+    forward = orient_joint_pair(sidecar, "vis", "log_re")
+    reverse = orient_joint_pair(sidecar, "log_re", "vis")
+    assert forward["kind"] == reverse["kind"] == "joint"
+    assert forward["x"]["key"] == reverse["y"]["key"] == "vis"
+    assert forward["x_edges"] == reverse["y_edges"]
+    density = np.asarray(forward["q1"]["density"])
+    assert density.shape == (EXPLORER_BINS, EXPLORER_BINS)
+    assert density.max() == pytest.approx(1.0)
+    assert np.array_equal(density.T, np.asarray(reverse["q1"]["density"]))
+    forward_path = forward["model"]["contours"][0]["paths"][0]
+    reverse_path = reverse["model"]["contours"][0]["paths"][0]
+    assert forward_path["x"] == reverse_path["y"]
+    assert forward_path["y"] == reverse_path["x"]
+
+    marginal = orient_joint_pair(sidecar, "j_minus_h", "j_minus_h")
+    assert marginal["kind"] == "marginal"
+    assert marginal["diagonal"] == corner["diagonal"][count - 1]
+    with pytest.raises(ValueError, match="unknown variable"):
+        orient_joint_pair(sidecar, "redshift", "vis")
+
+
+def test_joint_pair_route_serves_the_sidecar(tmp_path, monkeypatch):
+    catalog_path, _meta = write_fixture_catalog(
+        tmp_path, synthetic_rows(n_rows=400),
+    )
+    corner = build_galaxy_corner(catalog_path, active_payload(), model_draws=200)
+    _slim, sidecar = split_joint_pairs(corner)
+    sidecar_path = tmp_path / "galaxy_joint_pairs.json"
+    sidecar_path.write_text(json.dumps(sidecar))
+    monkeypatch.setattr(distributions, "joint_pairs_path", lambda: sidecar_path)
+    app = Flask(__name__)
+    routes.register(app)
+    client = app.test_client()
+
+    view = client.get(
+        "/api/galaxy-distributions/joint-pair?x=log_sfr&y=vis_minus_y"
+    ).get_json()
+    assert view["available"] is True
+    assert view["x"]["key"] == "log_sfr"
+    assert view["y"]["key"] == "vis_minus_y"
+    assert client.get(
+        "/api/galaxy-distributions/joint-pair?x=vis&y=nope"
+    ).status_code == 400
+
+    monkeypatch.setattr(
+        distributions, "joint_pairs_path", lambda: tmp_path / "missing.json",
+    )
+    missing = client.get(
+        "/api/galaxy-distributions/joint-pair?x=vis&y=log_re"
+    ).get_json()
+    assert missing["available"] is False
+
+
+def test_pair_explorer_card_is_rendered_on_the_galaxy_page():
+    pages = Path(__file__).parents[1] / "euclid_polish/web/frontend/src/pages"
+    page = (pages / "GalaxyDistributions.tsx").read_text()
+    explorer = (pages / "JointPairExplorer.tsx").read_text()
+
+    assert "<JointPairExplorer" in page
+    assert "/api/galaxy-distributions/joint-pair" in explorer
+    assert "Swap axes" in explorer

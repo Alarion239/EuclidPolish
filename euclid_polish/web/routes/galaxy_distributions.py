@@ -8,6 +8,7 @@ from euclid_polish.web import euclid_session
 from euclid_polish.web.helpers.galaxy_distributions import (
     build_galaxy_distributions,
     read_galaxy_distributions,
+    read_joint_pair,
 )
 from euclid_polish.web.helpers.population_calibration import (
     activate_joint_galaxy_candidate,
@@ -130,6 +131,15 @@ def register(app):
             "q1_radius": _q1_radius_state(),
             "calibration": joint_galaxy_state_summary(),
         })
+
+    @app.get("/api/galaxy-distributions/joint-pair")
+    def api_galaxy_joint_pair():
+        try:
+            return jsonify(read_joint_pair(
+                request.args.get("x", ""), request.args.get("y", ""),
+            ))
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
 
     @app.post("/api/galaxy-distributions/query-q1-counts")
     def api_query_q1_galaxy_counts():

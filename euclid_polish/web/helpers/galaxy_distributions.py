@@ -36,6 +36,8 @@ from euclid_polish.sky.generation.source_catalog import source_is_off_field
 from euclid_polish.web.helpers.galaxy_corner import (
     build_galaxy_corner,
     mass_fraction_contours,
+    orient_joint_pair,
+    split_joint_pairs,
 )
 from euclid_polish.web.helpers.population_calibration import (
     joint_galaxy_candidate,
@@ -60,7 +62,7 @@ from euclid_polish.web.helpers.q1_galaxy_radius_statistics import (
     read_q1_galaxy_radius_statistics,
 )
 
-ARTIFACT_VERSION = 23
+ARTIFACT_VERSION = 24
 MAG_EDGES = np.arange(14.0, 30.0001, 0.25)
 RADIUS_MAX_VIS_PIXELS = 100.0
 RADIUS_MAX_ARCSEC = RADIUS_MAX_VIS_PIXELS * float(Config.VIS_PIXEL_SCALE_ARCSEC)
@@ -128,6 +130,11 @@ COSMOS_APERTURE_DIAMETERS_ARCSEC = {
 
 def artifact_path() -> Path:
     return Path(Config.DATA_DIR) / "population_comparison" / "galaxy_distributions.json"
+
+
+def joint_pairs_path() -> Path:
+    """Sidecar holding the pair-explorer grids, kept out of the page payload."""
+    return artifact_path().with_name("galaxy_joint_pairs.json")
 
 
 def _signature(path: Path) -> dict[str, int] | None:
@@ -2094,6 +2101,13 @@ def _training_variant(
     }
 
 
+def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(payload, separators=(",", ":")))
+    os.replace(temporary, path)
+
+
 def build_galaxy_distributions(progress: Callable[[int, int, str], None] | None = None) -> dict[str, Any]:
     tick = progress or (lambda _done, _total, _label: None)
     parameters = _empty_parameters()
@@ -2114,6 +2128,7 @@ def build_galaxy_distributions(progress: Callable[[int, int, str], None] | None 
         )
     except ValueError as exc:
         corner = {"available": False, "detail": str(exc)}
+    corner, joint_pairs = split_joint_pairs(corner)
     joint_maps = _joint_magnitude_radius_maps(synthetic)
     training_variant = _training_variant(parameters, synthetic)
     payload = {
@@ -2131,11 +2146,10 @@ def build_galaxy_distributions(progress: Callable[[int, int, str], None] | None 
         "parameters": parameters,
         "training_variant": training_variant,
     }
-    path = artifact_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(json.dumps(payload, separators=(",", ":")))
-    os.replace(temporary, path)
+    # The sidecar lands first so a completed main artifact never points at
+    # explorer grids from an older build.
+    _write_json_atomic(joint_pairs_path(), joint_pairs)
+    _write_json_atomic(artifact_path(), payload)
     tick(6, 6, "galaxy-distribution plots ready")
     return payload
 
@@ -2184,3 +2198,14 @@ def read_galaxy_distributions(
         if isinstance(sources, dict):
             sources["fit"] = _read_fit(parameters)
     return {**payload, "stale": stale, "artifact_path": str(artifact_path())}
+
+
+def read_joint_pair(x_key: str, y_key: str) -> dict[str, Any]:
+    """One pair-explorer view from the sidecar (``ValueError`` on bad keys)."""
+    sidecar = _json(joint_pairs_path())
+    if not sidecar:
+        return {
+            "available": False,
+            "detail": "Rebuild cached plots to draw the joint distributions.",
+        }
+    return orient_joint_pair(sidecar, x_key, y_key)
