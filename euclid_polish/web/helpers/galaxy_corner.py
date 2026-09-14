@@ -38,7 +38,7 @@ CORNER_VARIABLES: tuple[tuple[str, str, str], ...] = (
     ("y_minus_j", "Y − J", "AB mag"),
     ("j_minus_h", "J − H", "AB mag"),
 )
-CORNER_CONTOUR_MASS_FRACTIONS = (0.95, 0.80, 0.50)
+CORNER_CONTOUR_MASS_FRACTIONS = (0.99, 0.95, 0.80, 0.50, 0.20)
 CORNER_JOINT_BINS = 36
 CORNER_DIAGONAL_BINS = 40
 CORNER_SMOOTHING_SIGMA_BINS = 1.0

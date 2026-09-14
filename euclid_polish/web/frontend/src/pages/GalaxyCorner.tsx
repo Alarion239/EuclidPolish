@@ -37,11 +37,16 @@ const GAP = 6;
 const MARGIN = { top: 28, right: 44, bottom: 30, left: 78 };
 const SOURCE_COLOR = { q1: "#2478d4", model: "#e25543" } as const;
 
-const contourStyle = (fraction: number) => fraction <= 0.5
-  ? { width: 1.7, opacity: 1 }
-  : fraction <= 0.8
-    ? { width: 1.2, opacity: 0.8 }
-    : { width: 0.8, opacity: 0.55 };
+/* Inner rings heaviest, outer tail faintest. */
+const contourStyle = (fraction: number) => fraction <= 0.2
+  ? { width: 1.8, opacity: 1 }
+  : fraction <= 0.5
+    ? { width: 1.5, opacity: 0.95 }
+    : fraction <= 0.8
+      ? { width: 1.15, opacity: 0.8 }
+      : fraction <= 0.95
+        ? { width: 0.85, opacity: 0.6 }
+        : { width: 0.65, opacity: 0.4 };
 
 /* About ``target`` round ticks inside the domain, with their label precision. */
 export function niceTicks(
