@@ -41,20 +41,30 @@ from tests._local_ssh import LocalSSHSession
 # ---------------------------------------------------------------------------
 
 @pytest.fixture(autouse=True)
-def _active_joint_galaxy_calibration(monkeypatch):
-    """Keep submission tests hermetic from the on-disk artifact.
+def _active_population_calibrations(monkeypatch):
+    """Keep submission tests hermetic from the on-disk artifacts.
 
     ``prepare_params`` fails closed when the activated joint-galaxy artifact
-    is stale (e.g. a pre-v15 fit); these tests exercise the submission
-    plumbing, not calibration validity. Individual tests may override.
+    is stale (e.g. a pre-v15 fit) or no stellar calibration is active — as on
+    a clean checkout (CI), where the gitignored data dir holds neither. These
+    tests exercise the submission plumbing, not calibration validity.
+    Individual tests may override.
     """
     joint = {
         "fingerprint": "j" * 64,
         "generation": {"surface_density_arcmin2": 123.0},
     }
+    stars = {
+        "fingerprint": "s" * 64,
+        "population": {"density_arcmin2": 3.0},
+    }
     monkeypatch.setattr(
         "euclid_polish.web.helpers.population_calibration.joint_galaxy_state",
         lambda: {"active": joint, "is_active": True},
+    )
+    monkeypatch.setattr(
+        "euclid_polish.web.helpers.population_calibration.star_state",
+        lambda: {"active": stars, "is_active": True},
     )
 
 

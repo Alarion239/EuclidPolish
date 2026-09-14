@@ -20,6 +20,8 @@ dependencies:
   - photutils=2.3.*
   - questionary
   - pytest
+  # Test-only: tests/test_viewer_results.py reads the exported grid PDF.
+  - pypdf
   - ruff
   - flask
   - pexpect

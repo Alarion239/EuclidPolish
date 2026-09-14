@@ -25,20 +25,29 @@ from euclid_polish.web.fasrc_pipeline import REGISTRY, StepResources
 
 
 @pytest.fixture(autouse=True)
-def _active_joint_galaxy_calibration(monkeypatch):
-    """Keep script-rendering tests hermetic from the on-disk artifact.
+def _active_population_calibrations(monkeypatch):
+    """Keep script-rendering tests hermetic from the on-disk artifacts.
 
     ``prepare_params`` fails closed when the activated joint-galaxy artifact
-    is stale (e.g. a pre-v15 fit); these tests exercise sbatch rendering,
-    not calibration validity.
+    is stale (e.g. a pre-v15 fit) or no stellar calibration is active — as on
+    a clean checkout (CI), where the gitignored data dir holds neither. These
+    tests exercise sbatch rendering, not calibration validity.
     """
     joint = {
         "fingerprint": "j" * 64,
         "generation": {"surface_density_arcmin2": 123.0},
     }
+    stars = {
+        "fingerprint": "s" * 64,
+        "population": {"density_arcmin2": 3.0},
+    }
     monkeypatch.setattr(
         "euclid_polish.web.helpers.population_calibration.joint_galaxy_state",
         lambda: {"active": joint, "is_active": True},
+    )
+    monkeypatch.setattr(
+        "euclid_polish.web.helpers.population_calibration.star_state",
+        lambda: {"active": stars, "is_active": True},
     )
 
 
