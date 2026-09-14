@@ -1,6 +1,6 @@
 """The clean ``Image`` data atom.
 
-``Image`` is the central multi-band sky-image type for the whole project and it
+``Image`` is the central multi-band sky-image type for the whole project, and it
 sits at the *bottom* of the import graph: it depends only on third-party libs
 (numpy and astropy) plus :mod:`euclid_polish.config` and the pure
 provenance value-types. It never imports an operator (simulator, forward
