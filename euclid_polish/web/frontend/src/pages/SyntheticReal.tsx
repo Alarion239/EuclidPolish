@@ -66,7 +66,9 @@ function LogRange(
 export default function SyntheticRealPage() {
   const [subset, setSubset] = useState<Subset>("test");
   const [transfer, setTransfer] = useState<ViewTransfer>({
-    color: "VIS",
+    // Lupton shows all four bands; NISP-only saturation blackouts are
+    // invisible in a single VIS channel.
+    color: "lupton",
     knee: 100,
     gain: 1,
   });

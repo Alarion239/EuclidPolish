@@ -189,3 +189,25 @@ def sample_stellar_sed(
             "an active empirical stellar prior is required for star generation"
         )
     return prior.sample(rng, mag_vis)
+
+
+def stellar_prior_density_arcmin2(payload: dict[str, Any]) -> float:
+    """Star surface density (per arcmin²) of an activated stellar prior.
+
+    Reads ``population.density_arcmin2``, the value FASRC generation uses for
+    the fixed validate/test stars, and falls back to the integral of the
+    prior's magnitude-count law when that field is missing.
+    """
+    population = payload.get("population") or {}
+    density = population.get("density_arcmin2")
+    if density is None:
+        law = StraightMagnitudeLaw.from_payload(
+            population.get("magnitude_distribution") or {},
+        )
+        density = law.integrated_density()
+    value = float(density)
+    if not np.isfinite(value) or value < 0.0:
+        raise ValueError(
+            f"stellar prior density must be finite and >= 0, got {value!r}"
+        )
+    return value

@@ -107,6 +107,16 @@ class ObservationSimulatorConfig:
     # always-mask operator; train/validate/test and on-the-fly configs pass the
     # lower, real-field-calibrated training default explicitly.
     saturation_mask_prob: float = 1.0
+    # Blackout probability of the brightest sources. A source's probability
+    # rises in log(peak/well) from ``saturation_mask_prob`` at the first well
+    # ratio to this value at the second, as in real MER fields where
+    # marginally saturated cores usually survive but the brightest are almost
+    # always masked. It never drops below ``saturation_mask_prob``, so the
+    # always-mask default is unchanged.
+    saturation_mask_prob_bright: float = Config.SATURATION_MASK_PROB_BRIGHT
+    saturation_mask_ramp_well_ratios: tuple[float, float] = (
+        Config.SATURATION_MASK_RAMP_WELL_RATIOS
+    )
     # A very bright star thousands of pixels beyond the generated field can
     # cast a nearly straight, field-spanning PSF wing through the LR cutout.
     add_distant_star_wings: bool = True
@@ -152,6 +162,17 @@ class ObservationSimulatorConfig:
             raise ValueError("psf_warp_sigma must be > 0")
         if not 0.0 <= float(self.saturation_mask_prob) <= 1.0:
             raise ValueError("saturation_mask_prob must be in [0, 1]")
+        if not 0.0 <= float(self.saturation_mask_prob_bright) <= 1.0:
+            raise ValueError("saturation_mask_prob_bright must be in [0, 1]")
+        ratios = tuple(
+            float(value) for value in self.saturation_mask_ramp_well_ratios
+        )
+        if len(ratios) != 2 or not 0.0 < ratios[0] < ratios[1]:
+            raise ValueError(
+                "saturation_mask_ramp_well_ratios must be (start, full) "
+                "with 0 < start < full"
+            )
+        self.saturation_mask_ramp_well_ratios = (ratios[0], ratios[1])
         if not 0.0 <= float(self.distant_star_wing_probability) <= 1.0:
             raise ValueError("distant_star_wing_probability must be in [0, 1]")
         if not (
@@ -450,6 +471,30 @@ class ObservationSimulator:
         )
 
     # ------------------------------------------------------------------ #
+    def apply_saturation(
+        self,
+        lr_stack: np.ndarray,
+        trigger_stack: np.ndarray,
+        rng: np.random.Generator,
+    ) -> None:
+        """Black out saturated sources of ``lr_stack`` in place.
+
+        ``trigger_stack`` is the pre-noise optical signal that decides which
+        sources saturate. Uses this simulator's well depths and blackout
+        probabilities, and does nothing when saturation is off.
+        """
+        if self._sat_model is None:
+            return
+        apply_saturation_masking(
+            lr_stack, self._sat_model, rng,
+            band_names=Config.LR_INPUT_BAND_NAMES,
+            trigger_4ch=trigger_stack,
+            mask_probability=self.config.saturation_mask_prob,
+            bright_mask_probability=self.config.saturation_mask_prob_bright,
+            bright_well_ratios=self.config.saturation_mask_ramp_well_ratios,
+        )
+
+    # ------------------------------------------------------------------ #
     def apply(self, hr: Image, rng=None, *, store=None) -> Image:
         """Forward-model a clean HR :class:`Image` into a dirty LR Image (role ``'lr'``).
 
@@ -633,16 +678,10 @@ class ObservationSimulator:
         )
 
         # Detector saturation masking: any pixel past the band well depth
-        # (bright stars OR bright galaxy nuclei) is masked to ~0 over a blocky
-        # rectangular patch, mirroring the MER pipeline — NOT clipped to the
-        # well. Per band; the clean HR target is untouched.
-        if self._sat_model is not None:
-            apply_saturation_masking(
-                lr_stack, self._sat_model, rng,
-                band_names=Config.LR_INPUT_BAND_NAMES,
-                trigger_4ch=saturation_trigger_stack,
-                mask_probability=self.config.saturation_mask_prob,
-            )
+        # (bright stars OR bright galaxy nuclei) can be masked to ~0 over a
+        # blocky rectangular patch, mirroring the MER pipeline — NOT clipped
+        # to the well. Per band; the clean HR target is untouched.
+        self.apply_saturation(lr_stack, saturation_trigger_stack, rng)
 
         # HR target: all four bands (clean, no noise applied), trimmed to the
         # same spatial extent the LR pipeline saw. Band k of the target is

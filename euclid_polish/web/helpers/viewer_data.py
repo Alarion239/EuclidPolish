@@ -822,7 +822,11 @@ def _ensemble_cube(index: int, tier: str, params: dict[str, str]):
 
 def _archive_fields_meta(_params: dict[str, str]) -> dict[str, Any]:
     status = archive_fields.availability()
-    fields = list(archive_fields.iter_fields()) if status["ready"] else []
+    # This collection is the real side of the Synthetic–Real comparison, so it
+    # offers only tiles that were not steered away from bright stars.
+    fields = (
+        list(archive_fields.iter_comparison_fields()) if status["ready"] else []
+    )
     tier = {"key": "lr", "label": "Archive LR"}
     return {
         "count": len(fields),
@@ -856,7 +860,7 @@ def _archive_fields_cube(index: int, tier: str, _params: dict[str, str]):
     status = archive_fields.availability()
     if not status["ready"]:
         raise ViewerError(404, "multipoint archive collection is unavailable")
-    fields = list(archive_fields.iter_fields())
+    fields = list(archive_fields.iter_comparison_fields())
     if index < 0 or index >= len(fields):
         raise ViewerError(404, "archive sample index out of range")
     field = fields[index]

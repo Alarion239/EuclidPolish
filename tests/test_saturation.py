@@ -9,6 +9,7 @@ from euclid_polish.config import Config
 from euclid_polish.sky.observation.saturation import (
     StarSaturationModel,
     apply_saturation_masking,
+    saturation_mask_probability,
 )
 
 _BANDS = Config.LR_INPUT_BAND_NAMES
@@ -191,6 +192,59 @@ def test_mask_probability_draw_is_shared_across_bands():
     assert len(set(masked)) == 1
 
 
+def test_blackout_probability_rises_with_peak_over_well():
+    probability = saturation_mask_probability(
+        np.array([1.0, 5.0, 10.0, 20.0, 100.0]),
+        near_well=0.2, bright=0.9, ratio_start=5.0, ratio_full=20.0,
+    )
+    np.testing.assert_allclose(probability, [0.2, 0.2, 0.55, 0.9, 0.9])
+
+
+def test_blackout_probability_never_drops_below_near_well_value():
+    probability = saturation_mask_probability(
+        np.array([1.0, 10.0, 100.0]),
+        near_well=1.0, bright=0.5, ratio_start=5.0, ratio_full=20.0,
+    )
+    np.testing.assert_allclose(probability, 1.0)
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"bright_mask_probability": 1.5},
+    {"bright_well_ratios": (20.0, 5.0)},
+    {"bright_well_ratios": (0.0, 5.0)},
+])
+def test_bright_blackout_settings_are_validated(kwargs):
+    m = StarSaturationModel()
+    lr = np.zeros((20, 20, len(_BANDS)), dtype=np.float32)
+    with pytest.raises(ValueError):
+        apply_saturation_masking(
+            lr, m, np.random.default_rng(0), band_names=_BANDS,
+            mask_probability=0.2, **kwargs,
+        )
+
+
+def test_brightest_sources_are_blacked_out_more_often():
+    """A core far above the well is masked almost always, while one just above
+    it keeps the low near-well probability, as in real MER fields."""
+    m = StarSaturationModel()
+    k = _BANDS.index("J_E")
+    well = m.well_depth_e(Config.get_band("J_E"))
+    faint_masked = bright_masked = 0
+    for seed in range(200):
+        lr = np.zeros((64, 64, len(_BANDS)), dtype=np.float32)
+        lr[8:12, 8:12, k] = np.float32(well * 1.5)
+        lr[48:52, 48:52, k] = np.float32(well * 50.0)
+        apply_saturation_masking(
+            lr, m, np.random.default_rng(seed), band_names=_BANDS,
+            mask_probability=0.05, bright_mask_probability=1.0,
+            bright_well_ratios=(5.0, 20.0),
+        )
+        faint_masked += bool(np.all(lr[8:12, 8:12, k] == 0.0))
+        bright_masked += bool(np.all(lr[48:52, 48:52, k] == 0.0))
+    assert bright_masked == 200
+    assert faint_masked < 30
+
+
 # ---------------------------------------------------------------------------
 # Forward-model integration
 # ---------------------------------------------------------------------------
@@ -220,6 +274,24 @@ def test_forward_masks_saturation_in_dirty_not_target():
     assert float(lr.data[..., 0].min()) <= 0.0
     # Clean HR target keeps the bright source (untouched).
     assert hr.data.max() == pytest.approx(1e6, rel=1e-4)
+
+
+def test_forward_blacks_out_very_bright_sources_at_training_probability():
+    """A core many times above every well (the test idx16 star) is blacked out
+    in most exposures even at the low near-well training probability."""
+    from euclid_polish.sky.observation.observation_simulator import (
+        ObservationSimulator,
+        ObservationSimulatorConfig,
+    )
+    fwd = ObservationSimulator(config=ObservationSimulatorConfig(
+        add_noise=False, add_artifacts=False, add_saturation=True,
+        saturation_mask_prob=Config.TRAIN_SATURATION_MASK_PROB))
+    masked = 0
+    for seed in range(20):
+        lr, _ = fwd.process(_hr_field_with_bright_source(1e7),
+                            np.random.default_rng(seed))
+        masked += float(lr.data[11:13, 11:13, :].max()) == 0.0
+    assert masked >= 14
 
 
 def test_forward_saturation_can_be_disabled():

@@ -9,6 +9,9 @@ export type ArchiveAvailability = {
   planned_sample_count: number;
   parent_count: number;
   fields: Record<string, number>;
+  comparison_sample_count?: number;
+  comparison_fields?: Record<string, number>;
+  comparison_excluded_positions?: string[];
   bands: string[];
   tile_size: number;
   manifest_fingerprint: string | null;
@@ -41,13 +44,18 @@ export function archiveOverview(status?: ArchiveAvailability): string {
     return status?.reasons?.[0] ?? "Multipoint archive samples are not synchronized.";
   }
   const release = status.source_release ? ` · ${status.source_release}` : "";
+  const compared = status.comparison_sample_count ?? status.sample_count;
+  const excluded = status.sample_count - compared;
+  const note = excluded > 0
+    ? ` (${excluded.toLocaleString()} star-avoiding centre tiles left out)`
+    : "";
   return `${status.parent_count.toLocaleString()} independent parent pointings · `
-    + `${status.sample_count.toLocaleString()} four-band samples${release}`;
+    + `${compared.toLocaleString()} four-band samples${note}${release}`;
 }
 
 export function archiveFieldBreakdown(status?: ArchiveAvailability): string {
   if (!status?.ready) return "";
-  return Object.entries(status.fields)
+  return Object.entries(status.comparison_fields ?? status.fields)
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([field, count]) => `${field} ${count}`)
     .join(" · ");
@@ -59,7 +67,7 @@ export function archiveSampleProvenance(
   count: number,
 ): string {
   if (!sample) return `sample ${Math.min(index + 1, Math.max(count, 1))} / ${count}`;
-  return `sample ${sample.sample_id + 1} / ${count} · source pointing `
+  return `sample ${index + 1} / ${count} · archive sample ${sample.sample_id + 1} · source pointing `
     + `${sample.source_sample_id + 1} · ${sample.field} · ${sample.position_name}`;
 }
 

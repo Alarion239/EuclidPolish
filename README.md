@@ -381,8 +381,11 @@ identical to the sky objective.
   validation/test records remain fixed and replayable. **No image flips/rotations** — the
   empirical PSF is asymmetric, so a flipped target is a different SR task. Clean/HR targets
   are never deformed. Above-well sources receive MER-style dark-core masks with probability
-  0.2 (configurable up to 0.5), leaving most bright stellar cores intact to match the
-  real-Euclid input distribution.
+  0.2 just above the well (configurable up to 0.5), rising to 0.9 for sources 20× or more
+  above it. This follows real Euclid fields, where most marginally saturated cores stay
+  intact while the brightest are almost always blacked out. On-the-fly training injects
+  stars at the activated stellar prior's density, the same density used for the generated
+  validation/test stars.
 
 ### 5.3 Validation metrics
 

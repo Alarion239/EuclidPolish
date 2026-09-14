@@ -8,7 +8,10 @@ This module reproduces that on the forward-modelled LR image: it finds the
 pixels that exceed each band's well depth and can zero a blocky rectangular
 patch around them. The training forward model applies the mask
 probabilistically because real MER cutouts also contain intact bright stellar
-cores; standalone callers retain the legacy always-mask default.
+cores. The probability grows with how far a source's peak exceeds the well: in
+real fields marginally saturated cores usually survive, while the brightest
+are almost always blacked out. Standalone callers retain the legacy
+always-mask default.
 
 Well depth (the saturation level, in electrons on the shared 0.10″ LR stack):
 
@@ -33,7 +36,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 import numpy as np
-from scipy.ndimage import find_objects, label
+from scipy.ndimage import find_objects, label, maximum
 
 from euclid_polish.config import BandConfig, Config
 
@@ -92,6 +95,38 @@ class StarSaturationModel:
         return rects
 
 
+def saturation_mask_probability(
+    well_ratio: np.ndarray | float,
+    *,
+    near_well: float,
+    bright: float,
+    ratio_start: float,
+    ratio_full: float,
+) -> np.ndarray:
+    """Blackout probability of a source whose peak is ``well_ratio`` × the well.
+
+    ``near_well`` applies up to ``ratio_start``. Above it the probability rises
+    linearly in ``log10(well_ratio)`` and reaches ``bright`` at ``ratio_full``.
+    A ``bright`` below ``near_well`` is raised to it, so a brighter source is
+    never masked less often than a fainter one.
+    """
+    for name, value in (("near_well", near_well), ("bright", bright)):
+        if not 0.0 <= float(value) <= 1.0:
+            raise ValueError(f"{name} probability must be in [0, 1]")
+    if not 0.0 < float(ratio_start) < float(ratio_full):
+        raise ValueError("well ratios must satisfy 0 < ratio_start < ratio_full")
+    ratio = np.maximum(np.asarray(well_ratio, dtype=np.float64), float(ratio_start))
+    ramp = np.clip(
+        np.log10(ratio / float(ratio_start))
+        / np.log10(float(ratio_full) / float(ratio_start)),
+        0.0,
+        1.0,
+    )
+    low = float(near_well)
+    high = max(float(bright), low)
+    return low + (high - low) * ramp
+
+
 def apply_saturation_masking(
     lr_4ch: np.ndarray,
     model: StarSaturationModel,
@@ -100,6 +135,8 @@ def apply_saturation_masking(
     band_names: Sequence[str],
     trigger_4ch: np.ndarray | None = None,
     mask_probability: float = 1.0,
+    bright_mask_probability: float | None = None,
+    bright_well_ratios: tuple[float, float] = Config.SATURATION_MASK_RAMP_WELL_RATIOS,
 ) -> None:
     """Zero a blocky rectangular patch over every saturated scene region.
 
@@ -116,7 +153,15 @@ def apply_saturation_masking(
     bands, so 0.2 means a 20% chance per bright source, not four independent
     chances. A skipped source remains intact in ``lr_4ch``; this represents
     the bright, unmasked compact stars present in the real MER cutouts while
-    retaining a minority of genuine blackout artifacts.
+    retaining a minority of genuine blackout artifacts. Zero disables
+    blackouts entirely.
+
+    ``bright_mask_probability`` makes that chance depend on brightness. A
+    source whose trigger peaks at no more than ``bright_well_ratios[0]`` × its
+    band well uses ``mask_probability``; the chance then rises in
+    log(peak/well) and reaches ``bright_mask_probability`` at
+    ``bright_well_ratios[1]`` (:func:`saturation_mask_probability`). ``None``
+    keeps one probability for every source.
 
     For each band:
 
@@ -133,6 +178,15 @@ def apply_saturation_masking(
     probability = float(mask_probability)
     if not 0.0 <= probability <= 1.0:
         raise ValueError("mask_probability must be in [0, 1]")
+    bright = (
+        probability if bright_mask_probability is None
+        else float(bright_mask_probability)
+    )
+    if not 0.0 <= bright <= 1.0:
+        raise ValueError("bright_mask_probability must be in [0, 1]")
+    ratio_start, ratio_full = (float(value) for value in bright_well_ratios)
+    if not 0.0 < ratio_start < ratio_full:
+        raise ValueError("bright_well_ratios must satisfy 0 < start < full")
     if trigger.shape != lr_4ch.shape:
         raise ValueError(
             f"trigger_4ch shape {trigger.shape} must match lr_4ch shape "
@@ -150,8 +204,25 @@ def apply_saturation_masking(
         source_labels, n_sources = label(selected_spatial)
         if n_sources == 0:
             return
+        # Each source's brightest band sets how likely it is blacked out.
+        well_ratio = np.max(trigger / wells.reshape((1, 1, -1)), axis=-1)
+        peak_ratio = np.asarray(
+            maximum(
+                well_ratio,
+                labels=source_labels,
+                index=np.arange(1, n_sources + 1),
+            ),
+            dtype=np.float64,
+        )
+        source_probability = saturation_mask_probability(
+            peak_ratio,
+            near_well=probability,
+            bright=bright,
+            ratio_start=ratio_start,
+            ratio_full=ratio_full,
+        )
         selected_ids = np.nonzero(
-            rng.random(n_sources) < probability,
+            rng.random(n_sources) < source_probability,
         )[0] + 1
         if selected_ids.size == 0:
             return

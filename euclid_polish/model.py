@@ -461,7 +461,11 @@ class Model:
         exposure's sampled PSF; the clean/HR target is never warped.
         ``saturation_mask_prob`` controls the minority of above-well sources
         converted to dark-core MER masks; it is capped at 0.5 so intact bright
-        stars remain common in the live training distribution.
+        stars remain common in the live training distribution. Sources far
+        above the well are masked more often
+        (``Config.SATURATION_MASK_PROB_BRIGHT``), as in real MER fields.
+        Stars are injected at the activated stellar prior's density, the
+        density generation uses for the validate/test stars.
 
         Validation always uses the record-based full set, no noise/forward
         randomness, and the L1 metric-space pipeline — members with
@@ -503,6 +507,9 @@ class Model:
                                       saturation_mask_prob),
                                   target_fwhm_arcsec=target_fwhm,
                                   star_prior_payload=star_prior_payload)
+            if fwd.inject_stars:
+                print(f"  on-the-fly stars: {fwd.star_density_arcmin2:.3f} "
+                      "per arcmin²")
             train_ds = self._build_onthefly_pipeline(
                 hr_path, batch_size, fwd,
                 noise_aug_rn=float(noise_aug),

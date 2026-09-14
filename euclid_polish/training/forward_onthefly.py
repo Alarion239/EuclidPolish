@@ -43,7 +43,10 @@ from euclid_polish.psf.psf_library import load_all_band_psf_sets
 from euclid_polish.psf.psf_set import PSFSet
 from euclid_polish.psf.rotpool import load_all_band_rotpools
 from euclid_polish.sky.generation.sky_simulator import inject_random_stars
-from euclid_polish.sky.generation.stellar_sed import EmpiricalStellarPrior
+from euclid_polish.sky.generation.stellar_sed import (
+    EmpiricalStellarPrior,
+    stellar_prior_density_arcmin2,
+)
 from euclid_polish.sky.observation.observation_simulator import (
     ObservationSimulator,
     ObservationSimulatorConfig,
@@ -115,7 +118,7 @@ class OnTheFlyForward:
         add_saturation: bool = True,
         starless: bool = True,
         inject_stars: bool = True,
-        star_density_arcmin2: float = Config.DEFAULT_STAR_DENSITY_ARCMIN2,
+        star_density_arcmin2: float | None = None,
         star_prior_payload: dict | None = None,
         pixel_scale_arcsec: float = Config.DEFAULT_PIXEL_SCALE,
         psf_warp_prob: float = Config.TRAIN_PSF_WARP_PROB,
@@ -130,15 +133,22 @@ class OnTheFlyForward:
         # Stars-as-artifacts: a FRESH star realization is drawn and deposited
         # (HR deltas, before the PSF) on every visit in BOTH regimes. ``starless``
         # picks the TARGET — the starless scene (erase the injected stars) vs the
-        # with-stars scene (reconstruct them). Density mirrors generation; the
-        # activated stellar prior owns the magnitude law and colour locus.
+        # with-stars scene (reconstruct them). The activated stellar prior owns
+        # the magnitude law and colour locus and, unless a density is passed,
+        # the star density too: generation places the fixed validate/test stars
+        # at that density, so training sees the same star population.
         self.starless = bool(starless)
         self.inject_stars = bool(inject_stars)
-        self.star_density_arcmin2 = float(star_density_arcmin2)
         self.stellar_prior = (
             EmpiricalStellarPrior.from_payload(star_prior_payload)
             if star_prior_payload else None
         )
+        if star_density_arcmin2 is None:
+            star_density_arcmin2 = (
+                stellar_prior_density_arcmin2(star_prior_payload)
+                if star_prior_payload else Config.DEFAULT_STAR_DENSITY_ARCMIN2
+            )
+        self.star_density_arcmin2 = float(star_density_arcmin2)
         if (
             self.inject_stars
             and self.star_density_arcmin2 > 0.0

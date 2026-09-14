@@ -51,6 +51,7 @@ def _write_collection(
     monkeypatch: pytest.MonkeyPatch,
     *,
     bad_band_shape: bool = False,
+    position_name: str = "center",
 ) -> tuple[Path, Path]:
     # Keep the fixture tiny while exercising the same strict cardinality rule
     # as the production 44 x 5 collection.
@@ -92,7 +93,7 @@ def _write_collection(
         "cutout_size_vis_pixels": 256,
         "bands": list(Config.LR_INPUT_BAND_NAMES),
         "offset_pattern_arcsec": [
-            {"name": "center", "east": 0.0, "north": 0.0},
+            {"name": position_name, "east": 0.0, "north": 0.0},
         ],
         "registration_method": "celestial WCS common-grid crop",
     }
@@ -108,7 +109,7 @@ def _write_collection(
         "parent_id": "parent-000",
         "field": "EDF-N",
         "position_index": 0,
-        "position_name": "center",
+        "position_name": position_name,
         "east_offset_arcsec": 0.0,
         "north_offset_arcsec": 0.0,
         "ra": 17.5,
@@ -164,6 +165,12 @@ def test_archive_provider_accepts_synced_source_and_converts_four_bands(
     assert status["sample_count"] == 1
     assert status["parent_count"] == 1
     assert status["fields"] == {"EDF-N": 1}
+    # The centre tile avoids bright stars by construction: it is synchronized
+    # but not offered as a real-vs-synthetic reference.
+    assert status["comparison_sample_count"] == 0
+    assert status["comparison_fields"] == {}
+    assert status["comparison_excluded_positions"] == ["center"]
+    assert list(archive_fields.iter_comparison_fields()) == []
     assert status["manifest_fingerprint"] == _sha256(manifest_path)
     assert status["source_manifest_sha256"] != _sha256(source_path)
 
@@ -219,14 +226,15 @@ def test_archive_fields_viewer_exposes_provenance_and_raw_cube(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _write_collection(tmp_path, monkeypatch)
+    _write_collection(tmp_path, monkeypatch, position_name="northeast")
     meta = viewer_data.get_meta("archive-fields", {})
     assert meta["count"] == 1
+    assert meta["archive"]["comparison_sample_count"] == 1
     assert meta["default_tier"] == "lr"
     assert meta["band_names"] == ["VIS", "Y_E", "J_E", "H_E"]
     assert meta["archive"]["parent_count"] == 1
     assert meta["objects"][0] == {
-        "label": "EDF-N · pointing 1 · center · sample 1",
+        "label": "EDF-N · pointing 1 · northeast · sample 1",
         "tiers": ["lr"],
         "sample_id": 0,
         "source_sample_id": 0,
@@ -234,7 +242,7 @@ def test_archive_fields_viewer_exposes_provenance_and_raw_cube(
         "field": "EDF-N",
         "ra": 17.5,
         "dec": 66.25,
-        "position_name": "center",
+        "position_name": "northeast",
     }
     cube, info = viewer_data.get_cube("archive-fields", 0, "lr", {})
     assert cube.shape == (256, 256, 4)
@@ -244,11 +252,26 @@ def test_archive_fields_viewer_exposes_provenance_and_raw_cube(
     assert error.value.code == 400
 
 
+def test_archive_fields_viewer_leaves_out_star_avoiding_centre_tiles(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_collection(tmp_path, monkeypatch, position_name="center")
+    meta = viewer_data.get_meta("archive-fields", {})
+    assert meta["archive"]["ready"] is True
+    assert meta["archive"]["sample_count"] == 1
+    assert meta["count"] == 0
+    assert meta["objects"] == []
+    with pytest.raises(viewer_data.ViewerError) as error:
+        viewer_data.get_cube("archive-fields", 0, "lr", {})
+    assert error.value.code == 404
+
+
 def test_archive_fields_http_surface_serves_the_manifest_backed_collection(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _write_collection(tmp_path, monkeypatch)
+    _write_collection(tmp_path, monkeypatch, position_name="northeast")
     from euclid_polish.web.app import create_app
 
     app = create_app()

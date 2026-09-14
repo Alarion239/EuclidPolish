@@ -36,6 +36,10 @@ SOURCE_SAMPLE_COUNT = 44
 POSITIONS_PER_PARENT = 5
 SAMPLE_COUNT = SOURCE_SAMPLE_COUNT * POSITIONS_PER_PARENT
 BAND_NAMES: tuple[str, ...] = tuple(Config.LR_INPUT_BAND_NAMES)
+#: Positions left out of real-vs-synthetic comparisons. Each source VIS pointing
+#: was placed at least 30" from a saved Q1 star, so its centre tile
+#: under-samples bright stars; the four ±80" offset tiles are not steered.
+COMPARISON_EXCLUDED_POSITIONS: frozenset[str] = frozenset({"center"})
 _Q1_FIELDS = frozenset({"EDF-N", "EDF-S", "EDF-F"})
 _COMPLETE_STATUSES = frozenset({"written", "cached", "complete", "completed"})
 _ALLOWED_STATUSES = _COMPLETE_STATUSES | frozenset({"planned", "failed"})
@@ -424,6 +428,21 @@ def iter_fields(
         )
 
 
+def iter_comparison_fields(
+    manifest: Mapping[str, Any] | None = None,
+    *,
+    manifest_file: Path | str | None = None,
+) -> Iterator[ArchiveField]:
+    """Yield the fields that fairly sample the sky for real-vs-synthetic work.
+
+    Same order as :func:`iter_fields`, without the
+    :data:`COMPARISON_EXCLUDED_POSITIONS` tiles.
+    """
+    for field in iter_fields(manifest, manifest_file=manifest_file):
+        if field.position_name not in COMPARISON_EXCLUDED_POSITIONS:
+            yield field
+
+
 def _normalised_unit(header: fits.Header) -> str:
     return "".join(str(header.get("BUNIT") or "").strip().lower().split())
 
@@ -623,6 +642,9 @@ def availability(
         "planned_sample_count": 0,
         "parent_count": 0,
         "fields": {},
+        "comparison_sample_count": 0,
+        "comparison_fields": {},
+        "comparison_excluded_positions": sorted(COMPARISON_EXCLUDED_POSITIONS),
         "bands": list(BAND_NAMES),
         "tile_size": TILE_SIZE,
         "manifest_path": str(target),
@@ -638,6 +660,10 @@ def availability(
     try:
         manifest = load_manifest(target)
         fields = list(iter_fields(manifest, manifest_file=target))
+        compared = [
+            field for field in fields
+            if field.position_name not in COMPARISON_EXCLUDED_POSITIONS
+        ]
         missing = [field.path for field in fields if not field.path.is_file()]
         provenance = currentness(
             manifest, manifest_file=target, source_file=source_file,
@@ -662,6 +688,10 @@ def availability(
             "planned_sample_count": planned,
             "parent_count": len({field.parent_id for field in fields}),
             "fields": dict(sorted(Counter(field.field for field in fields).items())),
+            "comparison_sample_count": len(compared),
+            "comparison_fields": dict(sorted(
+                Counter(field.field for field in compared).items()
+            )),
             "manifest_fingerprint": manifest_fingerprint(target),
             "collection_fingerprint": str(manifest["collection_fingerprint"]),
             "source_release": str(manifest["source_release"]),
@@ -679,6 +709,7 @@ __all__ = [
     "ArchiveField",
     "ArchiveFieldError",
     "BAND_NAMES",
+    "COMPARISON_EXCLUDED_POSITIONS",
     "MANIFEST_KIND",
     "MANIFEST_VERSION",
     "POSITIONS_PER_PARENT",
@@ -691,6 +722,7 @@ __all__ = [
     "compute_plan_fingerprint",
     "currentness",
     "is_current",
+    "iter_comparison_fields",
     "iter_fields",
     "load_field",
     "load_manifest",

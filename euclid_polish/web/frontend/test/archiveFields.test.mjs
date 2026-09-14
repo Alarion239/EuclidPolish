@@ -20,6 +20,9 @@ const ready = {
   planned_sample_count: 220,
   parent_count: 44,
   fields: { "EDF-S": 45, "EDF-N": 80, "EDF-F": 95 },
+  comparison_sample_count: 176,
+  comparison_fields: { "EDF-S": 36, "EDF-N": 64, "EDF-F": 76 },
+  comparison_excluded_positions: ["center"],
   bands: ["VIS", "Y_E", "J_E", "H_E"],
   tile_size: 256,
   manifest_fingerprint: "b".repeat(64),
@@ -32,9 +35,16 @@ const ready = {
 test("summarizes independent archive pointings without calling tiles fields", () => {
   assert.equal(
     archiveOverview(ready),
+    "44 independent parent pointings · 176 four-band samples "
+      + "(44 star-avoiding centre tiles left out) · Q1_R1",
+  );
+  assert.equal(archiveFieldBreakdown(ready), "EDF-F 76 · EDF-N 64 · EDF-S 36");
+  const legacy = { ...ready, comparison_sample_count: undefined, comparison_fields: undefined };
+  assert.equal(
+    archiveOverview(legacy),
     "44 independent parent pointings · 220 four-band samples · Q1_R1",
   );
-  assert.equal(archiveFieldBreakdown(ready), "EDF-F 95 · EDF-N 80 · EDF-S 45");
+  assert.equal(archiveFieldBreakdown(legacy), "EDF-F 95 · EDF-N 80 · EDF-S 45");
 });
 
 test("surfaces missing/stale reasons and exact per-sample provenance", () => {
@@ -53,8 +63,8 @@ test("surfaces missing/stale reasons and exact per-sample provenance", () => {
       ra: 12,
       dec: 65,
       position_name: "northeast",
-    }, 17, 220),
-    "sample 18 / 220 · source pointing 4 · EDF-N · northeast",
+    }, 13, 176),
+    "sample 14 / 176 · archive sample 18 · source pointing 4 · EDF-N · northeast",
   );
   assert.equal(shortArchiveFingerprint("a".repeat(64)), "aaaaaaaaaaaa…");
 });
@@ -65,6 +75,7 @@ test("Synthetic–Real uses only the multipoint collection and keeps legacy infe
     "utf8",
   );
   assert.match(comparison, /\/viewer\/meta\/archive-fields/);
+  assert.match(comparison, /color: "lupton"/);
   assert.match(comparison, /collection="archive-fields"/);
   assert.match(comparison, /stepId="archive_field_sample"/);
   assert.match(comparison, /archiveSync\.run\("\/api\/archive-fields\/sync"/);

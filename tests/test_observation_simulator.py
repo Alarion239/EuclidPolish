@@ -340,6 +340,10 @@ def test_invalid_kernel_raises(kernel):
     {"psf_warp_sigma": 0.0},
     {"saturation_mask_prob": -0.1},
     {"saturation_mask_prob": 1.1},
+    {"saturation_mask_prob_bright": -0.1},
+    {"saturation_mask_prob_bright": 1.1},
+    {"saturation_mask_ramp_well_ratios": (20.0, 5.0)},
+    {"saturation_mask_ramp_well_ratios": (0.0, 5.0)},
 ])
 def test_invalid_psf_warp_config_raises(kwargs):
     with pytest.raises(ValueError):

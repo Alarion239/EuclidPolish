@@ -158,6 +158,34 @@ def test_inject_stars_adds_flux_before_forward(gaussian_sets):
     assert np.all(scene >= field - 1e-3)
 
 
+def test_star_density_defaults_to_the_activated_prior(gaussian_sets):
+    """Training injects stars at the prior's density, which is the density
+    generation uses for the fixed validate/test stars, not the config default."""
+    payload = _stellar_prior_payload()
+    payload["population"]["density_arcmin2"] = 7.25
+    fwd = OnTheFlyForward(gaussian_sets, seed=5, star_prior_payload=payload,
+                          target_fwhm_arcsec=0.0)
+    assert fwd.star_density_arcmin2 == pytest.approx(7.25)
+
+
+def test_star_density_falls_back_to_the_prior_count_law(gaussian_sets):
+    payload = _stellar_prior_payload()
+    law = StraightMagnitudeLaw.from_payload(
+        payload["population"]["magnitude_distribution"])
+    fwd = OnTheFlyForward(gaussian_sets, seed=5, star_prior_payload=payload,
+                          target_fwhm_arcsec=0.0)
+    assert fwd.star_density_arcmin2 == pytest.approx(law.integrated_density())
+    assert fwd.star_density_arcmin2 != pytest.approx(
+        Config.DEFAULT_STAR_DENSITY_ARCMIN2)
+
+
+def test_explicit_star_density_overrides_the_prior(gaussian_sets):
+    fwd = OnTheFlyForward(gaussian_sets, seed=5, star_density_arcmin2=500.0,
+                          star_prior_payload=_stellar_prior_payload(),
+                          target_fwhm_arcsec=0.0)
+    assert fwd.star_density_arcmin2 == pytest.approx(500.0)
+
+
 def test_crops_target_is_starless_even_with_injection(gaussian_sets):
     """Stars-as-artifacts: with injection on, every HR crop is still an exact
     block-aligned sub-tile of the ORIGINAL starless field — the injected stars

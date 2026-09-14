@@ -40,7 +40,8 @@ from euclid_polish.web.helpers.tng_prior import (
     detection_payload,
 )
 
-VERSION = 11
+# 12: the real reference leaves out the star-avoiding archive centre tiles.
+VERSION = 12
 CATALOG_VERSION = 7
 PHZ_PDF_GRID = np.linspace(0.0, 6.0, 601, dtype=np.float64)
 BANDS = ("VIS", "Y_E", "J_E", "H_E")
@@ -618,6 +619,7 @@ def _archive_collection_state() -> dict[str, Any]:
             "current": False,
             "reasons": [f"multipoint archive provider is unavailable: {exc}"],
             "sample_count": 0,
+            "comparison_sample_count": 0,
             "parent_count": 0,
             "fields": {},
             "bands": [],
@@ -659,6 +661,7 @@ def _archive_source_summary(state: dict[str, Any]) -> dict[str, Any]:
         "source_plan_fingerprint",
         "source_manifest_sha256",
         "sample_count",
+        "comparison_sample_count",
         "planned_sample_count",
         "parent_count",
         "fields",
@@ -898,7 +901,7 @@ def _archive_fields(manifest: dict[str, Any]) -> Iterator[
     tuple[np.ndarray, dict[str, Any]]
 ]:
     provider = _archive_provider()
-    for sample in provider.iter_fields(manifest):
+    for sample in provider.iter_comparison_fields(manifest):
         metadata = {
             key: getattr(sample, key, None)
             for key in (

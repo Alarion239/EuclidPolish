@@ -233,8 +233,16 @@ class Config:
     # every bright compact source. In the inspected real field, 0/8 brightest
     # compact star candidates were blacked out; keep a minority masked so
     # training sees both regimes instead of removing every above-well core.
+    # This is the probability for sources just above the well.
     TRAIN_SATURATION_MASK_PROB = 0.2
     TRAIN_SATURATION_MASK_PROB_MAX = 0.5
+    # The brightest cores are blacked out far more often. In 172 real archive
+    # offset fields (2026-09-14), sources up to ~6x our well were masked ~23%
+    # of the time and sources brighter than that 6 times out of 7. A source's
+    # blackout probability therefore rises in log(peak/well) from the near-well
+    # value at the first ratio to SATURATION_MASK_PROB_BRIGHT at the second.
+    SATURATION_MASK_PROB_BRIGHT = 0.9
+    SATURATION_MASK_RAMP_WELL_RATIOS = (5.0, 20.0)
 
     # VIS instrument
     # AB zeropoint for MER fluxes quoted in microJansky (µJy): the catalogue's

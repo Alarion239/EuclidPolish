@@ -305,7 +305,7 @@ def test_archive_field_provider_preserves_parent_and_sample_metadata(monkeypatch
 
     class Provider:
         @staticmethod
-        def iter_fields(manifest):
+        def iter_comparison_fields(manifest):
             assert manifest == {"kind": "euclid_archive_fields"}
             yield Sample()
 

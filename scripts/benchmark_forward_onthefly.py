@@ -50,9 +50,6 @@ from euclid_polish.sky.observation.observation_simulator import (  # noqa: E402
     ObservationSimulator,
     ObservationSimulatorConfig,
 )
-from euclid_polish.sky.observation.saturation import (  # noqa: E402
-    apply_saturation_masking,
-)
 
 
 def parse_args(argv=None):
@@ -166,8 +163,11 @@ def main() -> int:
 
     fwd = ObservationSimulator(
         psf_sets_by_band=psf_sets,
-        config=ObservationSimulatorConfig(add_noise=True, add_artifacts=True,
-                                          add_saturation=True))
+        config=ObservationSimulatorConfig(
+            add_noise=True, add_artifacts=True, add_saturation=True,
+            # Time the training operator: per-source blackout draws.
+            saturation_mask_prob=Config.TRAIN_SATURATION_MASK_PROB,
+        ))
     rng = np.random.default_rng(1)
     field = fields[0]
     hr = np.asarray(field.data, np.float32)
@@ -217,8 +217,8 @@ def main() -> int:
     lr_stack = np.stack([reb[n] for n in bands], axis=-1).astype(np.float32)
 
     def _sat():
-        apply_saturation_masking(lr_stack.copy(), fwd._sat_model, rng,
-                                 band_names=Config.LR_INPUT_BAND_NAMES)
+        # The noise-free stack is both the dirty image and the trigger here.
+        fwd.apply_saturation(lr_stack.copy(), lr_stack, rng)
     _row("saturation masking (stack)", *_bench(_sat, args.repeats))
 
     # end-to-end, median across fields
