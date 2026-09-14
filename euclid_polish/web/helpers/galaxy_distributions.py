@@ -45,7 +45,6 @@ from euclid_polish.web.helpers.population_comparison import (
     euclid_catalog_meta_path,
     euclid_catalog_path,
     euclid_phz_pdf_path,
-    read_phz_pdf_cache,
 )
 from euclid_polish.web.helpers.q1_galaxy_counts import (
     q1_galaxy_counts_path,
@@ -58,15 +57,35 @@ from euclid_polish.web.helpers.q1_galaxy_radius_statistics import (
     read_q1_galaxy_radius_statistics,
 )
 
-ARTIFACT_VERSION = 21
+ARTIFACT_VERSION = 22
 MAG_EDGES = np.arange(14.0, 30.0001, 0.25)
 RADIUS_MAX_VIS_PIXELS = 100.0
 RADIUS_MAX_ARCSEC = RADIUS_MAX_VIS_PIXELS * float(Config.VIS_PIXEL_SCALE_ARCSEC)
 LOG_RADIUS_EDGES = np.arange(
     -2.4, np.log10(RADIUS_MAX_ARCSEC) + 0.0001, 0.10,
 )
-MASS_EDGES = np.arange(7.0, 13.0001, 0.20)
-SSFR_EDGES = np.arange(-14.0, -8.1999, 0.20)
+COLOR_EDGES = np.arange(-2.0, 4.0001, 0.1)
+#: (parameter key, catalogue flux columns forming the ratio, synthetic column)
+COLOR_PANELS: tuple[tuple[str, str, str, str, str], ...] = (
+    (
+        "color_vis_y", "VIS − Y colour",
+        "flux_y_2fwhm_aper_uJy", "flux_vis_2fwhm_aper_uJy",
+        "vis_minus_y_mag",
+    ),
+    (
+        "color_y_j", "Y − J colour",
+        "flux_j_2fwhm_aper_uJy", "flux_y_2fwhm_aper_uJy",
+        "y_j_color_mag",
+    ),
+    (
+        "color_j_h", "J − H colour",
+        "flux_h_2fwhm_aper_uJy", "flux_j_2fwhm_aper_uJy",
+        "j_h_color_mag",
+    ),
+)
+#: Matches the colour+SFR fit: below this VIS 2FWHM S/N the denominator of
+#: the flux ratio sits at its own noise level and the colour is meaningless.
+COLOR_VIS_SNR_FLOOR = 5.0
 APERTURE_SIZE_EDGES = np.asarray([
     0.0, 0.25, 0.50, 0.75, 1.0, 1.5, 2.0, 3.0, 5.0, 8.0, 12.0,
 ])
@@ -850,36 +869,24 @@ def _read_synthetic(
         contributor_fields = sum(split_field_counts[split] for split in splits)
         return contributor_fields * FIELD_AREA_ARCMIN2, splits
 
-    redshift = values("z")
-    mass = values("target_logmass", "logmass")
-    ssfr = values("target_logssfr", "native_tng_logssfr")
     requested_radius = values("re_arcsec", "target_re_arcsec")
     achieved_f2 = values("achieved_vis_2fwhm_mag", "target_vis_2fwhm_mag")
-    redshift_edges = np.linspace(0.0, 6.0, 49)
     parameter_coverage: dict[str, Any] = {}
-    for key, data, edges, definition in (
-        (
-            "redshift", redshift, redshift_edges,
-            f"actual generated {catalogue_scope} galaxy redshift draws",
-        ),
-        (
-            "stellar_mass", mass, MASS_EDGES,
-            f"actual generated {catalogue_scope} target stellar-mass draws",
-        ),
-        (
-            "specific_sfr", ssfr, SSFR_EDGES,
-            f"actual generated {catalogue_scope} target specific-SFR draws",
-        ),
+    for key, _label, _numerator, _denominator, synthetic_column in (
+        COLOR_PANELS
     ):
+        data = values(synthetic_column)
         valid = np.isfinite(data)
-        if key == "specific_sfr":
-            valid &= data < -8.2
+        if not np.any(valid):
+            # Source catalogues generated before the empirical colour model
+            # carry no drawn colours; the panel then shows Euclid only.
+            continue
         parameter_area, contributor_splits = effective_area(valid)
         parameters[key]["series"]["synthetic"] = _curve(
-            edges,
-            np.histogram(data[valid], edges)[0],
+            COLOR_EDGES,
+            np.histogram(data[valid], COLOR_EDGES)[0],
             parameter_area or area,
-            definition,
+            f"deconvolved {catalogue_scope} colour draws from source records",
         )
         parameter_coverage[key] = {
             "splits": contributor_splits,
@@ -1139,18 +1146,25 @@ def _aperture_scatter_payload(
 
 
 def _empty_parameters() -> dict[str, dict[str, Any]]:
-    return {
-        "redshift": {
-            "label": "Redshift",
-            "x_label": "Redshift z",
-            "density_unit": "objects / arcmin² / redshift",
+    color_panels = {
+        key: {
+            "label": label,
+            "x_label": f"{label} (AB mag, 2FWHM apertures)",
+            "density_unit": "objects / arcmin² / mag",
             "note": (
-                "Euclid uses probability-weighted PHZ PDFs; COSMOS uses "
-                "catalogue photo-z; the fit is the corrected latent draw model; "
-                "generated points are the actual test/validation draws."
+                "Euclid colours are raw forced-photometry flux ratios with "
+                f"VIS 2FWHM S/N ≥ {COLOR_VIS_SNR_FLOOR:g} and positive "
+                "ratios (measurement noise included). Generated colours are "
+                "the deconvolved draws stored in the source catalogues; "
+                "their scatter should sit below the raw Euclid scatter at "
+                "fixed depth."
             ),
             "series": {},
-        },
+        }
+        for key, label, _numerator, _denominator, _synthetic in COLOR_PANELS
+    }
+    return {
+        **color_panels,
         "magnitude": {
             "label": "Apparent brightness",
             "x_label": "catalogue AB magnitude (native estimator)",
@@ -1189,26 +1203,6 @@ def _empty_parameters() -> dict[str, dict[str, Any]]:
             "series": {},
             "radius_series": {},
             "radius_missing": [],
-        },
-        "stellar_mass": {
-            "label": "Stellar mass",
-            "x_label": "log₁₀ stellar mass (M☉)",
-            "density_unit": "objects / arcmin² / dex",
-            "note": (
-                "PHZ and COSMOS values are posterior/catalogue estimates. The fit "
-                "curve requires a PHZ-enhanced physical conditional model."
-            ),
-            "series": {},
-        },
-        "specific_sfr": {
-            "label": "Specific star-formation rate",
-            "x_label": "log₁₀ sSFR (yr⁻¹)",
-            "density_unit": "objects / arcmin² / dex",
-            "note": (
-                "The documented pathological tail at log₁₀ sSFR ≥ -8.2 is "
-                "excluded from PHZ constraints and the fitted model."
-            ),
-            "series": {},
         },
     }
 
@@ -1419,20 +1413,12 @@ def _read_euclid(parameters: dict[str, Any], progress: Callable[[int, int, str],
     if not path.is_file() or area <= 0:
         return {"available": False, "detail": "Query Euclid MER + PHZ to create the catalogue cache."}
 
-    pdf_by_id: dict[str, np.ndarray] = {}
-    pdf_edges: np.ndarray | None = None
-    try:
-        pdf = read_phz_pdf_cache()
-        pdf_by_id = dict(zip(np.asarray(pdf["object_id"]).astype(str), pdf["probability"], strict=True))
-        pdf_edges = np.asarray(pdf["z_edges"], dtype=np.float64)
-    except (OSError, KeyError, ValueError):
-        pass
-
     mag = np.zeros(len(MAG_EDGES) - 1)
     radius = np.zeros(len(LOG_RADIUS_EDGES) - 1)
-    mass = np.zeros(len(MASS_EDGES) - 1)
-    ssfr = np.zeros(len(SSFR_EDGES) - 1)
-    redshift = np.zeros(len(pdf_edges) - 1) if pdf_edges is not None else None
+    color_histograms = {
+        key: np.zeros(len(COLOR_EDGES) - 1)
+        for key, _label, _numerator, _denominator, _synthetic in COLOR_PANELS
+    }
     aperture_keys = (
         "1fwhm_minus_4fwhm", "2fwhm_minus_4fwhm",
         "3fwhm_minus_4fwhm", "4fwhm_minus_kron",
@@ -1462,7 +1448,7 @@ def _read_euclid(parameters: dict[str, Any], progress: Callable[[int, int, str],
         )
     }
     radius_weights = {key: [] for key in radius_values}
-    rows = phz_rows = physical_rows = 0
+    rows = 0
     with path.open(newline="", encoding="utf-8") as handle:
         reader = csv.DictReader(handle)
         has_sersic_re = {
@@ -1659,35 +1645,42 @@ def _read_euclid(parameters: dict[str, Any], progress: Callable[[int, int, str],
                     aperture_histograms[key][size_bin, delta_bin] += mer_weight
                     aperture_counts[key][size_bin] += mer_weight
 
-            object_pdf = pdf_by_id.get(str(row.get("object_id", "")))
-            if (
-                object_pdf is not None
-                and redshift is not None
-                and np.isfinite(gal_weight)
-                and 0 <= gal_weight <= 1
-                and magnitude < 24.5
-            ):
-                redshift += gal_weight * object_pdf
-                phz_rows += 1
+            # Raw 2FWHM flux-ratio colours: the same selection the colour+SFR
+            # fit uses (VIS S/N floor; negative NISP fluxes exist but only
+            # positive ratios have a magnitude).
             try:
-                flags = float(row.get("phz_phys_flags", "nan"))
-                quality = float(row.get("phz_phys_quality_flag", "nan"))
-                logmass = float(row.get("phz_pp_median_stellarmass", "nan"))
-                logsfr = float(row.get("phz_pp_median_sfr", "nan"))
+                color_flux_vis = float(row.get(
+                    "flux_vis_2fwhm_aper_uJy", "nan",
+                ))
+                color_error_vis = float(row.get(
+                    "fluxerr_vis_2fwhm_aper_uJy", "nan",
+                ))
             except ValueError:
-                continue
-            logssfr = logsfr - logmass
+                color_flux_vis = color_error_vis = np.nan
             if (
-                flags == 0
-                and quality == 0
-                and np.isfinite(logmass)
-                and np.isfinite(logssfr)
-                and logssfr < -8.2
-                and np.isfinite(gal_weight)
+                np.isfinite(color_flux_vis) and color_flux_vis > 0.0
+                and np.isfinite(color_error_vis) and color_error_vis > 0.0
+                and color_flux_vis / color_error_vis >= COLOR_VIS_SNR_FLOOR
             ):
-                mass += np.histogram([logmass], MASS_EDGES, weights=[gal_weight])[0]
-                ssfr += np.histogram([logssfr], SSFR_EDGES, weights=[gal_weight])[0]
-                physical_rows += 1
+                for key, _label, numerator, denominator, _synthetic in (
+                    COLOR_PANELS
+                ):
+                    try:
+                        numerator_flux = float(row.get(numerator, "nan"))
+                        denominator_flux = float(row.get(denominator, "nan"))
+                    except ValueError:
+                        continue
+                    if (
+                        np.isfinite(numerator_flux) and numerator_flux > 0.0
+                        and np.isfinite(denominator_flux)
+                        and denominator_flux > 0.0
+                    ):
+                        color = 2.5 * np.log10(
+                            numerator_flux / denominator_flux
+                        )
+                        color_histograms[key] += np.histogram(
+                            [color], COLOR_EDGES, weights=[mer_weight],
+                        )[0]
             if rows % 50000 == 0:
                 progress(rows, int(meta.get("rows") or rows), "stream Euclid MER + PHZ")
 
@@ -1766,22 +1759,13 @@ def _read_euclid(parameters: dict[str, Any], progress: Callable[[int, int, str],
             "The MER morphology cache contains no clean positive VIS Sérsic "
             "Rₑ values with PHZ_GAL_PROB > 0."
         )
-    if redshift is not None and pdf_edges is not None:
-        pdf_source = str(meta.get("phz_pdf_source") or "archive_full_pdf")
-        definition = (
-            "PHZ_GAL_PROB × PDF reconstructed from cached modes"
-            if pdf_source == "summary_reconstruction"
-            else "PHZ_GAL_PROB × rebinned archive PHZ PDF"
-        )
-        parameters["redshift"]["series"]["euclid"] = _curve(
-            pdf_edges, redshift, area, definition,
-        )
-    if physical_rows:
-        parameters["stellar_mass"]["series"]["euclid"] = _curve(
-            MASS_EDGES, mass, area, "valid PHZ physical posterior, galaxy-weighted"
-        )
-        parameters["specific_sfr"]["series"]["euclid"] = _curve(
-            SSFR_EDGES, ssfr, area, "PHZ log SFR − log mass, galaxy-weighted"
+    for key, _label, _numerator, _denominator, _synthetic in COLOR_PANELS:
+        parameters[key]["series"]["euclid"] = _curve(
+            COLOR_EDGES, color_histograms[key], area,
+            (
+                "raw 2FWHM flux-ratio colour; weight 1 − POINT_LIKE_PROB; "
+                f"VIS S/N ≥ {COLOR_VIS_SNR_FLOOR:g}; positive flux ratios"
+            ),
         )
     coverage = meta.get("phz_coverage") or {}
     return {
@@ -1789,8 +1773,7 @@ def _read_euclid(parameters: dict[str, Any], progress: Callable[[int, int, str],
         "rows": rows,
         "area_arcmin2": area,
         "schema_version": meta.get("catalog_version"),
-        "phz_pdf_rows": phz_rows,
-        "physical_rows": physical_rows,
+        "phz_pdf_rows": int(meta.get("phz_pdf_rows") or 0),
         "phz_pdf_source": meta.get("phz_pdf_source"),
         "phz_pdf_activation_eligible": meta.get("phz_pdf_activation_eligible"),
         "phz_coverage": coverage,
@@ -1803,11 +1786,7 @@ def _read_euclid(parameters: dict[str, Any], progress: Callable[[int, int, str],
             for negative_priority, object_id, sample in heap
         ]),
         "detail": (
-            "MER cache ready with locally reconstructed PHZ summaries"
-            if redshift is not None and meta.get("phz_pdf_source") == "summary_reconstruction"
-            else "MER cache ready with archive PHZ PDFs"
-            if redshift is not None
-            else "MER cache ready; PHZ sidecar missing"
+            f"MER + PHZ cache, schema v{meta.get('catalog_version')}"
         ),
     }
 
@@ -1818,7 +1797,6 @@ def _read_cosmos(parameters: dict[str, Any]) -> dict[str, Any]:
         return {"available": False, "detail": "COSMOS2025 population prior is missing."}
     cosmos = read_cosmos_population(path)
     definitions = {
-        "redshift": (cosmos["redshift"], np.linspace(0.05, 5.5, 45), "COSMOS2025 LePhare photo-z"),
         "magnitude": (
             cosmos["magnitude"], MAG_EDGES,
             "HST F814W single-Sérsic total AB magnitude",
@@ -1828,13 +1806,9 @@ def _read_cosmos(parameters: dict[str, Any]) -> dict[str, Any]:
             LOG_RADIUS_EDGES,
             "combined half-light radius",
         ),
-        "stellar_mass": (cosmos["logmass"], MASS_EDGES, "LePhare stellar mass"),
-        "specific_sfr": (cosmos["logssfr"], SSFR_EDGES, "LePhare specific SFR"),
     }
     for key, (values, edges, definition) in definitions.items():
         finite = np.isfinite(values)
-        if key == "specific_sfr":
-            finite &= values < -8.2
         parameters[key]["series"]["cosmos"] = _curve(
             edges, np.histogram(values[finite], edges)[0], COSMOS_AREA_ARCMIN2, definition
         )

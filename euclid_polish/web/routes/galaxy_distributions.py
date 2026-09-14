@@ -13,8 +13,12 @@ from euclid_polish.web.helpers.population_calibration import (
     activate_joint_galaxy_candidate,
     fit_euclid_joint_galaxy_candidate,
     joint_galaxy_state,
+    joint_galaxy_state_summary,
 )
-from euclid_polish.web.helpers.population_comparison import availability
+from euclid_polish.web.helpers.population_comparison import (
+    availability,
+    refresh_cached_euclid_population_multi,
+)
 from euclid_polish.web.helpers.publication_figures import (
     render_galaxy_distribution_plate,
     render_population_atlas,
@@ -124,7 +128,7 @@ def register(app):
             "authenticated": euclid_session.is_authenticated(),
             "q1_counts": _q1_counts_state(),
             "q1_radius": _q1_radius_state(),
-            "calibration": joint_galaxy_state(),
+            "calibration": joint_galaxy_state_summary(),
         })
 
     @app.post("/api/galaxy-distributions/query-q1-counts")
@@ -190,7 +194,15 @@ def register(app):
                 "galaxy_counts": result,
                 "galaxy_radius": radii,
                 "brightness_fit": brightness_fit,
-                "joint_galaxy_fit": joint_fit,
+                # Keep the multi-megabyte forest out of the job ledger.
+                "joint_galaxy_fit": {
+                    "fingerprint": joint_fit.get("fingerprint"),
+                    "version": joint_fit.get("version"),
+                    "surface_density_arcmin2": (
+                        (joint_fit.get("generation") or {})
+                        .get("surface_density_arcmin2")
+                    ),
+                },
                 "plots": {"version": plots["version"]},
             }
 
@@ -198,6 +210,42 @@ def register(app):
             "ok": True,
             "job_id": REGISTRY.spawn(
                 label="galaxy distributions: MER + PHZ queries and fits",
+                target=run,
+            ),
+        })
+
+    @app.post("/api/galaxy-distributions/refresh-population-cones")
+    def api_refresh_population_cones():
+        """Re-query the saved 24-cone population footprint (schema refresh)."""
+        catalog = euclid_session.catalog()
+        if catalog is None:
+            return jsonify({
+                "ok": False,
+                "error": "Log in to the Euclid archive on the Catalog page first.",
+            }), 400
+
+        def run(cap):
+            meta = refresh_cached_euclid_population_multi(
+                progress=lambda done, total, label: cap.tick(
+                    done, total, label,
+                ),
+                relogin=catalog.relogin,
+            )
+            cap.write(
+                f"population cache v{meta['catalog_version']}: "
+                f"{meta['rows']} rows over {meta['cone_count']} cones "
+                f"({meta['area_arcmin2']:.0f} arcmin²)\n"
+            )
+            return {
+                "catalog_version": meta["catalog_version"],
+                "rows": meta["rows"],
+                "cone_count": meta["cone_count"],
+            }
+
+        return jsonify({
+            "ok": True,
+            "job_id": REGISTRY.spawn(
+                label="galaxy distributions: re-query population cones",
                 target=run,
             ),
         })
@@ -260,10 +308,16 @@ def register(app):
     @app.post("/api/galaxy-distributions/activate")
     def api_activate_joint_galaxy():
         def run(cap):
-            cap.tick(0, 1, "activate Euclid brightness-radius population")
+            cap.tick(0, 1, "activate galaxy population model")
             result = activate_joint_galaxy_candidate()
-            cap.tick(1, 1, "Euclid brightness-radius population active")
-            return result
+            cap.tick(1, 1, "galaxy population model active")
+            return {
+                "fingerprint": result["fingerprint"],
+                "version": result["version"],
+                "surface_density_arcmin2": (
+                    result["generation"]["surface_density_arcmin2"]
+                ),
+            }
 
         return jsonify({
             "ok": True,

@@ -75,7 +75,6 @@ type Source = {
   area_arcmin2?: number;
   schema_version?: number;
   phz_pdf_rows?: number;
-  physical_rows?: number;
   phz_pdf_source?: string;
   fingerprint?: string;
   active_fingerprint?: string;
@@ -133,6 +132,14 @@ type Payload = {
         source_magnitude_bin: number[];
         out_of_support_policy: string;
       };
+      color_sfr_model?: {
+        row_count: number;
+        tree_count: number;
+        catalog_version: number;
+        vis_snr_floor?: number;
+        min_leaf_weight?: number;
+        calibration_fingerprint: string;
+      };
       plots?: {
         conditional_radius?: {
           magnitude: number[];
@@ -150,9 +157,23 @@ type Payload = {
           model_kind: string;
           out_of_support_policy: string;
         };
+        conditional_colors?: {
+          magnitude: number[];
+          model_mean_vis_minus_y: number[];
+          model_mean_y_j: number[];
+          model_mean_j_h: number[];
+          magnitude_edges?: number[];
+          observed_ratio_variance_by_magnitude?: Array<Array<number | null>>;
+          noise_ratio_variance_by_magnitude?: Array<Array<number | null>>;
+          sfr_valid_weight_fraction_by_magnitude?: Array<number | null>;
+        };
       };
       provenance?: {
         object_catalog_used?: boolean;
+        color_selected_rows?: number;
+        color_sfr_valid_weight_fraction?: number;
+        color_resolved_radius_weight_fraction?: number;
+        color_quenched_weight_fraction?: number;
       };
     };
     is_active: boolean;
@@ -219,13 +240,22 @@ type Q1Counts = {
 type SourceKey = "euclid" | "synthetic" | "cosmos" | "fit";
 
 const SOURCE: Record<SourceKey, { label: string; kicker: string; color: string }> = {
-  euclid: { label: "Euclid MER + PHZ", kicker: "observed layer", color: "#2478d4" },
-  synthetic: { label: "Generated source catalogues", kicker: "actual rendered draws", color: "#d39b32" },
+  euclid: { label: "Euclid MER + PHZ", kicker: "Euclid Q1", color: "#2478d4" },
+  synthetic: { label: "Generated source catalogues", kicker: "generated fields", color: "#d39b32" },
   cosmos: { label: "COSMOS2025", kicker: "diagnostic only", color: "#00a078" },
-  fit: { label: "Euclid joint fit", kicker: "generator candidate", color: "#e25543" },
+  fit: { label: "Euclid joint fit", kicker: "fitted model", color: "#e25543" },
 };
 const ORDER: SourceKey[] = ["euclid", "synthetic", "fit"];
-const PARAMETER_ORDER = ["magnitude", "radius"];
+const PARAMETER_ORDER = [
+  "magnitude", "radius", "color_vis_y", "color_y_j", "color_j_h",
+];
+const COLOR_TREND_SERIES: Array<{ key: "model_mean_vis_minus_y" | "model_mean_y_j" | "model_mean_j_h"; label: string; color: string }> = [
+  { key: "model_mean_vis_minus_y", label: "VIS − Y", color: "#2478d4" },
+  { key: "model_mean_y_j", label: "Y − J", color: "#168f65" },
+  { key: "model_mean_j_h", label: "J − H", color: "#e25543" },
+];
+const COLOR_BAND_LABELS = ["Y", "J", "H"];
+const COLOR_BAND_COLORS = ["#2478d4", "#168f65", "#e25543"];
 const USEFUL_BRIGHTNESS_KEYS = new Set([
   "q1_vis_f2", "synthetic_vis_2fwhm", "generator_vis_f2",
 ]);
@@ -760,11 +790,10 @@ function JointDensityMaps({ data }: { data?: JointMaps }) {
   return <section className="joint-atlas" aria-labelledby="joint-atlas-title">
     <header className="joint-atlas__head">
       <div>
-        <div className="eyebrow">joint population comparison</div>
-        <h2 id="joint-atlas-title">Q1 MER + PHZ, generated, and model contours</h2>
-        <p>Gray contours show the PHZ-weighted Q1 magnitude–radius density; blue dashed contours show {synthetic?.label.toLowerCase() ?? "the generated galaxies"}; vermillion solid contours show the active generation law. Every contour is labeled by its enclosed population mass.</p>
+        <div className="eyebrow">magnitude × radius joint</div>
+        <h2 id="joint-atlas-title">Q1, generated, and model contours</h2>
+        <p>Gray contours show the PHZ-weighted Q1 magnitude–radius density; blue dashed contours show {synthetic?.label.toLowerCase() ?? "the generated galaxies"}; red solid contours show the active generation law. Contours are labeled by enclosed population mass.</p>
       </div>
-      <Badge tone="good">one shared Q1 plot</Badge>
     </header>
     <div className="joint-atlas__maps">
       <article className="joint-map" style={{ "--map-source": q1.color } as React.CSSProperties}>
@@ -807,9 +836,9 @@ function PublicationPlate({
   return <section className="publication-plate" aria-labelledby="publication-plate-title">
     <header className="publication-plate__head">
       <div>
-        <div className="eyebrow">paper figure · fixed layout</div>
+        <div className="eyebrow">figure export</div>
         <h2 id="publication-plate-title">Galaxy population diagnostics · 2 × 2</h2>
-        <p>Rendered from the cached numerical arrays at publication resolution—not from a browser screenshot.</p>
+        <p>Rendered from the cached numerical arrays at publication resolution.</p>
       </div>
       <div className="publication-plate__downloads">
         {(["svg", "pdf", "png"] as const).map((format) => <a
@@ -836,6 +865,7 @@ export default function GalaxyDistributionsPage() {
     { ttl: 10_000 },
   );
   const q1Query = useJob();
+  const coneRefresh = useJob();
   const activate = useJob();
   const plotBuild = useJob();
   const trainingCatalog = useJob();
@@ -866,7 +896,7 @@ export default function GalaxyDistributionsPage() {
 
   return <Page>
     <PageHead
-      eyebrow="population laboratory · fitted observables only"
+      eyebrow="galaxy population"
       title="Galaxy distributions"
       sub={`Compare Q1, galaxies in ${api.training_included ? "the training + test + validation source catalogues" : "the current test + validation fields"}, and the active VIS 2FWHM × circularized-size model.`}
       right={<div className="galaxy-actions__buttons">
@@ -941,6 +971,20 @@ export default function GalaxyDistributionsPage() {
             >
               {q1Query.busy ? "Querying + fitting galaxies…" : "Query MER + PHZ"}
             </Button>
+            <Button
+              variant="ghost"
+              disabled={!api.authenticated || coneRefresh.busy || q1Query.busy}
+              title={"Re-query the saved 24-cone population footprint. "
+                + "Needed after a catalogue schema change; the colour+SFR "
+                + "fit refuses a stale cache."}
+              onClick={() => coneRefresh.run(
+                "/api/galaxy-distributions/refresh-population-cones",
+                {},
+                { onDone: refresh },
+              )}
+            >
+              {coneRefresh.busy ? "Re-querying cones…" : "Re-query population cones"}
+            </Button>
             <Button variant="ghost" onClick={resource.reload}>Refresh view</Button>
             <Button variant="ghost" disabled={plotBuild.busy || q1Query.busy}
               onClick={rebuildPlots}>
@@ -949,6 +993,7 @@ export default function GalaxyDistributionsPage() {
             {!api.authenticated && <NavLink className="ui-btn" to="/catalog">Log in to Euclid archive</NavLink>}
           </div>
         </div>
+        <JobProgressView job={coneRefresh.job} error={coneRefresh.error} />
         <p className="galaxy-q1-counts__note">
           <strong>Single acquisition path:</strong> exact 0.1-mag bins are queried at 0.5-mag spacing first,
           then revisited at offsets of 0.1, 0.2, 0.3, and 0.4 mag. Each F₁–F₄ result
@@ -964,8 +1009,8 @@ export default function GalaxyDistributionsPage() {
     </Card>
 
     <Card className="calibration-workflow">
-      <CardHead title="Euclid VIS 2FWHM × circularized Sérsic Rₑ model"
-        sub="Continuous three-segment bright bridge/main/flat counts plus one straight truncated-Gaussian conditional log-radius law, with no radius tail or break."
+      <CardHead title="Galaxy population model"
+        sub="Q1 counts and size laws, plus empirical colours and SFR resampled from real catalogue rows through a conditional forest. No per-galaxy redshift is drawn."
         right={<Badge tone={api.calibration.is_active ? "good" : api.calibration.candidate?.valid ? "warn" : undefined}>
           {api.calibration.is_active ? "active for generation" : api.calibration.candidate?.valid ? "candidate ready" : "not fitted"}
         </Badge>} />
@@ -976,24 +1021,25 @@ export default function GalaxyDistributionsPage() {
             ? `${api.calibration.candidate.generation.surface_density_arcmin2.toFixed(0)} arcmin⁻²`
             : "—"} />
           <Stat k="faint plateau" v={api.calibration.candidate
-            ? `${api.calibration.candidate.generation.differential_density_cap_arcmin2_mag.toFixed(0)} arcmin⁻² mag⁻¹`
-            : "100 arcmin⁻² mag⁻¹"} />
-          <Stat k="bright joins" v={api.calibration.candidate
-            ? `VIS ${api.calibration.candidate.magnitude_law.bright_join_magnitudes.map((value) => value.toFixed(2)).join(" / ")}`
+            ? `${api.calibration.candidate.generation.differential_density_cap_arcmin2_mag.toFixed(0)} arcmin⁻² mag⁻¹ from VIS ${api.calibration.candidate.generation.break_magnitude.toFixed(2)}`
             : "—"} />
-          <Stat k="bridge slopes" v={api.calibration.candidate
-            ? `${api.calibration.candidate.magnitude_law.bright_slopes.map((value) => value.toFixed(3)).join(" / ")} dex/mag`
-            : "—"} />
-          <Stat k="faint plateau starts" v={api.calibration.candidate
-            ? `VIS ${api.calibration.candidate.generation.break_magnitude.toFixed(2)}`
-            : "—"} />
-          <Stat k="radius source" v="Q1 cleaned circularized Sérsic Rₑ" />
-          <Stat k="COSMOS in fit" v="no" />
-          <Stat k="slope" v={api.calibration.candidate
+          <Stat k="radius slope" v={api.calibration.candidate
             ? `${api.calibration.candidate.radius_law.slope_log10_arcsec_per_mag.toFixed(4)} dex/mag`
             : "—"} />
-          <Stat k="scatter" v={api.calibration.candidate
+          <Stat k="radius scatter" v={api.calibration.candidate
             ? `${api.calibration.candidate.radius_law.scatter_dex.toFixed(4)} dex`
+            : "—"} />
+          <Stat k="colour rows" v={api.calibration.candidate?.color_sfr_model
+            ? api.calibration.candidate.color_sfr_model.row_count.toLocaleString()
+            : "—"} />
+          <Stat k="forest" v={api.calibration.candidate?.color_sfr_model
+            ? `${api.calibration.candidate.color_sfr_model.tree_count} trees`
+            : "—"} />
+          <Stat k="SFR-valid weight" v={api.calibration.candidate?.provenance?.color_sfr_valid_weight_fraction != null
+            ? `${(100 * api.calibration.candidate.provenance.color_sfr_valid_weight_fraction).toFixed(1)}%`
+            : "—"} />
+          <Stat k="resolved-Rₑ weight" v={api.calibration.candidate?.provenance?.color_resolved_radius_weight_fraction != null
+            ? `${(100 * api.calibration.candidate.provenance.color_resolved_radius_weight_fraction).toFixed(1)}%`
             : "—"} />
         </div>
         <div className="galaxy-actions__row">
@@ -1004,17 +1050,19 @@ export default function GalaxyDistributionsPage() {
                 "/api/galaxy-distributions/activate", {}, { onDone: refresh },
               )}>
               {activate.busy ? "Activating…" : api.calibration.is_active
-                ? "Re-activate this TNG model" : "Use this TNG model"}
+                ? "Re-activate model" : "Activate model"}
             </Button>
             {api.calibration.is_active && <NavLink className="ui-btn" to="/sky">Open Sky jobs</NavLink>}
           </div>
         </div>
         {api.calibration.candidate && <p className="galaxy-q1-counts__note">
-          The candidate contains {api.calibration.candidate.radius_law.fitted_rows.toLocaleString()} clean
-          aggregate-weighted radii. Three fitted bright-bridge slopes meet continuously at fixed VIS joins {api.calibration.candidate.magnitude_law.bright_join_magnitudes.map((value) => value.toFixed(2)).join(", ")}, then join the main Q1 line continuously; counts stay flat at {api.calibration.candidate.generation.differential_density_cap_arcmin2_mag.toFixed(0)} galaxies / arcmin² / mag through VIS {api.calibration.candidate.generation.vis_magnitude_max.toFixed(0)}.
-          {" "}All magnitudes use the same straight truncated-Gaussian conditional radius law; there is no separate broad tail or radius break.
-          {" "}Its integral is {api.calibration.candidate.generation.surface_density_arcmin2.toFixed(2)} galaxies / arcmin².
-          {" "}Its fingerprint is <code>{api.calibration.candidate.fingerprint.slice(0, 12)}…</code>.
+          Counts: three bright-bridge slopes joined at fixed VIS {api.calibration.candidate.magnitude_law.bright_join_magnitudes.map((value) => value.toFixed(2)).join(" / ")}, the main Q1 line, then a flat faint plateau through VIS {api.calibration.candidate.generation.vis_magnitude_max.toFixed(0)}.
+          {" "}Size: one straight truncated-Gaussian log-radius law from {api.calibration.candidate.radius_law.fitted_rows.toLocaleString()} aggregate radii; no tail or break.
+          {" "}Colours and SFR: resampled from real Q1 rows (leaf resampling with analytic noise deconvolution); SFR steers the TNG donor match only.
+          {" "}Fingerprint <code>{api.calibration.candidate.fingerprint.slice(0, 12)}…</code>
+          {api.calibration.candidate.color_sfr_model
+            ? <> · colour model <code>{api.calibration.candidate.color_sfr_model.calibration_fingerprint.slice(0, 12)}…</code></>
+            : null}.
         </p>}
         <JobProgressView job={activate.job} error={activate.error} />
       </CardBody>
@@ -1137,12 +1185,106 @@ export default function GalaxyDistributionsPage() {
       </Card>;
     })()}
 
+    {api.calibration.candidate?.plots?.conditional_colors && (() => {
+      const colors = api.calibration.candidate.plots!.conditional_colors!;
+      const trendValues = COLOR_TREND_SERIES.flatMap(({ key }) => colors[key]);
+      const trendY = paddedDomain(trendValues, 0.5);
+      const trendX = paddedDomain(colors.magnitude, 1.0);
+      const edges = colors.magnitude_edges ?? [];
+      const binCenters = edges.slice(0, -1).map(
+        (edge, index) => 0.5 * (edge + edges[index + 1]),
+      );
+      const varianceRows = (
+        source?: Array<Array<number | null>>,
+      ): Array<Array<number | null>> => source ?? [];
+      const observed = varianceRows(colors.observed_ratio_variance_by_magnitude);
+      const noise = varianceRows(colors.noise_ratio_variance_by_magnitude);
+      const logColumn = (
+        rows: Array<Array<number | null>>, band: number,
+      ): Array<number | null> => rows.map((row) => {
+        const value = row?.[band];
+        return value != null && Number.isFinite(value) && value > 0
+          ? Math.log10(value) : null;
+      });
+      const varianceSeries: Series[] = binCenters.length ? [
+        ...COLOR_BAND_LABELS.map((_band, index) => ({
+          x: binCenters,
+          y: logColumn(observed, index),
+          color: COLOR_BAND_COLORS[index],
+          width: 2.0,
+        })),
+        ...COLOR_BAND_LABELS.map((_band, index) => ({
+          x: binCenters,
+          y: logColumn(noise, index),
+          color: COLOR_BAND_COLORS[index],
+          width: 1.5,
+          dash: [5, 4] as [number, number],
+        })),
+      ] : [];
+      const varianceValues = varianceSeries.flatMap((series) => series.y)
+        .filter((value): value is number => value != null);
+      const varianceY = paddedDomain(varianceValues, 1.0);
+      const varianceX = paddedDomain(binCenters, 1.0);
+      return <Card className="parameter-card">
+        <CardHead title="Empirical colour model"
+          sub="Median NISP/VIS colour trend of the forest, and the per-magnitude variance decomposition behind the noise deconvolution." />
+        <CardBody>
+          <Plot
+            xDomain={trendX} yDomain={trendY}
+            xTicks={ticks(trendX, 7)} yTicks={ticks(trendY, 6)}
+            xLabel="VIS 2FWHM AB magnitude"
+            yLabel="median colour (AB mag)"
+            series={COLOR_TREND_SERIES.map(({ key, color }) => ({
+              x: colors.magnitude,
+              y: colors[key],
+              color,
+              width: 2.2,
+            }))}
+            aspect={0.32}
+          />
+          <div className="galaxy-plot__definitions">
+            {COLOR_TREND_SERIES.map(({ key, label, color }) => (
+              <span key={key}><i style={{ background: color }} />{label}</span>
+            ))}
+          </div>
+          {varianceSeries.length > 0 && <>
+            <Plot
+              xDomain={varianceX} yDomain={varianceY}
+              xTicks={ticks(varianceX, 7)} yTicks={physicalLogTicks(varianceY, 6)}
+              xLabel="VIS 2FWHM AB magnitude"
+              yLabel="flux-ratio variance (log scale)"
+              series={varianceSeries}
+              aspect={0.32}
+            />
+            <div className="galaxy-plot__definitions">
+              {COLOR_BAND_LABELS.map((band, index) => (
+                <span key={band}>
+                  <i style={{ background: COLOR_BAND_COLORS[index] }} />
+                  {band}/VIS: observed (solid) vs reported noise (dashed)
+                </span>
+              ))}
+            </div>
+          </>}
+          <p className="galaxy-q1-counts__note">
+            Generated colours resample real Q1 rows from the query point's
+            forest leaves; the drawn row's ratio is then sampled from its
+            Gaussian posterior with intrinsic variance = observed − noise
+            (floored at zero). Where the dashed noise curve approaches the
+            solid observed curve, the catalogue constrains only the median
+            colour relation. Colour rows require VIS 2FWHM S/N ≥ {
+              api.calibration.candidate.color_sfr_model?.vis_snr_floor ?? 5
+            }; fainter generated magnitudes reuse the deepest leaves.
+          </p>
+        </CardBody>
+      </Card>;
+    })()}
+
     <section className="galaxy-density-section">
       <header className="galaxy-density-section__head">
         <div>
-          <div className="eyebrow">fitted one-dimensional observables</div>
+          <div className="eyebrow">marginal distributions</div>
           <h2>Q1 aggregates, {api.training_included ? "all catalogued generated fields" : "current generated galaxies"}, and the active law</h2>
-          <p>Only VIS 2FWHM brightness and circularized half-light size are retained. Every diagnostic occupies its own full-width row.</p>
+          <p>VIS 2FWHM brightness, circularized half-light size, and the three NISP/VIS colours.</p>
         </div>
         <div className="galaxy-key">
           {ORDER.map((key) => <span key={key}><i style={{ background: SOURCE[key].color }} />{SOURCE[key].label}</span>)}

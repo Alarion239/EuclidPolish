@@ -84,10 +84,10 @@ def test_actual_synthetic_catalogue_draws_are_added_to_every_parameter(
     source = tmp_path / "sources_test.csv"
     source.write_text(
         "field_index,type,render,x_pix,y_pix,flux_vis_e,flux_y_e,"
-        "flux_j_e,flux_h_e,z,re_arcsec,target_logmass,target_logssfr,"
-        "achieved_vis_2fwhm_mag\n"
-        "0,galaxy,tng,10,10,1000,900,800,700,0.8,0.2,9.5,-9.8,24.0\n"
-        "0,galaxy,tng,20,20,500,450,400,350,1.2,0.1,8.8,-10.2,25.0\n"
+        "flux_j_e,flux_h_e,re_arcsec,achieved_vis_2fwhm_mag,"
+        "vis_minus_y_mag,y_j_color_mag,j_h_color_mag\n"
+        "0,galaxy,tng,10,10,1000,900,800,700,0.2,24.0,0.9,0.3,0.2\n"
+        "0,galaxy,tng,20,20,500,450,400,350,0.1,25.0,0.7,0.2,0.1\n"
     )
     monkeypatch.setattr(helper, "_synthetic_paths", lambda: ([], [source]))
 
@@ -98,7 +98,7 @@ def test_actual_synthetic_catalogue_draws_are_added_to_every_parameter(
     assert result["rows"] == 2
     assert result["fields"] == 1
     assert result["measured_radius_rows"] == 0
-    for key in ("redshift", "stellar_mass", "specific_sfr"):
+    for key in ("color_vis_y", "color_y_j", "color_j_h"):
         assert parameters[key]["series"]["synthetic"]["weighted_count"] == 2
     brightness = parameters["magnitude"]["photometry_series"]
     assert brightness["synthetic_vis_2fwhm"]["weighted_count"] == 2
@@ -113,10 +113,10 @@ def test_off_field_galaxies_do_not_enter_distribution_counts(
 ):
     source = tmp_path / "sources_test.csv"
     source.write_text(
-        "field_index,type,off_field,render,x_pix,y_pix,flux_vis_e,z,re_arcsec,"
-        "target_logmass,target_logssfr,achieved_vis_2fwhm_mag\n"
-        "0,galaxy,0,tng,10,10,1000,0.8,0.2,9.5,-9.8,24.0\n"
-        "0,galaxy,1,tng,-4,10,900,0.9,0.3,9.6,-9.7,24.2\n"
+        "field_index,type,off_field,render,x_pix,y_pix,flux_vis_e,re_arcsec,"
+        "achieved_vis_2fwhm_mag,vis_minus_y_mag,y_j_color_mag,j_h_color_mag\n"
+        "0,galaxy,0,tng,10,10,1000,0.2,24.0,0.9,0.3,0.2\n"
+        "0,galaxy,1,tng,-4,10,900,0.3,24.2,0.8,0.2,0.1\n"
     )
     monkeypatch.setattr(helper, "_synthetic_paths", lambda: ([], [source]))
 
@@ -126,7 +126,7 @@ def test_off_field_galaxies_do_not_enter_distribution_counts(
     assert result["available"] is True
     assert result["fields"] == 1
     assert result["rows"] == 1
-    assert parameters["redshift"]["series"]["synthetic"][
+    assert parameters["color_vis_y"]["series"]["synthetic"][
         "weighted_count"
     ] == 1
 
@@ -349,9 +349,6 @@ def test_euclid_aperture_growth_compares_all_vis_apertures_to_total_proxies(
     meta.write_text(json.dumps({"area_arcmin2": 1.0, "rows": 1}))
     monkeypatch.setattr(helper, "euclid_catalog_path", lambda: catalog)
     monkeypatch.setattr(helper, "euclid_catalog_meta_path", lambda: meta)
-    monkeypatch.setattr(
-        helper, "read_phz_pdf_cache", lambda: (_ for _ in ()).throw(OSError()),
-    )
 
     parameters = helper._empty_parameters()
     source = helper._read_euclid(parameters, lambda *_: None)
@@ -426,9 +423,6 @@ def test_euclid_aperture_scatter_uses_phz_galaxies_when_extended_flag_is_unset(
     meta.write_text(json.dumps({"area_arcmin2": 1.0, "rows": 2}))
     monkeypatch.setattr(helper, "euclid_catalog_path", lambda: catalog)
     monkeypatch.setattr(helper, "euclid_catalog_meta_path", lambda: meta)
-    monkeypatch.setattr(
-        helper, "read_phz_pdf_cache", lambda: (_ for _ in ()).throw(OSError()),
-    )
 
     parameters = helper._empty_parameters()
     source = helper._read_euclid(parameters, lambda *_: None)
@@ -482,9 +476,6 @@ def test_euclid_radius_plot_adds_clean_phz_mer_sersic_re(
     }))
     monkeypatch.setattr(helper, "euclid_catalog_path", lambda: catalog)
     monkeypatch.setattr(helper, "euclid_catalog_meta_path", lambda: meta)
-    monkeypatch.setattr(
-        helper, "read_phz_pdf_cache", lambda: (_ for _ in ()).throw(OSError()),
-    )
 
     parameters = helper._empty_parameters()
     helper._read_euclid(parameters, lambda *_: None)
@@ -512,9 +503,6 @@ def test_euclid_radius_plot_explains_stale_cache_without_sersic_re(
     }))
     monkeypatch.setattr(helper, "euclid_catalog_path", lambda: catalog)
     monkeypatch.setattr(helper, "euclid_catalog_meta_path", lambda: meta)
-    monkeypatch.setattr(
-        helper, "read_phz_pdf_cache", lambda: (_ for _ in ()).throw(OSError()),
-    )
 
     parameters = helper._empty_parameters()
     helper._read_euclid(parameters, lambda *_: None)
@@ -1063,19 +1051,24 @@ def test_galaxy_distribution_controls_use_one_galaxy_query_action():
     assert "full faint extension" in source
     assert "half_light_shape" in source
     assert "normalized probability / dex" in source
-    assert 'const PARAMETER_ORDER = ["magnitude", "radius"]' in source
+    assert 'const PARAMETER_ORDER = [' in source
+    assert '"magnitude", "radius", "color_vis_y", "color_y_j", "color_j_h",' in source
+    assert '"Empirical colour model"' in source
+    assert "conditional_colors" in source
+    assert "model_mean_vis_minus_y" in source
+    assert "observed_ratio_variance_by_magnitude" in source
+    assert "noise_ratio_variance_by_magnitude" in source
     assert "ApertureLadder" not in source
     assert "JointDensityMaps" in source
-    assert "one shared Q1 plot" in source
-    assert "Q1 MER + PHZ, generated, and model contours" in source
-    assert "Every contour is labeled by its enclosed population mass" in source
+    assert "Q1, generated, and model contours" in source
+    assert "Contours are labeled by enclosed population mass" in source
     assert "const contourMaps = [q1, ...overlays]" in source
     assert "contourMassLabel(contour.mass_fraction)" in source
     assert "z: q1.density" not in source
     assert "neutral grayscale" not in source
     assert "Gray contours show" in source
     assert "blue dashed contours show" in source
-    assert "vermillion solid contours" in source
+    assert "red solid contours" in source
     assert "10 / 50 / 80 / 95 / 99 / 99.5 / 99.9% contours" in source
     assert "JOINT_DENSITY_COLOR" not in source
     assert 'map.key === "synthetic" ? [7, 4]' in source
@@ -1084,7 +1077,7 @@ def test_galaxy_distribution_controls_use_one_galaxy_query_action():
     assert "include training catalog" in source
     assert "no training" in source.lower()
     assert "Download {format.toUpperCase()}" in source
-    assert "paper figure · fixed layout" in source
+    assert "figure export" in source
     assert "broken conditional log-radius law" not in source
     assert "Added galaxies fainter than VIS 25.5" not in source
     assert "fitted mixture mean" not in source

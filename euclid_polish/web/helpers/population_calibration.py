@@ -98,8 +98,33 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+# The v15 candidate carries the exported colour+SFR forest (~20 MB), so the
+# dashboard cannot afford to re-read and re-validate it on every poll. The
+# cache key is the file identity; ``_write`` replaces atomically, so a refit
+# always changes it.
+_JOINT_CANDIDATE_CACHE: dict[str, Any] = {"key": None, "value": None}
+
+
+def _file_identity(path: Path) -> tuple[int, int] | None:
+    try:
+        status = path.stat()
+    except OSError:
+        return None
+    return (status.st_mtime_ns, status.st_size)
+
+
 def joint_galaxy_candidate() -> dict[str, Any] | None:
-    """Return the persisted Euclid-only brightness-radius candidate."""
+    """Return the persisted, structurally validated joint-galaxy candidate."""
+    identity = _file_identity(joint_galaxy_candidate_path())
+    if identity is not None and _JOINT_CANDIDATE_CACHE["key"] == identity:
+        return _JOINT_CANDIDATE_CACHE["value"]
+    value = _validated_joint_galaxy_candidate()
+    _JOINT_CANDIDATE_CACHE["key"] = identity
+    _JOINT_CANDIDATE_CACHE["value"] = value
+    return value
+
+
+def _validated_joint_galaxy_candidate() -> dict[str, Any] | None:
     source = _read(joint_galaxy_candidate_path())
     if not source:
         return None
@@ -799,6 +824,37 @@ def joint_galaxy_state() -> dict[str, Any]:
             candidate and active and candidate.get("valid")
             and candidate.get("fingerprint") == active.get("fingerprint")
         ),
+    }
+
+
+def joint_galaxy_payload_summary(
+    payload: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """The candidate/active payload without the packed forest arrays.
+
+    Everything the dashboard renders (laws, plots, provenance, colour-model
+    metadata) survives; only the encoded row table and trees are dropped —
+    they are megabytes of base64 the browser never uses.
+    """
+    if not payload:
+        return payload
+    slim = dict(payload)
+    model = payload.get("color_sfr_model")
+    if isinstance(model, dict):
+        slim["color_sfr_model"] = {
+            key: value for key, value in model.items()
+            if key not in ("rows", "trees")
+        }
+    return slim
+
+
+def joint_galaxy_state_summary() -> dict[str, Any]:
+    """``joint_galaxy_state`` with browser-sized payloads."""
+    state = joint_galaxy_state()
+    return {
+        **state,
+        "candidate": joint_galaxy_payload_summary(state.get("candidate")),
+        "active": joint_galaxy_payload_summary(state.get("active")),
     }
 
 
