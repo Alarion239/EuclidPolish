@@ -97,6 +97,33 @@ def test_simulator_gives_every_band_the_same_drawn_position(monkeypatch):
     assert _is_table_row(levels, np.array([seen[name] for name in BANDS]))
 
 
+def test_scene_scale_preserves_the_measured_spread_and_band_pairing():
+    """The drawn row already carries the real field-to-field spread, so the
+    per-scene scale must stay small. A wide one inflates that spread and, being
+    a single factor shared by the four bands, lifts the VIS-NISP correlation
+    (0.30 measured, 0.53 under a +-20% scale)."""
+    config = ObservationSimulatorConfig()
+    assert config.noise_global_scale_min >= 0.98
+    assert config.noise_global_scale_max <= 1.02
+
+    levels = load_mer_noise_levels()
+    rng = np.random.default_rng(0)
+    rows = levels.levels_e[rng.integers(len(levels.levels_e), size=20_000)]
+    scale = rng.uniform(
+        config.noise_global_scale_min, config.noise_global_scale_max, len(rows),
+    )
+    drawn = np.log(rows * scale[:, None])
+    table = np.log(levels.levels_e)
+    for index in range(len(BANDS)):
+        assert drawn[:, index].std() == pytest.approx(
+            table[:, index].std(), rel=0.05,
+        )
+    vis, j_e = BANDS.index("VIS"), BANDS.index("J_E")
+    assert np.corrcoef(drawn[:, vis], drawn[:, j_e])[0, 1] == pytest.approx(
+        np.corrcoef(table[:, vis], table[:, j_e])[0, 1], abs=0.05,
+    )
+
+
 def test_simulator_can_use_band_medians_instead(monkeypatch):
     seen = _captured_sky_levels(monkeypatch, draw_mer_noise_levels=False)
     assert all(seen[name] is None for name in BANDS)

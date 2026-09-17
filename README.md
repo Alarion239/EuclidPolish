@@ -295,12 +295,15 @@ we add a dedicated channel of sub-σ additive ridges with random orientation. Se
 
 ### 3.4 Bright-star saturation
 
-**Code:** `euclid_polish/sky/saturation.py`. Applied to the **dirty LR** stack (not at HR
-generation), gated by `MultiBandForwardConfig.add_saturation` (default True). Per-band well
-depths are derived so P(saturate) = 0.5 lands at calibration magnitudes (VIS ≈ 14, NISP
-≈ 17). Onset is a smooth ~1-mag transition (`Poisson(peak · 10^N(0,0.15)) ≥ well`, drawn
-independently per band); the saturated footprint is the union of 1–3 overlapping
-rectangles clipped to the well depth.
+**Code:** `euclid_polish/sky/observation/saturation.py`. Applied to the **dirty LR** stack
+(not at HR generation), gated by `ObservationSimulatorConfig.add_saturation` (default True).
+Any pixel at or above its band's well depth saturates — bright stars and bright galaxy
+nuclei alike, since the trigger is the pre-noise pixel value. The MER pipeline masks such
+cores instead of recording them clipped, so the region reads ~0: its bounding box plus 1–3
+overlapping rectangles are zeroed, and the clean HR target is untouched. Wells are
+stack-referred (VIS ≈ 710 ke⁻ from McCracken+25 blooming × the four exposures; NISP from
+`scripts/measure_star_saturation.py`). Not every saturated source is masked — see §5.2 for
+the per-source blackout probability.
 
 ---
 

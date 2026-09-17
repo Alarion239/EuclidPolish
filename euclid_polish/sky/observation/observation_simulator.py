@@ -127,13 +127,21 @@ class ObservationSimulatorConfig:
     distant_star_wing_width_max_lr_pix: float = 2.0
     distant_star_wing_fade_length_min_lr_pix: float = 60.0
     distant_star_wing_fade_length_max_lr_pix: float = 220.0
-    # Per-field depth jitter plus an occasional shared four-band pointing
-    # intersection.  Both scale distributions are centred on one: the
-    # augmentation broadens the range of field depths without systematically
-    # making the training set noisier.
+    # A tiny per-scene depth jitter plus an occasional shared four-band
+    # pointing intersection. Both scale distributions are centred on one.
+    # The jitter stays small on purpose: the drawn Q1 level already carries
+    # the real field-to-field spread (sd of log level 19% in VIS, 14-15% in
+    # NISP), so a wide knob both inflates that spread and, being a single
+    # common factor across the bands, lifts the measured VIS-NISP level
+    # correlation (0.30 -> 0.53 at +-20%). It exists only to keep scenes off
+    # the 294 discrete table values; the table's own levels are medians over
+    # thousands of noise-map pixels, so they are precise to well under 1%.
     add_noise_variation: bool = True
-    noise_global_scale_min: float = 0.80
-    noise_global_scale_max: float = 1.20
+    noise_global_scale_min: float = 0.99
+    noise_global_scale_max: float = 1.01
+    # The strip stands for a within-field pointing seam, which the level table
+    # cannot see: it reads one 6.4" position per tile while a scene spans
+    # 25.5". Its amplitude and rate are not measured yet.
     noise_region_probability: float = 0.20
     noise_region_fraction_min: float = 0.25
     noise_region_fraction_max: float = 0.50

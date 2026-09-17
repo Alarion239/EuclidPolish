@@ -56,6 +56,10 @@ def test_default_noise_variation_is_rare_and_centered():
     assert (
         config.noise_global_scale_min + config.noise_global_scale_max
     ) / 2.0 == pytest.approx(1.0)
+    # The measured level already spans the real field-to-field range; this
+    # scale only keeps scenes off the discrete table values.
+    assert config.noise_global_scale_min >= 0.98
+    assert config.noise_global_scale_max <= 1.02
     assert (
         config.noise_region_scale_min + config.noise_region_scale_max
     ) / 2.0 == pytest.approx(1.0)
