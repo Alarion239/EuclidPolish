@@ -61,6 +61,41 @@ def _properties(path: Path, *subhalo_ids: str) -> None:
     path.write_text("\n".join(rows) + "\n")
 
 
+def test_empty_atlas_names_the_directory_instead_of_blaming_measurements(
+    tmp_path,
+):
+    """An atlas with no complete galaxy must say so. Every count agrees at
+    zero there, so the generic "invalid or incomplete measurements" reason
+    sends the reader hunting for a broken frame that does not exist."""
+    atlas = tmp_path / "tng_skirt"
+    atlas.mkdir()
+    (atlas / "42").mkdir()                    # started download, no .done
+    properties = tmp_path / "properties.csv"
+    _properties(properties, "42")
+    manifest = tmp_path / "manifest.json"
+
+    report = validate_manifest(
+        str(atlas),
+        properties_path=str(properties),
+        manifest=build_manifest(
+            str(atlas),
+            properties_path=str(properties),
+            output_path=str(manifest),
+        ),
+        manifest_path_value=str(manifest),
+    )
+    assert report["valid"] is False
+    assert any(str(atlas) in reason for reason in report["reasons"])
+    assert not any("invalid or incomplete" in r for r in report["reasons"])
+
+    with pytest.raises(ValueError, match=str(atlas)):
+        ensure_manifest(
+            str(atlas),
+            properties_path=str(properties),
+            manifest_path_value=str(manifest),
+        )
+
+
 def test_manifest_is_atomic_and_validates_inventory(tmp_path):
     atlas = tmp_path / "tng_skirt"
     atlas.mkdir()

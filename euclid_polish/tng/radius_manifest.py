@@ -564,11 +564,21 @@ def validate_manifest(
         "properties": _property_identity(properties_path),
     })
     reasons: list[str] = []
+    if not galaxies:
+        # Without this the empty atlas reads as "invalid measurements", which
+        # sends the reader hunting for a broken FITS frame instead of a
+        # missing or mis-pointed atlas: with no galaxies every count agrees
+        # at zero and only the valid flag (expected_count > 0) goes false.
+        reasons.append(
+            f"no complete TNG galaxies under {os.path.abspath(tng_dir)} "
+            f"(each needs a {Config.Tng.DONE_MARKER} marker and all "
+            f"{N_ORIENTATIONS} orientations in every band)"
+        )
     if payload.get("version") != MANIFEST_VERSION:
         reasons.append("unsupported radius-manifest version")
     if payload.get("algorithm_version") != ALGORITHM_VERSION:
         reasons.append("radius algorithm version changed")
-    if not payload.get("valid"):
+    if galaxies and not payload.get("valid"):
         reasons.append("manifest contains invalid or incomplete measurements")
     if payload.get("atlas_inventory_fingerprint") != current_fp:
         reasons.append("atlas files or TNG properties changed since measurement")
@@ -647,6 +657,7 @@ def ensure_manifest(
         ]
         detail = list(result.get("reasons") or []) + failures
         raise ValueError(
-            "TNG radius manifest repair failed: " + "; ".join(detail)
+            f"TNG radius manifest repair failed (atlas {os.path.abspath(tng_dir)}, "
+            f"manifest {path}): " + "; ".join(detail)
         )
     return result
