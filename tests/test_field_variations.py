@@ -5,6 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+import euclid_polish.sky.observation.observation_simulator as observation_module
 from euclid_polish.config import Config
 from euclid_polish.image import Image
 from euclid_polish.sky.observation.artifacts import ArtifactConfig
@@ -39,20 +40,53 @@ def test_rotated_noise_region_covers_requested_cutout_fraction():
         region_probability=1.0,
         region_fraction_min=0.25,
         region_fraction_max=0.50,
-        region_scale_min=1.2,
-        region_scale_max=1.2,
+        region_step_min=1.2,
+        region_step_max=1.2,
     )
-    covered = float(np.mean(scale > 1.0))
+    covered = float(np.mean(scale != 1.0))
 
     assert scale.shape == (128, 160)
     assert 0.25 <= covered <= 0.50
-    np.testing.assert_allclose(np.unique(scale), [1.0, 1.2])
+    # The step lands deeper or shallower with equal probability.
+    assert {round(float(value), 5) for value in np.unique(scale)} <= {
+        1.0, 1.2, round(1.0 / 1.2, 5),
+    }
+
+
+def test_each_band_draws_its_own_seam_over_a_shared_field_depth(monkeypatch):
+    """Real VIS and NISP mosaics do not share pointing boundaries: of the 35
+    Q1 fields with a clean VIS seam, one also had a clean J seam and none
+    shared its geometry. The field-wide depth stays one draw per scene."""
+    seen: dict[str, np.ndarray] = {}
+
+    def fake_noise(signal, band, rng, **kwargs):
+        del rng
+        seen[band.name] = np.array(kwargs["noise_scale_map"], copy=True)
+        return signal
+
+    monkeypatch.setattr(observation_module, "apply_archive_noise", fake_noise)
+    simulator = ObservationSimulator(config=ObservationSimulatorConfig(
+        add_artifacts=False,
+        add_saturation=False,
+        randomize_psf=False,
+        add_distant_star_wings=False,
+        noise_region_probability=1.0,
+    ))
+    simulator.process(_blank_hr(128), np.random.default_rng(3))
+
+    maps = [seen[name] for name in Config.LR_INPUT_BAND_NAMES]
+    assert len(maps) == len(Config.LR_INPUT_BAND_NAMES)
+    assert any(not np.array_equal(maps[0], other) for other in maps[1:])
+    # Outside its seam every band sits at the one field depth.
+    depths = [float(np.median(one)) for one in maps]
+    assert max(depths) == pytest.approx(min(depths), rel=1e-6)
 
 
 def test_default_noise_variation_is_rare_and_centered():
     config = ObservationSimulatorConfig()
 
-    assert config.noise_region_probability == pytest.approx(0.20)
+    # Measured: a clean straight-line seam in 7-12% of real Q1 fields.
+    assert config.noise_region_probability == pytest.approx(0.10)
     assert (
         config.noise_global_scale_min + config.noise_global_scale_max
     ) / 2.0 == pytest.approx(1.0)
@@ -60,9 +94,10 @@ def test_default_noise_variation_is_rare_and_centered():
     # scale only keeps scenes off the discrete table values.
     assert config.noise_global_scale_min >= 0.98
     assert config.noise_global_scale_max <= 1.02
-    assert (
-        config.noise_region_scale_min + config.noise_region_scale_max
-    ) / 2.0 == pytest.approx(1.0)
+    # Measured seam steps cluster at 1.20 (p90 1.36), the square root of the
+    # integer exposure ratios sqrt(4/3), sqrt(3/2), sqrt(2).
+    assert config.noise_region_step_min >= 1.0
+    assert config.noise_region_step_max <= 1.5
 
 
 @pytest.mark.parametrize("band", [Config.BAND_VIS, Config.BAND_Y_E])
@@ -164,7 +199,8 @@ def test_simulator_adds_off_field_wing_without_local_star_or_hr_target():
     {"noise_region_probability": 1.1},
     {"noise_region_fraction_min": 0.6,
      "noise_region_fraction_max": 0.5},
-    {"noise_region_scale_min": 1.2, "noise_region_scale_max": 1.1},
+    {"noise_region_step_min": 1.3, "noise_region_step_max": 1.1},
+    {"noise_region_step_min": 0.9},
 ])
 def test_invalid_field_variation_config_rejected(kwargs):
     with pytest.raises(ValueError):

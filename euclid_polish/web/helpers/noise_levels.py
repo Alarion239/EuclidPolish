@@ -90,8 +90,8 @@ def _generator_defaults() -> dict[str, Any]:
                 defaults["noise_region_fraction_min"],
                 defaults["noise_region_fraction_max"],
             ],
-            "scale": [
-                defaults["noise_region_scale_min"], defaults["noise_region_scale_max"],
+            "step": [
+                defaults["noise_region_step_min"], defaults["noise_region_step_max"],
             ],
         } if varied else None,
     }

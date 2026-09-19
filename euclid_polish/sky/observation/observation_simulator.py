@@ -139,14 +139,21 @@ class ObservationSimulatorConfig:
     add_noise_variation: bool = True
     noise_global_scale_min: float = 0.99
     noise_global_scale_max: float = 1.01
-    # The strip stands for a within-field pointing seam, which the level table
-    # cannot see: it reads one 6.4" position per tile while a scene spans
-    # 25.5". Its amplitude and rate are not measured yet.
-    noise_region_probability: float = 0.20
+    # The strip stands for a within-field pointing seam. Measured on the 294
+    # scene-sized Q1 noise cutouts (2026-09-19): a clean straight-line step
+    # appears in 7-12% of fields, and per band independently — of 35 fields
+    # with a clean VIS seam only one also had a clean J seam and none shared
+    # its geometry, so every band draws its own.
+    noise_region_probability: float = 0.10
     noise_region_fraction_min: float = 0.25
     noise_region_fraction_max: float = 0.50
-    noise_region_scale_min: float = 0.50
-    noise_region_scale_max: float = 1.50
+    # A seam is one side of the field getting a different number of exposures,
+    # so its depth step is the square root of a small integer ratio:
+    # sqrt(4/3) = 1.15, sqrt(3/2) = 1.22, sqrt(2) = 1.41. The measured clean
+    # steps cluster right there (p50 1.20, p90 1.36, max 2.03), far short of
+    # the 0.5-1.5 this used to guess. Applied deeper or shallower alike.
+    noise_region_step_min: float = 1.10
+    noise_region_step_max: float = 1.45
 
     def __post_init__(self) -> None:
         if self.nisp_resample_kernel not in ("bilinear", "cubic"):
@@ -221,11 +228,11 @@ class ObservationSimulatorConfig:
                 "noise region fractions must satisfy 0 < min <= max < 1"
             )
         if not (
-            0.0 < float(self.noise_region_scale_min)
-            <= float(self.noise_region_scale_max)
+            1.0 <= float(self.noise_region_step_min)
+            <= float(self.noise_region_step_max)
         ):
             raise ValueError(
-                "regional noise scales must satisfy 0 < min <= max"
+                "regional depth steps must satisfy 1 <= min <= max"
             )
 
 
@@ -619,19 +626,28 @@ class ObservationSimulator:
                 ),
             )
 
-        noise_scale_map = None
+        # One field depth for the whole scene — the bands' depths already move
+        # together through the drawn level row — but a seam per band: real VIS
+        # and NISP mosaics do not share their pointing boundaries.
+        noise_scale_maps: dict[str, np.ndarray] = {}
         if self.config.add_noise and self.config.add_noise_variation:
-            noise_scale_map = draw_noise_scale_map(
-                target_lr_shape,
-                rng,
-                global_scale_min=self.config.noise_global_scale_min,
-                global_scale_max=self.config.noise_global_scale_max,
-                region_probability=self.config.noise_region_probability,
-                region_fraction_min=self.config.noise_region_fraction_min,
-                region_fraction_max=self.config.noise_region_fraction_max,
-                region_scale_min=self.config.noise_region_scale_min,
-                region_scale_max=self.config.noise_region_scale_max,
-            )
+            field_scale = float(rng.uniform(
+                self.config.noise_global_scale_min,
+                self.config.noise_global_scale_max,
+            ))
+            for band_name in Config.LR_INPUT_BAND_NAMES:
+                noise_scale_maps[band_name] = draw_noise_scale_map(
+                    target_lr_shape,
+                    rng,
+                    global_scale=field_scale,
+                    global_scale_min=self.config.noise_global_scale_min,
+                    global_scale_max=self.config.noise_global_scale_max,
+                    region_probability=self.config.noise_region_probability,
+                    region_fraction_min=self.config.noise_region_fraction_min,
+                    region_fraction_max=self.config.noise_region_fraction_max,
+                    region_step_min=self.config.noise_region_step_min,
+                    region_step_max=self.config.noise_region_step_max,
+                )
         # One real Q1 sky position per scene sets all four bands' sky noise.
         sky_levels: dict[str, float] = {}
         if self.config.add_noise and self.config.draw_mer_noise_levels:
@@ -666,7 +682,7 @@ class ObservationSimulator:
                                  if star_data_trim is not None else None),
                 star_psf_spec=star_psf_spec,
                 distant_star_wings=distant_star_wings,
-                noise_scale_map=noise_scale_map,
+                noise_scale_map=noise_scale_maps.get(band_name),
                 sky_rms_e=sky_levels.get(band.name),
                 warp_displacements=warp_displacements,
             )

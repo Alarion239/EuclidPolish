@@ -406,7 +406,7 @@ class Config:
     # :func:`euclid_polish.sky.observation.noise.apply_archive_noise`. It is
     # stamped into generation and training provenance; change it whenever
     # that model changes, so records made under another model are refused.
-    NOISE_MODEL = "euclid-q1-mer-noise-levels-dithered-bilinear-v4"
+    NOISE_MODEL = "euclid-q1-mer-noise-levels-dithered-bilinear-v5"
 
     # Canonical band ordering for the 4-channel network input AND the
     # 4-channel HR target (same bands, same order: the model maps the

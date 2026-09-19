@@ -122,19 +122,30 @@ def draw_noise_scale_map(
     region_probability: float,
     region_fraction_min: float,
     region_fraction_max: float,
-    region_scale_min: float,
-    region_scale_max: float,
+    region_step_min: float,
+    region_step_max: float,
+    global_scale: float | None = None,
 ) -> np.ndarray:
     """Draw a field-wide noise scale plus an oversized rotated rectangle.
 
     The rectangle is much longer than the cutout and therefore appears as one
     pointing/intersection region with a straight rotated boundary.  Rejection
     sampling keeps its visible coverage between the requested fractions.
+
+    Its depth step is drawn from ``[region_step_min, region_step_max]`` and
+    applied deeper or shallower with equal probability: a real seam is one side
+    of the field receiving a different number of exposures, which scales the
+    noise by the square root of an integer ratio.
+
+    ``global_scale`` pins the field-wide factor instead of drawing one, so the
+    bands of a scene can share a depth while each draws its own seam.
     """
     height, width = (int(shape[0]), int(shape[1]))
     if height < 1 or width < 1:
         raise ValueError(f"shape must be positive, got {shape}")
-    global_scale = float(rng.uniform(global_scale_min, global_scale_max))
+    if global_scale is None:
+        global_scale = rng.uniform(global_scale_min, global_scale_max)
+    global_scale = float(global_scale)
     scale_map = np.full((height, width), global_scale, dtype=np.float32)
     if rng.random() >= float(region_probability):
         return scale_map
@@ -177,6 +188,8 @@ def draw_noise_scale_map(
             break
 
     if best_mask is not None and np.any(best_mask):
-        region_scale = float(rng.uniform(region_scale_min, region_scale_max))
-        scale_map[best_mask] *= np.float32(region_scale)
+        step = float(rng.uniform(region_step_min, region_step_max))
+        if rng.random() < 0.5:
+            step = 1.0 / step
+        scale_map[best_mask] *= np.float32(step)
     return scale_map

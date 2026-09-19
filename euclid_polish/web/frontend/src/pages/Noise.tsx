@@ -36,7 +36,7 @@ type NoisePayload = {
     noise_model: string;
     draws_measured_levels: boolean;
     scene_scale: [number, number] | null;
-    region: null | { probability: number; fraction: [number, number]; scale: [number, number] };
+    region: null | { probability: number; fraction: [number, number]; step: [number, number] };
   };
   summary: Record<string, BandSummary>;
   fields: FieldSummary[];
@@ -212,7 +212,7 @@ function HowScenesUseIt({ payload }: { payload: NoisePayload }) {
             {scale
               ? `The level is multiplied by a scene scale drawn uniformly from ${scale[0]}–${scale[1]}.`
               : "No depth jitter is applied."}
-            {region && ` In ${percent(region.probability)} of scenes a straight-edged strip covering ${percent(region.fraction[0])}–${percent(region.fraction[1])} of the cutout gets an extra ×${region.scale[0]}–${region.scale[1]}.`}
+            {region && ` Per band, in ${percent(region.probability)} of scenes a straight-edged strip covering ${percent(region.fraction[0])}–${percent(region.fraction[1])} of the cutout steps ×${region.step[0]}–${region.step[1]} deeper or shallower — a pointing seam, measured in 7–12% of real Q1 fields and independent between bands.`}
           </li>
           <li>
             <strong>Draw the noise.</strong> Per pixel σ = √(level² + signal) × scale, applied to a
