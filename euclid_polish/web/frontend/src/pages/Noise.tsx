@@ -22,6 +22,22 @@ type Histogram = {
   counts_by_field: Record<string, number[]>;
   jittered_counts: number[];
 };
+type WithinFieldBand = {
+  fields: number;
+  seam_count: number;
+  seam_rate: number;
+  counts: number[];
+  steps: null | { p50: number; p90: number; max: number };
+};
+type WithinFieldSection = {
+  cutout_arcsec: number;
+  sub_tile_arcsec: number;
+  grid_side: number;
+  step_edges: number[];
+  step_threshold: number;
+  uniformity_threshold: number;
+  bands: Record<string, WithinFieldBand>;
+};
 type Position = { field: string; tile: string; ra: number; dec: number; levels_e: number[] };
 type FieldSummary = { name: string; positions: number; bands: Record<string, Quantiles> };
 type NoisePayload = {
@@ -41,6 +57,7 @@ type NoisePayload = {
   summary: Record<string, BandSummary>;
   fields: FieldSummary[];
   histograms: Record<string, Histogram>;
+  within_field: WithinFieldSection | null;
   log_correlation: number[][];
   positions: Position[];
 };
@@ -141,6 +158,95 @@ function LevelHistogram({ band, histogram, summary, fields, showJitter }: {
   );
 }
 
+/* Depth steps in ×1.0 … ×1.6, one tick per tenth. */
+function stepTicks([lo, hi]: [number, number]): Tick[] {
+  const ticks: Tick[] = [];
+  for (let tenth = Math.ceil(lo * 10); tenth <= Math.round(hi * 10); tenth++) {
+    ticks.push({ v: tenth / 10, label: `×${(tenth / 10).toFixed(1)}` });
+  }
+  return ticks;
+}
+
+function WithinField({ payload }: { payload: NoisePayload }) {
+  const within = payload.within_field;
+  if (!within) return null;
+  const region = payload.generator.region;
+  const percent = (value: number) => `${Math.round(100 * value)}%`;
+  const edges = within.step_edges;
+  // Exceedance, not a histogram: nearly every field sits in the ×1.0 bin, which
+  // would squash the tail the strip is calibrated on. "How many fields step at
+  // least this much" is also the shape of the knob — a rate and a range.
+  const series: Series[] = payload.bands.map((band, index) => {
+    const { counts, fields } = within.bands[band];
+    let remaining = counts.reduce((sum, count) => sum + count, 0);
+    const y = counts.map((count) => {
+      const above = remaining;
+      remaining -= count;
+      return fields ? (100 * above) / fields : 0;
+    });
+    return {
+      x: [...edges.slice(0, -1), edges[edges.length - 1]],
+      y: [...y, 0],
+      color: categorical(index), width: 2,
+    };
+  });
+  const xDomain: [number, number] = [edges[0], edges[edges.length - 1]];
+  const columns: Column<string>[] = [
+    { header: "band", cell: (band) => <strong>{bandLabel(band)}</strong> },
+    {
+      header: "fields with a seam", align: "right",
+      cell: (band) => `${within.bands[band].seam_count} of ${within.bands[band].fields}`,
+    },
+    { header: "rate", align: "right", cell: (band) => percent(within.bands[band].seam_rate) },
+    ...(["p50", "p90", "max"] as const).map((key): Column<string> => ({
+      header: `step ${key}`, align: "right",
+      cell: (band) => {
+        const steps = within.bands[band].steps;
+        return steps ? `×${steps[key].toFixed(2)}` : "—";
+      },
+    })),
+  ];
+  return (
+    <Card className="noise-card">
+      <CardHead title="How the depth varies inside one field"
+        sub={`Every ${within.cutout_arcsec}″ cutout splits into a ${within.grid_side}×${within.grid_side} grid of ${within.sub_tile_arcsec}″ sub-tiles. The step is the largest straight-line split of that grid; a seam also needs both sides uniform within ${Math.round(100 * (within.uniformity_threshold - 1))}%, which separates a pointing boundary from a bright source.`} />
+      <CardBody>
+        <Plot xDomain={xDomain} yDomain={[0, 100]}
+          xTicks={stepTicks(xDomain)}
+          yTicks={[0, 20, 40, 60, 80, 100].map((v) => ({ v, label: `${v}%` }))}
+          xLabel="largest straight-line depth step inside a field"
+          yLabel="fields stepping at least this much"
+          series={series}
+          bands={region ? [{
+            axis: "x", from: region.step[0], to: region.step[1],
+            color: C.comb, alpha: 0.14,
+          }] : []}
+          guides={[{
+            axis: "x", v: within.step_threshold, width: 1.6, dash: [4, 4],
+            label: "seam threshold",
+          }]}
+          aspect={0.42} />
+        <Legend items={[
+          ...payload.bands.map((band, index) => ({
+            label: bandLabel(band), color: categorical(index), line: true,
+          })),
+          ...(region ? [{
+            label: `generator step ×${region.step[0]}–${region.step[1]}`,
+            color: C.comb, filled: true,
+          }] : []),
+        ]} />
+        <Table columns={columns} rows={payload.bands} rowKey={(band) => band} />
+        <p className="noise-note">
+          The curve drops steeply: in most fields the depth is flat across a scene. Where it
+          crosses the threshold is the seam rate the generator's strip reproduces, drawn per
+          band because a seam in VIS rarely coincides with one in J. Steps beyond ×1.1 also
+          carry sources the uniformity cut removes, so the curve sits above the rate column.
+        </p>
+      </CardBody>
+    </Card>
+  );
+}
+
 function BandPairs({ payload }: { payload: NoisePayload }) {
   const [pair, setPair] = useState(PAIRS[0].value);
   const { bands, positions, log_correlation: correlation } = payload;
@@ -194,6 +300,13 @@ function HowScenesUseIt({ payload }: { payload: NoisePayload }) {
   const percent = (value: number) => `${Math.round(100 * value)}%`;
   const scale = generator.scene_scale;
   const region = generator.region;
+  const rates = payload.within_field
+    ? payload.bands.map((band) => payload.within_field!.bands[band].seam_rate)
+    : [];
+  const measuredSeams = rates.length
+    ? ` Measured in ${percent(Math.min(...rates))}–${percent(Math.max(...rates))}`
+      + " of real Q1 fields, independently per band."
+    : "";
   return (
     <Card className="noise-card">
       <CardHead title="How a scene gets its noise"
@@ -212,7 +325,7 @@ function HowScenesUseIt({ payload }: { payload: NoisePayload }) {
             {scale
               ? `The level is multiplied by a scene scale drawn uniformly from ${scale[0]}–${scale[1]}.`
               : "No depth jitter is applied."}
-            {region && ` Per band, in ${percent(region.probability)} of scenes a straight-edged strip covering ${percent(region.fraction[0])}–${percent(region.fraction[1])} of the cutout steps ×${region.step[0]}–${region.step[1]} deeper or shallower — a pointing seam, measured in 7–12% of real Q1 fields and independent between bands.`}
+            {region && ` Per band, in ${percent(region.probability)} of scenes a straight-edged strip covering ${percent(region.fraction[0])}–${percent(region.fraction[1])} of the cutout steps ×${region.step[0]}–${region.step[1]} deeper or shallower — a pointing seam.${measuredSeams}`}
           </li>
           <li>
             <strong>Draw the noise.</strong> Per pixel σ = √(level² + signal) × scale, applied to a
@@ -330,6 +443,7 @@ export default function NoisePage() {
           </CardBody>
         </Card>
 
+        <WithinField payload={payload} />
         <BandPairs payload={payload} />
         <HowScenesUseIt payload={payload} />
       </div>

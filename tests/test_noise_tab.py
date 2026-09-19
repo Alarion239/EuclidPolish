@@ -14,6 +14,8 @@ from euclid_polish.web.helpers.noise_levels import (
     jittered_counts,
     log10_edges,
     noise_levels_payload,
+    seam_splits,
+    seam_step,
 )
 
 ROOT = Path(__file__).parents[1]
@@ -40,6 +42,44 @@ def test_histograms_count_every_position_once():
         assert counts.sum() == positions
         # Each bin is rounded to 4 decimals in the payload.
         assert sum(histogram["jittered_counts"]) == pytest.approx(positions, abs=0.01)
+
+
+def test_within_field_seams_match_the_committed_sub_grids():
+    payload = noise_levels_payload()
+    within = payload["within_field"]
+    assert within["grid_side"] == 4
+    assert within["cutout_arcsec"] == pytest.approx(25.6)
+    assert within["sub_tile_arcsec"] == pytest.approx(6.4)
+    for band in payload["bands"]:
+        stats = within["bands"][band]
+        # Nearly every position splits; a few have too much unobserved sky.
+        positions = payload["source"]["position_count"]
+        assert 0.97 * positions <= stats["fields"] <= positions
+        assert sum(stats["counts"]) == stats["fields"]
+        # Clean seams are the minority the generator's strip stands for.
+        assert 0.0 < stats["seam_rate"] < 0.25
+        assert stats["seam_count"] == pytest.approx(
+            stats["seam_rate"] * stats["fields"], abs=1,
+        )
+        steps = stats["steps"]
+        assert within["step_threshold"] <= steps["p50"] <= steps["p90"] <= steps["max"]
+
+
+def test_seam_step_separates_a_clean_boundary_from_a_bright_source():
+    """The discriminator the strip is calibrated on: a straight depth step
+    counts as a seam, one hot sub-tile is a source and does not."""
+    splits = seam_splits(4)
+    assert seam_step([10.0] * 16, splits)[0] == pytest.approx(1.0)
+
+    step, scatter = seam_step([10.0] * 8 + [12.0] * 8, splits)
+    assert step == pytest.approx(1.2)
+    assert scatter == pytest.approx(1.0)
+
+    source = [10.0] * 16
+    source[5] = 40.0
+    step, scatter = seam_step(source, splits)
+    assert step == pytest.approx(1.0)
+    assert scatter > 1.5
 
 
 def test_log_edges_cover_the_range_in_fixed_steps():
