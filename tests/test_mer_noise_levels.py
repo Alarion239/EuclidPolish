@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import numpy as np
 import pytest
 
@@ -9,6 +11,7 @@ import euclid_polish.sky.observation.observation_simulator as observation_module
 from euclid_polish.config import Config
 from euclid_polish.image import Image
 from euclid_polish.sky.observation.mer_noise_levels import (
+    TABLE_PATH,
     MERNoiseLevels,
     load_mer_noise_levels,
 )
@@ -38,6 +41,22 @@ def test_band_constants_are_the_table_medians():
         assert Config.get_band(name).mer_rms_e == pytest.approx(
             levels.median(name), rel=0.01,
         )
+
+
+def test_committed_rows_carry_the_within_field_sub_tile_grid():
+    """Each level is the median of a scene-sized 25.6" cutout, and the 4x4 grid
+    of 6.4" sub-tiles inside it records how the depth varies within one field.
+    Nothing draws from it yet; it is what a regeneration must not drop."""
+    table = json.loads(TABLE_PATH.read_text())
+    assert table["cutout_pixels"] == 256
+    assert table["sub_tile_pixels"] == 64
+    for row in table["rows"]:
+        for band in BANDS:
+            grid = row["sub_levels_e"][band]
+            assert len(grid) == 16
+            measured = [value for value in grid if value is not None]
+            assert measured, f"{row['tile']} {band} has no measurable sub-tile"
+            assert all(value > 0.0 for value in measured)
 
 
 def test_draw_returns_one_real_position_for_all_bands():

@@ -3,8 +3,15 @@
 ``mer_noise_levels.json`` is written by ``scripts/download_mer_noise_levels.py``
 from Euclid's own MER noise (RMS) maps: one observed position in every
 extragalactic Q1 tile, with the sky level in VIS, Y, J and H read at the same
-position. Drawing one whole row per scene keeps how the bands' depths move
-together: Y, J and H almost in lockstep, VIS only loosely.
+position. Each level is the median over a 25.6" cutout — the size of one
+generated scene, so the level is measured at the scale it is used. Drawing one
+whole row per scene keeps how the bands' depths move together: Y, J and H
+almost in lockstep, VIS only loosely.
+
+Rows also carry ``sub_levels_e``, the 4x4 grid of 6.4" sub-tile levels inside
+each cutout. Nothing in the generator reads it yet; it measures how the depth
+varies within a single field (pointing seams), which the field-wide scale and
+the regional strip stand for.
 """
 
 from __future__ import annotations

@@ -2,10 +2,12 @@
 """Sample Euclid's own MER noise maps at one random position per Q1 tile.
 
 Each Q1 MER tile ships a per-pixel noise (RMS) map next to its science image.
-This script requests a small 64x64 server-side cutout of the VIS, Y, J and H
-noise maps at one random observed position inside every extragalactic Q1
-tile, takes the median over sky pixels, and converts it to stack electrons
-per 0.1" pixel with the header MAGZERO. Tiles at field edges are partly
+This script requests a scene-sized 256x256 (25.6") server-side cutout of the
+VIS, Y, J and H noise maps at one random observed position inside every
+extragalactic Q1 tile, takes the median over sky pixels, and converts it to
+stack electrons per 0.1" pixel with the header MAGZERO. Each cutout also
+yields the 4x4 grid of 64-pixel sub-tile levels inside it, so the same
+download measures the depth variation within a field. Tiles at field edges are partly
 unobserved, so each tile has a few pre-drawn candidate positions; the first
 candidate with coverage in all four bands is kept. The resulting table of four-band levels is the
 noise-level distribution used by the synthetic generator.
@@ -73,7 +75,11 @@ FIELD_CENTRES = {
     "LDN1641": (85.7, -8.0),
 }
 SAMPLED_FIELDS = ("EDF-N", "EDF-S", "EDF-F")
-CUTOUT_PIXELS = 64
+# Scene-sized cutout: a generated field spans 25.5", so the level is measured
+# at the scale it is used. The 4x4 grid of 64-pixel sub-tiles inside it also
+# exposes the within-field depth variation a 6.4" cutout cannot see.
+CUTOUT_PIXELS = 256
+SUB_TILE_PIXELS = 64
 PIXEL_SCALE_ARCSEC = 0.1
 SEED = 2026
 POSITION_FRACTION = 0.8  # stay inside the central 80% of each tile's extent
@@ -216,6 +222,27 @@ def make_plan() -> dict:
     return plan
 
 
+def sub_tile_levels(data: np.ndarray, sky: np.ndarray, factor: float) -> list:
+    """Sky level of every ``SUB_TILE_PIXELS`` block, row-major.
+
+    A scene-sized cutout therefore also reports how the depth varies inside one
+    field — the pointing seams a 6.4" cutout cannot see. ``None`` marks a block
+    with too little sky to measure.
+    """
+    step = int(SUB_TILE_PIXELS)
+    height, width = data.shape
+    levels: list = []
+    for y0 in range(0, height - step + 1, step):
+        for x0 in range(0, width - step + 1, step):
+            block = sky[y0:y0 + step, x0:x0 + step]
+            if block.mean() < 0.5:
+                levels.append(None)
+                continue
+            values = data[y0:y0 + step, x0:x0 + step][block] * factor
+            levels.append(round(float(np.median(values)), 4))
+    return levels
+
+
 def level_from_cutout(content: bytes, band_name: str, url: str) -> dict:
     """Sky noise level of one noise-map cutout, in stack electrons per pixel."""
     with fits.open(io.BytesIO(content), memmap=False) as hdus:
@@ -242,6 +269,7 @@ def level_from_cutout(content: bytes, band_name: str, url: str) -> dict:
         "p16_e": float(np.percentile(values, 16)),
         "p84_e": float(np.percentile(values, 84)),
         "sky_fraction": float(sky.mean()),
+        "sub_levels_e": sub_tile_levels(data, sky, factor),
         "magzero": magzero,
         "shape": list(data.shape),
     }
@@ -339,6 +367,9 @@ def finalize() -> dict:
                 "ra": round(record["ra"], 6),
                 "dec": round(record["dec"], 6),
                 "levels_e": [round(bands[b]["level_e"], 4) for b in BANDS],
+                "sub_levels_e": {
+                    b: bands[b].get("sub_levels_e") for b in BANDS
+                },
             })
         else:
             last = record["attempts"][-1]["bands"] if record.get("attempts") else {}
@@ -354,9 +385,14 @@ def finalize() -> dict:
         "description": (
             "Sky noise levels read from Euclid's Q1 MER noise (RMS) maps: one random "
             "position per extragalactic tile, the median of noise-map values below five "
-            "times the cutout median in a 64x64 pixel (6.4 arcsec) cutout, in stack "
-            "electrons per 0.1 arcsec pixel via each cutout's MAGZERO."
+            "times the cutout median in a 256x256 pixel (25.6 arcsec, one generated "
+            "scene) cutout, in stack electrons per 0.1 arcsec pixel via each cutout's "
+            "MAGZERO. Every row also carries sub_levels_e, the 4x4 grid of 64-pixel "
+            "sub-tile levels inside that cutout, which measures how the depth varies "
+            "within one field."
         ),
+        "cutout_pixels": int(plan.get("cutout_pixels", CUTOUT_PIXELS)),
+        "sub_tile_pixels": int(SUB_TILE_PIXELS),
         "release": "Q1_R1",
         "archive": IRSA,
         "tile_query": plan["tile_query"],

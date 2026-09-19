@@ -318,7 +318,7 @@ class Config:
         asinh_stretch_scale_e   = 100.0,
         # Calibrated against compact single-band outliers in real MER tiles.
         cr_rate_factor          = 0.002,
-        mer_rms_e               = 29.74,
+        mer_rms_e               = 29.81,
     )
 
     # Euclid archive delivers every band — VIS and NISP alike — resampled to
@@ -338,7 +338,8 @@ class Config:
     #   - dark current ~0.02 e⁻/s/pix (Sect. 4.1.2).
     # ``mer_rms_e`` values: per-band medians of the measured Q1 sky levels in
     # ``sky/observation/mer_noise_levels.json``, read from Euclid's own MER
-    # noise maps at one observed position per extragalactic Q1 tile
+    # noise maps at one observed position per extragalactic Q1 tile, each the
+    # median over a scene-sized 25.6" cutout
     # (scripts/download_mer_noise_levels.py). Generated scenes draw a whole
     # row of that table; these medians are the fallback and a sanity anchor.
     BAND_Y_E = BandConfig(
@@ -356,7 +357,7 @@ class Config:
         asinh_stretch_scale_e   = 100.0,
         archive_instrument      = "NISP",
         archive_filter          = "NIR_Y",
-        mer_rms_e               = 9.38,
+        mer_rms_e               = 9.40,
         detector_pixel_um       = 18.0,
         cr_rate_factor          = 0.015,
     )
@@ -376,7 +377,7 @@ class Config:
         asinh_stretch_scale_e   = 100.0,
         archive_instrument      = "NISP",
         archive_filter          = "NIR_J",
-        mer_rms_e               = 9.89,
+        mer_rms_e               = 9.90,
         detector_pixel_um       = 18.0,
         cr_rate_factor          = 0.015,
     )
@@ -396,7 +397,7 @@ class Config:
         asinh_stretch_scale_e   = 100.0,
         archive_instrument      = "NISP",
         archive_filter          = "NIR_H",
-        mer_rms_e               = 9.71,
+        mer_rms_e               = 9.69,
         detector_pixel_um       = 18.0,
         cr_rate_factor          = 0.015,
     )
@@ -405,7 +406,7 @@ class Config:
     # :func:`euclid_polish.sky.observation.noise.apply_archive_noise`. It is
     # stamped into generation and training provenance; change it whenever
     # that model changes, so records made under another model are refused.
-    NOISE_MODEL = "euclid-q1-mer-noise-levels-dithered-bilinear-v3"
+    NOISE_MODEL = "euclid-q1-mer-noise-levels-dithered-bilinear-v4"
 
     # Canonical band ordering for the 4-channel network input AND the
     # 4-channel HR target (same bands, same order: the model maps the
