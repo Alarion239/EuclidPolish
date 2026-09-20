@@ -1454,10 +1454,11 @@ class EnsembleTrainStep(FASRCPipelineStep):
         if str(params.get("icnr", "")).strip().lower() in (
                 "1", "true", "yes", "on"):
             cmd += ["--icnr"]
-        # Star regime (default starless): 0 = starfull (reconstruct stars).
-        if str(params.get("starless", "1")).strip().lower() in (
-            "0", "false", "no", "off"):
-            cmd += ["--starless", "0"]
+        # Star regime (default starfull: reconstruct stars). Starless — erase
+        # them — is the opt-in, so only that case emits the flag.
+        if str(params.get("starless", "0")).strip().lower() in (
+            "1", "true", "yes", "on"):
+            cmd += ["--starless", "1"]
         star_prior_file = str(params.get("_star_prior_file", "") or "").strip()
         if star_prior_file:
             cmd += ["--star-prior-file", star_prior_file]

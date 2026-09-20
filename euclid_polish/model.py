@@ -426,7 +426,7 @@ class Model:
         saturation_mask_prob: float = Config.TRAIN_SATURATION_MASK_PROB,
         target_fwhm_arcsec: float = Config.TARGET_PSF_FWHM_ARCSEC,
         star_prior_payload: dict | None = None,
-        starless: bool = True,
+        starless: bool = False,
         **kwargs,
     ) -> None:
         """Train the model on TFRecord files at ``lr_path`` and ``hr_path``.

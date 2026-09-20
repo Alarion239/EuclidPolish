@@ -190,6 +190,27 @@ class TestRegistry:
         assert argv[argv.index("--steps") + 1] == "150000"
         assert argv[argv.index("--base-seed") + 1] == "42"
 
+    def test_ensemble_train_defaults_to_starfull(self, monkeypatch):
+        """No star-regime param → STARFULL: no --starless flag is emitted, so
+        the trainer's own starfull default applies."""
+        monkeypatch.setattr(
+            "euclid_polish.web.fasrc_pipeline.next_member_names",
+            lambda base, k: ["member_09"])
+        argv = REGISTRY.get("ensemble_train").build_command({
+            "mode": "add", "count": 1, "steps": 1000,
+        })
+        assert "--starless" not in argv
+
+    def test_ensemble_train_opts_into_starless(self, monkeypatch):
+        """starless=1 is the opt-in and must be passed through explicitly."""
+        monkeypatch.setattr(
+            "euclid_polish.web.fasrc_pipeline.next_member_names",
+            lambda base, k: ["member_09"])
+        argv = REGISTRY.get("ensemble_train").build_command({
+            "mode": "add", "count": 1, "steps": 1000, "starless": "1",
+        })
+        assert argv[argv.index("--starless") + 1] == "1"
+
     def test_ensemble_train_passes_training_geometry(self, monkeypatch):
         monkeypatch.setattr(
             "euclid_polish.web.fasrc_pipeline.next_member_names",

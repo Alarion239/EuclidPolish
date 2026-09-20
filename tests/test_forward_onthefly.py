@@ -193,7 +193,7 @@ def test_crops_target_is_starless_even_with_injection(gaussian_sets):
     them."""
     field = _field()
     fwd = OnTheFlyForward(gaussian_sets, seed=5, crops_per_field=4,
-                          hr_crop_size=CROP,
+                          hr_crop_size=CROP, starless=True,
                           add_noise=False, add_artifacts=False,
                           add_saturation=False, inject_stars=True,
                           star_density_arcmin2=500.0,
@@ -206,6 +206,23 @@ def test_crops_target_is_starless_even_with_injection(gaussian_sets):
             for x in range(0, FIELD - CROP + 1, 2)
             for y in range(0, FIELD - CROP + 1, 2))
         assert found, f"HR crop {k} is not a starless sub-tile of the field"
+
+
+def test_default_regime_is_starfull(gaussian_sets):
+    """Unasked, the live forward supervises STARFULL: the target keeps the
+    injected stars, so an HR crop is NOT a sub-tile of the starless field."""
+    field = _field()
+    kw = {"seed": 5, "crops_per_field": 4, "hr_crop_size": CROP,
+          "add_noise": False, "add_artifacts": False, "add_saturation": False,
+          "inject_stars": True, "star_density_arcmin2": 500.0,
+          "star_prior_payload": _stellar_prior_payload(),
+          "target_fwhm_arcsec": 0.0}
+    default = OnTheFlyForward(gaussian_sets, **kw)
+    assert default.starless is False
+    _lr, hr_default = default.crops(field)
+    _lr2, hr_starfull = OnTheFlyForward(
+        gaussian_sets, starless=False, **kw).crops(field)
+    assert np.array_equal(hr_default, hr_starfull)
 
 
 def test_both_regimes_inject_stars_only_target_differs(gaussian_sets):

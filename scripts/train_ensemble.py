@@ -174,12 +174,13 @@ def parse_args(argv=None) -> argparse.Namespace:
                         "source receives a dark rectangular core. Default "
                         "0.2; maximum 0.5 so intact bright stars remain "
                         "common.")
-    p.add_argument("--starless", type=int, default=1,
-                   help="1/0 — STARLESS member: the forward injects a fresh "
-                        "star realization each visit and the target is the "
-                        "starless scene, so the model learns to ERASE stars "
-                        "(scored on lr↔clean). 0 = starfull: keep the scene's "
-                        "stars, reconstruct them (scored on lr↔hr). Recorded "
+    p.add_argument("--starless", type=int, default=0,
+                   help="1/0 — DEFAULT 0 (starfull): the forward injects a "
+                        "fresh star realization each visit and keeps it in the "
+                        "target, so the model RECONSTRUCTS stars (scored on "
+                        "lr↔hr). 1 = starless: same injected stars in the LR "
+                        "but the target is the starless scene, so the model "
+                        "learns to ERASE them (scored on lr↔clean). Recorded "
                         "in origin.json; drives the /ensemble eval mode. "
                         "Forks always inherit their source member's regime.")
     p.add_argument("--star-prior-json", default="",

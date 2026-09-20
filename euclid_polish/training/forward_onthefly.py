@@ -116,7 +116,7 @@ class OnTheFlyForward:
         add_noise: bool = True,
         add_artifacts: bool = True,
         add_saturation: bool = True,
-        starless: bool = True,
+        starless: bool = False,
         inject_stars: bool = True,
         star_density_arcmin2: float | None = None,
         star_prior_payload: dict | None = None,

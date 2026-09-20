@@ -220,18 +220,19 @@ def test_member_is_starless_reads_origin(tmp_path):
     assert member_is_starless(str(d)) is False
 
 
-def test_build_specs_starless_default_and_flag(tmp_path):
-    on = parse_args(["--count", "2", "--steps", "10"])   # default --starless 1
-    assert all(s.starless for s in build_specs(on, str(tmp_path / "a")))
-    off = parse_args(["--count", "1", "--steps", "10", "--starless", "0"])
-    assert build_specs(off, str(tmp_path / "b"))[0].starless is False
+def test_build_specs_starfull_default_and_flag(tmp_path):
+    """No --starless → STARFULL (reconstruct stars), the default regime."""
+    off = parse_args(["--count", "2", "--steps", "10"])   # default --starless 0
+    assert not any(s.starless for s in build_specs(off, str(tmp_path / "a")))
+    on = parse_args(["--count", "1", "--steps", "10", "--starless", "1"])
+    assert build_specs(on, str(tmp_path / "b"))[0].starless is True
 
 
 def test_member_spec_starless_override(tmp_path):
     args = parse_args(["--count", "2", "--steps", "10",
-                       "--member-spec", '[{"starless": false}, {}]'])
+                       "--member-spec", '[{"starless": true}, {}]'])
     specs = build_specs(args, str(tmp_path / "ens"))
-    assert specs[0].starless is False and specs[1].starless is True
+    assert specs[0].starless is True and specs[1].starless is False
 
 
 # --------------------------------------------------------------------------- #

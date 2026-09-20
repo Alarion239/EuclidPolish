@@ -48,7 +48,7 @@ const newRow = (starless: boolean, from?: SpecRow): SpecRow => ({
 function buildSpec(rows: SpecRow[], mode: Mode): Record<string, unknown>[] {
   return rows.map((r) => {
     const o: Record<string, unknown> = { loss: r.loss };
-    if (!r.starless) o.starless = false;                 // default starless=true
+    if (r.starless) o.starless = true;                   // default starfull
     const noise = parseFloat(r.noise); if (noise > 0) o.noise_aug = noise;
     const boot = parseFloat(r.boot); if (boot > 0 && boot < 1) o.bootstrap = boot;
     const knee = parseFloat(r.knee); if (knee > 0 && knee !== 100) o.asinh_knee = knee;
@@ -70,7 +70,7 @@ export default function TrainMembersPage() {
   const [member, setMember] = useState(prefilledMember);
   const [selectedMembers, setSelectedMembers] = useState<string[]>(
     prefilledMember ? [prefilledMember] : []);
-  const [starlessDefault, setStarlessDefault] = useState(true);
+  const [starlessDefault, setStarlessDefault] = useState(false);
   const [forwardOtf, setForwardOtf] = useState(true);   // run-wide forward model
   const [batchSize, setBatchSize] = useState("4");
   const [hrCropSize, setHrCropSize] = useState("256");
@@ -81,7 +81,7 @@ export default function TrainMembersPage() {
   const [psfWarpSigma, setPsfWarpSigma] = useState("3");
   const [saturationMaskProb, setSaturationMaskProb] = useState("0.2");
   const [targetPsfFwhm, setTargetPsfFwhm] = useState("0.066");
-  const [rows, setRows] = useState<SpecRow[]>([newRow(true)]);
+  const [rows, setRows] = useState<SpecRow[]>([newRow(false)]);
   const [steps, setSteps] = useState("60000");
   const [continueBasis, setContinueBasis] = useState<ContinueBasis>("extra");
   const [extraSteps, setExtraSteps] = useState("50000");
