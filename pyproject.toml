@@ -92,3 +92,6 @@ exclude = ["**/__pycache__", "**/node_modules"]
 typeCheckingMode = "standard"
 pythonVersion = "3.12"
 reportMissingTypeStubs = false
+
+venvPath = "/Users/alarion239/miniforge3/envs"
+venv = "EuclidPolishEnv"
