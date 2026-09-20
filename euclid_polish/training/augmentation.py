@@ -7,10 +7,8 @@ from __future__ import annotations
 
 import numpy as np
 import tensorflow as tf
-from tensorflow.python.data.experimental import AUTOTUNE
 
 from euclid_polish.config import Config
-from euclid_polish.image.tfio import parse_example
 from euclid_polish.training.target_blur import (
     target_kernel_radius_pixels,
     target_sigma_pixels,
@@ -204,22 +202,3 @@ def _augment_multiband(
     return lr, hr
 
 
-# ---------------------------------------------------------------------------
-# LR-only streaming dataset (no HR side)
-# ---------------------------------------------------------------------------
-
-def lr_only_dataset(dirty_path: str, *, batch_size: int) -> tf.data.Dataset:
-    """Streaming LR-only dataset from a ``dirty_{subset}.tfrecord``.
-
-    Applies the same per-band asinh stretch as the training path.
-    Yields LR tensors of shape ``[B, H, W, 4]``.
-    """
-    n_lr = Config.NUM_LR_CHANNELS
-
-    def _parse(raw):
-        return asinh_stretch_lr(parse_example(raw, n_lr))
-
-    return (tf.data.TFRecordDataset(dirty_path)
-            .map(_parse, num_parallel_calls=AUTOTUNE)
-            .batch(batch_size)
-            .prefetch(AUTOTUNE))

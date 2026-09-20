@@ -15,7 +15,7 @@ from euclid_polish.web import fasrc_config
 from euclid_polish.web.fasrc_pipeline import (
     REGISTRY,
     EnsembleTrainStep,
-    EuclidSkyDownloadStep,
+    EuclidCutoutDownloadStep,
     FASRCPipelineStep,
     StepRegistry,
     StepResources,
@@ -137,14 +137,12 @@ class TestStepResources:
 class TestRegistry:
 
     def test_all_steps_present(self):
-        """Registry must include the two round-trip steps (sky download +
-        LR-only TFRecord build), the Euclid star-cutout steps (per-page
-        cutout download + all-band ePSF extraction), and the synthetic
-        generator. The legacy ``run_pipeline.py`` training presets were
-        removed."""
+        """Registry must include the noise-model sampling steps, the Euclid
+        star-cutout steps (per-page cutout download + all-band ePSF
+        extraction), and the synthetic generator. The legacy
+        ``run_pipeline.py`` training presets were removed."""
         ids = {s.step_id for s in REGISTRY.all()}
         assert ids == {
-            "euclid_sky_download", "euclid_roundtrip_tfrecords",
             "vis_noise_sample", "archive_field_sample",
             "euclid_query", "euclid_verify_photometry",
             "download_euclid_cutouts", "extract_euclid_psf",
@@ -697,8 +695,8 @@ class TestRegistry:
             assert flag not in plain
 
     def test_lookup_by_id(self):
-        assert isinstance(REGISTRY.get("euclid_sky_download"),
-                          EuclidSkyDownloadStep)
+        assert isinstance(REGISTRY.get("download_euclid_cutouts"),
+                          EuclidCutoutDownloadStep)
         assert isinstance(REGISTRY.get("ensemble_train"), EnsembleTrainStep)
 
     def test_unknown_step_raises(self):
@@ -821,12 +819,12 @@ class TestSbatchRendering:
         assert not any(key.startswith("_vis_noise") for key in built["params"])
 
     def test_paths_use_job_name_and_timestamp(self, cfg):
-        step = REGISTRY.get("euclid_sky_download")
+        step = REGISTRY.get("vis_noise_sample")
         out = step.build_sbatch_body(
-            params={"n_positions": 5},
+            params={"n_clusters": 5},
             resources=step.defaults, cfg=cfg, label="x",
         )
-        assert out["name"].startswith("sky-cutouts-")
+        assert out["name"].startswith("vis-noise-samples-")
         assert out["script"].startswith("logs/pipeline/")
         assert out["script"].endswith(".sh")
         assert out["out"].endswith(".out")
@@ -849,11 +847,8 @@ class TestSbatchRendering:
             "tng_grid":                     "tng-grid",
             "tng_stack":                    "tng-stack",
             "poster_cutout":                "poster-cutout",
-            # Experimental-lane steps keep sane names for when they return.
-            "euclid_sky_download":          "sky-cutouts",
             "vis_noise_sample":             "vis-noise-samples",
             "archive_field_sample":         "archive-fields",
-            "euclid_roundtrip_tfrecords":   "roundtrip-tfrecords",
             "psf_rotation_pool":            "psf-rotpool",
         }
         _mock_population_calibrations(monkeypatch)
@@ -871,13 +866,6 @@ class TestSbatchRendering:
             # bolted onto the step id.
             assert out["name"].startswith(f"{step.job_name}-")
             assert f"--job-name={step.job_name}-" in out["body"]
-
-    def test_experimental_steps_flagged(self):
-        experimental_ids = {s.step_id for s in REGISTRY.all()
-                            if s.experimental}
-        assert experimental_ids == {
-            "euclid_sky_download", "euclid_roundtrip_tfrecords",
-        }
 
     def test_gpu_step_emits_gres_line(self, cfg):
         step = REGISTRY.get("ensemble_train")
@@ -1009,19 +997,6 @@ class TestSbatchRendering:
 
 
 
-    def test_euclid_sky_download_step_args(self, cfg):
-        step = REGISTRY.get("euclid_sky_download")
-        out = step.build_sbatch_body(
-            params={"n_positions": 50, "vis_pixels": 256},
-            resources=step.defaults, cfg=cfg, label="x",
-        )
-        body = out["body"]
-        assert "scripts/fasrc_download_euclid_sky_cutouts.py" in body
-        assert "--n-positions" in body and "50" in body
-        assert "--vis-pixels" in body and "256" in body
-        assert "--ra-centre"  in body
-        assert "--dec-centre" in body
-
     def test_vis_noise_sample_step_uses_spherical_star_support(self, cfg):
         step = REGISTRY.get("vis_noise_sample")
         assert step.defaults.n_cpus == 1
@@ -1069,18 +1044,6 @@ class TestSbatchRendering:
         forced = step.build_command({"force_redownload": "1"})
         assert forced.count("--force-redownload") == 1
 
-    def test_euclid_roundtrip_tfrecords_step_args(self, cfg):
-        step = REGISTRY.get("euclid_roundtrip_tfrecords")
-        out = step.build_sbatch_body(
-            params={"vis_pixels": 512, "stamp_size": 64, "valid_fraction": 0.15},
-            resources=step.defaults, cfg=cfg, label="x",
-        )
-        body = out["body"]
-        assert "scripts/fasrc_generate_euclid_roundtrip_tfrecords.py" in body
-        assert "--vis-pixels" in body and "512" in body
-        assert "--stamp-size" in body and "64" in body
-        assert "--valid-fraction" in body and "0.15" in body
-
     def test_command_args_shell_quoted(self, cfg):
         """Even pathological params shouldn't break sbatch."""
         # Subclass to inject a problematic arg — the public API quotes argv.
@@ -1106,7 +1069,7 @@ class TestSbatchRendering:
 
 class TestConcreteSteps:
 
-    @pytest.mark.parametrize("step_cls", [EuclidSkyDownloadStep])
+    @pytest.mark.parametrize("step_cls", [EuclidCutoutDownloadStep])
     def test_builds_nonempty_command(self, step_cls):
         step = step_cls()
         argv = step.build_command({})    # defaults only

@@ -14,13 +14,6 @@ This module factors all of that into one abstract base class
 Adding a new step (e.g. "ingest JWST F814W") is then a 30-line
 delta — no Flask, web template, or sbatch-template duplication.
 
-Steps marked ``experimental=True`` belong to the EXPERIMENTAL
-round-trip supervision lane — a feature for the future, disabled for
-now. They stay registered (so build_command unit tests and a future
-re-enable keep working) but are hidden from the WebUI step listing and
-refused by the submit endpoint while
-``euclid_polish.web.experimental.EXPERIMENTAL_LANES_ENABLED`` is False.
-
 The companion in :mod:`euclid_polish.web.fasrc_jobs` (the existing
 training-only sbatch builder) remains untouched for backwards
 compatibility; new code uses this module instead.
@@ -194,12 +187,6 @@ class FASRCPipelineStep(ABC):
     #: to ``step_id`` when unset; the timestamp suffix keeps log paths
     #: unique per submission.
     job_name:  str | None = None
-    #: EXPERIMENTAL-lane step (round-trip supervision).
-    #: While ``experimental.EXPERIMENTAL_LANES_ENABLED`` is False these
-    #: steps are hidden from the WebUI step listing and refused by the
-    #: submit endpoint — experimental features for the future, disabled
-    #: for now. The step classes stay registered so nothing else breaks.
-    experimental: bool = False
     #: Conda env to activate for this step. ``None`` uses the cluster default
     #: (``cfg.conda_env_path``). Set to an absolute env path or a named env
     #: when a step needs an isolated environment.
@@ -491,38 +478,6 @@ def render_sbatch_body(
 # Concrete steps
 # ---------------------------------------------------------------------------
 
-class EuclidSkyDownloadStep(FASRCPipelineStep):
-    """EXPERIMENTAL (round-trip lane) — disabled for now, kept for future work."""
-
-    def __init__(self):
-        super().__init__(
-            step_id="euclid_sky_download",
-            label="5a. Download real Euclid sky cutouts (round-trip)",
-            job_name="sky-cutouts",
-            experimental=True,
-            defaults=StepResources(
-                partition="shared", n_cpus=8, n_gpus=0,
-                memory="16G", time_limit="2:00:00",
-            ),
-            needs_gpu=False,
-        )
-
-    def build_command(self, params: dict[str, Any]) -> list[str]:
-        n_positions = int(params.get("n_positions", 200))
-        vis_pixels  = int(params.get("vis_pixels", 512))
-        ra_centre   = float(params.get("ra_centre", 270.0))
-        dec_centre  = float(params.get("dec_centre", 66.0))
-        radius_deg  = float(params.get("radius_deg", 2.0))
-        return [
-            "scripts/fasrc_download_euclid_sky_cutouts.py",
-            "--n-positions", str(n_positions),
-            "--vis-pixels",  str(vis_pixels),
-            "--ra-centre",   f"{ra_centre:g}",
-            "--dec-centre",  f"{dec_centre:g}",
-            "--radius-deg",  f"{radius_deg:g}",
-        ]
-
-
 class VISNoiseSampleStep(FASRCPipelineStep):
     """Download independent source-maskable VIS samples across Q1 support."""
 
@@ -612,34 +567,6 @@ class ArchiveFieldSampleStep(FASRCPipelineStep):
         ):
             cmd.append("--force-redownload")
         return cmd
-
-
-class EuclidRoundtripTFRecordStep(FASRCPipelineStep):
-    """EXPERIMENTAL (round-trip lane) — disabled for now, kept for future work."""
-
-    def __init__(self):
-        super().__init__(
-            step_id="euclid_roundtrip_tfrecords",
-            label="5b. Stack + chop Euclid sky cutouts into round-trip TFRecords",
-            job_name="roundtrip-tfrecords",
-            experimental=True,
-            defaults=StepResources(
-                partition="shared", n_cpus=4, n_gpus=0,
-                memory="16G", time_limit="1:00:00",
-            ),
-            needs_gpu=False,
-        )
-
-    def build_command(self, params: dict[str, Any]) -> list[str]:
-        vis_pixels = int(params.get("vis_pixels", 512))
-        stamp_size = int(params.get("stamp_size", 128))
-        valid_fraction = float(params.get("valid_fraction", 0.1))
-        return [
-            "scripts/fasrc_generate_euclid_roundtrip_tfrecords.py",
-            "--vis-pixels", str(vis_pixels),
-            "--stamp-size", str(stamp_size),
-            "--valid-fraction", f"{valid_fraction:g}",
-        ]
 
 
 class EuclidQueryStep(FASRCPipelineStep):
@@ -1654,10 +1581,8 @@ class SyntheticGenerateStep(RunPipelineStep):
 # ---------------------------------------------------------------------------
 
 STEP_CLASSES: tuple[Callable[[], FASRCPipelineStep], ...] = (
-    EuclidSkyDownloadStep,
     VISNoiseSampleStep,
     ArchiveFieldSampleStep,
-    EuclidRoundtripTFRecordStep,
     EuclidQueryStep,
     EuclidVerifyPhotometryStep,
     EuclidCutoutDownloadStep,

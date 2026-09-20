@@ -14,14 +14,6 @@ import numpy as np
 import pytest
 import tensorflow as tf
 
-from euclid_polish.config import Config
-from euclid_polish.image import Image
-from euclid_polish.image.tfio import open_writer, tfrecord_path
-from euclid_polish.training.augmentation import (
-    asinh_stretch_hr,
-    asinh_stretch_lr,
-    lr_only_dataset,
-)
 from euclid_polish.training.models.wdsr import wdsr
 from euclid_polish.training.trainer import (
     GRAD_SPIKE_SKIP_NORM,
@@ -195,39 +187,6 @@ def _train_pairs_dataset(n: int = 4, lr_side: int = 8, hr_side: int = 16,
     hr = rng.normal(size=(n, hr_side, hr_side, 1)).astype(np.float32)
     ds = tf.data.Dataset.from_tensor_slices((lr, hr))
     return ds.batch(batch_size).repeat()
-
-
-def _write_lr_only_tfrecord(path_dir: str, subset: str = "validate",
-                            n: int = 3, side: int = 8, seed: int = 3) -> str:
-    """Write a tiny LR-only ``dirty_{subset}.tfrecord`` and return its path."""
-    rng = np.random.default_rng(seed)
-    with open_writer(f"dirty_{subset}", records_dir=path_dir) as w:
-        for i in range(n):
-            data = rng.normal(size=(side, side, 4)).astype(np.float32)
-            img = Image(
-                data=data,
-                pixel_scale_arcsec=0.10,
-                band_names=Config.LR_INPUT_BAND_NAMES,
-                is_clean=False,
-                index=i,
-                subset=subset,
-            )
-            w.write(img, index=i)
-    return tfrecord_path(path_dir, f"dirty_{subset}")
-
-
-class TestLrOnlyDataset:
-
-    def test_lr_only_dataset_shape(self, tmp_path):
-        """``lr_only_dataset`` yields batched LR tensors ``[B, H, W, 4]``."""
-        path = _write_lr_only_tfrecord(str(tmp_path / "rt"), n=3, side=8)
-        ds = lr_only_dataset(path, batch_size=2)
-        batches = list(ds)
-        assert len(batches) == 2          # 3 records → batches of 2 + 1
-        b0 = batches[0]
-        assert b0.shape.as_list() == [2, 8, 8, 4]
-        assert batches[1].shape.as_list() == [1, 8, 8, 4]
-        assert b0.dtype == tf.float32
 
 
 class TestValidationLogging:

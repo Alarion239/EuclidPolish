@@ -1,12 +1,11 @@
 #!/usr/bin/env python
-"""Download multi-band Euclid sky cutouts for round-trip training.
+"""Download multi-band Euclid sky cutouts.
 
-Round-trip
-training adds a self-supervised signal on *real* Euclid observations:
-``loss = |Conv(M(LR_real)) - LR_real|`` where ``Conv`` is the
-deterministic Euclid forward operator (PSF + rebin, no noise).
-
-This script handles the data-acquisition half of that path:
+Feeds the noise-model calibration paths (``--sampling-mode star-support``
+samples real VIS noise fields over the Q1 star footprint;
+``--sampling-mode archive-fields`` derives compact matched four-band
+fields from the frozen VIS parents). The default ``single-disk`` mode
+downloads generic 4-band cutouts inside a circular footprint:
 
   1. Generate ``N`` random sky positions inside a circular footprint
      (default: 2° radius around RA=270°, Dec=66° — a deep Euclid
@@ -1005,7 +1004,7 @@ def bundle_path_for_id(output_dir: str, pos_id: int) -> str:
 
 
 def default_vis_noise_output_dir() -> str:
-    """Dedicated root that cannot collide with round-trip sky cutouts."""
+    """Dedicated root that cannot collide with the single-disk sky cutouts."""
     return os.path.join(Config.EUCLID_SKY_DIR, VIS_NOISE_SAMPLING_SUBDIR)
 
 
@@ -2154,7 +2153,7 @@ def parse_args() -> argparse.Namespace:
         "--sampling-mode", choices=("single-disk", "star-support", "archive-fields"),
         default="single-disk",
         help=(
-            "single-disk preserves the round-trip downloader; star-support "
+            "single-disk downloads generic 4-band cutouts in a disk; star-support "
             "builds equal-area spherical anchors over the saved Q1 star "
             "footprint and downloads one VIS field per unique parent mosaic; "
             "archive-fields derives five compact matched four-band fields "
@@ -2558,7 +2557,7 @@ def main() -> int:
     arcsec_side = args.vis_pixels * Config.BAND_VIS.pixel_scale_lr_arcsec
 
     print("=" * 64)
-    print("  Euclid sky cutout download (for round-trip training)")
+    print("  Euclid sky cutout download (single-disk mode)")
     print("=" * 64)
     print(f"  output dir       = {args.output_dir}")
     print(f"  sky disk         = (RA={args.ra_centre:.3f}°, "

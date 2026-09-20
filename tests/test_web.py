@@ -26,19 +26,6 @@ def client():
         yield c
 
 
-@pytest.fixture
-def lanes_client(experimental_lanes_on):
-    """Client with the EXPERIMENTAL round-trip lane enabled.
-
-    The round-trip lane surfaces are disabled by default (see
-    euclid_polish/web/experimental.py); tests that exercise those
-    pages/steps build their app behind the flag."""
-    app = create_app()
-    app.config["TESTING"] = True
-    with app.test_client() as c:
-        yield c
-
-
 def test_view_training_log_empty_is_404_not_500(client, tmp_path, monkeypatch):
     """An empty/header-only training log must 404 (placeholder), never 500."""
     ckpt = tmp_path / "ckpt" / "wdsr"
@@ -462,9 +449,9 @@ def test_inference_page_renders(client):
     _assert_react_shell(client.get("/inference"))
 
 
-def test_no_experimental_lane_traces_in_ui(client):
-    """With the experimental lane disabled (default), no lane surface
-    may be visible anywhere: no nav link to the Round-trip page."""
+def test_no_lane_traces_in_ui(client):
+    """The removed supervision lanes may leave no surface anywhere: no
+    nav link to a Round-trip page."""
     body = client.get("/ensemble").data.decode()
     assert "Round-trip" not in body, "nav still shows 'Round-trip'"
 
@@ -1169,7 +1156,7 @@ def test_serve_vis_unknown_file_404(client):
 
 
 # ---------------------------------------------------------------------------
-# FASRC pipeline status API — round-trip wiring
+# FASRC pipeline status API
 # ---------------------------------------------------------------------------
 #
 # /api/fasrc/steps/status returns the registered pipeline steps + an
@@ -1177,16 +1164,15 @@ def test_serve_vis_unknown_file_404(client):
 # side so the UI's JS dispatch (form fields + status badges) can rely
 # on them being there.
 
-def test_steps_status_hides_experimental_lane_steps_by_default(client):
-    """The EXPERIMENTAL round-trip lane is disabled for now — none of
-    its steps may surface in the step listing, so the UI renders no
-    card for them anywhere."""
+def test_steps_status_omits_removed_lane_steps(client):
+    """The removed supervision-lane steps may not surface in the step
+    listing, so the UI renders no card for them anywhere."""
     r = client.get("/api/fasrc/steps/status")
     assert r.status_code == 200
     step_ids = {s["step_id"] for s in r.get_json()["steps"]}
-    for gated in ("euclid_sky_download", "euclid_roundtrip_tfrecords"):
-        assert gated not in step_ids, (
-            f"experimental step '{gated}' leaked into the UI listing"
+    for gone in ("euclid_sky_download", "euclid_roundtrip_tfrecords"):
+        assert gone not in step_ids, (
+            f"removed step '{gone}' leaked into the UI listing"
         )
     # The active pipeline is untouched (training is ensemble-only).
     for kept in ("ensemble_train", "synthetic_generate", "euclid_query",
@@ -1194,39 +1180,13 @@ def test_steps_status_hides_experimental_lane_steps_by_default(client):
         assert kept in step_ids
 
 
-def test_experimental_step_submit_refused_by_default(client):
-    """Submitting a disabled experimental step (e.g. from a stale tab)
-    must be refused before anything reaches FASRC."""
-    r = client.post("/api/fasrc/steps/euclid_roundtrip_tfrecords/submit",
-                    data={"confirm": "yes"})
-    assert r.status_code == 404
-    assert "experimental" in r.get_json()["error"]
-
-
-def test_steps_status_exposes_roundtrip_steps_and_artifacts(lanes_client):
-    client = lanes_client
+def test_steps_status_artifact_values_are_none_or_bool(client):
     r = client.get("/api/fasrc/steps/status")
     assert r.status_code == 200
-    body = r.get_json()
-
-    # Steps registry: round-trip steps must appear so the UI
-    # auto-renders cards for them.
-    step_ids = {s["step_id"] for s in body["steps"]}
-    assert "euclid_sky_download"          in step_ids
-    assert "euclid_roundtrip_tfrecords"   in step_ids
-
-    # Artifact keys must appear in the dict regardless of SSH state
-    # (when disconnected they're None — meaning "unknown"; when SSH
-    # is up the probe returns True/False per actual existence). The
-    # JS side keys off these names; missing names would silently
-    # break the badge rendering for the new steps.
-    artifacts = body["artifacts"]
-    assert "euclid_sky"         in artifacts
-    assert "roundtrip_records"  in artifacts
+    artifacts = r.get_json()["artifacts"]
     # Values must be None or bool — never raw strings / ints — so the
     # JS ``=== true`` / ``=== false`` checks behave predictably.
-    for k in ("euclid_sky", "roundtrip_records"):
-        v = artifacts[k]
+    for k, v in artifacts.items():
         assert v is None or isinstance(v, bool), (
             f"artifacts[{k!r}] = {v!r} (type {type(v).__name__}) — "
             "must be None or bool"

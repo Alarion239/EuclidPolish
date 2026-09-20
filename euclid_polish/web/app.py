@@ -32,7 +32,7 @@ from flask import (
     url_for,
 )
 
-from euclid_polish.web import experimental, fasrc_config, fasrc_jobs
+from euclid_polish.web import fasrc_config, fasrc_jobs
 from euclid_polish.web.remote import STATE, SSHConfig, SSHError, SSHSession
 from euclid_polish.web.routes import (
     archive_fields,
@@ -116,15 +116,6 @@ def create_app() -> Flask:
     )
 
     register_mutation_guard(app)
-
-    # EXPERIMENTAL round-trip supervision lane: a feature for the future,
-    # disabled for now. Templates read this global to hide their nav links
-    # and step-card mounts — see euclid_polish.web.experimental. A context
-    # processor (not a bare jinja_env global) so the flag is read
-    # per-request and tests can flip it.
-    @app.context_processor
-    def _inject_experimental_flags():
-        return {"experimental_lanes": experimental.EXPERIMENTAL_LANES_ENABLED}
 
     # ---------------------------------------------------------------- #
     # Auto-connect to FASRC on launch. If we can't connect, every
@@ -213,11 +204,8 @@ def create_app() -> Flask:
     })
 
     # These pages are all rendered by the React shell even while their Flask
-    # handlers remain registered as deprecated compatibility code. The
-    # round-trip lane is normally disabled, but including it here prevents a
-    # feature flag change from silently bringing the old Jinja UI back.
+    # handlers remain registered as deprecated compatibility code.
     _DEPRECATED_PAGE_PATHS = frozenset({
-        "/roundtrip",
         "/cutouts/VIS", "/cutouts/Y_E", "/cutouts/J_E", "/cutouts/H_E",
     })
 

@@ -19,7 +19,6 @@ from flask import Response, abort, jsonify, render_template, request, stream_wit
 from euclid_polish.observability.training_log import TrainingLog
 from euclid_polish.training.log_plot import plot_training_records
 from euclid_polish.web import (
-    experimental,
     fasrc_config,
     fasrc_jobs,
     fasrc_log_parser,
@@ -598,11 +597,6 @@ def register(app):
 
         steps_payload = []
         for step in STEP_REGISTRY.all():
-            # EXPERIMENTAL round-trip lane: its steps are hidden from the
-            # UI while the feature flag is off —
-            # see euclid_polish.web.experimental.
-            if step.experimental and not experimental.EXPERIMENTAL_LANES_ENABLED:
-                continue
             steps_payload.append({
                 "step_id":     step.step_id,
                 "label":       step.label,
@@ -618,18 +612,6 @@ def register(app):
         # (the JS side maps each step_id to one of these keys).
         artifacts = {
             "ckpt": None,
-            # Round-trip pipeline artifacts (Chunk C3 + web wiring):
-            #   euclid_sky      — sky-position catalog written by the
-            #                     sky-download step (cutouts arrive in
-            #                     subdirs whose names depend on the
-            #                     requested size; gate on the catalog
-            #                     instead, which exists as soon as the
-            #                     position generation has run).
-            #   roundtrip_records — LR-only TFRecord produced by the
-            #                     stack/chop step. Single-file probe so
-            #                     the UI can flip ✓ as soon as the
-            #                     first shard lands.
-            "euclid_sky": None, "roundtrip_records": None,
             # Per-page Euclid star-cutout pipeline:
             #   euclid_cutouts — VIS cutout subdir, written by the
             #                    download_euclid_cutouts step.
@@ -649,16 +631,6 @@ def register(app):
                 "synthetic_records":
                     f"{cfg_loaded.data_dir}/images/records_v2/clean_train.tfrecord",
             }
-            # EXPERIMENTAL round-trip-lane artifacts: only probed when the
-            # lane is enabled — no point spending SSH time on features the
-            # UI hides.
-            if experimental.EXPERIMENTAL_LANES_ENABLED:
-                paths.update({
-                    "euclid_sky":
-                        f"{cfg_loaded.data_dir}/euclid_sky/sky_positions.csv",
-                    "roundtrip_records":
-                        f"{cfg_loaded.data_dir}/images/records_v2_euclid_roundtrip/dirty_train.tfrecord",
-                })
             probe = " && ".join(
                 f"(test -e {shlex.quote(p)} && echo {k}=1 || echo {k}=0)"
                 for k, p in paths.items()
@@ -706,14 +678,6 @@ def register(app):
             step = STEP_REGISTRY.get(step_id)
         except KeyError:
             return jsonify({"ok": False, "error": f"unknown step: {step_id}"}), 404
-        # EXPERIMENTAL round-trip-lane steps are disabled for now — refuse
-        # the submit so a stale tab can't launch one.
-        # See euclid_polish.web.experimental.
-        if step.experimental and not experimental.EXPERIMENTAL_LANES_ENABLED:
-            return jsonify({"ok": False, "error":
-                            f"step {step_id!r} is experimental and currently "
-                            "disabled"}), 404
-
         form = request.form.to_dict()
         # Multi-valued fields (the ensemble continue-mode member checkboxes)
         # flatten to a comma-joined string — to_dict() alone keeps only the

@@ -1,8 +1,8 @@
 """Tests for the TF-graph Euclid VIS forward op.
 
-The round-trip training path needs ``Conv(M(LR))`` inside the gradient
-tape. This module pins the four properties that have to hold for the
-loss to do the right thing:
+The /inference "forward(SR)" diagnostic needs ``Conv(M(LR))`` as a
+TF-graph op. This module pins the four properties that have to hold for
+it to do the right thing:
 
   1. **Shape contract**: input HR → output LR shrinks by exactly
      ``rebin_factor`` per side.
@@ -10,8 +10,7 @@ loss to do the right thing:
      preserves total flux to round-off for sources not pinned to the
      image edge.
   3. **Gradient flow**: ``tf.GradientTape`` produces a non-trivial
-     gradient of the forward-op output w.r.t. its input — without this,
-     the round-trip loss couldn't backprop into M.
+     gradient of the forward-op output w.r.t. its input.
   4. **Numerical parity** with the numpy synthetic forward path
      (``ObservationSimulator._process_one_band`` for VIS, noise off). Same
      PSF, same input → same output to within float32 round-off across
@@ -136,8 +135,7 @@ class TestGradientFlow:
             loss = tf.reduce_sum(lr ** 2)
         grad = tape.gradient(loss, hr)
         assert grad is not None
-        # Some pixels must have non-trivial gradient — otherwise the
-        # round-trip loss can't pull M's weights.
+        # Some pixels must have non-trivial gradient.
         assert float(tf.reduce_max(tf.abs(grad))) > 1e-6
 
     def test_psf_kernel_is_non_trainable(self, tmp_psf_fits):
@@ -157,8 +155,8 @@ class TestNumpyParity:
     """Pin the TF op against the existing scipy-based forward.
 
     The TF op MUST agree with ``ObservationSimulator._process_one_band`` (VIS,
-    noise off) so the round-trip loss isn't training the model to undo
-    a *different* Conv from the one applied at synthetic generation
+    noise off) so the forward diagnostic applies the same Conv as
+    synthetic generation
     time. Boundary pixels diverge by O(1) ULP because of how float32
     rounding accumulates across slightly different conv kernel paths
     (FFT vs spatial); we crop a PSF-sized border before comparing.

@@ -55,7 +55,6 @@ _PROJECT_ROOT = os.path.dirname(
 #: in the sandbox, so outputs stay isolated.
 INPUT_RELPATHS = [
     "images/records_v2",
-    "images/records_v2_euclid_roundtrip",
     "euclid_psf",
     "euclid_stars",
     "euclid_sky",

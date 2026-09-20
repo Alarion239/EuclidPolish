@@ -90,49 +90,7 @@
   // the cheapest DRY win.)
 
   function taskFields(step) {
-    // NOTE: the cases for the EXPERIMENTAL round-trip-lane steps
-    // (euclid_sky_download, euclid_roundtrip_tfrecords) are unreachable
-    // while the experimental flag is off — those steps are omitted from
-    // /api/fasrc/steps/status and their page mounts are gone. Kept so
-    // re-enabling the lane restores the cards unchanged.
     switch (step.step_id) {
-      case 'euclid_sky_download':
-        // Field names mirror the EuclidSkyDownloadStep.build_command
-        // params (n_positions, vis_pixels, ra_centre, dec_centre,
-        // radius_deg). RA/Dec defaults point at EDF-N (the field with
-        // Q1 coverage); the script uniformly samples ``n_positions``
-        // points inside the cos-Dec-corrected disk, then pulls one
-        // 4-band cutout per surviving position from the Euclid SAS.
-        return `
-          <label>N positions
-            <input type="number" name="n_positions" value="200" min="1" max="5000"
-                   title="How many random sky positions to draw inside the disk. Positions outside Euclid coverage are silently dropped at mosaic-lookup time, so the final cutout count is typically &lt; this."></label>
-          <label>VIS cutout (px)
-            <input type="number" name="vis_pixels" value="512" min="64" max="4096" step="32"
-                   title="Side length of the VIS cutout in 0.10″/pix Euclid pixels. NIR cutouts are sized to match the same angular footprint."></label>
-          <label>RA centre (deg)
-            <input type="number" name="ra_centre" value="270.0" step="any" min="0" max="360"
-                   title="Disk centre in ICRS degrees. Default 270° = EDF-N (matches Euclid Q1 coverage)."></label>
-          <label>Dec centre (deg)
-            <input type="number" name="dec_centre" value="66.0" step="any" min="-90" max="90"
-                   title="Default +66° = EDF-N."></label>
-          <label>Radius (deg)
-            <input type="number" name="radius_deg" value="2.0" step="any" min="0.01" max="10"
-                   title="Disk radius around (RA, Dec). 2° covers most of the contiguous EDF-N tile grid."></label>`;
-      case 'euclid_roundtrip_tfrecords':
-        return `
-          <label>Max records
-            <input type="number" name="max_records" value="1000" min="10" max="50000"
-                   title="LR-only TFRecords pulled from the sky cutouts. Each
-record stores VIS + Y_E + J_E + H_E."></label>
-          <label>Stamp size
-            <input type="number" name="stamp_size" value="128" min="32" max="512"
-                   title="LR side (0.10\"/pix) of each training stamp chopped out of
-a large cutout. Each large cutout yields (vis_pixels / stamp_size)² stamps."></label>
-          <label>Validate fraction
-            <input type="number" name="valid_fraction" value="0.1" step="0.05" min="0" max="0.5"
-                   title="Split at the position level so stamps from one
-large cutout don't leak across train/validate."></label>`;
       case 'download_euclid_cutouts':
         // Mirrors EuclidCutoutDownloadStep.build_command (vis_pixels,
         // workers). One shared angular field; each band fetches its own
@@ -507,8 +465,6 @@ large cutout don't leak across train/validate."></label>`;
     artifactStatus = artifactStatus || {};
     // Map step id → which artifact existence this step PRODUCES.
     const produces = {
-      euclid_sky_download: 'euclid_sky',
-      euclid_roundtrip_tfrecords: 'roundtrip_records',
       // New per-page tasks (registered in Phase 2 of the migration):
       euclid_query:            'catalog',
       download_euclid_cutouts: 'euclid_cutouts',

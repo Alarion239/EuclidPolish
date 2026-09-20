@@ -160,7 +160,7 @@ def test_q1_deep_field_coordinate_labels_are_not_swapped():
     assert labelled["field"].tolist() == ["EDF-F", "EDF-S", "EDF-N"]
 
 
-def test_star_support_default_has_dedicated_non_roundtrip_root(monkeypatch, tmp_path):
+def test_star_support_default_has_dedicated_root(monkeypatch, tmp_path):
     monkeypatch.setattr(sampling.Config, "EUCLID_SKY_DIR", str(tmp_path / "euclid_sky"))
 
     assert sampling.default_vis_noise_output_dir() == str(

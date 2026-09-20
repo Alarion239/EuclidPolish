@@ -12,9 +12,7 @@ import uuid
 from collections.abc import Callable
 from typing import Any, cast
 
-import matplotlib.pyplot as plt
 import numpy as np
-import tensorflow as tf
 from astropy.io import fits
 from astropy.io import fits as _fits
 from scipy import signal as scipy_signal
@@ -29,14 +27,11 @@ from euclid_polish.photometry import adu_per_s_to_electrons_factor
 from euclid_polish.psf.psf_library import load_all_band_psfs
 from euclid_polish.sky.observation.observation_simulator import ObservationSimulator
 from euclid_polish.training.inference import (
-    load_model_from_checkpoint,
     plot_reconstruction,
-    reconstruct,  # experimental round-trip lane only (raw keras model)
     scaled_wcs_header,
 )
 from euclid_polish.training.target_blur import blur_target_array
 from euclid_polish.web import fasrc_config, job_config
-from euclid_polish.web import fasrc_fetcher as _fasrc_fetcher
 from euclid_polish.web.fasrc_jobs import _conda_activate_snippet
 from euclid_polish.web.helpers.status import _fasrc_psf_dir
 from euclid_polish.web.remote import STATE
@@ -315,7 +310,7 @@ def _forward_model_sr_residual(
     Convolves SR with the empirical VIS ePSF, sum-rebins ×2 to the
     0.10″/pix LR grid (the deterministic ``EuclidVISForwardOp`` chain),
     crops to the common shape, and returns ``(predicted_dirty, residual)``
-    with ``residual = lr_vis − predicted_dirty``. This is the round-trip
+    with ``residual = lr_vis − predicted_dirty``. This is the forward-model
     self-consistency check — a well-behaved model reproduces the observed
     Euclid LR. May raise on PSF-load / shape errors; callers handle it.
 
@@ -325,7 +320,7 @@ def _forward_model_sr_residual(
     that the login-node generation used), not the local committed copy.
 
     ``sr_data`` may be the 4-band SR cube (the VIS+NISP model) — only
-    its VIS plane (channel 0) is round-tripped here.
+    its VIS plane (channel 0) is pushed through the forward model here.
     """
     sr_data = np.asarray(sr_data)
     if sr_data.ndim == 3:
@@ -641,149 +636,4 @@ def _job_reconstruct_euclid_cutout(
         "cutout_size":  cutout_size_vis_pixels,
         "bands":        res["bands"],
         "flux_ratio":   res["metrics"]["flux_ratio_sr_over_lr"],
-    }
-
-
-def _plot_lr_input(lr_cube, output_path, asinh_scale, *, label=""):
-    """Render the 4-band LR input as an asinh montage (no model needed).
-
-    Used by the round-trip inspector before any checkpoint exists, so the
-    user can still eyeball the real-Euclid stamps the network will be fed.
-    """
-    scale = float(asinh_scale) if asinh_scale and asinh_scale > 0 \
-            else float(Config.STRETCH_SCALE_E)
-    names = Config.LR_INPUT_BAND_NAMES
-    fig, axes = plt.subplots(1, len(names), figsize=(4 * len(names), 4.2))
-    if len(names) == 1:
-        axes = [axes]
-    for ax, name in zip(axes, names, strict=False):
-        plane = np.arcsinh(lr_cube[..., names.index(name)] / scale)
-        ax.imshow(plane, origin="lower", cmap="gray", interpolation="nearest")
-        ax.set_title(f"{name} (asinh)", fontsize=10)
-        ax.set_xticks([]); ax.set_yticks([])
-    fig.suptitle(f"Round-trip LR input · {label}  (0.10\"/pix, electrons)",
-                 fontsize=11)
-    fig.tight_layout()
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    fig.savefig(output_path, dpi=110, bbox_inches="tight")
-    plt.close(fig)
-
-
-def _job_roundtrip_inspect(
-    cap,
-    pos_id: int,
-    checkpoint_dir: str,
-    num_res_blocks: int,
-    asinh_scale: float | None = None,
-    show_all_bands: bool = False,
-) -> dict[str, Any]:
-    """Inspect one real-Euclid round-trip cutout — and its round-trip
-    reconstruction once a checkpoint exists.
-
-    Pulls the bundled ``sky_<pos_id>.fits`` (the 4-band cutouts step 1 of
-    the round-trip pipeline writes on FASRC) into the local cache,
-    converts each band from archive e⁻/s to total electrons via its
-    MAGZERO zeropoint factor (the same conversion the round-trip
-    TFRecords the trainer saw now use), and renders the LR input. When
-    the local checkpoint
-    mirror has a checkpoint, it also runs ``M → SR``, forward-models SR
-    back to the Euclid LR grid, and shows the round-trip residual — the
-    exact self-consistency the round-trip loss optimises.
-    """
-    cfg = fasrc_config.load()
-    remote = f"{cfg.data_dir}/euclid_sky/cutouts/sky_{int(pos_id):04d}.fits"
-    cap.tick(0, 4, f"fetching sky_{int(pos_id):04d}.fits from FASRC")
-    res = _fasrc_fetcher.fetch_one_file(remote)
-    if not res.ok or res.local_path is None:
-        raise RuntimeError(f"could not fetch {remote}: {res.error}")
-    local = res.local_path
-
-    cap.tick(1, 4, "reading 4-band bundle")
-    bands_data: dict[str, np.ndarray] = {}
-    bands_info: dict[str, dict[str, Any]] = {}
-    with fits.open(local) as hdul:
-        names_present = {
-            str(name) for hdu in hdul
-            if (name := getattr(hdu, "name", ""))
-        }
-        primary_hdr = cast(fits.PrimaryHDU, hdul[0]).header
-        for band_name in Config.LR_INPUT_BAND_NAMES:
-            if band_name not in names_present:
-                raise RuntimeError(
-                    f"bundle {os.path.basename(local)} is missing band "
-                    f"{band_name} (HDUs: {sorted(names_present)})"
-                )
-            band = Config.get_band(band_name)
-            # Archive e⁻/s → total electrons over the stack via the band's
-            # MAGZERO zeropoint factor — the SAME conversion as the
-            # direct-cutout reconstruct and the round-trip TFRecord
-            # generator (verify_star_photometry-validated). MAGZERO is
-            # preserved per band in the sky bundle.
-            band_hdu = cast(fits.ImageHDU, hdul[band_name])
-            band_hdr = band_hdu.header
-            magzero = float(cast(str | float, band_hdr.get(
-                "MAGZERO", band.sim_zeropoint_e,
-            )))
-            adu_to_e = adu_per_s_to_electrons_factor(magzero, band)
-            data_e = np.asarray(band_hdu.data, dtype=np.float32) * adu_to_e
-            bands_data[band_name] = data_e
-            bands_info[band_name] = {
-                "shape":    list(data_e.shape),
-                "magzero":  magzero,
-                "adu_to_e": adu_to_e,
-                "pix_mean": float(np.mean(data_e)),
-                "pix_std":  float(np.std(data_e)),
-            }
-    ra = float(cast(str | float, primary_hdr.get("RA", float("nan"))))
-    dec = float(cast(str | float, primary_hdr.get("DEC", float("nan"))))
-
-    shapes = {n: bands_data[n].shape for n in Config.LR_INPUT_BAND_NAMES}
-    if len(set(shapes.values())) != 1:
-        raise RuntimeError(f"per-band shapes disagree: {shapes}")
-    lr_cube = np.stack(
-        [bands_data[n] for n in Config.LR_INPUT_BAND_NAMES], axis=-1,
-    )
-    lr_vis = lr_cube[..., 0]
-
-    out_dir = Config.VIS_RECONSTRUCTION_DIR
-    os.makedirs(out_dir, exist_ok=True)
-    out_path = os.path.join(out_dir, "roundtrip_latest.png")
-
-    has_ckpt = bool(tf.train.latest_checkpoint(checkpoint_dir))
-    residual_std = None
-    if has_ckpt:
-        cap.tick(2, 4, "running model + round-trip forward")
-        model = load_model_from_checkpoint(
-            checkpoint_dir, Config.DEFAULT_REBIN_FACTOR, num_res_blocks,
-            nchan_out=Config.NUM_HR_CHANNELS,   # nchan_in inferred from ckpt
-        )
-        _, sr_data = reconstruct(model, lr_cube)
-        try:
-            predicted_dirty, residual = _forward_model_sr_residual(sr_data, lr_vis)
-            residual_std = float(residual.std())
-        except Exception as e:  # noqa: BLE001 — residual is a bonus panel
-            print(f"  residual skipped: {type(e).__name__}: {e}")
-            predicted_dirty, residual = None, None
-        plot_reconstruction(
-            lr_vis, sr_data, hr_data=None, output_path=out_path,
-            lr_cube=lr_cube, asinh_scale=asinh_scale,
-            show_all_bands=show_all_bands,
-            predicted_dirty=predicted_dirty, residual=residual,
-        )
-    else:
-        cap.tick(2, 4, "no checkpoint yet — rendering LR input only")
-        _plot_lr_input(lr_cube, out_path, asinh_scale,
-                       label=f"sky_{int(pos_id):04d}")
-    cap.tick(4, 4, "done")
-    print(f"  ✓ {out_path}")
-    return {
-        "output_path":    out_path,
-        "pos_id":         int(pos_id),
-        "ra":             ra,
-        "dec":            dec,
-        "has_checkpoint": has_ckpt,
-        "shape":          list(lr_vis.shape),
-        "bands":          bands_info,
-        "residual_std":   residual_std,
-        "local_bundle":   local,
     }

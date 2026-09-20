@@ -317,15 +317,7 @@ class TestRoutesRegistered:
         assert "/fasrc/file/download" in urls
         assert "/connection-error" in urls
         assert "/api/connection/retry" in urls
-        # The EXPERIMENTAL round-trip page is disabled by default — its
-        # route may not exist in a stock app.
-        assert "/roundtrip" not in urls, "/roundtrip should be hidden by default"
-
-    def test_experimental_lane_routes_register_when_enabled(
-            self, experimental_lanes_on):
-        from euclid_polish.web.app import create_app
-        app = create_app()
-        urls = {str(r) for r in app.url_map.iter_rules()}
-        assert "/roundtrip" in urls
+        # The removed round-trip page may not exist.
+        assert "/roundtrip" not in urls, "/roundtrip should be gone"
 
 

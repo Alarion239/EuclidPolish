@@ -1000,13 +1000,12 @@ class Config:
 
     @dataclass(frozen=True)
     class EuclidSky:
-        """Real-Euclid sky cutout download + round-trip TFRecord layout."""
+        """Real-Euclid sky cutout download layout (noise sampling + archive fields)."""
         SKY_SUBDIR: str               = "euclid_sky"
         CUTOUTS_SUBDIR: str           = "cutouts"
         SKY_CATALOG_FILENAME: str     = "sky_positions.csv"
         ARCHIVE_FIELDS_SUBDIR: str    = "archive_fields"
         ARCHIVE_FIELDS_MANIFEST_FILENAME: str = "archive_fields_manifest.json"
-        ROUNDTRIP_RECORDS_SUBDIR: str = "images/records_v2_euclid_roundtrip"
 
     @dataclass(frozen=True)
     class Tng:
@@ -1064,7 +1063,6 @@ class Config:
         EUCLID_ARCHIVE_FIELDS_DIR,
         EuclidSky.ARCHIVE_FIELDS_MANIFEST_FILENAME,
     )
-    ROUNDTRIP_RECORDS_DIR  = os.path.join(DATA_DIR, EuclidSky.ROUNDTRIP_RECORDS_SUBDIR)
     TNG_SKIRT_DIR          = os.path.join(DATA_DIR, Tng.SKIRT_SUBDIR)
     FASRC_CACHE_DIR        = os.path.join(DATA_DIR, WebFetch.CACHE_SUBDIR)
 
