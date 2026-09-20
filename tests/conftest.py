@@ -303,8 +303,7 @@ def _redirect_writable_config_paths(
 
 @_pytest.fixture
 def experimental_lanes_on(monkeypatch):
-    """Enable the EXPERIMENTAL supervision lanes (HST / star-anchor /
-    round-trip) for one test.
+    """Enable the EXPERIMENTAL round-trip supervision lane for one test.
 
     Their WebUI surfaces are disabled by default (see
     ``euclid_polish.web.experimental``); route registration reads the

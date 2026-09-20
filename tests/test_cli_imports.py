@@ -16,27 +16,6 @@ def test_run_pipeline_script_imports():
     import scripts.run_pipeline  # noqa: F401
 
 
-def test_fasrc_generate_hst_tfrecords_script_imports():
-    """Smoke guard for the analytic-A pair generator. A syntax error
-    here would only fire when SLURM actually executed the script,
-    wasting a real allocation."""
-    import importlib.util
-    import os
-    path = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "scripts", "fasrc_generate_hst_tfrecords.py",
-    )
-    spec = importlib.util.spec_from_file_location(
-        "fasrc_generate_hst_tfrecords_under_test", path,
-    )
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    assert callable(mod._init_worker)
-    assert callable(mod._kernel_forward)
-    assert callable(mod._is_stamp_too_bright)
-
-
 def test_cli_class_constructs():
     """InteractiveCLI class is well-formed and instantiates."""
     from euclid_polish.cli.main import InteractiveCLI

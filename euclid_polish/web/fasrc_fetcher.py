@@ -1,10 +1,10 @@
 """
 Pull-on-demand file fetcher for the FASRC remote tree.
 
-The UI's HST PSF / HST cutouts tabs need to read FITS files that live
-on FASRC netscratch, not locally. We rsync them through the existing
-SSH ControlMaster into ``data/_fasrc_cache/`` and route subsequent
-inspector views through the cached path.
+Several UI tabs need to read FITS files that live on FASRC netscratch,
+not locally. We rsync them through the existing SSH ControlMaster into
+``data/_fasrc_cache/`` and route subsequent inspector views through the
+cached path.
 
 Safeguards (informed by FASRC's documented best practices — see
 https://docs.rc.fas.harvard.edu/kb/transferring-data-on-the-cluster/,
@@ -37,7 +37,7 @@ import time
 from dataclasses import dataclass
 
 from euclid_polish.config import Config
-from euclid_polish.web import fasrc_config, fasrc_jobs
+from euclid_polish.web import fasrc_config
 from euclid_polish.web.remote import STATE
 
 # ---------------------------------------------------------------------------
@@ -351,34 +351,6 @@ def fetch_one_file(
             ok=True, local_path=local, from_cache=False,
             size_bytes=size_bytes,
         )
-
-
-# ---------------------------------------------------------------------------
-# Remote Python invocation — for the tile inspector
-# ---------------------------------------------------------------------------
-
-def run_remote_python(
-    script_rel_path: str, args: list[str], *,
-    binary: bool = False, timeout: int = 30,
-) -> tuple[int, object, str]:
-    """Run a project script on FASRC via the existing SSH ControlMaster.
-
-    Returns ``(rc, stdout, stderr)`` — stdout is bytes when ``binary=True``.
-    Delegates command construction to :func:`fasrc_jobs.build_remote_python_command`
-    so there is a single canonical implementation of the conda-activation and
-    environment-setup logic. Called by the HST tile inspector (``routes/hst.py``)
-    to run ``scripts/fasrc_inspect_tile.py`` on a login node without rsync'ing
-    the multi-GB tile back to local.
-    """
-    if STATE.ssh is None or not STATE.ssh.is_connected():
-        return 1, (b"" if binary else ""), "ssh not connected"
-    cfg = fasrc_config.load()
-    cmd = fasrc_jobs.build_remote_python_command(cfg, [script_rel_path, *args])
-    try:
-        return STATE.ssh.run(cmd, timeout=timeout, binary=binary)
-    except Exception as e:
-        return 1, (b"" if binary else ""), f"{type(e).__name__}: {e}"
-
 
 # ---------------------------------------------------------------------------
 # Remote directory listing (cheap — single SSH round-trip)

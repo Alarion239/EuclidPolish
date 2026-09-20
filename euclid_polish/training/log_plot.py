@@ -15,17 +15,13 @@ from euclid_polish.training.trainer import (
 
 _NUMERIC_LOG_COLS = {
     "step", "wall_time",
-    "loss", "loss_syn", "loss_hst", "loss_anchor",
+    "loss",
     "psnr_stretched", "psnr_raw",
     # Per-band validation PSNRs (psnr_vis / psnr_y_e / psnr_j_e /
     # psnr_h_e) — monitoring only; save-best stays on the joint PSNR.
     *PER_BAND_PSNR_COLUMNS,
     "gnorm_avg", "gnorm_max", "clip_norm", "duration_s",
-    # Multi-source validation columns (empty in synthetic-only / older
-    # runs — read_training_log skips empty cells, so those rows simply
-    # won't carry the key and the corresponding panel is omitted).
-    "psnr_stretched_hst", "psnr_raw_hst", "anchor_val_psnr",
-    "save_best_score",
+    "combined_loss",
 }
 
 # Wavelength-ordered display colors for the per-band panel: VIS (optical)
@@ -95,19 +91,13 @@ def plot_training_records(
     smooth_window: int = 0,
     title_suffix: str = "",
 ) -> tuple[int, int]:
-    """Plot the validation metrics — all on ONE graph.
+    """Plot the validation metrics (from a pre-loaded record list; used by
+    the FASRC dashboard which fetches the log over SSH and filters by
+    wall-time window).
 
-    Three curves share a single figure (from a pre-loaded record list;
-    used by the FASRC dashboard which fetches the log over SSH and
-    filters by wall-time window):
-
-      * synthetic PSNR (stretched)   — dB
-      * HST PSNR (stretched)         — dB (when logged)
-      * star-anchor PSNR (masked at the star pixel) — dB (when logged)
-
-    All three are PSNR in dB and "higher is better", so they share one
-    left axis. Synthetic-only / older runs without the HST / star-anchor
-    columns just show the one PSNR line.
+    Stacked panels (shared x): the validation PSNR (with the running-best
+    save threshold), the per-band PSNR when ≥ 2 bands are logged, and the
+    training / validation losses when logged.
 
     Returns ``(n_records, last_step)``.
     """
@@ -119,10 +109,10 @@ def plot_training_records(
     def _opt_series(col: str) -> tuple[np.ndarray, np.ndarray]:
         """(steps, values) for the rows that actually carry ``col``.
 
-        Multi-source columns are blank on rows from synthetic-only runs
-        (read_training_log drops empty cells → key absent) and ``None``
-        from the SSH parser; both are filtered so each curve plots only
-        the points genuinely measured.
+        Optional columns are blank on some rows (read_training_log drops
+        empty cells → key absent) and ``None`` from the SSH parser; both
+        are filtered so each curve plots only the points genuinely
+        measured.
         """
         xs: list[float] = []
         ys: list[float] = []
@@ -137,10 +127,6 @@ def plot_training_records(
                 continue
         return np.array(xs), np.array(ys)
 
-    hst_x, hst_y     = _opt_series("psnr_stretched_hst")
-    anc_x, anc_y     = _opt_series("anchor_val_psnr")
-    score_x, score_y = _opt_series("save_best_score")
-    has_score = score_x.size > 0
     # Per-band PSNR series (4-band runs; VIS-only / older logs carry none
     # or just psnr_vis — the panel renders whatever is there).
     band_data = []
@@ -151,21 +137,14 @@ def plot_training_records(
             band_data.append((bx, by, _BAND_PLOT_COLORS.get(col, "gray"),
                               label, col))
     # One band == the joint metric (VIS-only model) — a separate panel
-    # would just duplicate the synthetic PSNR line, so require ≥ 2.
+    # would just duplicate the PSNR line, so require ≥ 2.
     has_bands = len(band_data) >= 2
-    # Combined validation loss (lower better) — overlaid on the save-best
-    # score panel via a twin y-axis (different scale).
-    cl_x, cl_y = _opt_series("combined_loss")
 
-    # Per-lane training losses (lower better). Colours match the PSNR lines.
-    loss_data = []
-    for col, color, lab in (("loss_syn",    "tab:red",    "Synthetic loss"),
-                            ("loss_hst",    "tab:green",  "HST loss"),
-                            ("loss_anchor", "tab:purple", "Star-anchor loss")):
-        lx, ly = _opt_series(col)
-        if lx.size:
-            loss_data.append((lx, ly, color, lab))
-    has_loss = len(loss_data) > 0
+    # Training loss (the optimised objective, eval-window mean) and the
+    # held-out validation loss the LOSS save-best track keys on.
+    tl_x, tl_y = _opt_series("loss")
+    cl_x, cl_y = _opt_series("combined_loss")
+    has_loss = tl_x.size > 0 or cl_x.size > 0
 
     # Resume baseline: the restored checkpoint's score measured at this
     # run's start (Trainer writes one is_baseline row per resume). The
@@ -193,12 +172,11 @@ def plot_training_records(
         return None
 
     # Stacked panels (shared x): PSNR always; per-band PSNR when ≥ 2 bands
-    # are logged; per-lane Loss when logged; the composite save-best score
-    # when logged. Older / single-metric runs collapse to just the PSNR
-    # graph.
+    # are logged; the losses when logged. Older / single-metric runs
+    # collapse to just the PSNR graph.
     panels = ["psnr"] + (["bands"] if has_bands else []) + (
-        ["loss"] if has_loss else []) + (["score"] if has_score else [])
-    ratios = {"psnr": 3, "bands": 2, "loss": 2, "score": 2}
+        ["loss"] if has_loss else [])
+    ratios = {"psnr": 3, "bands": 2, "loss": 2}
     if len(panels) == 1:
         fig, ax0 = plt.subplots(figsize=(11, 6))
         axmap = {"psnr": ax0}
@@ -212,53 +190,31 @@ def plot_training_records(
     ax_psnr  = axmap["psnr"]
     ax_bands = axmap.get("bands")
     ax_loss  = axmap.get("loss")
-    ax_score = axmap.get("score")
 
-    # ── Left axis: PSNR (dB), higher is better. ──
+    # ── Validation PSNR (dB), higher is better. The running max is the
+    #    actual save-best threshold; the model is checkpointed wherever
+    #    the raw curve touches that envelope. ──
     ax_psnr.plot(steps, psnr_syn, color="tab:red", lw=1.6, alpha=0.9,
-                 label="Synthetic PSNR")
-    if hst_x.size:
-        ax_psnr.plot(hst_x, hst_y, color="tab:green", lw=1.6, alpha=0.9,
-                     label="HST PSNR")
-    # Optional smoothed overlays.
+                 label="Validation PSNR")
+    running_best = np.maximum.accumulate(psnr_syn)
+    ax_psnr.plot(steps, running_best, color="black", lw=1.2, ls="--",
+                 drawstyle="steps-post", label="best so far (save threshold)")
+    # Optional smoothed overlay.
     smoothed = _smoothed(steps, psnr_syn)
     if smoothed is not None:
         sx, sy = smoothed
-        ax_psnr.plot(sx, sy, color="tab:red", lw=2.6, label="Synthetic PSNR (MA)")
-    if hst_x.size:
-        smoothed = _smoothed(hst_x, hst_y)
-        if smoothed is not None:
-            sx, sy = smoothed
-            ax_psnr.plot(sx, sy, color="tab:green", lw=2.6, label="HST PSNR (MA)")
+        ax_psnr.plot(sx, sy, color="tab:red", lw=2.6, label="Validation PSNR (MA)")
     ax_psnr.set_ylabel("PSNR (dB)  ·  higher better")
 
-    # ── Star-anchor PSNR shares the same dB axis — all three metrics are
-    #    PSNR (higher better), so no twin axis is needed. ──
-    if anc_x.size:
-        ax_psnr.plot(anc_x, anc_y, color="tab:purple", lw=1.6, ls="--",
-                     alpha=0.9, label="Star-anchor PSNR")
-        smoothed = _smoothed(anc_x, anc_y)
-        if smoothed is not None:
-            sx, sy = smoothed
-            ax_psnr.plot(sx, sy, color="tab:purple", lw=2.6, ls="--",
-                         label="Star-anchor PSNR (MA)")
-
-    # Dashed "bar to beat" lines at the resume baseline for each metric.
+    # Dashed "bar to beat" line at the resume baseline.
     b_syn = _baseline_val("psnr_stretched")
     if b_syn is not None:
         ax_psnr.axhline(b_syn, color="tab:red", lw=1.0, ls=":", alpha=0.7,
-                        label="Synthetic baseline (prev ckpt)")
-    b_hst = _baseline_val("psnr_stretched_hst")
-    if b_hst is not None:
-        ax_psnr.axhline(b_hst, color="tab:green", lw=1.0, ls=":", alpha=0.7,
-                        label="HST baseline")
-    b_anc = _baseline_val("anchor_val_psnr")
-    if b_anc is not None:
-        ax_psnr.axhline(b_anc, color="tab:purple", lw=1.0, ls=":", alpha=0.7,
-                        label="Star-anchor baseline")
+                        label="Baseline (prev ckpt)")
 
     ax_psnr.legend(loc="best", framealpha=0.9, fontsize=9)
-    ax_psnr.set_title("Per-source validation metrics", fontsize=9, loc="left")
+    ax_psnr.set_title(
+        "Validation PSNR (drives checkpoint selection)", fontsize=9, loc="left")
 
     # ── Per-band validation PSNR (4-band model). MONITORING ONLY — the
     #    joint PSNR above is what save-best keys on; this panel shows
@@ -285,78 +241,38 @@ def plot_training_records(
             "the joint PSNR)", fontsize=9, loc="left",
         )
 
-    # ── Per-lane training loss (lower is better; log scale spans the lanes'
-    #    ~1e-3–1 range). One line per active lane, colour-matched to PSNR. ──
+    # ── Losses (lower is better; log scale). Training loss = the optimised
+    #    objective averaged over the eval window; validation loss = the
+    #    held-out MAE the LOSS save-best track keys on, with its dotted
+    #    running *minimum* as that track's save threshold. ──
     if ax_loss is not None:
-        for lx, ly, color, lab in loss_data:
-            ax_loss.plot(lx, ly, color=color, lw=1.6, alpha=0.9, label=lab)
-            smoothed = _smoothed(lx, ly)
+        if tl_x.size:
+            ax_loss.plot(tl_x, tl_y, color="tab:red", lw=1.6, alpha=0.9,
+                         label="Training loss")
+            smoothed = _smoothed(tl_x, tl_y)
             if smoothed is not None:
                 sx, sy = smoothed
-                ax_loss.plot(sx, sy, color=color, lw=2.6, label=f"{lab} (MA)")
-        ax_loss.set_yscale("log")
-        ax_loss.set_ylabel("Loss  ·  lower better (log)")
-        ax_loss.legend(loc="best", framealpha=0.9, fontsize=9)
-        ax_loss.set_title("Per-lane training loss", fontsize=9, loc="left")
-
-    # ── Composite save-best score (the quantity checkpoint selection
-    #    keys on: w_syn·PSNR_syn + w_hst·PSNR_hst + w_rt·PSNR_rt). The
-    #    running max is the actual save-best threshold; the model is
-    #    checkpointed wherever the raw score touches that envelope. ──
-    if ax_score is not None:
-        ax_score.plot(score_x, score_y, color="tab:blue", lw=1.5,
-                      label="save-best score")
-        running_best = np.maximum.accumulate(score_y)
-        ax_score.plot(score_x, running_best, color="black", lw=1.2, ls="--",
-                      drawstyle="steps-post", label="best so far (save threshold)")
-        smoothed = _smoothed(score_x, score_y)
-        if smoothed is not None:
-            sx, sy = smoothed
-            ax_score.plot(sx, sy, color="tab:blue", lw=2.6,
-                          label="save-best score (MA)")
-        b_score = _baseline_val("save_best_score")
-        if b_score is not None:
-            ax_score.axhline(b_score, color="dimgray", lw=1.3, ls=":",
-                             alpha=0.85, label="resume baseline (bar to beat)")
-        ax_score.set_ylabel("Composite score  ·  higher better")
-        ax_score.set_title(
-            "Overall save-best score (drives checkpoint selection)",
-            fontsize=9, loc="left",
-        )
-
-        # ── Combined validation loss on a twin y-axis. The score is on a
-        #    dB-like scale (~tens) and the loss is ~1e-3, so they cannot
-        #    share an axis. Mirror of the score line: the dotted running
-        #    *minimum* is the save-best-loss threshold (lower better), vs
-        #    the score's running maximum above. ──
-        ax_cl = None
+                ax_loss.plot(sx, sy, color="tab:red", lw=2.6,
+                             label="Training loss (MA)")
         if cl_x.size:
-            ax_cl = ax_score.twinx()
-            ax_cl.plot(cl_x, cl_y, color="tab:orange", lw=1.5,
-                       label="combined val loss")
+            ax_loss.plot(cl_x, cl_y, color="tab:orange", lw=1.5,
+                         label="Validation loss")
             running_min = np.minimum.accumulate(cl_y)
-            ax_cl.plot(cl_x, running_min, color="darkorange", lw=1.2, ls="--",
-                       drawstyle="steps-post", label="loss best so far")
+            ax_loss.plot(cl_x, running_min, color="darkorange", lw=1.2, ls="--",
+                         drawstyle="steps-post", label="loss best so far")
             smoothed = _smoothed(cl_x, cl_y)
             if smoothed is not None:
                 sx, sy = smoothed
-                ax_cl.plot(sx, sy, color="tab:orange", lw=2.6,
-                           label="combined val loss (MA)")
+                ax_loss.plot(sx, sy, color="tab:orange", lw=2.6,
+                             label="Validation loss (MA)")
             b_loss = _baseline_val("combined_loss")
             if b_loss is not None:
-                ax_cl.axhline(b_loss, color="chocolate", lw=1.3, ls=":",
-                              alpha=0.85, label="loss baseline (bar to beat)")
-            ax_cl.set_yscale("log")
-            ax_cl.set_ylabel("Combined val loss  ·  lower better (log)",
-                             color="tab:orange")
-            ax_cl.tick_params(axis="y", labelcolor="tab:orange")
-
-        # One legend covering both axes (the twin draws none of its own).
-        h1, l1 = ax_score.get_legend_handles_labels()
-        h2, l2 = (ax_cl.get_legend_handles_labels() if ax_cl is not None
-                  else ([], []))
-        ax_score.legend(h1 + h2, l1 + l2, loc="best", framealpha=0.9,
-                        fontsize=8)
+                ax_loss.axhline(b_loss, color="chocolate", lw=1.3, ls=":",
+                                alpha=0.85, label="loss baseline (bar to beat)")
+        ax_loss.set_yscale("log")
+        ax_loss.set_ylabel("Loss  ·  lower better (log)")
+        ax_loss.legend(loc="best", framealpha=0.9, fontsize=9)
+        ax_loss.set_title("Training / validation loss", fontsize=9, loc="left")
 
     # X-label on the bottom-most axes only (shared x when stacked).
     axmap[panels[-1]].set_xlabel("Step")
@@ -436,4 +352,3 @@ def ensemble_training_series(base_dir: str) -> list[dict]:
         if psnr or loss:
             out.append({"name": os.path.basename(d), "psnr": psnr, "loss": loss})
     return out
-

@@ -62,7 +62,7 @@ def test_resolve_falls_back_to_legacy(tmp_path):
 
 def test_resolve_handles_compound_role(tmp_path):
     from euclid_polish.provenance.resolve import resolve_record
-    (tmp_path / "dirty_anchor_validate.0a1b2c3d.tfrecord").write_bytes(b"x")
-    r = resolve_record(str(tmp_path), role="dirty_anchor", subset="validate")
+    (tmp_path / "dirty_extra_validate.0a1b2c3d.tfrecord").write_bytes(b"x")
+    r = resolve_record(str(tmp_path), role="dirty_extra", subset="validate")
     assert r.prov_id == ProvId("0a1b2c3d")
     assert r.legacy is False

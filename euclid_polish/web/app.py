@@ -46,8 +46,6 @@ from euclid_polish.web.routes import (
     files,
     galaxy_distributions,
     git,
-    hst,
-    hstpairs,
     jwst_euclid,
     model,
     noise,
@@ -119,12 +117,11 @@ def create_app() -> Flask:
 
     register_mutation_guard(app)
 
-    # EXPERIMENTAL lanes (HST / star-anchor / round-trip supervision):
-    # features for the future, disabled for now. Templates read this
-    # global to hide their nav links and step-card mounts — see
-    # euclid_polish.web.experimental. A context processor (not a bare
-    # jinja_env global) so the flag is read per-request and tests can
-    # flip it.
+    # EXPERIMENTAL round-trip supervision lane: a feature for the future,
+    # disabled for now. Templates read this global to hide their nav links
+    # and step-card mounts — see euclid_polish.web.experimental. A context
+    # processor (not a bare jinja_env global) so the flag is read
+    # per-request and tests can flip it.
     @app.context_processor
     def _inject_experimental_flags():
         return {"experimental_lanes": experimental.EXPERIMENTAL_LANES_ENABLED}
@@ -216,11 +213,11 @@ def create_app() -> Flask:
     })
 
     # These pages are all rendered by the React shell even while their Flask
-    # handlers remain registered as deprecated compatibility code. The HST
-    # lanes are normally disabled, but including them here prevents a feature
-    # flag change from silently bringing the old Jinja UI back.
+    # handlers remain registered as deprecated compatibility code. The
+    # round-trip lane is normally disabled, but including it here prevents a
+    # feature flag change from silently bringing the old Jinja UI back.
     _DEPRECATED_PAGE_PATHS = frozenset({
-        "/hst-psf", "/hst-cutouts", "/hst-tiles", "/hst-pairs", "/roundtrip",
+        "/roundtrip",
         "/cutouts/VIS", "/cutouts/Y_E", "/cutouts/J_E", "/cutouts/H_E",
     })
 
@@ -329,7 +326,6 @@ def create_app() -> Flask:
     catalog.register(app)
     auth.register(app)
     cutouts.register(app)
-    hst.register(app)
     psfs.register(app)
     sky.register(app)
     tng.register(app)
@@ -343,7 +339,6 @@ def create_app() -> Flask:
     ensemble.register(app)
     evaluation.register(app)
     views.register(app)
-    hstpairs.register(app)
     jwst_euclid.register(app)
     files.register(app)
     git.register(app)

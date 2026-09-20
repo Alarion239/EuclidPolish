@@ -1,14 +1,11 @@
 """TF-graph forward operator that maps the model's deconvolved sky → an image.
 
-The model emits a single deconvolved VIS sky ``SR``; each non-synthetic
-training lane scores ``SR`` by passing it through its instrument's forward
-operator *inside* the gradient tape, so the operator has to be a TF-graph op
-differentiable with respect to its input. This module provides that as a Keras
-layer:
+The model emits a deconvolved VIS sky ``SR``; scoring ``SR`` through the
+instrument's image formation requires a TF-graph op differentiable with
+respect to its input. This module provides that as a Keras layer:
 
   * Constant (non-trainable) PSF loaded from FITS. ``EuclidVISForwardOp`` uses
-    the VIS ePSF (``$DATA_DIR/euclid_psf/euclid_psf_VIS.fits``); the
-    :class:`HSTForwardOp` subclass uses the HST F814W PSF with ``rebin_factor=1``.
+    the VIS ePSF (``$DATA_DIR/euclid_psf/euclid_psf_VIS.fits``).
   * PSF convolution evaluated in the **Fourier domain** (``tf.signal.rfft2d`` /
     ``irfft2d``), matching ``scipy.signal.fftconvolve(..., mode='same')`` — far
     cheaper than a spatial ``conv2d`` for the ~1023² PSF.
@@ -17,9 +14,8 @@ layer:
   * **No noise.** Noise is a non-differentiable sampling step; the operator is
     defined on the deterministic image formation only.
 
-In the current trainer the operator applied in training is :class:`HSTForwardOp`
-(the HST lane, ``H ⊛ SR``). :class:`EuclidVISForwardOp` is retained for the
-``/inference`` "forward(SR)" diagnostic panel.
+:class:`EuclidVISForwardOp` serves the ``/inference`` "forward(SR)" diagnostic
+panel.
 
 The numerical contract with the numpy path is tested in
 ``tests/test_forward_op.py``: applying this layer to a known HR input must match
@@ -41,13 +37,8 @@ from euclid_polish.config import Config
 
 
 def _default_vis_psf_path() -> str:
-    """Same VIS PSF FITS the synthetic forward (and the diff kernel) consume."""
+    """Same VIS PSF FITS the synthetic forward consumes."""
     return os.path.join(Config.EUCLID_PSF_DIR, Config.BAND_VIS.psf_fits_filename)
-
-
-def _default_hst_psf_path() -> str:
-    """HST F814W ePSF FITS — the same file the differential kernel consumes."""
-    return Config.HST_PSF_PATH
 
 
 def _next_pow2(n: tf.Tensor) -> tf.Tensor:
@@ -236,32 +227,3 @@ class EuclidVISForwardOp(tf.keras.layers.Layer):
             "crop_half_side": self._crop_half_side,
         })
         return cfg
-
-
-class HSTForwardOp(EuclidVISForwardOp):
-    """HST F814W image-formation forward op: ``H ⊛ SR``, no rebin.
-
-    Same FFT-conv machinery as :class:`EuclidVISForwardOp` but with the
-    HST PSF and ``rebin_factor=1`` — the HST image shares SR's 0.05″/pix
-    HR grid, so there is no downsample. Used by the ``SR = sky``
-    objective: the HST supervised loss compares ``H ⊛ SR`` to the
-    observed HST image, so the model learns the deconvolved sky (matching
-    what the synthetic + round-trip paths target) rather than the
-    HST-PSF-blurred image.
-    """
-
-    def __init__(
-        self,
-        psf_fits_path: str | None = None,
-        *,
-        crop_half_side: int | None = None,
-        name: str = "hst_forward_op",
-        **kwargs,
-    ) -> None:
-        super().__init__(
-            psf_fits_path or _default_hst_psf_path(),
-            rebin_factor=1,
-            crop_half_side=crop_half_side,
-            name=name,
-            **kwargs,
-        )

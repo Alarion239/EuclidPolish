@@ -9,10 +9,10 @@ is never touched. See euclid_polish.tracking.timetravel.
 Examples
 --------
     # restore a specific model backup (exact code + checkpoint) and open it
-    scripts/timetravel.py restore --campaign current --model anchors-on
+    scripts/timetravel.py restore --campaign current --model l2-member
 
     # restore an archived campaign at its saved commit, incl. FASRC sandbox
-    scripts/timetravel.py restore --campaign anchor-sweep --remote
+    scripts/timetravel.py restore --campaign loss-sweep --remote
 
     scripts/timetravel.py list
     scripts/timetravel.py stop  <short>

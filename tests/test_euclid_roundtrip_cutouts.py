@@ -208,9 +208,9 @@ class TestLoadFourBandCube:
 
     def test_scales_each_band_by_its_magzero_zeropoint(self, tf_mod, tmp_path):
         """Default ``scale_to_electrons=True`` puts archive e⁻/s cutouts on the
-        synthetic/HST total-electron scale via the band's MAGZERO zeropoint
+        synthetic total-electron scale via the band's MAGZERO zeropoint
         factor — the verify_star_photometry-validated conversion shared with
-        the direct-cutout and star-anchor lanes (NOT the old ~2.3×-too-faint
+        the direct-cutout path (NOT the old ~2.3×-too-faint
         ``× t_total_s``).
 
         Without a consistent electron scale the round-trip LR would sit at a

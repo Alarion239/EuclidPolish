@@ -1,17 +1,15 @@
 #!/usr/bin/env python
-"""Step 0 of the star-anchor work: verify the catalog-magnitude → electrons
-scale against real star cutouts.
+"""Verify the catalog-magnitude → electrons scale against real star cutouts.
 
 For each star in ``data/euclid_stars/stars.csv`` we load its VIS cutout,
 convert it from archive ADU/s to electrons over the stack (same MAGZERO
 conversion the model input uses, ``euclid.photometry.adu_per_s_to_electrons``),
 measure its flux in circular apertures, and compare to the electrons implied
 by the catalog magnitude (``ab_mag_to_electrons``). A ratio ≈ 1 in the large
-aperture means catalog-mag electrons ≈ total measured electrons — i.e. the
-anchor delta-target (built from catalog mag) is on the same scale the model
-sees.
+aperture means catalog-mag electrons ≈ total measured electrons — i.e. a
+flux derived from the catalog mag is on the same scale the model sees.
 
-The anchor flux is now the catalog ``flux_vis_psf`` (TPHOT PSF-fitting flux,
+The reference flux is the catalog ``flux_vis_psf`` (TPHOT PSF-fitting flux,
 µJy) — already a *total* point-source flux — converted to electrons via the
 physical µJy→AB→e⁻ path (``uJy_to_electrons``). So the large-aperture ratio
 should land near 1 with no aperture correction; a gross constant offset at
@@ -124,9 +122,9 @@ def main() -> int:
           "   • a gross constant offset at ALL radii ⇒ a zeropoint/units bug\n"
           f"     (the catalog flux is µJy, AB ZP {Config.AB_ZP_UJY:.2f}; verify it round-trips).\n"
           "   • with PSF flux, the moderate-aperture ratio ≈ 1 ⇒ no correction.\n"
-          "     If you instead anchor on an aperture flux and the ratio rises\n"
+          "     If you instead reference an aperture flux and the ratio rises\n"
           "     with radius, the correction factor is that (>1) ratio itself —\n"
-          "     anchor_flux = catalog_flux × ratio — NOT 1/ratio."
+          "     reference_flux = catalog_flux × ratio — NOT 1/ratio."
           )
     return 0
 

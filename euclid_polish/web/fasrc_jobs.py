@@ -156,7 +156,7 @@ class JobDB:
                       (int(step), int(total), time.time(), jobid))
 
     def set_step_id(self, jobid: str, step_id: str) -> None:
-        """Tag a job with its HST-pipeline step id (for per-step history)."""
+        """Tag a job with its pipeline step id (for per-step history)."""
         with self._conn() as c:
             c.execute("UPDATE fasrc_jobs SET step_id = ?, last_seen = ? "
                       "WHERE jobid = ?",
@@ -550,7 +550,7 @@ def submit_sbatch_script(
     # from ``params`` (the form values, post-validation by
     # :class:`StepResources.from_form` → ``to_dict()``) so the log
     # matches what SLURM saw on the ``#SBATCH`` lines. Script-specific
-    # params (n_stars, n_tiles, hst_fraction, …) are JSON-encoded into
+    # params (n_stars, steps, …) are JSON-encoded into
     # the ``params_json`` column. Errors here must not break the
     # submit response, so swallow + log instead of raising.
     try:  # noqa: SIM105 — suppress() would awkwardly wrap a 25-line JobRecord(...)

@@ -41,7 +41,7 @@ def q(tmp_path):
     return JobQueue(path=str(tmp_path / "q.json"))
 
 
-SPEC = {"kind": "hst", "step": "train", "form": {"steps": "1000"}}
+SPEC = {"kind": "step", "step": "train", "form": {"steps": "1000"}}
 
 
 # --------------------------------------------------------------------------

@@ -218,9 +218,8 @@ class Reporter:
         WebUI used to scrape out of the ``.out`` log.
 
         ``metrics`` is a flat dict from one evaluate: ``step``/``total``,
-        ``loss`` (+ per-lane ``loss_syn``/``loss_hst``/``loss_anchor``),
-        ``psnr_stretched``/``psnr_raw`` (+ HST/anchor variants), gradient
-        norms, ``duration_s``, ``save_best_score`` and a ``saved`` flag
+        ``loss``, ``psnr_stretched``/``psnr_raw``, gradient norms,
+        ``duration_s``, ``combined_loss`` and a ``saved`` flag
         when this eval wrote a checkpoint. The web consumer folds these
         into the live :class:`JobStatus` (latest metrics + validation
         history + last-checkpoint marker), so the UI reads training

@@ -142,20 +142,11 @@ def _coerce_validation_row(rec: dict[str, Any]) -> dict[str, Any]:
     return {
         "step":               int(_f("step")),
         "loss":               _f("loss"),
-        # Per-lane training losses (blank when that lane is off this run).
-        "loss_syn":           _opt_f("loss_syn"),
-        "loss_hst":           _opt_f("loss_hst"),
-        "loss_anchor":        _opt_f("loss_anchor"),
         "psnr_stretched":     _f("psnr_stretched"),
         "psnr_raw":           _f("psnr_raw"),
         "duration_s":         _f("duration_s"),
         "wall_time":          _f("wall_time"),
-        "psnr_stretched_hst": _opt_f("psnr_stretched_hst"),
-        "psnr_raw_hst":       _opt_f("psnr_raw_hst"),
-        "anchor_val_psnr":    _opt_f("anchor_val_psnr"),
-        "save_best_score":    _opt_f("save_best_score"),
-        # Combined validation loss (second save-best track, lower better);
-        # plotted on the save-best score panel's twin axis.
+        # Held-out validation loss (second save-best track, lower better).
         "combined_loss":      _opt_f("combined_loss"),
         # Resume-baseline flag ("1" on the one bar-to-beat row) — passed
         # through so the dashboard plot can draw the dashed baseline line.

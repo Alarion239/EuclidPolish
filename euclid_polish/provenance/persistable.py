@@ -1,7 +1,7 @@
 """The artifact contract: a small Protocol plus a dataclass mixin.
 
 Existing typed classes (``Image``, ``PSF``, ``PSFSet``,
-``DifferentialKernel``, ``CatalogObject``) join the provenance system by carrying
+``CatalogObject``) join the provenance system by carrying
 a :class:`~euclid_polish.provenance.records.Stamp` and declaring their on-disk
 :class:`~euclid_polish.provenance.records.Format`. The :class:`StampCarrier`
 mixin supplies the shared implementation; :class:`Persistable` is the public

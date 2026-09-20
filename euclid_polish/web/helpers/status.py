@@ -219,8 +219,8 @@ def _tfrecords_status(records_dir: str | None = None) -> dict[str, Any]:
     """List on-disk TFRecord files under ``records_dir``.
 
     Defaults to ``Config.RECORDS_DIR_V2`` (the locally-generated sky
-    records) so existing callers stay unchanged. The HST Catalog
-    passes its own dir to reuse this for the FASRC-cached records.
+    records) so existing callers stay unchanged; callers may pass their
+    own dir to reuse this for FASRC-cached records.
     """
     d = records_dir or Config.RECORDS_DIR_V2
     out = {"dir": d, "files": []}
@@ -355,8 +355,8 @@ def _record_count(name: str, records_dir: str | None = None) -> int | None:
       * ``int``  — full record count
       * ``None`` — file present but partially corrupt (e.g. ``DataLossError``
         from a truncated rsync). Returning ``None`` instead of raising
-        keeps callers like ``/api/hst-pairs/totals`` from 500-ing the
-        whole response when one shard is bad.
+        keeps callers from 500-ing the whole response when one shard
+        is bad.
     """
     p = tfrecord_path(records_dir or Config.RECORDS_DIR_V2, name)
     if not os.path.exists(p):

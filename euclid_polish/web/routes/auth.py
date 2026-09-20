@@ -14,7 +14,7 @@ def register(app):
     # The catalog query + photometry verify are now two separate FASRC
     # pipeline steps (``euclid_query`` on the catalog page, then download,
     # then ``euclid_verify_photometry`` on the cutouts page) submitted through
-    # the standard ``/api/fasrc/hst/<step_id>/submit`` route — editable
+    # the standard ``/api/fasrc/steps/<step_id>/submit`` route — editable
     # resources, run history and Cancel-job all come for free. The bespoke
     # ``/catalog/query-brightest`` + ``/cutouts/verify-photometry`` routes
     # were removed.

@@ -265,10 +265,10 @@ class TestPSFIO:
             assert h[0].data.sum() == pytest.approx(1.0, abs=1e-5)
 
     def test_from_fits_reads_pixscale_or_pixscale_fallback(self, tmp_path):
-        """The HST extractor writes ``PIXSCALE``; ours writes
+        """Older files write ``PIXSCALE``; ours writes
         ``PXSCALE``. The loader must accept either."""
-        # Write a fake HST-style file with PIXSCALE only.
-        path = tmp_path / "hst.fits"
+        # Write a legacy-style file with PIXSCALE only.
+        path = tmp_path / "legacy.fits"
         hdu = fits.PrimaryHDU(_gauss(11, 1.0))
         hdu.header["PIXSCALE"] = 0.0500004
         hdu.writeto(str(path), overwrite=True)

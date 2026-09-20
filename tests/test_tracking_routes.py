@@ -175,13 +175,11 @@ def test_backup_model_bundles_training_log_plot(client, tmp_path, monkeypatch):
     (ckpt / "checkpoint").write_text('model_checkpoint_path: "ckpt-5"\n')
     (ckpt / "ckpt-5.index").write_bytes(b"i")
     (ckpt / "ckpt-5.data-00000-of-00001").write_bytes(b"w")
-    header = ("step,wall_time,loss,loss_syn,loss_hst,loss_anchor,"
+    header = ("step,wall_time,loss,"
               "psnr_stretched,psnr_raw,gnorm_avg,gnorm_max,clip_norm,"
-              "duration_s,psnr_stretched_hst,psnr_raw_hst,anchor_val_psnr,"
-              "save_best_score,combined_loss,is_baseline")
+              "duration_s,combined_loss,is_baseline")
     rows = "\n".join(
-        f"{s},178051{s},0.04,0.04,,,46.{s},39.{s},1.4,160.0,5.0,135.0,,,,"
-        f"46.{s},0.003,"
+        f"{s},178051{s},0.04,46.{s},39.{s},1.4,160.0,5.0,135.0,0.003,"
         for s in (1000, 2000, 3000))
     (ckpt / "training_log.csv").write_text(header + "\n" + rows + "\n")
     monkeypatch.setattr(Config, "DEFAULT_CHECKPOINT_DIR", str(ckpt))

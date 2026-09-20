@@ -63,10 +63,10 @@ class TestRecordSubmission:
             partition="shared", req_cpus=1, req_gpus=0,
             req_memory="8G", req_time_limit="0:10:00",
             params_json='{"n_stars":200}',
-            script_path="/repo/logs/hst_pipeline/x.sh",
-            log_path="/repo/logs/hst_pipeline/x.out",
-            err_path="/repo/logs/hst_pipeline/x.err",
-            events_path="/repo/logs/hst_pipeline/x.events",
+            script_path="/repo/logs/pipeline/x.sh",
+            log_path="/repo/logs/pipeline/x.out",
+            err_path="/repo/logs/pipeline/x.err",
+            events_path="/repo/logs/pipeline/x.events",
         ))
         rows = _rows(p)
         assert len(rows) == 1

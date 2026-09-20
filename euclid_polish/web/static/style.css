@@ -467,32 +467,32 @@ button.secondary:hover { background: #565e64; }
  * Resources start empty per task #63; the history panel may auto-fill
  * them from a successful match.
  */
-.hst-step-form fieldset {
+.pipeline-step-form fieldset {
   border: 1px solid #ddd; border-radius: 4px;
   margin: 8px 0; padding: 8px 12px;
 }
-.hst-step-form fieldset > legend {
+.pipeline-step-form fieldset > legend {
   font-size: 12px; font-weight: 600;
   text-transform: uppercase; letter-spacing: 0.04em;
   padding: 0 6px; color: #555;
 }
-.hst-step-form .js-history-panel {
+.pipeline-step-form .js-history-panel {
   max-height: 260px; overflow: auto;
 }
-.hst-step-form table.history-table {
+.pipeline-step-form table.history-table {
   width: 100%; border-collapse: collapse; font: 11px/1.25 "JetBrains Mono", Menlo, monospace;
   font-variant-numeric: tabular-nums;
 }
-.hst-step-form table.history-table th,
-.hst-step-form table.history-table td {
+.pipeline-step-form table.history-table th,
+.pipeline-step-form table.history-table td {
   border-bottom: 1px solid #eee; padding: 7px 8px 7px 0; text-align: left;
   vertical-align: middle; white-space: nowrap; font: inherit;
 }
-.hst-step-form table.history-table th {
+.pipeline-step-form table.history-table th {
   color: #777; font-weight: 600; text-transform: uppercase; letter-spacing: .05em;
 }
-.hst-step-form table.history-table code,
-.hst-step-form table.history-table .badge { font: inherit; }
+.pipeline-step-form table.history-table code,
+.pipeline-step-form table.history-table .badge { font: inherit; }
 
 /* ── Ensemble training curves (ensemble_train_curves.js) ─────────────────
    The JS emits .etc-panels (two SVG charts), .etc-legend and per-member

@@ -4,8 +4,8 @@ The downloader flags corruption as it goes, but a dedicated pass that *opens
 every file on disk* is the durable guarantee: it catches cutouts that were
 truncated/partially written and re-derives each ``(band, size)`` validity
 flag from whether the FITS actually opens and carries finite data. Run it
-right after a download so downstream consumers (PSF extraction, star-anchor
-generation, the ``/star-cutouts`` gallery) can trust the catalog's
+right after a download so downstream consumers (PSF extraction, the
+``/star-cutouts`` gallery) can trust the catalog's
 "valid in all 4 bands" without re-opening every file themselves.
 
 Operates on a catalog directory: cutouts live under

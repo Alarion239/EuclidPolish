@@ -7,14 +7,14 @@
  * submit.
  *
  * Two entry points, both keyed by the step id used in
- * ``/api/fasrc/hst/<id>/submit``:
+ * ``/api/fasrc/steps/<id>/submit``:
  *
  *   FasrcStepCard.renderMany(containerEl, steps, artifactStatus, opts)
  *     — used by fasrc.html, which lists every registered step.
  *
  *   FasrcStepCard.mountOne(containerEl, stepId, opts)
  *     — used by single-step pages (cutouts, PSFs, …). Fetches the
- *       step metadata via /api/fasrc/hst/status, then renders + wires
+ *       step metadata via /api/fasrc/steps/status, then renders + wires
  *       just that one card.
  *
  * ``opts.onSubmitted(jobid, payload)`` fires after a successful POST
@@ -34,14 +34,6 @@
 
 (function (window) {
   "use strict";
-
-  // EXPERIMENTAL lanes (HST / star-anchor / round-trip supervision) —
-  // features for the future, disabled for now. Mirrors the Python flag in
-  // euclid_polish/web/experimental.py; keep the two in sync. While false,
-  // the training card hides the per-lane knobs (n_hst / n_anchor / lane
-  // loss + save-best weights / forward-op crop) so the submitted command
-  // stays synthetic-only (the backend defaults every hidden knob to off).
-  const EXPERIMENTAL_LANES = false;
 
   const RESOURCE_FIELDS = ['partition', 'n_cpus', 'n_gpus', 'memory', 'time_limit'];
 
@@ -93,40 +85,17 @@
   //
   // Centralised so adding a new task page is one switch-case change
   // here, not a new copy of the HTML per page. (Long-term we may move
-  // this to a server-supplied schema on /api/fasrc/hst/status; for
+  // this to a server-supplied schema on /api/fasrc/steps/status; for
   // Phase 1 of the per-page-task refactor, the JS-side dictionary is
   // the cheapest DRY win.)
 
   function taskFields(step) {
-    // NOTE: the cases for the EXPERIMENTAL-lane steps (download,
-    // extract_psf, kernel, tfrecords, euclid_sky_download,
-    // euclid_roundtrip_tfrecords, euclid_star_anchor_tfrecords) are
-    // unreachable while EXPERIMENTAL_LANES is false — those steps are
-    // omitted from /api/fasrc/hst/status and their page mounts are gone.
-    // Kept so re-enabling the lanes restores the cards unchanged.
+    // NOTE: the cases for the EXPERIMENTAL round-trip-lane steps
+    // (euclid_sky_download, euclid_roundtrip_tfrecords) are unreachable
+    // while the experimental flag is off — those steps are omitted from
+    // /api/fasrc/steps/status and their page mounts are gone. Kept so
+    // re-enabling the lane restores the cards unchanged.
     switch (step.step_id) {
-      case 'download':
-        return `
-          <label>Number of HLSP tiles
-            <input type="number" name="n_tiles" value="25" min="1" max="81"></label>`;
-      case 'extract_psf':
-        return `
-          <label>Target N stars
-            <input type="number" name="n_stars" value="200" min="20" max="5000"></label>
-          <label>PSF half-side (px)
-            <input type="number" name="half_side" value="255" min="31" max="767"
-                   title="Half-side of the FINAL ePSF → spans (2·half+1) px at the ~0.05″/pix HLSP scale: 255 → 511², 511 → 1023². Always odd, so the PSF stays centred. Changing it forces a full tile re-scan (cached stamps are size-specific)."></label>
-          <label>Extraction margin (frac)
-            <input type="number" name="extract_margin_frac" value="0.08" step="0.01" min="0" max="0.25"
-                   title="Extract star stamps this fraction larger than the half-side, then trim the extra border off the built ePSF. EPSFBuilder's smoothing leaves edge artifacts on the outermost pixels; this margin pushes them into the trimmed region so the final PSF borders are clean. 0.08 = 8%; 0 disables."></label>
-          <span class="js-extract-mem muted" style="flex-basis:100%; font-size:12px;"
-                title="EPSFBuilder holds several float64 copies of every star cutout, so peak RAM ≈ n_stars · (2·half+1)² · ~60 B. Set the Memory field at or above this."></span>`;
-      case 'kernel':
-        return `
-          <label>Wiener regularisation
-            <input type="number" name="regularisation" value="0.001" step="any" min="0"></label>`;
-      case 'tfrecords':
-        return _tfrecordsFields();
       case 'euclid_sky_download':
         // Field names mirror the EuclidSkyDownloadStep.build_command
         // params (n_positions, vis_pixels, ra_centre, dec_centre,
@@ -335,29 +304,6 @@ large cutout don't leak across train/validate."></label>`;
           <label>Cutout size (px, as downloaded)
             <input type="number" name="size" value="256" min="32" max="4096" step="32"
                    title="Cutout side to read — must match the size the cutouts were downloaded at (reads star_NNNN_<size>.fits)."></label>`;
-      case 'euclid_star_anchor_tfrecords':
-        // Mirrors EuclidStarAnchorTFRecordStep.build_command (size, stamp,
-        // valid_every, snr_min, limit). Assembles the downloaded star
-        // cutouts + catalog PSF flux → (dirty_anchor, hr_anchor) single-
-        // pixel delta-target pairs. Operator-free (no PSF).
-        return `
-          <label>Cutout size (px, as downloaded)
-            <input type="number" name="size" value="256" min="32" max="4096" step="32"
-                   title="Side of the per-star cutouts to read — must match the size the cutout-download job used. Stars are read from star_NNNN_<size>.fits, so a mismatch finds no files."></label>
-          <label>LR stamp (px)
-            <input type="number" name="stamp" value="128" min="64" max="2048"
-                   title="Star-centred LR stamp side written to each record. Must be ≥ the training LR crop (HR_CROP/2) so the random training crop always keeps the star in-frame."></label>
-          <label>Validate every Nth
-            <input type="number" name="valid_every" value="10" min="2" max="100"
-                   title="Every Nth usable star goes to the validate split; the rest train."></label>
-          <label>Min SNR <span class="muted">(blank = off)</span>
-            <input type="number" name="snr_min" value="" step="1" min="0" max="1000"
-                   placeholder="e.g. 50"
-                   title="Skip stars whose PSF flux_psf_uJy / fluxerr_psf_uJy is below this (keep only well-measured flux). Blank/0 = keep all."></label>
-          <label>Limit stars <span class="muted">(blank = all)</span>
-            <input type="number" name="limit" value="" min="1" max="100000"
-                   placeholder="all"
-                   title="Only process the first N catalog rows (debugging). Blank = all."></label>`;
       case 'synthetic_generate':
         // Mirrors run_pipeline.py --skip-train (RunPipelineStep.build_command
         // reads n_train / n_valid / image_size). Renders synthetic clean HR
@@ -374,8 +320,6 @@ large cutout don't leak across train/validate."></label>`;
           <p class="hint" style="flex-basis:100%;">Train scenes, Validate scenes and
              HR image size are set on the <a href="/config">⚙️ Config</a> tab and sent
              with this job.</p>`;
-      case 'train':
-        return _hstTrainFields();
       case 'ensemble_train':
         return _ensembleTrainFields();
       default:
@@ -501,91 +445,6 @@ large cutout don't leak across train/validate."></label>`;
                title="For the most/least modes: 0 picks the deterministic extreme; higher temperatures randomly sample from a broader set of the top galaxies, weighted toward the extreme (not a fixed top-N). Ignored for Random."></label>`;
   }
 
-  function _tfrecordsFields() {
-    // Analytic-A forward model is single-stamp, CPU-only — no GPU, no
-    // batch_size knob. Each HLSP mosaic is diced into a grid of
-    // ``image_size``² HR chunks; coverage + bright + star filters drop
-    // chunks until ``n_train`` + ``n_valid`` pairs are written.
-    return `
-      <label>Train scenes
-        <input type="number" name="n_train" value="2000" min="100" max="50000"></label>
-      <label>Validate scenes
-        <input type="number" name="n_valid" value="200" min="20" max="5000"></label>
-      <label>Image size
-        <input type="number" name="image_size" value="256" step="2" min="64" max="2048"
-               title="HR chunk side in 0.05″/pix pixels. Mosaics are diced into a non-overlapping grid of these squares; smaller → more chunks per mosaic."></label>
-      <label>Max relative noise (k)
-        <input type="number" name="max_relative_noise" value="5.0" step="0.5" min="0.5" max="50"
-               title="Reject a chunk when √S_max·|A|_peak > k·σ_LR — i.e. when the brightest HR pixel's Poisson noise propagated through A would exceed k× the per-pixel Euclid LR noise floor. Smaller k → stricter rejection; larger k → more chunks kept. Default 5."></label>
-      <label>Star reject (σ)
-        <input type="number" name="star_threshold_sigma" value="20" step="5" min="0" max="100"
-               title="Reject a chunk if DAOStarFinder finds a point source brighter than this many σ above the chunk background. Stars forward-model to unlearnable A(ε) ringing; sharpness/roundness cuts spare resolved galaxies. With grid tiling, rejected chunks just advance to the next cell, so be aggressive — lower (10–15) chases fainter stars; 0 disables. Default 20 catches every star bright enough to ring."></label>
-      <label>Min source (σ)
-        <input type="number" name="min_source_sigma" value="5" step="1" min="0" max="50"
-               title="Reject a chunk as empty unless a few pixels exceed this many σ above its background. COSMOS is full of blank sky that clears the coverage check (noise is non-zero) but holds no object — a useless noise→noise pair. Default 5 (standard detection floor); raise to demand brighter objects; 0 disables."></label>`;
-  }
-
-  function _hstTrainFields() {
-    // EXPERIMENTAL-lane knobs (HST / star-anchor supervision) — disabled
-    // for now, kept for future work. While EXPERIMENTAL_LANES is false
-    // none of these reach the form; the backend defaults every one of
-    // them to "lane off", so the submitted training job is synthetic-only.
-    const laneBatchFields = !EXPERIMENTAL_LANES ? '' : `
-      <label># HST / batch
-        <input type="number" name="n_hst" value="0" min="0" max="256"
-               title="HST examples per batch — the SR=sky lane |asinh(H⊛SR) − HST_image|. 0 disables it. Needs the HST records (records_v2_hst) + the F814W ePSF. A whole integer, so no rounding surprises: e.g. 1 HST per 4 synthetic = 20% HST."></label>
-      <label># star-anchor / batch
-        <input type="number" name="n_anchor" value="0" min="0" max="256"
-               title="Star-anchor examples per batch — operator-free masked |SR − delta| at the catalog star pixel (pins real Euclid stars to points of known flux; no PSF). 0 disables it. Needs the star-anchor records (records_v2_star_anchor)."></label>`;
-    const laneWeightFields = !EXPERIMENTAL_LANES ? '' : `
-      <label>Loss weight · synthetic
-        <input type="number" name="synthetic_loss_weight" value="1" step="0.5" min="0" max="100"
-               title="Per-example TRAINING-loss multiplier for synthetic records. 1 = default; raise to up-weight that source's gradient, 0 to ablate (kept in the batch mix but zero gradient)."></label>
-      <label>Loss weight · HST
-        <input type="number" name="hst_loss_weight" value="1" step="0.5" min="0" max="100"
-               title="Per-example TRAINING-loss multiplier for HST records. 1 = default. Distinct from the data fraction: fraction sets how many HST examples per batch, this scales each one's loss."></label>
-      <label>Loss weight · star-anchor
-        <input type="number" name="star_anchor_loss_weight" value="1" step="0.5" min="0" max="100"
-               title="Per-example TRAINING-loss multiplier for the star-anchor lane (masked |SR − delta| at the star pixel). 1 = default; raise to up-weight the anchor, 0 to ablate (anchor data still loaded, loss contribution zeroed). Only used when #star-anchor > 0."></label>
-      <label>Forward-op PSF crop (½)
-        <input type="number" name="forward_op_crop_half" value="0" step="8" min="0" max="512"
-               title="Optional central crop of the F814W PSF for the HST forward op → (2·crop+1)² kernel. 0 = full PSF (the forward op convolves via FFT, so the full PSF is exact AND fast — no crop needed). Set >0 only to ablate the PSF wings. Only used when #HST > 0."></label>
-      <label>Save-best w·synthetic
-        <input type="number" name="save_best_w_syn" value="1.0" step="0.5" min="0" max="100"
-               title="Weight of synthetic PSNR (dB) in the composite save-best score."></label>
-      <label>Save-best w·HST
-        <input type="number" name="save_best_w_hst" value="1.0" step="0.5" min="0" max="100"
-               title="Weight of HST PSNR (dB) in the composite save-best score. No effect if no HST validate split exists."></label>
-      <label>Save-best w·star-anchor
-        <input type="number" name="save_best_w_anchor" value="0" step="0.5" min="0" max="100"
-               title="Weight of the star-anchor PSNR (dB, ADDED — higher is better) in the composite save-best score. Masked to the star pixel; on the same dB scale as the other two PSNRs. Default 0 = monitored only."></label>`;
-    const nSynTitle = EXPERIMENTAL_LANES
-      ? 'Synthetic examples per batch (|SR − scene|). Always present; must be ≥ 1. The batch is the fixed layout [n_syn | n_hst | n_anchor] and its size is the sum. At HR-crop 192/LR-crop 96, 4 keeps activation memory ~constant vs the old 96-crop; on an A100 you can go much higher (e.g. 24) to raise GPU utilisation — watch the live GPU gauge.'
-      : 'Examples per batch (|SR − scene| on synthetic pairs). Must be ≥ 1. At HR-crop 192/LR-crop 96, 4 keeps activation memory ~constant vs the old 96-crop; on an A100 you can go much higher (e.g. 24) to raise GPU utilisation — watch the live GPU gauge.';
-    return `
-      <label>Training steps
-        <input type="number" name="steps" value="400000" min="1000" max="2000000"></label>
-      <label>${EXPERIMENTAL_LANES ? '# synthetic / batch' : 'Batch size'}
-        <input type="number" name="n_syn" value="4" min="1" max="256"
-               title="${nSynTitle}"></label>${laneBatchFields}
-      <label>Learning rate
-        <input type="number" name="learning_rate" value="" step="0.0001" min="0" max="0.01"
-               placeholder="blank = 1e-3→5e-4 schedule"
-               title="Constant Adam LR for the whole run (e.g. 0.001). Leave blank for the default two-phase schedule 1e-3 → 5e-4 at steps//2. Constant is simpler for an exploratory restart; the decay gives a slightly sharper final result. Scale up with a larger batch."></label>
-      <label>SR non-negativity λ
-        <input type="number" name="nonneg_sr_weight" value="" step="0.5" min="0" max="100"
-               placeholder="blank = config default"
-               title="Weight of the SR non-negativity penalty λ·mean(relu(-SR)) added to the loss, constraining the sky estimate toward physical (≥0) flux. Blank = the config default (1.0); 0 disables. Tune by watching the negative-pixel fraction — raise if negatives persist, lower if it flattens faint structure."></label>${laneWeightFields}
-      <label class="checkbox-field" style="flex-basis:100%;"
-             title="On a resumed run: UNCHECKED (default) validates the restored checkpoint and uses its score as the bar to beat (no save until genuinely beaten). CHECKED ignores the previous best and lets this run overwrite it on its first eval — use after an architecture change, when the old score is meaningless. No effect on a fresh run.">
-        <input type="checkbox" name="overwrite_best" value="1">
-        Overwrite previous best (skip resume baseline)</label>
-      <label class="checkbox-field" style="flex-basis:100%;"
-             title="Feed the model VIS only (1 input channel) instead of the full VIS+NISP stack (4 channels). The TFRecords keep all 4 bands; the loader slices to VIS in-graph and the model is built with 1 input channel. Checkpoints go to a separate '-vis' directory so a 1-channel model never collides with (or overwrites) your 4-channel checkpoints.">
-        <input type="checkbox" name="vis_only" value="1">
-        VIS-only input (1 channel, no NISP)</label>`;
-  }
-
   // ── Resource-field markup ──────────────────────────────────────────
   //
   // Editable resource inputs start EMPTY. Either the history-driven
@@ -648,15 +507,12 @@ large cutout don't leak across train/validate."></label>`;
     artifactStatus = artifactStatus || {};
     // Map step id → which artifact existence this step PRODUCES.
     const produces = {
-      download: 'tiles', extract_psf: 'psf', kernel: 'kernel',
-      tfrecords: 'records', train: 'ckpt',
       euclid_sky_download: 'euclid_sky',
       euclid_roundtrip_tfrecords: 'roundtrip_records',
       // New per-page tasks (registered in Phase 2 of the migration):
       euclid_query:            'catalog',
       download_euclid_cutouts: 'euclid_cutouts',
       extract_euclid_psf:      'euclid_psf',
-      euclid_star_anchor_tfrecords: 'star_anchor_records',
       synthetic_generate:      'synthetic_records',
       download_tng_skirt:      'tng_skirt',
     }[step.step_id];
@@ -669,7 +525,7 @@ large cutout don't leak across train/validate."></label>`;
     <section class="card">
       <h3>${escapeHtml(step.label)} ${statusBadge}</h3>
 
-      <form data-step-id="${step.step_id}" class="hst-step-form"
+      <form data-step-id="${step.step_id}" class="pipeline-step-form"
             autocomplete="off">
         <fieldset class="task-fields">
           <legend>Task parameters</legend>
@@ -698,7 +554,7 @@ large cutout don't leak across train/validate."></label>`;
 
         <button type="submit" style="margin-top:8px;">Submit ${escapeHtml(step.step_id)}</button>
       </form>
-      <div class="hst-step-status" data-step-id="${step.step_id}"></div>
+      <div class="pipeline-step-status" data-step-id="${step.step_id}"></div>
     </section>`;
   }
 
@@ -807,12 +663,6 @@ large cutout don't leak across train/validate."></label>`;
         return [field('stars', historyCount(params, 'n')), field('cutout px', historyCount(params, 'size'))];
       case 'ensemble_train':
         return [field('total steps', ensembleTotalSteps(params))];
-      case 'download':
-        return [field('tiles', historyCount(params, 'n_tiles'))];
-      case 'extract_psf': {
-        const half = historyNumber(params.half_side);
-        return [field('stars', historyCount(params, 'n_stars')), field('PSF px', half == null ? '—' : (2 * half + 1).toLocaleString())];
-      }
       default: return [];
     }
   }
@@ -870,7 +720,7 @@ large cutout don't leak across train/validate."></label>`;
     const hint   = form.querySelector('.js-prefill-hint');
     if (!panel) return;
     try {
-      const resp = await fetch(`/api/fasrc/hst/${stepId}/history`, {
+      const resp = await fetch(`/api/fasrc/steps/${stepId}/history`, {
         method: 'POST',
         body:   taskParamsFromForm(form),
       });
@@ -896,9 +746,8 @@ large cutout don't leak across train/validate."></label>`;
   }
 
   function wireHistoryAndPrefill(scope) {
-    scope.querySelectorAll('.hst-step-form').forEach(form => {
+    scope.querySelectorAll('.pipeline-step-form').forEach(form => {
       fetchHistoryAndPrefill(form);
-      wireExtractMemEstimate(form);
       let timer = null;
       const debounced = () => {
         if (timer) clearTimeout(timer);
@@ -908,48 +757,6 @@ large cutout don't leak across train/validate."></label>`;
         el.addEventListener('input', debounced);
       });
     });
-  }
-
-  // ── HST-PSF-extract memory estimate ────────────────────────────────
-  //
-  // EPSFBuilder works in float64 and keeps several copies of *every*
-  // star cutout through its iterations, so peak RAM is dominated by
-  // ``n_stars · (2·half_extract+1)² · ~60 B`` (empirically measured: a
-  // 500-star / 1023² run peaked ~32 GB). Surface a live estimate so a
-  // big PSF / high n_stars doesn't OOM by surprise.
-
-  function _extractMemEstimateGB(nStars, halfSide, marginFrac) {
-    if (!(nStars > 0) || !(halfSide > 0)) return null;
-    const marginPx = marginFrac > 0
-      ? Math.max(1, Math.round(halfSide * marginFrac)) : 0;
-    const stamp = 2 * (halfSide + marginPx) + 1;
-    // ~60 B/star-px × 1.4 safety, + ~2 GB for the materialised HLSP tile.
-    return Math.ceil(nStars * stamp * stamp * 60e-9 * 1.4) + 2;
-  }
-
-  function wireExtractMemEstimate(form) {
-    if (form.dataset.stepId !== 'extract_psf') return;
-    const hint   = form.querySelector('.js-extract-mem');
-    const memEl  = form.querySelector('input[name="memory"]');
-    const nEl    = form.querySelector('input[name="n_stars"]');
-    const hEl    = form.querySelector('input[name="half_side"]');
-    const mEl    = form.querySelector('input[name="extract_margin_frac"]');
-    if (!hint || !nEl || !hEl) return;
-    const num = (el, fb) => parseFloat((el && (el.value || el.placeholder)) || fb);
-    const recompute = () => {
-      const gb = _extractMemEstimateGB(
-        num(nEl, '0'), num(hEl, '0'), num(mEl, '0'));
-      if (gb == null) { hint.textContent = ''; return; }
-      const stamp = 2 * (num(hEl, '0')
-        + (num(mEl, '0') > 0 ? Math.max(1, Math.round(num(hEl, '0') * num(mEl, '0'))) : 0)) + 1;
-      hint.textContent =
-        `≈ ${gb} GB RAM for ${num(nEl, '0')} stars at ${stamp}² — set Memory ≥ this.`;
-      // Guide the Memory field (placeholder only, so history prefill /
-      // a typed value still win).
-      if (memEl) memEl.placeholder = `e.g. ${gb}G`;
-    };
-    [nEl, hEl, mEl].forEach(el => el && el.addEventListener('input', recompute));
-    recompute();
   }
 
   // ── Submit handler ─────────────────────────────────────────────────
@@ -968,25 +775,6 @@ large cutout don't leak across train/validate."></label>`;
     // (The old GPUs-on-a-CPU-partition warning is gone: the partition is
     // no longer user-editable — it's fixed per job type server-side.)
     let warning = '';
-    // Batch sanity for the train step: the synthetic batch must be ≥1.
-    // (With EXPERIMENTAL_LANES off the hidden HST / star-anchor counts
-    // never reach the form and parse to 0 here.)
-    if (stepId === 'train') {
-      const nSyn = parseInt(body.get('n_syn') ?? '0', 10) || 0;
-      const nHst = parseInt(body.get('n_hst') ?? '0', 10) || 0;
-      const nAnchor = parseInt(body.get('n_anchor') ?? '0', 10) || 0;
-      if (nSyn < 1) {
-        warning +=
-          `\n⚠️  WARNING: batch size = ${nSyn}, but it must be ≥ 1. ` +
-          `The job aborts at startup.\n`;
-      } else if (EXPERIMENTAL_LANES) {
-        // Friendly confirmation of the resulting batch composition.
-        const batch = nSyn + nHst + nAnchor;
-        warning +=
-          `\nBatch layout: ${nSyn} synthetic + ${nHst} HST + ${nAnchor} ` +
-          `star-anchor = batch ${batch}.\n`;
-      }
-    }
     const msg =
       `Submit a SLURM job to FASRC?\n\n` +
       `Step: ${stepId}\n\n` +
@@ -1004,7 +792,7 @@ large cutout don't leak across train/validate."></label>`;
 
     statusEl.innerHTML = '<span class="muted">submitting…</span>';
     try {
-      const resp = await fetch(`/api/fasrc/hst/${stepId}/submit`, {
+      const resp = await fetch(`/api/fasrc/steps/${stepId}/submit`, {
         method: 'POST', body,
       });
       const data = await resp.json();
@@ -1061,7 +849,7 @@ large cutout don't leak across train/validate."></label>`;
 
   function _wireForms(scope, opts) {
     // Block Enter on every input — prevents accidental form submit.
-    scope.querySelectorAll('.hst-step-form input').forEach(el => {
+    scope.querySelectorAll('.pipeline-step-form input').forEach(el => {
       el.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') {
           e.preventDefault();
@@ -1069,10 +857,10 @@ large cutout don't leak across train/validate."></label>`;
         }
       });
     });
-    scope.querySelectorAll('.hst-step-form').forEach(form => {
+    scope.querySelectorAll('.pipeline-step-form').forEach(form => {
       const stepId = form.dataset.stepId;
       const statusEl = scope.querySelector(
-        `.hst-step-status[data-step-id="${stepId}"]`,
+        `.pipeline-step-status[data-step-id="${stepId}"]`,
       );
       form.addEventListener('submit', e => _onSubmit(e, form, statusEl, opts));
     });
@@ -1270,7 +1058,7 @@ large cutout don't leak across train/validate."></label>`;
     containerEl.innerHTML = '<span class="muted">loading step…</span>';
     let payload;
     try {
-      const r = await fetch('/api/fasrc/hst/status', { credentials: 'same-origin' });
+      const r = await fetch('/api/fasrc/steps/status', { credentials: 'same-origin' });
       payload = await r.json();
     } catch (e) {
       containerEl.innerHTML =

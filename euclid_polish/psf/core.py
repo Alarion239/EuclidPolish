@@ -560,7 +560,7 @@ class PSF(StampCarrier):
 
         Reads ``PXSCALE`` (default 0.0), ``OVERSAMP`` (optional),
         ``FWHM`` (optional). When the file uses ``PIXSCALE`` instead
-        of ``PXSCALE`` (HST extractor convention), that key is read
+        of ``PXSCALE`` (a historical convention), that key is read
         as a fallback.
 
         ``normalise=True`` (default) returns a sum=1 PSF — what every
@@ -576,7 +576,7 @@ class PSF(StampCarrier):
             data = np.asarray(primary.data, dtype=np.float32)
         stamp = read_stamp_cards(header)
         # Two historical FITS conventions — PXSCALE (our save) and
-        # PIXSCALE (HST extractor + HLSP WCS). Accept either.
+        # PIXSCALE (older files). Accept either.
         pix = header.get("PXSCALE", None)
         if pix is None:
             pix = header.get("PIXSCALE", 0.0)

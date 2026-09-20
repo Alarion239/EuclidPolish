@@ -14,11 +14,9 @@ from euclid_polish.population.euclid_galaxy_prior import (
 from euclid_polish.web import fasrc_config
 from euclid_polish.web.fasrc_pipeline import (
     REGISTRY,
-    DifferentialKernelStep,
+    EnsembleTrainStep,
+    EuclidSkyDownloadStep,
     FASRCPipelineStep,
-    HSTDownloadStep,
-    HSTPSFExtractStep,
-    HSTTFRecordStep,
     StepRegistry,
     StepResources,
 )
@@ -139,22 +137,18 @@ class TestStepResources:
 class TestRegistry:
 
     def test_all_steps_present(self):
-        """Registry must include the original HST steps (download,
-        extract-PSF, kernel, TFRecord generation, WDSR train), the two
-        round-trip steps (sky download + LR-only TFRecord build), the
-        Euclid star-cutout steps (per-page cutout download + all-band ePSF
-        extraction + star-anchor TFRecord build), and the synthetic
+        """Registry must include the two round-trip steps (sky download +
+        LR-only TFRecord build), the Euclid star-cutout steps (per-page
+        cutout download + all-band ePSF extraction), and the synthetic
         generator. The legacy ``run_pipeline.py`` training presets were
         removed."""
         ids = {s.step_id for s in REGISTRY.all()}
         assert ids == {
-            "download", "extract_psf", "kernel", "tfrecords",
             "euclid_sky_download", "euclid_roundtrip_tfrecords",
             "vis_noise_sample", "archive_field_sample",
             "euclid_query", "euclid_verify_photometry",
             "download_euclid_cutouts", "extract_euclid_psf",
             "psf_rotation_pool",
-            "euclid_star_anchor_tfrecords",
             "download_tng_skirt",
             "measure_tng_radii",
             "tng_grid", "tng_stack", "poster_cutout",
@@ -333,101 +327,11 @@ class TestRegistry:
         assert argv[argv.index("--member-names") + 1] == "member_11"
         assert argv[argv.index("--count") + 1] == "1"
 
-    def test_tfrecords_step_passes_max_relative_noise(self):
-        """The bright-stamp rejection threshold must reach the
-        analytic-A generator. Without ``--max-relative-noise`` the
-        script would default to its own value and the form knob would
-        silently do nothing."""
-        step = REGISTRY.get("tfrecords")
-        argv = step.build_command({
-            "n_train": 100, "n_valid": 10, "image_size": 256,
-            "max_relative_noise": 7.5,
-        })
-        assert "scripts/fasrc_generate_hst_tfrecords.py" in argv
-        assert "--max-relative-noise" in argv
-        idx = argv.index("--max-relative-noise")
-        assert float(argv[idx + 1]) == pytest.approx(7.5)
-
-    def test_tfrecords_step_default_max_relative_noise(self):
-        """Form omitted → default 5.0 reaches the script."""
-        step = REGISTRY.get("tfrecords")
-        argv = step.build_command({})
-        assert "--max-relative-noise" in argv
-        idx = argv.index("--max-relative-noise")
-        assert float(argv[idx + 1]) == pytest.approx(5.0)
-
-    def test_tfrecords_step_does_not_emit_legacy_model_flags(self):
-        """The deleted two-stage chain CLI must not leak back in.
-        Past argv had ``--transition-model`` / ``--frozen-denoiser`` /
-        ``--frozen-denoiser-summary``; none of those should appear."""
-        step = REGISTRY.get("tfrecords")
-        argv = step.build_command({})
-        for flag in ("--transition-model", "--frozen-denoiser",
-                     "--frozen-denoiser-summary"):
-            assert flag not in argv
-
-    def test_query_step_default_command(self):
-        """The query step runs query_brightest_stars.py; window/SNR flags are
-        emitted only when the form supplies them."""
-        step = REGISTRY.get("euclid_query")
-        argv = step.build_command({"num_stars": 3000})
-        assert argv[0] == "scripts/query_brightest_stars.py"
-        assert argv[argv.index("--num-stars") + 1] == "3000"
-        assert "--magnitude-min" not in argv
-        assert "--snr-min" not in argv
-
-    def test_query_step_full_window(self):
-        step = REGISTRY.get("euclid_query")
-        argv = step.build_command({
-            "num_stars": 3000, "magnitude_min": "16",
-            "magnitude_limit": "19", "snr_min": "50"})
-        assert argv[argv.index("--magnitude-min") + 1] == "16"
-        assert argv[argv.index("--magnitude-limit") + 1] == "19"
-        assert argv[argv.index("--snr-min") + 1] == "50"
-
-    def test_verify_photometry_step_command(self):
-        step = REGISTRY.get("euclid_verify_photometry")
-        argv = step.build_command({"n": 60, "size": 512})
-        assert argv[0] == "scripts/verify_star_photometry.py"
-        assert argv[argv.index("--n") + 1] == "60"
-        assert argv[argv.index("--size") + 1] == "512"
-
     def test_query_and_verify_steps_are_cpu_only(self):
         for sid in ("euclid_query", "euclid_verify_photometry"):
             step = REGISTRY.get(sid)
             assert step.needs_gpu is False
             assert step.defaults.n_gpus == 0
-
-    def test_star_anchor_step_default_command(self):
-        """Defaults reach the generator: 256-px cutouts, 128-px stamp,
-        validate every 10th. The optional cuts are absent."""
-        step = REGISTRY.get("euclid_star_anchor_tfrecords")
-        argv = step.build_command({})
-        assert argv[0] == "scripts/fasrc_generate_star_anchor_tfrecords.py"
-        assert argv[argv.index("--size") + 1] == "256"
-        assert argv[argv.index("--stamp") + 1] == "128"
-        assert argv[argv.index("--valid-every") + 1] == "10"
-        assert "--snr-min" not in argv
-        assert "--limit" not in argv
-
-    def test_star_anchor_step_optional_flags(self):
-        """Form-supplied SNR cut + row limit reach the script."""
-        step = REGISTRY.get("euclid_star_anchor_tfrecords")
-        argv = step.build_command({"size": 512, "stamp": 160,
-                                   "valid_every": 8, "snr_min": 50,
-                                   "limit": 300})
-        assert argv[argv.index("--size") + 1] == "512"
-        assert argv[argv.index("--stamp") + 1] == "160"
-        assert argv[argv.index("--snr-min") + 1] == "50"
-        assert argv[argv.index("--limit") + 1] == "300"
-
-    def test_star_anchor_step_blank_optionals_omitted(self):
-        """Blank / 0 means 'no cut' / 'all rows' — the flag is dropped so
-        the script keeps its own default behaviour."""
-        step = REGISTRY.get("euclid_star_anchor_tfrecords")
-        argv = step.build_command({"snr_min": "0", "limit": ""})
-        assert "--snr-min" not in argv
-        assert "--limit" not in argv
 
     def test_tng_skirt_step_default_command(self):
         """The atlas downloader runs the bulk script, ties --workers to the
@@ -793,8 +697,9 @@ class TestRegistry:
             assert flag not in plain
 
     def test_lookup_by_id(self):
-        assert isinstance(REGISTRY.get("kernel"), DifferentialKernelStep)
-        assert isinstance(REGISTRY.get("download"), HSTDownloadStep)
+        assert isinstance(REGISTRY.get("euclid_sky_download"),
+                          EuclidSkyDownloadStep)
+        assert isinstance(REGISTRY.get("ensemble_train"), EnsembleTrainStep)
 
     def test_unknown_step_raises(self):
         with pytest.raises(KeyError, match="unknown"):
@@ -804,11 +709,6 @@ class TestRegistry:
         """Only model inference/training/evaluation steps request GPUs."""
         gpu_steps = {s.step_id for s in REGISTRY.all() if s.needs_gpu}
         assert gpu_steps == {"ensemble_train"}
-
-    def test_extract_psf_is_single_threaded(self):
-        step = REGISTRY.get("extract_psf")
-        assert step.fixed_cpus == 1
-        assert step.defaults.n_cpus == 1
 
     def test_euclid_psf_extract_uses_chosen_cpu_count(self):
         """The all-band Euclid ePSF step no longer locks CPUs (the user picks
@@ -835,11 +735,12 @@ class TestRegistry:
         assert argv2[argv2.index("--stars-per-psf") + 1] == "400"
         assert argv2[argv2.index("--min-stars-per-psf") + 1] == "200"
 
-    def test_other_steps_do_not_lock_cpus(self):
-        """Only the HST ePSF step (single-threaded → 1 CPU) still pins CPUs;
-        the all-band Euclid ePSF now lets the user choose."""
+    def test_no_step_locks_cpus(self):
+        """No registered step pins its CPU count — the user picks it in
+        the form (the submit route still enforces ``fixed_cpus`` when a
+        step declares one)."""
         locked = {s.step_id for s in REGISTRY.all() if s.fixed_cpus is not None}
-        assert locked == {"extract_psf"}
+        assert locked == set()
 
     def test_every_step_has_label(self):
         for s in REGISTRY.all():
@@ -919,30 +820,14 @@ class TestSbatchRendering:
         assert "_star_prior_json" not in built["params"]
         assert not any(key.startswith("_vis_noise") for key in built["params"])
 
-    def test_kernel_step_renders_one_argument(self, cfg):
-        step = REGISTRY.get("kernel")
-        out = step.build_sbatch_body(
-            params={"regularisation": 1e-4},
-            resources=step.defaults,
-            cfg=cfg,
-            label="kernel test",
-        )
-        body = out["body"]
-        assert body.startswith("#!/bin/bash"), "body has residual indent"
-        assert "--regularisation" in body
-        assert "0.0001" in body
-        assert "scripts/fasrc_compute_differential_kernel.py" in body
-        assert "RUNTIME_SECONDS" in body
-        assert "STEP_ID=kernel" in body
-
     def test_paths_use_job_name_and_timestamp(self, cfg):
-        step = REGISTRY.get("download")
+        step = REGISTRY.get("euclid_sky_download")
         out = step.build_sbatch_body(
-            params={"n_tiles": 5},
+            params={"n_positions": 5},
             resources=step.defaults, cfg=cfg, label="x",
         )
-        assert out["name"].startswith("hst-tiles-")
-        assert out["script"].startswith("logs/hst_pipeline/")
+        assert out["name"].startswith("sky-cutouts-")
+        assert out["script"].startswith("logs/pipeline/")
         assert out["script"].endswith(".sh")
         assert out["out"].endswith(".out")
         assert out["err"].endswith(".err")
@@ -953,7 +838,6 @@ class TestSbatchRendering:
         prefixes, so squeue/sacct read sensibly and the names survive
         feature reshuffles."""
         expected = {
-            "train":                        "train",
             "ensemble_train":               "ensemble-train",
             "synthetic_generate":           "synthetic-data",
             "euclid_query":                 "star-catalog",
@@ -966,15 +850,10 @@ class TestSbatchRendering:
             "tng_stack":                    "tng-stack",
             "poster_cutout":                "poster-cutout",
             # Experimental-lane steps keep sane names for when they return.
-            "download":                     "hst-tiles",
-            "extract_psf":                  "hst-psf",
-            "kernel":                       "diff-kernel",
-            "tfrecords":                    "hst-tfrecords",
             "euclid_sky_download":          "sky-cutouts",
             "vis_noise_sample":             "vis-noise-samples",
             "archive_field_sample":         "archive-fields",
             "euclid_roundtrip_tfrecords":   "roundtrip-tfrecords",
-            "euclid_star_anchor_tfrecords": "anchor-tfrecords",
             "psf_rotation_pool":            "psf-rotpool",
         }
         _mock_population_calibrations(monkeypatch)
@@ -988,7 +867,7 @@ class TestSbatchRendering:
                 cfg=cfg,
                 label="x",
             )
-            # name = <job_name>-<timestamp>; no legacy hst-/euclid- prefix
+            # name = <job_name>-<timestamp>; no legacy per-lane prefix
             # bolted onto the step id.
             assert out["name"].startswith(f"{step.job_name}-")
             assert f"--job-name={step.job_name}-" in out["body"]
@@ -997,9 +876,7 @@ class TestSbatchRendering:
         experimental_ids = {s.step_id for s in REGISTRY.all()
                             if s.experimental}
         assert experimental_ids == {
-            "download", "extract_psf", "kernel", "tfrecords",
             "euclid_sky_download", "euclid_roundtrip_tfrecords",
-            "euclid_star_anchor_tfrecords",
         }
 
     def test_gpu_step_emits_gres_line(self, cfg):
@@ -1064,9 +941,9 @@ class TestSbatchRendering:
 
     def test_cpu_step_omits_gres_line(self, cfg):
         # gpu:0 is silently rejected by some SLURM configs.
-        step = REGISTRY.get("kernel")
+        step = REGISTRY.get("euclid_verify_photometry")
         out = step.build_sbatch_body(
-            params={"regularisation": 1e-3},
+            params={"n": 40},
             resources=step.defaults, cfg=cfg, label="x",
         )
         assert "--gres=" not in out["body"]
@@ -1093,23 +970,26 @@ class TestSbatchRendering:
                 )
 
     def test_fixed_cpus_renders_in_header(self, cfg):
-        """extract_psf must always emit --cpus-per-task=1, no matter what."""
-        step = REGISTRY.get("extract_psf")
-        # Even if defaults say 1, render with the defaults to confirm.
+        """A step's resource CPU count must land on --cpus-per-task."""
+        step = REGISTRY.get("euclid_verify_photometry")
         out = step.build_sbatch_body(
-            params={"n_stars": 200},
-            resources=step.defaults, cfg=cfg, label="x",
+            params={"n": 40},
+            resources=StepResources(
+                partition="shared", n_cpus=1, n_gpus=0,
+                memory="8G", time_limit="0:30:00",
+            ),
+            cfg=cfg, label="x",
         )
         assert "--cpus-per-task=1" in out["body"]
 
     def test_resources_propagate_into_header(self, cfg):
-        step = REGISTRY.get("tfrecords")
+        step = REGISTRY.get("euclid_verify_photometry")
         custom = StepResources(
             partition="bigmem", n_cpus=32, n_gpus=0,
             memory="128G", time_limit="12:00:00",
         )
         out = step.build_sbatch_body(
-            params={"n_train": 100, "n_valid": 10, "image_size": 256},
+            params={"n": 40, "size": 256},
             resources=custom, cfg=cfg, label="x",
         )
         body = out["body"]
@@ -1119,9 +999,9 @@ class TestSbatchRendering:
         assert "--time=12:00:00" in body
 
     def test_data_dir_exported(self, cfg):
-        step = REGISTRY.get("download")
+        step = REGISTRY.get("euclid_verify_photometry")
         out = step.build_sbatch_body(
-            params={"n_tiles": 1},
+            params={"n": 1},
             resources=step.defaults, cfg=cfg, label="x",
         )
         assert "EUCLID_POLISH_DATA_DIR" in out["body"]
@@ -1226,10 +1106,7 @@ class TestSbatchRendering:
 
 class TestConcreteSteps:
 
-    @pytest.mark.parametrize("step_cls", [
-        HSTDownloadStep, HSTPSFExtractStep,
-        DifferentialKernelStep, HSTTFRecordStep,
-    ])
+    @pytest.mark.parametrize("step_cls", [EuclidSkyDownloadStep])
     def test_builds_nonempty_command(self, step_cls):
         step = step_cls()
         argv = step.build_command({})    # defaults only
@@ -1243,13 +1120,6 @@ class TestConcreteSteps:
 
 
 
-
-
-    def test_tfrecords_passes_image_size(self):
-        argv = HSTTFRecordStep().build_command({"image_size": 256})
-        assert "--image-size" in argv
-        idx = argv.index("--image-size")
-        assert argv[idx + 1] == "256"
 
 
 # ---------------------------------------------------------------------------
@@ -1276,20 +1146,38 @@ class TestFixedCpusEnforcement:
         monkeypatch.setattr(remote.STATE, "ssh", stub)
         return stub
 
-    def test_form_n_cpus_overridden_by_fixed_cpus(self, monkeypatch,
-                                                  experimental_lanes_on):
+    def test_form_n_cpus_overridden_by_fixed_cpus(self, monkeypatch):
+        """No registered step pins CPUs anymore, so the enforcement is
+        exercised through a locked dummy step injected into the registry."""
+        from euclid_polish.web import fasrc_pipeline
         from euclid_polish.web.app import create_app
+
+        class _LockedStep(FASRCPipelineStep):
+            def __init__(self):
+                super().__init__(
+                    step_id="locked_cpu_test", label="locked",
+                    job_name="locked-test",
+                    defaults=StepResources(
+                        partition="shared", n_cpus=1, n_gpus=0,
+                        memory="4G", time_limit="0:10:00",
+                    ),
+                    needs_gpu=False, fixed_cpus=1,
+                )
+            def build_command(self, params):
+                return ["scripts/verify_star_photometry.py"]
+
+        monkeypatch.setitem(
+            fasrc_pipeline.REGISTRY.by_id, "locked_cpu_test", _LockedStep())
         self._stub_ssh(monkeypatch)
         app = create_app()
         client = app.test_client()
         r = client.post(
-            "/api/fasrc/hst/extract_psf/submit",
+            "/api/fasrc/steps/locked_cpu_test/submit",
             data={
                 "confirm": "yes",
                 "n_cpus": "16",     # user tries to over-allocate
                 "n_gpus": "0",      # all resource fields are required
                                     # (StepResources.from_form_strict)
-                "n_stars": "200",
                 "memory": "8G",
                 "time_limit": "2:00:00",
                 "partition": "shared",
@@ -1311,7 +1199,7 @@ class TestFixedCpusEnforcement:
         app = create_app()
         client = app.test_client()
         r = client.post(
-            "/api/fasrc/hst/download_tng_skirt/submit",
+            "/api/fasrc/steps/download_tng_skirt/submit",
             data={
                 "confirm": "yes",
                 "n_cpus": "8",      # allocation
@@ -1343,7 +1231,7 @@ class TestFixedCpusEnforcement:
         app = create_app()
         client = app.test_client()
         r = client.post(
-            "/api/fasrc/hst/download_tng_skirt/submit",
+            "/api/fasrc/steps/download_tng_skirt/submit",
             data={
                 "confirm": "yes",
                 "n_cpus": "8", "n_gpus": "0",
@@ -1377,7 +1265,7 @@ class TestFixedCpusEnforcement:
         }
 
         rejected = client.post(
-            "/api/fasrc/hst/archive_field_sample/submit", data=form,
+            "/api/fasrc/steps/archive_field_sample/submit", data=form,
         )
 
         assert rejected.status_code == 400
@@ -1385,7 +1273,7 @@ class TestFixedCpusEnforcement:
         assert stub.calls == []
 
         accepted = client.post(
-            "/api/fasrc/hst/archive_field_sample/submit",
+            "/api/fasrc/steps/archive_field_sample/submit",
             data={**form, "confirm_force_redownload": "yes"},
         )
         payload = accepted.get_json()
@@ -1395,8 +1283,7 @@ class TestFixedCpusEnforcement:
         assert "confirm_force_redownload" not in payload["params"]
         assert any("--force-redownload" in command for command in stub.calls)
 
-    def test_partition_forced_to_step_default(self, monkeypatch,
-                                              experimental_lanes_on):
+    def test_partition_forced_to_step_default(self, monkeypatch):
         """The partition is determined by the job type — a form-supplied
         value (stale tab, manual POST) is overridden by the step's
         partition before anything reaches sbatch."""
@@ -1405,12 +1292,12 @@ class TestFixedCpusEnforcement:
         app = create_app()
         client = app.test_client()
         r = client.post(
-            "/api/fasrc/hst/tfrecords/submit",
+            "/api/fasrc/steps/euclid_verify_photometry/submit",
             data={
                 "confirm": "yes",
                 "partition": "gpu",          # wrong on purpose
                 "n_cpus": "16", "n_gpus": "0",
-                "n_train": "100", "n_valid": "10", "image_size": "256",
+                "n": "40", "size": "256",
                 "memory": "64G", "time_limit": "1:00:00",
             },
         )
@@ -1418,8 +1305,7 @@ class TestFixedCpusEnforcement:
         assert r.status_code == 200 and j["ok"]
         assert j["params"]["partition"] == "shared"   # the step's partition
 
-    def test_partition_not_required_in_form(self, monkeypatch,
-                                            experimental_lanes_on):
+    def test_partition_not_required_in_form(self, monkeypatch):
         """With the partition question removed from the cards, a form
         without the field must still submit — the server injects the
         step's partition before the strict resource parse."""
@@ -1428,11 +1314,11 @@ class TestFixedCpusEnforcement:
         app = create_app()
         client = app.test_client()
         r = client.post(
-            "/api/fasrc/hst/tfrecords/submit",
+            "/api/fasrc/steps/euclid_verify_photometry/submit",
             data={
                 "confirm": "yes",            # NO partition field at all
                 "n_cpus": "16", "n_gpus": "0",
-                "n_train": "100", "n_valid": "10", "image_size": "256",
+                "n": "40", "size": "256",
                 "memory": "64G", "time_limit": "1:00:00",
             },
         )
@@ -1440,22 +1326,20 @@ class TestFixedCpusEnforcement:
         assert r.status_code == 200 and j["ok"]
         assert j["params"]["partition"] == "shared"
 
-    def test_form_n_cpus_kept_when_no_fixed(self, monkeypatch,
-                                            experimental_lanes_on):
+    def test_form_n_cpus_kept_when_no_fixed(self, monkeypatch):
         from euclid_polish.web.app import create_app
         self._stub_ssh(monkeypatch)
         app = create_app()
         client = app.test_client()
         r = client.post(
-            "/api/fasrc/hst/tfrecords/submit",
+            "/api/fasrc/steps/euclid_verify_photometry/submit",
             data={
                 "confirm": "yes",
                 "n_cpus": "20",
                 "n_gpus": "0",      # all resource fields are required
                                     # (StepResources.from_form_strict)
-                "n_train": "100",
-                "n_valid": "10",
-                "image_size": "256",
+                "n": "40",
+                "size": "256",
                 "memory": "64G",
                 "time_limit": "1:00:00",
                 "partition": "shared",
@@ -1464,11 +1348,10 @@ class TestFixedCpusEnforcement:
         j = r.get_json()
         assert r.status_code == 200
         assert j["ok"]
-        # tfrecords has no fixed_cpus → user's 20 should be honoured.
+        # euclid_verify_photometry has no fixed_cpus → user's 20 honoured.
         assert j["params"]["n_cpus"] == 20
 
-    def test_submit_rejected_without_confirm_token(self, monkeypatch,
-                                                   experimental_lanes_on):
+    def test_submit_rejected_without_confirm_token(self, monkeypatch):
         """The server-side confirmation guard must refuse any POST that
         lacks ``confirm=yes`` — no SLURM script gets written, no sbatch
         gets called, no job ID is returned. This is the load-bearing
@@ -1483,13 +1366,12 @@ class TestFixedCpusEnforcement:
         app = create_app()
         client = app.test_client()
         r = client.post(
-            "/api/fasrc/hst/tfrecords/submit",
+            "/api/fasrc/steps/euclid_verify_photometry/submit",
             data={
                 # Intentionally NO "confirm" field.
                 "n_cpus": "20",
-                "n_train": "100",
-                "n_valid": "10",
-                "image_size": "256",
+                "n": "40",
+                "size": "256",
                 "memory": "64G",
                 "time_limit": "1:00:00",
                 "partition": "shared",
@@ -1504,8 +1386,7 @@ class TestFixedCpusEnforcement:
         # assertion that the guard short-circuited before doing any work.
         assert stub.calls == []
 
-    def test_submit_rejected_with_invalid_confirm_value(self, monkeypatch,
-                                                        experimental_lanes_on):
+    def test_submit_rejected_with_invalid_confirm_value(self, monkeypatch):
         """Token values other than 'yes' / 'true' / '1' (case-insensitive)
         must also be rejected, so a typo or stray default can't sneak
         a submission through."""
@@ -1515,8 +1396,8 @@ class TestFixedCpusEnforcement:
         client = app.test_client()
         for bad in ("no", "false", "", "0", "maybe", "ok", "y"):
             r = client.post(
-                "/api/fasrc/hst/extract_psf/submit",
-                data={"confirm": bad, "n_stars": "10"},
+                "/api/fasrc/steps/euclid_verify_photometry/submit",
+                data={"confirm": bad, "n": "10"},
             )
             assert r.status_code == 400, f"value {bad!r} should be rejected"
         assert stub.calls == []

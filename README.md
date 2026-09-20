@@ -8,8 +8,7 @@ flag strong-lens **candidates** — especially the under-represented small-Einst
 population that wide, low-resolution surveys miss.
 
 The network is trained on **synthetic Euclid scenes** with a clean high-resolution
-ground truth, optionally mixed with two real-data lanes (HST F814W and Euclid
-star cutouts). The synthetic generator simulates four bands in raw electrons
+ground truth. The synthetic generator simulates four bands in raw electrons
 (VIS + NISP Y_E / J_E / H_E), convolves each band with its own empirical PSF, applies a
 per-band Poisson + read-noise model plus detector artifacts, and writes float32
 TFRecords. All photometry is calibrated against the published Euclid AB zeropoints per
@@ -182,11 +181,6 @@ deformation is shared across all four bands, and it changes only the forward PSF
 make LR, never the clean/HR target. The probability, maximum alpha, and smoothing scale are
 persistent controls on `/config`.
 
-`differential_kernel.py` is a **separate** path used only by the HST→Euclid training lane
-(§5): it solves `A ⊛ H ≈ E` (Wiener) so that convolving a real HST F814W cutout with `A`
-yields a correct Euclid-PSF LR instead of double-convolving through HST's own PSF. It is
-not part of the synthetic forward model.
-
 ### 2.2 Forward model
 
 All four bands are delivered by the Euclid MER archive on a common **0.10″/pix** grid.
@@ -341,28 +335,19 @@ model has no internal normalisation.
 **Code:** `euclid_polish/training/trainer.py`, `training/data_multiband.py`,
 `training/forward_op.py`, `training/models/wdsr.py`.
 
-### 5.1 Objective: one deconvolved sky, many forward operators
+### 5.1 Objective: the deconvolved sky
 
 The model always estimates a single quantity: the **deconvolved VIS sky** `SR @ 0.05″/pix`
-(asinh space). Each data lane supervises that same estimate through its own instrument's
-forward operator, in a **fixed-layout** train step (`train_step_sky`) that slices the batch
-into contiguous lane blocks `[n_syn | n_hst | n_anchor]` with **no per-example branching**:
-
-| Lane | Records | Loss |
-|---|---|---|
-| **synthetic** (always on) | simulated `(lr, hr)` pairs; `hr` *is* the clean sky | `\|SR − scene\|` directly (the synthetic target is the deconvolved sky) |
-| **HST** (optional) | real HST F814W cutouts | `\|asinh(H ⊛ SR_lin) − HST_image\|` — `SR` is un-stretched to electrons, convolved with the HST PSF (`HSTForwardOp`), re-stretched, compared to the observed image |
-| **star-anchor** (optional) | real Euclid star cutouts + sparse delta-target | masked `\|SR − delta_target\|` at the star pixel only (operator-free) |
+(asinh space), supervised on simulated `(lr, hr)` pairs where `hr` *is* the clean sky:
+the loss is `|SR − scene|` directly.
 
 A non-negativity penalty `λ · mean(relu(−SR))` is available but **defaults to off**
 (`Config.NONNEG_SR_WEIGHT = 0.0`): forcing `SR ≥ 0` forbade legitimate deconvolution
 ringing and pushed the model into a blurry basin. Re-enable per run with `--nonneg-sr-weight`.
 
-`EuclidVISForwardOp` (Fourier-domain VIS PSF convolution + sum-rebin) is retained only for
-the `/inference` "forward(SR)" diagnostic panel; the operator applied **in training** is
-`HSTForwardOp`. The single-source `train_step` (used by `run_pipeline.py`, the CLI, and all
-validation streams) computes `loss(SR, hr)` directly, which for the synthetic lane is
-identical to the sky objective.
+`EuclidVISForwardOp` (Fourier-domain VIS PSF convolution + sum-rebin) is retained for
+the `/inference` "forward(SR)" diagnostic panel. The train step (`train_step`, used by
+`run_pipeline.py`, the CLI, and all validation streams) computes `loss(SR, hr)` directly.
 
 ### 5.2 Model, loss, schedule
 
@@ -401,12 +386,9 @@ PSNR_PEAK_E         = 10^(-0.4 · (17.0 − SIM_VIS_ZEROPOINT_E)) ≈ 5.68 × 10
 PSNR_PEAK_STRETCHED = asinh(PSNR_PEAK_E / 100)
 ```
 
-We log `psnr_stretched` / `psnr_raw` for the synthetic lane, `psnr_*_hst` for the HST lane
-(scored through the forward op), and a masked `anchor_val_psnr` (clipped at 80 dB so one
-nailed pixel can't spike it). Best-checkpoint selection runs **two independent tracks** — a
-PSNR composite (`w_syn·PSNR_syn + w_hst·PSNR_hst + w_anchor·PSNR_anchor`, default weights
-`(1, 1, 0)`) saved to the root checkpoint dir, and a combined validation-loss track saved to
-`loss_best/`.
+We log `psnr_stretched` / `psnr_raw` (plus per-band PSNRs for the 4-band model).
+Best-checkpoint selection runs **two independent tracks** — the validation PSNR saved to
+the root checkpoint dir, and a held-out validation-loss track saved to `loss_best/`.
 
 ---
 
@@ -418,10 +400,6 @@ Schema v2 (multi-band), under `Config.RECORDS_DIR_V2 = "./data/images/records_v2
 |---|---|---|
 | `clean_{train,validate}.tfrecord` | HR clean field, `(H_hr, W_hr, 1)` VIS only, raw float32 electrons | Training target (after asinh in loader) |
 | `dirty_{train,validate}.tfrecord` | LR noisy field, `(H_lr, W_lr, 4)` `(VIS, Y_E, J_E, H_E)` @ 0.10″/pix, raw float32 electrons (can be negative) | Training input (after per-band asinh in loader) |
-
-The optional real-data lanes use their own records: HST-paired records
-(`fasrc_generate_hst_tfrecords.py`) and star-anchor records
-(`fasrc_generate_star_anchor_tfrecords.py`).
 
 There is no normalisation step before the TFRecord. The float32 representation preserves
 negative residuals from sky/dark subtraction. Each record carries explicit `channels`,
@@ -461,17 +439,11 @@ pytest tests/ -q
 
 Heavy jobs run on Harvard's FASRC cluster via SLURM. The typical order:
 
-1. **Download** star cutouts (`download_all_bands.py`) and real-lane data
-   (`fasrc_download_euclid_sky_cutouts.py`, `fasrc_download_hst_hlsp.py`,
-   `fasrc_download_tng_skirt_atlas.py`).
-2. **PSFs:** `extract_all_band_psfs.py` (Euclid per-band ePSFs);
-   `fasrc_extract_hst_psf.py` + `fasrc_compute_differential_kernel.py` (HST→Euclid kernel).
-3. **TFRecords** for the optional lanes: `fasrc_generate_hst_tfrecords.py`,
-   `fasrc_generate_star_anchor_tfrecords.py`. (Synthetic records are produced inside
-   `run_pipeline.py`.)
-4. **Train:** `sbatch scripts/fasrc_train.sh` (full pipeline) or
-   `sbatch scripts/fasrc_train_only.sh` (records already exist). Mixed-lane training is
-   driven by `scripts/fasrc_train_with_hst.py` (`--n-syn / --n-hst / --n-anchor`).
+1. **Download** star cutouts (`download_all_bands.py`) and real data
+   (`fasrc_download_euclid_sky_cutouts.py`, `fasrc_download_tng_skirt_atlas.py`).
+2. **PSFs:** `extract_all_band_psfs.py` (Euclid per-band ePSFs).
+3. **TFRecords:** synthetic records are produced inside `run_pipeline.py`.
+4. **Train:** submitted from the WebUI as the `ensemble_train` FASRC step.
 
 Experiment tracking lives in `scripts/track.py` (campaign lab notebook — back up
 models/FITS/images, log FASRC jobs, mirror to holylabs) and `scripts/timetravel.py`

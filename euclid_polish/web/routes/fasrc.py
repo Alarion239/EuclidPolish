@@ -581,12 +581,11 @@ def register(app):
         return _submit_or_queue("synthetic", step_name, f.to_dict())
 
     # =========================================================================
-    # Pipeline steps (generic FASRC submissions; URL prefix /api/fasrc/hst/
-    # is historical — it serves every registered step, not just HST ones)
+    # Pipeline steps (generic FASRC submissions)
     # =========================================================================
 
-    @app.route("/api/fasrc/hst/status")
-    def api_fasrc_hst_status():
+    @app.route("/api/fasrc/steps/status")
+    def api_fasrc_steps_status():
         """Per-step: name, defaults, last-runtime median, on-disk status.
 
         Uses ``STATE.ssh`` to ``test`` for each artifact's existence; if
@@ -599,8 +598,8 @@ def register(app):
 
         steps_payload = []
         for step in STEP_REGISTRY.all():
-            # EXPERIMENTAL lanes (HST / star-anchor / round-trip): their
-            # steps are hidden from the UI while the feature flag is off —
+            # EXPERIMENTAL round-trip lane: its steps are hidden from the
+            # UI while the feature flag is off —
             # see euclid_polish.web.experimental.
             if step.experimental and not experimental.EXPERIMENTAL_LANES_ENABLED:
                 continue
@@ -618,8 +617,7 @@ def register(app):
         # this list in sync with the ``produces`` map in fasrc.html
         # (the JS side maps each step_id to one of these keys).
         artifacts = {
-            "tiles": None, "psf": None, "kernel": None,
-            "records": None, "ckpt": None,
+            "ckpt": None,
             # Round-trip pipeline artifacts (Chunk C3 + web wiring):
             #   euclid_sky      — sky-position catalog written by the
             #                     sky-download step (cutouts arrive in
@@ -651,15 +649,11 @@ def register(app):
                 "synthetic_records":
                     f"{cfg_loaded.data_dir}/images/records_v2/clean_train.tfrecord",
             }
-            # EXPERIMENTAL-lane artifacts (HST / round-trip): only probed
-            # when the lanes are enabled — no point spending SSH time on
-            # features the UI hides.
+            # EXPERIMENTAL round-trip-lane artifacts: only probed when the
+            # lane is enabled — no point spending SSH time on features the
+            # UI hides.
             if experimental.EXPERIMENTAL_LANES_ENABLED:
                 paths.update({
-                    "tiles":   f"{cfg_loaded.data_dir}/hst_hlsp/download_summary.json",
-                    "psf":     f"{cfg_loaded.data_dir}/hst_psf/F814W.fits",
-                    "kernel":  f"{cfg_loaded.data_dir}/hst_psf/diff_kernel_VIS.fits",
-                    "records": f"{cfg_loaded.data_dir}/images/records_v2_hst/clean_train.tfrecord",
                     "euclid_sky":
                         f"{cfg_loaded.data_dir}/euclid_sky/sky_positions.csv",
                     "roundtrip_records":
@@ -688,13 +682,13 @@ def register(app):
             "remote_paths": {
                 "data_dir":    cfg_loaded.data_dir,
                 "ckpt_dir":    cfg_loaded.ckpt_dir,
-                "logs_dir":    "logs/hst_pipeline",
+                "logs_dir":    "logs/pipeline",
             },
         })
 
-    @app.route("/api/fasrc/hst/<step_id>/submit", methods=["POST"])
-    def api_fasrc_hst_submit(step_id: str):
-        """Generic submission for any HST-pipeline step.
+    @app.route("/api/fasrc/steps/<step_id>/submit", methods=["POST"])
+    def api_fasrc_step_submit(step_id: str):
+        """Generic submission for any pipeline step.
 
         Two defences, in order of evaluation:
 
@@ -712,9 +706,9 @@ def register(app):
             step = STEP_REGISTRY.get(step_id)
         except KeyError:
             return jsonify({"ok": False, "error": f"unknown step: {step_id}"}), 404
-        # EXPERIMENTAL-lane steps (HST / star-anchor / round-trip) are
-        # disabled for now — refuse the submit so a stale tab can't launch
-        # one. See euclid_polish.web.experimental.
+        # EXPERIMENTAL round-trip-lane steps are disabled for now — refuse
+        # the submit so a stale tab can't launch one.
+        # See euclid_polish.web.experimental.
         if step.experimental and not experimental.EXPERIMENTAL_LANES_ENABLED:
             return jsonify({"ok": False, "error":
                             f"step {step_id!r} is experimental and currently "
@@ -792,10 +786,10 @@ def register(app):
                 form[param_name] = value
 
         # All form values are passed as ``params``; the step picks out
-        # what it needs (e.g. ``n_tiles``, ``hst_fraction``).
+        # what it needs.
         # Validation above (step, confirm, resources) has passed; hand off
         # to the local queue: submit now if the lane is free, else enqueue.
-        return _submit_or_queue("hst", step_id, form)
+        return _submit_or_queue("step", step_id, form)
 
     @app.route("/api/fasrc/refresh-accounting", methods=["POST"])
     def api_fasrc_refresh_accounting():
@@ -807,8 +801,8 @@ def register(app):
             return jsonify({"ok": False, "error": "not connected"}), 400
         return jsonify(fasrc_jobs.refresh_all_post_mortems(STATE.ssh))
 
-    @app.route("/api/fasrc/hst/<step_id>/history", methods=["GET", "POST"])
-    def api_fasrc_hst_step_history(step_id: str):
+    @app.route("/api/fasrc/steps/<step_id>/history", methods=["GET", "POST"])
+    def api_fasrc_step_history(step_id: str):
         """Per-step run history + best-match prefill suggestion.
 
         Powers the "Previous runs" panel and the resources prefill under
@@ -1126,7 +1120,7 @@ def register(app):
         # through with empty output if the dir doesn't exist yet.
         cmd = (
             f"{{ [ -d {shlex.quote(log_dir)} ] && "
-            # Modern pipeline logs live in ``logs/hst_pipeline`` while older
+            # Modern pipeline logs live in ``logs/pipeline`` while older
             # generic submissions live in ``logs/jobs``. Search the configured
             # log tree, not just the legacy jobs directory.
             f"find {shlex.quote(log_dir)} -maxdepth 3 -type f "

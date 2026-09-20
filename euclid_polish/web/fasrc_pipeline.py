@@ -15,10 +15,10 @@ Adding a new step (e.g. "ingest JWST F814W") is then a 30-line
 delta — no Flask, web template, or sbatch-template duplication.
 
 Steps marked ``experimental=True`` belong to the EXPERIMENTAL
-supervision lanes (HST / star-anchor / round-trip) — features for the
-future, disabled for now. They stay registered (so build_command unit
-tests and a future re-enable keep working) but are hidden from the
-WebUI step listing and refused by the submit endpoint while
+round-trip supervision lane — a feature for the future, disabled for
+now. They stay registered (so build_command unit tests and a future
+re-enable keep working) but are hidden from the WebUI step listing and
+refused by the submit endpoint while
 ``euclid_polish.web.experimental.EXPERIMENTAL_LANES_ENABLED`` is False.
 
 The companion in :mod:`euclid_polish.web.fasrc_jobs` (the existing
@@ -117,7 +117,7 @@ class StepResources:
     def from_form_strict(cls, form: dict[str, Any]) -> StepResources:
         """Build from a Flask form, *rejecting* blank resource fields.
 
-        Used by the HST-pipeline submit endpoint after the
+        Used by the pipeline-step submit endpoint after the
         history-driven-defaults UI change: there is no implicit
         fallback to a step's defaults anymore. If the form has no
         precedent in the CSV log and the user typed nothing, the
@@ -171,7 +171,7 @@ class FASRCPipelineStep(ABC):
     via :meth:`build_sbatch_body`.
     """
 
-    #: Stable id used in URLs (``/api/fasrc/hst/<step_id>/submit``).
+    #: Stable id used in URLs (``/api/fasrc/steps/<step_id>/submit``).
     step_id:   str
     #: Human label shown in the UI.
     label:     str
@@ -182,7 +182,7 @@ class FASRCPipelineStep(ABC):
     #: If set, the CPU count is locked to this value at submit time and
     #: the UI hides the corresponding form field. Use when the underlying
     #: work is single-threaded and asking SLURM for extra cores just
-    #: wastes the allocation — see HSTPSFExtractStep.
+    #: wastes the allocation.
     fixed_cpus: int | None = None
     #: GPU equivalent of ``fixed_cpus``. Ensemble members are ordinary
     #: single-device models, so allocating extra GPUs to one array task would
@@ -194,7 +194,7 @@ class FASRCPipelineStep(ABC):
     #: to ``step_id`` when unset; the timestamp suffix keeps log paths
     #: unique per submission.
     job_name:  str | None = None
-    #: EXPERIMENTAL-lane step (HST / star-anchor / round-trip supervision).
+    #: EXPERIMENTAL-lane step (round-trip supervision).
     #: While ``experimental.EXPERIMENTAL_LANES_ENABLED`` is False these
     #: steps are hidden from the WebUI step listing and refused by the
     #: submit endpoint — experimental features for the future, disabled
@@ -248,10 +248,10 @@ class FASRCPipelineStep(ABC):
 
     #: Subclasses override this class-level constant to control where
     #: their log files land. Pipeline steps live under
-    #: ``logs/hst_pipeline``; legacy training presets live under
+    #: ``logs/pipeline``; legacy training presets live under
     #: ``logs/jobs``. Declared as ``ClassVar`` so the dataclass
     #: machinery doesn't promote it to a per-instance field.
-    log_dir_prefix:  ClassVar[str] = "logs/hst_pipeline"
+    log_dir_prefix:  ClassVar[str] = "logs/pipeline"
 
     def banner_line(self, label: str) -> str:
         """First echo line of the sbatch banner.
@@ -490,122 +490,6 @@ def render_sbatch_body(
 # ---------------------------------------------------------------------------
 # Concrete steps
 # ---------------------------------------------------------------------------
-
-class HSTDownloadStep(FASRCPipelineStep):
-    """EXPERIMENTAL (HST lane) — disabled for now, kept for future work."""
-
-    def __init__(self):
-        super().__init__(
-            step_id="download",
-            label="1. Download COSMOS HLSP tiles",
-            job_name="hst-tiles",
-            experimental=True,
-            defaults=StepResources(
-                partition="shared", n_cpus=2, n_gpus=0,
-                memory="16G", time_limit="1:00:00",
-            ),
-            needs_gpu=False,
-        )
-
-    def build_command(self, params: dict[str, Any]) -> list[str]:
-        n_tiles = int(params.get("n_tiles", 25))
-        return [
-            "scripts/fasrc_download_hst_hlsp.py",
-            "--n-tiles", str(n_tiles),
-        ]
-
-
-class HSTPSFExtractStep(FASRCPipelineStep):
-    """EXPERIMENTAL (HST lane) — disabled for now, kept for future work."""
-
-    def __init__(self):
-        super().__init__(
-            step_id="extract_psf",
-            label="2. Extract HST F814W ePSF",
-            job_name="hst-psf",
-            experimental=True,
-            defaults=StepResources(
-                partition="shared", n_cpus=1, n_gpus=0,
-                # Peak ≈ a materialised ~500 MB HLSP tile + working copies
-                # (~1–2 GB, half-side-independent) plus the held star stamps
-                # (n_stars·(2·half+1)²·4 B → ~1 GB for 200 stars at 1023²)
-                # and EPSFBuilder (~1 GB). 16 GB gives clear headroom for
-                # large PSFs / higher n_stars; bump in the form if needed.
-                memory="16G", time_limit="0:20:00",
-            ),
-            needs_gpu=False,
-            fixed_cpus=1,
-        )
-
-    def build_command(self, params: dict[str, Any]) -> list[str]:
-        n_stars = int(params.get("n_stars", 200))
-        half_side = int(params.get("half_side", 255))
-        margin_frac = float(params.get("extract_margin_frac", 0.08))
-        return [
-            "scripts/fasrc_extract_hst_psf.py",
-            "--n-stars", str(n_stars),
-            "--half-side", str(half_side),
-            "--extract-margin-frac", f"{margin_frac:g}",
-        ]
-
-
-class DifferentialKernelStep(FASRCPipelineStep):
-    """EXPERIMENTAL (HST lane) — disabled for now, kept for future work."""
-
-    def __init__(self):
-        super().__init__(
-            step_id="kernel",
-            label="3. Build differential kernel A = E / H",
-            job_name="diff-kernel",
-            experimental=True,
-            defaults=StepResources(
-                partition="shared", n_cpus=1, n_gpus=0,
-                memory="4G", time_limit="0:05:00",
-            ),
-            needs_gpu=False,
-        )
-
-    def build_command(self, params: dict[str, Any]) -> list[str]:
-        reg = float(params.get("regularisation", 1e-3))
-        return [
-            "scripts/fasrc_compute_differential_kernel.py",
-            "--regularisation", f"{reg:g}",
-        ]
-
-
-class HSTTFRecordStep(FASRCPipelineStep):
-    """EXPERIMENTAL (HST lane) — disabled for now, kept for future work."""
-
-    def __init__(self):
-        super().__init__(
-            step_id="tfrecords",
-            label="4. Generate HST → Euclid TFRecord pairs",
-            job_name="hst-tfrecords",
-            experimental=True,
-            defaults=StepResources(
-                partition="shared", n_cpus=16, n_gpus=0,
-                memory="64G", time_limit="0:10:00",
-            ),
-            needs_gpu=False,
-        )
-
-    def build_command(self, params: dict[str, Any]) -> list[str]:
-        n_train = int(params.get("n_train", 2000))
-        n_valid = int(params.get("n_valid", 200))
-        image_size = int(params.get("image_size", 256))
-        max_relative_noise = float(params.get("max_relative_noise", 5.0))
-        star_threshold_sigma = float(params.get("star_threshold_sigma", 20.0))
-        min_source_sigma = float(params.get("min_source_sigma", 5.0))
-        return [
-            "scripts/fasrc_generate_hst_tfrecords.py",
-            "--n-train", str(n_train),
-            "--n-valid", str(n_valid),
-            "--image-size", str(image_size),
-            "--max-relative-noise", f"{max_relative_noise:g}",
-            "--star-threshold-sigma", f"{star_threshold_sigma:g}",
-            "--min-source-sigma", f"{min_source_sigma:g}",
-        ]
-
 
 class EuclidSkyDownloadStep(FASRCPipelineStep):
     """EXPERIMENTAL (round-trip lane) — disabled for now, kept for future work."""
@@ -1192,42 +1076,6 @@ class PosterCutoutStep(FASRCPipelineStep):
         return cmd
 
 
-class EuclidStarAnchorTFRecordStep(FASRCPipelineStep):
-    """EXPERIMENTAL (star-anchor lane) — disabled for now, kept for future work."""
-
-    def __init__(self):
-        super().__init__(
-            step_id="euclid_star_anchor_tfrecords",
-            label="Build star-anchor TFRecords (real Euclid stars → delta targets)",
-            job_name="anchor-tfrecords",
-            experimental=True,
-            defaults=StepResources(
-                partition="shared", n_cpus=4, n_gpus=0,
-                memory="16G", time_limit="1:00:00",
-            ),
-            needs_gpu=False,
-        )
-
-    def build_command(self, params: dict[str, Any]) -> list[str]:
-        size        = int(params.get("size", 256))
-        stamp       = int(params.get("stamp", 128))
-        valid_every = int(params.get("valid_every", 10))
-        cmd = [
-            "scripts/fasrc_generate_star_anchor_tfrecords.py",
-            "--size",        str(size),
-            "--stamp",       str(stamp),
-            "--valid-every", str(valid_every),
-        ]
-        # Optional SNR cut on the raw PSF photometry (blank/0 → keep all).
-        snr_min = str(params.get("snr_min", "")).strip()
-        if snr_min not in ("", "0"):
-            cmd += ["--snr-min", f"{float(snr_min):g}"]
-        # Optional row cap for a quick debugging pass (blank → all).
-        limit = str(params.get("limit", "")).strip()
-        if limit not in ("", "0"):
-            cmd += ["--limit", str(int(float(limit)))]
-        return cmd
-
 
 class EnsembleTrainStep(FASRCPipelineStep):
     """Ensemble training with one independent model per SLURM array task.
@@ -1806,10 +1654,6 @@ class SyntheticGenerateStep(RunPipelineStep):
 # ---------------------------------------------------------------------------
 
 STEP_CLASSES: tuple[Callable[[], FASRCPipelineStep], ...] = (
-    HSTDownloadStep,
-    HSTPSFExtractStep,
-    DifferentialKernelStep,
-    HSTTFRecordStep,
     EuclidSkyDownloadStep,
     VISNoiseSampleStep,
     ArchiveFieldSampleStep,
@@ -1824,7 +1668,6 @@ STEP_CLASSES: tuple[Callable[[], FASRCPipelineStep], ...] = (
     TngGridStep,
     TngStackStep,
     PosterCutoutStep,
-    EuclidStarAnchorTFRecordStep,
     SyntheticGenerateStep,
     EnsembleTrainStep,
 )
@@ -1832,7 +1675,7 @@ STEP_CLASSES: tuple[Callable[[], FASRCPipelineStep], ...] = (
 
 @dataclass(frozen=True)
 class StepRegistry:
-    """Lookup helper: ``REGISTRY.get("kernel")`` → step instance."""
+    """Lookup helper: ``REGISTRY.get("ensemble_train")`` → step instance."""
 
     by_id: dict[str, FASRCPipelineStep] = field(default_factory=dict)
 

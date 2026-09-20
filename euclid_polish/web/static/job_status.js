@@ -2,7 +2,7 @@
  *
  * Polls /api/fasrc/jobs/<jobid>/status every ~1.5s and updates real
  * DOM elements (stage chip, progress bar, warnings/errors lists). One
- * card per row; the same class drives the HST pipeline page and the
+ * card per row; the same class drives the pipeline step pages and the
  * legacy training page.
  *
  * Usage (in a template):
@@ -187,8 +187,6 @@ class JobStatusCard {
     const ps = fmt(m.psnr_stretched, 2), pr = fmt(m.psnr_raw, 2);
     if (ps !== null && pr !== null) parts.push(`PSNR ${ps}/${pr} dB`);
     else if (ps !== null) parts.push(`PSNR ${ps} dB`);
-    const ah = fmt(m.anchor_val_psnr, 2);
-    if (ah !== null) parts.push(`anchor ${ah} dB`);
     if (ckpt) parts.push(`✓ ckpt @ ${ckpt}`);
     slot.hidden = parts.length === 0;
     slot.textContent = parts.join("  ·  ");

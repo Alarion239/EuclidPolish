@@ -9,15 +9,15 @@ default) and is mirrored to holylabs with ``track.py sync``.
 Examples
 --------
     # start / end a campaign (the titled folder everything goes into)
-    scripts/track.py new --title "anchor sweep" --description "w_anchor=1.0"
+    scripts/track.py new --title "loss sweep" --description "l1 vs l2"
     scripts/track.py status
     scripts/track.py save                 # freeze → tracking/archive/<slug>
 
     # add a note to the markdown notebook
-    scripts/track.py log "kicked off 400k-step run, anchors on"
+    scripts/track.py log "kicked off 400k-step run"
 
     # back up artifacts (each takes a --comment; --sync also pushes holylabs)
-    scripts/track.py model --comment "best val loss" --name anchors-on
+    scripts/track.py model --comment "best val loss" --name l2-member
     scripts/track.py fits  data/euclid_inference/local_cutout/SR.fits -c "M101 SR"
     scripts/track.py image data/vis/training_log.png -c "loss curve at 120k"
 

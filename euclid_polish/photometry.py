@@ -119,7 +119,7 @@ def electrons_to_ab_mag(flux_e, band: BandConfig):
 
 def uJy_to_electrons(flux_uJy: float, band: BandConfig) -> float:
     """Catalogue flux (µJy, AB) → electrons over ``band``'s stack — the scale
-    the model and the star-anchor delta-targets use. Routes through the AB
+    the model uses. Routes through the AB
     system: ``e⁻ = flux_µJy · 10^(0.4·(band.sim_zeropoint_e − AB_ZP_UJY))``.
     Algebraically identical to ``ab_mag_to_electrons(uJy_to_ab_mag(f), band)``
     (pinned by a test) but avoids the intermediate log/exp round trip."""

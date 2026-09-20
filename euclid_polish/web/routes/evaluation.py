@@ -5,7 +5,7 @@ of real sky targets — the headline use is the Natalie Lines Euclid Q1
 strong-lens catalog) and surfaces the mirrored-back results as a gallery.
 
 Job *submission* reuses the generic FASRC plumbing: the page POSTs to the
-existing ``/api/fasrc/hst/eval_catalog/submit`` endpoint (queue + confirm +
+existing ``/api/fasrc/steps/eval_catalog/submit`` endpoint (queue + confirm +
 sbatch are all shared). This module only adds read-only views:
 
   * ``/evaluation``               — the page (submit form + results gallery)

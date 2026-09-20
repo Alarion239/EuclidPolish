@@ -4,9 +4,9 @@ Covers:
 
   * ``StepResources.from_form_strict`` — rejects blank resource fields
     with a clear message; no silent fallback to step.defaults.
-  * ``/api/fasrc/hst/<step_id>/history`` — returns the full history
+  * ``/api/fasrc/steps/<step_id>/history`` — returns the full history
     for a step and the latest exact-match row for prefill.
-  * ``/api/fasrc/hst/<step_id>/submit`` — rejects when resources are
+  * ``/api/fasrc/steps/<step_id>/submit`` — rejects when resources are
     blank (the new strict path).
 """
 
@@ -72,7 +72,7 @@ class TestFromFormStrict:
 
 
 # ---------------------------------------------------------------------------
-# Flask: /api/fasrc/hst/<step_id>/history
+# Flask: /api/fasrc/steps/<step_id>/history
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
@@ -92,31 +92,31 @@ class TestHistoryEndpoint:
         # Pre-populate the log with two extract_psf runs at n_stars=200,
         # one of which COMPLETED, and one unrelated download row.
         log.record_submission(JobRecord(
-            jobid="1", step_id="extract_psf",
+            jobid="1", step_id="euclid_verify_photometry",
             submitted_at="2026-05-26T10:00:00Z",
             params_json='{"n_stars":"200"}',
             req_memory="8G", req_time_limit="0:10:00",
         ))
         log.record_post_mortem("1", {"state": "COMPLETED"})
         log.record_submission(JobRecord(
-            jobid="2", step_id="extract_psf",
+            jobid="2", step_id="euclid_verify_photometry",
             submitted_at="2026-05-26T12:00:00Z",
             params_json='{"n_stars":"200"}',
             req_memory="16G", req_time_limit="0:20:00",
         ))
         log.record_post_mortem("2", {"state": "FAILED"})
         log.record_submission(JobRecord(
-            jobid="9", step_id="download",
+            jobid="9", step_id="download_euclid_cutouts",
             params_json='{"n_tiles":"5"}',
         ))
 
         client = flask_app.test_client()
-        r = client.post("/api/fasrc/hst/extract_psf/history",
+        r = client.post("/api/fasrc/steps/euclid_verify_photometry/history",
                         data={"n_stars": "200"})
         assert r.status_code == 200
         body = r.get_json()
         assert body["ok"] is True
-        assert body["step_id"] == "extract_psf"
+        assert body["step_id"] == "euclid_verify_photometry"
         # Full history for the step (newest first).
         ids = [row["jobid"] for row in body["history"]]
         assert ids == ["2", "1"]
@@ -129,11 +129,11 @@ class TestHistoryEndpoint:
     def test_no_history_match_is_null(self, app):
         flask_app, log = app
         log.record_submission(JobRecord(
-            jobid="1", step_id="extract_psf",
+            jobid="1", step_id="euclid_verify_photometry",
             params_json='{"n_stars":"200"}',
         ))
         client = flask_app.test_client()
-        r = client.post("/api/fasrc/hst/extract_psf/history",
+        r = client.post("/api/fasrc/steps/euclid_verify_photometry/history",
                         data={"n_stars": "999"})
         body = r.get_json()
         assert body["match"] is None
@@ -144,7 +144,7 @@ class TestHistoryEndpoint:
     def test_unknown_step_id_returns_404(self, app):
         flask_app, _ = app
         r = flask_app.test_client().post(
-            "/api/fasrc/hst/not_a_step/history", data={},
+            "/api/fasrc/steps/not_a_step/history", data={},
         )
         assert r.status_code == 404
 
@@ -152,12 +152,12 @@ class TestHistoryEndpoint:
         """Curl-friendly GET path used during debugging."""
         flask_app, log = app
         log.record_submission(JobRecord(
-            jobid="1", step_id="extract_psf",
+            jobid="1", step_id="euclid_verify_photometry",
             params_json='{"n_stars":"200"}',
         ))
         log.record_post_mortem("1", {"state": "COMPLETED"})
         r = flask_app.test_client().get(
-            "/api/fasrc/hst/extract_psf/history?n_stars=200",
+            "/api/fasrc/steps/euclid_verify_photometry/history?n_stars=200",
         )
         assert r.status_code == 200
         assert r.get_json()["match"]["jobid"] == "1"
@@ -168,12 +168,12 @@ class TestHistoryEndpoint:
         the prefill would never hit for a submitted run."""
         flask_app, log = app
         log.record_submission(JobRecord(
-            jobid="1", step_id="extract_psf",
+            jobid="1", step_id="euclid_verify_photometry",
             params_json='{"n_stars":"200"}',
         ))
         log.record_post_mortem("1", {"state": "COMPLETED"})
         r = flask_app.test_client().post(
-            "/api/fasrc/hst/extract_psf/history",
+            "/api/fasrc/steps/euclid_verify_photometry/history",
             data={"n_stars": "200", "confirm": "yes",
                   "label": "annotation", "preset": "custom"},
         )
@@ -181,31 +181,24 @@ class TestHistoryEndpoint:
 
 
 # ---------------------------------------------------------------------------
-# /api/fasrc/hst/<step_id>/submit  — rejects blank resources
+# /api/fasrc/steps/<step_id>/submit  — rejects blank resources
 # ---------------------------------------------------------------------------
 
 class TestSubmitRejectsBlankResources:
 
-    def test_blank_resources_400(self, app, experimental_lanes_on):
-        # ``extract_psf`` belongs to the EXPERIMENTAL HST lane (its
-        # submit is refused while disabled), but it's the only step
-        # with a server-locked CPU count — enable the lanes so this
-        # test keeps covering the fixed-cpus injection path.
+    def test_blank_resources_400(self, app):
         flask_app, _ = app
         r = flask_app.test_client().post(
-            "/api/fasrc/hst/extract_psf/submit",
-            data={"confirm": "yes", "n_stars": "200"},
+            "/api/fasrc/steps/euclid_verify_photometry/submit",
+            data={"confirm": "yes", "n": "40"},
         )
         assert r.status_code == 400
         body = r.get_json()
         assert body["ok"] is False
         assert "resource field" in body["error"]
         # The error message must name the fields the user needs to fill.
-        # ``n_cpus`` is server-locked for extract_psf (the step's CPU count
-        # is fixed) and ``partition`` is fixed per job type — both are
-        # injected server-side before validation, so neither is in the
-        # list of fields the user is asked to supply.
-        for f in ("n_gpus", "memory", "time_limit"):
+        # ``partition`` is fixed per job type — injected server-side before
+        # validation, so it is not in the list the user is asked to supply.
+        for f in ("n_cpus", "n_gpus", "memory", "time_limit"):
             assert f in body["error"]
         assert "partition" not in body["error"]
-        assert "n_cpus" not in body["error"]

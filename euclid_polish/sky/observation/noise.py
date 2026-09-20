@@ -4,7 +4,7 @@
 records and on-the-fly training: Euclid's own MER noise level with the pixel
 correlation of a dithered, bilinearly resampled stack.
 :func:`apply_band_noise` is the older detector-grid Poisson/read model, still
-used by the HST lane and :meth:`Image.with_band_noise`.
+used by :meth:`Image.with_band_noise`.
 """
 
 from __future__ import annotations
@@ -57,10 +57,9 @@ def apply_band_noise(
     deposit charge → ramp is read with Gaussian read noise →
     sky-subtracted on the ground.
 
-    Module-level so non-class callers (e.g. the HST→Euclid TFRecord
-    generator at ``scripts/fasrc_generate_hst_tfrecords.py``, the
-    :class:`ObservationSimulator` per-band pipeline, the
-    :meth:`Image.with_band_noise` method) share one noise model.
+    Module-level so non-class callers (the :class:`ObservationSimulator`
+    per-band pipeline, the :meth:`Image.with_band_noise` method) share
+    one noise model.
     """
 
     t_total = band.t_total_s

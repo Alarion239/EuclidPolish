@@ -248,7 +248,7 @@ class Config:
     # AB zeropoint for MER fluxes quoted in microJansky (µJy): the catalogue's
     # flux columns (flux_vis_psf, flux_vis_*fwhm_aper, …) are in µJy, and for
     # an AB flux ``mag_AB = AB_ZP_UJY − 2.5·log10(flux_µJy)`` with
-    # ``AB_ZP_UJY = 8.90 + 2.5·log10(1e6) = 23.90`` (3631 Jy = AB 0). Star-anchor
+    # ``AB_ZP_UJY = 8.90 + 2.5·log10(1e6) = 23.90`` (3631 Jy = AB 0). Star
     # photometry uses this physical scale (the absolute electron scale is then
     # confirmed against the cutouts by scripts/verify_star_photometry.py).
     AB_ZP_UJY                    = 23.90
@@ -415,7 +415,7 @@ class Config:
     LR_INPUT_BAND_NAMES = ("VIS", "Y_E", "J_E", "H_E")
     HR_TARGET_BAND_NAMES = ("VIS", "Y_E", "J_E", "H_E")
     # The single "primary" HR band: channel 0 (VIS). Still the band the
-    # star-anchor delta-targets, the HST lane, and the VIS-only model use.
+    # VIS-only model uses.
     HR_TARGET_BAND_NAME = "VIS"
     NUM_LR_CHANNELS = 4
     NUM_HR_CHANNELS = 4
@@ -950,72 +950,15 @@ class Config:
 
     STAR_CUTOUTS_ROOT = os.path.join(DATA_DIR, "euclid_stars/cutouts")
 
-    # ---------------------------------------------------------------------
-    # HST F814W → Euclid VIS photometric chain
-    # ---------------------------------------------------------------------
-    # The HST→Euclid TFRecord generator preserves HST's native photometry
-    # instead of normalising and re-scaling against a single catalog row
-    # — a 25″ × 25″ HLSP cutout typically contains many sources, and the
-    # old "unit-flux × catalog_flux" path silently allocated a single
-    # galaxy's electron budget across all of them, leaving every source
-    # 10–100× dimmer than its real Euclid magnitude. We multiply the
-    # HST cutout by ``HST→VIS_rate_ratio × t_total_VIS × area_correction``
-    # instead; every source ends up at its physical brightness automatically.
-    #
-    # The two constants below feed that chain:
-    #   - HLSP COSMOS F814W mosaics are calibrated such that pixel values
-    #     are electrons/second; the AB zeropoint is ~25.94 (standard
-    #     HAP/HLSP ACS/WFC F814W ZP, e⁻/s units). See
-    #     https://archive.stsci.edu/hlsp/cosmos for the data products spec.
-    HST_ACS_F814W_AB_ZP_E_PER_S   = 25.94
-    #   - HLSP delivers F814W mosaics drizzled to 0.03″/pixel. Used in
-    #     the resample step to compute the area correction
-    #     (HR_pixel_area / HST_pixel_area) = (0.05/0.03)² ≈ 2.78 that
-    #     compensates for interpolation-based zoom (preserves surface
-    #     brightness, not per-pixel integrated flux).
-    HST_HLSP_PIXEL_SCALE_ARCSEC   = 0.03
-
     # =====================================================================
     # Consolidated module constants (nested topical namespaces)
     # =====================================================================
     # Knobs that used to live as module-level constants in individual
     # pipeline modules are gathered here so there's a single place to tune
     # them. Each group is a frozen dataclass used purely as a namespace
-    # (access via e.g. ``Config.HST.PSF_HALF_SIDE_PIX``). Derived full paths
-    # that join these names onto ``DATA_DIR`` follow as flat attributes,
-    # matching the existing path section.
-
-    @dataclass(frozen=True)
-    class HST:
-        """HST F814W HLSP → Euclid VIS pipeline (download → ePSF → TFRecords).
-
-        Migrated from scripts/fasrc_download_hst_hlsp.py,
-        fasrc_extract_hst_psf.py, fasrc_generate_hst_tfrecords.py and
-        fasrc_compute_differential_kernel.py.
-        """
-        # --- HLSP mosaic download (MAST) ---
-        TARGET_NAME: str         = "COSMOS"
-        FILTER: str              = "F814W"
-        OBS_COLLECTION: str      = "HLSP"
-        MAST_SCRATCH_SUBDIR: str = "mastDownload"  # MAST's nested write subtree
-        # --- directory / file names under DATA_DIR ---
-        HLSP_DIR_NAME: str    = "hst_hlsp"
-        PSF_DIR_NAME: str     = "hst_psf"
-        PSF_FILE_NAME: str    = "F814W.fits"
-        STARS_DIR_NAME: str   = "hst_stars"   # per-star ePSF stamp library (UI)
-        DIFF_KERNEL_FILE: str = "diff_kernel_VIS.fits"
-        RECORDS_SUBDIR: str   = "images/records_v2_hst"
-        # --- ePSF extraction ---
-        FALLBACK_PIX_SCALE_ARCSEC: float = 0.05  # only if WCS lacks CDELT/CD
-        EPSF_OVERSAMPLING: int     = 1           # keep PSF at native tile scale
-        PSF_HALF_SIDE_PIX: int     = 255         # ePSF side = 2*half+1 = 511
-        MAX_STARS_PER_TILE: int    = 100         # cap stars taken per HLSP tile
-        MAX_UNCOVERED_FRAC: float  = 0.005       # >0.5% zero/NaN → seam/hole
-        MIN_STAMP_PEAK_SNR: float  = 30.0        # peak ≥ this × MAD σ, else noise
-        MAX_PEAK_OFFCENTER_PX: int = 5           # peak within this of stamp centre
-        # --- TFRecord generation ---
-        MIN_TILE_COVERAGE: float = 0.95          # min finite/non-zero fraction
-        MIN_SOURCE_PIXELS: int   = 3             # min above-threshold source pixels
+    # (access via e.g. ``Config.Matching.CATALOG_POSITION_TOL_ARCSEC``).
+    # Derived full paths that join these names onto ``DATA_DIR`` follow as
+    # flat attributes, matching the existing path section.
 
     @dataclass(frozen=True)
     class Matching:
@@ -1112,11 +1055,6 @@ class Config:
         }
 
     # --- derived full paths (join the nested names onto DATA_DIR) ---
-    HLSP_DIR               = os.path.join(DATA_DIR, HST.HLSP_DIR_NAME)
-    HST_PSF_DIR            = os.path.join(DATA_DIR, HST.PSF_DIR_NAME)
-    HST_PSF_PATH           = os.path.join(HST_PSF_DIR, HST.PSF_FILE_NAME)
-    HST_DIFF_KERNEL_PATH   = os.path.join(HST_PSF_DIR, HST.DIFF_KERNEL_FILE)
-    HST_RECORDS_DIR        = os.path.join(DATA_DIR, HST.RECORDS_SUBDIR)
     EUCLID_SKY_DIR         = os.path.join(DATA_DIR, EuclidSky.SKY_SUBDIR)
     EUCLID_SKY_CUTOUTS_DIR = os.path.join(EUCLID_SKY_DIR, EuclidSky.CUTOUTS_SUBDIR)
     EUCLID_ARCHIVE_FIELDS_DIR = os.path.join(

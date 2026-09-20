@@ -139,7 +139,7 @@ def _load_4band_cube(
     **Units conversion** — ``scale_to_electrons=True`` (default) is what
     you want for training. The Euclid mosaic bands are delivered in
     archive **e⁻/s** calibrated to each header's ``MAGZERO`` (≈24.6 for
-    VIS). To land on the synthetic/HST/star-anchor **total-electron**
+    VIS). To land on the synthetic **total-electron**
     scale we apply the band's zeropoint factor
     ``10**((band.sim_zeropoint_e − MAGZERO)/2.5)`` (VIS: ≈7.6e3 at MAGZERO 24.6) — the
     exact conversion ``verify_star_photometry.py`` validates against

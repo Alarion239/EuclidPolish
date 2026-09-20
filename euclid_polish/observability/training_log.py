@@ -3,11 +3,9 @@
 Stored next to the checkpoint (``<ckpt_dir>/training_log.csv``) so a run's
 whole history travels with its weights. One row is written per validation:
 
-  * **per-lane training losses** — synthetic / HST / star-anchor, each the
-    mean over the eval window (empty when that lane is off this run),
-  * **per-mode validation PSNRs** — synthetic (str/raw), HST (str/raw),
-    star-anchor (masked at the star pixel),
-  * gradient norms, and the composite **save-best score**.
+  * the **training loss**, the mean over the eval window,
+  * the **validation PSNRs** (stretched/raw, plus per-band),
+  * gradient norms, and the held-out **validation loss**.
 
 This is the durable, structured record of a run — readable with pandas or
 the dashboard without parsing stdout. It survives resumes (append-only). If

@@ -50,10 +50,9 @@
         {# Sidebar order follows the pipeline workflow:
              1. Setup (config + remote connection).
              2. Euclid source data → Euclid PSF.
-             3. HST source data → HST PSF.
-             4. Combined / pair generation.
-             5. Model lifecycle (training → inference).
-             6. Auxiliary (visualisation, git). #}
+             3. Combined / pair generation.
+             4. Model lifecycle (training → inference).
+             5. Auxiliary (visualisation, git). #}
 
         {# 0. Universal job config — shared knobs sent with every job. #}
         <li><a href="{{ url_for('config_page') }}">⚙️ Config</a></li>
@@ -66,31 +65,20 @@
         <li><a href="{{ url_for('cutouts_page') }}">⬇️ Euclid cutouts</a></li>
         <li><a href="{{ url_for('psfs_page') }}">✨ Euclid PSFs</a></li>
 
-        {# 3. HST pipeline: download HLSP tiles → per-star cutouts → ePSF.
-           EXPERIMENTAL (HST supervision lane) — disabled for now; the
-           routes are only registered when the experimental-lanes flag is
-           on (see euclid_polish/web/experimental.py). #}
-        {% if experimental_lanes %}
-        <li><a href="{{ url_for('hst_tiles_page') }}">🔭 HST tiles</a></li>
-        <li><a href="{{ url_for('hst_cutouts_page') }}">🔭 HST cutouts</a></li>
-        <li><a href="{{ url_for('hst_psf_page') }}">🔭 HST PSF</a></li>
-        {% endif %}
-
-        {# 4. Combined / pair generation #}
+        {# 3. Combined / pair generation #}
         <li><a href="{{ url_for('sky_page') }}">🌌 Sky data</a></li>
         <li><a href="{{ url_for('tng_page') }}">🌠 TNG atlas</a></li>
-        {# EXPERIMENTAL (HST + round-trip lanes) — disabled for now. #}
+        {# EXPERIMENTAL (round-trip lane) — disabled for now. #}
         {% if experimental_lanes %}
-        <li><a href="{{ url_for('hst_pairs_page') }}">🪐 HST Catalog</a></li>
         <li><a href="{{ url_for('roundtrip_page') }}">🔁 Round-trip</a></li>
         {% endif %}
 
-        {# 5. Model lifecycle #}
+        {# 4. Model lifecycle #}
         <li><a href="{{ url_for('inference_page') }}">🔬 Inference</a></li>
         <li><a href="{{ url_for('ensemble_page') }}">🎲 Ensemble</a></li>
         <li><a href="{{ url_for('evaluation_page') }}">📊 Evaluation</a></li>
 
-        {# 6. Auxiliary #}
+        {# 5. Auxiliary #}
         <li><a href="{{ url_for('visualization_page') }}">🖼️ Visualization</a></li>
         <li><a href="{{ url_for('tracking_page') }}">📌 Tracking</a></li>
         <li><a href="{{ url_for('git_page') }}">🌿 Git</a></li>
@@ -469,7 +457,7 @@
        templates/_job_status_card.html for the markup any page can drop
        in next to a job row. -->
   <script src="{{ url_for('static', filename='job_status.js') }}"></script>
-  <!-- Reusable HST/FASRC step-card module. Defines window.FasrcStepCard
+  <!-- Reusable FASRC step-card module. Defines window.FasrcStepCard
        with .renderMany() for fasrc.html and .mountOne() for per-task
        pages (cutouts, PSFs, …). Loaded in base.html so every page can
        drop in a step card via the _step_card_mount.html partial. -->

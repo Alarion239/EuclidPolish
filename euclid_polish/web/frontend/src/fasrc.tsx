@@ -22,15 +22,15 @@ export type Step = {
   step_id: string; label: string; needs_gpu: boolean;
   fixed_cpus?: number | null; fixed_gpus?: number | null; defaults: StepDefaults;
 };
-export type HstStatus = {
+export type StepsStatus = {
   ssh_connected: boolean;
   steps: Step[];
   artifacts: Record<string, unknown>;
   remote_paths: Record<string, string>;
 };
 
-export function useHstStatus() {
-  return useResource<HstStatus>("/api/fasrc/hst/status");
+export function useStepsStatus() {
+  return useResource<StepsStatus>("/api/fasrc/steps/status");
 }
 
 type SlurmStep = { current: number; total: number; label?: string };
@@ -548,7 +548,7 @@ function taskColumnsFor(stepId: string): Column<HistoryRow>[] {
 }
 
 function PreviousRuns({ stepId, refreshKey }: { stepId: string; refreshKey?: string | null }) {
-  const history = useResource<HistoryResp>(`/api/fasrc/hst/${stepId}/history`, [refreshKey]);
+  const history = useResource<HistoryResp>(`/api/fasrc/steps/${stepId}/history`, [refreshKey]);
   const [showAll, setShowAll] = useState(false);
   const rows = asArray<HistoryRow>(history.data?.history);
   const shown = showAll ? rows : rows.slice(0, 8);
@@ -699,7 +699,7 @@ export function StepCard(
     setSubmissionAction(action); setError(null);
     try {
       const res = await postForm<{ ok?: boolean; jobid?: string; slurm_id?: string; error?: string }>(
-        `/api/fasrc/hst/${step.step_id}/submit`,
+        `/api/fasrc/steps/${step.step_id}/submit`,
         {
           partition, n_cpus: nCpus, n_gpus: nGpus, memory, time_limit: timeLimit,
           confirm: "yes", ...extraParams,
@@ -807,7 +807,7 @@ export function StepById(
     submitDisabledHint?: string;
   },
 ) {
-  const { data, loading } = useHstStatus();
+  const { data, loading } = useStepsStatus();
   if (loading) return embedded
     ? <div className="fasrc-step-inline"><Empty><Spinner /> loading step…</Empty></div>
     : <Card><CardBody><Empty><Spinner /> loading step…</Empty></CardBody></Card>;

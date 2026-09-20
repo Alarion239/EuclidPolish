@@ -1,8 +1,7 @@
 #!/usr/bin/env python
 """Download multi-band Euclid sky cutouts for round-trip training.
 
-The HST path (``scripts/fasrc_generate_hst_tfrecords.py``) gives us
-forward-modelled HST→Euclid pairs with HR ground truth. Round-trip
+Round-trip
 training adds a self-supervised signal on *real* Euclid observations:
 ``loss = |Conv(M(LR_real)) - LR_real|`` where ``Conv`` is the
 deterministic Euclid forward operator (PSF + rebin, no noise).
