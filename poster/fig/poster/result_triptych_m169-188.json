@@ -1,0 +1,40 @@
+{
+  "source": "/Users/alarion239/Desktop/EuclidPolish/poster/target_181255_combiner_results.fits",
+  "hubble_reference": "/Users/alarion239/Desktop/EuclidPolish/poster/fig/poster/result_hubble.png",
+  "combiner": "raw_incremental_minmeanmax_rbf",
+  "members": [
+    "169\u00b7psnr",
+    "170\u00b7psnr",
+    "171\u00b7psnr",
+    "172\u00b7psnr",
+    "173\u00b7psnr",
+    "174\u00b7psnr",
+    "175\u00b7psnr",
+    "176\u00b7psnr",
+    "177\u00b7psnr",
+    "178\u00b7psnr",
+    "179\u00b7psnr",
+    "180\u00b7psnr",
+    "181\u00b7psnr",
+    "182\u00b7psnr",
+    "183\u00b7psnr",
+    "184\u00b7psnr",
+    "185\u00b7psnr",
+    "186\u00b7psnr",
+    "187\u00b7psnr",
+    "188\u00b7psnr"
+  ],
+  "target_ra_deg": 273.2308875,
+  "target_dec_deg": 68.3636556,
+  "lr_shape": [
+    1024,
+    1024,
+    4
+  ],
+  "sr_shape": [
+    2048,
+    2048,
+    4
+  ],
+  "display": "per-panel asinh stretch, 0.5-99.5 percentile clip"
+}
