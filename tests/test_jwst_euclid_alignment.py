@@ -104,16 +104,16 @@ def test_nexus_download_reuses_cached_tiles_while_filling_missing_bands(tmp_path
         fits.PrimaryHDU(source, header=header).writeto(destination, overwrite=True)
         return source, header, wcs, 268.4625, 65.19917
 
-    def fetch_cutout_at(*, band_name, output_file, cutout_size_vis_pixels, **_kwargs):
+    def fetch_cutout_at(*, ra, dec, band_name, output_file, cutout_size_vis_pixels, **_kwargs):
         calls.append(band_name)
         data = np.ones((cutout_size_vis_pixels, cutout_size_vis_pixels), dtype=np.float32)
         cutout_header = header.copy()
-        # Real archive cutouts always carry their ADU/s zeropoint.
+        # Real archive cutouts always carry their ADU/s zeropoint and are
+        # centred on the requested position.
         cutout_header["MAGZERO"] = {"VIS": 24.6, "Y_E": 29.8,
                                     "J_E": 30.0, "H_E": 29.9}[band_name]
-        if band_name != "VIS":
-            cutout_header["CRPIX1"] = 5.0
-            cutout_header["CRPIX2"] = 5.0
+        cutout_header["CRVAL1"], cutout_header["CRVAL2"] = ra, dec
+        cutout_header["CRPIX1"] = cutout_header["CRPIX2"] = (cutout_size_vis_pixels + 1) / 2
         fits.PrimaryHDU(data, header=cutout_header).writeto(output_file, overwrite=True)
         return True, None
 
@@ -127,6 +127,70 @@ def test_nexus_download_reuses_cached_tiles_while_filling_missing_bands(tmp_path
     assert "four_band_error" not in first["tiles"][0], first["tiles"][0].get("four_band_error")
     assert first["tiles"][0]["lr_file"] == second["tiles"][0]["lr_file"]
     assert set(first["tiles"][0]["euclid_files"]) == set(Config.LR_INPUT_BAND_NAMES)
+
+
+def test_nexus_download_crops_rounded_archive_vis_cutouts_to_exact_tiles(tmp_path, monkeypatch):
+    """The archive rounds a 255-px request up to 256/257 px; keep the tile."""
+    from astropy.coordinates import SkyCoord
+    from astropy.io import fits
+    from astropy.wcs import WCS
+
+    monkeypatch.setattr(Config, "DATA_DIR", str(tmp_path / "data"))
+    source_wcs = WCS(naxis=2)
+    source_wcs.wcs.crpix = [1.0, 1.0]
+    source_wcs.wcs.crval = [268.4625, 65.19917]
+    source_wcs.wcs.cdelt = [-0.03 / 3600.0, 0.03 / 3600.0]
+    source_wcs.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+    source = np.ones((850, 850), dtype=np.float32)
+    vis_requests: list[int] = []
+
+    monkeypatch.setattr(jwst_euclid, "_download_nexus_mosaic", lambda *_args, **_kwargs: tmp_path / "nexus.fits")
+    monkeypatch.setattr(
+        jwst_euclid, "_nexus_source_tiles",
+        lambda *_args, **_kwargs: (source, source_wcs.to_header(), source_wcs, [(0, 0, 850, 850)]),
+    )
+
+    def write_jwst(_data, _header, _wcs, _bounds, destination, **_kwargs):
+        fits.PrimaryHDU(source, header=source_wcs.to_header()).writeto(destination, overwrite=True)
+        return source, source_wcs.to_header(), source_wcs, 268.4625, 65.19917
+
+    def fetch_cutout_at(*, ra, dec, band_name, output_file, cutout_size_vis_pixels, **_kwargs):
+        # Mimic the Euclid cutout service: a CD-matrix TAN grid centred on the
+        # request whose side is rounded up by one or two native pixels.
+        scale = 0.1 if band_name == "VIS" else 0.3
+        side = int(round(cutout_size_vis_pixels * 0.1 / scale))
+        if band_name == "VIS":
+            vis_requests.append(cutout_size_vis_pixels)
+        ny, nx = side + 2, side + 1
+        header = fits.Header()
+        header["CTYPE1"], header["CTYPE2"] = "RA---TAN", "DEC--TAN"
+        header["CRVAL1"], header["CRVAL2"] = ra, dec
+        header["CRPIX1"], header["CRPIX2"] = (nx + 1) / 2, (ny + 1) / 2
+        header["CD1_1"], header["CD1_2"] = -scale / 3600.0, 0.0
+        header["CD2_1"], header["CD2_2"] = 0.0, scale / 3600.0
+        header["MAGZERO"] = {"VIS": 24.6, "Y_E": 29.8, "J_E": 30.0, "H_E": 29.9}[band_name]
+        fits.PrimaryHDU(np.ones((ny, nx), dtype=np.float32), header=header).writeto(
+            output_file, overwrite=True,
+        )
+        return True, None
+
+    monkeypatch.setattr(jwst_euclid, "_write_nexus_source_tile", write_jwst)
+    monkeypatch.setattr("euclid_polish.catalog.downloader.fetch_cutout_at", fetch_cutout_at)
+
+    manifest = jwst_euclid.download_nexus_field(filter_name="F200W")
+
+    tile = manifest["tiles"][0]
+    assert "four_band_error" not in tile, tile.get("four_band_error")
+    assert vis_requests and all(side > 255 for side in vis_requests)
+    root = jwst_euclid.nexus_field_root() / manifest["field_id"]
+    vis, _header, vis_wcs, _name = jwst_euclid._find_image(root / tile["euclid_files"]["VIS"])
+    assert vis.shape == (255, 255)
+    assert tile["euclid_metadata"]["shape"] == [255, 255]
+    centre = vis_wcs.pixel_to_world(127, 127)
+    target = SkyCoord(ra=tile["ra_deg"], dec=tile["dec_deg"], unit="deg")
+    assert centre.separation(target).arcsec < 0.08
+    with fits.open(root / tile["lr_file"]) as hdul:
+        assert hdul[0].data.shape == (4, 255, 255)
 
 
 def test_nexus_field_viewer_exposes_registered_lr_and_sr(tmp_path, monkeypatch):

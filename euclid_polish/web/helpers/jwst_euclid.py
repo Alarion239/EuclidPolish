@@ -977,6 +977,56 @@ def _write_nexus_cutout(
     return cutout, cutout_header, cutout_wcs
 
 
+def _exact_nexus_vis_tile(
+    path: Path, *, ra: float, dec: float,
+) -> tuple[np.ndarray, Any, Any] | None:
+    """Crop an archive VIS cutout onto the exact 255-pixel NEXUS tile grid.
+
+    The Euclid cutout service rounds a radius request to whole pixels, so a
+    255-pixel request comes back 256-257 pixels on a side. Keep the native
+    VIS pixels and rewrite the file as the 255×255 grid centred on the tile;
+    ``None`` when the cutout cannot contain that grid.
+    """
+    import astropy.units as u
+    from astropy.coordinates import SkyCoord
+    from astropy.io import fits
+    from astropy.nddata import Cutout2D
+    from astropy.nddata.utils import NoOverlapError, PartialOverlapError
+
+    data, header, wcs, _ = _find_image(path)
+    side = _NEXUS_EUCLID_TILE_SIDE
+    if data.shape == (side, side):
+        return data, header, wcs
+    try:
+        cutout = Cutout2D(
+            data, position=SkyCoord(ra=ra * u.deg, dec=dec * u.deg, frame="icrs"),
+            size=(side, side), wcs=wcs, mode="strict",
+        )
+    except (NoOverlapError, PartialOverlapError, ValueError):
+        return None
+    tile = np.ascontiguousarray(cutout.data, dtype=np.float32)
+    source_header = header.copy()
+    # The archive grid uses a CD matrix; drop every linear-transform card so
+    # the cropped WCS is written in one self-consistent form.
+    for key in [key for key in source_header
+                if re.fullmatch(r"(CD|PC)\d_\d|CDELT\d", key)]:
+        del source_header[key]
+    tile_header = _primary_image_header(
+        source_header, cutout.wcs, path.name,
+        "Euclid VIS archive cutout cropped to the exact NEXUS tile grid",
+    )
+    temporary = path.with_name(f".{path.stem}.{os.getpid()}.tmp.fits")
+    try:
+        fits.PrimaryHDU(tile, header=tile_header).writeto(
+            temporary, overwrite=True, output_verify="silentfix",
+        )
+        os.replace(temporary, path)
+    finally:
+        with __import__("contextlib").suppress(OSError):
+            temporary.unlink()
+    return tile, tile_header, cutout.wcs
+
+
 def _nexus_source_tiles(
     mosaic_path: Path, *, filter_name: str,
 ) -> tuple[np.ndarray, Any, Any, list[tuple[int, int, int, int]]]:
@@ -1205,10 +1255,11 @@ def download_nexus_field(
 ) -> dict[str, Any]:
     """Download a full NEXUS mosaic and cover it with matched Euclid tiles.
 
-    VIS remains an exact 255×255-pixel cutout.  The three NISP inputs include
-    a small guard band, so they can later be registered onto that VIS WCS for
-    the four-band STARFULL input.  Existing readable JWST or Euclid files are
-    always reused; this operation only fills missing bands/tiles.
+    VIS is cropped to an exact 255×255-pixel native grid from a guard-banded
+    archive cutout.  The three NISP inputs keep that guard band, so they can
+    later be registered onto the VIS WCS for the four-band STARFULL input.
+    Existing readable JWST or Euclid files are always reused; this operation
+    only fills missing bands/tiles.
     """
     filter_name = filter_name.upper().strip()
     if filter_name not in _NEXUS_PRODUCTS:
@@ -1277,20 +1328,28 @@ def download_nexus_field(
         euclid_files = _nexus_euclid_files(tile)
         euclid_files.setdefault("VIS", f"tiles/euclid_vis_{source_index:04d}.fits")
         vis_path = final_dir / euclid_files["VIS"]
-        if not _is_readable_fits(vis_path):
+        vis_tile = (
+            _exact_nexus_vis_tile(vis_path, ra=ra, dec=dec)
+            if _is_readable_fits(vis_path) else None
+        )
+        if vis_tile is None:
             if progress:
                 progress(source_index * 4 + 1, total * 4, f"Euclid VIS tile {source_index + 1}/{total}")
+            # Request the same guard band as NISP so the rounded archive
+            # cutout always contains the exact centred 255-pixel grid.
             _ok, _error = fetch_cutout_at(
                 ra=ra, dec=dec, band_name="VIS", output_file=str(vis_path),
-                cutout_size_vis_pixels=_NEXUS_EUCLID_TILE_SIDE,
+                cutout_size_vis_pixels=_NEXUS_EUCLID_TILE_SIDE + source_padding,
             )
-        if not _is_readable_fits(vis_path):
+            if _is_readable_fits(vis_path):
+                vis_tile = _exact_nexus_vis_tile(vis_path, ra=ra, dec=dec)
+        if vis_tile is None:
             # No point requesting NISP when this location has no released VIS
             # coverage.  The source tile is retried only if a later run finds
             # a new archive product.
             continue
-        vis_data, vis_header, vis_wcs, _ = _find_image(vis_path)
-        if vis_data.shape != (_NEXUS_EUCLID_TILE_SIDE, _NEXUS_EUCLID_TILE_SIDE) or not _has_signal(vis_data):
+        vis_data, vis_header, vis_wcs = vis_tile
+        if not _has_signal(vis_data):
             continue
         tile["euclid_file"] = euclid_files["VIS"]  # compatibility with the VIS-only cache
         tile["euclid_metadata"] = _pixel_metadata(vis_data, vis_wcs, vis_header)
