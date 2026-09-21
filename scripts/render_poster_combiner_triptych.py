@@ -207,8 +207,59 @@ def _render_triptych(path: str, euclid: np.ndarray, sr: np.ndarray,
     plt.close(fig)
 
 
+def _member_recipes(ckpt_root: str,
+                    labels: list[str]) -> list[tuple[str, float]] | None:
+    """``(loss, asinh knee in e⁻)`` per member from its ``origin.json``.
+
+    A member without a recorded knee uses the per-band default. ``None`` when
+    any member's loss is unknown, so the caller keeps the flat layout.
+    """
+    recipes = []
+    for label in labels:
+        path = os.path.join(ckpt_root, f"member_{int(_member_id(label)):02d}",
+                            "origin.json")
+        try:
+            with open(path, encoding="utf-8") as handle:
+                origin = json.load(handle)
+        except (OSError, json.JSONDecodeError):
+            return None
+        loss = origin.get("loss_norm")
+        if not loss:
+            return None
+        knee = origin.get("asinh_knee")
+        recipes.append((str(loss).upper(),
+                        float(Config.STRETCH_SCALE_E if knee is None else knee)))
+    return recipes
+
+
+def _recipe_grid(labels: list[str], recipes: list[tuple[str, float]],
+                 ) -> tuple[list[str], list[float], dict[str, tuple[int, int]]]:
+    """Rows grouped by loss, columns by knee; members sharing a recipe stack
+    into repeated rows of that loss in member order.
+
+    Returns the row names, the column knees and each label's ``(row, col)``.
+    """
+    knees = sorted({knee for _, knee in recipes})
+    cells: dict[tuple[str, float], list[str]] = {}
+    for label, recipe in sorted(zip(labels, recipes, strict=True),
+                                key=lambda item: int(_member_id(item[0]))):
+        cells.setdefault(recipe, []).append(label)
+    row_names: list[str] = []
+    positions: dict[str, tuple[int, int]] = {}
+    for loss in sorted({loss for loss, _ in recipes}):
+        depth = max(len(cells.get((loss, knee), [])) for knee in knees)
+        for repeat in range(depth):
+            for column, knee in enumerate(knees):
+                cell = cells.get((loss, knee), [])
+                if repeat < len(cell):
+                    positions[cell[repeat]] = (len(row_names), column)
+            row_names.append(loss)
+    return row_names, knees, positions
+
+
 def _render_individual_members(
     output_dir: str, contact_path: str, members: np.ndarray, labels: list[str],
+    *, recipes: list[tuple[str, float]] | None = None,
 ) -> None:
     os.makedirs(output_dir, exist_ok=True)
     vis = np.asarray(members[..., 0], dtype=np.float32)
@@ -225,22 +276,45 @@ def _render_individual_members(
                     pad_inches=0.04)
         plt.close(fig)
 
-    ncols = min(5, max(1, len(labels)))
-    nrows = (len(labels) + ncols - 1) // ncols
+    if recipes is None:
+        ncols = min(5, max(1, len(labels)))
+        nrows = (len(labels) + ncols - 1) // ncols
+        row_names, knees = [], []
+        positions = {label: divmod(index, ncols)
+                     for index, label in enumerate(labels)}
+    else:
+        row_names, knees, positions = _recipe_grid(labels, recipes)
+        nrows, ncols = len(row_names), len(knees)
+    # Margins in inches, so the loss / knee headers fit at any grid size.
+    left_in = 0.55 if row_names else 0.03
+    top_in = 0.85 if knees else 0.25
+    width, height = ncols * 3.0 + left_in, nrows * 3.4 + top_in
     fig, axes = plt.subplots(
-        nrows, ncols, figsize=(ncols * 3.0, nrows * 3.4),
+        nrows, ncols, figsize=(width, height),
         dpi=220, facecolor="black", squeeze=False,
     )
-    flat_axes = axes.flat
-    for ax, image, label in zip(flat_axes, vis, labels, strict=True):
+    for ax in axes.flat:
+        ax.set_visible(False)
+    for image, label in zip(vis, labels, strict=True):
+        ax = axes[positions[label]]
+        ax.set_visible(True)
         ax.imshow(_asinh_display_shared(image, vis), origin="lower", cmap="gray",
                   interpolation="nearest", vmin=0.0, vmax=1.0)
         ax.set_title(label, color="white", fontsize=12, fontweight="bold", pad=7)
         ax.set_axis_off()
-    for ax in list(axes.flat)[len(labels):]:
-        ax.set_visible(False)
-    fig.subplots_adjust(left=0.01, right=0.99, bottom=0.01, top=0.94,
+    fig.subplots_adjust(left=left_in / width, right=1 - 0.03 / width,
+                        bottom=0.03 / height, top=1 - top_in / height,
                         wspace=0.025, hspace=0.12)
+    for row, name in enumerate(row_names):
+        box = axes[row, 0].get_position()
+        fig.text(box.x0 - 0.12 / width, (box.y0 + box.y1) / 2, name,
+                 rotation=90, ha="right", va="center", color="white",
+                 fontsize=17, fontweight="bold")
+    for column, knee in enumerate(knees):
+        box = axes[0, column].get_position()
+        fig.text((box.x0 + box.x1) / 2, box.y1 + 0.40 / height,
+                 f"asinh knee {knee:g} e⁻", ha="center", va="bottom",
+                 color="white", fontsize=15, fontweight="bold")
     fig.savefig(contact_path, dpi=220, facecolor="black", edgecolor="none",
                 pad_inches=0.04)
     plt.close(fig)
@@ -294,7 +368,8 @@ def main() -> int:
         print(f"combiner={combiner.kind}  members={labels}")
     members = _run_members(lr, ckpt_root=args.ckpt_root, labels=labels)
     _render_individual_members(args.individual_dir, args.individual_contact,
-                               members, labels)
+                               members, labels,
+                               recipes=_member_recipes(args.ckpt_root, labels))
     if combiner is None:
         sr = np.asarray(np.mean(members, axis=0), dtype=np.float32)
     else:
