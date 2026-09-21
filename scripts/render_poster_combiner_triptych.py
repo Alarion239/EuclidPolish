@@ -42,6 +42,8 @@ from euclid_polish.eval.combiner import (
     COMBINER_MODELS,
     load_combiner,
 )
+from euclid_polish.photometry import ab_mag_to_electrons
+from euclid_polish.visualization.color import eye_rgb, planck_color_strip
 
 BANDS = tuple(Config.LR_INPUT_BAND_NAMES)
 MEMBER_RE = re.compile(r"^(\d+)·psnr$")
@@ -257,9 +259,34 @@ def _recipe_grid(labels: list[str], recipes: list[tuple[str, float]],
     return row_names, knees, positions
 
 
+def _temperature_panels(members: np.ndarray) -> list[np.ndarray]:
+    """Each member in the viewer's "Temp" colour, on one shared stretch.
+
+    :func:`eye_rgb` fits a per-pixel blackbody colour temperature to the
+    AB-calibrated bands (hue) and applies an absolute asinh transfer to the
+    VIS-equivalent intensity (brightness). Its knee and white point are the
+    90th percentile of positive and the 99.5th percentile of all intensity
+    across every member — the grey sheet's shared-stretch choice — so hue and
+    brightness compare directly between members.
+    """
+    vis_ab0 = float(ab_mag_to_electrons(0.0, Config.get_band("VIS")))
+    weights = np.array([vis_ab0 / float(ab_mag_to_electrons(0.0, Config.get_band(band)))
+                        for band in BANDS], dtype=np.float32)
+    intensity = (members[:, ::4, ::4, :] * weights).mean(axis=-1)
+    positive = intensity[intensity > 0]
+    knee = float(np.percentile(positive, 90.0)) if positive.size else 1.0
+    white = max(float(np.percentile(intensity, 99.5)), 2.0 * knee)
+    panels = []
+    for member in members:
+        rgb = eye_rgb(member, BANDS, asinh_scale_e=knee, white_e=white)
+        panels.append(np.round(rgb * 255.0).astype(np.uint8))
+    return panels
+
+
 def _render_individual_members(
     output_dir: str, contact_path: str, members: np.ndarray, labels: list[str],
     *, recipes: list[tuple[str, float]] | None = None,
+    temperature_path: str | None = None,
 ) -> None:
     os.makedirs(output_dir, exist_ok=True)
     vis = np.asarray(members[..., 0], dtype=np.float32)
@@ -275,7 +302,22 @@ def _render_individual_members(
         fig.savefig(out, dpi=220, facecolor="black", edgecolor="none",
                     pad_inches=0.04)
         plt.close(fig)
+    _render_member_sheet(
+        contact_path, [_asinh_display_shared(image, vis) for image in vis],
+        labels, recipes,
+    )
+    if temperature_path:
+        _render_member_sheet(temperature_path, _temperature_panels(members),
+                             labels, recipes, legend=True)
 
+
+def _render_member_sheet(
+    path: str, panels: list[np.ndarray], labels: list[str],
+    recipes: list[tuple[str, float]] | None, *, legend: bool = False,
+) -> None:
+    """One panel per member: grey ``(H, W)`` in [0, 1] or ``(H, W, 3)`` RGB,
+    on the loss × knee grid when ``recipes`` are known (else ID order), with
+    a colour-temperature legend strip when ``legend``."""
     if recipes is None:
         ncols = min(5, max(1, len(labels)))
         nrows = (len(labels) + ncols - 1) // ncols
@@ -288,23 +330,40 @@ def _render_individual_members(
     # Margins in inches, so the loss / knee headers fit at any grid size.
     left_in = 0.55 if row_names else 0.03
     top_in = 0.85 if knees else 0.25
-    width, height = ncols * 3.0 + left_in, nrows * 3.4 + top_in
+    bottom_in = 0.95 if legend else 0.03
+    width = ncols * 3.0 + left_in
+    height = nrows * 3.4 + top_in + bottom_in
     fig, axes = plt.subplots(
         nrows, ncols, figsize=(width, height),
         dpi=220, facecolor="black", squeeze=False,
     )
     for ax in axes.flat:
         ax.set_visible(False)
-    for image, label in zip(vis, labels, strict=True):
+    for image, label in zip(panels, labels, strict=True):
         ax = axes[positions[label]]
         ax.set_visible(True)
-        ax.imshow(_asinh_display_shared(image, vis), origin="lower", cmap="gray",
-                  interpolation="nearest", vmin=0.0, vmax=1.0)
+        if image.ndim == 2:
+            ax.imshow(image, origin="lower", cmap="gray",
+                      interpolation="nearest", vmin=0.0, vmax=1.0)
+        else:
+            ax.imshow(image, origin="lower", interpolation="nearest")
         ax.set_title(label, color="white", fontsize=12, fontweight="bold", pad=7)
         ax.set_axis_off()
     fig.subplots_adjust(left=left_in / width, right=1 - 0.03 / width,
-                        bottom=0.03 / height, top=1 - top_in / height,
+                        bottom=bottom_in / height, top=1 - top_in / height,
                         wspace=0.025, hspace=0.12)
+    if legend:
+        strip, temps = planck_color_strip()
+        bar = fig.add_axes([0.30, 0.42 / height, 0.40, 0.20 / height])
+        bar.imshow(strip, aspect="auto", extent=(0.0, 1.0, 0.0, 1.0))
+        span = np.log(temps[-1] / temps[0])
+        ticks = [3000, 5000, 10000, 20000]
+        bar.set_xticks([np.log(t / temps[0]) / span for t in ticks],
+                       [f"{t:,} K" for t in ticks])
+        bar.set_yticks([])
+        bar.tick_params(colors="white", labelsize=12)
+        bar.set_title("per-pixel blackbody colour temperature (VIS+Y+J+H)",
+                      color="white", fontsize=13, pad=6)
     for row, name in enumerate(row_names):
         box = axes[row, 0].get_position()
         fig.text(box.x0 - 0.12 / width, (box.y0 + box.y1) / 2, name,
@@ -315,7 +374,7 @@ def _render_individual_members(
         fig.text((box.x0 + box.x1) / 2, box.y1 + 0.40 / height,
                  f"asinh knee {knee:g} e⁻", ha="center", va="bottom",
                  color="white", fontsize=15, fontweight="bold")
-    fig.savefig(contact_path, dpi=220, facecolor="black", edgecolor="none",
+    fig.savefig(path, dpi=220, facecolor="black", edgecolor="none",
                 pad_inches=0.04)
     plt.close(fig)
 
@@ -339,6 +398,11 @@ def main() -> int:
     parser.add_argument("--out-png", default="poster/fig/poster/result_triptych_combiner.png")
     parser.add_argument("--individual-dir", default="poster/fig/poster/individual_sr")
     parser.add_argument("--individual-contact", default="poster/fig/poster/individual_sr_grid.png")
+    parser.add_argument(
+        "--individual-contact-temp", default=None,
+        help="temperature-coloured member sheet; default <contact>_temp.png, "
+             "empty string to skip",
+    )
     parser.add_argument(
         "--members", default="",
         help="explicit comma-separated member IDs; bypasses the stored combiner",
@@ -367,9 +431,14 @@ def main() -> int:
         combine_kind = combiner.kind
         print(f"combiner={combiner.kind}  members={labels}")
     members = _run_members(lr, ckpt_root=args.ckpt_root, labels=labels)
+    temperature_contact = (
+        f"{os.path.splitext(args.individual_contact)[0]}_temp.png"
+        if args.individual_contact_temp is None else args.individual_contact_temp
+    )
     _render_individual_members(args.individual_dir, args.individual_contact,
                                members, labels,
-                               recipes=_member_recipes(args.ckpt_root, labels))
+                               recipes=_member_recipes(args.ckpt_root, labels),
+                               temperature_path=temperature_contact)
     if combiner is None:
         sr = np.asarray(np.mean(members, axis=0), dtype=np.float32)
     else:
