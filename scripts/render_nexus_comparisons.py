@@ -4,11 +4,13 @@
 Each tile is read through the ``nexus-field`` viewer collection (registered
 four-band Euclid LR, the STARFULL combiner SR, native NEXUS), so a plate
 shows exactly the arrays the viewer shows. All panels cover the same
-25.5″ north-up tile. Every panel gets its own asinh display stretch: NEXUS
-is an external morphological reference in a different band and unit, not a
-photometric truth for the SR.
+25.5″ tile. With ``--band VIS`` (or another band) every panel gets its own
+asinh display stretch; ``--band temp`` renders the Euclid LR and SR in the
+viewer's "Temp" colour (:func:`eye_rgb` at the viewer's default knee) while
+NEXUS stays native grey. NEXUS is an external morphological reference in a
+different band and unit, not a photometric truth for the SR.
 
-    python scripts/render_nexus_comparisons.py --tiles 16,18,31,88 --tag m169-178
+    python scripts/render_nexus_comparisons.py --tiles 40,42,70,178 --tag m169-188
 """
 from __future__ import annotations
 
@@ -27,6 +29,8 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
+from euclid_polish.config import Config
+from euclid_polish.visualization.color import eye_rgb
 from euclid_polish.web.helpers.jwst_euclid import (
     _read_nexus_field_manifest,
     nexus_field_id,
@@ -58,14 +62,28 @@ def _plane(cube: np.ndarray, info: dict, band: str) -> np.ndarray:
     return cube[..., index]
 
 
+def _display(cube: np.ndarray, info: dict, color: str) -> tuple[np.ndarray, dict]:
+    """A panel image plus its imshow keywords for the requested colour."""
+    bands = tuple(str(name) for name in info.get("bands", []))
+    if color == "temp" and bands == tuple(Config.LR_INPUT_BAND_NAMES):
+        # The viewer's Temp default: knee = the tier's asinh, white = 30×.
+        knee = float(info.get("asinh", Config.STRETCH_SCALE_E))
+        return eye_rgb(np.nan_to_num(cube), bands, asinh_scale_e=knee), {}
+    band = "VIS" if color == "temp" else color
+    return (_asinh_display(_plane(cube, info, band)),
+            {"cmap": "gray", "vmin": 0.0, "vmax": 1.0})
+
+
 def _render(axes_row, index: int, params: dict, band: str, filter_name: str,
             *, titles: bool) -> None:
     for ax, (tier, title, scale, color) in zip(axes_row, PANELS, strict=True):
         cube, info = get_cube("nexus-field", index, tier, params)
-        ax.imshow(_asinh_display(_plane(cube, info, band)), origin="lower",
-                  cmap="gray", interpolation="nearest", vmin=0.0, vmax=1.0)
+        image, style = _display(cube, info, band)
+        # Viewer orientation: row 0 at the top, as in the exported figures.
+        ax.imshow(image, origin="upper", interpolation="nearest", **style)
         if titles:
-            ax.set_title(f"{title.format(band=band, filter=filter_name)}\n{scale}",
+            label = "temperature" if band == "temp" else band
+            ax.set_title(f"{title.format(band=label, filter=filter_name)}\n{scale}",
                          color="white", fontsize=12, fontweight="bold", pad=8)
         ax.set_xticks([])
         ax.set_yticks([])
@@ -79,9 +97,11 @@ def _render(axes_row, index: int, params: dict, band: str, filter_name: str,
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--field", default=nexus_field_id("F200W"))
-    parser.add_argument("--tiles", default="16,18,31,88",
+    parser.add_argument("--tiles", default="40,42,70,178",
                         help="comma-separated viewer tile indices")
-    parser.add_argument("--band", default="VIS", help="Euclid band for LR/SR")
+    parser.add_argument("--band", default="VIS",
+                        help="Euclid band for LR/SR, or 'temp' for the "
+                             "viewer's temperature colour")
     parser.add_argument("--tag", default="current",
                         help="output sub-directory, e.g. the member range")
     parser.add_argument("--out-dir", default="output/nexus_comparisons")
