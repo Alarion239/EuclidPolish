@@ -2,9 +2,11 @@
 """Run the current STARFULL combiner on the poster galaxy and render a triptych.
 
 The poster source is the cached four-band Euclid LR cube for the target at
-18:12:55.413 +68:21:49.16.  This script runs the active STARFULL members one
-at a time, applies the fitted raw incremental combiner, and writes a compact
-FITS product plus a poster-style Euclid/SR/Hubble plate.
+18:12:55.413 +68:21:49.16 — either the band-first ``original_stack.fits`` or
+the ``LR_<band>`` extensions of an earlier results FITS written here (the same
+electron-domain input).  This script runs the active STARFULL members, applies
+the fitted combiner, and writes a compact FITS product plus a poster-style
+Euclid/SR/Hubble plate.
 
 The Hubble panel is the existing WFPC2 F814W poster reference.  It is kept as
 the poster asset rather than redownloaded, so the comparison remains the same
@@ -33,8 +35,13 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from euclid_polish.config import Config
-from euclid_polish.eval.combiner import load_combiner
-from euclid_polish.model import Model
+from euclid_polish.ensemble import EnsembleModel
+from euclid_polish.ensemble_registry import default_ensemble_dir, regime_labels
+from euclid_polish.eval.combiner import (
+    ACTIVE_COMBINER_KINDS,
+    COMBINER_MODELS,
+    load_combiner,
+)
 
 BANDS = tuple(Config.LR_INPUT_BAND_NAMES)
 MEMBER_RE = re.compile(r"^(\d+)·psnr$")
@@ -42,7 +49,13 @@ MEMBER_RE = re.compile(r"^(\d+)·psnr$")
 
 def _load_lr(path: str, side: int) -> tuple[np.ndarray, fits.Header, dict]:
     with fits.open(path, memmap=False) as hdul:
-        data = np.asarray(hdul[0].data, dtype=np.float32)
+        names = {hdu.name for hdu in hdul}
+        if all(f"LR_{band}" in names for band in BANDS):
+            # A results FITS from this script: one LR extension per band.
+            data = np.stack([np.asarray(hdul[f"LR_{band}"].data, np.float32)
+                             for band in BANDS])
+        else:
+            data = np.asarray(hdul[0].data, dtype=np.float32)
         header = hdul[0].header.copy()
     if data.ndim != 3 or data.shape[0] != len(BANDS):
         raise ValueError(f"expected a band-first LR cube, got {data.shape}")
@@ -66,23 +79,41 @@ def _member_id(label: str) -> str:
 
 def _run_members(lr: np.ndarray, *, ckpt_root: str,
                  labels: list[str]) -> np.ndarray:
+    """Each member's SR in ``labels`` order, one STARFULL member at a time.
+
+    Members load through :class:`EnsembleModel`, so each one self-corrects to
+    its checkpoint's depth and un-stretches with its own asinh knee.
+    """
+    ensemble = EnsembleModel(ckpt_root, starless=False)
+    by_label = dict(zip(ensemble.member_labels, ensemble.members, strict=True))
+    missing = [label for label in labels if label not in by_label]
+    if missing:
+        raise FileNotFoundError(f"no active STARFULL checkpoint for {missing}")
     predictions = []
     for label in labels:
-        member_id = _member_id(label)
-        member_dir = os.path.join(ckpt_root, f"member_{int(member_id):02d}")
-        if not os.path.isfile(os.path.join(member_dir, "checkpoint")):
-            raise FileNotFoundError(f"no checkpoint for combiner member {label}")
-        print(f"  loading {label} …", flush=True)
-        model = Model(member_dir, scale=Config.DEFAULT_REBIN_FACTOR,
-                      num_res_blocks=Config.DEFAULT_NUM_RES_BLOCKS)
-        pred = np.asarray(model.upsample_array(lr), dtype=np.float32)
+        _member_id(label)
+        print(f"  inferring {label} …", flush=True)
+        pred = np.asarray(by_label[label].upsample_array(lr), dtype=np.float32)
         if pred.ndim != 3 or pred.shape[-1] != len(BANDS):
             raise ValueError(f"member {label} returned {pred.shape}, expected 4-band SR")
         predictions.append(pred)
-        del model
-        tf.keras.backend.clear_session()
         gc.collect()
+    del ensemble, by_label
+    tf.keras.backend.clear_session()
     return np.stack(predictions, axis=0)
+
+
+def _active_combiner(combiner_root: str, ckpt_root: str):
+    """The first fitted combiner whose members are the active STARFULL set."""
+    labels = regime_labels(ckpt_root, starless=False)
+    for kind in ACTIVE_COMBINER_KINDS:
+        combiner = load_combiner(
+            combiner_root, member_labels=labels,
+            artifact_dir=COMBINER_MODELS[kind].artifact_dir,
+        )
+        if combiner is not None:
+            return combiner
+    return None
 
 
 def _asinh_display(data: np.ndarray) -> np.ndarray:
@@ -121,6 +152,9 @@ def _read_hubble(path: str, native_side: int) -> np.ndarray:
     with PILImage.open(path) as image:
         image = image.convert("L")
         arr = np.asarray(image, dtype=np.float32) / 255.0
+    # PNG rows run top-down while every panel is drawn with origin="lower"
+    # (FITS convention); flip so the reference keeps the Euclid orientation.
+    arr = np.flipud(arr)
     # The reference is already a rendered poster panel; use a central crop to
     # match the Euclid LR field of view after converting pixel scales.
     return _center_crop(arr, native_side)
@@ -219,7 +253,7 @@ def main() -> int:
         default="data/euclid_inference/cutouts/ra273.23_dec68.36/original_stack.fits",
     )
     parser.add_argument("--hubble", default="poster/fig/poster/result_hubble.png")
-    parser.add_argument("--ckpt-root", default="ckpt/ensemble")
+    parser.add_argument("--ckpt-root", default=default_ensemble_dir())
     parser.add_argument("--combiner-root", default="data/vis/ensemble/starfull")
     parser.add_argument("--side", type=int, default=1024,
                         help="central Euclid LR side, matching the poster crop")
@@ -250,9 +284,11 @@ def main() -> int:
         combine_kind = "mean_explicit_members"
         print(f"explicit members={labels}")
     else:
-        combiner = load_combiner(args.combiner_root)
+        combiner = _active_combiner(args.combiner_root, args.ckpt_root)
         if combiner is None:
-            raise RuntimeError(f"no compatible combiner under {args.combiner_root}")
+            raise RuntimeError(
+                f"no combiner under {args.combiner_root} matches the active "
+                "STARFULL members; fit one first")
         labels = combiner.member_labels
         combine_kind = combiner.kind
         print(f"combiner={combiner.kind}  members={labels}")
