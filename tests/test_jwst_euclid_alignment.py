@@ -565,6 +565,18 @@ def test_readable_fits_rejects_empty_archive_placeholder(tmp_path):
     assert jwst_euclid._is_readable_fits(valid)
 
 
+def test_readable_fits_rejects_truncated_archive_download(tmp_path):
+    """A dropped transfer leaves a valid header but a short data block."""
+    from astropy.io import fits
+
+    full = tmp_path / "full.fits"
+    fits.PrimaryHDU(data=np.ones((265, 265), dtype=np.float32)).writeto(full)
+    truncated = tmp_path / "truncated.fits"
+    truncated.write_bytes(full.read_bytes()[:24576])
+    assert jwst_euclid._is_readable_fits(full)
+    assert not jwst_euclid._is_readable_fits(truncated)
+
+
 def test_euclid_download_recovers_valid_file_from_placeholder(tmp_path):
     from astropy.io import fits
 

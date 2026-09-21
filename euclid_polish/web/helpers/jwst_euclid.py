@@ -17,13 +17,20 @@ import os
 import re
 import shutil
 import tempfile
+import warnings
 from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 from urllib.request import urlopen
 
+import astropy.units as u
 import numpy as np
+from astropy.coordinates import SkyCoord
+from astropy.io import fits
+from astropy.nddata import Cutout2D
+from astropy.nddata.utils import NoOverlapError, PartialOverlapError
+from astropy.utils.exceptions import AstropyUserWarning
 
 from euclid_polish.config import Config
 from euclid_polish.photometry import adu_per_s_to_electrons_factor, header_magzero
@@ -987,12 +994,6 @@ def _exact_nexus_vis_tile(
     VIS pixels and rewrite the file as the 255×255 grid centred on the tile;
     ``None`` when the cutout cannot contain that grid.
     """
-    import astropy.units as u
-    from astropy.coordinates import SkyCoord
-    from astropy.io import fits
-    from astropy.nddata import Cutout2D
-    from astropy.nddata.utils import NoOverlapError, PartialOverlapError
-
     data, header, wcs, _ = _find_image(path)
     side = _NEXUS_EUCLID_TILE_SIDE
     if data.shape == (side, side):
@@ -1723,15 +1724,23 @@ def _copy_downloaded(source: Any, destination: Path) -> None:
 
 
 def _is_readable_fits(path: Path) -> bool:
-    """Return whether an archive output is a non-empty, readable FITS file."""
+    """Return whether an archive output is a complete, readable FITS file.
+
+    A dropped transfer leaves a valid header over a short data block, which
+    astropy opens with only a warning; treat that as unreadable so the next
+    pass re-fetches it instead of reusing the truncated file forever.
+    """
     try:
         if not path.is_file() or path.stat().st_size < 2880:
             return False
-        from astropy.io import fits
-
-        with fits.open(path, memmap=False):
-            return True
-    except (OSError, ValueError):
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "error", message="File may have been truncated",
+                category=AstropyUserWarning,
+            )
+            with fits.open(path, memmap=False):
+                return True
+    except (OSError, ValueError, AstropyUserWarning):
         return False
 
 
