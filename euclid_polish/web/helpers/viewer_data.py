@@ -49,6 +49,7 @@ from euclid_polish.eval.combiner import (
     COMBINER_MODELS,
     RAW_INCREMENTAL_MINMEANMAX_RBF_KIND,
 )
+from euclid_polish.eval.ensemble_cube_cache import load_cached_field_lr
 from euclid_polish.image.tfio import read_images, tfrecord_path
 from euclid_polish.psf.core import PSF
 from euclid_polish.training.target_blur import (
@@ -699,7 +700,18 @@ def _combiner_field_cube(starless: bool, rec_index: int,
         if not os.path.isfile(p):
             raise ViewerError(404, f"member{i} cube missing")
         stack.append(np.load(p).astype(np.float32))
-    out = np.asarray(comb.apply_field(np.stack(stack, axis=0)), np.float32)
+    lr = None
+    if getattr(comb, "use_lr", False):
+        try:
+            with open(os.path.join(cdir, "viz_index.json")) as handle:
+                subset = str(json.load(handle).get("subset", "test"))
+        except (OSError, ValueError):
+            subset = "test"
+        lr = load_cached_field_lr(cdir, int(rec_index),
+                                  records_dir=_sky_records_local_dir(), subset=subset)
+        if lr is None:
+            raise ViewerError(404, "LR input for the spatial gate is missing")
+    out = np.asarray(comb.apply_field(np.stack(stack, axis=0), lr=lr), np.float32)
     _COMB_CUBE_CACHE[key] = out
     if len(_COMB_CUBE_CACHE) > _COMB_CUBE_MAX:
         _COMB_CUBE_CACHE.popitem(last=False)

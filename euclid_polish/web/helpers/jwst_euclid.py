@@ -1529,7 +1529,8 @@ def run_starfull_nexus_field_inference(
                 progress(order - 1, len(remaining), f"STARFULL tile {order}/{len(remaining)}")
             lr_cube, lr_header = _cache_nexus_tile_lr(directory, tile)
             members = ensemble.member_arrays(lr_cube)
-            starfull = np.asarray(selected_combiner.apply_field(members), np.float32)
+            starfull = np.asarray(
+                selected_combiner.apply_field(members, lr=lr_cube), np.float32)
             source_index = int(tile.get("source_index", tile.get("index", index)))
             sr_relative = f"tiles/starfull_combiner_{source_index:04d}.fits"
             sr_path = directory / sr_relative
@@ -2327,7 +2328,8 @@ def run_starfull_pair_inference(
             break
     if selected_kind is None or selected_combiner is None:
         raise RuntimeError("no fitted STARFULL combiner is available")
-    starfull = np.asarray(selected_combiner.apply_field(members), np.float32)
+    starfull = np.asarray(
+        selected_combiner.apply_field(members, lr=lr_cube), np.float32)
     sr_path = inference_dir / "starfull_combiner.fits"
     sr_header = vis_header.copy()
     scale = max(1, int(round(starfull.shape[0] / lr_cube.shape[0])))

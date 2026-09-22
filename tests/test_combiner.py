@@ -30,6 +30,7 @@ from euclid_polish.eval.combiner import (
     normalize_model_kind,
     save_combiner,
 )
+from euclid_polish.eval.spatial_gate import SPATIAL_GATE_KIND
 
 
 def _training_problem(seed=7, n=2400):
@@ -44,10 +45,11 @@ def _training_problem(seed=7, n=2400):
 
 def test_joint_and_frozen_incremental_raw_combiners_are_registered():
     assert ACTIVE_COMBINER_KINDS == (
+        SPATIAL_GATE_KIND,
         RAW_INCREMENTAL_MINMEANMAX_RBF_KIND,
         RAW_INCREMENTAL_FROZEN_MINMEANMAX_RBF_KIND,
     )
-    assert tuple(COMBINER_MODELS) == ACTIVE_COMBINER_KINDS
+    assert set(COMBINER_MODELS) == set(ACTIVE_COMBINER_KINDS)
     assert combiner_model_spec().default_kernels == 128
     assert normalize_model_kind(None) == RAW_INCREMENTAL_MINMEANMAX_RBF_KIND
     assert normalize_model_kind("frozen_block_rbf") \

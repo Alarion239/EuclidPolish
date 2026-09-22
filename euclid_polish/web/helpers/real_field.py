@@ -373,7 +373,8 @@ def cache_real_field(ra: float, dec: float, *,
             np.save(cubes / f"pca{i}_{tile:03d}.npy", component)
         for kind, combiner in combiners.items():
             prefix = COMBINER_MODELS[kind].cube_prefix
-            np.save(cubes / f"{prefix}_{tile:03d}.npy", combiner.apply_field(members))
+            np.save(cubes / f"{prefix}_{tile:03d}.npy",
+                    combiner.apply_field(members, lr=tile_lr))
         _accumulate_diagnostics(diagnostics, members, combiners)
         pca_amps[str(tile)] = [float(x) for x in amps]
         pca_var[str(tile)] = [float(x) for x in variance]
@@ -434,10 +435,11 @@ def refresh_real_field_combiners(
         if not all(path.is_file() for path in paths):
             raise RuntimeError(f"real-field member cubes missing for tile {tile + 1}")
         members = np.stack([np.load(path) for path in paths]).astype(np.float32)
+        tile_lr = np.load(cubes / f"lr_{tile:03d}.npy")
         for kind, combiner in combiners.items():
             prefix = COMBINER_MODELS[kind].cube_prefix
             np.save(cubes / f"{prefix}_{tile:03d}.npy",
-                    combiner.apply_field(members))
+                    combiner.apply_field(members, lr=tile_lr))
         _accumulate_diagnostics(diagnostics, members, combiners)
         progress(tile + 1, count, f"real-star combiner reevaluation {tile + 1}/{count}")
 

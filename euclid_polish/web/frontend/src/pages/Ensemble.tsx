@@ -12,6 +12,7 @@ import { useThemeValue } from "../theme";
 import { CutoutViewer, loadColorEngine, type ViewerApi, type ColorMeta, type RenderOpts } from "../legacy";
 import { C, LOSS_COLOR, categorical, viridis } from "../colors";
 import Plot, { Legend, type Series, type Guide, type Tick, type Heat } from "../charts/Plot";
+import { SpatialGateCard, SPATIAL_GATE_KIND, type SpatialGate } from "./SpatialGateCard";
 import {
   Badge, Button, Card, CardBody, CardHead, Chip, DefList, Empty,
   NumberField, Page, PageHead, Segmented, Select, Spinner, Stat, Table,
@@ -209,12 +210,13 @@ const COMBINER_META: Record<string, { label: string; color: string }> = {
   ensemble_mean: { label: "ensemble mean", color: C.mean },
   raw_incremental_minmeanmax_rbf: { label: "minibatched convex all-asinh RBF", color: "#4f9d69" },
   raw_incremental_frozen_minmeanmax_rbf: { label: "frozen-block convex all-asinh RBF", color: "#b48ef2" },
+  spatial_gate: { label: "spatial gate (convolutional, convex)", color: "#e07b39" },
 };
 const combinerMeta = (kind: string) => COMBINER_META[kind] ?? {
   label: kind.replace(/_/g, " "), color: categorical(kind.length),
 };
 const activeCombinerKind = (kind: string) => kind === "raw_incremental_minmeanmax_rbf"
-  || kind === "raw_incremental_frozen_minmeanmax_rbf";
+  || kind === "raw_incremental_frozen_minmeanmax_rbf" || kind === SPATIAL_GATE_KIND;
 const hasData = (a: unknown) => asArray<number | null>(a).some((v) => v != null && isFinite(v));
 const finite = (a: unknown, i: 0 | 1) => asArray<[number, number]>(a).map((p) => p[i]);
 const num = (a: unknown) => asArray<number | null>(a).map((v) => (v == null ? NaN : v));
@@ -465,6 +467,7 @@ export default function EnsemblePage() {
   const evals = useResource<Evals>(`/ensemble/evals.json?mode=${mode}`, [mode]);
   const jointComb = useResource<Combiner>(`/ensemble/combiner.json?mode=${mode}&model_kind=${jointCombinerKind}`, [mode, jointCombinerKind]);
   const frozenComb = useResource<Combiner>(`/ensemble/combiner.json?mode=${mode}&model_kind=${frozenCombinerKind}`, [mode, frozenCombinerKind]);
+  const gateComb = useResource<SpatialGate>(`/ensemble/combiner.json?mode=${mode}&model_kind=${SPATIAL_GATE_KIND}`, [mode]);
   const curves = useResource<{ members?: Curve[] }>("/ensemble/training-curves.json");
 
   const evalJob = useJob();
@@ -477,7 +480,7 @@ export default function EnsemblePage() {
     navigate(`/train-members?mode=${m}&member=${encodeURIComponent(member)}`);
 
   const reloadAll = () => {
-    status.reload(); evals.reload(); jointComb.reload(); frozenComb.reload(); curves.reload();
+    status.reload(); evals.reload(); jointComb.reload(); frozenComb.reload(); gateComb.reload(); curves.reload();
   };
 
   return (
@@ -502,6 +505,9 @@ export default function EnsemblePage() {
         <TrainingCurves curves={asArray<Curve>(curves.data?.members)} starless={starless} />
         <Evaluations evals={evals.data} loading={evals.loading} mode={mode} theme={theme}
           targetLabel={starless ? "clean goal" : "HR"} />
+        <SpatialGateCard gate={gateComb.data} loading={gateComb.loading} mode={mode}
+          evalReady={status.data?.evaluations_ready ?? false} targetFwhm={targetFwhm}
+          onFit={reloadAll} />
         <CombinerCard comb={jointComb.data} loading={jointComb.loading} mode={mode} theme={theme} fitJob={jointFitJob} onFit={reloadAll}
           evalReady={status.data?.evaluations_ready ?? false}
           title={`Combiner · joint refit · ${mode}`}
@@ -873,6 +879,7 @@ export function Evaluations(
       if (r.id === "combiner") return "comb";
       if (r.id === "raw_incremental_minmeanmax_rbf_combiner") return "raw RBF";
       if (r.id === "raw_incremental_frozen_minmeanmax_rbf_combiner") return "frozen RBF";
+      if (r.id === "spatial_gate_combiner") return "gate";
       if (r.id === "model_agreement") return "agree";
       return `m${String(i).padStart(2, "0")}`;
     };

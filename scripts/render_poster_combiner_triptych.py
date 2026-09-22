@@ -442,7 +442,7 @@ def main() -> int:
     if combiner is None:
         sr = np.asarray(np.mean(members, axis=0), dtype=np.float32)
     else:
-        sr = np.asarray(combiner.apply_field(members), dtype=np.float32)
+        sr = np.asarray(combiner.apply_field(members, lr=lr), dtype=np.float32)
     print(f"combiner output: {sr.shape}")
 
     metadata.update({

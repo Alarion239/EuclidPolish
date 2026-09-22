@@ -156,3 +156,28 @@ def test_combiner_json_defaults_to_incremental_raw(client, monkeypatch):
 def test_removed_combined_combiner_routes_are_404(client):
     assert client.get("/ensemble/combined-combiner.json").status_code == 404
     assert client.post("/ensemble/combined-combiner/fit").status_code == 404
+
+
+def test_spatial_gate_fit_passes_a_member_subset(client, monkeypatch):
+    from euclid_polish.web.routes import ensemble as routes
+
+    seen = {}
+
+    def fake_job(_cap, **kwargs):
+        seen.update(kwargs)
+
+    def fake_spawn(_description, target):
+        target(_Cap())
+        return "gate"
+
+    monkeypatch.setattr(routes, "job_combiner_fit", fake_job)
+    monkeypatch.setattr(routes.REGISTRY, "spawn", fake_spawn)
+    response = client.post("/ensemble/combiner/fit", data={
+        "mode": "starfull", "model_kind": "spatial_gate", "members": "170, 180,184"})
+    assert response.status_code == 200
+    assert seen["model_kind"] == "spatial_gate"
+    assert seen["gate_members"] == ["170", "180", "184"]
+
+    bad = client.post("/ensemble/combiner/fit", data={
+        "mode": "starfull", "model_kind": "spatial_gate", "members": "170,best"})
+    assert bad.status_code == 400

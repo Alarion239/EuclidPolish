@@ -110,6 +110,11 @@ def register(app):
             num_images = max(1, int(request.form.get("num_images", 100) or 100))
         except (TypeError, ValueError):
             num_images = 100
+        gate_members = [token.strip() for token in
+                        str(request.form.get("members", "") or "").split(",")
+                        if token.strip()]
+        if any(not token.isdigit() for token in gate_members):
+            abort(400, description="members must be comma-separated member numbers")
         raw_min_usage = request.form.get("min_usage")
         try:
             min_usage = (None if raw_min_usage in (None, "")
@@ -136,7 +141,8 @@ def register(app):
         except (TypeError, ValueError):
             n_kernels = spec.default_kernels
         regime = "starless" if starless else "starfull"
-        model_label = f"{spec.label} K={n_kernels}"
+        model_label = (spec.label if spec.default_kernels <= 0
+                       else f"{spec.label} K={n_kernels}")
         job_id = REGISTRY.spawn(
             f"combiner: fit {regime} on validate ({num_images} fields, {model_label})",
             target=lambda cap: job_combiner_fit(
@@ -144,6 +150,7 @@ def register(app):
                 min_usage=min_usage,
                 starless=starless,
                 model_kind=model_kind,
+                gate_members=gate_members or None,
                 target_fwhm_arcsec=target_fwhm),
         )
         return jsonify({"job_id": job_id})

@@ -345,7 +345,7 @@ def test_nexus_starfull_inference_reuses_current_and_replaces_stale_sr(
             return cube
 
     class FakeCombiner:
-        def apply_field(self, members):
+        def apply_field(self, members, *, lr=None):
             applied.append((fingerprint["value"], member_fingerprint["value"]))
             multiplier = 2 if fingerprint["value"] == "fp-one" else 3
             return members * multiplier

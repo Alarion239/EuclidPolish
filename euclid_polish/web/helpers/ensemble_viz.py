@@ -34,8 +34,21 @@ from euclid_polish.ensemble import (
     pca_field,
 )
 from euclid_polish.eval.combiner import (
+    BAND_NAMES,
     COMBINER_MODELS,
     RAW_INCREMENTAL_MINMEANMAX_RBF_KIND,
+    combiner_artifact_fingerprint,
+    combiner_model_spec,
+    combiner_region_ids,
+    fit_combiner_minibatched,
+    load_combiner,
+    normalize_model_kind,
+    save_combiner,
+)
+from euclid_polish.eval.ensemble_cube_cache import (
+    load_cached_field_lr,
+    load_cached_member_stack,
+    save_cached_field_lr,
 )
 from euclid_polish.eval.ensemble_diagnostics import (
     EnsembleDiagnosticsAccumulator,
@@ -48,6 +61,18 @@ from euclid_polish.eval.power_spectrum import (
     EnsembleSpectrumCurves,
     ensemble_ps_plot_curves,
     render_ensemble_power_spectrum,
+)
+from euclid_polish.eval.spatial_gate import (
+    SPATIAL_GATE_KIND,
+    SpatialGateCombiner,
+    band_scales,
+)
+from euclid_polish.eval.spatial_gate_fit import (
+    LazyMemberRunner,
+    build_blackout_fields,
+    fit_spatial_gate,
+    load_cube_fields,
+    split_holdout,
 )
 from euclid_polish.eval.subsets import eval_subset
 from euclid_polish.image import Image
@@ -254,12 +279,15 @@ def _member_scoring_records_fingerprint(records_dir: str | None,
 _RAW_INCREMENTAL_MINMEANMAX_RBF_KIND = RAW_INCREMENTAL_MINMEANMAX_RBF_KIND
 _RBF_KIND = _RAW_INCREMENTAL_MINMEANMAX_RBF_KIND
 _PCA_GATE_KINDS = {_RAW_INCREMENTAL_MINMEANMAX_RBF_KIND}
+#: Spatial gate fit: share of validate fields held out for checkpoint
+#: selection, and how many training fields get a blackout-augmented copy.
+SPATIAL_GATE_HOLDOUT_FRACTION = 0.15
+SPATIAL_GATE_BLACKOUT_FIELDS = 40
 _ORDINARY_COMBINER_KINDS = tuple(COMBINER_MODELS)
 _PCA_WEIGHT_SURFACE_SCHEMA = 3
 
 
 def _normalize_combiner_kind(kind: str | None) -> str:
-    from euclid_polish.eval.combiner import normalize_model_kind
     return normalize_model_kind(kind)
 
 
@@ -762,12 +790,16 @@ def _ensemble_cubes_dir(subset: str | None = None, *, starless: bool) -> str:
 
 def _cache_field_cubes(cubes_dir: str, rec: int, preds: np.ndarray,
                        mean: np.ndarray, std: np.ndarray, *,
+                       lr: np.ndarray | None = None,
                        pca_components: int = ENSEMBLE_PCA_COMPONENTS
                        ) -> tuple[list[float], list[float]]:
-    """Write one field's cubes (``sr_``, ``std_``, ``pcaN_``, ``memberi_``) into
-    ``cubes_dir`` and return ``(pca_amps, pca_var)``. Shared by the test-eval and
-    the validate combiner-fit caching so both lay out identical buckets."""
+    """Write one field's cubes (``sr_``, ``std_``, ``pcaN_``, ``memberi_`` and,
+    when given, the LR input ``lr_``) into ``cubes_dir`` and return
+    ``(pca_amps, pca_var)``. Shared by the test-eval and the validate
+    combiner-fit caching so both lay out identical buckets."""
     rec = int(rec)
+    if lr is not None:
+        save_cached_field_lr(cubes_dir, rec, lr)
     np.save(os.path.join(cubes_dir, f"sr_{rec:05d}.npy"),
             np.asarray(mean, dtype=np.float32))
     np.save(os.path.join(cubes_dir, f"std_{rec:05d}.npy"),
@@ -1216,8 +1248,6 @@ def _collect_bounded_ablation_patches(
     resident at a time; returned storage is hard-capped at roughly 24 MB for a
     20-member ensemble.
     """
-    from euclid_polish.eval.combiner import combiner_region_ids
-    from euclid_polish.eval.ensemble_cube_cache import load_cached_member_stack
     from euclid_polish.image.collection import ImageSet
 
     wanted = sorted(int(i) for i in indices)[:max(1, int(max_fields))]
@@ -1308,16 +1338,13 @@ def job_combiner_fit(cap, *, num_images: int, n_kernels: int = 128,
                      starless: bool = False,
                      model_kind: str = _RAW_INCREMENTAL_MINMEANMAX_RBF_KIND,
                      score_test: bool = True,
+                     gate_members: list[str] | None = None,
                      target_fwhm_arcsec: float = Config.TARGET_PSF_FWHM_ARCSEC) -> dict:
-    """Fit every validation pixel in minibatches, then optionally test-score."""
+    """Fit a combiner on the validate cubes, then optionally test-score.
+
+    ``gate_members`` (member numbers, spatial gate only) fits a pruned gate
+    that reads just those members."""
     del min_usage
-    from euclid_polish.eval.combiner import (
-        BAND_NAMES,
-        combiner_model_spec,
-        fit_combiner_minibatched,
-        save_combiner,
-    )
-    from euclid_polish.eval.ensemble_cube_cache import load_cached_member_stack
 
     model_kind = _normalize_combiner_kind(model_kind)
     target_fwhm = validate_target_fwhm_arcsec(target_fwhm_arcsec)
@@ -1344,9 +1371,9 @@ def job_combiner_fit(cap, *, num_images: int, n_kernels: int = 128,
         os.makedirs(validate_dir, exist_ok=True)
         saved: list[int] = []
 
-        def on_field(record_index, _lr, predictions, mean, std, _target_image):
+        def on_field(record_index, lr, predictions, mean, std, _target_image):
             _cache_field_cubes(
-                validate_dir, record_index, predictions, mean, std)
+                validate_dir, record_index, predictions, mean, std, lr=lr)
             saved.append(int(record_index))
 
         result = evaluate_on_records(
@@ -1364,6 +1391,18 @@ def job_combiner_fit(cap, *, num_images: int, n_kernels: int = 128,
 
     if not indices:
         raise RuntimeError("no validate fields collected — check the records.")
+
+    if model_kind == SPATIAL_GATE_KIND:
+        combiner = _fit_spatial_gate_on_validate(
+            cap, base=base, labels=labels, indices=indices,
+            records_dir=records_dir, records_fp=records_fp,
+            validate_dir=validate_dir, starless=starless, target=target,
+            target_fwhm=target_fwhm, gate_members=gate_members)
+        combiner.fit_meta.update({"subset": "validate",
+                                  "num_images": int(num_images)})
+        return _save_and_score_combiner(
+            cap, combiner, starless=starless, model_kind=model_kind,
+            score_test=score_test, n_members=len(labels))
 
     def validation_fields(requested_indices):
         from euclid_polish.image.collection import ImageSet
@@ -1423,6 +1462,56 @@ def job_combiner_fit(cap, *, num_images: int, n_kernels: int = 128,
         "features": "all member asinh inferences",
         "pixel_source": "all pixels from disjoint validation fields",
     })
+    return _save_and_score_combiner(
+        cap, combiner, starless=starless, model_kind=model_kind,
+        score_test=score_test, n_members=len(labels))
+
+
+def _fit_spatial_gate_on_validate(cap, *, base: str, labels: list[str],
+                                  indices: list[int], records_dir: str,
+                                  records_fp, validate_dir: str, starless: bool,
+                                  target: str, target_fwhm: float,
+                                  gate_members: list[str] | None = None):
+    """Fit the spatial gate on the cached validate member cubes, plus
+    blackout-augmented copies of the training fields (one cached extra
+    member-inference pass, reused on later fits)."""
+    fields, _labels = load_cube_fields(
+        validate_dir, records_dir, "validate", target_name=target,
+        target_fwhm_arcsec=target_fwhm, indices=indices,
+        progress=lambda i, n, label: cap.tick(i, n, label))
+    if len(fields) < 2:
+        raise RuntimeError("the spatial gate needs at least two validate fields")
+    active = None
+    if gate_members:
+        wanted = {str(v) for v in gate_members}
+        active = [i for i, label in enumerate(labels)
+                  if str(label).split("·")[0] in wanted]
+        unknown = wanted - {str(labels[i]).split("·")[0] for i in active}
+        if unknown:
+            raise RuntimeError(f"not active {_regime_slug(starless)} members: "
+                               f"{', '.join(sorted(unknown))}")
+    train, holdout = split_holdout(
+        fields, max(1, round(SPATIAL_GATE_HOLDOUT_FRACTION * len(fields))), seed=0)
+    blackout = build_blackout_fields(
+        train, labels, LazyMemberRunner(base, starless=starless, labels=labels),
+        _ensemble_cubes_dir("validate_blackout", starless=starless),
+        max_fields=SPATIAL_GATE_BLACKOUT_FIELDS, seed=0,
+        source_fingerprint=str(records_fp),
+        progress=lambda i, n, label: cap.tick(i, n, label))
+    combiner = fit_spatial_gate(
+        train + blackout, holdout, labels, active_members=active,
+        progress=lambda i, n, label: cap.tick(i, n, label),
+        log=lambda message: print(f"[spatial gate] {message}", flush=True))
+    combiner.records_fp = records_fp
+    combiner.starfull = not bool(starless)
+    combiner.fit_meta["blackout_fields"] = len(blackout)
+    return combiner
+
+
+def _save_and_score_combiner(cap, combiner, *, starless: bool, model_kind: str,
+                             score_test: bool, n_members: int) -> dict:
+    """Persist a freshly fitted combiner, refresh its payload and (optionally)
+    score it on the cached test cubes without re-running the members."""
     regime_dir = _ensemble_regime_dir(starless)
     save_combiner(
         combiner, regime_dir, artifact_dir=_combiner_artifact_dir(model_kind))
@@ -1439,7 +1528,7 @@ def job_combiner_fit(cap, *, num_images: int, n_kernels: int = 128,
                 progress=cap.tick)
     cap.tick(1, 1, "done")
     result = {
-        "n_members": len(labels),
+        "n_members": int(n_members),
         "n_kernels": int(combiner.n_kernels),
         "model_kind": combiner.kind,
         "fitted_models": [combiner.kind],
@@ -1461,7 +1550,6 @@ def _shared_pca_weight_diagnostic(comb, *, starless: bool,
                                   max_rows: int = 100_000,
                                   per_field: int = 4096) -> dict:
     """PC1 x PC2 gate surfaces from cached validation member pixels."""
-    from euclid_polish.eval.ensemble_cube_cache import load_cached_member_stack
 
     val_dir = _ensemble_cubes_dir("validate", starless=starless)
     try:
@@ -1549,16 +1637,14 @@ def _shared_pca_weight_diagnostic(comb, *, starless: bool,
 def compute_combiner_payload(starless: bool,
                              model_kind: str | None = None) -> dict | None:
     """Serialize the incremental combiner's fit and PCA diagnostics."""
-    from euclid_polish.eval.combiner import (
-        combiner_artifact_fingerprint,
-        load_combiner,
-    )
     model_kind = _normalize_combiner_kind(model_kind)
     combiner = load_combiner(
         _ensemble_regime_dir(starless),
         artifact_dir=_combiner_artifact_dir(model_kind))
     if combiner is None:
         return None
+    if isinstance(combiner, SpatialGateCombiner):
+        return _spatial_gate_payload(combiner, starless=starless)
     payload_path = _combiner_payload_path(starless, model_kind)
     previous = None
     with contextlib.suppress(OSError, ValueError), open(payload_path) as handle:
@@ -1614,6 +1700,133 @@ def compute_combiner_payload(starless: bool,
         "hr_weights": {"available": False, "bands": {},
                        "member_labels": [], "n_fields": 0, "n_pixels": 0},
         "fit_meta": combiner.fit_meta,
+    }
+    _atomic_json(payload_path, payload)
+    return payload
+
+
+_GATE_DIAGNOSTIC_SCHEMA = 1
+_GATE_DIAGNOSTIC_FIELDS = 8
+_GATE_BRIGHTNESS_EDGES = (0.02, 0.1, 0.5, 2.0)
+_GATE_BRIGHTNESS_NAMES = ("sky", "faint", "mid", "bright", "core")
+
+
+def _spatial_gate_weight_diagnostic(comb: SpatialGateCombiner, *, starless: bool,
+                                    max_fields: int = _GATE_DIAGNOSTIC_FIELDS) -> dict:
+    """How much weight the gate gives each member, per band: over all pixels,
+    over source pixels, and by brightness (the member-mean asinh level), from
+    the gate's held-out validate fields."""
+    val_dir = _ensemble_cubes_dir("validate", starless=starless)
+    try:
+        with open(os.path.join(val_dir, "viz_index.json")) as handle:
+            manifest = json.load(handle)
+    except (OSError, ValueError):
+        return {"available": False, "reason": "no validation cube cache"}
+    if list(manifest.get("member_labels") or []) != list(comb.member_labels):
+        return {"available": False,
+                "reason": "validation cube cache does not match this fit"}
+    cached = {int(i) for i in manifest.get("indices", []) or []}
+    preferred = [int(i) for i in comb.fit_meta.get("holdout_fields", []) or []]
+    fields = [i for i in preferred if i in cached] or sorted(cached)
+    records_dir = _sky_records_local_dir()
+    scales = band_scales(comb.band_names).astype(np.float32)
+    n_members, n_bands = len(comb.member_labels), len(comb.band_names)
+    n_bins = len(_GATE_BRIGHTNESS_NAMES)
+    usage = np.zeros((n_members, n_bands))
+    usage_source = np.zeros((n_members, n_bands))
+    by_bin = np.zeros((n_bands, n_bins, n_members))
+    bin_pixels = np.zeros((n_bands, n_bins))
+    n_pixels = n_source = n_fields = 0
+    for rec in fields[:int(max_fields)]:
+        stack = load_cached_member_stack(rec, subset="validate", cubes_dir=val_dir,
+                                         active=list(comb.member_labels))
+        lr = (load_cached_field_lr(val_dir, rec, records_dir=records_dir,
+                                   subset="validate") if comb.use_lr else None)
+        if stack is None or (comb.use_lr and lr is None):
+            continue
+        weights = comb.weights_field(stack, lr=lr)            # (H, W, M, C)
+        level = np.arcsinh(stack.mean(axis=0) / scales)       # (H, W, C)
+        usage += weights.sum(axis=(0, 1))
+        n_pixels += level.shape[0] * level.shape[1]
+        source = level[..., 0] > _GATE_BRIGHTNESS_EDGES[1]
+        usage_source += weights[source].sum(axis=0)
+        n_source += int(source.sum())
+        for c in range(n_bands):
+            bins = np.digitize(level[..., c], _GATE_BRIGHTNESS_EDGES)
+            for b in range(n_bins):
+                hit = bins == b
+                by_bin[c, b] += weights[..., c][hit].sum(axis=0)
+                bin_pixels[c, b] += hit.sum()
+        n_fields += 1
+    if not n_fields:
+        return {"available": False,
+                "reason": "no validate member cubes available for the gate"}
+    names = list(comb.band_names)
+    mean_by_bin = by_bin / np.maximum(bin_pixels[..., None], 1.0)
+    return {
+        "available": True,
+        "schema": _GATE_DIAGNOSTIC_SCHEMA,
+        "n_fields": int(n_fields),
+        "n_pixels": int(n_pixels),
+        "brightness_edges_asinh": list(_GATE_BRIGHTNESS_EDGES),
+        "brightness_names": list(_GATE_BRIGHTNESS_NAMES),
+        "usage": {band: (usage[:, c] / max(n_pixels, 1)).tolist()
+                  for c, band in enumerate(names)},
+        "usage_source": {band: (usage_source[:, c] / max(n_source, 1)).tolist()
+                         for c, band in enumerate(names)},
+        "usage_by_brightness": {band: mean_by_bin[c].tolist()
+                                for c, band in enumerate(names)},
+        "brightness_pixels": {band: bin_pixels[c].astype(int).tolist()
+                              for c, band in enumerate(names)},
+    }
+
+
+def _spatial_gate_payload(comb: SpatialGateCombiner, *, starless: bool) -> dict:
+    """The combiner card's dataset for the spatial gate (weight diagnostics
+    are cached per fitted artifact, so page loads stay cheap)."""
+    regime_dir = _ensemble_regime_dir(starless)
+    payload_path = _combiner_payload_path(starless, SPATIAL_GATE_KIND)
+    artifact_fp = combiner_artifact_fingerprint(
+        regime_dir, _combiner_artifact_dir(SPATIAL_GATE_KIND))
+    previous = None
+    with contextlib.suppress(OSError, ValueError), open(payload_path) as handle:
+        previous = json.load(handle)
+    diagnostic = (previous or {}).get("gate_diagnostics") or {}
+    if (diagnostic.get("schema") != _GATE_DIAGNOSTIC_SCHEMA
+            or diagnostic.get("artifact_fp") != artifact_fp):
+        diagnostic = _spatial_gate_weight_diagnostic(comb, starless=starless)
+        diagnostic["artifact_fp"] = artifact_fp
+    labels = list(comb.member_labels)
+    member_meta = _member_meta_from_labels(labels)
+    usage = diagnostic.get("usage") or {}
+    payload = {
+        "available": True,
+        "stale": labels != _regime_labels(ensemble_dir(), starless),
+        "kind": comb.kind,
+        "regime": _regime_slug(starless),
+        "member_labels": labels,
+        "source_member_labels": labels,
+        "members": [{"label": str(label), "role": "source_member", **member_meta[i]}
+                    for i, label in enumerate(labels)],
+        "n_kernels": int(comb.n_kernels),
+        "n_parameters": int(comb.n_kernels),
+        "use_lr": bool(comb.use_lr),
+        "min_usage": 0.0,
+        "val_l1": comb.val_l1,
+        "band_names": list(comb.band_names),
+        "eff_weights": {},
+        "member_weight_peaks": {},
+        "member_weight_integrals": usage,
+        "surviving": comb.surviving_members(),
+        "feature_grid": {},
+        "pca_weight_surface": {
+            "available": False,
+            "reason": ("the spatial gate weighs members from each pixel's "
+                       "neighbourhood, not from per-pixel member values alone")},
+        "hr_weights": {"available": False, "bands": {},
+                       "member_labels": [], "n_fields": 0, "n_pixels": 0},
+        "gate_diagnostics": diagnostic,
+        "fit_meta": comb.fit_meta,
     }
     _atomic_json(payload_path, payload)
     return payload
@@ -2086,6 +2299,14 @@ def _reevaluate_from_cached_cubes(starless: bool,
         summary["combiner_psnr"] = comb_block["psnr"]
         summary["combiner_vs_mean_db"] = (
             comb_block["psnr"] - comb_block["ensemble_mean_psnr"])
+    for kind, cmet in model_cmet.items():
+        block = cmet.block(labels)
+        if block and block.get("available"):
+            summary[f"{kind}_combiner_psnr"] = block["psnr"]
+            summary[f"{kind}_combiner_vs_mean_db"] = (
+                block["psnr"] - block["ensemble_mean_psnr"])
+            summary[f"{kind}_combiner_vs_best_member_db"] = (
+                block["psnr"] - (block["best_member_psnr"] or 0.0))
     summary["eval_identity"] = _eval_identity(
         base, rdir, sub, out_dir, starless=starless, num_images=int(num_images),
         target_fwhm_arcsec=target_fwhm)
@@ -2103,7 +2324,6 @@ def _apply_combiner_to_test_cubes(starless: bool,
                                   progress: Callable[[int, int, str], None]
                                   | None = None) -> bool:
     """Apply one fitted model to cached TEST member cubes without re-inference."""
-    from euclid_polish.eval.combiner import load_combiner
     model_kind = _normalize_combiner_kind(model_kind)
     prefix = _combiner_cube_prefix(model_kind)
     cubes_dir = _ensemble_cubes_dir(starless=starless)
@@ -2121,6 +2341,8 @@ def _apply_combiner_to_test_cubes(starless: bool,
     n_members = len(labels)
     applied = 0
     indices = [int(i) for i in man.get("indices", []) or []]
+    needs_lr = bool(getattr(comb, "use_lr", False))
+    records_dir = _sky_records_local_dir() if needs_lr else None
     for position, rec in enumerate(indices, 1):
         tag = f"{rec:05d}"
         stack = []
@@ -2129,9 +2351,12 @@ def _apply_combiner_to_test_cubes(starless: bool,
             if not os.path.isfile(mf):
                 break
             stack.append(np.load(mf))
-        if len(stack) == n_members:
+        lr = (load_cached_field_lr(cubes_dir, rec, records_dir=records_dir,
+                                   subset=str(man.get("subset", "test")))
+              if needs_lr else None)
+        if len(stack) == n_members and (lr is not None or not needs_lr):
             comb_full = comb.apply_field(
-                np.stack(stack, 0))     # (H, W, C) electrons
+                np.stack(stack, 0), lr=lr)     # (H, W, C) electrons
             np.save(os.path.join(cubes_dir, f"{prefix}_{tag}.npy"),
                     np.asarray(comb_full, np.float32))
             applied += 1
@@ -2166,7 +2391,6 @@ def _reconcile_combiner_on_archives(regime_dir: str, starless: bool,
     pruned members were archived before the next evaluation: an intermediate
     combiner label set would not match the final active ensemble.
     """
-    from euclid_polish.eval.combiner import load_combiner, save_combiner
     model_kind = _normalize_combiner_kind(model_kind)
     artifact_dir = _combiner_artifact_dir(model_kind)
     comb = load_combiner(regime_dir, artifact_dir=artifact_dir)
@@ -2310,7 +2534,6 @@ def job_ensemble_evaluate(cap, *, num_images: int,
 
     # Load every independently persisted ordinary model. They share member
     # predictions but retain distinct output cubes and diagnostics.
-    from euclid_polish.eval.combiner import load_combiner
     labels_now = _regime_labels(base, starless)
     models = {
         kind: load_combiner(out_dir, member_labels=labels_now,
@@ -2329,7 +2552,7 @@ def job_ensemble_evaluate(cap, *, num_images: int,
             if mem.ndim == 4:
                 for kind, model in models.items():
                     if model is not None and mem.shape[0] == len(model.member_labels):
-                        model_full[kind] = model.apply_field(mem)
+                        model_full[kind] = model.apply_field(mem, lr=lr_cube)
             model_v = {kind: (_vis(image) if image is not None else None)
                        for kind, image in model_full.items()}
             lr_v = _lr_on_hr_grid(lr_cube, int(hr_v.shape[0]))  # baseline r(k)
@@ -2354,7 +2577,8 @@ def job_ensemble_evaluate(cap, *, num_images: int,
         if len(saved) >= viz_cap:
             return
         rec = int(rec_index)
-        amps, var_exp = _cache_field_cubes(cubes_dir, rec, preds, mean, std)
+        amps, var_exp = _cache_field_cubes(cubes_dir, rec, preds, mean, std,
+                                           lr=lr_cube)
         for kind, image in model_full.items():
             np.save(os.path.join(cubes_dir,
                                  f"{_combiner_cube_prefix(kind)}_{rec:05d}.npy"),

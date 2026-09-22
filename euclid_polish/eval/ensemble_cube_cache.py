@@ -24,6 +24,8 @@ import numpy as np
 from euclid_polish.config import Config
 from euclid_polish.ensemble import default_ensemble_dir
 from euclid_polish.ensemble_registry import regime_labels
+from euclid_polish.image.collection import ImageSet
+from euclid_polish.image.tfio import tfrecord_path
 
 
 def _default_cubes_dir(starless: bool = True) -> str:
@@ -88,3 +90,38 @@ def load_cached_member_stack(field_index: int, *, subset: str,
         return np.stack(stack, axis=0)
     except (OSError, ValueError, KeyError, TypeError):
         return None
+
+
+def cached_field_lr_path(cubes_dir: str, field_index: int) -> str:
+    return os.path.join(cubes_dir, f"lr_{int(field_index):05d}.npy")
+
+
+def save_cached_field_lr(cubes_dir: str, field_index: int, lr: np.ndarray) -> None:
+    """Store a field's LR input next to its member cubes (for combiners that
+    read the LR, e.g. the spatial gate's blackout mask)."""
+    np.save(cached_field_lr_path(cubes_dir, field_index),
+            np.asarray(lr, np.float32))
+
+
+def load_cached_field_lr(cubes_dir: str, field_index: int, *,
+                         records_dir: str | None, subset: str) -> np.ndarray | None:
+    """The ``(h, w, C)`` LR input of a cached field.
+
+    Reads ``lr_{index}.npy`` from the cube bucket; buckets written before LR
+    inputs were cached fall back to the ``dirty_{subset}`` records (the file
+    is then written so the next read is direct). ``None`` when neither exists.
+    """
+    path = cached_field_lr_path(cubes_dir, field_index)
+    if os.path.isfile(path):
+        return np.load(path)
+    if not records_dir:
+        return None
+    records = tfrecord_path(records_dir, f"dirty_{subset}")
+    if not os.path.isfile(records):
+        return None
+    for image in ImageSet.read(records, num_images=int(field_index) + 1):
+        if image.index == int(field_index):
+            lr = np.asarray(image.data, np.float32)
+            save_cached_field_lr(cubes_dir, field_index, lr)
+            return lr
+    return None

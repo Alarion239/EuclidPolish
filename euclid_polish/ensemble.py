@@ -418,11 +418,15 @@ class EnsembleModel:
 
     # -- prediction + disagreement -- #
 
-    def member_arrays(self, lr_array: np.ndarray) -> np.ndarray:
-        """``(M, H, W, C)`` stack of each member's SR array (raw electrons)."""
+    def member_arrays(self, lr_array: np.ndarray,
+                      indices: list[int] | None = None) -> np.ndarray:
+        """``(M, H, W, C)`` stack of each member's SR array (raw electrons);
+        ``indices`` runs only those members (e.g. the ones a pruned combiner
+        reads), in that order."""
         self._require_members()
-        return np.stack([m.upsample_array(lr_array) for m in self._models],
-                        axis=0)
+        models = (self._models if indices is None
+                  else [self._models[int(i)] for i in indices])
+        return np.stack([m.upsample_array(lr_array) for m in models], axis=0)
 
     def predict(self, lr_array: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """``(mean, std)``: the ensemble-mean SR and the per-pixel disagreement

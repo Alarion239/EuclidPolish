@@ -16,6 +16,12 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from euclid_polish.config import Config
+from euclid_polish.eval.spatial_gate import (
+    SPATIAL_GATE_KIND,
+    SpatialGateCombiner,
+    load_spatial_gate,
+    save_spatial_gate,
+)
 
 _BAND_SCALE = {name: float(Config.get_band(name).asinh_stretch_scale_e)
                for name in Config.HR_TARGET_BAND_NAMES}
@@ -66,8 +72,20 @@ COMBINER_MODELS = {
         "comb_raw_incremental_frozen_minmeanmax_rbf",
         _RAW_FEATURE_NAMES,
     ),
+    SPATIAL_GATE_KIND: CombinerModelSpec(
+        SPATIAL_GATE_KIND,
+        "spatial gate (convolutional, convex)",
+        "spatial_gate_combiner",
+        "spatial_gate_combiner_evals.json",
+        "comb_spatial_gate",
+        ("member_asinh_neighbourhood_plus_lr",),
+        default_kernels=0,
+    ),
 }
+#: Fitted combiners in preference order: callers that need ONE combiner take
+#: the first kind that has a current fit.
 ACTIVE_COMBINER_KINDS = (
+    SPATIAL_GATE_KIND,
     RAW_INCREMENTAL_MINMEANMAX_RBF_KIND,
     RAW_INCREMENTAL_FROZEN_MINMEANMAX_RBF_KIND,
 )
@@ -104,6 +122,8 @@ def normalize_model_kind(kind: str | None) -> str:
         "frozen_block_rbf",
     }:
         return RAW_INCREMENTAL_FROZEN_MINMEANMAX_RBF_KIND
+    if key in {SPATIAL_GATE_KIND, "spatial", "conv_gate"}:
+        return SPATIAL_GATE_KIND
     raise ValueError(f"unsupported combiner model kind: {kind!r}")
 
 
@@ -683,7 +703,11 @@ class RawIncrementalMinMeanMaxRBFCombiner:
         return np.sinh(prediction_asinh) * scales[None, :]
 
     def apply_field(self, preds: np.ndarray,
-                    band_names: tuple[str, ...] | None = None) -> np.ndarray:
+                    band_names: tuple[str, ...] | None = None, *,
+                    lr: np.ndarray | None = None) -> np.ndarray:
+        """``lr`` is accepted for interface parity with the spatial gate and
+        ignored: this gate sees only the member values at each pixel."""
+        del lr
         raw = np.asarray(preds, np.float32)
         if raw.ndim != 4:
             raise ValueError(f"expected (M,H,W,C) member stack, got {raw.shape}")
@@ -806,6 +830,11 @@ class RawIncrementalMinMeanMaxRBFCombiner:
             "z_label": "integrated shared member weight [0-1]",
             "surface_labels": list(self.member_labels),
         }
+
+
+#: Every fitted combiner type ``load_combiner`` can return.
+Combiner = RawIncrementalMinMeanMaxRBFCombiner | SpatialGateCombiner
+
 
 def _fit_raw_incremental_minmeanmax_rbf(
     Xtr: np.ndarray, ytr: np.ndarray, Xval: np.ndarray, yval: np.ndarray,
@@ -1837,10 +1866,17 @@ def combiner_artifact_fingerprint(base_dir: str, artifact_dir: str) -> str | Non
     return digest.hexdigest()
 
 
-def save_combiner(comb: RawIncrementalMinMeanMaxRBFCombiner, base_dir: str, *,
+def save_combiner(comb: Combiner, base_dir: str, *,
                   artifact_dir: str | None = None) -> None:
+    if isinstance(comb, SpatialGateCombiner):
+        expected = combiner_model_spec(SPATIAL_GATE_KIND).artifact_dir
+        if artifact_dir is not None and artifact_dir != expected:
+            raise ValueError(
+                f"artifact directory {artifact_dir!r} does not match the spatial gate")
+        save_spatial_gate(comb, _combiner_dir(base_dir, expected))
+        return
     if not isinstance(comb, RawIncrementalMinMeanMaxRBFCombiner):
-        raise TypeError("only the all-inference RBF combiner is supported")
+        raise TypeError(f"unsupported combiner type {type(comb).__name__}")
     kind = normalize_model_kind(comb.kind)
     expected_artifact_dir = combiner_model_spec(kind).artifact_dir
     if artifact_dir is not None and artifact_dir != expected_artifact_dir:
@@ -1881,10 +1917,11 @@ def save_combiner(comb: RawIncrementalMinMeanMaxRBFCombiner, base_dir: str, *,
 
 
 def load_combiner(base_dir: str, *, member_labels: list[str] | None = None,
-                  artifact_dir: str | None = None
-                  ) -> RawIncrementalMinMeanMaxRBFCombiner | None:
-    """Load one active all-inference artifact; retired formats are rejected."""
+                  artifact_dir: str | None = None) -> Combiner | None:
+    """Load one active combiner artifact; retired formats are rejected."""
     directory = _combiner_dir(base_dir, artifact_dir)
+    if artifact_dir == combiner_model_spec(SPATIAL_GATE_KIND).artifact_dir:
+        return load_spatial_gate(directory, member_labels=member_labels)
     manifest_path = os.path.join(directory, "combiner.json")
     arrays_path = os.path.join(directory, "combiner.npz")
     if not (os.path.isfile(manifest_path) and os.path.isfile(arrays_path)):
