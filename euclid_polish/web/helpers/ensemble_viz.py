@@ -19,6 +19,7 @@ import re
 import shlex
 import shutil
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 
@@ -55,6 +56,12 @@ from euclid_polish.eval.ensemble_diagnostics import (
     render_std_vs_brightness,
     render_std_vs_error,
 )
+from euclid_polish.eval.knee_psnr import (
+    KNEE_GRID_E,
+    integrated_psnr,
+    knee_psnr,
+    stretched_truth,
+)
 from euclid_polish.eval.power_spectrum import (
     LR_NYQUIST_CYC_ARCSEC,
     EnsembleSpectrumAccumulator,
@@ -76,6 +83,7 @@ from euclid_polish.eval.spatial_gate_fit import (
 )
 from euclid_polish.eval.subsets import eval_subset
 from euclid_polish.image import Image
+from euclid_polish.image.collection import ImageSet
 from euclid_polish.image.tfio import read_images, tfrecord_path
 from euclid_polish.model import _checkpoint_exists
 from euclid_polish.provenance.checkpoint import read_checkpoint_provenance
@@ -1248,7 +1256,6 @@ def _collect_bounded_ablation_patches(
     resident at a time; returned storage is hard-capped at roughly 24 MB for a
     20-member ensemble.
     """
-    from euclid_polish.image.collection import ImageSet
 
     wanted = sorted(int(i) for i in indices)[:max(1, int(max_fields))]
     if not wanted:
@@ -1405,8 +1412,6 @@ def job_combiner_fit(cap, *, num_images: int, n_kernels: int = 128,
             score_test=score_test, n_members=len(labels))
 
     def validation_fields(requested_indices):
-        from euclid_polish.image.collection import ImageSet
-
         wanted = sorted({int(value) for value in requested_indices})
         if not wanted:
             return
@@ -2205,6 +2210,184 @@ def _rebuild_bucket_dropping_member(cubes_dir: str, member_nn: str,
     return True
 
 
+_KNEE_PSNR_SCHEMA = 1
+_KNEE_PSNR_WORKERS = 6
+
+
+def _knee_psnr_path(starless: bool) -> str:
+    return os.path.join(_ensemble_regime_dir(starless), "ensemble_knee_psnr.json")
+
+
+def _read_test_manifest(starless: bool) -> dict | None:
+    try:
+        with open(os.path.join(_ensemble_cubes_dir(starless=starless),
+                               "viz_index.json")) as handle:
+            return json.load(handle)
+    except (OSError, ValueError):
+        return None
+
+
+def _knee_psnr_identity(starless: bool, manifest: dict) -> dict:
+    """What the curves depend on: the scored fields, the members and every
+    baked combiner (a refit changes its artifact fingerprint)."""
+    regime_dir = _ensemble_regime_dir(starless)
+    return {
+        "schema": _KNEE_PSNR_SCHEMA,
+        "knees": list(KNEE_GRID_E),
+        "records_fp": manifest.get("records_fp"),
+        "subset": manifest.get("subset"),
+        "indices": sorted(int(i) for i in manifest.get("indices", []) or []),
+        "member_labels": [str(x) for x in manifest.get("member_labels", []) or []],
+        "target_psf_fwhm_arcsec": manifest.get("target_psf_fwhm_arcsec"),
+        "combiner_fps": {kind: _combiner_fingerprint(regime_dir, kind)
+                         for kind in COMBINER_MODELS
+                         if manifest.get(f"has_combiner_{kind}")},
+    }
+
+
+def compute_knee_psnr_payload(starless: bool, *, force: bool = False,
+                              progress: Callable[[int, int, str], None]
+                              | None = None) -> dict | None:
+    """PSNR-vs-knee curves (every band) for every member, the ensemble mean
+    and each baked combiner over the regime's cached test cubes, plus each
+    model's integrated PSNR (mean over log knee). Reuses the saved payload
+    when nothing it depends on changed; ``None`` when there are no current
+    cubes or records to score."""
+    manifest = _read_test_manifest(starless)
+    if manifest is None:
+        return None
+    labels = [str(x) for x in manifest.get("member_labels", []) or []]
+    if not labels or labels != _regime_labels(ensemble_dir(), starless):
+        return None
+    identity = _knee_psnr_identity(starless, manifest)
+    path = _knee_psnr_path(starless)
+    if not force:
+        with contextlib.suppress(OSError, ValueError), open(path) as handle:
+            cached = json.load(handle)
+            if cached.get("identity") == identity:
+                return cached
+    rdir = _sky_records_local_dir()
+    subset = str(manifest.get("subset", ""))
+    target_name = "clean" if starless else "hr"
+    target_path = tfrecord_path(rdir, f"{target_name}_{subset}") if rdir else ""
+    if (not identity["indices"] or not target_path or not os.path.isfile(target_path)
+            or manifest.get("records_fp")
+            != _eval_records_fingerprint(rdir, subset, starless=starless)):
+        return None
+    fwhm = validate_target_fwhm_arcsec(
+        manifest.get("target_psf_fwhm_arcsec", Config.TARGET_PSF_FWHM_ARCSEC))
+    cubes_dir = _ensemble_cubes_dir(starless=starless)
+    combiner_kinds = [kind for kind in COMBINER_MODELS
+                      if manifest.get(f"has_combiner_{kind}")]
+    model_ids = ([f"member_{i}" for i in range(len(labels))]
+                 + ["ensemble_mean"] + combiner_kinds)
+
+    def field_curves(rec: int, target: np.ndarray) -> np.ndarray | None:
+        tag = f"{rec:05d}"
+        paths = ([os.path.join(cubes_dir, f"member{i}_{tag}.npy")
+                  for i in range(len(labels))]
+                 + [os.path.join(cubes_dir, f"sr_{tag}.npy")]
+                 + [os.path.join(cubes_dir, f"{COMBINER_MODELS[k].cube_prefix}_{tag}.npy")
+                    for k in combiner_kinds])
+        if not all(os.path.isfile(p) for p in paths):
+            return None
+        truth = stretched_truth(target)
+        return np.stack([knee_psnr(np.load(p), target, truth_asinh=truth)
+                         for p in paths])                     # (models, K, C)
+
+    wanted = set(identity["indices"])
+    total, done, n_fields = len(wanted), 0, 0
+    sums: np.ndarray | None = None
+    pending = []
+
+    def drain(limit: int) -> None:
+        nonlocal sums, done, n_fields
+        while len(pending) > limit:
+            result = pending.pop(0).result()
+            done += 1
+            if result is not None:
+                sums = result if sums is None else sums + result
+                n_fields += 1
+            if progress is not None:
+                progress(done, total, "PSNR vs knee")
+
+    with ThreadPoolExecutor(max_workers=_KNEE_PSNR_WORKERS) as pool:
+        for image in ImageSet.read(target_path, num_images=max(wanted) + 1):
+            rec = _record_index(image)
+            if rec not in wanted:
+                continue
+            target = blur_target_array(np.asarray(image.data, np.float32), fwhm,
+                                       pixel_scale_arcsec=image.pixel_scale_arcsec)
+            pending.append(pool.submit(field_curves, rec, target))
+            drain(2 * _KNEE_PSNR_WORKERS)
+        drain(0)
+    if sums is None:
+        return None
+    curves = sums / n_fields
+    member_meta = _member_meta_from_labels(labels)
+    models = []
+    for m, model_id in enumerate(model_ids):
+        entry: dict = {"id": model_id,
+                       "psnr": np.round(curves[m], 4).tolist(),
+                       "integrated": np.round(integrated_psnr(curves[m]), 4).tolist()}
+        if m < len(labels):
+            meta = member_meta[m]
+            entry.update(kind="member", label=labels[m], loss=meta.get("loss"),
+                         asinh_knee=meta.get("asinh_knee"), blocks=meta.get("blocks"))
+        elif model_id == "ensemble_mean":
+            entry.update(kind="mean", label="ensemble mean")
+        else:
+            entry.update(kind="combiner", label=COMBINER_MODELS[model_id].label)
+        models.append(entry)
+    payload = {
+        "available": True,
+        "identity": identity,
+        "regime": _regime_slug(starless),
+        "knees": list(KNEE_GRID_E),
+        "bands": list(BAND_NAMES),
+        "n_fields": int(n_fields),
+        "integration": {"from_e": KNEE_GRID_E[0], "to_e": KNEE_GRID_E[-1],
+                        "weighting": "uniform in log10(knee), trapezoid rule"},
+        "models": models,
+    }
+    _atomic_json(path, payload)
+    return payload
+
+
+def knee_psnr_status(starless: bool) -> dict:
+    """The saved curves for the regime, flagged ``stale`` when the cubes,
+    members or combiners moved on since they were computed."""
+    try:
+        with open(_knee_psnr_path(starless)) as handle:
+            payload = json.load(handle)
+    except (OSError, ValueError):
+        return {"available": False, "stale": False,
+                "reason": "PSNR-vs-knee curves not computed yet"}
+    manifest = _read_test_manifest(starless)
+    payload["stale"] = (manifest is None
+                        or payload.get("identity") != _knee_psnr_identity(starless, manifest))
+    return payload
+
+
+def job_knee_psnr(cap, *, starless: bool) -> dict:
+    payload = compute_knee_psnr_payload(
+        starless, force=True, progress=lambda i, n, label: cap.tick(i, n, label))
+    if payload is None:
+        raise RuntimeError("no current cached test cubes to score — run "
+                           "“Evaluate on test set” first.")
+    return {"regime": payload["regime"], "n_fields": payload["n_fields"],
+            "models": len(payload["models"])}
+
+
+def _refresh_knee_psnr(starless: bool, progress) -> None:
+    """Keep the PSNR-vs-knee curves in step with the cubes (best-effort: a
+    diagnostic never fails the evaluation that triggered it)."""
+    try:
+        compute_knee_psnr_payload(starless, progress=progress)
+    except Exception as exc:  # noqa: BLE001 — diagnostic only
+        print(f"[ensemble] PSNR-vs-knee curves not refreshed: {exc}")
+
+
 def _reevaluate_from_cached_cubes(starless: bool,
                                   *, num_images: int | None = None,
                                   progress: Callable[[int, int, str], None]
@@ -2316,6 +2499,7 @@ def _reevaluate_from_cached_cubes(starless: bool,
     for png in EVAL_DIAGNOSTIC_PNGS.values():
         with contextlib.suppress(FileNotFoundError):
             os.remove(os.path.join(out_dir, png))
+    _refresh_knee_psnr(starless, progress)
     return summary
 
 
@@ -2513,6 +2697,7 @@ def job_ensemble_evaluate(cap, *, num_images: int,
         if cached is not None:
             cap.tick(0, 1, "cached evaluation found — rebuilding figures (no inference)")
             compute_evaluation_payload(starless)   # payload + back-trace samples
+            _refresh_knee_psnr(starless, lambda i, n, label: cap.tick(i, n, label))
             cap.tick(1, 1, "reused cached evaluation (dataset + model unchanged)")
             summary = dict(cached)
             summary["reused"] = True
@@ -2683,6 +2868,7 @@ def job_ensemble_evaluate(cap, *, num_images: int,
     if pending_archives:
         _clear_archive_stale(starless)
     print(json.dumps(out, indent=2))
+    _refresh_knee_psnr(starless, lambda i, n, label: cap.tick(i, n, label))
     out["viz_fields"] = len(saved)
     return out
 
@@ -2733,7 +2919,6 @@ def _iter_cached_fields(starless: bool):
 
     # Stream targets and optional LR records in index order. Materialising every
     # 510²×4 target field costs hundreds of MB and defeats cached-cube refreshes.
-    from euclid_polish.image.collection import ImageSet
     target_iter = iter(ImageSet.read(hr_path, num_images=max(idxs) + 1))
     current_target = next(target_iter, None)
     # LR baseline (optional): absent → the r_lr curve is simply skipped, no

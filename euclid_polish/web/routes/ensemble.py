@@ -24,7 +24,9 @@ from euclid_polish.web.helpers.ensemble_viz import (
     job_ensemble_evaluate,
     job_ensemble_pull,
     job_ensemble_render,
+    job_knee_psnr,
     job_member_psnr,
+    knee_psnr_status,
     pixel_trace,
     refresh_evaluation_diagnostics,
     regenerate_eval_diagnostics,
@@ -182,6 +184,22 @@ def register(app):
                 "eff_weights": {}, "feature_grid": {}, "surviving": {},
             })
         return send_file(path, mimetype="application/json", max_age=0)
+
+    @app.route("/ensemble/knee-psnr.json")
+    def ensemble_knee_psnr_json():
+        """PSNR-vs-knee curves + integrated PSNR for every model of a regime
+        (``?mode=``), flagged ``stale`` when the cubes or combiners changed."""
+        return jsonify(knee_psnr_status(_mode_starless(default="starfull")))
+
+    @app.route("/ensemble/knee-psnr", methods=["POST"])
+    def ensemble_knee_psnr_compute():
+        starless = _mode_starless(default="starfull")
+        regime = "starless" if starless else "starfull"
+        job_id = REGISTRY.spawn(
+            f"ensemble: PSNR vs knee ({regime})",
+            target=lambda cap: job_knee_psnr(cap, starless=starless),
+        )
+        return jsonify({"job_id": job_id})
 
     @app.route("/ensemble/member-psnr", methods=["POST"])
     def ensemble_member_psnr():

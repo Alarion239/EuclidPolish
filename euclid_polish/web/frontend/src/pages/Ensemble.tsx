@@ -13,6 +13,7 @@ import { CutoutViewer, loadColorEngine, type ViewerApi, type ColorMeta, type Ren
 import { C, LOSS_COLOR, categorical, viridis } from "../colors";
 import Plot, { Legend, type Series, type Guide, type Tick, type Heat } from "../charts/Plot";
 import { SpatialGateCard, SPATIAL_GATE_KIND, type SpatialGate } from "./SpatialGateCard";
+import { KneePsnrPanel } from "./KneePsnrPanel";
 import {
   Badge, Button, Card, CardBody, CardHead, Chip, DefList, Empty,
   NumberField, Page, PageHead, Segmented, Select, Spinner, Stat, Table,
@@ -250,6 +251,7 @@ function facetLegend(
 
 const DIAG_TABS = [
   { id: "power-spectrum", label: "power spectrum" },
+  { id: "psnr-knee", label: "PSNR vs knee" },
   { id: "coherence", label: "coherence score" },
   { id: "std-error", label: "std vs error" },
   { id: "combiner-error", label: "combiner axes vs error" },
@@ -1060,6 +1062,8 @@ export function Evaluations(
                 </div>
               </>
             )
+          ) : tab === "psnr-knee" ? (
+            <KneePsnrPanel mode={mode} theme={theme} colorOf={(kind) => combinerMeta(kind).color} />
           ) : tab === "coherence" ? (
             !coherenceChart ? <Empty>no spectral coherence cached for <b>{mode}</b> — refresh the evaluation from cached cubes.</Empty> : (
               <>
