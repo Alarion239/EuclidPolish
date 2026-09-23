@@ -10,7 +10,6 @@ from collections.abc import Callable
 import numpy as np
 import tensorflow as tf
 from tf_keras.losses import Loss, MeanAbsoluteError
-from tf_keras.metrics import Mean
 from tf_keras.optimizers import Adam
 from tf_keras.optimizers.schedules import PiecewiseConstantDecay
 from tqdm import tqdm
@@ -330,6 +329,16 @@ class Trainer:
             max_to_keep=3,
         )
 
+        # Per-validation-window training statistics, accumulated INSIDE the
+        # compiled step so the loop never waits on the GPU between steps. The
+        # loop reads them back once per validation (``_read_window``), where
+        # the gradient-spike guard is also evaluated.
+        self._win_loss_sum = tf.Variable(0.0, trainable=False)
+        self._win_gnorm_sum = tf.Variable(0.0, trainable=False)
+        self._win_gnorm_max = tf.Variable(0.0, trainable=False)
+        self._win_spike_norm = tf.Variable(0.0, trainable=False)
+        self._win_steps = tf.Variable(0.0, trainable=False)
+
         # Provenance: this checkpoint dir's identity. Resolved lazily on the
         # first save (or reused from an existing sidecar on resume).
         self.checkpoint_dir = checkpoint_dir
@@ -420,6 +429,25 @@ class Trainer:
         lr = max(self._min_lr, base * self._lr_scale)
         self.checkpoint.optimizer.learning_rate = lr
         return lr
+
+    def _reset_window(self) -> None:
+        for var in (self._win_loss_sum, self._win_gnorm_sum, self._win_gnorm_max,
+                    self._win_spike_norm, self._win_steps):
+            var.assign(0.0)
+
+    def _read_window(self) -> dict:
+        """The one host sync per validation window: mean loss, mean / max
+        pre-clip |g|, and the spike norm (largest post-warmup |g|, non-finite
+        counted as infinite). Resets the accumulators."""
+        n = max(float(self._win_steps.numpy()), 1.0)
+        window = {
+            "loss": float(self._win_loss_sum.numpy()) / n,
+            "gnorm_avg": float(self._win_gnorm_sum.numpy()) / n,
+            "gnorm_max": float(self._win_gnorm_max.numpy()),
+            "spike_norm": float(self._win_spike_norm.numpy()),
+        }
+        self._reset_window()
+        return window
 
     def _validate(self, valid_dataset, validate_images) -> dict:
         """Run the held-out validation and return the save-best metrics.
@@ -515,10 +543,6 @@ class Trainer:
         # Process.training so the run can be replayed. Done first, before any
         # dataset iteration consumes randomness.
         self._begin_reproducible_run(steps=steps, evaluate_every=evaluate_every)
-
-        loss_mean = Mean()
-        gnorm_mean = Mean()
-        gnorm_max  = tf.Variable(tf.constant(0.0), trainable=False)
 
         ckpt_mgr = self.checkpoint_manager
         ckpt = self.checkpoint
@@ -622,30 +646,51 @@ class Trainer:
         self.now = time.perf_counter()
         n_rollbacks = 0   # rollbacks since the last LR halving
         n_halvings  = 0   # LR halvings this run (divergence guard)
+        # ``ckpt.step`` is advanced inside the compiled step; the loop mirrors
+        # it in Python so nothing is read back from the device between steps
+        # (a per-step read made the GPU and the Python loop take turns).
+        step = start_step
+        self._reset_window()
 
         for batch in train_dataset:
-            if int(ckpt.step.numpy()) >= steps:
+            if step >= steps:
                 break
-            ckpt.step.assign_add(1)
-            step = int(ckpt.step.numpy())
+            step += 1
             # Follow the LR schedule (× the guard's halving scale). No-op for a
             # constant LR with no halvings yet; assigns in place otherwise.
             if self._lr_schedule is not None or self._lr_scale != 1.0:
                 self._apply_lr(step)
             lr, hr = batch
-            loss, gnorm = self.train_step(lr, hr)
+            self.train_step(lr, hr)
+            pbar.update(1)
 
-            # Divergence rollback (checked BEFORE accumulation so the spike's
-            # huge values never poison the window means or trigger an eval). A
-            # post-warmup spike means a bad batch / Adam-v→0 step is dragging
-            # the model toward the collapse basin; skipping it only FREEZES a
-            # diverged model, so instead restore the last good checkpoint
-            # (model + optimiser state) and continue from before the spike.
-            if _is_grad_spike(gnorm, step):
+            # External progress callback (e.g. the JSONL events file).
+            # Cadence-gated so a 200k-step run doesn't write 200k JSONL
+            # lines; the first step always fires so "did training start?"
+            # is answerable immediately.
+            if step_callback is not None and (
+                step == start_step + 1 or step % step_callback_every == 0
+            ):
+                step_callback(int(step), int(steps))
+
+            if step % evaluate_every != 0:
+                continue
+            window = self._read_window()
+
+            # Divergence rollback, checked once per window BEFORE validation
+            # and before either track can save, so a spiked model is never
+            # checkpointed. A post-warmup spike means a bad batch / Adam-v→0
+            # step is dragging the model toward the collapse basin; skipping
+            # it would only FREEZE a diverged model, so restore the last good
+            # checkpoint (model + optimiser state) and continue from there.
+            # Checking per window instead of per step costs at most one
+            # window of re-trained steps on a spike.
+            if _is_grad_spike(window["spike_norm"], step):
                 n_rollbacks += 1
-                msg = (f"⚠ gradient spike |g|={float(gnorm):.3g} at step {step}"
-                       f" — restored last checkpoint "
-                       f"(rollback {n_rollbacks}/{GRAD_SPIKE_MAX_ROLLBACKS})")
+                msg = (f"⚠ gradient spike |g|={window['spike_norm']:.3g} in steps "
+                       f"{step - evaluate_every + 1}–{step} — restored last "
+                       f"checkpoint (rollback {n_rollbacks}/"
+                       f"{GRAD_SPIKE_MAX_ROLLBACKS})")
                 tqdm.write("  " + msg)
                 if warn_callback is not None:
                     warn_callback(msg)
@@ -668,9 +713,7 @@ class Trainer:
                     step_callback(step, int(steps))
                 # Discard the current eval window — its samples came from the
                 # now rolled-back model state, so they'd skew the next mean.
-                loss_mean.reset_state()
-                gnorm_mean.reset_state()
-                gnorm_max.assign(0.0)
+                self._reset_window()
                 # A rollback rewinds ckpt.step, so forget the plateau guard's
                 # stall history — otherwise ``step - best_step`` goes negative
                 # and the guard silently disarms until the step catches back up.
@@ -701,228 +744,202 @@ class Trainer:
                         if warn_callback is not None:
                             warn_callback(abort)
                         break
-                continue   # skip metric accumulation / eval for the spiked step
+                continue   # skip validation for the rolled-back window
 
-            pbar.update(1)   # normal forward step (model advanced by 1)
+            loss_value  = window["loss"]
+            gnorm_avg   = window["gnorm_avg"]
+            gnorm_peak  = window["gnorm_max"]
 
-            loss_mean(loss)
-            gnorm_mean(gnorm)
-            gnorm_max.assign(tf.maximum(gnorm_max, gnorm))
+            # Validation (same code path as the resume baseline, so the
+            # two are directly comparable).
+            v = self._validate(valid_dataset, validate_images)
+            psnr_str = v["psnr_str"]
+            psnr_raw = v["psnr_raw"]
+            # Second save-best key: the held-out VALIDATION loss (lower =
+            # better), computed in _validate (NOT the training window) —
+            # the held-out analogue of the optimised loss.
+            combined_loss = v["combined_loss"]
 
-            if step % 50 == 0:
-                pbar.set_postfix(loss=f"{loss.numpy():.4f}", refresh=False)
+            duration = time.perf_counter() - self.now
+            pbar.set_postfix(
+                loss=f"{loss_value:.3f}",
+                PSNRs=f"{psnr_str:.2f}",
+                PSNRr=f"{psnr_raw:.2f}",
+            )
+            status = (
+                f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] "
+                f"Step {step}/{steps}: loss = {loss_value:.4f}, "
+                f"PSNR(str/raw) = {psnr_str:.3f}/{psnr_raw:.3f} dB"
+                f", |g| avg/max = {gnorm_avg:.3g}/{gnorm_peak:.3g} "
+                f"({duration:.2f}s)"
+            )
+            tqdm.write(status)
 
-            # External progress callback (e.g. the JSONL events file).
-            # Cadence-gated so a 200k-step run doesn't write 200k JSONL
-            # lines; the first step always fires so "did training start?"
-            # is answerable immediately. ``int(step)`` because tf returns
-            # a numpy int64 here and the callback's typed contract is
-            # plain Python int.
-            if step_callback is not None and (
-                step == start_step + 1 or step % step_callback_every == 0
-            ):
-                step_callback(int(step), int(steps))
+            # Persist for later plotting. Append-only CSV so each row
+            # is durable the moment ``evaluate_every`` fires — a job
+            # OOM-killed mid-training still leaves a complete log.
+            row = {
+                "step":           int(step),
+                "wall_time":      time.time(),
+                "loss":           float(loss_value),
+                "psnr_stretched": psnr_str,
+                "psnr_raw":       psnr_raw,
+                **v["psnr_bands"],
+                "gnorm_avg":      float(gnorm_avg),
+                "gnorm_max":      float(gnorm_peak),
+                "clip_norm":      float(GRAD_CLIP_NORM),
+                "duration_s":     float(duration),
+                "combined_loss":  combined_loss,
+                "is_baseline":    "",
+            }
+            train_log.append(row)
 
-            if step % evaluate_every == 0:
-                loss_value  = loss_mean.result()
-                gnorm_avg   = gnorm_mean.result()
-                gnorm_peak  = float(gnorm_max.numpy())
-                loss_mean.reset_state()
-                gnorm_mean.reset_state()
-                gnorm_max.assign(0.0)
+            # TWO independent save-best tracks, each with its own
+            # checkpoint set. ``ckpt.psnr`` / ``ckpt.best_loss`` are the
+            # checkpointed bars (seeded by the baseline eval on resume).
+            #   - PSNR track  (higher = better) → ``ckpt_mgr`` (root dir)
+            #   - LOSS track  (lower  = better) → ``loss_mgr`` (loss_best/)
+            # ``save_best_only=False`` (save-every) makes both fire each
+            # eval.
+            psnr_improved = (
+                not save_best_only or psnr_str > ckpt.psnr)
+            loss_improved = (
+                not save_best_only or combined_loss < float(ckpt.best_loss))
 
-                # Validation (same code path as the resume baseline, so the
-                # two are directly comparable).
-                v = self._validate(valid_dataset, validate_images)
-                psnr_str = v["psnr_str"]
-                psnr_raw = v["psnr_raw"]
-                # Second save-best key: the held-out VALIDATION loss (lower =
-                # better), computed in _validate (NOT the training window) —
-                # the held-out analogue of the optimised loss.
-                combined_loss = v["combined_loss"]
+            # Emit this evaluate's metrics to the structured event stream
+            # BEFORE any ``continue`` so every eval reaches the WebUI.
+            # ``saved`` is true if EITHER track saved a checkpoint.
+            if eval_callback is not None:
+                eval_callback({**row, "total": int(steps),
+                               "saved": bool(psnr_improved or loss_improved)})
 
-                duration = time.perf_counter() - self.now
-                pbar.set_postfix(
-                    loss=f"{loss_value.numpy():.3f}",
-                    PSNRs=f"{psnr_str:.2f}",
-                    PSNRr=f"{psnr_raw:.2f}",
+            # ``.assign`` keeps the bars tf.Variables (checkpoint-tracked
+            # across resumes, expose .numpy()) rather than replacing them
+            # with bare tensors.
+            if psnr_improved:
+                ckpt.psnr.assign(psnr_str)
+                ckpt_mgr.save()
+                self._psnr_best_step = step
+                self._gap_streak = 0
+                tqdm.write(
+                    f"  ✓ Checkpoint saved [best PSNR] "
+                    f"(PSNR str={psnr_str:.3f}, raw={psnr_raw:.3f} dB)"
                 )
-                status = (
-                    f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] "
-                    f"Step {step}/{steps}: loss = {loss_value.numpy():.4f}, "
-                    f"PSNR(str/raw) = {psnr_str:.3f}/{psnr_raw:.3f} dB"
-                    f", |g| avg/max = {gnorm_avg.numpy():.3g}/{gnorm_peak:.3g} "
-                    f"({duration:.2f}s)"
+                # Plateau cuts are provisional: a NEW best at the reduced
+                # LR proves the stall broke, so hand back one cut (raise
+                # the LR ×1/factor toward the schedule value). Only in
+                # save-best mode — save-every "improves" each eval.
+                if (save_best_only and self._plateau_lr_recovery
+                        and self._plateau_cuts > 0):
+                    before = self._apply_lr(step)
+                    self._lr_scale, self._plateau_cuts = \
+                        _plateau_recovery_step(
+                            self._lr_scale, self._plateau_lr_factor,
+                            self._plateau_cuts)
+                    after = self._apply_lr(step)
+                    # A recovery is proof of progress — re-arm the stall
+                    # counter, so the loss watcher can't cut the LR back
+                    # in the very same eval (the ↑…↓ churn at the end of
+                    # job 27315806).
+                    if self._plateau is not None:
+                        self._plateau.reset(step)
+                    rmsg = (f"↑ new best at reduced LR — raised learning "
+                            f"rate back {before:.3g} → {after:.3g} "
+                            f"({self._plateau_cuts} plateau cut(s) "
+                            f"still applied)")
+                    tqdm.write("  " + rmsg)
+                    if warn_callback is not None:
+                        warn_callback(rmsg)
+            if loss_improved and np.isfinite(combined_loss):
+                ckpt.best_loss.assign(combined_loss)
+                self.loss_checkpoint_manager.save()
+                tqdm.write(
+                    f"  ✓ Checkpoint saved [best LOSS] → loss_best/ "
+                    f"(combined_loss={combined_loss:.5f})"
                 )
-                tqdm.write(status)
 
-                # Persist for later plotting. Append-only CSV so each row
-                # is durable the moment ``evaluate_every`` fires — a job
-                # OOM-killed mid-training still leaves a complete log.
-                row = {
-                    "step":           int(step),
-                    "wall_time":      time.time(),
-                    "loss":           float(loss_value.numpy()),
-                    "psnr_stretched": psnr_str,
-                    "psnr_raw":       psnr_raw,
-                    **v["psnr_bands"],
-                    "gnorm_avg":      float(gnorm_avg.numpy()),
-                    "gnorm_max":      float(gnorm_peak),
-                    "clip_norm":      float(GRAD_CLIP_NORM),
-                    "duration_s":     float(duration),
-                    "combined_loss":  combined_loss,
-                    "is_baseline":    "",
-                }
-                train_log.append(row)
+            # Stamp the checkpoint dir with its model identity whenever a
+            # track saved, so SR outputs can later tell this model apart
+            # from a stale one. Best-effort; never raises.
+            if psnr_improved or loss_improved:
+                self._emit_checkpoint_provenance()
 
-                # TWO independent save-best tracks, each with its own
-                # checkpoint set. ``ckpt.psnr`` / ``ckpt.best_loss`` are the
-                # checkpointed bars (seeded by the baseline eval on resume).
-                #   - PSNR track  (higher = better) → ``ckpt_mgr`` (root dir)
-                #   - LOSS track  (lower  = better) → ``loss_mgr`` (loss_best/)
-                # ``save_best_only=False`` (save-every) makes both fire each
-                # eval.
-                psnr_improved = (
-                    not save_best_only or psnr_str > ckpt.psnr)
-                loss_improved = (
-                    not save_best_only or combined_loss < float(ckpt.best_loss))
-
-                # Emit this evaluate's metrics to the structured event stream
-                # BEFORE any ``continue`` so every eval reaches the WebUI.
-                # ``saved`` is true if EITHER track saved a checkpoint.
-                if eval_callback is not None:
-                    eval_callback({**row, "total": int(steps),
-                                   "saved": bool(psnr_improved or loss_improved)})
-
-                # ``.assign`` keeps the bars tf.Variables (checkpoint-tracked
-                # across resumes, expose .numpy()) rather than replacing them
-                # with bare tensors.
-                if psnr_improved:
-                    ckpt.psnr.assign(psnr_str)
-                    ckpt_mgr.save()
+            # ── Degenerate-basin detector (PSNR-based). The basin's
+            # signature lives in PSNR, not the loss: the score sits FLAT
+            # and well below the run's best (the frozen ~43.5 dB skip-only
+            # floor) while combined_loss micro-creeps. Fire only when the
+            # PSNR has made no new best for ``patience`` steps AND the
+            # gap persisted for ``PLATEAU_ROLLBACK_MIN_EVALS`` consecutive
+            # evals (a single noisy validation dip must not trigger).
+            # Response: restore the best-PSNR checkpoint and cool — an
+            # in-place cut would only polish the collapsed solution.
+            if save_best_only and self._plateau is not None:
+                below = _plateau_wants_rollback(
+                    psnr_str, float(ckpt.psnr.numpy()),
+                    min_gap=self._plateau_rollback_min_gap,
+                    has_best_ckpt=bool(ckpt_mgr.latest_checkpoint),
+                    save_best_only=save_best_only)
+                self._gap_streak = self._gap_streak + 1 if below else 0
+                stalled = (step - self._psnr_best_step
+                           >= self._plateau.patience)
+                before = self._apply_lr(step)
+                floored = before <= self._min_lr * (1.0 + 1e-9)
+                if (stalled and not floored and self._gap_streak
+                        >= int(Config.PLATEAU_ROLLBACK_MIN_EVALS)):
+                    best_score = float(ckpt.psnr.numpy())
+                    self._lr_scale *= self._plateau_lr_factor
+                    self._plateau_cuts += 1
+                    # Same mechanics as the gradient-spike rollback:
+                    # weights + optimizer + step rewind to the best-PSNR
+                    # checkpoint; the eval-window stats came from the
+                    # collapsed model, so discard them; re-arm both
+                    # watchers at the rewound step.
+                    restore_keeping_loss_bar(
+                        self.checkpoint, ckpt_mgr.latest_checkpoint)
+                    step = int(ckpt.step.numpy())
+                    pbar.n = max(0, step)
+                    pbar.refresh()
+                    if step_callback is not None:
+                        step_callback(step, int(steps))
+                    self._reset_window()
+                    self._plateau.reset(step)
                     self._psnr_best_step = step
                     self._gap_streak = 0
-                    tqdm.write(
-                        f"  ✓ Checkpoint saved [best PSNR] "
-                        f"(PSNR str={psnr_str:.3f}, raw={psnr_raw:.3f} dB)"
-                    )
-                    # Plateau cuts are provisional: a NEW best at the reduced
-                    # LR proves the stall broke, so hand back one cut (raise
-                    # the LR ×1/factor toward the schedule value). Only in
-                    # save-best mode — save-every "improves" each eval.
-                    if (save_best_only and self._plateau_lr_recovery
-                            and self._plateau_cuts > 0):
-                        before = self._apply_lr(step)
-                        self._lr_scale, self._plateau_cuts = \
-                            _plateau_recovery_step(
-                                self._lr_scale, self._plateau_lr_factor,
-                                self._plateau_cuts)
-                        after = self._apply_lr(step)
-                        # A recovery is proof of progress — re-arm the stall
-                        # counter, so the loss watcher can't cut the LR back
-                        # in the very same eval (the ↑…↓ churn at the end of
-                        # job 27315806).
-                        if self._plateau is not None:
-                            self._plateau.reset(step)
-                        rmsg = (f"↑ new best at reduced LR — raised learning "
-                                f"rate back {before:.3g} → {after:.3g} "
-                                f"({self._plateau_cuts} plateau cut(s) "
-                                f"still applied)")
-                        tqdm.write("  " + rmsg)
-                        if warn_callback is not None:
-                            warn_callback(rmsg)
-                if loss_improved and np.isfinite(combined_loss):
-                    ckpt.best_loss.assign(combined_loss)
-                    self.loss_checkpoint_manager.save()
-                    tqdm.write(
-                        f"  ✓ Checkpoint saved [best LOSS] → loss_best/ "
-                        f"(combined_loss={combined_loss:.5f})"
-                    )
+                    after = self._apply_lr(step)
+                    pmsg = (f"↺ degenerate plateau (PSNR stalled "
+                            f"≥{self._plateau.patience} steps at "
+                            f"{float(psnr_str):.3f} vs best "
+                            f"{best_score:.3f}) — restored best-PSNR "
+                            f"checkpoint @ step {step} and reduced "
+                            f"learning rate {before:.3g} → {after:.3g}")
+                    tqdm.write("  " + pmsg)
+                    if warn_callback is not None:
+                        warn_callback(pmsg)
 
-                # Stamp the checkpoint dir with its model identity whenever a
-                # track saved, so SR outputs can later tell this model apart
-                # from a stale one. Best-effort; never raises.
-                if psnr_improved or loss_improved:
-                    self._emit_checkpoint_provenance()
-
-                # ── Degenerate-basin detector (PSNR-based). The basin's
-                # signature lives in PSNR, not the loss: the score sits FLAT
-                # and well below the run's best (the frozen ~43.5 dB skip-only
-                # floor) while combined_loss micro-creeps. Fire only when the
-                # PSNR has made no new best for ``patience`` steps AND the
-                # gap persisted for ``PLATEAU_ROLLBACK_MIN_EVALS`` consecutive
-                # evals (a single noisy validation dip must not trigger).
-                # Response: restore the best-PSNR checkpoint and cool — an
-                # in-place cut would only polish the collapsed solution.
-                if save_best_only and self._plateau is not None:
-                    below = _plateau_wants_rollback(
-                        psnr_str, float(ckpt.psnr.numpy()),
-                        min_gap=self._plateau_rollback_min_gap,
-                        has_best_ckpt=bool(ckpt_mgr.latest_checkpoint),
-                        save_best_only=save_best_only)
-                    self._gap_streak = self._gap_streak + 1 if below else 0
-                    stalled = (step - self._psnr_best_step
-                               >= self._plateau.patience)
+            # ── Converged plateau (the watched metric, combined_loss by
+            # default, flat for ``patience`` steps with a RELATIVE
+            # min-delta): cut the LR in place via the SAME ``_lr_scale``
+            # the spike guard uses. Skip once at the ``min_lr`` floor.
+            if self._plateau is not None:
+                metric = (combined_loss
+                          if self._plateau_lr_metric == "combined_loss"
+                          else psnr_str)
+                if self._plateau.should_reduce(step, metric):
                     before = self._apply_lr(step)
                     floored = before <= self._min_lr * (1.0 + 1e-9)
-                    if (stalled and not floored and self._gap_streak
-                            >= int(Config.PLATEAU_ROLLBACK_MIN_EVALS)):
-                        best_score = float(ckpt.psnr.numpy())
+                    if not floored:
                         self._lr_scale *= self._plateau_lr_factor
                         self._plateau_cuts += 1
-                        # Same mechanics as the gradient-spike rollback:
-                        # weights + optimizer + step rewind to the best-PSNR
-                        # checkpoint; the eval-window stats came from the
-                        # collapsed model, so discard them; re-arm both
-                        # watchers at the rewound step.
-                        restore_keeping_loss_bar(
-                            self.checkpoint, ckpt_mgr.latest_checkpoint)
-                        step = int(ckpt.step.numpy())
-                        pbar.n = max(0, step)
-                        pbar.refresh()
-                        if step_callback is not None:
-                            step_callback(step, int(steps))
-                        loss_mean.reset_state()
-                        gnorm_mean.reset_state()
-                        gnorm_max.assign(0.0)
-                        self._plateau.reset(step)
-                        self._psnr_best_step = step
-                        self._gap_streak = 0
                         after = self._apply_lr(step)
-                        pmsg = (f"↺ degenerate plateau (PSNR stalled "
-                                f"≥{self._plateau.patience} steps at "
-                                f"{float(psnr_str):.3f} vs best "
-                                f"{best_score:.3f}) — restored best-PSNR "
-                                f"checkpoint @ step {step} and reduced "
-                                f"learning rate {before:.3g} → {after:.3g}")
+                        pmsg = (f"↓ plateau ({self._plateau_lr_metric} "
+                                f"flat for ≥{self._plateau.patience} "
+                                f"steps) — reduced learning rate "
+                                f"{before:.3g} → {after:.3g}")
                         tqdm.write("  " + pmsg)
                         if warn_callback is not None:
                             warn_callback(pmsg)
 
-                # ── Converged plateau (the watched metric, combined_loss by
-                # default, flat for ``patience`` steps with a RELATIVE
-                # min-delta): cut the LR in place via the SAME ``_lr_scale``
-                # the spike guard uses. Skip once at the ``min_lr`` floor.
-                if self._plateau is not None:
-                    metric = (combined_loss
-                              if self._plateau_lr_metric == "combined_loss"
-                              else psnr_str)
-                    if self._plateau.should_reduce(step, metric):
-                        before = self._apply_lr(step)
-                        floored = before <= self._min_lr * (1.0 + 1e-9)
-                        if not floored:
-                            self._lr_scale *= self._plateau_lr_factor
-                            self._plateau_cuts += 1
-                            after = self._apply_lr(step)
-                            pmsg = (f"↓ plateau ({self._plateau_lr_metric} "
-                                    f"flat for ≥{self._plateau.patience} "
-                                    f"steps) — reduced learning rate "
-                                    f"{before:.3g} → {after:.3g}")
-                            tqdm.write("  " + pmsg)
-                            if warn_callback is not None:
-                                warn_callback(pmsg)
-
-                self.now = time.perf_counter()
+            self.now = time.perf_counter()
 
         pbar.close()
 
@@ -951,6 +968,19 @@ class Trainer:
         self.checkpoint.optimizer.apply_gradients(
             zip(gradients, self.checkpoint.model.trainable_variables, strict=False)
         )
+
+        # Step counter and window statistics stay on the device; the training
+        # loop reads them once per validation window.
+        step = self.checkpoint.step.assign_add(1)
+        self._win_loss_sum.assign_add(loss_value)
+        self._win_gnorm_sum.assign_add(gnorm)
+        self._win_gnorm_max.assign(tf.maximum(self._win_gnorm_max, gnorm))
+        self._win_steps.assign_add(1.0)
+        # Spike watch: post-warmup pre-clip |g|, non-finite counted as inf
+        # (NaN would otherwise vanish inside tf.maximum).
+        watched = tf.where(tf.math.is_finite(gnorm), gnorm, float("inf"))
+        watched = tf.where(step > GRAD_SPIKE_SKIP_WARMUP_STEPS, watched, 0.0)
+        self._win_spike_norm.assign(tf.maximum(self._win_spike_norm, watched))
 
         return loss_value, gnorm
 

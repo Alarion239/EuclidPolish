@@ -14,6 +14,7 @@ import numpy as np
 import pytest
 import tensorflow as tf
 
+from euclid_polish.training import trainer as trainer_module
 from euclid_polish.training.models.wdsr import wdsr
 from euclid_polish.training.trainer import (
     GRAD_SPIKE_SKIP_NORM,
@@ -444,3 +445,74 @@ class TestPerBandPSNRLogging:
         assert np.isfinite(float(rows[-1][PER_BAND_PSNR_COLUMNS[0]]))
         for col in PER_BAND_PSNR_COLUMNS[1:]:
             assert rows[-1][col] == "", f"{col} should be blank for VIS-only"
+
+
+# ---------------------------------------------------------------------------
+# No per-step host sync: window statistics + spike guard per validation
+# ---------------------------------------------------------------------------
+
+class TestWindowedSpikeGuard:
+
+    def test_train_step_advances_step_and_accumulates_window(self, tiny_trainer):
+        """The compiled step owns the step counter and the window statistics;
+        the loop reads them back once per validation."""
+        lr, hr = _rand_batch()
+        losses, norms = [], []
+        for _ in range(3):
+            loss, gnorm = tiny_trainer.train_step(lr, hr)
+            losses.append(float(loss))
+            norms.append(float(gnorm))
+        assert int(tiny_trainer.checkpoint.step.numpy()) == 3
+        window = tiny_trainer._read_window()
+        assert window["loss"] == pytest.approx(np.mean(losses), rel=1e-5)
+        assert window["gnorm_avg"] == pytest.approx(np.mean(norms), rel=1e-5)
+        assert window["gnorm_max"] == pytest.approx(max(norms), rel=1e-5)
+        assert window["spike_norm"] == 0.0            # all steps inside warmup
+        assert tiny_trainer._read_window()["loss"] == 0.0   # read resets
+
+    def test_nonfinite_gradient_counts_as_infinite_spike(
+            self, tiny_model, tmp_path, monkeypatch):
+        monkeypatch.setattr(trainer_module, "GRAD_SPIKE_SKIP_WARMUP_STEPS", 0)
+        trainer = Trainer(tiny_model, checkpoint_dir=str(tmp_path / "ckpt"))
+        lr, hr = _rand_batch()
+        trainer.train_step(lr * float("nan"), hr)
+        assert trainer._read_window()["spike_norm"] == float("inf")
+
+    def test_spike_guard_runs_once_per_validation_window(
+            self, tiny_model, tmp_path, monkeypatch):
+        calls = []
+
+        def counting(gnorm, step):
+            calls.append(int(step))
+            return _is_grad_spike(gnorm, step)
+
+        monkeypatch.setattr(trainer_module, "_is_grad_spike", counting)
+        trainer = Trainer(tiny_model, checkpoint_dir=str(tmp_path / "ckpt"))
+        trainer.train(_train_pairs_dataset(), _valid_pairs_dataset(seed=10),
+                      steps=6, evaluate_every=3, save_best_only=False,
+                      validate_images=2)
+        assert calls == [3, 6]
+        assert int(trainer.checkpoint.step.numpy()) == 6
+
+    def test_spiked_window_rolls_back_before_validation_and_saving(
+            self, tiny_model, tmp_path, monkeypatch):
+        """Every post-warmup step 'spikes': each window is caught at its
+        validation point, before it can be validated or checkpointed, and two
+        rollbacks halve the LR. (With no checkpoint saved yet there is nothing
+        to restore, so the run continues into the next window.)"""
+        monkeypatch.setattr(trainer_module, "GRAD_SPIKE_SKIP_WARMUP_STEPS", 0)
+        monkeypatch.setattr(trainer_module, "GRAD_SPIKE_SKIP_NORM", 1e-12)
+        ckpt_dir = str(tmp_path / "ckpt")
+        trainer = Trainer(tiny_model, checkpoint_dir=ckpt_dir)
+        warnings = []
+        trainer.train(_train_pairs_dataset(), _valid_pairs_dataset(seed=10),
+                      steps=6, evaluate_every=3, save_best_only=False,
+                      validate_images=2, warn_callback=warnings.append)
+        spikes = [w for w in warnings if "gradient spike" in w]
+        assert "in steps 1–3" in spikes[0] and "in steps 4–6" in spikes[1]
+        assert any("halved learning rate" in w for w in warnings)
+        assert trainer._lr_scale == 0.5
+        assert trainer.checkpoint_manager.latest_checkpoint is None
+        log_path = os.path.join(ckpt_dir, "training_log.csv")
+        rows = open(log_path).read().strip().splitlines() if os.path.exists(log_path) else []
+        assert len(rows) <= 1                         # header only, no validation row
