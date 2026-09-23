@@ -217,7 +217,9 @@ def test_fit_learns_a_spatially_varying_member_choice(tmp_path, monkeypatch):
     comb = fit_spatial_gate(fields[:5], fields[5:], ["a", "b"], width=8,
                             steps=240, batch_size=4, crop=64, eval_every=60,
                             learning_rate=1e-2, warmup_steps=5, seed=0,
-                            checkpoint=checkpoints.append)
+                            # Band-knee loss: sign-flipping additive noise makes
+                            # the low-knee terms a pathological toy objective.
+                            loss_knees=None, checkpoint=checkpoints.append)
     meta = comb.fit_meta
     assert meta["selected"]["loss"] < 0.6 * meta["baseline_holdout"]["loss"]
     # Every improvement hands over the best gate so far; the last one is the

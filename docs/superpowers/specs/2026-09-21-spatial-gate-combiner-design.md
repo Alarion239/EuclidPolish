@@ -174,3 +174,10 @@ judged by the knee-integrated PSNR (mean PSNR over log knee, 0.1–10⁴ e⁻; s
   steps. The fitter hands every improved checkpoint to a `checkpoint`
   callback; `scripts/fit_spatial_gate.py` saves it, so a fit can be stopped
   (SIGTERM or Ctrl-C) and keeps its best gate.
+
+Decision (2026-09-23): the all-knee loss with linear mixing is the default of
+`fit_spatial_gate` (and so of the web fit job and the script), and the
+`spatial_gate_linear` fit is installed as the STARFULL `spatial_gate_combiner`
+(web re-score 59.049 dB VIS, +0.267 dB over the best member, +1.100 dB over
+the ensemble mean). The knee-100 asinh gate it replaced is kept at
+`spatial_gate_knee100`.

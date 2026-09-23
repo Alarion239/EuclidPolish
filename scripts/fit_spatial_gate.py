@@ -38,7 +38,7 @@ from euclid_polish.eval.combiner import (  # noqa: E402
     load_combiner,
 )
 from euclid_polish.eval.spatial_gate import (  # noqa: E402
-    MIX_ASINH,
+    MIX_LINEAR,
     MIX_SPACES,
     band_scales,
     load_spatial_gate,
@@ -383,10 +383,10 @@ def main() -> None:
     fit.add_argument("--holdout", type=int, default=15)
     fit.add_argument("--blackout-fields", type=int, default=40)
     fit.add_argument("--seed", type=int, default=0)
-    fit.add_argument("--knee-loss", action="store_true",
+    fit.add_argument("--knee-loss", action=argparse.BooleanOptionalAction, default=True,
                      help="score the loss at 11 knees from 0.1 to 1e4 e- (the "
-                          "knee-integrated PSNR) instead of the band knee only")
-    fit.add_argument("--mix", choices=MIX_SPACES, default=MIX_ASINH,
+                          "knee-integrated PSNR); --no-knee-loss scores the band knee only")
+    fit.add_argument("--mix", choices=MIX_SPACES, default=MIX_LINEAR,
                      help="average the members in electrons (linear: knee-free, "
                           "flux-conserving) or in band-knee asinh space")
     fit.add_argument("--members", default="",

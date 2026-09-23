@@ -6,18 +6,19 @@ here mirrors :func:`euclid_polish.eval.spatial_gate.gate_logits` operation for
 operation; the fitted parameters are handed to the NumPy
 :class:`~euclid_polish.eval.spatial_gate.SpatialGateCombiner` for inference.
 
-The gate averages the members in electrons or in per-band asinh space
-(``mix_space``, see :mod:`euclid_polish.eval.spatial_gate`); the graph keeps
-its output in band-knee asinh either way, so the losses below read the same.
+The gate averages the members in electrons (default) or in per-band asinh
+space (``mix_space``, see :mod:`euclid_polish.eval.spatial_gate`); the graph
+keeps its output in band-knee asinh either way, so the losses below read the
+same.
 The loss is squared error in per-band asinh space (the space the ensemble is
 scored in), divided per field and band by the best member's error there: a
 loss of 1.0 means "as good as the best single member", and every field and
 band counts equally, as in the mean per-field PSNR the ensemble is scored by.
 The best member is chosen on the natural (not blackout-augmented) fields. The
 gate starts near that member (per band) and the checkpoint with the lowest
-held-out loss is kept. Optionally the loss is evaluated at several asinh
-knees and averaged (``loss_knees``), matching the knee-integrated PSNR
-instead of favouring the brightnesses around the band knee.
+held-out loss is kept. By default the loss is evaluated at asinh knees from
+0.1 to 10⁴ e⁻ and averaged (``loss_knees``), matching the knee-integrated
+PSNR instead of favouring the brightnesses around the band knee.
 """
 
 from __future__ import annotations
@@ -394,8 +395,8 @@ def fit_spatial_gate(train_fields: Sequence[GateField],
                      uniform_crop_fraction: float = 0.5,
                      eval_every: int = 250, seed: int = 0,
                      active_members: Sequence[int] | None = None,
-                     loss_knees: Sequence[float] | None = None,
-                     mix_space: str = MIX_ASINH,
+                     loss_knees: Sequence[float] | None = ALL_KNEE_LOSS,
+                     mix_space: str = MIX_LINEAR,
                      progress: ProgressFn | None = None,
                      log: Callable[[str], None] | None = None,
                      checkpoint: Callable[[SpatialGateCombiner], None] | None = None,
@@ -405,13 +406,14 @@ def fit_spatial_gate(train_fields: Sequence[GateField],
     ``active_members`` (positions in ``member_labels``) fits a pruned gate
     that reads only those members; it is still keyed to the whole ensemble.
 
-    ``loss_knees`` scores the output at several asinh knees (e⁻) instead of
-    only the band knee the members are mixed at: at each knee the error is
-    taken relative to the reference member's on that field, then averaged —
-    a stand-in for the knee-integrated PSNR (see :data:`ALL_KNEE_LOSS`).
+    ``loss_knees`` scores the output at several asinh knees (e⁻): at each
+    knee the error is taken relative to the reference member's on that
+    field, then averaged — a stand-in for the knee-integrated PSNR (see
+    :data:`ALL_KNEE_LOSS`). ``None`` scores the band knee only.
 
     ``mix_space`` is where the members are averaged: ``"linear"``
-    (electrons) or ``"asinh"`` (the band knee).
+    (electrons, knee-free and flux-conserving) or ``"asinh"`` (the band
+    knee). The defaults won on the test set (2026-09-23 design notes).
 
     ``checkpoint`` is called with the best gate so far every time the held-out
     loss improves (its ``fit_meta["complete"]`` is False), so a fit stopped
