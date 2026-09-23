@@ -138,3 +138,39 @@ Follow-ups: more validate fields (the rare very-bright-star failures);
 choose a pruned set that also covers blackout usage; make the preferred
 fitted kind (not always the RBF) the viewer's main SR tier and the summary
 headline.
+
+## Knee-independent loss and mixing space (2026-09-23)
+
+A single scoring knee favours models trained near it, so the gate is now also
+judged by the knee-integrated PSNR (mean PSNR over log knee, 0.1–10⁴ e⁻; see
+`euclid_polish/eval/knee_psnr.py`). Two options were added to the fitter:
+
+* `loss_knees=ALL_KNEE_LOSS`: the loss is the relative MSE at 11 log-spaced
+  knees from 0.1 to 10⁴ e⁻ (each relative to the reference member at that
+  knee), averaged; the stand-in for the integrated PSNR.
+* `mix_space="linear"`: the convex weighted mean is taken in electrons
+  instead of band-knee asinh. Mixing in asinh space is an arithmetic mean
+  below the knee and a geometric mean above it, so the knee leaks into the
+  output even with a knee-free loss; the linear mean is knee-free, conserves
+  flux, and stays convex. The gate still sees its inputs in asinh space
+  (input compression only). Old artifacts load as `mix_space="asinh"`.
+
+26 members, 100 STARFULL test fields, 3000 steps:
+
+| gate | integrated VIS | Y | J | H | at 100 e⁻ VIS | Y | J | H |
+|---|---|---|---|---|---|---|---|---|
+| best member (191) | 54.50 | 63.01 | 60.48 | 59.91 | 58.54 | 67.79 | 64.79 | 63.92 |
+| ensemble mean | 53.56 | 62.50 | 59.72 | 59.11 | 57.95 | 67.29 | 63.96 | 63.26 |
+| knee-100 loss, asinh mix (installed) | 55.52 | 64.82 | 61.87 | 61.10 | 59.06 | 68.98 | 65.57 | 64.67 |
+| all-knee loss, asinh mix | 55.66 | 64.91 | 62.01 | 61.31 | 59.05 | 68.98 | 65.52 | 64.70 |
+| all-knee loss, linear mix | 55.65 | 64.94 | 62.06 | 61.30 | 59.05 | 68.96 | 65.56 | 64.70 |
+
+* The all-knee loss adds +0.13–0.21 dB integrated, all of it below ~10 e⁻
+  (+0.8–1.1 dB at the 0.1 e⁻ knee), at no cost at 100 e⁻.
+* Linear and asinh mixing tie within ±0.05 dB integrated; linear is ahead in
+  Y and at J's bright end, asinh at VIS's bright end. Linear is preferred
+  for being knee-free and flux-conserving at equal accuracy.
+* Held-out gains after step 2000 were ≤0.03 dB, so the default is now 2000
+  steps. The fitter hands every improved checkpoint to a `checkpoint`
+  callback; `scripts/fit_spatial_gate.py` saves it, so a fit can be stopped
+  (SIGTERM or Ctrl-C) and keeps its best gate.

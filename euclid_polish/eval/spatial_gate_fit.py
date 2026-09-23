@@ -6,13 +6,18 @@ here mirrors :func:`euclid_polish.eval.spatial_gate.gate_logits` operation for
 operation; the fitted parameters are handed to the NumPy
 :class:`~euclid_polish.eval.spatial_gate.SpatialGateCombiner` for inference.
 
+The gate averages the members in electrons or in per-band asinh space
+(``mix_space``, see :mod:`euclid_polish.eval.spatial_gate`); the graph keeps
+its output in band-knee asinh either way, so the losses below read the same.
 The loss is squared error in per-band asinh space (the space the ensemble is
 scored in), divided per field and band by the best member's error there: a
 loss of 1.0 means "as good as the best single member", and every field and
 band counts equally, as in the mean per-field PSNR the ensemble is scored by.
 The best member is chosen on the natural (not blackout-augmented) fields. The
 gate starts near that member (per band) and the checkpoint with the lowest
-held-out loss is kept.
+held-out loss is kept. Optionally the loss is evaluated at several asinh
+knees and averaged (``loss_knees``), matching the knee-integrated PSNR
+instead of favouring the brightnesses around the band knee.
 """
 
 from __future__ import annotations
@@ -33,9 +38,13 @@ import tensorflow as tf
 
 from euclid_polish.config import Config
 from euclid_polish.ensemble import EnsembleModel
+from euclid_polish.eval.knee_psnr import integrated_psnr, knee_psnr
 from euclid_polish.eval.spatial_gate import (
     BAND_NAMES,
     DILATIONS,
+    MIX_ASINH,
+    MIX_LINEAR,
+    MIX_SPACES,
     PARAM_NAMES,
     SPATIAL_GATE_KIND,
     SpatialGateCombiner,
@@ -57,6 +66,11 @@ BLACKOUT_WELL_FRACTIONS = (0.03, 0.1, 0.1, 0.1)
 ERROR_MAP_BLOCK_PX = 30
 LOSS_BORDER_PX = 16
 INITIAL_BEST_WEIGHT = 0.9
+#: Knees (e⁻) of the all-knee loss: log-uniform, half a decade apart, over the
+#: same 0.1–10⁴ e⁻ span as the integrated PSNR, so the loss is its stand-in.
+ALL_KNEE_LOSS = tuple(float(v) for v in np.logspace(-1.0, 4.0, 11))
+#: Knees the held-out integrated PSNR is monitored on (both loss modes).
+MONITOR_KNEES = ALL_KNEE_LOSS
 ProgressFn = Callable[[int, int, str], None]
 
 
@@ -270,11 +284,17 @@ def tf_gate_logits(params: dict, members, lr_feats, use_lr: bool):
     return _conv1x1(fused, params["w_out"], params["b_out"])
 
 
-def tf_mix(logits, members, n_members: int, n_bands: int):
+def tf_mix(logits, members, n_members: int, n_bands: int, mix_space: str = MIX_ASINH):
+    """Convex member mixture of the band-knee asinh ``members``, returned in
+    band-knee asinh. ``"linear"`` averages in electrons: the band knee cancels,
+    ``asinh(Σ w·sinh(x))``."""
     shape = tf.shape(logits)
     five = [shape[0], shape[1], shape[2], n_members, n_bands]
     weights = tf.nn.softmax(tf.reshape(logits, five), axis=3)
-    return tf.reduce_sum(weights * tf.reshape(members, five), axis=3)
+    members = tf.reshape(members, five)
+    if mix_space == MIX_LINEAR:
+        return tf.asinh(tf.reduce_sum(weights * tf.sinh(members), axis=3))
+    return tf.reduce_sum(weights * members, axis=3)
 
 
 def init_params(n_members: int, n_bands: int, width: int, use_lr: bool,
@@ -369,17 +389,35 @@ def fit_spatial_gate(train_fields: Sequence[GateField],
                      member_labels: Sequence[str], *,
                      band_names: Sequence[str] = BAND_NAMES,
                      width: int = 32, use_lr: bool = False,
-                     steps: int = 3000, batch_size: int = 8, crop: int = 192,
+                     steps: int = 2000, batch_size: int = 8, crop: int = 192,
                      learning_rate: float = 2e-3, warmup_steps: int = 100,
                      uniform_crop_fraction: float = 0.5,
                      eval_every: int = 250, seed: int = 0,
                      active_members: Sequence[int] | None = None,
+                     loss_knees: Sequence[float] | None = None,
+                     mix_space: str = MIX_ASINH,
                      progress: ProgressFn | None = None,
-                     log: Callable[[str], None] | None = None) -> SpatialGateCombiner:
+                     log: Callable[[str], None] | None = None,
+                     checkpoint: Callable[[SpatialGateCombiner], None] | None = None,
+                     ) -> SpatialGateCombiner:
     """Fit the gate; returns the checkpoint with the lowest held-out loss.
 
     ``active_members`` (positions in ``member_labels``) fits a pruned gate
-    that reads only those members; it is still keyed to the whole ensemble."""
+    that reads only those members; it is still keyed to the whole ensemble.
+
+    ``loss_knees`` scores the output at several asinh knees (e⁻) instead of
+    only the band knee the members are mixed at: at each knee the error is
+    taken relative to the reference member's on that field, then averaged —
+    a stand-in for the knee-integrated PSNR (see :data:`ALL_KNEE_LOSS`).
+
+    ``mix_space`` is where the members are averaged: ``"linear"``
+    (electrons) or ``"asinh"`` (the band knee).
+
+    ``checkpoint`` is called with the best gate so far every time the held-out
+    loss improves (its ``fit_meta["complete"]`` is False), so a fit stopped
+    early still leaves its best checkpoint behind."""
+    if mix_space not in MIX_SPACES:
+        raise ValueError(f"mix_space must be one of {MIX_SPACES}, got {mix_space!r}")
     all_labels = [str(v) for v in member_labels]
     active = (list(range(len(all_labels))) if active_members is None
               else sorted({int(i) for i in active_members}))
@@ -413,6 +451,23 @@ def fit_spatial_gate(train_fields: Sequence[GateField],
     field_norm = np.maximum(np.stack([field_mse[:, m, c] for c, m in
                                       enumerate(best_per_band)], -1), 1e-12)
     say(f"best member per band: {[labels[m] for m in best_per_band]}")
+    multi_knee = loss_knees is not None
+    knees_e = np.asarray(loss_knees if multi_knee else [], np.float32)
+
+    def reference_knee_mse(f: GateField) -> np.ndarray:
+        """``(K, C)`` MSE of the reference member at each loss knee."""
+        target = np.asarray(f.target_e, np.float32)
+        refs = {m: np.load(f.member_paths[m]).astype(np.float32)
+                for m in set(best_per_band)}
+        out = np.empty((len(knees_e), n_bands), np.float64)
+        for k, q in enumerate(knees_e):
+            for c, m in enumerate(best_per_band):
+                err = np.arcsinh(refs[m][..., c] / q) - np.arcsinh(target[..., c] / q)
+                out[k, c] = np.mean(err * err, dtype=np.float64)
+        return np.maximum(out, 1e-12)
+
+    knee_norm = (np.stack([reference_knee_mse(f) for f in train_fields])
+                 if multi_knee else None)                      # (F, K, C)
 
     # Crop sampler: half uniform, half centred where the best member's
     # relative error is (crops land where improvement is possible).
@@ -454,7 +509,7 @@ def fit_spatial_gate(train_fields: Sequence[GateField],
                 if flip:
                     arrays = [a[:, ::-1] for a in arrays]
                 xs.append(arrays[0]); ts.append(arrays[1]); ls.append(arrays[2])
-                ns.append(field_norm[i])
+                ns.append(knee_norm[i] if multi_knee else field_norm[i])
             yield (np.ascontiguousarray(np.stack(xs), np.float32),
                    np.ascontiguousarray(np.stack(ts), np.float32),
                    np.ascontiguousarray(np.stack(ls), np.float32),
@@ -464,7 +519,8 @@ def fit_spatial_gate(train_fields: Sequence[GateField],
         tf.TensorSpec((batch_size, crop, crop, n_members * n_bands), tf.float32),
         tf.TensorSpec((batch_size, crop, crop, n_bands), tf.float32),
         tf.TensorSpec((batch_size, crop // 2, crop // 2, n_bands + 1), tf.float32),
-        tf.TensorSpec((batch_size, n_bands), tf.float32))
+        tf.TensorSpec((batch_size, len(knees_e), n_bands) if multi_knee
+                      else (batch_size, n_bands), tf.float32))
     dataset = tf.data.Dataset.from_generator(batches, output_signature=signature)
     iterator = iter(dataset.prefetch(4))
 
@@ -484,13 +540,30 @@ def fit_spatial_gate(train_fields: Sequence[GateField],
         cosine = 0.01 + 0.99 * 0.5 * (1.0 + tf.cos(math.pi * progress_frac))
         return learning_rate * warm * cosine
 
+    band_scale = tf.constant(scales, tf.float32)
+
+    def knee_crop_mse(y, t):
+        """``(B, K, C)`` crop MSE at every loss knee, from band-knee asinh."""
+        y_e = tf.sinh(y) * band_scale
+        t_e = tf.sinh(t) * band_scale
+        per_knee = []
+        for q in knees_e:
+            err = tf.asinh(y_e / float(q)) - tf.asinh(t_e / float(q))
+            per_knee.append(tf.reduce_mean(err * err, axis=[1, 2]))
+        return tf.stack(per_knee, axis=1)
+
     @tf.function(reduce_retracing=True)
     def train_step(x, t, lf, norm):
         with tf.GradientTape() as tape:
             logits = tf_gate_logits(params, x, lf, use_lr)
-            y = tf_mix(logits, x, n_members, n_bands)
-            err = (y - t)[:, border:-border, border:-border]
-            crop_mse = tf.reduce_mean(err * err, axis=[1, 2])        # (B, C)
+            y = tf_mix(logits, x, n_members, n_bands, mix_space)
+            y_in = y[:, border:-border, border:-border]
+            t_in = t[:, border:-border, border:-border]
+            if multi_knee:
+                crop_mse = knee_crop_mse(y_in, t_in)                 # (B, K, C)
+            else:
+                err = y_in - t_in
+                crop_mse = tf.reduce_mean(err * err, axis=[1, 2])    # (B, C)
             loss = tf.reduce_mean(crop_mse / norm)
         grads = tape.gradient(loss, variables)
         step_var.assign_add(1)
@@ -506,7 +579,8 @@ def fit_spatial_gate(train_fields: Sequence[GateField],
 
     @tf.function(reduce_retracing=True)
     def predict(x, lf):
-        return tf_mix(tf_gate_logits(params, x, lf, use_lr), x, n_members, n_bands)
+        return tf_mix(tf_gate_logits(params, x, lf, use_lr), x, n_members, n_bands,
+                      mix_space)
 
     holdout = []
     for f in holdout_fields:
@@ -517,27 +591,70 @@ def fit_spatial_gate(train_fields: Sequence[GateField],
                                for c, m in enumerate(best_per_band)])
         holdout.append((
             members.transpose(1, 2, 0, 3).reshape(1, h, w, -1).astype(np.float16),
-            target, f.lr_feats(scales)[None], np.maximum(best_mse, 1e-12)))
+            target, f.lr_feats(scales)[None], np.maximum(best_mse, 1e-12),
+            reference_knee_mse(f) if multi_knee else None,
+            np.asarray(f.target_e, np.float32)))
 
     def evaluate() -> dict:
-        relative, vis_psnr, band_psnr = [], [], []
-        for x, t, lf, best_mse in holdout:
+        relative, vis_psnr, band_psnr, integrated = [], [], [], []
+        for x, t, lf, best_mse, best_knee_mse, target_e in holdout:
             y = predict(tf.constant(x, tf.float32), tf.constant(lf, tf.float32))[0].numpy()
             mse = ((y - t) ** 2).mean(axis=(0, 1))
-            relative.append(mse / best_mse)
+            y_e = np.sinh(y) * scales.astype(np.float32)
+            curve = knee_psnr(y_e, target_e, knees=MONITOR_KNEES)       # (K, C)
+            integrated.append(integrated_psnr(curve, MONITOR_KNEES))
+            if multi_knee:
+                knee_mse = np.stack([
+                    np.mean((np.arcsinh(y_e / q) - np.arcsinh(target_e / q)) ** 2,
+                            axis=(0, 1)) for q in knees_e])
+                relative.append(knee_mse / best_knee_mse)
+            else:
+                relative.append(mse / best_mse)
             band_psnr.append([_stretched_psnr(float(v)) for v in mse])
             vis_psnr.append(band_psnr[-1][0])
         return {"loss": float(np.mean(relative)),
-                "band_relative_mse": np.mean(relative, axis=0).tolist(),
                 "band_psnr": np.mean(band_psnr, axis=0).tolist(),
-                "vis_psnr": float(np.mean(vis_psnr))}
+                "vis_psnr": float(np.mean(vis_psnr)),
+                "integrated_psnr": np.mean(integrated, axis=0).tolist(),
+                "vis_integrated_psnr": float(np.mean(integrated, axis=0)[0])}
+
+    def build(step: int, *, complete: bool) -> SpatialGateCombiner:
+        """The gate at the best checkpoint so far, as of ``step``."""
+        return SpatialGateCombiner(
+            member_labels=all_labels, params=dict(snapshot), width=int(width),
+            use_lr=bool(use_lr), band_names=names, val_l1=None, kind=SPATIAL_GATE_KIND,
+            mix_space=mix_space,
+            active_members=None if len(active) == len(all_labels) else tuple(active),
+            fit_meta={
+                "model": f"convolutional member gate, convex {mix_space} mixture",
+                "mix_space": mix_space,
+                "active_member_labels": labels,
+                "width": int(width), "use_lr": bool(use_lr),
+                "dilations": list(DILATIONS),
+                "loss": ("per-field relative asinh MSE: each field and band's MSE "
+                         "over the best member's, averaged (1.0 = best member)"
+                         + ("; at every loss knee, averaged over knees" if multi_knee else "")),
+                "loss_knees_e": [float(q) for q in knees_e] if multi_knee else None,
+                "best_member_per_band": [labels[m] for m in best_per_band],
+                "member_train_mse": member_mse.tolist(),
+                "steps": int(steps), "steps_run": int(step), "complete": bool(complete),
+                "batch_size": int(batch_size), "crop": int(crop),
+                "learning_rate": float(learning_rate),
+                "uniform_crop_fraction": float(uniform_crop_fraction),
+                "train_fields": [f.index for f in train_fields],
+                "train_field_tags": [f.tag for f in train_fields],
+                "holdout_fields": [f.index for f in holdout_fields],
+                "baseline_holdout": baseline, "selected": dict(best),
+                "history": list(history), "fit_seconds": float(time.time() - started),
+            })
 
     snapshot = {k: v.numpy().copy() for k, v in params.items()}
     baseline = evaluate()
     best = dict(baseline, step=0)
     history = [dict(baseline, step=0, train_loss=None)]
     say(f"step 0 (best member per band): held-out loss {baseline['loss']:.4f} "
-        f"VIS PSNR {baseline['vis_psnr']:.3f} dB")
+        f"VIS PSNR {baseline['vis_psnr']:.3f} dB, integrated "
+        f"{baseline['vis_integrated_psnr']:.3f} dB")
     running = []
     for step in range(1, int(steps) + 1):
         x, t, lf, norm = next(iterator)
@@ -552,31 +669,13 @@ def fit_spatial_gate(train_fields: Sequence[GateField],
                 best = dict(metrics, step=step)
                 snapshot = {k: v.numpy().copy() for k, v in params.items()}
             say(f"step {step}: train {row['train_loss']:.4f} held-out {metrics['loss']:.4f} "
-                f"VIS PSNR {metrics['vis_psnr']:.3f} dB{'  *' if improved else ''} "
+                f"VIS PSNR {metrics['vis_psnr']:.3f} dB, integrated "
+                f"{metrics['vis_integrated_psnr']:.3f} dB{'  *' if improved else ''} "
                 f"({time.time() - started:.0f}s)")
+            if improved and checkpoint is not None:
+                checkpoint(build(step, complete=False))
         if progress is not None:
             progress(step, int(steps), f"spatial gate step {step}")
 
     cache.cleanup()
-    return SpatialGateCombiner(
-        member_labels=all_labels, params=snapshot, width=int(width), use_lr=bool(use_lr),
-        band_names=names, val_l1=None, kind=SPATIAL_GATE_KIND,
-        active_members=None if len(active) == len(all_labels) else tuple(active),
-        fit_meta={
-            "model": "convolutional member gate, convex asinh mixture",
-            "active_member_labels": labels,
-            "width": int(width), "use_lr": bool(use_lr),
-            "dilations": list(DILATIONS),
-            "loss": ("per-field relative asinh MSE: each field and band's MSE "
-                     "over the best member's, averaged (1.0 = best member)"),
-            "best_member_per_band": [labels[m] for m in best_per_band],
-            "member_train_mse": member_mse.tolist(),
-            "steps": int(steps), "batch_size": int(batch_size), "crop": int(crop),
-            "learning_rate": float(learning_rate),
-            "uniform_crop_fraction": float(uniform_crop_fraction),
-            "train_fields": [f.index for f in train_fields],
-            "train_field_tags": [f.tag for f in train_fields],
-            "holdout_fields": [f.index for f in holdout_fields],
-            "baseline_holdout": baseline, "selected": best,
-            "history": history, "fit_seconds": float(time.time() - started),
-        })
+    return build(int(steps), complete=True)

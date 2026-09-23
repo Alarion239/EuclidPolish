@@ -3,9 +3,12 @@
 The gate looks at a neighbourhood of every member's super-resolution (and,
 optionally, the LR input plus a mask of its zeroed pixels) and returns, per
 pixel and per band, a softmax weight over members. The output is the weighted
-mean of the member predictions in per-band asinh space, so it is convex by
-construction: every output value lies between the smallest and largest member
-value at that pixel and band.
+mean of the member predictions, so it is convex by construction: every output
+value lies between the smallest and largest member value at that pixel and
+band. The mean is taken in electrons (``mix_space="linear"``: knee-free and
+flux-conserving) or in per-band asinh space (``"asinh"``, the original gates:
+arithmetic below the band knee, geometric above it). The gate always *sees*
+the members in asinh space; that only compresses its input range.
 
 Network (``F`` = ``width`` channels, ``M`` members, ``C`` bands)::
 
@@ -17,7 +20,7 @@ Network (``F`` = ``width`` channels, ``M`` members, ``C`` bands)::
           │       └─ 4 residual 3x3 convs, dilation 1, 2, 4, 8, relu
           │           └─ bilinear 2x upsample (half-pixel, edge clamped)
           └─ concat ──┘ → 1x1 conv → F, relu → 1x1 conv → M*C logits
-    softmax over members per band → weighted asinh mean → sinh → electrons
+    softmax over members per band → weighted mean (electrons or asinh) → electrons
 
 The receptive field is about 62 HR pixels, wide enough to see a bright star's
 halo from any pixel in it. Every operation is written out explicitly (symmetric
@@ -41,6 +44,10 @@ from euclid_polish.config import Config
 SPATIAL_GATE_KIND = "spatial_gate"
 SPATIAL_GATE_SCHEMA = 1
 DILATIONS = (1, 2, 4, 8)
+#: Spaces the member predictions can be averaged in (see the module docstring).
+MIX_LINEAR = "linear"
+MIX_ASINH = "asinh"
+MIX_SPACES = (MIX_LINEAR, MIX_ASINH)
 LR_MASK_DILATION_PX = 2
 BAND_NAMES = tuple(Config.HR_TARGET_BAND_NAMES)
 
@@ -53,7 +60,7 @@ PARAM_NAMES = (
 
 
 def band_scales(band_names=BAND_NAMES) -> np.ndarray:
-    """Per-band asinh knee in electrons (the space members are mixed in)."""
+    """Per-band asinh knee in electrons (the space the gate sees members in)."""
     return np.asarray([Config.get_band(name).asinh_stretch_scale_e
                        for name in band_names], np.float64)
 
@@ -170,6 +177,11 @@ class SpatialGateCombiner:
     val_l1: float | None = None
     kind: str = SPATIAL_GATE_KIND
     fit_meta: dict = field(default_factory=dict)
+    mix_space: str = MIX_ASINH
+
+    def __post_init__(self) -> None:
+        if self.mix_space not in MIX_SPACES:
+            raise ValueError(f"mix_space must be one of {MIX_SPACES}, got {self.mix_space!r}")
 
     @property
     def n_kernels(self) -> int:
@@ -216,18 +228,26 @@ class SpatialGateCombiner:
                 raise ValueError(
                     f"LR shape {lr_arr.shape[:2]} is not half the SR grid {want}")
             lr_feats = lr_features(lr_arr, scales)
-        return members, lr_feats, (h, w, m, c)
+        return stack, members, lr_feats
 
-    def weights_field(self, preds: np.ndarray, *,
-                      lr: np.ndarray | None = None) -> np.ndarray:
-        """``(H, W, M, C)`` convex weights over the whole ensemble (pruned
-        members get zero) for one field."""
-        members, lr_feats, (h, w, m, c) = self._prepare(preds, lr)
+    def _weights(self, stack: np.ndarray, members: np.ndarray,
+                 lr_feats: np.ndarray | None) -> np.ndarray:
+        """``(H, W, M, C)`` softmax weights over the active members."""
+        m, h, w, c = stack.shape
         logits = gate_logits(self.params, members, lr_feats)[:h, :w]
         logits = logits.reshape(h, w, m, c)
         logits -= logits.max(axis=2, keepdims=True)
         np.exp(logits, out=logits)
         logits /= logits.sum(axis=2, keepdims=True)
+        return logits
+
+    def weights_field(self, preds: np.ndarray, *,
+                      lr: np.ndarray | None = None) -> np.ndarray:
+        """``(H, W, M, C)`` convex weights over the whole ensemble (pruned
+        members get zero) for one field."""
+        stack, members, lr_feats = self._prepare(preds, lr)
+        logits = self._weights(stack, members, lr_feats)
+        m, h, w, c = stack.shape
         if m == len(self.member_labels):
             return logits
         full = np.zeros((h, w, len(self.member_labels), c), np.float32)
@@ -240,13 +260,13 @@ class SpatialGateCombiner:
         """``(M, H, W, C)`` member electrons → ``(H, W, C)`` electrons."""
         if band_names is not None and tuple(band_names) != tuple(self.band_names):
             raise ValueError(f"spatial gate expects bands {self.band_names}")
-        members, lr_feats, (h, w, m, c) = self._prepare(preds, lr)
-        logits = gate_logits(self.params, members, lr_feats)[:h, :w]
-        logits = logits.reshape(h, w, m, c)
-        logits -= logits.max(axis=2, keepdims=True)
-        np.exp(logits, out=logits)
-        logits /= logits.sum(axis=2, keepdims=True)
-        mixed = np.einsum("hwmc,hwmc->hwc", logits,
+        stack, members, lr_feats = self._prepare(preds, lr)
+        weights = self._weights(stack, members, lr_feats)
+        m, h, w, c = stack.shape
+        if self.mix_space == MIX_LINEAR:
+            return np.einsum("hwmc,mhwc->hwc", weights, stack,
+                             optimize=True).astype(np.float32)
+        mixed = np.einsum("hwmc,hwmc->hwc", weights,
                           members[:h, :w].reshape(h, w, m, c), optimize=True)
         return (np.sinh(mixed) * band_scales(self.band_names)[None, None, :]
                 ).astype(np.float32)
@@ -289,6 +309,7 @@ def save_spatial_gate(comb: SpatialGateCombiner, directory: str) -> None:
         "band_names": list(comb.band_names),
         "width": int(comb.width),
         "use_lr": bool(comb.use_lr),
+        "mix_space": comb.mix_space,
         "active_members": (None if comb.active_members is None
                            else [int(i) for i in comb.active_members]),
         "dilations": list(DILATIONS),
@@ -331,6 +352,7 @@ def load_spatial_gate(directory: str, *, member_labels: list[str] | None = None
             records_fp=manifest.get("records_fp"),
             starfull=bool(manifest.get("starfull", True)),
             val_l1=manifest.get("val_l1"),
-            fit_meta=manifest.get("fit_meta", {}))
+            fit_meta=manifest.get("fit_meta", {}),
+            mix_space=str(manifest.get("mix_space", MIX_ASINH)))
     except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
         return None

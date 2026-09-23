@@ -24,6 +24,8 @@ from euclid_polish.eval.ensemble_cube_cache import (
 )
 from euclid_polish.eval.spatial_gate import (
     BAND_NAMES,
+    MIX_ASINH,
+    MIX_LINEAR,
     SPATIAL_GATE_KIND,
     SpatialGateCombiner,
     band_scales,
@@ -36,6 +38,7 @@ from euclid_polish.eval.spatial_gate import (
     upsample2x,
 )
 from euclid_polish.eval.spatial_gate_fit import (
+    ALL_KNEE_LOSS,
     GateField,
     fit_spatial_gate,
     init_params,
@@ -79,8 +82,9 @@ def test_space_to_depth_and_upsample_match_tensorflow():
     np.testing.assert_allclose(upsample2x(constant), 2.5)
 
 
-@pytest.mark.parametrize("use_lr", [True, False])
-def test_numpy_forward_matches_tensorflow_graph(use_lr):
+@pytest.mark.parametrize("use_lr, mix_space",
+                         [(True, MIX_ASINH), (False, MIX_ASINH), (True, MIX_LINEAR)])
+def test_numpy_forward_matches_tensorflow_graph(use_lr, mix_space):
     members, lr = _members_and_lr()
     params = _random_params(len(members), 8, use_lr)
     scales = band_scales()
@@ -93,18 +97,20 @@ def test_numpy_forward_matches_tensorflow_graph(use_lr):
     np.testing.assert_allclose(ours, theirs, rtol=1e-4, atol=1e-4)
 
     comb = SpatialGateCombiner([f"m{i}" for i in range(len(members))], params,
-                               width=8, use_lr=use_lr)
+                               width=8, use_lr=use_lr, mix_space=mix_space)
     mixed = tf_mix(tf.constant(theirs[None]), tf.constant(x[None]),
-                   len(members), N_BANDS)[0].numpy()
+                   len(members), N_BANDS, mix_space)[0].numpy()
     out = comb.apply_field(members, lr=lr)
     np.testing.assert_allclose(np.arcsinh(out / scales), mixed, rtol=1e-4, atol=1e-4)
 
 
-def test_output_is_convex_in_members_and_handles_odd_shapes():
+@pytest.mark.parametrize("mix_space", [MIX_ASINH, MIX_LINEAR])
+def test_output_is_convex_in_members_and_handles_odd_shapes(mix_space):
     members, lr = _members_and_lr(n_members=4)
     members = members[:, :31, :47]
     comb = SpatialGateCombiner([f"m{i}" for i in range(4)],
-                               _random_params(4, 8, True), width=8, use_lr=True)
+                               _random_params(4, 8, True), width=8, use_lr=True,
+                               mix_space=mix_space)
     out = comb.apply_field(members, lr=lr)
     assert out.shape == (31, 47, N_BANDS)
     lo, hi = members.min(0), members.max(0)
@@ -112,6 +118,27 @@ def test_output_is_convex_in_members_and_handles_odd_shapes():
     assert np.all(out <= hi + 1e-3 * np.abs(hi) + 1e-3)
     weights = comb.weights_field(members, lr=lr)
     np.testing.assert_allclose(weights.sum(axis=2), 1.0, atol=1e-5)
+    if mix_space == MIX_LINEAR:
+        # Averaging in electrons: the output is exactly the weighted flux.
+        np.testing.assert_allclose(out, np.einsum("hwmc,mhwc->hwc", weights, members),
+                                   rtol=1e-5, atol=1e-3)
+
+
+def test_linear_and_asinh_mixing_differ_only_where_members_disagree():
+    members, lr = _members_and_lr(n_members=3)
+    params = _random_params(3, 8, False)
+    linear = SpatialGateCombiner(["a", "b", "c"], params, width=8, use_lr=False,
+                                 mix_space=MIX_LINEAR).apply_field(members)
+    asinh = SpatialGateCombiner(["a", "b", "c"], params, width=8,
+                                use_lr=False).apply_field(members)
+    assert not np.allclose(linear, asinh)
+    agree = np.repeat(members[:1], 3, axis=0)
+    np.testing.assert_allclose(
+        SpatialGateCombiner(["a", "b", "c"], params, width=8, use_lr=False,
+                            mix_space=MIX_LINEAR).apply_field(agree),
+        agree[0], rtol=1e-5, atol=1e-3)
+    with pytest.raises(ValueError):
+        SpatialGateCombiner(["a"], params, width=8, use_lr=False, mix_space="log")
 
 
 def test_initial_gate_reproduces_each_bands_best_member():
@@ -138,11 +165,18 @@ def test_save_load_roundtrip_and_staleness(tmp_path):
     members, lr = _members_and_lr()
     comb = SpatialGateCombiner(["a", "b", "c"], _random_params(3, 8, False),
                                width=8, use_lr=False, records_fp="fp",
-                               fit_meta={"note": 1})
+                               fit_meta={"note": 1}, mix_space=MIX_LINEAR)
     save_spatial_gate(comb, str(tmp_path))
     loaded = load_spatial_gate(str(tmp_path), member_labels=["a", "b", "c"])
     assert loaded is not None and loaded.records_fp == "fp"
+    assert loaded.mix_space == MIX_LINEAR
     np.testing.assert_array_equal(loaded.apply_field(members), comb.apply_field(members))
+    # Gates saved before the mixing space was recorded mixed in asinh.
+    manifest_path = tmp_path / "combiner.json"
+    manifest = json.loads(manifest_path.read_text())
+    del manifest["mix_space"]
+    manifest_path.write_text(json.dumps(manifest))
+    assert load_spatial_gate(str(tmp_path)).mix_space == MIX_ASINH
     assert load_spatial_gate(str(tmp_path), member_labels=["a", "b"]) is None
     assert load_spatial_gate(str(tmp_path / "missing")) is None
 
@@ -179,11 +213,21 @@ def test_fit_learns_a_spatially_varying_member_choice(tmp_path, monkeypatch):
             paths.append(str(path))
         lr = target.reshape(48, 2, 48, 2, N_BANDS).sum(axis=(1, 3))
         fields.append(GateField(index, paths, target, lr))
+    checkpoints = []
     comb = fit_spatial_gate(fields[:5], fields[5:], ["a", "b"], width=8,
                             steps=240, batch_size=4, crop=64, eval_every=60,
-                            learning_rate=1e-2, warmup_steps=5, seed=0)
+                            learning_rate=1e-2, warmup_steps=5, seed=0,
+                            checkpoint=checkpoints.append)
     meta = comb.fit_meta
     assert meta["selected"]["loss"] < 0.6 * meta["baseline_holdout"]["loss"]
+    # Every improvement hands over the best gate so far; the last one is the
+    # returned gate, so a fit stopped early keeps its best checkpoint.
+    assert checkpoints and all(not c.fit_meta["complete"] for c in checkpoints)
+    assert [c.fit_meta["selected"]["step"] for c in checkpoints] == sorted(
+        c.fit_meta["selected"]["step"] for c in checkpoints)
+    for name, value in comb.params.items():
+        np.testing.assert_array_equal(checkpoints[-1].params[name], value)
+    assert meta["complete"] and meta["steps_run"] == 240
     weights = comb.weights_field(np.stack([np.load(p) for p in fields[5].member_paths]),
                                  lr=fields[5].lr_e)
     assert weights[20:76, 8:40, 0].mean() > 0.8
@@ -331,3 +375,33 @@ def test_member_arrays_can_run_a_member_subset():
     ens._models = [Member(v) for v in (1.0, 2.0, 3.0)]
     assert ens.member_arrays(np.zeros((1, 1, 1)), indices=[2, 0])[:, 0, 0, 0].tolist() == [3.0, 1.0]
     assert ens.member_arrays(np.zeros((1, 1, 1))).shape[0] == 3
+
+
+@pytest.mark.parametrize("mix_space", [MIX_ASINH, MIX_LINEAR])
+def test_all_knee_loss_fits_and_records_its_knees(tmp_path, mix_space):
+    rng = np.random.default_rng(3)
+    fields = []
+    for index in range(4):
+        # Multiplicative (sign-preserving) noise: additive noise that flips
+        # signs makes the low-knee terms a pathological toy objective.
+        target = rng.exponential(150.0, (64, 64, N_BANDS)).astype(np.float32)
+        good = np.zeros((2, 64, 64, 1), np.float32)
+        good[0, :, :32] = good[1, :, 32:] = 1.0
+        factor = np.exp(rng.normal(0, 0.7, (2, 64, 64, N_BANDS))).astype(np.float32)
+        members = target[None] * (good + (1 - good) * factor)
+        paths = []
+        for m in range(2):
+            path = tmp_path / f"member{m}_{index:05d}.npy"
+            np.save(path, members[m])
+            paths.append(str(path))
+        lr = target.reshape(32, 2, 32, 2, N_BANDS).sum(axis=(1, 3))
+        fields.append(GateField(index, paths, target, lr))
+    comb = fit_spatial_gate(fields[:3], fields[3:], ["a", "b"], width=8, steps=120,
+                            batch_size=4, crop=48, eval_every=40, learning_rate=1e-2,
+                            warmup_steps=5, seed=0, loss_knees=ALL_KNEE_LOSS,
+                            mix_space=mix_space)
+    meta = comb.fit_meta
+    assert comb.mix_space == meta["mix_space"] == mix_space
+    assert meta["loss_knees_e"] == pytest.approx(list(ALL_KNEE_LOSS))
+    assert meta["selected"]["loss"] < meta["baseline_holdout"]["loss"]
+    assert len(meta["selected"]["integrated_psnr"]) == N_BANDS

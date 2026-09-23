@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import signal
 import sys
 import time
 
@@ -37,17 +38,21 @@ from euclid_polish.eval.combiner import (  # noqa: E402
     load_combiner,
 )
 from euclid_polish.eval.spatial_gate import (  # noqa: E402
+    MIX_ASINH,
+    MIX_SPACES,
     band_scales,
     load_spatial_gate,
     save_spatial_gate,
 )
 from euclid_polish.eval.spatial_gate_fit import (  # noqa: E402
+    ALL_KNEE_LOSS,
     LazyMemberRunner,
     build_blackout_fields,
     fit_spatial_gate,
     load_cube_fields,
     split_holdout,
 )
+from euclid_polish.web.helpers.ensemble_viz import _eval_records_fingerprint  # noqa: E402
 from euclid_polish.web.helpers.paths import _sky_records_local_dir  # noqa: E402
 
 BANDS = tuple(Config.HR_TARGET_BAND_NAMES)
@@ -67,7 +72,12 @@ def _fwhm(cubes_dir: str) -> float:
 
 
 def cmd_fit(args) -> None:
+    # A fit can be stopped at any time: the best gate so far is already saved
+    # (see ``save`` below), and exiting on SIGTERM instead of dying lets the
+    # temporary feature cache be removed at interpreter exit.
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
     regime = _regime_dir()
+    out = os.path.join(regime, args.out_name)
     cubes = os.path.join(regime, "cubes_validate")
     records = _sky_records_local_dir()
     fields, labels = load_cube_fields(cubes, records, "validate", target_name="hr",
@@ -80,8 +90,16 @@ def cmd_fit(args) -> None:
         extra = build_blackout_fields(
             train, labels, runner, os.path.join(regime, "cubes_validate_blackout"),
             max_fields=args.blackout_fields, seed=args.seed,
+            # Same cache identity as the web fit, so neither invalidates the other's.
+            source_fingerprint=str(_eval_records_fingerprint(records, "validate")),
             progress=lambda i, n, msg: print(f"  [{i}/{n}] {msg}", flush=True))
         print(f"{len(extra)} blackout-augmented training fields")
+
+    def save(comb) -> None:
+        comb.starfull = True
+        comb.fit_meta["blackout_fields"] = len(extra)
+        save_spatial_gate(comb, out)
+
     active = None
     if args.members:
         wanted = {name.strip() for name in args.members.split(",") if name.strip()}
@@ -94,11 +112,10 @@ def cmd_fit(args) -> None:
         train + extra, holdout, labels, width=args.width, use_lr=args.lr_input,
         steps=args.steps, batch_size=args.batch, crop=args.crop,
         learning_rate=args.lr, eval_every=args.eval_every, seed=args.seed,
-        active_members=active, log=lambda msg: print(msg, flush=True))
-    comb.starfull = True
-    comb.fit_meta["blackout_fields"] = len(extra)
-    out = os.path.join(regime, args.out_name)
-    save_spatial_gate(comb, out)
+        active_members=active, loss_knees=ALL_KNEE_LOSS if args.knee_loss else None,
+        mix_space=args.mix,
+        log=lambda msg: print(msg, flush=True), checkpoint=save)
+    save(comb)
     print(f"saved {out}")
 
 
@@ -358,7 +375,7 @@ def main() -> None:
     fit.add_argument("--lr-input", action="store_true",
                      help="also feed the LR image and its blackout mask to the gate "
                           "(off by default: no PSNR gain, more sky/halo error)")
-    fit.add_argument("--steps", type=int, default=3000)
+    fit.add_argument("--steps", type=int, default=2000)
     fit.add_argument("--batch", type=int, default=8)
     fit.add_argument("--crop", type=int, default=192)
     fit.add_argument("--lr", type=float, default=2e-3)
@@ -366,6 +383,12 @@ def main() -> None:
     fit.add_argument("--holdout", type=int, default=15)
     fit.add_argument("--blackout-fields", type=int, default=40)
     fit.add_argument("--seed", type=int, default=0)
+    fit.add_argument("--knee-loss", action="store_true",
+                     help="score the loss at 11 knees from 0.1 to 1e4 e- (the "
+                          "knee-integrated PSNR) instead of the band knee only")
+    fit.add_argument("--mix", choices=MIX_SPACES, default=MIX_ASINH,
+                     help="average the members in electrons (linear: knee-free, "
+                          "flux-conserving) or in band-knee asinh space")
     fit.add_argument("--members", default="",
                      help="comma-separated member numbers for a pruned gate (e.g. 170,180)")
     fit.set_defaults(func=cmd_fit)
