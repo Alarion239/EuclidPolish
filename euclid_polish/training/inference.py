@@ -176,6 +176,20 @@ def infer_checkpoint_asinh_knees(checkpoint_dir: str) -> tuple[float, ...] | Non
     return None
 
 
+def infer_checkpoint_output_knee(checkpoint_dir: str) -> float | None:
+    """The knee a single-image multi-knee member's one output is stretched at
+    (``output_knee`` in its ``origin.json``); ``None`` otherwise."""
+    for d in (checkpoint_dir, os.path.dirname(checkpoint_dir.rstrip("/"))):
+        try:
+            with open(os.path.join(d, "origin.json")) as f:
+                v = json.load(f).get("output_knee")
+            if v is not None:
+                return float(v)
+        except (OSError, ValueError, TypeError):
+            continue
+    return None
+
+
 def default_head_knee(knees: Sequence[float]) -> float:
     """The image a multi-knee member returns by default: the knee nearest
     (in log) the per-band default stretch."""
@@ -213,6 +227,8 @@ def infer_checkpoint_nchan_out(
         4-in/1-out checkpoints and every VIS-only (1→1) model.
       * per-band skip (the 4-band model) — per-band kernels
         ``(5, 5, 1, scale²)`` with ``nchan_in > 1`` → ``nchan_out = nchan_in``.
+      * per-band skip over ``K`` knees (a single-image multi-knee member) —
+        per-band kernels ``(5, 5, K, scale²)`` → ``nchan_out = nchan_in / K``.
 
     Returns None if no checkpoint / unreadable / no 5×5 kernel found
     (caller falls back to its default).
@@ -235,6 +251,10 @@ def infer_checkpoint_nchan_out(
             return int(shp[3] // scale ** 2)
     if any(shp[2] == 1 for shp in skip_kernels):
         return int(nchan_in)                   # per-band skip: out == in
+    for shp in skip_kernels:
+        knees = int(shp[2])
+        if knees > 1 and shp[3] == scale ** 2 and nchan_in % knees == 0:
+            return int(nchan_in // knees)      # per-band skip over K knees
     return None
 
 
@@ -292,9 +312,13 @@ def load_model_from_checkpoint(
                   f"(requested {num_res_blocks}); using the checkpoint's.")
         num_res_blocks = ckpt_blocks
 
+    # A single-image multi-knee member reads K knee blocks of its bands
+    # (nchan_in = K · nchan_out); rebuild its per-band skip over all K.
+    input_knees = (nchan_in // nchan_out
+                   if 1 < nchan_out < nchan_in and nchan_in % nchan_out == 0 else 1)
     model = wdsr(
         scale=scale, num_res_blocks=num_res_blocks,
-        nchan_in=nchan_in, nchan_out=nchan_out,
+        nchan_in=nchan_in, nchan_out=nchan_out, input_knees=input_knees,
     )
     checkpoint = tf.train.Checkpoint(model=model)
     latest = tf.train.latest_checkpoint(checkpoint_dir)
@@ -380,6 +404,7 @@ def reconstruct(
     knee: float | None = None,
     knees: Sequence[float] | None = None,
     head_knee: float | None = None,
+    output_knee: float | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Apply super-resolution to a single LR image.
@@ -410,6 +435,9 @@ def reconstruct(
         A multi-knee member's knees: the input is stretched at every knee and
         one of the predicted images is returned — ``head_knee``'s, by default
         :func:`default_head_knee` (see :func:`reconstruct_heads` for all).
+    output_knee : float, optional
+        A single-image multi-knee member: the input is stretched at every
+        knee and its one output is un-stretched at this knee.
 
     Returns
     -------
@@ -421,6 +449,13 @@ def reconstruct(
         the 4-band VIS+NISP model — channel 0 is VIS, so legacy callers
         can take ``sr[..., 0]`` (or pass the cube on for color panels).
     """
+    if knees and output_knee is not None:
+        lr_data, lr_for_model = _model_input(model, lr_input, len(knees))
+        stretched = asinh_stretch_multi_knee(tf.constant(lr_for_model), knees)
+        sr = np.clip(resolve_single(model, stretched).numpy().astype(np.float32), -20.0, 20.0)
+        sr_data = (np.sinh(sr) * np.float32(output_knee)).astype(np.float32)
+        lr_display = lr_data[..., 0] if lr_data.ndim == 3 else lr_data
+        return lr_display, sr_data
     if knees:
         lr_data, lr_for_model = _model_input(model, lr_input, len(knees))
         head = default_head_knee(knees) if head_knee is None else float(head_knee)

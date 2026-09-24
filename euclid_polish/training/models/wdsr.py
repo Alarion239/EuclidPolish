@@ -49,7 +49,7 @@ def res_block(x_in, num_filters, expansion, kernel_size, scaling):
 def wdsr(scale, num_filters=32, num_res_blocks=8, res_block_expansion=6,
          res_block_scaling=None, nchan_in=1, nchan_out=None,
          entry_kernel_size=3, skip_kernel_size=5,
-         per_band_skip=None, icnr=False):
+         per_band_skip=None, icnr=False, input_knees=1):
     """WDSR-A model with potentially asymmetric input/output channels.
 
     Parameters
@@ -82,18 +82,24 @@ def wdsr(scale, num_filters=32, num_res_blocks=8, res_block_expansion=6,
                    the dense all-to-all skip is kept for asymmetric /
                    single-channel configs, preserving the legacy layer
                    graph so old checkpoints still restore.
+    input_knees  : knee blocks in the input of a single-image multi-knee
+                   member (``nchan_in = input_knees · nchan_out``, knee-major:
+                   channel ``j·nchan_out + k`` is band ``k`` at knee ``j``).
+                   Output band ``k``'s per-band skip then reads band ``k`` at
+                   every knee, so bands still only mix through the trunk.
 
     Input  : asinh-stretched LR tensor, shape ``(B, H, W, nchan_in)``.
     Output : asinh-stretched SR tensor, shape ``(B, scale*H, scale*W, nchan_out)``.
     """
     if nchan_out is None:
         nchan_out = nchan_in
+    knees = int(input_knees)
     if per_band_skip is None:
-        per_band_skip = (nchan_in == nchan_out and nchan_out > 1)
-    if per_band_skip and nchan_in != nchan_out:
+        per_band_skip = (nchan_in == nchan_out * knees and nchan_out > 1)
+    if per_band_skip and nchan_in != nchan_out * knees:
         raise ValueError(
             f"per_band_skip needs nchan_in == nchan_out (band k → band k); "
-            f"got nchan_in={nchan_in}, nchan_out={nchan_out}"
+            f"got nchan_in={nchan_in}, nchan_out={nchan_out}, input_knees={knees}"
         )
 
     x_in = Input(shape=(None, None, nchan_in))
@@ -125,10 +131,17 @@ def wdsr(scale, num_filters=32, num_res_blocks=8, res_block_expansion=6,
         # to flow through the trunk above.
         s_bands = []
         for k in range(nchan_out):
-            band_in = Lambda(
-                lambda t, k=k: t[..., k:k + 1],
-                name=f'skip_band_{k}_slice',
-            )(x_in)
+            if knees == 1:
+                band_in = Lambda(
+                    lambda t, k=k: t[..., k:k + 1],
+                    name=f'skip_band_{k}_slice',
+                )(x_in)
+            else:
+                # Band k at every knee (knee-major input: stride nchan_out).
+                band_in = Lambda(
+                    lambda t, k=k: t[..., k::nchan_out],
+                    name=f'skip_band_{k}_slice',
+                )(x_in)
             s_k = conv2d_weightnorm(
                 scale ** 2, skip_kernel_size, padding='same',
                 name=f'conv2d_skip_band_{k}_scale_{scale}',

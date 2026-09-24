@@ -154,6 +154,9 @@ class MemberTrainSpec:
     #: Mutually exclusive with ``asinh_knee``; continue/fork read it from
     #: ``origin.json`` (it fixes the channel count).
     asinh_knees: tuple[float, ...] | None = None
+    #: A multi-knee member that outputs ONE image, stretched at this knee and
+    #: scored at every knee (``None`` → one image per knee).
+    output_knee: float | None = None
     #: How a multi-knee member combines its channels' errors ("plain" |
     #: "balanced", see ``training.losses.channel_balanced_loss``).
     knee_loss: str = "plain"
@@ -355,6 +358,8 @@ class EnsembleModel:
                 model_kwargs["asinh_knee"] = spec.asinh_knee
             if spec.asinh_knees:
                 model_kwargs["asinh_knees"] = spec.asinh_knees
+            if spec.output_knee is not None:
+                model_kwargs["output_knee"] = spec.output_knee
             m = Model(d, **model_kwargs)
             if created and spec.op in ("add", "fork"):
                 commit = (capture_git() or {}).get("short")
@@ -403,6 +408,9 @@ class EnsembleModel:
                     # stretch (and the channel count) at train + inference.
                     origin["asinh_knees"] = [float(q) for q in knees]
                     origin["knee_loss"] = spec.knee_loss
+                    output_knee = getattr(m, "_output_knee", spec.output_knee)
+                    if output_knee is not None:
+                        origin["output_knee"] = float(output_knee)
                 with open(os.path.join(d, "origin.json"), "w") as f:
                     json.dump(origin, f, indent=2)
             # Continue resumes from the PSNR-best track — the model eval

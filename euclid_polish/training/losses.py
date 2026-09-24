@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import tensorflow as tf
 
+from euclid_polish.training.augmentation import expand_to_knees
 from euclid_polish.training.loss_names import (  # noqa: F401  (re-exported)
     BERHU_DEFAULT_C,
     KNEE_LOSS_MODES,
@@ -115,3 +116,13 @@ def channel_balanced_loss(name: str):
                                 for i in range(int(a.shape[-1]))])
         return tf.exp(tf.reduce_mean(tf.math.log(tf.maximum(per_channel, 1e-12))))
     return _balanced
+
+
+def knee_expanded_loss(loss, output_knee: float, knees):
+    """Loss of a single-image multi-knee member: its one output (stretched at
+    ``output_knee``) is re-stretched at every knee and compared, channel for
+    channel, with the knee-major multi-knee target by ``loss`` (plain or
+    channel-balanced); signature ``loss(sr, hr)``."""
+    def _loss(sr, hr):
+        return loss(expand_to_knees(sr, output_knee, knees), hr)
+    return _loss

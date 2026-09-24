@@ -151,6 +151,15 @@ def inverse_asinh_stretch_multi_knee(y: tf.Tensor, knees: Sequence[float]) -> tf
                      for i, q in enumerate(knees)], axis=0)
 
 
+def expand_to_knees(y: tf.Tensor, output_knee: float, knees: Sequence[float]) -> tf.Tensor:
+    """A single image stretched at ``output_knee`` → the same image stretched
+    at every knee, knee-major ``(..., K·C)``: the layout of a multi-knee
+    target, so a single-image member is scored channel for channel. Clipped
+    at ±20 before ``sinh``, as at inference."""
+    x = tf.sinh(tf.clip_by_value(y, -20.0, 20.0)) * tf.cast(output_knee, y.dtype)
+    return asinh_stretch_multi_knee(x, knees)
+
+
 def stretch_pair(lr: tf.Tensor, hr: tf.Tensor, *, knee: float | None = None,
                  knees: Sequence[float] | None = None) -> tuple[tf.Tensor, tf.Tensor]:
     """Stretch an (LR, HR) pair the way a member trains: at every knee of a

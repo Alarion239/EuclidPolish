@@ -221,6 +221,7 @@ class Trainer:
         resume_track: str = "latest",
         provenance_fields: dict[str, object] | None = None,
         knees: Sequence[float] | None = None,
+        output_knee: float | None = None,
     ):
         """
         Initialize the trainer.
@@ -263,6 +264,9 @@ class Trainer:
         # A multi-knee member's knees: validation scores each knee's block of
         # channels against its own peak and saves on the mean over knees.
         self._knees = tuple(float(q) for q in knees) if knees else None
+        # A single-image multi-knee member: its one output, stretched at this
+        # knee, is re-stretched at every knee for validation.
+        self._output_knee = float(output_knee) if output_knee is not None else None
         self.nonneg_sr_weight = float(nonneg_sr_weight)
         self._provenance_fields = dict(provenance_fields or {})
         # Build Adam with a CONSTANT, settable learning rate so the divergence
@@ -1022,7 +1026,8 @@ class Trainer:
             and ``psnr_raw``.
         """
         if self._knees:
-            return evaluate(self.checkpoint.model, dataset, knees=self._knees)
+            return evaluate(self.checkpoint.model, dataset, knees=self._knees,
+                            output_knee=self._output_knee)
         return evaluate(self.checkpoint.model, dataset)
 
     def restore(self, track: str = "latest"):

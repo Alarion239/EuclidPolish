@@ -208,6 +208,10 @@ def parse_args(argv=None) -> argparse.Namespace:
                         "knees in and out), so the network sees and predicts "
                         "every brightness scale. Excludes --asinh-knee. ADD "
                         "members only; continue/fork read it from origin.json.")
+    p.add_argument("--output-knee", type=float, default=None,
+                   help="With --asinh-knees: output ONE image, stretched at "
+                        "this knee (e⁻), scored at every knee against the "
+                        "multi-knee target, instead of one image per knee.")
     p.add_argument("--knee-loss", choices=KNEE_LOSS_MODES, default="plain",
                    help="How a multi-knee member combines its channels' "
                         "errors: 'plain' = the --loss over all channels at "
@@ -390,7 +394,8 @@ def _member_overrides(args, k: int) -> list[dict]:
                "hr_crop_size", "icnr",
                "psf_warp_prob", "psf_warp_alpha_max", "psf_warp_sigma",
                "saturation_mask_prob",
-               "starless", "asinh_knee", "asinh_knees", "knee_loss"}
+               "starless", "asinh_knee", "asinh_knees", "knee_loss",
+               "output_knee"}
     for i, o in enumerate(spec):
         bad = set(o) - allowed
         if bad:
@@ -434,6 +439,19 @@ def _diversity_kwargs(args, over: dict) -> dict:
     if knees and knee not in (None, "", 0):
         print("✗ set asinh_knee (one knee) or asinh_knees (multi-knee), not both")
         raise SystemExit(2)
+    output_knee = over.get("output_knee", args.output_knee)
+    if output_knee is not None:
+        if not knees:
+            print("✗ output_knee needs asinh_knees (a multi-knee member)")
+            raise SystemExit(2)
+        try:
+            output_knee = float(output_knee)
+        except (TypeError, ValueError) as exc:
+            print(f"✗ output_knee must be a number, got {output_knee!r}")
+            raise SystemExit(2) from exc
+        if output_knee <= 0:
+            print(f"✗ output_knee must be positive, got {output_knee!r}")
+            raise SystemExit(2)
     saturation_mask_prob = float(over.get(
         "saturation_mask_prob", args.saturation_mask_prob,
     ))
@@ -447,6 +465,7 @@ def _diversity_kwargs(args, over: dict) -> dict:
     return {"loss_norm": str(over.get("loss", args.loss)),
             "asinh_knee": (float(knee) if knee not in (None, "", 0) else None),
             "asinh_knees": knees,
+            "output_knee": output_knee,
             "knee_loss": str(over.get("knee_loss", args.knee_loss)),
             "noise_aug": float(over.get("noise_aug", args.noise_aug)),
             "bootstrap": boot if 0.0 < boot < 1.0 else None,
@@ -769,6 +788,8 @@ def main() -> int:
         if s.asinh_knees:
             knobs += (" asinh_knees=" + ",".join(f"{q:g}" for q in s.asinh_knees)
                       + f"e knee_loss={s.knee_loss}")
+            if s.output_knee is not None:
+                knobs += f" output_knee={s.output_knee:g}e"
         if s.noise_aug:
             knobs += f" noise_aug={s.noise_aug:g}"
         if s.bootstrap:

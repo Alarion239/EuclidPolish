@@ -9,7 +9,7 @@ import math
 import numpy as np
 import pytest
 import tensorflow as tf
-from tf_keras.layers import Input, UpSampling2D
+from tf_keras.layers import Input, Lambda, UpSampling2D
 from tf_keras.models import Model as KerasModel
 
 from euclid_polish import ensemble as ens_mod
@@ -20,16 +20,21 @@ from euclid_polish.training.augmentation import (
     asinh_stretch_hr,
     asinh_stretch_lr,
     asinh_stretch_multi_knee,
+    expand_to_knees,
     inverse_asinh_stretch_multi_knee,
     stretch_pair,
 )
 from euclid_polish.training.inference import (
     default_head_knee,
     infer_checkpoint_asinh_knees,
+    infer_checkpoint_nchan_in,
+    infer_checkpoint_nchan_out,
+    infer_checkpoint_output_knee,
+    load_model_from_checkpoint,
     reconstruct,
     reconstruct_heads,
 )
-from euclid_polish.training.losses import build_loss, channel_balanced_loss
+from euclid_polish.training.losses import build_loss, channel_balanced_loss, knee_expanded_loss
 from euclid_polish.training.models.common import evaluate
 from euclid_polish.training.models.wdsr import wdsr
 from euclid_polish.training.trainer import Trainer
@@ -188,10 +193,12 @@ class _KneeModel:
     """Model stand-in that accepts the knee knobs and records train()."""
 
     def __init__(self, checkpoint_dir, *, scale=2, num_res_blocks=32, seed=None,
-                 init_weights_from=None, icnr=False, asinh_knee=None, asinh_knees=None):
+                 init_weights_from=None, icnr=False, asinh_knee=None, asinh_knees=None,
+                 output_knee=None):
         self._num_res_blocks = num_res_blocks
         self._asinh_knee = asinh_knee
         self._asinh_knees = tuple(asinh_knees) if asinh_knees else None
+        self._output_knee = output_knee
         self.trained: dict = {}
 
     def train(self, lr, hr, **kwargs):
@@ -209,3 +216,94 @@ def test_train_members_records_the_knees_in_origin_json(tmp_path, monkeypatch):
     assert origin["asinh_knees"] == list(KNEES)
     assert origin["knee_loss"] == "plain" and origin["asinh_knee"] is None
     assert ens._models[0].trained["knee_loss"] == "plain"
+
+
+def test_train_members_records_a_single_image_members_output_knee(tmp_path, monkeypatch):
+    monkeypatch.setattr(ens_mod, "Model", _KneeModel)
+    base = tmp_path / "ensemble"
+    spec = MemberTrainSpec(name="member_196", seed=1, target_steps=10, run_steps=10,
+                           loss_norm="l2", asinh_knees=KNEES, knee_loss="balanced",
+                           output_knee=10.0)
+    EnsembleModel(str(base), _models=[]).train_members("lr", "hr", [spec])
+    origin = json.loads((base / "member_196" / "origin.json").read_text())
+    assert origin["output_knee"] == 10.0 and origin["knee_loss"] == "balanced"
+    assert infer_checkpoint_output_knee(str(base / "member_196")) == 10.0
+
+
+# --------------------------------------------------------------------------- #
+# Single-image multi-knee members: every knee in, one image out               #
+# --------------------------------------------------------------------------- #
+def test_single_image_member_reads_every_knee_and_writes_one_image(tmp_path):
+    m = Model(str(tmp_path / "m"), scale=2, num_res_blocks=1, asinh_knees=KNEES,
+              output_knee=10.0)
+    assert m._tf_model.inputs[0].shape[-1] == 24
+    assert m._tf_model.outputs[0].shape[-1] == 4
+    assert m._knee_kw() == {"knees": KNEES, "output_knee": 10.0}
+    with pytest.raises(ValueError):
+        Model(str(tmp_path / "x"), num_res_blocks=1, output_knee=10.0)
+    with pytest.raises(ValueError):
+        m.upsample_heads(np.zeros((4, 4, 4), np.float32))
+
+
+def test_single_image_checkpoint_restores_its_per_band_skip_over_every_knee(tmp_path):
+    model = wdsr(scale=2, num_res_blocks=1, nchan_in=24, nchan_out=4, input_knees=6)
+    d = str(tmp_path / "ckpt")
+    tf.train.Checkpoint(model=model).save(d + "/ckpt")
+    assert infer_checkpoint_nchan_in(d) == 24
+    assert infer_checkpoint_nchan_out(d, scale=2, nchan_in=24) == 4
+    loaded = load_model_from_checkpoint(d, scale=2, num_res_blocks=1)
+    x = tf.constant(np.random.default_rng(4).normal(size=(1, 6, 6, 24)).astype(np.float32))
+    np.testing.assert_allclose(loaded(x).numpy(), model(x).numpy(), rtol=1e-5, atol=1e-5)
+    # Band k's skip sees band k at every knee and no other band.
+    with pytest.raises(ValueError):
+        wdsr(scale=2, num_res_blocks=1, nchan_in=24, nchan_out=4, per_band_skip=True)
+
+
+def test_one_image_is_scored_at_every_knee():
+    rng = np.random.default_rng(5)
+    hr_e = tf.constant(rng.uniform(0.0, 3000.0, (1, 8, 8, 4)).astype(np.float32))
+    y = tf.asinh(hr_e / 10.0)
+    np.testing.assert_allclose(expand_to_knees(y, 10.0, KNEES),
+                               asinh_stretch_multi_knee(hr_e, KNEES), rtol=1e-4, atol=1e-5)
+    target = asinh_stretch_multi_knee(hr_e, KNEES)
+    for loss in (build_loss("l2"), channel_balanced_loss("l2")):
+        assert float(knee_expanded_loss(loss, 10.0, KNEES)(y, target)) < 1e-4
+        assert float(knee_expanded_loss(loss, 10.0, KNEES)(y + 0.01, target)) > 1e-4
+    metrics = evaluate(lambda _lr: y + 0.001, [(tf.zeros((1, 4, 4, 24)), target)],
+                       knees=KNEES, output_knee=10.0)
+    assert metrics["psnr_knee"].shape == (6,)
+    assert np.isfinite(float(metrics["psnr_stretched"]))
+
+
+def test_reconstruct_returns_a_single_image_members_one_image():
+    inp = Input(shape=(None, None, 24))
+    knee10 = Lambda(lambda t: t[..., 8:12])(inp)            # the 10 e- block
+    model = KerasModel(inp, UpSampling2D(size=2, interpolation="nearest")(knee10))
+    x = np.random.default_rng(6).uniform(1.0, 500.0, (6, 6, 4)).astype(np.float32)
+    _lr, sr = reconstruct(model, x, knees=KNEES, output_knee=10.0)
+    np.testing.assert_allclose(sr, np.kron(x, np.ones((2, 2, 1), np.float32)), rtol=1e-4)
+
+
+def test_trainer_steps_a_single_image_member(tmp_path):
+    rng = np.random.default_rng(7)
+    lr_e = tf.constant(rng.uniform(0, 200, (2, 8, 8, 4)).astype(np.float32))
+    hr_e = tf.constant(rng.uniform(0, 200, (2, 16, 16, 4)).astype(np.float32))
+    lr, hr = stretch_pair(lr_e, hr_e, knees=KNEES)
+    model = wdsr(scale=2, num_res_blocks=1, nchan_in=24, nchan_out=4, input_knees=6)
+    loss = knee_expanded_loss(channel_balanced_loss("l2"), 10.0, KNEES)
+    trainer = Trainer(model, loss=loss, learning_rate=1e-3, checkpoint_dir=str(tmp_path),
+                      knees=KNEES, output_knee=10.0)
+    value, gnorm = trainer.train_step(lr, hr)
+    assert np.isfinite(float(value)) and np.isfinite(float(gnorm))
+    assert np.isfinite(trainer._validate(tf.data.Dataset.from_tensors((lr, hr)), 1)["psnr_str"])
+
+
+def test_member_spec_makes_a_single_image_member(tmp_path):
+    args = parse_args(["--count", "1", "--steps", "10", "--member-spec", json.dumps(
+        [{"asinh_knees": list(KNEES), "output_knee": 10, "knee_loss": "balanced"}])])
+    spec = build_specs(args, str(tmp_path / "ens"))[0]
+    assert spec.output_knee == 10.0 and spec.asinh_knees == KNEES
+    bad = parse_args(["--count", "1", "--steps", "10",
+                      "--member-spec", json.dumps([{"output_knee": 10}])])
+    with pytest.raises(SystemExit):
+        build_specs(bad, str(tmp_path / "ens2"))
