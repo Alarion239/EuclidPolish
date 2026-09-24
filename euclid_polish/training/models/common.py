@@ -1,3 +1,6 @@
+import math
+from collections.abc import Sequence
+
 import tensorflow as tf
 from tf_keras.initializers import GlorotUniform, Initializer
 
@@ -29,8 +32,12 @@ def _to_electrons(stretched: tf.Tensor) -> tf.Tensor:
     return tf.sinh(tf.clip_by_value(stretched, -_SINH_CLIP, _SINH_CLIP)) * _STRETCH_SCALE
 
 
-def evaluate(model, dataset):
+def evaluate(model, dataset, knees: Sequence[float] | None = None):
     """Validation metrics — PSNR in both stretched and raw space.
+
+    ``knees`` marks a multi-knee member (channels = knee-major blocks of
+    bands, see ``asinh_stretch_multi_knee``); its metrics come from
+    :func:`_evaluate_multi_knee`.
 
     Peaks come from ``Config.PSNR_PEAK_*`` (mag-17 star electron count and
     its asinh-mapped value under STRETCH_SCALE_E). Set-mean of per-image
@@ -54,6 +61,8 @@ def evaluate(model, dataset):
                            noisier NISP channels improve independently
                            of the NISP-dominated joint number.
     """
+    if knees:
+        return _evaluate_multi_knee(model, dataset, knees)
     psnr_str_list  = []
     psnr_raw_list  = []
     mae_str_list   = []
@@ -88,6 +97,53 @@ def evaluate(model, dataset):
         "mae_stretched":  tf.reduce_mean(mae_str_list),
         "psnr_band_stretched": tf.reduce_mean(
             tf.concat(psnr_band_list, axis=0), axis=0),                 # (C,)
+    }
+
+
+def _evaluate_multi_knee(model, dataset, knees: Sequence[float]) -> dict:
+    """Validation metrics for a multi-knee member.
+
+    Each knee's block of bands is scored against its own stretched peak
+    ``asinh(PSNR_PEAK_E / knee)`` — one shared peak would let the low knees,
+    whose stretched range is widest, decide every comparison. The save-best
+    metric ``psnr_stretched`` is the mean over knees of the per-knee PSNR:
+    with log-spaced knees, the knee-grid analogue of the knee-integrated PSNR.
+    ``psnr_knee`` ``(K,)`` is logged; ``psnr_band_stretched`` ``(C,)`` is each
+    band's PSNR averaged over knees; ``psnr_raw`` scores, in electrons, the
+    head whose knee is nearest the per-band default; ``mae_stretched`` is the
+    plain mean absolute error over every channel (the loss track's metric).
+    """
+    n_k = len(knees)
+    peaks = tf.constant([math.asinh(float(Config.PSNR_PEAK_E) / float(q)) for q in knees],
+                        dtype=tf.float32)                                  # (K,)
+    head = min(range(n_k), key=lambda i: abs(math.log(float(knees[i])
+                                                      / float(Config.STRETCH_SCALE_E))))
+    head_knee = tf.constant(float(knees[head]), dtype=tf.float32)
+    ln10 = tf.constant(2.302585092994046, dtype=tf.float32)
+    knee_list, band_list, mae_list, raw_list = [], [], [], []
+    for lr, hr in dataset:
+        sr = model(lr)
+        c = int(hr.shape[-1]) // n_k
+        shape = tf.shape(hr)
+        err2 = tf.reshape(tf.square(hr - sr), [shape[0], shape[1], shape[2], n_k, c])
+        mse_kc = tf.reduce_mean(err2, axis=[1, 2])                          # (B, K, C)
+        mse_k = tf.reduce_mean(mse_kc, axis=2)                              # (B, K)
+        knee_list.append(10.0 * tf.math.log(
+            peaks ** 2 / tf.maximum(mse_k, 1e-30)) / ln10)
+        band_list.append(tf.reduce_mean(10.0 * tf.math.log(
+            (peaks ** 2)[None, :, None] / tf.maximum(mse_kc, 1e-30)) / ln10, axis=1))
+        mae_list.append(tf.reduce_mean(tf.abs(hr - sr)))
+        block = slice(head * c, (head + 1) * c)
+        hr_e = tf.sinh(tf.clip_by_value(hr[..., block], -_SINH_CLIP, _SINH_CLIP)) * head_knee
+        sr_e = tf.sinh(tf.clip_by_value(sr[..., block], -_SINH_CLIP, _SINH_CLIP)) * head_knee
+        raw_list.append(tf.image.psnr(hr_e, sr_e, max_val=_PSNR_MAX_VAL_RAW))
+    psnr_knee = tf.reduce_mean(tf.concat(knee_list, axis=0), axis=0)       # (K,)
+    return {
+        "psnr_stretched": tf.reduce_mean(psnr_knee),
+        "psnr_knee": psnr_knee,
+        "psnr_raw": tf.reduce_mean(tf.concat(raw_list, axis=0)),
+        "mae_stretched": tf.reduce_mean(mae_list),
+        "psnr_band_stretched": tf.reduce_mean(tf.concat(band_list, axis=0), axis=0),
     }
 
 

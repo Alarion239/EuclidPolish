@@ -5,6 +5,8 @@ These are pure TF graph functions used by :meth:`Model._build_training_pipeline`
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import numpy as np
 import tensorflow as tf
 
@@ -124,6 +126,39 @@ def inverse_asinh_stretch_hr(y: tf.Tensor, num_channels: int | None = None,
     if knee is not None:
         return tf.sinh(y) * tf.cast(knee, y.dtype)
     return tf.sinh(y) * _hr_scale_for(y, num_channels)
+
+
+def asinh_stretch_multi_knee(x: tf.Tensor, knees: Sequence[float]) -> tf.Tensor:
+    """``asinh(x / q)`` at every knee ``q``, concatenated knee-major on the
+    channel axis: ``(..., C)`` → ``(..., len(knees)·C)``, channel ``k·C + c``
+    being band ``c`` at knee ``k``.
+
+    The input and target of a multi-knee member: it sees faint structure at
+    the low knees and bright cores nearly linear at the high ones, and
+    predicts every knee's image. Knee-major blocks keep output channel ``i``
+    paired with input channel ``i``, so the WDSR per-channel skip maps each
+    band-knee to itself.
+    """
+    return tf.concat([tf.asinh(x / tf.cast(q, x.dtype)) for q in knees], axis=-1)
+
+
+def inverse_asinh_stretch_multi_knee(y: tf.Tensor, knees: Sequence[float]) -> tf.Tensor:
+    """Inverse of :func:`asinh_stretch_multi_knee`: ``(..., K·C)`` stretched →
+    ``(K, ..., C)`` electrons, one image per knee."""
+    n = len(knees)
+    c = int(y.shape[-1]) // n
+    return tf.stack([tf.sinh(y[..., i * c:(i + 1) * c]) * tf.cast(q, y.dtype)
+                     for i, q in enumerate(knees)], axis=0)
+
+
+def stretch_pair(lr: tf.Tensor, hr: tf.Tensor, *, knee: float | None = None,
+                 knees: Sequence[float] | None = None) -> tuple[tf.Tensor, tf.Tensor]:
+    """Stretch an (LR, HR) pair the way a member trains: at every knee of a
+    multi-knee member (``knees``), else at its single ``knee`` (``None`` →
+    the per-band default)."""
+    if knees:
+        return asinh_stretch_multi_knee(lr, knees), asinh_stretch_multi_knee(hr, knees)
+    return asinh_stretch_lr(lr, knee=knee), asinh_stretch_hr(hr, knee=knee)
 
 
 # ---------------------------------------------------------------------------

@@ -32,6 +32,7 @@ import tensorflow as tf
 
 from euclid_polish.training.loss_names import (  # noqa: F401  (re-exported)
     BERHU_DEFAULT_C,
+    KNEE_LOSS_MODES,
     LOSS_NAMES,
     LOSS_NORMS,
     MSE_NAME,
@@ -92,3 +93,26 @@ def build_loss(name: str = "l1"):
     if key in LOSS_NORMS:
         return lp_loss(key)
     raise ValueError(f"unknown loss {name!r}; use one of {sorted(LOSS_NAMES)}")
+
+
+def knee_balanced_loss(name: str, n_knees: int):
+    """``name``'s loss per knee block (channels are knee-major blocks of
+    bands), combined by their geometric mean; signature ``loss(a, b)``.
+
+    Minimising the geometric mean minimises the mean log error over knees,
+    i.e. maximises the mean PSNR over knees. The plain loss over all channels
+    is instead dominated by the lowest knees, whose stretched residuals are
+    orders of magnitude larger. The result keeps the per-knee losses' units,
+    so the LR schedule, clipping and spike guard need no retuning.
+    """
+    base = build_loss(name)
+    k = int(n_knees)
+    if k < 1:
+        raise ValueError(f"n_knees must be positive, got {n_knees}")
+
+    def _balanced(a, b):
+        c = int(a.shape[-1]) // k
+        per_knee = tf.stack([base(a[..., i * c:(i + 1) * c], b[..., i * c:(i + 1) * c])
+                             for i in range(k)])
+        return tf.exp(tf.reduce_mean(tf.math.log(tf.maximum(per_knee, 1e-12))))
+    return _balanced

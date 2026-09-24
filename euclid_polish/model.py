@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import glob as _glob
 import os as _os
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import cast
 
 import numpy as np
@@ -27,10 +27,9 @@ from euclid_polish.provenance.records import Stamp
 from euclid_polish.training.augmentation import (
     _augment_multiband,
     add_lr_noise,
-    asinh_stretch_hr,
-    asinh_stretch_lr,
     blur_target_tf,
     random_dihedral,
+    stretch_pair,
 )
 from euclid_polish.training.forward_onthefly import (
     DEFAULT_CROPS_PER_FIELD,
@@ -42,6 +41,9 @@ from euclid_polish.training.inference import (
     infer_checkpoint_asinh_knee as _infer_asinh_knee,
 )
 from euclid_polish.training.inference import (
+    infer_checkpoint_asinh_knees as _infer_asinh_knees,
+)
+from euclid_polish.training.inference import (
     infer_checkpoint_num_res_blocks as _infer_num_res_blocks,
 )
 from euclid_polish.training.inference import (
@@ -50,8 +52,9 @@ from euclid_polish.training.inference import (
 from euclid_polish.training.inference import (
     reconstruct as _default_reconstruct,
 )
+from euclid_polish.training.inference import reconstruct_heads
 from euclid_polish.training.loss_names import plateau_guard_applies
-from euclid_polish.training.losses import build_loss
+from euclid_polish.training.losses import KNEE_LOSS_MODES, build_loss, knee_balanced_loss
 from euclid_polish.training.lr_schedule import WarmupCosineDecay
 from euclid_polish.training.models.wdsr import wdsr as _wdsr_build
 from euclid_polish.training.target_blur import validate_target_fwhm_arcsec
@@ -145,6 +148,7 @@ class Model:
         init_weights_from: str | None = None,
         icnr: bool = False,
         asinh_knee: float | None = None,
+        asinh_knees: Sequence[float] | None = None,
         _load_fn: Callable | None = None,
         _reconstruct_fn: Callable | None = None,
     ) -> None:
@@ -158,6 +162,14 @@ class Model:
         # a fresh build takes the passed value. ``None`` → per-band config
         # default (100 e⁻), so pre-knob members are bit-identical.
         self._asinh_knee: float | None = asinh_knee
+        # Multi-knee member: input and target stretched at EVERY knee and
+        # stacked knee-major on the channel axis (4 bands × K knees in and
+        # out); the model predicts each knee's image. Architecture-bound (it
+        # sets the channel count), so a resume/fork reads it from origin.json.
+        if asinh_knee is not None and asinh_knees:
+            raise ValueError("pass asinh_knee (one knee) or asinh_knees, not both")
+        self._asinh_knees: tuple[float, ...] | None = (
+            tuple(float(q) for q in asinh_knees) if asinh_knees else None)
         # ICNR init only shapes a FROM-SCRATCH build (below); fork/resume load
         # weights from a checkpoint, so it has no effect there.
         self._icnr = bool(icnr)
@@ -192,6 +204,7 @@ class Model:
             # with — read it from the sidecar (the passed value is ignored,
             # like depth), so continue never silently re-normalizes.
             self._asinh_knee = _infer_asinh_knee(checkpoint_dir)
+            self._asinh_knees = _infer_asinh_knees(checkpoint_dir)
             self.id: ProvId | None = model_id_of_checkpoint(checkpoint_dir)
         elif init_weights_from is not None:
             # Fork: build the new member AS the source model — loading the
@@ -215,6 +228,13 @@ class Model:
             # passed knee still wins (e.g. a deliberate re-normalizing fork).
             if asinh_knee is None:
                 self._asinh_knee = _infer_asinh_knee(init_weights_from)
+            # The knee list fixes the channel count, so a fork always takes
+            # the source's.
+            src_knees = _infer_asinh_knees(init_weights_from)
+            if self._asinh_knees is not None and self._asinh_knees != src_knees:
+                raise ValueError(f"fork source trained on knees {src_knees}; "
+                                 f"cannot fork it as {self._asinh_knees}")
+            self._asinh_knees = src_knees
             self.id = None
             print(f"  ✓ fork: architecture + weights from {init_weights_from}")
         else:
@@ -225,10 +245,11 @@ class Model:
             # and dies on 4-band data ("expected shape (…, 1), found (…, 4)").
             # Resumed checkpoints introspect their own nchan in load_model_from_
             # checkpoint, so they are unaffected.
+            n_knees = len(self._asinh_knees) if self._asinh_knees else 1
             self._tf_model = _wdsr_build(
                 scale=scale, num_res_blocks=num_res_blocks,
-                nchan_in=Config.NUM_LR_CHANNELS,
-                nchan_out=Config.NUM_HR_CHANNELS,
+                nchan_in=Config.NUM_LR_CHANNELS * n_knees,
+                nchan_out=Config.NUM_HR_CHANNELS * n_knees,
                 icnr=self._icnr)
             self.id = None
 
@@ -302,12 +323,13 @@ class Model:
             noise_rn = float(noise_aug_rn)
 
             knee = self._asinh_knee    # per-member stretch (None → per-band 100 e⁻)
+            knees = self._asinh_knees
 
             def _crop_then_stretch(lr, hr):
                 lr, hr = _augment_multiband(lr, hr, hr_crop, scale)
                 lr, hr = random_dihedral(lr, hr)
                 lr = add_lr_noise(lr, noise_rn)
-                return asinh_stretch_lr(lr, knee=knee), asinh_stretch_hr(hr, knee=knee)
+                return stretch_pair(lr, hr, knee=knee, knees=knees)
 
             ds = (ds.shuffle(200)
                     .map(_crop_then_stretch, num_parallel_calls=AUTOTUNE)
@@ -317,8 +339,8 @@ class Model:
             # (trained on knee-normalized inputs) would be validated on a
             # different normalization and save-best would track garbage.
             knee = self._asinh_knee
-            ds = ds.map(lambda lr, hr: (asinh_stretch_lr(lr, knee=knee),
-                                        asinh_stretch_hr(hr, knee=knee)),
+            knees = self._asinh_knees
+            ds = ds.map(lambda lr, hr: stretch_pair(lr, hr, knee=knee, knees=knees),
                         num_parallel_calls=AUTOTUNE)
         return ds.batch(batch_size).prefetch(AUTOTUNE)
 
@@ -374,11 +396,12 @@ class Model:
 
         noise_rn = float(noise_aug_rn)
         knee = self._asinh_knee    # per-member stretch (None → per-band 100 e⁻)
+        knees = self._asinh_knees
 
         def _augment_then_stretch(lr, hr):
             lr, hr = random_dihedral(lr, hr)
             lr = add_lr_noise(lr, noise_rn)
-            return asinh_stretch_lr(lr, knee=knee), asinh_stretch_hr(hr, knee=knee)
+            return stretch_pair(lr, hr, knee=knee, knees=knees)
 
         # Field-level shuffle is small (each element is a full 510² field);
         # the crop-level shuffle after unbatch de-correlates the K siblings
@@ -427,6 +450,7 @@ class Model:
         target_fwhm_arcsec: float = Config.TARGET_PSF_FWHM_ARCSEC,
         star_prior_payload: dict | None = None,
         starless: bool = False,
+        knee_loss: str = "plain",
         **kwargs,
     ) -> None:
         """Train the model on TFRecord files at ``lr_path`` and ``hr_path``.
@@ -555,9 +579,16 @@ class Model:
             # Live training draws noise from the code's noise model; record it
             # the same way generated records do.
             provenance_fields["noise_model"] = Config.NOISE_MODEL
+        # A multi-knee member's loss: ``plain`` = the loss over all channels
+        # at once; ``balanced`` = every knee weighted equally.
+        if knee_loss not in KNEE_LOSS_MODES:
+            raise ValueError(f"knee_loss must be one of {KNEE_LOSS_MODES}, got {knee_loss!r}")
+        loss = (knee_balanced_loss(loss_norm, len(self._asinh_knees))
+                if self._asinh_knees and knee_loss == "balanced"
+                else build_loss(loss_norm))
         trainer = Trainer(self._tf_model, learning_rate=lr_schedule,
                           checkpoint_dir=self._checkpoint_dir,
-                          loss=build_loss(loss_norm),
+                          loss=loss, knees=self._asinh_knees,
                           seed=self._seed, deterministic=self._deterministic,
                           plateau_lr_enabled=plateau_lr_enabled,
                           plateau_lr_factor=plateau_lr_factor,
@@ -583,11 +614,23 @@ class Model:
 
     def _knee_kw(self) -> dict:
         """``{"knee": …}`` for the reconstruct call when this member trained
-        under a non-default asinh knee, else ``{}`` — so the default-100 e⁻
-        path is byte-for-byte the old call and test-injected reconstruct
-        doubles (which take no ``knee``) keep working."""
+        under a non-default asinh knee (``{"knees": …}`` for a multi-knee
+        member), else ``{}`` — so the default-100 e⁻ path is byte-for-byte
+        the old call and test-injected reconstruct doubles (which take no
+        ``knee``) keep working."""
+        knees = getattr(self, "_asinh_knees", None)
+        if knees:
+            return {"knees": knees}
         knee = getattr(self, "_asinh_knee", None)
         return {} if knee is None else {"knee": knee}
+
+    def upsample_heads(self, arr: np.ndarray) -> np.ndarray:
+        """Every knee's SR image of a multi-knee member: ``(K, H·scale,
+        W·scale, C)`` electrons in knee order (``upsample_array`` returns one
+        of them)."""
+        if not getattr(self, "_asinh_knees", None):
+            raise ValueError("upsample_heads needs a multi-knee member")
+        return reconstruct_heads(self._tf_model, arr, knees=self._asinh_knees)
 
     def upsample_array(self, arr: np.ndarray) -> np.ndarray:
         """Super-resolve a bare numpy array (raw electrons); return the SR array.

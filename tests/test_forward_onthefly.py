@@ -345,6 +345,29 @@ def test_onthefly_pipeline_yields_batches(gaussian_sets, tmp_path):
     assert np.isfinite(lr.numpy()).all()
 
 
+def test_onthefly_pipeline_stretches_every_knee(gaussian_sets, tmp_path):
+    """A multi-knee member gets LR and target stretched at each knee, stacked
+    knee-major; every block encodes the same electrons."""
+    imgs = [Image(data=_field(seed=i), pixel_scale_arcsec=0.05,
+                  band_names=Config.HR_TARGET_BAND_NAMES, is_clean=True,
+                  index=i) for i in range(3)]
+    write_images(imgs, "clean_train", records_dir=str(tmp_path))
+    m = Model(str(tmp_path / "ckpt"), scale=2, num_res_blocks=1,
+              asinh_knees=(1.0, 100.0))
+    fwd = OnTheFlyForward(
+        gaussian_sets, seed=4, crops_per_field=4, hr_crop_size=CROP,
+        inject_stars=False,
+    )
+    ds = m._build_onthefly_pipeline(
+        tfrecord_path(str(tmp_path), "clean_train"), 8, fwd)
+    lr, hr = next(iter(ds))
+    assert lr.shape == (8, CROP // 2, CROP // 2, 8)
+    assert hr.shape == (8, CROP, CROP, 8)
+    for x in (lr.numpy(), hr.numpy()):
+        np.testing.assert_allclose(np.sinh(x[..., :4]) * 1.0, np.sinh(x[..., 4:]) * 100.0,
+                                   rtol=1e-3, atol=1e-2)
+
+
 def test_new_onthefly_geometry_defaults(gaussian_sets):
     fwd = OnTheFlyForward(gaussian_sets, seed=1, inject_stars=False)
     assert fwd.crops_per_field == DEFAULT_CROPS_PER_FIELD == 8

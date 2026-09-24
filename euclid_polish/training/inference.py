@@ -6,15 +6,23 @@ images and visualizing the results.
 """
 
 
+import json
+import math
 import os
 import re
+from collections.abc import Sequence
 
 import numpy as np
 import tensorflow as tf
 from astropy.wcs import WCS
 
 from euclid_polish.config import Config
-from euclid_polish.training.augmentation import asinh_stretch_lr, inverse_asinh_stretch_hr
+from euclid_polish.training.augmentation import (
+    asinh_stretch_lr,
+    asinh_stretch_multi_knee,
+    inverse_asinh_stretch_hr,
+    inverse_asinh_stretch_multi_knee,
+)
 from euclid_polish.training.models.common import resolve_single
 from euclid_polish.training.models.wdsr import wdsr
 
@@ -142,7 +150,6 @@ def infer_checkpoint_asinh_knee(checkpoint_dir: str) -> float | None:
     sidecar or no ``asinh_knee`` field → the caller falls back to the per-band
     config default (100 e⁻), which is what every pre-knob member trained under.
     """
-    import json
     for d in (checkpoint_dir, os.path.dirname(checkpoint_dir.rstrip("/"))):
         try:
             with open(os.path.join(d, "origin.json")) as f:
@@ -152,6 +159,27 @@ def infer_checkpoint_asinh_knee(checkpoint_dir: str) -> float | None:
         except (OSError, ValueError, TypeError):
             continue
     return None
+
+
+def infer_checkpoint_asinh_knees(checkpoint_dir: str) -> tuple[float, ...] | None:
+    """The knees a multi-knee member trained under (``asinh_knees`` in its
+    ``origin.json``, checkpoint dir then parent, as for the single knee);
+    ``None`` for a single-knee member."""
+    for d in (checkpoint_dir, os.path.dirname(checkpoint_dir.rstrip("/"))):
+        try:
+            with open(os.path.join(d, "origin.json")) as f:
+                v = json.load(f).get("asinh_knees")
+            if v:
+                return tuple(float(q) for q in v)
+        except (OSError, ValueError, TypeError):
+            continue
+    return None
+
+
+def default_head_knee(knees: Sequence[float]) -> float:
+    """The image a multi-knee member returns by default: the knee nearest
+    (in log) the per-band default stretch."""
+    return min(knees, key=lambda q: abs(math.log(float(q) / float(Config.STRETCH_SCALE_E))))
 
 
 def checkpoint_step(checkpoint_dir: str) -> int | None:
@@ -278,47 +306,11 @@ def load_model_from_checkpoint(
     return model
 
 
-def reconstruct(
-    model,
-    lr_input,
-    *,
-    knee: float | None = None,
-) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Apply super-resolution to a single LR image.
-
-    Inputs and outputs are raw float32 electrons (over the stacked Euclid VIS
-    integration). Internally this function
-
-      1. asinh-stretches the input by the model's training knee,
-      2. runs the model (which operates entirely in stretched space),
-      3. clips the stretched output for safety, and
-      4. applies sinh × scale to recover electrons.
-
-    Parameters
-    ----------
-    model : tf.keras.Model
-        Trained WDSR model.
-    lr_input : str or np.ndarray
-        Either a ``.npy`` file path or a numpy array in raw electron units.
-    knee : float, optional
-        The asinh stretch knee (electrons) this model was TRAINED under —
-        the input stretch and output un-stretch must match it, or the model
-        sees a different normalization than it learned. ``None`` → the
-        per-band config default (100 e⁻), correct for every pre-knob model.
-        A member with a non-default knee passes its own here so its electron
-        output is exact and stays comparable with the rest of the ensemble.
-
-    Returns
-    -------
-    lr_data : ndarray, shape (H, W)
-        The input LR image (2-D VIS plane, raw electrons).
-    sr_data : ndarray, shape (H', W') or (H', W', C)
-        The super-resolved output in raw electrons. 2-D for a
-        single-output (VIS-only / legacy) model; a (H', W', 4) cube for
-        the 4-band VIS+NISP model — channel 0 is VIS, so legacy callers
-        can take ``sr[..., 0]`` (or pass the cube on for color panels).
-    """
+def _model_input(model, lr_input, n_knees: int = 1) -> tuple[np.ndarray, np.ndarray]:
+    """``lr_input`` (``.npy`` path or array, electrons) → ``(lr_data,
+    lr_for_model)``: the loaded array and its ``(H, W, C)`` bands matched to
+    what the model reads (``n_knees`` stretched copies of each band for a
+    multi-knee member)."""
     if isinstance(lr_input, str):
         if lr_input.endswith(".npy"):
             lr_data = np.load(lr_input).astype(np.float32)
@@ -350,7 +342,7 @@ def reconstruct(
     # selects the right leading channels for either. Callers can therefore
     # always hand us the full 4-band cube and let the model decide.
     try:
-        n_in = int(model.inputs[0].shape[-1])
+        n_in = int(model.inputs[0].shape[-1]) // max(int(n_knees), 1)
     except (AttributeError, IndexError, TypeError):
         n_in = lr_for_model.shape[-1]
     c = lr_for_model.shape[-1]
@@ -361,6 +353,85 @@ def reconstruct(
             f"reconstruct(): model expects {n_in} input channels but the LR "
             f"input has only {c}"
         )
+    return lr_data, lr_for_model
+
+
+def reconstruct_heads(model, lr_input, *, knees: Sequence[float]) -> np.ndarray:
+    """Every knee's SR image of a multi-knee member: ``(K, H', W', C)``
+    electrons, in ``knees`` order (the model predicts ``asinh(x / q)`` for
+    each knee ``q``; each block is un-stretched with its own knee)."""
+    _lr_data, lr_for_model = _model_input(model, lr_input, len(knees))
+    return _heads_from_bands(model, lr_for_model, knees)
+
+
+def _heads_from_bands(model, lr_for_model: np.ndarray, knees: Sequence[float]) -> np.ndarray:
+    stretched = asinh_stretch_multi_knee(tf.constant(lr_for_model), knees)
+    sr = resolve_single(model, stretched).numpy().astype(np.float32)
+    # Same ±20 guard as the single-knee path (see ``reconstruct``).
+    sr = np.clip(sr, -20.0, 20.0)
+    return inverse_asinh_stretch_multi_knee(
+        tf.constant(sr), knees).numpy().astype(np.float32)
+
+
+def reconstruct(
+    model,
+    lr_input,
+    *,
+    knee: float | None = None,
+    knees: Sequence[float] | None = None,
+    head_knee: float | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Apply super-resolution to a single LR image.
+
+    Inputs and outputs are raw float32 electrons (over the stacked Euclid VIS
+    integration). Internally this function
+
+      1. asinh-stretches the input by the model's training knee,
+      2. runs the model (which operates entirely in stretched space),
+      3. clips the stretched output for safety, and
+      4. applies sinh × scale to recover electrons.
+
+    Parameters
+    ----------
+    model : tf.keras.Model
+        Trained WDSR model.
+    lr_input : str or np.ndarray
+        Either a ``.npy`` file path or a numpy array in raw electron units.
+    knee : float, optional
+        The asinh stretch knee (electrons) this model was TRAINED under —
+        the input stretch and output un-stretch must match it, or the model
+        sees a different normalization than it learned. ``None`` → the
+        per-band config default (100 e⁻), correct for every pre-knob model.
+        A member with a non-default knee passes its own here so its electron
+        output is exact and stays comparable with the rest of the ensemble.
+
+    knees : sequence of float, optional
+        A multi-knee member's knees: the input is stretched at every knee and
+        one of the predicted images is returned — ``head_knee``'s, by default
+        :func:`default_head_knee` (see :func:`reconstruct_heads` for all).
+
+    Returns
+    -------
+    lr_data : ndarray, shape (H, W)
+        The input LR image (2-D VIS plane, raw electrons).
+    sr_data : ndarray, shape (H', W') or (H', W', C)
+        The super-resolved output in raw electrons. 2-D for a
+        single-output (VIS-only / legacy) model; a (H', W', 4) cube for
+        the 4-band VIS+NISP model — channel 0 is VIS, so legacy callers
+        can take ``sr[..., 0]`` (or pass the cube on for color panels).
+    """
+    if knees:
+        lr_data, lr_for_model = _model_input(model, lr_input, len(knees))
+        head = default_head_knee(knees) if head_knee is None else float(head_knee)
+        if head not in [float(q) for q in knees]:
+            raise ValueError(f"head_knee {head_knee} is not one of the member's knees {knees}")
+        heads = _heads_from_bands(model, lr_for_model, knees)
+        sr_data = heads[[float(q) for q in knees].index(head)]
+        lr_display = lr_data[..., 0] if lr_data.ndim == 3 else lr_data
+        return lr_display, sr_data
+
+    lr_data, lr_for_model = _model_input(model, lr_input)
 
     # Stretch → model → unstretch. ``clip(±20)`` is a defensive guard against
     # an untrained / pathological model output: ``sinh(20) ≈ 2.4×10⁸``, well

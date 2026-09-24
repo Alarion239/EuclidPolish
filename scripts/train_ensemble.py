@@ -54,7 +54,7 @@ from euclid_polish.training.forward_onthefly import (  # noqa: E402
     DEFAULT_ONTHEFLY_HR_CROP_SIZE,
 )
 from euclid_polish.training.inference import checkpoint_step  # noqa: E402
-from euclid_polish.training.loss_names import LOSS_NAMES  # noqa: E402
+from euclid_polish.training.loss_names import KNEE_LOSS_MODES, LOSS_NAMES  # noqa: E402
 from euclid_polish.training.staging import stage_records  # noqa: E402
 from euclid_polish.training.target_blur import (  # noqa: E402
     validate_target_fwhm_arcsec,
@@ -200,6 +200,19 @@ def parse_args(argv=None) -> argparse.Namespace:
                         "with no TFRecord regen (it's an on-the-fly "
                         "normalization). ADD members only; continue/fork "
                         "inherit the existing/source member's knee.")
+    p.add_argument("--asinh-knees", default="",
+                   help="Comma-separated asinh knees in ELECTRONS for a "
+                        "MULTI-KNEE member (e.g. 0.1,1,10,100,1000,10000): the "
+                        "LR input and the HR target are stretched at every "
+                        "knee and stacked on the channel axis (4 bands x K "
+                        "knees in and out), so the network sees and predicts "
+                        "every brightness scale. Excludes --asinh-knee. ADD "
+                        "members only; continue/fork read it from origin.json.")
+    p.add_argument("--knee-loss", choices=KNEE_LOSS_MODES, default="plain",
+                   help="How a multi-knee member combines its knees' errors: "
+                        "'plain' = the --loss over all channels at once; "
+                        "'balanced' = every knee weighted equally (geometric "
+                        "mean of the per-knee losses).")
     p.add_argument("--target-psf-fwhm-arcsec", type=float,
                    default=Config.TARGET_PSF_FWHM_ARCSEC,
                    help="Desired Gaussian PSF FWHM of PSF-free clean/HR "
@@ -375,7 +388,7 @@ def _member_overrides(args, k: int) -> list[dict]:
                "hr_crop_size", "icnr",
                "psf_warp_prob", "psf_warp_alpha_max", "psf_warp_sigma",
                "saturation_mask_prob",
-               "starless", "asinh_knee"}
+               "starless", "asinh_knee", "asinh_knees", "knee_loss"}
     for i, o in enumerate(spec):
         bad = set(o) - allowed
         if bad:
@@ -386,7 +399,28 @@ def _member_overrides(args, k: int) -> list[dict]:
             print(f"✗ --member-spec[{i}]: loss must be one of "
                   f"{list(LOSS_NAMES)}, got {o['loss']!r}")
             raise SystemExit(2)
+        if o.get("knee_loss") is not None and o["knee_loss"] not in KNEE_LOSS_MODES:
+            print(f"✗ --member-spec[{i}]: knee_loss must be one of "
+                  f"{list(KNEE_LOSS_MODES)}, got {o['knee_loss']!r}")
+            raise SystemExit(2)
     return [dict(spec[i]) if i < len(spec) else {} for i in range(k)]
+
+
+def _parse_knees(value) -> tuple[float, ...] | None:
+    """``asinh_knees`` from the CLI (comma string) or a member spec (list) →
+    a tuple of at least two distinct positive knees, or ``None`` when unset."""
+    if value in (None, "", []):
+        return None
+    try:
+        items = value.split(",") if isinstance(value, str) else list(value)
+        knees = tuple(float(q) for q in items if str(q).strip() != "")
+    except (TypeError, ValueError) as exc:
+        print(f"✗ asinh_knees must be a list of numbers, got {value!r}")
+        raise SystemExit(2) from exc
+    if len(knees) < 2 or len(set(knees)) != len(knees) or min(knees) <= 0:
+        print(f"✗ asinh_knees needs at least two distinct positive knees, got {value!r}")
+        raise SystemExit(2)
+    return knees
 
 
 def _diversity_kwargs(args, over: dict) -> dict:
@@ -394,6 +428,10 @@ def _diversity_kwargs(args, over: dict) -> dict:
     boot = float(over.get("bootstrap", args.bootstrap) or 0.0)
     subset = int(over.get("psf_subset", args.psf_subset) or 0)
     knee = over.get("asinh_knee", args.asinh_knee)
+    knees = _parse_knees(over.get("asinh_knees", args.asinh_knees))
+    if knees and knee not in (None, "", 0):
+        print("✗ set asinh_knee (one knee) or asinh_knees (multi-knee), not both")
+        raise SystemExit(2)
     saturation_mask_prob = float(over.get(
         "saturation_mask_prob", args.saturation_mask_prob,
     ))
@@ -406,6 +444,8 @@ def _diversity_kwargs(args, over: dict) -> dict:
         raise SystemExit(2)
     return {"loss_norm": str(over.get("loss", args.loss)),
             "asinh_knee": (float(knee) if knee not in (None, "", 0) else None),
+            "asinh_knees": knees,
+            "knee_loss": str(over.get("knee_loss", args.knee_loss)),
             "noise_aug": float(over.get("noise_aug", args.noise_aug)),
             "bootstrap": boot if 0.0 < boot < 1.0 else None,
             "forward_onthefly": bool(over.get("forward_onthefly",
@@ -469,6 +509,8 @@ def _continue_identity(name: str, member_dir: str, diversity: dict,
     if origin.get("target_psf_fwhm_arcsec") is not None:
         identity["target_fwhm_arcsec"] = validate_target_fwhm_arcsec(
             origin["target_psf_fwhm_arcsec"])
+    if origin.get("asinh_knees") and "knee_loss" not in override:
+        identity["knee_loss"] = str(origin.get("knee_loss") or "plain")
     for key, kept in identity.items():
         if diversity.get(key) != kept:
             print(f"  ↺ {name}: keeping recorded {key}={kept!r} "
@@ -722,6 +764,9 @@ def main() -> int:
             knobs += f" target_psf_fwhm={s.target_fwhm_arcsec:g}\""
         if s.asinh_knee is not None:
             knobs += f" asinh_knee={s.asinh_knee:g}e"
+        if s.asinh_knees:
+            knobs += (" asinh_knees=" + ",".join(f"{q:g}" for q in s.asinh_knees)
+                      + f"e knee_loss={s.knee_loss}")
         if s.noise_aug:
             knobs += f" noise_aug={s.noise_aug:g}"
         if s.bootstrap:

@@ -149,6 +149,14 @@ class MemberTrainSpec:
     #: default (100 e⁻). A NEW-member (add) knob, like depth; continue/fork
     #: inherit the existing/source member's knee from its ``origin.json``.
     asinh_knee: float | None = None
+    #: Multi-knee member: input and target stretched at every knee (electrons)
+    #: and stacked on the channel axis; the model predicts every knee's image.
+    #: Mutually exclusive with ``asinh_knee``; continue/fork read it from
+    #: ``origin.json`` (it fixes the channel count).
+    asinh_knees: tuple[float, ...] | None = None
+    #: How a multi-knee member combines its knees' errors ("plain" |
+    #: "balanced", see ``training.losses.knee_balanced_loss``).
+    knee_loss: str = "plain"
     #: Gaussian FWHM applied to the HR supervision/reference target.
     target_fwhm_arcsec: float = Config.TARGET_PSF_FWHM_ARCSEC
 
@@ -345,6 +353,8 @@ class EnsembleModel:
             }
             if spec.asinh_knee is not None:
                 model_kwargs["asinh_knee"] = spec.asinh_knee
+            if spec.asinh_knees:
+                model_kwargs["asinh_knees"] = spec.asinh_knees
             m = Model(d, **model_kwargs)
             if created and spec.op in ("add", "fork"):
                 commit = (capture_git() or {}).get("short")
@@ -387,12 +397,20 @@ class EnsembleModel:
                 }
                 if spec.forward_onthefly:
                     origin["noise_model"] = Config.NOISE_MODEL
+                knees = getattr(m, "_asinh_knees", spec.asinh_knees)
+                if knees:
+                    # Multi-knee member: the knees drive the input/target
+                    # stretch (and the channel count) at train + inference.
+                    origin["asinh_knees"] = [float(q) for q in knees]
+                    origin["knee_loss"] = spec.knee_loss
                 with open(os.path.join(d, "origin.json"), "w") as f:
                     json.dump(origin, f, indent=2)
             # Continue resumes from the PSNR-best track — the model eval
             # actually uses. Max-step resume would pick loss_best/ when that
             # track ran ahead during a degenerate (skip-only) stretch.
             member_train_kwargs = dict(train_kwargs)
+            if getattr(m, "_asinh_knees", None):
+                member_train_kwargs["knee_loss"] = spec.knee_loss
             m.train(lr_path, hr_path, steps=int(spec.target_steps),
                     batch_size=batch_size,
                     resume_track=("psnr" if spec.op == "continue"

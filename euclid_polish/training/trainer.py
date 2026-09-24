@@ -5,7 +5,7 @@ import os
 import random
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 
 import numpy as np
 import tensorflow as tf
@@ -220,6 +220,7 @@ class Trainer:
         plateau_lr_recovery: bool = Config.PLATEAU_LR_RECOVERY,
         resume_track: str = "latest",
         provenance_fields: dict[str, object] | None = None,
+        knees: Sequence[float] | None = None,
     ):
         """
         Initialize the trainer.
@@ -259,6 +260,9 @@ class Trainer:
         """
         self.now = None
         self.loss = loss
+        # A multi-knee member's knees: validation scores each knee's block of
+        # channels against its own peak and saves on the mean over knees.
+        self._knees = tuple(float(q) for q in knees) if knees else None
         self.nonneg_sr_weight = float(nonneg_sr_weight)
         self._provenance_fields = dict(provenance_fields or {})
         # Build Adam with a CONSTANT, settable learning rate so the divergence
@@ -472,6 +476,11 @@ class Trainer:
         if band_vals is not None:
             for col, v in zip(PER_BAND_PSNR_COLUMNS, band_vals.numpy(), strict=False):
                 psnr_bands[col] = float(v)
+        knee_vals = metrics.get("psnr_knee")
+        if knee_vals is not None and self._knees:
+            tqdm.write("  per-knee PSNR (dB): " + " | ".join(
+                f"{q:g} e⁻ {float(v):.2f}"
+                for q, v in zip(self._knees, knee_vals.numpy(), strict=True)))
 
         return {
             "psnr_str":      psnr_str,
@@ -1012,6 +1021,8 @@ class Trainer:
             See ``models.common.evaluate`` — keys are ``psnr_stretched``
             and ``psnr_raw``.
         """
+        if self._knees:
+            return evaluate(self.checkpoint.model, dataset, knees=self._knees)
         return evaluate(self.checkpoint.model, dataset)
 
     def restore(self, track: str = "latest"):
