@@ -2210,7 +2210,7 @@ def _rebuild_bucket_dropping_member(cubes_dir: str, member_nn: str,
     return True
 
 
-_KNEE_PSNR_SCHEMA = 1
+_KNEE_PSNR_SCHEMA = 2
 _KNEE_PSNR_WORKERS = 6
 
 
@@ -2333,7 +2333,9 @@ def compute_knee_psnr_payload(starless: bool, *, force: bool = False,
         if m < len(labels):
             meta = member_meta[m]
             entry.update(kind="member", label=labels[m], loss=meta.get("loss"),
-                         asinh_knee=meta.get("asinh_knee"), blocks=meta.get("blocks"))
+                         asinh_knee=meta.get("asinh_knee"), blocks=meta.get("blocks"),
+                         asinh_knees=meta.get("asinh_knees"),
+                         output_knee=meta.get("output_knee"))
         elif model_id == "ensemble_mean":
             entry.update(kind="mean", label="ensemble mean")
         else:
@@ -2962,9 +2964,11 @@ def _iter_cached_fields(starless: bool):
 
 
 def _member_meta_from_labels(labels) -> list[dict]:
-    """Per-member ``{"loss", "blocks", "asinh_knee", "step", "psnr"}`` for line
-    coloring (loss / depth / knee / test-PSNR gradient), positional with
-    ``labels`` ("NN·psnr" → member_NN)."""
+    """Per-member ``{"loss", "blocks", "asinh_knee", "asinh_knees",
+    "output_knee", "step", "psnr"}`` for line coloring (loss / depth / knee /
+    test-PSNR gradient), positional with ``labels`` ("NN·psnr" → member_NN).
+    ``asinh_knees`` marks a multi-knee member (``output_knee`` set: one image
+    out; unset: one image per knee)."""
     base = ensemble_dir()
     rdir = _sky_records_local_dir()
     sub = eval_subset(rdir) if rdir else "test"
@@ -2979,6 +2983,8 @@ def _member_meta_from_labels(labels) -> list[dict]:
         meta.append({"loss": ((origin or {}).get("loss_norm") or "l1"),
                      "blocks": infer_checkpoint_num_res_blocks(d),
                      "asinh_knee": (origin or {}).get("asinh_knee"),
+                     "asinh_knees": (origin or {}).get("asinh_knees"),
+                     "output_knee": (origin or {}).get("output_knee"),
                      "step": _member_last_step(d),
                      "psnr": (entry or {}).get("psnr")})
     return meta

@@ -14,6 +14,8 @@ import {
 type KneeModel = {
   id: string; kind: "member" | "mean" | "combiner"; label: string;
   loss?: string | null; asinh_knee?: number | null; blocks?: number | null;
+  asinh_knees?: number[] | null;  // multi-knee member: trained on every knee
+  output_knee?: number | null;    // …with one output image (else one per knee)
   psnr: number[][];            // [knee][band]
   integrated: number[];        // [band]
 };
@@ -28,6 +30,11 @@ type View = "relative" | "absolute";
    (light theme); on the dark theme the steps stay clear of the surface. */
 const RAMP_LIGHT = ["#86b6ef", "#6da7ec", "#5598e7", "#3987e5", "#2a78d6", "#1c5cab", "#184f95", "#0d366b"];
 const RAMP_DARK = ["#cde2fb", "#b7d3f6", "#9ec5f4", "#86b6ef", "#6da7ec", "#5598e7", "#3987e5", "#2a78d6"];
+/* Multi-knee members (trained on every knee at once) get their own categorical
+   hues, off the single-knee ramp: aqua = one image out, violet = one image per
+   knee (its 100 e⁻ image is the one scored). */
+const MULTI_LIGHT = { single: "#1baf7a", heads: "#4a3aa7" };
+const MULTI_DARK = { single: "#199e70", heads: "#9085e9" };
 const DEFAULT_KNEE = 100;
 const X_TICKS: Tick[] = [
   { v: 0.1, label: "0.1" }, { v: 1, label: "1" }, { v: 10, label: "10" },
@@ -35,6 +42,12 @@ const X_TICKS: Tick[] = [
 ];
 const BAND_TITLE: Record<string, string> = { VIS: "VIS", Y_E: "Y", J_E: "J", H_E: "H" };
 const kneeOf = (m: KneeModel) => (m.asinh_knee == null ? DEFAULT_KNEE : Number(m.asinh_knee));
+const isMultiKnee = (m: KneeModel) => Array.isArray(m.asinh_knees) && m.asinh_knees.length > 1;
+const multiLabel = (m: KneeModel) => {
+  const q = m.asinh_knees ?? [];
+  const span = `${Math.min(...q)}–${Math.max(...q)} e⁻`;
+  return m.output_knee != null ? `all knees ${span}, 1 image` : `all knees ${span}, 1 image per knee`;
+};
 const fmt = (v: number | undefined) => (v == null || !isFinite(v) ? "—" : v.toFixed(2));
 
 function yAxis(values: number[], view: View): { domain: [number, number]; ticks: Tick[] } {
@@ -71,9 +84,12 @@ export function KneePsnrPanel(
   const models = asArray<KneeModel>(data?.models);
   const mean = models.find((m) => m.kind === "mean");
   const ramp = theme === "dark" ? RAMP_DARK : RAMP_LIGHT;
+  const multi = theme === "dark" ? MULTI_DARK : MULTI_LIGHT;
+  const multiColor = (m: KneeModel) => (m.output_knee != null ? multi.single : multi.heads);
 
   const memberKnees = useMemo(
-    () => [...new Set(models.filter((m) => m.kind === "member").map(kneeOf))].sort((a, b) => a - b),
+    () => [...new Set(models.filter((m) => m.kind === "member" && !isMultiKnee(m))
+      .map(kneeOf))].sort((a, b) => a - b),
     [models]);
   const rampColor = (knee: number) => {
     if (memberKnees.length <= 1) return ramp[4];
@@ -87,8 +103,9 @@ export function KneePsnrPanel(
     const curve = (m: KneeModel) => knees.map((_, k) => m.psnr[k][b] - ref(k));
     const series: Series[] = [];
     for (const m of models.filter((x) => x.kind === "member")) {
-      series.push({ x: knees, y: curve(m), color: rampColor(kneeOf(m)), width: 1,
-        dash: m.loss === "l1" ? [5, 4] : undefined });
+      const many = isMultiKnee(m);
+      series.push({ x: knees, y: curve(m), color: many ? multiColor(m) : rampColor(kneeOf(m)),
+        width: many ? 1.6 : 1, dash: m.loss === "l1" ? [5, 4] : undefined });
     }
     if (view === "absolute" && mean) {
       series.push({ x: knees, y: curve(mean), color: C.cross, width: 1.4, dash: [6, 4] });
@@ -103,6 +120,10 @@ export function KneePsnrPanel(
 
   const legend = [
     ...memberKnees.map((k) => ({ label: `trained knee ${k}`, color: rampColor(k) })),
+    ...(models.some((m) => isMultiKnee(m) && m.output_knee != null)
+      ? [{ label: "all knees, 1 image out", color: multi.single }] : []),
+    ...(models.some((m) => isMultiKnee(m) && m.output_knee == null)
+      ? [{ label: "all knees, 1 image per knee (100 e⁻ image)", color: multi.heads }] : []),
     { label: "L2 member", color: C.cross },
     { label: "L1 member", color: C.cross, dash: true },
     ...models.filter((m) => m.kind === "combiner").map((m) => ({ label: m.label, color: colorOf(m.id) })),
@@ -114,7 +135,8 @@ export function KneePsnrPanel(
   const columns: Column<KneeModel>[] = [
     { header: "model", cell: (m) => (m.kind === "combiner" ? <b>{m.label}</b> : m.label) },
     { header: "loss", cell: (m) => m.loss ?? "—" },
-    { header: "trained knee", align: "right", cell: (m) => (m.kind === "member" ? kneeOf(m) : "—") },
+    { header: "trained knee", align: "right", cell: (m) => (m.kind !== "member" ? "—"
+      : isMultiKnee(m) ? multiLabel(m) : kneeOf(m)) },
     ...bands.map((band, b) => ({
       header: `${BAND_TITLE[band] ?? band} integrated`, align: "right" as const,
       cell: (m: KneeModel) => fmt(m.integrated[b]),
