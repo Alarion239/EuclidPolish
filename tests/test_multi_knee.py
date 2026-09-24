@@ -29,7 +29,7 @@ from euclid_polish.training.inference import (
     reconstruct,
     reconstruct_heads,
 )
-from euclid_polish.training.losses import build_loss, knee_balanced_loss
+from euclid_polish.training.losses import build_loss, channel_balanced_loss
 from euclid_polish.training.models.common import evaluate
 from euclid_polish.training.models.wdsr import wdsr
 from euclid_polish.training.trainer import Trainer
@@ -97,20 +97,34 @@ def test_validation_scores_each_knee_against_its_own_peak():
     assert np.isfinite(float(metrics["psnr_raw"]))
 
 
-def test_balanced_loss_is_the_geometric_mean_of_the_knee_losses():
-    residuals = [10.0 ** -k for k in range(len(KNEES))]
+def test_validation_averages_channel_psnrs_rather_than_pooling_bands():
+    # One knee, VIS off by 0.1 and the NISP bands by 0.001: a pooled MSE would
+    # be set by VIS alone; the metric averages the four bands' PSNRs.
+    hr = tf.zeros((1, 4, 4, 4))
+    sr = tf.concat([tf.fill((1, 4, 4, 1), 0.1), tf.fill((1, 4, 4, 3), 0.001)], axis=-1)
+    metrics = evaluate(lambda _lr: sr, [(tf.zeros((1, 2, 2, 4)), hr)], knees=(100.0,))
+    peak = math.asinh(Config.PSNR_PEAK_E / 100.0)
+    per_band = [10.0 * math.log10(peak ** 2 / d ** 2) for d in (0.1, 0.001, 0.001, 0.001)]
+    assert float(metrics["psnr_stretched"]) == pytest.approx(np.mean(per_band), rel=1e-5)
+    np.testing.assert_allclose(metrics["psnr_band_stretched"].numpy(), per_band, rtol=1e-5)
+
+
+def test_balanced_loss_is_the_geometric_mean_of_the_channel_losses():
+    # 24 channels (4 bands x 6 knees) with residuals spanning six decades.
+    residuals = [10.0 ** -(i / 4.0) for i in range(24)]
     a = tf.zeros((1, 3, 3, 24))
-    b = tf.concat([tf.fill((1, 3, 3, 4), r) for r in residuals], axis=-1)
-    balanced = knee_balanced_loss("l2", len(KNEES))
-    assert float(balanced(a, b)) == pytest.approx(10.0 ** -2.5, rel=1e-4)
-    # The plain loss is set almost entirely by the lowest knee's residual.
+    b = tf.concat([tf.fill((1, 3, 3, 1), r) for r in residuals], axis=-1)
+    balanced = channel_balanced_loss("l2")
+    geometric = 10.0 ** -np.mean([i / 4.0 for i in range(24)])
+    assert float(balanced(a, b)) == pytest.approx(geometric, rel=1e-4)
+    # The plain loss is set almost entirely by the largest residuals.
     assert float(build_loss("l2")(a, b)) == pytest.approx(
-        math.sqrt(sum(r * r for r in residuals) / len(KNEES)), rel=1e-4)
-    # Balanced: scaling any one knee's error by 10 moves the loss equally.
-    for k in (0, 5):
-        scaled = [r * (10.0 if i == k else 1.0) for i, r in enumerate(residuals)]
-        bk = tf.concat([tf.fill((1, 3, 3, 4), r) for r in scaled], axis=-1)
-        assert float(balanced(a, bk)) == pytest.approx(10.0 ** -2.5 * 10.0 ** (1 / 6), rel=1e-4)
+        math.sqrt(sum(r * r for r in residuals) / 24), rel=1e-4)
+    # Balanced: scaling any one channel's error by 10 moves the loss equally.
+    for i in (0, 23):
+        scaled = [r * (10.0 if j == i else 1.0) for j, r in enumerate(residuals)]
+        bi = tf.concat([tf.fill((1, 3, 3, 1), r) for r in scaled], axis=-1)
+        assert float(balanced(a, bi)) == pytest.approx(geometric * 10.0 ** (1 / 24), rel=1e-4)
 
 
 def test_reconstruct_returns_each_knees_image():

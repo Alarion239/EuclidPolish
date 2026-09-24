@@ -54,7 +54,7 @@ from euclid_polish.training.inference import (
 )
 from euclid_polish.training.inference import reconstruct_heads
 from euclid_polish.training.loss_names import plateau_guard_applies
-from euclid_polish.training.losses import KNEE_LOSS_MODES, build_loss, knee_balanced_loss
+from euclid_polish.training.losses import KNEE_LOSS_MODES, build_loss, channel_balanced_loss
 from euclid_polish.training.lr_schedule import WarmupCosineDecay
 from euclid_polish.training.models.wdsr import wdsr as _wdsr_build
 from euclid_polish.training.target_blur import validate_target_fwhm_arcsec
@@ -580,10 +580,10 @@ class Model:
             # the same way generated records do.
             provenance_fields["noise_model"] = Config.NOISE_MODEL
         # A multi-knee member's loss: ``plain`` = the loss over all channels
-        # at once; ``balanced`` = every knee weighted equally.
+        # at once; ``balanced`` = every channel (band x knee) weighted equally.
         if knee_loss not in KNEE_LOSS_MODES:
             raise ValueError(f"knee_loss must be one of {KNEE_LOSS_MODES}, got {knee_loss!r}")
-        loss = (knee_balanced_loss(loss_norm, len(self._asinh_knees))
+        loss = (channel_balanced_loss(loss_norm)
                 if self._asinh_knees and knee_loss == "balanced"
                 else build_loss(loss_norm))
         trainer = Trainer(self._tf_model, learning_rate=lr_schedule,

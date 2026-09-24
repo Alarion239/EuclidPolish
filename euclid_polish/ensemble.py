@@ -154,8 +154,8 @@ class MemberTrainSpec:
     #: Mutually exclusive with ``asinh_knee``; continue/fork read it from
     #: ``origin.json`` (it fixes the channel count).
     asinh_knees: tuple[float, ...] | None = None
-    #: How a multi-knee member combines its knees' errors ("plain" |
-    #: "balanced", see ``training.losses.knee_balanced_loss``).
+    #: How a multi-knee member combines its channels' errors ("plain" |
+    #: "balanced", see ``training.losses.channel_balanced_loss``).
     knee_loss: str = "plain"
     #: Gaussian FWHM applied to the HR supervision/reference target.
     target_fwhm_arcsec: float = Config.TARGET_PSF_FWHM_ARCSEC

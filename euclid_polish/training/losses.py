@@ -95,24 +95,23 @@ def build_loss(name: str = "l1"):
     raise ValueError(f"unknown loss {name!r}; use one of {sorted(LOSS_NAMES)}")
 
 
-def knee_balanced_loss(name: str, n_knees: int):
-    """``name``'s loss per knee block (channels are knee-major blocks of
-    bands), combined by their geometric mean; signature ``loss(a, b)``.
+def channel_balanced_loss(name: str):
+    """``name``'s loss per output channel, combined by the geometric mean over
+    channels; signature ``loss(a, b)``.
 
-    Minimising the geometric mean minimises the mean log error over knees,
-    i.e. maximises the mean PSNR over knees. The plain loss over all channels
-    is instead dominated by the lowest knees, whose stretched residuals are
-    orders of magnitude larger. The result keeps the per-knee losses' units,
-    so the LR schedule, clipping and spike guard need no retuning.
+    Minimising the geometric mean minimises the mean log error over channels,
+    i.e. maximises the mean PSNR over every band and knee. It is the
+    parameter-free form of learned uncertainty weighting (Kendall, Gal &
+    Cipolla 2018), whose per-output weights converge to 1 / loss. The plain
+    loss over all channels is instead dominated by the channels with the
+    largest stretched residuals: the lowest knees by orders of magnitude, and
+    VIS among the bands. The result keeps the per-channel losses' units, so
+    the LR schedule, clipping and spike guard need no retuning.
     """
     base = build_loss(name)
-    k = int(n_knees)
-    if k < 1:
-        raise ValueError(f"n_knees must be positive, got {n_knees}")
 
     def _balanced(a, b):
-        c = int(a.shape[-1]) // k
-        per_knee = tf.stack([base(a[..., i * c:(i + 1) * c], b[..., i * c:(i + 1) * c])
-                             for i in range(k)])
-        return tf.exp(tf.reduce_mean(tf.math.log(tf.maximum(per_knee, 1e-12))))
+        per_channel = tf.stack([base(a[..., i:i + 1], b[..., i:i + 1])
+                                for i in range(int(a.shape[-1]))])
+        return tf.exp(tf.reduce_mean(tf.math.log(tf.maximum(per_channel, 1e-12))))
     return _balanced

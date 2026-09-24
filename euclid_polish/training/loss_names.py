@@ -38,9 +38,9 @@ LOSS_NAMES = (*LOSS_NORMS, MSE_NAME)
 #: exists only to escape this basin — see :func:`plateau_guard_applies`.
 DEGENERATE_PLATEAU_LOSSES = frozenset({"l1"})
 
-#: How a multi-knee member combines its knees' errors: ``plain`` applies the
-#: loss to all channels at once; ``balanced`` weighs every knee equally (see
-#: ``losses.knee_balanced_loss``).
+#: How a multi-knee member combines its channels' errors: ``plain`` applies the
+#: loss to all channels at once; ``balanced`` weighs every channel (band x
+#: knee) equally (see ``losses.channel_balanced_loss``).
 KNEE_LOSS_MODES = ("plain", "balanced")
 
 

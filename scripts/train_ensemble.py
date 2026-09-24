@@ -209,10 +209,12 @@ def parse_args(argv=None) -> argparse.Namespace:
                         "every brightness scale. Excludes --asinh-knee. ADD "
                         "members only; continue/fork read it from origin.json.")
     p.add_argument("--knee-loss", choices=KNEE_LOSS_MODES, default="plain",
-                   help="How a multi-knee member combines its knees' errors: "
-                        "'plain' = the --loss over all channels at once; "
-                        "'balanced' = every knee weighted equally (geometric "
-                        "mean of the per-knee losses).")
+                   help="How a multi-knee member combines its channels' "
+                        "errors: 'plain' = the --loss over all channels at "
+                        "once (dominated by the lowest knees and VIS); "
+                        "'balanced' = every channel (band x knee) weighted "
+                        "equally (geometric mean of the per-channel losses, "
+                        "i.e. the mean PSNR over bands and knees).")
     p.add_argument("--target-psf-fwhm-arcsec", type=float,
                    default=Config.TARGET_PSF_FWHM_ARCSEC,
                    help="Desired Gaussian PSF FWHM of PSF-free clean/HR "
