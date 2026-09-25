@@ -421,8 +421,9 @@ class ObservationSimulator:
         warp_displacements: dict[
             tuple[int, int], tuple[np.ndarray, np.ndarray]
         ] | None = None,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """Return final dirty LR plus its pre-noise optical trigger plane."""
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
+        """Return final dirty LR, its pre-noise optical trigger plane, and the
+        star plane's share of that trigger (``None`` without stars)."""
         # The ordinary scene and sparse star plane share the same sampled,
         # optionally elastically deformed observation PSF.
         psf = self._psf_for_sample(band, psf_spec, warp_displacements)
@@ -434,16 +435,20 @@ class ObservationSimulator:
         # 1. PSF convolution on HR plane via PSF.convolved_with (sum=1-normalises
         #    the kernel and runs fftconvolve mode="same" + float32 cast).
         hr_e = psf.convolved_with(hr_channel)
+        star_e = None
         if star_hr_channel is not None and np.any(star_hr_channel):
             star_psf = self._psf_for_sample(
                 band, star_psf_spec, warp_displacements,
             )
-            hr_e += self._convolve_sparse_deltas(star_hr_channel, star_psf)
+            star_e = self._convolve_sparse_deltas(star_hr_channel, star_psf)
+            hr_e += star_e
 
         # 2. Sum-rebin to the band's LR scale (preserves photon shot noise
         #    statistics at the right pixel size for the per-band noise step).
         rebin_factor = int(round(band.pixel_scale_lr_arcsec / self.config.hr_pixel_scale))
         lr_signal_e = self.sum_rebin(hr_e, rebin_factor)
+        star_signal_e = (self.sum_rebin(star_e, rebin_factor)
+                         if star_e is not None else None)
 
         # 3. Apply delivered-MER noise: Euclid's noise level with the pixel
         #    correlation of a dithered bilinear stack, identical for all bands.
@@ -469,6 +474,12 @@ class ObservationSimulator:
                 factor=upsample_factor,
                 kernel=resample_kernel,
             )
+            if star_signal_e is not None:
+                star_signal_e = resample_upsample(
+                    star_signal_e,
+                    factor=upsample_factor,
+                    kernel=resample_kernel,
+                )
         if distant_star_wings:
             residual = lr_e - lr_signal_e
             residual_median = float(np.median(residual))
@@ -483,6 +494,8 @@ class ObservationSimulator:
         return (
             lr_e.astype(np.float32, copy=False),
             lr_signal_e.astype(np.float32, copy=False),
+            (star_signal_e.astype(np.float32, copy=False)
+             if star_signal_e is not None else None),
         )
 
     # ------------------------------------------------------------------ #
@@ -491,12 +504,15 @@ class ObservationSimulator:
         lr_stack: np.ndarray,
         trigger_stack: np.ndarray,
         rng: np.random.Generator,
+        star_trigger_stack: np.ndarray | None = None,
     ) -> None:
         """Black out saturated sources of ``lr_stack`` in place.
 
         ``trigger_stack`` is the pre-noise optical signal that decides which
-        sources saturate. Uses this simulator's well depths and blackout
-        probabilities, and does nothing when saturation is off.
+        sources saturate; ``star_trigger_stack`` is the star plane's share of
+        it, which lets galaxy light saturate at the extended well (see
+        :func:`apply_saturation_masking`). Uses this simulator's well depths
+        and blackout probabilities, and does nothing when saturation is off.
         """
         if self._sat_model is None:
             return
@@ -504,6 +520,7 @@ class ObservationSimulator:
             lr_stack, self._sat_model, rng,
             band_names=Config.LR_INPUT_BAND_NAMES,
             trigger_4ch=trigger_stack,
+            star_trigger_4ch=star_trigger_stack,
             mask_probability=self.config.saturation_mask_prob,
             bright_mask_probability=self.config.saturation_mask_prob_bright,
             bright_well_ratios=self.config.saturation_mask_ramp_well_ratios,
@@ -667,6 +684,7 @@ class ObservationSimulator:
         # Process each channel; the four LR channels are stacked at the end.
         lr_channels = []
         saturation_trigger_channels = []
+        star_trigger_channels = []
         # Same-shaped band kernels share one displacement field for this
         # physical exposure. Coordinate generation is the expensive part of
         # an elastic warp; reuse keeps live augmentation cheap without
@@ -676,7 +694,7 @@ class ObservationSimulator:
         ] = {}
         for k, band_name in enumerate(Config.LR_INPUT_BAND_NAMES):
             band = Config.get_band(band_name)
-            lr_channel, trigger_channel = self._process_one_band(
+            lr_channel, trigger_channel, star_channel = self._process_one_band(
                 hr_data_trim[..., k], band, rng, psf_spec=psf_spec,
                 star_hr_channel=(star_data_trim[..., k]
                                  if star_data_trim is not None else None),
@@ -688,6 +706,9 @@ class ObservationSimulator:
             )
             lr_channels.append(lr_channel)
             saturation_trigger_channels.append(trigger_channel)
+            star_trigger_channels.append(
+                star_channel if star_channel is not None
+                else np.zeros_like(trigger_channel))
         # All channels must end on the same grid (the VIS LR grid).
         target_shape = lr_channels[0].shape
         for k, ch in enumerate(lr_channels):
@@ -700,12 +721,18 @@ class ObservationSimulator:
         saturation_trigger_stack = np.stack(
             saturation_trigger_channels, axis=-1,
         )
+        # With a star plane the masking can tell star cores from galaxy light.
+        star_trigger_stack = (
+            np.stack(star_trigger_channels, axis=-1)
+            if star_data_trim is not None else None
+        )
 
-        # Detector saturation masking: any pixel past the band well depth
-        # (bright stars OR bright galaxy nuclei) can be masked to ~0 over a
-        # blocky rectangular patch, mirroring the MER pipeline — NOT clipped
-        # to the well. Per band; the clean HR target is untouched.
-        self.apply_saturation(lr_stack, saturation_trigger_stack, rng)
+        # Detector saturation masking, mirroring the MER pipeline — NOT
+        # clipped to the well. Star cores past the band well are masked to ~0
+        # over a blocky rectangular patch; galaxy light only loses its pixels
+        # past the extended well. Per band; the clean HR target is untouched.
+        self.apply_saturation(lr_stack, saturation_trigger_stack, rng,
+                              star_trigger_stack)
 
         # HR target: all four bands (clean, no noise applied), trimmed to the
         # same spatial extent the LR pipeline saw. Band k of the target is

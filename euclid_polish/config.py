@@ -243,6 +243,15 @@ class Config:
     # value at the first ratio to SATURATION_MASK_PROB_BRIGHT at the second.
     SATURATION_MASK_PROB_BRIGHT = 0.9
     SATURATION_MASK_RAMP_WELL_RATIOS = (5.0, 20.0)
+    # The wells below are the highest values real STAR cores reach before MER
+    # blanks them. Smooth galaxy light is recorded far above that: Euclid's own
+    # mosaic of the poster galaxy's nucleus (MER tile 102160611, 2026-09-25)
+    # keeps NISP pixels at 3.4/6.7/4.2x the Y/J/H wells and blanks, as
+    # irregular patches rather than a box, the pixels estimated above ~4-8x.
+    # Galaxy-dominated sources (star plane < half the light at their peak)
+    # therefore saturate at this multiple of the well and lose only the pixels
+    # above it.
+    SATURATION_EXTENDED_WELL_FACTOR = 5.0
 
     # VIS instrument
     # AB zeropoint for MER fluxes quoted in microJansky (µJy): the catalogue's

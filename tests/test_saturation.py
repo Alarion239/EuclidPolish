@@ -92,8 +92,8 @@ def test_apply_saturation_masking_leaves_subwell_untouched():
 
 
 def test_apply_saturation_masking_galaxy_core_not_just_stars():
-    """A bright EXTENDED source (no star metadata) still saturates and is
-    masked — the trigger is the pixel value, not the source type."""
+    """Without a star plane the trigger is source-agnostic: a bright EXTENDED
+    source still saturates at the star-derived well and is masked."""
     m = StarSaturationModel()
     lr = np.zeros((40, 40, len(_BANDS)), dtype=np.float32)
     well = m.well_depth_e(Config.get_band(_BANDS[0]))
@@ -245,6 +245,89 @@ def test_brightest_sources_are_blacked_out_more_often():
     assert faint_masked < 30
 
 
+def _core_with_halo(band_index: int, core_ratio: float, halo_ratio: float,
+                    n: int = 48):
+    """A 12x12 region at ``halo_ratio`` x the band well with a 4x4 core at
+    ``core_ratio`` x the well, in one band."""
+    m = StarSaturationModel()
+    well = m.well_depth_e(Config.get_band(_BANDS[band_index]))
+    img = np.zeros((n, n, len(_BANDS)), dtype=np.float32)
+    img[18:30, 18:30, band_index] = np.float32(well * halo_ratio)
+    img[22:26, 22:26, band_index] = np.float32(well * core_ratio)
+    return m, well, img
+
+
+def test_galaxy_light_below_extended_well_is_never_blanked():
+    """With a star plane, galaxy light is recorded up to
+    SATURATION_EXTENDED_WELL_FACTOR x the star-derived well."""
+    k = _BANDS.index("J_E")
+    ratio = 0.8 * Config.SATURATION_EXTENDED_WELL_FACTOR
+    m, _well, lr = _core_with_halo(k, core_ratio=ratio, halo_ratio=2.0)
+    before = lr.copy()
+    apply_saturation_masking(
+        lr, m, np.random.default_rng(0), band_names=_BANDS,
+        trigger_4ch=before, star_trigger_4ch=np.zeros_like(lr),
+        mask_probability=1.0)
+    np.testing.assert_array_equal(lr, before)
+
+
+def test_galaxy_core_loses_only_pixels_above_extended_well():
+    """A selected galaxy source blanks the pixels above the extended well —
+    no bounding box, no rectangles — and keeps the rest of its bright light."""
+    k = _BANDS.index("J_E")
+    factor = Config.SATURATION_EXTENDED_WELL_FACTOR
+    m, well, lr = _core_with_halo(k, core_ratio=2.0 * factor, halo_ratio=2.0)
+    trigger = lr.copy()
+    apply_saturation_masking(
+        lr, m, np.random.default_rng(0), band_names=_BANDS,
+        trigger_4ch=trigger, star_trigger_4ch=np.zeros_like(lr),
+        mask_probability=1.0)
+    assert lr[22:26, 22:26, k].max() == 0.0                # core blanked
+    halo = trigger[..., k] == np.float32(well * 2.0)
+    np.testing.assert_array_equal(lr[..., k][halo], trigger[..., k][halo])
+    assert int((lr[..., k] == 0.0).sum()) == int((trigger[..., k] == 0.0).sum()) + 16
+
+
+def test_star_dominated_source_keeps_the_box_blackout():
+    """The same light on the star plane is a star core: the star-derived well
+    and the bounding-box + rectangle blackout still apply."""
+    k = _BANDS.index("J_E")
+    m, well, lr = _core_with_halo(k, core_ratio=3.0, halo_ratio=2.0)
+    trigger = lr.copy()
+    apply_saturation_masking(
+        lr, m, np.random.default_rng(0), band_names=_BANDS,
+        trigger_4ch=trigger, star_trigger_4ch=trigger.copy(),
+        mask_probability=1.0)
+    assert lr[18:30, 18:30, k].max() == 0.0                # whole box blanked
+    assert lr[..., k].max() < well
+
+
+def test_galaxy_and_star_share_one_probability_draw_order():
+    """Without a star plane the draw sequence and result are the legacy ones."""
+    k = _BANDS.index("J_E")
+    m, _well, lr = _core_with_halo(k, core_ratio=3.0, halo_ratio=2.0)
+    a, b = lr.copy(), lr.copy()
+    apply_saturation_masking(a, m, np.random.default_rng(5), band_names=_BANDS,
+                             mask_probability=0.5)
+    apply_saturation_masking(b, m, np.random.default_rng(5), band_names=_BANDS,
+                             trigger_4ch=lr, star_trigger_4ch=lr.copy(),
+                             mask_probability=0.5)
+    np.testing.assert_array_equal(a, b)
+
+
+@pytest.mark.parametrize("kwargs, match", [
+    ({"star_trigger_4ch": np.zeros((19, 20, len(_BANDS)), np.float32)}, "star_trigger_4ch shape"),
+    ({"star_trigger_4ch": np.zeros((20, 20, len(_BANDS)), np.float32),
+      "extended_well_factor": 0.5}, "extended_well_factor"),
+])
+def test_star_plane_settings_are_validated(kwargs, match):
+    m = StarSaturationModel()
+    lr = np.zeros((20, 20, len(_BANDS)), dtype=np.float32)
+    with pytest.raises(ValueError, match=match):
+        apply_saturation_masking(lr, m, np.random.default_rng(0),
+                                 band_names=_BANDS, **kwargs)
+
+
 # ---------------------------------------------------------------------------
 # Forward-model integration
 # ---------------------------------------------------------------------------
@@ -336,3 +419,40 @@ def test_forward_hot_pixels_do_not_trigger_blackout_rectangles():
     for band_index, band_name in enumerate(_BANDS):
         well = StarSaturationModel().well_depth_e(Config.get_band(band_name))
         assert lr.data[..., band_index].max() > well
+
+
+def _j_peak_over_well(fwd, hr_img, star_plane) -> tuple[float, bool]:
+    lr, _ = fwd.process(hr_img, np.random.default_rng(0), star_hr_4ch=star_plane)
+    k = _BANDS.index("J_E")
+    well = StarSaturationModel().well_depth_e(Config.get_band("J_E"))
+    core = lr.data[20:28, 20:28, k]
+    return float(core.max()) / well, bool((core == 0.0).any())
+
+
+def test_forward_blanks_a_star_core_but_records_galaxy_light_at_the_same_level():
+    """In the forward model the star plane decides the rule: the same
+    above-well light is a blacked-out star core on the star plane and a
+    recorded galaxy core in the scene (below the extended well)."""
+    from euclid_polish.image import Image
+    from euclid_polish.sky.observation.observation_simulator import (
+        ObservationSimulator,
+        ObservationSimulatorConfig,
+    )
+    plain = ObservationSimulator(config=ObservationSimulatorConfig(
+        add_noise=False, add_artifacts=False, add_saturation=False))
+    masking = ObservationSimulator(config=ObservationSimulatorConfig(
+        add_noise=False, add_artifacts=False, add_saturation=True,
+        saturation_mask_prob=1.0))
+    unit = _hr_field_with_bright_source(1.0)
+    zeros = np.zeros_like(unit.data)
+    ratio_unit, _ = _j_peak_over_well(plain, unit, zeros)
+    flux = 2.5 / ratio_unit                                  # J core at 2.5x the well
+    galaxy = _hr_field_with_bright_source(flux)
+    empty = Image(data=zeros, pixel_scale_arcsec=unit.pixel_scale_arcsec,
+                  band_names=_BANDS, is_clean=True, metadata={"stars": []})
+
+    ratio, blanked = _j_peak_over_well(masking, galaxy, zeros)
+    assert 2.0 < ratio < Config.SATURATION_EXTENDED_WELL_FACTOR
+    assert not blanked
+    _, star_blanked = _j_peak_over_well(masking, empty, galaxy.data)
+    assert star_blanked

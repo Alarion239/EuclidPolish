@@ -29,6 +29,15 @@ Shape: the masked region is each saturated component's bounding box (so no
 pixel survives above the well) unioned with 1–3 overlapping rectangles (sides
 ``STAR_SATURATION_RECT_{MIN,MAX}_PX`` px) at its peak, zeroed (flat blocky
 mask, ≈0 fill on the sky-subtracted grid).
+
+Galaxy light: the NISP wells are STAR ceilings. Euclid records galaxy nuclei
+far above them and blanks only irregular patches of their brightest pixels —
+likely because a star packs its light into one 0.3″ detector pixel while
+smooth light at the same mosaic value does not, and MER keeps any dithered
+exposure that measured a pixel. When the caller passes the star plane's share of the trigger,
+a galaxy-dominated source therefore saturates only at
+``Config.SATURATION_EXTENDED_WELL_FACTOR`` × the well and loses just the pixels
+above that level — no box, no rectangles.
 """
 
 from __future__ import annotations
@@ -36,7 +45,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 import numpy as np
-from scipy.ndimage import find_objects, label, maximum
+from scipy.ndimage import find_objects, label, maximum, maximum_position
 
 from euclid_polish.config import BandConfig, Config
 
@@ -134,9 +143,11 @@ def apply_saturation_masking(
     *,
     band_names: Sequence[str],
     trigger_4ch: np.ndarray | None = None,
+    star_trigger_4ch: np.ndarray | None = None,
     mask_probability: float = 1.0,
     bright_mask_probability: float | None = None,
     bright_well_ratios: tuple[float, float] = Config.SATURATION_MASK_RAMP_WELL_RATIOS,
+    extended_well_factor: float = Config.SATURATION_EXTENDED_WELL_FACTOR,
 ) -> None:
     """Zero a blocky rectangular patch over every saturated scene region.
 
@@ -162,6 +173,13 @@ def apply_saturation_masking(
     log(peak/well) and reaches ``bright_mask_probability`` at
     ``bright_well_ratios[1]`` (:func:`saturation_mask_probability`). ``None``
     keeps one probability for every source.
+
+    ``star_trigger_4ch`` is the star plane's share of the trigger. With it, a
+    source whose brightest pixel is mostly galaxy light (star plane below half
+    the trigger there) is extended: its probability ramps on its peak over
+    ``extended_well_factor`` × the well, and a selected one loses only the
+    pixels at or above that level in each band. Star-dominated sources, and
+    every source when the star plane is omitted, get the blackout below.
 
     For each band:
 
@@ -192,6 +210,15 @@ def apply_saturation_masking(
             f"trigger_4ch shape {trigger.shape} must match lr_4ch shape "
             f"{lr_4ch.shape}"
         )
+    star = None if star_trigger_4ch is None else np.asarray(star_trigger_4ch)
+    if star is not None and star.shape != lr_4ch.shape:
+        raise ValueError(
+            f"star_trigger_4ch shape {star.shape} must match lr_4ch shape "
+            f"{lr_4ch.shape}"
+        )
+    factor = float(extended_well_factor)
+    if not factor >= 1.0:
+        raise ValueError("extended_well_factor must be >= 1")
     if probability <= 0.0:
         return
     H, W = lr_4ch.shape[:2]
@@ -200,36 +227,46 @@ def apply_saturation_masking(
     ], dtype=np.float32)
     saturated_by_band = trigger >= wells.reshape((1, 1, -1))
     selected_spatial = np.any(saturated_by_band, axis=-1)
-    if probability < 1.0:
+    extended_spatial = np.zeros_like(selected_spatial)
+    if probability < 1.0 or star is not None:
         source_labels, n_sources = label(selected_spatial)
         if n_sources == 0:
             return
+        ids = np.arange(1, n_sources + 1)
         # Each source's brightest band sets how likely it is blacked out.
         well_ratio = np.max(trigger / wells.reshape((1, 1, -1)), axis=-1)
         peak_ratio = np.asarray(
-            maximum(
-                well_ratio,
-                labels=source_labels,
-                index=np.arange(1, n_sources + 1),
-            ),
+            maximum(well_ratio, labels=source_labels, index=ids),
             dtype=np.float64,
         )
-        source_probability = saturation_mask_probability(
-            peak_ratio,
-            near_well=probability,
-            bright=bright,
-            ratio_start=ratio_start,
-            ratio_full=ratio_full,
-        )
-        selected_ids = np.nonzero(
-            rng.random(n_sources) < source_probability,
-        )[0] + 1
-        if selected_ids.size == 0:
+        extended = np.zeros(n_sources, dtype=bool)
+        if star is not None:
+            peaks = maximum_position(well_ratio, labels=source_labels, index=ids)
+            for i, (y, x) in enumerate(peaks):
+                b = int(np.argmax(trigger[y, x] / wells))
+                extended[i] = star[y, x, b] < 0.5 * trigger[y, x, b]
+            # Galaxy light saturates only at the extended well.
+            peak_ratio = np.where(extended, peak_ratio / factor, peak_ratio)
+        if probability < 1.0:
+            source_probability = saturation_mask_probability(
+                peak_ratio,
+                near_well=probability,
+                bright=bright,
+                ratio_start=ratio_start,
+                ratio_full=ratio_full,
+            )
+            chosen = rng.random(n_sources) < source_probability
+        else:
+            chosen = np.ones(n_sources, dtype=bool)
+        if not chosen.any():
             return
-        selected_spatial = np.isin(source_labels, selected_ids)
+        selected_spatial = np.isin(source_labels, ids[chosen & ~extended])
+        extended_spatial = np.isin(source_labels, ids[chosen & extended])
     for k, _band_name in enumerate(band_names):
         ch = lr_4ch[..., k]                      # view → writes propagate
         trigger_ch = trigger[..., k]
+        # Galaxy light: only the pixels above the extended well go blank.
+        ch[extended_spatial & (trigger_ch >= factor * wells[k])] = 0.0
         sat = saturated_by_band[..., k] & selected_spatial
         if not sat.any():
             continue
