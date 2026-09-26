@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "comment": "Single source of truth for SPA page URLs. Read by Flask (page matcher + legacy redirects) and imported by the frontend route manifest. A page path is a workspace path, optionally followed by one tab segment from its tabs list.",
+  "workspaces": [
+    { "id": "home", "label": "Home", "path": "/", "tabs": [] },
+    { "id": "sky", "label": "Sky", "path": "/sky", "tabs": ["atlas", "results", "experiments", "catalog-eval"], "defaultTab": "atlas" },
+    { "id": "ensemble", "label": "Ensemble", "path": "/ensemble/:mode", "params": { "mode": ["starfull", "starless"] }, "defaultParams": { "mode": "starfull" }, "tabs": ["overview", "members", "curves", "knee", "diagnostics", "combiners", "disagreement", "train"], "defaultTab": "overview" },
+    { "id": "realism", "label": "Realism", "path": "/realism", "tabs": ["overview", "noise", "galaxies", "stars", "pixels", "visual"], "defaultTab": "overview" },
+    { "id": "data", "label": "Data", "path": "/data", "tabs": ["records", "catalog", "cutouts", "psfs", "tng"], "defaultTab": "records" },
+    { "id": "figures", "label": "Figures", "path": "/figures", "tabs": ["grid", "plates", "results"], "defaultTab": "grid" },
+    { "id": "inspect", "label": "Inspect", "path": "/inspect", "tabs": [] },
+    { "id": "ops", "label": "Ops", "path": "/ops", "tabs": ["jobs", "fasrc", "tracking", "git", "provenance"], "defaultTab": "jobs" },
+    { "id": "settings", "label": "Settings", "path": "/settings", "tabs": ["config", "connections", "appearance", "about"], "defaultTab": "config" }
+  ],
+  "redirects": {
+    "/app": "/",
+    "/ensemble": "/ensemble/starfull",
+    "/config": "/settings/config",
+    "/catalog": "/data/catalog",
+    "/psfs": "/data/psfs",
+    "/cutouts": "/data/cutouts",
+    "/cutouts/VIS": "/data/cutouts",
+    "/cutouts/Y_E": "/data/cutouts",
+    "/cutouts/J_E": "/data/cutouts",
+    "/cutouts/H_E": "/data/cutouts",
+    "/tng": "/data/tng",
+    "/noise": "/realism/noise",
+    "/galaxy-distributions": "/realism/galaxies",
+    "/star-distribution": "/realism/stars",
+    "/population-comparison": "/realism/pixels",
+    "/synthetic-real": "/realism/visual",
+    "/jwst-euclid": "/sky",
+    "/inference": "/sky/results",
+    "/evaluation": "/sky/catalog-eval",
+    "/train-members": "/ensemble/starfull/train",
+    "/training": "/ensemble/starfull/overview",
+    "/tracking": "/ops/tracking",
+    "/visualization": "/figures",
+    "/fasrc": "/ops/fasrc",
+    "/git": "/ops/git",
+    "/connection-error": "/settings/connections"
+  }
+}
