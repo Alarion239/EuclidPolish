@@ -7,6 +7,7 @@ import io
 import os
 import shutil
 import sys
+import time as _time
 
 # Make ``euclid_polish`` importable even when pytest is run from /tests.
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -32,16 +33,15 @@ os.environ.setdefault("EUCLID_POLISH_DISABLE_AUTO_SSH", "1")
 
 # ─── Session-wide harmless SSH stub on ``STATE.ssh``. ──────────────────
 #
-# Many existing tests GET pages that go through the ``_enforce_ssh_gate``
-# ``before_request`` hook. Pre-fix, the auto-connect populated
-# ``STATE.ssh`` with a real session so these tests sailed through. With
-# the auto-connect now disabled, ``STATE.ssh`` is ``None`` and every
-# such request 302-redirects to /connection-error — breaking ~60 tests
-# that never asked for SSH at all.
+# Handlers marked ``@requires_fasrc`` (``euclid_polish/web/fasrc_gate.py``)
+# answer 503 ``fasrc_offline`` while ``STATE.ssh`` is not connected, and
+# with the auto-connect disabled ``STATE.ssh`` would be ``None`` for every
+# test that never asked for SSH at all.
 #
 # Solution: install a do-nothing SSH stub as the session default. It
 # reports ``is_connected() == True`` and returns ``(0, "", "")`` for
 # every ``.run(...)`` so the gate is satisfied without touching FASRC.
+# Tests of the offline behaviour set ``STATE.ssh = None`` themselves.
 # The submit route would still fail (it tries to parse a sbatch jobid
 # out of the empty string and 500s), so even if a future test bypasses
 # the new arm/nonce guard, no real cluster work happens.
@@ -50,7 +50,17 @@ os.environ.setdefault("EUCLID_POLISH_DISABLE_AUTO_SSH", "1")
 # _integration, _fetcher) monkeypatch ``STATE.ssh`` to their own stub
 # — those overrides win for the duration of the test, then pytest's
 # monkeypatch reverts to this session-default no-op.
+#
+# The package imports below sit AFTER the env var on purpose (module scope,
+# never inside a fixture): nothing may import ``euclid_polish.web`` before
+# the auto-connect kill switch is set.
 import pytest as _pytest
+
+from euclid_polish.config import Config
+from euclid_polish.web import fasrc_jobs as _fasrc_jobs
+from euclid_polish.web import fasrc_queue as _fasrc_queue
+from euclid_polish.web import remote
+from euclid_polish.web.jobs import REGISTRY
 
 
 class _SessionNullSSH:
@@ -91,7 +101,6 @@ def _forbid_real_data_writes(monkeypatch):
     ``tmp_path`` (the shared writable-path fixture does this for production
     outputs used throughout the suite).
     """
-    from euclid_polish.config import Config
 
     configured_data_dir = os.fspath(Config.DATA_DIR)
     real_data_roots = {
@@ -219,7 +228,6 @@ def _redirect_writable_config_paths(
     the produced file should monkeypatch the path back to a known
     location.
     """
-    from euclid_polish.config import Config
     pkg_tmp = tmp_path_factory.mktemp("writable_config_paths")
     # Child Python processes construct Config afresh.  Point those processes
     # at the same temporary boundary instead of letting them inherit ./data.
@@ -231,9 +239,10 @@ def _redirect_writable_config_paths(
         Config, "VIS_STAR_POSITIONS",
         str(pkg_tmp / "star_positions.png"), raising=False,
     )
-    # The fasrc training-plot route renders ``tmp_training_plot.png`` into
-    # ``Config.VIS_DIR``; without this redirect a test that exercises it
-    # overwrites the live WebUI's copy under ./data/vis. Routes read that
+    # Routes that render figures (``/view/training-log``, the TNG archive
+    # copies) write under ``Config.VIS_DIR``; without this redirect a test
+    # that exercises them overwrites the live WebUI's copy under ./data/vis.
+    # Routes read that
     # Config path at request time, so writing AND serving (/vis/...) stay
     # consistent;
     # tests that need a specific VIS_DIR monkeypatch it themselves (their
@@ -257,11 +266,10 @@ def _redirect_writable_config_paths(
     # writes into the real ``~/.euclid_polish/{fasrc_jobs.db,
     # fasrc_job_log.csv}``. The integration fixtures only patched ``DB``, so
     # every submit test was appending the fake-sbatch sentinel jobid 99999
-    # into the user's real job log — and since ``/api/fasrc/submit`` defaults
-    # the step to ``synthetic_generate``, those phantom rows flooded that
-    # card's "previous runs" panel with never-finalising "pending" entries.
+    # into the user's real job log — those phantom rows flooded the
+    # ``synthetic_generate`` card's "previous runs" panel with
+    # never-finalising "pending" entries.
     # A fresh per-test store also means no run history leaks between tests.
-    from euclid_polish.web import fasrc_jobs as _fasrc_jobs
     monkeypatch.setattr(
         _fasrc_jobs, "JOBLOG",
         _fasrc_jobs.JobLog(str(pkg_tmp / "fasrc_job_log.csv")),
@@ -275,7 +283,6 @@ def _redirect_writable_config_paths(
     # Isolate the local submission queue too — submit routes now route
     # through it, so without this a test submit would mutate the real
     # ``~/.euclid_polish/fasrc_queue.json``.
-    from euclid_polish.web import fasrc_queue as _fasrc_queue
     monkeypatch.setattr(
         _fasrc_queue, "QUEUE",
         _fasrc_queue.JobQueue(path=str(pkg_tmp / "fasrc_queue.json")),
@@ -289,9 +296,6 @@ def _redirect_writable_config_paths(
     # dependency reverts the paths — otherwise a late write lands in the
     # real ./data tree (where the prevention fixture would reject it).
     try:
-        import time as _time
-
-        from euclid_polish.web.jobs import REGISTRY
         _deadline = _time.monotonic() + 5.0
         while _time.monotonic() < _deadline:
             if not any(j.get("status") == "running" for j in REGISTRY.list()):
@@ -311,10 +315,6 @@ def _safe_default_ssh_state(monkeypatch):
     nothing leaks between tests. ``monkeypatch`` automatically reverts
     at end-of-test, so the previous test's stub never bleeds in.
     """
-    # Import inside the fixture so the import happens AFTER the env var
-    # above has been set — otherwise importing ``app`` would still
-    # trigger the auto-connect on the very first test.
-    from euclid_polish.web import remote
     monkeypatch.setattr(remote.STATE, "ssh", _SessionNullSSH())
     monkeypatch.setattr(remote.STATE, "connected_at", 0.0)
     yield

@@ -17,19 +17,17 @@ from typing import Any
 
 import numpy as np
 from astroquery.esa.euclid import Euclid
+from pyvo import dal as pyvo_dal
 
 from euclid_polish.config import Config
 from euclid_polish.photometry import ab_mag_to_uJy, uJy_to_ab_mag
+from euclid_polish.sky.observation.q1_fields import Q1_FIELDS
 
 Q1_STELLAR_COLOR_SAMPLE_VERSION = 1
 Q1_STELLAR_COLOR_MAG_BIN_WIDTH = 0.5
 Q1_STELLAR_COLOR_ROWS_PER_BIN = 500
 Q1_STELLAR_COLOR_FIELD_RADIUS_DEG = 0.35
-Q1_STELLAR_COLOR_FIELDS = (
-    (269.733, 66.018, "EDF-N"),
-    (61.241, -48.423, "EDF-S"),
-    (52.932, -28.088, "EDF-F"),
-)
+Q1_STELLAR_COLOR_FIELDS = tuple((f.ra, f.dec, f.name) for f in Q1_FIELDS)
 GAIA_TAP_PROVIDER = "ARI Gaia TAP"
 GAIA_TAP_URL = "https://gaia.ari.uni-heidelberg.de/tap"
 GAIA_SYNC_MAXREC = 10_000
@@ -222,9 +220,7 @@ def query_q1_stellar_color_sample(
             if record["object_id"] and record["gaia_id"]:
                 euclid_rows[record["object_id"]] = record
 
-    from pyvo.dal import TAPService
-
-    service = TAPService(GAIA_TAP_URL)
+    service = pyvo_dal.TAPService(GAIA_TAP_URL)
     gaia_rows: dict[str, dict[str, Any]] = {}
     field_metadata = []
     for field_index, (ra, dec, name) in enumerate(Q1_STELLAR_COLOR_FIELDS):

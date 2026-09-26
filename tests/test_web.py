@@ -10,12 +10,28 @@ from __future__ import annotations
 
 import os
 import time
+import types
 
+import numpy as np
 import pytest
+from astropy.io import fits
 
 from euclid_polish.config import Config
+from euclid_polish.web import euclid_session, fasrc_fetcher
+from euclid_polish.web import remote as web_remote
 from euclid_polish.web.app import create_app
+from euclid_polish.web.fasrc_config import FasrcConfig
+from euclid_polish.web.fasrc_fetcher import FetchResult
+from euclid_polish.web.helpers import sky_records, status
+from euclid_polish.web.helpers import viewer_data as vd
+from euclid_polish.web.helpers.ensemble_viz import _ensemble_regime_dir, ensemble_status
+from euclid_polish.web.helpers.status import _record_count
 from euclid_polish.web.jobs import REGISTRY
+from euclid_polish.web.routes import galaxy_distributions as galaxy_routes
+from euclid_polish.web.routes import star_distribution as star_routes
+from euclid_polish.web.routes import tng
+from euclid_polish.web.routes import tng as tng_routes
+from euclid_polish.web.routes import views as views_mod
 
 
 @pytest.fixture
@@ -73,10 +89,10 @@ def test_view_training_log_empty_is_404_not_500(client, tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def _assert_react_shell(response):
+    # Only the shell contract (``index.html`` with the React mount point):
+    # the bundle's file layout belongs to the frontend build, not pytest.
     assert response.status_code == 200, response.get_data(as_text=True)
-    body = response.get_data(as_text=True)
-    assert 'id="root"' in body
-    assert "/static/dist/assets/" in body
+    assert 'id="root"' in response.get_data(as_text=True)
 
 
 def test_root_serves_react_console(client):
@@ -92,34 +108,13 @@ def test_app_prefix_redirects_to_canonical_route(client):
 
 
 def test_ensemble_page_renders(client):
-    _assert_react_shell(client.get("/ensemble"))
-
-
-def test_ensemble_power_spectrum_serves_with_relative_vis_dir(
-        client, tmp_path, monkeypatch):
-    """Relative VIS_DIR must not make Flask send_file look under app.root_path."""
-    from euclid_polish.web.helpers.ensemble_viz import _ensemble_regime_dir
-
-    monkeypatch.setattr(Config, "VIS_DIR",
-                        os.path.relpath(str(tmp_path / "vis")))
-    out_dir = _ensemble_regime_dir(starless=True)
-    os.makedirs(out_dir, exist_ok=True)
-    minimal_png = (
-        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
-        b"\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89"
-        b"\x00\x00\x00\rIDATx\x9cc\xfc\xcf\xc0\x00\x00\x00\x03\x00\x01\x9b\xc8"
-        b"\x9d\xed\x00\x00\x00\x00IEND\xaeB`\x82"
-    )
-    with open(os.path.join(out_dir, "ensemble_power_spectrum.png"), "wb") as f:
-        f.write(minimal_png)
-
-    r = client.get("/ensemble/power-spectrum.png")
-    assert r.status_code == 200
-    assert r.content_type.startswith("image/png")
+    _assert_react_shell(client.get("/ensemble/starfull"))
+    legacy = client.get("/ensemble")
+    assert legacy.status_code == 308
+    assert legacy.headers["Location"] == "/ensemble/starfull"
 
 
 def test_ensemble_status_no_members(monkeypatch, tmp_path):
-    from euclid_polish.web.helpers.ensemble_viz import ensemble_status
     monkeypatch.setattr(Config, "DEFAULT_CHECKPOINT_DIR",
                         str(tmp_path / "ckpt" / "wdsr"))
     monkeypatch.setattr(Config, "VIS_DIR", str(tmp_path / "vis"))
@@ -131,11 +126,11 @@ def test_ensemble_status_no_members(monkeypatch, tmp_path):
 
 
 def test_catalog_page_renders(client):
-    _assert_react_shell(client.get("/catalog"))
+    _assert_react_shell(client.get("/data/catalog"))
 
 
 def test_psfs_page_renders(client):
-    _assert_react_shell(client.get("/psfs"))
+    _assert_react_shell(client.get("/data/psfs"))
 
 
 def test_sky_page_renders(client):
@@ -143,11 +138,11 @@ def test_sky_page_renders(client):
 
 
 def test_visualization_page_renders(client):
-    _assert_react_shell(client.get("/visualization"))
+    _assert_react_shell(client.get("/figures"))
 
 
 def test_cutouts_page_renders(client):
-    _assert_react_shell(client.get("/cutouts"))
+    _assert_react_shell(client.get("/data/cutouts"))
 
 
 def test_cutout_viewer_exports_capture_all_visible_frames():
@@ -197,6 +192,21 @@ def test_cutout_viewer_exports_capture_all_visible_frames():
     assert "function drawPublicationHeatbar" in source
     assert 'asinh knee: ${Math.round(info.knee)} e⁻' in source
     assert 'Pixel signal (e⁻)' in source
+    # The heat bar labels the tier's own unit (X-Cube-Unit / tier.unit), so a
+    # JWST panel reads MJy/sr, not e⁻ (spec §11).
+    assert 'unit: r.headers.get("X-Cube-Unit") || ""' in source
+    assert "function publicationUnitLabel(unit)" in source
+    assert "`Pixel signal (${info.unit})`" in source
+    assert "info.knee / info.scale" in source
+    # The disagreement movie is centred on the tier its PCs are components
+    # about — meta.morph_base_tier ("mean" for the ensemble, whose `sr` is
+    # the production gate) — never a hard-coded "sr" (C6).
+    assert 'function morphBaseTier()' in source
+    assert 'state.meta && state.meta.morph_base_tier' in source
+    assert 'fetchCube("sr", j, extra)' not in source
+    assert 'await fetchCube("sr", index, extra)' not in source
+    assert 'fetchCube(morphBaseTier(), j, extra)' in source
+    assert 'await fetchCube(morphBaseTier(), index, extra)' in source
     assert 'input-equivalent signal' not in source
     assert "const inset =" not in source
     assert "const displayedSidePixels = crop ? crop.side : fr.canvas.width;" in source
@@ -221,14 +231,12 @@ def test_cutout_viewer_exports_capture_all_visible_frames():
 
 
 def test_population_atlas_download_route(client, monkeypatch):
-    from euclid_polish.web.routes import galaxy_distributions as route
-
     monkeypatch.setattr(
-        route, "joint_galaxy_state",
+        galaxy_routes, "joint_galaxy_state",
         lambda: {"candidate": {"kind": "euclid_joint"}},
     )
     monkeypatch.setattr(
-        route,
+        galaxy_routes,
         "render_population_atlas",
         lambda calibration, output_format, dpi: (
             b"%PDF-atlas" if calibration == {"kind": "euclid_joint"}
@@ -245,14 +253,12 @@ def test_population_atlas_download_route(client, monkeypatch):
 
 
 def test_star_population_calibration_download_route(client, monkeypatch):
-    from euclid_polish.web.routes import star_distribution as route
-
     monkeypatch.setattr(
-        route, "star_state",
+        star_routes, "star_state",
         lambda: {"active": {"diagnostics": {}}, "candidate": None},
     )
     monkeypatch.setattr(
-        route,
+        star_routes,
         "render_star_population_calibration",
         lambda _fit, output_format, dpi: b"%PDF-stars"
         if output_format == "pdf"
@@ -324,7 +330,6 @@ def test_viewer_cube_bad_tier_404(client):
 
 
 def test_sky_sr_checkpoint_and_records_detection(tmp_path):
-    from euclid_polish.web.helpers import sky_records
     # checkpoint: detected only when a 'checkpoint' pointer or *.index exists.
     ck = tmp_path / "ck"; ck.mkdir()
     assert sky_records.checkpoint_present(str(ck)) is False
@@ -339,11 +344,6 @@ def test_sky_sr_checkpoint_and_records_detection(tmp_path):
 
 
 def test_sky_sr_count_isolated(tmp_path, monkeypatch):
-    import os
-
-    import numpy as np
-
-    from euclid_polish.web.helpers import sky_records
     monkeypatch.setattr(Config, "VIS_DIR", str(tmp_path))
     assert sky_records.sr_count("validate") == 0
     os.makedirs(sky_records.sky_sr_dir(), exist_ok=True)
@@ -353,7 +353,6 @@ def test_sky_sr_count_isolated(tmp_path, monkeypatch):
 
 def test_viewer_meta_sky_uses_starfull_hr_record(tmp_path, monkeypatch):
     """HR is the starfull record; clean remains a separate starless target."""
-    from euclid_polish.web.helpers import viewer_data as vd
 
     for kind in ("dirty", "clean", "hr"):
         (tmp_path / f"{kind}_validate.tfrecord").touch()
@@ -379,12 +378,6 @@ def test_viewer_meta_sky_uses_starfull_hr_record(tmp_path, monkeypatch):
 
 
 def test_viewer_sky_hr_and_bhr_cubes_read_starfull_record(tmp_path, monkeypatch):
-    import types
-
-    import numpy as np
-
-    from euclid_polish.web.helpers import viewer_data as vd
-
     hr_path = tmp_path / "hr_validate.tfrecord"
     hr_path.touch()
     read_paths = []
@@ -419,8 +412,6 @@ def test_viewer_sky_hr_and_bhr_cubes_read_starfull_record(tmp_path, monkeypatch)
 
 
 def test_bhr_fwhm_uses_full_target_selection_range():
-    from euclid_polish.web.helpers import viewer_data as vd
-
     assert vd._bhr_fwhm_arcsec({
         "bhr_fwhm_arcsec": str(Config.BAND_VIS.psf_fwhm_arcsec),
     }) == Config.BAND_VIS.psf_fwhm_arcsec
@@ -439,21 +430,15 @@ def test_viewer_meta_sky_accepts_test_subset(client):
 
 
 def test_training_redirects_to_ensemble(client):
-    """/training is folded into /ensemble (ensemble-only training)."""
+    """/training is folded into the Ensemble workspace (ensemble-only
+    training); the legacy URL moves permanently."""
     r = client.get("/training")
-    assert r.status_code in (301, 302)
-    assert "/ensemble" in r.headers["Location"]
+    assert r.status_code == 308
+    assert r.headers["Location"] == "/ensemble/starfull/overview"
 
 
 def test_inference_page_renders(client):
-    _assert_react_shell(client.get("/inference"))
-
-
-def test_no_lane_traces_in_ui(client):
-    """The removed supervision lanes may leave no surface anywhere: no
-    nav link to a Round-trip page."""
-    body = client.get("/ensemble").data.decode()
-    assert "Round-trip" not in body, "nav still shows 'Round-trip'"
+    _assert_react_shell(client.get("/sky/results"))
 
 
 # ---------------------------------------------------------------------------
@@ -486,7 +471,6 @@ def test_removed_routes_are_gone(client):
 def test_psfs_page_reads_cache_without_rsync(client, monkeypatch):
     """Loading /psfs reads the local ePSF cache only — it must NOT rsync from
     FASRC on page load (the slow behaviour we replaced with a button)."""
-    from euclid_polish.web import fasrc_fetcher
     calls = []
 
     def spy(*a, **k):
@@ -494,7 +478,7 @@ def test_psfs_page_reads_cache_without_rsync(client, monkeypatch):
         return fasrc_fetcher.FetchResult(ok=False)
 
     monkeypatch.setattr(fasrc_fetcher, "fetch_one_file", spy)
-    assert client.get("/psfs").status_code == 200
+    assert client.get("/data/psfs").status_code == 200
     assert calls == []                         # cache-only; no fetch on load
 
 
@@ -502,7 +486,6 @@ def test_euclid_psf_sync_forces_each_band_with_larger_cap(client, monkeypatch):
     """The Synchronise button force-fetches all four bands using the larger
     ePSF pull cap, so the multi-extension VIS file (tens-to-hundreds of MB)
     isn't rejected by the generic 50 MB cap."""
-    from euclid_polish.web import fasrc_fetcher
     seen = []
 
     def fake(remote, *, force=False, max_bytes=None, **k):
@@ -529,7 +512,6 @@ def test_euclid_auth_save_writes_remote_credentials(client, monkeypatch):
     """Saving Euclid credentials writes ~/.euclid_credentials on FASRC via a
     quoted heredoc (password as stdin, not argv), mode 600. Nothing is
     stored on the laptop."""
-    from euclid_polish.web import remote as web_remote
     captured = {}
 
     class _CapSSH:
@@ -551,8 +533,6 @@ def test_euclid_auth_save_writes_remote_credentials(client, monkeypatch):
 
 
 def test_euclid_auth_save_rejects_blank(client, monkeypatch):
-    from euclid_polish.web import remote as web_remote
-
     class _OkSSH:
         def is_connected(self): return True
         def run(self, cmd, timeout=60): return (0, "", "")
@@ -565,8 +545,6 @@ def test_euclid_auth_save_rejects_blank(client, monkeypatch):
 
 
 def test_euclid_auth_status_reports_presence(client, monkeypatch):
-    from euclid_polish.web import remote as web_remote
-
     class _PresentSSH:
         def is_connected(self): return True
         def run(self, cmd, timeout=60): return (0, "alice\n", "")
@@ -580,8 +558,6 @@ def test_euclid_auth_status_reports_presence(client, monkeypatch):
 
 def test_local_euclid_login_is_reachable_without_fasrc(client, monkeypatch):
     """The laptop-side archive session must not be gated on FASRC SSH."""
-    from euclid_polish.web import euclid_session
-    from euclid_polish.web import remote as web_remote
 
     class _Down:
         def is_connected(self): return False
@@ -608,7 +584,6 @@ def test_local_euclid_login_is_reachable_without_fasrc(client, monkeypatch):
 def test_tng_auth_save_writes_remote_token(client, monkeypatch):
     """Saving the TNG token writes ~/.tng_api_key on FASRC via a quoted
     heredoc (token as stdin, not argv), mode 600. Nothing is stored locally."""
-    from euclid_polish.web import remote as web_remote
     captured = {}
 
     class _CapSSH:
@@ -633,8 +608,6 @@ def test_tng_auth_save_writes_remote_token(client, monkeypatch):
 
 
 def test_tng_auth_save_rejects_blank(client, monkeypatch):
-    from euclid_polish.web import remote as web_remote
-
     class _OkSSH:
         def is_connected(self): return True
         def run(self, cmd, timeout=60): return (0, "", "")
@@ -648,11 +621,10 @@ def test_tng_auth_save_rejects_blank(client, monkeypatch):
 def test_tng_auth_save_requires_connection(client, monkeypatch):
     """No FASRC connection → the request is refused and NOTHING is written.
 
-    The global SSH gate (``_enforce_ssh_gate`` before_request) redirects a
-    disconnected request to /connection-error (302); the endpoint's own
+    The route is marked ``@requires_fasrc``, so the per-route gate answers
+    503 ``fasrc_offline`` before the handler runs; the endpoint's own
     ``is_connected`` guard is belt-and-suspenders behind it. Either way the
     token must never be written — the stub's ``run`` raises if touched."""
-    from euclid_polish.web import remote as web_remote
 
     class _Down:
         def is_connected(self): return False
@@ -662,13 +634,12 @@ def test_tng_auth_save_requires_connection(client, monkeypatch):
     monkeypatch.setattr(web_remote.STATE, "ssh", _Down())
     r = client.post("/tng-auth/save", data={"tng_token": "x"})
     # Refused — never a successful save (no write happened: the stub would
-    # have raised). 302 = gate redirect, 400 = endpoint guard.
-    assert r.status_code in (302, 400)
+    # have raised).
+    assert r.status_code == 503
+    assert r.get_json()["code"] == "fasrc_offline"
 
 
 def test_tng_auth_status_reports_presence_without_leaking_token(client, monkeypatch):
-    from euclid_polish.web import remote as web_remote
-
     class _PresentSSH:
         def is_connected(self): return True
         def run(self, cmd, timeout=60): return (0, "39\n", "")   # wc -c output
@@ -681,9 +652,9 @@ def test_tng_auth_status_reports_presence_without_leaking_token(client, monkeypa
     assert "token" not in body and "tng_token" not in body
 
 
-def test_tng_radius_status_uses_activated_remote_python(client, monkeypatch):
-    from euclid_polish.web.routes import tng
-
+def test_tng_radius_validation_uses_activated_remote_python(monkeypatch):
+    """The refresh job (``POST /api/tng/radii/refresh``) validates the remote
+    manifest through the activated remote python with a 180 s budget."""
     calls = []
 
     def run_remote_python(ssh, *, cfg, argv, timeout):
@@ -694,13 +665,11 @@ def test_tng_radius_status_uses_activated_remote_python(client, monkeypatch):
         ), "stale"
 
     monkeypatch.setattr(tng.fasrc_jobs, "run_remote_python", run_remote_python)
-    response = client.get("/api/tng/radii/status")
-    payload = response.get_json()
+    payload = tng._validate_radius_manifest()
 
-    assert response.status_code == 200
-    assert payload["connected"] is True
     assert payload["expected_count"] == 5770
     assert payload["valid_count"] == 5700
+    assert payload["reasons"] == ["stale"]
     assert calls[0][2][0] == "scripts/validate_tng_radius_manifest.py"
     properties_index = calls[0][2].index("--properties") + 1
     manifest_index = calls[0][2].index("--manifest") + 1
@@ -723,8 +692,6 @@ _PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 def _stub_fetch(monkeypatch, *, local_path=None, ok=True, error=None):
     """Make routes/tng.fetch_one_file return a canned FetchResult + capture
     the (remote_path, kwargs) the route asked for."""
-    from euclid_polish.web.fasrc_fetcher import FetchResult
-    from euclid_polish.web.routes import tng as tng_routes
     captured = {}
 
     def fake(remote, **kw):
@@ -738,7 +705,6 @@ def _stub_fetch(monkeypatch, *, local_path=None, ok=True, error=None):
 def test_tng_histograms_png_renders_locally(client, tmp_path, monkeypatch):
     """Histograms render in-process (not a job): the route calls the local
     render with the FASRC id list + key and streams the PNG."""
-    from euclid_polish.web.routes import tng as tng_routes
     seen = {}
     monkeypatch.setattr(tng_routes, "_LOCAL_TNG_DIR",
                         str(tmp_path / "_tng_infographics"))
@@ -809,19 +775,6 @@ def test_post_inference_refresh_combiners_returns_job_id(client, monkeypatch):
     assert "job_id" in response.get_json()
 
 
-def test_login_node_generate_cmd_injects_tng_density():
-    """Inference login-node generation forwards the fitted galaxy density."""
-    from euclid_polish.web.fasrc_config import FasrcConfig
-    from euclid_polish.web.helpers.jobs_impl import _login_node_generate_cmd
-    cfg = FasrcConfig(data_dir="/n/d", conda_env_path="/n/env", repo_path="/n/repo")
-    base = _login_node_generate_cmd(
-        cfg, "/n/tmp", 510, 2, galaxy_density_arcmin2=175
-    )
-    assert "scripts/run_pipeline.py" in base
-    assert "--galaxy-density-arcmin2 175" in base
-    assert "--tng-density-arcmin2" not in base
-
-
 # ---------------------------------------------------------------------------
 # Progress tracking
 # ---------------------------------------------------------------------------
@@ -850,8 +803,7 @@ def test_job_to_dict_exposes_progress():
     def _target(cap):
         cap.tick(3, 10, "mid")
         # leave running so we can read progress
-        import time as _t
-        _t.sleep(0.05)
+        time.sleep(0.05)
         return None
 
     job_id = REGISTRY.spawn("progress test", _target)
@@ -933,10 +885,10 @@ def test_failed_job_records_error():
 # ---------------------------------------------------------------------------
 
 def test_cutouts_gallery_page_renders(client):
-    """The deprecated per-band page redirects into the React cutouts page."""
+    """The deprecated per-band page redirects into the Data cutouts tab."""
     r = client.get("/cutouts/VIS")
     assert r.status_code == 308
-    assert r.headers["Location"] == "/cutouts"
+    assert r.headers["Location"] == "/data/cutouts"
 
 
 def test_cutouts_gallery_unknown_band_404(client):
@@ -963,10 +915,7 @@ def test_cutout_image_rejects_bad_size(client):
 
 def test_cutout_image_renders_real_fits(client, tmp_path, monkeypatch):
     """Drop a tiny FITS into the VIS cutout dir and round-trip a render."""
-    import numpy as np
-    from astropy.io import fits
 
-    from euclid_polish.config import Config
     monkeypatch.setattr(Config, "DEFAULT_OUTPUT_DIR", str(tmp_path / "data"))
     band_dir = Config.cutout_dir_for_band(
         "VIS", root=os.path.join(Config.DEFAULT_OUTPUT_DIR, "cutouts"),
@@ -1028,8 +977,6 @@ def test_view_catalog_unknown_view_400(client):
 
 
 def test_cached_catalog_directory_never_fetches(monkeypatch, tmp_path):
-    from euclid_polish.web.helpers import status
-
     cached = tmp_path / "euclid_stars" / "stars.csv"
     cached.parent.mkdir()
     cached.write_text("id,ra,dec\n")
@@ -1047,17 +994,7 @@ def test_cached_catalog_directory_never_fetches(monkeypatch, tmp_path):
     assert status._cached_fasrc_catalog_dir() == str(cached.parent)
 
 
-def test_api_sky_totals_returns_json(client):
-    r = client.get("/api/sky/totals")
-    assert r.status_code == 200
-    body = r.get_json()
-    assert set(body.keys()) >= {"clean_train", "clean_validate", "dirty_train", "dirty_validate"}
-
-
 def test_api_sky_sync_pulls_source_catalog_sidecars(client, monkeypatch):
-    from euclid_polish.web import fasrc_fetcher
-    from euclid_polish.web.routes import views as views_mod
-
     pulled = []
 
     def fake_fetch(remote_path, **kwargs):
@@ -1098,7 +1035,6 @@ def test_record_count_handles_truncated_tfrecord(tmp_path):
     raised ``DataLossError``, the response 500'd, and every count
     (including the valid validate files) silently became 0 in the UI.
     """
-    from euclid_polish.web.helpers.status import _record_count
 
     # ``_record_count(name)`` reads ``<dir>/<name>.tfrecord``; write a
     # garbage-bytes shard at that exact path so TF rejects the header.
@@ -1129,7 +1065,6 @@ def test_serve_vis_rejects_path_traversal(client):
 
 def test_serve_vis_returns_existing_png(client, tmp_path):
     """If a PNG exists under data/vis, we can fetch it through the server."""
-    from euclid_polish.config import Config
     # Use an existing demo PNG if present; otherwise drop a tiny test one.
     test_png = os.path.join(Config.VIS_DIR, "test_serve.png")
     os.makedirs(os.path.dirname(test_png), exist_ok=True)
@@ -1212,7 +1147,6 @@ def test_steps_status_omits_deleted_two_stage_chain_keys(client, monkeypatch):
     # and skips the live SSH probe entirely. This test only asserts the
     # *shape* (step ids + artifact keys), and pinning makes it immune to
     # whatever ssh stub a prior test happened to leave on the global STATE.
-    from euclid_polish.web import remote as web_remote
     monkeypatch.setattr(web_remote.STATE, "ssh", None)
     r = client.get("/api/fasrc/steps/status")
     body = r.get_json()

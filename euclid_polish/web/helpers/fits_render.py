@@ -9,13 +9,11 @@ import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 from astropy.io import fits
-from astropy.io import fits as _fits
 from astropy.visualization import AsinhStretch, ImageNormalize, MinMaxInterval
 from flask import abort
 from PIL import Image
 
 from euclid_polish.config import BandConfig, Config
-from euclid_polish.psf import PSF
 from euclid_polish.psf.psf_library import load_all_band_psfs
 from euclid_polish.visualization.presentation_style import (
     AXIS_LABEL_SIZE,
@@ -271,108 +269,5 @@ def _render_psf_panel_png(band: str | None, dpi: int = 110) -> bytes:
         bbox_inches="tight", format="png",
     )
     plt.close(fig)
-    buf.seek(0)
-    return buf.getvalue()
-
-
-def _psf_preview_payload(band: str | None = None,
-                         *, max_side: int = 256) -> dict[str, Any]:
-    """Return bounded display arrays for browser-side PSF rendering.
-
-    This reads only the already-synchronised FASRC cache. The React console
-    owns colour mapping and canvas rendering; this helper avoids putting
-    matplotlib or a multi-hundred-MB FITS transfer on the page request path.
-    ``HDU0`` is the mean PSF for the multi-extension PSFSet format.
-    """
-    valid = {b.name for b in Config.BANDS}
-    if band and band != "all" and band not in valid:
-        abort(404)
-
-    psf_dir = _cached_fasrc_psf_dir()
-    if not psf_dir:
-        return {
-            "available": False,
-            "source": "FASRC cache",
-            "message": "No synchronised FASRC ePSFs are available.",
-            "bands": [],
-        }
-
-    names = ([band] if band and band != "all" else
-             [b.name for b in Config.BANDS])
-    previews: list[dict[str, Any]] = []
-    for name in names:
-        cfg = Config.get_band(name)
-        path = os.path.join(psf_dir, cfg.psf_fits_filename)
-        if not os.path.isfile(path):
-            continue
-        psf = PSF.from_fits(path)
-        data = np.asarray(psf.data, dtype=np.float32)
-        finite = np.isfinite(data)
-        if not finite.any():
-            continue
-        data = np.where(finite, data, 0.0)
-        logged = np.log10(np.clip(data, 1e-12, None))
-        original_shape = [int(v) for v in logged.shape]
-        if max(logged.shape) > max_side:
-            ys = np.linspace(0, logged.shape[0] - 1, max_side).astype(int)
-            xs = np.linspace(0, logged.shape[1] - 1, max_side).astype(int)
-            logged = logged[np.ix_(ys, xs)]
-        previews.append({
-            "name": name,
-            "values": logged.astype(float).tolist(),
-            "shape": original_shape,
-            "pixel_scale": float(psf.pixel_scale),
-            "fwhm": (float(psf.fwhm_arcsec)
-                     if psf.fwhm_arcsec is not None else cfg.psf_fwhm_arcsec),
-            "n_psf": int(fits.getheader(path, 0).get("NPSF", 1)),
-        })
-
-    return {
-        "available": bool(previews),
-        "source": "FASRC cache",
-        "message": (None if previews else
-                     "No synchronised FASRC ePSFs are available."),
-        "bands": previews,
-    }
-
-
-def _arrays_to_fits_bytes(
-    arrays,
-    header_meta=None,
-    primary_name: str | None = None,
-) -> bytes:
-    """Pack a dict of ``{name: array}`` into a multi-HDU FITS file.
-
-    The first array goes into the PrimaryHDU; the rest become
-    ``ImageHDU`` extensions with their dict key as ``EXTNAME``.
-    ``header_meta`` keys are copied into every HDU's header
-    (FITS keywords are uppercased and truncated to 8 chars).
-
-    Used by the "Download FITS" sister endpoints of every renderer
-    so the user can pull the raw linear array even when the view
-    they're looking at is asinh-stretched, percentile-clipped, and
-    colormapped for display.
-    """
-    header_meta = dict(header_meta or {})
-    hdus = []
-    items = list(arrays.items())
-    if not items:
-        raise ValueError("arrays dict is empty")
-    for i, (name, arr) in enumerate(items):
-        arr = np.asarray(arr, dtype=np.float32)
-        hdu = _fits.PrimaryHDU(data=arr) if i == 0 else _fits.ImageHDU(data=arr)
-        # EXTNAME on the primary HDU isn't strictly required but lots
-        # of viewers (DS9, ginga) treat it as the human-readable label
-        # so set it consistently.
-        hdu.header["EXTNAME"] = name[:60]
-        for k, v in header_meta.items():
-            key = str(k).upper()[:8]
-            if isinstance(v, (int, float, bool, str)):
-                hdu.header[key] = v
-        if primary_name and i == 0:
-            hdu.header["EXTNAME"] = primary_name[:60]
-        hdus.append(hdu)
-    buf = io.BytesIO()
-    _fits.HDUList(hdus).writeto(buf, overwrite=True)
     buf.seek(0)
     return buf.getvalue()

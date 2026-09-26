@@ -1,18 +1,19 @@
 """psfs routes for the EuclidPolish web UI (extracted from app.py)."""
 from __future__ import annotations
 
+import json
 import shlex
 import textwrap
 from typing import Any
 
-from flask import jsonify, render_template, request
+from flask import jsonify
 
 from euclid_polish.config import Config
 from euclid_polish.web import fasrc_config
 from euclid_polish.web import fasrc_fetcher as _fasrc_fetcher
+from euclid_polish.web.fasrc_gate import requires_fasrc
 from euclid_polish.web.fasrc_jobs import _conda_activate_snippet
-from euclid_polish.web.helpers.fits_render import _psf_preview_payload
-from euclid_polish.web.helpers.status import PSF_CLUSTERS_META, _psf_status
+from euclid_polish.web.helpers.status import PSF_CLUSTERS_META
 from euclid_polish.web.remote import STATE
 
 
@@ -72,8 +73,6 @@ def _sync_clusters_meta(cfg) -> dict[str, Any]:
         force=True, max_bytes=16 * 1024 * 1024)
     if not r.ok or r.local_path is None:
         return {"ok": False, "error": r.error or "rsync of the metadata failed"}
-    import json
-
     try:
         with open(r.local_path) as f:
             n = int(json.load(f).get("n_clusters", 0))
@@ -84,18 +83,8 @@ def _sync_clusters_meta(cfg) -> dict[str, Any]:
 
 def register(app):
 
-    # ---------------- PSFs page ----------------
-    @app.route("/psfs")
-    def psfs_page():
-        return render_template(
-            "psfs.html",
-            status=_psf_status(),
-            bands=Config.BANDS,
-            default_num_stars=200,
-            default_output_size=1024,
-        )
-
     @app.route("/api/euclid-psf/sync", methods=["POST"])
+    @requires_fasrc
     def api_euclid_psf_sync():
         """Force a re-rsync of the four Euclid band ePSFs from FASRC.
 
@@ -124,16 +113,8 @@ def register(app):
         meta = _sync_clusters_meta(cfg_loaded)
         return jsonify({"ok": any_ok, "files": results, "clusters_meta": meta})
 
-    @app.route("/api/euclid-psf/preview")
-    def api_euclid_psf_preview():
-        """Serve bounded PSF arrays for the React canvas renderer.
-
-        Synchronisation remains an explicit user action. A page render cannot
-        silently trigger SSH/rsync or confuse a FASRC outage with rendering.
-        """
-        return jsonify(_psf_preview_payload(request.args.get("band", "all")))
-
     @app.route("/api/euclid-psf/sync-meta", methods=["POST"])
+    @requires_fasrc
     def api_euclid_psf_sync_meta():
         """Metadata-ONLY sync for the cluster map: dump the per-cluster
         centroids + star counts from the VIS ePSF headers on the FASRC login

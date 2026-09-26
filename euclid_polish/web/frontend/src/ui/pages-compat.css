@@ -1,0 +1,245 @@
+/* Page-specific styles that lived in the v1 kit stylesheet. They belong to
+   legacy pages (fasrc.tsx, Fasrc, Ensemble, TrainMembers) and are deleted by
+   the phase-3 workspace that absorbs each page (W-Ops, W-Ensemble). Do not
+   add new rules here: co-locate workspace CSS with the workspace. */
+
+/* ---- v1 Field markup written by hand (Config.tsx plateau-guard card) ----
+   v1 styled a Field's first <span> as the label; v2 needs .ui-field__label.
+   Keeps `<div className="ui-field"><span>Label</span>…` pages styled until
+   the phase-3 Settings workspace uses <Field>. Unclassed spans only, so a
+   kit Field (whose label span has a class) is unaffected. */
+.ui-field > span:first-child:not([class]) {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-family: var(--font-mono); font-size: var(--fs-xs); letter-spacing: .06em; color: var(--text-faint); text-transform: uppercase;
+}
+
+/* ---- Ensemble member table (Ensemble.tsx) ----
+   Deliberately a fixed grid: labels and numeric fields keep the same
+   x-coordinates as the rows, while the actions keep enough room to stay on
+   one line. The wrapper supplies the small-screen horizontal scroll. */
+.ens-members-table { table-layout: fixed; min-width: 1280px; }
+.ens-members-table th, .ens-members-table td { overflow: hidden; }
+.ens-members-table td:nth-child(2) code { display: block; overflow: hidden; text-overflow: ellipsis; }
+.ens-members-table th:last-child, .ens-members-table td:last-child { overflow: visible; }
+
+/* ---- FASRC step card + SLURM monitor (fasrc.tsx) ---- */
+.fasrc-step__res { display: flex; flex-wrap: wrap; gap: var(--s3) var(--s4); align-items: flex-end; }
+.fasrc-step-inline {
+  margin-top: var(--s3); padding: var(--s3) var(--s4) var(--s2);
+  border-left: 3px solid var(--accent); background: var(--accent-soft);
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
+}
+.fasrc-step-inline__head {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--s3);
+  margin-bottom: var(--s3);
+}
+.fasrc-step-inline__head strong { margin-right: var(--s2); font-size: 14px; }
+.fasrc-step-inline__head code { color: var(--text-faint); font-size: 11px; }
+.fasrc-history { margin-top: var(--s4); padding-top: var(--s3); border-top: 1px solid var(--border-strong); }
+.fasrc-history__head {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--s3);
+  margin-bottom: var(--s2);
+}
+.fasrc-history__note { font-size: 11px; margin-top: 2px; }
+.fasrc-history .ui-table { font: 11px/1.25 var(--font-mono); font-variant-numeric: tabular-nums; }
+.fasrc-history .ui-table th,
+.fasrc-history .ui-table td {
+  text-align: left; vertical-align: middle; white-space: nowrap;
+  padding: 7px 10px 7px 0; font: inherit;
+}
+.fasrc-history .ui-table th { font-weight: 600; color: var(--text-faint); }
+.fasrc-history .ui-table td code,
+.fasrc-history .ui-badge,
+.fasrc-history__date,
+.fasrc-history__value { font: inherit; white-space: nowrap; }
+.fasrc-history__date { color: var(--text-dim); }
+.fasrc-mon {
+  border: 1px solid var(--border); border-radius: var(--r-md);
+  background: var(--surface-2); padding: var(--s3) var(--s4); margin-top: var(--s3);
+  display: flex; flex-direction: column; gap: var(--s2);
+}
+.fasrc-mon__head { display: flex; align-items: center; gap: var(--s3); }
+.fasrc-mon__jobid { color: var(--text-faint); font-size: 12px; }
+.fasrc-mon__stage { font-size: 12px; color: var(--text-dim); }
+.fasrc-mon__res { display: flex; gap: var(--s4); font-size: 12px; color: var(--text-dim); }
+.fasrc-mon__events { margin: 0; padding-left: 16px; font-size: 12px; }
+.fasrc-mon__events--warn { color: var(--warn); }
+.fasrc-mon__events--err { color: var(--bad); }
+.fasrc-log__toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s2); }
+.fasrc-log__content { min-height: 280px; max-height: min(68vh, 760px); }
+.fasrc-log__tasks { margin-bottom: var(--s3); }
+.fasrc-log__task-caption { margin-bottom: var(--s2); font-size: 12px; }
+.fasrc-log__selected {
+  padding: var(--s2) var(--s3); border: 1px solid var(--border);
+  border-bottom: 0; border-radius: var(--r-sm) var(--r-sm) 0 0;
+  background: var(--surface-2); font-size: 12px;
+}
+.fasrc-log__pager {
+  display: flex; align-items: center; flex-wrap: wrap; gap: var(--s2);
+  margin-top: var(--s3); font-size: 12px;
+}
+
+/* ---- Ensemble combiner importance bars (Ensemble.tsx) ---- */
+.ens-imp { display: grid; grid-template-columns: 64px 1fr 44px auto; align-items: center; gap: var(--s3); padding: 3px 0; }
+.ens-imp__label { font-size: 12px; color: var(--text-dim); }
+.ens-imp__bar { height: 10px; border-radius: var(--r-pill); background: var(--surface-3); overflow: hidden; }
+.ens-imp__fill { height: 100%; border-radius: var(--r-pill); }
+.ens-imp__val { font-size: 12px; text-align: right; color: var(--text); }
+.ens-imp__meta { font-size: 11px; }
+
+/* ---- Ensemble member panel: compact cards packed per row (Ensemble.tsx) ---- */
+.ens-mgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(126px, 1fr)); gap: 5px; }
+.ens-mcard {
+  --lc: var(--border-strong);   /* per-card loss color, set inline */
+  display: flex; flex-direction: column; gap: 1px; padding: 4px 6px;
+  border: 1px solid color-mix(in srgb, var(--lc) 45%, var(--border));
+  border-radius: var(--r-1);
+  cursor: pointer; user-select: none;
+  /* whole card faintly tinted by its loss norm — the loss reads at a glance */
+  background: color-mix(in srgb, var(--lc) 14%, var(--surface-1));
+  text-align: left; font: inherit; color: inherit;
+  transition: border-color .12s, background .12s, box-shadow .12s;
+}
+.ens-mcard:hover { background: color-mix(in srgb, var(--lc) 22%, var(--surface-1)); }
+.ens-mcard[data-on="true"] {
+  border-color: var(--lc);
+  background: color-mix(in srgb, var(--lc) 32%, var(--surface-1));
+  box-shadow: inset 0 0 0 1px var(--lc);
+}
+.ens-mcard__hd { display: flex; align-items: baseline; justify-content: space-between; gap: 6px; }
+.ens-mcard__num { font-weight: 600; font-size: 12px; }
+.ens-mcard__psnr { font-size: 10.5px; color: var(--text-dim); }
+.ens-mcard__meta { font-size: 10px; color: var(--text-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* ---- Pixel back-trace panel (click a heatmap cell → real image stamps) ---- */
+.ens-trace {
+  margin-top: var(--s3); padding: 12px; border: 1px solid var(--border);
+  border-radius: var(--r-2); background: var(--surface-1);
+}
+.ens-trace__grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+.ens-trace__card {
+  padding: 8px; border: 1px solid var(--border); border-radius: var(--r-1);
+  background: var(--surface-2);
+}
+.ens-trace__stamps { display: flex; gap: 6px; justify-content: center; flex-wrap: wrap; }
+.ens-trace__tier { font-size: 10px; color: var(--text-faint); margin-top: 2px; }
+.ens-trace__tier b { color: var(--text-dim); font-weight: 600; }
+.ens-trace__na {
+  display: flex; align-items: center; justify-content: center;
+  border: 1px dashed var(--border); border-radius: 3px;
+  color: var(--text-faint); font-size: 10px;
+}
+.ens-trace__nums { margin-top: 6px; font-size: 10.5px; color: var(--text-dim); text-align: center; }
+
+/* ---- Train-members per-model row editor (TrainMembers.tsx) ---- */
+.ens-spec { display: flex; flex-direction: column; gap: 6px; }
+.ens-spec__row {
+  display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px;
+  padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--r-2);
+  background: var(--surface-1);
+}
+.ens-spec__idx { align-self: center; font-weight: 600; min-width: 2em; color: var(--text-dim); }
+.ens-spec__row .ui-field { position: relative; }
+.ens-spec__row .ui-input, .ens-spec__row .ui-select { width: 6.5em; }
+.ens-spec__dot { position: absolute; right: 6px; bottom: 9px; width: 8px; height: 8px; border-radius: 50%; pointer-events: none; }
+.ens-spec__del {
+  margin-left: auto; align-self: center; width: 26px; height: 26px; border-radius: var(--r-1);
+  border: 1px solid var(--border); background: var(--surface-2); color: var(--text-dim);
+  cursor: pointer; font-size: 16px; line-height: 1;
+}
+.ens-spec__del:hover:not(:disabled) { border-color: var(--danger); color: var(--danger); }
+.ens-spec__del:disabled { opacity: .35; cursor: default; }
+
+/* ---- Continue-training member checklist (TrainMembers.tsx) ---- */
+.continue-members {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(270px, 1fr));
+  gap: 8px;
+}
+.continue-member {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center; gap: 10px; min-height: 58px; padding: 9px 11px;
+  border: 1px solid var(--border); border-radius: var(--r-2);
+  background: var(--surface-1); color: var(--text-dim); cursor: pointer;
+  transition: border-color .12s ease, background .12s ease, box-shadow .12s ease;
+}
+.continue-member:hover { border-color: var(--border-strong); background: var(--surface-2); }
+.continue-member[data-selected="true"] {
+  border-color: var(--accent); background: var(--accent-soft);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.continue-member > input { width: 16px; height: 16px; accent-color: var(--accent); }
+.continue-member__body { display: flex; flex-direction: column; min-width: 0; gap: 5px; }
+.continue-member__name { color: var(--text); font-size: 13px; font-weight: 600; }
+.continue-member__meta { display: flex; align-items: center; flex-wrap: wrap; gap: 5px 9px; font-size: 11px; }
+.continue-member__step { color: var(--text-faint); font-size: 11px; white-space: nowrap; }
+
+/* ── Page scaffold of the pre-rework pages (moved from the old src/app.css;
+   the compat <Page>/<PageHead> and the .grid/.row helpers). Phase-3
+   workspaces use the kit layout instead. ─────────────────────────────── */
+.page { padding: var(--s5) var(--s6) var(--s7); max-width: 1600px; margin: 0 auto; }
+.page__head { display: flex; align-items: flex-end; gap: var(--s4); margin-bottom: var(--s5); }
+.page__title { font-size: 24px; letter-spacing: -0.02em; }
+.page__sub { color: var(--text-dim); font-size: 13px; margin-top: 4px; }
+.page__spacer { flex: 1; }
+
+/* ---- PSF live-warp instrument control ---------------------------------- */
+.psf-warp-ctl {
+  display: flex; align-items: center; justify-content: flex-end;
+  gap: var(--s2); flex-wrap: wrap;
+}
+.psf-warp-toggle {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 5px 9px 5px 5px; border-radius: var(--r-pill);
+  font: 500 11px/1 var(--font-mono); color: var(--text-dim);
+  background: var(--surface-2); border: 1px solid var(--border-strong);
+  cursor: pointer;
+}
+.psf-warp-toggle:hover { color: var(--text); border-color: var(--accent); }
+.psf-warp-toggle:focus-visible { outline: none; box-shadow: var(--ring); }
+.psf-warp-toggle:disabled { opacity: .5; cursor: not-allowed; }
+.psf-warp-toggle[aria-pressed="true"] {
+  color: var(--accent-press); background: var(--accent-soft); border-color: var(--accent);
+}
+.psf-warp-toggle__track {
+  position: relative; width: 31px; height: 17px; border-radius: var(--r-pill);
+  background: var(--surface-3); border: 1px solid var(--border-strong);
+}
+.psf-warp-toggle__thumb {
+  position: absolute; top: 2px; left: 2px; width: 11px; height: 11px;
+  border-radius: 50%; background: var(--text-faint);
+  transition: transform .18s ease, background .18s ease;
+}
+.psf-warp-toggle[aria-pressed="true"] .psf-warp-toggle__thumb {
+  transform: translateX(14px); background: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.psf-warp-speed {
+  display: inline-flex; align-items: center; gap: 6px;
+  color: var(--text-faint); font: 10.5px/1 var(--font-mono);
+  text-transform: uppercase; letter-spacing: .05em;
+}
+.psf-warp-speed input {
+  width: 94px; accent-color: var(--accent); cursor: ew-resize;
+}
+.psf-warp-speed input:focus-visible { outline: none; box-shadow: var(--ring); }
+.psf-warp-speed input:disabled { opacity: .45; cursor: not-allowed; }
+.psf-warp-speed output {
+  min-width: 38px; color: var(--text-dim); text-align: right;
+  font-variant-numeric: tabular-nums; text-transform: none; letter-spacing: 0;
+}
+.psf-warp-status {
+  min-width: 76px; color: var(--text-faint);
+  font: 10.5px/1.2 var(--font-mono); text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+@media (prefers-reduced-motion: reduce) {
+  .psf-warp-toggle__thumb { transition: none; }
+}
+@media (max-width: 760px) {
+  .ui-card__head:has(.psf-warp-ctl) { align-items: flex-start; flex-wrap: wrap; }
+  .psf-warp-ctl { width: 100%; justify-content: flex-start; }
+  .psf-warp-status { min-width: 0; text-align: left; }
+}
+
+.grid { display: grid; gap: var(--s4); }
+.row { display: flex; gap: var(--s4); flex-wrap: wrap; align-items: center; }

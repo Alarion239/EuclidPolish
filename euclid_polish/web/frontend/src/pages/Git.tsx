@@ -1,13 +1,15 @@
-/* Git — repo status, stage-all+commit, push/pull/fetch, diff + recent log.
+/* Git — repo status, commit, push/pull/fetch, diff + recent log.
    Second exemplar page: useResource for status, postForm for the sync actions,
-   Table/DefList from the kit. */
+   Table/DefList from the kit. "Stage all + commit" confirms the file list and
+   posts `all=1` (never an implicit `git add -A`); the server's large/binary
+   guard (409 refused_files) offers a `force=1` retry; push confirms first. */
 import { useState } from "react";
 import { asArray } from "../data";
-import { getJSON, postForm } from "../api";
+import { ApiError, getJSON, postForm } from "../api";
 import { useResource } from "../hooks";
 import {
   Badge, Button, Card, CardBody, CardHead, DefList, Empty, LogTail, Page,
-  PageHead, Spinner, Table, Textarea, type Column,
+  PageHead, Spinner, Table, Textarea, confirm, type Column,
 } from "../ui";
 
 type Last = { hash: string; subject: string; relative: string };
@@ -17,6 +19,25 @@ type GitStatus = {
 };
 type LogEntry = { hash: string; author: string; subject: string; relative: string };
 type StatusResp = { status: GitStatus; log: LogEntry[] };
+type Refused = { path: string; size?: number; reason?: string };
+type CommitResp = { ok: boolean; error?: string; stdout?: string; committed?: string[] };
+
+const LIST_MAX = 25;
+
+/** A context-free file list for confirm() (plain elements only). */
+function fileList(rows: { key: string; text: string }[]) {
+  const shown = rows.slice(0, LIST_MAX);
+  return (
+    <div>
+      <ul className="mono" style={{ margin: "6px 0 0", paddingLeft: 18, maxHeight: 260, overflow: "auto", fontSize: 12 }}>
+        {shown.map((r) => <li key={r.key}>{r.text}</li>)}
+      </ul>
+      {rows.length > LIST_MAX && <p style={{ margin: "6px 0 0" }}>… and {rows.length - LIST_MAX} more</p>}
+    </div>
+  );
+}
+
+const mbText = (bytes?: number) => (bytes == null ? "" : ` · ${(bytes / 1e6).toFixed(1)} MB`);
 
 const FILE_COLS: Column<{ xy: string; path: string }>[] = [
   { header: "status", cell: (f) => <code className="mono">{f.xy}</code>, width: 80 },
@@ -49,6 +70,54 @@ export default function GitPage() {
     } catch (e) {
       setNote({ ok: false, text: e instanceof Error ? e.message : String(e) });
     } finally { setBusy(null); }
+  }
+
+  async function commitAll() {
+    const changed = files.map((f) => ({ key: f.path, text: `${f.xy.trim() || "?"}  ${f.path}` }));
+    const ok = await confirm({
+      title: `Commit all ${files.length} changed file${files.length === 1 ? "" : "s"}?`,
+      message: fileList(changed),
+      confirmLabel: "Commit all",
+    });
+    if (!ok) return;
+    await postCommit({ message, all: "1" });
+  }
+
+  async function postCommit(body: Record<string, string>) {
+    setBusy("/git/commit"); setNote(null);
+    try {
+      const r = await postForm<CommitResp>("/git/commit", body);
+      setNote({ ok: !!r.ok, text: r.ok ? (r.stdout || `committed ${r.committed?.length ?? 0} file(s)`) : (r.error || "failed") });
+      if (r.ok) { setMessage(""); reload(); }
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 409 && e.code === "refused_files") {
+        const refused = asArray<Refused>((e.body as { refused?: unknown })?.refused);
+        setNote({ ok: false, text: `refused (large or untracked binary files):\n${refused.map((f) => `${f.path}${mbText(f.size)} — ${f.reason ?? "refused"}`).join("\n")}` });
+        setBusy(null);
+        const force = await confirm({
+          title: `Commit ${refused.length} large or binary file${refused.length === 1 ? "" : "s"} anyway?`,
+          message: fileList(refused.map((f) => ({ key: f.path, text: `${f.path}${mbText(f.size)} — ${f.reason ?? "refused"}` }))),
+          tone: "danger", confirmLabel: "Force commit",
+        });
+        if (force) await postCommit({ ...body, force: "1" });
+        return;
+      }
+      if (e instanceof ApiError && e.status === 400 && (e.code === "no_selection" || e.code === "nothing_selected")) {
+        setNote({ ok: false, text: e.code === "nothing_selected" ? "nothing to commit: no changed file matches the selection" : "nothing selected to commit" });
+        return;
+      }
+      setNote({ ok: false, text: e instanceof Error ? e.message : String(e) });
+    } finally { setBusy(null); }
+  }
+
+  async function push() {
+    const ahead = s?.ahead ?? 0;
+    const ok = await confirm({
+      title: `Push ${s?.branch ?? "this branch"} to ${s?.upstream ?? "its upstream"}?`,
+      message: ahead ? `${ahead} local commit${ahead === 1 ? "" : "s"} will be published.` : "No local commits ahead of the upstream.",
+      confirmLabel: "Push",
+    });
+    if (ok) await act("/git/push");
   }
 
   async function loadDiff() {
@@ -90,7 +159,7 @@ export default function GitPage() {
               <div className="row" style={{ marginTop: "var(--s4)", gap: "var(--s2)" }}>
                 <Button onClick={() => act("/git/fetch")} disabled={busy != null}>Fetch</Button>
                 <Button onClick={() => act("/git/pull")} disabled={busy != null}>Pull (ff-only)</Button>
-                <Button variant="primary" onClick={() => act("/git/push")} disabled={busy != null}>Push</Button>
+                <Button variant="primary" onClick={push} disabled={busy != null}>Push</Button>
                 <Button variant="ghost" size="sm" onClick={loadDiff}>{diff != null ? "hide diff" : "show unstaged diff"}</Button>
               </div>
               {note && (
@@ -103,12 +172,12 @@ export default function GitPage() {
           </Card>
 
           <Card>
-            <CardHead title="Commit" sub="stages all changes, then commits" />
+            <CardHead title="Commit" sub="commits every changed file (you confirm the list first)" />
             <CardBody>
               <Textarea value={message} onChange={setMessage} rows={3} placeholder="commit message…" />
               <div className="row" style={{ marginTop: "var(--s3)" }}>
-                <Button variant="primary" disabled={!message.trim() || busy != null}
-                  onClick={() => act("/git/commit", { message })}>
+                <Button variant="primary" disabled={!message.trim() || busy != null || files.length === 0}
+                  onClick={commitAll}>
                   Stage all + commit
                 </Button>
               </div>

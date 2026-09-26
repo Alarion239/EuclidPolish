@@ -7,7 +7,7 @@ import { asArray } from "../data";
 import { useResource } from "../hooks";
 import {
   Badge, Button, Card, CardBody, CardHead, ConnBadge, DefList, Empty, Field,
-  Input, LogTail, Page, PageHead, Spinner, Table, Textarea, type Column,
+  Input, LogTail, Page, PageHead, Spinner, Table, Textarea, confirm, type Column,
 } from "../ui";
 
 type Commit = { short?: string; hash?: string; branch?: string; dirty?: boolean } | string | null;
@@ -17,7 +17,12 @@ type Campaign = { title: string; description?: string; slug: string; created_at?
 type ModelRec = { name: string; size_bytes: number; created_at?: string; commit?: Commit };
 type Archived = Campaign & { _dir: string; saved_at?: string; saved_commit?: Commit; models: ModelRec[] };
 type BackupRec = { name: string; kind: string; comment?: string; size_bytes: number; created_at?: string; commit?: Commit };
-type Sandbox = { short: string; created_at?: string; source?: string; running: boolean; url?: string; remote?: boolean };
+/* `source` is an object (what the sandbox restores); `source_label` is its
+   text form — render the label, never the object. */
+type Sandbox = {
+  short: string; created_at?: string; source?: Record<string, unknown> | null; source_label?: string | null;
+  running: boolean; url?: string; remote?: boolean;
+};
 type TrackState = {
   active: Campaign | null;
   archived: Archived[];
@@ -62,6 +67,33 @@ export default function TrackingPage() {
     } finally { setBusy(null); }
   }
 
+  async function saveSnapshot() {
+    const ok = await confirm({
+      title: `Save a snapshot of “${data?.active?.title ?? "the active campaign"}”?`,
+      message: "Archives the campaign with its models, FITS and image backups and the current commit stamp.",
+      confirmLabel: "Save snapshot",
+    });
+    if (ok) await act("/api/tracking/save", {}, "✓ snapshot saved");
+  }
+
+  async function timeTravel(a: Archived) {
+    const ok = await confirm({
+      title: `Time-travel to “${a.title}”?`,
+      message: `Creates a sandbox worktree at ${commitStr(a.saved_commit)} and starts a second console for it.`,
+      confirmLabel: "Start sandbox",
+    });
+    if (ok) await act("/api/tracking/timetravel/restore", { campaign: a.slug, remote: "0" }, "✓ sandbox launching");
+  }
+
+  async function removeSandbox(sb: Sandbox) {
+    const ok = await confirm({
+      title: `Remove sandbox ${sb.short}?`,
+      message: "Stops it and deletes its worktree.",
+      tone: "danger", confirmLabel: "Remove",
+    });
+    if (ok) await act("/api/tracking/timetravel/remove", { short: sb.short }, "✓ removed");
+  }
+
   const s = data;
   const archived = asArray<Archived>(s?.archived);
   const sandboxes = asArray<Sandbox>(s?.sandboxes);
@@ -85,7 +117,7 @@ export default function TrackingPage() {
             <CardHead title="Active campaign"
               right={s.active
                 ? <div className="row" style={{ gap: 8 }}>
-                    <Button onClick={() => act("/api/tracking/save", {}, "✓ snapshot saved")} disabled={busy != null} variant="primary">Save snapshot</Button>
+                    <Button onClick={saveSnapshot} disabled={busy != null} variant="primary">Save snapshot</Button>
                     <Button onClick={() => act("/api/tracking/sync", {}, "✓ pushed")} disabled={busy != null}>Push to holylabs</Button>
                   </div>
                 : undefined} />
@@ -147,7 +179,7 @@ export default function TrackingPage() {
                     <div key={a.slug} className="track-arch">
                       <div className="row" style={{ justifyContent: "space-between" }}>
                         <div><b>{a.title}</b> <span className="muted mono">{commitStr(a.saved_commit)}</span> <span className="muted">· {a.saved_at}</span></div>
-                        <Button size="sm" onClick={() => act("/api/tracking/timetravel/restore", { campaign: a.slug, remote: "0" }, "✓ sandbox launching")}
+                        <Button size="sm" onClick={() => timeTravel(a)}
                           disabled={busy != null}>⏱ time-travel</Button>
                       </div>
                       {asArray<ModelRec>(a.models).length > 0 && (
@@ -171,14 +203,14 @@ export default function TrackingPage() {
                   rowKey={(sb) => sb.short}
                   columns={[
                     { header: "id", cell: (sb) => <code className="mono">{sb.short}</code> },
-                    { header: "source", cell: (sb) => <span className="muted">{sb.source || "—"}</span> },
+                    { header: "source", cell: (sb) => <span className="muted">{sb.source_label || "—"}</span> },
                     { header: "state", cell: (sb) => <Badge tone={sb.running ? "good" : undefined}>{sb.running ? "running" : "stopped"}</Badge> },
                     { header: "where", cell: (sb) => sb.remote ? "FASRC" : "local" },
                     { header: "", align: "right", cell: (sb) => (
                       <div className="row" style={{ gap: 6, justifyContent: "flex-end" }}>
                         <Button size="sm" onClick={() => act("/api/tracking/timetravel/open", { short: sb.short })} disabled={busy != null}>open</Button>
                         <Button size="sm" onClick={() => act("/api/tracking/timetravel/stop", { short: sb.short }, "✓ stopped")} disabled={busy != null}>stop</Button>
-                        <Button size="sm" variant="ghost" onClick={() => act("/api/tracking/timetravel/remove", { short: sb.short }, "✓ removed")} disabled={busy != null}>remove</Button>
+                        <Button size="sm" variant="ghost" onClick={() => removeSandbox(sb)} disabled={busy != null}>remove</Button>
                       </div>
                     ) },
                   ]}

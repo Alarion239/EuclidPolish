@@ -6,6 +6,7 @@ import contextlib
 from flask import jsonify, request
 
 from euclid_polish.web import euclid_session
+from euclid_polish.web.fasrc_gate import requires_fasrc
 from euclid_polish.web.remote import STATE
 
 
@@ -57,6 +58,7 @@ def register(app):
     _EUCLID_CREDS_REMOTE = '"$HOME/.euclid_credentials"'
 
     @app.route("/euclid-auth/save", methods=["POST"])
+    @requires_fasrc
     def euclid_auth_save():
         if not STATE.ssh or not STATE.ssh.is_connected():
             return jsonify({"ok": False, "error": "not connected to FASRC"}), 400

@@ -176,6 +176,16 @@ class JobDB:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    def list_live(self) -> list[dict[str, Any]]:
+        """Every ``PENDING``/``RUNNING`` row, newest first — however old
+        (no ``LIMIT``: a long-queued job must not fall out of view)."""
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT * FROM fasrc_jobs WHERE state IN ('PENDING', 'RUNNING') "
+                "ORDER BY submitted_at DESC",
+            ).fetchall()
+        return [dict(r) for r in rows]
+
     def list_completed(self, limit: int = 10) -> list[dict[str, Any]]:
         with self._conn() as c:
             rows = c.execute(
@@ -304,9 +314,9 @@ def _conda_activate_snippet(env_path: str, load_cuda: bool = False) -> str:
 
     Generates ``module load python`` (plus ``module load cuda`` when
     ``load_cuda=True``) followed by a ``CONDA_SHLVL``-gated conda/mamba
-    initialization and ``mamba activate``. Used by both sbatch scripts
-    (:func:`fasrc_pipeline.render_sbatch_body`) and login-node helper
-    commands (:func:`jobs_impl._login_node_generate_cmd`) to eliminate
+    initialization and ``mamba activate``. Used by the sbatch scripts
+    (:func:`fasrc_pipeline.render_sbatch_body`) and the login-node helpers
+    (``run_remote_python``, the PSF cluster-metadata dump) to eliminate
     duplicate inline shell snippets.
     """
     env = shlex.quote(env_path)

@@ -1,9 +1,10 @@
 """model routes for the EuclidPolish web UI (extracted from app.py)."""
 from __future__ import annotations
 
-from flask import jsonify, redirect, render_template, request
+import json
 
-from euclid_polish.config import Config
+from flask import jsonify, request
+
 from euclid_polish.web.helpers.real_field import (
     FIELD_SIZE,
     REAL_FIELD_DIAGNOSTICS_VERSION,
@@ -12,28 +13,10 @@ from euclid_polish.web.helpers.real_field import (
     latest_field,
     refresh_real_field_combiners,
 )
-from euclid_polish.web.helpers.status import _checkpoints_status
 from euclid_polish.web.jobs import REGISTRY
 
 
 def register(app):
-
-    # ---------------- Training (folded into /ensemble) ----------------
-    @app.route("/training")
-    def training_page():
-        """Training is ensemble-only now — the /ensemble page owns TFRecord
-        status, the ensemble_train step card, curves and member management."""
-        return redirect("/ensemble", code=302)
-
-    # ---------------- Inference page ----------------
-    @app.route("/inference")
-    def inference_page():
-        return render_template(
-            "inference.html",
-            checkpoints=_checkpoints_status(),
-            field=latest_field(),
-            default_num_res_blocks=Config.DEFAULT_NUM_RES_BLOCKS,
-        )
 
     @app.route("/api/inference/field.json")
     def api_inference_field():
@@ -45,7 +28,6 @@ def register(app):
         if field is None:
             return jsonify({"diagnostics": None})
         try:
-            import json
             with (field_dir(str(field["field_id"])) / "diagnostics.json").open() as f:
                 diagnostics = json.load(f)
             if diagnostics.get("version") != REAL_FIELD_DIAGNOSTICS_VERSION:

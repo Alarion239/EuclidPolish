@@ -51,14 +51,10 @@ class FasrcConfig:
     n_cpus:             int = 8
     memory:             str = "32G"
     time_limit:         str = "12:00:00"
-
-    # ── Default training knobs ─────────────────────────────────────────────
-    n_train:            int = 6400
-    n_valid:            int = 200
-    n_test:             int = 100
-    image_size:         int = 510
-    batch_size:         int = 16
-    steps:              int = 400_000
+    # Science knobs (split sizes, image size, training steps) are not
+    # connection settings: each FASRC step declares its own ``task_params``
+    # (``fasrc_pipeline.TaskParam``) and /config holds the shared job knobs.
+    # Legacy keys still present in an old ``fasrc.json`` are ignored.
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

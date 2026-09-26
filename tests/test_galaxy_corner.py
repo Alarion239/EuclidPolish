@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import numpy as np
 import pytest
@@ -87,14 +86,27 @@ def test_corner_requires_a_fitted_model(tmp_path):
         build_galaxy_corner(catalog_path, None)
 
 
-def test_corner_card_is_rendered_on_the_galaxy_page():
-    pages = Path(__file__).parents[1] / "euclid_polish/web/frontend/src/pages"
-    page = (pages / "GalaxyDistributions.tsx").read_text()
-    corner = (pages / "GalaxyCorner.tsx").read_text()
+def test_corner_page_payload_keeps_both_triangles_and_drops_explorer_grids(tmp_path):
+    """The page-sized corner block (``/api/galaxy-distributions`` ``corner``)
+    carries the diagonal plus the lower/upper-triangle cells the corner card
+    draws; the pair-explorer grids move to the sidecar."""
+    catalog_path, _meta = write_fixture_catalog(
+        tmp_path, synthetic_rows(n_rows=300),
+    )
+    corner = build_galaxy_corner(catalog_path, active_payload(), model_draws=200)
 
-    assert "<GalaxyCorner data={api.corner} />" in page
-    assert "Lower triangle" in corner
-    assert "Upper triangle" in corner
+    slim, _sidecar = split_joint_pairs(corner)
+
+    assert slim["available"] is True
+    count = len(CORNER_VARIABLES)
+    assert [variable["key"] for variable in slim["variables"]] == [
+        key for key, *_rest in CORNER_VARIABLES
+    ]
+    assert len(slim["diagonal"]) == count
+    assert slim["cells"]
+    assert slim["contour_mass_fractions"]
+    assert "pairs" not in slim
+    assert "explorer_contour_mass_fractions" not in slim
 
 
 def test_corner_sfr_window_ignores_the_unphysical_phz_tail(tmp_path):
@@ -177,13 +189,3 @@ def test_joint_pair_route_serves_the_sidecar(tmp_path, monkeypatch):
         "/api/galaxy-distributions/joint-pair?x=vis&y=log_re"
     ).get_json()
     assert missing["available"] is False
-
-
-def test_pair_explorer_card_is_rendered_on_the_galaxy_page():
-    pages = Path(__file__).parents[1] / "euclid_polish/web/frontend/src/pages"
-    page = (pages / "GalaxyDistributions.tsx").read_text()
-    explorer = (pages / "JointPairExplorer.tsx").read_text()
-
-    assert "<JointPairExplorer" in page
-    assert "/api/galaxy-distributions/joint-pair" in explorer
-    assert "Swap axes" in explorer

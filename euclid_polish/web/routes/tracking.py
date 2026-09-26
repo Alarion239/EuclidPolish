@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from flask import jsonify, render_template, request
+from flask import jsonify, request
 
 from euclid_polish.config import Config
 from euclid_polish.observability.training_log import TrainingLog
@@ -14,6 +14,7 @@ from euclid_polish.tracking import sync as tracking_sync
 from euclid_polish.tracking import timetravel as tracking_timetravel
 from euclid_polish.training.log_plot import plot_training_log
 from euclid_polish.web import fasrc_config
+from euclid_polish.web.fasrc_gate import requires_fasrc
 from euclid_polish.web.helpers.paths import _resolve_trackable_ckpt, _resolve_trackable_file
 from euclid_polish.web.remote import STATE
 
@@ -66,10 +67,6 @@ def register(app):
             "ssh_connected": bool(STATE.ssh and STATE.ssh.is_connected()),
             "sandboxes":     tracking_timetravel.list_sandboxes(),
         }
-
-    @app.route("/tracking")
-    def tracking_page():
-        return render_template("tracking.html", state=_tracking_state())
 
     @app.route("/api/tracking/state")
     def api_tracking_state():
@@ -159,6 +156,7 @@ def register(app):
                         "sync": _tracking_try_sync(store)})
 
     @app.route("/api/tracking/sync", methods=["POST"])
+    @requires_fasrc
     def api_tracking_sync():
         res = _tracking_try_sync(tracking_default_store())
         return jsonify(res), (200 if res.get("ok") else 400)

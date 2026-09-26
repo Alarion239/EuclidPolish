@@ -8,16 +8,27 @@ stubbed download + model so no network / TF weights are needed), and the
 
 from __future__ import annotations
 
+import csv as _csv
 import os
+import time as _time
 
 import numpy as np
 import pytest
 from astropy.io import fits
 
 from euclid_polish.config import Config
+from euclid_polish.ensemble import ensemble_available
+from euclid_polish.eval import catalog_runner, galaxy_catalog, grouped_runner, lens_catalog, synthetic_runner
+from euclid_polish.eval import catalog_runner as cr
+from euclid_polish.eval import synthetic_runner as sr
+from euclid_polish.eval.catalog_runner import can_reuse_eval_object, center_crop
 from euclid_polish.eval.eval_catalog import CatalogError, read_eval_catalog
+from euclid_polish.eval.grouped_runner import retire_stale_synthetic
+from euclid_polish.eval.progress import tqdm_progress
+from euclid_polish.web import euclid_session
 from euclid_polish.web.app import create_app
 from euclid_polish.web.fasrc_pipeline import REGISTRY
+from euclid_polish.web.helpers import jobs_impl
 
 
 @pytest.fixture(autouse=True)
@@ -30,7 +41,6 @@ def _isolate_galaxy_cache(tmp_path_factory, monkeypatch):
     breaking the lens-reuse tests. Point it at an absent path by default; the
     galaxy-specific tests re-patch it to their own fixture CSV.
     """
-    from euclid_polish.eval import galaxy_catalog
     absent = tmp_path_factory.mktemp("nogal") / "galaxies.csv"
     monkeypatch.setattr(galaxy_catalog, "default_out_csv", lambda: str(absent))
 
@@ -97,7 +107,6 @@ class TestRunCatalogEval:
             REGISTRY.get("eval_catalog")
 
     def test_autofetch_then_empty_returns_cleanly(self, tmp_path, monkeypatch):
-        from euclid_polish.eval import catalog_runner, lens_catalog
         monkeypatch.setattr(Config, "EVAL_CATALOG_DIR", str(tmp_path / "cat"))
         called = {}
 
@@ -115,15 +124,12 @@ class TestRunCatalogEval:
         assert res["n"] == 0 and called["out"].endswith("lenses.csv")
 
     def test_explicit_missing_catalog_raises(self, tmp_path):
-        from euclid_polish.eval import catalog_runner
         with pytest.raises(FileNotFoundError):
             catalog_runner.run_catalog_eval(
                 out_dir=str(tmp_path / "out"),
                 catalog_path=str(tmp_path / "nope.csv"))
 
     def test_manifest_upsert_preserves_existing_rows(self, tmp_path):
-        from euclid_polish.eval import catalog_runner
-
         manifest = tmp_path / "manifest.csv"
         catalog_runner.write_manifest_upsert(str(manifest), [
             {"id": "old", "ra": 1.0, "dec": 2.0, "grade": "A", "ok": True,
@@ -140,8 +146,6 @@ class TestRunCatalogEval:
         assert [r["id"] for r in rows] == ["old", "new"]
 
     def test_manifest_upsert_drop_ids_retires_rows(self, tmp_path):
-        from euclid_polish.eval import catalog_runner
-
         manifest = tmp_path / "manifest.csv"
         catalog_runner.write_manifest_upsert(str(manifest), [
             {"id": "keep", "ra": 1.0, "dec": 2.0, "grade": "A", "ok": True,
@@ -168,8 +172,6 @@ class TestRetireStaleSynthetic:
     show the disagreement movie)."""
 
     def _seed_manifest(self, tmp_path):
-        from euclid_polish.eval import catalog_runner
-
         manifest = tmp_path / "manifest.csv"
         rows = [
             {"id": "real_a", "grade": "A", "ok": True, "out_subdir": "real_a"},
@@ -185,8 +187,6 @@ class TestRetireStaleSynthetic:
         return manifest
 
     def test_supersedes_old_generation(self, tmp_path):
-        from euclid_polish.eval.grouped_runner import retire_stale_synthetic
-
         manifest = self._seed_manifest(tmp_path)
         new_rows = [
             {"id": "syn-lens_0001_0", "grade": "syn-lens", "ok": True},
@@ -202,7 +202,6 @@ class TestRetireStaleSynthetic:
     def test_failed_grade_keeps_previous_stamps(self, tmp_path):
         """No ok rows for a grade (e.g. source catalog missing) → its previous
         stamps survive rather than emptying the group."""
-        from euclid_polish.eval.grouped_runner import retire_stale_synthetic
 
         manifest = self._seed_manifest(tmp_path)
         new_rows = [
@@ -216,8 +215,6 @@ class TestRetireStaleSynthetic:
         assert (tmp_path / "syn-gal_0034").exists()
 
     def test_empty_run_is_a_noop(self, tmp_path):
-        from euclid_polish.eval.grouped_runner import retire_stale_synthetic
-
         manifest = self._seed_manifest(tmp_path)
         assert retire_stale_synthetic(
             str(tmp_path), str(manifest), [], lambda m: None) == set()
@@ -230,8 +227,6 @@ class TestRetireStaleSynthetic:
 
 class TestReconstructCutoutAt:
     def test_writes_outputs_and_metrics(self, tmp_path, monkeypatch):
-        from euclid_polish.web.helpers import jobs_impl
-
         h = w = 16
 
         def fake_fetch(*, ra, dec, band_name, output_file, cutout_size_vis_pixels):
@@ -279,8 +274,6 @@ class TestReconstructCutoutAt:
         assert res["png_paths"] == []   # render=False
 
     def test_reuses_existing_band_fits_without_fetch(self, tmp_path, monkeypatch):
-        from euclid_polish.web.helpers import jobs_impl
-
         h = w = 12
         out_dir = str(tmp_path / "obj")
         os.makedirs(out_dir, exist_ok=True)
@@ -325,7 +318,7 @@ def client():
 
 class TestEvaluationRoutes:
     def test_page_renders(self, client):
-        r = client.get("/evaluation")
+        r = client.get("/sky/catalog-eval")
         assert r.status_code == 200
         assert b'id="root"' in r.data
 
@@ -352,11 +345,31 @@ class TestEvaluationRoutes:
         assert j["rows"][0]["id"] == "lensA"
         assert j["n_ok"] == 1
 
-    def test_eval_files_traversal_blocked(self, client):
-        assert client.get("/eval-files/../../etc/passwd").status_code == 403
+    def test_eval_files_download_only_fits(self, client, tmp_path, monkeypatch):
+        """``/eval-files`` keeps the jailed per-object FITS download; its
+        server-side PNG renderer went with the classic UI (spec §10)."""
+        root = tmp_path / "res"
+        monkeypatch.setattr(Config, "EVAL_RESULTS_DIR", str(root))
+        (root / "lensA").mkdir(parents=True)
+        fits.PrimaryHDU(np.ones((2, 2), np.float32)).writeto(root / "lensA" / "SR.fits")
+        (root / "lensA" / "eye.png").write_bytes(b"\x89PNG")
+        (tmp_path / "secret.fits").write_bytes(b"x")
+
+        ok = client.get("/eval-files/lensA/SR.fits")
+        assert ok.status_code == 200
+        assert ok.mimetype == "application/fits"
+        assert "attachment" in ok.headers["Content-Disposition"]
+        assert "SR.fits" in ok.headers["Content-Disposition"]
+
+        png = client.get("/eval-files/lensA/eye.png")
+        assert png.status_code == 404 and png.get_json()["ok"] is False
+        assert client.get("/eval-files/lensA/missing.fits").status_code == 404
+        outside = client.get("/eval-files/..%2Fsecret.fits")
+        assert outside.status_code in (403, 404)
+        assert outside.status_code == 404 or outside.get_json()["ok"] is False
+        assert client.get("/eval-files/../secret.fits").status_code in (403, 404)
 
     def test_run_grouped_spawns_job(self, client, tmp_path, monkeypatch):
-        from euclid_polish.eval import grouped_runner
         monkeypatch.setattr(Config, "EVAL_RESULTS_DIR", str(tmp_path / "res"))
         captured = {}
         monkeypatch.setattr(grouped_runner, "run_grouped_analysis",
@@ -371,7 +384,6 @@ class TestEvaluationRoutes:
 
     def test_run_grouped_always_includes_galaxies(self, client, tmp_path, monkeypatch):
         """Real galaxies are a fixed negative control — no UI toggle disables them."""
-        from euclid_polish.eval import grouped_runner
         monkeypatch.setattr(Config, "EVAL_RESULTS_DIR", str(tmp_path / "res"))
         captured = {}
         monkeypatch.setattr(grouped_runner, "run_grouped_analysis",
@@ -389,7 +401,6 @@ class TestEvaluationRoutes:
     def test_query_galaxies_requires_login(self, client, monkeypatch):
         """The standalone galaxy step needs an authenticated session; without
         one it returns 400 rather than silently doing nothing."""
-        from euclid_polish.web import euclid_session
         monkeypatch.setattr(euclid_session, "catalog", lambda: None)
         r = client.post("/api/evaluation/query-galaxies", data={"n_galaxies": "5"})
         assert r.status_code == 400
@@ -398,10 +409,7 @@ class TestEvaluationRoutes:
     def test_query_galaxies_spawns_job_with_session(self, client, tmp_path, monkeypatch):
         """When logged in, the step spawns a job that runs galaxy_catalog.build
         with the WebUI's session client and this step's own n_galaxies."""
-        import time as _time
 
-        from euclid_polish.eval import catalog_runner, galaxy_catalog
-        from euclid_polish.web import euclid_session
         sentinel = object()
         monkeypatch.setattr(euclid_session, "catalog", lambda: sentinel)
         lenses = tmp_path / "lenses.csv"
@@ -447,54 +455,6 @@ class TestEvaluationRoutes:
         assert r.status_code == 200 and r.mimetype == "image/png"
         assert os.path.isfile(os.path.join(run, "transformation_summary.png"))
 
-    def test_render_on_demand_from_fits(self, client, tmp_path, monkeypatch):
-        # FASRC writes only FITS; the server renders the PNG locally on first
-        # request. Lay down SR.fits + original_stack.fits and confirm a missing
-        # eye.png is rendered and served.
-        monkeypatch.setattr(Config, "EVAL_RESULTS_DIR", str(tmp_path / "res"))
-        obj = os.path.join(Config.EVAL_RESULTS_DIR, "run1", "lensA")
-        os.makedirs(obj, exist_ok=True)
-        h = w = 16
-        sr = np.ones((4, 2 * h, 2 * w), dtype=np.float32)
-        sr[0, 12:20, 12:20] = 50.0
-        fits.PrimaryHDU(sr, header=fits.Header({"ASINH": 100.0})).writeto(
-            os.path.join(obj, "SR.fits"))
-        stack = np.ones((4, h, w), dtype=np.float32)
-        stack[0, 6:10, 6:10] = 50.0
-        fits.PrimaryHDU(stack).writeto(os.path.join(obj, "original_stack.fits"))
-
-        assert not os.path.isfile(os.path.join(obj, "eye.png"))
-        r = client.get("/eval-files/run1/lensA/eye.png")
-        assert r.status_code == 200 and r.mimetype == "image/png"
-        assert os.path.isfile(os.path.join(obj, "eye.png"))
-
-    def test_render_clip_caches_per_clip(self, client, tmp_path, monkeypatch):
-        # The "Dirty clip %ile" control: ?clip=99.9 renders to its own cache
-        # file so different clips coexist; the default clip uses the plain name.
-        monkeypatch.setattr(Config, "EVAL_RESULTS_DIR", str(tmp_path / "res"))
-        obj = os.path.join(Config.EVAL_RESULTS_DIR, "run1", "lensA")
-        os.makedirs(obj, exist_ok=True)
-        h = w = 16
-        sr = np.ones((4, 2 * h, 2 * w), dtype=np.float32)
-        sr[0, 12:20, 12:20] = 50.0
-        fits.PrimaryHDU(sr, header=fits.Header({"ASINH": 100.0})).writeto(
-            os.path.join(obj, "SR.fits"))
-        stack = np.ones((4, h, w), dtype=np.float32)
-        stack[0, 6:10, 6:10] = 50.0
-        fits.PrimaryHDU(stack).writeto(os.path.join(obj, "original_stack.fits"))
-
-        r = client.get("/eval-files/run1/lensA/eye.png?clip=99.9")
-        assert r.status_code == 200 and r.mimetype == "image/png"
-        assert os.path.isfile(os.path.join(obj, "eye__c99.9.png"))
-        # Default clip keeps the plain filename.
-        assert client.get("/eval-files/run1/lensA/eye.png").status_code == 200
-        assert os.path.isfile(os.path.join(obj, "eye.png"))
-        # The interactive viewer also drives the asinh knee; clip+asinh cache
-        # to a combined per-setting filename.
-        r = client.get("/eval-files/run1/lensA/eye.png?clip=99.9&asinh=300")
-        assert r.status_code == 200
-        assert os.path.isfile(os.path.join(obj, "eye__c99.9__a300.png"))
-
     def test_rerender_drops_cached_pngs(self, client, tmp_path, monkeypatch):
         monkeypatch.setattr(Config, "EVAL_RESULTS_DIR", str(tmp_path / "res"))
         obj = os.path.join(Config.EVAL_RESULTS_DIR, "run1", "lensA")
@@ -512,7 +472,6 @@ class TestEvaluationRoutes:
 
     def test_fetch_catalog_endpoint(self, client, monkeypatch):
         # Stub the (network) fetch so the route is exercised offline.
-        from euclid_polish.eval import lens_catalog
 
         monkeypatch.setattr(
             lens_catalog, "fetch",
@@ -525,8 +484,6 @@ class TestEvaluationRoutes:
         assert j["rel"].endswith("lenses.csv")
 
     def test_fetch_catalog_endpoint_reports_failure(self, client, monkeypatch):
-        from euclid_polish.eval import lens_catalog
-
         def boom(*a, **k):
             raise RuntimeError("zenodo down")
         monkeypatch.setattr(lens_catalog, "fetch", boom)
@@ -551,8 +508,6 @@ class TestEvaluationRoutes:
 
 class TestLensCatalogModule:
     def test_normalize_grade_filter(self, tmp_path):
-        from euclid_polish.eval import lens_catalog
-
         raw = tmp_path / "raw.csv"
         raw.write_text(
             "subset,id_str,right_ascension,declination,grade\n"
@@ -568,7 +523,6 @@ class TestLensCatalogModule:
 
     def test_fetch_uses_source_without_network(self, tmp_path):
         # source= short-circuits the download, so this never touches the net.
-        from euclid_polish.eval import lens_catalog
 
         raw = tmp_path / "raw.csv"
         raw.write_text(
@@ -581,7 +535,6 @@ class TestLensCatalogModule:
 
 class TestSyntheticCutouts:
     def test_select_central_source_picks_closest_fitting(self):
-        from euclid_polish.eval import synthetic_runner as sr
         srcs = [
             {"type": "galaxy", "x_pix": 128.0, "y_pix": 128.0},  # center, fits
             {"type": "galaxy", "x_pix": 130.0, "y_pix": 131.0},  # near center
@@ -592,7 +545,6 @@ class TestSyntheticCutouts:
         assert pick is not None and pick["x_pix"] == 128.0
 
     def test_select_central_source_can_prefer_bright_galaxy(self):
-        from euclid_polish.eval import synthetic_runner as sr
         srcs = [
             {"type": "galaxy", "x_pix": 128.0, "y_pix": 128.0,
              "flux_vis_e": 50.0},
@@ -607,16 +559,11 @@ class TestSyntheticCutouts:
         assert pick["flux_vis_e"] == 5000.0
 
     def test_select_central_source_rejects_all_when_edge(self):
-        from euclid_polish.eval import synthetic_runner as sr
         srcs = [{"type": "lens", "x_pix": 10.0, "y_pix": 10.0}]
         assert sr.select_central_source(srcs, "lens", field=256, m=64) is None
 
     def test_grouped_reuses_existing_lens_outputs_without_model_load(
             self, tmp_path, monkeypatch):
-        from astropy.io import fits
-
-        from euclid_polish.eval import catalog_runner, grouped_runner
-
         catalog = tmp_path / "lenses.csv"
         catalog.write_text(
             "id,ra,dec,grade\n"
@@ -661,9 +608,6 @@ class TestSyntheticCutouts:
             assert h[0].data.shape == (4, 106, 106)
 
     def test_crop_stamp_hr_and_lr(self):
-        import numpy as np
-
-        from euclid_polish.eval import synthetic_runner as sr
         hr = np.arange(256 * 256, dtype=np.float32).reshape(256, 256)
         stamp = sr.crop_stamp(hr, cx=128.0, cy=100.0, m=64)
         assert stamp.shape == (64, 64)
@@ -677,7 +621,6 @@ class TestSyntheticCutouts:
         # No validation records → synthetic raises internally; the grouped run
         # must still finish and write a (possibly empty) manifest. grades=() so
         # there's no lens network work.
-        from euclid_polish.eval import grouped_runner, synthetic_runner
         monkeypatch.setattr(synthetic_runner, "default_records_dir",
                             lambda: None)
         out = str(tmp_path / "run")
@@ -689,7 +632,6 @@ class TestSyntheticCutouts:
 
 class TestCenterCropAndReuse:
     def test_center_crop_plane_and_cube(self):
-        from euclid_polish.eval.catalog_runner import center_crop
         plane = np.arange(256 * 256, dtype=np.float32).reshape(256, 256)
         c = center_crop(plane, 63)
         assert c.shape == (63, 63)
@@ -702,7 +644,6 @@ class TestCenterCropAndReuse:
         assert center_crop(small, 63).shape == (10, 10)
 
     def test_enforce_object_sizes_crops_then_drops(self, tmp_path):
-        from euclid_polish.eval import catalog_runner as cr
         # Oversized LR/SR/HR are center-cropped to the canonical geometry.
         d = tmp_path / "ok"
         d.mkdir()
@@ -731,7 +672,6 @@ class TestCenterCropAndReuse:
             assert h[0].data.shape == (4, 64, 64)
 
     def test_reuse_catalog_object_log_distinguishes_cache_from_download(self, tmp_path):
-        from euclid_polish.eval import catalog_runner as cr
         d = cr.object_output_dir(str(tmp_path), "obj1")
         os.makedirs(d)
         fits.PrimaryHDU(np.ones((4, 53, 53), np.float32)).writeto(
@@ -747,7 +687,6 @@ class TestCenterCropAndReuse:
         assert not any("reusing existing" in m for m in fresh)
 
     def test_seed_object_from_cache(self, tmp_path):
-        from euclid_polish.eval import catalog_runner
         src = tmp_path / "cache"
         out = tmp_path / "run"
         sd = catalog_runner.object_output_dir(str(src), "x0")
@@ -766,7 +705,6 @@ class TestCenterCropAndReuse:
             self, tmp_path, monkeypatch):
         """A fresh out_dir reuses cached cutouts from lens_source_dir, crops them
         to the canonical eval geometry, and never loads the model or downloads."""
-        from euclid_polish.eval import catalog_runner, grouped_runner
 
         catalog = tmp_path / "lenses.csv"
         catalog.write_text("id,ra,dec,grade\na0,1.0,2.0,A\n")
@@ -802,7 +740,6 @@ class TestCenterCropAndReuse:
             assert h[0].data.shape == (4, 256, 256)
 
     def test_tqdm_progress_callback_runs(self):
-        from euclid_polish.eval.progress import tqdm_progress
         cb = tqdm_progress("t")
         cb(0, 3, "a")
         cb(1, 3, "b")
@@ -811,7 +748,6 @@ class TestCenterCropAndReuse:
 def test_run_catalog_eval_accepts_preloaded_model(tmp_path, monkeypatch):
     """When a model is passed in, load_eval_ensemble is NOT called and the
     supplied model object is threaded to eval_catalog_object."""
-    from euclid_polish.eval import catalog_runner
 
     # A catalog with one object that is NOT cached (forces needs_model path).
     cat = tmp_path / "cat.csv"
@@ -841,7 +777,6 @@ def test_run_catalog_eval_accepts_preloaded_model(tmp_path, monkeypatch):
 
 def test_run_grouped_accepts_preloaded_model(tmp_path, monkeypatch):
     """A supplied model= skips load_eval_ensemble and threads through to eval_catalog_object."""
-    from euclid_polish.eval import catalog_runner, grouped_runner
 
     def _boom(*a, **k):
         raise AssertionError("load_eval_ensemble must NOT be called when model= supplied")
@@ -890,9 +825,7 @@ def test_run_grouped_accepts_preloaded_model(tmp_path, monkeypatch):
 def test_galaxy_plan_reads_all_cached(monkeypatch, tmp_path):
     """Cache-only: _galaxy_plan reads every row of the galaxies.csv the
     standalone Query-galaxies step wrote — it never queries the archive."""
-    import csv as _csv
 
-    from euclid_polish.eval import galaxy_catalog, grouped_runner
     gal_csv = tmp_path / "galaxies.csv"
     with open(gal_csv, "w", newline="") as f:
         w = _csv.writer(f)
@@ -911,7 +844,6 @@ def test_galaxy_plan_reads_all_cached(monkeypatch, tmp_path):
 
 
 def test_galaxy_plan_empty_when_no_cache(monkeypatch, tmp_path):
-    from euclid_polish.eval import galaxy_catalog, grouped_runner
     monkeypatch.setattr(galaxy_catalog, "default_out_csv",
                         lambda: str(tmp_path / "absent.csv"))
     msgs = []
@@ -923,7 +855,6 @@ def test_galaxy_plan_empty_when_no_cache(monkeypatch, tmp_path):
 def test_grouped_downloads_padded_size(monkeypatch, tmp_path):
     """Real cutouts are requested a few px larger than the canonical LR side, so
     the Euclid cutout service's round-down never drops them below EVAL_LR_SIZE."""
-    from euclid_polish.eval import catalog_runner, grouped_runner
     cat = tmp_path / "lenses.csv"
     cat.write_text("id,ra,dec,grade\na0,1.0,2.0,A\n")
     seen = {}
@@ -943,7 +874,6 @@ def test_grouped_downloads_padded_size(monkeypatch, tmp_path):
 def test_can_reuse_requires_disagreement_cubes(tmp_path):
     """An SR-only object is reusable by default, but must be re-run (not reused)
     when the disagreement cubes are required (ensemble runs)."""
-    from euclid_polish.eval.catalog_runner import can_reuse_eval_object
 
     d = str(tmp_path)
     for name in ("original_stack.fits", "SR.fits"):
@@ -959,7 +889,6 @@ def test_can_reuse_requires_disagreement_cubes(tmp_path):
 
 def test_ensemble_available_probe(tmp_path):
     """Cheap availability probe: a member dir counts only with a checkpoint."""
-    from euclid_polish.ensemble import ensemble_available
 
     base = tmp_path / "ensemble"
     (base / "member_00").mkdir(parents=True)

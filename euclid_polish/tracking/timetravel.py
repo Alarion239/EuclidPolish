@@ -272,8 +272,24 @@ def set_sandbox_remote(short: str, remote: dict[str, Any] | None) -> None:
     _write_json(os.path.join(meta["root"], "sandbox.json"), meta)
 
 
+def _source_payload(source: Any) -> tuple[dict[str, Any], str]:
+    """``(source object, display label)`` of a sandbox's recorded origin.
+
+    New sandboxes record ``{"campaign", "model"}``; a legacy string (or
+    nothing) becomes an object too, so a client can always render
+    ``source_label`` as text and read ``source`` as a mapping.
+    """
+    if isinstance(source, dict):
+        parts = [str(source[key]) for key in ("campaign", "model") if source.get(key)]
+        return dict(source), " · ".join(parts) or "—"
+    if source:
+        return {"label": str(source)}, str(source)
+    return {}, "—"
+
+
 def list_sandboxes() -> list[dict[str, Any]]:
-    """All sandboxes (newest first), each annotated with live ``running``."""
+    """All sandboxes (newest first), each annotated with live ``running``
+    and a text ``source_label`` beside the ``source`` object."""
     root = timetravel_root()
     out: list[dict[str, Any]] = []
     if os.path.isdir(root):
@@ -281,6 +297,7 @@ def list_sandboxes() -> list[dict[str, Any]]:
             meta = _read_json(os.path.join(root, name, "sandbox.json"))
             if meta:
                 meta["running"] = _pid_alive(meta.get("pid"))
+                meta["source"], meta["source_label"] = _source_payload(meta.get("source"))
                 out.append(meta)
     out.sort(key=lambda m: m.get("created_at") or "", reverse=True)
     return out

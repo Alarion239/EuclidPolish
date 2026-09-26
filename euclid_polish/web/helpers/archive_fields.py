@@ -24,6 +24,7 @@ from astropy.io.fits.verify import VerifyError
 
 from euclid_polish.config import Config
 from euclid_polish.photometry import adu_per_s_to_electrons_factor
+from euclid_polish.sky.observation.q1_fields import q1_field_for
 
 ARCHIVE_FIELDS_SUBDIR = Config.EuclidSky.ARCHIVE_FIELDS_SUBDIR
 ARCHIVE_FIELDS_MANIFEST = Config.EuclidSky.ARCHIVE_FIELDS_MANIFEST_FILENAME
@@ -428,6 +429,15 @@ def iter_fields(
         )
 
 
+def position_field(field: ArchiveField) -> str:
+    """The Q1 deep field containing ``field``'s position, else its stored label.
+
+    The cutout script that wrote the early manifests swapped EDF-F and EDF-S,
+    so a stored ``field`` string cannot be trusted for display or grouping.
+    """
+    return q1_field_for(float(field.ra), float(field.dec)) or field.field
+
+
 def iter_comparison_fields(
     manifest: Mapping[str, Any] | None = None,
     *,
@@ -642,6 +652,7 @@ def availability(
         "planned_sample_count": 0,
         "parent_count": 0,
         "fields": {},
+        "stored_fields": {},
         "comparison_sample_count": 0,
         "comparison_fields": {},
         "comparison_excluded_positions": sorted(COMPARISON_EXCLUDED_POSITIONS),
@@ -687,10 +698,13 @@ def availability(
             "sample_count": len(fields),
             "planned_sample_count": planned,
             "parent_count": len({field.parent_id for field in fields}),
-            "fields": dict(sorted(Counter(field.field for field in fields).items())),
+            # Position-derived labels (the stored ones swapped EDF-F/EDF-S);
+            # ``stored_fields`` keeps the manifest's own strings.
+            "fields": dict(sorted(Counter(position_field(field) for field in fields).items())),
+            "stored_fields": dict(sorted(Counter(field.field for field in fields).items())),
             "comparison_sample_count": len(compared),
             "comparison_fields": dict(sorted(
-                Counter(field.field for field in compared).items()
+                Counter(position_field(field) for field in compared).items()
             )),
             "manifest_fingerprint": manifest_fingerprint(target),
             "collection_fingerprint": str(manifest["collection_fingerprint"]),
@@ -728,5 +742,6 @@ __all__ = [
     "load_manifest",
     "manifest_fingerprint",
     "manifest_path",
+    "position_field",
     "source_manifest_path",
 ]

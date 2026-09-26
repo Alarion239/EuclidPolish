@@ -134,7 +134,7 @@ export default function TrainMembersPage() {
       target_psf_fwhm_arcsec: targetPsfFwhm,
     };
     if (mode === "continue") {
-      const continuation = continueBasis === "target"
+      const continuation: Record<string, string> = continueBasis === "target"
         ? { target_steps: targetSteps } : { extra_steps: extraSteps };
       return { mode, members: selectedMemberNames.join(","),
         continue_basis: continueBasis, ...continuation,

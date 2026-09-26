@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import pytest
 
+from euclid_polish.config import Config
 from euclid_polish.web import job_config
 from euclid_polish.web.app import create_app
+from euclid_polish.web.fasrc_pipeline import EnsembleTrainStep
 
 
 @pytest.fixture
@@ -63,13 +65,12 @@ def test_save_endpoint_round_trips(client, cfg_path):
 
 
 def test_config_page_renders(client, cfg_path):
-    r = client.get("/config")
+    r = client.get("/settings/config")
     assert r.status_code == 200
     assert b'id="root"' in r.data
 
 
 def test_lens_field_defaults_update_and_mapping(cfg_path):
-    from euclid_polish.config import Config
     c = job_config.load()
     assert c.lens_density_arcmin2 == Config.LENS_DENSITY_ARCMIN2
     assert c.lens_sigma_v_min_kms == Config.LENS_SIGMA_V_MIN_KMS
@@ -84,7 +85,6 @@ def test_lens_field_defaults_update_and_mapping(cfg_path):
 
 
 def test_star_field_defaults_and_update(cfg_path):
-    from euclid_polish.config import Config
     c = job_config.load()
     assert c.star_density_arcmin2 == Config.DEFAULT_STAR_DENSITY_ARCMIN2
     c = job_config.update({"star_density_arcmin2": "4.2"})
@@ -119,7 +119,7 @@ def test_psf_warp_mapped_for_all_generation_and_training_steps():
 
 
 def test_config_page_renders_training_section(client, cfg_path):
-    r = client.get("/config")
+    r = client.get("/settings/config")
     assert r.status_code == 200
     assert b'id="root"' in r.data
 
@@ -127,7 +127,6 @@ def test_config_page_renders_training_section(client, cfg_path):
 # -- WDSR LR schedule + plateau guard knobs -------------------------------- #
 
 def test_lr_and_plateau_defaults_from_config(cfg_path):
-    from euclid_polish.config import Config
     c = job_config.load()
     assert c.lr_peak == Config.LR_PEAK
     assert c.lr_final == Config.LR_FINAL
@@ -177,13 +176,12 @@ def test_saturation_mask_probability_is_capped_at_half(cfg_path):
 
 
 def test_config_page_renders_lr_plateau_section(client, cfg_path):
-    r = client.get("/config")
+    r = client.get("/settings/config")
     assert r.status_code == 200
     assert b'id="root"' in r.data
 
 
 def test_ensemble_train_build_command_injects_lr_plateau_flags(monkeypatch):
-    from euclid_polish.web.fasrc_pipeline import EnsembleTrainStep
     monkeypatch.setattr(
         "euclid_polish.web.fasrc_pipeline.next_member_names",
         lambda base, k: [f"member_{i:02d}" for i in range(k)])

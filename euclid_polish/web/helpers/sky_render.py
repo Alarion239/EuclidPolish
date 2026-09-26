@@ -14,7 +14,6 @@ from flask import abort
 
 from euclid_polish.catalog.catalog_object import CatalogObject
 from euclid_polish.config import Config
-from euclid_polish.image.tfio import read_images, tfrecord_path
 from euclid_polish.visualization.methods import plot_star_positions
 from euclid_polish.visualization.presentation_style import (
     LEGEND_SIZE,
@@ -23,85 +22,6 @@ from euclid_polish.visualization.presentation_style import (
     apply_presentation_figure,
     presentation_rc,
 )
-from euclid_polish.web.helpers.sky_records import SUBSETS
-
-
-def _export_sky_record_fits(
-    subset: str, kind: str, band: str, index: int,
-    records_dir: str | None = None,
-) -> str:
-    """Materialise one sky record as a single-band FITS file.
-
-    Caches the result under ``data/vis/sky_fits/`` so repeat clicks on
-    the same record don't re-read the TFRecord. Returns the absolute
-    path to the saved file. ``records_dir`` defaults to the local
-    ``RECORDS_DIR_V2``; the /sky viewer passes the FASRC cache dir.
-    """
-
-    if subset not in SUBSETS:
-        abort(400)
-    if kind not in ("clean", "dirty", "hr"):
-        abort(400)
-    band_names = list(Config.LR_INPUT_BAND_NAMES)
-    # ``hr`` records are 4-band since the VIS+NISP-output change, so any
-    # band is selectable; a legacy 1-channel record (pre-change) simply
-    # 404s below for bands beyond channel 0.
-    if band not in band_names:
-        abort(400)
-    band_idx = band_names.index(band)
-    try:
-        idx = int(index)
-    except (TypeError, ValueError):
-        abort(400)
-    if idx < 0:
-        abort(400)
-
-    name = f"{kind}_{subset}"
-    src_path = tfrecord_path(records_dir or Config.RECORDS_DIR_V2, name)
-    if not os.path.exists(src_path):
-        abort(404)
-
-    out_dir = os.path.realpath(os.path.join(Config.VIS_DIR, "sky_fits"))
-    os.makedirs(out_dir, exist_ok=True)
-    out_path = os.path.join(out_dir, f"{kind}_{subset}_{band}_{idx:04d}.fits")
-    if os.path.isfile(out_path) and os.path.getsize(out_path) > 0:
-        return out_path
-
-    # Stream just enough records to reach ``idx`` — TFRecords don't have
-    # random access so we read sequentially. Cheap for typical idx ≤ ~50.
-    records = read_images(src_path, num_images=idx + 1)
-    if not records or idx >= len(records):
-        abort(404)
-    record = records[idx]
-    data = record.data
-    if data.ndim == 2:
-        plane = data
-    elif data.ndim == 3:
-        if band_idx >= data.shape[-1]:
-            abort(404)
-        plane = data[..., band_idx]
-    else:
-        abort(415)
-
-    hdu = fits.PrimaryHDU(np.ascontiguousarray(plane, dtype=np.float32))
-    hdu.header["OBJECT"] = (f"EuclidPolish {kind} {band}", "kind + band")
-    hdu.header["SUBSET"] = (subset, "TFRecord subset")
-    hdu.header["IDX"]    = (idx, "record index within subset")
-    hdu.header["BAND"]   = (band, "band name (VIS, Y_E, J_E, H_E)")
-    hdu.header["KIND"]   = (kind, "clean | dirty | hr")
-    hdu.header["BUNIT"]  = ("e-", "electrons (raw, sign preserved)")
-    if kind == "clean":
-        hdu.header["CDELT1"] = (-Config.DEFAULT_PIXEL_SCALE / 3600.0,
-                                 "HR pixel scale (degrees)")
-        hdu.header["CDELT2"] = ( Config.DEFAULT_PIXEL_SCALE / 3600.0,
-                                 "HR pixel scale (degrees)")
-    elif kind == "dirty":
-        hdu.header["CDELT1"] = (-Config.VIS_PIXEL_SCALE_ARCSEC / 3600.0,
-                                 "LR pixel scale (degrees)")
-        hdu.header["CDELT2"] = ( Config.VIS_PIXEL_SCALE_ARCSEC / 3600.0,
-                                 "LR pixel scale (degrees)")
-    hdu.writeto(out_path, overwrite=True)
-    return out_path
 
 
 def _saturation_cutoff(valid_mags, invalid_mags, bins):

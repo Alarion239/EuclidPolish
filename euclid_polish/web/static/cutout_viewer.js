@@ -478,6 +478,8 @@ export function mountCutoutViewer(root, opts = {}) {
       pixscale: parseFloat(r.headers.get("X-Cube-Pixscale")) || 0,
       transferGroup: r.headers.get("X-Cube-Transfer-Group") || "default",
       displayScale: parseFloat(r.headers.get("X-Cube-Display-Scale")) || 1,
+      // Physical unit of the served values (C6): "e-", "MJy/sr", "ADU/s", "arb".
+      unit: r.headers.get("X-Cube-Unit") || "",
       bands: (r.headers.get("X-Cube-Bands") || "").split(",").filter(Boolean),
       tint: (r.headers.get("X-Cube-Tint") || "").split(",").map(Number)
         .filter(Number.isFinite),
@@ -495,6 +497,13 @@ export function mountCutoutViewer(root, opts = {}) {
   // this now includes the "morph" tier: the movie's sr + pcaN cubes (subset-
   // aware) are the expensive ones — a subset PCA is a fresh server SVD — so
   // pre-fetching them ahead is what kills the per-switch lag.
+  // Centre of the disagreement movie: the tier its PCs are components about.
+  // The ensemble's `sr` is the production gate while its PCs are about the
+  // member mean, so its meta names `morph_base_tier: "mean"` (C6).
+  function morphBaseTier() {
+    return (state.meta && state.meta.morph_base_tier) || "sr";
+  }
+
   function prefetch(index) {
     // The PSF page changes its replay seed every few seconds.  Warming four
     // invisible neighbours for every seed would spend most of the preview's
@@ -512,7 +521,7 @@ export function mountCutoutViewer(root, opts = {}) {
       if (j < 0 || j >= state.meta.count) continue;
       for (const t of state.tiers) {
         if (t === "morph") {
-          fetchCube("sr", j, extra).catch(() => {});
+          fetchCube(morphBaseTier(), j, extra).catch(() => {});
           for (let k = 0; k < nPca; k++) fetchCube(`pca${k}`, j, extra).catch(() => {});
         } else if (tierAvail(t)) {
           warm(t, j);
@@ -1408,14 +1417,15 @@ export function mountCutoutViewer(root, opts = {}) {
     bar.querySelector(".cv-movie-prog__lbl").textContent = `caching movie… ${Math.round(p * 100)}%`;
   }
 
-  // Fetch a field's movie ingredients: sr (mean) + PCA cubes (subset-aware).
+  // Fetch a field's movie ingredients: the movie centre (morphBaseTier — the
+  // mean the PCs are about) + PCA cubes (subset-aware).
   async function movieCubes(index, subset) {
     const extra = subset ? { members: subset } : undefined;
     const nSub = subset ? subset.split(",").filter(Boolean).length : 0;
     const pcaMax = (state.meta && state.meta.pca_max) || 3;
     const n = subset ? Math.max(0, Math.min(pcaMax, nSub - 1))
                      : ((state.meta && state.meta.pca_n) | 0);
-    const sr = await fetchCube("sr", index, extra);
+    const sr = await fetchCube(morphBaseTier(), index, extra);
     const comps = [];
     for (let k = 0; k < n; k++) {
       try { comps.push(await fetchCube(`pca${k}`, index, extra)); } catch { /* fewer PCs */ }
@@ -2173,14 +2183,29 @@ export function mountCutoutViewer(root, opts = {}) {
     return state.color;
   }
 
+  function publicationUnitLabel(unit) {
+    // The tier's physical unit (X-Cube-Unit, else the meta tier's `unit`);
+    // Euclid tiers without one are electrons.
+    const u = String(unit || "").trim();
+    if (!u || u === "e-" || u === "e⁻" || u.toLowerCase() === "electron") return "e⁻";
+    if (u === "arb") return "arb. units";
+    return u;
+  }
+
   function publicationDisplayInfo(fr) {
     const rec = state.shown.get(fr.tier);
     const transfer = transferFor(rec);
+    // The transfer runs on value × displayScale, so native-unit ticks are the
+    // display values divided by it.
+    const scale = Number.isFinite(rec?.displayScale) && rec.displayScale > 0
+      ? rec.displayScale : 1;
     return {
       band: publicationBandLabel(fr),
       gain: transfer.gain,
       knee: transfer.knee,
       log: state.meta?.color?.render_mode === "log",
+      unit: publicationUnitLabel(rec?.unit || tierMeta(fr.tier)?.unit),
+      scale,
     };
   }
 
@@ -2188,6 +2213,7 @@ export function mountCutoutViewer(root, opts = {}) {
     if (value >= 1000) return `${(value / 1000).toFixed(value >= 10000 ? 0 : 1)}k`;
     if (value >= 10) return `${Math.round(value)}`;
     if (value >= 1) return value.toFixed(1);
+    if (value > 0 && value < 0.01) return value.toExponential(1);
     return value.toFixed(2);
   }
 
@@ -2197,9 +2223,12 @@ export function mountCutoutViewer(root, opts = {}) {
     ctx.font = `400 ${parameterSize}px Arial, Helvetica, sans-serif`;
     ctx.textAlign = "left";
     ctx.textBaseline = "alphabetic";
+    const electrons = info.unit === "e⁻" && info.scale === 1;
     const parameterText = info.log
       ? `Band: ${info.band}  ·  logarithmic display`
-      : `Band: ${info.band}  ·  asinh knee: ${Math.round(info.knee)} e⁻`;
+      : electrons
+        ? `Band: ${info.band}  ·  asinh knee: ${Math.round(info.knee)} e⁻`
+        : `Band: ${info.band}  ·  asinh knee: ${publicationElectronLabel(info.knee / info.scale)} ${info.unit}`;
     ctx.fillText(parameterText, x, imageBottom + side * 0.034);
 
     const barWidth = side * 0.56;
@@ -2230,13 +2259,14 @@ export function mountCutoutViewer(root, opts = {}) {
       ctx.stroke();
       const value = info.log
         ? fraction
-        : Math.sinh(fraction * norm) * info.knee / Math.max(info.gain, 1e-30);
+        : Math.sinh(fraction * norm) * info.knee / Math.max(info.gain, 1e-30) / info.scale;
       const label = info.log ? fraction.toFixed(2) : publicationElectronLabel(value);
       ctx.fillText(label, tickX, barY + barHeight + side * 0.013);
     }
     ctx.font = `400 ${tickSize}px Arial, Helvetica, sans-serif`;
     ctx.textBaseline = "top";
-    ctx.fillText(info.log ? "relative display intensity" : "Pixel signal (e⁻)",
+    const signalLabel = info.unit === "e⁻" ? "Pixel signal (e⁻)" : `Pixel signal (${info.unit})`;
+    ctx.fillText(info.log ? "relative display intensity" : signalLabel,
       barX + barWidth / 2, barY + barHeight + side * 0.045);
   }
 

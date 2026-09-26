@@ -1,0 +1,282 @@
+/* ============================================================================
+   EuclidPolish — design tokens (the ONE colour/type/space contract).
+
+   Every component reads these variables; no hardcoded hex in components.
+   Themes: LIGHT is the default (`:root`); DARK is `:root[data-theme="dark"]`.
+   The user preference light | dark | system lives in `state/prefs.ts`; the
+   pre-paint script in index.html and `bindPrefsToDocument()` resolve "system"
+   through `prefers-color-scheme` and write the RESOLVED theme to
+   <html data-theme> (plus data-theme-pref, data-accent, data-density), so
+   canvas code that reads tokens with getComputedStyle always sees concrete
+   colours.
+
+   Contrast (WCAG AA, ≥ 4.5:1, both themes — enforced by
+   src/theme/tokens.test.ts):
+     · --text, --text-dim, --text-faint on --surface-1/-2/-3, --bg-0/-1;
+     · --good/--warn/--bad/--info as text on every opaque surface
+       (--surface-1/-2/-3, --bg-0/-1) and on their -soft tint over each of
+       them (badges on cards, the rail, inputs);
+     · --accent (default blue AND every [data-accent] preset) as text on every
+       opaque surface (--surface-1/-2/-3, --bg-0/-1), and --accent and
+       --accent-press on the --accent-soft tint over --surface-1/-2, --bg-0/-1
+       (selected chips / tabs / rail items); --on-accent on a filled --accent.
+     Not covered: --accent text on --accent-soft over --surface-3 (no such
+     pairing in the kit).
+   ============================================================================ */
+
+:root {
+  color-scheme: light;
+
+  /* — surfaces — */
+  --bg-0: #f7f7f8;          /* app background */
+  --bg-1: #eeeef1;          /* rail / sunken */
+  --surface-1: #ffffff;     /* card */
+  --surface-2: #f4f4f6;     /* raised / hover */
+  --surface-3: #ececef;     /* active / input */
+  --surface-grad: #fafafb;  /* card gradient foot */
+  --border: #e2e2e6;
+  --border-strong: #c9c9d0;
+  --rail-bg: linear-gradient(180deg, #f4f4f6, #eeeef1);
+  --app-bg: #f7f7f8;
+  --overlay: #0f172a59;     /* dialog / drawer scrim */
+  --tooltip-bg: #17202e;
+  --tooltip-text: #f7f7f8;
+
+  /* — ink — */
+  --text: #17202e;
+  --text-dim: #4a566a;
+  --text-faint: #5f6a79;    /* AA: 5.5 card · 5.1 app · 4.7 rail · 4.66 input */
+
+  /* — instrument accents — */
+  --accent: #2159d3;        /* primary (interactive); AA on every surface + its soft tint */
+  --accent-press: #1a46c1;
+  --accent-soft: #2159d31a;
+  --on-accent: #ffffff;     /* ink ON a filled accent surface */
+  --amber: #c2680a;         /* SR / highlight */
+  --cyan: #0e8f96;
+  --violet: #7c5cf0;
+  --magenta: #d63384;
+
+  /* — status (AA as text on every opaque surface AND on its -soft tint
+       over every surface; the tightest pairing is tone on tint over
+       --surface-3: good 4.77 · warn 4.75 · bad 4.65 · info 4.89) — */
+  --good: #096b41;
+  --warn: #845300;
+  --bad: #b12a2a;
+  --info: #1d4ed8;
+  --good-soft: #096b411c;
+  --warn-soft: #8453001c;
+  --bad-soft: #b12a2a1c;
+  --info-soft: #1d4ed81a;
+
+  /* — data-series palette (charts) — */
+  --series-baseline: #e11d48;   /* LR / floor-to-beat */
+  --series-mean: #2563eb;       /* ensemble mean */
+  --series-comb: #c2680a;       /* combiner */
+  --series-muted: #9aa6b6;      /* faint member / model–model pairs */
+  --series-cross: #5b6879;      /* model–model r̃(k) */
+  --series-guide: #c2ccd9;      /* grid guide */
+  --series-visfwhm: #2563eb;    /* VIS PSF marker */
+
+  /* — categorical (facet colouring) — */
+  --cat-0: #2563eb; --cat-1: #0f9d58; --cat-2: #d97706; --cat-3: #7c3aed;
+  --cat-4: #db2777; --cat-5: #0e8f96; --cat-6: #dc2626; --cat-7: #927608;
+
+  /* — reconstruction-loss colours (member facets) — */
+  --loss-l1: #2563eb; --loss-l2: #0f9d58; --loss-l3: #d97706; --loss-mse: #0e8f96;
+  --loss-berhu: #7c3aed;        /* deprecated loss; kept only for old members */
+
+  /* — Euclid bands, short → long wavelength (blue → red) — */
+  --band-vis: #2563eb;
+  --band-y: #0f9d58;
+  --band-j: #d97706;
+  --band-h: #dc2626;
+
+  /* — type — */
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --fs-2xs: 10px;
+  --fs-xs: 11px;            /* eyebrows, table headers */
+  --fs-sm: 12px;            /* dense UI, captions */
+  --fs-md: 13px;            /* controls */
+  --fs-base: 14px;          /* body */
+  --fs-lg: 15px;            /* card titles */
+  --fs-xl: 18px;            /* section titles */
+  --fs-2xl: 24px;           /* page titles */
+  --fs-3xl: 32px;           /* KPI numbers */
+  --lh-tight: 1.2;
+  --lh-snug: 1.35;
+  --lh-base: 1.5;
+  --fw-regular: 400;
+  --fw-medium: 500;
+  --fw-semibold: 600;
+  --ls-eyebrow: 0.14em;
+
+  /* — space scale (4px base) — */
+  --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 24px; --s6: 32px; --s7: 48px; --s8: 64px;
+
+  /* — radius / elevation / focus — */
+  --r-sm: 5px; --r-md: 8px; --r-lg: 12px; --r-pill: 999px;
+  --shadow-1: 0 1px 2px #1a2a4a14;
+  --shadow-2: 0 10px 28px -12px #1a2a4a33;
+  --shadow-3: 0 18px 48px -16px #1a2a4a47;   /* dialogs, popovers */
+  --ring: 0 0 0 2px var(--accent-soft), 0 0 0 1px var(--accent);
+
+  /* — stacking — */
+  --z-raised: 1;
+  --z-sticky: 10;
+  --z-rail: 20;
+  --z-topbar: 30;
+  --z-overlay: 40;
+  --z-drawer: 45;
+  --z-popover: 50;
+  --z-dialog: 60;
+  --z-toast: 70;
+  --z-tooltip: 80;
+
+  /* — motion (zeroed under prefers-reduced-motion) — */
+  --dur-instant: 60ms;
+  --dur-fast: 120ms;
+  --dur-base: 200ms;
+  --dur-slow: 320ms;
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --ease-out: cubic-bezier(0, 0, 0.2, 1);
+  --ease-in: cubic-bezier(0.4, 0, 1, 1);
+
+  /* — layout + density (data-density="compact" tightens these) — */
+  --rail-w: 232px;
+  --rail-w-collapsed: 56px;
+  --topbar-h: 48px;
+  --inspector-w: 380px;
+  --page-max: 1600px;
+  --ctl-h: 32px;
+  --ctl-h-sm: 26px;
+  --row-h: 34px;
+  --card-pad: 16px;
+
+  /* — compatibility aliases (names older CSS used without defining) — */
+  --line: var(--border);
+  --muted: var(--text-dim);
+  --mono: var(--font-mono);
+  --panel: var(--surface-1);
+  --bg: var(--bg-0);
+  --surface: var(--surface-1);
+  --surface-subtle: var(--surface-2);
+  --warning-text: var(--warn);
+  --danger: var(--bad);
+  --radius-sm: var(--r-sm);
+  --r-1: var(--r-sm);
+  --r-2: var(--r-md);
+  --guide: var(--series-guide);
+  --text-sm: var(--fs-sm);
+}
+
+/* ── DARK — deep-space console ─────────────────────────────────────────────*/
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --bg-0: #080b11;
+  --bg-1: #0e131c;
+  --surface-1: #131a26;
+  --surface-2: #1a2333;
+  --surface-3: #222d40;
+  --surface-grad: #10161f;
+  --border: #26303f;
+  --border-strong: #33415a;
+  --rail-bg: linear-gradient(180deg, #0b1019, var(--bg-1));
+  --app-bg:
+    radial-gradient(1200px 700px at 78% -12%, #16233a55, transparent 60%),
+    radial-gradient(900px 600px at -8% 8%, #12203a44, transparent 55%),
+    #080b11;
+  --overlay: #000000a6;
+  --tooltip-bg: #e5edf7;
+  --tooltip-text: #0e131c;
+
+  --text: #e5edf7;
+  --text-dim: #9aa8bd;
+  --text-faint: #8a97ab;    /* AA: 5.9 card · 6.7 app · 6.3 rail · 4.68 input */
+
+  --accent: #4c9ffe;
+  --accent-press: #6fb2ff;
+  --accent-soft: #4c9ffe22;
+  --on-accent: #04101f;
+  --amber: #ffb454;
+  --cyan: #33d6c4;
+  --violet: #b48ef2;
+  --magenta: #ff77c8;
+
+  --good: #56d68a;
+  --warn: #ffcc66;
+  --bad: #ff7a7a;           /* AA on its tint over --surface-3: 4.65 */
+  --info: #6fb2ff;
+  --good-soft: #56d68a1c;
+  --warn-soft: #ffcc661c;
+  --bad-soft: #ff7a7a1c;
+  --info-soft: #6fb2ff1c;
+
+  --series-baseline: #ff5c6c;
+  --series-mean: #4c9ffe;
+  --series-comb: #ffb454;
+  --series-muted: #55627a;
+  --series-cross: #8794a8;
+  --series-guide: #3a475c;
+  --series-visfwhm: #4c9ffe;
+
+  --cat-0: #4c9ffe; --cat-1: #56d68a; --cat-2: #ffb454; --cat-3: #b48ef2;
+  --cat-4: #ff77c8; --cat-5: #33d6c4; --cat-6: #ff6b6b; --cat-7: #c7d05e;
+  --loss-l1: #4c9ffe; --loss-l2: #56d68a; --loss-l3: #ffb454; --loss-mse: #33d6c4;
+  --loss-berhu: #b48ef2;
+
+  --band-vis: #4c9ffe;
+  --band-y: #56d68a;
+  --band-j: #ffb454;
+  --band-h: #ff6b6b;
+
+  --shadow-1: 0 1px 2px #0006;
+  --shadow-2: 0 6px 22px -8px #000a;
+  --shadow-3: 0 18px 48px -12px #000c;
+}
+
+/* ── accent presets (prefs.accent; "blue" is the default above) ────────────*/
+:root[data-accent="violet"] {
+  --accent: #6847d6; --accent-press: #5738c0; --accent-soft: #6847d61a; --on-accent: #ffffff;
+}
+:root[data-accent="teal"] {
+  --accent: #096d73; --accent-press: #085a64; --accent-soft: #096d731a; --on-accent: #ffffff;
+}
+:root[data-accent="amber"] {
+  --accent: #945204; --accent-press: #7d4503; --accent-soft: #9452041a; --on-accent: #ffffff;
+}
+:root[data-accent="rose"] {
+  --accent: #b42762; --accent-press: #9a2053; --accent-soft: #b427621a; --on-accent: #ffffff;
+}
+:root[data-theme="dark"][data-accent="violet"] {
+  --accent: #b48ef2; --accent-press: #c7a9f6; --accent-soft: #b48ef222; --on-accent: #140a26;
+}
+:root[data-theme="dark"][data-accent="teal"] {
+  --accent: #33d6c4; --accent-press: #5fe2d3; --accent-soft: #33d6c422; --on-accent: #021a17;
+}
+:root[data-theme="dark"][data-accent="amber"] {
+  --accent: #ffb454; --accent-press: #ffc67a; --accent-soft: #ffb45422; --on-accent: #1f1300;
+}
+:root[data-theme="dark"][data-accent="rose"] {
+  --accent: #ff77c8; --accent-press: #ff96d5; --accent-soft: #ff77c822; --on-accent: #26061a;
+}
+
+/* ── density (prefs.density) ───────────────────────────────────────────────*/
+:root[data-density="compact"] {
+  --ctl-h: 28px;
+  --ctl-h-sm: 22px;
+  --row-h: 28px;
+  --card-pad: 12px;
+}
+
+/* ── reduced motion ────────────────────────────────────────────────────────*/
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-instant: 0ms;
+    --dur-fast: 0ms;
+    --dur-base: 0ms;
+    --dur-slow: 0ms;
+  }
+}

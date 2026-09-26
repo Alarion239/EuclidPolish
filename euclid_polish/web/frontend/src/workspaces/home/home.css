@@ -1,0 +1,15 @@
+/* Home dashboard (workspaces/home). */
+.home__kpis {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: var(--s3); margin-bottom: var(--s4);
+}
+.home__grid { display: grid; grid-template-columns: minmax(0, 2fr) minmax(260px, 1fr); gap: var(--s4); }
+@media (max-width: 899px) { .home__grid { grid-template-columns: minmax(0, 1fr); } }
+.home__links { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.home__links a {
+  display: flex; flex-direction: column; padding: var(--s2) var(--s3); border-radius: var(--r-sm);
+  color: var(--text);
+}
+.home__links a:hover { background: var(--surface-2); color: var(--text); }
+.home__links b { font-weight: var(--fw-semibold); font-size: var(--fs-md); }
+.home__links span { color: var(--text-dim); font-size: var(--fs-sm); }

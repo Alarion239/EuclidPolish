@@ -8,6 +8,9 @@ import pytest
 
 from euclid_polish.config import Config
 from euclid_polish.web import fasrc_config
+from euclid_polish.web import fasrc_fetcher as ff
+from euclid_polish.web import remote as remote_module
+from euclid_polish.web.app import create_app
 from euclid_polish.web.fasrc_fetcher import (
     FetchResult,
     _local_path_for,
@@ -16,6 +19,7 @@ from euclid_polish.web.fasrc_fetcher import (
     fetch_one_file,
     is_allowed_remote_path,
 )
+from euclid_polish.web.remote import STATE
 
 # ---------------------------------------------------------------------------
 # Path safety
@@ -94,7 +98,6 @@ class TestForceBypassesCache:
     you rebuilt 30 s ago shows up without waiting for the 5-min TTL."""
 
     def test_force_bypasses_fresh_cache(self, tmp_path, monkeypatch):
-        from euclid_polish.web import fasrc_fetcher as ff
         # Point the cache at tmp_path and the safety check at "always ok".
         monkeypatch.setattr(Config, "FASRC_CACHE_DIR", str(tmp_path))
         monkeypatch.setattr(ff, "is_allowed_remote_path", lambda p: True)
@@ -125,7 +128,6 @@ class TestForceBypassesCache:
             ff, "_remote_size_bytes",
             lambda p: (True, 11, None),
         )
-        from euclid_polish.web import remote as remote_module
         monkeypatch.setattr(remote_module.STATE, "ssh", _FakeSSH())
 
         # Sanity: without force, we get the cached blob and never rsync.
@@ -144,7 +146,6 @@ class TestForceBypassesCache:
 class TestCacheEviction:
 
     def test_cache_size_reads_existing_files(self, tmp_path, monkeypatch):
-        from euclid_polish.web import fasrc_fetcher as ff
         monkeypatch.setattr(Config, "FASRC_CACHE_DIR", str(tmp_path))
         # No files → 0
         assert ff.cache_size_bytes() == 0
@@ -154,7 +155,6 @@ class TestCacheEviction:
         assert ff.cache_size_bytes() == 300
 
     def test_evict_lru_frees_oldest_first(self, tmp_path, monkeypatch):
-        from euclid_polish.web import fasrc_fetcher as ff
         monkeypatch.setattr(Config, "FASRC_CACHE_DIR", str(tmp_path))
         f1 = tmp_path / "old"
         f2 = tmp_path / "new"
@@ -170,7 +170,6 @@ class TestCacheEviction:
     def test_evict_lru_never_deletes_protected_path(self, tmp_path, monkeypatch):
         """A ``protect``-ed file is never evicted, even when it's the oldest
         and the cache is over budget — the cache just stays over budget."""
-        from euclid_polish.web import fasrc_fetcher as ff
         monkeypatch.setattr(Config, "FASRC_CACHE_DIR", str(tmp_path))
         oldest = tmp_path / "oldest"   # would normally be evicted first
         other  = tmp_path / "other"
@@ -192,8 +191,6 @@ class TestFetchSelfEvictionRegression:
     and failing every gen+reconstruct that needed the 374 MB FASRC ePSF."""
 
     def test_fetch_over_cap_keeps_just_pulled_file(self, tmp_path, monkeypatch):
-        from euclid_polish.web import fasrc_fetcher as ff
-        from euclid_polish.web import remote as remote_module
         monkeypatch.setattr(Config, "FASRC_CACHE_DIR", str(tmp_path))
         monkeypatch.setattr(ff, "is_allowed_remote_path", lambda p: True)
         # Tiny cache budget so any pull trips the eviction path.
@@ -227,8 +224,6 @@ class TestFetchSelfEvictionRegression:
 
     def test_fetch_preserves_the_rest_of_an_explicit_sync_set(self, tmp_path, monkeypatch):
         """A later shard in a batch must not evict an earlier requested shard."""
-        from euclid_polish.web import fasrc_fetcher as ff
-        from euclid_polish.web import remote as remote_module
         monkeypatch.setattr(Config, "FASRC_CACHE_DIR", str(tmp_path))
         monkeypatch.setattr(Config.WebFetch, "MAX_CACHE_BYTES", 500)
         monkeypatch.setattr(ff, "is_allowed_remote_path", lambda p: True)
@@ -265,8 +260,6 @@ class TestConnectionGate:
 
     @pytest.fixture
     def app_with_no_ssh(self, monkeypatch):
-        from euclid_polish.web.app import create_app
-        from euclid_polish.web.remote import STATE
         app = create_app()
         monkeypatch.setattr(STATE, "ssh", None)
         return app
@@ -279,23 +272,25 @@ class TestConnectionGate:
 
     def test_catalog_serves_react_console_when_disconnected(self, app_with_no_ssh):
         client = app_with_no_ssh.test_client()
-        r = client.get("/catalog", follow_redirects=False)
+        r = client.get("/data/catalog", follow_redirects=False)
         assert r.status_code == 200
         assert b'id="root"' in r.data
 
-    def test_connection_error_page_reachable(self, app_with_no_ssh):
+    def test_connection_error_page_moves_to_settings(self, app_with_no_ssh):
         client = app_with_no_ssh.test_client()
         r = client.get("/connection-error")
-        assert r.status_code == 200
-        assert b'id="root"' in r.data
+        assert r.status_code == 308
+        assert r.headers["Location"] == "/settings/connections"
+        page = client.get("/settings/connections")
+        assert page.status_code == 200
+        assert b'id="root"' in page.data
 
     def test_static_assets_reachable(self, app_with_no_ssh):
         client = app_with_no_ssh.test_client()
-        r = client.get("/static/style.css")
-        # 200 if the file exists; 404 is also acceptable here — what matters
-        # is the gate doesn't redirect.
-        assert r.status_code in (200, 404)
-        assert r.status_code != 302
+        # Any shipped static file (the committed SPA build is always there) is
+        # served offline: no gate, no redirect.
+        r = client.get("/static/dist/index.html")
+        assert r.status_code == 200
 
     def test_api_fasrc_always_reachable(self, app_with_no_ssh):
         client = app_with_no_ssh.test_client()
@@ -310,13 +305,13 @@ class TestConnectionGate:
 class TestRoutesRegistered:
 
     def test_all_new_routes_present(self):
-        from euclid_polish.web.app import create_app
         app = create_app()
         urls = {str(r) for r in app.url_map.iter_rules()}
         assert "/fasrc/file/inspect" in urls
         assert "/fasrc/file/download" in urls
-        assert "/connection-error" in urls
         assert "/api/connection/retry" in urls
+        # The legacy connect form is gone; the URL only 308s (C1).
+        assert "/connection-error" not in urls
         # The removed round-trip page may not exist.
         assert "/roundtrip" not in urls, "/roundtrip should be gone"
 

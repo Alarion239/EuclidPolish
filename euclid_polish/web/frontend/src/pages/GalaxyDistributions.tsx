@@ -993,7 +993,7 @@ export default function GalaxyDistributionsPage() {
               onClick={rebuildPlots}>
               {plotBuild.busy ? "Rebuilding plots…" : "Rebuild cached plots"}
             </Button>
-            {!api.authenticated && <NavLink className="ui-btn" to="/catalog">Log in to Euclid archive</NavLink>}
+            {!api.authenticated && <NavLink className="ui-btn" to="/data/catalog">Log in to Euclid archive</NavLink>}
           </div>
         </div>
         <JobProgressView job={coneRefresh.job} error={coneRefresh.error} />
@@ -1055,7 +1055,7 @@ export default function GalaxyDistributionsPage() {
               {activate.busy ? "Activating…" : api.calibration.is_active
                 ? "Re-activate model" : "Activate model"}
             </Button>
-            {api.calibration.is_active && <NavLink className="ui-btn" to="/sky">Open Sky jobs</NavLink>}
+            {api.calibration.is_active && <NavLink className="ui-btn" to="/data/records">Open Records jobs</NavLink>}
           </div>
         </div>
         {api.calibration.candidate && <p className="galaxy-q1-counts__note">

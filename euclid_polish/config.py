@@ -719,12 +719,12 @@ class Config:
 
     # Reconstruction output
     VIS_RECONSTRUCTION_DIR       = os.path.join(DATA_DIR, "vis/reconstruction")
-    # Persistent storage for cutouts downloaded by the real-Euclid
-    # inference flow (``_job_reconstruct_euclid_cutout``). Each
-    # (ra, dec, size) gets its own sub-directory containing the four
-    # band FITS files + the super-resolved VIS FITS. Files persist
-    # across runs so the user can revisit / re-render a position
-    # without re-downloading.
+    # Persistent storage for real-Euclid inference products: the CLI /
+    # ``scripts/infer_euclid_cutout.py`` ad-hoc cutouts (``adhoc/``), the
+    # real-field tiles of ``web/helpers/real_field.py`` (``real_fields/``)
+    # and other per-position cutout directories (band FITS + SR FITS).
+    # Files persist across runs so a position can be revisited / re-rendered
+    # without re-downloading; the web UI serves them via ``/inference-files``.
     EUCLID_INFERENCE_DIR         = os.path.join(DATA_DIR, "euclid_inference")
 
     # Catalog-based evaluation. ``EVAL_CATALOG_DIR`` holds normalized

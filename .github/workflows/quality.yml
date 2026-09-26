@@ -49,3 +49,51 @@ jobs:
           python -m pytest --noconftest tests/test_psf_provenance.py::test_psf_resampling_preserves_stamp -q
           python -m pytest --noconftest tests/test_sky_lazy_imports.py -q
           python -m pytest --noconftest tests/test_measure_star_saturation.py -q
+          python -m pytest --noconftest tests/test_spa_routes.py -q
+
+  # The React console (euclid_polish/web/frontend) builds into the COMMITTED
+  # euclid_polish/web/static/dist that Flask serves. This job type-checks,
+  # lints and unit-tests the frontend, rebuilds it from the lockfile, and
+  # fails when the committed build is stale (edited sources without a
+  # rebuild, or a build that was never committed).
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: euclid_polish/web/frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: euclid_polish/web/frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: Committed build is fresh
+        working-directory: ${{ github.workspace }}
+        run: |
+          if ! git diff --exit-code --stat -- euclid_polish/web/static/dist; then
+            echo "::error::euclid_polish/web/static/dist is stale: run 'npm run build' in euclid_polish/web/frontend and commit the result."
+            exit 1
+          fi
+          untracked="$(git status --porcelain --untracked-files=all -- euclid_polish/web/static/dist)"
+          if [ -n "$untracked" ]; then
+            echo "$untracked"
+            echo "::error::the build produced files that are not committed under euclid_polish/web/static/dist."
+            exit 1
+          fi

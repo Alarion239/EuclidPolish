@@ -5,7 +5,7 @@
 import { useEffect, useRef, useState } from "react";
 import { postForm } from "../api";
 import { asArray } from "../data";
-import { useResource, usePolling } from "../hooks";
+import { useResource } from "../hooks";
 import { ConnectionBar, CurrentSubmission } from "../fasrc";
 import {
   Badge, Button, Card, CardBody, CardHead, DefList, Empty, LogTail, Page,

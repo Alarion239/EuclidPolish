@@ -24,20 +24,23 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import math
 import secrets
 import shlex
 import textwrap
 import time
 from abc import ABC, abstractmethod
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 
 from euclid_polish.config import Config
 from euclid_polish.ensemble_registry import default_ensemble_dir, next_member_names
-from euclid_polish.training.loss_names import LOSS_NAMES
+from euclid_polish.tng import selection as tng_selection
+from euclid_polish.training.loss_names import KNEE_LOSS_MODES, LOSS_NAMES
 from euclid_polish.web import fasrc_config
 from euclid_polish.web.fasrc_jobs import _conda_activate_snippet
+from euclid_polish.web.helpers import population_calibration
 
 # ---------------------------------------------------------------------------
 # Resource preset (subset of SLURM knobs the user can override per submit)
@@ -151,6 +154,137 @@ class StepResources:
 
 
 # ---------------------------------------------------------------------------
+# Task-parameter schema (contract C5)
+# ---------------------------------------------------------------------------
+
+TaskParamType = Literal["int", "float", "str", "bool", "choice", "json"]
+#: What an explicitly blank (empty/whitespace) submitted value means.
+BlankPolicy = Literal["default", "unset"]
+_TRUE_WORDS = frozenset({"1", "true", "yes", "on"})
+_FALSE_WORDS = frozenset({"", "0", "false", "no", "off"})
+
+
+class TaskParamError(ValueError):
+    """A submitted task parameter does not satisfy its step's schema."""
+
+
+@dataclass(frozen=True)
+class TaskParam:
+    """One step-specific knob its ``build_command`` reads from the form.
+
+    ``/api/fasrc/steps/status`` publishes these so the SPA renders every
+    step form generically; the submit route fills absent ones from
+    ``default`` (:meth:`FASRCPipelineStep.fill_task_params`) and rejects
+    values :meth:`parse` refuses. A ``default`` of ``None`` means "unset":
+    the step then uses its own fallback (or omits the CLI flag).
+    Resource fields and the knobs ``/config`` injects
+    (``job_config.FASRC_STEP_PARAMS``) are deliberately not task params.
+
+    ``blank`` says what an explicitly blank posted value means (a generic
+    form posts ``""`` when the user clears a field): ``"default"`` — the
+    same as absent, i.e. ``default`` — or ``"unset"``, for the few params
+    whose help gives blank its own meaning ("blank = no cut"). A param
+    whose ``default`` is ``None`` is unset when blank either way.
+    """
+
+    name: str
+    type: TaskParamType
+    default: Any = None
+    help: str = ""
+    min: float | None = None
+    max: float | None = None
+    choices: tuple[str, ...] | None = None
+    required: bool = False
+    #: ``False`` for values resolved afresh at every submit when left blank
+    #: (fresh-entropy seeds): the job DB stores the resolved number, and
+    #: prefilling it would silently replay the previous run's seeds, so
+    #: :meth:`FASRCPipelineStep.last_task_params` reports them as ``None``.
+    prefill: bool = True
+    blank: BlankPolicy = "default"
+
+    def to_dict(self) -> dict[str, Any]:
+        """The C5 wire shape (optional keys only when set)."""
+        out: dict[str, Any] = {"name": self.name, "type": self.type,
+                               "default": self.default, "help": self.help}
+        if self.min is not None:
+            out["min"] = self.min
+        if self.max is not None:
+            out["max"] = self.max
+        if self.choices is not None:
+            out["choices"] = list(self.choices)
+        if self.required:
+            out["required"] = True
+        return out
+
+    def _bad(self, raw: Any, why: str) -> TaskParamError:
+        return TaskParamError(f"{self.name}: {why} (got {raw!r})")
+
+    def _check_range(self, value: float, raw: Any) -> None:
+        if not math.isfinite(value):
+            raise self._bad(raw, "must be a finite number")
+        if self.min is not None and value < self.min:
+            raise self._bad(raw, f"must be ≥ {self.min:g}")
+        if self.max is not None and value > self.max:
+            raise self._bad(raw, f"must be ≤ {self.max:g}")
+
+    def parse(self, raw: Any) -> Any:
+        """Typed value of one (string) form value; raises :class:`TaskParamError`."""
+        text = raw.strip() if isinstance(raw, str) else raw
+        if self.type == "bool":
+            if isinstance(text, bool):
+                return text
+            word = str(text).strip().lower()
+            if word in _TRUE_WORDS:
+                return True
+            if word in _FALSE_WORDS:
+                return False
+            raise self._bad(raw, "must be a boolean (1/0, true/false)")
+        if self.type == "int":
+            try:
+                number = float(text)
+            except (TypeError, ValueError):
+                raise self._bad(raw, "must be an integer") from None
+            if not number.is_integer():
+                raise self._bad(raw, "must be an integer")
+            self._check_range(number, raw)
+            return int(number)
+        if self.type == "float":
+            try:
+                number = float(text)
+            except (TypeError, ValueError):
+                raise self._bad(raw, "must be a number") from None
+            self._check_range(number, raw)
+            return number
+        if self.type == "choice":
+            value = str(text)
+            if self.choices is None or value not in self.choices:
+                raise self._bad(raw, f"must be one of {list(self.choices or ())}")
+            return value
+        if self.type == "json":
+            if not isinstance(text, str):
+                return text
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError as exc:
+                raise self._bad(raw, f"is not valid JSON ({exc.msg})") from None
+        return str(text)
+
+    def form_value(self, value: Any) -> str:
+        """Serialise a typed value back to the string a form would post."""
+        if self.type == "bool":
+            return "1" if value else "0"
+        if self.type == "json":
+            return json.dumps(value, separators=(",", ":"))
+        if self.type == "float" and float(value).is_integer():
+            return str(int(value))
+        return str(value)
+
+
+def _blank(value: Any) -> bool:
+    return value is None or (isinstance(value, str) and value.strip() == "")
+
+
+# ---------------------------------------------------------------------------
 # Abstract base
 # ---------------------------------------------------------------------------
 
@@ -159,10 +293,14 @@ class FASRCPipelineStep(ABC):
     """One submittable FASRC job.
 
     Subclasses implement :meth:`build_command` to produce the Python
-    command line that runs on the remote node. Everything else
-    (SLURM header, conda setup, log layout, runtime banner) is shared
-    via :meth:`build_sbatch_body`.
+    command line that runs on the remote node and declare the knobs it
+    reads as :attr:`task_params`. Everything else (SLURM header, conda
+    setup, log layout, runtime banner) is shared via
+    :meth:`build_sbatch_body`.
     """
+
+    #: The step-specific knobs :meth:`build_command` reads (contract C5).
+    task_params: ClassVar[tuple[TaskParam, ...]] = ()
 
     #: Stable id used in URLs (``/api/fasrc/steps/<step_id>/submit``).
     step_id:   str
@@ -201,6 +339,72 @@ class FASRCPipelineStep(ABC):
         of shell-safe tokens — :meth:`build_sbatch_body` joins them with
         spaces and shell-quotes individually.
         """
+
+    def task_param_schema(self) -> list[dict[str, Any]]:
+        """``task_params`` in the C5 wire shape."""
+        return [param.to_dict() for param in self.task_params]
+
+    def fill_task_params(self, form: Mapping[str, Any]) -> dict[str, Any]:
+        """``form`` with absent and blank task params resolved per the schema.
+
+        An absent value takes the schema ``default``; so does an explicitly
+        blank (empty/whitespace) one, unless the param's ``blank`` policy is
+        ``"unset"`` or it has no default — then it is stored as ``""`` (the
+        step's own "unset" meaning, never a whitespace string ``int()``
+        chokes on). A ``required`` param refuses a blank value, and an
+        absent one without a default. Present values are validated
+        (:meth:`TaskParam.parse`) and kept as posted, so the job DB/history
+        keep the exact form strings. Raises :class:`TaskParamError` on the
+        first invalid value.
+        """
+        out = dict(form)
+        for param in self.task_params:
+            if param.name in out and not _blank(out[param.name]):
+                param.parse(out[param.name])
+                continue
+            posted_blank = param.name in out
+            if param.required and (posted_blank or param.default is None):
+                raise TaskParamError(f"{param.name}: is required")
+            if param.default is None or (posted_blank and param.blank == "unset"):
+                if posted_blank:
+                    out[param.name] = ""
+                continue
+            out[param.name] = param.form_value(param.default)
+        return out
+
+    def last_task_params(
+        self, history: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        """Typed task params of the newest ``COMPLETED`` run in ``history``.
+
+        ``history`` is :meth:`JobLog.history_for_step` (newest first). Only
+        schema names are returned; a blank stored value becomes ``None``, a
+        ``prefill=False`` param (a seed drawn at submit when blank) is always
+        ``None``, and a value the current schema refuses is dropped. ``None``
+        when the step never completed.
+        """
+        by_name = {param.name: param for param in self.task_params}
+        for row in history:
+            if str(row.get("state") or "").strip().upper() != "COMPLETED":
+                continue
+            try:
+                stored = json.loads(row.get("params_json") or "{}")
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if not isinstance(stored, dict):
+                continue
+            out: dict[str, Any] = {}
+            for name, raw in stored.items():
+                param = by_name.get(name)
+                if param is None:
+                    continue
+                if _blank(raw) or not param.prefill:
+                    out[name] = None
+                    continue
+                with contextlib.suppress(TaskParamError):
+                    out[name] = param.parse(raw)
+            return out
+        return None
 
     def prepare_params(self, params: dict[str, Any]) -> dict[str, Any]:
         """Resolve submission-time values before rendering and logging.
@@ -481,6 +685,25 @@ def render_sbatch_body(
 class VISNoiseSampleStep(FASRCPipelineStep):
     """Download independent source-maskable VIS samples across Q1 support."""
 
+    task_params = (
+        TaskParam("n_clusters", "int", 44, "Star-footprint k-means clusters "
+                  "(one sampling region each).", min=1),
+        TaskParam("samples_per_cluster", "int", 1,
+                  "VIS samples drawn per cluster.", min=1),
+        TaskParam("vis_pixels", "int", 2560, "VIS sample side (0.1″ pixels).",
+                  min=16),
+        TaskParam("workers", "int", 1, "Parallel download workers.", min=1),
+        TaskParam("seed", "int", 42, "Sampling seed."),
+        TaskParam("source_release", "str", "Q1_R1", "Euclid archive release."),
+        TaskParam("star_support_csv", "str", None,
+                  "Star catalogue defining the support (blank = default)."),
+        TaskParam("sampling_manifest", "str", None,
+                  "Sampling-plan manifest path (blank = default)."),
+        TaskParam("output_dir", "str", None, "Output directory (blank = default)."),
+        TaskParam("regenerate_catalog", "bool", False,
+                  "Rebuild the sampling plan instead of reusing it."),
+    )
+
     def __init__(self):
         super().__init__(
             step_id="vis_noise_sample",
@@ -528,6 +751,20 @@ class VISNoiseSampleStep(FASRCPipelineStep):
 class ArchiveFieldSampleStep(FASRCPipelineStep):
     """Derive compact matched four-band fields from the frozen VIS parents."""
 
+    task_params = (
+        TaskParam("workers", "int", 1, "Parallel download workers.", min=1),
+        TaskParam("source_release", "str", "Q1_R1", "Euclid archive release."),
+        TaskParam("source_sampling_manifest", "str", None,
+                  "Frozen VIS sampling plan (blank = default)."),
+        TaskParam("sampling_manifest", "str", None,
+                  "Archive-field manifest path (blank = default)."),
+        TaskParam("output_dir", "str", None, "Output directory (blank = default)."),
+        TaskParam("regenerate_catalog", "bool", False,
+                  "Rebuild the field plan instead of reusing it."),
+        TaskParam("force_redownload", "bool", False,
+                  "Re-download every bundle (needs its own confirmation)."),
+    )
+
     def __init__(self):
         super().__init__(
             step_id="archive_field_sample",
@@ -569,7 +806,27 @@ class ArchiveFieldSampleStep(FASRCPipelineStep):
         return cmd
 
 
+#: Brightest-N of the last real catalogue run — the schema default AND the
+#: ``build_command`` fallback (the old 200 silently overwrote the catalogue).
+EUCLID_QUERY_NUM_STARS = 10_000
+
+
 class EuclidQueryStep(FASRCPipelineStep):
+    # Defaults are the last real catalogue run (10,000 stars, 18 ≤ VIS ≤ 19,
+    # S/N ≥ 50). A blank cut means "no cut"; a blank count is the default.
+    task_params = (
+        TaskParam("num_stars", "int", EUCLID_QUERY_NUM_STARS,
+                  "Brightest N stars to keep.", min=1),
+        TaskParam("magnitude_min", "float", 18.0,
+                  "Brightest VIS magnitude kept (blank = no bright cut).",
+                  blank="unset"),
+        TaskParam("magnitude_limit", "float", 19.0,
+                  "Faintest VIS magnitude kept (blank = no faint cut).",
+                  blank="unset"),
+        TaskParam("snr_min", "float", 50.0,
+                  "Minimum VIS S/N (blank = no cut).", min=0, blank="unset"),
+    )
+
     def __init__(self):
         super().__init__(
             step_id="euclid_query",
@@ -583,7 +840,8 @@ class EuclidQueryStep(FASRCPipelineStep):
         )
 
     def build_command(self, params: dict[str, Any]) -> list[str]:
-        num_stars = int(params.get("num_stars", 200) or 200)
+        num_stars = int(str(params.get("num_stars") or "").strip()
+                        or EUCLID_QUERY_NUM_STARS)
         cmd = ["scripts/query_brightest_stars.py", "--num-stars", str(num_stars)]
         mag_min = str(params.get("magnitude_min", "")).strip()
         if mag_min:
@@ -598,6 +856,11 @@ class EuclidQueryStep(FASRCPipelineStep):
 
 
 class EuclidVerifyPhotometryStep(FASRCPipelineStep):
+    task_params = (
+        TaskParam("n", "int", 40, "Stars checked.", min=1),
+        TaskParam("size", "int", 256, "Cutout side (VIS pixels).", min=16),
+    )
+
     def __init__(self):
         super().__init__(
             step_id="euclid_verify_photometry",
@@ -618,6 +881,11 @@ class EuclidVerifyPhotometryStep(FASRCPipelineStep):
 
 
 class EuclidCutoutDownloadStep(FASRCPipelineStep):
+    # ``vis_pixels`` comes from /config (job_config.FASRC_STEP_PARAMS).
+    task_params = (
+        TaskParam("workers", "int", 8, "Parallel download workers.", min=1),
+    )
+
     def __init__(self):
         super().__init__(
             step_id="download_euclid_cutouts",
@@ -632,7 +900,7 @@ class EuclidCutoutDownloadStep(FASRCPipelineStep):
 
     def build_command(self, params: dict[str, Any]) -> list[str]:
         vis_pixels = int(params.get("vis_pixels", 512))
-        workers    = int(params.get("workers", 8))
+        workers    = int(str(params.get("workers") or "").strip() or 8)
         return [
             "scripts/download_all_bands.py",
             "--vis-pixels", str(vis_pixels),
@@ -641,6 +909,17 @@ class EuclidCutoutDownloadStep(FASRCPipelineStep):
 
 
 class EuclidPSFExtractStep(FASRCPipelineStep):
+    # ``vis_pixels`` / ``output_size`` come from /config; workers = CPUs.
+    task_params = (
+        TaskParam("stars_per_psf", "int", Config.PSF_STARS_PER_CLUSTER,
+                  "Target stars per spatial ePSF cluster.", min=1),
+        TaskParam("min_stars_per_psf", "int", Config.PSF_MIN_STARS_PER_CLUSTER,
+                  "Smaller clusters merge into a neighbour.", min=1),
+        TaskParam("num_stars", "int", 0,
+                  "Cap on stars considered per band (0 = every good cutout).",
+                  min=0),
+    )
+
     def __init__(self):
         super().__init__(
             step_id="extract_euclid_psf",
@@ -658,9 +937,8 @@ class EuclidPSFExtractStep(FASRCPipelineStep):
 
     def build_command(self, params: dict[str, Any]) -> list[str]:
         vis_pixels    = int(params.get("vis_pixels", 512))
-        stars_per_psf = int(params.get(
-            "stars_per_psf", Config.PSF_STARS_PER_CLUSTER,
-        ))
+        stars_per_psf = int(str(params.get("stars_per_psf") or "").strip()
+                            or Config.PSF_STARS_PER_CLUSTER)
         # Minimum cluster size: clusters smaller than this are merged into a
         # neighbour, so no ePSF is built from fewer than ``min_stars`` stars.
         min_stars = int(params.get(
@@ -700,6 +978,14 @@ class PSFRotationPoolStep(FASRCPipelineStep):
     per-member PSF bagging of on-the-fly training. Re-run after every ePSF
     re-extraction (the pool is a derivative of the cluster kernels).
     """
+
+    task_params = (
+        TaskParam("rotations", "int", 12, "Random roll angles per cluster ePSF.",
+                  min=1),
+        TaskParam("seed", "int", None, "Angle-table seed (blank = random).",
+                  prefill=False),
+        TaskParam("crop", "int", 0, "Crop kernels to this side (0 = full).", min=0),
+    )
 
     def __init__(self):
         super().__init__(
@@ -743,6 +1029,18 @@ class TngSkirtAtlasDownloadStep(FASRCPipelineStep):
     download thread per allocated CPU. The TNG API token is read on the node
     from ``$TNG_API_KEY`` or ``~/.tng_api_key`` — never from the form.
     """
+
+    task_params = (
+        TaskParam("workers", "int", 0,
+                  "Download workers (0 = one per allocated CPU).", min=0),
+        TaskParam("executor", "choice", "process",
+                  "Parallelism backend.", choices=("process", "thread")),
+        TaskParam("limit", "int", 0, "Cap on galaxies (0 = all ~1153).", min=0),
+        TaskParam("keep_archive", "bool", False,
+                  "Keep each .tar.gz beside its FITS."),
+        TaskParam("force", "bool", False,
+                  "Re-download everything, ignoring .done markers."),
+    )
 
     def __init__(self):
         super().__init__(
@@ -797,6 +1095,16 @@ class TngSkirtAtlasDownloadStep(FASRCPipelineStep):
 
 class MeasureTngRadiiStep(FASRCPipelineStep):
     """Measure the centered VIS half-light radius of every atlas frame."""
+
+    task_params = (
+        TaskParam("tng_dir", "str", None, "TNG SKIRT atlas dir (blank = default)."),
+        TaskParam("tng_properties", "str", None,
+                  "TNG properties CSV (blank = default)."),
+        TaskParam("tng_radius_manifest", "str", None,
+                  "Output radius manifest (blank = default)."),
+        TaskParam("tng_parameter_summary", "str", None,
+                  "Output parameter summary (blank = default)."),
+    )
 
     def __init__(self):
         super().__init__(
@@ -853,11 +1161,11 @@ def _tng_note(mode: str, temperature: float) -> str:
 
 
 def _tng_select(mode: str, n: int, temperature: float) -> list[str]:
-    """Select ``n`` galaxy ids locally by mode (empty if no property cache)."""
-    # Lazy import: keeps matplotlib (pulled via tng.properties) out of the
-    # pipeline module's import path. Resolved at call time so tests can patch.
-    from euclid_polish.tng.selection import pick_by_mode
-    return pick_by_mode(mode, n, temperature=temperature)
+    """Select ``n`` galaxy ids locally by mode (empty if no property cache).
+
+    Looked up on the module at call time so tests can patch
+    ``euclid_polish.tng.selection.pick_by_mode``."""
+    return tng_selection.pick_by_mode(mode, n, temperature=temperature)
 
 
 class TngGridStep(FASRCPipelineStep):
@@ -865,6 +1173,17 @@ class TngGridStep(FASRCPipelineStep):
     ``_infographics/grid.png``. Band ∈ VIS/Y/J/H/RGB; downsample ×1/×2/×4. The
     5 galaxies are chosen by ``mode`` (random, or the most/least extreme in
     stellar mass / SFR / radius) with a temperature-weighted draw."""
+
+    task_params = (
+        TaskParam("band", "choice", "VIS", "Band (RGB = Lupton colour).",
+                  choices=("VIS", "Y", "J", "H", "RGB")),
+        TaskParam("downsample", "choice", "1", "Downsample factor.",
+                  choices=("1", "2", "4")),
+        TaskParam("mode", "choice", "random", "Galaxy selection.",
+                  choices=_TNG_MODES),
+        TaskParam("temperature", "float", 0.3,
+                  "Selection temperature (0 = strict extremes).", min=0, max=1),
+    )
 
     def __init__(self):
         super().__init__(
@@ -910,6 +1229,16 @@ class TngStackStep(FASRCPipelineStep):
     FITS → ``_infographics/stack.fits``. The galaxy is an explicit id, else
     chosen by ``mode`` (temperature-weighted) like the grid."""
 
+    task_params = (
+        TaskParam("band", "choice", "VIS", "Band.", choices=("VIS", "Y", "J", "H")),
+        TaskParam("galaxy_id", "str", None,
+                  "Subhalo id (blank = pick by mode)."),
+        TaskParam("mode", "choice", "random", "Galaxy selection.",
+                  choices=_TNG_MODES),
+        TaskParam("temperature", "float", 0.3,
+                  "Selection temperature (0 = strict extremes).", min=0, max=1),
+    )
+
     def __init__(self):
         super().__init__(
             step_id="tng_stack",
@@ -953,6 +1282,15 @@ class PosterCutoutStep(FASRCPipelineStep):
     TNG-backed modes need the downloaded SKIRT atlas, which is why the job runs
     on the node. Blank seed re-rolls each submit."""
 
+    task_params = (
+        TaskParam("mode", "choice", "tng", "Object kind.",
+                  choices=("star", "lens", "tng", "field")),
+        TaskParam("image_size", "int", 0, "HR side in pixels (0 = default).",
+                  min=0),
+        TaskParam("seed", "int", None, "Seed (blank = re-roll each submit).",
+                  prefill=False),
+    )
+
     def __init__(self):
         super().__init__(
             step_id="poster_cutout",
@@ -966,15 +1304,13 @@ class PosterCutoutStep(FASRCPipelineStep):
         )
 
     def prepare_params(self, params: dict[str, Any]) -> dict[str, Any]:
-        from euclid_polish.web.helpers.population_calibration import active_star
-
         prepared = dict(params)
         mode = str(prepared.get("mode", "tng") or "tng").lower()
         if mode not in ("star", "lens", "tng", "field"):
             mode = "tng"
         prepared["mode"] = mode
         if mode in ("star", "field"):
-            stars = active_star()
+            stars = population_calibration.active_star()
             if not stars:
                 raise ValueError(
                     "activate a valid Gaia+Euclid stellar calibration before "
@@ -1022,6 +1358,77 @@ class EnsembleTrainStep(FASRCPipelineStep):
     these cluster jobs. Periodic validation within each training run remains.
     """
 
+    # LR schedule, plateau guard and PSF-warp knobs come from /config
+    # (job_config.FASRC_STEP_PARAMS; a posted value overrides them here).
+    task_params = (
+        TaskParam("mode", "choice", "add",
+                  "add = new members, continue = train existing ones, "
+                  "fork = new members from an existing member's weights.",
+                  choices=("add", "continue", "fork")),
+        TaskParam("count", "int", None,
+                  "New members (blank = 5 for add, 1 for fork).", min=1),
+        TaskParam("members", "str", None,
+                  "Comma-separated members to continue (continue mode)."),
+        TaskParam("continue_basis", "choice", "extra",
+                  "Continue by extra steps or up to an absolute target.",
+                  choices=("extra", "target")),
+        TaskParam("extra_steps", "int", 50_000,
+                  "Extra steps per continued member.", min=1),
+        TaskParam("target_steps", "int", None,
+                  "Absolute step target (continue_basis = target).", min=1),
+        TaskParam("steps", "int", Config.DEFAULT_TRAIN_STEPS,
+                  "Training steps for new members.", min=1),
+        TaskParam("fork_from", "str", None, "Member to fork from (fork mode)."),
+        TaskParam("fork_track", "choice", "psnr",
+                  "Checkpoint track to fork from.", choices=("psnr", "loss")),
+        TaskParam("num_res_blocks", "int", None,
+                  f"Trunk depth of new members (blank = "
+                  f"{Config.DEFAULT_NUM_RES_BLOCKS}).", min=1),
+        TaskParam("batch_size", "int", None,
+                  "Examples per update (blank = trainer default).", min=1),
+        TaskParam("evaluate_every", "int", None,
+                  f"Validation period in steps (blank = "
+                  f"{Config.DEFAULT_EVALUATE_EVERY}).", min=1),
+        TaskParam("loss", "choice", "l1", "Run-wide loss.", choices=LOSS_NAMES),
+        TaskParam("noise_aug", "float", 0.0,
+                  "Extra read-noise augmentation (RN units).", min=0),
+        TaskParam("bootstrap", "float", 0.0,
+                  "Bootstrap resampling fraction (0 = off).", min=0, max=1),
+        TaskParam("asinh_knee", "float", None,
+                  "Single asinh knee in e⁻ (blank = per-band 100 e⁻).", min=0),
+        TaskParam("asinh_knees", "str", None,
+                  "Comma-separated knees (e⁻) for a multi-knee member, "
+                  "e.g. 0.1,1,10,100,1000,10000."),
+        TaskParam("output_knee", "float", None,
+                  "Multi-knee: output one image stretched at this knee (e⁻).",
+                  min=0),
+        TaskParam("knee_loss", "choice", "plain",
+                  "Multi-knee channel weighting.", choices=KNEE_LOSS_MODES),
+        TaskParam("target_psf_fwhm_arcsec", "float", None,
+                  "Target Gaussian PSF FWHM (blank = config default).",
+                  min=0, max=float(Config.TARGET_PSF_FWHM_MAX_ARCSEC)),
+        TaskParam("icnr", "bool", False,
+                  "ICNR-initialise the pixel-shuffle convs (add only)."),
+        TaskParam("starless", "bool", False,
+                  "Starless regime (erase stars); default starfull."),
+        TaskParam("forward_onthefly", "bool", False,
+                  "Live forward model (PSF + noise re-drawn each visit)."),
+        TaskParam("psf_subset", "int", None,
+                  "Per-member PSF bag size (on-the-fly; blank/0 = trainer "
+                  "default).", min=0),
+        TaskParam("crops_per_field", "int", None,
+                  "Crops per field visit (on-the-fly; blank/0 = default).", min=0),
+        TaskParam("hr_crop_size", "int", None,
+                  "HR crop side (on-the-fly; blank/0 = default).", min=0),
+        TaskParam("member_spec", "json", None,
+                  'Per-member override list, e.g. [{"loss":"l2"},{}].'),
+        TaskParam("base_seed", "int", None,
+                  "Base seed (blank = fresh entropy, recorded per member).",
+                  prefill=False),
+        TaskParam("array_max_parallel", "int", 2,
+                  "Array tasks running at once.", min=1),
+    )
+
     def __init__(self) -> None:
         super().__init__(
             step_id="ensemble_train",
@@ -1067,8 +1474,6 @@ class EnsembleTrainStep(FASRCPipelineStep):
         )
 
     def prepare_params(self, params: dict[str, Any]) -> dict[str, Any]:
-        from euclid_polish.web.helpers.population_calibration import active_star
-
         prepared = dict(params)
         mode = str(prepared.get("mode", "add") or "add").strip()
         if mode == "continue":
@@ -1090,7 +1495,7 @@ class EnsembleTrainStep(FASRCPipelineStep):
         requested = int(prepared.get("array_max_parallel", 2) or 2)
         prepared["array_max_parallel"] = max(1, min(requested, len(names)))
         uses_forward_onthefly = self._uses_forward_onthefly(prepared)
-        stars = active_star()
+        stars = population_calibration.active_star()
         if stars:
             prepared["_star_prior_json"] = json.dumps(
                 stars, separators=(",", ":"), sort_keys=True,
@@ -1221,6 +1626,30 @@ class EnsembleTrainStep(FASRCPipelineStep):
         if knee not in ("", "0", "0.0", "100", "100.0"):
             with contextlib.suppress(ValueError):
                 cmd += ["--asinh-knee", f"{float(knee):g}"]
+        # Multi-knee member (add only): stretch at every knee; optionally one
+        # output image scored at every knee, channels balanced or plain.
+        knees = str(params.get("asinh_knees", "") or "").strip()
+        if knees:
+            try:
+                values = [float(token) for token in knees.split(",")
+                          if token.strip()]
+            except ValueError as exc:
+                raise ValueError(f"asinh_knees must be numbers: {knees!r}") from exc
+            if not values or any(v <= 0 for v in values):
+                raise ValueError("asinh_knees must be positive electrons")
+            cmd += ["--asinh-knees", ",".join(f"{v:g}" for v in values)]
+            output_knee = str(params.get("output_knee", "") or "").strip()
+            if output_knee:
+                cmd += ["--output-knee", f"{float(output_knee):g}"]
+            knee_loss = str(params.get("knee_loss", "") or "").strip()
+            if knee_loss and knee_loss != "plain":
+                if knee_loss not in KNEE_LOSS_MODES:
+                    raise ValueError(f"knee_loss must be one of {KNEE_LOSS_MODES}")
+                cmd += ["--knee-loss", knee_loss]
+        evaluate_every = str(params.get("evaluate_every", "") or "").strip()
+        if evaluate_every:
+            with contextlib.suppress(ValueError):
+                cmd += ["--evaluate-every", str(int(float(evaluate_every)))]
         target_fwhm = str(params.get("target_psf_fwhm_arcsec", "")).strip()
         if target_fwhm != "":
             with contextlib.suppress(ValueError):
@@ -1400,6 +1829,24 @@ class SyntheticGenerateStep(RunPipelineStep):
     card on /sky.
     """
 
+    # Scene counts, image size, densities and PSF knobs come from /config.
+    task_params = (
+        TaskParam("force", "bool", False,
+                  "Regenerate every split from scratch."),
+        TaskParam("regenerate_splits", "str", None,
+                  "Comma list of splits to rebuild (train,validate,test); "
+                  "excludes force."),
+        TaskParam("onthefly_train", "bool", False,
+                  "Train split clean-only (on-the-fly training)."),
+        TaskParam("extra_flags", "str", None,
+                  "Extra run_pipeline.py flags."),
+        TaskParam("tng_dir", "str", None, "TNG SKIRT atlas dir (blank = default)."),
+        TaskParam("tng_properties", "str", None,
+                  "TNG properties CSV (blank = default)."),
+        TaskParam("tng_radius_manifest", "str", None,
+                  "TNG radius manifest (blank = default)."),
+    )
+
     def __init__(self) -> None:
         super().__init__(
             step_id="synthetic_generate",
@@ -1414,12 +1861,8 @@ class SyntheticGenerateStep(RunPipelineStep):
 
     def prepare_params(self, params: dict[str, Any]) -> dict[str, Any]:
         """Freeze the active Euclid brightness-radius population into the job."""
-        from euclid_polish.web.helpers.population_calibration import (
-            joint_galaxy_state,
-        )
-
         prepared = super().prepare_params(params)
-        joint_status = joint_galaxy_state()
+        joint_status = population_calibration.joint_galaxy_state()
         joint = joint_status.get("active") or {}
         if not joint_status.get("is_active") or not joint:
             raise ValueError(
@@ -1437,8 +1880,7 @@ class SyntheticGenerateStep(RunPipelineStep):
             raise ValueError(
                 "empirical PHZ galaxy population has no finite density"
             ) from exc
-        from euclid_polish.web.helpers.population_calibration import star_state
-        star_status = star_state()
+        star_status = population_calibration.star_state()
         stars = star_status.get("active") or {}
         if not star_status.get("is_active") or not stars:
             raise ValueError(

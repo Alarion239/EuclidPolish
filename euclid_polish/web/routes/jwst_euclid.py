@@ -24,13 +24,11 @@ from euclid_polish.web.helpers.jwst_euclid import (
     pair_root,
     run_starfull_nexus_field_inference,
     run_starfull_pair_inference,
-    saved_pairs,
     scan_euclid_coverage,
 )
 from euclid_polish.web.jobs import REGISTRY
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9._-]{1,220}$")
-_SIZES = {"euclid_png": "euclid_vis.png", "jwst_png": "jwst_native.png"}
 
 
 def _manifest(identifier: str) -> dict | None:
@@ -69,10 +67,6 @@ def register(app):
         rows, status = location_groups()
         return jsonify({"fields": rows, "status": status})
 
-    @app.get("/api/jwst-euclid/nexus/options")
-    def api_nexus_options():
-        return jsonify({"products": nexus_product_options()})
-
     @app.get("/api/jwst-euclid/nexus/fields")
     def api_nexus_fields():
         fields = [{
@@ -86,20 +80,6 @@ def register(app):
             "stale_sr_count": field.get("stale_sr_count", 0),
             "active_combiner_kind": field.get("active_combiner_kind"),
         } for field in nexus_fields()]
-        return jsonify({"fields": fields})
-
-    @app.get("/api/jwst-euclid/saved")
-    def api_jwst_euclid_saved():
-        source = request.args.get("source") or None
-        fields = [{
-            "field_id": field.get("field_id"),
-            "source": field.get("source"),
-            "target_name": field.get("target_name"),
-            "jwst_filters": field.get("jwst_filters"),
-            "ra_deg": field.get("ra_deg"),
-            "dec_deg": field.get("dec_deg"),
-            "size_arcsec": field.get("size_arcsec"),
-        } for field in saved_pairs(source=source)]
         return jsonify({"fields": fields})
 
     @app.get("/api/jwst-euclid/field.json")
@@ -239,17 +219,6 @@ def register(app):
             ),
         )
         return jsonify({"job_id": job_id, "field_id": identifier})
-
-    @app.get("/api/jwst-euclid/field/<identifier>/<kind>")
-    def api_jwst_euclid_image(identifier: str, kind: str):
-        filename = _SIZES.get(kind)
-        payload = _manifest(identifier)
-        if filename is None or payload is None:
-            return jsonify({"error": "paired field asset not found"}), 404
-        path = _asset_path(identifier, filename)
-        if path is None or not path.is_file():
-            return jsonify({"error": "paired field asset not found"}), 404
-        return send_file(path, mimetype="image/png", max_age=0)
 
     @app.get("/api/jwst-euclid/field/<identifier>/download/<kind>")
     def api_jwst_euclid_download_asset(identifier: str, kind: str):

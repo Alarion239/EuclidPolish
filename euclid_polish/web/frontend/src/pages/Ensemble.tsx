@@ -17,7 +17,7 @@ import { KneePsnrPanel } from "./KneePsnrPanel";
 import {
   Badge, Button, Card, CardBody, CardHead, Chip, DefList, Empty,
   NumberField, Page, PageHead, Segmented, Select, Spinner, Stat, Table,
-  Tabs, type Column,
+  Tabs, confirm, type Column,
 } from "../ui";
 
 type Mode = "starfull" | "starless";
@@ -479,7 +479,7 @@ export default function EnsemblePage() {
   // Continue/fork buttons in the members table jump to the Train members page,
   // prefilled via query params.
   const toTrain = (m: "continue" | "fork", member: string) =>
-    navigate(`/train-members?mode=${m}&member=${encodeURIComponent(member)}`);
+    navigate(`/ensemble/${mode}/train?mode=${m}&member=${encodeURIComponent(member)}`);
 
   const reloadAll = () => {
     status.reload(); evals.reload(); jointComb.reload(); frozenComb.reload(); gateComb.reload(); curves.reload();
@@ -708,7 +708,14 @@ function Members(
           onClick={() => onFork(m.name)}>⑂ fork</Button>
         <Button size="sm" variant="ghost" disabled={opJob.busy}
           title="zip → tracking, tombstone, delete; rebuild cached cubes on next evaluation"
-          onClick={() => { if (window.confirm(`Archive ${m.name}? This retires it from the ensemble.`)) opJob.run("/ensemble/archive-member", { member: m.name }, { onDone: onArchived }); }}>
+          onClick={async () => {
+            const ok = await confirm({
+              title: `Archive ${m.name}?`,
+              message: "This retires it from the ensemble: the checkpoint is zipped to tracking, tombstoned and deleted; cached cubes rebuild on the next evaluation.",
+              tone: "danger", confirmLabel: "Archive",
+            });
+            if (ok) void opJob.run("/ensemble/archive-member", { member: m.name }, { onDone: onArchived });
+          }}>
           📦
         </Button>
       </div>

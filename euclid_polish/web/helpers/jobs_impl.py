@@ -1,354 +1,23 @@
 """jobs_impl helpers for the EuclidPolish web UI (extracted from app.py)."""
 from __future__ import annotations
 
-import contextlib
-import dataclasses
-import glob
 import os
-import shlex
-import shutil
-import textwrap
-import uuid
 from collections.abc import Callable
 from typing import Any, cast
 
 import numpy as np
 from astropy.io import fits
-from astropy.io import fits as _fits
-from scipy import signal as scipy_signal
 
 from euclid_polish.catalog.downloader import fetch_cutout_at
 from euclid_polish.config import Config
-from euclid_polish.ensemble import default_ensemble_dir
-from euclid_polish.eval.ensemble_infer import load_eval_ensemble, sr_from_model
+from euclid_polish.eval.disagreement import write_disagreement_cubes
+from euclid_polish.eval.ensemble_infer import sr_from_model
 from euclid_polish.eval.sr_provenance import write_sr_provenance
-from euclid_polish.image.tfio import read_images, tfrecord_path
 from euclid_polish.photometry import adu_per_s_to_electrons_factor
-from euclid_polish.psf.psf_library import load_all_band_psfs
-from euclid_polish.sky.observation.observation_simulator import ObservationSimulator
 from euclid_polish.training.inference import (
     plot_reconstruction,
     scaled_wcs_header,
 )
-from euclid_polish.training.target_blur import blur_target_array
-from euclid_polish.web import fasrc_config, job_config
-from euclid_polish.web.fasrc_jobs import _conda_activate_snippet
-from euclid_polish.web.helpers.status import _fasrc_psf_dir
-from euclid_polish.web.remote import STATE
-
-
-def _login_node_generate_cmd(cfg, remote_tmp: str, hr_image_size: int,
-                             n_pairs: int, *,
-                             galaxy_density_arcmin2: float) -> str:
-    """Shell command that generates ``n_pairs`` synthetic *validate* pairs
-    at ``hr_image_size`` on the FASRC **login node** — a plain command, not
-    an sbatch job.
-
-    Reuses ``scripts/run_pipeline.py`` (the same generator ``/sky`` uses);
-    with ``EUCLID_POLISH_DATA_DIR`` pointed at the netscratch data dir, the
-    script's defaults resolve the 10 GB COSMOS catalog and the FASRC ePSFs.
-    Output TFRecords go to the throwaway ``remote_tmp`` so the training
-    records are never touched. Mirrors the conda activation prologue the
-    sbatch wrapper uses, minus the GPU module (generation is CPU-only).
-    """
-    q = shlex.quote
-    # The configured density controls one COSMOS-conditioned TNG population.
-    tng_flag = (
-        f" --galaxy-density-arcmin2 {float(galaxy_density_arcmin2):g}"
-    )
-    _conda_block = _conda_activate_snippet(cfg.conda_env_path)
-    return textwrap.dedent(f"""
-        set -e
-        export EUCLID_POLISH_DATA_DIR={q(cfg.data_dir)}
-        mkdir -p {q(remote_tmp)}
-        module purge 2>/dev/null || true
-        __CONDA_BLOCK__
-        cd {q(cfg.repo_path)}
-        python -u scripts/run_pipeline.py \
-          --ntrain 0 --nvalid {int(n_pairs)} --image-size {int(hr_image_size)} \
-          --records-dir {q(remote_tmp)} --skip-train --gen-workers 1{tng_flag}
-    """).replace("__CONDA_BLOCK__", _conda_block).strip()
-
-
-def _job_generate_reconstruct(
-    cap, hr_image_size: int, n_pairs: int,
-    asinh_scale: float | None = None,
-) -> dict[str, Any]:
-    """Generate fresh synthetic pair(s) on the FASRC login node, pull them
-    down, run the ensemble locally, and render LR | SR | HR | forward(SR) |
-    residual with the FASRC PSF the checkpoints trained against.
-
-    Flow: (1) pull the Euclid ePSFs from FASRC; (2) run ``run_pipeline.py``
-    on the **login node** (not sbatch) writing one-or-more validate pairs to
-    a throwaway remote dir; (3) rsync them down; (4) WDSR inference locally;
-    (5) ``forward(SR)`` with the *same* FASRC PSF; (6) write FITS + PNG into
-    ``VIS_RECONSTRUCTION_DIR``. The remote/local temp dirs are cleaned up.
-    """
-    if STATE.ssh is None or not STATE.ssh.is_connected():
-        raise RuntimeError(
-            "not connected to FASRC — connect on the FASRC tab first; "
-            "login-node generation needs the SSH session"
-        )
-    cfg = fasrc_config.load()
-    total = n_pairs + 2  # PSF pull + login-node gen + one tick per scene
-
-    # 1. Pull the FASRC ePSFs so generation AND the local forward(SR) use
-    #    the same PSF the checkpoint trained against. Writes to the cache,
-    #    never data/euclid_psf.
-    cap.tick(0, total, "pulling FASRC ePSFs")
-    psf_dir = _fasrc_psf_dir(force=True)
-    if not psf_dir:
-        raise FileNotFoundError("no Euclid ePSFs on FASRC to pull")
-    print(f"  ✓ FASRC ePSFs → {psf_dir}")
-
-    # 2. Generate on the login node into a throwaway dir.
-    remote_tmp = f"{cfg.data_dir}/_inference_gen/{uuid.uuid4().hex}"
-    local_tmp = os.path.join(Config.DATA_DIR, "_inference_gen", uuid.uuid4().hex)
-    cap.tick(1, total,
-             f"generating {n_pairs} pair(s) @ {hr_image_size}px, TNG "
-             "on FASRC login node")
-    print(f"  login-node generate → {remote_tmp}")
-    try:
-        rc, out, err = STATE.ssh.run(
-            _login_node_generate_cmd(
-                cfg,
-                remote_tmp,
-                hr_image_size,
-                n_pairs,
-                galaxy_density_arcmin2=(
-                    job_config.load().galaxy_density_arcmin2
-                ),
-            ),
-            timeout=900,
-        )
-        if rc != 0:
-            tail = (err.strip() or out.strip())[-2000:]
-            raise RuntimeError(f"login-node generation failed (rc={rc}):\n{tail}")
-
-        # 3. Pull the pair(s) down. ``rsync -a`` tries to preserve perms, so
-        #    a Linux→macOS pull can exit rc=23 ("unable to escalate mode")
-        #    while still copying every file — don't fail on rc alone; the
-        #    file-existence check below is the real gate.
-        rc, _o, perr = STATE.ssh.rsync_pull(remote_tmp + "/", local_tmp, timeout=600)
-        if rc != 0:
-            print(f"  ⚠ rsync exited rc={rc} (continuing): {perr.strip()[:300]}")
-
-        lr_path    = tfrecord_path(local_tmp, "dirty_validate")
-        hr_path    = tfrecord_path(local_tmp, "hr_validate")
-        clean_path = tfrecord_path(local_tmp, "clean_validate")
-        if not os.path.exists(lr_path):
-            raise FileNotFoundError(
-                f"login-node generation produced no dirty records in {local_tmp}")
-        lr_records    = read_images(lr_path, num_images=10_000)
-        hr_records = [
-            dataclasses.replace(
-                rec,
-                data=blur_target_array(
-                    rec.data,
-                    Config.TARGET_PSF_FWHM_ARCSEC,
-                    pixel_scale_arcsec=rec.pixel_scale_arcsec,
-                ),
-            )
-            for rec in read_images(hr_path, num_images=10_000)
-        ] if os.path.exists(hr_path) else []
-        clean_records = [
-            dataclasses.replace(
-                rec,
-                data=blur_target_array(
-                    rec.data,
-                    Config.TARGET_PSF_FWHM_ARCSEC,
-                    pixel_scale_arcsec=rec.pixel_scale_arcsec,
-                ),
-            )
-            for rec in read_images(clean_path, num_images=10_000)
-        ] if os.path.exists(clean_path) else []
-        hr_by_idx    = {h.index: h for h in hr_records}
-        clean_by_idx = {c.index: c for c in clean_records}
-
-        # 4. Model — the ensemble, loaded once (mean is the prediction).
-        model = load_eval_ensemble(log=print)
-
-        out_dir = Config.VIS_RECONSTRUCTION_DIR
-        os.makedirs(out_dir, exist_ok=True)
-        out_paths = []
-        for k, lr_img in enumerate(lr_records):
-            scene_index = lr_img.index
-            if scene_index is None:
-                raise RuntimeError("synthetic reconstruction records must carry an index")
-            # Keep the full 4-band LR cube for the color composite — the
-            # 2-D ``lr_data`` returned by reconstruct() is VIS-only.
-            lr_cube_for_color = (lr_img.data
-                                 if lr_img.data.ndim == 3
-                                    and lr_img.data.shape[-1] == Config.NUM_LR_CHANNELS
-                                 else None)
-            lr_data, sr_data, _members = sr_from_model(model, lr_img.data)
-
-            # HR color from the CLEAN (noise-free) record; residual/PSNR from
-            # the 1-channel hr_<subset>, falling back to clean channel 0.
-            hr_cube_for_color = None
-            if lr_img.index in clean_by_idx:
-                raw = clean_by_idx[lr_img.index].data
-                if raw.ndim == 3 and raw.shape[-1] == Config.NUM_LR_CHANNELS:
-                    hr_cube_for_color = raw
-            hr_data = None
-            if lr_img.index in hr_by_idx:
-                raw = hr_by_idx[lr_img.index].data
-                hr_data = raw[..., 0] if raw.ndim == 3 else raw
-                # The hr record is 4-band since the VIS+NISP-output
-                # change — it can back the color panel when the clean
-                # record is absent.
-                if (hr_cube_for_color is None and raw.ndim == 3
-                        and raw.shape[-1] == Config.NUM_LR_CHANNELS):
-                    hr_cube_for_color = raw
-            elif hr_cube_for_color is not None:
-                hr_data = hr_cube_for_color[..., 0]
-
-            # forward(SR) with the FASRC PSF (matches gen + training).
-            predicted = residual = None
-            try:
-                predicted, residual = _forward_model_sr_residual(
-                    sr_data, lr_data, psf_dir=psf_dir)
-            except Exception as e:  # noqa: BLE001 — panel is best-effort
-                print(f"  ⚠ forward(SR) failed: {e}")
-
-            stem = f"gensynth_{hr_image_size}px_idx{scene_index:04d}"
-            # TWO colored reconstructions per scene — the same LR | SR | HR
-            # figure rendered once per color regime: "eye" (physical
-            # blackbody-T colors, absolute) and "solar" (solar-balanced
-            # adaptive windows). Both land in the gallery side by side.
-            scene_pngs = []
-            for regime, mode in (("eye", "eye"), ("solar", "calibrated")):
-                out = os.path.join(out_dir, f"{stem}_{regime}.png")
-                plot_reconstruction(lr_data, sr_data, hr_data=hr_data,
-                                    output_path=out,
-                                    lr_cube=lr_cube_for_color,
-                                    hr_cube=hr_cube_for_color,
-                                    asinh_scale=asinh_scale,
-                                    predicted_dirty=predicted,
-                                    residual=residual,
-                                    rgb_mode=mode)
-                scene_pngs.append(out)
-
-            def _write_fits(
-                path: str, data2d, label: str, *, scene_index: int = scene_index,
-            ) -> None:
-                if data2d is None:
-                    return
-                arr = np.ascontiguousarray(np.asarray(data2d, dtype=np.float32))
-                band_note = "VIS"
-                if arr.ndim == 3:
-                    # 4-band cube (the VIS+NISP model) → NAXIS3 plane per
-                    # band, same convention as original_stack.fits.
-                    arr = np.ascontiguousarray(np.moveaxis(arr, -1, 0))
-                    band_note = "4-band"
-                hdu = _fits.PrimaryHDU(arr)
-                if band_note == "4-band":
-                    hdu.header["BANDS"] = (
-                        ",".join(Config.LR_INPUT_BAND_NAMES),
-                        "NAXIS3 plane order (band 0 = VIS)")
-                hdu.header["OBJECT"] = (f"EuclidPolish {label} ({band_note})",
-                                        "panel label")
-                hdu.header["IDX"]    = (scene_index, "scene index")
-                hdu.header["HRSIZE"] = (int(hr_image_size), "HR side px (0.05in/px)")
-                hdu.header["CKPT"]   = (str(default_ensemble_dir())[:60],
-                                        "ensemble dir")
-                hdu.header["PSFSRC"] = ("FASRC", "ePSF pulled from FASRC (training PSF)")
-                hdu.header["ASINH"]  = (float(asinh_scale or Config.STRETCH_SCALE_E),
-                                        "asinh stretch knee used for the plot")
-                hdu.header["BUNIT"]  = ("e-", "electrons (raw, sign preserved)")
-                os.makedirs(os.path.dirname(path), exist_ok=True)
-                hdu.writeto(path, overwrite=True)
-
-            # SR FITS next to the PNG — the /inference gallery links to this.
-            _write_fits(os.path.join(out_dir, stem + ".fits"), sr_data, "SR")
-
-            # Inspectable per-scene FITS set, mirroring the real-Euclid cutout
-            # outputs so each synthetic scene can be inspected/downloaded as
-            # FITS on /inference: the 4-band LR cube + SR (+ HR clean, the
-            # ground truth that only the synthetic path has).
-            syn_dir = os.path.join(Config.EUCLID_INFERENCE_DIR, "synthetic", stem)
-            os.makedirs(syn_dir, exist_ok=True)
-            if lr_cube_for_color is not None:
-                stack = np.moveaxis(np.ascontiguousarray(
-                    np.asarray(lr_cube_for_color, dtype=np.float32)), -1, 0)
-                sh = _fits.Header()
-                sh["OBJECT"] = "EuclidPolish synthetic LR stack (electrons)"
-                sh["BUNIT"]  = "electron"
-                sh["BANDS"]  = (",".join(Config.LR_INPUT_BAND_NAMES),
-                                "NAXIS3 plane order (band 0 = VIS)")
-                sh["IDX"]    = (scene_index, "scene index")
-                _fits.PrimaryHDU(stack, header=sh).writeto(
-                    os.path.join(syn_dir, "original_stack.fits"),
-                    overwrite=True, output_verify="silentfix")
-            _write_fits(os.path.join(syn_dir, "SR.fits"), sr_data, "SR")
-            _write_fits(os.path.join(syn_dir, "HR.fits"), hr_data, "HR clean")
-            # Purge superseded / deprecated per-scene flat FITS + the old
-            # single-regime PNG naming from previous runs.
-            for _stale in (stem + "_lr.fits", stem + "_hr.fits",
-                           stem + "_srforward.fits", stem + "_residual.fits",
-                           stem + ".png"):
-                with contextlib.suppress(OSError):
-                    os.remove(os.path.join(out_dir, _stale))
-            out_paths.extend(scene_pngs)
-            cap.tick(k + 2, total, f"reconstructed scene {lr_img.index}")
-            for out in scene_pngs:
-                print(f"  ✓ {out}")
-        return {"output_dir": out_dir, "n": len(out_paths), "paths": out_paths}
-    finally:
-        # Best-effort cleanup: remote throwaway dir + local temp pull.
-        with contextlib.suppress(Exception):
-            STATE.ssh.run(f"rm -rf {shlex.quote(remote_tmp)}", timeout=30)
-        shutil.rmtree(local_tmp, ignore_errors=True)
-
-
-def _forward_model_sr_residual(
-    sr_data: np.ndarray, lr_vis: np.ndarray,
-    psf_dir: str | None = None,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Push SR back through the VIS forward chain and diff against the LR.
-
-    Convolves SR with the empirical VIS ePSF, sum-rebins ×2 to the
-    0.10″/pix LR grid (the deterministic ``EuclidVISForwardOp`` chain),
-    crops to the common shape, and returns ``(predicted_dirty, residual)``
-    with ``residual = lr_vis − predicted_dirty``. This is the forward-model
-    self-consistency check — a well-behaved model reproduces the observed
-    Euclid LR. May raise on PSF-load / shape errors; callers handle it.
-
-    ``psf_dir`` overrides which Euclid ePSFs to convolve with. The
-    generate+reconstruct path passes the FASRC-pulled PSF dir so the
-    forward op uses the *same* PSF the checkpoint trained against (and
-    that the login-node generation used), not the local committed copy.
-
-    ``sr_data`` may be the 4-band SR cube (the VIS+NISP model) — only
-    its VIS plane (channel 0) is pushed through the forward model here.
-    """
-    sr_data = np.asarray(sr_data)
-    if sr_data.ndim == 3:
-        sr_data = sr_data[..., 0]
-    if psf_dir:
-        psfs = load_all_band_psfs(
-            psf_dir=psf_dir,
-            target_pixel_scale=Config.DEFAULT_PIXEL_SCALE,
-        )
-    else:
-        psfs = load_all_band_psfs(
-            target_pixel_scale=Config.DEFAULT_PIXEL_SCALE,
-        )
-    vis_psf = psfs[Config.BAND_VIS.name]
-    sr_hr = scipy_signal.fftconvolve(
-        sr_data, vis_psf.data, mode="same",
-    ).astype(np.float32)
-    rebin_factor = int(round(
-        Config.BAND_VIS.pixel_scale_lr_arcsec / Config.DEFAULT_PIXEL_SCALE
-    ))
-    predicted = ObservationSimulator.sum_rebin(sr_hr, rebin_factor)
-    # ``sum_rebin`` may trim a row/col if HR isn't divisible by the rebin
-    # factor — match the LR shape by cropping to the smaller.
-    h = min(predicted.shape[0], lr_vis.shape[0])
-    w = min(predicted.shape[1], lr_vis.shape[1])
-    predicted = predicted[:h, :w].astype(np.float32)
-    residual = (lr_vis[:h, :w].astype(np.float32) - predicted).astype(np.float32)
-    return predicted, residual
 
 
 def reconstruct_cutout_at(
@@ -366,9 +35,8 @@ def reconstruct_cutout_at(
 ) -> dict[str, Any]:
     """Fetch a 4-band real Euclid cutout at ``(ra, dec)``, run SR, write outputs.
 
-    This is the per-object body shared by the single-position WebUI job
-    (:func:`_job_reconstruct_euclid_cutout`) and the batch catalog evaluator
-    (``scripts/fasrc_eval_catalog.py``). It fetches each band, converts the
+    This is the per-object body of the batch catalog evaluator
+    (``eval/catalog_runner.py`` and ``scripts/fasrc_eval_catalog.py``). It fetches each band, converts the
     archive's ADU s⁻¹ to electrons-over-the-stack via the per-band ``MAGZERO``
     (so the model sees the same scale it trained on), stacks to ``(H, W, 4)``,
     runs ``reconstruct``, forward-models the SR for a self-consistency
@@ -527,7 +195,6 @@ def reconstruct_cutout_at(
     # them alongside SR so they stay pixel-aligned). No-op for a single model.
     if members is not None:
         try:
-            from euclid_polish.eval.disagreement import write_disagreement_cubes
             write_disagreement_cubes(
                 out_dir, members,
                 member_labels=list(getattr(model, "member_labels", []) or []))
@@ -576,64 +243,4 @@ def reconstruct_cutout_at(
         "cutout_size":  int(cutout_size_vis_pixels),
         "bands":        bands_info,
         "metrics":      metrics,
-    }
-
-
-def _job_reconstruct_euclid_cutout(
-    cap,
-    ra: float,
-    dec: float,
-    cutout_size_vis_pixels: int,
-    asinh_scale: float | None = None,
-    show_all_bands: bool = False,
-) -> dict[str, Any]:
-    """Download a 4-band Euclid cutout at one sky position, run SR, save PNG.
-
-    Thin wrapper over :func:`reconstruct_cutout_at`: it loads the ensemble,
-    wipes the single ``Config.EUCLID_INFERENCE_DIR/cutouts/latest/`` overwrite
-    slot (so each run *replaces* the previous record), runs the shared
-    per-object body into it, then copies the two color renders to the
-    gallery's fixed ``euclid_latest_{eye,solar}.png`` names. The input
-    RA/Dec/size are preserved in the SR FITS header for provenance.
-    """
-    model = load_eval_ensemble(log=print)
-
-    # Single overwrite slot: wipe every previous cutout record so each call
-    # replaces the prior run rather than accumulating one directory per
-    # position.
-    cutouts_root = os.path.join(Config.EUCLID_INFERENCE_DIR, "cutouts")
-    if os.path.isdir(cutouts_root):
-        shutil.rmtree(cutouts_root)
-    cache_dir = os.path.join(cutouts_root, "latest")
-
-    res = reconstruct_cutout_at(
-        model, ra, dec, cutout_size_vis_pixels, cache_dir,
-        asinh_scale=asinh_scale, show_all_bands=show_all_bands,
-        checkpoint_dir=default_ensemble_dir(),
-        progress=lambda done, total, label: cap.tick(done, total, label),
-    )
-
-    out_dir = Config.VIS_RECONSTRUCTION_DIR
-    os.makedirs(out_dir, exist_ok=True)
-    # Drop stale Euclid-cutout renders (one used to be written per
-    # position); leave the synthetic reconstruction PNGs alone.
-    for stale in glob.glob(os.path.join(out_dir, "euclid_*.png")):
-        with contextlib.suppress(OSError):
-            os.remove(stale)
-    out_pngs = []
-    for regime, src in zip(("eye", "solar"), res["png_paths"], strict=False):
-        dst = os.path.join(out_dir, f"euclid_latest_{regime}.png")
-        shutil.copyfile(src, dst)
-        out_pngs.append(dst)
-
-    return {
-        "output_path":  out_pngs[0] if out_pngs else None,
-        "output_paths": out_pngs,
-        "cache_dir":    cache_dir,
-        "sr_fits_path": res["sr_fits_path"],
-        "ra":           ra,
-        "dec":          dec,
-        "cutout_size":  cutout_size_vis_pixels,
-        "bands":        res["bands"],
-        "flux_ratio":   res["metrics"]["flux_ratio_sr_over_lr"],
     }

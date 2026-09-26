@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 from pathlib import Path
@@ -12,6 +13,7 @@ from astropy.io import fits
 
 from euclid_polish.config import Config
 from euclid_polish.photometry import adu_per_s_to_electrons_factor
+from euclid_polish.web.app import create_app
 from euclid_polish.web.helpers import archive_fields, viewer_data
 
 
@@ -222,6 +224,25 @@ def test_archive_manifest_fingerprint_detects_metadata_edit(
         archive_fields.load_manifest()
 
 
+def test_archive_field_labels_are_derived_from_the_position(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Stored EDF-F/EDF-S labels were swapped by the old cutout script: the
+    counts use the Q1 field containing each sample (``stored_fields`` keeps
+    the manifest strings)."""
+    _write_collection(tmp_path, monkeypatch, position_name="northeast")
+    field = next(archive_fields.iter_fields())
+    assert archive_fields.position_field(field) == "EDF-N"      # outside Q1 cones
+    swapped = dataclasses.replace(field, field="EDF-S", ra=52.93, dec=-28.09)
+    assert archive_fields.position_field(swapped) == "EDF-F"
+    monkeypatch.setattr(archive_fields, "q1_field_for", lambda _ra, _dec: "EDF-S")
+    status = archive_fields.availability()
+    assert status["fields"] == {"EDF-S": 1}
+    assert status["comparison_fields"] == {"EDF-S": 1}
+    assert status["stored_fields"] == {"EDF-N": 1}
+
+
 def test_archive_fields_viewer_exposes_provenance_and_raw_cube(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -234,12 +255,15 @@ def test_archive_fields_viewer_exposes_provenance_and_raw_cube(
     assert meta["band_names"] == ["VIS", "Y_E", "J_E", "H_E"]
     assert meta["archive"]["parent_count"] == 1
     assert meta["objects"][0] == {
+        "id": "0",
         "label": "EDF-N · pointing 1 · northeast · sample 1",
         "tiers": ["lr"],
         "sample_id": 0,
         "source_sample_id": 0,
         "parent_id": "parent-000",
+        # Outside every Q1 cone the stored label is kept as the field.
         "field": "EDF-N",
+        "stored_field": "EDF-N",
         "ra": 17.5,
         "dec": 66.25,
         "position_name": "northeast",
@@ -272,8 +296,6 @@ def test_archive_fields_http_surface_serves_the_manifest_backed_collection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _write_collection(tmp_path, monkeypatch, position_name="northeast")
-    from euclid_polish.web.app import create_app
-
     app = create_app()
     app.config["TESTING"] = True
     with app.test_client() as client:

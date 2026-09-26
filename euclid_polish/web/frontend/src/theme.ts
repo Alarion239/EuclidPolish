@@ -1,35 +1,21 @@
-import { createContext, useContext, useEffect, useState } from "react";
+/* Theme — compatibility module over the prefs store (`state/prefs.ts`) for
+ * the pre-rework pages.
+ *
+ * The preference (light | dark | system) lives in `usePrefs`; the RESOLVED
+ * theme is written to <html data-theme> by `bindPrefsToDocument()` (main.tsx)
+ * and read by components through `useResolvedTheme()` / `useThemeValue()`.
+ * The old `ThemeContext` / `useTheme` (fed by the removed App.tsx) are gone:
+ * the theme toggle lives in the top bar, the choice in Settings › Appearance.
+ */
+import { resolveTheme, usePrefs, useResolvedTheme, type ResolvedTheme } from "./state/prefs";
 
-export type Theme = "light" | "dark";
-const KEY = "ep-theme";
+export type Theme = ResolvedTheme;
 
-/** Current theme, for components that must recompute on a theme flip (e.g. the
- *  canvas figures whose series colors read live from the CSS tokens). Provided
- *  at the app root; read via `useThemeValue()` and add to the relevant deps. */
-export const ThemeContext = createContext<Theme>("light");
-export const useThemeValue = (): Theme => useContext(ThemeContext);
+/** Current resolved theme, for components that must recompute on a theme flip
+ *  (e.g. canvas figures whose colours read live from the CSS tokens). */
+export const useThemeValue = (): Theme => useResolvedTheme();
 
-/** The persisted theme (default light). Mirrors the pre-paint script in
- *  index.html so the first React render matches what's already on <html>. */
+/** The resolved theme right now (outside React). */
 export function readTheme(): Theme {
-  try {
-    const s = localStorage.getItem(KEY);
-    if (s === "dark" || s === "light") return s;
-  } catch { /* localStorage unavailable — fall through */ }
-  return "light";
-}
-
-/** Theme state bound to <html data-theme> + localStorage. `toggle` flips
- *  light↔dark; because the state lives at the app root, a flip re-renders the
- *  whole tree so the canvas figures redraw from the new theme's tokens. */
-export function useTheme(): { theme: Theme; toggle: () => void } {
-  const [theme, setTheme] = useState<Theme>(readTheme);
-  useEffect(() => {
-    document.documentElement.setAttribute("data-theme", theme);
-    try { localStorage.setItem(KEY, theme); } catch { /* ignore */ }
-  }, [theme]);
-  return {
-    theme,
-    toggle: () => setTheme((t) => (t === "light" ? "dark" : "light")),
-  };
+  return resolveTheme(usePrefs.getState().theme);
 }

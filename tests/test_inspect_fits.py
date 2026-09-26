@@ -1,4 +1,4 @@
-"""Tests for the universal FITS inspector + sky FITS exporter."""
+"""Tests for the universal FITS inspector."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import tempfile
 import numpy as np
 import pytest
 from astropy.io import fits
+from flask import Flask
 
 from euclid_polish.config import Config
 from euclid_polish.web.app import create_app
@@ -21,7 +22,6 @@ from euclid_polish.web.helpers.paths import (
     _resolve_inspectable_fits,
     _safe_relpath,
 )
-from euclid_polish.web.helpers.sky_render import _export_sky_record_fits
 
 # ---------------------------------------------------------------------------
 # Helpers used across tests
@@ -65,7 +65,6 @@ class TestPathResolution:
             assert os.path.isabs(r)
 
     def test_resolve_rejects_empty(self):
-        from flask import Flask
         app = Flask(__name__)
         with app.test_request_context():
             with pytest.raises(Exception) as exc:
@@ -74,7 +73,6 @@ class TestPathResolution:
             assert getattr(exc.value, "code", None) == 400
 
     def test_resolve_rejects_non_fits_extension(self, tmp_path):
-        from flask import Flask
         app = Flask(__name__)
         bad = tmp_path / "thing.txt"
         bad.write_text("nope")
@@ -84,7 +82,6 @@ class TestPathResolution:
             assert getattr(exc.value, "code", None) == 400
 
     def test_resolve_rejects_outside_roots(self, tmp_path):
-        from flask import Flask
         app = Flask(__name__)
         # Real FITS but not under any inspectable root → 403.
         bad = tmp_path / "outside.fits"
@@ -95,7 +92,6 @@ class TestPathResolution:
             assert getattr(exc.value, "code", None) == 403
 
     def test_resolve_404_for_missing(self):
-        from flask import Flask
         app = Flask(__name__)
         with app.test_request_context():
             with pytest.raises(Exception) as exc:
@@ -103,7 +99,6 @@ class TestPathResolution:
             assert getattr(exc.value, "code", None) == 404
 
     def test_resolve_accepts_path_under_root(self, cutout_fits):
-        from flask import Flask
         app = Flask(__name__)
         with app.test_request_context():
             resolved = _resolve_inspectable_fits(cutout_fits)
@@ -152,12 +147,19 @@ class TestInspectRoutes:
     def test_routes_are_registered(self):
         app = create_app()
         urls = {str(r) for r in app.url_map.iter_rules()}
-        assert "/inspect" in urls
         assert "/api/inspect" in urls
         assert "/inspect/download" in urls
         assert "/inspect/preview.png" in urls
-        assert "/sky/fits" in urls
-        assert "/sky/inspect" in urls
+        # The page itself is the SPA's Inspect workspace (C1), not a rule;
+        # the per-record FITS exporters went with the classic pages.
+        assert "/inspect" not in urls
+        assert "/sky/fits" not in urls
+        assert "/sky/inspect" not in urls
+
+    def test_inspect_page_is_the_spa_workspace(self, client):
+        response = client.get("/inspect?fits=data/x.fits")
+        assert response.status_code == 200
+        assert b'id="root"' in response.data
 
     def test_inspect_with_unknown_path_404(self, client):
         r = client.get("/api/inspect?fits=data/euclid_stars/cutouts/VIS/nope.fits")
@@ -191,55 +193,3 @@ class TestInspectRoutes:
         rel = _safe_relpath(os.path.realpath(cutout_fits))
         r = client.get(f"/inspect/preview.png?fits={rel}&size=99999")
         assert r.status_code == 400
-
-
-# ---------------------------------------------------------------------------
-# Sky FITS export
-# ---------------------------------------------------------------------------
-
-class TestSkyFitsExport:
-
-    def test_rejects_bad_subset(self):
-        from flask import Flask
-        app = Flask(__name__)
-        with app.test_request_context():
-            with pytest.raises(Exception) as exc:
-                _export_sky_record_fits("bogus", "clean", "VIS", 0)
-            assert getattr(exc.value, "code", None) == 400
-
-    def test_rejects_bad_kind(self):
-        from flask import Flask
-        app = Flask(__name__)
-        with app.test_request_context():
-            with pytest.raises(Exception) as exc:
-                _export_sky_record_fits("train", "bogus", "VIS", 0)
-            assert getattr(exc.value, "code", None) == 400
-
-    def test_rejects_bad_band(self):
-        from flask import Flask
-        app = Flask(__name__)
-        with app.test_request_context():
-            with pytest.raises(Exception) as exc:
-                _export_sky_record_fits("train", "clean", "NOPE", 0)
-            assert getattr(exc.value, "code", None) == 400
-
-    def test_rejects_negative_index(self):
-        from flask import Flask
-        app = Flask(__name__)
-        with app.test_request_context():
-            with pytest.raises(Exception) as exc:
-                _export_sky_record_fits("train", "clean", "VIS", -1)
-            assert getattr(exc.value, "code", None) == 400
-
-    def test_404_when_no_records(self, tmp_path, monkeypatch):
-        """When the requested TFRecord doesn't exist, abort with 404."""
-        from flask import Flask
-        app = Flask(__name__)
-        # Point the records dir at an empty tmp path so the test doesn't
-        # depend on what happens to be on disk and doesn't have to read
-        # any real TFRecord.
-        monkeypatch.setattr(Config, "RECORDS_DIR_V2", str(tmp_path / "empty"))
-        with app.test_request_context():
-            with pytest.raises(Exception) as exc:
-                _export_sky_record_fits("train", "clean", "VIS", 0)
-            assert getattr(exc.value, "code", None) == 404

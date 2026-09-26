@@ -57,7 +57,7 @@ def test_ensemble_goal_cubes_use_raw_and_blurred_regime_target(monkeypatch):
     assert bhr_info["label"].startswith("BHR (blurred HR)")
 
 
-def test_ensemble_sr_tier_serves_primary_combiner(tmp_path, monkeypatch):
+def test_ensemble_sr_tier_serves_the_production_combiner(tmp_path, monkeypatch):
     manifest = {
         "subset": "test", "indices": [3], "member_labels": ["00·x", "01·y"]}
     monkeypatch.setattr(vd, "_ensemble_manifest", lambda _starless: manifest)
@@ -76,11 +76,12 @@ def test_ensemble_sr_tier_serves_primary_combiner(tmp_path, monkeypatch):
     cube, info = vd._ensemble_cube(0, "sr", {"mode": "starfull"})
 
     assert np.array_equal(cube, expected)
-    assert seen == [vd.RAW_INCREMENTAL_MINMEANMAX_RBF_KIND]
-    assert "minibatched convex all-asinh RBF" in info["label"]
+    # Contract C6: ``sr`` is ACTIVE_COMBINER_KINDS[0], the spatial gate.
+    assert seen == [vd.PRODUCTION_COMBINER_KIND] == [vd.SPATIAL_GATE_KIND]
+    assert info["label"].startswith("SR · production gate")
 
 
-def test_ensemble_meta_does_not_duplicate_primary_combiner(monkeypatch):
+def test_ensemble_meta_does_not_duplicate_the_production_combiner(monkeypatch):
     manifest = {
         "subset": "test", "indices": [3], "member_labels": ["00·x", "01·y"]}
     monkeypatch.setattr(vd, "_ensemble_manifest", lambda _starless: manifest)
@@ -91,10 +92,12 @@ def test_ensemble_meta_does_not_duplicate_primary_combiner(monkeypatch):
     keys = [tier["key"] for tier in tiers]
 
     assert keys.count("sr") == 1
+    assert vd.COMBINER_MODELS[vd.SPATIAL_GATE_KIND].cube_prefix not in keys
+    # The other active combiners (RBF kinds) stay as their own tiers.
     assert vd.COMBINER_MODELS[
-        vd.RAW_INCREMENTAL_MINMEANMAX_RBF_KIND].cube_prefix not in keys
-    assert "minibatched convex all-asinh RBF" in next(
-        tier["label"] for tier in tiers if tier["key"] == "sr")
+        vd.RAW_INCREMENTAL_MINMEANMAX_RBF_KIND].cube_prefix in keys
+    assert next(tier["label"] for tier in tiers
+                if tier["key"] == "sr") == "SR · production gate"
 
 
 def test_ensemble_meta_hides_sr_when_primary_combiner_is_unavailable(monkeypatch):

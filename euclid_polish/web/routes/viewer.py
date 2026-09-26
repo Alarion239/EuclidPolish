@@ -4,8 +4,11 @@ Cube/meta endpoints are backed by ``helpers.viewer_data`` (the collection
 registry), while durable crop and figure endpoints use
 ``helpers.viewer_results``:
 
-* ``GET /viewer/meta/<collection>``       — JSON meta + colour constants.
+* ``GET /viewer/meta/<collection>``       — JSON meta + colour constants
+  (``?id=`` adds the ``index`` of that object).
 * ``GET /viewer/cube/<collection>/<i>``    — raw Float32 ``(H, W, C)`` cube.
+* ``GET /viewer/cube/<collection>?id=``    — the same, addressed by the
+  object's stable meta ``id`` instead of its position.
 * ``GET|POST /viewer/results``             — list or save matched raw crops.
 * ``GET /viewer/results/<id>``             — one saved-result summary.
 * ``GET /viewer/results/<id>/panel.png``   — render one saved panel.
@@ -13,17 +16,37 @@ registry), while durable crop and figure endpoints use
 
 The cube body is little-endian Float32 in C order; shape and per-cube
 metadata travel in ``X-Cube-*`` response headers so the browser can
-reshape without a JSON envelope. All heavy lifting (TFRecord/FITS reads,
-calibration constants) lives in ``viewer_data``; this module is just the
-HTTP surface.
+reshape without a JSON envelope (contract C6 adds ``X-Cube-WCS`` — the
+compact celestial WCS keywords of the tier's pixel grid — and
+``X-Cube-Unit``). Every failure under ``/viewer/`` is JSON ``{"error"}`` with
+the status code. All heavy lifting (TFRecord/FITS reads, calibration
+constants) lives in ``viewer_data``; this module is just the HTTP surface.
 """
 from __future__ import annotations
 
-from flask import Response, abort, jsonify, request
+import json
+
+from flask import Response, jsonify, request
 
 from euclid_polish.image import Image
+from euclid_polish.web import errors
 from euclid_polish.web.helpers import viewer_data, viewer_results
 from euclid_polish.web.helpers.viewer_data import ViewerError
+
+
+def _error(code: int, message: str):
+    return jsonify({"error": message}), code
+
+
+def _band_names(info: dict, channels: int) -> tuple[str, ...]:
+    """Channel names for ``X-Cube-Bands``: the collection's own, the four
+    Euclid bands, or generic ``ch<i>`` for multi-channel (multi-knee) heads."""
+    bands = tuple(info.get("bands") or ())
+    if len(bands) == channels:
+        return bands
+    if channels <= len(viewer_data.BAND_NAMES):
+        return tuple(viewer_data.BAND_NAMES[:channels])
+    return tuple(f"ch{i}" for i in range(channels))
 
 
 def _params() -> dict:
@@ -45,6 +68,11 @@ def _params() -> dict:
 
 
 def register(app):
+
+    # ``/viewer/*`` answers JSON errors (C6) — routing 404/405 and crashes
+    # included — through the app's one shared HTTPException handler (never a
+    # module-local ``@app.errorhandler``, which would replace the others').
+    errors.json_errors_for(app, "/viewer/")
 
     @app.get("/viewer/results")
     def viewer_result_list():
@@ -116,32 +144,49 @@ def register(app):
 
     @app.route("/viewer/meta/<collection>")
     def viewer_meta(collection: str):
+        object_id = request.args.get("id")
         try:
-            resp = jsonify(viewer_data.get_meta(collection, _params()))
-            # Never let a stale meta stick: the ensemble cube cache is wiped +
-            # rebuilt during an evaluation, so a meta fetched mid-run is briefly
-            # empty — caching that would leave the viewer showing "no members"
-            # long after the eval finished.
-            resp.headers["Cache-Control"] = "no-cache"
-            return resp
+            meta = viewer_data.get_meta(collection, _params())
+            if object_id is not None:
+                meta["index"] = viewer_data.index_of(meta.get("objects") or [],
+                                                     object_id)
+            resp = jsonify(meta)
         except ViewerError as e:
-            abort(e.code)
+            return _error(e.code, str(e))
+        # Never let a stale meta stick: the ensemble cube cache is wiped +
+        # rebuilt during an evaluation, so a meta fetched mid-run is briefly
+        # empty — caching that would leave the viewer showing "no members"
+        # long after the eval finished.
+        resp.headers["Cache-Control"] = "no-cache"
+        return resp
+
+    @app.route("/viewer/cube/<collection>")
+    def viewer_cube_by_id(collection: str):
+        object_id = request.args.get("id")
+        if not object_id:
+            return _error(400, "pass ?id=<object id> or use /viewer/cube/<collection>/<index>")
+        try:
+            index = viewer_data.resolve_index(collection, object_id, _params())
+        except ViewerError as e:
+            return _error(e.code, str(e))
+        return _cube_response(collection, index)
 
     @app.route("/viewer/cube/<collection>/<int:index>")
     def viewer_cube(collection: str, index: int):
+        return _cube_response(collection, index)
+
+    def _cube_response(collection: str, index: int):
         tier = (request.args.get("tier") or "").strip()
         try:
             cube, info = viewer_data.get_cube(collection, index, tier, _params())
         except ViewerError as e:
-            abort(e.code)
+            return _error(e.code, str(e))
 
         # Serialize via the Image atom: little-endian float32, C-contiguous,
         # so the browser reads the raw bytes straight into a Float32Array.
         # One source of truth for the wire format (Image.to_raw_bytes).
         c = cube.shape[-1]
-        cube_bands = tuple(info.get("bands") or viewer_data.BAND_NAMES[:c])
-        if len(cube_bands) != c:
-            abort(500)
+        cube_bands = _band_names(info, c)
         img = Image(data=cube,
                     pixel_scale_arcsec=float(info.get("pixscale", 0.0)),
                     band_names=cube_bands,
@@ -154,8 +199,9 @@ def register(app):
         resp.headers["X-Cube-Label"] = str(info.get("label", ""))
         resp.headers["X-Cube-Asinh"] = repr(float(info.get("asinh", 100.0)))
         resp.headers["X-Cube-Pixscale"] = repr(float(info.get("pixscale", 0.0)))
+        resp.headers["X-Cube-Index"] = str(index)
         exposed = ["X-Cube-Shape", "X-Cube-Bands", "X-Cube-Label",
-                   "X-Cube-Asinh", "X-Cube-Pixscale"]
+                   "X-Cube-Asinh", "X-Cube-Pixscale", "X-Cube-Index"]
         # PCA eigen-image cubes carry the (subset-dependent) amplitude + variance
         # the disagreement movie animates by — the client reads them per-PC off
         # the header rather than a static per-field manifest.
@@ -181,6 +227,15 @@ def register(app):
         if "display_scale" in info:
             resp.headers["X-Cube-Display-Scale"] = repr(float(info["display_scale"]))
             exposed.append("X-Cube-Display-Scale")
+        # C6: celestial WCS of THIS tier's pixel grid (FITS 1-based, axis 1 =
+        # column) and the physical unit of the values.
+        if info.get("wcs"):
+            resp.headers["X-Cube-WCS"] = json.dumps(
+                info["wcs"], separators=(",", ":"), sort_keys=True)
+            exposed.append("X-Cube-WCS")
+        if info.get("unit"):
+            resp.headers["X-Cube-Unit"] = str(info["unit"])
+            exposed.append("X-Cube-Unit")
         # Expose the custom headers to fetch() under any CORS posture.
         resp.headers["Access-Control-Expose-Headers"] = ",".join(exposed)
         resp.headers["Cache-Control"] = "no-cache"

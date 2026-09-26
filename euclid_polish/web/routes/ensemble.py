@@ -4,17 +4,21 @@
 
 from __future__ import annotations
 
+import json
 import os
 
-from flask import abort, jsonify, render_template, request, send_file
+from flask import abort, jsonify, request, send_file
 
 from euclid_polish.config import Config
-from euclid_polish.eval.combiner import ACTIVE_COMBINER_KINDS
+from euclid_polish.eval.combiner import (
+    ACTIVE_COMBINER_KINDS,
+    combiner_model_spec,
+    normalize_model_kind,
+)
 from euclid_polish.training.target_blur import validate_target_fwhm_arcsec
+from euclid_polish.web.fasrc_gate import requires_fasrc
 from euclid_polish.web.helpers.ensemble_viz import (
-    EVAL_DIAGNOSTIC_PNGS,
     _combiner_payload_path,
-    _ensemble_regime_dir,
     _evals_payload_path,
     compute_combiner_payload,
     compute_evaluation_payload,
@@ -23,54 +27,34 @@ from euclid_polish.web.helpers.ensemble_viz import (
     job_combiner_fit,
     job_ensemble_evaluate,
     job_ensemble_pull,
-    job_ensemble_render,
     job_knee_psnr,
     job_member_psnr,
     knee_psnr_status,
     pixel_trace,
     refresh_evaluation_diagnostics,
-    regenerate_eval_diagnostics,
-    regenerate_power_spectrum,
     training_curves_payload,
 )
 from euclid_polish.web.jobs import REGISTRY
 
 
-def _mode_starless(default: str = "starless") -> bool:
+def _mode_starless(default: str = "starfull") -> bool:
     """Star regime for a request (``?mode=`` / form ``mode=``). starfull and
     starless artifacts are fully detached; the client sends the active regime
-    on every read so the page shows that regime's data."""
+    on every read so the page shows that regime's data. STARFULL is the
+    default (the production regime since 3aa5c86); starless is opt-in."""
     src = request.args if request.args.get("mode") is not None else request.form
-    return (src.get("mode", default) or default).lower() != "starfull"
+    return (src.get("mode", default) or default).lower() == "starless"
 
 
 def register(app):
-
-    @app.route("/ensemble")
-    def ensemble_page():
-        return render_template("ensemble.html", **ensemble_status())
 
     @app.route("/ensemble/status.json")
     def ensemble_status_json():
         """Everything the members table + summary render from — the JSON twin of
         the classic page's render context (members, archived, eval summary,
         data presence). Consumed by the React console. ``?mode=`` selects which
-        regime's eval summary + staleness to report (mode-specific badge)."""
-        mode = request.args.get("mode")
-        starless = None if mode is None else (mode.lower() != "starfull")
-        return jsonify(ensemble_status(starless))
-
-    @app.route("/ensemble/render", methods=["POST"])
-    def ensemble_render():
-        try:
-            index = max(0, int(request.form.get("index", 0) or 0))
-        except (TypeError, ValueError):
-            index = 0
-        job_id = REGISTRY.spawn(
-            f"ensemble: disagreement @ test field {index}",
-            target=lambda cap: job_ensemble_render(cap, index=index),
-        )
-        return jsonify({"job_id": job_id})
+        regime's eval summary + staleness to report (default starfull)."""
+        return jsonify(ensemble_status(_mode_starless()))
 
     @app.route("/ensemble/evaluate", methods=["POST"])
     def ensemble_evaluate():
@@ -78,9 +62,9 @@ def register(app):
             num_images = max(1, int(request.form.get("num_images", 100) or 100))
         except (TypeError, ValueError):
             num_images = 100
-        # Star regime: starfull (reconstruct stars, hr target) vs starless
-        # (erase them, clean target). Default starless (the current regime).
-        starless = (request.form.get("mode", "starless").lower() != "starfull")
+        # Star regime: starfull (reconstruct stars, hr target — the default)
+        # vs starless (erase them, clean target; opt-in).
+        starless = _mode_starless()
         try:
             target_fwhm = validate_target_fwhm_arcsec(
                 float(request.form.get("target_psf_fwhm_arcsec",
@@ -101,7 +85,7 @@ def register(app):
         """Fit the combiner for the requested star regime locally on the
         validate split. Available in both regimes — starfull fuses star
         reconstructions, starless fuses the star-erasing members."""
-        starless = _mode_starless(default="starfull")
+        starless = _mode_starless()
         try:
             target_fwhm = validate_target_fwhm_arcsec(
                 float(request.form.get("target_psf_fwhm_arcsec",
@@ -123,10 +107,6 @@ def register(app):
                          else max(0.0, float(raw_min_usage)))
         except (TypeError, ValueError):
             min_usage = None
-        from euclid_polish.eval.combiner import (
-            combiner_model_spec,
-            normalize_model_kind,
-        )
         try:
             model_kind = normalize_model_kind(
                 request.form.get("model_kind"))
@@ -164,8 +144,7 @@ def register(app):
         (loss/depth/PSNR — the facets the gate plot colors by). Always recomputed
         from the saved combiner (cheap: reads the npz + member origins, no
         inference) so the member meta stays current; 404 before any fit."""
-        starless = _mode_starless(default="starfull")
-        from euclid_polish.eval.combiner import normalize_model_kind
+        starless = _mode_starless()
         try:
             model_kind = normalize_model_kind(
                 request.args.get("model_kind"))
@@ -189,11 +168,11 @@ def register(app):
     def ensemble_knee_psnr_json():
         """PSNR-vs-knee curves + integrated PSNR for every model of a regime
         (``?mode=``), flagged ``stale`` when the cubes or combiners changed."""
-        return jsonify(knee_psnr_status(_mode_starless(default="starfull")))
+        return jsonify(knee_psnr_status(_mode_starless()))
 
     @app.route("/ensemble/knee-psnr", methods=["POST"])
     def ensemble_knee_psnr_compute():
-        starless = _mode_starless(default="starfull")
+        starless = _mode_starless()
         regime = "starless" if starless else "starfull"
         job_id = REGISTRY.spawn(
             f"ensemble: PSNR vs knee ({regime})",
@@ -218,22 +197,6 @@ def register(app):
         for the coloring modes. Empty ``members`` → the client hides the card."""
         return jsonify({"members": training_curves_payload()})
 
-    @app.route("/ensemble/power-spectrum.png")
-    def ensemble_power_spectrum():
-        """Serve the ensemble power-spectrum PNG. ``?fresh=1`` re-renders it from
-        the cached per-field cubes (no full re-run / inference)."""
-        starless = _mode_starless()
-        out_png = os.path.join(_ensemble_regime_dir(starless),
-                               "ensemble_power_spectrum.png")
-        fresh = request.args.get("fresh", "").lower() in ("1", "true", "yes")
-        color = request.args.get("color", "").lower()
-        color_by = color if color in ("loss", "depth", "knee") else None
-        if ((fresh or not os.path.isfile(out_png))
-                and regenerate_power_spectrum(starless, color_by=color_by) is None
-                and not os.path.isfile(out_png)):
-            abort(404)
-        return send_file(out_png, mimetype="image/png", max_age=0)
-
     @app.route("/ensemble/evals.json")
     def ensemble_evals_json():
         """The Evaluations card's dataset: power-spectrum curves, diagnostic
@@ -250,7 +213,6 @@ def register(app):
             # Rebuild once from existing cubes, with no model inference or
             # recaching; this also refreshes the per-model trace sidecar.
             try:
-                import json
                 with open(path) as f:
                     cached = json.load(f)
                     fresh = "coherence" not in cached
@@ -304,24 +266,6 @@ def register(app):
                                    model_kind=model_kind or None,
                                    axis_mode=axis_mode or None))
 
-    @app.route("/ensemble/eval-plot/<plot>.png")
-    def ensemble_eval_plot(plot: str):
-        """Serve a pixel-level evaluation diagnostic (std-error /
-        std-brightness / calibration). Renders lazily from the cached
-        per-field cubes on first request; ``?fresh=1`` forces a re-render
-        (all three figures share one pass, so they regenerate together)."""
-        png_name = EVAL_DIAGNOSTIC_PNGS.get(plot)
-        if png_name is None:
-            abort(404)
-        starless = _mode_starless()
-        out_png = os.path.join(_ensemble_regime_dir(starless), png_name)
-        fresh = request.args.get("fresh", "").lower() in ("1", "true", "yes")
-        if ((fresh or not os.path.isfile(out_png))
-                and regenerate_eval_diagnostics(starless) is None
-                and not os.path.isfile(out_png)):
-            abort(404)
-        return send_file(out_png, mimetype="image/png", max_age=0)
-
     @app.route("/ensemble/archive-member", methods=["POST"])
     def ensemble_archive_member():
         """Retire one member: zip → tracking campaign, registry tombstone,
@@ -334,6 +278,7 @@ def register(app):
         return jsonify({"job_id": job_id})
 
     @app.route("/ensemble/pull", methods=["POST"])
+    @requires_fasrc
     def ensemble_pull():
         job_id = REGISTRY.spawn(
             "ensemble: download from FASRC",

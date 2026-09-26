@@ -8,12 +8,22 @@ from pathlib import Path
 
 import pytest
 
+from euclid_polish.web.app import create_app
+from euclid_polish.web.helpers import star_population
+from euclid_polish.web.helpers.q1_stellar_colors import (
+    GAIA_TAP_PROVIDER,
+    Q1_STELLAR_COLOR_FIELD_RADIUS_DEG,
+    Q1_STELLAR_COLOR_FIELDS,
+    Q1_STELLAR_COLOR_SAMPLE_VERSION,
+)
+from euclid_polish.web.helpers.star_population import (
+    _require_current_gaia_field_sampling,
+    _star_distribution_from_rows,
+)
+from euclid_polish.web.routes import star_distribution as routes
+
 
 def test_star_distribution_builds_all_six_measured_colours():
-    from euclid_polish.web.helpers.star_population import (
-        _star_distribution_from_rows,
-    )
-
     gaia_rows = [
         {
             "source_id": str(index),
@@ -97,8 +107,6 @@ def test_star_distribution_builds_all_six_measured_colours():
 def test_stellar_density_comparison_uses_area_density_and_all_six_colours(
     monkeypatch,
 ):
-    from euclid_polish.web.helpers import star_population
-
     def no_q1_cache(**_kwargs):
         raise ValueError("not cached")
 
@@ -242,16 +250,6 @@ def test_stellar_density_comparison_uses_area_density_and_all_six_colours(
 
 
 def test_stellar_colour_cache_rejects_legacy_random_fields():
-    from euclid_polish.web.helpers.q1_stellar_colors import (
-        GAIA_TAP_PROVIDER,
-        Q1_STELLAR_COLOR_FIELD_RADIUS_DEG,
-        Q1_STELLAR_COLOR_FIELDS,
-        Q1_STELLAR_COLOR_SAMPLE_VERSION,
-    )
-    from euclid_polish.web.helpers.star_population import (
-        _require_current_gaia_field_sampling,
-    )
-
     meta = {
         "version": Q1_STELLAR_COLOR_SAMPLE_VERSION,
         "sampling_kind": "fixed_q1_magnitude_stratified_color_fields",
@@ -272,9 +270,6 @@ def test_stellar_colour_cache_rejects_legacy_random_fields():
 
 
 def test_star_distribution_page_and_status_route(monkeypatch):
-    from euclid_polish.web.app import create_app
-    from euclid_polish.web.routes import star_distribution as routes
-
     expected_distribution = {
         "matched_stars": 2772,
         "colors": {"vis_j": {"values": [0.4]}},
@@ -294,7 +289,7 @@ def test_star_distribution_page_and_status_route(monkeypatch):
     monkeypatch.setattr(routes, "availability", lambda: {"synthetic": {}})
     client = create_app().test_client()
 
-    page = client.get("/star-distribution")
+    page = client.get("/realism/stars")
     assert page.status_code == 200
     assert b'<div id="root">' in page.data
 
@@ -314,33 +309,7 @@ def test_star_distribution_page_and_status_route(monkeypatch):
     }
 
 
-def test_checked_in_star_bundle_matches_current_api_contract():
-    """Flask must not serve a stale bundle from before color_sample existed."""
-    from euclid_polish.web.app import create_app
-
-    client = create_app().test_client()
-    page = client.get("/star-distribution")
-    match = re.search(
-        r'<script type="module" crossorigin src="([^"]+\.js)"',
-        page.get_data(as_text=True),
-    )
-
-    assert page.status_code == 200
-    assert match is not None
-    asset = client.get(match.group(1))
-    bundle = asset.get_data(as_text=True)
-    assert asset.status_code == 200
-    assert "color_sample" in bundle
-    assert "/api/star-distribution/query" in bundle
-    assert "Open Query MER + PHZ" not in bundle
-    assert "Gaia shape sample at 0.5 mag" in bundle
-    assert "availability.euclid_catalog" not in bundle
-
-
 def test_star_query_requires_euclid_login(monkeypatch):
-    from euclid_polish.web.app import create_app
-    from euclid_polish.web.routes import star_distribution as routes
-
     monkeypatch.setattr(routes.euclid_session, "catalog", lambda: None)
 
     response = create_app().test_client().post("/api/star-distribution/query")
@@ -350,9 +319,6 @@ def test_star_query_requires_euclid_login(monkeypatch):
 
 
 def test_star_query_runs_only_stellar_counts_and_colours(monkeypatch):
-    from euclid_polish.web.app import create_app
-    from euclid_polish.web.routes import star_distribution as routes
-
     events = []
 
     class Catalog:
@@ -405,30 +371,27 @@ def test_star_query_runs_only_stellar_counts_and_colours(monkeypatch):
     ]
 
 
-def test_star_page_uses_its_own_stellar_query():
-    source = (
-        Path(__file__).parents[1]
-        / "euclid_polish/web/frontend/src/pages/StarDistribution.tsx"
-    ).read_text()
+def test_star_page_has_its_own_stellar_query_routes():
+    """Stars are queried, fitted and activated through their own endpoints
+    (never the galaxy MER + PHZ query). pytest pins only this backend
+    contract; how the page renders is not tested by pytest (the dropped
+    page-source checks are handed to the Realism workspace WP's vitest
+    suite)."""
 
-    assert '"/api/star-distribution/query"' in source
-    assert "Query stars · MER + PHZ + Gaia" in source
-    assert "Fit stellar prior from cached data" in source
-    assert "Q1 at 0.1-mag" in source
-    assert "Gaia shape sample at 0.5 mag" in source
-    assert "Q1 0.1 mag · Gaia fit 0.5 mag" in source
-    assert 'to="/galaxy-distributions"' not in source
-    assert "No galaxy selection is used" in source
-    assert "include training catalog" in source
-    assert "sources_train.csv" in source
-    assert "no training" in source.lower()
-    assert "Random Euclid population cones" not in source
+    rules: dict[str, set[str]] = {}
+    for rule in create_app().url_map.iter_rules():
+        rules.setdefault(rule.rule, set()).update(rule.methods or ())
+
+    for path in (
+        "/api/star-distribution/query",
+        "/api/star-distribution/fit",
+        "/api/star-distribution/activate",
+    ):
+        assert "POST" in rules[path]
+    assert "GET" in rules["/api/star-distribution"]
 
 
 def test_cached_stellar_fit_does_not_query_gaia_or_require_euclid_login(monkeypatch):
-    from euclid_polish.web.app import create_app
-    from euclid_polish.web.routes import star_distribution as routes
-
     class Capture:
         def tick(self, *_args):
             pass

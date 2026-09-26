@@ -18,7 +18,6 @@ from euclid_polish.psf.psf_library import psf_inventory
 from euclid_polish.web import fasrc_config
 from euclid_polish.web import fasrc_fetcher as _fasrc_fetcher
 from euclid_polish.web.fasrc_fetcher import _local_path_for
-from euclid_polish.web.helpers._const import _CUTOUT_FNAME_RE
 from euclid_polish.web.helpers.paths import _safe_relpath
 from euclid_polish.web.remote import STATE
 
@@ -60,6 +59,14 @@ def _valid_4band_stars(force: bool = False):
     size with the most such stars, or ``(None, [])`` when there's no catalog
     or none qualify. ``force`` re-pulls the catalog; navigation passes False
     so it reads the already-cached copy instead of rsync-ing per image."""
+    size, objects = _valid_4band_star_objects(force=force)
+    return size, [int(o.id) for o in objects if o.id is not None]
+
+
+def _valid_4band_star_objects(force: bool = False):
+    """:func:`_valid_4band_stars` with the catalogue rows: ``(size,
+    [CatalogObject, ...])`` sorted by id — so callers also get each star's
+    ``ra``/``dec`` without re-reading ``stars.csv``."""
     cat_dir = _fasrc_catalog_dir(force=force)
     if cat_dir is None:
         return None, []
@@ -67,7 +74,7 @@ def _valid_4band_stars(force: bool = False):
     if not objects:
         return None, []
     band_names = [b.name for b in Config.BANDS]
-    by_size: dict[int, list[int]] = {}
+    by_size: dict[int, list[CatalogObject]] = {}
     for o in objects:
         # Sizes valid in EVERY band = intersection of each band's valid sizes;
         # any band with no valid size disqualifies the star.
@@ -81,11 +88,11 @@ def _valid_4band_stars(force: bool = False):
         if per_band is None or o.id is None:
             continue
         for sz in set.intersection(*per_band):
-            by_size.setdefault(sz, []).append(int(o.id))
+            by_size.setdefault(sz, []).append(o)
     if not by_size:
         return None, []
     best = max(by_size, key=lambda sz: len(by_size[sz]))
-    return best, sorted(by_size[best])
+    return best, sorted(by_size[best], key=lambda o: int(o.id))
 
 
 def _ensure_local_star_cutout(band: str, sid: int, size: int) -> str | None:
@@ -112,8 +119,8 @@ def _ensure_local_star_cutout(band: str, sid: int, size: int) -> str | None:
     return local_path if os.path.isfile(local_path) else None
 
 
-def _catalog_status() -> dict[str, Any]:
-    cat_dir = _fasrc_catalog_dir()
+def _catalog_status_at(cat_dir: str | None) -> dict[str, Any]:
+    """Summary of the ``stars.csv`` in ``cat_dir`` (``present: False`` if none)."""
     if cat_dir is None:
         return {"present": False}
     path = os.path.join(cat_dir, Config.CATALOG_FILE)
@@ -124,6 +131,17 @@ def _catalog_status() -> dict[str, Any]:
     # (netscratch) catalog, not the local cache copy we render from.
     return {"present": True, "summary": summary,
             "path": _fasrc_catalog_remote_path()}
+
+
+def _catalog_status() -> dict[str, Any]:
+    """Re-pull the FASRC catalogue (forced rsync), then summarise it."""
+    return _catalog_status_at(_fasrc_catalog_dir())
+
+
+def _cached_catalog_status() -> dict[str, Any]:
+    """Summary of the already-synchronised catalogue — no SSH, no rsync
+    (``GET /api/status``); ``POST /api/status/refresh-catalog`` re-pulls."""
+    return {**_catalog_status_at(_cached_fasrc_catalog_dir()), "cached": True}
 
 
 def _fasrc_psf_dir(force: bool = True) -> str | None:
@@ -268,33 +286,6 @@ def _checkpoints_status() -> dict[str, Any]:
     # Members in order; root track before sub-tracks; sorted.
     out["files"].sort(key=lambda f: (f["member"], f["subdir"], f["name"]))
     return out
-
-
-def _cutout_layout_status(output_dir: str = Config.DEFAULT_OUTPUT_DIR,
-                          preview_n: int = 8) -> dict[str, Any]:
-    """Count cutout FITS files per band under ``output_dir/cutouts/<band>/``.
-
-    Also returns up to ``preview_n`` filenames per band for inline thumbnails.
-    """
-    cutout_root = os.path.join(output_dir, "cutouts")
-    bands_info = []
-    total = 0
-    for band in Config.BANDS:
-        band_dir = Config.cutout_dir_for_band(band.name, root=cutout_root)
-        files: list[str] = []
-        if os.path.isdir(band_dir):
-            files = sorted(
-                f for f in os.listdir(band_dir)
-                if f.lower().endswith(".fits") and _CUTOUT_FNAME_RE.match(f)
-            )
-        n = len(files)
-        total += n
-        bands_info.append({
-            "name": band.name, "dir": band_dir, "count": n,
-            "native_scale": band.pixel_scale_lr_arcsec,
-            "preview": files[:preview_n],
-        })
-    return {"root": cutout_root, "bands": bands_info, "total": total}
 
 
 def _list_vis_pngs() -> list[dict[str, Any]]:

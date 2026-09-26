@@ -257,9 +257,11 @@ def test_runs_log_clamps_lines_param(client, tmp_repo):
 def test_runs_handles_ssh_disconnected(client, tmp_repo):
     web_app.STATE.ssh = None
     r = client.get("/api/fasrc/runs")
-    assert r.status_code == 400
+    assert r.status_code == 503
+    assert r.get_json()["code"] == "fasrc_offline"
     r = client.get("/api/fasrc/runs/log?path=/anything.out&lines=100")
-    assert r.status_code == 400
+    assert r.status_code == 503
+    assert r.get_json()["code"] == "fasrc_offline"
 
 
 # ---------------------------------------------------------------------------

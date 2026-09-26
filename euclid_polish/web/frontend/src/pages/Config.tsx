@@ -1,12 +1,16 @@
 /* Config — universal per-job knobs (mirror of the classic /config page).
-   useResource seeds a local editable copy; a sticky Save posts ALL fields via
-   postForm. Numeric inputs are NumberField, enums are Select. Server-side
-   coercion (e.g. VIS cutout forced odd) is reflected back on save. */
+   useResource seeds a local editable copy; Save posts ONLY the fields you
+   changed, with the `version` the page loaded as `base_version` (lost-update
+   guard): a field somebody else changed since then is refused (409
+   config_conflict) and shown, and "Reload server values" takes the server's
+   values for the conflicting fields while keeping your other edits.
+   Numeric inputs are NumberField, enums are Select. Server-side coercion
+   (e.g. VIS cutout forced odd) is reflected back on save. */
 import { useEffect, useMemo, useState } from "react";
-import { postForm } from "../api";
+import { ApiError, postForm } from "../api";
 import { useResource } from "../hooks";
 import {
-  Badge, Button, Card, CardBody, CardHead, Empty, LogTail, NumberField, Page,
+  Badge, Button, Callout, Card, CardBody, CardHead, Empty, LogTail, NumberField, Page,
   PageHead, Select, Spinner,
 } from "../ui";
 
@@ -51,8 +55,16 @@ interface JobConfig {
 type Field = keyof JobConfig;
 type FormState = Record<Field, string>;
 
-type ConfigResp = { ok: boolean; config: Record<string, number | string> };
-type SaveResp = { ok: boolean; config: Record<string, number | string>; note?: string | null; error?: string };
+type ConfigResp = { ok: boolean; config: Record<string, number | string>; version?: string };
+type SaveResp = {
+  ok: boolean; config: Record<string, number | string>; note?: string | null; error?: string; version?: string;
+};
+type ConflictBody = {
+  conflicts?: Record<string, { base: unknown; current: unknown }>;
+  config?: Record<string, number | string>;
+  version?: string;
+};
+type Conflict = { fields: Record<string, { base: unknown; current: unknown }>; config: Record<string, number | string>; version: string | null };
 
 /* Ordered list of every field so we can build the form state + the POST body
    without a hand-maintained duplicate. */
@@ -94,8 +106,10 @@ export default function ConfigPage() {
   const { data, loading, reload } = useResource<ConfigResp>("/api/config");
   const [loaded, setLoaded] = useState<FormState | null>(null);
   const [form, setForm] = useState<FormState | null>(null);
+  const [version, setVersion] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null);
+  const [conflict, setConflict] = useState<Conflict | null>(null);
 
   // Seed the editable copy once the config arrives.
   useEffect(() => {
@@ -103,6 +117,7 @@ export default function ConfigPage() {
       const f = toForm(data.config);
       setLoaded(f);
       setForm(f);
+      setVersion(data.version ?? null);
     }
   }, [data]);
 
@@ -116,27 +131,52 @@ export default function ConfigPage() {
   }
 
   async function save() {
-    if (!form) return;
-    setBusy(true); setNote(null);
+    if (!form || !loaded) return;
+    setBusy(true); setNote(null); setConflict(null);
     try {
+      // Only the edited fields, plus the version they were edited against.
       const body: Record<string, string> = {};
-      for (const f of FIELDS) body[f] = form[f];
+      for (const f of FIELDS) if (form[f] !== loaded[f]) body[f] = form[f];
+      if (version) body.base_version = version;
       const r = await postForm<SaveResp>("/api/config/save", body);
       if (!r.ok) {
         setNote({ ok: false, text: r.error || "save failed" });
         return;
       }
-      // Reflect any server-side coercion (e.g. VIS cutout forced odd).
+      // Reflect any server-side coercion (e.g. VIS cutout forced odd). Fields
+      // the server merged from elsewhere arrive here too.
       const next = toForm(r.config);
       setLoaded(next);
       setForm(next);
+      setVersion(r.version ?? null);
       setNote({ ok: true, text: r.note ? `saved — ${r.note}` : "saved" });
       reload();
     } catch (e) {
+      if (e instanceof ApiError && e.status === 409 && e.code === "config_conflict") {
+        const b = (e.body ?? {}) as ConflictBody;
+        setConflict({ fields: b.conflicts ?? {}, config: b.config ?? {}, version: b.version ?? null });
+        return;
+      }
       setNote({ ok: false, text: e instanceof Error ? e.message : String(e) });
     } finally {
       setBusy(false);
     }
+  }
+
+  /* Rebase on the server's config: its values for the conflicting fields,
+     your edits for every other field you changed. */
+  function takeServerValues() {
+    if (!conflict || !form || !loaded) return;
+    const server = toForm(conflict.config);
+    const next = { ...server };
+    for (const f of FIELDS) {
+      if (!(f in conflict.fields) && form[f] !== loaded[f]) next[f] = form[f];
+    }
+    setLoaded(server);
+    setForm(next);
+    setVersion(conflict.version);
+    setConflict(null);
+    setNote({ ok: true, text: "reloaded the server values — review and save again" });
   }
 
   const num = (field: Field, label: string, opts: {
@@ -318,6 +358,19 @@ export default function ConfigPage() {
               </div>
             </CardBody>
           </Card>
+
+          {conflict && (
+            <Callout tone="warn" title="The config changed since you loaded it"
+              action={<Button size="sm" variant="primary" onClick={takeServerValues}>Reload server values</Button>}>
+              Not saved. These fields were changed elsewhere (another tab, or a calibration activation):
+              <ul className="mono" style={{ margin: "6px 0 0", paddingLeft: 18 }}>
+                {Object.entries(conflict.fields).map(([f, c]) => (
+                  <li key={f}>{f}: yours {form[f as Field] ?? "—"} · now {String(c.current ?? "—")}</li>
+                ))}
+              </ul>
+              Reloading takes the server values for these fields and keeps your other edits; then save again.
+            </Callout>
+          )}
 
           {note && (
             <div className={`job-panel job-panel--${note.ok ? "done" : "err"}`}>

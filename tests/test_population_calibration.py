@@ -9,6 +9,7 @@ import pytest
 
 from euclid_polish.config import Config
 from euclid_polish.population.magnitude_law import StraightMagnitudeLaw
+from euclid_polish.sky.generation import sky_simulator as sky_simulator_module
 from euclid_polish.sky.generation.sky_simulator import (
     SkySimulator,
     SkySimulatorConfig,
@@ -24,13 +25,7 @@ from euclid_polish.tng.radius_manifest import (
     write_parameter_summary,
 )
 from euclid_polish.web.helpers.population_calibration import (
-    activate_galaxy_recommendation,
     activate_star_candidate,
-    active_transfer_path,
-    density_calibration_path,
-    fit_density_response,
-    fit_local_catalog_density,
-    galaxy_recommendation_state,
     star_candidate_path,
     star_state,
 )
@@ -197,153 +192,7 @@ def test_gaia_shape_fit_rebins_sparse_point_one_mag_counts():
     assert diagnostics["q1"]["bin_width_mag"] == pytest.approx(0.1)
 
 
-def test_density_response_is_reproducible_and_rejects_wrong_transfer():
-    densities = [240.0, 280.0, 320.0, 360.0, 400.0]
-    fields = [[density / 10 + offset for offset in (-1, 0, 1, 0)]
-              for density in densities]
-    real = [31.0, 32.0, 33.0, 32.0]
-    first = fit_density_response(
-        densities, fields, real, transfer_fingerprint="same",
-        active_transfer_fingerprint="same", field_area_arcmin2=1.0,
-        euclid_cone_detection_densities=[30.0, 32.0, 34.0],
-        bootstraps=100, seed=5,
-    )
-    second = fit_density_response(
-        densities, fields, real, transfer_fingerprint="same",
-        active_transfer_fingerprint="same", field_area_arcmin2=1.0,
-        euclid_cone_detection_densities=[30.0, 32.0, 34.0],
-        bootstraps=100, seed=5,
-    )
-    assert first["valid"]
-    assert first["recommended_density_arcmin2"] == pytest.approx(320.0)
-    assert first["interval_arcmin2"] == second["interval_arcmin2"]
-    assert first["euclid_cones"] == 3
-
-    mismatch = fit_density_response(
-        densities, fields, real, transfer_fingerprint="old",
-        active_transfer_fingerprint="new", field_area_arcmin2=1.0,
-        bootstraps=100,
-    )
-    assert not mismatch["valid"]
-    assert "different" in " ".join(mismatch["warnings"]) or "not the active" in " ".join(mismatch["warnings"])
-
-
-def test_local_catalog_fit_recovers_raw_density_without_rendering(
-    tmp_path, monkeypatch,
-):
-    monkeypatch.setattr(Config, "DATA_DIR", str(tmp_path))
-    root = tmp_path / "population_comparison"
-    prior_path = root / "cosmos2025" / "prior.npz"
-    fit_path = root / "cosmos2025" / "fit.json"
-    prior_path.parent.mkdir(parents=True)
-    monkeypatch.setattr(
-        Config, "COSMOS_POPULATION_PRIOR_PATH", str(prior_path),
-    )
-    monkeypatch.setattr(
-        Config, "JOINT_GALAXY_POPULATION_FIT_PATH", str(fit_path),
-    )
-    atlas_summary_path = root / "tng_atlas_parameters.csv"
-    monkeypatch.setattr(
-        Config, "TNG_ATLAS_PARAMETERS_PATH", str(atlas_summary_path),
-    )
-    size = 2_000
-    np.savez_compressed(
-        prior_path,
-        catalog_id=np.arange(size),
-        mag_hst_f814w=np.full(size, 24.0),
-        z_phot=np.full(size, 1.0),
-        logmass_lephare=np.full(size, 10.0),
-        logssfr_lephare=np.where(
-            np.arange(size) % 2 == 0, -12.0, -10.0,
-        ),
-        re_combined_arcsec=np.full(size, 0.4),
-        generator_ready=np.ones(size, dtype=bool),
-    )
-    properties_path = tmp_path / "tng_properties.csv"
-    properties_path.write_text(
-        "id,sfr,mass_stars,m_halo,reff\n"
-        f"1,0.001,{10.0 ** 9.8},1e12,2\n"
-        f"2,0.001,{10.0 ** 10.2},1e12,2\n"
-        f"3,1,{10.0 ** 9.8},1e12,2\n"
-        f"4,1,{10.0 ** 10.2},1e12,2\n"
-    )
-    manifest = {
-        "valid": True,
-        "algorithm_version": "test-cog-v1",
-        "manifest_fingerprint": "radius-v1",
-        "atlas_inventory_fingerprint": "atlas-v1",
-        "entries": [
-            {
-                "subhalo_id": gid,
-                "orientation": orientation,
-                "native_re_px": 10.0,
-                "shape": [64, 64],
-                "valid": True,
-            }
-            for gid in ("1", "2", "3", "4")
-            for orientation in range(1, 6)
-        ],
-    }
-    write_parameter_summary(
-        atlas_summary_path, manifest, properties_path=str(properties_path),
-    )
-    fit_path.write_text(json.dumps({
-        "inputs": {
-            "euclid_cone_count": 4,
-            "euclid_area_arcmin2": 4.0,
-            "euclid_cones": [{"star_id": str(index)} for index in range(4)],
-        },
-        "fit": {
-            "vis_minus_f814w_mag": 0.0,
-            "magnitude_slope": 1.0,
-            "scatter_mag": 0.0,
-            "completeness_m50": 24.0,
-            "completeness_width_mag": 1.0,
-            "poisson_deviance": 4.0,
-            "dof": 4,
-        },
-    }))
-    (root / "euclid_population_meta.json").write_text(json.dumps({
-        "cone_count": 4,
-        "area_arcmin2": 4.0,
-        "cones": [{"star_id": str(index)} for index in range(4)],
-    }))
-    rows = []
-    for cone_index in range(4):
-            rows.extend({
-                "type": "unknown",
-                "spurious_prob": "0.0",
-                "point_like_prob": "0.0",
-                "mag_vis": "24.0",
-            "cone_index": str(cone_index),
-        } for _ in range(10))
-    _write_csv(root / "euclid_population.csv", rows)
-
-    first = fit_local_catalog_density(bootstraps=100, seed=8)
-    second = fit_local_catalog_density(bootstraps=100, seed=8)
-
-    assert first["valid"]
-    assert first["retained_detection_fraction"] == pytest.approx(0.5)
-    assert first["euclid_detected_density_arcmin2"] == pytest.approx(10.0)
-    assert first["recommended_density_arcmin2"] == pytest.approx(20.0)
-    assert first["cosmos_generator_rows"] == size
-    assert first["morphology_model"]["eligible_cosmos_rows"] == size
-    assert first["morphology_model"]["method"] == (
-        "activity_conditioned_empirical_mass_quantile_transport"
-    )
-    assert first["morphology_model"]["excluded_cosmos_rows"] == 0
-    assert first["magnitude_fit_quality"]["valid"]
-    assert first["method"].startswith("empirical COSMOS/TNG")
-    assert first["forward_integration_grid_step_mag"] == pytest.approx(0.005)
-    assert "local_draws" not in first
-    assert first["calibration_fingerprint"] == second["calibration_fingerprint"]
-    assert first["interval_arcmin2"] == second["interval_arcmin2"]
-    assert density_calibration_path().exists()
-
-
 def test_nested_thinning_keeps_nuisance_population_identical(monkeypatch):
-    import euclid_polish.sky.generation.sky_simulator as module
-
     galaxy = TNGGalaxy(Path("x"), "1")
     atlas = TNGAtlas(
         root=Path("x"),
@@ -355,7 +204,7 @@ def test_nested_thinning_keeps_nuisance_population_identical(monkeypatch):
         ),
     )
     monkeypatch.setattr(
-        module.TNGAtlas,
+        sky_simulator_module.TNGAtlas,
         "open",
         classmethod(lambda cls, *args, **kwargs: atlas),
     )
@@ -379,68 +228,6 @@ def test_nested_thinning_keeps_nuisance_population_identical(monkeypatch):
     assert low_ids <= high_ids
     assert lower["stars"] == upper["stars"]
     assert lower["lenses"] == upper["lenses"]
-
-
-def test_complete_generator_recommendation_can_activate_with_fit_warnings(
-    tmp_path, monkeypatch,
-):
-    monkeypatch.setattr(Config, "DATA_DIR", str(tmp_path))
-    fit_path = tmp_path / "fit.json"
-    monkeypatch.setattr(
-        Config, "JOINT_GALAXY_POPULATION_FIT_PATH", str(fit_path),
-    )
-    fit_path.write_text(json.dumps({
-        "inputs": {"euclid_cone_count": 6},
-        "fit": {
-            "vis_minus_f814w_mag": 0.4,
-            "magnitude_slope": 0.7,
-            "scatter_mag": 1.0,
-            "completeness_m50": 25.1,
-            "completeness_width_mag": 0.5,
-            "poisson_deviance": 60.0,
-            "dof": 10,
-        },
-    }))
-    from euclid_polish.sky.generation.cosmos_tng_prior import (
-        brightness_transfer_payload,
-    )
-    transfer = brightness_transfer_payload(fit_path)
-    assert transfer is not None
-    assert transfer["version"] == 3
-    assert not transfer["valid"]
-    density_calibration_path().parent.mkdir(parents=True, exist_ok=True)
-    density_calibration_path().write_text(json.dumps({
-        "valid": True,
-        "warnings": [],
-        "transfer_fingerprint": transfer["fingerprint"],
-        "calibration_fingerprint": "sweep",
-        "recommended_density_arcmin2": 315.0,
-        "interval_arcmin2": {"median": 315, "p16": 295, "p84": 338},
-    }))
-    updates = []
-    monkeypatch.setattr(
-        "euclid_polish.web.job_config.update", lambda patch: updates.append(patch),
-    )
-
-    state = galaxy_recommendation_state()
-    assert state["recommendation_available"]
-    assert not state["validated"]
-    assert state["generator_parameters"] == {
-        "galaxy_density_arcmin2": 315.0,
-        "cosmos_vis_offset_mag": 0.4,
-        "cosmos_vis_magnitude_slope": 0.7,
-        "cosmos_vis_scatter_mag": 1.0,
-    }
-
-    activated = activate_galaxy_recommendation()
-    assert activated["active"]
-    assert activated["brightness_transfer"][
-        "activated_with_quality_warnings"
-    ]
-    assert json.loads(active_transfer_path().read_text())["fingerprint"] == transfer[
-        "fingerprint"
-    ]
-    assert updates == [{"galaxy_density_arcmin2": 315.0}]
 
 
 def _write_csv(path, rows):

@@ -3,19 +3,47 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
     <title>EuclidPolish · console</title>
-    <!-- Apply the persisted theme before first paint (no flash). Default light. -->
+    <!-- Apply the saved appearance before first paint (no flash). Mirrors
+         src/state/prefs.ts: "ep-prefs" (zustand persist JSON) → theme
+         light|dark|system (system resolved via prefers-color-scheme), accent,
+         density; falls back to the pre-rework "ep-theme" key. Default light.
+         src/state/prePaint.test.ts runs this script and checks it writes the
+         same attributes as bindPrefsToDocument() — keep them in step. -->
     <script>
       (function () {
+        var root = document.documentElement;
+        var pref = "light", accent = "blue", density = "comfortable";
         try {
-          var t = localStorage.getItem("ep-theme");
-          document.documentElement.setAttribute(
-            "data-theme", t === "dark" || t === "light" ? t : "light");
-        } catch (e) { document.documentElement.setAttribute("data-theme", "light"); }
+          var raw = localStorage.getItem("ep-prefs");
+          var s = raw ? (JSON.parse(raw) || {}).state || {} : null;
+          if (s) {
+            if (s.theme === "light" || s.theme === "dark" || s.theme === "system") pref = s.theme;
+            if (typeof s.accent === "string" && /^(blue|violet|teal|amber|rose)$/.test(s.accent)) accent = s.accent;
+            if (s.density === "compact") density = "compact";
+          } else {
+            var legacy = localStorage.getItem("ep-theme");
+            if (legacy === "dark" || legacy === "light") pref = legacy;
+          }
+        } catch (e) { /* storage unavailable: defaults */ }
+        var theme = pref;
+        if (pref === "system") {
+          try {
+            theme = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches
+              ? "dark" : "light";
+          } catch (e) { theme = "light"; }
+        }
+        root.setAttribute("data-theme", theme);
+        root.setAttribute("data-theme-pref", pref);
+        root.setAttribute("data-accent", accent);
+        root.setAttribute("data-density", density);
       })();
     </script>
-    <script type="module" crossorigin src="/static/dist/assets/index-CDOQriaO.js"></script>
-    <link rel="stylesheet" crossorigin href="/static/dist/assets/index-CtEjqLEK.css">
+    <script type="module" crossorigin src="/static/dist/assets/index-Cd6PmDsR.js"></script>
+    <link rel="modulepreload" crossorigin href="/static/dist/assets/react-BRFK8GSE.js">
+    <link rel="modulepreload" crossorigin href="/static/dist/assets/vendor-BbR-4Fw_.js">
+    <link rel="stylesheet" crossorigin href="/static/dist/assets/index-BEWegM2o.css">
   </head>
   <body>
     <div id="root"></div>

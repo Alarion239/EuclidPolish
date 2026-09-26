@@ -7,7 +7,7 @@ import { useJob, JobProgressView } from "../jobs";
 import { CutoutViewer } from "../legacy";
 import {
   Badge, Button, Card, CardBody, CardHead, Checkbox, Empty, Field, Input,
-  LogTail, NumberField, Page, PageHead, PngFigure, Spinner, Table, type Column,
+  LogTail, NumberField, Page, PageHead, PngFigure, Spinner, Table, confirm, type Column,
 } from "../ui";
 
 type RunRow = {
@@ -56,6 +56,17 @@ export default function EvaluationPage() {
       runs.reload();
     } catch (e) { setNote(`✗ ${e instanceof Error ? e.message : String(e)}`); }
     finally { setBusy(null); }
+  }
+
+  // The sync runs `rsync --delete-after`: the server refuses it without
+  // confirm=1 (400 confirm_required), so ask first.
+  async function sync() {
+    const ok = await confirm({
+      title: "Sync evaluation results from FASRC?",
+      message: "rsync --delete-after will delete local-only results in data/eval_results that FASRC does not have.",
+      tone: "danger", confirmLabel: "Sync and delete local-only",
+    });
+    if (ok) await plainPost("/api/evaluation/sync", { confirm: "1" });
   }
 
   async function login() {
@@ -121,7 +132,7 @@ export default function EvaluationPage() {
           <CardHead title="Data sync" sub="pull results from FASRC and fetch the lens catalog" />
           <CardBody>
             <div className="row" style={{ gap: "var(--s2)" }}>
-              <Button onClick={() => plainPost("/api/evaluation/sync")} disabled={busy != null}>⟳ Sync results (FASRC)</Button>
+              <Button onClick={sync} disabled={busy != null}>⟳ Sync results (FASRC)</Button>
               <Button onClick={() => plainPost("/api/evaluation/fetch-catalog")} disabled={busy != null}>Fetch Q1 lens catalog</Button>
               <Button variant="ghost" size="sm" onClick={() => plainPost("/api/evaluation/rerender")} disabled={busy != null}>drop cached PNGs</Button>
             </div>

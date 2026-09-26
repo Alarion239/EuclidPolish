@@ -1,0 +1,61 @@
+/* Plot v2 overlays: crosshair, hover marker, box-zoom rectangle, tooltip,
+   export/reset tools and the interactive legend. The chart itself is a
+   canvas; everything that follows the pointer is DOM (cheap, crisp, no
+   canvas redraw on hover). */
+
+.plot { width: 100%; min-width: 0; }
+.plot__frame { position: relative; width: 100%; outline: none; border-radius: var(--r-sm); }
+.plot__frame:focus-visible { box-shadow: var(--ring); }
+.plot__frame canvas { display: block; touch-action: pan-y; }
+
+.plot__cross-x, .plot__cross-y { position: absolute; pointer-events: none; z-index: var(--z-raised); }
+.plot__cross-x { width: 0; border-left: 1px dashed var(--text-faint); transform: translateX(-0.5px); }
+.plot__cross-y { height: 0; border-top: 1px dashed var(--border-strong); transform: translateY(-0.5px); }
+.plot__mark {
+  position: absolute; width: 9px; height: 9px; margin: -4.5px 0 0 -4.5px; border-radius: 50%;
+  border: 2px solid var(--accent); background: var(--surface-1); pointer-events: none; z-index: var(--z-raised);
+  box-shadow: 0 0 0 2px var(--surface-1);
+}
+.plot__mark--remote { width: 7px; height: 7px; margin: -3.5px 0 0 -3.5px; box-shadow: none; }
+.plot__box {
+  position: absolute; pointer-events: none; z-index: var(--z-raised);
+  border: 1px solid var(--accent); background: var(--accent-soft);
+}
+
+.plot__tooltip {
+  position: absolute; z-index: var(--z-popover); pointer-events: none; min-width: 120px; max-width: 280px;
+  padding: 6px 9px; border-radius: var(--r-sm); background: var(--tooltip-bg); color: var(--tooltip-text);
+  box-shadow: var(--shadow-2); font: var(--fs-xs)/var(--lh-snug) var(--font-mono);
+}
+.plot__tip-head { font-weight: var(--fw-semibold); margin-bottom: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.plot__tip-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 1px; }
+.plot__tip-list li { display: flex; align-items: center; gap: 6px; opacity: .78; }
+.plot__tip-list li[data-nearest="true"] { opacity: 1; font-weight: var(--fw-semibold); }
+.plot__tip-list b { margin-left: auto; font-weight: inherit; font-variant-numeric: tabular-nums; padding-left: 10px; }
+.plot__tip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.plot__tip-row { display: flex; gap: 10px; justify-content: space-between; }
+.plot__tip-sw { flex: none; width: 8px; height: 8px; border-radius: 2px; }
+.plot__tip-more { margin-top: 2px; opacity: .78; font-style: italic; }
+
+.plot__tools {
+  position: absolute; top: 4px; right: 4px; z-index: var(--z-sticky); display: flex; gap: 2px;
+  opacity: 0; transition: opacity var(--dur-fast);
+}
+.plot__frame:hover .plot__tools, .plot__frame:focus-within .plot__tools, .plot[data-zoomed] .plot__tools { opacity: 1; }
+.plot__tool {
+  display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; padding: 0;
+  border-radius: var(--r-sm); border: 1px solid var(--border); background: var(--surface-1); color: var(--text-dim);
+  cursor: pointer; box-shadow: var(--shadow-1);
+}
+.plot__tool:hover { color: var(--text); border-color: var(--accent); }
+
+/* legend (v1 look; toggle entries are buttons) */
+.plot-legend { display: flex; flex-wrap: wrap; gap: 6px 16px; padding: 10px 2px 2px; font-size: var(--fs-sm); }
+.plot-legend__item { display: inline-flex; align-items: center; gap: 7px; color: var(--text-dim); }
+.plot-legend__item--toggle {
+  padding: 2px 4px; margin: -2px -4px; border: 0; border-radius: var(--r-sm); background: transparent;
+  font: inherit; cursor: pointer; transition: opacity var(--dur-fast), color var(--dur-fast);
+}
+.plot-legend__item--toggle:hover { color: var(--text); background: var(--surface-2); }
+.plot-legend__item--toggle[data-off] { opacity: .42; }
+.plot-legend__item--toggle[data-off] .plot-legend__label { text-decoration: line-through; }

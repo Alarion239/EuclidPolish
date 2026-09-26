@@ -11,7 +11,7 @@ import { useResource, usePolling } from "./hooks";
 import Plot, { Legend } from "./charts/Plot";
 import {
   Badge, Button, Card, CardBody, CardHead, ConnBadge, DefList, Empty, LogTail,
-  NumberField, Field, Input, ProgressBar, Segmented, Spinner, Table, Checkbox,
+  NumberField, Field, Input, ProgressBar, Segmented, Spinner, Table, Checkbox, confirm,
   type Column,
 } from "./ui";
 
@@ -695,7 +695,13 @@ export function StepCard(
       : hasArchiveRedownload
         ? `Generate or resume “${step.label}”? Existing valid remote bundles will be reused.`
         : `Submit “${step.label}” to SLURM?`;
-    if (!window.confirm(prompt)) return;
+    const ok = await confirm({
+      title: forceRedownload ? "Re-download every archive field?" : `Submit “${step.label}”?`,
+      message: prompt,
+      tone: forceRedownload ? "danger" : "default",
+      confirmLabel: forceRedownload ? "Re-download" : "Submit",
+    });
+    if (!ok) return;
     setSubmissionAction(action); setError(null);
     try {
       const res = await postForm<{ ok?: boolean; jobid?: string; slurm_id?: string; error?: string }>(
@@ -823,7 +829,7 @@ export function StepById(
 
 /** FASRC SSH connection status + connect/disconnect. */
 export function ConnectionBar() {
-  const { data, reload } = useResource<{ ssh_connected: boolean; error?: string }>("/api/fasrc/status");
+  const { data, reload } = useResource<{ ssh_connected: boolean; last_error?: string | null }>("/api/fasrc/status");
   const [busy, setBusy] = useState(false);
   const connected = !!data?.ssh_connected;
   async function toggle() {
@@ -838,7 +844,7 @@ export function ConnectionBar() {
       <Button size="sm" onClick={toggle} disabled={busy}>
         {busy ? "…" : connected ? "disconnect" : "connect"}
       </Button>
-      {data?.error && !connected && <span className="ui-field__hint">{data.error}</span>}
+      {data?.last_error && !connected && <span className="ui-field__hint">{data.last_error}</span>}
     </div>
   );
 }

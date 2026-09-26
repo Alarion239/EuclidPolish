@@ -113,11 +113,25 @@ ARCHIVE_FIELDS_PATTERN = (
     ("northwest", -ARCHIVE_FIELDS_OFFSET_ARCSEC, ARCHIVE_FIELDS_OFFSET_ARCSEC),
     ("northeast", ARCHIVE_FIELDS_OFFSET_ARCSEC, ARCHIVE_FIELDS_OFFSET_ARCSEC),
 )
+# (name, RA, Dec, radius) — the same centres as
+# ``euclid_polish.sky.observation.q1_fields.Q1_FIELDS``. EDF-F (Fornax) is the
+# field beside the CDF-S at Dec −28°; EDF-S is at Dec −48°. (These two labels
+# were swapped before 2026-09-26, so older sample manifests carry them the
+# wrong way round; consumers derive the label from the position instead.)
+# Only the labels were fixed: the PHYSICAL row order is unchanged, because
+# build_star_support_anchors seeds each field's k-means by row index and the
+# plan fingerprint does not include the regions — a --regenerate-catalog
+# under an existing fingerprint must reproduce the same anchors.
 Q1_SUPPORT_REGIONS = (
     ("EDF-N", 269.733, 66.018, 6.0),
-    ("EDF-F", 61.241, -48.423, 6.0),
-    ("EDF-S", 52.932, -28.088, 6.0),
+    ("EDF-S", 61.241, -48.423, 6.0),
+    ("EDF-F", 52.932, -28.088, 6.0),
 )
+# Last-resort tie order of _allocate_clusters (equal cell counts). Before the
+# label fix the tie went to the lexicographically largest *label*; this rank
+# keeps that choice on the same physical field now that its label changed
+# ((53°, −28°) was "EDF-S", the maximum, and is now "EDF-F").
+_CLUSTER_TIE_RANK = {"EDF-F": 2, "EDF-N": 1, "EDF-S": 0}
 _SPHERE_AREA_DEG2 = 4.0 * math.pi * (180.0 / math.pi) ** 2
 _FOV_POLYGON_RE = re.compile(
     r"^\s*POLYGON(?:\s+ICRS)?\s+(.+?)\s*$", re.IGNORECASE,
@@ -358,7 +372,8 @@ def _allocate_clusters(counts: Mapping[str, int], total: int) -> dict[str, int]:
             break
         name = max(
             choices,
-            key=lambda item: (quotas[item] - math.floor(quotas[item]), nonempty[item], item),
+            key=lambda item: (quotas[item] - math.floor(quotas[item]), nonempty[item],
+                              _CLUSTER_TIE_RANK.get(item, -1), item),
         )
         allocation[name] += 1
         quotas[name] = math.floor(quotas[name])

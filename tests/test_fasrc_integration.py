@@ -12,9 +12,7 @@ This exercises the entire submission pipeline:
   * the script body being uploaded via the SSH ``cat <<'EOF'`` heredoc,
   * the chmod / sbatch invocations,
   * the sqlite write,
-  * subsequent ``squeue`` parsing,
-  * tailing the SLURM log via the SSE handler,
-  * progress lines updating sqlite as they stream past.
+  * subsequent ``squeue`` parsing.
 
 No process leaves the box; no Bitwarden is touched.
 """
@@ -24,16 +22,21 @@ from __future__ import annotations
 import json
 import os
 import re
+import signal
 import stat
+import subprocess
 import textwrap
 import time
 from pathlib import Path
 
 import pytest
 
+from euclid_polish.config import Config
 from euclid_polish.web import app as app_module
-from euclid_polish.web import fasrc_config, fasrc_jobs
+from euclid_polish.web import fasrc_config, fasrc_jobs, fasrc_queue, job_config
+from euclid_polish.web.fasrc_gate import FASRC_OFFLINE_PAYLOAD
 from euclid_polish.web.remote import STATE
+from euclid_polish.web.routes import fasrc as fasrc_routes
 from tests._local_ssh import LocalSSHSession
 
 # ---------------------------------------------------------------------------
@@ -113,7 +116,6 @@ def fake_remote(tmp_path, monkeypatch):
         ckpt_dir=str(ckpt_dir),
         local_ckpt_mirror=str(tmp_path / "local_ckpt"),
         n_gpus=1, n_cpus=4, memory="8G", time_limit="01:00:00",
-        n_train=10, n_valid=2, image_size=12, batch_size=2, steps=1000,
     )
     fasrc_config.save(cfg)
 
@@ -149,17 +151,36 @@ def client(fake_remote):
 
 
 # ---------------------------------------------------------------------------
-# Submit flow
+# Submit flow (synthetic generation through the generic step submit; the
+# legacy ``/api/fasrc/submit`` route is gone)
 # ---------------------------------------------------------------------------
 
-def test_submit_writes_sbatch_script_with_correct_contents(fake_remote, client):
-    r = client.post("/api/fasrc/submit", data={
-        "confirm": "yes",
-        "label": "integration",
-        "n_gpus": 2, "n_cpus": 16, "memory": "64G", "time_limit": "06:00:00",
-        "n_train": 100, "n_valid": 5, "image_size": 60,
-        "extra_flags": "--skip-generate",
-    })
+SYNTH = "/api/fasrc/steps/synthetic_generate/submit"
+
+
+@pytest.fixture
+def job_config_file(tmp_path, monkeypatch):
+    """A tmp ``job_config.json``: the step submit injects its scene counts."""
+    path = tmp_path / "job_config.json"
+    monkeypatch.setattr(job_config, "CONFIG_PATH", str(path))
+    monkeypatch.setattr(job_config, "CONFIG_DIR", str(tmp_path))
+
+    def write(**fields):
+        path.write_text(json.dumps(fields))
+    write(n_train=100, n_valid=5, n_test=3, hr_image_size=60)
+    return write
+
+
+def _synth_form(**extra):
+    return {"confirm": "yes", "n_gpus": 0, "n_cpus": 8, "memory": "32G",
+            "time_limit": "12:00:00", **extra}
+
+
+def test_submit_writes_sbatch_script_with_correct_contents(
+        fake_remote, client, job_config_file):
+    r = client.post(SYNTH, data=_synth_form(
+        label="integration", n_gpus=2, n_cpus=16, memory="64G",
+        time_limit="06:00:00", extra_flags="--skip-generate"))
     assert r.status_code == 200, r.get_json()
     data = r.get_json()
     assert data["ok"] is True
@@ -179,13 +200,12 @@ def test_submit_writes_sbatch_script_with_correct_contents(fake_remote, client):
     assert "#SBATCH --cpus-per-task=16" in body
     assert "#SBATCH --mem=64G" in body
     assert "#SBATCH --time=06:00:00" in body
-    # Generation knobs reached the run_pipeline command. Each argv token
-    # is rendered on its own continuation line by the consolidated
-    # builder, so we check the tokens individually instead of as a
-    # joined ``--name value`` substring.
+    # Generation knobs (from /config's job config) reached the run_pipeline
+    # command. Each argv token is rendered on its own continuation line.
     for token in (
         "--ntrain", "100",
         "--nvalid", "5",
+        "--ntest", "3",
         "--image-size", "60",
         "--skip-generate",
         "--skip-train",
@@ -204,15 +224,10 @@ def test_submit_writes_sbatch_script_with_correct_contents(fake_remote, client):
     assert str(fake_remote["cfg"].ckpt_dir) in body
 
 
-def test_submit_invokes_sbatch_with_the_built_script(fake_remote, client):
-    r = client.post("/api/fasrc/submit", data={
-        "confirm": "yes",
-        "label": "y",
-        "n_gpus": 1, "n_cpus": 8, "memory": "32G", "time_limit": "12:00:00",
-        "n_train": 6400, "n_valid": 200, "image_size": 510, "batch_size": 16,
-        "steps": 400000, "extra_flags": "",
-    })
-    assert r.status_code == 200
+def test_submit_invokes_sbatch_with_the_built_script(
+        fake_remote, client, job_config_file):
+    r = client.post(SYNTH, data=_synth_form(label="y", extra_flags=""))
+    assert r.status_code == 200, r.get_json()
     # The shim wrote its argv list to sbatch.argv.
     argv = fake_remote["sbatch_log"].read_text().strip().splitlines()
     assert len(argv) == 1
@@ -220,20 +235,17 @@ def test_submit_invokes_sbatch_with_the_built_script(fake_remote, client):
     assert argv[0].endswith(".sh")
 
 
-def test_second_submit_is_queued_while_first_runs(fake_remote, client):
-    base = {"confirm": "yes",
-            "n_gpus": 1, "n_cpus": 8, "memory": "32G", "time_limit": "12:00:00",
-            "n_train": 100, "n_valid": 5, "image_size": 60, "batch_size": 4,
-            "steps": 1000, "extra_flags": ""}
+def test_second_submit_is_queued_while_first_runs(
+        fake_remote, client, job_config_file):
     # First submit goes straight to the cluster (lane is free).
-    r1 = client.post("/api/fasrc/submit", data={**base, "label": "first"})
+    r1 = client.post(SYNTH, data=_synth_form(label="first"))
     d1 = r1.get_json()
     assert d1["ok"] is True and d1.get("jobid") == "99999"
     assert not d1.get("queued")
 
     # Second submit, while 99999 is PENDING in the DB → queued locally, no
     # new sbatch. The response carries the queue (list of names).
-    r2 = client.post("/api/fasrc/submit", data={**base, "label": "second"})
+    r2 = client.post(SYNTH, data=_synth_form(label="second"))
     d2 = r2.get_json()
     assert d2["ok"] is True and d2.get("queued") is True
     assert d2["queue"]["names"] == ["second"]
@@ -242,46 +254,27 @@ def test_second_submit_is_queued_while_first_runs(fake_remote, client):
     assert argv.count(".sh") <= 1
 
 
-def test_submit_records_job_in_sqlite(fake_remote, client):
-    client.post("/api/fasrc/submit", data={
-        "confirm": "yes",
-        "label": "remember me",
-        "n_gpus": 1, "n_cpus": 8, "memory": "32G", "time_limit": "12:00:00",
-        "n_train": 6400, "n_valid": 200, "image_size": 510, "extra_flags": "",
-    })
+def test_submit_records_job_in_sqlite(fake_remote, client, job_config_file):
+    job_config_file(n_train=6400, n_valid=200, n_test=100, hr_image_size=510)
+    client.post(SYNTH, data=_synth_form(label="remember me", extra_flags=""))
     row = fake_remote["db"].get("99999")
     assert row is not None
     assert row["label"] == "remember me"
     assert row["state"] == "PENDING"
     p = json.loads(row["params_json"])
     # Generation params are persisted; the decoupled training knobs are not.
-    assert p["n_train"] == 6400
-    assert p["image_size"] == 510
+    assert int(p["n_train"]) == 6400
+    assert int(p["image_size"]) == 510
+    assert p["step_id"] == "synthetic_generate"
     assert "steps" not in p
     assert "batch_size" not in p
 
 
 def test_synthetic_submit_persists_prepared_calibration_identities(
-    fake_remote, client, monkeypatch,
+    fake_remote, client, monkeypatch, job_config_file,
 ):
     """The submit ledger receives sidecar identities, not pre-render form data."""
     del fake_remote
-    joint = {
-        "fingerprint": "j" * 64,
-        "generation": {"surface_density_arcmin2": 123.0},
-    }
-    stars = {
-        "fingerprint": "s" * 64,
-        "population": {"density_arcmin2": 3.0},
-    }
-    monkeypatch.setattr(
-        "euclid_polish.web.helpers.population_calibration.joint_galaxy_state",
-        lambda: {"active": joint, "is_active": True},
-    )
-    monkeypatch.setattr(
-        "euclid_polish.web.helpers.population_calibration.star_state",
-        lambda: {"active": stars, "is_active": True},
-    )
     submitted: dict = {}
 
     def capture_submit(_ssh, *, cfg, built, label, params, step_id):
@@ -291,17 +284,8 @@ def test_synthetic_submit_persists_prepared_calibration_identities(
 
     monkeypatch.setattr(fasrc_jobs, "submit_sbatch_script", capture_submit)
 
-    response = client.post("/api/fasrc/submit", data={
-        "confirm": "yes",
-        "n_cpus": 4,
-        "n_gpus": 0,
-        "memory": "8G",
-        "time_limit": "01:00:00",
-        "n_train": 10,
-        "n_valid": 2,
-        "n_test": 1,
-        "image_size": 60,
-    })
+    response = client.post(SYNTH, data=_synth_form(
+        n_cpus=4, memory="8G", time_limit="01:00:00"))
 
     assert response.status_code == 200, response.get_json()
     assert submitted["_joint_galaxy_population_fingerprint"] == "j" * 64
@@ -311,9 +295,39 @@ def test_synthetic_submit_persists_prepared_calibration_identities(
 
 def test_submit_refuses_when_disconnected(client, monkeypatch):
     monkeypatch.setattr(STATE, "ssh", None)
-    r = client.post("/api/fasrc/submit", data={})
-    assert r.status_code == 400
-    assert "not connected" in r.get_json()["error"]
+    r = client.post(SYNTH, data={})
+    assert r.status_code == 503
+    assert r.get_json() == FASRC_OFFLINE_PAYLOAD
+
+
+def test_legacy_submit_endpoint_is_gone(client):
+    assert client.post("/api/fasrc/submit", data={}).status_code == 404
+
+
+def test_queued_legacy_synthetic_spec_is_promoted_as_the_step(
+        fake_remote, client, job_config_file):
+    """A spec queued by the removed ``/api/fasrc/submit`` (``kind`` =
+    ``synthetic``, no resource fields) still submits, as the
+    ``synthetic_generate`` step with its default resources."""
+    bin_dir = fake_remote["bin_dir"]
+    (bin_dir / "squeue").write_text("#!/usr/bin/env bash\nexit 0\n")
+    os.chmod(bin_dir / "squeue", 0o755)
+    fasrc_queue.QUEUE.enqueue(
+        {"kind": "synthetic", "step": "gen_convolve",
+         "form": {"n_train": "7", "n_valid": "1", "n_test": "1",
+                  "image_size": "60"}},
+        "legacy")
+
+    r = client.get("/api/fasrc/current-submission")
+
+    assert r.status_code == 200, r.get_json()
+    assert fasrc_queue.QUEUE.public()["count"] == 0
+    assert not fasrc_queue.QUEUE.halted, fasrc_queue.QUEUE.halted_reason
+    row = fake_remote["db"].get("99999")
+    assert row is not None
+    assert json.loads(row["params_json"])["step_id"] == "synthetic_generate"
+    body = sorted((fake_remote["repo"] / "logs" / "jobs").glob("*.sh"))[0].read_text()
+    assert "#SBATCH --cpus-per-task=16" in body       # the step default
 
 
 # ---------------------------------------------------------------------------
@@ -344,70 +358,6 @@ def test_queue_endpoint_parses_fake_squeue_output(fake_remote, client):
     assert len(data["rows"]) == 2
     assert data["rows"][0]["state"] == "RUNNING"
     assert data["rows"][1]["jobid"] == "1002"
-
-
-def test_training_status_running_returns_parsed_summary(fake_remote, client):
-    """Plant a fake squeue + a Reporter *events* stream (NOT logs), then
-    assert the route folds stage / progress / metrics / checkpoint straight
-    from the events — no log parsing."""
-    bin_dir = fake_remote["bin_dir"]
-    # Squeue: one RUNNING job. The jobid matches what we'll plant in sqlite.
-    (bin_dir / "squeue").write_text(textwrap.dedent("""\
-        #!/usr/bin/env bash
-        printf '88888|euclid-test|RUNNING|00:10:00|12:00:00|1|holygpu1|2026-05-13T01:00:00\n'
-    """))
-    os.chmod(bin_dir / "squeue", 0o755)
-
-    cfg = fake_remote["cfg"]
-    log_dir = Path(cfg.repo_path) / "logs" / "jobs"
-    log_dir.mkdir(parents=True, exist_ok=True)
-    out_path    = log_dir / "euclid-test.out"
-    err_path    = log_dir / "euclid-test.err"
-    events_path = log_dir / "euclid-test.events"
-    fake_remote["db"].insert(
-        "88888", label="test run", params={"steps": 400_000},
-        script_path=str(log_dir / "euclid-test.sh"),
-        log_path=str(out_path), err_path=str(err_path),
-        events_path=str(events_path),
-    )
-    # The structured event stream the trainer writes via Reporter: one
-    # stage, two step events (so rate/ETA is computable) and two metric
-    # samples (the second wrote a checkpoint → saved=True).
-    events = [
-        {"ts": 100.0, "kind": "stage",  "value": "training 400000 steps"},
-        {"ts": 110.0, "kind": "step",   "value": {"current": 11000, "total": 400000, "label": "train"}},
-        {"ts": 110.0, "kind": "metric", "value": {"step": 11000, "total": 400000, "loss": 4.3, "psnr_stretched": 22.1, "psnr_raw": 19.7}},
-        {"ts": 210.0, "kind": "step",   "value": {"current": 12000, "total": 400000, "label": "train"}},
-        {"ts": 210.0, "kind": "metric", "value": {"step": 12000, "total": 400000, "loss": 4.21, "psnr_stretched": 22.314, "psnr_raw": 19.872, "saved": True}},
-    ]
-    events_path.write_text("".join(json.dumps(e) + "\n" for e in events))
-
-    r = client.get("/api/fasrc/training-status")
-    assert r.status_code == 200, r.get_json()
-    data = r.get_json()
-    assert data["ok"] is True
-    assert data["running"] is True
-    assert data["job"]["jobid"]  == "88888"
-    assert data["job"]["label"]  == "test run"
-    assert data["stage"] == "training 400000 steps"
-    assert data["progress"]["current"] == 12000
-    assert data["progress"]["total"]   == 400000
-    assert data["latest_metrics"]["psnr_stretched"] == 22.314
-    assert data["last_checkpoint"] == "step 12000"       # from the saved flag
-    assert data["latest_validation"]["step"] == 12000
-    assert len(data["validations"]) == 2
-    assert data["eta_seconds"] is not None
-
-
-def test_training_status_returns_running_false_when_queue_empty(fake_remote, client):
-    bin_dir = fake_remote["bin_dir"]
-    (bin_dir / "squeue").write_text("#!/usr/bin/env bash\nexit 0\n")
-    os.chmod(bin_dir / "squeue", 0o755)
-    r = client.get("/api/fasrc/training-status")
-    assert r.status_code == 200
-    data = r.get_json()
-    assert data["ok"] is True
-    assert data["running"] is False
 
 
 def test_git_pull_flags_env_update_when_environment_yml_changed(fake_remote, client):
@@ -443,55 +393,6 @@ def test_git_pull_does_not_flag_env_update_for_unrelated_changes(fake_remote, cl
     data = r.get_json()
     assert data["env_update_needed"] is False
     assert data["changed_files"] == ["README.md"]
-
-
-# ---------------------------------------------------------------------------
-# Live log SSE
-# ---------------------------------------------------------------------------
-
-def test_log_stream_emits_lines(fake_remote, client):
-    # First submit a job so the db knows about it + the log path.
-    r = client.post("/api/fasrc/submit", data={
-        "confirm": "yes",
-        "label": "stream test",
-        "n_gpus": 1, "n_cpus": 8, "memory": "32G", "time_limit": "12:00:00",
-        "n_train": 10, "n_valid": 2, "image_size": 12, "batch_size": 2,
-        "steps": 1000, "extra_flags": "",
-    })
-    jobid = r.get_json()["jobid"]
-    log_path = Path(fake_remote["db"].get(jobid)["log_path"])
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-
-    # Pre-seed the log file with a few lines so ``tail -F`` has something
-    # to emit before we close the stream.
-    log_path.write_text(textwrap.dedent("""\
-        starting training
-        step 100/1000 loss=4.2
-        step 200/1000 loss=3.7
-        step 300/1000 loss=3.1
-    """))
-
-    # The SSE handler is a generator — pull a few events with a timeout
-    # cap on iterations so the test never hangs.
-    resp = client.get(f"/api/fasrc/log/{jobid}?which=out", buffered=False)
-    assert resp.status_code == 200
-    chunks = []
-    deadline = time.time() + 5
-    for chunk in resp.response:
-        chunks.append(chunk.decode() if isinstance(chunk, bytes) else chunk)
-        if any("300/1000" in c for c in chunks) or time.time() > deadline:
-            break
-    resp.close()
-    combined = "".join(chunks)
-    assert "step 100/1000" in combined
-    assert "step 300/1000" in combined
-
-    # The log stream is now a pure raw-log VIEWER: it emits lines but does
-    # NOT scrape progress out of them. Progress comes from the Reporter
-    # event stream (folded in JobStatus by /api/fasrc/training-status), so
-    # the DB progress is untouched by merely tailing the log.
-    row = fake_remote["db"].get(jobid)
-    assert row["progress_step"] in (None, 0)
 
 
 # ---------------------------------------------------------------------------
@@ -533,7 +434,6 @@ def test_mirror_status_reflects_last_sync(fake_remote, client):
 
 def _has_gnu_find() -> bool:
     """``find -printf`` is GNU-only; BSD/macOS find rejects the flag."""
-    import subprocess
     r = subprocess.run(["find", "/tmp", "-maxdepth", "0", "-printf", "%p"],
                        capture_output=True)
     return r.returncode == 0
@@ -551,50 +451,6 @@ def test_data_listing_picks_up_tfrecord_files(fake_remote, client):
     assert data["ok"] is True
     paths = {t["path"] for t in data["tfrecords"]}
     assert any(p.endswith("clean_train.tfrecord") for p in paths)
-
-
-def test_stages_endpoint_returns_csv_rows_for_finished_job(fake_remote, client):
-    """``/api/fasrc/stages/<jobid>`` reads the remote stages CSV that
-    ``run_pipeline.py``'s StageTimer writes, and returns one JSON row
-    per stage with parsed durations and the params at run time."""
-    cfg = fake_remote["cfg"]
-    rec_dir = Path(cfg.data_dir) / "images" / "records_v2"
-    rec_dir.mkdir(parents=True, exist_ok=True)
-    (rec_dir / "stages_12345.csv").write_text(textwrap.dedent("""\
-        jobid,stage,started_at,ended_at,duration_seconds,params_dependent,n_train,n_valid,image_size,batch_size,steps
-        12345,init,1000000.000,1000012.500,12.500,0,6400,200,510,16,400000
-        12345,generate,1000012.500,1001000.000,987.500,1,6400,200,510,16,400000
-        12345,convolve,1001000.000,1001400.000,400.000,1,6400,200,510,16,400000
-        12345,train,1001400.000,1100000.000,98600.000,1,6400,200,510,16,400000
-    """))
-    r = client.get("/api/fasrc/stages/12345")
-    assert r.status_code == 200
-    data = r.get_json()
-    assert data["ok"] is True
-    rows = data["rows"]
-    assert [r["stage"] for r in rows] == ["init", "generate", "convolve", "train"]
-    assert rows[0]["params_dependent"] is False
-    assert rows[1]["params_dependent"] is True
-    assert rows[3]["duration_seconds"] == 98600.0
-    assert rows[1]["n_train"] == "6400"
-
-
-def test_stages_endpoint_returns_empty_when_csv_missing(fake_remote, client):
-    """A job that hasn't reached the first stage marker yet doesn't have
-    a stages CSV on disk. The endpoint should still succeed with an
-    empty row list so the UI can render a 'pending' state."""
-    r = client.get("/api/fasrc/stages/99999")
-    assert r.status_code == 200
-    data = r.get_json()
-    assert data["ok"] is True
-    assert data["rows"] == []
-    assert "stages_99999.csv" in data["path"]
-
-
-def test_stages_endpoint_rejects_disconnected(client, monkeypatch):
-    monkeypatch.setattr(STATE, "ssh", None)
-    r = client.get("/api/fasrc/stages/12345")
-    assert r.status_code == 400
 
 
 def test_bootstrap_data_creates_symlinks(fake_remote, client):
@@ -645,25 +501,23 @@ def test_bootstrap_data_reports_missing_sources(fake_remote, client):
 def test_bootstrap_data_refuses_when_disconnected(client, monkeypatch):
     monkeypatch.setattr(STATE, "ssh", None)
     r = client.post("/api/fasrc/bootstrap-data")
-    assert r.status_code == 400
+    assert r.status_code == 503
+    assert r.get_json() == FASRC_OFFLINE_PAYLOAD
 
 
-def test_env_update_streams_lines_and_terminates(fake_remote, client):
-    """SSE env-update routes the `module load python + mamba env update`
-    pipeline through the active SSH session. We stand in fake `module` /
-    `mamba` shims that print recognisable lines, then assert the stream
-    delivered them in order and closed with a ``done`` event."""
+def _env_update_shims(fake_remote, *, mamba_exit: int = 0) -> None:
     bin_dir = fake_remote["bin_dir"]
     (bin_dir / "module").write_text(
         "#!/usr/bin/env bash\necho \"module $*\"\n"
     )
-    (bin_dir / "mamba").write_text(textwrap.dedent("""\
+    (bin_dir / "mamba").write_text(textwrap.dedent(f"""\
         #!/usr/bin/env bash
         echo "mamba argv: $*"
         # Read+echo stdin so we can verify `yes |` is feeding it.
         head -3 || true
         echo "Proceed ([y]/n)? y"
         echo "Updated 0 packages."
+        exit {mamba_exit}
     """))
     for shim in ("module", "mamba"):
         os.chmod(bin_dir / shim, 0o755)
@@ -674,31 +528,210 @@ def test_env_update_streams_lines_and_terminates(fake_remote, client):
         "dependencies:\n  - python=3.12\n",
     )
 
-    r = client.get("/api/fasrc/env-update", buffered=False)
-    assert r.status_code == 200
-    chunks = []
-    deadline = time.time() + 5
-    for chunk in r.response:
-        chunks.append(chunk.decode() if isinstance(chunk, bytes) else chunk)
-        if any("done" in c for c in chunks) or time.time() > deadline:
-            break
-    r.close()
-    combined = "".join(chunks)
-    # Header lines from the route generator.
-    assert "$ module load python" in combined
-    # Output captured from the fake `module` and `mamba` shims.
-    assert "module load python" in combined
-    assert "mamba argv:" in combined
-    assert "Updated 0 packages" in combined
-    # And the route emitted the ``done`` event so the client can close.
-    assert "event: done" in combined
+
+def _finished_job(client, job_id: str, timeout: float = 10.0) -> dict:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        job = client.get(f"/api/jobs/{job_id}").get_json()
+        if job["status"] != "running":
+            return job
+        time.sleep(0.02)
+    raise AssertionError(f"env-update job {job_id} never finished")
+
+
+def test_env_update_runs_as_a_local_job_streaming_into_its_log(fake_remote, client):
+    """``POST /api/fasrc/env-update`` routes the `module load python + mamba
+    env update` pipeline through the active SSH session inside a local job
+    (kind ``fasrc-env-update``) whose log receives the remote output line by
+    line. We stand in fake `module` / `mamba` shims that print recognisable
+    lines, then assert the log delivered them in order."""
+    _env_update_shims(fake_remote)
+
+    r = client.post("/api/fasrc/env-update")
+    assert r.status_code == 200, r.get_json()
+    body = r.get_json()
+    assert body["ok"] is True
+
+    job = _finished_job(client, body["job_id"])
+    assert job["kind"] == "fasrc-env-update"
+    assert job["status"] == "done", job["log"]
+    log = job["log"]
+    # Header lines from the job itself.
+    assert "$ module load python" in log
+    # Output captured from the fake `module` and `mamba` shims, in order.
+    assert log.index("module load python") < log.index("mamba argv:")
+    assert log.index("mamba argv:") < log.index("Updated 0 packages")
+    assert "__EP_EXIT__" not in log
+    assert job["result"] == {"exit_code": 0, "lines": job["result"]["lines"]}
+    assert job["result"]["lines"] >= 3
+
+
+def test_env_update_job_fails_when_the_remote_update_fails(fake_remote, client):
+    _env_update_shims(fake_remote, mamba_exit=3)
+
+    body = client.post("/api/fasrc/env-update").get_json()
+    job = _finished_job(client, body["job_id"])
+
+    assert job["status"] == "failed"
+    assert "exit code 3" in job["error"]
+    assert "Updated 0 packages" in job["log"]
+
+
+def _write_mamba(fake_remote, body: str) -> None:
+    mamba = fake_remote["bin_dir"] / "mamba"
+    mamba.write_text("#!/usr/bin/env bash\n" + textwrap.dedent(body))
+    os.chmod(mamba, 0o755)
+
+
+def _silent_mamba(fake_remote, pid_file: Path) -> None:
+    """A mamba that prints one line, then solves silently for 30 s."""
+    _env_update_shims(fake_remote)
+    _write_mamba(fake_remote, f"""\
+        echo $$ > {pid_file}
+        echo "Resolving environment"
+        sleep 30
+        echo "Updated 0 packages."
+    """)
+
+
+def _wait_for_log(client, job_id: str, needle: str, timeout: float = 10.0) -> dict:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        job = client.get(f"/api/jobs/{job_id}").get_json()
+        if needle in (job["log"] or ""):
+            return job
+        assert job["status"] == "running", job
+        time.sleep(0.02)
+    raise AssertionError(f"{needle!r} never reached the log of job {job_id}")
+
+
+def _alive(pid: int) -> bool:
+    """True while ``pid`` runs (a zombie awaiting its reaper counts as gone)."""
+    out = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)],
+                         capture_output=True, text=True).stdout.strip()
+    return bool(out) and not out.startswith("Z")
+
+
+class _ChannelDropSession(LocalSSHSession):
+    """Closing a stream only drops the channel, like the local ``ssh`` client
+    exiting: the "remote" processes get no signal, only a closed stdout
+    (no pty, so no SIGHUP either)."""
+
+    def __init__(self, cwd: str, env: dict | None = None) -> None:
+        super().__init__(cwd=cwd, env=env)
+        self.procs: list[subprocess.Popen] = []
+
+    def stream(self, cmd):
+        proc = subprocess.Popen(
+            ["bash", "-c", cmd], cwd=self.cwd, env=self._merged_env(),
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, bufsize=1, start_new_session=True,
+        )
+        self.procs.append(proc)
+        try:
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                yield line.rstrip("\n")
+        finally:
+            proc.stdout.close()
+
+
+def test_env_update_cancel_is_honoured_while_mamba_is_silent(
+        fake_remote, client, monkeypatch, tmp_path):
+    """A mamba solve can print nothing for minutes; the remote heartbeat
+    keeps the job ticking so a cancel lands within one heartbeat, not at
+    mamba's next output line."""
+    monkeypatch.setattr(fasrc_routes, "_ENV_UPDATE_HEARTBEAT_S", 0.2)
+    _silent_mamba(fake_remote, tmp_path / "mamba.pid")
+
+    job_id = client.post("/api/fasrc/env-update").get_json()["job_id"]
+    _wait_for_log(client, job_id, "Resolving environment")
+    started = time.monotonic()
+    assert client.post(f"/api/jobs/{job_id}/cancel").get_json() == {"ok": True}
+
+    job = _finished_job(client, job_id, timeout=5.0)
+    assert job["status"] == "cancelled"
+    assert time.monotonic() - started < 5.0
+    assert "Updated 0 packages" not in job["log"]
+    assert "__EP_" not in job["log"]
+
+
+def test_env_update_remote_side_dies_when_the_channel_closes(
+        fake_remote, client, monkeypatch, tmp_path):
+    """Cancel closes the stream; with no pty the remote processes get no
+    signal, so the remote heartbeat watchdog notices its write failing and
+    kills the remote process group (mamba included)."""
+    monkeypatch.setattr(fasrc_routes, "_ENV_UPDATE_HEARTBEAT_S", 0.2)
+    pid_file = tmp_path / "mamba.pid"
+    _silent_mamba(fake_remote, pid_file)
+    session = _ChannelDropSession(cwd=STATE.ssh.cwd, env=STATE.ssh.env)
+    monkeypatch.setattr(STATE, "ssh", session)
+
+    job_id = client.post("/api/fasrc/env-update").get_json()["job_id"]
+    try:
+        _wait_for_log(client, job_id, "Resolving environment")
+        mamba_pid = int(pid_file.read_text())
+        assert client.post(f"/api/jobs/{job_id}/cancel").get_json() == {"ok": True}
+        assert _finished_job(client, job_id, timeout=5.0)["status"] == "cancelled"
+
+        (remote_shell,) = session.procs
+        remote_shell.wait(timeout=5)   # the whole remote group was killed
+        deadline = time.time() + 5
+        while _alive(mamba_pid) and time.time() < deadline:
+            time.sleep(0.05)
+        assert not _alive(mamba_pid)
+    finally:
+        for proc in session.procs:
+            if proc.poll() is None:
+                os.killpg(proc.pid, signal.SIGKILL)
+                proc.wait(timeout=5)
+
+
+def test_env_update_heartbeat_never_reaches_the_log(fake_remote, client, monkeypatch):
+    """Heartbeat lines are filtered, even one glued to a partial output line
+    (mamba's prompt has no newline)."""
+    monkeypatch.setattr(fasrc_routes, "_ENV_UPDATE_HEARTBEAT_S", 0.1)
+    _env_update_shims(fake_remote)
+    _write_mamba(fake_remote, """\
+        printf 'Proceed ([y]/n)? '
+        sleep 0.5
+        echo y
+        echo "Updated 0 packages."
+    """)
+
+    job_id = client.post("/api/fasrc/env-update").get_json()["job_id"]
+    job = _finished_job(client, job_id)
+
+    assert job["status"] == "done", job["log"]
+    assert "__EP_" not in job["log"]
+    assert "Proceed ([y]/n)?" in job["log"]
+    assert "Updated 0 packages" in job["log"]
+
+
+def test_env_update_heartbeat_does_not_hold_the_stream_open(
+        fake_remote, client, monkeypatch):
+    """A quick update ends as soon as mamba does: the heartbeat (and its
+    ``sleep``) must not keep the channel open for a full period."""
+    monkeypatch.setattr(fasrc_routes, "_ENV_UPDATE_HEARTBEAT_S", 30)
+    _env_update_shims(fake_remote)
+
+    started = time.monotonic()
+    job_id = client.post("/api/fasrc/env-update").get_json()["job_id"]
+    job = _finished_job(client, job_id, timeout=10.0)
+
+    assert job["status"] == "done", job["log"]
+    assert time.monotonic() - started < 5.0
 
 
 def test_env_update_refuses_when_disconnected(client, monkeypatch):
     monkeypatch.setattr(STATE, "ssh", None)
-    r = client.get("/api/fasrc/env-update")
-    assert r.status_code == 400
-    assert "not connected" in r.get_data(as_text=True)
+    r = client.post("/api/fasrc/env-update")
+    assert r.status_code == 503
+    assert r.get_json() == FASRC_OFFLINE_PAYLOAD
+
+
+def test_env_update_is_not_reachable_with_get(client):
+    assert client.get("/api/fasrc/env-update").status_code == 405
 
 
 def test_extend_time_endpoint_remains_removed(client):
@@ -730,8 +763,6 @@ def test_cancel_endpoint_marks_job_cancelled(fake_remote, client):
 
 def test_evaluation_sync_pulls_results(fake_remote, client, tmp_path, monkeypatch):
     """POST /api/evaluation/sync rsyncs <data_dir>/eval_results → local gallery."""
-    from euclid_polish.config import Config
-
     # Seed a finished run under the fake remote's eval_results dir.
     remote_run = fake_remote["data_dir"] / "eval_results" / "lenses"
     (remote_run / "obj1").mkdir(parents=True)
@@ -743,7 +774,7 @@ def test_evaluation_sync_pulls_results(fake_remote, client, tmp_path, monkeypatc
     local_eval = tmp_path / "local_eval"
     monkeypatch.setattr(Config, "EVAL_RESULTS_DIR", str(local_eval))
 
-    r = client.post("/api/evaluation/sync")
+    r = client.post("/api/evaluation/sync", data={"confirm": "1"})
     assert r.status_code == 200, r.get_json()
     j = r.get_json()
     assert j["ok"] is True
@@ -758,5 +789,5 @@ def test_evaluation_sync_pulls_results(fake_remote, client, tmp_path, monkeypatc
 def test_evaluation_sync_refuses_when_disconnected(client, monkeypatch):
     monkeypatch.setattr(STATE, "ssh", None)
     r = client.post("/api/evaluation/sync")
-    assert r.status_code == 400
-    assert r.get_json()["ok"] is False
+    assert r.status_code == 503
+    assert r.get_json() == FASRC_OFFLINE_PAYLOAD

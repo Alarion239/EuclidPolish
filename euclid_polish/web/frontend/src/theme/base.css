@@ -1,0 +1,87 @@
+/* Global element styles + the few app-wide utility classes. Tokens live in
+   tokens.css; component styles live with their components. */
+
+* { box-sizing: border-box; }
+
+html, body, #root { height: 100%; margin: 0; }
+
+body {
+  background: var(--app-bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: var(--fs-base);
+  line-height: var(--lh-base);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Theme cross-fade — flipping the theme glides instead of snapping. */
+body, .rail, .ui-card, .ui-btn, .ui-chip, .ui-input, .ui-select {
+  transition: background-color var(--dur-base) ease, border-color var(--dur-base) ease,
+    color var(--dur-base) ease;
+}
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { color: var(--accent-press); }
+
+::selection { background: var(--accent-soft); }
+
+/* Keyboard focus is always visible (zero specificity: components may restyle).
+   The ring is a box-shadow; the TRANSPARENT outline is invisible normally but
+   is repainted with a system colour in forced-colors mode (Windows High
+   Contrast), where box-shadows are not painted at all. */
+:where(a, button, [role="button"], [role="tab"], [role="option"], [role="menuitem"],
+  [tabindex]:not([tabindex="-1"]), summary):focus-visible {
+  outline: 2px solid transparent;
+  outline-offset: 1px;
+  box-shadow: var(--ring);
+  border-radius: var(--r-sm);
+}
+/* Forced colours: every focused control (inputs too) gets a real outline,
+   overriding component rules that use `outline: none` + a box-shadow ring. */
+@media (forced-colors: active) {
+  :focus-visible {
+    outline: 2px solid CanvasText !important;
+    outline-offset: 1px;
+  }
+}
+
+/* tabular figures for all numeric/mono contexts */
+.mono, code, kbd { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+
+/* scrollbars — thin, on-theme */
+* { scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-thumb {
+  background: var(--border-strong); border-radius: var(--r-pill);
+  border: 3px solid transparent; background-clip: content-box;
+}
+
+h1, h2, h3, h4 { margin: 0; font-weight: var(--fw-semibold); letter-spacing: -0.01em; }
+
+/* uppercase micro-label used for section headers / eyebrows */
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  letter-spacing: var(--ls-eyebrow);
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+/* secondary text (used across pages; previously only in the classic CSS) */
+.muted { color: var(--text-dim); }
+
+/* visually hidden, still announced by screen readers */
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

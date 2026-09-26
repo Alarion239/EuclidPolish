@@ -1,36 +1,46 @@
 """Collection registry feeding the unified client-side cutout viewer.
 
-The viewer (``static/cutout_viewer.js``) renders raw N-band float cubes in
-the browser. This module is the server side of that contract: it abstracts
-the three heterogeneous data sources behind one tiny interface so the
-``/viewer`` routes don't care where pixels come from.
+The viewer renders raw N-band float cubes in the browser. This module is the
+server side of that contract (C6 in the web-console plan): it abstracts every
+heterogeneous data source behind one tiny interface so the ``/viewer`` routes
+don't care where pixels come from.
 
 A *collection* is a named source of indexable cutouts. Each registered
 collection provides:
 
-* ``meta(params) -> dict`` — ``count``, ``tiers`` (``[{key,label}]``),
-  ``default_tier``, ``band_names``, and optionally an ``objects`` list
-  (per-index label/grade/available-tiers, used by ``evaluation``).
+* ``meta(params) -> dict`` — ``count``, ``tiers`` (``[{key, label, unit?,
+  hidden?, disabled?}]``), ``default_tier``, ``band_names`` and ``objects``
+  (per index: a stable ``id``, ``label``, ``ra``/``dec`` in degrees when the
+  object is on the sky, and the tiers available for it when they differ).
 * ``cube(index, tier, params) -> (ndarray (H, W, C) float32, info)`` where
-  ``info`` is ``{label, asinh, pixscale}``.
+  ``info`` carries ``label``, ``asinh``, ``pixscale`` and, when known,
+  ``unit`` (``"e-"``, ``"MJy/sr"``, ``"ADU/s"``, ``"arb"``) and ``wcs`` (the
+  compact celestial WCS keywords of *that tier's* pixel grid, FITS 1-based,
+  axis 1 = column; see :func:`celestial_wcs_keywords`).
 
-The principal collections are:
-
-==============  =========  ======================================  ==========
-collection      params     tiers                                    source
-==============  =========  ======================================  ==========
-``sky``         subset     dirty→LR, hr→HR, bhr→BHR                  TFRecords
-``cutouts``     —          real→Euclid                               per-band FITS
-``evaluation``  —          LR / SR / HR (per object)                 object FITS
-``archive-fields`` —       LR                                        multipoint FITS
-``psfs``        —          VIS / Y_E / J_E / H_E cluster kernels     FASRC ePSF FITS
-==============  =========  ======================================  ==========
+==================  ================================  ============================
+collection          tiers                             source
+==================  ================================  ============================
+``sky``             dirty (LR), hr, bhr, sr           synthetic TFRecords
+``cutouts``         real                              real star cutouts (FITS)
+``evaluation``      LR / SR / HR / BHR / std / pcaN    eval-store object FITS
+``ensemble``        lr, sr (production gate), mean,   evaluation cube cache +
+                    std, hr, bhr, combiners, members  records
+``archive-fields``  lr                                multipoint archive FITS
+``real-field``      lr, sr (mean), combiners, …       cached 100-tile real field
+``jwst-euclid``     lr, sr, jwst, jwst_blur           saved JWST × Euclid pairs
+``nexus-field``     lr, sr, jwst, jwst_blur           NEXUS tiled field
+``psfs``            VIS / Y_E / J_E / H_E             cached FASRC ePSF clusters
+==================  ================================  ============================
 
 Band order is always ``Config.LR_INPUT_BAND_NAMES = (VIS, Y_E, J_E, H_E)``.
+SR grids are 2× the LR grid: their WCS is the LR WCS magnified ×2
+(``CD/2``, ``CRPIX → 2·CRPIX − 0.5``), see :func:`scaled_wcs_keywords`.
 """
 from __future__ import annotations
 
 import contextlib
+import csv
 import json
 import math
 import os
@@ -41,26 +51,36 @@ from collections.abc import Callable, Mapping
 from typing import Any, cast
 
 import numpy as np
+from astropy.coordinates import SkyCoord
 from astropy.io import fits
+from astropy.wcs import WCS
+from scipy.ndimage import gaussian_filter
 
 from euclid_polish.config import Config
+from euclid_polish.ensemble import pca_field
 from euclid_polish.eval.combiner import (
     ACTIVE_COMBINER_KINDS,
     COMBINER_MODELS,
     RAW_INCREMENTAL_MINMEANMAX_RBF_KIND,
+    load_combiner,
 )
 from euclid_polish.eval.ensemble_cube_cache import load_cached_field_lr
+from euclid_polish.eval.spatial_gate import SPATIAL_GATE_KIND
 from euclid_polish.image.tfio import read_images, tfrecord_path
 from euclid_polish.psf.core import PSF
 from euclid_polish.training.target_blur import (
     blur_target_array,
     validate_target_fwhm_arcsec,
 )
-from euclid_polish.web.helpers import archive_fields, sky_records
+from euclid_polish.web import job_config
+from euclid_polish.web.helpers import archive_fields, jwst_euclid, real_field, sky_records
 from euclid_polish.web.helpers.paths import _sky_records_local_dir
 from euclid_polish.web.helpers.status import (
+    _cached_fasrc_psf_dir,
+    _cached_psf_clusters_json,
     _ensure_local_star_cutout,
     _record_count,
+    _valid_4band_star_objects,
     _valid_4band_stars,
 )
 
@@ -159,22 +179,165 @@ def color_constants() -> dict[str, Any]:
     }
 
 
-def _as_hwc(arr: np.ndarray) -> np.ndarray:
+def _as_hwc(arr: np.ndarray, *, layout: str = "auto") -> np.ndarray:
     """Normalise a FITS/record array to ``(H, W, C)`` float32.
 
-    Accepts ``(C, H, W)`` (FITS cube convention), ``(H, W, C)`` (records),
-    or ``(H, W)`` (single band → 1 channel).
+    ``layout="chw"`` is the FITS cube convention (the band axis is NAXIS3,
+    i.e. numpy axis 0) and ``"hwc"`` the record / ``.npy`` one; ``"auto"``
+    treats a leading axis strictly shorter than both others as channel-first.
+    Channel counts above four (multi-knee heads: ``(24, H, W)``) are kept,
+    never misread as an image row. ``(H, W)`` becomes one channel.
     """
     a = np.asarray(arr, dtype=np.float32)
     if a.ndim == 2:
         return a[..., None]
     if a.ndim != 3:
         raise ViewerError(415, f"expected 2-D/3-D array, got {a.shape}")
-    # FITS cubes are (C, H, W) with a small leading axis; records are
-    # (H, W, C). Disambiguate by which axis is the short (band) one.
-    if a.shape[0] <= 4 and a.shape[0] < a.shape[-1]:
+    if layout == "chw" or (
+            layout == "auto" and a.shape[0] < a.shape[1] and a.shape[0] < a.shape[2]):
         return np.moveaxis(a, 0, -1)
     return a
+
+
+# ---------------------------------------------------------------------------
+# Celestial WCS + units (contract C6)
+# ---------------------------------------------------------------------------
+
+_WCS_KEYS = ("CTYPE1", "CTYPE2", "CRVAL1", "CRVAL2", "CRPIX1", "CRPIX2",
+             "CD1_1", "CD1_2", "CD2_1", "CD2_2")
+
+
+def celestial_wcs_keywords(source: Any) -> dict[str, Any] | None:
+    """Compact celestial WCS of a FITS header / astropy ``WCS``, or ``None``.
+
+    Always the CD-matrix form (``CD = PC · CDELT`` when the source uses
+    PC/CDELT), FITS 1-based pixel convention, axis 1 = column (x) — what
+    ``X-Cube-WCS`` carries. ``None`` when the source has no celestial WCS.
+    """
+    if source is None:
+        return None
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            wcs = source if isinstance(source, WCS) else WCS(source)
+            wcs = wcs.celestial
+        if not wcs.has_celestial or wcs.naxis != 2:
+            return None
+        matrix = np.asarray(wcs.pixel_scale_matrix, dtype=np.float64)
+        ctype = [str(value) for value in wcs.wcs.ctype]
+        if not all(ctype) or not np.all(np.isfinite(matrix)):
+            return None
+        return {
+            "CTYPE1": ctype[0], "CTYPE2": ctype[1],
+            "CRVAL1": float(wcs.wcs.crval[0]), "CRVAL2": float(wcs.wcs.crval[1]),
+            "CRPIX1": float(wcs.wcs.crpix[0]), "CRPIX2": float(wcs.wcs.crpix[1]),
+            "CD1_1": float(matrix[0, 0]), "CD1_2": float(matrix[0, 1]),
+            "CD2_1": float(matrix[1, 0]), "CD2_2": float(matrix[1, 1]),
+        }
+    except Exception:  # noqa: BLE001 - heterogeneous archive headers
+        return None
+
+
+def shifted_wcs_keywords(keywords: Mapping[str, Any] | None, *,
+                         dx: float, dy: float) -> dict[str, Any] | None:
+    """WCS of a crop whose pixel (0, 0) is source pixel ``(dx, dy)`` (0-based)."""
+    if keywords is None:
+        return None
+    out = dict(keywords)
+    out["CRPIX1"] = float(out["CRPIX1"]) - float(dx)
+    out["CRPIX2"] = float(out["CRPIX2"]) - float(dy)
+    return out
+
+
+def scaled_wcs_keywords(keywords: Mapping[str, Any] | None,
+                        factor: int) -> dict[str, Any] | None:
+    """WCS of a grid ``factor``× finer on the same footprint (SR = 2).
+
+    ``CRPIX → factor·CRPIX − (factor − 1)/2`` and ``CD /= factor``: the
+    ``factor²`` fine pixels exactly subdivide each coarse pixel (the
+    pixel-shuffle geometry), matching :func:`scaled_wcs_header`.
+    """
+    if keywords is None:
+        return None
+    out = dict(keywords)
+    offset = (factor - 1) / 2.0
+    for key in ("CRPIX1", "CRPIX2"):
+        out[key] = float(out[key]) * factor - offset
+    for key in ("CD1_1", "CD1_2", "CD2_1", "CD2_2"):
+        out[key] = float(out[key]) / factor
+    return out
+
+
+def _world_centre(keywords: Mapping[str, Any] | None, height: int,
+                  width: int) -> tuple[float, float] | None:
+    """``(ra, dec)`` of an image's centre under ``keywords``."""
+    if keywords is None:
+        return None
+    try:
+        wcs = WCS(fits.Header(dict(keywords)))
+        ra, dec = wcs.pixel_to_world_values((width - 1) / 2.0, (height - 1) / 2.0)
+    except Exception:  # noqa: BLE001
+        return None
+    ra, dec = float(ra) % 360.0, float(dec)
+    return (ra, dec) if math.isfinite(ra) and math.isfinite(dec) else None
+
+
+_UNIT_ALIASES = {
+    "electron": "e-", "electrons": "e-", "e-": "e-", "e": "e-",
+    "electron/pixel": "e-", "electrons/pixel": "e-", "e-/pixel": "e-",
+    "mjy/sr": "MJy/sr", "mjysr-1": "MJy/sr", "mjy.sr-1": "MJy/sr",
+    "adu/s": "ADU/s", "adu/sec": "ADU/s", "count/s": "ADU/s", "counts/s": "ADU/s",
+}
+
+
+def unit_from_header(header: Mapping[str, Any] | None, default: str = "arb") -> str:
+    """The viewer unit of a FITS ``BUNIT`` (``e-``, ``MJy/sr``, ``ADU/s``)."""
+    raw = "".join(str((header or {}).get("BUNIT") or "").strip().lower().split())
+    return _UNIT_ALIASES.get(raw, default)
+
+
+_HEADER_CACHE: OrderedDict[tuple[str, int, int], fits.Header | None] = OrderedDict()
+_HEADER_CACHE_MAX = 256
+
+
+def _fits_header(path: str | os.PathLike[str], hdu: int = 0) -> fits.Header | None:
+    """One HDU's header without reading pixels (cached by path + mtime)."""
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return None
+    key = (os.fspath(path), int(stat.st_mtime_ns), int(hdu))
+    if key in _HEADER_CACHE:
+        _HEADER_CACHE.move_to_end(key)
+        return _HEADER_CACHE[key]
+    try:
+        header: fits.Header | None = fits.getheader(path, hdu)
+    except (OSError, IndexError, KeyError):
+        header = None
+    _HEADER_CACHE[key] = header
+    if len(_HEADER_CACHE) > _HEADER_CACHE_MAX:
+        _HEADER_CACHE.popitem(last=False)
+    return header
+
+
+_FILE_WCS_CACHE: OrderedDict[tuple[str, int, int], dict[str, Any] | None] = OrderedDict()
+
+
+def _file_wcs(path: str | os.PathLike[str], hdu: int = 0) -> dict[str, Any] | None:
+    """Compact WCS of one FITS HDU (cached by path + mtime; ``None`` if none)."""
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return None
+    key = (os.fspath(path), int(stat.st_mtime_ns), int(hdu))
+    if key not in _FILE_WCS_CACHE:
+        _FILE_WCS_CACHE[key] = celestial_wcs_keywords(_fits_header(path, hdu))
+        if len(_FILE_WCS_CACHE) > _HEADER_CACHE_MAX:
+            _FILE_WCS_CACHE.popitem(last=False)
+    else:
+        _FILE_WCS_CACHE.move_to_end(key)
+    keywords = _FILE_WCS_CACHE[key]
+    return dict(keywords) if keywords is not None else None
 
 
 # ---------------------------------------------------------------------------
@@ -187,8 +350,8 @@ def _as_hwc(arr: np.ndarray) -> np.ndarray:
 # The clean record is the deliberately starless target and must not be
 # substituted for HR.
 _SKY_RECORD_TIERS = [
-    {"key": "dirty", "label": "LR"},
-    {"key": "hr", "label": "HR"},
+    {"key": "dirty", "label": "LR", "unit": "e-"},
+    {"key": "hr", "label": "HR", "unit": "e-"},
 ]
 
 
@@ -213,14 +376,14 @@ def _sky_meta(params: dict[str, str]) -> dict[str, Any]:
         hr_position = next(i for i, tier in enumerate(tiers)
                            if tier["key"] == "hr")
         tiers.insert(hr_position + 1, {
-            "key": "bhr", "label": "BHR (blurred HR)",
+            "key": "bhr", "label": "BHR (blurred HR)", "unit": "e-",
         })
         counts["bhr"] = counts["hr"]
     count = max(counts.values()) if counts else 0
     # SR is always offered so the user can see it exists; it's disabled until
     # the model has been run over the records (the "Generate SR" button).
     n_sr = sky_records.sr_count(subset)
-    tiers.append({"key": "sr", "label": "SR", "disabled": n_sr == 0})
+    tiers.append({"key": "sr", "label": "SR", "disabled": n_sr == 0, "unit": "e-"})
     counts["sr"] = n_sr
     default = "dirty" if any(t["key"] == "dirty" for t in tiers) else (
         tiers[0]["key"] if tiers else "dirty")
@@ -230,6 +393,9 @@ def _sky_meta(params: dict[str, str]) -> dict[str, Any]:
         "default_tier": default,
         "band_names": list(BAND_NAMES),
         "tier_counts": counts,
+        # Synthetic scenes: positional ids within the split, no sky position.
+        "objects": [{"id": f"{subset}:{index}", "label": f"{subset} · idx {index}"}
+                    for index in range(count)],
     }
 
 
@@ -239,11 +405,12 @@ def _sky_cube(index: int, tier: str, params: dict[str, str]):
         path = sky_records.sr_path(subset, index)
         if not os.path.isfile(path):
             raise ViewerError(404, "SR not generated for this record")
-        cube = _as_hwc(np.load(path))
+        cube = _as_hwc(np.load(path), layout="hwc")
         return cube, {
             "label": f"sr · {subset} · idx {index}",
             "asinh": float(Config.STRETCH_SCALE_E),
             "pixscale": float(Config.DEFAULT_PIXEL_SCALE),
+            "unit": "e-",
         }
     if tier not in ("dirty", "hr", "bhr"):
         raise ViewerError(400, "bad tier")
@@ -255,7 +422,7 @@ def _sky_cube(index: int, tier: str, params: dict[str, str]):
     if not records or index >= len(records):
         raise ViewerError(404, "index out of range")
     rec = records[index]
-    cube = _as_hwc(rec.data)
+    cube = _as_hwc(rec.data, layout="hwc")
     if tier == "bhr":
         cube = blur_target_array(
             cube, _bhr_fwhm_arcsec(params),
@@ -266,6 +433,7 @@ def _sky_cube(index: int, tier: str, params: dict[str, str]):
         "label": f"{label} · {subset} · idx {rec.index}",
         "asinh": float(Config.STRETCH_SCALE_E),
         "pixscale": float(getattr(rec, "pixel_scale_arcsec", 0.0) or 0.0),
+        "unit": "e-",
     }
     return cube, info
 
@@ -275,12 +443,21 @@ def _sky_cube(index: int, tier: str, params: dict[str, str]):
 # ---------------------------------------------------------------------------
 
 def _cutouts_meta(params: dict[str, str]) -> dict[str, Any]:
-    _size, ids = _valid_4band_stars(force=False)
+    _size, stars = _valid_4band_star_objects(force=False)
+    objects = []
+    for star in stars:
+        ra, dec = _finite_float(star.ra), _finite_float(star.dec)
+        objects.append({
+            "id": str(int(star.id)), "label": f"star {int(star.id)}",
+            **({"ra": ra, "dec": dec} if ra is not None and dec is not None else {}),
+        })
     return {
-        "count": len(ids),
-        "tiers": [{"key": "real", "label": "Euclid"}],
+        "count": len(objects),
+        # Raw archive cutouts (rate units, MAGZERO in the header).
+        "tiers": [{"key": "real", "label": "Euclid", "unit": "ADU/s"}],
         "default_tier": "real",
         "band_names": list(BAND_NAMES),
+        "objects": objects,
     }
 
 
@@ -301,19 +478,25 @@ def _cutouts_cube(index: int, tier: str, params: dict[str, str]):
         raise ViewerError(404, "index out of range")
     sid = ids[index]
     planes = []
+    vis_path = None
     for band in BAND_NAMES:
         path = _ensure_local_star_cutout(band, sid, size)
         if not path:
             raise ViewerError(404, f"{band} cutout unavailable")
+        vis_path = vis_path or path
         planes.append(_read_fits_plane(path))
     shapes = {p.shape for p in planes}
     if len(shapes) != 1:
         raise ViewerError(415, f"band cutouts disagree in shape: {shapes}")
     cube = np.stack(planes, axis=-1)
+    header = _fits_header(vis_path) if vis_path else None
     info = {
         "label": f"star {sid} · {size}px",
         "asinh": float(Config.STRETCH_SCALE_E),
         "pixscale": float(Config.VIS_PIXEL_SCALE_ARCSEC),
+        # Every band is cut on the VIS grid, so the VIS WCS holds for all.
+        "wcs": celestial_wcs_keywords(header),
+        "unit": unit_from_header(header, default="ADU/s"),
     }
     return cube, info
 
@@ -328,12 +511,27 @@ _EVAL_TIER_FILES = {
     "HR": "HR.fits",
     "std": "std.fits",
 }
+def _read_eval_manifest(root: str) -> list[dict[str, str]]:
+    """Rows of the shared eval store's ``manifest.csv`` (empty when absent)."""
+    path = os.path.join(root, "manifest.csv")
+    if not os.path.isfile(path):
+        return []
+    with open(path, newline="") as handle:
+        return list(csv.DictReader(handle))
+
+
+def _finite_float(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
 def _eval_objects() -> list[dict[str, Any]]:
     """Return manifest objects with their available on-disk tiers and grade."""
-    from euclid_polish.web.routes.evaluation import _read_manifest  # local: avoid cycle
-
     root = os.path.abspath(Config.EVAL_RESULTS_DIR)
-    rows = _read_manifest(root)
+    rows = _read_eval_manifest(root)
     objs: list[dict[str, Any]] = []
     for r in rows:
         if str(r.get("ok", "")).lower() != "true":
@@ -365,6 +563,10 @@ def _eval_objects() -> list[dict[str, Any]]:
         # availability gate keeps the movie chip disabled for every object.
         if pca_n > 0 and "SR" in tiers:
             tiers.append("morph")
+        position = {}
+        ra, dec = _finite_float(r.get("ra")), _finite_float(r.get("dec"))
+        if ra is not None and dec is not None:
+            position = {"ra": ra, "dec": dec}
         objs.append({
             "subdir": sub,
             "label": (f"{r.get('id', sub)}" + (f" · {grade}" if grade else "")),
@@ -373,6 +575,7 @@ def _eval_objects() -> list[dict[str, Any]]:
             "pca_n": pca_n,
             "pca_amps": pca_amps,
             "pca_var": pca_var,
+            **position,
         })
     return objs
 
@@ -382,7 +585,7 @@ def _eval_meta(params: dict[str, str]) -> dict[str, Any]:
     # All tiers seen across the run, ordered LR→SR→HR→BHR→std, for the chip strip.
     order = ["LR", "SR", "HR", "BHR", "std"]
     seen = {t for o in objs for t in o["tiers"]}
-    tiers = [{"key": k, "label": ("stdSR" if k == "std" else k)}
+    tiers = [{"key": k, "label": ("stdSR" if k == "std" else k), "unit": "e-"}
              for k in order if k in seen]
     pca_n = max((int(o.get("pca_n", 0) or 0) for o in objs), default=0)
     pca_amps = [list(o.get("pca_amps", []) or []) for o in objs]
@@ -399,8 +602,9 @@ def _eval_meta(params: dict[str, str]) -> dict[str, Any]:
         "pca_n": pca_n,
         "pca_amps": pca_amps,
         "pca_var": pca_var,
-        "objects": [{"label": o["label"], "grade": o["grade"],
-                     "tiers": o["tiers"], "subdir": o["subdir"]}
+        "objects": [{"id": str(o.get("id") or o["subdir"]), "label": o["label"],
+                     "grade": o["grade"], "tiers": o["tiers"], "subdir": o["subdir"],
+                     **{key: o[key] for key in ("ra", "dec") if key in o}}
                     for o in objs],
     }
 
@@ -435,45 +639,71 @@ def _eval_cube(index: int, tier: str, params: dict[str, str]):
     with fits.open(path, memmap=False) as hdul:
         primary = cast(fits.PrimaryHDU, hdul[0])
         data = primary.data
+        header = primary.header
         with contextlib.suppress(TypeError, ValueError):
             asinh = float(cast(
-                str | float, primary.header.get("ASINH", asinh),
+                str | float, header.get("ASINH", asinh),
             ))
     if data is None:
         raise ViewerError(415, "primary FITS HDU contains no image")
-    cube = _as_hwc(data)
+    cube = _as_hwc(data, layout="chw")
     if key == "BHR":
         cube = blur_target_array(
             cube, _bhr_fwhm_arcsec(params),
             pixel_scale_arcsec=Config.DEFAULT_PIXEL_SCALE,
         )
-    tier_scale = (Config.VIS_PIXEL_SCALE_ARCSEC
-                  if tier.lower() in {"lr", "original", "original_stack"}
+    is_lr = tier.lower() in {"lr", "original", "original_stack"}
+    tier_scale = (Config.VIS_PIXEL_SCALE_ARCSEC if is_lr
                   else Config.DEFAULT_PIXEL_SCALE)
     display_tier = "BHR (blurred HR)" if key == "BHR" else tier
     info = {"label": f"{obj['label']} · {display_tier}", "asinh": asinh,
-            "pixscale": float(tier_scale)}
+            "pixscale": float(tier_scale),
+            "unit": unit_from_header(header, default="e-"),
+            **_eval_tier_wcs(os.path.join(root, obj["subdir"]), is_lr=is_lr,
+                             synthetic="HR" in obj["tiers"])}
+    if tier.startswith("pca"):
+        info["unit"] = "arb"            # unit-norm eigen-images
     return cube, info
 
 
+def _eval_tier_wcs(obj_dir: str, *, is_lr: bool, synthetic: bool) -> dict[str, Any]:
+    """``{"wcs": …}`` for an eval tier: the LR cutout's WCS, or that WCS ×2
+    for every SR-grid tier (SR / std / pcaN share the SR grid). Synthetic
+    objects (they carry an HR truth) have no sky position."""
+    if synthetic:
+        return {}
+    lr = _file_wcs(os.path.join(obj_dir, _EVAL_TIER_FILES["LR"]))
+    wcs = lr if is_lr else scaled_wcs_keywords(lr, 2)
+    return {"wcs": wcs} if wcs else {}
+
+
 # ---------------------------------------------------------------------------
-# ensemble — LR / SR(combiner) / stdSR(std) / HR disagreement viewer
+# ensemble — LR / SR (production gate) / mean / stdSR / HR disagreement viewer
 # ---------------------------------------------------------------------------
 #
 # The /ensemble "Evaluate" job caches the ensemble-mean and per-pixel std
-# (stdSR) cubes under <vis>/ensemble/cubes/{sr,std}_<recidx>.npy plus a
-# viz_index.json {subset, indices}. LR/HR are read back from the sky records by
-# record index.  The public ``sr`` viewer tier is replaced by the primary fitted
-# combiner below; the cached mean remains the centre of the disagreement movie.
+# (stdSR) cubes under <vis>/ensemble/<regime>/cubes/{sr,std}_<recidx>.npy plus a
+# viz_index.json {subset, indices, member_labels}. LR/HR are read back from the
+# sky records by record index. Contract C6: the public ``sr`` tier is the
+# PRODUCTION combiner (``ACTIVE_COMBINER_KINDS[0]``, the spatial gate); the
+# cached mean is its own ``mean`` tier (also the centre of the disagreement
+# movie, ``morph_base_tier``); other loadable combiners (RBF kinds) stay as
+# extra tiers. The regime defaults to STARFULL.
+
+#: The combiner behind the ``sr`` tier.
+PRODUCTION_COMBINER_KIND = ACTIVE_COMBINER_KINDS[0]
+PRODUCTION_SR_LABEL = "SR · production gate"
+MEAN_LABEL = "Mean of members"
 
 _ENSEMBLE_TIERS = [
-    {"key": "lr", "label": "LR"},
-    {"key": "sr", "label": "SR (minibatched convex all-asinh RBF)"},
+    {"key": "lr", "label": "LR", "unit": "e-"},
+    {"key": "sr", "label": PRODUCTION_SR_LABEL, "unit": "e-"},
+    {"key": "mean", "label": MEAN_LABEL, "unit": "e-"},
     # stdSR stays available (it powers the ±σ magnitude on the mean frame) but
     # is hidden from the chip row per the trimmed tier set.
-    {"key": "std", "label": "stdSR", "hidden": True},
-    {"key": "hr", "label": "HR"},
-    {"key": "bhr", "label": "BHR (blurred HR)"},
+    {"key": "std", "label": "stdSR", "hidden": True, "unit": "e-"},
+    {"key": "hr", "label": "HR", "unit": "e-"},
+    {"key": "bhr", "label": "BHR (blurred HR)", "unit": "e-"},
 ]
 
 #: How many PCA components the on-the-fly (member-subset) disagreement movie
@@ -482,10 +712,10 @@ _MORPH_PCA_COMPONENTS = 3
 
 
 def _ensemble_starless(params: dict[str, str]) -> bool:
-    """The star regime the viewer is showing (``?mode=starfull|starless``). The
-    two regimes' cubes are fully detached; default starless (the production
-    reconstruction)."""
-    return (params.get("mode", "starless") or "starless").lower() != "starfull"
+    """The star regime the viewer is showing (``?mode=starfull|starless``).
+    The two regimes' cubes are fully detached; STARFULL is the default (the
+    production regime since 3aa5c86)."""
+    return (params.get("mode", "starfull") or "starfull").lower() == "starless"
 
 
 def _ensemble_target(starless: bool) -> tuple[str, str]:
@@ -513,6 +743,14 @@ def _ensemble_manifest(starless: bool) -> dict[str, Any]:
     return {"subset": "", "indices": []}
 
 
+def _combiner_available(starless: bool, man: Mapping[str, Any], kind: str) -> bool:
+    """A combiner tier is offered when its cube is baked or it loads for the
+    cached membership (computed on the fly then)."""
+    labels = man.get("member_labels", []) or []
+    return bool(man.get(f"has_combiner_{kind}")
+                or (labels and _load_field_combiner(starless, labels, kind) is not None))
+
+
 def _ensemble_meta(params: dict[str, str]) -> dict[str, Any]:
     starless = _ensemble_starless(params)
     target_kind, target_label = _ensemble_target(starless)
@@ -530,33 +768,29 @@ def _ensemble_meta(params: dict[str, str]) -> dict[str, Any]:
               if t["key"] in target_labels else dict(t))
              for t in _ENSEMBLE_TIERS
              if t["key"] not in target_labels or has_target]
-    member_labels0 = man.get("member_labels", []) or []
-    primary_available = bool(
-        man.get(f"has_combiner_{RAW_INCREMENTAL_MINMEANMAX_RBF_KIND}")
-        or man.get("has_combiner")
-        or (member_labels0 and _load_field_combiner(
-            starless, member_labels0,
-            RAW_INCREMENTAL_MINMEANMAX_RBF_KIND) is not None)
-    )
-    if not primary_available:
+    production = _combiner_available(starless, man, PRODUCTION_COMBINER_KIND)
+    has_mean = bool(idxs) and os.path.isfile(os.path.join(
+        _ensemble_cubes_dir(starless), f"sr_{int(idxs[0]):05d}.npy"))
+    if not production:
         tiers = [tier for tier in tiers if tier["key"] != "sr"]
-    # Each ordinary combiner model gets its own selectable tier. Cubes are
-    # computed on demand from the shared member cache when not baked by eval.
-    for kind, key, label in reversed(tuple(
-            (kind, spec.cube_prefix, spec.label)
-            for kind, spec in COMBINER_MODELS.items()
-            if kind in ACTIVE_COMBINER_KINDS
-            and kind != RAW_INCREMENTAL_MINMEANMAX_RBF_KIND)):
-        if man.get(f"has_combiner_{kind}") or (
-                member_labels0 and _load_field_combiner(
-                    _ensemble_starless(params), member_labels0, kind) is not None):
-            tiers.insert(2, {"key": key, "label": label})
+    if not has_mean:
+        tiers = [tier for tier in tiers if tier["key"] != "mean"]
+    # Every other active combiner (the RBF kinds) gets its own selectable
+    # tier after the mean, computed on demand when not baked by the eval.
+    position = 1 + max((i for i, tier in enumerate(tiers)
+                        if tier["key"] in {"mean", "sr"}), default=0)
+    for kind in reversed(ACTIVE_COMBINER_KINDS[1:]):
+        if _combiner_available(starless, man, kind):
+            spec = COMBINER_MODELS[kind]
+            tiers.insert(position, {"key": spec.cube_prefix,
+                                    "label": f"SR · {spec.label}", "unit": "e-"})
     # Individual member SR tiers, labelled from the eval. HIDDEN from the tier
     # chip row (they'd swamp it at 22 members) but still loadable on demand:
     # the React member panel searches/sorts them and toggles one in via the
     # engine's setTiers, and their cubes feed the member-subset movie.
     member_labels = man.get("member_labels", []) or []
-    tiers += [{"key": f"member{i}", "label": f"SR {lab}", "hidden": True}
+    tiers += [{"key": f"member{i}", "label": f"SR {lab}", "hidden": True,
+               "unit": "e-"}
               for i, lab in enumerate(member_labels)]
     # PCA disagreement basis for the morphing animation: per-field amplitudes
     # (population std the members span along each component), aligned to the
@@ -569,18 +803,26 @@ def _ensemble_meta(params: dict[str, str]) -> dict[str, Any]:
     # components); the viewer special-cases it (no fetchable cube).
     if pca_n > 0:
         tiers.append({"key": "morph", "label": "disagreement movie"})
+    default = ("sr" if production else "mean" if has_mean else "lr")
     return {
         "count": len(idxs),
         "tiers": tiers,
-        "default_tier": "sr" if primary_available else "lr",
+        "default_tier": default,
         "band_names": list(BAND_NAMES),
         "subset": sub,
+        "regime": "starless" if starless else "starfull",
         "pca_n": pca_n,
         "pca_amps": pca_amps,
+        # The movie animates mean + Σ amp·PC: its centre is the mean tier.
+        "morph_base_tier": "mean",
+        "production_combiner": PRODUCTION_COMBINER_KIND,
         # Member index → label, for the React panel to join psnr/loss/depth
         # (from status.json) and drive the member-subset disagreement movie.
         "member_labels": list(member_labels),
         "pca_max": _MORPH_PCA_COMPONENTS,
+        # Synthetic test fields: ids are split:record-index, no sky position.
+        "objects": [{"id": f"{sub}:{int(i)}", "label": f"{sub} · idx {int(i)}"}
+                    for i in idxs],
     }
 
 
@@ -595,7 +837,7 @@ def _ensemble_record_cube(sub: str, n_read: int, kind: str, rec_index: int,
     rec = {r.index: r for r in recs}.get(rec_index)
     if rec is None:
         raise ViewerError(404, f"record {rec_index} not found")
-    data = _as_hwc(rec.data)
+    data = _as_hwc(rec.data, layout="hwc")
     if blurred_fwhm_arcsec is not None:
         data = blur_target_array(
             data, blurred_fwhm_arcsec,
@@ -638,7 +880,6 @@ def _subset_pca(starless: bool, rec_index: int, subset: list[int]):
     if hit is not None:
         _SUBSET_PCA_CACHE.move_to_end(key)
         return hit
-    from euclid_polish.ensemble import pca_field
     cdir = _ensemble_cubes_dir(starless)
     stack = []
     for i in subset:
@@ -659,12 +900,11 @@ def _ensemble_regime_dir(starless: bool) -> str:
 
 
 def _load_field_combiner(starless: bool, member_labels: list[str],
-                         model_kind: str = "raw_incremental_minmeanmax_rbf"):
+                         model_kind: str = PRODUCTION_COMBINER_KIND):
     """The regime's fitted combiner if it exists AND its membership matches the
-    cube stack (``member_labels``), else ``None``. Cheap (an ~8 KB npz)."""
+    cube stack (``member_labels``), else ``None``. Cheap (a small artifact)."""
     if not member_labels:
         return None
-    from euclid_polish.eval.combiner import load_combiner
     try:
         return load_combiner(_ensemble_regime_dir(starless),
                              member_labels=list(member_labels),
@@ -681,7 +921,7 @@ _COMB_CUBE_MAX = 8
 
 def _combiner_field_cube(starless: bool, rec_index: int,
                          member_labels: list[str],
-                         model_kind: str = "raw_incremental_minmeanmax_rbf") -> np.ndarray:
+                         model_kind: str = PRODUCTION_COMBINER_KIND) -> np.ndarray:
     """The combiner reconstruction ``(H,W,C)`` for one field, applied to the
     cached full member stack. LRU-cached; raises 404 if no combiner / cubes."""
     key = ("starless" if starless else "starfull", int(rec_index),
@@ -728,52 +968,59 @@ def _ensemble_cube(index: int, tier: str, params: dict[str, str]):
         raise ViewerError(404, "index out of range")
     rec_index = int(idxs[index])
 
-    # Member-subset disagreement movie: recompute sr (=subset mean) and the PCA
-    # eigen-images on the fly for the requested members. amp/var are subset-
-    # dependent → returned as headers so the animation reads the right spread.
+    # Member-subset disagreement movie: recompute the mean (``mean``, and
+    # ``sr`` for the movie engine that fetches ``sr`` as its centre) and the
+    # PCA eigen-images on the fly for the requested members. A combiner fitted
+    # for the full ordered membership cannot take fewer member channels, so
+    # a subset always means the subset mean. amp/var are subset-dependent →
+    # returned as headers so the animation reads the right spread.
     is_pca = tier.startswith("pca") and tier[3:].isdigit()
     subset = _parse_member_subset(
         params.get("members"), len(man.get("member_labels", []) or []))
-    if subset is not None and (tier == "sr" or is_pca):
+    if subset is not None and (tier in ("sr", "mean") or is_pca):
         mean, comps, amps, var = _subset_pca(starless, rec_index, subset)
         tag = f"{len(subset)} of {len(man.get('member_labels', []) or [])} members"
-        if tier == "sr":
-            return _as_hwc(mean), {
+        if not is_pca:
+            return _as_hwc(mean, layout="hwc"), {
                 "label": f"SR (subset mean · {tag}) · {sub} · idx {rec_index}",
                 "asinh": float(Config.STRETCH_SCALE_E),
-                "pixscale": float(Config.DEFAULT_PIXEL_SCALE)}
+                "pixscale": float(Config.DEFAULT_PIXEL_SCALE), "unit": "e-"}
         k = int(tier[3:])
         if k >= len(comps):
             raise ViewerError(404, "pca component out of range")
-        return _as_hwc(comps[k]), {
+        return _as_hwc(comps[k], layout="hwc"), {
             "label": f"PC{k} · {tag}", "asinh": float(Config.STRETCH_SCALE_E),
             "pixscale": float(Config.DEFAULT_PIXEL_SCALE), "amp": float(amps[k]),
-            "var": float(var[k]) if k < len(var) else 0.0}
-    # The main SR tier is the primary fitted combiner.  Keep ``sr`` as the
-    # stable viewer/API key while avoiding a duplicate primary-combiner chip.
-    # A requested member subset is handled above as a subset mean because a
-    # combiner fitted for the full ordered membership cannot accept fewer
-    # member channels.
-    if tier == "sr":
-        tier = COMBINER_MODELS[
-            RAW_INCREMENTAL_MINMEANMAX_RBF_KIND].cube_prefix
-
-    # Combiner reconstruction: prefer a baked model-specific cube; otherwise
-    # apply that fitted model to the cached member stack on the fly.
+            "var": float(var[k]) if k < len(var) else 0.0, "unit": "arb"}
+    # ``sr`` is the production combiner (C6); every combiner tier prefers a
+    # baked model-specific cube, else applies the fitted model to the cached
+    # member stack on the fly.
     tier_kinds = {COMBINER_MODELS[kind].cube_prefix: kind
                   for kind in ACTIVE_COMBINER_KINDS}
+    tier_kinds["sr"] = PRODUCTION_COMBINER_KIND
     if tier in tier_kinds:
         model_kind = tier_kinds[tier]
         prefix = COMBINER_MODELS[model_kind].cube_prefix
         baked = os.path.join(_ensemble_cubes_dir(starless),
                              f"{prefix}_{rec_index:05d}.npy")
-        cube = (_as_hwc(np.load(baked)) if os.path.isfile(baked)
+        cube = (_as_hwc(np.load(baked), layout="hwc") if os.path.isfile(baked)
                 else _as_hwc(_combiner_field_cube(
-                    starless, rec_index, man.get("member_labels", []) or [], model_kind)))
-        label = COMBINER_MODELS[model_kind].label
-        return cube, {"label": f"SR ({label}) · {sub} · idx {rec_index}",
+                    starless, rec_index, man.get("member_labels", []) or [], model_kind),
+                    layout="hwc"))
+        label = (PRODUCTION_SR_LABEL if tier == "sr"
+                 else f"SR · {COMBINER_MODELS[model_kind].label}")
+        return cube, {"label": f"{label} · {sub} · idx {rec_index}",
                       "asinh": float(Config.STRETCH_SCALE_E),
-                      "pixscale": float(Config.DEFAULT_PIXEL_SCALE)}
+                      "pixscale": float(Config.DEFAULT_PIXEL_SCALE), "unit": "e-"}
+    # The cached ensemble mean is stored as ``sr_<rec>.npy`` by the evaluation.
+    if tier == "mean":
+        path = os.path.join(_ensemble_cubes_dir(starless), f"sr_{rec_index:05d}.npy")
+        if not os.path.isfile(path):
+            raise ViewerError(404, "mean cube missing")
+        return _as_hwc(np.load(path), layout="hwc"), {
+            "label": f"{MEAN_LABEL} · {sub} · idx {rec_index}",
+            "asinh": float(Config.STRETCH_SCALE_E),
+            "pixscale": float(Config.DEFAULT_PIXEL_SCALE), "unit": "e-"}
     # Records are written index==position from 0, so reading up to the largest
     # cached index covers every LR/goal field we need.
     n_read = (max(int(i) for i in idxs) + 1) if idxs else 1
@@ -782,7 +1029,7 @@ def _ensemble_cube(index: int, tier: str, params: dict[str, str]):
     # records. pcaN are served on demand for the animation (not advertised as
     # static tiers). The stable ``hr`` tier key means "goal" here: clean for
     # starless and hr for starfull.
-    is_npy = (tier in ("sr", "std")
+    is_npy = (tier == "std"
               or (tier.startswith("pca") and tier[3:].isdigit())
               or (tier.startswith("member") and tier[6:].isdigit()))
     if is_npy:
@@ -790,7 +1037,7 @@ def _ensemble_cube(index: int, tier: str, params: dict[str, str]):
                             f"{tier}_{rec_index:05d}.npy")
         if not os.path.isfile(path):
             raise ViewerError(404, f"{tier} cube missing")
-        cube, pix = _as_hwc(np.load(path)), float(Config.DEFAULT_PIXEL_SCALE)
+        cube, pix = _as_hwc(np.load(path), layout="hwc"), float(Config.DEFAULT_PIXEL_SCALE)
     elif tier == "lr":
         cube, pix = _ensemble_record_cube(sub, n_read, "dirty", rec_index)
     elif tier in {"hr", "bhr"}:
@@ -802,10 +1049,8 @@ def _ensemble_cube(index: int, tier: str, params: dict[str, str]):
         )
     else:
         raise ViewerError(400, "bad tier")
-    labels = {"lr": "LR", "sr": "SR (ensemble mean)",
-              "std": "stdSR (member std)", "hr": target_label,
-              "bhr": _blurred_target_label(target_label),
-              "comb": "SR (combiner)"}
+    labels = {"lr": "LR", "std": "stdSR (member std)", "hr": target_label,
+              "bhr": _blurred_target_label(target_label)}
     if tier.startswith("member") and tier[6:].isdigit():
         mlabels = man.get("member_labels", []) or []
         mi = int(tier[6:])
@@ -813,7 +1058,8 @@ def _ensemble_cube(index: int, tier: str, params: dict[str, str]):
     else:
         label = labels.get(tier, tier)
     info = {"label": f"{label} · {sub} · idx {rec_index}",
-            "asinh": float(Config.STRETCH_SCALE_E), "pixscale": pix}
+            "asinh": float(Config.STRETCH_SCALE_E), "pixscale": pix,
+            "unit": "arb" if is_pca else "e-"}
     # Baked full-ensemble PCA: surface the per-field amplitude/variance from the
     # manifest so the client reads amps from the cube header uniformly (subset
     # and full paths alike), not a separate meta lookup.
@@ -839,30 +1085,34 @@ def _archive_fields_meta(_params: dict[str, str]) -> dict[str, Any]:
     fields = (
         list(archive_fields.iter_comparison_fields()) if status["ready"] else []
     )
-    tier = {"key": "lr", "label": "Archive LR"}
+    tier = {"key": "lr", "label": "Archive LR", "unit": "e-"}
+    objects = []
+    for field in fields:
+        label_field = archive_fields.position_field(field)
+        objects.append({
+            "id": str(field.sample_id),
+            "label": (
+                f"{label_field} · pointing {field.source_sample_id + 1} · "
+                f"{field.position_name} · sample {field.sample_id + 1}"
+            ),
+            "tiers": ["lr"],
+            "sample_id": field.sample_id,
+            "source_sample_id": field.source_sample_id,
+            "parent_id": field.parent_id,
+            # Position-derived label; the manifest's own string is kept.
+            "field": label_field,
+            "stored_field": field.field,
+            "ra": field.ra,
+            "dec": field.dec,
+            "position_name": field.position_name,
+        })
     return {
         "count": len(fields),
         "tiers": [tier],
         "default_tier": "lr",
         "band_names": list(BAND_NAMES),
         "archive": status,
-        "objects": [
-            {
-                "label": (
-                    f"{field.field} · pointing {field.source_sample_id + 1} · "
-                    f"{field.position_name} · sample {field.sample_id + 1}"
-                ),
-                "tiers": ["lr"],
-                "sample_id": field.sample_id,
-                "source_sample_id": field.source_sample_id,
-                "parent_id": field.parent_id,
-                "field": field.field,
-                "ra": field.ra,
-                "dec": field.dec,
-                "position_name": field.position_name,
-            }
-            for field in fields
-        ],
+        "objects": objects,
     }
 
 
@@ -882,13 +1132,17 @@ def _archive_fields_cube(index: int, tier: str, _params: dict[str, str]):
         raise ViewerError(415, str(exc)) from exc
     return cube, {
         "label": (
-            f"Archive LR · {field.field} · pointing {field.source_sample_id + 1} "
-            f"· {field.position_name} · sample {field.sample_id + 1}"
+            f"Archive LR · {archive_fields.position_field(field)} · pointing "
+            f"{field.source_sample_id + 1} · {field.position_name} · "
+            f"sample {field.sample_id + 1}"
         ),
         "asinh": float(Config.STRETCH_SCALE_E),
         "pixscale": float(Config.VIS_PIXEL_SCALE_ARCSEC),
         "bands": list(BAND_NAMES),
         "transfer_group": "euclid",
+        # load_field converts every band to electrons on the VIS grid.
+        "unit": "e-",
+        "wcs": _file_wcs(field.path, 1),
     }
 
 
@@ -897,40 +1151,66 @@ def _archive_fields_cube(index: int, tier: str, _params: dict[str, str]):
 # ---------------------------------------------------------------------------
 
 def _real_field_manifest(params: dict[str, str]) -> dict[str, Any]:
-    from euclid_polish.web.helpers.real_field import latest_field, manifest_path
-
     identifier = (params.get("field") or "").strip()
     if identifier:
         try:
-            with manifest_path(identifier).open() as f:
+            with real_field.manifest_path(identifier).open() as f:
                 return json.load(f)
         except (OSError, ValueError):
             raise ViewerError(404, "real field not cached") from None
-    manifest = latest_field()
+    manifest = real_field.latest_field()
     if manifest is None:
         raise ViewerError(404, "no real Euclid field cached")
     return manifest
+
+
+def _real_field_geometry(manifest: Mapping[str, Any]) -> tuple[int, int]:
+    """``(tile_size, grid_side)`` of a cached field (LR pixels, tiles/side)."""
+    tile = int(manifest.get("tile_size", real_field.TILE_SIZE) or real_field.TILE_SIZE)
+    side = int(manifest.get("grid_side", real_field.GRID_SIDE) or real_field.GRID_SIDE)
+    return tile, side
+
+
+def _real_field_tile_wcs(manifest: Mapping[str, Any], index: int) -> dict[str, Any] | None:
+    """LR WCS of one tile: the field's ``original_stack.fits`` WCS shifted by
+    the tile's pixel offset (tiles are ``tile_size`` squares, row-major)."""
+    field = _file_wcs(real_field.field_dir(str(manifest["field_id"]))
+                      / "original_stack.fits")
+    tile, side = _real_field_geometry(manifest)
+    row, col = divmod(int(index), side)
+    return shifted_wcs_keywords(field, dx=col * tile, dy=row * tile)
 
 
 def _real_field_meta(params: dict[str, str]) -> dict[str, Any]:
     manifest = _real_field_manifest(params)
     labels = list(manifest.get("member_labels", []) or [])
     tiers = [
-        {"key": "lr", "label": "LR"},
-        {"key": "sr", "label": "SR (mean)"},
-        {"key": "std", "label": "stdSR", "hidden": True},
+        {"key": "lr", "label": "LR", "unit": "e-"},
+        {"key": "sr", "label": "SR (mean)", "unit": "e-"},
+        {"key": "std", "label": "stdSR", "hidden": True, "unit": "e-"},
     ]
     for kind, spec in COMBINER_MODELS.items():
         if kind not in ACTIVE_COMBINER_KINDS:
             continue
         if kind in set(manifest.get("combiner_kinds", []) or []):
-            tiers.append({"key": spec.cube_prefix, "label": spec.label})
-    tiers += [{"key": f"member{i}", "label": f"SR {label}", "hidden": True}
+            tiers.append({"key": spec.cube_prefix, "label": spec.label, "unit": "e-"})
+    tiers += [{"key": f"member{i}", "label": f"SR {label}", "hidden": True,
+               "unit": "e-"}
               for i, label in enumerate(labels)]
     if int(manifest.get("pca_n", 0) or 0) > 0:
         tiers.append({"key": "morph", "label": "disagreement movie"})
     count = int(manifest.get("count", 0) or 0)
-    side = int(manifest.get("grid_side", 10) or 10)
+    tile, side = _real_field_geometry(manifest)
+    identifier = str(manifest.get("field_id", ""))
+    objects = []
+    for i in range(count):
+        centre = _world_centre(_real_field_tile_wcs(manifest, i), tile, tile)
+        objects.append({
+            "id": f"{identifier}/{i:03d}",
+            "label": f"tile {i + 1:03d} · row {i // side + 1}, col {i % side + 1}",
+            "tiers": [t["key"] for t in tiers],
+            **({"ra": centre[0], "dec": centre[1]} if centre else {}),
+        })
     return {
         "count": count, "tiers": tiers, "default_tier": "sr",
         "band_names": list(BAND_NAMES), "member_labels": labels,
@@ -939,11 +1219,7 @@ def _real_field_meta(params: dict[str, str]) -> dict[str, Any]:
                      for i in range(count)],
         "pca_var": [list((manifest.get("pca_var", {}) or {}).get(str(i), []))
                     for i in range(count)],
-        "objects": [
-            {"label": f"tile {i + 1:03d} · row {i // side + 1}, col {i % side + 1}",
-             "tiers": [t["key"] for t in tiers]}
-            for i in range(count)
-        ],
+        "objects": objects,
     }
 
 
@@ -952,11 +1228,11 @@ def _real_field_cube(index: int, tier: str, params: dict[str, str]):
     count = int(manifest.get("count", 0) or 0)
     if index < 0 or index >= count:
         raise ViewerError(404, "tile index out of range")
-    from euclid_polish.web.helpers.real_field import field_dir
-    path = field_dir(str(manifest["field_id"])) / "cubes" / f"{tier}_{index:03d}.npy"
+    path = (real_field.field_dir(str(manifest["field_id"])) / "cubes"
+            / f"{tier}_{index:03d}.npy")
     if not path.is_file():
         raise ViewerError(404, f"{tier} cube is not cached")
-    cube = _as_hwc(np.load(path))
+    cube = _as_hwc(np.load(path), layout="hwc")
     labels = list(manifest.get("member_labels", []) or [])
     if tier.startswith("member") and tier[6:].isdigit():
         mi = int(tier[6:])
@@ -970,11 +1246,15 @@ def _real_field_cube(index: int, tier: str, params: dict[str, str]):
     else:
         label = next((COMBINER_MODELS[kind].label for kind in ACTIVE_COMBINER_KINDS
                       if COMBINER_MODELS[kind].cube_prefix == tier), tier)
-    tier_scale = (Config.VIS_PIXEL_SCALE_ARCSEC
-                  if tier.lower() == "lr" else Config.DEFAULT_PIXEL_SCALE)
+    is_lr = tier.lower() == "lr"
+    tier_scale = (Config.VIS_PIXEL_SCALE_ARCSEC if is_lr
+                  else Config.DEFAULT_PIXEL_SCALE)
+    lr_wcs = _real_field_tile_wcs(manifest, index)
     return cube, {"label": f"{label} · tile {index + 1:03d}",
                   "asinh": float(Config.STRETCH_SCALE_E),
-                  "pixscale": float(tier_scale)}
+                  "pixscale": float(tier_scale),
+                  "unit": "arb" if tier.startswith("pca") else "e-",
+                  "wcs": lr_wcs if is_lr else scaled_wcs_keywords(lr_wcs, 2)}
 
 
 # ---------------------------------------------------------------------------
@@ -983,8 +1263,6 @@ def _real_field_cube(index: int, tier: str, params: dict[str, str]):
 
 def _psf_paths() -> dict[str, str]:
     """Return the already-synchronised FASRC ePSF paths by band."""
-    from euclid_polish.web.helpers.status import _cached_fasrc_psf_dir
-
     psf_dir = _cached_fasrc_psf_dir()
     if not psf_dir:
         return {}
@@ -1006,21 +1284,38 @@ def _psf_count(path: str) -> int:
         return max(1, len(image_hdus) - 1) if len(image_hdus) > 1 else 1
 
 
+def _psf_cluster_positions() -> list[dict[str, Any]]:
+    """Cluster centroids from the synced metadata sidecar (``[]`` if absent)."""
+    path = _cached_psf_clusters_json()
+    if not path:
+        return []
+    try:
+        with open(path) as handle:
+            clusters = json.load(handle).get("clusters", [])
+    except (OSError, ValueError, AttributeError):
+        return []
+    return [cluster if isinstance(cluster, dict) else {} for cluster in clusters]
+
+
 def _psf_meta(_params: dict[str, str]) -> dict[str, Any]:
     paths = _psf_paths()
     counts = {name: _psf_count(path) for name, path in paths.items()}
     count = max(counts.values(), default=0)
     tiers = [
-        {"key": name, "label": name, "disabled": name not in counts}
+        {"key": name, "label": name, "disabled": name not in counts, "unit": "arb"}
         for name in BAND_NAMES
     ]
-    objects = [
-        {
+    positions = _psf_cluster_positions()
+    objects = []
+    for index in range(count):
+        position = positions[index] if index < len(positions) else {}
+        ra, dec = _finite_float(position.get("ra")), _finite_float(position.get("dec"))
+        objects.append({
+            "id": f"cluster-{index + 1:03d}",
             "label": f"PSF cluster {index + 1:03d}",
             "tiers": [name for name, n in counts.items() if index < n],
-        }
-        for index in range(count)
-    ]
+            **({"ra": ra, "dec": dec} if ra is not None and dec is not None else {}),
+        })
     return {
         "count": count,
         "tiers": tiers,
@@ -1035,8 +1330,6 @@ def _psf_meta(_params: dict[str, str]) -> dict[str, Any]:
 
 def _psf_preview_warp_settings() -> tuple[float, float]:
     """Current persisted training warp ``(alpha_max, sigma)`` for the demo."""
-    from euclid_polish.web import job_config
-
     cfg = job_config.load()
     return float(cfg.psf_warp_alpha_max), float(cfg.psf_warp_sigma)
 
@@ -1104,6 +1397,7 @@ def _psf_cube(index: int, tier: str, params: dict[str, str]):
         "label": label,
         "asinh": float(Config.STRETCH_SCALE_E),
         "pixscale": pixel_scale,
+        "unit": "arb",                    # normalised kernel, not on the sky
     }
 
 
@@ -1116,24 +1410,19 @@ _PAIR_ID = re.compile(r"^[A-Za-z0-9._-]{1,220}$")
 
 def _jwst_euclid_pair(params: dict[str, str]) -> tuple[dict[str, Any], str]:
     """Load a verified paired-field manifest without exposing its cache path."""
-    from euclid_polish.web.helpers.jwst_euclid import (
-        _cached_pair_is_usable,
-        enrich_manifest_metadata,
-        pair_root,
-    )
-
     identifier = (params.get("field") or "").strip()
     if not _PAIR_ID.fullmatch(identifier):
         raise ViewerError(404, "paired field not found")
-    directory = pair_root() / identifier
+    directory = jwst_euclid.pair_root() / identifier
     try:
         with (directory / "manifest.json").open(encoding="utf-8") as handle:
             manifest = json.load(handle)
     except (OSError, ValueError):
         raise ViewerError(404, "paired field not found") from None
-    if not isinstance(manifest, dict) or not _cached_pair_is_usable(directory, manifest):
+    if (not isinstance(manifest, dict)
+            or not jwst_euclid._cached_pair_is_usable(directory, manifest)):
         raise ViewerError(404, "paired field is incomplete")
-    return enrich_manifest_metadata(directory, manifest), str(directory)
+    return jwst_euclid.enrich_manifest_metadata(directory, manifest), str(directory)
 
 
 def _pair_file(directory: str, relative: object) -> str:
@@ -1149,8 +1438,6 @@ def _pair_file(directory: str, relative: object) -> str:
 
 def _pair_image(path: str) -> tuple[np.ndarray, Any, Any]:
     """Read the first usable celestial image from a cached pair FITS file."""
-    from astropy.wcs import WCS
-
     try:
         with fits.open(path, memmap=False) as hdul:
             primary = cast(fits.PrimaryHDU, hdul[0]).header
@@ -1175,18 +1462,25 @@ def _pair_image(path: str) -> tuple[np.ndarray, Any, Any]:
     raise ViewerError(404, "paired field FITS has no celestial image")
 
 
-def _pair_cube(path: str) -> np.ndarray:
-    """Read a 2-D image or a small channel-first cube from a pair product."""
+def _pair_cube_and_header(path: str) -> tuple[np.ndarray, fits.Header]:
+    """A 2-D image or a small channel-first cube from a pair product, plus
+    the header of the HDU it came from (its WCS and ``BUNIT``)."""
     try:
         with fits.open(path, memmap=False) as hdul:
             for hdu in hdul:
                 data = getattr(hdu, "data", None)
                 if data is None or np.ndim(data) not in (2, 3):
                     continue
-                return _as_hwc(np.asarray(data, np.float32))
+                return (_as_hwc(np.asarray(data, np.float32), layout="chw"),
+                        hdu.header.copy())
     except OSError as exc:
         raise ViewerError(404, "paired field FITS is unreadable") from exc
     raise ViewerError(404, "paired field FITS has no image cube")
+
+
+def _pair_cube(path: str) -> np.ndarray:
+    """Read a 2-D image or a small channel-first cube from a pair product."""
+    return _pair_cube_and_header(path)[0]
 
 
 def _jwst_band_entries(manifest: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1208,27 +1502,17 @@ def _pair_native_jwst(
     manifest: dict[str, Any], directory: str, entry: dict[str, Any],
 ) -> tuple[np.ndarray, Any]:
     """Return JWST at its source pixel scale, cropping legacy full products only."""
-    from astropy.coordinates import SkyCoord
-
-    from euclid_polish.web.helpers.jwst_euclid import _native_sky_cutout
-
-    data, _, wcs = _pair_image(_pair_file(directory, entry.get("file")))
+    data, _header, wcs = _pair_image(_pair_file(directory, entry.get("file")))
     if entry.get("native_is_field_cutout"):
         return data, wcs
     try:
         coordinate = SkyCoord(
             ra=float(manifest["ra_deg"]), dec=float(manifest["dec_deg"]), unit="deg", frame="icrs",
         )
-        return _native_sky_cutout(data, wcs, coordinate, float(manifest["size_arcsec"]))
+        return jwst_euclid._native_sky_cutout(
+            data, wcs, coordinate, float(manifest["size_arcsec"]))
     except (KeyError, TypeError, ValueError) as exc:
         raise ViewerError(404, "legacy JWST product has no usable field geometry") from exc
-
-
-def _pair_asinh(cube: np.ndarray) -> float:
-    finite = np.abs(cube[np.isfinite(cube)])
-    if finite.size == 0:
-        return 1.0
-    return max(float(np.nanpercentile(finite, 95.0)), 1e-8)
 
 
 def _robust_display_scale(data: np.ndarray) -> float:
@@ -1263,8 +1547,6 @@ def _jwst_sr_pixel_blur(
     either image, while the copied display scale ensures the native and
     blurred JWST tiers differ only by this convolution.
     """
-    from scipy.ndimage import gaussian_filter
-
     jwst_pixel_scale = float(info.get("pixscale", 0.0))
     if not math.isfinite(jwst_pixel_scale) or jwst_pixel_scale <= 0:
         raise ViewerError(404, "JWST pixel scale is unavailable for SR-matched blur")
@@ -1314,34 +1596,14 @@ def _jwst_band_name(manifest: dict[str, Any]) -> str:
     return "JWST"
 
 
-def _jwst_filter_tint(band: str) -> list[float]:
-    """Give an uncalibrated single JWST filter a clearly labelled display tint."""
-    match = re.search(r"F(\d{3,4})", band.upper())
-    wavelength_um = float(match.group(1)) / 100.0 if match else None
-    if wavelength_um is None:
-        return [0.92, 0.92, 0.96]
-    if wavelength_um <= 1.2:
-        return [0.38, 0.62, 1.0]
-    if wavelength_um <= 1.8:
-        return [0.32, 0.92, 0.66]
-    if wavelength_um <= 2.6:
-        return [1.0, 0.72, 0.26]
-    return [1.0, 0.34, 0.30]
-
-
 def _saved_jwst_euclid_pairs() -> list[tuple[dict[str, Any], str]]:
     """Return saved paired fields in the stable location-carousel order."""
-    from euclid_polish.web.helpers.jwst_euclid import (
-        pair_root,
-        saved_pairs,
-    )
-
     pairs: list[tuple[dict[str, Any], str]] = []
-    for manifest in saved_pairs():
+    for manifest in jwst_euclid.saved_pairs():
         identifier = str(manifest.get("field_id") or "")
         if not _PAIR_ID.fullmatch(identifier):
             continue
-        directory = pair_root() / identifier
+        directory = jwst_euclid.pair_root() / identifier
         pairs.append((manifest, str(directory)))
     if not pairs:
         raise ViewerError(404, "no saved JWST × Euclid fields")
@@ -1389,10 +1651,9 @@ def _jwst_colour_channel_groups(entries: list[dict[str, Any]]) -> tuple[list[int
 
 def _jwst_aligned_planes(
     manifest: dict[str, Any], directory: str,
-) -> tuple[list[dict[str, Any]], list[np.ndarray], str, float]:
-    """Return the usable JWST planes on the finest native JWST display WCS."""
-    from euclid_polish.web.helpers.jwst_euclid import align_to_target
-
+) -> tuple[list[dict[str, Any]], list[np.ndarray], str, float, Any]:
+    """Return the usable JWST planes on the finest native JWST display WCS
+    (entries, planes, reference filter, reference pixel scale, reference WCS)."""
     loaded: list[tuple[dict[str, Any], np.ndarray, Any, float]] = []
     for entry in _jwst_band_entries(manifest):
         try:
@@ -1414,7 +1675,7 @@ def _jwst_aligned_planes(
     aligned_planes: list[np.ndarray] = []
     for entry, data, wcs, _scale in loaded:
         try:
-            plane = data if wcs is reference_wcs else align_to_target(
+            plane = data if wcs is reference_wcs else jwst_euclid.align_to_target(
                 data, wcs, reference_wcs, reference_data.shape,
             )
         except Exception:  # noqa: BLE001 - a non-overlapping camera need not break colour
@@ -1425,7 +1686,8 @@ def _jwst_aligned_planes(
     if not aligned_planes:
         raise ViewerError(404, "JWST cameras do not overlap on this field")
     reference_filter = str(reference_entry.get("filter") or "JWST")
-    return aligned_entries, aligned_planes, reference_filter, reference_scale
+    return (aligned_entries, aligned_planes, reference_filter, reference_scale,
+            reference_wcs)
 
 
 def _jwst_colour_cube(manifest: dict[str, Any], directory: str) -> tuple[np.ndarray, dict[str, Any]]:
@@ -1437,9 +1699,8 @@ def _jwst_colour_cube(manifest: dict[str, Any], directory: str) -> tuple[np.ndar
     are combined directly: one shared display stretch is applied to the final
     cube, so inter-filter brightness ratios remain intact.
     """
-    aligned_entries, aligned_planes, reference_filter, reference_scale = _jwst_aligned_planes(
-        manifest, directory,
-    )
+    (aligned_entries, aligned_planes, reference_filter, reference_scale,
+     reference_wcs) = _jwst_aligned_planes(manifest, directory)
 
     blue_indices, green_indices, red_indices = _jwst_colour_channel_groups(aligned_entries)
 
@@ -1469,12 +1730,15 @@ def _jwst_colour_cube(manifest: dict[str, Any], directory: str) -> tuple[np.ndar
         "direct_rgb": True,
         "display_scale": _robust_display_scale(cube),
         "transfer_group": "jwst",
+        "unit": "arb",                     # display-only colour composite
+        "wcs": celestial_wcs_keywords(reference_wcs),
     }
 
 
 def _jwst_temperature_cube(manifest: dict[str, Any], directory: str) -> tuple[np.ndarray, dict[str, Any]]:
     """Build an approximate JWST temperature cube from native brightnesses."""
-    entries, planes, reference_filter, reference_scale = _jwst_aligned_planes(manifest, directory)
+    (entries, planes, reference_filter, reference_scale,
+     reference_wcs) = _jwst_aligned_planes(manifest, directory)
     bands_and_meta = [_jwst_approx_color_band(entry) for entry in entries]
     usable = [item for item in bands_and_meta if item is not None]
     if len(usable) < 2:
@@ -1495,7 +1759,37 @@ def _jwst_temperature_cube(manifest: dict[str, Any], directory: str) -> tuple[np
         "bands": names,
         "display_scale": _robust_display_scale(cube),
         "transfer_group": "jwst",
+        "unit": "arb",
+        "wcs": celestial_wcs_keywords(reference_wcs),
     }
+
+
+def _manifest_position(manifest: Mapping[str, Any]) -> dict[str, float]:
+    """``{"ra", "dec"}`` of a pair/tile manifest (``ra_deg``/``dec_deg``)."""
+    ra, dec = _finite_float(manifest.get("ra_deg")), _finite_float(manifest.get("dec_deg"))
+    return {"ra": ra, "dec": dec} if ra is not None and dec is not None else {}
+
+
+def _image_unit(path: str, default: str = "arb") -> str:
+    """Viewer unit of the first HDU carrying a ``BUNIT`` (headers only);
+    ``default`` (itself normalised, e.g. a manifest's ``"MJy/sr"``) else."""
+    fallback = _UNIT_ALIASES.get("".join(default.lower().split()), default)
+    try:
+        with fits.open(path, memmap=True, lazy_load_hdus=True) as hdul:
+            for hdu in hdul:
+                if hdu.header.get("BUNIT"):
+                    return unit_from_header(hdu.header, default=fallback)
+    except OSError:
+        pass
+    return fallback
+
+
+def _pair_lr_wcs(directory: str, relative: object) -> dict[str, Any] | None:
+    """WCS of a pair/tile LR product (the HDU :func:`_pair_cube` reads)."""
+    try:
+        return celestial_wcs_keywords(_pair_cube_and_header(_pair_file(directory, relative))[1])
+    except ViewerError:
+        return None
 
 
 def _jwst_euclid_meta(params: dict[str, str]) -> dict[str, Any]:
@@ -1522,7 +1816,7 @@ def _jwst_euclid_meta(params: dict[str, str]) -> dict[str, Any]:
     )
     tiers = [
         {"key": "lr", "label": "LR · Euclid VIS"},
-        {"key": "sr", "label": "SR · STARFULL combiner"},
+        {"key": "sr", "label": "SR · STARFULL combiner", "unit": "e-"},
         {"key": "jwst", "label": "JWST"},
         {"key": "jwst_blur", "label": "JWST · Gaussian blur · FWHM 1 SR px"},
     ]
@@ -1538,6 +1832,8 @@ def _jwst_euclid_meta(params: dict[str, str]) -> dict[str, Any]:
         "transfer_groups": ["euclid", "jwst"],
         "objects": [
             {
+                "id": str(manifest.get("field_id") or index),
+                **_manifest_position(manifest),
                 "label": f"{index} · {manifest.get('target_name') or 'paired field'}",
                 # Keep SR in every comparison row.  Before inference its tile
                 # is an explicit "Generate SR" affordance rather than a hidden
@@ -1564,9 +1860,9 @@ def _jwst_euclid_cube(index: int, tier: str, params: dict[str, str]):
     files = manifest.get("files", {}) or {}
     inference = manifest.get("inference", {}) or {}
     inference_files = inference.get("files", {}) if isinstance(inference, dict) else {}
+    lr_source = inference_files.get("lr") or files.get("euclid")
     if tier == "lr":
-        source = inference_files.get("lr") or files.get("euclid")
-        cube = _pair_cube(_pair_file(directory, source))
+        cube, header = _pair_cube_and_header(_pair_file(directory, lr_source))
         bands = list(BAND_NAMES[:cube.shape[-1]])
         return cube, {
             "label": "LR · Euclid VIS",
@@ -1575,6 +1871,9 @@ def _jwst_euclid_cube(index: int, tier: str, params: dict[str, str]):
             "bands": bands,
             "display_scale": _robust_display_scale(cube),
             "transfer_group": "euclid",
+            "unit": unit_from_header(
+                header, default="e-" if inference_files.get("lr") else "arb"),
+            "wcs": celestial_wcs_keywords(header),
         }
     if tier == "sr":
         source = inference_files.get("starfull")
@@ -1589,6 +1888,10 @@ def _jwst_euclid_cube(index: int, tier: str, params: dict[str, str]):
             "bands": bands,
             "display_scale": _robust_display_scale(cube),
             "transfer_group": "euclid",
+            "unit": "e-",
+            # SR grid = the LR grid magnified ×2 (one consistent rule).
+            "wcs": scaled_wcs_keywords(
+                _pair_lr_wcs(directory, lr_source), 2),
         }
     if tier in {"jwst", "jwst_blur"}:
         choice = str(params.get("jwst_band") or "colour").strip().upper()
@@ -1604,7 +1907,7 @@ def _jwst_euclid_cube(index: int, tier: str, params: dict[str, str]):
             )
             if entry is None:
                 raise ViewerError(404, f"JWST band {choice} is unavailable for this field")
-            data, _wcs = _pair_native_jwst(manifest, directory, entry)
+            data, native_wcs = _pair_native_jwst(manifest, directory, entry)
             metadata = entry.get("metadata", {}) or {}
             scales = metadata.get("pixel_scale_arcsec", [])
             scale = float(scales[0]) if isinstance(scales, list) and scales else 0.0
@@ -1615,6 +1918,9 @@ def _jwst_euclid_cube(index: int, tier: str, params: dict[str, str]):
                 "bands": [choice],
                 "display_scale": _robust_display_scale(data),
                 "transfer_group": "jwst",
+                "unit": _image_unit(_pair_file(directory, entry.get("file")),
+                                    default=str(metadata.get("units") or "arb")),
+                "wcs": celestial_wcs_keywords(native_wcs),
             }
         if tier == "jwst_blur":
             sr_scale = float(inference.get("pixel_scale_arcsec") or Config.DEFAULT_PIXEL_SCALE)
@@ -1628,18 +1934,23 @@ def _jwst_euclid_cube(index: int, tier: str, params: dict[str, str]):
 # ---------------------------------------------------------------------------
 
 def _nexus_field(params: dict[str, str]) -> tuple[dict[str, Any], str]:
-    from euclid_polish.web.helpers.jwst_euclid import (
-        _read_nexus_field_manifest,
-        nexus_field_root,
-    )
-
     identifier = (params.get("field") or "").strip()
     if not _PAIR_ID.fullmatch(identifier):
         raise ViewerError(404, "NEXUS tiled field not found")
-    manifest = _read_nexus_field_manifest(identifier)
+    manifest = jwst_euclid._read_nexus_field_manifest(identifier)
     if manifest is None:
         raise ViewerError(404, "NEXUS tiled field not found")
-    return manifest, str(nexus_field_root() / identifier)
+    return manifest, str(jwst_euclid.nexus_field_root() / identifier)
+
+
+def _nexus_jwst_unit(tiles: list[Any]) -> str:
+    """NEXUS NIRCam mosaics are MJy/sr; trust a tile's recorded unit first."""
+    for tile in tiles:
+        metadata = tile.get("jwst_metadata", {}) if isinstance(tile, Mapping) else {}
+        recorded = str((metadata or {}).get("units") or "").strip()
+        if recorded:
+            return _UNIT_ALIASES.get("".join(recorded.lower().split()), recorded)
+    return "MJy/sr"
 
 
 def _nexus_field_meta(params: dict[str, str]) -> dict[str, Any]:
@@ -1665,13 +1976,17 @@ def _nexus_field_meta(params: dict[str, str]) -> dict[str, Any]:
         tiers.extend(("jwst", "jwst_blur"))
         return tiers
 
+    jwst_unit = _nexus_jwst_unit(tiles)
+    identifier = str(manifest.get("field_id") or "nexus")
     return {
         "count": len(tiles),
         "tiers": [
-            {"key": "lr", "label": "LR · Euclid · 255 px"},
-            {"key": "sr", "label": "SR · STARFULL combiner"},
-            {"key": "jwst", "label": f"NEXUS {manifest.get('filter') or 'JWST'} · native"},
-            {"key": "jwst_blur", "label": "JWST · Gaussian blur · FWHM 1 SR px"},
+            {"key": "lr", "label": "LR · Euclid · 255 px", "unit": "e-"},
+            {"key": "sr", "label": "SR · STARFULL combiner", "unit": "e-"},
+            {"key": "jwst", "label": f"NEXUS {manifest.get('filter') or 'JWST'} · native",
+             "unit": jwst_unit},
+            {"key": "jwst_blur", "label": "JWST · Gaussian blur · FWHM 1 SR px",
+             "unit": jwst_unit},
         ],
         "default_tier": "lr",
         "band_names": list(BAND_NAMES),
@@ -1679,6 +1994,8 @@ def _nexus_field_meta(params: dict[str, str]) -> dict[str, Any]:
         "missing_tier_labels": {"sr": "Generate SR"},
         "transfer_groups": ["euclid", "jwst"],
         "objects": [{
+            "id": f"{identifier}/{int(tile.get('index', index)):04d}",
+            **_manifest_position(tile),
             "label": (
                 f"{index} · RA {float(tile.get('ra_deg', 0.0)):.5f}, "
                 f"Dec {float(tile.get('dec_deg', 0.0)):.5f}"
@@ -1697,9 +2014,9 @@ def _nexus_field_cube(index: int, tier: str, params: dict[str, str]):
     tile = tiles[index]
     if not isinstance(tile, Mapping):
         raise ViewerError(404, "NEXUS tile is invalid")
+    lr_source = tile.get("lr_file") or tile.get("euclid_file")
     if tier == "lr":
-        lr_file = tile.get("lr_file")
-        cube = _pair_cube(_pair_file(directory, lr_file or tile.get("euclid_file")))
+        cube, header = _pair_cube_and_header(_pair_file(directory, lr_source))
         bands = list(BAND_NAMES[:cube.shape[-1]])
         return cube, {
             "label": "LR · Euclid VIS+Y+J+H · matched 255 × 255 tile" if len(bands) == 4
@@ -1712,6 +2029,8 @@ def _nexus_field_cube(index: int, tier: str, params: dict[str, str]):
             # background/noise much brighter before the shared asinh clip.
             "bands": bands,
             "transfer_group": "euclid",
+            "unit": "e-",
+            "wcs": celestial_wcs_keywords(header),
         }
     if tier == "sr":
         inference = tile.get("inference", {}) if isinstance(tile, Mapping) else {}
@@ -1726,9 +2045,12 @@ def _nexus_field_cube(index: int, tier: str, params: dict[str, str]):
             "pixscale": float(inference.get("pixel_scale_arcsec") or Config.DEFAULT_PIXEL_SCALE),
             "bands": list(BAND_NAMES[:cube.shape[-1]]),
             "transfer_group": "euclid",
+            "unit": "e-",
+            # SR grid = the tile's LR grid magnified ×2 (one consistent rule).
+            "wcs": scaled_wcs_keywords(_pair_lr_wcs(directory, lr_source), 2),
         }
     if tier in {"jwst", "jwst_blur"}:
-        cube = _pair_cube(_pair_file(directory, tile.get("jwst_file")))
+        cube, header = _pair_cube_and_header(_pair_file(directory, tile.get("jwst_file")))
         metadata = tile.get("jwst_metadata", {}) if isinstance(tile, Mapping) else {}
         scales = metadata.get("pixel_scale_arcsec", []) if isinstance(metadata, Mapping) else []
         scale = float(scales[0]) if isinstance(scales, list) and scales else 0.0
@@ -1738,6 +2060,8 @@ def _nexus_field_cube(index: int, tier: str, params: dict[str, str]):
             "bands": [str(manifest.get("filter") or "JWST")],
             "display_scale": _robust_display_scale(cube),
             "transfer_group": "jwst",
+            "unit": unit_from_header(header, default=_nexus_jwst_unit([tile])),
+            "wcs": celestial_wcs_keywords(header),
         }
         if tier == "jwst_blur":
             inference = tile.get("inference", {}) if isinstance(tile, Mapping) else {}
@@ -1798,9 +2122,50 @@ def get_meta(collection: str, params: dict[str, str]) -> dict[str, Any]:
     return meta
 
 
+def index_of(objects: list[Mapping[str, Any]], object_id: str) -> int:
+    """Position of the object whose meta ``id`` is ``object_id`` in a meta's
+    ``objects``; :class:`ViewerError` 404 when it is not there."""
+    for index, obj in enumerate(objects):
+        if str(obj.get("id")) == object_id:
+            return index
+    raise ViewerError(404, f"unknown object id: {object_id}")
+
+
+def resolve_index(collection: str, object_id: str,
+                  params: dict[str, str]) -> int:
+    """Position of the object whose stable meta ``id`` is ``object_id``,
+    looked up in the collection's meta built with the same ``params``."""
+    if collection not in _REGISTRY:
+        raise ViewerError(404, "unknown collection")
+    return index_of(_REGISTRY[collection][0](params).get("objects") or [], object_id)
+
+
 def get_cube(collection: str, index: int, tier: str,
              params: dict[str, str]) -> tuple[np.ndarray, dict[str, Any]]:
     if collection not in _REGISTRY:
         raise ViewerError(404, "unknown collection")
     cube, info = _REGISTRY[collection][1](index, tier, params)
     return np.ascontiguousarray(cube, dtype=np.float32), info
+
+
+__all__ = [
+    "BAND_NAMES",
+    "BHR_FWHM_PARAM",
+    "COMBINER_MODELS",
+    "MEAN_LABEL",
+    "PRODUCTION_COMBINER_KIND",
+    "PRODUCTION_SR_LABEL",
+    "RAW_INCREMENTAL_MINMEANMAX_RBF_KIND",
+    "SPATIAL_GATE_KIND",
+    "ViewerError",
+    "celestial_wcs_keywords",
+    "color_constants",
+    "get_cube",
+    "get_meta",
+    "index_of",
+    "receptive_field_constants",
+    "resolve_index",
+    "scaled_wcs_keywords",
+    "shifted_wcs_keywords",
+    "unit_from_header",
+]

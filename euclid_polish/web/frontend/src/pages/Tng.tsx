@@ -2,13 +2,15 @@
    FASRC), run the TNG50-1 SKIRT atlas download step, and view the derived
    infographics: locally-rendered property histograms, the FASRC grid render,
    and the stacked-FITS download. Ported from the classic tng.html/tng.py. */
-import { useState } from "react";
-import { getJSON, postForm } from "../api";
+import { useEffect, useRef, useState } from "react";
+import { postForm } from "../api";
+import { useJobsStore } from "../api/jobs";
 import { useResource } from "../hooks";
+import { useJob } from "../jobs";
 import { StepById } from "../fasrc";
 import {
-  Badge, Button, Card, CardBody, CardHead, ConnBadge, Field, Input, LogTail,
-  Page, PageHead, PngFigure, Spinner,
+  Badge, Button, Card, CardBody, CardHead, ConnBadge, Field, Input, JobProgressView, LogTail,
+  Page, PageHead, PngFigure,
 } from "../ui";
 
 interface TngAuth {
@@ -28,13 +30,34 @@ interface TngRadiusStatus {
   valid_count?: number;
   failed_count?: number;
   reasons?: string[];
+  /** The cached validation is missing or old: POST /api/tng/radii/refresh. */
+  stale?: boolean;
+  cached?: boolean;
+  /** Id of a running validation job (started here or elsewhere), else null. */
+  refresh_job?: string | null;
 }
 
 export default function TngPage() {
   const { data: auth, loading: authLoading, reload: reloadAuth } =
     useResource<TngAuth>("/tng-auth/status");
+  const [radiusPoll, setRadiusPoll] = useState(false);
   const { data: radius, loading: radiusLoading, reload: reloadRadius } =
-    useResource<TngRadiusStatus>("/api/tng/radii/status");
+    useResource<TngRadiusStatus>("/api/tng/radii/status", [], { poll: radiusPoll ? 3_000 : undefined });
+
+  // The status GET is read-only and answers from the cache at once; when that
+  // cache is stale and FASRC is up, re-validate in a background job (once per
+  // visit) and show it. A validation already running (refresh_job) is shown
+  // too, and the status is polled until it ends.
+  const refresh = useJob("tng:radii-refresh");
+  const autoRefreshed = useRef(false);
+  const runningId = radius?.refresh_job ?? null;
+  const running = useJobsStore((st) => (runningId ? st.jobs[runningId] ?? null : null));
+  useEffect(() => {
+    if (!radius?.stale || !radius.connected || radius.refresh_job || refresh.busy || autoRefreshed.current) return;
+    autoRefreshed.current = true;
+    void refresh.run("/api/tng/radii/refresh", {}, { onDone: () => reloadRadius() });
+  }, [radius, refresh, reloadRadius]);
+  useEffect(() => { setRadiusPoll(!!runningId && !refresh.busy); }, [runningId, refresh.busy]);
 
   const [token, setToken] = useState("");
   const [saving, setSaving] = useState(false);
@@ -144,6 +167,10 @@ export default function TngPage() {
             {!radius?.valid && radius?.reasons?.length ? (
               <div className="job-panel job-panel--err"><LogTail text={radius.reasons.join("\n")} /></div>
             ) : null}
+            {radius?.stale && !radius.connected && !refresh.job && (
+              <p className="muted">This validation is out of date; connect to FASRC to re-check it.</p>
+            )}
+            <JobProgressView job={refresh.job ?? running} error={refresh.error} />
             <div className="row" style={{ gap: "var(--s2)" }}>
               <StepById stepId="measure_tng_radii" />
               <Button onClick={reloadRadius}>Refresh status</Button>

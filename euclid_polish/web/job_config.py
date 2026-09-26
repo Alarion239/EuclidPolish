@@ -14,9 +14,10 @@ user tweaks between runs.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import os
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 from typing import Any
 
 from euclid_polish.config import Config
@@ -138,8 +139,59 @@ class JobConfig:
         return asdict(self)
 
 
+_FLAG_WORDS = {"1": True, "true": True, "yes": True, "on": True,
+               "0": False, "false": False, "no": False, "off": False}
+
+
+def parse_flag(raw: Any) -> bool | None:
+    """A form/JSON flag (``1/0``, ``true/false``, ``yes/no``, ``on/off``, or a
+    real bool) as a bool; ``None`` when it is not a flag word."""
+    if isinstance(raw, bool):
+        return raw
+    return _FLAG_WORDS.get(str(raw).strip().lower())
+
+
+def _field_type(name: str) -> type | None:
+    """The declared type of a :class:`JobConfig` field (its default's type)."""
+    for field in fields(JobConfig):
+        if field.name == name:
+            return type(field.default)
+    return None
+
+
+def coerce_field(name: str, raw: Any) -> Any:
+    """``raw`` (a form string or a JSON value) as field ``name``'s declared
+    type, or ``None`` when it is not a field or does not convert.
+
+    ``str`` fields are kept verbatim; ``int`` fields accept whole numbers
+    (``"5"``, ``"5.0"``) and flag words / bools as 0/1 (``plateau_lr_enabled``);
+    ``float`` fields accept numbers.
+    """
+    kind = _field_type(name)
+    if kind is None or raw is None:
+        return None
+    if kind is str:
+        return str(raw)
+    if kind is bool:
+        return parse_flag(raw)
+    if isinstance(raw, bool):
+        return kind(raw)
+    try:
+        number = float(str(raw).strip())
+    except ValueError:
+        flag = parse_flag(raw) if kind is int else None
+        return None if flag is None else int(flag)
+    if kind is float:
+        return number
+    return int(number) if number.is_integer() else None
+
+
 def load() -> JobConfig:
-    """Read the persisted config, defaulting any missing key."""
+    """Read the persisted config, defaulting any missing key.
+
+    Values are coerced to each field's declared type (a flag saved as a JSON
+    ``true`` loads as ``1``); an unconvertible value keeps the default.
+    """
     if not os.path.isfile(CONFIG_PATH):
         return JobConfig()
     try:
@@ -149,8 +201,9 @@ def load() -> JobConfig:
         return JobConfig()
     cfg = JobConfig()
     for k, v in data.items():
-        if hasattr(cfg, k) and v is not None:
-            setattr(cfg, k, v)
+        value = coerce_field(k, v)
+        if value is not None:
+            setattr(cfg, k, value)
     cfg.vis_pixels = _ensure_odd(int(cfg.vis_pixels))
     cfg.saturation_mask_prob = min(
         max(float(cfg.saturation_mask_prob), 0.0),
@@ -174,24 +227,27 @@ def save(cfg: JobConfig) -> None:
         os.chmod(CONFIG_PATH, 0o600)
 
 
+def version_of(values: dict[str, Any]) -> str:
+    """Stable content hash of an effective config dict (``/api/config``'s
+    ``version``): two loads of the same persisted values hash the same."""
+    encoded = json.dumps(values, sort_keys=True, separators=(",", ":"),
+                         default=str).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()[:16]
+
+
 def update(patch: dict[str, Any]) -> JobConfig:
     """Merge ``patch`` into the on-disk config and return the new state.
 
-    Numeric fields are coerced from form strings; blanks are ignored so a
+    Values are coerced to each field's declared type
+    (:func:`coerce_field`); blanks and unconvertible values are ignored so a
     partial form never wipes a value. VIS cutout is forced odd.
     """
     cfg = load()
     for k, v in patch.items():
-        if not hasattr(cfg, k) or v is None or v == "":
+        if v is None or v == "":
             continue
-        cur = getattr(cfg, k)
-        if isinstance(cur, str):
-            v = str(v)                       # string fields kept verbatim
-        else:
-            try:
-                v = float(v) if isinstance(cur, float) else int(v)
-            except (TypeError, ValueError):
-                continue
-        setattr(cfg, k, v)
+        value = coerce_field(k, v)
+        if value is not None:
+            setattr(cfg, k, value)
     save(cfg)
     return cfg

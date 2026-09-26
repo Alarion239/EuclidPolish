@@ -373,7 +373,7 @@ function StellarDensityComparison({ distribution }: { distribution: Distribution
               interval && interval.every((value): value is number =>
                 value != null && Number.isFinite(value))
                 ? interval.map((value) => ({
-                  axis: "x" as const, v: value, color: C.muted,
+                  axis: "x" as const, v: value as number, color: C.muted,
                   dash: [3, 4], width: 1, alpha: 0.55,
                 }))
                 : []

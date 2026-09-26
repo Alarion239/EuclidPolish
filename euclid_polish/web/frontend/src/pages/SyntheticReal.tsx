@@ -221,7 +221,7 @@ export default function SyntheticRealPage() {
                     onChange={(state) => setSyntheticIndex(state.index)} />
                 ) : (
                   <Empty>
-                    <span>Sync the {subset} dirty records on the <NavLink to="/sky">Sky page</NavLink> first.</span>
+                    <span>Sync the {subset} dirty records on the <NavLink to="/data/records">Records page</NavLink> first.</span>
                   </Empty>
                 )}
             </div>

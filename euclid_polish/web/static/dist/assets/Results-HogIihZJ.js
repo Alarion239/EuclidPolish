@@ -1,0 +1,1 @@
+import{j as e}from"./react-BRFK8GSE.js";import{k as r}from"./index-Cd6PmDsR.js";import"./vendor-BbR-4Fw_.js";function a(){return e.jsx(r,{workspace:"figures",tab:"results",links:[["Figure grid","/figures/grid"],["Plates","/figures/plates"]],children:"Every crop saved from a viewer (S / Save crop to results), with its WCS, rename and delete."})}export{a as default};

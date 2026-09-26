@@ -5,11 +5,15 @@ import csv
 import json
 import warnings
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
 from euclid_polish.config import Config
+from euclid_polish.web import remote
+from euclid_polish.web.app import create_app
+from euclid_polish.web.helpers import population_comparison as comparison
 from euclid_polish.web.helpers.population_comparison import (
     CATALOG_VERSION,
     VERSION,
@@ -32,6 +36,7 @@ from euclid_polish.web.helpers.population_comparison import (
     refresh_population_comparison,
     select_star_cone_centers,
 )
+from euclid_polish.web.routes import population_comparison as routes
 
 
 def test_population_field_payload_is_json_safe_and_keeps_four_bands():
@@ -183,8 +188,6 @@ def test_field_interval_keeps_empirical_spread_and_clusters_median_ci():
 def test_comparison_fingerprint_changes_when_equal_count_input_bytes_change(
     monkeypatch, tmp_path,
 ):
-    from euclid_polish.web.helpers import population_comparison as comparison
-
     record = tmp_path / "dirty_test.tfrecord"
     source = tmp_path / "sources_test.csv"
     record.write_bytes(b"first")
@@ -216,8 +219,6 @@ def test_comparison_fingerprint_changes_when_equal_count_input_bytes_change(
 def test_comparison_cache_freshness_uses_input_fingerprint(
     monkeypatch, tmp_path,
 ):
-    from euclid_polish.web.helpers import population_comparison as comparison
-
     cache = tmp_path / "comparison.json"
     cache.write_text(json.dumps({
         "version": VERSION,
@@ -236,8 +237,6 @@ def test_comparison_cache_freshness_uses_input_fingerprint(
 def test_availability_exposes_multipoint_readiness_and_exact_fingerprint(
     monkeypatch, tmp_path,
 ):
-    from euclid_polish.web.helpers import population_comparison as comparison
-
     record = tmp_path / "dirty_test.tfrecord"
     source = tmp_path / "sources_test.csv"
     record.write_bytes(b"")
@@ -291,8 +290,6 @@ def test_population_field_normalisation_accepts_fits_plane_order():
 
 
 def test_archive_field_provider_preserves_parent_and_sample_metadata(monkeypatch):
-    from euclid_polish.web.helpers import population_comparison as comparison
-
     class Sample:
         sample_id = 12
         source_sample_id = 3
@@ -329,8 +326,6 @@ def test_archive_field_provider_preserves_parent_and_sample_metadata(monkeypatch
 def test_build_requires_ready_multipoint_archive_without_legacy_fallback(
     monkeypatch, tmp_path,
 ):
-    from euclid_polish.web.helpers import population_comparison as comparison
-
     record = tmp_path / "dirty_test.tfrecord"
     record.write_bytes(b"")
     monkeypatch.setattr(
@@ -431,8 +426,6 @@ def test_masked_catalog_values_are_missing_without_warning():
 
 
 def test_population_refresh_preserves_field_statistics(tmp_path, monkeypatch):
-    from euclid_polish.web.helpers import population_comparison as comparison
-
     comparison_file = tmp_path / "comparison.json"
     comparison_file.write_text(json.dumps({
         "version": VERSION,
@@ -487,8 +480,6 @@ def test_population_refresh_preserves_field_statistics(tmp_path, monkeypatch):
 
 
 def test_synthetic_paths_exclude_training_by_default(tmp_path, monkeypatch):
-    from euclid_polish.web.helpers import population_comparison as comparison
-
     for name in (
         "dirty_test.tfrecord",
         "dirty_validate.tfrecord",
@@ -516,10 +507,6 @@ def test_synthetic_paths_exclude_training_by_default(tmp_path, monkeypatch):
 
 
 def test_population_variants_only_switch_the_synthetic_census(monkeypatch):
-    from pathlib import Path
-
-    from euclid_polish.web.helpers import population_comparison as comparison
-
     current_paths = [Path("sources_test.csv"), Path("sources_validate.csv")]
     all_paths = [*current_paths, Path("sources_train.csv")]
     monkeypatch.setattr(
@@ -552,8 +539,6 @@ def test_population_variants_only_switch_the_synthetic_census(monkeypatch):
 def test_euclid_population_query_keeps_classifier_uncertainty_and_photometry(
     tmp_path, monkeypatch
 ):
-    from euclid_polish.web.helpers import population_comparison as comparison
-
     rows = [
         {
             "object_id": 1, "right_ascension": 10.0, "declination": 20.0,
@@ -619,8 +604,6 @@ def test_euclid_population_query_keeps_classifier_uncertainty_and_photometry(
 def test_euclid_population_query_retains_curated_mer_and_morphology_schema(
     tmp_path, monkeypatch,
 ):
-    from euclid_polish.web.helpers import population_comparison as comparison
-
     row = {
         "object_id": 7,
         "right_ascension": 10.0,
@@ -690,8 +673,6 @@ def test_euclid_population_query_retains_curated_mer_and_morphology_schema(
 def test_euclid_population_query_preserves_cache_on_silent_archive_failure(
     tmp_path, monkeypatch,
 ):
-    from euclid_polish.web.helpers import population_comparison as comparison
-
     catalog_path = tmp_path / "euclid_population.csv"
     meta_path = tmp_path / "euclid_population_meta.json"
     catalog_path.write_text("object_id,type,mag_vis\nold,galaxy,22\n")
@@ -714,8 +695,6 @@ def test_euclid_population_query_preserves_cache_on_silent_archive_failure(
 def test_euclid_population_query_compacts_phz_pdf_and_physical_columns(
     tmp_path, monkeypatch,
 ):
-    from euclid_polish.web.helpers import population_comparison as comparison
-
     pdf = np.exp(-0.5 * ((comparison.PHZ_PDF_GRID - 1.2) / 0.15) ** 2)
     rows = [{
         "object_id": 42,
@@ -784,8 +763,6 @@ def test_euclid_population_query_compacts_phz_pdf_and_physical_columns(
 
 
 def test_archive_vector_parser_accepts_tap_string_arrays():
-    from euclid_polish.web.helpers import population_comparison as comparison
-
     np.testing.assert_allclose(
         comparison._result_vector({"value": "[1.0, 2.5]"}, "value", 2),
         [1.0, 2.5],
@@ -805,8 +782,6 @@ def test_archive_vector_parser_accepts_tap_string_arrays():
 def test_cached_phz_summary_recovery_requires_no_archive_query(
     tmp_path, monkeypatch,
 ):
-    from euclid_polish.web.helpers import population_comparison as comparison
-
     catalog_path = tmp_path / "euclid_population.csv"
     meta_path = tmp_path / "euclid_population_meta.json"
     pdf_path = tmp_path / "euclid_population_phz_pdf.npz"
@@ -857,8 +832,6 @@ def test_cached_phz_summary_recovery_requires_no_archive_query(
 def test_euclid_population_query_retries_after_session_refresh(
     tmp_path, monkeypatch,
 ):
-    from euclid_polish.web.helpers import population_comparison as comparison
-
     rows = [{
         "object_id": 1,
         "right_ascension": 10.0,
@@ -897,8 +870,6 @@ def test_euclid_population_query_retries_after_session_refresh(
 def test_multi_cone_failure_preserves_complete_previous_cache(
     tmp_path, monkeypatch,
 ):
-    from euclid_polish.web.helpers import population_comparison as comparison
-
     catalog_path = tmp_path / "euclid_population.csv"
     meta_path = tmp_path / "euclid_population_meta.json"
     original_catalog = "object_id,type,mag_vis\nold,galaxy,22\n"
@@ -1008,10 +979,6 @@ def test_synthetic_dataset_prior_distinguishes_legacy_and_saved_config(tmp_path)
 
 
 def test_ensure_ssh_connected_builds_shared_session(monkeypatch):
-    from types import SimpleNamespace
-
-    from euclid_polish.web import remote
-
     created = []
 
     class FakeSession:
@@ -1046,9 +1013,6 @@ def test_ensure_ssh_connected_builds_shared_session(monkeypatch):
 
 
 def test_population_comparison_page_and_status_route(monkeypatch):
-    from euclid_polish.web.app import create_app
-    from euclid_polish.web.routes import population_comparison as routes
-
     expected_availability = {
         "synthetic": {"fields": 200},
         "real": {"fields": 302},
@@ -1061,7 +1025,7 @@ def test_population_comparison_page_and_status_route(monkeypatch):
                         lambda: False)
     client = create_app().test_client()
 
-    page = client.get("/population-comparison")
+    page = client.get("/realism/pixels")
     assert page.status_code == 200
     assert b'<div id="root">' in page.data
 
@@ -1076,8 +1040,6 @@ def test_population_comparison_page_and_status_route(monkeypatch):
 
 
 def test_field_statistics_has_no_population_query_or_fit_routes():
-    from euclid_polish.web.app import create_app
-
     client = create_app().test_client()
     obsolete = (
         "/api/population-comparison/query-euclid",
@@ -1092,22 +1054,8 @@ def test_field_statistics_has_no_population_query_or_fit_routes():
     )
     assert all(client.post(endpoint).status_code == 404 for endpoint in obsolete)
 
-    source = (
-        Path(__file__).parents[1]
-        / "euclid_polish/web/frontend/src/pages/PopulationComparison.tsx"
-    ).read_text()
-    assert "Random Euclid population cones" not in source
-    assert "GalaxyCalibrationControls" not in source
-    assert "StarCalibrationControls" not in source
-    assert "comparison.population.euclid" not in source
-    assert "the fit that connects them" not in source
-    assert "VisNoiseCalibrationPanel" not in source
-
 
 def test_population_comparison_status_selects_training_variant(monkeypatch):
-    from euclid_polish.web.app import create_app
-    from euclid_polish.web.routes import population_comparison as routes
-
     cached = {
         "version": VERSION,
         "population": {

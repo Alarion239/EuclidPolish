@@ -427,13 +427,13 @@ export default function InferencePage() {
                 <CutoutViewer key={`nexus-${selectedNexusField.field_id}:${selectedNexusField.current_sr_count}:${selectedNexusField.stale_sr_count}`} collection="nexus-field"
                   params={{ field: selectedNexusField.field_id }} initialTiers={["lr", "sr", "jwst"]} />
               </> : <Empty>
-                Download a full NEXUS F200W or F444W quick-release mosaic on the <a href="/jwst-euclid">JWST × Euclid page</a>; its WCS-derived Euclid tile coverage will appear here automatically.
+                Download a full NEXUS F200W or F444W quick-release mosaic on the <a href="/sky/atlas">JWST × Euclid page</a>; its WCS-derived Euclid tile coverage will appear here automatically.
               </Empty>}
           </CardBody>
         </Card>
 
         {field && diagnostics.data?.diagnostics && <InferenceDiagnostics data={diagnostics.data.diagnostics}
-          synthetic={synthetic.data} syntheticLoading={synthetic.loading} syntheticError={synthetic.error} />}
+          synthetic={synthetic.data} syntheticLoading={synthetic.loading} syntheticError={!!synthetic.error} />}
         {field && !diagnostics.loading && !diagnostics.data?.diagnostics && (
           <Card><CardHead title="Field diagnostics" sub="Rerun this exact cached field once to derive its model–model spectral and gate-occupancy plots." /></Card>
         )}

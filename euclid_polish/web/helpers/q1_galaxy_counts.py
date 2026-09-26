@@ -20,6 +20,7 @@ from euclid_polish.population.magnitude_law import (
     StraightMagnitudeLaw,
     fit_straight_region,
 )
+from euclid_polish.sky.observation.q1_fields import Q1_FIELD_CONES
 from euclid_polish.web.helpers.q1_star_counts import (
     Q1_DEEP_FIELD_AREA_ARCMIN2,
     Q1_DEEP_FIELD_AREA_DEG2,
@@ -36,11 +37,7 @@ Q1_GALAXY_PROGRESSIVE_STRIDE = 0.5
 
 _QUERY_LOCK = threading.Lock()
 
-_Q1_DEEP_FIELD_REGIONS = (
-    (269.733, 66.018, 6.0),  # EDF-N
-    (61.241, -48.423, 6.0),  # EDF-S
-    (52.932, -28.088, 6.0),  # EDF-F
-)
+_Q1_DEEP_FIELD_REGIONS = Q1_FIELD_CONES  # EDF-N, EDF-S, EDF-F
 
 Q1_VIS_APERTURES = {
     "f1": ("flux_vis_1fwhm_aper", "VIS · 1 FWHM", "1-FWHM diameter aperture"),

@@ -7,14 +7,18 @@ import os
 import threading as _t
 from typing import Any
 
-from flask import abort, jsonify, render_template, request, send_file
+import numpy as np
+from flask import abort, jsonify, request, send_file
 
 from euclid_polish.config import Config
 from euclid_polish.ensemble import default_ensemble_dir
 from euclid_polish.ensemble_registry import active_member_dirs
 from euclid_polish.eval.ensemble_infer import load_eval_ensemble
+from euclid_polish.image import ImageSet
+from euclid_polish.image.tfio import tfrecord_path
 from euclid_polish.training.log_plot import plot_training_log
 from euclid_polish.web import fasrc_fetcher as _fasrc_fetcher
+from euclid_polish.web.fasrc_gate import requires_fasrc
 from euclid_polish.web.helpers import sky_records
 from euclid_polish.web.helpers.fits_render import _render_psf_panel_png
 from euclid_polish.web.helpers.paths import _sky_records_local_dir, _sky_records_remote_dir
@@ -24,7 +28,6 @@ from euclid_polish.web.helpers.status import (
     _cached_fasrc_psf_dir,
     _cached_psf_clusters_json,
     _list_vis_pngs,
-    _record_count,
     _resolve_training_log,
 )
 from euclid_polish.web.jobs import REGISTRY as JOB_REGISTRY
@@ -37,12 +40,6 @@ def register(app):
             return max(72, min(int(request.args.get("dpi", "110")), 600))
         except (TypeError, ValueError):
             abort(400)
-
-    # ---------------- Visualization page ----------------
-    @app.route("/visualization")
-    def visualization_page():
-        return render_template("visualization.html",
-                               pngs=_list_vis_pngs())
 
     @app.route("/api/vis/list.json")
     def api_vis_list():
@@ -136,17 +133,8 @@ def register(app):
             abort(404)
         return send_file(out_png, mimetype="image/png", max_age=0)
 
-    @app.route("/api/sky/totals")
-    def api_sky_totals():
-        local = _sky_records_local_dir()
-        return jsonify({
-            name: _record_count(name, records_dir=local)
-            for name in ("clean_train", "clean_validate",
-                         "dirty_train", "dirty_validate",
-                         "hr_train",    "hr_validate")
-        })
-
     @app.route("/api/sky/sync", methods=["POST"])
+    @requires_fasrc
     def api_sky_sync():
         """Rsync the synthetic TFRecord shards from FASRC into the local
         cache so the preview can render them.
@@ -236,16 +224,14 @@ def register(app):
                      in ("1", "true", "yes", "on"))
 
         def _run(cap):
-            import numpy as np
-
-            from euclid_polish.image import ImageSet
-            from euclid_polish.image.tfio import tfrecord_path as _trp
+            # STARFULL members through the production combiner (mean when no
+            # current combiner loads) — never the mixed-regime plain mean.
             model = load_eval_ensemble(
                 log=lambda m: cap.write(m if m.endswith("\n") else m + "\n"))
             os.makedirs(sky_records.sky_sr_dir(), exist_ok=True)
             done = 0
             for subset in subsets:
-                lr_path = _trp(records_dir, f"dirty_{subset}")
+                lr_path = tfrecord_path(records_dir, f"dirty_{subset}")
                 if not os.path.exists(lr_path) or (
                     not overwrite and sky_records.sr_count(subset) > 0
                 ):

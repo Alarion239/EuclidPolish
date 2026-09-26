@@ -157,7 +157,29 @@ def test_q1_deep_field_coordinate_labels_are_not_swapped():
 
     labelled = sampling._assign_q1_regions(stars)
 
-    assert labelled["field"].tolist() == ["EDF-F", "EDF-S", "EDF-N"]
+    # EDF-S is at Dec −48°, EDF-F (Fornax, beside the CDF-S) at Dec −28°.
+    assert labelled["field"].tolist() == ["EDF-S", "EDF-F", "EDF-N"]
+
+
+def test_label_fix_keeps_the_physical_region_order():
+    """Only the EDF-F/EDF-S *labels* were swapped: the per-field k-means seeds
+    follow the row order (``seed + 104729·(row + 1)``) and the plan fingerprint
+    omits the regions, so the physical order must stay N, (61°, −48°),
+    (53°, −28°) for a regenerated catalogue to reproduce the same anchors."""
+    centres = [(ra, dec) for _name, ra, dec, _radius in sampling.Q1_SUPPORT_REGIONS]
+    assert centres == [(269.733, 66.018), (61.241, -48.423), (52.932, -28.088)]
+    assert [row[0] for row in sampling.Q1_SUPPORT_REGIONS] == ["EDF-N", "EDF-S", "EDF-F"]
+
+
+def test_cluster_tie_break_follows_the_physical_field_not_the_label():
+    """Equal cell counts tie on the fractional quota; the winner must be the
+    same physical field as before the label fix (it was the (53°, −28°) field,
+    then labelled "EDF-S" — the lexicographic maximum — now "EDF-F")."""
+    counts = {"EDF-N": 3, "EDF-S": 3, "EDF-F": 3}
+    allocation = sampling._allocate_clusters(counts, 4)
+    assert allocation == {"EDF-N": 1, "EDF-S": 1, "EDF-F": 2}
+    allocation = sampling._allocate_clusters({"EDF-N": 3, "EDF-S": 3}, 3)
+    assert allocation == {"EDF-N": 2, "EDF-S": 1}
 
 
 def test_star_support_default_has_dedicated_root(monkeypatch, tmp_path):

@@ -5,13 +5,16 @@ from __future__ import annotations
 import json
 import os
 import shlex
+from dataclasses import replace
 
 import pytest
 
+from euclid_polish.config import Config
 from euclid_polish.population.euclid_galaxy_prior import (
     JOINT_EUCLID_GALAXY_VERSION,
 )
-from euclid_polish.web import fasrc_config
+from euclid_polish.web import fasrc_config, fasrc_pipeline, remote
+from euclid_polish.web.app import create_app
 from euclid_polish.web.fasrc_pipeline import (
     REGISTRY,
     EnsembleTrainStep,
@@ -20,35 +23,13 @@ from euclid_polish.web.fasrc_pipeline import (
     StepRegistry,
     StepResources,
 )
+from scripts.fasrc_poster_cutout import _counts_for_mode, _record_ok
 
 
 def _mock_population_calibrations(monkeypatch):
-    transfer = {
-        "fingerprint": "a" * 64,
-        "coefficients": {
-            "offset_mag": 0.2,
-            "magnitude_slope": 0.8,
-            "scatter_mag": 0.3,
-        },
-    }
-    monkeypatch.setattr(
-        "euclid_polish.web.helpers.population_calibration.active_transfer",
-        lambda: transfer,
-    )
-    monkeypatch.setattr(
-        "euclid_polish.web.helpers.population_calibration.photometric_candidate",
-        lambda: transfer,
-    )
     monkeypatch.setattr(
         "euclid_polish.web.helpers.population_calibration.active_star",
         lambda: None,
-    )
-    monkeypatch.setattr(
-        "euclid_polish.web.helpers.population_calibration.density_state",
-        lambda: {"active": {
-            "transfer_fingerprint": "a" * 64,
-            "activated_density_arcmin2": 255.0,
-        }},
     )
     joint = {
         "version": 6,
@@ -491,7 +472,6 @@ class TestRegistry:
 
     def test_poster_field_mode_helpers(self):
         """`field` overrides no counts and accepts any non-empty scene."""
-        from scripts.fasrc_poster_cutout import _counts_for_mode, _record_ok
         assert _counts_for_mode("field") == {}
         assert _counts_for_mode("tng")["n_galaxies"] == 1
         meta = {"n_galaxies": 3, "n_stars": 0, "n_lenses": 1}
@@ -501,7 +481,6 @@ class TestRegistry:
 
     def test_synthetic_generate_galaxy_density_flag(self):
         """Generation has one COSMOS-conditioned TNG population."""
-        from euclid_polish.config import Config
         step = REGISTRY.get("synthetic_generate")
         base = {"n_train": 10, "n_valid": 2, "image_size": 252,
                 "batch_size": 4, "steps": 100,
@@ -909,7 +888,6 @@ class TestSbatchRendering:
             # so the test exercises the gres branch regardless of step
             # defaults shifting in future.
             resources = step.defaults
-            from dataclasses import replace
             resources_gpu = replace(resources, n_gpus=1, partition="gpu")
             out = step.build_sbatch_body(
                 params={}, resources=resources_gpu, cfg=cfg,
@@ -940,7 +918,6 @@ class TestSbatchRendering:
         """Every registered step must produce a body that begins with
         ``#!/bin/bash``. Sanity guard against future edits to the
         template that would break the dedent invariant."""
-        from dataclasses import replace
         _mock_population_calibrations(monkeypatch)
         for step in REGISTRY.all():
             for n_gpus in (0, 1, 2):
@@ -1094,7 +1071,6 @@ class TestFixedCpusEnforcement:
 
     def _stub_ssh(self, monkeypatch):
         """Make STATE.ssh report connected + capture sbatch commands."""
-        from euclid_polish.web import remote
         class _StubSSH:
             calls: list = []
             def is_connected(self): return True
@@ -1112,9 +1088,6 @@ class TestFixedCpusEnforcement:
     def test_form_n_cpus_overridden_by_fixed_cpus(self, monkeypatch):
         """No registered step pins CPUs anymore, so the enforcement is
         exercised through a locked dummy step injected into the registry."""
-        from euclid_polish.web import fasrc_pipeline
-        from euclid_polish.web.app import create_app
-
         class _LockedStep(FASRCPipelineStep):
             def __init__(self):
                 super().__init__(
@@ -1157,7 +1130,6 @@ class TestFixedCpusEnforcement:
         confirm the rendered sbatch body (written via the heredoc) carries
         ``--workers 32`` — decoupled from the 8 allocated CPUs. This proves the
         new form field flows form → build_command → script."""
-        from euclid_polish.web.app import create_app
         stub = self._stub_ssh(monkeypatch)
         app = create_app()
         client = app.test_client()
@@ -1189,7 +1161,6 @@ class TestFixedCpusEnforcement:
     def test_tng_workers_blank_falls_back_to_cpus_in_script(self, monkeypatch):
         """Blank workers field → the script is rendered with --workers = the
         allocated CPU count (8 here)."""
-        from euclid_polish.web.app import create_app
         stub = self._stub_ssh(monkeypatch)
         app = create_app()
         client = app.test_client()
@@ -1213,8 +1184,6 @@ class TestFixedCpusEnforcement:
     def test_archive_redownload_requires_its_stronger_confirmation(
         self, monkeypatch,
     ):
-        from euclid_polish.web.app import create_app
-
         stub = self._stub_ssh(monkeypatch)
         client = create_app().test_client()
         form = {
@@ -1250,7 +1219,6 @@ class TestFixedCpusEnforcement:
         """The partition is determined by the job type — a form-supplied
         value (stale tab, manual POST) is overridden by the step's
         partition before anything reaches sbatch."""
-        from euclid_polish.web.app import create_app
         self._stub_ssh(monkeypatch)
         app = create_app()
         client = app.test_client()
@@ -1272,7 +1240,6 @@ class TestFixedCpusEnforcement:
         """With the partition question removed from the cards, a form
         without the field must still submit — the server injects the
         step's partition before the strict resource parse."""
-        from euclid_polish.web.app import create_app
         self._stub_ssh(monkeypatch)
         app = create_app()
         client = app.test_client()
@@ -1290,7 +1257,6 @@ class TestFixedCpusEnforcement:
         assert j["params"]["partition"] == "shared"
 
     def test_form_n_cpus_kept_when_no_fixed(self, monkeypatch):
-        from euclid_polish.web.app import create_app
         self._stub_ssh(monkeypatch)
         app = create_app()
         client = app.test_client()
@@ -1324,7 +1290,6 @@ class TestFixedCpusEnforcement:
         extension, or a programmatic POST could submit jobs to FASRC
         without the user ever seeing the confirmation dialog.
         """
-        from euclid_polish.web.app import create_app
         stub = self._stub_ssh(monkeypatch)
         app = create_app()
         client = app.test_client()
@@ -1353,7 +1318,6 @@ class TestFixedCpusEnforcement:
         """Token values other than 'yes' / 'true' / '1' (case-insensitive)
         must also be rejected, so a typo or stray default can't sneak
         a submission through."""
-        from euclid_polish.web.app import create_app
         stub = self._stub_ssh(monkeypatch)
         app = create_app()
         client = app.test_client()
@@ -1381,8 +1345,6 @@ class TestFixedCpusEnforcement:
         installed *before* ``create_app()`` survives and intercepts
         every SSH call the route makes.
         """
-        from euclid_polish.web import remote
-        from euclid_polish.web.app import create_app
         # Install the stub BEFORE create_app.
         stub = self._stub_ssh(monkeypatch)
         # Sanity: env var must be set by conftest.py — otherwise

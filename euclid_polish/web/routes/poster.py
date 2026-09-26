@@ -17,6 +17,7 @@ from flask import jsonify, send_file
 from euclid_polish.config import Config
 from euclid_polish.web import fasrc_config
 from euclid_polish.web.fasrc_fetcher import fetch_one_file
+from euclid_polish.web.fasrc_gate import requires_fasrc
 
 # Must match scripts/fasrc_poster_cutout.py (OUTPUT_SUBDIR / FITS_NAME / PNG_NAME).
 _POSTER_SUBDIR = "_poster"
@@ -83,10 +84,12 @@ def register(app):
                          download_name=download_name)
 
     @app.route("/poster/result/cutout.png")
+    @requires_fasrc
     def poster_result_png():
         return _serve(_PNG_NAME, "image/png", archive_png=True)
 
     @app.route("/poster/result/cutout.fits")
+    @requires_fasrc
     def poster_result_fits():
         return _serve(_FITS_NAME, "application/fits", as_attachment=True,
                       download_name=_FITS_NAME)

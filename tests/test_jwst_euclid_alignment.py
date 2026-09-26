@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from astropy.coordinates import SkyCoord
+from astropy.io import fits
+from astropy.wcs import WCS
+from astropy.wcs.utils import proj_plane_pixel_scales
 
+import euclid_polish.ensemble as ensemble_module
+import euclid_polish.eval.combiner as combiner_module
 from euclid_polish.config import Config
 from euclid_polish.web.helpers import jwst_euclid, viewer_data
 
@@ -26,8 +33,6 @@ def test_nexus_pair_id_and_public_product_options_are_stable():
 
 
 def test_nexus_source_tiles_use_exact_255_pixel_euclid_footprints(monkeypatch):
-    from astropy.wcs import WCS
-
     wcs = WCS(naxis=2)
     wcs.wcs.crpix = [1.0, 1.0]
     wcs.wcs.crval = [268.4625, 65.19917]
@@ -49,8 +54,6 @@ def test_nexus_source_tiles_use_exact_255_pixel_euclid_footprints(monkeypatch):
 
 
 def test_nexus_field_viewer_reads_saved_255_pixel_tiles(tmp_path, monkeypatch):
-    from astropy.io import fits
-
     monkeypatch.setattr(Config, "DATA_DIR", str(tmp_path / "data"))
     identifier = jwst_euclid.nexus_field_id("F200W")
     root = jwst_euclid.nexus_field_root() / identifier / "tiles"
@@ -81,9 +84,6 @@ def test_nexus_field_viewer_reads_saved_255_pixel_tiles(tmp_path, monkeypatch):
 
 
 def test_nexus_download_reuses_cached_tiles_while_filling_missing_bands(tmp_path, monkeypatch):
-    from astropy.io import fits
-    from astropy.wcs import WCS
-
     monkeypatch.setattr(Config, "DATA_DIR", str(tmp_path / "data"))
     wcs = WCS(naxis=2)
     wcs.wcs.crpix = [1.0, 1.0]
@@ -131,10 +131,6 @@ def test_nexus_download_reuses_cached_tiles_while_filling_missing_bands(tmp_path
 
 def test_nexus_download_crops_rounded_archive_vis_cutouts_to_exact_tiles(tmp_path, monkeypatch):
     """The archive rounds a 255-px request up to 256/257 px; keep the tile."""
-    from astropy.coordinates import SkyCoord
-    from astropy.io import fits
-    from astropy.wcs import WCS
-
     monkeypatch.setattr(Config, "DATA_DIR", str(tmp_path / "data"))
     source_wcs = WCS(naxis=2)
     source_wcs.wcs.crpix = [1.0, 1.0]
@@ -194,8 +190,6 @@ def test_nexus_download_crops_rounded_archive_vis_cutouts_to_exact_tiles(tmp_pat
 
 
 def test_nexus_field_viewer_exposes_registered_lr_and_sr(tmp_path, monkeypatch):
-    from astropy.io import fits
-
     monkeypatch.setattr(Config, "DATA_DIR", str(tmp_path / "data"))
     identifier = jwst_euclid.nexus_field_id("F444W")
     root = jwst_euclid.nexus_field_root() / identifier / "tiles"
@@ -271,8 +265,6 @@ def test_saved_pair_viewer_exposes_sr_pixel_blurred_jwst(monkeypatch):
 
 
 def test_nexus_jwst_blur_uses_one_sr_pixel_fwhm(tmp_path, monkeypatch):
-    from astropy.io import fits
-
     monkeypatch.setattr(Config, "DATA_DIR", str(tmp_path / "data"))
     identifier = jwst_euclid.nexus_field_id("F444W")
     root = jwst_euclid.nexus_field_root() / identifier / "tiles"
@@ -310,13 +302,6 @@ def test_nexus_jwst_blur_uses_one_sr_pixel_fwhm(tmp_path, monkeypatch):
 
 def test_nexus_starfull_inference_reuses_current_and_replaces_stale_sr(
         tmp_path, monkeypatch):
-    from types import SimpleNamespace
-
-    from astropy.io import fits
-
-    import euclid_polish.ensemble as ensemble_module
-    import euclid_polish.eval.combiner as combiner_module
-
     monkeypatch.setattr(Config, "DATA_DIR", str(tmp_path / "data"))
     identifier = jwst_euclid.nexus_field_id("F200W")
     root = jwst_euclid.nexus_field_root() / identifier / "tiles"
@@ -405,8 +390,6 @@ def test_nexus_starfull_inference_reuses_current_and_replaces_stale_sr(
 
 def test_nexus_field_status_marks_changed_combiner_sr_stale(
         tmp_path, monkeypatch):
-    from astropy.io import fits
-
     monkeypatch.setattr(Config, "DATA_DIR", str(tmp_path / "data"))
     identifier = jwst_euclid.nexus_field_id("F200W")
     directory = jwst_euclid.nexus_field_root() / identifier
@@ -483,8 +466,6 @@ def test_field_coordinates_prefer_jwst_footprint_center():
 
 
 def test_aligned_header_removes_invalid_extension_cards(tmp_path):
-    from astropy.io import fits
-
     header = fits.Header()
     header["EXTNAME"] = 1
     header["EXTVER"] = 1
@@ -542,7 +523,7 @@ def test_jwst_colour_and_temperature_preserve_native_band_brightness(monkeypatch
     monkeypatch.setattr(
         viewer_data,
         "_jwst_aligned_planes",
-        lambda _manifest, _directory: (entries, planes, "F100W", 0.03),
+        lambda _manifest, _directory: (entries, planes, "F100W", 0.03, None),
     )
 
     colour, colour_meta = viewer_data._jwst_colour_cube({}, "")
@@ -555,8 +536,6 @@ def test_jwst_colour_and_temperature_preserve_native_band_brightness(monkeypatch
 
 
 def test_readable_fits_rejects_empty_archive_placeholder(tmp_path):
-    from astropy.io import fits
-
     empty = tmp_path / "empty.fits"
     empty.touch()
     valid = tmp_path / "valid.fits"
@@ -567,8 +546,6 @@ def test_readable_fits_rejects_empty_archive_placeholder(tmp_path):
 
 def test_readable_fits_rejects_truncated_archive_download(tmp_path):
     """A dropped transfer leaves a valid header but a short data block."""
-    from astropy.io import fits
-
     full = tmp_path / "full.fits"
     fits.PrimaryHDU(data=np.ones((265, 265), dtype=np.float32)).writeto(full)
     truncated = tmp_path / "truncated.fits"
@@ -578,8 +555,6 @@ def test_readable_fits_rejects_truncated_archive_download(tmp_path):
 
 
 def test_euclid_download_recovers_valid_file_from_placeholder(tmp_path):
-    from astropy.io import fits
-
     extracted = tmp_path / "extracted.fits"
     fits.PrimaryHDU(data=np.ones((2, 2), dtype=np.float32)).writeto(extracted)
     destination = tmp_path / "requested.fits"
@@ -602,8 +577,6 @@ def test_euclid_download_recovers_valid_file_from_placeholder(tmp_path):
 
 
 def test_align_to_target_preserves_an_identity_grid():
-    from astropy.wcs import WCS
-
     wcs = WCS(naxis=2)
     wcs.wcs.crpix = [2.0, 2.0]
     wcs.wcs.crval = [10.0, 20.0]
@@ -615,8 +588,6 @@ def test_align_to_target_preserves_an_identity_grid():
 
 
 def test_align_to_target_corrects_a_one_pixel_wcs_offset():
-    from astropy.wcs import WCS
-
     target_wcs = WCS(naxis=2)
     target_wcs.wcs.crpix = [3.0, 3.0]
     target_wcs.wcs.crval = [10.0, 20.0]
@@ -635,10 +606,6 @@ def test_align_to_target_corrects_a_one_pixel_wcs_offset():
 
 
 def test_native_sky_cutout_keeps_source_pixel_scale():
-    from astropy.coordinates import SkyCoord
-    from astropy.wcs import WCS
-    from astropy.wcs.utils import proj_plane_pixel_scales
-
     wcs = WCS(naxis=2)
     wcs.wcs.crpix = [51.0, 51.0]
     wcs.wcs.crval = [10.0, 20.0]
@@ -657,9 +624,6 @@ def test_native_sky_cutout_keeps_source_pixel_scale():
 
 
 def test_pixel_metadata_reports_shape_scale_and_detector():
-    from astropy.io import fits
-    from astropy.wcs import WCS
-
     wcs = WCS(naxis=2)
     wcs.wcs.crpix = [2.0, 2.0]
     wcs.wcs.crval = [10.0, 20.0]

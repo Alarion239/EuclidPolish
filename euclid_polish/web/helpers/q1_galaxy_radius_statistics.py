@@ -19,6 +19,7 @@ from astroquery.esa.euclid import Euclid
 
 from euclid_polish.config import Config
 from euclid_polish.photometry import ab_mag_to_uJy
+from euclid_polish.sky.observation.q1_fields import Q1_FIELD_CONES
 from euclid_polish.web.helpers.q1_galaxy_counts import (
     Q1_GALAXY_MAG_BIN_WIDTH,
     Q1_GALAXY_MAG_BRIGHT,
@@ -60,11 +61,7 @@ Q1_GALAXY_RADIUS_TOTAL_QUERIES = (
 )
 
 _QUERY_LOCK = threading.Lock()
-_Q1_DEEP_FIELD_REGIONS = (
-    (269.733, 66.018, 6.0),
-    (61.241, -48.423, 6.0),
-    (52.932, -28.088, 6.0),
-)
+_Q1_DEEP_FIELD_REGIONS = Q1_FIELD_CONES  # EDF-N, EDF-S, EDF-F
 
 
 def q1_galaxy_radius_statistics_path() -> Path:

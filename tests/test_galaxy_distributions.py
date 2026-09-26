@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import csv
 import json
-from pathlib import Path
 
 import numpy as np
 import pytest
@@ -1003,108 +1002,29 @@ def test_q1_aperture_fit_route_waits_for_four_queried_bins(monkeypatch):
 
 
 def test_galaxy_distribution_page_is_registered_in_spa():
-    response = create_app().test_client().get("/galaxy-distributions")
+    response = create_app().test_client().get("/realism/galaxies")
 
     assert response.status_code == 200
     assert 'id="root"' in response.get_data(as_text=True)
 
 
-def test_galaxy_distribution_controls_use_one_galaxy_query_action():
-    source = (
-        Path(__file__).parents[1]
-        / "euclid_polish/web/frontend/src/pages/GalaxyDistributions.tsx"
-    ).read_text()
+def test_galaxy_distribution_routes_expose_one_galaxy_query_action():
+    """The galaxy page has exactly one MER + PHZ query route and one activate
+    route; the retired PHZ-recovery and multi-cone query/fit routes stay gone.
 
-    assert source.count('"Query MER + PHZ"') == 1
-    assert "Recover PHZ locally" not in source
-    assert "/api/galaxy-distributions/recover-phz" not in source
-    assert "/api/population-comparison/query-euclid-multi" not in source
-    assert "/api/population-comparison/fit-euclid" not in source
-    assert "/api/galaxy-distributions/fit-q1-counts" not in source
-    assert "Fit cached aperture curves" not in source
-    assert '"/api/galaxy-distributions/activate"' in source
-    assert "Rₑ brackets" in source
-    assert "stellar bins" not in source
-    assert "stellar colours" not in source
-    assert "POINT_LIKE_FLAG IS NULL" in source
-    assert "never refreshes star caches" in source
-    assert "Joint brightness–radius relation" in source
-    assert "observed_mean_log10_arcsec" in source
-    assert "model_core_low_log10_arcsec" in source
-    assert "model_core_high_log10_arcsec" in source
-    assert "?? relation.model_low_log10_arcsec" in source
-    assert "?? relation.model_high_log10_arcsec" in source
-    assert "VIS magnitude–MER aperture FWHM relation" in source
-    assert "observed_mean_arcsec" in source
-    assert "model_mean_arcsec" in source
-    assert "MER catalogue FWHM (arcsec)" in source
-    assert "conditionalFwhmInterval" in source
-    assert "errorLow: interval.low" in source
-    assert "errorHigh: interval.high" in source
-    assert "weighted 16th–84th" in source
-    assert "nearest populated bin where direct Q1 support is absent" in source
-    assert "generation_bright_join_magnitudes" in source
-    assert "generation_bright_slopes" in source
-    assert "three-segment bright bridge/main/flat" in source
-    assert "one fitted straight truncated-Gaussian conditional law" in source
-    assert "Q1 magnitude mix" in source
-    assert "full faint extension" in source
-    assert "half_light_shape" in source
-    assert "normalized probability / dex" in source
-    assert 'const PARAMETER_ORDER = [' in source
-    assert '"magnitude", "radius", "color_vis_y", "color_y_j", "color_j_h",' in source
-    assert '"Empirical colour model"' in source
-    assert "conditional_colors" in source
-    assert "model_mean_vis_minus_y" in source
-    assert "observed_ratio_variance_by_magnitude" in source
-    assert "noise_ratio_variance_by_magnitude" in source
-    assert "ApertureLadder" not in source
-    assert "JointDensityMaps" in source
-    assert "Q1, generated, and model contours" in source
-    assert "Contours are labeled by enclosed population mass" in source
-    assert "const contourMaps = [q1, ...overlays]" in source
-    assert "contourMassLabel(contour.mass_fraction)" in source
-    assert "z: q1.density" not in source
-    assert "neutral grayscale" not in source
-    assert "Gray contours show" in source
-    assert "blue dashed contours show" in source
-    assert "red solid contours" in source
-    assert "10 / 50 / 80 / 95 / 99 / 99.5 / 99.9% contours" in source
-    assert "JOINT_DENSITY_COLOR" not in source
-    assert 'map.key === "synthetic" ? [7, 4]' in source
-    assert "data.maps.map" not in source
-    assert "include_training=${includeTraining" in source
-    assert "include training catalog" in source
-    assert "no training" in source.lower()
-    assert "Download {format.toUpperCase()}" in source
-    assert "figure export" in source
-    assert "broken conditional log-radius law" not in source
-    assert "Added galaxies fainter than VIS 25.5" not in source
-    assert "fitted mixture mean" not in source
-    assert 'label="random cones"' not in source
-    assert 'label="radius (arcmin)"' not in source
-    assert "galaxy-q1-phases" in source
+    (pytest pins only this backend contract. How the page renders is not
+    tested by pytest; the dropped page-source checks are handed to the
+    Realism workspace WP's vitest suite.)"""
+    rules: dict[str, set[str]] = {}
+    for rule in create_app().url_map.iter_rules():
+        rules.setdefault(rule.rule, set()).update(rule.methods or ())
 
-    css = (
-        Path(__file__).parents[1]
-        / "euclid_polish/web/frontend/src/pages/galaxy-distributions.css"
-    ).read_text()
-    assert (
-        ".galaxy-plot-grid { display: grid; grid-template-columns: "
-        "minmax(0, 1fr)"
-    ) in css
-    assert ".publication-plate__preview" in css
-
-
-def test_logarithmic_plots_label_ticks_in_physical_units():
-    source = (
-        Path(__file__).parents[1]
-        / "euclid_polish/web/frontend/src/pages/GalaxyDistributions.tsx"
-    ).read_text()
-
-    assert "const physicalLogTicks" in source
-    assert "yTicks={physicalLogTicks(yDomain)}" in source
-    assert "xTicks={physicalLogTicks(xDomain, 6)}" in source
-    assert "log₁₀ ${parameter.density_unit}" not in source
-    assert "(log scale)" in source
-    assert "parameter.x_domain" in source
+    assert "POST" in rules["/api/galaxy-distributions/query-q1-counts"]
+    assert "POST" in rules["/api/galaxy-distributions/activate"]
+    assert "GET" in rules["/api/galaxy-distributions"]
+    for retired in (
+        "/api/galaxy-distributions/recover-phz",
+        "/api/population-comparison/query-euclid-multi",
+        "/api/population-comparison/fit-euclid",
+    ):
+        assert retired not in rules

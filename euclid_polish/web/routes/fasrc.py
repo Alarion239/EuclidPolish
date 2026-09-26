@@ -2,22 +2,17 @@
 from __future__ import annotations
 
 import contextlib
-import csv
-import io as _io
 import json
 import os
 import shlex
 import subprocess
-import tempfile
-import threading as _t
 import time
 import traceback
 from typing import Any, cast
 
-from flask import Response, abort, jsonify, render_template, request, stream_with_context
+from flask import jsonify, request
 
 from euclid_polish.observability.training_log import TrainingLog
-from euclid_polish.training.log_plot import plot_training_records
 from euclid_polish.web import (
     fasrc_config,
     fasrc_jobs,
@@ -25,11 +20,48 @@ from euclid_polish.web import (
     fasrc_queue,
     job_config,
 )
+from euclid_polish.web.fasrc_gate import requires_fasrc
 from euclid_polish.web.fasrc_mirror import MIRROR
 from euclid_polish.web.fasrc_pipeline import REGISTRY as STEP_REGISTRY
-from euclid_polish.web.fasrc_pipeline import StepResources
+from euclid_polish.web.fasrc_pipeline import StepResources, TaskParamError
 from euclid_polish.web.job_status import JobStatusFetcher
-from euclid_polish.web.remote import STATE, SSHConfig, SSHError, SSHSession
+from euclid_polish.web.jobs import REGISTRY as JOB_REGISTRY
+from euclid_polish.web.remote import STATE, SSHError, SSHSession, connect_from_config
+
+# Sentinel line appended to the remote env-update command so the local job
+# learns the pipeline's exit status from a plain output stream.
+_ENV_UPDATE_EXIT_MARKER = "__EP_EXIT__"
+# Keep-alive line the remote env-update watchdog prints every
+# ``_ENV_UPDATE_HEARTBEAT_S`` seconds (filtered from the job log). It lets a
+# cancel land while mamba solves silently, and its failing write is how the
+# remote side learns the channel is gone (see ``_env_update_watchdog``).
+_ENV_UPDATE_ALIVE_MARKER = "__EP_ALIVE__"
+_ENV_UPDATE_HEARTBEAT_S: float = 2.0
+
+
+def _env_update_watchdog(period_s: float) -> str:
+    """Bash prefix: a heartbeat that kills the remote job once nobody listens.
+
+    ``SSHSession.stream`` runs without a pty, so closing it (a cancel) only
+    ends the local ``ssh`` client; the remote processes get no SIGHUP and a
+    silent ``mamba`` solve would run on until its next write. The background
+    loop prints ``_ENV_UPDATE_ALIVE_MARKER`` every ``period_s`` with SIGPIPE
+    ignored, so a write into the closed channel fails and it runs
+    ``kill -TERM 0``: sshd starts each session command with ``setsid``, so
+    process group 0 is exactly this command (``yes``, ``mamba``, the shell).
+    The ``EXIT`` trap stops the loop when the update ends normally; its
+    ``sleep`` writes to /dev/null so it never holds the channel open.
+    A local stand-in for ``SSHSession`` must likewise start the command in
+    its own session (``start_new_session=True``, as ``tests/_local_ssh.py``
+    does), or ``kill -TERM 0`` would reach the caller's process group.
+    """
+    return (
+        "( trap '' PIPE; "
+        f"while sleep {period_s:g} >/dev/null 2>&1; do "
+        f"echo {_ENV_UPDATE_ALIVE_MARKER} 2>/dev/null || kill -TERM 0; "
+        "done ) & __ep_hb=$!; "
+        "trap 'kill $__ep_hb 2>/dev/null' EXIT; "
+    )
 
 
 class _JobStatusSSHAdapter:
@@ -55,26 +87,28 @@ def _job_status_ssh(
     return _JobStatusSSHAdapter(session) if session is not None else None
 
 
+def _merge_squeue_fields(
+    row: dict[str, Any], squeue_rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Overlay the live squeue columns of ``row``'s job (or its RUNNING array
+    task, else its first task) onto a JobDB row."""
+    jid = str(row.get("jobid", "")).strip()
+    live_rows = fasrc_jobs.array_squeue_rows(jid, squeue_rows)
+    live = next((r for r in live_rows if r.get("state") == "RUNNING"), None)
+    live = live or next(iter(live_rows), None)
+    if live is not None:
+        for key in ("start_time", "reason", "nodes", "time", "time_limit"):
+            value = live.get(key)
+            if value is not None and value != "":
+                row[key] = value
+    return row
+
+
 def register(app):
     # =========================================================================
     # FASRC tab — Bitwarden-driven SSH ControlMaster, SLURM submission,
     # live log streaming, checkpoint auto-mirror.
     # =========================================================================
-
-    @app.route("/fasrc")
-    def fasrc_page():
-        # Don't call STATE.public_status() here — it runs ``bw --version``
-        # and ``ssh -O check`` subprocesses (up to ~600 ms combined on a
-        # warm cache, several seconds on a cold one) and the template
-        # doesn't even use the result. The page's own JS fetches connection
-        # state via /api/fasrc/status after the DOM loads, which is async
-        # and doesn't block render.
-        cfg = fasrc_config.load()
-        return render_template(
-            "fasrc.html",
-            cfg=cfg,
-            recent=fasrc_jobs.DB.list_recent(20),
-        )
 
     # ---- config -----------------------------------------------------------
 
@@ -91,31 +125,23 @@ def register(app):
 
     @app.route("/api/fasrc/status")
     def api_fasrc_status():
+        """Connection state; ``last_error`` explains a disconnected state
+        (startup auto-connect error or the last failed connect)."""
         return jsonify(STATE.public_status())
 
     @app.route("/api/fasrc/connect", methods=["POST"])
     def api_fasrc_connect():
-        cfg = fasrc_config.load()
-        if not cfg.ssh_user:
-            return jsonify({"ok": False,
-                            "error": "set ssh_user in Settings first"}), 400
-        STATE.ssh = SSHSession(SSHConfig(
-            user=cfg.ssh_user, host=cfg.ssh_host,
-            socket=cfg.control_socket,
-            control_persist=cfg.control_persist,
-        ))
         try:
-            STATE.ssh.connect()
+            session = connect_from_config()
         except SSHError as e:
-            STATE.ssh = None
-            return jsonify({"ok": False, "error": str(e)}), 400
-        STATE.connected_at = time.time()
+            return jsonify({"ok": False, "error": str(e),
+                            "status": STATE.public_status()}), 400
         # Catch up on any jobs that finished while the server was offline:
         # squeue no longer lists them, so reconcile marks them DONE and
         # the ssh-passing path fetches their sacct accounting into the
         # CSV log. Best-effort — failures here must not block connect.
         with contextlib.suppress(Exception):
-            fasrc_jobs.sync_pending_on_connect(STATE.ssh)
+            fasrc_jobs.sync_pending_on_connect(session)
         return jsonify({"ok": True, "status": STATE.public_status()})
 
     @app.route("/api/fasrc/disconnect", methods=["POST"])
@@ -124,12 +150,14 @@ def register(app):
             STATE.ssh.disconnect()
         STATE.ssh = None
         STATE.connected_at = None
+        STATE.last_error = None
         MIRROR.stop()
         return jsonify({"ok": True, "status": STATE.public_status()})
 
     # ---- remote info ------------------------------------------------------
 
     @app.route("/api/fasrc/git-status")
+    @requires_fasrc
     def api_fasrc_git_status():
         ssh = STATE.ssh
         if ssh is None or not ssh.is_connected():
@@ -159,12 +187,13 @@ def register(app):
                         "last": last_commit})
 
     @app.route("/api/fasrc/git-pull", methods=["POST"])
+    @requires_fasrc
     def api_fasrc_git_pull():
         """``git pull`` + auto-update conda env when ``environment.yml`` moved.
 
         Returns ``env_update_needed: True`` whenever the pull's diff
-        touches ``environment.yml``; the UI then kicks off the
-        ``/api/fasrc/env-update`` SSE stream automatically so the user
+        touches ``environment.yml``; the UI then starts the
+        ``POST /api/fasrc/env-update`` job automatically so the user
         doesn't have to remember.
         """
         if not STATE.ssh or not STATE.ssh.is_connected():
@@ -199,6 +228,7 @@ def register(app):
         })
 
     @app.route("/api/fasrc/data-listing")
+    @requires_fasrc
     def api_fasrc_data_listing():
         if not STATE.ssh or not STATE.ssh.is_connected():
             return jsonify({"ok": False, "error": "not connected"}), 400
@@ -267,6 +297,7 @@ def register(app):
         })
 
     @app.route("/api/fasrc/bootstrap-data", methods=["POST"])
+    @requires_fasrc
     def api_fasrc_bootstrap_data():
         """Re-create the symlinks that point ``data_dir`` at the durable
         copy of the same data under ``{repo_path}/data/`` on holylabs.
@@ -312,6 +343,7 @@ def register(app):
         })
 
     @app.route("/api/fasrc/queue")
+    @requires_fasrc
     def api_fasrc_queue():
         if not STATE.ssh or not STATE.ssh.is_connected():
             return jsonify({"ok": False, "error": "not connected"}), 400
@@ -329,22 +361,7 @@ def register(app):
         fasrc_jobs.reconcile_with_squeue(rows, ssh=STATE.ssh)
         return jsonify({"ok": True, "rows": rows})
 
-    _parse_slurm_time = fasrc_jobs.parse_slurm_time
-
     # ---- submission -------------------------------------------------------
-
-    @app.route("/api/fasrc/eta")
-    def api_fasrc_eta():
-        try:
-            steps = int(request.args.get("steps", 0))
-        except ValueError:
-            steps = 0
-        spt = fasrc_jobs.secs_per_step_history()
-        return jsonify({
-            "secs_per_step": spt,
-            "history_n":     len(fasrc_jobs.DB.list_completed(8)),
-            "eta_seconds":   fasrc_jobs.eta_for_submission(steps),
-        })
 
     def _require_confirm(form):
         """Shared confirm-token guard for the two FASRC submit endpoints.
@@ -370,66 +387,30 @@ def register(app):
     # locally instead of sbatch'd. On the active job's SUCCESS the next is
     # submitted; on FAILURE (incl OOM) the queue halts. See fasrc_queue.
 
-    def _spec_label(kind, step_ref, form):
+    def _spec_label(step_ref, form):
         explicit = (form.get("label") or "").strip()
         if explicit:
             return explicit
         try:
-            step = STEP_REGISTRY.get(step_ref)
+            return STEP_REGISTRY.get(step_ref).label
         except KeyError:
-            step = None
-        if kind == "synthetic":
-            steps = form.get("steps") or fasrc_config.load().steps
-            return f"{step.label if step else 'synthetic'}: {steps} steps"
-        return step.label if step else f"step {step_ref}"
+            return f"step {step_ref}"
 
-    def _build_and_submit(kind, step_ref, form):
-        """Render + sbatch a job from a stored spec → (slurm_id, payload)."""
+    def _render_spec(kind, step_ref, form):
+        """Render a stored spec's sbatch script without touching FASRC.
+
+        → ``(cfg, step_ref, label, built, resources)``. Raises
+        ``ValueError`` when the spec cannot be built (bad member list, an
+        inactive population calibration, …). Every spec is a pipeline step
+        (``kind="step"``). A spec still queued by the removed
+        ``/api/fasrc/submit`` (``kind="synthetic"``, persisted in
+        ``fasrc_queue.json``) is rendered as the ``synthetic_generate`` step
+        with blank resources taken from the step defaults.
+        """
         cfg = fasrc_config.load()
-        if kind == "synthetic":
-            try:
-                step = STEP_REGISTRY.get(step_ref)
-            except KeyError:
-                step = STEP_REGISTRY.get("synthetic_generate")
-                step_ref = "synthetic_generate"
-            resources = StepResources.from_form(form, step.defaults)
-            # Partition is fixed per job type — never taken from the form.
-            resources.partition = step.defaults.partition
-            params = {
-                # Generation is standalone — no training knobs (batch_size /
-                # steps). Training runs separately via the ensemble step.
-                "n_train":     int(form.get("n_train",    cfg.n_train)),
-                "n_valid":     int(form.get("n_valid",    cfg.n_valid)),
-                "n_test":      int(form.get("n_test",     cfg.n_test)),
-                "image_size":  int(form.get("image_size", cfg.image_size)),
-                "extra_flags": (form.get("extra_flags", "") or "").strip(),
-                # "Override existing data" checkbox → run_pipeline --force
-                # (regenerate from scratch instead of resuming prior shards).
-                "force": str(form.get("force", "")).strip().lower() in (
-                    "1", "true", "yes", "on"),
-                # "on-the-fly training" checkbox → --onthefly-train (train
-                # split generated clean-only; no hr/dirty — training builds
-                # both live from clean_train).
-                "onthefly_train": str(form.get("onthefly_train", "")
-                                      ).strip().lower() in (
-                    "1", "true", "yes", "on"),
-            }
-            params.update(resources.to_dict())
-            label = _spec_label(kind, step_ref, form)
-            built = step.build_sbatch_body(
-                params=params, resources=resources, cfg=cfg, label=label)
-            # ``prepare_payload_files`` replaces embedded calibration JSON with
-            # immutable sidecar paths and records each payload's digest and
-            # scientific fingerprint in ``built['params']``.  Persist that
-            # prepared mapping, not the pre-render form mapping, so the job DB,
-            # CSV history, tracking log, and submit response identify exactly
-            # which calibrations the remote command consumed.
-            params_for_db = dict(built.get("params", params))
-            params_for_db.update(resources.to_dict())
-            return fasrc_jobs.submit_sbatch_script(
-                STATE.ssh, cfg=cfg, built=built, label=label,
-                params=params_for_db, step_id=step.step_id)
-        # Pipeline step
+        legacy = kind == "synthetic"
+        if legacy and step_ref not in STEP_REGISTRY.by_id:
+            step_ref = "synthetic_generate"
         step = STEP_REGISTRY.get(step_ref)
         form2 = dict(form)
         # Partition is fixed per job type — force the step's value even on
@@ -439,18 +420,27 @@ def register(app):
             form2["n_cpus"] = str(step.fixed_cpus)
         if step.fixed_gpus is not None:
             form2["n_gpus"] = str(step.fixed_gpus)
-        resources = StepResources.from_form_strict(form2)
+        resources = (StepResources.from_form(form2, step.defaults) if legacy
+                     else StepResources.from_form_strict(form2))
         if step.fixed_cpus is not None:
             resources.n_cpus = int(step.fixed_cpus)
         if step.fixed_gpus is not None:
             resources.n_gpus = int(step.fixed_gpus)
-        label = _spec_label(kind, step_ref, form2)
+        label = _spec_label(step_ref, form2)
         built = step.build_sbatch_body(
             params=form2, resources=resources, cfg=cfg, label=label)
-        # Array steps resolve member names/base seeds while rendering. Persist
-        # those prepared values so monitoring can map task indices to members
-        # and a queued/retried submission remains reproducible.
-        params_for_db = dict(built.get("params", form2))
+        return cfg, step_ref, label, built, resources
+
+    def _build_and_submit(kind, step_ref, form):
+        """Render + sbatch a job from a stored spec → (slurm_id, payload)."""
+        cfg, step_ref, label, built, resources = _render_spec(
+            kind, step_ref, form)
+        # Array steps resolve member names/base seeds while rendering, and
+        # ``prepare_payload_files`` swaps embedded calibration JSON for
+        # immutable sidecar paths + digests. Persist those prepared values so
+        # monitoring can map task indices to members and the job DB records
+        # exactly which calibrations the remote command consumed.
+        params_for_db = dict(built.get("params", form))
         params_for_db.update(resources.to_dict())
         params_for_db["step_id"] = step_ref
         return fasrc_jobs.submit_sbatch_script(
@@ -468,22 +458,18 @@ def register(app):
         except Exception:
             traceback.print_exc()
 
-    def _submit_or_queue(kind, step_ref, form):
+    def _submit_or_queue(step_ref, form):
         """Submit immediately if the single lane is free, else enqueue."""
-        label = _spec_label(kind, step_ref, form)
-        spec = {"kind": kind, "step": step_ref, "form": form}
-        # Validate that both fitted population artifacts are active before
-        # creating a queue entry. They are resolved and embedded again at
-        # promotion, so no Config/legacy population fallback can enter.
+        label = _spec_label(step_ref, form)
+        spec = {"kind": "step", "step": step_ref, "form": form}
+        # Dry-run the exact render promotion will do (prepare_params, payload
+        # staging, build_command — no SSH) before queueing: a queued spec is
+        # only built when the lane frees, and a build failure there halts the
+        # whole queue. This also checks the fitted population artifacts are
+        # active; they are resolved and embedded again at promotion, so no
+        # Config/legacy population fallback can enter.
         try:
-            resolved_step = step_ref
-            if kind == "synthetic":
-                try:
-                    resolved_step = STEP_REGISTRY.get(step_ref).step_id
-                except KeyError:
-                    resolved_step = "synthetic_generate"
-            if resolved_step == "synthetic_generate":
-                STEP_REGISTRY.get(resolved_step).prepare_params(dict(form))
+            _render_spec(spec["kind"], step_ref, form)
         except ValueError as exc:
             return jsonify({"ok": False, "error": str(exc)}), 400
         if fasrc_queue.QUEUE.active_is_running(fasrc_jobs.DB):
@@ -524,61 +510,6 @@ def register(app):
         return jsonify({"ok": True,
                         "queue": fasrc_queue.QUEUE.remove(item_id)})
 
-    @app.route("/api/fasrc/submit", methods=["POST"])
-    def api_fasrc_submit():
-        """``run_pipeline.py`` submission (API path).
-
-        Submits a ``scripts/run_pipeline.py`` job through the shared
-        sbatch helper. The only registered run_pipeline step is
-        ``synthetic_generate``; an optional ``step`` form field can name
-        another registered step, otherwise it defaults to that.
-        """
-        if not STATE.ssh or not STATE.ssh.is_connected():
-            return jsonify({"ok": False, "error": "not connected"}), 400
-        confirm_err = _require_confirm(request.form)
-        if confirm_err is not None:
-            return confirm_err
-
-        cfg = fasrc_config.load()
-        f = request.form
-        step_name = f.get("step") or f.get("preset") or "synthetic_generate"
-        try:
-            step = STEP_REGISTRY.get(step_name)
-        except KeyError:
-            # Unknown names fall back to the synthetic generator so a stale
-            # frontend can't 404 the submit.
-            step = STEP_REGISTRY.get("synthetic_generate")
-            step_name = "synthetic_generate"
-
-        # Resources from the form, falling back to the step's defaults
-        # (so the legacy form fields keep working even when fields are
-        # left blank).
-        try:
-            resources = StepResources.from_form(f, step.defaults)
-        except ValueError as e:
-            return jsonify({"ok": False, "error": str(e)}), 400
-
-        # Training params — passed through to ``build_command``. We
-        # validate the numerics here so a bad form field 400s instead of
-        # blowing up inside the renderer.
-        try:
-            params = {
-                "n_train":     int(f.get("n_train",    cfg.n_train)),
-                "n_valid":     int(f.get("n_valid",    cfg.n_valid)),
-                "image_size":  int(f.get("image_size", cfg.image_size)),
-                "batch_size":  int(f.get("batch_size", cfg.batch_size)),
-                "steps":       int(f.get("steps",      cfg.steps)),
-                "extra_flags": f.get("extra_flags", "").strip(),
-            }
-        except (TypeError, ValueError) as e:
-            return jsonify({"ok": False, "error": f"bad form field: {e}"}), 400
-        params.update(resources.to_dict())
-
-        # Validation above (resources + params) has passed; hand off to the
-        # local queue: submit now if the lane is free, else enqueue. The
-        # sbatch body is (re)built from the form by _build_and_submit.
-        return _submit_or_queue("synthetic", step_name, f.to_dict())
-
     # =========================================================================
     # Pipeline steps (generic FASRC submissions)
     # =========================================================================
@@ -604,6 +535,11 @@ def register(app):
                 "fixed_cpus":  step.fixed_cpus,
                 "fixed_gpus":  step.fixed_gpus,
                 "defaults":    step.defaults.to_dict(),
+                # Contract C5: the schema the SPA renders generically, and
+                # the task params of the newest successful run (prefill).
+                "task_params": step.task_param_schema(),
+                "last_params": step.last_task_params(
+                    fasrc_jobs.JOBLOG.history_for_step(step.step_id)),
             })
 
         # Cheap probes for "does this artifact exist on FASRC?" — single
@@ -659,6 +595,7 @@ def register(app):
         })
 
     @app.route("/api/fasrc/steps/<step_id>/submit", methods=["POST"])
+    @requires_fasrc
     def api_fasrc_step_submit(step_id: str):
         """Generic submission for any pipeline step.
 
@@ -739,6 +676,14 @@ def register(app):
         if step.fixed_gpus is not None:
             resources.n_gpus = int(step.fixed_gpus)
 
+        # Task params (C5): absent ones take the step's schema defaults (so an
+        # euclid_query submit with no knobs asks for 10,000 stars, never the
+        # old 200); an invalid one is refused before anything reaches FASRC.
+        try:
+            form = step.fill_task_params(form)
+        except TaskParamError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+
         # Fill universal job-config values. Most steps always inherit /config
         # (including computed/locked values); React Train members deliberately
         # exposes experiment-local ensemble controls, so preserve values that
@@ -753,9 +698,10 @@ def register(app):
         # what it needs.
         # Validation above (step, confirm, resources) has passed; hand off
         # to the local queue: submit now if the lane is free, else enqueue.
-        return _submit_or_queue("step", step_id, form)
+        return _submit_or_queue(step_id, form)
 
     @app.route("/api/fasrc/refresh-accounting", methods=["POST"])
+    @requires_fasrc
     def api_fasrc_refresh_accounting():
         """One-shot: re-pull sacct for every finalised job and re-record.
 
@@ -817,6 +763,7 @@ def register(app):
         })
 
     @app.route("/api/fasrc/cancel", methods=["POST"])
+    @requires_fasrc
     def api_fasrc_cancel():
         if not STATE.ssh or not STATE.ssh.is_connected():
             return jsonify({"ok": False, "error": "not connected"}), 400
@@ -830,17 +777,8 @@ def register(app):
                                    ended_at=time.time())
         return jsonify({"ok": True})
 
-    @app.route("/api/fasrc/jobs")
-    def api_fasrc_jobs_list():
-        rows = fasrc_jobs.DB.list_recent(30)
-        for r in rows:
-            r["eta_seconds"] = (
-                fasrc_jobs.eta_for_running(r)
-                if r["state"] in ("RUNNING", "PENDING") else None
-            )
-        return jsonify({"jobs": rows})
-
     @app.route("/api/fasrc/current-submission")
+    @requires_fasrc
     def api_fasrc_current_submission():
         """Return the user's most-recent live submission + its event-stream status.
 
@@ -858,10 +796,8 @@ def register(app):
                            "status": { stage, stages, step, warnings,
                                        errors, has_events, ... } } }
 
-        Used by the FASRC page's "Current Submission" tab. Replaces the
-        WDSR-specific ``/api/fasrc/training-status`` for the general job
-        case; the training-status endpoint stays for the trainer's own
-        live-metrics view.
+        Every response also carries ``live``: all PENDING/RUNNING rows
+        (newest first, same shape as ``current.job``) for the job tray.
         """
         ssh = STATE.ssh
         if ssh is None or not ssh.is_connected():
@@ -891,39 +827,31 @@ def register(app):
 
         queue_public = fasrc_queue.QUEUE.public()
 
-        # Pick the newest still-live row. ``list_recent`` orders by
-        # submitted_at DESC, so the first matching row IS the newest.
-        recent = fasrc_jobs.DB.list_recent(limit=10)
-        current_row = next(
-            (r for r in recent if r.get("state") in ("PENDING", "RUNNING")),
-            None,
-        )
+        # Every still-live row (``live``, contract C5), newest first —
+        # ``list_live`` orders by submitted_at DESC with no row limit, so the
+        # first one IS the current submission. Merge live squeue fields into each row so the UI
+        # sees the current ``start_time`` (PENDING jobs only), ``reason`` (why
+        # SLURM hasn't started it: Priority / Resources / …), updated elapsed
+        # ``time`` and assigned ``nodes``. reconcile_with_squeue only persists
+        # state + started_at, so these are merged in at the response layer.
+        # A stale tick (slow login node) returns the last-known DB rows.
+        live_jobs = [
+            dict(row) if stale else _merge_squeue_fields(dict(row), squeue_rows)
+            for row in fasrc_jobs.DB.list_live()
+        ]
+        current_row = live_jobs[0] if live_jobs else None
         if current_row is None:
             return jsonify({"ok": True, "current": None, "queue": queue_public,
-                            "stale": stale})
+                            "stale": stale, "live": []})
         if stale:
             # Login node slow this tick — return the last-known DB row without
             # the extra SSH calls (squeue merge + event fetch) that would also
             # hang and 500. The next poll fills the live fields back in.
             return jsonify({"ok": True, "stale": True, "queue": queue_public,
-                            "current": {"job": current_row, "status": None}})
-
-        # Merge live squeue fields into the row so the UI sees the
-        # current ``start_time`` (PENDING jobs only), ``reason`` (why
-        # SLURM hasn't started it: Priority / Resources / …), updated
-        # elapsed ``time``, and assigned ``nodes``. reconcile_with_squeue
-        # only persists state + started_at, so these have to be merged
-        # in at the response layer.
+                            "current": {"job": current_row, "status": None},
+                            "live": live_jobs})
         jid = str(current_row.get("jobid", "")).strip()
         live_rows = fasrc_jobs.array_squeue_rows(jid, squeue_rows)
-        live = next((r for r in live_rows
-                     if r.get("state") == "RUNNING"), None)
-        live = live or next(iter(live_rows), None)
-        if live is not None:
-            for k in ("start_time", "reason", "nodes", "time", "time_limit"):
-                v = live.get(k)
-                if v is not None and v != "":
-                    current_row[k] = v
 
         # Fold the live event stream into a JobStatus. Array submissions have
         # one Reporter stream per model; expose them separately rather than
@@ -993,6 +921,7 @@ def register(app):
                 "accounting": live_accounting,
             },
             "queue":   queue_public,
+            "live":    live_jobs,
         })
 
     @app.route("/api/fasrc/jobs/<jobid>/status")
@@ -1056,6 +985,7 @@ def register(app):
     # the file timestamps + sizes.
 
     @app.route("/api/fasrc/runs")
+    @requires_fasrc
     def api_fasrc_runs():
         if not STATE.ssh or not STATE.ssh.is_connected():
             return jsonify({"ok": False, "error": "not connected"}), 400
@@ -1281,48 +1211,6 @@ def register(app):
             "has_newer":   page > 0,
         })
 
-    @app.route("/api/fasrc/runs/ckpt-bundle.tar")
-    def api_fasrc_runs_ckpt_bundle():
-        """Stream a tar of the FASRC ckpt dir so the user can download
-        the trained model after a job completes.
-
-        We tar on the remote (one ssh + tar pipeline) and pipe bytes
-        back through the ControlMaster — no temp file involved. Bundle
-        size is bounded by ``max_to_keep=3`` in the trainer, so usually
-        a few × 7 MB plus the training_log.
-        """
-        if not STATE.ssh or not STATE.ssh.is_connected():
-            return jsonify({"ok": False, "error": "not connected"}), 400
-        cfg = fasrc_config.load()
-        ckpt_dir = cfg.ckpt_dir
-        # Defensive: refuse if cfg.ckpt_dir points anywhere weird.
-        if not ckpt_dir or ".." in ckpt_dir.split("/"):
-            return jsonify({"ok": False, "error": "invalid ckpt_dir"}), 400
-        parent = os.path.dirname(ckpt_dir.rstrip("/")) or "/"
-        leaf   = os.path.basename(ckpt_dir.rstrip("/"))
-        # ``tar -C parent leaf`` makes the tarball self-contained: it
-        # unpacks into ``leaf/`` regardless of where the user extracts
-        # it. ``--ignore-failed-read`` keeps going if a single ckpt file
-        # is being rewritten while we tar.
-        cmd = (
-            f"tar -C {shlex.quote(parent)} -cf - "
-            f"  --ignore-failed-read {shlex.quote(leaf)} 2>/dev/null"
-        )
-        rc, out, err = STATE.ssh.run(cmd, timeout=300, binary=True)
-        if rc != 0 or not out:
-            return jsonify({
-                "ok": False,
-                "error": f"tar failed: {err[:200] if err else 'no output'}",
-            }), 500
-        filename = f"{leaf}.tar"
-        return Response(
-            out, mimetype="application/x-tar",
-            headers={
-                "Content-Disposition": f'attachment; filename="{filename}"',
-                "Content-Length":      str(len(out)),
-            },
-        )
-
     def _training_run_rows(started_at: float, ended_at: float, *, step_id: str = ""):
         """Windowed training-log records for one run, with the ensemble active-
         member fallback. Returns ``(rows, member_label)`` (rows empty if none in
@@ -1396,6 +1284,7 @@ def register(app):
                      "psnr_vis", "psnr_y_e", "psnr_j_e", "psnr_h_e")
 
     @app.route("/api/fasrc/runs/training-curve.json")
+    @requires_fasrc
     def api_fasrc_runs_training_curve():
         """Per-step training records for one run's wall-time window, as JSON, so
         the browser draws the curves live (no server-side matplotlib). Empty
@@ -1416,48 +1305,8 @@ def register(app):
         records = [{k: r.get(k) for k in _CURVE_FIELDS} for r in rows]
         return jsonify({"ok": True, "member": member_label, "records": records})
 
-    @app.route("/api/fasrc/runs/training-plot.png")
-    def api_fasrc_runs_training_plot():
-        """PNG of the validation log restricted to one run's wall-time window.
-        (Kept for the classic page; the SPA renders the curve client-side.)"""
-        if not STATE.ssh or not STATE.ssh.is_connected():
-            return jsonify({"ok": False, "error": "not connected"}), 400
-        win = _run_window()
-        if win is None:
-            return jsonify({"ok": False, "error": "bad/missing started_at"}), 400
-        started_at, ended_at = win
-        rows, member_label = _training_run_rows(started_at, ended_at)
-        if not rows:
-            return jsonify({"ok": False,
-                            "error": f"no training-log rows in window "
-                                     f"[{started_at:.0f}, {ended_at:.0f}]"}), 404
-
-        # Render to a throwaway tempfile OUTSIDE data/vis — this is a
-        # per-request scratch render (the page re-polls it every minute),
-        # and a stable path under data/ used to trip the test suite's
-        # data-dir immutability guard whenever a live WebUI overwrote it
-        # mid-pytest-run.
-        fd, tmp_png = tempfile.mkstemp(suffix=".png",
-                                       prefix="euclid_training_plot_")
-        os.close(fd)
-        try:
-            plot_training_records(
-                rows, tmp_png,
-                title_suffix=(
-                    f"\n(ensemble {member_label}, this run: {len(rows)} evals)"
-                    if member_label else
-                    f"\n(this run only: {len(rows)} evals)"
-                ),
-            )
-            with open(tmp_png, "rb") as fh:
-                data = fh.read()
-        finally:
-            with contextlib.suppress(OSError):
-                os.unlink(tmp_png)
-        return Response(data, mimetype="image/png",
-                        headers={"Cache-Control": "no-cache"})
-
     @app.route("/api/fasrc/runs/log")
+    @requires_fasrc
     def api_fasrc_runs_log():
         """Tail of one log file on FASRC.
 
@@ -1543,230 +1392,6 @@ def register(app):
         return jsonify({"ok": True, "path": path, "lines": lines,
                         "content": out})
 
-    # ---- parsed live status (.out + .err + training_log) -----------------
-    #
-    # The sidebar polls this every couple of seconds AND every page in the
-    # app pulls it on initial render — without a cache that's a fresh
-    # squeue + multi-file tail per poll, which is what makes the UI feel
-    # sluggish. A 2-second TTL coalesces bursts and keeps live progress
-    # visibly fresh (next poll arrives just after expiry).
-
-    _TRAINING_STATUS_CACHE: dict[str, Any] = {"at": 0.0, "resp": None}
-    _TRAINING_STATUS_TTL_S: float = 2.0
-
-    @app.route("/api/fasrc/training-status")
-    def api_fasrc_training_status():
-        """Single JSON dict the UI polls every few seconds.
-
-        Identifies the currently running job (RUNNING state in squeue,
-        cross-referenced against local sqlite), reads the tail of its
-        ``.out`` / ``.err`` / ``training_log`` over SSH, and returns a
-        parsed summary. Errors are reported in-band as
-        ``{"ok": False, "error": ...}`` rather than raising — a 5xx
-        here would just look like the dashboard "disconnecting" to
-        the user, when really the SSH is fine and only one log read
-        misbehaved.
-        """
-        if not STATE.ssh or not STATE.ssh.is_connected():
-            return jsonify({"ok": False, "error": "not connected"}), 400
-
-        # Serve from the cache if a recent (<2 s) response is available.
-        now = time.monotonic()
-        if (_TRAINING_STATUS_CACHE["resp"] is not None
-                and now - _TRAINING_STATUS_CACHE["at"] < _TRAINING_STATUS_TTL_S):
-            return _TRAINING_STATUS_CACHE["resp"]
-
-        try:
-            resp = _build_training_status()
-        except subprocess.TimeoutExpired:
-            # FASRC login-node / ControlMaster lag — transient and expected.
-            # Don't dump a full traceback on every ~3 s heartbeat; one quiet line.
-            print("[training-status] FASRC poll timed out — retry next tick")
-            resp = jsonify({"ok": False, "error": "fasrc poll timed out",
-                            "transient": True}), 200
-        except Exception as e:
-            traceback.print_exc()
-            resp = jsonify({
-                "ok":    False,
-                "error": f"{type(e).__name__}: {e}",
-            }), 200
-        _TRAINING_STATUS_CACHE["at"]   = now
-        _TRAINING_STATUS_CACHE["resp"] = resp
-        return resp
-
-    def _build_training_status():
-        cfg = fasrc_config.load()
-        ssh = STATE.ssh
-        if ssh is None:
-            raise SSHError("not connected")
-
-        # 1. Identify the running job. Trust live squeue > sqlite.
-        rc, sq_out, _err = ssh.run(
-            f"squeue -r -h -u $USER --format='{fasrc_jobs.SQUEUE_FMT}'",
-            timeout=10,
-        )
-        # Drive the local submit queue off this poll too — this endpoint is
-        # the global ~3 s heartbeat, so the queue promotes/halts even when
-        # the user isn't on the Current-Submission tab.
-        if rc == 0:
-            fasrc_jobs.reconcile_with_squeue(
-                fasrc_jobs.parse_squeue(sq_out), ssh=ssh)
-            _queue_tick()
-        running_rows = []
-        if rc == 0:
-            for row in fasrc_jobs.parse_squeue(sq_out):
-                if row.get("state") == "RUNNING":
-                    running_rows.append(row)
-        if not running_rows:
-            return jsonify({"ok": True, "running": False,
-                            "queue_rows": fasrc_jobs.parse_squeue(sq_out)
-                                          if rc == 0 else []})
-
-        # Prefer a row belonging to a submission from this UI. With ``squeue
-        # -r`` an array appears as parent_index rows while sqlite stores the
-        # numeric parent id, so map the selected live task back to its parent.
-        known_ids = [r["jobid"] for r in fasrc_jobs.DB.list_recent(20)]
-        live = next((r for r in running_rows
-                     if any(r["jobid"] == parent
-                            or r["jobid"].startswith(parent + "_")
-                            for parent in known_ids)), running_rows[0])
-        live_jobid = live["jobid"]
-        jobid = next((parent for parent in known_ids
-                      if live_jobid == parent
-                      or live_jobid.startswith(parent + "_")), live_jobid)
-        task_suffix = live_jobid.removeprefix(jobid + "_")
-        task_index = int(task_suffix) if task_suffix.isdigit() else None
-        stored = fasrc_jobs.DB.get(jobid)
-        log_path = (stored or {}).get("log_path") \
-                   or f"{cfg.repo_path}/logs/jobs/{live['name']}.out"
-        err_path = (stored or {}).get("err_path") \
-                   or log_path.replace(".out", ".err")
-        events_path = (stored or {}).get("events_path")
-        if task_index is not None:
-            log_path = fasrc_jobs.expand_array_path(log_path, jobid, task_index)
-            err_path = fasrc_jobs.expand_array_path(err_path, jobid, task_index)
-            events_path = fasrc_jobs.expand_array_path(
-                events_path, jobid, task_index)
-        # 2. Fold the job's structured event stream into a JobStatus —
-        # the SAME Reporter events the JobStatusCard polls. No log
-        # scraping: stage, progress, per-evaluate metrics (loss/PSNR) and
-        # the checkpoint marker all come from the events file the trainer
-        # writes via :class:`Reporter`.
-        elapsed_s = fasrc_jobs.parse_slurm_time(live.get("time"))
-        status = JobStatusFetcher(ssh=_job_status_ssh(ssh)).fetch(
-            events_path=events_path)
-
-        # Map JobStatus → the dashboard's existing field shape.
-        progress = None
-        if status.step is not None and status.step.total > 0:
-            cur, tot = status.step.current, status.step.total
-            progress = {"current": cur, "total": tot,
-                        "pct": round(100.0 * cur / tot, 2)}
-        # ``stage_index`` is just how far through the stage sequence we are
-        # (0-based); ``pipeline_done`` is always False here — this branch
-        # only runs while a job is RUNNING in squeue.
-        stage_index = max(0, len(status.stages) - 1)
-
-        # 3. Side-effect: keep sqlite up to date so /api/fasrc/jobs is
-        # accurate for the recent-submissions panel.
-        if progress:
-            fasrc_jobs.DB.update_progress(
-                jobid, progress["current"], progress["total"])
-        if stored and stored["started_at"] is None:
-            fasrc_jobs.DB.update_state(
-                jobid, state="RUNNING",
-                started_at=time.time() - elapsed_s,
-            )
-
-        # 4. Activate the auto-mirror during the training stage and trigger
-        # an immediate sync whenever a fresh checkpoint marker arrives on
-        # the event stream (the trainer emits ``saved`` on each checkpoint
-        # eval; fold_events surfaces it as ``last_checkpoint``).
-        # ``MIRROR.trigger()`` rsyncs synchronously and can block for
-        # minutes on large ckpt dirs — dispatch on a daemon thread so the
-        # status poll stays snappy.
-        in_training = bool(status.stage
-                           and status.stage.lower().startswith("training"))
-        if in_training:
-            if not MIRROR.status.enabled:
-                MIRROR.start()
-            if (status.last_checkpoint
-                    and MIRROR.status.last_checkpoint_line
-                        != status.last_checkpoint):
-                MIRROR.status.last_checkpoint_line = status.last_checkpoint
-                _t.Thread(target=MIRROR.trigger, daemon=True,
-                          name="mirror-trigger").start()
-
-        return jsonify({
-            "ok":       True,
-            "running":  True,
-            "job": {
-                "jobid":           jobid,
-                "array_task_jobid": live_jobid if task_index is not None else None,
-                "name":            live.get("name", ""),
-                "state":           live.get("state", ""),
-                "elapsed_seconds": elapsed_s,
-                "elapsed":         live.get("time", ""),
-                "time_limit":      live.get("time_limit", ""),
-                "node":            live.get("reason", ""),
-                "start_time":      live.get("start_time", ""),
-                "log_path":        log_path,
-                "err_path":        err_path,
-                "label":           (stored or {}).get("label", ""),
-                "params":          json.loads((stored or {}).get("params_json") or "null"),
-            },
-            "stage":             status.stage,
-            "stage_index":       stage_index,
-            "pipeline_done":     False,
-            "progress":          progress,
-            "latest_metrics":    status.latest_metrics,
-            "last_checkpoint":   status.last_checkpoint,
-            "validations":       list(status.metrics),
-            "latest_validation": status.latest_metrics,
-            "eta_seconds":       status.step_eta_s,
-            "queue_rows":        running_rows,
-        })
-
-    # ---- live log stream (SSE) -------------------------------------------
-
-    @app.route("/api/fasrc/log/<jobid>")
-    def api_fasrc_log_stream(jobid: str):
-        if not jobid.isdigit():
-            abort(400)
-        row = fasrc_jobs.DB.get(jobid)
-        if not row:
-            abort(404)
-        log_path = row["log_path"]
-        # Stream both files in case the user wants stderr (`?which=err`).
-        which = request.args.get("which", "out")
-        if which == "err":
-            log_path = row["err_path"]
-
-        def _gen():
-            if not STATE.ssh or not STATE.ssh.is_connected():
-                yield "event: error\ndata: not connected\n\n"
-                return
-            # tail with retry — file may not exist until SLURM starts the job.
-            cmd = (f"tail -F -n 200 {log_path} 2>/dev/null || "
-                   f"(while [ ! -f {log_path} ]; do sleep 2; done && "
-                   f" tail -F -n 200 {log_path})")
-            try:
-                for line in STATE.ssh.stream(cmd):
-                    # This stream is the raw-log VIEWER only. Progress is no
-                    # longer scraped from log lines — it comes from the
-                    # Reporter event stream (folded in JobStatus); the DB
-                    # progress is updated by the events-based status poll.
-                    # SSE framing: one event per line, multiline data uses
-                    # repeated ``data:`` lines.
-                    safe = line.replace("\r", "")
-                    yield f"data: {safe}\n\n"
-            except SSHError as e:
-                yield f"event: error\ndata: {e}\n\n"
-        return Response(stream_with_context(_gen()),
-                        mimetype="text/event-stream",
-                        headers={"Cache-Control": "no-cache",
-                                 "X-Accel-Buffering": "no"})
-
     # ---- checkpoint auto-mirror -------------------------------------------
 
     @app.route("/api/fasrc/mirror/status")
@@ -1783,21 +1408,8 @@ def register(app):
             "period_seconds": MIRROR.period,
         })
 
-    @app.route("/api/fasrc/mirror/start", methods=["POST"])
-    def api_fasrc_mirror_start():
-        if not STATE.ssh or not STATE.ssh.is_connected():
-            return jsonify({"ok": False, "error": "not connected"}), 400
-        with contextlib.suppress(ValueError):
-            MIRROR.period = max(15, int(request.form.get("period", 60)))
-        MIRROR.start()
-        return jsonify({"ok": True, "status": api_fasrc_mirror_status().json})
-
-    @app.route("/api/fasrc/mirror/stop", methods=["POST"])
-    def api_fasrc_mirror_stop():
-        MIRROR.stop()
-        return jsonify({"ok": True})
-
     @app.route("/api/fasrc/mirror/trigger", methods=["POST"])
+    @requires_fasrc
     def api_fasrc_mirror_trigger():
         """One-shot rsync from remote ckpt dir → local mirror.
 
@@ -1819,53 +1431,6 @@ def register(app):
             "local_dir":   s.local_dir,
             "last_run_at": s.last_run_at,
         })
-
-    # ---- per-stage timings (CSV from run_pipeline.py's StageTimer) -------
-
-    @app.route("/api/fasrc/stages/<jobid>")
-    def api_fasrc_stages(jobid: str):
-        """Parse the remote ``stages_<jobid>.csv`` into JSON rows so the
-        UI can render the per-stage breakdown. The CSV lives next to the
-        TFRecords on netscratch (see ``run_pipeline.py``'s ``--stages-csv``
-        default)."""
-        if not jobid.isdigit() and jobid != "local":
-            abort(400)
-        if not STATE.ssh or not STATE.ssh.is_connected():
-            return jsonify({"ok": False, "error": "not connected"}), 400
-        cfg = fasrc_config.load()
-        path = f"{cfg.data_dir}/images/records_v2/stages_{jobid}.csv"
-        rc, out, err = STATE.ssh.run(
-            f"if [ -f {shlex.quote(path)} ]; then "
-            f"  cat {shlex.quote(path)}; "
-            f"else "
-            f"  echo MISSING; "
-            f"fi", timeout=10,
-        )
-        if rc != 0:
-            return jsonify({"ok": False, "error": err.strip()}), 500
-        if out.strip() == "MISSING":
-            return jsonify({"ok": True, "path": path, "rows": []})
-
-        reader = csv.DictReader(_io.StringIO(out))
-        rows = []
-        for r in reader:
-            try:
-                rows.append({
-                    "stage":             r.get("stage", ""),
-                    "started_at":        float(r.get("started_at",  "0") or 0),
-                    "ended_at":          float(r.get("ended_at",    "0") or 0),
-                    "duration_seconds":  float(r.get("duration_seconds", "0") or 0),
-                    "params_dependent":  bool(int(r.get("params_dependent", "0") or 0)),
-                    "n_train":           r.get("n_train", ""),
-                    "n_valid":           r.get("n_valid", ""),
-                    "image_size":        r.get("image_size", ""),
-                    "batch_size":        r.get("batch_size", ""),
-                    "steps":             r.get("steps", ""),
-                })
-            except (ValueError, TypeError):
-                # Skip malformed rows (e.g. a partial write captured mid-flight).
-                continue
-        return jsonify({"ok": True, "path": path, "rows": rows})
 
     # ---- conda env update -------------------------------------------------
 
@@ -1889,29 +1454,72 @@ def register(app):
             "-f environment.yml 2>&1"
         )
 
-    @app.route("/api/fasrc/env-update")
+    @app.post("/api/fasrc/env-update")
+    @requires_fasrc
     def api_fasrc_env_update():
-        ssh = STATE.ssh
-        if ssh is None or not ssh.is_connected():
-            return Response(
-                "event: error\ndata: not connected\n\n",
-                mimetype="text/event-stream", status=400,
-            )
-        cfg = fasrc_config.load()
-        cmd = _build_env_update_cmd(cfg)
+        """Run ``yes | mamba env update`` on FASRC as a local job.
 
-        def _gen():
-            yield f"data: $ remote: cd {cfg.repo_path}\n\n"
-            yield "data: $ module load python\n\n"
-            yield (f"data: $ yes | mamba env update -p "
-                   f"{cfg.conda_env_path} -f environment.yml\n\n")
-            try:
-                for line in ssh.stream(cmd):
-                    yield f"data: {line.replace(chr(13), '')}\n\n"
-                yield "event: done\ndata: complete\n\n"
-            except SSHError as e:
-                yield f"event: error\ndata: {e}\n\n"
-        return Response(stream_with_context(_gen()),
-                        mimetype="text/event-stream",
-                        headers={"Cache-Control": "no-cache",
-                                 "X-Accel-Buffering": "no"})
+        POST-only (it mutates the cluster env, so it must sit behind the
+        cross-origin mutation guard). Returns ``{ok, job_id}``; the job
+        (``kind="fasrc-env-update"``) streams the remote output into its
+        log line by line, ends ``done`` with ``result={exit_code, lines}``,
+        or ``failed`` when the remote pipeline exits non-zero.
+
+        Cancel (``POST /api/jobs/<id>/cancel``) lands within one heartbeat
+        (``_ENV_UPDATE_HEARTBEAT_S``, even while mamba prints nothing) and
+        closes the stream, which stops the local ``ssh`` client. The remote
+        side gets no signal from that (no pty); the heartbeat watchdog
+        (``_env_update_watchdog``) sees its next write fail and kills the
+        remote process group, so ``mamba`` stops within about one more
+        heartbeat. A cancel can therefore leave the env half-updated; re-run
+        the update to finish it.
+        """
+        ssh = STATE.ssh
+        cfg = fasrc_config.load()
+        # ``yes | mamba`` under ``pipefail`` always ends 141 (``yes`` dies of
+        # SIGPIPE once mamba exits), so report the pipeline's own statuses:
+        # the last PIPESTATUS entry is mamba's exit (or the failing earlier
+        # step's, e.g. ``module load``, when the pipeline never ran).
+        cmd = (_env_update_watchdog(_ENV_UPDATE_HEARTBEAT_S)
+               + _build_env_update_cmd(cfg)
+               + f'; echo "{_ENV_UPDATE_EXIT_MARKER}=${{PIPESTATUS[*]}}"')
+
+        def run(cap):
+            cap.write(f"$ remote: cd {cfg.repo_path}\n")
+            cap.write("$ module load python\n")
+            cap.write(f"$ yes | mamba env update -p {cfg.conda_env_path} "
+                      "-f environment.yml\n")
+            exit_code: int | None = None
+            lines = 0
+            with contextlib.closing(ssh.stream(cmd)) as stream:
+                for raw in stream:
+                    line = raw.replace("\r", "")
+                    if _ENV_UPDATE_ALIVE_MARKER in line:
+                        # A heartbeat, possibly glued to a partial line
+                        # (mamba's prompt has no newline): drop the marker,
+                        # tick so a pending cancel lands, keep any text.
+                        line = line.replace(_ENV_UPDATE_ALIVE_MARKER, "")
+                        if not line.strip():
+                            cap.tick(lines, 0, "mamba env update")
+                            continue
+                    if line.startswith(f"{_ENV_UPDATE_EXIT_MARKER}="):
+                        statuses = line.split("=", 1)[1].split()
+                        with contextlib.suppress(ValueError, IndexError):
+                            exit_code = int(statuses[-1])
+                        continue
+                    cap.write(line + "\n")
+                    lines += 1
+                    cap.tick(lines, 0, "mamba env update")
+            if exit_code is None:
+                raise RuntimeError(
+                    "remote env update ended without reporting an exit code "
+                    "(connection dropped?)")
+            if exit_code != 0:
+                raise RuntimeError(
+                    f"remote env update failed with exit code {exit_code}")
+            return {"exit_code": exit_code, "lines": lines}
+
+        job_id = JOB_REGISTRY.spawn(
+            "FASRC: update conda environment", run, kind="fasrc-env-update",
+        )
+        return jsonify({"ok": True, "job_id": job_id})

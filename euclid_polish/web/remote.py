@@ -36,6 +36,8 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
 
+from euclid_polish.web import fasrc_config
+
 # ---------------------------------------------------------------------------
 # SSH ControlMaster session
 # ---------------------------------------------------------------------------
@@ -235,8 +237,12 @@ class SSHSession:
     def stream(self, cmd: str) -> Iterator[str]:
         """Yield stdout lines from ``cmd`` as they arrive (for ``tail -f``).
 
-        The caller is responsible for terminating the generator (close it
-        to send SIGTERM to the remote process).
+        The caller is responsible for terminating the generator. Closing it
+        SIGTERMs the *local* ``ssh`` client, which closes the channel; there
+        is no pty, so the remote process gets no SIGHUP and only stops at
+        its next write (SIGPIPE). A remote command that can stay silent for
+        long must watch the channel itself (see the env-update heartbeat in
+        ``routes/fasrc.py``).
 
         Deliberately does **not** acquire the concurrency semaphore: a
         log stream is long-lived (often open for the whole job) and would
@@ -356,11 +362,18 @@ class SSHSession:
 # ---------------------------------------------------------------------------
 
 class RemoteState:
-    """Singleton: one SSH session, shared across Flask requests."""
+    """Singleton: one SSH session, shared across Flask requests.
+
+    ``last_error`` explains the current disconnected state: the startup
+    auto-connect error or the last failed connect (``None`` after a
+    successful connect or a manual disconnect). It is reported by
+    ``GET /api/fasrc/status`` (contract C4).
+    """
 
     def __init__(self) -> None:
         self.ssh: SSHSession | None = None
         self.connected_at: float | None = None
+        self.last_error: str | None = None
 
     def public_status(self) -> dict:
         ssh_ok = bool(self.ssh and self.ssh.is_connected())
@@ -368,12 +381,48 @@ class RemoteState:
             "ssh_connected":  ssh_ok,
             "connected_at":   self.connected_at if ssh_ok else None,
             "socket":         self.ssh.cfg.socket if self.ssh else None,
+            "last_error":     self.last_error,
         }
 
 
 STATE = RemoteState()
 
 _CONNECT_LOCK = threading.Lock()
+
+NO_SSH_USER = "set ssh_user in Settings first"
+
+
+def connect_from_config() -> SSHSession:
+    """Open the shared session from the saved FASRC settings.
+
+    On success the session is installed on :data:`STATE` (``connected_at``
+    set, ``last_error`` cleared). On failure ``STATE.ssh`` is cleared,
+    ``STATE.last_error`` records the message and :class:`SSHError` is raised
+    with it. Callers that must honour the test kill switch
+    (``EUCLID_POLISH_DISABLE_AUTO_SSH``) check it before calling.
+    """
+    cfg = fasrc_config.load()
+    if not cfg.ssh_user:
+        STATE.ssh = None
+        STATE.last_error = NO_SSH_USER
+        raise SSHError(NO_SSH_USER)
+    session = SSHSession(SSHConfig(
+        user=cfg.ssh_user,
+        host=cfg.ssh_host,
+        socket=cfg.control_socket,
+        control_persist=cfg.control_persist,
+    ))
+    try:
+        session.connect()
+    except Exception as exc:
+        message = str(exc) if isinstance(exc, SSHError) else f"{type(exc).__name__}: {exc}"
+        STATE.ssh = None
+        STATE.last_error = message
+        raise SSHError(message) from exc
+    STATE.ssh = session
+    STATE.connected_at = time.time()
+    STATE.last_error = None
+    return session
 
 
 def ensure_ssh_connected() -> SSHSession:
@@ -386,21 +435,4 @@ def ensure_ssh_connected() -> SSHSession:
     with _CONNECT_LOCK:
         if STATE.ssh is not None and STATE.ssh.is_connected():
             return STATE.ssh
-
-        # Import lazily to keep the low-level SSH module independent from the
-        # persisted WebUI configuration at import time.
-        from euclid_polish.web import fasrc_config
-
-        cfg = fasrc_config.load()
-        if not cfg.ssh_user:
-            raise SSHError("set ssh_user in Settings first")
-        session = SSHSession(SSHConfig(
-            user=cfg.ssh_user,
-            host=cfg.ssh_host,
-            socket=cfg.control_socket,
-            control_persist=cfg.control_persist,
-        ))
-        session.connect()
-        STATE.ssh = session
-        STATE.connected_at = time.time()
-        return session
+        return connect_from_config()

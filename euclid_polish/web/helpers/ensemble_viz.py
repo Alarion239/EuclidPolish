@@ -22,11 +22,11 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
+from scipy.ndimage import zoom
 
 from euclid_polish import ensemble_registry
 from euclid_polish.config import Config
 from euclid_polish.ensemble import (
-    EnsembleModel,
     default_ensemble_dir,
     evaluate_member_on_records,
     evaluate_on_records,
@@ -51,11 +51,7 @@ from euclid_polish.eval.ensemble_cube_cache import (
     load_cached_member_stack,
     save_cached_field_lr,
 )
-from euclid_polish.eval.ensemble_diagnostics import (
-    EnsembleDiagnosticsAccumulator,
-    render_std_vs_brightness,
-    render_std_vs_error,
-)
+from euclid_polish.eval.ensemble_diagnostics import EnsembleDiagnosticsAccumulator
 from euclid_polish.eval.knee_psnr import (
     KNEE_GRID_E,
     integrated_psnr,
@@ -91,13 +87,13 @@ from euclid_polish.provenance.defaults import default_store
 from euclid_polish.provenance.gitinfo import capture_git
 from euclid_polish.tracking import TrackingError
 from euclid_polish.tracking import default_store as tracking_default_store
+from euclid_polish.training import log_plot
 from euclid_polish.training.inference import infer_checkpoint_num_res_blocks
 from euclid_polish.training.target_blur import (
     blur_target_array,
     validate_target_fwhm_arcsec,
 )
 from euclid_polish.training.trainer import prune_orphaned_checkpoints
-from euclid_polish.visualization.base import BaseVisualizer
 from euclid_polish.web import fasrc_config
 from euclid_polish.web.helpers.paths import _sky_records_local_dir
 from euclid_polish.web.remote import STATE
@@ -472,9 +468,12 @@ def training_curves_payload() -> list[dict]:
     a FASRC leftover), and the series reader globs ``member_*`` — without this
     filter a tombstoned member kept showing in the PSNR curves. Each entry is
     enriched with trunk depth and the cached test PSNR so the chart can color
-    lines by depth or by a test-PSNR gradient."""
-    from euclid_polish.training.log_plot import ensemble_training_series
+    lines by depth or by a test-PSNR gradient.
 
+    ``loss_series`` is the member's training-loss curve ``[[step, loss], …]``
+    and ``loss_norm`` its reconstruction norm (``l1`` / ``l2`` / …); ``loss``
+    is kept as an alias of ``loss_norm`` for the current chart (it used to
+    overwrite the series)."""
     base = ensemble_dir()
     active = {os.path.basename(d)
               for d in ensemble_registry.active_member_dirs(base)}
@@ -483,7 +482,7 @@ def training_curves_payload() -> list[dict]:
     rec_fp = _member_scoring_records_fingerprint(rdir, sub)
     cache = _load_member_psnr_cache()
     out = []
-    for s in ensemble_training_series(base):
+    for s in log_plot.ensemble_training_series(base):
         if s["name"] not in active:
             continue
         d = os.path.join(base, s["name"])
@@ -494,7 +493,9 @@ def training_curves_payload() -> list[dict]:
         # Reconstruction norm from origin.json; members created before the
         # loss knob existed all trained with the then-hardcoded L1.
         origin = _member_origin(d)
-        s["loss"] = ((origin or {}).get("loss_norm") or "l1")
+        s["loss_series"] = s.get("loss", []) if isinstance(s.get("loss"), list) else []
+        s["loss_norm"] = ((origin or {}).get("loss_norm") or "l1")
+        s["loss"] = s["loss_norm"]
         # Per-member asinh knee (electrons) for the "by knee" coloring; None →
         # the per-band default (the client renders it as 100).
         s["asinh_knee"] = (origin or {}).get("asinh_knee")
@@ -692,70 +693,8 @@ def _lr_on_hr_grid(lr_cube, n: int) -> np.ndarray | None:
         return None
     if a.shape == (n, n):
         return a
-    from scipy.ndimage import zoom
     up = zoom(a, (n / a.shape[0], n / a.shape[1]), order=3)  # bicubic baseline
     return up[:n, :n]
-
-
-def _render_disagreement_png(lr_vis, sr_vis, std_vis, hr_vis, out_png) -> str:
-    """LR | ensemble-mean SR | disagreement (std) | HR — VIS planes, asinh."""
-    cols = 4 if hr_vis is not None else 3
-    viz = BaseVisualizer(rows=1, cols=cols, figsize=(5.2 * cols, 5.0))
-    viz.add_scale_panel(lr_vis, stretch="asinh", title_suffix=" — LR (VIS)")
-    viz.add_scale_panel(sr_vis, stretch="asinh",
-                        title_suffix=" — ensemble mean SR (VIS)")
-    viz.add_scale_panel(std_vis, stretch="asinh", cmap="magma",
-                        colorbar_label="member std (e⁻)",
-                        title_suffix=" — disagreement ≈ hallucination")
-    if hr_vis is not None:
-        viz.add_scale_panel(hr_vis, stretch="asinh", title_suffix=" — HR (VIS)")
-    viz.save_figure(out_png)
-    return out_png
-
-
-def job_ensemble_render(cap, *, index: int) -> dict:
-    """Run the ensemble on one held-out test field and render its disagreement."""
-    base = ensemble_dir()
-    ens = EnsembleModel(base, scale=Config.DEFAULT_REBIN_FACTOR,
-                        num_res_blocks=Config.DEFAULT_NUM_RES_BLOCKS)
-    if ens.n_members == 0:
-        raise RuntimeError(
-            f"no ensemble members under {base}/{_MEMBER_GLOB}; train an ensemble "
-            "first (EnsembleModel.train_members / scripts/train_ensemble.py).")
-    rdir = _sky_records_local_dir()
-    if not rdir:
-        raise RuntimeError("no local sky records — sync them on the /sky page.")
-    sub = eval_subset(rdir)
-
-    lr_recs = read_images(tfrecord_path(rdir, f"dirty_{sub}"), num_images=index + 1)
-    if index >= len(lr_recs):
-        raise RuntimeError(
-            f"only {len(lr_recs)} {sub} fields available; index {index} out of range.")
-    lr = lr_recs[index]
-    hr_path = tfrecord_path(rdir, f"hr_{sub}")
-    hr = None
-    if os.path.exists(hr_path):
-        hr_by = {h.index: h for h in read_images(hr_path, num_images=index + 1)}
-        hr = hr_by.get(lr.index)
-        if hr is not None:
-            hr = dataclasses.replace(
-                hr,
-                data=blur_target_array(
-                    hr.data, Config.TARGET_PSF_FWHM_ARCSEC,
-                    pixel_scale_arcsec=hr.pixel_scale_arcsec,
-                ),
-            )
-
-    cap.tick(0, ens.n_members, f"running {ens.n_members} members")
-    mean, std = ens.predict(lr.data)
-    cap.tick(ens.n_members, ens.n_members, "rendering")
-
-    out_png = os.path.join(_ensemble_out_dir(),
-                           f"ensemble_{sub}_idx{lr.index:04d}.png")
-    _render_disagreement_png(_vis(lr.data), _vis(mean), _vis(std),
-                             _vis(hr.data) if hr is not None else None, out_png)
-    print(f"  ✓ {ens.n_members}-member disagreement → {out_png}")
-    return {"png": out_png, "n_members": ens.n_members, "index": lr.index}
 
 
 #: How many of the scored fields to persist as float cubes for the client-side
@@ -1903,7 +1842,6 @@ def _lr_cube_on_hr_grid(lr_cube, n: int):
         return None
     if a.shape[0] == n and a.shape[1] == n:
         return a
-    from scipy.ndimage import zoom
     up = zoom(a, (n / a.shape[0], n / a.shape[1], 1), order=3)  # bicubic
     return up[:n, :n]
 
@@ -2497,10 +2435,6 @@ def _reevaluate_from_cached_cubes(starless: bool,
         target_fwhm_arcsec=target_fwhm)
     with open(os.path.join(out_dir, "eval_summary.json"), "w") as f:
         json.dump(summary, f, indent=2)
-    # Classic-page diagnostic PNGs render lazily from the fresh cubes.
-    for png in EVAL_DIAGNOSTIC_PNGS.values():
-        with contextlib.suppress(FileNotFoundError):
-            os.remove(os.path.join(out_dir, png))
     _refresh_knee_psnr(starless, progress)
     return summary
 
@@ -2629,11 +2563,12 @@ def _rebuild_pending_archive_caches(starless: bool) -> bool:
 
 
 def job_ensemble_evaluate(cap, *, num_images: int,
-                          starless: bool = True, force: bool = False,
+                          starless: bool, force: bool = False,
                           target_fwhm_arcsec: float = Config.TARGET_PSF_FWHM_ARCSEC) -> dict:
     """Evaluate the ensemble on the held-out test set; persist + return the summary.
 
-    ``starless`` selects the regime: STARLESS members scored against the
+    ``starless`` (required — no regime default here; the routes default to
+    STARFULL) selects the regime: STARLESS members scored against the
     starless ``clean`` target (erase stars), STARFULL against the starfull
     ``hr`` target (reconstruct them). Only members of the matching regime are
     evaluated together (their targets differ, so a mixed mean is meaningless).
@@ -2854,11 +2789,6 @@ def job_ensemble_evaluate(cap, *, num_images: int,
             combiner_block["psnr"] - combiner_block["ensemble_mean_psnr"])
         out["combiner_vs_best_member_db"] = (
             combiner_block["psnr"] - (combiner_block["best_member_psnr"] or 0.0))
-    # The pixel-level diagnostic figures render lazily from the fresh cubes —
-    # drop the ones from the previous eval so the page never serves stale plots.
-    for png in EVAL_DIAGNOSTIC_PNGS.values():
-        with contextlib.suppress(FileNotFoundError):
-            os.remove(os.path.join(out_dir, png))
 
     out["regime"] = _regime_slug(starless)
     # Stamp the identity LAST (with the summary) so its presence means this run
@@ -2988,70 +2918,6 @@ def _member_meta_from_labels(labels) -> list[dict]:
                      "step": _member_last_step(d),
                      "psnr": (entry or {}).get("psnr")})
     return meta
-
-
-def regenerate_power_spectrum(starless: bool,
-                              color_by: str | None = None) -> str | None:
-    """Re-render one regime's ensemble power spectrum from the CACHED per-field
-    cubes (see :func:`_iter_cached_fields`). ``color_by`` ∈ {"loss", "depth",
-    "knee"} colors the per-member lines by that grouping. Returns the PNG path,
-    or ``None`` if nothing is cached."""
-    acc = None
-    for hr_v, mean_v, mem_v, model_v, lr_v, _rec in _iter_cached_fields(starless):
-        if acc is None:
-            acc = EnsembleSpectrumAccumulator(
-                int(hr_v.shape[0]), float(Config.DEFAULT_PIXEL_SCALE))
-        acc.add(hr_v, mean_v, mem_v, model_combiners=model_v, lr=lr_v)
-    if acc is None or float(acc.bc.sum()) <= 0:
-        return None
-    member_meta = None
-    if color_by in ("loss", "depth", "knee"):
-        man_path = os.path.join(_ensemble_cubes_dir(starless=starless),
-                                "viz_index.json")
-        try:
-            with open(man_path) as f:
-                member_meta = _member_meta_from_labels(
-                    json.load(f).get("member_labels", []))
-        except (OSError, json.JSONDecodeError):
-            member_meta = None
-    ps_png = os.path.join(_ensemble_regime_dir(starless),
-                          "ensemble_power_spectrum.png")
-    render_ensemble_power_spectrum(ps_png, acc.curves(), n_fields=acc.n_fields,
-                                   member_meta=member_meta, color_by=color_by)
-    return ps_png
-
-
-#: Diagnostic figures rendered from the cached cubes: URL slug → PNG basename.
-#: One sweep renders both (they share the same pixel statistics pass).
-EVAL_DIAGNOSTIC_PNGS = {
-    "std-error": "ensemble_std_vs_error.png",
-    "std-brightness": "ensemble_std_vs_brightness.png",
-}
-
-
-def regenerate_eval_diagnostics(starless: bool) -> dict[str, str] | None:
-    """Render one regime's pixel-level diagnostic figures from the CACHED cubes.
-
-    One pass over :func:`_iter_cached_fields` feeds a single
-    :class:`EnsembleDiagnosticsAccumulator`; all figures in
-    :data:`EVAL_DIAGNOSTIC_PNGS` are (re)rendered together. Returns
-    ``{slug: png_path}`` or ``None`` when nothing is cached.
-    """
-    acc = EnsembleDiagnosticsAccumulator()
-    for hr_v, mean_v, mem_v, model_v, _lr_v, rec in _iter_cached_fields(starless):
-        acc.add(hr_v, mean_v, mem_v, combiners=model_v, field_index=rec)
-    if acc.n_fields == 0:
-        return None
-    _write_diag_samples(starless, acc)
-    out_dir = _ensemble_regime_dir(starless)
-    renderers = {"std-error": render_std_vs_error,
-                 "std-brightness": render_std_vs_brightness}
-    out = {}
-    for slug, render in renderers.items():
-        png = os.path.join(out_dir, EVAL_DIAGNOSTIC_PNGS[slug])
-        if render(png, acc):
-            out[slug] = png
-    return out or None
 
 
 def _delete_remote_member(name: str) -> str:

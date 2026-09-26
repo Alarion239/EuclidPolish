@@ -15,14 +15,17 @@ import io
 import json
 import os
 import shlex
+import threading
 import time
 
-from flask import jsonify, render_template, request, send_file
+from flask import jsonify, request, send_file
 
 from euclid_polish.config import Config
 from euclid_polish.tng.properties import render_histograms_for_ids
 from euclid_polish.web import fasrc_config, fasrc_jobs
-from euclid_polish.web.fasrc_fetcher import fetch_one_file, list_remote_dir
+from euclid_polish.web.fasrc_fetcher import fetch_one_file
+from euclid_polish.web.fasrc_gate import requires_fasrc
+from euclid_polish.web.jobs import REGISTRY as JOB_REGISTRY
 from euclid_polish.web.remote import STATE
 
 # Job-rendered image infographics on FASRC (written by
@@ -79,65 +82,141 @@ def _archive_png_to_vis(kind: str, png_bytes: bytes) -> None:
 _TNG_KEY_REMOTE = '"$HOME/' + os.path.basename(Config.Tng.API_KEY_FILE) + '"'
 
 
+#: A cached radius validation older than this is reported ``stale`` by the
+#: status GET (the client then asks for ``POST /api/tng/radii/refresh``).
+_RADII_TTL_S = 3600.0
+#: A cached *failure* (often a transient SSH timeout) goes stale much sooner,
+#: so a retry is offered after minutes rather than an hour.
+_RADII_FAILED_TTL_S = 300.0
+_RADII_JOB_KIND = "tng-radii"
+
+
+def _radii_cache_path() -> str:
+    return os.path.join(Config.DATA_DIR, _CALIBRATION_SUBDIR,
+                        "tng_radius_manifest_status.json")
+
+
+def _read_radii_cache() -> dict | None:
+    try:
+        with open(_radii_cache_path()) as handle:
+            payload = json.load(handle)
+    except (OSError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _validate_radius_manifest() -> dict:
+    """Run the remote validator once; the payload the status route serves."""
+    cfg = fasrc_config.load()
+    tng_dir = os.path.join(cfg.data_dir, Config.Tng.SKIRT_SUBDIR)
+    props = os.path.join(cfg.data_dir, _CALIBRATION_SUBDIR, "tng_properties.csv")
+    manifest = os.path.join(cfg.data_dir, _CALIBRATION_SUBDIR,
+                            "tng_radius_manifest.json")
+    rc, out, err = fasrc_jobs.run_remote_python(
+        STATE.ssh,
+        cfg=cfg,
+        argv=[
+            "scripts/validate_tng_radius_manifest.py",
+            "--tng-dir", tng_dir,
+            "--properties", props,
+            "--manifest", manifest,
+        ],
+        timeout=180,
+    )
+    lines = [line for line in (out or "").splitlines() if line.strip()]
+    if not lines:
+        raise ValueError(
+            (err or "radius-manifest validator returned no output").strip())
+    payload = json.loads(lines[-1])
+    if rc != 0 and not payload.get("reasons"):
+        payload["reasons"] = [(err or "manifest validation failed").strip()]
+    return payload
+
+
+def _write_radii_cache(payload: dict) -> None:
+    path = _radii_cache_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w") as handle:
+        json.dump(payload, handle)
+    os.replace(tmp, path)
+
+
+def _radii_cache_stale(cached: dict | None) -> bool:
+    """Missing, or older than its TTL (a failure's TTL is the short one)."""
+    if cached is None:
+        return True
+    ttl = _RADII_FAILED_TTL_S if cached.get("failed") else _RADII_TTL_S
+    try:
+        checked_at = float(cached.get("checked_at", 0))
+    except (TypeError, ValueError):
+        return True
+    return time.time() - checked_at > ttl
+
+
+def _radii_refresh_job(cap) -> dict:
+    """Validate once and cache the answer — a failure is cached too (with
+    ``checked_at`` and ``failed``, stale after the short failure TTL)."""
+    cap.tick(0, 1, "validating the remote TNG radius manifest")
+    try:
+        payload = {**_validate_radius_manifest(), "checked_at": time.time()}
+    except Exception as exc:
+        _write_radii_cache({"valid": False, "reasons": [str(exc)],
+                            "failed": True, "checked_at": time.time()})
+        raise
+    _write_radii_cache(payload)
+    cap.tick(1, 1, "validated")
+    return payload
+
+
+_RADII_SPAWN_LOCK = threading.Lock()
+
+
+def _radii_refresh_running() -> str | None:
+    for job in JOB_REGISTRY.list(summary=True):
+        if job.get("kind") == _RADII_JOB_KIND and job.get("status") == "running":
+            return str(job["job_id"])
+    return None
+
+
+def _spawn_radii_refresh() -> str:
+    """Start the validation job unless one already runs (one at a time)."""
+    with _RADII_SPAWN_LOCK:
+        running = _radii_refresh_running()
+        if running is not None:
+            return running
+        return JOB_REGISTRY.spawn("TNG: validate radius manifest",
+                                  _radii_refresh_job, kind=_RADII_JOB_KIND)
+
+
 def register(app):
 
     @app.route("/api/tng/radii/status")
     def tng_radii_status():
-        """Validate the remote, versioned TNG effective-radius manifest."""
-        if not STATE.ssh or not STATE.ssh.is_connected():
-            return jsonify({"valid": False, "connected": False,
-                            "reasons": ["not connected to FASRC"]})
-        cfg = fasrc_config.load()
-        tng_dir = os.path.join(cfg.data_dir, Config.Tng.SKIRT_SUBDIR)
-        props = os.path.join(cfg.data_dir, _CALIBRATION_SUBDIR,
-                             "tng_properties.csv")
-        manifest = os.path.join(cfg.data_dir, _CALIBRATION_SUBDIR,
-                                "tng_radius_manifest.json")
-        try:
-            rc, out, err = fasrc_jobs.run_remote_python(
-                STATE.ssh,
-                cfg=cfg,
-                argv=[
-                    "scripts/validate_tng_radius_manifest.py",
-                    "--tng-dir", tng_dir,
-                    "--properties", props,
-                    "--manifest", manifest,
-                ],
-                timeout=180,
-            )
-            lines = [line for line in (out or "").splitlines() if line.strip()]
-            if not lines:
-                raise ValueError(
-                    (err or "radius-manifest validator returned no output").strip()
-                )
-            payload = json.loads(lines[-1])
-        except Exception as exc:
-            return jsonify({"valid": False, "connected": True,
-                            "reasons": [str(exc)]})
-        payload["connected"] = True
-        if rc != 0 and not payload.get("reasons"):
-            payload["reasons"] = [(err or "manifest validation failed").strip()]
-        return jsonify(payload)
+        """The last radius-manifest validation, answered immediately.
 
-    @app.route("/tng")
-    def tng_page():
-        cfg = fasrc_config.load()
-        tng_dir = f"{cfg.data_dir}/{Config.Tng.SKIRT_SUBDIR}"
-        # Completed galaxies = ``.done`` sentinels one level under tng_skirt.
-        # Depth 2 so ``tng_skirt/<subhalo_id>/.done`` is reached; a missing dir
-        # degrades to an empty list (ok=True) rather than an error.
-        ok, entries, err = list_remote_dir(
-            tng_dir,
-            glob_pattern=Config.Tng.DONE_MARKER,
-            max_entries=2000,
-            max_depth=2,
-        )
-        return render_template(
-            "tng.html",
-            tng_dir=tng_dir,
-            n_done=(len(entries) if ok else None),
-            list_err=(None if ok else err),
-        )
+        Read-only: validation runs the remote checker (up to 180 s over
+        SSH) in a job started by ``POST /api/tng/radii/refresh``. This GET
+        serves the cached result plus ``stale`` (cache missing, older than
+        :data:`_RADII_TTL_S`, or a failure older than
+        :data:`_RADII_FAILED_TTL_S`) and ``refresh_job`` (the running
+        validation job, if any); a client refreshes when ``stale`` and
+        ``connected`` and no job runs. Works offline.
+        """
+        cached = _read_radii_cache()
+        connected = bool(STATE.ssh and STATE.ssh.is_connected())
+        base = cached or {"valid": False, "reasons": [
+            "not validated yet" + ("" if connected else " — connect to FASRC")]}
+        return jsonify({**base, "cached": cached is not None,
+                        "stale": _radii_cache_stale(cached),
+                        "connected": connected,
+                        "refresh_job": _radii_refresh_running()})
+
+    @app.post("/api/tng/radii/refresh")
+    @requires_fasrc
+    def tng_radii_refresh():
+        """Re-validate the remote radius manifest in a local job."""
+        return jsonify({"ok": True, "job_id": _spawn_radii_refresh()})
 
     # ---------------- IllustrisTNG API token (for the FASRC job) ----------
     # The download job runs on FASRC and authenticates to the TNG API there.
@@ -147,6 +226,7 @@ def register(app):
     # disk or the job DB.
 
     @app.route("/tng-auth/save", methods=["POST"])
+    @requires_fasrc
     def tng_auth_save():
         if not STATE.ssh or not STATE.ssh.is_connected():
             return jsonify({"ok": False, "error": "not connected to FASRC"}), 400
@@ -280,10 +360,12 @@ def register(app):
                          download_name=download_name)
 
     @app.route("/tng/result/grid.png")
+    @requires_fasrc
     def tng_result_grid():
         return _serve_artifact("grid", "image/png")
 
     @app.route("/tng/result/stack.fits")
+    @requires_fasrc
     def tng_result_stack():
         # ~51 MB — pull with the larger cap (the default 50 MB cap is too
         # small) and hand it to the browser as a download.

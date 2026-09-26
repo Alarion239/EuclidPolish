@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import json
 import os
 
 import pytest
 
 from euclid_polish.config import Config
+from euclid_polish.tracking import default_store
+from euclid_polish.tracking import timetravel as tt
+from euclid_polish.web import remote
 from euclid_polish.web.app import create_app
 
 
@@ -18,16 +22,15 @@ def client():
 
 
 def test_tracking_page_renders_when_empty(client):
-    r = client.get("/tracking")
+    r = client.get("/ops/tracking")
     assert r.status_code == 200
     assert b'id="root"' in r.data
 
 
 def test_tracking_page_reachable_without_ssh(client, monkeypatch):
-    # The gate must NOT redirect /tracking even when SSH is down.
-    from euclid_polish.web import remote
+    # The Ops tracking tab is local-first: it serves with SSH down.
     monkeypatch.setattr(remote.STATE, "ssh", None)
-    r = client.get("/tracking")
+    r = client.get("/ops/tracking")
     assert r.status_code == 200
 
 
@@ -47,7 +50,7 @@ def test_new_then_state_then_save(client):
     assert st["active"]["title"] == "Route Run"
 
     # The React page reads the updated state through its JSON endpoint.
-    assert client.get("/tracking").status_code == 200
+    assert client.get("/ops/tracking").status_code == 200
 
     # Save → archived, no active.
     rs = client.post("/api/tracking/save")
@@ -124,12 +127,6 @@ def test_backup_unknown_kind(client):
 # --------------------------------------------------------------------------
 
 def test_timetravel_restore_route(client, monkeypatch):
-    import json
-    import os
-
-    from euclid_polish.tracking import default_store
-    from euclid_polish.tracking import timetravel as tt
-
     store = default_store()
     store.create_campaign("tt")
     mdir = os.path.join(store.current_dir, "models", "m1")
@@ -191,7 +188,6 @@ def test_backup_model_bundles_training_log_plot(client, tmp_path, monkeypatch):
     assert r.status_code == 200, r.get_data(as_text=True)
     assert r.get_json()["ok"]
 
-    from euclid_polish.tracking import default_store
     bdir = default_store().model_backup_dir("current", "m1")
     assert os.path.isfile(os.path.join(bdir, "training_log.csv"))
     # The rendered plot is bundled alongside the checkpoint.
@@ -220,7 +216,6 @@ def test_backup_model_accepts_vis_only_sibling(client, tmp_path, monkeypatch):
     assert r.status_code == 200, r.get_data(as_text=True)
     assert r.get_json()["ok"]
 
-    from euclid_polish.tracking import default_store
     bdir = default_store().model_backup_dir("current", "mvis")
     # The -vis checkpoint files made it into the backup.
     assert os.path.isfile(os.path.join(bdir, "ckpt-7.index"))

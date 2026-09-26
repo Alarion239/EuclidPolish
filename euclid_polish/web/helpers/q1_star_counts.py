@@ -14,6 +14,7 @@ from astroquery.esa.euclid import Euclid
 
 from euclid_polish.config import Config
 from euclid_polish.photometry import ab_mag_to_uJy
+from euclid_polish.sky.observation.q1_fields import Q1_FIELD_CONES
 
 Q1_DEEP_FIELD_AREA_DEG2 = 63.1
 Q1_DEEP_FIELD_AREA_ARCMIN2 = Q1_DEEP_FIELD_AREA_DEG2 * 3600.0
@@ -22,11 +23,7 @@ Q1_STAR_COUNT_VERSION = 3
 # These broad regions select the three released deep fields while excluding
 # the separate LDN 1641 commissioning field. The normalization is the released
 # Q1 deep-field footprint area, not the area of these selection circles.
-_Q1_DEEP_FIELD_REGIONS = (
-    (269.733, 66.018, 6.0),  # EDF-N
-    (61.241, -48.423, 6.0),  # EDF-S
-    (52.932, -28.088, 6.0),  # EDF-F
-)
+_Q1_DEEP_FIELD_REGIONS = Q1_FIELD_CONES  # EDF-N, EDF-S, EDF-F
 
 
 def q1_star_counts_path() -> Path:

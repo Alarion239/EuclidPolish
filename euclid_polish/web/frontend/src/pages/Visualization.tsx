@@ -14,15 +14,15 @@ import "./presentation-figures.css";
 type VisPng = { rel: string; mtime: number; size_kb: number; inspect_fits: string | null };
 
 const FIGURE_BUILDERS = [
-  { label: "Synthetic comparison", path: "/sky", tiers: ["Euclid Image", "Super-resolved Image", "High-resolution truth"],
+  { label: "Synthetic comparison", path: "/data/records", tiers: ["Euclid Image", "Super-resolved Image", "High-resolution truth"],
     note: "Use the held-out synthetic records for the LR–SR–HR plate." },
-  { label: "Evaluation fields", path: "/evaluation", tiers: ["Euclid Image", "Super-resolved Image", "High-resolution truth"],
+  { label: "Evaluation fields", path: "/sky/catalog-eval", tiers: ["Euclid Image", "Super-resolved Image", "High-resolution truth"],
     note: "Browse selected evaluation fields and ensemble products." },
-  { label: "Real Euclid fields", path: "/inference", tiers: ["Euclid Image", "Super-resolved Image"],
+  { label: "Real Euclid fields", path: "/sky/results", tiers: ["Euclid Image", "Super-resolved Image"],
     note: "Export cached real-field reconstructions without implying an unavailable truth image." },
-  { label: "Euclid × JWST", path: "/jwst-euclid", tiers: ["Euclid Image", "Super-resolved Image", "JWST reference"],
+  { label: "Euclid × JWST", path: "/sky/atlas", tiers: ["Euclid Image", "Super-resolved Image", "JWST reference"],
     note: "Compare registered native-band Euclid and JWST views." },
-  { label: "Selected ePSFs", path: "/psfs", tiers: ["VIS", "Y_E", "J_E", "H_E"],
+  { label: "Selected ePSFs", path: "/data/psfs", tiers: ["VIS", "Y_E", "J_E", "H_E"],
     note: "Choose the empirical PSF and place the magnified region with the pointer." },
 ] as const;
 

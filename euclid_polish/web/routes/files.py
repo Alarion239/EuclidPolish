@@ -3,11 +3,13 @@ from __future__ import annotations
 
 import io
 import os
+from urllib.parse import urlencode
 
-from flask import abort, jsonify, redirect, render_template, request, send_file, url_for
+from flask import abort, jsonify, redirect, request, send_file
 
 from euclid_polish.config import Config
 from euclid_polish.web import fasrc_fetcher as _fasrc_fetcher
+from euclid_polish.web.fasrc_gate import requires_fasrc
 from euclid_polish.web.helpers.fits_render import (
     _fits_file_info,
     _read_fits_header_rows,
@@ -17,54 +19,19 @@ from euclid_polish.web.helpers.paths import (
     _inspectable_roots,
     _resolve_inspectable_fits,
     _safe_relpath,
-    _sky_records_local_dir,
 )
-from euclid_polish.web.helpers.sky_render import _export_sky_record_fits
 from euclid_polish.web.helpers.status import (
+    _cached_catalog_status,
     _catalog_status,
     _checkpoints_status,
     _psf_status,
     _tfrecords_status,
 )
 from euclid_polish.web.jobs import REGISTRY
+from euclid_polish.web.version import process_tracker
 
 
 def register(app):
-
-    @app.route("/sky/fits")
-    def sky_fits():
-        """Export one sky-record band+index as FITS and return the file."""
-        try:
-            index = int(request.args.get("i", "0"))
-        except ValueError:
-            abort(400)
-        path = _export_sky_record_fits(
-            subset=request.args.get("subset", ""),
-            kind=request.args.get("kind", ""),
-            band=request.args.get("band", ""),
-            index=index,
-            records_dir=_sky_records_local_dir(),
-        )
-        return send_file(path, as_attachment=True,
-                         download_name=os.path.basename(path),
-                         mimetype="application/fits")
-
-    @app.route("/sky/inspect")
-    def sky_inspect():
-        """Export the requested record then redirect into the inspector."""
-        try:
-            index = int(request.args.get("i", "0"))
-        except ValueError:
-            abort(400)
-        path = _export_sky_record_fits(
-            subset=request.args.get("subset", ""),
-            kind=request.args.get("kind", ""),
-            band=request.args.get("band", ""),
-            index=index,
-            records_dir=_sky_records_local_dir(),
-        )
-        return redirect(url_for("inspect_fits_page",
-                                fits=_safe_relpath(path)))
 
     # ---------------- Static PNG server (data/vis/) ----------------
     @app.route("/vis/<path:relpath>")
@@ -101,26 +68,54 @@ def register(app):
             download_name=os.path.basename(full),
         )
 
-    # ---------------- Job tracker API ----------------
+    # ---------------- Job tracker API (contract C2) ----------------
     @app.route("/api/jobs")
     def api_jobs():
-        return jsonify(REGISTRY.list())
+        """Local background jobs, newest first; ``?summary=1`` omits logs."""
+        summary = request.args.get("summary", "").lower() in ("1", "true", "yes")
+        return jsonify(REGISTRY.list(summary=summary))
 
     @app.route("/api/jobs/<job_id>")
     def api_job(job_id: str):
         job = REGISTRY.get(job_id)
         if not job:
-            abort(404)
+            return jsonify({"ok": False, "error": f"unknown job {job_id}"}), 404
         return jsonify(job.to_dict())
+
+    @app.post("/api/jobs/<job_id>/cancel")
+    def api_job_cancel(job_id: str):
+        """Cooperative cancel: the job stops at its next ``cap.tick``."""
+        outcome = REGISTRY.cancel(job_id)
+        if outcome is None:
+            return jsonify({"ok": False, "error": f"unknown job {job_id}"}), 404
+        if outcome is False:
+            job = REGISTRY.get(job_id)
+            status = job.status if job is not None else "finished"
+            return jsonify({"ok": False,
+                            "error": f"job {job_id} is already {status}"}), 409
+        return jsonify({"ok": True})
+
+    # ---------------- Server version (contract C3) ----------------
+    @app.get("/api/version")
+    def api_version():
+        """Boot commit vs live HEAD, dirty flag and the served SPA build."""
+        return jsonify(process_tracker().payload())
 
     @app.route("/api/status")
     def api_status():
+        """Local status summary — cache-only and cheap (no SSH, no rsync)."""
         return jsonify({
-            "catalog":     _catalog_status(),
+            "catalog":     _cached_catalog_status(),
             "psfs":        _psf_status(),
             "tfrecords":   _tfrecords_status(),
             "checkpoints": _checkpoints_status(),
         })
+
+    @app.post("/api/status/refresh-catalog")
+    @requires_fasrc
+    def api_status_refresh_catalog():
+        """Explicitly re-pull the FASRC ``stars.csv`` (forced rsync)."""
+        return jsonify({"ok": True, "catalog": _catalog_status()})
 
     # =========================================================================
     # Universal FITS inspector — every image card across the UI links here.
@@ -137,26 +132,6 @@ def register(app):
             "allowed_roots": _inspectable_roots(),
         })
 
-    @app.route("/inspect")
-    def inspect_fits_page():
-        path = _resolve_inspectable_fits(request.args.get("fits", ""))
-        info = _fits_file_info(path)
-        rows = _read_fits_header_rows(path)
-        # Project-relative path is what shows in the UI + what the
-        # download/preview routes echo back (so refresh from a bookmark
-        # keeps working as long as the file is still at that location).
-        rel = _safe_relpath(path)
-        return render_template(
-            "inspect_fits.html",
-            file=info,
-            hdus=rows,
-            rel=rel,
-            # Roots are displayed so the user can confirm which data
-            # subtree the file came from (useful when triaging mismatched
-            # outputs from multiple runs).
-            allowed_roots=_inspectable_roots(),
-        )
-
     @app.route("/inspect/download")
     def inspect_fits_download():
         path = _resolve_inspectable_fits(request.args.get("fits", ""))
@@ -167,8 +142,9 @@ def register(app):
         )
 
     @app.route("/fasrc/file/inspect")
+    @requires_fasrc
     def fasrc_file_inspect():
-        """Fetch one file from FASRC (cached) then redirect to /inspect.
+        """Fetch one file from FASRC (cached) then redirect to ``/inspect``.
 
         Query param: ``remote_path=<absolute path on FASRC>``. Subject
         to all the safeguards in :mod:`euclid_polish.web.fasrc_fetcher`
@@ -179,16 +155,13 @@ def register(app):
             abort(400)
         result = _fasrc_fetcher.fetch_one_file(remote)
         if not result.ok or result.local_path is None:
-            return render_template(
-                "fasrc_fetch_error.html", remote=remote, error=result.error,
-            ), 502
-        # Hand off to the existing inspector with the local cache path.
-        return redirect(url_for(
-            "inspect_fits_page",
-            fits=_safe_relpath(result.local_path),
-        ))
+            return jsonify({"ok": False, "error": result.error}), 502
+        # Hand off to the Inspect workspace with the local cache path.
+        return redirect("/inspect?" + urlencode(
+            {"fits": _safe_relpath(result.local_path)}))
 
     @app.route("/fasrc/file/download")
+    @requires_fasrc
     def fasrc_file_download():
         """Fetch one file from FASRC (cached) and send it back directly."""
         remote = request.args.get("remote_path", "").strip()
