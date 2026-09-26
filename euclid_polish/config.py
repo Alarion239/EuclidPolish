@@ -618,11 +618,15 @@ class Config:
     # guard above: cut the LR on *stagnation*, not just on divergence). Standard
     # ReduceLROnPlateau, phrased in STEPS. On the plateau the model can't settle
     # at the hot LR; cutting it early — as soon as the metric stalls — lets it
-    # settle without waiting for the schedule. On by default. NOTE: this guard
-    # exists to escape L1's degenerate skip-only basin, so model.train() applies
-    # it to L1 members ONLY — for L2/L3/BerHu it is forced off regardless of
-    # this flag (loss_names.plateau_guard_applies).
-    PLATEAU_LR_ENABLED           = True
+    # settle without waiting for the schedule. NOTE: this guard exists to
+    # escape L1's degenerate skip-only basin, so model.train() applies it to L1
+    # members ONLY — for L2/L3/BerHu it is forced off regardless of this flag
+    # (loss_names.plateau_guard_applies).
+    # OFF by default since 2026-09-25: on the current data it fired only on
+    # ordinary validation noise at 63–66 dB — the L1 members of 2026-09-20/21
+    # repeated 71% extra steps in rollbacks and four of them hit the time
+    # limit unfinished. The knobs stay; re-enable with --plateau-lr-enabled 1.
+    PLATEAU_LR_ENABLED           = False
     PLATEAU_LR_FACTOR            = 0.5      # multiply the LR by this on a stall
     PLATEAU_LR_PATIENCE          = 5000     # steps of no metric progress → cut
     # RELATIVE improvement threshold (fraction of |best|): the effective
