@@ -258,7 +258,7 @@ class Image(StampCarrier):
         """The pixels as a little-endian float32, C-contiguous ``(H, W, C)`` buffer.
 
         This is the canonical wire format the browser cutout viewer
-        (``static/cutout_viewer.js``) reads straight into a ``Float32Array``:
+        (``frontend/src/viewer/cube.ts``) reads straight into a ``Float32Array``:
         it is exactly the body of the ``/viewer/cube`` response. Pair it with
         :meth:`wire_meta` for the shape/band header. No HTTP or framework types
         are involved, so this stays a leaf concern.

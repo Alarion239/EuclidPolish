@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from types import SimpleNamespace
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -10,10 +10,8 @@ from astropy.io import fits
 from astropy.wcs import WCS
 from astropy.wcs.utils import proj_plane_pixel_scales
 
-import euclid_polish.ensemble as ensemble_module
-import euclid_polish.eval.combiner as combiner_module
 from euclid_polish.config import Config
-from euclid_polish.web.helpers import jwst_euclid, viewer_data
+from euclid_polish.web.helpers import jwst_euclid, model_catalog, viewer_data
 
 
 def test_field_id_is_stable_and_path_safe():
@@ -45,7 +43,7 @@ def test_nexus_source_tiles_use_exact_255_pixel_euclid_footprints(monkeypatch):
         lambda _path: (data, wcs.to_header(), wcs, "PRIMARY"),
     )
     _data, _header, _wcs, tiles = jwst_euclid._nexus_source_tiles(
-        __import__("pathlib").Path("nexus.fits"), filter_name="F200W",
+        Path("nexus.fits"), filter_name="F200W",
     )
     assert tiles == [
         (0, 0, 850, 850), (850, 0, 1700, 850),
@@ -118,7 +116,7 @@ def test_nexus_download_reuses_cached_tiles_while_filling_missing_bands(tmp_path
         return True, None
 
     monkeypatch.setattr(jwst_euclid, "_write_nexus_source_tile", write_jwst)
-    monkeypatch.setattr("euclid_polish.catalog.downloader.fetch_cutout_at", fetch_cutout_at)
+    monkeypatch.setattr(jwst_euclid, "fetch_q1_cutout", fetch_cutout_at)
 
     first = jwst_euclid.download_nexus_field(filter_name="F200W")
     second = jwst_euclid.download_nexus_field(filter_name="F200W")
@@ -171,7 +169,7 @@ def test_nexus_download_crops_rounded_archive_vis_cutouts_to_exact_tiles(tmp_pat
         return True, None
 
     monkeypatch.setattr(jwst_euclid, "_write_nexus_source_tile", write_jwst)
-    monkeypatch.setattr("euclid_polish.catalog.downloader.fetch_cutout_at", fetch_cutout_at)
+    monkeypatch.setattr(jwst_euclid, "fetch_q1_cutout", fetch_cutout_at)
 
     manifest = jwst_euclid.download_nexus_field(filter_name="F200W")
 
@@ -300,6 +298,14 @@ def test_nexus_jwst_blur_uses_one_sr_pixel_fwhm(tmp_path, monkeypatch):
     assert blurred_meta["pixscale"] == 0.06
 
 
+def _fake_production(fingerprint: str, member_fingerprint: str) -> model_catalog.ModelSpec:
+    return model_catalog.ModelSpec(
+        "production", "production", "Fake STARFULL", ("member",), ("member",), True,
+        fingerprint=f"{fingerprint}|{member_fingerprint}",
+        member_fingerprints=(member_fingerprint,), combiner_kind="fake",
+        combiner_fingerprint=fingerprint)
+
+
 def test_nexus_starfull_inference_reuses_current_and_replaces_stale_sr(
         tmp_path, monkeypatch):
     monkeypatch.setattr(Config, "DATA_DIR", str(tmp_path / "data"))
@@ -311,7 +317,13 @@ def test_nexus_starfull_inference_reuses_current_and_replaces_stale_sr(
         filename = f"{band_name}.fits"
         fits.PrimaryHDU(np.ones((255, 255), dtype=np.float32)).writeto(root / filename)
         files[band_name] = f"tiles/{filename}"
-    fits.PrimaryHDU(np.ones((4, 255, 255), dtype=np.float32)).writeto(root / "lr.fits")
+    lr_header = WCS(naxis=2)
+    lr_header.wcs.crpix = [128.0, 128.0]
+    lr_header.wcs.crval = [268.4625, 65.19917]
+    lr_header.wcs.cdelt = [-0.1 / 3600.0, 0.1 / 3600.0]
+    lr_header.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+    fits.PrimaryHDU(np.ones((4, 255, 255), dtype=np.float32),
+                    header=lr_header.to_header()).writeto(root / "lr.fits")
     manifest = {
         "field_id": identifier, "filter": "F200W", "tiles": [{
             "index": 0, "source_index": 0, "euclid_file": files["VIS"],
@@ -320,72 +332,102 @@ def test_nexus_starfull_inference_reuses_current_and_replaces_stale_sr(
     }
     (root.parent / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
 
-    class FakeEnsemble:
-        member_labels = ["member"]
-
-        def __init__(self, *_args, **_kwargs):
-            pass
-
-        def member_arrays(self, cube):
-            return cube
-
-    class FakeCombiner:
-        def apply_field(self, members, *, lr=None):
-            applied.append((fingerprint["value"], member_fingerprint["value"]))
-            multiplier = 2 if fingerprint["value"] == "fp-one" else 3
-            return members * multiplier
-
-    fingerprint = {"value": "fp-one"}
-    member_fingerprint = {"value": "member-one"}
+    state = {"fingerprint": "fp-one", "member": "member-one"}
     applied: list[tuple[str, str]] = []
-    monkeypatch.setattr(ensemble_module, "EnsembleModel", FakeEnsemble)
-    monkeypatch.setattr(ensemble_module, "default_ensemble_dir", lambda: "unused")
-    monkeypatch.setattr(
-        jwst_euclid, "_starfull_member_fingerprints",
-        lambda *_args: [member_fingerprint["value"]],
-    )
-    monkeypatch.setattr(combiner_module, "ACTIVE_COMBINER_KINDS", ("fake",))
-    monkeypatch.setattr(
-        combiner_module, "COMBINER_MODELS",
-        {"fake": SimpleNamespace(artifact_dir="fake", label="Fake STARFULL")},
-    )
-    monkeypatch.setattr(combiner_module, "load_combiner", lambda *_args, **_kwargs: FakeCombiner())
-    monkeypatch.setattr(
-        combiner_module, "combiner_artifact_fingerprint",
-        lambda *_args, **_kwargs: fingerprint["value"],
-    )
 
-    result = jwst_euclid.run_starfull_nexus_field_inference(identifier)
+    class FakeRunner:
+        def predict(self, lr, label):
+            assert label == "member"
+            return np.kron(lr, np.ones((2, 2, 1))) / 4.0
+
+    def fake_predict(spec, lr, members):
+        applied.append((spec.combiner_fingerprint, spec.member_fingerprints[0]))
+        multiplier = 2 if spec.combiner_fingerprint == "fp-one" else 3
+        return members.get("member") * multiplier
+
+    monkeypatch.setattr(
+        jwst_euclid.model_catalog, "resolve_spec",
+        lambda spec, *_a: _fake_production(state["fingerprint"], state["member"]))
+    monkeypatch.setattr(jwst_euclid.model_catalog, "predict", fake_predict)
+    run = lambda: jwst_euclid.run_starfull_nexus_field_inference(  # noqa: E731
+        identifier, runner=FakeRunner())
+
+    result = run()
     source = result["tiles"][0]["inference"]["files"]["starfull"]
     assert (root.parent / source).is_file()
     assert result["tiles"][0]["inference"]["combiner_fingerprint"] == "fp-one"
     assert applied == [("fp-one", "member-one")]
+    # The SR WCS is the LR WCS magnified x2 (CRPIX -> 2*CRPIX - 0.5).
+    sr_wcs = WCS(fits.getheader(root.parent / source)).celestial
+    assert sr_wcs.wcs.crpix[0] == pytest.approx(2 * 128.0 - 0.5)
+    assert sr_wcs.pixel_scale_matrix[1, 1] == pytest.approx(0.05 / 3600.0)
 
     # The same exact artifact reuses the completed SR.
-    assert jwst_euclid.run_starfull_nexus_field_inference(identifier)["field_id"] == identifier
+    assert run()["field_id"] == identifier
     assert applied == [("fp-one", "member-one")]
 
     # Retraining a member under the same label invalidates the cached SR even
     # while the fitted combiner artifact itself is unchanged.
-    member_fingerprint["value"] = "member-two"
-    member_refreshed = jwst_euclid.run_starfull_nexus_field_inference(identifier)
+    state["member"] = "member-two"
+    member_refreshed = run()
     assert applied == [("fp-one", "member-one"), ("fp-one", "member-two")]
-    assert member_refreshed["tiles"][0]["inference"][
-        "member_fingerprints"
-    ] == ["member-two"]
+    assert member_refreshed["tiles"][0]["inference"]["member_fingerprints"] == ["member-two"]
 
-    # A refit under the same combiner kind changes the artifact hash. The old
-    # FITS stays in place until its replacement is complete, then the manifest
-    # and image move to the new identity together.
-    fingerprint["value"] = "fp-two"
-    refreshed = jwst_euclid.run_starfull_nexus_field_inference(identifier)
-    assert applied == [
-        ("fp-one", "member-one"), ("fp-one", "member-two"),
-        ("fp-two", "member-two"),
-    ]
+    # A refit changes the artifact hash. The old FITS stays in place until its
+    # replacement is complete, then the manifest and image move together.
+    state["fingerprint"] = "fp-two"
+    refreshed = run()
+    assert applied[-1] == ("fp-two", "member-two")
     assert refreshed["tiles"][0]["inference"]["combiner_fingerprint"] == "fp-two"
     with fits.open(root.parent / source) as hdul:
-        assert np.all(np.asarray(hdul[0].data) == 3)
+        assert np.all(np.asarray(hdul[0].data) == 3 / 4)
+
+
+def test_nexus_inference_runs_a_tile_subset_and_other_specs_to_the_store(
+        tmp_path, monkeypatch):
+    monkeypatch.setattr(Config, "DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setattr(Config, "EUCLID_INFERENCE_DIR", str(tmp_path / "inference"))
+    identifier = jwst_euclid.nexus_field_id("F200W")
+    root = jwst_euclid.nexus_field_root() / identifier / "tiles"
+    root.mkdir(parents=True)
+    tiles = []
+    for index in range(3):
+        files = {}
+        for band_name in Config.LR_INPUT_BAND_NAMES:
+            filename = f"{band_name}_{index}.fits"
+            fits.PrimaryHDU(np.ones((8, 8), dtype=np.float32)).writeto(root / filename)
+            files[band_name] = f"tiles/{filename}"
+        fits.PrimaryHDU(np.full((4, 8, 8), index + 1, dtype=np.float32)).writeto(
+            root / f"lr_{index}.fits")
+        tiles.append({"index": index, "source_index": index, "euclid_files": files,
+                      "lr_file": f"tiles/lr_{index}.fits"})
+    (root.parent / "manifest.json").write_text(
+        json.dumps({"field_id": identifier, "filter": "F200W", "tiles": tiles}),
+        encoding="utf-8")
+    spec = model_catalog.ModelSpec("member:member_7", "member", "Member 7·psnr",
+                                   ("7·psnr",), ("7·psnr",), True, fingerprint="m7",
+                                   member_fingerprints=("ck7",))
+    monkeypatch.setattr(jwst_euclid.model_catalog, "resolve_spec", lambda *_a: spec)
+    calls: list[float] = []
+
+    class FakeRunner:
+        def predict(self, lr, label):
+            calls.append(float(lr[0, 0, 0]))
+            return np.kron(lr, np.ones((2, 2, 1)))
+
+    jwst_euclid.run_starfull_nexus_field_inference(
+        identifier, tiles=["f200w-0001", 2], spec="member:member_7", runner=FakeRunner())
+    assert calls == [2.0, 3.0]                     # tiles 1 and 2 only
+    outputs = model_catalog.list_outputs("nexus", "f200w-0001")
+    assert outputs["member:member_7"]["fingerprint"] == "m7"
+    assert model_catalog.list_outputs("nexus", "f200w-0000") == {}
+    # current outputs are reused
+    jwst_euclid.run_starfull_nexus_field_inference(
+        identifier, tiles=[1, 2], spec="member:member_7", runner=FakeRunner())
+    assert calls == [2.0, 3.0]
+    with pytest.raises(ValueError, match="unknown NEXUS tile"):
+        jwst_euclid.run_starfull_nexus_field_inference(
+            identifier, tiles=["f200w-0099"], spec="member:member_7", runner=FakeRunner())
 
 
 def test_nexus_field_status_marks_changed_combiner_sr_stale(

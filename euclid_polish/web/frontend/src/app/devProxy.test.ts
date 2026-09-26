@@ -14,7 +14,7 @@ describe("dev proxy routing", () => {
 
   it("proxies every non-page path to Flask", () => {
     for (const u of [
-      "/api/jobs", "/ensemble/status.json?mode=starfull", "/viewer/meta/sky", "/static/cutout_viewer.js",
+      "/api/jobs", "/ensemble/status.json?mode=starfull", "/viewer/meta/sky", "/static/dist/index.html",
       "/auth/status", "/euclid-auth/login", "/inspect/preview.png?fits=a", "/cutout-image/1", "/pix/x.png",
       "/sky/unknown", "/app/sky",
     ]) expect(devRoute(u), u).toBe("flask");

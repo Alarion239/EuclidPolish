@@ -8,6 +8,7 @@ and that the static PNG server refuses path-traversal attempts.
 
 from __future__ import annotations
 
+import json
 import os
 import time
 import types
@@ -145,89 +146,48 @@ def test_cutouts_page_renders(client):
     _assert_react_shell(client.get("/data/cutouts"))
 
 
-def test_cutout_viewer_exports_capture_all_visible_frames():
+# The SPA viewer engine (viewer/cube.ts in the frontend) parses these headers; a
+# browser only lets it read the ones listed in Access-Control-Expose-Headers.
+_TS_ENGINE_HEADERS = (
+    "X-Cube-Shape", "X-Cube-Bands", "X-Cube-Label", "X-Cube-Asinh", "X-Cube-Pixscale",
+    "X-Cube-Index", "X-Cube-Amp", "X-Cube-Var", "X-Cube-Transfer-Group",
+    "X-Cube-Display-Scale", "X-Cube-WCS", "X-Cube-Unit",
+)
+
+
+def test_classic_viewer_engine_is_retired(client):
+    """The standalone static/cutout_viewer.js engine was ported into the SPA
+    bundle (src/viewer/, WP-V); nothing serves it any more."""
     static_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)),
                               "euclid_polish", "web", "static")
-    source = open(os.path.join(static_dir, "cutout_viewer.js")).read()
+    assert not os.path.exists(os.path.join(static_dir, "cutout_viewer.js"))
+    assert client.get("/static/cutout_viewer.js").status_code == 404
 
-    assert "function compositeVisibleFrames" in source
-    assert "state.frames.find((f) => f.canvas.width > 1)" not in source
-    assert "Record the current view (all selected tiers, side by side)" in source
-    assert 'VIEW_LAYOUT_STORAGE_KEY = "euclid-polish.cutout-viewer.layout"' in source
-    assert 'state.layout === "two-rows" ? Math.ceil(count / 2) : count' in source
-    assert "const columns = forcedColumns;" in source
-    assert 'r.headers.get("X-Cube-Transfer-Group") || "default"' in source
-    assert "function transferFor(rec)" in source
-    assert "function resetTransferSettings()" in source
-    assert "function copiedTransferSettings()" in source
-    assert "const transferGroups = transferGroupKeys();" in source
-    assert 'text: "⬇ Figure"' in source
-    assert "function publicationFigureCanvas()" in source
-    assert "function publicationCrop(fr)" in source
-    assert "let hoverSelection = null" in source
-    assert "let frozenSelection = null" in source
-    assert "const hoverLenses = new Map()" in source
-    assert "const frozenLenses = new Map()" in source
-    assert "function promoteHoverLensesToFrozen()" in source
-    assert "for (const [fr, lens] of hoverLenses)" in source
-    assert "frozenLenses.set(fr, lens)" in source
-    assert "lens.frozenRect = popupDocumentRect(lens.popup)" in source
-    assert "if (!frozenSelection) resolveLensOverlaps()" in source
-    assert "const selected = hoverSelection || selectionFromEvent(fr, event, null)" in source
-    assert "function resolveCrop(fr, selection)" in source
-    assert "function clampSelectionToReadyFrames(selection)" in source
-    assert "const selection = frozenSelection || hoverSelection" in source
-    assert "frozenSelection = Object.freeze" in source
-    assert "position.zoom =" not in source
-    assert "return frozenSelection ? resolveCrop(fr, frozenSelection) : null" in source
-    assert "publicationRegion" not in source
-    assert "rememberPublicationRegion" not in source
-    assert "A selected magnification region exports as matched crops" in source
-    assert "publicationTransferSummary" not in source
-    assert "PUBLICATION_GOLD" not in source
-    assert "panelHeader = 64" in source
-    assert "panelFooter = 184" in source
-    assert 'return "Euclid Image"' in source
-    assert 'return "Super-resolved Image"' in source
-    assert "function drawPublicationHeatbar" in source
-    assert 'asinh knee: ${Math.round(info.knee)} e⁻' in source
-    assert 'Pixel signal (e⁻)' in source
-    # The heat bar labels the tier's own unit (X-Cube-Unit / tier.unit), so a
-    # JWST panel reads MJy/sr, not e⁻ (spec §11).
-    assert 'unit: r.headers.get("X-Cube-Unit") || ""' in source
-    assert "function publicationUnitLabel(unit)" in source
-    assert "`Pixel signal (${info.unit})`" in source
-    assert "info.knee / info.scale" in source
-    # The disagreement movie is centred on the tier its PCs are components
-    # about — meta.morph_base_tier ("mean" for the ensemble, whose `sr` is
-    # the production gate) — never a hard-coded "sr" (C6).
-    assert 'function morphBaseTier()' in source
-    assert 'state.meta && state.meta.morph_base_tier' in source
-    assert 'fetchCube("sr", j, extra)' not in source
-    assert 'await fetchCube("sr", index, extra)' not in source
-    assert 'fetchCube(morphBaseTier(), j, extra)' in source
-    assert 'await fetchCube(morphBaseTier(), index, extra)' in source
-    assert 'input-equivalent signal' not in source
-    assert "const inset =" not in source
-    assert "const displayedSidePixels = crop ? crop.side : fr.canvas.width;" in source
-    assert "ctx.drawImage(fr.canvas, crop.x, crop.y, crop.side, crop.side," in source
-    assert "exportFigure()" in source
-    assert 'text: "Save crop to results"' in source
-    assert 'if (key === "s") {' in source
-    assert "activeKeyboardViewer === keyboardViewer && frozenSelection" in source
-    assert "A frozen viewer retains ownership of S" in source
-    assert "S save" in source
-    assert "activeKeyboardViewer !== keyboardViewer" in source
-    assert 'fetch("/viewer/results"' in source
-    assert 'method: "POST"' in source
-    assert "angular_side_arcsec: frozenSelection.angularSideArcsec" in source
-    assert "selection.relative_fallback_safe = true" in source
-    assert 'NATIVE_F200W_SAVE_REASON = "Choose native F200W first."' in source
-    assert 'collection === "jwst-euclid"' in source
-    assert 'String(state.params.jwst_band || "").toUpperCase() !== "F200W"' in source
-    assert '"BHR FWHM"' in source
-    assert 'refreshTier("bhr")' in source
-    assert 'state.meta.bhr_fwhm_control' in source
+
+def test_cube_exposes_every_header_the_ts_engine_reads(client, monkeypatch):
+    """A cube response carries (and exposes) the full X-Cube-* wire format:
+    shape/bands for the Float32 HWC body, WCS + unit for the readout, the
+    display scale + transfer group for the colour transfer, PCA amplitude and
+    variance for the disagreement movie and the resolved index."""
+    wcs = {"CTYPE1": "RA---TAN", "CTYPE2": "DEC--TAN", "CRVAL1": 150.0, "CRVAL2": 2.0,
+           "CRPIX1": 2.5, "CRPIX2": 1.5, "CD1_1": -8.3e-6, "CD1_2": 0.0, "CD2_1": 0.0,
+           "CD2_2": 8.3e-6}
+    cube = np.arange(2 * 4 * 1, dtype=np.float32).reshape(2, 4, 1)
+    info = {"label": "NEXUS native \u00b7 F200W", "pixscale": 0.03, "bands": ["F200W"],
+            "amp": 0.5, "var": 0.25, "transfer_group": "jwst", "display_scale": 17743.0,
+            "wcs": wcs, "unit": "MJy/sr"}
+    monkeypatch.setattr(vd, "get_cube", lambda collection, index, tier, params: (cube, info))
+    r = client.get("/viewer/cube/nexus-field/7?tier=jwst")
+    assert r.status_code == 200
+    exposed = {h.strip() for h in r.headers["Access-Control-Expose-Headers"].split(",")}
+    for header in _TS_ENGINE_HEADERS:
+        assert header in r.headers, header
+        assert header in exposed, header
+    assert r.headers["X-Cube-Shape"] == "2,4,1"
+    assert r.headers["X-Cube-Index"] == "7"
+    assert r.headers["X-Cube-Unit"] == "MJy/sr"
+    assert json.loads(r.headers["X-Cube-WCS"]) == wcs
+    assert np.frombuffer(r.data, dtype="<f4").tolist() == cube.ravel().tolist()
 
 
 def test_population_atlas_download_route(client, monkeypatch):

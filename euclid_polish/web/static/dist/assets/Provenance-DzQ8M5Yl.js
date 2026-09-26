@@ -1,0 +1,1 @@
+import{j as e}from"./react-CheNxWTo.js";import{k as a}from"./index-DrdkSTqA.js";import"./vendor-5esPRBDq.js";function o(){return e.jsx(a,{workspace:"ops",tab:"provenance",links:[["Tracking","/ops/tracking"]],children:"Search products, walk ancestors and descendants, and check staleness over data/_prov and the per-object sidecars."})}export{o as default};

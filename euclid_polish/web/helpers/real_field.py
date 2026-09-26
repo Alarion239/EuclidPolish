@@ -19,12 +19,12 @@ import numpy as np
 from astropy.io import fits
 
 from euclid_polish import ensemble_registry
-from euclid_polish.catalog.downloader import fetch_cutout_at
 from euclid_polish.config import Config
-from euclid_polish.ensemble import default_ensemble_dir, pca_field
+from euclid_polish.ensemble import EnsembleModel, default_ensemble_dir, pca_field
 from euclid_polish.eval.combiner import COMBINER_MODELS, load_combiner
 from euclid_polish.eval.power_spectrum import log_k_edges, pairwise_cross_correlation
 from euclid_polish.photometry import adu_per_s_to_electrons_factor, header_magzero
+from euclid_polish.web.helpers import jwst_euclid
 
 FIELD_SIZE = 2560
 TILE_SIZE = 256
@@ -62,18 +62,25 @@ def _read_manifest(identifier: str) -> dict[str, Any] | None:
         return None
 
 
-def latest_field() -> dict[str, Any] | None:
+def list_fields() -> list[dict[str, Any]]:
+    """Every cached real field's manifest (not only the latest), newest first."""
     root = fields_root()
-    candidates: list[tuple[float, dict[str, Any]]] = []
+    candidates: list[tuple[float, str, dict[str, Any]]] = []
     if not root.is_dir():
-        return None
+        return []
     for path in root.iterdir():
         if not path.is_dir():
             continue
         manifest = _read_manifest(path.name)
         if manifest is not None:
-            candidates.append((path.stat().st_mtime, manifest))
-    return max(candidates, default=(0.0, None), key=lambda x: x[0])[1]
+            candidates.append((path.stat().st_mtime, path.name, manifest))
+    candidates.sort(key=lambda item: (-item[0], item[1]))
+    return [manifest for _mtime, _name, manifest in candidates]
+
+
+def latest_field() -> dict[str, Any] | None:
+    fields = list_fields()
+    return fields[0] if fields else None
 
 
 def _write_json(path: Path, value: dict[str, Any]) -> None:
@@ -226,7 +233,9 @@ def _load_or_download_lr(ra: float, dec: float, root: Path,
         path = raw / f"{name}.fits"
         if not path.is_file() or path.stat().st_size == 0:
             tick(index, 4 + GRID_SIDE * GRID_SIDE, f"downloading {name} field")
-            ok, error = fetch_cutout_at(
+            # From the Q1 MER tile whose polygon CONTAINS the position (the
+            # nearest-centre archive lookup returned partial edge fields).
+            ok, error = jwst_euclid.fetch_q1_cutout(
                 ra=ra, dec=dec, band_name=name, output_file=str(path),
                 cutout_size_vis_pixels=FIELD_SIZE)
             if not ok:
@@ -355,7 +364,6 @@ def cache_real_field(ra: float, dec: float, *,
             if not path.is_file()]
         if missing_members:
             if ensemble is None:
-                from euclid_polish.ensemble import EnsembleModel
                 ensemble = EnsembleModel(default_ensemble_dir(), starless=False)
                 if list(ensemble.member_labels) != labels:
                     raise RuntimeError("STARFULL membership changed during real-field refresh")

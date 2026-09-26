@@ -24,7 +24,7 @@ describe("display store (C7)", () => {
     expect(s.colormap).toBe("gray");
     expect(s.residualColormap).toBe("rdbu");
     expect(s.invert).toBe(false);
-    expect(s.nanColor).toBe("#ff00ff");
+    expect(s.nanColor).toBe("#5b6475");
     expect(s.linked).toBe(true);
     expect(s.wheel).toBe("zoom-when-focused");
     expect(Object.keys(s.groups).sort()).toEqual(["default", "euclid", "jwst"]);
@@ -99,6 +99,15 @@ describe("display store (C7)", () => {
     expect(s.groups.default).toEqual(DEFAULT_TRANSFER);
     expect(s.rgb).toEqual(["H_E", "J_E", "VIS"]);
     expect(typeof s.set).toBe("function");
+  });
+
+  it("migrates the v1 magenta NaN default to the muted default but keeps a chosen colour", async () => {
+    localStorage.setItem(DISPLAY_STORAGE_KEY, JSON.stringify({ state: { nanColor: "#FF00FF" }, version: 1 }));
+    await useDisplay.persist.rehydrate();
+    expect(useDisplay.getState().nanColor).toBe(DEFAULT_DISPLAY.nanColor);
+    localStorage.setItem(DISPLAY_STORAGE_KEY, JSON.stringify({ state: { nanColor: "#00ff00" }, version: 1 }));
+    await useDisplay.persist.rehydrate();
+    expect(useDisplay.getState().nanColor).toBe("#00ff00");
   });
 
   it("the locked defaults are deeply frozen (a stray write cannot change reset())", () => {

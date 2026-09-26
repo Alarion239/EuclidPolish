@@ -41,7 +41,7 @@ side effects. (It lived at ``catalog/photometry.py`` until 2026-07-05, where
 importing it dragged in the astroquery-backed archive client via the package
 ``__init__`` — which is why stray inline copies of these formulas existed.)
 
-The client-side viewer (``static/cutout_viewer.js``) necessarily mirrors the
+The client-side viewer (``frontend/src/viewer/color.ts``) necessarily mirrors the
 display math in JS; it consumes the constants served by
 ``viewer_data.color_constants()`` (including the precomputed
 ``zeropoint_ab_e_total``) and must not hard-code any of them.

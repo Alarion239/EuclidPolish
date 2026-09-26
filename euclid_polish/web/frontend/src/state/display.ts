@@ -69,7 +69,7 @@ const DEFAULTS: DisplaySettings = {
   colormap: "gray",
   residualColormap: "rdbu",
   invert: false,
-  nanColor: "#ff00ff",
+  nanColor: "#5b6475",
   linked: true,
   wheel: "zoom-when-focused",
 };
@@ -80,6 +80,9 @@ const DEFAULTS: DisplaySettings = {
 export const DEFAULT_DISPLAY: Readonly<DisplaySettings> = Object.freeze(DEFAULTS);
 
 export const DISPLAY_STORAGE_KEY = "ep-display";
+
+/** The v1 NaN default (magenta), migrated away in persisted state v2. */
+export const LEGACY_NAN_DEFAULT = "#ff00ff";
 
 const oneOf = <T extends string>(v: unknown, options: readonly T[], fallback: T): T =>
   (typeof v === "string" && (options as readonly string[]).includes(v) ? v as T : fallback);
@@ -163,8 +166,17 @@ export const useDisplay = create<DisplayStore>()(
     }),
     {
       name: DISPLAY_STORAGE_KEY,
-      version: 1,
+      version: 2,
       storage: safeJSONStorage,
+      // v1 persisted the loud magenta NaN default; carry an untouched default
+      // forward to the muted v2 one, but keep any colour the user picked.
+      migrate: (persisted, version) => {
+        const p = (persisted && typeof persisted === "object" ? { ...persisted } : {}) as Record<string, unknown>;
+        if (version < 2 && typeof p.nanColor === "string" && p.nanColor.toLowerCase() === LEGACY_NAN_DEFAULT) {
+          p.nanColor = DEFAULTS.nanColor;
+        }
+        return p as unknown as DisplayStore;
+      },
       partialize: (s) => settingsOf(s),
       merge: (persisted, current) => (persisted == null
         ? current

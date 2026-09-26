@@ -48,7 +48,9 @@ Contracts C1–C5 referenced below are defined in
   path-dispatching handler (`errors.json_http_error`), later calls add
   prefixes (idempotent). Under a registered prefix every HTTP error — routing
   404/405 and an unhandled exception's 500 included — is `{"error"}` with its
-  status; other paths keep Flask's default. Registered today: `/viewer/`.
+  status; other paths keep Flask's default. Registered today: `/viewer/`,
+  `/api/real/`, `/api/models`, `/api/experiments` (`routes/real.py`) and
+  `/api/sky/` (`routes/sky_atlas.py`).
   `tests/test_web_errors.py` fails if any other HTTPException handler exists.
 - Other codes: `config_conflict` (409, `/api/config/save`), `refused_files`
   (409) / `no_selection` (400) (`/git/commit`), `confirm_required` (400,
@@ -124,7 +126,9 @@ Job dict:
   Long targets should tick (or call `cap.check_cancelled()`) regularly.
 - The registry keeps at most **200 finished jobs** (oldest evicted); running
   jobs are never evicted. Jobs do not survive a server restart.
-- Known kinds: `fasrc-env-update`, `tng-radii`.
+- Known kinds: `fasrc-env-update`, `tng-radii`, `real-tile` (cache a 25.6″
+  tile, optionally + models), `real-experiment`, `jwst-discover`, `jwst-pair`
+  (contract C9).
 
 ### Pages and redirects (contract C1)
 
@@ -191,7 +195,7 @@ schedule, `vis_pixels` …) are not task params.
 
 Collections (`helpers/viewer_data.py`): `sky`, `cutouts`, `evaluation`,
 `ensemble`, `archive-fields`, `real-field`, `jwst-euclid`, `nexus-field`,
-`psfs`.
+`psfs`, `real` (contract C9, see *Real tiles* below).
 
 - **Objects.** Every `meta.objects[i]` has a stable string `id` (`sky` /
   `ensemble`: `"<subset>:<record index>"`; `cutouts`: star id; `evaluation`:
@@ -239,7 +243,7 @@ Collections (`helpers/viewer_data.py`): `sky`, `cutouts`, `evaluation`,
   `meta.morph_base_tier = "mean"` names the disagreement movie's centre (the
   tier the `pcaN` components are about; a client animates
   `morph_base_tier + Σ amp·pcaK`, falling back to `sr` when the key is
-  absent — the classic `static/cutout_viewer.js` engine does exactly this);
+  absent — the SPA viewer engine, `frontend/src/viewer/`, does exactly this);
   `meta.production_combiner` and `meta.regime` are informative.
 - **Evaluation movie centre.** `evaluation` has no `mean` tier and no
   `morph_base_tier`, so its movie centres on `SR`. For results written since
@@ -248,6 +252,170 @@ Collections (`helpers/viewer_data.py`): `sky`, `cutouts`, `evaluation`,
   about the member **mean** — a small, known approximation until the eval
   writer also persists the member mean (then expose it as `mean` and set
   `morph_base_tier`).
+
+### Real tiles, model catalogue, experiments (contract C9)
+
+`routes/real.py` over `helpers/{real_tiles,model_catalog,experiments,real_metrics}.py`.
+Everything is local (the tile download talks to the public Euclid archive from
+a local job): **nothing is FASRC-gated**.
+
+- **Real tile** = four-band Euclid LR (`(H, W, 4)` electrons, bands
+  `VIS,Y_E,J_E,H_E`) on a celestial grid, addressed `source/id` (ids never
+  contain `/` or `,`). Sources: `nexus` (445 NEXUS × Euclid 255² tiles, JWST
+  F200W; id `f200w-NNNN` = source index), `tile` (user-cached 25.6″ tiles,
+  `data/euclid_inference/real_tiles/<id>/`: `lr_e.npy` (256, 256, 4) float32,
+  `lr.fits` (4, 256, 256) with the VIS WCS, `raw/<band>.fits`,
+  `manifest.json`; id `ra…_dec…`), `field` (every legacy 100-tile real field;
+  id `<field id>-NNN`), `archive` (220 archive samples, ADU/s → e⁻ via
+  MAGZERO; id `NNN`), `eval` (real evaluation objects; id = `out_subdir`),
+  `poster` (`poster/*_results.fits`; WCS **constructed** north-up TAN from
+  `RA/DEC/PIXSCALE`), `pair` (saved JWST × Euclid pairs; four-band once the
+  pair's LR input exists, VIS-only before). Field labels are
+  position-derived (`q1_field_for`).
+- **Tile entry** (list rows and the card's base):
+  `{source, id, ref:"source/id", label, ra, dec, field, shape:[H,W], pixscale,
+  bands, model_ready, tiers:["lr", "jwst"?], has_jwst, polygon:[[ra,dec]×4],
+  extras{…source specific: legacy_sr, grade, field_id, position_name…}}`. `extras.legacy_sr` is the SR the pre-C9 production
+  pipeline wrote for the tile (a *legacy record*, below; `null` when none):
+  NEXUS whole-field inference `tiles/starfull_combiner_NNNN.fits`, pair
+  inference `starfull_inference/starfull_combiner.fits`, the poster's `SR_*`
+  HDUs, the evaluation `SR.fits` (no recorded model: listed, never a tier).
+  Every legacy SR that names a C9 spec (NEXUS / pair `inference` + pair
+  `model_inference`, poster) is one of the tile's model outputs (the `models`
+  rows below); the entry keeps them internally (`extras.legacy_outputs`, not
+  serialised).
+- **Model specs** (`GET /api/models`): `production` (the production spatial
+  gate `spatial_gate_combiner/` fitted for the CURRENT STARFULL members —
+  unavailable otherwise, no silent fallback), `mean` (all active STARFULL
+  members), `member:member_<N>` (each active member; aliases `member:170`,
+  `member:170·psnr`), `gate:<variant>` (every `spatial_gate_<variant>/` beside
+  the production artifact, applied with **its own** member labels via
+  `eval.spatial_gate.load_spatial_gate`; unavailable, with `reason`, unless all
+  its members are active STARFULL members), `rbf` (the RBF combiner, own
+  labels). Members always run through `EnsembleModel` by label. A spec's
+  `fingerprint` hashes the member checkpoint fingerprints it reads plus (for
+  combiners) the artifact's `combiner.json`+`combiner.npz`.
+- **Output store**: one SR per (tile, spec) at
+  `data/euclid_inference/experiments/outputs/<source>/<id>/<slug>.fits`
+  (`(4, 2H, 2W)` electrons, WCS = LR WCS ×2: `CD/2`, `CRPIX → 2·CRPIX − 0.5`)
+  + `<slug>.json` `{spec, label, fingerprint, member_labels,
+  member_fingerprints, combiner_kind, combiner_fingerprint, lr_sha, shape,
+  created, experiment_id, metrics}`; `slug` = spec with `:` → `-`. An output
+  is `current` while its fingerprint equals the spec's now, `stale` when not,
+  `unavailable` when the spec cannot run now. Member SRs are cached per tile
+  under `experiments/cache/<source>/<id>/member_<N>.npy` keyed by checkpoint
+  fingerprint + LR hash — **bounded**: ≤ 4 GiB over all tiles
+  (`experiments.MEMBER_CACHE_BUDGET_BYTES`), least-recently-used entries
+  evicted, and no cache write while the data disk keeps less than
+  `MIN_FREE_BYTES` (5 GiB) + the budget free (the SR is then used from memory
+  for that tile only).
+- **Model outputs of a tile** = the output store merged with the tile's
+  **legacy records** (read in place, never copied; the store wins for a spec
+  unless only the legacy SR is current): `{spec, slug, kind, label,
+  fingerprint, member_labels, member_fingerprints, member_count,
+  combiner_kind, combiner_fingerprint, identity{combiner_kind,
+  combiner_fingerprint, member_fingerprints}|null, shape, file, path,
+  created, origin: "nexus-field"|"pair"|"poster", legacy: true,
+  experiment_id: null, lr_sha: null}`. Its spec is the recorded `spec`
+  (records since C9) else the `combiner_kind` (`spatial_gate` → `production`,
+  `raw_incremental_minmeanmax_rbf` → `rbf`, poster `mean_explicit_members` →
+  `mean`); its fingerprint is the recorded `spec_fingerprint`, else rebuilt
+  from the recorded identity with the catalogue formula
+  (`model_catalog.spec_fingerprint`), so its state is decided exactly like a
+  store output's (the poster records no identity: never `current`). A legacy
+  SR is always served on the LR WCS ×2 (`CRPIX → 2·CRPIX − 0.5`), never its
+  file's own header (older NEXUS SR files carry `2·CRPIX − 1`). The 445 cached
+  NEXUS SRs (RBF era) therefore appear as `m:rbf` (current while the RBF
+  artifact + members are unchanged) and the tiles' `production_state` is
+  `stale` until the production gate runs on them.
+- **Production state** of a tile (`production_state`): `current` (its
+  `production` output — store or legacy — carries the production fingerprint
+  now), `stale` (that output is older, or only a legacy SR of the production
+  pipeline exists, e.g. the RBF-era NEXUS SRs), `missing`.
+- **Metrics** (`real_metrics.tile_metrics`, per band; version 1):
+  `hole_pct` = % of the SR pixels under the brightest 1 % of LR pixels with
+  `SR < 0.5 × LR/4` (`hole_pct_100sigma`, `n_bright_100sigma_px`: the same over
+  the bright-1 % pixels that are also > 100 σ — on faint tiles the top 1 % is
+  noise); enclosed-flux R around bright (> 100 σ, σ = 1.4826·MAD,
+  background = median), locally dominant (brightest within ±1.5″) LR peaks
+  that pass the central-pixel-fraction cut `F(1px)/F(3×3) ≤ 0.25` (VIS) /
+  `≤ 0.14` (NISP): per peak `R = min over odd boxes 3–17 LR px (0.3–1.7″) of
+  F_SR/F_LR` (background-subtracted); `n_peaks, n_artifacts, n_edge,
+  pct_R_lt_0p8, pct_R_lt_0p5, median_R, min_R`; `flux_ratio = ΣSR/ΣLR`,
+  `lr_flux_e, sr_flux_e, background_e, sigma_e, n_bright_px`; undefined →
+  `null`. `peaks[band] = [[x, y, peak_e, cpf, R], …]` (LR px, ≤ 200). Gate
+  specs add `gate_core_weights[band] = [[member label, mean weight], …]` (top
+  3 over the brightest-1 % SR pixels). `summary` pools bands; experiment
+  `summary[spec]` pools tiles (`real_metrics.aggregate`: holes weighted by
+  bright pixels, R over the union of peaks).
+- **Experiment record** (`GET /api/experiments/<id>`, id
+  `YYYYMMDD-HHMMSS-xxxxxx`): `{version, id, label, created, finished,
+  duration_s, status: running|done|failed|cancelled, job_id, tiles:["src/id"],
+  models, skipped:{spec: reason}, fingerprints:{spec}, model_labels,
+  definitions, results:{"src/id":{spec:{state: computed|reused, fingerprint,
+  file, metrics:{per_band, summary, gate_core_weights?}}}}, summary:{spec:
+  aggregate}, errors:{"src/id|spec": msg}, counts:{members_computed,
+  members_reused, members_not_cached, members_evicted, outputs_computed,
+  outputs_reused}}` — written progressively. One experiment computes at a
+  time; a second waits (cancellable). A current output is `reused` without a
+  model run: a store output with current metrics as is; a store output
+  without metrics, or a current legacy SR, is scored (a legacy SR is then
+  copied into the store with its metrics, `from_legacy` = its path). The
+  member runner restores only the registry prefix holding the members of the
+  specs that will actually run — a spec already current on every tile adds
+  none — (`EnsembleModel(n_members=…)`; there is no arbitrary-subset option,
+  and a request past the prefix reloads uncapped once).
+- **Viewer collection `real`**: `GET /viewer/meta/real?source=<source>&models=<spec,…>`
+  (default models: every spec with an output in that source). Tiers `lr`
+  (e⁻, LR WCS), `jwst` (native, MJy/sr, its own WCS; `?jwst_band=` picks a
+  pair filter) when any tile has JWST, and `m:<spec>` (e⁻, SR WCS; label gets
+  ` · legacy` for a legacy SR and ` · stale` when not current; cube meta adds
+  `model_state`, `legacy`; 404 "has not been run" when missing). Objects:
+  `{id, label, ra, dec, field, ref, tiers, model_states:{spec: state},
+  legacy_models:[spec…], model_ready}`; default models = every spec with an
+  output (store or legacy) in the source; `?id=` works as for every
+  collection.
+
+| Methods | Path | Gate | Notes |
+|---|---|---|---|
+| GET, POST | `/api/experiments` |  | GET: `{experiments:[{id, label, created, finished, status, job_id, tiles, models, skipped, summary, errors, counts}]}` newest first. POST: start an experiment (local job `real-experiment`): `tiles` = comma list of `source/id`, `models` = comma list of specs, `label?`. `{ok, job_id, experiment_id, tiles, models (runnable), skipped:{spec: reason}}`. 400 bad/unknown spec (`unknown model spec 'gate:x'`) or no runnable model; 404 unknown tile; 409 tile without four-band LR; **507** `{ok:false, code:"insufficient_storage", needed_bytes, free_bytes}` when the new outputs (`(4, 2H, 2W)` float32 per (tile, spec) not yet in the store) would leave < 5 GiB free. Job result: `{experiment_id, status, tiles, models, errors, counts}`. |
+| GET | `/api/experiments/<experiment_id>` |  | The experiment record (above); 404 unknown. |
+| GET | `/api/models` |  | `{regime:"starfull", production_kind, members:[labels], models:[{spec, kind, label, slug, members, member_names, reads, n_members, available, reason, fingerprint, member_fingerprints, combiner_kind, combiner_fingerprint, details{mix_space, use_lr, width, active_members, fitted_at, artifact_dir, loss, loss_knees_e, steps, …}}]}` — order: production, mean, rbf, members, gate variants. |
+| GET | `/api/real/<source>` |  | `{source, label, description, count, tiles:[tile entry + models:{spec:{state, legacy, label, fingerprint, created, experiment_id, file, origin, summary}} + production_state]}` (models = the tile's merged outputs). 404 unknown source. |
+| GET | `/api/real/<source>/<identifier>` |  | Card: tile entry + `models:{spec:{state, legacy, label, kind, fingerprint, created, experiment_id, file, member_labels, combiner_kind, lr_sha, shape, origin, metrics{per_band, summary, gate_core_weights?}, image_url}}` (store + legacy outputs), `production_state`, `legacy` (= `extras.legacy_sr`: the pre-C9 production-pipeline SR record or `null`), `runnable_models`, `experiments:[ids]`, `disk{tile_bytes, output_bytes, cache_bytes (member-SR cache), legacy_bytes (NEXUS / pair legacy SR files), total_bytes}`, `q1_tile` (the containing Q1 tile), `image_urls{tier: url}` (one per `m:<spec>` with an output), `viewer{collection:"real", params{source}, id}`. |
+| POST | `/api/real/<source>/<identifier>/delete-outputs` |  | Delete the tile's cached model outputs and member-SR cache (never the LR itself): `{ok, ref, removed:[paths], removed_count, cache_bytes_freed}`. |
+| GET | `/api/real/<source>/<identifier>/image.fits` |  | 2-D float32 FITS of one plane with its celestial WCS (CD form) for sky overlays: `tier` = `lr` (default) \| `jwst` \| `m:<spec>` (store output or legacy SR; SR WCS = LR WCS ×2), `band` = `VIS` (default) \| `Y_E` \| `J_E` \| `H_E` (JWST: its filter, default the first). Header `BUNIT` (`electron` / `MJy/sr`), `TIER`, `BAND`, `REALTILE` (+ `LEGACYSR` for a legacy SR). 400 bad tier/band; 404 missing tier. |
+| GET | `/api/real/sources` |  | `{sources:[{id, label, description, count, model_ready, has_jwst, ready, reason}]}` for `nexus, tile, field, archive, eval, poster, pair`. |
+| POST | `/api/real/tiles` |  | Cache a 25.6″ four-band tile at `ra`, `dec` (local job `real-tile`; Euclid archive, not FASRC): Q1 coverage is checked first against the committed MER polygons (400 `{ok:false, code:"outside_q1"}`; 400 `{ok:false, code:"unobserved_q1", tile}` when every containing tile is `rejected` — measured unobserved by the noise campaign — unless `force=1`); each band is cut from the Q1 tile whose polygon CONTAINS the point (observed tiles first, deepest inside), VIS cropped to the exact 256² grid, NISP registered onto its WCS, electrons via MAGZERO. Optional `run=production,mean` then runs an experiment on it. `{ok, job_id, id, ref:"tile/<id>", experiment_id|null}`; job result `{tile, ref, experiment?}`. |
+
+### Sky atlas (contract C9, `routes/sky_atlas.py`)
+
+`helpers/sky_atlas.py`; every layer is built from local files (memoised on
+their mtimes, ≤ 30 s) and works offline. Layer groups: `coverage`
+(`q1-tiles` 352 MER polygons with `levels_e`/`rejected`/`state`, `q1-fields`
+cones, `nexus-footprint` hull of the NEXUS tile cells), `results`
+(`nexus-tiles`, `real-tiles`, `real-fields`, `poster`, `pairs`,
+`archive-fields` — polygons with `state` = production state; `eval-objects`,
+`experiments` — points), `catalogues` (`lens-candidates`, `galaxies`,
+`stars` (the FASRC-mirror `stars.csv`, 43k rows `[ra, dec, mag, flags]`,
+`flags` bit `2^b` = valid cutout in band `b` ∈ VIS,Y_E,J_E,H_E), `psf-clusters`,
+`noise-positions`, `population-cones`, `gaia-fields`, `jwst-mast`).
+
+Feature shapes (`GET /api/sky/layer/<id>`, always with `id, label, group, kind, count`):
+`points` → `{columns:[…], rows:[[ra, dec, …]], inspect:{kind, prefix, id_column}}`
+(row inspector entity `{kind}:{prefix}{row[id_column] or row index}`);
+`polygons` → `{features:[{id, polygon:[[ra,dec],…], props, inspect:{kind, id}}]}`;
+`circles` → `{features:[{id, ra, dec, radius_deg, props, inspect}]}`. Real
+tiles inspect as `realtile:<source>/<id>`, others as `source:<layer>/<id>`.
+
+| Methods | Path | Gate | Notes |
+|---|---|---|---|
+| GET | `/api/sky/at` |  | What covers `ra`, `dec`: `{ra, dec, field, in_q1, q1_observed (a containing tile is not rejected), q1_verdict: "observed"\|"unobserved"\|"outside", q1_tiles:[tile (incl. rejected) + margin_arcsec] (observed tiles first, each deepest first), best_tile, real_tiles:[{source, id, ref, label, has_jwst, state, inspect}], nexus, pairs, jwst:[discovered footprints containing the point], jwst_discovered}`. 400 bad/missing coordinates. |
+| POST | `/api/sky/jwst/discover` |  | JWST × Euclid discovery (local job `jwst-discover`; MAST, not FASRC): wraps `scripts/find_jwst_euclid_overlap.py` (the same MAST cone query and cache in `data/jwst_euclid_overlap/mast/` — `jwst_euclid._mast_rows_for_scope`, astroquery imported at module top — plus the script's direct-imaging + public filters and CSV rows) with the exact test MAST `s_region` ∩ committed Q1 polygon done locally. Scope: `fields` (comma list: `EDF-N,EDF-S,EDF-F,LDN1641`) and/or `region=ra,dec,radius_deg` (≤ 10°); both empty = all Q1; `refresh=1` ignores the MAST cache. Results MERGE into `overlap.csv`/`overlap.json` (pairing input) and `jwst_footprints.json`. `{ok, job_id, tile_count, fields, region}`; job result = the discovery manifest + `footprint_count`. |
+| GET | `/api/sky/jwst/footprints` |  | Cached MAST footprints near `ra`, `dec` within `r` deg (default 0.5, ≤ 5): `{ra, dec, r, ready, updated_utc, fields, count, truncated, footprints:[{obs_id, instrument, filters, target, proposal_id, exptime_s, ra, dec, polygons:[[[ra,dec],…]], status, euclid_tiles, fields}]}` (nearest first, ≤ 2000). |
+| POST | `/api/sky/jwst/pair` |  | Download + align one JWST × Euclid pair, then build its four-band LR input (local job `jwst-pair`): `obs_id` (a discovered MAST observation → its location group) or `ra`, `dec` (inside one of the NEXUS × Euclid tile cells — their polygons, not the hull → a NEXUS cutout, `filter` F200W\|F444W; else the nearest discovered location within max(size/2, 15″)); `size_arcsec` (1–120, default 30); optional `run=<specs>`. 404 `code:"not_discovered"` when nothing covers it. `{ok, job_id, pair_id, ref:"pair/<id>", mode:"nexus"\|"archive"}`. The Euclid VIS box comes from the committed Q1 tiles containing the point (observed first, deepest inside first; the archive INTERSECTS search only outside every committed polygon) and must be ≥ 99.5 % observed, else the job fails (no partial pair is published); the pair manifest records `euclid_vis_tile_index` and `euclid_selection{method: q1_polygon\|archive_intersects, tile, coverage, tried}`. The pair becomes real source `pair`. |
+| GET | `/api/sky/layer/<layer_id>` |  | One layer's features (shapes above); 404 unknown layer. |
+| GET | `/api/sky/layers` |  | `{groups, layers:[{id, label, group, kind, count, bbox{ra_min, ra_max, dec_min, dec_max}\|null, style{color?, color_by?, colors?, shape?, size?, opacity?}, ready, reason, fill_action{method, url, label, requires_fasrc?}\|null, description, url}]}`. |
 
 ### Removed with the classic console (WP-B1b)
 
@@ -503,16 +671,16 @@ syntax. Flask's own `/static/<path:filename>` is omitted.
 
 | Methods | Path | Gate | Notes |
 |---|---|---|---|
-| POST | `/api/jwst-euclid/download` |  | Download + align one JWST × Euclid pair (local job; MAST/Euclid archive, not FASRC). |
+| POST | `/api/jwst-euclid/download` |  | Download + align one JWST × Euclid pair (local job; MAST/Euclid archive, not FASRC). The Euclid VIS side is the archive tile covering the JWST position. |
 | POST | `/api/jwst-euclid/download-all` |  | Download every remaining pair (local job). |
 | GET | `/api/jwst-euclid/field.json` |  | Manifest of one saved paired field (`?id=`). |
 | GET | `/api/jwst-euclid/field/<identifier>/download/<kind>` |  | Download one paired-field FITS asset. |
 | GET | `/api/jwst-euclid/fields` |  | Cached JWST × Euclid location groups + status. |
-| POST | `/api/jwst-euclid/infer` |  | Run the STARFULL combiner on a saved pair (local job). |
-| POST | `/api/jwst-euclid/nexus/download` |  | Download one NEXUS tile at (`ra`, `dec`) (local job). |
-| POST | `/api/jwst-euclid/nexus/download-field` |  | Cache a NEXUS mosaic + four-band Euclid coverage (local job). |
+| POST | `/api/jwst-euclid/infer` |  | Run the production model on a saved pair (local job): builds / reuses the pair's four-band LR input (`starfull_inference/euclid_lr_vis_y_j_h.fits`, bands cut from the containing Q1 tile), writes `starfull_inference/starfull_combiner.fits` (SR WCS = LR ×2). |
+| POST | `/api/jwst-euclid/nexus/download` |  | Download one NEXUS tile at (`ra`, `dec`) (local job); Euclid VIS from the Q1 tile whose polygon contains the point. |
+| POST | `/api/jwst-euclid/nexus/download-field` |  | Cache a NEXUS mosaic + four-band Euclid coverage (local job). Every band is cut from the Q1 MER tile whose polygon contains the tile centre (committed `q1_mer_tiles.json`; never the nearest tile centre); the manifest records each tile's `polygon` (VIS grid corners), `euclid_tile_index` and the mosaic grid `footprint`. |
 | GET | `/api/jwst-euclid/nexus/fields` |  | Cached NEXUS fields. |
-| POST | `/api/jwst-euclid/nexus/infer` |  | Run the STARFULL combiner on NEXUS tiles (local job). |
+| POST | `/api/jwst-euclid/nexus/infer` |  | Run the production model (C9 spec `production`: the spatial gate fitted for the current STARFULL members; no RBF fallback) on the stale NEXUS tiles (local job). SR WCS = LR WCS ×2 (`CRPIX → 2·CRPIX − 0.5`). The helper `run_starfull_nexus_field_inference(…, tiles=, spec=)` also takes a tile subset and any model spec (non-production specs write the C9 output store; production SRs stay in `tiles/` and are served by C9 as legacy outputs — `m:production` on `/api/real/nexus/*` and the `real` viewer); run subsets/specs through `POST /api/experiments`. This route does not yet accept `tiles`/`spec` form fields (not WP-B2's file). |
 | POST | `/api/jwst-euclid/scan-coverage` |  | Scan Euclid VIS coverage of the cached JWST rows (local job). |
 
 ### Viewer (`routes/viewer.py`)

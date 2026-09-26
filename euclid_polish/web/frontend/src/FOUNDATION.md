@@ -56,9 +56,10 @@ Rules that apply everywhere:
 | `theme/` | `tokens.css` (the token contract), `base.css` (element styles, `.muted`, `.eyebrow`, `.sr-only`), `index.css` (entry point) |
 | `ui/` | UI kit v2 on Radix (§9): controls, overlays, `confirm`, `toast`, display primitives, `DataTable`, `LogView`, `JsonTree`, `JobProgress`, `Icon`, download/clipboard helpers, `UiProvider` |
 | `charts/` | `Plot` v2, `Legend`, `useLegend` (§9.4); the pure maths is in `plotModel.ts` |
-| `viewer/` | Viewer engine v2 *(WP-V)* |
+| `viewer/` | Viewer engine v2 (§12): `<ImageViewer>`, `ViewerApi`, the colour core, WCS, cube transport; `viewer/README.md` |
 | `workspaces/<id>/` | One folder per workspace: `index.tsx` + lazy `tabs/<Tab>.tsx` (§11) |
 | `pages/` | The pre-rework pages, rendered by the workspace tabs as legacy adapters until phase 3 |
+| `legacy.tsx` | Compat `CutoutViewer` / `loadColorEngine` for the pre-rework pages, on top of `viewer/` |
 
 These compatibility modules keep the pre-rework pages compiling. New code should not import
 from them:
@@ -261,7 +262,7 @@ transferFor(effective, "jwst");                                    // {knee, gai
   - `colormap`: `gray`
   - `residualColormap`: `rdbu`
   - `invert`: `false`
-  - `nanColor`: `#ff00ff`
+  - `nanColor`: `#5b6475` (muted slate; persisted v1 state carrying the old magenta default is migrated)
   - `linked`: `true`
   - `wheel`: `zoom-when-focused`
 - It persists to `"ep-display"`. The option lists are exported as `COLOR_MODES`, `STRETCHES`,
@@ -990,8 +991,10 @@ const off = bindShortcut("Shift+E", run, { description: "Evaluate" });   // impe
   space between the presses of a sequence (`g s`).
 - A shortcut does not fire while typing in an input, textarea, select or contenteditable, nor
   with focus inside a modal dialog, unless `allowInInputs`. It also skips an event another handler
-  already `preventDefault()`ed: the legacy image viewer consumes its keys (q–y, arrows, space, S)
-  on `document`, which runs before these window listeners.
+  already `preventDefault()`ed: the image viewer (§12) consumes its keys (q–y, arrows, space, S,
+  + − 0, L, B, Esc) on `document` for the hovered/focused viewer, which runs before these window
+  listeners. Shift+letter acts as the letter there (old engine), except for the shell's
+  Shift+D/J/T and any combo registered here (the viewer checks `useShortcutRegistry`).
 - The handler is read from a ref (no rebinding on re-render). It `preventDefault()`s unless it
   returns `false` (return `false` when it did nothing, so the key keeps its default).
 - `target` (an element or a ref) scopes it to that element, e.g. the focused viewer. `enabled:
@@ -1253,3 +1256,38 @@ owner splits the page):
 3. Delete the absorbed `src/pages/<X>.tsx` (and its CSS / `ui/pages-compat.css` block) when no
    other tab imports it, and remove its row from the `ADAPTERS` list in `workspaces.test.ts`.
 4. A missing shared primitive goes to the orchestrator; do not fork one.
+
+## 12. Viewer engine v2: `viewer/` (WP-V)
+
+The one image viewer of the console (spec §6). Full reference: `src/viewer/README.md` (props, API,
+URL keys, display binding, interactions, how each feature works, adding a collection tier).
+
+```tsx
+import { ImageViewer, type ViewerApi } from "../../viewer";
+<ImageViewer collection="nexus-field" params={{ field }} tiers={["lr", "sr", "jwst"]} urlKey="nexus"
+  toolbar="full" onReady={(api) => (ref.current = api)} onState={(s) => setIndex(s.index)} />
+api.goToId("nexus-…/0200"); api.zoomTo(268.24, 65.19, 5); api.getReadout(); api.setView({ color: "lupton" });
+```
+
+- **Display binding (C7).** Effective settings are `mergeDisplay(useDisplay, override)`. A linked
+  viewer's toolbar, keyboard and histogram edits write the Display panel store; fields a viewer
+  overrides (`setView`, the `display` prop, `?v.<k>.c`) stay per-viewer; the viewer's link toggle
+  copies the current settings into its own override. The default is the locked absolute asinh
+  transfer, bit-identical to the pre-rework engine (golden-tested); stretches, colormaps, black
+  point and invert are opt-in; NaN pixels take `nanColor`.
+- **Colour keys and linking** (behaviour change from the old engine, whose colour was per
+  viewer): while linked, a viewer's Q–Y keys and colour chips set the Display panel colour, so
+  every linked viewer follows; unlink for per-viewer colour. The JWST "temperature" chip is a
+  per-viewer override.
+- **Geometry**: pan/zoom, the lens and exported crops are matched across tiers through each
+  tier's `X-Cube-WCS` (normalised position only without one); pointer coordinates are measured
+  from the frame's padding box (inside its 1 px border).
+- **URL state** (`urlKey`): `v.<k>.id` (or `.i`), `.t` tiers, `.r` residual tiers, `.z` view,
+  `.c` colour override; the default (mount-time) state is not written. All viewers flush their
+  URL writes in one tick.
+- **Wheel** follows `display.wheel` (default: zoom only when the viewer is focused or ⌘/Ctrl is held;
+  a plain wheel scrolls the page).
+- **Other surfaces** that need the viewer's colour (e.g. stamps) use `renderCubeImageData` from
+  `viewer/color.ts`; pre-rework pages use `CutoutViewer` / `loadColorEngine` from `legacy.tsx`.
+- **Backend contract**: `/viewer/meta` + `/viewer/cube` with the `X-Cube-*` headers of C6
+  (`euclid_polish/web/API.md`); errors are shown verbatim.

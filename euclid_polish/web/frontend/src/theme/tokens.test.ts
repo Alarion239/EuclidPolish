@@ -169,8 +169,8 @@ describe("theme tokens", () => {
 describe("token usage", () => {
   const css = import.meta.glob("../**/*.css", { query: "?raw", import: "default", eager: true }) as Record<string, string>;
   const tsx = import.meta.glob("../**/*.{ts,tsx}", { query: "?raw", import: "default", eager: true }) as Record<string, string>;
-  // Set at runtime by the imperative viewer engine (static/cutout_viewer.js,
-  // outside src/) via style.setProperty.
+  // Set at runtime by the viewer's TierGrid (src/viewer/TierGrid.tsx) via
+  // style.setProperty, so no stylesheet defines them.
   const EXTERNALLY_SET = ["--cv-columns", "--cv-frame-size"];
 
   it("has no undefined custom properties", () => {

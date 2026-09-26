@@ -56,6 +56,8 @@ def _params() -> dict:
     out = {}
     for key in (
         "subset", "mode", "members", "field", "jwst_band",
+        # ``real`` collection (C9): real-tile source + model-spec tiers.
+        "source", "models",
         viewer_data.BHR_FWHM_PARAM,
         # PSF-page live preview: the client changes only the replay seed every
         # few seconds.  These remain harmless for every other collection.

@@ -11,7 +11,7 @@ import { devRoute } from "./src/app/devProxy";
 // Dev (`npm run dev`, http://localhost:5173): page paths from the route
 // manifest (../spa_routes.json, contract C1) and Vite's own module URLs are
 // served by Vite; EVERY other path (/api, /viewer, /ensemble/*.json,
-// /static/cutout_viewer.js, /auth, …) is proxied to Flask at
+// /static/dist/…, /auth, …) is proxied to Flask at
 // FLASK_ORIGIN || http://localhost:9777. The Host header is kept
 // (changeOrigin: false) so Flask's same-origin mutation guard sees
 // Origin == Host and dev POSTs are accepted.

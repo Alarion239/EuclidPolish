@@ -1,0 +1,1 @@
+import{j as r}from"./react-CheNxWTo.js";import{F as i}from"./FigureGridBuilder-DqGJtgKw.js";import{P as e,b as s}from"./index-DrdkSTqA.js";import"./vendor-5esPRBDq.js";function u(){return r.jsxs(e,{children:[r.jsx(s,{eyebrow:"figures · grid",title:"Figure grid",sub:"Assemble saved viewer crops into a publication grid."}),r.jsx(i,{})]})}export{u as default};

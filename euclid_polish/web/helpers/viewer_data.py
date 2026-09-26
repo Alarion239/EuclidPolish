@@ -31,6 +31,8 @@ collection          tiers                             source
 ``jwst-euclid``     lr, sr, jwst, jwst_blur           saved JWST × Euclid pairs
 ``nexus-field``     lr, sr, jwst, jwst_blur           NEXUS tiled field
 ``psfs``            VIS / Y_E / J_E / H_E             cached FASRC ePSF clusters
+``real``            lr, jwst, m:<spec>                any real tile (``source``;
+                                                      ``models`` = spec list)
 ==================  ================================  ============================
 
 Band order is always ``Config.LR_INPUT_BAND_NAMES = (VIS, Y_E, J_E, H_E)``.
@@ -73,7 +75,14 @@ from euclid_polish.training.target_blur import (
     validate_target_fwhm_arcsec,
 )
 from euclid_polish.web import job_config
-from euclid_polish.web.helpers import archive_fields, jwst_euclid, real_field, sky_records
+from euclid_polish.web.helpers import (
+    archive_fields,
+    jwst_euclid,
+    model_catalog,
+    real_field,
+    real_tiles,
+    sky_records,
+)
 from euclid_polish.web.helpers.paths import _sky_records_local_dir
 from euclid_polish.web.helpers.status import (
     _cached_fasrc_psf_dir,
@@ -2074,6 +2083,157 @@ def _nexus_field_cube(index: int, tier: str, params: dict[str, str]):
 
 
 # ---------------------------------------------------------------------------
+# real — any real tile of the real-tile store (contract C9)
+# ---------------------------------------------------------------------------
+#
+# ``?source=`` picks the real-tile source (nexus, tile, field, archive, eval,
+# poster, pair); ``?models=`` (comma list of model specs) the ``m:<spec>``
+# tiers — default: every spec with at least one output in the source. A tile's
+# outputs are the C9 store merged with its legacy SRs (NEXUS whole-field /
+# pair inference, poster), see ``real_tiles.tile_outputs``. Object ids are the
+# real-tile ids, so ``?id=`` works as for every collection.
+
+_SPEC_ORDER = ("production", "mean", "rbf")
+
+
+def _real_source(params: dict[str, str]) -> str:
+    source = (params.get("source") or "").strip()
+    try:
+        return real_tiles.check_source(source)
+    except real_tiles.RealTileError as exc:
+        raise ViewerError(404, str(exc)) from exc
+
+
+def _real_default_specs(outputs: list[dict[str, Any]]) -> list[str]:
+    seen = {spec for tile in outputs for spec in tile}
+
+    def order(spec: str) -> tuple[int, str]:
+        return (_SPEC_ORDER.index(spec) if spec in _SPEC_ORDER else
+                len(_SPEC_ORDER) + (0 if spec.startswith("member:") else 1), spec)
+
+    return sorted(seen, key=order)
+
+
+def _real_specs(params: dict[str, str], outputs: list[dict[str, Any]]) -> list[str]:
+    raw = params.get("models")
+    if not raw:
+        return _real_default_specs(outputs)
+    try:
+        return model_catalog.parse_specs(raw)
+    except ValueError as exc:
+        raise ViewerError(400, str(exc)) from exc
+
+
+def _real_meta(params: dict[str, str]) -> dict[str, Any]:
+    source = _real_source(params)
+    entries = real_tiles.list_entries(source)
+    catalog = {item.spec: item for item in model_catalog.list_specs()}
+    current = {spec: item.fingerprint for spec, item in catalog.items()}
+    tile_outputs = [real_tiles.tile_outputs(entry, current) for entry in entries]
+    specs = _real_specs(params, tile_outputs)
+    has_jwst = any(entry.has_jwst for entry in entries)
+    tiers: list[dict[str, Any]] = [{"key": "lr", "label": "LR · Euclid", "unit": "e-"}]
+    if has_jwst:
+        tiers.append({"key": "jwst", "label": "JWST · native", "unit": "MJy/sr"})
+    for spec in specs:
+        item = catalog.get(spec)
+        tiers.append({"key": f"m:{spec}", "label": item.label if item else spec,
+                      "unit": "e-", "spec": spec,
+                      "available": bool(item and item.available)})
+    objects = []
+    for entry, outputs in zip(entries, tile_outputs, strict=True):
+        states = {spec: model_catalog.output_state(outputs[spec], current)
+                  for spec in specs if spec in outputs}
+        objects.append({
+            "id": entry.id, "label": entry.label,
+            **({"ra": entry.ra, "dec": entry.dec}
+               if entry.ra is not None and entry.dec is not None else {}),
+            "field": entry.field, "ref": entry.ref,
+            "tiers": (["lr"] + (["jwst"] if entry.has_jwst else [])
+                      + [f"m:{spec}" for spec in states]),
+            "model_states": states,
+            "legacy_models": [spec for spec in states if outputs[spec].get("legacy")],
+            "model_ready": entry.model_ready,
+        })
+    return {
+        "count": len(objects), "tiers": tiers, "default_tier": "lr",
+        "band_names": list(BAND_NAMES), "source": source, "models": specs,
+        "transfer_groups": ["euclid", "jwst"] if has_jwst else ["euclid"],
+        "missing_tier_labels": {f"m:{spec}": "Run this model (Sky → Experiments)"
+                                for spec in specs},
+        "objects": objects,
+    }
+
+
+def _real_entry(index: int, params: dict[str, str]) -> real_tiles.TileEntry:
+    entries = real_tiles.list_entries(_real_source(params))
+    if not 0 <= index < len(entries):
+        raise ViewerError(404, "real tile index out of range")
+    return entries[index]
+
+
+def _pixscale_of(header: Any, default: float) -> float:
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            matrix = WCS(header).celestial.pixel_scale_matrix
+        return float(math.sqrt(abs(np.linalg.det(matrix))) * 3600.0)
+    except Exception:  # noqa: BLE001 - heterogeneous headers
+        return default
+
+
+def _real_cube(index: int, tier: str, params: dict[str, str]):
+    entry = _real_entry(index, params)
+    if tier == "lr":
+        try:
+            tile = real_tiles.get_tile(entry.source, entry.id, entry=entry)
+        except real_tiles.RealTileError as exc:
+            raise ViewerError(exc.code, str(exc)) from exc
+        return tile.lr_e, {
+            "label": f"LR · {entry.label}", "asinh": float(Config.STRETCH_SCALE_E),
+            "pixscale": float(entry.pixscale), "bands": list(entry.bands),
+            "transfer_group": "euclid", "unit": "e-",
+            "wcs": celestial_wcs_keywords(tile.wcs_header),
+        }
+    if tier == "jwst":
+        planes = real_tiles.jwst_planes(entry)
+        if not planes:
+            raise ViewerError(404, f"{entry.ref} has no JWST image")
+        wanted = (params.get("jwst_band") or "").strip().upper()
+        plane = next((p for p in planes if p["band"].upper() == wanted), planes[0])
+        cube = np.asarray(plane["data"], np.float32)[..., None]
+        return cube, {
+            "label": f"JWST {plane['band']} · native", "asinh": 100.0,
+            "pixscale": _pixscale_of(plane["header"], 0.0), "bands": [plane["band"]],
+            "display_scale": _robust_display_scale(cube), "transfer_group": "jwst",
+            "unit": unit_from_header(plane["header"], default=plane["unit"]),
+            "wcs": celestial_wcs_keywords(plane["header"]),
+            "jwst_bands": [p["band"] for p in planes],
+        }
+    if tier.startswith("m:"):
+        current = model_catalog.current_fingerprints()
+        try:
+            spec = model_catalog.canonical_spec(tier[2:])
+            cube, header, meta = real_tiles.load_output(entry, spec, current=current.get(spec))
+        except ValueError as exc:
+            raise ViewerError(400, str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise ViewerError(404, f"{spec} has not been run on {entry.ref} yet") from exc
+        state = model_catalog.output_state(meta, current)
+        return cube, {
+            "label": (f"{meta.get('label') or spec}"
+                      + (" · legacy" if meta.get("legacy") else "")
+                      + ("" if state == "current" else f" · {state}")),
+            "asinh": float(Config.STRETCH_SCALE_E),
+            "pixscale": float(entry.pixscale) / model_catalog.SR_FACTOR,
+            "bands": list(BAND_NAMES[:cube.shape[-1]]), "transfer_group": "euclid",
+            "unit": "e-", "wcs": celestial_wcs_keywords(header),
+            "model_state": state, "legacy": bool(meta.get("legacy")),
+        }
+    raise ViewerError(400, f"bad real-tile tier {tier!r} (lr, jwst, m:<spec>)")
+
+
+# ---------------------------------------------------------------------------
 # registry
 # ---------------------------------------------------------------------------
 
@@ -2090,6 +2250,7 @@ _REGISTRY: dict[str, tuple[_Meta, _Cube]] = {
     "jwst-euclid": (_jwst_euclid_meta, _jwst_euclid_cube),
     "nexus-field": (_nexus_field_meta, _nexus_field_cube),
     "psfs": (_psf_meta, _psf_cube),
+    "real": (_real_meta, _real_cube),
 }
 
 
