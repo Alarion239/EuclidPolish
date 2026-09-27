@@ -5,9 +5,11 @@
    C8 names: Button, IconButton, Tooltip, Popover, Dialog, confirm, Menu,
    ContextMenu, Tabs, Segmented, Switch, Checkbox, Slider, RangeSlider,
    NumberField, Input, Select, Field, Card, CardHead, CardBody, Section, Badge,
-   Chip, Stat, Kpi, DefList, Callout, EmptyState, Skeleton, ProgressBar,
-   LogView, JsonTree, CopyButton, Kbd, DataTable, toast; plus Toolbar
+   Chip, DefList, Callout, EmptyState, Skeleton, ProgressBar, LogView,
+   JsonTree, CopyButton, Kbd, DataTable, toast; plus Toolbar
    (+ ToolbarGroup / ToolbarText / ToolbarSpacer / ToolbarSeparator).
+   Statistics: SummaryLine (+ Num), FactsList, Caption, Details (ui/facts);
+   the Stat / Kpi tiles are gone (spec 2026-09-27).
    Compat names kept for the pre-rework pages: Page, PageHead, Empty, Spinner,
    Table/Column, LogTail, Gallery, PngFigure, ConnBadge, Textarea,
    JobProgressView. */
@@ -39,10 +41,11 @@ export { Card, CardBody, CardHead, Page, PageHead, Section } from "./layout";
 export { Toolbar, ToolbarGroup, ToolbarSeparator, ToolbarSpacer, ToolbarText } from "./toolbar";
 
 export {
-  Badge, Callout, Chip, ConnBadge, CopyButton, DefList, Empty, EmptyState, Kbd, Kpi, ProgressBar,
-  Skeleton, Spinner, Stat, comboKeys,
+  Badge, Callout, Chip, ConnBadge, CopyButton, DefList, Empty, EmptyState, Kbd, ProgressBar,
+  Skeleton, Spinner, comboKeys,
 } from "./display";
 export type { Tone } from "./display";
+export { Caption, Details, FactsList, Num, SummaryLine, type Fact } from "./facts";
 
 export { LogTail, LogView, findMatches } from "./LogView";
 export type { LogMatch } from "./LogView";

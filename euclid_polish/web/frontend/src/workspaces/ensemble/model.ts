@@ -6,7 +6,7 @@
    the one-experiment real-data benchmark, the shared e⁻ number format).
    No React, no DOM. */
 import { formatDate } from "../../format";
-import type { ExperimentSummary, KneeInfo, KneeModel } from "./api";
+import type { ExperimentSummary, Headline, KneeInfo, KneeModel, KneePayload } from "./api";
 
 /* ── member names ──────────────────────────────────────────────────────── */
 
@@ -208,6 +208,74 @@ export function kneeModelName(m: { id: string; kind: string; label: string }): s
   if (m.kind === "member") return `#${memberNumber(m.label) ?? m.label}`;
   if (m.kind === "mean") return "plain mean";
   return m.id === "spatial_gate" ? "production gate" : m.label;
+}
+
+/* ── the Overview comparison ──────────────────────────────────────────── */
+
+export type ComparisonRow = { id: "gate" | "mean" | "best"; label: string; integrated: number | null; bands: (number | null)[] };
+export type Comparison = { rows: ComparisonRow[]; source: "knee" | "headline"; bestNumber: string | null };
+
+const finiteOr = (v: number | null | undefined): number | null => (v != null && Number.isFinite(v) ? v : null);
+const bandMeanOf = (vs: readonly (number | null | undefined)[] | null | undefined) => {
+  const f = (vs ?? []).filter((v): v is number => v != null && Number.isFinite(v));
+  return f.length ? f.reduce((a, b) => a + b, 0) / f.length : null;
+};
+const N_BANDS = 4;
+
+/** The Overview's gate / plain mean / best member rows on ONE metric — the
+ *  knee-integrated PSNR over the full grid (`integrated`, one value per band;
+ *  ∫PSNR = their mean) — so "best member" is the best by that same number.
+ *  From knee-psnr.json when it is readable; else from the overview headline
+ *  (band means, plus the gate's per-band values). RBF rows are never read. */
+export function overviewComparison(knee: KneePayload | null | undefined, head: Headline["knee"] | null | undefined): Comparison {
+  const models = knee?.available ? knee.models ?? [] : [];
+  if (models.length) {
+    const nb = knee?.bands?.length || N_BANDS;
+    const bands = (m: KneeModel | undefined) => Array.from({ length: nb }, (_, i) => finiteOr(m?.integrated?.[i]));
+    const gate = models.find((m) => m.kind === "combiner" && m.id === "spatial_gate");
+    const mean = models.find((m) => m.kind === "mean");
+    let best: KneeModel | undefined;
+    let bestValue: number | null = null;
+    for (const m of models) {
+      if (m.kind !== "member") continue;
+      const v = bandMeanOf(m.integrated);
+      if (v != null && (bestValue == null || v > bestValue)) { best = m; bestValue = v; }
+    }
+    const bestNumber = best ? memberNumber(best.label) ?? best.label : null;
+    const rows: ComparisonRow[] = [];
+    if (gate) rows.push({ id: "gate", label: "Production gate", integrated: bandMeanOf(gate.integrated), bands: bands(gate) });
+    if (mean) rows.push({ id: "mean", label: "Plain mean", integrated: bandMeanOf(mean.integrated), bands: bands(mean) });
+    if (best) rows.push({ id: "best", label: `Best member (#${bestNumber})`, integrated: bestValue, bands: bands(best) });
+    return { rows, source: "knee", bestNumber };
+  }
+  const empty = () => Array.from({ length: N_BANDS }, () => null);
+  const rows: ComparisonRow[] = [];
+  if (!head?.available) return { rows, source: "headline", bestNumber: null };
+  const bestNumber = head.best_member_label ? memberNumber(head.best_member_label) ?? head.best_member_label : null;
+  if (finiteOr(head.production) != null) {
+    const pb = head.production_bands ?? [];
+    rows.push({ id: "gate", label: "Production gate", integrated: finiteOr(head.production),
+      bands: Array.from({ length: N_BANDS }, (_, i) => finiteOr(pb[i])) });
+  }
+  if (finiteOr(head.mean) != null) rows.push({ id: "mean", label: "Plain mean", integrated: finiteOr(head.mean), bands: empty() });
+  if (finiteOr(head.best_member) != null) {
+    rows.push({ id: "best", label: bestNumber ? `Best member (#${bestNumber})` : "Best member", integrated: finiteOr(head.best_member), bands: empty() });
+  }
+  return { rows, source: "headline", bestNumber };
+}
+
+/** How far the cross-member σ under-states a field's error: the median over
+ *  the test fields of RMSE / mean σ (fields with no σ or no RMSE skipped). */
+export function fieldErrorRatio(std: readonly (number | null)[], rmse: readonly (number | null)[]): { ratio: number | null; n: number } {
+  const r: number[] = [];
+  std.forEach((s, i) => {
+    const e = rmse[i];
+    if (s != null && e != null && Number.isFinite(s) && Number.isFinite(e) && s > 0 && e > 0) r.push(e / s);
+  });
+  if (!r.length) return { ratio: null, n: 0 };
+  r.sort((a, b) => a - b);
+  const mid = r.length >> 1;
+  return { ratio: r.length % 2 ? r[mid] : 0.5 * (r[mid - 1] + r[mid]), n: r.length };
 }
 
 /** A knee in e⁻ as the axes read it: 0.1, 100, 1k, 10k. */

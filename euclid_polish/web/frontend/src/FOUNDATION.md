@@ -398,6 +398,7 @@ Every formatter returns `"—"` for null, NaN or ±∞. The output is locale-ind
 |---|---|
 | `formatNumber` | `formatNumber(3.14159, {digits: 2})` → `"3.14"`, `formatNumber(2.5e-5)` → `"2.5e-5"`, `{signed, unit}` |
 | `formatCount` | `43401` → `"43,401"` |
+| `formatApprox` | `403069.7` → `"≈403k"`, `16.6e6` → `"≈16.6M"` (expected or modelled counts, ≈3 significant figures) |
 | `formatPercent` | `0.1234` → `"12.3%"` |
 | `formatSI` | `(2.5e6, {unit: "e⁻"})` → `"2.5 Me⁻"` |
 | `formatBytes` | `1536` → `"1.5 KiB"` (binary units) |
@@ -490,8 +491,10 @@ sets at runtime, `--radix-*`, are exempt).
 - no raw colour (hex, `rgb()`, `hsl()`): every colour is a token;
 - no `text-transform` (labels are sentence case as authored — ALL-CAPS turned "σ" into "Σ") and
   no letter-spaced eyebrow (`--ls-eyebrow` stays defined only for old workspace CSS);
-- table headers, field / KPI / stat labels, segmented choices, badges, tabs, chips and menu
-  labels use `--font-sans`; numeric table cells stay tabular mono (they are data). Names that older CSS
+- table headers, field labels, segmented choices, badges, tabs, chips and menu labels use
+  `--font-sans`; the statistics styles (`ui/facts.css`: summary line, facts titles, labels and
+  values) use the body face with tabular numerals, and a fact's value never wraps apart from its
+  unit; numeric table cells stay tabular mono (they are data). Names that older CSS
 used without defining (`--line`, `--muted`, `--mono`, `--panel`, `--bg`, `--surface`, …) are
 aliases now. The `.muted` class is defined in `base.css`.
 
@@ -510,8 +513,10 @@ charts from `"../charts/Plot"`. Never import a part module (`ui/controls`, …) 
 
 The C8 names are all exported: `Button, IconButton, Tooltip, Popover, Dialog, confirm, Menu,
 ContextMenu, Tabs, Segmented, Switch, Checkbox, Slider, RangeSlider, NumberField, Input, Select,
-Field, Card, CardHead, CardBody, Section, Badge, Chip, Stat, Kpi, DefList, Callout, EmptyState,
-Skeleton, ProgressBar, LogView, JsonTree, CopyButton, Kbd, DataTable, toast`. So are the v1
+Field, Card, CardHead, CardBody, Section, Badge, Chip, DefList, Callout, EmptyState,
+Skeleton, ProgressBar, LogView, JsonTree, CopyButton, Kbd, DataTable, toast`, plus the statistics
+components `SummaryLine` (+ `Num`), `FactsList` (+ type `Fact`), `Caption` and `Details` (§9.2
+*Statistics*). The `Stat`, `StatStrip` and `Kpi` tiles are gone. So are the v1
 names the old pages use: `Page, PageHead, Empty, Spinner, Table`/`Column`, `LogTail, Gallery,
 PngFigure, ConnBadge, Textarea` and `JobProgressView` (= `JobProgress`). The v1 `ToolbarLabel`
 and `ToolbarSep` are gone; the v2 `Toolbar` (+ `ToolbarGroup`, `ToolbarText`, `ToolbarSpacer`,
@@ -527,10 +532,11 @@ Conventions for every component:
   trigger.
 - Focus shows the shared `--ring`. Colours come from tokens only.
 - `tone` is one of `neutral | good | warn | bad | info | accent`.
-- Labels (field, KPI and stat labels, table headers, segmented choices, badges, tabs, chips, menu
+- Labels (field and fact labels, table headers, segmented choices, badges, tabs, chips, menu
   labels, eyebrows) are drawn in the UI face (`--font-sans`) exactly as authored: no
-  `text-transform`, no letter-spacing. Write them in sentence case ("Holes >100σ", "HR"). Data
-  values (KPI and stat values, numeric cells, readouts, chart ticks) stay tabular mono.
+  `text-transform`, no letter-spacing. Write them in sentence case ("Holes >100σ", "HR").
+  Statistics in prose and facts lists use the body face with tabular numerals; data values in
+  numeric table cells, readouts and chart ticks stay tabular mono.
 - Headings: the page's one h1 is the workspace's visually hidden heading (`<Workspace>`, §11);
   a `CardHead` title is an h2, a `Section` title an h3 (a collapsible one wraps its toggle in the
   h3), a `PageHead` title an h2. Each keeps its own look.
@@ -685,8 +691,6 @@ toast.warning("Stale"); toast.info("FYI"); toast.promise(p, { loading: "…", su
 <Card><CardHead eyebrow="Ensemble" title="Members" sub="26 active" right={<Button>…</Button>} /><CardBody>…</CardBody></Card>   // title: h2
 <Section title="Calibration" sub="z-pdf" collapsible defaultOpen={false}>…</Section>
 <Badge tone="good" dot>current</Badge>   <Chip on={shown} dot={color} onClick={toggle}>mean</Chip>
-<Stat k="members" v="26" hint="active STARFULL" />   <Kpi label="Production PSNR" value="44.12" unit="dB" delta="+0.21" deltaTone="good" onClick={open} />
-<Kpi label="Members" value="26" to="/ensemble/starfull/members" />   <Kpi label="Report" value="PDF" href="/api/report.pdf" />
 <DefList items={[["loss", "l1"], cond && ["knee", "100"]]} />            // falsy rows are skipped
 <Callout tone="warn" title="Stale" action={<Button size="sm">Refresh</Button>}>…</Callout>
 <EmptyState icon="table" title="No experiments yet" action={<Button>Run one</Button>}>Pick tiles…</EmptyState>
@@ -701,16 +705,6 @@ toast.warning("Stale"); toast.info("FYI"); toast.promise(p, { loading: "…", su
   `eyebrow` (the prop is accepted and ignored): the breadcrumbs and the active tab already say
   where you are.
 - `Segmented` shows each option's label as written (no lowercasing: an "HR" choice reads "HR").
-- `Kpi` is an action tile when `to`, `href` or `onClick` is set:
-  - `to` is an SPA route, rendered as a router `<Link>`. There is no page reload, so the jobs
-    store, the query cache and the inspector survive (C8).
-  - `href` is for external or download URLs only, as a plain `<a>`. An app path there reloads
-    the whole document.
-  - `onClick` alone renders a `<button>`; with `to` or `href` it also runs on click.
-
-  In an action tile the `hint` icon is hover-only (nothing focusable nests inside the link or
-  button), and the hint text becomes the tile's accessible description. A static tile's hint
-  is a focusable "About this figure" button.
 - `Callout` with tone `bad` or `warn` has `role="alert"`; the other tones are a polite status.
   `dense` makes it a compact one-line strip (~32 px with `size="sm"` buttons), the shell's
   notice strip (§10.2).
@@ -727,6 +721,66 @@ toast.warning("Stale"); toast.info("FYI"); toast.promise(p, { loading: "…", su
   Follow keeps the view at the end while you are at the end. Scrolling up pauses it, and "Jump
   to end" resumes it.
 - `LogTail` (compat) is the same follow logic with no toolbar.
+
+**Statistics: readable, informative, nothing useless** (spec 2026-09-27, `ui/facts.tsx`)
+
+The user's rule: *"Make it in a format that is readable and informative. Do not show useless
+numbers, but show all the necessary information in an accessible and nice way."* There are no
+stat tiles: no `Stat`, `StatStrip` or `Kpi`, and no page-local tile grid (`src/ui/noCards.test.ts`
+fails on any tile element or `ui-stat` / `ui-kpi` / `rl-stats` / `ens-kpis` / `ops-kpis` class outside tests).
+A page presents its numbers like this:
+
+1. **Summary line.** Where a page has an answer, one body-size `SummaryLine` above the primary
+   figure states it as a comparison with units and a reference (synthetic vs prior or Q1, gate vs
+   best member, SR vs LR). Key numbers are wrapped in `Num` (bold, tabular); the delta is
+   `tone="warn"` when outside tolerance. At most one per page.
+2. **Facts list.** The necessary supporting numbers stay VISIBLE in a `FactsList`: label left,
+   value + unit right, one row each, grouped under a plain `title` ("Sample", "Fit",
+   "Coverage"). The Q1 area, the matched-star count and the fit window live here, never in a
+   collapsed block.
+3. **Comparison table.** When two or more things are compared (models, samples, bands), use a
+   small `Table` / `DataTable`: the reference row first, numbers right-aligned (`numeric`), the
+   unit in the column header, not in every cell.
+4. **Counts on the controls that use them.** Sample sizes go in legend labels, chip counts and
+   segmented options, each count once per screen.
+5. **Captions.** Normalisation area, release, retrieval date, model version: one muted
+   `Caption` under the figure it qualifies.
+6. **Details.** Only provenance-level numbers (fingerprints, hashes, bin counts, tree counts,
+   query configuration, bytes) are collapsed in `Details`. A necessary number never hides there.
+7. **Status.** A badge appears only on a problem; the OK state is one quiet line or nothing.
+   Progress counters appear only inside a running job (`JobProgress`).
+8. **Rounding.** Counts are integers (`formatCount`); expected or modelled counts ≈3 significant
+   figures (`formatApprox`: "≈403k", never "403,069.7"); slopes and scatters 2 significant
+   figures in prose; dB 2 decimals; one unit per quantity everywhere (the Q1 deep-field area is
+   63.1 deg² on every page).
+9. **Numbers about an image** stay in the viewer readout.
+10. **Delete** a number only when it is useless: false precision, a duplicate of a number beside
+    it, a hard-coded constant, an implementation detail, or a physically meaningless quantity.
+
+```tsx
+<SummaryLine>
+  Generated <Num>5.03</Num> vs prior <Num>5.08</Num> arcmin⁻² (<Num tone="warn">−1%</Num>)
+</SummaryLine>
+<FactsList title="Sample" facts={[
+  { label: "Q1 area", value: "63.1", unit: "deg²" },
+  { label: "Matched stars", value: formatCount(n), hint: "Gaia × Euclid in the fixed fields" },
+  fit && { label: "Fit window", value: "17–23.5", unit: "VIS mag", tone: fit.ok ? undefined : "warn" },
+]} />                                                                   // falsy rows are skipped
+<Caption>NOISE_MODEL v5 · Q1_R1 · retrieved 2026-09-19</Caption>
+<Details summary="Query configuration">…fingerprint, bins, bytes…</Details>
+```
+
+- `SummaryLine({children, className})` is a `<p>` at body size (max 80ch). `Num({children,
+  tone})` is a `<strong>` with tabular numerals that never wraps; `tone` other than `neutral`
+  sets `data-tone` and colours it.
+- `FactsList({title, facts, className})` renders a `<section>` with an optional h3 `title` and a
+  `<dl>`; each `Fact` (`{label, value, unit?, hint?, tone?}`) is one `role="group"` row. The
+  value and unit never wrap apart (on a row too narrow for both the value drops to its own
+  right-aligned line). A `hint` makes the label a focusable tooltip trigger (dotted underline);
+  a `tone` colours the value. Falsy entries are skipped, and a list with no rows renders nothing.
+  Rows flow into as many ~16rem columns as fit.
+- `Caption({children, className})` is one muted `<p>` at `--fs-xs`.
+- `Details({summary, children, className})` is a closed native `<details>`: provenance only.
 
 **Toolbar** (a tab's control bar: the one look of the old per-workspace `.ens-bar`, `.rl-bar`,
 `.ops-bar`, `.dt-bar`: a calm rounded strip at the top of the page that scrolls away with it and

@@ -85,7 +85,7 @@ def test_layer_catalogue_lists_every_spec_layer(world):
     for key in ("q1-tiles", "q1-fields", "nexus-footprint", "nexus-tiles", "real-tiles",
                 "real-fields", "poster", "pairs", "archive-fields", "eval-objects",
                 "experiments", "lens-candidates", "galaxies", "stars", "psf-clusters",
-                "noise-positions", "population-cones", "gaia-fields", "jwst-mast"):
+                "noise-positions", "population-cones", "jwst-mast"):
         assert key in layers, key
         layer = layers[key]
         assert {"id", "label", "group", "kind", "count", "bbox", "style", "ready",
@@ -224,6 +224,10 @@ def test_convex_hull():
 
 def test_sky_routes(client, mast):
     assert client.get("/api/sky/layers").get_json()["layers"]
+    # The 'Gaia fields' layer existed only for the deleted Realism › Stars gaia view.
+    ids = {layer["id"] for layer in client.get("/api/sky/layers").get_json()["layers"]}
+    assert "gaia-fields" not in ids
+    assert client.get("/api/sky/layer/gaia-fields").status_code == 404
     layer = client.get("/api/sky/layer/nexus-tiles").get_json()
     assert layer["kind"] == "polygons" and layer["count"] == 2
     missing = client.get("/api/sky/layer/nope")

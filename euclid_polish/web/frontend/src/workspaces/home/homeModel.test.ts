@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  bandMean, kneeHeadline, memberName, productionFromStatus, productionHeadline, productionModel, starfullMembers,
+  bandMean, kneeHeadline, memberName, memberRange, productionFromStatus, productionHeadline, productionModel, runningItems, starfullMembers,
   trackingCatchUpNote, unloggedItems, type KneePayload,
 } from "./homeModel";
 
@@ -178,5 +178,48 @@ describe("tracking catch-up note (Home › Quick actions › Log to tracking)", 
     expect(md).toContain("**Production model** — 30 STARFULL members");
     expect(md).toContain("- ∫PSNR production gate 60.97 dB");
     expect(md).toContain("- Test PSNR production gate 59.24 dB");
+  });
+});
+
+describe("running now (Home, the jobs feed)", () => {
+  const local = (id: string, patch: Record<string, unknown> = {}) => ({
+    job_id: id, label: `job ${id}`, status: "running", duration: 0, error: null, log: null, log_truncated: false,
+    cancellable: false, cancel_requested: false, result: null, progress: { current: 0, total: 0, pct: 0, label: "" }, ...patch,
+  });
+
+  it("names a training array by its members, compressed to ranges", () => {
+    expect(memberRange(["member_199", "member_200", "member_201", "member_202"])).toBe("members 199–202");
+    expect(memberRange(["member_195", "member_196", "member_199", "member_200", "member_201"])).toBe("members 195, 196, 199–201");
+    expect(memberRange(["member_07"])).toBe("member 07");
+    expect(memberRange([])).toBeNull();
+  });
+
+  it("lists the live SLURM jobs first, with their members and progress, then the local ones", () => {
+    const items = runningItems(
+      [local("a", { progress: { current: 4, total: 10, pct: 40, label: "" } }), local("b", { status: "done" })],
+      [
+        { jobid: "1", state: "RUNNING", label: "Train ensemble members", progress_step: 10500, progress_total: 70000,
+          params_json: JSON.stringify({ mode: "add", member_names: "member_199,member_200,member_201,member_202" }) },
+        { jobid: "2", state: "PENDING", label: "Generate synthetic records" },
+        { jobid: "3", state: "COMPLETED", label: "done already" },
+      ],
+    );
+    expect(items.map((i) => i.text)).toEqual([
+      "members 199–202 on FASRC · 15%", "Generate synthetic records on FASRC · queued", "job a on this laptop · 40%",
+    ]);
+  });
+
+  it("reads a continue submission's members and falls back to the label", () => {
+    const items = runningItems([local("c")], [
+      { jobid: "4", state: "RUNNING", label: "Continue members", params_json: JSON.stringify({ mode: "continue", members: "member_178, member_179" }) },
+      { jobid: "5", state: "RUNNING", label: null, step_id: "ensemble_evaluate", params_json: "{not json" },
+    ]);
+    expect(items.map((i) => i.text)).toEqual([
+      "members 178, 179 on FASRC", "ensemble_evaluate on FASRC", "job c on this laptop",
+    ]);
+  });
+
+  it("is empty when nothing runs", () => {
+    expect(runningItems([local("d", { status: "failed" })], [])).toEqual([]);
   });
 });

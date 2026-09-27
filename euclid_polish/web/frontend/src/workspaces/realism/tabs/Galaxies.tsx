@@ -118,9 +118,9 @@ function StatusBadges({ api }: { api: GalaxyPayload }) {
   const cal = api.calibration;
   return (
     <>
-      <Badge size="sm" tone={cal.is_active ? "good" : cal.candidate?.valid ? "warn" : "bad"} dot>
-        {cal.is_active ? "model active" : cal.candidate?.valid ? "candidate not active" : "not fitted"}
-      </Badge>
+      {cal.is_active ? <span className="rl-quiet">model active</span> : (  // a badge only on a problem
+        <Badge size="sm" tone={cal.candidate?.valid ? "warn" : "bad"} dot>{cal.candidate?.valid ? "candidate not active" : "not fitted"}</Badge>
+      )}
       {api.stale && <Badge size="sm" tone="warn">plots need rebuild</Badge>}
     </>
   );

@@ -180,25 +180,91 @@ const legendLabels = (root: ParentNode = document) =>
   [...root.querySelectorAll(".plot-legend__label")].map((n) => n.textContent);
 
 describe("overview", () => {
-  it("headlines the production gate's knee-integrated and test PSNR with their deltas", async () => {
+  const tableRows = () => [...document.querySelectorAll("table[aria-label='Production vs references'] tbody tr")]
+    .map((tr) => [...tr.querySelectorAll("td")].map((td) => td.textContent));
+
+  it("states the production gate against the best member and the plain mean, with no tiles", async () => {
     const { default: Overview } = await import("./tabs/Overview");
     show(<Overview />);
-    expect(await screen.findByText("60.97")).toBeTruthy();
-    const knee = screen.getByText("∫PSNR · production gate").closest(".ui-kpi") as HTMLElement;
-    expect(within(knee).getByText("+1.02 dB vs member 196")).toBeTruthy();
-    expect(within(knee).getByText("+1.87 dB vs plain mean")).toBeTruthy();
-    const test = screen.getByText("Test PSNR · production gate").closest(".ui-kpi") as HTMLElement;
-    expect(within(test).getByText("59.24")).toBeTruthy();
-    expect(within(test).getByText("+0.29 dB vs best member")).toBeTruthy();
-    expect(screen.getAllByText("Production gate vs members")).toHaveLength(2);   // banner + checks list
-    expect(screen.getByRole("alert").textContent).toMatch(/Fitted for 30 members; 31 are active/);
+    const line = await waitFor(() => {
+      const el = document.querySelector(".ui-summary");
+      if (!el || !/61\.00/.test(el.textContent ?? "")) throw new Error("not yet");
+      return el as HTMLElement;
+    });
+    // one source for the sentence and the table: knee-psnr.json
+    expect(line.textContent).toBe("Production gate 61.00\u00a0dB integrated PSNR, +1.00\u00a0dB over the best member (#196) and +2.00\u00a0dB over the plain mean");
+    expect(document.querySelector(".ui-kpi, .ens-kpis")).toBeNull();
+    expect(screen.queryByText("59.24")).toBeNull();                 // the test-PSNR tile is gone
+  });
+
+  it("compares gate, plain mean and the best member on the same integrated metric, per band", async () => {
+    const { default: Overview } = await import("./tabs/Overview");
+    show(<Overview />);
+    await waitFor(() => expect(tableRows()).toHaveLength(3));
+    const head = [...document.querySelectorAll("table[aria-label='Production vs references'] thead th")].map((th) => th.textContent);
+    expect(head).toEqual(["", "∫PSNR [dB]", "∫VIS [dB]", "∫Y [dB]", "∫J [dB]", "∫H [dB]"]);
+    expect(tableRows()).toEqual([
+      ["Production gate", "61.00", "56.00", "65.00", "62.00", "61.00"],
+      ["Plain mean", "59.00", "54.00", "63.00", "60.00", "59.00"],
+      ["Best member (#196)", "60.00", "55.00", "64.00", "61.00", "60.00"],
+    ]);
+    const caption = document.querySelector(".ens-overview__caption")?.textContent ?? "";
+    expect(caption).toMatch(/^3 members · production gate fitted .+\sago \(linear mix\) · ∫ = PSNR averaged over log knee 0\.1–10⁴\se⁻ on 100 test fields · evaluated .+\sago$/);
+  });
+
+  it("falls back to the overview headline when the knee curves cannot be read", async () => {
+    routes["GET /ensemble/knee-psnr.json?mode=starfull"] = () => ({ status: 404, body: { ok: false, error: "no curves" } });
+    const { default: Overview } = await import("./tabs/Overview");
+    show(<Overview />);
+    await waitFor(() => expect(document.querySelector(".ui-summary")?.textContent)
+      .toBe("Production gate 60.97\u00a0dB integrated PSNR, +1.02\u00a0dB over the best member (#196) and +1.87\u00a0dB over the plain mean"));
+    expect(tableRows()).toEqual([
+      ["Production gate", "60.97", "55.80", "64.90", "62.00", "61.10"],
+      ["Plain mean", "59.11", "—", "—", "—", "—"],
+      ["Best member (#196)", "59.96", "—", "—", "—", "—"],
+    ]);
+  });
+
+  it("shows each failing staleness check once, with its fix", async () => {
+    const { default: Overview } = await import("./tabs/Overview");
+    show(<Overview />);
+    const status = await screen.findByRole("list", { name: "Staleness" });
+    expect(screen.getAllByText("Production gate vs members")).toHaveLength(1);
+    const item = within(status).getByText("Production gate vs members").closest("li") as HTMLElement;
+    expect(item.textContent).toContain("Fitted for 30 members; 31 are active");
+    expect(within(item).getByRole("link", { name: "Combiners" }).getAttribute("href")).toBe("/ensemble/starfull/combiners");
+    expect(within(status).queryByText("Evaluation vs members")).toBeNull();   // passing checks stay quiet
+  });
+
+  it("offers each fix once and runs it only after confirm", async () => {
+    routes["GET /ensemble/overview.json?mode=starfull"] = () => ({ body: { ...OVERVIEW, checks: [
+      { id: "eval-members", ok: false, tone: "warn", title: "Evaluation vs members", detail: "Evaluated 2 members; 3 are active now.", action: "evaluate" },
+      { id: "eval-gate", ok: false, tone: "warn", title: "Evaluation vs production gate", detail: "The production gate changed.", action: "evaluate" },
+      { id: "knee", ok: false, tone: "warn", title: "Knee curves", detail: "The cubes changed.", action: "knee" },
+    ] } });
+    routes["POST /ensemble/knee-psnr"] = () => ({ body: { job_id: "kn1" } });
+    const { default: Overview } = await import("./tabs/Overview");
+    show(<Overview />);
+    const status = await screen.findByRole("list", { name: "Staleness" });
+    expect(within(status).getAllByRole("button", { name: "Evaluate" })).toHaveLength(1);
+    fireEvent.click(within(status).getByRole("button", { name: "Compute" }));
+    await answer("Recompute PSNR vs knee?", "Compute");
+    await waitFor(() => expect(posts("/ensemble/knee-psnr")[0]?.form).toMatchObject({ mode: "starfull" }));
+  });
+
+  it("says all current in one quiet line when every check passes", async () => {
+    routes["GET /ensemble/overview.json?mode=starfull"] = () => ({ body: { ...OVERVIEW, checks: OVERVIEW.checks.map((c) => ({ ...c, ok: true, tone: "good" })) } });
+    const { default: Overview } = await import("./tabs/Overview");
+    show(<Overview />);
+    expect(await screen.findByText("All current")).toBeTruthy();
+    expect(screen.queryByRole("list", { name: "Staleness" })).toBeNull();
   });
 
   it("logs the Evaluate summary to tracking only after Append", async () => {
     routes["POST /api/tracking/log"] = () => ({ body: { ok: true } });
     const { default: Overview } = await import("./tabs/Overview");
     show(<Overview />);
-    await screen.findByText("60.97");
+    await screen.findByRole("table", { name: "Production vs references" });
     fireEvent.click(screen.getByRole("button", { name: "Log to tracking" }));
     const note = (await screen.findByRole("textbox", { name: "Markdown note" })) as HTMLTextAreaElement;
     expect(note.value).toContain("**Ensemble evaluation · starfull** — 2026-09-25 19:32 UTC · 3 members · 100 test fields");
@@ -209,22 +275,24 @@ describe("overview", () => {
     expect(posts("/api/tracking/log")[0].form.text).toContain("∫PSNR over 0.1–10k e⁻");
   });
 
-  it("never reports members complete while members.json is loading or failed", async () => {
+  it("says when the members cannot be read instead of claiming none timed out", async () => {
     routes["GET /ensemble/members.json?mode=starfull"] = () => ({ status: 404, body: { ok: false, error: "registry unreadable" } });
     const { default: Overview } = await import("./tabs/Overview");
     show(<Overview />);
-    expect(await screen.findByText("60.97")).toBeTruthy();
-    expect(await screen.findByText("registry unreadable")).toBeTruthy();
-    expect(screen.queryByText("Every member reached its target steps.")).toBeNull();
+    expect(await screen.findByText(/registry unreadable/)).toBeTruthy();
+    expect(screen.queryByText(/stopped at the time limit/)).toBeNull();
   });
 
-  it("lists TIMEOUT members with a continue link and evaluates only after confirm", async () => {
+  it("names the TIMEOUT members in one alert line with a continue link, and evaluates only after confirm", async () => {
+    routes["GET /ensemble/members.json?mode=starfull"] = () => ({ body: { ...MEMBERS, members: [
+      ...MEMBERS.members, member(179, { step: 35000, fraction: 0.5, status: "timeout", timeout: true })] } });
     const { default: Overview } = await import("./tabs/Overview");
     show(<Overview />);
-    await screen.findByText("60.97");
-    expect(await screen.findByText("#178 52k/70k")).toBeTruthy();
+    const line = await screen.findByText("2 members stopped at the time limit: 178, 179.");
+    expect(line.closest(".ui-callout")).toBeTruthy();
+    expect(screen.queryByText("TIMEOUT")).toBeNull();
     expect(screen.getByRole("link", { name: "Continue them…" }).getAttribute("href"))
-      .toBe("/ensemble/starfull/train?mode=continue&members=member_178");
+      .toBe("/ensemble/starfull/train?mode=continue&members=member_178,member_179");
     fireEvent.click(screen.getByRole("checkbox", { name: "force" }));
     fireEvent.click(screen.getByRole("button", { name: "Evaluate" }));
     await answer(/Evaluate the starfull ensemble/, "Cancel");
@@ -452,6 +520,26 @@ describe("combiners", () => {
     expect(((within(grid).getByText("26m").closest("tr") as HTMLElement).querySelector(".ens-holes") as HTMLElement).textContent).toBe("9 · 9 · 9 · 9");
   });
 
+  it("never lists the legacy RBF and never offers it in a compare", async () => {
+    routes["GET /ensemble/combiners.json?mode=starfull"] = () => ({ body: { ...COMBINERS, variants: [
+      ...COMBINERS.variants, variant("raw_incremental_minmeanmax_rbf", { kind: "rbf", spec: "rbf", production: false, backup: false }),
+    ] } });
+    routes["POST /ensemble/combiners/compare"] = () => ({ body: { ok: true, job_id: "cmp1" } });
+    const { default: Combiners } = await import("./tabs/Combiners");
+    show(<Combiners />, "/ensemble/starfull/combiners");
+    const grid = await screen.findByRole("grid", { name: "Combiner variants" });
+    expect(within(grid).queryByText("RBF")).toBeNull();
+    expect(within(grid).queryByText("stale kind")).toBeNull();
+    fireEvent.click(screen.getAllByRole("button", { name: "Compare…" })[0]);
+    const dlg = await screen.findByRole("dialog", { name: "Compare gate variants" });
+    expect(within(dlg).queryByText(/include the RBF/)).toBeNull();
+    expect(within(dlg).queryByText(/the RBF/)).toBeNull();
+    fireEvent.click(within(dlg).getByRole("button", { name: /^Compare \d/ }));
+    await answer("Run the compare?", "Compare");
+    await waitFor(() => expect(posts("/ensemble/combiners/compare")).toHaveLength(1));
+    expect(posts("/ensemble/combiners/compare")[0].form).not.toHaveProperty("include_rbf");
+  });
+
   it("says how many members production runs", async () => {
     routes["GET /ensemble/combiners.json?mode=starfull"] = () => ({ body: { ...COMBINERS, variants: [
       variant("spatial_gate_combiner", { n_members: 30, n_reads: 20, pruned: true, fit: { steps: 2000, prune_threshold: 0.005 } }),
@@ -555,6 +643,48 @@ describe("diagnostics", () => {
     show(<Diagnostics />, "/ensemble/starfull/diagnostics?color=loss");
     await screen.findByLabelText("Cross-correlation r(k)");
     expect(legendLabels()).toEqual(["l1", "l2", "LR (bicubic)", "plain mean"]);
+  });
+
+  const block = { edges: [-1, 0, 1], hist: [[1, 2], [3, 4]], med_std: [-0.5, 0.5], med_err: [-0.4, 0.6], n_fields: 3 };
+  const CALIB = {
+    ...EVALS,
+    std_err: { ...block, models: { ensemble_mean: block, spatial_gate: block, raw_incremental_minmeanmax_rbf: block } },
+    calibration: {
+      z_edges: [-2, 0, 2], pdf: [0.2, 0.3], field_std: [1, 2, 4], field_rmse: [10, 30, 40],
+      stats: { cover1: 0.8893, cover2: 0.9531, cover3: 0.977, sigma_z: 0.45 },
+    },
+  };
+
+  it("answers the calibration in one sentence and a coverage table, with no tiles", async () => {
+    routes["GET /ensemble/evals.json?mode=starfull"] = () => ({ body: CALIB });
+    const { default: Diagnostics } = await import("./tabs/Diagnostics");
+    show(<Diagnostics />, "/ensemble/starfull/diagnostics?d=calibration");
+    const line = await waitFor(() => {
+      const el = document.querySelector(".ui-summary");
+      if (!el) throw new Error("not yet");
+      return el as HTMLElement;
+    });
+    // field RMSE / mean σ = 10, 15, 10 → median 10
+    expect(line.textContent).toBe("Cross-member σ is not an error bar: per test field, the RMSE is ≈10× the mean σ (median over 3 fields).");
+    const table = screen.getByRole("table", { name: "Coverage of |z|" });
+    expect([...table.querySelectorAll("thead th")].map((th) => th.textContent)).toEqual(["", "Observed", "Gaussian"]);
+    expect([...table.querySelectorAll("tbody tr")].map((tr) => [...tr.querySelectorAll("td")].map((td) => td.textContent))).toEqual([
+      ["|z| < 1", "88.9%", "68.3%"], ["|z| < 2", "95.3%", "95.4%"], ["|z| < 3", "97.7%", "99.7%"],
+    ]);
+    expect(document.querySelector(".ui-kpi, .ens-kpis")).toBeNull();
+  });
+
+  it("has no combiner-axes view and never offers the RBF", async () => {
+    routes["GET /ensemble/evals.json?mode=starfull"] = () => ({ body: CALIB });
+    const { default: Diagnostics } = await import("./tabs/Diagnostics");
+    const view = show(<Diagnostics />, "/ensemble/starfull/diagnostics?d=axes");
+    expect(await screen.findByLabelText("Cross-correlation r(k)")).toBeTruthy();   // an unknown section reads as the default
+    expect(screen.queryByRole("radio", { name: /Combiner axes/ })).toBeNull();
+    view.unmount();
+    show(<Diagnostics />, "/ensemble/starfull/diagnostics?d=stderr");
+    await screen.findByLabelText("Disagreement vs error");
+    const chips = [...document.querySelectorAll(".ens-bar .ui-chip")].map((c) => c.textContent);
+    expect(chips).toEqual(["plain mean", "production gate"]);
   });
 });
 

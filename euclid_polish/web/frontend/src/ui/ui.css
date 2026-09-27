@@ -128,48 +128,7 @@
   font: var(--fw-medium) var(--fs-2xs)/1 var(--font-mono);
 }
 
-/* ════ Stat / Kpi / DefList ══════════════════════════════════════════════ */
-.ui-stat { display: flex; flex-direction: column; gap: 2px; }
-.ui-stat__v { font: var(--fw-semibold) 22px/1 var(--font-mono); font-variant-numeric: tabular-nums; }
-.ui-stat__k { font: var(--fw-medium) var(--fs-sm)/var(--lh-tight) var(--font-sans); color: var(--text-dim); }
-.ui-stat__k--hint { text-decoration: underline dotted var(--border-strong); text-underline-offset: 3px; cursor: help; width: fit-content; }
-.ui-stat__sub { font-size: var(--fs-xs); color: var(--text-dim); }
-.ui-stat--good .ui-stat__v { color: var(--good); }
-.ui-stat--warn .ui-stat__v { color: var(--warn); }
-.ui-stat--bad .ui-stat__v { color: var(--bad); }
-.ui-stat--info .ui-stat__v, .ui-stat--accent .ui-stat__v { color: var(--accent); }
-
-.ui-kpi {
-  display: flex; flex-direction: column; gap: 6px; min-width: 0; text-align: left;
-  padding: var(--card-pad); border-radius: var(--r-lg); border: 1px solid var(--border);
-  background: var(--surface-1); box-shadow: var(--shadow-1); color: var(--text); font: inherit;
-}
-.ui-kpi--action { cursor: pointer; transition: border-color var(--dur-fast), background var(--dur-fast); }
-.ui-kpi--action:hover { border-color: var(--accent); color: var(--text); }
-.ui-kpi--good { border-left: 3px solid var(--good); }
-.ui-kpi--warn { border-left: 3px solid var(--warn); }
-.ui-kpi--bad { border-left: 3px solid var(--bad); }
-.ui-kpi--info, .ui-kpi--accent { border-left: 3px solid var(--accent); }
-.ui-kpi__label {
-  display: flex; align-items: center; gap: 6px; color: var(--text-dim);
-  font: var(--fw-medium) var(--fs-sm)/var(--lh-tight) var(--font-sans);
-}
-.ui-kpi__hint {
-  display: inline-flex; color: var(--text-faint); cursor: help;
-  padding: 0; border: 0; border-radius: 50%; background: none; font: inherit;
-}
-.ui-kpi__hint:hover { color: var(--accent); }
-.ui-kpi__value {
-  display: flex; align-items: baseline; gap: 4px; min-height: 30px;
-  font: var(--fw-semibold) var(--fs-2xl)/1.1 var(--font-mono); font-variant-numeric: tabular-nums;
-}
-.ui-kpi__unit { font-size: var(--fs-md); color: var(--text-dim); font-weight: var(--fw-medium); }
-.ui-kpi__delta { font: var(--fw-medium) var(--fs-sm)/1 var(--font-mono); color: var(--text-dim); }
-.ui-kpi__delta--good { color: var(--good); }
-.ui-kpi__delta--warn { color: var(--warn); }
-.ui-kpi__delta--bad { color: var(--bad); }
-.ui-kpi__foot { font-size: var(--fs-xs); color: var(--text-faint); }
-
+/* ════ DefList ═══════════════════════════════════════════════════════════ */
 .ui-deflist { margin: 0; display: grid; gap: 1px; }
 .ui-deflist > div { display: grid; grid-template-columns: minmax(120px, 40%) 1fr; gap: var(--s3); padding: 6px 0; border-bottom: 1px solid var(--border); }
 .ui-deflist > div:last-child { border-bottom: 0; }

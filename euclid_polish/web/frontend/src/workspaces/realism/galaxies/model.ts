@@ -97,13 +97,13 @@ export function brightnessOverlays(entries: [string, BrightnessCurve][], xDomain
   if (trust) {
     const lower = clamp(trust.lower_magnitude), upper = clamp(trust.upper_magnitude);
     const turnover = clamp(peakMag ?? trust.magnitude);
-    if (turnover > xDomain[0]) bands.push({ axis: "x", from: xDomain[0], to: turnover, color: q1Color, alpha: 0.07, label: "Q1 COUNT SUPPORT TO TURNOVER" });
+    if (turnover > xDomain[0]) bands.push({ axis: "x", from: xDomain[0], to: turnover, color: q1Color, alpha: 0.07, label: "Q1 count support to turnover" });
     if (upper > lower) bands.push({ axis: "x", from: lower, to: upper, color: q1Color, alpha: 0.16 });
-    if (upper < xDomain[1]) bands.push({ axis: "x", from: upper, to: xDomain[1], color: surveyColor("fit"), alpha: 0.05, hatch: true, label: `BEYOND MER ${trust.snr}σ RANGE` });
+    if (upper < xDomain[1]) bands.push({ axis: "x", from: upper, to: xDomain[1], color: surveyColor("fit"), alpha: 0.05, hatch: true, label: `beyond the MER ${trust.snr}σ range` });
   } else if (peakMag != null) {
     const turnover = clamp(peakMag);
-    if (turnover > xDomain[0]) bands.push({ axis: "x", from: xDomain[0], to: turnover, color: q1Color, alpha: 0.07, label: "Q1 COUNT-SUPPORTED" });
-    if (turnover < xDomain[1]) bands.push({ axis: "x", from: turnover, to: xDomain[1], color: surveyColor("fit"), alpha: 0.05, hatch: true, label: "BEYOND Q1 TURNOVER" });
+    if (turnover > xDomain[0]) bands.push({ axis: "x", from: xDomain[0], to: turnover, color: q1Color, alpha: 0.07, label: "Q1 count-supported" });
+    if (turnover < xDomain[1]) bands.push({ axis: "x", from: turnover, to: xDomain[1], color: surveyColor("fit"), alpha: 0.05, hatch: true, label: "beyond the Q1 turnover" });
   }
   return { guides, bands, trust, peak, peakMag, generationCap: gen?.generation_density_cap_arcmin2_mag,
     cumulativeToBoundary: q1?.observed_cumulative_density_to_boundary_arcmin2 ?? gen?.observed_cumulative_density_to_boundary_arcmin2,

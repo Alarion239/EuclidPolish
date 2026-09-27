@@ -5,8 +5,12 @@
    of every field: detections, negative islands, completeness — computed by
    the build and never shown before), census (the generated population) and
    inputs (the FASRC steps behind both samples). Bands and samples toggle in
-   the toolbar (?hide=); every figure zooms (drag / Ctrl-wheel) and has exact
-   bounds. A real-field dot opens its archive field in the inspector. */
+   the toolbar (?hide=), each sample chip carrying its size; every figure
+   zooms (drag / Ctrl-wheel) and has exact bounds. A real-field dot opens its
+   archive field in the inspector. The pixels view states its answer (the VIS
+   scale-spectrum score) in one summary line; the census compares generated,
+   prior and Q1 densities from the galaxy and star payloads, so it never waits
+   for the pixel cache. */
 import { useMemo, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import Plot, { Legend } from "../../../charts/Plot";
@@ -17,18 +21,21 @@ import { formatCount, formatDateTime, formatNumber, formatPercent } from "../../
 import { useUrlState } from "../../../hooks/useUrlState";
 import { linearTicks } from "../../../ticks";
 import {
-  Badge, Button, Card, CardBody, CardHead, Chip, DefList, EmptyState, JobProgress, Page, Segmented, Stat, Table,
-  toast, type Column,
+  Badge, Button, Caption, Card, CardBody, CardHead, Chip, DefList, EmptyState, JobProgress, Num, Page, Segmented, SummaryLine,
+  Table, toast, type Column,
 } from "../../../ui";
-import { useArchiveMeta, usePixels, type Band, type Comparison, type FieldComparison, type PixelsPayload, type SourceDetection } from "../api";
+import {
+  useArchiveMeta, useGalaxies, usePixels, useStars, type Band, type Comparison, type FieldComparison, type PixelsPayload,
+  type SourceDetection,
+} from "../api";
 import { logDomain, nearestIndex2d, ticksFor, domainOf } from "../chartKit";
-import { BarGroup, BarSpacer, BoundedPlot, Info, LoadState, RealismBar, StatStrip, Swatch } from "../common";
+import { BarGroup, BarSpacer, BoundedPlot, Info, LoadState, RealismBar, Swatch } from "../common";
 import { useIncludeTraining } from "../header";
 import { JOB, runJob, useRealismJob } from "../jobs";
 import {
-  BANDS, SAMPLES, SAMPLE_LABEL, bandLabel, bandLegend, correlationSeries, detectionHistogram, detectionStats,
+  BANDS, SAMPLES, SAMPLE_LABEL, bandLabel, bandLegend, censusRows, correlationSeries, detectionHistogram, detectionStats, generatedSample,
   histogramSeries, perFieldCompleteness, powerSeries, quantileSeries, relationDomains, relationPoints,
-  relationSeries, sampleLegend, similaritySeries, visibleFrom, type RelationKey, type Visible,
+  relationSeries, sampleChipLabel, sampleLegend, similaritySeries, visibleFrom, type CensusRow, type RelationKey, type Visible,
 } from "../pixels/model";
 import { bandColor, C } from "../../../colors";
 
@@ -167,25 +174,51 @@ function PixelFigures({ comparison, t, onRealField }: {
       </FigureCard>
       <FigureCard wide title="Scale-spectrum similarity" sub="where each population places its fluctuation power · bootstrap 16–84%"
         info="0 means an equal share of the variance at that scale; positive means the synthetic fields place more of their variance there, negative means Euclid does.">
-        <div className="rl-scores">
-          {BANDS.filter((b) => t.visible.bands.includes(b)).map((band) => {
-            const s = fields.scale_similarity[band];
-            return (
-              <div key={band} className="rl-score" style={{ ["--sw" as string]: bandColor(band) }}>
-                <strong>{bandLabel(band)}</strong>
-                <span>overlap <b>{s.overlap.median.toFixed(3)}</b> <small>{s.overlap.p16.toFixed(3)}–{s.overlap.p84.toFixed(3)}</small></span>
-                <span>power syn / real <b>{s.variance_ratio.median.toFixed(2)}</b> <small>{s.variance_ratio.p16.toFixed(2)}–{s.variance_ratio.p84.toFixed(2)}</small></span>
-              </div>
-            );
-          })}
-        </div>
         <BoundedPlot boundsLabel="Scale-spectrum similarity" xDomain={simX} yDomain={simY} xScale="log"
           xTicks={ticksFor(simX, "log")} yTicks={linearTicks(simY, { count: 5 })} guides={[{ axis: "y", v: 0, dash: [4, 4] }]}
           xLabel="angular scale (arcsec / cycle)" yLabel="log₁₀ scale-share ratio (synthetic ÷ real)" series={sim}
           aspect={0.34} exportName="field-scale-similarity" aria-label="Scale-spectrum similarity" />
         <Legend items={bandLegend()} hidden={t.hidden} onToggle={t.toggle} />
+        <ScaleScores fields={fields} bands={BANDS.filter((b) => t.visible.bands.includes(b))} />
       </FigureCard>
     </div>
+  );
+}
+
+const interval2 = (i: { median: number; p16: number; p84: number }) => `${i.median.toFixed(2)} (${i.p16.toFixed(2)}–${i.p84.toFixed(2)})`;
+
+/** The pixels view's answer: how closely the synthetic VIS fields place their power across scales. */
+function ScaleSummary({ fields }: { fields: FieldComparison }) {
+  const s = fields.scale_similarity.VIS;
+  if (!s) return null;
+  return (
+    <SummaryLine>
+      VIS overlap <Num>{s.overlap.median.toFixed(2)}</Num> ({s.overlap.p16.toFixed(2)}–{s.overlap.p84.toFixed(2)}),
+      power syn/real <Num>{s.variance_ratio.median.toFixed(2)}</Num> ({s.variance_ratio.p16.toFixed(2)}–{s.variance_ratio.p84.toFixed(2)})
+    </SummaryLine>
+  );
+}
+
+/** The NISP scale scores: one comparison table (median, bootstrap 16–84%). VIS is the summary line's. */
+function ScaleScores({ fields, bands }: { fields: FieldComparison; bands: Band[] }) {
+  const columns: Column<Band>[] = [
+    { header: "band", cell: (b) => <span className="rl-legend-cell"><Swatch color={bandColor(b)} />{bandLabel(b)}</span> },
+    { header: "overlap (16–84%)", align: "right", cell: (b) => interval2(fields.scale_similarity[b].overlap) },
+    { header: "power syn / real (16–84%)", align: "right", cell: (b) => interval2(fields.scale_similarity[b].variance_ratio) },
+  ];
+  const rows = bands.filter((b) => b !== "VIS" && fields.scale_similarity[b]);
+  if (!rows.length) return null;
+  return <div className="rl-scores"><Table columns={columns} rows={rows} rowKey={(b) => b} aria-label="Scale-spectrum similarity per NISP band" /></div>;
+}
+
+/** The field geometry under the figures it qualifies, as the built comparison states it. */
+function GeometryCaption({ comparison }: { comparison: Comparison }) {
+  const g = comparison.geometry;
+  const crop = g.analysis_size !== g.tile_size ? `; statistics on the ${g.analysis_size} × ${g.analysis_size} centre crop` : "";
+  return (
+    <Caption>
+      {`Fields ${g.tile_size} × ${g.tile_size} px at ${formatNumber(g.pixel_scale_arcsec, { sig: 3 })}″ (${formatNumber(g.field_area_arcmin2, { sig: 2 })} arcmin²)${crop}`}
+    </Caption>
   );
 }
 
@@ -290,25 +323,53 @@ function Detection({ detection, t }: { detection?: SourceDetection; t: Toggle & 
   );
 }
 
-function Census({ comparison }: { comparison: Comparison }) {
-  const pop = comparison.population.synthetic;
-  const kinds = ["galaxy", "star", "unknown"].filter((k) => k in pop.counts);
+const CENSUS_LABEL: Record<CensusRow["kind"], string> = { galaxies: "Galaxies", stars: "Stars" };
+const WINDOW_LABEL: Record<CensusRow["kind"], string> = { galaxies: "to the Q1 5σ limit", stars: "Q1 trusted window" };
+const density3 = (v: number | null) => formatNumber(v, { sig: 3 });
+/** Magnitude limits at one fixed precision, so a range never mixes "14–25.53". */
+const mag2 = (v: number) => v.toFixed(2);
+
+/** Generated vs prior vs Q1 surface density per kind, from the galaxy and star payloads, so it never
+ *  waits for the pixel cache (opening it only reads; nothing is built). Q1 is compared only where it is
+ *  complete, with all three columns over the same magnitudes; the full prior range has no Q1 value. */
+function Census({ training }: { training: boolean }) {
+  const galaxies = useGalaxies(training);
+  const stars = useStars(training);
+  const rows = censusRows(galaxies.data, stars.data);
+  const loading = (galaxies.loading && !galaxies.data) || (stars.loading && !stars.data);
+  const error = !galaxies.data && !stars.data ? galaxies.error ?? stars.error : null;
+  const trainingIncluded = !!(galaxies.data?.training_included || stars.data?.distribution?.training_included);
+  const columns: Column<CensusRow>[] = [
+    // The kind names its first row only; its second row is the same kind over the full prior range.
+    { header: "Kind", cell: (r, i) => (i === 0 || rows[i - 1].kind !== r.kind ? CENSUS_LABEL[r.kind] : "") },
+    { header: "VIS range", cell: (r) => `${mag2(r.range[0])}–${mag2(r.range[1])} · ${r.window === "q1" ? WINDOW_LABEL[r.kind] : "full prior"}` },
+    { header: "Generated", align: "right", cell: (r) => density3(r.generated) },
+    { header: "Prior", align: "right", cell: (r) => density3(r.prior) },
+    { header: "Q1", align: "right", cell: (r) => (r.window === "q1" ? density3(r.q1) : <span className="rl-faint">incomplete</span>) },
+  ];
+  const galaxySource = galaxies.data?.sources.synthetic;
+  const starComparison = stars.data?.distribution?.density_comparison;
+  const caption = [
+    generatedSample(galaxySource?.available ? galaxySource : undefined, starComparison),
+    "Q1: the observed PHZ-weighted density, compared only over the magnitudes where it is complete",
+    // The population comparison folds lensed systems into the galaxy counts.
+    "lenses are counted with the galaxies",
+  ].filter(Boolean).join(" · ");
   return (
     <div className="rl-stack">
       <Card>
-        <CardHead title="Synthetic source truth" sub={`${formatNumber(pop.area_arcmin2, { digits: 2 })} arcmin² · ${formatCount(comparison.population.synthetic_field_count)} fields`}
-          right={<Badge size="sm" tone={comparison.population.training_included ? "warn" : undefined}>
-            {comparison.population.training_included ? "train + test + validation" : "test + validation"}
-          </Badge>} />
+        <CardHead title="Generated, prior and Q1 surface density" sub="arcmin⁻² · the same VIS window in every column of a row"
+          right={trainingIncluded ? <Badge size="sm" tone="warn">train + test + validation</Badge> : undefined} />
         <CardBody>
-          <StatStrip label="Synthetic census">
-            <Stat k="catalogue objects" v={formatCount(pop.objects)} />
-            {kinds.map((k) => (
-              <Stat key={k} k={`${k === "galaxy" ? "galaxies" : `${k}s`} / arcmin²`} v={formatNumber(pop.density_arcmin2[k] ?? 0, { digits: 2 })}
-                sub={`${formatCount(pop.counts[k])} objects`} />
-            ))}
-          </StatStrip>
-          {comparison.population.training_included && (
+          <LoadState loading={loading} error={error} onRetry={() => { galaxies.reload(); stars.reload(); }} lines={3}>
+            {rows.length ? (
+              <>
+                <Table columns={columns} rows={rows} rowKey={(r) => `${r.kind}:${r.window}`} aria-label="Surface density: generated, prior and Q1" />
+                <Caption>{caption}</Caption>
+              </>
+            ) : <EmptyState compact icon="table" title="No galaxy or stellar prior has been fitted yet" />}
+          </LoadState>
+          {trainingIncluded && (
             <p className="rl-faint">Training truth is in this census only; the pixel and detection statistics stay on test + validation.</p>
           )}
           <div className="rl-row">
@@ -333,21 +394,6 @@ function Inputs() {
   );
 }
 
-function FieldCensus({ payload }: { payload: PixelsPayload }) {
-  const a = payload.availability;
-  return (
-    <StatStrip label="Compared field census">
-      <Stat k="field" v={`${payload.comparison?.geometry.tile_size ?? 256} px × ${payload.comparison?.geometry.pixel_scale_arcsec ?? 0.1}″`}
-        sub={`${a.field_area_arcmin2.toFixed(3)} arcmin²`} />
-      <Stat k="synthetic LR" v={`${formatCount(payload.comparison?.samples.synthetic.fields ?? a.synthetic.fields)} fields`}
-        sub={(payload.comparison?.samples.synthetic.splits ?? ["test", "validate"]).join(" + ")} />
-      <Stat k="real Euclid LR" v={`${formatCount(payload.comparison?.samples.real.fields ?? a.real.fields)} fields`}
-        sub={`${formatCount(payload.comparison?.samples.real.independent_parents ?? a.real.independent_parents)} Q1 pointings`} />
-      <Stat k="built" v={payload.comparison?.provenance?.generated_at ? formatDateTime(payload.comparison.provenance.generated_at) : "—"} />
-    </StatStrip>
-  );
-}
-
 export default function PixelsTab() {
   const [training] = useIncludeTraining();
   const [rawView, setView] = useUrlState("view", "pixels");
@@ -360,6 +406,9 @@ export default function PixelsTab() {
   const comparison = payload?.comparison ?? null;
   const cache = payload?.availability.comparison_cache;
   const realReady = !!payload?.availability.real.ready;
+  const built = comparison?.provenance?.generated_at;
+  const measured = view === "pixels" || view === "detection";
+  const cacheTitle = [cache?.reason, built ? `built ${formatDateTime(built)}` : null].filter(Boolean).join(" · ") || undefined;
   const byParent = useMemo(() => {
     const map = new Map<string, string>();
     for (const o of archive.data?.objects ?? []) if (!map.has(o.parent_id)) map.set(o.parent_id, o.id ?? String(o.sample_id));
@@ -389,27 +438,32 @@ export default function PixelsTab() {
               {view === "pixels" && BANDS.map((b) => (
                 <Chip key={b} on={!t.hidden.includes(b)} dot={bandColor(b)} onClick={() => t.toggle(b)}>{bandLabel(b)}</Chip>
               ))}
-              {SAMPLES.map((s) => <Chip key={s} on={!t.hidden.includes(s)} onClick={() => t.toggle(s)}>{s}</Chip>)}
+              {SAMPLES.map((s) => (
+                <Chip key={s} on={!t.hidden.includes(s)} onClick={() => t.toggle(s)}>
+                  {sampleChipLabel(s, comparison, payload?.availability)}
+                </Chip>
+              ))}
             </div>
           </BarGroup>
         )}
-        {cache && (
-          <Badge size="sm" tone={cache.fresh ? "good" : "warn"} dot title={cache.reason ?? undefined}>
-            {cache.fresh ? "cache current" : cache.present ? "cache stale" : "not built"}
-          </Badge>
-        )}
+        {/* The cache state and its build belong to the views that read the cache (not the census or inputs). */}
+        {measured && cache && (cache.fresh
+          ? <span className="rl-quiet" title={cacheTitle}>cache current</span>
+          : <Badge size="sm" tone="warn" dot title={cacheTitle}>{cache.present ? "cache stale" : "not built"}</Badge>)}
         <BarSpacer />
-        <Button size="sm" variant={comparison && cache?.fresh ? "ghost" : "primary"} icon="reset" loading={build.busy}
-          disabled={!realReady} onClick={() => void buildStatistics(payload)}>
-          {comparison ? "Rebuild" : "Measure fields"}
-        </Button>
+        {measured && (
+          <Button size="sm" variant={comparison && cache?.fresh ? "ghost" : "primary"} icon="reset" loading={build.busy}
+            disabled={!realReady} onClick={() => void buildStatistics(payload)}>
+            {comparison ? "Rebuild" : "Measure fields"}
+          </Button>
+        )}
       </RealismBar>
       <LoadState loading={resource.loading && !payload} error={resource.error} onRetry={resource.reload}>
         {payload && (
           <div className="rl-stack">
             <JobProgress job={build.job} error={build.error} />
-            {view !== "inputs" && <FieldCensus payload={payload} />}
             {view === "inputs" ? <Inputs />
+              : view === "census" ? <Census training={training} />
               : !comparison ? (
                 <EmptyState icon="table"
                   title={realReady ? "The field-statistics cache has not been built" : "The multipoint Euclid reference is not ready"}
@@ -420,9 +474,15 @@ export default function PixelsTab() {
                     : payload.availability.real.unavailable_reason ?? "Generate and synchronize the four-band archive fields first."}
                 </EmptyState>
               )
-                : view === "pixels" ? <><PixelFigures comparison={comparison} t={t} onRealField={onRealField} /><BandLedger fields={comparison.fields} /></>
-                  : view === "detection" ? <Detection detection={comparison.fields.source_detection} t={t} />
-                    : <Census comparison={comparison} />}
+                : view === "pixels" ? (
+                  <>
+                    <ScaleSummary fields={comparison.fields} />
+                    <PixelFigures comparison={comparison} t={t} onRealField={onRealField} />
+                    <BandLedger fields={comparison.fields} />
+                    <GeometryCaption comparison={comparison} />
+                  </>
+                )
+                  : <><Detection detection={comparison.fields.source_detection} t={t} /><GeometryCaption comparison={comparison} /></>}
           </div>
         )}
       </LoadState>

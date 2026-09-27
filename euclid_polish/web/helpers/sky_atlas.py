@@ -394,10 +394,6 @@ def population_meta_path() -> Path:
     return Path(Config.DATA_DIR) / "population_comparison" / "euclid_population_meta.json"
 
 
-def gaia_meta_path() -> Path:
-    return Path(Config.DATA_DIR) / "population_comparison" / "gaia_population.meta.json"
-
-
 def _population_cones() -> dict[str, Any]:
     features = []
     with contextlib.suppress(OSError, ValueError):
@@ -410,21 +406,6 @@ def _population_cones() -> dict[str, Any]:
                 "props": {"rows": cone.get("rows"), "star_id": cone.get("star_id"),
                           "field": q1_field_for(float(cone["ra"]), float(cone["dec"]))},
                 "inspect": {"kind": "source", "id": f"population-cones/cone-{index:02d}"},
-            })
-    return _circles(features)
-
-
-def _gaia_fields() -> dict[str, Any]:
-    features = []
-    with contextlib.suppress(OSError, ValueError):
-        meta = json.loads(gaia_meta_path().read_text(encoding="utf-8"))
-        radius = float(meta.get("radius_arcmin") or 21.0) / 60.0
-        for item in meta.get("fields") or []:
-            name = str(item.get("name") or "")
-            features.append({
-                "id": name, "ra": _round(item.get("ra")), "dec": _round(item.get("dec")),
-                "radius_deg": radius, "props": {"name": name, "rows": item.get("rows")},
-                "inspect": {"kind": "source", "id": f"gaia-fields/{name}"},
             })
     return _circles(features)
 
@@ -534,9 +515,6 @@ LAYERS: tuple[LayerSpec, ...] = (
     LayerSpec("population-cones", "Population cones", "catalogues", "circles",
               _population_cones, lambda: (_mtime(population_meta_path()),),
               style={"color": "#0984e3", "opacity": 0.25}),
-    LayerSpec("gaia-fields", "Gaia fields", "catalogues", "circles", _gaia_fields,
-              lambda: (_mtime(gaia_meta_path()),),
-              style={"color": "#fab1a0", "opacity": 0.25}),
     LayerSpec("jwst-mast", "JWST MAST footprints", "catalogues", "points", _jwst_mast,
               lambda: (_mtime(jwst_euclid.footprints_path()),),
               style={"color": "#e17055", "shape": "plus", "size": 6},

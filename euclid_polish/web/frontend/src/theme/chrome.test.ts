@@ -49,15 +49,29 @@ describe("kit chrome stylesheets", () => {
     }
   });
 
-  it("set labels in the UI face: table headers, field / KPI / stat labels, segmented choices, badges, tabs, chips", () => {
+  it("set labels in the UI face: table headers, field labels, segmented choices, badges, tabs, chips", () => {
     const ui = sheets["../ui/ui.css"];
-    for (const sel of [".ui-dt__table thead th", ".ui-table th", ".ui-field__label", ".ui-kpi__label", ".ui-stat__k",
+    for (const sel of [".ui-dt__table thead th", ".ui-table th", ".ui-field__label",
       ".ui-seg__item, .ui-seg button", ".ui-badge", ".ui-tab", ".ui-chip", ".ui-menu__label"]) {
       const body = rule(ui, sel);
       expect(body, sel).toMatch(/var\(--font-sans\)/);
       expect(body, sel).not.toMatch(/var\(--font-mono\)/);
     }
     expect(sheets["./base.css"]).not.toMatch(/\.eyebrow\s*\{[^}]*font-mono/);
+  });
+
+  it("state statistics in the body face with tabular numerals (facts, never a mono tile)", () => {
+    const facts = sheets["../ui/facts.css"];
+    for (const sel of [".ui-summary", ".ui-facts__title", ".ui-facts__label", ".ui-facts__v"]) {
+      const body = rule(facts, sel);
+      expect(body, sel).toMatch(/var\(--font-sans\)/);
+      expect(body, sel).not.toMatch(/var\(--font-mono\)/);
+    }
+    for (const sel of [".ui-num", ".ui-facts__v"]) {
+      expect(rule(facts, sel), sel).toMatch(/font-variant-numeric:\s*tabular-nums/);
+    }
+    // A value and its unit never wrap apart.
+    expect(rule(facts, ".ui-facts__value")).toMatch(/white-space:\s*nowrap/);
   });
 
   it("shade a table's scrolled edge with a darkening token in both themes (never mixed from --text, a light haze in dark)", () => {

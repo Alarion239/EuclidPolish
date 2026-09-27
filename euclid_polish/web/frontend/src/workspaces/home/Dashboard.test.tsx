@@ -115,97 +115,142 @@ const show = (el: ReactElement) => render(
   </QueryClientProvider>,
 );
 
-const tile = (label: string | RegExp) => screen.getByText(label).closest(".ui-kpi") as HTMLElement;
+const summary = () => document.querySelector(".ui-summary") as HTMLElement | null;
+const summaryText = async () => waitFor(() => {
+  const t = summary()?.textContent ?? "";
+  if (!/dB/.test(t)) throw new Error("no summary yet");
+  return t;
+}, { timeout: 4000 });
+const notes = () => [...document.querySelectorAll(".home__notes .ui-callout")].map((n) => n.textContent ?? "");
 
-describe("Home · production numbers", () => {
-  it("headlines the gate's knee-integrated PSNR vs the best member and the plain mean", async () => {
+describe("Home · production summary", () => {
+  it("states the gate's integrated PSNR against the best member and the plain mean in one sentence", async () => {
     show(<Dashboard />);
-    expect(await screen.findByText("60.97")).toBeTruthy();
-    const knee = tile("∫PSNR · production gate");
-    expect(within(knee).getByText("+1.02 dB vs member 196")).toBeTruthy();
-    expect(within(knee).getByText("+1.87 dB vs plain mean · 100 fields")).toBeTruthy();
-    expect(knee.getAttribute("href")).toBe("/ensemble/starfull/knee");
+    const text = await summaryText();
+    expect(text).toMatch(/^Production gate 60\.97\u00a0dB integrated PSNR, \+1\.02\u00a0dB over the best member \(#196\) and \+1\.87\u00a0dB over the plain mean · 30 members, evaluated .+\sago$/);
+    expect([...summary()!.querySelectorAll("strong")].map((n) => n.textContent)).toEqual(["60.97", "+1.02", "+1.87"]);
+    // every number keeps its unit: a non-breaking space before each "dB", never a plain one
+    expect(text.match(/\u00a0dB/g)).toHaveLength(3);
+    expect(text).not.toMatch(/ dB/);
+    expect(document.querySelector(".ui-kpi")).toBeNull();
+    expect(screen.queryByText(/99\.00/)).toBeNull();                       // the RBF block is never the headline
+    expect(screen.getByRole("link", { name: "integrated PSNR" }).getAttribute("href")).toBe("/ensemble/starfull/knee");
+    expect(screen.getByRole("link", { name: "30 members" }).getAttribute("href")).toBe("/ensemble/starfull/members");
   });
 
-  it("shows the production gate's test PSNR from the spatial_gate_* keys, never the RBF", async () => {
+  it("counts the active STARFULL members by regime label, not all 42", async () => {
     show(<Dashboard />);
-    expect(await screen.findByText("59.24")).toBeTruthy();
-    const test = tile("Test PSNR · production gate");
-    expect(within(test).getByText("+0.29 dB vs best member")).toBeTruthy();
-    expect(within(test).getByText("+0.86 dB vs plain mean 58.38")).toBeTruthy();
-    expect(screen.queryByText("99.00")).toBeNull();
+    const text = await summaryText();
+    expect(text).toContain("30 members");
+    expect(text).not.toContain("42");
+  });
+
+  it("falls back to the labelled test PSNR when no knee curves exist, and flags a stale evaluation", async () => {
+    routes["GET /api/system/production"] = () => ({ body: { members: 30, starless_members: 12, stale: true,
+      stale_reason: "The evaluation predates the current members", evaluated_at: "2026-09-25T23:32:26+00:00", eval_summary: {
+        ensemble_psnr: 44.123, mean_member_psnr: 43.913, ensemble_gain_db: -0.4,
+      } } });
+    routes["GET /ensemble/knee-psnr.json?mode=starfull"] = () => ({ body: { available: false, stale: false } });
+    show(<Dashboard />);
+    const text = await summaryText();
+    expect(text).toMatch(/^Plain mean 44\.12\u00a0dB test PSNR, \+0\.21\u00a0dB over the mean member · 30 members, evaluated .+\sago \(stale\)$/);
+    expect(summary()!.querySelector("[data-tone=warn]")?.textContent).toBe("stale");
+  });
+
+  it("uses the gate's test PSNR from the spatial_gate_* keys when the knee curves are missing", async () => {
+    routes["GET /ensemble/knee-psnr.json?mode=starfull"] = () => ({ body: { available: false, stale: false } });
+    show(<Dashboard />);
+    const text = await summaryText();
+    expect(text).toMatch(/^Production gate 59\.24\u00a0dB test PSNR, \+0\.29\u00a0dB over the best member and \+0\.86\u00a0dB over the plain mean · 30 members/);
   });
 
   it("falls back to the ensemble status when the server predates the production endpoint", async () => {
     routes["GET /api/system/production"] = () => ({ status: 404, body: { error: "The requested URL was not found on the server." } });
+    routes["GET /ensemble/knee-psnr.json?mode=starfull"] = () => ({ body: { available: false, stale: false } });
     routes["GET /ensemble/status.json?mode=starfull"] = () => ({ body: {
       eval_summary: { ensemble_psnr: 58.3753, spatial_gate_combiner_psnr: 59.2354, spatial_gate_combiner_vs_best_member_db: 0.2948 },
       eval_summary_stale: false, members: STATUS_MEMBERS,
     } });
     show(<Dashboard />);
-    expect(await screen.findByText("59.24", undefined, { timeout: 4000 })).toBeTruthy();
-    const test = tile("Test PSNR · production gate");
-    expect(within(test).getByText(/via ensemble status/)).toBeTruthy();
+    expect(await summaryText()).toMatch(/^Production gate 59\.24\u00a0dB test PSNR, \+0\.29\u00a0dB over the best member · 30 members$/);
+    await waitFor(() => expect(notes().some((n) => /predates \/api\/system\/production/.test(n))).toBe(true));
   });
 
   it("says the server needs a restart when neither endpoint answers", async () => {
     routes["GET /api/system/production"] = () => ({ status: 404, body: { error: "The requested URL was not found on the server." } });
+    routes["GET /ensemble/knee-psnr.json?mode=starfull"] = () => ({ body: { available: false, stale: false } });
     show(<Dashboard />);
-    const test = await waitFor(() => {
-      const t = tile("Test PSNR · production gate");
-      if (!within(t).queryByText("not served by this server — restart it")) throw new Error("not yet");
-      return t;
-    }, { timeout: 4000 });
-    expect(test).toBeTruthy();
+    await waitFor(() => expect(notes().some((n) => /does not serve the production numbers.*restart it/.test(n))).toBe(true), { timeout: 4000 });
+    expect(summary()).toBeNull();
   });
 
   it("never waits on the heavy ensemble status", async () => {
     show(<Dashboard />);
-    expect(await screen.findByText("59.24")).toBeTruthy();
+    await summaryText();
     expect(calls.some((c) => c.url.startsWith("/ensemble/status.json"))).toBe(false);
   });
+});
 
-  it("counts the active STARFULL members by regime label, not all 42", async () => {
+describe("Home · problems only", () => {
+  it("notes FASRC only when it is broken, and never repeats a notice the shell or the list shows", async () => {
     show(<Dashboard />);
-    const members = await waitFor(() => {
-      const t = tile("STARFULL members");
-      if (!within(t).queryByText("30")) throw new Error("not loaded");
-      return t;
-    });
-    expect(within(members).queryByText("42")).toBeNull();
-    expect(within(members).getByText(/^linear mix · fitted .+ · 12 starless \(opt-in\)$/)).toBeTruthy();
-    expect(within(members).getByText("spatial gate fits them")).toBeTruthy();
-  });
-
-  it("falls back to the labelled plain mean with its gain over the mean member", async () => {
-    routes["GET /api/system/production"] = () => ({ body: { members: 30, starless_members: 12, stale: true,
-      stale_reason: "The evaluation predates the current members", eval_summary: {
-        ensemble_psnr: 44.123, mean_member_psnr: 43.913, ensemble_gain_db: -0.4,
-      } } });
-    routes["GET /ensemble/knee-psnr.json?mode=starfull"] = () => ({ body: { available: false, stale: false } });
-    show(<Dashboard />);
-    expect(await screen.findByText("44.12")).toBeTruthy();
-    const test = tile("Test PSNR · plain mean");
-    expect(within(test).getByText("+0.21 dB vs mean member")).toBeTruthy();
-    expect(within(test).getByText("no production-gate score yet · summary stale")).toBeTruthy();
-    expect(within(tile("∫PSNR · production gate")).getByText("not computed yet")).toBeTruthy();
-  });
-
-  it("shows connection, version, jobs and free disk", async () => {
-    show(<Dashboard />);
-    expect(await screen.findByText("1111111")).toBeTruthy();
-    expect(screen.getByText("code changed")).toBeTruthy();
-    expect(screen.getByText("Backend code changed — restart the server to load it")).toBeTruthy();
+    await waitFor(() => expect(notes().length).toBe(1));
+    expect(notes()[0]).toMatch(/^FASRC is not connected.*ssh: connect to host login\.rc: timed out/);
+    // a changed backend is the shell's restart notice (on every page, dismissible): not repeated here
+    expect(notes().some((n) => /Backend code changed|restart the server/.test(n))).toBe(false);
+    expect(screen.queryByText("1111111")).toBeNull();
     expect(screen.queryByText(/behind|HEAD/)).toBeNull();
-    expect(await screen.findByText("ssh: connect to host login.rc: timed out")).toBeTruthy();
-    expect(await screen.findByText("job a")).toBeTruthy();
-    const disk = await waitFor(() => {
-      const t = tile("Free disk");
-      if (!within(t).queryByText("20 GiB")) throw new Error("not loaded");
-      return t;
+    // the disk alert is in the health list below, so it gets no second note
+    expect(notes().some((n) => /disk/i.test(n))).toBe(false);
+    expect(screen.getByText("20.0 GiB free on the data disk (96 % used)")).toBeTruthy();
+  });
+
+  it("notes low disk when the health list does not already carry it", async () => {
+    routes["GET /api/system/alerts"] = () => ({ body: { ...ALERTS, alerts: ALERTS.alerts.filter((c) => (c as { id: string }).id !== "disk"),
+      checks: ALERTS.checks.filter((c) => c.id !== "disk") } });
+    show(<Dashboard />);
+    await waitFor(() => expect(notes().some((n) => /disk/.test(n))).toBe(true));
+    expect(notes().find((n) => /disk/.test(n))).toBe("Low disk: 20 GiB free on the data disk (96% of 460 GiB used)");
+  });
+
+  it("shows no system notes and no tiles when everything is healthy", async () => {
+    routes["GET /api/version"] = () => ({ body: { boot_commit: "1111111aaaa", boot_short: "1111111", head_commit: "1111111aaaa",
+      head_short: "1111111", behind: false, dirty: false, started_at: "2026-09-26T01:00:00Z", pid: 4242, dist: null } });
+    routes["GET /api/fasrc/status"] = () => ({ body: { ssh_connected: true, last_error: null } });
+    routes["GET /api/system"] = () => ({ body: { disk: { free_bytes: 200 * GIB, total_bytes: 460 * GIB, used_fraction: 0.56, level: "ok" } } });
+    show(<Dashboard />);
+    await summaryText();
+    await waitFor(() => expect(calls.some((c) => c.url === "/api/fasrc/status")).toBe(true));
+    await waitFor(() => expect(calls.some((c) => c.url === "/api/system")).toBe(true));
+    expect(notes()).toEqual([]);
+    expect(screen.queryByText("Connected")).toBeNull();
+    expect(screen.queryByText("1111111")).toBeNull();
+    expect(screen.queryByText(/Free disk/)).toBeNull();
+  });
+});
+
+describe("Home · running now", () => {
+  it("says what runs, locally and on FASRC, and links to the jobs page", async () => {
+    routes["GET /api/fasrc/current-submission"] = () => ({ body: { ok: true, live: [
+      { jobid: "4242", state: "RUNNING", label: "Train ensemble members", step_id: "ensemble_train", progress_step: 10500, progress_total: 70000,
+        params_json: JSON.stringify({ member_names: "member_199,member_200,member_201,member_202" }) },
+    ] } });
+    show(<Dashboard />);
+    const line = await waitFor(() => {
+      const el = document.querySelector(".home__running") as HTMLElement | null;
+      if (!el || !/FASRC/.test(el.textContent ?? "")) throw new Error("not yet");
+      return el;
     });
-    expect(within(disk).getByText("96 % of 460 GiB used")).toBeTruthy();
-    expect(within(disk).getByText("low")).toBeTruthy();
+    expect(line.textContent).toBe("Running now: members 199–202 on FASRC · 15%; job a on this laptop. All jobs");
+    expect(within(line).getByRole("link", { name: "All jobs" }).getAttribute("href")).toBe("/ops/jobs");
+  });
+
+  it("says nothing when idle", async () => {
+    routes["GET /api/jobs?summary=1"] = () => ({ body: [job("b")] });
+    show(<Dashboard />);
+    await summaryText();
+    expect(await screen.findByText("job b")).toBeTruthy();
+    expect(document.querySelector(".home__running")).toBeNull();
   });
 });
 
@@ -232,6 +277,15 @@ describe("Home · health checks", () => {
     expect(screen.getByText("Evaluation current (30 members, test records)")).toBeTruthy();
     fireEvent.click(screen.getByText("20.0 GiB free on the data disk (96 % used)"));
     expect(useInspector.getState().current).toEqual({ kind: "check", id: "disk" });
+  });
+
+  it("shows the alert badge only while something needs attention", async () => {
+    routes["GET /api/system/alerts"] = () => ({ body: { ...ALERTS, counts: { bad: 0, warn: 0, ok: 4, unknown: 1 },
+      checks: ALERTS.checks.filter((c) => c.state !== "warn"), alerts: [] } });
+    show(<Dashboard />);
+    expect(await screen.findByText("Everything is current")).toBeTruthy();
+    expect(screen.queryByText("all clear")).toBeNull();
+    expect(screen.queryByText(/\d alerts?$/)).toBeNull();
   });
 
   it("runs a check's action only after confirm, as a tracked local job", async () => {

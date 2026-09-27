@@ -1,21 +1,21 @@
 /* Stars tab: pure series builders on the Realism chart kit. Densities are
-   physical values on a log y axis; magnitudes are drawn bright-at-top as
-   −mag with magnitudeTicks({invert}). */
+   physical values on a log y axis. */
 import type { Guide, Series } from "../../../charts/Plot";
 import { C, categorical } from "../../../colors";
-import type { StarColorKey, StarDensityKey, StarDensityParameter, StarDistribution } from "../api";
+import type { StarDensityKey, StarDensityParameter, StarDistribution } from "../api";
 import { extent } from "../../../ticks";
 import { positiveOrNull } from "../chartKit";
 
-export const COLOR_ORDER: StarColorKey[] = ["vis_y", "vis_j", "vis_h", "y_j", "y_h", "j_h"];
-export const PROJECTION_ORDER = ["vis_y", "vis_j", "vis_h"] as const;
-export const DENSITY_ORDER: StarDensityKey[] = ["vis", ...COLOR_ORDER];
+/** The VIS magnitude panel, then the six Euclid colour panels. */
+export const DENSITY_ORDER: StarDensityKey[] = ["vis", "vis_y", "vis_j", "vis_h", "y_j", "y_h", "j_h"];
 
 /** The density curves, one legend key each (toggled together across the
  *  seven density panels). */
 export const DENSITY_KEYS = {
   pointSources: "point sources",
   q1: "Q1 PHZ",
+  /** The colour panels' Euclid curve: the four-band colours of the Gaia-matched fixed-field stars. */
+  fourBand: "Euclid four-band",
   gaia: "Gaia G_AB",
   gaiaFit: "Gaia fit",
   model: "model",
@@ -25,27 +25,30 @@ export const DENSITY_KEYS = {
 export const densityColor = {
   pointSources: () => categorical(1),
   q1: () => C.mean,
+  // Its own hue: the colour panels' four-band curve is a separate legend toggle from the VIS Q1 PHZ curve.
+  fourBand: () => categorical(7),
   gaia: () => C.comb,
   model: () => categorical(3),
   synthetic: () => categorical(4),
 };
 
-export function clamp(values: readonly number[], [lo, hi]: [number, number]): number[] {
-  return values.map((v) => Math.max(lo, Math.min(hi, v)));
-}
-
-/** A negated magnitude list (bright at the top), clamped to `domain`. */
-export const brightUp = (values: readonly number[], domain: [number, number]) => clamp(values, domain).map((v) => -v);
-
-export function densitySeries(parameter: StarDensityParameter, trainingIncluded: boolean): Series[] {
+/** One panel's curves. The native Gaia G_AB counts and their shared-slope fit exist only on the VIS
+ *  panel: they set the slope of the fitted magnitude law (Q1 PHZ sets its level). On a colour panel
+ *  the Euclid curve is the matched fixed-field stars' four-band colours, not Q1 PHZ. */
+export function densitySeries(parameter: StarDensityParameter, trainingIncluded: boolean, panel: StarDensityKey = "vis"): Series[] {
   const gx = parameter.gaia_x ?? parameter.x;
   const out: Series[] = [];
   if (parameter.point_sources) {
     out.push({ x: parameter.x, y: positiveOrNull(parameter.point_sources), color: densityColor.pointSources(), width: 2.2,
       name: "Q1 point sources (VIS)", key: DENSITY_KEYS.pointSources });
   }
-  out.push({ x: parameter.x, y: positiveOrNull(parameter.euclid), color: densityColor.q1(), width: 2.2, name: "Q1 PHZ (VIS)", key: DENSITY_KEYS.q1 });
-  out.push({ x: gx, y: positiveOrNull(parameter.gaia), color: densityColor.gaia(), width: 2.2, name: "native Gaia G_AB", key: DENSITY_KEYS.gaia });
+  out.push(panel === "vis"
+    ? { x: parameter.x, y: positiveOrNull(parameter.euclid), color: densityColor.q1(), width: 2.2, name: "Q1 PHZ (VIS)", key: DENSITY_KEYS.q1 }
+    : { x: parameter.x, y: positiveOrNull(parameter.euclid), color: densityColor.fourBand(), width: 2.2, name: "Euclid four-band",
+      key: DENSITY_KEYS.fourBand });
+  if (parameter.gaia) {
+    out.push({ x: gx, y: positiveOrNull(parameter.gaia), color: densityColor.gaia(), width: 2.2, name: "native Gaia G_AB", key: DENSITY_KEYS.gaia });
+  }
   if (parameter.gaia_fit) {
     out.push({ x: gx, y: positiveOrNull(parameter.gaia_fit), color: densityColor.gaia(), width: 2.2, dash: [4, 3],
       name: "Gaia shared-slope fit", key: DENSITY_KEYS.gaiaFit });
@@ -60,7 +63,7 @@ export function densitySeries(parameter: StarDensityParameter, trainingIncluded:
 
 /** Density y domain: the positive values, at most 5 decades below the peak. */
 export function densityDomain(parameter: StarDensityParameter): [number, number] {
-  const positive = [parameter.euclid, parameter.gaia, parameter.model, parameter.synthetic,
+  const positive = [parameter.euclid, parameter.gaia ?? [], parameter.model, parameter.synthetic,
     parameter.gaia_fit ?? [], parameter.point_sources ?? []].flat().filter((v) => Number.isFinite(v) && v > 0);
   const span = extent(positive);
   if (!span) return [1e-4, 1];
@@ -80,45 +83,22 @@ export function fitGuides(parameter: StarDensityParameter): Guide[] {
   });
 }
 
-export function correlationSeries(distribution: StarDistribution, key: StarColorKey): Series[] {
-  const item = distribution.colors[key];
-  const x = clamp(distribution.bp_rp, distribution.x_domain);
-  const y = clamp(item.values, item.y_domain);
-  const fit = item.fit;
-  return [
-    ...(fit ? [
-      { x: fit.x, y: fit.center, low: fit.two_sigma_low, high: fit.two_sigma_high, color: C.comb, fillAlpha: 0.07, alpha: 0, width: 0, name: "2σ intrinsic", key: "2σ" },
-      { x: fit.x, y: fit.center, low: fit.one_sigma_low, high: fit.one_sigma_high, color: C.comb, fillAlpha: 0.16, alpha: 0, width: 0, name: "1σ intrinsic", key: "1σ" },
-    ] : []),
-    { x, y, color: C.mean, mode: "scatter", width: 0.7, alpha: 0.28, name: "catalogue stars", key: "stars" },
-    fit
-      ? { x: fit.x, y: fit.center, color: C.comb, width: 2.4, name: "fitted locus", key: "locus" }
-      : { x: item.trend.x, y: item.trend.y, color: C.comb, width: 2.4, name: "trend", key: "locus" },
-  ];
+/** The VIS window the Q1 counts were fitted over (the Q1 fit guides), or null. */
+export function trustedWindow(parameter: StarDensityParameter): [number, number] | null {
+  const [lo, hi] = parameter.fit_ranges?.q1 ?? [];
+  return lo != null && hi != null && Number.isFinite(lo) && Number.isFinite(hi) ? [lo, hi] : null;
 }
 
-/** The Gaia colour–magnitude diagram (G bright-at-top). */
-export function cmdSeries(distribution: StarDistribution): Series[] {
-  const cmd = distribution.gaia_cmd;
-  return [
-    { x: clamp(cmd.unmatched.bp_rp, cmd.x_domain), y: brightUp(cmd.unmatched.g_mag, cmd.g_domain), color: C.muted,
-      mode: "scatter", width: 0.45, alpha: 0.25, name: `unmatched · ${cmd.unmatched.bp_rp.length.toLocaleString("en")}`, key: "unmatched" },
-    { x: clamp(cmd.matched.bp_rp, cmd.x_domain), y: brightUp(cmd.matched.g_mag, cmd.g_domain), color: C.comb,
-      mode: "scatter", marker: "ring", width: 0.75, alpha: 0.62, name: `Euclid counterpart · ${cmd.matched.bp_rp.length.toLocaleString("en")}`, key: "matched" },
-  ];
+type DensityComparison = NonNullable<StarDistribution["density_comparison"]>;
+
+/** Stars per arcmin² in the generated catalogues, or null without a rendered area. */
+export function generatedDensity(c: DensityComparison): number | null {
+  const n = c.synthetic_star_count, area = c.synthetic_area_arcmin2;
+  return n != null && area != null && area > 0 ? n / area : null;
 }
 
-/** VIS vs one colour for the Gaia population projected into Euclid. */
-export function projectionSeries(distribution: StarDistribution, key: (typeof PROJECTION_ORDER)[number]): Series[] {
-  const p = distribution.euclid_projection!;
-  const color = p.colors[key];
-  const observed = p.euclid_observed[key];
-  return [
-    { x: clamp(p.unmatched.colors[key], color.x_domain), y: brightUp(p.unmatched.vis_mag, p.vis_domain), color: C.muted,
-      mode: "scatter", width: 0.4, alpha: 0.22, name: "unmatched Gaia", key: "unmatched" },
-    { x: clamp(p.matched.colors[key], color.x_domain), y: brightUp(p.matched.vis_mag, p.vis_domain), color: C.comb,
-      mode: "scatter", marker: "ring", width: 0.7, alpha: 0.58, name: "Euclid counterpart", key: "matched" },
-    { x: clamp(observed.color, color.x_domain), y: brightUp(observed.vis_mag, p.vis_domain), color: C.mean,
-      mode: "scatter", width: 0.55, alpha: 0.34, name: "measured fixed-Q1 star", key: "measured" },
-  ];
+/** Generated ÷ prior − 1 (a fraction), or null when either side is missing. */
+export function densityDelta(c: DensityComparison): number | null {
+  const generated = generatedDensity(c);
+  return generated != null && c.model_density_arcmin2 > 0 ? generated / c.model_density_arcmin2 - 1 : null;
 }

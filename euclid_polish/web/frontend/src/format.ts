@@ -78,6 +78,17 @@ export function formatCount(v: Maybe, fallback = DASH): string {
   return isFiniteNumber(v) ? nf({ maximumFractionDigits: 0 }).format(Math.round(v)) : fallback;
 }
 
+/** An expected or modelled count at ≈3 significant figures ("≈403k",
+ *  "≈16.6M", "≈1,200", "≈5.08"). Measured counts use formatCount instead.
+ *  Rounds before choosing the suffix, so 999,950 reads "≈1M", not "≈1,000k". */
+export function formatApprox(v: Maybe, { sign = true }: { sign?: boolean } = {}): string {
+  if (!isFiniteNumber(v)) return DASH;
+  const r = Number(v.toPrecision(3)) || 0; // `|| 0` folds -0 into 0
+  const a = Math.abs(r);
+  const [div, suffix] = a >= 1e6 ? [1e6, "M"] : a >= 1e4 ? [1e3, "k"] : [1, ""];
+  return `${sign ? "≈" : ""}${nf({ maximumSignificantDigits: 3 }).format(r / div)}${suffix}`;
+}
+
 /** Fraction → percent: 0.1234 → "12.3%". */
 export function formatPercent(fraction: Maybe, digits = 1, fallback = DASH): string {
   return isFiniteNumber(fraction) ? `${(fraction * 100).toFixed(digits)}%` : fallback;

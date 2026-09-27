@@ -83,7 +83,7 @@ const LAYER_TOKEN: Record<string, string> = {
   poster: "cat-4", pairs: "cat-5", "archive-fields": "cat-3", "eval-objects": "cat-1",
   experiments: "cat-6", "lens-candidates": "bad", galaxies: "cat-1", stars: "cat-7",
   "psf-clusters": "cat-2", "noise-positions": "cat-0", "population-cones": "cat-0",
-  "gaia-fields": "cat-7", "jwst-mast": "cat-6", "jwst-footprints": "cat-6", selection: "accent",
+  "jwst-mast": "cat-6", "jwst-footprints": "cat-6", selection: "accent",
 };
 
 function tokenColor(token: string, p: SkyPalette): string | null {

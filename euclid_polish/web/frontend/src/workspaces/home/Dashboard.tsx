@@ -1,14 +1,20 @@
-/* Home (spec §8.1): the production model's numbers, the health checks, the
- * running work, quick actions and a small sky. Everything works offline.
+/* Home (spec §8.1; statistics rule of the 2026-09-27 console spec): one
+ * sentence with the production model's number against its references, a
+ * "Running now" line while jobs run, notes for FASRC / the production
+ * endpoint / the disk ONLY when they are broken (a changed backend is the
+ * shell's notice strip), then the health checks, recent jobs, quick
+ * actions and a small sky. Everything works offline.
  *
  * Numbers and their definitions are in homeModel.ts: the knee-integrated
- * PSNR of the production spatial gate (/ensemble/knee-psnr.json), its test
- * PSNR from eval_summary.json's spatial_gate_* keys (/ensemble/status.json),
- * the active STARFULL member count from the regime labels (/api/models).
- * Health checks: /api/system/alerts (routes/system.py); free space:
- * /api/system. Quick actions › Log to tracking opens the shared dialog
- * pre-filled from the tracking check's unlogged results (homeModel.ts). */
-import { useState } from "react";
+ * PSNR of the production spatial gate (/ensemble/knee-psnr.json) with its
+ * gain over the best member and the plain mean; without knee curves, its
+ * test PSNR from eval_summary.json's spatial_gate_* keys
+ * (/api/system/production); the active STARFULL member count from the
+ * regime labels (/api/models). Health checks: /api/system/alerts
+ * (routes/system.py); free space: /api/system. Quick actions › Log to
+ * tracking opens the shared dialog pre-filled from the tracking check's
+ * unlogged results (homeModel.ts). */
+import { useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { useJobsFeed } from "../../api/jobs";
 import { invalidate, useResource } from "../../api/query";
@@ -16,16 +22,18 @@ import { registerInspector } from "../../app/inspector";
 import { JobList, SlurmRow } from "../../app/JobTray";
 import { usePageActions } from "../../app/palette";
 import { refreshHealth, useRunJobs } from "../../app/RunActions";
-import { useConsoleUpdate, useFasrcStatus, useSystemAlerts, useVersion } from "../../app/status";
-import { formatBytes, formatCount, formatNumber, formatRelative } from "../../format";
-import { Badge, Button, Card, CardBody, CardHead, IconButton, Kpi, Page, type Tone } from "../../ui";
+import { useFasrcStatus, useSystemAlerts } from "../../app/status";
+import { formatBytes, formatNumber, formatRelative } from "../../format";
+import {
+  Badge, Button, Callout, Card, CardBody, CardHead, IconButton, Num, Page, Skeleton, SummaryLine,
+} from "../../ui";
 import { LogToTrackingDialog } from "../shared/LogToTracking";
 import { PageLead } from "../shared/PageLead";
-import { serverCodeText } from "../shared/versionText";
 import { CheckInspector, HealthList } from "./Health";
 import {
-  kneeHeadline, productionFromStatus, productionHeadline, productionModel, starfullMembers, trackingCatchUpNote, unloggedItems,
-  type EnsembleStatusSlice, type KneePayload, type ModelsCatalog, type ProductionPayload,
+  kneeHeadline, productionFromStatus, productionHeadline, productionModel, runningItems, starfullMembers, trackingCatchUpNote,
+  unloggedItems, type EnsembleStatusSlice, type KneeHeadline, type KneePayload, type ModelsCatalog, type ProductionHeadline,
+  type ProductionPayload,
 } from "./homeModel";
 import { SkyOverview } from "./SkyOverview";
 import "./home.css";
@@ -37,20 +45,74 @@ type SystemInfo = {
 };
 
 const db = (v: number | null | undefined) => formatNumber(v, { digits: 2 });
-const dbSigned = (v: number | null | undefined) => formatNumber(v, { digits: 2, signed: true });
-const deltaTone = (v: number | null | undefined): Tone => (v != null && v >= 0 ? "good" : "warn");
-const LEVEL_TONE: Record<string, Tone> = { ok: "neutral", warn: "warn", bad: "bad", unknown: "neutral" };
 
 const KNEE_HINT = "Mean over VIS, Y, J, H of each model's PSNR integrated over log asinh knee 0.1–10⁴ e⁻ "
   + "(test cubes). The knee-independent way to compare models.";
-const TEST_HINT = "Asinh-stretched test PSNR of the production spatial gate from the last STARFULL evaluation "
-  + "(eval_summary.json spatial_gate_* keys; the RBF combiner is never the headline).";
+const TEST_HINT = "Asinh-stretched test PSNR from the last STARFULL evaluation (eval_summary.json spatial_gate_* "
+  + "keys; the RBF combiner is never the headline).";
 const MEMBERS_HINT = "Registry-active members of the STARFULL regime (the default). Starless members are an opt-in "
   + "regime and never enter the production gate.";
 
+/** "+1.02 dB over the best member (#196)"; a loss reads "0.30 dB under …" in warn.
+ *  A non-breaking space keeps each number with its unit. */
+function gain(v: number | null | undefined, what: string): ReactNode {
+  if (v == null || !Number.isFinite(v)) return null;
+  return v >= 0
+    ? <><Num>{formatNumber(v, { digits: 2, signed: true })}</Num>{"\u00a0"}dB over {what}</>
+    : <><Num tone="warn">{formatNumber(-v, { digits: 2 })}</Num>{"\u00a0"}dB under {what}</>;
+}
+
+/** "a, b and c" over the non-empty parts. */
+function joinClauses(parts: ReactNode[]): ReactNode[] {
+  const ok = parts.filter((p) => p != null);
+  return ok.flatMap((p, i) => [i === 0 ? null : i === ok.length - 1 ? " and " : ", ", <span key={i}>{p}</span>]);
+}
+
+/** The production model's one sentence: its knee-integrated PSNR against the
+ *  best member and the plain mean (or, without knee curves, its test PSNR),
+ *  then the member count and the evaluation time. Null without a number. */
+function ProductionSummary({ knee, prod, members, evaluatedAt }: {
+  knee: KneeHeadline | null; prod: ProductionHeadline | null; members: number | null; evaluatedAt: string | null;
+}) {
+  let head: ReactNode;
+  let stale = !!prod?.stale;
+  const kneeValue = knee?.gate ?? knee?.mean ?? null;
+  if (knee && kneeValue != null) {
+    const best = knee.best ? `the best member (#${knee.best.name.replace(/^member_/, "")})` : "the best member";
+    head = <>
+      {knee.gate != null ? "Production gate" : "Plain mean"} <Num>{db(kneeValue)}</Num>{"\u00a0"}dB{" "}
+      <Link to="/ensemble/starfull/knee" title={KNEE_HINT}>integrated PSNR</Link>
+      {(knee.vsBest != null || knee.vsMean != null) && ", "}
+      {joinClauses([gain(knee.vsBest, best), knee.gate != null ? gain(knee.vsMean, "the plain mean") : null])}
+    </>;
+    stale = stale || knee.stale;
+  } else if (prod) {
+    const clauses = prod.kind === "gate"
+      ? [gain(prod.vsBest, "the best member"), gain(prod.vsMean, "the plain mean")]
+      : [gain(prod.vsMeanMember, "the mean member")];
+    head = <>
+      {prod.kind === "gate" ? "Production gate" : "Plain mean"} <Num>{db(prod.psnr)}</Num>{"\u00a0"}dB{" "}
+      <Link to="/ensemble/starfull/overview" title={TEST_HINT}>test PSNR</Link>
+      {clauses.some((c) => c != null) && ", "}{joinClauses(clauses)}
+    </>;
+  } else {
+    return null;
+  }
+  const tail = [
+    members != null ? <Link key="m" to="/ensemble/starfull/members" title={MEMBERS_HINT}>{members} members</Link> : null,
+    evaluatedAt ? <span key="e">evaluated {formatRelative(evaluatedAt).replace(/ /g, "\u00a0")}</span> : null,
+  ].filter(Boolean);
+  return (
+    <SummaryLine className="home__summary">
+      {head}
+      {tail.length > 0 && <> · {tail.flatMap((t, i) => (i ? [", ", t] : [t]))}</>}
+      {stale && <> (<Num tone="warn">stale</Num>)</>}
+    </SummaryLine>
+  );
+}
+
 export default function Dashboard() {
   const fasrc = useFasrcStatus();
-  const version = useVersion();
   const feed = useJobsFeed();
   const alerts = useSystemAlerts();
   const system = useResource<SystemInfo>("/api/system", [], { ttl: 60_000 });
@@ -66,7 +128,6 @@ export default function Dashboard() {
   const models = useResource<ModelsCatalog>("/api/models", [], { ttl: 60_000 });
   const knee = useResource<KneePayload>("/ensemble/knee-psnr.json?mode=starfull", [], { ttl: 60_000 });
   const run = useRunJobs();
-  const consoleUpdated = useConsoleUpdate();
   const [logOpen, setLogOpen] = useState(false);
 
   const refreshAll = () => {
@@ -74,11 +135,10 @@ export default function Dashboard() {
     for (const prefix of ["/api/system", "/ensemble/", "/api/models", "/api/version", "/api/fasrc/status", "/api/sky/layer/"]) void invalidate(prefix);
   };
   usePageActions([
-    { id: "home:refresh", label: "Refresh Home", group: "Home", keywords: ["reload", "health", "kpi"], run: refreshAll },
+    { id: "home:refresh", label: "Refresh Home", group: "Home", keywords: ["reload", "health", "summary"], run: refreshAll },
     { id: "home:log", label: "Log the unlogged results to tracking…", group: "Home", keywords: ["notebook", "tracking"], run: () => setLogOpen(true) },
   ]);
 
-  const v = version.data;
   const prod = productionHeadline(ens.data?.eval_summary ?? null, !!ens.data?.stale);
   const kh = kneeHeadline(knee.data);
   const members = starfullMembers(models.data, ens.data);
@@ -87,33 +147,43 @@ export default function Dashboard() {
   const alertCount = alerts.data?.alerts.length ?? 0;
   const trackingCheck = alerts.data?.checks.find((c) => c.id === "tracking");
   const unlogged = unloggedItems(trackingCheck).length;
-  const code = v ? serverCodeText(v, consoleUpdated) : null;
+  const running = runningItems(feed.jobs, feed.slurm);
+  const summaryLoading = (knee.loading && !knee.data) || (ens.loading && !ens.data);
 
-  const kneeValue = kh?.gate ?? kh?.mean ?? null;
-  const kneeDelta = kh?.best && kh.vsBest != null ? `${dbSigned(kh.vsBest)} dB vs ${kh.best.name.replace("member_", "member ")}` : undefined;
-  const kneeFooter = kh
-    ? [kh.gate == null ? "plain mean (no gate in the cubes)" : kh.vsMean != null ? `${dbSigned(kh.vsMean)} dB vs plain mean` : null,
-      kh.nFields != null ? `${kh.nFields} fields` : null, kh.stale ? "stale" : null].filter(Boolean).join(" · ")
-    : knee.error ? "no knee curves" : knee.data && !knee.data.available ? "not computed yet" : undefined;
-
-  const testLabel = prod?.kind === "mean" ? "Test PSNR · plain mean" : "Test PSNR · production gate";
-  const testDelta = prod?.kind === "gate"
-    ? (prod.vsBest != null ? `${dbSigned(prod.vsBest)} dB vs best member` : undefined)
-    : prod?.kind === "mean" && prod.vsMeanMember != null ? `${dbSigned(prod.vsMeanMember)} dB vs mean member` : undefined;
-  const testFooter = prod
-    ? [prod.kind === "gate" && prod.vsMean != null ? `${dbSigned(prod.vsMean)} dB vs plain mean${prod.meanPsnr != null ? ` ${db(prod.meanPsnr)}` : ""}` : null,
-      prod.kind === "mean" ? "no production-gate score yet" : null, prod.stale ? "summary stale" : null,
-      viaLegacy ? "via ensemble status (restart the server for the fast endpoint)" : null].filter(Boolean).join(" · ")
-    : ens.error ? (viaLegacy ? "not served by this server — restart it" : ens.error.message)
-      : ens.data ? "not evaluated yet" : undefined;
+  // Problems only (spec: "a badge appears only on a problem"): FASRC, the
+  // server and the disk are silent while healthy, and nothing is said twice
+  // on one screen: a changed backend or a new console build is the shell's
+  // notice strip (every page, dismissible), and the disk note is skipped when
+  // the health list below already carries the disk alert.
+  const notes: { id: string; tone: "warn" | "bad"; body: ReactNode; action?: ReactNode }[] = [];
+  if (fasrc.data && !fasrc.data.ssh_connected) {
+    notes.push({ id: "fasrc", tone: "warn",
+      body: <>FASRC is not connected — local pages still work.{fasrc.data.last_error ? <> <span className="home__note-detail">{fasrc.data.last_error}</span></> : null}</>,
+      action: <Button asChild size="sm" variant="ghost"><Link to="/settings/connections">Connections</Link></Button> });
+  }
+  if (viaLegacy && legacy.data) {
+    notes.push({ id: "legacy", tone: "warn",
+      body: "This server predates /api/system/production: the numbers come from the slower ensemble status. Restart the server for the fast endpoint." });
+  } else if (viaLegacy && legacy.error) {
+    notes.push({ id: "legacy", tone: "warn", body: "This server does not serve the production numbers — restart it." });
+  } else if (!viaLegacy && ens.error && !ens.data) {
+    notes.push({ id: "production", tone: "warn", body: `Could not read the production numbers: ${ens.error.message}` });
+  }
+  const diskAlerted = alerts.data?.alerts.some((c) => c.id === "disk") ?? false;
+  if (disk && (disk.level === "warn" || disk.level === "bad") && !diskAlerted) {
+    notes.push({ id: "disk", tone: disk.level === "bad" ? "bad" : "warn",
+      body: <>{disk.level === "bad" ? "Disk critically low" : "Low disk"}: {formatBytes(disk.free_bytes)} free on the{" "}
+        <Link to="/settings/about">data disk</Link>
+        {disk.used_fraction != null ? ` (${Math.round(disk.used_fraction * 100)}% of ${formatBytes(disk.total_bytes)} used)` : ""}</> });
+  }
 
   return (
     <Page className="home">
       <PageLead right={(
         <>
-          {alerts.data && (
-            <Badge tone={alertCount ? (alerts.data.counts.bad ? "bad" : "warn") : "good"} dot>
-              {alertCount ? `${alertCount} alert${alertCount === 1 ? "" : "s"}` : "all clear"}
+          {alertCount > 0 && alerts.data && (
+            <Badge tone={alerts.data.counts.bad ? "bad" : "warn"} dot>
+              {`${alertCount} alert${alertCount === 1 ? "" : "s"}`}
             </Badge>
           )}
           <IconButton icon="reset" label="Refresh Home" onClick={refreshAll} />
@@ -122,45 +192,20 @@ export default function Dashboard() {
         The production model, health checks and running work.
       </PageLead>
 
-      <div className="home__kpis" role="group" aria-label="Production model">
-        <Kpi label={kh?.gate == null && kh ? "∫PSNR · plain mean" : "∫PSNR · production gate"} icon="layers"
-          to="/ensemble/starfull/knee" loading={knee.loading && !knee.data} hint={KNEE_HINT}
-          value={db(kneeValue)} unit={kneeValue != null ? "dB" : undefined}
-          delta={kneeDelta} deltaTone={deltaTone(kh?.vsBest)} footer={kneeFooter} />
-        <Kpi label={testLabel} icon="activity" to="/ensemble/starfull/overview" loading={ens.loading && !ens.data}
-          hint={prod?.stale && ens.data?.stale_reason ? `${TEST_HINT} Stale: ${ens.data.stale_reason}.` : TEST_HINT}
-          value={db(prod?.psnr)} unit={prod ? "dB" : undefined}
-          delta={testDelta}
-          deltaTone={deltaTone(prod?.kind === "gate" ? prod.vsBest : prod?.kind === "mean" ? prod.vsMeanMember : null)}
-          footer={testFooter} tone={prod?.stale ? "warn" : undefined} />
-        <Kpi label="STARFULL members" icon="database" to="/ensemble/starfull/members" hint={MEMBERS_HINT}
-          loading={models.loading && ens.loading && !members} value={formatCount(members?.count ?? null)}
-          delta={production ? (production.available ? `${production.label} fits them` : `${production.label} out of date`) : undefined}
-          deltaTone={production?.available ? "good" : "warn"}
-          footer={[
-            production?.mix ? `${production.mix} mix` : null,
-            production?.fittedAt ? `fitted ${formatRelative(production.fittedAt)}` : null,
-            members?.starless != null ? `${members.starless} starless (opt-in)` : null,
-          ].filter(Boolean).join(" · ") || undefined} />
-      </div>
-      <div className="home__kpis home__kpis--system" role="group" aria-label="System">
-        <Kpi label="Running jobs" icon="activity" to="/ops/jobs" loading={feed.loading}
-          value={formatCount(feed.runningCount)}
-          footer={feed.fasrcOffline ? "local only · FASRC offline" : `${feed.running.length} local · ${feed.slurm.length} SLURM`} />
-        <Kpi label="FASRC" icon="server" to="/settings/connections" loading={fasrc.loading && !fasrc.data}
-          value={fasrc.data?.ssh_connected ? "Connected" : "Offline"}
-          tone={fasrc.data?.ssh_connected ? "good" : "neutral"}
-          footer={fasrc.data?.ssh_connected ? "SSH ControlMaster up" : (fasrc.data?.last_error ?? "local pages still work")} />
-        <Kpi label="Server" icon="info" to="/settings/about" loading={version.loading && !v}
-          value={v?.boot_short ?? "—"} tone={code?.title ? "warn" : "neutral"}
-          delta={code?.badge} deltaTone={code?.tone}
-          hint="The commit the server started from. Backend code that changed on disk since then needs a server restart; a new console build only a page reload."
-          footer={code?.title ?? (v?.started_at ? `started ${formatRelative(v.started_at)}${v.dirty ? " · uncommitted changes" : ""}` : undefined)} />
-        <Kpi label="Free disk" icon="database" to="/settings/about" loading={system.loading && !disk}
-          value={disk ? formatBytes(disk.free_bytes) : "—"} tone={disk ? LEVEL_TONE[disk.level] : undefined}
-          delta={disk && disk.level !== "ok" ? (disk.level === "bad" ? "critically low" : "low") : undefined}
-          deltaTone={disk?.level === "bad" ? "bad" : "warn"}
-          footer={disk?.used_fraction != null ? `${Math.round(disk.used_fraction * 100)} % of ${formatBytes(disk.total_bytes)} used` : undefined} />
+      <div className="home__lead">
+        <ProductionSummary knee={kh} prod={prod} members={members?.count ?? null} evaluatedAt={ens.data?.evaluated_at ?? null} />
+        {summaryLoading && !kh && !prod && <Skeleton lines={1} width="60%" />}
+        {running.length > 0 && (
+          <p className="home__running">
+            <span className="home__running-lead">Running now:</span> {running.map((r) => r.text).join("; ")}.{" "}
+            <Link to="/ops/jobs">All jobs</Link>
+          </p>
+        )}
+        {notes.length > 0 && (
+          <div className="home__notes">
+            {notes.map((n) => <Callout key={n.id} tone={n.tone} dense action={n.action}>{n.body}</Callout>)}
+          </div>
+        )}
       </div>
 
       <div className="home__grid">

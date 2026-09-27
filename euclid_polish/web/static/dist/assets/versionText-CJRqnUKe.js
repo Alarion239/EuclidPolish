@@ -1,1 +1,0 @@
-function n(e,t){return e.behind?{tone:"warn",badge:"code changed",title:"Backend code changed — restart the server to load it"}:t?{tone:"warn",badge:"new build",title:"The console build changed — reload"}:{tone:"good",badge:"current code",title:null}}export{n as s};

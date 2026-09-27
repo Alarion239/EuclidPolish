@@ -22,9 +22,16 @@ from euclid_polish.web.helpers.star_population import (
 )
 from euclid_polish.web.routes import star_distribution as routes
 
+#: Payload keys that existed only for the deleted Stars 'colours' (Gaia
+#: BP−RP vs the six Euclid colours) and 'gaia' (CMD + projection) views.
+DELETED_VIEW_KEYS = (
+    "colors", "gaia_cmd", "euclid_projection", "bp_rp", "x_domain",
+    "axis_note", "fit_note",
+)
 
-def test_star_distribution_builds_all_six_measured_colours():
-    gaia_rows = [
+
+def _gaia_rows() -> list[dict[str, str]]:
+    return [
         {
             "source_id": str(index),
             "bp_rp": str(0.2 * index),
@@ -33,9 +40,12 @@ def test_star_distribution_builds_all_six_measured_colours():
         }
         for index in range(1, 10)
     ]
-    euclid_rows = []
+
+
+def _euclid_rows() -> list[dict[str, str]]:
+    rows = []
     for index in range(1, 9):
-        euclid_rows.append({
+        rows.append({
             "gaia_id": str(index),
             "type": "star",
             "mag_vis": str(20.0 + index),
@@ -52,93 +62,11 @@ def test_star_distribution_builds_all_six_measured_colours():
                 for band in ("vis", "y", "j", "h")
             },
         })
-
-    payload = _star_distribution_from_rows(
-        euclid_rows,
-        gaia_rows,
-        calibration_fingerprint="candidate-1",
-        color_model={
-            "bp_rp_edges": [0.0, 0.8, 2.0],
-            "bp_rp_nodes": [0.4, 1.2],
-            "locus_colors": [[1.0, 0.5, 0.25], [1.2, 0.4, 0.1]],
-            "g_to_vis_offset": [0.3, 0.5],
-            "intrinsic_color_covariance": [
-                [0.04, 0.0, 0.0],
-                [0.0, 0.01, 0.0],
-                [0.0, 0.0, 0.0025],
-            ],
-        },
-    )
-
-    assert payload["matched_stars"] == 8
-    assert payload["high_quality_stars"] == 8
-    assert payload["pointlike_over_0_9"] == 8
-    assert payload["gaia_cmd"]["cached_stars"] == 9
-    assert len(payload["gaia_cmd"]["matched"]["bp_rp"]) == 8
-    assert payload["gaia_cmd"]["unmatched"]["bp_rp"] == pytest.approx([1.8])
-    assert set(payload["colors"]) == {
-        "vis_y", "vis_j", "vis_h", "y_j", "y_h", "j_h",
-    }
-    assert payload["colors"]["vis_y"]["values"] == pytest.approx([1.0] * 8)
-    assert payload["colors"]["vis_h"]["values"] == pytest.approx([2.0] * 8)
-    assert payload["colors"]["y_j"]["values"] == pytest.approx([0.5] * 8)
-    assert payload["colors"]["vis_j"]["fit"]["center"] == pytest.approx(
-        [1.5, 1.6]
-    )
-    assert payload["colors"]["vis_h"]["fit"]["sigma"] == pytest.approx(
-        0.0525 ** 0.5
-    )
-    assert payload["colors"]["y_h"]["fit"]["sigma"] == pytest.approx(
-        0.0125 ** 0.5
-    )
-    assert payload["fit_note"]
-    projection = payload["euclid_projection"]
-    assert len(projection["matched"]["vis_mag"]) == 8
-    assert len(projection["unmatched"]["vis_mag"]) == 1
-    assert projection["matched"]["vis_mag"][0] == pytest.approx(18.3)
-    assert projection["matched"]["colors"]["vis_j"][0] == pytest.approx(1.5)
-    assert len(projection["euclid_observed"]["vis_y"]["vis_mag"]) == 8
-    assert projection["euclid_observed"]["vis_h"]["color"] == pytest.approx(
-        [2.0] * 8
-    )
-    assert payload["density_comparison"] is None
+    return rows
 
 
-def test_stellar_density_comparison_uses_area_density_and_all_six_colours(
-    monkeypatch,
-):
-    def no_q1_cache(**_kwargs):
-        raise ValueError("not cached")
-
-    monkeypatch.setattr(
-        star_population,
-        "read_q1_phz_star_counts",
-        no_q1_cache,
-    )
-
-    euclid_rows = [
-        {
-            "type": "star", "point_like_prob": "0.95",
-            "mag_vis": "20", "mag_y_e": "19",
-            "mag_j_e": "18.5", "mag_h_e": "18",
-        },
-        {
-            "type": "star", "point_like_prob": "0.5",
-            "mag_vis": "21", "mag_y_e": "20",
-            "mag_j_e": "19.5", "mag_h_e": "19",
-        },
-    ]
-    projected = {
-        "matched": {
-            "vis_mag": [18.0],
-            "colors": {"vis_y": [0.5], "vis_j": [0.8], "vis_h": [1.0]},
-        },
-        "unmatched": {
-            "vis_mag": [19.0],
-            "colors": {"vis_y": [0.7], "vis_j": [1.1], "vis_h": [1.4]},
-        },
-    }
-    stellar_model = {
+def _stellar_model() -> dict:
+    return {
         "fingerprint": "density-test",
         "population": {
             "density_arcmin2": 2.0,
@@ -200,13 +128,125 @@ def test_stellar_density_comparison_uses_area_density_and_all_six_colours(
         },
     }
 
+
+def _no_q1_cache(monkeypatch):
+    def no_q1_cache(**_kwargs):
+        raise ValueError("not cached")
+
+    monkeypatch.setattr(
+        star_population,
+        "read_q1_phz_star_counts",
+        no_q1_cache,
+    )
+
+
+def test_star_distribution_counts_the_colour_sample_without_the_deleted_views():
+    """The Gaia–Euclid colour sample the prior fits colours on is still
+    counted, but the Gaia colour / CMD / projection views are not built."""
+    payload = _star_distribution_from_rows(
+        _euclid_rows(),
+        _gaia_rows(),
+        calibration_fingerprint="candidate-1",
+        color_model={
+            "bp_rp_edges": [0.0, 0.8, 2.0],
+            "bp_rp_nodes": [0.4, 1.2],
+            "locus_colors": [[1.0, 0.5, 0.25], [1.2, 0.4, 0.1]],
+            "g_to_vis_offset": [0.3, 0.5],
+            "intrinsic_color_covariance": [
+                [0.04, 0.0, 0.0],
+                [0.0, 0.01, 0.0],
+                [0.0, 0.0, 0.0025],
+            ],
+        },
+        gaia_sampling={"field_count": 3, "radius_arcmin": 21.0},
+    )
+
+    assert payload["matched_stars"] == 8
+    assert payload["high_quality_stars"] == 8
+    assert payload["pointlike_over_0_9"] == 8
+    assert payload["gaia_sampling"] == {"field_count": 3, "radius_arcmin": 21.0}
+    for key in DELETED_VIEW_KEYS:
+        assert key not in payload, key
+    assert payload["density_comparison"] is None     # no stellar model
+
+
+def test_star_distribution_payload_keeps_the_density_and_colour_panels(
+    monkeypatch,
+):
+    """GET /api/star-distribution: no deleted view keys, and the density
+    comparison (the six colour panels + the VIS law) is still served."""
+    _no_q1_cache(monkeypatch)
+    model = _stellar_model()
+    distribution = _star_distribution_from_rows(
+        _euclid_rows(),
+        _gaia_rows(),
+        calibration_fingerprint="density-test",
+        color_model=model["color_model"],
+        stellar_model=model,
+        area_arcmin2=10.0,
+        gaia_area_arcmin2=20.0,
+        gaia_sampling={"field_count": 3},
+    )
+    monkeypatch.setattr(
+        routes, "q1_stellar_color_sample_state",
+        lambda: {"cached": True, "euclid": {"rows": 8}, "gaia": {"rows": 9}},
+    )
+    monkeypatch.setattr(routes, "star_state", lambda: {"status": "candidate"})
+    monkeypatch.setattr(routes.euclid_session, "is_authenticated", lambda: True)
+    monkeypatch.setattr(routes, "_q1_counts_state", lambda: None)
+    monkeypatch.setattr(
+        routes, "star_distribution_payload", lambda **_kwargs: distribution,
+    )
+    monkeypatch.setattr(routes, "availability", lambda: {"synthetic": {}})
+
+    body = create_app().test_client().get("/api/star-distribution").get_json()
+
+    assert body["color_sample"]["cached"] is True     # what the prior fits on
+    served = body["distribution"]
+    for key in DELETED_VIEW_KEYS:
+        assert key not in served, key
+    assert served["matched_stars"] == 8
+    assert served["gaia_sampling"] == {"field_count": 3}
+    comparison = served["density_comparison"]
+    assert set(comparison["parameters"]) == {
+        "vis", "vis_y", "vis_j", "vis_h", "y_j", "y_h", "j_h",
+    }
+    for key in ("vis_y", "vis_j", "vis_h", "y_j", "y_h", "j_h"):
+        panel = comparison["parameters"][key]
+        assert {"euclid", "model", "synthetic"} <= set(panel)
+        assert "gaia" not in panel, key               # the deleted projection
+    vis = comparison["parameters"]["vis"]
+    # Native Gaia G_AB counts set the shared slope of the magnitude law.
+    assert {"euclid", "model", "gaia", "gaia_x", "gaia_fit"} <= set(vis)
+    assert "gaia_count" not in comparison
+    assert comparison["gaia_native_g_count"] == 9
+
+
+def test_stellar_density_comparison_uses_area_density_and_all_six_colours(
+    monkeypatch,
+):
+    _no_q1_cache(monkeypatch)
+
+    euclid_rows = [
+        {
+            "type": "star", "point_like_prob": "0.95",
+            "mag_vis": "20", "mag_y_e": "19",
+            "mag_j_e": "18.5", "mag_h_e": "18",
+        },
+        {
+            "type": "star", "point_like_prob": "0.5",
+            "mag_vis": "21", "mag_y_e": "20",
+            "mag_j_e": "19.5", "mag_h_e": "19",
+        },
+    ]
+    stellar_model = _stellar_model()
+
     result = star_population._stellar_density_comparison(
         euclid_rows,
         [
             {"g_mag": "17.9", "central_selected_star": "0"},
             {"g_mag": "18.9", "central_selected_star": "1"},
         ],
-        projected,
         stellar_model,
         euclid_area_arcmin2=10.0,
         gaia_area_arcmin2=20.0,
@@ -227,7 +267,7 @@ def test_stellar_density_comparison_uses_area_density_and_all_six_colours(
     assert result is not None
     assert result["euclid_vis_count"] == 1
     assert result["euclid_color_count"] == 1
-    assert result["gaia_count"] == 2
+    assert "gaia_count" not in result                # the deleted projection count
     assert result["gaia_native_g_count"] == 1
     assert result["synthetic_star_count"] == 2
     assert result["synthetic_color_count"] == 2
@@ -245,6 +285,8 @@ def test_stellar_density_comparison_uses_area_density_and_all_six_colours(
     assert set(result["parameters"]) == {
         "vis", "vis_y", "vis_j", "vis_h", "y_j", "y_h", "j_h",
     }
+    for key in ("vis_y", "vis_j", "vis_h", "y_j", "y_h", "j_h"):
+        assert "gaia" not in result["parameters"][key], key
     assert sum(result["parameters"]["vis"]["model"]) * 0.5 == pytest.approx(2.0)
     assert sum(result["parameters"]["vis"]["synthetic"]) * 0.5 == pytest.approx(0.5)
 
@@ -272,7 +314,7 @@ def test_stellar_colour_cache_rejects_legacy_random_fields():
 def test_star_distribution_page_and_status_route(monkeypatch):
     expected_distribution = {
         "matched_stars": 2772,
-        "colors": {"vis_j": {"values": [0.4]}},
+        "density_comparison": None,
     }
     monkeypatch.setattr(
         routes, "q1_stellar_color_sample_state",

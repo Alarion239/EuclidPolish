@@ -1,9 +1,10 @@
 /* ensemble/diagnostics (spec §8.2), from GET /ensemble/evals.json: the VIS
    power spectrum (cross-correlation r(k) and transfer function T(k)),
-   spectral coherence, std-vs-error, combiner axes vs error, std-vs-
-   brightness and the calibration (z-pdf, coverage, per-field σ vs RMSE —
-   computed by every evaluation, shown here for the first time). A click on
-   a heat cell back-traces it to real image stamps. State in the URL. */
+   spectral coherence, std-vs-error, std-vs-brightness and the calibration
+   (one sentence on the per-field RMSE vs σ, a |z| coverage table observed vs
+   Gaussian, the z-pdf and per-field σ vs RMSE). A click on a heat cell
+   back-traces it to real image stamps. State in the URL. The RBF combiner
+   (legacy) is never offered: its "combiner axes" view was deleted with it. */
 import { useMemo } from "react";
 import Plot, { useLegend, type Guide, type Heat, type LegendItem, type Series } from "../../../charts/Plot";
 import { C, categorical } from "../../../colors";
@@ -11,28 +12,34 @@ import { useResource } from "../../../api/query";
 import { usePageActions } from "../../../app/palette";
 import { useUrlState } from "../../../hooks/useUrlState";
 import { decadeTicks, extent, logTicks } from "../../../ticks";
-import { Chip, EmptyState, Kpi, Page, Segmented } from "../../../ui";
+import { Chip, EmptyState, Num, Page, Segmented, SummaryLine, Table, type Column } from "../../../ui";
 import { url, useMode, type Evals, type NumArr } from "../api";
 import { BarGroup, ColorBySelect, EnsBar, LoadState, useFacetColors } from "../common";
-import { facetOf, formatE, memberNumber, type ColorBy } from "../model";
+import { facetOf, fieldErrorRatio, formatE, memberNumber, type ColorBy } from "../model";
 import { PixelTrace, type Pick } from "../PixelTrace";
 import { unitTicks } from "../../plotTicks";
 import "../ensemble.css";
 
-type Section = "spectrum" | "transfer" | "coherence" | "stderr" | "axes" | "brightness" | "calibration";
+type Section = "spectrum" | "transfer" | "coherence" | "stderr" | "brightness" | "calibration";
 const SECTIONS: { value: Section; label: string; title: string }[] = [
   { value: "spectrum", label: "r(k)", title: "Cross-correlation with the target per angular scale" },
   { value: "transfer", label: "T(k)", title: "Transfer function √(P_SR / P_target)" },
   { value: "coherence", label: "Coherence", title: "One-number spectral coherence per model" },
   { value: "stderr", label: "σ vs error", title: "Does member disagreement predict the error?" },
-  { value: "axes", label: "Combiner axes", title: "Error on the combiner's input coordinates" },
   { value: "brightness", label: "σ vs brightness", title: "Where does disagreement live?" },
   { value: "calibration", label: "Calibration", title: "Is σ a calibrated error bar?" },
 ];
-const MODEL_LABEL: Record<string, string> = {
-  ensemble_mean: "plain mean", spatial_gate: "production gate",
-  raw_incremental_minmeanmax_rbf: "RBF", raw_incremental_frozen_minmeanmax_rbf: "frozen RBF",
-};
+const MODEL_LABEL: Record<string, string> = { ensemble_mean: "plain mean", spatial_gate: "production gate" };
+/** The RBF combiner is legacy: an old payload may still carry its blocks. */
+const isRbf = (kind: string) => /rbf/i.test(kind);
+const GAUSS_COVER = [0.683, 0.954, 0.997];
+const pct = (v: number | null | undefined) => (v == null || !Number.isFinite(v) ? "—" : `${(100 * v).toFixed(1)}%`);
+type CoverRow = { k: number; observed: number | null | undefined; gaussian: number };
+const COVER_COLUMNS: Column<CoverRow>[] = [
+  { header: "", cell: (r) => `|z| < ${r.k}` },
+  { header: "Observed", align: "right", cell: (r) => <span className="ens-tnum">{pct(r.observed)}</span> },
+  { header: "Gaussian", align: "right", cell: (r) => <span className="ens-tnum">{pct(r.gaussian)}</span> },
+];
 const modelColor = (kind: string) => (kind === "ensemble_mean" ? C.mean : kind === "spatial_gate" ? C.comb : categorical(5));
 const num = (a: NumArr | undefined | null) => (a ?? []).map((v) => (v == null ? NaN : v));
 const has = (a: NumArr | undefined | null) => (a ?? []).some((v) => v != null && Number.isFinite(v));
@@ -42,18 +49,32 @@ const X_TICKS = [0.05, 0.1, 0.2, 0.5, 1, 2, 5].map((v) => ({ v, label: String(v)
 
 function parseCell(raw: string): Pick | undefined {
   const [diag, i, j] = raw.split(",");
-  if (!["std_err", "bright_std", "combiner_feature_error"].includes(diag)) return undefined;
+  if (!["std_err", "bright_std"].includes(diag)) return undefined;
   const ii = Number(i), jj = Number(j);
   return Number.isInteger(ii) && Number.isInteger(jj) ? { diag: diag as Pick["diag"], i: ii, j: jj } : undefined;
+}
+
+/** The calibration's answer: how far a field's RMSE sits from its mean
+ *  cross-member σ (median over the test fields, 2 significant figures). */
+function CalibrationSentence({ ratio, n }: { ratio: number | null; n: number }) {
+  if (ratio == null) return null;
+  const r = Number(ratio.toPrecision(2));
+  const verdict = ratio > 1.25 ? "Cross-member σ is not an error bar" : ratio < 0.8 ? "Cross-member σ over-states the error" : "Cross-member σ tracks the error";
+  return (
+    <SummaryLine>
+      {verdict}: per test field, the RMSE is <Num tone={ratio > 1.25 || ratio < 0.8 ? "warn" : undefined}>≈{r}×</Num> the mean σ
+      {" "}(median over {n} field{n === 1 ? "" : "s"}).
+    </SummaryLine>
+  );
 }
 
 export default function Diagnostics() {
   const mode = useMode();
   const res = useResource<Evals>(url.evals(mode), [mode], { ttl: 5 * 60_000 });
-  const [section, setSection] = useUrlState<Section>("d", "spectrum");
+  const [section, setSection] = useUrlState<Section>("d", "spectrum",
+    { parse: (r) => (SECTIONS.some((s) => s.value === r) ? r as Section : undefined) });
   const [colorBy, setColorBy] = useUrlState<ColorBy>("color", "uniform");
   const [model, setModel] = useUrlState("model", "spatial_gate");
-  const [axis, setAxis] = useUrlState("axis", "mean_std");
   const [pairs, setPairs] = useUrlState("pairs", false);
   const [cellRaw, setCellRaw] = useUrlState("cell", "");
   const cell = parseCell(cellRaw) ?? null;
@@ -106,6 +127,7 @@ export default function Diagnostics() {
     const mean = isT ? ps.T : ps.r;
     if (has(mean)) push({ x: theta, y: num(mean), color: C.mean, width: 2.6, dots: true, name: "plain mean" });
     for (const [kind, c] of Object.entries(ps.model_combiners ?? {})) {
+      if (isRbf(kind)) continue;
       const y = isT ? c.T : c.r;
       if (has(y)) push({ x: theta, y: num(y), color: modelColor(kind), width: 2.4, dots: true, name: MODEL_LABEL[kind] ?? kind });
     }
@@ -124,8 +146,8 @@ export default function Diagnostics() {
   const stdErr = useMemo(() => {
     const d = e?.std_err;
     if (!d) return null;
-    const kinds = Object.keys(d.models ?? {});
-    const kind = d.models?.[model] ? model : kinds.includes("spatial_gate") ? "spatial_gate" : kinds[0] ?? "ensemble_mean";
+    const kinds = Object.keys(d.models ?? {}).filter((k) => !isRbf(k));
+    const kind = kinds.includes(model) ? model : kinds.includes("spatial_gate") ? "spatial_gate" : kinds[0] ?? "ensemble_mean";
     const m = d.models?.[kind] ?? d;
     if (!m.hist?.length) return null;
     const edges = num(m.edges);
@@ -141,28 +163,6 @@ export default function Diagnostics() {
       describe: (p: Pick) => `σ ${range(edges, p.i)} e⁻ · |err| ${range(edges, p.j)} e⁻`,
     };
   }, [e, model]);
-
-  /* combiner axes vs error */
-  const axes = useMemo(() => {
-    const d = e?.combiner_feature_error;
-    const a = d?.axes?.[axis] ?? Object.values(d?.axes ?? {})[0];
-    if (!d || !a) return null;
-    const kinds = Object.keys(a.models ?? {});
-    const kind = a.models?.[model] ? model : kinds.includes("spatial_gate") ? "spatial_gate" : kinds[0];
-    const m = kind ? a.models[kind] : null;
-    if (!m) return null;
-    const xEdges = num(a.edges[0]), yEdges = num(a.edges[1]);
-    const z = m.median_log_error.map(num);
-    const [zlo, zhi] = d.color_range?.length === 2 ? d.color_range : [-3, 3];
-    return {
-      kind, kinds, axisNames: a.axis_names,
-      heat: { z, xEdges, yEdges, scale: "linear", min: zlo, max: zhi, colorLabel: "median |error| [e⁻]",
-        colorTicks: decadeTicks([zlo, zhi], { space: "log10" }) } as Heat,
-      xDomain: [xEdges[0], xEdges[xEdges.length - 1]] as [number, number],
-      yDomain: [yEdges[0], yEdges[yEdges.length - 1]] as [number, number],
-      describe: (p: Pick) => `${a.axis_names[0]} ${xEdges[p.i].toFixed(2)}–${xEdges[p.i + 1].toFixed(2)} · ${a.axis_names[1]} ${yEdges[p.j].toFixed(2)}–${yEdges[p.j + 1].toFixed(2)} · median |err| ${fmtE(10 ** (z[p.i]?.[p.j] ?? NaN))} e⁻`,
-    };
-  }, [e, axis, model]);
 
   /* std vs brightness */
   const bright = useMemo(() => {
@@ -187,7 +187,7 @@ export default function Diagnostics() {
 
   /* coherence */
   const coherence = useMemo(() => {
-    const rows = (e?.coherence?.scores ?? []).filter((r) => r.overall != null || r.sr != null);
+    const rows = (e?.coherence?.scores ?? []).filter((r) => !isRbf(r.id) && (r.overall != null || r.sr != null));
     if (!rows.length) return null;
     const short = (r: { id: string; label: string }) => (r.id === "ensemble_mean" ? "mean" : r.id === "lr_baseline" ? "LR"
       : r.id === "spatial_gate_combiner" ? "gate" : r.id === "model_agreement" ? "agree" : r.id.startsWith("member_") ? `#${memberNumber(r.label) ?? r.label}` : r.id.replace(/_combiner$/, "").slice(0, 8));
@@ -212,6 +212,8 @@ export default function Diagnostics() {
     const lo = Math.max(1e-3, extent([...std, ...rmse].filter((v) => v > 0))?.[0] ?? 1e-3);
     return {
       stats: c.stats,
+      ratio: fieldErrorRatio(std.map((v) => (Number.isFinite(v) ? v : null)), rmse.map((v) => (Number.isFinite(v) ? v : null))),
+      cover: [c.stats.cover1, c.stats.cover2, c.stats.cover3].map((observed, i): CoverRow => ({ k: i + 1, observed, gaussian: GAUSS_COVER[i] })),
       pdf: [
         { x: cen, y: num(c.pdf), color: C.mean, mode: "histogram", fillAlpha: 0.35, name: "z = (SR − target) / σ" },
         { x: cen, y: gauss, color: C.baseline, width: 2, dash: [6, 3], name: "N(0, 1)" },
@@ -229,9 +231,9 @@ export default function Diagnostics() {
       {kinds.map((k) => <Chip key={k} on={model === k} dot={modelColor(k)} onClick={() => setModel(k)}>{MODEL_LABEL[k] ?? k}</Chip>)}
     </BarGroup>
   );
-  const trace = (describe: (p: Pick) => string, diag: Pick["diag"], extra: { model?: string; axis?: string } = {}) =>
+  const trace = (describe: (p: Pick) => string, diag: Pick["diag"], extra: { model?: string } = {}) =>
     cell?.diag === diag ? (
-      <PixelTrace mode={mode} pick={cell} model={extra.model} axis={extra.axis} cellLabel={describe(cell)}
+      <PixelTrace mode={mode} pick={cell} model={extra.model} cellLabel={describe(cell)}
         targetLabel={targetLabel} onClose={() => setPick(null)} />
     ) : <span className="ens-faint">Click a cell to see the real pixels that landed in it.</span>;
 
@@ -246,11 +248,6 @@ export default function Diagnostics() {
           {section === "spectrum" && <Chip on={pairs} onClick={() => setPairs(!pairs)} title="Every member pair's cross-correlation">pairs</Chip>}
         </>}
         {section === "stderr" && stdErr && modelChips(stdErr.kinds)}
-        {section === "axes" && axes && <>
-          <Segmented size="sm" aria-label="Combiner axes" value={axis} onChange={setAxis}
-            options={[{ value: "mean_std", label: "mean–std" }, { value: "min_max", label: "min–max" }]} />
-          {modelChips(axes.kinds)}
-        </>}
       </EnsBar>
       <LoadState loading={res.loading} error={res.error} onRetry={res.reload}>
         {e && (
@@ -280,14 +277,6 @@ export default function Diagnostics() {
                 exportName={`ensemble-std-error-${mode}`} aria-label="Disagreement vs error" />
               {trace(stdErr.describe, "std_err", { model: stdErr.kind })}
             </> : <EmptyState icon="activity" title="No σ-vs-error diagnostic cached" />)}
-            {section === "axes" && (axes ? <>
-              <Plot xDomain={axes.xDomain} yDomain={axes.yDomain} xLabel={`${axes.axisNames[0]} [asinh]`} yLabel={`${axes.axisNames[1]} [asinh]`}
-                heat={axes.heat} series={[]} aspect={0.62}
-                onHeatClick={(c) => setPick({ diag: "combiner_feature_error", ...c })}
-                highlight={cell?.diag === "combiner_feature_error" ? cell : null}
-                exportName={`ensemble-combiner-axes-${mode}`} aria-label="Combiner axes vs error" />
-              {trace(axes.describe, "combiner_feature_error", { model: axes.kind, axis })}
-            </> : <EmptyState icon="activity" title="No combiner-axes diagnostic cached" />)}
             {section === "brightness" && (bright ? <>
               <Plot xDomain={bright.xDomain} yDomain={bright.yDomain} xTicks={bright.xTicks} yTicks={bright.yTicks}
                 xLabel={`${targetLabel} brightness [e⁻] (asinh axis)`} yLabel="cross-member σ [e⁻]"
@@ -298,13 +287,9 @@ export default function Diagnostics() {
             </> : <EmptyState icon="activity" title="No σ-vs-brightness diagnostic cached" />)}
             {section === "calibration" && (calib ? (
               <div className="ens-stack">
-                <div className="ens-kpis">
-                  <Kpi label="σ(z)" value={calib.stats.sigma_z?.toFixed(2) ?? "—"} footer="1.00 when calibrated"
-                    tone={calib.stats.sigma_z != null && Math.abs(calib.stats.sigma_z - 1) > 0.25 ? "warn" : undefined}
-                    hint="Width of the z = (SR − target)/σ distribution: > 1 means σ under-states the error." />
-                  <Kpi label="|z| < 1" value={calib.stats.cover1 != null ? `${(100 * calib.stats.cover1).toFixed(1)}%` : "—"} footer="68.3% expected" />
-                  <Kpi label="|z| < 2" value={calib.stats.cover2 != null ? `${(100 * calib.stats.cover2).toFixed(1)}%` : "—"} footer="95.4% expected" />
-                  <Kpi label="|z| < 3" value={calib.stats.cover3 != null ? `${(100 * calib.stats.cover3).toFixed(1)}%` : "—"} footer="99.7% expected" />
+                <div className="ens-calib">
+                  <CalibrationSentence ratio={calib.ratio.ratio} n={calib.ratio.n} />
+                  <Table className="ens-compare" aria-label="Coverage of |z|" columns={COVER_COLUMNS} rows={calib.cover} rowKey={(r) => r.k} />
                 </div>
                 <div className="ens-charts">
                   <div className="ens-chart">

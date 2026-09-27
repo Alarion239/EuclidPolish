@@ -3,7 +3,9 @@
    offline). Per-band level histograms stacked by field (+ the scene-scale
    jitter), the within-field depth steps (pointing seams), how the bands move
    together, and every measured position — a row or a scatter point opens its
-   `noisepos` inspector (4×4 sub-tile grid, atlas link). */
+   `noisepos` inspector (4×4 sub-tile grid, atlas link). The sample size is the
+   histogram card's subtitle, its provenance the card's footer caption and the
+   coverage gaps its info popover; each panel keeps its median · p5–p95. */
 import { useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import Plot, { Legend, type Guide, type LegendItem, type Series } from "../../../charts/Plot";
@@ -14,12 +16,12 @@ import { formatCount, formatDate, formatNumber } from "../../../format";
 import { useUrlState } from "../../../hooks/useUrlState";
 import { linearTicks, logTicks, paddedDomain } from "../../../ticks";
 import {
-  Badge, Card, CardBody, CardHead, DataTable, Page, Segmented, Stat, Switch, Table,
+  Badge, Caption, Card, CardBody, CardHead, DataTable, Page, Segmented, Switch, Table,
   type Column, type DataColumn,
 } from "../../../ui";
 import { useNoise, type NoisePayload } from "../api";
 import { binCenters, exceedancePercent, nearestIndex2d, stackedTops } from "../chartKit";
-import { BarGroup, BarSpacer, Info, LoadState, RealismBar, SkyLink, StatStrip, atlasHref, useUrlLegend } from "../common";
+import { BarGroup, BarSpacer, Info, LoadState, RealismBar, SkyLink, atlasHref, useUrlLegend } from "../common";
 
 const PAIRS = [
   { value: "Y_E|J_E", label: "Y·J" }, { value: "Y_E|H_E", label: "Y·H" }, { value: "J_E|H_E", label: "J·H" },
@@ -35,6 +37,24 @@ const levelTicks = (domain: [number, number]) =>
   logTicks(domain, { space: "log10", maxTicks: 7, format: formatLevel });
 
 type Position = NoisePayload["positions"][number];
+
+/** "EDF-N/S/F" for fields sharing a prefix, else the names joined. */
+function fieldsLabel(names: readonly string[]): string {
+  const parts = names.map((n) => { const i = n.lastIndexOf("-"); return i > 0 ? [n.slice(0, i), n.slice(i + 1)] : [n, ""]; });
+  const prefix = parts[0]?.[0];
+  if (names.length > 1 && parts.every(([p, rest]) => p === prefix && rest)) return `${prefix}-${parts.map(([, rest]) => rest).join("/")}`;
+  return names.join(", ");
+}
+
+/** "NOISE_MODEL v5 · Q1_R1 · retrieved 2026-09-19". */
+function provenanceText(payload: NoisePayload): string {
+  const version = /-v(\d+)$/.exec(payload.generator.noise_model)?.[1];
+  return [
+    version ? `NOISE_MODEL v${version}` : `NOISE_MODEL ${payload.generator.noise_model}`,
+    payload.source.release,
+    `retrieved ${formatDate(payload.source.retrieved_last, { utc: true })}`,
+  ].join(" · ");
+}
 
 function LevelHistogram({ band, payload, fields, hidden, jitter }: {
   band: string; payload: NoisePayload; fields: string[]; hidden: readonly string[]; jitter: boolean;
@@ -65,7 +85,7 @@ function LevelHistogram({ band, payload, fields, hidden, jitter }: {
     <figure className="rl-fig">
       <figcaption className="rl-fig__head">
         <strong>{bandLabel(band)}</strong>
-        <span className="rl-num">median {summary.median.toFixed(2)} · p5–p95 {summary.p5.toFixed(1)}–{summary.p95.toFixed(1)}</span>
+        <span className="rl-num">median {formatLevel(summary.median)} · p5–p95 {formatLevel(summary.p5)}–{formatLevel(summary.p95)}{"\u00a0"}e⁻</span>
       </figcaption>
       <Plot xDomain={xDomain} yDomain={[0, yMax]} xTicks={levelTicks(xDomain)}
         yTicks={linearTicks([0, yMax], { count: 5 })}
@@ -83,12 +103,15 @@ function Histograms({ payload, fields, jitter }: { payload: NoisePayload; fields
     ...(jitter ? [{ label: "after scene scale", key: JITTER_KEY, color: C.comb, dash: true }] : []),
   ];
   const scale = payload.generator.scene_scale;
+  const { source } = payload;
   return (
     <Card>
-      <CardHead title="Sky noise level per band" sub={`stacked by field · ${payload.source.units}`}
+      <CardHead title="Sky noise level per band" sub={`${formatCount(source.position_count)} Q1 positions in ${fieldsLabel(fields)}`}
         right={<Info label="About the level histograms">
-          Each measured Q1 position contributes its four band levels. Bars stack the fields (click a
-          legend entry to hide one). {scale ? `The dashed curve is the expected histogram after the generator's scene scale ×${scale[0]}–${scale[1]}.` : ""}
+          <p>Each measured Q1 position contributes its four band levels, in {source.units}. Bars stack the fields (click a
+            legend entry to hide one). {scale ? `The dashed curve is the expected histogram after the generator's scene scale ×${scale[0]}–${scale[1]}.` : ""}</p>
+          <p>{`${formatCount(source.unobserved_tiles)} of ${formatCount(source.tiles_attempted)} tiles without coverage.`}</p>
+          <p>{source.description}</p>
         </Info>} />
       <CardBody>
         <div className="rl-grid rl-grid--2">
@@ -97,6 +120,7 @@ function Histograms({ payload, fields, jitter }: { payload: NoisePayload; fields
           ))}
         </div>
         <Legend items={items} {...legend.legendProps} />
+        <Caption>{provenanceText(payload)}</Caption>
       </CardBody>
     </Card>
   );
@@ -208,46 +232,11 @@ function Positions({ payload }: { payload: NoisePayload }) {
   ], [payload.bands]);
   return (
     <Card>
-      <CardHead title="Measured positions" sub={`${payload.positions.length} Q1 tiles · click a row to inspect`}
+      <CardHead title="Measured positions" sub="one Q1 tile per row · click a row to inspect"
         right={<SkyLink layers={["q1-tiles:0.3", "noise-positions"]} hint="Every position on the sky atlas" />} />
       <CardBody>
         <DataTable rows={payload.positions} columns={columns} rowKey={(p) => p.tile} aria-label="Noise positions"
           inspect={(p) => ({ kind: "noisepos", id: p.tile })} exportName="noise-positions" urlKey="np" height={360} dense />
-      </CardBody>
-    </Card>
-  );
-}
-
-function Summary({ payload, fields }: { payload: NoisePayload; fields: string[] }) {
-  const { bands, summary } = payload;
-  const summaryColumns: Column<string>[] = [
-    { header: "band", cell: (b) => <strong>{bandLabel(b)}</strong> },
-    ...(["p5", "p16", "median", "p84", "p95", "max"] as const).map((k): Column<string> => ({
-      header: k, align: "right", cell: (b) => summary[b][k].toFixed(2),
-    })),
-    { header: "px σ ÷ level", align: "right", cell: (b) => summary[b].pixel_scatter_ratio.toFixed(2) },
-  ];
-  const fieldColumns: Column<NoisePayload["fields"][number]>[] = [
-    { header: "field", cell: (f) => <span className="rl-legend-cell"><i style={{ background: fieldColor(fields.indexOf(f.name)) }} />{f.name}</span> },
-    { header: "n", align: "right", cell: (f) => f.positions },
-    ...bands.map((b): Column<NoisePayload["fields"][number]> => ({
-      header: `${bandLabel(b)} median`, align: "right",
-      cell: (f) => `${f.bands[b].median.toFixed(2)}`,
-    })),
-  ];
-  return (
-    <Card>
-      <CardHead title="Level quantiles" sub="over all positions, and per deep field"
-        right={<Info label="About the quantiles">
-          Noise-map level quantiles over every measured position. Pixel σ ÷ level is the single-pixel
-          scatter of the generated unit noise field (dithered, bilinearly resampled exposures), whose
-          large-area variance matches the noise map.
-        </Info>} />
-      <CardBody>
-        <div className="rl-grid rl-grid--2">
-          <Table columns={summaryColumns} rows={bands} rowKey={(b) => b} />
-          <Table columns={fieldColumns} rows={payload.fields} rowKey={(f) => f.name} />
-        </div>
       </CardBody>
     </Card>
   );
@@ -305,17 +294,9 @@ export default function NoiseTab() {
       <LoadState loading={resource.loading && !payload} error={resource.error} onRetry={resource.reload}>
         {payload && (
           <div className="rl-stack">
-            <StatStrip label="Noise table">
-              <Stat k="positions" v={formatCount(payload.source.position_count)} />
-              <Stat k="tiles without coverage" v={`${payload.source.unobserved_tiles} / ${payload.source.tiles_attempted}`} />
-              <Stat k="fields" v={fields.join(" · ")} />
-              <Stat k="release" v={payload.source.release} hint={payload.source.description} />
-              <Stat k="retrieved" v={formatDate(payload.source.retrieved_last)} />
-            </StatStrip>
             <Histograms payload={payload} fields={fields} jitter={jitter} />
             <BandPairs payload={payload} pair={pair} />
             <WithinField payload={payload} />
-            <Summary payload={payload} fields={fields} />
             <Positions payload={payload} />
             <HowScenesUseIt payload={payload} />
           </div>

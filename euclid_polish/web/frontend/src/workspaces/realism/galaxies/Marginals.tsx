@@ -7,6 +7,7 @@
    whose swatch is the line style, so they double as the legend. */
 import type { ReactNode } from "react";
 import Plot, { type Series } from "../../../charts/Plot";
+import { formatCount } from "../../../format";
 import { useUrlState } from "../../../hooks/useUrlState";
 import { extent, linearTicks } from "../../../ticks";
 import { Badge, Button, Chip, EmptyState } from "../../../ui";
@@ -130,6 +131,15 @@ export function DensityPanel({ parameter, name }: { parameter: Parameter; name: 
 
 const SURVEYS: BrightnessCurve["survey"][] = ["euclid", "synthetic", "cosmos", "fit", "generation"];
 
+/** The generator's faint plateau against the Q1 peak it is held at. Held at the peak it reads
+ *  "generator plateau = Q1 peak" (the peak value is already in the box); otherwise it prints its own
+ *  value and the ratio ("generator plateau 61.2 arcmin⁻² mag⁻¹ = 2.0× Q1 peak"). */
+function plateauText(plateau: number, peak: number): string {
+  const ratio = plateau / peak;
+  return Math.abs(ratio - 1) < 0.005 ? "generator plateau = Q1 peak"
+    : `generator plateau ${plateau.toFixed(1)} arcmin⁻² mag⁻¹ = ${ratio.toFixed(1)}× Q1 peak`;
+}
+
 export function BrightnessPanel({ parameter }: { parameter: Parameter }) {
   const entries = brightnessEntries(parameter);
   const defaults = entries.filter(([, c]) => c.default_on).map(([k]) => k);
@@ -168,11 +178,10 @@ export function BrightnessPanel({ parameter }: { parameter: Parameter }) {
       summary = (
         <div className="rl-trust" aria-label="Euclid magnitude support and five-sigma boundary">
           <div><small>Q1 count turnover</small><b>VIS {o.peakMag.toFixed(2)}</b>
-            <span>peak {o.peak.toFixed(1)} arcmin⁻² mag⁻¹{o.cumulativeToBoundary != null ? ` · ${o.cumulativeToBoundary.toFixed(1)} arcmin⁻² to 5σ` : ""}</span></div>
+            <span>peak {o.peak.toFixed(1)} arcmin⁻² mag⁻¹{o.cumulativeToBoundary != null ? ` · ${o.cumulativeToBoundary.toFixed(1)} arcmin⁻² to 5σ` : ""}</span>
+            {o.generationCap != null && <span>{plateauText(o.generationCap, o.peak)}</span>}</div>
           <div><small>MER {o.trust.snr}σ limit</small><b>VIS {o.trust.magnitude.toFixed(2)}</b>
-            <span>{o.trust.lower_magnitude.toFixed(2)}–{o.trust.upper_magnitude.toFixed(2)} (16–84%) · {Math.round(o.trust.sample_size).toLocaleString("en")} rows</span></div>
-          <div><small>Generation ceiling</small><b>{o.generationCap?.toFixed(1) ?? "—"}</b>
-            <span>{o.generationCap != null && o.generationCap > o.peak ? `${(o.generationCap / o.peak).toFixed(1)}× the Q1 peak` : "matches the Q1 peak"}</span></div>
+            <span>{o.trust.lower_magnitude.toFixed(2)}–{o.trust.upper_magnitude.toFixed(2)} (16–84%) · {formatCount(o.trust.sample_size)} rows</span></div>
         </div>
       );
       trustAbout = (

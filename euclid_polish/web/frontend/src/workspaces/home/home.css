@@ -2,12 +2,17 @@
    the inspector is open, so the layout follows the page's own width. */
 .home { container-type: inline-size; }
 
-/* Two KPI rows: the production model (3 wide tiles) and the system (4). */
-.home__kpis {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
-  gap: var(--s3); margin-bottom: var(--s3);
-}
-.home__kpis--system { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); margin-bottom: var(--s4); }
+/* The production sentence, the running line and the problem-only notes sit
+   above the cards; none of them is sticky. */
+.home__lead { display: flex; flex-direction: column; gap: var(--s2); margin: 0 0 var(--s4); min-width: 0; }
+.home__lead:empty { display: none; }
+.home__summary { margin: 0; }
+.home__summary a { color: inherit; text-decoration: underline dotted var(--border-strong); text-underline-offset: 3px; }
+.home__summary a:hover { color: var(--accent); }
+.home__running { margin: 0; font-size: var(--fs-sm); line-height: var(--lh-base); color: var(--text-dim); }
+.home__running-lead { font-weight: var(--fw-semibold); color: var(--text); }
+.home__notes { display: flex; flex-direction: column; gap: var(--s2); }
+.home__note-detail { color: var(--text-dim); overflow-wrap: anywhere; }
 .home__grid {
   display: grid; grid-template-columns: minmax(0, 3fr) minmax(300px, 2fr);
   gap: var(--s4); align-items: start;
@@ -15,9 +20,6 @@
 .home__col { display: flex; flex-direction: column; gap: var(--s4); min-width: 0; }
 @container (max-width: 880px) {
   .home__grid { grid-template-columns: minmax(0, 1fr); }
-}
-@container (max-width: 460px) {
-  .home__kpis, .home__kpis--system { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s2); }
 }
 
 .home__actions { display: flex; flex-wrap: wrap; gap: var(--s2); }

@@ -4,7 +4,7 @@ import {
   benchmarkChoices, benchmarkExperiment, dbDelta, facetOf, facetValues, formatE, gateUsage, heldOutComparable, holesText,
   integrateKnee, kneeLeaderboard, kneeModelName, kneeText, memberLabel, memberMatches, memberName, memberNumber, membersButtonText,
   movieStatus, parseMemberList, readsText, relativeTo, smooth, stepsText, stampBacking, stampKnee, variantLabel,
-  gatePeak, gateUseText, productionRunsText, pruneThreshold, usedByGate,
+  gatePeak, gateUseText, productionRunsText, pruneThreshold, usedByGate, fieldErrorRatio, overviewComparison,
 } from "./model";
 import {
   RECIPE_RESOURCES, buildParams, buildSpec, continueTarget, defaultForm, defaultResources, formFromJob, jobRegime, lastBatch,
@@ -410,5 +410,44 @@ describe("production member count", () => {
     expect(pruneThreshold({ fit: { used_threshold: 0.01 } })).toBe(0.01);
     expect(pruneThreshold({ fit: {} })).toBeNull();
     expect(pruneThreshold({})).toBeNull();
+  });
+});
+
+describe("overview comparison (gate / plain mean / best member on ∫PSNR)", () => {
+  const km = (id: string, kind: "member" | "mean" | "combiner", label: string, integrated: number[]) =>
+    ({ id, kind, label, integrated, psnr: [] as number[][] });
+  const HEAD = { available: true, stale: false, production: 60.9731, production_bands: [55.8, 64.9, 62, 61.1], mean: 59.1063,
+    best_member: 59.958, best_member_label: "196·psnr" };
+
+  it("reads every row and band from knee-psnr.json, the best member by the same metric", () => {
+    const c = overviewComparison({ available: true, bands: ["VIS", "Y_E", "J_E", "H_E"], models: [
+      km("member_0", "member", "178·psnr", [54, 62, 59, 58]), km("member_1", "member", "196·psnr", [55, 64, 61, 60]),
+      km("ensemble_mean", "mean", "ensemble mean", [54, 63, 60, 59]), km("spatial_gate", "combiner", "spatial gate", [56, 65, 62, 61]),
+      km("rbf", "combiner", "RBF", [70, 70, 70, 70]),
+    ] }, HEAD);
+    expect(c.source).toBe("knee");
+    expect(c.rows.map((r) => [r.id, r.label, r.integrated, r.bands])).toEqual([
+      ["gate", "Production gate", 61, [56, 65, 62, 61]],
+      ["mean", "Plain mean", 59, [54, 63, 60, 59]],
+      ["best", "Best member (#196)", 60, [55, 64, 61, 60]],
+    ]);
+    expect(c.bestNumber).toBe("196");
+  });
+
+  it("falls back to the overview headline (band means; the gate's bands) without knee curves", () => {
+    const c = overviewComparison(null, HEAD);
+    expect(c.source).toBe("headline");
+    expect(c.rows.map((r) => [r.id, r.integrated, r.bands])).toEqual([
+      ["gate", 60.9731, [55.8, 64.9, 62, 61.1]], ["mean", 59.1063, [null, null, null, null]], ["best", 59.958, [null, null, null, null]],
+    ]);
+    expect(overviewComparison(null, { available: false, stale: false }).rows).toEqual([]);
+  });
+});
+
+describe("calibration ratio (field RMSE vs mean σ)", () => {
+  it("is the median over fields of RMSE / σ, skipping empty fields", () => {
+    expect(fieldErrorRatio([1, 2, 4, 0, null], [10, 30, 40, 5, 3])).toEqual({ ratio: 10, n: 3 });
+    expect(fieldErrorRatio([1, 2], [10, 30])).toEqual({ ratio: 12.5, n: 2 });
+    expect(fieldErrorRatio([], [])).toEqual({ ratio: null, n: 0 });
   });
 });

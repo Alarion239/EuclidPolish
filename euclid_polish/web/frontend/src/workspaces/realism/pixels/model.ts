@@ -5,14 +5,94 @@
    bands and the two samples (the toolbar's toggles). */
 import type { LegendItem, Series } from "../../../charts/Plot";
 import { C, bandColor } from "../../../colors";
-import type { Band, DetectionSide, FieldComparison, Relation, SourceDetection } from "../api";
-import { angularScaleAxis, countHistogram, domainOf, finite, omitBin, ordered, positiveOrNull, quantile } from "../chartKit";
+import { formatCount, formatNumber } from "../../../format";
+import type {
+  Availability, Band, Comparison, DetectionSide, FieldComparison, GalaxyPayload, Relation, SourceDetection, StarPayload,
+} from "../api";
+import { angularScaleAxis, countHistogram, domainOf, finite, integrateDensity, omitBin, ordered, positiveOrNull, quantile } from "../chartKit";
+import { generatedDensity, trustedWindow } from "../stars/model";
 
 export const BANDS: Band[] = ["VIS", "Y_E", "J_E", "H_E"];
 export type Sample = "synthetic" | "real";
 export const SAMPLES: Sample[] = ["synthetic", "real"];
 export const SAMPLE_LABEL: Record<Sample, string> = { synthetic: "synthetic LR", real: "real Euclid LR" };
 export const bandLabel = (band: string) => band.replace("_E", "");
+
+/** A sample chip's label with its size: "synthetic LR · 200 fields", "real Euclid LR · 176 fields / 44 pointings".
+ *  The built comparison's samples when there is one, else what the collections hold. */
+export function sampleChipLabel(sample: Sample, comparison: Comparison | null | undefined, availability: Availability | undefined): string {
+  if (!availability && !comparison) return SAMPLE_LABEL[sample];
+  const n = (v: number | undefined) => (v == null ? null : formatCount(v));
+  if (sample === "synthetic") {
+    const fields = n(comparison?.samples.synthetic.fields ?? availability?.synthetic.fields);
+    return fields ? `${SAMPLE_LABEL.synthetic} · ${fields} fields` : SAMPLE_LABEL.synthetic;
+  }
+  const fields = n(comparison?.samples.real.fields ?? availability?.real.fields);
+  const pointings = n(comparison?.samples.real.independent_parents ?? availability?.real.independent_parents);
+  return fields ? `${SAMPLE_LABEL.real} · ${fields} fields${pointings ? ` / ${pointings} pointings` : ""}` : SAMPLE_LABEL.real;
+}
+
+/** One row of the generated-vs-prior-vs-Q1 census: surface densities in arcmin⁻² over one VIS window.
+ *  Each kind has a `q1` row (the window where Q1 is complete, all three columns integrated over the same
+ *  magnitudes) and a `prior` row (the full prior range, where Q1 is incomplete, so its q1 is null). */
+export type CensusRow = {
+  kind: "galaxies" | "stars"; window: "q1" | "prior"; range: [number, number];
+  generated: number | null; prior: number | null; q1: number | null;
+};
+
+const perArea = (n?: number | null, area?: number | null) => (n != null && area != null && area > 0 ? n / area : null);
+const within = (range: [number, number]) => (curve: { x: readonly number[]; density: readonly (number | null)[] } | undefined) =>
+  curve ? integrateDensity(curve.x, curve.density, range[0], range[1]) : null;
+
+/** The census from the galaxy and star payloads (independent of the pixel cache). Galaxies compare over
+ *  the prior's bright end to the Q1 5σ limit (VIS 2FWHM: the generated magnitudes, the generator law and
+ *  the PHZ-weighted Q1 counts); stars over the Q1 trusted window of the VIS panel. The full prior range
+ *  follows with generated and prior only. */
+export function censusRows(galaxies: GalaxyPayload | null | undefined, stars: StarPayload | null | undefined): CensusRow[] {
+  const rows: CensusRow[] = [];
+  const generation = galaxies?.calibration.candidate?.generation;
+  if (galaxies && generation) {
+    const synthetic = galaxies.sources.synthetic;
+    const curves = galaxies.parameters.magnitude?.photometry_series;
+    const q1Curve = curves?.q1_vis_f2;
+    const limit = q1Curve?.trust_boundary?.magnitude ?? curves?.generator_vis_f2?.trust_boundary?.magnitude;
+    const full: [number, number] = [generation.vis_magnitude_min, generation.vis_magnitude_max];
+    const lo = Math.max(full[0], galaxies.q1_counts?.bright ?? full[0]);
+    const hi = Math.min(full[1], limit ?? Number.NaN, galaxies.q1_counts?.faint ?? full[1]);
+    if (q1Curve && hi > lo) {
+      const window: [number, number] = [lo, hi];
+      const over = within(window);
+      rows.push({
+        kind: "galaxies", window: "q1", range: window,
+        generated: synthetic?.available ? over(curves?.synthetic_vis_2fwhm) : null,
+        prior: over(curves?.generator_vis_f2), q1: over(q1Curve),
+      });
+    }
+    rows.push({
+      kind: "galaxies", window: "prior", range: full,
+      generated: synthetic?.available ? perArea(synthetic.rows, synthetic.area_arcmin2) : null,
+      prior: generation.surface_density_arcmin2 ?? null, q1: null,
+    });
+  }
+  const c = stars?.distribution?.density_comparison;
+  if (c) {
+    const vis = c.parameters.vis;
+    const generated = generatedDensity(c);
+    const trusted = trustedWindow(vis);
+    const lo = trusted ? Math.max(trusted[0], vis.x_domain[0]) : Number.NaN;
+    const hi = trusted ? Math.min(trusted[1], vis.x_domain[1]) : Number.NaN;
+    if (hi > lo) {
+      const window: [number, number] = [lo, hi];
+      rows.push({
+        kind: "stars", window: "q1", range: window,
+        generated: generated != null ? integrateDensity(vis.x, vis.synthetic, lo, hi) : null,
+        prior: integrateDensity(vis.x, vis.model, lo, hi), q1: integrateDensity(vis.x, vis.euclid, lo, hi),
+      });
+    }
+    rows.push({ kind: "stars", window: "prior", range: vis.x_domain, generated, prior: c.model_density_arcmin2, q1: null });
+  }
+  return rows;
+}
 
 /** Which bands and samples are drawn (the hidden keys of the toolbar). */
 export type Visible = { bands: Band[]; samples: Sample[] };
@@ -191,4 +271,23 @@ export function detectionHistogram(detection: SourceDetection, which: "positive"
       name: SAMPLE_LABEL[s], key: s,
     };
   });
+}
+
+/** "Generated: 5,489 galaxies and 175 stars over 36.4 arcmin²" — the shared area stated once; each
+ *  sample keeps its own area when they differ. */
+export function generatedSample(
+  galaxies: { rows?: number | null; area_arcmin2?: number | null } | undefined,
+  stars: { synthetic_star_count?: number | null; synthetic_area_arcmin2?: number | null } | null | undefined,
+): string | null {
+  const parts: { text: string; area: number }[] = [];
+  if (galaxies?.rows != null && galaxies.area_arcmin2) parts.push({ text: `${formatCount(galaxies.rows)} galaxies`, area: galaxies.area_arcmin2 });
+  if (stars?.synthetic_star_count != null && stars.synthetic_area_arcmin2) {
+    parts.push({ text: `${formatCount(stars.synthetic_star_count)} stars`, area: stars.synthetic_area_arcmin2 });
+  }
+  if (!parts.length) return null;
+  const areaText = (a: number) => `${formatNumber(a)} arcmin²`;
+  const shared = parts.every((p) => areaText(p.area) === areaText(parts[0].area));
+  return shared
+    ? `Generated: ${parts.map((p) => p.text).join(" and ")} over ${areaText(parts[0].area)}`
+    : `Generated: ${parts.map((p) => `${p.text} over ${areaText(p.area)}`).join(", ")}`;
 }

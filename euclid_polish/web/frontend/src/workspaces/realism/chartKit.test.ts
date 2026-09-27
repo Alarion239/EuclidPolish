@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   angularScaleAxis, binIndex, contourMassLabel, contourSeries, contourStyle, countHistogram, enclosingFraction,
-  exceedancePercent, jointColor, log10AxisTicks, logDomain, mixRgb, nearestIndex2d, omitBin, ordered, parseRgb,
+  exceedancePercent, integrateDensity, jointColor, log10AxisTicks, logDomain, mixRgb, nearestIndex2d, omitBin, ordered, parseRgb,
   physicalFromLog10, physicalLogAxisLabel, positiveOrNull, quantile, radiusBand, stackedTops, stepSeries,
   surveyColor, tintRamp,
 } from "./chartKit";
@@ -123,5 +123,14 @@ describe("chart kit", () => {
     }
     expect(jointColor("q1", "maps")).not.toBe(jointColor("q1", "pairs"));
     expect(jointColor("model", "maps")).toBe(jointColor("model", "pairs"));
+  });
+
+  it("integrates a binned density over a window, with partial edge bins", () => {
+    // Centres 1, 2, 3 (width 1): bins [0.5, 1.5], [1.5, 2.5], [2.5, 3.5].
+    expect(integrateDensity([1, 2, 3], [1, 2, 4], 0, 10)).toBeCloseTo(7);
+    expect(integrateDensity([1, 2, 3], [1, 2, 4], 1, 3)).toBeCloseTo(0.5 + 2 + 2);
+    expect(integrateDensity([1, 2, 3], [1, null, 4], 1.5, 3.5)).toBeCloseTo(4);
+    expect(integrateDensity([1, 2, 3], [1, 2, 4], 5, 6)).toBeNull();
+    expect(integrateDensity([1, 2, 3], [1, 2, 4], 3, 1)).toBeNull();
   });
 });

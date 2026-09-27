@@ -2,7 +2,9 @@
  * sidecars next to the data and the checkpoint stamps. Search the records
  * (server-side, ANDed tokens), filter by kind / verdict / source, and walk a
  * record's ancestors and descendants; the verdict compares a product's model
- * with the active ensemble members (current / stale / unknown).
+ * with the active ensemble members (current / stale / unknown). The verdict
+ * counts live on the verdict control only; while most records carry no model
+ * id, one callout says the verdicts are not meaningful yet (no stat tiles).
  * URL: `q`, `kind`, `verdict`, `source`, `id` (the open record). */
 import { useEffect, useMemo, useState } from "react";
 import { apiPost } from "../../../api/client";
@@ -12,7 +14,7 @@ import { usePageActions } from "../../../app/palette";
 import { formatCount, formatDateTime, formatRelative } from "../../../format";
 import { useUrlState } from "../../../hooks/useUrlState";
 import {
-  Badge, Callout, Card, CardBody, CardHead, DataTable, IconButton, Input, Kpi, Page, Segmented,
+  Callout, Card, CardBody, CardHead, DataTable, IconButton, Input, Page, Segmented,
   Select, Skeleton, toast, type DataColumn,
 } from "../../../ui";
 import {
@@ -59,6 +61,16 @@ export default function Provenance() {
     { id: "prov-unknown", label: "Show products with no model", group: "Provenance", run: () => setVerdict("unknown") },
   ]);
 
+  const verdictOptions = useMemo(() => {
+    const n = (v: "current" | "stale" | "unknown") => (s ? ` (${formatCount(s.counts.verdicts[v] ?? 0)})` : "");
+    return [{ value: "" as VerdictFilter, label: "All" }, { value: "current" as VerdictFilter, label: `Current${n("current")}` },
+      { value: "stale" as VerdictFilter, label: `Stale${n("stale")}` }, { value: "unknown" as VerdictFilter, label: `No model${n("unknown")}` }];
+  }, [s]);
+  // Verdicts compare a product's model id with the active members, so they
+  // say nothing while most records carry no model id.
+  const unstamped = s ? s.counts.verdicts.unknown ?? 0 : 0;
+  const stamped = s ? (s.counts.verdicts.current ?? 0) + (s.counts.verdicts.stale ?? 0) : 0;
+  const unstampedPct = s && s.total > 0 && unstamped > stamped ? Math.round((100 * unstamped) / s.total) : null;
   const kindOptions = useMemo(() => [{ value: "", label: "All kinds" },
     ...Object.entries(s?.counts.kinds ?? {}).map(([k, n]) => ({ value: k, label: `${k} (${formatCount(n)})` }))], [s]);
   const columns = useMemo<DataColumn<ProvRow>[]>(() => [
@@ -81,24 +93,17 @@ export default function Provenance() {
   return (
     <Page className="ops-page">
       {summary.error && !s && <Callout tone="bad" title="Could not index the provenance records">{summary.error.message}</Callout>}
-      <div className="ops-kpis">
-        <Kpi label="Records" value={s ? formatCount(s.total) : "…"} loading={summary.loading && !s}
-          hint={s ? s.roots.map((r) => `${r.path}: ${formatCount(r.records)}`).join(" · ") : undefined} onClick={() => { setKind(""); setVerdict(""); }} />
-        <Kpi label="Current" value={s ? formatCount(s.counts.verdicts.current) : "…"} tone="good" loading={summary.loading && !s}
-          hint="SR products made by an active member" onClick={() => setVerdict("current")} />
-        <Kpi label="Stale" value={s ? formatCount(s.counts.verdicts.stale) : "…"} tone={s?.counts.verdicts.stale ? "bad" : undefined}
-          loading={summary.loading && !s} hint="Made by a model that is no longer active" onClick={() => setVerdict("stale")} />
-        <Kpi label="No model" value={s ? formatCount(s.counts.verdicts.unknown) : "…"} loading={summary.loading && !s}
-          hint="Legacy / un-stamped products (no model id)" onClick={() => setVerdict("unknown")} />
-        <Kpi label="Active models" value={s ? s.current_models.length : "…"} loading={summary.loading && !s}
-          hint="Active ensemble members with a provenance id" onClick={() => { setKind("checkpointartifact"); setVerdict(""); }} />
-      </div>
+      {unstampedPct != null && (
+        // ops.css has no rule for this one line; the gap to the toolbar is a token
+        <div style={{ marginBottom: "var(--s3)" }}>
+          <Callout tone="info" dense>{`${unstampedPct}% of records carry no model id, so current/stale verdicts are not meaningful yet.`}</Callout>
+        </div>
+      )}
       <div className="ops-bar" role="toolbar" aria-label="Search provenance">
         <Input size="sm" value={draft} onChange={setDraft} icon="search" clearable placeholder="id, kind, path, member, commit…"
           aria-label="Search records" style={{ flex: "1 1 220px", maxWidth: 360 }} />
         <Select size="sm" value={kind} onChange={setKind} options={kindOptions} aria-label="Kind" />
-        <Segmented<VerdictFilter> size="sm" value={verdict} onChange={setVerdict} aria-label="Verdict"
-          options={[{ value: "", label: "All" }, { value: "current", label: "Current" }, { value: "stale", label: "Stale" }, { value: "unknown", label: "No model" }]} />
+        <Segmented<VerdictFilter> size="sm" value={verdict} onChange={setVerdict} aria-label="Verdict" options={verdictOptions} />
         <Select size="sm" value={source} onChange={setSource} aria-label="Source"
           options={[{ value: "", label: "All sources" }, { value: "prov", label: "data/_prov" }, { value: "sidecar", label: "Sidecars" }, { value: "checkpoint", label: "Checkpoints" }]} />
         <span className="ops-spacer" />
@@ -113,7 +118,12 @@ export default function Provenance() {
             loading={records.loading && !d} height={600} activeKey={id || null} onRowClick={(r) => setId(r.id)}
             exportName="provenance" urlKey="pr" filterPlaceholder="Filter these rows…"
             empty={q || kind || verdict || source ? "No record matches." : "No provenance record found locally."}
-            toolbar={d ? <Badge size="sm">{d.total > d.records.length ? `${formatCount(d.records.length)} of ${formatCount(d.total)}` : formatCount(d.total)}</Badge> : undefined} />
+            toolbar={d && d.total > d.records.length
+              /* The table's own count already says how many rows loaded; this
+                 adds only the total, so no count appears twice. */
+              ? <span className="ops-dim ops-small" title={`Only the first ${formatCount(d.records.length)} records load; narrow the filters to see the rest.`}>
+                  {formatCount(d.total)} match in total
+                </span> : undefined} />
         </div>
         {id && (
           <aside className="ops-split__side" aria-label={`Record ${id}`}>

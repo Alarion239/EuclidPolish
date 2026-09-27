@@ -15,31 +15,23 @@ from flask import abort, jsonify, request, send_file
 from euclid_polish import ensemble_registry
 from euclid_polish.config import Config
 from euclid_polish.ensemble_registry import member_name
-from euclid_polish.eval.combiner import (
-    ACTIVE_COMBINER_KINDS,
-    SPATIAL_GATE_KIND,
-    combiner_model_spec,
-    normalize_model_kind,
-)
+from euclid_polish.eval.combiner import ACTIVE_COMBINER_KINDS
 from euclid_polish.eval.spatial_gate import MIX_SPACES
 from euclid_polish.training.target_blur import validate_target_fwhm_arcsec
 from euclid_polish.web import errors
 from euclid_polish.web.fasrc_gate import requires_fasrc
 from euclid_polish.web.fasrc_pipeline import TaskParamError
 from euclid_polish.web.helpers.ensemble_viz import (
-    _combiner_payload_path,
     _evals_payload_path,
     check_new_variant_name,
     combiner_variants,
     compare_reports,
-    compute_combiner_payload,
     compute_evaluation_payload,
     ensemble_dir,
     ensemble_overview,
     ensemble_status,
     job_archive_member,
     job_combiner_compare,
-    job_combiner_fit,
     job_combiner_promote,
     job_ensemble_evaluate,
     job_ensemble_pull,
@@ -175,90 +167,6 @@ def register(app):
         )
         return jsonify({"job_id": job_id})
 
-    @app.route("/ensemble/combiner/fit", methods=["POST"])
-    def ensemble_combiner_fit():
-        """Fit an RBF combiner for the requested star regime locally on the
-        validate split, in place. The spatial gate — production — is refused
-        here (it would be overwritten without a backup): fit it as a named
-        variant (``/ensemble/combiners/fit``) and promote that
-        (``/ensemble/combiners/promote``, which backs production up)."""
-        starless = _mode_starless()
-        try:
-            target_fwhm = validate_target_fwhm_arcsec(
-                float(request.form.get("target_psf_fwhm_arcsec",
-                                       Config.TARGET_PSF_FWHM_ARCSEC)))
-        except (TypeError, ValueError):
-            abort(400, description="invalid target_psf_fwhm_arcsec")
-        try:
-            num_images = max(1, int(request.form.get("num_images", 100) or 100))
-        except (TypeError, ValueError):
-            num_images = 100
-        raw_min_usage = request.form.get("min_usage")
-        try:
-            min_usage = (None if raw_min_usage in (None, "")
-                         else max(0.0, float(raw_min_usage)))
-        except (TypeError, ValueError):
-            min_usage = None
-        try:
-            model_kind = normalize_model_kind(
-                request.form.get("model_kind"))
-        except ValueError:
-            abort(400)
-        if model_kind not in ACTIVE_COMBINER_KINDS:
-            abort(400)
-        if model_kind == SPATIAL_GATE_KIND:
-            return _bad("the spatial gate is production: fit a named variant "
-                        "(POST /ensemble/combiners/fit) and promote it "
-                        "(POST /ensemble/combiners/promote, which backs production up)")
-        spec = combiner_model_spec(model_kind)
-        raw_kernels = request.form.get("n_kernels")
-        try:
-            n_kernels = max(
-                2, int(raw_kernels if raw_kernels not in (None, "")
-                       else spec.default_kernels))
-        except (TypeError, ValueError):
-            n_kernels = spec.default_kernels
-        regime = "starless" if starless else "starfull"
-        model_label = (spec.label if spec.default_kernels <= 0
-                       else f"{spec.label} K={n_kernels}")
-        job_id = REGISTRY.spawn(
-            f"combiner: fit {regime} on validate ({num_images} fields, {model_label})",
-            target=lambda cap: job_combiner_fit(
-                cap, num_images=num_images, n_kernels=n_kernels,
-                min_usage=min_usage,
-                starless=starless,
-                model_kind=model_kind,
-                target_fwhm_arcsec=target_fwhm),
-        )
-        return jsonify({"job_id": job_id})
-
-    @app.route("/ensemble/combiner.json")
-    def ensemble_combiner_json():
-        """The Combiner card's dataset for a regime (``?mode=``): per-band
-        effective-weight curves, survivors, val loss and per-member meta
-        (loss/depth/PSNR — the facets the gate plot colors by). Always recomputed
-        from the saved combiner (cheap: reads the npz + member origins, no
-        inference) so the member meta stays current; 404 before any fit."""
-        starless = _mode_starless()
-        try:
-            model_kind = normalize_model_kind(
-                request.args.get("model_kind"))
-        except ValueError:
-            abort(400)
-        if model_kind not in ACTIVE_COMBINER_KINDS:
-            abort(400)
-        path = _combiner_payload_path(starless, model_kind)
-        if compute_combiner_payload(starless, model_kind=model_kind) is None:
-            return jsonify({
-                "available": False,
-                "stale": False,
-                "kind": model_kind,
-                "reason": "no current combiner fitted for this model",
-                "member_labels": [], "members": [], "band_names": [],
-                "eff_weights": {}, "feature_grid": {}, "surviving": {},
-            })
-        return send_file(path, mimetype="application/json", max_age=0)
-
     # ---- combiner variants: registry, compare, fit, promote -------------- #
 
     @app.route("/ensemble/combiners.json")
@@ -290,7 +198,8 @@ def register(app):
             seed = _form_number("seed", 0, int, lo=0, hi=2**31 - 1)
         except ValueError as exc:
             return _bad(str(exc))
-        include_rbf = _form_bool("include_rbf", True)
+        # The RBF combiner is legacy: it is scored only when asked for.
+        include_rbf = _form_bool("include_rbf", False)
         knee = _form_bool("knee", True)
         regime = "starless" if starless else "starfull"
         what = ", ".join(gates) if gates else "every applicable gate"
@@ -427,12 +336,8 @@ def register(app):
                 with open(path) as f:
                     cached = json.load(f)
                     fresh = "coherence" not in cached
-                    feature_error = cached.get("combiner_feature_error") or {}
                     std_err = cached.get("std_err") or {}
-                    needs_diagnostics = (
-                        "axes" not in feature_error
-                        or not std_err.get("adaptive_range", False)
-                    )
+                    needs_diagnostics = not std_err.get("adaptive_range", False)
             except (OSError, ValueError):
                 fresh = True
         if (needs_diagnostics
@@ -449,7 +354,7 @@ def register(app):
     def ensemble_pixel_trace():
         """Back-trace a diagnostic heatmap cell to real image stamps.
 
-        ``?mode=&diag=std_err|bright_std|combiner_feature_error&model=&axis=&i=&j=``
+        ``?mode=&diag=std_err|bright_std&model=&i=&j=``
         → up to a handful of
         VIS zoom stamps (HR / ensemble-mean SR / cross-member std, electrons) of
         the actual pixels that fell into the clicked cell, each with the exact
@@ -457,17 +362,10 @@ def register(app):
         there. Empty ``stamps`` when nothing was sampled for that cell."""
         starless = _mode_starless()
         diag = (request.args.get("diag") or "").strip()
-        if diag not in ("std_err", "bright_std", "combiner_feature_error"):
+        if diag not in ("std_err", "bright_std"):
             abort(404)
         model_kind = (request.args.get("model") or "").strip()
-        axis_mode = (request.args.get("axis") or "").strip()
         if model_kind and model_kind not in ("ensemble_mean", *ACTIVE_COMBINER_KINDS):
-            abort(400)
-        if (diag == "combiner_feature_error"
-                and model_kind not in ("ensemble_mean", *ACTIVE_COMBINER_KINDS)):
-            abort(400)
-        if diag == "combiner_feature_error" and axis_mode not in (
-                "mean_std", "min_max"):
             abort(400)
         try:
             i = int(request.args.get("i", ""))
@@ -475,8 +373,7 @@ def register(app):
         except (TypeError, ValueError):
             abort(400)
         return jsonify(pixel_trace(starless, diag, i, j,
-                                   model_kind=model_kind or None,
-                                   axis_mode=axis_mode or None))
+                                   model_kind=model_kind or None))
 
     # ---- members: archive, restore, pull, train preview ------------------- #
 

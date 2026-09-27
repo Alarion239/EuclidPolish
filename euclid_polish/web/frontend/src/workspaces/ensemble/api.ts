@@ -179,6 +179,9 @@ export type Evals = {
   } | null;
   std_err?: (StdErrModel & { models?: Record<string, StdErrModel> }) | null;
   bright_std?: { bright_edges: NumArr; std_edges: NumArr; hist: number[][]; bright: NumArr; lo: NumArr; med: NumArr; hi: NumArr; stretch: number } | null;
+  /** Legacy (RBF combiner axes): no longer computed; an old cached payload may
+   *  still carry it. Only Sky › Results' RBF occupancy view reads it, until that
+   *  view is deleted with the rest of the RBF. */
   combiner_feature_error?: {
     axes: Record<string, { axis_names: string[]; edges: number[][]; models: Record<string, { median_log_error: NumArr[]; counts: number[][] }> }>;
     color_range: number[]; error_unit?: string;

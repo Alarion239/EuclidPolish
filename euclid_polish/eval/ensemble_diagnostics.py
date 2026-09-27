@@ -34,11 +34,6 @@ from euclid_polish.config import Config
 LOG_E_RANGE = (-4.0, 6.0)
 LOG_E_BINS = 96
 
-#: Combiner-input bins.  These are deliberately coarser than the error axis:
-#: each occupied feature cell then has enough real pixels for a stable median
-#: and useful click-to-inspect examples.
-FEATURE_BINS = 48
-
 #: z-score histogram edges (z = error / member std).
 Z_RANGE = (-8.0, 8.0)
 Z_BINS = 161
@@ -91,11 +86,6 @@ class EnsembleDiagnosticsAccumulator:
         # to the displayed max-RBF output when available.
         self.h_std_err_models: dict[str, np.ndarray] = {}
         self.std_err_model_fields: dict[str, int] = {}
-        # Per-combiner |error| conditioned on the coordinates that actually
-        # drive its gate.  Values are histograms over [...feature bins, error]
-        # so medians remain streaming/cache-friendly (no pixel arrays retained).
-        self.h_combiner_feature_err: dict[str, dict[str, np.ndarray]] = {}
-        self.combiner_feature_meta: dict[str, dict] = {}
         self.h_bright_std = np.zeros((nb, nb), np.float64)   # [bright, std]
         self.h_z = np.zeros(Z_BINS, np.float64)
         self.n_z = 0                                          # z-scored pixels
@@ -118,10 +108,6 @@ class EnsembleDiagnosticsAccumulator:
         self.se_seen: dict[int, int] = {}
         self.se_model_samples: dict[str, dict[int, list[tuple[int, int, int]]]] = {}
         self.se_model_seen: dict[str, dict[int, int]] = {}
-        self.cf_model_samples: dict[
-            str, dict[str, dict[int, list[tuple[int, int, int]]]]
-        ] = {}
-        self.cf_model_seen: dict[str, dict[str, dict[int, int]]] = {}
         self.bs_samples: dict[int, list[tuple[int, int, int]]] = {}
         self.bs_seen: dict[int, int] = {}
         # Deterministic given call order → reproducible sidecars + testable.
@@ -151,9 +137,6 @@ class EnsembleDiagnosticsAccumulator:
             hist = _rebin_axis(hist, old_edges, new_edges, 0)
             self.h_std_err_models[kind] = _rebin_axis(hist, old_edges, new_edges, 1)
         self.h_bright_std = _rebin_axis(self.h_bright_std, old_edges, new_edges, 1)
-        for axis_hists in self.h_combiner_feature_err.values():
-            for kind, hist in axis_hists.items():
-                axis_hists[kind] = _rebin_axis(hist, old_edges, new_edges, -1)
 
         self._remap_std_error_samples(old_edges, new_edges)
         self.log_edges = new_edges
@@ -219,30 +202,6 @@ class EnsembleDiagnosticsAccumulator:
                 if j < k:
                     lst[j] = (int(field_index), int(y), int(x))
 
-    def _axis_features(self, members: np.ndarray, axis_mode: str):
-        """Return one model-independent projection and its fixed plot edges.
-
-        Member values are transformed to the same asinh space used by the
-        combiners.  Mean/std is shown in raw input coordinates; the model's RBF
-        distance internally log-warps std, but the raw std axis is the quantity
-        a scientist can read directly and is the input being conditioned on.
-        """
-        x = np.arcsinh(np.asarray(members, np.float64) / self.stretch)
-        fb = FEATURE_BINS
-        level_edges = np.linspace(-1.0, 13.0, fb + 1)
-        if axis_mode == "mean_std":
-            # Cross-member asinh spread is non-negative.  Five covers the
-            # useful occupied range while clipping extreme star cores into the
-            # final cell instead of letting them flatten the quiet regime.
-            return ((np.mean(x, axis=0), np.std(x, axis=0)),
-                    (level_edges, np.linspace(0.0, 5.0, fb + 1)),
-                    ("mean member", "member std"))
-        if axis_mode == "min_max":
-            return ((np.min(x, axis=0), np.max(x, axis=0)),
-                    (level_edges, level_edges),
-                    ("min member", "max member"))
-        return None
-
     def add(self, hr: np.ndarray, mean: np.ndarray,
             members: np.ndarray, *, combiner: np.ndarray | None = None,
             combiners: dict[str, np.ndarray | None] | None = None,
@@ -266,10 +225,6 @@ class EnsembleDiagnosticsAccumulator:
             image = np.asarray(combiner, np.float64)
             if image.shape == hr.shape:
                 predictions["rbf_gate"] = image
-        axis_features = {
-            mode: self._axis_features(members, mode)
-            for mode in ("mean_std", "min_max")
-        }
         pred = mean
         if "rbf_gate" in predictions:
             pred = predictions["rbf_gate"]
@@ -296,23 +251,6 @@ class EnsembleDiagnosticsAccumulator:
             self.h_std_err_models.setdefault(
                 kind, np.zeros_like(self.h_std_err))[:] += hist
             self.std_err_model_fields[kind] = self.std_err_model_fields.get(kind, 0) + 1
-
-            # Project every point estimate onto every requested coordinate
-            # plane.  Model choice and plot geometry are intentionally
-            # independent so their error surfaces can be compared directly.
-            for axis_mode, feature_info in axis_features.items():
-                if feature_info is None:
-                    continue
-                features, edges, axis_names = feature_info
-                values = [np.clip(np.asarray(v).ravel(), e[0], e[-1])
-                          for v, e in zip(features, edges, strict=True)]
-                sample = np.column_stack((*values, np.clip(model_err, lo, hi)))
-                hist, _ = np.histogramdd(sample, bins=(*edges, self.log_edges))
-                axis_hists = self.h_combiner_feature_err.setdefault(axis_mode, {})
-                axis_hists.setdefault(kind, np.zeros_like(hist))[:] += hist
-                self.combiner_feature_meta[axis_mode] = {
-                    "axis_names": axis_names, "edges": edges,
-                }
 
         bright = np.arcsinh(hr / self.stretch).ravel()
         blo, bhi = self.bright_edges[0], self.bright_edges[-1]
@@ -357,24 +295,6 @@ class EnsembleDiagnosticsAccumulator:
                 self._reservoir_add_field(samples, seen,
                                           std_bin * NB + model_err_bin,
                                           W, field_index)
-
-                for axis_mode, feature_info in axis_features.items():
-                    if feature_info is None:
-                        continue
-                    features, edges, _axis_names = feature_info
-                    bins = [np.clip(np.searchsorted(edge, np.asarray(value).ravel(),
-                                                    side="right") - 1,
-                                    0, FEATURE_BINS - 1)
-                            for value, edge in zip(features, edges, strict=True)]
-                    # Both coordinate planes share the same compact
-                    # i*FEATURE_BINS+j sidecar key convention.
-                    cell_ids = (bins[0] * FEATURE_BINS +
-                                (bins[1] if len(bins) == 2 else 0))
-                    samples = self.cf_model_samples.setdefault(
-                        axis_mode, {}).setdefault(kind, {})
-                    seen = self.cf_model_seen.setdefault(
-                        axis_mode, {}).setdefault(kind, {})
-                    self._reservoir_add_field(samples, seen, cell_ids, W, field_index)
             self._reservoir_add_field(self.bs_samples, self.bs_seen,
                                       bright_bin * NB + std_bin, W, field_index)
 
@@ -414,43 +334,6 @@ class EnsembleDiagnosticsAccumulator:
                 "hist": np.asarray(hist, int).tolist(),
                 "med_std": _l(np.log10(cen)), "med_err": _l(np.log10(med)),
                 "n_fields": int(n_fields)}
-
-    def combiner_feature_error_blocks(self) -> dict:
-        """Serialize every model error over both model-independent planes."""
-        axes = {}
-        all_medians = []
-        error_centers = 0.5 * (self.log_edges[:-1] + self.log_edges[1:])
-        for axis_mode, model_hists in self.h_combiner_feature_err.items():
-            meta = self.combiner_feature_meta[axis_mode]
-            models = {}
-            for kind, hist in model_hists.items():
-                totals = hist.sum(axis=-1)
-                cumulative = np.cumsum(hist, axis=-1)
-                median_idx = np.argmax(
-                    cumulative >= (0.5 * totals)[..., None], axis=-1)
-                med = error_centers[median_idx].astype(float)
-                med[totals <= 0] = np.nan
-                all_medians.extend(med[np.isfinite(med)].tolist())
-                median_values = med.astype(object)
-                median_values[~np.isfinite(med)] = None
-                models[kind] = {
-                    "median_log_error": median_values.tolist(),
-                    "counts": totals.astype(int).tolist(),
-                }
-            axes[axis_mode] = {
-                "axis_names": list(meta["axis_names"]),
-                "edges": [[float(v) for v in edge] for edge in meta["edges"]],
-                "models": models,
-            }
-        if all_medians:
-            color_range = [float(np.floor(min(all_medians))),
-                           float(np.ceil(max(all_medians)))]
-            if color_range[1] <= color_range[0]:
-                color_range[1] = color_range[0] + 1.0
-        else:
-            color_range = [float(self.log_edges[0]), float(self.log_edges[-1])]
-        return {"axes": axes, "color_range": color_range,
-                "error_unit": "log10_electrons"}
 
     def binned_std_percentiles(self) -> dict[str, np.ndarray]:
         """Median + 16/84% of std per brightness bin → arrays over the
@@ -495,7 +378,6 @@ class EnsembleDiagnosticsAccumulator:
                 "models": {kind: self.std_err_block(hist, n_fields=self.std_err_model_fields.get(kind, 0))
                            for kind, hist in self.h_std_err_models.items()},
             },
-            "combiner_feature_error": self.combiner_feature_error_blocks(),
             "bright_std": {
                 "bright_edges": _l(self.bright_edges),  # asinh(x/stretch)
                 "std_edges": _l(self.log_edges),
@@ -523,8 +405,8 @@ class EnsembleDiagnosticsAccumulator:
         real image stamps for that cell."""
         NB = LOG_E_BINS
 
-        def enc(res: dict, width: int = NB) -> dict:
-            return {f"{key // width},{key % width}":
+        def enc(res: dict) -> dict:
+            return {f"{key // NB},{key % NB}":
                     [[int(f), int(y), int(x)] for f, y, x in v]
                     for key, v in res.items()}
 
@@ -535,11 +417,6 @@ class EnsembleDiagnosticsAccumulator:
             "std_err": enc(self.se_samples),
             "std_err_models": {kind: enc(samples)
                                for kind, samples in self.se_model_samples.items()},
-            "combiner_feature_error": {
-                axis_mode: {kind: enc(samples, FEATURE_BINS)
-                            for kind, samples in model_samples.items()}
-                for axis_mode, model_samples in self.cf_model_samples.items()
-            },
             "bright_std": enc(self.bs_samples),
         }
 

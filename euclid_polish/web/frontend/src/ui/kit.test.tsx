@@ -4,8 +4,8 @@ import { MemoryRouter, Link, useLocation } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 import { queryClient } from "../api/query";
 import {
-  Badge, Button, Callout, Card, CardHead, Checkbox, CopyButton, Dialog, PageHead, Stat, Toolbar, ToolbarGroup, ToolbarSeparator,
-  ToolbarSpacer, ToolbarText, Field, IconButton, Input, JobProgress, JsonTree, Kbd, Kpi, LogView, Menu,
+  Badge, Button, Callout, Card, CardHead, Checkbox, CopyButton, Dialog, FactsList, PageHead, Toolbar, ToolbarGroup,
+  ToolbarSeparator, ToolbarSpacer, ToolbarText, Field, IconButton, Input, JobProgress, JsonTree, Kbd, LogView, Menu,
   MultiSelect, NumberField, Popover, Section, Segmented, Select, Slider, Switch, Tabs, Toaster, UiProvider, comboKeys, findMatches,
   jsonPath, toast,
 } from "./index";
@@ -449,38 +449,6 @@ describe("JobProgress", () => {
   });
 });
 
-describe("Kpi", () => {
-  it("navigates inside the SPA with `to` (a router link); `href` stays a plain link", () => {
-    function Where() { return <output>{useLocation().pathname}</output>; }
-    render(
-      <MemoryRouter initialEntries={["/home"]}>
-        <Kpi label="Members" value="26" to="/ensemble/starfull/members" />
-        <Kpi label="Report" value="pdf" href="/api/report.pdf" />
-        <Where />
-      </MemoryRouter>,
-    );
-    const tile = screen.getByRole("link", { name: /Members/ });
-    expect(tile.getAttribute("href")).toBe("/ensemble/starfull/members");
-    fireEvent.click(tile);
-    expect(screen.getByRole("status").textContent).toBe("/ensemble/starfull/members");
-    expect(screen.getByRole("link", { name: /Report/ }).getAttribute("href")).toBe("/api/report.pdf");
-  });
-
-  it("an action tile keeps its hint out of the tab order and uses it as its description", () => {
-    const onClick = vi.fn();
-    const { rerender } = render(<Kpi label="PSNR" value="44" hint="Knee-integrated" onClick={onClick} />);
-    const tile = screen.getByRole("button", { name: /PSNR/ });
-    expect(tile.querySelector("[tabindex]")).toBeNull();          // no focusable inside a button
-    expect(description(tile)).toBe("Knee-integrated");
-    fireEvent.click(tile);
-    expect(onClick).toHaveBeenCalledTimes(1);
-    rerender(<Kpi label="PSNR" value="44" hint="Knee-integrated" />);   // a static tile: a focusable hint button
-    const about = screen.getByRole("button", { name: "About this figure" });
-    expect(about.tagName).toBe("BUTTON");
-    expect(about.getAttribute("type")).toBe("button");
-  });
-});
-
 describe("toast / UiProvider", () => {
   it("shows toasts in the Toaster and tooltips inside the shared provider", async () => {
     render(<UiProvider><IconButton icon="info" label="Details" /></UiProvider>);
@@ -516,11 +484,11 @@ describe("Headings and label casing", () => {
   it("shows labels as authored: a Segmented 'HR' stays HR, a σ stays σ", () => {
     render(<>
       <Segmented value="hr" onChange={() => {}} aria-label="Tier" options={[{ value: "lr", label: "LR" }, { value: "hr", label: "HR" }]} />
-      <Stat k="Holes >100σ" v="3" />
+      <FactsList facts={[{ label: "Holes >100σ", value: "3" }]} />
       <Badge>Not cached</Badge>
     </>);
     expect(screen.getByRole("radio", { name: "HR" }).textContent).toBe("HR");
-    expect(screen.getByText("Holes >100σ").className).toBe("ui-stat__k");
+    expect(screen.getByText("Holes >100σ").className).toBe("ui-facts__label");
     expect(screen.getByText("Not cached").className).toBe("ui-badge");
   });
 });

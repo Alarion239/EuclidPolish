@@ -25,7 +25,7 @@ import { drawFrame } from "../../viewer/draw";
 import { url, type Mode } from "./api";
 import { formatE, stampBacking, stampKnee } from "./model";
 
-export type Pick = { diag: "std_err" | "bright_std" | "combiner_feature_error"; i: number; j: number };
+export type Pick = { diag: "std_err" | "bright_std"; i: number; j: number };
 type Stamp = {
   field: number; y: number; x: number; center: number; sr_is_combiner: boolean;
   lr?: string; hr: string; sr: string; std: string;
@@ -141,12 +141,11 @@ function SigmaStamp({ b64, size, center, stretch }: { b64: string; size: number;
 const fieldHref = (mode: Mode, field: number) =>
   `${pagePath("ensemble", { tab: "disagreement", params: { mode } })}?${new URLSearchParams({ "v.ens.id": `test:${field}` }).toString()}`;
 
-export function PixelTrace({ mode, pick, model, axis, cellLabel, targetLabel, onClose }: {
-  mode: Mode; pick: Pick; model?: string; axis?: string; cellLabel: string; targetLabel: string; onClose: () => void;
+export function PixelTrace({ mode, pick, model, cellLabel, targetLabel, onClose }: {
+  mode: Mode; pick: Pick; model?: string; cellLabel: string; targetLabel: string; onClose: () => void;
 }) {
   const q = new URLSearchParams({ mode, diag: pick.diag, i: String(pick.i), j: String(pick.j) });
   if (model) q.set("model", model);
-  if (axis) q.set("axis", axis);
   const trace = useResource<Trace>(`/ensemble/pixel-trace.json?${q.toString()}`, [q.toString()]);
   const meta = useResource<{ color?: ColorMeta }>(url.viewerMeta(mode), [mode], { ttl: 5 * 60_000 });
   const display = useDisplay();

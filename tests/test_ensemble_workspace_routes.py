@@ -81,6 +81,12 @@ def test_errors_under_ensemble_are_json(client):
     assert r.status_code == 404 and "error" in r.get_json()
 
 
+def test_pixel_trace_has_no_combiner_axes_diagnostic(client):
+    r = client.get("/ensemble/pixel-trace.json?diag=combiner_feature_error"
+                   "&model=spatial_gate&axis=mean_std&i=0&j=0")
+    assert r.status_code == 404 and "error" in r.get_json()
+
+
 def test_evaluate_passes_force(client, spawned, monkeypatch):
     seen = _capture(monkeypatch, "job_ensemble_evaluate")
     client.post("/ensemble/evaluate", data={"num_images": "20", "force": "1"})
@@ -98,8 +104,9 @@ def test_compare_validates_gates_and_passes_knobs(client, spawned, monkeypatch):
     r = client.post("/ensemble/combiners/compare", data={"blackout_fields": "0", "knee": "0"})
     assert r.status_code == 200 and r.get_json()["job_id"] == "job1"
     spawned[0]["target"](_Cap())
+    # the legacy RBF is scored only when asked for explicitly
     assert seen == {"starless": False, "gates": None, "blackout_fields": 0, "seed": 0,
-                    "include_rbf": True, "knee": False}
+                    "include_rbf": False, "knee": False}
     assert spawned[0]["kind"] == "ensemble-compare"
 
 

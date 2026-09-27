@@ -1,7 +1,8 @@
 /* Small shared pieces of the Realism tabs: the sticky toolbar, load / error
    states that show the server's own message, an info popover for the long
-   explanations (kept off the page), stat strips, the state dot and the links
-   into the sky atlas. */
+   explanations (kept off the page), the state dot and the links into the sky
+   atlas. Statistics use the kit's SummaryLine / FactsList / Caption / Details
+   (ui/facts.tsx); there are no stat tiles. */
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import type { ApiError } from "../../api/client";
@@ -53,11 +54,6 @@ export function Info({ label, children, width = 360 }: { label: string; children
       <div className="rl-info">{children}</div>
     </Popover>
   );
-}
-
-/** A compact grid of <Stat>s. */
-export function StatStrip({ children, label }: { children: ReactNode; label?: string }) {
-  return <div className="rl-stats" aria-label={label}>{children}</div>;
 }
 
 export const STATE_TONE: Record<CheckState, Tone> = { ok: "good", warn: "warn", bad: "bad", unknown: "neutral" };

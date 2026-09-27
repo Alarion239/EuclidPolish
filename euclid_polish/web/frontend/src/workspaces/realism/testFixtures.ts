@@ -50,11 +50,11 @@ export const OVERVIEW: OverviewPayload = {
 export const NOISE: NoisePayload = {
   bands: BANDS,
   source: {
-    release: "Q1", archive: "IRSA", description: "MER noise maps", units: "e⁻ per 0.1″ pixel",
-    retrieved_first: "2026-09-18T00:00:00Z", retrieved_last: "2026-09-19T00:00:00Z",
+    release: "Q1_R1", archive: "IRSA", description: "MER noise maps", units: "e⁻ per 0.1″ pixel",
+    retrieved_first: "2026-09-19T18:22:46+00:00", retrieved_last: "2026-09-19T18:37:40+00:00",
     tiles_attempted: 300, position_count: 3, unobserved_tiles: 6, table_path: "euclid_polish/sky/observation/mer_noise_levels.json",
   },
-  generator: { noise_model: "mer-noise-v5", draws_measured_levels: true, scene_scale: [0.99, 1.01],
+  generator: { noise_model: "euclid-q1-mer-noise-levels-dithered-bilinear-v5", draws_measured_levels: true, scene_scale: [0.99, 1.01],
     region: { probability: 0.1, fraction: [0.2, 0.5], step: [1.1, 1.45] } },
   summary: per((_b, i) => ({ ...q(10 + i), pixel_scatter_ratio: 1.2 })),
   fields: [
@@ -154,8 +154,9 @@ export function galaxyPayload(patch: Partial<GalaxyPayload> = {}): GalaxyPayload
   return {
     version: 25, stale: false, authenticated: true,
     sources: {
-      euclid: { available: true, rows: 51234, area_arcmin2: 227160, phz_pdf_rows: 40000, phz_pdf_source: "phz", detail: "Q1 MER + PHZ aggregate" },
-      synthetic: { available: true, rows: 5321, area_arcmin2: 36.4, measured_radius_rows: 4100, detail: "test + validation source catalogues" },
+      euclid: { available: true, rows: 140085, area_arcmin2: 1884.96, phz_pdf_rows: 132147, phz_pdf_source: "phz", schema_version: 7,
+        detail: "MER + PHZ cache, schema v7" },
+      synthetic: { available: true, rows: 5489, area_arcmin2: 36.41, measured_radius_rows: 4802, fields: 200, detail: "test + validation source catalogues" },
       fit: { available: true, fingerprint: "f".repeat(64), is_active: false, validated: true, detail: "fitted candidate" },
     },
     q1_counts: {
@@ -170,13 +171,13 @@ export function galaxyPayload(patch: Partial<GalaxyPayload> = {}): GalaxyPayload
       candidate: {
         valid: true, version: 15, fingerprint: "c".repeat(64),
         magnitude_law: { bright_join_magnitudes: [19.5, 20.5, 21.5], bright_slopes: [0.5, 0.42, 0.37], break_magnitude: 25.3, straight_law: { slope: 0.31 } },
-        radius_law: { slope_log10_arcsec_per_mag: -0.0712, scatter_dex: 0.2231, fitted_rows: 170 },
-        generation: { surface_density_arcmin2: 372.8, differential_density_cap_arcmin2_mag: 61.2, break_magnitude: 25.3,
+        radius_law: { slope_log10_arcsec_per_mag: -0.1497, scatter_dex: 0.2290, fitted_rows: 7528938 },
+        generation: { surface_density_arcmin2: 151.5, differential_density_cap_arcmin2_mag: 30.16, break_magnitude: 25.06,
           fitted_surface_density_arcmin2: 120, vis_magnitude_min: 14, vis_magnitude_max: 29, fitted_vis_magnitude_max: 26, faint_end_policy: "flat" },
         aperture_fwhm_distribution: { magnitude_edges: [17, 19, 21, 23, 25, 27], fwhm_edges_arcsec: [0, 0.5, 1, 1.5],
           probability: [[0.2, 0.6, 0.2], [0.3, 0.5, 0.2], [0.4, 0.4, 0.2], [0.6, 0.3, 0.1], [0.7, 0.2, 0.1]],
           source_magnitude_bin: [0, 1, 2, 3, 3], out_of_support_policy: "nearest populated bin" },
-        color_sfr_model: { row_count: 41234, tree_count: 64, catalog_version: 3, vis_snr_floor: 5, calibration_fingerprint: "a".repeat(64) },
+        color_sfr_model: { row_count: 83583, tree_count: 50, catalog_version: 7, vis_snr_floor: 5, calibration_fingerprint: "a".repeat(64) },
         plots: {
           conditional_radius: { magnitude: mags, observed_mean_log10_arcsec: [-0.1, -0.3, null, -0.6, -0.8], model_mean_log10_arcsec: [-0.1, -0.25, -0.4, -0.55, -0.7],
             model_core_low_log10_arcsec: [-0.3, -0.45, -0.6, -0.75, -0.9], model_core_high_log10_arcsec: [0.1, -0.05, -0.2, -0.35, -0.5] },
@@ -187,7 +188,7 @@ export function galaxyPayload(patch: Partial<GalaxyPayload> = {}): GalaxyPayload
             observed_ratio_variance_by_magnitude: [[0.01, 0.02, 0.03], [0.02, 0.03, 0.04], [0.05, 0.06, 0.08], [0.1, 0.12, 0.2], [null, null, null]],
             noise_ratio_variance_by_magnitude: [[0.001, 0.002, 0.003], [0.004, 0.006, 0.01], [0.03, 0.04, 0.05], [0.09, 0.1, 0.18], [null, null, null]] },
         },
-        provenance: { color_sfr_valid_weight_fraction: 0.912, color_resolved_radius_weight_fraction: 0.784 },
+        provenance: { color_sfr_valid_weight_fraction: 0.330, color_resolved_radius_weight_fraction: 0.975 },
       },
     },
     parameters: {
@@ -197,7 +198,8 @@ export function galaxyPayload(patch: Partial<GalaxyPayload> = {}): GalaxyPayload
         photometry_series: {
           q1_vis_f2: { ...curve("Q1 PHZ-weighted"), label: "Q1 MER + PHZ galaxies · VIS · 2 FWHM", survey: "euclid", band: "VIS", estimator: "2FWHM aperture",
             selection: "PHZ_GAL_PROB ≥ 0.5", default_on: true, trust_boundary: TRUST, observed_density_cap_arcmin2_mag: 30.5,
-            observed_density_cap_magnitude: 24.8, observed_cumulative_density_to_boundary_arcmin2: 88.1 },
+            observed_density_cap_magnitude: 24.8, observed_cumulative_density_to_boundary_arcmin2: 88.1,
+            observed_cumulative_density_all_queried_bins_arcmin2: 74.4 },
           synthetic_vis_2fwhm: { ...curve("generated", 0.9), label: "Generated fields · VIS 2FWHM", survey: "synthetic", band: "VIS",
             estimator: "2FWHM aperture", selection: "all", default_on: true },
           generator_vis_f2: { ...curve("law", 1.1), label: "Generator · three-segment bright bridge + main + flat", survey: "generation", band: "VIS",
@@ -241,16 +243,16 @@ export function galaxyPayload(patch: Partial<GalaxyPayload> = {}): GalaxyPayload
 
 /* ─── stars ─────────────────────────────────────────────────────────────── */
 
+/* The VIS panel carries the Q1 point sources and the native Gaia G_AB counts + shared-slope fit (the
+   magnitude-law fit inputs); a colour panel carries only Q1, the model and the generated stars. */
 const starDensity = (label: string, x: number[]) => ({
   label, x_label: `${label} [AB mag]`, x, x_domain: [x[0], x[x.length - 1]] as [number, number],
-  euclid: x.map((_, i) => 0.01 * (i + 1)), gaia: x.map((_, i) => 0.012 * (i + 1)), model: x.map((_, i) => 0.011 * (i + 1)),
-  synthetic: x.map((_, i) => 0.009 * (i + 1)), point_sources: x.map((_, i) => 0.02 * (i + 1)), gaia_fit: x.map((_, i) => 0.012 * (i + 1)),
-  fit_ranges: { q1: [18, 23] as [number, number], gaia: [16, 20] as [number, number] },
+  euclid: x.map((_, i) => 0.01 * (i + 1)), model: x.map((_, i) => 0.011 * (i + 1)), synthetic: x.map((_, i) => 0.009 * (i + 1)),
 });
-const colorPlot = (label: string) => ({
-  label, values: [0.1, 0.4, 0.8], pearson_r: 0.93, y_domain: [-0.5, 2] as [number, number], trend: { x: [0.5, 1, 1.5], y: [0.2, 0.5, 0.9] },
-  fit: { x: [0.5, 1, 1.5], center: [0.2, 0.5, 0.9], sigma: 0.041, one_sigma_low: [0.15, 0.45, 0.85], one_sigma_high: [0.25, 0.55, 0.95],
-    two_sigma_low: [0.1, 0.4, 0.8], two_sigma_high: [0.3, 0.6, 1] },
+const starVisDensity = (x: number[]) => ({
+  ...starDensity("VIS", x),
+  gaia: x.map((_, i) => 0.012 * (i + 1)), point_sources: x.map((_, i) => 0.02 * (i + 1)), gaia_fit: x.map((_, i) => 0.012 * (i + 1)),
+  fit_ranges: { q1: [18, 23] as [number, number], gaia: [16, 20] as [number, number] },
 });
 const COLOR_KEYS = ["vis_y", "vis_j", "vis_h", "y_j", "y_h", "j_h"] as const;
 
@@ -258,36 +260,24 @@ export function starPayload(patch: Partial<StarPayload> = {}): StarPayload {
   const mag = [16, 18, 20, 22];
   return {
     authenticated: true,
-    color_sample: { cached: true, euclid: { rows: 5963, field_count: 3 }, gaia: { rows: 5963, field_count: 3 } },
+    color_sample: { cached: true, euclid: { rows: 3462, field_count: 3 }, gaia: { rows: 5963, field_count: 3 } },
     calibration: { candidate: { valid: true, warnings: ["refit after the Q1 counts changed"], coverage_notes: ["three fixed fields"],
-      euclid_mapping: { matched_stars: 1234 } }, is_active: false },
-    q1_counts: { footprint_area_deg2: 63.1, selected_point_sources: 432100, expected_point_sources: 250123.4, expected_stars: 198765.4,
+      euclid_mapping: { matched_stars: 3456 } }, is_active: false },
+    q1_counts: { footprint_area_deg2: 63.1, selected_point_sources: 536780, expected_point_sources: 519611.8, expected_stars: 403069.7,
       bins: [1, 2, 3], edges: [14, 14.1, 14.2, 14.3], selection: "POINT_LIKE_PROB ≥ 0.9" },
     distribution: {
-      matched_stars: 1234, high_quality_stars: 1100, pointlike_over_0_9: 1180, bp_rp: [0.5, 1, 1.5], x_domain: [0, 3],
-      colors: Object.fromEntries(COLOR_KEYS.map((k) => [k, colorPlot(k.replace("_", " − ").toUpperCase())])) as StarDistribution["colors"],
-      axis_note: "BP − RP from Gaia DR3", fit_note: "one shared locus", training_included: false,
-      gaia_cmd: { cached_stars: 5963, plotted_stars: 5900, without_color: 63, x_domain: [0, 3], g_domain: [12, 21],
-        matched: { bp_rp: [1, 1.2], g_mag: [15, 17] }, unmatched: { bp_rp: [0.8, 2], g_mag: [18, 20] }, note: "All cached Gaia sources." },
-      euclid_projection: {
-        vis_domain: [14, 22],
-        matched: { vis_mag: [16, 17], colors: { vis_y: [0.1, 0.2], vis_j: [0.2, 0.3], vis_h: [0.3, 0.4] } },
-        unmatched: { vis_mag: [18, 19], colors: { vis_y: [0.1, 0.2], vis_j: [0.2, 0.3], vis_h: [0.3, 0.4] } },
-        euclid_observed: { vis_y: { vis_mag: [16], color: [0.15] }, vis_j: { vis_mag: [16], color: [0.25] }, vis_h: { vis_mag: [16], color: [0.35] } },
-        colors: { vis_y: { label: "VIS − Y", x_domain: [-1, 2], sigma: 0.05 }, vis_j: { label: "VIS − J", x_domain: [-1, 2], sigma: 0.06 },
-          vis_h: { label: "VIS − H", x_domain: [-1, 2], sigma: 0.07 } },
-        note: "Projected through the fitted locus.",
-      },
+      matched_stars: 3456, high_quality_stars: 2398, pointlike_over_0_9: 3456, training_included: false,
       density_comparison: {
-        area_arcmin2: 227160, gaia_area_arcmin2: 4156, model_density_arcmin2: 0.412, model_sample_count: 9000, euclid_vis_count: 432100,
-        q1_phz_expected_stars: 198765.4, q1_expected_point_sources: 250123.4, q1_selected_point_sources: 432100, q1_area_arcmin2: 227160,
-        euclid_color_count: 1100, gaia_count: 5900, gaia_native_g_count: 5963, synthetic_area_arcmin2: 36.4, synthetic_star_count: 15,
-        parameters: { vis: starDensity("VIS", mag), ...Object.fromEntries(COLOR_KEYS.map((k) => [k, starDensity(k, [-0.5, 0, 0.5, 1])])) } as
+        area_arcmin2: 4156.3, gaia_area_arcmin2: 4156.3, model_density_arcmin2: 5.084, model_sample_count: 50000, euclid_vis_count: 3462,
+        q1_phz_expected_stars: 403069.7, q1_expected_point_sources: 519611.8, q1_selected_point_sources: 536780, q1_area_arcmin2: 227160,
+        euclid_color_count: 3456, gaia_native_g_count: 5963, synthetic_area_arcmin2: 1201.49, synthetic_star_count: 6040,
+        parameters: { vis: starVisDensity(mag), ...Object.fromEntries(COLOR_KEYS.map((k) => [k, starDensity(k, [-0.5, 0, 0.5, 1])])) } as
           NonNullable<StarDistribution["density_comparison"]>["parameters"],
         note: "Q1 0.1-mag brackets normalize the population.",
       },
       gaia_sampling: { field_count: 3, radius_arcmin: 21, area_arcmin2: 4156,
-        fields: [{ name: "EDF-N", ra: 269.733, dec: 66.018, rows: 2950 }, { name: "EDF-S", ra: 61.241, dec: -48.423, rows: 1637 }] },
+        fields: [{ name: "EDF-N", ra: 269.733, dec: 66.018, rows: 2950 }, { name: "EDF-S", ra: 61.241, dec: -48.423, rows: 1637 },
+          { name: "EDF-F", ra: 52.932, dec: -28.088, rows: 1376 }] },
     },
     availability: undefined,
     ...patch,

@@ -198,26 +198,16 @@ def test_std_error_payload_keeps_one_distribution_per_combiner():
     assert np.asarray(models["minmax_rbf_gate"]["hist"]).sum(axis=0)[0] < hr.size
 
 
-def test_combiner_feature_error_separates_axes_from_error_model():
-    """Every point estimate is projected onto both comparison planes."""
+def test_no_combiner_axes_diagnostic():
+    """The RBF combiner-axes view is deleted: its input space means nothing for
+    the conv spatial gate in production, so neither the payload nor the
+    back-trace sidecar carries it (and the accumulator keeps no such state)."""
     hr, mean, members = _calibrated_ensemble(n=64, seed=8)
     acc = EnsembleDiagnosticsAccumulator()
-    acc.add(hr, mean, members, combiners={
-        "rbf_gate": mean,
-        "stats_rbf_gate": mean + 1.0,
-        "minmax_rbf_gate": mean + 2.0,
-    }, field_index=3)
-    block = acc.to_payload()["combiner_feature_error"]
-    axes = block["axes"]
-    assert set(axes) == {"mean_std", "min_max"}
-    expected_models = {
-        "ensemble_mean", "rbf_gate", "stats_rbf_gate", "minmax_rbf_gate",
-    }
-    assert set(axes["mean_std"]["models"]) == expected_models
-    assert set(axes["min_max"]["models"]) == expected_models
-    assert axes["mean_std"]["axis_names"] == ["mean member", "member std"]
-    assert axes["min_max"]["axis_names"] == ["min member", "max member"]
-    assert len(block["color_range"]) == 2
+    acc.add(hr, mean, members, combiners={"spatial_gate": mean + 1.0}, field_index=3)
+    assert "combiner_feature_error" not in acc.to_payload()
+    assert "combiner_feature_error" not in acc.samples_payload()
+    assert not any("feature" in name for name in vars(acc))
 
 
 def test_backtrace_samples_are_separate_for_every_point_estimate():
@@ -231,13 +221,7 @@ def test_backtrace_samples_are_separate_for_every_point_estimate():
     assert set(samples["std_err_models"]) == {
         "ensemble_mean", "rbf_gate", "stats_rbf_gate",
     }
-    assert set(samples["combiner_feature_error"]) == {"mean_std", "min_max"}
-    for axis_mode in ("mean_std", "min_max"):
-        assert set(samples["combiner_feature_error"][axis_mode]) == {
-            "ensemble_mean", "rbf_gate", "stats_rbf_gate",
-        }
     assert samples["std_err_models"]["rbf_gate"]
-    assert samples["combiner_feature_error"]["mean_std"]["stats_rbf_gate"]
 
 
 def test_mixed_combiner_run_labels_as_mean():

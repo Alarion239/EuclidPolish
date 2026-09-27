@@ -110,6 +110,10 @@ export type GalaxySource = {
   available?: boolean; detail?: string; rows?: number; area_arcmin2?: number; phz_pdf_rows?: number;
   phz_pdf_source?: string; fingerprint?: string; is_active?: boolean; validated?: boolean;
   measured_radius_rows?: number;
+  /** Q1 (euclid) cache schema, and its population-cone count when the payload carries it. */
+  schema_version?: number; cone_count?: number;
+  /** Generated (synthetic) catalogue fields. */
+  fields?: number;
 };
 export type Q1Counts = {
   footprint_area_deg2: number; bright: number; faint: number; bin_width: number; query_count: number;
@@ -201,42 +205,25 @@ export type GalaxyPayload = {
 /* ─── stars ─────────────────────────────────────────────────────────────── */
 
 export type StarColorKey = "vis_y" | "vis_j" | "vis_h" | "y_j" | "y_h" | "j_h";
-export type ProjectionColorKey = "vis_y" | "vis_j" | "vis_h";
 export type StarDensityKey = "vis" | StarColorKey;
+/** One density panel. Only the VIS panel carries the Q1 point sources and the native Gaia G_AB counts
+ *  (`gaia`, `gaia_x`) with their shared-slope fit: those counts set the slope of the fitted magnitude
+ *  law. The colour panels carry no Gaia series (the Gaia projection view was deleted). */
 export type StarDensityParameter = {
   label: string; x_label: string; x: number[]; x_domain: [number, number];
-  euclid: number[]; gaia_x?: number[]; gaia: number[]; model: number[]; synthetic: number[];
+  euclid: number[]; gaia_x?: number[]; gaia?: number[]; model: number[]; synthetic: number[];
   point_sources?: number[] | null; gaia_fit?: number[] | null;
   fit_ranges?: { q1?: [number | null, number | null]; gaia?: [number | null, number | null] };
 };
-export type StarColorPlot = {
-  label: string; values: number[]; pearson_r: number | null; y_domain: [number, number];
-  trend: { x: number[]; y: number[] };
-  fit: null | { x: number[]; center: number[]; sigma: number; one_sigma_low: number[]; one_sigma_high: number[];
-    two_sigma_low: number[]; two_sigma_high: number[] };
-};
 export type StarDistribution = {
-  matched_stars: number; high_quality_stars: number; pointlike_over_0_9: number; bp_rp: number[];
-  x_domain: [number, number]; colors: Record<StarColorKey, StarColorPlot>; axis_note: string; fit_note: string | null;
+  /** The Gaia–Euclid colour sample the prior fits colours on. */
+  matched_stars: number; high_quality_stars: number; pointlike_over_0_9: number;
   training_included?: boolean;
-  gaia_cmd: {
-    cached_stars: number; plotted_stars: number; without_color: number; x_domain: [number, number];
-    g_domain: [number, number]; matched: { bp_rp: number[]; g_mag: number[] };
-    unmatched: { bp_rp: number[]; g_mag: number[] }; note: string;
-  };
-  euclid_projection: null | {
-    vis_domain: [number, number];
-    matched: { vis_mag: number[]; colors: Record<ProjectionColorKey, number[]> };
-    unmatched: { vis_mag: number[]; colors: Record<ProjectionColorKey, number[]> };
-    euclid_observed: Record<ProjectionColorKey, { vis_mag: number[]; color: number[] }>;
-    colors: Record<ProjectionColorKey, { label: string; x_domain: [number, number]; sigma: number }>;
-    note: string;
-  };
   density_comparison: null | {
     area_arcmin2: number; gaia_area_arcmin2?: number; model_density_arcmin2: number; model_sample_count: number;
     euclid_vis_count: number; q1_phz_expected_stars: number | null; q1_expected_point_sources: number | null;
     q1_selected_point_sources: number | null; q1_area_arcmin2: number | null; euclid_color_count: number;
-    gaia_count: number; gaia_native_g_count?: number; synthetic_area_arcmin2?: number | null;
+    gaia_native_g_count?: number; synthetic_area_arcmin2?: number | null;
     synthetic_star_count?: number; parameters: Record<StarDensityKey, StarDensityParameter>; note: string;
   };
   gaia_sampling?: null | {

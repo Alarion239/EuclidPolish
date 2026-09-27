@@ -150,7 +150,6 @@
 .ops-editor textarea { font-family: var(--font-mono); font-size: var(--fs-xs); }
 
 /* ── provenance ────────────────────────────────────────────────────────── */
-.ops-kpis { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: var(--s3); margin-bottom: var(--s4); }
 .ops-lineage { display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 0; list-style: none; max-height: 280px; overflow: auto; }
 .ops-lineage li { display: flex; align-items: center; gap: var(--s2); min-width: 0; font-size: var(--fs-xs); }
 .ops-lineage__depth { flex: none; width: 3ch; text-align: right; color: var(--text-faint); font-family: var(--font-mono); }

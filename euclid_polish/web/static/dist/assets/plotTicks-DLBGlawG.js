@@ -1,1 +1,0 @@
-import{dd as e}from"./index-DQ-4kspf.js";function a(o,t="linear",i){const[n,r]=o;return!Number.isFinite(n)||!Number.isFinite(r)||n===r?[]:e(void 0,[n,r],t==="log"&&Math.min(n,r)>0?"log":"linear",i)}function s(o){const t=[];for(let i=0;i<=o+1e-9;i+=.25)t.push({v:Math.round(i*100)/100,label:String(Math.round(i*100)/100)});return t}export{a,s as u};

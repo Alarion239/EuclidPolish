@@ -19,10 +19,14 @@
  *    active members.
  *  - production model: the `production` spec of `/api/models` (its combiner,
  *    mix space and fit time; `available` = fitted for the current members).
+ *  - running now: the live SLURM rows of the jobs feed (their `params_json`
+ *    member list compressed to ranges, `progress_step/total` when present),
+ *    then the running local jobs with their progress percentage.
  *  - tracking catch-up: the `tracking` health check's `facts.unlogged`
  *    (results written after the newest `## <ISO>` heading of log.md), one
  *    line each with the matching headline number, for the Log to tracking
  *    dialog (workspaces/shared/LogToTracking). */
+import type { Job, SlurmJob } from "../../api/jobs";
 import { utcText } from "../shared/noteText";
 
 export type EvalSummary = {
@@ -215,6 +219,53 @@ export function productionModel(catalog: ModelsCatalog | null | undefined): Prod
     available: !!spec.available,
     reason: spec.reason ?? null,
   };
+}
+
+/* ── running now ────────────────────────────────────────────────────────── */
+
+/** ["member_199", …, "member_202"] → "members 199–202" (runs of consecutive
+ *  numbers become ranges); null for an empty list. */
+export function memberRange(names: readonly string[]): string | null {
+  const nums = names.map((n) => String(n).trim().replace(/^member_/, "")).filter((n) => /^\d+$/.test(n));
+  if (!nums.length) return null;
+  const sorted = [...new Set(nums)].sort((a, b) => Number(a) - Number(b));
+  const parts: string[] = [];
+  for (let i = 0; i < sorted.length;) {
+    let j = i;
+    while (j + 1 < sorted.length && Number(sorted[j + 1]) === Number(sorted[j]) + 1) j += 1;
+    // Two in a row read better as a list ("195, 196") than as a range.
+    if (j - i >= 2) parts.push(`${sorted[i]}–${sorted[j]}`);
+    else for (let k = i; k <= j; k += 1) parts.push(sorted[k]);
+    i = j + 1;
+  }
+  return `${sorted.length === 1 ? "member" : "members"} ${parts.join(", ")}`;
+}
+
+/** The member list a SLURM row was submitted for (`params_json`). */
+function slurmMembers(job: SlurmJob): string | null {
+  let params: Record<string, unknown>;
+  try { params = JSON.parse(String(job.params_json ?? "{}")) as Record<string, unknown>; } catch { return null; }
+  if (!params || typeof params !== "object") return null;
+  const raw = params.mode === "continue" ? params.members : params.member_names ?? params.members;
+  return typeof raw === "string" ? memberRange(raw.split(",")) : null;
+}
+
+export type RunningItem = { key: string; text: string };
+
+const pctText = (current: number, total: number) => (total > 0 ? ` · ${Math.round((100 * current) / total)}%` : "");
+
+/** What runs right now, one short phrase each: live SLURM jobs first (by
+ *  their members when the submission names them), then the local jobs. */
+export function runningItems(local: readonly Job[], slurm: readonly SlurmJob[]): RunningItem[] {
+  const remote = slurm.filter((j) => j.state === "RUNNING" || j.state === "PENDING").map((j) => {
+    const what = slurmMembers(j) ?? j.label ?? j.step_id ?? `job ${j.jobid}`;
+    const tail = j.state === "PENDING" ? " · queued" : pctText(Number(j.progress_step ?? 0), Number(j.progress_total ?? 0));
+    return { key: `slurm/${j.jobid}`, text: `${what} on FASRC${tail}` };
+  });
+  const here = local.filter((j) => j.status === "running").map((j) => ({
+    key: j.job_id, text: `${j.label} on this laptop${pctText(j.progress?.current ?? 0, j.progress?.total ?? 0)}`,
+  }));
+  return [...remote, ...here];
 }
 
 /* ── tracking catch-up note ────────────────────────────────────────────── */

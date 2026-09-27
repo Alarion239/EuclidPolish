@@ -1,6 +1,6 @@
 /* ensemble/combiners (spec §8.2): the variant registry — every
-   spatial_gate_* directory (production, named variants, promotion backups)
-   and the RBF — with fit summary, membership, held-out loss curves overlaid,
+   spatial_gate_* directory (production, named variants, promotion backups;
+   the legacy RBF is never listed) — with fit summary, membership, held-out loss curves overlaid,
    test and knee-integrated PSNR per variant (latest compare report), the
    real-data benchmark (Sky › Experiments), the COMPARE job, the FIT job with
    every knob (writes a NAMED variant, never production) and PROMOTE (backs
@@ -143,15 +143,14 @@ function CompareDialog({ open, onOpenChange, data, onStart }: {
   const gates = data.variants.filter((v) => v.kind === "gate" && v.applies_to_test_cubes);
   const [picked, setPicked] = useState<string[]>(() => gates.filter((v) => !v.backup).map((v) => v.name));
   const [blackout, setBlackout] = useState("40");
-  const [rbf, setRbf] = useState(true);
   const [knee, setKnee] = useState(true);
   const submit = () => {
-    onStart({ gates: picked.join(","), blackout_fields: blackout, include_rbf: rbf ? "1" : "0", knee: knee ? "1" : "0" });
+    onStart({ gates: picked.join(","), blackout_fields: blackout, knee: knee ? "1" : "0" });
     onOpenChange(false);
   };
   return (
     <Dialog open={open} onOpenChange={onOpenChange} size="lg" title="Compare gate variants"
-      description="Scores each variant, the plain mean, the RBF and every member on the cached test cubes and blackout copies."
+      description="Scores each variant, the plain mean and every member on the cached test cubes and blackout copies."
       footer={<>
         <Button variant="ghost" onClick={() => onOpenChange(false)}>Cancel</Button>
         <Button variant="primary" disabled={!picked.length} onClick={submit}>Compare {picked.length}</Button>
@@ -172,7 +171,6 @@ function CompareDialog({ open, onOpenChange, data, onStart }: {
         <div className="ens-form">
           <NumberField label="Blackout fields" value={blackout} onChange={setBlackout} min={0} max={400}
             hint="0 = natural fields only (no member inference)" />
-          <Checkbox checked={rbf} onChange={setRbf}>include the RBF</Checkbox>
           <Checkbox checked={knee} onChange={setKnee}>PSNR-vs-knee curves</Checkbox>
         </div>
       </div>
@@ -258,7 +256,8 @@ export default function Combiners() {
   })), [exps.data]);
   const rows = useMemo<Row[]>(() => {
     const production = data?.variants.find((v) => v.production);
-    return (data?.variants ?? []).filter((v) => showBackups || !v.backup).map((v) => {
+    // The RBF combiner is legacy: the registry may still list it; it is never shown.
+    return (data?.variants ?? []).filter((v) => v.kind !== "rbf" && (showBackups || !v.backup)).map((v) => {
       const nat = rep?.groups?.natural?.[method(v)];
       const blk = rep?.groups?.blackout?.[method(v)];
       return {
@@ -280,7 +279,7 @@ export default function Combiners() {
     `**Combiner variants · ${mode}** — ${rows.length} variants${rep ? ` · compare report \`${rep.id ?? "latest"}\`` : ""}${benchmark ? ` · real holes on ${benchmark.tileSet} (experiment \`${benchmark.expId}\`)` : ""}`, "",
     "| Variant | Members | Mix | Test VIS | ∫PSNR | Real holes VIS · Y · J · H | Fitted |",
     "| --- | --- | --- | ---: | ---: | --- | --- |",
-    ...rows.map((v) => `| ${v.kind === "rbf" ? "RBF" : variantLabel(v.name)}${v.production ? " (production)" : ""} | ${readsText(v)} | ${v.mix_space ?? "—"} | ${db(v.testVis, 3)} | ${db(v.kneeMean, 3)} | ${v.bench ? holesText(v.bench) : "—"} | ${v.fitted_at ? utcText(v.fitted_at) : "—"} |`),
+    ...rows.map((v) => `| ${variantLabel(v.name)}${v.production ? " (production)" : ""} | ${readsText(v)} | ${v.mix_space ?? "—"} | ${db(v.testVis)} | ${db(v.kneeMean)} | ${v.bench ? holesText(v.bench) : "—"} | ${v.fitted_at ? utcText(v.fitted_at) : "—"} |`),
   ].join("\n");
   const fitResult = fit.job?.status === "done" ? (fit.job.result as { variant?: string } | null) : null;
   const fitted = fitResult?.variant ? rows.find((r) => r.name === fitResult.variant || r.name === `spatial_gate_${fitResult.variant}`) ?? null : null;
@@ -312,10 +311,9 @@ export default function Combiners() {
     { id: "name", header: "Variant", accessor: (v) => v.name, width: 176,
       cell: (v) => (
         <span className="ens-variant-name">
-          <code>{v.kind === "rbf" ? "RBF" : v.name.replace(/^spatial_gate_/, "")}</code>
+          <code>{v.name.replace(/^spatial_gate_/, "")}</code>
           {v.production && <Badge tone="accent">production</Badge>}
           {v.backup && <Badge>backup</Badge>}
-          {v.kind === "rbf" && <Badge tone="warn">stale kind</Badge>}
         </span>
       ) },
     { id: "members", header: "Members", accessor: (v) => v.n_reads, width: 92,

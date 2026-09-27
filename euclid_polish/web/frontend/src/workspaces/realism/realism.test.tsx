@@ -359,12 +359,13 @@ describe("galaxies", () => {
     for (const retired of [/PHZ.?recovery/i, /multi.?cone/i, /fit.?euclid/i, /fit.?q1.?counts/i]) {
       expect(screen.queryByRole("button", { name: retired })).toBeNull();
     }
-    expect(screen.getByText("Rₑ brackets")).toBeTruthy();
     expect(screen.getByText("POINT_LIKE_FLAG IS NULL")).toBeTruthy();
     expect(screen.getByText(/never refreshes star caches/)).toBeTruthy();
     expect(screen.queryByText(/stellar bins|stellar colou?rs|Gaia/i)).toBeNull();
-    const phases = within(screen.getByRole("list", { name: "Progressive magnitude-bin sampling phases" })).getAllByRole("listitem");
-    expect(phases.map((p) => p.getAttribute("data-state"))).toEqual(["cached", "cached", "cached", "waiting", "waiting"]);
+    // Idle: no progress counters; the interrupted query is one status line (a problem).
+    expect(screen.queryByRole("list", { name: "Progressive magnitude-bin sampling phases" })).toBeNull();
+    expect(screen.queryByText(/Rₑ brackets/)).toBeNull();
+    expect(screen.getByText("The last Q1 query stopped at 400 of 560 checkpoints (3 of 5 passes); run it again to resume.")).toBeTruthy();
     // Activation goes through /api/galaxy-distributions/activate.
     fireEvent.click(screen.getByRole("button", { name: "Activate model" }));
     await answer(/Activate this galaxy model/, "Activate");
@@ -372,8 +373,12 @@ describe("galaxies", () => {
     fireEvent.click(query);
     await answer(/Query MER \+ PHZ/, "Query");
     await waitFor(() => expect(posts("/api/galaxy-distributions/query-q1-counts")).toHaveLength(1));
-    // While the query runs, activation waits for it.
+    // While the query runs, activation waits for it, and the progress counters appear beside the job.
     await waitFor(() => expect((screen.getByRole("button", { name: "Activate model" }) as HTMLButtonElement).disabled).toBe(true));
+    const phases = within(screen.getByRole("list", { name: "Progressive magnitude-bin sampling phases" })).getAllByRole("listitem");
+    expect(phases.map((p) => p.getAttribute("data-state"))).toEqual(["cached", "cached", "cached", "querying", "waiting"]);
+    expect(screen.getByText("checkpoints 400 of 560 · Rₑ brackets 170 of 170")).toBeTruthy();
+    expect(screen.queryByText(/The last Q1 query stopped/)).toBeNull();
   });
 
   it("shows the brightness–radius, FWHM and colour relations of the fitted model", async () => {
@@ -444,8 +449,14 @@ describe("stars", () => {
     const { container } = show(<Stars />, "/realism/stars?view=prior");
     const query = await screen.findByRole("button", { name: "Query stars · MER + PHZ + Gaia" });
     expect(screen.getByText("No galaxy selection is used by this action.")).toBeTruthy();
-    expect(screen.getByText(/keeps Q1 at 0\.1-mag resolution and bins the smaller Gaia shape sample at 0\.5 mag/)).toBeTruthy();
-    expect(screen.getByText("5,963 Euclid candidates")).toBeTruthy();       // from color_sample, not availability
+    // The bin widths are an implementation detail: only the fit card's Info popover states them.
+    expect(screen.queryByText(/0\.5 mag/)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "About the stellar fit" }));
+    const about = within(await screen.findByRole("dialog", { name: "About the stellar fit" }));
+    expect(about.getByText(/keeps Q1 at 0\.1-mag resolution and bins the smaller Gaia shape sample at 0\.5 mag/)).toBeTruthy();
+    // The coverage note restates the footprint, so it lives in the same popover, not on the page.
+    expect(about.getByText("three fixed fields")).toBeTruthy();
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
     expect(container.querySelector('a[href^="/realism/galaxies"]')).toBeNull();
     expect(screen.queryByText(/random cones?/i)).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Fit stellar prior from cached data" }));
@@ -453,33 +464,57 @@ describe("stars", () => {
     fireEvent.click(query);
     await answer(/Query stars/, "Query");
     await waitFor(() => expect(posts("/api/star-distribution/query")).toHaveLength(1));
-    const gaia = screen.getAllByRole("link", { name: "On sky" }).map((a) => a.getAttribute("href") ?? "");
-    expect(gaia.some((h) => h.includes("layers=q1-tiles:0.2,gaia-fields") && h.includes("inspect=source:gaia-fields/EDF-N"))).toBe(true);
+    // The Gaia colour-field table stays (the prior fits colours on that sample), but the deleted
+    // atlas 'gaia-fields' layer is never linked: each row opens the Q1 tiles at its field centre.
+    const onSky = screen.getAllByRole("link", { name: "On sky" }).map((a) => a.getAttribute("href") ?? "");
+    expect(onSky).toContain("/sky/atlas?ra=269.733&dec=66.018&fov=1&layers=q1-tiles:0.2");
+    expect(container.querySelector('a[href*="gaia-fields"]')).toBeNull();
   });
 
-  it("shows the density panels (Q1 at 0.1 mag vs the Gaia shape sample at 0.5 mag) and keeps the legend in the URL", async () => {
+  it("shows the density panels (bin widths only in the popover) and keeps the legend in the URL", async () => {
     const Stars = await tab("Stars");
     const { container } = show(<Stars />, "/realism/stars");
     expect(await screen.findByText("Stellar density in Euclid magnitude and colour")).toBeTruthy();
-    expect(screen.getByText("Q1 at 0.1 mag · Gaia shape sample at 0.5 mag · guides mark the fitted regions")).toBeTruthy();
+    expect(screen.getByText("guides mark the fitted regions")).toBeTruthy();
+    expect(screen.queryByText(/0\.1 mag|0\.5 mag/)).toBeNull();
     expect(container.querySelectorAll(".rl-panel")).toHaveLength(7);
     fireEvent.click(screen.getByRole("button", { name: "native Gaia G_AB" }));
     await waitFor(() => expect(params().get("shide")).toBe("Gaia G_AB"));
     expect(container.querySelector('a[href^="/realism/galaxies"]')).toBeNull();
   });
 
-  it("registers the query, fit and Gaia atlas link in the palette", async () => {
+  it("registers the query, fit and activation in the palette, with no Gaia atlas link", async () => {
     const Stars = await tab("Stars");
-    show(<Stars />, "/realism/stars");
+    const { container } = show(<Stars />, "/realism/stars");
     await screen.findByText("Stellar density in Euclid magnitude and colour");
-    expect(paletteIds()).toEqual(expect.arrayContaining(["stars-query", "stars-fit", "stars-activate", "stars-gaia-sky"]));
+    expect(paletteIds()).toEqual(expect.arrayContaining(["stars-query", "stars-fit", "stars-activate"]));
+    expect(paletteIds().filter((id) => /gaia/.test(id))).toEqual([]);
+    expect(paletteIds().filter((id) => id.startsWith("stars-view-"))).toEqual(["stars-view-density", "stars-view-prior"]);
+    expect(container.querySelector('a[href*="gaia-fields"]')).toBeNull();
     act(() => runPalette("stars-fit"));
     await waitFor(() => expect(posts("/api/star-distribution/fit")).toHaveLength(1));
     act(() => runPalette("stars-query"));
     await answer(/Query stars/, "Query");
     await waitFor(() => expect(posts("/api/star-distribution/query")).toHaveLength(1));
-    act(() => runPalette("stars-gaia-sky"));
-    await waitFor(() => expect(lastLocation).toMatch(/^\/sky\/atlas\?.*layers=q1-tiles:0\.2,gaia-fields/));
+  });
+
+  it("offers only the density and prior views (the Gaia colour and CMD views are deleted)", async () => {
+    const { STAR_VIEWS } = await import("./tabs/Stars");
+    expect(STAR_VIEWS.map((v) => v.value)).toEqual(["density", "prior"]);
+    const Stars = await tab("Stars");
+    show(<Stars />, "/realism/stars?view=colours");               // an old link falls back to the default view
+    expect(await screen.findByText("Stellar density in Euclid magnitude and colour")).toBeTruthy();
+    expect(screen.queryByText("Gaia colour versus fitted Euclid distributions")).toBeNull();
+    expect(screen.queryByText("Gaia colour–magnitude diagram")).toBeNull();
+    const views = screen.getByRole("radiogroup", { name: "Star view" });
+    expect(within(views).getAllByRole("radio").map((r) => r.textContent)).toEqual(["Density", "Prior"]);
+  });
+
+  it("falls back to the density view for the deleted gaia view too", async () => {
+    const Stars = await tab("Stars");
+    show(<Stars />, "/realism/stars?view=gaia");
+    expect(await screen.findByText("Stellar density in Euclid magnitude and colour")).toBeTruthy();
+    expect(screen.queryByText("Gaia population projected into Euclid")).toBeNull();
   });
 
   it("shows no made-up Q1 footprint before the stellar query ran", async () => {
@@ -494,7 +529,7 @@ describe("stars", () => {
   it("points an empty distribution at the prior workflow", async () => {
     routes["GET /api/star-distribution?include_training=0"] = () => ({ body: starPayload({ distribution: null }) });
     const Stars = await tab("Stars");
-    show(<Stars />, "/realism/stars?view=colours");
+    show(<Stars />, "/realism/stars");
     fireEvent.click(await screen.findByRole("button", { name: "Open the prior workflow" }));
     await waitFor(() => expect(params().get("view")).toBe("prior"));
   });
@@ -575,6 +610,211 @@ describe("pixels", () => {
     expect(series.map((s) => s.key)).toEqual(["Y_E:synthetic", "J_E:synthetic", "H_E:synthetic"]);
     const points = relationPoints(FIELDS, "mean_std", visibleFrom([]));
     expect(points.filter((p) => p.sample === "real").map((p) => p.parent)).toContain("parent-3");
+  });
+});
+
+/* ── statistics: summary line, facts, captions, no stat tiles ──────────── */
+
+const noTiles = (container: HTMLElement) => expect(container.querySelector(".ui-stat, .rl-stats, .rl-score")).toBeNull();
+const factRows = (title: string) =>
+  within(screen.getByRole("heading", { name: title }).closest(".ui-facts") as HTMLElement).getAllByRole("group").map((r) => r.textContent);
+
+describe("statistics", () => {
+  it("stars density: one summary sentence, the sample sizes on the legend, the area in a caption", async () => {
+    const Stars = await tab("Stars");
+    const { container } = show(<Stars />, "/realism/stars");
+    await screen.findByText("Stellar density in Euclid magnitude and colour");
+    noTiles(container);
+    const summaries = container.querySelectorAll(".ui-summary");
+    expect(summaries).toHaveLength(1);
+    // 6,040 stars / 1,201.5 arcmin² = 5.03 against the 5.084 prior: −1.1%, inside the 5% tolerance.
+    expect(summaries[0].textContent).toBe("Generated 5.03 vs prior 5.08\u00a0arcmin⁻² (-1.1%), trusted window VIS 18.00–23.00");
+    expect(summaries[0].querySelector("[data-tone=warn]")).toBeNull();
+    for (const label of ["Q1 PHZ (VIS) · ≈403k", "Q1 point sources (VIS) · ≈520k",
+      "generated test + validation stars · 6,040 in 1,201 arcmin²", "Euclid four-band · 3,456", "native Gaia G_AB"]) {
+      expect(screen.getByRole("button", { name: label })).toBeTruthy();
+    }
+    expect(screen.getByText("Q1 footprint 63.1 deg² · colours from the Gaia-matched stars in 3 fixed Q1 fields").className).toContain("ui-caption");
+    // Deleted with the Gaia views: the Gaia field area, the native Gaia count, the false-precision totals.
+    for (const gone of [/4,156/, /5,963/, /403,069/, /519,611/, /Gaia field area/, /model density/]) expect(screen.queryByText(gone)).toBeNull();
+  });
+
+  it("stars density: the matched count moves into the caption when no four-band curve carries it", async () => {
+    const base = starPayload();
+    const comparison = base.distribution!.density_comparison!;
+    const parameters = Object.fromEntries(Object.entries(comparison.parameters).map(([k, p]) =>
+      [k, k === "vis" ? p : { ...p, euclid: p.euclid.map(() => 0) }])) as typeof comparison.parameters;
+    routes["GET /api/star-distribution?include_training=0"] = () => ({
+      body: { ...base, distribution: { ...base.distribution!, density_comparison: { ...comparison, parameters } } } });
+    const Stars = await tab("Stars");
+    show(<Stars />, "/realism/stars");
+    await screen.findByText("Stellar density in Euclid magnitude and colour");
+    expect(screen.queryByRole("button", { name: /Euclid four-band/ })).toBeNull();
+    expect(screen.getByText("Q1 footprint 63.1 deg² · colours from 3,456 Gaia-matched stars in 3 fixed Q1 fields")).toBeTruthy();
+  });
+
+  it("stars density: warns when the generated density is more than 5% off the prior", async () => {
+    const base = starPayload();
+    const comparison = { ...base.distribution!.density_comparison!, synthetic_star_count: 5000 };
+    routes["GET /api/star-distribution?include_training=0"] = () => ({
+      body: { ...base, distribution: { ...base.distribution!, density_comparison: comparison } } });
+    const Stars = await tab("Stars");
+    const { container } = show(<Stars />, "/realism/stars");
+    await screen.findByText("Stellar density in Euclid magnitude and colour");
+    expect(container.querySelector(".ui-summary [data-tone=warn]")?.textContent).toBe("-18%");
+  });
+
+  it("stars: the active prior is one quiet line, not a badge (badges only flag problems)", async () => {
+    const base = starPayload();
+    routes["GET /api/star-distribution?include_training=0"] = () => ({
+      body: { ...base, calibration: { ...base.calibration, is_active: true } } });
+    const Stars = await tab("Stars");
+    const { container } = show(<Stars />, "/realism/stars?view=prior");
+    await screen.findByRole("heading", { name: "Query result" });
+    expect(screen.getByText("prior active").className).toContain("rl-quiet");
+    expect(screen.getByText("prior active").closest(".ui-badge")).toBeNull();
+    expect(container.querySelectorAll(".ui-badge")).toHaveLength(0);
+  });
+
+  it("stars prior: the query result as facts, the colour fit as one sentence, the Gaia fields collapsed", async () => {
+    const Stars = await tab("Stars");
+    const { container } = show(<Stars />, "/realism/stars?view=prior");
+    await screen.findByRole("heading", { name: "Query result" });
+    noTiles(container);
+    expect(factRows("Query result")).toEqual(["Objects selected≈537k", "Point sources≈520k", "PHZ stars≈403k", "Footprint63.1deg²"]);
+    expect(container.querySelector(".ui-summary")?.textContent).toBe("Colours fitted on 2,398 stars with S/N ≥ 5 in all bands, of 3,456 matched");
+    const details = screen.getByText("Gaia colour fields").closest("details")!;
+    expect(details.open).toBe(false);
+    expect(within(details).getAllByRole("row")).toHaveLength(4);                  // header + the three fixed fields
+    // Only the field radius stays as provenance; the Gaia field area went with the Gaia views.
+    expect(within(details).getByText("r = 21′ each")).toBeTruthy();
+    expect(screen.queryByText(/4,156/)).toBeNull();
+    for (const gone of [/VIS bin width/, /^bins$/, /fixed Q1 fields/, /3,462/, /Euclid candidates/, /Gaia rows/, /POINT_LIKE_PROB/]) {
+      expect(screen.queryByText(gone)).toBeNull();
+    }
+  });
+
+  it("galaxies model: the ledger speaks in sentences, the query in a caption, the model in a summary and facts", async () => {
+    const Galaxies = await tab("Galaxies");
+    const { container } = show(<Galaxies />, "/realism/galaxies?view=model");
+    await screen.findByRole("button", { name: "Query MER + PHZ" });
+    noTiles(container);
+    const ledger = within(screen.getByRole("region", { name: "Galaxy distribution data layers" }));
+    expect(ledger.getByText("Q1 query: 140,085 rows over 1,885 arcmin², 132,147 with PHZ PDFs.")).toBeTruthy();
+    expect(ledger.getByText("Generated test + validation: 5,489 galaxies over 36.4 arcmin² (200 fields), 4,802 radii measured on clean images.")).toBeTruthy();
+    expect(ledger.getByText("Fitted model: the Q1 counts and radii over the 63.1 deg² footprint.")).toBeTruthy();
+    // Rows, area and cones are in the ledger sentence, so the query caption keeps only the version and range.
+    expect(screen.getByText("Q1 cache v7 · VIS 14–28").className).toContain("ui-caption");
+    expect(screen.getAllByText(/140,085/)).toHaveLength(1);
+    expect(container.querySelectorAll(".ui-summary")).toHaveLength(1);
+    expect(container.querySelector(".ui-summary")?.textContent).toBe("152\u00a0galaxies arcmin⁻² at scene depth (VIS 14–29)");
+    expect(factRows("Model")).toEqual(["Radius slope-0.15dex/mag", "Radius scatter0.23dex", "Colour forest83,583rows",
+      "SFR known for33%of the weight", "Rₑ resolved for97.5%of the weight"]);
+    expect(screen.getByText("Fingerprints").closest("details")?.open).toBe(false);
+    for (const gone of [/PHZ weight/, /bin width/, /trees/, /^faint plateau$/, /^integrated density$/, /^brightness$/, /2FWHM · 14–29/]) {
+      expect(screen.queryByText(gone)).toBeNull();
+    }
+  });
+
+  it("galaxies model: the ledger names the cones when the payload counts them (once per screen)", async () => {
+    const base = galaxyPayload();
+    routes["GET /api/galaxy-distributions?include_training=0"] = () => ({
+      body: { ...base, sources: { ...base.sources, euclid: { ...base.sources.euclid, cone_count: 24 } } } });
+    const Galaxies = await tab("Galaxies");
+    show(<Galaxies />, "/realism/galaxies?view=model");
+    expect(await screen.findByText("Q1 cache v7 · VIS 14–28")).toBeTruthy();
+    expect(screen.getAllByText(/24 cones/)).toHaveLength(1);
+    expect(screen.getByText("Q1 query: 140,085 rows over 1,885 arcmin² (24 cones), 132,147 with PHZ PDFs.")).toBeTruthy();
+  });
+
+  it("galaxies distributions: two trust boxes, the generator plateau folded into the turnover box with its unit", async () => {
+    const Galaxies = await tab("Galaxies");
+    const { container } = show(<Galaxies />, "/realism/galaxies");
+    await screen.findByText("Q1 count turnover");
+    const boxes = [...container.querySelectorAll(".rl-trust > div")];
+    expect(boxes).toHaveLength(2);
+    expect(boxes[0].textContent).toContain("generator plateau 61.2 arcmin⁻² mag⁻¹ = 2.0× Q1 peak");
+    expect(screen.queryByText("Generation ceiling")).toBeNull();
+  });
+
+  it("galaxies distributions: a plateau held at the Q1 peak reads '= Q1 peak'", async () => {
+    const base = galaxyPayload();
+    const magnitude = base.parameters.magnitude;
+    const series = { ...magnitude.photometry_series!,
+      generator_vis_f2: { ...magnitude.photometry_series!.generator_vis_f2, generation_density_cap_arcmin2_mag: 30.5 } };
+    routes["GET /api/galaxy-distributions?include_training=0"] = () => ({
+      body: { ...base, parameters: { ...base.parameters, magnitude: { ...magnitude, photometry_series: series } } } });
+    const Galaxies = await tab("Galaxies");
+    const { container } = show(<Galaxies />, "/realism/galaxies");
+    await screen.findByText("Q1 count turnover");
+    const box = container.querySelector(".rl-trust > div")?.textContent ?? "";
+    // Held at the peak, the plateau does not repeat the peak value the box already prints.
+    expect(box).toContain("generator plateau = Q1 peak");
+    expect(box.split("30.5").length - 1).toBe(1);
+  });
+
+  it("pixels: the VIS score as the summary, sample sizes on the chips, geometry in a caption, built in the badge", async () => {
+    const Pixels = await tab("Pixels");
+    const { container } = show(<Pixels />, "/realism/pixels");
+    await screen.findByText("Brightness distribution");
+    noTiles(container);
+    expect(container.querySelectorAll(".ui-summary")).toHaveLength(1);
+    expect(container.querySelector(".ui-summary")?.textContent).toBe("VIS overlap 0.97 (0.87–1.07), power syn/real 1.10 (0.99–1.21)");
+    const chips = within(screen.getByRole("group", { name: "Bands and samples" }));
+    expect(chips.getByRole("button", { name: "synthetic LR · 200 fields" })).toBeTruthy();
+    expect(chips.getByRole("button", { name: "real Euclid LR · 176 fields / 44 pointings" })).toBeTruthy();
+    expect(screen.getByText("Fields 256 × 256 px at 0.1″ (0.18 arcmin²); statistics on the 255 × 255 centre crop").className)
+      .toContain("ui-caption");
+    expect(screen.getByText("cache current").closest("[title]")?.getAttribute("title")).toMatch(/^built 2026-09-25/);
+    // The NISP scale scores are one comparison table, not a row of score tiles; VIS is the summary's alone.
+    const scores = within(screen.getByRole("table", { name: "Scale-spectrum similarity per NISP band" }));
+    expect(scores.getAllByRole("row").map((r) => r.querySelector("td")?.textContent ?? "")).toEqual(["", "Y", "J", "H"]);
+    expect(screen.queryByText(/^built$/)).toBeNull();
+  });
+
+  it("pixels census: generated vs prior vs Q1 over the same window per row, even without the pixel cache", async () => {
+    routes["GET /api/population-comparison?include_training=0"] = () => ({ body: pixelsPayload({ comparison: null }) });
+    const Pixels = await tab("Pixels");
+    const { container } = show(<Pixels />, "/realism/pixels?view=census");
+    const table = await screen.findByRole("table", { name: "Surface density: generated, prior and Q1" });
+    noTiles(container);
+    const rows = within(table).getAllByRole("row").map((r) => [...r.querySelectorAll("th, td")].map((c) => c.textContent));
+    expect(rows).toEqual([
+      ["Kind", "VIS range", "Generated", "Prior", "Q1"],
+      // Q1 only where it is complete (galaxies to the 5σ limit, stars over the trusted window), with the
+      // generated and prior densities integrated over exactly the same magnitudes.
+      ["Galaxies", "14.00–25.30 · to the Q1 5σ limit", "109", "134", "122"],
+      ["", "14.00–29.00 · full prior", "151", "152", "incomplete"],
+      ["Stars", "18.00–22.00 · Q1 trusted window", "0.108", "0.132", "0.12"],
+      ["", "16.00–22.00 · full prior", "5.03", "5.08", "incomplete"],
+    ]);
+    // The unit heads the numbers (card subtitle); where lenses went is said, not silently dropped.
+    expect(screen.getByText("arcmin⁻² · the same VIS window in every column of a row")).toBeTruthy();
+    const caption = container.querySelector(".ui-caption")?.textContent ?? "";
+    expect(caption).toContain("lenses are counted with the galaxies");
+    expect(caption.split("arcmin²").length - 1).toBeLessThanOrEqual(2);
+    // The census never reads the pixel cache: no cache state and no build action on this view.
+    expect(screen.queryByRole("button", { name: /Measure fields|Rebuild/ })).toBeNull();
+    expect(screen.queryByText(/cache (current|stale)|not built/)).toBeNull();
+    // The observed all-bins Q1 totals (Q1 incomplete past its limit) are no longer compared with the prior.
+    expect(screen.queryByText("74.4")).toBeNull();
+    expect(screen.queryByText("1.77")).toBeNull();
+    expect(screen.queryByText("The field-statistics cache has not been built")).toBeNull();
+  });
+
+  it("noise: no stat strip or quantile tables; positions in the subtitle, provenance in the footer, gaps in the popover", async () => {
+    const Noise = await tab("Noise");
+    const { container } = show(<Noise />, "/realism/noise");
+    await screen.findByText("Sky noise level per band");
+    noTiles(container);
+    expect(screen.queryByText("Level quantiles")).toBeNull();
+    expect(screen.getByText("3 Q1 positions in EDF-N/S")).toBeTruthy();
+    expect(screen.getByText("NOISE_MODEL v5 · Q1_R1 · retrieved 2026-09-19").className).toContain("ui-caption");
+    expect(screen.getAllByText(/^median .* · p5–p95 /)).toHaveLength(4);
+    expect(screen.queryByText(/tiles without coverage/)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "About the level histograms" }));
+    const about = within(await screen.findByRole("dialog", { name: "About the level histograms" }));
+    expect(about.getByText(/6 of 300 tiles without coverage/)).toBeTruthy();
   });
 });
 

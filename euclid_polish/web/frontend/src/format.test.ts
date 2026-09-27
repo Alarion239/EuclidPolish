@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   DASH,
+  formatApprox,
   formatBytes,
   formatCount,
   formatDate,
@@ -202,5 +203,31 @@ describe("dates", () => {
     expect(formatRelative(t - 2 * 86400_000, t)).toBe("2 d ago");
     expect(formatRelative(t + 3600_000, t)).toBe("in 1 h");
     expect(formatRelative(null, t)).toBe(DASH);
+  });
+});
+
+describe("formatApprox", () => {
+  it("rounds expected counts to 3 significant figures with a suffix", () => {
+    expect(formatApprox(403069.7)).toBe("≈403k");
+    expect(formatApprox(519611.8)).toBe("≈520k");
+    expect(formatApprox(536780)).toBe("≈537k");
+    expect(formatApprox(16_600_000)).toBe("≈16.6M");
+    expect(formatApprox(1201.5)).toBe("≈1,200");
+    expect(formatApprox(152.4)).toBe("≈152");
+  });
+  it("keeps small values and handles missing ones", () => {
+    expect(formatApprox(5.084)).toBe("≈5.08");
+    expect(formatApprox(null)).toBe("—");
+    expect(formatApprox(Number.NaN)).toBe("—");
+  });
+  it("can drop the approximation sign", () => {
+    expect(formatApprox(403069.7, { sign: false })).toBe("403k");
+  });
+  it("picks the suffix after rounding and keeps 3 figures on small values", () => {
+    expect(formatApprox(999_950)).toBe("≈1M");
+    expect(formatApprox(9_999.6)).toBe("≈10k");
+    expect(formatApprox(0.012345)).toBe("≈0.0123");
+    expect(formatApprox(-0.0001)).toBe("≈-0.0001");
+    expect(formatApprox(0)).toBe("≈0");
   });
 });

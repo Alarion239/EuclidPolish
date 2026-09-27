@@ -141,6 +141,27 @@ export function stepSeries(edges: readonly number[], density: readonly number[])
   return { x, y };
 }
 
+/** ∫ density dx over [lo, hi] for a binned density given at bin centres `x` (ascending). Each bin spans
+ *  the midpoints to its neighbours (the edge bins mirror their one neighbour) and contributes the part
+ *  of it inside the window; missing values contribute nothing. Null when no bin overlaps the window. */
+export function integrateDensity(
+  x: readonly number[], density: readonly (number | null | undefined)[], lo: number, hi: number,
+): number | null {
+  if (!(hi > lo) || x.length < 2) return null;
+  let total = 0;
+  let overlapped = false;
+  for (let i = 0; i < x.length; i++) {
+    const left = i > 0 ? (x[i - 1] + x[i]) / 2 : x[0] - (x[1] - x[0]) / 2;
+    const right = i < x.length - 1 ? (x[i] + x[i + 1]) / 2 : x[i] + (x[i] - x[i - 1]) / 2;
+    const overlap = Math.min(hi, right) - Math.max(lo, left);
+    const v = density[i];
+    if (overlap <= 0 || v == null || !Number.isFinite(v)) continue;
+    total += v * overlap;
+    overlapped = true;
+  }
+  return overlapped ? total : null;
+}
+
 export const binCenters = (edges: readonly number[]) =>
   edges.slice(0, -1).map((lo, i) => (lo + edges[i + 1]) / 2);
 

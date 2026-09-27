@@ -23,8 +23,24 @@
 .ens-grid { display: grid; gap: var(--s4); grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); align-items: start; }
 @container (max-width: 760px) { .ens-grid { grid-template-columns: minmax(0, 1fr); } }
 
-.ens-kpis { display: grid; gap: var(--s3); grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); }
-.ens-kpis .ui-kpi { min-width: 0; }
+/* statistics (overview, diagnostics › calibration): a sentence, a small
+   comparison table in the body face with tabular numerals, a caption */
+.ens-tnum { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ens-compare { width: auto; min-width: min(100%, 30rem); }
+.ens-compare th, .ens-compare td { padding-inline: var(--s3); }
+.ens-compare th:first-child, .ens-compare td:first-child { padding-left: 0; }
+.ens-overview__result { display: flex; flex-direction: column; gap: var(--s2); min-width: 0; }
+.ens-overview__result .ui-summary { margin: 0; }
+.ens-overview__result .ui-summary a { color: inherit; text-decoration: underline dotted var(--border-strong); text-underline-offset: 3px; }
+.ens-overview__result .ui-summary a:hover { color: var(--accent); }
+.ens-overview__note { margin: 0; font-size: var(--fs-sm); }
+.ens-status {
+  display: flex; align-items: center; gap: var(--s2); margin: 0;
+  font-size: var(--fs-sm); color: var(--text-dim);
+}
+.ens-status .ens-check__dot { justify-self: auto; flex: none; }
+.ens-calib { display: flex; flex-direction: column; gap: var(--s2); min-width: 0; }
+.ens-calib .ui-summary { margin: 0; }
 
 .ens-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); min-width: 0; }
 .ens-muted { color: var(--text-dim); }

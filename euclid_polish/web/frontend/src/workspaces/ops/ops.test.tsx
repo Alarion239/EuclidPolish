@@ -455,8 +455,31 @@ describe("Provenance tab", () => {
     fireEvent.click(await within(grid).findByText("77777777"));
     expect(await screen.findByText("Model check: stale")).toBeTruthy();
     expect(screen.getByText("Open the FITS in Inspect").getAttribute("href")).toBe("/inspect?fits=data%2Fx%2FSR.fits");
-    fireEvent.click(screen.getByRole("radio", { name: "Current" }));
+    expect(screen.queryByText(/carry no model id/)).toBeNull();          // verdicts mean something here
+    fireEvent.click(screen.getByRole("radio", { name: "Current (0)" }));
     await waitFor(() => expect(calls.some((c) => c.url.includes("verdict=current"))).toBe(true));
+  });
+
+  it("says once that the verdicts mean nothing yet, with counts only on the verdict control", async () => {
+    routes["GET /api/provenance/summary"] = () => ({ body: { ok: true, total: 11345, counts: { kinds: { srcutoutartifact: 11094 },
+      verdicts: { current: 0, stale: 0, unknown: 11094 } }, roots: [{ path: "data/_prov", records: 11345 }],
+      current_models: Array.from({ length: 42 }, (_, i) => ({ id: `m${i}`, member: `member_${i}` })),
+      truncated: false, duplicates: 0, built_at: 1790000000, build_seconds: 0.1 } });
+    const row = (id: string) => ({ id, kind: "srcutoutartifact", category: "artifact", source: "sidecar", file: `data/x/${id}.json`,
+      created_at: "2026-02-01T00:00:00+00:00", status: null, path: null, format: "fits", label: `x/${id}.fits`, git: "abc", dirty: false,
+      config_type: null, seed: null, produced_by: null, parents: [], inputs: [], outputs: [], ra: null, dec: null, member: null,
+      verdict: "unknown", models: [], n_upstream: 0, n_downstream: 0 });
+    routes["GET /api/provenance/records"] = () => ({ body: { ok: true, total: 11345, offset: 0, limit: 1000,
+      records: [row("11111111"), row("22222222"), row("33333333")] } });
+    show(<ProvenanceTab />);
+    const note = await screen.findByText(/carry no model id/);
+    expect(note.closest(".ui-callout")?.textContent).toBe("98% of records carry no model id, so current/stale verdicts are not meaningful yet.");
+    expect(document.querySelector(".ui-kpi, .ops-kpis")).toBeNull();
+    expect(screen.getAllByRole("radio").map((r) => r.textContent)).toEqual(["All", "Current (0)", "Stale (0)", "No model (11,094)"]);
+    expect(await screen.findByText("11,345 match in total")).toBeTruthy();  // the total, beside the table's own "3 rows"
+    expect(screen.getAllByText(/^3 rows$/)).toHaveLength(1);
+    expect(screen.queryByText(/showing/)).toBeNull();                   // the loaded count is not repeated
+    expect(screen.queryByText("42")).toBeNull();                         // the active-models tile is gone
   });
 });
 

@@ -1,27 +1,34 @@
-/* ensemble/overview (spec §8.2): the headline numbers, each with its exact
-   definition (production spatial gate, plain mean, best member, knee-
-   integrated), the staleness checks with their fix, and the run actions —
-   evaluate (optionally forced), refresh member PSNR, PSNR vs knee, and a
-   FASRC pull with a member picker (probe first, then pull what you pick).
-   "Log to tracking" opens the Evaluate summary as an editable notebook entry
+/* ensemble/overview (spec §8.2; statistics rule of the 2026-09-27 console
+   spec): one status line (all current, or each failing staleness check with
+   its confirmed fix), one sentence with the production gate against its
+   references, a comparison table gate / plain mean / best member on the SAME
+   metric (knee-integrated PSNR, per band) so "best member" is tied to it, a
+   caption (members, gate fit, the integration, evaluation time), one alert
+   line for TIMEOUT members, and the run actions — evaluate (optionally
+   forced), refresh member PSNR, PSNR vs knee, and a FASRC pull with a member
+   picker (probe first, then pull what you pick). The numbers come from
+   knee-psnr.json (the overview headline when it cannot be read). "Log to
+   tracking" opens the Evaluate summary as an editable notebook entry
    (../notes.ts evaluationNote). */
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { useJob, type Job } from "../../../api/jobs";
 import { pagePath } from "../../../app/nav";
 import { usePageActions } from "../../../app/palette";
 import { startJob } from "../../../app/RunActions";
 import { useFasrcStatus } from "../../../app/status";
-import { formatDateTime, formatRelative } from "../../../format";
+import { formatRelative } from "../../../format";
 import { useUrlState } from "../../../hooks/useUrlState";
 import {
-  Badge, Button, Callout, Card, CardBody, CardHead, Checkbox, Dialog, EmptyState, Input, JobProgress, Kpi,
-  NumberField, Page, Tooltip,
+  Button, Callout, Caption, Card, CardBody, CardHead, Checkbox, Dialog, EmptyState, Input, JobProgress, Num,
+  NumberField, Page, SummaryLine, Table, Tooltip, type Column,
 } from "../../../ui";
-import { useMembers, useMode, useOverview, type Check, type Mode, type Overview as OverviewData } from "../api";
+import {
+  BAND_SHORT, BANDS, useKnee, useMembers, useMode, useOverview, type Check, type MemberRow, type Mode, type Overview as OverviewData,
+} from "../api";
 import { BarGroup, EnsBar, LoadState } from "../common";
 import { JOB, useOnJobEnd } from "../jobs";
-import { db, dbDelta, deltaTone, memberNumber, parseMemberList } from "../model";
+import { db, dbDelta, memberNumber, overviewComparison, parseMemberList, type Comparison, type ComparisonRow } from "../model";
 import { evaluationNote } from "../notes";
 import { LogToTrackingButton } from "../../shared/LogToTracking";
 import "../ensemble.css";
@@ -53,77 +60,101 @@ const memberPsnr = () => startJob({
   question: { title: "Re-score the members' test PSNR?", message: "Only changed or unscored members are evaluated (TensorFlow).", confirmLabel: "Re-score" },
 });
 
-function Headline({ o, mode }: { o: OverviewData; mode: Mode }) {
-  const h = o.headline;
-  const fields = h.n_scored ? `${h.n_scored} test fields` : "the test fields";
-  const metric = `VIS asinh PSNR (knee ${h.knee_e ?? 100} e⁻) over ${fields}`;
-  const k = h.knee;
-  const kneeRange = k.integration ? `${k.integration.from_e}–${k.integration.to_e} e⁻` : "0.1–10⁴ e⁻";
-  const kneeDelta = k.production != null && k.best_member != null ? k.production - k.best_member : null;
-  const kneeVsMean = k.production != null && k.mean != null ? k.production - k.mean : null;
-  const best = h.best_member.label ? `member ${memberNumber(h.best_member.label) ?? h.best_member.label}` : "best member";
+/** A knee in e⁻ as prose reads it: 0.1, 100, 10⁴. */
+const SUP: Record<string, string> = { 0: "⁰", 1: "¹", 2: "²", 3: "³", 4: "⁴", 5: "⁵", 6: "⁶", 7: "⁷", 8: "⁸", 9: "⁹" };
+function kneeE(v: number): string {
+  const p = Math.log10(v);
+  return v >= 1000 && Number.isInteger(p) ? `10${String(p).split("").map((d) => SUP[d]).join("")}` : String(v);
+}
+
+/** Non-breaking spaces: "2 d ago" and "10⁴ e⁻" never wrap inside. */
+const nb = (t: string) => t.replace(/ /g, "\u00a0");
+
+/** "+1.02 dB over …"; a loss reads "0.30 dB under …" in warn. A non-breaking
+ *  space keeps each number with its unit. */
+function gain(v: number | null, what: string): ReactNode {
+  if (v == null || !Number.isFinite(v)) return null;
+  return v >= 0 ? <><Num>{dbDelta(v)}</Num>{"\u00a0"}dB over {what}</> : <><Num tone="warn">{db(-v)}</Num>{"\u00a0"}dB under {what}</>;
+}
+
+/** The production gate (else the plain mean) against the best member and the
+ *  plain mean, on the comparison table's own numbers. */
+function Summary({ cmp, mode }: { cmp: Comparison; mode: Mode }) {
+  const row = (id: ComparisonRow["id"]) => cmp.rows.find((r) => r.id === id)?.integrated ?? null;
+  const gate = row("gate"), mean = row("mean"), best = row("best");
+  const head = gate ?? mean;
+  if (head == null) return null;
+  const bestWhat = cmp.bestNumber ? `the best member (#${cmp.bestNumber})` : "the best member";
+  const clauses = [
+    best != null ? gain(head - best, bestWhat) : null,
+    gate != null && mean != null ? gain(gate - mean, "the plain mean") : null,
+  ].filter((c) => c != null);
   return (
-    <div className="ens-kpis">
-      <Kpi label="∫PSNR · production gate" value={db(k.production)} unit=" dB" loading={false}
-        to={tabPath(mode, "knee")}
-        delta={kneeDelta != null ? `${dbDelta(kneeDelta)} dB vs ${k.best_member_label ? `member ${memberNumber(k.best_member_label)}` : "best member"}` : undefined}
-        deltaTone={deltaTone(kneeDelta)}
-        footer={kneeVsMean != null ? `${dbDelta(kneeVsMean)} dB vs plain mean${k.stale ? " · stale" : ""}` : k.available ? undefined : "not computed"}
-        tone={k.stale ? "warn" : undefined}
-        hint={`Knee-integrated PSNR: the production spatial gate's PSNR averaged uniformly in log(knee) over ${kneeRange}, then over the four bands (${k.n_fields ?? "?"} test fields). The knee-independent metric.`} />
-      <Kpi label="Test PSNR · production gate" value={db(h.production.psnr)} unit=" dB"
-        delta={h.production.vs_best_member_db != null ? `${dbDelta(h.production.vs_best_member_db)} dB vs best member` : undefined}
-        deltaTone={deltaTone(h.production.vs_best_member_db)}
-        footer={h.production.vs_mean_db != null ? `${dbDelta(h.production.vs_mean_db)} dB vs plain mean` : "not evaluated"}
-        hint={`${metric} of the production spatial gate (eval summary spatial_gate_combiner_psnr).`} />
-      <Kpi label="Plain mean" value={db(h.mean.psnr)} unit=" dB"
-        delta={h.mean.vs_mean_member_db != null ? `${dbDelta(h.mean.vs_mean_member_db)} dB vs mean member` : undefined}
-        deltaTone={deltaTone(h.mean.vs_mean_member_db)}
-        hint={`${metric} of the unweighted mean of the members (ensemble_psnr); the gain is over the average member (ensemble_gain_db).`} />
-      <Kpi label="Best member" value={db(h.best_member.psnr)} unit=" dB" footer={h.best_member.label ? best : undefined}
-        delta={h.best_member.mean_member_psnr != null ? `mean member ${db(h.best_member.mean_member_psnr)}` : undefined}
-        to={tabPath(mode, "members")}
-        hint={`${metric} of the single best member on the same fields (best_member_psnr).`} />
-      <Kpi label="Members" value={String(o.n_members)} to={tabPath(mode, "members")}
-        footer={o.production_gate.available ? `gate fitted for ${o.production_gate.n_members}${o.production_gate.mix_space ? ` · ${o.production_gate.mix_space} mix` : ""}` : "no production gate"}
-        tone={o.production_gate.available && o.production_gate.n_members !== o.n_members ? "warn" : undefined}
-        hint={`Active ${mode} members (registry). The production gate is fitted for a fixed member list.`} />
-      <Kpi label="Evaluated" value={o.evaluated_at ? formatRelative(o.evaluated_at) : "never"}
-        footer={o.evaluated_at ? formatDateTime(o.evaluated_at) : o.test_present ? "test records present" : "no test records"}
-        hint={`When eval_summary.json was last written (${o.eval_subset ?? "test"} subset).`} />
-    </div>
+    <SummaryLine>
+      {gate != null ? "Production gate" : "Plain mean"} <Num>{db(head)}</Num>{"\u00a0"}dB{" "}
+      <Link to={tabPath(mode, "knee")}>integrated PSNR</Link>
+      {clauses.length > 0 && ", "}
+      {clauses.map((c, i) => <span key={i}>{i > 0 && " and "}{c}</span>)}
+    </SummaryLine>
   );
 }
 
-function Checks({ checks, mode, onEvaluate, onKnee }: {
-  checks: Check[]; mode: Mode; onEvaluate: () => void; onKnee: () => void;
+function ComparisonTable({ cmp, bands }: { cmp: Comparison; bands: readonly string[] }) {
+  const columns: Column<ComparisonRow>[] = [
+    { header: "", cell: (r) => (r.id === "gate" ? <strong>{r.label}</strong> : r.label) },
+    { header: "∫PSNR [dB]", align: "right", cell: (r) => <span className="ens-tnum">{db(r.integrated)}</span> },
+    ...bands.map((b, i): Column<ComparisonRow> => ({
+      header: `∫${BAND_SHORT[b] ?? b} [dB]`, align: "right", cell: (r) => <span className="ens-tnum">{db(r.bands[i])}</span>,
+    })),
+  ];
+  return <Table className="ens-compare" aria-label="Production vs references" columns={columns} rows={cmp.rows} rowKey={(r) => r.id} />;
+}
+
+/** One quiet line when every check passes; else each failing check once,
+ *  with its fix (each fix offered once, on the first check that needs it). */
+function StatusLine({ o, mode, onEvaluate, onKnee }: {
+  o: OverviewData; mode: Mode; onEvaluate: () => void; onKnee: () => void;
 }) {
-  const bad = checks.filter((c) => !c.ok);
+  const failing = o.checks.filter((c) => !c.ok);
+  if (!failing.length) {
+    return <p className="ens-status" data-tone="good"><span className="ens-check__dot" aria-hidden />All current</p>;
+  }
+  const offered = new Set<string>();
+  const fix = (c: Check) => {
+    if (!c.action || offered.has(c.action)) return <span />;
+    offered.add(c.action);
+    if (c.action === "evaluate") {
+      return (
+        <Tooltip content={o.test_present ? "Evaluate the members, the mean and the combiners on the test records" : "No local test records — sync them in Data › Records"}>
+          <span><Button size="sm" onClick={onEvaluate} disabled={!o.test_present}>Evaluate</Button></span>
+        </Tooltip>
+      );
+    }
+    if (c.action === "knee") return <Button size="sm" onClick={onKnee}>Compute</Button>;
+    if (c.action === "combiners") return <Button size="sm" asChild><Link to={tabPath(mode, "combiners")}>Combiners</Link></Button>;
+    return <span />;
+  };
   return (
-    <Card>
-      <CardHead title="Staleness" sub={bad.length ? `${bad.length} to act on` : "everything current"} />
-      <CardBody>
-        <ul className="ens-checks">
-          {checks.map((c) => (
-            <li key={c.id} className="ens-check" data-tone={c.tone}>
-              <span className="ens-check__dot" aria-hidden />
-              <span>
-                <span className="ens-check__title">{c.title}</span>{" "}
-                <span className="ens-check__detail">{c.detail}</span>
-              </span>
-              {!c.ok && c.action === "evaluate" && <Button size="sm" onClick={onEvaluate}>Evaluate</Button>}
-              {!c.ok && c.action === "knee" && <Button size="sm" onClick={onKnee}>Compute</Button>}
-              {!c.ok && c.action === "combiners" && (
-                <Button size="sm" asChild><Link to={tabPath(mode, "combiners")}>Combiners</Link></Button>
-              )}
-              {c.ok && <span />}
-            </li>
-          ))}
-        </ul>
-      </CardBody>
-    </Card>
+    <ul className="ens-checks ens-status-list" aria-label="Staleness">
+      {failing.map((c) => (
+        <li key={c.id} className="ens-check" data-tone={c.tone}>
+          <span className="ens-check__dot" aria-hidden />
+          <span>
+            <span className="ens-check__title">{c.title}</span>{" "}
+            <span className="ens-check__detail">{c.detail}</span>
+          </span>
+          {fix(c)}
+        </li>
+      ))}
+    </ul>
   );
 }
+
+/** "178, 179, 182" (at most `max`, then "…"). */
+const numberList = (rows: readonly MemberRow[], max = 8) => {
+  const nums = rows.map((m) => memberNumber(m.name) ?? m.name);
+  return nums.length > max ? `${nums.slice(0, max).join(", ")}, …` : nums.join(", ");
+};
 
 /** Probe FASRC for changed members, then pull the ones picked. */
 function PullDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (v: boolean) => void }) {
@@ -191,6 +222,7 @@ export default function Overview() {
   const mode = useMode();
   const ov = useOverview(mode);
   const members = useMembers(mode);
+  const kneeRes = useKnee(mode);
   const [n, setN] = useUrlState("n", "100");
   const [force, setForce] = useUrlState("force", false);
   const [pullOpen, setPullOpen] = useState(false);
@@ -217,7 +249,19 @@ export default function Overview() {
   ]);
 
   const o = ov.data;
+  const kneeData = kneeRes.data;
+  const cmp = useMemo(() => overviewComparison(kneeData, o?.headline.knee), [kneeData, o]);
+  const bands = kneeData?.available && kneeData.bands?.length ? kneeData.bands : [...BANDS];
   const timeouts = (members.data?.members ?? []).filter((m) => m.timeout);
+  const integration = kneeData?.integration ?? o?.headline.knee.integration ?? null;
+  const nFieldsKnee = kneeData?.n_fields ?? o?.headline.knee.n_fields ?? null;
+  const caption = o ? [
+    `${o.n_members} member${o.n_members === 1 ? "" : "s"}`,
+    o.production_gate.available && o.production_gate.fitted_at
+      ? `production gate fitted ${nb(formatRelative(o.production_gate.fitted_at))}${o.production_gate.mix_space ? ` (${o.production_gate.mix_space} mix)` : ""}` : null,
+    cmp.rows.length ? `∫ = PSNR averaged over log knee ${nb(`${kneeE(integration?.from_e ?? 0.1)}–${kneeE(integration?.to_e ?? 1e4)} e⁻`)}${nFieldsKnee ? ` on ${nFieldsKnee} test fields` : ""}` : null,
+    o.evaluated_at ? `evaluated ${nb(formatRelative(o.evaluated_at))}` : "not evaluated yet",
+  ].filter(Boolean).join(" · ") : "";
   return (
     <Page>
       <EnsBar label="Run actions">
@@ -241,46 +285,30 @@ export default function Overview() {
       </EnsBar>
       <LoadState loading={ov.loading} error={ov.error} onRetry={ov.reload}>
         {o && (
-          <div className="ens-stack">
-            {o.summary == null && (
-              <EmptyState icon="activity" title={`No ${mode} evaluation yet`}
-                action={<Button variant="primary" onClick={run.evaluate} disabled={!o.test_present}>Evaluate</Button>}>
-                {o.test_present ? "Score the members, the mean and the combiners on the test records." : "No local test records — sync them in Data › Records."}
-              </EmptyState>
-            )}
-            {o.checks.some((c) => !c.ok && c.tone !== "info") && (
-              <Callout tone={o.checks.some((c) => !c.ok && c.tone === "bad") ? "bad" : "warn"}
-                title={o.checks.filter((c) => !c.ok && c.tone !== "info").map((c) => c.title).join(" · ")}>
-                {o.checks.find((c) => !c.ok && c.tone !== "info")?.detail}
+          <div className="ens-stack ens-overview">
+            <StatusLine o={o} mode={mode} onEvaluate={run.evaluate} onKnee={run.knee} />
+            {timeouts.length > 0 && (
+              <Callout tone="warn" dense action={(
+                <Button size="sm" asChild>
+                  <Link to={`${tabPath(mode, "train")}?mode=continue&members=${timeouts.map((m) => m.name).join(",")}`}>
+                    {timeouts.length === 1 ? "Continue it…" : "Continue them…"}
+                  </Link>
+                </Button>
+              )}>
+                {`${timeouts.length} member${timeouts.length === 1 ? "" : "s"} stopped at the time limit: ${numberList(timeouts)}.`}
               </Callout>
             )}
-            <Headline o={o} mode={mode} />
-            <div className="ens-grid">
-              <Checks checks={o.checks} mode={mode} onEvaluate={run.evaluate} onKnee={run.knee} />
-              <Card>
-                <CardHead title="Training status" sub={`${members.data?.members.length ?? "…"} members`}
-                  right={<Button size="sm" variant="ghost" asChild><Link to={tabPath(mode, "members")}>Members</Link></Button>} />
-                <CardBody>
-                  <LoadState loading={members.loading && !members.data} error={members.data ? null : members.error} onRetry={members.reload} lines={2}>
-                  {!members.data ? null : timeouts.length === 0
-                    ? <span className="ens-muted">{members.data.members.length ? "Every member reached its target steps." : "No members in this regime."}</span>
-                    : (
-                      <div className="ens-stack" style={{ gap: "var(--s2)" }}>
-                        <span><Badge tone="warn">TIMEOUT</Badge> {timeouts.length} stopped short of their target:</span>
-                        <div className="ens-row">
-                          {timeouts.map((m) => (
-                            <Badge key={m.name} tone="warn">#{memberNumber(m.name)} {Math.round((m.step ?? 0) / 1000)}k/{Math.round((m.target_steps ?? 0) / 1000)}k</Badge>
-                          ))}
-                        </div>
-                        <Button size="sm" asChild>
-                          <Link to={`${tabPath(mode, "train")}?mode=continue&members=${timeouts.map((m) => m.name).join(",")}`}>Continue them…</Link>
-                        </Button>
-                      </div>
-                    )}
-                  </LoadState>
-                </CardBody>
-              </Card>
-            </div>
+            {members.error && !members.data && (
+              <p className="ens-muted ens-overview__note">Could not read the members: {members.error.message}</p>
+            )}
+            {cmp.rows.length > 0 && (
+              <section className="ens-overview__result" aria-label="Production model">
+                <Summary cmp={cmp} mode={mode} />
+                <ComparisonTable cmp={cmp} bands={bands} />
+                <Caption className="ens-overview__caption">{caption}</Caption>
+              </section>
+            )}
+            {!cmp.rows.length && <Caption className="ens-overview__caption">{caption}</Caption>}
             {(evalJob.job || kneeJob.job || psnrJob.job || evalJob.error) && (
               <Card>
                 <CardHead title="Jobs" />

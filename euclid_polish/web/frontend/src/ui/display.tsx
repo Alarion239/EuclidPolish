@@ -1,10 +1,10 @@
-/* Display primitives: Badge, Chip, Stat, Kpi, DefList, Callout, EmptyState
-   (+ compat Empty), Skeleton, Spinner, ProgressBar, Kbd, ConnBadge,
-   CopyButton. */
+/* Display primitives: Badge, Chip, DefList, Callout, EmptyState (+ compat
+   Empty), Skeleton, Spinner, ProgressBar, Kbd, ConnBadge, CopyButton.
+   Statistics are stated with ui/facts.tsx (SummaryLine, FactsList, Caption,
+   Details), never as tiles. */
 import {
-  forwardRef, useEffect, useId, useRef, useState, type CSSProperties, type MouseEvent, type ReactNode,
+  forwardRef, useEffect, useRef, useState, type CSSProperties, type MouseEvent, type ReactNode,
 } from "react";
-import { Link } from "react-router-dom";
 import { copyText } from "./download";
 import { Icon, type IconName } from "./icons";
 import { Tooltip } from "./overlays";
@@ -55,86 +55,7 @@ export const Chip = forwardRef<HTMLButtonElement, {
   );
 });
 
-/* ─── Stat / Kpi / DefList ────────────────────────────────────────────────── */
-
-/** Compact value-over-key figure (the old `Stat k v`). */
-export function Stat(
-  { k, v, hint, tone, sub, className }: {
-    k: ReactNode; v: ReactNode; hint?: ReactNode; tone?: Tone; sub?: ReactNode; className?: string;
-  },
-) {
-  const key = <div className="ui-stat__k">{k}</div>;
-  return (
-    <div className={cx("ui-stat", tone && tone !== "neutral" && `ui-stat--${tone}`, className)}>
-      <div className="ui-stat__v">{v}</div>
-      {hint ? <Tooltip content={hint}><div className="ui-stat__k ui-stat__k--hint" tabIndex={0}>{k}</div></Tooltip> : key}
-      {sub != null && <div className="ui-stat__sub">{sub}</div>}
-    </div>
-  );
-}
-
-/** Dashboard tile: label, big value (+unit), delta, footnote. It is an action
- *  when one of these is set:
- *  - `to`: an SPA route, rendered as a router <Link> (no page reload, so the
- *    in-memory jobs store, query cache and inspector survive);
- *  - `href`: an external or download URL, a plain <a>;
- *  - `onClick` alone: a <button> (with `to`/`href` it runs on click too).
- *  `loading` shows a skeleton value. */
-export function Kpi(
-  { label, value, unit, delta, deltaTone, tone, hint, footer, onClick, to, href, loading = false, icon,
-    className }: {
-    label: ReactNode; value: ReactNode; unit?: ReactNode; delta?: ReactNode; deltaTone?: Tone;
-    tone?: Tone; hint?: ReactNode; footer?: ReactNode; onClick?: () => void;
-    /** SPA route (router link). */
-    to?: string;
-    /** External or download URL (plain link; a full page load for an app path). */
-    href?: string;
-    loading?: boolean; icon?: IconName; className?: string;
-  },
-) {
-  const hintId = useId();
-  const action = to != null || href != null || onClick != null;
-  const described = action && hint != null ? hintId : undefined;
-  // Spans throughout: a link or button tile may only hold phrasing content.
-  const body = (
-    <>
-      <span className="ui-kpi__label">
-        {icon && <Icon name={icon} size={14} />}
-        <span>{label}</span>
-        {hint != null && (action
-          // Inside a link/button no focusable may nest: the icon is hover-only
-          // and the hint is the tile's accessible description instead.
-          ? (
-            <Tooltip content={hint}>
-              <span className="ui-kpi__hint" aria-hidden="true"><Icon name="help" size={12} /></span>
-            </Tooltip>
-          )
-          : (
-            <Tooltip content={hint}>
-              <button type="button" className="ui-kpi__hint" aria-label="About this figure">
-                <Icon name="help" size={12} />
-              </button>
-            </Tooltip>
-          ))}
-      </span>
-      <span className="ui-kpi__value">
-        {loading ? <Skeleton width="60%" height={26} /> : <>{value}{unit != null && <span className="ui-kpi__unit">{unit}</span>}</>}
-      </span>
-      {delta != null && !loading && (
-        <span className={cx("ui-kpi__delta", deltaTone && `ui-kpi__delta--${deltaTone}`)}>{delta}</span>
-      )}
-      {footer != null && <span className="ui-kpi__foot">{footer}</span>}
-      {described && <span id={hintId} hidden>{hint}</span>}
-    </>
-  );
-  const cls = cx("ui-kpi", tone && tone !== "neutral" && `ui-kpi--${tone}`, action && "ui-kpi--action", className);
-  if (to != null) return <Link className={cls} to={to} onClick={onClick} aria-describedby={described}>{body}</Link>;
-  if (href != null) return <a className={cls} href={href} onClick={onClick} aria-describedby={described}>{body}</a>;
-  if (onClick) {
-    return <button type="button" className={cls} onClick={onClick} aria-describedby={described}>{body}</button>;
-  }
-  return <div className={cls}>{body}</div>;
-}
+/* ─── DefList ─────────────────────────────────────────────────────────────── */
 
 export function DefList(
   { items, className, dense = false }: {

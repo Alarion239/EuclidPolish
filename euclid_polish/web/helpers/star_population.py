@@ -51,7 +51,7 @@ _GAIA_COUNT_LIMIT_MAG = 20.5
 _GAIA_G_AB_MINUS_VEGA_MAG = 25.8010446445 - 25.6873668671
 _GAIA_TAP_PROVIDER = "ARI Gaia TAP"
 _STAR_POPULATION_VERSION = 6
-_STAR_DISTRIBUTION_VERSION = 12
+_STAR_DISTRIBUTION_VERSION = 13
 _GAIA_COUNT_FIT_BIN_WIDTH_MAG = 0.5
 
 
@@ -279,7 +279,6 @@ def _shared_color_edges(
 def _stellar_density_comparison(
     euclid_rows: list[dict[str, str]],
     gaia_rows: list[dict[str, str]],
-    projected: dict[str, Any],
     stellar_model: dict[str, Any],
     *,
     euclid_area_arcmin2: float,
@@ -289,7 +288,13 @@ def _stellar_density_comparison(
     synthetic_scope: str = "test + validation",
     sample_count: int = 50_000,
 ) -> dict[str, Any] | None:
-    """Compare measured, Gaia-projected, and generator stellar densities."""
+    """Compare measured and generator stellar densities.
+
+    The VIS panel also carries the native Gaia G_AB counts and their
+    shared-slope fit, because they set the slope of the fitted magnitude law.
+    No Gaia series is drawn on the colour panels: projecting Gaia through the
+    fitted locus is a deterministic curve with no scatter (deleted view).
+    """
     if (
         euclid_area_arcmin2 <= 0.0 or gaia_area_arcmin2 <= 0.0
         or sample_count <= 0
@@ -346,24 +351,6 @@ def _stellar_density_comparison(
                 if value is not None
             })
 
-    gaia_vis = np.asarray(
-        projected["matched"]["vis_mag"] + projected["unmatched"]["vis_mag"],
-        dtype=np.float64,
-    )
-    gaia_projected = {
-        key: np.asarray(
-            projected["matched"]["colors"][key]
-            + projected["unmatched"]["colors"][key],
-            dtype=np.float64,
-        )
-        for key in ("vis_y", "vis_j", "vis_h")
-    }
-    gaia_colors = {
-        **gaia_projected,
-        "y_j": gaia_projected["vis_j"] - gaia_projected["vis_y"],
-        "y_h": gaia_projected["vis_h"] - gaia_projected["vis_y"],
-        "j_h": gaia_projected["vis_h"] - gaia_projected["vis_j"],
-    }
     model_colors = {
         "vis_y": model_bands["VIS"] - model_bands["Y_E"],
         "vis_j": model_bands["VIS"] - model_bands["J_E"],
@@ -501,8 +488,7 @@ def _stellar_density_comparison(
     }
     for key in ("vis_y", "vis_j", "vis_h", "y_j", "y_h", "j_h"):
         edges = _shared_color_edges([
-            euclid_colors[key], gaia_colors[key], model_colors[key],
-            synthetic_colors[key],
+            euclid_colors[key], model_colors[key], synthetic_colors[key],
         ])
         parameters[key] = {
             "label": labels[key],
@@ -512,10 +498,6 @@ def _stellar_density_comparison(
             "euclid": _density_series(
                 euclid_colors[key], edges,
                 area_arcmin2=euclid_area_arcmin2,
-            ),
-            "gaia": _density_series(
-                gaia_colors[key], edges,
-                area_arcmin2=gaia_area_arcmin2,
             ),
             "model": _density_series(
                 model_colors[key], edges, total_density_arcmin2=model_density,
@@ -548,7 +530,6 @@ def _stellar_density_comparison(
             if q1_counts is not None else None
         ),
         "euclid_color_count": len(euclid_color_rows),
-        "gaia_count": int(gaia_vis.size),
         "gaia_native_g_count": int(gaia_g_ab.size),
         "synthetic_area_arcmin2": synthetic_area_arcmin2 or None,
         "synthetic_star_count": int(synthetic_bands["VIS"].size),
@@ -627,16 +608,6 @@ _STAR_COLOR_PAIRS = (
     ("j_h", "J − H", "mag_j_e", "mag_h_e"),
 )
 
-_STAR_COLOR_PROJECTIONS = {
-    "vis_y": np.asarray([1.0, 0.0, 0.0]),
-    "vis_j": np.asarray([1.0, 1.0, 0.0]),
-    "vis_h": np.asarray([1.0, 1.0, 1.0]),
-    "y_j": np.asarray([0.0, 1.0, 0.0]),
-    "y_h": np.asarray([0.0, 1.0, 1.0]),
-    "j_h": np.asarray([0.0, 0.0, 1.0]),
-}
-
-
 def _distribution_source_signature(
     *, include_training: bool = False,
 ) -> dict[str, int | None]:
@@ -678,42 +649,13 @@ def _star_distribution_from_rows(
     synthetic_area_arcmin2: float = 0.0,
     synthetic_scope: str = "test + validation",
 ) -> dict[str, Any]:
-    """Build all six measured Euclid colours against matched Gaia BP−RP."""
-    euclid_counterpart_ids = {
-        str(row.get("gaia_id") or "").strip()
-        for row in euclid_rows
-        if str(row.get("gaia_id") or "").strip()
-    }
-    cmd_matched_bp_rp: list[float] = []
-    cmd_matched_g: list[float] = []
-    cmd_unmatched_bp_rp: list[float] = []
-    cmd_unmatched_g: list[float] = []
-    cmd_without_color = 0
-    for row in gaia_rows:
-        bp_rp_value = _finite(row.get("bp_rp"))
-        g_value = _finite(row.get("g_mag"))
-        if bp_rp_value is None or g_value is None:
-            cmd_without_color += 1
-            continue
-        if str(row.get("source_id")) in euclid_counterpart_ids:
-            cmd_matched_bp_rp.append(bp_rp_value)
-            cmd_matched_g.append(g_value)
-        else:
-            cmd_unmatched_bp_rp.append(bp_rp_value)
-            cmd_unmatched_g.append(g_value)
-    cmd_bp_rp = np.asarray(
-        cmd_matched_bp_rp + cmd_unmatched_bp_rp,
-        dtype=np.float64,
-    )
-    cmd_g = np.asarray(cmd_matched_g + cmd_unmatched_g, dtype=np.float64)
-    cmd_x_domain = (
-        [float(value) for value in np.quantile(cmd_bp_rp, [0.005, 0.995])]
-        if cmd_bp_rp.size else [0.0, 1.0]
-    )
-    cmd_g_domain = (
-        [float(value) for value in np.quantile(cmd_g, [0.005, 0.995])]
-        if cmd_g.size else [0.0, 1.0]
-    )
+    """Count the Gaia–Euclid colour sample and compare stellar densities.
+
+    The matched counts describe the sample the stellar prior fits its colours
+    on. The Gaia BP−RP colour, CMD and Gaia-projection views were deleted
+    (a deterministic locus and raw G < 21.9 input), so their payloads are not
+    built.
+    """
     gaia_by_id = {
         str(row.get("source_id")): row
         for row in gaia_rows
@@ -721,12 +663,9 @@ def _star_distribution_from_rows(
         and _finite(row.get("g_mag")) is not None
         and row.get("central_selected_star") != "1"
     }
-    bp_rp: list[float] = []
-    colors = {key: [] for key, _label, _left, _right in _STAR_COLOR_PAIRS}
+    matched = 0
     high_quality = 0
     pointlike_over_09 = 0
-    g_to_vis_bp: list[float] = []
-    g_to_vis_offsets: list[float] = []
     for row in euclid_rows:
         gaia = gaia_by_id.get(str(row.get("gaia_id") or "").strip())
         if gaia is None or row.get("type") != "star":
@@ -736,43 +675,23 @@ def _star_distribution_from_rows(
         ]
         if any(item is None for item in measurements):
             continue
-        valid_measurements = [
-            measurement for measurement in measurements
-            if measurement is not None
-        ]
-        optional_magnitudes = {
-            key: _finite(row.get(key))
+        if any(
+            _finite(row.get(key)) is None
             for key in ("mag_vis", "mag_y_e", "mag_j_e", "mag_h_e")
-        }
-        if any(value is None for value in optional_magnitudes.values()):
+        ):
             continue
-        magnitudes = {
-            key: value
-            for key, value in optional_magnitudes.items()
-            if value is not None
-        }
-        bp_rp.append(float(gaia["bp_rp"]))
-        for key, _label, left, right in _STAR_COLOR_PAIRS:
-            colors[key].append(float(magnitudes[left] - magnitudes[right]))
+        matched += 1
         signal_to_noise = [
             abs(flux / error)
-            for flux, error in valid_measurements
-        ]
-        is_high_quality = min(signal_to_noise) >= 5.0
-        high_quality += int(is_high_quality)
-        if is_high_quality:
-            g_to_vis_bp.append(float(gaia["bp_rp"]))
-            g_to_vis_offsets.append(
-                float(magnitudes["mag_vis"]) - float(gaia["g_mag"])
+            for flux, error in (
+                measurement for measurement in measurements
+                if measurement is not None
             )
+        ]
+        high_quality += int(min(signal_to_noise) >= 5.0)
         probability = _finite(row.get("point_like_prob"))
         pointlike_over_09 += int(probability is not None and probability >= 0.9)
 
-    x = np.asarray(bp_rp, dtype=np.float64)
-    x_domain = (
-        [float(value) for value in np.quantile(x, [0.005, 0.995])]
-        if x.size else [0.0, 1.0]
-    )
     fit_nodes = np.asarray(
         color_model.get("bp_rp_nodes", []) if color_model else [],
         dtype=np.float64,
@@ -794,241 +713,31 @@ def _star_distribution_from_rows(
         and np.all(np.isfinite(fit_locus))
         and np.all(np.isfinite(fit_covariance))
     )
-    fit_edges = np.asarray(
-        color_model.get("bp_rp_edges", []) if color_model else [],
-        dtype=np.float64,
-    )
-    g_to_vis_locus = np.asarray(
-        color_model.get("g_to_vis_offset", []) if color_model else [],
-        dtype=np.float64,
-    )
-    if (
-        has_fit
-        and g_to_vis_locus.shape != fit_nodes.shape
-        and fit_edges.shape == (fit_nodes.size + 1,)
-        and g_to_vis_offsets
-    ):
-        offset_bp = np.asarray(g_to_vis_bp, dtype=np.float64)
-        offset_values = np.asarray(g_to_vis_offsets, dtype=np.float64)
-        fallback_offset = float(np.median(offset_values))
-        g_to_vis_locus = np.asarray([
-            float(np.median(offset_values[
-                (offset_bp >= fit_edges[index])
-                & (offset_bp <= fit_edges[index + 1])
-            ]))
-            if np.any(
-                (offset_bp >= fit_edges[index])
-                & (offset_bp <= fit_edges[index + 1])
-            ) else fallback_offset
-            for index in range(fit_nodes.size)
-        ])
-    plot_payload: dict[str, Any] = {}
-    for key, label, _left, _right in _STAR_COLOR_PAIRS:
-        y = np.asarray(colors[key], dtype=np.float64)
-        y_domain = (
-            [float(value) for value in np.quantile(y, [0.005, 0.995])]
-            if y.size else [0.0, 1.0]
-        )
-        correlation = (
-            float(np.corrcoef(x, y)[0, 1])
-            if x.size > 1 and np.std(x) > 0.0 and np.std(y) > 0.0 else None
-        )
-        trend_x: list[float] = []
-        trend_y: list[float] = []
-        edges = np.linspace(x_domain[0], x_domain[1], 19)
-        for index in range(edges.size - 1):
-            selected = (
-                (x >= edges[index])
-                & (x <= edges[index + 1] if index == edges.size - 2
-                   else x < edges[index + 1])
-            )
-            if np.count_nonzero(selected) < 8:
-                continue
-            trend_x.append(float(0.5 * (edges[index] + edges[index + 1])))
-            trend_y.append(float(np.median(y[selected])))
-        fit = None
-        if has_fit:
-            projection = _STAR_COLOR_PROJECTIONS[key]
-            center = fit_locus @ projection
-            variance = float(projection @ fit_covariance @ projection)
-            sigma = float(np.sqrt(max(variance, 0.0)))
-            fit = {
-                "x": fit_nodes.tolist(),
-                "center": center.tolist(),
-                "sigma": sigma,
-                "one_sigma_low": (center - sigma).tolist(),
-                "one_sigma_high": (center + sigma).tolist(),
-                "two_sigma_low": (center - 2.0 * sigma).tolist(),
-                "two_sigma_high": (center + 2.0 * sigma).tolist(),
-            }
-        plot_payload[key] = {
-            "label": label,
-            "values": y.tolist(),
-            "pearson_r": correlation,
-            "y_domain": y_domain,
-            "trend": {"x": trend_x, "y": trend_y},
-            "fit": fit,
-        }
-
-    projection_payload = None
     density_comparison = None
-    if has_fit and g_to_vis_locus.shape == fit_nodes.shape:
-        projection_colors = {
-            key: fit_locus @ _STAR_COLOR_PROJECTIONS[key]
-            for key in ("vis_y", "vis_j", "vis_h")
-        }
-        projected = {
-            "matched": {"vis_mag": [], "colors": {
-                key: [] for key in projection_colors
-            }},
-            "unmatched": {"vis_mag": [], "colors": {
-                key: [] for key in projection_colors
-            }},
-        }
-        for row in gaia_rows:
-            bp_rp_value = _finite(row.get("bp_rp"))
-            g_value = _finite(row.get("g_mag"))
-            if bp_rp_value is None or g_value is None:
-                continue
-            group = (
-                "matched"
-                if str(row.get("source_id")) in euclid_counterpart_ids
-                else "unmatched"
-            )
-            predicted_vis = g_value + float(np.interp(
-                bp_rp_value, fit_nodes, g_to_vis_locus,
-            ))
-            projected[group]["vis_mag"].append(predicted_vis)
-            for key, color_locus in projection_colors.items():
-                projected[group]["colors"][key].append(float(np.interp(
-                    bp_rp_value, fit_nodes, color_locus,
-                )))
-        projected_vis = np.asarray(
-            projected["matched"]["vis_mag"]
-            + projected["unmatched"]["vis_mag"],
-            dtype=np.float64,
+    if (
+        has_fit and stellar_model is not None
+        and area_arcmin2 is not None and gaia_area_arcmin2 is not None
+    ):
+        density_comparison = _stellar_density_comparison(
+            euclid_rows,
+            gaia_rows,
+            stellar_model,
+            euclid_area_arcmin2=area_arcmin2,
+            gaia_area_arcmin2=gaia_area_arcmin2,
+            synthetic_rows=synthetic_rows,
+            synthetic_area_arcmin2=synthetic_area_arcmin2,
+            synthetic_scope=synthetic_scope,
         )
-        euclid_observed = {
-            key: {"vis_mag": [], "color": []}
-            for key in projection_colors
-        }
-        euclid_vis_for_domain: list[float] = []
-        projection_magnitude_fields = {
-            "vis_y": "mag_y_e",
-            "vis_j": "mag_j_e",
-            "vis_h": "mag_h_e",
-        }
-        for row in euclid_rows:
-            vis_magnitude = _finite(row.get("mag_vis"))
-            if row.get("type") != "star" or vis_magnitude is None:
-                continue
-            has_projection_color = False
-            for key, other_field in projection_magnitude_fields.items():
-                other_magnitude = _finite(row.get(other_field))
-                if other_magnitude is None:
-                    continue
-                euclid_observed[key]["vis_mag"].append(vis_magnitude)
-                euclid_observed[key]["color"].append(
-                    vis_magnitude - other_magnitude
-                )
-                has_projection_color = True
-            if has_projection_color:
-                euclid_vis_for_domain.append(vis_magnitude)
-        combined_vis = np.concatenate([
-            projected_vis,
-            np.asarray(euclid_vis_for_domain, dtype=np.float64),
-        ])
-        projection_payload = {
-            **projected,
-            "euclid_observed": euclid_observed,
-            "vis_domain": (
-                [float(value) for value in np.quantile(
-                    combined_vis, [0.005, 0.995],
-                )]
-                if combined_vis.size else [0.0, 1.0]
-            ),
-            "colors": {
-                key: {
-                    "label": plot_payload[key]["label"],
-                    "x_domain": [float(value) for value in np.quantile(
-                        np.asarray(
-                            projected["matched"]["colors"][key]
-                            + projected["unmatched"]["colors"][key]
-                            + euclid_observed[key]["color"],
-                            dtype=np.float64,
-                        ),
-                        [0.005, 0.995],
-                    )],
-                    "sigma": plot_payload[key]["fit"]["sigma"],
-                }
-                for key in projection_colors
-            },
-            "note": (
-                "Each point is a fit-derived central prediction: Gaia G is "
-                "mapped to VIS and Gaia BP−RP is mapped to the three Euclid "
-                "colours. The fixed-Q1 Euclid overlay shows measured catalogue "
-                "stars with valid VIS and the comparison band. No random "
-                "scatter or simulated noise is added to the Gaia projection."
-            ),
-        }
-        if (
-            stellar_model is not None and area_arcmin2 is not None
-            and gaia_area_arcmin2 is not None
-        ):
-            density_comparison = _stellar_density_comparison(
-                euclid_rows,
-                gaia_rows,
-                projected,
-                stellar_model,
-                euclid_area_arcmin2=area_arcmin2,
-                gaia_area_arcmin2=gaia_area_arcmin2,
-                synthetic_rows=synthetic_rows,
-                synthetic_area_arcmin2=synthetic_area_arcmin2,
-                synthetic_scope=synthetic_scope,
-            )
 
     return {
         "version": _STAR_DISTRIBUTION_VERSION,
         "calibration_fingerprint": calibration_fingerprint,
         "source_signature": _distribution_source_signature(),
-        "matched_stars": int(x.size),
+        "matched_stars": int(matched),
         "high_quality_stars": int(high_quality),
         "pointlike_over_0_9": int(pointlike_over_09),
-        "bp_rp": x.tolist(),
-        "x_domain": x_domain,
-        "colors": plot_payload,
-        "gaia_cmd": {
-            "cached_stars": len(gaia_rows),
-            "plotted_stars": int(cmd_bp_rp.size),
-            "without_color": int(cmd_without_color),
-            "x_domain": cmd_x_domain,
-            "g_domain": cmd_g_domain,
-            "matched": {
-                "bp_rp": cmd_matched_bp_rp,
-                "g_mag": cmd_matched_g,
-            },
-            "unmatched": {
-                "bp_rp": cmd_unmatched_bp_rp,
-                "g_mag": cmd_unmatched_g,
-            },
-            "note": (
-                "Matched means that the Gaia source has any cached Euclid "
-                "catalogue counterpart. This is broader than the four-band "
-                "high-S/N sample used to fit the stellar colours."
-            ),
-        },
-        "euclid_projection": projection_payload,
         "density_comparison": density_comparison,
         "gaia_sampling": gaia_sampling,
-        "axis_note": (
-            "Axes show the central 99%; all stars are retained and outliers "
-            "are clipped to the plot boundary."
-        ),
-        "fit_note": (
-            "The centre follows the Gaia BP−RP locus fitted to all-band "
-            "S/N ≥ 5 matches. The 1σ and 2σ bands show fitted intrinsic "
-            "colour scatter after subtracting Euclid flux-error covariance."
-        ) if has_fit else None,
     }
 
 
