@@ -262,14 +262,22 @@ export type FrameLayout = {
   dx: number; dy: number; dw: number; dh: number;
 };
 
-/** The full image, contained (never distorted), or the view's square crop
- *  filling the frame. */
-export function frameLayout(fr: Pick<FrameGeom, "width" | "height" | "pixscale" | "tier" | "ready">, view: Selection | null, S: number): FrameLayout {
+/** The full image, contained (never distorted) in a square of `drawSide`
+ *  css px (default: the whole frame; draw.ts `snappedDrawSide` makes it a
+ *  whole multiple of native pixels) centred in the frame of side S — on
+ *  whole device pixels at `dpr` — or the view's square crop filling the
+ *  frame (a user zoom may be any magnification). */
+export function frameLayout(
+  fr: Pick<FrameGeom, "width" | "height" | "pixscale" | "tier" | "ready">, view: Selection | null, S: number,
+  drawSide = S, dpr = 1,
+): FrameLayout {
   const crop = view ? resolveCrop(fr as FrameGeom, view) : null;
   if (crop) return { sx: crop.x, sy: crop.y, sw: crop.side, sh: crop.side, dx: 0, dy: 0, dw: S, dh: S };
-  const scale = Math.min(S / Math.max(1, fr.width), S / Math.max(1, fr.height));
+  const side = drawSide > 0 && drawSide < S ? drawSide : S;
+  const scale = Math.min(side / Math.max(1, fr.width), side / Math.max(1, fr.height));
   const dw = fr.width * scale, dh = fr.height * scale;
-  return { sx: 0, sy: 0, sw: fr.width, sh: fr.height, dx: (S - dw) / 2, dy: (S - dh) / 2, dw, dh };
+  const snap = (v: number) => (side < S && dpr > 0 ? Math.round(v * dpr) / dpr : v);
+  return { sx: 0, sy: 0, sw: fr.width, sh: fr.height, dx: snap((S - dw) / 2), dy: snap((S - dh) / 2), dw, dh };
 }
 
 /** Frame CSS point → image pixel coordinates (continuous; null outside the image). */

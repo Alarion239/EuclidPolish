@@ -12,7 +12,7 @@ import { formatDateTime, formatDuration, formatRelative } from "../../../format"
 import { useUrlState } from "../../../hooks/useUrlState";
 import {
   Badge, Button, Callout, Card, CardBody, CardHead, DataTable, DefList, EmptyState, IconButton, JobProgress,
-  JsonTree, LogView, Page, PageHead, ProgressBar, Section, Segmented, Skeleton, confirm, toast, type DataColumn,
+  JsonTree, LogView, Page, ProgressBar, Section, Segmented, Skeleton, confirm, toast, type DataColumn,
 } from "../../../ui";
 import { localJobTone } from "../model";
 import "../ops.css";
@@ -114,7 +114,6 @@ export default function Jobs() {
 
   return (
     <Page className="ops-page">
-      <PageHead eyebrow="ops · jobs" title="Local jobs" />
       <div className="ops-bar" role="toolbar" aria-label="Job filters">
         <Segmented<StatusFilter> value={status} onChange={setStatus} aria-label="Status"
           options={STATUSES.map((s) => ({ value: s, label: `${s}${counts[s] ? ` · ${counts[s]}` : ""}` }))} />

@@ -10,7 +10,7 @@ import { usePageActions } from "../../../app/palette";
 import { formatDateTime } from "../../../format";
 import { useUrlState } from "../../../hooks/useUrlState";
 import {
-  Badge, Button, Callout, Card, CardBody, Dialog, EmptyState, Field, Input, Page, PageHead, Segmented, Select,
+  Badge, Button, Callout, Card, CardBody, Dialog, EmptyState, Field, Input, Page, Segmented, Select,
   Skeleton, Textarea, Tooltip, confirm, toast,
 } from "../../../ui";
 import { TRACKING_STATE_URL, type TrackingState } from "../api";
@@ -107,7 +107,6 @@ export default function Tracking() {
   };
   return (
     <Page className="ops-page">
-      <PageHead eyebrow="ops · tracking" title="Tracking" />
       <div className="ops-bar" role="toolbar" aria-label="Tracking">
         {active ? (
           <span className="ops-campaign">

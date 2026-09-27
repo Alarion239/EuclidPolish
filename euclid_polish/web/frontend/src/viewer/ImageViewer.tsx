@@ -11,9 +11,9 @@ import { useUrlState } from "../hooks/useUrlState";
 import { useShortcutRegistry } from "../hooks/useShortcut";
 import { useDisplay } from "../state/display";
 import { Bar, type BarMode } from "./Bar";
-import { DisplayDock } from "./BarMenus";
+import { DisplayRow } from "./BarMenus";
 import { reservedBarRows, safeStorage } from "./barModel";
-import { ViewerController } from "./controller";
+import { NARROW_MAX_TIERS, NARROW_VIEWER_WIDTH, ViewerController } from "./controller";
 import {
   compositeFrames, publicationFigureCanvas, publicationPanelName, recordCanvas, saveCanvasPng,
   type CompositeFrame, type FigurePanel,
@@ -24,6 +24,7 @@ import { LensLayer } from "./Lens";
 import { MarkersContext } from "./markers";
 import { ProfilePanel } from "./ProfilePanel";
 import { ReadoutBar } from "./ReadoutBar";
+import { READOUT_WRAP_WIDTH } from "./readout";
 import { parseResidualKey } from "./residual";
 import type { Selection } from "./selection";
 import { TierGrid } from "./TierGrid";
@@ -121,12 +122,15 @@ function UrlSync({ urlKey, base }: { urlKey: string; base: UrlBase }) {
       const writeObject = index !== defaultIndex || base.had.id || base.had.i;
       S.setId(writeObject ? id : "");
       S.setI(writeObject && !id ? String(index) : "");
-      // The tiers: only when they differ from the mount-time tiers (the page's
-      // `tiers` prop, else meta.default_tier), compared as the engine keeps them.
+      // The tiers: only when they differ from the ones the viewer settled on at
+      // its first load (the page's `tiers` prop as this object has them, a
+      // narrow viewer's first two, else meta.default_tier). A set the object
+      // has none of (every tier disabled) is never written.
       const keys = (meta.tiers ?? []).map((t) => t.key);
-      const canon = (list: string[]) => keys.filter((k) => list.includes(k) && (tiers.includes(k) || !ctrl.tierDisabled(k))).join(",");
-      const defaults = base.tiers?.length ? base.tiers : meta.default_tier ? [meta.default_tier] : [];
-      S.setT(base.had.t || canon(tiers) !== canon(defaults) ? tiers.join(",") : "");
+      const canon = (list: string[]) => keys.filter((k) => list.includes(k)).join(",");
+      const defaults = ctrl.initialTiers ?? (base.tiers?.length ? base.tiers : meta.default_tier ? [meta.default_tier] : []);
+      const usable = tiers.some((k) => !ctrl.tierDisabled(k));
+      if (usable) S.setT(base.had.t || canon(tiers) !== canon(defaults) ? tiers.join(",") : "");
       S.setR(residuals.join(","));
       // The view in the first frame's coordinates (restored with that frame as its source tier).
       const first = ctrl.frameKeys()[0];
@@ -184,11 +188,15 @@ function ViewerBody({ ctrl, toolbar, nav, urlKey, urlBase, onFullscreen }: {
     const h = ctrl.frames.get(k);
     if (!h || h.element.classList.contains("cv-frame--hidden")) return [];
     const st = ctrl.s.status[k];
+    const message = st && (st.kind === "error" || st.kind === "missing") ? st.message : "";
+    // The drawn image's rectangle (the snapped whole image, or the zoomed view), not the surround.
+    const L = message ? null : ctrl.layoutOf(k);
     return [{
       // The canvas's own rect: the frame's border box is 2 px larger.
       canvas: h.visible, rect: h.visible.getBoundingClientRect(),
+      crop: L ? { x: L.dx, y: L.dy, width: L.dw, height: L.dh } : undefined,
       label: ctrl.s.overlay[k] ?? ctrl.tierLabel(k),
-      message: st && (st.kind === "error" || st.kind === "missing") ? st.message : "",
+      message,
     }];
   });
 
@@ -238,9 +246,10 @@ function ViewerBody({ ctrl, toolbar, nav, urlKey, urlBase, onFullscreen }: {
       {urlKey && inRouter && urlBase && <UrlSync urlKey={urlKey} base={urlBase} />}
       <div className="cv-table">
         {mode && <Bar mode={mode} nav={nav} onPng={savePng} onFigure={exportFigure} onRecord={toggleRecord} onFullscreen={onFullscreen} />}
+        {dock && (mode === "full" || mode === "compact") && <DisplayRow basic={mode === "compact"} />}
+        {/* data-dock: the Display row is open (Esc closes it first; app/viewerEscape.ts reads it) */}
         <div className="cv-body" data-dock={(dock && (mode === "full" || mode === "compact")) || undefined}>
           <TierGrid />
-          {dock && (mode === "full" || mode === "compact") && <DisplayDock basic={mode === "compact"} />}
         </div>
         <ReadoutBar />
       </div>
@@ -255,14 +264,20 @@ function ViewerBody({ ctrl, toolbar, nav, urlKey, urlBase, onFullscreen }: {
 function Placeholder({ bar, collection }: { bar: boolean; collection: string }) {
   const ref = useRef<HTMLDivElement>(null);
   const [rows, setRows] = useState<1 | 2>(() => reservedBarRows(collection, 0, safeStorage()));
+  const [narrow, setNarrow] = useState(false);
   // Two rows when the viewer is narrower than a one-row bar needs (unless
-  // this collection's bar was one row last time).
-  useLayoutEffect(() => { setRows(reservedBarRows(collection, ref.current?.clientWidth ?? 0, safeStorage())); }, [collection]);
+  // this collection's bar was one row last time); a narrow viewer's readout
+  // takes two lines.
+  useLayoutEffect(() => {
+    const width = ref.current?.clientWidth ?? 0;
+    setRows(reservedBarRows(collection, width, safeStorage()));
+    setNarrow(width > 0 && width < READOUT_WRAP_WIDTH);
+  }, [collection]);
   return (
     <div ref={ref} className="cv-table">
       {bar && <div className="cv-bar" data-rows={rows} data-reserve aria-hidden="true" />}
       <div className="cv-frames"><div className="cv-frame cv-frame--message cv-loading"><div className="cv-msg"><span>Loading…</span></div></div></div>
-      <div className="cv-readout" aria-hidden="true" />
+      <div className="cv-readout" aria-hidden="true" data-lines={narrow ? "2" : undefined} />
     </div>
   );
 }
@@ -365,12 +380,18 @@ function ViewerCore(props: ImageViewerProps & { search: string }) {
   onStateRef.current = onState;
   const init = useRef({ tiers, initialIndex, initialId, id, display, params });
   init.current = { tiers, initialIndex, initialId, id, display, params };
+  const navRef = useRef(nav);
+  navRef.current = nav;
   useViewerHelp();
   const rootRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const i = init.current;
     const fromUrl = urlKey ? readUrlInit(urlKey, searchRef.current) : {};
+    // A narrow viewer (the inspector panel, the bottom sheet) opens with at
+    // most two tiers, unless the URL names them.
+    const width = rootRef.current?.clientWidth ?? 0;
+    const narrow = width > 0 && width < NARROW_VIEWER_WIDTH && !fromUrl.tiers;
     const c = new ViewerController({
       collection,
       params: i.params,
@@ -379,6 +400,8 @@ function ViewerCore(props: ImageViewerProps & { search: string }) {
       initialId: fromUrl.id ?? i.initialId,
       id: i.id,
       display: fromUrl.color ? { ...(i.display ?? {}), color: fromUrl.color as never } : i.display,
+      nav: navRef.current,
+      maxTiers: narrow ? NARROW_MAX_TIERS : null,
     });
     if (fromUrl.residuals?.length) c.store.setState({ residuals: fromUrl.residuals });
     // Reserve the bar's height (rows) until the meta arrives and it is measured.
@@ -397,6 +420,9 @@ function ViewerCore(props: ImageViewerProps & { search: string }) {
       c.destroy();
     };
   }, [collection, paramsKey, urlKey]);
+
+  // Only a navigating viewer prefetches its neighbours.
+  useEffect(() => { if (ctrl) ctrl.nav = nav; }, [ctrl, nav]);
 
   // Colour-mode changes from the Display panel refresh the magnitude overlays.
   useEffect(() => {

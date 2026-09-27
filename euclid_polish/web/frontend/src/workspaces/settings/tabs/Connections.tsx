@@ -17,10 +17,10 @@ import { FASRC_STATUS_URL, useFasrcStatus } from "../../../app/status";
 import { useUrlState } from "../../../hooks/useUrlState";
 import { formatDateTime, formatRelative } from "../../../format";
 import {
-  Badge, Button, Callout, Card, CardBody, CardHead, DefList, Field, Input, NumberField, Page, PageHead,
-  Section, Skeleton, confirm, toast,
+  Badge, Button, Callout, Card, CardBody, CardHead, DefList, Field, Input, NumberField, Page, Section, Skeleton, confirm, toast,
 } from "../../../ui";
 import { dirtyFields, toForm, type FormState } from "../configModel";
+import { PageLead } from "../../shared/PageLead";
 import "../settings.css";
 
 type Reply = { ok?: boolean; error?: string } & Record<string, unknown>;
@@ -154,7 +154,7 @@ function FasrcCard() {
     <Card>
       <CardHead title="FASRC" sub="SSH ControlMaster to the login node"
         right={status.loading && !s ? <Badge>…</Badge>
-          : <Badge tone={connected ? "good" : "bad"} dot>{connected ? "connected" : "offline"}</Badge>} />
+          : <Badge tone={connected ? "good" : "bad"} dot>{connected ? "Connected" : "Offline"}</Badge>} />
       <CardBody>
         <div className="settings-stack">
           {s?.last_error && !connected && (
@@ -164,9 +164,9 @@ function FasrcCard() {
           )}
           {status.error && !s && <Callout tone="bad" title="Could not read the connection state">{status.error.message}</Callout>}
           <DefList dense items={[
-            ["state", connected ? "connected" : "not connected — local pages keep working"],
-            s?.connected_at ? ["since", `${formatDateTime(s.connected_at)} (${formatRelative(s.connected_at)})`] : null,
-            s?.socket ? ["socket", <code className="mono">{s.socket}</code>] : null,
+            ["State", connected ? "Connected" : "Not connected — local pages keep working"],
+            s?.connected_at ? ["Since", `${formatDateTime(s.connected_at)} (${formatRelative(s.connected_at)})`] : null,
+            s?.socket ? ["Socket", <code className="mono">{s.socket}</code>] : null,
           ]} />
           <div className="settings-row">
             <Button variant={connected ? "default" : "primary"} size="sm" loading={busy === "/api/fasrc/connect"} onClick={() => void connect()}>
@@ -338,8 +338,7 @@ function RemoteSecretCard({ kind }: { kind: "euclid" | "tng" }) {
 export default function Connections() {
   return (
     <Page className="settings-connections">
-      <PageHead eyebrow="settings · connections" title="Connections"
-        sub="Sessions and credentials; local pages work with all of them down." />
+      <PageLead>Sessions and credentials. Local pages work with all of them down.</PageLead>
       <div className="settings-cards">
         <FasrcCard />
         <div className="settings-stack">

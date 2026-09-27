@@ -11,6 +11,8 @@ export function NotFound() {
   const near = MANIFEST.workspaces.find((w) => w.path.split("/").filter(Boolean)[0] === first && w.id !== "home");
   return (
     <Page>
+      {/* The page's one h1 (FOUNDATION §9 headings): a 404 renders outside <Workspace>. */}
+      <h1 className="sr-only">Not found</h1>
       <EmptyState icon="search" title="No page here"
         action={(
           <div className="row" style={{ gap: "var(--s2)", justifyContent: "center" }}>

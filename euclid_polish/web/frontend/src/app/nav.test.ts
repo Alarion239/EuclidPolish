@@ -70,8 +70,8 @@ describe("labels", () => {
   });
 
   it("gives every page a heading: the tab, then where it lives", () => {
-    expect(pageHeading("/ensemble/starless/members")).toBe("Members — Ensemble (starless)");
-    expect(pageHeading("/data/records")).toBe("Records — Data");
+    expect(pageHeading("/ensemble/starless/members")).toBe("Members, Ensemble (starless)");
+    expect(pageHeading("/data/records")).toBe("Records, Data");
     expect(pageHeading("/")).toBe("Home");
     expect(pageHeading("/inspect")).toBe("Inspect");
     expect(pageHeading("/nope")).toBe("Not found");

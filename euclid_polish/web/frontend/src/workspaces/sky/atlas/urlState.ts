@@ -167,3 +167,12 @@ export function patchSearch(search: string, patch: Readonly<Record<string, strin
   }
   return out.length ? `?${out.join("&")}` : "";
 }
+
+/** The view that frames a feature: centred on it, the field of view a few
+ *  times its size (a NEXUS tile, 25.6″ → ~2.6′), at least 1.2′ and at most
+ *  30°. A deep link that names only the inspected feature (`?inspect=` with no
+ *  `ra`/`dec`) opens here instead of on the whole sky. */
+export function featureView(f: { ra: number; dec: number; sizeDeg: number }): { ra: number; dec: number; fov: number } {
+  const size = Number.isFinite(f.sizeDeg) && f.sizeDeg > 0 ? f.sizeDeg : 0;
+  return { ra: f.ra, dec: f.dec, fov: Math.min(30, Math.max(0.02, size * 6)) };
+}

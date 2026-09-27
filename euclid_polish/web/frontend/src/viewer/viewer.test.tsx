@@ -2,7 +2,7 @@
  * backend (no network): loading, verbatim server errors, keyboard, ?id=
  * lookup, per-viewer override, readout through WCS, residual tiers, URL
  * state, and the JWST carousel's no-remount index follow. */
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup as cleanupRender, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { queryClient } from "../api/query";
@@ -75,24 +75,32 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllGlobals(); });
 
 describe("ViewerController", () => {
-  it("shows LR and SR per unit area of the LR pixel (knee ÷ 4 on SR); native values and the heat bar unchanged", async () => {
+  it("matching surface brightness is an opt-in Display option: off, every frame renders exactly as before", async () => {
     mockBackend(defaultHandler());
-    localStorage.removeItem("euclid-polish.viewer.per-area");
     const c = new ViewerController({ collection: "test", tiers: ["lr", "sr"] });
     await c.start();
     const sr = c.s.shown.sr, lr = c.s.shown.lr;
     if (sr?.kind !== "cube" || lr?.kind !== "cube") throw new Error("not loaded");
     expect(c.areaRef()).toBe(0.1);
+    // off (the default): the knee, K0 and the heat bar scale are untouched on every tier
+    expect(useDisplay.getState().matchSurfaceBrightness).toBe(false);
     const knee = c.displayParams(lr.rec).knee;
+    expect(c.displayParams(sr.rec)).toEqual(c.displayParams(lr.rec));
+    expect(c.heatbarInfo("sr")?.scale).toBe(1);
+    // on: SR (0.05″) is shown per LR (0.1″) pixel — values × 4 ≡ knee, K0 ÷ 4
+    c.setDisplay({ matchSurfaceBrightness: true });
+    expect(useDisplay.getState().matchSurfaceBrightness).toBe(true);    // a linked viewer edits the page-wide setting
     expect(c.displayParams(sr.rec).knee).toBeCloseTo(knee / 4);
     expect(c.displayParams(sr.rec).K0).toBeCloseTo(c.K0() / 4);
-    expect(c.heatbarInfo("sr")?.scale).toBeCloseTo(4);          // the bar's ticks read native e⁻ per SR pixel
-    expect(c.getState().knee).toBe(knee);                         // the knee the page sees is unchanged
-    c.setPerArea(false);
+    expect(c.displayParams(lr.rec).knee).toBe(knee);                    // the reference tier is unchanged
+    expect(c.heatbarInfo("sr")?.scale).toBeCloseTo(4);                  // the bar's ticks read native e⁻ per SR pixel
+    expect(c.getState().knee).toBe(knee);                               // the knee the page sees is unchanged
+    // the readout stays native e⁻ per pixel
+    c.hoverAt("sr", 1.5, 1.5);
+    expect(c.s.readout?.tiers.find((t) => t.tier === "sr")?.values?.[0]).toBe(2 + (1 * 8 + 1) * 4 / 4);
+    c.setDisplay({ matchSurfaceBrightness: false });
     expect(c.displayParams(sr.rec).knee).toBe(knee);
-    expect(localStorage.getItem("euclid-polish.viewer.per-area")).toBe("0");
     c.destroy();
-    localStorage.removeItem("euclid-polish.viewer.per-area");
   });
 
   it("loads meta and the default tier, and shows server errors verbatim", async () => {
@@ -361,6 +369,112 @@ describe("ViewerController", () => {
     c.destroy();
   });
 
+  it("resolves the object FIRST, then filters the tiers by that object's own tiers (never settles on a disabled one)", async () => {
+    // object "b" has LR only; the page asks for SR + HR
+    const m = meta({ objects: [{ id: "a", tiers: ["lr", "sr", "hr"] }, { id: "b", tiers: ["lr"] }, { id: "c" }] });
+    mockBackend(defaultHandler(m));
+    const c = new ViewerController({ collection: "test", tiers: ["sr", "hr"], initialId: "b" });
+    await c.start();
+    expect(c.s.index).toBe(1);
+    expect(c.s.tiers).toEqual(["lr"]);                     // the default tier, which "b" has
+    expect(c.initialTiers).toEqual(["lr"]);
+    c.destroy();
+    // the same object requested by index: its tiers, not index 0's
+    const d = new ViewerController({ collection: "test", tiers: ["lr", "sr"], initialIndex: 1 });
+    await d.start();
+    expect(d.s.tiers).toEqual(["lr"]);
+    d.destroy();
+  });
+
+  it("prefetches each neighbour's own tiers only, and nothing without navigation", async () => {
+    const m = meta({ objects: [{ id: "a", tiers: ["lr", "sr"] }, { id: "b", tiers: ["lr"] }, { id: "c", tiers: ["lr", "sr"] }] });
+    mockBackend(defaultHandler(m));
+    const c = new ViewerController({ collection: "test", tiers: ["lr", "sr"] });
+    await c.start();
+    await waitFor(() => expect(calls.some((u) => u.includes("/viewer/cube/test/2?"))).toBe(true));
+    // neighbour 1 has no SR: it is not asked for it (no 404s for neighbour tiles)
+    expect(calls.filter((u) => u.includes("/viewer/cube/test/1?") && u.includes("tier=sr"))).toEqual([]);
+    expect(calls.some((u) => u.includes("/viewer/cube/test/1?") && u.includes("tier=lr"))).toBe(true);
+    c.destroy();
+    sharedCubeCache.clear();
+    mockBackend(defaultHandler(m));
+    const single = new ViewerController({ collection: "test", tiers: ["lr"], nav: false });
+    await single.start();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(calls.filter((u) => u.startsWith("/viewer/cube/")).map((u) => u.split("?")[0])).toEqual(["/viewer/cube/test/0"]);
+    single.destroy();
+  });
+
+  it("a narrow viewer opens with at most two tiers (canonical order)", async () => {
+    mockBackend(defaultHandler(meta({ tiers: [{ key: "lr", label: "LR" }, { key: "sr", label: "SR" }, { key: "hr", label: "HR" }], objects: [{ id: "a" }] })));
+    const c = new ViewerController({ collection: "test", tiers: ["hr", "sr", "lr"], maxTiers: 2 });
+    await c.start();
+    expect(c.s.tiers).toEqual(["lr", "sr"]);
+    expect(c.initialTiers).toEqual(["lr", "sr"]);
+    c.setTiers(["lr", "sr", "hr"]);                        // the rest stay one click away
+    expect(c.s.tiers).toEqual(["lr", "sr", "hr"]);
+    c.destroy();
+  });
+
+  it("the whole image is drawn at a pixel-exact side, centred; the readout and markers follow that rectangle", async () => {
+    mockBackend(defaultHandler());
+    const c = new ViewerController({ collection: "test", tiers: ["lr", "sr"] });
+    await c.start();
+    // LR 4 px, SR 8 px in 30 css px frames at dpr 1: SR snaps to 3× (24 px), LR to 6× — one side for both
+    const el = document.createElement("div");
+    for (const tier of ["lr", "sr"]) c.registerFrame({ tier, source: document.createElement("canvas"), visible: document.createElement("canvas"), element: el, size: () => 30, redraw: () => {} });
+    const L = c.layoutOf("lr")!, S = c.layoutOf("sr")!;
+    expect([L.dx, L.dy, L.dw, L.dh]).toEqual([3, 3, 24, 24]);
+    expect([S.dx, S.dw]).toEqual([3, 24]);
+    expect(L.dw / L.sw).toBe(6);
+    expect(S.dw / S.sw).toBe(3);
+    // a snap that would keep less than 80 % of the frame keeps the whole frame (SR 1× = 8 of 15 px) …
+    expect(c.layoutOf("sr", 15)!.dw).toBe(15);
+    // … unless "Pixel-exact fit" is on
+    c.setPixelExact(true);
+    expect(c.layoutOf("sr", 15)!.dw).toBe(8);
+    expect(c.layoutOf("sr", 15)!.dx).toBe(4);
+    c.setPixelExact(false);
+    c.destroy();
+  });
+
+  it("zoomBy steps through integer magnifications of the finest tier; setTool switches lens / profile / none", async () => {
+    mockBackend(defaultHandler(meta({ tiers: [{ key: "lr", label: "LR" }, { key: "sr", label: "SR" }] })));
+    const c = new ViewerController({ collection: "test", tiers: ["lr", "sr"] });
+    await c.start();
+    const el = document.createElement("div");
+    for (const tier of ["lr", "sr"]) c.registerFrame({ tier, source: document.createElement("canvas"), visible: document.createElement("canvas"), element: el, size: () => 32, redraw: () => {} });
+    // SR 8 px in a 32 px frame: fit 4× (8 px → 32); one step in → 6×, then 8×
+    c.api.zoomBy(1.5);
+    expect(32 / c.cropOf("sr", c.s.view)!.side).toBeCloseTo(6);
+    c.api.zoomBy(1.5);
+    expect(32 / c.cropOf("sr", c.s.view)!.side).toBeCloseTo(8);
+    expect(32 / c.cropOf("lr", c.s.view)!.side).toBeCloseTo(16);   // LR (a 2× coarser grid): an integer too
+    c.api.zoomBy(1 / 1.5);
+    expect(32 / c.cropOf("sr", c.s.view)!.side).toBeCloseTo(6);
+    c.api.zoomBy(1 / 1.5);
+    expect(c.s.view).toBeNull();                                  // back to the fit
+    // a fit already past the largest preset (8 px in a 700 px frame: 87.5×) still zooms in
+    const big = new ViewerController({ collection: "test", tiers: ["sr"] });
+    await big.start();
+    big.registerFrame({ tier: "sr", source: document.createElement("canvas"), visible: document.createElement("canvas"), element: el, size: () => 700, redraw: () => {} });
+    big.api.zoomBy(1.5);
+    expect(big.s.view).not.toBeNull();
+    const m = 700 / big.cropOf("sr", big.s.view)!.side;           // ≈ 131 (the crop rounds to whole px)
+    expect(m).toBeGreaterThan(87.5 * 1.4);
+    expect(m).toBeLessThan(87.5 * 1.6);
+    big.destroy();
+    c.api.setTool("lens");
+    expect(c.getState().tool).toBe("lens");
+    c.api.setTool("profile");
+    expect(c.getState().tool).toBe("pan");
+    expect(c.s.profileOpen).toBe(true);
+    c.api.setTool("none");
+    expect(c.s.profileOpen).toBe(false);
+    expect(c.getState().tool).toBe("pan");
+    c.destroy();
+  });
+
   it("the disagreement movie centres on meta.morph_base_tier", async () => {
     const m = meta({ tiers: [...meta().tiers, { key: "mean", label: "Mean" }, { key: "morph", label: "movie" }], morph_base_tier: "mean", pca_n: 1 });
     mockBackend((url) => {
@@ -470,6 +584,33 @@ describe("<ImageViewer>", () => {
     await waitFor(() => expect(screen.getByTestId("loc").textContent).toBe("?keep=1"), { timeout: 2000 });
   });
 
+  it("never writes a tier set the object has none of to the URL (the requested tiers are unavailable)", async () => {
+    mockBackend(defaultHandler(meta({ objects: [{ id: "a", tiers: ["lr"] }, { id: "b" }, { id: "c" }] })));
+    render(<MemoryRouter initialEntries={["/x?keep=1"]}>
+      <ImageViewer collection="test" urlKey="t" tiers={["sr"]} /><Where />
+    </MemoryRouter>);
+    await screen.findByText(/^LR 0/);
+    await new Promise((r) => setTimeout(r, 450));
+    expect(screen.getByTestId("loc").textContent).toBe("?keep=1");      // no v.t.t=sr (nor =lr)
+  });
+
+  it("a tier the object does not have is dimmed, not clickable, and says why", async () => {
+    mockBackend(defaultHandler(meta({ objects: [{ id: "a", tiers: ["lr", "sr"] }, { id: "b" }, { id: "c" }] })));
+    render(<MemoryRouter><ImageViewer collection="test" /></MemoryRouter>);
+    await screen.findByText(/^LR 0/);
+    const hr = screen.getByRole("button", { name: "HR: Generate HR" });             // the backend's reason
+    expect(hr.getAttribute("aria-disabled")).toBe("true");
+    expect(hr.getAttribute("aria-pressed")).toBe("false");
+    fireEvent.click(hr);
+    expect(hr.getAttribute("aria-pressed")).toBe("false");
+    cleanupRender();
+    queryClient.clear(); resetMetaNotes(); sharedCubeCache.clear();
+    mockBackend(defaultHandler(meta({ missing_tier_labels: {}, objects: [{ id: "a", tiers: ["lr"] }, { id: "b" }, { id: "c" }] })));
+    render(<MemoryRouter><ImageViewer collection="test" /></MemoryRouter>);
+    await screen.findByText(/^LR 0/);
+    expect(screen.getByRole("button", { name: "SR: Not available for this object" })).toBeTruthy();
+  });
+
   it("a colour the page sets as the viewer loads is its default, not URL state", async () => {
     mockBackend(defaultHandler());
     let api: ViewerApi | null = null;
@@ -481,6 +622,24 @@ describe("<ImageViewer>", () => {
     expect(screen.getByTestId("loc").textContent).toBe("");
     act(() => { api!.setView({ color: "H_E" }); });
     await waitFor(() => expect(screen.getByTestId("loc").textContent).toBe("?v.t.c=H_E"), { timeout: 2000 });
+  });
+
+  it("a tier with no coverage shows a quiet caption; a sparse corner of data is painted with one at its foot", async () => {
+    const base = defaultHandler();
+    // SR: every pixel blank; LR: an 850 × 850-like sparse cube (1200 finite of 160 000 values)
+    mockBackend((url) => {
+      const tier = url.searchParams.get("tier");
+      if (tier === "sr") return cube(8, 8, 4, () => NaN, { "X-Cube-Label": "SR 0", "X-Cube-Pixscale": "0.05" });
+      if (tier === "lr") return cube(200, 200, 4, (i) => (i < 1200 ? 5 : NaN), { "X-Cube-Label": "LR 0", "X-Cube-Pixscale": "0.1" });
+      return base(url);
+    });
+    const { container } = render(<MemoryRouter><ImageViewer collection="test" tiers={["lr", "sr"]} /></MemoryRouter>);
+    expect(await screen.findByText("No SR data here")).toBeTruthy();
+    expect(container.querySelector(".cv-frame[data-tier='sr'] .cv-msg--quiet")).not.toBeNull();
+    expect(await screen.findByText("Little LR data here")).toBeTruthy();
+    const foot = container.querySelector(".cv-frame[data-tier='lr'] .cv-msg--foot");
+    expect(foot?.textContent).toContain("Only 1,200 of 160,000 values have data");
+    expect(container.querySelector(".cv-frame[data-tier='lr'] .cv-msg--quiet:not(.cv-msg--foot)")).toBeNull();
   });
 
   it("round-trips the view in the URL codec", () => {
@@ -501,7 +660,7 @@ describe("<ImageViewer> control bar, keys and focus mode", () => {
     await screen.findByText(/^LR 0/);
     const bar = screen.getByRole("group", { name: "Image viewer controls" });
     for (const name of ["Display settings for this viewer", "Tools: lens, profiles, residuals, playback", "Zoom in", "Previous", "Next",
-      "Run through the objects", "Arrange the frames, focus mode, full screen", "Export: PNG, figure, video, save the crop", "Focus mode"]) {
+      "Run through the objects", "Arrange the frames, focus mode, full screen", "Export: PNG, figure, video, save the crop", "Open large"]) {
       expect(bar.contains(screen.getByRole("button", { name }))).toBe(true);
     }
     // band chips use the short NISP names; Q–Y are their keys
@@ -525,7 +684,7 @@ describe("<ImageViewer> control bar, keys and focus mode", () => {
     expect(screen.getByRole("button", { name: /^Export/ })).toBeTruthy();
   });
 
-  it("the Display dock sits beside the frames, keeps the keys to its controls, and Esc closes it", async () => {
+  it("the Display row sits under the bar (no dock beside the frames), keeps the keys to its controls, and Esc closes it", async () => {
     mockBackend(defaultHandler());
     let api: ViewerApi | null = null;
     const { container } = render(<MemoryRouter><ImageViewer collection="test" tiers={["lr", "sr"]} onReady={(a) => { api = a; }} /></MemoryRouter>);
@@ -533,43 +692,70 @@ describe("<ImageViewer> control bar, keys and focus mode", () => {
     const toggle = screen.getByRole("button", { name: "Display settings for this viewer" });
     expect(toggle.getAttribute("aria-pressed")).toBe("false");
     fireEvent.click(toggle);
-    const dock = await screen.findByRole("complementary", { name: "Display settings for this viewer" });
+    const row = await screen.findByRole("group", { name: "Display settings for this viewer" });
     expect(toggle.getAttribute("aria-pressed")).toBe("true");
-    // in the light table next to the frames, not a popover over them
-    expect(dock.parentElement).toBe(container.querySelector(".cv-body"));
-    expect(dock.parentElement!.querySelector(".cv-frames")).not.toBeNull();
-    expect(screen.getByRole("combobox", { name: "Stretch" })).toBeTruthy();
-    // the knee and brightness come first; the rarely used settings wait behind "More settings"
+    // a row of the light table between the bar and the frames: it takes no width from them
+    const table = container.querySelector(".cv-table")!;
+    expect(row.parentElement).toBe(table);
+    expect(row.previousElementSibling).toBe(table.querySelector(".cv-bar"));
+    expect(row.nextElementSibling).toBe(table.querySelector(".cv-body"));
+    expect(container.querySelector(".cv-body")!.children.length).toBe(1);   // the frames only
+    // the three most-used controls in the row: knee, brightness, stretch
     const knee = screen.getByRole("slider", { name: "knee" });
     const stretch = screen.getByRole("combobox", { name: "Stretch" });
+    expect(row.contains(knee) && row.contains(stretch) && row.contains(screen.getByRole("slider", { name: "brightness" }))).toBe(true);
     expect(knee.compareDocumentPosition(stretch) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // the rest waits behind "More display settings" (a popover over the surround)
     expect(screen.queryByRole("combobox", { name: "Colormap" })).toBeNull();
-    expect(screen.getByRole("switch", { name: "Share with every viewer" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "More settings" }));
+    fireEvent.click(screen.getByRole("button", { name: "More display settings" }));
+    const more = await screen.findByRole("dialog", { name: "More display settings" });
+    expect(row.contains(more)).toBe(false);
     expect(screen.getByRole("combobox", { name: "Colormap" })).toBeTruthy();
     expect(screen.getByRole("textbox", { name: "black point (e⁻)" })).toBeTruthy();
-    // the histogram waits behind its own disclosure
-    expect(container.querySelector(".cv-hist")).toBeNull();
+    expect(screen.getByRole("switch", { name: "Use the page-wide display settings" })).toBeTruthy();
+    expect(screen.getByRole("switch", { name: "Match surface brightness across pixel scales" })).toBeTruthy();
+    // two columns (the popover is wide and short, so it covers little of the frames)
+    expect(more.querySelectorAll(".cv-more-cols > .cv-more-col").length).toBe(2);
+    // the histogram is a page of its own (it replaces the settings instead of growing the popover)
+    expect(document.querySelector(".cv-hist")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Histogram and cuts" }));
-    expect(container.querySelector(".cv-hist")).not.toBeNull();
-    // an arrow on a dock slider moves the slider, not the object
+    expect(document.querySelector(".cv-hist")).not.toBeNull();
+    expect(screen.queryByRole("combobox", { name: "Colormap" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Back to the display settings" }));
+    expect(document.querySelector(".cv-hist")).toBeNull();
+    expect(screen.getByRole("combobox", { name: "Colormap" })).toBeTruthy();
+    fireEvent.keyDown(more, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "More display settings" })).toBeNull());
+    // an arrow on a row slider moves the slider, not the object
     fireEvent.mouseEnter(rootOf(container));
     const thumb = screen.getByRole("slider", { name: "knee" });
     thumb.focus();
     fireEvent.keyDown(thumb, { key: "ArrowRight" });
     expect(api!.getIndex()).toBe(0);
     fireEvent.keyDown(thumb, { key: "Escape" });
-    await waitFor(() => expect(screen.queryByRole("complementary", { name: "Display settings for this viewer" })).toBeNull());
+    await waitFor(() => expect(screen.queryByRole("group", { name: "Display settings for this viewer" })).toBeNull());
   });
 
-  it("compact bar: a basic Display dock (knee, brightness), no tools or export menus; a lens toggle", async () => {
+  it("matching surface brightness: the row names it and the knee reads per the coarsest pixel", async () => {
+    mockBackend(defaultHandler());
+    render(<MemoryRouter><ImageViewer collection="test" tiers={["lr", "sr"]} /></MemoryRouter>);
+    await screen.findByText(/^SR 0/);
+    fireEvent.click(screen.getByRole("button", { name: "Display settings for this viewer" }));
+    expect(await screen.findByRole("textbox", { name: "knee (e⁻)" })).toBeTruthy();
+    expect(screen.queryByText("Surface brightness matched")).toBeNull();
+    act(() => { useDisplay.getState().set({ matchSurfaceBrightness: true }); });
+    expect(await screen.findByText("Surface brightness matched")).toBeTruthy();
+    expect(screen.getByRole("textbox", { name: "knee (e⁻ per 0.1″ px)" })).toBeTruthy();
+  });
+
+  it("compact bar: a basic Display row (knee, brightness), no tools or export menus; a lens toggle", async () => {
     mockBackend(defaultHandler());
     render(<MemoryRouter><ImageViewer collection="test" tiers={["lr", "sr"]} toolbar="compact" /></MemoryRouter>);
     await screen.findByText(/^LR 0/);
     fireEvent.click(screen.getByRole("button", { name: "Display settings for this viewer" }));
     expect(await screen.findByRole("textbox", { name: "knee (e⁻)" })).toBeTruthy();
     expect(screen.getByRole("slider", { name: "brightness" })).toBeTruthy();
-    expect(screen.queryByRole("combobox", { name: "Stretch" })).toBeNull();
+    expect(screen.queryByRole("combobox", { name: "Stretch" })).toBeNull();     // in More display settings
     expect(screen.queryByRole("button", { name: "Histogram and cuts" })).toBeNull();
     expect(screen.queryByRole("button", { name: /^Tools/ })).toBeNull();
     expect(screen.queryByRole("button", { name: /^Export/ })).toBeNull();
@@ -617,6 +803,18 @@ describe("<ImageViewer> control bar, keys and focus mode", () => {
     expect(useDisplay.getState().color).toBe("Y_E");
   });
 
+  it("L toggles the lens and reports it through onState (a page's shared lens button follows)", async () => {
+    mockBackend(defaultHandler());
+    const tools: string[] = [];
+    const { container } = render(<MemoryRouter><ImageViewer collection="test" onState={(st) => { tools.push(st.tool); }} /></MemoryRouter>);
+    await screen.findByText(/^LR 0/);
+    fireEvent.mouseEnter(rootOf(container));
+    fireEvent.keyDown(document.body, { key: "l" });
+    expect(tools[tools.length - 1]).toBe("lens");
+    fireEvent.keyDown(document.body, { key: "l" });
+    expect(tools[tools.length - 1]).toBe("pan");
+  });
+
   it("F enters focus mode and Esc (or the button) leaves it", async () => {
     mockBackend(defaultHandler());
     const { container } = render(<MemoryRouter><ImageViewer collection="test" /></MemoryRouter>);
@@ -630,7 +828,7 @@ describe("<ImageViewer> control bar, keys and focus mode", () => {
     fireEvent.mouseLeave(root);
     fireEvent.keyDown(document.body, { key: "Escape" });
     await waitFor(() => expect(root.hasAttribute("data-focus")).toBe(false));
-    fireEvent.click(screen.getByRole("button", { name: "Focus mode" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open large" }));
     await waitFor(() => expect(root.hasAttribute("data-focus")).toBe(true));
     fireEvent.click(screen.getByRole("button", { name: "Leave focus mode" }));
     await waitFor(() => expect(root.hasAttribute("data-focus")).toBe(false));
@@ -665,7 +863,7 @@ describe("<ImageViewer> control bar, keys and focus mode", () => {
     expect(useDisplay.getState().color).toBe("VIS");
   });
 
-  it("Display dock: knees span 0.1–1e4 on a log slider, each transfer group in its own unit", async () => {
+  it("Display row: knees span 0.1–1e4 on a log slider, each transfer group in its own unit (one group at a time)", async () => {
     const m = meta({
       transfer_groups: ["euclid", "jwst"],
       tiers: [{ key: "lr", label: "LR", unit: "e-" }, { key: "jw", label: "JWST", unit: "MJy/sr" }],
@@ -681,12 +879,17 @@ describe("<ImageViewer> control bar, keys and focus mode", () => {
     await screen.findByText(/^LR 0/);
     fireEvent.click(screen.getByRole("button", { name: "Display settings for this viewer" }));
     const euclid = await screen.findByRole("textbox", { name: "Euclid knee (e⁻)" });
-    const jwst = screen.getByRole("textbox", { name: "JWST knee (MJy/sr)" });
     expect((euclid as HTMLInputElement).value).toBe("100");
+    // the row edits one transfer group at a time: pick JWST, then back to Euclid
+    fireEvent.click(screen.getByRole("radio", { name: "JWST" }));
+    const jwst = await screen.findByRole("textbox", { name: "JWST knee (MJy/sr)" });
     expect((jwst as HTMLInputElement).value).toBe("0.025");          // 100 / display scale 4000
+    fireEvent.click(screen.getByRole("radio", { name: "Euclid" }));
+    await screen.findByRole("textbox", { name: "Euclid knee (e⁻)" });
     // typed values, and the slider's ends
-    fireEvent.change(euclid, { target: { value: "3" } });
-    fireEvent.keyDown(euclid, { key: "Enter" });
+    const euclid2 = screen.getByRole("textbox", { name: "Euclid knee (e⁻)" });
+    fireEvent.change(euclid2, { target: { value: "3" } });
+    fireEvent.keyDown(euclid2, { key: "Enter" });
     expect(useDisplay.getState().groups.euclid.knee).toBe(3);
     const thumb = screen.getByRole("slider", { name: "Euclid knee" });
     fireEvent.keyDown(thumb, { key: "Home" });

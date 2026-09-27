@@ -215,6 +215,7 @@ def register(app):
                 request.args.getlist("row"),
                 output_format,
                 request.args.get("dpi", str(viewer_results.DEFAULT_GRID_DPI)),
+                missing=request.args.get("missing", "refuse"),
             )
         except viewer_results.ViewerResultError as exc:
             return jsonify({"error": str(exc)}), exc.code

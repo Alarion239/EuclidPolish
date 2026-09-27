@@ -41,7 +41,7 @@ export function JobProgress(
       if (onCancel) await onCancel();
       else {
         const r = await cancelJob(job.job_id);
-        if (!r.ok) { setCancelError(r.error ?? "cancel refused"); setCancelling(false); }
+        if (!r.ok) { setCancelError(r.error ?? "Cancel refused"); setCancelling(false); }
       }
     } catch (e) {
       setCancelError(e instanceof Error ? e.message : String(e));

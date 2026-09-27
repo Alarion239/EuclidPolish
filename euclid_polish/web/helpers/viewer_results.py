@@ -45,6 +45,9 @@ from astropy.io import fits
 from astropy.wcs import WCS
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
+from matplotlib.font_manager import FontProperties
+from matplotlib.patches import Rectangle
+from matplotlib.textpath import TextToPath
 from PIL import Image as PILImage
 
 from euclid_polish.config import Config
@@ -73,6 +76,15 @@ A4_HEIGHT_MM = 297.0
 GRID_GAP_MM = 4.0
 MIN_ROW_TITLE_TRACK_MM = 12.0
 MIN_COLUMN_TITLE_TRACK_MM = 10.0
+#: Row / column title size: 20 % of the cell side, within these bounds.
+MIN_GRID_TITLE_PT = 7.0
+MAX_GRID_TITLE_PT = 10.0
+GRID_TITLE_COLOR = "#111111"
+#: A cell whose result lacks the row's recipe (``missing=blank``).
+GRID_MISSING_RGB = (226, 226, 226)
+GRID_MISSING_TEXT = "Not available"
+GRID_MISSING_TEXT_COLOR = "#606060"
+GRID_MISSING_MODES = ("refuse", "blank")
 MAX_GRID_OUTPUT_PIXELS = 36_000_000
 MAX_GRID_SOURCE_BYTES = 512 * 1024 * 1024
 MAX_GRID_RENDER_BYTES = 384 * 1024 * 1024
@@ -112,6 +124,10 @@ _WCS_KEYS = ("CTYPE1", "CTYPE2", "CRVAL1", "CRVAL2", "CRPIX1", "CRPIX2",
              "CD1_1", "CD1_2", "CD2_1", "CD2_2")
 
 _LAYOUT_LOCK = threading.Lock()
+# Text measurement for the grid titles (matplotlib's font cache is not
+# thread-safe; the Flask server renders in threads).
+_TEXT_LOCK = threading.Lock()
+_TEXT_TO_PATH = TextToPath()
 
 _PARAMS_BY_COLLECTION: dict[str, frozenset[str]] = {
     "sky": frozenset({"subset", viewer_data.BHR_FWHM_PARAM}),
@@ -172,6 +188,13 @@ class GridGeometry:
     page_width_pixels: int
     page_height_pixels: int
     cell_side_pixels: int
+    #: Row and column title size (points).
+    title_font_pt: float = MIN_GRID_TITLE_PT
+    #: Row titles read horizontally, right-aligned one gap left of the cells
+    #: (when the page has the width), else rotated in the narrow track.
+    row_labels_horizontal: bool = False
+    #: Where horizontal row titles end (their right edge, mm from the left).
+    row_title_right_mm: float = 0.0
 
     def panel_bounds_mm(self, row: int, column: int) -> tuple[float, float, float, float]:
         """Return ``left, bottom, width, height`` for a top-indexed cell."""
@@ -1606,13 +1629,51 @@ def _default_grid_recipes(manifests: Sequence[Mapping[str, Any]]) -> list[tuple[
     return [recipe for recipe in preferred if recipe in supported]
 
 
-def _grid_geometry(rows: int, columns: int, dpi: int) -> GridGeometry:
-    """Fit square panels on A4 using one exact physical gap/padding value.
+def _text_size_mm(text: str, font_pt: float) -> tuple[float, float]:
+    """Width and height (mm) of one line of ``text`` at ``font_pt``."""
+    with _TEXT_LOCK:
+        width, height, _descent = _TEXT_TO_PATH.get_text_width_height_descent(
+            text, FontProperties(size=font_pt), ismath=False)
+    return width * 25.4 / 72.0, height * 25.4 / 72.0
 
-    The row- and column-title tracks absorb the spare dimension.  Consequently
-    every panel remains square, every inter-cell gap is ``GRID_GAP_MM``, and
-    the complete table has exactly that same padding at all four page edges.
+
+def _fit_label(label: str, font_pt: float, max_width_mm: float) -> str:
+    """``label`` shortened with an ellipsis until it is ``max_width_mm`` wide."""
+    if _text_size_mm(label, font_pt)[0] <= max_width_mm:
+        return label
+    low, high = 0, len(label)
+    while low < high:                      # the longest prefix that fits
+        mid = (low + high + 1) // 2
+        if _text_size_mm(f"{label[:mid].rstrip()}…", font_pt)[0] <= max_width_mm:
+            low = mid
+        else:
+            high = mid - 1
+    return f"{label[:low].rstrip()}…"
+
+
+def _title_font_pt(cell_side_mm: float) -> float:
+    return max(MIN_GRID_TITLE_PT, min(MAX_GRID_TITLE_PT, cell_side_mm * 0.2))
+
+
+def _grid_geometry(
+    rows: int,
+    columns: int,
+    dpi: int,
+    row_labels: Sequence[str] = (),
+    column_labels: Sequence[str] = (),
+) -> GridGeometry:
+    """Fit square panels on A4 using one exact physical gap value.
+
+    Every panel is square and every inter-cell gap is ``GRID_GAP_MM``. The
+    title tracks are sized to their text: the column titles take one line
+    above the cells, the row titles read horizontally one gap left of the
+    cells when the page has the width (a tall sheet) and rotated in the
+    narrow minimum track otherwise. The table (row titles + cells) hangs one
+    gap below the top edge, centred across the page, at least one gap from
+    every edge — spare page is left blank rather than put between a title
+    and its cells.
     """
+    del column_labels  # one line each: the track does not depend on them
     if rows < 1 or columns < 1:
         raise ViewerResultError(400, "grid needs at least one row and one result")
     width_for_cells = (
@@ -1630,25 +1691,25 @@ def _grid_geometry(rows: int, columns: int, dpi: int) -> GridGeometry:
     side = min(width_for_cells / columns, height_for_cells / rows)
     if not math.isfinite(side) or side <= 0.0:
         raise ViewerResultError(413, "grid has too many rows or results for A4")
+    font_pt = _title_font_pt(side)
 
-    row_title_track = (
-        A4_WIDTH_MM
-        - 2.0 * GRID_GAP_MM
-        - columns * side
-        - (columns - 1) * GRID_GAP_MM
-    )
-    column_title_track = (
-        A4_HEIGHT_MM
-        - 2.0 * GRID_GAP_MM
-        - rows * side
-        - (rows - 1) * GRID_GAP_MM
-    )
+    cells_width = columns * side + (columns - 1) * GRID_GAP_MM
+    cells_height = rows * side + (rows - 1) * GRID_GAP_MM
+    spare_width = A4_WIDTH_MM - 2.0 * GRID_GAP_MM - cells_width
+    widest = max((_text_size_mm(label, font_pt)[0] for label in row_labels), default=0.0)
+    horizontal_track = widest + 2.0 * GRID_GAP_MM
+    horizontal = bool(row_labels) and horizontal_track <= spare_width + 1.0e-9
+    row_title_track = horizontal_track if horizontal else MIN_ROW_TITLE_TRACK_MM
+    column_title_track = MIN_COLUMN_TITLE_TRACK_MM
     if (
-        row_title_track + 1.0e-8 < MIN_ROW_TITLE_TRACK_MM
-        or column_title_track + 1.0e-8 < MIN_COLUMN_TITLE_TRACK_MM
+        row_title_track + cells_width > A4_WIDTH_MM - 2.0 * GRID_GAP_MM + 1.0e-8
+        or column_title_track + cells_height > A4_HEIGHT_MM - 2.0 * GRID_GAP_MM + 1.0e-8
     ):
         raise ViewerResultError(413, "grid title tracks do not fit on A4")
 
+    table_left = (A4_WIDTH_MM - row_title_track - cells_width) / 2.0
+    grid_left = table_left + row_title_track
+    grid_top = A4_HEIGHT_MM - GRID_GAP_MM - column_title_track
     page_width_pixels = int(round(A4_WIDTH_MM / 25.4 * dpi))
     page_height_pixels = int(round(A4_HEIGHT_MM / 25.4 * dpi))
     cell_side_pixels = int(round(side / 25.4 * dpi))
@@ -1663,11 +1724,27 @@ def _grid_geometry(rows: int, columns: int, dpi: int) -> GridGeometry:
         row_title_track_mm=row_title_track,
         column_title_track_mm=column_title_track,
         cell_side_mm=side,
-        grid_left_mm=GRID_GAP_MM + row_title_track,
-        grid_bottom_mm=GRID_GAP_MM,
+        grid_left_mm=grid_left,
+        grid_bottom_mm=grid_top - cells_height,
         page_width_pixels=page_width_pixels,
         page_height_pixels=page_height_pixels,
         cell_side_pixels=cell_side_pixels,
+        title_font_pt=font_pt,
+        row_labels_horizontal=horizontal,
+        row_title_right_mm=grid_left - GRID_GAP_MM,
+    )
+
+
+def _grid_geometry_for(
+    manifests: Sequence[Mapping[str, Any]],
+    recipes: Sequence[tuple[str, str]],
+    dpi: int,
+) -> GridGeometry:
+    """The geometry :func:`render_grid` draws these results and recipes with."""
+    return _grid_geometry(
+        len(recipes), len(manifests), dpi,
+        row_labels=[_recipe_label(logical, mode) for logical, mode in recipes],
+        column_labels=[str(_result_summary(manifest)["label"]) for manifest in manifests],
     )
 
 
@@ -1687,20 +1764,26 @@ def _grid_request_budget(
     manifests: Sequence[Mapping[str, Any]],
     recipes: Sequence[tuple[str, str]],
     geometry: GridGeometry,
+    available: Sequence[set[tuple[str, str]]] | None = None,
 ) -> dict[str, int]:
-    """Validate page, source-I/O, and peak working-memory pixel budgets."""
+    """Validate page, source-I/O, and peak working-memory pixel budgets.
+
+    ``available`` (per result) limits the cells to the recipes each result
+    supports (``missing=blank``: the rest are drawn as blank cells)."""
     page_pixels = geometry.page_width_pixels * geometry.page_height_pixels
     if page_pixels > MAX_GRID_OUTPUT_PIXELS:
         raise ViewerResultError(413, "requested A4 raster exceeds the output-pixel budget")
 
     unique_sources: dict[tuple[str, str], tuple[int, int, int]] = {}
     unique_panels: set[tuple[str, str, str]] = set()
-    for manifest in manifests:
+    for index, manifest in enumerate(manifests):
         result_id = str(manifest.get("id") or "")
         files = manifest.get("files", {})
         if not isinstance(files, Mapping):
             raise ViewerResultError(415, "saved result file metadata is invalid")
         for logical, mode in recipes:
+            if available is not None and (logical, mode) not in available[index]:
+                continue
             entry = files.get(logical)
             if not isinstance(entry, Mapping):
                 raise ViewerResultError(404, f"saved result has no {logical} tier")
@@ -1746,13 +1829,17 @@ def _grid_panel_cache(
     manifests: Sequence[Mapping[str, Any]],
     recipes: Sequence[tuple[str, str]],
     target_side_pixels: int,
+    available: Sequence[set[tuple[str, str]]] | None = None,
 ) -> dict[tuple[str, str, str], np.ndarray]:
-    """Render every unique panel once at exactly its output-cell resolution."""
+    """Render every unique panel once at exactly its output-cell resolution
+    (only the recipes a result supports when ``available`` is given)."""
     manifests_by_id = {str(manifest["id"]): manifest for manifest in manifests}
     modes_by_source: OrderedDict[tuple[str, str], list[str]] = OrderedDict()
-    for manifest in manifests:
+    for index, manifest in enumerate(manifests):
         result_id = str(manifest["id"])
         for logical, mode in recipes:
+            if available is not None and (logical, mode) not in available[index]:
+                continue
             key = (result_id, logical)
             modes = modes_by_source.setdefault(key, [])
             if mode not in modes:
@@ -1776,10 +1863,17 @@ def render_grid(
     rows: Sequence[str],
     output_format: str,
     dpi: Any = DEFAULT_GRID_DPI,
+    missing: str = "refuse",
 ) -> bytes:
-    """Render results as columns and tier/mode recipes as rows."""
+    """Render results as columns and tier/mode recipes as rows.
+
+    ``missing="refuse"`` (default) requires every recipe for every result;
+    ``missing="blank"`` draws every available cell and a grey "Not
+    available" cell where a result lacks the row's recipe."""
     if output_format not in {"png", "pdf"}:
         raise ViewerResultError(400, "grid format must be png or pdf")
+    if missing not in GRID_MISSING_MODES:
+        raise ViewerResultError(400, "grid missing must be refuse or blank")
     if isinstance(dpi, bool):
         raise ViewerResultError(400, "grid dpi must be an integer")
     try:
@@ -1809,15 +1903,23 @@ def render_grid(
         {(recipe["tier"], recipe["mode"]) for recipe in _supported_recipes(manifest)}
         for manifest in manifests
     ]
-    supported_intersection = set.intersection(*supported_by_result)
-    if any(recipe not in supported_intersection for recipe in recipes):
-        raise ViewerResultError(400, "every grid recipe must be available for every result")
+    available: list[set[tuple[str, str]]] | None = None
+    if missing == "refuse":
+        supported_intersection = set.intersection(*supported_by_result)
+        if any(recipe not in supported_intersection for recipe in recipes):
+            raise ViewerResultError(400, "every grid recipe must be available for every result")
+    else:
+        available = [{recipe for recipe in recipes if recipe in supported}
+                     for supported in supported_by_result]
+        if not any(available):
+            raise ViewerResultError(400, "no grid cell is available for these results and rows")
 
-    geometry = _grid_geometry(len(recipes), len(manifests), render_dpi)
-    _grid_request_budget(manifests, recipes, geometry)
-    panel_cache = _grid_panel_cache(manifests, recipes, geometry.cell_side_pixels)
+    geometry = _grid_geometry_for(manifests, recipes, render_dpi)
+    _grid_request_budget(manifests, recipes, geometry, available)
+    panel_cache = _grid_panel_cache(manifests, recipes, geometry.cell_side_pixels, available)
 
     nrows = len(recipes)
+    font_pt = geometry.title_font_pt
     figure = Figure(figsize=(A4_WIDTH_MM / 25.4, A4_HEIGHT_MM / 25.4), facecolor="white")
     FigureCanvasAgg(figure)
 
@@ -1831,19 +1933,27 @@ def render_grid(
                 height / A4_HEIGHT_MM,
             ])
             axis.set_axis_off()
-            rgb = panel_cache[(str(manifest["id"]), logical, mode)]
-            axis.imshow(rgb, origin="upper", interpolation="nearest", aspect="equal")
+            rgb = panel_cache.get((str(manifest["id"]), logical, mode))
+            if rgb is not None:
+                axis.imshow(rgb, origin="upper", interpolation="nearest", aspect="equal")
+                continue
+            axis.set_xlim(0.0, 1.0)
+            axis.set_ylim(0.0, 1.0)
+            axis.add_patch(Rectangle(
+                (0.0, 0.0), 1.0, 1.0, transform=axis.transAxes, edgecolor="none",
+                facecolor=tuple(channel / 255.0 for channel in GRID_MISSING_RGB)))
+            text_width = _text_size_mm(GRID_MISSING_TEXT, font_pt)[0]
+            axis.text(0.5, 0.5, GRID_MISSING_TEXT, transform=axis.transAxes, ha="center", va="center",
+                      fontsize=font_pt * min(1.0, 0.85 * geometry.cell_side_mm / max(text_width, 1e-6)),
+                      color=GRID_MISSING_TEXT_COLOR)
 
     grid_top_mm = (
         geometry.grid_bottom_mm
         + nrows * geometry.cell_side_mm
         + (nrows - 1) * geometry.gap_mm
     )
-    title_font_size = max(5.0, min(9.0, geometry.cell_side_mm * 0.18))
     for index, manifest in enumerate(manifests):
-        label = str(_result_summary(manifest)["label"])
-        if len(label) > 42:
-            label = f"{label[:39]}..."
+        label = _fit_label(str(_result_summary(manifest)["label"]), font_pt, geometry.cell_side_mm)
         figure.text(
             (
                 geometry.grid_left_mm
@@ -1854,21 +1964,21 @@ def render_grid(
             label,
             ha="center",
             va="center",
-            fontsize=title_font_size,
-            color="#111111",
+            fontsize=font_pt,
+            color=GRID_TITLE_COLOR,
         )
+    table_left_mm = geometry.grid_left_mm - geometry.row_title_track_mm
     for index, (logical, mode) in enumerate(recipes):
         _left, bottom, _width, height = geometry.panel_bounds_mm(index, 0)
-        figure.text(
-            (geometry.outer_padding_mm + geometry.row_title_track_mm / 2.0) / A4_WIDTH_MM,
-            (bottom + height / 2.0) / A4_HEIGHT_MM,
-            _recipe_label(logical, mode),
-            ha="center",
-            va="center",
-            rotation=90,
-            fontsize=title_font_size,
-            color="#111111",
-        )
+        label = _recipe_label(logical, mode)
+        y = (bottom + height / 2.0) / A4_HEIGHT_MM
+        if geometry.row_labels_horizontal:
+            figure.text(geometry.row_title_right_mm / A4_WIDTH_MM, y, label,
+                        ha="right", va="center", fontsize=font_pt, color=GRID_TITLE_COLOR)
+        else:
+            figure.text((table_left_mm + geometry.row_title_track_mm / 2.0) / A4_WIDTH_MM, y,
+                        _fit_label(label, font_pt, geometry.cell_side_mm),
+                        ha="center", va="center", rotation=90, fontsize=font_pt, color=GRID_TITLE_COLOR)
 
     output = BytesIO()
     figure.savefig(

@@ -282,3 +282,38 @@ export function parentDir(path: string): string {
 
 /** A local project path the Inspect workspace can open (`tracking/…`). */
 export const inspectHrefFor = (path: string): string => `/inspect?fits=${encodeURIComponent(path)}`;
+
+/* ── tracking notebook ────────────────────────────────────────────────────── */
+
+/** log.md with its entries (`## ` headings) newest first — the preamble
+ *  (before the first entry) stays on top — or as written. */
+export function notebookOrder(text: string, newestFirst: boolean): string {
+  if (!newestFirst) return text;
+  const parts = text.split(/\n(?=## )/);
+  return parts.length > 1 ? [parts[0], ...parts.slice(1).reverse()].join("\n") : text;
+}
+
+export type NotebookDay = { day: string; label: string; month: string; count: number; id: string };
+
+const ENTRY_TIME = /^(\d{4})-(\d{2})-(\d{2})T\d{2}:\d{2}/;
+const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+
+/** The notebook's dated entries (`## <ISO time>` headings) by UTC day, in the
+ *  order they are shown; `id` is the day's first shown entry (the jump
+ *  target). Headings that are not a timestamp are left out. */
+export function notebookDays(heads: readonly { level: number; text: string; id: string }[]): NotebookDay[] {
+  const out: NotebookDay[] = [];
+  const byDay = new Map<string, NotebookDay>();
+  for (const h of heads) {
+    const m = h.level === 2 ? ENTRY_TIME.exec(h.text.trim()) : null;
+    if (!m) continue;
+    const day = `${m[1]}-${m[2]}-${m[3]}`;
+    const seen = byDay.get(day);
+    if (seen) { seen.count += 1; continue; }
+    const month = MONTHS[Number(m[2]) - 1] ?? m[2];
+    const entry = { day, label: `${month.slice(0, 3)} ${Number(m[3])}`, month: `${month} ${m[1]}`, count: 1, id: h.id };
+    byDay.set(day, entry);
+    out.push(entry);
+  }
+  return out;
+}

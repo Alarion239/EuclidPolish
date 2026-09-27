@@ -10,83 +10,25 @@ import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useResource } from "../../../api/query";
 import { usePageActions } from "../../../app/palette";
-import { formatCount, formatDeg } from "../../../format";
+import { formatCount } from "../../../format";
 import { useUrlState } from "../../../hooks/useUrlState";
 import { useSelected, useSelection } from "../../../state/selection";
 import {
-  Badge, Button, Callout, Chip, DataTable, IconButton, Menu, Page, Popover, Segmented, Tooltip,
-  type DataColumn, type MenuItem,
+  Button, Callout, Chip, DataTable, IconButton, Menu, Page, Popover, Segmented, Tooltip, type MenuItem,
 } from "../../../ui";
 import { computeMetrics, deleteOutputs, refreshResults, runNexusField } from "../results/actions";
-import { experimentsHref, SOURCES, URLS, type SourcesPayload, type TileList, type TileRow } from "../results/api";
+import { experimentsHref, SOURCES, URLS, type SourcesPayload, type TileList } from "../results/api";
 import { CacheTilePopover } from "../results/CacheTile";
+import { REAL_TILE_COLUMNS } from "../results/columns";
 import { FieldDiagnostics } from "../results/FieldDiagnostics";
 import { MetricDefinitions, StateBadge } from "../results/common";
-import {
-  filterByState, flattenTiles, formatMetric, headlineSpec, metricsPlan, productionCounts, specShort, tileModels,
-} from "../results/model";
+import { filterByState, flattenTiles, metricsPlan, productionCounts } from "../results/model";
 import "../results/register";
 import { RunModelsPopover } from "../results/RunModels";
 import "../results/results.css";
 
 
 const TTL = { ttl: 60_000 };
-
-function headline(row: TileRow) {
-  const spec = headlineSpec(row);
-  return { spec, summary: spec ? row.models?.[spec]?.summary ?? null : null };
-}
-
-const COLUMNS: DataColumn<TileRow>[] = [
-  { id: "source", header: "Source", cell: (r) => <Badge size="sm">{r.source}</Badge>, width: 76 },
-  { id: "id", header: "Tile", filterText: (r) => `${r.id} ${r.label}${r.has_jwst ? " jwst" : ""}`, width: 190,
-    cell: (r) => (
-      <span className="res-tilecell">
-        <span className="mono res-ellipsis" title={r.label}>{r.id}</span>
-        {r.has_jwst && <Badge size="sm" tone="info" title="Has a JWST image">JWST</Badge>}
-      </span>
-    ) },
-  { id: "label", header: "Label", hidden: true },
-  { id: "field", header: "Field", accessor: (r) => r.field ?? "", width: 64 },
-  // wide enough for the whole value ("268.3772° +65.0985°", 19 mono characters)
-  { id: "ra", header: "RA, Dec", headerText: "RA", numeric: true, width: 184,
-    cell: (r) => <span className="mono">{formatDeg(r.ra, 4)} {formatDeg(r.dec, 4, { signed: true })}</span> },
-  { id: "dec", header: "Dec", numeric: true, cell: (r) => formatDeg(r.dec, 4, { signed: true }), hidden: true },
-  { id: "shape", header: "Grid", accessor: (r) => (r.shape ? r.shape[0] * r.shape[1] : null),
-    cell: (r) => (r.shape ? `${r.shape[1]}×${r.shape[0]}` : "—"), csv: (r) => (r.shape ? `${r.shape[1]}x${r.shape[0]}` : ""), hidden: true },
-  { id: "jwst", header: "JWST", accessor: (r) => (r.has_jwst ? "jwst" : ""), hidden: true },
-  { id: "production", header: "Production", accessor: (r) => r.production_state ?? "missing",
-    cell: (r) => <StateBadge state={r.production_state} />, width: 96 },
-  { id: "models", header: "Models", accessor: (r) => Object.keys(r.models ?? {}).length,
-    filterText: (r) => Object.keys(r.models ?? {}).join(" "),
-    csv: (r) => Object.keys(r.models ?? {}).join(" "),
-    cell: (r) => {
-      const ms = tileModels(r);
-      if (!ms.length) return <span className="muted">—</span>;
-      return (
-        <span className="res-chips res-chips--tight">
-          {ms.slice(0, 3).map((m) => (
-            <Badge key={m.spec} size="sm" dot tone={m.state === "current" ? "good" : m.state === "stale" ? "warn" : "neutral"}
-              title={`${m.spec} · ${m.state}${m.legacy ? " · legacy" : ""}`}>{specShort(m.spec)}</Badge>
-          ))}
-          {ms.length > 3 && <span className="muted">+{ms.length - 3}</span>}
-        </span>
-      );
-    }, width: 170 },
-  { id: "holes", header: "Holes %", headerText: "Holes % (worst band)", numeric: true, accessor: (r) => headline(r).summary?.hole_pct_max ?? null,
-    cell: (r) => { const h = headline(r); return <span title={h.spec ? `${h.spec}: worst band` : undefined}>{formatMetric("hole_pct", h.summary?.hole_pct_max)}</span>; },
-    width: 72 },
-  { id: "R08", header: "% R<0.8", numeric: true, accessor: (r) => headline(r).summary?.pct_R_lt_0p8 ?? null,
-    cell: (r) => formatMetric("pct_R_lt_0p8", headline(r).summary?.pct_R_lt_0p8), hidden: true },
-  { id: "medR", header: "R̃", headerText: "Median R", numeric: true, accessor: (r) => headline(r).summary?.median_R ?? null,
-    cell: (r) => formatMetric("median_R", headline(r).summary?.median_R), width: 60 },
-  { id: "peaks", header: "Peaks", numeric: true, accessor: (r) => headline(r).summary?.n_peaks ?? null, hidden: true },
-  { id: "grade", header: "Grade", accessor: (r) => (typeof r.extras?.grade === "string" ? r.extras.grade : ""), hidden: true },
-  { id: "legacy", header: "Legacy SR", accessor: (r) => {
-      const l = r.extras?.legacy_sr as { origin?: string; kind?: string } | null | undefined;
-      return l ? `${l.origin ?? ""} ${l.kind ?? ""}`.trim() : "";
-    }, hidden: true },
-];
 
 const STATES = ["all", "current", "stale", "missing"] as const;
 
@@ -209,7 +151,7 @@ export default function Results() {
         <span>production <StateBadge state="current" prefix={String(counts.current)} /> <StateBadge state="stale" prefix={String(counts.stale)} /> <StateBadge state="missing" prefix={String(counts.missing)} /></span>
       </div>
       {diag && <FieldDiagnostics onClose={() => setDiag(false)} />}
-      <DataTable rows={rows} columns={COLUMNS} rowKey={(r) => r.ref} aria-label="Real tiles"
+      <DataTable rows={rows} columns={REAL_TILE_COLUMNS} rowKey={(r) => r.ref} aria-label="Real tiles"
         selectable selected={selected} onSelectedChange={onSelected}
         inspect={(r) => ({ kind: "tile", id: r.ref })}
         exportName="real-tiles" urlKey="rt" loading={loading} height="max(420px, calc(100vh - 260px))"

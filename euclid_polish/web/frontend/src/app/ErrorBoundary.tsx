@@ -54,7 +54,7 @@ export function ErrorView(
         )}>
         <p style={{ margin: 0 }}>
           {chunk
-            ? "The console was rebuilt while this page was open. Reload to load the new version."
+            ? "A newer console build is available and this page's code is gone. Reload the page to use the new build."
             : "Other workspaces still work. Retry, or copy the details for a bug report."}
         </p>
         <pre className="shell-error__msg">{message}</pre>

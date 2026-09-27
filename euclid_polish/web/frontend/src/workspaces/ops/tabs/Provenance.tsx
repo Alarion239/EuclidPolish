@@ -12,7 +12,7 @@ import { usePageActions } from "../../../app/palette";
 import { formatCount, formatDateTime, formatRelative } from "../../../format";
 import { useUrlState } from "../../../hooks/useUrlState";
 import {
-  Badge, Callout, Card, CardBody, CardHead, DataTable, IconButton, Input, Kpi, Page, PageHead, Segmented,
+  Badge, Callout, Card, CardBody, CardHead, DataTable, IconButton, Input, Kpi, Page, Segmented,
   Select, Skeleton, toast, type DataColumn,
 } from "../../../ui";
 import {
@@ -80,7 +80,6 @@ export default function Provenance() {
   const d = records.data;
   return (
     <Page className="ops-page">
-      <PageHead eyebrow="ops · provenance" title="Provenance" />
       {summary.error && !s && <Callout tone="bad" title="Could not index the provenance records">{summary.error.message}</Callout>}
       <div className="ops-kpis">
         <Kpi label="Records" value={s ? formatCount(s.total) : "…"} loading={summary.loading && !s}

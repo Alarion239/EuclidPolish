@@ -17,6 +17,7 @@ from astropy.wcs import WCS
 from euclid_polish.web import app as web_app
 from euclid_polish.web import remote
 from euclid_polish.web.helpers import experiments, jwst_euclid, model_catalog, real_tiles
+from euclid_polish.web.helpers import viewer_data as vd
 from euclid_polish.web.jobs import REGISTRY
 from tests import _real_fixtures as fx
 
@@ -339,6 +340,35 @@ def test_poster_sr_is_served_as_a_legacy_tier(client, world):
     assert image.status_code == 200
     with fits.open(io.BytesIO(image.data)) as hdul:
         assert hdul[0].data.shape == (64, 64)
+    # the tier list names what is served (the legacy 20-member poster RBF),
+    # not the current spec's catalogue entry
+    meta = client.get("/viewer/meta/real?source=poster").get_json()
+    labels = {tier["key"]: tier["label"] for tier in meta["tiers"]}
+    assert labels["m:rbf"] == "RBF (20 members, legacy)"
+    cube = client.get("/viewer/cube/real/0?source=poster&tier=m:rbf")
+    assert "legacy" in cube.headers["X-Cube-Label"]
+
+
+def test_real_tier_label_for_legacy_outputs():
+    legacy = {"legacy": True, "member_count": 10}
+    current = {"legacy": False}
+    catalogue = "Mean of 30 STARFULL members"
+    assert vd._real_tier_label("mean", catalogue, []) == "Mean · 30 starfull members"
+    assert vd._real_tier_label("mean", catalogue, [(current, "current")]) == "Mean · 30 starfull members"
+    # a legacy output that is still current is the catalogue's model
+    assert vd._real_tier_label("rbf", "RBF · x", [(legacy, "current")]) == "RBF · x"
+    assert vd._real_tier_label("mean", catalogue, [({"legacy": True, "member_count": 4}, "stale")]) \
+        == "Mean (4 members, legacy)"
+    assert vd._real_tier_label("rbf", "RBF · x", [(legacy, "stale"), ({"legacy": True, "member_count": 20}, "stale")]) \
+        == "RBF (10 or 20 members, legacy)"
+    assert vd._real_tier_label("rbf", "RBF · x", [(legacy, "stale"), ({"legacy": True}, "stale"),
+                                                  ({"legacy": True, "member_count": 30}, "stale"),
+                                                  ({"legacy": True, "member_count": 20}, "stale")]) \
+        == "RBF (10–30 members, legacy)"
+    assert vd._real_tier_label("production", "Production · gate", [({"legacy": True}, "stale")]) \
+        == "Production (legacy)"
+    assert vd._real_tier_label("rbf", "RBF · x", [(legacy, "stale"), (current, "current")]) \
+        == "RBF · x (a legacy SR on 1 of 2 tiles)"
 
 
 def test_experiment_refused_when_disk_is_full(client, monkeypatch):

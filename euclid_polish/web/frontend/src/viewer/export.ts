@@ -327,16 +327,35 @@ function drawLabel(ctx: CanvasRenderingContext2D, text: string, x: number, y: nu
 }
 
 /** A visible frame for the PNG / video composite. */
-export type CompositeFrame = { canvas: HTMLCanvasElement; rect: DOMRect | { left: number; top: number; right: number; bottom: number; width: number; height: number }; label: string; message: string };
+type Box = { left: number; top: number; right: number; bottom: number; width: number; height: number };
 
-/** Composite the visible frames as laid out on screen (≤ 2× device pixels). */
+export type CompositeFrame = {
+  canvas: HTMLCanvasElement;
+  /** The canvas's on-screen rect (css px). */
+  rect: DOMRect | Box;
+  /** The drawn image inside the canvas (css px from its top-left: the
+   *  snapped whole image, controller.layoutOf) — the PNG leaves the
+   *  surround around it out. The whole canvas without one. */
+  crop?: { x: number; y: number; width: number; height: number };
+  label: string;
+  message: string;
+};
+
+/** Composite the visible frames as laid out on screen (≤ 2× device pixels):
+ *  each frame's drawn image (its `crop`), placed as on screen. */
 export function compositeFrames(frames: CompositeFrame[], target?: HTMLCanvasElement): HTMLCanvasElement | null {
-  const shown = frames.filter((f) => f.rect.width > 1 && f.rect.height > 1);
-  if (!shown.length) return null;
-  const left = Math.min(...shown.map((f) => f.rect.left));
-  const top = Math.min(...shown.map((f) => f.rect.top));
-  const right = Math.max(...shown.map((f) => f.rect.right));
-  const bottom = Math.max(...shown.map((f) => f.rect.bottom));
+  const placed = frames.filter((f) => f.rect.width > 1 && f.rect.height > 1).map((f) => {
+    const c = f.crop && f.crop.width > 1 && f.crop.height > 1 ? f.crop : null;
+    const box: Box = c
+      ? { left: f.rect.left + c.x, top: f.rect.top + c.y, width: c.width, height: c.height, right: f.rect.left + c.x + c.width, bottom: f.rect.top + c.y + c.height }
+      : { left: f.rect.left, top: f.rect.top, width: f.rect.width, height: f.rect.height, right: f.rect.right, bottom: f.rect.bottom };
+    return { f, c, box };
+  });
+  if (!placed.length) return null;
+  const left = Math.min(...placed.map((p) => p.box.left));
+  const top = Math.min(...placed.map((p) => p.box.top));
+  const right = Math.max(...placed.map((p) => p.box.right));
+  const bottom = Math.max(...placed.map((p) => p.box.bottom));
   const cssW = Math.max(1, right - left), cssH = Math.max(1, bottom - top);
   const scale = Math.max(1, Math.min(typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1, 2));
   const out = target || document.createElement("canvas");
@@ -349,13 +368,21 @@ export function compositeFrames(frames: CompositeFrame[], target?: HTMLCanvasEle
   ctx.fillStyle = FRAME_INK;
   ctx.fillRect(0, 0, cssW, cssH);
   ctx.imageSmoothingEnabled = false;
-  for (const f of shown) {
-    const x = f.rect.left - left, y = f.rect.top - top;
+  for (const { f, c, box } of placed) {
+    const x = box.left - left, y = box.top - top;
     ctx.fillStyle = FRAME_INK;
-    ctx.fillRect(x, y, f.rect.width, f.rect.height);
-    if (f.canvas.width > 1) ctx.drawImage(f.canvas, x, y, f.rect.width, f.rect.height);
-    drawLabel(ctx, f.label, x + 9, y + 8, f.rect.width);
-    if (f.message) drawLabel(ctx, f.message, x + 20, y + f.rect.height / 2 - 8, f.rect.width - 40, "rgba(6, 9, 16, 0.82)");
+    ctx.fillRect(x, y, box.width, box.height);
+    if (f.canvas.width > 1) {
+      if (c) {
+        // canvas pixels per css px of the frame
+        const k = f.canvas.width / f.rect.width;
+        ctx.drawImage(f.canvas, c.x * k, c.y * k, c.width * k, c.height * k, x, y, box.width, box.height);
+      } else {
+        ctx.drawImage(f.canvas, x, y, box.width, box.height);
+      }
+    }
+    drawLabel(ctx, f.label, x + 9, y + 8, box.width);
+    if (f.message) drawLabel(ctx, f.message, x + 20, y + box.height / 2 - 8, box.width - 40, "rgba(6, 9, 16, 0.82)");
   }
   return out;
 }

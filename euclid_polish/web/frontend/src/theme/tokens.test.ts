@@ -76,7 +76,7 @@ const REQUIRED = [
 const THEMED = [
   "--bg-0", "--bg-1", "--surface-1", "--surface-2", "--surface-3", "--border", "--text",
   "--text-dim", "--text-faint", "--accent", "--on-accent", "--good", "--warn", "--bad",
-  "--series-mean", "--cat-0", "--loss-l1", "--band-vis", "--band-h", "--tooltip-bg",
+  "--series-mean", "--cat-0", "--loss-l1", "--band-vis", "--band-h", "--tooltip-bg", "--scroll-shade",
 ];
 
 describe("theme tokens", () => {

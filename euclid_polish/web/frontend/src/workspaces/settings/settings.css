@@ -35,7 +35,7 @@
 .cfg-chip {
   display: inline-flex; align-items: center; padding: 1px 7px; border-radius: var(--r-pill);
   border: 1px solid var(--border); background: var(--surface-2); color: var(--text-dim);
-  font: var(--fw-medium) var(--fs-2xs)/1.6 var(--font-mono); white-space: nowrap;
+  font-size: var(--fs-xs); font-weight: var(--fw-medium); line-height: 1.6; white-space: nowrap;
 }
 .cfg-chip:hover { color: var(--accent); border-color: var(--accent); }
 .cfg-conflicts { margin: 6px 0 0; padding-left: 18px; }
@@ -43,10 +43,10 @@
 
 /* ── appearance ────────────────────────────────────────────────────────── */
 .appearance-group { display: flex; flex-direction: column; gap: 6px; }
-.appearance-group__label {
-  font-family: var(--font-mono); font-size: var(--fs-xs); letter-spacing: .06em;
-  text-transform: uppercase; color: var(--text-faint);
-}
+/* sentence case, plain sans (no mono / all-caps labels) */
+.appearance-group__label { font-size: var(--fs-sm); font-weight: var(--fw-medium); color: var(--text-dim); }
+/* a Display setting that differs from the installed default */
+.appearance-changed { color: var(--accent); font-weight: var(--fw-medium); }
 .settings-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: var(--s4); align-items: start; }
 @container (max-width: 520px) { .settings-cards { grid-template-columns: minmax(0, 1fr); } }
 .settings-cards__wide { grid-column: 1 / -1; }
@@ -67,8 +67,8 @@
 .conn-form { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: var(--s3); }
 .conn-form__wide { grid-column: 1 / -1; }
 .conn-section-title {
-  margin: var(--s2) 0 0; font: var(--fw-semibold) var(--fs-2xs)/1 var(--font-mono);
-  letter-spacing: .08em; text-transform: uppercase; color: var(--text-faint); grid-column: 1 / -1;
+  margin: var(--s2) 0 0; font-size: var(--fs-sm); font-weight: var(--fw-semibold); line-height: 1.3;
+  color: var(--text-dim); grid-column: 1 / -1;
 }
 .conn-error {
   margin: 0; font: var(--fs-sm)/var(--lh-snug) var(--font-mono); white-space: pre-wrap; word-break: break-word;

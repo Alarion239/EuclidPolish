@@ -101,7 +101,6 @@
 .res-run__foot, .res-form__foot { display: flex; align-items: center; justify-content: flex-end; gap: var(--s2); }
 .res-run__foot .ui-input { flex: 1; min-width: 0; }
 .res-form { display: flex; flex-direction: column; gap: var(--s3); }
-.res-mdnote { width: 100%; font-size: var(--fs-xs); }
 
 /* ── experiments ─────────────────────────────────────────────────────── */
 /* The picked experiment is the top of the page: head, tile picker, viewer. */
@@ -115,7 +114,6 @@
 .res-exp__title { flex: 1 1 0; font-size: var(--fs-md); min-width: 6ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .res-exp__scope { flex: 0 1 240px; min-width: 120px; }
 .res-exp__actions { display: flex; flex-wrap: nowrap; align-items: center; gap: var(--s1); margin-left: auto; }
-.res-case { text-transform: none; }
 /* a sentence-case inline label beside its control (not the kit's mono field eyebrow) */
 .res-inline { display: inline-flex; align-items: center; gap: 6px; }
 .res-inline__label { font-size: var(--fs-xs); color: var(--text-dim); }
@@ -133,9 +131,9 @@
 
 /* ── catalogue evaluation ────────────────────────────────────────────── */
 /* image first: the viewer is the first column (wide) or the top of the page
-   (narrow), in a FitBox that ends its frames at the fold; the actions, the
-   table filters and the table follow (beside it when wide). Not sticky: the
-   FitBox measures its place in the page. */
+   (narrow) and ends its frames at the fold by itself (it fits under its own
+   top); the actions, the table filters and the table follow (beside it when
+   wide). Not sticky. */
 .res-eval { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: var(--s4); align-items: start; }
 .res-eval__viewer { min-width: 0; }
 .res-eval__actions { row-gap: var(--s1); }
@@ -154,7 +152,17 @@
   .res-bar { padding: var(--s2); }
 }
 
-.res-tilecell { display: inline-flex; align-items: center; gap: var(--s1); min-width: 0; max-width: 100%; }
+/* Real results key columns, two short lines each so Tile + RA / Dec +
+   Production fit the inspector-open table (columns.tsx): the tile id over its
+   JWST badge, RA over Dec (tabular mono, right-aligned like the header) */
+.res-tilecell {
+  display: inline-flex; flex-direction: column; align-items: flex-start; gap: 1px;
+  min-width: 0; max-width: 100%; vertical-align: middle; font-size: var(--fs-sm); line-height: 1.2;
+}
+.res-radec {
+  display: inline-flex; flex-direction: column; align-items: flex-end; vertical-align: middle;
+  font: var(--fs-sm)/1.2 var(--font-mono); font-variant-numeric: tabular-nums;
+}
 @container res-page (max-width: 1100px) {
   /* stacked: a short list right under the viewer keeps both within reach */
   .res-eval__list .ui-dt__scroll { max-height: min(48vh, 520px) !important; }

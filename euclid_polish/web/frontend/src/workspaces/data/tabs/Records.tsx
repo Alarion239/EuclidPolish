@@ -9,13 +9,13 @@
  * regenerate this split's SR, refresh). Then one caption row for the image:
  * the record and its truth sources (sources_<split>.csv) — drawn on the HR
  * image, on every tier or not at all, filtered by type. Then the viewer
- * (LR · HR · BHR · Clean (starless) · SR), sized so its first frame row is in
- * view (ViewerStage). Below it: a running job, the record's sources as a table
+ * (LR · HR · BHR · Clean (starless) · SR), which fits its first frame row
+ * under its own top (viewer/fit.ts). Below it: a running job, the record's sources as a table
  * (marker / row → the `truth` inspector), the split's per-record census
  * (row → that record) and the synthetic_generate step (collapsed). The split,
  * viewer object/tiers/view, overlay mode, hidden source types and open sections
  * live in the URL. */
-import { useMemo, useRef, useState, type ComponentProps, type ReactNode } from "react";
+import { useMemo, useRef, useState, type ReactNode } from "react";
 import { useJob } from "../../../api/jobs";
 import { useResource } from "../../../api/query";
 import { openInspector } from "../../../app/inspector";
@@ -27,10 +27,9 @@ import { useUrlState } from "../../../hooks/useUrlState";
 import { useInspector } from "../../../state/inspector";
 import {
   Badge, Button, Callout, Checkbox, Chip, DataTable, EmptyState, IconButton, Menu, Page,
-  Popover, Section, Segmented, Switch, Tooltip, type DataColumn,
+  Popover, Section, Segmented, Switch, Tooltip, type DataColumn, type MenuItem, type Tone,
 } from "../../../ui";
 import { ImageViewer, type ViewerApi, type ViewerMarker, type ViewerMarkers, type ViewerState } from "../../../viewer";
-import type { LayoutMode } from "../../../viewer/fit";
 import {
   SPLITS, SYNC_KINDS, URLS, useSrStatus, type FieldCensus, type RecordSources, type SourcesCensus, type Split,
   type SrStatus, type TruthSource,
@@ -38,9 +37,8 @@ import {
 import { BarActions, DataBar, JobStrip, OFFLINE_HINT, Spacer, startDataJob, useFasrcOnline } from "../common";
 import {
   SR_STATE_LABEL, SR_STATE_TONE, formatCompact, noiseBadge, recordFiles, recordObjectId, resumeSafeStep, shownTypes,
-  sourceMarker, sourceTypeChips, toggleHiddenType, truthId, type SourceType,
+  sourceMarker, sourceTypeChips, toggleHiddenType, truthId, worstToneIndex, type SourceType,
 } from "../model";
-import { ViewerStage } from "../ViewerStage";
 import "../register";
 import "../data.css";
 
@@ -56,31 +54,40 @@ const DEFAULT_TIERS = ["dirty", "hr"];
 
 /* ── toolbar pieces ────────────────────────────────────────────────────── */
 
-/** A status badge with its detail in a tooltip (focusable, so the tip is reachable by keyboard). */
-function TipBadge({ tip, tone, children }: { tip: ReactNode; tone: ComponentProps<typeof Badge>["tone"]; children: ReactNode }) {
+/** One of the split's status badges: its word, tone and tooltip detail. */
+type BadgeSpec = { key: string; label: string; tone: Tone; tip: ReactNode };
+
+/** A status badge with its detail in a tooltip (focusable, so the tip is
+ *  reachable by keyboard). In a crowded toolbar (compact level 2 and 3) only
+ *  its dot shows, unless it is the split's worst state (`keep`, see
+ *  worstToneIndex): its word is then clipped out of sight but stays in the
+ *  DOM, so it is still the badge's text for screen readers, and heads the tip. */
+function TipBadge({ tip, tone, label, keep }: Omit<BadgeSpec, "key"> & { keep: boolean }) {
   return (
-    <Tooltip content={tip}>
-      <span tabIndex={0} className="dt-tipbadge"><Badge size="sm" tone={tone} dot>{children}</Badge></span>
+    <Tooltip content={<><strong className="dt-tipbadge__head">{label}</strong>{tip}</>}>
+      <span tabIndex={0} className={keep ? "dt-tipbadge dt-tipbadge--keep" : "dt-tipbadge"}>
+        <Badge size="sm" tone={tone} dot><span className="dt-tipbadge__text">{label}</span></Badge>
+      </span>
     </Tooltip>
   );
 }
 
-function FilesBadge({ status, split }: { status: SrStatus; split: Split }) {
+function filesBadge(status: SrStatus, split: Split): BadgeSpec | null {
   const files = status.splits[split]?.files;
   if (!files) return null;
   const { label, tone, rows } = recordFiles(files, split);
-  return (
-    <TipBadge tone={tone} tip={(
+  return {
+    key: "files", label, tone, tip: (
       <dl className="dt-tipdl">
         {rows.map((r) => (
           <div key={r.key} data-state={r.state}><dt>{r.label}</dt><dd>{r.detail}</dd></div>
         ))}
       </dl>
-    )}>{label}</TipBadge>
-  );
+    ),
+  };
 }
 
-function SrBadge({ status, split }: { status: SrStatus; split: Split }) {
+function srBadge(status: SrStatus, split: Split): BadgeSpec | null {
   const sr = status.splits[split]?.sr;
   if (!sr) return null;
   const who = sr.manifest?.model_label ? ` by ${sr.manifest.model_label}` : "";
@@ -89,22 +96,22 @@ function SrBadge({ status, split }: { status: SrStatus; split: Split }) {
     ...sr.reasons,
     sr.manifest?.generated_at ? `generated ${sr.manifest.generated_at}` : "",
   ].filter(Boolean).join("\n");
-  return (
-    <TipBadge tone={SR_STATE_TONE[sr.state]} tip={<span className="dt-pre">{tip}</span>}>
-      {SR_STATE_LABEL[sr.state]}{sr.state === "partial" && sr.records_count ? ` ${sr.count}/${sr.records_count}` : ""}
-    </TipBadge>
-  );
+  const label = `${SR_STATE_LABEL[sr.state]}${sr.state === "partial" && sr.records_count ? ` ${sr.count}/${sr.records_count}` : ""}`;
+  return { key: "sr", tone: SR_STATE_TONE[sr.state], label, tip: <span className="dt-pre">{tip}</span> };
 }
 
-function NoiseBadge() {
+function useNoiseBadge(): BadgeSpec | null {
   const check = useSystemAlerts().data?.checks.find((c) => c.id === "records-noise");
   if (!check) return null;
   const { label, tone } = noiseBadge(check.state);
-  return (
-    <TipBadge tone={tone} tip={<span className="dt-pre">{[check.title, check.detail].filter(Boolean).join("\n")}</span>}>
-      {label}
-    </TipBadge>
-  );
+  return { key: "noise", label, tone, tip: <span className="dt-pre">{[check.title, check.detail].filter(Boolean).join("\n")}</span> };
+}
+
+/** The split's state: files, SR tier, noise model; the worst keeps its word in a compact bar. */
+function StatusBadges({ badges }: { badges: (BadgeSpec | null)[] }) {
+  const shown = badges.filter((b): b is BadgeSpec => b != null);
+  const worst = worstToneIndex(shown.map((b) => b.tone));
+  return <>{shown.map((b, i) => <TipBadge key={b.key} label={b.label} tone={b.tone} tip={b.tip} keep={i === worst} />)}</>;
 }
 
 function SyncPopover({ open, onOpenChange, onStart, busy, online }: {
@@ -158,7 +165,7 @@ function GeneratePopover({ status, open, onOpenChange, onStart, busy }: {
   const anyExisting = subsets.some((s) => (status.sr[s] ?? 0) > 0);
   const anyStale = subsets.some((s) => ["stale", "unknown", "partial"].includes(status.splits[s]?.sr.state));
   const [overwrite, setOverwrite] = useState(anyStale);
-  const reason = !status.records ? "Sync the records first." : !status.checkpoint ? "No active STARFULL members." : null;
+  const reason = !status.records ? "Sync the records first." : !status.checkpoint ? "No active starfull members." : null;
   if (reason || !status.can_generate) {
     return (
       <Tooltip content={reason ?? "Nothing to generate"}>
@@ -232,10 +239,13 @@ function useTruthSources(split: Split, index: number | null) {
 }
 type Truth = ReturnType<typeof useTruthSources>;
 
+const OVERLAY_LABEL: Record<Overlay, string> = { off: "Off", hr: "HR", all: "All tiers" };
+
 /** Where and which of the record's truth sources are drawn (the keys match
  *  the markers' colours) — a group in the tab's toolbar row, so the viewer
  *  starts one row higher (the record itself is the viewer's position and its
- *  readout label). */
+ *  readout label). In a crowded toolbar (compact level 3) "Sources on Off |
+ *  HR | All tiers" becomes one menu button, "Sources: HR". */
 function TruthControls({ truth, overlay, onOverlay, index, split }: {
   truth: Truth; overlay: Overlay; onOverlay: (v: Overlay) => void; index: number | null; split: Split;
 }) {
@@ -243,9 +253,20 @@ function TruthControls({ truth, overlay, onOverlay, index, split }: {
   const counts = data?.present ? data.counts : null;
   return (
     <div className="dt-caption" role="group" aria-label={index != null ? `Truth sources of record ${index}` : "Truth sources overlay"}>
-      <span className="dt-caption__label" aria-hidden="true">Sources on</span>
-      <Segmented size="sm" className="dt-seg-text" value={overlay} onChange={onOverlay} aria-label="Draw the truth sources on"
-        options={[{ value: "off", label: "Off" }, { value: "hr", label: "HR" }, { value: "all", label: "All tiers" }]} />
+      <span className="dt-caption__label dt-ov--wide" aria-hidden="true">Sources on</span>
+      <Segmented size="sm" className="dt-ov--wide" value={overlay} onChange={onOverlay} aria-label="Draw the truth sources on"
+        options={OVERLAYS.map((v) => ({ value: v, label: OVERLAY_LABEL[v] }))} />
+      <span className="dt-ov--menu">
+        <Menu label="Draw the truth sources on" items={[
+          { type: "label", label: "Draw the truth sources on" },
+          ...OVERLAYS.map((v): MenuItem => ({
+            type: "checkbox", label: OVERLAY_LABEL[v], checked: overlay === v, keepOpen: false,
+            onCheckedChange: () => onOverlay(v),
+          })),
+          ...(counts && counts.off_field > 0
+            ? [{ type: "separator" } as MenuItem, { type: "label", label: `${counts.off_field} centred off the frame (dashed)` } as MenuItem] : []),
+        ]} trigger={<Button size="sm" variant="ghost" iconRight="chevronDown" aria-label={`Truth sources on: ${OVERLAY_LABEL[overlay]}`}>Sources: {OVERLAY_LABEL[overlay]}</Button>} />
+      </span>
       {/* one toggle per type the record has: on = drawn and listed in the table */}
       {counts && sourceTypeChips(counts, hidden).map((c) => (
         <Chip key={c.type} on={c.shown} onClick={() => toggle(c.type)}
@@ -255,7 +276,7 @@ function TruthControls({ truth, overlay, onOverlay, index, split }: {
       ))}
       {counts && counts.off_field > 0 && (
         <Tooltip content="Centred outside the frame, their light spills in (dashed)">
-          <span tabIndex={0} className="dt-caption__note">{counts.off_field} off-field</span>
+          <span tabIndex={0} className="dt-caption__note dt-ov--wide">{counts.off_field} off-field</span>
         </Tooltip>
       )}
       {index != null && res.loading && !data && <span className="dt-caption__note">Loading sources…</span>}
@@ -373,12 +394,11 @@ export default function Records() {
   const running = sync.busy || generate.busy;
   const status = useSrStatus(running ? 3_000 : undefined);
   const s = status.data;
+  const noise = useNoiseBadge();
   const { online } = useFasrcOnline();
   const [viewerKey, setViewerKey] = useState(0);
   // Primitives from the viewer's state (a pan does not re-render the page).
   const [index, setIndex] = useState<number | null>(null);
-  const [layout, setLayout] = useState<LayoutMode>("auto");
-  const [tierCount, setTierCount] = useState(DEFAULT_TIERS.length);
   const [syncOpen, setSyncOpen] = useState(false);
   const [genOpen, setGenOpen] = useState(false);
   const [, setGenSection] = useUrlState("gen", false);
@@ -423,7 +443,7 @@ export default function Records() {
       label: "Generate SR",
       question: {
         title: `Generate the production SR for ${subsets.join(" + ")}?`,
-        message: `Loads every active STARFULL member (TensorFlow) and the production gate${overwrite ? "; the existing SR of these splits is deleted first" : ""}.`,
+        message: `Loads every active starfull member (TensorFlow) and the production gate${overwrite ? "; the existing SR of these splits is deleted first" : ""}.`,
         confirmLabel: "Generate", tone: overwrite ? "danger" : "default",
       },
       onDone: bump,
@@ -452,22 +472,18 @@ export default function Records() {
   const viewable = s ? !absent : !!status.error;
   const onViewerState = (st: ViewerState) => {
     setIndex(st.index);
-    setLayout(st.layout);
-    setTierCount(st.tiers?.length || DEFAULT_TIERS.length);
   };
   return (
     <Page className="dt-page dt-page--image">
-      <DataBar label="Records">
-        <Segmented size="sm" className="dt-seg-text" value={split} onChange={(v) => setSplit(v)} aria-label="Split"
+      <DataBar label="Records" compactable={3}>
+        <Segmented size="sm" value={split} onChange={(v) => setSplit(v)} aria-label="Split"
           options={SPLITS.map((sp) => ({
             value: sp, label: <>{sp} <span className="muted">{s ? formatCount(s.splits[sp]?.count ?? 0) : ""}</span></>,
           }))} />
         {viewable && !absent && <TruthControls truth={truth} overlay={overlay} onOverlay={setOverlay} index={index} split={split} />}
         <Spacer />
         <div className="dt-bar__status" role="group" aria-label={`State of the ${split} split`}>
-          {s && <FilesBadge status={s} split={split} />}
-          {s && <SrBadge status={s} split={split} />}
-          <NoiseBadge />
+          <StatusBadges badges={[s ? filesBadge(s, split) : null, s ? srBadge(s, split) : null, noise]} />
         </div>
         <BarActions>
           {s && <SyncPopover open={syncOpen} onOpenChange={setSyncOpen} busy={sync.busy} online={online} onStart={runSync} />}
@@ -493,13 +509,11 @@ export default function Records() {
         </EmptyState>
       ) : viewable && (
         <div className="dt-figure">
-          <ViewerStage layout={layout} frames={tierCount}>
-            <ImageViewer key={`${split}-${viewerKey}`} collection="sky" params={params} urlKey="rec"
-              tiers={DEFAULT_TIERS} initialId={index != null ? recordObjectId(split, index) : undefined}
-              markers={markers}
-              onReady={(a) => { api.current = a; }}
-              onState={onViewerState} />
-          </ViewerStage>
+          <ImageViewer key={`${split}-${viewerKey}`} collection="sky" params={params} urlKey="rec"
+            tiers={DEFAULT_TIERS} initialId={index != null ? recordObjectId(split, index) : undefined}
+            markers={markers}
+            onReady={(a) => { api.current = a; }}
+            onState={onViewerState} />
         </div>
       )}
       <JobStrip job={sync} />

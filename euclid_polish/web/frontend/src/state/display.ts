@@ -30,8 +30,13 @@ export type DisplaySettings = {
   colormap: Colormap;
   residualColormap: Colormap;
   invert: boolean;
-  /** CSS colour painted for NaN pixels. */
+  /** CSS colour painted for NaN pixels (a neutral dark grey by default). */
   nanColor: string;
+  /** Show every e⁻ tier per unit area of the coarsest linked pixel scale
+   *  (viewer/area.ts): values × (ref / pixscale)² before the stretch, so HR
+   *  and SR at 0.05″ read as bright as LR at 0.1″. Off by default; the
+   *  readout stays native e⁻ per pixel. */
+  matchSurfaceBrightness: boolean;
   /** true: every viewer follows these global settings. */
   linked: boolean;
   wheel: WheelMode;
@@ -69,7 +74,8 @@ const DEFAULTS: DisplaySettings = {
   colormap: "gray",
   residualColormap: "rdbu",
   invert: false,
-  nanColor: "#5b6475",
+  nanColor: "#404040",
+  matchSurfaceBrightness: false,
   linked: true,
   wheel: "zoom-when-focused",
 };
@@ -83,6 +89,9 @@ export const DISPLAY_STORAGE_KEY = "ep-display";
 
 /** The v1 NaN default (magenta), migrated away in persisted state v2. */
 export const LEGACY_NAN_DEFAULT = "#ff00ff";
+/** Every earlier NaN default (v1 magenta, v2 tinted slate): persisted state
+ *  before v3 still carrying one of them gets the neutral grey. */
+export const LEGACY_NAN_DEFAULTS: readonly string[] = [LEGACY_NAN_DEFAULT, "#5b6475"];
 
 const oneOf = <T extends string>(v: unknown, options: readonly T[], fallback: T): T =>
   (typeof v === "string" && (options as readonly string[]).includes(v) ? v as T : fallback);
@@ -124,6 +133,7 @@ export function sanitizeDisplay(raw: unknown, fallback: DisplaySettings = DEFAUL
     residualColormap: oneOf(r.residualColormap, COLORMAPS, f.residualColormap),
     invert: typeof r.invert === "boolean" ? r.invert : f.invert,
     nanColor: typeof r.nanColor === "string" && r.nanColor.trim() ? r.nanColor : f.nanColor,
+    matchSurfaceBrightness: typeof r.matchSurfaceBrightness === "boolean" ? r.matchSurfaceBrightness : f.matchSurfaceBrightness,
     linked: typeof r.linked === "boolean" ? r.linked : f.linked,
     wheel: oneOf(r.wheel, WHEEL_MODES, f.wheel),
   };
@@ -148,8 +158,8 @@ export function transferFor(settings: Pick<DisplaySettings, "groups">, group = "
 
 const settingsOf = (s: DisplayStore): DisplaySettings => ({
   color: s.color, rgb: s.rgb, stretch: s.stretch, groups: s.groups, colormap: s.colormap,
-  residualColormap: s.residualColormap, invert: s.invert, nanColor: s.nanColor, linked: s.linked,
-  wheel: s.wheel,
+  residualColormap: s.residualColormap, invert: s.invert, nanColor: s.nanColor,
+  matchSurfaceBrightness: s.matchSurfaceBrightness, linked: s.linked, wheel: s.wheel,
 });
 
 export const useDisplay = create<DisplayStore>()(
@@ -166,13 +176,14 @@ export const useDisplay = create<DisplayStore>()(
     }),
     {
       name: DISPLAY_STORAGE_KEY,
-      version: 2,
+      version: 3,
       storage: safeJSONStorage,
-      // v1 persisted the loud magenta NaN default; carry an untouched default
-      // forward to the muted v2 one, but keep any colour the user picked.
+      // v1 persisted the loud magenta NaN default, v2 a tinted slate; carry
+      // an untouched old default forward to the neutral v3 grey, but keep any
+      // colour the user picked.
       migrate: (persisted, version) => {
         const p = (persisted && typeof persisted === "object" ? { ...persisted } : {}) as Record<string, unknown>;
-        if (version < 2 && typeof p.nanColor === "string" && p.nanColor.toLowerCase() === LEGACY_NAN_DEFAULT) {
+        if (version < 3 && typeof p.nanColor === "string" && LEGACY_NAN_DEFAULTS.includes(p.nanColor.trim().toLowerCase())) {
           p.nanColor = DEFAULTS.nanColor;
         }
         return p as unknown as DisplayStore;

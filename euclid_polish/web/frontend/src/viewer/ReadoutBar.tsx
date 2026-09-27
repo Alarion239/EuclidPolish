@@ -5,12 +5,13 @@
  *
  * with the save status or the object's label at the right. Values are the
  * shown band's (a composite shows the first band); every band of every tier
- * is in the line's tooltip and in `getReadout()`. When the widest line for
- * the shown tiers would not fit (`readoutLineWidth`: the inspector, the
- * bottom sheet, three tiers at 720 px) the readout reserves TWO lines — the
- * position on the first, the per-tier values on the second, each value kept
- * with its unit — decided before any hover, so it never changes height under
- * the pointer; the object's label gives way first. */
+ * is in the line's tooltip and in `getReadout()`. Below ~560 px of viewer
+ * width, or when the widest line for the shown tiers would not fit
+ * (`readoutLines`: the inspector, the bottom sheet, three tiers at 720 px),
+ * the readout reserves TWO or more lines — the position first, then the
+ * per-tier values, each tier's name, value and unit kept together and the
+ * line broken only between tiers — decided before any hover, so it never
+ * changes height under the pointer; the object's label gives way first. */
 
 let measureCtx: CanvasRenderingContext2D | null | undefined;
 /** A string's width in the readout's font (≈ 6.6 px a character without canvas). */
@@ -27,12 +28,12 @@ function measurer(el: HTMLElement): (text: string) => number {
   ctx.font = `${size}px ${mono}`;
   return (t) => ctx.measureText(t).width;
 }
-import { useLayoutEffect, useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import { formatDec, formatDeg, formatRA } from "../format";
 import { CopyButton } from "../ui";
 import { bandLabel, readoutTierName } from "./barModel";
 import { useController, useSettings, useViewer } from "./hooks";
-import { cubeIsEmpty, formatValue, readoutLineWidth, unitLabel } from "./readout";
+import { cubeIsEmpty, formatValue, readoutLines, unitLabel } from "./readout";
 import type { ReadoutTier } from "./types";
 
 const fovText = (fov: number) => `${fov < 10 ? fov.toFixed(2) : fov.toFixed(1)}″`;
@@ -54,20 +55,24 @@ export function ReadoutBar() {
   const shown = useViewer((s) => s.shown);
   const settings = useSettings();
   const ref = useRef<HTMLDivElement>(null);
-  const [lines, setLines] = useState<1 | 2>(1);
+  const [lines, setLines] = useState(1);
   const tierKey = meta ? ctrl.frameKeys().map((k) => `${k}:${ctrl.tierLabel(k)}`).join("|") : "";
   const anyWcs = Object.values(shown).some((sh) => !!sh.rec.wcs);
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el || !meta) return;
     const keys = ctrl.frameKeys();
-    const tiers = keys.map((k) => ({ name: k.startsWith("res:") ? ctrl.tierLabel(k) : readoutTierName(ctrl.tierLabel(k)), unit: ctrl.tierMeta(k)?.unit ?? "" }));
+    const hasStd = (meta.tiers ?? []).some((t) => t.key === "std");
+    const tiers = keys.map((k) => ({
+      name: k.startsWith("res:") ? ctrl.tierLabel(k) : readoutTierName(ctrl.tierLabel(k)), unit: ctrl.tierMeta(k)?.unit ?? "",
+      sigma: hasStd && k.toLowerCase() === "sr",
+    }));
     const hasSky = anyWcs || (meta.objects ?? []).some((o) => Number.isFinite(o.ra));
     const decide = () => {
       const cs = getComputedStyle(el);
       const avail = el.clientWidth - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0);
       if (!(avail > 0)) return;
-      setLines(readoutLineWidth(tiers, measurer(el), { hasSky }) > avail ? 2 : 1);
+      setLines(readoutLines(tiers, measurer(el), { width: avail, hasSky }));
     };
     decide();
     if (typeof ResizeObserver === "undefined") return;
@@ -97,7 +102,8 @@ export function ReadoutBar() {
   </>;
 
   return (
-    <div ref={ref} className="cv-readout" data-lines={lines === 2 ? "2" : undefined} aria-label="Pixel readout" title={full || undefined}>
+    <div ref={ref} className="cv-readout" data-lines={lines > 1 ? String(lines) : undefined} aria-label="Pixel readout" title={full || undefined}
+      style={lines > 1 ? { "--cv-readout-lines": lines } as CSSProperties : undefined}>
       <span className="cv-readout__main">
         {readout ? (
           src && src.x != null

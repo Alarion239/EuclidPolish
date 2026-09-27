@@ -2,8 +2,8 @@
    visible focus ring, `loading` (spinner + aria-busy, click-guarded), icons,
    and link rendering (`href`, or `asChild` around a router <Link>). */
 import {
-  forwardRef, type AnchorHTMLAttributes, type ButtonHTMLAttributes, type MouseEvent, type ReactElement,
-  type ReactNode, type Ref,
+  Children, cloneElement, forwardRef, isValidElement, type AnchorHTMLAttributes, type ButtonHTMLAttributes,
+  type MouseEvent, type ReactElement, type ReactNode, type Ref,
 } from "react";
 import { Icon, type IconName } from "./icons";
 import { Tooltip, type Side } from "./overlays";
@@ -22,7 +22,9 @@ type Common = {
   iconRight?: IconName | ReactNode;
   /** Render the single child (e.g. a router <Link>) with the button styles.
    *  The ref, `loading` (aria-busy + click guard, which also blocks a Link's
-   *  navigation) and every other prop are forwarded onto the child. */
+   *  navigation) and every other prop are forwarded onto the child; `icon`,
+   *  `iconRight` and the loading spinner are drawn inside it, around its
+   *  own content (as `.ui-btn__label`). */
   asChild?: boolean;
   /** Render an <a> with the button styles (ref and props forwarded; the
    *  button-only attributes — type, form*, name, value — are dropped). */
@@ -76,7 +78,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
         aria-busy={loading || undefined} data-loading={loading || undefined}
         {...(disabled ? { "aria-disabled": true } : {})}
         onClick={guarded(off) as never}>
-        {children as ReactElement}
+        {decorateChild(children, loading, icon, iconRight)}
       </Slot>
     );
   }
@@ -103,6 +105,24 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
     </button>
   );
 });
+
+/** asChild: the child with the icon / spinner and its own content as the
+ *  label (unchanged when there is neither an icon nor a spinner). */
+function decorateChild(
+  children: ReactNode, loading: boolean, icon: IconName | ReactNode | undefined,
+  iconRight: IconName | ReactNode | undefined,
+): ReactElement {
+  const child = Children.only(children) as ReactElement<{ children?: ReactNode }>;
+  if (!isValidElement(child) || (icon == null && iconRight == null && !loading)) return child;
+  const own = child.props.children;
+  return cloneElement(child, undefined, (
+    <>
+      {loading ? <span className="ui-spin ui-btn__spin" aria-hidden="true" /> : renderIcon(icon)}
+      {own != null && own !== false && <span className="ui-btn__label">{own}</span>}
+      {renderIcon(iconRight)}
+    </>
+  ));
+}
 
 function omitButtonOnly(
   rest: Omit<ButtonHTMLAttributes<HTMLButtonElement>, "onClick">,

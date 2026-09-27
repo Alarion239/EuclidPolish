@@ -28,9 +28,9 @@ export function surveyColor(survey: Survey): string {
 
 export const SOURCE_META: Record<SourceKey, { label: string; kicker: string }> = {
   euclid: { label: "Euclid MER + PHZ", kicker: "Euclid Q1" },
-  synthetic: { label: "Generated source catalogues", kicker: "generated fields" },
-  cosmos: { label: "COSMOS2025", kicker: "diagnostic only" },
-  fit: { label: "Euclid joint fit", kicker: "fitted model" },
+  synthetic: { label: "Generated source catalogues", kicker: "Generated fields" },
+  cosmos: { label: "COSMOS2025", kicker: "Diagnostic only" },
+  fit: { label: "Euclid joint fit", kicker: "Fitted model" },
 };
 
 /** Joint galaxy views. Corner + explorer: Q1 blue, model red. The

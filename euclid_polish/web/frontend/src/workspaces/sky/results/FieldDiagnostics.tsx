@@ -91,7 +91,7 @@ function Body({ view, diag, syn, synLoading, synError, fieldId }: {
               xLabel={`d [″] · ${power.pixel_scale_arcsec.toFixed(2)}″ px`} />
               : <p className="muted res-note">No cross-correlation measured.</p>}
           </Side>
-          <Side title="Synthetic STARFULL">
+          <Side title="Synthetic starfull">
             {synCross ? <CrossPlot series={crossSeries(synCross, C.comb)} name="synthetic-rd" xLabel="d [″]" />
               : <Missing loading={synLoading} error={synError} />}
           </Side>
@@ -104,7 +104,7 @@ function Body({ view, diag, syn, synLoading, synError, fieldId }: {
     return (
       <div className="res-diag__pair">
         <Side title="Real field"><HeatPlot pair={bright} z={bright.real} label="sampled pixels" name={`field-${fieldId}-sigma`} /></Side>
-        <Side title="Synthetic STARFULL">
+        <Side title="Synthetic starfull">
           {bright.synthetic ? <HeatPlot pair={bright} z={bright.synthetic} label="synthetic pixels" name="synthetic-sigma" />
             : <Missing loading={synLoading} error={synError} />}
         </Side>
@@ -128,7 +128,7 @@ function Body({ view, diag, syn, synLoading, synError, fieldId }: {
           ) : (
             <div className="res-diag__pair">
               <Side title="Real field"><HeatPlot pair={o.heat} z={o.heat.real} label="real pixels" name={`field-${fieldId}-${o.kind}`} /></Side>
-              <Side title="Synthetic STARFULL">
+              <Side title="Synthetic starfull">
                 {o.heat.synthetic ? <HeatPlot pair={o.heat} z={o.heat.synthetic} label="synthetic pixels" name={`synthetic-${o.kind}`} />
                   : <Missing loading={synLoading} error={synError} />}
               </Side>
@@ -154,7 +154,7 @@ export function FieldDiagnostics({ onClose }: { onClose: () => void }) {
     <span className="res-chips">
       <Segmented size="sm" value={current.value} onChange={setView} aria-label="Diagnostic"
         options={VIEWS.map((v) => ({ value: v.value, label: v.label, title: v.title }))} />
-      <Tooltip content="Apply the newest STARFULL combiners to the field and rewrite its diagnostics">
+      <Tooltip content="Apply the newest starfull combiners to the field and rewrite its diagnostics">
         <Button size="sm" icon="reset" disabled={!f} onClick={() => { if (f) void refreshFieldDiagnostics(f.field_id, reload); }}>Recompute</Button>
       </Tooltip>
       <IconButton icon="close" size="sm" label="Hide field diagnostics" onClick={onClose} />

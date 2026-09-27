@@ -2,10 +2,11 @@
  *
  *   ┌ rail ┬ top bar: breadcrumbs, ⌘K, FASRC, jobs, display, theme, ?  ─────┐
  *   │      ├ stage (scrolls) ─────────────────────────╥ inspector (resizable) │
- *   │      │  restart banner (only when backend code  ║                       │
- *   │      │  changed; scrolls away with the page)    ║                       │
+ *   │      │  "newer console build" / "restart the    ║                       │
+ *   │      │  server" strips (only when they apply;   ║                       │
+ *   │      │  they scroll away with the page)         ║                       │
  *   │      │  page (<Outlet/>: the workspace; gets    ║                       │
- *   │      │  the height left under the banner)       ║                       │
+ *   │      │  the height left under the strips)       ║                       │
  *   └──────┴──────────────────────────────────────────╨───────────────────────┘
  *
  * Only the one-line top bar stays put; nothing else is pinned over the
@@ -16,7 +17,8 @@
  * command palette (+ the global "Run a job" actions), the ? sheet, the
  * Display panel, the global shortcuts, the `?inspect=` sync, local and SLURM
  * job toasts, `document.title` and the stage scroll management. Below 900 px the rail becomes a drawer and the inspector a
- * sheet. The inspector width is persisted (prefs.inspectorWidth). While the
+ * sheet. The inspector width is persisted (prefs.inspectorWidth; until the
+ * user drags it, it opens fitted to the window: app/inspectorWidth.ts). While the
  * Display sheet is open (`data-display`) the body gives up the sheet's width
  * (from 640 px), so the images refit beside it rather than under it.
  */
@@ -32,6 +34,7 @@ import { CommandPalette } from "./CommandPalette";
 import { DisplayPanel } from "./DisplayPanel";
 import { GlobalShortcuts } from "./GlobalShortcuts";
 import { InspectorPanel } from "./InspectorPanel";
+import { STAGE_MIN_PX, dockedInspectorWidth, railWidth, useWindowWidth } from "./inspectorWidth";
 import { registerInspector, useInspectorUrlSync } from "./inspector";
 import { JobInspector, jobTitle } from "./inspectors/JobInspector";
 import { useJobToasts, useSlurmToasts } from "./JobTray";
@@ -40,7 +43,7 @@ import { Rail } from "./Rail";
 import { RunActions } from "./RunActions";
 import { useShellUi } from "./shellStore";
 import { ShortcutSheet } from "./ShortcutSheet";
-import { TopBar, VersionBanner } from "./TopBar";
+import { ShellNotices, TopBar } from "./TopBar";
 import { useStageScroll } from "./useStageScroll";
 import { viewerTakesEscape } from "./viewerEscape";
 import "./shell.css";
@@ -86,6 +89,13 @@ function InspectorSheet() {
         {/* A light scrim under the sheet: its images stay bright and take the pointer. */}
         <RDialog.Overlay className="shell__scrim shell__scrim--light" />
         <RDialog.Content className="inspector-sheet" aria-describedby={undefined}
+          // Focus the panel itself: Radix would focus the first enabled button
+          // (Pin, Back/Forward are disabled), pop its tooltip on top, and make
+          // the first Esc close only that tooltip.
+          onOpenAutoFocus={(e) => {
+            e.preventDefault();
+            (e.currentTarget as HTMLElement).querySelector<HTMLElement>(".inspector")?.focus({ preventScroll: true });
+          }}
           onEscapeKeyDown={(e) => { if (viewerTakesEscape(document.querySelector(".inspector-sheet"))) e.preventDefault(); }}>
           <RDialog.Title className="sr-only">Inspector</RDialog.Title>
           <InspectorPanel />
@@ -107,6 +117,7 @@ function ShellFrame() {
   const displayOpen = useShellUi((s) => s.display);
   const stageRef = useStageScroll<HTMLElement>();
   const inspectorRef = useRef<PanelImperativeHandle | null>(null);
+  const windowWidth = useWindowWidth();
 
   useEffect(() => { document.title = pageTitle(location.pathname); }, [location.pathname]);
   // Navigating closes the narrow-screen drawer.
@@ -114,6 +125,8 @@ function ShellFrame() {
 
   const docked = inspecting && !narrow;
   const [wMin, wMax] = INSPECTOR_WIDTH_RANGE;
+  // Read when the panel mounts (each time the inspector opens docked).
+  const openWidth = dockedInspectorWidth(inspectorWidth, windowWidth - railWidth(railCollapsed));
   return (
     <div className="shell" data-rail={railCollapsed && !narrow ? "collapsed" : "expanded"}
       data-narrow={narrow || undefined} data-display={displayOpen || undefined}>
@@ -126,16 +139,16 @@ function ShellFrame() {
             const size = inspectorRef.current?.getSize().inPixels;
             if (meta.isUserInteraction && size && size > 0) usePrefs.getState().set({ inspectorWidth: Math.round(size) });
           }}>
-          <Panel id="stage" minSize={320} className="shell__stage-panel">
+          <Panel id="stage" minSize={STAGE_MIN_PX} className="shell__stage-panel">
             <main id="main" className="stage" ref={stageRef} tabIndex={-1}>
-              {/* in the scrolling stage, so it scrolls away with the page */}
-              <VersionBanner />
+              {/* in the scrolling stage, so they scroll away with the page */}
+              <ShellNotices />
               <div className="stage__page"><Outlet /></div>
             </main>
           </Panel>
-          {docked && <Separator className="shell__sep" aria-label="Resize the inspector" />}
+          {docked && <Separator className="shell__sep" aria-label="Resize inspector" />}
           {docked && (
-            <Panel id="inspector" panelRef={inspectorRef} defaultSize={inspectorWidth}
+            <Panel id="inspector" panelRef={inspectorRef} defaultSize={openWidth}
               minSize={wMin} maxSize={wMax} groupResizeBehavior="preserve-pixel-size"
               className="shell__inspector-panel">
               <InspectorPanel />

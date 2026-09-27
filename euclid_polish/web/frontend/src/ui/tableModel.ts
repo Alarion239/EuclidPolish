@@ -35,6 +35,16 @@ export type DataColumn<T> = {
   numeric?: boolean;
   /** px (number) or any CSS width. Default: estimated from the content. */
   width?: number | string;
+  /** The narrowest this column may get: px (number, the whole column) or
+   *  `"<n>ch"` (n tabular digits of content, plus the cell padding), e.g.
+   *  `"19ch"` for "269.27120 +65.09876". Widens the estimate and the CSS width. */
+  minWidth?: number | string;
+  /** Narrow tables: when the visible columns need more width than the table
+   *  has, columns WITH a priority drop out, the largest number first (the
+   *  rightmost on a tie), until the rest fit. Columns without one never
+   *  drop. Dropped columns stay in the column menu ("hidden to fit"), where
+   *  checking one shows it again (the table then scrolls sideways). */
+  priority?: number;
   /** Initially hidden (the column menu can show it). */
   hidden?: boolean;
   /** Default true: listed in the column-visibility menu. */
@@ -316,10 +326,59 @@ export function rangeKeys(order: readonly string[], anchor: string | null | unde
 
 export const MIN_COL_WIDTH = 56;
 export const MAX_COL_WIDTH = 420;
+/** A cell's horizontal padding (10 px each side, ui.css .ui-dt__table td). */
+export const CELL_PAD_PX = 20;
+/** Width of one "ch" (a tabular digit at the table's 13 px) for layout estimates. */
+export const CH_PX = 7.8;
+
+/** A `minWidth` in px for the layout maths: a number as-is, `"<n>px"`,
+ *  `"<n>ch"` as n digits plus the cell padding; anything else 0. */
+export function minWidthPx(min: number | string | undefined): number {
+  if (typeof min === "number") return Number.isFinite(min) && min > 0 ? min : 0;
+  const m = /^\s*(\d+(?:\.\d+)?)\s*(ch|px)\s*$/.exec(min ?? "");
+  if (!m) return 0;
+  return m[2] === "px" ? Number(m[1]) : Number(m[1]) * CH_PX + CELL_PAD_PX;
+}
+
+/** The CSS width of a column's <col>: its width (the estimate in px, or a
+ *  string width) floored at its `minWidth` with CSS max(). */
+export function colWidthCss<T>(col: DataColumn<T>, estimatePx: number | undefined): string {
+  const base = typeof col.width === "string" ? col.width : `${Math.round(estimatePx ?? 120)}px`;
+  const min = col.minWidth;
+  if (min == null) return base;
+  const floor = typeof min === "number" ? `${min}px`
+    : /ch\s*$/.test(min) ? `calc(${min.trim()} + ${CELL_PAD_PX}px)` : min.trim();
+  return `max(${base}, ${floor})`;
+}
+
+/** Which columns to drop so the rest fit `available` px (see
+ *  `DataColumn.priority`): ids in drop order. Columns without a priority
+ *  never drop; an unknown width (≤ 0) drops nothing. A column in `keep` (the
+ *  user asked to see it) never drops and is not counted: showing it adds it
+ *  (the table scrolls sideways) instead of pushing other columns out. */
+export function fitColumns(
+  cols: readonly { id: string; width: number; priority?: number }[], available: number,
+  keep: ReadonlySet<string> = new Set(),
+): string[] {
+  if (!(available > 0)) return [];
+  let need = cols.reduce((n, c) => n + (keep.has(c.id) ? 0 : c.width), 0);
+  const order = cols
+    .map((c, i) => ({ c, i }))
+    .filter(({ c }) => c.priority != null && Number.isFinite(c.priority) && !keep.has(c.id))
+    .sort((a, b) => (b.c.priority! - a.c.priority!) || (b.i - a.i));
+  const out: string[] = [];
+  for (const { c } of order) {
+    if (need <= available) break;
+    out.push(c.id);
+    need -= c.width;
+  }
+  return out;
+}
 
 /** Stable px widths per column id, estimated from the header and the first
  *  `sample` rows (so virtualised rows scrolling in never reflow the table).
- *  A numeric `width` is used as-is; string widths are left to CSS (absent). */
+ *  A numeric `width` is used as-is; string widths are left to CSS (absent,
+ *  unless a `minWidth` gives a floor); every width is floored at `minWidth`. */
 export function estimateWidths<T>(
   rows: readonly T[], columns: DataColumn<T>[], opts: { sample?: number; charPx?: number; pad?: number } = {},
 ): Record<string, number> {
@@ -327,11 +386,12 @@ export function estimateWidths<T>(
   const out: Record<string, number> = {};
   const n = Math.min(rows.length, sample);
   for (const c of columns) {
-    if (typeof c.width === "number") { out[c.id] = c.width; continue; }
-    if (typeof c.width === "string") continue;
+    const floor = minWidthPx(c.minWidth);
+    if (typeof c.width === "number") { out[c.id] = Math.round(Math.max(c.width, floor)); continue; }
+    if (typeof c.width === "string") { if (floor) out[c.id] = Math.round(floor); continue; }
     let chars = headerText(c).length + (c.sortable === false ? 0 : 2);
     for (let i = 0; i < n; i++) chars = Math.max(chars, Math.min(64, cellText(c, rows[i]).length));
-    out[c.id] = Math.round(Math.max(MIN_COL_WIDTH, Math.min(MAX_COL_WIDTH, chars * charPx + pad)));
+    out[c.id] = Math.round(Math.max(MIN_COL_WIDTH, floor, Math.min(MAX_COL_WIDTH, chars * charPx + pad)));
   }
   return out;
 }

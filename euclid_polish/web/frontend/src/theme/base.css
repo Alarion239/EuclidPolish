@@ -59,12 +59,10 @@ a:hover { color: var(--accent-press); }
 
 h1, h2, h3, h4 { margin: 0; font-weight: var(--fw-semibold); letter-spacing: -0.01em; }
 
-/* uppercase micro-label used for section headers / eyebrows */
+/* small label above a title (a CardHead eyebrow, a group name): sentence
+   case in the UI face, as authored — never ALL-CAPS mono */
 .eyebrow {
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
-  letter-spacing: var(--ls-eyebrow);
-  text-transform: uppercase;
+  font: var(--fw-medium) var(--fs-sm)/var(--lh-tight) var(--font-sans);
   color: var(--text-faint);
 }
 

@@ -2,17 +2,18 @@
  *
  * The linked stretch is in e⁻ per pixel. An HR / SR pixel (0.05″) collects
  * about a quarter of the flux of an LR pixel (0.1″) of the same surface
- * brightness, so under one knee the HR and SR frames looked nearly empty
- * next to LR even when their integrated magnitudes matched. With
- * "Match surface brightness" on (the default), every e⁻ frame is DISPLAYED
- * as if it had the coarsest shown pixel: its values × (ref / pixscale)²
- * before the stretch (knee, black point and white reference ÷ that factor —
- * the same image). The readout, magnitudes, histogram values and exports
- * stay in native e⁻ per pixel; the knee reads "e⁻ per <ref>″ pixel". Tiers
- * already in a surface-brightness unit (JWST MJy/sr) and collections with a
- * single pixel scale are untouched. */
-
-export const PER_AREA_STORAGE_KEY = "euclid-polish.viewer.per-area";
+ * brightness, so under one knee the HR and SR frames look about 4× dimmer
+ * than LR even when their integrated magnitudes match (Records record 0:
+ * galaxy centre LR 1323 e⁻ vs HR 433.7 e⁻ at VIS 21.48 vs 21.51 AB). The
+ * Display option "Match surface brightness across pixel scales"
+ * (`DisplaySettings.matchSurfaceBrightness`, OFF by default) DISPLAYS every
+ * e⁻ frame as if it had the coarsest shown pixel: its values × (ref /
+ * pixscale)² before the stretch (knee, black point and white reference ÷
+ * that factor — the same image). The readout, magnitudes, histogram values
+ * and exports stay in native e⁻ per pixel; the knee reads "e⁻ per <ref>″
+ * px". Tiers already in a surface-brightness unit (JWST MJy/sr) and
+ * collections with a single pixel scale are untouched; with the option off
+ * every factor is 1 and the colour output is bit-identical to before. */
 
 type AreaRec = { pixscale?: number | null; unit?: string | null };
 
@@ -39,9 +40,4 @@ export function areaFactor(rec: AreaRec, ref: number, on: boolean): number {
   if (!on || !(ref > 0) || !(p > 0) || !isElectrons(rec.unit)) return 1;
   const f = (ref / p) ** 2;
   return Number.isFinite(f) && f > 0 ? f : 1;
-}
-
-/** The saved preference ("0" = off; anything else, or nothing, = on). */
-export function parsePerArea(raw: string | null | undefined): boolean {
-  return raw !== "0";
 }

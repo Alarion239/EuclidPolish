@@ -9,7 +9,7 @@ export type GalleryItem = { src: string; href?: string; label?: string; onClick?
 /** Responsive thumbnail grid on paper-white cells. Each cell links out (new
  *  tab) or fires onClick. */
 export function Gallery({ items, thumb = 150, empty }: { items: GalleryItem[]; thumb?: number; empty?: ReactNode }) {
-  if (!items.length) return <Empty>{empty ?? "nothing rendered yet"}</Empty>;
+  if (!items.length) return <Empty>{empty ?? "Nothing rendered yet"}</Empty>;
   return (
     <div className="ui-gallery" style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${thumb}px, 1fr))` }}>
       {items.map((it, i) => {

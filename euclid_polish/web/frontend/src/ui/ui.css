@@ -18,7 +18,7 @@
   border-bottom: 1px solid var(--border);
 }
 .ui-card__heading { min-width: 0; }
-.ui-card__title { font-size: var(--fs-lg); font-weight: var(--fw-medium); }
+.ui-card__title { margin: 0; font-size: var(--fs-lg); font-weight: var(--fw-medium); line-height: var(--lh-base); letter-spacing: normal; }
 .ui-card__sub { color: var(--text-dim); font-size: 12.5px; }
 .ui-card__body { padding: var(--s5); }
 .ui-card__spacer { flex: 1; }
@@ -29,6 +29,7 @@
 .ui-section__title {
   font: var(--fw-semibold) var(--fs-md)/var(--lh-tight) var(--font-sans); color: var(--text); margin: 0;
 }
+.ui-section__heading { margin: 0; font: inherit; letter-spacing: normal; }
 .ui-section__toggle {
   display: inline-flex; align-items: center; gap: 6px; padding: 2px 4px 2px 0;
   border: 0; background: transparent; color: var(--text); cursor: pointer; font: inherit;
@@ -86,7 +87,7 @@
 
 /* ════ Chip / Badge / Kbd ════════════════════════════════════════════════ */
 .ui-chip {
-  font: var(--fw-medium) var(--fs-sm)/1 var(--font-mono);
+  font: var(--fw-medium) var(--fs-sm)/1 var(--font-sans);
   display: inline-flex; align-items: center; gap: 6px;
   padding: 6px 11px; border-radius: var(--r-pill);
   background: var(--surface-2); color: var(--text-dim);
@@ -108,10 +109,10 @@
 
 .ui-badge {
   display: inline-flex; align-items: center; gap: 5px;
-  font: var(--fw-medium) var(--fs-xs)/1 var(--font-mono); padding: 4px 8px; border-radius: var(--r-pill);
+  font: var(--fw-medium) var(--fs-sm)/1 var(--font-sans); padding: 4px 8px; border-radius: var(--r-pill);
   background: var(--surface-2); color: var(--text-dim); border: 1px solid var(--border); white-space: nowrap;
 }
-.ui-badge--sm { padding: 2px 6px; font-size: var(--fs-2xs); }
+.ui-badge--sm { padding: 2px 6px; font-size: var(--fs-xs); }
 .ui-badge__dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 .ui-badge--good { background: var(--good-soft); color: var(--good); border-color: transparent; }
 .ui-badge--warn { background: var(--warn-soft); color: var(--warn); border-color: transparent; }
@@ -130,7 +131,7 @@
 /* ════ Stat / Kpi / DefList ══════════════════════════════════════════════ */
 .ui-stat { display: flex; flex-direction: column; gap: 2px; }
 .ui-stat__v { font: var(--fw-semibold) 22px/1 var(--font-mono); font-variant-numeric: tabular-nums; }
-.ui-stat__k { font-size: var(--fs-xs); letter-spacing: .05em; text-transform: uppercase; color: var(--text-faint); }
+.ui-stat__k { font: var(--fw-medium) var(--fs-sm)/var(--lh-tight) var(--font-sans); color: var(--text-dim); }
 .ui-stat__k--hint { text-decoration: underline dotted var(--border-strong); text-underline-offset: 3px; cursor: help; width: fit-content; }
 .ui-stat__sub { font-size: var(--fs-xs); color: var(--text-dim); }
 .ui-stat--good .ui-stat__v { color: var(--good); }
@@ -150,8 +151,8 @@
 .ui-kpi--bad { border-left: 3px solid var(--bad); }
 .ui-kpi--info, .ui-kpi--accent { border-left: 3px solid var(--accent); }
 .ui-kpi__label {
-  display: flex; align-items: center; gap: 6px; color: var(--text-faint);
-  font: var(--fw-medium) var(--fs-xs)/var(--lh-tight) var(--font-mono); letter-spacing: .06em; text-transform: uppercase;
+  display: flex; align-items: center; gap: 6px; color: var(--text-dim);
+  font: var(--fw-medium) var(--fs-sm)/var(--lh-tight) var(--font-sans);
 }
 .ui-kpi__hint {
   display: inline-flex; color: var(--text-faint); cursor: help;
@@ -176,6 +177,21 @@
 .ui-deflist dd { margin: 0; color: var(--text); font-variant-numeric: tabular-nums; min-width: 0; overflow-wrap: anywhere; }
 .ui-deflist--dense > div { padding: 3px 0; }
 
+/* ════ Toolbar (a tab's control bar; scrolls with the page) ══════════════ */
+.ui-toolbar {
+  position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2);
+  margin: 0 0 var(--s4); padding: var(--s2) var(--s3); min-width: 0;
+  background: var(--bg-0); border: 1px solid var(--border); border-radius: var(--r-lg);
+  box-shadow: var(--shadow-1);
+}
+.ui-toolbar--plain { margin: 0; padding: 0; background: none; border: 0; box-shadow: none; }
+.ui-toolbar__group { display: inline-flex; flex-wrap: wrap; align-items: center; gap: var(--s2); min-width: 0; }
+.ui-toolbar__label { font: var(--fw-medium) var(--fs-sm)/1.2 var(--font-sans); color: var(--text-dim); white-space: nowrap; }
+.ui-toolbar__text { font-size: var(--fs-sm); color: var(--text-dim); }
+.ui-toolbar__spacer { flex: 1 1 0; min-width: 0; }
+.ui-toolbar__sep { width: 1px; align-self: stretch; margin: 2px 0; background: var(--border); }
+@media (max-width: 899px) { .ui-toolbar:not(.ui-toolbar--plain) { padding: var(--s2); } }
+
 /* ════ Callout / EmptyState / Skeleton / Spinner ═════════════════════════ */
 .ui-callout {
   display: flex; align-items: flex-start; gap: var(--s3); padding: var(--s3) var(--s4);
@@ -183,6 +199,11 @@
   color: var(--text); font-size: var(--fs-md);
 }
 .ui-callout__icon { margin-top: 2px; }
+/* Dense: one line, ~32 px with sm buttons (2 px + 26 px + 2 px + borders). */
+.ui-callout--dense { align-items: center; gap: var(--s2); padding: 2px 2px 2px var(--s3); font-size: var(--fs-sm); }
+.ui-callout--dense .ui-callout__icon { margin-top: 0; flex: none; }
+.ui-callout--dense .ui-callout__body { gap: 0; }
+.ui-callout--dense .ui-callout__action { gap: var(--s1); }
 .ui-callout__body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .ui-callout__title { font-weight: var(--fw-semibold); }
 .ui-callout__text { color: var(--text-dim); }
@@ -244,19 +265,18 @@
 .ui-field--inline > .ui-field__main { flex-direction: row; align-items: center; gap: var(--s2); }
 .ui-field__label {
   display: inline-flex; align-items: center; gap: 4px;
-  font-family: var(--font-mono); font-size: var(--fs-xs); letter-spacing: .06em; color: var(--text-faint); text-transform: uppercase;
+  font: var(--fw-medium) var(--fs-sm)/1.2 var(--font-sans); color: var(--text-dim);
 }
 .ui-field__hintbtn {
   display: inline-flex; align-items: center; color: var(--text-faint); cursor: help; border-radius: 50%;
-  text-transform: none;
 }
 .ui-field__hintbtn:hover { color: var(--accent); }
 .ui-field__hinttext { max-width: 300px; font-size: var(--fs-sm); line-height: var(--lh-base); color: var(--text); }
-.ui-field__hint { font-family: var(--font-sans); font-size: var(--fs-xs); line-height: 1.4; letter-spacing: normal; text-transform: none; color: var(--text-faint); max-width: 240px; }
+.ui-field__hint { font-family: var(--font-sans); font-size: var(--fs-xs); line-height: 1.4; color: var(--text-faint); max-width: 240px; }
 .ui-field__error { font-size: var(--fs-xs); color: var(--bad); }
 
 .ui-input, .ui-select {
-  font: 400 var(--fs-md)/1 var(--font-mono);
+  font: 400 var(--fs-md)/1 var(--font-sans); font-variant-numeric: tabular-nums;
   background: var(--surface-3); color: var(--text);
   border: 1px solid var(--border-strong); border-radius: var(--r-sm);
   height: var(--ctl-h); padding: 0 10px; min-width: 96px;
@@ -325,9 +345,9 @@
 /* Segmented control (toggle group) */
 .ui-seg { display: inline-flex; background: var(--bg-1); border: 1px solid var(--border); border-radius: var(--r-md); padding: 3px; gap: 2px; }
 .ui-seg__item, .ui-seg button {
-  font: var(--fw-medium) var(--fs-sm)/1 var(--font-mono); letter-spacing: .02em;
+  font: var(--fw-medium) var(--fs-sm)/1 var(--font-sans);
   padding: 6px 12px; border: 0; border-radius: 6px; cursor: pointer;
-  background: transparent; color: var(--text-dim); text-transform: lowercase;
+  background: transparent; color: var(--text-dim);
 }
 .ui-seg__item:hover { color: var(--text); }
 .ui-seg__item:disabled { opacity: .45; cursor: not-allowed; }
@@ -341,7 +361,7 @@
 .ui-tabs { display: inline-flex; gap: 4px; flex-wrap: wrap; }
 .ui-tab {
   display: inline-flex; align-items: center; gap: 6px;
-  font: var(--fw-medium) 12.5px/1 var(--font-mono); letter-spacing: .02em;
+  font: var(--fw-medium) var(--fs-md)/1 var(--font-sans);
   padding: 7px 13px; border-radius: var(--r-pill); cursor: pointer; text-decoration: none;
   background: transparent; border: 1px solid transparent; color: var(--text-dim);
 }
@@ -437,7 +457,7 @@
 .ui-menu__chev { color: var(--text-faint); }
 /* plain items line up with checkbox / icon items in the same menu */
 .ui-menu:has(.ui-menu__check) .ui-menu__item:not(:has(.ui-menu__check, .ui-menu__icon)) { padding-left: 30px; }
-.ui-menu__label { padding: 6px 10px 4px; font: var(--fw-medium) var(--fs-2xs)/1 var(--font-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--text-faint); }
+.ui-menu__label { padding: 6px 10px 4px; font: var(--fw-semibold) var(--fs-xs)/1.2 var(--font-sans); color: var(--text-faint); }
 .ui-menu__sep { height: 1px; margin: 4px 2px; background: var(--border); }
 
 .ui-picker { padding: 0; width: max(var(--radix-popover-trigger-width, 220px), 240px); }
@@ -445,7 +465,7 @@
 .ui-picker__search { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--border); color: var(--text-faint); }
 .ui-picker__search input {
   flex: 1; min-width: 0; border: 0; outline: none; background: transparent; color: var(--text);
-  font: var(--fs-md) var(--font-mono);
+  font: var(--fs-md) var(--font-sans);
 }
 .ui-picker__bulk { display: flex; justify-content: space-between; align-items: center; padding: 6px 10px; border-bottom: 1px solid var(--border); font-size: var(--fs-xs); }
 .ui-picker__bulk button { border: 0; background: transparent; color: var(--accent); cursor: pointer; font: inherit; padding: 0; }
@@ -492,8 +512,8 @@
 .ui-table-wrap { overflow-x: auto; }
 .ui-table { width: 100%; border-collapse: collapse; font-size: var(--fs-md); }
 .ui-table th {
-  font: var(--fw-semibold) var(--fs-xs)/1 var(--font-mono); letter-spacing: .05em; text-transform: uppercase;
-  color: var(--text-faint); text-align: left; padding: 8px 12px 8px 0;
+  font: var(--fw-semibold) var(--fs-sm)/1.2 var(--font-sans);
+  color: var(--text-dim); text-align: left; padding: 8px 12px 8px 0;
   border-bottom: 1px solid var(--border-strong); white-space: nowrap;
 }
 .ui-table td {
@@ -527,6 +547,22 @@
   position: relative; overflow: auto; border: 1px solid var(--border); border-radius: var(--r-md);
   background: var(--surface-1); overscroll-behavior: contain;
 }
+/* A table wider than its box: a shade on the edge that has more columns (the
+   overlay scrollbars of macOS hide the sideways scroll otherwise). */
+.ui-dt__frame { position: relative; min-width: 0; }
+.ui-dt__frame::before, .ui-dt__frame::after {
+  content: ""; position: absolute; top: 1px; bottom: 1px; width: 28px; pointer-events: none;
+  z-index: calc(var(--z-sticky) + 1); opacity: 0; transition: opacity var(--dur-fast) var(--ease-standard);
+}
+.ui-dt__frame::before {
+  left: 1px; border-radius: var(--r-md) 0 0 var(--r-md);
+  background: linear-gradient(to right, var(--scroll-shade), transparent);
+}
+.ui-dt__frame::after {
+  right: 1px; border-radius: 0 var(--r-md) var(--r-md) 0;
+  background: linear-gradient(to left, var(--scroll-shade), transparent);
+}
+.ui-dt__frame[data-more-left]::before, .ui-dt__frame[data-more-right]::after { opacity: 1; }
 .ui-dt__table {
   table-layout: fixed; border-collapse: separate; border-spacing: 0; font-size: var(--fs-md);
   outline: none;
@@ -535,14 +571,15 @@
 .ui-dt__table thead th {
   position: sticky; top: 0; z-index: var(--z-sticky);
   height: var(--row-h); padding: 0 10px; text-align: left; white-space: nowrap; overflow: hidden;
-  font: var(--fw-semibold) var(--fs-xs)/1 var(--font-mono); letter-spacing: .05em; text-transform: uppercase;
-  color: var(--text-faint); background: var(--surface-2); border-bottom: 1px solid var(--border-strong);
+  font: var(--fw-semibold) var(--fs-sm)/1.2 var(--font-sans);
+  color: var(--text-dim); background: var(--surface-2); border-bottom: 1px solid var(--border-strong);
 }
 .ui-dt__table td {
   height: var(--row-h); padding: 0 10px; border-bottom: 1px solid var(--border);
   color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; vertical-align: middle;
 }
-.ui-dt__table td.is-num, .ui-dt__table th.is-num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+/* numeric cells are data: tabular mono; a numeric header is a label (UI face) */
+.ui-dt__table td.is-num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 .ui-dt--dense .ui-dt__table td, .ui-dt--dense .ui-dt__table thead th { height: 28px; font-size: var(--fs-sm); }
 .ui-dt__row { cursor: default; scroll-margin-top: 44px; }
 .ui-dt__row:hover td { background: var(--surface-2); }
@@ -557,13 +594,14 @@
 .ui-dt__nil { color: var(--text-faint); }
 .ui-dt__sort {
   display: inline-flex; align-items: center; gap: 4px; max-width: 100%; height: 100%;
-  padding: 0; border: 0; background: transparent; color: inherit; font: inherit; letter-spacing: inherit;
-  text-transform: inherit; text-align: left; cursor: pointer;
+  padding: 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer;
 }
 .ui-dt__sort:hover { color: var(--text); }
 .ui-dt__sort--right { flex-direction: row-reverse; width: 100%; justify-content: flex-start; }
 .ui-dt__hlabel { overflow: hidden; text-overflow: ellipsis; }
 .ui-dt__sorticon { display: inline-flex; align-items: center; gap: 1px; color: var(--accent); min-width: 12px; }
+/* an unsorted column gives the arrow's room to its label */
+.ui-dt__sorticon:empty { display: none; }
 .ui-dt__sortn { font-size: 9px; }
 
 /* ════ Log / JSON ════════════════════════════════════════════════════════ */
@@ -574,7 +612,7 @@
 }
 .ui-log { position: relative; display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--bg-1); min-width: 0; }
 .ui-log__bar { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; padding: 5px 6px; border-bottom: 1px solid var(--border); }
-.ui-log__title { font: var(--fw-medium) var(--fs-xs) var(--font-mono); color: var(--text-dim); margin: 0 6px 0 4px; }
+.ui-log__title { font: var(--fw-medium) var(--fs-sm) var(--font-sans); color: var(--text-dim); margin: 0 6px 0 4px; }
 .ui-log__search { width: 200px; }
 .ui-log__count { font-size: var(--fs-xs); color: var(--text-faint); padding: 0 4px; }
 .ui-log__spacer { flex: 1; }
@@ -590,7 +628,7 @@
 .ui-log__jump {
   position: absolute; right: 14px; bottom: 10px; padding: 4px 10px; border-radius: var(--r-pill);
   border: 1px solid var(--accent); background: var(--surface-1); color: var(--accent); cursor: pointer;
-  font: var(--fw-medium) var(--fs-xs) var(--font-mono); box-shadow: var(--shadow-2);
+  font: var(--fw-medium) var(--fs-sm) var(--font-sans); box-shadow: var(--shadow-2);
 }
 
 .ui-json { list-style: none; margin: 0; padding: 0; font: var(--fs-sm)/1.55 var(--font-mono); color: var(--text); }
@@ -619,24 +657,27 @@
 .ui-figure__bar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .ui-figure__download { margin-left: auto; text-decoration: none; }
 /* Server-rendered matplotlib figures are drawn on white; keep the inset
-   paper-white in both themes (a deliberate, theme-independent surface). */
+   paper-white in both themes (--paper: a deliberate, theme-independent surface). */
 .ui-figure__paper {
-  background: #fff; border: 1px solid var(--border); border-radius: var(--r-md);
+  background: var(--paper); border: 1px solid var(--border); border-radius: var(--r-md);
   padding: var(--s3); display: flex; align-items: center; justify-content: center;
   box-shadow: var(--shadow-1); overflow: auto;
 }
 .ui-figure__paper img { max-width: 100%; height: auto; display: block; }
 
 .ui-gallery { display: grid; gap: var(--s2); }
+/* The cell is a themed surface (its caption reads in both themes); only the
+   image sits on the neutral dark --image-ink backing. */
 .ui-gallery__cell {
   border: 1px solid var(--border); border-radius: var(--r-sm); overflow: hidden;
-  background: #fff; display: block; padding: 0; cursor: pointer; text-align: left;
+  background: var(--surface-1); color: var(--text); font: inherit;
+  display: block; padding: 0; cursor: pointer; text-align: left;
   transition: border-color var(--dur-fast), transform var(--dur-instant);
 }
 .ui-gallery__cell:hover { border-color: var(--accent); }
 .ui-gallery__cell:active { transform: translateY(1px); }
-.ui-gallery__cell img { width: 100%; aspect-ratio: 1 / 1; object-fit: contain; display: block; background: #05070d; }
-.ui-gallery__cap { display: block; font-size: 10.5px; padding: 3px 6px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ui-gallery__cell img { width: 100%; aspect-ratio: 1 / 1; object-fit: contain; display: block; background: var(--image-ink); }
+.ui-gallery__cap { display: block; font-size: var(--fs-xs); line-height: 1.4; padding: 4px 6px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ════ Local job progress panel (JobProgress.tsx) ════════════════════════ */
 .job-panel {

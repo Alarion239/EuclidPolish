@@ -2,7 +2,9 @@
    definition (production spatial gate, plain mean, best member, knee-
    integrated), the staleness checks with their fix, and the run actions —
    evaluate (optionally forced), refresh member PSNR, PSNR vs knee, and a
-   FASRC pull with a member picker (probe first, then pull what you pick). */
+   FASRC pull with a member picker (probe first, then pull what you pick).
+   "Log to tracking" opens the Evaluate summary as an editable notebook entry
+   (../notes.ts evaluationNote). */
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useJob, type Job } from "../../../api/jobs";
@@ -20,6 +22,8 @@ import { useMembers, useMode, useOverview, type Check, type Mode, type Overview 
 import { BarGroup, EnsBar, LoadState } from "../common";
 import { JOB, useOnJobEnd } from "../jobs";
 import { db, dbDelta, deltaTone, memberNumber, parseMemberList } from "../model";
+import { evaluationNote } from "../notes";
+import { LogToTrackingButton } from "../../shared/LogToTracking";
 import "../ensemble.css";
 
 const tabPath = (mode: Mode, tab: string) => pagePath("ensemble", { tab, params: { mode } });
@@ -229,6 +233,8 @@ export default function Overview() {
         <Button size="sm" loading={psnrJob.busy} onClick={run.psnr}>Member PSNR</Button>
         <Button size="sm" loading={kneeJob.busy} onClick={run.knee}>Knee PSNR</Button>
         <span className="ens-bar__spacer" />
+        <LogToTrackingButton disabled={!o} note={() => (o ? evaluationNote(o, mode) : "")}
+          title="Append the Evaluate summary to the tracking notebook (you edit it first)" />
         <Tooltip content={fasrc && !fasrc.ssh_connected ? `FASRC offline: ${fasrc.last_error ?? "not connected"}` : "Check FASRC and pull changed members"}>
           <span><Button size="sm" icon="download" onClick={() => setPullOpen(true)}>Pull…</Button></span>
         </Tooltip>

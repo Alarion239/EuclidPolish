@@ -90,6 +90,11 @@ export function HealthList({ data, loading, error }: {
 }
 
 const isScalar = (v: unknown) => v == null || ["string", "number", "boolean"].includes(typeof v);
+/** A fact key as a sentence-case label ("ssh_connected" → "Ssh connected"). */
+const factLabel = (key: string) => {
+  const words = key.replace(/_/g, " ");
+  return words.charAt(0).toUpperCase() + words.slice(1);
+};
 const factValue = (key: string, v: unknown) =>
   typeof v === "number" && /bytes$/.test(key) ? formatBytes(v)
     : typeof v === "string" && /(_at|_entry)$/.test(key) ? `${formatDateTime(v)} (${formatRelative(v)})`
@@ -110,10 +115,10 @@ export function CheckInspector({ id }: { id: string }) {
       <Callout tone={STATE_TONE[check.state] === "neutral" ? "info" : STATE_TONE[check.state]} title={check.title}>
         {check.detail}
       </Callout>
-      {scalars.length > 0 && <DefList dense items={scalars.map(([k, v]) => [k.replace(/_/g, " "), factValue(k, v)])} />}
+      {scalars.length > 0 && <DefList dense items={scalars.map(([k, v]) => [factLabel(k), factValue(k, v)])} />}
       {nested.map(([k, v]) => (
         <div key={k}>
-          <div className="eyebrow">{k.replace(/_/g, " ")}</div>
+          <div className="eyebrow">{factLabel(k)}</div>
           <JsonTree data={v} expandDepth={2} />
         </div>
       ))}

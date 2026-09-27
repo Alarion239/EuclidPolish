@@ -1,6 +1,10 @@
 /* Layout primitives: Card (+CardHead/CardBody), Section, and the compat
    Page/PageHead used by the pre-rework pages (workspace tabs use the shell's
-   header instead; WP-F3). */
+   header instead; WP-F3).
+
+   Headings: the page's one h1 is the workspace's visually hidden heading
+   (<Workspace>, "Records, Data"); a CardHead title is an h2, a Section title
+   an h3, a PageHead title an h2 — each keeps its own look. */
 import { useId, useState, type CSSProperties, type ReactNode } from "react";
 import { Icon } from "./icons";
 import { cx } from "./slot";
@@ -20,7 +24,7 @@ export function CardHead(
     <header className={cx("ui-card__head", className)}>
       <div className="ui-card__heading">
         {eyebrow != null && <div className="eyebrow">{eyebrow}</div>}
-        <div className="ui-card__title">{title}</div>
+        <h2 className="ui-card__title">{title}</h2>
         {sub && <div className="ui-card__sub">{sub}</div>}
       </div>
       <div className="ui-card__spacer" />
@@ -52,12 +56,14 @@ export function Section(
     <section className={cx("ui-section", className)} id={id} data-open={open}>
       <header className="ui-section__head">
         {collapsible ? (
-          <button type="button" className="ui-section__toggle" aria-expanded={open}
-            aria-controls={open ? bodyId : undefined}
-            onClick={() => setOpen(!open)}>
-            <Icon name={open ? "chevronDown" : "chevronRight"} size={14} />
-            <span className="ui-section__title">{title}</span>
-          </button>
+          <h3 className="ui-section__heading">
+            <button type="button" className="ui-section__toggle" aria-expanded={open}
+              aria-controls={open ? bodyId : undefined}
+              onClick={() => setOpen(!open)}>
+              <Icon name={open ? "chevronDown" : "chevronRight"} size={14} />
+              <span className="ui-section__title">{title}</span>
+            </button>
+          </h3>
         ) : <h3 className="ui-section__title">{title}</h3>}
         {sub != null && <span className="ui-section__sub">{sub}</span>}
         <span className="ui-section__spacer" />
@@ -74,15 +80,17 @@ export function Page({ children, className, style }: Box) {
   return <div className={cx("page", className)} style={style}>{children}</div>;
 }
 
+/** A page's visible title row. The title is an h2 (the page's h1 is the
+ *  workspace's hidden heading). `eyebrow` is accepted for old callers and
+ *  not drawn: the breadcrumbs and the active tab already say where you are. */
 export function PageHead(
-  { eyebrow, title, sub, right }:
-  { eyebrow?: ReactNode; title: ReactNode; sub?: ReactNode; right?: ReactNode },
+  { title, sub, right }:
+  { /** @deprecated ignored (not drawn). */ eyebrow?: ReactNode; title: ReactNode; sub?: ReactNode; right?: ReactNode },
 ) {
   return (
     <header className="page__head">
       <div>
-        {eyebrow && <div className="eyebrow">{eyebrow}</div>}
-        <h1 className="page__title">{title}</h1>
+        <h2 className="page__title">{title}</h2>
         {sub && <div className="page__sub">{sub}</div>}
       </div>
       {right && <><div className="page__spacer" />{right}</>}

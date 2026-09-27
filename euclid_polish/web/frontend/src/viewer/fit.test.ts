@@ -27,10 +27,34 @@ describe("columnsFor", () => {
   it("auto: three frames on a 792 × 644 stage go 2 + 1 (321 px) rather than one row (262 px)", () => {
     expect(columnsFor("auto", 3, 792, 644)).toBe(2);
   });
-  it("auto: three frames stay in one row unless a grid makes them ≥ 8 % larger (no empty cell for a few px)", () => {
-    // Disagreement at 720 × 720: one row 216 px, 2 + 1 would be 228 px (+5.6 %)
+  it("auto: one row wins when its side is within 2 % of the largest", () => {
+    // two frames in 600 × 610: one row 299 px, a stack 304 px (299 ≥ 0.98 · 304)
+    expect(columnsFor("auto", 2, 600, 610)).toBe(2);
+    // …and a grid clearly larger with no empty cell wins: 4 frames in 1000 × 700 (see above)
+  });
+  it("auto: an empty cell costs 6 % — a 2 + 1 grid must beat one row by more than that", () => {
+    // Disagreement at 720 × 720: 654 × 458, one row 216 px, 2 + 1 228 px (+5.6 %) → one row
     expect(columnsFor("auto", 3, 654, 458)).toBe(3);
     expect(fitFrames({ n: 3, width: 654, height: 458, mode: "auto" }).side).toBe(216);
+    // Experiments at 1024 × 768 (review): 728 × 500, one row 241 px, 2 + 1 249 px (+3 %) → one row
+    expect(sideFor(3, 3, 728, 500)).toBe(241);
+    expect(sideFor(3, 2, 728, 500)).toBe(249);
+    expect(columnsFor("auto", 3, 728, 500)).toBe(3);
+    // a much larger 2 + 1 still wins: 728 × 560, one row 241, 2 + 1 279 (+16 %)
+    expect(columnsFor("auto", 3, 728, 560)).toBe(2);
+    // a grid with no empty cell pays nothing (4 frames, 2 × 2)
+    expect(columnsFor("auto", 4, 1000, 700)).toBe(2);
+  });
+  it("auto: a layout whose rows do not fit the height (the minimum side) loses to one that fits", () => {
+    // 3 frames in 700 × 300: one row 232 px fits; 2 + 1 would be raised to the
+    // 160 px minimum and its second row would end at 322 > 300 (below the fold)
+    expect(columnsFor("auto", 3, 700, 300)).toBe(3);
+    // 2 frames in 400 × 300: a stack (149 → 160 px, 322 px tall) does not fit, one row (199 px) does
+    expect(columnsFor("auto", 2, 400, 300)).toBe(2);
+  });
+  it("auto: near-ties (within 2 %) go to the fewest empty cells, then to more columns", () => {
+    // 3 frames in 600 × 900: 2 + 1 is 299 px (one empty cell), a stack 298 px (none)
+    expect(columnsFor("auto", 3, 600, 900)).toBe(1);
   });
   it("auto: fewer columns only when the frames get clearly larger", () => {
     // 3 frames in 900 × 450: one row 298 px; 2 + 1 min(449, 224) = 224 → one row
@@ -77,15 +101,30 @@ describe("heightUnderTop", () => {
     expect(heightUnderTop({ viewport: 720, chrome: 65 })).toBe(availableHeight(720, 65));
     expect(heightUnderTop({ viewport: 720, chrome: 65, lead: 0 })).toBe(647);
   });
-  it("a viewer far down a page fits the whole viewport (you scroll to it)", () => {
-    // 647 px full; 330 px lead leaves 317 < half of it → the full height
-    expect(heightUnderTop({ viewport: 720, chrome: 65, lead: 330 })).toBe(647);
-    expect(heightUnderTop({ viewport: 720, chrome: 65, lead: 320 })).toBe(327);
-    // never below the minimum side
+  it("keeps fitting under the top however far down the viewer starts, down to the minimum side", () => {
+    // 647 px full; a 330 px lead leaves 317 px (no fallback to the whole viewport)
+    expect(heightUnderTop({ viewport: 720, chrome: 65, lead: 330 })).toBe(317);
+    expect(heightUnderTop({ viewport: 720, chrome: 65, lead: 480 })).toBe(167);
+    // clamped by the minimum side
+    expect(heightUnderTop({ viewport: 720, chrome: 65, lead: 490 })).toBe(160);
+  });
+  it("a viewer that starts below the first screen fits the whole viewport (it is scrolled to)", () => {
+    // not even a minimum frame is in sight under its top
+    expect(heightUnderTop({ viewport: 720, chrome: 65, lead: 720 })).toBe(647);
+    expect(heightUnderTop({ viewport: 720, chrome: 65, lead: 1500 })).toBe(647);
     expect(heightUnderTop({ viewport: 300, chrome: 65, lead: 100 })).toBe(227);
   });
   it("a fractional lead rounds up (the readout never ends a pixel under the fold)", () => {
     expect(heightUnderTop({ viewport: 720, chrome: 95, lead: 109.2 })).toBe(507);
+  });
+  it("the Disagreement case of the review: 3 frames under a 110 px lead end inside the 720 px stage", () => {
+    const height = heightUnderTop({ viewport: 720, chrome: 67 + 28, lead: 110 });
+    const f = fitFrames({ n: 3, width: 728, height, mode: "auto" });
+    const bottom = 48 + 110 + 67 + f.rows * f.side + (f.rows - 1) * 2 + 28;
+    expect(bottom).toBeLessThanOrEqual(768);
+    // Cutouts at 1280 × 800: one frame under a 131 px lead, bar 37 + readout 28 in a 752 px stage
+    const one = fitFrames({ n: 1, width: 1000, height: heightUnderTop({ viewport: 752, chrome: 65, lead: 131 }), mode: "auto" });
+    expect(48 + 131 + 37 + one.side + 28).toBeLessThanOrEqual(800);
   });
 });
 

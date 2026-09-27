@@ -25,8 +25,9 @@ export type RenderSpec = {
   scale: ColorScale;
   lod: Lod;
   markerScale: number;
-  /** Coverage MOCs: fill the area (zoomed out), else only its outline, so the
-   *  imagery inside the covered sky keeps a neutral colour (specs.ts). */
+  /** Coverage layers (MOCs, the Q1 fields and tiles): fill the area (zoomed
+   *  out, or a fill the user set), else only its outline, so the imagery inside
+   *  the covered sky keeps a neutral colour (specs.ts `coverageFill`). */
   fill?: boolean;
 };
 
@@ -55,7 +56,7 @@ export function scaleSignature(s: ColorScale): string {
 }
 
 export function specSignature(s: RenderSpec): string {
-  return [s.dataVersion, scaleSignature(s.scale), s.opacity.toFixed(3), s.lod, s.markerScale.toFixed(2)].join("|");
+  return [s.dataVersion, scaleSignature(s.scale), s.opacity.toFixed(3), s.lod, s.markerScale.toFixed(2), s.fill === false ? "outline" : "fill"].join("|");
 }
 
 export class LayerRenderer {
@@ -228,12 +229,13 @@ export class LayerRenderer {
     const p = this.palette();
     const o = A.graphicOverlay({ name: s.info.label, lineWidth: 1.5 });
     al.addOverlay(o);
-    // Coverage shapes (Q1 tiles, deep fields) are large: a light tint keeps the imagery readable.
+    // Coverage shapes (Q1 tiles, deep fields) are large: a light tint keeps the
+    // imagery readable, and none at all when zoomed in (s.fill false).
     const fillAlpha = s.info.group === "coverage" ? COVERAGE_FILL : SHAPE_FILL;
     for (const f of s.features) {
       const c = colorOf(s.scale, f.props);
       const opts = {
-        color: c, fillColor: withAlpha(c, fillAlpha), fill: true, opacity: s.opacity, lineWidth: 1.5,
+        color: c, fillColor: withAlpha(c, fillAlpha), fill: s.fill !== false, opacity: s.opacity, lineWidth: 1.5,
         hoverColor: p.hover, selectionColor: p.select,
       };
       const shape = f.polygon

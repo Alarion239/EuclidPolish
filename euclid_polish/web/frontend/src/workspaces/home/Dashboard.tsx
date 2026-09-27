@@ -6,7 +6,9 @@
  * PSNR from eval_summary.json's spatial_gate_* keys (/ensemble/status.json),
  * the active STARFULL member count from the regime labels (/api/models).
  * Health checks: /api/system/alerts (routes/system.py); free space:
- * /api/system. */
+ * /api/system. Quick actions › Log to tracking opens the shared dialog
+ * pre-filled from the tracking check's unlogged results (homeModel.ts). */
+import { useState } from "react";
 import { Link } from "react-router-dom";
 import { useJobsFeed } from "../../api/jobs";
 import { invalidate, useResource } from "../../api/query";
@@ -14,12 +16,15 @@ import { registerInspector } from "../../app/inspector";
 import { JobList, SlurmRow } from "../../app/JobTray";
 import { usePageActions } from "../../app/palette";
 import { refreshHealth, useRunJobs } from "../../app/RunActions";
-import { useFasrcStatus, useSystemAlerts, useVersion } from "../../app/status";
+import { useConsoleUpdate, useFasrcStatus, useSystemAlerts, useVersion } from "../../app/status";
 import { formatBytes, formatCount, formatNumber, formatRelative } from "../../format";
-import { Badge, Button, Card, CardBody, CardHead, IconButton, Kpi, Page, PageHead, type Tone } from "../../ui";
+import { Badge, Button, Card, CardBody, CardHead, IconButton, Kpi, Page, type Tone } from "../../ui";
+import { LogToTrackingDialog } from "../shared/LogToTracking";
+import { PageLead } from "../shared/PageLead";
+import { serverCodeText } from "../shared/versionText";
 import { CheckInspector, HealthList } from "./Health";
 import {
-  kneeHeadline, productionFromStatus, productionHeadline, productionModel, starfullMembers,
+  kneeHeadline, productionFromStatus, productionHeadline, productionModel, starfullMembers, trackingCatchUpNote, unloggedItems,
   type EnsembleStatusSlice, type KneePayload, type ModelsCatalog, type ProductionPayload,
 } from "./homeModel";
 import { SkyOverview } from "./SkyOverview";
@@ -61,6 +66,8 @@ export default function Dashboard() {
   const models = useResource<ModelsCatalog>("/api/models", [], { ttl: 60_000 });
   const knee = useResource<KneePayload>("/ensemble/knee-psnr.json?mode=starfull", [], { ttl: 60_000 });
   const run = useRunJobs();
+  const consoleUpdated = useConsoleUpdate();
+  const [logOpen, setLogOpen] = useState(false);
 
   const refreshAll = () => {
     void refreshHealth();
@@ -68,6 +75,7 @@ export default function Dashboard() {
   };
   usePageActions([
     { id: "home:refresh", label: "Refresh Home", group: "Home", keywords: ["reload", "health", "kpi"], run: refreshAll },
+    { id: "home:log", label: "Log the unlogged results to tracking…", group: "Home", keywords: ["notebook", "tracking"], run: () => setLogOpen(true) },
   ]);
 
   const v = version.data;
@@ -77,6 +85,9 @@ export default function Dashboard() {
   const production = productionModel(models.data);
   const disk = system.data?.disk;
   const alertCount = alerts.data?.alerts.length ?? 0;
+  const trackingCheck = alerts.data?.checks.find((c) => c.id === "tracking");
+  const unlogged = unloggedItems(trackingCheck).length;
+  const code = v ? serverCodeText(v, consoleUpdated) : null;
 
   const kneeValue = kh?.gate ?? kh?.mean ?? null;
   const kneeDelta = kh?.best && kh.vsBest != null ? `${dbSigned(kh.vsBest)} dB vs ${kh.best.name.replace("member_", "member ")}` : undefined;
@@ -98,17 +109,18 @@ export default function Dashboard() {
 
   return (
     <Page className="home">
-      <PageHead eyebrow="console" title="Home" sub="The production model, health checks and running work."
-        right={(
-          <div className="home__head-right">
-            {alerts.data && (
-              <Badge tone={alertCount ? (alerts.data.counts.bad ? "bad" : "warn") : "good"} dot>
-                {alertCount ? `${alertCount} alert${alertCount === 1 ? "" : "s"}` : "all clear"}
-              </Badge>
-            )}
-            <IconButton icon="reset" label="Refresh Home" onClick={refreshAll} />
-          </div>
-        )} />
+      <PageLead right={(
+        <>
+          {alerts.data && (
+            <Badge tone={alertCount ? (alerts.data.counts.bad ? "bad" : "warn") : "good"} dot>
+              {alertCount ? `${alertCount} alert${alertCount === 1 ? "" : "s"}` : "all clear"}
+            </Badge>
+          )}
+          <IconButton icon="reset" label="Refresh Home" onClick={refreshAll} />
+        </>
+      )}>
+        The production model, health checks and running work.
+      </PageLead>
 
       <div className="home__kpis" role="group" aria-label="Production model">
         <Kpi label={kh?.gate == null && kh ? "∫PSNR · plain mean" : "∫PSNR · production gate"} icon="layers"
@@ -136,14 +148,14 @@ export default function Dashboard() {
           value={formatCount(feed.runningCount)}
           footer={feed.fasrcOffline ? "local only · FASRC offline" : `${feed.running.length} local · ${feed.slurm.length} SLURM`} />
         <Kpi label="FASRC" icon="server" to="/settings/connections" loading={fasrc.loading && !fasrc.data}
-          value={fasrc.data?.ssh_connected ? "connected" : "offline"}
+          value={fasrc.data?.ssh_connected ? "Connected" : "Offline"}
           tone={fasrc.data?.ssh_connected ? "good" : "neutral"}
           footer={fasrc.data?.ssh_connected ? "SSH ControlMaster up" : (fasrc.data?.last_error ?? "local pages still work")} />
         <Kpi label="Server" icon="info" to="/settings/about" loading={version.loading && !v}
-          value={v?.boot_short ?? "—"} tone={v?.behind ? "warn" : "neutral"}
-          delta={v ? (v.behind ? `HEAD ${v.head_short} — restart` : "at HEAD") : undefined}
-          deltaTone={v?.behind ? "warn" : "good"}
-          footer={v?.started_at ? `started ${formatRelative(v.started_at)}${v.dirty ? " · dirty tree" : ""}` : undefined} />
+          value={v?.boot_short ?? "—"} tone={code?.title ? "warn" : "neutral"}
+          delta={code?.badge} deltaTone={code?.tone}
+          hint="The commit the server started from. Backend code that changed on disk since then needs a server restart; a new console build only a page reload."
+          footer={code?.title ?? (v?.started_at ? `started ${formatRelative(v.started_at)}${v.dirty ? " · uncommitted changes" : ""}` : undefined)} />
         <Kpi label="Free disk" icon="database" to="/settings/about" loading={system.loading && !disk}
           value={disk ? formatBytes(disk.free_bytes) : "—"} tone={disk ? LEVEL_TONE[disk.level] : undefined}
           delta={disk && disk.level !== "ok" ? (disk.level === "bad" ? "critically low" : "low") : undefined}
@@ -185,7 +197,10 @@ export default function Dashboard() {
                 <Button asChild size="sm"><Link to="/ensemble/starfull/combiners">Fit a gate…</Link></Button>
                 <Button asChild size="sm"><Link to="/sky/experiments">Real-tile experiments</Link></Button>
                 <Button asChild size="sm"><Link to="/ensemble/starfull/train">Train members</Link></Button>
-                <Button asChild size="sm" variant="ghost"><Link to="/ops/tracking">Log to tracking</Link></Button>
+                <Button size="sm" variant="ghost" icon="pin" onClick={() => setLogOpen(true)}
+                  title={unlogged ? `${unlogged} result${unlogged === 1 ? "" : "s"} since the last notebook entry` : "Append a note to the tracking notebook"}>
+                  Log to tracking{unlogged ? ` (${unlogged})` : ""}
+                </Button>
               </div>
             </CardBody>
           </Card>
@@ -196,6 +211,8 @@ export default function Dashboard() {
           </Card>
         </div>
       </div>
+      <LogToTrackingDialog open={logOpen} onOpenChange={setLogOpen}
+        note={() => trackingCatchUpNote(trackingCheck, { knee: kh, prod, members: members?.count ?? null, production })} />
     </Page>
   );
 }

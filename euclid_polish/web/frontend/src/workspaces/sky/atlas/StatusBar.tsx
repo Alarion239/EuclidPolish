@@ -29,7 +29,7 @@ export function StatusBar({ url }: { url: AtlasUrl }) {
   return (
     <div className="sky-status" role="group" aria-label="Sky status">
       <span className="sky-status__pos mono" aria-live="off">
-        <span className="sky-status__k">{cursor ? "cursor" : "centre"}</span>
+        <span className="sky-status__k">{cursor ? "Cursor" : "Centre"}</span>
         {pos ? (
           gal ? (
             <span>l {formatDeg(gal[0], 4)} b {formatDeg(gal[1], 4, { signed: true })}</span>
@@ -48,7 +48,7 @@ export function StatusBar({ url }: { url: AtlasUrl }) {
         options={PROJECTIONS.map((p) => ({ value: p, label: p, title: PROJ_TITLE[p] }))} />
       <Tooltip content={`${survey.label} value under the cursor${survey.format === "fits" ? " (FITS tiles: HiPS units)" : " (RGB tiles)"}`}>
         <span className="sky-status__item" tabIndex={0}>
-          <span className="sky-status__k">pixel</span> <span className="mono">{cursor ? formatPixel(pixel) : "—"}</span>
+          <span className="sky-status__k">Pixel</span> <span className="mono">{cursor ? formatPixel(pixel) : "—"}</span>
         </span>
       </Tooltip>
     </div>

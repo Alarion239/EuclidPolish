@@ -135,36 +135,73 @@ export function sequencePending(prev: { key: string; t: number } | null, now: nu
   return !!prev && prev.key === "g" && now - prev.t >= 0 && now - prev.t < windowMs;
 }
 
-export type BarItem = { width: number; row: 1 | 2 };
-/** rows: one or two; compact: the button texts hidden; wrap: the rows too
- *  wide even icon-only (a viewer of ~300 px beside the inspector, a phone):
- *  they wrap onto another line. No control is ever cut off or scrolled out
- *  of sight; the bar only takes more than two lines at those widths. */
-export type BarLayout = { rows: 1 | 2; compact: boolean; wrap: (1 | 2)[] };
+export type BarItem = {
+  width: number;
+  row: 1 | 2;
+  /** The group's id (Bar.tsx `data-g`): what `overflow` / `collapsed` name. */
+  id?: string;
+  /** May move into the bar's More menu in a narrow viewer; lower goes first. */
+  overflow?: number;
+  /** Its width when collapsed (the band chips become one select). */
+  shrink?: number;
+};
+/** rows: one or two; compact: the button texts hidden; overflow: the groups
+ *  moved into the More menu (a narrow viewer, 300–480 px); collapsed: the
+ *  groups drawn collapsed (the band chips as one select); wrap: the rows
+ *  still too wide (below ~300 px) — they wrap onto another line. No control
+ *  is ever cut off or scrolled out of sight. */
+export type BarLayout = { rows: 1 | 2; compact: boolean; wrap: (1 | 2)[]; overflow: string[]; collapsed: string[] };
 
 /** How the bar lays out: ONE row when every item fits (with the Display
  *  text, else icon-only); otherwise two rows — what is shown (tiers, bands)
  *  above how it is shown — with the text unless the second row only fits
- *  icon-only; a row that does not fit even then wraps. `textWidth` is the
- *  width the second row's button texts take when shown. */
-export function barLayout(o: { items: readonly BarItem[]; textWidth: number; gap: number; available: number }): BarLayout {
+ *  icon-only. When a row does not fit even then (a narrow viewer: the
+ *  inspector panel, the bottom sheet), the first row collapses its band
+ *  chips into a select, then its tier chips to the selected ones (the tier
+ *  menu has the rest), and the second moves its rarely used groups into a
+ *  More menu (`moreWidth`), lowest `overflow` rank first, until it fits;
+ *  only what still does not fit wraps. `textWidth` is the width the second
+ *  row's button texts take when shown. */
+export function barLayout(o: { items: readonly BarItem[]; textWidth: number; gap: number; available: number; moreWidth?: number }): BarLayout {
   const { items, gap, available } = o;
-  if (!(available > 0) || !items.length) return { rows: 1, compact: false, wrap: [] };
+  const done = (rows: 1 | 2, compact: boolean, wrap: (1 | 2)[] = [], overflow: string[] = [], collapsed: string[] = []): BarLayout =>
+    ({ rows, compact, wrap, overflow, collapsed });
+  if (!(available > 0) || !items.length) return done(1, false);
   const span = (list: readonly BarItem[]) => list.reduce((s, it) => s + it.width, 0) + gap * Math.max(0, list.length - 1);
   const all = span(items);
-  if (all <= available) return { rows: 1, compact: false, wrap: [] };
-  if (all - o.textWidth <= available) return { rows: 1, compact: true, wrap: [] };
-  const first = span(items.filter((it) => it.row === 1));
-  const second = span(items.filter((it) => it.row === 2));
-  const compact = second > available;
+  if (all <= available) return done(1, false);
+  if (all - o.textWidth <= available) return done(1, true);
+  const row1 = items.filter((it) => it.row === 1);
+  const row2 = items.filter((it) => it.row === 2);
+  const compact = span(row2) > available;
+  let first = span(row1);
+  let second = compact ? span(row2) - o.textWidth : span(row2);
+  const collapsed: string[] = [];
+  const overflow: string[] = [];
+  // the first row collapses from its end (the band chips, then the tier chips)
+  for (const it of [...row1].reverse()) {
+    if (first <= available) break;
+    if (it.id && it.shrink != null && it.shrink < it.width) { collapsed.push(it.id); first -= it.width - it.shrink; }
+  }
+  if (second > available) {
+    const movable = row2.filter((it) => it.id && it.overflow != null).sort((a, b) => (a.overflow as number) - (b.overflow as number));
+    const more = Math.max(0, o.moreWidth ?? 28);
+    for (const it of movable) {
+      if (second <= available) break;
+      second -= it.width + gap;
+      if (!overflow.length) second += more + gap;
+      overflow.push(it.id as string);
+    }
+  }
   const wrap: (1 | 2)[] = [];
   if (first > available) wrap.push(1);
-  if ((compact ? second - o.textWidth : second) > available) wrap.push(2);
-  return { rows: 2, compact, wrap };
+  if (second > available) wrap.push(2);
+  return done(2, compact, wrap, overflow, collapsed);
 }
 
 export function sameBarLayout(a: BarLayout, b: BarLayout): boolean {
-  return a.rows === b.rows && a.compact === b.compact && a.wrap.join() === b.wrap.join();
+  return a.rows === b.rows && a.compact === b.compact && a.wrap.join() === b.wrap.join()
+    && a.overflow.join() === b.overflow.join() && a.collapsed.join() === b.collapsed.join();
 }
 
 /** Height reserved for the bar before the meta arrives, so nothing below it
@@ -214,4 +251,28 @@ export function navPosition(index: number, count: number): { position: string; t
 export function parsePosition(text: string): number | null {
   const v = parseNumber(text);
   return v == null ? null : Math.round(v) - 1;
+}
+
+/** The two shapes of "More display settings" (css px, measured at 1024 × 768):
+ *  one column, or two columns (wide and short). */
+export const MORE_SHAPES = { narrow: { w: 340, h: 340 }, wide: { w: 600, h: 240 } } as const;
+export type Box = { left: number; top: number; right: number; bottom: number };
+
+/** Which shape of "More display settings" hides less of the frames: the
+ *  popover opens under its trigger (`anchor`), aligned to the trigger's
+ *  right edge, inside the viewport (8 px of padding). The frames are the
+ *  on-screen frame rectangles. Ties go to the narrow one. */
+export function moreShape(frames: readonly Box[], anchor: Box, viewportWidth: number): "narrow" | "wide" {
+  const covered = (w: number, h: number) => {
+    const right = Math.min(anchor.right, viewportWidth - 8);
+    const box = { left: Math.max(8, right - w), top: anchor.bottom + 6, right, bottom: anchor.bottom + 6 + h };
+    return frames.reduce((sum, f) => {
+      const x = Math.max(0, Math.min(f.right, box.right) - Math.max(f.left, box.left));
+      const y = Math.max(0, Math.min(f.bottom, box.bottom) - Math.max(f.top, box.top));
+      return sum + x * y;
+    }, 0);
+  };
+  const n = covered(MORE_SHAPES.narrow.w, MORE_SHAPES.narrow.h);
+  const w = covered(MORE_SHAPES.wide.w, MORE_SHAPES.wide.h);
+  return w < n ? "wide" : "narrow";
 }

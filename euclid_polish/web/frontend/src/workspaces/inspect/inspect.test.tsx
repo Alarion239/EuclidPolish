@@ -197,6 +197,12 @@ describe("a file", () => {
     const sky = screen.getAllByRole("link", { name: /Show on sky/ });
     expect(sky.length).toBe(2);                     // the file bar + the Sky card
     for (const link of sky) expect(link.getAttribute("href")).toMatch(/^\/sky\/atlas\?ra=150\.000000&dec=2\.000000&fov=/);
+    // the page's HDU picker is labelled as what it is (not a copy of the viewer's chips): the name first
+    const pick = screen.getByRole("combobox", { name: "HDU for the header, table and statistics" });
+    expect(pick.textContent).toContain("PRIMARY (HDU 0)");
+    // a crumb keeps its whole name for assistive tech while its middle may give way
+    const crumbs = screen.getByRole("navigation", { name: "File location" });
+    expect(within(crumbs).getAllByRole("button").map((b) => b.getAttribute("aria-label"))).toContain("Evaluation results");
   });
 
   it("switches to the table HDU and pages on the server", async () => {

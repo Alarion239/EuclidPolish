@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   BAR_ROWS_STORAGE_KEY, bandLabel, barLayout, navPosition, parsePosition, rememberBarRows, reservedBarRows, chipTiers, colourOptions, formatSig, groupUnit, isSinglePlane, parseNumber, sameBarLayout, sentenceLabel, sequencePending, shortTierLabel, plainLabel, readoutTierName,
 } from "./barModel";
+import { moreShape } from "./barModel";
 
 describe("shortTierLabel", () => {
   it("keeps the name before the detail", () => {
@@ -107,30 +108,33 @@ describe("sequencePending", () => {
 describe("barLayout", () => {
   const items = (w1: number[], w2: number[]) => [...w1.map((width) => ({ width, row: 1 as const })), ...w2.map((width) => ({ width, row: 2 as const }))];
   it("one row with the texts when everything fits", () => {
-    expect(barLayout({ items: items([200, 190], [96, 92, 86, 82, 160, 82]), textWidth: 110, gap: 8, available: 1100 })).toEqual({ rows: 1, compact: false, wrap: [] });
+    expect(barLayout({ items: items([200, 190], [96, 92, 86, 82, 160, 82]), textWidth: 110, gap: 8, available: 1100 })).toEqual({ rows: 1, compact: false, wrap: [], overflow: [], collapsed: [] });
   });
   it("one row icon-only when only the texts overflow (1280 px window)", () => {
     // 988 + 64 gaps = 1052 > 1000; without the 110 px of text: 942
-    expect(barLayout({ items: items([200, 190], [96, 92, 86, 82, 160, 82]), textWidth: 110, gap: 8, available: 1000 })).toEqual({ rows: 1, compact: true, wrap: [] });
+    expect(barLayout({ items: items([200, 190], [96, 92, 86, 82, 160, 82]), textWidth: 110, gap: 8, available: 1000 })).toEqual({ rows: 1, compact: true, wrap: [], overflow: [], collapsed: [] });
   });
   it("two rows below that, texts kept while the second row fits (792 px stage)", () => {
-    expect(barLayout({ items: items([200, 190], [96, 92, 86, 82, 160, 82]), textWidth: 110, gap: 8, available: 740 })).toEqual({ rows: 2, compact: false, wrap: [] });
+    expect(barLayout({ items: items([200, 190], [96, 92, 86, 82, 160, 82]), textWidth: 110, gap: 8, available: 740 })).toEqual({ rows: 2, compact: false, wrap: [], overflow: [], collapsed: [] });
   });
   it("two rows icon-only in a narrow inspector", () => {
-    expect(barLayout({ items: items([150, 190], [96, 92, 86, 82, 82]), textWidth: 110, gap: 8, available: 360 })).toEqual({ rows: 2, compact: true, wrap: [] });
+    expect(barLayout({ items: items([150, 190], [96, 92, 86, 82, 82]), textWidth: 110, gap: 8, available: 360 })).toEqual({ rows: 2, compact: true, wrap: [], overflow: [], collapsed: [] });
   });
   it("a row too wide even icon-only wraps (never hides a control) (a 300 px viewer beside the inspector)", () => {
     // what: 227 + 8 + 194 = 429 > 288; how: 98 + 26 + 82 + 26 + 26 + 5 gaps = 298, icon-only 248
     const it2 = items([227, 194], [98, 26, 82, 26, 26, 26]);
-    expect(barLayout({ items: it2, textWidth: 71, gap: 8, available: 288 })).toEqual({ rows: 2, compact: true, wrap: [1] });
-    expect(barLayout({ items: it2, textWidth: 71, gap: 8, available: 200 })).toEqual({ rows: 2, compact: true, wrap: [1, 2] });
+    expect(barLayout({ items: it2, textWidth: 71, gap: 8, available: 288 })).toEqual({ rows: 2, compact: true, wrap: [1], overflow: [], collapsed: [] });
+    expect(barLayout({ items: it2, textWidth: 71, gap: 8, available: 200 })).toEqual({ rows: 2, compact: true, wrap: [1, 2], overflow: [], collapsed: [] });
   });
   it("sameBarLayout compares every field", () => {
-    expect(sameBarLayout({ rows: 2, compact: true, wrap: [1] }, { rows: 2, compact: true, wrap: [1] })).toBe(true);
-    expect(sameBarLayout({ rows: 2, compact: true, wrap: [1] }, { rows: 2, compact: true, wrap: [] })).toBe(false);
+    const base = { rows: 2 as const, compact: true, wrap: [1 as const], overflow: [], collapsed: [] };
+    expect(sameBarLayout(base, { ...base, wrap: [1] })).toBe(true);
+    expect(sameBarLayout(base, { ...base, wrap: [] })).toBe(false);
+    expect(sameBarLayout(base, { ...base, overflow: ["export"] })).toBe(false);
+    expect(sameBarLayout(base, { ...base, collapsed: ["colour"] })).toBe(false);
   });
   it("unknown width: one row", () => {
-    expect(barLayout({ items: items([100], [100]), textWidth: 0, gap: 8, available: 0 })).toEqual({ rows: 1, compact: false, wrap: [] });
+    expect(barLayout({ items: items([100], [100]), textWidth: 0, gap: 8, available: 0 })).toEqual({ rows: 1, compact: false, wrap: [], overflow: [], collapsed: [] });
   });
 });
 
@@ -150,6 +154,75 @@ describe("no control out of sight", () => {
       expect(first <= available || lay.wrap.includes(1)).toBe(true);
       expect(second <= available || lay.wrap.includes(2)).toBe(true);
     }
+  });
+});
+
+describe("narrow bars: a More menu instead of wrapping (300–480 px)", () => {
+  // icon-only widths measured on the NEXUS tile card: tier chips + menu, the
+  // band chips (a 76 px select when collapsed); Display, compare, tools,
+  // zoom, navigation, layout, export, Open large
+  const narrowItems = (nav = true) => [
+    { id: "tiers", row: 1 as const, width: 182 },
+    { id: "colour", row: 1 as const, width: 230, shrink: 76 },
+    { id: "display", row: 2 as const, width: 76 },
+    { id: "compare", row: 2 as const, width: 84, overflow: 4 },
+    { id: "tools", row: 2 as const, width: 28, overflow: 3 },
+    { id: "zoom", row: 2 as const, width: 88, overflow: 5 },
+    ...(nav ? [{ id: "nav", row: 2 as const, width: 154 }] : []),
+    { id: "layout", row: 2 as const, width: 28, overflow: 2 },
+    { id: "export", row: 2 as const, width: 28, overflow: 1 },
+    { id: "focus", row: 2 as const, width: 28 },
+  ];
+  const plan = (available: number, nav = true) => barLayout({ items: narrowItems(nav), textWidth: 48, gap: 8, available, moreWidth: 28 });
+
+  it("collapses the band chips and moves the rarely used groups into More, export first", () => {
+    const p = plan(340, false);                  // the 380 px inspector panel, no navigation
+    expect(p.rows).toBe(2);
+    expect(p.collapsed).toEqual(["colour"]);
+    expect(p.overflow).toEqual(["export", "layout"]);
+    expect(p.wrap).toEqual([]);
+    // with the navigation, at 300 px: everything but Display, navigation and Open large goes
+    const q = plan(300);
+    expect(q.overflow).toEqual(["export", "layout", "tools", "compare", "zoom"]);
+    expect(q.wrap).toEqual([]);
+  });
+
+  it("keeps two rows and never wraps from 300 to 480 px; nothing moves when two rows fit", () => {
+    for (let available = 300; available <= 480; available += 4) {
+      for (const nav of [true, false]) {
+        const p = plan(available, nav);
+        expect(p.rows).toBe(2);
+        expect(p.wrap).toEqual([]);
+        // what stays in the bar fits it (with the More button when something moved)
+        const span = (ws: number[]) => ws.reduce((a, w) => a + w, 0) + 8 * (ws.length - 1);
+        const kept = narrowItems(nav).filter((it) => it.row === 2 && !p.overflow.includes(it.id)).map((it) => it.width);
+        expect(span([...kept, ...(p.overflow.length ? [28] : [])]) - 48).toBeLessThanOrEqual(available);
+      }
+    }
+    expect(plan(900).overflow).toEqual([]);
+    expect(plan(900).collapsed).toEqual([]);
+  });
+
+  it("long tier names: the tier chips collapse to the selected ones after the band chips", () => {
+    // Disagreement at 420 px: six chips (Mean of members, Disagreement movie …) 372 px, the selected two + menu 96 px
+    const items = [
+      { id: "tiers", row: 1 as const, width: 372, shrink: 96 },
+      { id: "colour", row: 1 as const, width: 230, shrink: 76 },
+      { id: "display", row: 2 as const, width: 28 },
+      { id: "nav", row: 2 as const, width: 154 },
+      { id: "focus", row: 2 as const, width: 28 },
+    ];
+    const p = barLayout({ items, textWidth: 0, gap: 8, available: 340, moreWidth: 28 });
+    expect(p.collapsed).toEqual(["colour", "tiers"]);
+    expect(p.wrap).toEqual([]);
+    // wide enough for the chips once the bands are one select: only the bands collapse
+    expect(barLayout({ items, textWidth: 0, gap: 8, available: 460, moreWidth: 28 }).collapsed).toEqual(["colour"]);
+  });
+
+  it("Display, the navigation and Open large never move into More", () => {
+    const p = plan(120);
+    for (const id of ["display", "nav", "focus", "tiers"]) expect(p.overflow).not.toContain(id);
+    expect(p.wrap).toContain(2);                   // below 300 px the rest wraps (never hidden)
   });
 });
 
@@ -184,5 +257,22 @@ describe("navigation counter", () => {
     expect(parsePosition(" 1 ")).toBe(0);
     expect(parsePosition("abc")).toBeNull();
     expect(parsePosition("")).toBeNull();
+  });
+});
+
+describe("moreShape (which shape of More display settings hides less of the frames)", () => {
+  const box = (left: number, top: number, side: number) => ({ left, top, right: left + side, bottom: top + side });
+  it("three frames in one row right under the trigger: one narrow column covers less", () => {
+    // Disagreement at 1024 × 768 with the Display row open: 3 × 241 at top 242, trigger right 946
+    const frames = [box(265, 242, 241), box(508, 242, 241), box(751, 242, 241)];
+    expect(moreShape(frames, { left: 800, top: 205, right: 946, bottom: 236 }, 1024)).toBe("narrow");
+  });
+  it("a stack no wider than the popover (the inspector): the wide, short shape covers less", () => {
+    // two 300 px frames stacked under the trigger: 300 × 240 hidden instead of 300 × 340
+    const frames = [box(700, 100, 300), box(700, 402, 300)];
+    expect(moreShape(frames, { left: 900, top: 60, right: 1000, bottom: 94 }, 1024)).toBe("wide");
+  });
+  it("nothing under the popover either way: narrow", () => {
+    expect(moreShape([], { left: 0, top: 0, right: 900, bottom: 30 }, 1024)).toBe("narrow");
   });
 });

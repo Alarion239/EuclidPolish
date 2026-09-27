@@ -108,6 +108,49 @@ export function linearTicks([lo, hi]: Domain, opts: LinearTickOpts = {}): Tick[]
   return vals.map((v) => ({ v, label: fmt(v, step) }));
 }
 
+/** Step mantissas a chart's automatic axis may use; 2.5 only when it is the
+ *  one that lands the tick count inside the wanted range. */
+const FIT_MANTISSAS = [1, 2, 2.5, 5] as const;
+
+export type FitLinearOpts = {
+  /** Wanted tick count (inclusive range, default 4–6). */
+  min?: number;
+  max?: number;
+  format?: (v: number, step: number) => string;
+};
+
+/** A chart's automatic linear axis: 4–6 evenly spaced ticks on a 1-2-2.5-5
+ *  step (3 or 7 when no nice step lands in 4–6, e.g. a span of 1.7 → 43.5,
+ *  44, 44.5). A count inside the range wins, then the nearest to it; ties go
+ *  to a 1-2-5 step, then the larger step (fewer labels). Degenerate spans
+ *  give their end points, non-finite input nothing. */
+export function fitLinearTicks([lo, hi]: Domain, opts: FitLinearOpts = {}): Tick[] {
+  const min = opts.min ?? 4, max = opts.max ?? 6;
+  if (!Number.isFinite(lo) || !Number.isFinite(hi)) return [];
+  const [a, b] = lo <= hi ? [lo, hi] : [hi, lo];
+  const fmt = opts.format ?? formatTick;
+  const span = b - a;
+  if (!(span > 0) || !Number.isFinite(span)) return linearTicks([a, b], { count: 5, format: opts.format });
+  const k = Math.floor(Math.log10(span / ((min + max) / 2)));
+  if (!Number.isFinite(k)) return linearTicks([a, b], { count: 5, format: opts.format });
+  let best: { vals: number[]; step: number; score: number } | null = null;
+  for (let e = k - 1; e <= k + 1; e++) {
+    for (const m of FIT_MANTISSAS) {
+      const step = clean(m * 10 ** e);
+      const vals = stepMultiples(a, b, step);
+      if (!vals || !vals.length) continue;
+      const n = vals.length;
+      const off = n < min ? min - n : n > max ? n - max : 0;
+      // outside the range dominates; 2.5 and smaller steps only break ties
+      const score = off * 10 + (m === 2.5 ? 1 : 0) - step / (span * 1e3);
+      if (!best || score < best.score) best = { vals, step, score };
+    }
+  }
+  if (!best) return linearTicks([a, b], { count: 5, format: opts.format });
+  const { vals, step } = best;
+  return vals.map((v) => ({ v, label: fmt(v, step) }));
+}
+
 /** Tick values on a positive log range: 1-2-5 mantissas over ≤ ~3 decades
  *  (every mantissa below one decade), else decades thinned to `maxTicks`. */
 export function logTickValues(lo: number, hi: number, opts: { maxTicks?: number } = {}): number[] {

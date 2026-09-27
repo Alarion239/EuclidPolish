@@ -234,7 +234,10 @@ class ModelSpec:
             "members": list(self.member_labels),
             "member_names": [member_name(label) for label in self.member_labels],
             "reads": list(self.reads),
-            "n_members": len(self.member_labels),
+            # How many members the spec RUNS (a pruned gate reads a subset of
+            # the members it was fitted with); ``n_fitted`` keeps that total.
+            "n_members": len(self.reads),
+            "n_fitted": len(self.member_labels),
             "available": self.available, "reason": self.reason,
             "fingerprint": self.fingerprint,
             "member_fingerprints": list(self.member_fingerprints),

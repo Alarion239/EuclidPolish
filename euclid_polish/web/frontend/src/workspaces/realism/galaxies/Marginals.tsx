@@ -171,7 +171,7 @@ export function BrightnessPanel({ parameter }: { parameter: Parameter }) {
             <span>peak {o.peak.toFixed(1)} arcmin⁻² mag⁻¹{o.cumulativeToBoundary != null ? ` · ${o.cumulativeToBoundary.toFixed(1)} arcmin⁻² to 5σ` : ""}</span></div>
           <div><small>MER {o.trust.snr}σ limit</small><b>VIS {o.trust.magnitude.toFixed(2)}</b>
             <span>{o.trust.lower_magnitude.toFixed(2)}–{o.trust.upper_magnitude.toFixed(2)} (16–84%) · {Math.round(o.trust.sample_size).toLocaleString("en")} rows</span></div>
-          <div><small>generation ceiling</small><b>{o.generationCap?.toFixed(1) ?? "—"}</b>
+          <div><small>Generation ceiling</small><b>{o.generationCap?.toFixed(1) ?? "—"}</b>
             <span>{o.generationCap != null && o.generationCap > o.peak ? `${(o.generationCap / o.peak).toFixed(1)}× the Q1 peak` : "matches the Q1 peak"}</span></div>
         </div>
       );

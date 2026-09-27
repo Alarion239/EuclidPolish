@@ -39,6 +39,7 @@ import { buildSpecs } from "../atlas/specs";
 import { StatusBar } from "../atlas/StatusBar";
 import { useAtlas, useSkyDisplay } from "../atlas/store";
 import { useAtlasUrl } from "../atlas/useAtlasUrl";
+import { featureView } from "../atlas/urlState";
 import "../atlas/atlas.css";
 
 const NARROW_PX = 620;
@@ -170,6 +171,16 @@ export default function Atlas() {
   const groups = useMemo(() => featuresInRegion(url.sel, byLayer, [...enabledIds, ...(footprints ? ["jwst-footprints"] : [])]), [url.sel, byLayer, enabledIds, footprints]);
   const inspected = useInspector((s) => (s.open ? s.current : null));
   const focus = useMemo(() => findFeatureByTarget(inspected, byLayer), [inspected, byLayer]);
+  // A link that names only the inspected feature (`?inspect=tile:…`, no
+  // ra/dec) opens framed on it, not on the whole sky — once per feature.
+  const framed = useRef("");
+  useEffect(() => {
+    if (!focus || url.ra != null || url.dec != null) return;
+    const key = `${focus.layer}/${focus.key}`;
+    if (framed.current === key) return;
+    framed.current = key;
+    url.setView(featureView(focus));
+  }, [focus, url]);
 
   /* actions */
   const jump = useCallback((j: Pick<QuickJump, "ra" | "dec" | "fov">) => url.setView({ ra: j.ra, dec: j.dec, fov: j.fov }), [url]);

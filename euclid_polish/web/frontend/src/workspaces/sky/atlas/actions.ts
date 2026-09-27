@@ -238,7 +238,7 @@ export async function runNexusProduction(fieldId?: string): Promise<StartResult 
   if (!stale) { toast.success(`Every ${field.target_name ?? "NEXUS"} tile already has a current production SR.`); return null; }
   const ok = await confirm({
     title: `Run production on ${stale} NEXUS tile${stale === 1 ? "" : "s"}?`,
-    message: `Runs the production spatial gate (STARFULL) locally on the stale tiles of ${field.target_name ?? field.field_id} (${field.count ?? "?"} tiles; TensorFlow, a local job).`,
+    message: `Runs the production spatial gate (starfull) locally on the stale tiles of ${field.target_name ?? field.field_id} (${field.count ?? "?"} tiles; TensorFlow, a local job).`,
     confirmLabel: "Run production",
   });
   if (!ok) return null;

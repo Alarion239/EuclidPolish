@@ -49,6 +49,9 @@ export type ViewerMeta = {
 /** Frame arrangement (fit.ts): auto | one-row | grid | stack. */
 export type Layout = LayoutMode;
 export type Tool = "pan" | "lens";
+/** The pointer tools by name (`ViewerApi.setTool`): none (pan and zoom),
+ *  the magnifier lens, the profile panel. */
+export type ViewerTool = "none" | "lens" | "profile";
 export type Compare = "off" | "blink" | "swipe";
 
 export type FrameStatus =
@@ -130,6 +133,13 @@ export type ViewerApi = {
   /** Centre the view on (ra, dec) with a field of view of `fovArcsec`. */
   zoomTo(ra: number, dec: number, fovArcsec?: number): boolean;
   resetView(): void;
+  /** One zoom step by about `factor` (> 1 in, < 1 out), landing on an integer
+   *  device-pixel magnification; out past the smallest view fits the image
+   *  (the + / − keys). */
+  zoomBy(factor: number): void;
+  /** Switch the pointer tool: "lens" (key L), "profile" (the profile panel)
+   *  or "none" (pan and zoom). */
+  setTool(tool: ViewerTool): void;
   /** Focus mode: the viewer covers the stage (an "Open large" button beside a small viewer). */
   setFocus(on: boolean): void;
   getReadout(): Readout | null;

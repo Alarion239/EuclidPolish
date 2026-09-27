@@ -1,19 +1,33 @@
 /* How a frame's rendered cube is drawn into its visible canvas (pure plan +
- * the canvas calls; Frame.tsx).
+ * the canvas calls; Frame.tsx), and the pixel-exact scale of the fit.
  *
  * Nearest-neighbour at a NON-integer magnification gives native pixels
  * uneven widths (2 and 3 device px side by side at 2.85×), which jitters the
  * noise texture and star cores. So:
  *
+ *   fit (whole image)     the drawn image is SNAPPED to the largest integer
+ *                         multiple of native pixels, in device pixels, that
+ *                         fits its cell (`snappedDrawSide`, one side for
+ *                         every frame of the grid so blink / swipe / side by
+ *                         side line up) and centred on whole device pixels —
+ *                         when that keeps at least SNAP_MIN_FILL (80 %) of
+ *                         the cell; a snap that would shrink the image more
+ *                         (a 1.97× fit snaps to 1×: half the side) keeps the
+ *                         full cell, drawn sharp-bilinear below. "Pixel-exact
+ *                         fit" (the layout menu) always snaps.
  *   scale ≈ integer ≥ 1   nearest neighbour (every pixel k × k device px)
- *   scale > 1 otherwise   "sharp bilinear": nearest neighbour to the next
- *                         integer multiple k = ⌈scale⌉ in a scratch canvas,
- *                         then bilinear down to the frame (square pixels of
- *                         equal size, ≤ 1 device px of blend at their edges)
- *   scale < 1             bilinear (downsampling: nearest would drop rows)
+ *   scale > 1 otherwise   (a user zoom, a tier whose grid is not an integer
+ *                         multiple of the finest) "sharp bilinear": nearest
+ *                         neighbour to the next integer multiple k = ⌈scale⌉
+ *                         in a scratch canvas, then bilinear down to the
+ *                         frame (square pixels of equal size, ≤ 1 device px
+ *                         of blend at their edges)
+ *   scale < 1             bilinear, high quality (downsampling: nearest
+ *                         would drop rows)
  *
- * The frame keeps its fitted size — snapping the side to an integer multiple
- * instead would shrink the images by up to half. */
+ * The zoom steps (+ / −, `zoomBy`) prefer integer device-pixel
+ * magnifications of the finest tier (`zoomPreset`); the wheel and a pinch
+ * stay continuous. */
 import type { FrameLayout } from "./selection";
 
 /** Scratch canvases larger than this (device px²) fall back to plain bilinear. */
@@ -80,4 +94,67 @@ export function drawFrame(ctx: Ctx, source: HTMLCanvasElement, L: FrameLayout, d
   ctx.imageSmoothingEnabled = plan.kind === "smooth";
   if (plan.kind === "smooth") ctx.imageSmoothingQuality = "high";
   ctx.drawImage(source, L.sx, L.sy, L.sw, L.sh, L.dx * dpr, L.dy * dpr, L.dw * dpr, L.dh * dpr);
+}
+
+/** The device-pixel ratio the frames draw at (1–2, as Frame.tsx sizes its canvas). */
+export function frameDpr(): number {
+  const d = typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1;
+  return Math.max(1, Math.min(d, 2));
+}
+
+/** A snap that keeps less of the cell than this draws the full cell instead
+ *  (sharp-bilinear: equal-size pixels, ≤ 1 device px of blend at their edges). */
+export const SNAP_MIN_FILL = 0.8;
+
+/** The side (css px) the whole image is drawn at inside a square cell of
+ *  side `S` css px, at `dpr`, for frames whose images are `extents` native
+ *  pixels across (max(w, h) of each shown tier): the largest integer
+ *  multiple of the finest tier that is magnified (extent ≤ the cell in
+ *  device px), floor(S·dpr / e)·e / dpr. Every coarser tier whose grid is
+ *  an integer fraction of it is then an integer magnification too (LR
+ *  0.1″ next to HR 0.05″); a finer, downsampled tier is drawn into the same
+ *  side (smoothed). When every tier is downsampled — or the snap would keep
+ *  less than `minFill` of the cell — the image fills the cell. */
+export function snappedDrawSide(S: number, dpr: number, extents: readonly number[], minFill = 0): number {
+  if (!(S > 0) || !(dpr > 0)) return Math.max(0, S || 0);
+  const D = Math.floor(S * dpr + 1e-6);
+  const up = extents.filter((e) => e > 0 && Number.isFinite(e) && e <= D);
+  if (!up.length) return S;
+  const e = Math.max(...up);
+  const side = (Math.floor(D / e) * e) / dpr;
+  return side >= S * minFill - 1e-9 ? side : S;
+}
+
+/** Magnifications (device px per native pixel of the finest tier) that the
+ *  zoom steps land on. */
+export const ZOOM_PRESETS: readonly number[] = [1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64];
+
+/** The magnification one zoom step by `factor` goes to from `m`: the preset
+ *  nearest (in log) to m·factor, at least one step in that direction.
+ *  `fit` is the whole image's (snapped) magnification, `full` the one at
+ *  which a crop covers the whole image (smaller zoomed views do not exist),
+ *  `max` the largest allowed. Zooming out past the smallest zoomed preset
+ *  returns "fit". Above the largest preset (a small image in a big frame,
+ *  whose fit is already past 64×) the steps go on continuously, by
+ *  `factor`, up to `max`, so + never stalls short of the maximum. */
+export function zoomPreset(m: number, factor: number, o: { fit: number; full: number; max: number }): number | "fit" {
+  const eps = 1e-6;
+  if (!(m > 0) || !(factor > 0) || factor === 1) return m;
+  const target = m * factor;
+  const top = ZOOM_PRESETS[ZOOM_PRESETS.length - 1];
+  const dist = (p: number) => Math.abs(Math.log(p / target));
+  if (factor > 1) {
+    const cands = ZOOM_PRESETS.filter((p) => p > m * (1 + eps) && p > o.full * (1 + eps) && p <= o.max * (1 + eps));
+    if (!cands.length) {
+      const next = Math.min(target, o.max);
+      return next > m * (1 + eps) ? next : m;
+    }
+    return cands.reduce((a, b) => (dist(b) < dist(a) ? b : a));
+  }
+  // out from above the presets: continuous while the target stays above them
+  if (m > top * (1 + eps) && target > top * (1 + eps) && target > o.full * (1 + eps)) return target;
+  const cands: (number | "fit")[] = ZOOM_PRESETS.filter((p) => p < m * (1 - eps) && p > o.full * (1 + eps));
+  cands.push("fit");
+  const value = (p: number | "fit") => (p === "fit" ? o.fit : p);
+  return cands.reduce((a, b) => (dist(value(b)) < dist(value(a)) ? b : a));
 }

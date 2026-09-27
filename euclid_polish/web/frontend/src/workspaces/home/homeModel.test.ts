@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   bandMean, kneeHeadline, memberName, productionFromStatus, productionHeadline, productionModel, starfullMembers,
-  type KneePayload,
+  trackingCatchUpNote, unloggedItems, type KneePayload,
 } from "./homeModel";
 
 describe("productionHeadline (eval_summary.json)", () => {
@@ -145,5 +145,38 @@ describe("helpers", () => {
   it("names members from their labels", () => {
     expect(memberName("196·psnr")).toBe("member_196");
     expect(memberName("member_7")).toBe("member_7");
+  });
+});
+
+describe("tracking catch-up note (Home › Quick actions › Log to tracking)", () => {
+  const check = { id: "tracking", label: "Tracking log", state: "warn" as const, title: "Results since the last tracking entry (2026-09-21)",
+    facts: { last_entry: "2026-09-21T14:42:29+00:00", unlogged: [
+      { at: "2026-09-27T02:44:21+00:00", label: "experiment" }, { at: "2026-09-25T23:33:42+00:00", label: "PSNR vs knee" },
+      { at: "2026-09-25T23:32:26+00:00", label: "evaluation" }, { at: "2026-09-25T22:30:13+00:00", label: "production gate fit" },
+    ] } };
+  const facts = {
+    knee: { gate: 60.97, mean: 59.1, best: { name: "member_196", label: "196·psnr", value: 59.96 }, vsBest: 1.01, vsMean: 1.87, perBand: [], nFields: 100, stale: false },
+    prod: { kind: "gate" as const, psnr: 59.2354, vsMean: 0.8601, vsBest: 0.2948, meanPsnr: 58.4, stale: false },
+    members: 30,
+    production: { label: "spatial gate", mix: "linear", fittedAt: "2026-09-25T22:30:13+00:00", available: true, reason: null },
+  };
+  it("reads the alert's unlogged items (newest first)", () => {
+    expect(unloggedItems(check).map((u) => u.label)).toEqual(["experiment", "PSNR vs knee", "evaluation", "production gate fit"]);
+    expect(unloggedItems(undefined)).toEqual([]);
+    expect(unloggedItems({ ...check, facts: { unlogged: "nope" } })).toEqual([]);
+  });
+  it("pre-fills one line per unlogged result with its headline numbers", () => {
+    const md = trackingCatchUpNote(check, facts);
+    expect(md).toContain("**Catch-up** — results since the last tracking entry (2026-09-21 14:42 UTC)");
+    expect(md).toContain("- experiment — 2026-09-27 02:44 UTC: see Sky › Experiments");
+    expect(md).toContain("- PSNR vs knee — 2026-09-25 23:33 UTC: ∫PSNR production gate 60.97 dB (+1.01 dB vs member 196, +1.87 dB vs plain mean, 100 fields)");
+    expect(md).toContain("- evaluation — 2026-09-25 23:32 UTC: test PSNR production gate 59.24 dB (+0.29 dB vs best member, +0.86 dB vs plain mean), 30 STARFULL members");
+    expect(md).toContain("- production gate fit — 2026-09-25 22:30 UTC: spatial gate, linear mix, fitted for the current members");
+  });
+  it("without unlogged results it notes the production model as it is", () => {
+    const md = trackingCatchUpNote({ facts: { last_entry: "2026-09-27T00:00:00Z", unlogged: [] } }, facts);
+    expect(md).toContain("**Production model** — 30 STARFULL members");
+    expect(md).toContain("- ∫PSNR production gate 60.97 dB");
+    expect(md).toContain("- Test PSNR production gate 59.24 dB");
   });
 });

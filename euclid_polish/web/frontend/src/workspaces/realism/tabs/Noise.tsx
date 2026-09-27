@@ -293,7 +293,7 @@ export default function NoiseTab() {
   return (
     <Page className="rl-page">
       <RealismBar label="Noise controls">
-        <BarGroup label="pair">
+        <BarGroup label="Pair">
           <Segmented size="sm" aria-label="Band pair" value={pair} onChange={setPair} options={PAIRS} />
         </BarGroup>
         {payload?.generator.scene_scale && (

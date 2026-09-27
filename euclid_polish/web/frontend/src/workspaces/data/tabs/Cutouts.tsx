@@ -7,9 +7,9 @@
  * valid in all four bands at one common size, from the synchronised
  * FASRC-mirror catalogue — works offline; its freshness in the tip, a badge
  * only when stale) and the catalogue. Then the navigator (viewer collection
- * `cutouts`; an auto stretch per viewer — the cutouts are in ADU/s, where the
- * console's absolute e⁻ knee shows black) sized so the whole frame is in view,
- * with the cutouts cached on this machine beside it when there is room (else
+ * `cutouts`, served in electrons via each band's MAGZERO, so the console's
+ * absolute e⁻ transfer shows it like every other image; it fits its own
+ * frames under its top), with the cutouts cached on this machine beside it when there is room (else
  * below): one band at a time, a thumbnail per star, the navigator's star
  * outlined, a click shows that star. The download_euclid_cutouts FASRC step
  * and the archive login link sit in the collapsed section at the bottom. The
@@ -22,16 +22,13 @@ import { usePageActions } from "../../../app/palette";
 import { StepById } from "../../../fasrc";
 import { formatCount, formatDateTime, formatNumber, formatRelative } from "../../../format";
 import { useUrlState } from "../../../hooks/useUrlState";
-import type { DisplaySettings } from "../../../state/display";
 import {
   Badge, Button, Callout, EmptyState, IconButton, Page, Section, Segmented, Skeleton, Tooltip,
 } from "../../../ui";
 import { ImageViewer, type ViewerApi, type ViewerState } from "../../../viewer";
-import type { LayoutMode } from "../../../viewer/fit";
 import { URLS, useStars, type GalleryPage, type Totals } from "../api";
 import { BarActions, DataBar, Freshness, LinkButton, OFFLINE_HINT, SkyButton, Spacer, useFasrcOnline } from "../common";
 import { BANDS, bandShort, cutoutTiles, decodeStars, type CutoutTile } from "../model";
-import { ViewerStage } from "../ViewerStage";
 import "../register";
 import "../data.css";
 
@@ -40,8 +37,6 @@ import "../data.css";
 const PER_PAGE = 96;
 /** Thumbnail pixels asked of the server: sharp at 2× for a ~128 px cell. */
 const THUMB_PX = 256;
-/** Real cutouts are ADU/s: stretch each frame from its own limits (per viewer). */
-const CUTOUT_DISPLAY: Partial<DisplaySettings> = { stretch: "asinh-auto" };
 const STALE_S = 3 * 24 * 3600;
 
 /** The star in the viewer: its facts (left of the toolbar) and its links (the actions). */
@@ -87,7 +82,7 @@ function CutoutGallery({ current, navSize, onPick }: { current: string | null; n
     <div className="dt-gallery">
       <div className="dt-gallery__head">
         <span className="dt-gallery__title">On this machine</span>
-        <Segmented size="sm" className="dt-seg-text" value={band} onChange={(b) => { setBand(b); setPage(1); }} aria-label="Band of the cached cutouts"
+        <Segmented size="sm" value={band} onChange={(b) => { setBand(b); setPage(1); }} aria-label="Band of the cached cutouts"
           options={BANDS.map((b) => ({ value: b, label: bandShort(b) }))} />
         {data && <span className="dt-gallery__count">{formatCount(data.total)} files</span>}
       </div>
@@ -134,7 +129,6 @@ export default function Cutouts() {
   const totals = useResource<Totals>(URLS.totals, [], { ttl: 60_000 });
   const t = totals.data;
   const [current, setCurrent] = useState<string | null>(null);
-  const [layout, setLayout] = useState<LayoutMode>("auto");
   const [steps, setSteps] = useUrlState("steps", false);
   const api = useRef<ViewerApi | null>(null);
   const navigate = useNavigate();
@@ -151,7 +145,7 @@ export default function Cutouts() {
   const noCatalog = t && !t.catalog.present;
   const syncedAt = t?.catalog.present ? t.catalog.mtime : null;
   const stale = syncedAt != null && Date.now() / 1000 - syncedAt > STALE_S;
-  const onViewerState = (s: ViewerState) => { setCurrent(s.id); setLayout(s.layout); };
+  const onViewerState = (s: ViewerState) => { setCurrent(s.id); };
   const star = useCurrentStar(current);
   return (
     <Page className="dt-page dt-page--image">
@@ -191,11 +185,15 @@ export default function Cutouts() {
           The navigator reads the FASRC catalogue mirror — pull it on the Catalog tab{online ? "" : ` (${OFFLINE_HINT})`}.
         </EmptyState>
       ) : (
-        <ViewerStage layout={layout} frames={1} asideLabel="Cached cutouts" asideMin={150} asideFill
-          aside={<CutoutGallery current={current} navSize={t?.size ?? null} onPick={pick} />}>
-          <ImageViewer collection="cutouts" urlKey="cut" display={CUTOUT_DISPLAY} onReady={(a) => { api.current = a; }}
-            onState={onViewerState} />
-        </ViewerStage>
+        <div className="dt-vsplit">
+          <div className="dt-vsplit__viewer">
+            <ImageViewer collection="cutouts" urlKey="cut" onReady={(a) => { api.current = a; }}
+              onState={onViewerState} />
+          </div>
+          <div className="dt-vsplit__aside" role="region" aria-label="Cached cutouts" data-fill="">
+            <CutoutGallery current={current} navSize={t?.size ?? null} onPick={pick} />
+          </div>
+        </div>
       )}
       <Section title="Download Euclid star cutouts (FASRC)" collapsible open={steps} onOpenChange={setSteps}
         right={<LinkButton to="/settings/connections" icon="settings" label="Archive login" />}>

@@ -19,7 +19,7 @@ import { downloadBlob, downloadText, safeFileName } from "../ui/download";
 import { Icon } from "../ui/icons";
 import {
   axis, clampView, drawable, formatValue, nearestIndex, nearestPoint, panDomain, readoutAt, sameInputs,
-  sameValue, seriesKey, seriesName, seriesToCSV, stepDrawable, tooltipReadout, viewTicks, zoomDomain, type Hit,
+  sameValue, seriesKey, seriesName, seriesToCSV, stepDrawable, tooltipReadout, thinnedViewTicks, viewTicks, zoomDomain, type Hit,
   type PlotGeometry,
 } from "./plotModel";
 import type { Band, Heat, LegendItem, PlotProps, PlotView, Series, Tick } from "./types";
@@ -230,7 +230,7 @@ function paint(ctx: CanvasRenderingContext2D, L: Layout, p: PlotProps, series: S
     const r = bandRect(band);
     if (!r) continue;
     ctx.save(); clipPlot();
-    ctx.font = `600 9px ${mono}`;
+    ctx.font = `600 10px ${sans}`;
     ctx.fillStyle = band.color;
     ctx.globalAlpha = 0.9;
     ctx.textBaseline = "top";
@@ -243,7 +243,7 @@ function paint(ctx: CanvasRenderingContext2D, L: Layout, p: PlotProps, series: S
     const v = g.axis === "x" ? tx(g.v) : ty(g.v);
     if (!Number.isFinite(v)) continue;
     ctx.save(); clipPlot();
-    ctx.font = `600 9px ${mono}`;
+    ctx.font = `600 10px ${sans}`;
     ctx.fillStyle = g.color ?? gridS;
     ctx.globalAlpha = Math.max(0.8, g.alpha ?? 1);
     ctx.textBaseline = "top";
@@ -389,7 +389,7 @@ function paint(ctx: CanvasRenderingContext2D, L: Layout, p: PlotProps, series: S
     if (angle < -Math.PI / 2) angle += Math.PI;
     ctx.save();
     ctx.translate(x, y); ctx.rotate(angle);
-    ctx.font = `600 9px ${mono}`;
+    ctx.font = `600 10px ${sans}`;
     ctx.textAlign = "center"; ctx.textBaseline = "middle";
     const w = ctx.measureText(s.label).width;
     ctx.globalCompositeOperation = "destination-out";
@@ -452,15 +452,15 @@ function paint(ctx: CanvasRenderingContext2D, L: Layout, p: PlotProps, series: S
     }
     ctx.save();
     ctx.translate(bx + bw + 34, bt + bh / 2); ctx.rotate(-Math.PI / 2);
-    ctx.fillStyle = dim; ctx.font = `500 11px ${mono}`;
+    ctx.fillStyle = dim; ctx.font = `500 11px ${sans}`;
     ctx.textAlign = "center"; ctx.textBaseline = "middle";
-    ctx.fillText(heatNorm.label ?? "pixels / cell", 0, 0);
+    ctx.fillText(heatNorm.label ?? "Pixels per cell", 0, 0);
     ctx.restore();
   }
 
   // axis labels
   ctx.fillStyle = dim;
-  ctx.font = `500 11.5px ${mono}`;
+  ctx.font = `500 12px ${sans}`;
   if (p.xLabel) { ctx.textAlign = "center"; ctx.textBaseline = "bottom"; ctx.fillText(p.xLabel, m.l + iw / 2, H - 6); }
   if (p.yLabel) {
     ctx.save(); ctx.translate(14, m.t + ih / 2); ctx.rotate(-Math.PI / 2);
@@ -672,12 +672,26 @@ export default function Plot(p: PlotProps) {
     return subscribeCursor(p.syncKey, (x, from) => { if (from !== me.current) setRemoteX(x); });
   }, [p.syncKey]);
 
-  /* effective (drawn) props + layout. Zoomed ticks are generated and
-     labelled by xFormat/yFormat; they are compared by their output, so an
-     inline formatter costs nothing and a changed one redraws. */
+  /* effective (drawn) props + layout. An axis whose caller passed no ticks
+     (`xTicks`/`yTicks` undefined; `[]` means none) and a zoomed axis get
+     generated ticks, labelled by xFormat/yFormat, with their grid lines;
+     they are compared by their output, so an inline formatter costs nothing
+     and a changed one redraws. */
   const emphasis = p.emphasis ?? legendEmph;
-  const xTicks = useStable(view?.x ? viewTicks(p.xTicks, xDom, xScale, p.xFormat) : p.xTicks);
-  const yTicks = useStable(view?.y ? viewTicks(p.yTicks, yDom, yScale, p.yFormat) : p.yTicks);
+  const xGen = Boolean(view?.x) || p.xTicks === undefined, yGen = Boolean(view?.y) || p.yTicks === undefined;
+  // Generated ticks are sized to the plot (thinnedViewTicks): a first layout
+  // with the unthinned ticks gives the pixel scale; x labels keep their own
+  // width + 12 px apart, y ticks a 22 px text line.
+  const xRaw = xGen ? viewTicks(p.xTicks, xDom, xScale, p.xFormat) : p.xTicks;
+  const yRaw = yGen ? viewTicks(p.yTicks, yDom, yScale, p.yFormat) : p.yTicks;
+  const pre = xGen || yGen
+    ? computeLayout(W, H, { ...p, xDomain: xDom, yDomain: yDom, xTicks: xRaw, yTicks: yRaw }, fonts())
+    : null;
+  const tickPx = (t: Tick[]) => { const m = measurer(); return Math.max(0, ...t.map((x) => m(x.label, `11px ${fonts().mono}`))); };
+  const xTicks = useStable(xGen && pre
+    ? thinnedViewTicks(p.xTicks, xDom, xScale, p.xFormat, pre.x.toPx, (t) => tickPx(t) + 12) : p.xTicks);
+  const yTicks = useStable(yGen && pre
+    ? thinnedViewTicks(p.yTicks, yDom, yScale, p.yFormat, pre.y.toPx, () => 22) : p.yTicks);
   const eff = useMemo<PlotProps>(() => ({ ...p, xDomain: xDom, yDomain: yDom, xTicks, yTicks }),
   // `version` stands for every drawn prop (structural compare)
   // eslint-disable-next-line react-hooks/exhaustive-deps

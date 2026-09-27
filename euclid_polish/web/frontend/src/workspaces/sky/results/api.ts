@@ -80,6 +80,8 @@ export type ModelKind = "production" | "mean" | "rbf" | "member" | "gate";
 export type ModelSpecRow = {
   spec: string; kind: ModelKind | string; label: string; slug?: string;
   members?: string[]; member_names?: string[]; reads?: string[]; n_members?: number;
+  /** Members the combiner was fitted on (a pruned gate reads fewer). */
+  n_fitted?: number;
   available: boolean; reason?: string | null; fingerprint?: string | null;
   combiner_kind?: string | null; combiner_fingerprint?: string | null;
   details?: Record<string, unknown>;
@@ -170,7 +172,6 @@ export const URLS = {
   evalRuns: "/api/evaluation/runs",
   evalObject: (id: string) => `/api/evaluation/objects/${enc(id)}`,
   authStatus: "/auth/status",
-  trackingLog: "/api/tracking/log",
   fieldStatus: "/api/inference/field.json",
   fieldDiagnostics: "/api/inference/diagnostics.json",
   fieldRefresh: "/inference/refresh-combiners",

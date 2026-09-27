@@ -157,14 +157,16 @@ const TONE_ICON: Record<string, IconName> = { info: "info", good: "success", war
 /** Inline message block. `bad`/`warn` are announced (role=alert); others are
  *  a polite status. */
 export function Callout(
-  { tone = "info", title, children, action, icon = true, className, onDismiss }: {
+  { tone = "info", title, children, action, icon = true, className, onDismiss, dense = false }: {
     tone?: Tone; title?: ReactNode; children?: ReactNode; action?: ReactNode; icon?: boolean;
     className?: string; onDismiss?: () => void;
+    /** A compact one-line strip (~32 px with sm buttons): the shell's notices. */
+    dense?: boolean;
   },
 ) {
   const urgent = tone === "bad" || tone === "warn";
   return (
-    <div className={cx("ui-callout", `ui-callout--${tone}`, className)} role={urgent ? "alert" : "status"}>
+    <div className={cx("ui-callout", `ui-callout--${tone}`, dense && "ui-callout--dense", className)} role={urgent ? "alert" : "status"}>
       {icon && <Icon name={TONE_ICON[tone] ?? "info"} className="ui-callout__icon" />}
       <div className="ui-callout__body">
         {title != null && <div className="ui-callout__title">{title}</div>}
@@ -291,7 +293,7 @@ export function Kbd({ children, keys }: { children?: ReactNode; keys?: string })
 }
 
 export function ConnBadge({ ok, labels }: { ok: boolean; labels?: [string, string] }) {
-  const [on, off] = labels ?? ["connected", "offline"];
+  const [on, off] = labels ?? ["Connected", "Offline"];
   return <Badge tone={ok ? "good" : "bad"} dot>{ok ? on : off}</Badge>;
 }
 

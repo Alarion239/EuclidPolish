@@ -4,6 +4,7 @@ through stub members, and the per-(tile, spec) output store."""
 
 from __future__ import annotations
 
+import dataclasses
 import json
 
 import numpy as np
@@ -144,6 +145,20 @@ def test_predict_mean_member_and_gates(regime):
     assert members.calls == LABELS[:2]           # only the gate's own members run
     with pytest.raises(ValueError, match="unavailable"):
         mc.predict(mc.resolve_spec("gate:old"), lr, members)
+
+
+def test_pruned_gate_counts_the_members_it_reads(regime):
+    """``n_members`` is what the spec runs (``reads``); a pruned gate keeps
+    the total it was fitted with in ``n_fitted`` (API.md /api/models)."""
+    pruned = dataclasses.replace(_uniform_gate(LABELS), active_members=(0, 2))
+    save_spatial_gate(pruned, str(regime["root"] / "spatial_gate_pruned"))
+    payload = mc.resolve_spec("gate:pruned").to_dict()
+    assert payload["reads"] == [LABELS[0], LABELS[2]]
+    assert payload["n_members"] == 2
+    assert payload["n_fitted"] == 3
+    assert payload["members"] == LABELS
+    full = mc.resolve_spec("gate:two").to_dict()
+    assert full["n_members"] == full["n_fitted"] == 2
 
 
 def test_needed_members_union(regime):

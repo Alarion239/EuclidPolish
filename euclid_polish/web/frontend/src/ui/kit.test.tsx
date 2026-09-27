@@ -4,7 +4,8 @@ import { MemoryRouter, Link, useLocation } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 import { queryClient } from "../api/query";
 import {
-  Button, Checkbox, CopyButton, Dialog, Field, IconButton, Input, JobProgress, JsonTree, Kbd, Kpi, LogView, Menu,
+  Badge, Button, Callout, Card, CardHead, Checkbox, CopyButton, Dialog, PageHead, Stat, Toolbar, ToolbarGroup, ToolbarSeparator,
+  ToolbarSpacer, ToolbarText, Field, IconButton, Input, JobProgress, JsonTree, Kbd, Kpi, LogView, Menu,
   MultiSelect, NumberField, Popover, Section, Segmented, Select, Slider, Switch, Tabs, Toaster, UiProvider, comboKeys, findMatches,
   jsonPath, toast,
 } from "./index";
@@ -45,6 +46,25 @@ describe("Button", () => {
     const a = screen.getByRole("link", { name: "Sky" });
     expect(a.className).toContain("ui-btn");
     expect(a.className).toContain("ui-btn--ghost");
+  });
+
+  it("draws the icon (and iconRight / the loading spinner) inside an asChild link", () => {
+    const { rerender } = render(
+      <MemoryRouter><Button asChild icon="download" iconRight="chevronRight"><Link to="/data">Data</Link></Button></MemoryRouter>);
+    const a = screen.getByRole("link", { name: "Data" });
+    expect(a.getAttribute("href")).toBe("/data");
+    const icons = a.querySelectorAll("svg.ui-icon");
+    expect(icons).toHaveLength(2);
+    expect(a.firstElementChild).toBe(icons[0]);                    // leading icon, label, trailing icon
+    expect(a.querySelector(".ui-btn__label")?.textContent).toBe("Data");
+    expect(a.lastElementChild).toBe(icons[1]);
+    rerender(<MemoryRouter><Button asChild icon="download" loading><Link to="/data">Data</Link></Button></MemoryRouter>);
+    const busy = screen.getByRole("link", { name: "Data" });
+    expect(busy.querySelector(".ui-btn__spin")).toBeTruthy();       // the spinner replaces the icon
+    expect(busy.querySelector("svg.ui-icon")).toBeNull();
+    // no icon: the child renders as authored
+    rerender(<MemoryRouter><Button asChild><Link to="/data"><b>Data</b></Link></Button></MemoryRouter>);
+    expect(screen.getByRole("link", { name: "Data" }).innerHTML).toBe("<b>Data</b>");
   });
 
   it("forwards the ref and the loading click guard in asChild mode", () => {
@@ -350,9 +370,9 @@ describe("JsonTree", () => {
     expect(screen.getByText("\"r1\"")).toBeTruthy();
     expect(screen.getByRole("button", { name: /^run\b/ }).getAttribute("aria-expanded")).toBe("true");
     fireEvent.click(screen.getByRole("button", { name: /^xs\b/, expanded: false }));
-    expect(screen.getByText(/show 50 more of 70/)).toBeTruthy();
-    fireEvent.click(screen.getByText(/show 50 more of 70/));
-    expect(screen.getByText(/show 20 more of 20/)).toBeTruthy();
+    expect(screen.getByText(/Show 50 more of 70/)).toBeTruthy();
+    fireEvent.click(screen.getByText(/Show 50 more of 70/));
+    expect(screen.getByText(/Show 20 more of 20/)).toBeTruthy();
   });
 
   it("is plain lists of disclosure buttons (no tree roles without a tree keyboard model)", () => {
@@ -472,5 +492,78 @@ describe("toast / UiProvider", () => {
   it("a standalone Toaster renders", () => {
     render(<Toaster />);
     expect(document.querySelector("section[aria-label]")).toBeTruthy();
+  });
+});
+
+describe("Headings and label casing", () => {
+  it("renders a CardHead title as an h2, a Section title as an h3 (collapsible too), a PageHead title as an h2 without its eyebrow", () => {
+    render(<>
+      <Card><CardHead eyebrow="Ensemble" title="Members" sub="26 active" /></Card>
+      <Section title="Calibration">body</Section>
+      <Section title="Advanced" collapsible defaultOpen={false}>hidden</Section>
+      <PageHead eyebrow="ops · jobs" title="Local jobs" />
+    </>);
+    expect(screen.getByRole("heading", { level: 2, name: "Members" })).toBeTruthy();
+    expect(screen.getByText("Ensemble").className).toBe("eyebrow");           // a CardHead eyebrow stays
+    expect(screen.getByRole("heading", { level: 3, name: "Calibration" })).toBeTruthy();
+    const adv = screen.getByRole("heading", { level: 3, name: "Advanced" });
+    expect(within(adv).getByRole("button", { name: "Advanced" }).getAttribute("aria-expanded")).toBe("false");
+    expect(screen.getByRole("heading", { level: 2, name: "Local jobs" })).toBeTruthy();
+    expect(screen.queryByText("ops · jobs")).toBeNull();                       // PageHead draws no eyebrow
+    expect(screen.queryAllByRole("heading", { level: 1 })).toHaveLength(0);    // the page's h1 is the workspace's
+  });
+
+  it("shows labels as authored: a Segmented 'HR' stays HR, a σ stays σ", () => {
+    render(<>
+      <Segmented value="hr" onChange={() => {}} aria-label="Tier" options={[{ value: "lr", label: "LR" }, { value: "hr", label: "HR" }]} />
+      <Stat k="Holes >100σ" v="3" />
+      <Badge>Not cached</Badge>
+    </>);
+    expect(screen.getByRole("radio", { name: "HR" }).textContent).toBe("HR");
+    expect(screen.getByText("Holes >100σ").className).toBe("ui-stat__k");
+    expect(screen.getByText("Not cached").className).toBe("ui-badge");
+  });
+});
+
+describe("Toolbar", () => {
+  it("is a named toolbar of labelled groups, with free text, a spacer and a separator", () => {
+    render(
+      <Toolbar label="Curves controls">
+        <ToolbarGroup label="Show"><button type="button">All</button></ToolbarGroup>
+        <ToolbarSeparator />
+        <ToolbarGroup label="Smooth" hideLabel><button type="button">rsm</button></ToolbarGroup>
+        <ToolbarSpacer />
+        <ToolbarText>26 members</ToolbarText>
+      </Toolbar>,
+    );
+    const bar = screen.getByRole("toolbar", { name: "Curves controls" });
+    expect(bar.className).toBe("ui-toolbar");
+    const show = within(bar).getByRole("group", { name: "Show" });
+    expect(within(show).getByText("Show").className).toBe("ui-toolbar__label");   // visible, as authored
+    expect(within(bar).getByText("Smooth").className).toBe("sr-only");
+    expect(within(bar).getByRole("group", { name: "Smooth" })).toBeTruthy();
+    expect(within(bar).getByRole("separator").getAttribute("aria-orientation")).toBe("vertical");
+    expect(within(bar).getByText("26 members").className).toBe("ui-toolbar__text");
+  });
+
+  it("drops its box when plain (a bar inside a card)", () => {
+    render(<Toolbar label="Filters" plain />);
+    expect(screen.getByRole("toolbar", { name: "Filters" }).className).toBe("ui-toolbar ui-toolbar--plain");
+  });
+});
+
+describe("Callout", () => {
+  it("has a dense one-line variant (the shell's notice strip) with its action and dismiss", () => {
+    const dismiss = vi.fn();
+    render(<Callout dense tone="info" title="A newer build" onDismiss={dismiss} action={<Button size="sm">Reload</Button>} />);
+    const box = screen.getByRole("status");
+    expect(box.classList.contains("ui-callout--dense")).toBe(true);
+    expect(within(box).getByRole("button", { name: "Reload" })).toBeTruthy();
+    fireEvent.click(within(box).getByRole("button", { name: "Dismiss" }));
+    expect(dismiss).toHaveBeenCalledTimes(1);
+  });
+  it("is roomy by default", () => {
+    render(<Callout title="Note" />);
+    expect(screen.getByRole("status").classList.contains("ui-callout--dense")).toBe(false);
   });
 });

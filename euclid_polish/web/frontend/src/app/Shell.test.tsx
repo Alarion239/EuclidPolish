@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClientProvider } from "@tanstack/react-query";
+import { StrictMode } from "react";
 import { RouterProvider, createMemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useJobsStore, type Job } from "../api/jobs";
@@ -92,13 +93,14 @@ const fakes: Record<string, WorkspaceLoader> = Object.fromEntries(MANIFEST.works
   return [ws.id, async () => ({ default: () => <Workspace id={ws.id} tabs={tabs}>{root}</Workspace> })];
 }));
 
-function mount(url = "/sky/atlas") {
+function mount(url = "/sky/atlas", { strict = false }: { strict?: boolean } = {}) {
   const router = createMemoryRouter(buildRoutes({ components: fakes, layout: Shell }), { initialEntries: [url], future: ROUTER_FUTURE });
-  render(
+  const app = (
     <QueryClientProvider client={queryClient}>
       <RouterProvider router={router} future={{ v7_startTransition: true }} />
-    </QueryClientProvider>,
+    </QueryClientProvider>
   );
+  render(strict ? <StrictMode>{app}</StrictMode> : app);
   return router;
 }
 
@@ -295,8 +297,7 @@ describe("Shell", () => {
       changed_count: 3, started_at: "2026-09-26T20:58:25Z", pid: 185, dist: null,
     } });
     mount();
-    const title = await screen.findByText(
-      "Backend code changed since the server started — restart it to load the new code.");
+    const title = await screen.findByText("Backend code changed — restart the server to use it.");
     const banner = title.closest(".ui-callout") as HTMLElement;
     expect(within(banner).queryByText("euclid_polish/web/routes/real.py")).toBeNull();   // collapsed
     const details = within(banner).getByRole("button", { name: "Details" });
@@ -310,7 +311,24 @@ describe("Shell", () => {
     const rail = screen.getByRole("navigation", { name: "Workspaces" });
     expect(within(rail).getByText("Backend code changed — restart the server")).toBeTruthy();
     fireEvent.click(within(banner).getByRole("button", { name: "Dismiss" }));
-    expect(screen.queryByText(/Backend code changed since the server started/)).toBeNull();
+    expect(screen.queryByText(/restart the server to use it/)).toBeNull();
+  });
+
+  it("puts the restart notice in the stage's one notice strip (dense, not pinned); no strip while nothing applies", async () => {
+    routes["GET /api/version"] = () => ({ body: {
+      boot_commit: "a1", boot_short: "a1", head_commit: "b2", head_short: "b2", behind: true, dirty: false,
+      changed_files: [], changed_count: 1, started_at: null, pid: 185, dist: null,
+    } });
+    mount();
+    const title = await screen.findByText("Backend code changed — restart the server to use it.");
+    const notice = title.closest(".ui-callout") as HTMLElement;
+    expect(notice.classList.contains("ui-callout--dense")).toBe(true);
+    const strips = document.querySelectorAll(".shell__banner");
+    expect(strips.length).toBe(1);
+    expect(strips[0].contains(notice)).toBe(true);
+    expect(strips[0].closest("main.stage")).toBeTruthy();   // in the scrolling stage, under the top bar
+    expect(/\.shell__banner:empty\s*\{\s*display:\s*none/.test(shellCss)).toBe(true);
+    expect(/\.shell__banner\s*\{[^}]*position:\s*(sticky|fixed)/.test(shellCss)).toBe(false);
   });
 
   it("shows no restart banner when HEAD moved but the loaded code did not change", async () => {
@@ -404,7 +422,7 @@ describe("Shell", () => {
     expect(screen.queryByRole("button", { name: /^More tabs/ })).toBeNull();
   });
 
-  it("Esc closes the docked inspector from the page too, and focus returns to what opened it", async () => {
+  it("moves focus into the inspector on open, Esc closes it from the page, and focus returns to the opener", async () => {
     routes["GET /api/jobs/j1"] = () => ({ body: job("j1") });
     mount();
     await screen.findByText("sky:atlas");
@@ -412,7 +430,12 @@ describe("Shell", () => {
     opener.focus();
     act(() => openInspector({ kind: "job", id: "local/j1" }));
     const panel = await screen.findByRole("complementary", { name: "Inspector" });
-    expect(document.activeElement).toBe(opener);                 // opening never steals focus
+    await waitFor(() => expect(document.activeElement).toBe(panel));   // opening moves focus in
+    // switching targets while open leaves focus where it is
+    opener.focus();
+    act(() => openInspector({ kind: "job", id: "local/j0" }));
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    expect(document.activeElement).toBe(opener);
     // Esc with focus on the page (not in the inspector) closes it
     press("Escape", { code: "Escape" });
     await waitFor(() => expect(screen.queryByRole("complementary", { name: "Inspector" })).toBeNull());
@@ -420,12 +443,67 @@ describe("Shell", () => {
     // closing from inside the inspector hands focus back to the opener
     act(() => openInspector({ kind: "job", id: "local/j1" }));
     const again = await screen.findByRole("complementary", { name: "Inspector" });
-    const close = within(again).getByRole("button", { name: "Close inspector" });
-    close.focus();
-    fireEvent.click(close);
+    await waitFor(() => expect(document.activeElement).toBe(again));
+    fireEvent.click(within(again).getByRole("button", { name: "Close inspector" }));
     await waitFor(() => expect(screen.queryByRole("complementary", { name: "Inspector" })).toBeNull());
     await waitFor(() => expect(document.activeElement).toBe(opener));
     expect(panel.isConnected).toBe(false);
+  });
+
+  it("keeps focus in the opened inspector under StrictMode's double effects (the dev build)", async () => {
+    routes["GET /api/jobs/j1"] = () => ({ body: job("j1") });
+    mount("/sky/atlas", { strict: true });
+    await screen.findByText("sky:atlas");
+    const opener = await screen.findByRole("button", { name: "Jobs: 1 running" });
+    opener.focus();
+    act(() => openInspector({ kind: "job", id: "local/j1" }));
+    const panel = await screen.findByRole("complementary", { name: "Inspector" });
+    await act(async () => { await new Promise((r) => setTimeout(r, 10)); });
+    expect(document.activeElement).toBe(panel);
+    fireEvent.click(within(panel).getByRole("button", { name: "Close inspector" }));
+    await waitFor(() => expect(document.activeElement).toBe(opener));
+  });
+
+  it("Esc closes the inspector from a field too, but an open dialog or a key the page used keeps it", async () => {
+    routes["GET /api/jobs/j1"] = () => ({ body: job("j1") });
+    mount();
+    await screen.findByText("sky:atlas");
+    const field = document.createElement("input");
+    document.getElementById("main")!.appendChild(field);
+    const escOn = (el: Element) => act(() => {
+      el.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true, cancelable: true }));
+    });
+    try {
+      act(() => openInspector({ kind: "job", id: "local/j1" }));
+      await screen.findByRole("complementary", { name: "Inspector" });
+      // a key something nearer consumed (the viewer's focus mode, a zoomed chart): kept
+      const eat = (e: KeyboardEvent) => e.preventDefault();
+      field.addEventListener("keydown", eat);
+      field.focus();
+      escOn(field);
+      expect(screen.getByRole("complementary", { name: "Inspector" })).toBeTruthy();
+      field.removeEventListener("keydown", eat);
+      // an open dialog (the palette) takes Esc first; the inspector stays
+      act(() => useShellUi.getState().openOnly("palette"));
+      const palette = await screen.findByRole("dialog");
+      escOn(palette);
+      expect(screen.getByRole("complementary", { name: "Inspector" })).toBeTruthy();
+      act(() => useShellUi.getState().closeAll());
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+      // typing in a field: Esc closes it
+      field.focus();
+      escOn(field);
+      await waitFor(() => expect(screen.queryByRole("complementary", { name: "Inspector" })).toBeNull());
+    } finally { field.remove(); }
+  });
+
+  it("renders one visually hidden h1 per tab, in plain words", async () => {
+    mount("/data/records");
+    await screen.findByText("data:records");
+    const h1s = screen.getAllByRole("heading", { level: 1 });
+    expect(h1s).toHaveLength(1);
+    expect(h1s[0].textContent).toBe("Records, Data");
+    expect(h1s[0].classList.contains("sr-only")).toBe(true);
   });
 
   describe("below 900 px (the drawer and the inspector sheet)", () => {
@@ -471,6 +549,19 @@ describe("Shell", () => {
       await waitFor(() => expect(new URLSearchParams(router.state.location.search).get("inspect")).toBe("job:local/j1"));
       expect(screen.getByRole("dialog", { name: "Inspector" })).toBe(sheet);
     });
+
+    it("opening the sheet focuses the panel itself, not its first button (no tooltip, one Esc closes)", async () => {
+      routes["GET /api/jobs/j1"] = () => ({ body: job("j1") });
+      mount();
+      await screen.findByText("sky:atlas");
+      act(() => openInspector({ kind: "job", id: "local/j1" }));
+      const sheet = await screen.findByRole("dialog", { name: "Inspector" });
+      await within(sheet).findByRole("heading", { name: "job j1" });
+      await waitFor(() => expect(document.activeElement).toBe(sheet.querySelector("aside.inspector")));
+      expect(document.querySelector("[role=tooltip]")).toBeNull();
+      fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+      await waitFor(() => expect(screen.queryByRole("dialog", { name: "Inspector" })).toBeNull());
+    });
   });
 
   it("names the inspector's resize handle", async () => {
@@ -479,7 +570,7 @@ describe("Shell", () => {
     await screen.findByText("sky:atlas");
     act(() => openInspector({ kind: "job", id: "local/j1" }));
     await screen.findByRole("complementary", { name: "Inspector" });
-    expect(screen.getByRole("separator", { name: "Resize the inspector" })).toBeTruthy();
+    expect(screen.getByRole("separator", { name: "Resize inspector" })).toBeTruthy();
   });
 
   it("re-renders the active tab, a tabless page and the inspector on a theme flip", async () => {

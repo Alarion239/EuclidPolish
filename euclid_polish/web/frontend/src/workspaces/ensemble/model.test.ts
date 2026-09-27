@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { KneeModel, TrainingJob } from "./api";
 import {
-  benchmarkExperiment, dbDelta, facetOf, facetValues, formatE, gateUsage, heldOutComparable, integrateKnee, kneeLeaderboard,
-  kneeText, memberLabel, memberMatches, memberName, memberNumber, movieStatus, parseMemberList, relativeTo, smooth, stepsText,
-  stampKnee, variantLabel,
+  benchmarkChoices, benchmarkExperiment, dbDelta, facetOf, facetValues, formatE, gateUsage, heldOutComparable, holesText,
+  integrateKnee, kneeLeaderboard, kneeModelName, kneeText, memberLabel, memberMatches, memberName, memberNumber, membersButtonText,
+  movieStatus, parseMemberList, readsText, relativeTo, smooth, stepsText, stampBacking, stampKnee, variantLabel,
 } from "./model";
 import {
   RECIPE_RESOURCES, buildParams, buildSpec, continueTarget, defaultForm, defaultResources, formFromJob, jobRegime, lastBatch,
@@ -257,6 +257,62 @@ describe("real-data benchmark", () => {
     expect(benchmarkExperiment([])).toBeNull();
     expect(benchmarkExperiment(undefined)).toBeNull();
   });
+  it("scores the experiment the user picked; an unknown pick falls back to the default", () => {
+    const exps = [exp("e-new", "2026-09-26", ["gate:26m"], 1), exp("e-prod", "2026-09-25", ["production", "gate:linear"], 9)];
+    expect(benchmarkExperiment(exps, "e-new")?.expId).toBe("e-new");
+    expect(benchmarkExperiment(exps, "e-new")?.bySpec.get("production")).toBeUndefined();
+    expect(benchmarkExperiment(exps, "gone")?.expId).toBe("e-prod");
+    expect(benchmarkExperiment(exps, "")?.expId).toBe("e-prod");
+  });
+  it("keeps the hole % per band and names the worst band", () => {
+    const perBand = { VIS: { hole_pct: 19.2 }, Y_E: { hole_pct: 13 }, J_E: { hole_pct: 19 }, H_E: { hole_pct: 30.4 } };
+    const b = benchmarkExperiment([{ id: "e", created: "2026-09-27", label: "cached tile ra0273", tiles: ["tile/a"],
+      summary: { production: { n_tiles: 1, per_band: perBand, summary: { hole_pct_mean: 20.4, hole_pct_max: 30.4 } } } }]);
+    const bench = b?.bySpec.get("production");
+    expect(bench?.bands.map((x) => [x.short, x.pct])).toEqual([["VIS", 19.2], ["Y", 13], ["J", 19], ["H", 30.4]]);
+    expect(bench?.worst).toEqual({ band: "H_E", short: "H", pct: 30.4 });
+    expect(b?.tileSet).toBe("cached tile ra0273");
+    expect(holesText(bench!)).toBe("19 · 13 · 19 · 30");
+    // an experiment without per-band values: no bands, no worst band
+    const old = benchmarkExperiment([exp("o", "2026-09-01", ["production"], 3)])?.bySpec.get("production");
+    expect(old?.bands).toEqual([]);
+    expect(old?.worst).toBeNull();
+    expect(holesText(old!)).toBe("10.0 % (mean)");
+  });
+  it("names the tile set by the experiment label, else its tile count", () => {
+    expect(benchmarkExperiment([exp("e", "2026-09-25", ["production"], 9)])?.tileSet).toBe("9 real tiles");
+    expect(benchmarkExperiment([exp("e", "2026-09-25", ["production"], 1)])?.tileSet).toBe("1 real tile");
+  });
+  it("lists the experiments to pick from, newest first, marking those that ran production", () => {
+    const choices = benchmarkChoices([
+      exp("e-old", "2026-09-20T10:00:00Z", ["production"], 4),
+      { id: "no-summary", created: "2026-09-30" },
+      { ...exp("e-new", "2026-09-26T08:00:00Z", ["gate:26m"], 1), label: "NEXUS core" },
+    ]);
+    expect(choices.map((c) => c.value)).toEqual(["e-new", "e-old"]);
+    expect(choices[0]).toMatchObject({ label: "NEXUS core · 1 tile · 2026-09-26", production: false });
+    expect(choices[1]).toMatchObject({ label: "4 real tiles · 2026-09-20", production: true });
+  });
+});
+
+describe("member counts and the disagreement member menu", () => {
+  it("says how many members a variant reads (a pruned gate: of how many)", () => {
+    expect(readsText({ n_reads: 6, n_members: 20, pruned: true })).toBe("6 of 20 members");
+    expect(readsText({ n_reads: 26, n_members: 26, pruned: false })).toBe("26 members");
+    expect(readsText({ n_reads: 1, n_members: 1, pruned: false })).toBe("1 member");
+  });
+  it("names the picked members on the menu button", () => {
+    expect(membersButtonText([])).toBe("Members: none · Pick");
+    expect(membersButtonText(["196"])).toBe("Members: 196 · Change");
+    expect(membersButtonText(["196", "195"])).toBe("Members: 196, 195 · Change");
+    expect(membersButtonText(["196", "195", "170", "171"])).toBe("Members: 196, 195 +2 · Change");
+  });
+  it("names knee-leaderboard models the way the Knee tab shows them", () => {
+    expect(kneeModelName({ id: "member_196", kind: "member", label: "196·psnr" })).toBe("#196");
+    expect(kneeModelName({ id: "mean", kind: "mean", label: "mean" })).toBe("plain mean");
+    expect(kneeModelName({ id: "spatial_gate", kind: "combiner", label: "Spatial gate" })).toBe("production gate");
+    expect(kneeModelName({ id: "rbf", kind: "combiner", label: "RBF" })).toBe("RBF");
+  });
 });
 
 describe("train resources and continue targets", () => {
@@ -285,6 +341,21 @@ describe("train resources and continue targets", () => {
     expect(continueTarget(rows, ["member_178", "member_179"])).toBe(80000);
     expect(continueTarget(rows, ["member_7"])).toBeNull();
     expect(continueTarget(rows, [])).toBeNull();
+  });
+});
+
+describe("stampBacking (the pixel back-trace's exact device-size backing)", () => {
+  it("fits whole device pixels into a fractional css width and snaps the css box to them", () => {
+    expect(stampBacking(141.5, 2)).toEqual({ side: 283, css: 141.5 });
+    expect(stampBacking(141.3, 2)).toEqual({ side: 282, css: 141 });
+    expect(stampBacking(124, 2)).toEqual({ side: 248, css: 124 });
+    expect(stampBacking(100.4, 1)).toEqual({ side: 100, css: 100 });
+    expect(stampBacking(0, 2)).toBeNull();
+    expect(stampBacking(120, 0)).toBeNull();
+  });
+  it("never rounds a float error down by a whole pixel", () => {
+    expect(stampBacking(0.1 * 3 * 100, 1)?.side).toBe(30);   // 30.000000000000004
+    expect(stampBacking(94.33333333, 3)?.side).toBe(283);    // 282.99999999
   });
 });
 

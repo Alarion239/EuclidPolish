@@ -2,8 +2,11 @@
    v2 over the `ensemble` collection — `sr` is the production spatial gate,
    `mean` the plain mean — FIRST, at the top of the page (nothing above its
    bar but the tab strip), sized to the viewport by the viewer's fit.
-   The members are reachable without scrolling from the "Pick members" menu
-   in the tab strip (right of the tabs, ../aside.ts): what is shown, Top 5 /
+   It opens on LR | SR | HR (SR = the production gate), so the frame always
+   has something to compare against. The members are reachable without
+   scrolling from the member menu in the tab strip (right of the tabs,
+   ../aside.ts), whose button names what the movie shows ("Members: 196 ·
+   Change", "Members: none · Pick"): what is shown, Top 5 /
    Clear, a search box (number, loss, knee), loss filter chips, the sort and
    the member toggles, over the movie so it updates as you pick. The same
    picker sits under the viewer as a panel for bulk work (it shares the
@@ -21,7 +24,7 @@ import { ImageViewer, type ViewerApi } from "../../../viewer";
 import { useTabAside } from "../aside";
 import { url, useMembers, useMode, type MemberRow } from "../api";
 import { useFacetColors } from "../common";
-import { db, kneeText, memberMatches, memberNumber, movieStatus } from "../model";
+import { db, kneeText, memberMatches, memberNumber, membersButtonText, movieStatus } from "../model";
 import "../ensemble.css";
 
 type Sort = "index" | "knee" | "psnr" | "loss";
@@ -172,11 +175,13 @@ export default function Disagreement() {
     shown, picks, sel: selSet, find, setFind, loss, setLoss, losses, sort, setSort,
     colorOf: (row: { loss: string }) => colors.of(row), toggle,
   };
+  const [menuWhat, menuAction] = membersButtonText(sel).split(" · ");
   const menu = aside && picks.length > 0 && createPortal(
     <Popover open={menuOpen} onOpenChange={setMenuOpen} align="end" label="Pick members" className="ens-menu"
       trigger={
-        <Button size="sm" variant={sel.length ? "default" : "primary"} iconRight="chevronDown" className="ens-menu__trigger">
-          {sel.length ? `${sel.length} member${sel.length === 1 ? "" : "s"}` : "Pick members"}
+        <Button size="sm" variant={sel.length ? "default" : "primary"} iconRight="chevronDown" className="ens-menu__trigger"
+          title={`${status}. SR is the production gate; picked members add their own SR frame (one) or the disagreement movie (two or more).`}>
+          {menuWhat}<span className="ens-menu__action"> · {menuAction}</span>
         </Button>
       }>
       <div className="ens-menu__head">

@@ -429,17 +429,17 @@ def test_grid_geometry_budget_downsampling_and_cache(saved_result_client, monkey
     last = geometry.panel_bounds_mm(4, 2)
     assert right[0] - (first[0] + first[2]) == pytest.approx(geometry.gap_mm)
     assert first[1] - (below[1] + below[3]) == pytest.approx(geometry.gap_mm)
-    assert geometry.grid_left_mm - geometry.row_title_track_mm == pytest.approx(
-        geometry.outer_padding_mm
-    )
-    assert last[0] + last[2] == pytest.approx(
-        viewer_results.A4_WIDTH_MM - geometry.outer_padding_mm
-    )
-    assert last[1] == pytest.approx(geometry.outer_padding_mm)
+    # The table (row titles + cells) is centred across the page, at least
+    # one gap from each edge, and hangs from the top padding.
+    table_left = geometry.grid_left_mm - geometry.row_title_track_mm
+    right_margin = viewer_results.A4_WIDTH_MM - (last[0] + last[2])
+    assert table_left == pytest.approx(right_margin)
+    assert table_left >= geometry.outer_padding_mm - 1e-9
     grid_top = first[1] + first[3]
     assert (
         viewer_results.A4_HEIGHT_MM - grid_top - geometry.column_title_track_mm
     ) == pytest.approx(geometry.outer_padding_mm)
+    assert last[1] >= geometry.outer_padding_mm - 1e-9
 
     budget = viewer_results._grid_request_budget(
         [manifest, manifest, manifest], recipes, geometry,
@@ -601,6 +601,77 @@ def test_saved_fits_checksum_is_cached_and_tampering_is_rejected(
     assert "checksum" in response.get_json()["error"]
     assert calls == 2
     assert client.get("/viewer/results").get_json()["results"] == []
+
+
+def test_grid_row_titles_are_sized_to_their_text(saved_result_client):
+    """A one-column sheet: the row titles sit beside the cells (a text-wide
+    track, horizontal), not centred in the whole spare page width, and never
+    below the minimum title size."""
+    labels = ["VIS Dirty", "H_E Dirty", "VIS + H_E Dirty", "VIS SR", "H_E SR", "VIS + H_E SR"]
+    geometry = viewer_results._grid_geometry(6, 1, 120, row_labels=labels, column_labels=["sky 0"])
+    widest = max(viewer_results._text_size_mm(label, geometry.title_font_pt)[0] for label in labels)
+    assert geometry.row_labels_horizontal
+    assert geometry.title_font_pt >= viewer_results.MIN_GRID_TITLE_PT
+    # the track is the text plus one gap on each side, no wider
+    assert geometry.row_title_track_mm == pytest.approx(widest + 2 * geometry.gap_mm)
+    cell = geometry.panel_bounds_mm(0, 0)
+    assert cell[0] - geometry.row_title_right_mm == pytest.approx(geometry.gap_mm)
+    # the table is centred: equal margins left and right
+    table_left = geometry.grid_left_mm - geometry.row_title_track_mm
+    assert table_left == pytest.approx(viewer_results.A4_WIDTH_MM - (cell[0] + cell[2]))
+    # the column title is one line above the cells, not half a page away
+    assert geometry.column_title_track_mm <= viewer_results.MIN_COLUMN_TITLE_TRACK_MM + 1e-9
+
+    wide = viewer_results._grid_geometry(3, 5, 120, row_labels=labels[:3], column_labels=["a"] * 5)
+    assert not wide.row_labels_horizontal            # width-bound: rotated in the narrow track
+    assert wide.row_title_track_mm == pytest.approx(viewer_results.MIN_ROW_TITLE_TRACK_MM)
+    assert wide.title_font_pt >= viewer_results.MIN_GRID_TITLE_PT
+    # a long column title is shortened to its cell
+    fitted = viewer_results._fit_label("cached tile ra0273.07050_decp066.36241", wide.title_font_pt, wide.cell_side_mm)
+    assert viewer_results._text_size_mm(fitted, wide.title_font_pt)[0] <= wide.cell_side_mm
+    assert fitted.endswith("…")
+
+
+def test_grid_marks_missing_cells_in_place(saved_result_client, tmp_path):
+    """``missing=blank`` draws every available cell and a grey "Not
+    available" cell where a result lacks the row's recipe; without it the
+    request is refused as before."""
+    client, _root, _cubes = saved_result_client
+    synthetic_id = _post_result(client)["id"]
+    real_payload = {
+        "collection": "nexus-field", "index": 0, "tiers": ["lr", "sr", "jwst"],
+        "params": {"field": "nexus-f200w"},
+        "selection": {"u": 0.5, "v": 0.5, "angular_side_arcsec": 0.4},
+        "display": {"color": "VIS_H", "knee": 100.0, "gain": 1.0},
+    }
+    real_id = _post_result(client, real_payload)["id"]
+    query = [("result", synthetic_id), ("result", real_id), ("row", "dirty:VIS"), ("row", "hr:VIS"), ("dpi", "120")]
+    assert client.get("/viewer/results/grid.png", query_string=query).status_code == 400
+    png = client.get("/viewer/results/grid.png", query_string=[*query, ("missing", "blank")])
+    assert png.status_code == 200
+    out = tmp_path / "partial.png"
+    out.write_bytes(png.data)
+    manifests = [viewer_results.get_result(synthetic_id), viewer_results.get_result(real_id)]
+    geometry = viewer_results._grid_geometry_for(manifests, [("dirty", "VIS"), ("hr", "VIS")], 120)
+    with Image.open(out) as image:
+        rgb = np.asarray(image.convert("RGB"))
+
+    def centre(row, col):
+        left, bottom, width, height = geometry.panel_bounds_mm(row, col)
+        x = (left + width / 2) / viewer_results.A4_WIDTH_MM * rgb.shape[1]
+        y = (1 - (bottom + height * 0.2) / viewer_results.A4_HEIGHT_MM) * rgb.shape[0]
+        return rgb[int(y), int(x)].astype(int)
+
+    grey = np.array(viewer_results.GRID_MISSING_RGB)
+    assert np.abs(centre(1, 1) - grey).max() <= 2          # the real result has no HR: grey
+    assert np.abs(centre(1, 0) - grey).max() > 2           # the synthetic HR cell is drawn
+    assert np.abs(centre(0, 1) - grey).max() > 2
+    only_missing = [("result", real_id), ("row", "hr:VIS"), ("missing", "blank")]
+    response = client.get("/viewer/results/grid.png", query_string=only_missing)
+    assert response.status_code == 400
+    assert "no grid cell" in response.get_json()["error"]
+    assert client.get("/viewer/results/grid.png",
+                      query_string=[*query, ("missing", "maybe")]).status_code == 400
 
 
 def test_grid_recipes_are_intersection_of_every_result(saved_result_client):

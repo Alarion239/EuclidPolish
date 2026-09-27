@@ -4,9 +4,11 @@
    (viewer/color.ts) on the viewer's neutral dark light table. The traced
    pixels sit at a few e⁻, so each ROW gets its own asinh knee from the traced
    pixel's level (`stampKnee`: its |target|, σ and |err|; shared by the row's
-   LR / target / SR stamps so they stay comparable; white at 30× the knee) —
-   the Display panel's fixed 100 e⁻ knee left the target and SR stamps black.
-   "Display panel knee" switches back. The colour and brightness follow the
+   LR / target / SR stamps so they stay comparable; white at 30× the knee),
+   named in the row's header line — the Display panel's fixed 100 e⁻ knee
+   left the target and SR stamps black. "Display panel knee" switches back.
+   The table is the viewer's light table (`.cv-root .cv-table`: its scoped dark
+   palette, one definition in viewer.css). The colour and brightness follow the
    Display panel. Stamps fill the row (≤ 240 px each), each backing store at
    the exact device size (viewer/draw.ts: equal-sized pixels, no dropped
    rows) with the sampled pixel ringed; a picked cell scrolls the trace into
@@ -21,7 +23,7 @@ import { Button, EmptyState, IconButton, Segmented, Skeleton } from "../../ui";
 import { renderCubeImageData, type ColorMeta, type RenderOpts } from "../../viewer";
 import { drawFrame } from "../../viewer/draw";
 import { url, type Mode } from "./api";
-import { formatE, stampKnee } from "./model";
+import { formatE, stampBacking, stampKnee } from "./model";
 
 export type Pick = { diag: "std_err" | "bright_std" | "combiner_feature_error"; i: number; j: number };
 type Stamp = {
@@ -42,14 +44,24 @@ function b64ToF32(b64: string): Float32Array {
   return new Float32Array(bytes.buffer);
 }
 
-/** Paint natural-size pixels into the canvas at its displayed device size
- *  (css width × dpr): nearest-neighbour at an integer scale, else sharp
- *  bilinear (viewer/draw.ts) — a 328 px backing shown at 284 device px
- *  dropped rows. */
+/** The stamp box's laid-out width in CSS px (fractional: the grid column). */
+function boxWidth(cv: HTMLCanvasElement): number {
+  return (cv.parentElement ?? cv).getBoundingClientRect().width;
+}
+
+/** Paint natural-size pixels into the canvas at its exact displayed device
+ *  size: the backing is the whole number of device pixels that fits the
+ *  stamp box (`stampBacking`) and the canvas's CSS box snaps to it, so the
+ *  pixelated canvas is never rescaled (nearest-neighbour at an integer scale,
+ *  else sharp bilinear, viewer/draw.ts) — a 284 px backing shown in a
+ *  141.5 css px cell (283 device px) dropped a row. */
 function paint(cv: HTMLCanvasElement, img: ImageData) {
   const dpr = Math.max(1, Math.min(window.devicePixelRatio || 1, 2));
-  const side = cv.clientWidth > 0 ? Math.round(cv.clientWidth * dpr) : img.width * UPSCALE;
+  const fit = stampBacking(boxWidth(cv), dpr);
+  const side = fit?.side ?? img.width * UPSCALE;
   if (cv.width !== side || cv.height !== side) { cv.width = side; cv.height = side; }
+  const css = fit ? `${fit.css}px` : "";
+  if (cv.style.width !== css) { cv.style.width = css; cv.style.height = css; }
   const ctx = cv.getContext("2d");
   if (!ctx) return;
   const off = document.createElement("canvas");
@@ -59,7 +71,8 @@ function paint(cv: HTMLCanvasElement, img: ImageData) {
   drawFrame(ctx, off, { sx: 0, sy: 0, sw: img.width, sh: img.height, dx: 0, dy: 0, dw: side, dh: side }, 1, document.createElement("canvas"));
 }
 
-/** Repaint when the stamp's displayed size changes. */
+/** Repaint when the stamp box's displayed size changes (the box, not the
+ *  canvas: the canvas's own CSS size is pinned to its backing). */
 function useStampPaint(ref: React.RefObject<HTMLCanvasElement>, render: (() => ImageData | null) | null, deps: unknown[]) {
   useLayoutEffect(() => {
     const cv = ref.current;
@@ -68,9 +81,9 @@ function useStampPaint(ref: React.RefObject<HTMLCanvasElement>, render: (() => I
     if (!img) return;
     paint(cv, img);
     if (typeof ResizeObserver === "undefined") return;
-    let last = cv.clientWidth;
-    const ro = new ResizeObserver(() => { if (cv.clientWidth !== last) { last = cv.clientWidth; paint(cv, img); } });
-    ro.observe(cv);
+    let last = boxWidth(cv);
+    const ro = new ResizeObserver(() => { const w = boxWidth(cv); if (w !== last) { last = w; paint(cv, img); } });
+    ro.observe(cv.parentElement ?? cv);
     return () => ro.disconnect();
     // the caller lists what the rendered image depends on
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -177,25 +190,29 @@ export function PixelTrace({ mode, pick, model, axis, cellLabel, targetLabel, on
           : !t || !t.stamps.length ? <EmptyState compact icon="search" title="No pixels sampled in this cell">Try a denser cell.</EmptyState>
             : (
               <>
-                <div className="ens-trace__table" role="list" aria-label={`${t.stamps.length} sampled pixels`}>
+                <div className="ens-trace__table cv-root cv-table" role="list" aria-label={`${t.stamps.length} sampled pixels`}>
                   <div className="ens-trace__cols" aria-hidden>
                     <span>LR</span><span>{targetLabel}</span><span>{srLabel(t.stamps[0])}</span><span>σ (members)</span><span>Pixel</span>
                   </div>
                   {t.stamps.map((s, k) => {
                     const opts = rowOpts(s);
                     return (
-                      <div key={k} className="ens-trace__row" role="listitem">
+                      <div key={k} className="ens-trace__row" role="listitem" aria-label={`Field ${s.field}, x ${s.x}, y ${s.y}`}>
+                        <div className="ens-trace__rowhead">
+                          <strong>Field {s.field}</strong>
+                          <span>x {s.x}, y {s.y}</span>
+                          <span className="ens-trace__knee" title={kneeFrom === "pixel"
+                            ? "One asinh knee for this row's LR, target and SR stamps: the traced pixel's own level (white at 30× it)"
+                            : "The Display panel's knee"}>knee {formatE(opts.knee ?? K0)} e⁻</span>
+                        </div>
                         <ImageStamp b64={s.lr} size={t.size} center={s.center} bands={t.bands} meta={colorMeta} opts={opts} label="LR" />
                         <ImageStamp b64={s.hr} size={t.size} center={s.center} bands={t.bands} meta={colorMeta} opts={opts} label={targetLabel} />
                         <ImageStamp b64={s.sr} size={t.size} center={s.center} bands={t.bands} meta={colorMeta} opts={opts} label={srLabel(s)} />
                         <SigmaStamp b64={s.std} size={t.size} center={s.center} stretch={t.stretch} />
                         <div className="ens-trace__nums">
-                          <strong>Field {s.field}</strong>
-                          <span>x {s.x}, y {s.y}</span>
                           <span>σ {formatE(s.std_val)} e⁻</span>
                           <span>|err| {formatE(s.err_val)} e⁻</span>
                           <span>{targetLabel} {formatE(s.hr_val)} e⁻</span>
-                          <span className="ens-trace__knee">knee {formatE(opts.knee ?? K0)} e⁻</span>
                           <Link to={fieldHref(mode, s.field)}>Open field {s.field} in the viewer</Link>
                         </div>
                       </div>

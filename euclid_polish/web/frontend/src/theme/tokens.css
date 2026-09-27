@@ -39,8 +39,14 @@
   --rail-bg: linear-gradient(180deg, #f4f4f6, #eeeef1);
   --app-bg: #f7f7f8;
   --overlay: #0f172a59;     /* dialog / drawer scrim */
+  --scroll-shade: #0f172a2e; /* a table's "more columns this way" edge: always a darkening */
   --tooltip-bg: #17202e;
   --tooltip-text: #f7f7f8;
+  /* theme-independent surfaces (the same in dark): the paper-white inset of a
+     server-rendered matplotlib PNG, and the neutral near-black behind an
+     astronomy image (a thumbnail's letterbox; matches the viewer's ink) */
+  --paper: #ffffff;
+  --image-ink: #050506;
 
   /* — ink — */
   --text: #17202e;
@@ -96,8 +102,8 @@
   --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
   --fs-2xs: 10px;
-  --fs-xs: 11px;            /* eyebrows, table headers */
-  --fs-sm: 12px;            /* dense UI, captions */
+  --fs-xs: 11px;            /* captions, badges (sm) */
+  --fs-sm: 12px;            /* labels, table headers, dense UI */
   --fs-md: 13px;            /* controls */
   --fs-base: 14px;          /* body */
   --fs-lg: 15px;            /* card titles */
@@ -189,6 +195,7 @@
     radial-gradient(900px 600px at -8% 8%, #12203a44, transparent 55%),
     #080b11;
   --overlay: #000000a6;
+  --scroll-shade: #00000099;
   --tooltip-bg: #e5edf7;
   --tooltip-text: #0e131c;
 

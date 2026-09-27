@@ -65,20 +65,47 @@ export function pixelValues(rec: PixelCube, x: number, y: number): number[] | nu
   return Array.from(rec.data.subarray(o, o + rec.c));
 }
 
-const emptyCache = new WeakMap<Float32Array, boolean>();
+/** A cube with less than this share of finite values has no coverage here. */
+export const MIN_COVERAGE = 0.01;
 
-/** True when a cube has no finite pixel at all (a JWST cutout outside the
- *  mosaic): the frame shows a caption instead of a flat NaN-coloured square.
- *  Cached per data array. */
-export function cubeIsEmpty(rec: { data: Float32Array } | null | undefined): boolean {
+export type Coverage = { finite: number; total: number; fraction: number };
+const coverageCache = new WeakMap<Float32Array, Coverage>();
+
+/** How many of a cube's values are finite (cached per data array). */
+export function cubeCoverage(rec: { data: Float32Array } | null | undefined): Coverage {
   const d = rec?.data;
-  if (!d || d.length === 0) return false;
-  const hit = emptyCache.get(d);
-  if (hit != null) return hit;
-  let empty = true;
-  for (let i = 0; i < d.length; i++) if (Number.isFinite(d[i])) { empty = false; break; }
-  emptyCache.set(d, empty);
-  return empty;
+  if (!d || d.length === 0) return { finite: 0, total: 0, fraction: 1 };
+  const hit = coverageCache.get(d);
+  if (hit) return hit;
+  let finite = 0;
+  for (let i = 0; i < d.length; i++) if (Number.isFinite(d[i])) finite++;
+  const out = { finite, total: d.length, fraction: finite / d.length };
+  coverageCache.set(d, out);
+  return out;
+}
+
+/** A cube with fewer finite values than this (and under MIN_COVERAGE) is
+ *  empty; with more it is only sparse (a corner of real data, ~32 × 32 px
+ *  or larger, stays visible). */
+export const EMPTY_MAX_FINITE = 1000;
+
+/** True when a cube has (almost) no data: under MIN_COVERAGE finite values
+ *  AND fewer than EMPTY_MAX_FINITE of them (a JWST cutout outside the
+ *  mosaic: 58 of 722 500 pixels on the NEXUS tile f200w-0000). The frame
+ *  then shows the neutral surround with a quiet "No JWST data here" instead
+ *  of a flat NaN-coloured square, and the readout says "no data"; partial
+ *  coverage keeps the image and paints its NaN pixels in the NaN colour. */
+export function cubeIsEmpty(rec: { data: Float32Array } | null | undefined): boolean {
+  const c = cubeCoverage(rec);
+  return c.total > 0 && c.fraction < MIN_COVERAGE && c.finite < EMPTY_MAX_FINITE;
+}
+
+/** True when a cube is under MIN_COVERAGE but not empty (a real corner of
+ *  data on a big cutout): the frame paints it and adds a quiet caption at
+ *  its foot that lets the pointer through. */
+export function cubeIsSparse(rec: { data: Float32Array } | null | undefined): boolean {
+  const c = cubeCoverage(rec);
+  return c.total > 0 && c.fraction < MIN_COVERAGE && c.finite >= EMPTY_MAX_FINITE;
 }
 
 /** Continuous image coordinates → the integer pixel under them. */
@@ -112,22 +139,71 @@ export function formatValue(v: number): string {
   return s.replace(/^-/, "−");
 }
 
+type ReadoutParts = { position: number[]; values: number[] };
+/** One shown tier in the readout: its name, unit, and whether its magnitude
+ *  carries a ± σ (SR next to a std tier). */
+export type ReadoutTierPart = { name: string; unit: string; sigma?: boolean };
+
+/** The readout's parts (css px, the readout's font via `measure`) while
+ *  hovering and while idle: the position (x y; RA Dec + the copy button)
+ *  and the values (the band, then each tier's name + a worst-case value +
+ *  its unit; idle: each tier's name + band + magnitude (± σ), the field size). */
+function readoutParts(tiers: readonly ReadoutTierPart[], measure: (text: string) => number, o: { copy?: number; hasSky?: boolean }): { hover: ReadoutParts; idle: ReadoutParts } {
+  const copy = o.copy ?? 25;
+  const sky = o.hasSky === false ? [] : [measure("00h00m00.00s +00°00′00.0″") + copy];
+  return {
+    hover: {
+      position: [measure("x 9999  y 9999"), ...sky],
+      values: [measure("VIS"), ...tiers.map((t) => measure(`${t.name} −0.000 ${unitLabel(t.unit)}`.trim()))],
+    },
+    idle: {
+      position: sky,
+      // (SR's magnitude carries the ensemble's ± σ when there is a std tier)
+      values: [...tiers.map((t) => measure(`${t.name} VIS 00.00${t.sigma ? " ± 0.00" : ""} AB`)), measure("0.0× 00.0″")],
+    },
+  };
+}
+
 /** The widest the one-line readout gets for these tiers (css px), from its
  *  parts: hovering — "x y", RA Dec (+ the copy button), the band, then each
  *  tier's name, a worst-case value and its unit; idle — RA Dec, each tier's
  *  name + band + magnitude, the field size. `measure` gives a string's width
- *  (the readout's font). The readout reserves two lines when this does not
- *  fit (ReadoutBar), so no value is ever cut off and hovering never changes
- *  its height. */
-export function readoutLineWidth(tiers: readonly { name: string; unit: string }[], measure: (text: string) => number, o: { gap?: number; copy?: number; hasSky?: boolean } = {}): number {
+ *  (the readout's font). The readout reserves more lines when this does not
+ *  fit (`readoutLines`), so no value is ever cut off and hovering never
+ *  changes its height. */
+export function readoutLineWidth(tiers: readonly ReadoutTierPart[], measure: (text: string) => number, o: { gap?: number; copy?: number; hasSky?: boolean } = {}): number {
   const gap = o.gap ?? 14;
-  const copy = o.copy ?? 25;
-  const sky = o.hasSky === false ? [] : [measure("00h00m00.00s +00°00′00.0″") + copy];
   const sum = (parts: number[]) => parts.reduce((a, b) => a + b, 0) + gap * Math.max(0, parts.length - 1);
-  const hover = sum([
-    measure("x 9999  y 9999"), ...sky, measure("VIS"),
-    ...tiers.map((t) => measure(`${t.name} −0.000 ${unitLabel(t.unit)}`.trim())),
-  ]);
-  const idle = sum([...sky, ...tiers.map((t) => measure(`${t.name} VIS 00.00 AB`)), measure("0.0× 00.0″")]);
-  return Math.ceil(Math.max(hover, idle));
+  const { hover, idle } = readoutParts(tiers, measure, o);
+  return Math.ceil(Math.max(sum([...hover.position, ...hover.values]), sum([...idle.position, ...idle.values])));
+}
+
+/** Below this viewer width the readout always takes two lines: the position
+ *  on the first, the per-tier values on the second. */
+export const READOUT_WRAP_WIDTH = 560;
+export const READOUT_MAX_LINES = 4;
+
+/** Lines of `width` px that `parts` take, filled greedily and broken only
+ *  BETWEEN parts (a tier's name, value and unit stay together). */
+function packLines(parts: readonly number[], width: number, gap: number): number {
+  let lines = 0, used = -1;
+  for (const w of parts) {
+    if (used < 0 || used + gap + w > width) { lines++; used = w; } else used += gap + w;
+  }
+  return lines;
+}
+
+/** How many lines the readout reserves (1–4), decided from the tiers and
+ *  the width before any hover, so it never changes height under the
+ *  pointer: one when the whole line fits and the viewer is at least
+ *  READOUT_WRAP_WIDTH wide; else the position on its own line(s), then the
+ *  values, wrapping only between tiers — as many lines as the widest of the
+ *  hover and idle contents needs. */
+export function readoutLines(tiers: readonly ReadoutTierPart[], measure: (text: string) => number, o: { width: number; gap?: number; copy?: number; hasSky?: boolean }): number {
+  const gap = o.gap ?? 14;
+  if (!(o.width > 0)) return 1;
+  if (o.width >= READOUT_WRAP_WIDTH && readoutLineWidth(tiers, measure, o) <= o.width) return 1;
+  const { hover, idle } = readoutParts(tiers, measure, o);
+  const need = (p: ReadoutParts) => packLines(p.position, o.width, gap) + packLines(p.values, o.width, gap);
+  return Math.max(2, Math.min(READOUT_MAX_LINES, Math.max(need(hover), need(idle))));
 }

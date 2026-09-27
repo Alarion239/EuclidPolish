@@ -1,16 +1,52 @@
 /* The campaign notebook (log.md): rendered with the safe Markdown renderer,
- * an outline of its entries, and an editor that appends a timestamped entry
- * or (confirmed) replaces the whole file. ⌘/Ctrl-Enter saves. */
+ * NEWEST entry first by default (?nbnew=0 for oldest first), a compact date
+ * outline (the entries by day: a "Jump to" menu in the card head, the day
+ * list beside the text on a wide page), and an editor that appends a
+ * timestamped entry or (confirmed) replaces the whole file. ⌘/Ctrl-Enter
+ * saves. */
 import { useMemo, useState } from "react";
 import { apiPost } from "../../../api/client";
 import { invalidate } from "../../../api/query";
 import { useShortcut } from "../../../hooks/useShortcut";
 import { useUrlState } from "../../../hooks/useUrlState";
 import {
-  Button, Card, CardBody, CardHead, CopyButton, EmptyState, Segmented, Textarea, confirm, toast,
+  Button, Card, CardBody, CardHead, CopyButton, EmptyState, Segmented, Select, Textarea, confirm, toast,
 } from "../../../ui";
 import { TRACKING_STATE_URL } from "../api";
 import { Markdown, outline } from "../markdown";
+import { notebookDays, notebookOrder, type NotebookDay } from "../model";
+
+/** Scroll an entry to the top of the stage (instantly under reduced motion). */
+function jumpTo(id: string) {
+  const reduce = typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  document.getElementById(id)?.scrollIntoView({ block: "start", behavior: reduce ? "auto" : "smooth" });
+}
+
+/** The day list beside the notebook, grouped by month. */
+function DayOutline({ days }: { days: NotebookDay[] }) {
+  const months: { month: string; days: NotebookDay[] }[] = [];
+  for (const d of days) {
+    const last = months[months.length - 1];
+    if (last?.month === d.month) last.days.push(d); else months.push({ month: d.month, days: [d] });
+  }
+  return (
+    <nav className="ops-outline" aria-label="Notebook entries by day">
+      {months.map((m) => (
+        <div key={m.month} className="ops-outline__month">
+          <span className="ops-outline__label">{m.month}</span>
+          <div className="ops-outline__days">
+            {m.days.map((d) => (
+              <a key={d.day} href={`#${d.id}`} title={`${d.day}: ${d.count} entr${d.count === 1 ? "y" : "ies"}`}
+                onClick={(e) => { e.preventDefault(); jumpTo(d.id); }}>
+                {d.label}{d.count > 1 && <span className="ops-outline__n">{d.count}</span>}
+              </a>
+            ))}
+          </div>
+        </div>
+      ))}
+    </nav>
+  );
+}
 
 type Mode = "append" | "replace";
 
@@ -19,8 +55,12 @@ export function NotebookView({ text, editable, title }: { text: string; editable
   const [draft, setDraft] = useState("");
   const [replaceDraft, setReplaceDraft] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [newestFirst, setNewestFirst] = useUrlState("nbnew", false);
-  const heads = useMemo(() => outline(text).filter((h) => h.level <= 2), [text]);
+  const [newestFirst, setNewestFirst] = useUrlState("nbnew", true);
+  // Newest first: the entries (## headings) in reverse, the preamble kept on top.
+  const shown = useMemo(() => notebookOrder(text, newestFirst), [text, newestFirst]);
+  const heads = useMemo(() => outline(shown).filter((h) => h.level <= 2), [shown]);
+  const days = useMemo(() => notebookDays(heads), [heads]);
+  const entries = heads.filter((h) => h.level === 2).length;
   const body = mode === "replace" ? (replaceDraft ?? text) : draft;
 
   async function save() {
@@ -39,13 +79,6 @@ export function NotebookView({ text, editable, title }: { text: string; editable
   }
   useShortcut("$mod+Enter", () => { if (editable && body.trim()) { void save(); return true; } return false; },
     { description: "Save the notebook entry", scope: "Tracking", allowInInputs: true, enabled: editable });
-
-  // Newest first: the entries (## headings) in reverse, the preamble kept on top.
-  const shown = useMemo(() => {
-    if (!newestFirst) return text;
-    const parts = text.split(/\n(?=## )/);
-    return parts.length > 1 ? [parts[0], ...parts.slice(1).reverse()].join("\n") : text;
-  }, [text, newestFirst]);
 
   return (
     <div className="ops-stack">
@@ -69,26 +102,22 @@ export function NotebookView({ text, editable, title }: { text: string; editable
         </Card>
       )}
       <Card>
-        <CardHead title={title ?? "Notebook"} sub={heads.length ? `${Math.max(0, heads.length - 1)} entries` : undefined}
+        <CardHead title={title ?? "Notebook"} sub={entries ? `${entries} entries${days.length ? `, ${days[newestFirst ? days.length - 1 : 0].day} to ${days[newestFirst ? 0 : days.length - 1].day}` : ""}` : undefined}
           right={<div className="ops-row">
             <Segmented size="sm" value={newestFirst ? "new" : "old"} onChange={(v) => setNewestFirst(v === "new")} aria-label="Order"
-              options={[{ value: "old", label: "Oldest first" }, { value: "new", label: "Newest first" }]} />
+              options={[{ value: "new", label: "Newest first" }, { value: "old", label: "Oldest first" }]} />
+            {days.length > 1 && (
+              <Select size="sm" aria-label="Jump to a day" placeholder="Jump to a day…" value=""
+                onChange={(id) => { if (id) jumpTo(id); }}
+                options={days.map((d) => ({ value: d.id, label: `${d.label}, ${d.day.slice(0, 4)}`, hint: `${d.count} entr${d.count === 1 ? "y" : "ies"}` }))} />
+            )}
             <CopyButton value={() => text} label="Copy log.md" />
           </div>} />
         <CardBody>
           {!text.trim() ? <EmptyState compact icon="info" title="The notebook is empty" /> : (
             <div className="ops-notebook">
               <Markdown text={shown} className="ops-notebook__doc" />
-              {heads.length > 2 && (
-                <nav className="ops-outline" aria-label="Notebook entries">
-                  {(newestFirst ? [...heads].reverse() : heads).map((h) => (
-                    <a key={h.id} href={`#${h.id}`} onClick={(e) => {
-                      e.preventDefault();
-                      document.getElementById(h.id)?.scrollIntoView({ block: "start", behavior: "smooth" });
-                    }}>{h.text}</a>
-                  ))}
-                </nav>
-              )}
+              {days.length > 1 && <DayOutline days={days} />}
             </div>
           )}
         </CardBody>

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   axis, clampView, drawable, nearestPoint, panDomain, readoutAt, sameInputs, seriesKey, seriesToCSV,
-  stepDrawable, tooltipReadout, viewTicks, zoomDomain, type PlotGeometry,
+  stepDrawable, thinnedViewTicks, tooltipReadout, viewTicks, zoomDomain, type PlotGeometry,
 } from "./plotModel";
 import type { Series } from "./types";
 
@@ -154,6 +154,30 @@ describe("viewTicks", () => {
   });
 });
 
+describe("automatic ticks (no caller ticks, unzoomed)", () => {
+  it("gives 4–6 nice linear ticks across the domain (3 when no nice step lands in 4–6)", () => {
+    for (const d of [[0, 10], [0, 100], [-1, 1.05], [0.1, 0.6], [0, 70_000]] as [number, number][]) {
+      const out = viewTicks(undefined, d, "linear");
+      expect(out.length, `${d}`).toBeGreaterThanOrEqual(4);
+      expect(out.length, `${d}`).toBeLessThanOrEqual(6);
+      for (const t of out) expect(t.v >= d[0] && t.v <= d[1]).toBe(true);
+    }
+    expect(viewTicks(undefined, [0, 10], "linear").map((t) => t.label)).toEqual(["0", "2", "4", "6", "8", "10"]);
+    expect(viewTicks(undefined, [43.2, 44.9], "linear").map((t) => t.label)).toEqual(["43.5", "44.0", "44.5"]);
+  });
+
+  it("labels decades on a wide log axis and 1-2-5 steps on a narrow one", () => {
+    expect(viewTicks(undefined, [1, 1e4], "log").map((t) => t.label)).toEqual(["1", "10", "10²", "10³", "10⁴"]);
+    expect(viewTicks(undefined, [0.1, 1e4], "log").length).toBeLessThanOrEqual(6);
+    const narrow = viewTicks(undefined, [2, 40], "log").map((t) => t.v);
+    expect(narrow).toEqual([2, 5, 10, 20]);
+  });
+
+  it("formats generated ticks with the axis formatter", () => {
+    expect(viewTicks(undefined, [0, 10], "linear", (v) => `${v} e⁻`)[1].label).toBe("2 e⁻");
+  });
+});
+
 describe("seriesToCSV", () => {
   it("writes long-format rows with the optional band/error columns", () => {
     const csv = seriesToCSV([
@@ -190,5 +214,49 @@ describe("sameInputs", () => {
       { ...base, heat: { z, xEdges: e, yEdges: e, color: () => "red" } })).toBe(false);
     // top-level functions (handlers, formatters) are not compared here
     expect(sameInputs({ ...base, xFormat: (v: number) => `${v}` }, { ...base, xFormat: (v: number) => `${v} e` })).toBe(true);
+  });
+});
+
+describe("thinnedViewTicks (generated ticks sized to the plot)", () => {
+  const lin = (d: [number, number], px: number) => (v: number) => ((v - d[0]) / (d[1] - d[0])) * px;
+  const gaps = (vals: number[], toPx: (v: number) => number) =>
+    vals.slice(1).map((v, i) => Math.abs(toPx(v) - toPx(vals[i])));
+  const labelGap = (t: { label: string }[]) => Math.max(...t.map((x) => x.label.length * 6.6)) + 12;
+
+  it("keeps 4–6 ticks on a roomy axis", () => {
+    const d: [number, number] = [0, 70_000];
+    const out = thinnedViewTicks(undefined, d, "linear", undefined, lin(d, 576), labelGap);
+    expect(out.map((t) => t.v)).toEqual(viewTicks(undefined, d, "linear").map((t) => t.v));
+  });
+
+  it("drops ticks until wide labels no longer collide on a narrow axis (≥ 2 kept)", () => {
+    const d: [number, number] = [0, 70_000];
+    const toPx = lin(d, 130);   // a 228 px inspector chart with a y label
+    const out = thinnedViewTicks(undefined, d, "linear", undefined, toPx, labelGap);
+    expect(out.length).toBeGreaterThanOrEqual(2);
+    expect(out.length).toBeLessThan(viewTicks(undefined, d, "linear").length);
+    for (const g of gaps(out.map((t) => t.v), toPx)) expect(g).toBeGreaterThanOrEqual(labelGap(out));
+  });
+
+  it("spaces y ticks at least a text line apart on a short axis", () => {
+    const d: [number, number] = [0, 1];
+    const toPx = lin(d, 67);
+    const out = thinnedViewTicks(undefined, d, "linear", undefined, toPx, () => 22);
+    expect(out.length).toBeGreaterThanOrEqual(2);
+    for (const g of gaps(out.map((t) => t.v), toPx)) expect(g).toBeGreaterThanOrEqual(22);
+  });
+
+  it("thins a log axis to fewer decades", () => {
+    const d: [number, number] = [1, 1e6];
+    const toPx = (v: number) => (Math.log10(v) / 6) * 60;
+    const out = thinnedViewTicks(undefined, d, "log", undefined, toPx, () => 22);
+    expect(out.length).toBeGreaterThanOrEqual(2);
+    for (const g of gaps(out.map((t) => t.v), toPx)) expect(g).toBeGreaterThanOrEqual(22);
+  });
+
+  it("never thins the caller's own ticks", () => {
+    const ticks = [0, 1, 2, 3, 4, 5].map((v) => ({ v, label: `t${v}` }));
+    const out = thinnedViewTicks(ticks, [0, 5], "linear", undefined, lin([0, 5], 40), () => 22);
+    expect(out.map((t) => t.label)).toEqual(ticks.map((t) => t.label));
   });
 });

@@ -99,6 +99,18 @@ describe("layer renderer", () => {
     expect((fake.mocs[0] as unknown as { fill: boolean }).fill).toBe(false);
   });
 
+  it("a coverage shape is drawn without its fill when zoomed in, and rebuilt when the fill returns", () => {
+    const fake = makeFakeAladin();
+    const r = new LayerRenderer({ A: fake.A, al: fake.al }, () => P);
+    const fields = { ...TILES_INFO, id: "q1-fields", group: "coverage" as const };
+    r.sync([spec({ info: fields, fill: false })]);
+    const items = () => fake.overlays[fake.overlays.length - 1].items as { opts: Record<string, unknown> }[];
+    expect(items()[0].opts.fill).toBe(false);
+    r.sync([spec({ info: fields, fill: true })]);
+    expect(fake.overlays).toHaveLength(1);
+    expect(items()[0].opts.fill).toBe(true);
+  });
+
   it("never asks Aladin for markers below its 5 px minimum (its sprite radius is size/2 − 2)", () => {
     const fake = makeFakeAladin();
     const r = new LayerRenderer({ A: fake.A, al: fake.al }, () => P);

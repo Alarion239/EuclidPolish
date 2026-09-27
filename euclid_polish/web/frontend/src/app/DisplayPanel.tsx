@@ -158,6 +158,11 @@ function ImageSection() {
             onChange={(e) => d.set({ nanColor: e.target.value })} />
         </Field>
         <div className="display-switch"><Switch checked={d.invert} onChange={(invert) => d.set({ invert })}>Invert</Switch></div>
+        <div className="display-switch">
+          <Switch checked={d.matchSurfaceBrightness} onChange={(matchSurfaceBrightness) => d.set({ matchSurfaceBrightness })}>
+            Match surface brightness across pixel scales
+          </Switch>
+        </div>
       </div>
       <TransferGroups />
     </Section>

@@ -280,7 +280,7 @@ describe("real-field diagnostics", () => {
     show(<Results />, "/sky/results?diag=1");
     const section = (await screen.findByText("Field diagnostics")).closest("section") as HTMLElement;
     expect(await within(section).findByText("Real field")).toBeTruthy();
-    expect(within(section).getByText("Synthetic STARFULL")).toBeTruthy();
+    expect(within(section).getByText("Synthetic starfull")).toBeTruthy();
     expect(within(section).getByText(/3 member pairs/)).toBeTruthy();
     expect(within(section).getByText(/ra0267_decp064/)).toBeTruthy();
     fireEvent.click(within(section).getByRole("radio", { name: "RBF occupancy" }));
@@ -359,7 +359,7 @@ describe("realtile inspector", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Catalogue evaluation" }));
     expect(await screen.findByText(/membership changed/)).toBeTruthy();
     expect(screen.getByText("22 members · combiner not recorded")).toBeTruthy();
-    expect(screen.getByText("30 STARFULL · spatial_gate")).toBeTruthy();
+    expect(screen.getByText("30 starfull · spatial_gate")).toBeTruthy();
     expect(screen.getByRole("link", { name: "SR" }).getAttribute("href")).toBe("/eval-files/lensA/SR.fits");
   });
 

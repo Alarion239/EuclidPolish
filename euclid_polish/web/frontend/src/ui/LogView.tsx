@@ -167,7 +167,7 @@ export function LogView(
         <IconButton size="sm" icon="arrowDown" label={follow ? "Following the end (click to stop)" : "Follow the end"}
           pressed={follow} onClick={() => { setFollow((f) => !f); if (!follow) jumpToEnd(); }} />
         <button type="button" className="ui-chip ui-log__wrap" data-on={wrap} aria-pressed={wrap}
-          onClick={() => setWrap((w) => !w)}>wrap</button>
+          onClick={() => setWrap((w) => !w)}>Wrap</button>
         <CopyButton value={() => body} label="Copy log" />
         {exportName && (
           <IconButton size="sm" icon="download" label="Download log"

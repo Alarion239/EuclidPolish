@@ -13,7 +13,7 @@ import { formatBytes, formatDateTime } from "../../../format";
 import { useShortcut } from "../../../hooks/useShortcut";
 import { useUrlState } from "../../../hooks/useUrlState";
 import {
-  Badge, Button, Callout, Card, CardBody, CardHead, DataTable, EmptyState, IconButton, Page, PageHead, Segmented,
+  Badge, Button, Callout, Card, CardBody, CardHead, DataTable, EmptyState, IconButton, Page, Segmented,
   Skeleton, Textarea, Tooltip, confirm, toast, type DataColumn,
 } from "../../../ui";
 import {
@@ -218,7 +218,6 @@ export default function Git() {
   const unstagedChosen = chosen.filter((p) => byPath.get(p)?.unstaged);
   return (
     <Page className="ops-page">
-      <PageHead eyebrow="ops · git" title="Git" />
       <div className="ops-bar" role="toolbar" aria-label="Repository">
         <code className="mono">{s?.branch}</code>
         {s?.upstream ? <span className="ops-dim mono ops-small">→ {s.upstream}</span> : <Badge size="sm" tone="warn">no upstream</Badge>}

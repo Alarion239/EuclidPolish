@@ -99,7 +99,7 @@ export default function Overview() {
   return (
     <Page className="rl-page">
       <RealismBar label="Overview controls">
-        <BarGroup label="readiness">
+        <BarGroup label="Readiness">
           <span className="rl-faint">{data ? `checked ${formatRelative(data.computed_at)}` : "…"}</span>
         </BarGroup>
         <BarSpacer />

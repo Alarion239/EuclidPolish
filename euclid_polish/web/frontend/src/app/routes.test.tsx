@@ -96,6 +96,10 @@ describe("buildRoutes", () => {
     for (const path of ["/nope", "/sky/unknown", "/ensemble/foo", "/ensemble/foo/knee", "/ensemble/starfull/knee/x"]) {
       go(path);
       expect(await screen.findByText("No page here"), path).toBeTruthy();
+      // exactly one (visually hidden) h1, in plain words
+      const h1s = document.querySelectorAll("h1");
+      expect(h1s.length, path).toBe(1);
+      expect(h1s[0].textContent, path).toBe("Not found");
       cleanup();
     }
   });
@@ -127,7 +131,7 @@ describe("buildRoutes", () => {
       });
       render(<RouterProvider router={router} future={{ v7_startTransition: true }} />);
       expect(await screen.findByText("Sky hit an error")).toBeTruthy();
-      expect(screen.getByText(/The console was rebuilt while this page was open/)).toBeTruthy();
+      expect(screen.getByText(/A newer console build is available/)).toBeTruthy();
       expect(screen.getByRole("button", { name: "Reload page" })).toBeTruthy();
       expect(screen.getByRole("navigation", { name: "Shell" })).toBeTruthy();   // not the root error page
       await act(() => router.navigate("/data/records"));

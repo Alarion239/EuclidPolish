@@ -17,13 +17,14 @@ import { useShortcut } from "../../../hooks/useShortcut";
 import { useUrlState } from "../../../hooks/useUrlState";
 import {
   Badge, Button, Callout, Card, CardBody, CardHead, Chip, EmptyState, Field, IconButton, Input, NumberField,
-  Page, PageHead, Select, Skeleton, Tooltip, toast,
+  Page, Select, Skeleton, Tooltip, toast,
 } from "../../../ui";
 import { GROUPS, type FieldMeta, type GroupId } from "../configFields";
 import {
   commonSteps, dirtyFields, fieldError, filterFields, isDefault, orderedFields, rebase, saveBody, toForm,
   type ConfigValues, type Conflict, type FormState,
 } from "../configModel";
+import { PageLead } from "../../shared/PageLead";
 import "../settings.css";
 
 type ConfigResp = {
@@ -198,8 +199,7 @@ export default function Config() {
 
   return (
     <Page className="settings-config">
-      <PageHead eyebrow="settings · config" title="Job config"
-        sub="Shared knobs the pipeline injects into its jobs (~/.euclid_polish/job_config.json)." />
+      <PageLead>Shared knobs the pipeline injects into its jobs (<code className="mono">~/.euclid_polish/job_config.json</code>).</PageLead>
 
       <div className="settings-bar" role="toolbar" aria-label="Config toolbar">
         <Input value={q} onChange={setQ} icon="search" clearable placeholder="Filter fields…" aria-label="Filter fields"

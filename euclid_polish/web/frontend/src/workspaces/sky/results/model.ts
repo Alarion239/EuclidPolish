@@ -72,9 +72,10 @@ export function groupModels(models: readonly ModelSpecRow[]): ModelGroup[] {
 }
 
 /** How many members a model reads: "6 of 20 members" when a pruned gate
- *  reads fewer members than it was fitted on (`reads` vs `n_members`). */
-export function membersText(m: Pick<ModelSpecRow, "n_members" | "reads" | "members">): string {
-  const total = m.n_members ?? m.members?.length ?? 0;
+ *  reads fewer members than it was fitted on (`reads` vs `n_fitted`; older
+ *  servers sent the fitted total as `n_members`). */
+export function membersText(m: Pick<ModelSpecRow, "n_members" | "n_fitted" | "reads" | "members">): string {
+  const total = m.n_fitted ?? m.members?.length ?? m.n_members ?? 0;
   const reads = m.reads?.length ?? total;
   if (!total && !reads) return "";
   const noun = (n: number) => `member${n === 1 ? "" : "s"}`;
@@ -339,11 +340,11 @@ export function defaultExperimentId(
   return history.reduce((a, b) => (newer(a, b) ? b : a)).id;
 }
 
-/** A metric column header in the kit's upper case, done here on Latin
- *  letters only: the kit's CSS `text-transform` would turn σ into Σ (a sum
- *  sign). Render it with `text-transform: none`. */
+/** A metric column header in sentence case, as the kit's headers read
+ *  ("holes >100σ" → "Holes >100σ"; σ stays σ — no CSS text-transform, which
+ *  would have turned it into Σ, a sum sign). */
 export function metricHeader(short: string): string {
-  return short.replace(/[a-z]+/g, (w) => w.toUpperCase());
+  return short ? short[0].toUpperCase() + short.slice(1) : short;
 }
 
 /* ── the real-tile card ────────────────────────────────────────────────── */

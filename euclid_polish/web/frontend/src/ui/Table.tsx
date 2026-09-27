@@ -21,7 +21,7 @@ export function Table<T>(
     className?: string; "aria-label"?: string;
   },
 ) {
-  if (!rows.length) return <Empty>{empty ?? "nothing here yet"}</Empty>;
+  if (!rows.length) return <Empty>{empty ?? "Nothing here yet"}</Empty>;
   return (
     <div className="ui-table-wrap">
       <table className={cx("ui-table", className)} aria-label={ariaLabel}>

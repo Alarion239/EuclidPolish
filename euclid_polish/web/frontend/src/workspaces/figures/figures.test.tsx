@@ -314,16 +314,19 @@ describe("Grid tab", () => {
     expect(document.querySelector('img[src^="/viewer/results/grid.png"]')).toBeNull();
   });
 
-  it("reports cells a column cannot render, and still previews the rows every column has", async () => {
+  it("draws every available cell and marks the one a column cannot render in place", async () => {
     show(<Grid />, `/figures/grid?regime=real&cols=${REAL.id},${REAL2.id}&rows=dirty:VIS,jwst:native`);
-    expect(await screen.findByText("1 cell unavailable: the preview leaves out 1 row")).toBeTruthy();
-    // the preview draws dirty:VIS (every column has it), not the jwst row
+    expect(await screen.findByText("1 cell not available (grey in the sheet)")).toBeTruthy();
+    // the preview asks for BOTH rows, the missing cell blank (grey "Not available")
     await waitFor(() => expect(document.querySelector('img[src^="/viewer/results/grid.png"]')).not.toBeNull());
     const src = document.querySelector('img[src^="/viewer/results/grid.png"]')!.getAttribute("src")!;
     expect(src).toContain("row=dirty%3AVIS");
-    expect(src).not.toContain("jwst");
+    expect(src).toContain("row=jwst%3Anative");
+    expect(src).toContain("missing=blank");
+    // downloads get the same sheet
+    expect(screen.getByRole("link", { name: "PNG" }).getAttribute("href")).toContain("missing=blank");
     expect(screen.getByText(/1 missing/)).toBeTruthy();
-    expect(screen.getAllByRole("button", { name: "Use the rows every column has" }).length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: "Only the rows every column has" })).toBeTruthy();
   });
 
   it("applies a preset and a saved layout from the template picker", async () => {

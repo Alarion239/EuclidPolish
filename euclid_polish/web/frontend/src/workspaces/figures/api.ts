@@ -127,12 +127,15 @@ export function fitsUrl(id: string, tier: string): string {
   return `/viewer/results/${encodeURIComponent(id)}/${encodeURIComponent(tier)}.fits`;
 }
 
-export function gridUrl(ids: readonly string[], rows: readonly string[], format: "png" | "pdf", dpi: number, inline = false): string {
+/** The server-rendered sheet. `missing`: draw the cells a column lacks as
+ *  grey "Not available" cells (`missing=blank`) instead of refusing. */
+export function gridUrl(ids: readonly string[], rows: readonly string[], format: "png" | "pdf", dpi: number, inline = false, missing = false): string {
   const q = new URLSearchParams();
   for (const id of ids) q.append("result", id);
   for (const row of rows) q.append("row", row);
   q.set("dpi", String(dpi));
   if (inline) q.set("inline", "1");
+  if (missing) q.set("missing", "blank");
   return `/viewer/results/grid.${format}?${q.toString()}`;
 }
 

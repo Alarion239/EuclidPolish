@@ -21,7 +21,6 @@ import { runModels } from "./actions";
 import { BANDS, splitRef, type ExperimentRecord } from "./api";
 import { CoreWeights, StateBadge } from "./common";
 import { useFollowViewer } from "./follow";
-import { FitBox } from "./FitBox";
 import { LogToTrackingButton } from "./LogToTracking";
 import {
   bandLabel, bandSeries, CHART_METRICS, experimentMarkdown, formatMetric, METRIC_BY_KEY, METRICS,
@@ -33,7 +32,7 @@ const METRIC_COLUMNS: DataColumn<MetricRow>[] = [
     filterText: (r) => `${r.spec} ${r.label}`, csv: (r) => r.spec },
   { id: "band", header: "Band", cell: (r) => bandLabel(r.band), sortFn: (a, b) => BANDS.indexOf(a.band as never) - BANDS.indexOf(b.band as never) },
   ...METRICS.map((m): DataColumn<MetricRow> => ({
-    id: m.key, header: <Tooltip content={m.hint}><span tabIndex={0} className="res-case">{metricHeader(m.short)}</span></Tooltip>, headerText: m.label,
+    id: m.key, header: <Tooltip content={m.hint}><span tabIndex={0}>{metricHeader(m.short)}</span></Tooltip>, headerText: m.label,
     numeric: true, cell: (r) => formatMetric(m.key, r[m.key]),
     accessor: (r) => (typeof r[m.key] === "number" ? r[m.key] : null),
     hidden: m.key === "min_R" || m.key === "n_artifacts",
@@ -138,11 +137,11 @@ export function ExperimentDetail({ record, scope, onScope, metric, onMetric, vie
         </span>
       </div>
       {viewer && viewTile && tileId && (
-        <FitBox className="res-exp__viewer" label={`Comparison on ${viewTile}`}>
+        <div className="res-exp__viewer" role="region" aria-label={`Comparison on ${viewTile}`}>
           <ImageViewer key={`${record.id}:${source}:${specs.join(",")}`} collection="real" params={params} initialId={tileId}
             nav={false} onReady={follow.onReady} onState={follow.onState} tiers={tiers}
             id={`experiment-${record.id}`} urlKey="exp" toolbar="full" />
-        </FitBox>
+        </div>
       )}
       {!!skipped.length && (
         <Callout tone="warn" title={`${skipped.length} model${skipped.length === 1 ? "" : "s"} skipped`}>

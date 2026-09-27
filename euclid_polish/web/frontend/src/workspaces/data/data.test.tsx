@@ -257,6 +257,26 @@ describe("Records", () => {
     await waitFor(() => expect(screen.queryByRole("group", { name: /^markers on/ })).toBeNull());
   });
 
+  it("a crowded toolbar keeps the overlay as one menu button and the badges' labels as their names", async () => {
+    show(<Records />);
+    await screen.findByRole("group", { name: "markers on hr" });
+    // the compact form (level 3: CSS shows it when the row would wrap) says where the sources are drawn
+    const menu = screen.getByRole("button", { name: "Truth sources on: HR" });
+    expect(menu.textContent).toBe("Sources: HR");
+    // level 2 and 3 show the badges as dots, except the split's worst state,
+    // which keeps its word (here "1 corrupt file" and "Old noise model" are
+    // both bad: the first wins); the others' words are clipped (CSS), never
+    // removed, so they stay each badge's text
+    const status = screen.getByRole("group", { name: /^State of the test split/ });
+    const badges = [...status.querySelectorAll(".dt-tipbadge")];
+    expect(badges.map((b) => b.textContent)).toContain("Old noise model");
+    const kept = badges.filter((b) => b.classList.contains("dt-tipbadge--keep"));
+    expect(kept.map((b) => b.textContent)).toEqual(["1 corrupt file"]);
+    for (const b of badges) expect(b.getAttribute("aria-label")).toBeNull();
+    // the bar lays out one row: the compact level is decided from measured widths (jsdom: 0 → the labelled bar)
+    expect(screen.getByRole("toolbar", { name: "Records" }).getAttribute("data-compact")).toBeNull();
+  });
+
   it("the census row moves the viewer", async () => {
     show(<Records />);
     const table = await screen.findByRole("grid", { name: "Records in test" });
@@ -424,12 +444,12 @@ describe("Cutouts", () => {
     await waitFor(() => expect(viewer.goToId).toEqual(["1"]));
   });
 
-  it("shows the navigator first, the gallery with it, and an auto stretch for the ADU/s cutouts", async () => {
+  it("shows the navigator first, the gallery with it, on the console's own transfer (the cutouts are served in e⁻)", async () => {
     show(<Cutouts />, "/data/cutouts");
     const viewerEl = await screen.findByTestId("viewer");
     const gallery = await screen.findByRole("region", { name: "Cached cutouts" });
     expect(!!(viewerEl.compareDocumentPosition(gallery) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
-    expect(viewer.display).toEqual({ stretch: "asinh-auto" });
+    expect(viewer.display).toBeUndefined();          // no page-side auto stretch
   });
 });
 

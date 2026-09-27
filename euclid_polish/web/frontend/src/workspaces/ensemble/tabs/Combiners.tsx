@@ -4,7 +4,11 @@
    test and knee-integrated PSNR per variant (latest compare report), the
    real-data benchmark (Sky › Experiments), the COMPARE job, the FIT job with
    every knob (writes a NAMED variant, never production) and PROMOTE (backs
-   the production gate up first; confirm). */
+   the production gate up first; confirm). The real-data holes come from ONE
+   Sky experiment the user picks (?bench=, default the newest that ran
+   production), per band; variants it did not run are blank. "Log to
+   tracking" (bar: the variant table; row menu: one fit; the compare report;
+   a finished fit / promote) opens an editable notebook entry (../notes.ts). */
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import Plot, { useLegend, type Series } from "../../../charts/Plot";
@@ -26,8 +30,11 @@ import {
 } from "../api";
 import { BarGroup, EnsBar, LoadState } from "../common";
 import { JOB, useOnJobEnd } from "../jobs";
-import { benchmarkExperiment, db, dbDelta, heldOutComparable, memberNumber, variantLabel, type Bench } from "../model";
-import { autoTicks } from "../../plotTicks";
+import {
+  benchmarkChoices, benchmarkExperiment, db, dbDelta, heldOutComparable, holesText, memberNumber, readsText, variantLabel, type Bench,
+} from "../model";
+import { compareNote, compareRows, holesLine, promoteNote, utcText, variantNote } from "../notes";
+import { LogToTrackingButton, LogToTrackingDialog } from "../../shared/LogToTracking";
 import "../ensemble.css";
 
 const method = (v: Variant) => (v.kind === "rbf" ? "rbf" : `gate:${v.name}`);
@@ -157,7 +164,7 @@ function CompareDialog({ open, onOpenChange, data, onStart }: {
                 <Checkbox checked={picked.includes(v.name)} aria-label={`Compare ${v.name}`}
                   onChange={(on) => setPicked((p) => (on ? [...p, v.name] : p.filter((x) => x !== v.name)))} />
               </span>
-              <span className="ens-pick__meta">{v.n_reads} members · {v.mix_space}{v.production ? " · production" : v.backup ? " · backup" : ""}</span>
+              <span className="ens-pick__meta">{readsText(v)} · {v.mix_space}{v.production ? " · production" : v.backup ? " · backup" : ""}</span>
             </label>
           ))}
         </div>
@@ -177,9 +184,8 @@ function ReportTable({ report }: { report: CompareReport }) {
   const [group, setGroup] = useUrlState("group", "natural");
   const block = report.groups[group] ?? report.groups.natural;
   if (!block) return null;
-  const memberKeys = Object.keys(block).filter((k) => k.startsWith("member:"));
-  const best = memberKeys.reduce<string | null>((b, k) => (b == null || block[k].band_psnr[0] > block[b].band_psnr[0] ? k : b), null);
-  const rows = ["mean", ...(best ? [best] : []), ...report.methods.filter((m) => m !== "mean")];
+  const rows = compareRows(report, report.groups[group] ? group : "natural");
+  const best = rows.find((r) => r.startsWith("member:")) ?? null;
   const ref = best ? block[best] : null;
   const rel = (v: number, r: number | undefined) => (r ? v / Math.max(r, 1e-30) : NaN);
   const knee = report.knee?.methods ?? {};
@@ -198,10 +204,10 @@ function ReportTable({ report }: { report: CompareReport }) {
             {report.brightness_names.map((n) => <th key={n}>{n}</th>)}<th>halo</th>{group === "blackout" && <th>holes</th>}
           </tr></thead>
           <tbody>
-            {rows.filter((r) => block[r]).map((r) => {
+            {rows.map((r) => {
               const s = block[r];
               const vs = s.band_psnr;
-              const top = rows.filter((x) => block[x]).every((x) => block[x].band_psnr[0] <= vs[0]);
+              const top = rows.every((x) => block[x].band_psnr[0] <= vs[0]);
               return (
                 <tr key={r} data-best={top}>
                   <td>{r.startsWith("member:") ? `best member #${memberNumber(r.slice(7))}` : variantLabel(r)}</td>
@@ -228,6 +234,8 @@ export default function Combiners() {
   const [reportId, setReportId] = useUrlState("report", "");
   const [historyMetric, setHistoryMetric] = useUrlState("hist", "loss");
   const [showBackups, setShowBackups] = useUrlState("backups", false);
+  const [benchId, setBenchId] = useUrlState("bench", "");
+  const [logRow, setLogRow] = useState<Row | null>(null);
   const report = useResource<CompareReport>(res.data?.compare || reportId ? url.report(mode, reportId || null) : null,
     [mode, reportId, res.data?.compare?.id]);
   const exps = useResource<{ experiments: ExperimentSummary[] }>(url.experiments(), [], { ttl: 60_000 });
@@ -243,7 +251,10 @@ export default function Combiners() {
   const data = res.data;
   const rep = report.data;
 
-  const benchmark = useMemo(() => benchmarkExperiment(exps.data?.experiments), [exps.data]);
+  const benchmark = useMemo(() => benchmarkExperiment(exps.data?.experiments, benchId), [exps.data, benchId]);
+  const benchOptions = useMemo(() => benchmarkChoices(exps.data?.experiments).map((c) => ({
+    value: c.value, label: c.label, hint: c.production ? "ran production" : "no production run",
+  })), [exps.data]);
   const rows = useMemo<Row[]>(() => {
     const production = data?.variants.find((v) => v.production);
     return (data?.variants ?? []).filter((v) => showBackups || !v.backup).map((v) => {
@@ -261,6 +272,18 @@ export default function Combiners() {
     });
   }, [data, rep, benchmark, showBackups]);
   const prod = rows.find((r) => r.production);
+  const prodScores = prod ? { testVis: prod.testVis, kneeMean: prod.kneeMean } : null;
+  const noteFor = (v: Row) => variantNote(v, { mode, prod: prodScores, benchmark });
+  /** The whole variant table (bar button): one line per variant, scored on the same tiles. */
+  const tableNote = () => [
+    `**Combiner variants · ${mode}** — ${rows.length} variants${rep ? ` · compare report \`${rep.id ?? "latest"}\`` : ""}${benchmark ? ` · real holes on ${benchmark.tileSet} (experiment \`${benchmark.expId}\`)` : ""}`, "",
+    "| Variant | Members | Mix | Test VIS | ∫PSNR | Real holes VIS · Y · J · H | Fitted |",
+    "| --- | --- | --- | ---: | ---: | --- | --- |",
+    ...rows.map((v) => `| ${v.kind === "rbf" ? "RBF" : variantLabel(v.name)}${v.production ? " (production)" : ""} | ${readsText(v)} | ${v.mix_space ?? "—"} | ${db(v.testVis, 3)} | ${db(v.kneeMean, 3)} | ${v.bench ? holesText(v.bench) : "—"} | ${v.fitted_at ? utcText(v.fitted_at) : "—"} |`),
+  ].join("\n");
+  const fitResult = fit.job?.status === "done" ? (fit.job.result as { variant?: string } | null) : null;
+  const fitted = fitResult?.variant ? rows.find((r) => r.name === fitResult.variant || r.name === `spatial_gate_${fitResult.variant}`) ?? null : null;
+  const promoted = promote.job?.status === "done" ? (promote.job.result as { promoted?: string; backup?: string; test_rescored?: boolean } | null) : null;
 
   async function doPromote(v: Variant) {
     const mismatch = !v.membership.current;
@@ -285,7 +308,7 @@ export default function Combiners() {
   ]);
 
   const columns = useMemo<DataColumn<Row>[]>(() => [
-    { id: "name", header: "Variant", accessor: (v) => v.name, width: 200,
+    { id: "name", header: "Variant", accessor: (v) => v.name, width: 176,
       cell: (v) => (
         <span className="ens-variant-name">
           <code>{v.kind === "rbf" ? "RBF" : v.name.replace(/^spatial_gate_/, "")}</code>
@@ -296,9 +319,9 @@ export default function Combiners() {
       ) },
     { id: "members", header: "Members", accessor: (v) => v.n_reads, width: 92,
       cell: (v) => (
-        <Tooltip content={v.membership.current ? "Fitted for the active members" : `Missing now: ${v.membership.missing.map((l) => memberNumber(l)).join(", ") || "none"} · not read: ${v.membership.extra.length}`}>
+        <Tooltip content={`${readsText(v)}${v.pruned ? " (a pruned gate)" : ""} · ${v.membership.current ? "fitted for the active members" : `missing now: ${v.membership.missing.map((l) => memberNumber(l)).join(", ") || "none"} · not read: ${v.membership.extra.length}`}`}>
           <span tabIndex={0} className={v.membership.current ? "ens-good" : "ens-warn"}>
-            {v.n_reads}{v.pruned ? ` of ${v.n_members}` : ""}{v.membership.current ? " ✓" : ""}
+            {v.pruned ? `${v.n_reads} of ${v.n_members}` : v.n_reads}{v.membership.current ? " ✓" : ""}
           </span>
         </Tooltip>
       ) },
@@ -320,15 +343,30 @@ export default function Combiners() {
     { id: "kneeMean", header: "∫PSNR", headerText: "knee integrated mean", numeric: true, width: 76, accessor: (v) => v.kneeMean,
       cell: (v) => <b>{db(v.kneeMean, 3)}</b> },
     { id: "blackoutVis", header: "Blackout VIS", numeric: true, accessor: (v) => v.blackoutVis, cell: (v) => db(v.blackoutVis, 3), hidden: true },
-    { id: "holes", header: benchmark ? <Tooltip content={`Real-data hole % (mean over bands) from ONE experiment, ${benchmark.label ?? benchmark.expId}${benchmark.nTiles ? ` on ${benchmark.nTiles} real tiles` : ""}${benchmark.created ? `, ${formatRelative(benchmark.created)}` : ""}: variants it did not run are blank.`}><span className="ens-defhead">Real holes</span></Tooltip> : "Real holes",
-      headerText: `real-data hole % (mean over bands)${benchmark ? `, experiment ${benchmark.expId}` : ""}`, numeric: true, width: 92, accessor: (v) => v.bench?.holeMean ?? null,
-      cell: (v) => (v.bench ? <Tooltip content={`Experiment ${benchmark?.expId}: ${v.bench.nTiles ?? "?"} real tiles · max ${v.bench.holeMax?.toFixed(1) ?? "—"}% · median R ${v.bench.medianR?.toFixed(3) ?? "—"} · R<0.8 ${v.bench.rLt08?.toFixed(1) ?? "—"}%`}>
-        <span tabIndex={0}>{v.bench.holeMean != null ? `${v.bench.holeMean.toFixed(1)}%` : "—"}</span></Tooltip> : <span className="ens-faint">—</span>) },
+    { id: "holes", header: benchmark ? (
+        <Tooltip content={`Real-data hole % per band (VIS · Y · J · H) from ONE experiment, ${benchmark.expId}, on ${benchmark.tileSet}${benchmark.created ? ` (${formatRelative(benchmark.created)})` : ""}: variants it did not run are blank. Pick another in the bar.`}>
+          <span className="ens-defhead">Real holes</span>
+        </Tooltip>
+      ) : "Real holes",
+      headerText: `real-data hole % VIS/Y/J/H${benchmark ? ` on ${benchmark.tileSet} (experiment ${benchmark.expId})` : ""}`, numeric: true, width: 128,
+      accessor: (v) => v.bench?.worst?.pct ?? v.bench?.holeMean ?? null,
+      csv: (v) => (v.bench ? holesText(v.bench) : ""),
+      cell: (v) => (v.bench ? (
+        <Tooltip content={`${holesLine(v.bench, benchmark!).replace(/^- /, "")} · max ${v.bench.holeMax?.toFixed(1) ?? "—"} % · median R ${v.bench.medianR?.toFixed(3) ?? "—"} · R<0.8 ${v.bench.rLt08?.toFixed(1) ?? "—"} %`}>
+          <span tabIndex={0} className="ens-holes">
+            {v.bench.bands.length ? v.bench.bands.map((b, i) => (
+              <span key={b.band}>{i > 0 && <span className="ens-faint"> · </span>}
+                <span data-worst={b === v.bench!.worst || undefined} title={`${b.short} ${b.pct?.toFixed(1) ?? "—"} %`}>{b.pct == null ? "—" : b.pct.toFixed(0)}</span></span>
+            )) : holesText(v.bench)}
+          </span>
+        </Tooltip>
+      ) : <span className="ens-faint">—</span>) },
     { id: "fitted", header: "Fitted", width: 84, accessor: (v) => v.fitted_at ?? null, cell: (v) => (v.fitted_at ? formatRelative(v.fitted_at) : "—") },
     { id: "actions", header: "", sortable: false, filterable: false, csv: false, hideable: false, width: 48,
       cell: (v) => (
         <Menu label={`${v.name} actions`} trigger={<Button size="sm" variant="ghost" icon="more" aria-label={`${v.name} actions`} />} items={[
           { label: "Inspect", onSelect: () => openCombiner(mode, v.name) },
+          { label: "Log to tracking…", onSelect: () => setLogRow(v) },
           ...(v.kind === "gate" && !v.production ? [{ label: "Promote to production…", onSelect: () => void doPromote(v) }] : []),
           ...(v.kind === "gate" && v.applies_to_test_cubes ? [{ label: "Compare with production", onSelect: () => startCompare({ gates: [data?.production ?? "spatial_gate_combiner", v.name].filter((x, i, a) => a.indexOf(x) === i).join(","), blackout_fields: "40" }) }] : []),
         ]} />
@@ -363,8 +401,13 @@ export default function Combiners() {
             onChange={setReportId} placeholder="latest"
             options={[{ value: "", label: "latest" }, ...(data?.reports ?? []).map((r) => ({ value: r.id, label: r.id }))]} />
         </BarGroup>
+        <BarGroup label="Real holes from">
+          <Select size="sm" className="ens-bench-select" aria-label="Real-data benchmark experiment" value={benchmark?.expId ?? ""} disabled={!benchOptions.length}
+            onChange={setBenchId} placeholder={exps.loading ? "loading…" : "no experiment yet"} options={benchOptions} />
+        </BarGroup>
         <span className="ens-bar__spacer" />
         <Checkbox checked={showBackups} onChange={setShowBackups}>backups</Checkbox>
+        <LogToTrackingButton disabled={!rows.length} note={tableNote} title="Append the variant table to the tracking notebook" />
       </EnsBar>
       <LoadState loading={res.loading} error={res.error} onRetry={res.reload}
         empty={data && !data.variants.length && (
@@ -375,8 +418,20 @@ export default function Combiners() {
         {data && (
           <div className="ens-stack">
             <JobProgress job={fit.job} error={fit.error} />
+            {fitted && (
+              <div className="ens-row">
+                <span className="ens-muted">Fitted {variantLabel(fitted.name)}.</span>
+                <LogToTrackingButton label="Log this fit to tracking" note={() => noteFor(fitted)} />
+              </div>
+            )}
             <JobProgress job={compare.job} error={compare.error} />
             <JobProgress job={promote.job} error={promote.error} />
+            {promoted?.promoted && (
+              <div className="ens-row">
+                <span className="ens-muted">Promoted {variantLabel(promoted.promoted)} to production.</span>
+                <LogToTrackingButton label="Log the promotion to tracking" note={() => promoteNote(promoted, mode, prodScores)} />
+              </div>
+            )}
             <DataTable rows={rows} columns={columns} rowKey={(v) => v.name} aria-label="Combiner variants"
               inspect={(v) => ({ kind: "combiner", id: `${mode}/${v.name}` })} urlKey="v" height="auto"
               defaultSort={[{ id: "kneeMean", desc: true }]} exportName={`combiner-variants-${mode}`} />
@@ -388,14 +443,14 @@ export default function Combiners() {
                 <CardBody>
                   {history.series.length
                     ? <Plot {...lg.plotProps} xDomain={history.xDomain} yDomain={history.yDomain} xLabel="fit step"
-                        xTicks={autoTicks(history.xDomain)} yTicks={autoTicks(history.yDomain)}
                         yLabel={historyMetric === "loss" ? "held-out loss (1 = best member)" : "PSNR [dB]"}
                         series={history.series} legend="auto" aspect={0.55} exportName={`gate-history-${mode}`} aria-label="Held-out fit curves" />
                     : <EmptyState compact icon="activity" title="No fit history" />}
                 </CardBody>
               </Card>
               <Card>
-                <CardHead title="Compare report" sub={rep ? `${rep.methods.length} methods` : undefined} />
+                <CardHead title="Compare report" sub={rep ? `${rep.methods.length} methods` : undefined}
+                  right={rep ? <LogToTrackingButton note={() => compareNote(rep, mode)} title="Append this compare report to the tracking notebook" /> : undefined} />
                 <CardBody>
                   {report.loading ? null : rep ? <ReportTable report={rep} />
                     : <EmptyState compact icon="table" title="No compare report yet"
@@ -404,7 +459,9 @@ export default function Combiners() {
               </Card>
             </div>
             <span className="ens-faint">
-              Real-data hole % comes from <Link to="/sky/experiments">Sky › Experiments</Link> (newest experiment per model).
+              {benchmark
+                ? <>Real holes: the % of bright LR pixels the SR blanks, per band (VIS · Y · J · H, the worst in colour), from one <Link to="/sky/experiments">Sky › Experiments</Link> run, {benchmark.expId} on {benchmark.tileSet}{benchmark.created ? ` (${formatDateTime(benchmark.created)})` : ""}; variants it did not run are blank.</>
+                : <>Real-data hole % comes from a <Link to="/sky/experiments">Sky › Experiments</Link> run (none yet).</>}
             </span>
           </div>
         )}
@@ -412,6 +469,7 @@ export default function Combiners() {
       {data && fitOpen && <FitDialog open={fitOpen} onOpenChange={setFitOpen} data={data} mode={mode}
         onStart={(body) => void fit.run("/ensemble/combiners/fit", body)} />}
       {data && cmpOpen && <CompareDialog open={cmpOpen} onOpenChange={setCmpOpen} data={data} onStart={startCompare} />}
+      <LogToTrackingDialog open={!!logRow} onOpenChange={(o) => { if (!o) setLogRow(null); }} note={() => (logRow ? noteFor(logRow) : "")} />
     </Page>
   );
 }

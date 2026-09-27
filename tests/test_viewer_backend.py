@@ -489,6 +489,58 @@ def test_cutouts_objects_carry_their_catalogue_positions(tmp_path, monkeypatch):
     assert web_status._valid_4band_stars() == (64, [3, 7, 12])
 
 
+def _cutout_files(tmp_path, monkeypatch, magzero):
+    """One star (id 3) whose four band cutouts are 1 ADU/s everywhere, with
+    ``magzero[band]`` as its MAGZERO card (None: no card)."""
+    paths = {}
+    for band in vd.BAND_NAMES:
+        header = _header(bunit="")
+        if magzero.get(band) is not None:
+            header["MAGZERO"] = magzero[band]
+        path = tmp_path / band / "star_0003_8.fits"
+        _write(path, np.ones((8, 8)), header)
+        paths[band] = str(path)
+    monkeypatch.setattr(vd, "_cached_valid_4band_stars", lambda: (8, [3]))
+    monkeypatch.setattr(vd, "_ensure_local_star_cutout", lambda band, _sid, _size: paths[band])
+
+
+def test_cutouts_are_served_in_electrons_via_magzero(tmp_path, monkeypatch):
+    """The archive cutouts are ADU/s; each band is served in electrons over its
+    stack (its MAGZERO), so the console's absolute e⁻ knee shows them (no
+    page-side auto stretch)."""
+    zeropoints = {"VIS": 24.6, "Y_E": 29.8, "J_E": 30.0, "H_E": 29.9}
+    _cutout_files(tmp_path, monkeypatch, zeropoints)
+    cube, info = vd.get_cube("cutouts", 0, "real", {})
+    assert info["unit"] == "e-" and "display_scale" not in info
+    for k, band in enumerate(vd.BAND_NAMES):
+        factor = vd.adu_per_s_to_electrons_factor(zeropoints[band], Config.get_band(band))
+        assert float(cube[0, 0, k]) == pytest.approx(factor, rel=1e-5)
+    assert "e- via MAGZERO" in info["label"]
+    monkeypatch.setattr(vd, "_cached_valid_4band_star_objects", lambda: (8, []))
+    assert vd.get_meta("cutouts", {})["tiers"] == [{"key": "real", "label": "Euclid", "unit": "e-"}]
+
+
+def test_cutouts_without_magzero_stay_native_with_a_display_scale(tmp_path, monkeypatch):
+    _cutout_files(tmp_path, monkeypatch, {"VIS": 24.6, "Y_E": None, "J_E": 30.0, "H_E": 29.9})
+    cube, info = vd.get_cube("cutouts", 0, "real", {})
+    assert info["unit"] == "ADU/s" and float(cube[0, 0, 0]) == 1.0
+    assert info["display_scale"] == pytest.approx(3000.0)       # robust bright end → white
+
+
+def test_cutouts_cube_unit_is_the_authority_over_the_meta_tier_unit(tmp_path, monkeypatch, client):
+    """The meta names the collection's usual unit (e⁻) without opening every
+    cutout; a cutout without MAGZERO says ADU/s in its own X-Cube-Unit, which
+    the viewer reads first (controller: X-Cube-Unit, else the tier's unit)."""
+    _cutout_files(tmp_path, monkeypatch, {"VIS": 24.6, "Y_E": None, "J_E": 30.0, "H_E": 29.9})
+    monkeypatch.setattr(vd, "_cached_valid_4band_star_objects", lambda: (8, []))
+    meta = client.get("/viewer/meta/cutouts").get_json()
+    assert meta["tiers"][0]["unit"] == "e-"
+    cube = client.get("/viewer/cube/cutouts/0?tier=real")
+    assert cube.status_code == 200
+    assert cube.headers["X-Cube-Unit"] == "ADU/s"
+    assert float(cube.headers["X-Cube-Display-Scale"]) == pytest.approx(3000.0)
+
+
 def test_sky_and_psf_objects_have_stable_ids(tmp_path, monkeypatch):
     for kind in ("dirty", "hr"):
         (tmp_path / f"{kind}_test.tfrecord").touch()

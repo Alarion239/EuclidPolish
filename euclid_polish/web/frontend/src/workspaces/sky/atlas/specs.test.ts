@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { SkyPalette } from "./colorScale";
 import type { LayerData } from "./layerData";
 import { CLIENT_LAYERS, type LayerInfo, type SkyFeature } from "./layerModel";
-import { buildSpecs, layerOpacity } from "./specs";
+import { buildSpecs, coverageFill, layerOpacity } from "./specs";
 
 const P: SkyPalette = {
   accent: "#4c9ffe", good: "#56d68a", warn: "#ffcc66", bad: "#ff7a7a", info: "#6fb2ff",
@@ -49,7 +49,21 @@ describe("render specs", () => {
     expect(at(2).fill).toBe(true);
     expect(at(0.45).fill).toBe(false);          // the NEXUS preset (27′)
     const [tiles] = buildSpecs({ layers: [TILES], settings: [{ id: "nexus-tiles" }], data: {}, palette: P, fov: 0.5, width: 900, markerScale: 1 });
-    expect(tiles.fill).toBeUndefined();         // only MOCs have a fill switch
+    expect(tiles.fill).toBeUndefined();         // result tiles are always filled
+  });
+
+  it("the coverage shapes (Q1 deep fields, MER tiles) are outlines when zoomed in, as the MOC is", () => {
+    const FIELDS: LayerInfo = { ...TILES, id: "q1-fields", group: "coverage", kind: "circles", style: {} };
+    const at = (fov: number, opacity?: number) => buildSpecs({
+      layers: [FIELDS], settings: [{ id: "q1-fields", ...(opacity != null ? { opacity } : {}) }], data: {}, palette: P, fov, width: 900, markerScale: 1,
+    })[0];
+    expect(at(10).fill).toBe(true);
+    expect(at(0.45).fill).toBe(false);          // the NEXUS preset: EDF-N's circle covers the whole view
+    // a fill the user set (the layer's slider) is drawn at every zoom
+    expect(at(0.45, 0.5).fill).toBe(true);
+    expect(coverageFill(FIELDS, undefined, 0.45)).toBe(false);
+    expect(coverageFill(TILES, undefined, 0.45)).toBeUndefined();
+    expect(coverageFill(CLIENT_LAYERS[0], { id: CLIENT_LAYERS[0].id, opacity: 0.3 }, 0.1)).toBe(true);
   });
 
   it("default opacities by kind", () => {

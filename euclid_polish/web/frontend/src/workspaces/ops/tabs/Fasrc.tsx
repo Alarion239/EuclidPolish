@@ -11,7 +11,7 @@ import { useJobsFeed } from "../../../api/jobs";
 import { useFasrcStatus } from "../../../app/status";
 import { usePageActions } from "../../../app/palette";
 import { useUrlState } from "../../../hooks/useUrlState";
-import { Page, PageHead, Segmented } from "../../../ui";
+import { Page, Segmented } from "../../../ui";
 import { ConnectionBar } from "../fasrc/Connection";
 import { HistoryPanel } from "../fasrc/History";
 import { LiveJobs } from "../fasrc/Live";
@@ -43,7 +43,6 @@ export default function Fasrc() {
 
   return (
     <Page className="ops-page">
-      <PageHead eyebrow="ops · fasrc" title="FASRC" />
       <div className="ops-bar" role="toolbar" aria-label="FASRC views">
         <Segmented<View> value={view} onChange={setView} aria-label="View" className="ops-bar__views"
           options={VIEWS.map((v) => ({

@@ -79,6 +79,7 @@
 .sky-layer__pop { display: flex; flex-direction: column; gap: var(--s3); }
 .sky-layer__pop p { margin: 0; font-size: var(--fs-sm); }
 .sky-opacity { width: 100%; }
+.sky-layer__note { margin: 0; font-size: var(--fs-xs); color: var(--text-faint); }
 
 /* background radio pills */
 .sky-radios { display: flex; flex-wrap: wrap; gap: 4px; }
@@ -91,7 +92,7 @@
 .sky-radio[data-on="true"] { border-color: var(--accent); color: var(--accent-press); background: var(--accent-soft); }
 .sky-radio:has(input:focus-visible) { box-shadow: var(--ring); }
 .sky-credit { margin: var(--s2) 0 0; font-size: var(--fs-2xs); color: var(--text-faint); }
-.sky-radio__tag { font: var(--fw-semibold) var(--fs-2xs)/1 var(--font-mono); color: var(--text-faint); }
+.sky-radio__tag { font: var(--fw-semibold) var(--fs-2xs)/1 var(--font-sans); color: var(--text-faint); }
 
 /* legend */
 .sky-legend { display: flex; flex-direction: column; gap: 4px; font-size: var(--fs-xs); color: var(--text-dim); }
@@ -140,9 +141,9 @@
 }
 .sky-status__pos { display: inline-flex; align-items: center; gap: var(--s2); flex-wrap: nowrap; min-width: 0; }
 .sky-status__deg { color: var(--text-faint); }
-.sky-status__k { color: var(--text-faint); text-transform: uppercase; letter-spacing: var(--ls-eyebrow); font: var(--fw-semibold) var(--fs-2xs)/1 var(--font-sans); }
+/* labels: the UI face, sentence case ("Centre", "FoV", "Pixel"); the values beside them are tabular mono */
+.sky-status__k { color: var(--text-faint); font: var(--fw-medium) var(--fs-xs)/1 var(--font-sans); }
 .sky-status__item { display: inline-flex; align-items: center; gap: 6px; }
-.sky-status .ui-seg__item { text-transform: none; } /* projection codes are upper case */
 /* A narrow sky: one compact line (degrees only in the tooltip / copy). */
 @container sky-main (max-width: 560px) {
   .sky-status { gap: var(--s1) var(--s3); padding: 3px var(--s2); }

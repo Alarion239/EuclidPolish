@@ -638,6 +638,47 @@ class TestViewerCollection:
         assert meta["default_tier"] == "b:LR_" and meta["fits"]["hdu"] == "b:LR_"
         assert meta["fits"]["stacked"] is True and meta["count"] == 1
 
+    def test_tiers_are_named_by_hdu_name_first(self, client, poster_like):
+        """The chips read "LR VIS" (the HDU's name in words), the index second;
+        the colour groups read "LR colour" / "SR colour"."""
+        meta = client.get(f"/viewer/meta/fits?path={_rel(poster_like)}").get_json()
+        labels = {t["key"]: t["label"] for t in meta["tiers"]}
+        assert labels["h1"] == "LR VIS · HDU 1" and labels["h6"] == "SR Y · HDU 6"
+        assert labels["b:LR_"] == "LR colour · VIS Y J H" and labels["b:SR_"] == "SR colour · VIS Y J H"
+        r = client.get(f"/viewer/cube/fits/0?path={_rel(poster_like)}&tier=b:SR_")
+        assert r.headers["X-Cube-Label"] == "SR colour · VIS Y J H"
+
+    def test_hdu_label_words(self):
+        assert viewer_data._fits_hdu_label("LR_VIS", 1) == "LR VIS · HDU 1"
+        assert viewer_data._fits_hdu_label("SR_H_E", 8) == "SR H · HDU 8"
+        assert viewer_data._fits_hdu_label("Y_E", 2) == "Y · HDU 2"
+        assert viewer_data._fits_hdu_label("PRIMARY", 0) == "PRIMARY · HDU 0"
+        assert viewer_data._fits_hdu_label("", 3) == "HDU 3"
+
+    def test_a_bright_file_sets_its_white_point(self, client, roots):
+        """A bright target (the poster galaxy's core) would be blown out at the
+        default white (30·K0 = 3000 e⁻): the file's meta moves K0 so white sits
+        at the selected plane's 99.99th percentile; a faint file keeps K0."""
+        primary = fits.PrimaryHDU()
+        primary.header["BUNIT"] = "electron"
+        bright = np.linspace(0.0, 2.0e5, 64 * 64, dtype=np.float32).reshape(64, 64)
+        hdus = [primary]
+        for prefix, scale in (("LR_", 1.0), ("SR_", 0.25)):
+            for band in ("VIS", "Y_E", "J_E", "H_E"):
+                hdus.append(fits.ImageHDU(bright * scale, name=f"{prefix}{band}"))
+        path = _write(roots["eval"] / "bright_results.fits", hdus)
+        meta = client.get(f"/viewer/meta/fits?path={_rel(path)}").get_json()
+        white = float(np.percentile(bright, 99.99))
+        assert meta["color"]["default_asinh"] == pytest.approx(white / 30.0, rel=1e-4)
+        # a selected SR group sets it from its own plane
+        sr = client.get(f"/viewer/meta/fits?path={_rel(path)}&hdu=b:SR_").get_json()
+        assert sr["color"]["default_asinh"] == pytest.approx(white / 30.0 * 0.25, rel=1e-4)
+
+    def test_a_faint_file_keeps_the_default_white(self, client, poster_like, band_cube):
+        for path in (poster_like, band_cube):
+            meta = client.get(f"/viewer/meta/fits?path={_rel(path)}").get_json()
+            assert meta["color"]["default_asinh"] == pytest.approx(float(Config.STRETCH_SCALE_E))
+
     def test_unknown_units_get_a_display_scale(self, client, roots):
         path = _write(roots["eval"] / "psf.fits", [fits.PrimaryHDU(np.full((6, 6), 1e-3, np.float32))])
         r = client.get(f"/viewer/cube/fits/0?path={_rel(path)}&tier=h0")

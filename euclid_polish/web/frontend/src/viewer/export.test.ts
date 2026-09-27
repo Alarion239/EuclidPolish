@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { colormapLut } from "./colormaps";
 import {
-  heatbarModel, heatbarStops, niceAngularScale, publicationElectronLabel, publicationLayout, publicationPanelName,
+  compositeFrames, heatbarModel, heatbarStops, niceAngularScale, publicationElectronLabel, publicationLayout, publicationPanelName,
   publicationUnitLabel, exportStem,
 } from "./export";
 
@@ -148,5 +148,46 @@ describe("figure layout and names", () => {
   });
   it("file stem", () => {
     expect(exportStem("nexus-field", 12, ["lr", "sr"], "VIS")).toBe("nexus-field_idx12_lr-sr_VIS");
+  });
+});
+
+describe("compositeFrames (the PNG of the frames as shown)", () => {
+  type Call = { fn: string; args: unknown[] };
+  function fakeTarget() {
+    const calls: Call[] = [];
+    const ctx = new Proxy({}, {
+      get: (_t, fn: string) => (fn === "measureText" ? () => ({ width: 10 }) : (...args: unknown[]) => { calls.push({ fn, args }); }),
+      set: () => true,
+    });
+    const target = { width: 0, height: 0, getContext: () => ctx } as unknown as HTMLCanvasElement;
+    return { target, calls };
+  }
+  const rect = (left: number, top: number, w: number, h: number) => ({ left, top, width: w, height: h, right: left + w, bottom: top + h });
+
+  it("follows the drawn rectangle: a snapped image is exported without its surround", () => {
+    // a 363 css px frame at dpr 2 (726 px canvas) drawing a 255 css px image at (54, 54)
+    const canvas = { width: 726, height: 726 } as HTMLCanvasElement;
+    const { target, calls } = fakeTarget();
+    const out = compositeFrames([
+      { canvas, rect: rect(100, 50, 363, 363), crop: { x: 54, y: 54, width: 255, height: 255 }, label: "LR", message: "" },
+      { canvas, rect: rect(465, 50, 363, 363), crop: { x: 54, y: 54, width: 255, height: 255 }, label: "HR", message: "" },
+    ], target);
+    expect(out).toBe(target);
+    const scale = Math.max(1, Math.min(window.devicePixelRatio || 1, 2));
+    // two drawn images 255 wide, 365 − 255 = 110 apart (the frames' offset less the crop)
+    expect(target.width).toBe(Math.round((465 + 54 + 255 - (100 + 54)) * scale));
+    expect(target.height).toBe(Math.round(255 * scale));
+    const draws = calls.filter((c) => c.fn === "drawImage");
+    expect(draws.map((d) => d.args)).toEqual([
+      [canvas, 108, 108, 510, 510, 0, 0, 255, 255],
+      [canvas, 108, 108, 510, 510, 365, 0, 255, 255],
+    ]);
+  });
+
+  it("without a crop the whole canvas is drawn at its rect", () => {
+    const canvas = { width: 200, height: 200 } as HTMLCanvasElement;
+    const { target, calls } = fakeTarget();
+    compositeFrames([{ canvas, rect: rect(0, 0, 100, 100), label: "", message: "" }], target);
+    expect(calls.filter((c) => c.fn === "drawImage").map((d) => d.args)).toEqual([[canvas, 0, 0, 100, 100]]);
   });
 });

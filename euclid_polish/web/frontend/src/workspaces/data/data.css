@@ -6,8 +6,8 @@
 
    Image pages (Records, Cutouts, PSFs; .dt-page--image) are image first
    (docs/superpowers/specs/2026-09-27-image-first-viewer-design.md): one
-   toolbar row, at most one caption row, then the viewer (ViewerStage.tsx
-   keeps its first frame row in view); everything else sits below it. */
+   toolbar row, at most one caption row, then the viewer (it fits its first
+   frame row under its own top); everything else sits below it. */
 
 .dt-page {
   container: dt-page / inline-size; display: flex; flex-direction: column; gap: var(--s3); min-width: 0;
@@ -46,7 +46,8 @@
 .dt-jobstrip { display: flex; align-items: flex-start; gap: var(--s2); min-width: 0; }
 .dt-jobstrip > :first-child { flex: 1 1 auto; min-width: 0; }
 
-.dt-pre { white-space: pre-wrap; word-break: break-word; font-family: var(--font-mono); font-size: var(--fs-xs); }
+/* server text (tips, errors) with its line breaks: prose, so the UI face */
+.dt-pre { white-space: pre-wrap; word-break: break-word; font-size: var(--fs-xs); }
 .dt-note { margin: 0; font-size: var(--fs-xs); color: var(--text-dim); }
 .dt-chips { display: flex; flex-wrap: wrap; gap: var(--s1); min-width: 0; }
 .dt-help {
@@ -90,25 +91,19 @@
 }
 .dt-two > * { min-width: 0; }
 
-/* ── the viewer slot (ViewerStage.tsx): the viewer first, full width; its
-   frames fitted to the height under its top (--dt-cols × --dt-side, centred
-   on the light table — the viewer's own fit uses the whole stage height);
-   never in focus mode. With a side panel, the viewer narrows to --dt-vw
-   (its frames, never below its bar's two-row width) and the panel sits
-   beside it, as tall as the viewer and scrolling inside; else below. ── */
-.dt-vstage { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s3); min-width: 0; }
-.dt-vstage__viewer { min-width: 0; width: 100%; }
-.dt-vstage[data-fit] .cv-root:not([data-focus]) .cv-frames {
-  grid-template-columns: repeat(var(--dt-cols, 1), minmax(0, var(--dt-side)));
+/* ── the viewer with a side panel (Cutouts' gallery; .dt-vsplit): the viewer
+   first — it fits its own frames under its top (viewer/fit.ts) — and the
+   panel beside it on a wide page, exactly as tall as the viewer (its list
+   scrolls inside), else below it. ── */
+.dt-vsplit { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s3); min-width: 0; }
+.dt-vsplit__viewer { min-width: 0; }
+.dt-vsplit__aside { min-width: 0; display: flex; flex-direction: column; max-height: 420px; }
+.dt-vsplit__aside > * { flex: 1 1 auto; min-height: 0; }
+@container dt-page (min-width: 880px) {
+  .dt-vsplit { grid-template-columns: minmax(0, 1fr) clamp(180px, 24%, 280px); align-items: stretch; }
+  /* adds no height to the row (the viewer sets it) and fills it */
+  .dt-vsplit__aside { height: 0; min-height: 100%; max-height: none; }
 }
-.dt-vstage[data-beside] { grid-template-columns: minmax(0, var(--dt-vw)) minmax(0, 1fr); align-items: start; }
-.dt-vstage[data-beside] > .dt-vstage__aside { max-height: var(--dt-vh, none); overflow: auto; overscroll-behavior: contain; }
-/* asideFill: the panel is the viewer's height and its list scrolls inside it */
-.dt-vstage[data-beside] > .dt-vstage__aside[data-fill] {
-  height: var(--dt-vh, auto); overflow: hidden; display: flex; flex-direction: column;
-}
-.dt-vstage[data-beside] > .dt-vstage__aside[data-fill] > * { flex: 1 1 auto; min-height: 0; }
-.dt-vstage__aside { min-width: 0; }
 
 /* ── records: the image's caption row (record + truth-source overlay; the
    circles are the viewer's markers, src/viewer/markers.ts, and these keys
@@ -205,7 +200,7 @@
 [data-fill] > .dt-clusters .ui-dt__scroll { flex: 1 1 auto; min-height: 0; }
 .dt-warp { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); min-width: 0; }
 .dt-warp .ui-slider-wrap { min-width: 110px; flex: 0 1 160px; }
-.dt-warp__status { font-size: var(--fs-xs); color: var(--text-dim); font-family: var(--font-mono); }
+.dt-warp__status { font-size: var(--fs-xs); color: var(--text-dim); font-variant-numeric: tabular-nums; }
 
 /* ── TNG ───────────────────────────────────────────────────────────────── */
 .dt-axes { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--s2); margin-bottom: var(--s2); min-width: 0; }
@@ -226,19 +221,26 @@
 /* toolbar groups: the status badges sit close; the actions are words, and
    icon-only in a compact bar (common.tsx DataBar `compactable`) */
 .dt-bar__status { display: inline-flex; flex-wrap: wrap; align-items: center; gap: var(--s1); min-width: 0; }
-/* status chips are words ("Files ok", "No SR"), not data: the UI face */
-.dt-bar__status .ui-badge { font-family: var(--font-sans); letter-spacing: 0; }
 .dt-bar__act { display: inline-flex; align-items: center; gap: var(--s1); flex: none; }
 .dt-bar:not([data-compact]) .dt-bar__act .ui-btn > svg { display: none; }
 .dt-bar[data-compact] .dt-bar__act .ui-btn__label { display: none; }
 .dt-bar[data-compact] .dt-bar__act .ui-btn { padding-inline: 6px; min-width: var(--ctl-h-sm); justify-content: center; }
-
-/* a segmented control whose labels are words or band names ("All tiers",
-   "VIS"): the page's sans text as written, matching the viewer's own buttons
-   (the kit's Segmented is lowercase mono) */
-.dt-seg-text .ui-seg__item { font-family: var(--font-sans); text-transform: none; letter-spacing: 0; }
+/* compact level 2 and 3 (Records): the status badges show their dot only,
+   except the split's worst state (--keep), which keeps its word. The hidden
+   words are clipped, not removed, so they stay the badges' text for screen
+   readers (and head the tooltip) */
+:is(.dt-bar[data-compact="2"], .dt-bar[data-compact="3"]) .dt-tipbadge:not(.dt-tipbadge--keep) .dt-tipbadge__text {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+:is(.dt-bar[data-compact="2"], .dt-bar[data-compact="3"]) .dt-tipbadge:not(.dt-tipbadge--keep) .ui-badge { gap: 0; }
+.dt-tipbadge__head { display: block; margin-bottom: 2px; }
+/* compact level 3 (Records): the truth-source overlay is one menu button */
+.dt-ov--menu { display: none; }
+.dt-bar[data-compact="3"] .dt-ov--wide { display: none; }
+.dt-bar[data-compact="3"] .dt-ov--menu { display: inline-flex; }
 
 /* Records' truth markers: a little lighter than the viewer's default, so the
    (often faint) HR light under them shows through; full strength on hover and
    for the inspected source (viewer.css .cv-mk[data-active]) */
-.dt-vstage .cv-mk:not([data-active]):not(:hover) .cv-mk__shape { stroke-opacity: 0.72; }
+.dt-figure .cv-mk:not([data-active]):not(:hover) .cv-mk__shape { stroke-opacity: 0.72; }

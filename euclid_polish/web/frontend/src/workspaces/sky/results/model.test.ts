@@ -100,7 +100,8 @@ describe("model specs", () => {
   });
   it("counts the members a model reads (a pruned gate reads fewer than it was fitted on)", () => {
     const six = ["170·psnr", "171·psnr", "180·psnr", "181·psnr", "184·psnr", "187·psnr"];
-    expect(membersText({ n_members: 20, reads: six })).toBe("6 of 20 members");
+    expect(membersText({ n_members: 6, n_fitted: 20, reads: six })).toBe("6 of 20 members");
+    expect(membersText({ n_members: 20, reads: six })).toBe("6 of 20 members"); // older servers
     expect(membersText({ n_members: 30, reads: Array(30).fill("x") })).toBe("30 members");
     expect(membersText({ n_members: 1 })).toBe("1 member");
     expect(membersText({ members: ["a", "b"] })).toBe("2 members");
@@ -284,8 +285,9 @@ describe("the experiment a visit opens", () => {
 });
 
 describe("metric column headers", () => {
-  it("upper-case Latin letters only, so σ never becomes Σ under the kit's transform", () => {
-    expect(metricHeader("holes >100σ")).toBe("HOLES >100σ");
+  it("are sentence case, σ kept (no CSS text-transform)", () => {
+    expect(metricHeader("holes >100σ")).toBe("Holes >100σ");
+    expect(metricHeader("art.")).toBe("Art.");
     expect(metricHeader("R<0.8")).toBe("R<0.8");
     expect(metricHeader("R̃")).toBe("R̃");
   });

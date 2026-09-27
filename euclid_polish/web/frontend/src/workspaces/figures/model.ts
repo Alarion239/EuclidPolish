@@ -174,16 +174,10 @@ export function commonRecipes(results: readonly SavedResult[]): RecipeKey[] {
   return first.recipes.filter((k) => rest.every((r) => r.recipes.includes(k)));
 }
 
-/** The rows the preview can draw now: the grid's rows that every column
- *  supports, in order (the renderer needs every cell). With unavailable cells
- *  the preview shows these rather than nothing. */
-export function previewRows(rows: readonly string[], results: readonly SavedResult[]): string[] {
-  if (!results.length) return [...rows];
-  return rows.filter((row) => results.every((r) => (r.recipes as readonly string[]).includes(row)));
-}
-
-/** The grid's state for the status line and whether it can render. */
-export type GridStatus = { canRender: boolean; tone: "good" | "warn" | "bad"; text: string; unsupported: number };
+/** The grid's state for the status line and whether it can render.
+ *  `missing`: some cells are not available — the sheet renders anyway, those
+ *  cells grey "Not available" in place (`gridUrl(…, missing)`). */
+export type GridStatus = { canRender: boolean; tone: "good" | "warn" | "bad"; text: string; unsupported: number; missing: boolean };
 
 export function gridStatus(opts: {
   loading: boolean; error: boolean; results: readonly SavedResult[]; columns: readonly string[];
@@ -192,7 +186,8 @@ export function gridStatus(opts: {
   const byId = new Map(opts.results.map((r) => [r.id, r]));
   const cols = opts.columns.map((id) => byId.get(id)).filter((r): r is SavedResult => !!r);
   const unsupported = cols.reduce((n, r) => n + missingRecipes(r, opts.rows).length, 0);
-  const done = (canRender: boolean, tone: GridStatus["tone"], text: string): GridStatus => ({ canRender, tone, text, unsupported });
+  const done = (canRender: boolean, tone: GridStatus["tone"], text: string): GridStatus =>
+    ({ canRender, tone, text, unsupported, missing: canRender && unsupported > 0 });
   if (opts.loading && !opts.results.length) return done(false, "warn", "Loading saved crops…");
   if (opts.error) return done(false, "bad", "Saved crops unavailable");
   if (opts.columns.length > opts.maxResults) return done(false, "bad", `At most ${opts.maxResults} columns`);
@@ -200,7 +195,8 @@ export function gridStatus(opts: {
   if (cols.length !== opts.columns.length) return done(false, "bad", "Some columns are no longer saved");
   if (!cols.length) return done(false, "warn", "Pick at least one saved crop");
   if (!opts.rows.length) return done(false, "warn", "Add at least one row");
-  if (unsupported) return done(false, "bad", `${unsupported} cell${unsupported === 1 ? "" : "s"} unavailable`);
+  if (unsupported >= cols.length * opts.rows.length) return done(false, "bad", "No cell is available: no column has these rows");
+  if (unsupported) return done(true, "warn", `${unsupported} cell${unsupported === 1 ? "" : "s"} not available (grey in the sheet)`);
   return done(true, "good", `${opts.rows.length} × ${cols.length} ready`);
 }
 

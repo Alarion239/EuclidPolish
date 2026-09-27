@@ -9,7 +9,7 @@
    workspaces use the kit layout instead. ─────────────────────────────── */
 .page { padding: var(--s5) var(--s6) var(--s7); max-width: 1600px; margin: 0 auto; }
 .page__head { display: flex; align-items: flex-end; gap: var(--s4); margin-bottom: var(--s5); }
-.page__title { font-size: 24px; letter-spacing: -0.02em; }
+.page__title { margin: 0; font-size: 24px; letter-spacing: -0.02em; }
 .page__sub { color: var(--text-dim); font-size: 13px; margin-top: 4px; }
 .page__spacer { flex: 1; }
 

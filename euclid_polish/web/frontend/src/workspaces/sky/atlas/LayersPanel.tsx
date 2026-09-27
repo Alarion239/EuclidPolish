@@ -177,8 +177,10 @@ function LayerRow({ info, spec, data, url, onZoomTo }: {
       </div>
       {on && (
         <div className="sky-layer__detail">
-          <OpacitySlider value={spec?.opacity ?? 0.7} label={`${info.label} opacity`}
+          <OpacitySlider value={spec?.opacity ?? 0.7} label={`${info.label} ${spec?.fill != null ? "fill" : "opacity"}`}
             onCommit={(v) => url.setLayers(updateLayer(url.layers, info.id, { opacity: v }))} />
+          {/* zoomed in, a coverage layer is only its outline (neutral imagery) until a fill is set */}
+          {spec?.fill === false && <p className="sky-layer__note">Outline only while zoomed in; move the slider to fill it.</p>}
           {legend && spec?.scale.type !== "fixed" && info.kind !== "moc" && <SkyLegend legend={legend} compact />}
         </div>
       )}

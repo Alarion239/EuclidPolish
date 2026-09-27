@@ -4,7 +4,7 @@ import {
   atlasHref, axisDomain, bandState, starState, clusterObjectId, decodeBand, decodeStars, decodeTng, DEFAULT_STAR_FILTER,
   fieldCounts, filterStars, histogram, magBins, nearestPoint, parseClusterId, parseRange,
   noiseBadge, parseTruthId, propertyHistogram, recordFiles, resumeSafeStep, stripRebuildFlags, scatterGroups, serializeRange, sourceMarker, summaryStats, tngValue, truthId,
-  shownTypes, sourceTypeChips, toggleHiddenType, cutoutTiles, psfBandGroups,
+  shownTypes, sourceTypeChips, toggleHiddenType, cutoutTiles, psfBandGroups, sentenceCase, compactLevelFor, worstToneIndex,
 } from "./model";
 
 const BITS = { valid: 1, corrupted: 2, failed: 4, size_shift: 3 };
@@ -324,12 +324,40 @@ describe("PSF band state badges", () => {
       ]);
   });
 
-  it("says all bands when every band shares the state", () => {
-    const all = ["VIS", "Y_E", "J_E", "H_E"].map((n) => b(n, "not_cached"));
-    expect(psfBandGroups(all)).toEqual([{ state: "not_cached", bands: ["VIS", "Y_E", "J_E", "H_E"], label: "All bands: not cached" }]);
+  it("says it as a plain sentence when every band shares the state", () => {
+    const all = (state: "not_cached" | "empirical" | "no_empirical") => ["VIS", "Y_E", "J_E", "H_E"].map((n) => b(n, state));
+    expect(psfBandGroups(all("not_cached"))).toEqual([{ state: "not_cached", bands: ["VIS", "Y_E", "J_E", "H_E"], label: "Not cached in any band" }]);
+    expect(psfBandGroups(all("empirical"))[0].label).toBe("Empirical in every band");
+    expect(psfBandGroups(all("no_empirical"))[0].label).toBe("No empirical PSF in any band");
+    expect(sentenceCase("not cached")).toBe("Not cached");
+    expect(sentenceCase("")).toBe("");
   });
 
   it("returns nothing for no bands", () => {
     expect(psfBandGroups([])).toEqual([]);
+  });
+});
+
+describe("toolbar compaction", () => {
+  it("takes the first level whose one row fits, else the most compact", () => {
+    // Records at a 792 px stage (728 px of bar): labelled 982, icon-only actions 902, dot badges 742, overlay menu 612
+    expect(compactLevelFor([982, 902, 742, 612], 728)).toBe(3);
+    expect(compactLevelFor([982, 902, 742, 612], 760)).toBe(2);
+    expect(compactLevelFor([700, 650], 728)).toBe(0);
+    expect(compactLevelFor([982, 902], 500)).toBe(1);         // nothing fits: the most compact
+    expect(compactLevelFor([982], 0)).toBe(0);                // not measured yet
+    expect(compactLevelFor([728, 600], 728)).toBe(1);         // exactly the bar's width still wraps (fractional px)
+  });
+});
+
+describe("the status badge a compact toolbar keeps worded", () => {
+  it("is the most severe one (bad > warn > info > neutral > good), the first on a tie", () => {
+    // Records' validate split: "Files ok" (good), "No SR" (neutral), "Noise unverified" (neutral)
+    expect(worstToneIndex(["good", "neutral", "neutral"])).toBe(1);
+    expect(worstToneIndex(["good", "warn", "bad"])).toBe(2);
+    expect(worstToneIndex(["warn", "info", "neutral"])).toBe(0);
+    expect(worstToneIndex(["good", "good"])).toBe(0);
+    expect(worstToneIndex(["good", undefined, "neutral"])).toBe(1);   // no tone reads as neutral
+    expect(worstToneIndex([])).toBe(-1);
   });
 });

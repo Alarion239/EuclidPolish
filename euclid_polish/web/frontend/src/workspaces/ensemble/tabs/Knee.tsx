@@ -3,7 +3,9 @@
    per band, absolute or relative to the plain mean; and the sortable
    leaderboard of knee-integrated PSNR per band + mean over a SELECTABLE
    integration range (rank and its change vs the full 0.1–10⁴ e⁻ range),
-   CSV export and the compute job. No 100 e⁻ reference line (user). */
+   CSV export and the compute job. No 100 e⁻ reference line (user). "Log to
+   tracking" opens the leaderboard as a markdown table with its integration
+   range (../notes.ts kneeNote). */
 import { useMemo } from "react";
 import Plot, { Legend, useLegend, type Band as PlotBand, type LegendItem, type Series } from "../../../charts/Plot";
 import { C, categorical, LOSS_COLOR, viridis } from "../../../colors";
@@ -18,14 +20,15 @@ import {
 import { BAND_SHORT, useKnee, useMode, type KneeModel } from "../api";
 import { BarGroup, EnsBar, LoadState } from "../common";
 import { JOB, useOnJobEnd } from "../jobs";
-import { db, dbDelta, kneeLeaderboard, kneeText, memberNumber, relativeTo, type LeaderRow } from "../model";
-import { autoTicks } from "../../plotTicks";
+import { db, dbDelta, kneeLeaderboard, kneeModelName, kneeNum, kneeText, memberNumber, relativeTo, type LeaderRow } from "../model";
+import { kneeNote } from "../notes";
+import { LogToTrackingButton } from "../../shared/LogToTracking";
 import "../ensemble.css";
 
 type View = "relative" | "absolute";
 type Colour = "knee" | "loss" | "multi";
 
-const kfmt = (v: number) => (v >= 1000 ? `${+(v / 1000).toPrecision(3)}k` : `${+v.toPrecision(3)}`);
+const kfmt = kneeNum;
 const parseRange = (raw: string): [number, number] | undefined => {
   const [a, b] = raw.split(",").map(Number);
   return a > 0 && b > 0 ? [Math.min(a, b), Math.max(a, b)] : undefined;
@@ -63,8 +66,7 @@ function memberFacet(m: KneeModel, by: Colour, kneeOrder: number[]): Facet {
 }
 const LOSS_ORDER = ["l1", "l2", "l3", "mse", "berhu"];
 
-const displayName = (m: KneeModel) => (m.kind === "member" ? `#${memberNumber(m.label) ?? m.label}`
-  : m.kind === "mean" ? "plain mean" : m.id === "spatial_gate" ? "production gate" : m.label);
+const displayName = (m: KneeModel) => kneeModelName(m);
 
 export default function Knee() {
   const mode = useMode();
@@ -182,6 +184,8 @@ export default function Knee() {
         <Chip on={showMembers} onClick={() => setShowMembers(!showMembers)}>members</Chip>
         <span className="ens-bar__spacer" />
         {data?.stale && <Badge tone="warn">stale</Badge>}
+        <LogToTrackingButton disabled={!board.length} title="Append the leaderboard (this range and band) to the tracking notebook"
+          note={() => kneeNote(board, { mode, range, full, band, bands, nFields: data?.n_fields })} />
         <Button size="sm" loading={job.busy} onClick={compute}>Compute</Button>
       </EnsBar>
       <LoadState loading={res.loading} error={res.error} onRetry={res.reload}
@@ -204,7 +208,7 @@ export default function Knee() {
             {panels.map((p) => (
               <div key={p.c} className="ens-chart">
                 <h3 className="ens-chart__title">{p.name}</h3>
-                <Plot {...lg.plotProps} xScale="log" xDomain={full} yDomain={p.yDomain} xTicks={xTicks} yTicks={autoTicks(p.yDomain)}
+                <Plot {...lg.plotProps} xScale="log" xDomain={full} yDomain={p.yDomain} xTicks={xTicks}
                   xLabel="scoring knee [e⁻]" yLabel={view === "relative" ? "PSNR − mean [dB]" : "PSNR [dB]"}
                   series={p.series} bands={p.bands} aspect={panels.length > 1 ? 0.62 : 0.45} syncKey="ens-knee"
                   xFormat={(v) => `${kfmt(v)} e⁻`} yFormat={(v) => v.toFixed(2)}

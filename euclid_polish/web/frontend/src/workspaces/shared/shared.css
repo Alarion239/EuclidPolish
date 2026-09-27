@@ -1,0 +1,14 @@
+/* Pieces shared across workspaces (workspaces/shared). Tokens only. */
+
+/* Log to tracking: the markdown note editor */
+.log-note { width: 100%; min-height: 220px; font-size: var(--fs-xs); line-height: 1.5; }
+
+/* A page's lead line: what the page is for, with the page's own actions at
+   its right (the breadcrumb and the active tab already name the page, so
+   there is no visible title). Scrolls with the page. */
+.page-lead {
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2) var(--s3);
+  margin: 0 0 var(--s4); min-width: 0;
+}
+.page-lead__text { flex: 1 1 280px; margin: 0; min-width: 0; color: var(--text-dim); font-size: var(--fs-sm); line-height: 1.5; }
+.page-lead__right { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); margin-left: auto; }

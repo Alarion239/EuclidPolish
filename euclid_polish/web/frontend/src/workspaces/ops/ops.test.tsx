@@ -384,6 +384,27 @@ describe("Tracking tab", () => {
     expect((await screen.findByText("result")).tagName).toBe("STRONG");
   });
 
+  it("opens the notebook newest first, with a jump-to-day menu, and has no repeated page title", async () => {
+    routes["GET /api/tracking/state"] = () => ({ body: {
+      active: { title: "gate-sweep", slug: "gate-sweep", created_commit: { short: "fff0000" } }, archived: [],
+      backups: { models: [], fits: [], images: [] }, jobs_count: 0, unassigned_count: 0, ssh_connected: false, sandboxes: [],
+      log_md: "# gate-sweep\n\n## 2026-07-02T02:37:41Z\n\nold one\n\n## 2026-09-21T01:36:49Z\n\nmiddle\n\n## 2026-09-21T14:42:29Z\n\nnewest",
+    } });
+    show(<TrackingTab />);
+    await screen.findByText("newest");
+    const doc = document.querySelector(".ops-notebook__doc") as HTMLElement;
+    const order = [...doc.querySelectorAll("h3, h2")].map((h) => h.textContent).filter((t) => t?.startsWith("2026"));
+    expect(order).toEqual(["2026-09-21T14:42:29Z", "2026-09-21T01:36:49Z", "2026-07-02T02:37:41Z"]);
+    expect(screen.getByRole("radio", { name: "Newest first" }).getAttribute("aria-checked")).toBe("true");
+    expect(screen.getByText("3 entries, 2026-07-02 to 2026-09-21")).toBeTruthy();
+    const jump = screen.getByRole("combobox", { name: "Jump to a day" });
+    expect([...jump.querySelectorAll("option")].map((o) => o.textContent)).toEqual(["Jump to a day…", "Sep 21, 2026", "Jul 2, 2026"]);
+    expect(screen.queryByRole("heading", { level: 1, name: "Tracking" })).toBeNull();
+    fireEvent.click(screen.getByRole("radio", { name: "Oldest first" }));
+    await waitFor(() => expect([...doc.querySelectorAll("h3, h2")].map((h) => h.textContent).filter((t) => t?.startsWith("2026"))[0])
+      .toBe("2026-07-02T02:37:41Z"));
+  });
+
   it("renders the sandbox source_label (source is an object) and confirms removal", async () => {
     show(<TrackingTab />, "/ops/tracking?view=sandboxes");
     expect(await screen.findByText("campaign old-run")).toBeTruthy();

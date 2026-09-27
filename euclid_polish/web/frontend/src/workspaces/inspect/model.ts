@@ -141,15 +141,53 @@ export function compareTiers(s: InspectResponse, sel: Selected): string[] | unde
   return s.band_groups.slice(0, 2).map((g) => g.id);
 }
 
-/** A per-viewer exposure for a bright target: when the plane's 99.9th
- *  percentile is above the default stretch's white (30·K0), knee and white
- *  are scaled by s = p99.9 / (30·K0) — knee × s, brightness ÷ s — the same
- *  look as a fainter target, the core no longer blown out. Null otherwise. */
-export function brightExposure(p999: number | null | undefined, K0: number): { knee: number; gain: number } | null {
+/** The per-viewer display of that first comparison: the chips, frame labels
+ *  and readout say "colour", so the two composites are drawn in colour
+ *  (Lupton) rather than the console's default VIS greyscale. A per-viewer
+ *  override (the Display panel is untouched); the bar's band group changes it. */
+export function compareDisplay(tiers: readonly string[] | undefined): { color: "lupton" } | undefined {
+  return tiers && tiers.length ? { color: "lupton" } : undefined;
+}
+
+/** A per-viewer knee for a bright target (the poster galaxy's core at VIS
+ *  12 AB): when the plane's 99.9th percentile is above the default stretch's
+ *  white (30·K0 e⁻), the knee goes where the default look puts it relative to
+ *  that percentile, p99.9 / 30. The white point is the file's own — the
+ *  server moves it to the plane's 99.99th percentile (`meta.color.
+ *  default_asinh`, viewer_data `_fits_white`) — so the core keeps its
+ *  structure and the disk stays visible (brightness 1×). Null otherwise. */
+export function brightExposure(p999: number | null | undefined, K0: number): { knee: number } | null {
   if (p999 == null || !Number.isFinite(p999) || !(K0 > 0)) return null;
-  const s = p999 / (30 * K0);
-  if (!(s > 1)) return null;
-  return { knee: K0 * s, gain: 1 / s };
+  if (!(p999 > 30 * K0)) return null;
+  return { knee: p999 / 30 };
+}
+
+/** "LR_VIS" → "LR VIS", "SR_Y_E" → "SR Y" (the NISP suffix dropped), as the viewer's chips read. */
+export function hduWords(name: string | null | undefined): string {
+  return String(name ?? "").trim().replace(/(^|_)([YJH])_E$/i, "$1$2").replace(/_/g, " ").trim();
+}
+
+/** The page's HDU picker entry: the HDU's name first, its index second
+ *  ("LR VIS (HDU 1)"; a non-image says its kind: "CAT (HDU 2, table)"). */
+export function hduOptionLabel(h: Pick<HduSummary, "index" | "name" | "type">): string {
+  const name = hduWords(h.name);
+  const kind = h.type === "image" ? "" : `, ${h.type}`;
+  return name ? `${name} (HDU ${h.index}${kind})` : `HDU ${h.index}${kind}`;
+}
+
+/** A 4-band group in the picker: "LR colour (HDUs 1–4)". */
+export function groupOptionLabel(g: Pick<BandGroup, "prefix" | "hdus">): string {
+  const head = String(g.prefix ?? "").replace(/[_\- ]+$/, "");
+  const span = g.hdus.length ? ` (HDUs ${Math.min(...g.hdus)}–${Math.max(...g.hdus)})` : "";
+  return `${head ? `${head} colour` : "Colour"}${span}`;
+}
+
+/** A label split for a middle ellipsis: the head (which gives way, CSS
+ *  ellipsis) and the last `tail` characters (always shown), so a squeezed
+ *  crumb reads "Post…(repo)" rather than "P…". Short labels stay whole. */
+export function middleSplit(text: string, tail = 6): [string, string] {
+  if (text.length <= tail * 2) return [text, ""];
+  return [text.slice(0, -tail), text.slice(-tail)];
 }
 
 /** Band names without the `_E` suffix: "VIS Y J H". */

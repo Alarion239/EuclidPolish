@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  LAYERS_CODEC, OVERLAYS_CODEC, REGION_CODEC, experimentsHref, fmtCoord, fmtFovParam, parseGoto, parsePointId,
-  parseProjection, patchSearch, pointTargetId, toggleLayer, updateLayer, type LayerSetting,
+  LAYERS_CODEC, OVERLAYS_CODEC, REGION_CODEC, experimentsHref, featureView, fmtCoord, fmtFovParam, parseGoto,
+  parsePointId, parseProjection, patchSearch, pointTargetId, toggleLayer, updateLayer, type LayerSetting,
 } from "./urlState";
 
 describe("atlas URL codecs", () => {
@@ -89,5 +89,15 @@ describe("atlas URL codecs", () => {
     expect(patchSearch("?goto=x", { goto: null })).toBe("");
     // Duplicates of a patched key collapse; values are encoded (not , : /).
     expect(patchSearch("?a=1&a=2&b=x%20y", { a: "p q,r" })).toBe("?a=p%20q,r&b=x%20y");
+  });
+});
+
+describe("featureView", () => {
+  it("frames an inspected feature a few times its size", () => {
+    const tile = featureView({ ra: 268.39, dec: 65.1, sizeDeg: 25.6 / 3600 });
+    expect(tile.ra).toBe(268.39);
+    expect(tile.fov).toBeCloseTo((25.6 * 6) / 3600, 6);          // ~2.6′
+    expect(featureView({ ra: 1, dec: 2, sizeDeg: 0 }).fov).toBe(0.02);   // a point: 1.2′
+    expect(featureView({ ra: 1, dec: 2, sizeDeg: 20 }).fov).toBe(30);    // a deep field: capped
   });
 });

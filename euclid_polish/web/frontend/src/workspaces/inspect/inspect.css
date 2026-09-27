@@ -88,6 +88,11 @@
   color: var(--text-dim); font: inherit; cursor: pointer;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+/* a middle ellipsis: the head gives way, the tail (the last few characters) stays */
+.insp-crumbs__item--mid { display: inline-flex; gap: 0; min-width: 0; }
+/* white-space: pre keeps the space between "Poster " and "(repo)" (a flex item's edge space collapses) */
+.insp-crumbs__head { min-width: 1ch; overflow: hidden; text-overflow: ellipsis; white-space: pre; }
+.insp-crumbs__tail { flex: none; white-space: pre; }
 .insp-crumbs__item:hover { background: var(--surface-2); color: var(--text); }
 .insp-crumbs__item[aria-current] { color: var(--text); font-weight: var(--fw-medium); }
 .insp-crumbs__item:focus-visible { box-shadow: var(--ring); outline: none; }
@@ -107,7 +112,7 @@
 }
 /* crumbs › name on ONE line: the crumbs give way first (ellipsis) */
 .insp-filebar__names { display: flex; align-items: center; gap: 2px; min-width: 0; }
-.insp-filebar__names .insp-crumbs { flex: 0 1 auto; flex-wrap: nowrap; overflow: hidden; min-width: 7ch; }
+.insp-filebar__names .insp-crumbs { flex: 0 1 auto; flex-wrap: nowrap; overflow: hidden; min-width: 11ch; }
 .insp-filebar__names .insp-crumbs__seg { flex: 0 1 auto; }
 /* both give way: the crumbs keep a readable stub, the name ellipsizes too */
 .insp-filebar__name {
@@ -141,6 +146,9 @@
 .insp-viewbar .insp-view__tabs { border-bottom: 0; align-self: stretch; }
 .insp-viewbar .insp-view__tabs .ui-tab { margin-bottom: -1px; }
 .insp-viewbar__hdu { max-width: min(100%, 320px); }
+/* "HDU [LR colour (HDUs 1–4) ▾]": the file part the header, table and statistics describe */
+.insp-viewbar__pick { display: inline-flex; align-items: center; gap: var(--s1); min-width: 0; }
+.insp-viewbar__picklabel { font-size: var(--fs-sm); color: var(--text-dim); white-space: nowrap; }
 .insp-viewbar__name { font-size: var(--fs-sm); font-weight: var(--fw-semibold); }
 .insp-viewbar__facts {
   font-size: var(--fs-xs); color: var(--text-dim); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -167,7 +175,7 @@
 .insp-planes { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; min-width: 0; flex: 1 1 320px; }
 .insp-planes__axis { display: inline-flex; align-items: center; gap: 6px; flex: 1 1 200px; min-width: 160px; }
 .insp-planes__axis > :nth-child(2) { flex: 1; min-width: 80px; }
-.insp-planes__name { font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--text-faint); }
+.insp-planes__name { font-size: var(--fs-xs); color: var(--text-faint); }
 .insp-planes__value { font-size: var(--fs-xs); min-width: 5ch; text-align: right; }
 .insp-planes__count { font-size: var(--fs-xs); white-space: nowrap; }
 

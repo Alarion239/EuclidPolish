@@ -18,7 +18,12 @@
  *    (`/api/models` `members`, or `/api/system/production`), never all
  *    active members.
  *  - production model: the `production` spec of `/api/models` (its combiner,
- *    mix space and fit time; `available` = fitted for the current members). */
+ *    mix space and fit time; `available` = fitted for the current members).
+ *  - tracking catch-up: the `tracking` health check's `facts.unlogged`
+ *    (results written after the newest `## <ISO>` heading of log.md), one
+ *    line each with the matching headline number, for the Log to tracking
+ *    dialog (workspaces/shared/LogToTracking). */
+import { utcText } from "../shared/noteText";
 
 export type EvalSummary = {
   ensemble_psnr?: number | null;
@@ -210,4 +215,67 @@ export function productionModel(catalog: ModelsCatalog | null | undefined): Prod
     available: !!spec.available,
     reason: spec.reason ?? null,
   };
+}
+
+/* ── tracking catch-up note ────────────────────────────────────────────── */
+
+export type Unlogged = { at: string; label: string };
+
+/** The `tracking` check's unlogged results (as the server lists them, newest first). */
+export function unloggedItems(check: { facts?: Record<string, unknown> } | null | undefined): Unlogged[] {
+  const raw = check?.facts?.unlogged;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((u): u is Unlogged => !!u && typeof u === "object" && typeof (u as Unlogged).label === "string")
+    .map((u) => ({ at: String(u.at ?? ""), label: u.label }));
+}
+
+type CatchUpFacts = { knee: KneeHeadline | null; prod: ProductionHeadline | null; members: number | null; production: ProductionModel | null };
+
+const fmt = (v: number) => v.toFixed(2);
+const signed = (v: number) => `${v >= 0 ? "+" : "−"}${Math.abs(v).toFixed(2)}`;
+
+function kneeLine(k: KneeHeadline | null): string | null {
+  const head = k?.gate ?? k?.mean;
+  if (!k || head == null) return null;
+  const what = k.gate != null ? "production gate" : "plain mean";
+  const vs = [k.best && k.vsBest != null ? `${signed(k.vsBest)} dB vs ${k.best.name.replace("member_", "member ")}` : null,
+    k.vsMean != null ? `${signed(k.vsMean)} dB vs plain mean` : null, k.nFields != null ? `${k.nFields} fields` : null].filter(Boolean).join(", ");
+  return `∫PSNR ${what} ${fmt(head)} dB${vs ? ` (${vs})` : ""}${k.stale ? ", stale" : ""}`;
+}
+
+function testLine(p: ProductionHeadline | null): string | null {
+  if (!p) return null;
+  if (p.kind === "mean") return `test PSNR plain mean ${fmt(p.psnr)} dB${p.vsMeanMember != null ? ` (${signed(p.vsMeanMember)} dB vs mean member)` : ""}`;
+  const vs = [p.vsBest != null ? `${signed(p.vsBest)} dB vs best member` : null, p.vsMean != null ? `${signed(p.vsMean)} dB vs plain mean` : null].filter(Boolean).join(", ");
+  return `test PSNR production gate ${fmt(p.psnr)} dB${vs ? ` (${vs})` : ""}${p.stale ? ", summary stale" : ""}`;
+}
+
+const gateLine = (m: ProductionModel | null): string | null => (m
+  ? `${m.label}${m.mix ? `, ${m.mix} mix` : ""}, ${m.available ? "fitted for the current members" : `out of date${m.reason ? ` (${m.reason})` : ""}`}`
+  : null);
+
+const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+
+/** The Home "Log to tracking" note: one line per result the notebook has not
+ *  logged yet (the `tracking` check), else the production model as it is. */
+export function trackingCatchUpNote(check: { facts?: Record<string, unknown> } | null | undefined, f: CatchUpFacts): string {
+  const items = unloggedItems(check);
+  const members = f.members != null ? `${f.members} STARFULL members` : null;
+  if (!items.length) {
+    return [`**Production model**${members ? ` — ${members}` : ""}`, "",
+      ...[kneeLine(f.knee), testLine(f.prod), gateLine(f.production)].filter((l): l is string => !!l).map((l) => `- ${cap(l)}`)].join("\n");
+  }
+  const last = check?.facts?.last_entry;
+  const detail = (label: string): string | null => {
+    const l = label.toLowerCase();
+    if (l.includes("knee")) return kneeLine(f.knee);
+    if (l.includes("evaluation")) return [testLine(f.prod), members].filter(Boolean).join(", ") || null;
+    if (l.includes("gate")) return gateLine(f.production);
+    if (l.includes("experiment")) return "see Sky › Experiments";
+    return null;
+  };
+  return [
+    `**Catch-up** — results since the last tracking entry${typeof last === "string" ? ` (${utcText(last)})` : ""}`, "",
+    ...items.map((u) => { const d = detail(u.label); return `- ${u.label} — ${utcText(u.at)}${d ? `: ${d}` : ""}`; }),
+  ].join("\n");
 }

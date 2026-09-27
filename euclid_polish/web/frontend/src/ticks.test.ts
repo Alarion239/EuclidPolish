@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   decadeTicks,
   extent,
+  fitLinearTicks,
   formatTick,
   linearTicks,
   linearTickValues,
@@ -56,6 +57,42 @@ describe("linear ticks", () => {
     expect(formatTick(2e-5, 1e-5)).toBe("2e-5");
     expect(formatTick(3e7, 1e7)).toBe("3e7");
     expect(formatTick(-0.0000000001, 0.5)).toBe("0.0");
+  });
+});
+
+describe("fitLinearTicks (a chart's automatic axis)", () => {
+  it("gives 4–6 evenly spaced ticks inside the domain (3–7 where no nice step lands in 4–6)", () => {
+    const cases: [number, number][] = [[0, 10], [0, 100], [43.2, 44.9], [-1, 1.05], [0.1, 0.6], [0, 70_000],
+      [0.000123, 0.000456], [1e9, 3.3e9], [-5.5, -5.1], [17.04, 17.93], [0, 0.6], [-6, 6]];
+    let inside = 0;
+    for (const d of cases) {
+      const t = fitLinearTicks(d);
+      expect(t.length, String(d)).toBeGreaterThanOrEqual(3);
+      expect(t.length, String(d)).toBeLessThanOrEqual(7);
+      if (t.length >= 4 && t.length <= 6) inside++;
+      for (const x of t) expect(x.v >= d[0] - 1e-12 && x.v <= d[1] + 1e-12, `${d}: ${x.v}`).toBe(true);
+      const steps = t.slice(1).map((x, i) => x.v - t[i].v);
+      for (const s of steps) expect(s).toBeCloseTo(steps[0], 9);
+    }
+    expect(inside).toBeGreaterThanOrEqual(cases.length - 2);
+  });
+
+  it("prefers 1-2-5 steps, uses 2.5 only to land in 4–6, and labels like the step", () => {
+    expect(labels(fitLinearTicks([0, 10]))).toEqual(["0", "2", "4", "6", "8", "10"]);
+    expect(labels(fitLinearTicks([0, 100]))).toEqual(["0", "20", "40", "60", "80", "100"]);
+    expect(values(fitLinearTicks([43.2, 44.9]))).toEqual([43.5, 44, 44.5]);
+    expect(labels(fitLinearTicks([0, 0.6]))).toEqual(["0.0", "0.2", "0.4", "0.6"]);
+    expect(labels(fitLinearTicks([-6, 6]))).toEqual(["-5.0", "-2.5", "0.0", "2.5", "5.0"]);
+    expect(labels(fitLinearTicks([0, 1], { format: (v) => `${v} dB` }))[1]).toBe("0.2 dB");
+  });
+
+  it("falls back to the end points of an unusable span and never hangs", () => {
+    expect(fitLinearTicks([5, 5]).map((t) => t.v)).toEqual([5]);
+    expect(fitLinearTicks([NaN, 1])).toEqual([]);
+    const huge = fitLinearTicks([-1e308, 1e308]);
+    expect(huge.every((t) => Number.isFinite(t.v))).toBe(true);
+    expect(huge.length).toBeLessThanOrEqual(1000);
+    expect(fitLinearTicks([5e-324, 1e-323]).every((t) => Number.isFinite(t.v))).toBe(true);
   });
 });
 

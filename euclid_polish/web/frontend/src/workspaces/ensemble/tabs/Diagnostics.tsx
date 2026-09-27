@@ -16,7 +16,7 @@ import { url, useMode, type Evals, type NumArr } from "../api";
 import { BarGroup, ColorBySelect, EnsBar, LoadState, useFacetColors } from "../common";
 import { facetOf, formatE, memberNumber, type ColorBy } from "../model";
 import { PixelTrace, type Pick } from "../PixelTrace";
-import { autoTicks, unitTicks } from "../../plotTicks";
+import { unitTicks } from "../../plotTicks";
 import "../ensemble.css";
 
 type Section = "spectrum" | "transfer" | "coherence" | "stderr" | "axes" | "brightness" | "calibration";
@@ -282,7 +282,6 @@ export default function Diagnostics() {
             </> : <EmptyState icon="activity" title="No σ-vs-error diagnostic cached" />)}
             {section === "axes" && (axes ? <>
               <Plot xDomain={axes.xDomain} yDomain={axes.yDomain} xLabel={`${axes.axisNames[0]} [asinh]`} yLabel={`${axes.axisNames[1]} [asinh]`}
-                xTicks={autoTicks(axes.xDomain)} yTicks={autoTicks(axes.yDomain)}
                 heat={axes.heat} series={[]} aspect={0.62}
                 onHeatClick={(c) => setPick({ diag: "combiner_feature_error", ...c })}
                 highlight={cell?.diag === "combiner_feature_error" ? cell : null}
@@ -311,7 +310,6 @@ export default function Diagnostics() {
                   <div className="ens-chart">
                     <h3 className="ens-chart__title">z-score distribution</h3>
                     <Plot xDomain={[-6, 6]} yDomain={[0, 0.6]} xLabel="z" yLabel="pdf" series={calib.pdf} aspect={0.62}
-                      xTicks={autoTicks([-6, 6])} yTicks={autoTicks([0, 0.6])}
                       legend="auto" exportName={`ensemble-z-pdf-${mode}`} aria-label="z-score distribution" />
                   </div>
                   <div className="ens-chart">

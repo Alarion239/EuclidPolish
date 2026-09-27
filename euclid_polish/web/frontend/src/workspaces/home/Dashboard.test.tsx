@@ -194,7 +194,9 @@ describe("Home · production numbers", () => {
   it("shows connection, version, jobs and free disk", async () => {
     show(<Dashboard />);
     expect(await screen.findByText("1111111")).toBeTruthy();
-    expect(screen.getByText("HEAD 2222222 — restart")).toBeTruthy();
+    expect(screen.getByText("code changed")).toBeTruthy();
+    expect(screen.getByText("Backend code changed — restart the server to load it")).toBeTruthy();
+    expect(screen.queryByText(/behind|HEAD/)).toBeNull();
     expect(await screen.findByText("ssh: connect to host login.rc: timed out")).toBeTruthy();
     expect(await screen.findByText("job a")).toBeTruthy();
     const disk = await waitFor(() => {
@@ -276,5 +278,23 @@ describe("Home · quick actions and sky", () => {
       "EDF-N269.7°, +66.0°", "EDF-S61.2°, -48.4°", "NEXUS268.4°, +65.2°",
     ]);
     expect(rows[2].getAttribute("href")).toBe(nexus.getAttribute("href"));
+  });
+});
+
+describe("Home · log to tracking", () => {
+  it("opens the notebook dialog pre-filled from the unlogged results and appends only on Append", async () => {
+    const tracking = { id: "tracking", label: "Tracking log", state: "warn", title: "Results since the last tracking entry (2026-09-21)",
+      to: "/ops/tracking", facts: { last_entry: "2026-09-21T14:42:29+00:00", unlogged: [
+        { at: "2026-09-25T23:32:26+00:00", label: "evaluation" }, { at: "2026-09-25T22:30:13+00:00", label: "production gate fit" }] } };
+    routes["GET /api/system/alerts"] = () => ({ body: { ...ALERTS, checks: [...ALERTS.checks, tracking], alerts: [...ALERTS.alerts, tracking] } });
+    routes["POST /api/tracking/log"] = () => ({ body: { ok: true } });
+    show(<Dashboard />);
+    fireEvent.click(await screen.findByRole("button", { name: "Log to tracking (2)" }));
+    const note = (await screen.findByRole("textbox", { name: "Markdown note" })) as HTMLTextAreaElement;
+    expect(note.value).toContain("results since the last tracking entry (2026-09-21 14:42 UTC)");
+    expect(note.value).toContain("- evaluation — 2026-09-25 23:32 UTC: test PSNR production gate 59.24 dB");
+    expect(calls.some((c) => c.method === "POST")).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "Append" }));
+    await waitFor(() => expect(calls.find((c) => c.method === "POST" && c.url === "/api/tracking/log")?.form.mode).toBe("append"));
   });
 });

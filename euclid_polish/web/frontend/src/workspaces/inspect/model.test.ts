@@ -5,7 +5,8 @@ import {
   basename, cardRows, defaultHduKey, defaultView, dirname, fileCrumbs, flatIndex, fovArcsec, hduByKey, hduFacts,
   histogramSeries, isGroupKey, pageLabel, planeAxesLabel, planeIndex, pushRecent, readRecent, shapeText,
   normalizeSummary, skyAt, skyColumns, skyHref, sliceTarget, sortToServer, viewerParams, viewsFor,
-  axisLabel, INSPECT_WIDE_PX, isNarrowWidth, searchScope, compareTiers, brightExposure,
+  axisLabel, INSPECT_WIDE_PX, isNarrowWidth, searchScope, compareTiers, compareDisplay, brightExposure,
+  groupOptionLabel, hduOptionLabel, middleSplit,
 } from "./model";
 
 const hdu = (over: Partial<HduSummary>): HduSummary => ({
@@ -39,6 +40,22 @@ describe("paths", () => {
       { name: "gal_1", rel: "data/eval_results/gal_1" },
     ]);
     expect(fileCrumbs("poster/x.fits", null)).toEqual([{ name: "poster", rel: "poster" }]);
+  });
+});
+
+describe("labels", () => {
+  it("names an HDU by its name first, its index second", () => {
+    expect(hduOptionLabel(hdu({ index: 1, name: "LR_VIS" }))).toBe("LR VIS (HDU 1)");
+    expect(hduOptionLabel(hdu({ index: 6, name: "SR_Y_E" }))).toBe("SR Y (HDU 6)");
+    expect(hduOptionLabel(hdu({ index: 2, name: "CAT", type: "table" }))).toBe("CAT (HDU 2, table)");
+    expect(hduOptionLabel(hdu({ index: 3, name: "" }))).toBe("HDU 3");
+    expect(groupOptionLabel(group)).toBe("LR colour (HDUs 1–4)");
+    expect(groupOptionLabel({ ...group, prefix: "" })).toBe("Colour (HDUs 1–4)");
+  });
+  it("splits a crumb for a middle ellipsis (the head gives way, the tail stays)", () => {
+    expect(middleSplit("Poster (repo)")).toEqual(["Poster ", "(repo)"]);
+    expect(middleSplit("gal_1")).toEqual(["gal_1", ""]);
+    expect(middleSplit("Evaluation results", 5)).toEqual(["Evaluation re", "sults"]);
   });
 });
 
@@ -291,9 +308,17 @@ describe("the first view of a results FITS", () => {
     const two = summary([hdu({ index: 1 })], [group, sr]);
     expect(compareTiers(two, hduByKey(two, "1")!)).toBeUndefined();     // an HDU picked by hand
   });
-  it("scales a bright target so its core is not blown out (knee and white ×s, the same look)", () => {
-    // the poster galaxy: p99.9 = 1.2e5 e⁻ ≫ the 3000 e⁻ white of the default stretch
-    expect(brightExposure(1.2e5, 100)).toEqual({ knee: 4000, gain: 0.025 });
+  it("draws the two colour composites in colour (Lupton), not the console's VIS greyscale", () => {
+    expect(compareDisplay(["b:LR_", "b:SR_"])).toEqual({ color: "lupton" });
+    expect(compareDisplay(undefined)).toBeUndefined();          // a lone HDU follows the Display panel
+    expect(compareDisplay([])).toBeUndefined();
+  });
+  it("seeds a bright target's knee from its 99.9th percentile (the white point is the file's, from the server)", () => {
+    // the poster galaxy: p99.9 = 31 005 e⁻ ≫ the 3000 e⁻ white of the default
+    // stretch; the server moves white to p99.99 (K0 = white / 30), the page
+    // puts the knee where the default look puts it relative to p99.9
+    expect(brightExposure(31005, 100)).toEqual({ knee: 1033.5 });
+    expect(brightExposure(1.2e5, 100)).toEqual({ knee: 4000 });
     expect(brightExposure(2500, 100)).toBeNull();          // already inside the default white
     expect(brightExposure(undefined, 100)).toBeNull();
     expect(brightExposure(NaN, 100)).toBeNull();

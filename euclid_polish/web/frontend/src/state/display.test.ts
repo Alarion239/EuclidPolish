@@ -24,7 +24,8 @@ describe("display store (C7)", () => {
     expect(s.colormap).toBe("gray");
     expect(s.residualColormap).toBe("rdbu");
     expect(s.invert).toBe(false);
-    expect(s.nanColor).toBe("#5b6475");
+    expect(s.nanColor).toBe("#404040");                  // neutral dark grey (untinted)
+    expect(s.matchSurfaceBrightness).toBe(false);         // opt-in (the user has not decided the default)
     expect(s.linked).toBe(true);
     expect(s.wheel).toBe("zoom-when-focused");
     expect(Object.keys(s.groups).sort()).toEqual(["default", "euclid", "jwst"]);
@@ -99,6 +100,33 @@ describe("display store (C7)", () => {
     expect(s.groups.default).toEqual(DEFAULT_TRANSFER);
     expect(s.rgb).toEqual(["H_E", "J_E", "VIS"]);
     expect(typeof s.set).toBe("function");
+  });
+
+  it("sanitises the surface-brightness option to a boolean", () => {
+    expect(sanitizeDisplay({ matchSurfaceBrightness: true }).matchSurfaceBrightness).toBe(true);
+    expect(sanitizeDisplay({ matchSurfaceBrightness: "yes" }).matchSurfaceBrightness).toBe(false);
+    useDisplay.getState().set({ matchSurfaceBrightness: true });
+    expect(useDisplay.getState().matchSurfaceBrightness).toBe(true);
+    expect(mergeDisplay(DEFAULT_DISPLAY, { matchSurfaceBrightness: true }).matchSurfaceBrightness).toBe(true);
+  });
+
+  it("v3 migrates the old NaN defaults (v1 magenta, v2 slate) to the neutral grey, only when still untouched", async () => {
+    for (const [old, version] of [["#5b6475", 2], ["#5B6475", 1], ["#ff00ff", 2], ["#FF00FF", 1]] as const) {
+      localStorage.setItem(DISPLAY_STORAGE_KEY, JSON.stringify({ state: { nanColor: old, colormap: "magma" }, version }));
+      await useDisplay.persist.rehydrate();
+      expect(useDisplay.getState().nanColor).toBe("#404040");
+      expect(useDisplay.getState().colormap).toBe("magma");          // the rest is kept
+    }
+    // a colour the user picked stays (in any version)
+    localStorage.setItem(DISPLAY_STORAGE_KEY, JSON.stringify({ state: { nanColor: "#00ff00" }, version: 2 }));
+    await useDisplay.persist.rehydrate();
+    expect(useDisplay.getState().nanColor).toBe("#00ff00");
+    // a v3 value is never rewritten (the slate picked again on purpose stays)
+    localStorage.setItem(DISPLAY_STORAGE_KEY, JSON.stringify({ state: { nanColor: "#5b6475" }, version: 3 }));
+    await useDisplay.persist.rehydrate();
+    expect(useDisplay.getState().nanColor).toBe("#5b6475");
+    useDisplay.getState().set({ colormap: "gray" });
+    expect(JSON.parse(localStorage.getItem(DISPLAY_STORAGE_KEY)!).version).toBe(3);
   });
 
   it("migrates the v1 magenta NaN default to the muted default but keeps a chosen colour", async () => {

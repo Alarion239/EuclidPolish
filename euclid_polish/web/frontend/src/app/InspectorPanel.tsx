@@ -2,10 +2,13 @@
  * `{kind, id}` target through the registry (app/inspector.ts), with
  * back/forward, pin, copy-link and close. The shell docks it in a resizable
  * panel (width persisted in prefs) on wide screens and shows it as a sheet
- * below 900 px. Escape closes it — from the page too, unless something
- * nearer (a menu, a dialog, the viewer, a field) takes the key first.
- * Opening never moves focus; closing it from inside hands focus back to what
- * opened it (or to the stage). */
+ * below 900 px. Escape closes it from anywhere — the page, a field, the
+ * inspector — unless a dialog, popover or menu is open or something nearer
+ * takes the key first (the viewer leaving focus mode or unfreezing its lens,
+ * a zoomed chart, a table clearing its selection: they preventDefault).
+ * Opening it moves focus into it (the panel); closing it hands focus back to
+ * what opened it (or to the stage). Switching targets while it is open leaves
+ * focus where it is (a table's arrow keys keep working). */
 import { Suspense, useEffect, useLayoutEffect, useRef, type RefObject } from "react";
 import { useLocation } from "react-router-dom";
 import { useShortcut } from "../hooks/useShortcut";
@@ -50,9 +53,25 @@ export function kindLabel(kind: string): string {
   return k ? k[0].toUpperCase() + k.slice(1) : kind;
 }
 
-/** Remember what had focus (outside the panel) when a target opened, and
- *  give focus back to it when the panel closes while focus is inside it —
- *  otherwise focus would drop to <body>. Falls back to the stage. */
+const EDITABLE = "input, textarea, select, [contenteditable]:not([contenteditable='false'])";
+/** An open layer that owns Escape: a dialog (the palette, confirm, the
+ *  Display sheet, a popover), a menu or a listbox. */
+const LAYER = "[role='dialog'], [role='alertdialog'], [role='menu'], [role='listbox']";
+
+/** Whether Escape belongs to a layer other than the docked inspector. */
+export function escapeTakenByLayer(event: KeyboardEvent, panel: HTMLElement | null): boolean {
+  const t = event.target;
+  const inLayer = t instanceof Element ? t.closest(LAYER) : null;
+  if (inLayer && !(panel && inLayer.contains(panel))) return true;
+  return [...document.querySelectorAll(LAYER)].some((el) => !(panel && (el.contains(panel) || panel.contains(el))));
+}
+
+/** Remember what had focus (outside the panel) when a target opened; move
+ *  focus into the panel when it opens (not when the target changes while it
+ *  is open, and not away from a field being typed in or from a dialog); give
+ *  focus back to the opener when the panel closes while focus is inside it —
+ *  otherwise focus would drop to <body>. Falls back to the stage. Inside the
+ *  narrow-screen sheet (a Radix dialog) the dialog moves and restores focus. */
 function useReturnFocus(panel: RefObject<HTMLElement>, target: string | null) {
   const opener = useRef<HTMLElement | null>(null);
   useEffect(() => {
@@ -63,7 +82,17 @@ function useReturnFocus(panel: RefObject<HTMLElement>, target: string | null) {
     }
   }, [target, panel]);
   const open = target != null;
+  useEffect(() => {
+    const el = panel.current;
+    if (!open || !el || el.closest("[role='dialog']")) return;
+    const active = document.activeElement;
+    if (active instanceof Element && (active.matches(EDITABLE) || active.closest(LAYER))) return;
+    if (el.contains(active)) return;
+    el.focus({ preventScroll: true });
+  }, [open, panel]);
   // A layout effect: its cleanup runs while the panel is still in the DOM.
+  // Focus goes back only once the panel has really left the page (not on
+  // StrictMode's simulated unmount, which keeps the element connected).
   useLayoutEffect(() => {
     if (!open) return undefined;
     const el = panel.current;
@@ -71,6 +100,7 @@ function useReturnFocus(panel: RefObject<HTMLElement>, target: string | null) {
       if (!el || !el.contains(document.activeElement)) return;
       const back = opener.current;
       queueMicrotask(() => {
+        if (el.isConnected) return;
         const to = back?.isConnected ? back : document.getElementById("main");
         to?.focus({ preventScroll: true });
       });
@@ -88,10 +118,14 @@ export function InspectorPanel() {
   const location = useLocation();
   const ref = useRef<HTMLElement>(null);
   const store = useInspector.getState;
-  // Window-level: runs after the viewer (document listener) and Radix menus
-  // and dialogs, which take Esc first (preventDefault); skipped in fields.
-  useShortcut("Escape", () => store().hide(), {
-    description: "Close the inspector", scope: "Inspector", hidden: true,
+  // Window-level: runs after the viewer (window capture) and anything else
+  // that uses Esc and preventDefaults it; works from fields too; an open
+  // dialog, popover or menu keeps the key (it closes first).
+  useShortcut("Escape", (e) => {
+    if (escapeTakenByLayer(e, ref.current)) return false;
+    store().hide();
+  }, {
+    description: "Close the inspector", scope: "Inspector", hidden: true, allowInInputs: true,
     enabled: current != null,
   });
   useReturnFocus(ref, current ? formatInspectParam(current) : null);
@@ -99,7 +133,7 @@ export function InspectorPanel() {
   const title = inspectorTitle(current);
   const link = () => `${window.location.origin}${inspectHref(current, location)}`;
   return (
-    <aside className="inspector" aria-label="Inspector" ref={ref}>
+    <aside className="inspector" aria-label="Inspector" ref={ref} tabIndex={-1}>
       <header className="inspector__head">
         <IconButton icon="chevronLeft" size="sm" label="Back" disabled={!canBack} onClick={() => store().goBack()} />
         <IconButton icon="chevronRight" size="sm" label="Forward" disabled={!canForward} onClick={() => store().goForward()} />

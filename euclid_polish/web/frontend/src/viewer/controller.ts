@@ -11,11 +11,12 @@ import { apiPost, isAbortError } from "../api/client";
 import { useShortcutRegistry } from "../hooks/useShortcut";
 import { mergeDisplay, useDisplay, type DisplaySettings, type TransferGroup } from "../state/display";
 import { readStorage, writeStorage } from "../state/storage";
-import { PER_AREA_STORAGE_KEY, areaFactor, areaReference, parsePerArea } from "./area";
+import { areaFactor, areaReference } from "./area";
 import { COLOR_KEYS, COLOR_MODES_EXTRA, plainLabel, rememberBarRows, reservedBarRows, safeStorage, sameBarLayout, sequencePending, type BarLayout } from "./barModel";
 import { prepareCore, type Prepared } from "./color";
 import { parseCssColor } from "./colormaps";
 import { cubeKey, cubeUrl, fetchMeta, metaUrl, noteMeta, sharedCubeCache, ViewerError, type CubeRec, type Params } from "./cube";
+import { SNAP_MIN_FILL, frameDpr, snappedDrawSide, zoomPreset } from "./draw";
 import { exportStem, heatbarStops, publicationUnitLabel, type HeatbarInfo } from "./export";
 import { LAYOUT_STORAGE_KEY, LEGACY_LAYOUT_STORAGE_KEY, figureLayout, parseLayout, type Fit } from "./fit";
 import {
@@ -33,7 +34,7 @@ import {
 } from "./selection";
 import type {
   Compare, FrameStatus, ImageViewerProps, Layout, LensPlacement, ProfileGeom, Readout, ReadoutTier, SaveStatus,
-  Shown, Tool, ViewerApi, ViewerMeta, ViewerState,
+  Shown, Tool, ViewerApi, ViewerMeta, ViewerState, ViewerTool,
 } from "./types";
 import { pixToSky, skyToPix } from "./wcs";
 
@@ -45,6 +46,12 @@ export { COLOR_KEYS, COLOR_MODES_EXTRA };
 export const VIEW_LAYOUT_STORAGE_KEY = LAYOUT_STORAGE_KEY;
 /** Maximum view zoom (relative to the full frame). */
 export const VIEW_MAX_ZOOM = 64;
+/** A viewer narrower than this (css px: the inspector panel, the bottom
+ *  sheet) opens with at most NARROW_MAX_TIERS tiers unless the URL names them. */
+export const NARROW_VIEWER_WIDTH = 480;
+export const NARROW_MAX_TIERS = 2;
+/** The zoom step of + / − and the bar's buttons (landing on integer presets, draw.ts). */
+export const ZOOM_STEP = 1.5;
 
 function savedViewLayout(): Layout {
   return parseLayout(readStorage(LAYOUT_STORAGE_KEY), readStorage(LEGACY_LAYOUT_STORAGE_KEY));
@@ -52,6 +59,9 @@ function savedViewLayout(): Layout {
 function saveViewLayout(value: Layout): void {
   writeStorage(LAYOUT_STORAGE_KEY, value);
 }
+/** "Pixel-exact fit" (the layout menu): always snap the whole image to whole
+ *  device pixels per image pixel, however much smaller it gets (draw.ts). */
+export const PIXEL_EXACT_STORAGE_KEY = "euclid-polish.viewer.pixel-exact";
 
 /** What a mounted <Frame> exposes to the engine. */
 export type FrameHandle = {
@@ -94,10 +104,11 @@ export type ViewerStoreState = {
   profileOpen: boolean;
   /** Focus mode: the viewer covers the stage (key F, Esc returns). */
   focus: boolean;
-  /** The Display dock beside the frames (the bar's Display button). */
+  /** The Display row under the bar (the bar's Display button). */
   dock: boolean;
-  /** Display every e⁻ frame per unit area of the coarsest shown pixel (area.ts). */
-  perArea: boolean;
+  /** Always snap the fit to whole device pixels per image pixel (else only
+   *  when that keeps ≥ 80 % of the frame, draw.ts SNAP_MIN_FILL). */
+  pixelExact: boolean;
   /** The frame grid's current fit (columns, rows, side), set by TierGrid. */
   fit: Fit | null;
   /** The control bar's arrangement (Bar.tsx measures it; TierGrid refits on a change). */
@@ -184,12 +195,20 @@ export class ViewerController {
   private initialId: string | null;
   private onState: ((s: ViewerState) => void) | undefined;
   private recorder: { stop: () => void } | null = null;
+  /** At most this many tiers on the first load (a narrow viewer), then null. */
+  private tierLimit: number | null;
+  /** The tiers the viewer settled on at its first load (UrlSync's default). */
+  initialTiers: string[] | null = null;
+  /** Whether the viewer navigates (the bar's ◀ ▶): only then are neighbours prefetched. */
+  nav = true;
   readonly api: ViewerApi;
 
-  constructor(props: Pick<ImageViewerProps, "collection" | "params" | "tiers" | "initialIndex" | "initialId" | "id" | "display">) {
+  constructor(props: Pick<ImageViewerProps, "collection" | "params" | "tiers" | "initialIndex" | "initialId" | "id" | "display" | "nav"> & { maxTiers?: number | null }) {
     this.collection = props.collection;
     this.id = props.id ?? props.collection;
     this.initialId = props.initialId ?? null;
+    this.tierLimit = props.maxTiers && props.maxTiers > 0 ? props.maxTiers : null;
+    this.nav = props.nav ?? true;
     this.store = createStore<ViewerStoreState>()(() => ({
       meta: null, metaError: null,
       params: { ...(props.params ?? {}) },
@@ -203,8 +222,8 @@ export class ViewerController {
       shown: {}, status: {}, overlay: {}, readout: null,
       compare: "off", blinkMs: 700, blinkAt: 0, swipe: 0.5,
       profileOpen: false, profile: null, focus: false, dock: false, fit: null,
-      perArea: parsePerArea(readStorage(PER_AREA_STORAGE_KEY)),
-      bar: { rows: reservedBarRows(props.collection, 0, safeStorage()), compact: false, wrap: [] }, mags: {},
+      pixelExact: readStorage(PIXEL_EXACT_STORAGE_KEY) === "1",
+      bar: { rows: reservedBarRows(props.collection, 0, safeStorage()), compact: false, wrap: [], overflow: [], collapsed: [] }, mags: {},
       playing: false, playMs: PLAY_INTERVAL_MS,
       morphAmp: 1.6, morphSpeed: 0.5, morphMembers: null, movieProgress: {},
       save: { text: "", tone: "" }, saveInFlight: false, recording: false, hot: false, drawn: 0,
@@ -239,17 +258,23 @@ export class ViewerController {
   }
   private currentObject() { return this.s.meta?.objects?.[this.s.index]; }
   tierAvail(key: string): boolean {
+    return this.tierAvailAt(key, this.s.index);
+  }
+  /** Whether object `index` has `key` (its meta `tiers`; every tier without a list). */
+  tierAvailAt(key: string, index: number): boolean {
     const r = parseResidualKey(key);
-    if (r) return this.tierAvail(r.a) && this.tierAvail(r.b);
-    const obj = this.currentObject();
+    if (r) return this.tierAvailAt(r.a, index) && this.tierAvailAt(r.b, index);
+    const obj = this.s.meta?.objects?.[index];
     return !obj || !obj.tiers || obj.tiers.includes(key);
   }
   tierDisabled(key: string): boolean {
     const tm = this.tierMeta(key);
     return !!(tm && tm.disabled) || !this.tierAvail(key);
   }
+  /** Why a tier has no data for this object: the backend's reason
+   *  (`missing_tier_labels`), else a plain sentence. */
   missingTierLabel(key: string): string {
-    return this.s.meta?.missing_tier_labels?.[key] || `no ${key}`;
+    return this.s.meta?.missing_tier_labels?.[key] || "Not available for this object";
   }
   jwstBandAvailable(value: string): boolean {
     if (value === "colour") return true;
@@ -280,7 +305,7 @@ export class ViewerController {
     const t = this.transfer(this.groupOf(rec), settings);
     // Per unit area (area.ts): values × f before the stretch ≡ knee, black and
     // the white reference ÷ f (the same image, native values untouched).
-    const f = perArea && rec ? this.areaFactorOf(rec) : 1;
+    const f = perArea && rec ? this.areaFactorOf(rec, this.s, settings) : 1;
     return {
       stretch: settings.stretch, knee: t.knee / f, gain: t.gain, black: t.black / f, K0: this.K0() / f,
       colormap: settings.colormap, invert: settings.invert, nanColor: parseCssColor(settings.nanColor),
@@ -292,19 +317,15 @@ export class ViewerController {
   areaRef(s: ViewerStoreState = this.s): number {
     return areaReference(Object.values(s.shown).filter((sh) => sh.kind === "cube").map((sh) => sh.rec));
   }
-  /** A frame's per-area display factor (1 when off or not needed). */
-  areaFactorOf(rec: { pixscale?: number; unit?: string }, s: ViewerStoreState = this.s): number {
-    return areaFactor(rec, this.areaRef(s), s.perArea);
+  /** A frame's per-area display factor: 1 unless the Display option "Match
+   *  surface brightness across pixel scales" is on (and the shown e⁻ tiers
+   *  have different pixel scales). */
+  areaFactorOf(rec: { pixscale?: number; unit?: string }, s: ViewerStoreState = this.s, settings = this.settings()): number {
+    return areaFactor(rec, this.areaRef(s), settings.matchSurfaceBrightness);
   }
   /** Native → display units of a cube: its served display scale × the per-area factor. */
   displayUnitsOf(rec: CubeRec): number {
     return (rec.displayScale > 0 ? rec.displayScale : 1) * this.areaFactorOf(rec);
-  }
-  setPerArea(on: boolean) {
-    if (on === this.s.perArea) return;
-    writeStorage(PER_AREA_STORAGE_KEY, on ? "1" : "0");
-    this.set({ perArea: on });
-    this.afterDisplayChange();
   }
 
   // ---- display edits (toolbar / keyboard / histogram) -----------------------
@@ -405,6 +426,16 @@ export class ViewerController {
     if (changed || force) this.cache.deletePrefix(`${this.collection}|`);
     this.prepCache.clear();
     this.set({ meta, metaError: null, params });
+    // The object first (initialId / the URL's object), THEN its tiers: which
+    // tiers are available is per object, so filtering before the object is
+    // known could settle on a tier that object does not have.
+    if (this.initialId) {
+      const id = this.initialId;
+      this.initialId = null;
+      await this.resolveId(id);
+      if (this.destroyed) return;
+    }
+    if (meta.count > 0) this.set({ index: Math.max(0, Math.min(this.s.index, meta.count - 1)) });
     const tierKeys = (meta.tiers || []).map((t) => t.key);
     let tiers = this.s.tiers.filter((t) => tierKeys.includes(t) && !this.tierDisabled(t));
     if (!tiers.length) {
@@ -413,16 +444,18 @@ export class ViewerController {
       tiers = tierKeys.includes(def) && !this.tierDisabled(def) ? [def]
         : firstEnabled ? [firstEnabled.key] : tierKeys.slice(0, 1);
     }
+    // A narrow viewer opens with at most `tierLimit` tiers (canonical order);
+    // the rest stay one click away (chips, blink, swipe).
+    if (this.tierLimit != null) {
+      tiers = tierKeys.filter((k) => tiers.includes(k)).slice(0, this.tierLimit);
+      this.tierLimit = null;
+    }
     const residuals = this.s.residuals.filter((k) => {
       const r = parseResidualKey(k);
       return !!r && tierKeys.includes(r.a) && tierKeys.includes(r.b);
     });
     this.set({ tiers, residuals });
-    if (this.initialId) {
-      const id = this.initialId;
-      this.initialId = null;
-      await this.resolveId(id);
-    }
+    if (this.initialTiers == null) this.initialTiers = tiers.slice();
   }
 
   /** Index of an object id (meta objects, else the server's ?id= lookup). */
@@ -530,10 +563,12 @@ export class ViewerController {
     };
   }
 
-  /** Warm the cubes of the next indices (+1..+3, −1) for every frame. */
+  /** Warm the cubes of the next indices (+1..+3, −1) for every frame — each
+   *  neighbour's own tiers only (meta.objects[j].tiers: a tile without JWST
+   *  is not asked for it), and nothing for a viewer without navigation. */
   prefetch(index: number) {
     const s = this.s;
-    if (s.params.psf_warp === "1" || !s.meta) return;
+    if (!this.nav || s.params.psf_warp === "1" || !s.meta) return;
     const subset = s.morphMembers;
     const extra = subset ? { members: subset } : undefined;
     const nPca = pcaCount(s.meta, subset);
@@ -546,7 +581,7 @@ export class ViewerController {
           for (let k = 0; k < nPca; k++) this.fetchCube(`pca${k}`, j, extra).catch(() => {});
         } else {
           const r = parseResidualKey(t);
-          for (const key of r ? [r.a, r.b] : [t]) if (this.tierAvail(key)) this.fetchCube(key, j).catch(() => {});
+          for (const key of r ? [r.a, r.b] : [t]) if (this.tierAvailAt(key, j)) this.fetchCube(key, j).catch(() => {});
         }
       }
     }
@@ -736,7 +771,7 @@ export class ViewerController {
       log: prep.mode === "gray-log" || this.s.meta.color?.render_mode === "log",
       unit: publicationUnitLabel(cubeRec.unit || this.tierMeta(tier)?.unit),
       // native = display ÷ (served display scale × per-area factor)
-      scale: this.displayUnitsOf(cubeRec),
+      scale: (cubeRec.displayScale > 0 ? cubeRec.displayScale : 1) * this.areaFactorOf(cubeRec, this.s, settings),
       stretch: settings.stretch, black: t.black,
       stops: heatbarStops(settings.colormap, settings.invert, prep.mode),
     };
@@ -744,7 +779,7 @@ export class ViewerController {
       const st = frameAutoStats(prep);
       // the frame's limits in the bar's display units (× the per-area factor,
       // which `scale` divides back out)
-      const f = (prep.factor > 0 ? prep.factor : 1) / this.areaFactorOf(cubeRec);
+      const f = (prep.factor > 0 ? prep.factor : 1) / this.areaFactorOf(cubeRec, this.s, settings);
       info.auto = settings.stretch === "zscale"
         ? { lo: st.z1 / f, hi: st.z2 / f }
         : { lo: st.lo / f, hi: st.hi / f, knee: st.knee / f };
@@ -827,12 +862,33 @@ export class ViewerController {
     const g = this.geomOf(tier);
     return g && sel ? resolveCrop(g, this.selectionOn(tier, sel)) : null;
   }
-  /** Which part of the image `tier`'s frame of side S draws for `view`. */
+  /** Which part of the image `tier`'s frame of side S draws for `view`: the
+   *  view's crop filling the frame, or the whole image at the grid's snapped
+   *  side (an integer multiple of native pixels in device px, draw.ts),
+   *  centred. Markers, the readout, the lens, profiles, swipe and the PNG
+   *  export all go through this rectangle. */
   layoutOf(tier: string, S?: number, view: Selection | null = this.s.view): FrameLayout | null {
     const g = this.geomOf(tier);
     const h = this.frames.get(tier);
     if (!g) return null;
-    return frameLayout(g, view ? this.selectionOn(tier, view) : null, S ?? h?.size() ?? 1);
+    const size = S ?? h?.size() ?? 1;
+    if (view) return frameLayout(g, this.selectionOn(tier, view), size);
+    const dpr = frameDpr();
+    return frameLayout(g, null, size, this.drawSide(size, dpr), dpr);
+  }
+  /** The whole image's drawn side (css px) in a frame of side S: ONE side for
+   *  every frame of the grid (draw.ts snappedDrawSide), so frames of different
+   *  pixel scales show the same sky at the same size. */
+  drawSide(S: number, dpr = frameDpr()): number {
+    const extents = this.frameKeys().map((k) => this.geomOf(k)).filter((g): g is FrameGeom => !!g && g.width > 0)
+      .map((g) => Math.max(g.width, g.height));
+    return snappedDrawSide(S, dpr, extents, this.s.pixelExact ? 0 : SNAP_MIN_FILL);
+  }
+  setPixelExact(on: boolean) {
+    if (on === this.s.pixelExact) return;
+    writeStorage(PIXEL_EXACT_STORAGE_KEY, on ? "1" : "0");
+    this.set({ pixelExact: on });
+    this.afterViewChange();
   }
 
   // ---- pan / zoom view ------------------------------------------------------------
@@ -872,6 +928,29 @@ export class ViewerController {
     const base = this.selectionOn(tier, start);
     this.set({ view: clampSelectionToFrames({ ...base, sourceTier: tier, u: base.u + du, v: base.v + dv }, this.readyGeoms()) });
     this.afterViewChange();
+  }
+  /** One zoom step (+ / −, the bar, `ViewerApi.zoomBy`): by about `factor`,
+   *  landing on an integer device-pixel magnification of the finest shown
+   *  tier (draw.ts zoomPreset; coarser tiers on integer fractions of its
+   *  grid are then integers too). Out past the smallest zoomed view: fit. */
+  zoomBy(factor: number) {
+    if (!(factor > 0) || factor === 1) return;
+    const geoms = this.frameKeys().map((k) => this.geomOf(k)).filter((g): g is FrameGeom => !!g && g.width > 0 && g.height > 0);
+    const ref = geoms.reduce<FrameGeom | null>((a, g) => (!a || Math.max(g.width, g.height) > Math.max(a.width, a.height) ? g : a), null);
+    if (!ref) return;
+    const S = this.frames.get(ref.tier)?.size() ?? 0;
+    if (!(S > 0)) { this.zoomView(ref.tier, factor); return; }
+    const dpr = frameDpr();
+    const D = S * dpr;
+    const extent = Math.min(ref.width, ref.height);
+    const full = D / extent;
+    const fit = (this.drawSide(S, dpr) * dpr) / Math.max(ref.width, ref.height);
+    const crop = this.s.view ? this.cropOf(ref.tier, this.s.view) : null;
+    const m = crop ? D / crop.side : fit;
+    const next = zoomPreset(m, factor, { fit, full, max: full * VIEW_MAX_ZOOM });
+    if (next === "fit") { if (this.s.view) this.resetView(); return; }
+    if (Math.abs(next - m) < 1e-9) return;
+    this.zoomView(ref.tier, (crop ? crop.side : extent) / (D / next));
   }
   resetView() { this.set({ view: null }); this.afterViewChange(); }
   setViewSelection(view: Selection | null) {
@@ -961,6 +1040,15 @@ export class ViewerController {
   bumpDrawn() { if (this.s.hover || this.s.frozen) this.set({ drawn: this.s.drawn + 1 }); }
 
   setTool(tool: Tool) { this.set({ tool }); this.clearAllLenses(); this.notify(); }
+  /** `ViewerApi.setTool`: the pointer tool by name — "lens" (the magnifier),
+   *  "profile" (the profile panel: shift-drag a line, click a point) or
+   *  "none" (pan and zoom, the profile panel closed). */
+  pickTool(tool: ViewerTool) {
+    if (tool === "lens") { this.setTool("lens"); return; }
+    if (tool === "profile") { if (this.s.tool !== "pan") this.setTool("pan"); this.setPanels({ profileOpen: true }); this.notify(); return; }
+    if (this.s.tool !== "pan") this.setTool("pan");
+    if (this.s.profileOpen || this.s.profile) { this.set({ profileOpen: false, profile: null }); this.notify(); }
+  }
   setAltLens(on: boolean) {
     if (on === this.s.altLens) return;
     this.set({ altLens: on });
@@ -984,7 +1072,7 @@ export class ViewerController {
   }
   private rememberedRows: 1 | 2 | 0 = 0;
 
-  /** Open or close the Display dock (the frames refit to the width left). */
+  /** Open or close the Display row under the bar (the frames refit to the height left). */
   setDock(on: boolean) { if (on !== this.s.dock) this.set({ dock: on }); }
 
   // ---- focus mode ---------------------------------------------------------------------
@@ -1398,9 +1486,9 @@ export class ViewerController {
     const layer = t && typeof t.closest === "function" ? t.closest("[role='dialog'], [role='alertdialog'], [role='menu']") : null;
     if (layer && ![...this.frames.values()].some((h) => layer.contains(h.element))) return;
     if (e.ctrlKey || e.metaKey || e.altKey || e.defaultPrevented) return;
-    // Keys pressed in the Display dock belong to its controls (a slider's
-    // arrows, typed values) — except Esc, which closes the dock.
-    if (t && typeof t.closest === "function" && t.closest(".cv-dock") && e.key !== "Escape") return;
+    // Keys pressed in the Display row belong to its controls (a slider's
+    // arrows, typed values) — except Esc, which closes the row.
+    if (t && typeof t.closest === "function" && t.closest(".cv-quick") && e.key !== "Escape") return;
     // Space / Enter on a focused control (a bar button) press that control.
     if ((e.key === " " || e.key === "Enter") && t && typeof t.closest === "function" && t.closest("button, a[href], [role='button'], [role='radio'], [role='slider'], [role='checkbox']")) return;
     const key = e.key.toLowerCase();
@@ -1428,10 +1516,10 @@ export class ViewerController {
     if (e.key === "ArrowLeft") { this.go(this.s.index - 1); e.preventDefault(); }
     else if (e.key === "ArrowRight") { this.go(this.s.index + 1); e.preventDefault(); }
     else if (e.key === " ") { this.togglePlay(); e.preventDefault(); }
-    else if ((e.key === "+" || e.key === "=") && first) { this.zoomView(first, 1.5); e.preventDefault(); }
-    else if ((e.key === "-" || e.key === "_") && first) { this.zoomView(first, 1 / 1.5); e.preventDefault(); }
+    else if ((e.key === "+" || e.key === "=") && first) { this.zoomBy(ZOOM_STEP); e.preventDefault(); }
+    else if ((e.key === "-" || e.key === "_") && first) { this.zoomBy(1 / ZOOM_STEP); e.preventDefault(); }
     else if (e.key === "0") { this.resetView(); e.preventDefault(); }
-    else if (key === "l") { this.set({ tool: this.s.tool === "lens" ? "pan" : "lens" }); this.clearAllLenses(); e.preventDefault(); }
+    else if (key === "l") { this.setTool(this.s.tool === "lens" ? "pan" : "lens"); e.preventDefault(); }   // notifies onState (a page's shared lens button)
     else if (key === "b" && this.frameKeys().length > 1) { this.setCompare(this.s.compare === "blink" ? "off" : "blink"); e.preventDefault(); }
     else if (key === "f") { this.setFocus(!this.s.focus); e.preventDefault(); }
     else if (e.key === "Escape") {
@@ -1520,6 +1608,8 @@ export class ViewerController {
       reload: () => this.reload(),
       zoomTo: (ra, dec, fov) => this.zoomTo(ra, dec, fov),
       resetView: () => this.resetView(),
+      zoomBy: (factor) => this.zoomBy(factor),
+      setTool: (tool) => this.pickTool(tool),
       setFocus: (on) => this.setFocus(on),
       getReadout: () => this.s.readout,
       destroy: () => this.destroy(),

@@ -3,7 +3,7 @@
    selection for zoomed views, CSV export and the "did the inputs change"
    comparison that gates redraws. Unit-tested in plotModel.test.ts. */
 import { formatNumber } from "../format";
-import { linearTicks, logTicks, type Tick } from "../ticks";
+import { fitLinearTicks, logTicks, type Tick } from "../ticks";
 import { csvCell } from "../ui/tableModel";
 import type { AxisScale, Series } from "./types";
 
@@ -238,25 +238,54 @@ export function tooltipReadout(
   return { rows: all.filter((r) => keep.has(r.series)), more: all.length - keep.size };
 }
 
-/* ─── ticks for a zoomed view ─────────────────────────────────────────────── */
+/* ─── generated ticks (an axis without caller ticks, or a zoomed view) ───── */
 
-/** Caller ticks inside `domain` when at least `min` remain, else generated
- *  ticks (linear or log) labelled with `format` (default: shared tick format). */
+/** Ticks for an axis over `domain`: the caller's ticks inside it when at
+ *  least `min` remain, else generated ones labelled with `format` (default:
+ *  the shared tick format) — 4–6 on a nice linear step, or on a log axis
+ *  1-2-5 mantissas over a few decades and decades beyond. Plot uses it for
+ *  an axis whose caller passed no ticks (`ticks` undefined) and for a zoomed
+ *  axis. */
 export function viewTicks(
   ticks: Tick[] | undefined, domain: [number, number], scale: AxisScale,
-  format?: (v: number) => string, min = 3,
+  format?: (v: number) => string, min = 3, max = 6,
 ): Tick[] {
   const [lo, hi] = [Math.min(...domain), Math.max(...domain)];
   const inside = (ticks ?? []).filter((t) => t.v >= lo && t.v <= hi);
   if (inside.length >= min) return inside;
   let out: Tick[] = [];
   if (scale === "log" && lo > 0) {
-    out = logTicks([lo, hi], { maxTicks: 8, format });
+    out = logTicks([lo, hi], { maxTicks: max, format });
   }
   if (out.filter((t) => t.v >= lo && t.v <= hi).length < 2) {
-    out = linearTicks([lo, hi], { count: 5, format: format ? (v) => format(v) : undefined });
+    out = fitLinearTicks([lo, hi], { min: Math.min(4, max), max, format: format ? (v) => format(v) : undefined });
   }
   return out.filter((t) => t.v >= lo && t.v <= hi);
+}
+
+/** viewTicks sized to the plot: generated ticks are thinned (6 → 2) until
+ *  neighbours sit at least `gap(ticks)` px apart on `toPx` — for x the
+ *  widest label plus a margin, for y a text line — so a small chart (an
+ *  inspector's 228 px plot) never overprints its labels. The caller's own
+ *  ticks (kept when enough fall inside the view) are never thinned. */
+export function thinnedViewTicks(
+  ticks: Tick[] | undefined, domain: [number, number], scale: AxisScale,
+  format: ((v: number) => string) | undefined, toPx: (v: number) => number, gap: (t: Tick[]) => number,
+): Tick[] {
+  const [lo, hi] = [Math.min(...domain), Math.max(...domain)];
+  if ((ticks ?? []).filter((t) => t.v >= lo && t.v <= hi).length >= 3) return viewTicks(ticks, domain, scale, format);
+  const fits = (t: Tick[]) => {
+    if (t.length < 2) return true;
+    const need = gap(t);
+    for (let i = 1; i < t.length; i++) if (Math.abs(toPx(t[i].v) - toPx(t[i - 1].v)) < need) return false;
+    return true;
+  };
+  let out = viewTicks(ticks, domain, scale, format);
+  for (let max = Math.min(6, out.length - 1); max >= 2 && !fits(out); max--) {
+    const next = viewTicks(ticks, domain, scale, format, 3, max);
+    if (next.length >= 2) out = next;
+  }
+  return out;
 }
 
 /* ─── readout formatting / CSV ────────────────────────────────────────────── */

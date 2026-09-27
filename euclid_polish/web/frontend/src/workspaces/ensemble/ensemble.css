@@ -17,7 +17,6 @@
 .ens-bar__label { font-size: var(--fs-xs); color: var(--text-dim); }
 .ens-bar__spacer { flex: 1 1 0; min-width: 0; }
 /* labels keep their case ("T(k)", "Add"): the kit Segmented lowercases */
-.ens-bar .ui-seg__item, .ens-trace__head .ui-seg__item { font-family: var(--font-sans); letter-spacing: 0; text-transform: none; }
 .ens-bar__sep { width: 1px; align-self: stretch; background: var(--border); margin: 2px 0; }
 
 .ens-stack { display: flex; flex-direction: column; gap: var(--s4); min-width: 0; }
@@ -113,47 +112,52 @@
 /* the "Pick members" menu in the tab strip (../aside.ts): over the movie */
 .ens-aside__slot { display: inline-flex; align-items: center; }
 .ens-aside__slot:empty { display: none; }
+/* "Members: 196 · Change": the action word is dimmer, and goes in a narrow
+   window (the chevron still says it opens) so the tab strip keeps its tabs */
+.ens-menu__action { color: var(--text-dim); font-weight: var(--fw-regular); }
+.ui-btn--primary .ens-menu__action { color: inherit; }
+@media (max-width: 899px) { .ens-menu__action { display: none; } }
 .ens-menu.ui-popover { display: flex; flex-direction: column; gap: var(--s2); width: min(560px, calc(100vw - 24px)); padding: var(--s2) var(--s3) var(--s3); }
 .ens-menu__head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s1) var(--s2); min-width: 0; }
 .ens-picker--menu { max-height: min(calc(8 * var(--ens-pick-h) + 7 * 4px + 2 * 4px), calc(100dvh - 220px)); }
 .ens-picker__none { grid-column: 1 / -1; align-self: center; margin: 0; }
 
 /* pixel back-trace (diagnostics): the sampled pixels as rows of LR · target
-   · SR · σ stamps on the viewer's neutral dark light table (the same fixed
-   surround as .cv-table: colour judgement needs it), stamps as large as the
-   row allows (≤ 240 px), crisp (pixelated) with the sampled pixel ringed. */
+   · SR · σ stamps on the viewer's neutral dark light table (`.cv-table` from
+   viewer/viewer.css — its surround and scoped dark palette: colour judgement
+   needs it), stamps as large as the row allows (≤ 240 px), crisp, with the
+   sampled pixel ringed; each row's header line names its field and knee. */
 .ens-trace { margin-top: var(--s3); display: flex; flex-direction: column; gap: var(--s2); min-width: 0; container: ens-trace / inline-size; }
 .ens-trace__head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s1) var(--s2); min-width: 0; }
 .ens-trace__title { margin: 0; font-size: var(--fs-md); font-weight: var(--fw-semibold); }
 .ens-trace__cell { font-size: var(--fs-xs); color: var(--text-dim); overflow-wrap: anywhere; }
-.ens-trace__table {
-  --lt-bg: #161719; --lt-ink: #050506; --lt-rule: #26282b;
-  --lt-text: #ededf0; --lt-dim: #bcc0c6; --lt-faint: #9da1a9; --lt-link: #74adff; --lt-mark: #ff5c7a;
-  color-scheme: dark;
-  display: flex; flex-direction: column; min-width: 0;
-  background: var(--lt-bg); color: var(--lt-text); border-radius: var(--r-md); padding: 2px;
-}
+.ens-trace__table { padding: 2px; }
 .ens-trace__cols, .ens-trace__row {
   display: grid; gap: 2px; align-items: start;
   grid-template-columns: repeat(4, minmax(0, 240px)) minmax(150px, 1fr);
 }
-.ens-trace__cols { padding: 6px 4px 4px; font-size: var(--fs-xs); color: var(--lt-dim); }
-.ens-trace__row { padding: 2px 0; border-top: 1px solid var(--lt-rule); }
+.ens-trace__cols { padding: 6px 4px 4px; font-size: var(--fs-xs); color: var(--text-dim); }
+.ens-trace__row { padding: 0 0 2px; border-top: 1px solid var(--cv-rule); }
 .ens-trace__row:first-of-type { border-top: 0; }
-.ens-trace__stamp { position: relative; aspect-ratio: 1 / 1; background: var(--lt-ink); min-width: 0; }
+.ens-trace__rowhead {
+  grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px var(--s3);
+  padding: 5px 4px 3px; font-size: var(--fs-xs); color: var(--text-dim); font-variant-numeric: tabular-nums;
+}
+.ens-trace__rowhead strong { color: var(--text); font-weight: var(--fw-semibold); }
+.ens-trace__knee { color: var(--text); font-family: var(--font-mono); }
+.ens-trace__stamp { position: relative; aspect-ratio: 1 / 1; background: var(--cv-ink); min-width: 0; }
 .ens-trace__stamp canvas { display: block; width: 100%; height: 100%; image-rendering: pixelated; }
 .ens-trace__mark {
   position: absolute; box-sizing: border-box; pointer-events: none;
-  outline: 1.5px solid var(--lt-mark); outline-offset: 1px;
+  outline: 1.5px solid var(--cv-mk-active); outline-offset: 1px;
 }
-.ens-trace__na { display: grid; place-items: center; width: 100%; height: 100%; font-size: var(--fs-xs); color: var(--lt-faint); }
+.ens-trace__na { display: grid; place-items: center; width: 100%; height: 100%; font-size: var(--fs-xs); color: var(--text-faint); }
 .ens-trace__nums {
   display: flex; flex-direction: column; gap: 2px; padding: 4px var(--s2); min-width: 0;
-  font: var(--fs-xs)/1.45 var(--font-mono); font-variant-numeric: tabular-nums; color: var(--lt-dim);
+  font: var(--fs-xs)/1.45 var(--font-mono); font-variant-numeric: tabular-nums; color: var(--text-dim);
 }
-.ens-trace__nums strong { color: var(--lt-text); font-weight: var(--fw-semibold); }
-.ens-trace__nums a { color: var(--lt-link); font-family: var(--font-sans); margin-top: 2px; }
-.ens-trace__nums a:focus-visible { outline: 2px solid var(--lt-link); outline-offset: 1px; border-radius: 2px; }
+.ens-trace__nums a { color: var(--accent); font-family: var(--font-sans); margin-top: 2px; }
+.ens-trace__nums a:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 2px; }
 .ens-trace__note { margin: 0; font-size: var(--fs-xs); color: var(--text-dim); }
 /* narrow: the four stamps take the row, the numbers go under them */
 @container ens-trace (max-width: 640px) {
@@ -197,6 +201,11 @@
 .ens-table-mini th { font-size: var(--fs-xs); font-weight: var(--fw-medium); color: var(--text-dim); }
 .ens-table-mini td { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 .ens-table-mini tr[data-best="true"] td { color: var(--good); font-weight: var(--fw-semibold); }
+/* the benchmark experiment picker: long experiment labels never widen the bar */
+.ens-bench-select { max-width: 280px; text-overflow: ellipsis; }
+/* real-data holes per band (VIS · Y · J · H): the worst band stands out */
+.ens-holes { font-family: var(--font-mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ens-holes [data-worst] { color: var(--warn); font-weight: var(--fw-semibold); }
 
 /* inspector */
 .ens-insp { display: flex; flex-direction: column; gap: var(--s3); }

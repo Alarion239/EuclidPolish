@@ -19,6 +19,7 @@ import { C, categorical } from "../../colors";
 import { useInspector } from "../../state/inspector";
 import { resetConfirm } from "../../ui";
 import { jointColor } from "./chartKit";
+import REALISM_CSS from "./realism.css?raw";
 import { PARAMETER_ORDER, USEFUL_SHAPE_KEYS, jointMapSeries, radiusEntries, radiusYLabel, xAxisOf, xDomainOf } from "./galaxies/model";
 import { RealismHeader, resetTrainingPref } from "./header";
 import { histogramSeries, relationPoints, visibleFrom } from "./pixels/model";
@@ -28,14 +29,16 @@ import {
 
 type ViewerProps = { collection: string; params?: Record<string, string>; tiers?: string[]; urlKey?: string;
   toolbar?: string; nav?: boolean; onReady?: (api: unknown) => void; onState?: (s: unknown) => void };
-const hoisted = vi.hoisted(() => ({ viewers: [] as { props: ViewerProps; api: { setView: ReturnType<typeof vi.fn>; resetView: ReturnType<typeof vi.fn> } }[] }));
+const hoisted = vi.hoisted(() => ({ viewers: [] as { props: ViewerProps; api: {
+  setView: ReturnType<typeof vi.fn>; resetView: ReturnType<typeof vi.fn>; zoomBy: ReturnType<typeof vi.fn>; setTool: ReturnType<typeof vi.fn>;
+} }[] }));
 
 vi.mock("../../viewer", async () => {
   const React = await import("react");
   return {
     ImageViewer: (props: ViewerProps) => {
       React.useEffect(() => {
-        const api = { setView: vi.fn(), goTo: vi.fn(), resetView: vi.fn() };
+        const api = { setView: vi.fn(), goTo: vi.fn(), resetView: vi.fn(), zoomBy: vi.fn(), setTool: vi.fn() };
         hoisted.viewers.push({ props, api });
         props.onReady?.(api);
         return () => props.onReady?.(null);
@@ -641,6 +644,17 @@ describe("visual", () => {
     // The knee slider spans the research grid 0.1–10⁴ e⁻.
     const slider = within(row).getByRole("slider", { name: "Shared knee" });
     expect(slider.getAttribute("aria-valuetext")).toBe("3 e⁻");
+    // Zoom and the lens drive both lanes from the row.
+    fireEvent.click(within(row).getByRole("button", { name: "Zoom in both lanes" }));
+    expect(real.api.zoomBy).toHaveBeenCalledTimes(1);
+    expect(syn.api.zoomBy).toHaveBeenCalledTimes(1);
+    // A narrow block (under ~720 px) clips the "Same transfer" words off
+    // screen so the row stays one line; the label element stays, still the
+    // switch's name (realism.css, @container rl-vis max-width 720px).
+    const lock = row.querySelector(".rl-vis__lock label");
+    expect(lock?.textContent).toBe("Same transfer");
+    expect(within(row).getByRole("switch", { name: "Same transfer" })).toBeTruthy();
+    expect(REALISM_CSS).toMatch(/@container rl-vis \(max-width: 720px\) \{\s*\.rl-vis__lock \.ui-switchrow > label \{[^}]*clip: rect\(0 0 0 0\)/);
     // One button fits both lanes (the viewers' own zoom stays on their keys, listed in ⓘ).
     fireEvent.click(within(row).getByRole("button", { name: "Fit both" }));
     expect(real.api.resetView).toHaveBeenCalledTimes(1);

@@ -172,7 +172,7 @@ export function JobTrayPanel({ onClose }: { onClose?: () => void }) {
           <h3>SLURM</h3>
           {feed.fasrcOffline
             ? <Badge size="sm" tone="neutral" dot>FASRC offline</Badge>
-            : feed.slurmStale ? <Badge size="sm" tone="warn">stale</Badge> : null}
+            : feed.slurmStale ? <Badge size="sm" tone="warn">Stale</Badge> : null}
         </header>
         {feed.fasrcOffline ? (
           <p className="jobtray__empty">Connect to FASRC to see cluster jobs.

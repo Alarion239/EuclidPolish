@@ -1,23 +1,22 @@
 /* settings/appearance (spec §8.8): theme (light / dark / system), accent,
- * density, the rail and the inspector width, and the image defaults every
- * linked viewer follows (the Display panel's store, C7): colour, stretch,
- * colormaps, NaN colour, invert, linking and the mouse-wheel behaviour.
- * Saved in this browser; nothing goes to the server. */
+ * density, the rail and the inspector width. "Images" summarises the live
+ * Display settings every linked viewer follows (the Display panel's store,
+ * C7) and opens the Display panel — the one place to change them (a second
+ * set of controls here edited the same live store while calling it
+ * "defaults"). Saved in this browser; nothing goes to the server. */
 import type { ReactNode } from "react";
-import { CMAP_LABEL, COLOR_LABEL, STRETCH_LABEL, WHEEL_LABEL } from "../../../app/DisplayPanel";
 import { usePageActions } from "../../../app/palette";
 import { openDisplayPanel } from "../../../app/shellStore";
-import {
-  COLORMAPS, COLOR_MODES, DEFAULT_DISPLAY, STRETCHES, WHEEL_MODES, useDisplay,
-  type ColorMode, type Colormap, type Stretch, type WheelMode,
-} from "../../../state/display";
+import { useDisplay } from "../../../state/display";
 import {
   ACCENTS, DEFAULT_PREFS, DENSITIES, THEME_PREFS, usePrefs, useResolvedTheme,
   type Accent, type Density, type ThemePref,
 } from "../../../state/prefs";
 import {
-  Badge, Button, Card, CardBody, CardHead, Chip, Field, Page, PageHead, Segmented, Select, Switch, toast,
+  Badge, Button, Card, CardBody, CardHead, Chip, DefList, Page, Segmented, Switch, toast,
 } from "../../../ui";
+import { PageLead } from "../../shared/PageLead";
+import { displaySummary } from "../appearanceModel";
 import "../settings.css";
 
 /* A caption over a group control (Segmented, chips): a <Field> would wrap
@@ -33,8 +32,6 @@ function Group({ label, children }: { label: string; children: ReactNode }) {
 
 const THEME_LABEL: Record<ThemePref, string> = { light: "Light", dark: "Dark", system: "System" };
 const DENSITY_LABEL: Record<Density, string> = { comfortable: "Comfortable", compact: "Compact" };
-const opts = <T extends string>(values: readonly T[], labels: Record<T, string>) =>
-  values.map((v) => ({ value: v, label: labels[v] }));
 
 export default function Appearance() {
   const prefs = usePrefs();
@@ -47,13 +44,11 @@ export default function Appearance() {
       keywords: ["display", "stretch", "knee", "colormap"],
       run: () => { d.reset(); toast("Display settings reset (absolute asinh, knee 100 e⁻)"); } },
   ]);
-  const displayChanged = d.color !== DEFAULT_DISPLAY.color || d.stretch !== DEFAULT_DISPLAY.stretch
-    || d.colormap !== DEFAULT_DISPLAY.colormap || d.residualColormap !== DEFAULT_DISPLAY.residualColormap
-    || d.nanColor !== DEFAULT_DISPLAY.nanColor || d.invert !== DEFAULT_DISPLAY.invert
-    || d.linked !== DEFAULT_DISPLAY.linked || d.wheel !== DEFAULT_DISPLAY.wheel;
+  const facts = displaySummary(d);
+  const changed = facts.filter((f) => f.changed).length;
   return (
     <Page className="settings-appearance">
-      <PageHead eyebrow="settings · appearance" title="Appearance" sub="Saved in this browser only." />
+      <PageLead>Theme, layout and how images are shown. Saved in this browser only.</PageLead>
       <div className="settings-cards">
         <Card>
           <CardHead title="Theme" sub={prefs.theme === "system" ? `following the system (now ${resolved})` : undefined} />
@@ -110,42 +105,16 @@ export default function Appearance() {
         </Card>
 
         <Card className="settings-cards__wide">
-          <CardHead title="Images" sub="defaults every linked viewer follows"
-            right={displayChanged ? <Badge tone="info">customised</Badge> : <Badge>defaults</Badge>} />
+          <CardHead title="Images" sub="How every linked viewer shows images now. Change them in the Display panel (Shift-D, or the ◐ button in the top bar)."
+            right={changed ? <Badge tone="info">{changed} changed</Badge> : <Badge>as installed</Badge>} />
           <CardBody>
             <div className="settings-stack">
-              <div className="conn-form">
-                <Field label="Colour" hint="The band or composite a viewer shows (Q–Y keys in a viewer).">
-                  <Select<ColorMode> value={d.color} onChange={(color) => d.set({ color })} options={opts(COLOR_MODES, COLOR_LABEL)} />
-                </Field>
-                <Field label="Stretch" hint="Absolute asinh (black / knee / white) is the locked default; the others are opt-in.">
-                  <Select<Stretch> value={d.stretch} onChange={(stretch) => d.set({ stretch })} options={opts(STRETCHES, STRETCH_LABEL)} />
-                </Field>
-                <Field label="Colormap" hint="Single-band colormap (gray by default).">
-                  <Select<Colormap> value={d.colormap} onChange={(colormap) => d.set({ colormap })} options={opts(COLORMAPS, CMAP_LABEL)} />
-                </Field>
-                <Field label="Residual colormap" hint="Diverging map of residual tiers (A−B, (A−B)/σ).">
-                  <Select<Colormap> value={d.residualColormap} onChange={(residualColormap) => d.set({ residualColormap })}
-                    options={opts(COLORMAPS, CMAP_LABEL)} />
-                </Field>
-                <Field label="NaN colour" hint="Colour of missing / NaN pixels (blank NISP holes, masked cores).">
-                  <span className="settings-row">
-                    <input type="color" className="color-input" value={d.nanColor}
-                      onChange={(e) => d.set({ nanColor: e.target.value })} aria-label="NaN colour" />
-                    <code className="mono">{d.nanColor}</code>
-                  </span>
-                </Field>
-                <Field label="Mouse wheel over a viewer" hint="A plain wheel scrolls the page unless you choose otherwise.">
-                  <Select<WheelMode> value={d.wheel} onChange={(wheel) => d.set({ wheel })} options={opts(WHEEL_MODES, WHEEL_LABEL)} />
-                </Field>
-              </div>
-              <Switch checked={d.invert} onChange={(invert) => d.set({ invert })}>Invert</Switch>
-              <Switch checked={d.linked} onChange={(linked) => d.set({ linked })}>Link every viewer to these settings</Switch>
+              <DefList dense items={facts.map((f) => [f.label, f.changed ? <span className="appearance-changed">{f.value}</span> : f.value])} />
               <div className="settings-row">
                 <Button size="sm" variant="primary" icon="contrast" onClick={openDisplayPanel}>
                   Open the Display panel
                 </Button>
-                <Button size="sm"
+                <Button size="sm" disabled={!changed}
                   onClick={() => { d.reset(); toast("Display settings reset (absolute asinh, knee 100 e⁻)"); }}>
                   Reset display settings
                 </Button>

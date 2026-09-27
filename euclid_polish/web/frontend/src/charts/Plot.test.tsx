@@ -26,6 +26,28 @@ const surface = () => document.querySelector("canvas") as HTMLCanvasElement;
 function hover(x: number, y: number) { fireEvent.pointerMove(surface(), { clientX: x, clientY: y, pointerType: "mouse" }); }
 const tooltip = () => document.querySelector(".plot__tooltip") as HTMLElement | null;
 
+/** A recording 2D context (happy-dom has none): the text drawn with
+ *  fillText and every straight moveTo → lineTo segment. */
+function recordCanvas() {
+  const texts: string[] = [];
+  const lines: [number, number, number, number][] = [];
+  let at: [number, number] = [0, 0];
+  const store: Record<string | symbol, unknown> = {};
+  const ctx = new Proxy(store, {
+    get: (t, k) => {
+      if (k === "fillText") return (s: string) => { texts.push(String(s)); };
+      if (k === "measureText") return (s: string) => ({ width: String(s).length * 6.6 });
+      if (k === "moveTo") return (x: number, y: number) => { at = [x, y]; };
+      if (k === "lineTo") return (x: number, y: number) => { lines.push([at[0], at[1], x, y]); at = [x, y]; };
+      if (k in t) return t[k];
+      return () => {};
+    },
+    set: (t, k, v) => { t[k] = v; return true; },
+  });
+  const spy = vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(ctx as never);
+  return { texts, lines, restore: () => spy.mockRestore() };
+}
+
 describe("Plot v2 hover", () => {
   it("shows a crosshair and a tooltip with the nearest series and every line at that x", () => {
     render(<Plot xDomain={X} yDomain={Y} series={SERIES} aria-label="demo" />);
@@ -393,6 +415,52 @@ describe("Plot v2 export and redraw", () => {
     rerender(<Plot xDomain={X} yDomain={Y} series={SERIES} view={view} xFormat={(v) => `${v} dB`} />);
     expect(spy.mock.calls.length).toBeGreaterThan(n);
     spy.mockRestore();
+  });
+
+  it("labels both axes and draws their grid lines when the caller passes no ticks", () => {
+    const canvas = recordCanvas();
+    try {
+      render(<Plot xDomain={X} yDomain={Y} series={SERIES} />);
+      for (const label of ["0", "2", "4", "6", "8", "10", "20", "40", "60", "80", "100"]) {
+        expect(canvas.texts).toContain(label);
+      }
+      // a horizontal grid line across the plot at y = 20, a vertical one at x = 4
+      expect(canvas.lines.some(([x0, y0, x1, y1]) => x0 === L && x1 === L + IW && Math.abs(y0 - py(20, Y)) < 0.01 && y1 === y0)).toBe(true);
+      expect(canvas.lines.some(([x0, y0, x1, y1]) => Math.abs(x0 - px(4, X)) < 0.01 && x1 === x0 && y0 === T && y1 === T + IH)).toBe(true);
+    } finally { canvas.restore(); }
+  });
+
+  it("labels generated ticks with xFormat / yFormat, decades on a log axis, and keeps an explicit empty tick list empty", () => {
+    const canvas = recordCanvas();
+    try {
+      const { unmount } = render(<Plot xDomain={X} yDomain={[1, 1e4]} yScale="log" series={SERIES}
+        xFormat={(v) => `${v} e⁻`} />);
+      expect(canvas.texts).toContain("4 e⁻");
+      for (const label of ["1", "10", "10²", "10³", "10⁴"]) expect(canvas.texts).toContain(label);
+      unmount();
+      canvas.texts.length = 0;
+      render(<Plot xDomain={X} yDomain={Y} series={SERIES} xTicks={[]} yTicks={[]} />);
+      expect(canvas.texts.filter((t) => /^\d/.test(t))).toEqual([]);
+    } finally { canvas.restore(); }
+  });
+
+  it("sizes generated ticks to a small plot: x labels never overlap, y ticks stay a line apart", () => {
+    const canvas = recordCanvas();
+    const cw = vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(200);
+    try {
+      render(<Plot xDomain={[0, 70_000]} yDomain={[0, 1]} height={120} series={[{ x: [0, 70_000], y: [0, 1], color: "red" }]} />);
+      // the last paint (the first one ran at the 640 px default, before the width was read)
+      const last = canvas.texts.slice(canvas.texts.lastIndexOf("0"));
+      const xs = last.filter((t) => /^\d{1,3}(,\d{3})*$/.test(t));
+      // inner width 200 − 42 − ~27 ≈ 131 px: 0, 20,000 … 60,000 would sit 37 px apart
+      // for ~40 px labels, so fewer are drawn (never fewer than 2)
+      expect(xs.length).toBeGreaterThanOrEqual(2);
+      expect(xs.length).toBeLessThan(4);
+      const ys = last.filter((t) => /^\d\.\d$/.test(t));
+      // inner height 120 − 12 − 38 = 70 → at most 4 y ticks (≥ 22 px apart), not 6
+      expect(ys.length).toBeGreaterThanOrEqual(2);
+      expect(ys.length).toBeLessThanOrEqual(4);
+    } finally { cw.mockRestore(); canvas.restore(); }
   });
 
   it("has an accessible name and a text summary", () => {

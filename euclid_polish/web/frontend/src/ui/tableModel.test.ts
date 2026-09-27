@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  cellText, compareValues, csvCell, estimateWidths, filterRows, nextSort, parseFilter, parseSort,
-  rangeKeys, serializeSort, sortRows, toCSV, type DataColumn,
+  cellText, colWidthCss, compareValues, csvCell, estimateWidths, filterRows, fitColumns, minWidthPx, nextSort,
+  parseFilter, parseSort, rangeKeys, serializeSort, sortRows, toCSV, type DataColumn,
 } from "./tableModel";
 
 type Row = { name: string; psnr: number | null; loss: string; steps?: number; ok?: boolean };
@@ -197,5 +197,52 @@ describe("estimateWidths", () => {
       expect(v).toBeGreaterThanOrEqual(56);
       expect(v).toBeLessThanOrEqual(420);
     }
+  });
+});
+
+describe("minimum widths", () => {
+  it("reads px numbers and ch strings (a ch is a tabular digit; the cell padding is added)", () => {
+    expect(minWidthPx(undefined)).toBe(0);
+    expect(minWidthPx(120)).toBe(120);
+    expect(minWidthPx("19ch")).toBeCloseTo(19 * 7.8 + 20);
+    expect(minWidthPx("150px")).toBe(150);
+    expect(minWidthPx("wide")).toBe(0);
+  });
+
+  it("widens the estimate to the minimum and writes the CSS width with it", () => {
+    const w = estimateWidths(ROWS, [{ id: "ra", header: "RA, Dec", width: 90, minWidth: "19ch" }, { id: "n", header: "N", minWidth: 200 }]);
+    expect(w.ra).toBeCloseTo(19 * 7.8 + 20, 0);                // the ch estimate + the cell padding
+    expect(w.n).toBe(200);
+    expect(colWidthCss({ id: "ra", header: "RA", minWidth: "19ch" }, 120)).toBe("max(120px, calc(19ch + 20px))");
+    expect(colWidthCss({ id: "x", header: "X", width: "12%", minWidth: 90 }, undefined)).toBe("max(12%, 90px)");
+    expect(colWidthCss({ id: "y", header: "Y" }, 88)).toBe("88px");
+  });
+});
+
+describe("fitColumns (narrow tables)", () => {
+  const cols = [
+    { id: "check", width: 36 },
+    { id: "source", width: 80, priority: 2 },
+    { id: "tile", width: 190 },
+    { id: "field", width: 64, priority: 3 },
+    { id: "radec", width: 184, priority: 1 },
+    { id: "models", width: 170, priority: 3 },
+  ];
+  it("drops nothing when everything fits or the width is unknown", () => {
+    expect(fitColumns(cols, 1000)).toEqual([]);
+    expect(fitColumns(cols, 0)).toEqual([]);
+  });
+  it("drops the largest priority number first (the rightmost on a tie) until the rest fit", () => {
+    // need 724: 600 → drop models (3, rightmost) → 554 fits
+    expect(fitColumns(cols, 600)).toEqual(["models"]);
+    // 500 → models, field → 490 fits
+    expect(fitColumns(cols, 500)).toEqual(["models", "field"]);
+    // 300 → models, field, source, radec → tile + check = 226
+    expect(fitColumns(cols, 300)).toEqual(["models", "field", "source", "radec"]);
+  });
+  it("never drops a column without a priority; one the user asked to see stays and is not counted", () => {
+    expect(fitColumns(cols, 100)).toEqual(["models", "field", "source", "radec"]);
+    // models shown on request: the rest need 554 → field goes (490), models scrolls in
+    expect(fitColumns(cols, 500, new Set(["models"]))).toEqual(["field"]);
   });
 });

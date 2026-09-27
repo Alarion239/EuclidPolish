@@ -194,6 +194,21 @@ describe("overview", () => {
     expect(screen.getByRole("alert").textContent).toMatch(/Fitted for 30 members; 31 are active/);
   });
 
+  it("logs the Evaluate summary to tracking only after Append", async () => {
+    routes["POST /api/tracking/log"] = () => ({ body: { ok: true } });
+    const { default: Overview } = await import("./tabs/Overview");
+    show(<Overview />);
+    await screen.findByText("60.97");
+    fireEvent.click(screen.getByRole("button", { name: "Log to tracking" }));
+    const note = (await screen.findByRole("textbox", { name: "Markdown note" })) as HTMLTextAreaElement;
+    expect(note.value).toContain("**Ensemble evaluation · starfull** — 2026-09-25 19:32 UTC · 3 members · 100 test fields");
+    expect(note.value).toContain("- Production gate: 59.24 dB (+0.29 dB vs best member, +0.86 dB vs plain mean)");
+    expect(posts("/api/tracking/log")).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: "Append" }));
+    await waitFor(() => expect(posts("/api/tracking/log")[0]?.form).toMatchObject({ mode: "append" }));
+    expect(posts("/api/tracking/log")[0].form.text).toContain("∫PSNR over 0.1–10k e⁻");
+  });
+
   it("never reports members complete while members.json is loading or failed", async () => {
     routes["GET /ensemble/members.json?mode=starfull"] = () => ({ status: 404, body: { ok: false, error: "registry unreadable" } });
     const { default: Overview } = await import("./tabs/Overview");
@@ -330,7 +345,7 @@ describe("disagreement", () => {
     }
     show(<WithStrip />, "/ensemble/starfull/disagreement?sel=196");
     const strip = screen.getByRole("navigation", { name: "Tab strip" });
-    const trigger = await within(strip).findByRole("button", { name: "1 member" });
+    const trigger = await within(strip).findByRole("button", { name: "Members: 196 · Change" });
     fireEvent.click(trigger);
     const menu = await screen.findByRole("dialog", { name: "Pick members" });
     expect(menu.textContent).toContain("Showing member #196");
@@ -338,13 +353,23 @@ describe("disagreement", () => {
     await waitFor(() => expect(within(picker).getAllByRole("button")).toHaveLength(3));
     fireEvent.click(within(picker).getAllByRole("button").find((b) => b.textContent?.startsWith("#178"))!);
     await waitFor(() => expect(lastLocation).toMatch(/sel=196(,|%2C)178/));
-    expect(await within(strip).findByRole("button", { name: "2 members" })).toBeTruthy();
+    expect(await within(strip).findByRole("button", { name: "Members: 196, 178 · Change" })).toBeTruthy();
     fireEvent.click(within(menu).getByRole("button", { name: "Clear selection" }));
-    await waitFor(() => expect(within(strip).getByRole("button", { name: "Pick members" })).toBeTruthy());
+    await waitFor(() => expect(within(strip).getByRole("button", { name: "Members: none · Pick" })).toBeTruthy());
   });
 });
 
 describe("knee", () => {
+  it("logs the leaderboard with its integration range as a markdown table", async () => {
+    const { default: Knee } = await import("./tabs/Knee");
+    show(<Knee />, "/ensemble/starfull/knee?range=1,100");
+    await screen.findByRole("grid", { name: "Knee-integrated PSNR leaderboard" });
+    fireEvent.click(screen.getByRole("button", { name: "Log to tracking" }));
+    const note = (await screen.findByRole("textbox", { name: "Markdown note" })) as HTMLTextAreaElement;
+    expect(note.value).toContain("∫ over 1–100 e⁻ (a sub-range of 0.1–10k e⁻, uniform in log knee) · all bands · 100 test fields");
+    expect(note.value).toContain("| # | Model | Trained | ∫VIS | ∫Y | ∫J | ∫H | ∫ mean | vs mean |");
+    expect(note.value).toMatch(/\| production gate \| combiner \|/);
+  });
   it("ranks the leaderboard over the selected range and draws no 100 e⁻ line", async () => {
     const { default: Knee } = await import("./tabs/Knee");
     show(<Knee />, "/ensemble/starfull/knee");
@@ -376,6 +401,54 @@ describe("knee", () => {
 });
 
 describe("combiners", () => {
+  const EXP = (id: string, created: string, label: string, specs: Record<string, number[]>) => ({
+    id, created, label, tiles: ["tile/a"],
+    summary: Object.fromEntries(Object.entries(specs).map(([spec, [vis, y, j, h]]) => [spec, {
+      n_tiles: 1, per_band: { VIS: { hole_pct: vis }, Y_E: { hole_pct: y }, J_E: { hole_pct: j }, H_E: { hole_pct: h } },
+      summary: { hole_pct_mean: (vis + y + j + h) / 4, hole_pct_max: Math.max(vis, y, j, h), median_R: 1, pct_R_lt_0p8: 0 } }])),
+  });
+  it("scores the real holes per band from ONE experiment the user picks, naming its tiles", async () => {
+    routes["GET /api/experiments"] = () => ({ body: { experiments: [
+      EXP("e-new", "2026-09-27T02:00:00Z", "cached tile ra0273", { mean: [14, 26, 26, 33], "gate:26m": [9, 9, 9, 9] }),
+      EXP("e-prod", "2026-09-26T02:00:00Z", "NEXUS core", { production: [19, 13, 19, 30], "gate:26m": [12, 11, 12, 20] }),
+    ] } });
+    const { default: Combiners } = await import("./tabs/Combiners");
+    show(<Combiners />, "/ensemble/starfull/combiners");
+    const grid = await screen.findByRole("grid", { name: "Combiner variants" });
+    // default: the newest experiment that ran production, named above the table
+    const picker = screen.getByRole("combobox", { name: "Real-data benchmark experiment" }) as HTMLSelectElement;
+    await waitFor(() => expect(picker.value).toBe("e-prod"));
+    expect(picker.selectedOptions[0].textContent).toMatch(/^NEXUS core · 1 tile/);
+    await waitFor(() => expect(screen.getByText(/on NEXUS core/)).toBeTruthy());
+    const prodRow = within(grid).getByText("combiner").closest("tr") as HTMLElement;
+    const holes = prodRow.querySelector(".ens-holes") as HTMLElement;
+    expect(holes.textContent).toBe("19 · 13 · 19 · 30");
+    expect(holes.querySelector("[data-worst]")?.textContent).toBe("30");
+    // pick the other experiment: production did not run there, so it is blank
+    fireEvent.change(picker, { target: { value: "e-new" } });
+    await waitFor(() => expect(lastLocation).toContain("bench=e-new"));
+    await waitFor(() => expect(screen.getByText(/on cached tile ra0273/)).toBeTruthy());
+    expect((within(grid).getByText("combiner").closest("tr") as HTMLElement).querySelector(".ens-holes")).toBeNull();
+    expect(((within(grid).getByText("26m").closest("tr") as HTMLElement).querySelector(".ens-holes") as HTMLElement).textContent).toBe("9 · 9 · 9 · 9");
+  });
+
+  it("says how many members a pruned gate reads, and logs a variant's fit from its menu", async () => {
+    routes["GET /ensemble/combiners.json?mode=starfull"] = () => ({ body: { ...COMBINERS, variants: [
+      COMBINERS.variants[0],
+      variant("spatial_gate_pruned", { n_members: 20, n_reads: 6, pruned: true }),
+    ] } });
+    const { default: Combiners } = await import("./tabs/Combiners");
+    show(<Combiners />, "/ensemble/starfull/combiners");
+    const grid = await screen.findByRole("grid", { name: "Combiner variants" });
+    const row = within(grid).getByText("pruned").closest("tr") as HTMLElement;
+    expect(within(row).getByText(/^6 of 20/)).toBeTruthy();
+    fireEvent.pointerDown(within(row).getByRole("button", { name: /actions/ }), { button: 0 });
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Log to tracking…" }));
+    const note = (await screen.findByRole("textbox", { name: "Markdown note" })) as HTMLTextAreaElement;
+    expect(note.value).toContain("**Gate variant `pruned` · starfull**");
+    expect(note.value).toContain("- Reads 6 of 20 members");
+  });
+
   it("fits a named variant and refuses the production name", async () => {
     const { default: Combiners } = await import("./tabs/Combiners");
     show(<Combiners />, "/ensemble/starfull/combiners");

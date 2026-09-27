@@ -481,21 +481,35 @@ def _cutouts_meta(params: dict[str, str]) -> dict[str, Any]:
         })
     return {
         "count": len(objects),
-        # Raw archive cutouts (rate units, MAGZERO in the header).
-        "tiers": [{"key": "real", "label": "Euclid", "unit": "ADU/s"}],
+        # Archive cutouts are ADU/s (MAGZERO in the header): served in
+        # electrons over each band's stack, like every other collection.
+        "tiers": [{"key": "real", "label": "Euclid", "unit": "e-"}],
         "default_tier": "real",
         "band_names": list(BAND_NAMES),
         "objects": objects,
     }
 
 
-def _read_fits_plane(path: str) -> np.ndarray:
+def _read_fits_plane(path: str) -> tuple[np.ndarray, fits.Header]:
+    """The first 2-D image plane of a FITS file and its HDU's header."""
     with fits.open(path, memmap=False) as hdul:
         for raw_hdu in hdul:
             hdu = _image_hdu(raw_hdu)
             if hdu is not None and hdu.data is not None and hdu.data.ndim == 2:
-                return np.asarray(hdu.data, dtype=np.float32)
+                return np.asarray(hdu.data, dtype=np.float32), hdu.header.copy()
     raise ViewerError(415, "no 2-D plane in FITS")
+
+
+def _magzero_electron_factor(header: Mapping[str, Any], band: str) -> float | None:
+    """e⁻ (over ``band``'s stack) per ADU/s of an archive cutout: its
+    ``MAGZERO`` card; None when the card is missing or not a number."""
+    try:
+        magzero = float(cast(str | float, header.get("MAGZERO")))
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(magzero):
+        return None
+    return adu_per_s_to_electrons_factor(magzero, Config.get_band(band))
 
 
 def _cutouts_cube(index: int, tier: str, params: dict[str, str]):
@@ -505,27 +519,40 @@ def _cutouts_cube(index: int, tier: str, params: dict[str, str]):
     if index < 0 or index >= len(ids):
         raise ViewerError(404, "index out of range")
     sid = ids[index]
-    planes = []
-    vis_path = None
+    planes: list[np.ndarray] = []
+    factors: list[float | None] = []
+    vis_header = None
     for band in BAND_NAMES:
         path = _ensure_local_star_cutout(band, sid, size)
         if not path:
             raise ViewerError(404, f"{band} cutout unavailable")
-        vis_path = vis_path or path
-        planes.append(_read_fits_plane(path))
+        plane, header = _read_fits_plane(path)
+        vis_header = vis_header if vis_header is not None else header
+        planes.append(plane)
+        factors.append(_magzero_electron_factor(header, band))
     shapes = {p.shape for p in planes}
     if len(shapes) != 1:
         raise ViewerError(415, f"band cutouts disagree in shape: {shapes}")
-    cube = np.stack(planes, axis=-1)
-    header = _fits_header(vis_path) if vis_path else None
-    info = {
-        "label": f"star {sid} · {size}px",
+    label = f"star {sid} · {size}px"
+    if all(f is not None for f in factors):
+        # ADU/s → electrons over each band's stack (MAGZERO): the console's
+        # absolute e⁻ transfer shows the star as it shows every other image.
+        cube = np.stack([p * np.float32(f) for p, f in zip(planes, factors, strict=True)], axis=-1)
+        unit, label = "e-", f"{label} · e- via MAGZERO"
+    else:
+        cube = np.stack(planes, axis=-1)
+        unit = unit_from_header(vis_header, default="ADU/s")
+    info: dict[str, Any] = {
+        "label": label,
         "asinh": float(Config.STRETCH_SCALE_E),
         "pixscale": float(Config.VIS_PIXEL_SCALE_ARCSEC),
         # Every band is cut on the VIS grid, so the VIS WCS holds for all.
-        "wcs": celestial_wcs_keywords(header),
-        "unit": unit_from_header(header, default="ADU/s"),
+        "wcs": celestial_wcs_keywords(vis_header),
+        "unit": unit,
     }
+    if unit != "e-":
+        # A cutout without MAGZERO: native values, the robust bright end at white.
+        info["display_scale"] = _robust_display_scale(cube)
     return cube, info
 
 
@@ -1285,9 +1312,9 @@ def _real_field_cube(index: int, tier: str, params: dict[str, str]):
         mi = int(tier[6:])
         label = f"SR {labels[mi]}" if mi < len(labels) else tier
     elif tier == "sr":
-        label = "SR (STARFULL mean)"
+        label = "SR (starfull mean)"
     elif tier == "std":
-        label = "stdSR (STARFULL members)"
+        label = "stdSR (starfull members)"
     elif tier == "lr":
         label = "LR"
     else:
@@ -1863,7 +1890,7 @@ def _jwst_euclid_meta(params: dict[str, str]) -> dict[str, Any]:
     )
     tiers = [
         {"key": "lr", "label": "LR · Euclid VIS"},
-        {"key": "sr", "label": "SR · STARFULL combiner", "unit": "e-"},
+        {"key": "sr", "label": "SR · starfull combiner", "unit": "e-"},
         {"key": "jwst", "label": "JWST"},
         {"key": "jwst_blur", "label": "JWST · Gaussian blur · FWHM 1 SR px"},
     ]
@@ -1925,11 +1952,11 @@ def _jwst_euclid_cube(index: int, tier: str, params: dict[str, str]):
     if tier == "sr":
         source = inference_files.get("starfull")
         if not source:
-            raise ViewerError(404, "STARFULL inference is not available for this field")
+            raise ViewerError(404, "The starfull inference is not available for this field")
         cube = _pair_cube(_pair_file(directory, source))
         bands = list(BAND_NAMES[:cube.shape[-1]])
         return cube, {
-            "label": str(inference.get("combiner_label") or "SR · STARFULL combiner"),
+            "label": _plain_label(str(inference.get("combiner_label") or "SR · starfull combiner")),
             "asinh": float(Config.STRETCH_SCALE_E),
             "pixscale": float(inference.get("pixel_scale_arcsec") or Config.DEFAULT_PIXEL_SCALE),
             "bands": bands,
@@ -2029,8 +2056,8 @@ def _nexus_field_meta(params: dict[str, str]) -> dict[str, Any]:
         "count": len(tiles),
         "tiers": [
             {"key": "lr", "label": "LR · Euclid · 255 px", "unit": "e-"},
-            {"key": "sr", "label": "SR · STARFULL combiner", "unit": "e-"},
-            {"key": "jwst", "label": f"NEXUS {manifest.get('filter') or 'JWST'} · native",
+            {"key": "sr", "label": "SR · starfull combiner", "unit": "e-"},
+            {"key": "jwst", "label": f"NEXUS {manifest.get('filter') or 'JWST'} (native)",
              "unit": jwst_unit},
             {"key": "jwst_blur", "label": "JWST · Gaussian blur · FWHM 1 SR px",
              "unit": jwst_unit},
@@ -2084,10 +2111,10 @@ def _nexus_field_cube(index: int, tier: str, params: dict[str, str]):
         files = inference.get("files", {}) if isinstance(inference, Mapping) else {}
         source = files.get("starfull") if isinstance(files, Mapping) else None
         if not isinstance(source, str) or not source:
-            raise ViewerError(404, "STARFULL inference is not available for this NEXUS tile")
+            raise ViewerError(404, "The starfull inference is not available for this NEXUS tile")
         cube = _pair_cube(_pair_file(directory, source))
         return cube, {
-            "label": str(inference.get("combiner_label") or "SR · STARFULL combiner"),
+            "label": _plain_label(str(inference.get("combiner_label") or "SR · starfull combiner")),
             "asinh": float(Config.STRETCH_SCALE_E),
             "pixscale": float(inference.get("pixel_scale_arcsec") or Config.DEFAULT_PIXEL_SCALE),
             "bands": list(BAND_NAMES[:cube.shape[-1]]),
@@ -2162,6 +2189,55 @@ def _real_specs(params: dict[str, str], outputs: list[dict[str, Any]]) -> list[s
         raise ViewerError(400, str(exc)) from exc
 
 
+def _plain_label(label: str) -> str:
+    """A served label in the console's plain words: the regime names in lower
+    case ("Mean of 30 STARFULL members" → "Mean of 30 starfull members")."""
+    return re.sub(r"\bSTAR(?:FULL|LESS)\b", lambda m: m.group(0).lower(), str(label))
+
+
+#: The name of a core spec in a legacy tier's label ("RBF (10 members, legacy)").
+_SPEC_NAMES = {model_catalog.SPEC_PRODUCTION: "Production", model_catalog.SPEC_MEAN: "Mean",
+               model_catalog.SPEC_RBF: "RBF"}
+
+
+def _members_text(counts: list[int]) -> str:
+    """"4 members", "10 or 20 members", "10–30 members" ("" when unknown)."""
+    if not counts:
+        return ""
+    if len(counts) == 1:
+        return f"{counts[0]} member{'' if counts[0] == 1 else 's'}"
+    if len(counts) == 2:
+        return f"{counts[0]} or {counts[1]} members"
+    return f"{counts[0]}–{counts[-1]} members"
+
+
+def _real_tier_label(spec: str, catalog_label: str | None,
+                     records: list[tuple[Mapping[str, Any], str]]) -> str:
+    """The tier label of a model spec over the tiles that have its output
+    (``records`` = ``(sidecar, state)`` per tile). A legacy output that is not
+    the current model (an older poster / NEXUS run) is NOT the catalogue's
+    model: when every output is one, the label names what is served — the
+    kind, the member count(s) and "legacy"; when only some are, it says how
+    many."""
+    base = _plain_label(catalog_label or spec)
+    if base.startswith("Mean of "):
+        # the chip is the part before " · ": "Mean", the tooltip "Mean · 30 starfull members"
+        base = f"Mean · {base.removeprefix('Mean of ')}"
+    older = [meta for meta, state in records if meta.get("legacy") and state != "current"]
+    if not older:
+        return base
+    if len(older) < len(records):
+        return f"{base} (a legacy SR on {len(older)} of {len(records)} tiles)"
+    name = _SPEC_NAMES.get(spec) or base.split(" · ")[0]
+    counts: set[int] = set()
+    for meta in older:
+        with contextlib.suppress(TypeError, ValueError):
+            if meta.get("member_count"):
+                counts.add(int(meta["member_count"]))
+    members = _members_text(sorted(counts))
+    return f"{name} ({members}, legacy)" if members else f"{name} (legacy)"
+
+
 def _real_meta(params: dict[str, str]) -> dict[str, Any]:
     source = _real_source(params)
     entries = real_tiles.list_entries(source)
@@ -2172,10 +2248,13 @@ def _real_meta(params: dict[str, str]) -> dict[str, Any]:
     has_jwst = any(entry.has_jwst for entry in entries)
     tiers: list[dict[str, Any]] = [{"key": "lr", "label": "LR · Euclid", "unit": "e-"}]
     if has_jwst:
-        tiers.append({"key": "jwst", "label": "JWST · native", "unit": "MJy/sr"})
+        tiers.append({"key": "jwst", "label": "JWST (native)", "unit": "MJy/sr"})
     for spec in specs:
         item = catalog.get(spec)
-        tiers.append({"key": f"m:{spec}", "label": item.label if item else spec,
+        records = [(outputs[spec], model_catalog.output_state(outputs[spec], current))
+                   for outputs in tile_outputs if spec in outputs]
+        label = _real_tier_label(spec, item.label if item else None, records)
+        tiers.append({"key": f"m:{spec}", "label": label,
                       "unit": "e-", "spec": spec,
                       "available": bool(item and item.available)})
     objects = []
@@ -2241,7 +2320,7 @@ def _real_cube(index: int, tier: str, params: dict[str, str]):
         plane = next((p for p in planes if p["band"].upper() == wanted), planes[0])
         cube = np.asarray(plane["data"], np.float32)[..., None]
         return cube, {
-            "label": f"JWST {plane['band']} · native", "asinh": 100.0,
+            "label": f"JWST {plane['band']} (native)", "asinh": 100.0,
             "pixscale": _pixscale_of(plane["header"], 0.0), "bands": [plane["band"]],
             "display_scale": _robust_display_scale(cube), "transfer_group": "jwst",
             "unit": unit_from_header(plane["header"], default=plane["unit"]),
@@ -2259,7 +2338,7 @@ def _real_cube(index: int, tier: str, params: dict[str, str]):
             raise ViewerError(404, f"{spec} has not been run on {entry.ref} yet") from exc
         state = model_catalog.output_state(meta, current)
         return cube, {
-            "label": (f"{meta.get('label') or spec}"
+            "label": (_plain_label(f"{meta.get('label') or spec}")
                       + (" · legacy" if meta.get("legacy") else "")
                       + ("" if state == "current" else f" · {state}")),
             "asinh": float(Config.STRETCH_SCALE_E),
@@ -2376,6 +2455,65 @@ def _fits_tier_serves(hdu: Mapping[str, Any], plane: int, params: dict[str, str]
     return _fits_stacked(hdu, params) or planes == 1 or plane < planes
 
 
+_NISP_HDU_SUFFIX = re.compile(r"(^|_)([YJH])_E$", re.IGNORECASE)
+
+
+def _fits_hdu_label(name: str | None, index: int) -> str:
+    """An image HDU's tier label: its name in words first, the index second
+    ("LR_VIS" → "LR VIS · HDU 1", "SR_Y_E" → "SR Y · HDU 6"), so the chip
+    (the part before " · ") says what the image is."""
+    raw = str(name or "").strip()
+    pretty = _NISP_HDU_SUFFIX.sub(r"\1\2", raw).replace("_", " ").strip()
+    return f"{pretty} · HDU {index}" if pretty else f"HDU {index}"
+
+
+def _fits_group_label(group: Mapping[str, Any]) -> str:
+    """A 4-band HDU group's label: "LR colour · VIS Y J H"."""
+    head = str(group.get("prefix") or "").rstrip("_- ").strip()
+    bands = " ".join(_NISP_HDU_SUFFIX.sub(r"\1\2", str(b)) for b in group.get("bands") or BAND_NAMES)
+    return f"{head} colour · {bands}" if head else f"Colour · {bands}"
+
+
+#: White-point cache: (file, mtime, size, selection) → the plane's bright end (e⁻).
+_FITS_WHITE_CACHE: OrderedDict[tuple[Any, ...], float | None] = OrderedDict()
+#: The percentile the white point of a bright file sits at: the core of the
+#: poster galaxy (VIS 12.2 AB, 0.1 % of its pixels above 31 k e⁻) keeps its
+#: structure; a few hot pixels above it do not set the scale.
+_FITS_WHITE_PERCENTILE = 99.99
+
+
+def _fits_white(real: str, selected: Mapping[str, Any]) -> float | None:
+    """The bright end (e⁻) of the selected HDU's first plane (a group's VIS
+    HDU), or None when the selection is not in electrons (or has no finite
+    pixel). Archive-rate groups count in electrons (MAGZERO), as served."""
+    group, hdu = selected.get("group"), selected.get("hdu")
+    source = group if group is not None else hdu
+    if source is None:
+        return None
+    stat = os.stat(real)
+    key = (real, int(stat.st_mtime_ns), int(stat.st_size), selected["key"])
+    if key in _FITS_WHITE_CACHE:
+        _FITS_WHITE_CACHE.move_to_end(key)
+        return _FITS_WHITE_CACHE[key]
+    white: float | None = None
+    bunit = source.get("bunit")
+    index = int(group["hdus"][0]) if group is not None else int(hdu["index"])
+    band = (group["bands"][0] if group is not None else hdu.get("band"))
+    try:
+        served = fits_inspect.read_plane(real, index, 0)
+    except fits_inspect.InspectError:
+        served = None
+    if served is not None:
+        factor = 1.0 if _fits_unit(bunit) == "e-" else _fits_electron_factor(served, bunit, band)
+        finite = served.data[np.isfinite(served.data)]
+        if factor is not None and finite.size:
+            white = float(np.percentile(finite, _FITS_WHITE_PERCENTILE)) * float(factor)
+    _FITS_WHITE_CACHE[key] = white
+    if len(_FITS_WHITE_CACHE) > _FITS_SUMMARY_CACHE_MAX:
+        _FITS_WHITE_CACHE.popitem(last=False)
+    return white
+
+
 def _fits_meta(params: dict[str, str]) -> dict[str, Any]:
     real, summary = _fits_file(params)
     _fits_bin(params)
@@ -2385,12 +2523,14 @@ def _fits_meta(params: dict[str, str]) -> dict[str, Any]:
     tiers: list[dict[str, Any]] = []
     for position, hdu in enumerate(images):
         key = f"h{hdu['index']}"
-        tier = {"key": key, "label": f"{hdu['index']} · {hdu['name']}", "unit": _fits_unit(hdu.get("bunit"))}
+        tier = {"key": key, "label": _fits_hdu_label(hdu.get("name"), int(hdu["index"])),
+                "unit": _fits_unit(hdu.get("bunit"))}
         if position >= _FITS_SHOWN_TIERS and key != selected["key"]:
             tier["hidden"] = True
         tiers.append(tier)
     for group in groups:
-        tiers.append({"key": group["id"], "label": group["label"], "unit": _fits_unit(group.get("bunit"))})
+        tiers.append({"key": group["id"], "label": _fits_group_label(group),
+                      "unit": _fits_unit(group.get("bunit"))})
 
     wcs = (selected.get("group") or selected.get("hdu") or {}).get("wcs")
     position = ({"ra": float(wcs["ra"]), "dec": float(wcs["dec"])} if wcs else {})
@@ -2428,6 +2568,13 @@ def _fits_meta(params: dict[str, str]) -> dict[str, Any]:
     }
     if (params.get("render") or "") == "log":
         meta["render_mode"] = "log"
+    else:
+        # A bright file (the poster galaxy's core is ~100× the default white of
+        # 30·K0 = 3000 e⁻): its white point moves to the plane's bright end, so
+        # the core keeps its structure; every tier of the file shares it.
+        white = _fits_white(real, selected)
+        if white is not None and white > 30.0 * float(Config.STRETCH_SCALE_E):
+            meta["default_asinh"] = white / 30.0
     return meta
 
 
@@ -2490,7 +2637,7 @@ def _fits_cube(index: int, tier: str, params: dict[str, str]):
             raise ViewerError(404, f"no band group {tier!r}")
         served = [_fits_read(real, h, 0, bin_factor) for h in group["hdus"]]
         head, bands = served[0], list(group["bands"])
-        name, bunit = group["label"], group.get("bunit")
+        name, bunit = _fits_group_label(group), group.get("bunit")
         factors = [_fits_electron_factor(p, bunit, b) for p, b in zip(served, bands, strict=True)]
         if all(f is not None for f in factors):
             # Archive-rate bands: one colour cube in electrons (MAGZERO), so the
@@ -2590,6 +2737,10 @@ def get_meta(collection: str, params: dict[str, str]) -> dict[str, Any]:
     # tile at the same physical/angular receptive-field sizes.
     meta["receptive_fields"] = receptive_field_constants()
     color = color_constants()
+    # A collection may move the white point (30·K0) of its images, e.g. a bright FITS file.
+    default_asinh = meta.pop("default_asinh", None)
+    if isinstance(default_asinh, int | float) and math.isfinite(default_asinh) and default_asinh > 0:
+        color["default_asinh"] = float(default_asinh)
     extra_color_bands = meta.pop("extra_color_bands", {})
     if isinstance(extra_color_bands, dict):
         color["bands"].update(extra_color_bands)

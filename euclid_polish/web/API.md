@@ -271,8 +271,22 @@ inspectable FITS file, see *Inspect workspace* below).
   resolved position, exposed).
 - **Units.** Tiers may carry `unit` (`"e-"`, `"MJy/sr"`, `"ADU/s"`, `"arb"`)
   in the meta; each cube repeats it as `X-Cube-Unit` (PSF kernels, PCA
-  eigen-images and JWST colour composites are `arb`; raw star cutouts are
-  `ADU/s`; NEXUS/JWST native tiers are `MJy/sr`).
+  eigen-images and JWST colour composites are `arb`; NEXUS/JWST native tiers
+  are `MJy/sr`). The archive star cutouts (`cutouts`, ADU/s on disk) are
+  served in electrons over each band's stack via their `MAGZERO` (label
+  `… · e- via MAGZERO`), so the console's absolute e⁻ transfer shows them; a
+  cutout without `MAGZERO` stays `ADU/s` with an `X-Cube-Display-Scale`.
+  The meta's `unit` is the collection's usual unit (it does not open every
+  cutout, so `cutouts` always says `e-`); a cube's `X-Cube-Unit` is the
+  authority for that cube, and the viewer reads it first.
+- **White point.** `meta.color.default_asinh` (K0; white at 30·K0 e⁻) is
+  `Config.STRETCH_SCALE_E` for every collection except a bright `fits` file:
+  when the selected plane's 99.99th percentile (e⁻) exceeds the default
+  white (3000 e⁻), K0 = that percentile ÷ 30, shared by every tier of the
+  file (the poster galaxy's core, 1.0 × 10⁵ e⁻, keeps its structure).
+- **Labels.** Tier labels are plain words: the part before the first ` · `
+  (or ` (`) is the chip ("LR VIS · HDU 1", "Mean · 30 starfull members",
+  "JWST (native)"); regime names are lower case ("starfull").
 - **WCS.** `X-Cube-WCS` is compact JSON of the celestial WCS of *that tier's*
   pixel grid — `CTYPE1/2, CRVAL1/2, CRPIX1/2, CD1_1, CD1_2, CD2_1, CD2_2`
   (always the CD form), FITS 1-based convention, axis 1 = column (x), row 0
@@ -431,8 +445,13 @@ a local job): **nothing is FASRC-gated**.
   and a request past the prefix reloads uncapped once).
 - **Viewer collection `real`**: `GET /viewer/meta/real?source=<source>&models=<spec,…>`
   (default models: every spec with an output in that source). Tiers `lr`
-  (e⁻, LR WCS), `jwst` (native, MJy/sr, its own WCS; `?jwst_band=` picks a
-  pair filter) when any tile has JWST, and `m:<spec>` (e⁻, SR WCS; label gets
+  (e⁻, LR WCS), `jwst` ("JWST (native)", MJy/sr, its own WCS; `?jwst_band=`
+  picks a pair filter) when any tile has JWST, and `m:<spec>` (e⁻, SR WCS;
+  the tier label names what is served: the catalogue's model, or — when
+  every output of the spec in the source is a legacy SR that is not current
+  — the kind, member count(s) and "legacy" (`RBF (10 or 20 members,
+  legacy)`, `Mean (4 members, legacy)`), or the catalogue label with
+  `(a legacy SR on n of m tiles)` when only some are; the cube label gets
   ` · legacy` for a legacy SR and ` · stale` when not current; cube meta adds
   `model_state`, `legacy`; 404 "has not been run" when missing). Objects:
   `{id, label, ra, dec, field, ref, tiers, model_states:{spec: state},
@@ -444,7 +463,7 @@ a local job): **nothing is FASRC-gated**.
 |---|---|---|---|
 | GET, POST | `/api/experiments` |  | GET: `{experiments:[{id, label, created, finished, status, job_id, tiles, models, skipped, summary, errors, counts}]}` newest first. POST: start an experiment (local job `real-experiment`): `tiles` = comma list of `source/id`, `models` = comma list of specs, `label?`. `{ok, job_id, experiment_id, tiles, models (runnable), skipped:{spec: reason}}`. 400 bad/unknown spec (`unknown model spec 'gate:x'`) or no runnable model; 404 unknown tile; 409 tile without four-band LR; **507** `{ok:false, code:"insufficient_storage", needed_bytes, free_bytes}` when the new outputs (`(4, 2H, 2W)` float32 per (tile, spec) not yet in the store) would leave < 5 GiB free. Job result: `{experiment_id, status, tiles, models, errors, counts}`. |
 | GET | `/api/experiments/<experiment_id>` |  | The experiment record (above); 404 unknown. |
-| GET | `/api/models` |  | `{regime:"starfull", production_kind, members:[labels], models:[{spec, kind, label, slug, members, member_names, reads, n_members, available, reason, fingerprint, member_fingerprints, combiner_kind, combiner_fingerprint, details{mix_space, use_lr, width, active_members, fitted_at, artifact_dir, loss, loss_knees_e, steps, …}}]}` — order: production, mean, rbf, members, gate variants. |
+| GET | `/api/models` |  | `{regime:"starfull", production_kind, members:[labels], models:[{spec, kind, label, slug, members, member_names, reads, n_members, n_fitted, available, reason, fingerprint, member_fingerprints, combiner_kind, combiner_fingerprint, details{mix_space, use_lr, width, active_members, fitted_at, artifact_dir, loss, loss_knees_e, steps, …}}]}` — order: production, mean, rbf, members, gate variants. `members` = the members the spec was built for (its staleness key), `reads` = the members it actually runs; `n_members` = `len(reads)` (a pruned gate: 6 of the 20 it was fitted with), `n_fitted` = `len(members)`. |
 | GET | `/api/real/<source>` |  | `{source, label, description, count, tiles:[tile entry + models:{spec:{state, legacy, label, fingerprint, created, experiment_id, file, origin, summary}} + production_state]}` (models = the tile's merged outputs). 404 unknown source. |
 | GET | `/api/real/<source>/<identifier>` |  | Card: tile entry + `models:{spec:{state, legacy, label, kind, fingerprint, created, experiment_id, file, member_labels, combiner_kind, lr_sha, shape, origin, metrics{per_band, summary, gate_core_weights?}, image_url}}` (store + legacy outputs), `production_state`, `legacy` (= `extras.legacy_sr`: the pre-C9 production-pipeline SR record or `null`), `runnable_models`, `experiments:[ids]`, `disk{tile_bytes, output_bytes, cache_bytes (member-SR cache), legacy_bytes (NEXUS / pair legacy SR files), total_bytes}`, `q1_tile` (the containing Q1 tile), `image_urls{tier: url}` (one per `m:<spec>` with an output), `viewer{collection:"real", params{source}, id}`. |
 | POST | `/api/real/<source>/<identifier>/delete-outputs` |  | Delete the tile's cached model outputs and member-SR cache (never the LR itself): `{ok, ref, removed:[paths], removed_count, cache_bytes_freed}`. |
@@ -552,8 +571,10 @@ Later, with no SPA (source or bundle) reference: the matplotlib PNGs
   (`bands` default | `planes`), `bin` (1–256, default auto), `render`
   (`log`). Objects = the selected HDU's planes (`id` `p<k>`, label `VIS` /
   `plane k` / `[i, j]`; one object for a band cube or band group); tiers =
-  every viewable image HDU (`h<index>`, label `<index> · <name>`; beyond 12
-  hidden) + every band group (`b:<prefix>`), so HDUs compare side by side. A
+  every viewable image HDU (`h<index>`, label `<name in words> · HDU <index>`:
+  "LR VIS · HDU 1", "SR Y · HDU 6"; beyond 12 hidden) + every band group
+  (`b:<prefix>`, "LR colour · VIS Y J H"), so HDUs compare side by side. A
+  bright file moves `meta.color.default_asinh` (White point, above). A
   non-selected HDU serves its own plane `k` (a 2-D HDU its only plane).
   `meta.fits = {path, hdu, planes, planes_truncated, stacked}`. Cubes carry
   `X-Cube-WCS` (binned), `X-Cube-Unit` (from `BUNIT`), channel names (bands,
@@ -954,7 +975,7 @@ answer `{ok:false, error}` with 400 on a bad knob. Everything is local except
 | POST | `/viewer/results/<result_id>/delete` |  | Delete one saved result (and drop it from every grid layout): `{ok, id}`; 404 unknown. |
 | GET | `/viewer/results/<result_id>/panel.png` |  | PNG panel of one saved result: `tier` + `mode` (both empty = the result's `thumbnail` recipe), `size` (8–2048 px thumbnail side; downsampled, never upsampled). Content-addressed `ETag` (`If-None-Match` → 304 without a render). |
 | POST | `/viewer/results/<result_id>/rename` |  | Set the user `label` (JSON or form; ≤ 120 chars, no control characters; empty = back to the default label): `{ok, result: summary}`. The id does not change. |
-| GET | `/viewer/results/grid.<output_format>` |  | Publication grid of saved results (`result`, `row`, `dpi`). |
+| GET | `/viewer/results/grid.<output_format>` |  | Publication grid of saved results (`result`, `row`, `dpi`, `missing`): results are the columns, recipes the rows, square cells on A4 with the row titles sized to their text (horizontal beside the cells when the page has the width, else rotated), the table centred across the page and hung from the top, titles 7–10 pt. `missing=refuse` (default) answers 400 unless every result supports every row; `missing=blank` draws every available cell and a grey "Not available" cell in place of each missing one (400 when no cell is available). |
 | GET, POST | `/viewer/grid-layouts` |  | Named figure-grid layouts (`<results root>/grid_layouts.json`). GET: `{layouts:[{id "gl-<12 hex>", name, results:[ids], rows:["tier:mode"], regime, created_utc, updated_utc}]}` newest first. POST (JSON or form; `results`/`rows` lists or comma strings): `{name, results, rows, regime?, id?}` — updates `id`, else the layout with the same name (any case), else creates one (201): `{ok, layout, created}`. 400 unknown result / bad recipe / > 12 results / > 16 rows; 409 at 200 layouts. |
 | POST | `/viewer/grid-layouts/<layout_id>/delete` |  | Delete one layout: `{ok, id}`; 404 unknown. |
 

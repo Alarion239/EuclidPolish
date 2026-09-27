@@ -5,6 +5,7 @@
    disagreement status, gate usage over bands, held-out loss comparability,
    the one-experiment real-data benchmark, the shared e⁻ number format).
    No React, no DOM. */
+import { formatDate } from "../../format";
 import type { ExperimentSummary, KneeInfo, KneeModel } from "./api";
 
 /* ── member names ──────────────────────────────────────────────────────── */
@@ -201,6 +202,17 @@ export function kneeLeaderboard(models: readonly KneeModel[], knees: number[], r
   }));
 }
 
+/** A knee-PSNR model's display name (the Knee tab, its tracking note):
+ *  "#196", "plain mean", "production gate", else the combiner's label. */
+export function kneeModelName(m: { id: string; kind: string; label: string }): string {
+  if (m.kind === "member") return `#${memberNumber(m.label) ?? m.label}`;
+  if (m.kind === "mean") return "plain mean";
+  return m.id === "spatial_gate" ? "production gate" : m.label;
+}
+
+/** A knee in e⁻ as the axes read it: 0.1, 100, 1k, 10k. */
+export const kneeNum = knum;
+
 /** A curve relative to a reference curve (same grid), per knee and band. */
 export function relativeTo(curve: number[][], ref: number[][] | null | undefined): number[][] {
   if (!ref) return curve;
@@ -277,6 +289,17 @@ export function stampKnee(s: { hr_val: number; std_val: number; err_val: number 
   return Math.max(0.25, ...levels);
 }
 
+/** The pixel back-trace stamp's backing store: the largest whole number of
+ *  device pixels that fits the stamp's laid-out (possibly fractional) CSS
+ *  width, and the CSS size that shows exactly those device pixels — so the
+ *  pixelated canvas is never rescaled (a 141.5 css px cell at dpr 2 is 283
+ *  device px; a 284 backing squeezed into it dropped a row). */
+export function stampBacking(cssWidth: number, dpr: number): { side: number; css: number } | null {
+  if (!(cssWidth > 0) || !(dpr > 0)) return null;
+  const side = Math.max(1, Math.floor(cssWidth * dpr + 1e-6));
+  return { side, css: side / dpr };
+}
+
 export function formatE(v: number): string {
   if (!Number.isFinite(v)) return "—";
   return Math.abs(v) >= 1000 || (Math.abs(v) > 0 && Math.abs(v) < 0.01)
@@ -347,24 +370,93 @@ export function heldOutComparable(v: { fit?: Record<string, unknown> }, producti
   return lossDef(v) === ref;
 }
 
-export type Bench = { holeMean: number | null; holeMax: number | null; medianR: number | null; rLt08: number | null; nTiles: number | null };
-export type Benchmark = { expId: string; label?: string; created?: string; nTiles: number | null; bySpec: Map<string, Bench> };
+/** One band's real-data hole % (the share of bright LR pixels the SR blanks). */
+export type BandHole = { band: string; short: string; pct: number | null };
+export type Bench = {
+  holeMean: number | null; holeMax: number | null; medianR: number | null; rLt08: number | null; nTiles: number | null;
+  /** Per band (VIS Y J H) when the experiment recorded `per_band`, else empty. */
+  bands: BandHole[];
+  /** The band with the most holes (null without per-band values). */
+  worst: BandHole | null;
+};
+export type Benchmark = {
+  expId: string; label?: string; created?: string; nTiles: number | null; tiles: string[];
+  /** What the tiles are, for headers: the experiment label, else "9 real tiles". */
+  tileSet: string;
+  bySpec: Map<string, Bench>;
+};
+
+const byNewest = (exps: readonly ExperimentSummary[] | null | undefined) =>
+  [...(exps ?? [])].sort((a, b) => String(b.created ?? "").localeCompare(String(a.created ?? "")));
+const hasSummary = (e: ExperimentSummary) => !!e.summary && Object.keys(e.summary).length > 0;
+const tilesText = (n: number | null) => (n == null ? "real tiles" : `${n} real tile${n === 1 ? "" : "s"}`);
+const expTiles = (e: ExperimentSummary): number | null => {
+  let n: number | null = null;
+  for (const agg of Object.values(e.summary ?? {})) {
+    const t = (agg as { n_tiles?: number }).n_tiles;
+    if (typeof t === "number") n = Math.max(n ?? 0, t);
+  }
+  return n ?? (e.tiles?.length || null);
+};
+
+/** The experiments the Combiners benchmark can be scored from (those with a
+ *  summary), newest first: "NEXUS core · 1 tile · 2026-09-26". */
+export function benchmarkChoices(exps: readonly ExperimentSummary[] | null | undefined): { value: string; label: string; production: boolean }[] {
+  return byNewest(exps).filter(hasSummary).map((e) => {
+    const n = expTiles(e);
+    const tiles = n == null ? null : `${n} tile${n === 1 ? "" : "s"}`;
+    const parts = e.label ? [e.label, tiles] : [tilesText(n)];
+    const date = e.created ? formatDate(e.created, { fallback: "" }) : "";   // local, like the note under the table
+    return { value: e.id, label: [...parts, date].filter(Boolean).join(" · "), production: "production" in (e.summary ?? {}) };
+  });
+}
 
 /** The real-data benchmark of the Combiners table, from ONE experiment so
- *  every variant is scored on the same tiles: the newest experiment that ran
- *  production (else the newest one). Variants it did not run stay blank. */
-export function benchmarkExperiment(exps: readonly ExperimentSummary[] | null | undefined): Benchmark | null {
-  const sorted = [...(exps ?? [])].sort((a, b) => String(b.created ?? "").localeCompare(String(a.created ?? "")));
-  const e = sorted.find((x) => x.summary && "production" in x.summary) ?? sorted[0];
+ *  every variant is scored on the same tiles: the one the user picked
+ *  (`chosen`), else the newest experiment that ran production (else the
+ *  newest one). Variants it did not run stay blank. */
+export function benchmarkExperiment(exps: readonly ExperimentSummary[] | null | undefined, chosen?: string | null): Benchmark | null {
+  const sorted = byNewest(exps);
+  const e = (chosen ? sorted.find((x) => x.id === chosen && hasSummary(x)) : undefined)
+    ?? sorted.find((x) => x.summary && "production" in x.summary) ?? sorted[0];
   if (!e) return null;
   const bySpec = new Map<string, Bench>();
-  let nTiles: number | null = null;
   for (const [spec, agg] of Object.entries(e.summary ?? {})) {
-    const a = agg as { n_tiles?: number; summary?: Record<string, number | null> };
-    const n = a.n_tiles ?? null;
-    if (n != null) nTiles = Math.max(nTiles ?? 0, n);
+    const a = agg as { n_tiles?: number; summary?: Record<string, number | null>; per_band?: Record<string, { hole_pct?: number | null }> };
+    const bands: BandHole[] = a.per_band
+      ? GATE_BANDS.filter(({ band }) => a.per_band?.[band]).map(({ band, short }) => {
+        const v = a.per_band?.[band]?.hole_pct;
+        return { band, short, pct: v != null && Number.isFinite(v) ? v : null };
+      })
+      : [];
+    const worst = bands.reduce<BandHole | null>((w, b) => (b.pct != null && (w?.pct == null || b.pct > w.pct) ? b : w), null);
     bySpec.set(spec, { holeMean: a.summary?.hole_pct_mean ?? null, holeMax: a.summary?.hole_pct_max ?? null,
-      medianR: a.summary?.median_R ?? null, rLt08: a.summary?.pct_R_lt_0p8 ?? null, nTiles: n });
+      medianR: a.summary?.median_R ?? null, rLt08: a.summary?.pct_R_lt_0p8 ?? null, nTiles: a.n_tiles ?? null, bands, worst });
   }
-  return { expId: e.id, label: e.label, created: e.created, nTiles, bySpec };
+  const nTiles = expTiles(e);
+  return { expId: e.id, label: e.label, created: e.created, nTiles, tiles: e.tiles ?? [], tileSet: e.label || tilesText(nTiles), bySpec };
+}
+
+/** A variant's hole % per band, "19 · 13 · 19 · 30" (VIS Y J H); the mean
+ *  when the experiment has no per-band values. */
+export function holesText(b: Bench): string {
+  if (b.bands.length) return b.bands.map((x) => (x.pct == null ? "—" : x.pct.toFixed(0))).join(" · ");
+  return b.holeMean != null ? `${b.holeMean.toFixed(1)} % (mean)` : "—";
+}
+
+/* ── member counts ─────────────────────────────────────────────────────── */
+
+/** How many members a combiner variant reads: "6 of 20 members" for a
+ *  pruned gate (it reads 6 of the 20 it was fitted with), else "26 members". */
+export function readsText(v: { n_reads: number; n_members: number; pruned: boolean }): string {
+  const noun = (n: number) => `member${n === 1 ? "" : "s"}`;
+  return v.pruned && v.n_reads < v.n_members ? `${v.n_reads} of ${v.n_members} ${noun(v.n_members)}` : `${v.n_reads} ${noun(v.n_reads)}`;
+}
+
+/** The Disagreement member menu's button: which members the movie shows
+ *  ("Members: 196, 195 +2 · Change"), or "Members: none · Pick". */
+export function membersButtonText(sel: readonly string[], shown = 2): string {
+  if (!sel.length) return "Members: none · Pick";
+  const head = sel.slice(0, shown).join(", ");
+  return `Members: ${head}${sel.length > shown ? ` +${sel.length - shown}` : ""} · Change`;
 }

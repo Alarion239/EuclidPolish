@@ -34,7 +34,6 @@ import { useFollowViewer } from "./follow";
 import {
   bandLabel, cardViewerTiers, defaultRunSpecs, formatMetric, outputOrigin, realTileViewerParams, sortSpecs, specShort,
 } from "./model";
-import { FitBox } from "./FitBox";
 import { RunModelsPopover } from "./RunModels";
 import "./results.css";
 
@@ -64,7 +63,7 @@ function EvalProvenance({ id }: { id: string }) {
         ["SR model", <StateBadge state={c.state ?? "unknown"} title={c.state_reason} />],
         c.state_reason ? ["why", <span className="res-note">{c.state_reason}</span>] : null,
         ["made by", members ? `${members.member_labels?.length ?? 0} members · ${members.combiner_kind ?? (members.combiner_kind === null ? "member mean" : "combiner not recorded")}` : "not recorded"],
-        ["now", c.current ? `${c.current.n_members} STARFULL · ${c.current.combiner_kind ?? "member mean"}` : "—"],
+        ["now", c.current ? `${c.current.n_members} starfull · ${c.current.combiner_kind ?? "member mean"}` : "—"],
         prov ? ["provenance", <span className="mono">{prov.id} · {prov.git ?? "?"}{prov.dirty ? " (dirty)" : ""} · {prov.created_at ? formatDateTime(prov.created_at) : ""}</span>] : null,
         c.disagreement?.pca_n ? ["disagreement", `${c.disagreement.pca_n} PCs`] : null,
       ]} />
@@ -145,11 +144,11 @@ export default function RealTileInspector({ id }: { id: string }) {
   const q1 = c.q1_tile;
   return (
     <div className="res-card">
-      <FitBox className="res-card__viewer" min={320}>
+      <div className="res-card__viewer">
         <ImageViewer key={`${c.ref}:${specs.join(",")}`} collection="real" params={params} initialId={c.id}
           tiers={viewerTiers} id={`realtile-${c.ref}`} toolbar="full" nav={false}
           onReady={(a) => { setApi(a); follow.onReady(a); }} onState={follow.onState} />
-      </FitBox>
+      </div>
       <div className="res-card__status">
         {/* the frames fill the stage (focus mode: F, Esc returns) */}
         <Button size="sm" variant="ghost" icon={<VIcon name="focus" />} className="res-card__large" disabled={!api}

@@ -14,9 +14,11 @@ import {
 } from "../../ui";
 import { ImageViewer, type ViewerApi, type ViewerState } from "../../viewer";
 import { imageStatsUrl, previewUrl, type ImageStats, type InspectResponse, type WcsSummary } from "./api";
-import { FitBox } from "../sky/results/FitBox";
 import { HistogramPlot } from "./charts";
-import { axisName, basename, brightExposure, compareTiers, flatIndex, planeIndex, shapeText, viewerParams, type Selected } from "./model";
+import {
+  axisName, basename, brightExposure, compareDisplay, compareTiers, flatIndex, groupOptionLabel, hduOptionLabel, planeIndex, shapeText, viewerParams,
+  type Selected,
+} from "./model";
 import { SkyLink } from "./SkyLink";
 
 /** The viewer shows at most this many tier chips (the rest are hidden, see
@@ -144,18 +146,20 @@ export function ImagePanel({ fits, summary, sel, unit, head }: {
 
   const tierOptions = useMemo(() => [
     ...summary.hdus.filter((h) => h.type === "image" && h.viewable)
-      .map((h) => ({ value: `h${h.index}`, label: `${h.index} · ${h.name}` })),
-    ...summary.band_groups.map((g) => ({ value: g.id, label: g.label })),
+      .map((h) => ({ value: `h${h.index}`, label: hduOptionLabel(h) })),
+    ...summary.band_groups.map((g) => ({ value: g.id, label: groupOptionLabel(g) })),
   ], [summary]);
   const shownTiers = vstate?.tiers ?? [group ? group.id : `h${hdu?.index ?? 0}`];
 
   const wcs = group?.wcs ?? hdu?.wcs;
   // A results FITS opens on LR and SR colour side by side (the comparison it is for).
   const firstTiers = useMemo(() => compareTiers(summary, sel), [summary, sel]);
-  // A bright target (the poster galaxy's core at VIS 12 AB): scale knee and
-  // white to its 99.9th percentile once per HDU, so the core is not blown
-  // out. A per-viewer setting; the Display dock resets it.
-  const exposure = useRef<{ at: string; view: { knee: number; gain: number } | null }>({ at: "", view: null });
+  const firstDisplay = useMemo(() => compareDisplay(firstTiers), [firstTiers]);
+  // A bright target (the poster galaxy's core at VIS 12 AB): the server moves
+  // the file's white point to the plane's 99.99th percentile; the knee is
+  // seeded here from its 99.9th, once per HDU, so the core keeps its
+  // structure. A per-viewer setting; the Display row's reset clears it.
+  const exposure = useRef<{ at: string; view: { knee: number } | null }>({ at: "", view: null });
   const p999 = stats.data?.percentiles?.["99.9"];
   const exposureAt = `${fits}|${sel.key}|${render}`;
   useEffect(() => {
@@ -199,8 +203,9 @@ export function ImagePanel({ fits, summary, sel, unit, head }: {
       {hdu?.bands_assumed && stacked && (
         <p className="insp-note">No BANDS card: the four planes are taken as VIS, Y, J, H.</p>
       )}
-      <FitBox className="insp-viewer" label="Image">
+      <div className="insp-viewer" role="region" aria-label="Image">
         <ImageViewer collection="fits" params={params} urlKey="fits" tiers={firstTiers}
+          display={firstDisplay}
           onReady={(a) => {
             api.current = a;
             const e = exposure.current;
@@ -208,7 +213,7 @@ export function ImagePanel({ fits, summary, sel, unit, head }: {
           }}
           onState={(s) => setVstate((prev) => (prev && prev.index === s.index && prev.tiers.join() === s.tiers.join()
             ? prev : { index: s.index, tiers: s.tiers }))} />
-      </FitBox>
+      </div>
       <div className="insp-cards">
         <StatsCard stats={stats.data} loading={stats.loading} error={stats.error?.message ?? null} unit={unit}
           title={statsTitle} />

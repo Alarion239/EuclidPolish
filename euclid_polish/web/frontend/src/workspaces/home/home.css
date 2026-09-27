@@ -1,7 +1,6 @@
 /* Home dashboard (workspaces/home). Container queries: the stage narrows when
    the inspector is open, so the layout follows the page's own width. */
 .home { container-type: inline-size; }
-.home__head-right { display: flex; align-items: center; gap: var(--s2); }
 
 /* Two KPI rows: the production model (3 wide tiles) and the system (4). */
 .home__kpis {

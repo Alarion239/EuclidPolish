@@ -157,6 +157,14 @@ describe("Sky atlas", () => {
     await waitFor(() => expect(screen.queryByRole("tooltip")).toBeNull());
   });
 
+  it("a link that names only the inspected tile opens framed on it, not on the whole sky", async () => {
+    act(() => { useInspector.getState().show({ kind: "tile", id: "nexus/f200w-0001" }); });
+    show("/sky/atlas?layers=nexus-tiles");
+    await waitFor(() => expect(search().get("ra")).not.toBeNull());
+    expect(Number(search().get("ra"))).toBeCloseTo(268.3935, 3);
+    expect(Number(search().get("fov"))).toBeLessThan(0.1);
+  });
+
   it("a URL view change moves the engine; a user move is written back to the URL", async () => {
     show("/sky/atlas?ra=268.38&dec=65.1&fov=0.2&layers=-");
     await waitFor(() => expect(currentSkyEngine()?.attachedTo).toBeTruthy());

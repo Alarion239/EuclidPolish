@@ -26,7 +26,6 @@ import { ImageViewer, type ViewerApi } from "../../../viewer";
 import { errorText } from "../results/actions";
 import { atlasHref, URLS, type EvalRow, type EvalRuns } from "../results/api";
 import { StateBadge } from "../results/common";
-import { FitBox } from "../results/FitBox";
 import { EVAL_GROUPS, filterEvalRows, num } from "../results/model";
 import "../results/register";
 import "../results/results.css";
@@ -196,7 +195,7 @@ export default function CatalogEval() {
     <div className="res-bar res-bar--inline res-eval__actions" role="toolbar" aria-label="Catalog eval actions">
       {data && (
         <span className="res-ident" aria-label="Current model">
-          Now: <strong>{cur?.n_members ?? 0}</strong> STARFULL members, {cur?.combiner_kind ? <Badge size="sm" tone="accent">{cur.combiner_kind.replace(/_/g, " ")}</Badge> : <Badge size="sm" tone="warn">member mean</Badge>}
+          Now: <strong>{cur?.n_members ?? 0}</strong> starfull members, {cur?.combiner_kind ? <Badge size="sm" tone="accent">{cur.combiner_kind.replace(/_/g, " ")}</Badge> : <Badge size="sm" tone="warn">member mean</Badge>}
           <span>{formatCount(data.n_ok)} of {formatCount(data.n)} ok</span>
         </span>
       )}
@@ -248,14 +247,15 @@ export default function CatalogEval() {
       ) : (
         <div className="res-eval">
           {/* Image first: the reconstruction browser is the top of the page
-              (the left column when wide); its frames end at the fold. */}
+              (the left column when wide); the viewer ends its frames at the
+              fold by itself (it fits under its own top). */}
           <div className="res-eval__viewer" ref={viewerBox}>
             {data.n_ok ? (
-              <FitBox label="Reconstruction browser" min={360}>
+              <div role="region" aria-label="Reconstruction browser">
                 <ImageViewer collection="evaluation" urlKey="cev" id="catalog-eval" toolbar="full" tiers={EVAL_TIERS}
                   onReady={(api) => { viewer.current = api; }}
                   onState={(s) => { if (s.id !== active) setActive(s.id ?? null); }} />
-              </FitBox>
+              </div>
             ) : <p className="muted res-note">No reconstructions to browse yet: run the grouped analysis.</p>}
           </div>
           <div className="res-eval__list">
@@ -264,7 +264,7 @@ export default function CatalogEval() {
             {counts.stale + counts.unknown > 0 && (
               <Callout tone="warn" title={`${formatCount(counts.stale + counts.unknown)} reconstructions predate the current model`}
                 action={<Button size="sm" onClick={() => setGroupedOpen(true)}>Grouped analysis…</Button>}>
-                The grouped analysis regenerates them with the STARFULL members and the production combiner.
+                The grouped analysis regenerates them with the starfull members and the production combiner.
               </Callout>
             )}
             {/* The filters narrow the table (the viewer browses every reconstruction). */}

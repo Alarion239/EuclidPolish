@@ -11,7 +11,7 @@ import { planckianXY, srgbGamma, xyToLinearSrgb } from "./color";
 import { drawFrame } from "./draw";
 import { useController, useSettings, useViewer } from "./hooks";
 import { markerShapes, markersOnTier, useMarkers } from "./markers";
-import { cubeIsEmpty } from "./readout";
+import { cubeCoverage, cubeIsEmpty, cubeIsSparse } from "./readout";
 import { contentBoxOrigin, frameToImage, frameToImageClamped, imageToFrame, type FrameLayout, type Selection } from "./selection";
 
 type Drag =
@@ -48,6 +48,7 @@ export function Frame({ tier, hidden = false, clip, label, labelRight = false }:
   const readout = useViewer((s) => s.readout);
   const profile = useViewer((s) => s.profile);
   const progress = useViewer((s) => s.movieProgress[tier] ?? null);
+  useViewer((s) => s.pixelExact);   // the drawn rectangle (layoutOf) follows it
   const settings = useSettings();
   const markers = useMarkers();
   const elRef = useRef<HTMLDivElement>(null);
@@ -106,12 +107,17 @@ export function Frame({ tier, hidden = false, clip, label, labelRight = false }:
     return () => ro.disconnect();
   }, []);
 
-  // A cube with no finite pixel (a JWST cutout outside the mosaic) is not
-  // painted as a flat NaN-coloured square: the frame keeps the neutral ink
-  // and says so. Partial NaNs keep the NaN colour.
+  // A cube with (almost) no finite pixel (a JWST cutout outside the mosaic:
+  // under 1 % and under 1000 values) is not painted as a flat NaN-coloured
+  // square: the frame keeps the neutral ink and says so. A sparse cube (a
+  // real corner of data) is painted, with a quiet caption at its foot.
+  // Partial coverage keeps the NaN colour.
   const empty = shown?.kind === "cube" && cubeIsEmpty(shown.rec);
+  const sparse = shown?.kind === "cube" && cubeIsSparse(shown.rec);
+  const coverage = shown?.kind === "cube" ? cubeCoverage(shown.rec) : { finite: 0, total: 0, fraction: 1 };
   // The per-area display factor (area.ts) follows the other shown tiers.
-  const area = useViewer((s) => (shown?.kind === "cube" ? ctrl.areaFactorOf(shown.rec, s) : 1));
+  // (1 unless the Display option "Match surface brightness" is on.)
+  const area = useViewer((s) => (shown?.kind === "cube" ? ctrl.areaFactorOf(shown.rec, s, settings) : 1));
 
   // Render the cube with the display settings (the movie draws itself).
   useEffect(() => {
@@ -294,7 +300,9 @@ export function Frame({ tier, hidden = false, clip, label, labelRight = false }:
   const box = crop && L ? { a: imageToFrame(L, crop.x, crop.y), b: imageToFrame(L, crop.x + crop.side, crop.y + crop.side) } : null;
   const here = readout?.tiers.find((t) => t.tier === tier);
   const cross = here && L ? imageToFrame(L, here.fx, here.fy) : null;
-  const inFrame = (p: { x: number; y: number } | null) => !!p && p.x >= 0 && p.y >= 0 && p.x <= S && p.y <= S;
+  // The drawn image (the snapped whole image, or the zoomed view filling the frame).
+  const drawn = L ? { x0: Math.max(0, L.dx), y0: Math.max(0, L.dy), x1: Math.min(S, L.dx + L.dw), y1: Math.min(S, L.dy + L.dh) } : null;
+  const inFrame = (p: { x: number; y: number } | null) => !!p && !!drawn && p.x >= drawn.x0 && p.y >= drawn.y0 && p.x <= drawn.x1 && p.y <= drawn.y1;
   const prof = profileDraft ? { kind: "line" as const, tier, p0: profileDraft.p0, p1: profileDraft.p1 } : profile;
   let profShape: { line?: [{ x: number; y: number }, { x: number; y: number }]; dot?: { x: number; y: number } } | null = null;
   if (prof && L) {
@@ -348,8 +356,8 @@ export function Frame({ tier, hidden = false, clip, label, labelRight = false }:
           ))}
         </g>}
         {box && <rect className="cv-lens-rect" x={box.a.x} y={box.a.y} width={Math.max(1, box.b.x - box.a.x)} height={Math.max(1, box.b.y - box.a.y)} />}
-        {cross && inFrame(cross) && <g className="cv-cross">
-          <line x1={cross.x} y1={0} x2={cross.x} y2={S} /><line x1={0} y1={cross.y} x2={S} y2={cross.y} />
+        {cross && drawn && inFrame(cross) && <g className="cv-cross">
+          <line x1={cross.x} y1={drawn.y0} x2={cross.x} y2={drawn.y1} /><line x1={drawn.x0} y1={cross.y} x2={drawn.x1} y2={cross.y} />
         </g>}
         {profShape?.line && <g className="cv-prof">
           <line x1={profShape.line[0].x} y1={profShape.line[0].y} x2={profShape.line[1].x} y2={profShape.line[1].y} />
@@ -374,7 +382,13 @@ export function Frame({ tier, hidden = false, clip, label, labelRight = false }:
       )}
       {message && <div className="cv-msg"><span>{message}{hint && hint !== message && <><br /><em>{hint}</em></>}</span></div>}
       {!message && empty && (
-        <div className="cv-msg cv-msg--quiet"><span>No {name || "image"} data here<br /><em>Every pixel of this cutout is blank</em></span></div>
+        <div className="cv-msg cv-msg--quiet"><span>No {name || "image"} data here<br /><em>{coverage.finite
+          ? `Only ${coverage.finite.toLocaleString("en")} of ${coverage.total.toLocaleString("en")} values have data (outside its coverage)`
+          : "Every pixel of this cutout is blank (outside its coverage)"}</em></span></div>
+      )}
+      {!message && sparse && (
+        <div className="cv-msg cv-msg--quiet cv-msg--foot"><span>Little {name || "image"} data here<br /><em>Only {
+          coverage.finite.toLocaleString("en")} of {coverage.total.toLocaleString("en")} values have data (the rest is outside its coverage)</em></span></div>
       )}
       {tier === "morph" && progress != null && (
         <div className="cv-movie-prog" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(progress * 100)}>

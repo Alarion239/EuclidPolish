@@ -90,18 +90,36 @@ let loadedBuild: string | null = null;
 /** Tests: forget the build this page loaded with. */
 export function __resetLoadedBuild(): void { loadedBuild = null; }
 
-/** True when the console was rebuilt since this page loaded, so its lazy
- *  chunks may be gone: reload to get the new build. Only a page served FROM
- *  the build can be out of date (`fromBuild`, default: a production bundle;
- *  the Vite dev server always serves the current source). */
+/** Names the served build, for a per-build dismissal of the "newer build"
+ *  message: its entry script (the name hashes the whole build), else the
+ *  index.html hash. */
+export function buildKey(served: VersionInfo["dist"] | undefined): string | null {
+  return served?.entry || served?.index_hash || null;
+}
+
+/** Is a newer console build served than the one this page runs, and which
+ *  (`key`, see `buildKey`)? Only a page served FROM the build can be out of
+ *  date (`fromBuild`, default: a production bundle; the Vite dev server
+ *  always serves the current source). Its lazy chunks may be gone, so the
+ *  next new page could fail to load: reload to get the new build. Never
+ *  reloads by itself. */
+export function useConsoleBuild(
+  fromBuild: boolean = import.meta.env.PROD,
+  pageEntry: string | null = documentEntry(),
+): { updated: boolean; key: string | null } {
+  const dist = useVersion().data?.dist ?? undefined;
+  const served = dist?.index_hash ?? null;
+  if (served && loadedBuild == null) loadedBuild = served;
+  const updated = fromBuild && buildChanged(pageEntry, dist, loadedBuild);
+  return { updated, key: updated ? buildKey(dist) : null };
+}
+
+/** True when a newer console build is served (see `useConsoleBuild`). */
 export function useConsoleUpdate(
   fromBuild: boolean = import.meta.env.PROD,
   pageEntry: string | null = documentEntry(),
 ): boolean {
-  const dist = useVersion().data?.dist ?? undefined;
-  const served = dist?.index_hash ?? null;
-  if (served && loadedBuild == null) loadedBuild = served;
-  return fromBuild && buildChanged(pageEntry, dist, loadedBuild);
+  return useConsoleBuild(fromBuild, pageEntry).updated;
 }
 
 export function useFasrcStatus() {

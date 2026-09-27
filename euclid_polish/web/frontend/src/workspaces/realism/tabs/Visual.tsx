@@ -24,8 +24,10 @@ import { usePageActions } from "../../../app/palette";
 import { useFasrcStatus } from "../../../app/status";
 import { StepById } from "../../../fasrc";
 import { useUrlState } from "../../../hooks/useUrlState";
-import { Badge, Button, Card, CardBody, CardHead, EmptyState, IconButton, JobProgress, Page, Popover, Segmented, Skeleton, Slider, Switch, Tooltip } from "../../../ui";
+import { Badge, Button, Card, CardBody, CardHead, EmptyState, IconButton, JobProgress, Kbd, Page, Popover, Segmented, Skeleton, Slider, Switch, Tooltip } from "../../../ui";
 import { ImageViewer, type ViewerApi, type ViewerState } from "../../../viewer";
+import { ZOOM_STEP } from "../../../viewer/controller";
+import { VIcon } from "../../../viewer/icons";
 import { GAIN_SLIDER_RANGE, KNEE_SLIDER_RANGE, formatSig, parseNumber } from "../../../viewer/barModel";
 import { useArchiveMeta, useSkyMeta } from "../api";
 import { archiveFieldBreakdown, archiveOverview, archiveSampleProvenance, shortArchiveFingerprint } from "../archiveFields";
@@ -93,6 +95,7 @@ export default function VisualTab() {
   const apis = useRef<Record<Lane, ViewerApi | null>>({ real: null, syn: null });
   const reported = useRef<Record<Lane, Reported | null>>({ real: null, syn: null });
   const [realIndex, setRealIndex] = useState(0);
+  const [lensIn, setLensIn] = useState<Record<Lane, boolean>>({ real: false, syn: false });
 
   const archive = useArchiveMeta();
   const sky = useSkyMeta(subset);
@@ -125,6 +128,9 @@ export default function VisualTab() {
     const edit = editOf(reported.current[lane], next);
     reported.current[lane] = next;
     if (lane === "real") setRealIndex(s.index);
+    // the shared lens button reads the lanes' own tool (L in a lane, its menu)
+    const lensOn = s.tool === "lens";
+    setLensIn((prev) => (prev[lane] === lensOn ? prev : { ...prev, [lane]: lensOn }));
     // A viewer that now shows the shared transfer is echoing our setView.
     if (!edit || !lockRef.current || shows(next, sharedRef.current)) return;
     if (edit.color != null) setColor(edit.color);
@@ -149,6 +155,15 @@ export default function VisualTab() {
   ]);
 
   const fitBoth = () => { apis.current.real?.resetView(); apis.current.syn?.resetView(); };
+  // Zoom and the lens in both lanes (the viewers' own + / − / L keys act on the hovered one).
+  const zoomBoth = (factor: number) => { apis.current.real?.zoomBy(factor); apis.current.syn?.zoomBy(factor); };
+  // pressed while both lanes show the lens; a click turns it on in both, or off in both
+  const lens = lensIn.real && lensIn.syn;
+  const toggleLens = () => {
+    const on = !lens;
+    apis.current.real?.setTool(on ? "lens" : "none");
+    apis.current.syn?.setTool(on ? "lens" : "none");
+  };
   const kneeField = <KneeField value={kneeValue} onChange={(v) => setKnee(urlKnee(v))} />;
   const gainField = (
     <span className="rl-vis__field">
@@ -178,6 +193,12 @@ export default function VisualTab() {
           </Tooltip>
           <span className="rl-vis__spacer" />
           <span className="rl-vis__end">
+            <IconButton size="sm" icon={<VIcon name="zoomOut" />} label="Zoom out both lanes"
+              tooltip={<span className="cv-tip">Zoom out both lanes; <Kbd keys="-" /> zooms the hovered one</span>} onClick={() => zoomBoth(1 / ZOOM_STEP)} />
+            <IconButton size="sm" icon={<VIcon name="zoomIn" />} label="Zoom in both lanes"
+              tooltip={<span className="cv-tip">Zoom in both lanes; <Kbd keys="+" /> zooms the hovered one</span>} onClick={() => zoomBoth(ZOOM_STEP)} />
+            <IconButton size="sm" icon={<VIcon name="lens" />} label="Magnifier lens in both lanes" pressed={lens}
+              tooltip={<span className="cv-tip">Magnifier lens in both lanes; <Kbd keys="L" /> in the hovered one</span>} onClick={toggleLens} />
             <Button size="sm" variant="ghost" onClick={fitBoth} title="Show the whole field in both lanes (0 in a viewer)">Fit both</Button>
             <IconButton size="sm" icon="reset" label="Reset the shared transfer (Lupton, default knee)" onClick={resetTransfer} disabled={isDefault} />
             <Info label="About the synthetic–real view">

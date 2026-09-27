@@ -1,9 +1,9 @@
 /* Viewer engine v2 — public API (src/viewer/README.md). */
 export { ImageViewer, parseView, serializeView } from "./ImageViewer";
-export { ViewerController } from "./controller";
+export { ViewerController, ZOOM_STEP } from "./controller";
 export type { FrameHandle, ViewerStoreState } from "./controller";
 export type {
-  ImageViewerProps, Readout, ReadoutTier, TierMeta, ToolbarMode, ViewerApi, ViewerMeta, ViewerObject, ViewerState,
+  ImageViewerProps, Readout, ReadoutTier, TierMeta, ToolbarMode, ViewerApi, ViewerMeta, ViewerObject, ViewerState, ViewerTool,
 } from "./types";
 export { renderCubeImageData, prepareCore, transferCore } from "./color";
 export type { ColorMeta, CubeLike, Prepared, RenderOpts } from "./color";

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   accountingNotes, basename, cpuUsage, finiteNumber, formatMemory, gitStatusText, gpuUsage, mergeCliJobs, mergeCommitPages, paramsSummary, hasGpu, isLiveState,
-  jobStateTone, memoryMegabytes, memoryUsage, pageForLine, parentDir, relationText, rowParams, rowState,
+  jobStateTone, memoryMegabytes, memoryUsage, notebookDays, notebookOrder, pageForLine, parentDir, relationText, rowParams, rowState,
   varyingParams, type HistoryRow,
 } from "./model";
 
@@ -134,5 +134,32 @@ describe("mergeCliJobs", () => {
     expect(out[1]).toMatchObject({ cli: true, label: "smoke-single", nodes: "holy7c", reason: null, time: "5:00" });
     expect(out[2]).toMatchObject({ cli: true, state: "PENDING", reason: "(Priority)", nodes: null, start_time: null });
     expect(mergeCliJobs(feed, null)).toEqual(feed);
+  });
+});
+
+describe("tracking notebook", () => {
+  const LOG = [
+    "# single-model retirement", "preamble",
+    "## 2026-07-02T02:37:41Z", "first", "## 2026-07-02T19:58:51Z", "second",
+    "## 2026-09-21T01:36:49Z", "third", "## Decisions", "not dated", "## 2026-09-21T14:42:29Z", "fourth",
+  ].join("\n");
+  it("reverses the entries for newest first, keeping the preamble on top", () => {
+    const shown = notebookOrder(LOG, true);
+    expect(shown.split("\n").filter((l) => l.startsWith("## "))).toEqual([
+      "## 2026-09-21T14:42:29Z", "## Decisions", "## 2026-09-21T01:36:49Z", "## 2026-07-02T19:58:51Z", "## 2026-07-02T02:37:41Z"]);
+    expect(shown.startsWith("# single-model retirement\npreamble")).toBe(true);
+    expect(notebookOrder(LOG, false)).toBe(LOG);
+  });
+  it("groups the dated entries by UTC day in the displayed order, jumping to the day's first shown entry", () => {
+    const heads = [
+      { level: 2, text: "2026-09-21T14:42:29Z", id: "a" }, { level: 2, text: "Decisions", id: "d" },
+      { level: 2, text: "2026-09-21T01:36:49Z", id: "b" }, { level: 2, text: "2026-07-02T19:58:51Z", id: "c" },
+      { level: 2, text: "2026-07-02T02:37:41Z", id: "e" }, { level: 1, text: "2026-01-01T00:00:00Z", id: "h1" },
+    ];
+    expect(notebookDays(heads)).toEqual([
+      { day: "2026-09-21", label: "Sep 21", month: "September 2026", count: 2, id: "a" },
+      { day: "2026-07-02", label: "Jul 2", month: "July 2026", count: 2, id: "c" },
+    ]);
+    expect(notebookDays([])).toEqual([]);
   });
 });

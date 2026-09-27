@@ -1,5 +1,8 @@
 /* settings/about (spec §8.8): which code the server runs (boot commit vs
- * HEAD, C3), the committed console bundle, the runtime (Python, platform,
+ * HEAD, C3; "Backend code changed — restart the server to load it" when a
+ * backend .py file it loaded changed on disk, "The console build changed —
+ * reload" when this page predates the served build), the committed console
+ * bundle, the runtime (Python, platform,
  * packages, Node) and the disk: free space with its warning level, the
  * experiments' member-cache budget and the disk usage of every data root
  * (GET /api/system; measured by a local job, POST
@@ -12,12 +15,14 @@ import { invalidate, useResource } from "../../../api/query";
 import { registerInspector } from "../../../app/inspector";
 import { usePageActions } from "../../../app/palette";
 import { startJob } from "../../../app/RunActions";
-import { useVersion } from "../../../app/status";
+import { useConsoleUpdate, useVersion } from "../../../app/status";
 import { formatBytes, formatCount, formatDateTime, formatPercent, formatRelative } from "../../../format";
 import {
-  Badge, Button, Callout, Card, CardBody, CardHead, CopyButton, DataTable, DefList, EmptyState, Page, PageHead,
+  Badge, Button, Callout, Card, CardBody, CardHead, CopyButton, DataTable, DefList, EmptyState, Page,
   ProgressBar, Skeleton, type DataColumn, type Tone,
 } from "../../../ui";
+import { PageLead } from "../../shared/PageLead";
+import { serverCodeText } from "../../shared/versionText";
 import "../settings.css";
 
 type Level = "ok" | "warn" | "bad" | "unknown";
@@ -126,6 +131,8 @@ function DiskCard({ sys }: { sys: SystemInfo }) {
 export default function About() {
   const version = useVersion();
   const v = version.data;
+  const consoleUpdated = useConsoleUpdate();
+  const code = v ? serverCodeText(v, consoleUpdated) : null;
   const sys = useSystem();
   const s = sys.data;
   const jobId = useJobsStore((st) => st.keyed[DISK_KEY] ?? null);
@@ -164,19 +171,29 @@ export default function About() {
 
   return (
     <Page className="settings-about">
-      <PageHead eyebrow="settings · about" title="About" sub="Server code, bundle, runtime and disk."
-        right={<Button size="sm" variant="ghost" icon="reset" onClick={() => { void version.reload(); void sys.reload(); }}>Refresh</Button>} />
+      <PageLead right={<Button size="sm" variant="ghost" icon="reset" onClick={() => { void version.reload(); void sys.reload(); }}>Refresh</Button>}>
+        The code the server runs, the console build, the runtime and the disk.
+      </PageLead>
       <div className="settings-cards">
         <Card>
-          <CardHead title="Server" right={v ? (v.behind ? <Badge tone="warn" dot>behind HEAD</Badge> : <Badge tone="good" dot>at HEAD</Badge>) : undefined} />
+          <CardHead title="Server" right={code ? <Badge tone={code.tone} dot>{code.badge}</Badge> : undefined} />
           <CardBody>
             {version.loading && !v && <Skeleton lines={5} />}
             {version.error && !v && <Callout tone="bad" title="Could not read /api/version">{version.error.message}</Callout>}
             {v && (
               <div className="settings-stack">
                 {v.behind && (
-                  <Callout tone="warn" title="Restart the server">
-                    It runs <code className="mono">{v.boot_short}</code>; the checkout is at <code className="mono">{v.head_short}</code>.
+                  <Callout tone="warn" title="Backend code changed — restart the server to load it">
+                    {v.changed_files?.length
+                      ? <>Changed since it started{v.changed_count && v.changed_count > v.changed_files.length ? ` (${v.changed_count} files, newest first)` : ""}:{" "}
+                        {v.changed_files.map((f, i) => <span key={f}>{i > 0 && ", "}<code className="mono">{f}</code></span>)}.</>
+                      : <>A backend file it loaded changed on disk after it started.</>}
+                  </Callout>
+                )}
+                {!v.behind && consoleUpdated && (
+                  <Callout tone="warn" title="The console build changed — reload"
+                    action={<Button size="sm" onClick={() => window.location.reload()}>Reload</Button>}>
+                    This page was loaded from an older build; reload to get the new one.
                   </Callout>
                 )}
                 <DefList dense items={[

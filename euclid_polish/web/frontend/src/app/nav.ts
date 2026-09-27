@@ -198,12 +198,13 @@ export function pageTitle(pathname: string): string {
   return [info.tabLabel, workspaceWithParams(info), APP_NAME].filter(Boolean).join(" · ");
 }
 
-/** The page's h1 (screen readers, the outline): "Members — Ensemble (starless)". */
+/** The page's one h1 (visually hidden; screen readers and the outline), in
+ *  plain words: "Members, Ensemble (starless)", "Records, Data", "Home". */
 export function pageHeading(pathname: string): string {
   const info = describePath(pathname);
   if (!info) return "Not found";
   const ws = workspaceWithParams(info);
-  return info.tabLabel ? `${info.tabLabel} — ${ws}` : ws;
+  return info.tabLabel ? `${info.tabLabel}, ${ws}` : ws;
 }
 
 export type NavTarget = {

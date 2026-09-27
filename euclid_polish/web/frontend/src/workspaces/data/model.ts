@@ -323,17 +323,25 @@ export function formatCompact(v: number): string {
 
 /* ── PSFs ───────────────────────────────────────────────────────────────── */
 
-export const PSF_STATE: Record<PsfState, { label: string; tone: Tone; hint: string }> = {
-  empirical: { label: "empirical", tone: "good", hint: "The FASRC ePSF is synchronised locally; generation uses it." },
+export const PSF_STATE: Record<PsfState, { label: string; all: string; tone: Tone; hint: string }> = {
+  empirical: {
+    label: "empirical", all: "Empirical in every band", tone: "good",
+    hint: "The FASRC ePSF is synchronised locally; generation uses it.",
+  },
   no_empirical: {
-    label: "no empirical PSF", tone: "warn",
+    label: "no empirical PSF", all: "No empirical PSF in any band", tone: "warn",
     hint: "The last sync found no ePSF for this band on FASRC: generation uses the Gaussian fallback (the FWHM in the config).",
   },
   not_cached: {
-    label: "not cached", tone: "neutral",
+    label: "not cached", all: "Not cached in any band", tone: "neutral",
     hint: "Not synchronised to this machine yet — FASRC may well have one. Sync the ePSFs.",
   },
 };
+
+/** "not cached" → "Not cached": a label at the start of its own line (a badge, a cell). */
+export function sentenceCase(text: string): string {
+  return text ? text[0].toUpperCase() + text.slice(1) : text;
+}
 
 /** The PSFs toolbar's band badges: one per state, naming its bands
  *  ("J, H: not cached"; "All bands: …" when they all share it), band order. */
@@ -345,8 +353,9 @@ export function psfBandGroups(bands: readonly { name: string; state: PsfState }[
     else groups.push({ state: band.state, bands: [band.name], label: "" });
   }
   for (const g of groups) {
-    const who = groups.length === 1 && bands.length > 1 ? "All bands" : g.bands.map(bandShort).join(", ");
-    g.label = `${who}: ${PSF_STATE[g.state].label}`;
+    // every band in one state: a plain sentence ("Not cached in any band")
+    g.label = groups.length === 1 && bands.length > 1 ? PSF_STATE[g.state].all
+      : `${g.bands.map(bandShort).join(", ")}: ${PSF_STATE[g.state].label}`;
   }
   return groups;
 }
@@ -519,4 +528,31 @@ export function resumeSafeStep<S extends { last_params?: Record<string, unknown>
   const { rest, dropped } = stripRebuildFlags(flags);
   if (!dropped.length) return { step, dropped };
   return { step: { ...step, last_params: { ...step.last_params, extra_flags: rest } }, dropped };
+}
+
+/* ── toolbar compaction ─────────────────────────────────────────────────── */
+
+/** The toolbar's compact level (common.tsx DataBar): the first level whose
+ *  one-row width fits the bar (`widths[level]`, the children's natural widths
+ *  plus the gaps with that level applied), else the most compact one. Level
+ *  0 is the labelled bar. */
+export function compactLevelFor(widths: readonly number[], available: number): number {
+  if (!(available > 0) || !widths.length) return 0;
+  const i = widths.findIndex((w) => w <= available - 1);
+  return i < 0 ? widths.length - 1 : i;
+}
+
+const TONE_SEVERITY: Record<Tone, number> = { bad: 5, warn: 4, accent: 3, info: 2, neutral: 1, good: 0 };
+
+/** Which of a toolbar's status badges keeps its word when the bar is compact
+ *  (Records level 2 and 3; the rest show their dot only): the most severe
+ *  tone, the first on a tie; -1 for none. So the split's worst state stays
+ *  readable without a hover. */
+export function worstToneIndex(tones: readonly (Tone | undefined)[]): number {
+  let at = -1, worst = -1;
+  tones.forEach((t, i) => {
+    const v = TONE_SEVERITY[t ?? "neutral"];
+    if (v > worst) { worst = v; at = i; }
+  });
+  return at;
 }

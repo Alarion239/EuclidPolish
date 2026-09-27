@@ -129,10 +129,22 @@
 .ops-campaign__title { font-size: var(--fs-md); font-weight: var(--fw-semibold); }
 .ops-notebook { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s4); align-items: start; }
 @container ops (min-width: 1100px) { .ops-notebook { grid-template-columns: minmax(0, 1fr) 240px; } }
-.ops-outline { position: sticky; top: var(--s2); display: flex; flex-direction: column; gap: 2px;
-  max-height: 70vh; overflow: auto; font-size: var(--fs-xs); }
-.ops-outline a { color: var(--text-dim); text-decoration: none; padding: 2px 6px; border-radius: var(--r-sm); font-family: var(--font-mono); }
+/* the date outline: the entries by day, grouped by month (beside the text
+   on a wide page; the card head's "Jump to a day" menu everywhere) */
+.ops-outline { display: none; flex-direction: column; gap: var(--s3); font-size: var(--fs-xs); }
+@container ops (min-width: 1100px) {
+  .ops-outline { display: flex; position: sticky; top: var(--s2); max-height: calc(100vh - var(--topbar-h, 48px) - var(--s4)); overflow: auto; }
+}
+.ops-outline__month { display: flex; flex-direction: column; gap: 4px; }
+.ops-outline__label { color: var(--text-faint); font-weight: var(--fw-medium); }
+.ops-outline__days { display: flex; flex-wrap: wrap; gap: 2px; }
+.ops-outline a {
+  display: inline-flex; align-items: baseline; gap: 3px; padding: 2px 6px; border-radius: var(--r-sm);
+  color: var(--text-dim); text-decoration: none; font-variant-numeric: tabular-nums;
+}
 .ops-outline a:hover { background: var(--surface-2); color: var(--text); }
+.ops-outline a:focus-visible { outline: none; box-shadow: var(--ring); }
+.ops-outline__n { padding: 0 5px; border-radius: var(--r-pill); background: var(--surface-3); color: var(--text-dim); font-size: var(--fs-2xs); }
 .ops-notebook__doc { max-height: none; }
 .ops-editor { display: flex; flex-direction: column; gap: var(--s2); }
 .ops-editor textarea { font-family: var(--font-mono); font-size: var(--fs-xs); }

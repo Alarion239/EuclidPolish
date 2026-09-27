@@ -6,7 +6,8 @@
    ContextMenu, Tabs, Segmented, Switch, Checkbox, Slider, RangeSlider,
    NumberField, Input, Select, Field, Card, CardHead, CardBody, Section, Badge,
    Chip, Stat, Kpi, DefList, Callout, EmptyState, Skeleton, ProgressBar,
-   LogView, JsonTree, CopyButton, Kbd, DataTable, toast.
+   LogView, JsonTree, CopyButton, Kbd, DataTable, toast; plus Toolbar
+   (+ ToolbarGroup / ToolbarText / ToolbarSpacer / ToolbarSeparator).
    Compat names kept for the pre-rework pages: Page, PageHead, Empty, Spinner,
    Table/Column, LogTail, Gallery, PngFigure, ConnBadge, Textarea,
    JobProgressView. */
@@ -35,6 +36,7 @@ export type { InputProps, SegmentedOption, SelectOption, TabItem } from "./contr
 export { useFieldAria } from "./fieldContext";
 
 export { Card, CardBody, CardHead, Page, PageHead, Section } from "./layout";
+export { Toolbar, ToolbarGroup, ToolbarSeparator, ToolbarSpacer, ToolbarText } from "./toolbar";
 
 export {
   Badge, Callout, Chip, ConnBadge, CopyButton, DefList, Empty, EmptyState, Kbd, Kpi, ProgressBar,

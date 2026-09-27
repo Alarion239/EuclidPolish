@@ -12,16 +12,22 @@ import { useFasrcStatus } from "../../app/status";
 import { formatDateTime, formatRelative } from "../../format";
 import { Badge, Button, Callout, Icon, JobProgress, Skeleton, Tooltip, confirm, toast, type IconName, type Tone } from "../../ui";
 import { DATA_PREFIXES } from "./api";
-import { atlasHref } from "./model";
+import { atlasHref, compactLevelFor } from "./model";
 
 /** The tab's toolbar: one plain row under the workspace tab strip (never
- *  pinned). With `compactable`, when the row does not fit with every label,
- *  the buttons in its `<BarActions>` go icon-only (they keep their
- *  aria-label and title) instead of wrapping onto a second row. */
-export function DataBar({ label, children, compactable = false }: { label: string; children: ReactNode; compactable?: boolean }) {
+ *  pinned). With `compactable`, when the row does not fit with every label it
+ *  steps through compact levels instead of wrapping onto a second row (so the
+ *  viewer starts one row higher): level 1 — the buttons in its
+ *  `<BarActions>` go icon-only (they keep their aria-label and title); a page
+ *  may define more (`compactable={3}`: Records' badges go dot-only at 2, its
+ *  overlay control becomes a menu at 3), styled by `data-compact="<level>"`. */
+export function DataBar({ label, children, compactable = false }: {
+  label: string; children: ReactNode; compactable?: boolean | number;
+}) {
   const ref = useRef<HTMLDivElement>(null);
-  const compact = useFitsOneRow(ref, compactable);
-  return <div ref={ref} className="dt-bar" role="toolbar" aria-label={label} data-compact={compact || undefined}>{children}</div>;
+  const levels = compactable === true ? 1 : compactable === false ? 0 : Math.max(0, Math.floor(compactable));
+  const level = useCompactLevel(ref, levels);
+  return <div ref={ref} className="dt-bar" role="toolbar" aria-label={label} data-compact={level ? String(level) : undefined}>{children}</div>;
 }
 
 /** The toolbar's action buttons (icon-only while the bar is compact). */
@@ -29,27 +35,34 @@ export function BarActions({ children }: { children: ReactNode }) {
   return <div className="dt-bar__act">{children}</div>;
 }
 
-/** Whether a flex row needs its compact form: its children at their natural
- *  (labelled) widths plus the gaps exceed its width. Measured with the compact
- *  attribute lifted for the reading, so the answer does not depend on the
- *  current form (no flip-flop), on resize and whenever a child changes size. */
-function useFitsOneRow(ref: RefObject<HTMLElement>, enabled: boolean): boolean {
-  const [compact, setCompact] = useState(false);
+/** The least compact level (0…`levels`) at which a flex row fits on one
+ *  line: at each level its children's natural widths plus the gaps are
+ *  measured with that level applied (`compactLevelFor`), on resize and
+ *  whenever a child changes size. The attribute is restored after reading, so
+ *  the answer does not depend on the current form (no flip-flop). */
+function useCompactLevel(ref: RefObject<HTMLElement>, levels: number): number {
+  const [level, setLevel] = useState(0);
   useLayoutEffect(() => {
     const el = ref.current;
-    if (!enabled || !el) return;
+    if (!levels || !el) return;
     let raf = 0;
-    const measure = () => {
-      raf = 0;
-      const had = el.hasAttribute("data-compact");
-      if (had) el.removeAttribute("data-compact");
+    const rowWidth = () => {
       const kids = [...el.children] as HTMLElement[];
       const gap = parseFloat(getComputedStyle(el).columnGap) || 0;
       // Fractional widths (offsetWidth rounds): a row that fits to the pixel still wraps.
-      const natural = kids.reduce((w, k) => w + (k.classList.contains("dt-bar__spacer") ? 0 : k.getBoundingClientRect().width), 0)
+      return kids.reduce((w, k) => w + (k.classList.contains("dt-bar__spacer") ? 0 : k.getBoundingClientRect().width), 0)
         + gap * Math.max(0, kids.length - 1);
-      if (had) el.setAttribute("data-compact", "");
-      setCompact(el.clientWidth > 0 && natural > el.clientWidth - 1);
+    };
+    const measure = () => {
+      raf = 0;
+      const had = el.getAttribute("data-compact");
+      const widths: number[] = [];
+      for (let l = 0; l <= levels; l++) {
+        if (l) el.setAttribute("data-compact", String(l)); else el.removeAttribute("data-compact");
+        widths.push(rowWidth());
+      }
+      if (had == null) el.removeAttribute("data-compact"); else el.setAttribute("data-compact", had);
+      setLevel(compactLevelFor(widths, el.clientWidth));
     };
     const schedule = () => { if (!raf) raf = requestAnimationFrame(measure); };
     const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(schedule) : null;
@@ -59,8 +72,8 @@ function useFitsOneRow(ref: RefObject<HTMLElement>, enabled: boolean): boolean {
     mo?.observe(el, { childList: true });
     measure();
     return () => { if (raf) cancelAnimationFrame(raf); ro?.disconnect(); mo?.disconnect(); };
-  }, [ref, enabled]);
-  return compact;
+  }, [ref, levels]);
+  return level;
 }
 
 export const Spacer = () => <span className="dt-bar__spacer" />;

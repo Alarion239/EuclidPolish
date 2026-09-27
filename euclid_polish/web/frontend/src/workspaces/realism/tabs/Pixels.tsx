@@ -384,7 +384,7 @@ export default function PixelsTab() {
           <Segmented size="sm" aria-label="Field statistics view" value={view} onChange={setView} options={[...PIXEL_VIEWS]} />
         </BarGroup>
         {(view === "pixels" || view === "detection") && (
-          <BarGroup label="show">
+          <BarGroup label="Show">
             <div className="rl-chips" role="group" aria-label="Bands and samples">
               {view === "pixels" && BANDS.map((b) => (
                 <Chip key={b} on={!t.hidden.includes(b)} dot={bandColor(b)} onClick={() => t.toggle(b)}>{bandLabel(b)}</Chip>

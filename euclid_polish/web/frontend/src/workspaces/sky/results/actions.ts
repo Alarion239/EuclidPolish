@@ -235,7 +235,7 @@ export async function runNexusField(fieldId: string, tiles: readonly string[], s
 export async function refreshFieldDiagnostics(fieldId: string, onDone?: () => void): Promise<Started | null> {
   const ok = await confirm({
     title: "Recompute the real-field diagnostics?",
-    message: `Applies the newest STARFULL combiners to field ${fieldId} (TensorFlow, local job; stale member SRs are rebuilt, the 100 sub-tiles re-downloaded only if the member cache is stale).`,
+    message: `Applies the newest starfull combiners to field ${fieldId} (TensorFlow, local job; stale member SRs are rebuilt, the 100 sub-tiles re-downloaded only if the member cache is stale).`,
     confirmLabel: "Recompute",
   });
   if (!ok) return null;
@@ -247,19 +247,3 @@ export async function refreshFieldDiagnostics(fieldId: string, onDone?: () => vo
   return r;
 }
 
-/* ── tracking notebook ─────────────────────────────────────────────────── */
-
-/** Append a markdown note to the active tracking campaign's log. */
-export async function logToTracking(text: string): Promise<boolean> {
-  try {
-    const r = await apiPost<{ ok?: boolean; error?: string }>(URLS.trackingLog, { text, mode: "append" });
-    if (r?.ok === false || r?.error) throw new Error(r.error ?? "refused");
-    toast.success("Logged to the tracking notebook");
-    void invalidate("/api/tracking/");
-    void invalidate("/api/system/alerts");
-    return true;
-  } catch (e) {
-    toast.error("Could not log to tracking", { description: errorText(e) });
-    return false;
-  }
-}

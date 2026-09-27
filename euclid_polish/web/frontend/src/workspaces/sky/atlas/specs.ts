@@ -9,10 +9,22 @@ import type { LayerSetting } from "./urlState";
 
 const DEFAULT_OPACITY: Record<LayerInfo["kind"], number> = { points: 0.9, polygons: 0.7, circles: 0.45, moc: 0.3 };
 
-/** Below this field of view (deg) a coverage MOC is drawn as an outline only:
- *  zoomed into the covered sky, a filled MOC tinted the Euclid colour
- *  imagery blue (colour judgement needs a neutral surround). */
+/** Below this field of view (deg) a coverage layer — the Q1 / JWST MOCs, the
+ *  Q1 deep-field circles and MER tiles — is drawn as an outline only: zoomed
+ *  into the covered sky, a filled one tinted the Euclid colour imagery (the
+ *  NEXUS preset at 27′ sits inside EDF-N's circle and the Q1 MOC), and colour
+ *  judgement needs a neutral surround. */
 export const MOC_FILL_MIN_FOV = 2;
+
+const isCoverage = (info: LayerInfo) => info.kind === "moc" || info.group === "coverage";
+
+/** Whether a coverage layer fills its area (undefined: not a coverage layer,
+ *  always filled): zoomed out (≥ MOC_FILL_MIN_FOV) yes, zoomed in only when
+ *  the user set the layer's fill (its opacity slider, `setting.opacity`). */
+export function coverageFill(info: LayerInfo, setting: LayerSetting | undefined, fov: number): boolean | undefined {
+  if (!isCoverage(info)) return undefined;
+  return setting?.opacity != null || fov >= MOC_FILL_MIN_FOV;
+}
 
 /* A scale scans the features (domains, categories: O(n log n) for the 43k
    stars), and the specs are rebuilt on every zoom step: cache it per
@@ -60,7 +72,7 @@ export function buildSpecs(a: {
       scale: cachedScale(info, features, a.palette, setting?.color),
       lod: info.kind === "moc" ? "shapes" : lodFor(d?.typicalSize ?? 0, a.fov, a.width),
       markerScale: a.markerScale,
-      ...(info.kind === "moc" ? { fill: a.fov >= MOC_FILL_MIN_FOV } : {}),
+      ...(isCoverage(info) ? { fill: coverageFill(info, setting, a.fov) } : {}),
     });
   }
   const jwst = a.settings.find((s) => s.id === "jwst-mast");

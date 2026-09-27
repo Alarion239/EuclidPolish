@@ -43,13 +43,14 @@
   background: linear-gradient(to right, transparent 1px, var(--accent) 1px, var(--accent) 4px, transparent 4px);
 }
 
-/* The restart strip: one compact line (title + Details + dismiss); the
-   changed files open under it. It scrolls away with the page. */
-.shell__banner { padding: var(--s2) var(--s4) 0; }
-.shell__banner .ui-callout { margin: 0; padding-block: var(--s2); align-items: flex-start; }
-.shell__banner .ui-callout__icon { margin-top: 5px; }
-.shell__banner .ui-callout__title { padding-top: 3px; line-height: var(--lh-snug); }
-.shell__banner .ui-callout__action { align-self: flex-start; }
+/* The "newer build" and "restart" strips: one compact line each (title +
+   action + dismiss; the restart strip's changed files open under it). They
+   scroll away with the page. */
+/* The stage's notice strip (TopBar ShellNotices): static, scrolls away; the
+   dense notices share one ~32 px line and wrap only on a narrow stage. */
+.shell__banner { display: flex; flex-wrap: wrap; gap: var(--s2); padding: var(--s1) var(--s4) 0; }
+.shell__banner:empty { display: none; }
+.shell__banner > .shell__notice { flex: 1 1 340px; min-width: 0; margin: 0; }
 .shell__banner-files { display: flex; flex-direction: column; gap: 4px; padding-top: 4px; }
 .shell__banner-files p { margin: 0; }
 .shell__banner-files ul { margin: 0; padding-left: var(--s4); }
@@ -206,14 +207,6 @@
 .topbar > .topbar__server { flex-shrink: 1; overflow: hidden; }
 .topbar__server-label, .topbar__server-more { overflow: hidden; text-overflow: ellipsis; }
 
-/* The console was rebuilt under this page: a calm accent chip. */
-.topbar__update {
-  display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px;
-  border: 1px solid transparent; border-radius: var(--r-pill); background: var(--accent-soft);
-  font: var(--fw-medium) var(--fs-sm)/1 var(--font-sans); color: var(--accent-press); white-space: nowrap; cursor: pointer;
-}
-.topbar__update:hover { border-color: var(--accent); }
-
 .topbar__btn {
   position: relative; display: inline-grid; place-items: center;
   width: var(--ctl-h); height: var(--ctl-h); border-radius: var(--r-md);
@@ -243,8 +236,8 @@
   .topbar__search-text, .topbar__search .ui-kbdgroup, .crumbs li.crumbs__entity { display: none; }
 }
 @media (max-width: 599px) {
-  .topbar__conn-label, .topbar__update-label { display: none; }
-  .topbar__conn, .topbar__update { padding: 0 8px; }
+  .topbar__conn-label { display: none; }
+  .topbar__conn { padding: 0 8px; }
   /* The outage stays readable; "— retrying" is in the tooltip and aria-label. */
   .topbar__server-more { display: none; }
 }
@@ -293,7 +286,7 @@
 /* ── inspector ─────────────────────────────────────────────────────────── */
 .inspector {
   height: 100%; min-width: 0; display: flex; flex-direction: column;
-  background: var(--surface-1);
+  background: var(--surface-1); outline: none;
 }
 .inspector__head {
   flex: none; display: flex; align-items: center; gap: 2px;

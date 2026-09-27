@@ -5,8 +5,11 @@
  * thumbnails of every saved crop. The preview is as large as the window
  * allows (above the editors in a narrow pane); a click on it (or "Full
  * size") opens the sheet in the Lightbox at FULL_DPI with Fit / Actual size,
- * and a crop's thumbnail opens that crop full size. Columns, rows, regime,
- * template and the export dpi live in the URL. */
+ * and a crop's thumbnail opens that crop full size. A cell a column cannot
+ * render (its crop lacks the row's recipe) does not blank the sheet: every
+ * available cell is drawn and the missing ones read "Not available" in grey
+ * in place (`missing=blank`, preview and downloads alike). Columns, rows,
+ * regime, template and the export dpi live in the URL. */
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { Link } from "react-router-dom";
 import { useResource } from "../../../api/query";
@@ -22,7 +25,7 @@ import { ServerImage, ThumbButton, WcsBadge } from "../common";
 import { Lightbox, ResultLightbox } from "../Lightbox";
 import { canAddGridRow, selectionForPreset } from "../grid/limits";
 import {
-  DEFAULT_PRESET, MODES, PREVIEW, PRESETS, TIERS, commonRecipes, previewRows, gridSizeText, gridStatus, isRecipeKey, layoutValue,
+  DEFAULT_PRESET, MODES, PREVIEW, PRESETS, TIERS, commonRecipes, gridSizeText, gridStatus, isRecipeKey, layoutValue,
   missingRecipes, modeTone, moveItem, normalizeIndex, recipeLabel, resultRegime, sanitizeColumns, splitRecipe,
 } from "../model";
 import "../figures.css";
@@ -77,15 +80,9 @@ export default function Grid() {
   });
   const activeLayout = tpl.startsWith("layout:") ? layouts.find((l) => layoutValue(l) === tpl) : undefined;
 
-  // With unavailable cells the preview still draws the rows every column has
-  // (the renderer needs every cell); the status says what is left out.
-  const drawable = useMemo(() => previewRows(rows, colResults), [rows, colResults]);
-  const partial = status.unsupported > 0 && drawable.length > 0;
-  const shown = partial ? gridStatus({
-    loading: index.loading, error: !!index.error || norm.malformed, results: norm.results,
-    columns: loaded ? cols : [], rows: drawable, maxResults: norm.maxResults, maxRows: norm.maxRows,
-  }) : status;
-  const previewQuery = shown.canRender ? gridUrl(cols, partial ? drawable : rows, "png", PREVIEW_DPI, true) : null;
+  // A cell a column lacks is drawn grey "Not available" in place (status.missing).
+  const sheet = (format: "png" | "pdf", dpiValue: number, inline = false) => gridUrl(cols, rows, format, dpiValue, inline, status.missing);
+  const previewQuery = status.canRender ? sheet("png", PREVIEW_DPI, true) : null;
   const settledSrc = useSettled(previewQuery, 450);
   /* the first render goes out at once; later edits settle for 450 ms while the
      last render stays up (dimmed) instead of blanking the preview */
@@ -190,7 +187,7 @@ export default function Grid() {
   };
 
   const download = (format: "png" | "pdf") => {
-    if (status.canRender) window.location.assign(gridUrl(cols, rows, format, exportDpi));
+    if (status.canRender) window.location.assign(sheet(format, exportDpi));
   };
   usePageActions([
     { id: "fig-grid-save", label: "Save the grid layout…", group: "Figure grid", disabled: !rows.length, run: () => openSave(true) },
@@ -255,8 +252,8 @@ export default function Grid() {
           </span>
         </Tooltip>
         <Select size="sm" value={dpi} onChange={setDpi} options={DPI_OPTIONS} aria-label="Export resolution" />
-        <Button size="sm" icon="download" disabled={!status.canRender} href={status.canRender ? gridUrl(cols, rows, "png", exportDpi) : undefined} download>PNG</Button>
-        <Button size="sm" icon="download" disabled={!status.canRender} href={status.canRender ? gridUrl(cols, rows, "pdf", exportDpi) : undefined} download>PDF</Button>
+        <Button size="sm" icon="download" disabled={!status.canRender} href={status.canRender ? sheet("png", exportDpi) : undefined} download>PNG</Button>
+        <Button size="sm" icon="download" disabled={!status.canRender} href={status.canRender ? sheet("pdf", exportDpi) : undefined} download>PDF</Button>
         <IconButton icon="reset" size="sm" label="Refresh saved crops" onClick={() => { void index.reload(); void layoutsRes.reload(); }} />
       </div>
 
@@ -351,12 +348,14 @@ export default function Grid() {
 
         <section className="fig-grid__preview" aria-label="Live preview" data-collapsed={!showPreview || undefined} style={PREVIEW_GEOMETRY}>
           <div className="fig-grid__previewhead">
-            <span className="fig-grid__status fig-ellipsis" data-tone={status.canRender ? status.tone : partial ? "warn" : undefined} role="status">
-              {status.canRender ? status.text
-                : partial ? `${status.text}: the preview leaves out ${rows.length - drawable.length} row${rows.length - drawable.length === 1 ? "" : "s"}`
-                  : "Preview"}
+            <span className="fig-grid__status fig-ellipsis" data-tone={status.canRender ? status.tone : undefined} role="status">
+              {status.canRender ? status.text : "Preview"}
             </span>
-            {partial && <Button size="sm" variant="ghost" onClick={useCommon}>Use the rows every column has</Button>}
+            {status.missing && commonRecipes(colResults).length > 0 && (
+              <Tooltip content="Replace the rows with the recipes every column supports (no grey cells)">
+                <Button size="sm" variant="ghost" onClick={useCommon}>Only the rows every column has</Button>
+              </Tooltip>
+            )}
             {showPreview && status.canRender && (
               <Button size="sm" variant="ghost" icon="zoomIn" onClick={() => setFullGrid(true)}>Full size</Button>
             )}
@@ -366,13 +365,13 @@ export default function Grid() {
           </div>
           {showPreview && (
             <ServerImage src={previewSrc} keepPrevious pending={previewPending}
-              alt={`Figure grid preview, ${gridSizeText(partial ? drawable.length : rows.length, colResults.length)}`}
+              alt={`Figure grid preview, ${gridSizeText(rows.length, colResults.length)}${status.missing ? `, ${status.unsupported} not available` : ""}`}
               className="fig-grid__paper" minHeight={280}
               overlay={status.canRender ? (
                 <button type="button" className="fig-grid__zoom" aria-label="View the grid full size" title="View full size"
                   onClick={() => setFullGrid(true)} />
               ) : undefined}>
-              {!shown.canRender && (
+              {!status.canRender && (
                 <EmptyState compact icon="columns" title={status.text}
                   action={status.unsupported > 0 && commonRecipes(colResults).length
                     ? <Button size="sm" onClick={useCommon}>Use the rows every column has</Button>
@@ -385,12 +384,12 @@ export default function Grid() {
         </section>
       </div>
       <Lightbox open={fullGrid && status.canRender} onOpenChange={setFullGrid}
-        title="Figure grid" description={`${gridSizeText(rows.length, colResults.length)} · rendered at ${FULL_DPI} dpi`}
-        src={fullGrid && status.canRender ? gridUrl(cols, rows, "png", FULL_DPI, true) : null}
+        title="Figure grid" description={`${gridSizeText(rows.length, colResults.length)}${status.missing ? ` · ${status.unsupported} not available` : ""} · rendered at ${FULL_DPI} dpi`}
+        src={fullGrid && status.canRender ? sheet("png", FULL_DPI, true) : null}
         alt={`Figure grid, ${gridSizeText(rows.length, colResults.length)}`}
         footer={<>
-          <Button size="sm" icon="download" href={status.canRender ? gridUrl(cols, rows, "png", exportDpi) : undefined} download>PNG · {exportDpi} dpi</Button>
-          <Button size="sm" icon="download" href={status.canRender ? gridUrl(cols, rows, "pdf", exportDpi) : undefined} download>PDF</Button>
+          <Button size="sm" icon="download" href={status.canRender ? sheet("png", exportDpi) : undefined} download>PNG · {exportDpi} dpi</Button>
+          <Button size="sm" icon="download" href={status.canRender ? sheet("pdf", exportDpi) : undefined} download>PDF</Button>
         </>} />
       <ResultLightbox result={fullCrop} onClose={() => setFullCrop(null)} />
     </Page>

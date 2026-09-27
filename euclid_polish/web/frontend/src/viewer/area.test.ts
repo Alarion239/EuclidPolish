@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { areaFactor, areaReference, parsePerArea } from "./area";
+import { areaFactor, areaReference } from "./area";
 
 const LR = { pixscale: 0.1, unit: "e-" };
 const HR = { pixscale: 0.05, unit: "e-" };
@@ -26,11 +26,5 @@ describe("per-unit-area display normalisation", () => {
     expect(areaFactor(HR, 0, true)).toBe(1);
     expect(areaFactor(JWST, 0.1, true)).toBe(1);
     expect(areaFactor({ pixscale: 0, unit: "e-" }, 0.1, true)).toBe(1);
-  });
-
-  it("is on unless turned off", () => {
-    expect(parsePerArea(null)).toBe(true);
-    expect(parsePerArea("1")).toBe(true);
-    expect(parsePerArea("0")).toBe(false);
   });
 });

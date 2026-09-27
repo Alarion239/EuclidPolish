@@ -25,11 +25,9 @@ import {
   Badge, Button, Callout, DataTable, EmptyState, Page, Section, Slider, Switch, Tooltip, type DataColumn,
 } from "../../../ui";
 import { ImageViewer, type ViewerApi, type ViewerState } from "../../../viewer";
-import type { LayoutMode } from "../../../viewer/fit";
 import { URLS, usePsfInventory, type PsfBand, type PsfCluster } from "../api";
 import { BarActions, DataBar, Freshness, JobStrip, LoadState, OFFLINE_HINT, SkyButton, Spacer, startDataJob, useFasrcOnline } from "../common";
-import { BANDS, PSF_STATE, bandShort, clusterObjectId, psfBandGroups } from "../model";
-import { ViewerStage, type AsidePlace } from "../ViewerStage";
+import { BANDS, PSF_STATE, bandShort, clusterObjectId, psfBandGroups, sentenceCase } from "../model";
 import "../register";
 import "../data.css";
 
@@ -40,8 +38,9 @@ type ConfigResp = { config?: { psf_warp_alpha_max?: number; psf_warp_sigma?: num
  *  so the View / Sky buttons are left to the full-width table. */
 const NARROW_CLUSTER_COLUMNS = new Set(["index", "n_stars", "fwhm_VIS"]);
 
-/** The bands that share a state, as one badge ("J, H: not cached"; "All
- *  bands: …"): at most three short badges, so the labelled actions fit. */
+/** The bands that share a state, as one badge ("J, H: not cached"; every
+ *  band: "Not cached in any band"): at most three short badges, so the
+ *  labelled actions fit. */
 function StateBadges({ bands }: { bands: PsfBand[] }) {
   return (
     <>
@@ -61,31 +60,31 @@ function StateBadges({ bands }: { bands: PsfBand[] }) {
   );
 }
 
-/* Headers are uppercase mono in the kit's table (~7.5 px a character + the
-   sort icon): short ones, sized to fit; `headerText` is the full name (sort
-   tip, CSV, column menu). In a narrow pane the kernel / file columns start
-   hidden (the column menu has them) so the table fits instead of scrolling. */
-function bandColumns(narrow: boolean): DataColumn<PsfBand>[] {
-  return [
-  { id: "name", header: "Band", width: 76, cell: (b) => <strong>{bandShort(b.name)}</strong> },
-  { id: "state", header: "State", width: 140, accessor: (b) => PSF_STATE[b.state].label,
-    cell: (b) => <Badge size="sm" tone={PSF_STATE[b.state].tone}>{PSF_STATE[b.state].label}</Badge> },
-  { id: "measured_fwhm", header: "ePSF ″", headerText: "ePSF FWHM ″", numeric: true, width: 88, accessor: (b) => b.measured_fwhm ?? null,
-    cell: (b) => formatNumber(b.measured_fwhm, { digits: 3 }) },
-  { id: "fwhm", header: "Gauss ″", headerText: "Fallback (Gaussian) FWHM ″", numeric: true, width: 96, cell: (b) => formatNumber(b.fwhm, { digits: 3 }) },
-  { id: "n_psf", header: "Clusters", numeric: true, width: 104, accessor: (b) => b.n_psf ?? null },
-  { id: "kernel", header: "Kernel", width: 136, hidden: narrow, accessor: (b) => (b.shape ? b.shape[0] * b.shape[1] : null),
+/* Headers are sentence case with their units spelled out ("ePSF FWHM (″)");
+   `headerText` is the name the sort tip, CSV and column menu use. In a pane
+   too narrow for every column the kernel, file, synced and cluster-count
+   columns drop out in that order (kit `priority`; the column menu shows them
+   again), so the table fits instead of scrolling. */
+const BAND_COLUMNS: DataColumn<PsfBand>[] = [
+  { id: "name", header: "Band", width: 72, cell: (b) => <strong>{bandShort(b.name)}</strong> },
+  { id: "state", header: "State", width: 150, accessor: (b) => PSF_STATE[b.state].label,
+    cell: (b) => <Badge size="sm" tone={PSF_STATE[b.state].tone}>{sentenceCase(PSF_STATE[b.state].label)}</Badge> },
+  { id: "measured_fwhm", header: "ePSF FWHM (″)", headerText: "ePSF FWHM (arcsec)", numeric: true, width: 124,
+    accessor: (b) => b.measured_fwhm ?? null, cell: (b) => formatNumber(b.measured_fwhm, { digits: 3 }) },
+  { id: "fwhm", header: "Gaussian FWHM (″)", headerText: "Fallback Gaussian FWHM (arcsec)", numeric: true, width: 150,
+    cell: (b) => formatNumber(b.fwhm, { digits: 3 }) },
+  { id: "n_psf", header: "Clusters", numeric: true, width: 92, priority: 1, accessor: (b) => b.n_psf ?? null },
+  { id: "kernel", header: "Kernel", width: 140, priority: 4, accessor: (b) => (b.shape ? b.shape[0] * b.shape[1] : null),
     cell: (b) => (b.shape ? <span className="mono">{b.shape[1]}×{b.shape[0]} at {formatNumber(b.pixel_scale, { digits: 4 })}″</span> : "—") },
-  { id: "oversampling", header: "Oversampling", numeric: true, width: 128, hidden: true, cell: (b) => `${b.oversampling}×` },
-  { id: "size_bytes", header: "File", numeric: true, width: 80, hidden: narrow, accessor: (b) => b.size_bytes ?? null, cell: (b) => formatBytes(b.size_bytes) },
-  { id: "synced", header: "Synced", width: 104, accessor: (b) => b.synced_at ?? null, csv: (b) => String(b.synced_at ?? ""),
+  { id: "oversampling", header: "Oversampling", numeric: true, width: 120, hidden: true, cell: (b) => `${b.oversampling}×` },
+  { id: "size_bytes", header: "File", numeric: true, width: 80, priority: 3, accessor: (b) => b.size_bytes ?? null, cell: (b) => formatBytes(b.size_bytes) },
+  { id: "synced", header: "Synced", width: 110, priority: 2, accessor: (b) => b.synced_at ?? null, csv: (b) => String(b.synced_at ?? ""),
     cell: (b) => (b.synced_at ? <Freshness at={b.synced_at} label="" stale={30 * 24 * 3600} /> : "—") },
   { id: "inspect", header: "", sortable: false, filterable: false, csv: false, hideable: false, width: 70,
     cell: (b) => (b.path ? (
       <Button size="sm" variant="ghost" icon="fileSearch" onClick={() => openInspector({ kind: "fits", id: b.path! })}>FITS</Button>
     ) : null) },
-  ];
-}
+];
 
 function clusterColumns(onView: (c: PsfCluster) => void, narrow: boolean): DataColumn<PsfCluster>[] {
   const all: DataColumn<PsfCluster>[] = [
@@ -95,7 +94,7 @@ function clusterColumns(onView: (c: PsfCluster) => void, narrow: boolean): DataC
     { id: "n_stars", header: "Stars", numeric: true, width: 76 },
     // the FWHM per band (arcsec): the band is the header, the section says FWHM
     ...BANDS.map((b): DataColumn<PsfCluster> => ({
-      id: `fwhm_${b}`, header: `${bandShort(b)} ″`, headerText: `FWHM ${bandShort(b)} ″`, numeric: true, width: bandShort(b).length > 1 ? 80 : 68,
+      id: `fwhm_${b}`, header: `${bandShort(b)} (″)`, headerText: `${bandShort(b)} FWHM (arcsec)`, numeric: true, width: bandShort(b).length > 1 ? 84 : 72,
       accessor: (c) => c.fwhm_by_band[b] ?? null, cell: (c) => formatNumber(c.fwhm_by_band[b], { digits: 3 }),
     })),
     { id: "view", header: "", sortable: false, filterable: false, csv: false, hideable: false, width: 120,
@@ -185,13 +184,8 @@ export default function Psfs() {
   const [ready, setReady] = useState(false);
   const [viewerKey, setViewerKey] = useState(0);
   const [current, setCurrent] = useState<string | null>(null);
-  const [layout, setLayout] = useState<LayoutMode>("auto");
-  const [tierCount, setTierCount] = useState(1);
   const [steps, setSteps] = useUrlState("steps", false);
   const bump = () => setViewerKey((k) => k + 1);
-  // a pane too narrow for every band column (the user's is ~720–800 px)
-  const narrowPane = useMediaQuery("(max-width: 1000px)");
-  const bandCols = useMemo(() => bandColumns(narrowPane), [narrowPane]);
 
   const run = (url: string, label: string, message: string) => void startDataJob(sync, url, {}, {
     label, question: { title: `${label}?`, message, confirmLabel: "Sync" }, onDone: bump,
@@ -213,8 +207,8 @@ export default function Psfs() {
   const anyCached = data?.bands.some((b) => b.state === "empirical");
   const clusterSub = data?.clusters_source === "metadata" ? "FWHM in arcsec, from the synced cluster metadata"
     : data?.clusters_source === "vis_headers" ? "FWHM in arcsec, from the cached VIS headers" : "No cluster data yet";
-  const clusterTable = (place: AsidePlace | null) => {
-    const narrow = !!place?.beside;
+  // The cluster list sits below the viewer (full width: every column), its rows scrolling inside 360 px.
+  const clusterTable = () => {
     return (
       <div className="dt-clusters">
         <div className="dt-gallery__head">
@@ -222,16 +216,14 @@ export default function Psfs() {
           <span className="dt-gallery__count">{clusterSub}</span>
           {data?.clusters_meta.synced_at ? <Freshness at={data.clusters_meta.synced_at} label="metadata" /> : null}
         </div>
-        <ClusterTable clusters={data?.clusters ?? []} narrow={narrow}
-          height={place?.beside ? "none" : 360} online={online}
+        <ClusterTable clusters={data?.clusters ?? []} narrow={false}
+          height={360} online={online}
           onView={view} onPick={(c) => { void api.current?.goToId(clusterObjectId(c.index)); }} />
       </div>
     );
   };
   const onViewerState = (s: ViewerState) => {
     setCurrent(s.id);
-    setLayout(s.layout);
-    setTierCount(s.tiers?.length || 1);
   };
   return (
     <Page className="dt-page dt-page--image">
@@ -258,12 +250,10 @@ export default function Psfs() {
               <span className="dt-caption__title">{current ?? "ePSF"}</span>
               <WarpControls api={api} ready={ready} />
             </div>
-            <ViewerStage layout={layout} frames={tierCount} asideLabel="Spatial clusters" asideMin={210} asideFill
-              aside={(place) => clusterTable(place)}>
-              <ImageViewer key={viewerKey} collection="psfs" urlKey="psf"
-                onReady={(a) => { api.current = a; setReady(a != null); }}
-                onState={onViewerState} />
-            </ViewerStage>
+            <ImageViewer key={viewerKey} collection="psfs" urlKey="psf"
+              onReady={(a) => { api.current = a; setReady(a != null); }}
+              onState={onViewerState} />
+            <section role="region" aria-label="Spatial clusters">{clusterTable()}</section>
           </div>
         ) : (
           <>
@@ -271,13 +261,13 @@ export default function Psfs() {
               action={<Button variant="primary" icon="download" disabled={!online} onClick={syncAll}>Sync ePSFs</Button>}>
               {online ? "Pull the FASRC extraction (a background job)." : OFFLINE_HINT}
             </EmptyState>
-            {clusterTable(null)}
+            {clusterTable()}
           </>
         )}
         <JobStrip job={sync} />
         <Section title="Bands" sub="state, FWHM, clusters, kernel" collapsible defaultOpen>
-          <DataTable rows={data?.bands ?? []} columns={bandCols} rowKey={(b) => b.name} height="auto" dense
-            hideToolbar={!narrowPane} aria-label="ePSF bands" />
+          <DataTable rows={data?.bands ?? []} columns={BAND_COLUMNS} rowKey={(b) => b.name} height="auto" dense
+            searchable={false} aria-label="ePSF bands" />
           {data?.bands.some((b) => b.state === "no_empirical") && (
             <Callout tone="warn" title="Gaussian fallback in use">
               {data.bands.filter((b) => b.state === "no_empirical").map((b) => bandShort(b.name)).join(", ")}: FASRC has no

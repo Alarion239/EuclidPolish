@@ -14,7 +14,6 @@
 }
 .fig-bar__spacer { flex: 1 1 0; min-width: 0; }
 /* sentence-case choices ("Real", "All 3"): the kit Segmented lowercases */
-.fig-bar .ui-seg__item { font-family: var(--font-sans); letter-spacing: 0; text-transform: none; }
 .fig-bar__note { font-size: var(--fs-xs); color: var(--text-dim); white-space: nowrap; }
 .fig-bar__field { display: inline-flex; align-items: center; gap: var(--s2); min-width: 0; }
 .fig-bar__field .ui-select { max-width: 240px; }
@@ -105,7 +104,6 @@
 }
 .fig-lightbox__desc { flex: 1 1 120px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-sm); color: var(--text-dim); }
 .fig-lightbox__actions { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; }
-.fig-lightbox__scale .ui-seg__item { font-family: var(--font-sans); letter-spacing: 0; text-transform: none; }
 .fig-lightbox__before { flex: none; min-height: var(--fig-lb-panels, 36px); padding: 4px var(--s3); box-sizing: border-box; border-bottom: 1px solid var(--fig-lt-rule); }
 .fig-lightbox__stage { position: relative; flex: 1 1 auto; min-height: 0; min-width: 0; overflow: auto; background: var(--fig-lt-ink); }
 .fig-lightbox__stage .fig-image { background: transparent; border-radius: 0; }

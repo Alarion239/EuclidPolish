@@ -133,23 +133,36 @@
 .cv-idx-total { padding: 0 4px 0 3px; font: var(--fs-sm)/1 var(--font-mono); font-variant-numeric: tabular-nums; color: var(--text-faint); white-space: nowrap; }
 .cv-tip { display: inline-flex; align-items: center; gap: 6px; }
 
-/* ---- the frames, and the Display dock beside them ---- */
-.cv-body { display: flex; align-items: flex-start; min-width: 0; }
+/* ---- the Display row under the bar (BarMenus DisplayRow): knee,
+   brightness, stretch and "More display settings"; it never sits beside the
+   frames or scrolls — TierGrid subtracts its height (it wraps onto a second
+   line in a narrow viewer) ---- */
+.cv-quick {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px;
+  padding: 5px 8px; min-height: calc(var(--ctl-h-sm) + 10px);
+  border-bottom: 1px solid var(--cv-rule);
+  font-size: var(--fs-sm);
+}
+.cv-quick__item { display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
+.cv-quick__label { color: var(--text-dim); white-space: nowrap; }
+.cv-quick .cv-valslider { flex: none; }
+.cv-quick .cv-valslider .ui-slider-wrap { width: clamp(88px, 12vw, 160px); min-width: 0; flex: none; }
+.cv-quick .cv-menu__unit { min-width: 0; }
+.cv-quick__end { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; }
+.cv-quick__note { color: var(--accent-press); font-size: var(--fs-xs); white-space: nowrap; }
+.cv-body { display: flex; min-width: 0; }
 .cv-body > .cv-frames { flex: 1 1 0; min-width: 0; }
-.cv-dock {
-  position: relative; flex: none; align-self: stretch;
-  width: 248px; min-height: 320px;
-  border-left: 1px solid var(--cv-rule);
-}
-.cv-dock[data-basic] { width: 232px; min-height: 230px; }
-/* the dock scrolls inside the frames' height (it never makes the table taller) */
-.cv-dock__scroll { position: absolute; inset: 0; overflow: auto; overscroll-behavior: contain; padding: 10px 12px 12px; }
-/* a narrow viewer: the dock goes under the frames (they refit above it) */
-@container cv-table (max-width: 620px) {
-  .cv-body[data-dock] { flex-direction: column; align-items: stretch; }
-  .cv-body[data-dock] > .cv-dock { width: auto; min-height: 0; border-left: 0; border-top: 1px solid var(--cv-rule); }
-  .cv-dock__scroll { position: static; max-height: 240px; }
-}
+
+/* the band choice collapsed into one select (a narrow bar) */
+.cv-colsel { display: inline-flex; }
+.cv-colsel .ui-select { min-width: 5.5em; }
+
+/* the More menu of a narrow bar (a popover in the app theme) */
+.cv-more { gap: 8px; }
+.cv-more__row { display: grid; grid-template-columns: 76px minmax(0, 1fr); align-items: center; gap: 8px; }
+.cv-more__label { color: var(--text-dim); font-size: var(--fs-sm); }
+.cv-more__ctl { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; min-width: 0; }
+.cv-more .cv-bar__group { display: inline-flex; }
 
 /* ---- frames: edge to edge on the table, 2 px apart ---- */
 .cv-frames {
@@ -240,12 +253,18 @@
 .cv-msg {
   position: absolute; inset: 0; z-index: 5; display: flex;
   align-items: center; justify-content: center; text-align: center;
-  color: #b3b8c0; font-size: var(--fs-md); line-height: var(--lh-snug, 1.35); padding: 0 24px;
+  color: var(--text-dim); font-size: var(--fs-md); line-height: var(--lh-snug, 1.35); padding: 0 24px;
 }
-.cv-msg em { color: #d6dae0; font-style: normal; font-size: var(--fs-sm); }
-/* a tier with no data here (every pixel blank): a quiet caption on the ink */
-.cv-msg--quiet { color: #9da1a9; font-size: var(--fs-sm); }
-.cv-msg--quiet em { color: #8a8f97; font-size: var(--fs-xs); }
+.cv-msg em { color: var(--text); font-style: normal; font-size: var(--fs-sm); }
+/* a tier with no data here (every pixel blank): a quiet caption, centred on
+   the neutral ink (no flat NaN-coloured square) */
+.cv-msg--quiet { color: var(--text-dim); font-size: var(--fs-sm); }
+.cv-msg--quiet em { color: var(--text-faint); font-size: var(--fs-xs); }
+/* a sparse tier (a corner of real data): the image is painted; the caption
+   sits at its foot on the label backing and lets the pointer through */
+.cv-msg--foot { inset: auto 0 8px 0; pointer-events: none; }
+.cv-msg--foot > span { padding: 3px 8px; border-radius: 4px; background: var(--cv-label-bg); color: var(--cv-label-ink); }
+.cv-msg--foot em { color: var(--cv-label-ink); }
 .cv-frame.cv-loading::after {
   content: ""; position: absolute; inset: 0; z-index: 1;
   background: linear-gradient(90deg, transparent, rgba(180, 185, 195, 0.08), transparent);
@@ -277,6 +296,9 @@
   white-space: nowrap; overflow: hidden;
 }
 .cv-readout__main { display: flex; align-items: center; gap: 14px; flex: 1 1 auto; min-width: 0; overflow: hidden; }
+/* one line: the values never shrink (ReadoutBar reserved room for them);
+   the object's label at the right gives way first */
+.cv-readout:not([data-lines]) .cv-readout__main { flex-shrink: 0; align-self: stretch; }   /* the full 27 px: descenders are not clipped at line-height 1 */
 /* the object's label gives way first (it shrinks 50× faster than the values) */
 .cv-readout__side { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex: 0 50 auto; max-width: 40%; min-width: 0; overflow: hidden; }
 .cv-readout__item { display: inline-flex; align-items: center; gap: 5px; flex: none; }
@@ -294,19 +316,27 @@
 .cv-readout__status[data-tone="saved"] { color: #56d68a; }
 .cv-readout__status[data-tone="error"] { color: #ff8a8a; }
 .cv-readout__break { display: none; }
-/* when one line would cut values off (ReadoutBar decides from the shown
-   tiers and the width, before any hover): two reserved lines — the
-   position, then the per-tier values (each value with its unit, wrapping
-   between values); the object's label goes first */
-.cv-readout[data-lines="2"] { height: 51px; align-items: flex-start; padding-top: 5px; padding-bottom: 5px; gap: var(--s2); }
-.cv-readout[data-lines="2"] .cv-readout__main { flex-wrap: wrap; align-content: flex-start; gap: 0 10px; height: 100%; }
-.cv-readout[data-lines="2"] .cv-readout__main > * { min-height: 18px; line-height: 18px; }
-.cv-readout[data-lines="2"] .cv-readout__sky .ui-iconbtn { width: 18px; height: 18px; }
-.cv-readout[data-lines="2"] .cv-readout__main > .cv-readout__break { display: block; flex: 0 0 100%; min-height: 0; height: 0; }
-.cv-readout[data-lines="2"] .cv-readout__break ~ * { margin-top: 4px; }
-.cv-readout[data-lines="2"] .cv-readout__item, .cv-readout[data-lines="2"] .cv-readout__band { white-space: nowrap; }
-.cv-readout[data-lines="2"] .cv-readout__obj { display: none; }
-.cv-readout[data-lines="2"] .cv-readout__side { max-width: 45%; }
+/* when one line would cut values off, or below ~560 px (ReadoutBar decides
+   from the shown tiers and the width, before any hover): 2–4 reserved lines
+   (--cv-readout-lines) — the position, then the per-tier values, each
+   tier's name, value and unit together (nowrap), the line broken only
+   between tiers; the object's label goes first */
+.cv-readout[data-lines] {
+  /* border-top 1 + padding 3 + 3 + N lines of 22 px (18 px of text and the
+     4 px between lines, carried by each line itself so an empty break line
+     costs nothing): 2 lines = 51 px, 3 = 73, 4 = 95 */
+  height: calc(1px + 6px + var(--cv-readout-lines, 2) * 22px);
+  align-items: flex-start; padding-top: 3px; padding-bottom: 3px; gap: var(--s2);
+}
+.cv-readout[data-lines] .cv-readout__main { flex-wrap: wrap; align-content: flex-start; gap: 0 10px; height: 100%; }
+.cv-readout[data-lines] .cv-readout__main > * { min-height: 22px; line-height: 22px; max-width: 100%; overflow: hidden; }
+.cv-readout[data-lines] .cv-readout__sky .ui-iconbtn { width: 18px; height: 18px; }
+/* the break is its own empty flex line of zero height (no row gap exists) */
+.cv-readout[data-lines] .cv-readout__main > .cv-readout__break { display: block; flex: 0 0 100%; min-height: 0; height: 0; }
+.cv-readout[data-lines] .cv-readout__side { min-height: 22px; }
+.cv-readout[data-lines] .cv-readout__item, .cv-readout[data-lines] .cv-readout__band { white-space: nowrap; }
+.cv-readout[data-lines] .cv-readout__obj { display: none; }
+.cv-readout[data-lines] .cv-readout__side { max-width: 45%; }
 
 /* ---- focus mode: the table covers the stage on the neutral surround ---- */
 .cv-root[data-focus] {
@@ -350,24 +380,20 @@
 .cv-menu__title { margin: 0; font-weight: var(--fw-semibold); font-size: var(--fs-md); color: var(--text); }
 .cv-menu__title + .cv-menu__title { margin-top: 4px; }
 .cv-menu__sep { height: 1px; background: var(--border); }
-/* the dock: label above its control (a narrow column); short controls inline */
-.cv-dock .cv-menu { gap: 12px; font-size: var(--fs-sm); }
-.cv-dock .cv-menu__row { grid-template-columns: minmax(0, 1fr); gap: 5px; }
-.cv-dock .cv-menu__row[data-inline] { grid-template-columns: minmax(0, 1fr) auto; }
-.cv-dock .cv-menu__hint { grid-column: 1; }
-.cv-dock .cv-menu__group { gap: 10px; padding-top: 10px; }
-.cv-dock .cv-menu__head { flex-wrap: nowrap; }
-.cv-dock .cv-menu__unit { min-width: 1.4em; }
-.cv-disclosure {
-  display: inline-flex; align-items: center; gap: 6px; align-self: flex-start;
-  padding: 3px 6px 3px 2px; border: 0; border-radius: var(--r-sm); background: transparent;
-  font: var(--fw-medium) var(--fs-sm)/1.2 var(--font-sans); color: var(--text-dim); cursor: pointer;
+/* the "More display settings" popover: a narrow column of controls */
+.cv-more-pop .cv-menu { gap: 12px; font-size: var(--fs-sm); }
+.cv-more-pop .cv-menu__row { grid-template-columns: 116px minmax(0, 1fr); }
+.cv-more-pop .cv-menu__group { gap: 8px; }
+/* one column, or (the wide shape, when it hides less of the frames) two
+   columns once the popover has the room; the histogram is its own page */
+.ui-popover.cv-more-pop--wide { container: cv-more / inline-size; max-width: min(600px, calc(100vw - 16px)); }
+.cv-more-cols { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px 20px; align-items: start; }
+.cv-more-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+@container cv-more (min-width: 540px) {
+  .cv-more-cols { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
 }
-.cv-disclosure:hover { color: var(--text); background: var(--surface-2); }
-.cv-disclosure:focus-visible { outline: 2px solid transparent; box-shadow: var(--ring); }
-.cv-disclosure svg { transform: rotate(-90deg); transition: transform var(--dur-fast); }
-.cv-disclosure[aria-expanded="true"] svg { transform: none; }
-@media (prefers-reduced-motion: reduce) { .cv-disclosure svg { transition: none; } }
+.cv-menu__label--inline { margin-left: 14px; }
+.cv-menu__actions--split { justify-content: space-between; align-items: center; }
 .cv-menu__row { display: grid; grid-template-columns: 108px minmax(0, 1fr); align-items: center; gap: 4px 10px; }
 .cv-menu__label { color: var(--text-dim); font-size: var(--fs-sm); }
 .cv-menu__ctl { display: flex; align-items: center; gap: 6px; min-width: 0; }

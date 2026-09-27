@@ -31,8 +31,8 @@ import { HduList } from "./HduList";
 import { HeaderPanel } from "./HeaderPanel";
 import { ImagePanel } from "./ImagePanel";
 import {
-  basename, defaultHduKey, dirname, fileCrumbs, hduByKey, hduFacts, INSPECT_WIDE_PX, isNarrowWidth, normalizeSummary,
-  pushRecent, sliceTarget, VIEW_LABELS, viewsFor, type Selected, type View,
+  basename, defaultHduKey, dirname, fileCrumbs, groupOptionLabel, hduByKey, hduFacts, hduOptionLabel, INSPECT_WIDE_PX,
+  isNarrowWidth, middleSplit, normalizeSummary, pushRecent, sliceTarget, VIEW_LABELS, viewsFor, type Selected, type View,
 } from "./model";
 import { ProvenancePanel } from "./ProvenancePanel";
 import { SkyLink } from "./SkyLink";
@@ -84,9 +84,9 @@ function useHduScopedReset(): () => void {
   return () => ref.current.forEach((set) => set(""));
 }
 
-/** "0 PRIMARY" / a band group's label: the selected HDU in words. */
+/** "LR VIS (HDU 1)" / "LR colour (HDUs 1–4)": the selected HDU in words. */
 function hduTitle(sel: Selected): string {
-  return sel.group ? sel.group.label : `HDU ${sel.hdu?.index ?? 0} ${sel.hdu?.name ?? ""}`.trim();
+  return sel.group ? groupOptionLabel(sel.group) : hduOptionLabel(sel.hdu ?? { index: 0, name: "", type: "image" });
 }
 
 /** The file's and the selected HDU's facts, under the view (the top of the
@@ -119,14 +119,19 @@ function ViewHead({ data, sel, view, views, onHdu, onView }: {
 }) {
   const many = data.hdus.length > 1 || data.band_groups.length > 0;
   const options = [
-    // an image HDU is the default kind: only the others say what they are
-    ...data.hdus.map((h) => ({ value: String(h.index), label: h.type === "image" ? `${h.index} ${h.name}` : `${h.index} ${h.name} (${h.type})` })),
-    ...data.band_groups.map((g) => ({ value: g.id, label: `${g.label} (colour)` })),
+    // the HDU's name first ("LR VIS (HDU 1)"); an image is the default kind, the others say theirs
+    ...data.hdus.map((h) => ({ value: String(h.index), label: hduOptionLabel(h) })),
+    ...data.band_groups.map((g) => ({ value: g.id, label: groupOptionLabel(g) })),
   ];
   return (
     <>
+      {/* The file's part the page describes (header, table, statistics, the
+          viewer's first images); the viewer's chips choose what is drawn. */}
       {many ? (
-        <Select size="sm" aria-label="HDU" value={sel.key} onChange={onHdu} options={options} className="insp-viewbar__hdu" />
+        <label className="insp-viewbar__pick" title="The HDU the header, table and statistics describe; the chips in the viewer choose the images shown">
+          <span className="insp-viewbar__picklabel">HDU</span>
+          <Select size="sm" aria-label="HDU for the header, table and statistics" value={sel.key} onChange={onHdu} options={options} className="insp-viewbar__hdu" />
+        </label>
       ) : view !== "image" && <span className="insp-viewbar__name mono">{hduTitle(sel)}</span>}
       {view && (
         <Tabs value={view} onChange={(v) => onView(v)} variant="line" aria-label="HDU view"
@@ -250,7 +255,7 @@ export default function InspectPage() {
         {!fits && (
           <header className="insp-start">
             <div className="insp-start__text">
-              <h1 className="insp-start__title"><Icon name="fileSearch" size={18} /> Open a FITS file</h1>
+              <h2 className="insp-start__title"><Icon name="fileSearch" size={18} /> Open a FITS file</h2>
               <p className="insp-dim">Browse a root below, press Enter in the filter to search, or paste a path.</p>
             </div>
             <OpenByPath onOpen={openFile} />
@@ -272,15 +277,21 @@ export default function InspectPage() {
                 {/* one line: where the file is, then its name */}
                 <div className="insp-filebar__names">
                   <nav className="insp-crumbs insp-crumbs--file" aria-label="File location">
-                    {crumbs.map((c) => (
-                      <span key={c.rel} className="insp-crumbs__seg">
-                        <button type="button" className="insp-crumbs__item" title={`Show ${c.rel} in the browser`}
-                          onClick={() => { onDir(c.rel); if (!showBrowser) toggleBrowser(); }}>{c.name}</button>
-                        <Icon name="chevronRight" size={11} />
-                      </span>
-                    ))}
+                    {crumbs.map((c) => {
+                      // squeezed, a crumb gives way in the middle ("Post…(repo)"), never to one letter
+                      const [head, tail] = middleSplit(c.name);
+                      return (
+                        <span key={c.rel} className="insp-crumbs__seg">
+                          <button type="button" className="insp-crumbs__item insp-crumbs__item--mid" title={`Show ${c.rel} in the browser`}
+                            aria-label={c.name} onClick={() => { onDir(c.rel); if (!showBrowser) toggleBrowser(); }}>
+                            <span className="insp-crumbs__head">{head}</span>{tail && <span className="insp-crumbs__tail">{tail}</span>}
+                          </button>
+                          <Icon name="chevronRight" size={11} />
+                        </span>
+                      );
+                    })}
                   </nav>
-                  <h1 className="insp-filebar__name mono" title={rel}>{basename(rel)}</h1>
+                  <h2 className="insp-filebar__name mono" title={rel}>{basename(rel)}</h2>
                 </div>
               </div>
               <div className="insp-filebar__actions" role="toolbar" aria-label="File actions">

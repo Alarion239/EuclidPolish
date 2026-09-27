@@ -44,7 +44,8 @@ Rules that apply everywhere:
 | `app/tabFit.ts` | `fitTabs`: the stable leading run + active slot of a workspace strip, the rest in "More" (pure) |
 | `app/displaySections.ts` | `registerDisplaySection` (the Display panel's extension point) |
 | `app/shellStore.ts` | `useShellUi`: open/closed palette, ? sheet, Display panel, job tray, rail drawer |
-| `app/status.ts` | `useVersion` (C3), `useFasrcStatus` (C4), `useSystemAlerts`, `bannerKey`, `useConsoleUpdate` |
+| `app/status.ts` | `useVersion` (C3), `useFasrcStatus` (C4), `useSystemAlerts`, `bannerKey`, `buildKey`, `useConsoleBuild` / `useConsoleUpdate` |
+| `app/inspectorWidth.ts` | The docked inspector's opening width (`defaultInspectorWidth`, `dockedInspectorWidth`, `useWindowWidth`; §10.4) |
 | `app/ErrorBoundary.tsx`, `NotFound.tsx`, `useStageScroll.ts` | Per-tab error boundary, 404 page, stage scroll management |
 | `state/display.ts` | Display (colour) settings store (C7) |
 | `state/prefs.ts` | Theme, accent, density, rail collapsed, inspector width |
@@ -55,8 +56,8 @@ Rules that apply everywhere:
 | `format.ts` | Number, SI, bytes, duration, magnitude, RA/Dec and date formatting; `parseSkyCoord` |
 | `ticks.ts` | Linear, log, decade and magnitude ticks; `extent`, `paddedDomain`, `unionDomain` |
 | `colors.ts` | Canvas colour readers: `C.*`, `categorical`, `LOSS_COLOR`, `bandColor`, `viridis` |
-| `theme/` | `tokens.css` (the token contract), `base.css` (element styles, `.muted`, `.eyebrow`, `.sr-only`), `index.css` (entry point) |
-| `ui/` | UI kit v2 on Radix (§9): controls, overlays, `confirm`, `toast`, display primitives, `DataTable`, `LogView`, `JsonTree`, `JobProgress`, `Icon`, download/clipboard helpers, `UiProvider` |
+| `theme/` | `tokens.css` (the token contract), `base.css` (element styles, `.muted`, `.eyebrow` — a sentence-case small label —, `.sr-only`), `index.css` (entry point); `tokens.test.ts` and `chrome.test.ts` (§8) |
+| `ui/` | UI kit v2 on Radix (§9): controls, overlays, `confirm`, `toast`, display primitives, `Toolbar`, `DataTable`, `LogView`, `JsonTree`, `JobProgress`, `Icon`, download/clipboard helpers, `UiProvider` |
 | `charts/` | `Plot` v2, `Legend`, `useLegend` (§9.4); the pure maths is in `plotModel.ts` |
 | `viewer/` | Viewer engine v2 (§12): `<ImageViewer>`, `ViewerApi`, the colour core, WCS, cube transport; `viewer/README.md` |
 | `workspaces/<id>/` | One folder per workspace: `index.tsx` + lazy `tabs/<Tab>.tsx` (§11) |
@@ -71,7 +72,7 @@ from them:
 | `../api` (`getJSON`, `postForm`) | `api/client.ts`. `getJSON` still resolves `null` on any failure; `postForm` = `apiPost` |
 | `../hooks` (`useResource`, `usePolling`, `invalidateCache`) | `api/query.ts`, `hooks/index.ts` |
 | `../jobs` (`useJob`, `useTrackedJob`, `JobProgressView`) | `api/jobs.ts`. The panel is `JobProgress` in `ui/`; `JobProgressView` is its compat name |
-| `../theme` (`useThemeValue`, `readTheme`) | `state/prefs.ts` (`usePrefs`, `useResolvedTheme`) |
+| `../theme` (`useThemeValue`, `readTheme`) | deleted (nothing imported it): use `state/prefs.ts` (`usePrefs`, `useResolvedTheme`) |
 
 ---
 
@@ -274,7 +275,9 @@ transferFor(effective, "jwst");                                    // {knee, gai
   - `colormap`: `gray`
   - `residualColormap`: `rdbu`
   - `invert`: `false`
-  - `nanColor`: `#5b6475` (muted slate; persisted v1 state carrying the old magenta default is migrated)
+  - `nanColor`: `#404040` (neutral dark grey; persist v3 migrates the old untouched defaults
+    `#ff00ff` and `#5b6475`, never a colour the user picked)
+  - `matchSurfaceBrightness`: `false` (opt-in: scale e⁻ tiers by (ref / pixscale)² before the stretch)
   - `linked`: `true`
   - `wheel`: `zoom-when-focused`
 - It persists to `"ep-display"`. The option lists are exported as `COLOR_MODES`, `STRETCHES`,
@@ -415,6 +418,7 @@ Every generator returns `Tick[] = {v, label}`, the shape `Plot` takes.
 | Function | Gives |
 |---|---|
 | `linearTicks([lo, hi], {count})`, `linearTickValues`, `niceStep`, `formatTick` | linear ticks on a 1-2-5 step |
+| `fitLinearTicks([lo, hi], {min, max, format})` | a chart's automatic axis: 4–6 ticks (3 or 7 when no nice step lands there) on a 1-2-2.5-5 step, 2.5 only when it is the one that fits |
 | `logTicks([lo, hi], {space: "value"\|"log10", maxTicks})` | 1-2-5 mantissas over a few decades, decades over wide ranges |
 | `decadeTicks` | integer decades labelled 10ⁿ |
 | `magnitudeTicks([lo, hi], {invert})` | whole, half or tenth magnitudes |
@@ -436,7 +440,12 @@ end points. `magnitudeTicks` switches to a nice step when the span is beyond 10-
 
 The contract is enforced by `theme/tokens.test.ts`. It covers:
 
-- surfaces (`--bg-0/1`, `--surface-1/2/3`, `--border*`, `--overlay`, `--tooltip-*`);
+- surfaces (`--bg-0/1`, `--surface-1/2/3`, `--border*`, `--overlay`, `--tooltip-*`,
+  `--scroll-shade` — a table's "more columns this way" edge, a darkening in both themes, never
+  mixed from `--text`, which would be a light haze in dark), and two
+  theme-independent ones that are the same in dark: `--paper` (the white inset of a
+  server-rendered matplotlib PNG) and `--image-ink` (the neutral near-black behind an astronomy
+  image, e.g. a thumbnail's letterbox);
 - ink (`--text`, `--text-dim`, `--text-faint`);
 - accent;
 - status (`--good/--warn/--bad/--info` + `-soft`);
@@ -473,7 +482,16 @@ repaint. A `@media (forced-colors: active)` rule then forces a `CanvasText` outl
 `:focus-visible`, including components that set `outline: none`.
 
 A second test fails when any `var(--x)` used in `src` has no definition (variables that Radix
-sets at runtime, `--radix-*`, are exempt). Names that older CSS
+sets at runtime, `--radix-*`, are exempt).
+
+`theme/chrome.test.ts` checks the kit's own stylesheets (`ui/*.css`, `charts/*.css`,
+`app/*.css`, `theme/base.css`):
+
+- no raw colour (hex, `rgb()`, `hsl()`): every colour is a token;
+- no `text-transform` (labels are sentence case as authored — ALL-CAPS turned "σ" into "Σ") and
+  no letter-spaced eyebrow (`--ls-eyebrow` stays defined only for old workspace CSS);
+- table headers, field / KPI / stat labels, segmented choices, badges, tabs, chips and menu
+  labels use `--font-sans`; numeric table cells stay tabular mono (they are data). Names that older CSS
 used without defining (`--line`, `--muted`, `--mono`, `--panel`, `--bg`, `--surface`, …) are
 aliases now. The `.muted` class is defined in `base.css`.
 
@@ -495,8 +513,9 @@ ContextMenu, Tabs, Segmented, Switch, Checkbox, Slider, RangeSlider, NumberField
 Field, Card, CardHead, CardBody, Section, Badge, Chip, Stat, Kpi, DefList, Callout, EmptyState,
 Skeleton, ProgressBar, LogView, JsonTree, CopyButton, Kbd, DataTable, toast`. So are the v1
 names the old pages use: `Page, PageHead, Empty, Spinner, Table`/`Column`, `LogTail, Gallery,
-PngFigure, ConnBadge, Textarea` and `JobProgressView` (= `JobProgress`). The dead v1
-`Toolbar`, `ToolbarLabel` and `ToolbarSep` are gone. Extras: `MultiSelect`, `Toaster`,
+PngFigure, ConnBadge, Textarea` and `JobProgressView` (= `JobProgress`). The v1 `ToolbarLabel`
+and `ToolbarSep` are gone; the v2 `Toolbar` (+ `ToolbarGroup`, `ToolbarText`, `ToolbarSpacer`,
+`ToolbarSeparator`) is below. Extras: `MultiSelect`, `Toaster`,
 `UiProvider`, `ConfirmHost`, `TooltipProvider`, `DialogClose`, `PopoverClose`, `Icon`,
 `copyText`, `downloadText`, `downloadBlob`, `safeFileName`, `cx`, `useFieldAria`.
 
@@ -508,6 +527,13 @@ Conventions for every component:
   trigger.
 - Focus shows the shared `--ring`. Colours come from tokens only.
 - `tone` is one of `neutral | good | warn | bad | info | accent`.
+- Labels (field, KPI and stat labels, table headers, segmented choices, badges, tabs, chips, menu
+  labels, eyebrows) are drawn in the UI face (`--font-sans`) exactly as authored: no
+  `text-transform`, no letter-spacing. Write them in sentence case ("Holes >100σ", "HR"). Data
+  values (KPI and stat values, numeric cells, readouts, chart ticks) stay tabular mono.
+- Headings: the page's one h1 is the workspace's visually hidden heading (`<Workspace>`, §11);
+  a `CardHead` title is an h2, a `Section` title an h3 (a collapsible one wraps its toggle in the
+  h3), a `PageHead` title an h2. Each keeps its own look.
 
 ### 9.1 Hosts: `UiProvider`
 
@@ -536,7 +562,7 @@ content.
 ```tsx
 <Button variant="primary" icon="download" loading={job.busy} onClick={run}>Evaluate</Button>
 <Button href="/api/x.csv" download size="sm">CSV</Button>             // an <a> with button styles (external / download)
-<Button asChild variant="ghost"><Link to="/sky">Open sky</Link></Button> // router link
+<Button asChild variant="ghost" icon="globe"><Link to="/sky">Open sky</Link></Button> // router link, icon inside
 <IconButton icon="reset" label="Reset zoom" onClick={reset} />         // label = aria-label + tooltip
 <IconButton icon="columns" label="Columns" pressed={open} />           // aria-pressed toggle
 ```
@@ -549,7 +575,9 @@ content.
 - The `ref` points at the rendered element (the `<a>` or the child in the link modes). Other
   props (`data-*`, `aria-*`, handlers) are forwarded in every mode; `href` mode drops the
   button-only attributes (`type`, `form*`, `name`, `value`).
-- `icon` and `iconRight` take an `IconName` or any node.
+- `icon` and `iconRight` take an `IconName` or any node. With `asChild` they (and the loading
+  spinner) are drawn inside the child, around its own content (`.ui-btn__label`); without an
+  icon or spinner the child renders as authored.
 - Icons come from `ui/icons.tsx` (inline SVG, `currentColor`). Add a path there when you need a
   new glyph.
 
@@ -654,7 +682,7 @@ toast.warning("Stale"); toast.info("FYI"); toast.promise(p, { loading: "…", su
 **Display**
 
 ```tsx
-<Card><CardHead eyebrow="Ensemble" title="Members" sub="26 active" right={<Button>…</Button>} /><CardBody>…</CardBody></Card>
+<Card><CardHead eyebrow="Ensemble" title="Members" sub="26 active" right={<Button>…</Button>} /><CardBody>…</CardBody></Card>   // title: h2
 <Section title="Calibration" sub="z-pdf" collapsible defaultOpen={false}>…</Section>
 <Badge tone="good" dot>current</Badge>   <Chip on={shown} dot={color} onClick={toggle}>mean</Chip>
 <Stat k="members" v="26" hint="active STARFULL" />   <Kpi label="Production PSNR" value="44.12" unit="dB" delta="+0.21" deltaTone="good" onClick={open} />
@@ -669,6 +697,10 @@ toast.warning("Stale"); toast.info("FYI"); toast.promise(p, { loading: "…", su
 <JobProgress job={ev.job} error={ev.error} />                           // + Cancel when job.cancellable
 ```
 
+- `PageHead` (compat) draws its `title` as an h2 plus `sub` and `right`; it no longer draws an
+  `eyebrow` (the prop is accepted and ignored): the breadcrumbs and the active tab already say
+  where you are.
+- `Segmented` shows each option's label as written (no lowercasing: an "HR" choice reads "HR").
 - `Kpi` is an action tile when `to`, `href` or `onClick` is set:
   - `to` is an SPA route, rendered as a router `<Link>`. There is no page reload, so the jobs
     store, the query cache and the inspector survive (C8).
@@ -680,6 +712,8 @@ toast.warning("Stale"); toast.info("FYI"); toast.promise(p, { loading: "…", su
   button), and the hint text becomes the tile's accessible description. A static tile's hint
   is a focusable "About this figure" button.
 - `Callout` with tone `bad` or `warn` has `role="alert"`; the other tones are a polite status.
+  `dense` makes it a compact one-line strip (~32 px with `size="sm"` buttons), the shell's
+  notice strip (§10.2).
 - A collapsible `Section` does not render its body while closed (its children do no work), so
   the toggle has `aria-controls` only while open.
 - `JsonTree` is nested plain lists of disclosure buttons (`aria-expanded`, `aria-controls` while
@@ -693,6 +727,23 @@ toast.warning("Stale"); toast.info("FYI"); toast.promise(p, { loading: "…", su
   Follow keeps the view at the end while you are at the end. Scrolling up pauses it, and "Jump
   to end" resumes it.
 - `LogTail` (compat) is the same follow logic with no toolbar.
+
+**Toolbar** (a tab's control bar: the one look of the old per-workspace `.ens-bar`, `.rl-bar`,
+`.ops-bar`, `.dt-bar`: a calm rounded strip at the top of the page that scrolls away with it and
+wraps onto more lines when narrow; never sticky)
+
+```tsx
+<Toolbar label="Curves controls">                       // role=toolbar, named
+  <ToolbarGroup label="Show"><Segmented … /></ToolbarGroup> // role=group, named by its visible label
+  <ToolbarSeparator />                                   // thin vertical rule
+  <ToolbarGroup label="Smooth" hideLabel><Select … /></ToolbarGroup>  // label for screen readers only
+  <ToolbarSpacer />                                      // pushes the rest right
+  <ToolbarText>26 members</ToolbarText>                  // dim free text
+</Toolbar>
+<Toolbar label="Filters" plain>…</Toolbar>                 // no box (a bar inside a card)
+```
+
+Page teams adopt it in place of their own bar CSS; labels are sentence case as authored.
 
 ### 9.3 `DataTable`
 
@@ -721,7 +772,26 @@ fields:
 - `align` or `numeric`;
 - `width`: px or any CSS width. Default widths are estimated from the header and the first 200
   rows, so virtual scrolling never reflows the table;
+- `minWidth`: the narrowest the column may get — px (the whole column) or `"<n>ch"` (n tabular
+  digits of content plus the cell padding), e.g. `minWidth: "19ch"` for "269.27120 +65.09876".
+  It floors the estimate and the CSS width (`max(<width>, calc(19ch + 20px))`, `colWidthCss`);
+- `priority`: drop order for narrow tables (below). Columns without one never drop;
 - `hidden`, `hideable`, `className`.
+
+Headers are labels: the UI face at `--fs-sm`, sentence case as written (no ALL-CAPS mono); an
+unsorted header gives the sort arrow's room to its label. Numeric cells stay tabular mono.
+
+**Narrow widths.** When the visible columns need more width than the table has (its box's
+`clientWidth`, re-read on resize), columns with a `priority` drop out — the largest number first,
+the rightmost on a tie — until the rest fit (`fitColumns`, pure). The column button then reads
+"N hidden" (named "Columns: N hidden to fit"), and its menu lists each dropped column unchecked
+as "<name> (hidden to fit)"; checking one shows it again (it is kept and no longer counted, so
+it is added and the table scrolls sideways rather than pushing other columns out). The CSV still
+exports every wanted column, dropped ones included. A table wider than its box shades the edge
+that has more (`.ui-dt__frame[data-more-left|right]`, following the scroll), so a sideways
+scroll is never hidden (macOS overlay scrollbars). Page teams set `minWidth` / `priority` on
+their own columns, e.g. `{ id: "ra", header: "RA, Dec", numeric: true, minWidth: "19ch",
+priority: 2 }`, `{ id: "field", header: "Field", priority: 3 }`.
 
 **Sort.** Click a header for asc → desc → none. Shift-click adds a secondary key. The sort is
 natural (`member_2` < `member_10`), case-insensitive and stable, and empty values always go
@@ -866,10 +936,19 @@ and keys the plot ignores (Space, PageDown, letters, …) do not count. Ctrl/⌘
 combinations are left to the browser: Ctrl/⌘ + `=` `−` `0` zoom the page, not the plot.
 
 A click without a drag still fires `onPlotClick` / `onHeatClick`, mapped through the current
-zoom and any log axis. Heat plots show the hovered cell's count in the tooltip. When zoomed,
-the caller's ticks are kept if at least 3 remain in view; otherwise ticks are generated with
-`ticks.ts`, labelled by `xFormat`/`yFormat`. An uncontrolled zoom resets when
-`xDomain`/`yDomain` change.
+zoom and any log axis. Heat plots show the hovered cell's count in the tooltip.
+
+**Ticks.** An axis whose caller passes no ticks (`xTicks` / `yTicks` undefined) gets generated
+ticks with their grid lines, labelled by `xFormat` / `yFormat`: 4–6 on a nice linear step
+(`fitLinearTicks`), or on a log axis 1-2-5 steps over a few decades and decades beyond (`logTicks`,
+at most 6). The count is sized to the plot (`thinnedViewTicks`, pure): generated ticks are thinned
+(down to 2) until neighbouring x labels sit their own width + 12 px apart and y ticks 22 px apart,
+so a small chart (an inspector's 228 × 137 px plot) never overprints its labels; the caller's own
+ticks are never thinned. Pass `[]` for an axis without numbers. When zoomed, the caller's ticks are kept if at
+least 3 remain in view; otherwise they are generated the same way (`viewTicks`, one path). An
+uncontrolled zoom resets when `xDomain`/`yDomain` change. Tick labels are data (mono); the
+title, axis labels, in-plot band / guide / series labels and the colour-bar label are words (the
+UI face).
 
 The plot redraws only when the drawn inputs change. The inputs are compared structurally, and
 handlers are ignored, so `series={[{ x: data.x, y: data.y, color: C.mean }]}` rebuilt on every
@@ -877,8 +956,9 @@ render costs nothing. Two function-valued inputs are drawn:
 
 - `heat.color` is compared by identity: a new closure redraws (a tint change shows at once), so
   memoise it when the parent re-renders often.
-- `xFormat`/`yFormat` label the generated ticks of a zoomed axis; those ticks are compared by
-  their labels, so an inline formatter is free and a changed one redraws.
+- `xFormat`/`yFormat` label the generated ticks (an axis without caller ticks, or a zoomed one);
+  those ticks are compared by their labels, so an inline formatter is free and a changed one
+  redraws.
 
 The plot also redraws on a resize (one `ResizeObserver` for the plot's life), on a theme flip
 (`useResolvedTheme`) and on a zoom, visibility or emphasis change. Hover never repaints the
@@ -926,6 +1006,12 @@ are in `charts/types.ts`, re-exported by `Plot.tsx`.
   a `description()` helper).
 - `confirm()` dialogs are `role="alertdialog"`: query them with `findByRole("alertdialog")`.
 - Tokens: `theme/tokens.test.ts` accepts runtime Radix variables (`--radix-*`) as defined.
+- To assert what a Plot draws (tick labels, grid lines), stub `getContext` with a recording
+  context (`recordCanvas()` in `Plot.test.tsx`: `fillText` texts and `moveTo`→`lineTo` segments).
+- happy-dom drops CSS `max()` / `min()` values set through `style` (a DataTable `<col>` with a
+  `minWidth`, the table width): assert the layout maths (`colWidthCss`, `fitColumns`) instead.
+  A DataTable's narrow-width behaviour needs a `clientWidth` (and `scrollWidth` for the edge
+  shade) stubbed for `.ui-dt__scroll`.
 
 ## 10. Shell, router, palette, shortcuts, inspector, jobs, display
 
@@ -962,13 +1048,18 @@ v7_startTransition: true }}>`); use the same flags in tests to keep them quiet.
 ### 10.2 Shell: `app/Shell.tsx`
 
 The root layout: rail | top bar, stage (`<main id="main" class="stage">`, the scroll container:
-the restart banner, then `<div class="stage__page"><Outlet/></div>`) and the docked inspector (a
-`react-resizable-panels` panel with a named separator, "Resize the inspector"; its width is
-`prefs.inspectorWidth`, saved after a drag). Below 900 px (`NARROW_QUERY`) the rail is a drawer
-(top-bar menu button) and the inspector a bottom sheet. The stage is a flex column: the banner
+the "newer build" and restart strips, then `<div class="stage__page"><Outlet/></div>`) and the
+docked inspector (a `react-resizable-panels` panel with a named separator, "Resize inspector";
+width: §10.4). Below 900 px (`NARROW_QUERY`) the rail is a drawer
+(top-bar menu button) and the inspector a bottom sheet. The stage is a flex column: each strip
 takes its own height and `.stage__page` exactly the rest (`flex: 1 0 0; min-height: 0`), so a
-page sized to the stage (`height: 100%`, the Sky atlas) fits under the banner; a longer page
+page sized to the stage (`height: 100%`, the Sky atlas) fits under them; a longer page
 overflows that box and the stage scrolls as before.
+
+The drawer and the sheet are Radix dialogs whose scrim (`.shell__scrim`, z `--z-drawer` − 1)
+sits UNDER their content (z `--z-drawer`); the kit's `.ui-dialog__overlay` (z `--z-dialog`) is
+never used for them, so a click inside the sheet stays in it and a drawer link navigates
+(Shell tests at a narrow width; checked at 720×720).
 
 The shell mounts, exactly once: `UiProvider` (§9.1), `useInspectorUrlSync`, `useJobToasts`,
 `useSlurmToasts` (§10.6), the global shortcuts, `<RunActions/>` (the palette's "Run a job"
@@ -990,13 +1081,9 @@ useShellUi.getState().openOnly("display");   // "palette" | "shortcuts" | "displ
 Top bar, left to right (one line at every width: the breadcrumbs take the free space and each
 crumb ellipsizes — the inspected entity first, the tab last — with the full path as the nav's
 tooltip; below 1200 px the search button is an icon + ⌘K, below 900 px an icon and the entity
-crumb goes; the FASRC / server / update chips keep their words down to 600 px): menu (narrow
+crumb goes; the FASRC / server chips keep their words down to 600 px): menu (narrow
 only), breadcrumbs (workspace [(params)] › tab › the inspected entity's title, e.g. "Ensemble
-(starfull) › Disagreement"), the ⌘K search button, "Reload to update" (only on a page served
-from the build, when `/api/version`'s `dist.entry` — the entry script index.html names now —
-differs from the `<script type="module" src>` this document was loaded from (`buildChanged`,
-exact even if the rebuild happened before the first answer; without an entry it falls back to
-the first `dist.index_hash` seen) — `useConsoleUpdate()`), the FASRC badge (`/api/fasrc/status`; offline shows the real
+(starfull) › Disagreement"), the ⌘K search button, the FASRC badge (`/api/fasrc/status`; offline shows the real
 `last_error` in its tooltip; links to Settings › Connections) — or, while the local server is
 not answering (`useServerHealth().down`, §4.2), the calm "Server not responding — retrying"
 chip in its place (a warn line under the bar marks everything below as possibly stale; it asks
@@ -1005,11 +1092,24 @@ region announces the outage and the recovery) — the job tray (its count greys 
 says "the job states it last sent" while the server is down), the Display button, the theme
 toggle and the ? sheet button.
 
-The restart banner (`VersionBanner`, top of the stage, scrolls away) appears when
+The stage opens with ONE notice strip (`ShellNotices`, `.shell__banner`: static, scrolls away,
+renders nothing while no notice applies). It holds up to two dense one-line notices
+(`Callout dense`, 32 px; the strip is 36 px with its top padding), side by side on one line when
+both apply and wrapping only on a narrow stage, so the first image still starts near the stage
+top. The "newer build" notice (`BuildBanner`; calm info, `role=status`) appears only on a page served from the build, when `/api/version`'s
+`dist.entry` — the entry script index.html names now — differs from the `<script type="module"
+src>` this document was loaded from (`buildChanged`, exact even if the rebuild happened before
+the first answer; without an entry, from an older server, it falls back to the first
+`dist.index_hash` seen; `useConsoleBuild()` → `{updated, key}`). Text: "A newer console build is
+available." with a Reload button. It never reloads by itself and is never pinned; a dismissal is
+remembered in this browser for that build only (`ep.buildBanner.dismissed` = `buildKey(dist)`,
+the served entry), so the next rebuild shows it again. The version is polled every 60 s while the
+tab is visible and refetched when the tab comes back.
+
+The restart notice (`VersionBanner`, next to it in the same strip) appears when
 `/api/version` says `behind`: a backend `.py` file the server loaded changed on disk since
 (C3; a commit of the code it already runs is not "behind", a new SPA build never needs a
-restart). Text: "Backend code changed since the server started — restart it to load the new
-code."; Details lists `changed_files` (+ "and N more", the start time and pid). A dismissal is
+restart). Text: "Backend code changed — restart the server to use it."; Details lists `changed_files` (+ "and N more", the start time and pid). A dismissal is
 remembered in this browser (`ep.restartBanner.dismissed`) until the server restarts or the set
 of changed files changes (`bannerKey`, keyed on the server's `changed_digest` of the whole set,
 so re-saving an already-changed file — which reorders the capped list — does not bring it
@@ -1024,7 +1124,9 @@ collapsed items get tooltips).
 ```ts
 const v = useVersion().data;        // C3: {boot_short, head_short, behind, changed_files, changed_count, changed_digest, dirty, started_at, pid, dist{built_at,index_hash,entry}}
 bannerKey(v);                       // what a banner dismissal is tied to (process + changed_digest)
-useConsoleUpdate();                 // true once the served build's entry script differs from this document's
+useConsoleBuild();                  // {updated, key}: a newer build is served than this document's entry script
+useConsoleUpdate();                 // just `updated`
+buildKey(v.dist);                   // what a "newer build" dismissal is tied to (the served entry, else index_hash)
 buildChanged(documentEntry(), v.dist, firstSeenHash);   // the pure rule behind it
 const f = useFasrcStatus().data;    // C4: {ssh_connected, connected_at, socket, last_error}
 const a = useSystemAlerts().data;   // GET /api/system/alerts: {checks, alerts (warn/bad), counts, computed_at}
@@ -1064,9 +1166,11 @@ const off = bindShortcut("Shift+E", run, { description: "Evaluate" });   // impe
 Global shortcuts (`app/GlobalShortcuts.tsx`): `$mod+k` palette (also in fields), `?` this
 sheet, `g h/s/e/r/d/f/i/o/,` go to Home/Sky/Ensemble/Realism/Data/Figures/Inspect/Ops/Settings,
 `[` collapse the rail, `]` show/hide the inspector, `Shift+D` Display panel, `Shift+J` jobs,
-`Shift+T` toggle the theme. Escape closes the docked inspector — from the page too, unless
-something nearer takes the key first (a menu, dialog or popover, the viewer, a field). Pages
-must not rebind these.
+`Shift+T` toggle the theme. Escape closes the inspector from anywhere — the page, a field, the
+inspector itself — unless a dialog, popover, menu or listbox is open (it closes first) or
+something nearer used the key and `preventDefault()`ed it (the viewer leaving focus mode or
+unfreezing its lens, a zoomed chart, a table clearing its selection). Pages must not rebind
+these.
 
 ### 10.4 Inspector: `app/inspector.ts`, `app/InspectorPanel.tsx`
 
@@ -1085,9 +1189,24 @@ const href = inspectHref({ kind: "tile", id: "nexus/12" }, location); // "/sky/a
   wins until unregistered) under its kind in sentence case ("Member", `kindLabel`), with
   back/forward (the store's history), pin (pinned targets are chips at the top), copy link and
   close. Its content has its own error boundary and Suspense.
-- Focus: opening never moves focus (it is a side panel, not a dialog). Closing it while focus
-  is inside hands focus back to what had it when the target opened (else the stage), so focus
-  never drops to `<body>`.
+- Focus: opening moves focus into the panel (the `<aside>`, `tabIndex=-1`), except away from a
+  field being typed in or from a dialog; switching targets while it is open leaves focus where it
+  is (a table's arrow keys and Enter keep working). Closing it while focus is inside hands focus
+  back to what had it when the target opened (else the stage), so focus never drops to
+  `<body>` — only once the panel has really left the page (StrictMode's simulated unmount in the
+  dev build keeps it). In the narrow sheet the Radix dialog restores focus on close; on open it
+  focuses the panel itself (`onOpenAutoFocus` → the `<aside>`), not the first enabled button —
+  that was Pin, whose tooltip then took the first Esc.
+- Width (docked): resizable by the "Resize inspector" separator (pointer or keyboard) and
+  remembered per browser (`prefs.inspectorWidth`, saved after a drag; the store's storage is
+  try/catch-guarded). Until the user drags it, it opens at a width fitted to the window
+  (`app/inspectorWidth.ts`): 512 px — a ~480 px viewer inside — when the window allows, narrower so
+  the main content keeps about 560 px, but never below 380 px (a ~348 px viewer, the old fixed
+  default) when the window cannot give both: the image wins, and the main content keeps only its
+  hard 320 px minimum. E.g. 1440 px wide (expanded rail) → 512, 1280 → 482 (viewer 450, main 560),
+  1024 collapsed rail → 402, 1024 expanded rail → 380 (viewer 348, main 406), 900 expanded → 342
+  (main 320); a saved width is trimmed only so the stage keeps its 320 px minimum. The default preference value (380) stands
+  for "never resized".
 - An unregistered kind shows a "no inspector yet" card with the target; the URL keeps it, so
   the link works once the owning workspace registers the kind.
 - `?inspect=kind:id` sync (`useInspectorUrlSync`, mounted by the shell): on load and on
@@ -1227,9 +1346,12 @@ cuts…) is added this way.
 - Every tab renders inside `<ErrorBoundary resetKey={pathname} label="Workspace › Tab">`: a crash
   shows a contained card with Retry, Reload page and Copy details (message, URL, time, stacks);
   the rest of the console keeps working and navigating away resets it. A failed lazy chunk (the
-  bundle was rebuilt under an open page) offers only Reload. A whole workspace chunk failing is
+  bundle was rebuilt under an open page: "A newer console build is available and this page's code
+  is gone. Reload the page to use the new build.") offers only Reload. A whole workspace chunk failing is
   contained the same way (§10.1). `RouteError` is the root route's `errorElement`.
 - `<NotFound/>`: the path, a link to the workspace the path starts with, Home, and the ⌘K hint.
+  It renders outside `<Workspace>`, so it carries its own visually hidden h1, "Not found" (one h1
+  per page, §9).
 
 ## 11. Workspaces
 
@@ -1265,7 +1387,7 @@ export default function RealismWorkspace() {
   the strip's `<nav>` landmark and its items are router links (middle-/⌘-click opens a new
   browser tab). `app/tabFit.ts` (`fitTabs`, unit-tested) does the maths;
   `WorkspaceTabs` measures the tabs before paint and re-fits on resize, density and font load.
-- Every page gets a visually hidden h1, `pageHeading(pathname)` ("Members — Ensemble
+- Every page gets a visually hidden h1, `pageHeading(pathname)` ("Members, Ensemble
   (starless)"), for screen readers and the outline; CSS drops it when the page renders its own
   h1 (`.ws:has(.ws__body h1)`), so there is always exactly one.
 - A bare workspace path redirects to the manifest default tab, or to `redirectTab` when that is
@@ -1274,8 +1396,9 @@ export default function RealismWorkspace() {
 - `aside` is the workspace's (the ensemble regime switch). A tab that needs ONE control reachable
   without scrolling and without a row over its images can portal it into the aside: the ensemble
   workspace provides a slot left of the switch (`workspaces/ensemble/aside.ts`, `TabAsideSlot` /
-  `useTabAside`); Disagreement's "Pick members" menu lives there. Outside the workspace the slot
-  is null and the tab shows only its in-page controls.
+  `useTabAside`); Disagreement's member menu lives there (its button names what the movie shows:
+  "Members: 196, 195 +1 · Change", "Members: none · Pick"). Outside the workspace the slot is null
+  and the tab shows only its in-page controls.
 - A theme or accent flip re-renders the active tab (and `children`, which `<Workspace>` clones
   for that reason): the route elements above a workspace are static, and the legacy pages read
   colour tokens during render. `bindPrefsToDocument` has already updated `<html data-theme>`
@@ -1324,7 +1447,6 @@ export default function Members() {
 
   return (
     <Page>
-      <PageHead eyebrow="ensemble · members" title="Members" />
       <Card>
         <CardHead title="Members" right={<Button disabled={!sel.length} onClick={archiveSelected}>Archive</Button>} />
         <CardBody>
@@ -1349,15 +1471,16 @@ its workspace folder, with its logic next to it.
 
 | Workspace | Tabs → modules | Inspector kinds |
 |---|---|---|
-| `/` Home | `workspaces/home/Dashboard.tsx` (+ `homeModel.ts`, `skyProjection.ts`) | `check` |
+| `/` Home | `workspaces/home/Dashboard.tsx` (+ `homeModel.ts` incl. the tracking catch-up note, `skyProjection.ts`) | `check` |
 | `sky` | `tabs/Atlas.tsx` (+ `atlas/`, `src/sky/` Aladin engine) · `tabs/{Results,Experiments,CatalogEval}.tsx` (+ `results/`) | `tile`, `source`, `realtile`, `experiment` |
-| `ensemble/:mode` | `tabs/{Overview,Members,Curves,Knee,Diagnostics,Combiners,Disagreement,Train}.tsx` | `member`, `combiner` |
+| `ensemble/:mode` | `tabs/{Overview,Members,Curves,Knee,Diagnostics,Combiners,Disagreement,Train}.tsx` (+ `model.ts`, `trainModel.ts`, `notes.ts`, `PixelTrace.tsx`) | `member`, `combiner` |
 | `realism` | `tabs/{Overview,Noise,Galaxies,Stars,Pixels,Visual}.tsx` | `readiness`, `noisepos`, `archivefield` |
 | `data` | `tabs/{Records,Catalog,Cutouts,Psfs,Tng}.tsx` | `star`, `truth`, `psf`, `tng` |
 | `figures` | `tabs/{Grid,Plates,Results}.tsx` | `figure` |
 | `inspect` | `InspectPage` (`?path=`, `dir`, `q`, `hdu`, `slice`, `view`) | `fits` |
 | `ops` | `tabs/{Jobs,Fasrc,Tracking,Git,Provenance}.tsx` (+ `steps/`, behind `src/fasrc.tsx`) | `prov`, `campaign`, `commit` |
-| `settings` | `tabs/{Config,Connections,Appearance,About}.tsx` | `root` |
+| `settings` | `tabs/{Config,Connections,Appearance,About}.tsx` (+ `configModel.ts`, `appearanceModel.ts`) | `root` |
+| (shared) | `workspaces/shared/`: `LogToTracking.tsx`, `PageLead.tsx`, `versionText.ts`, `noteText.ts` (§11.6) | — |
 
 ### 11.4 Adding or replacing a tab
 
@@ -1395,6 +1518,118 @@ import { StepById, SlurmMonitor, useStepsStatus } from "../../../fasrc";
   `ConnectionBar`, `CurrentSubmission` (the live SLURM jobs panel) and the `Step`/`StepsStatus`/
   `TaskParam`/`SlurmStatus` types.
 
+### 11.6 Pieces shared across workspaces: `workspaces/shared/`
+
+A component or pure helper that more than one workspace uses, and that is not a kit primitive,
+lives here (import it from the workspace; never from another workspace's folder).
+
+```tsx
+import { LogToTrackingButton, LogToTrackingDialog, appendTrackingNote } from "../../shared/LogToTracking";
+<LogToTrackingButton note={() => markdown} title="…" />                 // "Log to tracking" + the dialog
+<LogToTrackingDialog open={open} onOpenChange={setOpen} note={() => md} /> // controlled: a menu item, a Home action
+import { PageLead } from "../../shared/PageLead";
+<PageLead right={<Button …>Refresh</Button>}>What the page is for.</PageLead>
+```
+
+- **LogToTracking**: an editable markdown note (`textbox "Markdown note"`) pre-filled from the
+  page's facts when the dialog opens; nothing is sent until "Append" (`POST /api/tracking/log
+  mode=append`), then `/api/tracking/` is invalidated and the Home `tracking` check recomputed
+  (`/api/system/alerts?fresh=1`). Used by Sky › Experiments (`sky/results/LogToTracking.tsx` is a
+  one-line re-export), Ensemble › Overview / Knee / Combiners and Home › Quick actions.
+- **PageLead**: the lead line of an Ops / Settings / Home page with the page's own actions at its
+  right. Those pages render no visible title or eyebrow: the breadcrumb and the active tab name
+  the page, `<Workspace>` renders its visually hidden h1.
+- **versionText** (`serverCodeText`): the version state in plain words — "Backend code changed —
+  restart the server to load it" (`/api/version` `behind`), "The console build changed — reload"
+  (`useConsoleUpdate`), else "current code". Home › Server and Settings › About read it; never
+  "behind HEAD".
+- **noteText** (`utcText`): "2026-09-25 23:32 UTC" for notebook notes.
+
+### 11.7 Ensemble, Ops, Figures, Home and Settings: page notes
+
+- **Charts** pass no `xTicks`/`yTicks` unless they want specific ones: `Plot` generates them (and
+  their grid lines) itself (§9.4). The r(k) / T(k) y axis keeps `unitTicks` (0, 0.25 … 1) with the
+  horizontal grid; log axes pass `logTicks`/`decadeTicks`; categorical axes their labels.
+- **Ensemble › Diagnostics, pixel back-trace** (`PixelTrace.tsx`): rows of LR · target · SR · σ
+  stamps on the viewer's light table (`cv-root cv-table` classes, its scoped dark palette in both
+  themes); ONE asinh knee per row from the traced pixel's level (`model.ts stampKnee`), named in
+  the row's header line with the field and pixel; each backing store is the whole number of device
+  pixels that fits the stamp box and the canvas's CSS box snaps to it (`model.ts stampBacking`:
+  a 141.5 css px cell at dpr 2 gets a 283 px backing shown at 141.5 css px, no rescale); a pick
+  scrolls the trace into view (`block: "nearest"`, instant under reduced motion).
+- **Ensemble › Disagreement** opens on LR | SR | HR (SR = the production gate); the member menu in
+  the tab strip names the picked members (`model.ts membersButtonText`; the "· Change" word hides
+  below 900 px).
+- **Ensemble › Combiners**: the real holes come from ONE Sky experiment (`?bench=`, default the
+  newest that ran production; `model.ts benchmarkExperiment / benchmarkChoices`), per band
+  VIS · Y · J · H with the worst band coloured (`holesText`); variants it did not run are blank; the
+  bar's "Real holes from" picker names the tile set. Member counts read `readsText` ("6 of 20
+  members" for a pruned gate).
+- **Ensemble notebook notes** (`notes.ts`, pure): `evaluationNote` (Overview), `kneeNote` (the
+  leaderboard as a markdown table with its integration range), `variantNote` (a fit; row menu
+  and after a fit job), `compareNote` (the compare report card), `promoteNote` (after a promote).
+- **Ensemble › Train** seeds CPUs / memory / time from the newest COMPLETED job of the same kind
+  (`trainModel.ts defaultResources`, else the recipe 16 CPUs, 32G, 3:00:00); "Continue them…"
+  (`?mode=continue&members=`) continues up to the members' `target_steps`; the submit confirm
+  names CPUs, memory and time. The command preview under the form is `POST
+  /ensemble/train/preview` from a debounced effect, also on open: a read-only exemption from
+  "no effect POSTs" (it builds the member names and the command locally; nothing reaches FASRC
+  or starts a job). Making it a GET needs a change in `routes/ensemble.py`.
+- **Ops › Tracking notebook**: newest entry first (`?nbnew=0` for oldest), a "Jump to a day" menu
+  in the card head and, on a page ≥ 1100 px, the day outline beside the text grouped by month
+  (`ops/model.ts notebookOrder / notebookDays`).
+- **Figures › Grid**: a cell a column lacks does not blank the sheet — the preview, the full-size
+  view and the downloads ask for `missing=blank` (`api.ts gridUrl(…, missing)`) and the server
+  draws a grey "Not available" cell in place; `gridStatus` refuses only when no cell is
+  available. The sheet's row titles are sized to their text (API.md).
+- **Settings › Appearance "Images"** is a read-only summary of the live Display settings
+  (`appearanceModel.ts displaySummary`, changed values in the accent colour) with "Open the
+  Display panel" — the panel is the one place they change.
+
+### 11.8 Sky, Data, Inspect and Realism: page notes
+
+- **Sky › Atlas coverage** (`atlas/specs.ts coverageFill`): every coverage layer — the Q1 / JWST
+  MOCs and the coverage-group shapes (Q1 deep-field circles, MER tiles) — is an outline only
+  below `MOC_FILL_MIN_FOV` (2°), so the Euclid colour imagery keeps a neutral surround (the
+  NEXUS preset at 27′ sits inside EDF-N's circle and the Q1 MOC); zoomed out it fills. A fill
+  the user set (the layer's slider, a URL opacity) is drawn at every zoom; the row says
+  "Outline only while zoomed in; move the slider to fill it". The renderer rebuilds a shape
+  layer when its fill flips (`specSignature` carries it).
+- **Sky › Atlas deep links**: `?inspect=<target>` without `ra`/`dec` opens framed on the
+  inspected feature (`urlState.ts featureView`: its size × 6, 1.2′–30°), not on the whole sky.
+  Status-bar labels are sentence case ("Centre", "FoV", "Pixel"); the values stay tabular mono.
+- **Sky › Real results table** (`results/columns.tsx`): Tile, RA / Dec and Production never
+  drop; Source (the chips say it), Field, Models, R̃ and Holes % drop in that order when the
+  table is narrow (kit `priority`, §9.3). The key columns are two short lines each — the tile
+  id over its JWST badge (110 px), RA over Dec (96 px, the whole "268.3772°" / "+65.0985°" in
+  tabular mono), Production (90 px) — so with the select column they fit the 340 px the tile
+  inspector leaves at 1024 × 768 (`INSPECTOR_TABLE_PX`) with no sideways scroll, in a 34 px
+  row. Without the inspector at 1024 only Source drops.
+- **Tier labels come from the backend in plain words** (API.md "Labels"): the chip is the part
+  before " · " — "LR VIS · HDU 1", "LR colour · VIS Y J H", "Mean · 30 starfull members",
+  "JWST (native)"; a spec whose every output in the source is an older legacy SR is named for
+  what is served ("RBF (10 or 20 members, legacy)"), not the current catalogue entry.
+- **Inspect**: a results FITS opens on LR colour | SR colour, drawn in colour (a per-viewer
+  Lupton override, `model.ts compareDisplay`; the Display panel stays VIS); a bright file's white point comes
+  from the server (`meta.color.default_asinh` = the selected plane's p99.99 ÷ 30) and the page
+  seeds the knee from its p99.9 (`model.ts brightExposure`: p99.9 ÷ 30, brightness 1×), so the
+  poster galaxy's core (VIS 12.2 AB) keeps its structure. The page's HDU picker is labelled
+  "HDU" (name first: "LR colour (HDUs 1–4)", "LR VIS (HDU 1)") — it picks what the header, table
+  and statistics describe; the viewer's chips pick the images. A squeezed breadcrumb gives way
+  in the middle ("Po… (repo)", `model.ts middleSplit`), never to its first letter.
+- **Data** toolbars compact by levels instead of wrapping (`common.tsx DataBar compactable`,
+  `model.ts compactLevelFor`; data/README.md): Records keeps ONE row — its viewer starts 85 px
+  under the stage top at 1024 × 768 and 720 × 720. In the compact levels the split's worst
+  state keeps its word ("No SR"; `model.ts worstToneIndex`) and the others show their dot, their
+  words clipped (not removed), so they stay the badges' text for screen readers. The `cutouts` collection is served in
+  electrons (MAGZERO), so Cutouts has no page-side stretch.
+- **Realism › Visual**: the shared row drives both lanes' zoom (− / +, `ViewerApi.zoomBy`) and
+  the magnifier (`setTool("lens")`, pressed while both lanes show it). Below a 720 px block the
+  "Same transfer" words are clipped off screen (still the switch's label), so the row stays one
+  line and the first frame starts 132 px under the stage top at 720 × 720 as at 1024. Realism labels (check
+  labels, kickers, curve-group titles, trust boxes) are the UI face in sentence case; data
+  values stay tabular mono.
+
 ## 12. Viewer engine v2: `viewer/` (WP-V)
 
 The one image viewer of the console (spec §6). Full reference: `src/viewer/README.md` (props, API,
@@ -1405,14 +1640,37 @@ import { ImageViewer, type ViewerApi } from "../../viewer";
 <ImageViewer collection="nexus-field" params={{ field }} tiers={["lr", "sr", "jwst"]} urlKey="nexus"
   toolbar="full" onReady={(api) => (ref.current = api)} onState={(s) => setIndex(s.index)} />
 api.goToId("nexus-…/0200"); api.zoomTo(268.24, 65.19, 5); api.getReadout(); api.setView({ color: "lupton" });
+api.zoomBy(1.5); api.setTool("lens"); api.setFocus(true);   // one integer-pixel zoom step, the magnifier, Open large
 ```
+
+- **Fit.** The viewer fits its own frames under its own top: height = stage viewport − (viewer
+  top − stage top + scroll) − its bar, Display row and readout − 8 px, clamped by 160 px
+  (`fit.ts` `heightUnderTop`), refitting when anything above it changes height. Pages place the
+  viewer directly; there is no page-side fit wrapper (the Data `ViewerStage` and Sky `FitBox`
+  are gone). "Auto" picks the arrangement whose rows fit, each empty cell costing 6 %, one row
+  within 2 % of the best.
+- **Look.** One dark light table: a bar of at most two rows (a narrow viewer, 300–480 px,
+  collapses the band / tier chips and moves export, layout, tools, compare and zoom into a More
+  menu; "Open large" is always visible), a Display row under the bar (knee, brightness,
+  stretch; "More display settings" in a wide, short two-column popover whose histogram is a
+  page of its own, so it never scrolls), the frames, and a readout of 1–4 reserved lines. A viewer narrower than 480 px opens with at most two tiers unless the URL names them.
+  A tier the object lacks is dimmed with its reason; one with no coverage (< 1 % and < 1000
+  finite values) shows "No JWST data here" and reads "no data"; a sparse one (< 1 % but a real
+  corner of data) is painted with a quiet caption at its foot.
+- **Pixel-exact fit**: the whole image is snapped to an integer multiple of native pixels in
+  device pixels when that keeps ≥ 80 % of the cell (always with the layout menu's "Pixel-exact
+  fit"; whether that becomes the default is the lead's call); the zoom steps land on integer
+  magnifications up to 64×, then go on continuously to the maximum (`draw.ts`).
 
 - **Display binding (C7).** Effective settings are `mergeDisplay(useDisplay, override)`. A linked
   viewer's toolbar, keyboard and histogram edits write the Display panel store; fields a viewer
   overrides (`setView`, the `display` prop, `?v.<k>.c`) stay per-viewer; the viewer's link toggle
   copies the current settings into its own override. The default is the locked absolute asinh
   transfer, bit-identical to the pre-rework engine (golden-tested); stretches, colormaps, black
-  point and invert are opt-in; NaN pixels take `nanColor`.
+  point, invert and `matchSurfaceBrightness` (each e⁻ tier × (ref / pixscale)² before the
+  stretch, ref = the coarsest shown; off by default, off = bit-identical) are opt-in; NaN pixels
+  take `nanColor` (a neutral dark grey by default). The per-viewer link switch reads "Use the
+  page-wide display settings".
 - **Colour keys and linking** (behaviour change from the old engine, whose colour was per
   viewer): while linked, a viewer's Q–Y keys and colour chips set the Display panel colour, so
   every linked viewer follows; unlink for per-viewer colour. The JWST "temperature" chip is a
@@ -1421,8 +1679,11 @@ api.goToId("nexus-…/0200"); api.zoomTo(268.24, 65.19, 5); api.getReadout(); ap
   tier's `X-Cube-WCS` (normalised position only without one); pointer coordinates are measured
   from the frame's padding box (inside its 1 px border).
 - **URL state** (`urlKey`): `v.<k>.id` (or `.i`), `.t` tiers, `.r` residual tiers, `.z` view,
-  `.c` colour override; the default (mount-time) state is not written. All viewers flush their
-  URL writes in one tick.
+  `.c` colour override; the default (mount-time) state is not written, nor a tier set the object
+  has none of. The object is resolved before the tiers are filtered by its own `tiers`. All
+  viewers flush their URL writes in one tick.
+- **Prefetch**: only a navigating viewer (`nav`) warms its neighbours, each with its own
+  `meta.objects[j].tiers`.
 - **Wheel** follows `display.wheel` (default: zoom only when the viewer is focused or ⌘/Ctrl is held;
   a plain wheel scrolls the page).
 - **Other surfaces** that need the viewer's colour (e.g. stamps) use `renderCubeImageData` from

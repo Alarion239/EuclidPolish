@@ -135,7 +135,7 @@ describe("Settings › Connections", () => {
 });
 
 describe("Settings › Appearance", () => {
-  it("edits theme, accent, density, rail and the image defaults", async () => {
+  it("edits theme, accent, density and rail, and summarises the live Display settings", async () => {
     show(<Appearance />);
     fireEvent.click(screen.getByRole("radio", { name: "Dark" }));
     expect(usePrefs.getState().theme).toBe("dark");
@@ -145,12 +145,14 @@ describe("Settings › Appearance", () => {
     expect(usePrefs.getState().density).toBe("compact");
     fireEvent.click(screen.getByRole("switch", { name: /Collapse the navigation rail/ }));
     expect(usePrefs.getState().railCollapsed).toBe(true);
-    fireEvent.change(screen.getByLabelText("Mouse wheel over a viewer"), { target: { value: "scroll" } });
-    expect(useDisplay.getState().wheel).toBe("scroll");
-    fireEvent.change(screen.getByLabelText("NaN colour"), { target: { value: "#112233" } });
-    expect(useDisplay.getState().nanColor).toBe("#112233");
-    fireEvent.change(screen.getByLabelText("Stretch"), { target: { value: "sqrt" } });
-    expect(useDisplay.getState().stretch).toBe("sqrt");
+    // No second set of display controls: a read-only summary of the live store…
+    expect(screen.queryByLabelText("Stretch")).toBeNull();
+    expect(screen.getByText("Asinh (absolute)")).toBeTruthy();
+    expect(screen.getByText("as installed")).toBeTruthy();
+    act(() => useDisplay.getState().set({ stretch: "sqrt" }));
+    expect(await screen.findByText("Square root")).toBeTruthy();
+    expect(screen.getByText("1 changed")).toBeTruthy();
+    // …and the Display panel is where they change
     fireEvent.click(screen.getByText("Open the Display panel"));
     expect(useShellUi.getState().display).toBe(true);
     fireEvent.click(screen.getByText("Reset display settings"));
@@ -163,7 +165,9 @@ describe("Settings › Appearance", () => {
 describe("Settings › About", () => {
   it("shows boot vs HEAD, the dirty tree and the dist build", async () => {
     show(<About />);
-    expect(await screen.findByText("Restart the server")).toBeTruthy();
+    expect(await screen.findByText("Backend code changed — restart the server to load it")).toBeTruthy();
+    expect(screen.getByText("code changed")).toBeTruthy();
+    expect(screen.queryByText(/behind/)).toBeNull();
     // short hashes, the full one in the tooltip and on the copy button
     expect(screen.getByTitle("1111111aaaa").textContent).toBe("1111111");
     expect(screen.getByTitle("2222222bbbb").textContent).toBe("2222222");

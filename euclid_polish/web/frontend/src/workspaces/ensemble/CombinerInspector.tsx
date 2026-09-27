@@ -13,7 +13,6 @@ import { Badge, Button, DefList, EmptyState, JobProgress, JsonTree, Section, Ske
 import { BAND_SHORT, useCombiners, type Mode } from "./api";
 import { JOB, useOnJobEnd } from "./jobs";
 import { db, memberNumber, variantLabel } from "./model";
-import { autoTicks } from "../plotTicks";
 import "./ensemble.css";
 
 const nums = (labels: string[]) => labels.map((l) => memberNumber(l) ?? l).join(", ");
@@ -88,7 +87,7 @@ export default function CombinerInspector({ id }: InspectorProps) {
         const histY: [number, number] = [Math.min(...ys) * 0.98, Math.max(...ys) * 1.02];
         return (
         <Section title="Held-out loss">
-          <Plot xDomain={histX} yDomain={histY} xTicks={autoTicks(histX)} yTicks={autoTicks(histY)}
+          <Plot xDomain={histX} yDomain={histY}
             series={[{ x: hist.map((h) => h.step), y: ys, color: C.comb, width: 2, dots: true, name: "held-out loss" }]}
             xLabel="fit step" yLabel="loss (1 = best member)" aspect={0.6} exportName={`${v.name}-history`} aria-label={`${v.name} held-out loss`} />
         </Section>

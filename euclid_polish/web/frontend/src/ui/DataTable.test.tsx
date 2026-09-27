@@ -24,6 +24,8 @@ const COLS: DataColumn<Row>[] = [
   { id: "loss", header: "Loss" },
 ];
 const key = (r: Row) => r.name;
+/* Radix menus open on pointerdown (mouse, primary button). */
+const pointerOpen = (el: Element) => fireEvent.pointerDown(el, { button: 0, ctrlKey: false, pointerType: "mouse" });
 
 /** Body row names in DOM order. */
 function bodyNames(): string[] {
@@ -315,6 +317,76 @@ describe("DataTable columns and export", () => {
     fireEvent.click(csv);
     // the whole selection, in the current sort order
     expect(downloads.calls[0].text).toBe("Member,PSNR,Loss\r\nmember_3,42,l3\r\nmember_2,44.1,l2\r\n");
+  });
+});
+
+describe("DataTable at narrow widths", () => {
+  type Tile = { src: string; tile: string; field: string; radec: string; models: string };
+  const TILES: Tile[] = [
+    { src: "nexus", tile: "12", field: "EDF-N", radec: "269.27120 +65.09876", models: "4" },
+    { src: "q1", tile: "7", field: "EDF-S", radec: "61.17780 -48.34012", models: "2" },
+  ];
+  const TCOLS: DataColumn<Tile>[] = [
+    { id: "src", header: "Source", width: 80, priority: 2 },
+    { id: "tile", header: "Tile", width: 190 },
+    { id: "field", header: "Field", width: 64, priority: 3 },
+    { id: "radec", header: "RA, Dec", width: 120, minWidth: "19ch", priority: 1 },
+    { id: "models", header: "Models", width: 170, priority: 3 },
+  ];
+  /** Give the scroll viewport a width (happy-dom has no layout). */
+  function viewport(clientWidth: number, scrollWidth = clientWidth) {
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(function (this: HTMLElement) {
+      return this.classList.contains("ui-dt__scroll") ? clientWidth : 0;
+    });
+    vi.spyOn(HTMLElement.prototype, "scrollWidth", "get").mockImplementation(function (this: HTMLElement) {
+      return this.classList.contains("ui-dt__scroll") ? scrollWidth : 0;
+    });
+  }
+  const heads = () => screen.getAllByRole("columnheader").map((h) => h.textContent);
+  afterEach(() => vi.restoreAllMocks());
+
+  it("floors a column at its minWidth (RA/Dec asks for 19 digits) in the fit", () => {
+    // (the <col> width is CSS max(…, calc(19ch + 20px)), see colWidthCss; happy-dom drops max())
+    viewport(480);
+    render(<DataTable rows={TILES} columns={TCOLS} rowKey={(r) => r.tile} />);
+    // RA, Dec counts 19 × 7.8 + 20 = 168 px, not its 120: 672 → −Models 502 > 480 → −Field 438
+    expect(heads()).toEqual(["Source", "Tile", "RA, Dec"]);
+  });
+
+  it("drops the lowest-priority columns first when the table is narrow, and the column menu shows them again", () => {
+    viewport(500);
+    render(<DataTable rows={TILES} columns={TCOLS} rowKey={(r) => r.tile} aria-label="tiles" />);
+    // need 80+190+64+168+170 = 672 > 500: Models (3, rightmost), then Field (3) go → 438 fits
+    expect(heads()).toEqual(["Source", "Tile", "RA, Dec"]);
+    const trigger = screen.getByRole("button", { name: "Columns: 2 hidden to fit" });
+    expect(trigger.textContent).toContain("2 hidden");
+    pointerOpen(trigger);
+    const models = screen.getByRole("menuitemcheckbox", { name: "Models (hidden to fit)" });
+    expect(models.getAttribute("aria-checked")).toBe("false");
+    fireEvent.click(models);
+    // asked for: added (the table scrolls sideways); the other columns stay put
+    expect(heads()).toEqual(["Source", "Tile", "RA, Dec", "Models"]);
+    expect(screen.getByRole("button", { name: "Columns: 1 hidden to fit" })).toBeTruthy();
+  });
+
+  it("drops nothing while the width is unknown or wide enough", () => {
+    render(<DataTable rows={TILES} columns={TCOLS} rowKey={(r) => r.tile} />);
+    expect(heads()).toEqual(["Source", "Tile", "Field", "RA, Dec", "Models"]);
+    expect(screen.queryByRole("button", { name: /hidden to fit/ })).toBeNull();
+  });
+
+  it("marks a horizontal overflow with an edge shade that follows the scroll", () => {
+    viewport(300, 900);
+    const cols = TCOLS.map(({ priority: _p, ...c }) => c);    // nothing may drop
+    render(<DataTable rows={TILES} columns={cols} rowKey={(r) => r.tile} />);
+    const frame = document.querySelector(".ui-dt__frame")!;
+    expect(frame.hasAttribute("data-more-right")).toBe(true);
+    expect(frame.hasAttribute("data-more-left")).toBe(false);
+    const scroller = document.querySelector(".ui-dt__scroll") as HTMLElement;
+    scroller.scrollLeft = 600;
+    fireEvent.scroll(scroller);
+    expect(frame.hasAttribute("data-more-right")).toBe(false);
+    expect(frame.hasAttribute("data-more-left")).toBe(true);
   });
 });
 

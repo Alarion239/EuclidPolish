@@ -13,7 +13,6 @@ import { Button, Chip, EmptyState, Page, Segmented, Select, Switch } from "../..
 import { BAND_SHORT, BANDS, useCurves, useMode, type Curve } from "../api";
 import { BarGroup, ColorBySelect, EnsBar, LoadState, openMember, useFacetColors } from "../common";
 import { facetOf, kneeText, memberNumber, smooth, xy, type ColorBy } from "../model";
-import { autoTicks } from "../../plotTicks";
 import "../ensemble.css";
 
 type Layout = "grid" | "bands" | "psnr" | "loss" | "gnorm" | "time";
@@ -136,7 +135,6 @@ export default function Curves() {
               <div key={p.key} className="ens-chart">
                 <h3 className="ens-chart__title">{p.spec.title}</h3>
                 <Plot {...lg.plotProps} xDomain={p.xDomain} yDomain={p.yDomain} yScale={p.log ? "log" : "linear"}
-                  xTicks={autoTicks(p.xDomain, "linear", kfmt)} yTicks={autoTicks(p.yDomain, p.log ? "log" : "linear")}
                   xLabel="training step" yLabel={p.spec.y} series={p.series} guides={p.guides}
                   aspect={plots.length > 1 ? 0.62 : 0.42} syncKey="ens-curves" zoomAxes="x"
                   xFormat={kfmt} yFormat={(v) => (p.log ? v.toPrecision(3) : v.toFixed(2))}

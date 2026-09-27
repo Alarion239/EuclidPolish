@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 import type { PlateRun, SavedResult } from "./api";
 import {
-  LIGHTBOX, commonRecipes, previewRows, cropSideArcsec, findRender, galleryMatches, gridSizeText, gridStatus, lightboxStageHeight, previewPaperCap, inspectLink, isRecipeKey, matchTile,
+  LIGHTBOX, commonRecipes, cropSideArcsec, findRender, galleryMatches, gridSizeText, gridStatus, lightboxStageHeight, previewPaperCap, inspectLink, isRecipeKey, matchTile,
   missingRecipes, moveItem, normalizeIndex, parseTileList, plateCoverage, recipeLabel,
   renderKey, renderTitle, resultRegime, sanitizeColumns, skyLink, sourceLabel, specsCoveringAll,
   viewerLink, wcsState, type NexusTile,
@@ -32,14 +32,6 @@ describe("recipes", () => {
     expect(commonRecipes([])).toEqual([]);
   });
 
-  it("previews the rows every column has while some cells are unavailable (instead of nothing)", () => {
-    const a = result({ id: "a" });
-    const b = result({ id: "b", recipes: ["dirty:VIS", "hr:VIS"] });
-    expect(previewRows(["hr:VIS", "dirty:VIS"], [a, b])).toEqual(["dirty:VIS"]);
-    expect(previewRows(["dirty:VIS"], [a, b])).toEqual(["dirty:VIS"]);
-    expect(previewRows(["hr:VIS"], [a, b])).toEqual([]);
-    expect(previewRows(["hr:VIS"], [])).toEqual(["hr:VIS"]);
-  });
 });
 
 describe("normalizeIndex", () => {
@@ -85,9 +77,14 @@ describe("regime and grid status", () => {
     expect(gridStatus({ ...base, columns: ["a"], rows: [] }).text).toMatch(/at least one row/);
     expect(gridStatus({ ...base, columns: ["a", "b", "c"], rows: ["dirty:VIS"] }).text).toMatch(/At most 2 columns/);
     expect(gridStatus({ ...base, columns: ["zz"], rows: ["dirty:VIS"] }).text).toMatch(/no longer saved/);
-    const bad = gridStatus({ ...base, columns: ["a", "b"], rows: ["dirty:VIS", "sr:VIS"] });
-    expect(bad).toMatchObject({ canRender: false, unsupported: 1, tone: "bad" });
-    expect(gridStatus({ ...base, columns: ["a", "b"], rows: ["dirty:VIS"] })).toMatchObject({ canRender: true, text: "1 × 2 ready" });
+    // a missing cell no longer blocks the sheet: it renders, grey "Not available" in place
+    const partial = gridStatus({ ...base, columns: ["a", "b"], rows: ["dirty:VIS", "sr:VIS"] });
+    expect(partial).toMatchObject({ canRender: true, missing: true, unsupported: 1, tone: "warn", text: "1 cell not available (grey in the sheet)" });
+    expect(gridStatus({ ...base, columns: ["a", "b"], rows: ["dirty:VIS", "sr:VIS", "hr:VIS"] }).text).toBe("3 cells not available (grey in the sheet)");
+    // nothing to draw at all: refused
+    expect(gridStatus({ ...base, columns: ["b"], rows: ["sr:VIS"] })).toMatchObject({ canRender: false, missing: false, tone: "bad",
+      text: "No cell is available: no column has these rows" });
+    expect(gridStatus({ ...base, columns: ["a", "b"], rows: ["dirty:VIS"] })).toMatchObject({ canRender: true, missing: false, text: "1 × 2 ready" });
     expect(gridStatus({ ...base, error: true, columns: ["a"], rows: ["dirty:VIS"] }).canRender).toBe(false);
   });
 

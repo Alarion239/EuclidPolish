@@ -91,7 +91,7 @@ function Node(
           {entries.length > shown && (
             <li className="ui-json__row">
               <button type="button" className="ui-json__more" onClick={() => setShown((s) => s + pageSize)}>
-                show {Math.min(pageSize, entries.length - shown)} more of {entries.length - shown}
+                Show {Math.min(pageSize, entries.length - shown)} more of {entries.length - shown}
               </button>
             </li>
           )}

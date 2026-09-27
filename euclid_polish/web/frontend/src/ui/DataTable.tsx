@@ -3,6 +3,9 @@
    stay fast; multi-key sort, a filter mini-language, column visibility,
    checkbox selection with shift-ranges, keyboard row navigation, row →
    inspector, CSV export, sticky header, optional URL-bound sort/filter.
+   Narrow tables: columns may ask for a minimum width (`minWidth`) and drop
+   out by `priority` when they do not fit (the column menu shows them again),
+   and a horizontal overflow is marked by a shade on the edge that has more.
 
    The pure model (sorting, filtering, CSV, ranges, widths) is `tableModel.ts`.
    Rows must be distinct objects (or unique primitives) with unique keys. */
@@ -17,8 +20,8 @@ import { sameTarget, useInspector, type InspectTarget } from "../state/inspector
 import { Button, IconButton } from "./Button";
 import { Checkbox, Input } from "./controls";
 import {
-  columnValue, estimateWidths, filterRows, headerText, nextSort, parseSort, rangeKeys, serializeSort,
-  sortRows, toCSV, type DataColumn, type SortState,
+  colWidthCss, columnValue, estimateWidths, filterRows, fitColumns, headerText, nextSort, parseSort, rangeKeys,
+  serializeSort, sortRows, toCSV, type DataColumn, type SortState,
 } from "./tableModel";
 import { EmptyState, Skeleton } from "./display";
 import { downloadText, safeFileName } from "./download";
@@ -145,6 +148,8 @@ function DataTableView<T>(p: DataTableProps<T>) {
   const [visInner, setVisInner] = useState<Record<string, boolean>>({});
   const visibility = p.columnVisibility ?? visInner;
   const isVisible = (c: DataColumn<T>) => visibility[c.id] ?? !c.hidden;
+  /* The columns the user wants (defaults + the column menu); `shownCols` is
+     what fits (§ narrow widths, below). CSV exports every wanted column. */
   const visibleCols = columns.filter(isVisible);
   const [cursor, setCursor] = useState<string | null>(null);
   /* The anchor is the row last clicked, activated (Enter) or toggled; a Shift
@@ -179,6 +184,41 @@ function DataTableView<T>(p: DataTableProps<T>) {
   const liveSelected = useMemo(() => selected.filter((k) => entries.byKey.has(k)), [selected, entries]);
   const selSet = useMemo(() => new Set(liveSelected), [liveSelected]);
   const widths = useMemo(() => estimateWidths(rows, columns), [rows, columns]);
+
+  /* ── narrow widths: drop columns by priority, shade the scrolling edge ── */
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const tableRef = useRef<HTMLTableElement>(null);
+  const [avail, setAvail] = useState(0);
+  const [edges, setEdges] = useState<{ left: boolean; right: boolean }>({ left: false, right: false });
+  const measure = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const w = el.clientWidth;
+    setAvail((old) => (Math.abs(old - w) >= 1 ? w : old));
+    const left = el.scrollLeft > 1;
+    const right = el.scrollLeft + el.clientWidth < el.scrollWidth - 1;
+    setEdges((old) => (old.left === left && old.right === right ? old : { left, right }));
+  }, []);
+  const dropped = useMemo(() => {
+    const keep = new Set(Object.keys(visibility).filter((k) => visibility[k] === true));
+    const fit = visibleCols.map((c) => ({ id: c.id, width: widths[c.id] ?? 120, priority: c.priority }));
+    if (selectable) fit.unshift({ id: "\u0000select", width: 36, priority: undefined });
+    return new Set(fitColumns(fit, avail, keep));
+    // visibleCols is derived from columns + visibility
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [columns, visibility, widths, avail, selectable]);
+  const shownCols = dropped.size ? visibleCols.filter((c) => !dropped.has(c.id)) : visibleCols;
+  const shownSig = shownCols.map((c) => c.id).join("|");
+  useLayoutEffect(() => {
+    measure();
+    if (typeof ResizeObserver === "undefined") return undefined;
+    const ro = new ResizeObserver(() => measure());
+    if (scrollRef.current) ro.observe(scrollRef.current);
+    if (tableRef.current) ro.observe(tableRef.current);
+    return () => ro.disconnect();
+  }, [measure]);
+  // New columns or rows change the table's width: re-read the edges.
+  useLayoutEffect(() => { measure(); }, [measure, shownSig, rows.length]);
 
   /* ── selection ── */
   const commitSelection = useCallback((next: Set<string>, keepRange = false) => {
@@ -247,7 +287,6 @@ function DataTableView<T>(p: DataTableProps<T>) {
   };
 
   /* ── virtualisation ── */
-  const scrollRef = useRef<HTMLDivElement>(null);
   const headRef = useRef<HTMLTableSectionElement>(null);
   const rowH = rowHeight ?? (dense ? 28 : 34);
   const threshold = typeof virtualize === "number" ? virtualize : 150;
@@ -354,12 +393,14 @@ function DataTableView<T>(p: DataTableProps<T>) {
   const csvTitle = !selSet.size ? "Export the rows shown"
     : `Export the ${selSet.size.toLocaleString("en-US")} selected row${selSet.size === 1 ? "" : "s"}`
       + (selHidden ? ` (${selHidden.toLocaleString("en-US")} hidden by the filter)` : "");
-  const hideable = columns.filter((c) => c.hideable !== false);
+  const hideable = columns.filter((c) => c.hideable !== false || dropped.has(c.id));
   const columnItems: MenuItem[] = [
     { type: "label", label: "Columns" },
     ...hideable.map((c): MenuItem => ({
-      type: "checkbox", id: c.id, label: headerText(c), checked: isVisible(c),
-      disabled: isVisible(c) && visibleCols.length <= 1,
+      type: "checkbox", id: c.id,
+      label: dropped.has(c.id) ? `${headerText(c)} (hidden to fit)` : headerText(c),
+      checked: isVisible(c) && !dropped.has(c.id),
+      disabled: isVisible(c) && !dropped.has(c.id) && shownCols.length <= 1,
       onCheckedChange: (on) => {
         const next = { ...visibility, [c.id]: on };
         setVisInner(next);
@@ -377,8 +418,8 @@ function DataTableView<T>(p: DataTableProps<T>) {
   ];
 
   /* ── render ── */
-  const nCols = visibleCols.length + (selectable ? 1 : 0);
-  const sumWidth = visibleCols.reduce((s, c) => s + (widths[c.id] ?? 120), selectable ? 36 : 0);
+  const nCols = shownCols.length + (selectable ? 1 : 0);
+  const sumWidth = shownCols.reduce((s, c) => s + (widths[c.id] ?? 120), selectable ? 36 : 0);
   const cursorIdx = cursor != null ? viewIndex.get(cursor) : undefined;
   const rowId = (i: number) => `${uid}-r${i}`;
   const countText = filter.trim() && view.length !== rows.length
@@ -404,7 +445,7 @@ function DataTableView<T>(p: DataTableProps<T>) {
               onClick={(e) => { e.stopPropagation(); setCursor(key); toggleKey(key, e.shiftKey); }} />
           </td>
         )}
-        {visibleCols.map((c) => (
+        {shownCols.map((c) => (
           <td key={c.id} role="gridcell"
             className={cx(c.numeric && "is-num", c.className)}
             style={{ textAlign: c.align ?? (c.numeric ? "right" : undefined) }}>
@@ -442,15 +483,22 @@ function DataTableView<T>(p: DataTableProps<T>) {
             <span className="ui-dt__selcount">
               <span className="mono">{selSet.size.toLocaleString("en-US")} selected</span>
               <button type="button" className="ui-dt__clear" onClick={() => { commitSelection(new Set()); setAnchor(null); }}>
-                clear
+                Clear
               </button>
             </span>
           )}
           <span className="ui-dt__spacer" />
           {p.toolbar}
-          {hideable.length > 1 && (
+          {(hideable.length > 1 || dropped.size > 0) && (
             <Menu align="end" label="Columns" items={columnItems}
-              trigger={<IconButton size="sm" icon="columns" label="Columns" />} />
+              trigger={dropped.size > 0
+                ? (
+                  <Button size="sm" variant="ghost" icon="columns" aria-label={`Columns: ${dropped.size} hidden to fit`}
+                    title="Some columns are hidden to fit this width — show them here">
+                    {dropped.size} hidden
+                  </Button>
+                )
+                : <IconButton size="sm" icon="columns" label="Columns" />} />
           )}
           {exportName && (
             <Button size="sm" variant="ghost" icon="download" onClick={exportCsv} title={csvTitle}>
@@ -459,8 +507,10 @@ function DataTableView<T>(p: DataTableProps<T>) {
           )}
         </div>
       )}
-      <div ref={scrollRef} className="ui-dt__scroll" style={{ maxHeight: height === "auto" ? undefined : height }}>
-        <table className="ui-dt__table" role="grid" tabIndex={0}
+      <div className="ui-dt__frame" data-more-left={edges.left || undefined} data-more-right={edges.right || undefined}>
+      <div ref={scrollRef} className="ui-dt__scroll" style={{ maxHeight: height === "auto" ? undefined : height }}
+        onScroll={measure}>
+        <table ref={tableRef} className="ui-dt__table" role="grid" tabIndex={0}
           aria-label={p["aria-label"]} aria-rowcount={view.length + 1} aria-colcount={nCols}
           aria-multiselectable={selectable || undefined}
           aria-activedescendant={cursorIdx != null && indices.includes(cursorIdx) ? rowId(cursorIdx) : undefined}
@@ -469,8 +519,8 @@ function DataTableView<T>(p: DataTableProps<T>) {
           {p.caption && <caption className="sr-only">{p.caption}</caption>}
           <colgroup>
             {selectable && <col style={{ width: 36 }} />}
-            {visibleCols.map((c) => (
-              <col key={c.id} style={{ width: typeof c.width === "string" ? c.width : widths[c.id] }} />
+            {shownCols.map((c) => (
+              <col key={c.id} style={{ width: colWidthCss(c, widths[c.id]) }} />
             ))}
           </colgroup>
           <thead ref={headRef}>
@@ -481,7 +531,7 @@ function DataTableView<T>(p: DataTableProps<T>) {
                     aria-label="Select all rows" disabled={!viewKeys.length} />
                 </th>
               )}
-              {visibleCols.map((c) => {
+              {shownCols.map((c) => {
                 const at = sort.findIndex((s) => s.id === c.id);
                 const dir = at >= 0 ? (sort[at].desc ? "desc" : "asc") : null;
                 const ariaSort = c.sortable === false ? undefined
@@ -513,6 +563,7 @@ function DataTableView<T>(p: DataTableProps<T>) {
             {bodyExtra}
           </tbody>
         </table>
+      </div>
       </div>
     </div>
   );

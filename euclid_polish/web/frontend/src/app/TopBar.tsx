@@ -1,11 +1,15 @@
 /* The top bar (spec §4), one line at every width: breadcrumbs (workspace ›
- * tab › inspected entity), the ⌘K palette trigger, "Reload to update" when
- * the console was rebuilt under this page, the FASRC connection badge (→
- * Settings › Connections) — or, while the local server is not answering, the
- * calm "Server not responding — retrying" status in its place — the job tray,
- * the Display panel button, the theme toggle and the shortcut sheet.
- * `VersionBanner` is the "backend code changed — restart" strip at the top of
- * the stage (from GET /api/version, C3); it scrolls away with the page. */
+ * tab › inspected entity), the ⌘K palette trigger, the FASRC connection badge
+ * (→ Settings › Connections) — or, while the local server is not answering,
+ * the calm "Server not responding — retrying" status in its place — the job
+ * tray, the Display panel button, the theme toggle and the shortcut sheet.
+ *
+ * One calm notice strip (`ShellNotices`) sits at the top of the STAGE (it
+ * scrolls away with the page; nothing is pinned over the images), fed by
+ * GET /api/version (C3). It holds up to two dense one-line notices, side by
+ * side on one ~32 px line when both apply: `BuildBanner` — "A newer console
+ * build is available" + Reload, dismissible per build — and `VersionBanner`
+ * — "Backend code changed — restart the server". */
 import { useEffect, useRef, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { useServerHealth } from "../api/query";
@@ -18,7 +22,7 @@ import { inspectorTitle, useInspectorRegistry } from "./inspector";
 import { JobTray } from "./JobTray";
 import { describePath, landingPath, pagePath } from "./nav";
 import { openDisplayPanel, openPalette, openShortcutSheet, useShellUi } from "./shellStore";
-import { bannerKey, useConsoleUpdate, useFasrcStatus, useVersion } from "./status";
+import { bannerKey, useConsoleBuild, useFasrcStatus, useVersion } from "./status";
 
 /** While the server is not answering, ask it again this often (a GET of the
  *  version: no job, nothing heavy). */
@@ -122,22 +126,6 @@ export function ServerStatus() {
   );
 }
 
-/** "Reload to update": the console was rebuilt since this page loaded (its
- *  lazy chunks may be gone, so the next new page could fail to load). Only
- *  for a page served from the build (`fromBuild`, see useConsoleUpdate). */
-export function UpdateNotice({ fromBuild, pageEntry }: { fromBuild?: boolean; pageEntry?: string | null }) {
-  const updated = useConsoleUpdate(fromBuild, pageEntry);
-  if (!updated) return null;
-  return (
-    <Tooltip content="The console was rebuilt since this page opened. Reload to use the new version.">
-      <button type="button" className="topbar__update" onClick={() => window.location.reload()}>
-        <Icon name="reset" size={14} />
-        <span className="topbar__update-label">Reload to update</span>
-      </button>
-    </Tooltip>
-  );
-}
-
 export function ThemeToggle() {
   const theme = useResolvedTheme();
   const toggle = usePrefs((s) => s.toggleTheme);
@@ -158,7 +146,6 @@ export function TopBar({ narrow = false }: { narrow?: boolean }) {
         <span className="topbar__search-text">Search or jump to…</span>
         <Kbd keys="mod+k" />
       </button>
-      <UpdateNotice />
       <ServerStatus />
       {!down && <ConnectionBadge />}
       <JobTray />
@@ -166,6 +153,34 @@ export function TopBar({ narrow = false }: { narrow?: boolean }) {
       <ThemeToggle />
       <IconButton icon="keyboard" label="Keyboard shortcuts (?)" onClick={openShortcutSheet} />
     </header>
+  );
+}
+
+/** Where a dismissed "newer build" message is remembered (this browser):
+ *  the key of the build it was dismissed for. */
+export const BUILD_BANNER_DISMISSED_KEY = "ep.buildBanner.dismissed";
+
+/** "A newer console build is available": the console was rebuilt since this
+ *  page loaded (its lazy chunks may be gone, so the next new page could fail
+ *  to load). Reload is the user's choice — it never reloads by itself — and a
+ *  dismissal holds for that build only (a later rebuild shows it again).
+ *  Only a page served from the build (`fromBuild`, see useConsoleBuild). */
+export function BuildBanner({ fromBuild, pageEntry }: { fromBuild?: boolean; pageEntry?: string | null }) {
+  const { updated, key } = useConsoleBuild(fromBuild, pageEntry);
+  const [dismissed, setDismissed] = useState<string | null>(() => readStorage(BUILD_BANNER_DISMISSED_KEY));
+  if (!updated || (key != null && dismissed === key)) return null;
+  const dismiss = () => {
+    if (key) writeStorage(BUILD_BANNER_DISMISSED_KEY, key);
+    setDismissed(key);
+  };
+  return (
+    <Callout dense className="shell__notice" tone="info" onDismiss={dismiss} title="A newer console build is available."
+      action={(
+        <Button size="sm" variant="primary" icon="reset" onClick={() => window.location.reload()}
+          title="Reload the page to use the new build (this page keeps working until you do)">
+          Reload
+        </Button>
+      )} />
   );
 }
 
@@ -186,29 +201,39 @@ export function VersionBanner() {
   const more = Math.max(0, (v.changed_count ?? files.length) - files.length);
   const dismiss = () => { writeStorage(BANNER_DISMISSED_KEY, key); setDismissed(key); };
   return (
+    <Callout dense className="shell__notice" tone="warn" onDismiss={dismiss}
+      title="Backend code changed — restart the server to use it."
+      action={(
+        <Button size="sm" variant="ghost" aria-expanded={open} aria-controls="version-banner-files"
+          onClick={() => setOpen((o) => !o)}>
+          Details
+        </Button>
+      )}>
+      {open && (
+        <div id="version-banner-files" className="shell__banner-files">
+          <p>{files.length ? "Changed on disk after they were loaded:" : "Changed files are not listed by this server."}</p>
+          {files.length > 0 && (
+            <ul>{files.map((f) => <li key={f}><code className="mono">{f}</code></li>)}</ul>
+          )}
+          {more > 0 && <p>and {more} more.</p>}
+          <p>
+            Server started {formatDateTime(v.started_at)}{v.pid ? `, process ${v.pid}` : ""}.
+            {" "}<Link to="/settings/about">Server details</Link>
+          </p>
+        </div>
+      )}
+    </Callout>
+  );
+}
+
+/** The stage's one notice strip: the new-build and the restart notices
+ *  together, on one line when both apply (they wrap on a narrow stage). It
+ *  renders nothing — no gap — while neither applies. */
+export function ShellNotices() {
+  return (
     <div className="shell__banner">
-      <Callout tone="warn" onDismiss={dismiss}
-        title="Backend code changed since the server started — restart it to load the new code."
-        action={(
-          <Button size="sm" variant="ghost" aria-expanded={open} aria-controls="version-banner-files"
-            onClick={() => setOpen((o) => !o)}>
-            Details
-          </Button>
-        )}>
-        {open && (
-          <div id="version-banner-files" className="shell__banner-files">
-            <p>{files.length ? "Changed on disk after they were loaded:" : "Changed files are not listed by this server."}</p>
-            {files.length > 0 && (
-              <ul>{files.map((f) => <li key={f}><code className="mono">{f}</code></li>)}</ul>
-            )}
-            {more > 0 && <p>and {more} more.</p>}
-            <p>
-              Server started {formatDateTime(v.started_at)}{v.pid ? `, process ${v.pid}` : ""}.
-              {" "}<Link to="/settings/about">Server details</Link>
-            </p>
-          </div>
-        )}
-      </Callout>
+      <BuildBanner />
+      <VersionBanner />
     </div>
   );
 }
