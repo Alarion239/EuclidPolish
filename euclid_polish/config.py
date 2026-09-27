@@ -586,6 +586,16 @@ class Config:
     # collapse (loss 0.004 → 6.5, PSNR 54 → 46, no recovery). Skipping that
     # one batch keeps the model on the improving trajectory. 0 disables.
     GRAD_SPIKE_SKIP_NORM         = 50.0
+    # …but a member's OWN ordinary gradient peaks set the bar too: a spike is
+    # a pre-clip norm above GRAD_SPIKE_RELATIVE × the median of its last
+    # GRAD_SPIKE_BASELINE_WINDOWS post-warmup window peaks (never below the
+    # absolute norm above). Low-knee members (asinh knee 0.1–0.3 e⁻, noise-
+    # dominated stretched loss) peak at |g| ~15–40 in ordinary windows; with a
+    # flat 50 their batch peaks (50–190, loss still falling) triggered 9 LR
+    # halvings and aborted members 200–202 (SLURM 48927816). A real blow-up
+    # (~4e4) is still 100× over any baseline.
+    GRAD_SPIKE_RELATIVE          = 10.0
+    GRAD_SPIKE_BASELINE_WINDOWS  = 5
     # The guard is OFF for the first this-many optimiser steps: early-training
     # gradients are legitimately large (the model is far from converged), so a
     # flat cutoff from step 0 would skip the whole warmup and the model would

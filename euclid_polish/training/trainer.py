@@ -5,6 +5,7 @@ import os
 import random
 import re
 import time
+from collections import deque
 from collections.abc import Callable, Sequence
 
 import numpy as np
@@ -94,13 +95,28 @@ GRAD_SPIKE_SKIP_NORM = float(Config.GRAD_SPIKE_SKIP_NORM)
 GRAD_SPIKE_SKIP_WARMUP_STEPS = int(Config.GRAD_SPIKE_SKIP_WARMUP_STEPS)
 GRAD_SPIKE_MAX_ROLLBACKS = int(Config.GRAD_SPIKE_MAX_ROLLBACKS)
 GRAD_SPIKE_MAX_LR_HALVINGS = int(Config.GRAD_SPIKE_MAX_LR_HALVINGS)
+GRAD_SPIKE_RELATIVE = float(Config.GRAD_SPIKE_RELATIVE)
+GRAD_SPIKE_BASELINE_WINDOWS = int(Config.GRAD_SPIKE_BASELINE_WINDOWS)
 
 
-def _is_grad_spike(gnorm, step) -> bool:
+def spike_threshold(recent_peaks) -> float:
+    """The spike bar for the next window: ``GRAD_SPIKE_RELATIVE`` × the median
+    of the member's recent post-warmup window peaks, never below the absolute
+    ``GRAD_SPIKE_SKIP_NORM`` (non-finite peaks are ignored). A knee-10 member
+    (peaks ~5) keeps the absolute bar; a low-knee member whose ordinary peaks
+    run at 15–40 is not rolled back for them (see ``Config.GRAD_SPIKE_RELATIVE``)."""
+    finite = [float(p) for p in recent_peaks if math.isfinite(float(p))]
+    if not finite:
+        return GRAD_SPIKE_SKIP_NORM
+    return max(GRAD_SPIKE_SKIP_NORM, GRAD_SPIKE_RELATIVE * float(np.median(finite)))
+
+
+def _is_grad_spike(gnorm, step, threshold=GRAD_SPIKE_SKIP_NORM) -> bool:
     """True iff this step is a post-warmup gradient spike worth rolling back.
 
     A spike is a PRE-clip global grad norm that is non-finite or exceeds
-    ``GRAD_SPIKE_SKIP_NORM`` (steady-state is ~0.5). Inert for the first
+    ``threshold`` (default the absolute ``GRAD_SPIKE_SKIP_NORM``; the train
+    loop passes :func:`spike_threshold` of the member's recent peaks). Inert for the first
     ``GRAD_SPIKE_SKIP_WARMUP_STEPS`` steps, where early-training gradients are
     legitimately large, and when the threshold is ``0`` (disabled). Evaluated
     eagerly in the train loop (``gnorm``/``step`` are already materialised
@@ -110,7 +126,7 @@ def _is_grad_spike(gnorm, step) -> bool:
     if GRAD_SPIKE_SKIP_NORM <= 0 or int(step) <= GRAD_SPIKE_SKIP_WARMUP_STEPS:
         return False
     g = float(gnorm)
-    return (not math.isfinite(g)) or g > GRAD_SPIKE_SKIP_NORM
+    return (not math.isfinite(g)) or g > float(threshold)
 
 def prune_orphaned_checkpoints(ckpt_dir: str) -> int:
     """Delete ``ckpt-N.*`` files no manifest references; return files removed.
@@ -659,6 +675,8 @@ class Trainer:
         self.now = time.perf_counter()
         n_rollbacks = 0   # rollbacks since the last LR halving
         n_halvings  = 0   # LR halvings this run (divergence guard)
+        # Accepted post-warmup window peaks: the member's own ordinary |g| level.
+        recent_peaks: deque[float] = deque(maxlen=GRAD_SPIKE_BASELINE_WINDOWS)
         # ``ckpt.step`` is advanced inside the compiled step; the loop mirrors
         # it in Python so nothing is read back from the device between steps
         # (a per-step read made the GPU and the Python loop take turns).
@@ -698,7 +716,8 @@ class Trainer:
             # checkpoint (model + optimiser state) and continue from there.
             # Checking per window instead of per step costs at most one
             # window of re-trained steps on a spike.
-            if _is_grad_spike(window["spike_norm"], step):
+            threshold = spike_threshold(recent_peaks)
+            if _is_grad_spike(window["spike_norm"], step, threshold):
                 n_rollbacks += 1
                 msg = (f"⚠ gradient spike |g|={window['spike_norm']:.3g} in steps "
                        f"{step - evaluate_every + 1}–{step} — restored last "
@@ -762,6 +781,10 @@ class Trainer:
             loss_value  = window["loss"]
             gnorm_avg   = window["gnorm_avg"]
             gnorm_peak  = window["gnorm_max"]
+            # An accepted, fully post-warmup window's peak joins the baseline
+            # the next windows' spike bar is measured against.
+            if step - evaluate_every >= GRAD_SPIKE_SKIP_WARMUP_STEPS:
+                recent_peaks.append(float(window["spike_norm"]))
 
             # Validation (same code path as the resume baseline, so the
             # two are directly comparable).

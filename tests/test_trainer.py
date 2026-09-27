@@ -22,6 +22,7 @@ from euclid_polish.training.trainer import (
     TRAINING_LOG_COLUMNS,
     Trainer,
     _is_grad_spike,
+    spike_threshold,
 )
 
 
@@ -43,6 +44,29 @@ def test_is_grad_spike_inert_during_warmup():
     spike = GRAD_SPIKE_SKIP_NORM * 100.0
     assert not _is_grad_spike(spike, max(0, GRAD_SPIKE_SKIP_WARMUP_STEPS - 1))
     assert not _is_grad_spike(spike, 1)
+
+
+def test_spike_threshold_scales_with_the_members_own_recent_peaks():
+    """The threshold is GRAD_SPIKE_RELATIVE x the median of the recent
+    post-warmup window peaks, never below GRAD_SPIKE_SKIP_NORM: a knee-10
+    member (peaks ~5) keeps the absolute 50, a knee-0.1/0.3 member whose
+    ordinary peaks are ~15-40 is not rolled back for them (members 200-202
+    aborted on |g| 50-190 while their loss kept falling)."""
+    assert spike_threshold([]) == GRAD_SPIKE_SKIP_NORM
+    assert spike_threshold([0.5, 4.8, 5.2, 3.9, 5.0]) == GRAD_SPIKE_SKIP_NORM
+    assert spike_threshold([19.3, 16.6, 15.4, 32.7, 18.4]) == pytest.approx(10.0 * 18.4)
+    # A non-finite peak never becomes the baseline.
+    assert spike_threshold([float("inf"), 20.0, float("nan")]) == pytest.approx(200.0)
+
+
+def test_relative_threshold_ignores_ordinary_low_knee_peaks_but_catches_blowups():
+    post = GRAD_SPIKE_SKIP_WARMUP_STEPS + 1
+    threshold = spike_threshold([19.3, 16.6, 15.4, 32.7, 18.4])
+    assert not _is_grad_spike(88.0, post, threshold)       # low-knee batch peak
+    assert not _is_grad_spike(155.0, post, threshold)
+    assert _is_grad_spike(4.0e4, post, threshold)          # the pathological blow-up
+    assert _is_grad_spike(float("nan"), post, threshold)
+    assert not _is_grad_spike(4.0e4, 1, threshold)         # still inert in warmup
 
 
 def test_apply_lr_follows_schedule_and_halves(tmp_path):
@@ -482,9 +506,9 @@ class TestWindowedSpikeGuard:
             self, tiny_model, tmp_path, monkeypatch):
         calls = []
 
-        def counting(gnorm, step):
+        def counting(gnorm, step, threshold=GRAD_SPIKE_SKIP_NORM):
             calls.append(int(step))
-            return _is_grad_spike(gnorm, step)
+            return _is_grad_spike(gnorm, step, threshold)
 
         monkeypatch.setattr(trainer_module, "_is_grad_spike", counting)
         trainer = Trainer(tiny_model, checkpoint_dir=str(tmp_path / "ckpt"))
