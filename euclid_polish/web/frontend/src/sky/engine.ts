@@ -418,7 +418,11 @@ export class SkyEngine {
   }
 
   private onContextMenu = (e: MouseEvent) => {
+    // Captured on the host so neither the browser's menu nor Aladin's own
+    // (3.8.2 opens its default menu from a catalogue-canvas listener even with
+    // showContextMenu: false) appears: only the atlas's "Sky actions" menu.
     e.preventDefault();
+    e.stopPropagation();
     const rect = this.host.getBoundingClientRect();
     const x = e.clientX - rect.left, y = e.clientY - rect.top;
     const p = this.pix2world(x, y);
@@ -483,6 +487,12 @@ async function createEngine(init: EngineInit): Promise<SkyEngine> {
     showZoomControl: true,
     showStatusBar: true,
   });
+  // Aladin 3.8.2 opens its own default menu on right-click from two places (a
+  // contextmenu listener and the mouseup after a right-button press), both
+  // guarded by `aladin.contextMenu`, and showContextMenu: false covers neither.
+  // Drop it so the atlas's "Sky actions" menu is the only one; right-drag
+  // contrast still works (it does not use the menu).
+  (al as { contextMenu?: unknown }).contextMenu = null;
   const engine = new SkyEngine(A, al, host, park, init.background);
   engineInstance = engine;
   // Dev-server debugging handle (never in a build).

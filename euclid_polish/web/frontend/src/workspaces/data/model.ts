@@ -240,17 +240,6 @@ export function sourceMarker(s: TruthSource, grid: Grid | null): Marker | null {
   return { row: s.row, kind: s.type, cx: s.x_pix, cy: s.y_pix, r, off: s.off_field, title: parts.join(" · ") };
 }
 
-/** The map's viewBox: the frame plus every marker (off-field ones included), padded. */
-export function mapViewBox(markers: readonly Marker[], width: number, height: number): [number, number, number, number] {
-  let x0 = 0, y0 = 0, x1 = width, y1 = height;
-  for (const m of markers) {
-    x0 = Math.min(x0, m.cx - m.r); y0 = Math.min(y0, m.cy - m.r);
-    x1 = Math.max(x1, m.cx + m.r); y1 = Math.max(y1, m.cy + m.r);
-  }
-  const pad = Math.max(width, height) * 0.02;
-  return [x0 - pad, y0 - pad, x1 - x0 + 2 * pad, y1 - y0 + 2 * pad];
-}
-
 export function formatCompact(v: number): string {
   const a = Math.abs(v);
   if (a >= 1e6) return `${(v / 1e6).toFixed(a >= 1e7 ? 0 : 1)}M`;

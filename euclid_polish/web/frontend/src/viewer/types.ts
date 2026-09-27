@@ -1,5 +1,6 @@
 /* Public and shared types of the image viewer (src/viewer/README.md). */
 import type { DisplaySettings } from "../state/display";
+import type { ViewerMarkers } from "./markers";
 import type { ColorMeta } from "./color";
 import type { CubeRec, Params } from "./cube";
 import type { Residual, ResidualOp } from "./residual";
@@ -153,6 +154,8 @@ export type ImageViewerProps = {
   className?: string;
   /** Per-viewer display override (wins over the Display panel). */
   display?: Partial<DisplaySettings>;
+  /** Point markers over the frames (e.g. truth sources), see markers.ts. */
+  markers?: ViewerMarkers | null;
 };
 
 export type { Params };

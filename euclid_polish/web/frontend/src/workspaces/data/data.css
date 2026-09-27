@@ -59,31 +59,18 @@
 .dt-split > *, .dt-two > * { min-width: 0; }
 .dt-viewer-card .ui-card__body { padding: var(--s2); }
 
-/* ── records: truth-source map + table ─────────────────────────────────── */
-.dt-sources { container: dt-sources / inline-size; }
-.dt-sources__body { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s2); min-width: 0; }
-@container dt-sources (min-width: 720px) {
-  .dt-sources__body { grid-template-columns: minmax(0, 300px) minmax(0, 1fr); align-items: start; }
+/* ── records: truth-source overlay controls (the circles are the viewer's
+   markers, see src/viewer/markers.ts; these keys match their colours) ── */
+.dt-viewer-card .ui-card__heading { flex: none; white-space: nowrap; }
+.dt-truthbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: var(--s1) var(--s2); min-width: 0; }
+.dt-truthbar__key {
+  display: inline-block; width: 9px; height: 9px; margin-right: 5px; border-radius: 50%;
+  border: 1.6px solid #cdd6e6; vertical-align: -1px;
 }
-.dt-sources__body > * { min-width: 0; }
-.dt-map {
-  width: 100%; max-width: 340px; aspect-ratio: 1 / 1; display: block; justify-self: center;
-  background: var(--surface-2); border-radius: var(--r-md); border: 1px solid var(--border);
-}
-.dt-map--empty { background: var(--surface-2); }
-.dt-map__frame { fill: var(--surface-1); stroke: var(--border-strong); stroke-width: 1; vector-effect: non-scaling-stroke; }
-.dt-map__mk { cursor: pointer; outline: none; }
-.dt-map__mk circle, .dt-map__mk path {
-  fill: none; stroke-width: 1.4; vector-effect: non-scaling-stroke;
-}
-.dt-map__mk[data-kind="galaxy"] circle { stroke: var(--info); fill: var(--info-soft); fill-opacity: 0.35; }
-.dt-map__mk[data-kind="lens"] circle { stroke: var(--accent); stroke-dasharray: 4 3; }
-.dt-map__mk[data-kind="star"] path { stroke: var(--warn); stroke-width: 2; }
-.dt-map__mk[data-kind="other"] circle { stroke: var(--text-dim); }
-.dt-map__mk[data-off] { opacity: 0.5; }
-.dt-map__mk[data-off] circle { stroke-dasharray: 2 2; }
-.dt-map__mk[data-hover] circle, .dt-map__mk[data-hover] path,
-.dt-map__mk:focus-visible circle, .dt-map__mk:focus-visible path { stroke: var(--bad); stroke-width: 2.6; }
+.dt-truthbar__key[data-kind="galaxy"] { border-color: #6ec3ff; }
+.dt-truthbar__key[data-kind="lens"] { border-color: #c9a2ff; border-style: dashed; }
+.dt-truthbar__key[data-kind="star"] { border-color: #ffd166; border-radius: 1px; }
+:root:not([data-theme="dark"]) .dt-truthbar__key { background: #0b0f18; }
 
 .dt-gen { display: flex; flex-direction: column; gap: var(--s3); min-width: 0; }
 .dt-gen__splits { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s1) var(--s2); min-width: 0; }

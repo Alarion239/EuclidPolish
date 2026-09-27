@@ -21,9 +21,13 @@ import Psfs from "./tabs/Psfs";
 import Records from "./tabs/Records";
 import Tng from "./tabs/Tng";
 
+type MockMarkers = {
+  items: { key: string; title?: string; x: number; y: number }[]; tiers?: string[];
+  activeKey?: string | null; onPick?: (key: string) => void; onHover?: (key: string | null) => void;
+} | null | undefined;
 type MockViewerProps = {
   collection: string; urlKey?: string; params?: Record<string, string>; tiers?: string[];
-  onReady?: (api: unknown) => void; onState?: (s: unknown) => void;
+  onReady?: (api: unknown) => void; onState?: (s: unknown) => void; markers?: MockMarkers;
 };
 const viewer = vi.hoisted(() => ({ goTo: [] as number[], goToId: [] as string[], mounts: 0, index: 1, id: "test:1" as string | null }));
 vi.mock("../../viewer", async () => {
@@ -41,7 +45,15 @@ vi.mock("../../viewer", async () => {
         return () => p.onReady?.(null);
         // eslint-disable-next-line react-hooks/exhaustive-deps
       }, []);
-      return <div data-testid="viewer">{p.collection}|{p.params?.subset ?? ""}|{(p.tiers ?? []).join(",")}</div>;
+      // markers render as buttons so a test can see what the page overlays and pick one
+      return <div data-testid="viewer">{p.collection}|{p.params?.subset ?? ""}|{(p.tiers ?? []).join(",")}
+        {p.markers && <div role="group" aria-label={`markers on ${p.markers.tiers?.join(",") ?? "every tier"}`}>
+          {p.markers.items.map((m) => (
+            <button key={m.key} type="button" aria-label={m.title} data-active={p.markers?.activeKey === m.key || undefined}
+              onClick={() => p.markers?.onPick?.(m.key)} />
+          ))}
+        </div>}
+      </div>;
     },
   };
 });
@@ -182,17 +194,33 @@ describe("Records", () => {
     expect(screen.getByTestId("viewer").textContent).toBe("sky|test|dirty,hr");
   });
 
-  it("maps the current record's truth sources and opens a source in the inspector", async () => {
+  it("overlays the current record's truth sources on the HR image and opens one in the inspector", async () => {
     show(<Records />);
-    const map = await screen.findByRole("img", { name: /Truth sources of record 1: 2 shown/ });
-    const star = within(map).getByRole("button", { name: /star · \(11\.0, 20\.0\) px · VIS 18\.50/ });
+    const marks = await screen.findByRole("group", { name: "markers on hr" });
+    expect(within(marks).getAllByRole("button")).toHaveLength(2);
+    const star = within(marks).getByRole("button", { name: /star · \(11\.0, 20\.0\) px · VIS 18\.50/ });
     fireEvent.click(star);
     expect(useInspector.getState().current).toEqual({ kind: "truth", id: "test/1/1" });
     expect(useInspectorRegistry.getState().kinds.truth).toBeTruthy();
-    // the type chips filter the map and the table
+    // the inspected source is the active marker
+    await waitFor(() => expect(within(screen.getByRole("group", { name: "markers on hr" }))
+      .getByRole("button", { name: /^star/ }).getAttribute("data-active")).toBe("true"));
+    // the type chips filter the markers and the table
     fireEvent.click(screen.getByRole("button", { name: /^star 1$/ }));
     await waitFor(() => expect(screen.getByTestId("loc").textContent).toContain("st=star"));
-    expect(within(screen.getByRole("img", { name: /Truth sources/ })).getAllByRole("button")).toHaveLength(1);
+    expect(within(screen.getByRole("group", { name: "markers on hr" })).getAllByRole("button")).toHaveLength(1);
+    // the source table sits under the viewer, full width
+    expect(screen.getByRole("grid", { name: "Sources of record 1" })).toBeTruthy();
+  });
+
+  it("draws the truth sources on every tier, or not at all", async () => {
+    show(<Records />);
+    await screen.findByRole("group", { name: "markers on hr" });
+    fireEvent.click(screen.getByRole("radio", { name: "All tiers" }));
+    expect(await screen.findByRole("group", { name: "markers on every tier" })).toBeTruthy();
+    await waitFor(() => expect(screen.getByTestId("loc").textContent).toContain("ov=all"));
+    fireEvent.click(screen.getByRole("radio", { name: "Off" }));
+    await waitFor(() => expect(screen.queryByRole("group", { name: /^markers on/ })).toBeNull());
   });
 
   it("the census row moves the viewer", async () => {

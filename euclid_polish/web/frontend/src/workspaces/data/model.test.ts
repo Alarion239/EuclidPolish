@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { StarsPayload, TngPayload, TruthSource } from "./api";
 import {
   atlasHref, axisDomain, bandState, starState, clusterObjectId, decodeBand, decodeStars, decodeTng, DEFAULT_STAR_FILTER,
-  fieldCounts, filterStars, histogram, magBins, mapViewBox, nearestPoint, parseClusterId, parseRange,
+  fieldCounts, filterStars, histogram, magBins, nearestPoint, parseClusterId, parseRange,
   parseTruthId, propertyHistogram, resumeSafeStep, stripRebuildFlags, scatterGroups, serializeRange, sourceMarker, summaryStats, tngValue, truthId,
 } from "./model";
 
@@ -131,14 +131,6 @@ describe("truth-source map", () => {
     expect(sourceMarker(src({ off_field: true }), grid)!.title).toContain("off-field");
   });
 
-  it("frames every marker, off-field ones too", () => {
-    const m = [sourceMarker(src({ x_pix: -30, y_pix: 5 }), grid)!, sourceMarker(src({ x_pix: 500, y_pix: 530 }), grid)!];
-    const [x, y, w, h] = mapViewBox(m, 510, 510);
-    expect(x).toBeLessThan(-30);
-    expect(y).toBeLessThan(0);
-    expect(x + w).toBeGreaterThan(510);
-    expect(y + h).toBeGreaterThan(530);
-  });
 });
 
 describe("TNG explorer", () => {

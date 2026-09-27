@@ -4,11 +4,12 @@
  * files, the SR tier's state against the production model, the records'
  * noise-model health check, and the actions — sync from FASRC (a background
  * job with progress), generate the production SR (with overwrite), generate
- * new pairs (the synthetic_generate step). Body: the viewer (LR · HR · BHR ·
- * Clean (starless) · SR) beside the current record's truth sources (a source
- * map + table from sources_<split>.csv; row / marker → the `truth`
- * inspector), then the split's per-record census (row → that record). The
- * split, viewer object/tiers/view, source-type filter and open sections live
+ * new pairs (the synthetic_generate step). Body: the full-width viewer (LR ·
+ * HR · BHR · Clean (starless) · SR) with the current record's truth sources
+ * (sources_<split>.csv) drawn as circles on the HR image (or on every tier),
+ * the same sources as a table below (marker / row → the `truth` inspector),
+ * then the split's per-record census (row → that record). The split, viewer
+ * object/tiers/view, overlay mode, source-type filter and open sections live
  * in the URL. */
 import { useMemo, useRef, useState } from "react";
 import { useJob } from "../../../api/jobs";
@@ -24,21 +25,26 @@ import {
   Badge, Button, Callout, Card, CardBody, CardHead, Checkbox, Chip, DataTable, EmptyState, IconButton, Menu, Page,
   Popover, Section, Segmented, Switch, Tooltip, type DataColumn,
 } from "../../../ui";
-import { ImageViewer, type ViewerApi, type ViewerState } from "../../../viewer";
+import { ImageViewer, type ViewerApi, type ViewerMarker, type ViewerMarkers, type ViewerState } from "../../../viewer";
 import {
   SPLITS, SYNC_KINDS, URLS, useSrStatus, type FieldCensus, type RecordSources, type SourcesCensus, type Split,
   type SrStatus, type TruthSource,
 } from "../api";
 import { BarGroup, DataBar, JobStrip, OFFLINE_HINT, Spacer, startDataJob, useFasrcOnline } from "../common";
 import {
-  SR_STATE_LABEL, SR_STATE_TONE, formatCompact, mapViewBox, recordObjectId, resumeSafeStep, sourceMarker, truthId,
-  type Marker,
+  SR_STATE_LABEL, SR_STATE_TONE, formatCompact, recordObjectId, resumeSafeStep, sourceMarker, truthId,
 } from "../model";
 import "../register";
 import "../data.css";
 
 const TYPES = ["galaxy", "star", "lens", "other"] as const;
 const isSplit = (v: string): v is Split => (SPLITS as readonly string[]).includes(v);
+const typeOf = (s: TruthSource) => (TYPES.includes(s.type as (typeof TYPES)[number]) ? s.type : "other");
+
+/** Where the truth sources are drawn: nowhere, on the HR image, or on every tier. */
+type Overlay = "off" | "hr" | "all";
+const OVERLAYS: readonly Overlay[] = ["off", "hr", "all"];
+const isOverlay = (v: string): v is Overlay => (OVERLAYS as readonly string[]).includes(v);
 
 /* ── toolbar pieces ────────────────────────────────────────────────────── */
 
@@ -185,38 +191,6 @@ function GeneratePopover({ status, open, onOpenChange, onStart, busy }: {
 
 /* ── truth sources ─────────────────────────────────────────────────────── */
 
-function SourceMap({ data, types, hover, onHover, onPick }: {
-  data: RecordSources; types: string[]; hover: number | null; onHover: (row: number | null) => void;
-  onPick: (row: number) => void;
-}) {
-  const grid = data.geometry.hr;
-  const width = grid?.width ?? 512, height = grid?.height ?? 512;
-  const markers = useMemo(() => data.sources
-    .filter((s) => !types.length || types.includes(TYPES.includes(s.type as (typeof TYPES)[number]) ? s.type : "other"))
-    .map((s) => sourceMarker(s, grid)).filter((m): m is Marker => m != null), [data, types, grid]);
-  const [x, y, w, h] = mapViewBox(markers, width, height);
-  return (
-    <svg className="dt-map" viewBox={`${x} ${y} ${w} ${h}`} role="img" preserveAspectRatio="xMidYMid meet"
-      aria-label={`Truth sources of record ${data.field_index}: ${markers.length} shown`}>
-      <rect className="dt-map__frame" x={0} y={0} width={width} height={height} />
-      {markers.map((m) => (
-        <g key={m.row} className="dt-map__mk" data-kind={m.kind} data-off={m.off || undefined}
-          data-hover={hover === m.row || undefined} tabIndex={0} role="button" aria-label={m.title}
-          onMouseEnter={() => onHover(m.row)} onMouseLeave={() => onHover(null)}
-          onFocus={() => onHover(m.row)} onBlur={() => onHover(null)}
-          onClick={() => onPick(m.row)} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onPick(m.row); } }}>
-          <title>{m.title}</title>
-          {m.kind === "star" ? (
-            <path d={`M${m.cx - m.r} ${m.cy}H${m.cx + m.r}M${m.cx} ${m.cy - m.r}V${m.cy + m.r}`} />
-          ) : (
-            <circle cx={m.cx} cy={m.cy} r={m.r} />
-          )}
-        </g>
-      ))}
-    </svg>
-  );
-}
-
 const SOURCE_COLUMNS: DataColumn<TruthSource>[] = [
   { id: "row", header: "#", width: 44, numeric: true },
   { id: "type", header: "Type", width: 80,
@@ -235,56 +209,69 @@ const SOURCE_COLUMNS: DataColumn<TruthSource>[] = [
     cell: (s) => (s.off_field ? <Badge size="sm">off</Badge> : "") },
 ];
 
-function SourcesCard({ split, index }: { split: Split; index: number | null }) {
+/** The current record's truth sources, the type filter and the hovered /
+ *  inspected source, shared by the viewer overlay and the table. */
+function useTruthSources(split: Split, index: number | null) {
   const [types, setTypes] = useUrlState<string[]>("st", []);
   const [hover, setHover] = useState<number | null>(null);
   const inspected = useInspector((s) => (s.current?.kind === "truth" ? s.current.id : null));
-  const url = index != null ? URLS.sources(split, index) : null;
-  const res = useResource<RecordSources>(url, [split, index], { ttl: 5 * 60_000 });
+  const res = useResource<RecordSources>(index != null ? URLS.sources(split, index) : null, [split, index], { ttl: 5 * 60_000 });
   const data = res.data;
-  const rows = useMemo(() => (data?.sources ?? []).filter((s) => !types.length
-    || types.includes(TYPES.includes(s.type as (typeof TYPES)[number]) ? s.type : "other")), [data, types]);
-  const pick = (row: number) => { if (index != null) openInspector({ kind: "truth", id: truthId(split, index, row) }); };
+  const rows = useMemo(() => (data?.sources ?? []).filter((s) => !types.length || types.includes(typeOf(s))), [data, types]);
   const activeRow = hover ?? (inspected && index != null && inspected.startsWith(`${split}/${index}/`)
     ? Number(inspected.split("/")[2]) : null);
-  const counts = data?.counts;
   const toggle = (t: string) => setTypes(types.includes(t) ? types.filter((x) => x !== t) : [...types, t]);
+  const pick = (row: number) => { if (index != null) openInspector({ kind: "truth", id: truthId(split, index, row) }); };
+  return { res, data, rows, types, toggle, activeRow, setHover, pick };
+}
+type Truth = ReturnType<typeof useTruthSources>;
+
+/** Overlay mode + type chips, in the viewer card's header. */
+function TruthControls({ truth, overlay, onOverlay, index, split }: {
+  truth: Truth; overlay: Overlay; onOverlay: (v: Overlay) => void; index: number | null; split: Split;
+}) {
+  const { data, res, types, toggle } = truth;
+  const counts = data?.present ? data.counts : null;
   return (
-    <Card className="dt-sources">
-      <CardHead title={index != null ? `Truth sources · record ${index}` : "Truth sources"}
-        sub={data?.geometry.hr ? `HR ${data.geometry.hr.width}² px · ${data.geometry.hr.pixscale}″/px` : undefined}
-        right={counts && (
-          <div className="dt-chips" role="group" aria-label="Source types">
-            {TYPES.filter((t) => t !== "other" || counts.other > 0).map((t) => (
-              <Chip key={t} on={!types.length || types.includes(t)} onClick={() => toggle(t)}>
-                {t} <span className="muted">{counts[t]}</span>
-              </Chip>
-            ))}
-          </div>
-        )} />
-      <CardBody>
-        {index == null ? <EmptyState compact icon="image" title="Pick a record in the viewer" />
-          : res.loading && !data ? <div className="dt-map dt-map--empty" aria-busy="true" />
-            : res.error ? <Callout tone="bad" title="Sources did not load"><span className="dt-pre">{res.error.message}</span></Callout>
-              : !data?.present ? (
-                <EmptyState compact icon="table" title={`No sources_${split}.csv`}>
-                  Sync the split with its sources file to see the truth catalogue.
-                </EmptyState>
-              ) : (
-                <div className="dt-sources__body">
-                  <SourceMap data={data} types={types} hover={activeRow} onHover={setHover} onPick={pick} />
-                  <DataTable rows={rows} columns={SOURCE_COLUMNS} rowKey={(s) => String(s.row)} dense height={300}
-                    aria-label={`Sources of record ${index}`} exportName={`sources_${split}_${index}`}
-                    activeKey={activeRow != null ? String(activeRow) : null}
-                    inspect={(s) => ({ kind: "truth", id: truthId(split, index, s.row) })}
-                    empty={data.sources.length ? "No source of the selected types" : "This record has no sources"}
-                    toolbar={counts && counts.off_field > 0
-                      ? <Tooltip content="Centred outside the frame, their light spills in"><span tabIndex={0} className="muted">{counts.off_field} off-field</span></Tooltip>
-                      : undefined} />
-                </div>
-              )}
-      </CardBody>
-    </Card>
+    <div className="dt-truthbar" role="group" aria-label="Truth sources overlay">
+      <span className="eyebrow">Truth sources</span>
+      <Segmented size="sm" value={overlay} onChange={onOverlay} aria-label="Draw the truth sources on"
+        options={[{ value: "off", label: "Off" }, { value: "hr", label: "HR" }, { value: "all", label: "All tiers" }]} />
+      {counts && TYPES.filter((t) => t !== "other" || counts.other > 0).map((t) => (
+        <Chip key={t} on={!types.length || types.includes(t)} onClick={() => toggle(t)}>
+          <span className="dt-truthbar__key" data-kind={t} aria-hidden="true" />{t} <span className="muted">{counts[t]}</span>
+        </Chip>
+      ))}
+      {counts && counts.off_field > 0 && (
+        <Tooltip content="Centred outside the frame, their light spills in (dashed)">
+          <span tabIndex={0} className="muted">{counts.off_field} off-field</span>
+        </Tooltip>
+      )}
+      {index != null && res.loading && !data && <span className="muted">loading sources…</span>}
+      {index != null && data && !data.present && (
+        <Tooltip content={`Sync the ${split} split with its sources file to see the truth catalogue`}>
+          <span tabIndex={0}><Badge size="sm">no sources_{split}.csv</Badge></span>
+        </Tooltip>
+      )}
+      {res.error && <Badge size="sm" tone="bad">sources: {res.error.message}</Badge>}
+    </div>
+  );
+}
+
+/** The same sources as a table, full width under the viewer. */
+function SourcesTable({ truth, split, index }: { truth: Truth; split: Split; index: number | null }) {
+  const [open, setOpen] = useUrlState("srct", true);
+  const { data, rows, activeRow } = truth;
+  if (index == null || !data?.present) return null;
+  return (
+    <Section title={`Truth sources · record ${index}`} collapsible open={open} onOpenChange={setOpen}
+      sub={data.geometry.hr ? `${rows.length} shown · HR ${data.geometry.hr.width}² px · ${data.geometry.hr.pixscale}″/px` : undefined}>
+      <DataTable rows={rows} columns={SOURCE_COLUMNS} rowKey={(s) => String(s.row)} dense height={300}
+        aria-label={`Sources of record ${index}`} exportName={`sources_${split}_${index}`}
+        activeKey={activeRow != null ? String(activeRow) : null}
+        inspect={(s) => ({ kind: "truth", id: truthId(split, index, s.row) })}
+        empty={data.sources.length ? "No source of the selected types" : "This record has no sources"} />
+    </Section>
   );
 }
 
@@ -384,6 +371,28 @@ export default function Records() {
   const api = useRef<ViewerApi | null>(null);
   const params = useMemo(() => ({ subset: split }), [split]);
   const bump = () => setViewerKey((k) => k + 1);
+  const [rawOverlay, setOverlay] = useUrlState("ov", "hr");
+  const overlay: Overlay = isOverlay(rawOverlay) ? rawOverlay : "hr";
+  const truth = useTruthSources(split, index);
+  const { data: truthData, rows: truthRows, activeRow, setHover, pick } = truth;
+  const markers = useMemo<ViewerMarkers | null>(() => {
+    const grid = truthData?.geometry.hr;
+    if (overlay === "off" || !truthData?.present || !grid) return null;
+    const items: ViewerMarker[] = [];
+    for (const src of truthRows) {
+      const m = sourceMarker(src, grid);
+      if (m) items.push({ key: String(m.row), x: m.cx, y: m.cy, r: m.r, kind: m.kind, title: m.title, dim: m.off });
+    }
+    return {
+      grid: { width: grid.width, height: grid.height }, items,
+      tiers: overlay === "hr" ? ["hr"] : undefined,
+      activeKey: activeRow != null ? String(activeRow) : null,
+      onHover: (key) => setHover(key == null ? null : Number(key)),
+      onPick: (key) => pick(Number(key)),
+    };
+    // setHover / pick are stable enough for a marker overlay; the inputs drive it
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [overlay, truthData, truthRows, activeRow]);
 
   const runSync = (subsets: Split[], kinds: string[]) => void startDataJob(sync, URLS.sync,
     { subsets: subsets.join(","), kinds: kinds.join(",") }, {
@@ -456,17 +465,20 @@ export default function Records() {
           {online ? "Pull the split from FASRC (a background job)." : OFFLINE_HINT}
         </EmptyState>
       ) : (
-        <div className="dt-split">
+        <>
           <Card className="dt-viewer-card">
+            <CardHead title={index != null ? `Record ${index}` : "Records"}
+              right={<TruthControls truth={truth} overlay={overlay} onOverlay={setOverlay} index={index} split={split} />} />
             <CardBody>
               <ImageViewer key={`${split}-${viewerKey}`} collection="sky" params={params} urlKey="rec"
                 tiers={["dirty", "hr"]} initialId={index != null ? recordObjectId(split, index) : undefined}
+                markers={markers}
                 onReady={(a) => { api.current = a; }}
                 onState={(st: ViewerState) => setIndex(st.index)} />
             </CardBody>
           </Card>
-          <SourcesCard split={split} index={index} />
-        </div>
+          <SourcesTable truth={truth} split={split} index={index} />
+        </>
       )}
       {s && splitInfo?.present && <CensusSection split={split} index={index} onGo={(i) => api.current?.goTo(i)} />}
       <GenerationSection />

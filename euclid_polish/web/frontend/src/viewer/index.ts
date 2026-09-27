@@ -8,4 +8,6 @@ export type {
 export { renderCubeImageData, prepareCore, transferCore } from "./color";
 export type { ColorMeta, CubeLike, Prepared, RenderOpts } from "./color";
 export { parseWcs, pixToSky, skyToPix } from "./wcs";
+export { markerShapes, markersOnTier } from "./markers";
+export type { MarkerShape, ViewerMarker, ViewerMarkers } from "./markers";
 export type { Wcs, Sky } from "./wcs";

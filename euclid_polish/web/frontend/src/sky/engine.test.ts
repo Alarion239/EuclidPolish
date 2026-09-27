@@ -146,6 +146,28 @@ describe("sky engine", () => {
     expect(arg.clientX).toBe(50);
   });
 
+  it("removes Aladin's own context menu (it also opens on a right-button mouseup)", async () => {
+    (fake.al as { contextMenu?: unknown }).contextMenu = { _show: vi.fn() };
+    await getSkyEngine(INIT);
+    expect((fake.al as { contextMenu?: unknown }).contextMenu).toBeNull();
+  });
+
+  it("keeps a right-click away from Aladin's own context menu (only ours opens)", async () => {
+    const e = await getSkyEngine(INIT);
+    // Aladin 3.8.2 opens its default menu from a contextmenu listener on its
+    // catalogue canvas, whatever showContextMenu says.
+    const canvas = document.createElement("canvas");
+    e.host.appendChild(canvas);
+    const aladinMenu = vi.fn();
+    canvas.addEventListener("contextmenu", aladinMenu);
+    const ours = vi.fn();
+    e.events.on("contextMenu", ours);
+    canvas.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 5, clientY: 5 }));
+    expect(ours).toHaveBeenCalledTimes(1);
+    expect(aladinMenu).not.toHaveBeenCalled();
+    canvas.remove();
+  });
+
   it("hands out ICRS whatever the view frame (Aladin reports the view frame)", async () => {
     const e = await getSkyEngine(INIT);
     const moves = vi.fn();

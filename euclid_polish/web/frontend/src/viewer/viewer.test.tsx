@@ -487,6 +487,28 @@ describe("<Frame> pointer → image", () => {
   let restore: () => void = () => {};
   afterEach(() => restore());
 
+  it("draws markers on the listed tiers only, on their pixel centres, and picks them on click", async () => {
+    restore = stubFrameLayout();
+    mockBackend(defaultHandler());
+    const onPick = vi.fn(), onHover = vi.fn();
+    const { container } = render(<MemoryRouter><ImageViewer collection="test" tiers={["lr", "sr"]}
+      markers={{ grid: { width: 8, height: 8 }, tiers: ["sr"], onPick, onHover,
+        items: [{ key: "a", x: 3, y: 3, r: 1, kind: "galaxy", title: "source a" }] }} /></MemoryRouter>);
+    await screen.findByText(/^SR 0/);
+    await waitFor(() => expect(container.querySelector(".cv-frame[data-tier='sr'] .cv-mk")).not.toBeNull());
+    expect(container.querySelector(".cv-frame[data-tier='lr'] .cv-mk")).toBeNull();
+    const mk = container.querySelector<SVGGElement>(".cv-frame[data-tier='sr'] .cv-mk")!;
+    // SR is 8×8 px in a 240 px frame: pixel 3's centre is 3.5 × 30 = 105 css px
+    const circle = mk.querySelector("circle.cv-mk__shape")!;
+    expect(Number(circle.getAttribute("cx"))).toBeCloseTo(105);
+    expect(Number(circle.getAttribute("r"))).toBeCloseTo(30);
+    expect(mk.querySelector("title")?.textContent).toBe("source a");
+    fireEvent.pointerEnter(mk);
+    expect(onHover).toHaveBeenCalledWith("a");
+    fireEvent.click(mk);
+    expect(onPick).toHaveBeenCalledWith("a");
+  });
+
   it("measures the pointer from the content box, not the 1 px border", async () => {
     restore = stubFrameLayout();
     mockBackend(defaultHandler());

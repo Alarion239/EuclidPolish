@@ -8,6 +8,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import { useDisplay } from "../state/display";
 import { planckianXY, srgbGamma, xyToLinearSrgb } from "./color";
 import { useController, useSettings, useViewer } from "./hooks";
+import { markerShapes, markersOnTier, useMarkers } from "./markers";
 import { contentBoxOrigin, frameToImage, frameToImageClamped, imageToFrame, type FrameLayout, type Selection } from "./selection";
 
 type Drag =
@@ -45,6 +46,7 @@ export function Frame({ tier, hidden = false, clip, label, labelRight = false }:
   const profile = useViewer((s) => s.profile);
   const progress = useViewer((s) => s.movieProgress[tier] ?? null);
   const settings = useSettings();
+  const markers = useMarkers();
   const elRef = useRef<HTMLDivElement>(null);
   const visRef = useRef<HTMLCanvasElement>(null);
   const legendRef = useRef<HTMLCanvasElement>(null);
@@ -293,6 +295,9 @@ export function Frame({ tier, hidden = false, clip, label, labelRight = false }:
     }
   }
 
+  const marks = markers && L && g && g.width > 0 && markersOnTier(tier, markers)
+    ? markerShapes(L, S, markers, g) : [];
+
   const message = status?.kind === "error" || status?.kind === "missing" ? status.message : "";
   const hint = status?.kind === "error" ? status.hint : undefined;
   const loading = status?.kind === "loading" || (tier === "morph" && progress != null);
@@ -307,6 +312,25 @@ export function Frame({ tier, hidden = false, clip, label, labelRight = false }:
       onDoubleClick={() => ctrl.resetView()}>
       <canvas ref={visRef} className="cv-canvas" />
       <svg className="cv-svg" width={S || 1} height={S || 1} aria-hidden="true">
+        {marks.length > 0 && <g className="cv-marks">
+          {marks.map((m) => (
+            // A marker takes the pointer (hover / click to pick) instead of
+            // starting a pan; the rest of the frame keeps panning.
+            <g key={m.key} className="cv-mk" data-kind={m.kind} data-dim={m.dim || undefined} data-active={m.active || undefined}
+              onPointerDown={(e) => e.stopPropagation()}
+              onPointerEnter={() => markers?.onHover?.(m.key)} onPointerLeave={() => markers?.onHover?.(null)}
+              onClick={(e) => { e.stopPropagation(); markers?.onPick?.(m.key); }}>
+              {m.title && <title>{m.title}</title>}
+              {m.kind === "star" ? <>
+                <circle className="cv-mk__hit" cx={m.cx} cy={m.cy} r={Math.max(m.r, 6)} />
+                <path className="cv-mk__shape" d={`M${m.cx - m.r} ${m.cy}H${m.cx + m.r}M${m.cx} ${m.cy - m.r}V${m.cy + m.r}`} />
+              </> : <>
+                <circle className="cv-mk__hit cv-mk__hit--ring" cx={m.cx} cy={m.cy} r={Math.max(m.r, 3)} />
+                <circle className="cv-mk__shape" cx={m.cx} cy={m.cy} r={Math.max(m.r, 3)} />
+              </>}
+            </g>
+          ))}
+        </g>}
         {box && <rect className="cv-lens-rect" x={box.a.x} y={box.a.y} width={Math.max(1, box.b.x - box.a.x)} height={Math.max(1, box.b.y - box.a.y)} />}
         {cross && inFrame(cross) && <g className="cv-cross">
           <line x1={cross.x} y1={0} x2={cross.x} y2={S} /><line x1={0} y1={cross.y} x2={S} y2={cross.y} />

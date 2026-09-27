@@ -18,6 +18,7 @@ import {
 import { HistogramPanel } from "./HistogramPanel";
 import { ViewerContext, useController, useViewer } from "./hooks";
 import { LensLayer } from "./Lens";
+import { MarkersContext } from "./markers";
 import { Nav } from "./Nav";
 import { ProfilePanel } from "./ProfilePanel";
 import { ReadoutBar } from "./ReadoutBar";
@@ -256,7 +257,7 @@ function RoutedViewer(props: ImageViewerProps) {
 }
 
 function ViewerCore(props: ImageViewerProps & { search: string }) {
-  const { collection, params, tiers, initialIndex, initialId, id, urlKey, onState, onReady, toolbar = "full", nav = true, className, display } = props;
+  const { collection, params, tiers, initialIndex, initialId, id, urlKey, onState, onReady, toolbar = "full", nav = true, className, display, markers } = props;
   const searchRef = useRef(props.search);
   searchRef.current = props.search;
   const paramsKey = JSON.stringify(params ?? {});
@@ -322,7 +323,7 @@ function ViewerCore(props: ImageViewerProps & { search: string }) {
       onFocus={() => ctrl?.activate()}
       onBlur={(e) => { if (ctrl && !e.currentTarget.contains(e.relatedTarget as Node | null)) ctrl.deactivate(); }}>
       {ctrl
-        ? <ViewerContext.Provider value={ctrl}><ViewerBody ctrl={ctrl} toolbar={toolbar} nav={nav} urlKey={urlKey} urlBase={urlBase} /></ViewerContext.Provider>
+        ? <ViewerContext.Provider value={ctrl}><MarkersContext.Provider value={markers ?? null}><ViewerBody ctrl={ctrl} toolbar={toolbar} nav={nav} urlKey={urlKey} urlBase={urlBase} /></MarkersContext.Provider></ViewerContext.Provider>
         : <div className="cv-frames"><div className="cv-frame cv-frame--message cv-loading"><div className="cv-msg"><span>Loading…</span></div></div></div>}
     </div>
   );

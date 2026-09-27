@@ -10,6 +10,11 @@
   --cv-overlay-bg: rgba(6, 9, 16, 0.62);
   --cv-cross: rgba(120, 220, 255, 0.85);
   --cv-profile: #ff8a3d;
+  --cv-mk-galaxy: #6ec3ff;
+  --cv-mk-lens: #c9a2ff;
+  --cv-mk-star: #ffd166;
+  --cv-mk-other: #cdd6e6;
+  --cv-mk-active: #ff5c7a;
   width: 100%;
   border-radius: var(--r-md);
   outline: none;
@@ -89,6 +94,20 @@
 .cv-cross line { stroke: var(--cv-cross); stroke-width: 1; stroke-dasharray: 3 3; }
 .cv-prof line { stroke: var(--cv-profile); stroke-width: 2; }
 .cv-prof circle { fill: none; stroke: var(--cv-profile); stroke-width: 2; }
+
+/* ---- point markers (markers.ts): truth sources etc. ---- */
+.cv-marks { filter: drop-shadow(0 0 1.2px rgba(0, 0, 0, 0.95)); }
+.cv-mk { cursor: pointer; }
+.cv-mk__shape { fill: none; stroke: var(--cv-mk-other); stroke-width: 1.4; pointer-events: none; }
+.cv-mk__hit { fill: transparent; stroke: none; pointer-events: all; }
+/* a ring takes the pointer on its outline only, so a big galaxy never blocks panning inside it */
+.cv-mk__hit--ring { fill: none; stroke: transparent; stroke-width: 10; pointer-events: stroke; }
+.cv-mk[data-kind="galaxy"] .cv-mk__shape { stroke: var(--cv-mk-galaxy); }
+.cv-mk[data-kind="lens"] .cv-mk__shape { stroke: var(--cv-mk-lens); stroke-dasharray: 5 3; }
+.cv-mk[data-kind="star"] .cv-mk__shape { stroke: var(--cv-mk-star); stroke-width: 1.8; }
+.cv-mk[data-dim] { opacity: 0.55; }
+.cv-mk[data-dim] .cv-mk__shape { stroke-dasharray: 2 3; }
+.cv-mk:hover .cv-mk__shape, .cv-mk[data-active] .cv-mk__shape { stroke: var(--cv-mk-active); stroke-width: 2.4; }
 
 .cv-stack { position: relative; aspect-ratio: 1 / 1; width: 100%; }
 .cv-stack > .cv-frame { position: absolute; inset: 0; }
