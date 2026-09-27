@@ -197,11 +197,12 @@
 }
 
 /* ── workspace tab strip ───────────────────────────────────────────────── */
-/* --ws-bar-h: the tab strip's measured height (WorkspaceTabs), for a tab's
-   own sticky toolbar: `position: sticky; top: var(--ws-bar-h)`. */
+/* The tab strip and each tab's toolbar sit at the top of the page and scroll
+   away with it, so the whole stage height is left to the images. (--ws-bar-h
+   stays 0: side panels that stick only keep a small margin.) */
 .ws { min-height: 100%; --ws-bar-h: 0px; }
 .ws__bar {
-  position: sticky; top: 0; z-index: var(--z-sticky);
+  position: relative;
   display: flex; align-items: center; gap: var(--s3);
   padding: 0 var(--s6); background: var(--app-bg); border-bottom: 1px solid var(--border);
 }

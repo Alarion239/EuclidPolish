@@ -94,9 +94,9 @@
 .insp-crumbs__item:focus-visible { box-shadow: var(--ring); outline: none; }
 .insp-crumbs__up { margin-left: auto; }
 
-/* ---- file bar (sticky) ---- */
+/* ---- file bar (at the top, scrolls with the page) ---- */
 .insp-filebar {
-  position: sticky; top: 0; z-index: var(--z-sticky);
+  position: relative;
   display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2) var(--s4);
   padding: var(--s2) var(--s3);
   background: var(--bg-0); border: 1px solid var(--border); border-radius: var(--r-lg);

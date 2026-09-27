@@ -432,24 +432,38 @@ describe("TNG", () => {
     routes["GET /api/tng/results"] = () => ({ body: { grid: { present: false }, stack: { present: false }, pull_job: null } });
   });
 
-  it("starts the radii refresh job when the cache is stale and FASRC is connected, and shows it", async () => {
+  it("never starts the radii validation on its own: a stale cache only says so", async () => {
+    routes["GET /api/tng/radii/status"] = () => ({ body: { valid: false, stale: true, connected: true, refresh_job: null, expected_count: 10, valid_count: 0 } });
+    show(<Tng />, "/data/tng");
+    expect(await screen.findByText(/out of date/)).toBeTruthy();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(posts.filter((p) => p.url === "/api/tng/radii/refresh")).toHaveLength(0);
+  });
+
+  it("validates on FASRC from the button after a confirm, and shows the job", async () => {
     routes["GET /api/tng/radii/status"] = () => ({ body: { valid: false, stale: true, connected: true, refresh_job: null, expected_count: 10, valid_count: 0 } });
     routes["POST /api/tng/radii/refresh"] = () => ({ body: { ok: true, job_id: "r1" } });
     routes["GET /api/jobs/r1"] = () => ({ body: RUNNING_JOB("r1", "TNG radii validation") });
     show(<Tng />, "/data/tng");
+    const button = await screen.findByRole("button", { name: "Validate on FASRC" }) as HTMLButtonElement;
+    await waitFor(() => expect(button.disabled).toBe(false));   // enabled once the status says FASRC is up
+    fireEvent.click(button);
+    await answer(/Validate the TNG radius manifest on FASRC/, "Validate");
     await waitFor(() => expect(posts.filter((p) => p.url === "/api/tng/radii/refresh")).toHaveLength(1));
     expect(await screen.findByText("TNG radii validation")).toBeTruthy();
   });
 
-  it("does not start it while offline or when a refresh already runs", async () => {
+  it("offers no validation while offline or while one already runs", async () => {
     routes["GET /api/tng/radii/status"] = () => ({ body: { valid: false, stale: true, connected: false, refresh_job: null } });
     const { unmount } = show(<Tng />, "/data/tng");
     expect(await screen.findByText(/connect to FASRC to re-check it/)).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Validate on FASRC" }) as HTMLButtonElement).disabled).toBe(true);
     unmount();
     queryClient.clear();
     routes["GET /api/tng/radii/status"] = () => ({ body: { valid: false, stale: true, connected: true, refresh_job: "other" } });
     show(<Tng />, "/data/tng");
     await screen.findByText(/frames valid/);
+    expect((screen.getByRole("button", { name: "Validate on FASRC" }) as HTMLButtonElement).disabled).toBe(true);
     expect(posts.filter((p) => p.url === "/api/tng/radii/refresh")).toHaveLength(0);
   });
 

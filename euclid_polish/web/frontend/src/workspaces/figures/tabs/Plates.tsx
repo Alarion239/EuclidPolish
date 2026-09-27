@@ -8,7 +8,6 @@ import { usePageActions } from "../../../app/palette";
 import { useUrlState } from "../../../hooks/useUrlState";
 import { Page, Section, Segmented, Select, Gallery, Spinner, type SelectOption } from "../../../ui";
 import { useResource } from "../../../api/query";
-import { useFigBarHeight } from "../common";
 import { NexusPlates } from "../plates/NexusPlates";
 import { PosterPlate } from "../plates/PosterPlate";
 import { StaticPlate, type StaticPlateDef } from "../plates/StaticPlate";
@@ -59,7 +58,6 @@ function RenderedPngs() {
 }
 
 export default function Plates() {
-  const barRef = useFigBarHeight();
   const [plate, setPlate] = useUrlState<string>("plate", "population");
   const [dpi, setDpi] = useUrlState<string>("dpi", "300");
   const [training, setTraining] = useUrlState<boolean>("training", false);
@@ -73,7 +71,7 @@ export default function Plates() {
 
   return (
     <Page className="fig-page">
-      <div ref={barRef} className="fig-bar" role="toolbar" aria-label="Plates">
+      <div className="fig-bar" role="toolbar" aria-label="Plates">
         <Segmented size="sm" value={active} onChange={setPlate} aria-label="Plate" options={PLATES} />
         <span className="fig-bar__spacer" />
         {staticPlate && <Select size="sm" value={dpi} onChange={setDpi} options={DPI_OPTIONS} aria-label="Download resolution" />}

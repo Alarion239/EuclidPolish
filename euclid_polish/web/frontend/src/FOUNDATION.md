@@ -992,9 +992,10 @@ const a = useSystemAlerts().data;   // GET /api/system/alerts: {checks, alerts (
 alertBadge(a);                      // {count, tone: "warn"|"bad", label} | null (the rail badge)
 ```
 
-A workspace tab's own sticky toolbar sits under the tab strip with
-`position: sticky; top: var(--ws-bar-h)` (`WorkspaceTabs` publishes the strip's measured height
-on the `.ws` root).
+Nothing pins to the top of the page: the tab strip, each tab's toolbar and the version banner
+sit at the top of the scrolling stage and scroll away with it, so the stage height goes to the
+images (user request, 2026-09-27). Only table headers (inside their own scroll box) and side
+panels (with `top: var(--s2)`) stick. `--ws-bar-h` is kept at `0px` for old offsets.
 
 ### 10.3 Keyboard shortcuts: `hooks/useShortcut.ts`
 

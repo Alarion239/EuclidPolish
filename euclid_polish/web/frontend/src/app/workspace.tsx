@@ -25,7 +25,7 @@
  * nothing else would repaint them in the new theme (`useTokenRerender`).
  */
 import {
-  Suspense, cloneElement, isValidElement, lazy, useLayoutEffect, useRef,
+  Suspense, cloneElement, isValidElement, lazy,
   type ComponentType, type LazyExoticComponent, type ReactNode,
 } from "react";
 import { Link, Navigate, useLocation } from "react-router-dom";
@@ -89,22 +89,8 @@ export function WorkspaceTabs(
     badge: tabs?.[tab]?.badge,
     to: `${base === "/" ? "" : base}/${tab}${keep}`,
   }));
-  // Publish the strip's height as --ws-bar-h on the workspace root, so a
-  // tab's own sticky toolbar can sit right under it (`top: var(--ws-bar-h)`).
-  const barRef = useRef<HTMLDivElement | null>(null);
-  useLayoutEffect(() => {
-    const bar = barRef.current;
-    const root = bar?.closest<HTMLElement>(".ws");
-    if (!bar || !root) return undefined;
-    const apply = () => root.style.setProperty("--ws-bar-h", `${bar.offsetHeight}px`);
-    apply();
-    if (typeof ResizeObserver === "undefined") return () => root.style.removeProperty("--ws-bar-h");
-    const ro = new ResizeObserver(apply);
-    ro.observe(bar);
-    return () => { ro.disconnect(); root.style.removeProperty("--ws-bar-h"); };
-  }, []);
   return (
-    <div className="ws__bar" ref={barRef}>
+    <div className="ws__bar">
       <Tabs value={current ?? ""} tabs={items} variant="line" aria-label={`${ws.label} tabs`}
         className="ws__tabs" />
       {aside != null && <div className="ws__aside">{aside}</div>}

@@ -9,7 +9,7 @@
  * table, then the measured radii (validated asynchronously, cached) and the
  * atlas / grid / stack FASRC steps with their pulled results. Axes, colour,
  * histogram property and open sections are in the URL. */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useJob, useJobsStore } from "../../../api/jobs";
 import { useResource } from "../../../api/query";
@@ -130,18 +130,22 @@ function RadiiCard() {
   const radius = useResource<TngRadius>(URLS.tngRadii, [], { poll: poll ? 3_000 : undefined });
   const r = radius.data;
   const refresh = useJob(RADII_JOB_KEY);
-  const auto = useRef(false);
   const runningId = r?.refresh_job ?? null;
   const running = useJobsStore((st) => (runningId ? st.jobs[runningId] ?? null : null));
   const [steps, setSteps] = useUrlState("rsteps", false);
   const reload = radius.reload;
-  // The GET answers from the cache; a stale cache with FASRC up re-validates
-  // once per visit in a background job (unless one already runs).
-  useEffect(() => {
-    if (!r?.stale || !r.connected || r.refresh_job || refresh.busy || auto.current) return;
-    auto.current = true;
-    void refresh.run(URLS.tngRadiiRefresh, {}, { onDone: () => void reload() });
-  }, [r, refresh, reload]);
+  // The GET answers from the cache and never starts anything: re-validating
+  // runs a script on FASRC, so it only happens from the button (confirmed).
+  const validate = () => void startDataJob(refresh, URLS.tngRadiiRefresh, {}, {
+    label: "TNG radius validation",
+    question: {
+      title: "Validate the TNG radius manifest on FASRC?",
+      message: "Runs scripts/validate_tng_radius_manifest.py on the cluster (up to a few minutes) and caches the result.",
+      confirmLabel: "Validate",
+    },
+    onDone: () => void reload(),
+  });
+  const canValidate = !!r?.connected && !runningId && !refresh.busy;
   useEffect(() => { setPoll(!!runningId && !refresh.busy); }, [runningId, refresh.busy]);
   return (
     <Card>
@@ -156,11 +160,17 @@ function RadiiCard() {
           </p>
         )}
         {!r?.valid && r?.reasons?.length ? <Callout tone="bad" title="Not valid"><span className="dt-pre">{r.reasons.join("\n")}</span></Callout> : null}
-        {r?.stale && !r.connected && !refresh.job && (
-          <p className="dt-note">This validation is out of date; connect to FASRC to re-check it.</p>
+        {r?.stale && !refresh.job && !runningId && (
+          <p className="dt-note">
+            {r.connected ? "This validation is out of date; validate it on FASRC to re-check it."
+              : "This validation is out of date; connect to FASRC to re-check it."}
+          </p>
         )}
         <JobProgress job={refresh.job ?? running} error={refresh.error} />
         <div className="dt-chips">
+          <Tooltip content={r?.connected ? (runningId || refresh.busy ? "A validation is already running" : "Re-check the measured radii on FASRC") : OFFLINE_HINT}>
+            <span><Button size="sm" icon="check" disabled={!canValidate} loading={refresh.busy} onClick={validate}>Validate on FASRC</Button></span>
+          </Tooltip>
           <Button size="sm" variant="ghost" icon="reset" onClick={() => void reload()}>Refresh status</Button>
           <Button size="sm" variant="ghost" onClick={() => setSteps(!steps)}>{steps ? "Hide" : "Measure"} (FASRC step)</Button>
         </div>

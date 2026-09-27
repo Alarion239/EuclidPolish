@@ -15,7 +15,7 @@ import {
   Tooltip, confirm, toast, type DataColumn, type SelectOption,
 } from "../../../ui";
 import { URLS, deleteLayout, gridUrl, saveLayout, type FigureMode, type FigureRegime, type FigureTier, type GridLayout, type RecipeKey, type SavedResult } from "../api";
-import { ResultThumb, ServerImage, WcsBadge, useFigBarHeight } from "../common";
+import { ResultThumb, ServerImage, WcsBadge } from "../common";
 import { canAddGridRow, selectionForPreset } from "../grid/limits";
 import {
   DEFAULT_PRESET, MODES, PRESETS, TIERS, commonRecipes, gridStatus, isRecipeKey, layoutValue,
@@ -39,7 +39,6 @@ function useSettled<T>(value: T, ms: number): T {
 }
 
 export default function Grid() {
-  const barRef = useFigBarHeight();
   const [regimeRaw, setRegime] = useUrlState<string>("regime", DEFAULT_PRESET.regime);
   const [cols, setCols] = useUrlState<string[]>("cols", []);
   const [rowsRaw, setRows] = useUrlState<string[]>("rows", DEFAULT_PRESET.rows);
@@ -209,7 +208,7 @@ export default function Grid() {
 
   return (
     <Page className="fig-page">
-      <div ref={barRef} className="fig-bar" role="toolbar" aria-label="Figure grid">
+      <div className="fig-bar" role="toolbar" aria-label="Figure grid">
         <label className="fig-bar__field">
           <span className="fig-bar__label">Template</span>
           <Select size="sm" value={tpl} onChange={chooseTemplate} options={templateOptions} aria-label="Template" />

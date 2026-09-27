@@ -5,9 +5,9 @@
 
 .res-page { container: res-page / inline-size; display: flex; flex-direction: column; gap: var(--s3); }
 
-/* sticky toolbar under the tab strip (--ws-bar-h, app/workspace.tsx) */
+/* the tab's toolbar: at the top of the page, scrolls with it (nothing pins above the images) */
 .res-bar {
-  position: sticky; top: var(--ws-bar-h); z-index: var(--z-sticky);
+  position: relative;
   display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2);
   padding: var(--s2) var(--s3); background: var(--bg-0);
   border: 1px solid var(--border); border-radius: var(--r-lg); box-shadow: var(--shadow-1);
@@ -103,7 +103,7 @@
 
 /* ── catalogue evaluation ────────────────────────────────────────────── */
 .res-eval { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--s4); align-items: start; }
-.res-eval__viewer { position: sticky; top: calc(var(--ws-bar-h) + 64px); min-width: 0; }
+.res-eval__viewer { position: sticky; top: var(--s2); min-width: 0; }
 .res-figs { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: var(--s4); }
 .res-fig { display: flex; flex-direction: column; gap: var(--s2); min-width: 0; }
 .res-fig__img { max-width: 100%; height: auto; border-radius: var(--r-md); background: var(--surface-2); }

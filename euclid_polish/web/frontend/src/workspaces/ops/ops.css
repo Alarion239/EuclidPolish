@@ -6,7 +6,7 @@
 
 /* sticky toolbar under the tab strip (--ws-bar-h, app/workspace.tsx) */
 .ops-bar {
-  position: sticky; top: var(--ws-bar-h); z-index: var(--z-sticky);
+  position: relative;
   display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2);
   margin: 0 0 var(--s4); padding: var(--s2) var(--s3);
   background: var(--bg-0); border: 1px solid var(--border); border-radius: var(--r-lg); box-shadow: var(--shadow-1);
@@ -35,9 +35,9 @@
 .ops-split__main, .ops-split__side { min-width: 0; display: flex; flex-direction: column; gap: var(--s3); }
 @container ops (min-width: 1100px) {
   .ops-split:has(> .ops-split__side) { grid-template-columns: minmax(0, 1.35fr) minmax(360px, 1fr); }
-  .ops-split__side { position: sticky; top: calc(var(--ws-bar-h) + 64px); max-height: calc(100vh - var(--ws-bar-h) - 90px); overflow: auto; }
+  .ops-split__side { position: sticky; top: var(--s2); max-height: calc(100vh - var(--topbar-h, 48px) - var(--s4)); overflow: auto; }
   .ops-split--steps { grid-template-columns: minmax(220px, 280px) minmax(0, 1fr); }
-  .ops-split--steps .ops-steplist { position: sticky; top: calc(var(--ws-bar-h) + 64px); }
+  .ops-split--steps .ops-steplist { position: sticky; top: var(--s2); }
 }
 
 /* connection chip */
@@ -88,7 +88,7 @@
 .md { font-size: var(--fs-sm); line-height: 1.6; color: var(--text); overflow-wrap: anywhere; }
 .md > :first-child { margin-top: 0; }
 .md p, .md ul, .md ol, .md blockquote, .md pre, .md .md-table { margin: 0 0 var(--s3); }
-.md .md-h { margin: var(--s4) 0 var(--s2); line-height: 1.3; scroll-margin-top: calc(var(--ws-bar-h) + 70px); }
+.md .md-h { margin: var(--s4) 0 var(--s2); line-height: 1.3; scroll-margin-top: var(--s3); }
 .md .md-h1 { font-size: var(--fs-xl); }
 .md .md-h2 { font-size: var(--fs-md); font-family: var(--font-mono); color: var(--text-dim); border-top: 1px solid var(--border); padding-top: var(--s3); }
 .md .md-h3, .md .md-h4, .md .md-h5, .md .md-h6 { font-size: var(--fs-sm); }
@@ -129,7 +129,7 @@
 .ops-campaign__title { font-size: var(--fs-md); font-weight: var(--fw-semibold); }
 .ops-notebook { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s4); align-items: start; }
 @container ops (min-width: 1100px) { .ops-notebook { grid-template-columns: minmax(0, 1fr) 240px; } }
-.ops-outline { position: sticky; top: calc(var(--ws-bar-h) + 64px); display: flex; flex-direction: column; gap: 2px;
+.ops-outline { position: sticky; top: var(--s2); display: flex; flex-direction: column; gap: 2px;
   max-height: 70vh; overflow: auto; font-size: var(--fs-xs); }
 .ops-outline a { color: var(--text-dim); text-decoration: none; padding: 2px 6px; border-radius: var(--r-sm); font-family: var(--font-mono); }
 .ops-outline a:hover { background: var(--surface-2); color: var(--text); }

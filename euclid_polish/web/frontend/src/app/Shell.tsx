@@ -107,7 +107,6 @@ function ShellFrame() {
       {!narrow && <Rail collapsed={railCollapsed} />}
       <div className="shell__main">
         <TopBar narrow={narrow} />
-        <VersionBanner />
         <Group orientation="horizontal" className="shell__body"
           onLayoutChanged={(_layout, meta) => {
             const size = inspectorRef.current?.getSize().inPixels;
@@ -115,6 +114,8 @@ function ShellFrame() {
           }}>
           <Panel id="stage" minSize={320} className="shell__stage-panel">
             <main id="main" className="stage" ref={stageRef} tabIndex={-1}>
+              {/* in the scrolling stage, so it scrolls away with the page */}
+              <VersionBanner />
               <Outlet />
             </main>
           </Panel>

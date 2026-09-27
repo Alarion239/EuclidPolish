@@ -5,9 +5,9 @@
 .ws--ensemble .page { container-type: inline-size; }
 .ws--ensemble .page, .ens-insp { min-width: 0; }
 
-/* sticky toolbar under the tab strip (--ws-bar-h, app/workspace.tsx) */
+/* the tab's toolbar: at the top of the page, scrolls with it (nothing pins above the images) */
 .ens-bar {
-  position: sticky; top: var(--ws-bar-h); z-index: var(--z-sticky);
+  position: relative;
   display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2);
   margin: 0 0 var(--s4); padding: var(--s2) var(--s3);
   background: var(--bg-0); border: 1px solid var(--border); border-radius: var(--r-lg);

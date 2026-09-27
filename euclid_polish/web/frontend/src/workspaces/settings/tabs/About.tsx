@@ -42,7 +42,6 @@ export const SYSTEM_URL = "/api/system";
 const DISK_KEY = "run:disk-usage";
 const LEVEL_TONE: Record<Level, Tone> = { ok: "good", warn: "warn", bad: "bad", unknown: "neutral" };
 const DISK_JOB = { key: DISK_KEY, label: "Measure disk usage", url: "/api/system/disk-usage/refresh" };
-let autoMeasured = false;
 
 function useSystem() {
   return useResource<SystemInfo>(SYSTEM_URL, [], { ttl: 30_000 });
@@ -137,12 +136,8 @@ export default function About() {
   useEffect(() => { if (jobStatus === "done") void invalidate(SYSTEM_URL); }, [jobStatus, jobId]);
   // Poll while a measurement started elsewhere runs.
   useResource<SystemInfo>(s?.roots.refresh_job ? SYSTEM_URL : null, [s?.roots.refresh_job], { poll: 1500 });
-  // A stale (or missing) measurement is refreshed once per session.
-  useEffect(() => {
-    if (!s || autoMeasured || !s.roots.stale || s.roots.refresh_job) return;
-    autoMeasured = true;
-    void startJob(DISK_JOB, { quiet: true });
-  }, [s]);
+  // Opening the page never starts a job: a stale measurement is flagged and
+  // re-measured from "Measure now" (or the palette).
 
   const measure = () => { void startJob(DISK_JOB); };
   usePageActions([

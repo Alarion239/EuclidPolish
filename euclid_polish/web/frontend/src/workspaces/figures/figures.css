@@ -4,9 +4,9 @@
 
 .fig-page { container: fig-page / inline-size; display: flex; flex-direction: column; gap: var(--s3); min-width: 0; }
 
-/* sticky toolbar under the tab strip (--ws-bar-h, app/workspace.tsx) */
+/* the tab's toolbar: at the top of the page, scrolls with it (nothing pins above the images) */
 .fig-bar {
-  position: sticky; top: var(--ws-bar-h); z-index: var(--z-sticky);
+  position: relative;
   display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2);
   padding: var(--s2) var(--s3); background: var(--bg-0);
   border: 1px solid var(--border); border-radius: var(--r-lg); box-shadow: var(--shadow-1);
@@ -71,7 +71,7 @@
 /* isolate: the picker table's sticky header never paints over the preview */
 .fig-grid__controls { display: flex; flex-direction: column; gap: var(--s3); min-width: 0; isolation: isolate; }
 .fig-grid__preview {
-  --fig-sticky-top: calc(var(--ws-bar-h) + var(--fig-bar-h, 48px) + var(--s2));
+  --fig-sticky-top: var(--s2);
   position: sticky; top: var(--fig-sticky-top);
   display: flex; flex-direction: column; gap: var(--s1); min-width: 0;
 }
@@ -131,7 +131,7 @@
 .fig-plate__tools { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s1); }
 
 .fig-nexus { display: grid; grid-template-columns: minmax(280px, 340px) minmax(0, 1fr); gap: var(--s3); align-items: start; }
-.fig-nexus__form { position: sticky; top: calc(var(--ws-bar-h) + var(--fig-bar-h, 48px) + var(--s2)); }
+.fig-nexus__form { position: sticky; top: var(--s2); }
 .fig-nexus__form > .ui-btn--primary { align-self: flex-start; }
 .fig-nexus__quick { display: flex; flex-wrap: wrap; gap: var(--s1); margin-top: calc(-1 * var(--s1)); }
 .fig-nexus__runs .fig-panel__head .ui-select { max-width: 220px; }
@@ -174,12 +174,10 @@
 @container fig-page (max-width: 760px) {
   .fig-grid, .fig-nexus { grid-template-columns: minmax(0, 1fr); }
   .fig-nexus__form { position: static; }
-  /* stacked: the preview leads and stays pinned (capped, collapsible) above
-     the editors that scroll beneath it */
+  /* stacked: the preview leads (capped) above the editors, in the page flow */
   .fig-grid__preview {
-    --fig-sticky-top: calc(var(--ws-bar-h) + var(--fig-bar-h, 48px));
-    order: -1; z-index: calc(var(--z-sticky) - 1);
-    background: var(--bg-0); padding: var(--s2) 0; border-bottom: 1px solid var(--border);
+    position: static; order: -1;
+    padding: var(--s2) 0; border-bottom: 1px solid var(--border);
   }
   .fig-grid__paper { --fig-paper-max: min(40vh, 440px); aspect-ratio: auto; }
 }

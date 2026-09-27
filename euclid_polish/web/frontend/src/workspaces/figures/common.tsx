@@ -1,6 +1,6 @@
 /* Shared pieces of the Figures tabs: server-rendered images that show the
  * server's error text, saved-result thumbnails and badges. */
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { ApiError, apiGet } from "../../api/client";
 import { Badge, Button, Icon, Skeleton, Tooltip, cx } from "../../ui";
 import { panelUrl, type SavedResult } from "./api";
@@ -18,25 +18,6 @@ export async function imageError(src: string): Promise<string> {
     }
     return e instanceof Error ? e.message : String(e);
   }
-}
-
-/** Publish the tab's sticky toolbar height as --fig-bar-h on the enclosing
- *  .fig-page, so sticky panels (grid preview, NEXUS form) sit right under a
- *  toolbar that wraps to two lines at narrow widths. Returns the bar's ref. */
-export function useFigBarHeight<T extends HTMLElement = HTMLDivElement>() {
-  const ref = useRef<T | null>(null);
-  useLayoutEffect(() => {
-    const bar = ref.current;
-    const page = bar?.closest<HTMLElement>(".fig-page");
-    if (!bar || !page) return undefined;
-    const apply = () => page.style.setProperty("--fig-bar-h", `${bar.offsetHeight}px`);
-    apply();
-    if (typeof ResizeObserver === "undefined") return () => page.style.removeProperty("--fig-bar-h");
-    const ro = new ResizeObserver(apply);
-    ro.observe(bar);
-    return () => { ro.disconnect(); page.style.removeProperty("--fig-bar-h"); };
-  }, []);
-  return ref;
 }
 
 type ImgState = { src: string; state: "loading" | "ready" | "error"; error?: string };

@@ -192,13 +192,12 @@ describe("Settings › About", () => {
     expect(useInspector.getState().current).toEqual({ kind: "root", id: "data/r3" });
   });
 
-  it("measures the disk usage when the last measurement is stale (once), and on demand", async () => {
+  it("never measures on its own: a stale measurement is only flagged", async () => {
     routes["GET /api/system"] = () => ({ body: { ...SYSTEM, roots: { ...SYSTEM.roots, stale: true } } });
     show(<About />);
-    await waitFor(() => expect(posts("/api/system/disk-usage/refresh")).toHaveLength(1));
-    await waitFor(() => expect(useJobsStore.getState().keyed["run:disk-usage"]).toBe("du1"));
-    // started by the page itself: no "started" toast
-    expect(screen.queryByText(/Measure disk usage: started/)).toBeNull();
+    expect(await screen.findByText("stale")).toBeTruthy();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(posts("/api/system/disk-usage/refresh")).toHaveLength(0);
   });
 
   it("toasts a measurement started on demand", async () => {
