@@ -11,6 +11,9 @@ export type Num = number | null;
 export type FieldManifest = {
   field_id: string; ra: number; dec: number; field_size?: number; grid_side?: number;
   count: number; member_labels?: string[]; combiner_kinds?: string[];
+  /** The members that ran (default: only the production gate's); older
+   *  caches ran every member and lack these. */
+  run_member_labels?: string[]; member_scope?: "gate" | "all";
 };
 export type FieldStatus = { field: FieldManifest | null; field_size?: number };
 
@@ -23,7 +26,8 @@ export type Occupancy = {
   counts: number[] | number[][]; x_label: string; y_label?: string; pixel_count: number;
 };
 export type FieldDiagnostics = {
-  version: number; member_labels: string[]; model_power: ModelPower;
+  version: number; member_labels: string[]; member_scope?: "gate" | "all"; n_ensemble_members?: number;
+  model_power: ModelPower;
   std_brightness: { x_edges: number[]; y_edges: number[]; counts: number[][]; x_label: string; y_label: string };
   combiners: Record<string, Occupancy>;
 };
@@ -41,6 +45,16 @@ export const RBF_KINDS: Record<string, string> = {
 export const CROSS_X_DOMAIN: [number, number] = [0.05, 10];
 
 /** `(transform(x), y)` for positive finite x and finite y, sorted by x. */
+/** How many members made the field's SR and diagnostics: "20 of 30
+ *  members (the production gate's)", or "30 members" when every one ran. */
+export function fieldMembersText(f: Pick<FieldManifest, "member_labels" | "run_member_labels" | "member_scope">): string {
+  const total = f.member_labels?.length ?? 0;
+  const ran = f.run_member_labels?.length ?? total;
+  const noun = (n: number) => `member${n === 1 ? "" : "s"}`;
+  if (ran >= total) return `${total} ${noun(total)}`;
+  return `${ran} of ${total} ${noun(total)}${f.member_scope === "gate" ? " (the production gate's)" : ""}`;
+}
+
 export function transformedSeries(xs: readonly Num[], ys: readonly Num[], transform: (v: number) => number): Pt[] {
   const out: Pt[] = [];
   xs.forEach((v, i) => {

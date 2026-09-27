@@ -9,6 +9,7 @@ stubbed download + model so no network / TF weights are needed), and the
 from __future__ import annotations
 
 import csv as _csv
+import json
 import os
 import time as _time
 
@@ -303,6 +304,46 @@ class TestReconstructCutoutAt:
 
         assert os.path.isfile(res["stack_fits_path"])
         assert os.path.isfile(res["sr_fits_path"])
+
+
+    def test_pruned_model_disagreement_covers_the_members_that_ran(self, tmp_path,
+                                                                   monkeypatch):
+        """A pruned production gate runs 2 of its 3 fitted members: the
+        std/PCA cubes are over those 2 and members.json records them, while
+        member_labels stays the gate's full fitted list (the identity)."""
+        h = w = 12
+
+        def fake_fetch(*, ra, dec, band_name, output_file, cutout_size_vis_pixels):
+            hdr = fits.Header()
+            hdr["MAGZERO"] = 30.0
+            fits.PrimaryHDU(np.ones((h, w), np.float32), header=hdr).writeto(
+                output_file, overwrite=True)
+            return True, None
+
+        members = np.stack([np.full((2 * h, 2 * w, 4), v, np.float32) for v in (1.0, 3.0)])
+
+        def fake_sr_from_model(model, lr_cube):
+            return lr_cube[..., 0], members.mean(axis=0), members
+
+        class _Pruned:
+            member_labels = ["a·psnr", "b·psnr", "c·psnr"]
+            run_labels = ["a·psnr", "c·psnr"]
+            n_members = 3
+            n_run = 2
+            combiner_kind = "spatial_gate"
+
+        monkeypatch.setattr(jobs_impl, "fetch_cutout_at", fake_fetch)
+        monkeypatch.setattr(jobs_impl, "sr_from_model", fake_sr_from_model)
+        out_dir = tmp_path / "obj"
+        jobs_impl.reconstruct_cutout_at(
+            model=_Pruned(), ra=1.0, dec=2.0, cutout_size_vis_pixels=h,
+            out_dir=str(out_dir), render=False, checkpoint_dir="ckpt-x")
+        recorded = json.loads((out_dir / "members.json").read_text())
+        assert recorded["member_labels"] == ["a·psnr", "b·psnr", "c·psnr"]
+        assert recorded["disagreement_members"] == ["a·psnr", "c·psnr"]
+        with fits.open(out_dir / "std.fits") as hdul:
+            np.testing.assert_allclose(np.asarray(hdul[0].data)[0], 1.0, rtol=1e-5)
+        assert (out_dir / "pca0.fits").is_file()
 
 
 # --------------------------------------------------------------------------- #

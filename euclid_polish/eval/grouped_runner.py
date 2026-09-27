@@ -176,31 +176,26 @@ def run_grouped_analysis(
     # Load the SR model only for real lenses that do not already have cached
     # LR/SR FITS. Synthetic can be regenerated cheaply; A/B/C cutouts should
     # not be redownloaded when their existing outputs are present.
-    # With >1 members we (re)generate the disagreement cubes (stdSR + movie),
-    # so an object that only has a plain SR.fits — or one produced by a
-    # DIFFERENT membership (fingerprint mismatch) — is re-run, not skipped.
-    # Cheap probe via the registry, no model load.
-    # The reuse key is the model identity: the STARFULL members AND the
-    # production combiner (kind + artifact fingerprint) — a refitted gate
-    # regenerates the SRs it changes.
+    # With >1 members running we (re)generate the disagreement cubes (stdSR +
+    # movie) over them, so an object that only has a plain SR.fits — or one
+    # produced by a DIFFERENT membership (fingerprint mismatch) — is re-run,
+    # not skipped. Cheap probe via the registry, no model load.
+    # The reuse key is the model identity: the production gate's fitted
+    # members AND the gate itself (kind + artifact fingerprint) — a refitted
+    # or promoted gate regenerates the SRs it changes.
     if model is not None:
         identity = catalog_runner.eval_model_identity(model)
     else:
         identity = catalog_runner.current_eval_identity(
             labels=active_labels(ensemble_dir))
-    labels = identity["member_labels"]
-    want_disagreement = len(labels) > 1
-    fp = labels if want_disagreement else None
-    ident = identity if want_disagreement else None
+    reuse = catalog_runner.reuse_requirements(identity)
 
     def _reusable(obj_id: str) -> bool:
         if catalog_runner.can_reuse_eval_object(
-                catalog_runner.object_output_dir(out_dir, obj_id),
-                require_disagreement=want_disagreement, member_labels=fp, identity=ident):
+                catalog_runner.object_output_dir(out_dir, obj_id), **reuse):
             return True
         return bool(lens_source_dir) and catalog_runner.can_reuse_eval_object(
-            catalog_runner.object_output_dir(lens_source_dir, obj_id),
-            require_disagreement=want_disagreement, member_labels=fp, identity=ident)
+            catalog_runner.object_output_dir(lens_source_dir, obj_id), **reuse)
 
     needs_lens_model = any(
         not _reusable(obj["id"])
@@ -234,9 +229,7 @@ def run_grouped_analysis(
                     lens_source_dir, out_dir, obj["id"])
             # Existence is checked BEFORE any archive download: a cutout already
             # on disk is reused as-is and never re-fetched.
-            from_cache = catalog_runner.can_reuse_eval_object(
-                obj_dir, require_disagreement=want_disagreement,
-                member_labels=fp, identity=ident)
+            from_cache = catalog_runner.can_reuse_eval_object(obj_dir, **reuse)
             if from_cache:
                 _emit(f"  • {obj['id']}: already present locally — skipping download")
                 produced, err = True, ""

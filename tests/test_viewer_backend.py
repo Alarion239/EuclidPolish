@@ -287,6 +287,44 @@ def test_real_field_tiles_carry_offset_wcs_and_positions(client, tmp_path, monke
     assert sr.headers["X-Cube-Unit"] == "e-"
 
 
+def test_real_field_labels_say_which_members_ran(tmp_path, monkeypatch):
+    _write(tmp_path / "original_stack.fits", np.zeros((4, 10, 10)), _header())
+    cubes = tmp_path / "cubes"
+    cubes.mkdir()
+    for tier in ("sr", "std", "member0", "member2"):
+        np.save(cubes / f"{tier}_000.npy", np.zeros((20, 20, 4), np.float32))
+    manifest = {"field_id": "f1", "count": 1, "grid_side": 1, "tile_size": 10,
+                "member_labels": ["170·psnr", "171·psnr", "172·psnr"],
+                "run_members": [0, 2], "run_member_labels": ["170·psnr", "172·psnr"],
+                "member_scope": "gate", "combiner_kinds": [], "pca_n": 1}
+    monkeypatch.setattr(vd, "_real_field_manifest", lambda _params: manifest)
+    monkeypatch.setattr(vd.real_field, "field_dir", lambda _identifier: tmp_path)
+
+    meta = vd._real_field_meta({})
+    tiers = {tier["key"]: tier["label"] for tier in meta["tiers"]}
+
+    # Only the members that ran are offered, keyed by their ensemble position.
+    assert [key for key in tiers if key.startswith("member")] == ["member0", "member2"]
+    assert tiers["sr"] == "SR (mean of 2 of 3 members: the production gate's)"
+    assert meta["run_member_labels"] == ["170·psnr", "172·psnr"]
+    assert meta["member_scope"] == "gate"
+    _cube, info = vd._real_field_cube(0, "sr", {})
+    assert info["label"].startswith("SR (starfull mean of 2 of 3 members: the production gate's)")
+    _cube, info = vd._real_field_cube(0, "std", {})
+    assert info["label"].startswith("stdSR (starfull, 2 of 3 members: the production gate's)")
+
+
+def test_real_field_labels_before_member_scopes_cover_every_member(tmp_path, monkeypatch):
+    manifest = {"field_id": "f1", "count": 0, "grid_side": 1, "tile_size": 10,
+                "member_labels": ["170·psnr", "171·psnr"], "combiner_kinds": [], "pca_n": 1}
+    monkeypatch.setattr(vd, "_real_field_manifest", lambda _params: manifest)
+
+    tiers = {tier["key"]: tier["label"] for tier in vd._real_field_meta({})["tiers"]}
+
+    assert tiers["sr"] == "SR (mean)"
+    assert [key for key in tiers if key.startswith("member")] == ["member0", "member1"]
+
+
 # ---------------------------------------------------------------------------
 # nexus-field and jwst-euclid
 # ---------------------------------------------------------------------------

@@ -22,7 +22,10 @@ import {
 import { BAND_SHORT, BANDS, useMembers, useMode, type MemberRow, type Mode, type Tombstone } from "../api";
 import { LoadState, useFacetColors } from "../common";
 import { JOB, useOnJobEnd } from "../jobs";
-import { GATE_BANDS, db, gateUsage, kneeText, memberNumber, stepsText, type GateUsage } from "../model";
+import {
+  GATE_BANDS, db, gatePeak, gateUsage, gateUseText, kneeText, memberNumber, stepsText, usedByGate,
+  type GatePeak, type GateUsage,
+} from "../model";
 import "../ensemble.css";
 
 const tabPath = (mode: Mode, tab: string) => pagePath("ensemble", { tab, params: { mode } });
@@ -53,15 +56,19 @@ function StatusBadge({ m }: { m: MemberRow }) {
 
 /** Gate use: the mean share of the production gate's weight over the bands,
  *  with one small bar per band (VIS Y J H) — the VIS weight alone hid
- *  members the gate leans on for NISP. `max` scales the bars (the table's
- *  largest band share). */
-function GateUse({ usage, max }: { usage: GateUsage; max: number }) {
-  if (usage.mean == null) return <span className="ui-dt__nil">—</span>;
+ *  members the gate leans on for NISP — and, when the payload has it, the
+ *  peak over bands and brightness bins: the all-pixel mean rounds a core
+ *  specialist to 0.0%. `max` scales the bars (the table's largest band
+ *  share). */
+function GateUse({ usage, peak, max }: { usage: GateUsage; peak: GatePeak; max: number }) {
+  if (usage.mean == null && peak.v == null) return <span className="ui-dt__nil">—</span>;
   const text = usage.bands.map((b) => `${b.short} ${pct(b.v)}`).join(" · ");
+  const summary = gateUseText(usage, peak);
+  const aria = peak.v == null ? `Gate use ${pct(usage.mean)} (mean over bands): ${text}` : `Gate use ${summary}: ${text}`;
   return (
-    <Tooltip content={`Share of the production gate's weight: ${text} (mean ${pct(usage.mean)})`}>
-      <span className="ens-gate" tabIndex={0} aria-label={`Gate use ${pct(usage.mean)} (mean over bands): ${text}`}>
-        <span className="ens-num">{pct(usage.mean)}</span>
+    <Tooltip content={`Share of the production gate's weight: ${text} (mean ${pct(usage.mean)}${peak.v == null ? "" : `; peak ${pct(peak.v)}${peak.where ? ` in ${peak.where}` : ""}, the largest over bands and brightness bins`})`}>
+      <span className="ens-gate" data-peak={peak.v == null ? undefined : true} tabIndex={0} aria-label={aria}>
+        <span className="ens-num">{summary}</span>
         <span className="ens-gate__bars" aria-hidden>
           {usage.bands.map((b) => (
             <i key={b.band} data-band={b.short} style={{ height: `${b.v == null ? 0 : Math.max(4, Math.min(100, (100 * b.v) / Math.max(max, 1e-9)))}%` }} />
@@ -70,6 +77,12 @@ function GateUse({ usage, max }: { usage: GateUsage; max: number }) {
       </span>
     </Tooltip>
   );
+}
+
+/** Whether production SR runs the member: the gate reads it (`used_by_gate`). */
+function ReadByGate({ used }: { used: boolean | null }) {
+  if (used == null) return <span className="ui-dt__nil">—</span>;
+  return used ? <Badge tone="good">read</Badge> : <span className="ens-muted">not read</span>;
 }
 
 /** Archive members one after another (each job rewrites the registry). */
@@ -136,9 +149,16 @@ export default function Members() {
     { id: "psnr", header: <DefHead def={`Test PSNR, joint 4-band asinh (the training psnr_stretched) over ${psnrFields ?? "—"} test fields, from the per-member PSNR cache (Refresh member PSNR). Higher than Test VIS by construction; not comparable with it.`}>Test 4b</DefHead>,
       headerText: "test 4-band psnr", numeric: true, width: 72, accessor: (m) => num(m.psnr, 3), cell: (m) => db(m.psnr, 3) },
     { id: "psnr_rank", header: "rank", numeric: true, accessor: (m) => m.psnr_rank ?? null, hidden: true },
-    { id: "gate", header: <DefHead def="Share of the production gate's weight given to this member, averaged over VIS, Y, J and H; the bars show each band (hover for the numbers). Per-band columns are in the column menu.">Gate use</DefHead>,
+    { id: "gate", header: <DefHead def="Share of the production gate's weight given to this member: the mean over all pixels, averaged over VIS, Y, J and H, then the peak (the largest share in any band and brightness bin: a member the gate leans on only in bright cores rounds to 0.0% mean). The bars show each band (hover for the numbers). Per-band columns are in the column menu.">Gate use</DefHead>,
       headerText: "gate use (mean over bands)", accessor: (m) => num(usage.get(m.name)?.mean, 5),
-      cell: (m) => <GateUse usage={usage.get(m.name) ?? gateUsage(null)} max={maxUsage} />, width: 124 },
+      cell: (m) => <GateUse usage={usage.get(m.name) ?? gateUsage(null)} peak={gatePeak(m)} max={maxUsage} />, width: 200 },
+    { id: "gate_peak", header: "Gate peak", headerText: "gate use peak (max over bands and brightness bins)", numeric: true, hidden: true, width: 80,
+      accessor: (m) => num(gatePeak(m).v, 5), cell: (m) => pct(gatePeak(m).v) },
+    // Only when the server says which members the gate reads.
+    ...(!rows.some((m) => usedByGate(m) != null) ? [] : [{ id: "gate_read", header: <DefHead def="Whether the production gate reads this member. Production SR runs only the members the gate reads; a pruned gate skips the rest.">Read by gate</DefHead>,
+      headerText: "read by the production gate", width: 96,
+      accessor: (m: MemberRow) => { const u = usedByGate(m); return u == null ? null : u ? "read" : "not read"; },
+      cell: (m: MemberRow) => <ReadByGate used={usedByGate(m)} /> } satisfies DataColumn<MemberRow>]),
     ...GATE_BANDS.map(({ band, short }): DataColumn<MemberRow> => ({
       id: `gate_${short}`, header: `Gate ${short}`, headerText: `gate use ${short}`, numeric: true, hidden: true, width: 72,
       accessor: (m) => num(m.gate_usage?.[band], 5), cell: (m) => pct(m.gate_usage?.[band]),
@@ -161,7 +181,7 @@ export default function Members() {
     { id: "gpu", header: "GPU util", numeric: true, accessor: (m) => m.job?.gpu_util_mean ?? null,
       cell: (m) => (m.job?.gpu_util_mean != null ? `${Math.round(m.job.gpu_util_mean)}%` : "—"), hidden: true },
     { id: "size", header: "Size", numeric: true, accessor: (m) => m.size_mb ?? null, cell: (m) => (m.size_mb != null ? `${m.size_mb} MB` : "—"), hidden: true },
-  ], [colors, usage, maxUsage, psnrFields, visMeta]);
+  ], [rows, colors, usage, maxUsage, psnrFields, visMeta]);
 
   async function archive() {
     const names = sel;

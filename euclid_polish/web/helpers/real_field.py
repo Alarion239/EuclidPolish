@@ -4,6 +4,14 @@ One archive request per band fetches a 2560-pixel VIS field.  The field is
 then cut deterministically into a 10x10 grid of 256-pixel LR tiles.  Every
 tile keeps its raw LR cube plus the STARFULL member, mean, disagreement and
 available-combiner SR cubes, so opening the viewer never re-runs inference.
+
+By default only the members the production gate reads are run (a pruned gate
+skips the ones it gives no weight), and the member mean, disagreement, PCA and
+diagnostics describe just those members (``member_scope`` ``"gate"``).
+``all_members=True`` runs every active member (``"all"``), the full
+member-diagnostic cache. Member cubes stay indexed by position in the whole
+active membership, so switching scope reuses every cube already computed and
+never deletes one.
 """
 from __future__ import annotations
 
@@ -22,6 +30,11 @@ from euclid_polish import ensemble_registry
 from euclid_polish.config import Config
 from euclid_polish.ensemble import EnsembleModel, default_ensemble_dir, pca_field
 from euclid_polish.eval.combiner import COMBINER_MODELS, load_combiner
+from euclid_polish.eval.ensemble_infer import (
+    PRODUCTION_COMBINER_KIND,
+    combiner_read_labels,
+    load_production_combiner,
+)
 from euclid_polish.eval.power_spectrum import log_k_edges, pairwise_cross_correlation
 from euclid_polish.photometry import adu_per_s_to_electrons_factor, header_magzero
 from euclid_polish.web.helpers import jwst_euclid
@@ -35,6 +48,9 @@ _MINMAX_EDGES = np.linspace(-1.0, 13.0, 81)
 _POWER_K_EDGES = log_k_edges(Config.DEFAULT_PIXEL_SCALE, kmin=0.2, nbins=24)
 _POWER_K_CENTERS = np.sqrt(_POWER_K_EDGES[:-1] * _POWER_K_EDGES[1:])
 REAL_FIELD_DIAGNOSTICS_VERSION = 2
+#: ``member_scope``: the production gate's read members, or every member.
+SCOPE_GATE = "gate"
+SCOPE_ALL = "all"
 
 
 def field_id(ra: float, dec: float) -> str:
@@ -145,7 +161,8 @@ def _accumulate_diagnostics(acc: dict[str, Any], members: np.ndarray,
 
 
 def _diagnostic_payload(acc: dict[str, Any], labels: list[str],
-                        combiners: dict[str, Any]) -> dict[str, Any]:
+                        combiners: dict[str, Any], *, scope: str = SCOPE_ALL,
+                        n_ensemble: int | None = None) -> dict[str, Any]:
     power_rows = acc["power_rows"]
     n_pairs = len(labels) * (len(labels) - 1) // 2
     if power_rows:
@@ -176,6 +193,8 @@ def _diagnostic_payload(acc: dict[str, Any], labels: list[str],
     return {
         "version": REAL_FIELD_DIAGNOSTICS_VERSION,
         "member_labels": labels,
+        "member_scope": scope,
+        "n_ensemble_members": len(labels) if n_ensemble is None else int(n_ensemble),
         "model_power": {
             "k": _POWER_K_CENTERS.tolist(),
             "r_pairs": json_rows(pair_curves),
@@ -297,9 +316,91 @@ def _restore_matching_member_cubes(cubes: Path, staging: Path) -> None:
         staging.rmdir()
 
 
+def _run_member_indices(combiners: dict[str, Any], labels: list[str], *,
+                        all_members: bool) -> tuple[list[int], str]:
+    """``(positions in labels, scope)`` of the members a cache pass runs: the
+    production gate's read members, or every member when asked (or when no
+    production gate is current for this membership, so the mean is the
+    fallback SR)."""
+    production = combiners.get(PRODUCTION_COMBINER_KIND)
+    if all_members or production is None:
+        return list(range(len(labels))), SCOPE_ALL
+    position = {label: i for i, label in enumerate(labels)}
+    return sorted(position[label] for label in combiner_read_labels(production)), SCOPE_GATE
+
+
+def _applicable_combiners(combiners: dict[str, Any],
+                          run_labels: list[str]) -> dict[str, Any]:
+    """The combiners whose every read member is in ``run_labels``."""
+    have = set(run_labels)
+    return {kind: comb for kind, comb in combiners.items()
+            if set(combiner_read_labels(comb)) <= have}
+
+
+def _combiner_stack(members: np.ndarray, run_labels: list[str], combiner) -> np.ndarray:
+    """The rows of the ``run_labels`` stack that ``combiner`` reads, in its order."""
+    rows = {label: row for row, label in enumerate(run_labels)}
+    return members[[rows[label] for label in combiner_read_labels(combiner)]]
+
+
+def _load_regime_combiners(labels: list[str]) -> dict[str, Any]:
+    """Every combiner fitted for exactly ``labels``; the production gate
+    whenever every member it reads is among them (members that joined after
+    its fit do not make it stale)."""
+    regime_dir = Path(Config.VIS_DIR) / "ensemble" / "starfull"
+    combiners = {
+        kind: comb
+        for kind, spec in COMBINER_MODELS.items()
+        if (comb := load_combiner(str(regime_dir), member_labels=labels,
+                                  artifact_dir=spec.artifact_dir)) is not None
+    }
+    production = load_production_combiner(labels, str(regime_dir))
+    if production is not None:
+        combiners[PRODUCTION_COMBINER_KIND] = production
+    return combiners
+
+
+def _combiner_state(combiners: dict[str, Any]) -> dict[str, list[int]]:
+    regime_dir = Path(Config.VIS_DIR) / "ensemble" / "starfull"
+    state = {}
+    for kind in combiners:
+        stat = (regime_dir / COMBINER_MODELS[kind].artifact_dir / "combiner.npz").stat()
+        state[kind] = [int(stat.st_mtime_ns), int(stat.st_size)]
+    return state
+
+
+def _write_tile_products(cubes: Path, tile: int, tile_lr: np.ndarray,
+                         members: np.ndarray, run_labels: list[str],
+                         combiners: dict[str, Any]) -> tuple[list[float], list[float]]:
+    """Mean, std, PCA and combiner cubes of one tile from the stack of the
+    ``run_labels`` members; returns the tile's PCA amplitudes and variances."""
+    mean, pcs, amps, variance = pca_field(members)
+    np.save(cubes / f"sr_{tile:03d}.npy", mean)
+    np.save(cubes / f"std_{tile:03d}.npy", members.std(axis=0))
+    for i, component in enumerate(pcs):
+        np.save(cubes / f"pca{i}_{tile:03d}.npy", component)
+    for kind, combiner in combiners.items():
+        prefix = COMBINER_MODELS[kind].cube_prefix
+        np.save(cubes / f"{prefix}_{tile:03d}.npy",
+                combiner.apply_field(_combiner_stack(members, run_labels, combiner),
+                                     lr=tile_lr))
+    return [float(x) for x in amps], [float(x) for x in variance]
+
+
+def _scope_fields(labels: list[str], run: list[int], scope: str) -> dict[str, Any]:
+    return {"run_members": list(run),
+            "run_member_labels": [labels[i] for i in run],
+            "member_scope": scope,
+            "pca_n": min(3, max(0, len(run) - 1))}
+
+
 def cache_real_field(ra: float, dec: float, *,
-                     progress: Callable[[int, int, str], None]) -> dict[str, Any]:
-    """Materialise the 100-tile STARFULL real-data cache, reusing raw data."""
+                     progress: Callable[[int, int, str], None],
+                     all_members: bool = False) -> dict[str, Any]:
+    """Materialise the 100-tile STARFULL real-data cache, reusing raw data.
+
+    Runs only the members the production gate reads unless ``all_members``;
+    member cubes already on disk are reused and never deleted."""
     identifier = field_id(ra, dec)
     root = field_dir(identifier)
     cubes = root / "cubes"
@@ -330,88 +431,81 @@ def cache_real_field(ra: float, dec: float, *,
         if preserved:
             print(f"  reused {preserved} matching cached member tiles")
 
-    regime_dir = Path(Config.VIS_DIR) / "ensemble" / "starfull"
-    combiners = {
-        kind: comb
-        for kind, spec in COMBINER_MODELS.items()
-        if (comb := load_combiner(str(regime_dir), member_labels=labels,
-                                  artifact_dir=spec.artifact_dir)) is not None
-    }
-    combiner_state = {}
-    for kind in combiners:
-        spec = COMBINER_MODELS[kind]
-        path = regime_dir / spec.artifact_dir / "combiner.npz"
-        stat = path.stat()
-        combiner_state[kind] = [int(stat.st_mtime_ns), int(stat.st_size)]
+    combiners = _load_regime_combiners(labels)
+    combiner_state = _combiner_state(combiners)
     if old.get("combiner_state") != combiner_state:
         # A refit changes the derived prediction even though member cubes are
         # still valid.  Rebuild only the affected cheap fused cubes.
         for spec in COMBINER_MODELS.values():
             for path in cubes.glob(f"{spec.cube_prefix}_*.npy"):
                 path.unlink()
+    run, scope = _run_member_indices(combiners, labels, all_members=all_members)
+    run_labels = [labels[i] for i in run]
+    applied = _applicable_combiners(combiners, run_labels)
+    count = GRID_SIDE * GRID_SIDE
+    missing = sorted({i for tile in range(count) for i in run
+                      if not (cubes / f"member{i}_{tile:03d}.npy").is_file()})
+    models: dict[int, Any] = {}
+    if missing:
+        # Restore only the checkpoints some tile still lacks.
+        try:
+            ensemble = EnsembleModel(default_ensemble_dir(), starless=False,
+                                     labels=[labels[i] for i in missing])
+        except ValueError as exc:
+            raise RuntimeError(
+                "STARFULL membership changed during real-field refresh") from exc
+        models = dict(zip(missing, ensemble.members, strict=True))
+    print(f"  running {len(run)} of {n_members} STARFULL members ({scope}); "
+          f"{len(missing)} need inference")
     pca_amps: dict[str, list[float]] = {}
     pca_var: dict[str, list[float]] = {}
-    diagnostics = _diagnostic_accumulators(combiners, n_members)
-    ensemble = None
-    for tile in range(GRID_SIDE * GRID_SIDE):
+    diagnostics = _diagnostic_accumulators(applied, len(run))
+    for tile in range(count):
         row, col = divmod(tile, GRID_SIDE)
         ys, xs = row * TILE_SIZE, col * TILE_SIZE
         tile_lr = lr[ys:ys + TILE_SIZE, xs:xs + TILE_SIZE]
         np.save(cubes / f"lr_{tile:03d}.npy", tile_lr)
-        member_paths = [cubes / f"member{i}_{tile:03d}.npy" for i in range(n_members)]
-        missing_members = [
-            index for index, path in enumerate(member_paths)
-            if not path.is_file()]
-        if missing_members:
-            if ensemble is None:
-                ensemble = EnsembleModel(default_ensemble_dir(), starless=False)
-                if list(ensemble.member_labels) != labels:
-                    raise RuntimeError("STARFULL membership changed during real-field refresh")
-            models = ensemble.members
-            for member_index in missing_members:
-                member = np.asarray(
-                    models[member_index].upsample_array(tile_lr), np.float32)
-                np.save(member_paths[member_index], member)
+        member_paths = [cubes / f"member{i}_{tile:03d}.npy" for i in run]
+        for position, path in zip(run, member_paths, strict=True):
+            if not path.is_file():
+                np.save(path, np.asarray(
+                    models[position].upsample_array(tile_lr), np.float32))
         members = np.stack(
             [np.load(path) for path in member_paths]).astype(np.float32)
-        mean, pcs, amps, variance = pca_field(members)
-        np.save(cubes / f"sr_{tile:03d}.npy", mean)
-        np.save(cubes / f"std_{tile:03d}.npy", members.std(axis=0))
-        for i, component in enumerate(pcs):
-            np.save(cubes / f"pca{i}_{tile:03d}.npy", component)
-        for kind, combiner in combiners.items():
-            prefix = COMBINER_MODELS[kind].cube_prefix
-            np.save(cubes / f"{prefix}_{tile:03d}.npy",
-                    combiner.apply_field(members, lr=tile_lr))
-        _accumulate_diagnostics(diagnostics, members, combiners)
-        pca_amps[str(tile)] = [float(x) for x in amps]
-        pca_var[str(tile)] = [float(x) for x in variance]
-        progress(4 + tile + 1, 4 + GRID_SIDE * GRID_SIDE,
-                 f"caching tile {tile + 1}/100")
+        pca_amps[str(tile)], pca_var[str(tile)] = _write_tile_products(
+            cubes, tile, tile_lr, members, run_labels, applied)
+        _accumulate_diagnostics(diagnostics, members, applied)
+        progress(4 + tile + 1, 4 + count, f"caching tile {tile + 1}/{count}")
 
     manifest = {
         "field_id": identifier, "ra": float(ra), "dec": float(dec),
         "field_size": FIELD_SIZE, "tile_size": TILE_SIZE, "grid_side": GRID_SIDE,
-        "count": GRID_SIDE * GRID_SIDE, "member_labels": labels,
-        "combiner_kinds": sorted(combiners), "combiner_state": combiner_state,
-        "pca_n": min(3, max(0, n_members - 1)),
+        "count": count, "member_labels": labels,
+        "combiner_kinds": sorted(applied), "combiner_state": combiner_state,
+        **_scope_fields(labels, run, scope),
         "pca_amps": pca_amps, "pca_var": pca_var,
     }
     _write_json(manifest_path(identifier), manifest)
-    _write_json(root / "diagnostics.json", _diagnostic_payload(diagnostics, labels, combiners))
+    _write_json(root / "diagnostics.json", _diagnostic_payload(
+        diagnostics, run_labels, applied, scope=scope, n_ensemble=n_members))
     return manifest
 
 
 def refresh_real_field_combiners(
     identifier: str | None = None, *,
     progress: Callable[[int, int, str], None],
+    all_members: bool = False,
 ) -> dict[str, Any]:
     """Reapply fitted STARFULL combiners to an existing real-field cache.
 
-    Member, mean, disagreement, and PCA cubes remain untouched.  This path
-    loads one cached member stack at a time and never constructs the TensorFlow
-    member networks, making post-fit real-star reevaluation both faster and
-    substantially less memory-intensive than a full field recache.
+    Member cubes remain untouched; the mean, disagreement and PCA cubes are
+    rebuilt only when the members in scope changed (a promoted gate reads
+    others, or ``all_members`` flipped). This path loads one cached member
+    stack at a time and never constructs the TensorFlow member networks,
+    making post-fit real-star reevaluation both faster and substantially less
+    memory-intensive than a full field recache. A member in scope without its
+    cubes raises the "member cache is stale" error, so the caller runs
+    :func:`cache_real_field` instead.
     """
     manifest = (_read_manifest(identifier) if identifier else latest_field())
     if manifest is None:
@@ -426,40 +520,45 @@ def refresh_real_field_combiners(
         raise RuntimeError(
             "real-field member cache is stale; run the full field cache once")
 
-    regime_dir = Path(Config.VIS_DIR) / "ensemble" / "starfull"
-    combiners = {
-        kind: comb
-        for kind, spec in COMBINER_MODELS.items()
-        if (comb := load_combiner(
-            str(regime_dir), member_labels=labels,
-            artifact_dir=spec.artifact_dir)) is not None
-    }
+    combiners = _load_regime_combiners(labels)
     if not combiners:
         raise RuntimeError("no fitted STARFULL combiners")
-    diagnostics = _diagnostic_accumulators(combiners, len(labels))
+    run, scope = _run_member_indices(combiners, labels, all_members=all_members)
+    run_labels = [labels[i] for i in run]
+    applied = _applicable_combiners(combiners, run_labels)
+    # A cache from before member scopes held every member.
+    recorded = [int(i) for i in manifest.get("run_members", range(len(labels)))]
+    rebuild_members = recorded != run
+    diagnostics = _diagnostic_accumulators(applied, len(run))
     count = int(manifest.get("count", 0))
+    pca_amps: dict[str, list[float]] = {}
+    pca_var: dict[str, list[float]] = {}
     for tile in range(count):
-        paths = [cubes / f"member{i}_{tile:03d}.npy" for i in range(len(labels))]
+        paths = [cubes / f"member{i}_{tile:03d}.npy" for i in run]
         if not all(path.is_file() for path in paths):
-            raise RuntimeError(f"real-field member cubes missing for tile {tile + 1}")
+            raise RuntimeError(
+                "real-field member cache is stale: member cubes missing for "
+                f"tile {tile + 1}")
         members = np.stack([np.load(path) for path in paths]).astype(np.float32)
         tile_lr = np.load(cubes / f"lr_{tile:03d}.npy")
-        for kind, combiner in combiners.items():
-            prefix = COMBINER_MODELS[kind].cube_prefix
-            np.save(cubes / f"{prefix}_{tile:03d}.npy",
-                    combiner.apply_field(members, lr=tile_lr))
-        _accumulate_diagnostics(diagnostics, members, combiners)
+        if rebuild_members:
+            pca_amps[str(tile)], pca_var[str(tile)] = _write_tile_products(
+                cubes, tile, tile_lr, members, run_labels, applied)
+        else:
+            for kind, combiner in applied.items():
+                prefix = COMBINER_MODELS[kind].cube_prefix
+                np.save(cubes / f"{prefix}_{tile:03d}.npy",
+                        combiner.apply_field(
+                            _combiner_stack(members, run_labels, combiner), lr=tile_lr))
+        _accumulate_diagnostics(diagnostics, members, applied)
         progress(tile + 1, count, f"real-star combiner reevaluation {tile + 1}/{count}")
 
-    combiner_state = {}
-    for kind in combiners:
-        spec = COMBINER_MODELS[kind]
-        path = regime_dir / spec.artifact_dir / "combiner.npz"
-        stat = path.stat()
-        combiner_state[kind] = [int(stat.st_mtime_ns), int(stat.st_size)]
-    manifest["combiner_kinds"] = sorted(combiners)
-    manifest["combiner_state"] = combiner_state
+    manifest["combiner_kinds"] = sorted(applied)
+    manifest["combiner_state"] = _combiner_state(combiners)
+    manifest.update(_scope_fields(labels, run, scope))
+    if rebuild_members:
+        manifest["pca_amps"], manifest["pca_var"] = pca_amps, pca_var
     _write_json(manifest_path(identifier), manifest)
-    _write_json(root / "diagnostics.json",
-                _diagnostic_payload(diagnostics, labels, combiners))
+    _write_json(root / "diagnostics.json", _diagnostic_payload(
+        diagnostics, run_labels, applied, scope=scope, n_ensemble=len(labels)))
     return manifest

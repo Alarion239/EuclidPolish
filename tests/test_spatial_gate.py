@@ -10,10 +10,12 @@ import tensorflow as tf
 
 from euclid_polish.config import Config
 from euclid_polish.ensemble import EnsembleModel
+from euclid_polish.eval import spatial_gate_compare as sgc
 from euclid_polish.eval.combiner import (
     ACTIVE_COMBINER_KINDS,
     COMBINER_MODELS,
     RawIncrementalMinMeanMaxRBFCombiner,
+    combiner_artifact_fingerprint,
     load_combiner,
     normalize_model_kind,
     save_combiner,
@@ -30,9 +32,12 @@ from euclid_polish.eval.spatial_gate import (
     SpatialGateCombiner,
     band_scales,
     gate_logits,
+    joined_after_fit,
     load_spatial_gate,
     lr_features,
     member_features,
+    reads_available,
+    restrict_to_available,
     save_spatial_gate,
     space_to_depth,
     upsample2x,
@@ -340,6 +345,173 @@ def test_pruned_gate_reads_only_its_active_members(tmp_path):
     loaded = load_spatial_gate(str(tmp_path), member_labels=["a", "b", "c", "d"])
     assert loaded is not None and loaded.active_members == (1, 3)
     np.testing.assert_array_equal(loaded.apply_field(members, lr=lr), full)
+
+
+def test_gate_validity_keys_on_the_members_it_reads(tmp_path):
+    """add / archive-unread / archive-read: a (pruned) gate loads for an
+    available membership while every member it READS is in it."""
+    comb = SpatialGateCombiner(["a", "b", "c", "d"], _random_params(2, 8, False),
+                               width=8, use_lr=False, active_members=(1, 3))
+    assert comb.read_labels == ["b", "d"]
+    save_spatial_gate(comb, str(tmp_path))
+    fitted = ["a", "b", "c", "d"]
+    for available in (fitted, [*fitted, "e", "f"], ["b", "d"], ["d", "x", "b"]):
+        loaded = load_spatial_gate(str(tmp_path), available_labels=available)
+        assert loaded is not None and loaded.member_labels == fitted, available
+    assert load_spatial_gate(str(tmp_path), available_labels=["a", "b", "c"]) is None
+    assert load_spatial_gate(str(tmp_path), available_labels=[]) is None
+    # the exact-list check the fit and its caches use is unchanged
+    assert load_spatial_gate(str(tmp_path), member_labels=[*fitted, "e"]) is None
+    assert reads_available(["b", "d"], ["d", "b", "z"]) and not reads_available([], ["a"])
+    assert joined_after_fit(fitted, ["a", "e", "b", "f"]) == ["e", "f"]
+
+    unpruned = SpatialGateCombiner(["a", "b"], _random_params(2, 8, False),
+                                   width=8, use_lr=False)
+    prod = os.path.join(str(tmp_path), "regime")
+    save_combiner(unpruned, prod)
+    artifact = COMBINER_MODELS[SPATIAL_GATE_KIND].artifact_dir
+    assert load_combiner(prod, artifact_dir=artifact,
+                         available_labels=["a", "b", "c"]) is not None   # c joined
+    assert load_combiner(prod, artifact_dir=artifact, available_labels=["a"]) is None
+
+
+def test_payload_reports_peak_weights_and_the_used_rule(tmp_path, monkeypatch):
+    """The combiner payload carries each member's peak weight (max over
+    bands and brightness bins) and whether the gate uses it (>= 0.5 %); a
+    validate cache that gained a member still serves the diagnostic."""
+    monkeypatch.setattr(Config, "VIS_DIR", str(tmp_path))
+    monkeypatch.setattr(ensemble_viz, "_member_meta_from_labels",
+                        lambda labels: [{} for _ in labels])
+    monkeypatch.setattr(ensemble_viz, "_sky_records_local_dir", lambda: None)
+    monkeypatch.setattr(ensemble_viz, "_regime_labels",
+                        lambda base, starless: ["a", "b", "c", "d", "e"])
+    members, lr = _members_and_lr(n_members=5)
+    val_dir = ensemble_viz._ensemble_cubes_dir("validate", starless=False)
+    os.makedirs(val_dir, exist_ok=True)
+    for i, member in enumerate(members):
+        np.save(os.path.join(val_dir, f"member{i}_00000.npy"), member)
+    with open(os.path.join(val_dir, "viz_index.json"), "w") as handle:
+        json.dump({"subset": "validate", "indices": [0],
+                   "member_labels": ["a", "b", "c", "d", "e"]}, handle)
+    comb = SpatialGateCombiner(["a", "b", "c", "d"], _random_params(2, 8, False),
+                               width=8, use_lr=False, active_members=(0, 2))
+    save_combiner(comb, ensemble_viz._ensemble_regime_dir(False))
+    payload = ensemble_viz.compute_combiner_payload(False, model_kind=SPATIAL_GATE_KIND)
+    assert payload["gate_diagnostics"]["available"]
+    assert payload["stale"] is False and payload["joined_after_fit"] == ["e"]
+    assert payload["read_labels"] == ["a", "c"]
+    peaks = payload["member_peak_weights"]
+    assert len(peaks) == 4 and peaks[1] == 0.0 and peaks[3] == 0.0   # never read
+    assert payload["used_by_gate"] == [p >= 0.005 for p in peaks]
+    assert payload["used_by_gate"][1] is False and payload["used_by_gate"][3] is False
+    assert payload["used_threshold"] == 0.005
+    monkeypatch.setattr(ensemble_viz, "_regime_labels", lambda base, starless: ["a", "b"])
+    assert ensemble_viz.compute_combiner_payload(
+        False, model_kind=SPATIAL_GATE_KIND)["stale"] is True        # c (read) left
+
+
+def test_archiving_an_unread_member_keeps_a_gate_fitted_before_members_joined(
+        tmp_path, monkeypatch):
+    regime = str(tmp_path / "starfull")
+    comb = SpatialGateCombiner(["a·psnr", "b·psnr", "c·psnr"], _random_params(2, 8, False),
+                               width=8, use_lr=False, active_members=(0, 2))
+    comb.fit_meta["complete"] = True
+    save_combiner(comb, regime)
+    artifact = COMBINER_MODELS[SPATIAL_GATE_KIND].artifact_dir
+    fp = combiner_artifact_fingerprint(regime, artifact)
+    monkeypatch.setattr(ensemble_viz, "_combiner_payload_path",
+                        lambda starless, kind=None: str(tmp_path / "payload.json"))
+    # b left (unread); d joined after the fit → the gate is kept BYTE-IDENTICAL
+    # (its fingerprint, and so every output it made, stays current).
+    monkeypatch.setattr(ensemble_viz, "_regime_labels",
+                        lambda base, starless: ["a·psnr", "c·psnr", "d·psnr"])
+    assert ensemble_viz._reconcile_combiner_on_archives(
+        regime, False, ["b"], SPATIAL_GATE_KIND) is True
+    kept = load_spatial_gate(os.path.join(regime, artifact))
+    assert kept.member_labels == ["a·psnr", "b·psnr", "c·psnr"] and kept.active == [0, 2]
+    assert combiner_artifact_fingerprint(regime, artifact) == fp
+    # It still applies to the stack without b, by label, with the same output.
+    restricted = restrict_to_available(kept, ["a·psnr", "c·psnr", "d·psnr"])
+    assert restricted.member_labels == ["a·psnr", "c·psnr"] and restricted.active == [0, 1]
+    stack = np.random.default_rng(0).exponential(50.0, (3, 16, 16, N_BANDS)).astype(np.float32)
+    np.testing.assert_allclose(restricted.apply_field(stack[[0, 2]]), kept.apply_field(stack),
+                               rtol=1e-5)
+    assert restrict_to_available(kept, ["c·psnr", "d·psnr"]) is None      # a is read
+    # Archiving a member the gate reads retires it to a promotable backup.
+    monkeypatch.setattr(ensemble_viz, "_regime_labels",
+                        lambda base, starless: ["c·psnr", "d·psnr"])
+    assert ensemble_viz._reconcile_combiner_on_archives(
+        regime, False, ["a"], SPATIAL_GATE_KIND) is False
+    assert load_spatial_gate(os.path.join(regime, artifact)) is None
+    backups = [d for d in os.listdir(regime) if d.startswith(ensemble_viz.GATE_BACKUP_PREFIX)]
+    assert len(backups) == 1
+    backed_up = load_spatial_gate(os.path.join(regime, backups[0]))
+    assert backed_up.member_labels == kept.member_labels
+    assert combiner_artifact_fingerprint(regime, backups[0]) == fp
+
+
+def _cube_bucket(directory, labels, members, subset):
+    os.makedirs(directory, exist_ok=True)
+    for i, member in enumerate(members):
+        np.save(os.path.join(directory, f"member{i}_00000.npy"), member)
+    with open(os.path.join(directory, "viz_index.json"), "w") as handle:
+        json.dump({"subset": subset, "indices": [0], "member_labels": labels}, handle)
+
+
+def test_gate_applies_to_cubes_that_gained_and_lost_members(tmp_path, monkeypatch):
+    """A pruned gate fitted for a, b, c (reads a, c) still scores and bakes
+    the TEST cubes, and its weight diagnostic still runs on the validate
+    cubes, once b (unread) was archived and d joined: by label, same output."""
+    monkeypatch.setattr(Config, "VIS_DIR", str(tmp_path))
+    monkeypatch.setattr(ensemble_viz, "_member_meta_from_labels",
+                        lambda labels: [{} for _ in labels])
+    monkeypatch.setattr(ensemble_viz, "_sky_records_local_dir", lambda: None)
+    monkeypatch.setattr(ensemble_viz, "_regime_labels",
+                        lambda base, starless: ["a", "c", "d"])
+    full, _lr = _members_and_lr(n_members=3)                 # a, b, c
+    comb = SpatialGateCombiner(["a", "b", "c"], _random_params(2, 8, False),
+                               width=8, use_lr=False, active_members=(0, 2))
+    regime = ensemble_viz._ensemble_regime_dir(False)
+    save_combiner(comb, regime)
+    now = np.stack([full[0], full[2], full[1] * 0.5])        # a, c, d (joined)
+    test_dir = ensemble_viz._ensemble_cubes_dir(starless=False)
+    _cube_bucket(test_dir, ["a", "c", "d"], now, "test")
+    _cube_bucket(ensemble_viz._ensemble_cubes_dir("validate", starless=False),
+                 ["a", "c", "d"], now, "validate")
+
+    assert ensemble_viz._apply_combiner_to_test_cubes(False, SPATIAL_GATE_KIND)
+    baked = np.load(os.path.join(test_dir, f"{COMBINER_MODELS[SPATIAL_GATE_KIND].cube_prefix}"
+                                           "_00000.npy"))
+    np.testing.assert_allclose(baked, comb.apply_field(full), rtol=1e-5)
+    with open(os.path.join(test_dir, "viz_index.json")) as handle:
+        assert json.load(handle)[f"has_combiner_{SPATIAL_GATE_KIND}"] is True
+
+    payload = ensemble_viz.compute_combiner_payload(False, model_kind=SPATIAL_GATE_KIND)
+    diag = payload["gate_diagnostics"]
+    assert diag["available"] and payload["stale"] is False
+    for band in BAND_NAMES:
+        assert len(diag["usage"][band]) == 3 and diag["usage"][band][1] == 0.0   # b unread
+        assert sum(diag["usage"][band]) == pytest.approx(1.0, abs=1e-5)
+    assert payload["member_peak_weights"][1] == 0.0
+
+    # A cube bucket without a member the gate READS cannot be scored.
+    _cube_bucket(test_dir, ["c", "d"], now[1:], "test")
+    assert not ensemble_viz._apply_combiner_to_test_cubes(False, SPATIAL_GATE_KIND)
+
+
+def test_compare_loads_a_gate_whose_unread_members_left_the_cubes(tmp_path):
+    comb = SpatialGateCombiner(["a", "b", "c"], _random_params(2, 8, False),
+                               width=8, use_lr=False, active_members=(0, 2))
+    save_spatial_gate(comb, str(tmp_path / "spatial_gate_p2"))
+    methods = sgc.load_gate_methods(str(tmp_path), ["spatial_gate_p2"], ["c", "x", "a"])
+    method = methods["gate:spatial_gate_p2"]
+    assert method.model.member_labels == ["a", "c"] and method.index == [2, 0]
+    full, _lr = _members_and_lr(n_members=3)
+    cubes = np.stack([full[2], full[1], full[0]])            # c, x, a
+    np.testing.assert_allclose(method.model.apply_field(cubes[method.index]),
+                               comb.apply_field(full), rtol=1e-5)
+    with pytest.raises(ValueError, match="lack: a"):
+        sgc.load_gate_methods(str(tmp_path), ["spatial_gate_p2"], ["b", "c"])
 
 
 def test_fit_can_prune_to_a_member_subset(tmp_path):

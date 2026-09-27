@@ -67,8 +67,9 @@ def _gate_dir(regime, name, labels, **extra):
     manifest = {"schema": 1, "kind": "spatial_gate", "member_labels": labels,
                 "band_names": ["VIS", "Y_E", "J_E", "H_E"], "width": 32, "use_lr": False,
                 "mix_space": "linear", "active_members": None, "dilations": [1, 2, 4, 8],
-                "fit_meta": {"steps": 2000, "history": [{"step": 0, "loss": 1.0},
-                                                         {"step": 250, "loss": 0.7}],
+                "fit_meta": {"steps": 2000, "steps_run": 2000, "complete": True,
+                             "history": [{"step": 0, "loss": 1.0},
+                                         {"step": 250, "loss": 0.7}],
                              "selected": {"loss": 0.7}, "train_fields": [1, 2, 3]},
                 **extra}
     with open(os.path.join(d, "combiner.json"), "w") as f:
@@ -176,6 +177,35 @@ def test_members_payload_joins_knee_gate_coherence_and_jobs(env):
     assert p["knee"]["available"] and p["gate"]["n_members"] == 2
 
 
+def test_member_rows_carry_the_gate_peak_and_whether_production_runs_them(env):
+    """#195's case: ~0 % over all pixels but half the weight in bright cores.
+    The row gives the peak (max over bands, all/source pixels and every
+    brightness bin) with where it is, and whether the production gate reads
+    the member (so production SR runs it)."""
+    base = ev.ensemble_dir()
+    _member(base, 1)
+    _member(base, 2)
+    regime = _regime(env)
+    bands = ("VIS", "Y_E", "J_E", "H_E")
+    with open(os.path.join(regime, "spatial_gate_combiner_evals.json"), "w") as f:
+        json.dump({"available": True, "stale": False, "member_labels": ["01·psnr", "02·psnr"],
+                   "read_labels": ["01·psnr"], "band_names": list(bands),
+                   "gate_diagnostics": {
+                       "usage": {b: [0.999, 0.001] for b in bands},
+                       "usage_source": {b: [0.99, 0.01] for b in bands},
+                       "brightness_names": ["sky", "core"],
+                       "usage_by_brightness": {
+                           **{b: [[1.0, 0.0], [0.9, 0.1]] for b in bands},
+                           "VIS": [[1.0, 0.0], [0.52, 0.48]]}}}, f)
+    one, two = ev.members_payload(False)["members"]
+    assert two["gate_usage_peak"] == {"value": 0.48, "band": "VIS", "bin": "core"}
+    assert one["gate_usage_peak"]["value"] == 1.0
+    assert one["used_by_gate"] is True and two["used_by_gate"] is False
+    os.remove(os.path.join(regime, "spatial_gate_combiner_evals.json"))
+    one, _two = ev.members_payload(False)["members"]
+    assert one["gate_usage_peak"] is None and one["used_by_gate"] is None
+
+
 def test_members_payload_joins_the_headline_vis_psnr_per_member(env):
     """The Overview's "Best member" tile is VIS asinh from eval_summary; each
     row carries that same number (``vis_psnr``) next to the 4-band cache."""
@@ -238,7 +268,31 @@ def test_combiner_variants_registry(env):
     small = rows["spatial_gate_small"]
     assert small["spec"] == "gate:small" and small["pruned"] and small["reads"] == ["02·psnr"]
     assert small["membership"]["extra"] == ["01·psnr"]
+    # current: every member it reads is active (01 joined after its fit)
+    assert small["membership"]["current"] is True
+    assert small["promotion"] == {"ok": True, "reason": None}
+    assert prod["promotion"]["ok"] is False
     assert rows["spatial_gate_backup_20260101-000000"]["backup"] is True
+
+
+def test_combiner_variants_flag_reads_that_left_and_unfinished_fits(env):
+    base = ev.ensemble_dir()
+    _member(base, 1)
+    regime = _regime(env)
+    _gate_dir(regime, "spatial_gate_combiner", ["01·psnr"])
+    _gate_dir(regime, "spatial_gate_gone", ["01·psnr", "05·psnr"])
+    _gate_dir(regime, "spatial_gate_unread", ["01·psnr", "05·psnr"], active_members=[0])
+    _gate_dir(regime, "spatial_gate_half", ["01·psnr"],
+              fit_meta={"steps": 2000, "steps_run": 750, "complete": False})
+    rows = {r["name"]: r for r in ev.combiner_variants(False)["variants"]}
+    gone = rows["spatial_gate_gone"]
+    assert gone["membership"]["current"] is False
+    assert gone["membership"]["missing_reads"] == ["05·psnr"]
+    assert gone["promotion"]["ok"] is False and "05·psnr" in gone["promotion"]["reason"]
+    unread = rows["spatial_gate_unread"]            # 05 fitted, never read, now gone
+    assert unread["membership"]["current"] is True and unread["promotion"]["ok"] is True
+    half = rows["spatial_gate_half"]
+    assert half["promotion"]["ok"] is False and "750" in half["promotion"]["reason"]
 
 
 @pytest.mark.parametrize("name, message", [
@@ -300,7 +354,7 @@ def test_promote_refuses_other_members_without_force(env, monkeypatch):
     _member(base, 2)
     regime = _regime(env)
     _gate_dir(regime, "spatial_gate_combiner", ["01·psnr", "02·psnr"])
-    _gate_dir(regime, "spatial_gate_old", ["01·psnr"])
+    _gate_dir(regime, "spatial_gate_old", ["01·psnr", "03·psnr"])     # 03 is not active
     monkeypatch.setattr(ev, "compute_combiner_payload", lambda *a, **k: None)
     monkeypatch.setattr(ev, "_apply_combiner_to_test_cubes", lambda *a, **k: False)
     with pytest.raises(RuntimeError, match="force"):
@@ -309,6 +363,60 @@ def test_promote_refuses_other_members_without_force(env, monkeypatch):
         ev.job_combiner_promote(_Cap(), starless=False, variant="production")
     out = ev.job_combiner_promote(_Cap(), starless=False, variant="spatial_gate_old", force=True)
     assert out["promoted"] == "spatial_gate_old"
+
+
+def test_promote_accepts_a_gate_fitted_before_members_joined(env, monkeypatch):
+    """A (pruned) gate stays promotable when members registered after its fit
+    or unread members left: only the members it reads must be active."""
+    base = ev.ensemble_dir()
+    for i in (1, 2, 3):
+        _member(base, i)
+    regime = _regime(env)
+    _gate_dir(regime, "spatial_gate_combiner", ["01·psnr"])
+    _gate_dir(regime, "spatial_gate_p1", ["01·psnr", "02·psnr", "07·psnr"],
+              active_members=[0, 1])              # 07 archived, never read; 03 joined
+    monkeypatch.setattr(ev, "compute_combiner_payload", lambda *a, **k: None)
+    monkeypatch.setattr(ev, "_apply_combiner_to_test_cubes", lambda *a, **k: False)
+    out = ev.job_combiner_promote(_Cap(), starless=False, variant="gate:p1")
+    assert out["promoted"] == "spatial_gate_p1"
+
+
+@pytest.mark.parametrize("fit_meta, message", [
+    ({"steps": 2000, "steps_run": 500, "complete": False}, "step 500 of 2000"),
+    ({"steps": 2000}, "no completion flag"),
+])
+def test_promote_refuses_an_incomplete_fit_even_with_force(env, monkeypatch, fit_meta, message):
+    base = ev.ensemble_dir()
+    _member(base, 1)
+    regime = _regime(env)
+    _gate_dir(regime, "spatial_gate_combiner", ["01·psnr"])
+    _gate_dir(regime, "spatial_gate_wip", ["01·psnr"], fit_meta=fit_meta)
+    monkeypatch.setattr(ev, "compute_combiner_payload", lambda *a, **k: None)
+    with pytest.raises(RuntimeError, match=message):
+        ev.job_combiner_promote(_Cap(), starless=False, variant="gate:wip", force=True)
+    with open(os.path.join(regime, "spatial_gate_combiner", "combiner.json")) as f:
+        assert json.load(f)["member_labels"] == ["01·psnr"]      # production untouched
+    assert not [n for n in os.listdir(regime) if n.startswith("spatial_gate_backup_")]
+
+
+def test_promote_refuses_a_variant_a_fit_is_still_writing(env, monkeypatch):
+    base = ev.ensemble_dir()
+    _member(base, 1)
+    regime = _regime(env)
+    _gate_dir(regime, "spatial_gate_combiner", ["01·psnr"])
+    wip = _gate_dir(regime, "spatial_gate_wip", ["01·psnr"])      # complete, but …
+    with open(os.path.join(wip, ev.sgc.FIT_MARKER), "w") as f:  # … a live fit rewrites it
+        json.dump({"pid": os.getpid(), "host": ev.sgc.socket.gethostname(),
+                   "started": "2026-09-27T12:00:00+00:00"}, f)
+    with pytest.raises(RuntimeError, match="still being fitted"):
+        ev.job_combiner_promote(_Cap(), starless=False, variant="gate:wip", force=True)
+    # A marker left by a dead process on this host does not block it.
+    with open(os.path.join(wip, ev.sgc.FIT_MARKER), "w") as f:
+        json.dump({"pid": 2 ** 22 + 12345, "host": ev.sgc.socket.gethostname()}, f)
+    monkeypatch.setattr(ev.sgc, "_pid_alive", lambda pid: False)
+    monkeypatch.setattr(ev, "compute_combiner_payload", lambda *a, **k: None)
+    monkeypatch.setattr(ev, "_apply_combiner_to_test_cubes", lambda *a, **k: False)
+    assert ev.job_combiner_promote(_Cap(), starless=False, variant="gate:wip")["promoted"]
 
 
 def test_compare_reports_listing_and_reading(env):
@@ -423,11 +531,26 @@ def test_overview_checks_flag_membership_and_gate_changes(env):
     o = ev.ensemble_overview(False)
     checks = {c["id"]: c for c in o["checks"]}
     assert checks["eval-members"]["ok"] is False
-    assert checks["gate-members"]["ok"] is False and "Fitted for 1 members" in checks["gate-members"]["detail"]
+    # The gate reads 01 (active); 02 joined after its fit: a note, not a failure.
+    assert checks["gate-members"]["ok"] is False and checks["gate-members"]["tone"] == "info"
+    assert "1 joined after this fit" in checks["gate-members"]["detail"]
     assert checks["eval-gate"]["ok"] is False
     assert checks["knee"]["ok"] is False
     assert o["headline"]["production"]["psnr"] == 59.0
     assert o["headline"]["mean"]["psnr"] == 58.0
+
+
+def test_overview_gate_check_fails_when_a_read_member_left(env):
+    base = ev.ensemble_dir()
+    _member(base, 1)
+    regime = _regime(env)
+    _gate_dir(regime, "spatial_gate_combiner", ["01·psnr", "04·psnr"])
+    checks = {c["id"]: c for c in ev.ensemble_overview(False)["checks"]}
+    assert checks["gate-members"]["ok"] is False and checks["gate-members"]["tone"] == "warn"
+    assert "04·psnr" in checks["gate-members"]["detail"]
+    _gate_dir(regime, "spatial_gate_combiner", ["01·psnr", "04·psnr"], active_members=[0])
+    checks = {c["id"]: c for c in ev.ensemble_overview(False)["checks"]}
+    assert checks["gate-members"]["ok"] is True                 # 04 is never read
 
 
 def test_summary_headline_single_metric():

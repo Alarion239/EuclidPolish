@@ -7,7 +7,13 @@ scores every method on the cached test cubes plus blackout-augmented test
 fields and writes a JSON report and comparison figures.
 
     python scripts/fit_spatial_gate.py fit --out-name spatial_gate_trial
+    python scripts/fit_spatial_gate.py fit --out-name spatial_gate_p20 --members used
     python scripts/fit_spatial_gate.py compare --gates spatial_gate_combiner spatial_gate_trial
+
+``--members used`` (or ``used:0.5%``) prunes to the members the production
+gate uses — peak weight ≥ 0.5 % in any band over all pixels, source pixels
+or any brightness bin of its cached held-out weight diagnostic
+(:mod:`euclid_polish.eval.gate_members`).
 
 The scoring and fitting live in :mod:`euclid_polish.eval.spatial_gate_compare`
 (the web console's Combiners tab runs the same code as local jobs). A fit
@@ -21,6 +27,7 @@ import json
 import os
 import signal
 import sys
+from collections.abc import Sequence
 
 import matplotlib
 
@@ -34,6 +41,12 @@ if _ROOT not in sys.path:
 
 from euclid_polish.config import Config  # noqa: E402
 from euclid_polish.ensemble_registry import default_ensemble_dir  # noqa: E402
+from euclid_polish.eval.ensemble_cube_cache import cached_member_labels  # noqa: E402
+from euclid_polish.eval.gate_members import (  # noqa: E402
+    format_choice,
+    parse_used_threshold,
+    production_used_members,
+)
 from euclid_polish.eval.spatial_gate import MIX_LINEAR, MIX_SPACES, band_scales  # noqa: E402
 from euclid_polish.eval.spatial_gate_compare import (  # noqa: E402
     PRODUCTION_DIR,
@@ -56,6 +69,27 @@ def _regime_dir() -> str:
     return os.path.abspath(os.path.join(Config.VIS_DIR, "ensemble", "starfull"))
 
 
+def resolve_members(raw: str, regime: str,
+                    cube_labels: Sequence[str] | None = None) -> list[str]:
+    """``--members``: a comma list of member numbers, or ``used`` /
+    ``used:<threshold>`` — the members the production gate uses, printed
+    with their peak weights (kept and dropped). Members of the fit's cubes
+    (``cube_labels``) that the production gate was never fitted with have no
+    weight evidence yet: they are kept too, and listed, so the refit a
+    "joined after this fit" note asks for does consider them."""
+    threshold = parse_used_threshold(raw)
+    if threshold is None:
+        return [m.strip() for m in str(raw or "").split(",") if m.strip()]
+    choice = production_used_members(regime, threshold=threshold)
+    print(format_choice(choice), flush=True)
+    fitted = set(choice.kept_labels) | set(choice.dropped_labels)
+    joined = [str(v) for v in cube_labels or [] if str(v) not in fitted]
+    if joined:
+        print(f"  new:     {', '.join(v.split('·')[0] for v in joined)} (joined after the "
+              "production fit, no weight evidence yet: kept)", flush=True)
+    return [label.split("·")[0] for label in [*choice.kept_labels, *joined]]
+
+
 def cmd_fit(args) -> None:
     # A fit can be stopped at any time: the best gate so far is already saved
     # (checkpointed by fit_gate_variant), and exiting on SIGTERM instead of
@@ -63,11 +97,14 @@ def cmd_fit(args) -> None:
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
     regime = _regime_dir()
     out = os.path.join(regime, args.out_name)
+    cubes = os.path.join(regime, "cubes_validate")
+    members = resolve_members(args.members, regime, cached_member_labels(cubes))
+    threshold = parse_used_threshold(args.members)
     records = _sky_records_local_dir()
-    fields, labels = load_fit_fields(os.path.join(regime, "cubes_validate"), records)
+    fields, labels = load_fit_fields(cubes, records)
     runner = LazyMemberRunner(default_ensemble_dir(), starless=False, labels=labels)
-    if args.members:
-        print(f"pruned gate over members {args.members}")
+    if members:
+        print(f"pruned gate over members {','.join(members)}")
     fit_gate_variant(
         fields, labels, out_dir=out, holdout=args.holdout, seed=args.seed,
         blackout_fields=args.blackout_fields, runner=runner,
@@ -76,9 +113,13 @@ def cmd_fit(args) -> None:
         source_fingerprint=str(_eval_records_fingerprint(records, "validate")),
         width=args.width, use_lr=args.lr_input, steps=args.steps, batch_size=args.batch,
         crop=args.crop, learning_rate=args.lr, eval_every=args.eval_every,
-        members=[m for m in args.members.split(",") if m.strip()],
+        members=members,
         loss_knees=parse_loss_knees("all" if args.knee_loss else "band"),
-        mix_space=args.mix, extra_meta={"variant": args.out_name, "fitted_via": "script"},
+        mix_space=args.mix,
+        extra_meta={"variant": args.out_name, "fitted_via": "script",
+                    # The rule that chose the members (the console's "those
+                    # with ≥ 0.5 % of the gate's weight somewhere").
+                    **({"used_threshold": threshold} if threshold is not None else {})},
         progress=lambda i, n, msg: print(f"  [{i}/{n}] {msg}", flush=True),
         log=lambda msg: print(msg, flush=True))
     print(f"saved {out}")
@@ -211,7 +252,10 @@ def main() -> None:
                      help="average the members in electrons (linear: knee-free, "
                           "flux-conserving) or in band-knee asinh space")
     fit.add_argument("--members", default="",
-                     help="comma-separated member numbers for a pruned gate (e.g. 170,180)")
+                     help="comma-separated member numbers for a pruned gate (e.g. 170,180), "
+                          "or 'used' / 'used:0.5%%': the members the production gate "
+                          "gives a peak weight of at least 0.5%% (default threshold) in "
+                          "any band, over all pixels, source pixels or any brightness bin")
     fit.set_defaults(func=cmd_fit)
     cmp_ = sub.add_parser("compare")
     cmp_.add_argument("--gates", nargs="+", default=["spatial_gate_combiner"])

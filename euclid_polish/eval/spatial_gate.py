@@ -34,6 +34,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -197,6 +198,11 @@ class SpatialGateCombiner:
         return (list(range(len(self.member_labels))) if self.active_members is None
                 else [int(i) for i in self.active_members])
 
+    @property
+    def read_labels(self) -> list[str]:
+        """The labels of the members the gate reads (its validity key)."""
+        return [self.member_labels[i] for i in self.active]
+
     def _prepare(self, preds: np.ndarray, lr: np.ndarray | None):
         """Accepts the whole ensemble's stack or just the active members'."""
         stack = np.asarray(preds, np.float32)
@@ -297,6 +303,40 @@ class SpatialGateCombiner:
         return {"source": [i in active for i in range(len(self.member_labels))]}
 
 
+def reads_available(read_labels: Sequence[str], available: Sequence[str]) -> bool:
+    """True when every member a combiner reads is among ``available``.
+
+    A gate's math depends only on the members it reads, so it stays valid
+    when members it never saw join the ensemble and when members it does not
+    read leave or are retrained; only losing a read member invalidates it."""
+    have = {str(label) for label in available}
+    return bool(read_labels) and all(str(label) in have for label in read_labels)
+
+
+def restrict_to_available(gate: SpatialGateCombiner,
+                          available: Sequence[str]) -> SpatialGateCombiner | None:
+    """``gate`` without the fitted members it does not read that are missing
+    from ``available`` (in memory; the artifact is untouched and the math is
+    identical), or ``None`` when a member it reads is missing. Lets a gate
+    apply to a member stack that lost unread members (archived since the
+    fit) as well as one that gained members (joined since the fit)."""
+    have = {str(label) for label in available}
+    out = gate
+    for index in reversed(range(len(gate.member_labels))):
+        if str(gate.member_labels[index]) in have:
+            continue
+        if not out.member_pruned(index):
+            return None
+        out = out.without_member(index)
+    return out
+
+
+def joined_after_fit(member_labels: Sequence[str], available: Sequence[str]) -> list[str]:
+    """``available`` members the combiner was not fitted with (in their order)."""
+    fitted = {str(label) for label in member_labels}
+    return [str(label) for label in available if str(label) not in fitted]
+
+
 def save_spatial_gate(comb: SpatialGateCombiner, directory: str) -> None:
     """Write ``combiner.json`` + ``combiner.npz`` (the combiner artifact pair)."""
     os.makedirs(directory, exist_ok=True)
@@ -322,10 +362,16 @@ def save_spatial_gate(comb: SpatialGateCombiner, directory: str) -> None:
         json.dump(manifest, handle, indent=2)
 
 
-def load_spatial_gate(directory: str, *, member_labels: list[str] | None = None
+def load_spatial_gate(directory: str, *, member_labels: list[str] | None = None,
+                      available_labels: Sequence[str] | None = None
                       ) -> SpatialGateCombiner | None:
-    """The saved gate, or ``None`` when absent, stale for ``member_labels``,
-    or written by an incompatible schema."""
+    """The saved gate, or ``None`` when absent, stale or written by an
+    incompatible schema.
+
+    ``member_labels`` demands the exact fitted list (order included; the fit
+    and its cube caches key on it). ``available_labels`` is the looser
+    production test: the gate loads when every member it READS is among them
+    (:func:`reads_available`), however many members joined since the fit."""
     manifest_path = os.path.join(directory, "combiner.json")
     arrays_path = os.path.join(directory, "combiner.npz")
     if not (os.path.isfile(manifest_path) and os.path.isfile(arrays_path)):
@@ -344,6 +390,11 @@ def load_spatial_gate(directory: str, *, member_labels: list[str] | None = None
             params = {name: np.asarray(arrays[name], np.float32)
                       for name in PARAM_NAMES}
         active = manifest.get("active_members")
+        if available_labels is not None:
+            reads = (labels if active is None
+                     else [labels[int(i)] for i in active])
+            if not reads_available(reads, available_labels):
+                return None
         return SpatialGateCombiner(
             member_labels=labels, params=params,
             width=int(manifest["width"]), use_lr=bool(manifest["use_lr"]),

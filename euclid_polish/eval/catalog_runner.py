@@ -32,9 +32,8 @@ from euclid_polish.ensemble_registry import regime_labels
 from euclid_polish.eval import lens_catalog
 from euclid_polish.eval.combiner import COMBINER_MODELS, combiner_artifact_fingerprint
 from euclid_polish.eval.ensemble_infer import (
-    PRODUCTION_COMBINER_KIND,
     load_eval_ensemble,
-    load_production_combiner,
+    production_plan,
     starfull_regime_dir,
 )
 from euclid_polish.eval.eval_catalog import read_eval_catalog
@@ -82,13 +81,18 @@ def _base_manifest_row(obj, grade: str | None = None) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 #
 # Every object records the model that produced its SR in ``members.json``:
-# ``{member_labels, combiner_kind, combiner_fingerprint}`` (``combiner_kind``
-# is ``None`` for the plain member mean). The reuse key and the staleness the
-# Sky › Catalog-eval tab shows both compare it with the model an evaluation
-# would load NOW (:func:`current_eval_identity`).
+# ``{member_labels, combiner_kind, combiner_fingerprint, run_labels}``
+# (``combiner_kind`` is ``None`` for the plain member mean). ``member_labels``
+# is the production gate's full fitted list, ``run_labels`` the members it
+# reads — the ones that ran and that the disagreement cubes describe. The
+# reuse key and the staleness the Sky › Catalog-eval tab shows both compare
+# it with the model an evaluation would load NOW (:func:`current_eval_identity`);
+# ``run_labels`` follows from the other three (the gate artifact fixes its
+# reads), so it is recorded but never compared.
 
 MEMBERS_FILE = "members.json"
 _IDENTITY_KEYS = ("member_labels", "combiner_kind", "combiner_fingerprint")
+_RECORDED_KEYS = (*_IDENTITY_KEYS, "run_labels")
 
 
 def _production_fingerprint(kind: str | None) -> str | None:
@@ -98,29 +102,50 @@ def _production_fingerprint(kind: str | None) -> str | None:
                                          COMBINER_MODELS[str(kind)].artifact_dir)
 
 
-def identity_for(member_labels: Sequence[str], combiner_kind: str | None) -> dict[str, Any]:
-    """The identity of an SR made by ``member_labels`` through ``combiner_kind``
-    (``None`` = the plain member mean), fingerprinting the fitted artifact."""
-    return {"member_labels": [str(x) for x in member_labels],
+def identity_for(member_labels: Sequence[str], combiner_kind: str | None,
+                 run_labels: Sequence[str] | None = None) -> dict[str, Any]:
+    """The identity of an SR made through ``combiner_kind`` (``None`` = the
+    plain member mean) fitted for ``member_labels``, fingerprinting the
+    fitted artifact. ``run_labels`` (default: all of ``member_labels``) are
+    the members that actually ran."""
+    labels = [str(x) for x in member_labels]
+    return {"member_labels": labels,
             "combiner_kind": combiner_kind or None,
-            "combiner_fingerprint": _production_fingerprint(combiner_kind)}
+            "combiner_fingerprint": _production_fingerprint(combiner_kind),
+            "run_labels": [str(x) for x in (labels if run_labels is None else run_labels)]}
 
 
 def eval_model_identity(model: Any) -> dict[str, Any]:
     """The identity of a loaded eval model (``load_eval_ensemble``)."""
-    return identity_for(getattr(model, "member_labels", []) or [],
-                        getattr(model, "combiner_kind", None))
+    labels = getattr(model, "member_labels", []) or []
+    return identity_for(labels, getattr(model, "combiner_kind", None),
+                        getattr(model, "run_labels", None) or labels)
 
 
 def current_eval_identity(ensemble_dir: str | None = None, *,
                           labels: Sequence[str] | None = None) -> dict[str, Any]:
-    """The identity :func:`load_eval_ensemble` would load now — the ACTIVE
-    STARFULL members and the production combiner when one is fitted for
-    exactly them (else the member mean) — without loading any network."""
+    """The identity :func:`load_eval_ensemble` would load now — the production
+    combiner while every member it reads is ACTIVE (its full fitted list, and
+    the members it reads), else the plain mean of the active STARFULL members
+    — without loading any network. ``labels`` overrides the active list."""
     members = (list(labels) if labels is not None
                else list(regime_labels(ensemble_dir or default_ensemble_dir(), False)))
-    current = (load_production_combiner(members) is not None) if members else False
-    return identity_for(members, PRODUCTION_COMBINER_KIND if current else None)
+    plan = production_plan(members)
+    return identity_for(plan.member_labels, plan.combiner_kind, plan.run_labels)
+
+
+def reuse_requirements(identity: Mapping[str, Any]) -> dict[str, Any]:
+    """The :func:`can_reuse_eval_object` keywords for SRs of ``identity``.
+
+    Disagreement cubes are required when more than one member RAN (they are
+    computed over those members); the recorded model is compared whenever
+    the model has more than one member (a plain single model is not)."""
+    labels = [str(x) for x in identity.get("member_labels") or []]
+    run = [str(x) for x in identity.get("run_labels") or labels]
+    ensemble = len(labels) > 1
+    return {"require_disagreement": len(run) > 1,
+            "member_labels": labels if ensemble else None,
+            "identity": identity if ensemble else None}
 
 
 def read_model_identity(obj_dir: str) -> dict[str, Any] | None:
@@ -136,7 +161,7 @@ def read_model_identity(obj_dir: str) -> dict[str, Any] | None:
 def record_model_identity(obj_dir: str, identity: Mapping[str, Any]) -> None:
     """Merge the model identity into the object's ``members.json``."""
     recorded = read_model_identity(obj_dir) or {}
-    recorded.update({key: identity.get(key) for key in _IDENTITY_KEYS})
+    recorded.update({key: identity.get(key) for key in _RECORDED_KEYS if key in identity})
     recorded["member_labels"] = list(recorded.get("member_labels") or [])
     os.makedirs(obj_dir, exist_ok=True)
     with open(os.path.join(obj_dir, MEMBERS_FILE), "w") as f:
@@ -150,20 +175,28 @@ def _combiner_matches(recorded: Mapping[str, Any], identity: Mapping[str, Any]) 
 
 
 def object_model_state(obj_dir: str, identity: Mapping[str, Any]) -> dict[str, Any]:
-    """``{state: current|stale|unknown, reason, n_members, combiner_kind,
-    combiner_fingerprint}`` of one object's SR against ``identity``."""
+    """``{state: current|stale|unknown, reason, n_members, n_run,
+    combiner_kind, combiner_fingerprint}`` of one object's SR against
+    ``identity``. ``n_members`` is the recorded model's membership (a gate's
+    full fitted list), ``n_run`` the members that ran (a pruned gate's reads;
+    its std/PCA cubes cover those)."""
     recorded = read_model_identity(obj_dir)
     if recorded is None:
         return {"state": "unknown", "reason": "no model recorded (members.json missing)",
-                "n_members": None, "combiner_kind": None, "combiner_fingerprint": None}
+                "n_members": None, "n_run": None, "combiner_kind": None,
+                "combiner_fingerprint": None}
     labels = [str(x) for x in recorded.get("member_labels") or []]
-    out = {"n_members": len(labels), "combiner_kind": recorded.get("combiner_kind"),
+    ran = recorded.get("disagreement_members") or recorded.get("run_labels") or labels
+    out = {"n_members": len(labels), "n_run": len(ran),
+           "combiner_kind": recorded.get("combiner_kind"),
            "combiner_fingerprint": recorded.get("combiner_fingerprint")}
     want = [str(x) for x in identity.get("member_labels") or []]
     if labels != want:
+        now = (f"the production gate is fitted for {len(want)} now"
+               if identity.get("combiner_kind") else
+               f"{len(want)} active STARFULL now (member mean)")
         return {**out, "state": "stale", "reason": (
-            f"membership changed: made by {len(labels)} member(s), "
-            f"{len(want)} active STARFULL now")}
+            f"membership changed: made by {len(labels)} member(s), {now}")}
     if "combiner_kind" not in recorded:
         return {**out, "state": "stale",
                 "reason": "made before the combiner was recorded (plain mean or older combiner)"}
@@ -182,18 +215,19 @@ def can_reuse_eval_object(obj_dir: str, *,
                           identity: Mapping[str, Any] | None = None) -> bool:
     """True when an object already has the real-lens evaluation FITS outputs.
 
-    With ``require_disagreement`` (set when the ensemble has >1 models), also
-    require the disagreement cubes (``std.fits`` + ``pca0.fits``) so an object
-    that only carries a plain ``SR.fits`` is re-run — letting the ensemble add
-    the stdSR + disagreement-movie cubes — instead of being skipped as done.
+    With ``require_disagreement`` (set when >1 members run), also require the
+    disagreement cubes (``std.fits`` + ``pca0.fits``) so an object that only
+    carries a plain ``SR.fits`` is re-run — letting the ensemble add the
+    stdSR + disagreement-movie cubes — instead of being skipped as done.
 
-    ``member_labels`` is the membership fingerprint: when given (alongside
-    ``require_disagreement``), the object's ``members.json`` must exist and
-    record the SAME labels — outputs produced by a different membership (e.g.
-    before a member was archived) are stale and must be regenerated.
-    ``identity`` (:func:`current_eval_identity`) adds the production combiner:
-    the recorded ``combiner_kind`` + ``combiner_fingerprint`` must match too,
-    so a refitted (or newly fitted) gate regenerates the SRs it would change.
+    ``member_labels`` is the membership fingerprint: when given, the object's
+    ``members.json`` must exist and record the SAME labels — outputs produced
+    by a different membership (e.g. before a member was archived) are stale
+    and must be regenerated. ``identity`` (:func:`current_eval_identity`)
+    adds the production combiner: the recorded ``combiner_kind`` +
+    ``combiner_fingerprint`` must match too, so a refitted (or newly
+    promoted) gate regenerates the SRs it would change.
+    :func:`reuse_requirements` derives all three from an identity.
     """
     needed = ["original_stack.fits", "SR.fits"]
     if require_disagreement:
@@ -204,7 +238,7 @@ def can_reuse_eval_object(obj_dir: str, *,
         for name in needed
     ):
         return False
-    if require_disagreement and member_labels is not None:
+    if member_labels is not None:
         recorded = read_model_identity(obj_dir)
         if recorded is None:
             return False
@@ -464,10 +498,7 @@ def eval_catalog_object(model, obj, out_dir: str, *, cutout_size: int,
     obj_dir = object_output_dir(out_dir, obj_id)
     rec = _base_manifest_row(obj, grade=grade)
     identity = eval_model_identity(model)
-    ensemble = model.n_members > 1
-    if can_reuse_eval_object(obj_dir, require_disagreement=ensemble,
-                             member_labels=(list(model.member_labels) if ensemble else None),
-                             identity=identity if ensemble else None):
+    if can_reuse_eval_object(obj_dir, **reuse_requirements(identity)):
         enforce_object_sizes(obj_dir, log=emit)
         return reuse_catalog_object(obj, out_dir, grade=grade, log=emit)
     try:
@@ -541,13 +572,10 @@ def run_catalog_eval(
     # would have — cheap registry probe, no network loaded).
     identity = (eval_model_identity(model) if model is not None
                 else current_eval_identity(ensemble_dir))
-    ensemble = len(identity["member_labels"]) > 1
+    reuse = reuse_requirements(identity)
 
     def _reusable(obj_id: str) -> bool:
-        return can_reuse_eval_object(
-            object_output_dir(out_dir, obj_id), require_disagreement=ensemble,
-            member_labels=identity["member_labels"] if ensemble else None,
-            identity=identity if ensemble else None)
+        return can_reuse_eval_object(object_output_dir(out_dir, obj_id), **reuse)
 
     needs_model = any(not _reusable(row["id"]) for row in rows)
     if needs_model and model is None:

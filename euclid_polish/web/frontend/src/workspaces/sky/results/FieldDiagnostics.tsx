@@ -15,7 +15,7 @@ import type { Evals } from "../../ensemble/api";
 import { refreshFieldDiagnostics } from "./actions";
 import { URLS } from "./api";
 import {
-  brightnessPair, crossCurves, CROSS_X_DOMAIN, evenTicks, occupancyViews,
+  brightnessPair, crossCurves, CROSS_X_DOMAIN, evenTicks, fieldMembersText, occupancyViews,
   type FieldDiagnostics as Diag, type FieldStatus, type HeatPair,
 } from "./diagnostics";
 import { autoTicks } from "../../plotTicks";
@@ -160,7 +160,7 @@ export function FieldDiagnostics({ onClose }: { onClose: () => void }) {
       <IconButton icon="close" size="sm" label="Hide field diagnostics" onClick={onClose} />
     </span>
   );
-  const sub = f ? `${f.field_id} · ${formatDeg(f.ra, 4)} ${formatDeg(f.dec, 4, { signed: true })} · ${f.member_labels?.length ?? 0} members` : undefined;
+  const sub = f ? `${f.field_id} · ${formatDeg(f.ra, 4)} ${formatDeg(f.dec, 4, { signed: true })} · ${fieldMembersText(f)}` : undefined;
 
   let body: ReactNode;
   if (field.loading || diag.loading) body = <Skeleton height={320} />;

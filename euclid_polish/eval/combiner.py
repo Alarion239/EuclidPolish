@@ -1917,11 +1917,17 @@ def save_combiner(comb: Combiner, base_dir: str, *,
 
 
 def load_combiner(base_dir: str, *, member_labels: list[str] | None = None,
-                  artifact_dir: str | None = None) -> Combiner | None:
-    """Load one active combiner artifact; retired formats are rejected."""
+                  artifact_dir: str | None = None,
+                  available_labels: list[str] | None = None) -> Combiner | None:
+    """Load one active combiner artifact; retired formats are rejected.
+
+    ``member_labels`` demands the exact fitted list; ``available_labels``
+    only that every member the combiner reads is among them (a spatial gate
+    reads its active members, an RBF all of its members)."""
     directory = _combiner_dir(base_dir, artifact_dir)
     if artifact_dir == combiner_model_spec(SPATIAL_GATE_KIND).artifact_dir:
-        return load_spatial_gate(directory, member_labels=member_labels)
+        return load_spatial_gate(directory, member_labels=member_labels,
+                                 available_labels=available_labels)
     manifest_path = os.path.join(directory, "combiner.json")
     arrays_path = os.path.join(directory, "combiner.npz")
     if not (os.path.isfile(manifest_path) and os.path.isfile(arrays_path)):
@@ -1940,6 +1946,8 @@ def load_combiner(base_dir: str, *, member_labels: list[str] | None = None,
             return None
         labels = [str(value) for value in manifest["member_labels"]]
         if member_labels is not None and labels != [str(value) for value in member_labels]:
+            return None
+        if available_labels is not None and not set(labels) <= set(map(str, available_labels)):
             return None
         arrays = np.load(arrays_path)
         return RawIncrementalMinMeanMaxRBFCombiner(

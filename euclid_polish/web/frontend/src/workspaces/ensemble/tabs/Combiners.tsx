@@ -31,7 +31,8 @@ import {
 import { BarGroup, EnsBar, LoadState } from "../common";
 import { JOB, useOnJobEnd } from "../jobs";
 import {
-  benchmarkChoices, benchmarkExperiment, db, dbDelta, heldOutComparable, holesText, memberNumber, readsText, variantLabel, type Bench,
+  benchmarkChoices, benchmarkExperiment, db, dbDelta, heldOutComparable, holesText, memberNumber, productionRunsText, pruneThreshold, readsText,
+  variantLabel, type Bench,
 } from "../model";
 import { compareNote, compareRows, holesLine, promoteNote, utcText, variantNote } from "../notes";
 import { LogToTrackingButton, LogToTrackingDialog } from "../../shared/LogToTracking";
@@ -430,6 +431,12 @@ export default function Combiners() {
               <div className="ens-row">
                 <span className="ens-muted">Promoted {variantLabel(promoted.promoted)} to production.</span>
                 <LogToTrackingButton label="Log the promotion to tracking" note={() => promoteNote(promoted, mode, prodScores)} />
+              </div>
+            )}
+            {prod && (
+              <div className="ens-row">
+                <Badge tone="accent">production</Badge>
+                <span>{productionRunsText(prod.n_reads, prod.n_members, pruneThreshold(prod))}</span>
               </div>
             )}
             <DataTable rows={rows} columns={columns} rowKey={(v) => v.name} aria-label="Combiner variants"

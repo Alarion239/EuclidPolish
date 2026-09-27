@@ -60,6 +60,7 @@
 .ens-progress[data-status="running"] .ens-progress__fill { background: var(--info); }
 /* gate use: mean % + one bar per band (VIS Y J H) */
 .ens-gate { display: inline-grid; grid-template-columns: 44px auto; align-items: center; gap: 6px; }
+.ens-gate[data-peak] { grid-template-columns: max-content auto; }
 .ens-gate__bars { display: inline-flex; align-items: flex-end; gap: 2px; height: 16px; padding-bottom: 1px; border-bottom: 1px solid var(--border); }
 .ens-gate__bars i { display: block; width: 6px; min-height: 0; border-radius: 1px 1px 0 0; background: var(--text-faint); }
 .ens-gate__bars i[data-band="VIS"] { background: var(--band-vis); }

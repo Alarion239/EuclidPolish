@@ -302,6 +302,26 @@ describe("members gate use", () => {
     const cell = await screen.findByLabelText(/^Gate use 26\.7% \(mean over bands\)/);
     expect(cell.getAttribute("aria-label")).toBe("Gate use 26.7% (mean over bands): VIS 0.0% · Y 37.4% · J 36.6% · H 32.9%");
     expect(cell.querySelectorAll(".ens-gate__bars i")).toHaveLength(4);
+    // No peak or read flag in the payload: the old display, no marker.
+    expect(screen.queryByText(/peak/)).toBeNull();
+    expect(screen.queryByText("read")).toBeNull();
+  });
+
+  it("shows a core specialist's peak beside its rounded mean, and marks what the gate reads", async () => {
+    routes["GET /ensemble/members.json?mode=starfull"] = () => ({ body: { ...MEMBERS, members: [
+      member(195, { gate_usage: { VIS: 0.0002, Y_E: 0.0001, J_E: 0.0001, H_E: 0.0001 },
+        gate_usage_peak: { value: 0.48, band: "VIS", bin: "core" }, used_by_gate: true }),
+      member(169, { gate_usage: { VIS: 0.00001, Y_E: 0.00001, J_E: 0.00001, H_E: 0.00001 },
+        gate_usage_peak: 0.0031, used_by_gate: false }),
+    ] } });
+    const { default: Members } = await import("./tabs/Members");
+    show(<Members />, "/ensemble/starfull/members");
+    expect(await screen.findByText("0.0% mean · 48% peak (VIS cores)")).toBeTruthy();
+    expect(screen.getByText("0.0% mean · 0.3% peak")).toBeTruthy();
+    const row195 = screen.getByText("#195").closest("tr") as HTMLElement;
+    const row169 = screen.getByText("#169").closest("tr") as HTMLElement;
+    expect(within(row195).getByText("read")).toBeTruthy();
+    expect(within(row169).getByText("not read")).toBeTruthy();
   });
 });
 
@@ -430,6 +450,15 @@ describe("combiners", () => {
     await waitFor(() => expect(screen.getByText(/on cached tile ra0273/)).toBeTruthy());
     expect((within(grid).getByText("combiner").closest("tr") as HTMLElement).querySelector(".ens-holes")).toBeNull();
     expect(((within(grid).getByText("26m").closest("tr") as HTMLElement).querySelector(".ens-holes") as HTMLElement).textContent).toBe("9 · 9 · 9 · 9");
+  });
+
+  it("says how many members production runs", async () => {
+    routes["GET /ensemble/combiners.json?mode=starfull"] = () => ({ body: { ...COMBINERS, variants: [
+      variant("spatial_gate_combiner", { n_members: 30, n_reads: 20, pruned: true, fit: { steps: 2000, prune_threshold: 0.005 } }),
+    ] } });
+    const { default: Combiners } = await import("./tabs/Combiners");
+    show(<Combiners />, "/ensemble/starfull/combiners");
+    expect(await screen.findByText("Runs 20 of 30 members: those with ≥ 0.5% of the gate's weight somewhere")).toBeTruthy();
   });
 
   it("says how many members a pruned gate reads, and logs a variant's fit from its menu", async () => {

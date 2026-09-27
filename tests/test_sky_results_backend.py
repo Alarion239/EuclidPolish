@@ -32,9 +32,10 @@ from euclid_polish.eval import (
     synthetic_runner,
 )
 from euclid_polish.eval.combiner import combiner_artifact_fingerprint
+from euclid_polish.eval.ensemble_infer import EvalEnsemble, ProductionPlan, production_plan
 from euclid_polish.eval.spatial_gate import save_spatial_gate
 from euclid_polish.web import app as web_app
-from euclid_polish.web.helpers import viewer_data
+from euclid_polish.web.helpers import ensemble_viz, viewer_data
 from euclid_polish.web.jobs import REGISTRY
 from euclid_polish.web.routes import jwst_euclid as jwst_routes
 from tests import _real_fixtures as fx
@@ -200,7 +201,8 @@ class _Model:
 def test_model_identity_names_members_and_production_gate(regime):
     ident = catalog_runner.eval_model_identity(_Model(regime["labels"]))
     assert ident == {"member_labels": regime["labels"], "combiner_kind": "spatial_gate",
-                     "combiner_fingerprint": regime["fingerprint"]}
+                     "combiner_fingerprint": regime["fingerprint"],
+                     "run_labels": regime["labels"]}
     mean = catalog_runner.eval_model_identity(_Model(regime["labels"], kind=None))
     assert mean["combiner_kind"] is None and mean["combiner_fingerprint"] is None
 
@@ -209,9 +211,119 @@ def test_current_identity_without_loading_the_model(regime):
     ident = catalog_runner.current_eval_identity(labels=regime["labels"])
     assert ident["combiner_kind"] == "spatial_gate"
     assert ident["combiner_fingerprint"] == regime["fingerprint"]
-    # A membership the gate was not fitted for reconstructs through the mean.
+    # A membership that lacks a member the gate reads reconstructs through the mean.
     other = catalog_runner.current_eval_identity(labels=regime["labels"][:2])
     assert other["combiner_kind"] is None and other["combiner_fingerprint"] is None
+    assert other["member_labels"] == other["run_labels"] == regime["labels"][:2]
+
+
+def _pruned_regime(regime, active_members=(0, 2)):
+    gate = fx.uniform_gate(fx.LABELS)
+    gate.active_members = tuple(active_members)
+    save_spatial_gate(gate, str(regime["gate_dir"]))
+    return combiner_artifact_fingerprint(str(regime["gate_dir"].parent),
+                                         "spatial_gate_combiner")
+
+
+def test_current_identity_of_a_pruned_gate_survives_new_and_unread_members(regime):
+    """The probe keys on the gate's full fitted list and names the members it
+    reads; members that join later, or unread members that leave, change
+    nothing. Losing a read member falls back to the mean."""
+    fp = _pruned_regime(regime)
+    labels = regime["labels"]
+    reads = [labels[0], labels[2]]
+    ident = catalog_runner.current_eval_identity(labels=labels)
+    assert ident == {"member_labels": labels, "combiner_kind": "spatial_gate",
+                     "combiner_fingerprint": fp, "run_labels": reads}
+    joined = catalog_runner.current_eval_identity(labels=[*labels, "4·psnr", "5·psnr"])
+    assert joined == ident                                  # members added: unchanged
+    unread_left = catalog_runner.current_eval_identity(labels=reads)
+    assert unread_left == ident                             # an unread member archived
+    read_left = catalog_runner.current_eval_identity(labels=labels[:2])
+    assert read_left["combiner_kind"] is None               # a read member archived
+    assert read_left["run_labels"] == labels[:2]
+
+
+def test_archiving_an_unread_member_leaves_every_production_output_current(
+        regime, monkeypatch):
+    """The archive reconcile at the next Evaluate must not rewrite a gate
+    whose reads all survive: its fingerprint — and so the identity every
+    catalog, grouped, records and Sky output was made with — is unchanged."""
+    fp = _pruned_regime(regime)
+    labels = regime["labels"]
+    before = catalog_runner.current_eval_identity(labels=labels)
+    after_archive = [labels[0], labels[2]]                 # 2·psnr (unread) archived
+    monkeypatch.setattr(ensemble_viz, "_regime_labels", lambda base, starless: after_archive)
+    monkeypatch.setattr(ensemble_viz, "_combiner_payload_path",
+                        lambda starless, kind=None: str(regime["gate_dir"].parent / "p.json"))
+    assert ensemble_viz._reconcile_combiner_on_archives(
+        str(regime["gate_dir"].parent), False, ["2"], "spatial_gate") is True
+    assert combiner_artifact_fingerprint(str(regime["gate_dir"].parent),
+                                         "spatial_gate_combiner") == fp
+    assert catalog_runner.current_eval_identity(labels=after_archive) == before
+
+
+def test_loaded_and_probed_identities_of_a_pruned_gate_agree(regime):
+    """What a run writes (from the loaded model) equals what the next run
+    probes from the registry, so nothing is re-run spuriously."""
+    _pruned_regime(regime)
+    active = [*regime["labels"], "4·psnr"]
+    plan = production_plan(active)
+
+    class _Ens:
+        member_labels = list(plan.run_labels)
+        n_members = len(plan.run_labels)
+
+    model = EvalEnsemble(_Ens(), plan.combiner, "spatial_gate",
+                         member_labels=plan.member_labels, joined=plan.joined)
+    assert (catalog_runner.eval_model_identity(model)
+            == catalog_runner.current_eval_identity(labels=active))
+
+
+def test_reuse_requirements_follow_the_members_that_ran():
+    ident = {"member_labels": ["1·psnr", "2·psnr", "3·psnr"], "combiner_kind": "spatial_gate",
+             "combiner_fingerprint": "f" * 64, "run_labels": ["2·psnr"]}
+    reuse = catalog_runner.reuse_requirements(ident)
+    # One member ran: no disagreement cubes can exist, but the model is checked.
+    assert reuse == {"require_disagreement": False, "member_labels": ident["member_labels"],
+                     "identity": ident}
+    both = catalog_runner.reuse_requirements({**ident, "run_labels": ["1·psnr", "3·psnr"]})
+    assert both["require_disagreement"] is True
+    legacy = catalog_runner.reuse_requirements({k: v for k, v in ident.items()
+                                                if k != "run_labels"})
+    assert legacy["require_disagreement"] is True          # all fitted members ran
+    single = catalog_runner.reuse_requirements({"member_labels": ["1·psnr"],
+                                                "combiner_kind": None})
+    assert single == {"require_disagreement": False, "member_labels": None, "identity": None}
+
+
+def test_one_member_run_reuses_an_object_without_disagreement_cubes(tmp_path):
+    ident = {"member_labels": ["1·psnr", "2·psnr"], "combiner_kind": "spatial_gate",
+             "combiner_fingerprint": "f" * 64, "run_labels": ["2·psnr"]}
+    d = tmp_path / "obj"
+    d.mkdir()
+    for name in ("original_stack.fits", "SR.fits"):
+        (d / name).write_bytes(b"x")
+    reuse = catalog_runner.reuse_requirements(ident)
+    assert not catalog_runner.can_reuse_eval_object(str(d), **reuse)   # no members.json
+    catalog_runner.record_model_identity(str(d), ident)
+    assert catalog_runner.can_reuse_eval_object(str(d), **reuse)
+    with open(d / "members.json") as f:
+        assert json.load(f)["run_labels"] == ["2·psnr"]
+    refit = {**ident, "combiner_fingerprint": "0" * 64}
+    assert not catalog_runner.can_reuse_eval_object(
+        str(d), **catalog_runner.reuse_requirements(refit))
+
+
+def test_objects_made_before_run_labels_stay_current_for_an_unpruned_gate(tmp_path, regime):
+    """Landing the pruning change must not mass-invalidate cached objects:
+    an old members.json (no run_labels) of the same unpruned gate reuses."""
+    ident = catalog_runner.current_eval_identity(labels=regime["labels"])
+    d = _object(tmp_path)
+    old = {k: ident[k] for k in ("member_labels", "combiner_kind", "combiner_fingerprint")}
+    (d / "members.json").write_text(json.dumps(old))
+    assert catalog_runner.can_reuse_eval_object(
+        str(d), **catalog_runner.reuse_requirements(ident))
 
 
 def _object(tmp_path, name="obj"):
@@ -403,20 +515,79 @@ class _Gate:
 def test_synthetic_field_reconstruction_uses_the_production_combiner(monkeypatch):
     stack = np.stack([np.full((4, 4, 4), v, np.float32) for v in (1.0, 3.0)])
     labels = ["1·psnr", "2·psnr"]
-    monkeypatch.setattr(synthetic_runner, "load_cached_member_stack", lambda *a, **k: stack)
-    monkeypatch.setattr(synthetic_runner, "cached_member_labels", lambda *a, **k: labels)
+    asked = []
+    monkeypatch.setattr(synthetic_runner, "load_cached_member_stack",
+                        lambda *a, **k: asked.append(k.get("active")) or stack)
     # Without a loaded model the cached stack goes through the production gate …
-    monkeypatch.setattr(synthetic_runner, "load_production_combiner", lambda lb: _Gate())
-    sr, members, got, kind = synthetic_runner.field_reconstruction(
-        None, 0, np.zeros((2, 2, 4), np.float32), subset="test", log=lambda m: None)
+    gate_plan = ProductionPlan(tuple(labels), tuple(labels), _Gate())
+    sr, members, got, kind, run = synthetic_runner.field_reconstruction(
+        None, 0, np.zeros((2, 2, 4), np.float32), subset="test", log=lambda m: None,
+        plan=gate_plan)
     assert kind == "spatial_gate" and got == labels and members is stack
+    assert run == labels and asked == [labels]
     np.testing.assert_allclose(sr, 10.0)
     # … and only falls back to the plain mean when no current gate loads.
-    monkeypatch.setattr(synthetic_runner, "load_production_combiner", lambda lb: None)
-    sr, _members, _labels, kind = synthetic_runner.field_reconstruction(
-        None, 0, np.zeros((2, 2, 4), np.float32), subset="test", log=lambda m: None)
+    sr, _members, _labels, kind, _run = synthetic_runner.field_reconstruction(
+        None, 0, np.zeros((2, 2, 4), np.float32), subset="test", log=lambda m: None,
+        plan=ProductionPlan(tuple(labels), tuple(labels), None))
     assert kind is None
     np.testing.assert_allclose(sr, 2.0)
+
+
+def test_synthetic_field_reconstruction_reads_only_the_gate_members(tmp_path, monkeypatch):
+    """A pruned gate reads only its members' cube files from the cache; a
+    cache that lacks one of them is reported and never deleted."""
+    cubes = tmp_path / "vis" / "ensemble" / "starfull" / "cubes"
+    cubes.mkdir(parents=True)
+    cache_labels = ["1·psnr", "2·psnr", "3·psnr"]
+    for i in range(3):
+        np.save(cubes / f"member{i}_00000.npy", np.full((4, 4, 4), float(i + 1), np.float32))
+    (cubes / "viz_index.json").write_text(json.dumps(
+        {"subset": "test", "indices": [0], "member_labels": cache_labels}))
+    monkeypatch.setattr(Config, "VIS_DIR", str(tmp_path / "vis"))
+
+    class _Pick:
+        use_lr = False
+
+        def apply_field(self, stack, lr=None):
+            return np.asarray(stack, np.float32).sum(axis=0)
+
+    pruned = ProductionPlan(tuple(cache_labels), ("1·psnr", "3·psnr"), _Pick())
+    sr, members, got, kind, run = synthetic_runner.field_reconstruction(
+        None, 0, np.zeros((2, 2, 4), np.float32), subset="test", log=lambda m: None,
+        plan=pruned)
+    np.testing.assert_allclose(sr, 1.0 + 3.0)             # members 1 and 3 only
+    assert members.shape[0] == 2 and run == ["1·psnr", "3·psnr"] and got == cache_labels
+    logged = []
+    joined = ProductionPlan(("1·psnr", "4·psnr"), ("1·psnr", "4·psnr"), _Pick())
+    with pytest.raises(RuntimeError, match="no cached member stack"):
+        synthetic_runner.field_reconstruction(
+            None, 0, np.zeros((2, 2, 4), np.float32), subset="test", log=logged.append,
+            plan=joined)
+    assert any("lacks 1 member" in m and "4·psnr" in m for m in logged)
+    assert (cubes / "viz_index.json").is_file()            # never purged
+
+
+def test_synthetic_field_reconstruction_resolves_the_plan_from_the_registry(monkeypatch):
+    """Neither a model nor a plan: the production plan comes from the
+    registry's active STARFULL labels (no network) and picks the members."""
+    labels = ["1·psnr", "2·psnr", "3·psnr"]
+    seen: dict = {}
+
+    def fake_plan(active):
+        seen["active"] = list(active)
+        return ProductionPlan(tuple(active), ("1·psnr", "3·psnr"), _Gate())
+
+    monkeypatch.setattr(synthetic_runner, "regime_labels", lambda base, starless: labels)
+    monkeypatch.setattr(synthetic_runner, "production_plan", fake_plan)
+    monkeypatch.setattr(synthetic_runner, "load_cached_member_stack",
+                        lambda *a, **k: seen.update(asked=k.get("active"))
+                        or np.ones((2, 4, 4, 4), np.float32))
+    sr, _members, got, kind, run = synthetic_runner.field_reconstruction(
+        None, 0, np.zeros((2, 2, 4), np.float32), subset="test", log=lambda m: None)
+    assert seen["active"] == labels and seen["asked"] == ["1·psnr", "3·psnr"]
+    assert got == labels and run == ["1·psnr", "3·psnr"] and kind == "spatial_gate"
+    np.testing.assert_allclose(sr, 10.0)
 
 
 def test_synthetic_field_reconstruction_prefers_the_loaded_model(monkeypatch):
@@ -432,7 +603,7 @@ def test_synthetic_field_reconstruction_prefers_the_loaded_model(monkeypatch):
 
     monkeypatch.setattr(synthetic_runner, "load_cached_member_stack", lambda *a, **k: stack)
     monkeypatch.setattr(synthetic_runner, "cached_member_labels", lambda *a, **k: Model.member_labels)
-    sr, _m, _l, kind = synthetic_runner.field_reconstruction(
+    sr, _m, _l, kind, _run = synthetic_runner.field_reconstruction(
         Model(), 0, np.zeros((2, 2, 4), np.float32), subset="test", log=lambda m: None)
     np.testing.assert_allclose(sr, 7.0)
     assert kind == "spatial_gate"

@@ -36,7 +36,7 @@ def reconstruct_cutout_at(
     """Fetch a 4-band real Euclid cutout at ``(ra, dec)``, run SR, write outputs.
 
     This is the per-object body of the batch catalog evaluator
-    (``eval/catalog_runner.py`` and ``scripts/fasrc_eval_catalog.py``). It fetches each band, converts the
+    (``eval/catalog_runner.py``). It fetches each band, converts the
     archive's ADU s⁻¹ to electrons-over-the-stack via the per-band ``MAGZERO``
     (so the model sees the same scale it trained on), stacks to ``(H, W, 4)``,
     runs ``reconstruct``, forward-models the SR for a self-consistency
@@ -192,12 +192,16 @@ def reconstruct_cutout_at(
     sr_hdu.writeto(sr_fits_path, overwrite=True, output_verify="silentfix")
     print(f"  ✓ saved SR  → {sr_fits_path}")
     # Ensemble disagreement cubes (full-field; enforce_object_sizes center-crops
-    # them alongside SR so they stay pixel-aligned). No-op for a single model.
+    # them alongside SR so they stay pixel-aligned) over the members that ran
+    # (a pruned production gate runs only the members it reads). No-op for a
+    # single model.
     if members is not None:
+        labels = list(getattr(model, "member_labels", []) or [])
+        run = list(getattr(model, "run_labels", None) or labels)
         try:
             write_disagreement_cubes(
-                out_dir, members,
-                member_labels=list(getattr(model, "member_labels", []) or []))
+                out_dir, members, member_labels=labels,
+                disagreement_members=run if len(run) == len(members) else None)
             print("  ✓ saved disagreement cubes (std + pca)")
         except Exception as exc:  # noqa: BLE001 — never kill a run over the movie
             print(f"  [disagreement] cubes not written: {exc}")

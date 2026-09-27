@@ -221,7 +221,7 @@ def test_default_runner_skips_members_of_specs_already_current(world, monkeypatc
     assert made == [{"labels": ["3·psnr"]}]
 
 
-def test_member_runner_widens_when_asked_for_a_member_past_its_prefix(monkeypatch):
+def test_member_runner_widens_to_the_union_when_asked_for_another_member(monkeypatch):
     active = ["1·psnr", "2·psnr", "3·psnr"]
     monkeypatch.setattr(model_catalog, "active_member_labels", lambda: list(active))
     built: list[dict] = []
@@ -229,16 +229,21 @@ def test_member_runner_widens_when_asked_for_a_member_past_its_prefix(monkeypatc
     class FakeEnsemble:
         def __init__(self, base_dir, **kwargs):
             built.append(kwargs)
-            self.member_labels = active[:kwargs.get("n_members") or len(active)]
+            self.member_labels = list(kwargs.get("labels") or active)
 
         def member_arrays(self, lr, indices):
-            return np.stack([lr * (i + 1) for i in indices])
+            return np.stack([lr * float(self.member_labels[i].split("·")[0])
+                             for i in indices])
 
     runner = model_catalog.EnsembleMemberRunner("/nowhere", factory=FakeEnsemble,
                                                 labels=["1·psnr"])
     lr = np.ones((2, 2, 4), np.float32)
     np.testing.assert_allclose(runner.predict(lr, "1·psnr"), 1.0)
-    np.testing.assert_allclose(runner.predict(lr, "3·psnr"), 3.0)   # rebuilt uncapped
-    assert built == [{"starless": False, "n_members": 1}, {"starless": False}]
+    np.testing.assert_allclose(runner.predict(lr, "3·psnr"), 3.0)   # rebuilt: the union
+    assert built == [{"starless": False, "labels": ["1·psnr"]},
+                     {"starless": False, "labels": ["1·psnr", "3·psnr"]}]
+    np.testing.assert_allclose(runner.predict(lr, "1·psnr"), 1.0)   # no further rebuild
+    assert len(built) == 2
     with pytest.raises(KeyError):
         runner.predict(lr, "9·psnr")
+    assert len(built) == 2                                           # unknown: no rebuild

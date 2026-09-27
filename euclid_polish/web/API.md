@@ -363,16 +363,23 @@ a local job): **nothing is FASRC-gated**.
   rows below); the entry keeps them internally (`extras.legacy_outputs`, not
   serialised).
 - **Model specs** (`GET /api/models`): `production` (the production spatial
-  gate `spatial_gate_combiner/` fitted for the CURRENT STARFULL members —
-  unavailable otherwise, no silent fallback), `mean` (all active STARFULL
-  members), `member:member_<N>` (each active member; aliases `member:170`,
-  `member:170·psnr`), `gate:<variant>` (every `spatial_gate_<variant>/` beside
-  the production artifact, applied with **its own** member labels via
-  `eval.spatial_gate.load_spatial_gate`; unavailable, with `reason`, unless all
-  its members are active STARFULL members), `rbf` (the RBF combiner, own
-  labels). Members always run through `EnsembleModel` by label. A spec's
-  `fingerprint` hashes the member checkpoint fingerprints it reads plus (for
-  combiners) the artifact's `combiner.json`+`combiner.npz`.
+  gate `spatial_gate_combiner/`, available while every member it READS — its
+  `active_members`, all of them when unpruned — is an active STARFULL member
+  with a checkpoint; members registered after its fit only add a `note`
+  ("N member(s) joined after this fit; refit to consider them") and
+  `details.joined_after_fit`; unavailable otherwise, no silent fallback),
+  `mean` (all active STARFULL members), `member:member_<N>` (each active
+  member; aliases `member:170`, `member:170·psnr`), `gate:<variant>` (every
+  `spatial_gate_<variant>/` beside the production artifact, applied with
+  **its own** member labels via `eval.spatial_gate.load_spatial_gate`;
+  unavailable, with `reason`, unless every member it reads is an active
+  STARFULL member), `rbf` (the RBF combiner, own labels, all of them
+  needed). Members always run through `EnsembleModel` by label — exactly the
+  members a job needs (`EnsembleModel(labels=…)`), never a registry prefix. A
+  spec's `fingerprint` hashes the checkpoint fingerprints of the members it
+  READS (a pruned gate: archiving or retraining a member it ignores leaves
+  its outputs current) plus (for combiners) the artifact's
+  `combiner.json`+`combiner.npz`.
 - **Output store**: one SR per (tile, spec) at
   `data/euclid_inference/experiments/outputs/<source>/<id>/<slug>.fits`
   (`(4, 2H, 2W)` electrons, WCS = LR WCS ×2: `CD/2`, `CRPIX → 2·CRPIX − 0.5`)
@@ -463,7 +470,7 @@ a local job): **nothing is FASRC-gated**.
 |---|---|---|---|
 | GET, POST | `/api/experiments` |  | GET: `{experiments:[{id, label, created, finished, status, job_id, tiles, models, skipped, summary, errors, counts}]}` newest first. POST: start an experiment (local job `real-experiment`): `tiles` = comma list of `source/id`, `models` = comma list of specs, `label?`. `{ok, job_id, experiment_id, tiles, models (runnable), skipped:{spec: reason}}`. 400 bad/unknown spec (`unknown model spec 'gate:x'`) or no runnable model; 404 unknown tile; 409 tile without four-band LR; **507** `{ok:false, code:"insufficient_storage", needed_bytes, free_bytes}` when the new outputs (`(4, 2H, 2W)` float32 per (tile, spec) not yet in the store) would leave < 5 GiB free. Job result: `{experiment_id, status, tiles, models, errors, counts}`. |
 | GET | `/api/experiments/<experiment_id>` |  | The experiment record (above); 404 unknown. |
-| GET | `/api/models` |  | `{regime:"starfull", production_kind, members:[labels], models:[{spec, kind, label, slug, members, member_names, reads, n_members, n_fitted, available, reason, fingerprint, member_fingerprints, combiner_kind, combiner_fingerprint, details{mix_space, use_lr, width, active_members, fitted_at, artifact_dir, loss, loss_knees_e, steps, …}}]}` — order: production, mean, rbf, members, gate variants. `members` = the members the spec was built for (its staleness key), `reads` = the members it actually runs; `n_members` = `len(reads)` (a pruned gate: 6 of the 20 it was fitted with), `n_fitted` = `len(members)`. |
+| GET | `/api/models` |  | `{regime:"starfull", production_kind, members:[labels], models:[{spec, kind, label, slug, members, member_names, reads, n_members, n_fitted, available, reason, note (soft remark, e.g. members joined after the fit)|null, fingerprint, member_fingerprints, combiner_kind, combiner_fingerprint, details{mix_space, use_lr, width, active_members, fitted_at, artifact_dir, loss, loss_knees_e, steps, complete, used_threshold, …}}]}` — order: production, mean, rbf, members, gate variants. `members` = the members the spec was built for (its staleness key), `reads` = the members it actually runs; `n_members` = `len(reads)` (a pruned gate: 6 of the 20 it was fitted with), `n_fitted` = `len(members)`. |
 | GET | `/api/real/<source>` |  | `{source, label, description, count, tiles:[tile entry + models:{spec:{state, legacy, label, fingerprint, created, experiment_id, file, origin, summary}} + production_state]}` (models = the tile's merged outputs). 404 unknown source. |
 | GET | `/api/real/<source>/<identifier>` |  | Card: tile entry + `models:{spec:{state, legacy, label, kind, fingerprint, created, experiment_id, file, member_labels, combiner_kind, lr_sha, shape, origin, metrics{per_band, summary, gate_core_weights?}, image_url}}` (store + legacy outputs), `production_state`, `legacy` (= `extras.legacy_sr`: the pre-C9 production-pipeline SR record or `null`), `runnable_models`, `experiments:[ids]`, `disk{tile_bytes, output_bytes, cache_bytes (member-SR cache), legacy_bytes (NEXUS / pair legacy SR files), total_bytes}`, `q1_tile` (the containing Q1 tile), `image_urls{tier: url}` (one per `m:<spec>` with an output), `viewer{collection:"real", params{source}, id}`. |
 | POST | `/api/real/<source>/<identifier>/delete-outputs` |  | Delete the tile's cached model outputs and member-SR cache (never the LR itself): `{ok, ref, removed:[paths], removed_count, cache_bytes_freed}`. |
@@ -781,7 +788,7 @@ changes). Local; JSON errors under `/api/provenance` (`errors.json_errors_for`).
 
 | Methods | Path | Gate | Notes |
 |---|---|---|---|
-| POST | `/api/sky/generate-sr` |  | Run the production SR over the local dirty records (local job `kind="sky-generate-sr"`, one at a time): STARFULL members through the production combiner (member mean when no current combiner loads). `subsets` (comma list; default every split with dirty records; 400 unknown / no records), `overwrite=1` (deletes the split's cubes first; without it a split that has SR is skipped). Writes `<vis>/sky_sr/sr_<split>_NNNN.npy` + `sr_<split>.json` (model identity `{member_labels, combiner_kind, combiner_fingerprint}`, `model_label`, the input records' size/mtime, `count`, `generated_at`). `{ok, job_id, subsets, overwrite}`; result `{generated{split: n}, skipped, model, identity}`. 400 without records or active members. |
+| POST | `/api/sky/generate-sr` |  | Run the production SR over the local dirty records (local job `kind="sky-generate-sr"`, one at a time): the production gate, restoring and running only the STARFULL members it reads (a pruned gate: its `active_members`), valid while every one of them is active (members that joined after the fit are logged as a note); the plain mean of every active STARFULL member, logged as a warning, when no current gate loads. `subsets` (comma list; default every split with dirty records; 400 unknown / no records), `overwrite=1` (deletes the split's cubes first; without it a split that has SR is skipped). Writes `<vis>/sky_sr/sr_<split>_NNNN.npy` + `sr_<split>.json` (model identity `{member_labels (the gate's full fitted list), combiner_kind, combiner_fingerprint, run_labels (the members that ran)}`, `model_label`, the input records' size/mtime, `count`, `generated_at`). `{ok, job_id, subsets, overwrite}`; result `{generated{split: n}, skipped, model, identity}`. 400 without records or active members. |
 | GET | `/api/sky/records/source` |  | Every column of one truth source (`subset`, `index` = record position, `row` = its position among the record's sources): `{subset, field_index, row, source (the compact row), values{column: number\|string\|null; JSON trace columns decoded}}`; 404 `{ok:false, error}` when absent, 400 bad arguments. |
 | GET | `/api/sky/records/sources` |  | Truth sources from the generator's `sources_<subset>.csv` (local). With `index` (record position = the CSV's `field_index`): `{subset, field_index, present, sources:[{row, type: galaxy\|star\|lens\|other, render, x_pix, y_pix (HR pixels, 0-based, pixel centres at integers), off_field, flux_vis_e, flux_y_e, flux_j_e, flux_h_e, mag_vis (a star's sampled magnitude, a galaxy's achieved 2FWHM magnitude, else its target), mag_y_e, mag_j_e, mag_h_e, target_vis_mag, z, re_arcsec, theta_E_arcsec, orientation, temperature_k, subhalo_id, source_subhalo_id, sfr_class}], counts{galaxy, star, lens, other, off_field}, geometry}`; without it the split census `{subset, present, fields:[{field_index, galaxy, star, lens, other, off_field, n, brightest_star_mag, brightest_galaxy_mag, total_vis_e}], geometry}`. `geometry{hr{height, width, pixscale}\|null, lr{…}\|null}` from the first hr (else clean) / dirty record. 400 bad subset/index. |
 | GET | `/api/sky/sr-status` |  | Data › Records state (local, headers only): `{records, checkpoint, can_generate, subsets (splits with dirty records), sr{split: n cubes}, records_dir, splits{split: {files{dirty\|hr\|clean: {name, size_bytes, mtime, count (null = truncated/corrupt)}\|null, sources: {name, size_bytes, mtime}\|null}, count, present, sr{state: current\|stale\|partial\|missing\|unknown, reasons[], count, records_count, manifest\|null}}}, model (the identity an SR run would load now)\|null, sync_job, generate_job}`. `unknown` = SR cubes without a manifest (made before model tracking). The records half of `stale` compares a content fingerprint (SHA-1 over every frame header + payload CRC, recorded in the manifest's `records.fingerprint`), never the mtime: a re-sync of unchanged records keeps the SR `current`; a legacy manifest without a fingerprint compares the size only. |
@@ -844,9 +851,9 @@ changes). Local; JSON errors under `/api/provenance` (`errors.json_errors_for`).
 
 | Methods | Path | Gate | Notes |
 |---|---|---|---|
-| GET | `/api/inference/diagnostics.json` |  | Diagnostics of the latest cached real field (`{diagnostics: {version, member_labels, model_power{k, r_pairs, r_cross, pixel_scale_arcsec}, std_brightness{x_edges, y_edges, counts, x_label, y_label}, combiners{kind: occupancy}} \| null}`; shown by Sky › Real results › Diagnostics beside `/ensemble/evals.json?mode=starfull`). |
-| GET | `/api/inference/field.json` |  | Latest cached real field + field size. |
-| POST | `/inference/refresh-combiners` |  | Apply the newest STARFULL combiner to cached fields (local job). |
+| GET | `/api/inference/diagnostics.json` |  | Diagnostics of the latest cached real field (`{diagnostics: {version, member_labels (the members that ran), member_scope ("gate" = the production gate's read members, "all"), n_ensemble_members, model_power{k, r_pairs, r_cross, pixel_scale_arcsec}, std_brightness{x_edges, y_edges, counts, x_label, y_label}, combiners{kind: occupancy}} \| null}`; shown by Sky › Real results › Diagnostics beside `/ensemble/evals.json?mode=starfull`). |
+| GET | `/api/inference/field.json` |  | Latest cached real field + field size. The field manifest's `member_labels` is the whole active STARFULL membership (member cubes are indexed by position in it); `run_members` / `run_member_labels` are the members that ran and `member_scope` is `"gate"` (only the production gate's read members, the default) or `"all"`; mean, std, PCA and diagnostics cover the members that ran. Manifests from before scopes lack these keys and ran every member. |
+| POST | `/inference/refresh-combiners` |  | Apply the newest STARFULL combiner to cached fields (local job). Runs only the members the production gate reads; `all_members=1` runs every active member (full member diagnostics). Member cubes already cached are reused and never deleted. |
 
 ### Ensemble (`routes/ensemble.py`)
 
@@ -882,15 +889,28 @@ answer `{ok:false, error}` with 400 on a bad knob. Everything is local except
   log), psnr (cached test PSNR), psnr_rank, knee_integrated{VIS,Y_E,J_E,H_E,
   mean}|null + knee_rank (from the knee payload), gate_usage{band} /
   gate_usage_source{band} (production gate, all / source pixels) |null,
+  gate_usage_peak{value, band, bin (brightness bin, "sources", or null =
+  all pixels)}|null (the member's largest share of the production gate's
+  weight over bands, all/source pixels and every brightness bin — the
+  "used by the gate" rule's peak), used_by_gate (the production gate reads
+  it, so production SR runs it)|null (no gate payload),
   coherence{overall, sr}|null, has_loss_best, size_mb}`.
 - **Variant row** (`combiners.json` `variants[]`): `{name (directory), kind:
   gate|rbf, spec (production | gate:<x> | rbf), production, backup
   (spatial_gate_backup_*), member_labels, reads, n_members, n_reads, pruned,
-  mix_space, use_lr, width, fitted_at, fingerprint, membership{current,
-  missing, extra} (vs the active regime members), applies_to_test_cubes, fit
+  mix_space, use_lr, width, fitted_at, fingerprint, membership{current
+  (every member it READS is active), missing (fitted members not active),
+  missing_reads (read members not active), extra (active members that joined
+  after the fit)}, promotion{ok, reason} (whether promote would install it:
+  refused while a fit writes it (`.fitting.json` marker of a live process),
+  when `fit_meta.complete` is not true, or — without `force` — when a
+  member it reads is not active), applies_to_test_cubes (a gate: the test
+  cubes hold every member it reads), fit
   {steps, steps_run, complete, batch_size, crop, learning_rate, loss,
   loss_knees_e, blackout_fields, fit_seconds, seed, eval_every, variant,
-  fitted_via, promoted_from, …, train_field_count, holdout_field_count},
+  fitted_via, members_requested, used_threshold (the `--members used` rule's
+  peak-weight threshold, when that picked the members), promoted_from, …,
+  train_field_count, holdout_field_count},
   selected, baseline, history[{step, loss, train_loss, vis_psnr, band_psnr,
   integrated_psnr}], test{source:"compare", report, band_psnr,
   blackout_band_psnr}|null, knee{source: "knee"|"compare", integrated[band],
@@ -911,15 +931,15 @@ answer `{ok:false, error}` with 400 on a bad knob. Everything is local except
 | Methods | Path | Gate | Notes |
 |---|---|---|---|
 | POST | `/ensemble/archive-member` |  | Retire one member (`member`: any member spelling): zip → tracking campaign, registry tombstone, member dir deleted, cube cache purged. The name is validated and must be ACTIVE before the job starts (400 `{ok:false, error}`); `{ok, job_id}`. |
-| GET | `/ensemble/combiner.json` |  | The Combiner card's dataset for a regime (``?mode=``, ``model_kind``): per-band effective-weight curves / gate usage, survivors, val loss and per-member meta. |
+| GET | `/ensemble/combiner.json` |  | The Combiner card's dataset for a regime (``?mode=``, ``model_kind``): per-band effective-weight curves / gate usage, survivors, val loss and per-member meta. The spatial gate adds `read_labels`, `joined_after_fit` (active members it was not fitted with), `stale` (a member it reads is no longer active), `member_peak_weights` (per fitted member: max over bands of the held-out all-pixel, source-pixel and every brightness-bin mean weight; `null` without a diagnostic), `used_threshold` (0.005) and `used_by_gate` (peak ≥ threshold — the rule `scripts/fit_spatial_gate.py fit --members used` prunes to; pruned members read 0). |
 | POST | `/ensemble/combiner/fit` |  | Legacy in-place fit of an RBF combiner kind (`model_kind`). The spatial gate — production — is refused with 400: fit a named variant (`/ensemble/combiners/fit`) and promote it (`/ensemble/combiners/promote`, which backs production up). No SPA caller. |
 | GET | `/ensemble/combiners.json` |  | Variant registry: `{regime, production (dir), active_members, cube_members, variants:[variant row], compare:{id, created, methods, n_fields}\|null, reports:[{id, created, methods, n_fields, gates_requested}]}`. |
 | POST | `/ensemble/combiners/compare` |  | Compare job: `gates` (comma list of `spatial_gate_*` dirs or `gate:<x>`; default every variant that applies to the test cubes, backups excluded), `blackout_fields` (0–400, default 40), `seed`, `include_rbf` (default 1), `knee` (default 1). Writes `spatial_gate_comparisons/<id>.json` + the latest `spatial_gate_comparison.json`. Job result `{report_id, methods, n_fields}`. |
 | GET | `/ensemble/combiners/compare.json` |  | One compare report (`?report=<id>`, default the latest); 404 before any compare. |
 | POST | `/ensemble/combiners/fit` |  | Fit a NAMED gate variant (job, TensorFlow): `out_name` (`spatial_gate_<x>` or `<x>`; never `spatial_gate_combiner`, never `spatial_gate_backup_*`, never `spatial_gate_comparison*` or a name ending `.json` / `_evals` (compare reports and eval sidecars share the prefix); an existing VARIANT needs `overwrite=1`, any other existing entry is refused), `mix_space` (`linear` default \| `asinh`), `loss_knees` (`all` = 11 knees 0.1–1e4 e⁻ default \| `band` \| comma list), `use_lr`, `width` (32), `steps` (2000), `batch_size` (8), `crop` (192), `learning_rate` (2e-3), `eval_every` (250), `holdout` (15), `blackout_fields` (40), `seed` (0), `members` (subset → pruned gate), `num_images` (validate fields, 100), `target_psf_fwhm_arcsec`, `compare_after` (default 1: compare with production afterwards). The validate member cubes are re-inferred when stale. `{ok, job_id, variant}`; job result `{variant, n_members, selected, report_id}`. |
-| POST | `/ensemble/combiners/promote` |  | Promote job: `variant` (dir or `gate:<x>`), `force` (required when the variant was fitted for other members than the active ones). Backs the current production gate up to `spatial_gate_backup_<UTC stamp>` (promote a backup to roll back), swaps the variant in, then refreshes the gate payload and — when the variant fits the cached test cubes — re-applies it and rebuilds the eval summary + knee curves (no member inference). Job result `{promoted, backup, test_rescored, summary}`. |
+| POST | `/ensemble/combiners/promote` |  | Promote job: `variant` (dir or `gate:<x>`), `force` (required when the variant reads a member that is not active; members that joined after its fit need no force). A variant a fit is still writing, or whose `fit_meta.complete` is not true, is always refused (the job fails with the reason). Backs the current production gate up to `spatial_gate_backup_<UTC stamp>` (promote a backup to roll back), swaps the variant in, then refreshes the gate payload and — when the variant fits the cached test cubes — re-applies it and rebuilds the eval summary + knee curves (no member inference). Job result `{promoted, backup, test_rescored, summary}`. |
 | GET | `/ensemble/evals.json` |  | The Diagnostics dataset: power spectrum (+ T(k)), coherence, std-vs-error, combiner axes, std-vs-brightness, calibration (`z_edges, pdf, stats{cover1..3, sigma_z}, field_std, field_rmse`), per-member meta. 404 JSON before an evaluation. `?fresh=1` recomputes from the cached cubes for a same-origin request only; a cross-site request gets the cached payload as it is (no diagnostics upgrade) or 404 when none exists. |
-| POST | `/ensemble/evaluate` |  | Evaluate the ensemble on local test records (local job; `num_images`, `mode`, `force=1` re-infers even when an identical evaluation is cached, `target_psf_fwhm_arcsec`). |
+| POST | `/ensemble/evaluate` |  | Evaluate the ensemble on local test records (local job; `num_images`, `mode`, `force=1` re-infers even when an identical evaluation is cached, `target_psf_fwhm_arcsec`). Archives queued since the last evaluation are applied first from the cached cubes: the production spatial gate is left byte-identical while every member it reads stays active (archiving a member it does not read keeps its fingerprint, so its outputs stay current), and is moved to `spatial_gate_backup_<UTC stamp>` (promotable again once the member is restored) when a member it reads was archived. The spatial gate is applied and scored on the test cubes by label (members that joined after its fit are skipped); the RBF needs exactly the active members. |
 | POST | `/ensemble/knee-psnr` |  | Compute PSNR-vs-knee curves (local job; `mode`). |
 | GET | `/ensemble/knee-psnr.json` |  | PSNR-vs-knee curves + integrated PSNR for every model of a regime (``?mode=``), flagged ``stale`` when the cubes or combiners changed. |
 | GET | `/ensemble/member/<name>.json` |  | One member (`member_196`, `196`, `196·psnr`): `{name, label, active, archived (tombstone row)\|null, regime, row (member row)\|null, curves{psnr, band_psnr, loss_series, train_loss, gnorm, gnorm_max, step_time}\|null, knee{knees, bands, stale, models:[this member, the mean, the combiners]}\|null, gate{stale, bands, brightness_names, usage, usage_source, by_brightness, uniform}\|null}`. 400 bad name, 404 unknown. |

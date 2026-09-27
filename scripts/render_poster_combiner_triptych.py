@@ -4,8 +4,10 @@
 The poster source is the cached four-band Euclid LR cube for the target at
 18:12:55.413 +68:21:49.16 — either the band-first ``original_stack.fits`` or
 the ``LR_<band>`` extensions of an earlier results FITS written here (the same
-electron-domain input).  This script runs the active STARFULL members, applies
-the fitted combiner, and writes a compact FITS product plus a poster-style
+electron-domain input).  This script runs the STARFULL members the fitted
+combiner reads (a pruned spatial gate skips the members it gives no weight;
+``--all-members`` runs every fitted member, e.g. for the full contact sheet),
+applies the combiner, and writes a compact FITS product plus a poster-style
 Euclid/SR/Hubble plate.
 
 The Hubble panel is the existing WFPC2 F814W poster reference.  It is kept as
@@ -42,6 +44,7 @@ from euclid_polish.eval.combiner import (
     COMBINER_MODELS,
     load_combiner,
 )
+from euclid_polish.eval.spatial_gate import SPATIAL_GATE_KIND, restrict_to_available
 from euclid_polish.photometry import ab_mag_to_electrons
 from euclid_polish.visualization.color import eye_rgb, planck_color_strip
 
@@ -83,14 +86,15 @@ def _run_members(lr: np.ndarray, *, ckpt_root: str,
                  labels: list[str]) -> np.ndarray:
     """Each member's SR in ``labels`` order, one STARFULL member at a time.
 
-    Members load through :class:`EnsembleModel`, so each one self-corrects to
-    its checkpoint's depth and un-stretches with its own asinh knee.
+    Only the ``labels`` checkpoints are restored. Members load through
+    :class:`EnsembleModel`, so each one self-corrects to its checkpoint's
+    depth and un-stretches with its own asinh knee.
     """
-    ensemble = EnsembleModel(ckpt_root, starless=False)
+    try:
+        ensemble = EnsembleModel(ckpt_root, starless=False, labels=labels)
+    except ValueError as exc:
+        raise FileNotFoundError(f"no active STARFULL checkpoint: {exc}") from exc
     by_label = dict(zip(ensemble.member_labels, ensemble.members, strict=True))
-    missing = [label for label in labels if label not in by_label]
-    if missing:
-        raise FileNotFoundError(f"no active STARFULL checkpoint for {missing}")
     predictions = []
     for label in labels:
         _member_id(label)
@@ -106,16 +110,34 @@ def _run_members(lr: np.ndarray, *, ckpt_root: str,
 
 
 def _active_combiner(combiner_root: str, ckpt_root: str):
-    """The first fitted combiner whose members are the active STARFULL set."""
+    """The first fitted combiner that applies to the active STARFULL set: the
+    spatial gate while every member it READS is active (as production does:
+    members that joined after its fit are ignored, and unread members that
+    left are dropped from the in-memory gate), any other kind for exactly
+    the active members."""
     labels = regime_labels(ckpt_root, starless=False)
     for kind in ACTIVE_COMBINER_KINDS:
-        combiner = load_combiner(
-            combiner_root, member_labels=labels,
-            artifact_dir=COMBINER_MODELS[kind].artifact_dir,
-        )
+        artifact_dir = COMBINER_MODELS[kind].artifact_dir
+        if kind == SPATIAL_GATE_KIND:
+            combiner = load_combiner(combiner_root, available_labels=labels,
+                                     artifact_dir=artifact_dir)
+            combiner = (restrict_to_available(combiner, labels)
+                        if combiner is not None else None)
+        else:
+            combiner = load_combiner(combiner_root, member_labels=labels,
+                                     artifact_dir=artifact_dir)
         if combiner is not None:
             return combiner
     return None
+
+
+def _gate_run_labels(combiner, *, all_members: bool) -> list[str]:
+    """The members to run: the ones ``combiner`` reads (a pruned gate's
+    active members), or every member it was fitted for."""
+    labels = list(combiner.member_labels)
+    if all_members:
+        return labels
+    return [labels[i] for i in combiner.needed_member_indices()]
 
 
 def _asinh_display(data: np.ndarray) -> np.ndarray:
@@ -379,7 +401,7 @@ def _render_member_sheet(
     plt.close(fig)
 
 
-def main() -> int:
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--source",
@@ -407,7 +429,16 @@ def main() -> int:
         "--members", default="",
         help="explicit comma-separated member IDs; bypasses the stored combiner",
     )
-    args = parser.parse_args()
+    parser.add_argument(
+        "--all-members", action="store_true",
+        help="run every member the combiner was fitted for, not only the ones "
+             "it reads (the individual-member sheets then show all of them)",
+    )
+    return parser.parse_args(argv)
+
+
+def main() -> int:
+    args = _parse_args()
 
     lr, source_header, metadata = _load_lr(args.source, args.side)
     metadata["RA"] = float(args.target_ra)
@@ -416,6 +447,7 @@ def main() -> int:
           f"RA={metadata['RA']:.6f} Dec={metadata['DEC']:+.6f}")
 
     combiner = None
+    fitted: list[str] | None = None
     if args.members.strip():
         ids = [item.strip() for item in args.members.split(",") if item.strip()]
         labels = [f"{int(item)}·psnr" for item in ids]
@@ -427,9 +459,11 @@ def main() -> int:
             raise RuntimeError(
                 f"no combiner under {args.combiner_root} matches the active "
                 "STARFULL members; fit one first")
-        labels = combiner.member_labels
+        fitted = list(combiner.member_labels)
+        labels = _gate_run_labels(combiner, all_members=args.all_members)
         combine_kind = combiner.kind
-        print(f"combiner={combiner.kind}  members={labels}")
+        print(f"combiner={combiner.kind}  running {len(labels)} of "
+              f"{len(fitted)} fitted members={labels}")
     members = _run_members(lr, ckpt_root=args.ckpt_root, labels=labels)
     temperature_contact = (
         f"{os.path.splitext(args.individual_contact)[0]}_temp.png"
@@ -442,12 +476,15 @@ def main() -> int:
     if combiner is None:
         sr = np.asarray(np.mean(members, axis=0), dtype=np.float32)
     else:
+        # A pruned gate takes the stack of just the members it reads (or the
+        # whole fitted stack, which it slices itself).
         sr = np.asarray(combiner.apply_field(members, lr=lr), dtype=np.float32)
     print(f"combiner output: {sr.shape}")
 
     metadata.update({
         "COMB_KIND": combine_kind,
         "N_MEMBER": len(labels),
+        "N_FITTED": len(fitted if fitted is not None else labels),
         "LRSIDE": int(args.side),
     })
     _write_fits(args.out_fits, lr, sr, source_header, metadata=metadata)
@@ -462,6 +499,7 @@ def main() -> int:
             "hubble_reference": os.path.abspath(args.hubble),
             "combiner": combine_kind,
             "members": labels,
+            "fitted_members": fitted if fitted is not None else labels,
             "target_ra_deg": args.target_ra,
             "target_dec_deg": args.target_dec,
             "lr_shape": list(lr.shape),

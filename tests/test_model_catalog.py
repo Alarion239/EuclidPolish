@@ -104,11 +104,82 @@ def test_fingerprints_follow_members_and_combiner_artifacts(regime):
     assert refit["mean"] == after["mean"]
 
 
-def test_production_unavailable_when_fitted_for_other_members(regime, monkeypatch):
+def test_production_stays_available_when_members_join_after_the_fit(regime, monkeypatch):
+    """Members the gate never saw are a soft note, not unavailability."""
+    before = mc.resolve_spec("production")
+    fps = regime["fingerprints"]
+    fps["4·psnr"] = "ckpt-4:10:100"
     monkeypatch.setattr(mc, "active_member_labels", lambda: LABELS + ["4·psnr"])
     production = mc.resolve_spec("production")
+    assert production.available and production.reason is None
+    assert production.note == "1 member(s) joined after this fit; refit to consider them"
+    assert production.details["joined_after_fit"] == ["4·psnr"]
+    assert production.to_dict()["note"] == production.note
+    assert production.fingerprint == before.fingerprint      # outputs stay current
+    assert before.note is None
+
+
+def test_production_unavailable_when_a_member_it_reads_left(regime, monkeypatch):
+    monkeypatch.setattr(mc, "active_member_labels", lambda: LABELS[:2])
+    production = mc.resolve_spec("production")
     assert not production.available
-    assert "3 members" in production.reason and "4" in production.reason
+    assert "3·psnr" in production.reason
+
+
+def _pruned_gate(labels, active) -> SpatialGateCombiner:
+    """A uniform gate fitted for ``labels`` that reads only ``active``."""
+    reads = _uniform_gate([labels[i] for i in active])
+    return dataclasses.replace(reads, member_labels=list(labels),
+                               active_members=tuple(active))
+
+
+def _prune_production(regime, active=(0, 2)):
+    save_spatial_gate(_pruned_gate(LABELS, active),
+                      str(regime["root"] / "spatial_gate_combiner"))
+
+
+def test_pruned_production_keys_on_the_members_it_reads(regime, monkeypatch):
+    """add / archive-unread / retrain-unread keep a pruned production gate
+    available and its fingerprint unchanged; archive-read makes it
+    unavailable, retrain-read makes its outputs stale."""
+    _prune_production(regime)                     # reads 1·psnr and 3·psnr
+    base = mc.resolve_spec("production")
+    assert base.available and list(base.reads) == ["1·psnr", "3·psnr"]
+    assert list(base.member_labels) == LABELS and base.to_dict()["n_members"] == 2
+    fps = regime["fingerprints"]
+    # add: a member registered after the fit
+    fps["4·psnr"] = "ckpt-4:10:100"
+    monkeypatch.setattr(mc, "active_member_labels", lambda: LABELS + ["4·psnr"])
+    added = mc.resolve_spec("production")
+    assert added.available and added.fingerprint == base.fingerprint and added.note
+    # archive-unread: 2·psnr (not read) leaves the ensemble
+    monkeypatch.setattr(mc, "active_member_labels", lambda: ["1·psnr", "3·psnr"])
+    unread_left = mc.resolve_spec("production")
+    assert unread_left.available and unread_left.fingerprint == base.fingerprint
+    # retrain-unread: 2·psnr gets a new checkpoint under the same label
+    monkeypatch.setattr(mc, "active_member_labels", lambda: list(LABELS))
+    fps["2·psnr"] = "ckpt-99:12:300"
+    assert mc.resolve_spec("production").fingerprint == base.fingerprint
+    # retrain-read: 3·psnr gets a new checkpoint → cached outputs go stale
+    fps["3·psnr"] = "ckpt-98:12:300"
+    retrained = mc.resolve_spec("production")
+    assert retrained.available and retrained.fingerprint != base.fingerprint
+    # archive-read: 3·psnr (read) leaves → unavailable, no fallback
+    monkeypatch.setattr(mc, "active_member_labels", lambda: ["1·psnr", "2·psnr"])
+    read_left = mc.resolve_spec("production")
+    assert not read_left.available and "3·psnr" in read_left.reason
+    assert read_left.fingerprint is None
+
+
+def test_pruned_gate_variant_needs_only_its_reads(regime, monkeypatch):
+    save_spatial_gate(_pruned_gate(["1·psnr", "9·psnr", "3·psnr"], (0, 2)),
+                      str(regime["root"] / "spatial_gate_skip9"))
+    variant = mc.resolve_spec("gate:skip9")
+    assert variant.available, variant.reason      # 9·psnr is fitted but never read
+    members = _Members()
+    out = mc.predict(variant, np.ones((4, 4, 4), np.float32), members)
+    assert members.calls == ["1·psnr", "3·psnr"]
+    np.testing.assert_allclose(out, members.base * 2.0, rtol=1e-5)
 
 
 def test_resolve_unknown_spec_raises(regime):
@@ -232,28 +303,37 @@ def test_spec_fingerprint_is_the_catalogue_formula(regime):
                                member_fingerprints=["a", None, "c"]) is None
 
 
-def test_member_runner_restores_only_the_members_it_needs(monkeypatch):
-    """The runner caps ``EnsembleModel`` at the registry prefix holding the
-    requested members instead of restoring every active checkpoint."""
-    active = ["1·psnr", "2·psnr", "3·psnr", "4·psnr"]
-    monkeypatch.setattr(mc, "active_member_labels", lambda: list(active))
+class _LabelEnsemble:
+    """Fake ``EnsembleModel``: restores exactly ``labels=`` (every active
+    member without it); member ``k·psnr`` predicts ``k·lr``."""
+
+    active: list[str] = []
     built: list[dict] = []
 
-    class FakeEnsemble:
-        def __init__(self, base_dir, **kwargs):
-            built.append(kwargs)
-            self.member_labels = active[:kwargs.get("n_members") or len(active)]
+    def __init__(self, base_dir, **kwargs):
+        type(self).built.append(kwargs)
+        self.member_labels = list(kwargs.get("labels") or type(self).active)
 
-        def member_arrays(self, lr, indices):
-            return np.stack([lr * (i + 1) for i in indices])
+    def member_arrays(self, lr, indices):
+        return np.stack([lr * float(self.member_labels[i].split("·")[0]) for i in indices])
 
-    runner = mc.EnsembleMemberRunner("/nowhere", factory=FakeEnsemble,
-                                     labels=["2·psnr", "1·psnr"])
-    out = runner.predict(np.ones((2, 2, 4), np.float32), "2·psnr")
-    np.testing.assert_allclose(out, 2.0)
-    assert built == [{"starless": False, "n_members": 2}]
+
+def test_member_runner_restores_only_the_members_it_needs(monkeypatch):
+    """The runner restores exactly the requested members (``labels=``), not a
+    registry prefix: a gate reading members 2 and 4 loads 2 checkpoints."""
+    active = ["1·psnr", "2·psnr", "3·psnr", "4·psnr"]
+    monkeypatch.setattr(mc, "active_member_labels", lambda: list(active))
+    monkeypatch.setattr(_LabelEnsemble, "active", active)
+    monkeypatch.setattr(_LabelEnsemble, "built", [])
+    runner = mc.EnsembleMemberRunner("/nowhere", factory=_LabelEnsemble,
+                                     labels=["4·psnr", "2·psnr", "9·psnr"])
+    out = runner.predict(np.ones((2, 2, 4), np.float32), "4·psnr")
+    np.testing.assert_allclose(out, 4.0)
+    # the unknown 9·psnr is left out of the restore, and reported at predict
+    assert _LabelEnsemble.built == [{"starless": False, "labels": ["4·psnr", "2·psnr"]}]
     with pytest.raises(KeyError):
         runner.predict(np.ones((2, 2, 4), np.float32), "9·psnr")      # not active at all
-    everything = mc.EnsembleMemberRunner("/nowhere", factory=FakeEnsemble)
+    assert len(_LabelEnsemble.built) == 1                             # no rebuild for it
+    everything = mc.EnsembleMemberRunner("/nowhere", factory=_LabelEnsemble)
     everything.predict(np.ones((2, 2, 4), np.float32), "4·psnr")
-    assert built[-1] == {"starless": False}
+    assert _LabelEnsemble.built[-1] == {"starless": False}

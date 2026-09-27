@@ -1198,13 +1198,16 @@ def _spec_identity(spec: model_catalog.ModelSpec) -> dict[str, Any]:
     For combiner specs it hashes the fitted JSON and NPZ rather than using
     mtimes: a copied/refitted artifact is current only when its actual
     parameters match what produced a cached SR. The cheap checkpoint
-    fingerprints ensure that retraining a member under the same label also
-    invalidates the SR.
+    fingerprints of the members the spec READS ensure that retraining one of
+    them under the same label also invalidates the SR; a member a pruned gate
+    does not read never touches it (for an unpruned gate this is every member).
     """
+    reads = set(spec.reads)
+    pairs = zip(spec.member_labels, spec.member_fingerprints, strict=False)
     return {
         "combiner_kind": spec.combiner_kind or spec.kind,
         "combiner_fingerprint": spec.combiner_fingerprint or spec.fingerprint,
-        "member_fingerprints": [str(fp) for fp in spec.member_fingerprints],
+        "member_fingerprints": [str(fp) for label, fp in pairs if label in reads],
     }
 
 

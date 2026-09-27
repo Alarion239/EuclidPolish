@@ -7,7 +7,7 @@ import { useResource } from "../../../api/query";
 import { formatDateTime } from "../../../format";
 import { Button, Callout, Checkbox, Input, Skeleton, Tooltip } from "../../../ui";
 import { URLS, type ModelSpecRow, type ModelsPayload } from "./api";
-import { groupModels, membersText, specShort } from "./model";
+import { groupModels, membersText, productionMembersText, specShort } from "./model";
 import "./results.css";
 
 export function useModels() {
@@ -17,7 +17,8 @@ export function useModels() {
 function detail(m: ModelSpecRow): string {
   const d = m.details ?? {};
   const bits: string[] = [];
-  const members = membersText(m);          // "6 of 20 members" for a pruned gate
+  // "6 of 20 members" for a pruned gate; production says how many it runs.
+  const members = m.kind === "production" ? productionMembersText(m) : membersText(m);
   if (members) bits.push(members);
   if (typeof d.mix_space === "string") bits.push(`${d.mix_space} mix`);
   if (d.use_lr === true) bits.push("LR input");

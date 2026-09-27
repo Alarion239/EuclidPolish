@@ -4,6 +4,7 @@
 import { formatNumber } from "../../../format";
 import { extent } from "../../../ticks";
 import type { Tone } from "../../../ui";
+import { productionRunsText, shareThreshold } from "../../ensemble/model";
 import {
   BANDS, SOURCES, type BandMetrics, type ExperimentRecord, type Metrics, type ModelSpecRow,
   type TileList, type TileRow,
@@ -80,6 +81,16 @@ export function membersText(m: Pick<ModelSpecRow, "n_members" | "n_fitted" | "re
   if (!total && !reads) return "";
   const noun = (n: number) => `member${n === 1 ? "" : "s"}`;
   return reads < total ? `${reads} of ${total} ${noun(total)}` : `${reads || total} ${noun(reads || total)}`;
+}
+
+/** How many members production SR runs ("Runs 20 of 30 members: those with
+ *  ≥ 0.5% of the gate's weight somewhere"), the pruning rule from the spec's
+ *  `details.prune_threshold` / `used_threshold` when the server records it. */
+export function productionMembersText(m: Pick<ModelSpecRow, "n_members" | "n_fitted" | "reads" | "members" | "details">): string {
+  const total = m.n_fitted ?? m.members?.length ?? m.n_members ?? 0;
+  const reads = m.reads?.length ?? total;
+  if (!total) return "";
+  return productionRunsText(reads, total, shareThreshold(m.details));
 }
 
 /** Specs to keep after the catalogue refreshed: known and available ones. */

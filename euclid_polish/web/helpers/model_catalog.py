@@ -4,14 +4,16 @@ A **model spec** names one way of turning a real LR tile into an SR image:
 
 ==================  ==========================================================
 ``production``      the production combiner — the spatial gate
-                    (``ACTIVE_COMBINER_KINDS[0]``) fitted for the current
-                    STARFULL membership; unavailable otherwise (no fallback)
+                    (``ACTIVE_COMBINER_KINDS[0]``); available while every
+                    member it READS is an active STARFULL member with a
+                    checkpoint (members that joined after the fit are a
+                    ``note``), unavailable otherwise (no fallback)
 ``mean``            plain mean of every active STARFULL member
 ``member:<name>``   one active member, e.g. ``member:member_170``
 ``gate:<variant>``  a named spatial-gate variant (``spatial_gate_<variant>/``
                     beside the production artifact), applied with its OWN
                     member labels; unavailable (with the reason) unless every
-                    one of them is an active STARFULL member
+                    member it reads is an active STARFULL member
 ``rbf``             the legacy RBF combiner, with its own member labels
 ==================  ==========================================================
 
@@ -20,10 +22,11 @@ Members are always run through :class:`~euclid_polish.ensemble.EnsembleModel`
 their ``NN·psnr`` labels (:class:`EnsembleMemberRunner`).
 
 Every spec has a **fingerprint**: a hash of the checkpoint identities of the
-members it reads (:func:`euclid_polish.ensemble.member_fingerprint`) and, for
-combiners, of the fitted artifact (``combiner.json`` + ``combiner.npz``). A
-cached output is *current* while its recorded fingerprint equals the spec's
-fingerprint now.
+members it READS (:func:`euclid_polish.ensemble.member_fingerprint`; a pruned
+gate's active members only, so retraining a member it ignores changes
+nothing) and, for combiners, of the fitted artifact (``combiner.json`` +
+``combiner.npz``). A cached output is *current* while its recorded
+fingerprint equals the spec's fingerprint now.
 
 The **output store** keeps one SR per (real tile, spec) under
 ``<EUCLID_INFERENCE_DIR>/experiments/outputs/<source>/<id>/<slug>.fits`` —
@@ -222,6 +225,7 @@ class ModelSpec:
     combiner_dir: str | None = None
     combiner_fingerprint: str | None = None
     details: Mapping[str, Any] = field(default_factory=dict)
+    note: str | None = None         # a soft remark (e.g. members joined after the fit)
 
     @property
     def slug(self) -> str:
@@ -238,7 +242,7 @@ class ModelSpec:
             # the members it was fitted with); ``n_fitted`` keeps that total.
             "n_members": len(self.reads),
             "n_fitted": len(self.member_labels),
-            "available": self.available, "reason": self.reason,
+            "available": self.available, "reason": self.reason, "note": self.note,
             "fingerprint": self.fingerprint,
             "member_fingerprints": list(self.member_fingerprints),
             "combiner_kind": self.combiner_kind,
@@ -273,7 +277,7 @@ def _fit_summary(manifest: Mapping[str, Any], directory: Path) -> dict[str, Any]
         "artifact_dir": directory.name,
     }
     for key in ("loss", "loss_knees_e", "steps", "subset", "num_images",
-                "installed_from", "fit_seconds", "complete"):
+                "installed_from", "fit_seconds", "complete", "used_threshold"):
         if key in meta:
             summary[key] = meta[key]
     return summary
@@ -308,17 +312,26 @@ def _combiner_spec(*, spec: str, kind: str, label: str, directory: Path,
     reads = (tuple(labels[int(i)] for i in active_members)
              if isinstance(active_members, list) and combiner_kind == PRODUCTION_KIND
              else labels)
-    details = _fit_summary(manifest, directory)
-    if fitted_for_current and list(labels) != list(active):
+    details = dict(_fit_summary(manifest, directory))
+    is_gate = combiner_kind == PRODUCTION_KIND
+    # A spatial gate's math depends only on the members it reads: it is
+    # valid while those are active, however many members joined since its
+    # fit; an RBF keeps needing its exact fitted membership for production.
+    joined = [lb for lb in active if lb not in set(labels)] if is_gate else []
+    note = (f"{len(joined)} member(s) joined after this fit; refit to consider them"
+            if joined else None)
+    if joined:
+        details["joined_after_fit"] = joined
+    if fitted_for_current and not is_gate and list(labels) != list(active):
         diff = sorted(set(active) ^ set(labels))
-        reason = (f"the production gate was fitted for {len(labels)} members; the "
+        reason = (f"the production combiner was fitted for {len(labels)} members; the "
                   f"active STARFULL ensemble has {len(active)} (differs in "
                   f"{', '.join(diff[:6])}{'…' if len(diff) > 6 else ''})")
         return ModelSpec(spec, kind, label, labels, reads, False, reason=reason,
                          combiner_kind=combiner_kind, combiner_dir=str(directory),
                          details=details)
     member_fps = {**fps, **member_fingerprints([lb for lb in labels if lb not in fps])}
-    reason = _membership_reason(labels, active, member_fps)
+    reason = _membership_reason(reads, active, member_fps)
     combiner = _load_combiner(str(directory), labels, combiner_kind)
     if reason is None and combiner is None:
         reason = f"{directory.name} is not a loadable {combiner_kind} artifact"
@@ -327,7 +340,7 @@ def _combiner_spec(*, spec: str, kind: str, label: str, directory: Path,
     if reason is None and artifact_fp:
         fingerprint = spec_fingerprint(
             kind, combiner_kind=combiner_kind, combiner_fingerprint=artifact_fp,
-            member_labels=labels, member_fingerprints=[member_fps.get(lb) for lb in labels])
+            member_labels=reads, member_fingerprints=[member_fps.get(lb) for lb in reads])
     elif reason is None:
         reason = f"{directory.name} artifact is incomplete"
     return ModelSpec(
@@ -335,7 +348,7 @@ def _combiner_spec(*, spec: str, kind: str, label: str, directory: Path,
         fingerprint=fingerprint,
         member_fingerprints=tuple(member_fps.get(lb) for lb in labels),
         combiner_kind=combiner_kind, combiner_dir=str(directory),
-        combiner_fingerprint=artifact_fp, details=details)
+        combiner_fingerprint=artifact_fp, details=details, note=note)
 
 
 @lru_cache(maxsize=32)
@@ -505,47 +518,42 @@ class EnsembleMemberRunner:
     """Runs STARFULL members by label through one lazily loaded
     :class:`EnsembleModel` (only the requested members are evaluated).
 
-    ``labels`` — the members a job will ask for — caps the ensemble at the
-    shortest prefix of the registry-active STARFULL order that holds them
-    (``EnsembleModel(n_members=…)``), so a job over a few early members no
-    longer restores every active checkpoint. ``EnsembleModel`` has no
-    arbitrary-subset option, so a late member still restores the members
-    before it; ``None`` loads every active member, and a request for a member
-    past the prefix reloads the ensemble uncapped once.
+    ``labels`` — the members a job will ask for — are exactly the members the
+    ensemble restores (``EnsembleModel(labels=…)``, in that order; labels that
+    are not active STARFULL members are left out so :meth:`predict` reports
+    them). ``None`` loads every active member. A request for an active member
+    outside ``labels`` (a job's plan changed, e.g. a reusable output turned
+    out stale) rebuilds the ensemble once over the union.
     """
 
     def __init__(self, base_dir: str | None = None, factory=EnsembleModel, *,
                  labels: Iterable[str] | None = None) -> None:
         self._base_dir = base_dir
         self._factory = factory
-        self._labels = None if labels is None else list(labels)
+        self._labels = None if labels is None else list(dict.fromkeys(labels))
         self._ensemble = None
 
-    def _prefix_length(self) -> int | None:
-        if not self._labels:
+    def _restore_labels(self) -> list[str] | None:
+        if self._labels is None:
             return None
-        order = active_member_labels()
-        positions = [order.index(label) for label in self._labels if label in order]
-        if len(positions) != len(self._labels):
-            return None                  # an unknown label: predict() reports it
-        return max(positions) + 1
+        active = set(active_member_labels())
+        return [label for label in self._labels if label in active]
 
     @property
     def ensemble(self):
         if self._ensemble is None:
             kwargs: dict[str, Any] = {"starless": False}
-            prefix = self._prefix_length()
-            if prefix is not None:
-                kwargs["n_members"] = prefix
+            labels = self._restore_labels()
+            if labels is not None:
+                kwargs["labels"] = labels
             self._ensemble = self._factory(self._base_dir or ensemble_dir(), **kwargs)
         return self._ensemble
 
     def predict(self, lr_e: np.ndarray, label: str) -> np.ndarray:
         labels = list(self.ensemble.member_labels)
-        if label not in labels and self._labels is not None:
-            # Asked for a member past the prefix (a job's plan changed, e.g.
-            # a reusable output turned out stale): load every member once.
-            self._labels, self._ensemble = None, None
+        if (label not in labels and self._labels is not None
+                and label in active_member_labels()):
+            self._labels, self._ensemble = [*self._labels, label], None
             labels = list(self.ensemble.member_labels)
         if label not in labels:
             raise KeyError(f"member {label} is not an active STARFULL member")

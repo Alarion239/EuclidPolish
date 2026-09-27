@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  brightnessPair, crossCurves, displayEdges, extendTo, heatPair, occupancyViews, rebinHeat, sharedDomain,
+  brightnessPair, crossCurves, displayEdges, extendTo, fieldMembersText, heatPair, occupancyViews, rebinHeat, sharedDomain,
   transformedSeries, type FieldDiagnostics,
 } from "./diagnostics";
 
@@ -70,5 +70,16 @@ describe("real-field diagnostics shaping", () => {
     expect(h.mode === "histogram" && h.x).toEqual([0.5, 1.5]);
     expect(h.mode === "histogram" && h.y).toEqual([1, 2]);
     expect(views[1].mode === "heat" && views[1].heat.synthetic).toBeNull();
+  });
+});
+
+describe("real-field member count", () => {
+  it("says which members made the field's SR", () => {
+    const all = ["170·psnr", "171·psnr", "172·psnr"];
+    expect(fieldMembersText({ member_labels: all, run_member_labels: ["170·psnr", "172·psnr"], member_scope: "gate" }))
+      .toBe("2 of 3 members (the production gate's)");
+    expect(fieldMembersText({ member_labels: all, run_member_labels: all, member_scope: "all" })).toBe("3 members");
+    expect(fieldMembersText({ member_labels: all })).toBe("3 members");
+    expect(fieldMembersText({})).toBe("0 members");
   });
 });

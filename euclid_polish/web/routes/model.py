@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 
-from flask import jsonify
+from flask import jsonify, request
 
 from euclid_polish.web.helpers.real_field import (
     FIELD_SIZE,
@@ -38,11 +38,16 @@ def register(app):
 
     @app.route("/inference/refresh-combiners", methods=["POST"])
     def inference_refresh_combiners():
-        """Apply the newest STARFULL combiner, rebuilding stale members."""
+        """Apply the newest STARFULL combiner, rebuilding stale members.
+
+        Runs only the members the production gate reads unless
+        ``all_members=1`` (every member, for the full member diagnostics)."""
         field = latest_field()
         if field is None:
             return jsonify({"error": "no cached real Euclid field"}), 400
         identifier = str(field["field_id"])
+        all_members = str(request.form.get("all_members", "")).strip().lower() in (
+            "1", "true", "yes", "on")
 
         def refresh(cap):
             def progress(done, total, label):
@@ -50,16 +55,17 @@ def register(app):
 
             try:
                 return refresh_real_field_combiners(
-                    identifier, progress=progress)
+                    identifier, progress=progress, all_members=all_members)
             except RuntimeError as error:
                 if "member cache is stale" not in str(error):
                     raise
                 return cache_real_field(
                     float(field["ra"]), float(field["dec"]),
-                    progress=progress)
+                    progress=progress, all_members=all_members)
 
+        scope = "all members" if all_members else "production gate members"
         job_id = REGISTRY.spawn(
-            label=f"refresh real-field inference ({identifier})",
+            label=f"refresh real-field inference ({identifier}, {scope})",
             target=refresh,
         )
         return jsonify({"job_id": job_id})

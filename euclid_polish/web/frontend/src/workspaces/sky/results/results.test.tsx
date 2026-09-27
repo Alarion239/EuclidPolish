@@ -316,6 +316,17 @@ describe("model picker", () => {
     expect(seen.at(-1)).toEqual(["member:member_1", "member:member_2"]);
     // a pruned gate says how many members it reads, not how many it was fitted on
     expect(screen.getByText(/6 of 20 members/)).toBeTruthy();
+    expect(screen.getByText(/^Runs all 2 members/)).toBeTruthy();
+  });
+
+  it("says how many members a pruned production runs", async () => {
+    const reads = Array.from({ length: 20 }, (_, i) => `${170 + i}·psnr`);
+    routes["GET /api/models"] = () => ({ body: { ...MODELS, models: [
+      { spec: "production", kind: "production", label: "Production · spatial gate", available: true,
+        n_members: 20, n_fitted: 30, reads, details: { prune_threshold: 0.005, mix_space: "linear" } },
+    ] } });
+    show(<ModelPicker value={[]} onChange={() => undefined} />);
+    expect(await screen.findByText("Runs 20 of 30 members: those with ≥ 0.5% of the gate's weight somewhere, linear mix")).toBeTruthy();
   });
 });
 

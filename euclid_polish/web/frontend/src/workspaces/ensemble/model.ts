@@ -333,6 +333,65 @@ export function gateUsage(usage: Record<string, number | null | undefined> | nul
   };
 }
 
+/** A member's peak share of the gate's weight (the largest over the bands and
+ *  brightness bins) and where it is. `gate_usage_peak` is a bare number or
+ *  `{value, band?, bin?}`; `where` reads "cores", "Y bright"… or null. */
+export type GatePeak = { v: number | null; where: string | null };
+type PeakField = number | { value?: number | null; band?: string | null; bin?: string | null } | null;
+
+const BIN_TEXT: Record<string, string> = { core: "cores" };
+
+export function gatePeak(row: { gate_usage_peak?: PeakField }): GatePeak {
+  const raw = row.gate_usage_peak;
+  const obj = typeof raw === "object" ? raw : null;
+  const v = typeof raw === "number" ? raw : obj?.value;
+  if (v == null || !Number.isFinite(v)) return { v: null, where: null };
+  const band = obj?.band ? GATE_BANDS.find((b) => b.band === obj.band)?.short ?? obj.band : null;
+  const bin = obj?.bin ? BIN_TEXT[obj.bin] ?? obj.bin : null;
+  return { v, where: [band, bin].filter(Boolean).join(" ") || null };
+}
+
+const share = (v: number | null, digits = 1) => (v == null || !Number.isFinite(v) ? "—" : `${(100 * v).toFixed(digits)}%`);
+
+/** "0.0% mean · 48% peak (cores)": the all-pixel mean over the bands hides a
+ *  member the gate leans on in a few bright pixels (#195: 0.0% mean, 48% of
+ *  the core weight). Just the mean when the payload has no peak. */
+export function gateUseText(usage: GateUsage, peak: GatePeak): string {
+  if (peak.v == null) return share(usage.mean);
+  const p = share(peak.v, peak.v >= 0.1 ? 0 : 1);
+  return `${share(usage.mean)} mean · ${p} peak${peak.where ? ` (${peak.where})` : ""}`;
+}
+
+/** Does the production gate read this member (`used_by_gate`)? null when
+ *  the payload does not say. */
+export function usedByGate(row: { used_by_gate?: boolean | null }): boolean | null {
+  return typeof row.used_by_gate === "boolean" ? row.used_by_gate : null;
+}
+
+/** How many members production SR runs: "Runs 20 of 30 members: those with
+ *  ≥ 0.5% of the gate's weight somewhere" for a pruned gate (the rule when
+ *  the payload records its share threshold), else "Runs all 30 members". */
+export function productionRunsText(reads: number, total: number, threshold?: number | null): string {
+  const noun = (n: number) => `member${n === 1 ? "" : "s"}`;
+  if (reads >= total) return total === 1 ? "Runs its 1 member" : `Runs all ${total} ${noun(total)}`;
+  const why = threshold != null && Number.isFinite(threshold)
+    ? `those with ≥ ${Number((100 * threshold).toPrecision(3))}% of the gate's weight somewhere`
+    : "the ones the gate reads";
+  return `Runs ${reads} of ${total} ${noun(total)}: ${why}`;
+}
+
+/** The share threshold a pruned gate's members were picked by (a fraction:
+ *  0.005 = 0.5%) from a fit record or model details (`prune_threshold`, or
+ *  the "used by the gate" rule's `used_threshold`), or null when not recorded. */
+export function pruneThreshold(v: { fit?: Record<string, unknown> | null }): number | null {
+  return shareThreshold(v.fit);
+}
+
+export function shareThreshold(rec: Record<string, unknown> | null | undefined): number | null {
+  const t = rec?.prune_threshold ?? rec?.used_threshold;
+  return typeof t === "number" && Number.isFinite(t) && t > 0 && t < 1 ? t : null;
+}
+
 /* ── disagreement member picker ────────────────────────────────────────── */
 
 /** Does a member match the picker's search text? Every word must appear in

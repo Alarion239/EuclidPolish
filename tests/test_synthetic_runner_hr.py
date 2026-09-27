@@ -5,11 +5,21 @@ from __future__ import annotations
 import json
 
 import numpy as np
+import pytest
 from astropy.io import fits
 
 from euclid_polish.config import Config
 from euclid_polish.eval import synthetic_runner as sr
 from euclid_polish.eval.catalog_runner import EVAL_HR_SIZE, EVAL_LR_SIZE
+from euclid_polish.eval.ensemble_infer import EvalEnsemble
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_regime(tmp_path, monkeypatch):
+    """Never read the real registry, production gate or cube cache: the
+    runner resolves which members production reads from them."""
+    monkeypatch.setattr(Config, "VIS_DIR", str(tmp_path / "vis"))
+    monkeypatch.setattr(Config, "DEFAULT_CHECKPOINT_DIR", str(tmp_path / "ckpt" / "wdsr"))
 
 
 class _Img:
@@ -183,3 +193,76 @@ def test_reuses_cached_ensemble_cubes(tmp_path, monkeypatch):
     sub0 = ok_rows[0]["out_subdir"]
     for name in ("SR.fits", "std.fits", "pca0.fits", "members.json"):
         assert (tmp_path / "out" / sub0 / name).is_file()
+
+
+class _TwoRunMembers:
+    """The ensemble a pruned gate restores: only the 2 members it reads."""
+
+    member_labels = ["a·psnr", "c·psnr"]
+    n_members = 2
+
+    def __init__(self):
+        self.calls = 0
+
+    def member_arrays(self, lr_array):
+        self.calls += 1
+        return np.stack([np.full((128, 128, 4), v, np.float32) for v in (1.0, 3.0)])
+
+
+class _MeanGate:
+    use_lr = False
+
+    def apply_field(self, stack, lr=None):
+        return np.asarray(stack, np.float32).mean(axis=0)
+
+
+def test_pruned_gate_run_records_the_members_that_ran(tmp_path, monkeypatch):
+    """End to end through run_synthetic_eval with a pruned production model:
+    members.json keeps the gate's full fitted list as the identity, records
+    the members that ran, and the std/PCA cubes cover exactly those."""
+    def fake_read(path, num_images=0):
+        if "dirty" in str(path):
+            return [_Img(0, np.zeros((64, 64, 4), np.float32))]
+        return [_Img(0, np.ones((128, 128, 4), np.float32))]
+
+    monkeypatch.setattr(sr, "read_images", fake_read)
+    monkeypatch.setattr(sr, "read_sources",
+                        lambda p: {0: [{"type": "lens", "x_pix": 64.0,
+                                        "y_pix": 64.0, "flux_vis_e": 1.0}]})
+    fitted = ["a·psnr", "b·psnr", "c·psnr"]
+    ens = _TwoRunMembers()
+    model = EvalEnsemble(ens, _MeanGate(), "spatial_gate", member_labels=fitted)
+    out_dir = tmp_path / "eval"
+    res = sr.run_synthetic_eval(str(out_dir), n=1, model=model, records_dir=str(tmp_path),
+                                on_progress=lambda *a: None, log=lambda *a: None)
+    assert res["n_ok"] == 1 and ens.calls == 1
+    obj = out_dir / "syn-lens_0000_0"
+    recorded = json.loads((obj / "members.json").read_text())
+    assert recorded["member_labels"] == fitted
+    assert recorded["run_labels"] == ["a·psnr", "c·psnr"]
+    assert recorded["disagreement_members"] == ["a·psnr", "c·psnr"]
+    assert recorded["combiner_kind"] == "spatial_gate"
+    assert (obj / "std.fits").is_file() and (obj / "pca0.fits").is_file()
+    with fits.open(obj / "std.fits") as hdul:            # std of members 1 and 3
+        np.testing.assert_allclose(np.asarray(hdul[0].data)[0], 1.0, rtol=1e-5)
+
+
+def test_mean_fallback_is_announced_even_when_every_field_is_cached(tmp_path, monkeypatch):
+    """No current production gate: the synthetic run reconstructs cached
+    fields as the plain member mean — and says so, once, as a warning."""
+    monkeypatch.setattr(sr, "read_images", lambda path, num_images=0: [
+        _Img(0, np.zeros((64, 64, 4) if "dirty" in str(path) else (128, 128, 4),
+                         np.float32))])
+    monkeypatch.setattr(sr, "read_sources",
+                        lambda p: {0: [{"type": "lens", "x_pix": 64.0,
+                                        "y_pix": 64.0, "flux_vis_e": 1.0}]})
+    monkeypatch.setattr(sr, "regime_labels", lambda base, starless: ["a·psnr", "b·psnr"])
+    monkeypatch.setattr(sr, "load_cached_member_stack",
+                        lambda *a, **k: np.ones((2, 128, 128, 4), np.float32))
+    logged: list[str] = []
+    res = sr.run_synthetic_eval(str(tmp_path / "eval"), n=1, model=None,
+                                records_dir=str(tmp_path),
+                                on_progress=lambda *a: None, log=logged.append)
+    assert res["n_ok"] == 1
+    warnings = [m for m in logged if m.startswith("WARNING: production SR falls back")]
+    assert len(warnings) == 1 and "2 STARFULL models" in warnings[0]

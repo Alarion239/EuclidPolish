@@ -20,6 +20,7 @@ import numpy as np
 from astropy.io import fits
 
 from euclid_polish.config import Config
+from euclid_polish.ensemble_registry import default_ensemble_dir, regime_labels
 from euclid_polish.eval.catalog_runner import (
     EVAL_HR_SIZE,
     EVAL_LR_SIZE,
@@ -30,12 +31,16 @@ from euclid_polish.eval.disagreement import write_disagreement_cubes
 from euclid_polish.eval.ensemble_cube_cache import (
     cached_member_labels,
     load_cached_member_stack,
+    missing_cached_members,
 )
 from euclid_polish.eval.ensemble_infer import (
-    PRODUCTION_COMBINER_KIND,
+    ProductionPlan,
+    combine_members,
     load_eval_ensemble,
-    load_production_combiner,
+    no_gate_reason,
+    production_plan,
     sr_from_model,
+    warn_mean_fallback,
 )
 from euclid_polish.eval.progress import tqdm_progress
 from euclid_polish.eval.stamp_geometry import crop_stamp  # re-export (back-compat)
@@ -62,50 +67,66 @@ def default_records_dir() -> str | None:
     return None
 
 
+def _production_of(model: Any, plan: ProductionPlan | None
+                   ) -> tuple[Callable[[np.ndarray, np.ndarray], np.ndarray],
+                              list[str], list[str], str | None]:
+    """``(combine, member_labels, run_labels, combiner_kind)`` of the
+    production SR: the loaded model's own when it has one, else the
+    production plan for the active STARFULL members (no network)."""
+    combine = getattr(model, "combine", None) if model is not None else None
+    if callable(combine):
+        labels = [str(v) for v in getattr(model, "member_labels", []) or []]
+        run = [str(v) for v in getattr(model, "run_labels", None) or labels]
+        return combine, labels, run, getattr(model, "combiner_kind", None)
+    if plan is None:
+        plan = production_plan(regime_labels(default_ensemble_dir(), False))
+    gate = plan.combiner
+    return ((lambda members, lr: combine_members(gate, members, lr)),
+            list(plan.member_labels), list(plan.run_labels), plan.combiner_kind)
+
+
 def field_reconstruction(
     model: Any, field_index: int, lr_cube: np.ndarray, *, subset: str,
     log: Callable[[str], None],
     load_model: Callable[[], Any] | None = None,
-) -> tuple[np.ndarray, np.ndarray | None, list[str], str | None]:
-    """``(sr, members, member_labels, combiner_kind)`` of one synthetic field.
+    plan: ProductionPlan | None = None,
+) -> tuple[np.ndarray, np.ndarray | None, list[str], str | None, list[str]]:
+    """``(sr, members, member_labels, combiner_kind, run_labels)`` of one
+    synthetic field.
 
-    Reuses the ensemble page's cached STARFULL member stack when it is current
-    (no network run) and reconstructs it through the production combiner — the
-    loaded model's own when it has the same members, else the production gate
-    fitted for exactly the cached membership — falling back to the member mean
-    only when no current gate loads. Without a cache the field goes through the
-    model (``load_model`` is called when ``model`` is ``None``).
-    ``members`` is ``None`` for an ensemble of one (no disagreement cubes).
+    The production SR needs only the members the production gate reads
+    (``run_labels``; the loaded model's, else ``plan`` — resolved from the
+    registry when not given). When the ensemble page's cached STARFULL
+    member cubes hold all of them the field is reconstructed from those
+    cubes (no network run); otherwise the missing members are logged and the
+    field goes through the model (``load_model`` is called when ``model`` is
+    ``None``). ``members`` is the stack of the members that ran, ``None``
+    for fewer than two (no disagreement cubes).
     """
-    cached = load_cached_member_stack(int(field_index), subset=subset)
+    combine, labels, run, kind = _production_of(model, plan)
+    cached = (load_cached_member_stack(int(field_index), subset=subset, active=run)
+              if run else None)
     if cached is not None:
-        labels = cached_member_labels() or []
-        combine = getattr(model, "combine", None) if model is not None else None
-        if callable(combine) and list(getattr(model, "member_labels", []) or []) == labels:
-            sr = combine(cached, lr_cube)
-            kind = getattr(model, "combiner_kind", None)
-        else:
-            gate = load_production_combiner(labels) if labels else None
-            if gate is not None:
-                lr = (np.asarray(lr_cube, np.float32)
-                      if getattr(gate, "use_lr", False) else None)
-                sr = gate.apply_field(cached, lr=lr)
-                kind = PRODUCTION_COMBINER_KIND
-            else:
-                sr = cached.mean(axis=0)
-                kind = None
-        log(f"  field {field_index}: reused ensemble cache ({cached.shape[0]} members) "
-            f"· {kind or 'member mean'}")
+        sr = combine(cached, lr_cube)
+        log(f"  field {field_index}: reused ensemble cache ({cached.shape[0]} of "
+            f"{len(labels)} members) · {kind or 'member mean'}")
         members = cached if cached.shape[0] >= 2 else None
-        return np.asarray(sr, np.float32), members, labels, kind
+        return np.asarray(sr, np.float32), members, labels, kind, run
+    if run and cached_member_labels() is not None:
+        missing = missing_cached_members(int(field_index), subset=subset, active=run)
+        if missing:
+            log(f"  field {field_index}: ensemble cache lacks {len(missing)} member(s) "
+                f"({', '.join(missing[:6])}{'…' if len(missing) > 6 else ''})")
     if model is None:
         if load_model is None:
             raise RuntimeError(f"field {field_index}: no cached member stack and no model")
         model = load_model()
     _, sr, members = sr_from_model(model, lr_cube)
     log(f"  field {field_index}: inference")
-    return (np.asarray(sr, np.float32), members, list(model.member_labels),
-            getattr(model, "combiner_kind", None))
+    labels = [str(v) for v in model.member_labels]
+    return (np.asarray(sr, np.float32), members, labels,
+            getattr(model, "combiner_kind", None),
+            [str(v) for v in getattr(model, "run_labels", None) or labels])
 
 
 def _psnr(a, b) -> float | None:
@@ -297,6 +318,15 @@ def run_synthetic_eval(
     plan.sort(key=lambda t: (t[0], t[1], t[3]))  # group by field → reconstruct once
 
     loaded: list[Any] = [model]
+    # Without a loaded production model: which members production reads
+    # (registry + gate manifest, no network) — resolved once for every field.
+    production = (None if callable(getattr(model, "combine", None)) else
+                  production_plan(regime_labels(ensemble_dir or default_ensemble_dir(), False)))
+    if production is not None and production.combiner is None and production.run_labels:
+        # Cached fields reconstruct without loading the model, so its
+        # fallback warning would never fire: say it here, once per run.
+        warn_mean_fallback(_emit, len(production.run_labels),
+                           no_gate_reason(len(production.run_labels)))
 
     def _load_model() -> Any:                   # only for a field without a cache
         if loaded[0] is None:
@@ -328,10 +358,10 @@ def run_synthetic_eval(
                 lr_cube = np.asarray(lr_by[idx].data, dtype=np.float32)   # (H,W,4)
                 # Cached STARFULL stack through the production combiner, else
                 # the model (loaded lazily); (2H, 2W, C) SR + (M, 2H, 2W, C).
-                sr_arr, members_full, labels, kind = field_reconstruction(
+                sr_arr, members_full, labels, kind, run = field_reconstruction(
                     loaded[0], idx, lr_cube, subset=field_subset, log=_emit,
-                    load_model=_load_model)
-                identity = identity_for(labels, kind)
+                    load_model=_load_model, plan=production)
+                identity = identity_for(labels, kind, run)
                 cur_idx = idx
             if lr_cube is None or sr_arr is None:
                 raise RuntimeError(f"field {idx} reconstruction arrays were not initialized")
@@ -406,9 +436,12 @@ def run_synthetic_eval(
                                   for b in range(mem.shape[-1])], axis=-1)
                         for mem in np.asarray(members_full, dtype=np.float32)
                     ], axis=0)                                   # (M, m, m, C)
-                    write_disagreement_cubes(obj_dir, mem_st,
-                                             member_labels=identity["member_labels"],
-                                             identity=identity)
+                    write_disagreement_cubes(
+                        obj_dir, mem_st, member_labels=identity["member_labels"],
+                        identity=identity,
+                        disagreement_members=(identity["run_labels"]
+                                              if len(identity["run_labels"]) == len(mem_st)
+                                              else None))
                 except Exception as exc:  # noqa: BLE001
                     _emit(f"  [disagreement] {sub}: cubes not written: {exc}")
 

@@ -8,6 +8,7 @@ import numpy as np
 from euclid_polish.eval.ensemble_cube_cache import (
     cached_member_labels,
     load_cached_member_stack,
+    missing_cached_members,
 )
 
 
@@ -64,14 +65,44 @@ def test_miss_missing_member_file(tmp_path):
                                     active=labels) is None
 
 
-def test_stale_membership_deletes_cache(tmp_path):
-    """Archived member since the cache was written → whole dir purged lazily."""
+def test_membership_mismatch_never_deletes_the_cache(tmp_path):
+    """A member archived (or added) since the cache was written: the cache
+    serves the members it has, by label, and is never deleted."""
     d = str(tmp_path / "cubes")
     _write_cache(d, subset="test", indices=[3], n_members=2)
     out = load_cached_member_stack(3, subset="test", cubes_dir=d,
-                                   active=["00"])          # member 01 retired
-    assert out is None
-    assert not os.path.isdir(d)                            # purged on read
+                                   active=["01"])          # member 00 retired
+    assert out is not None and out.shape == (1, 8, 8, 4)
+    np.testing.assert_allclose(out[0], np.load(os.path.join(d, "member1_00003.npy")))
+    # A member that joined since the cache was written: a miss, reported.
+    assert load_cached_member_stack(3, subset="test", cubes_dir=d,
+                                    active=["00", "01", "02"]) is None
+    assert missing_cached_members(3, subset="test", cubes_dir=d,
+                                  active=["00", "01", "02"]) == ["02"]
+    assert os.path.isfile(os.path.join(d, "viz_index.json"))   # never purged
+    assert os.path.isfile(os.path.join(d, "member0_00003.npy"))
+
+
+def test_requested_members_come_back_in_the_requested_order(tmp_path):
+    """A pruned gate reads only its members' cube files, in its own order."""
+    d = str(tmp_path / "cubes")
+    _write_cache(d, subset="test", indices=[4], n_members=4)
+    out = load_cached_member_stack(4, subset="test", cubes_dir=d, active=["03", "01"])
+    assert out is not None and out.shape == (2, 8, 8, 4)
+    np.testing.assert_allclose(out[0], np.load(os.path.join(d, "member3_00004.npy")))
+    np.testing.assert_allclose(out[1], np.load(os.path.join(d, "member1_00004.npy")))
+
+
+def test_missing_members_reports_the_whole_request_without_a_field(tmp_path):
+    d = str(tmp_path / "cubes")
+    _write_cache(d, subset="test", indices=[4], n_members=2)
+    assert missing_cached_members(4, subset="test", cubes_dir=d, active=["00"]) == []
+    assert missing_cached_members(5, subset="test", cubes_dir=d,
+                                  active=["00", "01"]) == ["00", "01"]
+    assert missing_cached_members(4, subset="validate", cubes_dir=d,
+                                  active=["00"]) == ["00"]
+    assert missing_cached_members(4, subset="test", cubes_dir=str(tmp_path / "nope"),
+                                  active=["00"]) == ["00"]
 
 
 def test_cached_member_labels(tmp_path):

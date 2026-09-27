@@ -3,7 +3,7 @@ import type { ExperimentRecord, ModelSpecRow, TileList, TileRow } from "./api";
 import { atlasHref, experimentsHref, splitRef, URLS } from "./api";
 import {
   bandSeries, cardViewerTiers, defaultExperimentId, defaultRunSpecs, experimentCost, experimentCostText, experimentMarkdown, filterByState,
-  filterEvalRows, flattenTiles, formatMetric, groupModels, headlineSpec, membersText, metricRows, metricsPlan, num,
+  filterEvalRows, flattenTiles, formatMetric, groupModels, headlineSpec, membersText, metricRows, productionMembersText, metricsPlan, num,
   metricHeader, parseRefs, productionCounts, realTileViewerParams, recordSpecs, runnableSelection, seriesDomain, sortSpecs, specShort,
   tileModels,
 } from "./model";
@@ -106,6 +106,14 @@ describe("model specs", () => {
     expect(membersText({ n_members: 1 })).toBe("1 member");
     expect(membersText({ members: ["a", "b"] })).toBe("2 members");
     expect(membersText({})).toBe("");
+  });
+  it("says how many members production runs, with the pruning rule when recorded", () => {
+    const twenty = Array.from({ length: 20 }, (_, i) => `${170 + i}·psnr`);
+    expect(productionMembersText({ n_fitted: 30, reads: twenty, details: { prune_threshold: 0.005 } }))
+      .toBe("Runs 20 of 30 members: those with ≥ 0.5% of the gate's weight somewhere");
+    expect(productionMembersText({ n_fitted: 30, reads: twenty })).toBe("Runs 20 of 30 members: the ones the gate reads");
+    expect(productionMembersText({ n_members: 30, reads: Array(30).fill("x") })).toBe("Runs all 30 members");
+    expect(productionMembersText({})).toBe("");
   });
 });
 

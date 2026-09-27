@@ -32,7 +32,8 @@ def _write_cube_fits(path: str, hwc: np.ndarray) -> None:
 def write_disagreement_cubes(obj_dir: str, members: np.ndarray,
                              *, n_components: int = 3,
                              member_labels: list[str] | None = None,
-                             identity: Mapping[str, Any] | None = None
+                             identity: Mapping[str, Any] | None = None,
+                             disagreement_members: list[str] | None = None
                              ) -> list[float]:
     """Write ``mean.fits`` + ``std.fits`` + ``pca*.fits`` + ``disagreement.json``
     into ``obj_dir``. Returns the PCA amplitudes (population std along each
@@ -44,6 +45,9 @@ def write_disagreement_cubes(obj_dir: str, members: np.ndarray,
     since-changed ensemble are regenerated, not served stale. ``identity``
     (``catalog_runner.eval_model_identity``: members + production combiner
     kind/fingerprint) is recorded instead when given.
+    ``disagreement_members`` names the members of ``members`` (the ones that
+    ran — a pruned production gate runs only the members it reads) and is
+    recorded as ``disagreement_members`` so the cubes say what they span.
     """
     mem = np.asarray(members, dtype=np.float32)
     os.makedirs(obj_dir, exist_ok=True)
@@ -60,10 +64,17 @@ def write_disagreement_cubes(obj_dir: str, members: np.ndarray,
         record = {"member_labels": list(identity.get("member_labels") or member_labels or []),
                   "combiner_kind": identity.get("combiner_kind"),
                   "combiner_fingerprint": identity.get("combiner_fingerprint")}
+        if identity.get("run_labels") is not None:
+            record["run_labels"] = [str(v) for v in identity["run_labels"]]
     elif member_labels is not None:
         record = {"member_labels": list(member_labels)}
     else:
         record = None
+    if record is not None and disagreement_members is not None:
+        if len(disagreement_members) != mem.shape[0]:
+            raise ValueError(f"{len(disagreement_members)} disagreement member labels "
+                             f"for a {mem.shape[0]}-member stack")
+        record["disagreement_members"] = [str(v) for v in disagreement_members]
     if record is not None:
         with open(os.path.join(obj_dir, "members.json"), "w") as f:
             json.dump(record, f)

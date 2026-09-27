@@ -1564,7 +1564,14 @@ import { PageLead } from "../../shared/PageLead";
   newest that ran production; `model.ts benchmarkExperiment / benchmarkChoices`), per band
   VIS · Y · J · H with the worst band coloured (`holesText`); variants it did not run are blank; the
   bar's "Real holes from" picker names the tile set. Member counts read `readsText` ("6 of 20
-  members" for a pruned gate).
+  members" for a pruned gate). A line above the table says how many members production SR runs
+  (`model.ts productionRunsText`: "Runs 20 of 30 members: those with ≥ 0.5% of the gate's weight
+  somewhere" when the fit records `prune_threshold` / `used_threshold`, else "…: the ones the gate reads").
+- **Ensemble › Members "Gate use"**: the all-pixel mean over the bands rounds a core specialist
+  to 0.0%, so when the row has `gate_usage_peak` the cell reads "0.0% mean · 48% peak (VIS
+  cores)" (`model.ts gatePeak / gateUseText`; the peak is the largest share over bands and
+  brightness bins) and a "Read by gate" column shows `used_by_gate` ("read" / "not read"). A
+  payload without these keeps the mean-only cell and no column.
 - **Ensemble notebook notes** (`notes.ts`, pure): `evaluationNote` (Overview), `kneeNote` (the
   leaderboard as a markdown table with its integration range), `variantNote` (a fit; row menu
   and after a fit job), `compareNote` (the compare report card), `promoteNote` (after a promote).
@@ -1605,6 +1612,10 @@ import { PageLead } from "../../shared/PageLead";
   tabular mono), Production (90 px) — so with the select column they fit the 340 px the tile
   inspector leaves at 1024 × 768 (`INSPECTOR_TABLE_PX`) with no sideways scroll, in a 34 px
   row. Without the inspector at 1024 only Source drops.
+- **Sky model picker**: the production entry says how many members it runs
+  (`results/model.ts productionMembersText`, the same sentence as Ensemble › Combiners); the
+  real-field diagnostics header names the members that made the field ("2 of 3 members (the
+  production gate's)", `diagnostics.ts fieldMembersText`).
 - **Tier labels come from the backend in plain words** (API.md "Labels"): the chip is the part
   before " · " — "LR VIS · HDU 1", "LR colour · VIS Y J H", "Mean · 30 starfull members",
   "JWST (native)"; a spec whose every output in the source is an older legacy SR is named for

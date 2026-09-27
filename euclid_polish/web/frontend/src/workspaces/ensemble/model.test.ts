@@ -4,6 +4,7 @@ import {
   benchmarkChoices, benchmarkExperiment, dbDelta, facetOf, facetValues, formatE, gateUsage, heldOutComparable, holesText,
   integrateKnee, kneeLeaderboard, kneeModelName, kneeText, memberLabel, memberMatches, memberName, memberNumber, membersButtonText,
   movieStatus, parseMemberList, readsText, relativeTo, smooth, stepsText, stampBacking, stampKnee, variantLabel,
+  gatePeak, gateUseText, productionRunsText, pruneThreshold, usedByGate,
 } from "./model";
 import {
   RECIPE_RESOURCES, buildParams, buildSpec, continueTarget, defaultForm, defaultResources, formFromJob, jobRegime, lastBatch,
@@ -368,5 +369,46 @@ describe("stampKnee (the pixel back-trace's per-row knee)", () => {
   it("never below the floor, and ignores non-finite values", () => {
     expect(stampKnee({ hr_val: 0, std_val: 0, err_val: 0 })).toBe(0.25);
     expect(stampKnee({ hr_val: NaN, std_val: 2, err_val: Infinity })).toBe(2);
+  });
+});
+
+describe("gate use: mean and peak", () => {
+  it("reads the peak as a number or as {value, band, bin}", () => {
+    expect(gatePeak({ gate_usage_peak: 0.48 })).toEqual({ v: 0.48, where: null });
+    expect(gatePeak({ gate_usage_peak: { value: 0.48, bin: "core" } })).toEqual({ v: 0.48, where: "cores" });
+    expect(gatePeak({ gate_usage_peak: { value: 0.4, band: "Y_E", bin: "bright" } })).toEqual({ v: 0.4, where: "Y bright" });
+    expect(gatePeak({ gate_usage_peak: { value: Number.NaN } })).toEqual({ v: null, where: null });
+    expect(gatePeak({})).toEqual({ v: null, where: null });
+  });
+
+  it("says the mean and the peak, the peak where the gate leans on the member", () => {
+    const u = gateUsage({ VIS: 0.0001, Y_E: 0.0002, J_E: 0.0001, H_E: 0.0001 });
+    expect(gateUseText(u, { v: 0.48, where: "cores" })).toBe("0.0% mean · 48% peak (cores)");
+    expect(gateUseText(u, { v: 0.046, where: null })).toBe("0.0% mean · 4.6% peak");
+    expect(gateUseText(u, { v: null, where: null })).toBe("0.0%");
+    expect(gateUseText(gateUsage(null), { v: 0.2, where: null })).toBe("— mean · 20% peak");
+  });
+
+  it("marks a member used by the gate only when the payload says so", () => {
+    expect(usedByGate({ used_by_gate: true })).toBe(true);
+    expect(usedByGate({ used_by_gate: false })).toBe(false);
+    expect(usedByGate({})).toBeNull();
+  });
+});
+
+describe("production member count", () => {
+  it("says how many members production runs and why", () => {
+    expect(productionRunsText(20, 30, 0.005)).toBe("Runs 20 of 30 members: those with ≥ 0.5% of the gate's weight somewhere");
+    expect(productionRunsText(20, 30)).toBe("Runs 20 of 30 members: the ones the gate reads");
+    expect(productionRunsText(30, 30)).toBe("Runs all 30 members");
+    expect(productionRunsText(1, 1)).toBe("Runs its 1 member");
+  });
+
+  it("reads the pruning threshold from the fit record only when it is a share", () => {
+    expect(pruneThreshold({ fit: { prune_threshold: 0.005 } })).toBe(0.005);
+    expect(pruneThreshold({ fit: { prune_threshold: "0.5%" } })).toBeNull();
+    expect(pruneThreshold({ fit: { used_threshold: 0.01 } })).toBe(0.01);
+    expect(pruneThreshold({ fit: {} })).toBeNull();
+    expect(pruneThreshold({})).toBeNull();
   });
 });

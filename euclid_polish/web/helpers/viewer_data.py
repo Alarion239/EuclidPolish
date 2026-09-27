@@ -70,6 +70,7 @@ from euclid_polish.eval.combiner import (
     load_combiner,
 )
 from euclid_polish.eval.ensemble_cube_cache import load_cached_field_lr
+from euclid_polish.eval.ensemble_infer import combiner_read_labels
 from euclid_polish.eval.spatial_gate import SPATIAL_GATE_KIND
 from euclid_polish.image.tfio import read_images, tfrecord_path
 from euclid_polish.photometry import adu_per_s_to_electrons_factor
@@ -975,13 +976,14 @@ def _ensemble_regime_dir(starless: bool) -> str:
 
 def _load_field_combiner(starless: bool, member_labels: list[str],
                          model_kind: str = PRODUCTION_COMBINER_KIND):
-    """The regime's fitted combiner if it exists AND its membership matches the
-    cube stack (``member_labels``), else ``None``. Cheap (a small artifact)."""
+    """The regime's fitted combiner if it exists AND every member it reads has
+    a cube in the stack (``member_labels``), else ``None``. Cheap (a small
+    artifact)."""
     if not member_labels:
         return None
     try:
         return load_combiner(_ensemble_regime_dir(starless),
-                             member_labels=list(member_labels),
+                             available_labels=list(member_labels),
                              artifact_dir=COMBINER_MODELS[model_kind].artifact_dir)
     except Exception:
         return None
@@ -997,7 +999,9 @@ def _combiner_field_cube(starless: bool, rec_index: int,
                          member_labels: list[str],
                          model_kind: str = PRODUCTION_COMBINER_KIND) -> np.ndarray:
     """The combiner reconstruction ``(H,W,C)`` for one field, applied to the
-    cached full member stack. LRU-cached; raises 404 if no combiner / cubes."""
+    cached cubes of the members it reads (a pruned gate skips the rest, so a
+    bucket without a pruned member's cube still serves). LRU-cached; raises
+    404 if no combiner / cubes."""
     key = ("starless" if starless else "starfull", int(rec_index),
            tuple(member_labels), model_kind)
     hit = _COMB_CUBE_CACHE.get(key)
@@ -1008,8 +1012,10 @@ def _combiner_field_cube(starless: bool, rec_index: int,
     if comb is None:
         raise ViewerError(404, "no combiner for this regime")
     cdir = _ensemble_cubes_dir(starless)
+    position = {str(label): i for i, label in enumerate(member_labels)}
     stack = []
-    for i in range(len(member_labels)):
+    for label in combiner_read_labels(comb):
+        i = position[label]
         p = os.path.join(cdir, f"member{i}_{int(rec_index):05d}.npy")
         if not os.path.isfile(p):
             raise ViewerError(404, f"member{i} cube missing")
@@ -1255,22 +1261,38 @@ def _real_field_tile_wcs(manifest: Mapping[str, Any], index: int) -> dict[str, A
     return shifted_wcs_keywords(field, dx=col * tile, dy=row * tile)
 
 
+def _real_field_run(manifest: Mapping[str, Any]) -> tuple[list[int], str | None]:
+    """``(positions, scope note)`` of the members a real-field cache ran. The
+    note names a subset (``"2 of 3 members: the production gate's"``); a
+    cache from before member scopes ran every member (note ``None``)."""
+    labels = list(manifest.get("member_labels", []) or [])
+    run = [int(i) for i in manifest.get("run_members", range(len(labels)))]
+    if len(run) == len(labels):
+        return run, None
+    whose = ("the production gate's"
+             if manifest.get("member_scope") == real_field.SCOPE_GATE else "a subset")
+    return run, f"{len(run)} of {len(labels)} members: {whose}"
+
+
 def _real_field_meta(params: dict[str, str]) -> dict[str, Any]:
     manifest = _real_field_manifest(params)
     labels = list(manifest.get("member_labels", []) or [])
+    run, note = _real_field_run(manifest)
     tiers = [
         {"key": "lr", "label": "LR", "unit": "e-"},
-        {"key": "sr", "label": "SR (mean)", "unit": "e-"},
-        {"key": "std", "label": "stdSR", "hidden": True, "unit": "e-"},
+        {"key": "sr", "label": f"SR (mean of {note})" if note else "SR (mean)",
+         "unit": "e-"},
+        {"key": "std", "label": f"stdSR ({note})" if note else "stdSR",
+         "hidden": True, "unit": "e-"},
     ]
     for kind, spec in COMBINER_MODELS.items():
         if kind not in ACTIVE_COMBINER_KINDS:
             continue
         if kind in set(manifest.get("combiner_kinds", []) or []):
             tiers.append({"key": spec.cube_prefix, "label": spec.label, "unit": "e-"})
-    tiers += [{"key": f"member{i}", "label": f"SR {label}", "hidden": True,
+    tiers += [{"key": f"member{i}", "label": f"SR {labels[i]}", "hidden": True,
                "unit": "e-"}
-              for i, label in enumerate(labels)]
+              for i in run if i < len(labels)]
     if int(manifest.get("pca_n", 0) or 0) > 0:
         tiers.append({"key": "morph", "label": "disagreement movie"})
     count = int(manifest.get("count", 0) or 0)
@@ -1288,6 +1310,8 @@ def _real_field_meta(params: dict[str, str]) -> dict[str, Any]:
     return {
         "count": count, "tiers": tiers, "default_tier": "sr",
         "band_names": list(BAND_NAMES), "member_labels": labels,
+        "run_member_labels": [labels[i] for i in run if i < len(labels)],
+        "member_scope": manifest.get("member_scope", real_field.SCOPE_ALL),
         "pca_n": int(manifest.get("pca_n", 0) or 0),
         "pca_amps": [list((manifest.get("pca_amps", {}) or {}).get(str(i), []))
                      for i in range(count)],
@@ -1312,9 +1336,11 @@ def _real_field_cube(index: int, tier: str, params: dict[str, str]):
         mi = int(tier[6:])
         label = f"SR {labels[mi]}" if mi < len(labels) else tier
     elif tier == "sr":
-        label = "SR (starfull mean)"
+        note = _real_field_run(manifest)[1]
+        label = f"SR (starfull mean of {note})" if note else "SR (starfull mean)"
     elif tier == "std":
-        label = "stdSR (starfull members)"
+        note = _real_field_run(manifest)[1]
+        label = f"stdSR (starfull, {note})" if note else "stdSR (starfull members)"
     elif tier == "lr":
         label = "LR"
     else:

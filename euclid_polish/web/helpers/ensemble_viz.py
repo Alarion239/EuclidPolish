@@ -55,6 +55,10 @@ from euclid_polish.eval.ensemble_cube_cache import (
     save_cached_field_lr,
 )
 from euclid_polish.eval.ensemble_diagnostics import EnsembleDiagnosticsAccumulator
+from euclid_polish.eval.gate_members import (
+    DEFAULT_USED_THRESHOLD,
+    member_peak_weights,
+)
 from euclid_polish.eval.knee_psnr import (
     KNEE_GRID_E,
     integrated_psnr,
@@ -72,6 +76,9 @@ from euclid_polish.eval.spatial_gate import (
     SPATIAL_GATE_KIND,
     SpatialGateCombiner,
     band_scales,
+    joined_after_fit,
+    reads_available,
+    restrict_to_available,
 )
 from euclid_polish.eval.spatial_gate_fit import (
     LazyMemberRunner,
@@ -1701,9 +1708,15 @@ def _spatial_gate_weight_diagnostic(comb: SpatialGateCombiner, *, starless: bool
             manifest = json.load(handle)
     except (OSError, ValueError):
         return {"available": False, "reason": "no validation cube cache"}
-    if list(manifest.get("member_labels") or []) != list(comb.member_labels):
+    cube_labels = {str(v) for v in manifest.get("member_labels") or []}
+    if not reads_available(comb.read_labels, cube_labels):
         return {"available": False,
-                "reason": "validation cube cache does not match this fit"}
+                "reason": "validation cube cache lacks members this gate reads"}
+    # The brightness level is the mean of every fitted member with a cube
+    # (all of them unless unread members were archived since the fit); the
+    # weights read only the gate's members and come back full width.
+    level_labels = [str(v) for v in comb.member_labels if str(v) in cube_labels]
+    read_rows = [level_labels.index(str(v)) for v in comb.read_labels]
     cached = {int(i) for i in manifest.get("indices", []) or []}
     preferred = [int(i) for i in comb.fit_meta.get("holdout_fields", []) or []]
     fields = [i for i in preferred if i in cached] or sorted(cached)
@@ -1718,12 +1731,12 @@ def _spatial_gate_weight_diagnostic(comb: SpatialGateCombiner, *, starless: bool
     n_pixels = n_source = n_fields = 0
     for rec in fields[:int(max_fields)]:
         stack = load_cached_member_stack(rec, subset="validate", cubes_dir=val_dir,
-                                         active=list(comb.member_labels))
+                                         active=level_labels)
         lr = (load_cached_field_lr(val_dir, rec, records_dir=records_dir,
                                    subset="validate") if comb.use_lr else None)
         if stack is None or (comb.use_lr and lr is None):
             continue
-        weights = comb.weights_field(stack, lr=lr)            # (H, W, M, C)
+        weights = comb.weights_field(stack[read_rows], lr=lr)  # (H, W, M, C)
         level = np.arcsinh(stack.mean(axis=0) / scales)       # (H, W, C)
         usage += weights.sum(axis=(0, 1))
         n_pixels += level.shape[0] * level.shape[1]
@@ -1778,9 +1791,24 @@ def _spatial_gate_payload(comb: SpatialGateCombiner, *, starless: bool) -> dict:
     labels = list(comb.member_labels)
     member_meta = _member_meta_from_labels(labels)
     usage = diagnostic.get("usage") or {}
+    active = _regime_labels(ensemble_dir(), starless)
+    try:
+        peaks: list[float] | None = member_peak_weights(diagnostic, len(labels))
+    except ValueError:
+        peaks = None
     payload = {
         "available": True,
-        "stale": labels != _regime_labels(ensemble_dir(), starless),
+        # Valid while every member the gate READS is active (joined members
+        # are a note, unread members may leave or be retrained).
+        "stale": not reads_available(comb.read_labels, active),
+        "joined_after_fit": joined_after_fit(labels, active),
+        "read_labels": comb.read_labels,
+        # The "used by the gate" rule (eval/gate_members.py): peak weight =
+        # max over bands of the all-pixel, source and brightness-bin means.
+        "member_peak_weights": peaks,
+        "used_threshold": DEFAULT_USED_THRESHOLD,
+        "used_by_gate": (None if peaks is None
+                         else [p >= DEFAULT_USED_THRESHOLD for p in peaks]),
         "kind": comb.kind,
         "regime": _regime_slug(starless),
         "member_labels": labels,
@@ -2456,11 +2484,34 @@ def _reevaluate_from_cached_cubes(starless: bool,
     return summary
 
 
+def _combiner_for_stack(regime_dir: str, labels: list[str], model_kind: str
+                        ) -> tuple[object | None, list[int]]:
+    """``(combiner, positions)``: the fitted ``model_kind`` combiner applied
+    to a label-keyed member stack (``labels``, e.g. a cube bucket) and the
+    positions in it of the members it takes, in its order.
+
+    A spatial gate applies while every member it READS is in the stack:
+    members that joined after its fit are skipped, and unread members that
+    left since (archived) are dropped from an in-memory copy — the artifact
+    is untouched and the math identical. The RBF needs exactly its fitted
+    members. ``(None, [])`` when the combiner is absent or cannot apply."""
+    artifact_dir = _combiner_artifact_dir(model_kind)
+    if model_kind != SPATIAL_GATE_KIND:
+        comb = load_combiner(regime_dir, member_labels=labels, artifact_dir=artifact_dir)
+        return (comb, list(range(len(labels)))) if comb is not None else (None, [])
+    gate = load_combiner(regime_dir, available_labels=labels, artifact_dir=artifact_dir)
+    gate = restrict_to_available(gate, labels) if gate is not None else None
+    positions = (sgc.member_positions(gate.member_labels, labels)
+                 if gate is not None else None)
+    return (gate, positions) if positions is not None else (None, [])
+
+
 def _apply_combiner_to_test_cubes(starless: bool,
                                   model_kind: str | None = None, *,
                                   progress: Callable[[int, int, str], None]
                                   | None = None) -> bool:
-    """Apply one fitted model to cached TEST member cubes without re-inference."""
+    """Apply one fitted model to cached TEST member cubes without re-inference
+    (a spatial gate reads only its members' cubes, by label)."""
     model_kind = _normalize_combiner_kind(model_kind)
     prefix = _combiner_cube_prefix(model_kind)
     cubes_dir = _ensemble_cubes_dir(starless=starless)
@@ -2471,11 +2522,10 @@ def _apply_combiner_to_test_cubes(starless: bool,
     except (OSError, json.JSONDecodeError):
         return False
     labels = [str(x) for x in man.get("member_labels", []) or []]
-    comb = load_combiner(_ensemble_regime_dir(starless), member_labels=labels,
-                         artifact_dir=_combiner_artifact_dir(model_kind))
+    comb, positions = _combiner_for_stack(_ensemble_regime_dir(starless), labels,
+                                          model_kind)
     if comb is None:                     # no combiner, or stale for these cubes
         return False
-    n_members = len(labels)
     applied = 0
     indices = [int(i) for i in man.get("indices", []) or []]
     needs_lr = bool(getattr(comb, "use_lr", False))
@@ -2483,7 +2533,7 @@ def _apply_combiner_to_test_cubes(starless: bool,
     for position, rec in enumerate(indices, 1):
         tag = f"{rec:05d}"
         stack = []
-        for p in range(n_members):
+        for p in positions:
             mf = os.path.join(cubes_dir, f"member{p}_{tag}.npy")
             if not os.path.isfile(mf):
                 break
@@ -2491,7 +2541,7 @@ def _apply_combiner_to_test_cubes(starless: bool,
         lr = (load_cached_field_lr(cubes_dir, rec, records_dir=records_dir,
                                    subset=str(man.get("subset", "test")))
               if needs_lr else None)
-        if len(stack) == n_members and (lr is not None or not needs_lr):
+        if len(stack) == len(positions) and (lr is not None or not needs_lr):
             comb_full = comb.apply_field(
                 np.stack(stack, 0), lr=lr)     # (H, W, C) electrons
             np.save(os.path.join(cubes_dir, f"{prefix}_{tag}.npy"),
@@ -2527,6 +2577,14 @@ def _reconcile_combiner_on_archives(regime_dir: str, starless: bool,
     Every queued archive is handled as one batch.  This matters when several
     pruned members were archived before the next evaluation: an intermediate
     combiner label set would not match the final active ensemble.
+
+    A spatial gate is left byte-identical while every member it reads stays
+    active: its validity is keyed on its reads, so rewriting it without the
+    unread members would only change its fingerprint and make every output
+    it produced stale for nothing (its consumers drop unread members that
+    left in memory, :func:`restrict_to_available`). A gate that lost a member
+    it reads is moved to a ``spatial_gate_backup_*`` directory, not deleted:
+    it can be promoted back once that member is restored.
     """
     model_kind = _normalize_combiner_kind(model_kind)
     artifact_dir = _combiner_artifact_dir(model_kind)
@@ -2535,7 +2593,17 @@ def _reconcile_combiner_on_archives(regime_dir: str, starless: bool,
         return False
 
     def _drop() -> bool:
-        shutil.rmtree(os.path.join(regime_dir, artifact_dir), ignore_errors=True)
+        path = os.path.join(regime_dir, artifact_dir)
+        if isinstance(comb, SpatialGateCombiner):
+            stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+            backup, n = f"{GATE_BACKUP_PREFIX}{stamp}", 1
+            while os.path.exists(os.path.join(regime_dir, backup)):
+                backup, n = f"{GATE_BACKUP_PREFIX}{stamp}-{n}", n + 1
+            os.replace(path, os.path.join(regime_dir, backup))
+            print(f"[ensemble] {artifact_dir} reads an archived member — moved to "
+                  f"{backup} (promote it again once the member is restored)")
+        else:
+            shutil.rmtree(path, ignore_errors=True)
         with contextlib.suppress(FileNotFoundError):
             os.remove(_combiner_payload_path(starless, model_kind))
         return False
@@ -2544,10 +2612,15 @@ def _reconcile_combiner_on_archives(regime_dir: str, starless: bool,
                  if str(lbl).split("·")[0] in set(member_nns)]
     if any(not comb.member_pruned(pos) for pos in positions):
         return _drop()                            # a departed member was used
+    active = _regime_labels(ensemble_dir(), starless)
+    if isinstance(comb, SpatialGateCombiner):
+        # Valid while every member it reads is active (members that joined
+        # after its fit do not matter either); never rewritten.
+        return True if reads_available(comb.read_labels, active) else _drop()
     for pos in reversed(positions):
         comb = comb.without_member(pos)
-    # Keep only if the fully reindexed combiner matches the active ensemble.
-    if list(comb.member_labels) != _regime_labels(ensemble_dir(), starless):
+    # Keep any other combiner only for exactly the active ensemble.
+    if list(comb.member_labels) != active:
         return _drop()
     save_combiner(comb, regime_dir, artifact_dir=artifact_dir)
     return True
@@ -2673,12 +2746,11 @@ def job_ensemble_evaluate(cap, *, num_images: int,
 
     # Load every independently persisted ordinary model. They share member
     # predictions but retain distinct output cubes and diagnostics.
+    # A spatial gate takes the members it reads by label (members that joined
+    # after its fit are skipped); the RBF needs exactly the active members.
     labels_now = _regime_labels(base, starless)
-    models = {
-        kind: load_combiner(out_dir, member_labels=labels_now,
-                            artifact_dir=_combiner_artifact_dir(kind))
-        for kind in _ORDINARY_COMBINER_KINDS
-    }
+    models = {kind: _combiner_for_stack(out_dir, labels_now, kind)
+              for kind in _ORDINARY_COMBINER_KINDS}
 
     def _on_field(rec_index, lr_cube, preds, mean, std, hr_cube):
         model_full: dict[str, np.ndarray] = {}
@@ -2688,10 +2760,12 @@ def job_ensemble_evaluate(cap, *, num_images: int,
             hr_v, mean_v = _vis(hr_cube), _vis(mean)
             mem = np.asarray(preds, np.float32)
             mem_v = mem[..., 0] if mem.ndim == 4 else mem      # (M, H, W)
-            if mem.ndim == 4:
-                for kind, model in models.items():
-                    if model is not None and mem.shape[0] == len(model.member_labels):
-                        model_full[kind] = model.apply_field(mem, lr=lr_cube)
+            if mem.ndim == 4 and mem.shape[0] == len(labels_now):
+                everyone = list(range(mem.shape[0]))
+                for kind, (model, positions) in models.items():
+                    if model is not None:          # no copy of the whole stack
+                        stack = mem if positions == everyone else mem[positions]
+                        model_full[kind] = model.apply_field(stack, lr=lr_cube)
             model_v = {kind: (_vis(image) if image is not None else None)
                        for kind, image in model_full.items()}
             lr_v = _lr_on_hr_grid(lr_cube, int(hr_v.shape[0]))  # baseline r(k)
@@ -2757,7 +2831,7 @@ def job_ensemble_evaluate(cap, *, num_images: int,
                 records_fp=_member_scoring_records_fingerprint(rdir, sub))
     combiner_block = model_cmet[_RBF_KIND].block(member_labels)
     has_by_kind = {
-        kind: bool(models[kind] is not None and cmet.n_comb > 0)
+        kind: bool(models[kind][0] is not None and cmet.n_comb > 0)
         for kind, cmet in model_cmet.items()
     }
     with open(os.path.join(cubes_dir, "viz_index.json"), "w") as f:
@@ -3422,13 +3496,43 @@ def _gate_usage(starless: bool) -> dict:
     if not payload or not payload.get("available"):
         return {"available": False}
     diag = payload.get("gate_diagnostics") or {}
+    reads = payload.get("read_labels")
     return {"available": True, "stale": bool(payload.get("stale")),
             "labels": [str(v) for v in payload.get("member_labels") or []],
+            "read_labels": None if reads is None else [str(v) for v in reads],
             "bands": [str(v) for v in payload.get("band_names") or []],
             "usage": diag.get("usage") or payload.get("member_weight_integrals") or {},
             "usage_source": diag.get("usage_source") or {},
             "usage_by_brightness": diag.get("usage_by_brightness") or {},
             "brightness_names": diag.get("brightness_names") or []}
+
+
+def _gate_peak(gate: dict, i: int) -> dict | None:
+    """Member ``i``'s peak share of the gate's weight — the largest, over the
+    bands, of its all-pixel, source-pixel and every brightness-bin mean (the
+    ``used by the gate`` rule, eval/gate_members.py) — and where it is:
+    ``{value, band, bin}`` (``bin`` = a brightness-bin name, ``"sources"`` or
+    ``None`` for all pixels). ``None`` without a diagnostic."""
+    best: dict | None = None
+
+    def consider(value, band: str, where: str | None) -> None:
+        nonlocal best
+        v = _finite(value)
+        if v is not None and (best is None or v > best["value"]):
+            best = {"value": v, "band": band, "bin": where}
+
+    for band, values in (gate.get("usage") or {}).items():
+        if i < len(values or []):
+            consider(values[i], str(band), None)
+    for band, values in (gate.get("usage_source") or {}).items():
+        if i < len(values or []):
+            consider(values[i], str(band), "sources")
+    names = list(gate.get("brightness_names") or [])
+    for band, rows in (gate.get("usage_by_brightness") or {}).items():
+        for b, row in enumerate(rows or []):
+            if i < len(row or []):
+                consider(row[i], str(band), names[b] if b < len(names) else None)
+    return best
 
 
 def _coherence_by_label(starless: bool) -> dict[str, dict]:
@@ -3508,9 +3612,13 @@ def _member_row(name: str, ctx: _MemberContext) -> dict:
         knee_integrated = dict(zip(bands, vals, strict=False))
         finite_vals = [v for v in vals if v is not None]
         knee_integrated["mean"] = (float(np.mean(finite_vals)) if finite_vals else None)
-    gate_usage = gate_usage_source = None
+    gate_usage = gate_usage_source = gate_usage_peak = used_by_gate = None
+    if ctx.gate.get("available") and ctx.gate.get("read_labels") is not None:
+        # Production SR runs this member iff the production gate reads it.
+        used_by_gate = label in ctx.gate["read_labels"]
     if ctx.gate.get("available") and label in ctx.gate["labels"]:
         i = ctx.gate["labels"].index(label)
+        gate_usage_peak = _gate_peak(ctx.gate, i)
         gate_usage = {b: _finite((ctx.gate["usage"].get(b) or [None] * (i + 1))[i])
                       for b in ctx.gate["bands"]}
         if ctx.gate["usage_source"]:
@@ -3542,6 +3650,7 @@ def _member_row(name: str, ctx: _MemberContext) -> dict:
         "vis_psnr": ctx.vis_psnr.get(label),
         "knee_integrated": knee_integrated,
         "gate_usage": gate_usage, "gate_usage_source": gate_usage_source,
+        "gate_usage_peak": gate_usage_peak, "used_by_gate": used_by_gate,
         "coherence": ctx.coherence.get(label),
         "has_loss_best": os.path.isdir(lb) and _checkpoint_exists(lb),
         "size_mb": round(_dir_size_mb(d), 1),
@@ -3719,7 +3828,8 @@ def _fit_summary(fit_meta: dict) -> dict:
             "steps_run", "complete", "batch_size", "crop", "learning_rate",
             "uniform_crop_fraction", "blackout_fields", "fit_seconds", "subset",
             "num_images", "seed", "eval_every", "holdout_count", "variant", "fitted_via",
-            "members_requested", "promoted_from", "promoted_at", "best_member_per_band")
+            "members_requested", "used_threshold", "promoted_from", "promoted_at",
+            "best_member_per_band")
     out = {k: fit_meta[k] for k in keep if k in fit_meta}
     out["train_field_count"] = len(fit_meta.get("train_fields") or [])
     out["holdout_field_count"] = len(fit_meta.get("holdout_fields") or [])
@@ -3739,6 +3849,20 @@ def _history_rows(fit_meta: dict) -> list[dict]:
 
 def _latest_compare(starless: bool) -> dict | None:
     return _read_json_file(os.path.join(_regime_dir_ro(starless), _COMPARE_LATEST))
+
+
+def _promotion_state(directory: str, manifest: dict, reads: list[str],
+                     active: list[str], *, production: bool = False) -> dict:
+    """``{ok, reason}``: whether :func:`job_combiner_promote` would install
+    this variant now (``force`` aside), and why not."""
+    if production:
+        return {"ok": False, "reason": "already the production gate"}
+    reason = sgc.promotion_refusal(directory, manifest)
+    if reason is None and not reads_available(reads, active):
+        missing = [lb for lb in reads if lb not in active]
+        reason = ("it reads members that are not active: "
+                  + ", ".join(missing[:6]) + ("…" if len(missing) > 6 else ""))
+    return {"ok": reason is None, "reason": reason}
 
 
 def combiner_variants(starless: bool) -> dict:
@@ -3785,10 +3909,16 @@ def combiner_variants(starless: bool) -> dict:
             "mix_space": m.get("mix_space", "asinh"), "use_lr": bool(m.get("use_lr")),
             "width": m.get("width"), "fitted_at": _iso_mtime(os.path.join(d, "combiner.npz")),
             "fingerprint": combiner_artifact_fingerprint(regime_dir, name),
-            "membership": {"current": labels == active,
+            # Current while every member the gate READS is active; "extra"
+            # members joined after the fit (refit to consider them).
+            "membership": {"current": reads_available(reads, active),
                            "missing": [lb for lb in labels if lb not in active],
-                           "extra": [lb for lb in active if lb not in labels]},
-            "applies_to_test_cubes": sgc.member_positions(labels, cube_labels) is not None,
+                           "missing_reads": [lb for lb in reads if lb not in active],
+                           "extra": joined_after_fit(labels, active)},
+            "promotion": _promotion_state(d, m, reads, active, production=production),
+            # A gate applies by label while the cubes hold every member it
+            # reads (load_gate_methods drops unread members that left).
+            "applies_to_test_cubes": sgc.member_positions(reads, cube_labels) is not None,
             "fit": _fit_summary(fit_meta),
             "selected": fit_meta.get("selected"), "baseline": fit_meta.get("baseline_holdout"),
             "history": _history_rows(fit_meta),
@@ -4012,21 +4142,36 @@ def job_combiner_promote(cap, *, starless: bool, variant: str, force: bool = Fal
     gate outputs, the eval summary and the knee curves are refreshed from the
     cached cubes (no member inference) when the variant fits the cubes.
 
-    A variant fitted for other members than the active ones is refused unless
-    ``force`` (it would make the production model unavailable)."""
+    A variant that a fit is still writing, or whose fit did not complete
+    (``fit_meta.complete`` not true), is always refused
+    (:func:`~euclid_polish.eval.spatial_gate_compare.promotion_refusal`). A
+    variant that reads a member which is not active is refused unless
+    ``force`` (it would make the production model unavailable); members that
+    joined after its fit do not matter (a note: refit to consider them)."""
     src = variant_dir(starless, variant)
     name = os.path.basename(src)
     prod_name = COMBINER_MODELS[SPATIAL_GATE_KIND].artifact_dir
     if name == prod_name:
         raise RuntimeError(f"{name} is already the production gate")
     manifest = _read_json_file(os.path.join(src, "combiner.json")) or {}
+    refusal = sgc.promotion_refusal(src, manifest)
+    if refusal is not None:
+        raise RuntimeError(f"not promoting: {refusal}")
     labels = [str(v) for v in manifest.get("member_labels") or []]
+    active_members = manifest.get("active_members")
+    reads = ([labels[int(i)] for i in active_members if int(i) < len(labels)]
+             if isinstance(active_members, list) else labels)
     active = _regime_labels(ensemble_dir(), starless)
-    if labels != active and not force:
+    if not reads_available(reads, active) and not force:
+        missing = [lb for lb in reads if lb not in active]
         raise RuntimeError(
-            f"{name} was fitted for {len(labels)} members, the active "
-            f"{_regime_slug(starless)} ensemble has {len(active)} — promoting it "
-            "would leave no current production model (pass force to promote anyway)")
+            f"{name} reads {len(missing)} member(s) that are not active in the "
+            f"{_regime_slug(starless)} ensemble ({', '.join(missing[:6])}) — promoting "
+            "it would leave no current production model (pass force to promote anyway)")
+    joined = joined_after_fit(labels, active)
+    if joined:
+        print(f"  • note: {len(joined)} member(s) joined after {name}'s fit; "
+              "refit to consider them")
     regime_dir = _ensemble_regime_dir(starless)
     prod = os.path.join(regime_dir, prod_name)
     stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
@@ -4134,11 +4279,24 @@ def ensemble_overview(starless: bool) -> dict:
         check("gate", False, "bad", "No production gate",
               "Fit a gate variant and promote it.", "combiners")
     else:
-        same = gate_labels == active
-        check("gate-members", same, "warn", "Production gate vs members",
-              f"Fitted for the {len(active)} active members." if same else
-              f"Fitted for {len(gate_labels)} members; {len(active)} are active "
-              f"(differs in {len(set(gate_labels) ^ set(active))}).", "combiners")
+        prod_active = (prod_manifest or {}).get("active_members")
+        gate_reads = ([gate_labels[int(i)] for i in prod_active if int(i) < len(gate_labels)]
+                      if isinstance(prod_active, list) else gate_labels)
+        valid = reads_available(gate_reads, active)
+        joined = joined_after_fit(gate_labels, active)
+        missing = [lb for lb in gate_reads if lb not in active]
+        if not valid:
+            detail = (f"It reads {len(missing)} member(s) that are not active "
+                      f"({', '.join(missing[:6])}): production falls back to the mean.")
+        elif joined:
+            detail = (f"Reads {len(gate_reads)} of the {len(active)} active members; "
+                      f"{len(joined)} joined after this fit — refit to consider them.")
+        else:
+            detail = (f"Reads {len(gate_reads)} of the {len(active)} active members."
+                      if len(gate_reads) != len(active) else
+                      f"Fitted for the {len(active)} active members.")
+        check("gate-members", valid and not joined, "info" if valid else "warn",
+              "Production gate vs members", detail, "combiners")
     if not knee.get("available"):
         check("knee", False, "warn", "No PSNR-vs-knee curves",
               "Compute them from the cached test cubes.", "knee")

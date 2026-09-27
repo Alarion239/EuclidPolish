@@ -59,6 +59,11 @@ export type MemberRow = KneeInfo & {
   vis_psnr?: number | null;
   knee_integrated?: Record<string, number | null> | null; knee_rank?: number | null;
   gate_usage?: Record<string, number | null> | null; gate_usage_source?: Record<string, number | null> | null;
+  /** The member's largest share of the production gate's weight over the
+   *  bands and brightness bins (a bare share, or where it is). */
+  gate_usage_peak?: number | { value?: number | null; band?: string | null; bin?: string | null } | null;
+  /** Whether production SR runs this member (the gate reads it). */
+  used_by_gate?: boolean | null;
   coherence?: { overall?: number | null; sr?: number | null } | null;
   has_loss_best?: boolean; size_mb?: number;
 };

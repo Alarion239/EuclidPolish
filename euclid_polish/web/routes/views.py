@@ -290,8 +290,9 @@ def _job_generate_sr(cap, records_dir: str, subsets: list[str], overwrite: bool)
     def log(message: str) -> None:
         cap.write(message if message.endswith("\n") else message + "\n")
 
-    # STARFULL members through the production combiner (mean when no current
-    # combiner loads) — never the mixed-regime plain mean.
+    # The production gate over only the STARFULL members it reads (the plain
+    # mean of every STARFULL member, logged as a warning, when no current gate
+    # loads) — never the mixed-regime plain mean.
     model = load_eval_ensemble(log=log)
     identity = eval_model_identity(model)
     os.makedirs(sky_records.sky_sr_dir(), exist_ok=True)

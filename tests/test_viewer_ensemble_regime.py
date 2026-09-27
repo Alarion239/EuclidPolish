@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import numpy as np
 
+from euclid_polish.eval.spatial_gate import MIX_LINEAR, SpatialGateCombiner, save_spatial_gate
+from euclid_polish.eval.spatial_gate_fit import init_params
 from euclid_polish.web.helpers import viewer_data as vd
 
 
@@ -111,3 +113,46 @@ def test_ensemble_meta_hides_sr_when_primary_combiner_is_unavailable(monkeypatch
 
     assert "sr" not in {tier["key"] for tier in meta["tiers"]}
     assert meta["default_tier"] == "lr"
+
+
+def test_sr_tier_reads_only_the_members_a_pruned_gate_needs(tmp_path, monkeypatch):
+    labels = ["00·x", "01·y", "02·z"]
+    params = init_params(2, 4, 8, False, [0, 0, 0, 0], seed=1)
+    gate = SpatialGateCombiner(labels, params, width=8, use_lr=False,
+                               active_members=(0, 2), mix_space=MIX_LINEAR)
+    save_spatial_gate(gate, str(tmp_path / "spatial_gate_combiner"))
+    cubes = tmp_path / "cubes"
+    cubes.mkdir()
+    rng = np.random.default_rng(3)
+    stack = rng.uniform(0.0, 50.0, (3, 8, 8, 4)).astype(np.float32)
+    # The pruned member's cube is absent: the bucket must still serve ``sr``.
+    for index in gate.needed_member_indices():
+        np.save(cubes / f"member{index}_00003.npy", stack[index])
+    monkeypatch.setattr(vd, "_ensemble_cubes_dir", lambda _starless: str(cubes))
+    vd._COMB_CUBE_CACHE.clear()
+
+    out = vd._combiner_field_cube(False, 3, labels)
+
+    np.testing.assert_allclose(out, gate.apply_field(stack), rtol=1e-5, atol=1e-5)
+
+
+def test_sr_tier_maps_a_gate_onto_a_cube_stack_with_joined_members(tmp_path, monkeypatch):
+    labels = ["00·x", "01·y", "02·z"]
+    params = init_params(2, 4, 8, False, [0, 0, 0, 0], seed=1)
+    gate = SpatialGateCombiner(labels, params, width=8, use_lr=False,
+                               active_members=(1, 2), mix_space=MIX_LINEAR)
+    save_spatial_gate(gate, str(tmp_path / "spatial_gate_combiner"))
+    cubes = tmp_path / "cubes"
+    cubes.mkdir()
+    # The cubes were evaluated after "03·new" joined in front of the others.
+    cube_labels = ["03·new", *labels]
+    rng = np.random.default_rng(4)
+    stack = rng.uniform(0.0, 50.0, (4, 8, 8, 4)).astype(np.float32)
+    for index in range(4):
+        np.save(cubes / f"member{index}_00001.npy", stack[index])
+    monkeypatch.setattr(vd, "_ensemble_cubes_dir", lambda _starless: str(cubes))
+    vd._COMB_CUBE_CACHE.clear()
+
+    out = vd._combiner_field_cube(False, 1, cube_labels)
+
+    np.testing.assert_allclose(out, gate.apply_field(stack[[2, 3]]), rtol=1e-5, atol=1e-5)

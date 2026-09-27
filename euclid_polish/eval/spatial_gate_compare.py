@@ -22,8 +22,10 @@ name.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
+import socket
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -50,6 +52,7 @@ from euclid_polish.eval.spatial_gate import (
     SpatialGateCombiner,
     band_scales,
     load_spatial_gate,
+    restrict_to_available,
     save_spatial_gate,
 )
 from euclid_polish.eval.spatial_gate_fit import (
@@ -175,7 +178,9 @@ def load_gate_methods(regime_dir: str, names: Sequence[str],
     """``gate:<dir>`` methods for the named ``spatial_gate_*`` directories.
 
     Raises :class:`ValueError` for a name that is not a gate directory, is not
-    loadable, or reads a member the cubes lack."""
+    loadable, or reads a member the cubes lack. Fitted members it does not
+    read may be missing (archived since the fit): they are dropped from the
+    in-memory gate, which leaves its output unchanged."""
     out: dict[str, Method] = {}
     for name in names:
         name = str(name).strip()
@@ -184,9 +189,11 @@ def load_gate_methods(regime_dir: str, names: Sequence[str],
         gate = load_spatial_gate(os.path.join(regime_dir, name))
         if gate is None:
             raise ValueError(f"no loadable spatial gate at {name}")
-        index = member_positions(gate.member_labels, cube_labels)
-        if index is None:
-            missing = sorted(set(gate.member_labels) - set(map(str, cube_labels)))
+        fitted = gate
+        gate = restrict_to_available(fitted, [str(v) for v in cube_labels])
+        index = None if gate is None else member_positions(gate.member_labels, cube_labels)
+        if gate is None or index is None:
+            missing = sorted(set(fitted.read_labels) - set(map(str, cube_labels)))
             raise ValueError(f"{name} reads members the test cubes lack: "
                              + ", ".join(missing[:8]))
         out[f"gate:{name}"] = Method(f"gate:{name}", gate, index, "gate", name)
@@ -448,6 +455,70 @@ def format_report(report: dict) -> str:
 
 
 # --------------------------------------------------------------------------- #
+# Fit-in-progress marker and the promotion guard
+# --------------------------------------------------------------------------- #
+
+#: Written into a variant directory while :func:`fit_gate_variant` fits it.
+FIT_MARKER = ".fitting.json"
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return False                   # not written by fit_gate_variant
+    if pid <= 0:                       # os.kill(-1 or 0) would probe a group
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except (PermissionError, OverflowError):
+        return True                    # exists but not ours: assume live
+    return True
+
+
+def fit_in_progress(directory: str) -> dict | None:
+    """The marker of a fit still writing ``directory`` (``{pid, host,
+    started}``), or ``None``. A marker whose process is gone is ignored (a
+    crashed fit must not block its variant forever). Gate fits run on this
+    machine, so liveness is the pid alone: the host name is informational
+    (a laptop's DHCP host name changes with the network)."""
+    try:
+        with open(os.path.join(directory, FIT_MARKER)) as handle:
+            marker = json.load(handle)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(marker, dict):
+        return None
+    if not _pid_alive(marker.get("pid", -1)):
+        return None
+    return marker
+
+
+def promotion_refusal(directory: str, manifest: Mapping[str, Any] | None) -> str | None:
+    """Why the gate variant in ``directory`` must not become production now
+    (``None`` when it may): a fit is still writing it, or its fit did not run
+    to completion (``fit_meta.complete`` is not true — a stopped fit keeps
+    its best checkpoint so far, and a running one rewrites it)."""
+    name = os.path.basename(os.path.normpath(directory))
+    marker = fit_in_progress(directory)
+    if marker is not None:
+        return (f"{name} is still being fitted (pid {marker.get('pid')} on "
+                f"{marker.get('host')}, since {marker.get('started')}) — wait for the fit "
+                f"to finish (if that process is not a gate fit, delete "
+                f"{os.path.join(directory, FIT_MARKER)})")
+    meta = (manifest or {}).get("fit_meta") or {}
+    complete = meta.get("complete") if isinstance(meta, Mapping) else None
+    if complete is not True:
+        state = ("its fit_meta has no completion flag (fitted before progressive "
+                 "checkpoints)" if complete is None else
+                 f"its fit stopped at step {meta.get('steps_run')} of {meta.get('steps')}")
+        return f"{name} is not a complete fit: {state} — refit it to completion"
+    return None
+
+
+# --------------------------------------------------------------------------- #
 # Fit a named variant
 # --------------------------------------------------------------------------- #
 
@@ -517,13 +588,22 @@ def fit_gate_variant(fields: Sequence[GateField], labels: Sequence[str], *,
         comb.fit_meta.update(dict(extra_meta or {}))
         save_spatial_gate(comb, out_dir)
 
-    comb = fit_spatial_gate(
-        list(train) + extra, held, labels, width=int(width), use_lr=bool(use_lr),
-        steps=int(steps), batch_size=int(batch_size), crop=int(crop),
-        learning_rate=float(learning_rate), eval_every=int(eval_every), seed=int(seed),
-        active_members=active, loss_knees=loss_knees, mix_space=mix_space,
-        progress=progress, log=log, checkpoint=save)
-    save(comb)
+    os.makedirs(out_dir, exist_ok=True)
+    marker = os.path.join(out_dir, FIT_MARKER)
+    with open(marker, "w") as handle:
+        json.dump({"pid": os.getpid(), "host": socket.gethostname(),
+                   "started": datetime.now(UTC).isoformat(timespec="seconds")}, handle)
+    try:
+        comb = fit_spatial_gate(
+            list(train) + extra, held, labels, width=int(width), use_lr=bool(use_lr),
+            steps=int(steps), batch_size=int(batch_size), crop=int(crop),
+            learning_rate=float(learning_rate), eval_every=int(eval_every), seed=int(seed),
+            active_members=active, loss_knees=loss_knees, mix_space=mix_space,
+            progress=progress, log=log, checkpoint=save)
+        save(comb)
+    finally:
+        with contextlib.suppress(FileNotFoundError):
+            os.remove(marker)
     return comb
 
 
