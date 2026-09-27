@@ -1,14 +1,15 @@
 /* The workspace rail (spec §4): brand, the nine workspaces from the route
- * manifest with their icons, a running-jobs badge on Ops and a "server
- * behind HEAD" badge on Settings, and the collapse toggle (persisted in
- * prefs). Below 900 px the shell shows it in a drawer instead. */
+ * manifest with their icons, a health-alert badge on Home (warn/bad checks
+ * of /api/system/alerts), a running-jobs badge on Ops and a "server behind
+ * HEAD" badge on Settings, and the collapse toggle (persisted in prefs).
+ * Below 900 px the shell shows it in a drawer instead. */
 import { Link, useLocation } from "react-router-dom";
 import { useJobsFeed } from "../api/jobs";
 import { usePrefs } from "../state/prefs";
 import { Icon, IconButton, Tooltip } from "../ui";
 import { MANIFEST, matchPage } from "./manifest";
 import { WORKSPACE_META, landingPath } from "./nav";
-import { useVersion } from "./status";
+import { alertBadge, useSystemAlerts, useVersion } from "./status";
 
 export function Rail({ collapsed = false, inDrawer = false, onNavigate }: {
   collapsed?: boolean; inDrawer?: boolean; onNavigate?: () => void;
@@ -17,8 +18,10 @@ export function Rail({ collapsed = false, inDrawer = false, onNavigate }: {
   const current = matchPage(pathname)?.workspace ?? null;
   const running = useJobsFeed().runningCount;
   const behind = !!useVersion().data?.behind;
+  const health = alertBadge(useSystemAlerts().data);
   const toggleRail = usePrefs((s) => s.toggleRail);
-  const badges: Record<string, { text: string; label: string } | null> = {
+  const badges: Record<string, { text: string; label: string; tone?: "warn" | "bad" } | null> = {
+    home: health ? { text: String(health.count), label: health.label, tone: health.tone } : null,
     ops: running > 0 ? { text: String(running), label: `${running} running job${running === 1 ? "" : "s"}` } : null,
     settings: behind ? { text: "!", label: "server behind HEAD" } : null,
   };
@@ -42,7 +45,7 @@ export function Rail({ collapsed = false, inDrawer = false, onNavigate }: {
               <Icon name={meta.icon} size={17} />
               <span className="rail__label">{ws.label}</span>
               {badge && (
-                <span className="rail__badge" title={badge.label}>
+                <span className="rail__badge" title={badge.label} data-tone={badge.tone}>
                   <span aria-hidden="true">{badge.text}</span>
                   <span className="sr-only">{badge.label}</span>
                 </span>

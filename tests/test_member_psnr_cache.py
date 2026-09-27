@@ -6,9 +6,17 @@ whole point is NOT paying inference for unchanged members.
 """
 from __future__ import annotations
 
+import json as _json
 import os
 
 import numpy as np
+
+from euclid_polish import ensemble_registry
+from euclid_polish.config import Config
+from euclid_polish.ensemble import EnsembleModel, member_fingerprint
+from euclid_polish.image import Image
+from euclid_polish.image.tfio import tfrecord_path
+from euclid_polish.web.helpers import ensemble_viz as ev
 
 
 def _member(base, name, ckpt="ckpt-5", payload=b"weights"):
@@ -30,8 +38,6 @@ class _Cap:
 
 
 def _setup(tmp_path, monkeypatch):
-    from euclid_polish.config import Config
-    from euclid_polish.web.helpers import ensemble_viz as ev
     monkeypatch.setattr(Config, "DEFAULT_CHECKPOINT_DIR",
                         str(tmp_path / "ckpt/wdsr"))
     monkeypatch.setattr(Config, "VIS_DIR", str(tmp_path / "vis"))
@@ -46,7 +52,6 @@ def _setup(tmp_path, monkeypatch):
 # --------------------------------------------------------------------------- #
 
 def test_fingerprint_identifies_the_served_checkpoint(tmp_path):
-    from euclid_polish.ensemble import member_fingerprint
     d = _member(str(tmp_path), "member_00")
     fp = member_fingerprint(d)
     assert fp is not None and fp.startswith("ckpt-5:")
@@ -60,7 +65,6 @@ def test_fingerprint_identifies_the_served_checkpoint(tmp_path):
 
 
 def test_fingerprint_changes_when_weights_change_in_place(tmp_path):
-    from euclid_polish.ensemble import member_fingerprint
     d = _member(str(tmp_path), "member_00", payload=b"v1")
     fp1 = member_fingerprint(d)
     _member(str(tmp_path), "member_00", payload=b"v2-longer")   # same ckpt name
@@ -109,7 +113,6 @@ def test_job_scores_once_then_skips_unchanged_members(tmp_path, monkeypatch):
 # --------------------------------------------------------------------------- #
 
 def test_status_shows_cached_psnr_with_rank(tmp_path, monkeypatch):
-    from euclid_polish.ensemble import member_fingerprint
     ev = _setup(tmp_path, monkeypatch)
     base = ev.ensemble_dir()
     d0 = _member(base, "member_00")
@@ -133,7 +136,6 @@ def test_status_shows_cached_psnr_with_rank(tmp_path, monkeypatch):
 def test_status_hides_psnr_after_checkpoint_change(tmp_path, monkeypatch):
     """A member whose checkpoint changed since its score must read "—" (stale
     numbers describe a different model), not show the old value."""
-    from euclid_polish.ensemble import member_fingerprint
     ev = _setup(tmp_path, monkeypatch)
     base = ev.ensemble_dir()
     d0 = _member(base, "member_00")
@@ -156,7 +158,6 @@ def test_curves_exclude_tombstoned_members(tmp_path, monkeypatch):
     """An archived member's dir (with its training_log.csv) can linger on disk
     or come back from a FASRC leftover — the curves must not show it.
     Regression: member_09 was archived but still plotted."""
-    from euclid_polish import ensemble_registry
     ev = _setup(tmp_path, monkeypatch)
     base = ev.ensemble_dir()
     log = ("step,wall_time,loss,psnr_stretched,psnr_raw,"
@@ -182,8 +183,6 @@ def test_curves_exclude_tombstoned_members(tmp_path, monkeypatch):
 # --------------------------------------------------------------------------- #
 
 def test_evaluate_reports_per_member_stretched_psnr():
-    from euclid_polish.ensemble import EnsembleModel
-    from euclid_polish.image import Image
 
     class _Stub:
         def __init__(self, fn):
@@ -214,8 +213,6 @@ def test_regenerated_eval_records_invalidate_cached_psnr(tmp_path, monkeypatch):
     were regenerated → the cached PSNR is a score against a different dataset
     and must not be served (the 2026-07 zeropoint regen made every old score
     silently stale)."""
-    from euclid_polish.ensemble import member_fingerprint
-    from euclid_polish.web.helpers import ensemble_viz as ev
 
     mdir = _member(str(tmp_path), "member_00")
     fp = member_fingerprint(mdir)
@@ -241,8 +238,6 @@ def test_regenerated_eval_records_invalidate_cached_psnr(tmp_path, monkeypatch):
 
 
 def test_eval_records_fingerprint_tracks_file_identity(tmp_path):
-    from euclid_polish.image.tfio import tfrecord_path
-    from euclid_polish.web.helpers import ensemble_viz as ev
 
     rdir = str(tmp_path)
     assert ev._eval_records_fingerprint(rdir, "test") is None   # files absent
@@ -259,33 +254,33 @@ def test_eval_records_fingerprint_tracks_file_identity(tmp_path):
 
 def test_training_curves_payload_carries_loss_norm(tmp_path, monkeypatch):
     """The curves chart's "by loss" mode reads each member's reconstruction
-    norm from origin.json; members predating the knob default to L1."""
-    import json as _json
+    norm from origin.json (``loss_norm``); members predating the knob default
+    to L1. The loss SERIES stays a series (the old payload overwrote it with
+    the norm string)."""
 
-    from euclid_polish.web.helpers import ensemble_viz as ev
 
     base = str(tmp_path / "ens")
     d_new = _member(base, "member_00")
     with open(os.path.join(d_new, "origin.json"), "w") as f:
         _json.dump({"op": "add", "loss_norm": "l2"}, f)
     d_old = _member(base, "member_01")          # no origin.json → legacy L1
+    for d in (d_new, d_old):
+        with open(os.path.join(d, "training_log.csv"), "w") as f:
+            f.write("step,psnr_stretched,combined_loss\n1000,40,0.2\n")
 
     monkeypatch.setattr(ev, "ensemble_dir", lambda: base)
     monkeypatch.setattr(
         "euclid_polish.ensemble_registry.active_member_dirs",
         lambda b: [d_new, d_old])
     monkeypatch.setattr(ev, "_sky_records_local_dir", lambda: None)
-    monkeypatch.setattr(
-        "euclid_polish.training.log_plot.ensemble_training_series",
-        lambda b: [{"name": "member_00"}, {"name": "member_01"}])
     out = ev.training_curves_payload()
-    assert {s["name"]: s["loss"] for s in out} == {
+    assert {s["name"]: s["loss_norm"] for s in out} == {
         "member_00": "l2", "member_01": "l1"}
+    assert all(s["loss_series"] == [[1000, 0.2]] == s["loss"] for s in out)
 
 
 def test_cache_from_an_older_scoring_rule_is_recomputed(tmp_path, monkeypatch):
     """Scores made before members were scored on their own regime are stale."""
-    from euclid_polish.ensemble import member_fingerprint
     ev = _setup(tmp_path, monkeypatch)
     d = _member(ev.ensemble_dir(), "member_00")
     entry = {"fingerprint": member_fingerprint(d), "psnr": 40.0, "n_scored": 1}
@@ -299,8 +294,6 @@ def test_cache_from_an_older_scoring_rule_is_recomputed(tmp_path, monkeypatch):
 
 def test_member_scores_are_keyed_on_both_regime_targets(tmp_path):
     """A regenerated clean_ file changes starless scores, so it must invalidate."""
-    from euclid_polish.image.tfio import tfrecord_path
-    from euclid_polish.web.helpers import ensemble_viz as ev
 
     rdir = str(tmp_path)
     assert ev._member_scoring_records_fingerprint(rdir, "test") is None

@@ -13,12 +13,41 @@ from euclid_polish.tracking import default_store as tracking_default_store
 from euclid_polish.tracking import sync as tracking_sync
 from euclid_polish.tracking import timetravel as tracking_timetravel
 from euclid_polish.training.log_plot import plot_training_log
-from euclid_polish.web import fasrc_config
+from euclid_polish.web import fasrc_config, fasrc_jobs
 from euclid_polish.web.fasrc_gate import requires_fasrc
 from euclid_polish.web.helpers.paths import _resolve_trackable_ckpt, _resolve_trackable_file
 from euclid_polish.web.remote import STATE
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+
+#: Page size bounds of ``GET /api/tracking/jobs``.
+_JOBS_DEFAULT_LIMIT = 50
+_JOBS_MAX_LIMIT = 500
+
+
+def _compact_job(record: dict[str, Any]) -> dict[str, Any]:
+    """A tracking job record without its embedded payload blobs (population
+    calibration / star-prior JSON, ~200 KB each): ``params`` compacted,
+    ``params_omitted`` = ``{key: size}``."""
+    out = dict(record)
+    params = record.get("params")
+    kept, omitted = fasrc_jobs.compact_params(params if isinstance(params, dict) else {})
+    out["params"] = kept
+    out["params_omitted"] = omitted
+    return out
+
+
+def _job_matches(record: dict[str, Any], needle: str) -> bool:
+    hay = " ".join(str(record.get(k) or "") for k in ("jobid", "label", "step_id", "logged_at"))
+    return needle in hay.lower()
+
+
+def _int_arg(name: str, default: int, lo: int, hi: int) -> int:
+    try:
+        value = int(request.args.get(name, default))
+    except (TypeError, ValueError):
+        value = default
+    return max(lo, min(value, hi))
 
 
 def register(app):
@@ -56,11 +85,15 @@ def register(app):
                 c["models"] = store.backups_in(c.get("_dir")).get("models", [])
             except Exception:
                 c["models"] = []
+        # The job records themselves are paged by GET /api/tracking/jobs:
+        # each embeds the submit params, which can carry ~200 KB of
+        # calibration JSON, so the state only reports how many there are.
         return {
             "active":        listing["active"],
             "archived":      listing["archived"],
             "backups":       store.list_backups(),
-            "jobs":          store.read_fasrc_jobs(),
+            "jobs_count":    store.count_fasrc_jobs(),
+            "unassigned_count": store.count_fasrc_jobs("unassigned"),
             "log_md":        store.read_log() if listing["active"] else "",
             "remote_dir":    _tracking_remote_dir(),
             "tracking_dir":  store.root,
@@ -71,6 +104,45 @@ def register(app):
     @app.route("/api/tracking/state")
     def api_tracking_state():
         return jsonify(_tracking_state())
+
+    @app.route("/api/tracking/jobs")
+    def api_tracking_jobs():
+        """One page of a campaign's FASRC job records, newest first, without
+        the embedded payload blobs. ``campaign`` = ``current`` (default), an
+        archived campaign's dir, or ``unassigned``; ``q`` filters on jobid,
+        label, step and time; ``offset``/``limit`` (≤ 500) page."""
+        store = tracking_default_store()
+        campaign = (request.args.get("campaign") or "current").strip()
+        try:
+            records = store.read_fasrc_jobs(campaign)
+        except TrackingError as e:
+            return jsonify({"ok": False, "error": str(e)}), 404
+        needle = (request.args.get("q") or "").strip().lower()
+        if needle:
+            records = [r for r in records if _job_matches(r, needle)]
+        offset = _int_arg("offset", 0, 0, 10**9)
+        limit = _int_arg("limit", _JOBS_DEFAULT_LIMIT, 1, _JOBS_MAX_LIMIT)
+        page = [_compact_job(r) for r in records[offset:offset + limit]]
+        return jsonify({"ok": True, "campaign": campaign, "total": len(records),
+                        "offset": offset, "limit": limit, "jobs": page})
+
+    @app.route("/api/tracking/campaign/<name>")
+    def api_tracking_campaign(name: str):
+        """An archived (or the active, ``current``) campaign: metadata, its
+        model/FITS/image backups, the notebook and the job count."""
+        store = tracking_default_store()
+        try:
+            directory = store.campaign_dir(name)
+            meta = store.campaign_meta(name) or {}
+            backups = store.backups_in(name)
+            log_md = store.read_log(name)
+            jobs_count = store.count_fasrc_jobs(name)
+        except TrackingError as e:
+            return jsonify({"ok": False, "error": str(e)}), 404
+        return jsonify({"ok": True, "dir": os.path.basename(directory),
+                        "active": name == "current", "metadata": meta,
+                        "backups": backups, "log_md": log_md,
+                        "jobs_count": jobs_count})
 
     @app.route("/api/tracking/new", methods=["POST"])
     def api_tracking_new():
@@ -191,7 +263,10 @@ def register(app):
             if model:
                 mm = store.model_backup_meta(campaign, model) or {}
                 commit_info = mm.get("commit")
-                seed_dir = store.model_backup_dir(campaign, model)
+                # A retired-model zip restores the code at its commit but is
+                # no live checkpoint to seed the sandbox with.
+                seed_dir = (None if model.endswith(".zip")
+                            else store.model_backup_dir(campaign, model))
             else:
                 cm = store.campaign_meta(campaign) or {}
                 commit_info = cm.get("saved_commit") or cm.get("created_commit")

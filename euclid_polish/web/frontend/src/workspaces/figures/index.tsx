@@ -1,6 +1,9 @@
-/* Figures workspace (spec §8.5). Phase 1: grid → the figure-grid builder,
-   plates → the old Visualization page; W-Figures replaces the tabs in phase 3. */
+/* Figures workspace (spec §8.5): grid (the publication contact sheet of saved
+   crops), plates (presentation plates, NEXUS comparison plates, the poster
+   cutout) and results (every crop saved from a viewer). Loading the
+   workspace registers the `figure:<result id>` inspector kind. */
 import { Workspace, defineTabs } from "../../app/workspace";
+import "./register";
 
 export const TABS = defineTabs("figures", {
   grid: { load: () => import("./tabs/Grid") },

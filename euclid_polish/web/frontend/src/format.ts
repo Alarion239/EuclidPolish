@@ -102,9 +102,10 @@ export function formatSI(v: Maybe, opts: { unit?: string; sig?: number; fallback
   return tail ? `${mant} ${tail}` : String(mant);
 }
 
-const BYTE_UNITS = ["B", "KB", "MB", "GB", "TB", "PB"];
+// Binary units, matching the 1024 divisor (and the server's "GiB free" titles).
+const BYTE_UNITS = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
 
-/** Byte count in binary units: 1536 → "1.5 KB", 10 MiB → "10 MB". */
+/** Byte count in binary units: 1536 → "1.5 KiB", 10·1024² → "10 MiB". */
 export function formatBytes(n: Maybe, fallback = DASH): string {
   if (!isFiniteNumber(n) || n < 0) return fallback;
   let i = 0;

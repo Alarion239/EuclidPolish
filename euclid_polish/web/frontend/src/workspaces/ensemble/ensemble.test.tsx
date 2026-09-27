@@ -1,7 +1,6 @@
-/* The ensemble workspace's regime switching: the workspace switch keeps the
- * tab, and so does the legacy page's own switch (it navigates to the bare
- * `/ensemble/<mode>`, which returns to the last tab visited). The tab modules
- * are stubbed so the legacy pages do not load. */
+/* The ensemble workspace's ONE regime switch keeps the tab, and a bare
+ * `/ensemble/<mode>` (a deep link, the palette) returns to the last tab
+ * visited. The tab modules are stubbed so no data loads. */
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { RouterProvider, createMemoryRouter } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
@@ -32,7 +31,7 @@ describe("ensemble workspace", () => {
     expect(router.state.location.pathname).toBe("/ensemble/starless/overview");
   });
 
-  it("keeps the tab when the legacy page switches the regime (bare /ensemble/<mode>)", async () => {
+  it("keeps the tab when a link switches the regime (bare /ensemble/<mode>)", async () => {
     const router = go("/ensemble/starfull/knee?inspect=job%3Alocal%2Fa");
     await screen.findByText("tab:knee");
     await act(() => router.navigate("/ensemble/starless"));

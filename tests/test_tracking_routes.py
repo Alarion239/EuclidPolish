@@ -220,3 +220,97 @@ def test_backup_model_accepts_vis_only_sibling(client, tmp_path, monkeypatch):
     # The -vis checkpoint files made it into the backup.
     assert os.path.isfile(os.path.join(bdir, "ckpt-7.index"))
     assert os.path.isfile(os.path.join(bdir, "training_log.csv"))
+
+
+# --------------------------------------------------------------------------
+# W-Ops: slim state, paginated compact jobs, archived-campaign detail
+# --------------------------------------------------------------------------
+
+_BLOB = "{" + "p" * 6000 + "}"
+
+
+def _log_jobs(store, n):
+    for i in range(n):
+        store.log_fasrc_job({"jobid": str(100 + i), "label": f"job {i}", "step_id": "synthetic_generate",
+                             "params": {"n_train": "10", "_star_prior_json": _BLOB}})
+
+
+def test_state_no_longer_embeds_the_job_records(client):
+    store = default_store()
+    store.create_campaign("slim")
+    _log_jobs(store, 3)
+    st = client.get("/api/tracking/state").get_json()
+    assert "jobs" not in st
+    assert st["jobs_count"] == 3
+    assert st["unassigned_count"] == 0
+
+
+def test_jobs_endpoint_pages_and_strips_payload_blobs(client):
+    store = default_store()
+    store.create_campaign("paged")
+    _log_jobs(store, 5)
+    r = client.get("/api/tracking/jobs?offset=1&limit=2")
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["total"] == 5 and body["offset"] == 1 and body["limit"] == 2
+    assert [j["jobid"] for j in body["jobs"]] == ["103", "102"]      # newest first
+    job = body["jobs"][0]
+    assert job["params"] == {"n_train": "10"}
+    assert job["params_omitted"] == {"_star_prior_json": len(_BLOB)}
+    assert _BLOB not in r.get_data(as_text=True)
+
+
+def test_jobs_endpoint_filters_and_reads_unassigned(client):
+    store = default_store()
+    store.log_fasrc_job({"jobid": "7", "label": "orphan eval"})
+    body = client.get("/api/tracking/jobs?campaign=unassigned").get_json()
+    assert [j["jobid"] for j in body["jobs"]] == ["7"]
+    store.create_campaign("filter")
+    _log_jobs(store, 3)
+    body = client.get("/api/tracking/jobs?q=job%202").get_json()
+    assert [j["jobid"] for j in body["jobs"]] == ["102"] and body["total"] == 1
+    assert client.get("/api/tracking/jobs?campaign=nope").status_code == 404
+
+
+def test_archived_campaign_detail(client):
+    store = default_store()
+    store.create_campaign("Detail me", "desc")
+    store.append_log("a result worth keeping")
+    _log_jobs(store, 2)
+    res = store.save_campaign()
+    name = os.path.basename(res["archive_path"])
+    r = client.get(f"/api/tracking/campaign/{name}")
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["metadata"]["title"] == "Detail me"
+    assert "a result worth keeping" in body["log_md"]
+    assert body["jobs_count"] == 2
+    assert set(body["backups"]) == {"models", "fits", "images"}
+    assert body["dir"] == name
+    assert client.get("/api/tracking/campaign/missing").status_code == 404
+
+
+def test_timetravel_restore_from_a_zipped_model_uses_its_commit(client, monkeypatch):
+    store = default_store()
+    store.create_campaign("zips")
+    models = os.path.join(store.current_dir, "models")
+    with open(os.path.join(models, "ensemble-member-01.zip"), "wb") as fp:
+        fp.write(b"PK")
+    json.dump({"name": "ensemble-member-01.zip", "kind": "model-zip",
+               "commit": {"hash": "def456", "short": "def456", "branch": "main", "dirty": True}},
+              open(os.path.join(models, "ensemble-member-01.zip.meta.json"), "w"))
+    seen = {}
+
+    def fake_prepare(commit, **k):
+        seen.update(k, commit=commit)
+        return {"short": "def456", "home": "/tmp/x", "root": "/tmp/x"}
+
+    monkeypatch.setattr(tt, "prepare_local_sandbox", fake_prepare)
+    monkeypatch.setattr(tt, "write_home_fasrc_config", lambda short, cfg: "/tmp/x/fasrc.json")
+    monkeypatch.setattr(tt, "spawn_server", lambda short, **k: {"ok": True, "url": "http://127.0.0.1:8766/"})
+    r = client.post("/api/tracking/timetravel/restore",
+                    data={"campaign": "current", "model": "ensemble-member-01.zip"})
+    assert r.status_code == 200, r.get_data(as_text=True)
+    assert seen["commit"] == "def456"
+    assert seen["seed_ckpt_dir"] is None          # a zip is not a live checkpoint
+    assert r.get_json()["warning"]                # dirty commit → reproducibility warning

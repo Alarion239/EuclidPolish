@@ -14,6 +14,7 @@ import time
 
 import pytest
 
+from euclid_polish.observability import JobLog, JobRecord
 from euclid_polish.web import app as web_app
 from euclid_polish.web import fasrc_config, fasrc_jobs
 
@@ -52,6 +53,8 @@ def tmp_repo(tmp_path, monkeypatch):
 
     fresh = fasrc_jobs.JobDB(path=str(tmp_path / "jobs.db"))
     monkeypatch.setattr(fasrc_jobs, "DB", fresh)
+    # An isolated job ledger (the Logs list reads its sacct verdicts).
+    monkeypatch.setattr(fasrc_jobs, "JOBLOG", JobLog(str(tmp_path / "ledger.csv")))
     return repo, log_dir, fresh
 
 
@@ -149,6 +152,25 @@ def test_runs_shows_db_jobs_with_missing_files(client, tmp_repo):
     assert runs[0]["missing"] is True
     assert runs[0]["jobid"] == "777"
     assert runs[0]["state"] == "FAILED"
+
+
+def test_runs_state_follows_the_history_display_rule(client, tmp_repo):
+    """The Logs list shows the same state as the History: sacct's final
+    ledger verdict over a speculative DB state, the DB over a stale
+    live ledger state."""
+    repo, log_dir, db = tmp_repo
+    for jobid, db_state, ledger in (("801", "UNKNOWN", "COMPLETED"),
+                                    ("802", "CANCELLED", "RUNNING")):
+        db.insert(jobid, label=jobid, params={}, script_path=f"{repo}/x.sh",
+                  log_path=f"{log_dir}/run-{jobid}.out", err_path=f"{log_dir}/run-{jobid}.err")
+        db.update_state(jobid, state=db_state, started_at=time.time() - 200,
+                        ended_at=time.time() - 100)
+        fasrc_jobs.JOBLOG.record_submission(JobRecord(jobid=jobid))
+        fasrc_jobs.JOBLOG.record_post_mortem(jobid, {"state": ledger})
+    web_app.STATE.ssh = StubSSH([(0, "", ""), (0, "", "")])
+    runs = {r["jobid"]: r for r in client.get("/api/fasrc/runs").get_json()["runs"]}
+    assert runs["801"]["state"] == "COMPLETED" and runs["801"]["db_state"] == "UNKNOWN"
+    assert runs["802"]["state"] == "CANCELLED"
 
 
 def test_runs_groups_array_task_logs_under_the_parent(client, tmp_repo):

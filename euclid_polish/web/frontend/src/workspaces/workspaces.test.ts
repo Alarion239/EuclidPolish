@@ -24,39 +24,5 @@ describe("workspace folders", () => {
   }
 });
 
-/* Which legacy page each tab adapts (plan WP-F T8): a page listed here must
-   be what the tab module exports. */
-const ADAPTERS: [string, string, () => Promise<{ default: unknown }>][] = [
-  ["sky/atlas", "JwstEuclid", () => import("../pages/JwstEuclid")],
-  ["sky/results", "Inference", () => import("../pages/Inference")],
-  ["sky/catalog-eval", "Evaluation", () => import("../pages/Evaluation")],
-  ["ensemble/overview", "Ensemble", () => import("../pages/Ensemble")],
-  ["ensemble/disagreement", "Ensemble", () => import("../pages/Ensemble")],
-  ["ensemble/train", "TrainMembers", () => import("../pages/TrainMembers")],
-  ["realism/noise", "Noise", () => import("../pages/Noise")],
-  ["realism/galaxies", "GalaxyDistributions", () => import("../pages/GalaxyDistributions")],
-  ["realism/stars", "StarDistribution", () => import("../pages/StarDistribution")],
-  ["realism/pixels", "PopulationComparison", () => import("../pages/PopulationComparison")],
-  ["realism/visual", "SyntheticReal", () => import("../pages/SyntheticReal")],
-  ["data/records", "Sky", () => import("../pages/Sky")],
-  ["data/catalog", "Catalog", () => import("../pages/Catalog")],
-  ["data/cutouts", "Cutouts", () => import("../pages/Cutouts")],
-  ["data/psfs", "Psfs", () => import("../pages/Psfs")],
-  ["data/tng", "Tng", () => import("../pages/Tng")],
-  ["figures/plates", "Visualization", () => import("../pages/Visualization")],
-  ["ops/fasrc", "Fasrc", () => import("../pages/Fasrc")],
-  ["ops/tracking", "Tracking", () => import("../pages/Tracking")],
-  ["ops/git", "Git", () => import("../pages/Git")],
-  ["settings/config", "Config", () => import("../pages/Config")],
-];
-
-describe("legacy adapters", () => {
-  for (const [path, page, loadPage] of ADAPTERS) {
-    it(`${path} renders pages/${page}`, async () => {
-      const [wsId, tab] = path.split("/");
-      const mod = (await workspaceComponents[wsId]()) as WorkspaceIndex;
-      const tabMod = await mod.TABS![tab].load();
-      expect(tabMod.default).toBe((await loadPage()).default);
-    }, 30_000);
-  }
-});
+/* The phase-1 legacy adapters (tabs that re-exported a pre-rework
+   `src/pages/<X>` page) are all replaced: every tab is a workspace module. */

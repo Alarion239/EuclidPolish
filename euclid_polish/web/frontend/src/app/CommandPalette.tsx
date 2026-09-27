@@ -21,6 +21,7 @@ import { Icon, Kbd, copyText, toast, type IconName } from "../ui";
 import { closeInspector, openInspector } from "./inspector";
 import { WORKSPACE_META, allPages } from "./nav";
 import { paletteSuggestions, usePaletteActions, type PageAction } from "./palette";
+import { RUN_GROUP } from "./RunActions";
 import { useShellUi } from "./shellStore";
 
 type Entry = {
@@ -52,13 +53,16 @@ function Group({ heading, children, forceMount }: { heading: string; children: R
   return <Command.Group heading={heading} forceMount={forceMount} className="cmdk__group">{children}</Command.Group>;
 }
 
-function groupActions(actions: PageAction[]): [string, PageAction[]][] {
+/** Page actions by group, the page's own groups first; the shell's global
+ *  "Run a job" group (RunActions) comes after them. */
+export function groupActions(actions: PageAction[]): [string, PageAction[]][] {
   const groups = new Map<string, PageAction[]>();
   for (const a of actions) {
     const g = a.group ?? "This page";
     groups.set(g, [...(groups.get(g) ?? []), a]);
   }
-  return [...groups.entries()];
+  const entries = [...groups.entries()];
+  return [...entries.filter(([g]) => g !== RUN_GROUP), ...entries.filter(([g]) => g === RUN_GROUP)];
 }
 
 export function CommandPalette() {
@@ -98,10 +102,12 @@ export function CommandPalette() {
     { key: "cmd:theme-system", label: "Theme: follow the system", icon: "monitor", keywords: ["appearance", "auto"], run: () => prefs.setTheme("system") },
     { key: "cmd:display", label: "Open the Display panel", icon: "contrast", shortcut: "Shift+D", keywords: ["colour", "color", "stretch", "knee"], run: () => useShellUi.getState().openOnly("display") },
     { key: "cmd:jobs", label: "Show running jobs", icon: "activity", shortcut: "Shift+J", keywords: ["tray", "slurm"], run: () => useShellUi.getState().openOnly("tray") },
+    { key: "cmd:settings-connections", label: "FASRC & archive connections", hint: "Settings › Connections", icon: "server",
+      keywords: ["ssh", "connect", "login", "euclid", "tng", "token", "credentials"], run: () => navigate("/settings/connections") },
     {
       key: "cmd:fasrc-step", label: "Run a FASRC step…", hint: "Ops › FASRC", icon: "server",
       keywords: ["run job", "job", "slurm", "submit", "step", "pipeline", "cluster", "sbatch"],
-      run: () => navigate("/ops/fasrc"),
+      run: () => navigate("/ops/fasrc?view=steps"),
     },
     { key: "cmd:shortcuts", label: "Keyboard shortcuts", icon: "keyboard", shortcut: "Shift+?", run: () => useShellUi.getState().openOnly("shortcuts") },
     { key: "cmd:rail", label: "Collapse / expand the navigation", icon: "sidebar", shortcut: "[", run: () => prefs.toggleRail() },

@@ -1,4 +1,4 @@
-/* The React engine and the legacy compat wrapper against a mocked /viewer
+/* The React engine against a mocked /viewer
  * backend (no network): loading, verbatim server errors, keyboard, ?id=
  * lookup, per-viewer override, readout through WCS, residual tiers, URL
  * state, and the JWST carousel's no-remount index follow. */
@@ -6,7 +6,6 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useShortcutRegistry } from "../hooks/useShortcut";
-import { CutoutViewer } from "../legacy";
 import { useDisplay } from "../state/display";
 import golden from "./__fixtures__/color_golden.json";
 import type { ColorMeta } from "./color";
@@ -302,7 +301,7 @@ describe("ViewerController", () => {
     const posted = JSON.parse(String((call[1] as RequestInit).body)) as Record<string, unknown>;
     expect(posted).toMatchObject({
       collection: "test", index: 0, tiers: ["lr", "sr"], params: {},
-      selection: { u: 0.5, v: 0.5, revision: 1 },
+      selection: { u: 0.5, v: 0.5, revision: 1, source_tier: "lr" },
       display: { color: "VIS", layout: "one-row", knee: 100, gain: 1, transfers: { default: { knee: 100, gain: 1 } } },
     });
     expect((posted.selection as { angular_side_arcsec: number }).angular_side_arcsec).toBeGreaterThan(0);
@@ -546,39 +545,5 @@ describe("<Frame> pointer → image", () => {
     expect(window.innerWidth).toBe(1024);
     expect(c.s.lens.lr).toEqual({ left: 341 + 12, top: 291 + 12, corner: "bottom-right" });
     c.destroy();
-  });
-});
-
-describe("legacy <CutoutViewer> compat", () => {
-  it("follows a changing initialIndex without remounting (JWST carousel)", async () => {
-    mockBackend(defaultHandler());
-    const ready = vi.fn();
-    const { rerender } = render(<MemoryRouter><CutoutViewer collection="test" urlKey="" initialIndex={0} onReady={ready} /></MemoryRouter>);
-    await screen.findByText(/^LR 0 · VIS/);
-    const metaCalls = () => calls.filter((u) => u.startsWith("/viewer/meta/")).length;
-    const before = metaCalls();
-    rerender(<MemoryRouter><CutoutViewer collection="test" urlKey="" initialIndex={2} onReady={ready} /></MemoryRouter>);
-    expect(await screen.findByText(/^LR 2 · VIS/)).toBeTruthy();
-    expect(metaCalls()).toBe(before);
-    expect(ready.mock.calls.filter(([a]) => a === null)).toHaveLength(0);
-  });
-
-  it("hideToolbar keeps the navigation; compact hides both", async () => {
-    mockBackend(defaultHandler());
-    const { container, unmount } = render(<MemoryRouter><CutoutViewer collection="test" hideToolbar urlKey="" /></MemoryRouter>);
-    await screen.findByText(/^LR 0/);
-    expect(container.querySelector(".cv-toolbar")).toBeNull();
-    expect(container.querySelector(".cv-nav")).not.toBeNull();
-    unmount();
-    const c2 = render(<MemoryRouter><CutoutViewer collection="test" compact urlKey="" /></MemoryRouter>);
-    await screen.findByText(/^LR 0/);
-    expect(c2.container.querySelector(".cv-nav")).toBeNull();
-  });
-
-  it("loadColorEngine resolves to the viewer's colour pipeline", async () => {
-    const { loadColorEngine } = await import("../legacy");
-    const fn = await loadColorEngine();
-    const img = fn({ data: Float32Array.from([0, 3000, 3000, 3000]), h: 1, w: 1, c: 4 }, COLOR as never, { color: "VIS", knee: 100, gain: 1, K0: 100 });
-    expect(Array.from(img.data)).toEqual([0, 0, 0, 255]);
   });
 });

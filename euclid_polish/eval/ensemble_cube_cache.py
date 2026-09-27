@@ -28,16 +28,16 @@ from euclid_polish.image.collection import ImageSet
 from euclid_polish.image.tfio import tfrecord_path
 
 
-def _default_cubes_dir(starless: bool = True) -> str:
+def _default_cubes_dir(starless: bool = False) -> str:
     # Must match euclid_polish.web.helpers.viewer_data._ensemble_cubes_dir().
-    # starfull and starless caches are fully detached; the synthetic evaluator
-    # reuses the STARLESS (production) reconstruction, so that is the default.
+    # starfull and starless caches are fully detached; STARFULL is the
+    # production regime (starless is opt-in), so it is the default.
     regime = "starless" if starless else "starfull"
     return os.path.join(Config.VIS_DIR, "ensemble", regime, "cubes")
 
 
 def cached_member_labels(cubes_dir: str | None = None, *,
-                         starless: bool = True) -> list[str] | None:
+                         starless: bool = False) -> list[str] | None:
     """The ``member_labels`` recorded in the cache manifest, or ``None``."""
     d = cubes_dir or _default_cubes_dir(starless)
     try:
@@ -50,13 +50,14 @@ def cached_member_labels(cubes_dir: str | None = None, *,
 def load_cached_member_stack(field_index: int, *, subset: str,
                              cubes_dir: str | None = None,
                              active: list[str] | None = None,
-                             starless: bool = True
+                             starless: bool = False
                              ) -> np.ndarray | None:
     """Return the cached ``(M, H, W, C)`` member stack for ``field_index``, or ``None``.
 
     Returns ``None`` unless ``<cubes_dir>/viz_index.json`` loads, its ``subset`` equals
-    ``subset``, its ``member_labels`` match the ACTIVE labels of the ``starless``
-    regime (``active`` overrides the registry lookup, for tests), ``field_index``
+    ``subset``, its ``member_labels`` match the ACTIVE labels of the regime
+    (STARFULL unless ``starless``; ``active`` overrides the registry lookup, for
+    tests), ``field_index``
     is among its ``indices``, and every ``member{i}_{field_index:05d}.npy`` exists.
     A membership mismatch DELETES the cache dir (stale, position-keyed) before
     returning ``None``. Never raises — any error degrades to ``None`` so callers

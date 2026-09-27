@@ -15,11 +15,12 @@ from collections.abc import Callable
 from typing import Any
 
 from euclid_polish.ensemble import default_ensemble_dir
-from euclid_polish.ensemble_registry import active_labels
-from euclid_polish.eval import catalog_runner, galaxy_catalog, synthetic_runner
+from euclid_polish.ensemble_registry import regime_labels
+from euclid_polish.eval import catalog_runner, galaxy_catalog, lens_catalog, synthetic_runner
 from euclid_polish.eval.catalog_runner import EVAL_HR_SIZE, EVAL_LR_SIZE
 from euclid_polish.eval.ensemble_infer import load_eval_ensemble
 from euclid_polish.eval.eval_catalog import read_eval_catalog
+from euclid_polish.eval.progress import tqdm_progress
 
 #: Manifest columns for a grouped run (superset: PSNR is synthetic-only).
 GROUPED_COLS = [
@@ -28,6 +29,12 @@ GROUPED_COLS = [
     "psnr_lr_hr", "psnr_sr_hr",
 ]
 LENS_GRADES = ("A", "B", "C")
+
+
+def active_labels(ensemble_dir: str) -> list[str]:
+    """The ACTIVE STARFULL member labels — the membership ``load_eval_ensemble``
+    loads (never the starless members: STARFULL is the production regime)."""
+    return list(regime_labels(ensemble_dir, False))
 
 #: Each non-lens class (real-gal, syn-lens, syn-gal) is sized to match the real
 #: lens total: N lenses per grade across the 3 A/B/C grades = 3N. So all four
@@ -138,7 +145,6 @@ def run_grouped_analysis(
     def _emit(m): (log or print)(m)
 
     if on_progress is None:                     # local/CLI run → visible bar
-        from euclid_polish.eval.progress import tqdm_progress
         on_progress = tqdm_progress("grouped")
 
     ensemble_dir = ensemble_dir or default_ensemble_dir()
@@ -149,7 +155,6 @@ def run_grouped_analysis(
         if not os.path.isfile(catalog):
             if catalog_path:
                 raise FileNotFoundError(f"catalog not found: {catalog}")
-            from euclid_polish.eval import lens_catalog
             _emit(f"catalog {catalog} not found — fetching from Zenodo…")
             lens_catalog.fetch(catalog)
         for g in grades:
@@ -175,19 +180,27 @@ def run_grouped_analysis(
     # so an object that only has a plain SR.fits — or one produced by a
     # DIFFERENT membership (fingerprint mismatch) — is re-run, not skipped.
     # Cheap probe via the registry, no model load.
-    labels = (list(model.member_labels) if model is not None
-              else active_labels(ensemble_dir))
+    # The reuse key is the model identity: the STARFULL members AND the
+    # production combiner (kind + artifact fingerprint) — a refitted gate
+    # regenerates the SRs it changes.
+    if model is not None:
+        identity = catalog_runner.eval_model_identity(model)
+    else:
+        identity = catalog_runner.current_eval_identity(
+            labels=active_labels(ensemble_dir))
+    labels = identity["member_labels"]
     want_disagreement = len(labels) > 1
     fp = labels if want_disagreement else None
+    ident = identity if want_disagreement else None
 
     def _reusable(obj_id: str) -> bool:
         if catalog_runner.can_reuse_eval_object(
                 catalog_runner.object_output_dir(out_dir, obj_id),
-                require_disagreement=want_disagreement, member_labels=fp):
+                require_disagreement=want_disagreement, member_labels=fp, identity=ident):
             return True
         return bool(lens_source_dir) and catalog_runner.can_reuse_eval_object(
             catalog_runner.object_output_dir(lens_source_dir, obj_id),
-            require_disagreement=want_disagreement, member_labels=fp)
+            require_disagreement=want_disagreement, member_labels=fp, identity=ident)
 
     needs_lens_model = any(
         not _reusable(obj["id"])
@@ -223,7 +236,7 @@ def run_grouped_analysis(
             # on disk is reused as-is and never re-fetched.
             from_cache = catalog_runner.can_reuse_eval_object(
                 obj_dir, require_disagreement=want_disagreement,
-                member_labels=fp)
+                member_labels=fp, identity=ident)
             if from_cache:
                 _emit(f"  • {obj['id']}: already present locally — skipping download")
                 produced, err = True, ""

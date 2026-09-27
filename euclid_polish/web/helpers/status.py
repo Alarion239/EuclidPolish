@@ -1,10 +1,12 @@
 """status helpers for the EuclidPolish web UI (extracted from app.py)."""
 from __future__ import annotations
 
+import json
 import os
+import threading
+import time
 from typing import Any, cast
 
-import tensorflow as tf
 from astropy.io import fits
 
 from euclid_polish.catalog.catalog_object import CatalogObject, summarize
@@ -18,6 +20,7 @@ from euclid_polish.psf.psf_library import psf_inventory
 from euclid_polish.web import fasrc_config
 from euclid_polish.web import fasrc_fetcher as _fasrc_fetcher
 from euclid_polish.web.fasrc_fetcher import _local_path_for
+from euclid_polish.web.helpers import sky_records
 from euclid_polish.web.helpers.paths import _safe_relpath
 from euclid_polish.web.remote import STATE
 
@@ -36,10 +39,15 @@ def _fasrc_catalog_dir(force: bool = True) -> str | None:
     The brightest-N query runs on the FASRC login node and writes the
     catalog to netscratch ``$DATA_DIR/euclid_stars``. The laptop UI must
     read *that* copy — never a stale local one — for the summary + plots,
-    so we rsync it down on demand."""
+    so we rsync it down on demand.
+
+    A non-forced read (navigation) falls back to the last synchronised copy
+    when the pull fails — FASRC offline, or the cache older than the fetch
+    TTL with the pull refused: a stale mirror beats "no catalogue". A forced
+    read (an explicit refresh) reports the failure instead."""
     res = _fasrc_fetcher.fetch_one_file(_fasrc_catalog_remote_path(), force=force)
     if not res.ok or not res.local_path or not os.path.isfile(res.local_path):
-        return None
+        return None if force else _cached_fasrc_catalog_dir()
     return os.path.dirname(res.local_path)
 
 
@@ -51,6 +59,52 @@ def _cached_fasrc_catalog_dir() -> str | None:
     """
     local = _local_path_for(_fasrc_catalog_remote_path())
     return os.path.dirname(local) if os.path.isfile(local) else None
+
+
+def catalog_cache_info() -> dict[str, Any]:
+    """Freshness of the synchronised FASRC ``stars.csv`` mirror (no SSH):
+    ``{present, path (remote), local_path, size_bytes, mtime, age_s}`` — the
+    mtime is the time of the last pull (the fetcher stamps it)."""
+    remote = _fasrc_catalog_remote_path()
+    local = _local_path_for(remote)
+    try:
+        st = os.stat(local)
+    except OSError:
+        return {"present": False, "path": remote, "local_path": None, "size_bytes": None,
+                "mtime": None, "age_s": None}
+    return {"present": True, "path": remote, "local_path": local, "size_bytes": int(st.st_size),
+            "mtime": float(st.st_mtime), "age_s": max(0.0, time.time() - float(st.st_mtime))}
+
+
+_CATALOG_LOCK = threading.Lock()
+_CATALOG_MEMO: dict[str, tuple[tuple[int, int], list[CatalogObject]]] = {}
+_VALID4_MEMO: dict[str, tuple[tuple[int, int], tuple[int | None, list[CatalogObject]]]] = {}
+
+
+def _catalog_key(path: str) -> tuple[int, int] | None:
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return int(st.st_size), int(st.st_mtime_ns)
+
+
+def read_catalog_objects(path: str) -> list[CatalogObject]:
+    """``CatalogObject.read(path)`` memoised per file state (the 43k-row
+    mirror takes ~1.3 s to parse; the cutouts viewer asks per cube)."""
+    key = _catalog_key(path)
+    if key is None:
+        return []
+    real = os.path.realpath(path)
+    with _CATALOG_LOCK:
+        hit = _CATALOG_MEMO.get(real)
+        if hit is not None and hit[0] == key:
+            return hit[1]
+    objects = CatalogObject.read(real)
+    with _CATALOG_LOCK:
+        _CATALOG_MEMO.clear()                   # one catalogue at a time
+        _CATALOG_MEMO[real] = (key, objects)
+    return objects
 
 
 def _valid_4band_stars(force: bool = False):
@@ -67,10 +121,41 @@ def _valid_4band_star_objects(force: bool = False):
     """:func:`_valid_4band_stars` with the catalogue rows: ``(size,
     [CatalogObject, ...])`` sorted by id — so callers also get each star's
     ``ra``/``dec`` without re-reading ``stars.csv``."""
-    cat_dir = _fasrc_catalog_dir(force=force)
+    return _valid_4band_star_objects_at(_fasrc_catalog_dir(force=force))
+
+
+def _cached_valid_4band_star_objects():
+    """:func:`_valid_4band_star_objects` over the synchronised mirror only —
+    no SSH, no rsync (the cutouts navigator and its totals; works offline)."""
+    return _valid_4band_star_objects_at(_cached_fasrc_catalog_dir())
+
+
+def _cached_valid_4band_stars():
+    """:func:`_valid_4band_stars` over the synchronised mirror only."""
+    size, objects = _cached_valid_4band_star_objects()
+    return size, [int(o.id) for o in objects if o.id is not None]
+
+
+def _valid_4band_star_objects_at(cat_dir: str | None):
     if cat_dir is None:
         return None, []
-    objects = CatalogObject.read(os.path.join(cat_dir, Config.CATALOG_FILE))
+    path = os.path.join(cat_dir, Config.CATALOG_FILE)
+    key = _catalog_key(path)
+    if key is None:
+        return None, []
+    real = os.path.realpath(path)
+    with _CATALOG_LOCK:
+        hit = _VALID4_MEMO.get(real)
+        if hit is not None and hit[0] == key:
+            return hit[1]
+    result = _valid_4band_select(read_catalog_objects(path))
+    with _CATALOG_LOCK:
+        _VALID4_MEMO.clear()
+        _VALID4_MEMO[real] = (key, result)
+    return result
+
+
+def _valid_4band_select(objects: list[CatalogObject]):
     if not objects:
         return None, []
     band_names = [b.name for b in Config.BANDS]
@@ -126,7 +211,7 @@ def _catalog_status_at(cat_dir: str | None) -> dict[str, Any]:
     path = os.path.join(cat_dir, Config.CATALOG_FILE)
     if not os.path.exists(path):
         return {"present": False}
-    summary = summarize(CatalogObject.read(path))
+    summary = summarize(read_catalog_objects(path))
     # Show the *remote* path so the page makes clear this is the FASRC
     # (netscratch) catalog, not the local cache copy we render from.
     return {"present": True, "summary": summary,
@@ -193,6 +278,204 @@ def _cached_fasrc_psf_dir() -> str | None:
         if os.path.isfile(local):
             local_dir = os.path.dirname(local)
     return local_dir
+
+
+def psf_sync_status_path() -> str:
+    """Where the last ePSF sync records each band's outcome (in the cache
+    root: evicting it only loses the "no empirical PSF" distinction)."""
+    return os.path.join(Config.FASRC_CACHE_DIR, "euclid_psf_sync.json")
+
+
+def read_psf_sync_status() -> dict[str, Any] | None:
+    try:
+        with open(psf_sync_status_path()) as handle:
+            payload = json.load(handle)
+    except (OSError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def write_psf_sync_status(bands: dict[str, dict[str, Any]],
+                          clusters_meta: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Merge one sync's per-band outcomes into the status file."""
+    previous = read_psf_sync_status() or {}
+    merged = dict(previous.get("bands") or {})
+    now = time.time()
+    for band, outcome in bands.items():
+        merged[band] = {**outcome, "checked_at": now}
+    payload = {"checked_at": now, "bands": merged,
+               "clusters_meta": clusters_meta if clusters_meta is not None
+               else previous.get("clusters_meta")}
+    path = psf_sync_status_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = f"{path}.tmp"
+    with open(tmp, "w") as handle:
+        json.dump(payload, handle)
+    os.replace(tmp, path)
+    return payload
+
+
+def remote_missing(error: str | None) -> bool:
+    """A fetch error that means "the file does not exist on FASRC"."""
+    text = (error or "").lower()
+    return "no such file" in text or "not found on remote" in text
+
+
+def _psf_band_path(band) -> str:
+    cfg = fasrc_config.load()
+    return _local_path_for(f"{cfg.data_dir}/euclid_psf/{band.psf_fits_filename}")
+
+
+_PSF_HEADER_MEMO: dict[str, tuple[tuple[int, int], dict[str, Any]]] = {}
+
+
+def _header_float(header, *keys: str) -> float | None:
+    for key in keys:
+        if key in header:
+            try:
+                value = float(cast(Any, header[key]))
+            except (TypeError, ValueError):
+                continue
+            if value == value:                  # not NaN
+                return value
+    return None
+
+
+def psf_file_summary(path: str) -> dict[str, Any]:
+    """Headers-only summary of one cached ePSF file (memoised per file
+    state): ``{n_psf, shape, pixel_scale, fwhm_arcsec, clusters: [{index,
+    ra, dec, n_stars, fwhm_arcsec}]}`` — HDU0 is the mean kernel, HDU1…K the
+    spatial clusters. Pixels are never read."""
+    key = _catalog_key(path)
+    real = os.path.realpath(path)
+    if key is not None:
+        hit = _PSF_HEADER_MEMO.get(real)
+        if hit is not None and hit[0] == key:
+            return hit[1]
+    with fits.open(real, memmap=True, lazy_load_hdus=True) as hdul:
+        primary = hdul[0].header
+        shape = [int(primary.get("NAXIS2", 0) or 0), int(primary.get("NAXIS1", 0) or 0)]
+        clusters = []
+        for index, hdu in enumerate(hdul[1:]):
+            header = hdu.header
+            if int(header.get("NAXIS", 0) or 0) < 2:
+                continue
+            n_stars = header.get("NSTARS")
+            clusters.append({
+                "index": index + 1,
+                "ra": _header_float(header, "RA"),
+                "dec": _header_float(header, "DEC"),
+                "n_stars": int(cast(Any, n_stars)) if n_stars is not None else None,
+                "fwhm_arcsec": _header_float(header, "FWHM"),
+            })
+        n_psf = primary.get("NPSF")
+        summary = {
+            "n_psf": int(cast(Any, n_psf)) if n_psf is not None else max(1, len(clusters)),
+            "shape": shape,
+            "pixel_scale": _header_float(primary, "PXSCALE", "PIXSCALE"),
+            "fwhm_arcsec": _header_float(primary, "FWHM"),
+            "clusters": clusters,
+        }
+    if key is not None:
+        _PSF_HEADER_MEMO[real] = (key, summary)
+    return summary
+
+
+def psf_inventory_payload() -> dict[str, Any]:
+    """The ePSF inventory of Data › PSFs (local cache only — no SSH).
+
+    Per band ``state``:
+
+    * ``empirical`` — the FASRC ePSF is synchronised locally (``path``,
+      ``synced_at``, header summary);
+    * ``no_empirical`` — the last sync found no ePSF on FASRC for this band:
+      generation uses the Gaussian fallback (``fwhm`` from the config);
+    * ``not_cached`` — not synchronised yet (or the last sync failed for
+      another reason, ``error``): FASRC may well have one.
+
+    ``clusters``: one row per spatial cluster (from the synced metadata JSON,
+    else the cached VIS headers) with RA/Dec, star count and the per-band
+    FWHM wherever a cached band file carries it."""
+    status = read_psf_sync_status() or {}
+    sync_bands = status.get("bands") or {}
+    bands = []
+    summaries: dict[str, dict[str, Any]] = {}
+    for band in Config.BANDS:
+        path = _psf_band_path(band)
+        last = sync_bands.get(band.name) or None
+        item: dict[str, Any] = {
+            "name": band.name,
+            "fwhm": band.psf_fwhm_arcsec,
+            "oversampling": band.epsf_oversampling,
+            "epsf_pixel_scale": band.epsf_pixel_scale_arcsec,
+            "last_sync": last,
+        }
+        try:
+            st = os.stat(path)
+        except OSError:
+            st = None
+        if st is not None:
+            item.update(state="empirical", empirical=True, path=_safe_relpath(path) or path,
+                        size_bytes=int(st.st_size), synced_at=float(st.st_mtime))
+            try:
+                summary = psf_file_summary(path)
+                summaries[band.name] = summary
+                item.update(n_psf=summary["n_psf"], shape=summary["shape"],
+                            pixel_scale=summary["pixel_scale"],
+                            measured_fwhm=summary["fwhm_arcsec"])
+            except Exception as exc:  # noqa: BLE001 - a broken file is reported, not raised
+                item["error"] = f"{type(exc).__name__}: {exc}"
+        elif last and not last.get("ok") and remote_missing(last.get("error")):
+            item.update(state="no_empirical", empirical=False)
+        else:
+            item.update(state="not_cached", empirical=False,
+                        error=(last or {}).get("error") if last and not last.get("ok") else None)
+        bands.append(item)
+
+    clusters: list[dict[str, Any]] = []
+    meta_path = _cached_psf_clusters_json()
+    meta_rows: list[dict[str, Any]] = []
+    if meta_path:
+        try:
+            with open(meta_path) as handle:
+                raw = json.load(handle).get("clusters", [])
+            meta_rows = [row for row in raw if isinstance(row, dict)]
+        except (OSError, ValueError, AttributeError):
+            meta_rows = []
+    vis = summaries.get(Config.BAND_VIS.name, {}).get("clusters", [])
+    base = meta_rows or vis
+    for position, row in enumerate(base):
+        index = int(row.get("index") or position + 1)
+        fwhm_by_band: dict[str, float | None] = {}
+        for name, summary in summaries.items():
+            match = next((c for c in summary["clusters"] if c["index"] == index), None)
+            fwhm_by_band[name] = match.get("fwhm_arcsec") if match else None
+        recorded = row.get("fwhm_by_band")
+        if isinstance(recorded, dict):
+            for name, value in recorded.items():
+                if fwhm_by_band.get(name) is None and isinstance(value, int | float):
+                    fwhm_by_band[name] = float(value)
+        if fwhm_by_band.get(Config.BAND_VIS.name) is None:
+            vis_fwhm = row.get("fwhm_arcsec")
+            if isinstance(vis_fwhm, int | float):
+                fwhm_by_band[Config.BAND_VIS.name] = float(vis_fwhm)
+        n_stars = row.get("n_stars")
+        clusters.append({
+            "index": index, "id": f"cluster-{index:03d}",
+            "ra": row.get("ra") if isinstance(row.get("ra"), int | float) else None,
+            "dec": row.get("dec") if isinstance(row.get("dec"), int | float) else None,
+            "n_stars": int(n_stars) if isinstance(n_stars, int | float) else None,
+            "fwhm_by_band": fwhm_by_band,
+        })
+    meta_stat = _catalog_key(meta_path) if meta_path else None
+    return {
+        "bands": bands,
+        "clusters": clusters,
+        "clusters_source": "metadata" if meta_rows else ("vis_headers" if vis else None),
+        "clusters_meta": {"present": bool(meta_path),
+                          "synced_at": os.path.getmtime(meta_path) if meta_stat else None},
+        "last_sync": status.get("checked_at"),
+    }
 
 
 def _psf_status() -> dict[str, Any]:
@@ -339,25 +622,14 @@ def _resolve_training_log(checkpoint_dir: str) -> str | None:
 
 
 def _record_count(name: str, records_dir: str | None = None) -> int | None:
-    """Records in a multi-band tfrecord.
+    """Records in a multi-band tfrecord (headers only, see
+    :func:`sky_records.record_count`).
 
     Returns:
       * ``0``    — file does not exist
       * ``int``  — full record count
-      * ``None`` — file present but partially corrupt (e.g. ``DataLossError``
-        from a truncated rsync). Returning ``None`` instead of raising
-        keeps callers from 500-ing the whole response when one shard
-        is bad.
+      * ``None`` — file present but partially corrupt (a truncated rsync, a
+        bad header). Returning ``None`` instead of raising keeps callers from
+        500-ing the whole response when one shard is bad.
     """
-    p = tfrecord_path(records_dir or Config.RECORDS_DIR_V2, name)
-    if not os.path.exists(p):
-        return 0
-    try:
-        return sum(1 for _ in tf.data.TFRecordDataset(p))
-    except tf.errors.DataLossError:
-        # Truncated / partially-synced shard. Caller renders as "—".
-        return None
-    except Exception:
-        # Any other read failure (permissions, corrupt header, etc.)
-        # — treat the same way so the page stays usable.
-        return None
+    return sky_records.record_count(tfrecord_path(records_dir or Config.RECORDS_DIR_V2, name))

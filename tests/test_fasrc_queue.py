@@ -223,3 +223,51 @@ def test_remove_one_item(q):
     q.enqueue(SPEC, "b")
     q.remove(it["id"])
     assert q.public()["names"] == ["b"]
+
+
+# --------------------------------------------------------------------------
+# W-Ops: per-item detail and resume past a failed job
+# --------------------------------------------------------------------------
+
+def test_public_items_carry_step_position_and_time(q):
+    first = q.enqueue(SPEC, "a")
+    q.enqueue({"kind": "step", "step": "euclid_query", "form": {}}, "b")
+    items = q.public()["items"]
+    assert [it["position"] for it in items] == [1, 2]
+    assert items[0]["id"] == first["id"]
+    assert items[0]["step"] == "train"
+    assert items[1]["step"] == "euclid_query"
+    assert isinstance(items[0]["queued_at"], float)
+    # The spec (form payloads can embed large JSON) never reaches the UI.
+    assert "spec" not in items[0]
+
+
+def test_resume_after_a_failed_job_drops_it_as_the_active_lane(q):
+    q.on_direct_submit("7")
+    q.enqueue(SPEC, "next")
+    db = FakeDB({"7": {"jobid": "7", "state": "FAILED"}})
+    q.tick(db, FakeLog(), FakeSSH(), lambda spec: ("8", {}))
+    assert q.halted
+    out = q.resume_after_halt(db, FakeLog())
+    assert out["halted"] is False
+    assert q.active_jobid is None          # the failed job no longer blocks
+    submitted = []
+    q.tick(db, FakeLog(), FakeSSH(), lambda spec: (submitted.append(spec) or "8", {}))
+    assert submitted == [SPEC]
+    assert q.active_jobid == "8"
+
+
+def test_resume_keeps_a_still_running_active_job(q):
+    q.on_direct_submit("9")
+    q._halt("promotion failed")
+    db = FakeDB({"9": {"jobid": "9", "state": "RUNNING"}})
+    q.resume_after_halt(db, FakeLog())
+    assert not q.halted
+    assert q.active_jobid == "9"
+
+
+def test_resume_after_halt_when_not_halted_is_a_noop(q):
+    q.on_direct_submit("5")
+    db = FakeDB({"5": {"jobid": "5", "state": "RUNNING"}})
+    q.resume_after_halt(db, FakeLog())
+    assert q.active_jobid == "5"

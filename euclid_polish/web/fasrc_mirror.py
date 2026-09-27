@@ -1,8 +1,11 @@
-"""Background poller that rsync's new ENSEMBLE checkpoints from FASRC.
+"""One-shot rsync of the ENSEMBLE checkpoints from FASRC to this laptop.
 
-One mirror thread per Flask process; ``start()`` / ``stop()`` toggle it.
-We don't try to detect "new" files ourselves — rsync's incremental
-transfer handles that natively. We just call it on a timer.
+Manual only (decided in W-Ops, 2026-09-26): the periodic poller used to be
+started by the training-status poll, which was deleted with the classic
+console, and an automatic ``rsync --delete-after`` that silently removes
+local-only files is not something to run unasked. ``POST
+/api/fasrc/mirror/trigger`` (with ``confirm=1``) runs :meth:`Mirror.trigger`
+as a local job; ``GET /api/fasrc/mirror/status`` reports the last run.
 
 The mirror syncs the remote *ensemble* dir (sibling of ``cfg.ckpt_dir``) into
 the local ensemble dir. The member registry lives OUTSIDE the ensemble dir
@@ -30,65 +33,26 @@ def _remote_ensemble_dir(cfg) -> str:
 
 @dataclass
 class MirrorStatus:
-    enabled:     bool = False
     last_run_at: float | None = None
     last_rc:     int | None = None
     last_error:  str = ""
     last_stdout: str = ""
     remote_dir:  str = ""
     local_dir:   str = ""
-    # Deduplicate checkpoint-save triggers: the status-poller writes the
-    # most recent "Checkpoint saved" log line here so the same line
-    # doesn't fire a fresh rsync on every poll.
-    last_checkpoint_line: str = ""
 
 
 class Mirror:
-    """Periodic rsync from ``cfg.ckpt_dir`` on FASRC → local mirror dir."""
+    """rsync ``<remote ensemble>/`` → the local ensemble dir, on request."""
 
-    def __init__(self, period_seconds: int = 60) -> None:
-        self.period = max(15, int(period_seconds))
-        self._thread: threading.Thread | None = None
-        self._stop_evt = threading.Event()
+    def __init__(self) -> None:
         self._lock = threading.Lock()
         self.status = MirrorStatus()
 
-    # ------------------------------ control -------------------------------
-
-    def start(self) -> MirrorStatus:
-        with self._lock:
-            if self._thread and self._thread.is_alive():
-                return self.status
-            self._stop_evt.clear()
-            cfg = fasrc_config.load()
-            self.status.enabled = True
-            self.status.remote_dir = _remote_ensemble_dir(cfg)
-            self.status.local_dir  = (cfg.local_ckpt_mirror or
-                                      default_ensemble_dir())
-            self._thread = threading.Thread(
-                target=self._loop, name="fasrc-mirror", daemon=True,
-            )
-            self._thread.start()
-        return self.status
-
-    def stop(self) -> MirrorStatus:
-        self._stop_evt.set()
-        with self._lock:
-            self.status.enabled = False
-        return self.status
-
     def trigger(self) -> MirrorStatus:
-        """One-shot sync (does not change the periodic schedule)."""
-        self._sync_once()
-        return self.status
-
-    # ------------------------------ loop ----------------------------------
-
-    def _loop(self) -> None:
-        # First sync immediately so the UI feels responsive.
-        self._sync_once()
-        while not self._stop_evt.wait(self.period):
+        """One synchronous sync (serialised: a second caller waits)."""
+        with self._lock:
             self._sync_once()
+        return self.status
 
     def _sync_once(self) -> None:
         if STATE.ssh is None or not STATE.ssh.is_connected():
@@ -141,4 +105,4 @@ class Mirror:
             pass
 
 
-MIRROR = Mirror(period_seconds=60)
+MIRROR = Mirror()

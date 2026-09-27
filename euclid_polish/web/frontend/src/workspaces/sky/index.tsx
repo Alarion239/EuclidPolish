@@ -1,7 +1,10 @@
-/* Sky workspace (spec §7). Phase 1: legacy adapters (atlas → JWST × Euclid,
-   results → Inference, catalog-eval → Evaluation); W-SkyAtlas / W-SkyResults
-   replace the tabs in phase 3. */
+/* Sky workspace (spec §7): atlas (the celestial sphere, W-SkyAtlas),
+   results, experiments and catalog-eval (W-SkyResults). Loading the
+   workspace registers the atlas's inspector kinds (`tile`, `source`) and the
+   results' (`realtile`, `experiment`). */
 import { Workspace, defineTabs } from "../../app/workspace";
+import "./atlas/inspectors/register";
+import "./results/register";
 
 export const TABS = defineTabs("sky", {
   atlas: { load: () => import("./tabs/Atlas") },

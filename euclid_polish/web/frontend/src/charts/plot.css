@@ -3,7 +3,11 @@
    canvas; everything that follows the pointer is DOM (cheap, crisp, no
    canvas redraw on hover). */
 
-.plot { width: 100%; min-width: 0; }
+/* position: relative contains every absolutely positioned overlay, and above
+   all the visually hidden .sr-only summary: without a positioned ancestor it
+   is placed against the initial containing block and extends the DOCUMENT
+   past the shell (the whole console then scrolls, e.g. on scrollIntoView). */
+.plot { position: relative; width: 100%; min-width: 0; }
 .plot__frame { position: relative; width: 100%; outline: none; border-radius: var(--r-sm); }
 .plot__frame:focus-visible { box-shadow: var(--ring); }
 .plot__frame canvas { display: block; touch-action: pan-y; }

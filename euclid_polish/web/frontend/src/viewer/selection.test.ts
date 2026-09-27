@@ -109,6 +109,12 @@ describe("the wire shape of a frozen crop", () => {
     });
     expect(serializeSelection(null)).toBeNull();
   });
+
+  it("carries the frozen tier so the server anchors the crop on it", () => {
+    expect(serializeSelection({ u: 0.5, v: 0.5, angularSideArcsec: 2, relativeSide: 0.1, revision: 1, sourceTier: "jwst" })).toEqual({
+      u: 0.5, v: 0.5, angular_side_arcsec: 2, relative_side: 0.1, revision: 1, source_tier: "jwst",
+    });
+  });
 });
 
 describe("frame layout (pan/zoom view)", () => {

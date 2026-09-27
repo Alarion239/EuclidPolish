@@ -475,6 +475,8 @@ def test_cutouts_objects_carry_their_catalogue_positions(tmp_path, monkeypatch):
     CatalogObject.write(stars, str(tmp_path / Config.CATALOG_FILE))
     monkeypatch.setattr(web_status, "_fasrc_catalog_dir",
                         lambda force=False: str(tmp_path))
+    # The navigator reads the synchronised mirror only (no SSH, offline-safe).
+    monkeypatch.setattr(web_status, "_cached_fasrc_catalog_dir", lambda: str(tmp_path))
 
     meta = vd.get_meta("cutouts", {})
 

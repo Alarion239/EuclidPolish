@@ -1,16 +1,17 @@
-/* Ensemble workspace (spec §8.2), `/ensemble/:mode/<tab>`. Phase 1: every tab
-   but `train` renders the old Ensemble page (all its cards), `train` renders
-   Train members; W-Ensemble splits the page into the real tabs in phase 3.
-   The regime switch beside the tabs keeps the current tab. So does the legacy
-   page's own starfull/starless switch (until W-Ensemble removes it): it
-   navigates to the bare `/ensemble/<mode>`, which returns to the last tab
-   visited instead of the default one. */
+/* Ensemble workspace (spec §8.2), `/ensemble/:mode/<tab>`: overview,
+   members, curves, knee, diagnostics, combiners, disagreement, train. The
+   ONE starfull/starless switch sits beside the tabs and keeps the current
+   tab (and ?inspect=); a bare `/ensemble/<mode>` returns to the last tab
+   visited. The inspector kinds `member` and `combiner` are registered by
+   ./register.ts. */
 import { useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { matchPage } from "../../app/manifest";
 import { pagePath } from "../../app/nav";
 import { Workspace, defineTabs } from "../../app/workspace";
 import { Segmented } from "../../ui";
+import "./register";
+import "./ensemble.css";
 
 export const TABS = defineTabs("ensemble", {
   overview: { load: () => import("./tabs/Overview") },

@@ -1,26 +1,56 @@
-"""cutouts routes for the EuclidPolish web UI (extracted from app.py)."""
+"""Star catalogue + star cutout routes (Data › Catalog and Data › Cutouts).
+
+Everything here reads the synchronised FASRC-mirror ``stars.csv`` and the
+local cutout cache only: no SSH, works offline. The explicit catalogue pull
+is ``POST /api/status/refresh-catalog`` (``routes/files.py``); the cutouts
+viewer (collection ``cutouts``) pulls single star cutouts on demand.
+"""
 from __future__ import annotations
 
 import io
+import re
 
 from flask import abort, jsonify, request, send_file
 
 from euclid_polish.config import Config
-from euclid_polish.web.fasrc_gate import requires_fasrc
+from euclid_polish.web.helpers import star_catalog
 from euclid_polish.web.helpers.fits_render import (
     _list_band_cutouts,
     _render_fits_to_png,
     _resolve_cutout_path,
 )
-from euclid_polish.web.helpers.status import _valid_4band_stars
+from euclid_polish.web.helpers.status import _cached_valid_4band_stars, catalog_cache_info
+
+_CUTOUT_NAME = re.compile(r"^star_(\d+)_(\d+)\.fits$", re.IGNORECASE)
+
+
+def gallery_items(files: list[str], stars: dict[int, dict]) -> list[dict]:
+    """``star_<id>_<size>.fits`` names → ``{file, id, size, ra, dec, mag}``."""
+    items = []
+    for name in files:
+        match = _CUTOUT_NAME.match(name)
+        sid = int(match.group(1)) if match else None
+        size = int(match.group(2)) if match else None
+        star = stars.get(sid, {}) if sid is not None else {}
+        items.append({"file": name, "id": sid, "size": size, "ra": star.get("ra"),
+                      "dec": star.get("dec"), "mag": star.get("mag")})
+    return items
 
 
 def register(app):
 
+    @app.route("/api/catalog/stars")
+    def api_catalog_stars():
+        """The star catalogue explorer's payload (see ``helpers/star_catalog``):
+        compact rows of the FASRC-mirror ``stars.csv`` + summary, per-band
+        validity and the mirror's freshness. Cache-only."""
+        return jsonify(star_catalog.stars_payload())
+
     @app.route("/api/cutouts/<band_name>/list.json")
     def api_cutouts_list(band_name: str):
-        """Paginated per-band cutout filenames as JSON for the React gallery.
-        Thumbnails load from /cutout-image/<band>/<filename>?size=…&output_dir=…"""
+        """Paginated per-band cutout files of the local cache, each with its
+        star id, size and catalogue position / magnitude. Thumbnails load from
+        /cutout-image/<band>/<filename>?size=…&output_dir=…"""
         try:
             Config.get_band(band_name)
         except Exception:
@@ -30,14 +60,19 @@ def register(app):
             page = max(1, int(request.args.get("page", 1)))
         except ValueError:
             page = 1
-        per_page = 60
+        try:
+            per_page = max(12, min(int(request.args.get("per_page", 60)), 240))
+        except ValueError:
+            per_page = 60
         files = _list_band_cutouts(band_name, out_dir)
         total = len(files)
         n_pages = max(1, (total + per_page - 1) // per_page)
         page = min(page, n_pages)
         start = (page - 1) * per_page
+        shown = files[start:start + per_page]
         return jsonify({
-            "band": band_name, "files": files[start:start + per_page],
+            "band": band_name, "files": shown,
+            "items": gallery_items(shown, star_catalog.stars_by_id()),
             "total": total, "page": page, "n_pages": n_pages,
             "per_page": per_page, "output_dir": out_dir,
         })
@@ -62,9 +97,11 @@ def register(app):
 
     # ---------------- Star cutouts (valid in all 4 bands) ----------------
     # The viewer collection ``cutouts`` serves the stars themselves; this
-    # counts them for the Cutouts tab.
+    # counts them for the Cutouts tab — from the synchronised mirror, so it
+    # answers offline (a stale mirror is flagged by ``age_s``).
     @app.route("/api/star-cutouts/totals")
-    @requires_fasrc
     def api_star_cutouts_totals():
-        size, ids = _valid_4band_stars(force=True)
-        return jsonify({"count": len(ids), "size": size})
+        size, ids = _cached_valid_4band_stars()
+        info = catalog_cache_info()
+        return jsonify({"count": len(ids), "size": size, "cached": True,
+                        "catalog": {k: info[k] for k in ("present", "path", "mtime", "age_s")}})

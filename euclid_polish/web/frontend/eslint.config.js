@@ -26,17 +26,6 @@ export default defineConfig([
     },
   },
   {
-    // Legacy page bodies are replaced workspace by workspace in phase 3 (their
-    // owners delete the dead code); until then dead locals there only warn.
-    files: ["src/pages/**/*.{ts,tsx}"],
-    rules: {
-      "@typescript-eslint/no-unused-vars": ["warn", {
-        argsIgnorePattern: "^_", varsIgnorePattern: "^_", caughtErrors: "none",
-      }],
-      "prefer-const": "warn",
-    },
-  },
-  {
     files: ["vite.config.ts", "vitest.config.ts", "eslint.config.js", "test/**/*.{ts,tsx}"],
     languageOptions: { globals: { ...globals.node } },
   },

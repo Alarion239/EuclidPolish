@@ -17,7 +17,10 @@
 .shell__body { flex: 1; min-height: 0; }
 .shell__stage-panel, .shell__inspector-panel { min-width: 0; height: 100%; }
 
-.stage { height: 100%; overflow: auto; min-width: 0; outline: none; }
+/* position: relative: the stage is the containing block of every absolutely
+   positioned descendant without a closer one (.sr-only text, overlays), so
+   they scroll with the stage instead of growing the document. */
+.stage { position: relative; height: 100%; overflow: auto; min-width: 0; outline: none; }
 
 .shell__sep {
   width: 6px; flex: none; cursor: col-resize;
@@ -87,6 +90,8 @@
   min-width: 18px; padding: 3px 6px; border-radius: var(--r-pill); text-align: center;
   font: 600 10px/1 var(--font-mono); color: var(--on-accent); background: var(--accent);
 }
+.rail__badge[data-tone="warn"] { background: var(--warn-soft); color: var(--warn); }
+.rail__badge[data-tone="bad"] { background: var(--bad-soft); color: var(--bad); }
 .rail__foot {
   display: flex; justify-content: flex-end; flex: none;
   padding: var(--s2) var(--s3); border-top: 1px solid var(--border);
@@ -112,37 +117,45 @@
 @keyframes shell-slide-in { from { transform: translateX(-16px); opacity: 0; } to { transform: none; opacity: 1; } }
 
 /* ── top bar ───────────────────────────────────────────────────────────── */
+/* One line at every width: the breadcrumbs take the free space and truncate
+   (each crumb ellipsizes, the entity first); every control keeps its size. */
 .topbar {
-  flex: none; display: flex; align-items: center; gap: var(--s2);
-  height: var(--topbar-h); padding: 0 var(--s4);
+  flex: none; display: flex; flex-wrap: nowrap; align-items: center; gap: var(--s2);
+  height: var(--topbar-h); padding: 0 var(--s4); min-width: 0; overflow: hidden;
   background: var(--surface-1); border-bottom: 1px solid var(--border);
   z-index: var(--z-topbar);
 }
-.topbar__spacer { flex: 1; }
+.topbar > * { flex-shrink: 0; }
+.topbar > .crumbs { flex: 1 1 auto; }
 
-.crumbs { min-width: 0; }
+.crumbs { min-width: 0; overflow: hidden; }
 .crumbs ol {
   display: flex; align-items: center; min-width: 0; margin: 0; padding: 0; list-style: none;
   font-size: var(--fs-md);
 }
-.crumbs li { display: flex; align-items: center; min-width: 0; white-space: nowrap; }
-.crumbs li + li::before { content: "›"; margin: 0 var(--s2); color: var(--text-faint); }
+.crumbs li { display: flex; align-items: center; flex: 0 1 auto; min-width: 0; white-space: nowrap; }
+.crumbs li + li::before { content: "›"; flex: none; margin: 0 var(--s2); color: var(--text-faint); }
+.crumbs__text { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .crumbs a { color: var(--text-dim); }
 .crumbs a:hover { color: var(--text); }
 .crumbs__here { color: var(--text); font-weight: var(--fw-semibold); }
-.crumbs__entity span {
-  max-width: 32ch; overflow: hidden; text-overflow: ellipsis; color: var(--text-dim);
-  font-family: var(--font-mono); font-size: var(--fs-sm);
+/* The page's own crumb (the tab) gives way last, the inspected entity first. */
+.crumbs li.crumbs__ws { flex-shrink: 2; }
+.crumbs li.crumbs__tab { flex-shrink: 0.4; }
+.crumbs li.crumbs__entity { flex-shrink: 6; }
+.crumbs__entity .crumbs__text {
+  max-width: 32ch; color: var(--text-dim); font-family: var(--font-mono); font-size: var(--fs-sm);
 }
 
 .topbar__search {
   display: inline-flex; align-items: center; gap: var(--s2);
-  height: var(--ctl-h); min-width: 250px; padding: 0 var(--s2) 0 var(--s3);
+  height: var(--ctl-h); flex: 0 1 250px; min-width: var(--ctl-h); padding: 0 var(--s2) 0 var(--s3);
   border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface-2);
-  color: var(--text-faint); font: inherit; font-size: var(--fs-sm); cursor: pointer;
+  color: var(--text-faint); font: inherit; font-size: var(--fs-sm); cursor: pointer; overflow: hidden;
 }
+.topbar > .topbar__search { flex-shrink: 1; }
 .topbar__search:hover { border-color: var(--border-strong); color: var(--text-dim); }
-.topbar__search-text { flex: 1; text-align: left; }
+.topbar__search-text { flex: 1; min-width: 0; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 .topbar__conn {
   display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px;
@@ -167,14 +180,26 @@
   font: 600 9px/1 var(--font-mono); text-align: center;
 }
 
+@media (max-width: 1199px) {
+  .topbar > .topbar__search { flex: none; }
+  .topbar__search-text { display: none; }
+}
 @media (max-width: 899px) {
-  .topbar { padding: 0 var(--s2); }
-  .topbar__search { min-width: 0; }
-  .topbar__search-text, .topbar__search .ui-kbdgroup, .topbar__conn-label, .crumbs__entity { display: none; }
+  .topbar { padding: 0 var(--s2); gap: 4px; }
+  .topbar > .topbar__search { flex: none; width: var(--ctl-h); padding: 0; justify-content: center; }
+  .topbar__search-text, .topbar__search .ui-kbdgroup, .topbar__conn-label, .crumbs li.crumbs__entity { display: none; }
+  .topbar__conn { padding: 0 8px; }
+}
+/* Very narrow: the tab name alone (the workspace is in the rail drawer). */
+@media (max-width: 519px) {
+  .crumbs li.crumbs__ws:not(:only-child) { display: none; }
+  .crumbs li.crumbs__tab::before { display: none; }
 }
 
 /* ── workspace tab strip ───────────────────────────────────────────────── */
-.ws { min-height: 100%; }
+/* --ws-bar-h: the tab strip's measured height (WorkspaceTabs), for a tab's
+   own sticky toolbar: `position: sticky; top: var(--ws-bar-h)`. */
+.ws { min-height: 100%; --ws-bar-h: 0px; }
 .ws__bar {
   position: sticky; top: 0; z-index: var(--z-sticky);
   display: flex; align-items: center; gap: var(--s3);

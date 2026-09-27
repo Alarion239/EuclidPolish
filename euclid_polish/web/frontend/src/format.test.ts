@@ -83,9 +83,9 @@ describe("formatSI / formatBytes / formatPercent", () => {
   it("formats byte counts in binary units", () => {
     expect(formatBytes(0)).toBe("0 B");
     expect(formatBytes(512)).toBe("512 B");
-    expect(formatBytes(1536)).toBe("1.5 KB");
-    expect(formatBytes(10 * 1024 ** 2)).toBe("10 MB");
-    expect(formatBytes(3.25 * 1024 ** 3)).toBe("3.3 GB");
+    expect(formatBytes(1536)).toBe("1.5 KiB");
+    expect(formatBytes(10 * 1024 ** 2)).toBe("10 MiB");
+    expect(formatBytes(3.25 * 1024 ** 3)).toBe("3.3 GiB");
     expect(formatBytes(-1)).toBe(DASH);
   });
 

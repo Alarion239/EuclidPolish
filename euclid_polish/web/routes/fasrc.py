@@ -15,9 +15,11 @@ from flask import jsonify, request
 from euclid_polish.observability.training_log import TrainingLog
 from euclid_polish.web import (
     fasrc_config,
+    fasrc_fetcher,
     fasrc_jobs,
     fasrc_log_parser,
     fasrc_queue,
+    git_ops,
     job_config,
 )
 from euclid_polish.web.fasrc_gate import requires_fasrc
@@ -104,6 +106,85 @@ def _merge_squeue_fields(
     return row
 
 
+#: Remote artifacts a step is known to produce (key → path under the FASRC
+#: config); ``/api/fasrc/steps/status`` probes them and lists each step's
+#: outputs. Keys match the ``artifacts`` map of the same payload.
+_ARTIFACT_PATHS: dict[str, Any] = {
+    "ckpt":              lambda c: f"{c.ckpt_dir}/checkpoint",
+    "euclid_cutouts":    lambda c: f"{c.data_dir}/euclid_stars/cutouts/VIS",
+    "euclid_psf":        lambda c: f"{c.data_dir}/euclid_psf/euclid_psf_VIS.fits",
+    "synthetic_records": lambda c: f"{c.data_dir}/images/records_v2/clean_train.tfrecord",
+}
+_STEP_OUTPUTS: dict[str, tuple[str, ...]] = {
+    "download_euclid_cutouts": ("euclid_cutouts",),
+    "extract_euclid_psf":      ("euclid_psf",),
+    "synthetic_generate":      ("synthetic_records",),
+    "ensemble_train":          ("ckpt",),
+}
+
+#: ``GET /api/fasrc/history`` page bounds.
+_HISTORY_DEFAULT_LIMIT = 500
+_HISTORY_MAX_LIMIT = 2000
+#: History "state" filter for jobs whose outcome sacct has not settled.
+_UNRESOLVED = "unresolved"
+
+#: The remote file browser lists at most this many entries per directory.
+_FILES_MAX_ENTRIES = 2000
+_INSPECTABLE_SUFFIXES = (".fits", ".fits.gz", ".fit", ".fz")
+
+#: At most this many ``grep`` matches are returned per log search.
+_LOG_GREP_MAX = 500
+
+
+def _int_arg(name: str, default: int, lo: int, hi: int) -> int:
+    try:
+        value = int(request.args.get(name, default))
+    except (TypeError, ValueError):
+        value = default
+    return max(lo, min(value, hi))
+
+
+def _history_rows() -> list[dict[str, Any]]:
+    """Every job-ledger row (all steps), newest first, compacted
+    (``fasrc_jobs.compact_row``) and joined with the live DB state:
+    ``db_state`` and ``state_display`` (``fasrc_jobs.display_state``: sacct's
+    final verdict, else the DB state)."""
+    db_rows = {str(r.get("jobid")): r for r in fasrc_jobs.DB.list_recent(100_000)}
+    out = []
+    for row in fasrc_jobs.JOBLOG.list_all():
+        jobid = str(row.get("jobid") or "")
+        if not jobid:
+            continue
+        compact = fasrc_jobs.compact_row(row)
+        db_row = db_rows.get(jobid) or {}
+        db_state = fasrc_jobs.normalize_state(db_row.get("state"))
+        compact["db_state"] = db_state or None
+        compact["state_display"] = fasrc_jobs.display_state(row.get("state"), db_state)
+        compact["step_id"] = compact.get("step_id") or db_row.get("step_id") or ""
+        out.append(compact)
+    out.sort(key=lambda r: str(r.get("submitted_at") or ""), reverse=True)
+    return out
+
+
+def _is_unresolved(row: dict[str, Any]) -> bool:
+    """No final sacct verdict (blank / speculative / stale live ledger state)
+    and not live — what ``refresh-accounting scope=unresolved`` re-queries."""
+    return fasrc_jobs.is_unresolved(row.get("state"), row.get("db_state"))
+
+
+def _remote_crumbs(path: str, roots: list[str]) -> list[dict[str, str]]:
+    root = next((r for r in roots if path == r or path.startswith(r + "/")), None)
+    if root is None:
+        return []
+    crumbs = [{"name": root, "path": root}]
+    rest = path[len(root):].strip("/")
+    cur = root
+    for part in [p for p in rest.split("/") if p]:
+        cur = f"{cur}/{part}"
+        crumbs.append({"name": part, "path": cur})
+    return crumbs
+
+
 def register(app):
     # =========================================================================
     # FASRC tab — Bitwarden-driven SSH ControlMaster, SLURM submission,
@@ -151,7 +232,6 @@ def register(app):
         STATE.ssh = None
         STATE.connected_at = None
         STATE.last_error = None
-        MIRROR.stop()
         return jsonify({"ok": True, "status": STATE.public_status()})
 
     # ---- remote info ------------------------------------------------------
@@ -164,26 +244,37 @@ def register(app):
             return jsonify({"ok": False, "error": "not connected"}), 400
         cfg = fasrc_config.load()
         repo = cfg.repo_path
+        # One round trip: branch, ahead/behind the remote's upstream (after a
+        # fetch), the full HEAD (compared with this laptop's HEAD below), the
+        # last commit and up to 50 dirty paths of the FASRC checkout.
         cmds = (
-            f"cd {repo} && "
+            f"cd {shlex.quote(repo)} && "
             f"git rev-parse --abbrev-ref HEAD && "
-            f"git fetch --quiet && "
-            f"git rev-list --left-right --count HEAD...@{{u}} 2>/dev/null && "
-            f"git log -1 --pretty=format:'%h%x09%s%x09%cr'"
+            f"git fetch --quiet; "
+            f"(git rev-list --left-right --count HEAD...@{{u}} 2>/dev/null || echo '0 0') && "
+            f"git rev-parse HEAD && "
+            f"git log -1 --pretty=format:'%h%x09%s%x09%cr' && echo && "
+            f"git status --porcelain 2>/dev/null | head -n 50"
         )
         rc, out, err = ssh.run(cmds, timeout=30)
         if rc != 0:
             return jsonify({"ok": False, "error": err.strip() or out.strip()}), 500
-        lines = out.strip().splitlines()
+        lines = out.strip("\n").splitlines()
         branch  = lines[0] if len(lines) > 0 else ""
         counts  = (lines[1].split() if len(lines) > 1 else ["0", "0"])
         ahead   = int(counts[0]) if counts and counts[0].isdigit() else 0
         behind  = int(counts[1]) if len(counts) > 1 and counts[1].isdigit() else 0
-        last    = lines[2].split("\t", 2) if len(lines) > 2 else []
+        head    = lines[2].strip() if len(lines) > 2 else ""
+        last    = lines[3].split("\t", 2) if len(lines) > 3 else []
         last_commit = ({"hash": last[0], "subject": last[1], "relative": last[2]}
                        if len(last) == 3 else {})
+        dirty_files = [line for line in lines[4:] if line.strip()]
+        local_head = git_ops.head()
         return jsonify({"ok": True, "repo": repo, "branch": branch,
                         "ahead": ahead, "behind": behind,
+                        "head": head, "local_head": local_head,
+                        "relation": git_ops.relation(local_head, head),
+                        "dirty": bool(dirty_files), "dirty_files": dirty_files,
                         "last": last_commit})
 
     @app.route("/api/fasrc/git-pull", methods=["POST"])
@@ -295,6 +386,53 @@ def register(app):
                 for p, s, m in [_split(line, 3)[:3]]
             ],
         })
+
+    @app.route("/api/fasrc/files")
+    @requires_fasrc
+    def api_fasrc_files():
+        """Remote file browser. No ``dir`` → the allowed roots (data dir,
+        checkpoint dir, repo logs); ``dir`` → its sub-directories and files
+        (``{name, path, type: dir|file|link, size, mtime, inspectable}``,
+        dirs first). Paths outside the roots are 403."""
+        roots = fasrc_fetcher.allowed_remote_roots()
+        directory = (request.args.get("dir") or "").strip().rstrip("/")
+        if not directory:
+            return jsonify({"ok": True, "dir": None, "crumbs": [], "truncated": False,
+                            "entries": [{"name": r, "path": r, "type": "dir", "size": None,
+                                         "mtime": None, "inspectable": False} for r in roots]})
+        if not fasrc_fetcher.is_allowed_remote_path(directory):
+            return jsonify({"ok": False, "error": f"not under the FASRC roots: {directory}"}), 403
+        ssh = STATE.ssh
+        cmd = (f"find {shlex.quote(directory)} -mindepth 1 -maxdepth 1 "
+               f"-printf '%y|%s|%T@|%f\\n' 2>/dev/null | head -n {_FILES_MAX_ENTRIES + 1}")
+        try:
+            rc, out, err = ssh.run(cmd, timeout=20)
+        except (subprocess.TimeoutExpired, SSHError) as e:
+            return jsonify({"ok": False, "error": f"remote listing failed: {e}"}), 502
+        if rc != 0:
+            return jsonify({"ok": False, "error": err.strip() or "remote listing failed"}), 502
+        kinds = {"d": "dir", "f": "file", "l": "link"}
+        entries = []
+        for line in out.splitlines():
+            parts = line.split("|", 3)
+            if len(parts) != 4 or not parts[3]:
+                continue
+            kind = kinds.get(parts[0], "other")
+            try:
+                size, mtime = int(parts[1]), float(parts[2])
+            except ValueError:
+                size, mtime = None, None
+            path = f"{directory}/{parts[3]}"
+            entries.append({"name": parts[3], "path": path, "type": kind,
+                            "size": None if kind == "dir" else size, "mtime": mtime,
+                            "inspectable": kind == "file"
+                            and parts[3].lower().endswith(_INSPECTABLE_SUFFIXES)})
+        truncated = len(entries) > _FILES_MAX_ENTRIES
+        entries = entries[:_FILES_MAX_ENTRIES]
+        order = {"dir": 0, "link": 1, "file": 2, "other": 3}
+        entries.sort(key=lambda e: (order[e["type"]], e["name"].lower()))
+        return jsonify({"ok": True, "dir": directory, "crumbs": _remote_crumbs(directory, roots),
+                        "entries": entries, "truncated": truncated})
 
     @app.route("/api/fasrc/bootstrap-data", methods=["POST"])
     @requires_fasrc
@@ -500,6 +638,13 @@ def register(app):
         payload["queue"] = fasrc_queue.QUEUE.public()
         return jsonify(payload)
 
+    @app.route("/api/fasrc/queue/state")
+    def api_fasrc_queue_state():
+        """The local submission queue (items, halt, active job) — offline too.
+        ``/api/fasrc/current-submission`` carries the same block but needs
+        SSH; the queue itself lives on this laptop."""
+        return jsonify({"ok": True, "queue": fasrc_queue.QUEUE.public()})
+
     @app.route("/api/fasrc/queue/clear", methods=["POST"])
     def api_fasrc_queue_clear():
         return jsonify({"ok": True, "queue": fasrc_queue.QUEUE.clear()})
@@ -509,6 +654,14 @@ def register(app):
         item_id = (request.form.get("id") or "").strip()
         return jsonify({"ok": True,
                         "queue": fasrc_queue.QUEUE.remove(item_id)})
+
+    @app.route("/api/fasrc/queue/resume", methods=["POST"])
+    def api_fasrc_queue_resume():
+        """Clear a halt so the queue continues past the job that stopped it
+        (a failed active job leaves the lane); the next
+        ``/api/fasrc/current-submission`` poll promotes the head item."""
+        return jsonify({"ok": True, "queue": fasrc_queue.QUEUE.resume_after_halt(
+            fasrc_jobs.DB, fasrc_jobs.JOBLOG)})
 
     # =========================================================================
     # Pipeline steps (generic FASRC submissions)
@@ -526,7 +679,7 @@ def register(app):
         ssh = STATE.ssh
         ssh_ok = ssh is not None and ssh.is_connected()
 
-        steps_payload = []
+        steps_payload: list[dict[str, Any]] = []
         for step in STEP_REGISTRY.all():
             steps_payload.append({
                 "step_id":     step.step_id,
@@ -557,16 +710,8 @@ def register(app):
             # Synthetic generation (/sky page).
             "synthetic_records": None,
         }
+        paths = {key: fn(cfg_loaded) for key, fn in _ARTIFACT_PATHS.items()}
         if ssh_ok and ssh is not None:
-            paths = {
-                "ckpt":    f"{cfg_loaded.ckpt_dir}/checkpoint",
-                "euclid_cutouts":
-                    f"{cfg_loaded.data_dir}/euclid_stars/cutouts/VIS",
-                "euclid_psf":
-                    f"{cfg_loaded.data_dir}/euclid_psf/euclid_psf_VIS.fits",
-                "synthetic_records":
-                    f"{cfg_loaded.data_dir}/images/records_v2/clean_train.tfrecord",
-            }
             probe = " && ".join(
                 f"(test -e {shlex.quote(p)} && echo {k}=1 || echo {k}=0)"
                 for k, p in paths.items()
@@ -583,6 +728,12 @@ def register(app):
             except Exception:
                 pass
 
+        # Each step's known remote outputs (``exists`` null while offline).
+        for payload in steps_payload:
+            payload["outputs"] = [
+                {"key": key, "path": paths[key], "exists": artifacts.get(key)}
+                for key in _STEP_OUTPUTS.get(payload["step_id"], ())
+            ]
         return jsonify({
             "ssh_connected": ssh_ok,
             "steps":         steps_payload,
@@ -703,13 +854,71 @@ def register(app):
     @app.route("/api/fasrc/refresh-accounting", methods=["POST"])
     @requires_fasrc
     def api_fasrc_refresh_accounting():
-        """One-shot: re-pull sacct for every finalised job and re-record.
+        """Re-pull Jobstats + sacct as a local job (``kind="fasrc-accounting"``,
+        cancellable between jobs). ``scope=unresolved`` (default) reconciles
+        the jobs whose outcome is unknown (blank/UNKNOWN/DONE) — sacct's
+        verdict also replaces a speculative DB state; ``scope=all`` re-pulls
+        every finalised job (backfill after a post-mortem stat changes).
+        ``{ok, job_id}``; the job result is ``{updated, total, scope,
+        resolved: {jobid: state}}``."""
+        scope = (request.form.get("scope") or _UNRESOLVED).strip()
+        if scope not in fasrc_jobs.REFRESH_SCOPES:
+            scopes = list(fasrc_jobs.REFRESH_SCOPES)
+            return jsonify({"ok": False, "error": f"scope must be one of {scopes}"}), 400
+        running = next((j for j in JOB_REGISTRY.list()
+                        if j.get("kind") == "fasrc-accounting" and j.get("status") == "running"), None)
+        if running is not None:
+            return jsonify({"ok": True, "job_id": running["job_id"], "already_running": True})
+        ssh = STATE.ssh
 
-        Use after a change to how a post-mortem stat is computed (e.g. the
-        CPU-utilisation fix) to backfill existing history rows."""
-        if not STATE.ssh or not STATE.ssh.is_connected():
-            return jsonify({"ok": False, "error": "not connected"}), 400
-        return jsonify(fasrc_jobs.refresh_all_post_mortems(STATE.ssh))
+        def run(cap):
+            def progress(i, n, jobid):
+                cap.tick(i - 1, n, f"sacct {jobid}")
+            res = fasrc_jobs.refresh_all_post_mortems(ssh, scope=scope, progress=progress)
+            if not res.get("ok"):
+                raise RuntimeError(res.get("error") or "accounting refresh failed")
+            cap.write(f"{res['updated']} of {res['total']} job(s) re-recorded\n")
+            for jobid, state in sorted(res.get("resolved", {}).items()):
+                cap.write(f"  {jobid}: {state}\n")
+            return res
+
+        label = ("FASRC: reconcile unresolved job states" if scope == _UNRESOLVED
+                 else "FASRC: re-pull accounting for every job")
+        return jsonify({"ok": True, "job_id": JOB_REGISTRY.spawn(label, run, kind="fasrc-accounting")})
+
+    @app.route("/api/fasrc/history")
+    def api_fasrc_history():
+        """Run history across every step (the local job ledger joined with
+        the DB state), newest first, without embedded payload blobs.
+        Filters: ``step`` (comma list), ``state`` (comma list of display
+        states, or ``unresolved``), ``q`` (jobid/label/step substring);
+        ``offset``/``limit`` (≤ 2000). Also ``facets`` {steps, states} over
+        the unfiltered rows and the ``unresolved`` count. Local (offline)."""
+        rows = _history_rows()
+        facets: dict[str, dict[str, int]] = {"steps": {}, "states": {}}
+        unresolved = 0
+        for row in rows:
+            step = row.get("step_id") or "(none)"
+            facets["steps"][step] = facets["steps"].get(step, 0) + 1
+            facets["states"][row["state_display"]] = facets["states"].get(row["state_display"], 0) + 1
+            unresolved += _is_unresolved(row)
+        steps = {x for x in (request.args.get("step") or "").split(",") if x}
+        states = {x.strip().upper() for x in (request.args.get("state") or "").split(",") if x.strip()}
+        needle = (request.args.get("q") or "").strip().lower()
+        if steps:
+            rows = [r for r in rows if r.get("step_id") in steps]
+        if states:
+            want_unresolved = _UNRESOLVED.upper() in states
+            rows = [r for r in rows if r["state_display"] in states
+                    or (want_unresolved and _is_unresolved(r))]
+        if needle:
+            rows = [r for r in rows if needle in " ".join(
+                str(r.get(k) or "") for k in ("jobid", "label", "step_id")).lower()]
+        offset = _int_arg("offset", 0, 0, 10**9)
+        limit = _int_arg("limit", _HISTORY_DEFAULT_LIMIT, 1, _HISTORY_MAX_LIMIT)
+        return jsonify({"ok": True, "total": len(rows), "offset": offset, "limit": limit,
+                        "rows": rows[offset:offset + limit], "facets": facets,
+                        "unresolved": unresolved})
 
     @app.route("/api/fasrc/steps/<step_id>/history", methods=["GET", "POST"])
     def api_fasrc_step_history(step_id: str):
@@ -752,8 +961,13 @@ def register(app):
             separators=(",", ":"), sort_keys=True,
         ) if task_params else ""
 
-        history = fasrc_jobs.JOBLOG.history_for_step(step_id)
+        # Rows are compacted: embedded payload blobs (calibration JSON, ~200 KB
+        # a row) are dropped from ``params_json`` and listed in
+        # ``params_omitted`` — the server re-resolves them at submit.
+        history = [fasrc_jobs.compact_row(r)
+                   for r in fasrc_jobs.JOBLOG.history_for_step(step_id)]
         match   = fasrc_jobs.JOBLOG.latest_match(step_id, params_json)
+        match   = fasrc_jobs.compact_row(match) if match else None
         return jsonify({
             "ok":               True,
             "step_id":          step_id,
@@ -1060,6 +1274,10 @@ def register(app):
             str(row.get("jobid")): row for row in squeue_rows
             if row.get("jobid")
         }
+        # The same state rule as the history (sacct's final ledger verdict
+        # first), so one job reads the same in the Logs list and the History.
+        ledger_states = {str(r.get("jobid")): r.get("state")
+                         for r in fasrc_jobs.JOBLOG.list_all() if r.get("jobid")}
         for db_row in fasrc_jobs.DB.list_recent(5000):
             lp = str(db_row.get("log_path") or "")
             base = os.path.basename(lp)
@@ -1075,11 +1293,15 @@ def register(app):
             except (TypeError, ValueError):
                 array_count = 1
 
+            db_state = fasrc_jobs.normalize_state(db_row.get("state"))
+            shown_state = fasrc_jobs.display_state(
+                ledger_states.get(str(db_row.get("jobid"))), db_state)
             common = {
                 "name":         stem,
                 "jobid":        db_row.get("jobid"),
                 "label":        db_row.get("label"),
-                "state":        db_row.get("state"),
+                "state":        shown_state,
+                "db_state":     db_state or None,
                 "submitted_at": db_row.get("submitted_at") or 0.0,
                 "started_at":   db_row.get("started_at"),
                 "ended_at":     db_row.get("ended_at"),
@@ -1111,9 +1333,9 @@ def register(app):
                         consumed_stems.add(task_stem)
                     task_jobid = f"{parent_jobid}_{index}"
                     live = live_by_jobid.get(task_jobid)
-                    parent_state = str(db_row.get("state") or "").upper()
                     task_state = live.get("state") if live else (
-                        parent_state if parent_state in fasrc_jobs.TERMINAL_STATES
+                        shown_state if (shown_state in fasrc_jobs.TERMINAL_STATES
+                                        or fasrc_jobs.ledger_is_final(shown_state))
                         else None
                     )
                     out_size = int(rec.get("out_size", 0) or 0)
@@ -1335,6 +1557,23 @@ def register(app):
         if ".." in path.split("/"):
             return jsonify({"ok": False, "error": "bad path"}), 400
 
+        # ---- search mode (``grep``): numbered matches over the whole file ----
+        needle = request.args.get("grep")
+        if needle is not None:
+            needle = needle.strip()
+            if not needle:
+                return jsonify({"ok": False, "error": "empty search"}), 400
+            rc, out, _e = STATE.ssh.run(
+                f"grep -n -i -F -m {_LOG_GREP_MAX} -e {shlex.quote(needle)} "
+                f"{shlex.quote(path)} 2>/dev/null || true", timeout=20)
+            matches = []
+            for line in (out or "").splitlines():
+                num, _, text = line.partition(":")
+                if num.isdigit():
+                    matches.append({"line": int(num), "text": text})
+            return jsonify({"ok": True, "path": path, "grep": needle, "matches": matches,
+                            "truncated": len(matches) >= _LOG_GREP_MAX})
+
         # ---- paginated mode -------------------------------------------------
         # ``page`` counts windows of ``page_size`` lines from the END of the
         # file: page 0 = the newest lines, page 1 = the previous block, … up
@@ -1394,43 +1633,53 @@ def register(app):
 
     # ---- checkpoint auto-mirror -------------------------------------------
 
+    def _mirror_job() -> str | None:
+        running = next((j for j in JOB_REGISTRY.list()
+                        if j.get("kind") == "fasrc-mirror" and j.get("status") == "running"), None)
+        return running["job_id"] if running else None
+
     @app.route("/api/fasrc/mirror/status")
     def api_fasrc_mirror_status():
+        """The last checkpoint pull (manual only — there is no periodic
+        mirror) and ``job_id`` of a pull running now."""
         s = MIRROR.status
         return jsonify({
-            "enabled":     s.enabled,
             "last_run_at": s.last_run_at,
             "last_rc":     s.last_rc,
             "last_error":  s.last_error,
             "last_stdout": s.last_stdout,
             "remote_dir":  s.remote_dir,
             "local_dir":   s.local_dir,
-            "period_seconds": MIRROR.period,
+            "job_id":      _mirror_job(),
         })
 
     @app.route("/api/fasrc/mirror/trigger", methods=["POST"])
     @requires_fasrc
     def api_fasrc_mirror_trigger():
-        """One-shot rsync from remote ckpt dir → local mirror.
+        """Pull the remote ensemble checkpoints into the local mirror as a
+        local job (``kind="fasrc-mirror"``). ``rsync --delete-after`` removes
+        local files the remote no longer has, so the caller must confirm
+        (``confirm=1``; else 400 ``confirm_required``). A running pull's id
+        is returned instead of starting a second one."""
+        if str(request.form.get("confirm", "")).strip().lower() not in ("1", "yes", "true"):
+            return jsonify({"ok": False, "code": "confirm_required",
+                            "error": "pulling checkpoints deletes local files the FASRC "
+                                     "copy no longer has; confirm with confirm=1"}), 400
+        running = _mirror_job()
+        if running:
+            return jsonify({"ok": True, "job_id": running, "already_running": True})
 
-        Used by the Training tab's "Sync now" button AND the Logs
-        tab's "Pull checkpoints" button. ``MIRROR.trigger`` runs
-        synchronously, so the caller learns the final ``last_rc`` /
-        ``last_error`` straight from the response without polling.
-        """
-        if not STATE.ssh or not STATE.ssh.is_connected():
-            return jsonify({"ok": False, "error": "not connected"}), 400
-        MIRROR.trigger()
-        s = MIRROR.status
-        return jsonify({
-            "ok":          (s.last_rc == 0),
-            "last_rc":     s.last_rc,
-            "last_error":  s.last_error,
-            "last_stdout": s.last_stdout,
-            "remote_dir":  s.remote_dir,
-            "local_dir":   s.local_dir,
-            "last_run_at": s.last_run_at,
-        })
+        def run(cap):
+            cap.write("$ rsync --delete-after <FASRC ensemble>/ <local mirror>\n")
+            status = MIRROR.trigger()
+            cap.write((status.last_stdout or "") + "\n")
+            if status.last_rc != 0:
+                raise RuntimeError(status.last_error or f"rsync exit {status.last_rc}")
+            return {"last_rc": status.last_rc, "remote_dir": status.remote_dir,
+                    "local_dir": status.local_dir, "last_run_at": status.last_run_at}
+
+        return jsonify({"ok": True, "job_id": JOB_REGISTRY.spawn(
+            "FASRC: pull ensemble checkpoints", run, kind="fasrc-mirror")})
 
     # ---- conda env update -------------------------------------------------
 

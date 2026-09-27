@@ -262,3 +262,128 @@ def test_every_path_status_lists_can_be_committed_as_listed(repo):
     assert git_ops.status()["files"] == []
     assert _tracked(repo) == {"NOTES.md", "sp ace.txt", "é.txt", "a,b.txt",
                               "newdir/inner.txt"}
+
+
+# ---------------------------------------------------------------------------
+# W-Ops: per-file staging, per-file diff, guard preview, history paging
+# ---------------------------------------------------------------------------
+
+def _porcelain(repo):
+    return subprocess.run(["git", "status", "--porcelain"], cwd=repo,
+                          capture_output=True, text=True, check=True).stdout
+
+
+def test_status_flags_staged_unstaged_and_guard(repo):
+    (repo / "README.md").write_text("changed\n")
+    (repo / "new.txt").write_text("n")
+    (repo / "big.fits").write_bytes(b"\0" * (2 * 1024 * 1024))
+    _run(["git", "add", "new.txt"], cwd=repo)
+    files = {f["path"]: f for f in git_ops.status()["files"]}
+    assert files["README.md"]["staged"] is False and files["README.md"]["unstaged"] is True
+    assert files["new.txt"]["staged"] is True and files["new.txt"]["unstaged"] is False
+    assert files["big.fits"]["untracked"] is True
+    assert files["big.fits"]["size"] == 2 * 1024 * 1024
+    assert files["big.fits"]["guard"] == "untracked binary > 1 MB"
+    assert files["README.md"]["guard"] is None
+
+
+def test_stage_and_unstage_one_file(repo):
+    (repo / "a.txt").write_text("a")
+    (repo / "b.txt").write_text("b")
+    out = git_ops.stage(["a.txt"])
+    assert out["ok"] is True and out["staged"] == ["a.txt"]
+    assert "A  a.txt" in _porcelain(repo) and "?? b.txt" in _porcelain(repo)
+    out = git_ops.unstage(["a.txt"])
+    assert out["ok"] is True
+    assert "?? a.txt" in _porcelain(repo)
+
+
+def test_stage_requires_paths_and_refuses_unknown_ones(repo):
+    assert git_ops.stage([])["ok"] is False
+    out = git_ops.stage(["nope.txt"])
+    assert out["ok"] is False and out["code"] == "nothing_selected"
+
+
+def test_unstage_a_modified_tracked_file_keeps_the_edit(repo):
+    (repo / "README.md").write_text("edit\n")
+    git_ops.stage(["README.md"])
+    assert _porcelain(repo).startswith("M ")
+    git_ops.unstage(["README.md"])
+    assert _porcelain(repo).startswith(" M")
+    assert (repo / "README.md").read_text() == "edit\n"
+
+
+def test_diff_of_one_path_staged_and_unstaged(repo):
+    (repo / "README.md").write_text("one\n")
+    (repo / "other.txt").write_text("o\n")
+    git_ops.stage(["other.txt"])
+    unstaged = git_ops.diff(staged=False, path="README.md")
+    assert "+one" in unstaged and "other.txt" not in unstaged
+    staged = git_ops.diff(staged=True, path="other.txt")
+    assert "+o" in staged and "README.md" not in staged
+
+
+def test_diff_of_an_untracked_file_shows_its_content(repo):
+    (repo / "fresh.txt").write_text("hello\n")
+    out = git_ops.diff(staged=False, path="fresh.txt")
+    assert "+hello" in out
+
+
+def test_diff_refuses_paths_outside_the_repo(repo):
+    assert git_ops.diff(staged=False, path="../etc/passwd") == ""
+
+
+def test_log_page_skips_and_counts(repo):
+    for name in ("a", "b", "c"):
+        (repo / f"{name}.txt").write_text(name)
+        git_ops.commit(f"add {name}", all_files=True)
+    page = git_ops.log_page(skip=1, limit=2)
+    assert page["total"] == 4
+    assert [c["subject"] for c in page["commits"]] == ["add b", "add a"]
+    assert page["skip"] == 1 and page["limit"] == 2 and page["has_more"] is True
+    assert len(page["commits"][0]["full"]) == 40
+
+
+def test_show_commit_returns_stat_and_patch(repo):
+    (repo / "a.txt").write_text("alpha\n")
+    git_ops.commit("add alpha", all_files=True)
+    head = git_ops.log(1)[0]["hash"]
+    out = git_ops.show(head)
+    assert out["ok"] is True
+    assert out["subject"] == "add alpha"
+    assert "a.txt" in out["stat"]
+    assert "+alpha" in out["patch"]
+    assert git_ops.show("not-a-hash; rm -rf /")["ok"] is False
+
+
+def test_relation_between_commits(repo):
+    first = git_ops.head()
+    (repo / "a.txt").write_text("a")
+    git_ops.commit("a", all_files=True)
+    second = git_ops.head()
+    assert git_ops.relation(second, second) == {"relation": "same", "ahead": 0, "behind": 0}
+    rel = git_ops.relation(second, first)
+    assert rel["relation"] == "remote_behind" and rel["ahead"] == 1
+    rel = git_ops.relation(first, second)
+    assert rel["relation"] == "remote_ahead" and rel["behind"] == 1
+    assert git_ops.relation(second, "f" * 40)["relation"] == "unknown"
+
+
+def test_stage_unstage_and_log_routes(repo):
+    app = create_app()
+    app.config["TESTING"] = True
+    client = app.test_client()
+    (repo / "a.txt").write_text("a")
+    r = client.post("/git/stage", data={"paths": ["a.txt"]})
+    assert r.status_code == 200 and r.get_json()["staged"] == ["a.txt"]
+    assert client.post("/git/stage", data={}).status_code == 400
+    r = client.post("/git/unstage", data={"paths": ["a.txt"]})
+    assert r.status_code == 200
+    log = client.get("/api/git/log?skip=0&limit=5").get_json()
+    assert log["total"] == 1 and log["commits"][0]["subject"] == "initial"
+    diff = client.get("/api/git/diff?path=a.txt").get_json()
+    assert "+a" in diff["diff"]
+    head = log["commits"][0]["full"]
+    show = client.get(f"/api/git/commit/{head}").get_json()
+    assert show["ok"] is True and show["subject"] == "initial"
+    assert client.get("/api/git/commit/zzz").status_code == 400

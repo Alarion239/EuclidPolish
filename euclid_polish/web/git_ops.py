@@ -8,8 +8,12 @@ no hidden state.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from typing import Any
+
+#: A commit reference the Git tab accepts: an abbreviated or full hex hash.
+_HASH_RE = re.compile(r"^[0-9a-fA-F]{4,40}$")
 
 
 def _run(args: list[str], cwd: str | None = None,
@@ -63,8 +67,8 @@ def status() -> dict[str, Any]:
     # rename, whose source is ``orig``) can be posted back to /git/commit
     # unchanged. Untracked directories stay collapsed (``dir/``); a directory
     # path selects every file under it.
-    files: list[dict[str, str | None]] = [
-        {"xy": xy, "path": path, "orig": orig}
+    files: list[dict[str, Any]] = [
+        _file_entry(root, xy, path, orig)
         for xy, path, orig in _changed_files(root, untracked="normal")
     ]
 
@@ -92,34 +96,149 @@ def status() -> dict[str, Any]:
     }
 
 
-def log(n: int = 12) -> list[dict[str, str]]:
-    """Last ``n`` commits as a list of dicts."""
+def log(n: int = 12, skip: int = 0) -> list[dict[str, str]]:
+    """``n`` commits (newest first, after skipping ``skip``) as dicts:
+    ``hash`` (short), ``full``, ``author``, ``subject``, ``relative``,
+    ``date`` (ISO 8601)."""
     root = repo_root()
     if not root:
         return []
-    r = _run(["git", "log", f"-{int(n)}",
-              "--pretty=format:%h%x09%an%x09%s%x09%cr"], cwd=root)
+    r = _run(["git", "log", f"-{max(0, int(n))}", f"--skip={max(0, int(skip))}",
+              "--pretty=format:%h%x09%H%x09%an%x09%cI%x09%cr%x09%s"], cwd=root)
     if r.returncode != 0:
         return []
     out: list[dict[str, str]] = []
     for line in r.stdout.splitlines():
-        parts = line.split("\t", 3)
-        if len(parts) == 4:
-            out.append({"hash": parts[0], "author": parts[1],
-                        "subject": parts[2], "relative": parts[3]})
+        parts = line.split("\t", 5)
+        if len(parts) == 6:
+            out.append({"hash": parts[0], "full": parts[1], "author": parts[2],
+                        "date": parts[3], "relative": parts[4],
+                        "subject": parts[5]})
     return out
 
 
-def diff(staged: bool = False, max_chars: int = 60_000) -> str:
-    """Return ``git diff`` (or ``git diff --cached``) truncated for UI display."""
+def log_page(skip: int = 0, limit: int = 50) -> dict[str, Any]:
+    """One page of the history: ``{commits, total, skip, limit, has_more}``
+    (``total`` = commits reachable from HEAD)."""
+    skip = max(0, int(skip))
+    limit = max(1, min(int(limit), 500))
+    root = repo_root()
+    total = 0
+    if root:
+        r = _run(["git", "rev-list", "--count", "HEAD"], cwd=root)
+        if r.returncode == 0 and r.stdout.strip().isdigit():
+            total = int(r.stdout.strip())
+    commits = log(limit, skip) if root else []
+    return {"commits": commits, "total": total, "skip": skip, "limit": limit,
+            "has_more": skip + len(commits) < total}
+
+
+def head() -> str:
+    """Full hash of HEAD, or '' outside a repo / before the first commit."""
     root = repo_root()
     if not root:
         return ""
-    args = ["git", "diff"]
+    r = _run(["git", "rev-parse", "HEAD"], cwd=root)
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
+def relation(local: str, remote: str) -> dict[str, Any]:
+    """How a remote checkout's HEAD relates to the local ``local`` commit.
+
+    ``relation`` is ``same``, ``remote_behind`` (``remote`` is an ancestor of
+    ``local``: the remote needs a pull), ``remote_ahead`` (the local checkout
+    needs a pull), ``diverged`` or ``unknown`` (a commit this repo does not
+    have, e.g. before a fetch). ``ahead``/``behind`` count local commits the
+    remote lacks and remote commits the local checkout lacks.
+    """
+    if not local or not remote or not (_HASH_RE.match(local) and _HASH_RE.match(remote)):
+        return {"relation": "unknown", "ahead": None, "behind": None}
+    root = repo_root()
+    if not root:
+        return {"relation": "unknown", "ahead": None, "behind": None}
+    full = []
+    for ref in (local, remote):
+        r = _run(["git", "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"], cwd=root)
+        if r.returncode != 0:
+            return {"relation": "unknown", "ahead": None, "behind": None}
+        full.append(r.stdout.strip())
+    if full[0] == full[1]:
+        return {"relation": "same", "ahead": 0, "behind": 0}
+    r = _run(["git", "rev-list", "--left-right", "--count", f"{full[0]}...{full[1]}"], cwd=root)
+    parts = r.stdout.split() if r.returncode == 0 else []
+    ahead, behind = (int(parts[0]), int(parts[1])) if len(parts) == 2 else (None, None)
+    if ahead and not behind:
+        kind = "remote_behind"
+    elif behind and not ahead:
+        kind = "remote_ahead"
+    elif ahead is None:
+        kind = "unknown"
+    else:
+        kind = "diverged"
+    return {"relation": kind, "ahead": ahead, "behind": behind}
+
+
+def show(rev: str, max_chars: int = 60_000) -> dict[str, Any]:
+    """One commit: metadata, ``--stat`` and the (truncated) patch."""
+    if not rev or not _HASH_RE.match(rev):
+        return {"ok": False, "error": "not a commit hash"}
+    root = repo_root()
+    if not root:
+        return {"ok": False, "error": "not in a git repo"}
+    meta = _run(["git", "show", "-s", "--pretty=format:%H%x09%h%x09%an%x09%ae%x09%cI%x09%s%x00%b",
+                 rev, "--"], cwd=root)
+    if meta.returncode != 0:
+        return {"ok": False, "error": meta.stderr.strip() or "unknown commit"}
+    head_part, _, body = meta.stdout.partition("\0")
+    fields = head_part.split("\t", 5)
+    if len(fields) != 6:
+        return {"ok": False, "error": "could not parse the commit"}
+    stat = _run(["git", "show", "--stat", "--format=", rev, "--"], cwd=root)
+    patch = _run(["git", "show", "--format=", "--patch", rev, "--"], cwd=root, timeout=30)
+    text = patch.stdout
+    truncated = len(text) > max_chars
+    if truncated:
+        text = text[:max_chars] + f"\n\n[…truncated, {len(patch.stdout) - max_chars} more chars]"
+    return {"ok": True, "full": fields[0], "hash": fields[1], "author": fields[2],
+            "email": fields[3], "date": fields[4], "subject": fields[5],
+            "body": body.strip(), "stat": stat.stdout.strip(), "patch": text,
+            "truncated": truncated}
+
+
+def _inside(root: str, path: str) -> bool:
+    real = os.path.realpath(os.path.join(root, path))
+    base = os.path.realpath(root)
+    return real == base or real.startswith(base + os.sep)
+
+
+def diff(staged: bool = False, max_chars: int = 60_000,
+         path: str | None = None) -> str:
+    """``git diff`` (``--cached`` when ``staged``) truncated for UI display.
+
+    ``path`` limits it to one file or directory (taken literally); an
+    untracked file's unstaged "diff" is its whole content (``--no-index``
+    against ``/dev/null``). A path outside the repo gives ''.
+    """
+    root = repo_root()
+    if not root:
+        return ""
+    if path is not None:
+        path = path.strip()
+        if not path or not _inside(root, path):
+            return ""
+    args = ["git", "--literal-pathspecs", "diff"]
     if staged:
         args.append("--cached")
+    if path:
+        args += ["--", path]
     r = _run(args, cwd=root, timeout=20)
     out = r.stdout
+    if path and not staged and not out.strip() and os.path.isfile(os.path.join(root, path)):
+        tracked = _run(["git", "--literal-pathspecs", "ls-files", "--error-unmatch", "--", path],
+                       cwd=root)
+        if tracked.returncode != 0:
+            r = _run(["git", "diff", "--no-index", "--", os.devnull, path], cwd=root, timeout=20)
+            out = r.stdout
     if len(out) > max_chars:
         out = (out[:max_chars]
                + f"\n\n[…truncated, {len(r.stdout) - max_chars} more chars]")
@@ -183,17 +302,74 @@ def _refusals(root: str, selected: list[tuple[str, str, str | None]]
               ) -> list[dict[str, Any]]:
     refused: list[dict[str, Any]] = []
     for xy, path, _orig in selected:
-        full = os.path.join(root, path)
-        if not os.path.isfile(full):
-            continue                    # deletions and directories stage fine
-        size = os.path.getsize(full)
-        if size > MAX_COMMIT_FILE_BYTES:
-            refused.append({"path": path, "size": size, "reason": "file > 10 MB"})
-        elif (_is_new(xy) and path.lower().endswith(UNTRACKED_BINARY_SUFFIXES)
-              and size > MAX_UNTRACKED_BINARY_BYTES):
-            refused.append({"path": path, "size": size,
-                            "reason": "untracked binary > 1 MB"})
+        size, reason = _guard_reason(root, xy, path)   # deletions/dirs: no size
+        if reason:
+            refused.append({"path": path, "size": size, "reason": reason})
     return refused
+
+
+def _guard_reason(root: str, xy: str, path: str) -> tuple[int | None, str | None]:
+    """``(size, reason)``: the file's size and why :func:`commit` would refuse
+    it without ``force`` (``None`` when it would not)."""
+    full = os.path.join(root, path)
+    if not os.path.isfile(full):
+        return None, None
+    size = os.path.getsize(full)
+    if size > MAX_COMMIT_FILE_BYTES:
+        return size, "file > 10 MB"
+    if (_is_new(xy) and path.lower().endswith(UNTRACKED_BINARY_SUFFIXES)
+            and size > MAX_UNTRACKED_BINARY_BYTES):
+        return size, "untracked binary > 1 MB"
+    return size, None
+
+
+def _file_entry(root: str, xy: str, path: str, orig: str | None) -> dict[str, Any]:
+    """One ``status()`` file: porcelain ``xy``, the index/worktree split
+    (``staged``, ``unstaged``, ``untracked``), the size and the commit
+    guard's verdict (``guard``) so the UI can warn before committing."""
+    untracked = xy == "??"
+    size, guard = _guard_reason(root, xy, path)
+    return {"xy": xy, "path": path, "orig": orig,
+            "staged": not untracked and xy[:1] not in (" ", "?"),
+            "unstaged": untracked or xy[1:2] not in (" ", ""),
+            "untracked": untracked, "size": size, "guard": guard}
+
+
+def stage(paths: list[str]) -> dict[str, Any]:
+    """``git add -A`` exactly the changed files covered by ``paths``."""
+    root = repo_root()
+    if not root:
+        return {"ok": False, "error": "not in a git repo"}
+    wanted = [p for p in paths if p.strip()]
+    if not wanted:
+        return {"ok": False, "code": "no_selection", "error": "choose the files to stage"}
+    selected = _selected(_changed_files(root), wanted)
+    if not selected:
+        return {"ok": False, "code": "nothing_selected",
+                "error": "no changed files match the selection"}
+    staged = [path for _xy, path, _orig in selected]
+    r = _run(["git", "--literal-pathspecs", "add", "-A", "--", *staged], cwd=root, timeout=60)
+    if r.returncode != 0:
+        return {"ok": False, "error": f"git add failed: {r.stderr.strip()}"}
+    return {"ok": True, "staged": staged}
+
+
+def unstage(paths: list[str]) -> dict[str, Any]:
+    """Take ``paths`` out of the index (``git restore --staged``); the
+    working-tree edits are kept."""
+    root = repo_root()
+    if not root:
+        return {"ok": False, "error": "not in a git repo"}
+    wanted = [p.strip().rstrip("/") for p in paths if p.strip()]
+    if not wanted:
+        return {"ok": False, "code": "no_selection", "error": "choose the files to unstage"}
+    if not all(_inside(root, p) for p in wanted):
+        return {"ok": False, "error": "path outside the repository"}
+    r = _run(["git", "--literal-pathspecs", "restore", "--staged", "--", *wanted],
+             cwd=root, timeout=60)
+    if r.returncode != 0:
+        return {"ok": False, "error": r.stderr.strip() or "git restore failed"}
+    return {"ok": True, "unstaged": wanted}
 
 
 def commit(message: str, paths: list[str] | None = None, *,

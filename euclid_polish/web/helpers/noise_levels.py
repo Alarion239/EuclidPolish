@@ -286,3 +286,45 @@ def noise_levels_payload() -> dict[str, Any]:
             for row in table["rows"]
         ],
     }
+
+
+@lru_cache(maxsize=1)
+def _rows_by_tile() -> dict[str, dict[str, Any]]:
+    with TABLE_PATH.open(encoding="utf-8") as handle:
+        table = json.load(handle)
+    return {str(row["tile"]): row for row in table.get("rows") or []}
+
+
+def noise_position(tile: str) -> dict[str, Any] | None:
+    """One measured position (the Realism ``noisepos`` inspector): its four
+    band levels, the 4×4 sub-tile grid of each band and that grid's largest
+    straight-line depth step. ``None`` for an unknown tile."""
+    row = _rows_by_tile().get(str(tile))
+    if row is None:
+        return None
+    bands = list(load_mer_noise_levels().bands)
+    sub = row.get("sub_levels_e") or {}
+    side = int(round(math.sqrt(len(sub[bands[0]])))) if sub.get(bands[0]) else 0
+    splits = seam_splits(side) if side else []
+    steps: dict[str, Any] = {}
+    for band in bands:
+        measured = seam_step(sub[band], splits) if band in sub and splits else None
+        steps[band] = None if measured is None else {
+            "step": round(measured[0], 4),
+            "scatter": round(measured[1], 4),
+            "seam": measured[0] >= SEAM_STEP_MIN and measured[1] < SEAM_UNIFORM_MAX,
+        }
+    return {
+        "tile": str(row["tile"]),
+        "field": row["field"],
+        "ra": row["ra"],
+        "dec": row["dec"],
+        "bands": bands,
+        "levels_e": dict(zip(bands, row["levels_e"], strict=True)),
+        "sub_levels_e": {band: sub.get(band) for band in bands} if sub else None,
+        "grid_side": side or None,
+        "steps": steps,
+        "step_threshold": SEAM_STEP_MIN,
+        "uniformity_threshold": SEAM_UNIFORM_MAX,
+        "noise_model": Config.NOISE_MODEL,
+    }

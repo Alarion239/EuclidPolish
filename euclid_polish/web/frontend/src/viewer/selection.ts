@@ -63,6 +63,8 @@ export type WireSelection = {
   relative_side: number | null;
   revision: number;
   relative_fallback_safe?: true;
+  /** The tier the crop was frozen on; the server anchors the WCS-matched crop on it. */
+  source_tier?: string;
 };
 
 export type Viewport = { width: number; height: number; scrollX: number; scrollY: number };
@@ -245,6 +247,7 @@ export function serializeSelection(sel: Selection | null): WireSelection | null 
     revision: sel.revision ?? 0,
   };
   if (!((sel.angularSideArcsec as number) > 0)) out.relative_fallback_safe = true;
+  if (sel.sourceTier) out.source_tier = sel.sourceTier;
   return out;
 }
 

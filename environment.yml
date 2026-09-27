@@ -23,7 +23,7 @@ dependencies:
   # Test-only: tests/test_viewer_results.py reads the exported grid PDF.
   - pypdf
   - ruff
-  - flask
+  - flask>=3.1       # app.config["TRUSTED_HOSTS"] (Host allowlist) needs Werkzeug/Flask 3.1
   - pexpect
   - pip
   - pip:

@@ -1,7 +1,8 @@
-"""Job-history sqlite + ETA heuristic + log parsing."""
+"""Job-history sqlite, squeue/SLURM-time parsing and row compaction."""
 
 from __future__ import annotations
 
+import json
 import time
 
 import pytest
@@ -27,11 +28,8 @@ def test_roundtrip_insert_update_get(db):
 
     t0 = time.time() - 60
     db.update_state("12345", state="RUNNING", started_at=t0)
-    db.update_progress("12345", step=500, total=1000)
     row = db.get("12345")
     assert row["state"] == "RUNNING"
-    assert row["progress_step"] == 500
-    assert row["progress_total"] == 1000
     assert abs(row["started_at"] - t0) < 1.0
 
 
@@ -163,105 +161,6 @@ def test_list_recent_orders_newest_first(db):
     assert [r["jobid"] for r in recent] == [f"job{i}" for i in range(4, -1, -1)]
 
 
-def test_eta_returns_none_with_no_history(db):
-    assert fasrc_jobs.secs_per_step_history() is None
-    assert fasrc_jobs.eta_for_submission(10_000) is None
-
-
-def test_eta_uses_median_seconds_per_step(db):
-    # Synthesize 3 finished jobs at 1ms/step, 2ms/step, 3ms/step.
-    samples = [(1_000, 1.0), (2_000, 4.0), (3_000, 9.0)]
-    base = time.time() - 1000
-    for i, (steps, runtime) in enumerate(samples):
-        db.insert(f"job{i}", label="x", params={"steps": steps},
-                  script_path=".", log_path=".", err_path=".")
-        db.update_state(f"job{i}", state="COMPLETED",
-                        started_at=base + i, ended_at=base + i + runtime)
-    spt = fasrc_jobs.secs_per_step_history()
-    # samples → 1.0/1000, 4.0/2000, 9.0/3000 = 0.001, 0.002, 0.003.
-    # Median = 0.002.
-    assert abs(spt - 0.002) < 1e-6
-    assert abs(fasrc_jobs.eta_for_submission(50_000) - 100.0) < 1e-3
-
-
-def test_secs_per_step_handles_string_steps_in_params(db):
-    """REGRESSION — form-submitted params arrive as strings because
-    ``request.form.to_dict()`` returns str values. They get stored
-    verbatim in ``params_json``. The ETA helper used to compare
-    ``steps <= 0`` directly, which raises
-    ``TypeError: '<=' not supported between instances of 'str' and
-    'int'`` and 500-ed the /api/fasrc/training-status endpoint on
-    every poll until the offending row was deleted.
-
-    The fix coerces ``steps`` via float() and silently skips rows
-    where coercion fails."""
-    base = time.time() - 1000
-    # Mix of types params can take in the wild:
-    #   - "20000"  (the bug: string from form)
-    #   - 20000    (int from a CLI-injected job)
-    #   - "junk"   (corrupt row — must not crash; skip silently)
-    #   - missing  (older rows that pre-date the "steps" field)
-    samples = [
-        ("jobA", {"steps": "20000"},  20.0),
-        ("jobB", {"steps": 10000},    10.0),
-        ("jobC", {"steps": "junk"},    5.0),
-        ("jobD", {},                   5.0),
-    ]
-    for i, (jobid, params, runtime) in enumerate(samples):
-        db.insert(jobid, label="x", params=params,
-                  script_path=".", log_path=".", err_path=".")
-        db.update_state(jobid, state="COMPLETED",
-                        started_at=base + i,
-                        ended_at=base + i + runtime)
-    # Must not raise. Median of the two valid samples (jobA: 20/20000,
-    # jobB: 10/10000) = 0.001.
-    spt = fasrc_jobs.secs_per_step_history()
-    assert spt is not None
-    assert abs(spt - 0.001) < 1e-7
-
-
-def test_secs_per_step_handles_string_progress_total(db):
-    """A row that has no ``params['steps']`` but does have
-    ``progress_total`` (parsed from a ``step X/Y`` log line) should
-    also handle string-typed totals without crashing."""
-    base = time.time() - 100
-    db.insert("99", label="x", params={},      # no steps key
-              script_path=".", log_path=".", err_path=".")
-    db.update_state("99", state="COMPLETED",
-                    started_at=base, ended_at=base + 5.0)
-    db.update_progress("99", step=100, total=5000)
-    # update_progress writes int; double-check secs_per_step doesn't
-    # explode regardless.
-    spt = fasrc_jobs.secs_per_step_history()
-    assert spt is not None
-    assert spt > 0
-
-
-def test_eta_for_running_uses_live_progress(db):
-    db.insert("99", label="x", params={"steps": 1000},
-              script_path=".", log_path=".", err_path=".")
-    db.update_state("99", state="RUNNING", started_at=time.time() - 30)
-    db.update_progress("99", step=10, total=1000)
-    row = db.get("99")
-    eta = fasrc_jobs.eta_for_running(row)
-    # 30s for 10 steps → 990 more steps ≈ 2970s. Allow wiggle for clock.
-    assert 2800 < eta < 3100
-
-
-def test_parse_progress_picks_step_total():
-    assert fasrc_jobs.parse_progress("Epoch 12345/400000 [12:34<…]") == (12345, 400000)
-    assert fasrc_jobs.parse_progress("step 1/250000 loss=4.2") == (1, 250000)
-
-
-def test_parse_progress_rejects_tiny_totals():
-    # The regex would match "shape 4/4", but the guard against total < 50 throws it out.
-    assert fasrc_jobs.parse_progress("output shape 4/4") is None
-
-
-def test_parse_progress_rejects_step_above_total():
-    assert fasrc_jobs.parse_progress("counter 9999/100") is None
-
-
 def test_parse_squeue_pipe_separated():
     """Current format uses ``|`` because modern SLURM doesn't expand
     ``\\t`` inside ``--format`` strings."""
@@ -301,3 +200,60 @@ def test_parse_slurm_time_handles_all_three_formats():
     assert p(None)          == 0.0
     assert p("")            == 0.0
     assert p("garbage")     == 0.0
+
+
+# ---------------------------------------------------------------------------
+# compact_params: history/tracking rows without the embedded payload blobs
+# ---------------------------------------------------------------------------
+
+def test_compact_params_drops_private_payload_blobs():
+    big = "{" + "x" * 5000 + "}"
+    params = {"num_stars": "10000", "_star_prior_json": big,
+              "_cosmos_vis_transfer_artifact_json": {"a": 1},
+              "members": "member_01,member_02", "_tiny": "ok"}
+    kept, omitted = fasrc_jobs.compact_params(params)
+    assert kept == {"num_stars": "10000", "members": "member_01,member_02", "_tiny": "ok"}
+    assert omitted["_star_prior_json"] == len(big)
+    assert omitted["_cosmos_vis_transfer_artifact_json"] > 0
+    assert "_tiny" not in omitted
+
+
+def test_compact_params_truncates_any_huge_public_value():
+    params = {"extra_flags": "y" * 20_000}
+    kept, omitted = fasrc_jobs.compact_params(params)
+    assert "extra_flags" not in kept
+    assert omitted == {"extra_flags": 20_000}
+
+
+def test_compact_row_ships_params_once():
+    row = {"jobid": "1", "params_json": '{"a":"1","_joint_galaxy_population_json":"' + "z" * 4000 + '"}'}
+    out = fasrc_jobs.compact_row(row)
+    assert out["params"] == {"a": "1"}
+    assert out["params_omitted"] == {"_joint_galaxy_population_json": 4000}
+    assert "params_json" not in out                     # not the same data twice
+    assert row["params_json"].startswith('{"a"')        # input untouched
+
+
+@pytest.mark.parametrize(("ledger", "db", "shown", "unresolved"), [
+    ("COMPLETED", "DONE", "COMPLETED", False),       # sacct's verdict wins
+    ("OUT_OF_MEMORY", "DONE", "OUT_OF_MEMORY", False),
+    ("CANCELLED by 123", "", "CANCELLED", False),
+    ("RUNNING", "CANCELLED", "CANCELLED", True),     # stale live ledger never wins
+    ("RUNNING", "DONE", "DONE", True),
+    ("PENDING", "CANCELLED", "CANCELLED", True),
+    ("RUNNING", "RUNNING", "RUNNING", False),        # genuinely live
+    ("RUNNING", "", "RUNNING", False),               # nothing to compare against
+    ("", "RUNNING", "RUNNING", False),
+    ("", "UNKNOWN", "UNKNOWN", True),
+    ("DONE", "COMPLETED", "COMPLETED", True),
+    ("UNKNOWN", "DONE", "UNKNOWN", True),
+    ("", "", "PENDING", True),
+])
+def test_display_state_and_unresolved(ledger, db, shown, unresolved):
+    assert fasrc_jobs.display_state(ledger, db) == shown
+    assert fasrc_jobs.is_unresolved(ledger, db) is unresolved
+
+
+def test_compact_row_survives_malformed_params_json():
+    out = fasrc_jobs.compact_row({"jobid": "1", "params_json": "{not json"})
+    assert out["params"] == {} and out["params_omitted"] == {}

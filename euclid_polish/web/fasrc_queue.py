@@ -146,8 +146,14 @@ class JobQueue:
         with self._lock:
             return {
                 "names":         [it.get("label", "(job)") for it in self.items],
-                "items":         [{"id": it["id"], "label": it.get("label", "")}
-                                  for it in self.items],
+                # Per-item detail for the queue panel (remove one, see what
+                # runs next). The stored ``spec`` stays server-side: its form
+                # can embed large calibration JSON.
+                "items":         [{"id": it["id"], "label": it.get("label", ""),
+                                   "step": (it.get("spec") or {}).get("step"),
+                                   "queued_at": it.get("queued_at"),
+                                   "position": i + 1}
+                                  for i, it in enumerate(self.items)],
                 "count":         len(self.items),
                 "active_jobid":  self.active_jobid,
                 "halted":        self.halted,
@@ -176,6 +182,29 @@ class JobQueue:
             self.halted = False
             self.halted_reason = None
             self._save()
+
+    def resume_after_halt(self, db: Any, joblog: Any) -> dict[str, Any]:
+        """Clear a halt so the queue continues past the job that stopped it.
+
+        A halt after a *failed* active job leaves that job as ``active_jobid``;
+        :meth:`tick` would re-classify it as a failure and halt again at once.
+        Resuming therefore drops a failed active job from the lane (a still
+        running or successful one stays, so the lane is never double-booked);
+        the next :meth:`tick` promotes the head of the queue. A no-op when the
+        queue is not halted.
+        """
+        with self._lock:
+            if not self.halted:
+                return self.public()
+            aid = self.active_jobid
+            if aid is not None:
+                outcome, _state = job_outcome(aid, db, joblog)
+                if outcome == "failure":
+                    self.active_jobid = None
+            self.halted = False
+            self.halted_reason = None
+            self._save()
+            return self.public()
 
     def clear(self) -> dict[str, Any]:
         """Drop all queued items and clear any halt. Leaves active untouched."""

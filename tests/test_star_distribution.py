@@ -414,6 +414,12 @@ def test_cached_stellar_fit_does_not_query_gaia_or_require_euclid_login(monkeypa
         "fit_star_population",
         lambda: {"euclid_mapping": {"matched_stars": 8}},
     )
+    persisted = []
+    monkeypatch.setattr(
+        routes,
+        "star_distribution_payload",
+        lambda **kwargs: persisted.append(kwargs) or {},
+    )
 
     def spawn(*, label, target):
         calls.append(label)
@@ -432,3 +438,8 @@ def test_cached_stellar_fit_does_not_query_gaia_or_require_euclid_login(monkeypa
     assert response.status_code == 200
     assert response.get_json() == {"ok": True, "job_id": "gaia-job"}
     assert calls == ["star distribution: fit cached stellar prior"]
+    # The fit job (a POST) persists both plot variants; the GET never writes.
+    assert persisted == [
+        {"include_training": False, "persist": True},
+        {"include_training": True, "persist": True},
+    ]

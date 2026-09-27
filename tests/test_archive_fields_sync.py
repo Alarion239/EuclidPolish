@@ -13,6 +13,7 @@ import pytest
 from flask import Flask
 
 from euclid_polish.web import remote
+from euclid_polish.web.app import create_app
 from euclid_polish.web.helpers import archive_fields as archive_provider
 from euclid_polish.web.routes import archive_fields as routes
 
@@ -172,8 +173,6 @@ def test_archive_fields_get_is_local_and_available_without_ssh(
         "fetch_one_file",
         lambda *_args, **_kwargs: pytest.fail("GET must not contact FASRC"),
     )
-
-    from euclid_polish.web.app import create_app
 
     response = create_app().test_client().get("/api/archive-fields")
 

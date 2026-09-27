@@ -20,7 +20,9 @@ A tombstone records where the member went::
 from __future__ import annotations
 
 import glob
+import json
 import os
+import re
 from datetime import UTC, datetime
 from typing import Any
 
@@ -29,6 +31,39 @@ from euclid_polish.tracking._utils import _read_json, _write_json
 
 _MEMBER_GLOB = "member_*"
 REGISTRY_FILENAME = "ensemble_registry.json"
+_MEMBER_SPELLING = re.compile(r"^(?:member_)?(\d{1,6})(?:·psnr)?$")
+
+
+def member_name(label: str) -> str:
+    """``"196·psnr"`` / ``"196"`` / ``"member_196"`` → ``"member_196"``.
+
+    The one normaliser for every spelling the UI, the registry, the cube
+    manifests (``NN·psnr``) and the model catalogue use; anything else (a
+    ``·loss`` track, a path) raises :class:`ValueError`. The number is
+    zero-padded to two digits like every member directory (``"2"`` →
+    ``"member_02"``)."""
+    m = _MEMBER_SPELLING.fullmatch(str(label).strip())
+    if m is None:
+        raise ValueError(f"not a member name or label: {label!r}")
+    return f"member_{int(m.group(1)):02d}"
+
+
+def member_label(name: str) -> str:
+    """Any member spelling → its ensemble label ``"NN·psnr"``."""
+    return member_name(name).removeprefix("member_") + "·psnr"
+
+
+def member_is_starless(member_dir: str) -> bool:
+    """Whether a member trained in the STARLESS regime (erase stars), read from
+    its ``origin.json``. Members predating the star knob have no field → they
+    are STARFULL (the original reconstruct-stars behavior). Lives here (no
+    TensorFlow) so :func:`regime_labels` needs no import of
+    :mod:`euclid_polish.ensemble`, which re-exports it."""
+    try:
+        with open(os.path.join(member_dir, "origin.json")) as f:
+            return bool(json.load(f).get("starless", False))
+    except (OSError, ValueError, AttributeError):
+        return False
 
 
 def default_ensemble_dir() -> str:
@@ -102,7 +137,6 @@ def regime_labels(base_dir: str, starless: bool) -> list[str]:
     its own cube/eval/combiner artifacts — so this (NOT :func:`active_labels`,
     which spans both regimes) is the per-regime membership fingerprint those
     caches validate against."""
-    from euclid_polish.ensemble import member_is_starless  # lazy: avoid cycle
     out = []
     for d in active_member_dirs(base_dir):
         if (os.path.isdir(d) and _checkpoint_exists(d)
@@ -148,3 +182,77 @@ def archive_member_entry(base_dir: str, name: str, *, zip_path: str,
     })
     _write_json(registry_path(base_dir), reg)
     return reg
+
+
+def restore_member_entry(base_dir: str, name: str) -> dict[str, Any]:
+    """Move an archived tombstone back to ``active`` (the inverse of
+    :func:`archive_member_entry`). The member directory must already be back
+    on disk with a checkpoint, else the bootstrap would drop it again."""
+    name = member_name(name)
+    reg = load_registry(base_dir)
+    if name in reg["active"]:
+        raise ValueError(f"{name} is already active")
+    if not any(str(t.get("name")) == name for t in reg["archived"]):
+        raise ValueError(f"{name} is not archived")
+    d = os.path.join(base_dir, name)
+    if not (os.path.isdir(d) and _checkpoint_exists(d)):
+        raise ValueError(f"{name} has no checkpoint on disk at {d}")
+    reg["archived"] = [t for t in reg["archived"] if str(t.get("name")) != name]
+    reg["active"] = sorted([*reg["active"], name])
+    _write_json(registry_path(base_dir), reg)
+    return reg
+
+
+def _campaign_dirs(tracking_root: str) -> list[tuple[str, str]]:
+    """``(campaign, dir)`` for the active campaign then every archived one."""
+    root = os.path.abspath(tracking_root)
+    out = [("current", os.path.join(root, "current"))]
+    archive = os.path.join(root, "archive")
+    if os.path.isdir(archive):
+        out += [(n, os.path.join(archive, n)) for n in sorted(os.listdir(archive))
+                if os.path.isdir(os.path.join(archive, n))]
+    return out
+
+
+def find_archived_zip(tombstone: dict[str, Any], tracking_root: str
+                      ) -> tuple[str, str] | None:
+    """``(campaign, abs zip path)`` of a tombstone's archive zip, or ``None``.
+
+    The tombstone records the zip relative to the campaign that was active
+    when the member was archived (``models/<file>.zip``), not which campaign;
+    campaigns are saved into ``archive/<slug>`` later, so every campaign's
+    ``models/`` is searched (the active one first). Only the file NAME is
+    used, so a crafted tombstone can never point outside the tracking tree."""
+    rel = str(tombstone.get("zip") or "").replace("\\", "/")
+    fname = os.path.basename(rel)
+    if not fname.endswith(".zip") or rel not in (fname, f"models/{fname}"):
+        return None
+    for campaign, d in _campaign_dirs(tracking_root):
+        path = os.path.join(d, "models", fname)
+        if os.path.isfile(path):
+            return campaign, path
+    return None
+
+
+def archived_members(base_dir: str, tracking_root: str | None = None
+                     ) -> list[dict[str, Any]]:
+    """The tombstones, newest first, each with where its zip is now:
+    ``zip_found``, ``zip_path`` (absolute or ``None``), ``campaign`` and
+    ``size_bytes`` — the Ensemble › Members archived table and the restore
+    action read this."""
+    root = tracking_root or Config.TRACKING_DIR
+    rows = []
+    for t in load_registry(base_dir)["archived"]:
+        found = find_archived_zip(t, root)
+        size = None
+        if found is not None:
+            try:
+                size = os.path.getsize(found[1])
+            except OSError:
+                found = None
+        rows.append({**t, "zip_found": found is not None,
+                     "zip_path": found[1] if found else None,
+                     "campaign": found[0] if found else None,
+                     "size_bytes": size})
+    rows.sort(key=lambda r: str(r.get("archived_at") or ""), reverse=True)
+    return rows

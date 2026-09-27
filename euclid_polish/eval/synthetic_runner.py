@@ -16,31 +16,100 @@ import shutil
 from collections.abc import Callable
 from typing import Any
 
+import numpy as np
+from astropy.io import fits
+
 from euclid_polish.config import Config
-from euclid_polish.eval.catalog_runner import EVAL_HR_SIZE, EVAL_LR_SIZE, enforce_object_sizes
+from euclid_polish.eval.catalog_runner import (
+    EVAL_HR_SIZE,
+    EVAL_LR_SIZE,
+    enforce_object_sizes,
+    identity_for,
+)
 from euclid_polish.eval.disagreement import write_disagreement_cubes
-from euclid_polish.eval.ensemble_infer import load_eval_ensemble
+from euclid_polish.eval.ensemble_cube_cache import (
+    cached_member_labels,
+    load_cached_member_stack,
+)
+from euclid_polish.eval.ensemble_infer import (
+    PRODUCTION_COMBINER_KIND,
+    load_eval_ensemble,
+    load_production_combiner,
+    sr_from_model,
+)
+from euclid_polish.eval.progress import tqdm_progress
 from euclid_polish.eval.stamp_geometry import crop_stamp  # re-export (back-compat)
-from euclid_polish.sky.generation.source_catalog import source_is_off_field
+from euclid_polish.eval.subsets import eval_subset
+from euclid_polish.image.tfio import read_images, tfrecord_path
+from euclid_polish.sky.generation.source_catalog import read_sources, source_is_off_field
+from euclid_polish.training.target_blur import blur_target_array
+from euclid_polish.web.helpers.paths import _sky_records_local_dir
+
+__all__ = [
+    "crop_stamp",
+    "default_records_dir",
+    "field_reconstruction",
+    "run_synthetic_eval",
+    "select_central_source",
+]
 
 
 def default_records_dir() -> str | None:
     """Local dir holding the validation TFRecords, or ``None`` if not present."""
-    cand = [Config.RECORDS_DIR_V2]
-    try:                                        # web-layer cache resolver
-        from euclid_polish.web.helpers.paths import _sky_records_local_dir
-        cand.append(_sky_records_local_dir())
-    except Exception:                           # noqa: BLE001 — optional
-        pass
-    for d in cand:
+    for d in (Config.RECORDS_DIR_V2, _sky_records_local_dir()):
         if d and os.path.isfile(os.path.join(d, "dirty_validate.tfrecord")):
             return d
     return None
 
 
+def field_reconstruction(
+    model: Any, field_index: int, lr_cube: np.ndarray, *, subset: str,
+    log: Callable[[str], None],
+    load_model: Callable[[], Any] | None = None,
+) -> tuple[np.ndarray, np.ndarray | None, list[str], str | None]:
+    """``(sr, members, member_labels, combiner_kind)`` of one synthetic field.
+
+    Reuses the ensemble page's cached STARFULL member stack when it is current
+    (no network run) and reconstructs it through the production combiner — the
+    loaded model's own when it has the same members, else the production gate
+    fitted for exactly the cached membership — falling back to the member mean
+    only when no current gate loads. Without a cache the field goes through the
+    model (``load_model`` is called when ``model`` is ``None``).
+    ``members`` is ``None`` for an ensemble of one (no disagreement cubes).
+    """
+    cached = load_cached_member_stack(int(field_index), subset=subset)
+    if cached is not None:
+        labels = cached_member_labels() or []
+        combine = getattr(model, "combine", None) if model is not None else None
+        if callable(combine) and list(getattr(model, "member_labels", []) or []) == labels:
+            sr = combine(cached, lr_cube)
+            kind = getattr(model, "combiner_kind", None)
+        else:
+            gate = load_production_combiner(labels) if labels else None
+            if gate is not None:
+                lr = (np.asarray(lr_cube, np.float32)
+                      if getattr(gate, "use_lr", False) else None)
+                sr = gate.apply_field(cached, lr=lr)
+                kind = PRODUCTION_COMBINER_KIND
+            else:
+                sr = cached.mean(axis=0)
+                kind = None
+        log(f"  field {field_index}: reused ensemble cache ({cached.shape[0]} members) "
+            f"· {kind or 'member mean'}")
+        members = cached if cached.shape[0] >= 2 else None
+        return np.asarray(sr, np.float32), members, labels, kind
+    if model is None:
+        if load_model is None:
+            raise RuntimeError(f"field {field_index}: no cached member stack and no model")
+        model = load_model()
+    _, sr, members = sr_from_model(model, lr_cube)
+    log(f"  field {field_index}: inference")
+    return (np.asarray(sr, np.float32), members, list(model.member_labels),
+            getattr(model, "combiner_kind", None))
+
+
 def _psnr(a, b) -> float | None:
     """PSNR (dB) over the overlapping region, peak = Config.PSNR_PEAK_E."""
-    import numpy as np
     a = np.asarray(a, np.float64); b = np.asarray(b, np.float64)
     h = min(a.shape[0], b.shape[0]); w = min(a.shape[1], b.shape[1])
     if h == 0 or w == 0:
@@ -132,22 +201,8 @@ def run_synthetic_eval(
     (the grouped runner then runs A/B/C only). Writes LR/SR/raw-HR/BHR FITS per
     stamp, where BHR is the PSF-stabilised supervision target.
     """
-    import numpy as np
-    from astropy.io import fits
-
-    from euclid_polish.eval.ensemble_cube_cache import (
-        cached_member_labels,
-        load_cached_member_stack,
-    )
-    from euclid_polish.eval.ensemble_infer import sr_from_model
-    from euclid_polish.eval.subsets import eval_subset
-    from euclid_polish.image.tfio import read_images, tfrecord_path
-    from euclid_polish.sky.generation.source_catalog import read_sources
-    from euclid_polish.training.target_blur import blur_target_array
-
     def _emit(m): (log or print)(m)
     if on_progress is None:                     # local/CLI run → visible bar
-        from euclid_polish.eval.progress import tqdm_progress
         on_progress = tqdm_progress("synthetic")
     def _tick(i, total, lbl=""):
         if on_progress: on_progress(i, total, lbl)
@@ -241,8 +296,13 @@ def run_synthetic_eval(
 
     plan.sort(key=lambda t: (t[0], t[1], t[3]))  # group by field → reconstruct once
 
-    if model is None:
-        model = load_eval_ensemble(ensemble_dir, num_res_blocks, log=_emit)
+    loaded: list[Any] = [model]
+
+    def _load_model() -> Any:                   # only for a field without a cache
+        if loaded[0] is None:
+            loaded[0] = load_eval_ensemble(ensemble_dir, num_res_blocks, log=_emit)
+        return loaded[0]
+
     scale_hdr = float(asinh_scale or Config.STRETCH_SCALE_E)
     bands = ",".join(Config.LR_INPUT_BAND_NAMES)
 
@@ -251,7 +311,7 @@ def run_synthetic_eval(
     total = len(plan)
     cur_idx = None                              # SR is per-field; reconstruct once
     lr_cube = sr_arr = members_full = None
-    member_labels: list[str] = []               # fingerprint for members.json
+    identity: dict[str, Any] = {}               # members + combiner → members.json
     for j, (idx, grade, src, rank) in enumerate(plan):
         _tick(j, total, f"{grade} idx {idx}")
         sub = f"{grade}_{idx:04d}_{rank}"       # unique per (field, brightness rank)
@@ -266,20 +326,12 @@ def run_synthetic_eval(
             os.makedirs(obj_dir, exist_ok=True)
             if idx != cur_idx:                  # same field → reuse per-field arrays
                 lr_cube = np.asarray(lr_by[idx].data, dtype=np.float32)   # (H,W,4)
-                cached = load_cached_member_stack(idx, subset=field_subset)
-                if cached is not None:          # reuse the ensemble page's cubes
-                    members_full = cached                              # (M,2H,2W,C)
-                    member_labels = cached_member_labels() or []
-                    sr_arr = members_full.mean(axis=0).astype(np.float32)
-                    _emit(f"  field {idx}: reused ensemble cache "
-                          f"({members_full.shape[0]} members)")
-                    if members_full.shape[0] < 2:   # ensemble of 1 → no cubes
-                        members_full = None
-                else:                           # no cache → run inference on the field
-                    _, sr_data, members_full = sr_from_model(model, lr_cube)
-                    member_labels = list(model.member_labels)
-                    sr_arr = np.asarray(sr_data, dtype=np.float32)     # (2H,2W,C)
-                    _emit(f"  field {idx}: inference")
+                # Cached STARFULL stack through the production combiner, else
+                # the model (loaded lazily); (2H, 2W, C) SR + (M, 2H, 2W, C).
+                sr_arr, members_full, labels, kind = field_reconstruction(
+                    loaded[0], idx, lr_cube, subset=field_subset, log=_emit,
+                    load_model=_load_model)
+                identity = identity_for(labels, kind)
                 cur_idx = idx
             if lr_cube is None or sr_arr is None:
                 raise RuntimeError(f"field {idx} reconstruction arrays were not initialized")
@@ -355,7 +407,8 @@ def run_synthetic_eval(
                         for mem in np.asarray(members_full, dtype=np.float32)
                     ], axis=0)                                   # (M, m, m, C)
                     write_disagreement_cubes(obj_dir, mem_st,
-                                             member_labels=member_labels)
+                                             member_labels=identity["member_labels"],
+                                             identity=identity)
                 except Exception as exc:  # noqa: BLE001
                     _emit(f"  [disagreement] {sub}: cubes not written: {exc}")
 

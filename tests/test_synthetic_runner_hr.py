@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import numpy as np
 from astropy.io import fits
 
@@ -58,9 +60,9 @@ def test_hr_fits_written_four_band(tmp_path, monkeypatch):
         target[64, 64, 0] = 1.0
         return [_Img(0, target)]
 
-    monkeypatch.setattr("euclid_polish.image.tfio.read_images",
+    monkeypatch.setattr(sr, "read_images",
                         fake_read)
-    monkeypatch.setattr("euclid_polish.sky.generation.source_catalog.read_sources",
+    monkeypatch.setattr(sr, "read_sources",
                         lambda p: {0: [{"type": "lens", "x_pix": 64.0,
                                         "y_pix": 64.0, "flux_vis_e": 1.0}]})
 
@@ -98,10 +100,10 @@ def test_multiple_galaxies_extracted_per_field(tmp_path, monkeypatch):
             return [_Img(0, np.zeros((64, 64, 4), np.float32))]
         return [_Img(0, np.ones((128, 128, 4), np.float32))]
 
-    monkeypatch.setattr("euclid_polish.image.tfio.read_images", fake_read)
+    monkeypatch.setattr(sr, "read_images", fake_read)
     # One field, three galaxies at distinct in-window positions and fluxes.
     monkeypatch.setattr(
-        "euclid_polish.sky.generation.source_catalog.read_sources",
+        sr, "read_sources",
         lambda p: {0: [
             {"type": "galaxy", "x_pix": 64.0, "y_pix": 64.0, "flux_vis_e": 10.0},
             {"type": "galaxy", "x_pix": 60.0, "y_pix": 70.0, "flux_vis_e": 100.0},
@@ -122,11 +124,6 @@ def test_multiple_galaxies_extracted_per_field(tmp_path, monkeypatch):
 
 def test_reuses_cached_ensemble_cubes(tmp_path, monkeypatch):
     """When ensemble cube cache is present, sr_from_model is never called."""
-    import json
-
-    from euclid_polish.config import Config
-    from euclid_polish.eval import synthetic_runner
-
     # Same LR/HR geometry as the other tests: LR 64²×4, HR 128²×4.
     # eval_subset returns "validate" because no dirty_test.tfrecord exists.
     subset = "validate"
@@ -138,9 +135,9 @@ def test_reuses_cached_ensemble_cubes(tmp_path, monkeypatch):
             return [_Img(0, np.zeros((64, 64, 4), np.float32))]
         return [_Img(0, np.ones(hr_field_shape, np.float32))]
 
-    monkeypatch.setattr("euclid_polish.image.tfio.read_images", fake_read)
+    monkeypatch.setattr(sr, "read_images", fake_read)
     monkeypatch.setattr(
-        "euclid_polish.sky.generation.source_catalog.read_sources",
+        sr, "read_sources",
         lambda p: {0: [{"type": "lens", "x_pix": 64.0,
                         "y_pix": 64.0, "flux_vis_e": 1.0}]})
 
@@ -152,14 +149,14 @@ def test_reuses_cached_ensemble_cubes(tmp_path, monkeypatch):
         d = ckpt_root / "ensemble" / f"member_{i:02d}"
         d.mkdir(parents=True)
         (d / "checkpoint").write_text("x")
-        (d / "origin.json").write_text(json.dumps({"starless": True}))
+        (d / "origin.json").write_text(json.dumps({"starless": False}))
     monkeypatch.setattr(Config, "DEFAULT_CHECKPOINT_DIR",
                         str(ckpt_root / "wdsr"))
     labels = [f"{i:02d}·psnr" for i in range(n_members)]
 
     # Stage the ensemble cube cache that synthetic_runner should reuse.
     vis_dir = tmp_path / "vis"
-    cubes_dir = vis_dir / "ensemble" / "starless" / "cubes"
+    cubes_dir = vis_dir / "ensemble" / "starfull" / "cubes"
     cubes_dir.mkdir(parents=True)
     rng = np.random.default_rng(0)
     for idx in field_indices:
@@ -174,9 +171,9 @@ def test_reuses_cached_ensemble_cubes(tmp_path, monkeypatch):
 
     def _boom(*a, **k):
         raise AssertionError("sr_from_model called — cache reuse failed")
-    monkeypatch.setattr("euclid_polish.eval.ensemble_infer.sr_from_model", _boom)
+    monkeypatch.setattr(sr, "sr_from_model", _boom)
 
-    out = synthetic_runner.run_synthetic_eval(
+    out = sr.run_synthetic_eval(
         str(tmp_path / "out"), n=1, model=object(),
         records_dir=str(tmp_path), seed=0,
         on_progress=lambda *a: None, log=lambda *a: None)

@@ -21,10 +21,12 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import tensorflow as tf
 from astroquery.esa.euclid import Euclid
 from scipy.special import ndtr
 
 from euclid_polish.config import Config
+from euclid_polish.image.tfio import deserialize_image
 from euclid_polish.photometry import (
     electrons_to_ab_mag,
     uJy_to_ab_mag,
@@ -34,6 +36,7 @@ from euclid_polish.sky.generation.source_catalog import (
     read_sources,
     source_is_off_field,
 )
+from euclid_polish.web.helpers import archive_fields
 from euclid_polish.web.helpers.paths import _sky_records_local_dir
 from euclid_polish.web.helpers.tng_prior import (
     DetectionAccumulator,
@@ -603,8 +606,6 @@ def _archive_provider() -> Any:
     provider as an unavailable collection instead of silently reverting to
     the historical one-pointing inference field.
     """
-    from euclid_polish.web.helpers import archive_fields
-
     return archive_fields
 
 
@@ -882,10 +883,6 @@ def _count_tfrecord(path: Path) -> int:
 
 
 def _synthetic_fields(paths: Iterable[Path]) -> Iterator[np.ndarray]:
-    import tensorflow as tf
-
-    from euclid_polish.image.tfio import deserialize_image
-
     for path in paths:
         for raw in tf.data.TFRecordDataset([str(path)]):
             yield np.asarray(deserialize_image(raw).data, dtype=np.float32)

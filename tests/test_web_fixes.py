@@ -325,15 +325,14 @@ def test_training_curves_keep_the_loss_series(tmp_path, monkeypatch):
     member = base / "member_00"
     member.mkdir(parents=True)
     (member / "origin.json").write_text(json.dumps({"loss_norm": "l2"}))
+    (member / "training_log.csv").write_text(
+        "step,psnr_stretched,combined_loss\n1000,40,0.5\n2000,41,0.25\n")
     monkeypatch.setattr(ensemble_viz, "ensemble_dir", lambda: str(base))
     monkeypatch.setattr("euclid_polish.ensemble_registry.active_member_dirs",
                         lambda _b: [str(member)])
     monkeypatch.setattr(ensemble_viz, "_sky_records_local_dir", lambda: None)
     series = [[1000, 0.5], [2000, 0.25]]
-    monkeypatch.setattr(
-        "euclid_polish.training.log_plot.ensemble_training_series",
-        lambda _b: [{"name": "member_00", "psnr": [[1000, 40.0]], "loss": series}])
     (entry,) = ensemble_viz.training_curves_payload()
     assert entry["loss_series"] == series
     assert entry["loss_norm"] == "l2"
-    assert entry["loss"] == "l2"                 # compat alias of loss_norm
+    assert entry["loss"] == series               # the series, never the norm (W-Ensemble)

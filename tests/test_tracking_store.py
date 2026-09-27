@@ -226,3 +226,39 @@ def test_git_commit_info_on_real_repo_has_keys():
 
 def test_git_commit_info_non_repo_returns_none(tmp_path):
     assert git_commit_info(str(tmp_path / "nope")) is None
+
+
+# ---------------------------------------------------------------------------
+# W-Ops: archived-campaign detail, per-campaign and unassigned job logs
+# ---------------------------------------------------------------------------
+
+def test_read_log_and_jobs_of_an_archived_campaign(store):
+    store.create_campaign("Old run")
+    store.append_log("archived note")
+    store.log_fasrc_job({"jobid": "1", "label": "train"})
+    store.log_fasrc_job({"jobid": "2", "label": "eval"})
+    res = store.save_campaign()
+    name = os.path.basename(res["archive_path"])
+    assert "archived note" in store.read_log(name)
+    jobs = store.read_fasrc_jobs(name)
+    assert [j["jobid"] for j in jobs] == ["2", "1"]          # newest first
+    assert store.read_fasrc_jobs() == []                     # no active campaign
+    assert store.read_log() == ""
+
+
+def test_unassigned_jobs_are_readable(store):
+    store.log_fasrc_job({"jobid": "9"})
+    assert [j["jobid"] for j in store.read_fasrc_jobs("unassigned")] == ["9"]
+
+
+def test_count_fasrc_jobs_matches_lines(store):
+    store.create_campaign("c")
+    for i in range(3):
+        store.log_fasrc_job({"jobid": str(i)})
+    assert store.count_fasrc_jobs() == 3
+    assert store.count_fasrc_jobs("unassigned") == 0
+
+
+def test_campaign_names_cannot_escape_the_archive(store):
+    with pytest.raises(TrackingError):
+        store.read_fasrc_jobs("../../etc")

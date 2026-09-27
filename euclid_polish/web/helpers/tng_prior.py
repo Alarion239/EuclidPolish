@@ -7,6 +7,9 @@ from dataclasses import dataclass, field
 from typing import Any, cast
 
 import numpy as np
+from astropy.stats import SigmaClip
+from photutils.background import Background2D, MedianBackground
+from photutils.segmentation import SourceCatalog, deblend_sources, detect_sources
 
 from euclid_polish.config import Config
 
@@ -30,14 +33,6 @@ def _segment_centroids(
     plane: np.ndarray,
 ) -> tuple[list[tuple[float, float]], int]:
     """Detect positive sources and matched-significance negative islands."""
-    from astropy.stats import SigmaClip
-    from photutils.background import Background2D, MedianBackground
-    from photutils.segmentation import (
-        SourceCatalog,
-        deblend_sources,
-        detect_sources,
-    )
-
     data = np.asarray(plane, dtype=np.float64)
     background = Background2D(
         data,

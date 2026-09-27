@@ -36,7 +36,10 @@ import numpy as np
 
 from euclid_polish import ensemble_registry
 from euclid_polish.config import Config
-from euclid_polish.ensemble_registry import default_ensemble_dir  # re-export
+from euclid_polish.ensemble_registry import (  # re-exports
+    default_ensemble_dir,
+    member_is_starless,
+)
 from euclid_polish.eval.subsets import eval_subset
 from euclid_polish.image import Image, ImageSet, Role
 from euclid_polish.image.tfio import tfrecord_path
@@ -214,15 +217,27 @@ def _psnr(a: np.ndarray, b: np.ndarray, peak: float) -> float:
     return float(10.0 * np.log10(peak * peak / mse))
 
 
-def member_is_starless(member_dir: str) -> bool:
-    """Whether a member trained in the STARLESS regime (erase stars), read from
-    its ``origin.json``. Members predating the star knob have no field → they
-    are STARFULL (the original reconstruct-stars behavior)."""
-    try:
-        with open(os.path.join(member_dir, "origin.json")) as f:
-            return bool(json.load(f).get("starless", False))
-    except (OSError, ValueError):
-        return False
+def _select_member_dirs(dirs: Sequence[str], labels: Sequence[str], *,
+                        starless: bool | None) -> list[str]:
+    """``dirs`` (registry-active member dirs) reduced to ``labels``, in the
+    order given; a label that is unknown, repeated, or of the other star
+    regime raises :class:`ValueError` naming it."""
+    by_name = {os.path.basename(d): d for d in dirs}
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in labels:
+        name = ensemble_registry.member_name(raw)
+        if name in seen:
+            raise ValueError(f"{name} is listed twice")
+        seen.add(name)
+        d = by_name.get(name)
+        if d is None:
+            raise ValueError(f"{name} is not an active ensemble member with a checkpoint")
+        if starless is not None and member_is_starless(d) != bool(starless):
+            regime = "starless" if member_is_starless(d) else "starfull"
+            raise ValueError(f"{name} is a {regime} member")
+        out.append(d)
+    return out
 
 
 class EnsembleModel:
@@ -245,6 +260,14 @@ class EnsembleModel:
         evaluation ~2× slower now that training converges well. The
         ``loss_best/`` track is still SAVED during training and can seed
         forks — it just isn't part of the ensemble unless opted in.
+    labels : sequence of str, optional
+        Load exactly these members, in this order (any spelling
+        :func:`~euclid_polish.ensemble_registry.member_name` accepts:
+        ``"196·psnr"``, ``"196"``, ``"member_196"``). Each must be a
+        registry-active member with a checkpoint (and of the ``starless``
+        regime when that is given), else :class:`ValueError`. Used to run a
+        combiner variant fitted for a SUBSET of the active members, so a
+        caller never has to load the whole ensemble and slice it.
     """
 
     def __init__(
@@ -256,6 +279,7 @@ class EnsembleModel:
         n_members: int | None = None,
         include_loss_best: bool = False,
         starless: bool | None = None,
+        labels: Sequence[str] | None = None,
         _models: Sequence[Model] | None = None,
     ) -> None:
         self.base_dir = base_dir
@@ -271,9 +295,11 @@ class EnsembleModel:
         # still sit on disk (e.g. mirrored back from FASRC) but never loads.
         dirs = [d for d in ensemble_registry.active_member_dirs(base_dir)
                 if os.path.isdir(d) and _checkpoint_exists(d)]
+        if labels is not None:
+            dirs = _select_member_dirs(dirs, labels, starless=starless)
         # Star-regime filter: a starless/starfull eval mixes only members of the
         # matching regime (they score against different targets — clean vs hr).
-        if starless is not None:
+        elif starless is not None:
             dirs = [d for d in dirs if member_is_starless(d) == bool(starless)]
         if n_members is not None:
             dirs = dirs[: int(n_members)]
@@ -539,7 +565,10 @@ class EnsembleModel:
                                                  #   training psnr_stretched)
               "per_member_labels": [...],        # NN·psnr / NN·loss, aligned
               "mean_member_psnr", "ensemble_psnr",
-              "ensemble_gain_db",                # ensemble − best member
+              "best_member_psnr", "best_member_label",
+              "ensemble_vs_mean_member_db",      # ensemble − mean member
+              "ensemble_vs_best_member_db",      # ensemble − best member
+              "ensemble_gain_db",                # = ensemble_vs_mean_member_db
               "disagreement": {
                  "mean_std_e",                   # mean per-pixel std (electrons)
                  "mean_rel_disagreement",        # std / (|mean| + floor)
@@ -619,7 +648,10 @@ class EnsembleModel:
                           if n_scored else [])
         ensemble_psnr = (ens_sum / n_scored) if n_scored else float("nan")
         mean_member = float(np.mean(per_member)) if per_member else float("nan")
-        best_member = float(np.max(per_member)) if per_member else float("nan")
+        best_index = int(np.argmax(per_member)) if per_member else -1
+        best_member = float(per_member[best_index]) if per_member else float("nan")
+        vs_mean = (ensemble_psnr - mean_member) if n_scored else float("nan")
+        vs_best = (ensemble_psnr - best_member) if n_scored else float("nan")
         return {
             "n_members": self.n_members,
             "n_fields": n_fields,
@@ -629,8 +661,15 @@ class EnsembleModel:
             "per_member_labels": list(self._member_labels),
             "mean_member_psnr": mean_member,
             "ensemble_psnr": ensemble_psnr,
-            "ensemble_gain_db": (ensemble_psnr - best_member
-                                 if n_scored else float("nan")),
+            "best_member_psnr": best_member,
+            "best_member_label": (self._member_labels[best_index]
+                                  if 0 <= best_index < len(self._member_labels)
+                                  else None),
+            "ensemble_vs_mean_member_db": vs_mean,
+            "ensemble_vs_best_member_db": vs_best,
+            # One meaning everywhere: the gain over the MEAN member (the eval
+            # summary rebuilt from cached cubes defines it the same way).
+            "ensemble_gain_db": vs_mean,
             "disagreement": {
                 "mean_std_e": (std_e_sum / n_fields) if n_fields else float("nan"),
                 "mean_rel_disagreement": (rel_sum / n_fields) if n_fields

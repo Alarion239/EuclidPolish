@@ -19,6 +19,7 @@ from typing import Any
 from flask import jsonify, request
 
 from euclid_polish.web import job_config
+from euclid_polish.web.fasrc_pipeline import REGISTRY as STEP_REGISTRY
 
 #: Recently served config snapshots by version, so a save can tell which
 #: posted fields changed server-side since the client loaded its copy. An
@@ -63,12 +64,30 @@ def _conflicts(posted: dict[str, Any], base_version: str,
     return out
 
 
+def _step_labels(used_by: dict[str, list[str]]) -> dict[str, str]:
+    """Label of every FASRC step a field feeds (the "used by" chips)."""
+    labels: dict[str, str] = {}
+    for step_ids in used_by.values():
+        for step_id in step_ids:
+            try:
+                labels[step_id] = STEP_REGISTRY.get(step_id).label
+            except KeyError:
+                labels[step_id] = step_id
+    return labels
+
+
 def register(app):
 
     @app.route("/api/config")
     def api_config_get():
+        """The effective config, its ``version`` and the schema the editor
+        renders: ``defaults`` (what a reset writes), ``types``, ``used_by``
+        (field → FASRC step ids it is injected into) and ``steps`` (labels)."""
         values = job_config.load().to_dict()
-        return jsonify({"ok": True, "config": values, "version": _remember(values)})
+        used_by = job_config.used_by()
+        return jsonify({"ok": True, "config": values, "version": _remember(values),
+                        "defaults": job_config.defaults(), "types": job_config.field_types(),
+                        "used_by": used_by, "steps": _step_labels(used_by)})
 
     @app.route("/api/config/save", methods=["POST"])
     def api_config_save():

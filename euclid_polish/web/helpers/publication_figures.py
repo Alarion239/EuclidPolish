@@ -11,7 +11,9 @@ from collections.abc import Mapping
 from typing import Any
 
 import matplotlib
+import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.colors import LogNorm
 
 from euclid_polish.visualization.presentation_style import (
     AXIS_LABEL_SIZE,
@@ -172,7 +174,6 @@ def render_population_atlas(
     if not brightness_law or not generation_law or not radius or not relation:
         raise ValueError("Euclid joint fit has no publication diagnostics")
     matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
 
     style = {
         "figure.facecolor": PAPER,
@@ -372,8 +373,6 @@ def render_galaxy_distribution_plate(
         raise ValueError("galaxy-distribution joint maps are unavailable")
 
     matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    from matplotlib.colors import LogNorm
 
     style = {
         "figure.facecolor": PAPER,
@@ -643,7 +642,6 @@ def render_star_population_calibration(
         raise ValueError("stellar calibration has no publication diagnostics")
 
     matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
 
     style = {
         "figure.facecolor": PAPER,

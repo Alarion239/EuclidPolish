@@ -115,7 +115,6 @@ def fake_remote(tmp_path, monkeypatch):
         data_dir=str(data_dir),
         ckpt_dir=str(ckpt_dir),
         local_ckpt_mirror=str(tmp_path / "local_ckpt"),
-        n_gpus=1, n_cpus=4, memory="8G", time_limit="01:00:00",
     )
     fasrc_config.save(cfg)
 
@@ -399,6 +398,16 @@ def test_git_pull_does_not_flag_env_update_for_unrelated_changes(fake_remote, cl
 # Checkpoint auto-mirror
 # ---------------------------------------------------------------------------
 
+def _wait_job(client, job_id, timeout=30.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        job = client.get(f"/api/jobs/{job_id}").get_json()
+        if job["status"] != "running":
+            return job
+        time.sleep(0.05)
+    raise AssertionError(f"job {job_id} did not finish")
+
+
 def test_mirror_trigger_rsyncs_remote_ckpts(fake_remote, client, tmp_path):
     # Pretend ensemble training wrote a member on FASRC — since the
     # ensemble-only refactor the mirror pulls the remote ENSEMBLE dir
@@ -408,8 +417,11 @@ def test_mirror_trigger_rsyncs_remote_ckpts(fake_remote, client, tmp_path):
     (member / "ckpt-12345.h5").write_bytes(b"hello world")
     (member / "training_log.jsonl").write_text('{"step": 1}\n')
 
-    r = client.post("/api/fasrc/mirror/trigger")
+    # The pull deletes local-only files (--delete-after): it must be confirmed.
+    assert client.post("/api/fasrc/mirror/trigger").status_code == 400
+    r = client.post("/api/fasrc/mirror/trigger", data={"confirm": "1"})
     assert r.status_code == 200
+    assert _wait_job(client, r.get_json()["job_id"])["status"] == "done"
 
     mirror = Path(fake_remote["cfg"].local_ckpt_mirror)
     assert (mirror / "member_00" / "ckpt-12345.h5").read_bytes() == b"hello world"
@@ -420,7 +432,8 @@ def test_mirror_status_reflects_last_sync(fake_remote, client):
     ens = fake_remote["ckpt_dir"].parent / "ensemble"
     ens.mkdir(exist_ok=True)
     (ens / "a.bin").write_bytes(b"x")
-    client.post("/api/fasrc/mirror/trigger")
+    r = client.post("/api/fasrc/mirror/trigger", data={"confirm": "1"})
+    _wait_job(client, r.get_json()["job_id"])
     s = client.get("/api/fasrc/mirror/status").get_json()
     assert s["last_run_at"] is not None
     assert s["last_rc"] == 0

@@ -1,13 +1,50 @@
-"""auth routes for the EuclidPolish web UI (extracted from app.py)."""
+"""Archive credentials for the web UI (Settings › Connections).
+
+- ONE laptop-side Euclid archive session (:mod:`euclid_polish.web.euclid_session`):
+  ``/auth/status`` / ``/auth/login`` / ``/auth/logout``. Every local feature
+  that queries the archive (galaxy and star distributions, the population
+  comparison, the catalog-eval galaxy query) reads this one session;
+  ``/auth/status`` lists them in ``used_by`` so the UI can say where it
+  matters. The password is never stored.
+- The FASRC-side credentials file the cutout download reads there
+  (``/euclid-auth/*``).
+"""
 from __future__ import annotations
 
 import contextlib
+import threading
+from datetime import UTC, datetime
 
 from flask import jsonify, request
 
 from euclid_polish.web import euclid_session
 from euclid_polish.web.fasrc_gate import requires_fasrc
 from euclid_polish.web.remote import STATE
+
+#: When the current laptop session logged in (``None`` while logged out).
+_SESSION: dict[str, str | None] = {"logged_in_at": None}
+_SESSION_LOCK = threading.Lock()
+
+#: The console features that read the laptop session (``id``, label, page).
+CONSUMERS = (
+    {"id": "galaxies", "label": "Realism › Galaxies (Euclid galaxy query)", "to": "/realism/galaxies"},
+    {"id": "stars", "label": "Realism › Stars (Euclid star query)", "to": "/realism/stars"},
+    {"id": "pixels", "label": "Realism › Pixels (population comparison)", "to": "/realism/pixels"},
+    {"id": "catalog-eval", "label": "Sky › Catalog eval (query galaxies)", "to": "/sky/catalog-eval"},
+)
+
+
+def session_status() -> dict:
+    """The one laptop-side archive session (``/auth/status``)."""
+    authenticated = euclid_session.is_authenticated()
+    with _SESSION_LOCK:
+        logged_in_at = _SESSION["logged_in_at"] if authenticated else None
+    return {
+        "authenticated": authenticated,
+        "user": euclid_session.current_user(),
+        "logged_in_at": logged_in_at,
+        "used_by": [dict(item) for item in CONSUMERS],
+    }
 
 
 def register(app):
@@ -23,10 +60,7 @@ def register(app):
     # ---------------- Authentication ----------------
     @app.route("/auth/status")
     def auth_status():
-        return jsonify({
-            "authenticated": euclid_session.is_authenticated(),
-            "user": euclid_session.current_user(),
-        })
+        return jsonify(session_status())
 
     @app.route("/auth/login", methods=["POST"])
     def auth_login():
@@ -38,14 +72,19 @@ def register(app):
             return jsonify({"ok": False, "error": "Missing username or password"}), 400
         try:
             euclid_session.login(user, pwd)
-            return jsonify({"ok": True, "user": euclid_session.current_user()})
         except Exception as e:
             return jsonify({"ok": False, "error": str(e)}), 500
+        with _SESSION_LOCK:
+            _SESSION["logged_in_at"] = datetime.now(UTC).isoformat(timespec="seconds")
+        # The reply keeps its legacy shape; /auth/status has the full session.
+        return jsonify({"ok": True, "user": euclid_session.current_user()})
 
     @app.route("/auth/logout", methods=["POST"])
     def auth_logout():
         with contextlib.suppress(Exception):
             euclid_session.logout()
+        with _SESSION_LOCK:
+            _SESSION["logged_in_at"] = None
         return jsonify({"ok": True})
 
     # ---------------- Euclid archive credentials (for FASRC download) -----

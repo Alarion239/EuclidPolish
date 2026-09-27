@@ -1042,10 +1042,21 @@ def _write_star_distribution(
     os.replace(temporary, output)
 
 
+#: In-process memo of the last computed distribution per ``include_training``
+#: variant, keyed by (calibration fingerprint, source signature): a GET must
+#: never write into ``data/``, so a stale on-disk cache is recomputed in memory
+#: once per input state; only POST jobs (``persist=True``) write the cache.
+_DISTRIBUTION_MEMO: dict[bool, tuple[tuple[Any, Any], dict[str, Any]]] = {}
+
+
 def star_distribution_payload(
-    *, include_training: bool = False,
+    *, include_training: bool = False, persist: bool = False,
 ) -> dict[str, Any] | None:
-    """Read stellar diagnostics for current or catalogue-only all splits."""
+    """Read stellar diagnostics for current or catalogue-only all splits.
+
+    Read-only unless ``persist`` (the fit job): a missing or stale cache is
+    computed in memory and memoised for this process.
+    """
     try:
         candidate = json.loads(star_candidate_path().read_text())
     except (OSError, json.JSONDecodeError):
@@ -1070,6 +1081,12 @@ def star_distribution_payload(
         and cached.get("source_signature") == signature
     ):
         return cached
+    memo_key = (fingerprint, json.dumps(signature, sort_keys=True, default=str))
+    memo = _DISTRIBUTION_MEMO.get(include_training)
+    if memo is not None and memo[0] == memo_key:
+        if persist:
+            _write_star_distribution(memo[1], include_training=include_training)
+        return memo[1]
     if not euclid_catalog_path().is_file() or not gaia_catalog_path().is_file():
         return None
     try:
@@ -1125,7 +1142,9 @@ def star_distribution_payload(
         include_training and "train" in payload["synthetic_splits"]
     )
     payload["training_catalog_only"] = payload["training_included"]
-    _write_star_distribution(payload, include_training=include_training)
+    _DISTRIBUTION_MEMO[include_training] = (memo_key, payload)
+    if persist:
+        _write_star_distribution(payload, include_training=include_training)
     return payload
 
 

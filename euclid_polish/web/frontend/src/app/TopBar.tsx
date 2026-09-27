@@ -23,14 +23,24 @@ export function Breadcrumbs() {
   const { match } = info;
   const ws = info.paramLabels.length ? `${info.workspaceLabel} · ${info.paramLabels.join(" · ")}` : info.workspaceLabel;
   const wsTo = match.tab ? pagePath(match.workspace, { params: match.params }) : landingPath(match.workspace);
+  const entity = current ? inspectorTitle(current) : null;
+  // Every crumb truncates with an ellipsis (its full text is the tooltip),
+  // so the top bar stays one line and never runs under its controls.
   return (
-    <nav className="crumbs" aria-label="Breadcrumbs">
+    <nav className="crumbs" aria-label="Breadcrumbs"
+      title={[ws, info.tabLabel, entity].filter(Boolean).join(" › ")}>
       <ol>
-        <li>{info.tabLabel
-          ? <Link to={wsTo}>{ws}</Link>
-          : <span className="crumbs__here" aria-current="page">{ws}</span>}</li>
-        {info.tabLabel && <li><span className="crumbs__here" aria-current="page">{info.tabLabel}</span></li>}
-        {current && <li className="crumbs__entity"><span title={`${current.kind}:${current.id}`}>{inspectorTitle(current)}</span></li>}
+        <li className="crumbs__ws">{info.tabLabel
+          ? <Link to={wsTo} className="crumbs__text">{ws}</Link>
+          : <span className="crumbs__here crumbs__text" aria-current="page">{ws}</span>}</li>
+        {info.tabLabel && (
+          <li className="crumbs__tab"><span className="crumbs__here crumbs__text" aria-current="page">{info.tabLabel}</span></li>
+        )}
+        {current && (
+          <li className="crumbs__entity">
+            <span className="crumbs__text" title={`${current.kind}:${current.id}`}>{entity}</span>
+          </li>
+        )}
       </ol>
     </nav>
   );
@@ -68,7 +78,6 @@ export function TopBar({ narrow = false }: { narrow?: boolean }) {
         <IconButton icon="menu" label="Open navigation" onClick={() => useShellUi.getState().openOnly("drawer")} />
       )}
       <Breadcrumbs />
-      <span className="topbar__spacer" />
       <button type="button" className="topbar__search" onClick={openPalette} aria-label="Search pages and actions (⌘K)">
         <Icon name="search" size={14} />
         <span className="topbar__search-text">Search or jump to…</span>

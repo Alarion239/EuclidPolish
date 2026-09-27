@@ -18,8 +18,10 @@ import os
 import re
 import shlex
 import shutil
+import zipfile
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime
 
 import numpy as np
 from scipy.ndimage import zoom
@@ -34,6 +36,7 @@ from euclid_polish.ensemble import (
     member_is_starless,
     pca_field,
 )
+from euclid_polish.eval import spatial_gate_compare as sgc
 from euclid_polish.eval.combiner import (
     BAND_NAMES,
     COMBINER_MODELS,
@@ -93,8 +96,9 @@ from euclid_polish.training.target_blur import (
     blur_target_array,
     validate_target_fwhm_arcsec,
 )
-from euclid_polish.training.trainer import prune_orphaned_checkpoints
-from euclid_polish.web import fasrc_config
+from euclid_polish.training.trainer import TRAINING_LOG_FILENAME, prune_orphaned_checkpoints
+from euclid_polish.web import fasrc_config, fasrc_jobs, job_config
+from euclid_polish.web.fasrc_pipeline import REGISTRY as STEP_REGISTRY
 from euclid_polish.web.helpers.paths import _sky_records_local_dir
 from euclid_polish.web.remote import STATE
 
@@ -462,51 +466,6 @@ def update_member_psnr_cache(scores: dict[str, dict], subset: str,
         json.dump(cache, f, indent=2)
 
 
-def training_curves_payload() -> list[dict]:
-    """Training series for the in-browser curves — registry-ACTIVE members
-    only. An archived member's directory can linger on disk (or come back from
-    a FASRC leftover), and the series reader globs ``member_*`` — without this
-    filter a tombstoned member kept showing in the PSNR curves. Each entry is
-    enriched with trunk depth and the cached test PSNR so the chart can color
-    lines by depth or by a test-PSNR gradient.
-
-    ``loss_series`` is the member's training-loss curve ``[[step, loss], …]``
-    and ``loss_norm`` its reconstruction norm (``l1`` / ``l2`` / …); ``loss``
-    is kept as an alias of ``loss_norm`` for the current chart (it used to
-    overwrite the series)."""
-    base = ensemble_dir()
-    active = {os.path.basename(d)
-              for d in ensemble_registry.active_member_dirs(base)}
-    rdir = _sky_records_local_dir()
-    sub = eval_subset(rdir) if rdir else "test"
-    rec_fp = _member_scoring_records_fingerprint(rdir, sub)
-    cache = _load_member_psnr_cache()
-    out = []
-    for s in log_plot.ensemble_training_series(base):
-        if s["name"] not in active:
-            continue
-        d = os.path.join(base, s["name"])
-        entry = _member_psnr_entry(cache, s["name"], d, sub,
-                                   records_fp=rec_fp)
-        s["blocks"] = infer_checkpoint_num_res_blocks(d)
-        s["test_psnr"] = (entry or {}).get("psnr")
-        # Reconstruction norm from origin.json; members created before the
-        # loss knob existed all trained with the then-hardcoded L1.
-        origin = _member_origin(d)
-        s["loss_series"] = s.get("loss", []) if isinstance(s.get("loss"), list) else []
-        s["loss_norm"] = ((origin or {}).get("loss_norm") or "l1")
-        s["loss"] = s["loss_norm"]
-        # Per-member asinh knee (electrons) for the "by knee" coloring; None →
-        # the per-band default (the client renders it as 100).
-        s["asinh_knee"] = (origin or {}).get("asinh_knee")
-        # Star regime (origin.json): starless members erase stars (clean
-        # target), starfull reconstruct them (hr target). Pre-knob members
-        # have no field → starfull. Drives the /ensemble mode toggle + filter.
-        s["starless"] = bool((origin or {}).get("starless", False))
-        out.append(s)
-    return out
-
-
 def job_member_psnr(cap) -> dict:
     """Score each active member's test-set PSNR (asinh space), skipping members
     whose checkpoint fingerprint already has a cached score — so re-running
@@ -578,7 +537,11 @@ def ensemble_status(starless: bool | None = None) -> dict:
             entry = _member_psnr_entry(psnr_cache, name, d, sub,
                                        records_fp=status_rec_fp)
             origin = _member_origin(d)
-            members.append({"name": name, "seed": _member_seed(d),
+            seed = (origin or {}).get("seed")
+            members.append({"name": name,
+                            # origin.json records the seed; the provenance
+                            # store lookup (~0.4 s per member) is the fallback.
+                            "seed": seed if seed is not None else _member_seed(d),
                             "has_loss_best": has_lb,
                             "size_mb": round(_dir_size_mb(d), 1),
                             "step": _member_last_step(d),
@@ -846,6 +809,64 @@ class _CombinerMetricAcc:
                 member_labels[best_l1_i]
                 if 0 <= best_l1_i < len(member_labels) else None),
         }
+
+
+def _summary_headline(model_cmet: dict[str, _CombinerMetricAcc],
+                      labels: list) -> dict:
+    """The eval summary's headline numbers, every one the VIS asinh PSNR
+    (knee ``Config.STRETCH_SCALE_E``) over the scored test fields:
+
+    * ``ensemble_psnr`` — the plain mean of the members;
+    * ``mean_member_psnr`` / ``best_member_psnr`` (+ ``best_member_label``) —
+      the average and the best single member;
+    * ``ensemble_vs_mean_member_db`` / ``ensemble_vs_best_member_db`` — the
+      mean's gain over them; ``ensemble_gain_db`` is the former (one meaning
+      everywhere, as :meth:`EnsembleModel.evaluate` defines it);
+    * per combiner kind ``<kind>_combiner_psnr``, ``…_vs_mean_db`` (over the
+      ensemble MEAN), ``…_vs_best_member_db`` and ``…_vs_mean_member_db``.
+      The production combiner is the spatial gate (``spatial_gate_*`` keys);
+      the bare ``combiner_psnr`` / ``combiner_vs_mean_db`` keys are the RBF's
+      (kept for older readers)."""
+    base = next((c for c in model_cmet.values() if c.n), None)
+    if base is None:
+        return {}
+    per_member = (base.mem / base.n) if base.mem is not None else np.array([])
+    ensemble = float(base.mean / base.n)
+    mean_member = float(np.mean(per_member)) if per_member.size else None
+    best_i = int(np.argmax(per_member)) if per_member.size else -1
+    best = float(per_member[best_i]) if per_member.size else None
+    out: dict = {
+        "psnr_metric": "vis_asinh",
+        "psnr_knee_e": float(Config.STRETCH_SCALE_E),
+        "n_scored": int(base.n),
+        "ensemble_psnr": ensemble,
+        "mean_member_psnr": mean_member,
+        "best_member_psnr": best,
+        "best_member_label": (str(labels[best_i])
+                              if 0 <= best_i < len(labels) else None),
+        "per_member_vis_psnr": [float(x) for x in per_member],
+        "ensemble_vs_mean_member_db": (ensemble - mean_member
+                                       if mean_member is not None else None),
+        "ensemble_vs_best_member_db": (ensemble - best
+                                       if best is not None else None),
+    }
+    out["ensemble_gain_db"] = out["ensemble_vs_mean_member_db"]
+    for kind, cmet in model_cmet.items():
+        block = cmet.block(labels)
+        if not (block and block.get("available")):
+            continue
+        out[f"{kind}_combiner_psnr"] = block["psnr"]
+        out[f"{kind}_combiner_vs_mean_db"] = block["psnr"] - block["ensemble_mean_psnr"]
+        out[f"{kind}_combiner_vs_best_member_db"] = (
+            block["psnr"] - (block["best_member_psnr"] or 0.0))
+        if mean_member is not None:
+            out[f"{kind}_combiner_vs_mean_member_db"] = block["psnr"] - mean_member
+        if kind == _RBF_KIND:
+            out["combiner_psnr"] = block["psnr"]
+            out["combiner_vs_mean_db"] = block["psnr"] - block["ensemble_mean_psnr"]
+            out["combiner_vs_best_member_db"] = (
+                block["psnr"] - (block["best_member_psnr"] or 0.0))
+    return out
 
 
 def _evals_payload(ps_curves: EnsembleSpectrumCurves | None,
@@ -1279,21 +1300,13 @@ def _collect_bounded_ablation_patches(
     return patch_stacks, patch_truth, regions
 
 
-def job_combiner_fit(cap, *, num_images: int, n_kernels: int = 128,
-                     min_usage: float | None = None,
-                     starless: bool = False,
-                     model_kind: str = _RAW_INCREMENTAL_MINMEANMAX_RBF_KIND,
-                     score_test: bool = True,
-                     gate_members: list[str] | None = None,
-                     target_fwhm_arcsec: float = Config.TARGET_PSF_FWHM_ARCSEC) -> dict:
-    """Fit a combiner on the validate cubes, then optionally test-score.
-
-    ``gate_members`` (member numbers, spatial gate only) fits a pruned gate
-    that reads just those members."""
-    del min_usage
-
-    model_kind = _normalize_combiner_kind(model_kind)
-    target_fwhm = validate_target_fwhm_arcsec(target_fwhm_arcsec)
+def _prepare_validate_cubes(cap, *, starless: bool, num_images: int,
+                            target_fwhm: float):
+    """The regime's cached validate member cubes, (re)inferred when the
+    records, the target PSF or the active members changed since they were
+    written. → ``(base, records_dir, records_fp, validate_dir, indices,
+    labels, target)`` — shared by the production combiner fit and the named
+    spatial-gate variant fit."""
     base = ensemble_dir()
     records_dir = _sky_records_local_dir()
     target = "clean" if starless else "hr"
@@ -1337,6 +1350,28 @@ def job_combiner_fit(cap, *, num_images: int, n_kernels: int = 128,
 
     if not indices:
         raise RuntimeError("no validate fields collected — check the records.")
+    return base, records_dir, records_fp, validate_dir, indices, labels, target
+
+
+def job_combiner_fit(cap, *, num_images: int, n_kernels: int = 128,
+                     min_usage: float | None = None,
+                     starless: bool = False,
+                     model_kind: str = _RAW_INCREMENTAL_MINMEANMAX_RBF_KIND,
+                     score_test: bool = True,
+                     gate_members: list[str] | None = None,
+                     target_fwhm_arcsec: float = Config.TARGET_PSF_FWHM_ARCSEC) -> dict:
+    """Fit a combiner on the validate cubes, then optionally test-score.
+
+    ``gate_members`` (member numbers, spatial gate only) fits a pruned gate
+    that reads just those members."""
+    del min_usage
+
+    model_kind = _normalize_combiner_kind(model_kind)
+    target_fwhm = validate_target_fwhm_arcsec(target_fwhm_arcsec)
+    (base, records_dir, records_fp, validate_dir, indices, labels,
+     target) = _prepare_validate_cubes(cap, starless=starless,
+                                       num_images=num_images,
+                                       target_fwhm=target_fwhm)
 
     if model_kind == SPATIAL_GATE_KIND:
         combiner = _fit_spatial_gate_on_validate(
@@ -2402,34 +2437,16 @@ def _reevaluate_from_cached_cubes(starless: bool,
     base_cmet = model_cmet[_RBF_KIND]
     per_member = ((base_cmet.mem / base_cmet.n).tolist()
                   if base_cmet.mem is not None else [])
-    ensemble_psnr = base_cmet.mean / base_cmet.n
-    mean_member = float(np.mean(per_member)) if per_member else None
     if num_images is None:
         num_images = base_cmet.n
     summary = {
         "regime": _regime_slug(starless),
         "member_labels": list(labels),
-        "n_scored": int(base_cmet.n),
-        "ensemble_psnr": float(ensemble_psnr),
-        "mean_member_psnr": mean_member,
-        "ensemble_gain_db": (float(ensemble_psnr - mean_member)
-                             if mean_member is not None else None),
         "per_member_psnr_stretched": [float(x) for x in per_member],
         "recomputed_from_cubes": True,
         "reused": False,
+        **_summary_headline(model_cmet, labels),
     }
-    if comb_block and comb_block.get("available"):
-        summary["combiner_psnr"] = comb_block["psnr"]
-        summary["combiner_vs_mean_db"] = (
-            comb_block["psnr"] - comb_block["ensemble_mean_psnr"])
-    for kind, cmet in model_cmet.items():
-        block = cmet.block(labels)
-        if block and block.get("available"):
-            summary[f"{kind}_combiner_psnr"] = block["psnr"]
-            summary[f"{kind}_combiner_vs_mean_db"] = (
-                block["psnr"] - block["ensemble_mean_psnr"])
-            summary[f"{kind}_combiner_vs_best_member_db"] = (
-                block["psnr"] - (block["best_member_psnr"] or 0.0))
     summary["eval_identity"] = _eval_identity(
         base, rdir, sub, out_dir, starless=starless, num_images=int(num_images),
         target_fwhm_arcsec=target_fwhm)
@@ -2782,13 +2799,18 @@ def job_ensemble_evaluate(cap, *, num_images: int,
             json.dump(payload, f)
         _write_diag_samples(starless, diag_acc)
 
-    # Combiner comparison numbers into the run summary.
-    if combiner_block is not None and combiner_block.get("available"):
-        out["combiner_psnr"] = combiner_block["psnr"]
-        out["combiner_vs_mean_db"] = (
-            combiner_block["psnr"] - combiner_block["ensemble_mean_psnr"])
-        out["combiner_vs_best_member_db"] = (
-            combiner_block["psnr"] - (combiner_block["best_member_psnr"] or 0.0))
+    # The headline numbers (ensemble mean, members, every combiner) in ONE
+    # metric — the VIS asinh PSNR of the metric accumulator — exactly as a
+    # rebuild from the cached cubes writes them. EnsembleModel.evaluate's
+    # raw-electron PSNRs stay available under *_raw_e.
+    for key in ("ensemble_psnr", "mean_member_psnr", "best_member_psnr",
+                "ensemble_gain_db", "ensemble_vs_mean_member_db",
+                "ensemble_vs_best_member_db"):
+        if key in out:
+            out[f"{key}_raw_e"] = out.pop(key)
+    out.pop("best_member_label", None)
+    if model_cmet[_RBF_KIND].n:
+        out.update(_summary_headline(model_cmet, member_labels))
 
     out["regime"] = _regime_slug(starless)
     # Stamp the identity LAST (with the summary) so its presence means this run
@@ -3033,7 +3055,8 @@ def changed_members_from_itemize(out: str) -> set[str]:
     return changed
 
 
-def job_ensemble_pull(cap) -> dict:
+def job_ensemble_pull(cap, *, members: list[str] | None = None,
+                      dry_run: bool = False) -> dict:
     """Download the trained ensemble (``member_NN/``) from FASRC to the local
     checkpoint tree, so the render / evaluate actions can run it locally.
 
@@ -3041,7 +3064,15 @@ def job_ensemble_pull(cap) -> dict:
     members actually changed on FASRC; only those are downloaded (and orphan-
     pruned). An unchanged ensemble downloads nothing — and the PSNR refresh
     afterwards is fingerprint-cached, so it re-scores only what was pulled.
+
+    ``members`` (any member spelling) restricts the download to those members
+    (the Overview's member picker); a requested member the probe finds
+    unchanged is reported in ``up_to_date``. ``dry_run`` stops after the
+    probe and returns what WOULD be pulled (``changed``) — nothing is
+    downloaded or re-scored.
     """
+    wanted = ({ensemble_registry.member_name(m) for m in members}
+              if members else None)
     if STATE.ssh is None or not STATE.ssh.is_connected():
         raise RuntimeError("not connected to FASRC — connect on the FASRC tab first.")
     remote = remote_ensemble_dir()
@@ -3061,9 +3092,30 @@ def job_ensemble_pull(cap) -> dict:
         remote.rstrip("/") + "/", local,
         extra_args=["--dry-run", "--itemize-changes", *excludes], timeout=600)
     changed = changed_members_from_itemize(probe_out) - tombstoned
+    if dry_run:
+        if probe_rc != 0 and not probe_out.strip():
+            raise RuntimeError("the FASRC change probe failed — try again, or pull "
+                               "without the dry run")
+        print(f"  • {len(changed)} member(s) changed on FASRC: "
+              + (", ".join(sorted(changed)) or "none"))
+        return {"dry_run": True, "changed": sorted(changed),
+                "tombstoned_skipped": sorted(tombstoned)}
+    up_to_date: list[str] = []
+    if wanted is not None:
+        up_to_date = sorted(wanted - changed - tombstoned)
+        changed &= wanted
 
     rc, err = 0, ""
-    if probe_rc != 0 and not probe_out.strip():
+    if probe_rc != 0 and not probe_out.strip() and wanted is not None:
+        # Probe failed but the user named members: pull exactly those.
+        changed = set(wanted) - tombstoned
+        for i, name in enumerate(sorted(changed)):
+            cap.tick(i, len(changed), f"pull {name}")
+            rc, _out, err = STATE.ssh.rsync_pull(
+                f"{remote.rstrip('/')}/{name}/", os.path.join(local, name),
+                timeout=3600)
+        print("  • change probe failed — pulled the requested members")
+    elif probe_rc != 0 and not probe_out.strip():
         # Probe itself failed (transport error, not perm noise) — fall back to
         # the old full-tree pull rather than wrongly concluding "no changes".
         cap.tick(0, 0, f"rsync {remote} → {local}")
@@ -3112,4 +3164,1072 @@ def job_ensemble_pull(cap) -> dict:
     except Exception as e:  # noqa: BLE001 — the pull itself succeeded
         print(f"  ! member PSNR refresh skipped: {type(e).__name__}: {e}")
     return {"local": local, "n_members": n,
-            "changed": sorted(changed), "psnr": psnr}
+            "changed": sorted(changed), "up_to_date": up_to_date,
+            "requested": sorted(wanted) if wanted is not None else None,
+            "psnr": psnr}
+
+
+# ===========================================================================
+# Ensemble workspace (spec §8.2): the joined members table, one member's
+# inspector payload, training curves, the combiner variant registry and its
+# compare / fit / promote jobs, the overview's headline + staleness, archived
+# members (restore from zip) and the train-command preview.
+# ===========================================================================
+
+#: Per-band validation PSNR columns of ``training_log.csv``.
+_BAND_LOG_COLUMNS = {"VIS": "psnr_vis", "Y_E": "psnr_y_e",
+                     "J_E": "psnr_j_e", "H_E": "psnr_h_e"}
+#: SLURM states of a job that is still going (the member may still grow).
+_LIVE_SLURM_STATES = {"PENDING", "RUNNING", "CONFIGURING", "COMPLETING",
+                      "REQUEUED", "RESIZING", "SUSPENDED"}
+#: A promotion's automatic backup of the previous production gate.
+GATE_BACKUP_PREFIX = "spatial_gate_backup_"
+_VARIANT_NAME = re.compile(r"^spatial_gate_[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+#: Named compare reports (newest wins as ``spatial_gate_comparison.json``).
+_COMPARE_DIR = "spatial_gate_comparisons"
+_COMPARE_LATEST = "spatial_gate_comparison.json"
+_COMPARE_ID = re.compile(r"^[0-9]{8}-[0-9]{6}(?:-[0-9]+)?$")
+
+
+def _regime_dir_ro(starless: bool) -> str:
+    """The regime artifact dir WITHOUT creating it (read-only GET paths)."""
+    return os.path.abspath(os.path.join(Config.VIS_DIR, "ensemble",
+                                        _regime_slug(starless)))
+
+
+def _read_json_file(path: str) -> dict | None:
+    try:
+        with open(path) as handle:
+            value = json.load(handle)
+    except (OSError, ValueError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _iso_mtime(path: str) -> str | None:
+    try:
+        stamp = os.path.getmtime(path)
+    except OSError:
+        return None
+    return datetime.fromtimestamp(stamp, UTC).isoformat(timespec="seconds")
+
+
+def _finite(value) -> float | None:
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return None
+    return v if np.isfinite(v) else None
+
+
+def _as_int(value) -> int | None:
+    v = _finite(value)
+    return int(v) if v is not None else None
+
+
+# ---- training curves ------------------------------------------------------ #
+
+def _member_training_series(member_dir: str) -> dict | None:
+    """One member's rollback-deduped validation history: joint + per-band
+    PSNR (asinh), the combined training loss, the raw loss, the gradient norm
+    (mean / max) and the wall time per 1000 steps. ``None`` without a log."""
+    path = os.path.join(member_dir, TRAINING_LOG_FILENAME)
+    if not os.path.isfile(path):
+        return None
+    try:
+        recs = log_plot.read_training_log(path)
+    except (FileNotFoundError, ValueError):
+        return None
+    recs = [r for r in recs if str(r.get("is_baseline", "")).strip()
+            not in ("1", "1.0", "true", "True")]
+    recs = log_plot.dedupe_latest_per_step(recs)
+
+    def col(key: str) -> list[list[float]]:
+        # 5 significant digits: plenty for a chart, ~40 % less JSON.
+        out = []
+        for r in recs:
+            v = _finite(r.get(key))
+            if v is not None and r.get("step") is not None:
+                out.append([int(r["step"]), float(f"{v:.5g}")])
+        return out
+
+    step_time = []
+    previous = None
+    for r in recs:
+        step, dur = r.get("step"), _finite(r.get("duration_s"))
+        if step is not None and dur is not None and dur > 0:
+            span = int(step) - (previous if previous is not None else 0)
+            if span > 0:
+                step_time.append([int(step), float(f"{dur * 1000.0 / span:.4g}")])
+        if step is not None:
+            previous = int(step)
+    series = {
+        "psnr": col("psnr_stretched"),
+        "band_psnr": {band: col(key) for band, key in _BAND_LOG_COLUMNS.items()},
+        "loss_series": col("combined_loss"),
+        "train_loss": col("loss"),
+        "gnorm": col("gnorm_avg"),
+        "gnorm_max": col("gnorm_max"),
+        "step_time": step_time,
+    }
+    if not (series["psnr"] or series["loss_series"]):
+        return None
+    return series
+
+
+def training_curves_payload() -> list[dict]:
+    """Training series for the in-browser curves — registry-ACTIVE members
+    only (an archived member's directory can linger on disk or come back from
+    a FASRC leftover; it never shows).
+
+    Each entry: ``{name, label, starless, psnr, band_psnr{VIS,Y_E,J_E,H_E},
+    loss_series, loss (= loss_series, deprecated alias), train_loss, gnorm,
+    gnorm_max, step_time}`` — every series ``[[step, value], …]``; ``step_time``
+    is seconds per 1000 steps — plus the facets the chart colours by:
+    ``loss_norm`` (the member's reconstruction loss ``l1``/``l2``/…),
+    ``blocks``, ``asinh_knee``, ``asinh_knees``, ``output_knee``,
+    ``knee_loss``, ``test_psnr`` and ``target_steps``. The series is never
+    overwritten by the norm (the old payload did that)."""
+    base = ensemble_dir()
+    rdir = _sky_records_local_dir()
+    sub = eval_subset(rdir) if rdir else "test"
+    rec_fp = _member_scoring_records_fingerprint(rdir, sub)
+    cache = _load_member_psnr_cache()
+    out = []
+    for d in ensemble_registry.active_member_dirs(base):
+        if not os.path.isdir(d):
+            continue
+        name = os.path.basename(d)
+        series = _member_training_series(d)
+        if series is None:
+            continue
+        origin = _member_origin(d) or {}
+        entry = _member_psnr_entry(cache, name, d, sub, records_fp=rec_fp)
+        out.append({
+            "name": name,
+            "label": ensemble_registry.member_label(name),
+            **series,
+            "loss": series["loss_series"],
+            "loss_norm": origin.get("loss_norm") or "l1",
+            "blocks": infer_checkpoint_num_res_blocks(d),
+            "asinh_knee": origin.get("asinh_knee"),
+            "asinh_knees": origin.get("asinh_knees"),
+            "output_knee": origin.get("output_knee"),
+            "knee_loss": origin.get("knee_loss"),
+            "target_steps": _as_int(origin.get("target_steps")),
+            "test_psnr": (entry or {}).get("psnr"),
+            "starless": bool(origin.get("starless", False)),
+        })
+    return out
+
+
+# ---- training jobs (the local FASRC job log) -------------------------------- #
+
+def _split_names(raw) -> list[str]:
+    return [t.strip() for t in str(raw or "").split(",") if t.strip()]
+
+
+def training_jobs() -> list[dict]:
+    """Every ``ensemble_train`` submission in the local job log (newest
+    first), with the members it created or continued and its recipe."""
+    try:
+        rows = fasrc_jobs.JOBLOG.history_for_step("ensemble_train")
+    except Exception:  # noqa: BLE001 — a missing/corrupt log is "no jobs"
+        return []
+    out = []
+    for r in rows:
+        try:
+            params = json.loads(r.get("params_json") or "{}")
+        except (TypeError, ValueError):
+            params = {}
+        if not isinstance(params, dict):
+            params = {}
+        mode = str(params.get("mode") or "add")
+        names = _split_names(params.get("member_names")) or _split_names(params.get("members"))
+        out.append({
+            "jobid": str(r.get("jobid") or ""),
+            "state": str(r.get("state") or "").upper() or None,
+            "submitted_at": r.get("submitted_at") or None,
+            "started_at": r.get("started_at") or None,
+            "ended_at": r.get("ended_at") or None,
+            "elapsed_seconds": _finite(r.get("elapsed_seconds")),
+            "req_time_limit": r.get("req_time_limit") or None,
+            "req_memory": r.get("req_memory") or None,
+            "req_cpus": _as_int(r.get("req_cpus")),
+            "req_gpus": _as_int(r.get("req_gpus")),
+            "partition": r.get("partition") or None,
+            "gpu_util_mean": _finite(r.get("gpu_util_mean")),
+            "mode": mode,
+            "member_names": names,
+            "steps": _as_int(params.get("steps")),
+            "continue_basis": params.get("continue_basis"),
+            "target_steps": _as_int(params.get("target_steps")),
+            "extra_steps": _as_int(params.get("extra_steps")),
+            "params": {k: v for k, v in params.items() if not str(k).startswith("_")},
+        })
+    return out
+
+
+def _jobs_by_member(jobs: list[dict]) -> dict[str, dict]:
+    """member name → the NEWEST training job that created or continued it."""
+    out: dict[str, dict] = {}
+    for job in jobs:                               # newest first
+        for name in job["member_names"]:
+            out.setdefault(name, job)
+    return out
+
+
+def member_progress(step: int | None, origin: dict | None, job: dict | None) -> dict:
+    """Steps reached vs the target, and whether the member stopped short.
+
+    The target is the continue job's ``target_steps`` when the newest job
+    continued the member up to N steps, else ``origin.json``'s. A member whose
+    job is still live is ``running``; one below its target once the job ended
+    is ``timeout`` (the SLURM time limit, or a crash, stopped it)."""
+    origin = origin or {}
+    target = _as_int(origin.get("target_steps"))
+    if job and job.get("mode") == "continue" and job.get("continue_basis") == "target" \
+            and job.get("target_steps"):
+        target = int(job["target_steps"])
+    live = bool(job and (job.get("state") or "") in _LIVE_SLURM_STATES)
+    if live:
+        status = "running"
+    elif step is None or not target:
+        status = "unknown"
+    elif step >= target:
+        status = "complete"
+    else:
+        status = "timeout"
+    return {"target_steps": target,
+            "fraction": (min(1.0, step / target) if step is not None and target else None),
+            "status": status, "timeout": status == "timeout"}
+
+
+# ---- one member row -------------------------------------------------------- #
+
+def _knee_rows_by_label(knee: dict) -> dict[str, dict]:
+    if not knee.get("available"):
+        return {}
+    return {str(m.get("label")): m for m in knee.get("models", []) or []
+            if m.get("kind") == "member"}
+
+
+def _gate_usage(starless: bool) -> dict:
+    """The production gate's cached per-member usage (Combiners payload) —
+    read from the saved payload only, never recomputed on a page load."""
+    payload = _read_json_file(os.path.join(
+        _regime_dir_ro(starless), COMBINER_MODELS[SPATIAL_GATE_KIND].payload_name))
+    if not payload or not payload.get("available"):
+        return {"available": False}
+    diag = payload.get("gate_diagnostics") or {}
+    return {"available": True, "stale": bool(payload.get("stale")),
+            "labels": [str(v) for v in payload.get("member_labels") or []],
+            "bands": [str(v) for v in payload.get("band_names") or []],
+            "usage": diag.get("usage") or payload.get("member_weight_integrals") or {},
+            "usage_source": diag.get("usage_source") or {},
+            "usage_by_brightness": diag.get("usage_by_brightness") or {},
+            "brightness_names": diag.get("brightness_names") or []}
+
+
+def _coherence_by_label(starless: bool) -> dict[str, dict]:
+    evals = _read_json_file(os.path.join(_regime_dir_ro(starless), "ensemble_evals.json"))
+    out: dict[str, dict] = {}
+    for row in ((evals or {}).get("coherence") or {}).get("scores", []) or []:
+        if str(row.get("id", "")).startswith("member_"):
+            out[str(row.get("label"))] = {"overall": row.get("overall"), "sr": row.get("sr")}
+    return out
+
+
+@dataclasses.dataclass
+class _MemberContext:
+    """Everything a member row joins, read once per request."""
+
+    base: str
+    starless: bool
+    sub: str
+    rec_fp: str | None
+    psnr_cache: dict
+    jobs: dict[str, dict]
+    knee: dict
+    knee_rows: dict[str, dict]
+    gate: dict
+    coherence: dict[str, dict]
+    vis_psnr: dict[str, float | None]
+    vis_psnr_meta: dict | None
+
+
+def _summary_vis_psnr(summary: dict | None) -> tuple[dict[str, float | None], dict | None]:
+    """label → the headline (VIS asinh) test PSNR of each member from
+    eval_summary.json: the metric of the Overview's "Best member" tile, NOT
+    the member-PSNR cache (joint 4-band). ``per_member_vis_psnr`` is the
+    explicit key; summaries recomputed from cubes before it existed carry the
+    same VIS numbers as ``per_member_psnr_stretched`` (the TF-evaluate path's
+    key of that name is joint 4-band, so it is only trusted from cubes)."""
+    s = summary or {}
+    labels = [str(x) for x in (s.get("member_labels") or s.get("per_member_labels") or [])]
+    vals = s.get("per_member_vis_psnr")
+    if vals is None and s.get("recomputed_from_cubes"):
+        vals = s.get("per_member_psnr_stretched")
+    if not labels or not isinstance(vals, list) or len(vals) != len(labels):
+        return {}, None
+    meta = {"metric": s.get("psnr_metric") or "vis_asinh",
+            "knee_e": s.get("psnr_knee_e"), "n_scored": s.get("n_scored")}
+    return {lbl: _finite(v) for lbl, v in zip(labels, vals, strict=True)}, meta
+
+
+def _member_context(starless: bool) -> _MemberContext:
+    base = ensemble_dir()
+    rdir = _sky_records_local_dir()
+    sub = eval_subset(rdir) if rdir else "test"
+    knee = knee_psnr_status(starless)
+    vis_psnr, vis_psnr_meta = _summary_vis_psnr(_read_eval_summary(starless))
+    return _MemberContext(
+        base=base, starless=starless, sub=sub,
+        rec_fp=_member_scoring_records_fingerprint(rdir, sub),
+        psnr_cache=_load_member_psnr_cache(), jobs=_jobs_by_member(training_jobs()),
+        knee=knee, knee_rows=_knee_rows_by_label(knee), gate=_gate_usage(starless),
+        coherence=_coherence_by_label(starless),
+        vis_psnr=vis_psnr, vis_psnr_meta=vis_psnr_meta)
+
+
+def _member_row(name: str, ctx: _MemberContext) -> dict:
+    d = os.path.join(ctx.base, name)
+    label = ensemble_registry.member_label(name)
+    origin = _member_origin(d)
+    o = origin or {}
+    step = _member_last_step(d)
+    job = ctx.jobs.get(name)
+    entry = _member_psnr_entry(ctx.psnr_cache, name, d, ctx.sub, records_fp=ctx.rec_fp)
+    knee_row = ctx.knee_rows.get(label)
+    knee_integrated = None
+    if knee_row is not None:
+        vals = [_finite(v) for v in knee_row.get("integrated") or []]
+        bands = list(ctx.knee.get("bands") or BAND_NAMES)
+        knee_integrated = dict(zip(bands, vals, strict=False))
+        finite_vals = [v for v in vals if v is not None]
+        knee_integrated["mean"] = (float(np.mean(finite_vals)) if finite_vals else None)
+    gate_usage = gate_usage_source = None
+    if ctx.gate.get("available") and label in ctx.gate["labels"]:
+        i = ctx.gate["labels"].index(label)
+        gate_usage = {b: _finite((ctx.gate["usage"].get(b) or [None] * (i + 1))[i])
+                      for b in ctx.gate["bands"]}
+        if ctx.gate["usage_source"]:
+            gate_usage_source = {b: _finite((ctx.gate["usage_source"].get(b) or [None] * (i + 1))[i])
+                                 for b in ctx.gate["bands"]}
+    lb = os.path.join(d, "loss_best")
+    seed = o.get("seed")
+    return {
+        "name": name, "label": label,
+        "starless": bool(o.get("starless", False)),
+        "regime": "starless" if o.get("starless") else "starfull",
+        "origin": origin,
+        "op": o.get("op"), "forked_from": o.get("forked_from"),
+        "loss": o.get("loss_norm") or "l1",
+        "blocks": infer_checkpoint_num_res_blocks(d),
+        "asinh_knee": o.get("asinh_knee"),
+        "asinh_knees": o.get("asinh_knees"),
+        "output_knee": o.get("output_knee"),
+        "knee_loss": o.get("knee_loss"),
+        "noise_aug": o.get("noise_aug"), "bootstrap": o.get("bootstrap"),
+        "icnr": o.get("icnr"), "seed": seed if seed is not None else _member_seed(d),
+        "commit": o.get("commit"), "created_at": o.get("created_at"),
+        "noise_model": o.get("noise_model"),
+        "step": step, **member_progress(step, origin, job),
+        "job": ({k: job[k] for k in ("jobid", "state", "submitted_at", "ended_at",
+                                     "elapsed_seconds", "req_time_limit", "gpu_util_mean",
+                                     "mode")} if job else None),
+        "psnr": (entry or {}).get("psnr"),
+        "vis_psnr": ctx.vis_psnr.get(label),
+        "knee_integrated": knee_integrated,
+        "gate_usage": gate_usage, "gate_usage_source": gate_usage_source,
+        "coherence": ctx.coherence.get(label),
+        "has_loss_best": os.path.isdir(lb) and _checkpoint_exists(lb),
+        "size_mb": round(_dir_size_mb(d), 1),
+    }
+
+
+def members_payload(starless: bool) -> dict:
+    """The Ensemble › Members table: one joined row per ACTIVE member of the
+    regime (status + origin.json + training job + knee-integrated PSNR per
+    band + production-gate usage + spectral coherence), the archived
+    tombstones (with their zip location, for restore) and the join's own
+    freshness flags."""
+    ctx = _member_context(starless)
+    reg = ensemble_registry.load_registry(ctx.base)
+    rows = []
+    for name in reg["active"]:
+        d = os.path.join(ctx.base, name)
+        if not (os.path.isdir(d) and _checkpoint_exists(d)):
+            continue
+        if ensemble_registry.member_is_starless(d) != bool(starless):
+            continue
+        rows.append(_member_row(name, ctx))
+    ranked = sorted((r for r in rows if r["psnr"] is not None), key=lambda r: -r["psnr"])
+    rank = {r["name"]: i + 1 for i, r in enumerate(ranked)}
+    ranked_knee = sorted((r for r in rows if (r["knee_integrated"] or {}).get("mean") is not None),
+                         key=lambda r: -r["knee_integrated"]["mean"])
+    knee_rank = {r["name"]: i + 1 for i, r in enumerate(ranked_knee)}
+    for r in rows:
+        r["psnr_rank"] = rank.get(r["name"])
+        r["knee_rank"] = knee_rank.get(r["name"])
+    other = sum(1 for n in reg["active"]
+                if ensemble_registry.member_is_starless(os.path.join(ctx.base, n)) != bool(starless))
+    return {
+        "regime": _regime_slug(starless),
+        "members": rows,
+        "other_regime_members": other,
+        "archived": ensemble_registry.archived_members(ctx.base, Config.TRACKING_DIR),
+        "knee": {"available": bool(ctx.knee.get("available")),
+                 "stale": bool(ctx.knee.get("stale")),
+                 "n_fields": ctx.knee.get("n_fields")},
+        "gate": {"available": bool(ctx.gate.get("available")),
+                 "stale": bool(ctx.gate.get("stale")),
+                 "n_members": len(ctx.gate.get("labels") or [])},
+        "psnr_fields": MEMBER_PSNR_FIELDS,
+        "vis_psnr": ctx.vis_psnr_meta,
+        "eval_subset": ctx.sub,
+    }
+
+
+def member_detail(name: str) -> dict | None:
+    """One member's inspector payload (active or archived): the joined row,
+    its origin, training series, PSNR-vs-knee curve (with the mean and the
+    production gate for reference) and production-gate usage by brightness.
+    ``None`` for a name the registry has never seen."""
+    name = ensemble_registry.member_name(name)
+    base = ensemble_dir()
+    reg = ensemble_registry.load_registry(base)
+    tombstone = next((t for t in ensemble_registry.archived_members(base, Config.TRACKING_DIR)
+                      if t.get("name") == name), None)
+    d = os.path.join(base, name)
+    active = name in reg["active"]
+    if not active and tombstone is None:
+        return None
+    starless = ensemble_registry.member_is_starless(d)
+    out: dict = {"name": name, "label": ensemble_registry.member_label(name),
+                 "active": active, "archived": tombstone,
+                 "regime": _regime_slug(starless), "row": None,
+                 "curves": None, "knee": None, "gate": None}
+    if not active:
+        return out
+    ctx = _member_context(starless)
+    # The table's row (with its ranks among the regime's members).
+    rows = {r["name"]: r for r in members_payload(starless)["members"]}
+    out["row"] = rows.get(name) or _member_row(name, ctx)
+    out["curves"] = _member_training_series(d)
+    label = out["label"]
+    if ctx.knee.get("available"):
+        models = ctx.knee.get("models", []) or []
+        pick = [m for m in models if m.get("label") == label or m.get("kind") in ("mean", "combiner")]
+        out["knee"] = {"knees": ctx.knee.get("knees"), "bands": ctx.knee.get("bands"),
+                       "stale": bool(ctx.knee.get("stale")),
+                       "models": [{k: m.get(k) for k in ("id", "kind", "label", "psnr", "integrated")}
+                                  for m in pick]}
+    if ctx.gate.get("available") and label in ctx.gate["labels"]:
+        i = ctx.gate["labels"].index(label)
+        out["gate"] = {
+            "stale": ctx.gate["stale"], "bands": ctx.gate["bands"],
+            "brightness_names": ctx.gate["brightness_names"],
+            "usage": {b: _finite((v or [None] * (i + 1))[i]) for b, v in ctx.gate["usage"].items()},
+            "usage_source": {b: _finite((v or [None] * (i + 1))[i])
+                             for b, v in ctx.gate["usage_source"].items()},
+            "by_brightness": {b: [_finite(row[i]) if i < len(row) else None for row in rows]
+                              for b, rows in ctx.gate["usage_by_brightness"].items()},
+            "uniform": 1.0 / max(1, len(ctx.gate["labels"])),
+        }
+    return out
+
+
+# ---- archive / restore ----------------------------------------------------- #
+
+def _safe_extract(zf: zipfile.ZipFile, dest: str) -> None:
+    root = os.path.realpath(dest)
+    for info in zf.infolist():
+        target = os.path.realpath(os.path.join(dest, info.filename))
+        if target != root and not target.startswith(root + os.sep):
+            raise RuntimeError(f"refusing unsafe zip entry {info.filename!r}")
+    zf.extractall(dest)
+
+
+def job_restore_member(cap, *, name: str) -> dict:
+    """Bring an archived member back: unzip its tracking archive into the
+    ensemble dir and move its tombstone back to active. The regime's
+    evaluation, knee curves and combiner then read stale (membership changed)
+    until re-evaluated / refitted — shown by the Ensemble banners."""
+    name = ensemble_registry.member_name(name)
+    base = ensemble_dir()
+    tomb = next((t for t in ensemble_registry.archived_members(base, Config.TRACKING_DIR)
+                 if t.get("name") == name), None)
+    if tomb is None:
+        raise RuntimeError(f"{name} is not archived")
+    if not tomb.get("zip_found"):
+        raise RuntimeError(f"the archive zip of {name} ({tomb.get('zip')}) is not in any "
+                           "tracking campaign — it cannot be restored")
+    dest = os.path.join(base, name)
+    if os.path.exists(dest):
+        raise RuntimeError(f"{dest} already exists — move it away before restoring")
+    tmp = os.path.join(base, f".restore-{name}")
+    shutil.rmtree(tmp, ignore_errors=True)
+    os.makedirs(tmp)
+    cap.tick(0, 3, f"unzipping {os.path.basename(tomb['zip_path'])}")
+    try:
+        with zipfile.ZipFile(tomb["zip_path"]) as zf:
+            _safe_extract(zf, tmp)
+        if not _checkpoint_exists(tmp):
+            raise RuntimeError(f"the archive of {name} holds no checkpoint")
+        cap.tick(1, 3, "installing the member directory")
+        os.rename(tmp, dest)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    cap.tick(2, 3, "updating the registry")
+    ensemble_registry.restore_member_entry(base, name)
+    regime = _regime_slug(ensemble_registry.member_is_starless(dest))
+    with contextlib.suppress(Exception):
+        tracking_default_store().append_log(
+            f"Restored ensemble member `{name}` from `{tomb.get('zip')}` "
+            f"({tomb.get('campaign')}); {regime} evaluation is stale until re-run.")
+    cap.tick(3, 3, "done")
+    print(f"  ✓ {name} restored from {tomb['zip_path']} ({regime})")
+    return {"member": name, "zip": tomb["zip_path"], "regime": regime}
+
+
+# ---- combiner variants ----------------------------------------------------- #
+
+def variant_dir(starless: bool, name: str, *, must_exist: bool = True) -> str:
+    """The directory of a gate variant: ``name`` is its directory
+    (``spatial_gate_<x>``) or its model spec (``gate:<x>``, ``production``).
+    Raises :class:`ValueError` on a malformed name (or a missing one when
+    ``must_exist``)."""
+    raw = str(name or "").strip()
+    if raw == "production":
+        raw = COMBINER_MODELS[SPATIAL_GATE_KIND].artifact_dir
+    elif raw.startswith("gate:"):
+        raw = "spatial_gate_" + raw.removeprefix("gate:")
+    if not _VARIANT_NAME.fullmatch(raw):
+        raise ValueError(f"not a spatial gate variant name: {name!r} "
+                         "(spatial_gate_<letters, digits, . _ ->)")
+    d = os.path.join(_regime_dir_ro(starless), raw)
+    if must_exist and not os.path.isfile(os.path.join(d, "combiner.json")):
+        raise ValueError(f"no gate variant {raw}")
+    return d
+
+
+def _fit_summary(fit_meta: dict) -> dict:
+    keep = ("model", "mix_space", "width", "use_lr", "loss", "loss_knees_e", "steps",
+            "steps_run", "complete", "batch_size", "crop", "learning_rate",
+            "uniform_crop_fraction", "blackout_fields", "fit_seconds", "subset",
+            "num_images", "seed", "eval_every", "holdout_count", "variant", "fitted_via",
+            "members_requested", "promoted_from", "promoted_at", "best_member_per_band")
+    out = {k: fit_meta[k] for k in keep if k in fit_meta}
+    out["train_field_count"] = len(fit_meta.get("train_fields") or [])
+    out["holdout_field_count"] = len(fit_meta.get("holdout_fields") or [])
+    return out
+
+
+def _history_rows(fit_meta: dict) -> list[dict]:
+    rows = []
+    for h in fit_meta.get("history") or []:
+        if not isinstance(h, dict):
+            continue
+        rows.append({k: h.get(k) for k in ("step", "loss", "train_loss", "vis_psnr",
+                                           "band_psnr", "integrated_psnr",
+                                           "vis_integrated_psnr") if k in h})
+    return rows
+
+
+def _latest_compare(starless: bool) -> dict | None:
+    return _read_json_file(os.path.join(_regime_dir_ro(starless), _COMPARE_LATEST))
+
+
+def combiner_variants(starless: bool) -> dict:
+    """The combiner variant registry of a regime: every ``spatial_gate_*``
+    directory (the production gate, named variants, promotion backups) and
+    the RBF, each with its fit summary, held-out loss history, membership
+    against the active members, test PSNR (production: the eval summary;
+    variants: the latest compare report) and knee-integrated PSNR (production:
+    the knee payload; variants: the latest compare report)."""
+    regime_dir = _regime_dir_ro(starless)
+    base = ensemble_dir()
+    active = _regime_labels(base, starless)
+    manifest = _read_test_manifest(starless) or {}
+    cube_labels = [str(v) for v in manifest.get("member_labels", []) or []]
+    summary = _read_eval_summary(starless) or {}
+    knee = knee_psnr_status(starless)
+    knee_gate = next((m for m in knee.get("models", []) or []
+                      if m.get("id") == SPATIAL_GATE_KIND), None) if knee.get("available") else None
+    report = _latest_compare(starless) or {}
+    report_knee = (report.get("knee") or {}).get("methods") or {}
+    natural = (report.get("groups") or {}).get("natural") or {}
+    blackout = (report.get("groups") or {}).get("blackout") or {}
+    production_dir = COMBINER_MODELS[SPATIAL_GATE_KIND].artifact_dir
+    rows = []
+    candidates = sorted(glob.glob(os.path.join(regime_dir, "spatial_gate_*")))
+    for d in candidates:
+        name = os.path.basename(d)
+        m = _read_json_file(os.path.join(d, "combiner.json"))
+        if m is None or m.get("kind") != SPATIAL_GATE_KIND or not _VARIANT_NAME.fullmatch(name):
+            continue
+        labels = [str(v) for v in m.get("member_labels") or []]
+        fit_meta = m.get("fit_meta") or {}
+        active_members = m.get("active_members")
+        reads = ([labels[int(i)] for i in active_members if int(i) < len(labels)]
+                 if isinstance(active_members, list) else labels)
+        production = name == production_dir
+        method = f"gate:{name}"
+        row = {
+            "name": name, "kind": "gate",
+            "spec": "production" if production else f"gate:{name.removeprefix('spatial_gate_')}",
+            "production": production, "backup": name.startswith(GATE_BACKUP_PREFIX),
+            "member_labels": labels, "reads": reads, "n_members": len(labels),
+            "n_reads": len(reads), "pruned": isinstance(active_members, list),
+            "mix_space": m.get("mix_space", "asinh"), "use_lr": bool(m.get("use_lr")),
+            "width": m.get("width"), "fitted_at": _iso_mtime(os.path.join(d, "combiner.npz")),
+            "fingerprint": combiner_artifact_fingerprint(regime_dir, name),
+            "membership": {"current": labels == active,
+                           "missing": [lb for lb in labels if lb not in active],
+                           "extra": [lb for lb in active if lb not in labels]},
+            "applies_to_test_cubes": sgc.member_positions(labels, cube_labels) is not None,
+            "fit": _fit_summary(fit_meta),
+            "selected": fit_meta.get("selected"), "baseline": fit_meta.get("baseline_holdout"),
+            "history": _history_rows(fit_meta),
+            "test": ({"source": "compare", "report": report.get("id"),
+                      "band_psnr": (natural.get(method) or {}).get("band_psnr"),
+                      "blackout_band_psnr": (blackout.get(method) or {}).get("band_psnr")}
+                     if method in natural else None),
+            "knee": ({"source": "compare", "report": report.get("id"),
+                      "integrated": report_knee[method]["integrated"],
+                      "psnr": report_knee[method]["psnr"]} if method in report_knee else None),
+        }
+        if production:
+            row["eval"] = {"psnr": summary.get(f"{SPATIAL_GATE_KIND}_combiner_psnr"),
+                           "vs_mean_db": summary.get(f"{SPATIAL_GATE_KIND}_combiner_vs_mean_db"),
+                           "vs_best_member_db": summary.get(
+                               f"{SPATIAL_GATE_KIND}_combiner_vs_best_member_db")}
+            if knee_gate is not None:
+                row["knee"] = {"source": "knee", "stale": bool(knee.get("stale")),
+                               "integrated": knee_gate.get("integrated"),
+                               "psnr": knee_gate.get("psnr")}
+        rows.append(row)
+    rbf_dir = COMBINER_MODELS[_RBF_KIND].artifact_dir
+    m = _read_json_file(os.path.join(regime_dir, rbf_dir, "combiner.json"))
+    if m is not None:
+        labels = [str(v) for v in m.get("member_labels") or []]
+        rows.append({
+            "name": rbf_dir, "kind": "rbf", "spec": "rbf", "production": False, "backup": False,
+            "member_labels": labels, "reads": labels, "n_members": len(labels),
+            "n_reads": len(labels), "pruned": False, "mix_space": "asinh", "use_lr": False,
+            "width": None, "fitted_at": _iso_mtime(os.path.join(regime_dir, rbf_dir, "combiner.npz")),
+            "fingerprint": combiner_artifact_fingerprint(regime_dir, rbf_dir),
+            "membership": {"current": labels == active,
+                           "missing": [lb for lb in labels if lb not in active],
+                           "extra": [lb for lb in active if lb not in labels]},
+            "applies_to_test_cubes": sgc.member_positions(labels, cube_labels) is not None,
+            "fit": {"n_kernels": m.get("n_kernels"), "model": COMBINER_MODELS[_RBF_KIND].label},
+            "selected": None, "baseline": None, "history": [],
+            "test": ({"source": "compare", "report": report.get("id"),
+                      "band_psnr": natural["rbf"].get("band_psnr"),
+                      "blackout_band_psnr": (blackout.get("rbf") or {}).get("band_psnr")}
+                     if "rbf" in natural else None),
+            "knee": ({"source": "compare", "report": report.get("id"),
+                      "integrated": report_knee["rbf"]["integrated"],
+                      "psnr": report_knee["rbf"]["psnr"]} if "rbf" in report_knee else None),
+        })
+    return {"regime": _regime_slug(starless), "production": production_dir,
+            "active_members": active, "cube_members": cube_labels,
+            "variants": rows,
+            "compare": ({"id": report.get("id"), "created": report.get("created"),
+                         "methods": report.get("methods"), "n_fields": report.get("n_fields")}
+                        if report else None)}
+
+
+# ---- compare --------------------------------------------------------------- #
+
+def compare_reports(starless: bool) -> list[dict]:
+    """Saved compare reports, newest first (id, created, methods, fields)."""
+    folder = os.path.join(_regime_dir_ro(starless), _COMPARE_DIR)
+    out = []
+    for path in glob.glob(os.path.join(folder, "*.json")):
+        rid = os.path.basename(path)[:-5]
+        rep = _read_json_file(path) if _COMPARE_ID.fullmatch(rid) else None
+        if rep is None:
+            continue
+        out.append({"id": rid, "created": rep.get("created"), "methods": rep.get("methods"),
+                    "n_fields": rep.get("n_fields"), "gates_requested": rep.get("gates_requested")})
+    out.sort(key=lambda r: r["id"], reverse=True)
+    return out
+
+
+def read_compare_report(starless: bool, report_id: str | None = None) -> dict | None:
+    """One saved compare report (``None`` → the latest)."""
+    if not report_id:
+        return _latest_compare(starless)
+    if not _COMPARE_ID.fullmatch(str(report_id)):
+        raise ValueError(f"bad report id {report_id!r}")
+    return _read_json_file(os.path.join(_regime_dir_ro(starless), _COMPARE_DIR,
+                                        f"{report_id}.json"))
+
+
+def _report_id(folder: str) -> str:
+    stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+    rid, n = stamp, 1
+    while os.path.exists(os.path.join(folder, f"{rid}.json")):
+        n += 1
+        rid = f"{stamp}-{n}"
+    return rid
+
+
+def default_compare_gates(starless: bool) -> list[str]:
+    """Every gate directory that applies to the regime's test cubes."""
+    data = combiner_variants(starless)
+    return [v["name"] for v in data["variants"]
+            if v["kind"] == "gate" and v["applies_to_test_cubes"] and not v["backup"]]
+
+
+def job_combiner_compare(cap, *, starless: bool, gates: list[str] | None = None,
+                         blackout_fields: int = 40, seed: int = 0,
+                         include_rbf: bool = True, knee: bool = True) -> dict:
+    """Score gate variants (default: every applicable one) against the mean,
+    the RBF and every member on the cached test cubes + blackout copies —
+    ``scripts/fit_spatial_gate.py compare`` as a local job. Saves the report
+    under ``<regime>/spatial_gate_comparisons/<id>.json`` and as the latest
+    ``spatial_gate_comparison.json``."""
+    regime_dir = _ensemble_regime_dir(starless)
+    records_dir = _sky_records_local_dir()
+    if not records_dir:
+        raise RuntimeError("no local sky records — sync them on Data › Records.")
+    names = [variant_dir(starless, g) for g in (gates or default_compare_gates(starless))]
+    names = [os.path.basename(p) for p in names]
+    if not names:
+        raise RuntimeError("no gate variant applies to the current test cubes")
+    manifest = _read_test_manifest(starless) or {}
+    labels = [str(v) for v in manifest.get("member_labels", []) or []]
+    active = _regime_labels(ensemble_dir(), starless)
+    runner = (LazyMemberRunner(ensemble_dir(), starless=starless, labels=labels)
+              if labels and labels == active else None)
+    if runner is None and blackout_fields > 0:
+        print("  • the test cubes' members differ from the active members — "
+              "only already-cached blackout fields can be scored")
+    result = sgc.run_compare(
+        regime_dir=regime_dir, records_dir=records_dir, gates=names, runner=runner,
+        blackout_fields=int(blackout_fields), seed=int(seed),
+        target_name="clean" if starless else "hr", include_rbf=include_rbf, knee=knee,
+        progress=lambda i, n, label: cap.tick(i, n, label),
+        log=lambda message: print(message, flush=True))
+    folder = os.path.join(regime_dir, _COMPARE_DIR)
+    os.makedirs(folder, exist_ok=True)
+    rid = _report_id(folder)
+    report = {**result.report, "id": rid, "gates_requested": names,
+              "regime": _regime_slug(starless)}
+    _atomic_json(os.path.join(folder, f"{rid}.json"), report)
+    _atomic_json(os.path.join(regime_dir, _COMPARE_LATEST), report)
+    print(sgc.format_report(report))
+    return {"report_id": rid, "methods": report["methods"], "n_fields": report["n_fields"]}
+
+
+# ---- fit a named variant --------------------------------------------------- #
+
+def check_new_variant_name(starless: bool, out_name: str, *, overwrite: bool = False) -> str:
+    """Validate a fit destination: a ``spatial_gate_<x>`` name that is neither
+    the production gate nor a promotion backup, and (unless ``overwrite``)
+    not an existing variant. Returns the directory."""
+    d = variant_dir(starless, out_name, must_exist=False)
+    name = os.path.basename(d)
+    if name == COMBINER_MODELS[SPATIAL_GATE_KIND].artifact_dir:
+        raise ValueError("a fit never writes the production gate — name a variant, "
+                         "then promote it")
+    if name.startswith(GATE_BACKUP_PREFIX):
+        raise ValueError(f"{GATE_BACKUP_PREFIX}* names are reserved for promotion backups")
+    if (name.startswith(_COMPARE_LATEST.removesuffix(".json"))
+            or name.endswith((".json", "_evals"))):
+        # spatial_gate_comparisons/ (compare reports), spatial_gate_comparison.json
+        # and the <combiner>_evals.json sidecars share the variant namespace
+        raise ValueError(f"{name} is reserved for compare reports / eval sidecars")
+    if os.path.exists(d):
+        manifest = _read_json_file(os.path.join(d, "combiner.json")) if os.path.isdir(d) else None
+        if not (manifest or {}).get("kind") == SPATIAL_GATE_KIND:
+            raise ValueError(f"{name} exists and is not a gate variant — pick another name")
+        if not overwrite:
+            raise ValueError(f"{name} already exists — pick another name or allow overwrite")
+    return d
+
+
+def job_gate_variant_fit(cap, *, starless: bool, out_name: str, width: int = 32,
+                         use_lr: bool = False, steps: int = 2000, batch_size: int = 8,
+                         crop: int = 192, learning_rate: float = 2e-3,
+                         eval_every: int = 250, holdout: int = 15,
+                         blackout_fields: int = SPATIAL_GATE_BLACKOUT_FIELDS, seed: int = 0,
+                         members: list[str] | None = None, loss_knees: str = "all",
+                         mix_space: str = "linear", num_images: int = 100,
+                         target_fwhm_arcsec: float = Config.TARGET_PSF_FWHM_ARCSEC,
+                         overwrite: bool = False, compare_after: bool = True) -> dict:
+    """Fit a spatial gate into a NAMED variant directory (never production)
+    on the regime's validate member cubes (re-inferred when stale), then —
+    by default — compare it with the production gate on the test cubes."""
+    out_dir = check_new_variant_name(starless, out_name, overwrite=overwrite)
+    name = os.path.basename(out_dir)
+    knees = sgc.parse_loss_knees(loss_knees)
+    target_fwhm = validate_target_fwhm_arcsec(target_fwhm_arcsec)
+    (base, records_dir, records_fp, validate_dir, indices, labels,
+     target) = _prepare_validate_cubes(cap, starless=starless, num_images=num_images,
+                                       target_fwhm=target_fwhm)
+    fields, _labels = load_cube_fields(
+        validate_dir, records_dir, "validate", target_name=target,
+        target_fwhm_arcsec=target_fwhm, indices=indices,
+        progress=lambda i, n, label: cap.tick(i, n, label))
+    comb = sgc.fit_gate_variant(
+        fields, labels, out_dir=out_dir, holdout=int(holdout), seed=int(seed),
+        blackout_fields=int(blackout_fields),
+        runner=LazyMemberRunner(base, starless=starless, labels=labels),
+        blackout_dir=_ensemble_cubes_dir("validate_blackout", starless=starless),
+        source_fingerprint=str(records_fp), width=int(width), use_lr=bool(use_lr),
+        steps=int(steps), batch_size=int(batch_size), crop=int(crop),
+        learning_rate=float(learning_rate), eval_every=int(eval_every),
+        members=members, loss_knees=knees, mix_space=mix_space,
+        starfull=not starless, records_fp=records_fp,
+        extra_meta={"variant": name, "fitted_via": "web", "subset": "validate",
+                    "num_images": int(num_images), "members_requested": members or None},
+        progress=lambda i, n, label: cap.tick(i, n, label),
+        log=lambda message: print(f"[spatial gate {name}] {message}", flush=True))
+    result = {"variant": name, "n_members": len(labels),
+              "selected": comb.fit_meta.get("selected"), "report_id": None}
+    if compare_after:
+        gates = [g for g in (COMBINER_MODELS[SPATIAL_GATE_KIND].artifact_dir, name)
+                 if os.path.isfile(os.path.join(_regime_dir_ro(starless), g, "combiner.json"))]
+        try:
+            result["report_id"] = job_combiner_compare(
+                cap, starless=starless, gates=gates)["report_id"]
+        except (RuntimeError, ValueError) as exc:
+            print(f"  ! compare after fit skipped: {exc}")
+    return result
+
+
+# ---- promote --------------------------------------------------------------- #
+
+def job_combiner_promote(cap, *, starless: bool, variant: str, force: bool = False) -> dict:
+    """Make a gate variant the production gate. The current production
+    artifact is first copied to ``spatial_gate_backup_<UTC stamp>`` (promote
+    that backup to roll back). Then the production payload, the test cubes'
+    gate outputs, the eval summary and the knee curves are refreshed from the
+    cached cubes (no member inference) when the variant fits the cubes.
+
+    A variant fitted for other members than the active ones is refused unless
+    ``force`` (it would make the production model unavailable)."""
+    src = variant_dir(starless, variant)
+    name = os.path.basename(src)
+    prod_name = COMBINER_MODELS[SPATIAL_GATE_KIND].artifact_dir
+    if name == prod_name:
+        raise RuntimeError(f"{name} is already the production gate")
+    manifest = _read_json_file(os.path.join(src, "combiner.json")) or {}
+    labels = [str(v) for v in manifest.get("member_labels") or []]
+    active = _regime_labels(ensemble_dir(), starless)
+    if labels != active and not force:
+        raise RuntimeError(
+            f"{name} was fitted for {len(labels)} members, the active "
+            f"{_regime_slug(starless)} ensemble has {len(active)} — promoting it "
+            "would leave no current production model (pass force to promote anyway)")
+    regime_dir = _ensemble_regime_dir(starless)
+    prod = os.path.join(regime_dir, prod_name)
+    stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+    backup = None
+    cap.tick(0, 5, "backing up the production gate")
+    if os.path.isdir(prod):
+        backup = f"{GATE_BACKUP_PREFIX}{stamp}"
+        shutil.copytree(prod, os.path.join(regime_dir, backup))
+    tmp = os.path.join(regime_dir, f".promote-{stamp}")
+    old = os.path.join(regime_dir, f".replaced-{stamp}")
+    shutil.copytree(src, tmp)
+    meta_path = os.path.join(tmp, "combiner.json")
+    tmp_manifest = _read_json_file(meta_path) or {}
+    tmp_manifest.setdefault("fit_meta", {}).update({
+        "promoted_from": name, "promoted_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        "replaced_backup": backup})
+    _atomic_json(meta_path, tmp_manifest)
+    cap.tick(1, 5, f"installing {name} as production")
+    if os.path.isdir(prod):
+        os.rename(prod, old)
+    try:
+        os.rename(tmp, prod)
+    except OSError:
+        if os.path.isdir(old) and not os.path.exists(prod):
+            os.rename(old, prod)            # put the previous production back
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
+    shutil.rmtree(old, ignore_errors=True)
+    result = {"promoted": name, "backup": backup, "test_rescored": False, "summary": None}
+    cap.tick(2, 5, "refreshing the production gate payload")
+    try:
+        compute_combiner_payload(starless, model_kind=SPATIAL_GATE_KIND)
+    except Exception as exc:  # noqa: BLE001 — the promotion itself succeeded
+        print(f"  ! gate payload not refreshed: {type(exc).__name__}: {exc}")
+    cap.tick(3, 5, "re-applying the gate to the cached test cubes")
+    try:
+        if _apply_combiner_to_test_cubes(starless, SPATIAL_GATE_KIND, progress=cap.tick):
+            previous = (_read_eval_summary(starless) or {}).get("eval_identity") or {}
+            summary = _reevaluate_from_cached_cubes(
+                starless, num_images=previous.get("num_images"), progress=cap.tick)
+            result["test_rescored"] = summary is not None
+            if summary:
+                result["summary"] = {k: summary.get(k) for k in (
+                    "spatial_gate_combiner_psnr", "spatial_gate_combiner_vs_mean_db",
+                    "spatial_gate_combiner_vs_best_member_db")}
+        else:
+            print("  • the promoted gate does not fit the cached test cubes — "
+                  "re-evaluate to score it")
+    except Exception as exc:  # noqa: BLE001
+        print(f"  ! test cubes not re-scored: {type(exc).__name__}: {exc}")
+    with contextlib.suppress(Exception):
+        tracking_default_store().append_log(
+            f"Promoted spatial gate `{name}` to production ({_regime_slug(starless)}); "
+            f"previous production backed up as `{backup}`.")
+    cap.tick(5, 5, "done")
+    print(f"  ✓ {name} → {prod_name} (backup {backup})")
+    return result
+
+
+# ---- overview -------------------------------------------------------------- #
+
+def ensemble_overview(starless: bool) -> dict:
+    """The Overview tab: headline numbers (each with its definition) and the
+    staleness checks, all from local files (fast, offline)."""
+    base = ensemble_dir()
+    regime_dir = _regime_dir_ro(starless)
+    active = _regime_labels(base, starless)
+    summary = _read_eval_summary(starless)
+    identity = (summary or {}).get("eval_identity") or {}
+    rdir = _sky_records_local_dir()
+    sub = eval_subset(rdir) if rdir else "test"
+    records_fp = _eval_records_fingerprint(rdir, sub, starless=starless)
+    knee = knee_psnr_status(starless)
+    prod_manifest = _read_json_file(os.path.join(
+        regime_dir, COMBINER_MODELS[SPATIAL_GATE_KIND].artifact_dir, "combiner.json"))
+    gate_labels = [str(v) for v in (prod_manifest or {}).get("member_labels") or []]
+    checks = []
+
+    def check(cid, ok, tone, title, detail, action=None):
+        checks.append({"id": cid, "ok": bool(ok), "tone": "good" if ok else tone,
+                       "title": title, "detail": detail, "action": action})
+
+    recorded = [str(x) for x in ((summary or {}).get("member_labels")
+                                 or (summary or {}).get("per_member_labels") or [])]
+    if summary is None:
+        check("evaluation", False, "warn", "No evaluation yet",
+              "Evaluate the ensemble on the test records.", "evaluate")
+    else:
+        check("eval-members", recorded == active, "warn", "Evaluation vs members",
+              "The evaluation matches the active members." if recorded == active else
+              f"Evaluated {len(recorded)} members; {len(active)} are active now.", "evaluate")
+        rec_ok = identity.get("records_fp") in (None, records_fp)
+        check("eval-records", rec_ok, "warn", "Evaluation vs records",
+              "The test records are the ones evaluated." if rec_ok else
+              "The test records changed since the evaluation (regenerated or re-synced).",
+              "evaluate")
+        fps = identity.get("combiner_fps") or {}
+        gate_fp = _combiner_fingerprint(regime_dir, SPATIAL_GATE_KIND)
+        gate_ok = fps.get(SPATIAL_GATE_KIND) in (None, gate_fp) or not gate_fp
+        check("eval-gate", gate_ok, "warn", "Evaluation vs production gate",
+              "The production gate is the one evaluated." if gate_ok else
+              "The production gate changed (refit or promotion) since the evaluation.",
+              "evaluate")
+    if prod_manifest is None:
+        check("gate", False, "bad", "No production gate",
+              "Fit a gate variant and promote it.", "combiners")
+    else:
+        same = gate_labels == active
+        check("gate-members", same, "warn", "Production gate vs members",
+              f"Fitted for the {len(active)} active members." if same else
+              f"Fitted for {len(gate_labels)} members; {len(active)} are active "
+              f"(differs in {len(set(gate_labels) ^ set(active))}).", "combiners")
+    if not knee.get("available"):
+        check("knee", False, "warn", "No PSNR-vs-knee curves",
+              "Compute them from the cached test cubes.", "knee")
+    else:
+        check("knee", not knee.get("stale"), "warn", "Knee curves",
+              "Current for the cubes and combiners." if not knee.get("stale") else
+              "The cubes or combiners changed since the curves were computed.", "knee")
+    pending = _pending_archived_members(starless)
+    if pending:
+        check("archive-pending", False, "info", "Archived members pending",
+              f"{', '.join(pending)} left; the next evaluation rebuilds from cached cubes.",
+              "evaluate")
+
+    knee_models = {m.get("id"): m for m in knee.get("models", []) or []} if knee.get("available") else {}
+    members_knee = [m for m in knee_models.values() if m.get("kind") == "member"]
+
+    def knee_mean(m):
+        vals = [v for v in (m or {}).get("integrated") or [] if v is not None]
+        return float(np.mean(vals)) if vals else None
+
+    best_knee = max(members_knee, key=lambda m: knee_mean(m) or -1e9, default=None)
+    s = dict(summary or {})
+    if s and s.get("best_member_psnr") is None:
+        # Summaries written before the headline keys: the evals payload's
+        # metric block carries the same VIS asinh best member.
+        block = ((_read_json_file(os.path.join(regime_dir, "ensemble_evals.json")) or {})
+                 .get("combiner") or {})
+        s["best_member_psnr"] = block.get("best_member_psnr")
+        s["best_member_label"] = s.get("best_member_label") or block.get("best_member_label")
+    headline = {
+        "metric": s.get("psnr_metric") or ("vis_asinh" if s.get("recomputed_from_cubes") else None),
+        "knee_e": s.get("psnr_knee_e", float(Config.STRETCH_SCALE_E)),
+        "n_scored": s.get("n_scored"),
+        "production": {"psnr": s.get(f"{SPATIAL_GATE_KIND}_combiner_psnr"),
+                       "vs_mean_db": s.get(f"{SPATIAL_GATE_KIND}_combiner_vs_mean_db"),
+                       "vs_best_member_db": s.get(f"{SPATIAL_GATE_KIND}_combiner_vs_best_member_db")},
+        "mean": {"psnr": s.get("ensemble_psnr"),
+                 "vs_mean_member_db": s.get("ensemble_vs_mean_member_db", s.get("ensemble_gain_db"))},
+        "best_member": {"psnr": s.get("best_member_psnr"), "label": s.get("best_member_label"),
+                        "mean_member_psnr": s.get("mean_member_psnr")},
+        "knee": {"available": bool(knee.get("available")), "stale": bool(knee.get("stale")),
+                 "n_fields": knee.get("n_fields"), "integration": knee.get("integration"),
+                 "production": knee_mean(knee_models.get(SPATIAL_GATE_KIND)),
+                 "production_bands": (knee_models.get(SPATIAL_GATE_KIND) or {}).get("integrated"),
+                 "mean": knee_mean(knee_models.get("ensemble_mean")),
+                 "best_member": knee_mean(best_knee),
+                 "best_member_label": (best_knee or {}).get("label")},
+    }
+    return {"regime": _regime_slug(starless), "active_members": active,
+            "n_members": len(active), "records_dir": rdir, "eval_subset": sub,
+            "test_present": bool(rdir) and os.path.exists(tfrecord_path(rdir, f"dirty_{sub}")),
+            "evaluated_at": _iso_mtime(os.path.join(regime_dir, "eval_summary.json")),
+            "summary": summary, "headline": headline, "checks": checks,
+            "production_gate": {"available": prod_manifest is not None,
+                                "n_members": len(gate_labels),
+                                "mix_space": (prod_manifest or {}).get("mix_space"),
+                                "fitted_at": _iso_mtime(os.path.join(
+                                    regime_dir, COMBINER_MODELS[SPATIAL_GATE_KIND].artifact_dir,
+                                    "combiner.npz")),
+                                "promoted_from": ((prod_manifest or {}).get("fit_meta") or {}).get(
+                                    "promoted_from")}}
+
+
+# ---- train preview --------------------------------------------------------- #
+
+def train_command_preview(form: dict) -> dict:
+    """What an ``ensemble_train`` submit with this form would run, without
+    touching FASRC: the member names it would allocate (from the local
+    registry, tombstones never reused), the array shape and the
+    ``train_ensemble.py`` argv. Raises :class:`ValueError` (a
+    ``TaskParamError`` included) for a form the submit would refuse."""
+    step = STEP_REGISTRY.get("ensemble_train")
+    params = step.fill_task_params(dict(form))
+    for key, value in job_config.fasrc_params_for("ensemble_train").items():
+        params.setdefault(key, value)
+    blank_seed = str(params.get("base_seed", "")).strip() in ("", "-1")
+    prepared = step.prepare_params(params)
+    star = bool(prepared.pop("_star_prior_json", None))
+    if star:
+        prepared["_star_prior_file"] = "logs/pipeline/<job>.star-population.<sha>.json"
+    if blank_seed:
+        prepared["base_seed"] = ""
+    command = step.build_command(prepared)
+    names = (_split_names(prepared.get("member_names"))
+             or _split_names(prepared.get("members")))
+    array = step.array_shape(prepared)
+    return {"ok": True, "mode": str(prepared.get("mode") or "add"),
+            "member_names": names, "count": len(names),
+            "array": ({"tasks": array[0], "max_parallel": array[1]} if array else None),
+            "command": ["python", *command],
+            "command_text": shlex.join(["python", *command]),
+            "base_seed": None if blank_seed else prepared.get("base_seed"),
+            "star_prior": star,
+            "params": {k: v for k, v in prepared.items() if not str(k).startswith("_")}}

@@ -5,14 +5,17 @@
  * first), and open the full log in the inspector (`job:local/<id>`,
  * `job:slurm/<jobid>`). FASRC offline (the C4 503) is shown as "offline",
  * never as an error. `useJobToasts` (mounted by the shell) toasts every job
- * this session saw running when it finishes, fails or is cancelled.
+ * this session saw running when it finishes, fails or is cancelled;
+ * `useSlurmToasts` does the same for SLURM jobs that leave the live list.
  */
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
+import { apiGet } from "../api/client";
 import {
-  cancelJob, cancelSlurmJob, isTerminal, refreshJobsFeed, useJobsFeed, useJobsStore,
-  type Job, type SlurmJob,
+  JOBS_FEED_KEY, cancelJob, cancelSlurmJob, isTerminal, refreshJobsFeed, useJobsFeed, useJobsStore,
+  type Job, type SlurmFeed, type SlurmJob,
 } from "../api/jobs";
+import { queryClient } from "../api/query";
 import { formatDuration, formatRelative } from "../format";
 import {
   Badge, Button, Icon, IconButton, Popover, ProgressBar, confirm, toast, type Tone,
@@ -226,4 +229,89 @@ export function useJobToasts(): void {
     }
     seen.current = now;
   }, [jobs]);
+}
+
+/* ── SLURM completion toasts ─────────────────────────────────────────────── */
+
+const SLURM_FEED_QUERY = JSON.stringify([...JOBS_FEED_KEY, "slurm"]);
+/** SLURM's terminal job states (long names and squeue's short codes); every
+ *  other state — PENDING, RUNNING, COMPLETING, CONFIGURING, SUSPENDED,
+ *  REQUEUED, RESIZING, STOPPED… — is still live. */
+const TERMINAL_STATES = new Set([
+  "COMPLETED", "FAILED", "TIMEOUT", "OUT_OF_MEMORY", "NODE_FAIL", "BOOT_FAIL", "DEADLINE",
+  "CANCELLED", "PREEMPTED", "REVOKED", "SPECIAL_EXIT",
+  "CD", "F", "TO", "OOM", "NF", "BF", "DL", "CA", "PR", "RV", "SE",
+]);
+
+/** True while a SLURM job in `state` has not reached a terminal state. */
+export function isLiveSlurmState(state: string | null | undefined): boolean {
+  const s = (state ?? "").trim().toUpperCase().split(/[\s+]/)[0];
+  if (!s) return true;
+  return !TERMINAL_STATES.has(s);
+}
+
+const SHORT_STATES: Record<string, string> = {
+  CD: "COMPLETED", F: "FAILED", TO: "TIMEOUT", OOM: "OUT_OF_MEMORY", NF: "NODE_FAIL", BF: "BOOT_FAIL",
+  DL: "DEADLINE", CA: "CANCELLED", PR: "PREEMPTED", RV: "REVOKED", SE: "SPECIAL_EXIT",
+};
+
+/** Upper-case long form of a SLURM state ("cd" → "COMPLETED", "CANCELLED by 123" kept). */
+export function normalizeSlurmState(state: string | null | undefined): string {
+  const s = (state ?? "").trim().toUpperCase();
+  return SHORT_STATES[s] ?? s;
+}
+
+/** Diff two SLURM snapshots: the jobs live in `prev` that are no longer live
+ *  in `now` (gone from the list, or listed with a terminal state). */
+export function finishedSlurmJobs(prev: ReadonlyMap<string, SlurmJob> | null, now: readonly SlurmJob[]): SlurmJob[] {
+  if (!prev) return [];
+  const byId = new Map(now.map((j) => [j.jobid, j]));
+  const out: SlurmJob[] = [];
+  for (const j of prev.values()) {
+    const cur = byId.get(j.jobid);
+    if (!cur) out.push(j);
+    else if (!isLiveSlurmState(cur.state)) out.push(cur);
+  }
+  return out;
+}
+
+type SlurmEnd = { state?: string | null };
+
+/** Toast one SLURM job that left the live list, with its final state from the
+ *  job DB (`/api/fasrc/jobs/<id>/status`) when the reconcile has recorded it. */
+export async function announceSlurmEnd(job: SlurmJob): Promise<void> {
+  const name = job.label ?? job.step_id ?? `job ${job.jobid}`;
+  let state: string | null = null;
+  try {
+    state = (await apiGet<SlurmEnd>(`/api/fasrc/jobs/${encodeURIComponent(job.jobid)}/status`)).state ?? null;
+  } catch { /* the toast still says it left the queue */ }
+  // The live list may already carry the terminal state (e.g. COMPLETED in the
+  // squeue grace window) when the job DB has not recorded it yet.
+  if (!state && !isLiveSlurmState(job.state)) state = job.state;
+  const action = { label: "Open", onClick: () => openInspector({ kind: "job", id: `slurm/${job.jobid}` }) };
+  const title = `SLURM ${job.jobid} · ${name}`;
+  const s = normalizeSlurmState(state);
+  if (s === "COMPLETED") toast.success(title, { description: "completed", action });
+  else if (["FAILED", "TIMEOUT", "OUT_OF_MEMORY", "NODE_FAIL", "BOOT_FAIL", "DEADLINE"].includes(s)) {
+    toast.error(title, { description: s.toLowerCase().replace(/_/g, " "), action, duration: 12_000 });
+  } else if (s.startsWith("CANCELLED")) toast.warning(title, { description: "cancelled", action });
+  else toast.info(title, { description: "left the SLURM queue", action });
+}
+
+/** Toast every SLURM job this session saw live when it leaves the live list.
+ *  Reads the shared SLURM feed's successful snapshots from the query cache
+ *  (the top bar's job tray keeps that feed polling); offline or "stale"
+ *  snapshots are skipped so a slow login node never reads as a finish. */
+export function useSlurmToasts(): void {
+  useEffect(() => {
+    let prev: Map<string, SlurmJob> | null = null;
+    return queryClient.getQueryCache().subscribe((event) => {
+      if (event.type !== "updated" || event.action.type !== "success") return;
+      if (JSON.stringify(event.query.queryKey) !== SLURM_FEED_QUERY) return;
+      const feed = event.query.state.data as SlurmFeed | undefined;
+      if (!feed || feed.offline || feed.stale) return;
+      for (const job of finishedSlurmJobs(prev, feed.jobs)) void announceSlurmEnd(job);
+      prev = new Map(feed.jobs.filter((j) => isLiveSlurmState(j.state)).map((j) => [j.jobid, j]));
+    });
+  }, []);
 }

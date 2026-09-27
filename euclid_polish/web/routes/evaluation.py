@@ -8,17 +8,26 @@ The grouped run, galaxy query and lens-catalogue fetch are local jobs; the
 results are browsed through the viewer collection ``evaluation`` (the page is
 the SPA's Sky › Catalog-eval tab). This module adds:
 
-  * ``/api/evaluation/runs``      — one run's manifest rows
+  * ``/api/evaluation/runs``      — one run's manifest rows, each with the
+    staleness of its SR against the model an evaluation would load now
+  * ``/api/evaluation/objects/<id>`` — one object's provenance card
   * ``/api/evaluation/sync``      — pull FASRC results (``confirm=1``)
   * run-level PNG summaries (transformation, angular power spectrum)
   * ``/eval-files/<path>``        — jailed per-object FITS download
+
+Errors under ``/api/evaluation/`` and ``/eval-files/`` are JSON ``{error}``.
 """
 from __future__ import annotations
 
 import csv
+import glob
+import json
+import math
 import os
+import re
 from typing import Any
 
+from astropy.io import fits
 from flask import abort, jsonify, request, send_file
 
 from euclid_polish.config import Config
@@ -30,10 +39,23 @@ from euclid_polish.eval import (
     power_spectrum,
     transformation_summary,
 )
-from euclid_polish.web import euclid_session, fasrc_config
+from euclid_polish.sky.observation.q1_fields import q1_field_for
+from euclid_polish.web import errors, euclid_session, fasrc_config
 from euclid_polish.web.fasrc_gate import requires_fasrc
 from euclid_polish.web.jobs import REGISTRY as JOB_REGISTRY
 from euclid_polish.web.remote import STATE
+
+#: Object sub-directory names (``out_subdir``): one path segment, no dot-files.
+_SAFE_OBJECT = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]{0,219}$")
+#: Manifest grade → object kind.
+_KINDS = {"A": "lens", "B": "lens", "C": "lens", "gal": "galaxy",
+          "syn-lens": "synthetic", "syn-gal": "synthetic"}
+#: The object FITS offered for download (tier → file).
+_DOWNLOADS = {"LR": "original_stack.fits", "SR": "SR.fits", "mean": "mean.fits",
+              "HR": "HR.fits", "BHR": "BHR.fits", "std": "std.fits"}
+#: SR.fits header cards shown on the object card (provenance + geometry).
+_SR_CARDS = ("OBJECT", "BANDS", "BUNIT", "CKPT", "ASINH", "RA", "DEC", "CSIZE",
+             "SRCX", "SRCY", "PROVID", "PROVKIND", "PROVGIT")
 
 
 def _read_csv(path: str) -> list[dict[str, str]]:
@@ -48,18 +70,152 @@ def _read_manifest(run_dir: str) -> list[dict[str, Any]]:
     return _read_csv(os.path.join(run_dir, "manifest.csv"))
 
 
+def _finite(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _is_ok(row: dict[str, Any]) -> bool:
+    return str(row.get("ok", "")).strip().lower() == "true"
+
+
+def _identity_payload(identity: dict[str, Any]) -> dict[str, Any]:
+    labels = list(identity.get("member_labels") or [])
+    return {"n_members": len(labels), "member_labels": labels,
+            "combiner_kind": identity.get("combiner_kind"),
+            "combiner_fingerprint": identity.get("combiner_fingerprint")}
+
+
+def _enrich_row(row: dict[str, Any], run_dir: str,
+                identity: dict[str, Any]) -> dict[str, Any]:
+    """A manifest row + ``kind``, ``field``, the SR's model ``state`` against
+    ``identity`` (``current|stale|unknown``, ``null`` for a failed object),
+    ``state_reason``, the recorded model (``n_members``, ``combiner_kind``),
+    ``tiers`` on disk, the viewer object id and the C9 real-tile ref."""
+    out = dict(row)
+    sub = str(row.get("out_subdir") or row.get("id") or "")
+    grade = str(row.get("grade") or "").strip()
+    ra, dec = _finite(row.get("ra")), _finite(row.get("dec"))
+    kind = _KINDS.get(grade, "synthetic" if grade.startswith("syn") else "lens")
+    out.update({"kind": kind, "field": q1_field_for(ra, dec) if ra is not None and dec is not None
+                else None, "viewer_id": sub or None, "realtile": None, "state": None,
+                "state_reason": None, "n_members": None, "combiner_kind": None, "tiers": []})
+    if not (_is_ok(row) and sub and _SAFE_OBJECT.fullmatch(sub)):
+        return out
+    obj_dir = os.path.join(run_dir, sub)
+    state = catalog_runner.object_model_state(obj_dir, identity)
+    out.update({"state": state["state"], "state_reason": state["reason"],
+                "n_members": state["n_members"], "combiner_kind": state["combiner_kind"],
+                "tiers": [tier for tier, name in _DOWNLOADS.items()
+                          if os.path.isfile(os.path.join(obj_dir, name))]})
+    if kind != "synthetic" and ra is not None and dec is not None:
+        out["realtile"] = f"eval/{sub}"
+    return out
+
+
 def _run_summary(run_dir: str, run_name: str) -> dict[str, Any]:
-    """Summary for one resolved evaluation run directory."""
-    rows = _read_manifest(run_dir)
-    n_ok = sum(1 for r in rows if str(r.get("ok", "")).lower() == "true")
+    """Summary for one resolved evaluation run directory: every manifest row
+    enriched (:func:`_enrich_row`), the model an evaluation would load now
+    (``current``), state ``counts`` and per-grade ``groups`` of the ok rows."""
+    identity = catalog_runner.current_eval_identity()
+    rows = [_enrich_row(r, run_dir, identity) for r in _read_manifest(run_dir)]
+    ok_rows = [r for r in rows if _is_ok(r)]
+    counts = {"current": 0, "stale": 0, "unknown": 0}
+    groups: dict[str, int] = {}
+    for r in ok_rows:
+        if r.get("state") in counts:
+            counts[str(r["state"])] += 1
+        grade = str(r.get("grade") or "").strip() or "—"
+        groups[grade] = groups.get(grade, 0) + 1
     mani = os.path.join(run_dir, "manifest.csv")
     return {
         "name": run_name,
         "run": run_name,
         "rows": rows,
         "n": len(rows),
-        "n_ok": n_ok,
+        "n_ok": len(ok_rows),
         "mtime": os.path.getmtime(mani) if os.path.isfile(mani) else 0,
+        "current": _identity_payload(identity),
+        "counts": counts,
+        "groups": groups,
+        "columns": list(catalog_runner.MANIFEST_COLS),
+    }
+
+
+def _provenance(obj_dir: str) -> list[dict[str, Any]]:
+    """The SR's provenance sidecars (``*.srcutoutartifact.json``), newest first."""
+    out = []
+    for path in glob.glob(os.path.join(obj_dir, "*.srcutoutartifact.json")):
+        try:
+            with open(path) as f:
+                record = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(record, dict):
+            continue
+        git = record.get("git") if isinstance(record.get("git"), dict) else {}
+        out.append({"id": record.get("id"), "created_at": record.get("created_at"),
+                    "produced_by": record.get("produced_by"),
+                    "git": git.get("short"), "dirty": git.get("dirty"),
+                    "descriptors": record.get("descriptors"),
+                    "file": os.path.basename(path)})
+    out.sort(key=lambda r: str(r.get("created_at") or ""), reverse=True)
+    return out
+
+
+def _sr_header(obj_dir: str) -> dict[str, Any]:
+    path = os.path.join(obj_dir, "SR.fits")
+    try:
+        header = fits.getheader(path)
+    except (OSError, ValueError):
+        return {}
+    return {card: header[card] for card in _SR_CARDS if card in header}
+
+
+def _object_card(run_dir: str, sub: str) -> dict[str, Any]:
+    if not _SAFE_OBJECT.fullmatch(sub or ""):
+        abort(400, description=f"bad object id {sub!r}")
+    obj_dir = os.path.realpath(os.path.join(run_dir, sub))
+    if os.path.dirname(obj_dir) != os.path.realpath(run_dir):
+        abort(400, description=f"bad object id {sub!r}")
+    rows = _read_manifest(run_dir)
+    row = next((r for r in rows if str(r.get("out_subdir") or r.get("id")) == sub), None)
+    if row is None and not os.path.isdir(obj_dir):
+        abort(404, description=f"unknown evaluation object {sub!r}")
+    identity = catalog_runner.current_eval_identity()
+    enriched = _enrich_row(row or {"id": sub, "out_subdir": sub, "ok": "True"},
+                           run_dir, identity)
+    files = []
+    if os.path.isdir(obj_dir):
+        for name in sorted(os.listdir(obj_dir)):
+            full = os.path.join(obj_dir, name)
+            if os.path.isfile(full) and not name.startswith("."):
+                stat = os.stat(full)
+                files.append({"name": name, "bytes": stat.st_size, "mtime": stat.st_mtime})
+    disagreement = None
+    try:
+        with open(os.path.join(obj_dir, "disagreement.json")) as f:
+            disagreement = json.load(f)
+    except (OSError, ValueError):
+        pass
+    rel = os.path.relpath(obj_dir, os.path.realpath(Config.EVAL_RESULTS_DIR))
+    return {
+        **enriched,
+        "id": str((row or {}).get("id") or sub),
+        "out_subdir": sub,
+        "row": row,
+        "members": catalog_runner.read_model_identity(obj_dir),
+        "current": _identity_payload(identity),
+        "disagreement": disagreement,
+        "files": files,
+        "provenance": _provenance(obj_dir),
+        "sr_header": _sr_header(obj_dir),
+        "downloads": {tier: f"/eval-files/{rel}/{name}" for tier, name in _DOWNLOADS.items()
+                      if os.path.isfile(os.path.join(obj_dir, name))},
+        "viewer": {"collection": "evaluation", "id": sub},
     }
 
 
@@ -116,26 +272,27 @@ def _resolve_run_dir(
     """Resolve a root alias or direct child run without allowing escapes."""
     run = (value or "").strip()
     if _bad_run_arg(run) or "\x00" in run:
-        abort(400)
+        abort(400, description=f"bad run name {run!r} (one directory under eval_results)")
 
     root = os.path.realpath(Config.EVAL_RESULTS_DIR)
     is_root = run in {"", "eval_results"}
     run_name = "eval_results" if is_root else run
     run_dir = root if is_root else os.path.realpath(os.path.join(root, run))
     if not is_root and os.path.dirname(run_dir) != root:
-        abort(400)
+        abort(400, description=f"run {run!r} resolves outside eval_results")
     if not os.path.isdir(run_dir):
         if is_root and (required_file is None or allow_missing_root_file):
             return run_dir, run_name
-        abort(404)
+        abort(404, description=f"no evaluation run {run_name!r}")
     if (required_file
             and not os.path.isfile(os.path.join(run_dir, required_file))
             and not (is_root and allow_missing_root_file)):
-        abort(404)
+        abort(404, description=f"run {run_name!r} has no {required_file}")
     return run_dir, run_name
 
 
 def register(app):
+    errors.json_errors_for(app, "/api/evaluation/", "/eval-files/")
 
     @app.route("/api/evaluation/run-grouped", methods=["POST"])
     def api_evaluation_run_grouped():
@@ -229,6 +386,11 @@ def register(app):
         )
         return jsonify(_run_summary(run_dir, run_name))
 
+    @app.route("/api/evaluation/objects/<object_id>")
+    def api_evaluation_object(object_id: str):
+        run_dir, _run_name = _resolve_run_dir(request.args.get("run"))
+        return jsonify(_object_card(run_dir, object_id))
+
     @app.route("/api/evaluation/fetch-catalog", methods=["POST"])
     def api_evaluation_fetch_catalog():
         """Download + normalize the Euclid Q1 strong-lens catalog (Zenodo).
@@ -309,7 +471,7 @@ def register(app):
         run = (request.form.get("run") or request.args.get("run") or "").strip()
         rd, _run_name = _resolve_run_dir(run)
         if not os.path.isdir(rd):
-            abort(404)
+            abort(404, description="no evaluation results yet")
         removed = 0
         for dirpath, _dirs, files in os.walk(rd):
             for fn in files:
@@ -338,7 +500,8 @@ def register(app):
         if ((fresh or not os.path.isfile(out_png))
                 and transformation_summary.render_transformation_summary(
                     run_dir, out_png) is None):
-            abort(404)
+            abort(404, description="no synthetic objects with HR truth to summarise yet — "
+                                   "run the grouped analysis with synthetic groups")
         return send_file(out_png, mimetype="image/png", max_age=0)
 
     @app.route("/api/evaluation/angular-power-spectrum")
@@ -353,12 +516,13 @@ def register(app):
         run = (request.args.get("run") or "").strip()
         run_dir, _run_name = _resolve_run_dir(run)
         if not os.path.isdir(run_dir):
-            abort(404)
+            abort(404, description="no evaluation results yet")
         out_png = os.path.join(run_dir, "angular_power_spectrum.png")
         fresh = request.args.get("fresh", "").lower() in ("1", "true", "yes")
         if ((fresh or not os.path.isfile(out_png))
                 and power_spectrum.render_power_spectrum_summary(out_png) is None):
-            abort(404)
+            abort(404, description="needs the synced validation records and their generated "
+                                   "SR cube (Data › Records)")
         return send_file(out_png, mimetype="image/png", max_age=0)
 
     @app.route("/eval-files/<path:relpath>")

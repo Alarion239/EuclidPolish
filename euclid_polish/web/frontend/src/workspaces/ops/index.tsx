@@ -1,6 +1,8 @@
-/* Ops workspace (spec §8.7). Phase 1: legacy adapters (fasrc, tracking, git)
-   and a minimal local-jobs list; W-Ops replaces the tabs in phase 3. */
+/* Ops workspace (spec §8.7): local jobs, the FASRC console, experiment
+   tracking, local git and the provenance browser. The inspector kinds
+   `prov`, `campaign` and `commit` are registered by ./register.ts. */
 import { Workspace, defineTabs } from "../../app/workspace";
+import "./register";
 
 export const TABS = defineTabs("ops", {
   jobs: { load: () => import("./tabs/Jobs") },

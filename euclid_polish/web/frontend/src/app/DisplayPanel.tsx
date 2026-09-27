@@ -13,18 +13,19 @@ import { Button, Dialog, Field, NumberField, Section, Select, Slider, Switch, ty
 import { useDisplaySections } from "./displaySections";
 import { useShellUi } from "./shellStore";
 
-const COLOR_LABEL: Record<ColorMode, string> = {
+/** Shared with Settings › Appearance. */
+export const COLOR_LABEL: Record<ColorMode, string> = {
   VIS: "VIS", Y_E: "Y", J_E: "J", H_E: "H", lupton: "Lupton RGB", temp: "Temperature",
   rgb: "Custom RGB", native: "Native (tier default)",
 };
-const STRETCH_LABEL: Record<Stretch, string> = {
+export const STRETCH_LABEL: Record<Stretch, string> = {
   "asinh-abs": "asinh · absolute (default)", linear: "linear", log: "log", sqrt: "sqrt",
   "asinh-auto": "asinh · auto", zscale: "zscale / percentile",
 };
-const CMAP_LABEL: Record<Colormap, string> = {
+export const CMAP_LABEL: Record<Colormap, string> = {
   gray: "gray", viridis: "viridis", magma: "magma", inferno: "inferno", cividis: "cividis", rdbu: "RdBu (diverging)",
 };
-const WHEEL_LABEL: Record<WheelMode, string> = {
+export const WHEEL_LABEL: Record<WheelMode, string> = {
   "zoom-when-focused": "zoom when the viewer is focused (or ⌘/Ctrl)",
   "always-zoom": "always zoom",
   scroll: "scroll the page (zoom with ⌘/Ctrl)",

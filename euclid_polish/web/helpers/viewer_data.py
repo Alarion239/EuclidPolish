@@ -33,6 +33,8 @@ collection          tiers                             source
 ``psfs``            VIS / Y_E / J_E / H_E             cached FASRC ePSF clusters
 ``real``            lr, jwst, m:<spec>                any real tile (``source``;
                                                       ``models`` = spec list)
+``fits``            h<hdu>, b:<prefix>                any inspectable FITS file
+                                                      (``path``, ``hdu``, …)
 ==================  ================================  ============================
 
 Band order is always ``Config.LR_INPUT_BAND_NAMES = (VIS, Y_E, J_E, H_E)``.
@@ -57,6 +59,7 @@ from astropy.coordinates import SkyCoord
 from astropy.io import fits
 from astropy.wcs import WCS
 from scipy.ndimage import gaussian_filter
+from werkzeug.exceptions import HTTPException
 
 from euclid_polish.config import Config
 from euclid_polish.ensemble import pca_field
@@ -69,6 +72,7 @@ from euclid_polish.eval.combiner import (
 from euclid_polish.eval.ensemble_cube_cache import load_cached_field_lr
 from euclid_polish.eval.spatial_gate import SPATIAL_GATE_KIND
 from euclid_polish.image.tfio import read_images, tfrecord_path
+from euclid_polish.photometry import adu_per_s_to_electrons_factor
 from euclid_polish.psf.core import PSF
 from euclid_polish.training.target_blur import (
     blur_target_array,
@@ -77,20 +81,25 @@ from euclid_polish.training.target_blur import (
 from euclid_polish.web import job_config
 from euclid_polish.web.helpers import (
     archive_fields,
+    fits_inspect,
     jwst_euclid,
     model_catalog,
     real_field,
     real_tiles,
     sky_records,
 )
-from euclid_polish.web.helpers.paths import _sky_records_local_dir
+from euclid_polish.web.helpers.paths import (
+    _resolve_inspectable_fits,
+    _safe_relpath,
+    _sky_records_local_dir,
+)
 from euclid_polish.web.helpers.status import (
     _cached_fasrc_psf_dir,
     _cached_psf_clusters_json,
+    _cached_valid_4band_star_objects,
+    _cached_valid_4band_stars,
     _ensure_local_star_cutout,
     _record_count,
-    _valid_4band_star_objects,
-    _valid_4band_stars,
 )
 
 #: Band names + channel order shared by every collection.
@@ -354,13 +363,15 @@ def _file_wcs(path: str | os.PathLike[str], hdu: int = 0) -> dict[str, Any] | No
 # ---------------------------------------------------------------------------
 
 # Tiers offered for sky records: LR (the dirty record), raw HR (the starfull
-# scene), BHR (that scene with the target PSF), and SR (model output, generated
-# on demand by the /sky button — disabled until at least one SR cube exists).
-# The clean record is the deliberately starless target and must not be
-# substituted for HR.
+# scene), BHR (that scene with the target PSF), the clean record (the
+# deliberately STARLESS scene — its own tier, never substituted for HR) and SR
+# (model output, generated on demand in Data › Records — disabled until at
+# least one SR cube exists). Records are read by position through the
+# header-scanned offset index (sky_records.read_record): O(1) per cube.
 _SKY_RECORD_TIERS = [
     {"key": "dirty", "label": "LR", "unit": "e-"},
     {"key": "hr", "label": "HR", "unit": "e-"},
+    {"key": "clean", "label": "Clean (starless)", "unit": "e-"},
 ]
 
 
@@ -394,8 +405,9 @@ def _sky_meta(params: dict[str, str]) -> dict[str, Any]:
     n_sr = sky_records.sr_count(subset)
     tiers.append({"key": "sr", "label": "SR", "disabled": n_sr == 0, "unit": "e-"})
     counts["sr"] = n_sr
+    # An on-the-fly train split is clean-only (no dirty/hr): show what exists.
     default = "dirty" if any(t["key"] == "dirty" for t in tiers) else (
-        tiers[0]["key"] if tiers else "dirty")
+        tiers[0]["key"] if tiers and tiers[0]["key"] != "sr" else "dirty")
     return {
         "count": count,
         "tiers": tiers,
@@ -416,28 +428,31 @@ def _sky_cube(index: int, tier: str, params: dict[str, str]):
             raise ViewerError(404, "SR not generated for this record")
         cube = _as_hwc(np.load(path), layout="hwc")
         return cube, {
-            "label": f"sr · {subset} · idx {index}",
+            "label": f"SR · {subset} · idx {index}",
             "asinh": float(Config.STRETCH_SCALE_E),
             "pixscale": float(Config.DEFAULT_PIXEL_SCALE),
             "unit": "e-",
         }
-    if tier not in ("dirty", "hr", "bhr"):
+    if tier not in ("dirty", "hr", "bhr", "clean"):
         raise ViewerError(400, "bad tier")
     record_kind = "hr" if tier == "bhr" else tier
     path = tfrecord_path(_sky_records_local_dir(), f"{record_kind}_{subset}")
     if not os.path.exists(path):
-        raise ViewerError(404, "records not synced")
-    records = read_images(path, num_images=max(index + 1, 1))
-    if not records or index >= len(records):
-        raise ViewerError(404, "index out of range")
-    rec = records[index]
+        raise ViewerError(404, f"{record_kind}_{subset} records not synced")
+    try:
+        rec = sky_records.read_record(path, index)
+    except IndexError as exc:
+        raise ViewerError(404, "index out of range") from exc
+    except (OSError, ValueError) as exc:
+        raise ViewerError(415, f"unreadable record {index} of {record_kind}_{subset}: {exc}") from exc
     cube = _as_hwc(rec.data, layout="hwc")
     if tier == "bhr":
         cube = blur_target_array(
             cube, _bhr_fwhm_arcsec(params),
             pixel_scale_arcsec=rec.pixel_scale_arcsec,
         )
-    label = "BHR (blurred HR)" if tier == "bhr" else tier
+    label = {"bhr": "BHR (blurred HR)", "dirty": "LR", "hr": "HR",
+             "clean": "clean (starless)"}.get(tier, tier)
     info = {
         "label": f"{label} · {subset} · idx {rec.index}",
         "asinh": float(Config.STRETCH_SCALE_E),
@@ -452,13 +467,17 @@ def _sky_cube(index: int, tier: str, params: dict[str, str]):
 # ---------------------------------------------------------------------------
 
 def _cutouts_meta(params: dict[str, str]) -> dict[str, Any]:
-    _size, stars = _valid_4band_star_objects(force=False)
+    # The synchronised FASRC-mirror catalogue only (no SSH; works offline).
+    _size, stars = _cached_valid_4band_star_objects()
     objects = []
     for star in stars:
         ra, dec = _finite_float(star.ra), _finite_float(star.dec)
+        mag = _finite_float(star.magnitude)
         objects.append({
-            "id": str(int(star.id)), "label": f"star {int(star.id)}",
+            "id": str(int(star.id)),
+            "label": f"star {int(star.id)}" + (f" · VIS {mag:.2f}" if mag is not None else ""),
             **({"ra": ra, "dec": dec} if ra is not None and dec is not None else {}),
+            **({"mag": round(mag, 4)} if mag is not None else {}),
         })
     return {
         "count": len(objects),
@@ -480,9 +499,9 @@ def _read_fits_plane(path: str) -> np.ndarray:
 
 
 def _cutouts_cube(index: int, tier: str, params: dict[str, str]):
-    size, ids = _valid_4band_stars(force=False)
+    size, ids = _cached_valid_4band_stars()
     if not ids or size is None:
-        raise ViewerError(404, "no valid-in-4-bands stars")
+        raise ViewerError(404, "no valid-in-4-bands stars in the synchronised catalogue")
     if index < 0 or index >= len(ids):
         raise ViewerError(404, "index out of range")
     sid = ids[index]
@@ -517,9 +536,15 @@ def _cutouts_cube(index: int, tier: str, params: dict[str, str]):
 _EVAL_TIER_FILES = {
     "LR": "original_stack.fits",
     "SR": "SR.fits",
+    "mean": "mean.fits",
     "HR": "HR.fits",
     "std": "std.fits",
 }
+#: Chip order of the evaluation tiers (``BHR`` follows ``HR``).
+_EVAL_TIER_ORDER = ["LR", "SR", "mean", "HR", "BHR", "std"]
+_EVAL_TIER_LABELS = {"std": "stdSR", "mean": "Mean of members"}
+
+
 def _read_eval_manifest(root: str) -> list[dict[str, str]]:
     """Rows of the shared eval store's ``manifest.csv`` (empty when absent)."""
     path = os.path.join(root, "manifest.csv")
@@ -591,11 +616,10 @@ def _eval_objects() -> list[dict[str, Any]]:
 
 def _eval_meta(params: dict[str, str]) -> dict[str, Any]:
     objs = _eval_objects()
-    # All tiers seen across the run, ordered LR→SR→HR→BHR→std, for the chip strip.
-    order = ["LR", "SR", "HR", "BHR", "std"]
+    # All tiers seen across the run, ordered LR→SR→mean→HR→BHR→std, for the chip strip.
     seen = {t for o in objs for t in o["tiers"]}
-    tiers = [{"key": k, "label": ("stdSR" if k == "std" else k), "unit": "e-"}
-             for k in order if k in seen]
+    tiers = [{"key": k, "label": _EVAL_TIER_LABELS.get(k, k), "unit": "e-"}
+             for k in _EVAL_TIER_ORDER if k in seen]
     pca_n = max((int(o.get("pca_n", 0) or 0) for o in objs), default=0)
     pca_amps = [list(o.get("pca_amps", []) or []) for o in objs]
     pca_var = [list(o.get("pca_var", []) or []) for o in objs]
@@ -603,6 +627,10 @@ def _eval_meta(params: dict[str, str]) -> dict[str, Any]:
         tiers.append({"key": "morph", "label": "disagreement movie"})
     default = "SR" if any(t["key"] == "SR" for t in tiers) else (
         tiers[0]["key"] if tiers else "SR")
+    # The pcaN components are about the member MEAN (eval/disagreement.py):
+    # centre the movie there once any object persists it (objects written
+    # before mean.fits centre on their SR, see _eval_cube).
+    movie_base = {"morph_base_tier": "mean"} if "mean" in seen else {}
     return {
         "count": len(objs),
         "tiers": tiers,
@@ -611,7 +639,11 @@ def _eval_meta(params: dict[str, str]) -> dict[str, Any]:
         "pca_n": pca_n,
         "pca_amps": pca_amps,
         "pca_var": pca_var,
-        "objects": [{"id": str(o.get("id") or o["subdir"]), "label": o["label"],
+        **movie_base,
+        # The object id is the output subdir — the manifest id may be
+        # sanitised into it (catalog_runner._safe_id) — so it matches the
+        # /api/evaluation rows' ``viewer_id`` and the ``eval/<subdir>`` refs.
+        "objects": [{"id": str(o["subdir"]), "label": o["label"],
                      "grade": o["grade"], "tiers": o["tiers"], "subdir": o["subdir"],
                      **{key: o[key] for key in ("ra", "dec") if key in o}}
                     for o in objs],
@@ -626,6 +658,7 @@ def _eval_cube(index: int, tier: str, params: dict[str, str]):
     root = os.path.abspath(Config.EVAL_RESULTS_DIR)
     asinh = float(Config.STRETCH_SCALE_E)
     key = None
+    fallback_label = None
     if tier.startswith("pca") and tier[3:].isdigit():
         path = os.path.join(root, obj["subdir"], f"{tier}.fits")
         if not os.path.isfile(path):
@@ -636,6 +669,10 @@ def _eval_cube(index: int, tier: str, params: dict[str, str]):
         # insensitively so the disagreement movie works on the eval page too.
         key = next((k for k in (*_EVAL_TIER_FILES, "BHR")
                     if k.lower() == tier.lower()), None)
+        if key == "mean" and "mean" not in obj["tiers"] and "SR" in obj["tiers"]:
+            # The movie centre of an object written before mean.fits existed:
+            # its SR (a known approximation, labelled as such).
+            key, fallback_label = "SR", "SR (member mean not persisted)"
         if key is None or key not in obj["tiers"]:
             raise ViewerError(404, f"{tier} not available for this object")
         if key == "BHR":
@@ -664,7 +701,8 @@ def _eval_cube(index: int, tier: str, params: dict[str, str]):
     is_lr = tier.lower() in {"lr", "original", "original_stack"}
     tier_scale = (Config.VIS_PIXEL_SCALE_ARCSEC if is_lr
                   else Config.DEFAULT_PIXEL_SCALE)
-    display_tier = "BHR (blurred HR)" if key == "BHR" else tier
+    display_tier = ("BHR (blurred HR)" if key == "BHR"
+                    else fallback_label or _EVAL_TIER_LABELS.get(str(key), tier))
     info = {"label": f"{obj['label']} · {display_tier}", "asinh": asinh,
             "pixscale": float(tier_scale),
             "unit": unit_from_header(header, default="e-"),
@@ -2234,6 +2272,283 @@ def _real_cube(index: int, tier: str, params: dict[str, str]):
 
 
 # ---------------------------------------------------------------------------
+# fits — any image HDU of any inspectable FITS file (the Inspect workspace)
+# ---------------------------------------------------------------------------
+# params: ``path`` (project-relative, jailed to the inspectable roots), ``hdu``
+# (an image HDU index, or ``b:<prefix>`` for a 4-band HDU group; default the
+# first band group, else the first viewable image), ``stack`` (``bands`` default: a 3-D cube whose planes
+# are the four Euclid bands is one colour cube; ``planes``: one object per
+# plane), ``bin`` (display bin ≥ 1; default auto, sides ≤ 2048), ``render``
+# (``log``). Objects are the selected HDU's planes; tiers are every viewable
+# image HDU (``h<index>``) and band group (``b:<prefix>``), so HDUs compare
+# side by side (pan/zoom/lens/residuals matched through their WCS).
+
+_FITS_SUMMARY_CACHE: OrderedDict[tuple[str, int, int], dict[str, Any]] = OrderedDict()
+_FITS_SUMMARY_CACHE_MAX = 64
+#: Tiers beyond this many (other than the selected one) are hidden chips.
+_FITS_SHOWN_TIERS = 12
+_FITS_CHANNEL = re.compile(r"[^A-Za-z0-9_.+-]")
+
+
+def _fits_file(params: dict[str, str]) -> tuple[str, dict[str, Any]]:
+    raw = (params.get("path") or "").strip()
+    if not raw:
+        raise ViewerError(400, "pass ?path=<project-relative FITS path>")
+    try:
+        real = _resolve_inspectable_fits(raw)
+    except HTTPException as exc:
+        raise ViewerError(exc.code or 400, exc.description or "bad FITS path") from exc
+    stat = os.stat(real)
+    key = (real, int(stat.st_mtime_ns), int(stat.st_size))
+    summary = _FITS_SUMMARY_CACHE.get(key)
+    if summary is None:
+        try:
+            summary = fits_inspect.file_summary(real)
+        except fits_inspect.InspectError as exc:
+            raise ViewerError(exc.code, str(exc)) from exc
+        _FITS_SUMMARY_CACHE[key] = summary
+        if len(_FITS_SUMMARY_CACHE) > _FITS_SUMMARY_CACHE_MAX:
+            _FITS_SUMMARY_CACHE.popitem(last=False)
+    else:
+        _FITS_SUMMARY_CACHE.move_to_end(key)
+    return real, summary
+
+
+def _fits_images(summary: Mapping[str, Any]) -> list[dict[str, Any]]:
+    return [h for h in summary["hdus"] if h.get("type") == "image" and h.get("viewable")]
+
+
+def _fits_stacked(hdu: Mapping[str, Any], params: dict[str, str]) -> bool:
+    """A 3-D cube of the four Euclid bands, served as one colour cube."""
+    return (hdu.get("ndim") == 3 and bool(hdu.get("bands"))
+            and (params.get("stack") or "bands") != "planes")
+
+
+def _fits_selected(params: dict[str, str], summary: Mapping[str, Any]) -> dict[str, Any]:
+    """The HDU (or band group) whose planes are the objects."""
+    images = _fits_images(summary)
+    groups = summary.get("band_groups") or []
+    raw = (params.get("hdu") or "").strip()
+    if raw.startswith("b:"):
+        for group in groups:
+            if group["id"] == raw:
+                return {"group": group, "key": group["id"]}
+        raise ViewerError(404, f"no band group {raw!r} in this file")
+    if raw:
+        try:
+            wanted = int(raw)
+        except ValueError as exc:
+            raise ViewerError(400, f"bad hdu {raw!r}") from exc
+        for hdu in summary["hdus"]:
+            if hdu["index"] == wanted:
+                if hdu in images:
+                    return {"hdu": hdu, "key": f"h{wanted}"}
+                raise ViewerError(415, f"HDU {wanted} ({hdu.get('name')}) is not a viewable image: "
+                                       f"{hdu.get('reason') or hdu.get('type')}")
+        raise ViewerError(404, f"no HDU {wanted} in this file")
+    # A file of band HDUs opens as its colour composite (as the Inspect page).
+    if groups:
+        return {"group": groups[0], "key": groups[0]["id"]}
+    if images:
+        return {"hdu": images[0], "key": f"h{images[0]['index']}"}
+    raise ViewerError(415, "this file has no image HDU to display")
+
+
+def _fits_unit(bunit: str | None) -> str:
+    return unit_from_header({"BUNIT": bunit or ""}, default="arb")
+
+
+def _fits_bin(params: dict[str, str]) -> int | None:
+    raw = (params.get("bin") or "").strip()
+    if not raw or raw == "auto":
+        return None
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ViewerError(400, f"bad bin {raw!r}") from exc
+    if value < 1 or value > 256:
+        raise ViewerError(400, "bin must be 1–256")
+    return value
+
+
+def _fits_tier_serves(hdu: Mapping[str, Any], plane: int, params: dict[str, str]) -> bool:
+    planes = int(hdu.get("planes") or 0)
+    return _fits_stacked(hdu, params) or planes == 1 or plane < planes
+
+
+def _fits_meta(params: dict[str, str]) -> dict[str, Any]:
+    real, summary = _fits_file(params)
+    _fits_bin(params)
+    selected = _fits_selected(params, summary)
+    images = _fits_images(summary)
+    groups = summary.get("band_groups") or []
+    tiers: list[dict[str, Any]] = []
+    for position, hdu in enumerate(images):
+        key = f"h{hdu['index']}"
+        tier = {"key": key, "label": f"{hdu['index']} · {hdu['name']}", "unit": _fits_unit(hdu.get("bunit"))}
+        if position >= _FITS_SHOWN_TIERS and key != selected["key"]:
+            tier["hidden"] = True
+        tiers.append(tier)
+    for group in groups:
+        tiers.append({"key": group["id"], "label": group["label"], "unit": _fits_unit(group.get("bunit"))})
+
+    wcs = (selected.get("group") or selected.get("hdu") or {}).get("wcs")
+    position = ({"ra": float(wcs["ra"]), "dec": float(wcs["dec"])} if wcs else {})
+    hdu = selected.get("hdu")
+    if hdu is None or _fits_stacked(hdu, params):
+        label = "4-band colour" if hdu is None else f"{hdu['name']} · bands"
+        objects = [{"id": "p0", "label": label, **position}]
+        planes = 1
+    else:
+        shape = tuple(hdu["shape"])
+        planes = min(int(hdu["planes"]), fits_inspect.MAX_PLANES)
+        keys = [t["key"] for t in tiers]
+        by_key = {f"h{h['index']}": h for h in images}
+        objects = []
+        for plane in range(planes):
+            serving = [k for k in keys if k.startswith("b:") or _fits_tier_serves(by_key[k], plane, params)]
+            objects.append({
+                "id": f"p{plane}",
+                "label": fits_inspect.plane_label(shape, plane, hdu.get("bands")),
+                "tiers": serving, **position,
+            })
+    meta: dict[str, Any] = {
+        "count": len(objects),
+        "tiers": tiers,
+        "default_tier": selected["key"],
+        "band_names": list(BAND_NAMES),
+        "objects": objects,
+        "source": _safe_relpath(real),
+        "empty_label": "No image planes in this HDU.",
+        "fits": {
+            "path": _safe_relpath(real), "hdu": selected["key"], "planes": planes,
+            "planes_truncated": bool(hdu is not None and int(hdu.get("planes") or 0) > planes),
+            "stacked": bool(hdu is None or _fits_stacked(hdu, params)),
+        },
+    }
+    if (params.get("render") or "") == "log":
+        meta["render_mode"] = "log"
+    return meta
+
+
+def _fits_channel(name: str | None, fallback: str) -> str:
+    cleaned = _FITS_CHANNEL.sub("_", str(name or ""))[:32].strip("_")
+    return cleaned or fallback
+
+
+def _fits_plane_info(served: fits_inspect.Plane) -> tuple[dict[str, Any] | None, float]:
+    """The compact WCS and pixel scale (″) of a served (binned) plane."""
+    wcs, _constructed = fits_inspect.celestial_wcs(served.header, served.full_shape, served.primary)
+    keywords = celestial_wcs_keywords(fits_inspect.binned_wcs(wcs, served.bin, served.offset))
+    if wcs is not None:
+        matrix = np.asarray(wcs.pixel_scale_matrix, dtype=np.float64)
+        scale = math.sqrt(abs(float(np.linalg.det(matrix)))) * 3600.0
+    else:
+        raw = served.header.get("PIXSCALE", served.header.get("PXSCALE", 0.0))
+        try:
+            scale = float(cast(str | float, raw) or 0.0)
+        except (TypeError, ValueError):
+            scale = 0.0
+    if not (math.isfinite(scale) and scale > 0):
+        # No WCS and no PIXSCALE: assume the Euclid VIS grid (the wire format
+        # needs a positive scale); the Inspect page says the scale is assumed.
+        scale = float(Config.VIS_PIXEL_SCALE_ARCSEC)
+    return keywords, scale * served.bin
+
+
+def _fits_electron_factor(served: fits_inspect.Plane, bunit: str | None, band: str | None) -> float | None:
+    """e⁻ per ADU/s of an archive-rate Euclid band plane (its ``MAGZERO``), else None."""
+    if _fits_unit(bunit) != "ADU/s" or band not in BAND_NAMES:
+        return None
+    raw = served.header.get("MAGZERO", (served.primary or {}).get("MAGZERO"))
+    try:
+        magzero = float(cast(str | float, raw))
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(magzero):
+        return None
+    return adu_per_s_to_electrons_factor(magzero, Config.get_band(band))
+
+
+def _fits_read(real: str, hdu: int, plane: int, bin_factor: int | None) -> fits_inspect.Plane:
+    try:
+        return fits_inspect.read_plane(real, hdu, plane, bin=bin_factor)
+    except fits_inspect.InspectError as exc:
+        raise ViewerError(exc.code, str(exc)) from exc
+
+
+def _fits_cube(index: int, tier: str, params: dict[str, str]):
+    real, summary = _fits_file(params)
+    bin_factor = _fits_bin(params)
+    selected = _fits_selected(params, summary)
+    tier = tier or selected["key"]
+    if index < 0:
+        raise ViewerError(404, "index out of range")
+    if tier.startswith("b:"):
+        group = next((g for g in summary.get("band_groups") or [] if g["id"] == tier), None)
+        if group is None:
+            raise ViewerError(404, f"no band group {tier!r}")
+        served = [_fits_read(real, h, 0, bin_factor) for h in group["hdus"]]
+        head, bands = served[0], list(group["bands"])
+        name, bunit = group["label"], group.get("bunit")
+        factors = [_fits_electron_factor(p, bunit, b) for p, b in zip(served, bands, strict=True)]
+        if all(f is not None for f in factors):
+            # Archive-rate bands: one colour cube in electrons (MAGZERO), so the
+            # composite colours are physical, as in every other collection.
+            cube = np.stack([p.data * np.float32(f) for p, f in zip(served, factors, strict=True)], axis=-1)
+            bunit, name = "electron", f"{name} · e- via MAGZERO"
+        else:
+            cube = np.stack([p.data for p in served], axis=-1)
+    elif tier.startswith("h"):
+        try:
+            hdu_index = int(tier[1:])
+        except ValueError as exc:
+            raise ViewerError(400, f"bad tier {tier!r}") from exc
+        hdu = next((h for h in _fits_images(summary) if h["index"] == hdu_index), None)
+        if hdu is None:
+            raise ViewerError(404, f"HDU {hdu_index} is not a viewable image")
+        bunit = hdu.get("bunit")
+        if _fits_stacked(hdu, params):
+            served = [_fits_read(real, hdu_index, k, bin_factor) for k in range(int(hdu["planes"]))]
+            cube = np.stack([p.data for p in served], axis=-1)
+            head, bands = served[0], list(hdu["bands"])
+            name = f"{hdu['name']} · bands"
+        else:
+            plane = 0 if int(hdu["planes"]) == 1 else index
+            if plane >= int(hdu["planes"]):
+                raise ViewerError(404, f"HDU {hdu_index} has no plane {plane}")
+            head = _fits_read(real, hdu_index, plane, bin_factor)
+            cube = head.data[..., None]
+            plane_name = fits_inspect.plane_label(head.shape, plane, hdu.get("bands"))
+            bands_of = hdu.get("bands") if len(head.shape) == 3 else None
+            band = hdu.get("band") or (bands_of[plane] if bands_of else None)
+            bands = [_fits_channel(band or hdu["name"], "data")]
+            name = hdu["name"] if plane_name == "image" else f"{hdu['name']} · {plane_name}"
+    else:
+        raise ViewerError(400, f"bad tier {tier!r}")
+    keywords, pixscale = _fits_plane_info(head)
+    unit = _fits_unit(bunit)
+    label = name + (f" · binned x{head.bin}" if head.bin > 1 else "")
+    info: dict[str, Any] = {
+        "label": label.encode("latin-1", "replace").decode("latin-1"),
+        "asinh": float(Config.STRETCH_SCALE_E),
+        "pixscale": pixscale,
+        "unit": unit,
+        "wcs": keywords,
+        "bands": tuple(bands),
+    }
+    factor = _fits_electron_factor(head, bunit, bands[0]) if len(bands) == 1 else None
+    if factor is not None:
+        # An archive-rate band: display as its electrons (MAGZERO), readout native.
+        info["display_scale"] = factor
+    elif unit != "e-":
+        # Unknown units: put the robust bright end at white (display only; the
+        # served values and the readout stay native).
+        info["display_scale"] = _robust_display_scale(cube)
+    return cube, info
+
+
+# ---------------------------------------------------------------------------
 # registry
 # ---------------------------------------------------------------------------
 
@@ -2251,6 +2566,7 @@ _REGISTRY: dict[str, tuple[_Meta, _Cube]] = {
     "nexus-field": (_nexus_field_meta, _nexus_field_cube),
     "psfs": (_psf_meta, _psf_cube),
     "real": (_real_meta, _real_cube),
+    "fits": (_fits_meta, _fits_cube),
 }
 
 

@@ -235,9 +235,11 @@ def test_offline_non_api_pages_are_not_redirected_to_a_connection_page(client):
     ("POST", "/api/euclid-psf/sync"),
     ("POST", "/api/tracking/sync"),
     ("GET", "/fasrc/file/download?remote_path=/n/x"),
-    ("GET", "/poster/result/cutout.png"),
-    ("GET", "/poster/result/cutout.fits"),
-    ("GET", "/tng/result/grid.png"),
+    # the poster GETs serve the last pulled copy (local); the pull is gated
+    ("POST", "/poster/result/pull"),
+    ("POST", "/api/tng/result/pull"),
+    ("POST", "/api/tng/properties/refresh"),
+    ("POST", "/api/euclid-psf/sync-meta"),
 ])
 def test_marked_endpoints_return_the_offline_payload(client, method, path):
     response = client.open(path, method=method)
@@ -264,7 +266,6 @@ GRACEFUL = {
         "its job self-connects (ensure_ssh_connected) and reports failure",
     "api_archive_fields_sync":
         "its job self-connects (ensure_ssh_connected) and reports failure",
-    "tng_histograms_png": "renders the local cache; FASRC ids/key are optional",
     "api_tracking_state": "local store; reports ssh_connected=false offline",
     "api_tracking_save": "local save; the holylabs push is best-effort",
     "api_tracking_backup": "local backup; the holylabs push is best-effort",

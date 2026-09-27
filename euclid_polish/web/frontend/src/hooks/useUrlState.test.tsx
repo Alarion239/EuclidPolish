@@ -232,6 +232,88 @@ describe("useUrlState", () => {
     expect(router.state.location.search).toBe("");               // a single Back
   });
 
+  /* Setters called from different macrotasks before React re-renders (two
+     viewers answering their fetches, a timer after a click) must build on the
+     LATEST location, not the one the component last rendered with, or the
+     second write drops the first one's param. */
+  it("a setter in a later macrotask keeps an earlier write React has not rendered yet (data router)", async () => {
+    let setters: { a: (v: string) => void; b: (v: string) => void } | null = null;
+    function Probe() {
+      const [, a] = useUrlState("a", "");
+      const [, b] = useUrlState("b", "");
+      setters = { a, b };
+      return null;
+    }
+    const router = createMemoryRouter([{ path: "/x", element: <Probe /> }], {
+      initialEntries: ["/x?keep=1"], future: { v7_relativeSplatPath: true },
+    });
+    render(<RouterProvider router={router} future={{ v7_startTransition: true }} />);
+    const { a, b } = setters!;
+    // Both setters fire outside act(), one macrotask apart, with the render
+    // of the first write still pending (a transition).
+    a("1");
+    await new Promise((r) => setTimeout(r, 0));
+    b("2");
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    expect(new URLSearchParams(router.state.location.search).get("a")).toBe("1");
+    expect(new URLSearchParams(router.state.location.search).get("b")).toBe("2");
+    expect(new URLSearchParams(router.state.location.search).get("keep")).toBe("1");
+  });
+
+  it("builds on a navigation that happened outside the component (data router)", async () => {
+    let set: ((v: string) => void) | null = null;
+    function Probe() {
+      const [, a] = useUrlState("a", "");
+      set = a;
+      return null;
+    }
+    const router = createMemoryRouter([{ path: "/x", element: <Probe /> }], {
+      initialEntries: ["/x"], future: { v7_relativeSplatPath: true },
+    });
+    render(<RouterProvider router={router} future={{ v7_startTransition: true }} />);
+    // e.g. the inspector sync writing ?inspect= — committed in the router,
+    // not yet rendered when the setter runs.
+    await router.navigate("/x?inspect=member:m_1", { replace: true });
+    set!("5");
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    expect(router.state.location.search).toBe("?inspect=member:m_1&a=5");
+  });
+
+  it("builds on the history's location under a plain MemoryRouter too", async () => {
+    let probe: { a: (v: string) => void; nav: { replace: (to: string) => void } } | null = null;
+    function Probe() {
+      const [, a] = useUrlState("a", "");
+      const { navigator } = useContext(UNSAFE_NavigationContext);
+      probe = { a, nav: navigator as unknown as { replace: (to: string) => void } };
+      return <LocationSpy />;
+    }
+    let seen = "";
+    function LocationSpy() { seen = useLocation().search; return null; }
+    render(<MemoryRouter initialEntries={["/x"]} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}><Probe /></MemoryRouter>);
+    probe!.nav.replace("/x?other=1");   // history moved; React has not re-rendered
+    probe!.a("2");
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    expect(seen).toBe("?other=1&a=2");
+  });
+
+  it("does not write onto another page the router already moved to", async () => {
+    let set: ((v: string) => void) | null = null;
+    function Probe() {
+      const [, a] = useUrlState("a", "");
+      set = a;
+      return null;
+    }
+    const router = createMemoryRouter([
+      { path: "/x", element: <Probe /> }, { path: "/y", element: null },
+    ], { initialEntries: ["/x"], future: { v7_relativeSplatPath: true } });
+    render(<RouterProvider router={router} future={{ v7_startTransition: true }} />);
+    await router.navigate("/y?z=1");
+    set!("stale-write");
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    expect(router.state.location.pathname).toBe("/y");
+    expect(router.state.location.search).toBe("?z=1");
+  });
+
   it.each([
     ["replace then push", false, "?k=1&r=2&p=1"],
     ["push then replace", true, "?k=1&p=1&r=2"],

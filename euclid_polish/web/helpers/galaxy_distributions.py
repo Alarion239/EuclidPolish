@@ -10,13 +10,16 @@ import json
 import math
 import os
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+import tensorflow as tf
 from scipy.ndimage import gaussian_filter
 
 from euclid_polish.config import Config
+from euclid_polish.image.tfio import deserialize_image
 from euclid_polish.photometry import electrons_to_ab_mag, uJy_to_ab_mag
 from euclid_polish.population.euclid_galaxy_prior import (
     ConditionalRadiusLaw,
@@ -763,10 +766,6 @@ def _read_synthetic(
             clean_path = source_path.with_name(f"clean_{split}.tfrecord")
             if not clean_path.is_file():
                 continue
-            import tensorflow as tf
-
-            from euclid_polish.image.tfio import deserialize_image
-
             for field_index, raw_record in enumerate(
                 tf.data.TFRecordDataset([str(clean_path)])
             ):
@@ -2198,6 +2197,30 @@ def read_galaxy_distributions(
         if isinstance(sources, dict):
             sources["fit"] = _read_fit(parameters)
     return {**payload, "stale": stale, "artifact_path": str(artifact_path())}
+
+
+def artifact_state() -> dict[str, Any]:
+    """Freshness of the cached plot artifact, without shaping the payload
+    (the Realism overview's "galaxy plots" item). Read-only."""
+    path = artifact_path()
+    payload = _json(path)
+    if not payload:
+        return {"present": False, "stale": True, "reason": "galaxy plots have not been built",
+                "version": None, "built_at": None}
+    version_current = payload.get("version") == ARTIFACT_VERSION
+    inputs_current = payload.get("inputs") == _inputs()
+    if not version_current:
+        reason: str | None = "the plot schema changed since the last build"
+    elif not inputs_current:
+        reason = "the Q1, generated or model inputs changed since the last build"
+    else:
+        reason = None
+    try:
+        built_at: str | None = datetime.fromtimestamp(path.stat().st_mtime, UTC).isoformat()
+    except OSError:
+        built_at = None
+    return {"present": True, "stale": reason is not None, "reason": reason,
+            "version": payload.get("version"), "built_at": built_at}
 
 
 def read_joint_pair(x_key: str, y_key: str) -> dict[str, Any]:

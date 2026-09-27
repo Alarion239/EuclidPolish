@@ -11,8 +11,14 @@ registry), while durable crop and figure endpoints use
   object's stable meta ``id`` instead of its position.
 * ``GET|POST /viewer/results``             — list or save matched raw crops.
 * ``GET /viewer/results/<id>``             — one saved-result summary.
-* ``GET /viewer/results/<id>/panel.png``   — render one saved panel.
+* ``GET /viewer/results/<id>/panel.png``   — render one saved panel
+  (``?size=`` thumbnail; no tier/mode = the thumbnail recipe; ETag).
+* ``GET /viewer/results/<id>/<tier>.fits`` — download one saved FITS crop.
+* ``POST /viewer/results/<id>/rename``     — set / clear the user label.
+* ``POST /viewer/results/<id>/delete``     — delete one saved result.
 * ``GET /viewer/results/grid.<png|pdf>``   — render an A4 result grid.
+* ``GET|POST /viewer/grid-layouts``        — list / save named grid layouts;
+  ``POST /viewer/grid-layouts/<id>/delete`` removes one.
 
 The cube body is little-endian Float32 in C order; shape and per-cube
 metadata travel in ``X-Cube-*`` response headers so the browser can
@@ -26,7 +32,7 @@ from __future__ import annotations
 
 import json
 
-from flask import Response, jsonify, request
+from flask import Response, jsonify, request, send_file
 
 from euclid_polish.image import Image
 from euclid_polish.web import errors
@@ -49,6 +55,14 @@ def _band_names(info: dict, channels: int) -> tuple[str, ...]:
     return tuple(f"ch{i}" for i in range(channels))
 
 
+def _payload() -> dict | None:
+    """A JSON object body, or the form (``None`` for a non-object JSON)."""
+    if request.is_json:
+        payload = request.get_json(silent=True)
+        return payload if isinstance(payload, dict) else None
+    return request.form.to_dict(flat=True)
+
+
 def _params() -> dict:
     """Whitelisted collection params from the query string. ``members`` is the
     ensemble disagreement movie's member subset (CSV of indices) — the sr/pcaN
@@ -58,6 +72,9 @@ def _params() -> dict:
         "subset", "mode", "members", "field", "jwst_band",
         # ``real`` collection (C9): real-tile source + model-spec tiers.
         "source", "models",
+        # ``fits`` collection (Inspect workspace): file, HDU, plane stacking,
+        # display bin, log render.
+        "path", "hdu", "stack", "bin", "render",
         viewer_data.BHR_FWHM_PARAM,
         # PSF-page live preview: the client changes only the replay seed every
         # few seconds.  These remain harmless for every other collection.
@@ -111,19 +128,84 @@ def register(app):
     @app.get("/viewer/results/<result_id>/panel.png")
     def viewer_result_panel(result_id: str):
         try:
-            body = viewer_results.render_panel(
+            panel = viewer_results.panel_request(
                 result_id,
                 request.args.get("tier", ""),
                 request.args.get("mode", ""),
+                request.args.get("size"),
             )
+            # Content-addressed: revalidate cheaply, render only on a miss.
+            if panel.etag in request.if_none_match:
+                response = Response(status=304)
+                response.set_etag(panel.etag)
+                response.headers["Cache-Control"] = "no-cache"
+                return response
+            body = viewer_results.render_panel_png(panel)
         except viewer_results.ViewerResultError as exc:
             return jsonify({"error": str(exc)}), exc.code
         response = Response(body, mimetype="image/png")
         response.headers["Content-Disposition"] = (
-            f'inline; filename="{result_id}_{request.args.get("tier", "panel")}.png"'
+            f'inline; filename="{result_id}_{panel.logical}_{panel.mode}.png"'
         )
+        response.set_etag(panel.etag)
         response.headers["Cache-Control"] = "no-cache"
         return response
+
+    @app.get("/viewer/results/<result_id>/<logical>.fits")
+    def viewer_result_fits(result_id: str, logical: str):
+        try:
+            path, name = viewer_results.result_fits(result_id, logical)
+        except viewer_results.ViewerResultError as exc:
+            return jsonify({"error": str(exc)}), exc.code
+        return send_file(path, mimetype="application/fits", as_attachment=True,
+                         download_name=name, max_age=0)
+
+    @app.post("/viewer/results/<result_id>/rename")
+    def viewer_result_rename(result_id: str):
+        payload = _payload()
+        if payload is None:
+            return jsonify({"ok": False, "error": "request body must be a JSON object"}), 400
+        try:
+            result = viewer_results.rename_result(result_id, payload.get("label"))
+        except viewer_results.ViewerResultError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), exc.code
+        return jsonify({"ok": True, "result": result})
+
+    @app.post("/viewer/results/<result_id>/delete")
+    def viewer_result_delete(result_id: str):
+        try:
+            removed = viewer_results.delete_result(result_id)
+        except viewer_results.ViewerResultError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), exc.code
+        return jsonify({"ok": True, "id": removed})
+
+    @app.get("/viewer/grid-layouts")
+    def viewer_grid_layouts():
+        try:
+            response = jsonify(viewer_results.list_layouts())
+        except viewer_results.ViewerResultError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), exc.code
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+    @app.post("/viewer/grid-layouts")
+    def viewer_grid_layout_save():
+        payload = _payload()
+        if payload is None:
+            return jsonify({"ok": False, "error": "request body must be a JSON object"}), 400
+        try:
+            layout, created = viewer_results.save_layout(payload)
+        except viewer_results.ViewerResultError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), exc.code
+        return jsonify({"ok": True, "layout": layout, "created": created}), (201 if created else 200)
+
+    @app.post("/viewer/grid-layouts/<layout_id>/delete")
+    def viewer_grid_layout_delete(layout_id: str):
+        try:
+            removed = viewer_results.delete_layout(layout_id)
+        except viewer_results.ViewerResultError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), exc.code
+        return jsonify({"ok": True, "id": removed})
 
     @app.get("/viewer/results/grid.<output_format>")
     def viewer_result_grid(output_format: str):

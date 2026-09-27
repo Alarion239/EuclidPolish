@@ -5,17 +5,33 @@ tier is reloaded through :mod:`viewer_data`, cropped in raw detector/image
 units, and written as FITS before the bundle directory is atomically renamed
 into place.  Display settings are provenance only: they never alter FITS
 pixels.
+
+Crops are matched on the sky: when the tiers carry a celestial WCS (C6
+``info["wcs"]``), the selection centre is resolved on its source tier
+(``selection.source_tier``, else the first tier with a WCS) and mapped
+through every other tier's WCS, exactly as the viewer's lens does, and each
+saved FITS keeps its crop's WCS (CRPIX shifted by the crop offset).
+
+The Figures workspace (W-Figures) also manages the bundles: a user label
+(:func:`rename_result`), deletion (:func:`delete_result`), thumbnails
+(:func:`panel_request` + :func:`render_panel_png`), FITS downloads and named
+grid layouts (:func:`list_layouts`, :func:`save_layout`,
+:func:`delete_layout`) stored beside the bundles in ``grid_layouts.json``.
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import hmac
 import json
 import math
 import os
 import re
+import secrets
 import shutil
 import tempfile
+import threading
+import warnings
 from collections import OrderedDict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -26,9 +42,13 @@ from typing import Any
 
 import numpy as np
 from astropy.io import fits
+from astropy.wcs import WCS
+from matplotlib.backends.backend_agg import FigureCanvasAgg
+from matplotlib.figure import Figure
+from PIL import Image as PILImage
 
 from euclid_polish.config import Config
-from euclid_polish.web.helpers import viewer_data
+from euclid_polish.web.helpers import paths, viewer_data
 
 SCHEMA_VERSION = 1
 
@@ -63,11 +83,35 @@ LOGICAL_TIER_ORDER = ("dirty", "sr", "hr", "jwst")
 DISPLAY_MODES = ("VIS", "H_E", "VIS_H", "native")
 
 _RESULT_ID = re.compile(r"^vr-[0-9a-f]{24}$")
+_LAYOUT_ID = re.compile(r"^gl-[0-9a-f]{12}$")
 _COLLECTION = re.compile(r"^[A-Za-z0-9-]{1,64}$")
 _SAFE_TOKEN = re.compile(r"^[A-Za-z0-9._+-]{1,220}$")
 _SAFE_SIMPLE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _MEMBERS = re.compile(r"^[0-9]+(?:,[0-9]+)*$")
 _BAND_NAME = re.compile(r"^[A-Za-z0-9_+-]{1,40}$")
+# ``real`` collection model specs (C9): production, mean, rbf,
+# member:member_<N>, gate:<variant>; a comma list of at most 64.
+_MODEL_SPEC = re.compile(r"^[A-Za-z0-9._+-]{1,64}(?::[A-Za-z0-9._+-]{1,64})?$")
+_TIER_KEY = re.compile(r"^[A-Za-z0-9._+:-]{1,120}$")
+_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+
+#: A user label (rename) and a grid-layout name.
+MAX_LABEL_CHARS = 120
+MAX_LAYOUT_NAME_CHARS = 80
+MAX_LAYOUTS = 200
+LAYOUTS_FILE = "grid_layouts.json"
+#: Thumbnail sides accepted by ``panel.png?size=`` (never upsampled).
+MIN_THUMB_SIDE = 8
+MAX_THUMB_SIDE = 2048
+#: The thumbnail recipe of a result: the first of these it supports.
+THUMBNAIL_PREFERENCE = (
+    "sr:VIS_H", "dirty:VIS_H", "hr:VIS_H", "sr:VIS", "dirty:VIS", "hr:VIS", "jwst:native",
+)
+#: The WCS keywords a tier must carry for sky-matched crops (C6 CD form).
+_WCS_KEYS = ("CTYPE1", "CTYPE2", "CRVAL1", "CRVAL2", "CRPIX1", "CRPIX2",
+             "CD1_1", "CD1_2", "CD2_1", "CD2_2")
+
+_LAYOUT_LOCK = threading.Lock()
 
 _PARAMS_BY_COLLECTION: dict[str, frozenset[str]] = {
     "sky": frozenset({"subset", viewer_data.BHR_FWHM_PARAM}),
@@ -79,6 +123,8 @@ _PARAMS_BY_COLLECTION: dict[str, frozenset[str]] = {
     "jwst-euclid": frozenset({"jwst_band"}),
     "nexus-field": frozenset({"field"}),
     "psfs": frozenset({"psf_warp", "psf_warp_seed"}),
+    # C9 real tiles: ``m:<spec>`` tiers are the SR panel (one per result).
+    "real": frozenset({"source", "models", "jwst_band"}),
 }
 
 _ALIASES = {
@@ -93,8 +139,18 @@ _ALIASES = {
 }
 
 _REAL_COLLECTIONS = frozenset({
-    "archive-fields", "cutouts", "real-field", "jwst-euclid", "nexus-field",
+    "archive-fields", "cutouts", "real-field", "jwst-euclid", "nexus-field", "real",
 })
+
+
+def _logical_alias(tier_key: str) -> str | None:
+    """The stable logical tier of a viewer tier key (lower-cased), or None.
+    ``m:<spec>`` (the ``real`` collection's model outputs) is the SR panel."""
+    if tier_key in _ALIASES:
+        return _ALIASES[tier_key]
+    if tier_key.startswith("m:") and len(tier_key) > 2:
+        return "sr"
+    return None
 
 _SHA_CACHE: OrderedDict[tuple[str, int, int, int, int, int], str] = OrderedDict()
 
@@ -238,9 +294,15 @@ def _safe_params(collection: str, raw: Any) -> dict[str, str]:
                 raise ViewerResultError(400, "psf_warp_seed must be a uint32") from exc
             if not 0 <= seed <= 2**32 - 1:
                 raise ViewerResultError(400, "psf_warp_seed must be a uint32")
-        elif key in {"subset", "mode"}:
+        elif key in {"subset", "mode", "source"}:
             if not _SAFE_SIMPLE.fullmatch(value):
                 raise ViewerResultError(400, f"viewer parameter {key} is invalid")
+        elif key == "models":
+            specs = [part.strip() for part in value.split(",")]
+            if (not specs or len(specs) > 64
+                    or any(not _MODEL_SPEC.fullmatch(spec) for spec in specs)):
+                raise ViewerResultError(400, "models must be a comma list of model specs")
+            value = ",".join(specs)
         elif not _SAFE_TOKEN.fullmatch(value):
             raise ViewerResultError(400, f"viewer parameter {key} is invalid")
         clean[key] = value
@@ -259,6 +321,14 @@ def _selection(raw: Any) -> dict[str, Any]:
     fallback_safe = value.get(
         "relative_fallback_safe", value.get("relativeFallbackSafe", False),
     ) is True
+    # The tier the selection was made on (the viewer's ``sourceTier``): its
+    # (u, v) is resolved there and mapped to the other tiers through the WCS.
+    source_raw = value.get("source_tier", value.get("sourceTier"))
+    source_tier: dict[str, str] = {}
+    if source_raw is not None:
+        if not isinstance(source_raw, str) or not _TIER_KEY.fullmatch(source_raw.strip()):
+            raise ViewerResultError(400, "selection.source_tier is invalid")
+        source_tier = {"source_tier": source_raw.strip()}
 
     if angular_raw is not None:
         angular = _finite_number(angular_raw, "selection.angular_side_arcsec")
@@ -274,6 +344,7 @@ def _selection(raw: Any) -> dict[str, Any]:
             "angular_side_arcsec": angular,
             "relative_side": None,
             "relative_fallback_safe": fallback_safe,
+            **source_tier,
         }
 
     if not fallback_safe:
@@ -291,6 +362,7 @@ def _selection(raw: Any) -> dict[str, Any]:
         "angular_side_arcsec": None,
         "relative_side": relative,
         "relative_fallback_safe": True,
+        **source_tier,
     }
 
 
@@ -369,7 +441,7 @@ def _source_tiers(meta: Mapping[str, Any], requested: Sequence[str]) -> list[tup
         if lowered in source_seen:
             raise ViewerResultError(400, "duplicate tiers are not allowed")
         source_seen.add(lowered)
-        logical = _ALIASES.get(lowered)
+        logical = _logical_alias(lowered)
         if logical is None:
             raise ViewerResultError(400, f"tier {source} has no publication-result alias")
         if logical in logical_seen:
@@ -397,7 +469,11 @@ def _crop_bounds(
     shape: tuple[int, int, int],
     pixscale: float,
     selection: Mapping[str, Any],
+    center: tuple[float, float] | None = None,
 ) -> dict[str, Any]:
+    """Pixel bounds of the square crop. ``center`` is the continuous crop
+    centre on this tier (pixel ``i`` spans ``[i, i+1)``); default the
+    selection's normalised ``(u, v)`` on this tier's grid."""
     height, width, _channels = shape
     if height <= 0 or width <= 0:
         raise ViewerResultError(415, "cube has an empty spatial axis")
@@ -413,10 +489,16 @@ def _crop_bounds(
     if side > MAX_CROP_SIDE_PIXELS or side * side > MAX_CROP_PIXELS:
         raise ViewerResultError(413, "selection crop is too large")
 
-    center_x = float(selection["u"]) * width
-    center_y = float(selection["v"]) * height
-    x0 = int(round(center_x - side / 2.0))
-    y0 = int(round(center_y - side / 2.0))
+    if center is None:
+        center_x = float(selection["u"]) * width
+        center_y = float(selection["v"]) * height
+    else:
+        center_x, center_y = center
+    if not (math.isfinite(center_x) and math.isfinite(center_y)):
+        raise ViewerResultError(422, "the selection centre is not on every tier's sky")
+    # Snap float noise from the WCS round trip so an exact .5 never flips.
+    x0 = int(round(round(center_x - side / 2.0, 6)))
+    y0 = int(round(round(center_y - side / 2.0, 6)))
     if x0 < 0 or y0 < 0 or x0 + side > width or y0 + side > height:
         raise ViewerResultError(
             422,
@@ -444,9 +526,49 @@ def _safe_object(meta: Mapping[str, Any], index: int) -> dict[str, Any] | None:
         value = obj.get(key)
         if isinstance(value, (str, int, float, bool)) or value is None:
             out[key] = value
+    # The stable object id (C6) and, for real objects, the sky position and
+    # the C9 tile reference — so a saved result can reopen its source.
+    for key in ("id", "ref", "field"):
+        value = obj.get(key)
+        if isinstance(value, str) and value and len(value) <= 256:
+            out[key] = value
+    for key in ("ra", "dec"):
+        value = obj.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
+            out[key] = float(value)
     if isinstance(obj.get("tiers"), list):
         out["tiers"] = [str(item) for item in obj["tiers"]]
     return out
+
+
+def _clean_wcs(raw: Any) -> dict[str, Any] | None:
+    """A tier's C6 WCS keywords, or None when absent/malformed."""
+    if not isinstance(raw, Mapping):
+        return None
+    out: dict[str, Any] = {}
+    for key in _WCS_KEYS:
+        value = raw.get(key)
+        if key.startswith("CTYPE"):
+            if not isinstance(value, str) or not value.strip():
+                return None
+            out[key] = value
+        else:
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+                return None
+            out[key] = float(value)
+    if out["CD1_1"] * out["CD2_2"] - out["CD1_2"] * out["CD2_1"] == 0.0:
+        return None
+    return out
+
+
+def _wcs_object(keywords: Mapping[str, Any]) -> WCS | None:
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            wcs = WCS(fits.Header(dict(keywords))).celestial
+    except Exception:  # noqa: BLE001 - malformed keywords
+        return None
+    return wcs if wcs.naxis == 2 and wcs.has_celestial else None
 
 
 def _write_fits(
@@ -457,13 +579,21 @@ def _write_fits(
     source_tier: str,
     bands: Sequence[str],
     pixscale: float,
+    wcs: Mapping[str, Any] | None = None,
 ) -> None:
+    """``wcs`` = the crop's own celestial WCS keywords (FITS 1-based, axis 1
+    = column) or None; axis 3 of the written cube is the band."""
     data = np.moveaxis(np.ascontiguousarray(cube, dtype=np.float32), -1, 0)
     hdu = fits.PrimaryHDU(data=data)
-    hdu.header["LOGTIER"] = (logical, "Stable viewer-result tier alias")
-    hdu.header["SRCTIER"] = (source_tier, "Source viewer tier key")
+    hdu.header["LOGTIER"] = (logical[:68], "Stable viewer-result tier alias")
+    hdu.header["SRCTIER"] = (source_tier[:68], "Source viewer tier key")
     hdu.header["PIXSCALE"] = (float(pixscale), "arcsec / pixel")
-    hdu.header["WCSKEEP"] = (False, "Source WCS was not available through viewer API")
+    if wcs:
+        for key in _WCS_KEYS:
+            hdu.header[key] = wcs[key]
+        hdu.header["WCSKEEP"] = (True, "Celestial WCS of this crop (CRPIX shifted)")
+    else:
+        hdu.header["WCSKEEP"] = (False, "Source WCS was not available through viewer API")
     hdu.header["DSPAPPL"] = (False, "Display transfer has not been applied")
     for index, band in enumerate(bands):
         hdu.header[f"BAND{index}"] = (str(band), "Channel name")
@@ -529,7 +659,47 @@ def _load_cube_for_save(
         "display_scale": display_scale,
         "direct_rgb": bool(info.get("direct_rgb")),
         "transfer_group": str(info.get("transfer_group") or "default"),
+        "wcs": _clean_wcs(info.get("wcs")),
     }
+
+
+def _matched_bounds(
+    loaded: Sequence[dict[str, Any]], selection: Mapping[str, Any],
+) -> dict[str, float] | None:
+    """Set ``item["bounds"]`` for every tier, matched on the sky.
+
+    The selection centre is the (u, v) of its source tier (``source_tier``,
+    else the first tier with a WCS); it reaches every other tier with a WCS
+    through both WCSs (continuous pixel ``x`` ↔ 0-based centre ``x − 0.5``,
+    as the viewer's ``mapPoint``). Tiers without a WCS — or every tier when
+    the source tier has none — use the normalised (u, v). Returns the sky
+    centre ``{ra, dec}`` (deg) or None."""
+    for item in loaded:
+        item["wcs_object"] = _wcs_object(item["wcs"]) if item.get("wcs") else None
+    wanted = str(selection.get("source_tier") or "").lower()
+    if wanted:
+        anchor = next((item for item in loaded
+                       if item["source_tier"].lower() == wanted), None)
+        if anchor is not None and anchor["wcs_object"] is None:
+            anchor = None
+    else:
+        anchor = next((item for item in loaded if item["wcs_object"] is not None), None)
+
+    sky: tuple[float, float] | None = None
+    if anchor is not None:
+        height, width = anchor["cube"].shape[:2]
+        fx, fy = float(selection["u"]) * width, float(selection["v"]) * height
+        ra, dec = anchor["wcs_object"].pixel_to_world_values(fx - 0.5, fy - 0.5)
+        if math.isfinite(float(ra)) and math.isfinite(float(dec)):
+            sky = (float(ra), float(dec))
+
+    for item in loaded:
+        center = None
+        if sky is not None and item is not anchor and item["wcs_object"] is not None:
+            px, py = item["wcs_object"].world_to_pixel_values(sky[0], sky[1])
+            center = (float(px) + 0.5, float(py) + 0.5)
+        item["bounds"] = _crop_bounds(item["cube"].shape, item["pixscale"], selection, center)
+    return {"ra": sky[0] % 360.0, "dec": sky[1]} if sky is not None else None
 
 
 def _require_native_f200w_request(
@@ -603,11 +773,8 @@ def save_result(raw_payload: Mapping[str, Any]) -> dict[str, Any]:
     ]
     _require_loaded_native_f200w(loaded)
 
-    bounds: dict[str, dict[str, Any]] = {}
-    for item in loaded:
-        item_bounds = _crop_bounds(item["cube"].shape, item["pixscale"], selection)
-        bounds[item["logical"]] = item_bounds
-        item["bounds"] = item_bounds
+    center = _matched_bounds(loaded, selection)
+    bounds: dict[str, dict[str, Any]] = {item["logical"]: item["bounds"] for item in loaded}
 
     source = {
         "collection": collection,
@@ -636,6 +803,8 @@ def save_result(raw_payload: Mapping[str, Any]) -> dict[str, Any]:
             )
             filename = f"{logical}.fits"
             path = staging / filename
+            crop_wcs = (viewer_data.shifted_wcs_keywords(item["wcs"], dx=b["x0"], dy=b["y0"])
+                        if item.get("wcs") else None)
             _write_fits(
                 path,
                 crop,
@@ -643,6 +812,7 @@ def save_result(raw_payload: Mapping[str, Any]) -> dict[str, Any]:
                 source_tier=item["source_tier"],
                 bands=item["bands"],
                 pixscale=item["pixscale"],
+                wcs=crop_wcs,
             )
             files[logical] = {
                 "filename": filename,
@@ -657,7 +827,9 @@ def save_result(raw_payload: Mapping[str, Any]) -> dict[str, Any]:
                 "display_scale": item["display_scale"],
                 "direct_rgb": item["direct_rgb"],
                 "transfer_group": item["transfer_group"],
+                "wcs": crop_wcs is not None,
             }
+        wcs_tiers = [logical for logical, entry in files.items() if entry["wcs"]]
 
         identity = {
             "schema_version": SCHEMA_VERSION,
@@ -699,7 +871,9 @@ def save_result(raw_payload: Mapping[str, Any]) -> dict[str, Any]:
                 "white_e": ASINH_WHITE_E,
                 "vis_h_false_colour": "VIS cyan; H_E amber",
             },
-            "wcs_preserved": False,
+            "wcs_preserved": bool(files) and len(wcs_tiers) == len(files),
+            "wcs_tiers": wcs_tiers,
+            "center": center,
         }
         _write_manifest(staging / "manifest.json", manifest)
 
@@ -829,30 +1003,90 @@ def _supported_recipes(manifest: Mapping[str, Any]) -> list[dict[str, str]]:
     return recipes
 
 
-def _result_summary(manifest: Mapping[str, Any]) -> dict[str, Any]:
-    raw_source = manifest.get("source", {})
-    source = raw_source if isinstance(raw_source, Mapping) else {}
+def _default_label(source: Mapping[str, Any]) -> str:
     obj = source.get("object")
     label = obj.get("label") if isinstance(obj, Mapping) else None
     if not isinstance(label, str) or not label.strip():
         label = f"{source.get('collection', 'viewer')} {source.get('index', '')}".strip()
+    return label
+
+
+_PUBLIC_FILE_KEYS = (
+    "filename", "shape_hwc", "bands", "pixscale_arcsec", "source_tier", "source_label",
+    "display_scale", "direct_rgb", "transfer_group",
+)
+
+
+def _public_files(manifest: Mapping[str, Any]) -> tuple[dict[str, dict[str, Any]], int, dict[str, str]]:
+    """``({logical: public entry}, bundle bytes, {logical: inspect path})``
+    — no checksums, no absolute paths."""
+    files = manifest.get("files")
+    directory = results_root() / str(manifest.get("id") or "")
+    out: dict[str, dict[str, Any]] = {}
+    inspect: dict[str, str] = {}
+    total = 0
+    if not isinstance(files, Mapping):
+        return out, total, inspect
+    for logical in LOGICAL_TIER_ORDER:
+        entry = files.get(logical)
+        if not isinstance(entry, Mapping):
+            continue
+        public = {key: entry.get(key) for key in _PUBLIC_FILE_KEYS if key in entry}
+        public["wcs"] = entry.get("wcs") is True
+        out[logical] = public
+        path = _safe_bundle_file(directory, entry.get("filename"))
+        if path is not None:
+            with contextlib.suppress(OSError):
+                total += path.stat().st_size
+            inspect[logical] = paths._safe_relpath(os.fspath(path))
+    return out, total, inspect
+
+
+def _thumbnail_recipe(recipe_keys: Sequence[str]) -> str | None:
+    for key in THUMBNAIL_PREFERENCE:
+        if key in recipe_keys:
+            return key
+    return recipe_keys[0] if recipe_keys else None
+
+
+def _result_summary(manifest: Mapping[str, Any]) -> dict[str, Any]:
+    raw_source = manifest.get("source", {})
+    source = raw_source if isinstance(raw_source, Mapping) else {}
+    default_label = _default_label(source)
+    user_label = manifest.get("label")
+    label = user_label.strip() if isinstance(user_label, str) and user_label.strip() else default_label
     recipe_options = _supported_recipes(manifest)
+    recipes = [recipe["key"] for recipe in recipe_options]
     regime = source.get("regime") if isinstance(source, Mapping) else None
     if regime not in {"real", "synthetic"}:
         regime = "real" if source.get("collection") in _REAL_COLLECTIONS else "synthetic"
+    files, total_bytes, inspect_paths = _public_files(manifest)
+    wcs_tiers = [tier for tier in LOGICAL_TIER_ORDER if files.get(tier, {}).get("wcs")]
+    center = manifest.get("center")
+    if not (isinstance(center, Mapping) and all(
+            isinstance(center.get(key), (int, float)) for key in ("ra", "dec"))):
+        center = None
     return {
         "id": manifest["id"],
         "created_utc": manifest.get("created_utc"),
         "label": label,
+        "default_label": default_label,
         "regime": regime,
         "source": source,
         "selection": manifest.get("selection"),
         "logical_tiers": manifest.get("logical_tiers", []),
         "bands": manifest.get("bands", {}),
         "pixscale_arcsec": manifest.get("pixscale_arcsec", {}),
-        "recipes": [recipe["key"] for recipe in recipe_options],
+        "recipes": recipes,
         "recipe_options": recipe_options,
-        "wcs_preserved": False,
+        "thumbnail": _thumbnail_recipe(recipes),
+        "files": files,
+        "bytes": total_bytes,
+        "inspect_paths": inspect_paths,
+        "display": manifest.get("display", {}),
+        "wcs_preserved": bool(files) and len(wcs_tiers) == len(files),
+        "wcs_tiers": wcs_tiers,
+        "center": dict(center) if center else None,
     }
 
 
@@ -993,12 +1227,10 @@ def _resample_plane(values: np.ndarray, target_side_pixels: int | None) -> np.nd
         return plane
     if target_side_pixels < 1:
         raise ViewerResultError(413, "grid cells are too small to render")
-    from PIL import Image
-
-    image = Image.fromarray(plane)
+    image = PILImage.fromarray(plane)
     resized = image.resize(
         (target_side_pixels, target_side_pixels),
-        resample=Image.Resampling.LANCZOS,
+        resample=PILImage.Resampling.LANCZOS,
     )
     return np.asarray(resized, dtype=np.float32)
 
@@ -1076,17 +1308,263 @@ def _render_panel_modes(
     return rendered
 
 
-def render_panel(result_id: str, tier: str, mode: str) -> bytes:
-    manifest = get_result(result_id)
-    clean_mode = mode.strip()
-    rgb = _render_panel_modes(
-        manifest, tier.strip().lower(), [clean_mode],
-    )[clean_mode]
-    from PIL import Image
+@dataclass(frozen=True)
+class PanelRequest:
+    """One resolved ``panel.png`` request (validated before any render)."""
 
+    manifest: Mapping[str, Any]
+    logical: str
+    mode: str
+    size: int | None
+    etag: str
+
+
+def panel_request(result_id: str, tier: str = "", mode: str = "",
+                  size: Any = None) -> PanelRequest:
+    """Validate a panel request. Empty ``tier``/``mode`` = the result's
+    thumbnail recipe; ``size`` = the thumbnail side (px, never upsampled).
+    The ETag is content-addressed (the id hashes the saved FITS)."""
+    manifest = get_result(result_id)
+    logical, clean_mode = tier.strip().lower(), mode.strip()
+    if not logical and not clean_mode:
+        recipe = _thumbnail_recipe([item["key"] for item in _supported_recipes(manifest)])
+        if recipe is None:
+            raise ViewerResultError(404, "saved result has no renderable panel")
+        logical, clean_mode = recipe.split(":", 1)
+    side: int | None = None
+    if size not in (None, ""):
+        try:
+            side = int(str(size).strip())
+        except ValueError as exc:
+            raise ViewerResultError(400, "size must be an integer") from exc
+        if not MIN_THUMB_SIDE <= side <= MAX_THUMB_SIDE:
+            raise ViewerResultError(
+                400, f"size must be from {MIN_THUMB_SIDE} to {MAX_THUMB_SIDE} pixels")
+    identity = str(manifest.get("identity_sha256") or manifest["id"])[:24]
+    etag = f"{identity}-{logical}-{clean_mode}-{side or 0}-r1"
+    return PanelRequest(manifest, logical, clean_mode, side, etag)
+
+
+def render_panel_png(request: PanelRequest) -> bytes:
+    """PNG of one saved panel; a ``size`` smaller than the crop downsamples
+    it (LANCZOS on the raw plane, before the transfer), a larger one does not
+    upsample (the browser scales it, pixelated)."""
+    target = None
+    if request.size is not None:
+        _path, entry = _result_file(request.manifest, request.logical)
+        height, width, _channels = _manifest_shape(entry)
+        if request.size < min(height, width):
+            target = request.size
+    rgb = _render_panel_modes(
+        request.manifest, request.logical, [request.mode], target_side_pixels=target,
+    )[request.mode]
     output = BytesIO()
-    Image.fromarray(rgb, mode="RGB").save(output, format="PNG")
+    PILImage.fromarray(rgb, mode="RGB").save(output, format="PNG")
     return output.getvalue()
+
+
+def render_panel(result_id: str, tier: str, mode: str, size: Any = None) -> bytes:
+    return render_panel_png(panel_request(result_id, tier, mode, size))
+
+
+def result_fits(result_id: str, logical: str) -> tuple[Path, str]:
+    """``(verified FITS path, download name)`` of one saved tier."""
+    manifest = get_result(result_id)
+    path, _entry = _result_file(manifest, logical.strip().lower())
+    return path, f"{manifest['id']}_{logical.strip().lower()}.fits"
+
+
+# ---------------------------------------------------------------------------
+# managing saved results (W-Figures): user label, delete
+# ---------------------------------------------------------------------------
+
+def _clean_label(value: Any, *, name: str, maximum: int, allow_empty: bool) -> str:
+    if value is None:
+        value = ""
+    if not isinstance(value, str):
+        raise ViewerResultError(400, f"{name} must be a string")
+    text = " ".join(value.split()) if not _CONTROL_CHARS.search(value) else None
+    if text is None:
+        raise ViewerResultError(400, f"{name} must not contain control characters")
+    if not text and not allow_empty:
+        raise ViewerResultError(400, f"{name} must not be empty")
+    if len(text) > maximum:
+        raise ViewerResultError(400, f"{name} must be at most {maximum} characters")
+    return text
+
+
+def _atomic_write_json(path: Path, value: Any) -> None:
+    fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump(value, stream, indent=2, sort_keys=True, allow_nan=False)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
+
+
+def rename_result(result_id: str, label: Any) -> dict[str, Any]:
+    """Set (or, with an empty label, clear) a result's user label. The id is
+    content-addressed and does not change; the label is not part of it."""
+    manifest = dict(get_result(result_id))
+    clean = _clean_label(label, name="label", maximum=MAX_LABEL_CHARS, allow_empty=True)
+    if clean and clean != _default_label(manifest.get("source") or {}):
+        manifest["label"] = clean
+    else:
+        manifest.pop("label", None)
+    try:
+        _atomic_write_json(results_root() / str(manifest["id"]) / "manifest.json", manifest)
+    except OSError as exc:
+        raise ViewerResultError(500, "could not rename the viewer result") from exc
+    return _result_summary(manifest)
+
+
+def delete_result(result_id: str) -> str:
+    """Delete one complete bundle (validated: an id under the results root,
+    no symlink). It leaves the listing atomically (renamed first), is then
+    removed, and is dropped from every saved grid layout."""
+    manifest = get_result(result_id)
+    root = results_root()
+    directory = root / str(manifest["id"])
+    doomed = root / f".deleting-{manifest['id']}-{secrets.token_hex(4)}"
+    try:
+        os.rename(directory, doomed)
+    except OSError as exc:
+        raise ViewerResultError(500, "could not delete the viewer result") from exc
+    shutil.rmtree(doomed, ignore_errors=True)
+    with contextlib.suppress(ViewerResultError, OSError):
+        _prune_layouts({str(manifest["id"])})
+    return str(manifest["id"])
+
+
+# ---------------------------------------------------------------------------
+# saved grid layouts
+# ---------------------------------------------------------------------------
+
+def _layouts_path() -> Path:
+    return results_root() / LAYOUTS_FILE
+
+
+def _read_layouts() -> list[dict[str, Any]]:
+    try:
+        raw = json.loads(_layouts_path().read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return []
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ViewerResultError(500, "the saved grid layouts are unreadable") from exc
+    items = raw.get("layouts") if isinstance(raw, Mapping) else None
+    if not isinstance(items, list):
+        return []
+    return [dict(item) for item in items
+            if isinstance(item, Mapping) and isinstance(item.get("id"), str)
+            and _LAYOUT_ID.fullmatch(item["id"])]
+
+
+def _write_layouts(layouts: list[dict[str, Any]]) -> None:
+    root = results_root()
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        _atomic_write_json(_layouts_path(), {"schema_version": 1, "layouts": layouts})
+    except OSError as exc:
+        raise ViewerResultError(500, "could not save the grid layouts") from exc
+
+
+def _prune_layouts(removed_ids: set[str]) -> None:
+    with _LAYOUT_LOCK:
+        layouts = _read_layouts()
+        changed = False
+        for layout in layouts:
+            kept = [item for item in layout.get("results", []) if item not in removed_ids]
+            if kept != layout.get("results", []):
+                layout["results"] = kept
+                changed = True
+        if changed:
+            _write_layouts(layouts)
+
+
+def _id_list(value: Any, name: str) -> list[str]:
+    if value is None or value == "":
+        return []
+    if isinstance(value, str):
+        value = [part.strip() for part in value.split(",") if part.strip()]
+    if not isinstance(value, Sequence) or isinstance(value, (bytes, bytearray)):
+        raise ViewerResultError(400, f"{name} must be a list")
+    return [str(item).strip() for item in value]
+
+
+def list_layouts() -> dict[str, Any]:
+    with _LAYOUT_LOCK:
+        layouts = _read_layouts()
+    layouts.sort(key=lambda item: str(item.get("updated_utc") or ""), reverse=True)
+    return {"layouts": layouts}
+
+
+def save_layout(payload: Mapping[str, Any]) -> tuple[dict[str, Any], bool]:
+    """Create or update a named grid layout: ``{name, results, rows, regime?,
+    id?}``. An existing ``id`` — or the same name, any case — is updated in
+    place. Returns ``(layout, created)``."""
+    name = _clean_label(payload.get("name"), name="name", maximum=MAX_LAYOUT_NAME_CHARS,
+                        allow_empty=False)
+    result_ids = _id_list(payload.get("results"), "results")
+    if len(result_ids) > MAX_GRID_RESULTS:
+        raise ViewerResultError(400, f"a layout holds at most {MAX_GRID_RESULTS} results")
+    if len(set(result_ids)) != len(result_ids):
+        raise ViewerResultError(400, "a layout lists each result once")
+    for result_id in result_ids:
+        try:
+            get_result(result_id)
+        except ViewerResultError as exc:
+            raise ViewerResultError(400, f"unknown saved result: {result_id}") from exc
+    rows = _id_list(payload.get("rows"), "rows")
+    if not rows:
+        raise ViewerResultError(400, "a layout needs at least one row recipe")
+    if len(rows) > MAX_GRID_ROWS:
+        raise ViewerResultError(400, f"a layout holds at most {MAX_GRID_ROWS} rows")
+    recipes = [":".join(_parse_recipe(row)) for row in rows]
+    regime = payload.get("regime")
+    if regime not in (None, "", "real", "synthetic"):
+        raise ViewerResultError(400, "regime must be real or synthetic")
+    layout_id = str(payload.get("id") or "").strip()
+    if layout_id and not _LAYOUT_ID.fullmatch(layout_id):
+        raise ViewerResultError(400, "layout id is invalid")
+    now = datetime.now(UTC).isoformat()
+    with _LAYOUT_LOCK:
+        layouts = _read_layouts()
+        existing = next((item for item in layouts if layout_id and item["id"] == layout_id), None)
+        if existing is None and layout_id:
+            raise ViewerResultError(404, "grid layout not found")
+        if existing is None:
+            existing = next((item for item in layouts
+                             if str(item.get("name", "")).casefold() == name.casefold()), None)
+        created = existing is None
+        if created:
+            if len(layouts) >= MAX_LAYOUTS:
+                raise ViewerResultError(409, f"at most {MAX_LAYOUTS} grid layouts; delete one first")
+            existing = {"id": f"gl-{secrets.token_hex(6)}", "created_utc": now}
+            layouts.append(existing)
+        existing.update({
+            "name": name, "results": result_ids, "rows": recipes,
+            "regime": regime or None, "updated_utc": now,
+        })
+        _write_layouts(layouts)
+    return dict(existing), created
+
+
+def delete_layout(layout_id: str) -> str:
+    if not _LAYOUT_ID.fullmatch(layout_id or ""):
+        raise ViewerResultError(404, "grid layout not found")
+    with _LAYOUT_LOCK:
+        layouts = _read_layouts()
+        kept = [item for item in layouts if item["id"] != layout_id]
+        if len(kept) == len(layouts):
+            raise ViewerResultError(404, "grid layout not found")
+        _write_layouts(kept)
+    return layout_id
 
 
 def _recipe_label(logical: str, mode: str) -> str:
@@ -1338,9 +1816,6 @@ def render_grid(
     geometry = _grid_geometry(len(recipes), len(manifests), render_dpi)
     _grid_request_budget(manifests, recipes, geometry)
     panel_cache = _grid_panel_cache(manifests, recipes, geometry.cell_side_pixels)
-
-    from matplotlib.backends.backend_agg import FigureCanvasAgg
-    from matplotlib.figure import Figure
 
     nrows = len(recipes)
     figure = Figure(figsize=(A4_WIDTH_MM / 25.4, A4_HEIGHT_MM / 25.4), facecolor="white")

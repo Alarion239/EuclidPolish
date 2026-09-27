@@ -2,9 +2,10 @@
 
 A small set of knobs that several pages used to each carry their own copy
 of (VIS cutout size, stars-per-PSF, scene counts, HR image size, asinh
-scale). They now live here, are edited once on the ``/config`` tab, persist
-to ``~/.euclid_polish/job_config.json`` (survives reloads/relaunches), and
-are injected into the relevant job submissions server-side.
+scale). They now live here, are edited once in Settings › Config
+(``/settings/config``), persist to ``~/.euclid_polish/job_config.json``
+(survives reloads/relaunches), and are injected into the relevant job
+submissions server-side.
 
 Kept separate from :mod:`euclid_polish.web.fasrc_config` (SSH + sbatch +
 remote paths) — this file is purely the *scientific* per-job parameters a
@@ -61,6 +62,19 @@ FASRC_STEP_PARAMS: dict[str, dict[str, str]] = {
                                 "plateau_lr_min_lr": "plateau_lr_min_lr",
                                 "plateau_lr_metric": "plateau_lr_metric"},
 }
+
+
+def used_by() -> dict[str, list[str]]:
+    """JobConfig field → the FASRC step ids its value is injected into
+    (the inverse of :data:`FASRC_STEP_PARAMS`, in step order). Fields no step
+    reads (``asinh_scale``, a local display knob) are absent."""
+    out: dict[str, list[str]] = {}
+    for step_id, mapping in FASRC_STEP_PARAMS.items():
+        for attr in mapping.values():
+            steps = out.setdefault(attr, [])
+            if step_id not in steps:
+                steps.append(step_id)
+    return out
 
 
 def fasrc_params_for(step_id: str) -> dict[str, str]:
@@ -157,6 +171,16 @@ def _field_type(name: str) -> type | None:
         if field.name == name:
             return type(field.default)
     return None
+
+
+def defaults() -> dict[str, Any]:
+    """Every field's default (what a reset writes back)."""
+    return JobConfig().to_dict()
+
+
+def field_types() -> dict[str, str]:
+    """Every field's declared type name (``int`` / ``float`` / ``str``)."""
+    return {f.name: type(f.default).__name__ for f in fields(JobConfig)}
 
 
 def coerce_field(name: str, raw: Any) -> Any:

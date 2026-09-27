@@ -45,16 +45,12 @@ class FasrcConfig:
     # ── Local mirror for auto-pulled checkpoints ───────────────────────────
     local_ckpt_mirror:  str = ""         # blank → DEFAULT_CHECKPOINT_DIR
 
-    # ── Default sbatch knobs (overridable per-submission) ──────────────────
-    partition:          str = "gpu"
-    n_gpus:             int = 1
-    n_cpus:             int = 8
-    memory:             str = "32G"
-    time_limit:         str = "12:00:00"
-    # Science knobs (split sizes, image size, training steps) are not
-    # connection settings: each FASRC step declares its own ``task_params``
-    # (``fasrc_pipeline.TaskParam``) and /config holds the shared job knobs.
-    # Legacy keys still present in an old ``fasrc.json`` are ignored.
+    # No sbatch defaults and no science knobs here: each FASRC step declares
+    # its own resources (``StepResources`` defaults, partition fixed per step)
+    # and ``task_params`` (``fasrc_pipeline.TaskParam``), and /config holds the
+    # shared job knobs. The old ``partition/n_gpus/n_cpus/memory/time_limit``
+    # defaults were read by nothing and were removed (W-Ops, 2026-09-26);
+    # legacy keys still present in an old ``fasrc.json`` are ignored.
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

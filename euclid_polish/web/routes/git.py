@@ -10,6 +10,21 @@ def _flag(name: str) -> bool:
     return str(request.form.get(name, "")).strip().lower() in ("1", "true", "yes", "on")
 
 
+def _paths() -> list[str]:
+    """``paths`` (repeatable; one value may hold several newline-separated
+    paths), taken literally as ``/api/git/status`` lists them."""
+    return [part.strip()
+            for raw in request.form.getlist("paths")
+            for part in raw.splitlines() if part.strip()]
+
+
+def _int_arg(name: str, default: int) -> int:
+    try:
+        return int(request.args.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
 def register(app):
 
     # =========================================================================
@@ -23,8 +38,35 @@ def register(app):
 
     @app.route("/api/git/diff")
     def api_git_diff():
+        """``?staged=1`` for the index; ``?path=`` for one file/directory (an
+        untracked file's unstaged diff is its content)."""
         staged = request.args.get("staged", "0") in ("1", "true", "yes")
-        return jsonify({"diff": git_ops.diff(staged=staged)})
+        path = request.args.get("path")
+        return jsonify({"diff": git_ops.diff(staged=staged, path=path),
+                        "staged": staged, "path": path})
+
+    @app.route("/api/git/log")
+    def api_git_log():
+        """One page of the history: ``?skip=&limit=`` (1–500, default 50)."""
+        return jsonify(git_ops.log_page(skip=_int_arg("skip", 0),
+                                        limit=_int_arg("limit", 50)))
+
+    @app.route("/api/git/commit/<rev>")
+    def api_git_show(rev: str):
+        out = git_ops.show(rev)
+        return jsonify(out), (200 if out.get("ok") else 400)
+
+    @app.route("/git/stage", methods=["POST"])
+    def git_stage():
+        """Stage exactly the changed files covered by ``paths``."""
+        out = git_ops.stage(_paths())
+        return jsonify(out), (200 if out.get("ok") else 400)
+
+    @app.route("/git/unstage", methods=["POST"])
+    def git_unstage():
+        """Take ``paths`` out of the index; working-tree edits are kept."""
+        out = git_ops.unstage(_paths())
+        return jsonify(out), (200 if out.get("ok") else 400)
 
     @app.route("/git/commit", methods=["POST"])
     def git_commit():
@@ -34,9 +76,7 @@ def register(app):
         lists them (commas, spaces and non-ASCII are part of a name).
         400 without a selection, 409 ``refused_files`` with the list."""
         msg = request.form.get("message", "").strip()
-        paths = [part.strip()
-                 for raw in request.form.getlist("paths")
-                 for part in raw.splitlines() if part.strip()]
+        paths = _paths()
         out = git_ops.commit(msg, paths or None, all_files=_flag("all"),
                              force=_flag("force"))
         if out.get("ok"):

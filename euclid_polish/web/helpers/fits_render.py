@@ -20,6 +20,7 @@ from euclid_polish.visualization.presentation_style import (
     TICK_LABEL_SIZE,
     apply_presentation_figure,
 )
+from euclid_polish.web.helpers import fits_inspect
 from euclid_polish.web.helpers._const import _CUTOUT_FNAME_RE
 from euclid_polish.web.helpers.status import _cached_fasrc_psf_dir
 
@@ -58,22 +59,34 @@ def _resolve_cutout_path(band_name: str, filename: str,
     return full
 
 
-def _render_fits_to_png_adaptive(fits_path: str, size: int) -> bytes:
-    """Render any 2-D FITS image to PNG with a data-adaptive stretch.
+def _default_image_hdu(fits_path: str) -> int:
+    """The first image HDU with at least 2-D data (415 when there is none)."""
+    try:
+        summary = fits_inspect.file_summary(fits_path)
+    except fits_inspect.InspectError as exc:
+        abort(exc.code, description=str(exc))
+    for hdu in summary["hdus"]:
+        if hdu.get("type") == "image" and hdu.get("viewable"):
+            return int(hdu["index"])
+    abort(415, description="this file has no 2-D image HDU to preview")
+
+
+def _render_fits_to_png_adaptive(fits_path: str, size: int, *, hdu: int | None = None,
+                                 plane: int = 0) -> bytes:
+    """Render one plane of any image HDU to a PNG thumbnail (data-adaptive).
+
+    ``hdu`` defaults to the first image HDU with ≥ 2-D data and ``plane`` to
+    its first plane (N-D cubes preview one plane). The longer side becomes
+    ``size`` px (aspect kept); large planes are read binned through
+    :func:`fits_inspect.read_plane`, never whole.
 
     The band-aware :func:`_render_fits_to_png` hardcodes an asinh knee
     (``band.asinh_stretch_scale_e``, ~1000 e⁻ by default) tuned for
     Euclid sky cutouts. That stretch is meaningless for files outside
     that domain — a unit-flux PSF sums to 1 over 511² pixels (values
     ~10⁻⁶–10⁻²), a differential kernel can have signed wings, dark
-    frames hover near zero. Applying the cutout knee to those leaves
-    `arcsinh(x / 1000) ≈ x / 1000` with a near-empty histogram, then
-    the 1.0/99.7-percentile clip stretches numerical noise instead of
-    real structure — what looked "weird" on /inspect for the diff
-    kernel was exactly this mismatch.
-
-    The /inspect route can't know what kind of file it's showing, so
-    use ``MinMaxInterval + AsinhStretch(a=0.01)`` from
+    frames hover near zero. The inspector can't know what kind of file it
+    is showing, so use ``MinMaxInterval + AsinhStretch(a=0.01)`` from
     astropy.visualization. MinMax keeps the full data range in view
     (a kernel's central peak sits 5 decades above the typical pixel —
     anything that trims outliers, like ZScale or a percentile clip,
@@ -83,16 +96,12 @@ def _render_fits_to_png_adaptive(fits_path: str, size: int) -> bytes:
     that dynamic range so the faint wings and the bright core are
     visible in the same frame.
     """
-
-    with fits.open(fits_path, memmap=False) as hdul:
-        data = None
-        for hdu in hdul:
-            image_data = _two_dimensional_image_data(hdu)
-            if image_data is not None:
-                data = np.asarray(image_data, dtype=np.float64)
-                break
-    if data is None:
-        abort(415)
+    index = _default_image_hdu(fits_path) if hdu is None else int(hdu)
+    try:
+        served = fits_inspect.read_plane(fits_path, index, plane, max_side=max(int(size), 64))
+    except fits_inspect.InspectError as exc:
+        abort(exc.code, description=str(exc))
+    data = np.asarray(served.data, dtype=np.float64)
 
     finite = np.isfinite(data)
     data = np.zeros_like(data) if not finite.any() else np.where(finite, data, np.nanmedian(data[finite]))
@@ -108,8 +117,11 @@ def _render_fits_to_png_adaptive(fits_path: str, size: int) -> bytes:
     img8 = (255 * (1.0 - normed)).astype(np.uint8)   # gray_r: bright → dark
     img8 = np.flipud(img8)                            # FITS lower-origin → PIL
     pil = Image.fromarray(img8, mode="L")
-    if size and size != pil.size[0]:
-        pil = pil.resize((int(size), int(size)), Image.Resampling.NEAREST)
+    ny, nx = img8.shape
+    if size and max(ny, nx) != int(size):
+        scale = float(size) / max(ny, nx)
+        pil = pil.resize((max(1, round(nx * scale)), max(1, round(ny * scale))),
+                         Image.Resampling.NEAREST)
     buf = io.BytesIO()
     pil.save(buf, format="PNG", optimize=True)
     return buf.getvalue()
@@ -177,32 +189,15 @@ def _list_band_cutouts(band_name: str, output_dir: str) -> list[str]:
 def _read_fits_header_rows(path: str) -> list[dict[str, Any]]:
     """Return one row per HDU with its header laid out for the table view.
 
-    Each row: ``{hdu_index, name, kind, shape, dtype, cards: [(key, value, comment), ...]}``.
+    Each row: ``{hdu_index, name, kind, shape, dtype, cards: [(key, value,
+    comment), ...]}`` plus the header summary of
+    :func:`fits_inspect.hdu_summary` (type, planes, WCS, bands, columns …).
+    Headers only: pixels are never read (a 1 GB mosaic lists instantly).
     """
-    rows: list[dict[str, Any]] = []
-    with fits.open(path, memmap=False) as hdul:
-        for i, hdu in enumerate(hdul):
-            cards: list[tuple[str, str, str]] = []
-            for card in hdu.header.cards:
-                key  = str(card.keyword)
-                val  = str(card.value)
-                # Trim long string values — full text is visible in the
-                # downloaded FITS, the UI just needs an at-a-glance view.
-                if len(val) > 80:
-                    val = val[:77] + "…"
-                cmt  = str(card.comment)
-                cards.append((key, val, cmt))
-            shape = getattr(hdu.data, "shape", None) if hdu.is_image else None
-            dtype = getattr(hdu.data, "dtype", None) if hdu.is_image else None
-            rows.append({
-                "hdu_index": i,
-                "name":      hdu.name or f"HDU{i}",
-                "kind":      type(hdu).__name__,
-                "shape":     list(shape) if shape is not None else None,
-                "dtype":     str(dtype) if dtype is not None else None,
-                "cards":     cards,
-            })
-    return rows
+    try:
+        return fits_inspect.file_summary(path, cards=True)["hdus"]
+    except fits_inspect.InspectError as exc:
+        abort(exc.code, description=str(exc))
 
 
 def _fits_file_info(path: str) -> dict[str, Any]:
@@ -211,8 +206,10 @@ def _fits_file_info(path: str) -> dict[str, Any]:
     return {
         "abspath":  path,
         "basename": os.path.basename(path),
+        "size":     int(st.st_size),
         "size_kb":  round(st.st_size / 1024, 1),
         "mtime":    st.st_mtime,
+        "compressed": path.lower().endswith((".gz", ".fz")),
     }
 
 

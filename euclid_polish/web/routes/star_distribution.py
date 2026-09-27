@@ -47,20 +47,21 @@ def register(app):
     @app.route("/view/star-population-calibration")
     def view_star_population_calibration():
         """Render the reviewed Gaia-Euclid stellar-prior diagnostics."""
+        output_format = (request.args.get("format") or "png").strip().lower()
+        if output_format not in {"png", "pdf", "svg"}:
+            abort(400, description="format must be png, pdf or svg")
         state = star_state()
         calibration = state.get("active") or state.get("candidate")
         if not calibration:
-            abort(404)
-        output_format = (request.args.get("format") or "png").strip().lower()
-        if output_format not in {"png", "pdf", "svg"}:
-            abort(400)
+            abort(404, description=(
+                "no stellar prior is active or pending — fit one on Realism › Stars"))
         try:
             dpi = int(request.args.get("dpi", "300"))
             payload = render_star_population_calibration(
                 calibration, output_format=output_format, dpi=dpi,
             )
-        except (TypeError, ValueError):
-            abort(400)
+        except (TypeError, ValueError) as exc:
+            abort(400, description=f"could not render the stellar plate: {exc}")
         mimetype = {
             "png": "image/png", "pdf": "application/pdf", "svg": "image/svg+xml",
         }[output_format]
@@ -163,9 +164,19 @@ def register(app):
             }), 400
 
         def run(cap):
-            cap.tick(0, 1, "fit stellar counts and colours from cached data")
+            cap.tick(0, 2, "fit stellar counts and colours from cached data")
             fit = fit_star_population()
-            cap.tick(1, 1, "stellar distribution ready")
+            cap.tick(1, 2, "cache the stellar distribution plots")
+            # GET /api/star-distribution never writes; the fit job persists
+            # both plot variants so a restarted server reads them back.
+            for include_training in (False, True):
+                try:
+                    star_distribution_payload(
+                        include_training=include_training, persist=True,
+                    )
+                except (OSError, ValueError) as exc:
+                    cap.write(f"plot cache not written ({exc})\n")
+            cap.tick(2, 2, "stellar distribution ready")
             cap.write(
                 f"Q1 PHZ expected stars {q1['expected_stars']:.1f} over "
                 f"{q1['footprint_area_deg2']:.1f} deg²; "

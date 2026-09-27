@@ -8,17 +8,21 @@ from urllib.parse import urlencode
 from flask import abort, jsonify, redirect, request, send_file
 
 from euclid_polish.config import Config
+from euclid_polish.web import errors
 from euclid_polish.web import fasrc_fetcher as _fasrc_fetcher
 from euclid_polish.web.fasrc_gate import requires_fasrc
+from euclid_polish.web.helpers import fits_inspect
 from euclid_polish.web.helpers.fits_render import (
     _fits_file_info,
-    _read_fits_header_rows,
     _render_fits_to_png_adaptive,
 )
 from euclid_polish.web.helpers.paths import (
     _inspectable_roots,
     _resolve_inspectable_fits,
     _safe_relpath,
+    browse_inspectable,
+    inspect_roots,
+    root_of,
 )
 from euclid_polish.web.helpers.status import (
     _cached_catalog_status,
@@ -31,7 +35,33 @@ from euclid_polish.web.jobs import REGISTRY
 from euclid_polish.web.version import process_tracker
 
 
+def _int_arg(name: str, default: int, *, lo: int | None = None, hi: int | None = None) -> int:
+    """An integer query parameter; 400 ``{error}`` when malformed or out of range."""
+    raw = request.args.get(name, "")
+    if raw == "":
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        abort(400, description=f"{name} must be an integer, got {raw!r}")
+    if (lo is not None and value < lo) or (hi is not None and value > hi):
+        abort(400, description=f"{name} must be within {lo}…{hi}")
+    return value
+
+
+def _inspect_call(fn, *args, **kwargs):
+    """Run a :mod:`fits_inspect` helper; its ``InspectError`` → JSON ``{error}``."""
+    try:
+        return fn(*args, **kwargs)
+    except fits_inspect.InspectError as exc:
+        abort(exc.code, description=str(exc))
+
+
 def register(app):
+
+    # Every error under the inspector's endpoints is JSON ``{error}`` with the
+    # status (the SPA shows the server's text), never an HTML abort page.
+    errors.json_errors_for(app, "/api/inspect", "/inspect/")
 
     # ---------------- Static PNG server (data/vis/) ----------------
     @app.route("/vis/<path:relpath>")
@@ -118,19 +148,69 @@ def register(app):
         return jsonify({"ok": True, "catalog": _catalog_status()})
 
     # =========================================================================
-    # Universal FITS inspector — every image card across the UI links here.
+    # Universal FITS inspector (the Inspect workspace, spec §8.6). Every
+    # path is jailed to the inspectable roots (helpers/paths.py); headers are
+    # read without pixels; planes are memory-mapped and binned.
     # =========================================================================
 
     @app.route("/api/inspect")
     def api_inspect_fits():
-        """Return the inspector payload consumed by the React page."""
+        """File card + every HDU's header summary and cards (no pixels)."""
         path = _resolve_inspectable_fits(request.args.get("fits", ""))
+        summary = _inspect_call(fits_inspect.file_summary, path, cards=True)
         return jsonify({
             "file": _fits_file_info(path),
-            "hdus": _read_fits_header_rows(path),
+            "hdus": summary["hdus"],
+            "band_groups": summary["band_groups"],
+            "scan_truncated": summary["scan_truncated"],
+            "stamp": summary["stamp"],
             "rel": _safe_relpath(path),
+            "root": root_of(path),
             "allowed_roots": _inspectable_roots(),
+            "roots": inspect_roots(),
         })
+
+    @app.get("/api/inspect/browse")
+    def api_inspect_browse():
+        """The file browser: roots, one directory, or a bounded FITS search."""
+        return jsonify(browse_inspectable(request.args.get("dir", "").strip(),
+                                          request.args.get("q", "")))
+
+    @app.get("/api/inspect/image/stats")
+    def api_inspect_image_stats():
+        """Statistics + histogram of one plane (or a 1-D HDU's series)."""
+        path = _resolve_inspectable_fits(request.args.get("fits", ""))
+        hdu = _int_arg("hdu", 0, lo=0)
+        plane = _int_arg("plane", 0, lo=0)
+        summary = _inspect_call(fits_inspect.file_summary, path)
+        row = next((h for h in summary["hdus"] if h["index"] == hdu), None)
+        if row is not None and row.get("type") == "vector":
+            return jsonify(_inspect_call(fits_inspect.vector_series, path, hdu))
+        return jsonify(_inspect_call(fits_inspect.plane_stats, path, hdu, plane))
+
+    @app.get("/api/inspect/table")
+    def api_inspect_table():
+        """One page of a table HDU's rows (optionally sorted by a column)."""
+        path = _resolve_inspectable_fits(request.args.get("fits", ""))
+        return jsonify(_inspect_call(
+            fits_inspect.table_page, path, _int_arg("hdu", 1, lo=0),
+            offset=_int_arg("offset", 0, lo=0),
+            limit=_int_arg("limit", 200, lo=1, hi=fits_inspect.TABLE_PAGE_MAX),
+            sort=(request.args.get("sort") or "").strip() or None,
+            desc=request.args.get("desc", "").lower() in ("1", "true", "yes"),
+        ))
+
+    @app.get("/api/inspect/table/stats")
+    def api_inspect_table_stats():
+        """Per-column statistics of a table HDU."""
+        path = _resolve_inspectable_fits(request.args.get("fits", ""))
+        return jsonify(_inspect_call(fits_inspect.table_stats, path, _int_arg("hdu", 1, lo=0)))
+
+    @app.get("/api/inspect/provenance")
+    def api_inspect_provenance():
+        """The file's PROVID stamp, its sidecars and related records."""
+        path = _resolve_inspectable_fits(request.args.get("fits", ""))
+        return jsonify(fits_inspect.provenance(path))
 
     @app.route("/inspect/download")
     def inspect_fits_download():
@@ -177,19 +257,24 @@ def register(app):
 
     @app.route("/inspect/preview.png")
     def inspect_fits_preview():
+        """PNG thumbnail of one plane (``hdu``, ``plane``; default the first
+        image HDU's first plane), longer side ``size`` px (16–2048)."""
         path = _resolve_inspectable_fits(request.args.get("fits", ""))
         try:
             size = int(request.args.get("size", 512))
         except ValueError:
             size = 512
         if size < 16 or size > 2048:
-            abort(400)
+            abort(400, description="size must be within 16…2048")
+        hdu_raw = request.args.get("hdu", "")
+        hdu = _int_arg("hdu", 0, lo=0) if hdu_raw != "" else None
         # /inspect is universal — could be a sky cutout, a PSF, a diff
         # kernel, a residual map, anything in the allowed roots. The
         # band-aware renderer assumes Euclid cutout units (~1000 e⁻ asinh
         # knee) and silently misrenders everything else; use the
         # data-adaptive ZScale + Asinh renderer instead.
-        png = _render_fits_to_png_adaptive(path, size=size)
+        png = _render_fits_to_png_adaptive(path, size=size, hdu=hdu,
+                                           plane=_int_arg("plane", 0, lo=0))
         # /inspect is interactive debugging — when the underlying FITS
         # gets regenerated (e.g. you re-run the differential-kernel
         # script with different params), the preview must reflect the

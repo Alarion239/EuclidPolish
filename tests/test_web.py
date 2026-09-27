@@ -324,7 +324,9 @@ def test_viewer_meta_sky_uses_starfull_hr_record(tmp_path, monkeypatch):
     keys = [t["key"] for t in m["tiers"]]
     assert "hr" in keys
     assert "bhr" in keys
-    assert "clean" not in keys
+    # The clean (starless) record is its own tier — never substituted for HR.
+    assert keys.index("clean") > keys.index("bhr")
+    assert next(t for t in m["tiers"] if t["key"] == "clean")["label"] == "Clean (starless)"
     assert "sr" in keys
     sr = next(t for t in m["tiers"] if t["key"] == "sr")
     assert isinstance(sr.get("disabled"), bool)
@@ -342,19 +344,14 @@ def test_viewer_sky_hr_and_bhr_cubes_read_starfull_record(tmp_path, monkeypatch)
     hr_path.touch()
     read_paths = []
 
-    def fake_read_images(path, num_images):
-        read_paths.append((path, num_images))
+    def fake_read_record(path, index):
+        read_paths.append((path, index))
         data = np.zeros((8, 8, 4), dtype=np.float32)
         data[4, 4, 0] = 1.0
-        record = types.SimpleNamespace(
-            data=data,
-            index=0,
-            pixel_scale_arcsec=0.025,
-        )
-        return [record]
+        return types.SimpleNamespace(data=data, index=index, pixel_scale_arcsec=0.025)
 
     monkeypatch.setattr(vd, "_sky_records_local_dir", lambda: str(tmp_path))
-    monkeypatch.setattr(vd, "read_images", fake_read_images)
+    monkeypatch.setattr(vd.sky_records, "read_record", fake_read_record)
 
     hr, hr_info = vd._sky_cube(0, "hr", {"subset": "validate"})
     bhr, bhr_info = vd._sky_cube(0, "bhr", {"subset": "validate"})
@@ -362,12 +359,14 @@ def test_viewer_sky_hr_and_bhr_cubes_read_starfull_record(tmp_path, monkeypatch)
         0, "bhr", {"subset": "validate", "bhr_fwhm_arcsec": "0"},
     )
 
-    assert read_paths == [(str(hr_path), 1)] * 3
+    # One record read by position each time (O(1): no deserialising of the
+    # records before it).
+    assert read_paths == [(str(hr_path), 0)] * 3
     assert hr.shape == bhr.shape == (8, 8, 4)
     assert hr[4, 4, 0] == 1.0
     assert bhr[4, 4, 0] < hr[4, 4, 0]
     np.testing.assert_array_equal(zero_blur, hr)
-    assert hr_info["label"] == "hr · validate · idx 0"
+    assert hr_info["label"] == "HR · validate · idx 0"
     assert bhr_info["label"] == "BHR (blurred HR) · validate · idx 0"
 
 
@@ -442,11 +441,22 @@ def test_psfs_page_reads_cache_without_rsync(client, monkeypatch):
     assert calls == []                         # cache-only; no fetch on load
 
 
-def test_euclid_psf_sync_forces_each_band_with_larger_cap(client, monkeypatch):
-    """The Synchronise button force-fetches all four bands using the larger
+def _wait_job(job_id: str, timeout: float = 20.0) -> dict:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        job = REGISTRY.get(job_id).to_dict()
+        if job["status"] != "running":
+            return job
+        time.sleep(0.02)
+    raise AssertionError(f"job {job_id} never finished")
+
+
+def test_euclid_psf_sync_forces_each_band_with_larger_cap(client, monkeypatch, tmp_path):
+    """The Synchronise job force-fetches all four bands using the larger
     ePSF pull cap, so the multi-extension VIS file (tens-to-hundreds of MB)
     isn't rejected by the generic 50 MB cap."""
     seen = []
+    monkeypatch.setattr(Config, "FASRC_CACHE_DIR", str(tmp_path / "cache"))
 
     def fake(remote, *, force=False, max_bytes=None, **k):
         seen.append((remote, force, max_bytes))
@@ -456,7 +466,9 @@ def test_euclid_psf_sync_forces_each_band_with_larger_cap(client, monkeypatch):
     monkeypatch.setattr(fasrc_fetcher, "fetch_one_file", fake)
     r = client.post("/api/euclid-psf/sync")
     assert r.status_code == 200
-    d = r.get_json()
+    job = _wait_job(r.get_json()["job_id"])
+    assert job["status"] == "done", job["error"]
+    d = job["result"]
     assert d["ok"] is True
     assert set(d["files"]) == {b.name for b in Config.BANDS}
     assert all(force for _, force, _ in seen)               # force=True
@@ -662,51 +674,50 @@ def _stub_fetch(monkeypatch, *, local_path=None, ok=True, error=None):
     return captured
 
 
-def test_tng_histograms_png_renders_locally(client, tmp_path, monkeypatch):
-    """Histograms render in-process (not a job): the route calls the local
-    render with the FASRC id list + key and streams the PNG."""
-    seen = {}
-    monkeypatch.setattr(tng_routes, "_LOCAL_TNG_DIR",
-                        str(tmp_path / "_tng_infographics"))
-
-    def fake_render(work, ids, key, **kw):
-        seen["work"] = work
-        return _PNG_MAGIC + b"hist"
-    monkeypatch.setattr(tng_routes, "render_histograms_for_ids", fake_render)
-    r = client.get("/tng/histograms.png")
-    assert r.status_code == 200 and r.mimetype == "image/png"
-    assert r.data.startswith(_PNG_MAGIC)
-    assert "_tng_infographics" in seen["work"]      # local cache dir
+def test_tng_histograms_png_is_gone_superseded_by_the_explorer(client):
+    """The GET that rendered (and cached into data/) the histogram PNG is
+    replaced by the local JSON explorer (``/api/tng/properties``)."""
+    assert client.get("/tng/histograms.png").status_code == 404
 
 
-def test_tng_result_grid_serves_png(client, tmp_path, monkeypatch):
+def test_tng_result_pull_serves_the_grid_afterwards(client, tmp_path, monkeypatch):
     p = tmp_path / "grid.png"
     p.write_bytes(_PNG_MAGIC + b"x")
     cap = _stub_fetch(monkeypatch, local_path=str(p))
+    monkeypatch.setattr(tng_routes, "_artifact_local", lambda kind: str(p))
+    job = _wait_job(client.post("/api/tng/result/pull", data={"kind": "grid"}).get_json()["job_id"])
+    assert job["status"] == "done", job["error"]
+    assert cap["remote"].endswith("/_infographics/grid.png")
+    assert cap["kw"].get("force") is True
     r = client.get("/tng/result/grid.png")
     assert r.status_code == 200 and r.mimetype == "image/png"
-    assert cap["remote"].endswith("/_infographics/grid.png")
 
 
 def test_tng_result_stack_is_attachment_with_large_cap(client, tmp_path, monkeypatch):
     p = tmp_path / "stack.fits"
     p.write_bytes(b"SIMPLE  =" + b"\x00" * 1024)
     cap = _stub_fetch(monkeypatch, local_path=str(p))
+    monkeypatch.setattr(tng_routes, "_artifact_local", lambda kind: str(p))
+    job = _wait_job(client.post("/api/tng/result/pull", data={"kind": "stack"}).get_json()["job_id"])
+    assert job["status"] == "done", job["error"]
+    assert cap["remote"].endswith("/_infographics/stack.fits")
+    # Must request the larger-than-50 MB cap so the ~51 MB stack isn't refused.
+    assert cap["kw"].get("max_bytes") == Config.WebFetch.MAX_PSF_PULL_BYTES
     r = client.get("/tng/result/stack.fits")
     assert r.status_code == 200 and r.mimetype == "application/fits"
     cd = r.headers.get("Content-Disposition", "")
     assert "attachment" in cd and "TNG_stack.fits" in cd
-    assert cap["remote"].endswith("/_infographics/stack.fits")
-    # Must request the larger-than-50 MB cap so the ~51 MB stack isn't refused.
-    assert cap["kw"].get("max_bytes") == Config.WebFetch.MAX_PSF_PULL_BYTES
 
 
-def test_tng_result_missing_returns_404(client, monkeypatch):
-    _stub_fetch(monkeypatch, ok=False, local_path=None, error="not found")
+def test_tng_result_missing_returns_404(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(tng_routes, "_artifact_local", lambda kind: str(tmp_path / "none.png"))
     r = client.get("/tng/result/grid.png")
     assert r.status_code == 404
     assert r.get_json()["ok"] is False
-    assert "submit the job" in r.get_json()["error"]
+    assert "run the job" in r.get_json()["error"]
+    _stub_fetch(monkeypatch, ok=False, local_path=None, error="not found")
+    job = _wait_job(client.post("/api/tng/result/pull").get_json()["job_id"])
+    assert job["status"] == "failed" and "not found" in job["error"]
 
 
 def test_post_inference_cache_real_field_returns_job_id(client, monkeypatch):
@@ -967,7 +978,8 @@ def test_api_sky_sync_pulls_source_catalog_sidecars(client, monkeypatch):
     # combiner fits on validate) are pulled; the large train split is opt-in.
     r = client.post("/api/sky/sync")
     assert r.status_code == 200
-    body = r.get_json()
+    job = _wait_job(r.get_json()["job_id"])
+    body = job["result"]
     assert body["ok"] is True
     assert any(p.endswith("/dirty_test.tfrecord") for p in pulled)
     assert any(p.endswith("/sources_test.csv") for p in pulled)
@@ -979,7 +991,7 @@ def test_api_sky_sync_pulls_source_catalog_sidecars(client, monkeypatch):
     pulled.clear()
     r = client.post("/api/sky/sync", data={"include_train": "1"})
     assert r.status_code == 200
-    body = r.get_json()
+    body = _wait_job(r.get_json()["job_id"])["result"]
     assert any(p.endswith("/sources_test.csv") for p in pulled)
     assert any(p.endswith("/sources_validate.csv") for p in pulled)
     assert any(p.endswith("/sources_train.csv") for p in pulled)

@@ -1223,8 +1223,11 @@ export class ViewerController {
     const frames = this.frameKeys();
     if (!frames.length) return "No image frames are open.";
     if (frames.length > RESULT_MAX_TIERS) return `Select at most ${RESULT_MAX_TIERS} result tiers.`;
-    const unsupported = frames.find((t) => !RESULT_SAVEABLE_TIERS.has(String(t).toLowerCase()));
+    // A real-collection model tier (m:<spec>) saves as the SR panel; the server takes one.
+    const isModelTier = (t: string) => String(t).startsWith("m:");
+    const unsupported = frames.find((t) => !RESULT_SAVEABLE_TIERS.has(String(t).toLowerCase()) && !isModelTier(t));
     if (unsupported) return `${unsupported} is a display-only tier and cannot be saved.`;
+    if (frames.filter(isModelTier).length > 1) return "Save one model tier at a time (it becomes the SR panel).";
     if (this.collection === "jwst-euclid" && frames.some((t) => String(t).toLowerCase() === "jwst")
       && String(s.params.jwst_band || "").toUpperCase() !== "F200W") return NATIVE_F200W_SAVE_REASON;
     if (frames.some((t) => s.status[t]?.kind !== "ready" || !s.shown[t])) return "Wait for every selected image cube to finish loading.";

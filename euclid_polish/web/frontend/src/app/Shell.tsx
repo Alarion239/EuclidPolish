@@ -7,9 +7,9 @@
  *
  * It mounts, exactly once: `UiProvider` (tooltips, toasts, confirm() host —
  * inside the router so their content can use <Link>, FOUNDATION §9.1), the
- * command palette, the ? sheet, the Display panel, the global shortcuts, the
- * `?inspect=` sync, job toasts, `document.title` and the stage scroll
- * management. Below 900 px the rail becomes a drawer and the inspector a
+ * command palette (+ the global "Run a job" actions), the ? sheet, the
+ * Display panel, the global shortcuts, the `?inspect=` sync, local and SLURM
+ * job toasts, `document.title` and the stage scroll management. Below 900 px the rail becomes a drawer and the inspector a
  * sheet. The inspector width is persisted (prefs.inspectorWidth).
  */
 import * as RDialog from "@radix-ui/react-dialog";
@@ -26,14 +26,25 @@ import { GlobalShortcuts } from "./GlobalShortcuts";
 import { InspectorPanel } from "./InspectorPanel";
 import { registerInspector, useInspectorUrlSync } from "./inspector";
 import { JobInspector, jobTitle } from "./inspectors/JobInspector";
-import { useJobToasts } from "./JobTray";
+import { useJobToasts, useSlurmToasts } from "./JobTray";
 import { pageTitle } from "./nav";
 import { Rail } from "./Rail";
+import { RunActions } from "./RunActions";
 import { useShellUi } from "./shellStore";
 import { ShortcutSheet } from "./ShortcutSheet";
 import { TopBar, VersionBanner } from "./TopBar";
 import { useStageScroll } from "./useStageScroll";
 import "./shell.css";
+// Workspace inspector kinds register at app start (their components are
+// lazy chunks), so a cold `?inspect=<kind>:<id>` link opens from any page.
+import "../workspaces/data/register";
+import "../workspaces/ensemble/register";
+import "../workspaces/figures/register";
+import "../workspaces/inspect/register";
+import "../workspaces/ops/register";
+import "../workspaces/realism/register";
+import "../workspaces/sky/atlas/inspectors/register";
+import "../workspaces/sky/results/register";
 
 /* Built-in inspector kinds (workspaces register theirs when they load). */
 registerInspector("job", JobInspector, { title: jobTitle });
@@ -74,6 +85,7 @@ function InspectorSheet() {
 function ShellFrame() {
   useInspectorUrlSync();
   useJobToasts();
+  useSlurmToasts();
   const location = useLocation();
   const narrow = useMediaQuery(NARROW_QUERY);
   const railCollapsed = usePrefs((s) => s.railCollapsed);
@@ -119,6 +131,7 @@ function ShellFrame() {
       {narrow && <RailDrawer />}
       {narrow && <InspectorSheet />}
       <GlobalShortcuts />
+      <RunActions />
       <CommandPalette />
       <ShortcutSheet />
       <DisplayPanel />

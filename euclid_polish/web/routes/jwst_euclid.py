@@ -8,8 +8,11 @@ from pathlib import Path
 
 from flask import jsonify, request, send_file
 
+from euclid_polish.web.helpers import model_catalog
 from euclid_polish.web.helpers.jwst_euclid import (
     _cached_pair_is_usable,
+    _read_nexus_field_manifest,
+    _selected_positions,
     download_and_align_pair,
     download_nexus_field,
     download_nexus_pair,
@@ -59,6 +62,30 @@ def _asset_path(identifier: str, filename: str) -> Path | None:
     except ValueError:
         return None
     return path
+
+
+def _nexus_inference_request(identifier: str, form) -> tuple[list[str] | None, str]:
+    """``(tiles, spec)`` of a NEXUS inference request, validated.
+
+    ``tiles`` is a comma list of real-tile ids (``f200w-0040``) or source
+    indices (blank = every tile); ``spec`` is ONE model-catalogue spec (blank =
+    ``production``) that can run now. :class:`ValueError` names the bad input.
+    """
+    raw_tiles = [item.strip() for item in (form.get("tiles") or "").split(",") if item.strip()]
+    tiles = raw_tiles or None
+    if tiles is not None:
+        _selected_positions(_read_nexus_field_manifest(identifier) or {}, tiles)
+    specs = model_catalog.parse_specs(form.get("spec") or model_catalog.SPEC_PRODUCTION)
+    if len(specs) != 1:
+        raise ValueError("pass exactly one model spec (spec=production, mean, member:<N>, "
+                         "gate:<variant> or rbf)")
+    try:
+        item = model_catalog.resolve_spec(specs[0])
+    except KeyError as exc:
+        raise ValueError(str(exc.args[0] if exc.args else exc)) from None
+    if not item.available:
+        raise ValueError(f"{item.spec} cannot run now: {item.reason}")
+    return tiles, item.spec
 
 
 def register(app):
@@ -160,15 +187,23 @@ def register(app):
         if not _SAFE_ID.fullmatch(identifier) or not any(
             field.get("field_id") == identifier for field in nexus_fields()
         ):
-            return jsonify({"error": "save a valid NEXUS Euclid field before inference"}), 404
+            return jsonify({"ok": False,
+                            "error": "save a valid NEXUS Euclid field before inference"}), 404
+        try:
+            tiles, spec = _nexus_inference_request(identifier, request.form)
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+        scope = f"{len(tiles)} tile(s)" if tiles else "every tile"
         job_id = REGISTRY.spawn(
-            label=f"run STARFULL combiner on NEXUS tiles ({identifier})",
-            target=lambda cap: run_starfull_nexus_field_inference(
-                identifier,
+            f"NEXUS inference · {spec} · {scope} ({identifier})",
+            lambda cap: run_starfull_nexus_field_inference(
+                identifier, tiles=tiles, spec=spec,
                 progress=lambda done, total, label: cap.tick(done, total, label),
             ),
+            kind="nexus-inference",
         )
-        return jsonify({"job_id": job_id, "field_id": identifier})
+        return jsonify({"ok": True, "job_id": job_id, "field_id": identifier,
+                        "tiles": tiles, "spec": spec})
 
     @app.post("/api/jwst-euclid/download-all")
     def api_jwst_euclid_download_all():

@@ -226,9 +226,13 @@ class TrackingStore:
 
     # ------------------------------- log ----------------------------------
 
-    def read_log(self) -> str:
+    def read_log(self, name: str | None = None) -> str:
+        """The notebook of the active campaign, or of the archived campaign
+        ``name`` (its archive dir); '' when it has none."""
+        directory = (self.campaign_dir(name) if name and name != "current"
+                     else self.current_dir)
         try:
-            with open(os.path.join(self.current_dir, "log.md")) as fp:
+            with open(os.path.join(directory, "log.md")) as fp:
                 return fp.read()
         except OSError:
             return ""
@@ -440,6 +444,14 @@ class TrackingStore:
 
     def model_backup_meta(self, name: str | None,
                           model: str) -> dict[str, Any] | None:
+        """The record of model backup ``model``: a checkpoint dir's
+        ``meta.json``, or a retired-model zip's ``<name>.zip.meta.json``."""
+        model = os.path.basename(model)
+        if model.endswith(".zip"):
+            path = os.path.join(self.campaign_dir(name), "models", model + ".meta.json")
+            if not os.path.isfile(path):
+                raise TrackingError(f"no model backup {model!r} in {name!r}")
+            return _read_json(path)
         return _read_json(os.path.join(self.model_backup_dir(name, model),
                                        "meta.json"))
 
@@ -468,11 +480,35 @@ class TrackingStore:
             except OSError:
                 return None
 
-    def read_fasrc_jobs(self) -> list[dict[str, Any]]:
-        """Parse the active campaign's job log (newest first)."""
-        if not self.has_current():
+    def _jobs_path(self, name: str | None) -> str | None:
+        """The job log of the active campaign (``None``/``"current"``), an
+        archived one (its archive dir name) or ``"unassigned"`` (jobs logged
+        while no campaign was active). ``None`` when there is no such log."""
+        if name == "unassigned":
+            return os.path.join(self.root, "unassigned_fasrc_jobs.jsonl")
+        if not name or name == "current":
+            if not self.has_current():
+                return None
+            return os.path.join(self.current_dir, "fasrc_jobs.jsonl")
+        return os.path.join(self.campaign_dir(name), "fasrc_jobs.jsonl")
+
+    def count_fasrc_jobs(self, name: str | None = None) -> int:
+        """Number of records in a job log (cheap: counts non-blank lines)."""
+        path = self._jobs_path(name)
+        if not path:
+            return 0
+        try:
+            with open(path) as fp:
+                return sum(1 for line in fp if line.strip())
+        except OSError:
+            return 0
+
+    def read_fasrc_jobs(self, name: str | None = None) -> list[dict[str, Any]]:
+        """Parse a job log (newest first): the active campaign's by default,
+        an archived campaign's (``name`` = its dir) or ``"unassigned"``."""
+        path = self._jobs_path(name)
+        if not path:
             return []
-        path = os.path.join(self.current_dir, "fasrc_jobs.jsonl")
         out: list[dict[str, Any]] = []
         try:
             with open(path) as fp:

@@ -363,6 +363,11 @@ useUrlState("k", def, { parse, serialize, replace: false });     // custom codec
 - Other params keep their exact spelling. Only the key's own segment is rewritten, so
   `?inspect=member:m_1` is never re-encoded to `member%3Am_1`. The key keeps its position,
   duplicates of it collapse into one, and the hash is kept.
+- A setter builds on the router's **latest** location (a data router's committed state, else
+  the history's), not the one its component last rendered: setters called from different
+  macrotasks before React re-renders (two viewers answering their fetches, the `?inspect=`
+  sync) merge instead of dropping each other's params. A setter whose page the router has
+  already left writes nothing.
 
 Keyboard shortcuts: `hooks/useShortcut.ts` (§10.3).
 
@@ -380,7 +385,7 @@ Every formatter returns `"—"` for null, NaN or ±∞. The output is locale-ind
 | `formatCount` | `43401` → `"43,401"` |
 | `formatPercent` | `0.1234` → `"12.3%"` |
 | `formatSI` | `(2.5e6, {unit: "e⁻"})` → `"2.5 Me⁻"` |
-| `formatBytes` | `1536` → `"1.5 KB"` |
+| `formatBytes` | `1536` → `"1.5 KiB"` (binary units) |
 | `formatDuration` | `185` → `"3m 05s"` |
 | `formatMagnitude` | `(19.234, {sigma: 0.05})` → `"19.23 ± 0.05"` |
 | `superscript`, `formatPow10` | `-3` → `"10⁻³"` |
@@ -828,6 +833,9 @@ still names the mean). A scatter hit shows that point; a heat plot shows the cel
 Mouse and keyboard controls. A plain wheel scrolls the page: a mouse click on the chart does not
 change that, and neither does holding Ctrl/⌘ for a Ctrl-wheel.
 
+`.plot` is `position: relative` (as is the shell's `.stage`): the visually hidden `.sr-only`
+summary is absolutely positioned and would otherwise extend the document past the shell.
+
 | Input | Action |
 |---|---|
 | hover | crosshair and tooltip |
@@ -946,8 +954,9 @@ scroll container holding `<Outlet/>`) and the docked inspector (a `react-resizab
 panel; its width is `prefs.inspectorWidth`, saved after a drag). Below 900 px
 (`NARROW_QUERY`) the rail is a drawer (top-bar menu button) and the inspector a bottom sheet.
 
-The shell mounts, exactly once: `UiProvider` (§9.1), `useInspectorUrlSync`, `useJobToasts`, the
-global shortcuts, the command palette, the ? sheet, the Display panel, a skip link, and:
+The shell mounts, exactly once: `UiProvider` (§9.1), `useInspectorUrlSync`, `useJobToasts`,
+`useSlurmToasts` (§10.6), the global shortcuts, `<RunActions/>` (the palette's "Run a job"
+group, §10.5), the command palette, the ? sheet, the Display panel, a skip link, and:
 
 - `document.title` = `pageTitle(pathname)`, e.g. "Members · Ensemble (starless) · EuclidPolish";
 - stage scrolling (`useStageScroll`): a new pathname scrolls to the top, back/forward restores
@@ -962,20 +971,30 @@ import { openPalette, openDisplayPanel, openShortcutSheet, openJobTray, useShell
 useShellUi.getState().openOnly("display");   // "palette" | "shortcuts" | "display" | "tray" | "drawer"
 ```
 
-Top bar, left to right: menu (narrow only), breadcrumbs (workspace [· params] › tab › the
-inspected entity's title), the ⌘K search button, the FASRC badge (`/api/fasrc/status`; offline
+Top bar, left to right (one line at every width: the breadcrumbs take the free space and each
+crumb ellipsizes — the inspected entity first, the tab last — with the full path as the nav's
+tooltip; below 1200 px the search button is an icon + ⌘K, below 900 px an icon): menu (narrow
+only), breadcrumbs (workspace [· params] › tab › the inspected entity's title), the ⌘K search button, the FASRC badge (`/api/fasrc/status`; offline
 shows the real `last_error` in its tooltip; links to Settings › Connections), the job tray, the
 Display button, the theme toggle and the ? sheet button. The version banner under it appears when
 `/api/version` says `behind` (dismissable per HEAD commit). The rail shows the nine workspaces
-(icons from `nav.ts`), a running-jobs badge on Ops, a "server behind HEAD" badge on Settings,
-and the collapse toggle (`prefs.railCollapsed`; collapsed items get tooltips).
+(icons from `nav.ts`), a health badge on Home (the count of warn/bad checks of
+`/api/system/alerts`, toned by the worst, their titles in the tooltip), a running-jobs badge on
+Ops, a "server behind HEAD" badge on Settings, and the collapse toggle (`prefs.railCollapsed`;
+collapsed items get tooltips).
 
-`app/status.ts` shares the two status resources (one cache entry each):
+`app/status.ts` shares the status resources (one cache entry each):
 
 ```ts
 const v = useVersion().data;        // C3: {boot_short, head_short, behind, dirty, started_at, pid, dist}
 const f = useFasrcStatus().data;    // C4: {ssh_connected, connected_at, socket, last_error}
+const a = useSystemAlerts().data;   // GET /api/system/alerts: {checks, alerts (warn/bad), counts, computed_at}
+alertBadge(a);                      // {count, tone: "warn"|"bad", label} | null (the rail badge)
 ```
+
+A workspace tab's own sticky toolbar sits under the tab strip with
+`position: sticky; top: var(--ws-bar-h)` (`WorkspaceTabs` publishes the strip's measured height
+on the `.ws` root).
 
 ### 10.3 Keyboard shortcuts: `hooks/useShortcut.ts`
 
@@ -1031,10 +1050,24 @@ const href = inspectHref({ kind: "tile", id: "nexus/12" }, location); // "/sky/a
   store changes are written in place (history replace), a malformed param is dropped.
 - Built-in kind `job` (`app/inspectors/JobInspector.tsx`): `job:local/<job_id>` (status, cancel,
   full searchable log, JSON result) and `job:slurm/<jobid>` (the FASRC live monitor).
-- Kinds planned by the spec for phase 3: `member`, `tile` (`nexus/<n>`), `realtile`, `source`,
-  `experiment`, `fits`, `figure`. The palette already opens `member:member_<n>` and
-  `tile:nexus/<n>`, but **nobody registers those kinds yet**: until W-Ensemble registers
-  `member` and W-SkyAtlas registers `tile`, they open the "no inspector yet" card.
+- Workspace kinds (registered at app start by side-effect imports in `app/Shell.tsx`; each
+  module registers lazy components, so the cost is a few bytes):
+
+  | Kind | Id | Registered by |
+  |---|---|---|
+  | `member` | `member_<n>` | `workspaces/ensemble/register.ts` |
+  | `combiner` | `<regime>/<variant>` | `workspaces/ensemble/register.ts` |
+  | `fits` | project-relative path | `workspaces/inspect/register.ts` |
+  | `prov`, `campaign`, `commit` | record id / campaign / hash | `workspaces/ops/register.ts` |
+  | `readiness`, `noisepos`, `archivefield` | see module | `workspaces/realism/register.ts` |
+  | `tile`, `source` | `nexus/<n>` · `<layer>/<id>` | `workspaces/sky/atlas/inspectors/register.tsx` |
+  | `realtile`, `experiment` | `<source>/<id>` · experiment id | `workspaces/sky/results/register.tsx` |
+  | `star`, `truth`, `psf`, `tng` | see module | `workspaces/data/register.ts` |
+  | `figure` | saved result id | `workspaces/figures/register.tsx` |
+  | `check` | health-check id | `workspaces/home/Dashboard.tsx` (registers when Home loads) |
+
+  A new workspace kind: register it in a `register.ts` in the workspace folder and add one
+  side-effect import to `app/Shell.tsx`.
 - The panel re-renders its content on a theme or accent flip (`useTokenRerender`, §11.1).
 - A `job:local/<id>` inspector polls the job every 2 s while it runs (status from the detail,
   else the jobs feed) and stops once it has finished, on a 404 (a stale shared link after a
@@ -1060,9 +1093,19 @@ usePageActions([
   view).
 - **Not done in phase 1 (phase-3 owners):** no page registers `usePageActions` yet (the legacy
   pages predate it), so on real pages the page-actions group is empty until the phase-3 tabs
-  register theirs (evaluate, fit gate, pull, fly to…). "Run job X" is only the route to Ops ›
-  FASRC; per-step commands ("Submit <step>") belong to W-Ops. `member N` / `nexus N` need the
-  `member` / `tile` inspector kinds (§10.4).
+  register theirs (evaluate, fit gate, pull, fly to…). Per-step commands ("Submit <step>")
+  belong to W-Ops. `member N` / `nexus N` need the `member` / `tile` inspector kinds (§10.4).
+- **"Run a job"** (`app/RunActions.tsx`, mounted once by the shell): the local jobs started most
+  often, listed after the page's own groups — evaluate STARFULL, PSNR vs knee, member PSNR, disk
+  usage, re-run the health checks — plus links to the knob-heavy runs (fit a gate variant,
+  real-tile experiments, train members). TensorFlow-heavy runs `confirm()` first; a started job
+  is registered under its `run:*` key (tray, end toast, a second start while it runs is refused).
+  Pages reuse the same runners:
+
+  ```ts
+  const run = useRunJobs();                 // {evaluate, knee, memberPsnr, diskUsage, health}: {label, busy, run()}
+  await startJob({ key: "check:disk", label, url, data, question }, { quiet: true });  // → job id | null
+  ```
 - Free text adds `paletteSuggestions(text, parseSkyCoord)` on top:
 
   | Typed | Offers |
@@ -1087,6 +1130,11 @@ usePageActions([
   inspector. FASRC offline (the C4 503) reads "FASRC offline", never an error.
 - `useJobToasts()` (the shell) toasts every local job this session saw running when it ends:
   success, error (first line of the error, 10 s) or cancelled, each with a "Log" action.
+- `useSlurmToasts()` (the shell) toasts every SLURM job this session saw live when it leaves the
+  live list, with its final state from `/api/fasrc/jobs/<id>/status` (completed / failed /
+  timeout / cancelled, else "left the SLURM queue") and an "Open" action (`job:slurm/<id>`).
+  Offline and `stale` snapshots of the feed are ignored, so a slow login node never reads as a
+  finish.
 - Reusable parts: `<JobList jobs limit? empty? onOpen?>`, `<JobRow job>`, `<SlurmRow job>`,
   `orderJobs(jobs, limit)` (Home and Ops › Jobs use them).
 
@@ -1210,52 +1258,58 @@ export default function Members() {
 Charts: `import Plot, { Legend, useLegend } from "../../../charts/Plot"` (§9.4). Formatting:
 `format.ts` / `ticks.ts` (§7), never a local tick helper.
 
-### 11.3 Where every tab points in phase 1 (legacy adapters)
+### 11.3 Where every tab lives (phase 3 complete)
 
-Each adapter tab module is one line, `export { default } from "../../../pages/<Page>"`.
+Every legacy `src/pages/*` module and the `legacy.tsx` wrapper are gone; each tab is a module in
+its workspace folder, with its logic next to it.
 
-| Tab | Renders |
-|---|---|
-| `/` | Home dashboard (new: FASRC, server version, running jobs, the STARFULL ensemble headline — the production spatial gate's PSNR when the eval summary scored it, else the labelled plain mean with its gain over the mean member —, local data, recent jobs, links) |
-| `sky/atlas` · `results` · `catalog-eval` | `pages/JwstEuclid` · `pages/Inference` · `pages/Evaluation` |
-| `sky/experiments` | PendingTab |
-| `ensemble/:mode/{overview,members,curves,knee,diagnostics,combiners,disagreement}` | `pages/Ensemble` (the whole old page on each tab) |
-| `ensemble/:mode/train` | `pages/TrainMembers` |
-| `realism/noise` · `galaxies` · `stars` · `pixels` · `visual` | `pages/Noise` · `GalaxyDistributions` · `StarDistribution` · `PopulationComparison` · `SyntheticReal` |
-| `realism/overview` | PendingTab (links to the other tabs) |
-| `data/records` · `catalog` · `cutouts` · `psfs` · `tng` | `pages/Sky` · `Catalog` · `Cutouts` · `Psfs` · `Tng` |
-| `figures/grid` · `plates` | `pages/figure-grid/FigureGridBuilder` (in a Page) · `pages/Visualization` |
-| `figures/results` | PendingTab |
-| `inspect` | `pages/Inspect` (`?fits=<project-relative path>`) |
-| `ops/fasrc` · `tracking` · `git` | `pages/Fasrc` · `Tracking` · `Git` |
-| `ops/jobs` | new: the local job list (`JobList`) |
-| `ops/provenance` | PendingTab |
-| `settings/config` | `pages/Config` |
-| `settings/connections` | new, minimal: FASRC state with `last_error`, connect / retry / disconnect |
-| `settings/appearance` | new: theme light/dark/system, accent, density, rail, inspector width, viewer wheel, Display defaults |
-| `settings/about` | new: boot commit vs HEAD, dirty tree, started, pid, dist build, bundle mode + React version |
+| Workspace | Tabs → modules | Inspector kinds |
+|---|---|---|
+| `/` Home | `workspaces/home/Dashboard.tsx` (+ `homeModel.ts`, `skyProjection.ts`) | `check` |
+| `sky` | `tabs/Atlas.tsx` (+ `atlas/`, `src/sky/` Aladin engine) · `tabs/{Results,Experiments,CatalogEval}.tsx` (+ `results/`) | `tile`, `source`, `realtile`, `experiment` |
+| `ensemble/:mode` | `tabs/{Overview,Members,Curves,Knee,Diagnostics,Combiners,Disagreement,Train}.tsx` | `member`, `combiner` |
+| `realism` | `tabs/{Overview,Noise,Galaxies,Stars,Pixels,Visual}.tsx` | `readiness`, `noisepos`, `archivefield` |
+| `data` | `tabs/{Records,Catalog,Cutouts,Psfs,Tng}.tsx` | `star`, `truth`, `psf`, `tng` |
+| `figures` | `tabs/{Grid,Plates,Results}.tsx` | `figure` |
+| `inspect` | `InspectPage` (`?path=`, `dir`, `q`, `hdu`, `slice`, `view`) | `fits` |
+| `ops` | `tabs/{Jobs,Fasrc,Tracking,Git,Provenance}.tsx` (+ `steps/`, behind `src/fasrc.tsx`) | `prov`, `campaign`, `commit` |
+| `settings` | `tabs/{Config,Connections,Appearance,About}.tsx` | `root` |
 
-The ensemble workspace adds a starfull/starless switch beside its tabs that keeps the tab.
-
-Known adapter limitations (the page bodies are not the shell's to edit; fixed when the phase-3
-owner splits the page):
-
-- **Two regime switches on every ensemble tab** (W-Ensemble): the workspace switch and the old
-  page's own `Segmented` in `pages/Ensemble.tsx`, which navigates to the bare
-  `/ensemble/<mode>`. Both keep the tab now (the bare path returns to the last tab, §11.1);
-  W-Ensemble removes the page's switch.
-- **The figure-grid builder shows on both `figures/grid` and `figures/plates`** (W-Figures):
-  `pages/Visualization` embeds `<FigureGridBuilder/>` under its plates. Until Visualization is
-  split, `plates` is "plates + the builder" and `grid` is the builder alone.
-- Every ensemble tab except `train` shows the whole old Ensemble page (see the table).
-
-### 11.4 Replacing an adapter in phase 3
+### 11.4 Adding or replacing a tab
 
 1. Write the tab in `src/workspaces/<id>/tabs/<Tab>.tsx` (your folder) on the foundation.
 2. Keep the tab ids and the module path; `workspaces.test.ts` keeps the contract.
 3. Delete the absorbed `src/pages/<X>.tsx` (and its CSS / `ui/pages-compat.css` block) when no
    other tab imports it, and remove its row from the `ADAPTERS` list in `workspaces.test.ts`.
 4. A missing shared primitive goes to the orchestrator; do not fork one.
+
+### 11.5 The shared FASRC step card: `src/fasrc.tsx` (W-Ops)
+
+`src/fasrc.tsx` is the public facade of `workspaces/ops/steps/` — import from it, not from the
+Ops folder:
+
+```tsx
+import { StepById, SlurmMonitor, useStepsStatus } from "../../../fasrc";
+<StepById stepId="euclid_query" />                                // the whole card, looked up by id
+<StepById stepId="ensemble_train" extraParams={{ mode: "continue", members }} embedded />
+<StepById stepId="tng_grid" hideParams={["mode"]} onSubmitted={(r) => …} />
+<SlurmMonitor jobid="12345" compact />                              // live monitor (job:slurm/<id> uses the full one)
+```
+
+- The card renders the step's `task_params` (C5) generically — int/float (range), str, bool
+  (switch), choice (segmented ≤ 3 short choices, else select), json — each with a help popover,
+  prefilled from `last_params` (the last successful run) or from a cloned past run (the history
+  table's "clone" button; Ops › FASRC › Steps `?step=&clone=<jobid>`), with "Defaults" / "Use last
+  run" resets, the SLURM resources (partition fixed per step) and a confirmed submit (a danger
+  confirm for `force`-style flags). A submit while another FASRC job runs is queued; the card says
+  where. It re-attaches to the step's live job from the shared jobs feed after navigation and lists
+  the step's known remote `outputs`.
+- Props (backward compatible): `stepId`/`step`, `extraParams` (host-controlled params: posted as
+  given and hidden from the form), `embedded`, `showHistory`, `submitDisabled`,
+  `submitDisabledHint`; new: `hideParams`, `initial {params, resources?, jobid?}`, `onSubmitted`.
+- Also exported: `StepCard`, `StepHistory`, `JobStatusBody`, `TrainingCurve`, `jobStateTone`,
+  `ConnectionBar`, `CurrentSubmission` (the live SLURM jobs panel) and the `Step`/`StepsStatus`/
+  `TaskParam`/`SlurmStatus` types.
 
 ## 12. Viewer engine v2: `viewer/` (WP-V)
 

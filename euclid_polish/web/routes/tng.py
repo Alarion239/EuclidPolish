@@ -1,17 +1,22 @@
-"""TNG50 SKIRT-atlas download page + API-token endpoints for the web UI.
+"""TNG routes of Data › TNG: the API token on FASRC, the radius-manifest
+validation, the property explorer and the grid/stack job results.
 
-Hosts the ``download_tng_skirt`` FASRC step card (bulk-fetch the whole
-IllustrisTNG TNG50-1 SKIRT atlas as dusty Euclid VIS+NISP FITS), a small
-"what's on FASRC" summary derived from the per-galaxy ``.done`` markers, and a
-token form that writes the IllustrisTNG API key to ``~/.tng_api_key`` on FASRC
-— mirroring the Euclid-archive login. The token is sent over the SSH channel as
-file content (never a process argv, never the job DB, never the laptop disk),
-stored mode-600, and is the exact file the download job reads on the node.
+* The token form writes the IllustrisTNG API key to ``~/.tng_api_key`` on
+  FASRC — sent over the SSH channel as file content (never a process argv,
+  never the job DB, never the laptop disk), stored mode-600, the exact file
+  the download job reads on the node.
+* ``GET /api/tng/properties`` is the interactive property explorer over the
+  local calibration CSVs (``helpers/tng_explorer.py``); ``POST
+  /api/tng/properties/refresh`` re-queries missing galaxies from the TNG API
+  in a job (the only thing that writes that cache).
+* The ``tng_grid`` / ``tng_stack`` job artifacts are pulled from FASRC by an
+  explicit ``POST /api/tng/result/pull`` job; ``GET /tng/result/grid.png``
+  and ``/tng/result/stack.fits`` serve the last pulled copy (cache-only: a
+  GET never writes into ``data/``).
 """
 from __future__ import annotations
 
 import glob
-import io
 import json
 import os
 import shlex
@@ -21,30 +26,33 @@ import time
 from flask import jsonify, request, send_file
 
 from euclid_polish.config import Config
-from euclid_polish.tng.properties import render_histograms_for_ids
+from euclid_polish.tng.properties import gather_properties
 from euclid_polish.web import fasrc_config, fasrc_jobs
-from euclid_polish.web.fasrc_fetcher import fetch_one_file
+from euclid_polish.web.fasrc_fetcher import _local_path_for, fetch_one_file
 from euclid_polish.web.fasrc_gate import requires_fasrc
+from euclid_polish.web.helpers import tng_explorer
 from euclid_polish.web.jobs import REGISTRY as JOB_REGISTRY
 from euclid_polish.web.remote import STATE
 
 # Job-rendered image infographics on FASRC (written by
-# scripts/fasrc_tng_infographic.py --save, grid/stack only). The histogram is
-# rendered LOCALLY (see /tng/histograms.png) — it needs no FITS, just the id
-# list pulled from FASRC + the TNG API.
+# scripts/fasrc_tng_infographic.py --save, grid/stack only).
 _INFOGRAPHIC_SUBDIR = "_infographics"
 _INFOGRAPHIC_NAMES = {"grid": "grid.png", "stack": "stack.fits"}
 # Radius/property calibration artifacts live beside the other population
 # caches, not inside the display-only infographic directory.
 _CALIBRATION_SUBDIR = "_tng_infographics"
-# Local working dir for the histogram's property cache (CSV + groupcat arrays).
-_LOCAL_TNG_DIR = os.path.join(Config.DATA_DIR, _CALIBRATION_SUBDIR)
 
-# TNG Atlas images (the FASRC-pulled grid + the histogram drawn from the
-# FASRC-pulled id list) are also archived under here so they appear in the
+# Pulled grid images are also archived under here so they appear in the
 # Visualization gallery (data/vis/) and get the 📌-track button. ``os.walk``
 # in ``_list_vis_pngs`` recurses, so a ``tng/`` subdir shows up automatically.
-_VIS_TNG_DIR = os.path.join(Config.VIS_DIR, "tng")
+# Written by the pull JOB only (never by a GET); resolved per call so the
+# configured VIS_DIR (tests redirect it) is honoured.
+def _vis_tng_dir() -> str:
+    return os.path.join(Config.VIS_DIR, "tng")
+
+
+_RESULT_JOB_KIND = "tng-result"
+_PROPERTIES_JOB_KIND = "tng-properties"
 
 
 def _archive_png_to_vis(kind: str, png_bytes: bytes) -> None:
@@ -52,13 +60,13 @@ def _archive_png_to_vis(kind: str, png_bytes: bytes) -> None:
 
     Saves a timestamped ``tng_<kind>_<YYYYmmdd-HHMMSS>.png`` so every
     distinct pulled image is kept. Skips the write when the most recent
-    archived image of this kind is byte-identical, so reloading the same
-    result doesn't pile up duplicates. Never raises — archiving must not
-    break serving the image to the page.
+    archived image of this kind is byte-identical, so re-pulling the same
+    result doesn't pile up duplicates. Never raises.
     """
+    vis_tng_dir = _vis_tng_dir()
     try:
-        os.makedirs(_VIS_TNG_DIR, exist_ok=True)
-        prior = sorted(glob.glob(os.path.join(_VIS_TNG_DIR, f"tng_{kind}_*.png")))
+        os.makedirs(vis_tng_dir, exist_ok=True)
+        prior = sorted(glob.glob(os.path.join(vis_tng_dir, f"tng_{kind}_*.png")))
         if prior:
             try:
                 with open(prior[-1], "rb") as fh:
@@ -67,14 +75,15 @@ def _archive_png_to_vis(kind: str, png_bytes: bytes) -> None:
             except OSError:
                 pass
         ts = time.strftime("%Y%m%d-%H%M%S")
-        path = os.path.join(_VIS_TNG_DIR, f"tng_{kind}_{ts}.png")
+        path = os.path.join(vis_tng_dir, f"tng_{kind}_{ts}.png")
         if os.path.exists(path):  # >1 save in the same second
             path = os.path.join(
-                _VIS_TNG_DIR, f"tng_{kind}_{ts}_{int(time.time() * 1000) % 1000:03d}.png")
+                vis_tng_dir, f"tng_{kind}_{ts}_{int(time.time() * 1000) % 1000:03d}.png")
         with open(path, "wb") as fh:
             fh.write(png_bytes)
     except Exception:
         pass
+
 
 # Remote path of the token file, matching the script's default
 # (``Config.Tng.API_KEY_FILE`` = ``~/.tng_api_key``). Quoted so a literal
@@ -172,11 +181,75 @@ def _radii_refresh_job(cap) -> dict:
 _RADII_SPAWN_LOCK = threading.Lock()
 
 
-def _radii_refresh_running() -> str | None:
+def _running(kind: str) -> str | None:
     for job in JOB_REGISTRY.list(summary=True):
-        if job.get("kind") == _RADII_JOB_KIND and job.get("status") == "running":
+        if job.get("kind") == kind and job.get("status") == "running":
             return str(job["job_id"])
     return None
+
+
+def _radii_refresh_running() -> str | None:
+    return _running(_RADII_JOB_KIND)
+
+
+def _artifact_remote(kind: str) -> str:
+    cfg = fasrc_config.load()
+    return (f"{cfg.data_dir}/{Config.Tng.SKIRT_SUBDIR}/"
+            f"{_INFOGRAPHIC_SUBDIR}/{_INFOGRAPHIC_NAMES[kind]}")
+
+
+def _artifact_local(kind: str) -> str:
+    """Where the last pull of ``kind`` sits (the fetcher's cache path)."""
+    return _local_path_for(_artifact_remote(kind))
+
+
+def _artifact_status(kind: str) -> dict:
+    path = _artifact_local(kind)
+    try:
+        st = os.stat(path)
+    except OSError:
+        return {"present": False, "pulled_at": None, "size_bytes": None}
+    return {"present": True, "pulled_at": float(st.st_mtime), "size_bytes": int(st.st_size)}
+
+
+def _job_pull_results(cap, kinds: list[str]) -> dict:
+    """Pull the latest grid / stack artifacts from FASRC (force: a fresh job
+    result is never masked by the fetcher's TTL); archive a new grid image
+    into the Visualization gallery."""
+    out: dict[str, dict] = {}
+    for position, kind in enumerate(kinds):
+        cap.tick(position, len(kinds), f"pulling the {kind}")
+        kwargs = {"max_bytes": Config.WebFetch.MAX_PSF_PULL_BYTES} if kind == "stack" else {}
+        result = fetch_one_file(_artifact_remote(kind), force=True, **kwargs)
+        if not result.ok or not result.local_path:
+            out[kind] = {"ok": False, "error": result.error or "not on FASRC — run the job first"}
+            cap.write(f"{kind}: {out[kind]['error']}\n")
+            continue
+        out[kind] = {"ok": True, "size_bytes": result.size_bytes}
+        cap.write(f"{kind}: {(result.size_bytes or 0) / 1e6:.1f} MB\n")
+        if kind == "grid":
+            try:
+                with open(result.local_path, "rb") as fh:
+                    _archive_png_to_vis("grid", fh.read())
+            except OSError:
+                pass
+    cap.tick(len(kinds), len(kinds), "done")
+    if not any(entry["ok"] for entry in out.values()):
+        raise RuntimeError("; ".join(f"{k}: {v['error']}" for k, v in out.items()))
+    return out
+
+
+class _CapReporter:
+    """``tng.properties`` progress reporter → a job's log/progress."""
+
+    def __init__(self, cap) -> None:
+        self.cap = cap
+
+    def set_stage(self, text: str) -> None:
+        self.cap.write(text + "\n")
+
+    def set_step(self, done: int, total: int, label: str) -> None:
+        self.cap.tick(done, total, label)
 
 
 def _spawn_radii_refresh() -> str:
@@ -266,10 +339,7 @@ def register(app):
             n = 0
         return jsonify({"present": n > 0, "connected": True, "chars": n})
 
-    # ---------------- Histogram (rendered LOCALLY) ------------------------
-    # The histogram needs no FITS — only the downloaded-galaxy id list (a tiny
-    # SSH `find`) plus the TNG API. So we pull just the ids from FASRC and
-    # render the plot in this process; nothing heavy is transferred.
+    # ---------------- Property explorer (local CSVs) ---------------------
 
     def _downloaded_ids() -> list:
         """Subhalo ids of finished galaxies on FASRC (dirs holding a .done)."""
@@ -309,67 +379,82 @@ def register(app):
                 pass
         return ""
 
-    @app.route("/tng/histograms.png")
-    def tng_histograms_png():
-        os.makedirs(_LOCAL_TNG_DIR, exist_ok=True)
-        ids = _downloaded_ids()
-        png = render_histograms_for_ids(_LOCAL_TNG_DIR, ids, _tng_api_key())
-        # Archive to the Visualization gallery — but only when there are real
-        # galaxies behind it, so we don't save empty-state placeholders.
-        if ids:
-            _archive_png_to_vis("histograms", png)
-        return send_file(io.BytesIO(png), mimetype="image/png", max_age=0)
+    @app.route("/api/tng/properties")
+    def tng_properties():
+        """The property explorer's rows (local CSVs only; see
+        ``helpers/tng_explorer``): per galaxy SFR, stellar/halo mass, the
+        group-catalogue radius and the measured VIS R_e per viewpoint."""
+        return jsonify(tng_explorer.properties_payload())
 
-    # ---------------- Image infographic results (grid/stack job artifacts) -
+    @app.post("/api/tng/properties/refresh")
+    @requires_fasrc
+    def tng_properties_refresh():
+        """Re-query the TNG API for downloaded galaxies missing from the
+        property cache (a job, ``kind="tng-properties"``): ids from FASRC,
+        the token from ``$TNG_API_KEY`` or the FASRC token file. Writes
+        ``tng_properties.csv``; result ``{n_ids, n_resolved}``."""
+        running = _running(_PROPERTIES_JOB_KIND)
+        if running:
+            return jsonify({"ok": True, "job_id": running, "already_running": True})
+
+        def _job(cap):
+            cap.tick(0, 1, "listing the downloaded galaxies on FASRC")
+            ids = _downloaded_ids()
+            key = _tng_api_key()
+            if not ids:
+                raise RuntimeError("no downloaded galaxies found on FASRC")
+            if not key:
+                raise RuntimeError("no TNG API token (Settings › Connections)")
+            work = tng_explorer.calibration_dir()
+            os.makedirs(work, exist_ok=True)
+            props = gather_properties(work, ids, key, reporter=_CapReporter(cap))
+            return {"n_ids": len(ids), "n_resolved": len(props)}
+
+        return jsonify({"ok": True, "job_id": JOB_REGISTRY.spawn(
+            "TNG: refresh galaxy properties", _job, kind=_PROPERTIES_JOB_KIND)})
+
+    # ---------------- Grid / stack job results -----------------------------
     # The grid + stacked-FITS jobs (``tng_grid`` / ``tng_stack`` step cards)
-    # write their artifact to ``tng_skirt/_infographics/<name>`` on the node;
-    # these routes fetch the latest one for display / download.
+    # write their artifact to ``tng_skirt/_infographics/<name>`` on the node.
 
-    def _artifact_remote(kind: str) -> str:
-        cfg = fasrc_config.load()
-        return (f"{cfg.data_dir}/{Config.Tng.SKIRT_SUBDIR}/"
-                f"{_INFOGRAPHIC_SUBDIR}/{_INFOGRAPHIC_NAMES[kind]}")
+    @app.route("/api/tng/results")
+    def tng_results_status():
+        """Which job results were pulled, and when (local): ``{grid:
+        {present, pulled_at, size_bytes}, stack: {…}, pull_job}``."""
+        return jsonify({kind: _artifact_status(kind) for kind in _INFOGRAPHIC_NAMES}
+                       | {"pull_job": _running(_RESULT_JOB_KIND)})
 
-    def _serve_artifact(kind: str, mimetype: str, *, as_attachment: bool = False,
-                        download_name: str | None = None,
-                        max_bytes: int | None = None):
-        # force=True so a freshly-rendered job result isn't masked by the
-        # fetcher's TTL cache. The PNGs are tiny; the FITS needs the larger cap.
-        if max_bytes is None:
-            result = fetch_one_file(_artifact_remote(kind), force=True)
-        else:
-            result = fetch_one_file(
-                _artifact_remote(kind), force=True, max_bytes=max_bytes,
-            )
-        if not result.ok or not result.local_path:
-            hint = ("no result yet — submit the job above, then load the result "
-                    "once it completes.")
-            if result.error:
-                hint += f" [{result.error}]"
-            return jsonify({"ok": False, "error": hint}), 404
-        # Archive the FASRC-pulled grid image into the Visualization gallery.
-        # The stack is a FITS download (not a gallery image), so it's skipped.
-        if kind == "grid":
-            try:
-                with open(result.local_path, "rb") as fh:
-                    _archive_png_to_vis("grid", fh.read())
-            except OSError:
-                pass
-        return send_file(result.local_path, mimetype=mimetype, max_age=0,
-                         as_attachment=as_attachment,
-                         download_name=download_name)
+    @app.post("/api/tng/result/pull")
+    @requires_fasrc
+    def tng_result_pull():
+        """Pull the latest ``grid`` / ``stack`` (``kind=grid|stack|all``,
+        default all) from FASRC in a job (``kind="tng-result"``)."""
+        raw = str(request.values.get("kind", "all") or "all").strip()
+        kinds = list(_INFOGRAPHIC_NAMES) if raw == "all" else [raw]
+        if any(kind not in _INFOGRAPHIC_NAMES for kind in kinds):
+            return jsonify({"ok": False, "error": "kind must be grid|stack|all"}), 400
+        running = _running(_RESULT_JOB_KIND)
+        if running:
+            return jsonify({"ok": True, "job_id": running, "already_running": True})
+        return jsonify({"ok": True, "job_id": JOB_REGISTRY.spawn(
+            f"TNG: pull the {' + '.join(kinds)} result", lambda cap: _job_pull_results(cap, kinds),
+            kind=_RESULT_JOB_KIND)})
+
+    def _serve_cached(kind: str, mimetype: str, **kwargs):
+        path = _artifact_local(kind)
+        if not os.path.isfile(path):
+            return jsonify({"ok": False, "error": (
+                f"no {kind} pulled yet — run the job, then pull its result "
+                "(POST /api/tng/result/pull).")}), 404
+        return send_file(path, mimetype=mimetype, max_age=0, **kwargs)
 
     @app.route("/tng/result/grid.png")
-    @requires_fasrc
     def tng_result_grid():
-        return _serve_artifact("grid", "image/png")
+        """The last pulled ``tng_grid`` image (cache-only)."""
+        return _serve_cached("grid", "image/png")
 
     @app.route("/tng/result/stack.fits")
-    @requires_fasrc
     def tng_result_stack():
-        # ~51 MB — pull with the larger cap (the default 50 MB cap is too
-        # small) and hand it to the browser as a download.
-        return _serve_artifact(
-            "stack", "application/fits", as_attachment=True,
-            download_name="TNG_stack.fits",
-            max_bytes=Config.WebFetch.MAX_PSF_PULL_BYTES)
+        """The last pulled ``tng_stack`` FITS as a download (cache-only)."""
+        return _serve_cached("stack", "application/fits", as_attachment=True,
+                             download_name="TNG_stack.fits")

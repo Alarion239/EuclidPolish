@@ -32,6 +32,9 @@ _SACCT_CANCELLED = (
     "143|572|09:32|2048M||||||cpu=4,gres/gpu=1,mem=8000M|"
 )
 
+# sacct still reports the job alive (a live verdict must resolve nothing).
+_SACCT_RUNNING = _SACCT_DONE.replace("COMPLETED", "RUNNING")
+
 
 class _SSHStub:
     """SSH stand-in with scripted ``run`` responses keyed by command prefix."""
@@ -349,3 +352,103 @@ class TestResourcePostMortem:
         assert r["gpu_util_mean"] == "50.0"
         assert r["gpu_util_peak"] == "60.0"
         assert r["cpu_util_peak"] == "90.0"
+
+
+# ---------------------------------------------------------------------------
+# refresh_all_post_mortems(scope="unresolved"): reconcile UNKNOWN states
+# ---------------------------------------------------------------------------
+
+class TestReconcileUnresolved:
+
+    def _submit(self, db, job_log, jobid, *, db_state, csv_state=""):
+        db.insert(jobid, label="x", params={},
+                  script_path="/s", log_path="/o", err_path="/e")
+        db.update_state(jobid, state=db_state)
+        job_log.record_submission(JobRecord(jobid=jobid))
+        if csv_state:
+            job_log.record_post_mortem(jobid, {"state": csv_state})
+
+    def test_unresolved_scope_fixes_unknown_and_done_rows(self, db, job_log):
+        self._submit(db, job_log, "12345", db_state="UNKNOWN")
+        # Already authoritative → not a candidate of the unresolved scope.
+        self._submit(db, job_log, "222", db_state="COMPLETED", csv_state="COMPLETED")
+        # Still live → never queried.
+        self._submit(db, job_log, "333", db_state="RUNNING")
+        ssh = _SSHStub({"sacct ": (0, _SACCT_CANCELLED, "")})
+        seen = []
+        res = fasrc_jobs.refresh_all_post_mortems(
+            ssh, job_log=job_log, db=db, scope="unresolved",
+            progress=lambda i, n, jid: seen.append((i, n, jid)))
+        assert res["ok"] is True
+        assert res["total"] == 1 and res["updated"] == 1
+        assert res["resolved"] == {"12345": "CANCELLED"}
+        # The CSV ledger AND the live DB row now carry sacct's verdict.
+        assert job_log.get("12345")["state"] == "CANCELLED"
+        assert db.get("12345")["state"] == "CANCELLED"
+        assert seen == [(1, 1, "12345")]
+        assert all("333" not in c and "222" not in c for c in ssh.calls)
+
+    def test_stale_live_ledger_rows_are_requeried_in_both_scopes(self, db, job_log):
+        # Ledger RUNNING (a snapshot taken while it ran), DB CANCELLED.
+        self._submit(db, job_log, "12345", db_state="CANCELLED", csv_state="RUNNING")
+        # Genuinely live → never queried.
+        self._submit(db, job_log, "333", db_state="RUNNING", csv_state="RUNNING")
+        ssh = _SSHStub({"sacct ": (0, _SACCT_CANCELLED, "")})
+        res = fasrc_jobs.refresh_all_post_mortems(
+            ssh, job_log=job_log, db=db, scope="unresolved")
+        assert res["total"] == 1 and res["resolved"] == {"12345": "CANCELLED"}
+        assert job_log.get("12345")["state"] == "CANCELLED"
+        assert db.get("12345")["state"] == "CANCELLED"        # authoritative, kept
+        assert all("333" not in c for c in ssh.calls)
+
+        job_log.record_post_mortem("12345", {"state": "RUNNING"})
+        res = fasrc_jobs.refresh_all_post_mortems(
+            ssh, job_log=job_log, db=db, scope="all")
+        assert res["total"] == 1 and res["resolved"] == {"12345": "CANCELLED"}
+
+    def test_a_live_sacct_verdict_resolves_nothing(self, db, job_log):
+        self._submit(db, job_log, "12345", db_state="DONE", csv_state="RUNNING")
+        ssh = _SSHStub({"sacct ": (0, _SACCT_RUNNING, "")})
+        res = fasrc_jobs.refresh_all_post_mortems(
+            ssh, job_log=job_log, db=db, scope="unresolved")
+        assert res["resolved"] == {}
+        assert db.get("12345")["state"] == "DONE"
+
+    def test_unresolved_scope_leaves_row_when_sacct_is_silent(self, db, job_log):
+        self._submit(db, job_log, "444", db_state="DONE")
+        ssh = _SSHStub({"sacct ": (0, "", "")})
+        res = fasrc_jobs.refresh_all_post_mortems(
+            ssh, job_log=job_log, db=db, scope="unresolved")
+        assert res["updated"] == 0 and res["resolved"] == {}
+        assert db.get("444")["state"] == "DONE"
+
+    def test_authoritative_db_state_is_never_overwritten(self, db, job_log):
+        # DB says FAILED (authoritative, from squeue) while the CSV row is blank.
+        self._submit(db, job_log, "12345", db_state="FAILED")
+        ssh = _SSHStub({"sacct ": (0, _SACCT_DONE, "")})
+        fasrc_jobs.refresh_all_post_mortems(
+            ssh, job_log=job_log, db=db, scope="unresolved")
+        assert db.get("12345")["state"] == "FAILED"
+        assert job_log.get("12345")["state"] == "COMPLETED"
+
+    def test_unknown_scope_is_rejected(self, db, job_log):
+        with pytest.raises(ValueError):
+            fasrc_jobs.refresh_all_post_mortems(
+                _SSHStub(), job_log=job_log, db=db, scope="bogus")
+
+    def test_cancel_hook_stops_between_jobs(self, db, job_log):
+        self._submit(db, job_log, "1", db_state="UNKNOWN")
+        self._submit(db, job_log, "2", db_state="UNKNOWN")
+
+        class Stop(BaseException):
+            pass
+
+        def progress(i, n, jid):
+            if i == 2:
+                raise Stop()
+
+        ssh = _SSHStub({"sacct ": (0, "", "")})
+        with pytest.raises(Stop):
+            fasrc_jobs.refresh_all_post_mortems(
+                ssh, job_log=job_log, db=db, scope="unresolved", progress=progress)
+        assert sum(1 for c in ssh.calls if c.startswith("sacct ")) == 1

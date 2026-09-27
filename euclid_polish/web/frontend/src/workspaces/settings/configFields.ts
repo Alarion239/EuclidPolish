@@ -1,0 +1,110 @@
+/* Presentation of every JobConfig field (euclid_polish/web/job_config.py):
+ * label, group, input kind/range and the popover hint. The VALUES, defaults,
+ * types and the FASRC steps each field feeds come from GET /api/config; a
+ * field the server has that is missing here is still shown (generic number
+ * input, "Other" group) — configModel.test.ts checks the list stays complete
+ * for the fields we know. */
+
+export type FieldKind = "int" | "float" | "choice" | "text";
+
+export type FieldMeta = {
+  name: string;
+  label: string;
+  group: GroupId;
+  kind: FieldKind;
+  min?: number;
+  max?: number;
+  step?: number;
+  unit?: string;
+  choices?: { value: string; label: string }[];
+  hint: string;
+  /** Read by no job any more (shown, flagged). */
+  unused?: boolean;
+};
+
+export type GroupId = "cutouts" | "scenes" | "stars" | "lenses" | "psf" | "lr" | "plateau" | "display" | "other";
+
+export const GROUPS: { id: GroupId; title: string; sub: string }[] = [
+  { id: "cutouts", title: "Cutouts & PSF", sub: "VIS stamp size shared by the cutout download and ePSF extraction" },
+  { id: "scenes", title: "Synthetic scenes", sub: "split sizes, HR size and galaxy density of the generator" },
+  { id: "stars", title: "Star field", sub: "magnitudes and colours come from the active stellar calibration" },
+  { id: "lenses", title: "Strong lenses", sub: "θ_E from the SIS law, σ_v uniform in [min, max]" },
+  { id: "psf", title: "PSF distribution & saturation", sub: "shared by generation and on-the-fly training" },
+  { id: "lr", title: "Training · LR schedule", sub: "warmup → cosine, scaled to each run's steps" },
+  { id: "plateau", title: "Training · plateau guard", sub: "reduce-LR-on-plateau, L1 members only (off by default)" },
+  { id: "display", title: "Display", sub: "legacy display knobs" },
+  { id: "other", title: "Other", sub: "fields this console does not describe yet" },
+];
+
+export const FIELDS: FieldMeta[] = [
+  { name: "vis_pixels", label: "VIS cutout", group: "cutouts", kind: "int", min: 31, max: 4095, step: 2, unit: "px",
+    hint: "VIS cutout side in 0.10″ pixels. Must be odd (a true centre pixel); an even value is bumped up on save. The ePSF output size is locked to 2·side + 1." },
+
+  { name: "n_train", label: "Train scenes", group: "scenes", kind: "int", min: 1, max: 50000, unit: "scenes",
+    hint: "Number of training scenes generated (record mode; on-the-fly training draws its own)." },
+  { name: "n_valid", label: "Validate scenes", group: "scenes", kind: "int", min: 1, max: 5000, unit: "scenes",
+    hint: "Validation split: checkpoint selection (save-best) and the plateau guard watch it." },
+  { name: "n_test", label: "Test scenes", group: "scenes", kind: "int", min: 0, max: 5000, unit: "scenes",
+    hint: "Held-out evaluation set — training and save-best never touch it; Ensemble evaluations run here. 0 disables the split." },
+  { name: "hr_image_size", label: "HR image size", group: "scenes", kind: "int", min: 60, max: 2048, step: 6, unit: "px",
+    hint: "HR scene side in 0.05″ pixels, kept a multiple of 6 (the NISP rebin factor)." },
+  { name: "galaxy_density_arcmin2", label: "Galaxy density", group: "scenes", kind: "float", min: 0, max: 1000, step: 1, unit: "/arcmin²",
+    hint: "Raw TNG draw density. Activating a galaxy calibration (Realism › Galaxies) writes this field, so it can change under you — the save refuses a lost update." },
+
+  { name: "star_density_arcmin2", label: "Star density", group: "stars", kind: "float", min: 0, step: 0.001, unit: "/arcmin²",
+    hint: "Stellar surface density; the per-scene count is Poisson(density × field area). Default ≈ 5000 /deg²." },
+
+  { name: "lens_density_arcmin2", label: "Lens density", group: "lenses", kind: "float", min: 0, step: 0.1, unit: "/arcmin²",
+    hint: "Strong-lens surface density for training augmentation (far above the real sky rate)." },
+  { name: "lens_sigma_v_min_kms", label: "σ_v min", group: "lenses", kind: "float", min: 50, max: 600, step: 1, unit: "km/s",
+    hint: "Minimum lens velocity dispersion; θ_E ∝ σ_v². The default [150, 350] gives θ_E ≈ 0.3–2.0″." },
+  { name: "lens_sigma_v_max_kms", label: "σ_v max", group: "lenses", kind: "float", min: 50, max: 600, step: 1, unit: "km/s",
+    hint: "Maximum lens velocity dispersion; θ_E is clamped to 0.10–3.5″." },
+
+  { name: "psf_warp_prob", label: "Warp probability", group: "psf", kind: "float", min: 0, max: 1, step: 0.01,
+    hint: "Chance that a dirty exposure's shared empirical PSF gets an elastic deformation (a fresh draw every visit on the fly). 0 disables." },
+  { name: "psf_warp_alpha_max", label: "Warp α max", group: "psf", kind: "float", min: 0, max: 100, step: 0.1, unit: "HR px",
+    hint: "α is drawn uniformly from [0, max] per exposure; 20 matches polish-pub." },
+  { name: "psf_warp_sigma", label: "Warp σ", group: "psf", kind: "float", min: 0.1, max: 100, step: 0.1, unit: "HR px",
+    hint: "Gaussian smoothing scale of the four-band displacement field (0.05″ pixels); 3 matches polish-pub." },
+  { name: "saturation_mask_prob", label: "Dark-core probability", group: "psf", kind: "float", min: 0, max: 0.5, step: 0.01,
+    hint: "Base chance an above-well source becomes a rectangular blackout (ramps up with peak/well). Capped at 0.5 so bright stars keep intact cores." },
+
+  { name: "lr_peak", label: "Peak LR", group: "lr", kind: "float", min: 0, max: 1, step: 0.00001,
+    hint: "Learning rate at the end of warmup, where the cosine decay starts." },
+  { name: "lr_final", label: "Final LR", group: "lr", kind: "float", min: 0, max: 1, step: 0.00001,
+    hint: "Learning rate at the last step (the cosine floor)." },
+  { name: "lr_warmup_steps", label: "Warmup steps", group: "lr", kind: "int", min: 0, max: 100000, unit: "steps",
+    hint: "Linear warmup length before the cosine decay." },
+
+  { name: "plateau_lr_enabled", label: "Plateau guard", group: "plateau", kind: "choice",
+    choices: [{ value: "0", label: "off" }, { value: "1", label: "on (L1 members)" }],
+    hint: "Cut the LR (and roll back to the best checkpoint) when the validation metric stalls. Applies to L1 members only: L2/L3 have no skip-only basin and it misfires on their slow climbs." },
+  { name: "plateau_lr_metric", label: "Monitor", group: "plateau", kind: "choice",
+    choices: [{ value: "combined_loss", label: "combined_loss (min)" }, { value: "psnr_stretched", label: "psnr_stretched (max)" }],
+    hint: "combined_loss (lower is better) is the checkpoint metric and least noisy; psnr_stretched is the dB curve." },
+  { name: "plateau_lr_factor", label: "Factor", group: "plateau", kind: "float", min: 0.05, max: 0.99, step: 0.01,
+    hint: "Multiply the LR by this on each cut (0.5 halves it). Shares the LR scale with the gradient-spike guard; cuts compound." },
+  { name: "plateau_lr_patience", label: "Patience", group: "plateau", kind: "int", min: 100, max: 100000, unit: "steps",
+    hint: "Steps without progress before a cut." },
+  { name: "plateau_lr_min_delta", label: "Min Δ", group: "plateau", kind: "float", min: 0, max: 10, step: 0.0001,
+    hint: "Smallest change that counts as progress: ~1e-4 for combined_loss, ~0.05 dB for psnr_stretched." },
+  { name: "plateau_lr_cooldown", label: "Cooldown", group: "plateau", kind: "int", min: 0, max: 100000, unit: "steps",
+    hint: "Steps after a cut before the stall counter re-arms." },
+  { name: "plateau_lr_min_lr", label: "Min LR", group: "plateau", kind: "float", min: 0, max: 1, step: 0.00001,
+    hint: "Absolute floor: neither guard lowers the effective LR below it." },
+
+  { name: "asinh_scale", label: "asinh scale", group: "display", kind: "float", min: 0.01, step: 0.1, unit: "e⁻", unused: true,
+    hint: "Knee of the pre-rework Inference page's asinh panels. No job or page reads it any more: image knees live in the Display panel." },
+];
+
+export const FIELD_BY_NAME: Record<string, FieldMeta> = Object.fromEntries(FIELDS.map((f) => [f.name, f]));
+
+/** Metadata for any server field (a generic entry for an undescribed one). */
+export function fieldMeta(name: string, type?: string): FieldMeta {
+  return FIELD_BY_NAME[name] ?? {
+    name, label: name.replace(/_/g, " "), group: "other",
+    kind: type === "int" ? "int" : type === "str" ? "text" : "float",
+    hint: "No description yet (a new job_config field).",
+  };
+}

@@ -279,3 +279,83 @@ describe("Shell", () => {
     expect(await screen.findByText("boom")).toBeTruthy();
   });
 });
+
+/* ── shell polish (W-Settings+Home) ──────────────────────────────────────── */
+
+const ALERTS = {
+  computed_at: "2026-09-26T10:00:00+00:00", ttl_s: 30, counts: { bad: 1, warn: 1, ok: 3, unknown: 1 },
+  checks: [],
+  alerts: [
+    { id: "records-noise", label: "Records noise model", state: "bad", title: "Training records use an older noise model" },
+    { id: "disk", label: "Disk space", state: "warn", title: "19.0 GiB free on the data disk" },
+  ],
+};
+
+describe("Shell polish", () => {
+  it("puts the full breadcrumb path in a tooltip so truncated crumbs stay readable", async () => {
+    mount("/ensemble/starless/knee");
+    await screen.findByText("ensemble:knee");
+    const crumbs = screen.getByRole("navigation", { name: "Breadcrumbs" });
+    expect(crumbs.getAttribute("title")).toBe("Ensemble · starless › Knee PSNR");
+    // every crumb is a truncating text element (CSS ellipsis)
+    expect(crumbs.querySelectorAll(".crumbs__text")).toHaveLength(2);
+    expect(within(crumbs).getByText("Knee PSNR").getAttribute("aria-current")).toBe("page");
+  });
+
+  it("badges Home in the rail with the number of health alerts, worst tone", async () => {
+    routes["GET /api/system/alerts"] = () => ({ body: ALERTS });
+    mount();
+    await screen.findByText("sky:atlas");
+    const rail = screen.getByRole("navigation", { name: "Workspaces" });
+    const home = within(rail).getByText("Home").closest("a")!;
+    const badge = await waitFor(() => {
+      const b = home.querySelector(".rail__badge");
+      if (!b) throw new Error("no badge yet");
+      return b;
+    });
+    expect(badge.getAttribute("data-tone")).toBe("bad");
+    expect(badge.textContent).toContain("2");
+    expect(badge.getAttribute("title")).toContain("Training records use an older noise model");
+  });
+
+  it("lists the global 'Run a job' actions after the page's own actions", async () => {
+    mount();
+    await screen.findByText("sky:atlas");
+    act(() => useShellUi.getState().openOnly("palette"));
+    await screen.findByText("Fly to NEXUS");
+    const headings = [...document.querySelectorAll("[cmdk-group-heading]")].map((h) => h.textContent);
+    expect(headings.indexOf("Sky")).toBeGreaterThanOrEqual(0);
+    expect(headings.indexOf("Run a job")).toBeGreaterThan(headings.indexOf("Sky"));
+    expect(screen.getByText("Evaluate the STARFULL ensemble")).toBeTruthy();
+  });
+
+  it("runs a job from the palette only after confirm, then tracks it in the tray", async () => {
+    routes["POST /ensemble/evaluate"] = () => ({ body: { job_id: "ev1" } });
+    mount();
+    await screen.findByText("sky:atlas");
+    act(() => useShellUi.getState().openOnly("palette"));
+    fireEvent.click(await screen.findByText("Evaluate the STARFULL ensemble"));
+    const dlg = await screen.findByRole("alertdialog", { name: "Evaluate the STARFULL ensemble?" });
+    expect(calls.some((c) => c.url === "/ensemble/evaluate")).toBe(false);
+    fireEvent.click(within(dlg).getByRole("button", { name: "Evaluate" }));
+    await waitFor(() => expect(calls.some((c) => c.method === "POST" && c.url === "/ensemble/evaluate")).toBe(true));
+    const post = calls.find((c) => c.url === "/ensemble/evaluate")!;
+    expect((post.body as FormData).get("mode")).toBe("starfull");
+    await waitFor(() => expect(useJobsStore.getState().keyed["run:evaluate"]).toBe("ev1"));
+  });
+
+  it("toasts a SLURM job that leaves the live list, with its final state", async () => {
+    routes["GET /api/fasrc/jobs/4242/status"] = () => ({ body: { ok: true, jobid: "4242", state: "COMPLETED" } });
+    mount();
+    await screen.findByText("sky:atlas");
+    const key = ["jobs-feed", "slurm"];
+    const live = { offline: false, stale: false, queue: null, current: null,
+      jobs: [{ jobid: "4242", state: "RUNNING", label: "ensemble_train ×4" }] };
+    act(() => { queryClient.setQueryData(key, live); });
+    act(() => { queryClient.setQueryData(key, { ...live, stale: true, jobs: [] }); });   // a slow tick: ignored
+    expect(calls.some((c) => c.url === "/api/fasrc/jobs/4242/status")).toBe(false);
+    act(() => { queryClient.setQueryData(key, { ...live, jobs: [] }); });
+    expect(await screen.findByText("SLURM 4242 · ensemble_train ×4")).toBeTruthy();
+    expect(await screen.findByText("completed")).toBeTruthy();
+  });
+});

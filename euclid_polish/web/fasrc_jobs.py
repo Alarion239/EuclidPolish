@@ -26,7 +26,6 @@ import os
 import re
 import shlex
 import sqlite3
-import statistics
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -149,12 +148,6 @@ class JobDB:
             c.execute(f"UPDATE fasrc_jobs SET {', '.join(sets)} "
                       f"WHERE jobid = ?", args)
 
-    def update_progress(self, jobid: str, step: int, total: int) -> None:
-        with self._conn() as c:
-            c.execute("UPDATE fasrc_jobs SET progress_step = ?, "
-                      "progress_total = ?, last_seen = ? WHERE jobid = ?",
-                      (int(step), int(total), time.time(), jobid))
-
     def set_step_id(self, jobid: str, step_id: str) -> None:
         """Tag a job with its pipeline step id (for per-step history)."""
         with self._conn() as c:
@@ -186,18 +179,6 @@ class JobDB:
             ).fetchall()
         return [dict(r) for r in rows]
 
-    def list_completed(self, limit: int = 10) -> list[dict[str, Any]]:
-        with self._conn() as c:
-            rows = c.execute(
-                "SELECT * FROM fasrc_jobs "
-                "WHERE state IN ('COMPLETED', 'DONE', 'TIMEOUT', 'FAILED', "
-                "                'CANCELLED') "
-                "  AND started_at IS NOT NULL AND ended_at IS NOT NULL "
-                "ORDER BY submitted_at DESC LIMIT ?",
-                (limit,),
-            ).fetchall()
-        return [dict(r) for r in rows]
-
 
 DB = JobDB()
 #: Module-level singleton; tests can swap in their own log via
@@ -210,100 +191,74 @@ def _utc_now_iso() -> str:
 
 
 # ---------------------------------------------------------------------------
-# ETA heuristic
+# Compact params: history / tracking rows without the embedded payload blobs
 # ---------------------------------------------------------------------------
+#
+# Progress and ETA of a SLURM job come from its Reporter ``.events`` stream
+# (``job_status``); the old sqlite step-counter ETA heuristic and the tqdm
+# line parser were orphaned when the training-status poll was deleted and
+# are gone (W-Ops, 2026-09-26).
 
-def _params_of(row: dict[str, Any]) -> dict[str, Any]:
+#: A private (``_``-prefixed) param above this many serialised characters is
+#: an embedded payload (population calibration, star prior, …) that the
+#: server re-resolves at submit — never shown, never cloned back.
+_PRIVATE_BLOB_CHARS = 1024
+#: Any other value above this is dropped from a listing too (with its size).
+_PUBLIC_VALUE_CHARS = 8192
+
+
+def _serialised_len(value: Any) -> int:
+    if isinstance(value, str):
+        return len(value)
     try:
-        return json.loads(row.get("params_json") or "{}")
-    except json.JSONDecodeError:
-        return {}
+        return len(json.dumps(value, separators=(",", ":")))
+    except (TypeError, ValueError):
+        return len(str(value))
 
 
-def secs_per_step_history(n: int = 8) -> float | None:
-    """Median wall-second-per-training-step across the last ``n`` finished jobs.
+def compact_params(params: dict[str, Any]) -> tuple[dict[str, Any], dict[str, int]]:
+    """``(kept, omitted)``: ``params`` without its embedded payload blobs.
 
-    ``steps`` can arrive as a string because submit forms write everything
-    as text into ``params_json``; ``runtime`` is built from floats but
-    either timestamp can be ``None``. Coerce both to numbers up front and
-    skip rows where the coercion fails — silently dropping a bad row is
-    better than 500-ing the training-status endpoint (which would freeze
-    the live job ticker on every page in the UI).
+    A ``_``-prefixed key holding structured data or more than
+    ``_PRIVATE_BLOB_CHARS`` characters, and any value above
+    ``_PUBLIC_VALUE_CHARS``, moves to ``omitted`` as ``{key: size}``. The
+    history and tracking listings use this so a row stays a few hundred
+    bytes instead of ~200 KB of calibration JSON.
     """
-    samples = []
-    for row in DB.list_completed(limit=n):
-        params = _params_of(row)
-        steps_raw = params.get("steps") or row.get("progress_total") or 0
-        try:
-            steps = float(steps_raw)
-        except (TypeError, ValueError):
-            continue
-        try:
-            runtime = float((row.get("ended_at") or 0)
-                            - (row.get("started_at") or 0))
-        except (TypeError, ValueError):
-            continue
-        if runtime <= 0 or steps <= 0:
-            continue
-        samples.append(runtime / steps)
-    if not samples:
-        return None
-    return statistics.median(samples)
+    kept: dict[str, Any] = {}
+    omitted: dict[str, int] = {}
+    for key, value in params.items():
+        size = _serialised_len(value)
+        private_blob = str(key).startswith("_") and (
+            isinstance(value, dict | list) or size > _PRIVATE_BLOB_CHARS)
+        if private_blob or size > _PUBLIC_VALUE_CHARS:
+            omitted[key] = size
+        else:
+            kept[key] = value
+    return kept, omitted
 
 
-def eta_for_submission(steps: int) -> float | None:
-    """Rough wall-time ETA in seconds for a fresh job of ``steps`` steps."""
-    spt = secs_per_step_history()
-    if spt is None:
-        return None
-    return spt * steps
+def compact_row(row: dict[str, Any]) -> dict[str, Any]:
+    """A job-log / DB row with ``params`` (parsed, compacted) and
+    ``params_omitted`` (``{key: size}``) in place of the raw ``params_json``.
+    The input row is not modified; malformed ``params_json`` reads as ``{}``."""
+    out = dict(row)
+    raw = row.get("params_json")
+    try:
+        parsed = json.loads(raw) if raw else {}
+    except (TypeError, json.JSONDecodeError):
+        parsed = {}
+    if not isinstance(parsed, dict):
+        parsed = {}
+    kept, omitted = compact_params(parsed)
+    out["params"] = kept
+    out["params_omitted"] = omitted
+    # ``params`` carries the same data — the raw column is dropped so the
+    # history payload does not ship every row's params twice.
+    out.pop("params_json", None)
+    return out
 
 
-def eta_for_running(row: dict[str, Any]) -> float | None:
-    """Live ETA for a job that has emitted a ``step X/Y`` line.
-
-    Falls back to the historical heuristic if the log has nothing yet.
-    """
-    step  = row.get("progress_step")  or 0
-    total = row.get("progress_total") or 0
-    started = row.get("started_at")
-    if step and total and started:
-        elapsed = time.time() - started
-        if step > 0:
-            return elapsed * (total - step) / float(step)
-    params = _params_of(row)
-    return eta_for_submission(params.get("steps", 0))
-
-
-# ---------------------------------------------------------------------------
-# Progress-line parsing
-# ---------------------------------------------------------------------------
-
-#  tqdm formats step counters as ``  12345/400000 [12:34<…]`` — match the
-#  ``step/total`` pair and ignore the rest. Falls through if absent.
-_TQDM_PROGRESS_RE = re.compile(r"(\d{1,8})\s*/\s*(\d{1,8})")
-
-_STEP_ID_RE = re.compile(r"STEP_ID=([A-Za-z0-9_\-]+)")
-
-
-def parse_progress(line: str) -> tuple[int, int] | None:
-    """Pull (step, total) out of a single log line, or None."""
-    m = _TQDM_PROGRESS_RE.search(line)
-    if not m:
-        return None
-    step, total = int(m.group(1)), int(m.group(2))
-    # Guard against false positives like "shape 4/4" in module prints.
-    if total < 50 or step > total:
-        return None
-    return step, total
-
-
-# ---------------------------------------------------------------------------
-# Submission helper — single SSH-write + sbatch + parse + DB.insert flow
-# ---------------------------------------------------------------------------
-
-# Marker for the heredoc that streams the script over SSH. Single source
-# of truth — both submit handlers used to hard-code their own copy.
 _HEREDOC_EOF = "__EUCLID_POLISH_EOF__"
 
 _SBATCH_JOBID_RE = re.compile(r"Submitted batch job (\d+)")
@@ -841,40 +796,146 @@ def fetch_live_jobstats(ssh: Any, jobid: str) -> dict[str, Any] | None:
     return stats
 
 
-def refresh_all_post_mortems(
-    ssh: Any, *, job_log: JobLog | None = None,
-) -> dict[str, Any]:
-    """Re-pull Jobstats plus sacct for every finalised job and re-record.
+#: CSV ledger states that are not sacct's verdict yet: blank (no accounting
+#: recorded) or one of the speculative states reconcile assigns from "absent
+#: from squeue" (``SPECULATIVE_TERMINAL``).
+_UNRESOLVED_LEDGER_STATES = frozenset({""}) | SPECULATIVE_TERMINAL
+#: DB states that mean the job may still be running — never re-accounted.
+_LIVE_DB_STATES = frozenset({"PENDING", "RUNNING", "REQUEUED", "RESIZING",
+                             "SUSPENDED", "COMPLETING", "CONFIGURING"})
+REFRESH_SCOPES = ("all", "unresolved")
 
-    One-shot maintenance: when the way a post-mortem field is *computed*
-    changes, rows already written hold stale values and the normal reconcile
-    won't re-fetch them (it only retries rows with a blank state). This
-    re-queries Jobstats plus sacct for each terminal job and overwrites the
-    actuals. Jobs whose accounting has expired are skipped (their old values
-    stay). Returns ``{ok, updated, total}``.
+
+def normalize_state(state: Any) -> str:
+    """``" cancelled by 1234 "`` → ``"CANCELLED"`` (upper case, sacct's
+    ``by <uid>`` tail dropped); ``None`` → ``""``."""
+    words = str(state or "").split()
+    return words[0].upper() if words else ""
+
+
+def ledger_is_final(ledger: Any) -> bool:
+    """A ledger state that is sacct's final verdict: neither blank /
+    speculative (``DONE``/``UNKNOWN``) nor a live snapshot (``RUNNING`` …
+    recorded while the job still ran)."""
+    s = normalize_state(ledger)
+    return s not in _UNRESOLVED_LEDGER_STATES and s not in _LIVE_DB_STATES
+
+
+def is_unresolved(ledger: Any, db_state: Any) -> bool:
+    """The job's outcome is not settled and it is not live in the DB:
+
+    * a blank / speculative ledger state (no sacct verdict yet), or
+    * a stale live ledger state (``RUNNING``/``PENDING`` recorded while the
+      job ran) that the DB has since finalised.
     """
+    lg, db = normalize_state(ledger), normalize_state(db_state)
+    if db in _LIVE_DB_STATES:
+        return False
+    if lg in _UNRESOLVED_LEDGER_STATES:
+        return True
+    return lg in _LIVE_DB_STATES and db != ""
+
+
+def display_state(ledger: Any, db_state: Any) -> str:
+    """The one state a history / logs row shows: sacct's final verdict when
+    the ledger has one; else the DB state when it is live or finalised (a
+    stale ``RUNNING`` ledger never outranks a DB ``CANCELLED``); else the
+    speculative ledger / DB state; ``PENDING`` when nothing is known."""
+    lg, db = normalize_state(ledger), normalize_state(db_state)
+    if ledger_is_final(lg):
+        return lg
+    if db and (db in _LIVE_DB_STATES or db not in SPECULATIVE_TERMINAL
+               or lg in _LIVE_DB_STATES):
+        return db
+    return lg or db or "PENDING"
+
+
+def _refresh_candidates(scope: str, target_log: JobLog,
+                        target_db: JobDB) -> list[dict[str, str]]:
+    rows = [r for r in target_log.list_all() if r.get("jobid")]
+    out = []
+    for r in rows:
+        db_row = target_db.get(r["jobid"]) or {}
+        db_state = db_row.get("state")
+        ledger = normalize_state(r.get("state"))
+        if scope == "all":
+            # Every finished row: any recorded non-live ledger state, plus a
+            # stale live ledger state the DB has finalised. A blank row
+            # (never accounted, maybe not even started) is left out.
+            if (ledger and ledger not in _LIVE_DB_STATES) or (
+                    ledger in _LIVE_DB_STATES and is_unresolved(ledger, db_state)):
+                out.append(r)
+        elif is_unresolved(ledger, db_state):
+            out.append(r)
+    return out
+
+
+def refresh_all_post_mortems(
+    ssh: Any, *, job_log: JobLog | None = None, db: JobDB | None = None,
+    scope: str = "all",
+    progress: Callable[[int, int, str], None] | None = None,
+) -> dict[str, Any]:
+    """Re-pull Jobstats plus sacct for finalised jobs and re-record them.
+
+    ``scope="all"`` re-queries every finished job of the CSV ledger — the
+    one-shot backfill after a post-mortem field's computation changes (the
+    normal reconcile only retries rows with a blank state); jobs whose
+    accounting has expired keep their old values.
+
+    ``scope="unresolved"`` reconciles the jobs whose outcome is unknown
+    (:func:`is_unresolved`: a blank / ``UNKNOWN`` / ``DONE`` ledger state, or
+    a stale ``RUNNING``/``PENDING`` one the DB has finalised), skipping jobs
+    the DB still sees live (the same rule as the history's ``unresolved``
+    filter).
+    sacct's verdict fills the ledger and also replaces a speculative DB
+    state (an authoritative one — FAILED/CANCELLED/TIMEOUT/COMPLETED — is
+    never overwritten), so a job that vanished from squeue reads COMPLETED
+    or FAILED again instead of UNKNOWN.
+
+    ``progress(i, n, jobid)`` runs before job ``i`` of ``n`` (1-based) — a
+    local job passes ``cap.tick`` so a cancel lands between jobs. Returns
+    ``{ok, updated, total, scope, resolved: {jobid: sacct state}}``.
+    """
+    if scope not in REFRESH_SCOPES:
+        raise ValueError(f"scope must be one of {REFRESH_SCOPES}, got {scope!r}")
     target_log = job_log if job_log is not None else JOBLOG
+    target_db = db if db is not None else DB
     if ssh is None or not ssh.is_connected():
-        return {"ok": False, "error": "not connected", "updated": 0, "total": 0}
-    candidates = [
-        r for r in target_log.list_all()
-        if r.get("jobid") and (r.get("state") or "").strip() in TERMINAL_STATES
-    ]
+        return {"ok": False, "error": "not connected", "updated": 0, "total": 0,
+                "scope": scope, "resolved": {}}
+    candidates = _refresh_candidates(scope, target_log, target_db)
     updated = 0
-    for r in candidates:
+    resolved: dict[str, str] = {}
+    for i, r in enumerate(candidates, start=1):
         jobid = r["jobid"]
+        db_row = target_db.get(jobid)
+        db_state = normalize_state((db_row or {}).get("state"))
+        was_unresolved = is_unresolved(r.get("state"), db_state)
+        if progress is not None:
+            progress(i, len(candidates), jobid)
         target_log.mark_accounting_attempt(jobid)
         try:
             stats = fetch_accounting_stats(ssh, jobid)
         except Exception:
             stats = None
-        if stats:
-            # Fold the events stream's resource samples in alongside the
-            # sacct actuals so the history panel keeps GPU/CPU util.
-            stats.update(fetch_resource_summary(ssh, r.get("events_path")))
-            if target_log.record_post_mortem(jobid, stats):
-                updated += 1
-    return {"ok": True, "updated": updated, "total": len(candidates)}
+        if not stats:
+            continue
+        # Fold the events stream's resource samples in alongside the
+        # sacct actuals so the history panel keeps GPU/CPU util.
+        stats.update(fetch_resource_summary(ssh, r.get("events_path")))
+        if target_log.record_post_mortem(jobid, stats):
+            updated += 1
+        verdict = normalize_state(stats.get("state"))
+        # Only a final verdict resolves anything: a live one (sacct still
+        # reports RUNNING) never overwrites the DB.
+        if not ledger_is_final(verdict):
+            continue
+        if db_row is not None and db_state in SPECULATIVE_TERMINAL:
+            target_db.update_state(jobid, state=verdict)
+        if was_unresolved or db_state in SPECULATIVE_TERMINAL:
+            resolved[jobid] = verdict
+    return {"ok": True, "updated": updated, "total": len(candidates),
+            "scope": scope, "resolved": resolved}
 
 
 def reconcile_with_squeue(squeue_rows: list[dict[str, Any]],

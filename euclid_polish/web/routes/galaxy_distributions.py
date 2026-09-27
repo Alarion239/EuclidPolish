@@ -4,7 +4,7 @@ import io
 
 from flask import abort, jsonify, request, send_file
 
-from euclid_polish.web import euclid_session
+from euclid_polish.web import errors, euclid_session
 from euclid_polish.web.helpers.galaxy_distributions import (
     build_galaxy_distributions,
     read_galaxy_distributions,
@@ -58,12 +58,15 @@ def _include_training_requested() -> bool:
 
 
 def register(app):
+    # The Figures › Plates tab shows these reasons verbatim.
+    errors.json_errors_for(app, "/view/")
+
     @app.route("/view/galaxy-distribution-plate")
     def view_galaxy_distribution_plate():
         """Download the four-panel galaxy population diagnostic."""
         output_format = (request.args.get("format") or "png").strip().lower()
         if output_format not in {"png", "pdf", "svg"}:
-            abort(400)
+            abort(400, description="format must be png, pdf or svg")
         try:
             dpi = int(request.args.get("dpi", "300"))
             figure = render_galaxy_distribution_plate(
@@ -73,8 +76,8 @@ def register(app):
                 output_format=output_format,
                 dpi=dpi,
             )
-        except (TypeError, ValueError):
-            abort(400)
+        except (TypeError, ValueError) as exc:
+            abort(400, description=f"could not render the galaxy plate: {exc}")
         mimetype = {
             "png": "image/png", "pdf": "application/pdf",
             "svg": "image/svg+xml",
@@ -96,17 +99,18 @@ def register(app):
         """Download the reviewed Euclid brightness-radius fit."""
         output_format = (request.args.get("format") or "png").strip().lower()
         if output_format not in {"png", "pdf", "svg"}:
-            abort(400)
+            abort(400, description="format must be png, pdf or svg")
         candidate = joint_galaxy_state().get("candidate")
         if not candidate:
-            abort(404)
+            abort(404, description=(
+                "no joint galaxy-population candidate — fit one on Realism › Galaxies"))
         try:
             dpi = int(request.args.get("dpi", "300"))
             payload = render_population_atlas(
                 candidate, output_format=output_format, dpi=dpi,
             )
-        except (TypeError, ValueError):
-            abort(400)
+        except (TypeError, ValueError) as exc:
+            abort(400, description=f"could not render the population atlas: {exc}")
         mimetype = {
             "png": "image/png", "pdf": "application/pdf", "svg": "image/svg+xml",
         }[output_format]

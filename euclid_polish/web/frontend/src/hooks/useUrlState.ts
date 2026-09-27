@@ -21,9 +21,17 @@
  * in-place writes of the tick) and pushes; later setters replace that entry.
  * Other params keep their exact spelling (only this key's segment is
  * rewritten) and the hash is preserved.
+ * A setter builds on the router's LATEST location, not the one its component
+ * last rendered with: setters called from different macrotasks before React
+ * re-renders (two viewers answering their fetches, a navigation made outside
+ * the component such as the `?inspect=` sync) merge instead of dropping each
+ * other's params. A setter whose page the router has already left (the
+ * latest pathname differs from the rendered one) writes nothing.
  */
 import { useCallback, useContext, useLayoutEffect, useMemo, useRef } from "react";
-import { UNSAFE_NavigationContext, useLocation, useNavigate } from "react-router-dom";
+import {
+  UNSAFE_DataRouterContext, UNSAFE_NavigationContext, useLocation, useNavigate, type Location,
+} from "react-router-dom";
 
 export type UrlStateOpts<T> = {
   /** raw param → value (return undefined for "invalid → default"). */
@@ -96,6 +104,28 @@ function withParam(search: string, key: string, raw: string | null): string {
   return out.length ? `?${out.join("&")}` : "";
 }
 
+type LatestSource = {
+  router?: { state: { location: Location } } | null;
+  navigator?: unknown;
+  basename?: string;
+};
+
+/** The router's current location, ahead of React's render: a data router's
+ *  committed state, else a history navigator's `location` (BrowserRouter,
+ *  MemoryRouter), else null (use the rendered location). The pathname is
+ *  relative to the router's basename, like `useLocation()`'s. */
+function latestLocation(src: LatestSource): Location | null {
+  const nav = src.navigator as { location?: Location } | undefined;
+  const found = src.router?.state?.location
+    ?? (nav?.location && typeof nav.location.pathname === "string" ? nav.location : null);
+  if (!found) return null;
+  const base = src.basename && src.basename !== "/" ? src.basename.replace(/\/+$/, "") : "";
+  if (base && found.pathname.startsWith(base)) {
+    return { ...found, pathname: found.pathname.slice(base.length) || "/" };
+  }
+  return found;
+}
+
 export function useUrlState<T>(
   key: string,
   defaultValue: T,
@@ -103,7 +133,8 @@ export function useUrlState<T>(
 ): [T, (next: T | ((prev: T) => T)) => void] {
   const location = useLocation();
   const navigate = useNavigate();
-  const { navigator } = useContext(UNSAFE_NavigationContext);
+  const { navigator, basename } = useContext(UNSAFE_NavigationContext);
+  const dataRouter = useContext(UNSAFE_DataRouterContext)?.router ?? null;
 
   const inferred = inferCodec(defaultValue);
   const parse = opts.parse ?? inferred.parse;
@@ -134,7 +165,12 @@ export function useUrlState<T>(
       parse: p, serialize: s, defaultValue: d,
     } = live.current;
     let batch = PENDING.get(navigator);
-    const base = batch?.search ?? loc.search;
+    // Build on the latest location (a write React has not rendered yet, or a
+    // navigation made elsewhere) — unless the router already left this page.
+    const latest = latestLocation({ router: dataRouter, navigator, basename });
+    if (!batch && latest && latest.pathname !== loc.pathname) return;
+    const current = !batch && latest ? latest : loc;
+    const base = batch?.search ?? current.search;
     const currentRaw = new URLSearchParams(base).get(key);
     const prev = currentRaw == null ? d : (p(currentRaw) ?? d);
     const resolved = typeof next === "function" ? (next as (v: T) => T)(prev) : next;
@@ -148,12 +184,12 @@ export function useUrlState<T>(
     const nextSearch = withParam(base, key, nextRaw);
     if (nextSearch === base) return;
     if (!batch) {
-      const fresh: TickBatch = { search: base, origin: base, originState: loc.state, pushed: false };
+      const fresh: TickBatch = { search: base, origin: base, originState: current.state, pushed: false };
       batch = fresh;
       PENDING.set(navigator, fresh);
       setTimeout(() => { if (PENDING.get(navigator) === fresh) PENDING.delete(navigator); }, 0);
     }
-    const to = (search: string) => ({ pathname: loc.pathname, search, hash: loc.hash });
+    const to = (search: string) => ({ pathname: loc.pathname, search, hash: current.hash });
     if (!rep && !batch.pushed) {
       // The tick's one new entry. Earlier replace-mode writes of this tick
       // edited the original entry in place: put it back first, so that one
@@ -167,7 +203,7 @@ export function useUrlState<T>(
       nav(to(nextSearch), { replace: true, state: batch.pushed ? null : batch.originState });
     }
     batch.search = nextSearch;
-  }, [key, navigator]);
+  }, [key, navigator, dataRouter, basename]);
 
   return [value, setValue];
 }
