@@ -169,6 +169,14 @@ class JobDB:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    def list_by_step(self, step_id: str) -> list[dict[str, Any]]:
+        """Every recorded submission of one FASRC step, newest first."""
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT * FROM fasrc_jobs WHERE step_id = ? ORDER BY submitted_at DESC",
+                (step_id,)).fetchall()
+        return [dict(r) for r in rows]
+
     def list_live(self) -> list[dict[str, Any]]:
         """Every ``PENDING``/``RUNNING`` row, newest first — however old
         (no ``LIMIT``: a long-queued job must not fall out of view)."""

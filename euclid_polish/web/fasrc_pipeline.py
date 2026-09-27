@@ -25,6 +25,7 @@ import contextlib
 import hashlib
 import json
 import math
+import re
 import secrets
 import shlex
 import textwrap
@@ -38,9 +39,41 @@ from euclid_polish.config import Config
 from euclid_polish.ensemble_registry import default_ensemble_dir, next_member_names
 from euclid_polish.tng import selection as tng_selection
 from euclid_polish.training.loss_names import KNEE_LOSS_MODES, LOSS_NAMES
-from euclid_polish.web import fasrc_config
+from euclid_polish.web import fasrc_config, fasrc_jobs
 from euclid_polish.web.fasrc_jobs import _conda_activate_snippet
 from euclid_polish.web.helpers import population_calibration
+
+_MEMBER_NAME = re.compile(r"member_(\d+)")
+
+
+def submitted_member_names() -> set[str]:
+    """Member names recorded ``add``/``fork`` training submissions claimed.
+
+    They exist on FASRC (training or finished) before the local registry sees
+    them — the registry learns a member only when it is pulled — so a second
+    batch submitted before the pull must not reuse them."""
+    names: set[str] = set()
+    for row in fasrc_jobs.DB.list_by_step("ensemble_train"):
+        try:
+            params = json.loads(row.get("params_json") or "{}")
+        except ValueError:
+            continue
+        if str(params.get("mode", "add") or "add") not in ("add", "fork"):
+            continue
+        names |= {n.strip() for n in str(params.get("member_names", "")).split(",") if n.strip()}
+    return names
+
+
+def after_claimed(names: list[str], claimed: set[str]) -> list[str]:
+    """A fresh consecutive block of member names, moved past every claimed
+    index (never backwards; unparseable claims are ignored)."""
+    indices = [int(m.group(1)) for n in claimed if (m := _MEMBER_NAME.fullmatch(n))]
+    first = _MEMBER_NAME.fullmatch(names[0]) if names else None
+    if not indices or first is None:
+        return list(names)
+    start = max(int(first.group(1)), max(indices) + 1)
+    return [f"member_{i:02d}" for i in range(start, start + len(names))]
+
 
 # ---------------------------------------------------------------------------
 # Resource preset (subset of SLURM knobs the user can override per submit)
@@ -1486,7 +1519,8 @@ class EnsembleTrainStep(FASRCPipelineStep):
                         (1 if mode == "fork" else 5))
             if count <= 0:
                 raise ValueError("member count must be positive")
-            names = next_member_names(default_ensemble_dir(), count)
+            names = after_claimed(next_member_names(default_ensemble_dir(), count),
+                                  submitted_member_names())
             prepared["count"] = count
             prepared["member_names"] = ",".join(names)
         if str(prepared.get("base_seed", "")).strip() in ("", "-1"):

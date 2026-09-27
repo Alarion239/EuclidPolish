@@ -1364,3 +1364,27 @@ class TestFixedCpusEnforcement:
             f"_try_startup_ssh_connect honours "
             f"EUCLID_POLISH_DISABLE_AUTO_SSH."
         )
+
+
+def test_new_members_skip_names_an_unpulled_submission_already_claimed(monkeypatch):
+    """Names come from the local registry, but members a submitted batch is
+    training (or finished) on FASRC are not in it until they are pulled; a
+    second 'add' before the pull must not reuse them (SLURM 48927816 claimed
+    member_199-202 while the registry still ended at 198)."""
+    from euclid_polish.web import fasrc_jobs
+    monkeypatch.setattr(fasrc_pipeline, "next_member_names",
+                        lambda base, k: [f"member_{199 + i}" for i in range(k)])
+    fasrc_jobs.DB.insert("48927816", label="Train ensemble", params={
+        "mode": "add", "member_names": "member_199,member_200,member_201,member_202",
+        "step_id": "ensemble_train"}, script_path="s", log_path="l", err_path="e")
+    fasrc_jobs.DB.set_step_id("48927816", "ensemble_train")
+    prepared = REGISTRY.get("ensemble_train").prepare_params({"mode": "add", "count": 3})
+    assert prepared["member_names"] == "member_203,member_204,member_205"
+
+
+def test_claimed_names_never_move_a_block_backwards():
+    assert fasrc_pipeline.after_claimed(["member_199", "member_200"], {"member_150"}) == \
+        ["member_199", "member_200"]
+    assert fasrc_pipeline.after_claimed(["member_199"], {"member_199", "junk", "member_202"}) == \
+        ["member_203"]
+    assert fasrc_pipeline.after_claimed(["member_07", "member_08"], set()) == ["member_07", "member_08"]
