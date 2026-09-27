@@ -5,6 +5,7 @@
 import { apiGet, apiPost, ApiError } from "../../../api/client";
 import { isTerminal, refreshJobsFeed, useJobsStore, type Job } from "../../../api/jobs";
 import { invalidate } from "../../../api/query";
+import { openInspector } from "../../../app/inspector";
 import { formatDec, formatRA } from "../../../format";
 import { confirm, toast } from "../../../ui";
 import { fmtCoord } from "./urlState";
@@ -119,8 +120,20 @@ export async function cacheTileAt(ra: number, dec: number, opts: { run?: boolean
   if (!ok) return null;
   const r = await startJob("/api/real/tiles", {
     ra: fmtCoord(ra), dec: fmtCoord(dec), run: opts.run ? "production,mean" : undefined, force: force ? 1 : undefined,
-  }, { onDone: refreshSky });
-  reportStart(r, "Tile cache");
+  });
+  if (reportStart(r, "Tile cache") && r.ok && r.jobId) {
+    // When it lands, open the new tile's card: its LR beside the SR of the
+    // models it ran (production + mean with "run"), ready to compare or overlay.
+    const ref = typeof r.body?.ref === "string" ? r.body.ref : null;
+    watchJob(r.jobId, (j) => {
+      refreshSky();
+      const id = (j.result as { id?: unknown } | null | undefined)?.id;
+      const target = ref ?? (typeof id === "string" ? `tile/${id}` : null);
+      if (j.status !== "done" || !target) return;
+      openInspector({ kind: "realtile", id: target });
+      toast.success("Tile cached", { description: opts.run ? "LR, production and mean are open in the inspector." : "Its LR is open in the inspector." });
+    });
+  }
   return r;
 }
 

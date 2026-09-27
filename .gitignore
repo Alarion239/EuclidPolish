@@ -41,3 +41,6 @@ euclid_credentials*
 
 # brainstorming visual companion
 .superpowers/
+
+# stray tool caches (a vitest run outside frontend/ once wrote one here)
+euclid_polish/web/node_modules/

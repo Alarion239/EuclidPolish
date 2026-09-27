@@ -6,6 +6,7 @@ import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useJobsStore } from "../../../../api/jobs";
 import { queryClient } from "../../../../api/query";
+import { useInspector } from "../../../../state/inspector";
 import { useSelection } from "../../../../state/selection";
 import { resetConfirm } from "../../../../ui";
 import { cacheTileAt, runLayerFill, runNexusProduction } from "../actions";
@@ -242,6 +243,23 @@ describe("cache a tile here", () => {
     await answer(/Cache a 25\.6″ tile here/, "Cache tile");
     await act(async () => { await p; });
     expect(posts).toEqual([{ url: "/api/real/tiles", form: { ra: "268.78", dec: "65.4" } }]);
+  });
+
+  it("opens the new tile (LR + the models it ran) in the inspector when the job finishes", async () => {
+    routes["GET /api/sky/at"] = () => ({ body: AT("observed") });
+    routes["POST /api/real/tiles"] = () => ({ body: { ok: true, job_id: "j9", id: "ra268_dec65", ref: "tile/ra268_dec65" } });
+    routes["GET /api/jobs"] = () => ({ body: [] });
+    show(<div />);
+    let p!: Promise<unknown>;
+    act(() => { p = cacheTileAt(268.78, 65.4, { run: true }); });
+    await answer(/Cache a 25\.6″ tile here/, "Cache tile");
+    await act(async () => { await p; });
+    expect(useInspector.getState().current).toBeNull();
+    act(() => {
+      useJobsStore.setState((st) => ({ jobs: { ...st.jobs, j9: { job_id: "j9", label: "cache tile", status: "done", result: { id: "ra268_dec65" } } as never } }));
+    });
+    await waitFor(() => expect(useInspector.getState().current).toEqual({ kind: "realtile", id: "tile/ra268_dec65" }));
+    act(() => { useInspector.getState().hide(); });
   });
 
   it("unobserved Q1 tile: a danger confirm, then force=1", async () => {
