@@ -12,10 +12,12 @@ import os
 
 from flask import abort, jsonify, request, send_file
 
+from euclid_polish import ensemble_registry
 from euclid_polish.config import Config
 from euclid_polish.ensemble_registry import member_name
 from euclid_polish.eval.combiner import (
     ACTIVE_COMBINER_KINDS,
+    SPATIAL_GATE_KIND,
     combiner_model_spec,
     normalize_model_kind,
 )
@@ -32,6 +34,7 @@ from euclid_polish.web.helpers.ensemble_viz import (
     compare_reports,
     compute_combiner_payload,
     compute_evaluation_payload,
+    ensemble_dir,
     ensemble_overview,
     ensemble_status,
     job_archive_member,
@@ -56,6 +59,11 @@ from euclid_polish.web.helpers.ensemble_viz import (
     variant_dir,
 )
 from euclid_polish.web.jobs import REGISTRY
+from euclid_polish.web.security import (
+    fresh_requested,
+    is_same_origin_request,
+    refuse_cross_site_cache_fill,
+)
 
 
 def _mode_starless(default: str = "starfull") -> bool:
@@ -69,6 +77,11 @@ def _mode_starless(default: str = "starfull") -> bool:
 
 def _bad(message: str, status: int = 400):
     return jsonify({"ok": False, "error": message}), status
+
+
+def _active_member_names() -> set[str]:
+    """The active members of the ensemble registry (``member_NN``)."""
+    return set(ensemble_registry.load_registry(ensemble_dir())["active"])
 
 
 def _form_bool(name: str, default: bool = False) -> bool:
@@ -164,9 +177,11 @@ def register(app):
 
     @app.route("/ensemble/combiner/fit", methods=["POST"])
     def ensemble_combiner_fit():
-        """Fit the combiner for the requested star regime locally on the
-        validate split. Available in both regimes — starfull fuses star
-        reconstructions, starless fuses the star-erasing members."""
+        """Fit an RBF combiner for the requested star regime locally on the
+        validate split, in place. The spatial gate — production — is refused
+        here (it would be overwritten without a backup): fit it as a named
+        variant (``/ensemble/combiners/fit``) and promote that
+        (``/ensemble/combiners/promote``, which backs production up)."""
         starless = _mode_starless()
         try:
             target_fwhm = validate_target_fwhm_arcsec(
@@ -178,11 +193,6 @@ def register(app):
             num_images = max(1, int(request.form.get("num_images", 100) or 100))
         except (TypeError, ValueError):
             num_images = 100
-        gate_members = [token.strip() for token in
-                        str(request.form.get("members", "") or "").split(",")
-                        if token.strip()]
-        if any(not token.isdigit() for token in gate_members):
-            abort(400, description="members must be comma-separated member numbers")
         raw_min_usage = request.form.get("min_usage")
         try:
             min_usage = (None if raw_min_usage in (None, "")
@@ -196,6 +206,10 @@ def register(app):
             abort(400)
         if model_kind not in ACTIVE_COMBINER_KINDS:
             abort(400)
+        if model_kind == SPATIAL_GATE_KIND:
+            return _bad("the spatial gate is production: fit a named variant "
+                        "(POST /ensemble/combiners/fit) and promote it "
+                        "(POST /ensemble/combiners/promote, which backs production up)")
         spec = combiner_model_spec(model_kind)
         raw_kernels = request.form.get("n_kernels")
         try:
@@ -214,7 +228,6 @@ def register(app):
                 min_usage=min_usage,
                 starless=starless,
                 model_kind=model_kind,
-                gate_members=gate_members or None,
                 target_fwhm_arcsec=target_fwhm),
         )
         return jsonify({"job_id": job_id})
@@ -396,10 +409,15 @@ def register(app):
         histograms, calibration stats and per-member loss/depth meta. The
         FRONTEND renders all figures from this JSON, so styling (member-line
         coloring, tab switches) never recomputes anything. ``?fresh=1``
-        recomputes the payload from the cached cubes (one sweep, seconds)."""
+        recomputes the payload from the cached cubes (one sweep, seconds) —
+        for a same-origin request only. A cross-site request gets the cached
+        payload as it is (no diagnostics upgrade), or 404 when none exists."""
         starless = _mode_starless()
         path = _evals_payload_path(starless)
-        fresh = request.args.get("fresh", "").lower() in ("1", "true", "yes")
+        refuse_cross_site_cache_fill(path)
+        if not is_same_origin_request():
+            return send_file(path, mimetype="application/json", max_age=0)
+        fresh = fresh_requested()          # same-origin only (a GET recomputes)
         needs_diagnostics = False
         if os.path.isfile(path) and not fresh:
             # Older payloads predate one or more cache-derived diagnostics.
@@ -465,13 +483,19 @@ def register(app):
     @app.route("/ensemble/archive-member", methods=["POST"])
     def ensemble_archive_member():
         """Retire one member: zip → tracking campaign, registry tombstone,
-        member dir deleted, cube cache purged. Reduces the ensemble."""
-        name = (request.form.get("member") or "").strip()
+        member dir deleted, cube cache purged. Reduces the ensemble. The name
+        is validated (and must be active) before the job starts: 400 JSON."""
+        try:
+            name = member_name(request.form.get("member") or "")
+        except ValueError as exc:
+            return _bad(str(exc))
+        if name not in _active_member_names():
+            return _bad(f"{name} is not an active ensemble member")
         job_id = REGISTRY.spawn(
             f"ensemble: archive {name} → tracking",
             target=lambda cap: job_archive_member(cap, name=name),
         )
-        return jsonify({"job_id": job_id})
+        return jsonify({"ok": True, "job_id": job_id})
 
     @app.route("/ensemble/restore-member", methods=["POST"])
     def ensemble_restore_member():

@@ -5,8 +5,6 @@ import io
 import os
 from typing import Any
 
-import matplotlib
-import matplotlib.pyplot as plt
 import numpy as np
 from astropy.io import fits
 from astropy.visualization import AsinhStretch, ImageNormalize, MinMaxInterval
@@ -14,15 +12,8 @@ from flask import abort
 from PIL import Image
 
 from euclid_polish.config import BandConfig, Config
-from euclid_polish.psf.psf_library import load_all_band_psfs
-from euclid_polish.visualization.presentation_style import (
-    AXIS_LABEL_SIZE,
-    TICK_LABEL_SIZE,
-    apply_presentation_figure,
-)
 from euclid_polish.web.helpers import fits_inspect
 from euclid_polish.web.helpers._const import _CUTOUT_FNAME_RE
-from euclid_polish.web.helpers.status import _cached_fasrc_psf_dir
 
 
 def _two_dimensional_image_data(hdu: object) -> np.ndarray | None:
@@ -211,60 +202,3 @@ def _fits_file_info(path: str) -> dict[str, Any]:
         "mtime":    st.st_mtime,
         "compressed": path.lower().endswith((".gz", ".fz")),
     }
-
-
-def _render_psf_panel_png(band: str | None, dpi: int = 110) -> bytes:
-    """Render one band (or all four) on a log-stretch panel as PNG bytes."""
-    matplotlib.use("Agg")
-
-    # Render the FASRC-extracted PSFs (pulled to the local cache), not a
-    # stale local copy. None → nothing on FASRC yet.
-    psf_dir = _cached_fasrc_psf_dir()
-    if not psf_dir:
-        abort(404)
-    psfs = load_all_band_psfs(psf_dir=psf_dir)
-    if band and band != "all":
-        if band not in psfs:
-            abort(404)
-        names = [band]
-    else:
-        names = [b.name for b in Config.BANDS if b.name in psfs]
-    if not names:
-        abort(404)
-    n = len(names)
-    logged = {
-        name: np.log10(np.clip(psfs[name].data, 1e-8, None))
-        for name in names
-    }
-    vmin = min(float(np.nanmin(data)) for data in logged.values())
-    vmax = max(float(np.nanmax(data)) for data in logged.values())
-    fig, axes = plt.subplots(
-        1, n, figsize=(5.2 * n, 5.8), squeeze=False,
-        layout="constrained",
-    )
-    image = None
-    for ax, name in zip(axes[0], names, strict=False):
-        p = psfs[name]
-        image = ax.imshow(
-            logged[name], cmap="viridis", origin="lower",
-            interpolation="nearest", vmin=vmin, vmax=vmax,
-        )
-        ax.set_title(
-            f"{name}\n{p.data.shape[0]}×{p.data.shape[1]} pixels"
-            f" · {p.pixel_scale:.3f}″ pixel⁻¹",
-            pad=12,
-        )
-        ax.set_xticks([]); ax.set_yticks([])
-    assert image is not None
-    colorbar = fig.colorbar(image, ax=axes[0].tolist(), shrink=0.82, pad=0.02)
-    colorbar.set_label("log₁₀ normalized PSF intensity", fontsize=AXIS_LABEL_SIZE)
-    colorbar.ax.tick_params(labelsize=TICK_LABEL_SIZE)
-    apply_presentation_figure(fig)
-    buf = io.BytesIO()
-    fig.savefig(
-        buf, dpi=max(72, min(int(dpi), 600)),
-        bbox_inches="tight", format="png",
-    )
-    plt.close(fig)
-    buf.seek(0)
-    return buf.getvalue()

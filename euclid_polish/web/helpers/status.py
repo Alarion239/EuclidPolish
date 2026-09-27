@@ -14,7 +14,6 @@ from euclid_polish.config import Config
 from euclid_polish.ensemble import default_ensemble_dir
 from euclid_polish.ensemble_registry import active_member_dirs
 from euclid_polish.image.tfio import tfrecord_path
-from euclid_polish.observability.training_log import TrainingLog
 from euclid_polish.psf import PSF
 from euclid_polish.psf.psf_library import psf_inventory
 from euclid_polish.web import fasrc_config
@@ -608,17 +607,6 @@ def _list_vis_pngs() -> list[dict[str, Any]]:
             })
     pngs.sort(key=lambda d: d["mtime"], reverse=True)
     return pngs
-
-
-def _resolve_training_log(checkpoint_dir: str) -> str | None:
-    """Pick the current ``training_log.csv`` or fall back to legacy
-    ``training_log.jsonl`` so logs from runs before the CSV switch still
-    plot. Returns the path that exists, or None if neither does."""
-    for name in (TrainingLog.FILENAME, "training_log.jsonl"):
-        p = os.path.join(checkpoint_dir, name)
-        if os.path.exists(p):
-            return p
-    return None
 
 
 def _record_count(name: str, records_dir: str | None = None) -> int | None:

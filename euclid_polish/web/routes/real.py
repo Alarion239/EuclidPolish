@@ -23,7 +23,7 @@ from euclid_polish.web.helpers import (
     real_tiles,
     sky_atlas,
 )
-from euclid_polish.web.jobs import REGISTRY
+from euclid_polish.web.jobs import REGISTRY, start_exclusive
 
 
 def _fail(message: str, status: int = 400, **extra):
@@ -228,11 +228,15 @@ def register(app):
                 result["experiment"] = experiments.job_result(record)
             return result
 
-        job_id = REGISTRY.spawn(
+        # One job per tile id: a second click on the same spot re-attaches
+        # instead of writing the same raw/LR files concurrently.
+        payload, status = start_exclusive(
             f"cache real tile ({ra:.5f}, {dec:+.5f})" + (f" + {', '.join(specs)}" if specs else ""),
-            target, kind="real-tile")
-        return jsonify({"ok": True, "job_id": job_id, "id": identifier,
-                        "ref": f"tile/{identifier}", "experiment_id": experiment_id})
+            target, kind="real-tile", key=identifier, per_key=True)
+        if payload.get("already_running"):
+            experiment_id = None                    # this request started nothing
+        return jsonify({**payload, "id": identifier, "ref": f"tile/{identifier}",
+                        "experiment_id": experiment_id}), status
 
     @app.post("/api/real/<source>/<identifier>/delete-outputs")
     def api_real_delete_outputs(source: str, identifier: str):

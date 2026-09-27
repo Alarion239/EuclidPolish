@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from flask import jsonify, request
 
-from euclid_polish.web import git_ops
+from euclid_polish.web import errors, git_ops
 
 
 def _flag(name: str) -> bool:
@@ -16,13 +16,6 @@ def _paths() -> list[str]:
     return [part.strip()
             for raw in request.form.getlist("paths")
             for part in raw.splitlines() if part.strip()]
-
-
-def _int_arg(name: str, default: int) -> int:
-    try:
-        return int(request.args.get(name, default))
-    except (TypeError, ValueError):
-        return default
 
 
 def register(app):
@@ -48,8 +41,8 @@ def register(app):
     @app.route("/api/git/log")
     def api_git_log():
         """One page of the history: ``?skip=&limit=`` (1–500, default 50)."""
-        return jsonify(git_ops.log_page(skip=_int_arg("skip", 0),
-                                        limit=_int_arg("limit", 50)))
+        return jsonify(git_ops.log_page(skip=errors.int_arg("skip", 0),
+                                        limit=errors.int_arg("limit", 50)))
 
     @app.route("/api/git/commit/<rev>")
     def api_git_show(rev: str):

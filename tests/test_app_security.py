@@ -47,3 +47,36 @@ def test_env_update_is_no_longer_a_get(client):
     """``mamba env update`` on the cluster is a mutation: a cross-site
     ``<img src>`` must not be able to trigger it."""
     assert client.get("/api/fasrc/env-update").status_code == 405
+
+
+# --------------------------------------------------------------------------- #
+# anti-framing / nosniff headers (clickjacking would otherwise bypass the
+# same-origin mutation guard: a POST made inside a hostile frame is
+# same-origin)
+# --------------------------------------------------------------------------- #
+
+_SECURITY_HEADERS = {
+    "X-Frame-Options": "DENY",
+    "Content-Security-Policy": "frame-ancestors 'none'",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "same-origin",
+}
+
+
+@pytest.mark.parametrize("method,path", [
+    ("get", "/sky/atlas"),                 # the SPA shell
+    ("get", "/api/jobs"),                  # JSON
+    ("get", "/api/definitely-not-a-route"),  # an error page
+    ("post", "/api/connection/retry"),     # a mutation
+])
+def test_every_response_forbids_framing_and_sniffing(client, method, path):
+    response = getattr(client, method)(path)
+    for name, value in _SECURITY_HEADERS.items():
+        assert response.headers.get(name) == value, (path, name)
+
+
+def test_a_refused_host_still_carries_the_security_headers(client):
+    response = client.get("/sky/atlas", headers={"Host": "evil.example"})
+    assert response.status_code == 400
+    assert response.headers["X-Frame-Options"] == "DENY"
+    assert response.headers["Content-Security-Policy"] == "frame-ancestors 'none'"

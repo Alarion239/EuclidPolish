@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import io
 import json
+import threading
 import time
 
 import numpy as np
@@ -355,3 +356,33 @@ def test_card_disk_counts_the_member_cache(client, world):
     assert disk["cache_bytes"] >= 3 * 80 * 80 * 4 * 4 and disk["output_bytes"] > 0
     assert disk["total_bytes"] == sum(disk[key] for key in (
         "tile_bytes", "output_bytes", "cache_bytes", "legacy_bytes"))
+
+
+def test_caching_one_tile_twice_reattaches_instead_of_racing(client, monkeypatch):
+    """Two clicks on the same spot must not write the same tile files at once;
+    another spot caches concurrently."""
+    release = threading.Event()
+    calls: list[tuple[float, float]] = []
+
+    def slow_cache(ra, dec, **_kwargs):
+        calls.append((ra, dec))
+        release.wait(10)
+        return {"id": real_tiles.real_tile_id(ra, dec)}
+
+    monkeypatch.setattr(real_tiles, "cache_tile", slow_cache)
+    here = {"ra": str(fx.NEXUS_RA), "dec": str(fx.NEXUS_DEC)}
+    try:
+        first = client.post("/api/real/tiles", data=here)
+        second = client.post("/api/real/tiles", data=here)
+        assert first.status_code == second.status_code == 200
+        assert second.get_json()["job_id"] == first.get_json()["job_id"]
+        assert second.get_json()["already_running"] is True
+        elsewhere = client.post("/api/real/tiles", data={"ra": str(fx.NEXUS_RA + 0.02),
+                                                         "dec": str(fx.NEXUS_DEC)})
+        assert elsewhere.status_code == 200
+        assert elsewhere.get_json()["job_id"] != first.get_json()["job_id"]
+    finally:
+        release.set()
+    for response in (first, elsewhere):
+        assert _wait(response.get_json()["job_id"])["status"] == "done"
+    assert len(calls) == 2

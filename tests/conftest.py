@@ -239,8 +239,8 @@ def _redirect_writable_config_paths(
         Config, "VIS_STAR_POSITIONS",
         str(pkg_tmp / "star_positions.png"), raising=False,
     )
-    # Routes that render figures (``/view/training-log``, the TNG archive
-    # copies) write under ``Config.VIS_DIR``; without this redirect a test
+    # Routes that render figures (the TNG archive copies, the galaxy /
+    # star plates) write under ``Config.VIS_DIR``; without this redirect a test
     # that exercises them overwrites the live WebUI's copy under ./data/vis.
     # Routes read that
     # Config path at request time, so writing AND serving (/vis/...) stay

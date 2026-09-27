@@ -308,10 +308,15 @@ def list_sandboxes() -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 # Version-robust launcher: import the worktree's own create_app and serve it.
-# Avoids depending on the old ``main()``'s --port handling.
+# Avoids depending on the old ``main()``'s --port handling. Code new enough
+# to have ``start_background_services`` (the FASRC queue ticker, the cache
+# warm-up) gets them started like ``main()`` does, so a persisted queue is
+# still promoted after a restart; older code simply lacks it.
 _SHIM = (
-    "from euclid_polish.web.app import create_app; "
-    "create_app().run(host='127.0.0.1', port={port}, "
+    "from euclid_polish.web import app as web_app; "
+    "application = web_app.create_app(); "
+    "getattr(web_app, 'start_background_services', lambda _app: None)(application); "
+    "application.run(host='127.0.0.1', port={port}, "
     "use_reloader=False, threaded=True)"
 )
 

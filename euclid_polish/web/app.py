@@ -13,6 +13,8 @@ from __future__ import annotations
 import argparse
 import contextlib
 import os
+import threading
+import traceback
 
 # Force the non-interactive matplotlib backend BEFORE any submodule imports
 # pyplot. The job registry plots from worker threads; macOS's default GUI
@@ -24,16 +26,20 @@ matplotlib.use("Agg")
 
 from flask import Flask, jsonify, redirect, request, send_file
 
-from euclid_polish.web import fasrc_jobs
+from euclid_polish.web import errors, fasrc_jobs, fasrc_queue
 from euclid_polish.web.fasrc_gate import register_fasrc_gate
+from euclid_polish.web.helpers import provenance_index, sky_atlas
 from euclid_polish.web.remote import STATE, SSHError, connect_from_config
 from euclid_polish.web.routes import MODULES as ROUTE_MODULES
+from euclid_polish.web.routes import fasrc as fasrc_routes
 from euclid_polish.web.security import (
     register_host_allowlist,
     register_mutation_guard,
+    register_security_headers,
     validate_bind_host,
 )
 from euclid_polish.web.spa_routes import is_page_path, redirect_target
+from euclid_polish.web.static_assets import register_static_caching
 from euclid_polish.web.version import process_tracker
 
 
@@ -119,6 +125,14 @@ def create_app() -> Flask:
     register_host_allowlist(app)
     register_mutation_guard(app)
     _register_spa_shell(app, os.path.join(here, "static", "dist", "index.html"))
+    # after_request hooks run in reverse order: the security headers are
+    # registered first so they land on every response, including the 304
+    # the static caching may substitute.
+    register_security_headers(app)
+    register_static_caching(app)
+    # Every /api/* error is JSON {ok: false, error} (C6/C8); route modules add
+    # their non-/api prefixes (``/viewer/``, ``/ensemble/`` …) themselves.
+    errors.json_errors_for(app, "/api/")
 
     # ---------------------------------------------------------------- #
     # Auto-connect to FASRC on launch. The console is offline-first: a
@@ -147,6 +161,26 @@ def create_app() -> Flask:
     return app
 
 
+def start_background_services(app: Flask) -> None:
+    """The real server's daemon threads (never started by ``create_app``, so
+    the test client stays thread-free): the FASRC queue ticker — queue
+    promotion is server-side, never a GET side effect — and one warm-up pass
+    of the slow caches (sky layers, provenance index) so the first atlas or
+    provenance request does not pay for the cold scan."""
+    step = app.extensions.get(fasrc_routes.QUEUE_STEP_KEY)
+    if step is not None:
+        fasrc_queue.TICKER.start(step)
+    threading.Thread(target=_warm_caches, daemon=True, name="warm-caches").start()
+
+
+def _warm_caches() -> None:
+    for warm in (sky_atlas.layers_payload, provenance_index.get_index):
+        try:
+            warm()
+        except Exception:  # noqa: BLE001 - a warm-up failure only costs a cold request
+            traceback.print_exc()
+
+
 def main() -> None:
     """Run the Flask app on 127.0.0.1:8765."""
     ap = argparse.ArgumentParser(description="EuclidPolish localhost web UI")
@@ -159,6 +193,7 @@ def main() -> None:
     except ValueError as exc:
         ap.error(str(exc))
     app = create_app()
+    start_background_services(app)
     print(f"\nEuclidPolish web UI on http://{args.host}:{args.port}\n")
     app.run(host=args.host, port=args.port, debug=args.debug,
             use_reloader=False)

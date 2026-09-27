@@ -8,6 +8,7 @@ viewer (collection ``cutouts``) pulls single star cutouts on demand.
 from __future__ import annotations
 
 import io
+import os
 import re
 
 from flask import abort, jsonify, request, send_file
@@ -19,9 +20,21 @@ from euclid_polish.web.helpers.fits_render import (
     _render_fits_to_png,
     _resolve_cutout_path,
 )
+from euclid_polish.web.helpers.paths import _abort_json, root_of
 from euclid_polish.web.helpers.status import _cached_valid_4band_stars, catalog_cache_info
 
 _CUTOUT_NAME = re.compile(r"^star_(\d+)_(\d+)\.fits$", re.IGNORECASE)
+
+
+def _output_dir() -> str:
+    """The request's ``output_dir`` (blank → ``Config.DEFAULT_OUTPUT_DIR``),
+    jailed to the inspectable data roots (:func:`helpers.paths.root_of`,
+    after symlink resolution): 403 JSON outside them, like ``/api/inspect``."""
+    raw = (request.args.get("output_dir") or "").strip() or Config.DEFAULT_OUTPUT_DIR
+    real = os.path.realpath(raw)
+    if root_of(real) is None:
+        _abort_json(403, f"{raw} is outside the inspectable data roots")
+    return raw
 
 
 def gallery_items(files: list[str], stars: dict[int, dict]) -> list[dict]:
@@ -55,7 +68,7 @@ def register(app):
             Config.get_band(band_name)
         except Exception:
             abort(404)
-        out_dir = request.args.get("output_dir", Config.DEFAULT_OUTPUT_DIR)
+        out_dir = _output_dir()
         try:
             page = max(1, int(request.args.get("page", 1)))
         except ValueError:
@@ -79,7 +92,7 @@ def register(app):
 
     @app.route("/cutout-image/<band_name>/<path:filename>")
     def cutout_image(band_name: str, filename: str):
-        out_dir = request.args.get("output_dir", Config.DEFAULT_OUTPUT_DIR)
+        out_dir = _output_dir()
         try:
             size = int(request.args.get("size", 0)) or None
         except ValueError:

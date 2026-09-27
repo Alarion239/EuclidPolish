@@ -272,6 +272,8 @@ GRACEFUL = {
     "api_connection_retry": "the connect action itself (C4: works offline)",
     "ensemble_archive_member": ("local archive job; the FASRC copy's delete "
                                 "is best-effort and skipped offline"),
+    "api_fasrc_queue_resume": ("local queue; it only pokes the server-side queue "
+                               "ticker, whose step skips while FASRC is offline"),
 }
 
 _SSH_METHODS = {"run", "stream", "rsync_pull", "rsync_push", "write_text"}

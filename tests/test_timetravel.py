@@ -10,6 +10,7 @@ import pytest
 from euclid_polish.config import Config
 from euclid_polish.tracking import dirty_warning
 from euclid_polish.tracking import timetravel as tt
+from euclid_polish.web import app as web_app
 
 # --------------------------------------------------------------------------
 # fixtures
@@ -213,3 +214,33 @@ def test_prepare_remote_sandbox_unreachable_commit_no_push():
         ssh, repo_path="/r", data_dir="/d", commit="deadbeef", short="dead")
     assert not res["ok"]
     assert "not reachable on FASRC" in res["error"]
+
+
+def test_the_sandbox_launcher_starts_the_background_services(monkeypatch):
+    # The queue ticker only runs from start_background_services: a sandbox
+    # served by a bare create_app().run() would never promote a persisted
+    # queue after a restart.
+    events: list[str] = []
+
+    class _App:
+        def run(self, **kwargs):
+            events.append(f"run:{kwargs['port']}")
+
+    monkeypatch.setattr(web_app, "create_app", lambda: _App())
+    monkeypatch.setattr(web_app, "start_background_services",
+                        lambda app: events.append("services"))
+    exec(tt._SHIM.format(port=8799), {})
+    assert events == ["services", "run:8799"]
+
+
+def test_the_sandbox_launcher_serves_old_code_without_background_services(monkeypatch):
+    events: list[str] = []
+
+    class _App:
+        def run(self, **kwargs):
+            events.append("run")
+
+    monkeypatch.setattr(web_app, "create_app", lambda: _App())
+    monkeypatch.delattr(web_app, "start_background_services")
+    exec(tt._SHIM.format(port=8799), {})
+    assert events == ["run"]

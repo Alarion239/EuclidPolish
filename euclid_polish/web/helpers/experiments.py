@@ -45,7 +45,7 @@ from typing import Any
 
 import numpy as np
 
-from euclid_polish.web.helpers import model_catalog, real_metrics, real_tiles
+from euclid_polish.web.helpers import atomic_files, model_catalog, real_metrics, real_tiles
 from euclid_polish.web.jobs import JobCancelled
 
 RECORD_VERSION = 1
@@ -105,10 +105,7 @@ def check_experiment_id(identifier: str) -> str:
 
 def _write_record(record: Mapping[str, Any]) -> None:
     path = records_root() / f"{record['id']}.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    temporary.write_text(json.dumps(record, indent=2, allow_nan=False) + "\n", encoding="utf-8")
-    os.replace(temporary, path)
+    atomic_files.write_json(path, record, indent=2, allow_nan=False)
 
 
 def get_experiment(identifier: str) -> dict[str, Any]:
@@ -268,9 +265,9 @@ class CachedTileMembers:
             self.budget.not_cached += 1
             return
         self.directory.mkdir(parents=True, exist_ok=True)
-        temporary = array_path.with_name(f".{array_path.stem}.{os.getpid()}.tmp.npy")
-        np.save(temporary, value)
-        os.replace(temporary, array_path)
+        with atomic_files.temporary_sibling(array_path, ".npy") as temporary:
+            np.save(temporary, value)
+            os.replace(temporary, array_path)
         meta_path.write_text(json.dumps({
             "label": label, "member_fingerprint": self.fingerprints.get(label),
             "lr_sha": self.lr_sha, "shape": [int(v) for v in value.shape],

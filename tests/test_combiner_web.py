@@ -4,6 +4,8 @@ import numpy as np
 import pytest
 
 from euclid_polish.web.app import create_app
+from euclid_polish.web.helpers.ensemble_viz import _CombinerMetricAcc
+from euclid_polish.web.routes import ensemble as routes
 
 
 class _Cap:
@@ -12,8 +14,6 @@ class _Cap:
 
 
 def test_combiner_metric_block_reports_l1_and_psnr():
-    from euclid_polish.web.helpers.ensemble_viz import _CombinerMetricAcc
-
     hr = np.zeros((2, 2), np.float32)
     members = np.stack([
         np.full_like(hr, 50.0),
@@ -40,8 +40,6 @@ def client():
 
 
 def test_combiner_fit_defaults_to_incremental_raw_k128(client, monkeypatch):
-    from euclid_polish.web.routes import ensemble as routes
-
     seen = {}
 
     def fake_job(_cap, **kwargs):
@@ -64,8 +62,6 @@ def test_combiner_fit_defaults_to_incremental_raw_k128(client, monkeypatch):
 
 
 def test_combiner_fit_accepts_kernel_count_above_default(client, monkeypatch):
-    from euclid_polish.web.routes import ensemble as routes
-
     seen = {}
 
     def fake_job(_cap, **kwargs):
@@ -88,8 +84,6 @@ def test_combiner_fit_accepts_kernel_count_above_default(client, monkeypatch):
 
 
 def test_combiner_fit_accepts_separate_frozen_block_model(client, monkeypatch):
-    from euclid_polish.web.routes import ensemble as routes
-
     seen = {}
 
     def fake_job(_cap, **kwargs):
@@ -132,8 +126,6 @@ def test_combiner_fit_rejects_retired_models(client, retired):
 
 
 def test_combiner_json_defaults_to_incremental_raw(client, monkeypatch):
-    from euclid_polish.web.routes import ensemble as routes
-
     seen = {}
 
     def fake_payload(starless, model_kind):
@@ -158,26 +150,17 @@ def test_removed_combined_combiner_routes_are_404(client):
     assert client.post("/ensemble/combined-combiner/fit").status_code == 404
 
 
-def test_spatial_gate_fit_passes_a_member_subset(client, monkeypatch):
-    from euclid_polish.web.routes import ensemble as routes
-
-    seen = {}
-
-    def fake_job(_cap, **kwargs):
-        seen.update(kwargs)
-
-    def fake_spawn(_description, target):
-        target(_Cap())
-        return "gate"
-
-    monkeypatch.setattr(routes, "job_combiner_fit", fake_job)
-    monkeypatch.setattr(routes.REGISTRY, "spawn", fake_spawn)
+def test_the_legacy_fit_never_overwrites_the_production_gate(client, monkeypatch):
+    """``/ensemble/combiner/fit`` writes its artifact in place: the spatial
+    gate (production) is refused there — it is fitted as a named variant
+    (``/ensemble/combiners/fit``) and promoted with a backup
+    (``/ensemble/combiners/promote``). The RBF kinds keep this path."""
+    spawned = []
+    monkeypatch.setattr(routes.REGISTRY, "spawn",
+                        lambda *a, **k: spawned.append(a) or "never")
     response = client.post("/ensemble/combiner/fit", data={
         "mode": "starfull", "model_kind": "spatial_gate", "members": "170, 180,184"})
-    assert response.status_code == 200
-    assert seen["model_kind"] == "spatial_gate"
-    assert seen["gate_members"] == ["170", "180", "184"]
-
-    bad = client.post("/ensemble/combiner/fit", data={
-        "mode": "starfull", "model_kind": "spatial_gate", "members": "170,best"})
-    assert bad.status_code == 400
+    assert response.status_code == 400
+    body = response.get_json()
+    assert body["ok"] is False and "/ensemble/combiners/fit" in body["error"]
+    assert spawned == []

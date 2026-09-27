@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 
-from flask import jsonify, request
+from flask import jsonify
 
 from euclid_polish.web.helpers.real_field import (
     FIELD_SIZE,
@@ -35,24 +35,6 @@ def register(app):
         except (OSError, ValueError, KeyError):
             diagnostics = None
         return jsonify({"diagnostics": diagnostics})
-
-    @app.route("/inference/cache-real-field", methods=["POST"])
-    def inference_cache_real_field():
-        try:
-            ra  = float(request.form["ra"])
-            dec = float(request.form["dec"])
-        except (KeyError, ValueError):
-            return jsonify({"error": "ra and dec must be valid floats (degrees)"}), 400
-        if not (0.0 <= ra < 360.0):
-            return jsonify({"error": f"ra={ra} out of range [0, 360)"}), 400
-        if not (-90.0 <= dec <= 90.0):
-            return jsonify({"error": f"dec={dec} out of range [-90, 90]"}), 400
-        job_id = REGISTRY.spawn(
-            label=f"cache real Euclid field @ ({ra:.4f}, {dec:+.4f})",
-            target=lambda cap: cache_real_field(
-                ra, dec, progress=lambda done, total, label: cap.tick(done, total, label)),
-        )
-        return jsonify({"job_id": job_id})
 
     @app.route("/inference/refresh-combiners", methods=["POST"])
     def inference_refresh_combiners():

@@ -314,3 +314,29 @@ def test_timetravel_restore_from_a_zipped_model_uses_its_commit(client, monkeypa
     assert seen["commit"] == "def456"
     assert seen["seed_ckpt_dir"] is None          # a zip is not a live checkpoint
     assert r.get_json()["warning"]                # dirty commit → reproducibility warning
+
+
+@pytest.mark.parametrize("action", ["open", "stop", "remove"])
+@pytest.mark.parametrize("short", ["", ".", "..", "../x", "abc/def", "abc1234/..",
+                                   "ABCD\x00", "beef00d"])
+def test_timetravel_refuses_bad_or_unknown_sandbox_ids(client, monkeypatch, action, short):
+    """An empty or '.' id used to name the time-travel ROOT (remove → rmtree of
+    every sandbox); only an id of an existing sandbox reaches timetravel."""
+    calls = []
+    monkeypatch.setattr(tt, "list_sandboxes", lambda: [{"short": "abc1234"}])
+    for name in ("spawn_server", "stop_server", "remove_sandbox"):
+        monkeypatch.setattr(tt, name, lambda s, **k: calls.append(s) or {"ok": True})
+    r = client.post(f"/api/tracking/timetravel/{action}", data={"short": short})
+    assert r.status_code == 400
+    assert r.get_json()["ok"] is False and r.get_json()["error"]
+    assert calls == []
+
+
+@pytest.mark.parametrize("action,target", [("open", "spawn_server"), ("stop", "stop_server"),
+                                           ("remove", "remove_sandbox")])
+def test_timetravel_acts_on_a_listed_sandbox(client, monkeypatch, action, target):
+    calls = []
+    monkeypatch.setattr(tt, "list_sandboxes", lambda: [{"short": "abc1234"}])
+    monkeypatch.setattr(tt, target, lambda s, **k: calls.append(s) or {"ok": True})
+    r = client.post(f"/api/tracking/timetravel/{action}", data={"short": "abc1234"})
+    assert r.status_code == 200 and calls == ["abc1234"]

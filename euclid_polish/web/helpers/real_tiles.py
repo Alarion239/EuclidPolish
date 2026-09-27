@@ -44,7 +44,7 @@ import csv
 import json
 import os
 import re
-import time
+import threading
 import warnings
 from collections import OrderedDict
 from collections.abc import Callable, Mapping
@@ -64,7 +64,14 @@ from euclid_polish.config import Config
 from euclid_polish.photometry import adu_per_s_to_electrons_factor, header_magzero
 from euclid_polish.sky.observation import q1_mer_tiles
 from euclid_polish.sky.observation.q1_fields import q1_field_for
-from euclid_polish.web.helpers import archive_fields, jwst_euclid, model_catalog, real_field
+from euclid_polish.web.helpers import (
+    archive_fields,
+    atomic_files,
+    jwst_euclid,
+    model_catalog,
+    real_field,
+)
+from euclid_polish.web.helpers.fs_stamp import stat_key, tree_stamp
 
 SOURCES = ("nexus", "tile", "field", "archive", "eval", "poster", "pair")
 SOURCE_INFO: dict[str, dict[str, str]] = {
@@ -797,29 +804,67 @@ _LOADERS: dict[str, Callable[[TileEntry], tuple[np.ndarray, fits.Header | None]]
 }
 
 
-#: ``source`` → (monotonic time, entries); listings are re-read after
-#: ``LIST_TTL_S`` or an explicit :func:`invalidate` (writers call it).
-_LIST_CACHE: dict[str, tuple[float, list[TileEntry]]] = {}
-LIST_TTL_S = 10.0
+def _eval_stamp() -> tuple:
+    # Depth 1 reaches manifest.csv and every per-object ``<sub>/`` directory,
+    # whose mtime moves when its original_stack.fits / SR.fits is added or
+    # atomically replaced (the lister reads both, not just the manifest).
+    return tree_stamp(Config.EVAL_RESULTS_DIR, 1)
+
+
+#: What each lister reads, as a cheap on-disk stamp (tens of ``stat`` calls):
+#: manifests, the tile directories (their mtimes move when a file is added
+#: or atomically rewritten) — never pixels or headers.
+_STAMPS: dict[str, Callable[[], tuple]] = {
+    "nexus": lambda: tree_stamp(jwst_euclid.nexus_field_root(), 2),
+    "tile": lambda: tree_stamp(tiles_root(), 2),
+    "field": lambda: tree_stamp(real_field.fields_root(), 2),
+    "archive": lambda: (tree_stamp(archive_fields.collection_root(), 1),
+                        stat_key(archive_fields.source_manifest_path(), "source")),
+    "eval": _eval_stamp,
+    "poster": lambda: tree_stamp(poster_root(), 1),
+    "pair": lambda: tree_stamp(jwst_euclid.pair_root(), 2),
+}
+
+
+def source_stamp(source: str) -> tuple:
+    """The on-disk stamp of one source's listing (see :data:`_STAMPS`)."""
+    return _STAMPS[check_source(source)]()
+
+
+def sources_stamp() -> tuple:
+    """The stamps of every source (the experiments layer resolves any ref)."""
+    return tuple(source_stamp(source) for source in SOURCES)
+
+
+#: ``source`` → (stamp, entries). A listing is re-read only when its
+#: :func:`source_stamp` changes (or after :func:`invalidate`): a warm atlas
+#: click never re-reads FITS headers, however long the server idled.
+_LIST_CACHE: dict[str, tuple[tuple, list[TileEntry]]] = {}
+_LIST_LOCK = threading.Lock()
 
 
 def invalidate(source: str | None = None) -> None:
     """Forget cached listings (all sources, or one)."""
-    if source is None:
-        _LIST_CACHE.clear()
-    else:
-        _LIST_CACHE.pop(source, None)
+    with _LIST_LOCK:
+        if source is None:
+            _LIST_CACHE.clear()
+        else:
+            _LIST_CACHE.pop(source, None)
 
 
 def list_entries(source: str) -> list[TileEntry]:
-    """Every tile of one source (cheap: no pixels; memoised ``LIST_TTL_S``)."""
+    """Every tile of one source (cheap: no pixels; memoised on its stamp)."""
     check_source(source)
-    cached = _LIST_CACHE.get(source)
-    now = time.monotonic()
-    if cached is not None and now - cached[0] < LIST_TTL_S:
+    # The stamp is taken BEFORE listing: a write racing the listing leaves
+    # a newer stamp on disk, so the next call lists again.
+    stamp = source_stamp(source)
+    with _LIST_LOCK:
+        cached = _LIST_CACHE.get(source)
+    if cached is not None and cached[0] == stamp:
         return list(cached[1])
     entries = _LISTERS[source]()
-    _LIST_CACHE[source] = (now, entries)
+    with _LIST_LOCK:
+        _LIST_CACHE[source] = (stamp, entries)
     return list(entries)
 
 
@@ -1047,13 +1092,13 @@ def cache_tile(ra: float, dec: float, *,
     header["REGWCS"] = ("VIS", "all Euclid input bands registered to VIS WCS")
     header["BUNIT"] = ("electron", "stack electrons per LR pixel")
     header["Q1TILE"] = (q1_tile.tile, "Q1 MER tile containing the position")
-    temporary = directory / f".lr.{os.getpid()}.tmp.fits"
-    fits.PrimaryHDU(np.moveaxis(cube, -1, 0), header=header).writeto(
-        temporary, overwrite=True, output_verify="silentfix")
-    os.replace(temporary, directory / "lr.fits")
-    temporary_npy = directory / f".lr_e.{os.getpid()}.tmp.npy"
-    np.save(temporary_npy, cube)
-    os.replace(temporary_npy, directory / "lr_e.npy")
+    with atomic_files.temporary_sibling(directory / "lr.fits", ".fits") as temporary:
+        fits.PrimaryHDU(np.moveaxis(cube, -1, 0), header=header).writeto(
+            temporary, overwrite=True, output_verify="silentfix")
+        os.replace(temporary, directory / "lr.fits")
+    with atomic_files.temporary_sibling(directory / "lr_e.npy", ".npy") as temporary_npy:
+        np.save(temporary_npy, cube)
+        os.replace(temporary_npy, directory / "lr_e.npy")
     manifest = {
         "id": identifier, "source": "tile", "ra": ra, "dec": dec,
         "field": q1_field_for(ra, dec), "euclid_tile_index": q1_tile.tile,

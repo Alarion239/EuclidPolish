@@ -42,6 +42,9 @@ REMOVED_RULES = [
     "/api/jwst-euclid/field/<identifier>/<kind>", "/api/fasrc/eta",
     "/api/fasrc/jobs", "/api/fasrc/mirror/start", "/api/fasrc/mirror/stop",
     "/api/fasrc/runs/ckpt-bundle.tar",
+    "/view/catalog", "/view/psfs", "/view/psf-clusters", "/view/training-log",
+    "/inference/cache-real-field", "/api/jwst-euclid/fields",
+    "/api/jwst-euclid/scan-coverage", "/api/jwst-euclid/field.json",
     # superseded
     "/ensemble/power-spectrum.png", "/api/euclid-psf/preview",
     "/api/sky/totals",
@@ -112,6 +115,8 @@ def test_no_python_module_renders_a_template():
 def test_dead_route_modules_are_deleted():
     assert not (WEB / "routes" / "catalog.py").exists()
     assert not (WEB / "routes" / "sky.py").exists()
+    # the matplotlib catalogue / PSF-cluster renderers of the removed /view/* PNGs
+    assert not (WEB / "helpers" / "sky_render.py").exists()
 
 
 @pytest.mark.parametrize("module,name", [
@@ -128,6 +133,8 @@ def test_dead_route_modules_are_deleted():
     (ensemble_viz, "regenerate_eval_diagnostics"),
     (evaluation_routes, "_list_catalogs"),
     (evaluation_routes, "_render_object_png"),
+    (fits_render, "_render_psf_panel_png"),
+    (status, "_resolve_training_log"),
 ])
 def test_orphan_function_is_deleted(module, name):
     assert not hasattr(module, name)

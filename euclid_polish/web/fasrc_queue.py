@@ -12,8 +12,9 @@ active job finishes:
 
 The queue is persisted to ``~/.euclid_polish/fasrc_queue.json`` so it
 survives a WebUI restart while a cluster job keeps running. Promotion is
-driven by :meth:`JobQueue.tick`, called by the dashboard's poll routes
-right after they reconcile the JobDB against ``squeue``.
+driven by :meth:`JobQueue.tick`, run by the server-side :class:`QueueTicker`
+thread right after it reconciles the JobDB against ``squeue`` — never by a
+GET (a polled GET that could ``sbatch`` is triggerable cross-site).
 
 This module owns *no* knowledge of how to build/submit a job: the caller
 passes a ``submit_fn(spec) -> (slurm_id, payload)`` so the routing layer
@@ -26,6 +27,7 @@ import json
 import os
 import threading
 import time
+import traceback
 import uuid
 from collections.abc import Callable
 from typing import Any
@@ -280,3 +282,63 @@ class JobQueue:
 #: Process-wide singleton; tests swap in their own via
 #: ``monkeypatch.setattr(fasrc_queue, "QUEUE", JobQueue(tmp_path))``.
 QUEUE = JobQueue()
+
+
+class QueueTicker:
+    """A daemon thread that runs the queue ``step`` every ``interval_s``.
+
+    The step (built by ``routes/fasrc``: ``squeue`` reconcile, then
+    :meth:`JobQueue.tick`) is the ONLY place a queued job is promoted.
+    :meth:`poke` runs it right away (after an enqueue or a resume). A failing
+    step is logged and retried at the next interval; the thread never dies
+    of it.
+    """
+
+    def __init__(self, interval_s: float = 20.0) -> None:
+        self.interval_s = float(interval_s)
+        self._lock = threading.Lock()
+        self._wake = threading.Event()
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    @property
+    def running(self) -> bool:
+        thread = self._thread
+        return thread is not None and thread.is_alive()
+
+    def start(self, step: Callable[[], None]) -> bool:
+        """Start the thread (``False`` when it already runs)."""
+        with self._lock:
+            if self.running:
+                return False
+            self._stop.clear()
+            self._thread = threading.Thread(target=self._loop, args=(step,), daemon=True,
+                                            name="fasrc-queue-ticker")
+            self._thread.start()
+            return True
+
+    def poke(self) -> None:
+        """Run the step now (no-op when the thread is not running)."""
+        self._wake.set()
+
+    def stop(self, timeout: float = 5.0) -> None:
+        self._stop.set()
+        self._wake.set()
+        thread = self._thread
+        if thread is not None:
+            thread.join(timeout)
+
+    def _loop(self, step: Callable[[], None]) -> None:
+        while not self._stop.is_set():
+            self._wake.wait(self.interval_s)
+            self._wake.clear()
+            if self._stop.is_set():
+                return
+            try:
+                step()
+            except Exception:  # noqa: BLE001 - keep ticking; the next pass retries
+                traceback.print_exc()
+
+
+#: The server's ticker (started by ``app.main`` and by the queueing POSTs).
+TICKER = QueueTicker()

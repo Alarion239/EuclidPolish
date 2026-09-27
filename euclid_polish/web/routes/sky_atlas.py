@@ -22,7 +22,7 @@ from euclid_polish.web.helpers import (
     real_tiles,
     sky_atlas,
 )
-from euclid_polish.web.jobs import REGISTRY
+from euclid_polish.web.jobs import REGISTRY, start_exclusive
 
 MAX_FOOTPRINT_RADIUS_DEG = 5.0
 NEXUS_FILTERS = ("F200W", "F444W")
@@ -219,6 +219,12 @@ def register(app):
                 result["experiment"] = experiments.job_result(record)
             return result
 
+        extra = {"pair_id": pair_id, "ref": f"pair/{pair_id}", "mode": mode}
+        if mode == "nexus":
+            payload, status = start_exclusive(
+                f"NEXUS × Euclid pair ({pair_id})", target,
+                kind=jwst_euclid.NEXUS_MOSAIC_JOB_KIND, key=f"pair:{pair_id}",
+                busy=jwst_euclid.NEXUS_MOSAIC_BUSY)
+            return jsonify({**payload, **extra}), status
         job_id = REGISTRY.spawn(f"JWST × Euclid pair ({pair_id})", target, kind="jwst-pair")
-        return jsonify({"ok": True, "job_id": job_id, "pair_id": pair_id,
-                        "ref": f"pair/{pair_id}", "mode": mode})
+        return jsonify({"ok": True, "job_id": job_id, **extra})

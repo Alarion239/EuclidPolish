@@ -43,48 +43,6 @@ def client():
         yield c
 
 
-def test_view_training_log_empty_is_404_not_500(client, tmp_path, monkeypatch):
-    """An empty/header-only training log must 404 (placeholder), never 500."""
-    ckpt = tmp_path / "ckpt" / "wdsr"
-    ckpt.mkdir(parents=True)
-    monkeypatch.setattr(Config, "DEFAULT_CHECKPOINT_DIR", str(ckpt))
-    # RELATIVE VIS_DIR (like the real "./data/vis"): exercises the bug where
-    # Flask's send_file resolves a relative path against app.root_path
-    # (euclid_polish/web/) instead of the CWD → a 500 on a file that exists.
-    monkeypatch.setattr(Config, "VIS_DIR", os.path.relpath(str(tmp_path / "vis")))
-    header = ("step,wall_time,loss,psnr_stretched,psnr_raw,"
-              "save_best_score,combined_loss,is_baseline\n")
-
-    # header-only (no data rows yet) → 404, not a 500 traceback
-    (ckpt / "training_log.csv").write_text(header)
-    r = client.get(f"/view/training-log?checkpoint_dir={ckpt}&force=1")
-    assert r.status_code == 404
-
-    # once a data row exists → 200 PNG
-    (ckpt / "training_log.csv").write_text(
-        header + "1000,1.0,0.04,46.6,39.9,46.6,0.003,\n")
-    r = client.get(f"/view/training-log?checkpoint_dir={ckpt}&force=1")
-    assert r.status_code == 200
-    assert r.content_type.startswith("image/png")
-
-    # a later transient truncation still serves the last good render (no 500)
-    (ckpt / "training_log.csv").write_text(header)
-    r = client.get(f"/view/training-log?checkpoint_dir={ckpt}&force=1")
-    assert r.status_code == 200
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 # ---------------------------------------------------------------------------
 # Pages render
 # ---------------------------------------------------------------------------
@@ -720,15 +678,6 @@ def test_tng_result_missing_returns_404(client, tmp_path, monkeypatch):
     assert job["status"] == "failed" and "not found" in job["error"]
 
 
-def test_post_inference_cache_real_field_returns_job_id(client, monkeypatch):
-    """The real-field request validates coordinates then runs as a job."""
-    monkeypatch.setattr("euclid_polish.web.routes.model.cache_real_field",
-                        lambda *args, **kwargs: {})
-    r = client.post("/inference/cache-real-field", data={"ra": 267.4229, "dec": 64.8873})
-    assert r.status_code == 200
-    assert "job_id" in r.get_json()
-
-
 def test_post_inference_refresh_combiners_returns_job_id(client, monkeypatch):
     """A fitted combiner can be reapplied without rerunning member networks."""
     monkeypatch.setattr(
@@ -907,46 +856,6 @@ def test_cutout_image_renders_real_fits(client, tmp_path, monkeypatch):
         os.remove(full)
 
 
-# ---------------------------------------------------------------------------
-# Live view renderers (PNG)
-# ---------------------------------------------------------------------------
-
-def test_view_psfs_all_returns_png(client):
-    # The panel renders the FASRC-pulled ePSFs: 200 PNG when present, else
-    # 404 (no test SSH session → nothing to pull). Both are valid.
-    r = client.get("/view/psfs?band=all")
-    assert r.status_code in (200, 404)
-    if r.status_code == 200:
-        assert r.headers["Content-Type"] == "image/png"
-        assert len(r.data) > 100
-
-
-def test_view_psfs_per_band_returns_png(client):
-    r = client.get("/view/psfs?band=VIS")
-    assert r.status_code in (200, 404)
-    if r.status_code == 200:
-        assert r.headers["Content-Type"] == "image/png"
-
-
-def test_view_psfs_unknown_band_404(client):
-    r = client.get("/view/psfs?band=NOPE")
-    assert r.status_code == 404
-
-
-def test_view_catalog_positions_returns_png(client):
-    r = client.get("/view/catalog?view=positions")
-    # 200 if a catalog exists, else 404 — both are valid for the route.
-    assert r.status_code in (200, 404)
-    if r.status_code == 200:
-        assert r.headers["Content-Type"] == "image/png"
-
-
-def test_view_catalog_unknown_view_400(client):
-    r = client.get("/view/catalog?view=bogus")
-    # 400 (bad view) when a catalog is present; 404 (no catalog) is also acceptable.
-    assert r.status_code in (400, 404)
-
-
 def test_cached_catalog_directory_never_fetches(monkeypatch, tmp_path):
     cached = tmp_path / "euclid_stars" / "stars.csv"
     cached.parent.mkdir()
@@ -1016,11 +925,6 @@ def test_record_count_handles_truncated_tfrecord(tmp_path):
 
     # An absent file is distinct from a bad one — returns 0, not None.
     assert _record_count("does_not_exist", records_dir=str(tmp_path)) == 0
-
-
-def test_view_training_log_404_when_missing(client):
-    r = client.get("/view/training-log?checkpoint_dir=/tmp/nope_dir")
-    assert r.status_code == 404
 
 
 # ---------------------------------------------------------------------------

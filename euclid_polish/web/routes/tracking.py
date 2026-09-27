@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 from typing import Any
 
 from flask import jsonify, request
@@ -13,9 +14,13 @@ from euclid_polish.tracking import default_store as tracking_default_store
 from euclid_polish.tracking import sync as tracking_sync
 from euclid_polish.tracking import timetravel as tracking_timetravel
 from euclid_polish.training.log_plot import plot_training_log
-from euclid_polish.web import fasrc_config, fasrc_jobs
+from euclid_polish.web import errors, fasrc_config, fasrc_jobs
 from euclid_polish.web.fasrc_gate import requires_fasrc
-from euclid_polish.web.helpers.paths import _resolve_trackable_ckpt, _resolve_trackable_file
+from euclid_polish.web.helpers.paths import (
+    _abort_json,
+    _resolve_trackable_ckpt,
+    _resolve_trackable_file,
+)
 from euclid_polish.web.remote import STATE
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
@@ -42,12 +47,23 @@ def _job_matches(record: dict[str, Any], needle: str) -> bool:
     return needle in hay.lower()
 
 
-def _int_arg(name: str, default: int, lo: int, hi: int) -> int:
-    try:
-        value = int(request.args.get(name, default))
-    except (TypeError, ValueError):
-        value = default
-    return max(lo, min(value, hi))
+#: A time-travel sandbox id is the commit's short hash (``git rev-parse
+#: --short``): hex only, so it can never name the sandbox root ('' / '.'),
+#: a parent or a nested path.
+_SANDBOX_SHORT = re.compile(r"^[0-9a-f]{4,40}$")
+
+
+def _sandbox_short() -> str:
+    """The form's ``short``, refused (400 JSON) unless it is a well-formed id
+    of an existing sandbox — before :mod:`timetravel` joins it into a path
+    (an empty id used to make ``remove`` rmtree every sandbox)."""
+    short = (request.form.get("short") or "").strip()
+    if not _SANDBOX_SHORT.fullmatch(short):
+        _abort_json(400, f"invalid time-travel sandbox id {short!r}")
+    known = {str(meta.get("short") or "") for meta in tracking_timetravel.list_sandboxes()}
+    if short not in known:
+        _abort_json(400, f"no time-travel sandbox {short!r}")
+    return short
 
 
 def register(app):
@@ -120,8 +136,8 @@ def register(app):
         needle = (request.args.get("q") or "").strip().lower()
         if needle:
             records = [r for r in records if _job_matches(r, needle)]
-        offset = _int_arg("offset", 0, 0, 10**9)
-        limit = _int_arg("limit", _JOBS_DEFAULT_LIMIT, 1, _JOBS_MAX_LIMIT)
+        offset = errors.int_arg("offset", 0, lo=0, hi=10**9, clamp=True)
+        limit = errors.int_arg("limit", _JOBS_DEFAULT_LIMIT, lo=1, hi=_JOBS_MAX_LIMIT, clamp=True)
         page = [_compact_job(r) for r in records[offset:offset + limit]]
         return jsonify({"ok": True, "campaign": campaign, "total": len(records),
                         "offset": offset, "limit": limit, "jobs": page})
@@ -314,7 +330,7 @@ def register(app):
 
     @app.route("/api/tracking/timetravel/open", methods=["POST"])
     def api_timetravel_open():
-        short = (request.form.get("short") or "").strip()
+        short = _sandbox_short()
         try:
             return jsonify(tracking_timetravel.spawn_server(short))
         except tracking_timetravel.TimeTravelError as e:
@@ -322,7 +338,7 @@ def register(app):
 
     @app.route("/api/tracking/timetravel/stop", methods=["POST"])
     def api_timetravel_stop():
-        short = (request.form.get("short") or "").strip()
+        short = _sandbox_short()
         try:
             return jsonify(tracking_timetravel.stop_server(short))
         except tracking_timetravel.TimeTravelError as e:
@@ -330,7 +346,7 @@ def register(app):
 
     @app.route("/api/tracking/timetravel/remove", methods=["POST"])
     def api_timetravel_remove():
-        short = (request.form.get("short") or "").strip()
+        short = _sandbox_short()
         try:
             return jsonify(tracking_timetravel.remove_sandbox(short))
         except tracking_timetravel.TimeTravelError as e:

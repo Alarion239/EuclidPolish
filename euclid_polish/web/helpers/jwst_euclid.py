@@ -20,6 +20,7 @@ import shutil
 import tempfile
 import threading
 import warnings
+from collections import OrderedDict
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -47,7 +48,7 @@ from euclid_polish.ensemble import member_fingerprint
 from euclid_polish.photometry import adu_per_s_to_electrons_factor, header_magzero
 from euclid_polish.sky.observation import q1_mer_tiles
 from euclid_polish.sky.observation.q1_fields import angular_separation_deg
-from euclid_polish.web.helpers import model_catalog
+from euclid_polish.web.helpers import atomic_files, fits_plane, model_catalog
 
 # The discovery script's row filters, CSV row format and MAST-cache helpers
 # (pure functions). The repo root is on ``sys.path`` wherever
@@ -84,6 +85,11 @@ _NEXUS_PRODUCTS = {
     },
 }
 _NEXUS_EUCLID_TILE_SIDE = 255
+#: Job kind of every web job that reads a NEXUS mosaic (pair crops, the field
+#: cache). They stream a multi-GB plane, so the routes run them one at a
+#: time (``jobs.start_exclusive``: 409 ``busy`` while another runs).
+NEXUS_MOSAIC_JOB_KIND = "nexus-mosaic"
+NEXUS_MOSAIC_BUSY = "a NEXUS mosaic job is running"
 
 
 def overlap_root() -> Path:
@@ -212,10 +218,7 @@ def _jsonable(value: Any) -> Any:
 
 
 def _write_json(path: Path, payload: Mapping[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    temporary.write_text(json.dumps(_jsonable(payload), indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    os.replace(temporary, path)
+    atomic_files.write_json(path, _jsonable(payload), indent=2, sort_keys=True)
 
 
 def _row_value(row: Mapping[str, Any], *names: str) -> Any:
@@ -602,159 +605,6 @@ def euclid_tiles_covering(ra: float, dec: float, *, strict: bool = False) -> lis
     return _table_rows(cast(Iterable[Any], results))
 
 
-def _probe_euclid_tiles(
-    euclid_client: Any,
-    tiles: Iterable[Mapping[str, Any]],
-    *,
-    coordinate: Any,
-    radius: Any,
-    destination_dir: Path,
-) -> tuple[dict[str, Any] | None, int, list[str]]:
-    """Try real VIS cutouts and return the first one with non-zero pixels."""
-    blank_count = 0
-    errors: list[str] = []
-    destination = destination_dir / "euclid_probe.fits"
-    for tile in tiles:
-        file_path = euclid_product_path(tile)
-        tile_index = _text(tile.get("tile_index"))
-        if not file_path or not tile_index:
-            errors.append("coverage row has no downloadable VIS product")
-            continue
-        try:
-            _download_euclid_cutout(
-                euclid_client,
-                file_path=file_path,
-                tile_index=tile_index,
-                coordinate=coordinate,
-                radius=radius,
-                destination=destination,
-            )
-            data, _, _, _ = _find_image(destination)
-        except (OSError, RuntimeError, ValueError) as exc:
-            errors.append(f"{tile_index}: {exc}")
-            continue
-        if _has_signal(data):
-            return dict(tile), blank_count, errors
-        blank_count += 1
-    return None, blank_count, errors
-
-
-def scan_euclid_coverage(progress: Any = None) -> dict[str, Any]:
-    """Check every unique JWST field center against the Euclid VIS footprint.
-
-    Results are written after each archive query, so an interrupted scan can be
-    resumed without repeating successful coverage checks.
-    """
-    rows, _ = overlap_rows()
-    positions: dict[str, tuple[float, float]] = {}
-    for row in rows:
-        ra, dec = field_coordinates(row)
-        if ra is not None and dec is not None:
-            positions.setdefault(_coverage_key(ra, dec), (ra, dec))
-
-    scan = _load_coverage_scan()
-    scan["version"] = 2
-    results = scan.setdefault("results", {})
-    if not isinstance(results, dict):
-        results = {}
-        scan["results"] = results
-    pending = [key for key in positions if not isinstance(results.get(key), Mapping)
-               or results[key].get("status") == "error"]
-    total = len(pending)
-    done = 0
-    if progress:
-        progress(done, total, "checking Euclid VIS coverage")
-
-    for key in pending:
-        ra, dec = positions[key]
-        checked_utc = datetime.now(UTC).isoformat()
-        try:
-            tiles = euclid_tiles_covering(ra, dec, strict=True)
-            tile_records = [
-                {
-                    "tile_index": _text(tile.get("tile_index")),
-                    "file_name": _text(tile.get("file_name")),
-                    "file_path": _text(tile.get("file_path")),
-                }
-                for tile in tiles[:8]
-            ]
-            if not tiles:
-                result = {
-                    "status": "not_covered",
-                    "tile_count": 0,
-                    "reason": "no_metadata_footprint",
-                    "tiles": [],
-                    "ra_deg": ra,
-                    "dec_deg": dec,
-                    "checked_utc": checked_utc,
-                }
-            else:
-                probe_dir = Path(tempfile.mkdtemp(prefix=".coverage-probe-", dir=overlap_root()))
-                try:
-                    usable_tile, blank_count, probe_errors = _probe_euclid_tiles(
-                        Euclid,
-                        tiles,
-                        coordinate=SkyCoord(ra=ra, dec=dec, unit="deg", frame="icrs"),
-                        radius=15.0 * u.arcsec,
-                        destination_dir=probe_dir,
-                    )
-                finally:
-                    shutil.rmtree(probe_dir, ignore_errors=True)
-                if usable_tile is not None:
-                    result = {
-                        "status": "covered",
-                        "tile_count": len(tiles),
-                        "usable_tile": {
-                            "tile_index": _text(usable_tile.get("tile_index")),
-                            "file_name": _text(usable_tile.get("file_name")),
-                            "file_path": _text(usable_tile.get("file_path")),
-                        },
-                        "tiles": tile_records,
-                        "ra_deg": ra,
-                        "dec_deg": dec,
-                        "checked_utc": checked_utc,
-                    }
-                elif probe_errors and not blank_count:
-                    result = {
-                        "status": "error",
-                        "tile_count": len(tiles),
-                        "tiles": tile_records,
-                        "ra_deg": ra,
-                        "dec_deg": dec,
-                        "checked_utc": checked_utc,
-                        "error": "; ".join(probe_errors[:3]),
-                    }
-                else:
-                    result = {
-                        "status": "not_covered",
-                        "tile_count": len(tiles),
-                        "reason": "blank_cutout",
-                        "tiles": tile_records,
-                        "ra_deg": ra,
-                        "dec_deg": dec,
-                        "checked_utc": checked_utc,
-                    }
-        except Exception as exc:  # noqa: BLE001 - continue checking other fields
-            result = {
-                "status": "error",
-                "tile_count": 0,
-                "ra_deg": ra,
-                "dec_deg": dec,
-                "checked_utc": checked_utc,
-                "error": str(exc),
-            }
-        results[key] = result
-        scan["updated_utc"] = checked_utc
-        _write_json(coverage_scan_path(), scan)
-        done += 1
-        if progress:
-            progress(done, total, f"checked {done}/{total} field centers")
-
-    summary = _coverage_scan_summary(scan, len(positions), positions)
-    summary["path"] = str(coverage_scan_path())
-    return summary
-
-
 def _find_image(path: Path) -> tuple[np.ndarray, Any, Any, str]:
     """Read the first 2-D image HDU and its celestial WCS."""
     with fits.open(path, memmap=False) as hdul:
@@ -1139,31 +989,35 @@ def _download_nexus_mosaic(
             progress(1, 4, f"reusing NEXUS {filter_name} mosaic")
         return destination
     destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary = destination.with_name(f".{destination.name}.{os.getpid()}.part")
     url = f"{_NEXUS_QDR_BASE}/{product['filename']}"
     downloaded = 0
     if progress:
         progress(0, 4, f"downloading NEXUS {filter_name} mosaic ({product['download_size']})")
     try:
-        with urlopen(url, timeout=60) as response, temporary.open("wb") as output:
-            length = int(response.headers.get("Content-Length") or 0)
-            while True:
-                chunk = response.read(1024 * 1024)
-                if not chunk:
-                    break
-                output.write(chunk)
-                downloaded += len(chunk)
-                if progress and length:
-                    percent = min(99, int(100 * downloaded / length))
-                    progress(0, 4, f"downloading NEXUS {filter_name} mosaic ({percent}%)")
-        if not _is_readable_fits(temporary):
-            raise RuntimeError("NEXUS quick-release response was not a readable FITS mosaic")
-        os.replace(temporary, destination)
+        with atomic_files.temporary_sibling(destination, ".part") as temporary:
+            with urlopen(url, timeout=60) as response, temporary.open("wb") as output:
+                length = int(response.headers.get("Content-Length") or 0)
+                while True:
+                    chunk = response.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    output.write(chunk)
+                    downloaded += len(chunk)
+                    if progress and length:
+                        percent = min(99, int(100 * downloaded / length))
+                        progress(0, 4, f"downloading NEXUS {filter_name} mosaic ({percent}%)")
+            if not _is_readable_fits(temporary):
+                raise RuntimeError("NEXUS quick-release response was not a readable FITS mosaic")
+            os.replace(temporary, destination)
     except OSError as exc:
-        with contextlib.suppress(OSError):
-            temporary.unlink()
         raise RuntimeError(f"could not download NEXUS {filter_name} mosaic: {exc}") from exc
     return destination
+
+
+def _close_plane(data: Any) -> None:
+    """Close a :class:`fits_plane.FitsPlane` (a plain array needs nothing)."""
+    if isinstance(data, fits_plane.FitsPlane):
+        data.close()
 
 
 def _write_nexus_cutout(
@@ -1174,10 +1028,16 @@ def _write_nexus_cutout(
     size_arcsec: float,
     destination: Path,
 ) -> tuple[np.ndarray, Any, Any]:
-    """Extract a native-grid NEXUS cutout and preserve its science WCS."""
-    data, header, wcs, _ = _find_image(mosaic_path)
+    """Extract a native-grid NEXUS cutout and preserve its science WCS.
+
+    The mosaic (F200W: a 4.46 GB float32 plane, gzip-compressed) is never
+    loaded whole: :mod:`fits_plane` streams only the rows the cutout spans,
+    so a crop costs tens of MB instead of ~9 GB (the plane plus its
+    ``astype`` copy)."""
     coordinate = SkyCoord(ra=ra, dec=dec, unit="deg", frame="icrs")
-    cutout, cutout_wcs = _native_sky_cutout(data, wcs, coordinate, size_arcsec)
+    with fits_plane.open_plane(mosaic_path) as plane:
+        header = plane.header
+        cutout, cutout_wcs = _native_sky_cutout(plane, plane.wcs, coordinate, size_arcsec)
     if not _has_signal(cutout):
         raise RuntimeError("selected NEXUS position has no usable mosaic pixels")
     cutout_header = _primary_image_header(
@@ -1221,23 +1081,22 @@ def _exact_nexus_vis_tile(
         source_header, cutout.wcs, path.name,
         "Euclid VIS archive cutout cropped to the exact NEXUS tile grid",
     )
-    temporary = path.with_name(f".{path.stem}.{os.getpid()}.tmp.fits")
-    try:
+    with atomic_files.temporary_sibling(path, ".fits") as temporary:
         fits.PrimaryHDU(tile, header=tile_header).writeto(
             temporary, overwrite=True, output_verify="silentfix",
         )
         os.replace(temporary, path)
-    finally:
-        with contextlib.suppress(OSError):
-            temporary.unlink()
     return tile, tile_header, cutout.wcs
 
 
 def _nexus_source_tiles(
     mosaic_path: Path, *, filter_name: str,
-) -> tuple[np.ndarray, Any, Any, list[tuple[int, int, int, int]]]:
-    """Derive complete 255-Euclid-pixel tiles from the mosaic WCS itself."""
-    data, header, wcs, _ = _find_image(mosaic_path)
+) -> tuple[fits_plane.FitsPlane, Any, Any, list[tuple[int, int, int, int]]]:
+    """Derive complete 255-Euclid-pixel tiles from the mosaic WCS itself.
+
+    Returns the mosaic as an OPEN :class:`fits_plane.FitsPlane` (sliced like
+    an array; the caller closes it): the scan reads one full-width row strip
+    at a time, so the whole plane is never in memory."""
     product = _NEXUS_PRODUCTS[filter_name]
     jwst_side = int(round(
         _NEXUS_EUCLID_TILE_SIDE * Config.VIS_PIXEL_SCALE_ARCSEC
@@ -1245,17 +1104,22 @@ def _nexus_source_tiles(
     ))
     if jwst_side < 1:
         raise RuntimeError("NEXUS pixel scale cannot form Euclid-sized tiles")
-    tiles: list[tuple[int, int, int, int]] = []
-    for y0 in range(0, data.shape[0] - jwst_side + 1, jwst_side):
-        for x0 in range(0, data.shape[1] - jwst_side + 1, jwst_side):
-            tile = data[y0:y0 + jwst_side, x0:x0 + jwst_side]
-            # Keep the source mosaic's natural footprint and omit empty
-            # padded regions before issuing any Euclid archive requests.
-            if _has_signal(tile):
-                tiles.append((x0, y0, x0 + jwst_side, y0 + jwst_side))
-    if not tiles:
-        raise RuntimeError("NEXUS mosaic has no non-empty 255-pixel Euclid tiles")
-    return data, header, wcs, tiles
+    plane = fits_plane.open_plane(mosaic_path)
+    try:
+        tiles: list[tuple[int, int, int, int]] = []
+        for y0 in range(0, plane.shape[0] - jwst_side + 1, jwst_side):
+            for x0 in range(0, plane.shape[1] - jwst_side + 1, jwst_side):
+                tile = plane[y0:y0 + jwst_side, x0:x0 + jwst_side]
+                # Keep the source mosaic's natural footprint and omit empty
+                # padded regions before issuing any Euclid archive requests.
+                if _has_signal(tile):
+                    tiles.append((x0, y0, x0 + jwst_side, y0 + jwst_side))
+        if not tiles:
+            raise RuntimeError("NEXUS mosaic has no non-empty 255-pixel Euclid tiles")
+    except BaseException:
+        plane.close()
+        raise
+    return plane, plane.header, plane.wcs, tiles
 
 
 def _write_nexus_source_tile(
@@ -1456,6 +1320,24 @@ def download_nexus_field(
     source_data, source_header, source_wcs, source_tiles = _nexus_source_tiles(
         mosaic_path, filter_name=filter_name,
     )
+    try:
+        return _fill_nexus_field(
+            filter_name=filter_name, identifier=identifier, final_dir=final_dir,
+            existing=existing, mosaic_path=mosaic_path, source_data=source_data,
+            source_header=source_header, source_wcs=source_wcs,
+            source_tiles=source_tiles, progress=progress,
+        )
+    finally:
+        _close_plane(source_data)
+
+
+def _fill_nexus_field(
+    *, filter_name: str, identifier: str, final_dir: Path,
+    existing: Mapping[str, Any] | None, mosaic_path: Path, source_data: Any,
+    source_header: Any, source_wcs: Any,
+    source_tiles: list[tuple[int, int, int, int]], progress: Any | None,
+) -> dict[str, Any]:
+    """The body of :func:`download_nexus_field` over an open source plane."""
     previous_tiles = existing.get("tiles", []) if isinstance(existing, Mapping) else []
     previous_by_centre = {
         _nexus_tile_key(float(tile["ra_deg"]), float(tile["dec_deg"])): dict(tile)
@@ -1662,15 +1544,11 @@ def write_sr_fits(path: Path, sr_hwc: np.ndarray, lr_header: Any, *,
     header["SRCFILE"] = str(source_name)[:68]
     header["SRMODE"] = "STARFULL"
     header["SPEC"] = str(spec)[:68]
-    temporary = path.with_name(f".{path.stem}.{os.getpid()}.tmp.fits")
-    try:
+    with atomic_files.temporary_sibling(path, ".fits") as temporary:
         fits.PrimaryHDU(np.moveaxis(np.asarray(sr_hwc, np.float32), -1, 0),
                         header=header).writeto(temporary, overwrite=True,
                                                output_verify="silentfix")
         os.replace(temporary, path)
-    finally:
-        with contextlib.suppress(OSError):
-            temporary.unlink()
 
 
 def _selected_positions(manifest: Mapping[str, Any],
@@ -1945,25 +1823,48 @@ def _copy_downloaded(source: Any, destination: Path) -> None:
     shutil.copy2(source_path, destination)
 
 
+#: ``_is_readable_fits`` verdicts keyed on ``(path, mtime_ns, size)``: the
+#: check of a 1 GB gzip mosaic decompresses it end to end (~6 s), and every
+#: NEXUS job asks again. A rewritten file has a new stamp.
+_READABLE: OrderedDict[tuple[str, int, int], bool] = OrderedDict()
+_READABLE_MAX = 4096
+_READABLE_LOCK = threading.Lock()
+
+
 def _is_readable_fits(path: Path) -> bool:
     """Return whether an archive output is a complete, readable FITS file.
 
     A dropped transfer leaves a valid header over a short data block, which
     astropy opens with only a warning; treat that as unreadable so the next
     pass re-fetches it instead of reusing the truncated file forever.
+    Memoised on the file's stat (:data:`_READABLE`).
     """
     try:
-        if not path.is_file() or path.stat().st_size < 2880:
-            return False
+        stat = path.stat()
+    except OSError:
+        return False
+    if not path.is_file() or stat.st_size < 2880:
+        return False
+    key = (os.fspath(path), stat.st_mtime_ns, stat.st_size)
+    with _READABLE_LOCK:
+        known = _READABLE.get(key)
+    if known is not None:
+        return known
+    try:
         with warnings.catch_warnings():
             warnings.filterwarnings(
                 "error", message="File may have been truncated",
                 category=AstropyUserWarning,
             )
             with fits.open(path, memmap=False):
-                return True
+                readable = True
     except (OSError, ValueError, AstropyUserWarning):
-        return False
+        readable = False
+    with _READABLE_LOCK:
+        _READABLE[key] = readable
+        while len(_READABLE) > _READABLE_MAX:
+            _READABLE.popitem(last=False)
+    return readable
 
 
 def _copy_valid_fits(source: Any, destination: Path) -> None:

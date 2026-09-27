@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import json
 import os
+import threading
+import time
 
 import pytest
 
@@ -185,3 +187,64 @@ def test_rebuild_route_picks_up_new_sidecars(client, layout):
            {"kind": "srcutoutartifact", "id": "aaaaaaaa", "created_at": "2026-04-01T00:00:00+00:00"})
     r = client.post("/api/provenance/rebuild")
     assert r.status_code == 200 and r.get_json()["total"] == 9
+
+
+# --------------------------------------------------------------------------- background refresh
+
+def _slow_builds(monkeypatch):
+    """Replace ``build_index`` with a gated fake: each build waits for
+    ``release`` and returns an index whose ``build_seconds`` is its number."""
+    release = threading.Event()
+    builds: list[int] = []
+
+    def build_index(**_kwargs):
+        builds.append(len(builds) + 1)
+        number = len(builds)
+        if number > 1:
+            release.wait(5)
+        index = pi.ProvIndex()
+        index.build_seconds = float(number)
+        return index
+
+    monkeypatch.setattr(pi, "build_index", build_index)
+    monkeypatch.setattr(pi, "current_model_ids", lambda ensemble_dir=None: [])
+    pi.reset_cache()
+    return release, builds
+
+
+def test_an_expired_index_is_served_while_it_rebuilds_in_the_background(monkeypatch):
+    release, builds = _slow_builds(monkeypatch)
+    first = pi.get_index()                                   # the first build blocks
+    assert first.build_seconds == 1.0 and builds == [1]
+    later = time.monotonic() + pi.TTL_S + 1
+    monkeypatch.setattr(pi.time, "monotonic", lambda: later)
+    started = time.perf_counter()
+    stale = pi.get_index()
+    assert time.perf_counter() - started < 1.0               # never waits for the scan
+    assert stale is first and pi.is_building()
+    assert pi.get_index() is first
+    deadline = time.perf_counter() + 5
+    while len(builds) < 2 and time.perf_counter() < deadline:
+        time.sleep(0.01)
+    assert builds == [1, 2]                                  # single flight
+    release.set()
+    assert pi.wait_for_refresh(5)
+    fresh = pi.get_index()
+    assert fresh.build_seconds == 2.0 and not pi.is_building()
+    pi.reset_cache()
+
+
+def test_an_explicit_rebuild_waits_for_the_new_index(monkeypatch):
+    release, builds = _slow_builds(monkeypatch)
+    pi.get_index()
+    release.set()
+    rebuilt = pi.get_index(rebuild=True)
+    assert rebuilt.build_seconds == 2.0 and builds == [1, 2]
+    pi.reset_cache()
+
+
+def test_summary_reports_a_background_build(client, monkeypatch):
+    body = client.get("/api/provenance/summary").get_json()
+    assert body["building"] is False
+    monkeypatch.setattr(pi, "is_building", lambda: True)
+    assert client.get("/api/provenance/summary").get_json()["building"] is True

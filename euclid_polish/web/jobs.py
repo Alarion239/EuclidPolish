@@ -84,6 +84,9 @@ class Job:
     error:     str | None       = None
     log_buf:   io.StringIO         = field(default_factory=io.StringIO)
     kind:      str | None       = None
+    #: What the job works on (a pair id, a tile id…) for the single-run
+    #: guard (:meth:`JobRegistry.spawn_exclusive`); not part of the C2 view.
+    key:       str | None       = None
     cancel_requested: bool = False
     # Progress fields — set by jobs via ``_LogCapture.tick(...)``. Optional;
     # ``progress_total = 0`` means "indeterminate".
@@ -279,6 +282,43 @@ class JobRegistry:
             for job in finished[:max(0, excess)]:
                 del self._jobs[job.job_id]
 
+    def running(self, kind: str, key: str | None = None) -> Job | None:
+        """The newest running job of ``kind`` (and ``key`` when given)."""
+        with self._lock:
+            return self._running_locked(kind, key)
+
+    def _running_locked(self, kind: str, key: str | None) -> Job | None:
+        matches = [job for job in self._jobs.values()
+                   if job.kind == kind and job.status == "running"
+                   and (key is None or job.key == key)]
+        return max(matches, key=lambda job: job.started) if matches else None
+
+    def spawn_exclusive(
+        self,
+        label: str,
+        target: Callable[[_LogCapture], Any],
+        *,
+        kind: str,
+        key: str | None = None,
+        per_key: bool = False,
+    ) -> tuple[Job, bool]:
+        """Spawn unless a job of ``kind`` is already running: ``(job, started)``.
+
+        The single-run guard of the jobs that must not overlap (a NEXUS
+        mosaic crop, a tile cache write): the check and the spawn are one
+        atomic step, so two clicks never start two jobs. ``per_key=True``
+        guards per ``key`` instead (other keys run concurrently). When
+        ``started`` is False, ``job`` is the running one — compare its
+        ``key`` to tell "the same request is running" from "busy".
+        """
+        with self._lock:
+            running = self._running_locked(kind, key if per_key else None)
+            if running is not None:
+                return running, False
+            job = self._register(label, kind, key)
+        self._start(job, target)
+        return job, True
+
     def spawn(
         self,
         label: str,
@@ -292,10 +332,18 @@ class JobRegistry:
         stdout into the same buffer while it's running). ``kind`` is a
         free-form tag (e.g. ``"fasrc-env-update"``) the UI can group by.
         """
-        job = Job(job_id=uuid.uuid4().hex[:8], label=label, kind=kind)
         with self._lock:
-            self._jobs[job.job_id] = job
+            job = self._register(label, kind, None)
+        self._start(job, target)
+        return job.job_id
 
+    def _register(self, label: str, kind: str | None, key: str | None) -> Job:
+        """Create and record a job (caller holds ``self._lock``)."""
+        job = Job(job_id=uuid.uuid4().hex[:8], label=label, kind=kind, key=key)
+        self._jobs[job.job_id] = job
+        return job
+
+    def _start(self, job: Job, target: Callable[[_LogCapture], Any]) -> None:
         def _runner() -> None:
             try:
                 cap = _LogCapture(job)
@@ -312,7 +360,6 @@ class JobRegistry:
                 self._evict_finished()
 
         threading.Thread(target=_runner, daemon=True, name=f"job-{job.job_id}").start()
-        return job.job_id
 
 
 class _ThreadLocalStream:
@@ -458,3 +505,34 @@ class _LogCapture:
 
 # Module-singleton tracker; one per process is plenty.
 REGISTRY = JobRegistry()
+
+
+def start_exclusive(
+    label: str,
+    target: Callable[[_LogCapture], Any],
+    *,
+    kind: str,
+    key: str,
+    per_key: bool = False,
+    busy: str = "another job of this kind is running",
+    registry: JobRegistry | None = None,
+) -> tuple[dict[str, Any], int]:
+    """Start a single-run job; the HTTP ``(payload, status)`` of the attempt.
+
+    * started → ``({ok: true, job_id}, 200)``;
+    * the same ``key`` is already running → ``({ok: true, job_id,
+      already_running: true}, 200)`` (a second click re-attaches);
+    * another ``key`` of ``kind`` is running (only when not ``per_key``) →
+      ``({ok: false, error: "busy: …", code: "busy", job_id}, 409)``.
+
+    Routes merge their own fields into the payload before ``jsonify``.
+    """
+    jobs = REGISTRY if registry is None else registry
+    job, started = jobs.spawn_exclusive(label, target, kind=kind, key=key, per_key=per_key)
+    if started:
+        return {"ok": True, "job_id": job.job_id}, 200
+    if job.key == key:
+        return {"ok": True, "job_id": job.job_id, "already_running": True}, 200
+    return {"ok": False, "code": "busy", "job_id": job.job_id,
+            "error": f"busy: {busy} ({job.label}, job {job.job_id}); "
+                     "try again when it finishes"}, 409

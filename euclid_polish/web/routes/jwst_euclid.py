@@ -8,14 +8,12 @@ from pathlib import Path
 
 from flask import jsonify, request, send_file
 
-from euclid_polish.web.helpers import model_catalog
+from euclid_polish.web.helpers import jwst_euclid, model_catalog
 from euclid_polish.web.helpers.jwst_euclid import (
     _cached_pair_is_usable,
     _read_nexus_field_manifest,
     _selected_positions,
     download_and_align_pair,
-    download_nexus_field,
-    download_nexus_pair,
     download_remaining_locations,
     enrich_manifest_metadata,
     find_location_group,
@@ -23,13 +21,11 @@ from euclid_polish.web.helpers.jwst_euclid import (
     nexus_fields,
     nexus_pair_id,
     nexus_product_options,
-    overlap_rows,
     pair_root,
     run_starfull_nexus_field_inference,
     run_starfull_pair_inference,
-    scan_euclid_coverage,
 )
-from euclid_polish.web.jobs import REGISTRY
+from euclid_polish.web.jobs import REGISTRY, start_exclusive
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9._-]{1,220}$")
 
@@ -89,11 +85,6 @@ def _nexus_inference_request(identifier: str, form) -> tuple[list[str] | None, s
 
 
 def register(app):
-    @app.get("/api/jwst-euclid/fields")
-    def api_jwst_euclid_fields():
-        rows, status = location_groups()
-        return jsonify({"fields": rows, "status": status})
-
     @app.get("/api/jwst-euclid/nexus/fields")
     def api_nexus_fields():
         fields = [{
@@ -108,14 +99,6 @@ def register(app):
             "active_combiner_kind": field.get("active_combiner_kind"),
         } for field in nexus_fields()]
         return jsonify({"fields": fields})
-
-    @app.get("/api/jwst-euclid/field.json")
-    def api_jwst_euclid_field():
-        identifier = request.args.get("id", "")
-        payload = _manifest(identifier)
-        if payload is None:
-            return jsonify({"error": "paired field not found"}), 404
-        return jsonify(payload)
 
     @app.post("/api/jwst-euclid/download")
     def api_jwst_euclid_download():
@@ -158,28 +141,32 @@ def register(app):
         if not (0.0 <= ra < 360.0 and -90.0 <= dec <= 90.0 and 1.0 <= size_arcsec <= 120.0):
             return jsonify({"error": "NEXUS coordinates or cutout size are outside the supported range"}), 400
         identifier = nexus_pair_id(ra, dec, filter_name, size_arcsec)
-        job_id = REGISTRY.spawn(
-            label=f"download NEXUS {filter_name} + matching Euclid VIS",
-            target=lambda cap: download_nexus_pair(
+        payload, status = start_exclusive(
+            f"download NEXUS {filter_name} + matching Euclid VIS ({identifier})",
+            lambda cap: jwst_euclid.download_nexus_pair(
                 ra=ra, dec=dec, filter_name=filter_name, size_arcsec=size_arcsec,
                 progress=lambda done, total, label: cap.tick(done, total, label),
             ),
+            kind=jwst_euclid.NEXUS_MOSAIC_JOB_KIND, key=f"pair:{identifier}",
+            busy=jwst_euclid.NEXUS_MOSAIC_BUSY,
         )
-        return jsonify({"job_id": job_id, "field_id": identifier})
+        return jsonify({**payload, "field_id": identifier}), status
 
     @app.post("/api/jwst-euclid/nexus/download-field")
     def api_nexus_download_field():
         filter_name = request.form.get("filter", "F200W").strip().upper()
         if filter_name not in {str(product["filter"]) for product in nexus_product_options()}:
             return jsonify({"error": "NEXUS filter must be F200W or F444W"}), 400
-        job_id = REGISTRY.spawn(
-            label=f"cache NEXUS {filter_name} mosaic + four-band Euclid coverage",
-            target=lambda cap: download_nexus_field(
+        payload, status = start_exclusive(
+            f"cache NEXUS {filter_name} mosaic + four-band Euclid coverage",
+            lambda cap: jwst_euclid.download_nexus_field(
                 filter_name=filter_name,
                 progress=lambda done, total, label: cap.tick(done, total, label),
             ),
+            kind=jwst_euclid.NEXUS_MOSAIC_JOB_KIND, key=f"field:{filter_name}",
+            busy=jwst_euclid.NEXUS_MOSAIC_BUSY,
         )
-        return jsonify({"job_id": job_id})
+        return jsonify(payload), status
 
     @app.post("/api/jwst-euclid/nexus/infer")
     def api_nexus_infer():
@@ -226,20 +213,6 @@ def register(app):
             ),
         )
         return jsonify({"job_id": job_id, "remaining_count": remaining})
-
-    @app.post("/api/jwst-euclid/scan-coverage")
-    def api_jwst_euclid_scan_coverage():
-        rows, status = overlap_rows()
-        if not rows:
-            return jsonify({"error": "no cached JWST fields are available to scan"}), 400
-        unique_count = status.get("coverage_scan", {}).get("unique_count", len(rows))
-        job_id = REGISTRY.spawn(
-            label=f"scan Euclid VIS coverage ({len(rows)} JWST rows; {unique_count} unique centers)",
-            target=lambda cap: scan_euclid_coverage(
-                progress=lambda done, total, label: cap.tick(done, total, label),
-            ),
-        )
-        return jsonify({"job_id": job_id})
 
     @app.post("/api/jwst-euclid/infer")
     def api_jwst_euclid_infer():

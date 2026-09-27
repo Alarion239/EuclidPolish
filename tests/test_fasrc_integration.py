@@ -307,7 +307,8 @@ def test_queued_legacy_synthetic_spec_is_promoted_as_the_step(
         fake_remote, client, job_config_file):
     """A spec queued by the removed ``/api/fasrc/submit`` (``kind`` =
     ``synthetic``, no resource fields) still submits, as the
-    ``synthetic_generate`` step with its default resources."""
+    ``synthetic_generate`` step with its default resources — promoted by the
+    server-side queue step (a GET poll never promotes)."""
     bin_dir = fake_remote["bin_dir"]
     (bin_dir / "squeue").write_text("#!/usr/bin/env bash\nexit 0\n")
     os.chmod(bin_dir / "squeue", 0o755)
@@ -317,9 +318,10 @@ def test_queued_legacy_synthetic_spec_is_promoted_as_the_step(
                   "image_size": "60"}},
         "legacy")
 
-    r = client.get("/api/fasrc/current-submission")
+    assert client.get("/api/fasrc/current-submission").status_code == 200
+    assert fasrc_queue.QUEUE.public()["count"] == 1          # the poll did not submit
+    client.application.extensions[fasrc_routes.QUEUE_STEP_KEY]()
 
-    assert r.status_code == 200, r.get_json()
     assert fasrc_queue.QUEUE.public()["count"] == 0
     assert not fasrc_queue.QUEUE.halted, fasrc_queue.QUEUE.halted_reason
     row = fake_remote["db"].get("99999")

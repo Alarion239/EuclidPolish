@@ -60,6 +60,7 @@ from euclid_polish.eval.combiner import (
     load_combiner,
 )
 from euclid_polish.eval.spatial_gate import SpatialGateCombiner, load_spatial_gate
+from euclid_polish.web.helpers import atomic_files
 
 SPEC_PRODUCTION = "production"
 SPEC_MEAN = "mean"
@@ -583,11 +584,7 @@ def member_cache_dir(source: str, identifier: str) -> Path:
 
 
 def _atomic_json(path: Path, payload: Mapping[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True, allow_nan=False)
-                         + "\n", encoding="utf-8")
-    os.replace(temporary, path)
+    atomic_files.write_json(path, payload, indent=2, sort_keys=True, allow_nan=False)
 
 
 _STRUCTURAL_CARDS = frozenset({
@@ -648,10 +645,10 @@ def save_output(source: str, identifier: str, spec: ModelSpec, sr: np.ndarray, *
     header["SPECFP"] = (str(spec.fingerprint or "")[:68], "model spec fingerprint")
     header["BANDS"] = ",".join(Config.LR_INPUT_BAND_NAMES[:cube.shape[-1]])
     path = directory / f"{spec.slug}.fits"
-    temporary = directory / f".{spec.slug}.{os.getpid()}.tmp.fits"
-    fits.PrimaryHDU(np.moveaxis(cube, -1, 0), header=header).writeto(
-        temporary, overwrite=True, output_verify="silentfix")
-    os.replace(temporary, path)
+    with atomic_files.temporary_sibling(path, ".fits") as temporary:
+        fits.PrimaryHDU(np.moveaxis(cube, -1, 0), header=header).writeto(
+            temporary, overwrite=True, output_verify="silentfix")
+        os.replace(temporary, path)
     meta = {
         "spec": spec.spec, "slug": spec.slug, "kind": spec.kind, "label": spec.label,
         "fingerprint": spec.fingerprint,

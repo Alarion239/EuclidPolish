@@ -17,14 +17,6 @@ _MAX_LIMIT = 1000
 _DEFAULT_LIMIT = 200
 
 
-def _int_arg(name: str, default: int, lo: int, hi: int) -> int:
-    try:
-        value = int(request.args.get(name, default))
-    except (TypeError, ValueError):
-        value = default
-    return max(lo, min(value, hi))
-
-
 def _inspect_path(entry: dict[str, Any]) -> str | None:
     """Project-relative path the Inspect workspace can open (FITS only)."""
     path = entry.get("path")
@@ -37,7 +29,8 @@ def _summary(index: pi.ProvIndex) -> dict[str, Any]:
     return {"ok": True, "total": len(index.entries), "counts": index.counts(),
             "roots": index.roots, "current_models": index.current_models,
             "truncated": index.truncated, "duplicates": index.duplicates,
-            "built_at": index.built_at, "build_seconds": index.build_seconds}
+            "built_at": index.built_at, "build_seconds": index.build_seconds,
+            "building": pi.is_building()}
 
 
 def register(app):
@@ -61,8 +54,8 @@ def register(app):
         index = pi.get_index()
         hits = index.search(q=request.args.get("q") or "", kind=request.args.get("kind") or "",
                             verdict=verdict, source=(request.args.get("source") or "").strip())
-        offset = _int_arg("offset", 0, 0, 10**9)
-        limit = _int_arg("limit", _DEFAULT_LIMIT, 1, _MAX_LIMIT)
+        offset = errors.int_arg("offset", 0, lo=0, hi=10**9, clamp=True)
+        limit = errors.int_arg("limit", _DEFAULT_LIMIT, lo=1, hi=_MAX_LIMIT, clamp=True)
         rows = [index.row(e) for e in hits[offset:offset + limit]]
         return jsonify({"ok": True, "total": len(hits), "offset": offset, "limit": limit,
                         "records": rows})
@@ -93,5 +86,6 @@ def register(app):
 
     @app.route("/api/provenance/rebuild", methods=["POST"])
     def api_provenance_rebuild():
-        """Re-scan every root now (the index is otherwise cached ~5 min)."""
+        """Re-scan every root now and answer the new summary (the GETs serve the
+        cached index and refresh it in the background after ~5 min)."""
         return jsonify(_summary(pi.get_index(rebuild=True)))

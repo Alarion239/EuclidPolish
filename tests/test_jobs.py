@@ -6,7 +6,7 @@ import time
 import tqdm as tqdm_module
 
 from euclid_polish.web import jobs
-from euclid_polish.web.jobs import Job, JobRegistry
+from euclid_polish.web.jobs import Job, JobRegistry, start_exclusive
 
 
 def _wait_for_done(registry: JobRegistry, *job_ids: str) -> None:
@@ -295,3 +295,89 @@ def test_listing_is_newest_first():
     second = registry.spawn("second", lambda _cap: None)
     _wait_for_done(registry, second)
     assert [job["job_id"] for job in registry.list()] == [second, first]
+
+
+# ---------------------------------------------------------------------------
+# single-run guard (spawn_exclusive / running)
+# ---------------------------------------------------------------------------
+
+def test_spawn_exclusive_returns_the_running_job_of_the_same_kind():
+    registry = JobRegistry()
+    release = threading.Event()
+    first, started = registry.spawn_exclusive(
+        "first", lambda _cap: release.wait(2), kind="nexus-pair", key="a")
+    assert started is True and first.key == "a"
+    again, started_again = registry.spawn_exclusive(
+        "second", lambda _cap: None, kind="nexus-pair", key="b")
+    assert started_again is False
+    assert again.job_id == first.job_id and again.key == "a"
+    assert registry.running("nexus-pair").job_id == first.job_id
+    assert registry.running("other-kind") is None
+    release.set()
+    _wait_for_done(registry, first.job_id)
+    assert registry.running("nexus-pair") is None
+    later, started_later = registry.spawn_exclusive(
+        "later", lambda _cap: None, kind="nexus-pair", key="b")
+    assert started_later is True and later.job_id != first.job_id
+    _wait_for_done(registry, later.job_id)
+
+
+def test_spawn_exclusive_per_key_lets_other_keys_run_concurrently():
+    registry = JobRegistry()
+    release = threading.Event()
+    a, started_a = registry.spawn_exclusive(
+        "tile a", lambda _cap: release.wait(2), kind="real-tile", key="a", per_key=True)
+    b, started_b = registry.spawn_exclusive(
+        "tile b", lambda _cap: release.wait(2), kind="real-tile", key="b", per_key=True)
+    a2, started_a2 = registry.spawn_exclusive(
+        "tile a again", lambda _cap: None, kind="real-tile", key="a", per_key=True)
+    assert started_a and started_b and not started_a2
+    assert a2.job_id == a.job_id and b.job_id != a.job_id
+    release.set()
+    _wait_for_done(registry, a.job_id, b.job_id)
+
+
+def test_spawn_exclusive_is_atomic_under_concurrent_callers():
+    registry = JobRegistry()
+    release = threading.Event()
+    results: list[tuple[str, bool]] = []
+    lock = threading.Lock()
+    barrier = threading.Barrier(8)
+
+    def call():
+        barrier.wait(1)
+        job, started = registry.spawn_exclusive(
+            "race", lambda _cap: release.wait(2), kind="race")
+        with lock:
+            results.append((job.job_id, started))
+
+    threads = [threading.Thread(target=call) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(2)
+    assert sum(started for _id, started in results) == 1
+    assert len({job_id for job_id, _started in results}) == 1
+    release.set()
+    _wait_for_done(registry, results[0][0])
+
+
+def test_start_exclusive_payloads():
+    registry = JobRegistry()
+    release = threading.Event()
+    first, status = start_exclusive("crop a", lambda _cap: release.wait(2), kind="mosaic",
+                                    key="a", busy="a mosaic job is running", registry=registry)
+    assert status == 200 and first == {"ok": True, "job_id": first["job_id"]}
+    same, same_status = start_exclusive("crop a again", lambda _cap: None, kind="mosaic",
+                                        key="a", registry=registry)
+    assert same_status == 200
+    assert same == {"ok": True, "job_id": first["job_id"], "already_running": True}
+    other, other_status = start_exclusive("crop b", lambda _cap: None, kind="mosaic",
+                                          key="b", busy="a mosaic job is running",
+                                          registry=registry)
+    assert other_status == 409
+    assert other["ok"] is False and other["code"] == "busy"
+    assert other["job_id"] == first["job_id"]
+    assert other["error"].startswith("busy: a mosaic job is running (crop a")
+    release.set()
+    _wait_for_done(registry, first["job_id"])

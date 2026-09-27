@@ -8,11 +8,14 @@ cutout directory or trust paths embedded by the remote filesystem.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import math
+import os
 import re
-from collections import Counter
+import threading
+from collections import Counter, OrderedDict
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,6 +28,7 @@ from astropy.io.fits.verify import VerifyError
 from euclid_polish.config import Config
 from euclid_polish.photometry import adu_per_s_to_electrons_factor
 from euclid_polish.sky.observation.q1_fields import q1_field_for
+from euclid_polish.web.helpers import fs_stamp
 
 ARCHIVE_FIELDS_SUBDIR = Config.EuclidSky.ARCHIVE_FIELDS_SUBDIR
 ARCHIVE_FIELDS_MANIFEST = Config.EuclidSky.ARCHIVE_FIELDS_MANIFEST_FILENAME
@@ -634,13 +638,40 @@ def is_current(
     )["current"])
 
 
+#: ``availability`` answers keyed on the stamp of every file it reads (the
+#: collection root two levels deep — manifest + bundles — and the source
+#: manifest): every realism request asks, and one answer costs three full
+#: manifest validations (~0.13 s).
+_AVAILABILITY: OrderedDict[tuple, dict[str, Any]] = OrderedDict()
+_AVAILABILITY_MAX = 8
+_AVAILABILITY_LOCK = threading.Lock()
+
+
 def availability(
     *,
     manifest_file: Path | str | None = None,
     source_file: Path | str | None = None,
 ) -> dict[str, Any]:
-    """Return non-raising readiness, provenance, and independent-pointing counts."""
+    """Return non-raising readiness, provenance, and independent-pointing counts.
+
+    Memoised on the on-disk stamp of its inputs (:data:`_AVAILABILITY`);
+    each caller gets its own copy."""
     target = Path(manifest_file) if manifest_file is not None else manifest_path()
+    source_target = Path(source_file) if source_file is not None else source_manifest_path()
+    key = (os.fspath(target), fs_stamp.tree_stamp(target.parent, 2),
+           fs_stamp.stat_key(source_target))
+    with _AVAILABILITY_LOCK:
+        cached = _AVAILABILITY.get(key)
+    if cached is None:
+        cached = _availability(target, source_file)
+        with _AVAILABILITY_LOCK:
+            _AVAILABILITY[key] = cached
+            while len(_AVAILABILITY) > _AVAILABILITY_MAX:
+                _AVAILABILITY.popitem(last=False)
+    return copy.deepcopy(cached)
+
+
+def _availability(target: Path, source_file: Path | str | None) -> dict[str, Any]:
     base: dict[str, Any] = {
         "available": target.is_file(),
         "valid": False,

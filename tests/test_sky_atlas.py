@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import csv
 import json
+import threading
 import time
 
 import pytest
@@ -301,3 +302,67 @@ def test_pair_route_tests_the_nexus_tiles_not_their_hull(tmp_path, monkeypatch):
         assert inside.status_code == 200 and inside.get_json()["mode"] == "nexus"
         assert _wait(inside.get_json()["job_id"])["status"] == "done"
     assert calls and calls[0]["filter_name"] == "F200W"
+
+
+# ---------------------------------------------------------------------------
+# single-run guard of the jobs that read the NEXUS mosaic (a crop streams a
+# 4.46 GB plane: two at once would contend for memory and disk)
+# ---------------------------------------------------------------------------
+
+def test_nexus_mosaic_jobs_run_one_at_a_time(client, monkeypatch):
+    release = threading.Event()
+    started = threading.Event()
+
+    def slow_field(**_kwargs):
+        started.set()
+        release.wait(10)
+        return {"field_id": "nexus-field"}
+
+    monkeypatch.setattr(jwst_euclid, "download_nexus_field", slow_field)
+    monkeypatch.setattr(jwst_euclid, "download_nexus_pair",
+                        lambda **kw: {"field_id": "nexus-pair"})
+    monkeypatch.setattr(jwst_euclid, "pair_lr_input", lambda *a, **k: None)
+    try:
+        first = client.post("/api/jwst-euclid/nexus/download-field", data={"filter": "F200W"})
+        assert first.status_code == 200
+        job_id = first.get_json()["job_id"]
+        assert started.wait(5)
+        # The same request again re-attaches to the running job.
+        again = client.post("/api/jwst-euclid/nexus/download-field", data={"filter": "F200W"})
+        assert again.status_code == 200
+        assert again.get_json()["job_id"] == job_id and again.get_json()["already_running"]
+        # Any other job over the mosaic is refused while it runs.
+        pair = client.post("/api/sky/jwst/pair",
+                           data={"ra": str(fx.NEXUS_RA + 0.001), "dec": str(fx.NEXUS_DEC)})
+        assert pair.status_code == 409
+        body = pair.get_json()
+        assert body["ok"] is False and body["code"] == "busy" and body["job_id"] == job_id
+        legacy = client.post("/api/jwst-euclid/nexus/download",
+                             data={"ra": str(fx.NEXUS_RA), "dec": str(fx.NEXUS_DEC)})
+        assert legacy.status_code == 409 and legacy.get_json()["code"] == "busy"
+        other_filter = client.post("/api/jwst-euclid/nexus/download-field",
+                                   data={"filter": "F444W"})
+        assert other_filter.status_code == 409
+    finally:
+        release.set()
+    assert _wait(job_id)["status"] == "done"
+    after = client.post("/api/sky/jwst/pair",
+                        data={"ra": str(fx.NEXUS_RA + 0.001), "dec": str(fx.NEXUS_DEC)})
+    assert after.status_code == 200 and after.get_json()["mode"] == "nexus"
+    job = _wait(after.get_json()["job_id"])
+    assert job["status"] == "done", job["error"]
+    assert job["kind"] == "nexus-mosaic"
+
+
+def test_fill_actions_describe_what_they_do(client):
+    """The atlas confirm dialog and toast read these flags: an action that
+    connects to FASRC by itself says so, and a synchronous pull (no job id)
+    is ``sync`` so the client refreshes at once instead of waiting for a job."""
+    actions = {layer["id"]: layer["fill_action"]
+               for layer in client.get("/api/sky/layers").get_json()["layers"]}
+    assert actions["archive-fields"]["self_connects"] is True
+    assert not actions["archive-fields"].get("requires_fasrc")
+    assert actions["lens-candidates"]["sync"] is True
+    assert actions["stars"]["sync"] is True and actions["stars"]["requires_fasrc"] is True
+    for layer_id in ("nexus-footprint", "real-tiles", "pairs", "jwst-mast", "psf-clusters"):
+        assert not actions[layer_id].get("sync"), layer_id

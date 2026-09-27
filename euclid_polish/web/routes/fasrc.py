@@ -14,6 +14,7 @@ from flask import jsonify, request
 
 from euclid_polish.observability.training_log import TrainingLog
 from euclid_polish.web import (
+    errors,
     fasrc_config,
     fasrc_fetcher,
     fasrc_jobs,
@@ -132,16 +133,12 @@ _UNRESOLVED = "unresolved"
 _FILES_MAX_ENTRIES = 2000
 _INSPECTABLE_SUFFIXES = (".fits", ".fits.gz", ".fit", ".fz")
 
+#: ``app.extensions`` key of the server-side queue step (``app.main`` starts
+#: :data:`fasrc_queue.TICKER` with it).
+QUEUE_STEP_KEY = "euclid_polish.fasrc_queue_step"
+
 #: At most this many ``grep`` matches are returned per log search.
 _LOG_GREP_MAX = 500
-
-
-def _int_arg(name: str, default: int, lo: int, hi: int) -> int:
-    try:
-        value = int(request.args.get(name, default))
-    except (TypeError, ValueError):
-        value = default
-    return max(lo, min(value, hi))
 
 
 def _history_rows() -> list[dict[str, Any]]:
@@ -596,6 +593,36 @@ def register(app):
         except Exception:
             traceback.print_exc()
 
+    def _queue_step():
+        """One server-side queue pass (:class:`fasrc_queue.QueueTicker`):
+        reconcile the job DB against ``squeue``, then promote/halt. Nothing
+        to do (no SSH round trip) while halted, while FASRC is down, or once
+        the queue is empty AND its last promoted job has been reconciled (the
+        final tick clears ``active_jobid``, or halts when that job failed)."""
+        queue = fasrc_queue.QUEUE
+        if queue.halted or (not queue.items and queue.active_jobid is None):
+            return
+        ssh = STATE.ssh
+        if ssh is None or not ssh.is_connected():
+            return
+        try:
+            rc_q, out_q, _err_q = ssh.run(
+                f"squeue -r -h -u $USER --format='{fasrc_jobs.SQUEUE_FMT}'", timeout=15)
+        except (subprocess.TimeoutExpired, SSHError):
+            return                       # a slow login node: retry next pass
+        if rc_q != 0:
+            return
+        fasrc_jobs.reconcile_with_squeue(fasrc_jobs.parse_squeue(out_q), ssh=ssh)
+        _queue_tick()
+
+    app.extensions[QUEUE_STEP_KEY] = _queue_step
+
+    def _wake_queue():
+        """Make sure the ticker runs (not under the test client) and pass now."""
+        if not app.config.get("TESTING"):
+            fasrc_queue.TICKER.start(_queue_step)
+        fasrc_queue.TICKER.poke()
+
     def _submit_or_queue(step_ref, form):
         """Submit immediately if the single lane is free, else enqueue."""
         label = _spec_label(step_ref, form)
@@ -612,6 +639,7 @@ def register(app):
             return jsonify({"ok": False, "error": str(exc)}), 400
         if fasrc_queue.QUEUE.active_is_running(fasrc_jobs.DB):
             fasrc_queue.QUEUE.enqueue(spec, label)
+            _wake_queue()
             return jsonify({"ok": True, "queued": True, "label": label,
                             "queue": fasrc_queue.QUEUE.public()})
         # Lane free → a fresh submit also clears any prior halt (resume).
@@ -658,10 +686,11 @@ def register(app):
     @app.route("/api/fasrc/queue/resume", methods=["POST"])
     def api_fasrc_queue_resume():
         """Clear a halt so the queue continues past the job that stopped it
-        (a failed active job leaves the lane); the next
-        ``/api/fasrc/current-submission`` poll promotes the head item."""
-        return jsonify({"ok": True, "queue": fasrc_queue.QUEUE.resume_after_halt(
-            fasrc_jobs.DB, fasrc_jobs.JOBLOG)})
+        (a failed active job leaves the lane); the server-side queue ticker
+        promotes the head item right after (never a GET poll)."""
+        queue = fasrc_queue.QUEUE.resume_after_halt(fasrc_jobs.DB, fasrc_jobs.JOBLOG)
+        _wake_queue()
+        return jsonify({"ok": True, "queue": queue})
 
     # =========================================================================
     # Pipeline steps (generic FASRC submissions)
@@ -914,8 +943,9 @@ def register(app):
         if needle:
             rows = [r for r in rows if needle in " ".join(
                 str(r.get(k) or "") for k in ("jobid", "label", "step_id")).lower()]
-        offset = _int_arg("offset", 0, 0, 10**9)
-        limit = _int_arg("limit", _HISTORY_DEFAULT_LIMIT, 1, _HISTORY_MAX_LIMIT)
+        offset = errors.int_arg("offset", 0, lo=0, hi=10**9, clamp=True)
+        limit = errors.int_arg("limit", _HISTORY_DEFAULT_LIMIT, lo=1, hi=_HISTORY_MAX_LIMIT,
+                               clamp=True)
         return jsonify({"ok": True, "total": len(rows), "offset": offset, "limit": limit,
                         "rows": rows[offset:offset + limit], "facets": facets,
                         "unresolved": unresolved})
@@ -1035,9 +1065,8 @@ def register(app):
         if rc_q == 0:
             squeue_rows = fasrc_jobs.parse_squeue(out_q)
             fasrc_jobs.reconcile_with_squeue(squeue_rows, ssh=ssh)
-            # Advance the local queue (promote on success / halt on failure)
-            # off the same reconcile that just refreshed job states.
-            _queue_tick()
+            # The queue is NOT advanced here: a GET must never sbatch. The
+            # server-side ticker (fasrc_queue.TICKER) promotes it.
 
         queue_public = fasrc_queue.QUEUE.public()
 

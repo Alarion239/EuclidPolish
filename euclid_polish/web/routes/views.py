@@ -1,4 +1,5 @@
-"""Figure renderers and the synthetic training records (Data › Records).
+"""The ``data/vis`` gallery listing and the synthetic training records
+(Data › Records).
 
 Records: ``GET /api/sky/sr-status`` (inventory + SR tier state),
 ``POST /api/sky/sync`` (FASRC pull as a background job),
@@ -9,83 +10,28 @@ is local and works offline.
 """
 from __future__ import annotations
 
-import contextlib
-import io
 import os
-import tempfile
 import threading
 from typing import Any
 
 import numpy as np
-from flask import abort, jsonify, request, send_file
+from flask import abort, jsonify, request
 
-from euclid_polish.config import Config
-from euclid_polish.ensemble import default_ensemble_dir
-from euclid_polish.ensemble_registry import active_member_dirs
 from euclid_polish.eval.catalog_runner import current_eval_identity, eval_model_identity
 from euclid_polish.eval.ensemble_infer import load_eval_ensemble
 from euclid_polish.image import ImageSet
 from euclid_polish.image.tfio import tfrecord_path
-from euclid_polish.training.log_plot import plot_training_log
 from euclid_polish.web import fasrc_fetcher as _fasrc_fetcher
 from euclid_polish.web.fasrc_gate import requires_fasrc
 from euclid_polish.web.helpers import sky_records
-from euclid_polish.web.helpers.fits_render import _render_psf_panel_png
 from euclid_polish.web.helpers.paths import _sky_records_local_dir, _sky_records_remote_dir
-from euclid_polish.web.helpers.sky_render import _render_catalog_view_png, _render_psf_clusters_png
 from euclid_polish.web.helpers.status import (
-    _cached_fasrc_catalog_dir,
-    _cached_fasrc_psf_dir,
-    _cached_psf_clusters_json,
     _list_vis_pngs,
-    _resolve_training_log,
 )
 from euclid_polish.web.jobs import REGISTRY as JOB_REGISTRY
 
-_TRAINING_LOG_PNGS: dict[str, tuple[tuple[int, int], bytes]] = {}
-_TRAINING_LOG_LOCK = threading.Lock()
-
-
-def _training_log_png(log_path: str, *, force: bool = False) -> bytes | None:
-    """PNG bytes of ``log_path``'s plot, memoised per log (size, mtime).
-
-    Renders into a private file in the system temp dir (matplotlib infers the
-    format from the ``.png`` suffix), reads it back and removes it — nothing
-    lands in ``data/``. A failed render (empty / header-only / mid-write log)
-    keeps the previous good bytes of that log, else ``None``."""
-    try:
-        st = os.stat(log_path)
-    except OSError:
-        return None
-    key = (int(st.st_size), int(st.st_mtime_ns))
-    with _TRAINING_LOG_LOCK:
-        hit = _TRAINING_LOG_PNGS.get(log_path)
-    if hit is not None and hit[0] == key and not force:
-        return hit[1]
-    fd, tmp_png = tempfile.mkstemp(prefix="training_log-", suffix=".png")
-    os.close(fd)
-    try:
-        plot_training_log(log_path, tmp_png)
-        with open(tmp_png, "rb") as handle:
-            png = handle.read()
-    except Exception as e:  # nothing to plot yet (empty / mid-write log) is not a 500
-        print(f"  ⚠ training-log plot skipped: {type(e).__name__}: {e}")
-        return hit[1] if hit is not None else None
-    finally:
-        with contextlib.suppress(OSError):
-            os.remove(tmp_png)
-    with _TRAINING_LOG_LOCK:
-        _TRAINING_LOG_PNGS[log_path] = (key, png)
-    return png
-
 
 def register(app):
-
-    def figure_dpi() -> int:
-        try:
-            return max(72, min(int(request.args.get("dpi", "110")), 600))
-        except (TypeError, ValueError):
-            abort(400)
 
     @app.route("/api/vis/list.json")
     def api_vis_list():
@@ -93,65 +39,6 @@ def register(app):
         `rel` (served at /vis/<rel>) + an optional `inspect_fits` sibling. The
         React Visualization page's gallery reads this."""
         return jsonify({"pngs": _list_vis_pngs()})
-
-    # ---------------- Live view renderers (PNG) ----------------
-    @app.route("/view/psfs")
-    def view_psfs():
-        band = request.args.get("band", "all")
-        png = _render_psf_panel_png(
-            None if band == "all" else band, dpi=figure_dpi(),
-        )
-        return send_file(io.BytesIO(png), mimetype="image/png", max_age=0)
-
-    @app.route("/view/psf-clusters")
-    def view_psf_clusters():
-        # Local sky map of the ePSF clusters + per-cluster diameter. Prefers
-        # the synced cluster-metadata JSON (kilobytes, covers EVERY FASRC
-        # cluster — see /api/euclid-psf/sync-meta), falling back to the VIS
-        # ePSF headers in the synced FASRC cache. 404s (via the renderer)
-        # when neither is on disk — the page hides the panel then. Uses the
-        # cached catalog for member diameters, degrading to a centroids-only
-        # map when absent.
-        psf_dir = _cached_fasrc_psf_dir()
-        psf_path = (os.path.join(psf_dir, Config.BAND_VIS.psf_fits_filename)
-                    if psf_dir else None)
-        out = _cached_fasrc_catalog_dir()
-        png = _render_psf_clusters_png(
-            out, psf_path, clusters_json=_cached_psf_clusters_json(),
-            dpi=figure_dpi())
-        return send_file(io.BytesIO(png), mimetype="image/png", max_age=0)
-
-    @app.route("/view/catalog")
-    def view_catalog():
-        view = request.args.get("view", "positions")
-        # Render from the FASRC catalog (pulled to the local cache), not a
-        # stale local stars.csv — the query writes it on netscratch.
-        out = _cached_fasrc_catalog_dir()
-        if out is None:
-            abort(404)
-        png = _render_catalog_view_png(view, out, dpi=figure_dpi())
-        return send_file(io.BytesIO(png), mimetype="image/png", max_age=0)
-
-    @app.route("/view/training-log")
-    def view_training_log():
-        """The training-log plot of one checkpoint dir, rendered **in memory**
-        (never written under data/ on a GET): re-rendered when the log changes
-        or on ``?force=1``; a mid-write/empty log serves the last good render
-        of that log, else 404 (the page shows its placeholder)."""
-        # Default: the first active ensemble member's log (members carry
-        # their own training_log.csv; the /ensemble page's JS curves cover
-        # the whole ensemble — this single-plot route serves explicit dirs).
-        default_dirs = active_member_dirs(default_ensemble_dir())
-        ckpt = request.args.get(
-            "checkpoint_dir", default_dirs[0] if default_dirs else "")
-        log_path = _resolve_training_log(ckpt) if ckpt else None
-        if log_path is None:
-            abort(404)
-        png = _training_log_png(os.path.abspath(log_path),
-                                force=request.args.get("force") in ("1", "true", "yes"))
-        if png is None:
-            abort(404)
-        return send_file(io.BytesIO(png), mimetype="image/png", max_age=0)
 
     # ---------------- synthetic training records (Data › Records) --------
 

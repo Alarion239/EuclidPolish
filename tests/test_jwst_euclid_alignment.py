@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import gzip
 import json
+import shutil
+import tracemalloc
 from pathlib import Path
 
 import numpy as np
@@ -11,7 +14,7 @@ from astropy.wcs import WCS
 from astropy.wcs.utils import proj_plane_pixel_scales
 
 from euclid_polish.config import Config
-from euclid_polish.web.helpers import jwst_euclid, model_catalog, viewer_data
+from euclid_polish.web.helpers import fits_plane, jwst_euclid, model_catalog, viewer_data
 
 
 def test_field_id_is_stable_and_path_safe():
@@ -30,25 +33,84 @@ def test_nexus_pair_id_and_public_product_options_are_stable():
     assert options["F444W"]["pixel_scale_mas"] == 60
 
 
-def test_nexus_source_tiles_use_exact_255_pixel_euclid_footprints(monkeypatch):
+def _nexus_wcs(scale_arcsec: float = 0.03) -> WCS:
     wcs = WCS(naxis=2)
     wcs.wcs.crpix = [1.0, 1.0]
     wcs.wcs.crval = [268.4625, 65.19917]
-    wcs.wcs.cdelt = [-0.03 / 3600.0, 0.03 / 3600.0]
+    wcs.wcs.cdelt = [-scale_arcsec / 3600.0, scale_arcsec / 3600.0]
     wcs.wcs.ctype = ["RA---TAN", "DEC--TAN"]
-    data = np.ones((1700, 1700), dtype=np.float32)
-    monkeypatch.setattr(
-        jwst_euclid,
-        "_find_image",
-        lambda _path: (data, wcs.to_header(), wcs, "PRIMARY"),
-    )
-    _data, _header, _wcs, tiles = jwst_euclid._nexus_source_tiles(
-        Path("nexus.fits"), filter_name="F200W",
-    )
-    assert tiles == [
-        (0, 0, 850, 850), (850, 0, 1700, 850),
-        (0, 850, 850, 1700), (850, 850, 1700, 1700),
-    ]
+    return wcs
+
+
+def _gzip_mosaic(tmp_path: Path, data: np.ndarray, wcs: WCS) -> Path:
+    """A gzip-compressed single-HDU mosaic like the NEXUS quick release."""
+    plain = tmp_path / "nexus_mosaic.fits"
+    header = wcs.to_header()
+    header["BUNIT"] = "MJy/sr"
+    fits.PrimaryHDU(data, header=header).writeto(plain)
+    packed = tmp_path / "nexus_mosaic.fits.gz"
+    with plain.open("rb") as source, gzip.open(packed, "wb") as target:
+        shutil.copyfileobj(source, target)
+    plain.unlink()
+    return packed
+
+
+def _no_whole_mosaic_reads(monkeypatch, mosaic: Path) -> None:
+    """Fail if the mosaic is ever read whole through ``_find_image``."""
+    whole = jwst_euclid._find_image
+
+    def guarded(path):
+        assert Path(path) != mosaic, "the NEXUS mosaic must never be read whole"
+        return whole(path)
+
+    monkeypatch.setattr(jwst_euclid, "_find_image", guarded)
+
+
+def test_nexus_source_tiles_use_exact_255_pixel_euclid_footprints(tmp_path, monkeypatch):
+    data = np.ones((1700, 1700), dtype=">f4")
+    data[850:, 850:] = np.nan                     # an empty cell is skipped
+    mosaic = _gzip_mosaic(tmp_path, data, _nexus_wcs())
+    _no_whole_mosaic_reads(monkeypatch, mosaic)
+    plane, header, wcs, tiles = jwst_euclid._nexus_source_tiles(mosaic, filter_name="F200W")
+    try:
+        assert tiles == [(0, 0, 850, 850), (850, 0, 1700, 850), (0, 850, 850, 1700)]
+        assert plane.shape == (1700, 1700) and header["BUNIT"] == "MJy/sr"
+        assert wcs.has_celestial
+        np.testing.assert_array_equal(plane[0:850, 850:1700], np.ones((850, 850), np.float32))
+    finally:
+        plane.close()
+
+
+@pytest.mark.parametrize("pixel", [(1200, 1000), (3, 1995)])   # interior, partial edge
+def test_nexus_cutout_is_cropped_from_the_plane_not_the_whole_mosaic(tmp_path, monkeypatch, pixel):
+    rng = np.random.default_rng(7)
+    data = rng.normal(10.0, 1.0, size=(2000, 2400)).astype(">f4")      # 19 MB
+    # Scale the reader's buffers to the test plane (the real ones are 32 MB
+    # chunks / 256 MB strips for a 4.46 GB mosaic).
+    monkeypatch.setattr(fits_plane, "CHUNK_BYTES", 1 << 20)
+    monkeypatch.setattr(fits_plane, "STRIP_CACHE_BYTES", 1 << 20)
+    wcs = _nexus_wcs()
+    mosaic = _gzip_mosaic(tmp_path, data, wcs)
+    header_wcs = WCS(fits.getheader(mosaic)).celestial
+    centre = header_wcs.pixel_to_world(*pixel)
+    reference = jwst_euclid._native_sky_cutout(
+        np.asarray(data, np.float32), header_wcs, centre, 6.0)
+    _no_whole_mosaic_reads(monkeypatch, mosaic)
+    destination = tmp_path / "cutout.fits"
+    tracemalloc.start()
+    try:
+        cutout, cutout_header, cutout_wcs = jwst_euclid._write_nexus_cutout(
+            mosaic, ra=float(centre.ra.deg), dec=float(centre.dec.deg), size_arcsec=6.0,
+            destination=destination)
+        _current, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    np.testing.assert_array_equal(cutout, reference[0])
+    assert cutout.dtype == np.float32
+    assert cutout_wcs.wcs.compare(reference[1].wcs)
+    assert cutout_header["BUNIT"] == "MJy/sr"
+    np.testing.assert_array_equal(fits.getdata(destination), cutout)
+    assert peak < data.nbytes / 4, f"peak {peak / 1e6:.1f} MB for a {data.nbytes / 1e6:.1f} MB mosaic"
 
 
 def test_nexus_field_viewer_reads_saved_255_pixel_tiles(tmp_path, monkeypatch):
@@ -757,67 +819,17 @@ def test_download_remaining_locations_skips_saved_and_keeps_going(monkeypatch):
     assert ticks[-1][:2] == (2, 2)
 
 
-def test_scan_euclid_coverage_caches_unique_field_centers(tmp_path, monkeypatch):
-    monkeypatch.setattr(Config, "DATA_DIR", str(tmp_path / "data"))
-    root = jwst_euclid.overlap_root()
-    root.mkdir(parents=True)
-    (root / "esa_partial.csv").write_text(
-        "euclid_tile_index,euclid_ra_deg,euclid_dec_deg,jwst_archive,jwst_observation_id,jwst_target_name,jwst_ra_deg,jwst_dec_deg\n"
-        "T123,10,20,esa,jwobs-1,Covered,10.0,20.0\n"
-        "T123,10,20,esa,jwobs-2,Same center,10.0,20.0\n"
-        "T124,11,21,esa,jwobs-3,Uncovered,11.0,21.0\n",
-        encoding="utf-8",
-    )
-
-    calls = []
-    probes = []
-
-    def fake_coverage(ra, dec, *, strict=False):
-        calls.append((ra, dec, strict))
-        return [{"tile_index": "VIS-T123", "file_name": "vis.fits", "file_path": "/archive"}] if ra == 10.0 else []
-
-    monkeypatch.setattr(jwst_euclid, "euclid_tiles_covering", fake_coverage)
-    def fake_probe(client, tiles, **kwargs):
-        probes.append(list(tiles))
-        return (tiles[0], 0, []) if tiles else (None, 1, [])
-
-    monkeypatch.setattr(jwst_euclid, "_probe_euclid_tiles", fake_probe)
-    summary = jwst_euclid.scan_euclid_coverage()
-
-    assert summary["unique_count"] == 2
-    assert summary["covered_count"] == 1
-    assert summary["not_covered_count"] == 1
-    assert len(calls) == 2
-    assert len(probes) == 1
-    rows, _ = jwst_euclid.overlap_rows()
-    assert [row["euclid_coverage_status"] for row in rows] == ["covered", "covered", "not_covered"]
-
-    jwst_euclid.scan_euclid_coverage()
-    assert len(calls) == 2
-
-
-def test_euclid_probe_skips_blank_product_for_alternate(tmp_path, monkeypatch):
-    tiles = [
-        {"tile_index": "VIS-BLANK", "file_path": "/archive", "file_name": "blank.fits"},
-        {"tile_index": "VIS-GOOD", "file_path": "/archive", "file_name": "good.fits"},
-    ]
-    downloaded = []
-
-    def fake_download(client, *, file_path, tile_index, coordinate, radius, destination):
-        downloaded.append(tile_index)
-        destination.touch()
-
-    def fake_find_image(path):
-        data = np.zeros((2, 2), dtype=np.float32) if downloaded[-1] == "VIS-BLANK" else np.ones((2, 2), dtype=np.float32)
-        return data, None, None, "PRIMARY"
-
-    monkeypatch.setattr(jwst_euclid, "_download_euclid_cutout", fake_download)
-    monkeypatch.setattr(jwst_euclid, "_find_image", fake_find_image)
-    selected, blank_count, errors = jwst_euclid._probe_euclid_tiles(
-        object(), tiles, coordinate=None, radius=None, destination_dir=tmp_path,
-    )
-
-    assert selected["tile_index"] == "VIS-GOOD"
-    assert blank_count == 1
-    assert errors == []
-    assert downloaded == ["VIS-BLANK", "VIS-GOOD"]
+def test_readable_fits_verdict_is_memoised_on_the_file_stat(tmp_path, monkeypatch):
+    path = tmp_path / "mosaic.fits"
+    fits.PrimaryHDU(np.ones((64, 64), np.float32)).writeto(path)
+    opens = []
+    real_open = fits.open
+    monkeypatch.setattr(jwst_euclid.fits, "open",
+                        lambda *a, **k: opens.append(a[0]) or real_open(*a, **k))
+    assert jwst_euclid._is_readable_fits(path) and jwst_euclid._is_readable_fits(path)
+    assert len(opens) == 1                     # the 6-s gzip check runs once
+    # A rewritten (here: truncated) file has a new stamp and is re-checked.
+    payload = path.read_bytes()
+    path.write_bytes(payload[:2880 * 2])
+    assert jwst_euclid._is_readable_fits(path) is False
+    assert len(opens) == 2

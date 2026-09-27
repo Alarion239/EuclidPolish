@@ -1085,3 +1085,18 @@ def test_population_comparison_status_selects_training_variant(monkeypatch):
     assert "cosmos_euclid_fit" not in current["comparison"]["population"]
     assert "tng_prior" not in current["comparison"]["population"]
     assert "population_with_training" not in with_training["comparison"]
+
+
+def test_source_field_counts_are_memoised_per_file_state(tmp_path, monkeypatch):
+    path = tmp_path / "sources_validate.csv"
+    path.write_text("field_index,x\n0,1\n0,2\n3,4\n", encoding="utf-8")
+    reads: list[object] = []
+    real_reader = comparison.csv.DictReader
+    monkeypatch.setattr(comparison.csv, "DictReader",
+                        lambda *a, **k: reads.append(1) or real_reader(*a, **k))
+    assert comparison._source_field_count([path]) == 2
+    assert comparison._source_field_count([path]) == 2
+    assert len(reads) == 1
+    path.write_text("field_index,x\n0,1\n5,2\n3,4\n", encoding="utf-8")
+    assert comparison._source_field_count([path]) == 3
+    assert len(reads) == 2

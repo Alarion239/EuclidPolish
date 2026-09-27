@@ -61,9 +61,57 @@ def test_a_viewer_loader_crash_is_a_json_500(app, monkeypatch):
 
 
 def test_other_paths_keep_flask_default_errors(app):
-    response = app.test_client().get("/api/definitely-not-a-route")
+    response = app.test_client().get("/definitely-not-a-route.txt")
     assert response.status_code == 404
     assert not response.is_json
+
+
+def test_the_whole_api_prefix_answers_json_errors(app):
+    """Every ``/api/*`` error is ``{ok: false, error}`` with its status — the
+    SPA's client shows the message instead of "HTTP 404 NOT FOUND"."""
+    assert "/api/" in errors.json_prefixes(app)
+    client = app.test_client()
+    for method, path, status in [
+        ("get", "/api/definitely-not-a-route", 404),
+        ("get", "/api/cutouts/NOPE/list.json", 404),
+        ("get", "/api/tng/nope", 404),
+        ("get", "/api/git/nope", 404),
+        ("get", "/api/tracking/backup", 405),
+        ("get", "/api/fasrc/queue/clear", 405),
+        ("get", "/api/tracking/campaign/..%2F..%2Fetc", 404),
+    ]:
+        response = getattr(client, method)(path)
+        assert response.status_code == status, path
+        assert response.is_json, path
+        body = response.get_json()
+        assert body["ok"] is False and isinstance(body["error"], str) and body["error"], path
+
+
+def test_json_error_bodies_carry_ok_false(app):
+    body = app.test_client().post("/viewer/meta/sky").get_json()
+    assert body["ok"] is False and body["error"]
+
+
+@pytest.mark.parametrize("path", [
+    "/api/provenance/records?limit=abc",
+    "/api/git/log?limit=abc",
+    "/api/git/log?skip=1.5",
+    "/api/tracking/jobs?offset=x",
+])
+def test_a_malformed_integer_argument_is_a_400(app, path):
+    response = app.test_client().get(path)
+    assert response.status_code == 400, response.get_data(as_text=True)[:200]
+    assert response.is_json and "integer" in response.get_json()["error"]
+
+
+def test_the_shared_int_arg_clamps_or_refuses_out_of_range(app):
+    with app.test_request_context("/?n=5000&m=-3&k=7"):
+        assert errors.int_arg("n", 1, lo=1, hi=100, clamp=True) == 100
+        assert errors.int_arg("m", 1, lo=0, clamp=True) == 0
+        assert errors.int_arg("missing", 42) == 42
+        with pytest.raises(HTTPException) as refused:
+            errors.int_arg("k", 1, lo=0, hi=5)
+        assert refused.value.code == 400
 
 
 def test_a_second_prefix_joins_instead_of_replacing(app):

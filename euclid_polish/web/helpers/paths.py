@@ -341,17 +341,18 @@ def _resolve_trackable_ckpt(raw_path: str) -> str:
 
     Constrained to live under the checkpoint root (``./ckpt`` by default)
     so the model-backup endpoint can't be pointed at an arbitrary tree.
-    Aborts 403 (outside the ckpt root) or 404 (not a directory).
+    Aborts 403 (outside the ckpt root) or 404 (not a directory), each with a
+    JSON ``{ok: false, error}`` body (:func:`_abort_json`).
     """
     ckpt_root = os.path.realpath(
         os.path.dirname(os.path.realpath(Config.DEFAULT_CHECKPOINT_DIR))
     )
     real = os.path.realpath(raw_path)
     if not os.path.isdir(real):
-        abort(404)
+        _abort_json(404, f"no such checkpoint directory: {raw_path}")
     if real == ckpt_root or real.startswith(ckpt_root + os.sep):
         return real
-    abort(403)
+    _abort_json(403, f"{raw_path} is outside the checkpoint root")
 
 
 def _safe_relpath(real_abs: str) -> str:

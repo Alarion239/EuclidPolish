@@ -18,9 +18,10 @@ model(s) behind it with the *current* models (the active ensemble members'
 ids): ``current`` when every model is active, ``stale`` when one is not,
 ``unknown`` when no model was recorded (legacy / un-stamped products).
 
-The scan (``os.walk`` of the data roots) is cheap but not free (~2 s for
-11 k sidecars), so :func:`get_index` caches the index for ``TTL_S`` and
-rebuilds early when ``data/_prov`` changes; ``rebuild=True`` forces it.
+The scan (``os.walk`` of the data roots) is cheap but not free (2–6 s for
+11 k sidecars), so :func:`get_index` caches the index and, after ``TTL_S``
+or when ``data/_prov`` changes, keeps serving it while one background
+thread rebuilds it; ``rebuild=True`` rebuilds synchronously.
 Read-only: nothing here writes to disk.
 """
 
@@ -32,6 +33,7 @@ import os
 import re
 import threading
 import time
+import traceback
 from collections import deque
 from collections.abc import Iterable
 from typing import Any
@@ -416,8 +418,10 @@ def _default_roots() -> dict[str, Any]:
     return {"prov_dir": Config.PROV_DIR, "data_dirs": [Config.DATA_DIR], "ckpt_root": ckpt_root}
 
 
-_LOCK = threading.Lock()
+_LOCK = threading.Lock()                 # guards _CACHE and _REFRESH
+_BUILD_LOCK = threading.Lock()           # one scan at a time
 _CACHE: dict[str, Any] = {"index": None, "key": None, "at": 0.0}
+_REFRESH: dict[str, threading.Thread | None] = {"thread": None}
 
 
 def _prov_signature(prov_dir: str) -> float | None:
@@ -427,24 +431,78 @@ def _prov_signature(prov_dir: str) -> float | None:
         return None
 
 
+def _build_and_store(roots: dict[str, Any], key: tuple) -> ProvIndex:
+    with _BUILD_LOCK:
+        index = build_index(current_models=current_model_ids(), **roots)
+    with _LOCK:
+        _CACHE.update(index=index, key=key, at=time.monotonic())
+    return index
+
+
+def _refresh(roots: dict[str, Any], key: tuple) -> None:
+    try:
+        _build_and_store(roots, key)
+    except Exception:  # noqa: BLE001 - keep serving the previous index
+        traceback.print_exc()
+        with _LOCK:
+            _CACHE["at"] = time.monotonic()      # retry after another TTL_S
+    finally:
+        with _LOCK:
+            _REFRESH["thread"] = None
+
+
+def _start_refresh_locked(roots: dict[str, Any], key: tuple) -> None:
+    """Start the background rebuild unless one runs (caller holds ``_LOCK``)."""
+    running = _REFRESH["thread"]
+    if running is not None and running.is_alive():
+        return
+    thread = threading.Thread(target=_refresh, args=(roots, key), daemon=True,
+                              name="provenance-index-refresh")
+    _REFRESH["thread"] = thread
+    thread.start()
+
+
 def get_index(*, rebuild: bool = False) -> ProvIndex:
-    """The cached project index (rebuilt after ``TTL_S``, when ``data/_prov``
-    changes, when the roots change, or on ``rebuild``)."""
+    """The cached project index.
+
+    Never blocks a request on a re-scan (2–6 s for ~11 k sidecars): after
+    ``TTL_S``, or when ``data/_prov`` changes, the previous index is served
+    while ONE background thread rebuilds it (:func:`is_building`). The first
+    build, a change of the scanned roots and ``rebuild=True`` (the explicit
+    POST) build synchronously.
+    """
     roots = _default_roots()
-    key = (roots["prov_dir"], tuple(roots["data_dirs"]), roots["ckpt_root"],
-           _prov_signature(roots["prov_dir"]))
+    roots_key = (roots["prov_dir"], tuple(roots["data_dirs"]), roots["ckpt_root"])
+    key = (*roots_key, _prov_signature(roots["prov_dir"]))
     with _LOCK:
         cached = _CACHE["index"]
-        fresh = (cached is not None and _CACHE["key"] == key
-                 and time.monotonic() - _CACHE["at"] < TTL_S)
-        if fresh and not rebuild:
+        cached_key = _CACHE["key"]
+        if cached is not None and not rebuild and cached_key is not None \
+                and cached_key[:3] == roots_key:
+            if cached_key != key or time.monotonic() - _CACHE["at"] >= TTL_S:
+                _start_refresh_locked(roots, key)
             return cached
-        index = build_index(current_models=current_model_ids(), **roots)
-        _CACHE.update(index=index, key=key, at=time.monotonic())
-        return index
+    return _build_and_store(roots, key)
+
+
+def is_building() -> bool:
+    """Whether a background rebuild is running."""
+    with _LOCK:
+        thread = _REFRESH["thread"]
+    return thread is not None and thread.is_alive()
+
+
+def wait_for_refresh(timeout: float | None = None) -> bool:
+    """Join the running background rebuild; ``True`` once none runs."""
+    with _LOCK:
+        thread = _REFRESH["thread"]
+    if thread is not None:
+        thread.join(timeout)
+    return not is_building()
 
 
 def reset_cache() -> None:
+    wait_for_refresh(10)
     with _LOCK:
         _CACHE.update(index=None, key=None, at=0.0)
 

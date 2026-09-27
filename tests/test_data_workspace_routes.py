@@ -366,6 +366,7 @@ def test_catalog_reads_are_memoised_per_file_state(mirror, monkeypatch):
 def test_cutout_gallery_items_carry_the_star(client, mirror, tmp_path, monkeypatch):
     mirror([_star(12, 269.7, 66.0, 17.5, valid=ALL4)])
     out = tmp_path / "gallery"
+    monkeypatch.setattr(Config, "DEFAULT_OUTPUT_DIR", str(out))     # the "stars" root
     band_dir = out / "cutouts" / "VIS"
     band_dir.mkdir(parents=True)
     (band_dir / "star_0012_511.fits").write_bytes(b"")
@@ -579,19 +580,23 @@ def test_star_catalog_module_exports():
     assert star_catalog.COLUMNS[0] == "id" and star_catalog.COLUMNS[-1] == "nav"
 
 
-def test_training_log_view_renders_in_memory_and_never_writes_data(client, tmp_path, monkeypatch):
-    """GET /view/training-log is cache-only: nothing lands under VIS_DIR."""
-    ckpt = tmp_path / "ckpt"
-    ckpt.mkdir()
-    vis = tmp_path / "vis"
-    monkeypatch.setattr(Config, "VIS_DIR", str(vis))
-    header = "step,wall_time,loss,psnr_stretched,psnr_raw,save_best_score,combined_loss,is_baseline\n"
-    (ckpt / "training_log.csv").write_text(header + "1000,1.0,0.04,46.6,39.9,46.6,0.003,\n")
-    r = client.get(f"/view/training-log?checkpoint_dir={ckpt}")
-    assert r.status_code == 200 and r.data[:8] == b"\x89PNG\r\n\x1a\n"
-    first = r.data
-    assert client.get(f"/view/training-log?checkpoint_dir={ckpt}").data == first   # memoised
-    (ckpt / "training_log.csv").write_text(header)                                 # mid-write
-    assert client.get(f"/view/training-log?checkpoint_dir={ckpt}&force=1").data == first
-    assert not vis.exists()
-    assert not list(ckpt.glob("*.png"))
+def test_cutout_endpoints_are_jailed_to_the_inspectable_roots(client, tmp_path, monkeypatch):
+    """``output_dir`` comes from the request: outside the allowed roots it
+    must not list or render files (the Inspect jail, helpers/paths)."""
+    monkeypatch.setattr(Config, "DEFAULT_OUTPUT_DIR", str(tmp_path / "stars"))
+    outside = tmp_path / "outside"
+    band_dir = outside / "cutouts" / "VIS"
+    band_dir.mkdir(parents=True)
+    fits.PrimaryHDU(np.ones((16, 16), np.float32)).writeto(band_dir / "star_1_64.fits")
+    listing = client.get(f"/api/cutouts/VIS/list.json?output_dir={outside}")
+    assert listing.status_code == 403 and listing.get_json()["ok"] is False
+    image = client.get(f"/cutout-image/VIS/star_1_64.fits?output_dir={outside}")
+    assert image.status_code == 403 and image.get_json()["ok"] is False
+    # Inside the stars root (the default) both still work.
+    inside = tmp_path / "stars" / "cutouts" / "VIS"
+    inside.mkdir(parents=True)
+    fits.PrimaryHDU(np.ones((16, 16), np.float32)).writeto(inside / "star_1_64.fits")
+    assert client.get("/api/cutouts/VIS/list.json").get_json()["files"] == ["star_1_64.fits"]
+    assert client.get("/cutout-image/VIS/star_1_64.fits?output_dir=").status_code == 200
+    assert client.get(
+        f"/cutout-image/VIS/star_1_64.fits?output_dir={tmp_path / 'stars'}").status_code == 200

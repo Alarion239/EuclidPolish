@@ -312,3 +312,29 @@ def test_archive_fields_http_surface_serves_the_manifest_backed_collection(
         assert cube.headers["X-Cube-Shape"] == "256,256,4"
         assert cube.headers["X-Cube-Bands"] == "VIS,Y_E,J_E,H_E"
         assert len(cube.data) == 256 * 256 * 4 * 4
+
+
+def test_availability_is_memoised_on_the_collection_stamp(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every realism request asks for the archive availability (three
+    manifest validations, ~0.13 s): unchanged files answer from the memo,
+    a rewritten source manifest or a deleted bundle is seen at once."""
+    _, source_path = _write_collection(tmp_path, monkeypatch)
+    loads: list[object] = []
+    real_load = archive_fields.load_manifest
+    monkeypatch.setattr(archive_fields, "load_manifest",
+                        lambda *a, **k: loads.append(a) or real_load(*a, **k))
+    first = archive_fields.availability()
+    first["fields"]["mutated"] = 99                  # callers get their own copy
+    second = archive_fields.availability()
+    assert len(loads) == 1 and second["ready"] is True
+    assert "mutated" not in second["fields"]
+    source = json.loads(source_path.read_text())
+    source["plan_fingerprint"] = "b" * 64
+    source_path.write_bytes(_json_bytes(source))
+    assert archive_fields.availability()["current"] is False
+    assert len(loads) == 2
+    next(archive_fields.iter_fields()).path.unlink()
+    assert archive_fields.availability()["complete"] is False

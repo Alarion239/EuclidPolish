@@ -36,7 +36,7 @@ from euclid_polish.sky.generation.source_catalog import (
     read_sources,
     source_is_off_field,
 )
-from euclid_polish.web.helpers import archive_fields
+from euclid_polish.web.helpers import archive_fields, fs_stamp
 from euclid_polish.web.helpers.paths import _sky_records_local_dir
 from euclid_polish.web.helpers.tng_prior import (
     DetectionAccumulator,
@@ -864,10 +864,25 @@ def availability() -> dict[str, Any]:
     }
 
 
+_TFRECORD_COUNTS: dict[tuple, int] = {}
+
+
 def _count_tfrecord(path: Path) -> int:
-    """Count framed TFRecord entries without importing TensorFlow."""
+    """Count framed TFRecord entries without importing TensorFlow
+    (memoised on the file's stat)."""
     if not path.is_file():
         return 0
+    key = fs_stamp.stat_key(path)
+    if key in _TFRECORD_COUNTS:
+        return _TFRECORD_COUNTS[key]
+    count = _count_tfrecord_frames(path)
+    if len(_TFRECORD_COUNTS) >= _FIELD_COUNTS_MAX:
+        _TFRECORD_COUNTS.clear()
+    _TFRECORD_COUNTS[key] = count
+    return count
+
+
+def _count_tfrecord_frames(path: Path) -> int:
     count = 0
     with path.open("rb") as handle:
         while True:
@@ -1505,15 +1520,29 @@ def _finite(value: Any) -> float | None:
     return number if np.isfinite(number) else None
 
 
-def _source_field_count(paths: Iterable[Path]) -> int:
-    total = 0
-    for path in paths:
+#: Distinct ``field_index`` count of one source CSV, keyed on its stat (the
+#: CSVs are re-read by every realism request otherwise: ~0.24 s).
+_FIELD_COUNTS: dict[tuple, int] = {}
+_FIELD_COUNTS_MAX = 64
+
+
+def _file_field_count(path: Path) -> int:
+    key = fs_stamp.stat_key(path)
+    count = _FIELD_COUNTS.get(key)
+    if count is None:
         fields: set[int] = set()
         with path.open(newline="") as handle:
             for raw in csv.DictReader(handle):
                 fields.add(int(raw["field_index"]))
-        total += len(fields)
-    return total
+        count = len(fields)
+        if len(_FIELD_COUNTS) >= _FIELD_COUNTS_MAX:
+            _FIELD_COUNTS.clear()
+        _FIELD_COUNTS[key] = count
+    return count
+
+
+def _source_field_count(paths: Iterable[Path]) -> int:
+    return sum(_file_field_count(Path(path)) for path in paths)
 
 
 def _derive_colours(row: dict[str, Any]) -> None:

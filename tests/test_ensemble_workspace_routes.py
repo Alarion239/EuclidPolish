@@ -163,3 +163,20 @@ def test_train_preview_answers_names_or_the_refusal(client, tmp_path):
     r = client.post("/ensemble/train/preview", data={"mode": "continue"})
     assert r.status_code == 400 and r.get_json()["ok"] is False
     assert os.path.isdir(base)
+
+
+def test_archive_member_validates_the_name_before_spawning(client, spawned, monkeypatch):
+    """A destructive job: a bad or inactive name is a 400 up front (not a
+    job id followed by a failed job), like restore-member."""
+    monkeypatch.setattr(routes, "_active_member_names", lambda: {"member_01"})
+    for bad in ("", "../../etc", "member_1/../x", "01·loss"):
+        r = client.post("/ensemble/archive-member", data={"member": bad})
+        assert r.status_code == 400 and r.get_json()["ok"] is False, bad
+    inactive = client.post("/ensemble/archive-member", data={"member": "member_09"})
+    assert inactive.status_code == 400 and "not an active" in inactive.get_json()["error"]
+    assert spawned == []
+    seen = _capture(monkeypatch, "job_archive_member")
+    ok = client.post("/ensemble/archive-member", data={"member": "1·psnr"})
+    assert ok.status_code == 200 and ok.get_json() == {"ok": True, "job_id": "job1"}
+    spawned[0]["target"](_Cap())
+    assert seen == {"name": "member_01"}

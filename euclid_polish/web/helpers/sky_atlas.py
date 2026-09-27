@@ -12,6 +12,11 @@ returns one layer's features in one of three compact shapes:
 * ``circles``  — ``{"kind": "circles", "features": [{"id", "ra", "dec",
   "radius_deg", "props", "inspect"}]}``.
 
+A layer's ``fill_action`` (``{method, url, label}``) says how to fetch its
+data: ``requires_fasrc`` — needs the console's FASRC connection;
+``self_connects`` — the job opens its own FASRC connection; ``sync`` — the
+POST answers the result directly (no ``job_id``), so refresh right away.
+
 Every builder reads local files only (works offline) and is memoised on the
 mtimes of what it reads. Groups follow the atlas Layers panel (spec §7.1):
 ``coverage``, ``results``, ``catalogues``.
@@ -35,7 +40,13 @@ from astropy.io import fits
 from euclid_polish.config import Config
 from euclid_polish.sky.observation import q1_mer_tiles
 from euclid_polish.sky.observation.q1_fields import Q1_FIELDS, q1_field_for
-from euclid_polish.web.helpers import experiments, jwst_euclid, model_catalog, real_tiles
+from euclid_polish.web.helpers import (
+    experiments,
+    fs_stamp,
+    jwst_euclid,
+    model_catalog,
+    real_tiles,
+)
 from euclid_polish.web.helpers.status import _cached_fasrc_catalog_dir, _cached_psf_clusters_json
 
 BAND_NAMES = tuple(Config.LR_INPUT_BAND_NAMES)
@@ -451,55 +462,59 @@ LAYERS: tuple[LayerSpec, ...] = (
               lambda: (1,), style={"color": "#7b61ff", "opacity": 0.2},
               description="EDF-N / EDF-S / EDF-F query cones (6°)."),
     LayerSpec("nexus-footprint", "NEXUS F200W mosaic", "coverage", "polygons",
-              _nexus_footprint, lambda: _dir_stamp(jwst_euclid.nexus_field_root()),
+              _nexus_footprint, lambda: real_tiles.source_stamp("nexus"),
               style={"color": "#f39c12", "opacity": 0.2},
               fill_action={"method": "POST", "url": "/api/jwst-euclid/nexus/download-field",
                            "label": "Cache the NEXUS mosaic + Euclid tiles"}),
     LayerSpec("nexus-tiles", "NEXUS × Euclid tiles", "results", "polygons",
               lambda: _entry_polygons("nexus"),
-              lambda: _results_stamp(jwst_euclid.nexus_field_root()),
+              lambda: _results_stamp("nexus"),
               style={"color_by": "state", "colors": _STATE_COLORS, "opacity": 0.5},
               fill_action={"method": "POST", "url": "/api/experiments",
                            "label": "Run models on selected tiles"}),
     LayerSpec("real-tiles", "Cached 25.6″ tiles", "results", "polygons",
               lambda: _entry_polygons("tile"),
-              lambda: _results_stamp(real_tiles.tiles_root()),
+              lambda: _results_stamp("tile"),
               style={"color_by": "state", "colors": _STATE_COLORS, "opacity": 0.5},
               fill_action={"method": "POST", "url": "/api/real/tiles",
                            "label": "Cache a 25.6″ tile here"}),
     LayerSpec("real-fields", "Legacy real fields", "results", "polygons",
               lambda: _entry_polygons("field"),
-              lambda: _results_stamp(real_field_root()),
+              lambda: _results_stamp("field"),
               style={"color_by": "state", "colors": _STATE_COLORS, "opacity": 0.35}),
     LayerSpec("poster", "Poster target", "results", "polygons",
               lambda: _entry_polygons("poster"),
-              lambda: _results_stamp(real_tiles.poster_root()),
+              lambda: _results_stamp("poster"),
               style={"color": "#e84393", "opacity": 0.5}),
     LayerSpec("pairs", "JWST × Euclid pairs", "results", "polygons",
               lambda: _entry_polygons("pair"),
-              lambda: _results_stamp(jwst_euclid.pair_root()),
+              lambda: _results_stamp("pair"),
               style={"color": "#00a8a8", "opacity": 0.5},
               fill_action={"method": "POST", "url": "/api/sky/jwst/pair",
                            "label": "Download a JWST × Euclid pair"}),
     LayerSpec("archive-fields", "Archive fields", "results", "polygons",
               lambda: _entry_polygons("archive"),
-              lambda: _results_stamp(Path(Config.EUCLID_SKY_DIR) / "archive_fields"),
+              lambda: _results_stamp("archive"),
               style={"color": "#6c5ce7", "opacity": 0.45, "color_by": "field"},
+              # The job connects to FASRC by itself (ensure_ssh_connected):
+              # it works from an offline console and reports its own failure.
               fill_action={"method": "POST", "url": "/api/archive-fields/sync",
-                           "label": "Sync the archive fields from FASRC"}),
+                           "label": "Sync the archive fields from FASRC",
+                           "self_connects": True}),
     LayerSpec("eval-objects", "Evaluation objects", "results", "points", _eval_objects,
-              lambda: (_mtime(Path(Config.EVAL_RESULTS_DIR) / "manifest.csv"),),
+              lambda: real_tiles.source_stamp("eval"),
               style={"color_by": "flux_ratio_sr_over_lr", "shape": "circle", "size": 6}),
     LayerSpec("experiments", "Experiment tiles", "results", "points", _experiment_points,
-              lambda: _dir_stamp(experiments.records_root()),
+              lambda: (_dir_stamp(experiments.records_root()), real_tiles.sources_stamp()),
               style={"color": "#ff7a45", "shape": "diamond", "size": 8}),
     LayerSpec("lens-candidates", "Q1 lens candidates", "catalogues", "points", _lenses,
               lambda: (_mtime(lens_catalog_path()),),
               style={"color_by": "grade",
                      "colors": {"A": "#d63031", "B": "#e17055", "C": "#fdcb6e"},
                      "shape": "circle", "size": 5},
+              # Synchronous (no job id): the answer IS the result.
               fill_action={"method": "POST", "url": "/api/evaluation/fetch-catalog",
-                           "label": "Download the Q1 lens catalogue"}),
+                           "label": "Download the Q1 lens catalogue", "sync": True}),
     LayerSpec("galaxies", "Evaluation galaxies", "catalogues", "points", _galaxies,
               lambda: (_mtime(galaxy_catalog_path()),),
               style={"color": "#00b894", "shape": "circle", "size": 4}),
@@ -507,7 +522,8 @@ LAYERS: tuple[LayerSpec, ...] = (
               lambda: (_mtime(stars_path()),),
               style={"color_by": "mag", "shape": "square", "size": 2},
               fill_action={"method": "POST", "url": "/api/status/refresh-catalog",
-                           "label": "Pull stars.csv from FASRC", "requires_fasrc": True}),
+                           "label": "Pull stars.csv from FASRC", "requires_fasrc": True,
+                           "sync": True}),
     LayerSpec("psf-clusters", "PSF clusters", "catalogues", "points", _psf_clusters,
               _psf_stamp, style={"color_by": "fwhm_arcsec", "shape": "cross", "size": 10},
               fill_action={"method": "POST", "url": "/api/euclid-psf/sync-meta",
@@ -532,40 +548,54 @@ LAYERS: tuple[LayerSpec, ...] = (
 _BY_ID = {layer.id: layer for layer in LAYERS}
 
 
-def real_field_root() -> Path:
-    return Path(Config.EUCLID_INFERENCE_DIR) / "real_fields"
+#: ``(monotonic time, fingerprint)``: one catalogue resolution (~6 ms) is
+#: shared by the six results-layer stamps of one ``/api/sky/layers`` call.
+_FINGERPRINT_MEMO: list[tuple[float, str | None]] = []
+FINGERPRINT_MEMO_S = 1.0
 
 
-def _results_stamp(path: Path) -> tuple:
-    return (_dir_stamp(path), _dir_stamp(model_catalog.outputs_root()),
-            _mtime(model_catalog.regime_dir() / model_catalog.PRODUCTION_ARTIFACT_DIR
-                   / "combiner.npz"))
+def _stamp_fingerprint() -> str | None:
+    now = time.monotonic()
+    if _FINGERPRINT_MEMO and now - _FINGERPRINT_MEMO[0][0] < FINGERPRINT_MEMO_S:
+        return _FINGERPRINT_MEMO[0][1]
+    value = production_fingerprint()
+    _FINGERPRINT_MEMO[:] = [(now, value)]
+    return value
 
 
-_CACHE: dict[str, tuple[tuple, float, dict[str, Any]]] = {}
-#: A memoised layer is rebuilt when its sources' mtimes change or after this
-#: many seconds (nested writes do not always touch the stamped directories).
-CACHE_TTL_S = 30.0
+def _results_stamp(source: str) -> tuple:
+    """A results layer's inputs: the source listing, its model outputs
+    (``outputs/<source>/<id>/`` — the id directories' mtimes move with every
+    new or rewritten output) and the production fingerprint the states are
+    judged against (members + combiner)."""
+    return (real_tiles.source_stamp(source),
+            fs_stamp.tree_stamp(model_catalog.outputs_root() / source, 1),
+            _stamp_fingerprint())
+
+
+_CACHE: dict[str, tuple[tuple, dict[str, Any]]] = {}
 
 
 def layer_features(layer_id: str) -> dict[str, Any]:
-    """One layer's features (memoised on its sources' mtimes); :class:`KeyError`."""
+    """One layer's features, memoised on the stamp of what it reads (no
+    timer: a stamp names every file or directory whose change matters);
+    :class:`KeyError` for an unknown layer."""
     layer = _BY_ID[layer_id]
     stamp = layer.stamp()
     cached = _CACHE.get(layer_id)
-    if (cached is not None and cached[0] == stamp
-            and time.monotonic() - cached[1] < CACHE_TTL_S):
-        return cached[2]
+    if cached is not None and cached[0] == stamp:
+        return cached[1]
     payload = {"id": layer.id, "label": layer.label, "group": layer.group, **layer.build()}
     payload["count"] = (len(payload.get("rows") or [])
                         if payload["kind"] == "points" else len(payload.get("features") or []))
-    _CACHE[layer_id] = (stamp, time.monotonic(), payload)
+    _CACHE[layer_id] = (stamp, payload)
     return payload
 
 
 def invalidate() -> None:
     """Forget every memoised layer (tests, writers)."""
     _CACHE.clear()
+    _FINGERPRINT_MEMO.clear()
 
 
 def _coordinates(payload: Mapping[str, Any]) -> Iterable[tuple[float, float]]:

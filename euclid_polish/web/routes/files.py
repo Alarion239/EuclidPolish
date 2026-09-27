@@ -32,21 +32,8 @@ from euclid_polish.web.helpers.status import (
     _tfrecords_status,
 )
 from euclid_polish.web.jobs import REGISTRY
+from euclid_polish.web.security import refuse_cross_site_get
 from euclid_polish.web.version import process_tracker
-
-
-def _int_arg(name: str, default: int, *, lo: int | None = None, hi: int | None = None) -> int:
-    """An integer query parameter; 400 ``{error}`` when malformed or out of range."""
-    raw = request.args.get(name, "")
-    if raw == "":
-        return default
-    try:
-        value = int(raw)
-    except ValueError:
-        abort(400, description=f"{name} must be an integer, got {raw!r}")
-    if (lo is not None and value < lo) or (hi is not None and value > hi):
-        abort(400, description=f"{name} must be within {lo}…{hi}")
-    return value
 
 
 def _inspect_call(fn, *args, **kwargs):
@@ -180,8 +167,8 @@ def register(app):
     def api_inspect_image_stats():
         """Statistics + histogram of one plane (or a 1-D HDU's series)."""
         path = _resolve_inspectable_fits(request.args.get("fits", ""))
-        hdu = _int_arg("hdu", 0, lo=0)
-        plane = _int_arg("plane", 0, lo=0)
+        hdu = errors.int_arg("hdu", 0, lo=0)
+        plane = errors.int_arg("plane", 0, lo=0)
         summary = _inspect_call(fits_inspect.file_summary, path)
         row = next((h for h in summary["hdus"] if h["index"] == hdu), None)
         if row is not None and row.get("type") == "vector":
@@ -193,9 +180,9 @@ def register(app):
         """One page of a table HDU's rows (optionally sorted by a column)."""
         path = _resolve_inspectable_fits(request.args.get("fits", ""))
         return jsonify(_inspect_call(
-            fits_inspect.table_page, path, _int_arg("hdu", 1, lo=0),
-            offset=_int_arg("offset", 0, lo=0),
-            limit=_int_arg("limit", 200, lo=1, hi=fits_inspect.TABLE_PAGE_MAX),
+            fits_inspect.table_page, path, errors.int_arg("hdu", 1, lo=0),
+            offset=errors.int_arg("offset", 0, lo=0),
+            limit=errors.int_arg("limit", 200, lo=1, hi=fits_inspect.TABLE_PAGE_MAX),
             sort=(request.args.get("sort") or "").strip() or None,
             desc=request.args.get("desc", "").lower() in ("1", "true", "yes"),
         ))
@@ -204,7 +191,7 @@ def register(app):
     def api_inspect_table_stats():
         """Per-column statistics of a table HDU."""
         path = _resolve_inspectable_fits(request.args.get("fits", ""))
-        return jsonify(_inspect_call(fits_inspect.table_stats, path, _int_arg("hdu", 1, lo=0)))
+        return jsonify(_inspect_call(fits_inspect.table_stats, path, errors.int_arg("hdu", 1, lo=0)))
 
     @app.get("/api/inspect/provenance")
     def api_inspect_provenance():
@@ -221,6 +208,25 @@ def register(app):
             mimetype="application/fits",
         )
 
+    @app.post("/api/fasrc/file/fetch")
+    @requires_fasrc
+    def api_fasrc_file_fetch():
+        """Pull one FASRC file into the local cache (the POST form of the
+        link GETs below): ``{ok, path, inspect_url, download_url}``; a failed
+        fetch is JSON 502 ``{ok: false, error}``."""
+        remote = (request.form.get("remote_path") or "").strip()
+        if not remote:
+            abort(400, description="pass remote_path=<absolute path on FASRC>")
+        result = _fasrc_fetcher.fetch_one_file(remote)
+        if not result.ok or result.local_path is None:
+            return jsonify({"ok": False, "error": result.error}), 502
+        relative = _safe_relpath(result.local_path)
+        return jsonify({
+            "ok": True, "path": relative,
+            "inspect_url": "/inspect?" + urlencode({"fits": relative}),
+            "download_url": "/fasrc/file/download?" + urlencode({"remote_path": remote}),
+        })
+
     @app.route("/fasrc/file/inspect")
     @requires_fasrc
     def fasrc_file_inspect():
@@ -228,8 +234,11 @@ def register(app):
 
         Query param: ``remote_path=<absolute path on FASRC>``. Subject
         to all the safeguards in :mod:`euclid_polish.web.fasrc_fetcher`
-        (size cap, allowed roots, cache TTL).
+        (size cap, allowed roots, cache TTL). A link GET that pulls into
+        the cache, so a cross-site request is refused (403): the SPA's own
+        link is same-origin; ``POST /api/fasrc/file/fetch`` is the POST form.
         """
+        refuse_cross_site_get()
         remote = request.args.get("remote_path", "").strip()
         if not remote:
             abort(400)
@@ -243,7 +252,9 @@ def register(app):
     @app.route("/fasrc/file/download")
     @requires_fasrc
     def fasrc_file_download():
-        """Fetch one file from FASRC (cached) and send it back directly."""
+        """Fetch one file from FASRC (cached) and send it back directly
+        (cross-site requests refused, like ``/fasrc/file/inspect``)."""
+        refuse_cross_site_get()
         remote = request.args.get("remote_path", "").strip()
         if not remote:
             abort(400)
@@ -267,14 +278,14 @@ def register(app):
         if size < 16 or size > 2048:
             abort(400, description="size must be within 16…2048")
         hdu_raw = request.args.get("hdu", "")
-        hdu = _int_arg("hdu", 0, lo=0) if hdu_raw != "" else None
+        hdu = errors.int_arg("hdu", 0, lo=0) if hdu_raw != "" else None
         # /inspect is universal — could be a sky cutout, a PSF, a diff
         # kernel, a residual map, anything in the allowed roots. The
         # band-aware renderer assumes Euclid cutout units (~1000 e⁻ asinh
         # knee) and silently misrenders everything else; use the
         # data-adaptive ZScale + Asinh renderer instead.
         png = _render_fits_to_png_adaptive(path, size=size, hdu=hdu,
-                                           plane=_int_arg("plane", 0, lo=0))
+                                           plane=errors.int_arg("plane", 0, lo=0))
         # /inspect is interactive debugging — when the underlying FITS
         # gets regenerated (e.g. you re-run the differential-kernel
         # script with different params), the preview must reflect the

@@ -1,6 +1,6 @@
 """Security boundary for the zero-login, loopback-only Web UI.
 
-Three layers, all registered by :func:`euclid_polish.web.app.create_app`:
+Four layers, all registered by :func:`euclid_polish.web.app.create_app`:
 
 * :func:`validate_bind_host` — the server binds to loopback only.
 * :func:`register_host_allowlist` — the ``Host`` header must name the
@@ -11,13 +11,22 @@ Three layers, all registered by :func:`euclid_polish.web.app.create_app`:
 * :func:`register_mutation_guard` — unsafe methods reject cross-site
   browser requests (``Sec-Fetch-Site`` / ``Origin``). Every state-changing
   endpoint must therefore be POST (or PUT/PATCH/DELETE), never GET.
+* :func:`register_security_headers` — every response forbids framing
+  (``X-Frame-Options: DENY`` + CSP ``frame-ancestors 'none'``: a hostile page
+  could otherwise embed the console, and a POST made inside that frame is
+  same-origin), MIME sniffing and cross-origin referrers.
+
+:func:`is_same_origin_request` is the fetch-metadata test for the few GETs
+that may still do work on the user's behalf (a ``?fresh=1`` re-render, a
+FASRC file pull behind a link): a cross-site ``<img src>`` is refused.
 """
 
 from __future__ import annotations
 
+import os
 from urllib.parse import urlsplit
 
-from flask import Flask, jsonify, request
+from flask import Flask, abort, jsonify, request
 from werkzeug.exceptions import SecurityError
 
 _UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
@@ -26,6 +35,14 @@ _UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 # bracketed IPv6 loopback literal (what browsers send); "::1" is kept for
 # clients that send the bare form.
 TRUSTED_HOSTS: tuple[str, ...] = ("localhost", "127.0.0.1", "[::1]", "::1")
+
+#: Set on every response (``setdefault``: a handler may set its own).
+SECURITY_HEADERS: dict[str, str] = {
+    "X-Frame-Options": "DENY",
+    "Content-Security-Policy": "frame-ancestors 'none'",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "same-origin",
+}
 
 
 def _origin_key(value: str) -> tuple[str, str, int] | None:
@@ -87,6 +104,65 @@ def register_host_allowlist(
         return None
 
 
+def is_same_origin_request() -> bool:
+    """Whether the request comes from this origin (or no browser context).
+
+    ``Sec-Fetch-Site`` must be ``same-origin`` or ``none`` (typed URL,
+    bookmark) — ``same-site`` is another localhost port — and an ``Origin``
+    header, when sent, must be ours. Clients that send neither (curl, the
+    test client, old browsers) count as same-origin: the Host allowlist
+    already keeps rebinding pages out.
+    """
+    fetch_site = request.headers.get("Sec-Fetch-Site", "").strip().lower()
+    if fetch_site and fetch_site not in {"same-origin", "none"}:
+        return False
+    supplied_origin = request.headers.get("Origin")
+    if supplied_origin is None:
+        return True
+    return _origin_key(supplied_origin) == _origin_key(f"{request.scheme}://{request.host}")
+
+
+def fresh_requested() -> bool:
+    """``?fresh=1`` — honoured only for a same-origin request (the SPA's own
+    re-render button); a cross-site ``<img src=…?fresh=1>`` gets the cached
+    render. The state-changing way to re-render is the route's POST."""
+    fresh = request.args.get("fresh", "").strip().lower() in ("1", "true", "yes")
+    return fresh and is_same_origin_request()
+
+
+def refuse_cross_site_get() -> None:
+    """Abort 403 (JSON) unless :func:`is_same_origin_request` — for the GETs
+    behind links that still do work (a FASRC file pull into the cache)."""
+    if not is_same_origin_request():
+        response = jsonify({"ok": False, "error": "cross-origin request rejected"})
+        response.status_code = 403
+        abort(response)
+
+
+def refuse_cross_site_cache_fill(path: str) -> None:
+    """Abort 404 (JSON) when ``path`` is not cached and the request is not
+    :func:`is_same_origin_request` — for the GETs that render or recompute a
+    missing cache (seconds to minutes): a cross-site ``<img src>`` gets what
+    is cached, never a render."""
+    if request.method not in ("GET", "HEAD"):
+        return
+    if not is_same_origin_request() and not os.path.isfile(path):
+        response = jsonify({"ok": False,
+                            "error": "not rendered yet — open it from the console"})
+        response.status_code = 404
+        abort(response)
+
+
+def register_security_headers(app: Flask) -> None:
+    """Add :data:`SECURITY_HEADERS` to every response (errors and refusals too)."""
+
+    @app.after_request
+    def _security_headers(response):
+        for name, value in SECURITY_HEADERS.items():
+            response.headers.setdefault(name, value)
+        return response
+
+
 def register_mutation_guard(app: Flask) -> None:
     """Reject browser cross-origin requests before unsafe route handlers."""
 
@@ -110,8 +186,14 @@ def register_mutation_guard(app: Flask) -> None:
 
 
 __all__ = [
+    "SECURITY_HEADERS",
     "TRUSTED_HOSTS",
+    "fresh_requested",
+    "is_same_origin_request",
+    "refuse_cross_site_cache_fill",
+    "refuse_cross_site_get",
     "register_host_allowlist",
     "register_mutation_guard",
+    "register_security_headers",
     "validate_bind_host",
 ]
