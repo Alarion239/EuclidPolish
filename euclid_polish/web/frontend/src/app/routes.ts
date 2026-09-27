@@ -7,7 +7,10 @@
  *     home page is exactly `/`). The workspace component is lazy
  *     (`workspaceComponents`); it validates the rest of the path against the
  *     manifest itself (<Workspace>), so the router and Flask agree on what a
- *     page is;
+ *     page is. It renders inside a contained error boundary (reset on
+ *     navigation): a workspace chunk that fails to load — the console was
+ *     rebuilt under an open page — shows "Reload page" in the stage while
+ *     the rail, top bar and other workspaces keep working;
  *   - every legacy redirect (`manifest.redirects`, exact paths) and
  *     `/app/<rest>`, as a client-side <Navigate replace> that keeps the query
  *     and hash (Flask answers the same URLs with a 308);
@@ -18,8 +21,9 @@
  */
 import { Suspense, createElement, lazy, type ComponentType, type LazyExoticComponent } from "react";
 import { Navigate, useLocation, type RouteObject } from "react-router-dom";
-import { RouteError } from "./ErrorBoundary";
+import { ErrorBoundary, RouteError } from "./ErrorBoundary";
 import { MANIFEST, redirectTarget, type RouteManifest } from "./manifest";
+import { workspaceLabel } from "./nav";
 import { NotFound } from "./NotFound";
 import { TabSkeleton } from "./workspace";
 
@@ -58,6 +62,14 @@ function lazyWorkspace(load: WorkspaceLoader): LazyExoticComponent<ComponentType
   return hit;
 }
 
+/** One workspace's route element: its lazy component in a Suspense
+ *  skeleton, inside an error boundary that resets when the path changes. */
+function WorkspaceRoute({ Component, label }: { Component: ComponentType; label: string }) {
+  const { pathname } = useLocation();
+  const children = createElement(Suspense, { fallback: createElement(TabSkeleton) }, createElement(Component));
+  return createElement(ErrorBoundary, { resetKey: pathname, label, children });
+}
+
 export type BuildRoutesOpts = {
   manifest?: RouteManifest;
   components?: Record<string, WorkspaceLoader>;
@@ -73,8 +85,7 @@ export function buildRoutes(opts: BuildRoutesOpts = {}): RouteObject[] {
   for (const ws of manifest.workspaces) {
     const load = components[ws.id];
     if (!load) throw new Error(`no workspace component for "${ws.id}" (app/routes.ts workspaceComponents)`);
-    const Component = lazyWorkspace(load);
-    const element = createElement(Suspense, { fallback: createElement(TabSkeleton) }, createElement(Component));
+    const element = createElement(WorkspaceRoute, { Component: lazyWorkspace(load), label: workspaceLabel(ws.id) });
     children.push(ws.path === "/"
       ? { path: "/", element }
       : { path: `${ws.path}/*`, element });

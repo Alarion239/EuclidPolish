@@ -66,8 +66,7 @@
 .insp-fb__search > span:first-child { flex: 1; min-width: 0; }
 .insp-fb__recent ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
 .insp-fb__heading {
-  margin: var(--s2) 0 4px; font-family: var(--font-mono); font-size: var(--fs-2xs);
-  letter-spacing: var(--ls-eyebrow, .06em); text-transform: uppercase; color: var(--text-faint);
+  margin: var(--s2) 0 4px; font-size: var(--fs-xs); font-weight: var(--fw-semibold); color: var(--text-dim);
 }
 .insp-fb__recentItem {
   display: grid; grid-template-columns: auto auto minmax(0, 1fr); align-items: baseline; gap: 6px;
@@ -94,25 +93,30 @@
 .insp-crumbs__item:focus-visible { box-shadow: var(--ring); outline: none; }
 .insp-crumbs__up { margin-left: auto; }
 
-/* ---- file bar (at the top, scrolls with the page) ---- */
+/* ---- file bar (at the top, scrolls with the page) ----
+   Plain — no card: the image below is the strong element. */
 .insp-filebar {
   position: relative;
-  display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2) var(--s4);
-  padding: var(--s2) var(--s3);
-  background: var(--bg-0); border: 1px solid var(--border); border-radius: var(--r-lg);
-  box-shadow: var(--shadow-1);
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--s1) var(--s4);
+  padding: 0;
 }
-.insp-filebar__title { display: flex; align-items: center; gap: var(--s2); min-width: 0; flex: 1 1 280px; }
-.insp-filebar__names { display: flex; flex-direction: column; min-width: 0; }
+.insp-filebar__title { display: flex; align-items: center; gap: var(--s2); min-width: 0; flex: 1 1 0; container: insp-title / inline-size; }
+/* a narrow title: only the folder the file is in (the rest is one click up in the browser) */
+@container insp-title (max-width: 520px) {
+  .insp-crumbs--file .insp-crumbs__seg:not(:last-child) { display: none; }
+}
+/* crumbs › name on ONE line: the crumbs give way first (ellipsis) */
+.insp-filebar__names { display: flex; align-items: center; gap: 2px; min-width: 0; }
+.insp-filebar__names .insp-crumbs { flex: 0 1 auto; flex-wrap: nowrap; overflow: hidden; min-width: 7ch; }
+.insp-filebar__names .insp-crumbs__seg { flex: 0 1 auto; }
+/* both give way: the crumbs keep a readable stub, the name ellipsizes too */
 .insp-filebar__name {
-  margin: 0; font-size: var(--fs-lg); font-weight: var(--fw-semibold); line-height: var(--lh-tight);
+  flex: 0 1 auto; min-width: 12ch; max-width: 100%;
+  margin: 0; font-size: var(--fs-md); font-weight: var(--fw-semibold); line-height: var(--lh-tight);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.insp-filebar__meta {
-  display: flex; align-items: center; flex-wrap: wrap; gap: 4px 12px;
-  font-size: var(--fs-xs); color: var(--text-dim);
-}
 .insp-filebar__actions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-left: auto; }
+.insp-facts { min-width: 0; }
 
 .insp-start {
   display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s3);
@@ -127,15 +131,24 @@
 .insp-openpath { display: flex; gap: var(--s2); width: min(520px, 100%); }
 .insp-openpath > :first-child { flex: 1; min-width: 0; }
 
-/* ---- the selected HDU ---- */
+/* ---- the selected HDU: one row (HDU, view, drawing), then the content ---- */
 .insp-view { display: flex; flex-direction: column; gap: var(--s2); min-width: 0; }
-.insp-view__title {
-  margin: 0; display: flex; align-items: baseline; flex-wrap: wrap; gap: var(--s3);
-  font-size: var(--fs-md); font-weight: var(--fw-semibold);
+.insp-viewbar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); min-width: 0;
+  border-bottom: 1px solid var(--border);
 }
-.insp-view__reason, .insp-view__facts { font-size: var(--fs-xs); font-weight: var(--fw-regular); }
-.insp-view__facts { overflow-wrap: anywhere; }
-.insp-view__body { padding-top: var(--s3); min-width: 0; }
+/* the tab underline sits on the row's rule */
+.insp-viewbar .insp-view__tabs { border-bottom: 0; align-self: stretch; }
+.insp-viewbar .insp-view__tabs .ui-tab { margin-bottom: -1px; }
+.insp-viewbar__hdu { max-width: min(100%, 320px); }
+.insp-viewbar__name { font-size: var(--fs-sm); font-weight: var(--fw-semibold); }
+.insp-viewbar__facts {
+  font-size: var(--fs-xs); color: var(--text-dim); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* the drawing controls sit at the row's end (and lead the next line when it wraps) */
+.insp-viewbar__controls { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); margin-left: auto; }
+.insp-viewbar > .insp-planes { flex-basis: 100%; }
+.insp-view__body { padding-top: var(--s1); min-width: 0; }
 /* the kit's line tabs scroll horizontally; a few tabs never need to, and
    their −1 px underline would otherwise raise a vertical scrollbar */
 .insp-view__tabs, .fits-insp .ui-tabs--line { display: flex; overflow: visible; }

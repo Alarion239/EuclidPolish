@@ -3,6 +3,7 @@
    coordinates are converted to physical values on a log x axis, so the
    tooltips and ticks read physical values ("… (log scale)"). */
 import type { Band as PlotBand, Guide, Series } from "../../../charts/Plot";
+import { extent } from "../../../ticks";
 import type {
   BrightnessCurve, GalaxyCandidate, JointMaps, Parameter, RadiusCurve,
 } from "../api";
@@ -40,8 +41,7 @@ export function xAxisOf(parameter: Parameter): XAxis {
 export function xDomainOf(parameter: Parameter, xs: number[]): [number, number] {
   const axis = xAxisOf(parameter);
   if (parameter.x_domain) return axis.scale === "log" ? [10 ** parameter.x_domain[0], 10 ** parameter.x_domain[1]] : parameter.x_domain;
-  const phys = axis.x(xs).filter(Number.isFinite);
-  return phys.length ? [Math.min(...phys), Math.max(...phys)] : [0, 1];
+  return extent(axis.x(xs)) ?? [0, 1];
 }
 
 const markerEvery = (n: number) => Math.max(1, Math.ceil(n / 18));

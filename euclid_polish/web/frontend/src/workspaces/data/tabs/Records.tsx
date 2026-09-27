@@ -1,107 +1,109 @@
-/* Data › Records (spec §8.4): the synthetic training TFRecords.
+/* Data › Records (spec §8.4): the synthetic training TFRecords, image first
+ * (docs/superpowers/specs/2026-09-27-image-first-viewer-design.md).
  *
- * Toolbar: split (test / validate / train, with record counts), the local
- * files, the SR tier's state against the production model, the records'
- * noise-model health check, and the actions — sync from FASRC (a background
- * job with progress), generate the production SR (with overwrite), generate
- * new pairs (the synthetic_generate step). Body: the full-width viewer (LR ·
- * HR · BHR · Clean (starless) · SR) with the current record's truth sources
- * (sources_<split>.csv) drawn as circles on the HR image (or on every tier),
- * the same sources as a table below (marker / row → the `truth` inspector),
- * then the split's per-record census (row → that record). The split, viewer
- * object/tiers/view, overlay mode, source-type filter and open sections live
- * in the URL. */
-import { useMemo, useRef, useState } from "react";
+ * One toolbar row: the split (test / validate / train, with record counts),
+ * the split's state as three badges — its local files (one badge, the files
+ * in its tip), the SR tier against the production model, the records'
+ * noise-model check — and the actions: sync from FASRC and generate the
+ * production SR (background jobs), more in the ⋯ menu (generate new pairs,
+ * regenerate this split's SR, refresh). Then one caption row for the image:
+ * the record and its truth sources (sources_<split>.csv) — drawn on the HR
+ * image, on every tier or not at all, filtered by type. Then the viewer
+ * (LR · HR · BHR · Clean (starless) · SR), sized so its first frame row is in
+ * view (ViewerStage). Below it: a running job, the record's sources as a table
+ * (marker / row → the `truth` inspector), the split's per-record census
+ * (row → that record) and the synthetic_generate step (collapsed). The split,
+ * viewer object/tiers/view, overlay mode, hidden source types and open sections
+ * live in the URL. */
+import { useMemo, useRef, useState, type ComponentProps, type ReactNode } from "react";
 import { useJob } from "../../../api/jobs";
 import { useResource } from "../../../api/query";
 import { openInspector } from "../../../app/inspector";
 import { usePageActions } from "../../../app/palette";
 import { useSystemAlerts } from "../../../app/status";
 import { StepById, StepCard, useStepsStatus } from "../../../fasrc";
-import { formatBytes, formatCount, formatNumber } from "../../../format";
+import { formatCount, formatNumber } from "../../../format";
 import { useUrlState } from "../../../hooks/useUrlState";
 import { useInspector } from "../../../state/inspector";
 import {
-  Badge, Button, Callout, Card, CardBody, CardHead, Checkbox, Chip, DataTable, EmptyState, IconButton, Menu, Page,
+  Badge, Button, Callout, Checkbox, Chip, DataTable, EmptyState, IconButton, Menu, Page,
   Popover, Section, Segmented, Switch, Tooltip, type DataColumn,
 } from "../../../ui";
 import { ImageViewer, type ViewerApi, type ViewerMarker, type ViewerMarkers, type ViewerState } from "../../../viewer";
+import type { LayoutMode } from "../../../viewer/fit";
 import {
   SPLITS, SYNC_KINDS, URLS, useSrStatus, type FieldCensus, type RecordSources, type SourcesCensus, type Split,
   type SrStatus, type TruthSource,
 } from "../api";
-import { BarGroup, DataBar, JobStrip, OFFLINE_HINT, Spacer, startDataJob, useFasrcOnline } from "../common";
+import { BarActions, DataBar, JobStrip, OFFLINE_HINT, Spacer, startDataJob, useFasrcOnline } from "../common";
 import {
-  SR_STATE_LABEL, SR_STATE_TONE, formatCompact, recordObjectId, resumeSafeStep, sourceMarker, truthId,
+  SR_STATE_LABEL, SR_STATE_TONE, formatCompact, noiseBadge, recordFiles, recordObjectId, resumeSafeStep, shownTypes,
+  sourceMarker, sourceTypeChips, toggleHiddenType, truthId, type SourceType,
 } from "../model";
+import { ViewerStage } from "../ViewerStage";
 import "../register";
 import "../data.css";
 
-const TYPES = ["galaxy", "star", "lens", "other"] as const;
 const isSplit = (v: string): v is Split => (SPLITS as readonly string[]).includes(v);
-const typeOf = (s: TruthSource) => (TYPES.includes(s.type as (typeof TYPES)[number]) ? s.type : "other");
 
 /** Where the truth sources are drawn: nowhere, on the HR image, or on every tier. */
 type Overlay = "off" | "hr" | "all";
 const OVERLAYS: readonly Overlay[] = ["off", "hr", "all"];
 const isOverlay = (v: string): v is Overlay => (OVERLAYS as readonly string[]).includes(v);
 
+/** The tiers the viewer opens with (its URL `v.rec.t` may name others). */
+const DEFAULT_TIERS = ["dirty", "hr"];
+
 /* ── toolbar pieces ────────────────────────────────────────────────────── */
 
-function FileBadges({ status, split }: { status: SrStatus; split: Split }) {
+/** A status badge with its detail in a tooltip (focusable, so the tip is reachable by keyboard). */
+function TipBadge({ tip, tone, children }: { tip: ReactNode; tone: ComponentProps<typeof Badge>["tone"]; children: ReactNode }) {
+  return (
+    <Tooltip content={tip}>
+      <span tabIndex={0} className="dt-tipbadge"><Badge size="sm" tone={tone} dot>{children}</Badge></span>
+    </Tooltip>
+  );
+}
+
+function FilesBadge({ status, split }: { status: SrStatus; split: Split }) {
   const files = status.splits[split]?.files;
   if (!files) return null;
-  const items: [string, string][] = [["dirty", "LR"], ["hr", "HR"], ["clean", "Clean"], ["sources", "Sources"]];
+  const { label, tone, rows } = recordFiles(files, split);
   return (
-    <BarGroup label="Local files">
-      {items.map(([key, label]) => {
-        const f = files[key as keyof typeof files];
-        const count = f && "count" in f ? f.count : undefined;
-        const tip = f
-          ? `${f.name} · ${formatBytes(f.size_bytes)}${count === null ? " · truncated or corrupt" : count != null ? ` · ${count} records` : ""}`
-          : `${key}_${split} is not synced`;
-        return (
-          <Tooltip key={key} content={tip}>
-            <span tabIndex={0}>
-              <Badge size="sm" dot tone={!f ? "neutral" : count === null ? "bad" : "good"}>{label}</Badge>
-            </span>
-          </Tooltip>
-        );
-      })}
-    </BarGroup>
+    <TipBadge tone={tone} tip={(
+      <dl className="dt-tipdl">
+        {rows.map((r) => (
+          <div key={r.key} data-state={r.state}><dt>{r.label}</dt><dd>{r.detail}</dd></div>
+        ))}
+      </dl>
+    )}>{label}</TipBadge>
   );
 }
 
 function SrBadge({ status, split }: { status: SrStatus; split: Split }) {
   const sr = status.splits[split]?.sr;
   if (!sr) return null;
-  const who = sr.manifest?.model_label ? ` · ${sr.manifest.model_label}` : "";
+  const who = sr.manifest?.model_label ? ` by ${sr.manifest.model_label}` : "";
   const tip = [
-    `${sr.count}${sr.records_count != null ? ` / ${sr.records_count}` : ""} SR cubes${who}`,
+    `${sr.count}${sr.records_count != null ? ` of ${sr.records_count}` : ""} SR cubes${who}`,
     ...sr.reasons,
     sr.manifest?.generated_at ? `generated ${sr.manifest.generated_at}` : "",
   ].filter(Boolean).join("\n");
   return (
-    <Tooltip content={<span className="dt-pre">{tip}</span>}>
-      <span tabIndex={0}>
-        <Badge size="sm" tone={SR_STATE_TONE[sr.state]} dot>
-          {SR_STATE_LABEL[sr.state]}{sr.state === "partial" && sr.records_count ? ` ${sr.count}/${sr.records_count}` : ""}
-        </Badge>
-      </span>
-    </Tooltip>
+    <TipBadge tone={SR_STATE_TONE[sr.state]} tip={<span className="dt-pre">{tip}</span>}>
+      {SR_STATE_LABEL[sr.state]}{sr.state === "partial" && sr.records_count ? ` ${sr.count}/${sr.records_count}` : ""}
+    </TipBadge>
   );
 }
 
 function NoiseBadge() {
   const check = useSystemAlerts().data?.checks.find((c) => c.id === "records-noise");
-  if (!check || check.state === "ok") {
-    return check ? <Tooltip content={check.title}><span tabIndex={0}><Badge size="sm" tone="good">noise ✓</Badge></span></Tooltip> : null;
-  }
-  const tone = check.state === "bad" ? "bad" : check.state === "warn" ? "warn" : "neutral";
+  if (!check) return null;
+  const { label, tone } = noiseBadge(check.state);
   return (
-    <Tooltip content={<span className="dt-pre">{[check.title, check.detail].filter(Boolean).join("\n")}</span>}>
-      <span tabIndex={0}><Badge size="sm" tone={tone} dot>{check.state === "unknown" ? "noise model ?" : "noise model"}</Badge></span>
-    </Tooltip>
+    <TipBadge tone={tone} tip={<span className="dt-pre">{[check.title, check.detail].filter(Boolean).join("\n")}</span>}>
+      {label}
+    </TipBadge>
   );
 }
 
@@ -115,13 +117,13 @@ function SyncPopover({ open, onOpenChange, onStart, busy, online }: {
   if (!online) {
     return (
       <Tooltip content={OFFLINE_HINT}>
-        <span tabIndex={0}><Button size="sm" icon="download" loading={busy} disabled>Sync</Button></span>
+        <span tabIndex={0}><Button size="sm" icon="download" loading={busy} disabled aria-label="Sync">Sync</Button></span>
       </Tooltip>
     );
   }
   return (
     <Popover open={open} onOpenChange={onOpenChange} label="Sync records from FASRC" width={300}
-      trigger={<Button size="sm" icon="download" loading={busy}>Sync</Button>}>
+      trigger={<Button size="sm" icon="download" loading={busy} aria-label="Sync" title="Sync records from FASRC">Sync</Button>}>
       <div className="dt-pop">
         <div className="dt-pop__title">Sync from FASRC</div>
         <fieldset className="dt-pop__set">
@@ -160,13 +162,13 @@ function GeneratePopover({ status, open, onOpenChange, onStart, busy }: {
   if (reason || !status.can_generate) {
     return (
       <Tooltip content={reason ?? "Nothing to generate"}>
-        <span tabIndex={0}><Button size="sm" icon="wave" loading={busy} disabled>Generate SR</Button></span>
+        <span tabIndex={0}><Button size="sm" icon="wave" loading={busy} disabled aria-label="Generate SR">Generate SR</Button></span>
       </Tooltip>
     );
   }
   return (
     <Popover open={open} onOpenChange={onOpenChange} label="Generate SR" width={300}
-      trigger={<Button size="sm" icon="wave" loading={busy}>Generate SR</Button>}>
+      trigger={<Button size="sm" icon="wave" loading={busy} aria-label="Generate SR" title="Generate the production SR">Generate SR</Button>}>
       <div className="dt-pop">
         <div className="dt-pop__title">Production SR over the local records</div>
         <fieldset className="dt-pop__set">
@@ -174,7 +176,7 @@ function GeneratePopover({ status, open, onOpenChange, onStart, busy }: {
           {present.map((s) => (
             <Checkbox key={s} checked={subsets.includes(s)}
               onChange={(on) => setSubsets((c) => (on ? [...c, s] : c.filter((x) => x !== s)))}>
-              {s} <span className="muted">· {status.splits[s]?.count ?? 0} records · {status.sr[s] ?? 0} SR</span>
+              {s} <span className="muted">({status.splits[s]?.count ?? 0} records, {status.sr[s] ?? 0} SR)</span>
             </Checkbox>
           ))}
         </fieldset>
@@ -209,51 +211,60 @@ const SOURCE_COLUMNS: DataColumn<TruthSource>[] = [
     cell: (s) => (s.off_field ? <Badge size="sm">off</Badge> : "") },
 ];
 
-/** The current record's truth sources, the type filter and the hovered /
- *  inspected source, shared by the viewer overlay and the table. */
+/** The current record's truth sources, the type filter (the URL keeps the
+ *  HIDDEN types: every type starts shown, a chip toggles its type) and the
+ *  hovered / inspected source, shared by the viewer overlay and the table. */
 function useTruthSources(split: Split, index: number | null) {
-  const [types, setTypes] = useUrlState<string[]>("st", []);
+  const [hidden, setHidden] = useUrlState<string[]>("hide", []);
   const [hover, setHover] = useState<number | null>(null);
   const inspected = useInspector((s) => (s.current?.kind === "truth" ? s.current.id : null));
   const res = useResource<RecordSources>(index != null ? URLS.sources(split, index) : null, [split, index], { ttl: 5 * 60_000 });
   const data = res.data;
-  const rows = useMemo(() => (data?.sources ?? []).filter((s) => !types.length || types.includes(typeOf(s))), [data, types]);
+  const rows = useMemo(() => {
+    const show = shownTypes(hidden);
+    return (data?.sources ?? []).filter((s) => show(s.type));
+  }, [data, hidden]);
   const activeRow = hover ?? (inspected && index != null && inspected.startsWith(`${split}/${index}/`)
     ? Number(inspected.split("/")[2]) : null);
-  const toggle = (t: string) => setTypes(types.includes(t) ? types.filter((x) => x !== t) : [...types, t]);
+  const toggle = (t: SourceType) => setHidden(toggleHiddenType(hidden, t));
   const pick = (row: number) => { if (index != null) openInspector({ kind: "truth", id: truthId(split, index, row) }); };
-  return { res, data, rows, types, toggle, activeRow, setHover, pick };
+  return { res, data, rows, hidden, toggle, activeRow, setHover, pick };
 }
 type Truth = ReturnType<typeof useTruthSources>;
 
-/** Overlay mode + type chips, in the viewer card's header. */
+/** Where and which of the record's truth sources are drawn (the keys match
+ *  the markers' colours) — a group in the tab's toolbar row, so the viewer
+ *  starts one row higher (the record itself is the viewer's position and its
+ *  readout label). */
 function TruthControls({ truth, overlay, onOverlay, index, split }: {
   truth: Truth; overlay: Overlay; onOverlay: (v: Overlay) => void; index: number | null; split: Split;
 }) {
-  const { data, res, types, toggle } = truth;
+  const { data, res, hidden, toggle } = truth;
   const counts = data?.present ? data.counts : null;
   return (
-    <div className="dt-truthbar" role="group" aria-label="Truth sources overlay">
-      <span className="eyebrow">Truth sources</span>
-      <Segmented size="sm" value={overlay} onChange={onOverlay} aria-label="Draw the truth sources on"
+    <div className="dt-caption" role="group" aria-label={index != null ? `Truth sources of record ${index}` : "Truth sources overlay"}>
+      <span className="dt-caption__label" aria-hidden="true">Sources on</span>
+      <Segmented size="sm" className="dt-seg-text" value={overlay} onChange={onOverlay} aria-label="Draw the truth sources on"
         options={[{ value: "off", label: "Off" }, { value: "hr", label: "HR" }, { value: "all", label: "All tiers" }]} />
-      {counts && TYPES.filter((t) => t !== "other" || counts.other > 0).map((t) => (
-        <Chip key={t} on={!types.length || types.includes(t)} onClick={() => toggle(t)}>
-          <span className="dt-truthbar__key" data-kind={t} aria-hidden="true" />{t} <span className="muted">{counts[t]}</span>
+      {/* one toggle per type the record has: on = drawn and listed in the table */}
+      {counts && sourceTypeChips(counts, hidden).map((c) => (
+        <Chip key={c.type} on={c.shown} onClick={() => toggle(c.type)}
+          title={`${c.shown ? "Hide" : "Show"} the ${c.type} sources (markers and table rows)`}>
+          <span className="dt-key" data-kind={c.type} aria-hidden="true" />{c.type} <span className="muted">{c.count}</span>
         </Chip>
       ))}
       {counts && counts.off_field > 0 && (
         <Tooltip content="Centred outside the frame, their light spills in (dashed)">
-          <span tabIndex={0} className="muted">{counts.off_field} off-field</span>
+          <span tabIndex={0} className="dt-caption__note">{counts.off_field} off-field</span>
         </Tooltip>
       )}
-      {index != null && res.loading && !data && <span className="muted">loading sources…</span>}
+      {index != null && res.loading && !data && <span className="dt-caption__note">Loading sources…</span>}
       {index != null && data && !data.present && (
         <Tooltip content={`Sync the ${split} split with its sources file to see the truth catalogue`}>
-          <span tabIndex={0}><Badge size="sm">no sources_{split}.csv</Badge></span>
+          <span tabIndex={0}><Badge size="sm">No sources_{split}.csv</Badge></span>
         </Tooltip>
       )}
-      {res.error && <Badge size="sm" tone="bad">sources: {res.error.message}</Badge>}
+      {res.error && <Badge size="sm" tone="bad">Sources: {res.error.message}</Badge>}
     </div>
   );
 }
@@ -264,8 +275,8 @@ function SourcesTable({ truth, split, index }: { truth: Truth; split: Split; ind
   const { data, rows, activeRow } = truth;
   if (index == null || !data?.present) return null;
   return (
-    <Section title={`Truth sources · record ${index}`} collapsible open={open} onOpenChange={setOpen}
-      sub={data.geometry.hr ? `${rows.length} shown · HR ${data.geometry.hr.width}² px · ${data.geometry.hr.pixscale}″/px` : undefined}>
+    <Section title={`Truth sources of record ${index}`} collapsible open={open} onOpenChange={setOpen}
+      sub={data.geometry.hr ? `${rows.length} shown on the ${data.geometry.hr.width} px HR grid (${data.geometry.hr.pixscale}″ per px)` : undefined}>
       <DataTable rows={rows} columns={SOURCE_COLUMNS} rowKey={(s) => String(s.row)} dense height={300}
         aria-label={`Sources of record ${index}`} exportName={`sources_${split}_${index}`}
         activeKey={activeRow != null ? String(activeRow) : null}
@@ -295,7 +306,7 @@ function CensusSection({ split, index, onGo }: { split: Split; index: number | n
   const res = useResource<SourcesCensus>(open ? URLS.sources(split) : null, [split], { ttl: 5 * 60_000 });
   return (
     <Section title={`Records in ${split}`} collapsible open={open} onOpenChange={setOpen}
-      sub={res.data?.present ? `${res.data.fields.length} records` : undefined}>
+      sub={res.data?.present ? `${res.data.fields.length} records; a row opens it in the viewer` : undefined}>
       {res.error ? <Callout tone="bad" title="Census did not load"><span className="dt-pre">{res.error.message}</span></Callout>
         : res.data && !res.data.present ? <EmptyState compact icon="table" title={`No sources_${split}.csv`} />
           : (
@@ -324,7 +335,7 @@ function GenerationSection() {
       sub={splits.length ? <Badge size="sm" tone="warn">rebuild {splits.join(" + ")}</Badge> : <Badge size="sm">resume</Badge>}>
       <div className="dt-gen">
         <div className="dt-gen__splits" role="group" aria-label="Splits to rebuild">
-          <span className="eyebrow">Rebuild only</span>
+          <span className="dt-label">Rebuild only</span>
           {SPLITS.map((s) => <Chip key={s} on={splits.includes(s)} onClick={() => toggle(s)}>{s}</Chip>)}
           <Button size="sm" variant="ghost" onClick={() => setSplits(["validate", "test"])}>validate + test</Button>
           {splits.length > 0 && <Button size="sm" variant="ghost" onClick={() => setSplits([])}>clear</Button>}
@@ -364,7 +375,10 @@ export default function Records() {
   const s = status.data;
   const { online } = useFasrcOnline();
   const [viewerKey, setViewerKey] = useState(0);
+  // Primitives from the viewer's state (a pan does not re-render the page).
   const [index, setIndex] = useState<number | null>(null);
+  const [layout, setLayout] = useState<LayoutMode>("auto");
+  const [tierCount, setTierCount] = useState(DEFAULT_TIERS.length);
   const [syncOpen, setSyncOpen] = useState(false);
   const [genOpen, setGenOpen] = useState(false);
   const [, setGenSection] = useUrlState("gen", false);
@@ -431,56 +445,67 @@ export default function Records() {
   ]);
 
   const splitInfo = s?.splits[split];
+  // The viewer mounts once the (fast, local) status says the split is here —
+  // or the status failed: a viewer opened on an absent split would settle on
+  // its lone disabled tier and write that into the URL (v.rec.t) on a visit.
+  const absent = !!s && !splitInfo?.present;
+  const viewable = s ? !absent : !!status.error;
+  const onViewerState = (st: ViewerState) => {
+    setIndex(st.index);
+    setLayout(st.layout);
+    setTierCount(st.tiers?.length || DEFAULT_TIERS.length);
+  };
   return (
-    <Page className="dt-page">
+    <Page className="dt-page dt-page--image">
       <DataBar label="Records">
-        <Segmented size="sm" value={split} onChange={(v) => setSplit(v)} aria-label="Split"
+        <Segmented size="sm" className="dt-seg-text" value={split} onChange={(v) => setSplit(v)} aria-label="Split"
           options={SPLITS.map((sp) => ({
             value: sp, label: <>{sp} <span className="muted">{s ? formatCount(s.splits[sp]?.count ?? 0) : ""}</span></>,
           }))} />
-        {s && <FileBadges status={s} split={split} />}
-        {s && <SrBadge status={s} split={split} />}
-        <NoiseBadge />
+        {viewable && !absent && <TruthControls truth={truth} overlay={overlay} onOverlay={setOverlay} index={index} split={split} />}
         <Spacer />
-        {s && <SyncPopover open={syncOpen} onOpenChange={setSyncOpen} busy={sync.busy} online={online} onStart={runSync} />}
-        {s && <GeneratePopover key={split} status={s} open={genOpen} onOpenChange={setGenOpen} busy={generate.busy} onStart={runGenerate} />}
-        <Menu label="More record actions" trigger={<IconButton icon="more" size="sm" label="More record actions" />} items={[
-          { label: "Generate synthetic training pairs…", onSelect: openGeneration },
-          { label: "Regenerate the SR of this split (overwrite)…", disabled: !s?.can_generate || !s?.subsets.includes(split),
-            onSelect: () => runGenerate([split], true) },
-          { type: "separator" },
-          { label: "Refresh the status", onSelect: () => { void status.reload(); bump(); } },
-        ]} />
+        <div className="dt-bar__status" role="group" aria-label={`State of the ${split} split`}>
+          {s && <FilesBadge status={s} split={split} />}
+          {s && <SrBadge status={s} split={split} />}
+          <NoiseBadge />
+        </div>
+        <BarActions>
+          {s && <SyncPopover open={syncOpen} onOpenChange={setSyncOpen} busy={sync.busy} online={online} onStart={runSync} />}
+          {s && <GeneratePopover key={split} status={s} open={genOpen} onOpenChange={setGenOpen} busy={generate.busy} onStart={runGenerate} />}
+          <Menu label="More record actions" trigger={<IconButton icon="more" size="sm" label="More record actions" />} items={[
+            { label: "Generate synthetic training pairs…", onSelect: openGeneration },
+            { label: "Regenerate the SR of this split (overwrite)…", disabled: !s?.can_generate || !s?.subsets.includes(split),
+              onSelect: () => runGenerate([split], true) },
+            { type: "separator" },
+            { label: "Refresh the status", onSelect: () => { void status.reload(); bump(); } },
+          ]} />
+        </BarActions>
       </DataBar>
-      <JobStrip job={sync} />
-      <JobStrip job={generate} />
       {status.error && !s && (
         <Callout tone="bad" title="Records status did not load" action={<Button size="sm" onClick={() => void status.reload()}>Retry</Button>}>
           <span className="dt-pre">{status.error.message}</span>
         </Callout>
       )}
-      {s && !splitInfo?.present ? (
+      {absent ? (
         <EmptyState icon="database" title={`No ${split} records on this machine`}
           action={<Button variant="primary" icon="download" disabled={!online} onClick={() => setSyncOpen(true)}>Sync from FASRC</Button>}>
           {online ? "Pull the split from FASRC (a background job)." : OFFLINE_HINT}
         </EmptyState>
-      ) : (
-        <>
-          <Card className="dt-viewer-card">
-            <CardHead title={index != null ? `Record ${index}` : "Records"}
-              right={<TruthControls truth={truth} overlay={overlay} onOverlay={setOverlay} index={index} split={split} />} />
-            <CardBody>
-              <ImageViewer key={`${split}-${viewerKey}`} collection="sky" params={params} urlKey="rec"
-                tiers={["dirty", "hr"]} initialId={index != null ? recordObjectId(split, index) : undefined}
-                markers={markers}
-                onReady={(a) => { api.current = a; }}
-                onState={(st: ViewerState) => setIndex(st.index)} />
-            </CardBody>
-          </Card>
-          <SourcesTable truth={truth} split={split} index={index} />
-        </>
+      ) : viewable && (
+        <div className="dt-figure">
+          <ViewerStage layout={layout} frames={tierCount}>
+            <ImageViewer key={`${split}-${viewerKey}`} collection="sky" params={params} urlKey="rec"
+              tiers={DEFAULT_TIERS} initialId={index != null ? recordObjectId(split, index) : undefined}
+              markers={markers}
+              onReady={(a) => { api.current = a; }}
+              onState={onViewerState} />
+          </ViewerStage>
+        </div>
       )}
-      {s && splitInfo?.present && <CensusSection split={split} index={index} onGo={(i) => api.current?.goTo(i)} />}
+      <JobStrip job={sync} />
+      <JobStrip job={generate} />
+      {viewable && <SourcesTable truth={truth} split={split} index={index} />}
+      {s && !absent && <CensusSection split={split} index={index} onGo={(i) => api.current?.goTo(i)} />}
       <GenerationSection />
     </Page>
   );

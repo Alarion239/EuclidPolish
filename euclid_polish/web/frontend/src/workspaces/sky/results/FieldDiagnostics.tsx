@@ -18,6 +18,7 @@ import {
   brightnessPair, crossCurves, CROSS_X_DOMAIN, evenTicks, occupancyViews,
   type FieldDiagnostics as Diag, type FieldStatus, type HeatPair,
 } from "./diagnostics";
+import { autoTicks } from "../../plotTicks";
 
 type View = "cross" | "brightness" | "occupancy";
 const VIEWS: { value: View; label: string; title: string }[] = [
@@ -120,6 +121,7 @@ function Body({ view, diag, syn, synLoading, synError, fieldId }: {
           <div className="res-diag__eyebrow">{o.label} · {formatCount(o.pixels)} real pixels, four bands</div>
           {o.mode === "histogram" ? (
             <Plot xDomain={o.xDomain} yDomain={[0, Math.max(1, ...o.y)]} xTicks={evenTicks(...o.xDomain)}
+              yTicks={autoTicks([0, Math.max(1, ...o.y)])}
               xLabel={o.xLabel} yLabel="log10(pixels + 1)" height={240}
               series={[{ x: o.x, y: o.y, color: C.mean, width: 2, name: o.label }]}
               exportName={`field-${fieldId}-${o.kind}`} aria-label={`${o.label} occupancy`} />

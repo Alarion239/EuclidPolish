@@ -15,6 +15,11 @@
  *   hidden parking box on <body> (visibility:hidden at the last slot size, so
  *   Aladin never sees a zero-size resize). `getSkyEngine` is a module-level
  *   singleton, so React StrictMode's double effects share it.
+ * - Parked, its render loop is paused: Aladin's view re-arms itself every
+ *   frame with `requestAnimationFrame(view.redrawClbk)` (~60 fps of WASM
+ *   updates forever, even on other workspaces). `detach` swaps that callback
+ *   for a stub that lets the loop lapse; `attach` restores it and restarts the
+ *   loop once (internal API: guarded, a no-op when it moves).
  * - `al.on` keeps ONE callback per event and has no `off`: each event is
  *   registered once here and fanned out through `engine.events`.
  * - `log: false` (the default logs every page URL to CDS); the Aladin logo
@@ -167,6 +172,10 @@ export class SkyEngine {
   private overlays = new Map<string, StackLayer>();
   private baseColor: BaseColor = {};
   private selectJob: { cancelled: boolean; resolve: (shape: AladinSelectionShape | null) => void } | null = null;
+  /** Aladin's own per-frame callback while the loop is paused (parked). */
+  private pausedRedraw: FrameRequestCallback | null = null;
+  /** The parking stub ran: no frame is queued, `resumeLoop` must request one. */
+  private loopLapsed = false;
 
   constructor(
     readonly A: AladinStatic,
@@ -198,11 +207,13 @@ export class SkyEngine {
     if (this.slot === slot && this.host.parentElement === slot) return;
     slot.appendChild(this.host);
     this.slot = slot;
+    this.resumeLoop();
     this.scheduleView();
     this.redraw();
   }
 
-  /** Park the host (hidden, same size). No-op when `slot` is not the current one. */
+  /** Park the host (hidden, same size) and pause the render loop. No-op when
+   *  `slot` is not the current one. */
   detach(slot?: HTMLElement | null): void {
     if (slot && this.slot !== slot) return;
     const w = this.host.clientWidth, h = this.host.clientHeight;
@@ -212,6 +223,39 @@ export class SkyEngine {
     }
     this.park.appendChild(this.host);
     this.slot = null;
+    this.pauseLoop();
+  }
+
+  /** Let Aladin's rAF loop lapse: the frame already queued runs, re-arms the
+   *  stub, and the stub does not re-arm. If the engine is attached again
+   *  before the stub runs, the stub forwards to the real callback instead. */
+  private pauseLoop(): void {
+    if (this.pausedRedraw) return;
+    try {
+      const view = this.al.view as { redrawClbk?: FrameRequestCallback } | undefined;
+      const real = view?.redrawClbk;
+      if (!view || typeof real !== "function") return;
+      this.pausedRedraw = real;
+      this.loopLapsed = false;
+      view.redrawClbk = (t: number) => {
+        if (this.pausedRedraw) { this.loopLapsed = true; return; }  // still parked: stop
+        real(t);                                                     // resumed meanwhile
+      };
+    } catch { /* internal API moved: keep the loop running */ }
+  }
+
+  private resumeLoop(): void {
+    const real = this.pausedRedraw;
+    if (!real) return;
+    this.pausedRedraw = null;
+    try {
+      const view = this.al.view as { redrawClbk?: FrameRequestCallback } | undefined;
+      if (view) view.redrawClbk = real;
+      if (this.loopLapsed) {
+        this.loopLapsed = false;
+        requestAnimationFrame(real);
+      }
+    } catch { /* internal API moved */ }
   }
 
   /** Repaint the overlays on the next frame (Aladin skips it after a

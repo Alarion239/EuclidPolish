@@ -133,6 +133,25 @@ export function defaultHduKey(s: InspectResponse): string {
   return String(other?.index ?? 0);
 }
 
+/** The first view of a file with two or more colour groups (a results FITS:
+ *  LR and SR): those groups side by side, when one of them is selected. An
+ *  HDU picked by hand, or a lone group, keeps the viewer's own default. */
+export function compareTiers(s: InspectResponse, sel: Selected): string[] | undefined {
+  if (!sel.group || s.band_groups.length < 2) return undefined;
+  return s.band_groups.slice(0, 2).map((g) => g.id);
+}
+
+/** A per-viewer exposure for a bright target: when the plane's 99.9th
+ *  percentile is above the default stretch's white (30·K0), knee and white
+ *  are scaled by s = p99.9 / (30·K0) — knee × s, brightness ÷ s — the same
+ *  look as a fainter target, the core no longer blown out. Null otherwise. */
+export function brightExposure(p999: number | null | undefined, K0: number): { knee: number; gain: number } | null {
+  if (p999 == null || !Number.isFinite(p999) || !(K0 > 0)) return null;
+  const s = p999 / (30 * K0);
+  if (!(s > 1)) return null;
+  return { knee: K0 * s, gain: 1 / s };
+}
+
 /** Band names without the `_E` suffix: "VIS Y J H". */
 export function bandsText(bands: readonly string[] | null | undefined): string {
   return (bands ?? []).map((b) => b.replace(/_E$/, "")).join(" ");

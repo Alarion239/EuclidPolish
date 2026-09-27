@@ -19,6 +19,7 @@ import { BAND_SHORT, useKnee, useMode, type KneeModel } from "../api";
 import { BarGroup, EnsBar, LoadState } from "../common";
 import { JOB, useOnJobEnd } from "../jobs";
 import { db, dbDelta, kneeLeaderboard, kneeText, memberNumber, relativeTo, type LeaderRow } from "../model";
+import { autoTicks } from "../../plotTicks";
 import "../ensemble.css";
 
 type View = "relative" | "absolute";
@@ -203,7 +204,7 @@ export default function Knee() {
             {panels.map((p) => (
               <div key={p.c} className="ens-chart">
                 <h3 className="ens-chart__title">{p.name}</h3>
-                <Plot {...lg.plotProps} xScale="log" xDomain={full} yDomain={p.yDomain} xTicks={xTicks}
+                <Plot {...lg.plotProps} xScale="log" xDomain={full} yDomain={p.yDomain} xTicks={xTicks} yTicks={autoTicks(p.yDomain)}
                   xLabel="scoring knee [e⁻]" yLabel={view === "relative" ? "PSNR − mean [dB]" : "PSNR [dB]"}
                   series={p.series} bands={p.bands} aspect={panels.length > 1 ? 0.62 : 0.45} syncKey="ens-knee"
                   xFormat={(v) => `${kfmt(v)} e⁻`} yFormat={(v) => v.toFixed(2)}

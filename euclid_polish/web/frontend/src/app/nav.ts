@@ -185,13 +185,25 @@ export function describePath(pathname: string): LocationInfo | null {
   };
 }
 
+/** "Ensemble (starless)": the workspace with its path parameters. */
+function workspaceWithParams(info: LocationInfo): string {
+  return info.paramLabels.length
+    ? `${info.workspaceLabel} (${info.paramLabels.join(", ")})` : info.workspaceLabel;
+}
+
 /** `document.title` for a page: "Members · Ensemble (starless) · EuclidPolish". */
 export function pageTitle(pathname: string): string {
   const info = describePath(pathname);
   if (!info) return `Not found · ${APP_NAME}`;
-  const ws = info.paramLabels.length
-    ? `${info.workspaceLabel} (${info.paramLabels.join(", ")})` : info.workspaceLabel;
-  return [info.tabLabel, ws, APP_NAME].filter(Boolean).join(" · ");
+  return [info.tabLabel, workspaceWithParams(info), APP_NAME].filter(Boolean).join(" · ");
+}
+
+/** The page's h1 (screen readers, the outline): "Members — Ensemble (starless)". */
+export function pageHeading(pathname: string): string {
+  const info = describePath(pathname);
+  if (!info) return "Not found";
+  const ws = workspaceWithParams(info);
+  return info.tabLabel ? `${info.tabLabel} — ${ws}` : ws;
 }
 
 export type NavTarget = {

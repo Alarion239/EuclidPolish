@@ -10,10 +10,14 @@ import { createStore, type StoreApi } from "zustand/vanilla";
 import { apiPost, isAbortError } from "../api/client";
 import { useShortcutRegistry } from "../hooks/useShortcut";
 import { mergeDisplay, useDisplay, type DisplaySettings, type TransferGroup } from "../state/display";
+import { readStorage, writeStorage } from "../state/storage";
+import { PER_AREA_STORAGE_KEY, areaFactor, areaReference, parsePerArea } from "./area";
+import { COLOR_KEYS, COLOR_MODES_EXTRA, plainLabel, rememberBarRows, reservedBarRows, safeStorage, sameBarLayout, sequencePending, type BarLayout } from "./barModel";
 import { prepareCore, type Prepared } from "./color";
 import { parseCssColor } from "./colormaps";
-import { cubeKey, cubeUrl, fetchMeta, sharedCubeCache, ViewerError, type CubeRec, type Params } from "./cube";
+import { cubeKey, cubeUrl, fetchMeta, metaUrl, noteMeta, sharedCubeCache, ViewerError, type CubeRec, type Params } from "./cube";
 import { exportStem, heatbarStops, publicationUnitLabel, type HeatbarInfo } from "./export";
+import { LAYOUT_STORAGE_KEY, LEGACY_LAYOUT_STORAGE_KEY, figureLayout, parseLayout, type Fit } from "./fit";
 import {
   MORPH_FRAMES, MOVIE_RADIUS, MovieStore, morphBaseTier, morphCoefficients, movieBytes, movieKey, movieLabel,
   pcaCount, slotAt, synthesizeMorphFrame,
@@ -37,24 +41,16 @@ export const PLAY_INTERVAL_MS = 1500;
 export const RESULT_MAX_TIERS = 4;
 export const RESULT_SAVEABLE_TIERS = new Set(["dirty", "lr", "real", "original", "original_stack", "sr", "hr", "jwst"]);
 export const NATIVE_F200W_SAVE_REASON = "Choose native F200W first.";
-export const COLOR_KEYS = ["q", "w", "e", "r", "t", "y"];
-export const COLOR_MODES_EXTRA = [
-  { key: "lupton", label: "Lupton", title: "4-band solar-balanced Lupton RGB" },
-  { key: "temp", label: "Temp", title: "Per-pixel blackbody-T colour (Planckian locus)" },
-];
-export const VIEW_LAYOUT_STORAGE_KEY = "euclid-polish.cutout-viewer.layout";
+export { COLOR_KEYS, COLOR_MODES_EXTRA };
+export const VIEW_LAYOUT_STORAGE_KEY = LAYOUT_STORAGE_KEY;
 /** Maximum view zoom (relative to the full frame). */
 export const VIEW_MAX_ZOOM = 64;
 
 function savedViewLayout(): Layout {
-  try {
-    return window.localStorage.getItem(VIEW_LAYOUT_STORAGE_KEY) === "two-rows" ? "two-rows" : "one-row";
-  } catch {
-    return "one-row";
-  }
+  return parseLayout(readStorage(LAYOUT_STORAGE_KEY), readStorage(LEGACY_LAYOUT_STORAGE_KEY));
 }
 function saveViewLayout(value: Layout): void {
-  try { window.localStorage.setItem(VIEW_LAYOUT_STORAGE_KEY, value); } catch { /* optional */ }
+  writeStorage(LAYOUT_STORAGE_KEY, value);
 }
 
 /** What a mounted <Frame> exposes to the engine. */
@@ -95,8 +91,19 @@ export type ViewerStoreState = {
   blinkMs: number;
   blinkAt: number;
   swipe: number;
-  histogram: boolean;
   profileOpen: boolean;
+  /** Focus mode: the viewer covers the stage (key F, Esc returns). */
+  focus: boolean;
+  /** The Display dock beside the frames (the bar's Display button). */
+  dock: boolean;
+  /** Display every e⁻ frame per unit area of the coarsest shown pixel (area.ts). */
+  perArea: boolean;
+  /** The frame grid's current fit (columns, rows, side), set by TierGrid. */
+  fit: Fit | null;
+  /** The control bar's arrangement (Bar.tsx measures it; TierGrid refits on a change). */
+  bar: BarLayout;
+  /** Per tier, the magnitude of the shown band ("VIS 21.43 AB"), for the readout. */
+  mags: Record<string, string>;
   profile: ProfileGeom | null;
   playing: boolean;
   playMs: number;
@@ -121,6 +128,21 @@ type MovieEntry = {
 /** The one viewer that answers document-level keys (most recently hovered,
  *  focused or frozen) — several viewers can be mounted on one page. */
 const keyboard: { active: ViewerController | null } = { active: null };
+
+/* The key pressed before the current one (a capture listener runs before
+   every viewer's handler): after a plain "g" the next key belongs to the
+   shell's "g <x>" navigation, so the viewer leaves it alone. */
+const keyTrack: { before: { key: string; t: number } | null; last: { key: string; t: number } | null; bound: boolean } = { before: null, last: null, bound: false };
+function trackKeys() {
+  if (keyTrack.bound || typeof window === "undefined") return;
+  keyTrack.bound = true;
+  // Window capture, registered before any viewer's own (also window capture) listener.
+  window.addEventListener("keydown", (e) => {
+    keyTrack.before = keyTrack.last;
+    const plain = !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey;
+    keyTrack.last = { key: plain ? e.key.toLowerCase() : "", t: e.timeStamp || Date.now() };
+  }, { capture: true });
+}
 
 const errMessage = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -180,13 +202,19 @@ export class ViewerController {
       view: null, tool: "pan", altLens: false, hover: null, frozen: null, lens: {},
       shown: {}, status: {}, overlay: {}, readout: null,
       compare: "off", blinkMs: 700, blinkAt: 0, swipe: 0.5,
-      histogram: false, profileOpen: false, profile: null,
+      profileOpen: false, profile: null, focus: false, dock: false, fit: null,
+      perArea: parsePerArea(readStorage(PER_AREA_STORAGE_KEY)),
+      bar: { rows: reservedBarRows(props.collection, 0, safeStorage()), compact: false, wrap: [] }, mags: {},
       playing: false, playMs: PLAY_INTERVAL_MS,
       morphAmp: 1.6, morphSpeed: 0.5, morphMembers: null, movieProgress: {},
       save: { text: "", tone: "" }, saveInFlight: false, recording: false, hot: false, drawn: 0,
     }));
     this.api = this.buildApi();
-    document.addEventListener("keydown", this.onKey);
+    trackKeys();
+    // Window capture: ahead of Radix's Escape (document capture), so a viewer
+    // in the inspector sheet (a modal dialog) leaves focus mode or unfreezes
+    // its lens on Esc (preventDefault) instead of the sheet closing under it.
+    window.addEventListener("keydown", this.onKey, true);
   }
 
   // ---- small accessors ----------------------------------------------------
@@ -206,7 +234,8 @@ export class ViewerController {
   tierLabel(key: string): string {
     const r = parseResidualKey(key);
     if (r) return residualLabel(r.op, this.tierLabel(r.a), this.tierLabel(r.b));
-    return this.tierMeta(key)?.label ?? key;
+    const label = this.tierMeta(key)?.label;
+    return label != null ? plainLabel(label) : key;
   }
   private currentObject() { return this.s.meta?.objects?.[this.s.index]; }
   tierAvail(key: string): boolean {
@@ -247,12 +276,35 @@ export class ViewerController {
   transfer(group: string, settings = this.settings()): TransferGroup {
     return settings.groups[group] ?? settings.groups.default ?? { knee: 100, gain: 1, black: 0 };
   }
-  displayParams(rec: { transferGroup?: string } | null, settings = this.settings()): DisplayParams {
+  displayParams(rec: { transferGroup?: string; pixscale?: number; unit?: string } | null, settings = this.settings(), perArea = true): DisplayParams {
     const t = this.transfer(this.groupOf(rec), settings);
+    // Per unit area (area.ts): values × f before the stretch ≡ knee, black and
+    // the white reference ÷ f (the same image, native values untouched).
+    const f = perArea && rec ? this.areaFactorOf(rec) : 1;
     return {
-      stretch: settings.stretch, knee: t.knee, gain: t.gain, black: t.black, K0: this.K0(),
+      stretch: settings.stretch, knee: t.knee / f, gain: t.gain, black: t.black / f, K0: this.K0() / f,
       colormap: settings.colormap, invert: settings.invert, nanColor: parseCssColor(settings.nanColor),
     };
+  }
+
+  // ---- per unit area (area.ts) ------------------------------------------------
+  /** The coarsest pixel scale among the shown e⁻ frames (0: one scale only). */
+  areaRef(s: ViewerStoreState = this.s): number {
+    return areaReference(Object.values(s.shown).filter((sh) => sh.kind === "cube").map((sh) => sh.rec));
+  }
+  /** A frame's per-area display factor (1 when off or not needed). */
+  areaFactorOf(rec: { pixscale?: number; unit?: string }, s: ViewerStoreState = this.s): number {
+    return areaFactor(rec, this.areaRef(s), s.perArea);
+  }
+  /** Native → display units of a cube: its served display scale × the per-area factor. */
+  displayUnitsOf(rec: CubeRec): number {
+    return (rec.displayScale > 0 ? rec.displayScale : 1) * this.areaFactorOf(rec);
+  }
+  setPerArea(on: boolean) {
+    if (on === this.s.perArea) return;
+    writeStorage(PER_AREA_STORAGE_KEY, on ? "1" : "0");
+    this.set({ perArea: on });
+    this.afterDisplayChange();
   }
 
   // ---- display edits (toolbar / keyboard / histogram) -----------------------
@@ -276,6 +328,19 @@ export class ViewerController {
   }
   setOverride(patch: Partial<DisplaySettings>) {
     this.set({ override: { ...this.s.override, ...patch } });
+    this.afterDisplayChange();
+  }
+  /** Stretch, colormap, invert, NaN colour … from the viewer's Display
+   *  popover: each field goes to the Display panel while linked and not
+   *  overridden here, else to this viewer's override. */
+  setDisplay(patch: Partial<Omit<DisplaySettings, "groups" | "color" | "linked">>) {
+    const toStore: Partial<DisplaySettings> = {}, toOverride: Partial<DisplaySettings> = {};
+    const linked = this.linked();
+    for (const [k, v] of Object.entries(patch) as [keyof DisplaySettings, never][]) {
+      if (linked && !(k in this.s.override)) toStore[k] = v; else toOverride[k] = v;
+    }
+    if (Object.keys(toStore).length) useDisplay.getState().set(toStore);
+    if (Object.keys(toOverride).length) this.set({ override: { ...this.s.override, ...toOverride } });
     this.afterDisplayChange();
   }
   /** Stop following the Display panel (a copy of it becomes this viewer's own). */
@@ -312,13 +377,16 @@ export class ViewerController {
   notify() { if (!this.destroyed) this.onState?.(this.getState()); }
 
   // ---- meta + loading ---------------------------------------------------------
-  async loadMeta(): Promise<void> {
+  /** Load the collection meta (shared with the page through the query
+   *  cache). The collection's cached cubes are dropped only when the meta
+   *  changed or on an explicit reload (`force`) — never merely on mount. */
+  async loadMeta({ force = false } = {}): Promise<void> {
     const s = this.s;
     let meta: ViewerMeta;
     try {
-      meta = await fetchMeta<ViewerMeta>(this.collection, s.params, this.life.signal);
+      meta = await fetchMeta<ViewerMeta>(this.collection, s.params, this.life.signal, { force });
     } catch (e) {
-      if (isAbortError(e)) return;
+      if (isAbortError(e) || this.destroyed) return;
       this.set({ metaError: errMessage(e), meta: null });
       throw e;
     }
@@ -331,8 +399,10 @@ export class ViewerController {
     }
     const jwstOptions = meta.jwst_band_options || [];
     if (jwstOptions.length && !jwstOptions.some((o) => o.value === params.jwst_band)) params.jwst_band = jwstOptions[0].value;
-    // Cubes of the previous meta may be stale (a regenerated SR, a new field).
-    this.cache.deletePrefix(`${this.collection}|`);
+    // Cubes cached under a different meta may be stale (a regenerated SR, a
+    // new field); an unchanged meta keeps them, so a remount downloads nothing.
+    const changed = noteMeta(metaUrl(this.collection, s.params), meta);
+    if (changed || force) this.cache.deletePrefix(`${this.collection}|`);
     this.prepCache.clear();
     this.set({ meta, metaError: null, params });
     const tierKeys = (meta.tiers || []).map((t) => t.key);
@@ -597,7 +667,7 @@ export class ViewerController {
     const k = Math.max(0, rec.bands.indexOf(settings.color));
     const band = new Float32Array(rec.h * rec.w);
     for (let p = 0; p < band.length; p++) band[p] = rec.data[p * rec.c + k];
-    const params = this.displayParams(rec, settings);
+    const params = this.displayParams(rec, settings, false);   // a residual has its own scale
     if (shown.op !== "diff") {
       return renderSigned(band, rec.w, rec.h, { ...params, gain: 1, colormap: settings.residualColormap, scale: "linear", range: shown.op === "ratio" ? 2 : 5 });
     }
@@ -665,13 +735,16 @@ export class ViewerController {
       band: bandLabel, knee: t.knee, gain: t.gain,
       log: prep.mode === "gray-log" || this.s.meta.color?.render_mode === "log",
       unit: publicationUnitLabel(cubeRec.unit || this.tierMeta(tier)?.unit),
-      scale: cubeRec.displayScale > 0 ? cubeRec.displayScale : 1,
+      // native = display ÷ (served display scale × per-area factor)
+      scale: this.displayUnitsOf(cubeRec),
       stretch: settings.stretch, black: t.black,
       stops: heatbarStops(settings.colormap, settings.invert, prep.mode),
     };
     if (settings.stretch === "asinh-auto" || settings.stretch === "zscale") {
       const st = frameAutoStats(prep);
-      const f = prep.factor > 0 ? prep.factor : 1;
+      // the frame's limits in the bar's display units (× the per-area factor,
+      // which `scale` divides back out)
+      const f = (prep.factor > 0 ? prep.factor : 1) / this.areaFactorOf(cubeRec);
       info.auto = settings.stretch === "zscale"
         ? { lo: st.z1 / f, hi: st.z2 / f }
         : { lo: st.lo / f, hi: st.hi / f, knee: st.knee / f };
@@ -685,15 +758,18 @@ export class ViewerController {
     if (!s.meta) return;
     const color = this.settings().color;
     const overlay: Record<string, string> = {};
+    const mags: Record<string, string> = {};
     for (const [tier, shown] of Object.entries(s.shown)) {
       if (shown.kind === "residual") {
         const sig = shown.op === "chi" ? ` (σ: ${shown.rec.sigmaSource === "tier" ? "std tier" : "robust MAD"})` : "";
         overlay[tier] = `${this.tierLabel(tier)}${sig}`;
         continue;
       }
-      overlay[tier] = shown.rec.label + magLabel(magInfo(shown.rec, s.meta.color, color));
+      const mag = magLabel(magInfo(shown.rec, s.meta.color, color));
+      overlay[tier] = (shown.rec.label || this.tierLabel(tier)) + mag;
+      if (mag) mags[tier] = mag.replace(/^ · /, "");
     }
-    this.set({ overlay: { ...s.overlay, ...overlay } });
+    this.set({ overlay: { ...s.overlay, ...overlay }, mags });
     const sr = Object.keys(s.shown).find((t) => t.toLowerCase() === "sr");
     if (sr && (s.meta.tiers || []).some((t) => t.key === "std")) void this.addSigmaToSR(sr);
   }
@@ -711,7 +787,8 @@ export class ViewerController {
     if (this.s.index !== idx || this.settings().color !== color || this.s.shown[tier] !== shown) return;
     const si = magInfo(std, s.meta.color, color);
     if (!si || !(si.tot > 0)) return;
-    this.set({ overlay: { ...this.s.overlay, [tier]: shown.rec.label + magLabel(mi, sigmaMagnitude(mi, si)) } });
+    const mag = magLabel(mi, sigmaMagnitude(mi, si));
+    this.set({ overlay: { ...this.s.overlay, [tier]: (shown.rec.label || this.tierLabel(tier)) + mag }, mags: { ...this.s.mags, [tier]: mag.replace(/^ · /, "") } });
   }
 
   // ---- frames / geometry ----------------------------------------------------------
@@ -889,7 +966,37 @@ export class ViewerController {
     this.set({ altLens: on });
     if (!on && !this.s.frozen) this.hideHover();
   }
-  setPanels(patch: Partial<Pick<ViewerStoreState, "histogram" | "profileOpen" | "swipe" | "morphAmp" | "morphSpeed">>) { this.set(patch); }
+  setPanels(patch: Partial<Pick<ViewerStoreState, "profileOpen" | "swipe" | "morphAmp" | "morphSpeed">>) { this.set(patch); }
+  /** The frame grid reports its fit (the figure follows the on-screen rows). */
+  setFit(fit: Fit) {
+    const f = this.s.fit;
+    if (!f || f.columns !== fit.columns || f.rows !== fit.rows || f.side !== fit.side) this.set({ fit });
+  }
+
+  /** The bar reports its arrangement (one or two rows, icon-only). */
+  setBarLayout(bar: BarLayout) {
+    // The next mount reserves this height before its meta arrives.
+    if (this.s.meta && bar.rows !== this.rememberedRows) {
+      this.rememberedRows = bar.rows;
+      rememberBarRows(this.collection, bar.rows, safeStorage());
+    }
+    if (!sameBarLayout(this.s.bar, bar)) this.set({ bar });
+  }
+  private rememberedRows: 1 | 2 | 0 = 0;
+
+  /** Open or close the Display dock (the frames refit to the width left). */
+  setDock(on: boolean) { if (on !== this.s.dock) this.set({ dock: on }); }
+
+  // ---- focus mode ---------------------------------------------------------------------
+  /** Focus mode: the viewer covers the stage below the top bar (<ImageViewer>
+   *  positions it); it keeps the keyboard until it is left (F or Esc). */
+  setFocus(on: boolean) {
+    if (on === this.s.focus) return;
+    this.set({ focus: on });
+    if (on) this.activate();
+    this.clearAllLenses();
+    this.notify();
+  }
 
   // ---- lens (magnifier) -----------------------------------------------------------
   lensActive(): boolean { return this.s.tool === "lens" || this.s.altLens || !!this.s.frozen; }
@@ -1249,7 +1356,9 @@ export class ViewerController {
       tiers: this.frameKeys(),
       params: { ...s.params },
       selection: serializeSelection(s.frozen),
-      display: { color: st.color, layout: s.layout, knee: st.knee, gain: st.gain, transfers: st.transfers },
+      // `layout` keeps the old two values ("one-row" | "two-rows": the arrangement
+      // on screen); the backend refuses unknown display fields (viewer_results._display).
+      display: { color: st.color, layout: figureLayout(s.fit, this.frameKeys().length), knee: st.knee, gain: st.gain, transfers: st.transfers },
     };
     const controller = new AbortController();
     this.saveController = controller;
@@ -1269,6 +1378,8 @@ export class ViewerController {
   // ---- keyboard -------------------------------------------------------------------------
   activate() { this.set({ hot: true }); keyboard.active = this; }
   deactivate() {
+    // A viewer in focus mode keeps the keys while the pointer is elsewhere.
+    if (this.s.focus) return;
     this.set({ hot: false });
     if (!this.s.frozen && keyboard.active === this) keyboard.active = null;
   }
@@ -1278,21 +1389,32 @@ export class ViewerController {
 
   /** The old engine's document-level keys (q–y colour, ← →, Space, S; like
    *  the old engine, Shift+letter = the letter) plus the new view keys
-   *  (+ − 0, L lens, B blink, Esc). */
+   *  (+ − 0, L lens, B blink, F focus, Esc). */
   private onKey = (e: KeyboardEvent) => {
     const t = e.target as HTMLElement | null;
-    if (t && typeof t.matches === "function" && (t.matches("input, textarea, select, [contenteditable]:not([contenteditable='false'])") || t.closest?.("[role='dialog'], [role='alertdialog']"))) return;
+    if (t && typeof t.matches === "function" && t.matches("input, textarea, select, [contenteditable]:not([contenteditable='false'])")) return;
+    // Keys typed in a dialog or menu are its own — unless this viewer lives
+    // in that dialog (the narrow-screen inspector sheet is one).
+    const layer = t && typeof t.closest === "function" ? t.closest("[role='dialog'], [role='alertdialog'], [role='menu']") : null;
+    if (layer && ![...this.frames.values()].some((h) => layer.contains(h.element))) return;
     if (e.ctrlKey || e.metaKey || e.altKey || e.defaultPrevented) return;
+    // Keys pressed in the Display dock belong to its controls (a slider's
+    // arrows, typed values) — except Esc, which closes the dock.
+    if (t && typeof t.closest === "function" && t.closest(".cv-dock") && e.key !== "Escape") return;
+    // Space / Enter on a focused control (a bar button) press that control.
+    if ((e.key === " " || e.key === "Enter") && t && typeof t.closest === "function" && t.closest("button, a[href], [role='button'], [role='radio'], [role='slider'], [role='checkbox']")) return;
     const key = e.key.toLowerCase();
+    // The second key of a shell "g <x>" sequence is the shell's.
+    if (/^[a-z]$/.test(key) && sequencePending(keyTrack.before, e.timeStamp || Date.now())) return;
     // A Shift+letter the shell (Shift+D/J/T) or the page binds is theirs:
-    // this listener on `document` runs before theirs on `window`.
+    // this listener (window, capture) runs before theirs (window, bubble).
     if (e.shiftKey && /^[a-z]$/.test(key) && shiftComboClaimed(key)) return;
     // A frozen viewer keeps S even after the pointer left its tiles.
     if (key === "s") {
       if (keyboard.active === this && this.s.frozen) { void this.saveCropToResults(); e.preventDefault(); }
       return;
     }
-    if (!this.s.hot || keyboard.active !== this) return;
+    if (keyboard.active !== this || !(this.s.hot || this.s.focus)) return;
     const meta = this.s.meta;
     const colorIndex = COLOR_KEYS.indexOf(key);
     if (colorIndex >= 0 && meta && meta.render_mode !== "log") {
@@ -1311,8 +1433,11 @@ export class ViewerController {
     else if (e.key === "0") { this.resetView(); e.preventDefault(); }
     else if (key === "l") { this.set({ tool: this.s.tool === "lens" ? "pan" : "lens" }); this.clearAllLenses(); e.preventDefault(); }
     else if (key === "b" && this.frameKeys().length > 1) { this.setCompare(this.s.compare === "blink" ? "off" : "blink"); e.preventDefault(); }
+    else if (key === "f") { this.setFocus(!this.s.focus); e.preventDefault(); }
     else if (e.key === "Escape") {
       if (this.s.frozen || this.s.profile) { this.clearAllLenses(); this.setProfile(null); e.preventDefault(); }
+      else if (this.s.focus) { this.setFocus(false); e.preventDefault(); }
+      else if (this.s.dock) { this.setDock(false); e.preventDefault(); }
     }
   };
 
@@ -1325,8 +1450,9 @@ export class ViewerController {
     }
     await this.show();
   }
+  /** Explicit reload: a fresh meta and fresh cubes (the collection's cache is dropped). */
   async reload(): Promise<void> {
-    try { await this.loadMeta(); } catch { return; }
+    try { await this.loadMeta({ force: true }); } catch { return; }
     await this.show();
   }
 
@@ -1338,7 +1464,7 @@ export class ViewerController {
     this.destroyed = true;
     this.saveController?.abort();
     this.life.abort();
-    document.removeEventListener("keydown", this.onKey);
+    window.removeEventListener("keydown", this.onKey, true);
     if (keyboard.active === this) keyboard.active = null;
     if (this.playTimer) clearInterval(this.playTimer);
     if (this.blinkTimer) clearInterval(this.blinkTimer);
@@ -1394,6 +1520,7 @@ export class ViewerController {
       reload: () => this.reload(),
       zoomTo: (ra, dec, fov) => this.zoomTo(ra, dec, fov),
       resetView: () => this.resetView(),
+      setFocus: (on) => this.setFocus(on),
       getReadout: () => this.s.readout,
       destroy: () => this.destroy(),
     };

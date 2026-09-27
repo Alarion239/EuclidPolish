@@ -1,0 +1,7 @@
+/* <FitBox> (FitBox.tsx): the viewer's own scroll box, as tall as the stage
+   left below it. The content fits it (the viewer fits the box), so it never
+   shows a scrollbar; the initial height is replaced before the first paint
+   in a mounted page. */
+.fitbox { min-width: 0; height: min(70vh, 640px); overflow-y: auto; overflow-x: hidden; }
+.fitbox--off { height: auto; overflow: visible; }
+.fitbox__inner { min-width: 0; }

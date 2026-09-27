@@ -8,15 +8,19 @@
 import { useMemo, useRef, useState } from "react";
 import { linearTicks } from "../ticks";
 import { Button, Select } from "../ui";
+import { bandLabel } from "./barModel";
 import { colormapGradient } from "./colormaps";
 import { useController, useSettings, useViewer } from "./hooks";
 import { formatValue, unitLabel } from "./readout";
 import { finiteSorted, histogram, percentile, regionValues, robustStats } from "./stats";
 
-const W = 640, H = 150, PAD = 28;
+const H = 150, PAD = 28;
 const ANCHORED = new Set(["asinh-abs", "linear", "sqrt", "log"]);
 
-export function HistogramPanel() {
+/** `width`: the drawing's width in css px (the SVG scales without distortion
+ *  when it is shown at about that width: 640 in a panel, less in a popover). */
+export function HistogramPanel({ width = 640 }: { width?: number } = {}) {
+  const W = width;
   const ctrl = useController();
   const shown = useViewer((s) => s.shown);
   const view = useViewer((s) => s.view);
@@ -49,7 +53,8 @@ export function HistogramPanel() {
   if (!rec || !tier || !data) return <div className="cv-panel cv-hist"><p className="cv-panel__empty">No image loaded.</p></div>;
   const group = ctrl.groupOf(rec);
   const t = ctrl.transfer(group, settings);
-  const ds = rec.displayScale || 1;
+  // display units = native × the served display scale × the per-area factor
+  const ds = ctrl.displayUnitsOf(rec);
   const K0 = ctrl.K0();
   const anchored = ANCHORED.has(settings.stretch) && ctrl.s.meta?.render_mode !== "log";
   const blackN = t.black / ds;
@@ -81,16 +86,16 @@ export function HistogramPanel() {
   return (
     <div className="cv-panel cv-hist">
       <div className="cv-panel__head">
-        <span className="cv-panel__title">Histogram · {view ? "visible region" : "whole image"}</span>
-        <Select value={tier} onChange={setPicked} aria-label="Histogram tier" options={keys.map((kk) => ({ value: kk, label: ctrl.tierLabel(kk) }))} />
-        {bands.length > 1 && <Select value={band} onChange={setBandPick} aria-label="Histogram band" options={bands.map((b) => ({ value: b, label: b }))} />}
+        <span className="cv-panel__title">{view ? "Histogram of the visible region" : "Histogram of the whole image"}</span>
+        <Select size="sm" value={tier} onChange={setPicked} aria-label="Histogram tier" options={keys.map((kk) => ({ value: kk, label: ctrl.tierLabel(kk) }))} />
+        {bands.length > 1 && <Select size="sm" value={band} onChange={setBandPick} aria-label="Histogram band" options={bands.map((b) => ({ value: b, label: bandLabel(b) }))} />}
         <span className="cv-panel__stats mono">
           n {data.stats.n} · median {formatValue(data.stats.median)} · σ(MAD) {formatValue(data.stats.sigma)} · {formatValue(data.stats.min)} … {formatValue(data.stats.max)} {unit}
         </span>
-        {anchored && <Button size="sm" variant="ghost" onClick={() => ctrl.setTransfer(group, { black: 0, gain: 1 })}>reset cuts</Button>}
+        {anchored && <Button size="sm" variant="ghost" onClick={() => ctrl.setTransfer(group, { black: 0, gain: 1 })}>Reset the cuts</Button>}
       </div>
       <svg ref={svgRef} className="cv-hist__svg" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" role="img"
-        aria-label={`Histogram of ${ctrl.tierLabel(tier)} ${band}`}
+        aria-label={`Histogram of ${ctrl.tierLabel(tier)} ${bandLabel(band ?? "")}`}
         onPointerMove={onMove} onPointerUp={() => { dragging.current = null; }} onPointerLeave={() => { dragging.current = null; }}>
         {hist && hist.counts.map((c, i) => {
           const h = (Math.log10(1 + c) / maxLog) * (H - 34);

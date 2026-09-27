@@ -2,7 +2,7 @@
  * of the C9 store (nexus, cached 25.6″ tiles, legacy fields with all their
  * sub-tiles, archive, eval, poster, pairs) — position, field, tiers, models
  * computed and the production state, real-data metrics. Row → the
- * `realtile` inspector; bulk run models / compare / delete outputs; cache a
+ * real-tile card (`tile:`, the atlas's kind); bulk run models / compare / delete outputs; cache a
  * new 25.6″ tile; the legacy real field's model–model diagnostics beside
  * their synthetic counterparts (`diag=1`). Filters and sort live in the URL. The selection is the
  * shared `tile` selection (the atlas and Experiments see it). */
@@ -14,14 +14,14 @@ import { formatCount, formatDeg } from "../../../format";
 import { useUrlState } from "../../../hooks/useUrlState";
 import { useSelected, useSelection } from "../../../state/selection";
 import {
-  Badge, Button, Callout, Chip, DataTable, IconButton, Menu, Page, Segmented, Tooltip,
+  Badge, Button, Callout, Chip, DataTable, IconButton, Menu, Page, Popover, Segmented, Tooltip,
   type DataColumn, type MenuItem,
 } from "../../../ui";
 import { computeMetrics, deleteOutputs, refreshResults, runNexusField } from "../results/actions";
 import { experimentsHref, SOURCES, URLS, type SourcesPayload, type TileList, type TileRow } from "../results/api";
 import { CacheTilePopover } from "../results/CacheTile";
 import { FieldDiagnostics } from "../results/FieldDiagnostics";
-import { StateBadge } from "../results/common";
+import { MetricDefinitions, StateBadge } from "../results/common";
 import {
   filterByState, flattenTiles, formatMetric, headlineSpec, metricsPlan, productionCounts, specShort, tileModels,
 } from "../results/model";
@@ -48,7 +48,8 @@ const COLUMNS: DataColumn<TileRow>[] = [
     ) },
   { id: "label", header: "Label", hidden: true },
   { id: "field", header: "Field", accessor: (r) => r.field ?? "", width: 64 },
-  { id: "ra", header: "RA, Dec", headerText: "RA", numeric: true, width: 156,
+  // wide enough for the whole value ("268.3772° +65.0985°", 19 mono characters)
+  { id: "ra", header: "RA, Dec", headerText: "RA", numeric: true, width: 184,
     cell: (r) => <span className="mono">{formatDeg(r.ra, 4)} {formatDeg(r.dec, 4, { signed: true })}</span> },
   { id: "dec", header: "Dec", numeric: true, cell: (r) => formatDeg(r.dec, 4, { signed: true }), hidden: true },
   { id: "shape", header: "Grid", accessor: (r) => (r.shape ? r.shape[0] * r.shape[1] : null),
@@ -72,12 +73,12 @@ const COLUMNS: DataColumn<TileRow>[] = [
         </span>
       );
     }, width: 170 },
-  { id: "holes", header: "Holes %", numeric: true, accessor: (r) => headline(r).summary?.hole_pct_max ?? null,
+  { id: "holes", header: "Holes %", headerText: "Holes % (worst band)", numeric: true, accessor: (r) => headline(r).summary?.hole_pct_max ?? null,
     cell: (r) => { const h = headline(r); return <span title={h.spec ? `${h.spec}: worst band` : undefined}>{formatMetric("hole_pct", h.summary?.hole_pct_max)}</span>; },
     width: 72 },
   { id: "R08", header: "% R<0.8", numeric: true, accessor: (r) => headline(r).summary?.pct_R_lt_0p8 ?? null,
     cell: (r) => formatMetric("pct_R_lt_0p8", headline(r).summary?.pct_R_lt_0p8), hidden: true },
-  { id: "medR", header: "R̃", numeric: true, accessor: (r) => headline(r).summary?.median_R ?? null,
+  { id: "medR", header: "R̃", headerText: "Median R", numeric: true, accessor: (r) => headline(r).summary?.median_R ?? null,
     cell: (r) => formatMetric("median_R", headline(r).summary?.median_R), width: 60 },
   { id: "peaks", header: "Peaks", numeric: true, accessor: (r) => headline(r).summary?.n_peaks ?? null, hidden: true },
   { id: "grade", header: "Grade", accessor: (r) => (typeof r.extras?.grade === "string" ? r.extras.grade : ""), hidden: true },
@@ -151,9 +152,9 @@ export default function Results() {
   };
   const byId = new Map((sources.data?.sources ?? []).map((s) => [s.id, s]));
   const more: MenuItem[] = [
-    { label: `NEXUS field inference · production on ${nexusSel.length || "every stale"} tile${nexusSel.length === 1 ? "" : "s"}…`,
+    { label: `Run NEXUS field inference (production) on ${nexusSel.length || "every stale"} tile${nexusSel.length === 1 ? "" : "s"}…`,
       disabled: !nexusField, onSelect: () => { if (nexusField) void runNexusField(nexusField, nexusSel.map((r) => r.slice("nexus/".length))); } },
-    { label: unscored ? `Compute metrics · ${unscored} unscored output${unscored === 1 ? "" : "s"}…` : "Compute metrics (every selected output is scored)",
+    { label: unscored ? `Compute metrics of ${unscored} unscored output${unscored === 1 ? "" : "s"}…` : "Compute metrics (every selected output is scored)",
       disabled: !unscored, onSelect: () => { void computeMetrics(plan); } },
     { type: "separator" },
     { label: "Clear the selection", disabled: !selectedAll.length, onSelect: () => useSelection.getState().clear("tile") },
@@ -188,6 +189,14 @@ export default function Results() {
         <Tooltip content="Real-field diagnostics: model–model r(d), σ vs brightness, RBF occupancy — vs synthetic">
           <Chip on={diag} onClick={() => setDiag(!diag)}>Diagnostics</Chip>
         </Tooltip>
+        <Popover label="What the metrics measure" width={420} align="end"
+          trigger={<IconButton icon="help" label="What the metrics measure" size="sm" />}>
+          <div className="res-form">
+            <strong>What the metrics measure</strong>
+            <p className="res-note">In the table, Holes % is the worst band and R̃ the median over all bands' peaks, of the tile's headline model (production, else the first scored one).</p>
+            <MetricDefinitions />
+          </div>
+        </Popover>
         <IconButton icon="reset" label="Refresh" size="sm" onClick={reload} />
       </div>
       {!!failed.length && (
@@ -202,7 +211,7 @@ export default function Results() {
       {diag && <FieldDiagnostics onClose={() => setDiag(false)} />}
       <DataTable rows={rows} columns={COLUMNS} rowKey={(r) => r.ref} aria-label="Real tiles"
         selectable selected={selected} onSelectedChange={onSelected}
-        inspect={(r) => ({ kind: "realtile", id: r.ref })}
+        inspect={(r) => ({ kind: "tile", id: r.ref })}
         exportName="real-tiles" urlKey="rt" loading={loading} height="max(420px, calc(100vh - 260px))"
         filterPlaceholder="Filter: field:EDF-N  models:gate  holes>5  production=stale"
         empty={src.length || state !== "all" ? "No tile matches these filters." : "No real tiles yet — cache one from the atlas or with “Cache tile…”."} />

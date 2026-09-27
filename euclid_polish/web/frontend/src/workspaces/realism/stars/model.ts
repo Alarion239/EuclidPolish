@@ -4,6 +4,7 @@
 import type { Guide, Series } from "../../../charts/Plot";
 import { C, categorical } from "../../../colors";
 import type { StarColorKey, StarDensityKey, StarDensityParameter, StarDistribution } from "../api";
+import { extent } from "../../../ticks";
 import { positiveOrNull } from "../chartKit";
 
 export const COLOR_ORDER: StarColorKey[] = ["vis_y", "vis_j", "vis_h", "y_j", "y_h", "j_h"];
@@ -61,9 +62,10 @@ export function densitySeries(parameter: StarDensityParameter, trainingIncluded:
 export function densityDomain(parameter: StarDensityParameter): [number, number] {
   const positive = [parameter.euclid, parameter.gaia, parameter.model, parameter.synthetic,
     parameter.gaia_fit ?? [], parameter.point_sources ?? []].flat().filter((v) => Number.isFinite(v) && v > 0);
-  if (!positive.length) return [1e-4, 1];
-  const high = Math.ceil(Math.log10(Math.max(...positive)));
-  const low = Math.max(Math.floor(Math.log10(Math.min(...positive))), high - 5);
+  const span = extent(positive);
+  if (!span) return [1e-4, 1];
+  const high = Math.ceil(Math.log10(span[1]));
+  const low = Math.max(Math.floor(Math.log10(span[0])), high - 5);
   return [10 ** low, 10 ** Math.max(low + 1, high)];
 }
 

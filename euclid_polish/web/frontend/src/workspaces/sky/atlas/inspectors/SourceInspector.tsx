@@ -3,8 +3,8 @@
  * `stars/<row>`, `q1-tiles/<tile>`, `jwst-mast/<obs_id>`, …), plus the sky
  * point card `source:at/<ra>,<dec>` ("what covers this point").
  * The feature comes from the layer payload (the atlas's cache entry); PSF
- * clusters and catalogue objects with a reconstruction get a mini viewer
- * (SourceViewer.tsx). */
+ * clusters and catalogue objects with a reconstruction get a viewer at the
+ * top of the card, image first (SourceViewer.tsx). */
 import { useMemo, type ReactNode } from "react";
 import { openInspector } from "../../../../app/inspector";
 import { useResource } from "../../../../api/query";
@@ -65,13 +65,15 @@ function LayerFeature({ layer, fid }: { layer: string; fid: string }) {
   const obsId = layer === "jwst-mast" ? String(f.props.obs_id ?? f.key) : null;
   return (
     <div className="sky-card">
+      {/* image first (PSF clusters, catalogue objects with a reconstruction) */}
+      <SourceViewer layer={layer} fid={f.key} />
+      <h3 className="sky-card__title">{f.label}</h3>
       <div className="sky-card__badges">
         <Badge>{info?.label ?? layer}</Badge>
         {typeof f.props.state === "string" && <Badge tone={f.props.state === "rejected" ? "bad" : "neutral"} dot>{f.props.state}</Badge>}
         {typeof f.props.grade === "string" && <Badge tone="accent">grade {f.props.grade}</Badge>}
         {typeof f.props.field === "string" && <Badge>{f.props.field}</Badge>}
       </div>
-      <h3 className="sky-card__title">{f.label}</h3>
       <CardActions>
         <Button size="sm" icon="globe" onClick={() => fly({ ra: f.ra, dec: f.dec, fov })}>Show on sky</Button>
         <Button size="sm" onClick={() => openInspector({ kind: "source", id: pointTargetId(f.ra, f.dec) })}>What covers this point</Button>
@@ -84,7 +86,6 @@ function LayerFeature({ layer, fid }: { layer: string; fid: string }) {
         )}
         <MoreMenu items={more} />
       </CardActions>
-      <SourceViewer layer={layer} fid={f.key} />
       <Section title="Properties" collapsible defaultOpen>
         <FeatureFacts f={f} payload={payload.data} />
       </Section>

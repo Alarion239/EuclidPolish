@@ -20,7 +20,7 @@
  * a mutation with `invalidate("/ensemble/")` (URL prefix).
  */
 import { QueryClient, useQuery } from "@tanstack/react-query";
-import { useCallback, useEffect, useRef, type DependencyList } from "react";
+import { useCallback, useEffect, useRef, useSyncExternalStore, type DependencyList } from "react";
 import { ApiError, apiGet } from "./client";
 
 /** How long a cached GET is served without a background refetch. */
@@ -208,4 +208,139 @@ export function getResourceData<T>(url: string): T | undefined {
 }
 export function setResourceData<T>(url: string, data: T): void {
   queryClient.setQueryData<T>(resourceKey(url), data);
+}
+
+/* ── Server health: is the local server answering? ─────────────────────────
+ *
+ * Every query outcome in the shared cache feeds one tracker. An answer from
+ * the server — any success, or an HTTP error it chose to send (4xx, 501, the
+ * 503 FASRC gate, and ANY 5xx carrying a JSON body: Flask's `{ok:false,
+ * error}` envelope, e.g. the deliberate 502 when an SSH/FASRC call fails or
+ * the JSON 500 of a crashed route) — means it is up. It is "down" after a
+ * request got no response at all (status 0, after the retries), or when two
+ * DIFFERENT resources failed with a body-less (non-JSON) 500/502/504 since
+ * the last answer: Vite's dev proxy answers an empty 500 when Flask is gone,
+ * while one route answering 500 is just that route's bug. Stale data stays on
+ * screen (`staleError`); the shell marks it (`useServerHealth` → the top
+ * bar). When the server answers again, every active resource whose refresh
+ * failed is refetched. */
+
+export type ServerHealth = {
+  /** The local server is not answering. */
+  down: boolean;
+  /** When the server last answered (ms epoch). */
+  lastOkAt: number | null;
+  /** When the current outage was first seen (ms epoch); null while up. */
+  downSince: number | null;
+  /** The last failure's message while down. */
+  lastError: string | null;
+};
+
+/** The error body is the app's own JSON (an object): the server answered. */
+function fromApp(e: ApiError): boolean {
+  return e.body != null && typeof e.body === "object";
+}
+
+/** A failure that says the request did not reach a working server: no
+ *  response at all, or a 500/502/504 without the app's JSON body (a proxy's
+ *  or gateway's answer). */
+export function isServerDownError(e: unknown): boolean {
+  if (!(e instanceof ApiError)) return false;
+  if (e.status === 0) return true;
+  return (e.status === 500 || e.status === 502 || e.status === 504) && !fromApp(e);
+}
+
+const UP: ServerHealth = { down: false, lastOkAt: null, downSince: null, lastError: null };
+
+export class ServerHealthTracker {
+  private state: ServerHealth = UP;
+  private failing = new Set<string>();
+  private listeners = new Set<() => void>();
+  private readonly now: () => number;
+  /** Different resources failing with a 5xx before the server counts as down. */
+  private readonly distinct: number;
+
+  constructor(opts: { now?: () => number; distinct?: number } = {}) {
+    this.now = opts.now ?? Date.now;
+    this.distinct = opts.distinct ?? 2;
+  }
+
+  getState = (): ServerHealth => this.state;
+
+  subscribe = (listener: () => void): (() => void) => {
+    this.listeners.add(listener);
+    return () => { this.listeners.delete(listener); };
+  };
+
+  /** The server answered (anything but a no-response / proxy error). */
+  answered(): void {
+    this.failing.clear();
+    this.set({ down: false, lastOkAt: this.now(), downSince: null, lastError: null });
+  }
+
+  /** `source` (a query key) failed with `error`. */
+  failed(source: string, error: unknown): void {
+    if (!isServerDownError(error)) return;
+    this.failing.add(source);
+    const noResponse = (error as ApiError).status === 0;
+    if (!noResponse && this.failing.size < this.distinct) return;
+    const s = this.state;
+    this.set({
+      down: true, lastOkAt: s.lastOkAt, downSince: s.down ? s.downSince : this.now(),
+      lastError: s.down && s.lastError ? s.lastError : (error as ApiError).message,
+    });
+  }
+
+  reset(): void {
+    this.failing.clear();
+    this.set(UP);
+  }
+
+  private set(next: ServerHealth): void {
+    const s = this.state;
+    // `lastOkAt` alone moving is not worth a re-render of every subscriber
+    // while up; it is read when the state changes (or via getState()).
+    if (s.down === next.down && s.downSince === next.downSince && s.lastError === next.lastError
+      && (s.lastOkAt === null) === (next.lastOkAt === null)) {
+      this.state = { ...s, lastOkAt: next.lastOkAt };
+      return;
+    }
+    this.state = next;
+    for (const l of [...this.listeners]) l();
+  }
+}
+
+/** The one tracker of the shared query cache. */
+export const serverHealth = new ServerHealthTracker();
+
+queryClient.getQueryCache().subscribe((event) => {
+  if (event.type === "removed") {
+    // Nothing cached any more (e.g. `queryClient.clear()`): nothing is stale.
+    if (queryClient.getQueryCache().getAll().length === 0) serverHealth.reset();
+    return;
+  }
+  if (event.type !== "updated") return;
+  const { action } = event;
+  if (action.type === "success") {
+    if (!action.manual) serverHealth.answered();   // a setQueryData is not an answer
+  } else if (action.type === "error") {
+    const err = action.error;
+    if (isServerDownError(err)) serverHealth.failed(JSON.stringify(event.query.queryKey), err);
+    else if (err instanceof ApiError) serverHealth.answered();
+  }
+});
+
+let wasDown = false;
+serverHealth.subscribe(() => {
+  const { down } = serverHealth.getState();
+  if (wasDown && !down) {
+    // Back: refresh what failed while it was gone (its stale data is marked).
+    void queryClient.refetchQueries({ type: "active", predicate: (q) => q.state.status === "error" });
+  }
+  wasDown = down;
+});
+
+/** The local server's health (re-renders when it goes down or comes back). */
+export function useServerHealth(): ServerHealth {
+  return useSyncExternalStore(serverHealth.subscribe, serverHealth.getState, serverHealth.getState);
 }

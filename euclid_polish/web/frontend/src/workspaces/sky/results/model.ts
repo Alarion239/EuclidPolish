@@ -2,6 +2,7 @@
  * row flattening, model grouping, metric tables and chart series, the
  * tracking-log summary. No React, no fetch (unit-tested in model.test.ts). */
 import { formatNumber } from "../../../format";
+import { extent } from "../../../ticks";
 import type { Tone } from "../../../ui";
 import {
   BANDS, SOURCES, type BandMetrics, type ExperimentRecord, type Metrics, type ModelSpecRow,
@@ -68,6 +69,16 @@ export function groupModels(models: readonly ModelSpecRow[]): ModelGroup[] {
   const byId = new Map(groups.map((g) => [g.id, g]));
   for (const m of models) (byId.get(String(m.kind)) ?? byId.get("member"))!.items.push(m);
   return groups.filter((g) => g.items.length);
+}
+
+/** How many members a model reads: "6 of 20 members" when a pruned gate
+ *  reads fewer members than it was fitted on (`reads` vs `n_members`). */
+export function membersText(m: Pick<ModelSpecRow, "n_members" | "reads" | "members">): string {
+  const total = m.n_members ?? m.members?.length ?? 0;
+  const reads = m.reads?.length ?? total;
+  if (!total && !reads) return "";
+  const noun = (n: number) => `member${n === 1 ? "" : "s"}`;
+  return reads < total ? `${reads} of ${total} ${noun(total)}` : `${reads || total} ${noun(reads || total)}`;
 }
 
 /** Specs to keep after the catalogue refreshed: known and available ones. */
@@ -170,7 +181,7 @@ export type MetricDef = {
 export const METRICS: MetricDef[] = [
   { key: "hole_pct", label: "Hole %", short: "holes", digits: 1, unit: "%", better: "lower",
     hint: "SR pixels under the brightest 1 % of LR pixels with SR < 0.5 × LR/4." },
-  { key: "hole_pct_100sigma", label: "Hole % (> 100σ)", short: "holes>100σ", digits: 1, unit: "%", better: "lower",
+  { key: "hole_pct_100sigma", label: "Hole % (> 100σ)", short: "holes >100σ", digits: 1, unit: "%", better: "lower",
     hint: "Hole % over the bright-1 % pixels that are also above 100σ (faint tiles: the top 1 % is noise)." },
   { key: "pct_R_lt_0p8", label: "% R < 0.8", short: "R<0.8", digits: 1, unit: "%", better: "lower",
     hint: "Share of bright, locally dominant peaks whose enclosed-flux ratio R = F_SR/F_LR (boxes 0.3–1.7″) drops below 0.8." },
@@ -256,13 +267,121 @@ export function bandSeries(record: ExperimentRecord, scope: string, metric: Metr
 export function seriesDomain(series: readonly BandSeries[], metric: MetricKey): [number, number] {
   const values = series.flatMap((s) => s.y).filter((v): v is number => v != null);
   const def = METRIC_BY_KEY[metric];
-  if (!values.length) return [0, 1];
-  let lo = Math.min(...values), hi = Math.max(...values);
+  const span = extent(values);
+  if (!span) return [0, 1];
+  let [lo, hi] = span;
   if (def?.unit === "%") { lo = 0; hi = Math.max(hi, 1); }
   if (def?.better === "one") { lo = Math.min(lo, 1); hi = Math.max(hi, 1); }
   if (hi === lo) { hi = lo + 1; }
   const pad = (hi - lo) * 0.08;
   return [def?.unit === "%" ? 0 : lo - pad, hi + pad];
+}
+
+/* ── what an experiment costs (the Run confirm, the New-experiment form) ─ */
+
+export type ExperimentCost = {
+  tiles: number;
+  /** Runnable models (the server skips unavailable ones). */
+  models: number;
+  /** Distinct member SRs the models need per tile (the union of what they read). */
+  members: number;
+  /** members × tiles: the member inferences at most (cached member SRs are reused). */
+  inferences: number;
+  /** models × tiles: the (tile, model) outputs written or re-scored. */
+  outputs: number;
+  skipped: string[];
+  unknown: string[];
+};
+
+/** The upper bound of an experiment's work from the model catalogue
+ *  (`GET /api/models`: each spec's `reads`, else its `members`). The member
+ *  cache is not visible to the client, so this is "at most". */
+export function experimentCost(specs: readonly string[], catalogue: readonly ModelSpecRow[], nTiles: number): ExperimentCost {
+  const bySpec = new Map(catalogue.map((m) => [m.spec, m]));
+  const members = new Set<string>();
+  const skipped: string[] = [], unknown: string[] = [];
+  let models = 0;
+  for (const spec of specs) {
+    const m = bySpec.get(spec);
+    if (!m) { unknown.push(spec); continue; }
+    if (!m.available) { skipped.push(spec); continue; }
+    models += 1;
+    for (const label of m.reads ?? m.members ?? []) members.add(label);
+  }
+  const tiles = Math.max(0, nTiles);
+  return { tiles, models, members: members.size, inferences: members.size * tiles, outputs: models * tiles, skipped, unknown };
+}
+
+const count = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+/** The cost as a sentence: "4 outputs (2 models on 2 tiles). Needs 4 member
+ *  SRs per tile: at most 8 member inferences on this machine; cached ones are
+ *  reused." (plain words, no "A · B" label string). */
+export function experimentCostText(c: ExperimentCost | null): string {
+  if (!c) return "";
+  const work = `${count(c.outputs, "output")} (${count(c.models, "model")} on ${count(c.tiles, "tile")}).`;
+  if (!c.members) return work;
+  return `${work} Needs ${count(c.members, "member SR")} per tile: at most ${count(c.inferences, "member inference")} on this machine; cached ones are reused.`;
+}
+
+/** The experiment a visit to Sky › Experiments opens: the `?exp=` one, else
+ *  the newest (so the plain tab link opens on a comparison, not a form) —
+ *  unless tiles were handed over (`?tiles=`): then the new-experiment form
+ *  is the point. Ids start with their timestamp (`20260927-024251-…`), which
+ *  orders them when `created` is missing. */
+export function defaultExperimentId(
+  history: readonly { id: string; created?: string | null }[], exp: string, tiles: readonly string[],
+): string {
+  if (exp) return exp;
+  if (tiles.length || !history.length) return "";
+  const newer = (a: { id: string; created?: string | null }, b: { id: string; created?: string | null }) =>
+    (a.created && b.created ? b.created > a.created : b.id > a.id);
+  return history.reduce((a, b) => (newer(a, b) ? b : a)).id;
+}
+
+/** A metric column header in the kit's upper case, done here on Latin
+ *  letters only: the kit's CSS `text-transform` would turn σ into Σ (a sum
+ *  sign). Render it with `text-transform: none`. */
+export function metricHeader(short: string): string {
+  return short.replace(/[a-z]+/g, (w) => w.toUpperCase());
+}
+
+/* ── the real-tile card ────────────────────────────────────────────────── */
+
+/** The `real` viewer's params for one tile: exactly its own model outputs,
+ *  so the tier picker offers only tiers that exist for it. Without `models`
+ *  the server would list every spec any tile of the source has; "," is the
+ *  explicit empty list (LR and JWST only). */
+export function realTileViewerParams(source: string, specs: readonly string[]): { source: string; models: string } {
+  return { source, models: sortSpecs(specs).join(",") || "," };
+}
+
+/** The card's first frames — two, so they are large in the ~380 px
+ *  inspector (three stacked at ~170 px were too small to judge): LR and the
+ *  first model output, else LR and the JWST truth. Every other tier is one
+ *  chip away in the viewer's bar. */
+export function cardViewerTiers(specs: readonly string[], hasJwst: boolean): string[] {
+  const first = sortSpecs(specs)[0];
+  if (first) return ["lr", `m:${first}`];
+  return ["lr", ...(hasJwst ? ["jwst"] : [])];
+}
+
+/** Where an output came from, in words ("legacy nexus-field · 2 members · spatial gate"). */
+export function outputOrigin(m: {
+  legacy?: boolean; origin?: string | null; member_labels?: readonly string[] | null; combiner_kind?: string | null;
+}): string {
+  const parts: string[] = [];
+  if (m.legacy) parts.push(`legacy ${m.origin ?? "record"}`);
+  if (m.member_labels?.length) parts.push(`${m.member_labels.length} member${m.member_labels.length === 1 ? "" : "s"}`);
+  if (m.combiner_kind) parts.push(m.combiner_kind.replace(/_/g, " "));
+  return parts.join(" · ");
+}
+
+/** "Run models…" preselection: production and the mean when missing or
+ *  stale; both when both are current (a re-score). */
+export function defaultRunSpecs(models: Record<string, { state?: string | null } | undefined>): string[] {
+  const missing = ["production", "mean"].filter((s) => models[s]?.state !== "current");
+  return missing.length ? missing : ["production", "mean"];
 }
 
 /* ── the tracking-log summary ──────────────────────────────────────────── */

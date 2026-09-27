@@ -12,6 +12,12 @@ describe("chart kit", () => {
     expect(physicalLogAxisLabel("log₁₀ density")).toBe("density (log scale)");
   });
 
+  it("takes domains of whole catalogues without spreading them into Math.min / Math.max (RangeError past ~120k)", () => {
+    const big = Array.from({ length: 200_000 }, (_, i) => 1 + (i % 1000));
+    expect(logDomain(big)).toEqual([1, 10 ** 3]);
+    expect(countHistogram(big.map((v) => v % 7)).edges.at(-1)).toBe(7);
+  });
+
   it("snaps log domains to half decades and blanks non-positive values", () => {
     expect(logDomain([0.02, 0, 3])).toEqual([10 ** -2, 10 ** 0.5]);
     expect(logDomain([5, 5])).toEqual([10 ** 0.5, 10]);

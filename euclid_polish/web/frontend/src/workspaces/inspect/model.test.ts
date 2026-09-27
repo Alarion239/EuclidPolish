@@ -5,7 +5,7 @@ import {
   basename, cardRows, defaultHduKey, defaultView, dirname, fileCrumbs, flatIndex, fovArcsec, hduByKey, hduFacts,
   histogramSeries, isGroupKey, pageLabel, planeAxesLabel, planeIndex, pushRecent, readRecent, shapeText,
   normalizeSummary, skyAt, skyColumns, skyHref, sliceTarget, sortToServer, viewerParams, viewsFor,
-  axisLabel, INSPECT_WIDE_PX, isNarrowWidth, searchScope,
+  axisLabel, INSPECT_WIDE_PX, isNarrowWidth, searchScope, compareTiers, brightExposure,
 } from "./model";
 
 const hdu = (over: Partial<HduSummary>): HduSummary => ({
@@ -275,5 +275,27 @@ describe("layout + labels", () => {
     expect(searchScope("data/eval_results", loaded)).toBe("Evaluation results");
     // a stale listing of another folder is ignored
     expect(searchScope("data/eval_results/gal_1", loaded)).toBe("gal_1");
+  });
+});
+
+describe("the first view of a results FITS", () => {
+  const sr: BandGroup = { ...group, id: "b:SR_", prefix: "SR_", label: "SR · 4-band colour", hdus: [5, 6, 7, 8] };
+  it("compares the LR and SR colour composites side by side when the file has both", () => {
+    const s = summary([hdu({ type: "empty", viewable: false })], [group, sr]);
+    expect(compareTiers(s, hduByKey(s, "b:LR_")!)).toEqual(["b:LR_", "b:SR_"]);
+    expect(compareTiers(s, hduByKey(s, "b:SR_")!)).toEqual(["b:LR_", "b:SR_"]);
+  });
+  it("leaves a single HDU or a lone group to the viewer's default", () => {
+    const s = summary([hdu({ type: "empty", viewable: false }), hdu({ index: 1 })], [group]);
+    expect(compareTiers(s, hduByKey(s, "b:LR_")!)).toBeUndefined();
+    const two = summary([hdu({ index: 1 })], [group, sr]);
+    expect(compareTiers(two, hduByKey(two, "1")!)).toBeUndefined();     // an HDU picked by hand
+  });
+  it("scales a bright target so its core is not blown out (knee and white ×s, the same look)", () => {
+    // the poster galaxy: p99.9 = 1.2e5 e⁻ ≫ the 3000 e⁻ white of the default stretch
+    expect(brightExposure(1.2e5, 100)).toEqual({ knee: 4000, gain: 0.025 });
+    expect(brightExposure(2500, 100)).toBeNull();          // already inside the default white
+    expect(brightExposure(undefined, 100)).toBeNull();
+    expect(brightExposure(NaN, 100)).toBeNull();
   });
 });

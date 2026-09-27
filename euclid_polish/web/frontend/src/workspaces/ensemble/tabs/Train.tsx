@@ -23,15 +23,14 @@ import { useMembers, useMode, useTrainingJobs, type MemberRow, type TrainingJob 
 import { BarGroup, EnsBar } from "../common";
 import { kneeText, memberName, memberNumber, stepsText } from "../model";
 import {
-  DEFAULT_MULTI_KNEES, KNEE_LOSSES, LOSSES, buildParams, defaultForm, formFromJob, jobRegime, lastBatch, newRow,
-  recipeSummary, validate, type SpecRow, type TrainForm, type TrainMode,
+  DEFAULT_MULTI_KNEES, KNEE_LOSSES, LOSSES, RECIPE_RESOURCES, buildParams, continueTarget, defaultForm, defaultResources,
+  formFromJob, jobRegime, lastBatch, newRow, recipeSummary, validate, type Resources, type SpecRow, type TrainForm, type TrainMode,
 } from "../trainModel";
 import "../ensemble.css";
 
 type Preview = { ok: boolean; mode: string; member_names: string[]; count: number; array: { tasks: number; max_parallel: number } | null;
   command: string[]; command_text: string; base_seed: string | number | null; star_prior: boolean };
 type StepInfo = { step_id: string; defaults: { partition: string; n_cpus: number; n_gpus: number; memory: string; time_limit: string }; fixed_gpus?: number | null };
-type Resources = { n_cpus: string; memory: string; time_limit: string };
 
 function SpecRowEditor({ row, i, mode, onChange, onRemove, onDuplicate, canRemove }: {
   row: SpecRow; i: number; mode: TrainMode; onChange: (p: Partial<SpecRow>) => void; onRemove: () => void;
@@ -95,6 +94,9 @@ function ContinuePicker({ rows, picked, onChange }: { rows: MemberRow[]; picked:
   );
 }
 
+/** Which jobs seed the resources: continue jobs, or new batches (add, fork). */
+const resKind = (m: TrainMode): "new" | "continue" => (m === "continue" ? "continue" : "new");
+
 export default function Train() {
   const mode = useMode();
   const members = useMembers(mode);
@@ -113,6 +115,10 @@ export default function Train() {
     return f;
   });
   const [res, setRes] = useState<Resources | null>(null);
+  /** Where the resources came from: a job id, null = the recipe. */
+  const [resFrom, setResFrom] = useState<string | null>(null);
+  /** The kind of job the resources were seeded from; null once the user owns them. */
+  const [resSeed, setResSeed] = useState<"new" | "continue" | null>(null);
   const [preview, setPreview] = useState<Preview | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -120,9 +126,29 @@ export default function Train() {
   const cloned = useRef<string | null>(null);
 
   const step = steps.data?.steps.find((s) => s.step_id === "ensemble_train");
+  // Resources start from the last finished batch (else the recipe: 16 CPUs,
+  // 3 h), never the step's generic 4 CPUs / 48 h.
+  // Seeded per kind of job (a continue job's short limit never seeds a new
+  // batch); switching the mode re-seeds until the resources are edited.
   useEffect(() => {
-    if (step && !res) setRes({ n_cpus: String(step.defaults.n_cpus), memory: step.defaults.memory, time_limit: step.defaults.time_limit });
-  }, [step, res]);
+    if (!jobs.data && !jobs.error) return;
+    if (res && (resSeed == null || resSeed === resKind(form.mode))) return;
+    const d = defaultResources(jobs.data?.jobs ?? [], form.mode);
+    setRes({ n_cpus: d.n_cpus, memory: d.memory, time_limit: d.time_limit });
+    setResFrom(d.from);
+    setResSeed(resKind(form.mode));
+  }, [jobs.data, jobs.error, res, resSeed, form.mode]);
+  /** The resources as the user set them (edited, cloned, the recipe): kept. */
+  const ownRes = (r: Resources) => { setRes(r); setResSeed(null); };
+  // "Continue them…" / Members › Continue (?members=): up to each member's
+  // recorded target, not a fixed +20k (once, when the member rows arrive).
+  const targetSet = useRef(false);
+  useEffect(() => {
+    if (targetSet.current || form.mode !== "continue" || !urlMembers || !members.data) return;
+    targetSet.current = true;
+    const t = continueTarget(members.data.members, form.members);
+    if (t) setForm((f) => ({ ...f, continueBasis: "target", targetSteps: String(t) }));
+  }, [members.data]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const patch = (p: Partial<TrainForm>) => setForm((f) => ({ ...f, ...p }));
   const setMode = (m: TrainMode) => { patch({ mode: m }); setUrlMode(m); };
@@ -134,9 +160,11 @@ export default function Train() {
     setForm(f);
     setUrlMode(f.mode);
     setFrom(job.jobid);
-    if (job.req_time_limit || job.req_memory) {
-      setRes((r) => ({ n_cpus: job.req_cpus ? String(job.req_cpus) : r?.n_cpus ?? "4",
-        memory: job.req_memory || r?.memory || "32G", time_limit: job.req_time_limit || r?.time_limit || "3:00:00" }));
+    if (job.req_time_limit || job.req_memory || job.req_cpus) {
+      setResSeed(null);
+      setRes((r) => ({ n_cpus: job.req_cpus ? String(job.req_cpus) : r?.n_cpus ?? RECIPE_RESOURCES.n_cpus,
+        memory: job.req_memory || r?.memory || RECIPE_RESOURCES.memory, time_limit: job.req_time_limit || r?.time_limit || RECIPE_RESOURCES.time_limit }));
+      setResFrom(job.jobid);
     }
     const jr = jobRegime(job);
     if (jr !== mode && f.mode !== "continue") {
@@ -168,7 +196,7 @@ export default function Train() {
   async function submit() {
     if (errors.length || !res) return;
     const what = form.mode === "continue" ? `continue ${form.members.length} member(s)` : `${form.rows.length} ${form.mode === "fork" ? "fork" : "new"} member(s): ${preview?.member_names.join(", ") ?? "…"}`;
-    const ok = await confirm({ title: "Submit ensemble_train to SLURM?", message: `${what} · ${res.time_limit} per model on ${step?.defaults.partition ?? "gpu"}. It queues locally when another job is active.`, confirmLabel: "Submit" });
+    const ok = await confirm({ title: "Submit ensemble_train to SLURM?", message: `${what} · per model ${res.n_cpus} CPUs, ${res.memory}, ${res.time_limit} on ${step?.defaults.partition ?? "gpu"}. It queues locally when another job is active.`, confirmLabel: "Submit" });
     if (!ok) return;
     setSubmitting(true);
     try {
@@ -190,7 +218,7 @@ export default function Train() {
   const last = lastBatch(jobs.data?.jobs ?? []);
   usePageActions([
     { id: "train-last", label: "Train: repeat the last batch recipe", group: "Train", disabled: !last, run: () => last && clone(last) },
-    { id: "train-recipe", label: "Train: reset to the standard recipe", group: "Train", run: () => { setForm({ ...defaultForm(), mode: form.mode }); setFrom(""); } },
+    { id: "train-recipe", label: "Train: reset to the standard recipe", group: "Train", run: () => { setForm({ ...defaultForm(), mode: form.mode }); setFrom(""); ownRes({ ...RECIPE_RESOURCES }); setResFrom(null); } },
     { id: "train-add-multi", label: "Train: add a multi-knee member row", group: "Train", run: () => patch({ rows: [...form.rows, newRow({ kneeMode: "multi" })] }) },
     { id: "train-submit", label: "Train: submit to SLURM", group: "Train", disabled: offline || !!errors.length, run: () => void submit() },
   ]);
@@ -218,7 +246,7 @@ export default function Train() {
           ? "A fork keeps its source member's regime." : `New members train ${mode === "starless" ? "starless (erase stars, clean target)" : "starfull (reconstruct stars)"}. Set by the workspace regime switch.`}>
           <span><Badge tone={mode === "starless" ? "warn" : undefined} dot>{mode}</Badge></span>
         </Tooltip>
-        <Button size="sm" variant="ghost" icon="reset" onClick={() => { setForm({ ...defaultForm(), mode: form.mode }); setFrom(""); }}>Recipe</Button>
+        <Button size="sm" variant="ghost" icon="reset" onClick={() => { setForm({ ...defaultForm(), mode: form.mode }); setFrom(""); ownRes({ ...RECIPE_RESOURCES }); setResFrom(null); }}>Recipe</Button>
       </EnsBar>
       <div className="ens-stack">
         {form.mode === "continue" ? (
@@ -292,9 +320,10 @@ export default function Train() {
             <div className="ens-stack">
               {res && (
                 <div className="ens-form">
-                  <NumberField label="CPUs / model" value={res.n_cpus} onChange={(v) => setRes({ ...res, n_cpus: v })} min={1} />
-                  <Field label="Memory / model"><Input value={res.memory} onChange={(v) => setRes({ ...res, memory: v })} /></Field>
-                  <Field label="Time limit / model" hint="The 70k-step recipe takes 2.5–3 h on the gpu partition."><Input value={res.time_limit} onChange={(v) => setRes({ ...res, time_limit: v })} /></Field>
+                  <NumberField label="CPUs / model" value={res.n_cpus} onChange={(v) => ownRes({ ...res, n_cpus: v })} min={1}
+                    hint={resFrom ? `As job ${resFrom} (the last finished ${form.mode === "continue" ? "continue job" : "new batch"})` : "The recipe: 16 keep the GPU fed"} />
+                  <Field label="Memory / model"><Input value={res.memory} onChange={(v) => ownRes({ ...res, memory: v })} /></Field>
+                  <Field label="Time limit / model" hint="The 70k-step recipe takes 2.5–3 h on the gpu partition."><Input value={res.time_limit} onChange={(v) => ownRes({ ...res, time_limit: v })} /></Field>
                 </div>
               )}
               {errors.length > 0 && <Callout tone="warn" title="Fix before submitting">{errors.join(" · ")}</Callout>}

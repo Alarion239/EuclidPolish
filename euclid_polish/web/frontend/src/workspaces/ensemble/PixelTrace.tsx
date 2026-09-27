@@ -1,14 +1,27 @@
 /* Back-trace a diagnostic heatmap cell to the real pixels that landed in it
-   (GET /ensemble/pixel-trace.json): LR · target · SR · σ stamps from across
-   the test fields, coloured by the Display panel (colour mode, knee, gain)
-   through the viewer's own colour core (viewer/color.ts). */
-import { useEffect, useMemo, useRef } from "react";
+   (GET /ensemble/pixel-trace.json): one row per sampled pixel with its LR ·
+   target · SR · σ stamps, coloured through the viewer's own colour core
+   (viewer/color.ts) on the viewer's neutral dark light table. The traced
+   pixels sit at a few e⁻, so each ROW gets its own asinh knee from the traced
+   pixel's level (`stampKnee`: its |target|, σ and |err|; shared by the row's
+   LR / target / SR stamps so they stay comparable; white at 30× the knee) —
+   the Display panel's fixed 100 e⁻ knee left the target and SR stamps black.
+   "Display panel knee" switches back. The colour and brightness follow the
+   Display panel. Stamps fill the row (≤ 240 px each), each backing store at
+   the exact device size (viewer/draw.ts: equal-sized pixels, no dropped
+   rows) with the sampled pixel ringed; a picked cell scrolls the trace into
+   view; each row links to its field in the Disagreement viewer. */
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import { useResource } from "../../api/query";
+import { pagePath } from "../../app/nav";
 import { viridis } from "../../colors";
 import { transferFor, useDisplay } from "../../state/display";
-import { Button, EmptyState, IconButton, Skeleton } from "../../ui";
+import { Button, EmptyState, IconButton, Segmented, Skeleton } from "../../ui";
 import { renderCubeImageData, type ColorMeta, type RenderOpts } from "../../viewer";
+import { drawFrame } from "../../viewer/draw";
 import { url, type Mode } from "./api";
+import { formatE, stampKnee } from "./model";
 
 export type Pick = { diag: "std_err" | "bright_std" | "combiner_feature_error"; i: number; j: number };
 type Stamp = {
@@ -18,10 +31,9 @@ type Stamp = {
 };
 type Trace = { diag: string; i: number; j: number; half: number; size: number; bands: string[]; stretch: number; stamps: Stamp[] };
 
-const STAMP_PX = 3;
+/** Backing-store upscale before a stamp has been laid out (then: its exact device size). */
+const UPSCALE = 8;
 const RENDERABLE = new Set(["VIS", "Y_E", "J_E", "H_E", "lupton", "temp"]);
-const fmtE = (v: number) => (!Number.isFinite(v) ? "—" : Math.abs(v) >= 1000 || (Math.abs(v) > 0 && Math.abs(v) < 0.01)
-  ? v.toExponential(1) : String(Number(v.toPrecision(3))));
 
 function b64ToF32(b64: string): Float32Array {
   const bin = atob(b64);
@@ -30,43 +42,58 @@ function b64ToF32(b64: string): Float32Array {
   return new Float32Array(bytes.buffer);
 }
 
-function ringColor(): string {
-  return getComputedStyle(document.documentElement).getPropertyValue("--bad").trim() || "currentColor";
-}
-
-function paint(cv: HTMLCanvasElement, size: number, center: number, draw: (ctx: CanvasRenderingContext2D) => void) {
-  const dpr = Math.min(window.devicePixelRatio || 1, 2);
-  cv.width = size * STAMP_PX * dpr; cv.height = size * STAMP_PX * dpr;
-  cv.style.width = `${size * STAMP_PX}px`; cv.style.height = `${size * STAMP_PX}px`;
+/** Paint natural-size pixels into the canvas at its displayed device size
+ *  (css width × dpr): nearest-neighbour at an integer scale, else sharp
+ *  bilinear (viewer/draw.ts) — a 328 px backing shown at 284 device px
+ *  dropped rows. */
+function paint(cv: HTMLCanvasElement, img: ImageData) {
+  const dpr = Math.max(1, Math.min(window.devicePixelRatio || 1, 2));
+  const side = cv.clientWidth > 0 ? Math.round(cv.clientWidth * dpr) : img.width * UPSCALE;
+  if (cv.width !== side || cv.height !== side) { cv.width = side; cv.height = side; }
   const ctx = cv.getContext("2d");
   if (!ctx) return;
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.imageSmoothingEnabled = false;
-  draw(ctx);
-  ctx.strokeStyle = ringColor(); ctx.lineWidth = 1.4;
-  ctx.strokeRect(center * STAMP_PX - 0.7, center * STAMP_PX - 0.7, STAMP_PX + 1.4, STAMP_PX + 1.4);
+  const off = document.createElement("canvas");
+  off.width = img.width; off.height = img.height;
+  off.getContext("2d")?.putImageData(img, 0, 0);
+  ctx.clearRect(0, 0, side, side);
+  drawFrame(ctx, off, { sx: 0, sy: 0, sw: img.width, sh: img.height, dx: 0, dy: 0, dw: side, dh: side }, 1, document.createElement("canvas"));
+}
+
+/** Repaint when the stamp's displayed size changes. */
+function useStampPaint(ref: React.RefObject<HTMLCanvasElement>, render: (() => ImageData | null) | null, deps: unknown[]) {
+  useLayoutEffect(() => {
+    const cv = ref.current;
+    if (!cv || !render) return;
+    const img = render();
+    if (!img) return;
+    paint(cv, img);
+    if (typeof ResizeObserver === "undefined") return;
+    let last = cv.clientWidth;
+    const ro = new ResizeObserver(() => { if (cv.clientWidth !== last) { last = cv.clientWidth; paint(cv, img); } });
+    ro.observe(cv);
+    return () => ro.disconnect();
+    // the caller lists what the rendered image depends on
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, deps);
+}
+
+/** The ring around the sampled pixel, in % of the stamp (any displayed size). */
+function Mark({ size, center }: { size: number; center: number }) {
+  const pct = (v: number) => `${(100 * v) / size}%`;
+  return <span className="ens-trace__mark" aria-hidden style={{ left: pct(center), top: pct(center), width: pct(1), height: pct(1) }} />;
 }
 
 function ImageStamp({ b64, size, center, bands, meta, opts, label }: {
   b64?: string; size: number; center: number; bands: string[]; meta?: ColorMeta; opts: RenderOpts; label: string;
 }) {
   const ref = useRef<HTMLCanvasElement>(null);
-  useEffect(() => {
-    const cv = ref.current;
-    if (!cv || !b64 || !meta || !bands.length) return;
-    const img = renderCubeImageData({ data: b64ToF32(b64), h: size, w: size, c: bands.length, bands }, meta, opts);
-    paint(cv, size, center, (ctx) => {
-      const off = document.createElement("canvas");
-      off.width = size; off.height = size;
-      off.getContext("2d")?.putImageData(img, 0, 0);
-      ctx.drawImage(off, 0, 0, size * STAMP_PX, size * STAMP_PX);
-    });
-  }, [b64, size, center, bands, meta, opts]);
+  useStampPaint(ref, b64 && meta && bands.length
+    ? () => renderCubeImageData({ data: b64ToF32(b64), h: size, w: size, c: bands.length, bands }, meta, opts)
+    : null, [b64, size, center, bands, meta, opts]);
   return (
-    <div>
-      {b64 ? <canvas ref={ref} aria-label={`${label} stamp`} role="img" />
-        : <div className="ens-trace__na" style={{ width: size * STAMP_PX, height: size * STAMP_PX }}>n/a</div>}
-      <div className="ens-trace__tier">{label}</div>
+    <div className="ens-trace__stamp">
+      {b64 ? <><canvas ref={ref} aria-label={`${label} stamp`} role="img" /><Mark size={size} center={center} /></>
+        : <span className="ens-trace__na">No {label}</span>}
     </div>
   );
 }
@@ -74,23 +101,32 @@ function ImageStamp({ b64, size, center, bands, meta, opts, label }: {
 /** σ is the thing shown: fixed viridis, asinh, normalised per stamp. */
 function SigmaStamp({ b64, size, center, stretch }: { b64: string; size: number; center: number; stretch: number }) {
   const ref = useRef<HTMLCanvasElement>(null);
-  useEffect(() => {
-    const cv = ref.current;
-    if (!cv) return;
+  useStampPaint(ref, () => {
     const a = b64ToF32(b64);
     const t = new Float32Array(a.length);
     let lo = Infinity, hi = -Infinity;
     for (let i = 0; i < a.length; i++) { const v = Math.asinh(a[i] / stretch); t[i] = v; lo = Math.min(lo, v); hi = Math.max(hi, v); }
     const span = hi - lo || 1;
-    paint(cv, size, center, (ctx) => {
-      for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
-        ctx.fillStyle = viridis((t[y * size + x] - lo) / span);
-        ctx.fillRect(x * STAMP_PX, y * STAMP_PX, STAMP_PX + 0.5, STAMP_PX + 0.5);
-      }
-    });
+    const img = new ImageData(size, size);
+    for (let k = 0; k < size * size && k < t.length; k++) {
+      const hex = viridis((t[k] - lo) / span);          // "#rrggbb"
+      img.data[4 * k] = parseInt(hex.slice(1, 3), 16);
+      img.data[4 * k + 1] = parseInt(hex.slice(3, 5), 16);
+      img.data[4 * k + 2] = parseInt(hex.slice(5, 7), 16);
+      img.data[4 * k + 3] = 255;
+    }
+    return img;
   }, [b64, size, center, stretch]);
-  return <div><canvas ref={ref} aria-label="σ stamp" role="img" /><div className="ens-trace__tier">σ</div></div>;
+  return (
+    <div className="ens-trace__stamp">
+      <canvas ref={ref} aria-label="σ stamp" role="img" /><Mark size={size} center={center} />
+    </div>
+  );
 }
+
+/** The Disagreement viewer on this stamp's test field (`test:<index>`). */
+const fieldHref = (mode: Mode, field: number) =>
+  `${pagePath("ensemble", { tab: "disagreement", params: { mode } })}?${new URLSearchParams({ "v.ens.id": `test:${field}` }).toString()}`;
 
 export function PixelTrace({ mode, pick, model, axis, cellLabel, targetLabel, onClose }: {
   mode: Mode; pick: Pick; model?: string; axis?: string; cellLabel: string; targetLabel: string; onClose: () => void;
@@ -105,36 +141,74 @@ export function PixelTrace({ mode, pick, model, axis, cellLabel, targetLabel, on
   const K0 = colorMeta?.default_asinh ?? 100;
   const g = transferFor(display, "default");
   const color = RENDERABLE.has(display.color) ? display.color : "VIS";
-  const opts: RenderOpts = useMemo(() => ({ color, knee: g.knee || K0, gain: g.gain || 1, K0 }), [color, g.knee, g.gain, K0]);
+  const [kneeFrom, setKneeFrom] = useState<"pixel" | "display">("pixel");
+  const panelOpts: RenderOpts = useMemo(() => ({ color, knee: g.knee || K0, gain: g.gain || 1, K0 }), [color, g.knee, g.gain, K0]);
+  /** One knee per row (LR / target / SR comparable), white at 30× it. */
+  const rowOpts = (s: Stamp): RenderOpts => {
+    if (kneeFrom === "display") return panelOpts;
+    const k = stampKnee(s);
+    return { color, knee: k, gain: g.gain || 1, K0: k };
+  };
   const t = trace.data;
+  // A picked cell scrolls its trace into view (it sits under the heatmap)
+  // once its rows are in (the skeleton alone is a few px tall).
+  const box = useRef<HTMLElement>(null);
+  const loaded = !!t && !trace.loading;
+  useEffect(() => {
+    if (!loaded) return;
+    const reduce = typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    box.current?.scrollIntoView?.({ block: "nearest", behavior: reduce ? "auto" : "smooth" });
+  }, [pick.diag, pick.i, pick.j, loaded]);
+  const srLabel = (s: Stamp) => (s.model_kind === "spatial_gate" ? "SR · gate" : s.sr_is_combiner ? "SR · combiner" : "SR · mean");
+  const colourName = color === "lupton" ? "Lupton" : color === "temp" ? "Temp" : color.replace(/_E$/, "");
   return (
-    <div className="ens-trace" aria-live="polite">
-      <div className="ens-row" style={{ justifyContent: "space-between", marginBottom: "var(--s2)" }}>
-        <span className="ens-bar__label">Back-trace · <span className="ens-mono" style={{ textTransform: "none" }}>{cellLabel}</span></span>
+    <section ref={box} className="ens-trace" aria-live="polite" aria-label="Pixels in the clicked cell">
+      <header className="ens-trace__head">
+        <h3 className="ens-trace__title">Pixels in this cell</h3>
+        <span className="ens-trace__cell">{cellLabel}</span>
+        <span className="ens-bar__spacer" />
+        <Segmented size="sm" aria-label="Stamp knee" value={kneeFrom} onChange={setKneeFrom}
+          options={[{ value: "pixel", label: "Knee from the pixel" }, { value: "display", label: "Display panel knee" }]} />
         <IconButton icon="close" label="Close the back-trace" size="sm" onClick={onClose} />
-      </div>
+      </header>
       {trace.loading ? <Skeleton lines={3} />
         : trace.error ? <EmptyState compact icon="warn" title="Could not back-trace"
             action={<Button size="sm" onClick={trace.reload}>Retry</Button>}><span className="ens-mono">{trace.error.message}</span></EmptyState>
           : !t || !t.stamps.length ? <EmptyState compact icon="search" title="No pixels sampled in this cell">Try a denser cell.</EmptyState>
             : (
-              <div className="ens-trace__grid">
-                {t.stamps.map((s, k) => (
-                  <div key={k} className="ens-trace__card">
-                    <div className="ens-trace__stamps">
-                      <ImageStamp b64={s.lr} size={t.size} center={s.center} bands={t.bands} meta={colorMeta} opts={opts} label="LR" />
-                      <ImageStamp b64={s.hr} size={t.size} center={s.center} bands={t.bands} meta={colorMeta} opts={opts} label={targetLabel} />
-                      <ImageStamp b64={s.sr} size={t.size} center={s.center} bands={t.bands} meta={colorMeta} opts={opts}
-                        label={s.model_kind === "spatial_gate" ? "SR · gate" : s.sr_is_combiner ? "SR · combiner" : "SR · mean"} />
-                      <SigmaStamp b64={s.std} size={t.size} center={s.center} stretch={t.stretch} />
-                    </div>
-                    <div className="ens-trace__nums">
-                      field {s.field} · σ {fmtE(s.std_val)} · |err| {fmtE(s.err_val)} · {targetLabel} {fmtE(s.hr_val)} e⁻
-                    </div>
+              <>
+                <div className="ens-trace__table" role="list" aria-label={`${t.stamps.length} sampled pixels`}>
+                  <div className="ens-trace__cols" aria-hidden>
+                    <span>LR</span><span>{targetLabel}</span><span>{srLabel(t.stamps[0])}</span><span>σ (members)</span><span>Pixel</span>
                   </div>
-                ))}
-              </div>
+                  {t.stamps.map((s, k) => {
+                    const opts = rowOpts(s);
+                    return (
+                      <div key={k} className="ens-trace__row" role="listitem">
+                        <ImageStamp b64={s.lr} size={t.size} center={s.center} bands={t.bands} meta={colorMeta} opts={opts} label="LR" />
+                        <ImageStamp b64={s.hr} size={t.size} center={s.center} bands={t.bands} meta={colorMeta} opts={opts} label={targetLabel} />
+                        <ImageStamp b64={s.sr} size={t.size} center={s.center} bands={t.bands} meta={colorMeta} opts={opts} label={srLabel(s)} />
+                        <SigmaStamp b64={s.std} size={t.size} center={s.center} stretch={t.stretch} />
+                        <div className="ens-trace__nums">
+                          <strong>Field {s.field}</strong>
+                          <span>x {s.x}, y {s.y}</span>
+                          <span>σ {formatE(s.std_val)} e⁻</span>
+                          <span>|err| {formatE(s.err_val)} e⁻</span>
+                          <span>{targetLabel} {formatE(s.hr_val)} e⁻</span>
+                          <span className="ens-trace__knee">knee {formatE(opts.knee ?? K0)} e⁻</span>
+                          <Link to={fieldHref(mode, s.field)}>Open field {s.field} in the viewer</Link>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+                <p className="ens-trace__note">
+                  {t.size} × {t.size} px around each sampled pixel (ringed), in {colourName}
+                  {kneeFrom === "pixel" ? " with a knee at the traced pixel's own level (one per row, white at 30× it)" : " with the Display panel's knee"} and the
+                  Display panel&apos;s brightness; σ is the cross-member spread (viridis, asinh, scaled per stamp). Numbers are VIS.
+                </p>
+              </>
             )}
-    </div>
+    </section>
   );
 }

@@ -25,6 +25,9 @@ export type RenderSpec = {
   scale: ColorScale;
   lod: Lod;
   markerScale: number;
+  /** Coverage MOCs: fill the area (zoomed out), else only its outline, so the
+   *  imagery inside the covered sky keeps a neutral colour (specs.ts). */
+  fill?: boolean;
 };
 
 type Entry = {
@@ -151,7 +154,7 @@ export class LayerRenderer {
     if (!e?.moc) {
       if (!s.info.mocUrl) return;
       const moc = A.MOCFromURL(s.info.mocUrl, {
-        name: s.info.label, color, fillColor: color, fill: true, perimeter: true, opacity: s.opacity, lineWidth: 1,
+        name: s.info.label, color, fillColor: color, fill: s.fill !== false, perimeter: true, opacity: s.opacity, lineWidth: 1,
       });
       al.addMOC(moc);
       this.entries.set(s.info.id, { id: s.info.id, kind: "moc", sig: "", visible: true, moc });
@@ -160,6 +163,9 @@ export class LayerRenderer {
     try {
       if (e.moc.opacity !== s.opacity) e.moc.opacity = s.opacity;
       if (e.moc.color !== color) { e.moc.color = color; e.moc.fillColor = color; }
+      const m = e.moc as AladinMoc & { fill?: boolean };
+      const fill = s.fill !== false;
+      if (m.fill !== fill) m.fill = fill;
     } catch { /* setters unavailable before the MOC is ready */ }
     e.moc.show();
     e.visible = true;

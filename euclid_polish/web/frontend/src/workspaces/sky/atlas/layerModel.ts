@@ -137,8 +137,8 @@ export function groupLayers(layers: readonly LayerInfo[]): { group: LayerGroup; 
 
 /* ── inspector targets ───────────────────────────────────────────────── */
 
-/** The atlas opens real tiles in its own `tile` card (sky actions); the
- *  backend links them as `realtile:` (the Real-results card). */
+/** The atlas opens real tiles as `tile:` (the backend links them as
+ *  `realtile:`; both kinds render the one real-tile card). */
 export function atlasTarget(t: RawInspect | null | undefined): InspectTarget | null {
   if (!t || !t.kind || t.id == null) return null;
   return t.kind === "realtile" ? { kind: "tile", id: String(t.id) } : { kind: t.kind, id: String(t.id) };
@@ -275,11 +275,14 @@ export function findFeatureByTarget(
   target: InspectTarget | null | undefined,
   byLayer: Readonly<Record<string, readonly SkyFeature[]>>,
 ): SkyFeature | null {
-  if (!target || (target.kind !== "tile" && target.kind !== "source")) return null;
-  const id = target.kind === "tile" ? tileTargetId(target.id) : target.id;
-  if (target.kind === "source" && id.startsWith("at/")) return null;
+  if (!target) return null;
+  // `realtile:` is the same real-tile card as `tile:` (sky/results/RealTileInspector.tsx).
+  const kind = target.kind === "realtile" ? "tile" : target.kind;
+  if (kind !== "tile" && kind !== "source") return null;
+  const id = kind === "tile" ? tileTargetId(target.id) : target.id;
+  if (kind === "source" && id.startsWith("at/")) return null;
   for (const feats of Object.values(byLayer)) {
-    for (const f of feats) if (f.inspect && f.inspect.kind === target.kind && f.inspect.id === id) return f;
+    for (const f of feats) if (f.inspect && f.inspect.kind === kind && f.inspect.id === id) return f;
   }
   return null;
 }

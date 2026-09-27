@@ -27,13 +27,17 @@ type MockMarkers = {
 } | null | undefined;
 type MockViewerProps = {
   collection: string; urlKey?: string; params?: Record<string, string>; tiers?: string[];
-  onReady?: (api: unknown) => void; onState?: (s: unknown) => void; markers?: MockMarkers;
+  onReady?: (api: unknown) => void; onState?: (s: unknown) => void; markers?: MockMarkers; display?: unknown;
 };
-const viewer = vi.hoisted(() => ({ goTo: [] as number[], goToId: [] as string[], mounts: 0, index: 1, id: "test:1" as string | null }));
+const viewer = vi.hoisted(() => ({
+  goTo: [] as number[], goToId: [] as string[], mounts: 0, index: 1, id: "test:1" as string | null,
+  display: undefined as unknown,
+}));
 vi.mock("../../viewer", async () => {
   const { useEffect } = await import("react");
   return {
     ImageViewer: (p: MockViewerProps) => {
+      viewer.display = p.display;
       useEffect(() => {
         viewer.mounts += 1;
         p.onReady?.({
@@ -151,7 +155,7 @@ const STEPS = { ssh_connected: true, steps: [], artifacts: {}, remote_paths: {} 
 
 beforeEach(() => {
   posts = [];
-  viewer.goTo = []; viewer.goToId = []; viewer.mounts = 0; viewer.index = 1; viewer.id = "test:1";
+  viewer.goTo = []; viewer.goToId = []; viewer.mounts = 0; viewer.index = 1; viewer.id = "test:1"; viewer.display = undefined;
   routes = {
     "GET /api/fasrc/status": () => ({ body: { ssh_connected: true } }),
     "GET /api/fasrc/steps/status": () => ({ body: STEPS }),
@@ -186,29 +190,59 @@ afterEach(() => {
 /* ── records ───────────────────────────────────────────────────────────── */
 
 describe("Records", () => {
-  it("shows the split, its files, the SR state and the noise check", async () => {
+  it("shows the split, its files, the SR state and the noise check in one toolbar row", async () => {
     show(<Records />);
     expect(await screen.findByText("SR stale")).toBeTruthy();
-    expect(screen.getByText("Clean")).toBeTruthy();
-    expect(screen.getByText("noise model")).toBeTruthy();
+    // the four local files are one badge (clean_test is truncated); the detail is its tip
+    expect(screen.getByText("1 corrupt file")).toBeTruthy();
+    expect(screen.getByText("Old noise model")).toBeTruthy();
+    expect(screen.getByRole("toolbar", { name: "Records" })).toBeTruthy();
     expect(screen.getByTestId("viewer").textContent).toBe("sky|test|dirty,hr");
+  });
+
+  it("puts the truth-source controls in the toolbar row and the viewer before every table", async () => {
+    show(<Records />);
+    const viewerEl = await screen.findByTestId("viewer");
+    // one row above the viewer: the split, the sources overlay, the state, the actions
+    const caption = await screen.findByRole("group", { name: "Truth sources of record 1" });
+    expect(screen.getByRole("toolbar", { name: "Records" }).contains(caption)).toBe(true);
+    expect(within(caption).getByRole("radiogroup", { name: "Draw the truth sources on" })).toBeTruthy();
+    const census = await screen.findByRole("grid", { name: "Records in test" });
+    const sources = await screen.findByRole("grid", { name: "Sources of record 1" });
+    const before = (a: Element, b: Element) => !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(before(caption, viewerEl)).toBe(true);
+    expect(before(viewerEl, sources)).toBe(true);
+    expect(before(viewerEl, census)).toBe(true);
+    // a type the record has none of is no filter chip
+    expect(within(caption).queryByRole("button", { name: /^lens/ })).toBeNull();
   });
 
   it("overlays the current record's truth sources on the HR image and opens one in the inspector", async () => {
     show(<Records />);
     const marks = await screen.findByRole("group", { name: "markers on hr" });
     expect(within(marks).getAllByRole("button")).toHaveLength(2);
-    const star = within(marks).getByRole("button", { name: /star · \(11\.0, 20\.0\) px · VIS 18\.50/ });
+    const star = within(marks).getByRole("button", { name: /star at \(11\.0, 20\.0\) px, VIS 18\.50/ });
     fireEvent.click(star);
     expect(useInspector.getState().current).toEqual({ kind: "truth", id: "test/1/1" });
     expect(useInspectorRegistry.getState().kinds.truth).toBeTruthy();
     // the inspected source is the active marker
     await waitFor(() => expect(within(screen.getByRole("group", { name: "markers on hr" }))
       .getByRole("button", { name: /^star/ }).getAttribute("data-active")).toBe("true"));
-    // the type chips filter the markers and the table
+    // each type chip is a toggle: every present type starts shown; a click hides
+    // that type (markers and table rows), a second click shows it again
+    const chip = screen.getByRole("button", { name: /^star 1$/ });
+    expect(chip.getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("button", { name: /^galaxy 1$/ }).getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(chip);
+    await waitFor(() => expect(screen.getByTestId("loc").textContent).toContain("hide=star"));
+    expect(screen.getByRole("button", { name: /^star 1$/ }).getAttribute("aria-pressed")).toBe("false");
+    expect(screen.getByRole("button", { name: /^galaxy 1$/ }).getAttribute("aria-pressed")).toBe("true");
+    const left = within(screen.getByRole("group", { name: "markers on hr" })).getAllByRole("button");
+    expect(left).toHaveLength(1);
+    expect(left[0].getAttribute("aria-label") ?? left[0].textContent).toMatch(/^galaxy/);
     fireEvent.click(screen.getByRole("button", { name: /^star 1$/ }));
-    await waitFor(() => expect(screen.getByTestId("loc").textContent).toContain("st=star"));
-    expect(within(screen.getByRole("group", { name: "markers on hr" })).getAllByRole("button")).toHaveLength(1);
+    await waitFor(() => expect(screen.getByTestId("loc").textContent).not.toContain("hide="));
+    expect(within(screen.getByRole("group", { name: "markers on hr" })).getAllByRole("button")).toHaveLength(2);
     // the source table sits under the viewer, full width
     expect(screen.getByRole("grid", { name: "Sources of record 1" })).toBeTruthy();
   });
@@ -286,6 +320,8 @@ describe("Records", () => {
     show(<Records />, "/data/records?split=validate");
     expect(await screen.findByText("No validate records on this machine")).toBeTruthy();
     expect(screen.queryByTestId("viewer")).toBeNull();
+    // never mounted, not even while the status loaded: a viewer on an absent split rewrites the URL
+    expect(viewer.mounts).toBe(0);
   });
 
   it("the sync is disabled while FASRC is offline", async () => {
@@ -304,8 +340,20 @@ describe("Catalog", () => {
     const grid = await screen.findByRole("grid", { name: "Stars" });
     await waitFor(() => expect(within(grid).getAllByRole("row")).toHaveLength(2));   // header + star 1
     expect(within(grid).getByRole("img", { name: "VIS valid, Y valid, J valid, H valid" })).toBeTruthy();
-    expect(screen.getByText("Valid in all 4")).toBeTruthy();
+    // the headline counts are one line of words above the table, not a wall of tiles
+    const summary = screen.getByLabelText("Catalogue summary");
+    expect(within(summary).getByText(/valid in all 4 \(33\.3 ?%\)/)).toBeTruthy();
+    expect(within(summary).getByRole("link", { name: /in the navigator at 511 px/ }).getAttribute("href")).toBe("/data/cutouts");
+    expect(!!(summary.compareDocumentPosition(grid) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
+    expect(screen.getByRole("figure", { name: "Magnitude distribution of the star catalogue" })).toBeTruthy();
   });
+
+  it("handles a catalogue beyond the argument-spread limit (~120k stars)", async () => {
+    const rows = Array.from({ length: 130_000 }, (_x, i) => [i + 1, 10, 10, 16 + (i % 300) / 100, 1, 0.1, "EDF-N", V, V, V, V, 1]);
+    routes["GET /api/catalog/stars"] = () => ({ body: { ...STARS, rows, summary: { ...STARS.summary, total: rows.length } } });
+    show(<Catalog />, "/data/catalog");
+    expect(await screen.findByRole("figure", { name: "Magnitude distribution of the star catalogue" }, { timeout: 8000 })).toBeTruthy();
+  }, 20_000);
 
   it("a band-state filter narrows the table", async () => {
     show(<Catalog />, "/data/catalog?band=H_E&bst=corrupted");
@@ -353,18 +401,35 @@ describe("Cutouts", () => {
     viewer.id = "1";
     routes["GET /api/star-cutouts/totals"] = () => ({ body: { count: 1, size: 511, cached: true,
       catalog: { present: true, path: "/n/x", mtime: Date.now() / 1000 - 60, age_s: 60 } } });
-    routes["GET /api/cutouts/VIS/list.json?page=1&per_page=48"] = () => ({ body: {
-      band: "VIS", files: ["star_0001_511.fits"], total: 1, page: 1, n_pages: 1, per_page: 48, output_dir: "/o",
-      items: [{ file: "star_0001_511.fits", id: 1, size: 511, ra: 269.7, dec: 66, mag: 17.5 }],
+    routes["GET /api/cutouts/VIS/list.json?page=1&per_page=96"] = () => ({ body: {
+      band: "VIS", files: ["star_0001_255.fits", "star_0001_511.fits"], total: 2, page: 1, n_pages: 1, per_page: 96, output_dir: "/o",
+      items: [
+        { file: "star_0001_255.fits", id: 1, size: 255, ra: 269.7, dec: 66, mag: 17.5 },
+        { file: "star_0001_511.fits", id: 1, size: 511, ra: 269.7, dec: 66, mag: 17.5 },
+      ],
     } });
   });
 
   it("labels the navigator's star and opens gallery stars in it", async () => {
     show(<Cutouts />, "/data/cutouts");
-    expect(await screen.findByText("1 stars @ 511 px")).toBeTruthy();
-    expect(await screen.findByText("star 1")).toBeTruthy();                     // the current star's facts
-    fireEvent.click(await screen.findByRole("button", { name: /1 · 511px · 17\.50/ }));
+    expect(await screen.findByText("1 stars")).toBeTruthy();
+    const facts = await screen.findByRole("group", { name: "Star 1" });          // the current star, in the toolbar
+    expect(within(facts).getByText("VIS 17.50")).toBeTruthy();
+    const thumb = await screen.findByRole("button", { name: "Star 1, VIS 17.50: show in the viewer" });
+    expect(thumb.getAttribute("aria-current")).toBe("true");                    // the viewer's star is outlined
+    // one tile per star (its navigator-size file), the other size in the tip
+    expect(screen.getAllByRole("button", { name: /^Star 1\b/ })).toHaveLength(1);
+    expect(thumb.getAttribute("title")).toBe("star_0001_511.fits (cached at 255 and 511 px)");
+    fireEvent.click(thumb);
     await waitFor(() => expect(viewer.goToId).toEqual(["1"]));
+  });
+
+  it("shows the navigator first, the gallery with it, and an auto stretch for the ADU/s cutouts", async () => {
+    show(<Cutouts />, "/data/cutouts");
+    const viewerEl = await screen.findByTestId("viewer");
+    const gallery = await screen.findByRole("region", { name: "Cached cutouts" });
+    expect(!!(viewerEl.compareDocumentPosition(gallery) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
+    expect(viewer.display).toEqual({ stretch: "asinh-auto" });
   });
 });
 
@@ -392,8 +457,8 @@ describe("PSFs", () => {
 
   it("distinguishes not-cached from no-empirical bands and lists the clusters", async () => {
     show(<Psfs />, "/data/psfs");
-    expect(await screen.findByText("Y · no empirical PSF")).toBeTruthy();
-    expect(screen.getByText("J · not cached")).toBeTruthy();
+    expect(await screen.findByText("Y: no empirical PSF")).toBeTruthy();
+    expect(screen.getByText("J, H: not cached")).toBeTruthy();                // bands sharing a state: one badge
     expect(screen.getByText("Gaussian fallback in use")).toBeTruthy();
     const clusters = screen.getByRole("grid", { name: "PSF clusters" });
     fireEvent.click(within(clusters).getByRole("button", { name: "View" }));
@@ -474,7 +539,7 @@ describe("TNG", () => {
     const grid = screen.getByRole("grid", { name: "TNG galaxies" });
     fireEvent.click(within(grid).getByText("9"));
     expect(useInspector.getState().current).toEqual({ kind: "tng", id: "9" });
-    expect(screen.getByText("2 galaxies · 2 measured · 1 local")).toBeTruthy();
+    expect(screen.getByRole("toolbar", { name: "TNG" }).textContent).toContain("2 galaxies, 2 measured, 1 local");
   });
 });
 
@@ -495,7 +560,7 @@ describe("inspector cards", () => {
       values: { type: "galaxy", x_pix: 10, y_pix: 20, flux_vis_e: 1000, re_arcsec: 0.2, tng_render_trace: { a: 1 } },
     } });
     show(<TruthInspector id="test/1/0" />);
-    expect(await screen.findByText("test · record 1 · #0")).toBeTruthy();
+    expect(await screen.findByText("Record 1 of test, source 0")).toBeTruthy();
     expect(screen.getByRole("link", { name: "Record" }).getAttribute("href")).toBe("/data/records?split=test&v.rec.id=test%3A1");
     fireEvent.click(screen.getByRole("button", { name: "TNG 658592" }));
     expect(useInspector.getState().current).toEqual({ kind: "tng", id: "658592" });

@@ -41,7 +41,7 @@ export default function ExperimentInspector({ id }: { id: string }) {
       <Section title="Tiles" sub={String(record.tiles?.length ?? 0)} collapsible defaultOpen={false}>
         <div className="res-chips">
           {(record.tiles ?? []).map((t) => (
-            <Button key={t} size="sm" variant="ghost" onClick={() => openInspector({ kind: "realtile", id: t })}>
+            <Button key={t} size="sm" variant="ghost" onClick={() => openInspector({ kind: "tile", id: t })}>
               <span className="mono">{t}</span>
             </Button>
           ))}

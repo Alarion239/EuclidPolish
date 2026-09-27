@@ -183,10 +183,11 @@ export function splitRef(ref: string): [string, string] {
   return i < 0 ? [ref, ""] : [ref.slice(0, i), ref.slice(i + 1)];
 }
 
-/** The atlas URL centred on a position, inspecting the real tile. */
+/** The atlas URL centred on a position, inspecting the real tile (its
+ *  `tile:` card — the same card as `realtile:`, and the atlas highlights it). */
 export function atlasHref(ra: number, dec: number, ref?: string): string {
   const q = new URLSearchParams({ ra: ra.toFixed(6), dec: dec.toFixed(6) });
-  if (ref) q.set("inspect", `realtile:${ref}`);
+  if (ref) q.set("inspect", `tile:${ref}`);
   return `/sky/atlas?${q.toString()}`;
 }
 

@@ -8,6 +8,7 @@
  * the SR frame of a collection with a `std` tier the one-sigma ensemble
  * disagreement adds ± (2.5/ln 10)·Σσ/ΣSR. Held to photometry.py by
  * readout.test.ts (golden fixture). */
+import { bandLabel } from "./barModel";
 import type { ColorMeta } from "./color";
 
 export type MagInfo = { name: string; tot: number; mag: number | null };
@@ -51,8 +52,8 @@ export function sigmaMagnitude(sr: MagInfo, std: MagInfo): number {
 export function magLabel(mi: MagInfo | null, dm?: number | null): string {
   if (!mi || mi.mag == null) return "";
   return dm != null && Number.isFinite(dm)
-    ? ` · ${mi.name} ${mi.mag.toFixed(2)} ± ${dm.toFixed(2)} AB`
-    : ` · ${mi.name} ${mi.mag.toFixed(2)} AB`;
+    ? ` · ${bandLabel(mi.name)} ${mi.mag.toFixed(2)} ± ${dm.toFixed(2)} AB`
+    : ` · ${bandLabel(mi.name)} ${mi.mag.toFixed(2)} AB`;
 }
 
 type PixelCube = { data: Float32Array; w: number; h: number; c: number };
@@ -62,6 +63,22 @@ export function pixelValues(rec: PixelCube, x: number, y: number): number[] | nu
   if (!Number.isInteger(x) || !Number.isInteger(y) || x < 0 || y < 0 || x >= rec.w || y >= rec.h) return null;
   const o = (y * rec.w + x) * rec.c;
   return Array.from(rec.data.subarray(o, o + rec.c));
+}
+
+const emptyCache = new WeakMap<Float32Array, boolean>();
+
+/** True when a cube has no finite pixel at all (a JWST cutout outside the
+ *  mosaic): the frame shows a caption instead of a flat NaN-coloured square.
+ *  Cached per data array. */
+export function cubeIsEmpty(rec: { data: Float32Array } | null | undefined): boolean {
+  const d = rec?.data;
+  if (!d || d.length === 0) return false;
+  const hit = emptyCache.get(d);
+  if (hit != null) return hit;
+  let empty = true;
+  for (let i = 0; i < d.length; i++) if (Number.isFinite(d[i])) { empty = false; break; }
+  emptyCache.set(d, empty);
+  return empty;
 }
 
 /** Continuous image coordinates → the integer pixel under them. */
@@ -93,4 +110,24 @@ export function formatValue(v: number): string {
   else if (a >= 10) s = v.toFixed(1);
   else s = v.toPrecision(3);
   return s.replace(/^-/, "−");
+}
+
+/** The widest the one-line readout gets for these tiers (css px), from its
+ *  parts: hovering — "x y", RA Dec (+ the copy button), the band, then each
+ *  tier's name, a worst-case value and its unit; idle — RA Dec, each tier's
+ *  name + band + magnitude, the field size. `measure` gives a string's width
+ *  (the readout's font). The readout reserves two lines when this does not
+ *  fit (ReadoutBar), so no value is ever cut off and hovering never changes
+ *  its height. */
+export function readoutLineWidth(tiers: readonly { name: string; unit: string }[], measure: (text: string) => number, o: { gap?: number; copy?: number; hasSky?: boolean } = {}): number {
+  const gap = o.gap ?? 14;
+  const copy = o.copy ?? 25;
+  const sky = o.hasSky === false ? [] : [measure("00h00m00.00s +00°00′00.0″") + copy];
+  const sum = (parts: number[]) => parts.reduce((a, b) => a + b, 0) + gap * Math.max(0, parts.length - 1);
+  const hover = sum([
+    measure("x 9999  y 9999"), ...sky, measure("VIS"),
+    ...tiers.map((t) => measure(`${t.name} −0.000 ${unitLabel(t.unit)}`.trim())),
+  ]);
+  const idle = sum([...sky, ...tiers.map((t) => measure(`${t.name} VIS 00.00 AB`)), measure("0.0× 00.0″")]);
+  return Math.ceil(Math.max(hover, idle));
 }

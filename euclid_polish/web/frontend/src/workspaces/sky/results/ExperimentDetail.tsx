@@ -1,26 +1,31 @@
-/* One experiment (GET /api/experiments/<id>, spec §7.3): comparison viewer
- * (LR + one tier per model + JWST; residuals from the viewer toolbar), the
- * per-band metrics of every model — pooled over the tiles or of one tile —
- * as a DataTable (CSV) and a band chart, the gate core weights, and the
- * actions (log to tracking, re-run, open the tiles). */
-import { useCallback, useEffect, useMemo, useRef } from "react";
-import { useNavigate } from "react-router-dom";
+/* One experiment (GET /api/experiments/<id>, spec §7.3), image first: the
+ * head (state, label, log to tracking, re-run, open the tiles) and the tile
+ * picker, then the comparison viewer (LR + one tier per model + JWST;
+ * residuals from the viewer bar), then the per-band metrics of every model —
+ * pooled over the tiles or of the picked tile — as a band chart and a
+ * DataTable (CSV), the gate core weights and the run details. */
+import { useMemo, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import Plot from "../../../charts/Plot";
 import { categorical } from "../../../colors";
 import { openInspector } from "../../../app/inspector";
 import { formatDateTime, formatDuration } from "../../../format";
+import { linearTicks } from "../../../ticks";
 import { useSelection } from "../../../state/selection";
 import {
-  Badge, Button, Callout, DataTable, DefList, Field, Section, Select, Tooltip, type DataColumn,
+  Badge, Callout, DataTable, DefList, Section, Select, Tooltip, type DataColumn, type MenuItem,
 } from "../../../ui";
-import { ImageViewer, type ViewerApi } from "../../../viewer";
+import { MoreMenu } from "../atlas/inspectors/common";
+import { ImageViewer } from "../../../viewer";
 import { runModels } from "./actions";
 import { BANDS, splitRef, type ExperimentRecord } from "./api";
 import { CoreWeights, StateBadge } from "./common";
+import { useFollowViewer } from "./follow";
+import { FitBox } from "./FitBox";
 import { LogToTrackingButton } from "./LogToTracking";
 import {
   bandLabel, bandSeries, CHART_METRICS, experimentMarkdown, formatMetric, METRIC_BY_KEY, METRICS,
-  metricRows, recordSpecs, seriesDomain, specShort, type MetricKey, type MetricRow,
+  metricHeader, metricRows, recordSpecs, seriesDomain, specShort, type MetricKey, type MetricRow,
 } from "./model";
 
 const METRIC_COLUMNS: DataColumn<MetricRow>[] = [
@@ -28,7 +33,7 @@ const METRIC_COLUMNS: DataColumn<MetricRow>[] = [
     filterText: (r) => `${r.spec} ${r.label}`, csv: (r) => r.spec },
   { id: "band", header: "Band", cell: (r) => bandLabel(r.band), sortFn: (a, b) => BANDS.indexOf(a.band as never) - BANDS.indexOf(b.band as never) },
   ...METRICS.map((m): DataColumn<MetricRow> => ({
-    id: m.key, header: <Tooltip content={m.hint}><span tabIndex={0}>{m.short}</span></Tooltip>, headerText: m.label,
+    id: m.key, header: <Tooltip content={m.hint}><span tabIndex={0} className="res-case">{metricHeader(m.short)}</span></Tooltip>, headerText: m.label,
     numeric: true, cell: (r) => formatMetric(m.key, r[m.key]),
     accessor: (r) => (typeof r[m.key] === "number" ? r[m.key] : null),
     hidden: m.key === "min_R" || m.key === "n_artifacts",
@@ -43,6 +48,7 @@ export function ExperimentMetrics({ record, scope, metric, onMetric, urlKey }: {
   const rows = useMemo(() => metricRows(record, scope), [record, scope]);
   const series = useMemo(() => bandSeries(record, scope, metric), [record, scope, metric]);
   const domain = seriesDomain(series, metric);
+  const yTicks = useMemo(() => linearTicks(domain, { count: 4 }), [domain[0], domain[1]]);   // eslint-disable-line react-hooks/exhaustive-deps
   const def = METRIC_BY_KEY[metric];
   const guides = def?.better === "one" ? [{ axis: "y" as const, v: 1, dash: [3, 3] }] : [];
   if (!rows.length) {
@@ -52,13 +58,14 @@ export function ExperimentMetrics({ record, scope, metric, onMetric, urlKey }: {
     <div className="res-metrics">
       <div className="res-metrics__chart">
         <div className="res-bar res-bar--inline">
-          <Field label="Chart" inline>
-            <Select size="sm" value={metric} onChange={(v) => onMetric(v as MetricKey)}
+          <label className="res-inline">
+            <span className="res-inline__label">Chart</span>
+            <Select size="sm" value={metric} onChange={(v) => onMetric(v as MetricKey)} aria-label="Chart metric"
               options={CHART_METRICS.map((k) => ({ value: k, label: METRIC_BY_KEY[k].label }))} />
-          </Field>
+          </label>
           <span className="muted res-note">{def?.hint}</span>
         </div>
-        <Plot xDomain={[-0.5, BANDS.length - 0.5]} yDomain={domain} xTicks={BAND_TICKS}
+        <Plot xDomain={[-0.5, BANDS.length - 0.5]} yDomain={domain} xTicks={BAND_TICKS} yTicks={yTicks}
           yLabel={def?.label} height={240} zoomAxes="y" guides={guides}
           series={series.map((s, i) => ({
             x: s.x, y: s.y, color: categorical(i), mode: "line", dots: true, width: 1.2,
@@ -74,38 +81,12 @@ export function ExperimentMetrics({ record, scope, metric, onMetric, urlKey }: {
   );
 }
 
-/** Keeps a nav-less viewer on the object `want` (the Scope select drives the
- *  comparison): re-armed whenever `want` changes or the viewer mounts, it
- *  moves the viewer once its meta is in — so neither the mount-time id nor a
- *  URL-carried `v.exp.id` can leave the images on another tile than the
- *  metrics beside them. Returns the viewer's onReady / onState handlers. */
-export function useFollowId(want: string) {
-  const api = useRef<ViewerApi | null>(null);
-  const wantRef = useRef(want);
-  wantRef.current = want;
-  const armed = useRef(true);
-  const busy = useRef(false);
-  const ensure = useCallback(() => {
-    const a = api.current;
-    const w = wantRef.current;
-    if (!a || !w || !armed.current || busy.current) return;
-    const cur = a.getState().id;
-    if (cur == null) return;                          // meta not in yet: onState re-tries
-    if (cur === w) { armed.current = false; return; }
-    busy.current = true;
-    void a.goToId(w).then(
-      () => {
-        busy.current = false;
-        if (wantRef.current !== w) ensure();   // the scope moved on meanwhile
-        else armed.current = false;            // reached, or an unknown id: stop either way
-      },
-      () => { busy.current = false; armed.current = false; },
-    );
-  }, []);
-  useEffect(() => { armed.current = true; ensure(); }, [want, ensure]);
-  const onReady = useCallback((a: ViewerApi | null) => { api.current = a; armed.current = true; busy.current = false; ensure(); }, [ensure]);
-  const onState = useCallback(() => ensure(), [ensure]);
-  return { onReady, onState };
+/** The tiers a URL carried for the comparison viewer (`v.<key>.t`), read once
+ *  at mount: a shared link's tier choice wins over the page's default. */
+function urlTiers(search: string, key: string): string[] | null {
+  const raw = new URLSearchParams(search).get(`v.${key}.t`);
+  const list = raw ? raw.split(",").map((t) => t.trim()).filter(Boolean) : [];
+  return list.length ? list : null;
 }
 
 export function ExperimentDetail({ record, scope, onScope, metric, onMetric, viewer = true }: {
@@ -113,12 +94,20 @@ export function ExperimentDetail({ record, scope, onScope, metric, onMetric, vie
   metric: MetricKey; onMetric: (m: MetricKey) => void; viewer?: boolean;
 }) {
   const navigate = useNavigate();
+  const location = useLocation();
   const specs = recordSpecs(record);
   const tiles = record.tiles ?? [];
   const viewTile = scope !== "pooled" && tiles.includes(scope) ? scope : tiles[0];
   const [source, tileId] = viewTile ? splitRef(viewTile) : ["", ""];
   const params = useMemo(() => ({ source, models: specs.join(",") }), [source, specs]);
-  const follow = useFollowId(tileId);
+  const tiers = useMemo(
+    () => ["lr", ...specs.slice(0, 4).map((s) => `m:${s}`), ...(source === "nexus" || source === "pair" ? ["jwst"] : [])],
+    [specs, source],
+  );
+  const [mountTiers] = useState(() => urlTiers(location.search, "exp"));
+  // nav off: the collection walks every tile of the source; the Scope select
+  // is this experiment's navigation (the follower keeps the images on it).
+  const follow = useFollowViewer(tileId, mountTiers ?? tiers);
   const errors = Object.entries(record.errors ?? {});
   const skipped = Object.entries(record.skipped ?? {});
   const gateSpecs = specs.filter((s) => s === "production" || s.startsWith("gate:"));
@@ -128,28 +117,33 @@ export function ExperimentDetail({ record, scope, onScope, metric, onMetric, vie
     useSelection.getState().select("tile", tiles);
     navigate("/sky/results");
   };
+  const pooledLabel = tiles.length === 1 ? "Pooled metrics (1 tile)" : `Pooled metrics (all ${tiles.length} tiles)`;
+  const more: MenuItem[] = [
+    { label: "Re-run this experiment…", disabled: record.status === "running" || !specs.length,
+      onSelect: () => { void runModels(tiles, specs, { label: record.label ? `${record.label} (re-run)` : undefined }); } },
+    { label: "Select its tiles in Real results", onSelect: openTiles },
+    ...(scope !== "pooled" ? [{ label: "Open the tile card", onSelect: () => openInspector({ kind: "tile", id: scope }) }] : []),
+  ];
+  // One row: what (state, label, which tile) then the actions; it wraps in a narrow pane.
   return (
     <div className="res-exp">
       <div className="res-exp__head">
         <StateBadge state={record.status} />
-        <strong className="res-exp__title">{record.label || record.id}</strong>
-        {record.label && <code className="mono muted">{record.id}</code>}
-        <span className="res-exp__spacer" />
-        <LogToTrackingButton note={() => experimentMarkdown(record)} disabled={record.status === "running"} />
-        <Button size="sm" icon="reset" disabled={record.status === "running" || !specs.length}
-          onClick={() => { void runModels(tiles, specs, { label: record.label ? `${record.label} (re-run)` : undefined }); }}>
-          Re-run
-        </Button>
-        <Button size="sm" icon="table" onClick={openTiles}>Tiles in results</Button>
+        <strong className="res-exp__title" title={record.id}>{record.label || record.id}</strong>
+        <Select size="sm" value={scope} onChange={onScope} aria-label="Metric scope" className="res-exp__scope"
+          options={[{ value: "pooled", label: pooledLabel }, ...tiles.map((t) => ({ value: t, label: t }))]} />
+        <span className="res-exp__actions">
+          <LogToTrackingButton note={() => experimentMarkdown(record)} disabled={record.status === "running"} />
+          <MoreMenu items={more} label="More experiment actions" />
+        </span>
       </div>
-      <DefList dense items={[
-        ["created", record.created ? formatDateTime(record.created) : "—"],
-        record.duration_s != null ? ["duration", formatDuration(record.duration_s)] : null,
-        ["tiles", tiles.length],
-        ["models", <span className="res-chips">{specs.map((s) => <Badge key={s} size="sm">{specShort(s)}</Badge>)}</span>],
-        ["members", `${counts.members_computed ?? 0} computed · ${counts.members_reused ?? 0} reused${counts.members_not_cached ? ` · ${counts.members_not_cached} not cached` : ""}`],
-        ["outputs", `${counts.outputs_computed ?? 0} computed · ${counts.outputs_reused ?? 0} reused`],
-      ]} />
+      {viewer && viewTile && tileId && (
+        <FitBox className="res-exp__viewer" label={`Comparison on ${viewTile}`}>
+          <ImageViewer key={`${record.id}:${source}:${specs.join(",")}`} collection="real" params={params} initialId={tileId}
+            nav={false} onReady={follow.onReady} onState={follow.onState} tiers={tiers}
+            id={`experiment-${record.id}`} urlKey="exp" toolbar="full" />
+        </FitBox>
+      )}
       {!!skipped.length && (
         <Callout tone="warn" title={`${skipped.length} model${skipped.length === 1 ? "" : "s"} skipped`}>
           {skipped.map(([s, why]) => <div key={s}><code className="mono">{s}</code>: {why}</div>)}
@@ -161,29 +155,7 @@ export function ExperimentDetail({ record, scope, onScope, metric, onMetric, vie
           {errors.length > 5 && <div className="muted">… {errors.length - 5} more</div>}
         </Callout>
       )}
-      <div className="res-bar res-bar--inline">
-        <Field label="Scope" inline>
-          <Select size="sm" value={scope} onChange={onScope} aria-label="Metric scope"
-            options={[{ value: "pooled", label: `All ${tiles.length} tiles (pooled)` }, ...tiles.map((t) => ({ value: t, label: t }))]} />
-        </Field>
-        {scope !== "pooled" && (
-          <Button size="sm" variant="ghost" onClick={() => openInspector({ kind: "realtile", id: scope })}>Inspect tile</Button>
-        )}
-      </div>
-      {viewer && viewTile && tileId && (
-        <Section title="Comparison" sub={viewTile} collapsible defaultOpen>
-          <div className="res-exp__viewer">
-            {/* nav off: the collection walks every tile of the source, the Scope
-                select is this experiment's navigation (useFollowId). */}
-            <ImageViewer key={`${record.id}:${source}:${specs.join(",")}`} collection="real" params={params} initialId={tileId}
-              nav={false} onReady={follow.onReady} onState={follow.onState}
-              tiers={["lr", ...specs.slice(0, 4).map((s) => `m:${s}`), ...(source === "nexus" || source === "pair" ? ["jwst"] : [])]}
-              id={`experiment-${record.id}`}
-              urlKey="exp" toolbar="full" />
-          </div>
-        </Section>
-      )}
-      <Section title="Metrics" sub={scope === "pooled" ? "pooled over tiles" : scope} collapsible defaultOpen>
+      <Section title="Metrics" sub={scope === "pooled" ? "pooled over the tiles" : `of ${scope}`} collapsible defaultOpen>
         <ExperimentMetrics record={record} scope={scope} metric={metric} onMetric={onMetric} urlKey={viewer ? "em" : undefined} />
       </Section>
       {scope !== "pooled" && gateSpecs.some((s) => tileResults[s]?.metrics?.gate_core_weights) && (
@@ -196,6 +168,17 @@ export function ExperimentDetail({ record, scope, onScope, metric, onMetric, vie
           ) : null)}
         </Section>
       )}
+      <Section title="Run details" collapsible defaultOpen={!viewer}>
+        <DefList dense items={[
+          ["id", <code className="mono">{record.id}</code>],
+          ["created", record.created ? formatDateTime(record.created) : "—"],
+          record.duration_s != null ? ["duration", formatDuration(record.duration_s)] : null,
+          ["tiles", tiles.length],
+          ["models", <span className="res-chips">{specs.map((s) => <Badge key={s} size="sm">{specShort(s)}</Badge>)}</span>],
+          ["members", `${counts.members_computed ?? 0} computed, ${counts.members_reused ?? 0} reused${counts.members_not_cached ? `, ${counts.members_not_cached} not cached` : ""}`],
+          ["outputs", `${counts.outputs_computed ?? 0} computed, ${counts.outputs_reused ?? 0} reused`],
+        ]} />
+      </Section>
     </div>
   );
 }

@@ -1,8 +1,11 @@
 /* Pure logic of the Ensemble workspace (unit-tested in model.test.ts): member
    names, knee descriptions, facets for colouring, the knee-PSNR leaderboard
    over a selectable integration range, member-list parsing and the headline
-   formatting. No React, no DOM. */
-import type { KneeInfo, KneeModel } from "./api";
+   formatting; the image-first pass's helpers (member search and the
+   disagreement status, gate usage over bands, held-out loss comparability,
+   the one-experiment real-data benchmark, the shared e⁻ number format).
+   No React, no DOM. */
+import type { ExperimentSummary, KneeInfo, KneeModel } from "./api";
 
 /* ── member names ──────────────────────────────────────────────────────── */
 
@@ -260,4 +263,108 @@ export function variantLabel(name: string): string {
   const dir = name.replace(/^gate:/, "");
   if (dir === "spatial_gate_combiner") return "production";
   return dir.replace(/^spatial_gate_/, "");
+}
+
+/** An e⁻ (or any physical) value at 3 significant figures, in exponent form
+ *  at the extremes (≥ 1000 or < 0.01): the back-trace stamps and the
+ *  diagnostics cell labels. */
+/** The asinh knee of one back-trace row (PixelTrace): the traced pixel's
+ *  own level — the largest finite |target|, σ and |err| — so its LR / target
+ *  / SR stamps show the structure around a few-e⁻ pixel (a 100 e⁻ knee left
+ *  them black). Floored at 0.25 e⁻. */
+export function stampKnee(s: { hr_val: number; std_val: number; err_val: number }): number {
+  const levels = [s.hr_val, s.std_val, s.err_val].map((v) => Math.abs(v)).filter((v) => Number.isFinite(v));
+  return Math.max(0.25, ...levels);
+}
+
+export function formatE(v: number): string {
+  if (!Number.isFinite(v)) return "—";
+  return Math.abs(v) >= 1000 || (Math.abs(v) > 0 && Math.abs(v) < 0.01)
+    ? v.toExponential(1) : String(Number(v.toPrecision(3)));
+}
+
+/* ── gate usage (members table) ────────────────────────────────────────── */
+
+/** The Euclid bands in canonical order and their short names (as the chips
+ *  read). Kept here so this module stays free of the hooks in ./api. */
+export const GATE_BANDS: readonly { band: string; short: string }[] = [
+  { band: "VIS", short: "VIS" }, { band: "Y_E", short: "Y" }, { band: "J_E", short: "J" }, { band: "H_E", short: "H" },
+];
+
+export type GateUsage = { mean: number | null; max: number | null; bands: { band: string; short: string; v: number | null }[] };
+
+/** A member's share of the production gate's weight, per band and summed up:
+ *  the mean over the bands that have a value (the table's "Gate use") and the
+ *  largest band. The VIS weight alone hid members the gate uses for NISP
+ *  (#190: 0.02 % of VIS but ~35 % of Y/J/H). */
+export function gateUsage(usage: Record<string, number | null | undefined> | null | undefined): GateUsage {
+  const bands = GATE_BANDS.map(({ band, short }) => {
+    const v = usage?.[band];
+    return { band, short, v: v != null && Number.isFinite(v) ? v : null };
+  });
+  const vs = bands.map((b) => b.v).filter((v): v is number => v != null);
+  return {
+    mean: vs.length ? vs.reduce((a, b) => a + b, 0) / vs.length : null,
+    max: vs.length ? Math.max(...vs) : null,
+    bands,
+  };
+}
+
+/* ── disagreement member picker ────────────────────────────────────────── */
+
+/** Does a member match the picker's search text? Every word must appear in
+ *  its number (with or without "#"), loss, knee description or label. */
+export function memberMatches(m: { num: string; loss?: string | null; knee?: string | null; label?: string | null }, query: string): boolean {
+  const words = query.toLowerCase().split(/\s+/).map((w) => w.replace(/^#/, "")).filter(Boolean);
+  if (!words.length) return true;
+  const hay = `${m.num} ${m.loss ?? ""} ${m.knee ?? ""} ${m.label ?? ""}`.toLowerCase();
+  return words.every((w) => hay.includes(w));
+}
+
+/** The line that says what the disagreement viewer shows for a selection. */
+export function movieStatus(sel: readonly string[], shown = 5): string {
+  if (!sel.length) return "Pick members: one shows its SR, two or more play the disagreement movie";
+  if (sel.length === 1) return `Showing member #${sel[0]}`;
+  const head = sel.slice(0, shown).map((n) => `#${n}`).join(", ");
+  const rest = sel.length > shown ? ` and ${sel.length - shown} more` : "";
+  return `Movie over ${sel.length} members: ${head}${rest}`;
+}
+
+/* ── combiners ─────────────────────────────────────────────────────────── */
+
+const lossDef = (v: { fit?: Record<string, unknown> } | null | undefined) => {
+  const l = v?.fit?.loss;
+  return typeof l === "string" && l.trim() ? l.trim() : null;
+};
+
+/** Is a variant's held-out loss on production's scale? Only when both name
+ *  the same loss definition (v1's band-weighted error read ~4× "better"
+ *  than production's relative MSE). Without a production definition there
+ *  is nothing to compare against, so nothing is flagged. */
+export function heldOutComparable(v: { fit?: Record<string, unknown> }, production: { fit?: Record<string, unknown> } | null | undefined): boolean {
+  const ref = lossDef(production);
+  if (!ref) return true;
+  return lossDef(v) === ref;
+}
+
+export type Bench = { holeMean: number | null; holeMax: number | null; medianR: number | null; rLt08: number | null; nTiles: number | null };
+export type Benchmark = { expId: string; label?: string; created?: string; nTiles: number | null; bySpec: Map<string, Bench> };
+
+/** The real-data benchmark of the Combiners table, from ONE experiment so
+ *  every variant is scored on the same tiles: the newest experiment that ran
+ *  production (else the newest one). Variants it did not run stay blank. */
+export function benchmarkExperiment(exps: readonly ExperimentSummary[] | null | undefined): Benchmark | null {
+  const sorted = [...(exps ?? [])].sort((a, b) => String(b.created ?? "").localeCompare(String(a.created ?? "")));
+  const e = sorted.find((x) => x.summary && "production" in x.summary) ?? sorted[0];
+  if (!e) return null;
+  const bySpec = new Map<string, Bench>();
+  let nTiles: number | null = null;
+  for (const [spec, agg] of Object.entries(e.summary ?? {})) {
+    const a = agg as { n_tiles?: number; summary?: Record<string, number | null> };
+    const n = a.n_tiles ?? null;
+    if (n != null) nTiles = Math.max(nTiles ?? 0, n);
+    bySpec.set(spec, { holeMean: a.summary?.hole_pct_mean ?? null, holeMax: a.summary?.hole_pct_max ?? null,
+      medianR: a.summary?.median_R ?? null, rLt08: a.summary?.pct_R_lt_0p8 ?? null, nTiles: n });
+  }
+  return { expId: e.id, label: e.label, created: e.created, nTiles, bySpec };
 }

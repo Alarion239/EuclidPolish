@@ -1,6 +1,7 @@
-/* The poster cutout: the last pulled `poster_cutout` result (served locally,
- * works offline), an explicit pull from FASRC, and the step card that
- * generates a new one on the cluster. */
+/* The synthetic poster cutout: the last pulled `poster_cutout` result (a
+ * synthetic scene, served locally, works offline), an explicit pull from
+ * FASRC, and the step card that generates a new one on the cluster. Not the
+ * real "Poster target" tile (Sky › Real results / the atlas chip). */
 import { useState } from "react";
 import { isFasrcOffline } from "../../../api/client";
 import { useResource } from "../../../api/query";
@@ -44,8 +45,8 @@ export function PosterPlate() {
     <section className="fig-plate" aria-labelledby="fig-plate-poster">
       <header className="fig-plate__head">
         <div className="fig-plate__heading">
-          <h2 id="fig-plate-poster">Poster cutout</h2>
-          <p className="muted">{st?.png ? `Pulled ${formatDateTime(st.png.pulled_at)} · PNG ${formatBytes(st.png.size)}${st.fits ? ` · FITS ${formatBytes(st.fits.size)}` : ""}` : "The latest poster_cutout job result"}</p>
+          <h2 id="fig-plate-poster">Synthetic poster cutout</h2>
+          <p className="muted">{st?.png ? `Pulled ${formatDateTime(st.png.pulled_at)} · PNG ${formatBytes(st.png.size)}${st.fits ? ` · FITS ${formatBytes(st.fits.size)}` : ""}` : "The latest poster_cutout job result (a synthetic scene; the real Poster target is in Sky › Real results)"}</p>
         </div>
         <div className="fig-plate__tools">
           {offline ? (
@@ -60,7 +61,7 @@ export function PosterPlate() {
         </div>
       </header>
       {status.error && <Callout tone="bad" title="Poster status did not load">{status.error.message}</Callout>}
-      <ServerImage src={st?.png ? `/poster/result/cutout.png${version}` : null} alt="Poster cutout" minHeight={st?.png ? 320 : 120}>
+      <ServerImage src={st?.png ? `/poster/result/cutout.png${version}` : null} alt="Synthetic poster cutout" minHeight={st?.png ? 320 : 120}>
         {st && !st.png && <p className="fig-note muted fig-image__empty">No cutout pulled yet — generate one on FASRC (below), then Pull latest.</p>}
       </ServerImage>
       <Section title="Generate on FASRC" collapsible defaultOpen={false}>

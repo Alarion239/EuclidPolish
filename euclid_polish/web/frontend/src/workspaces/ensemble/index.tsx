@@ -1,7 +1,8 @@
 /* Ensemble workspace (spec §8.2), `/ensemble/:mode/<tab>`: overview,
    members, curves, knee, diagnostics, combiners, disagreement, train. The
    ONE starfull/starless switch sits beside the tabs and keeps the current
-   tab (and ?inspect=); a bare `/ensemble/<mode>` returns to the last tab
+   tab (and ?inspect=); left of it a tab may put one compact control
+   (./aside.ts: Disagreement's member menu); a bare `/ensemble/<mode>` returns to the last tab
    visited. The inspector kinds `member` and `combiner` are registered by
    ./register.ts. */
 import { useState } from "react";
@@ -10,6 +11,7 @@ import { matchPage } from "../../app/manifest";
 import { pagePath } from "../../app/nav";
 import { Workspace, defineTabs } from "../../app/workspace";
 import { Segmented } from "../../ui";
+import { TabAsideSlot } from "./aside";
 import "./register";
 import "./ensemble.css";
 
@@ -55,5 +57,12 @@ function useLastTab(): string | null {
 
 export default function EnsembleWorkspace() {
   const lastTab = useLastTab();
-  return <Workspace id="ensemble" tabs={TABS} aside={<RegimeSwitch />} redirectTab={lastTab} />;
+  // A tab's one compact control (./aside.ts) portals in left of the switch.
+  const [slot, setSlot] = useState<HTMLElement | null>(null);
+  return (
+    <TabAsideSlot.Provider value={slot}>
+      <Workspace id="ensemble" tabs={TABS} redirectTab={lastTab}
+        aside={<><span ref={setSlot} className="ens-aside__slot" /><RegimeSwitch /></>} />
+    </TabAsideSlot.Provider>
+  );
 }

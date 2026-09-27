@@ -130,7 +130,7 @@ export async function cacheTileAt(ra: number, dec: number, opts: { run?: boolean
       const id = (j.result as { id?: unknown } | null | undefined)?.id;
       const target = ref ?? (typeof id === "string" ? `tile/${id}` : null);
       if (j.status !== "done" || !target) return;
-      openInspector({ kind: "realtile", id: target });
+      openInspector({ kind: "tile", id: target });
       toast.success("Tile cached", { description: opts.run ? "LR, production and mean are open in the inspector." : "Its LR is open in the inspector." });
     });
   }

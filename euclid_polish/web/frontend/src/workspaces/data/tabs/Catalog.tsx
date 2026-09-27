@@ -2,14 +2,17 @@
  * stars.csv (43k stars; never the stale 200-row local copy).
  *
  * Toolbar filters (deep field, cutout coverage, a band's status, magnitude
- * range) + the mirror's freshness and an explicit "refresh from FASRC".
- * Below: headline counts, the magnitude distribution (all / filtered /
- * navigator, Plot v2), per-band cutout validity with the states explained,
- * and a DataTable of the filtered stars (search, sort, CSV; row → the `star`
+ * range) + the mirror's freshness and an explicit "refresh from FASRC". Then
+ * one summary line (the headline counts in words, the ones that need it
+ * explained in their tips; the navigator count links to Cutouts), the
+ * DataTable of the filtered stars (search, sort, CSV; row → the `star`
  * inspector; multi-select → the shared `star` selection; each row links to
- * the atlas). The euclid_query / verify-photometry FASRC steps sit at the
- * bottom. Every filter is in the URL. */
-import { useMemo, useState } from "react";
+ * the atlas), then the magnitude distribution (all / filtered / navigator,
+ * Plot v2) and the per-band cutout validity with the states explained. The
+ * euclid_query / verify-photometry FASRC steps sit at the bottom (collapsed).
+ * Every filter is in the URL. */
+import { useMemo, useState, type ReactNode } from "react";
+import { Link } from "react-router-dom";
 import { apiPost, isFasrcOffline } from "../../../api/client";
 import { invalidate } from "../../../api/query";
 import { usePageActions } from "../../../app/palette";
@@ -19,10 +22,10 @@ import { StepById } from "../../../fasrc";
 import { formatCount, formatDeg, formatNumber, formatPercent } from "../../../format";
 import { useUrlState } from "../../../hooks/useUrlState";
 import { useSelected, useSelection } from "../../../state/selection";
-import { linearTicks, magnitudeTicks } from "../../../ticks";
+import { extent, linearTicks, magnitudeTicks } from "../../../ticks";
 import {
-  Badge, Button, Callout, Card, CardBody, CardHead, DataTable, EmptyState, Kpi, Page, Popover, RangeSlider,
-  Section, Segmented, Select, Switch, Tooltip, toast, type DataColumn,
+  Badge, Button, Callout, Card, CardBody, CardHead, DataTable, EmptyState, Page, Popover, RangeSlider,
+  Section, Select, Switch, Tooltip, toast, type DataColumn,
 } from "../../../ui";
 import { URLS, useStars, type StarsPayload } from "../api";
 import { BarGroup, DataBar, Freshness, LoadState, OFFLINE_HINT, SkyButton, Spacer, useFasrcOnline } from "../common";
@@ -57,18 +60,20 @@ function BandDots({ star }: { star: Star }) {
   );
 }
 
+/* Widths sum to ~714 px with the select column: the table fits a ~720 px pane
+   without clipping the coordinates or the Sky button. */
 const COLUMNS: DataColumn<Star>[] = [
-  { id: "id", header: "Star", numeric: true, width: 64 },
+  { id: "id", header: "Star", numeric: true, width: 68 },
   { id: "field", header: "Field", width: 64, accessor: (s) => s.field || "—" },
-  { id: "ra", header: "RA", numeric: true, width: 92, cell: (s) => <span className="mono">{formatDeg(s.ra, 5)}</span> },
-  { id: "dec", header: "Dec", numeric: true, width: 92, cell: (s) => <span className="mono">{formatDeg(s.dec, 5, { signed: true })}</span> },
-  { id: "mag", header: "VIS mag", numeric: true, width: 74, cell: (s) => formatNumber(s.mag, { digits: 3 }) },
+  { id: "ra", header: "RA", numeric: true, width: 100, cell: (s) => <span className="mono">{formatDeg(s.ra, 5)}</span> },
+  { id: "dec", header: "Dec", numeric: true, width: 100, cell: (s) => <span className="mono">{formatDeg(s.dec, 5, { signed: true })}</span> },
+  { id: "mag", header: "VIS mag", numeric: true, width: 86, cell: (s) => formatNumber(s.mag, { digits: 3 }) },
   { id: "flux", header: "Flux µJy", numeric: true, width: 84, hidden: true, cell: (s) => formatNumber(s.flux, { digits: 1 }) },
   { id: "fluxErr", header: "σ µJy", numeric: true, width: 70, hidden: true, cell: (s) => formatNumber(s.fluxErr, { digits: 3 }) },
-  { id: "bands", header: "V Y J H", headerText: "Bands", width: 76, accessor: (s) => s.nValid,
+  { id: "bands", header: "Bands", headerText: "Bands (VIS Y J H)", width: 88, accessor: (s) => s.nValid,
     filterText: (s) => BANDS.map((b) => `${bandShort(b)}:${bandState(s.bands[b])}`).join(" "),
     csv: (s) => BANDS.map((b) => `${b}=${bandState(s.bands[b])}`).join(" "), cell: (s) => <BandDots star={s} /> },
-  { id: "nav", header: "Navigator", width: 84, accessor: (s) => (s.nav ? "yes" : ""),
+  { id: "nav", header: "Navigator", width: 100, accessor: (s) => (s.nav ? "yes" : ""),
     cell: (s) => (s.nav ? <Badge size="sm" tone="good">yes</Badge> : "") },
   { id: "sky", header: "", sortable: false, filterable: false, csv: false, hideable: false, width: 72,
     cell: (s) => <SkyButton ra={s.ra} dec={s.dec} fov={0.02} layers={["stars", "q1-tiles:0.3"]} label="Sky" /> },
@@ -112,11 +117,46 @@ function BandTable({ data, total }: { data: StarsPayload; total: number }) {
   );
 }
 
+/** One summary figure: the value in tabular figures, then what it counts;
+ *  a definition, when it needs one, in its tip. */
+function Fig({ value, children, hint, tone }: { value: ReactNode; children: ReactNode; hint?: string; tone?: "good" | "warn" | "bad" }) {
+  const body = <><b className="dt-summary__v" data-tone={tone}>{value}</b> {children}</>;
+  return hint
+    ? <Tooltip content={hint}><span tabIndex={0} className="dt-summary__item dt-summary__item--hint">{body}</span></Tooltip>
+    : <span className="dt-summary__item">{body}</span>;
+}
+
+type Summary = NonNullable<StarsPayload["summary"]>;
+
+/** The headline counts as one quiet line of words (it wraps in a narrow pane). */
+function SummaryLine({ summary, shown, filtered }: { summary: Summary; shown: number; filtered: boolean }) {
+  const nav = summary.navigator;
+  return (
+    <p className="dt-summary" aria-label="Catalogue summary">
+      <Fig value={formatCount(summary.total)}>stars{filtered ? <>, <b className="dt-summary__v">{formatCount(shown)}</b> shown</> : null}</Fig>
+      <Fig value={formatCount(summary.valid)} tone="good" hint={BAND_STATE_HELP.valid}>valid in a band</Fig>
+      <Fig value={formatCount(summary.valid_all4)}>valid in all 4 ({formatPercent(summary.valid_all4 / Math.max(1, summary.total))})</Fig>
+      <Tooltip content="Valid in all four bands at one common cutout size (the size with the most such stars): what Data › Cutouts browses.">
+        <Link to="/data/cutouts" className="dt-summary__item dt-summary__link">
+          <b className="dt-summary__v">{formatCount(nav.count)}</b> in the navigator{nav.size ? ` at ${nav.size} px` : ""}
+        </Link>
+      </Tooltip>
+      <Fig value={formatCount(summary.corrupted)} tone={summary.corrupted ? "warn" : undefined}
+        hint="No valid band; at least one band's cutout was downloaded but rejected.">corrupted</Fig>
+      <Fig value={formatCount(summary.failed)} tone={summary.failed ? "bad" : undefined}
+        hint="No valid or rejected band; at least one band's download failed.">failed</Fig>
+      <Fig value={formatCount(summary.pending)} hint="No band ever attempted.">pending</Fig>
+      <Fig value={`${formatNumber(summary.mag_min, { digits: 2 })}–${formatNumber(summary.mag_max, { digits: 2 })}`}>VIS mag</Fig>
+    </p>
+  );
+}
+
 function MagHistogram({ all, shown, nav }: { all: Star[]; shown: Star[]; nav: Star[] }) {
   const [logY, setLogY] = useUrlState("hlog", false);
-  const mags = all.map((s) => s.mag).filter((m): m is number => m != null);
-  if (!mags.length) return <EmptyState compact icon="activity" title="No magnitudes" />;
-  const { lo, hi, bins } = magBins(Math.min(...mags), Math.max(...mags));
+  // extent(), never Math.min(...mags): an argument spread overflows the stack past ~120k stars.
+  const range = extent(all.map((s) => s.mag));
+  if (!range) return <EmptyState compact icon="activity" title="No magnitudes" />;
+  const { lo, hi, bins } = magBins(range[0], range[1]);
   const hAll = histogram(all.map((s) => s.mag), lo, hi, bins);
   const hShown = histogram(shown.map((s) => s.mag), lo, hi, bins);
   const hNav = histogram(nav.map((s) => s.mag), lo, hi, bins);
@@ -195,20 +235,21 @@ export default function Catalog() {
   return (
     <Page className="dt-page">
       <DataBar label="Catalogue filters">
-        <Segmented size="sm" value={field} onChange={setField} aria-label="Deep field"
+        <Select size="sm" value={FIELDS.includes(field as (typeof FIELDS)[number]) ? field : "all"} onChange={setField} aria-label="Deep field"
           options={FIELDS.map((f) => ({
-            value: f, label: f === "all" ? "All" : f === "none" ? "Outside" : <>{f} <span className="muted">{formatCount(counts[f] ?? 0)}</span></>,
-            disabled: f !== "all" && !counts[f], title: f === "none" ? "Outside the three Q1 deep-field cones" : undefined,
+            value: f,
+            label: f === "all" ? "All fields" : `${f === "none" ? "Outside the deep fields" : f} (${formatCount(counts[f] ?? 0)})`,
+            disabled: f !== "all" && !counts[f],
           }))} />
         <Select size="sm" value={filter.cutouts} onChange={setCutouts} aria-label="Cutout coverage" options={CUTOUTS} />
         <BarGroup label="Band status">
           <Select size="sm" value={band} onChange={setBand} aria-label="Band"
-            options={[{ value: "any", label: "Overall" }, ...BANDS.map((b) => ({ value: b, label: bandShort(b) }))]} />
+            options={[{ value: "any", label: "Best band" }, ...BANDS.map((b) => ({ value: b, label: `${bandShort(b)} band` }))]} />
           <Select size="sm" value={filter.bandState} onChange={setBstate} aria-label="Band status"
-            options={STATES.map((s) => ({ value: s, label: s === "any" ? "any status" : s }))} />
+            options={STATES.map((s) => ({ value: s, label: s === "any" ? "Any status" : s[0].toUpperCase() + s.slice(1) }))} />
         </BarGroup>
         <BarGroup label="Magnitude">
-          <span className="dt-bar__label">VIS</span>
+          <span className="dt-bar__label">VIS mag</span>
           <RangeSlider value={magValue} min={Math.floor(magLo * 10) / 10} max={Math.ceil(magHi * 10) / 10} step={0.05}
             showValue format={(v) => v.toFixed(2)} aria-label="VIS magnitude"
             onChange={setMagDraft} onCommit={(v) => { setMagDraft(null); setMagRaw(serializeRange(v)); }} />
@@ -232,21 +273,24 @@ export default function Catalog() {
           </EmptyState>
         ) : (
           <>
-            <div className="dt-kpis">
-              <Kpi label="Stars" value={formatCount(summary?.total)} footer={filtered ? `${formatCount(shown.length)} shown` : undefined} />
-              <Kpi label="Valid (any band)" value={formatCount(summary?.valid)} hint={BAND_STATE_HELP.valid} tone="good" />
-              <Kpi label="Valid in all 4" value={formatCount(summary?.valid_all4)} footer={summary ? formatPercent(summary.valid_all4 / Math.max(1, summary.total)) : undefined} />
-              <Kpi label="Navigator" value={formatCount(summary?.navigator.count)} unit={summary?.navigator.size ? `@ ${summary.navigator.size} px` : undefined}
-                hint="Valid in all four bands at one common cutout size (the size with the most such stars): what Data › Cutouts browses."
-                to="/data/cutouts" />
-              <Kpi label="Corrupted" value={formatCount(summary?.corrupted)} hint="No valid band; at least one band's cutout was downloaded but rejected." tone={summary?.corrupted ? "warn" : undefined} />
-              <Kpi label="Failed" value={formatCount(summary?.failed)} hint="No valid or rejected band; at least one band's download failed." tone={summary?.failed ? "bad" : undefined} />
-              <Kpi label="Pending" value={formatCount(summary?.pending)} hint="No band ever attempted." />
-              <Kpi label="VIS range" value={summary ? `${formatNumber(summary.mag_min, { digits: 2 })}–${formatNumber(summary.mag_max, { digits: 2 })}` : "—"} unit="mag" />
-            </div>
+            {summary && <SummaryLine summary={summary} shown={shown.length} filtered={filtered} />}
+            <DataTable rows={shown} columns={COLUMNS} rowKey={(s) => String(s.id)} urlKey="cat" height={520}
+              aria-label="Stars" exportName="stars" filterPlaceholder="Filter stars (e.g. mag<17 field:EDF-S)"
+              inspect={(s) => ({ kind: "star", id: String(s.id) })}
+              selectable selected={selected}
+              onSelectedChange={(keys) => {
+                const hidden = selectedAll.filter((k) => !shownKeys.has(k));
+                useSelection.getState().select("star", [...hidden, ...keys]);
+              }}
+              toolbar={selected.length > 0 && (
+                <Button size="sm" variant="ghost" onClick={() => useSelection.getState().clear("star")}>
+                  Clear {selected.length}
+                </Button>
+              )}
+              empty={all.length ? "No star matches the filters" : "The catalogue is empty"} />
             <div className="dt-two">
               <Card>
-                <CardHead title="Magnitude distribution" sub="all · navigator · filtered" />
+                <CardHead title="Magnitude distribution" sub="All stars, the navigator's and the filtered ones" />
                 <CardBody><MagHistogram all={all} shown={shown} nav={nav} /></CardBody>
               </Card>
               <Card>
@@ -258,31 +302,13 @@ export default function Catalog() {
                         {(["valid", "corrupted", "failed", "pending"] as BandState[]).map((st) => (
                           <div key={st}><Badge size="sm" tone={st === "valid" ? "good" : st === "corrupted" ? "warn" : st === "failed" ? "bad" : "neutral"}>{st}</Badge> {BAND_STATE_HELP[st]}</div>
                         ))}
-                        <div className="muted">Each row sums to the star count: a band counts once, under its best outcome (valid › corrupted › failed › pending). The KPIs and the “Overall” filter use a star’s best band.</div>
+                        <div className="muted">Each row sums to the star count: a band counts once, under its best outcome (valid › corrupted › failed › pending). The summary and the “Best band” filter use a star’s best band.</div>
                       </div>
                     </Popover>
                   )} />
                 <CardBody>{stars.data && <BandTable data={stars.data} total={summary?.total ?? 0} />}</CardBody>
               </Card>
             </div>
-            <Card>
-              <CardBody>
-                <DataTable rows={shown} columns={COLUMNS} rowKey={(s) => String(s.id)} urlKey="cat" height={520}
-                  aria-label="Stars" exportName="stars" filterPlaceholder="Filter stars (e.g. mag<17 field:EDF-S)"
-                  inspect={(s) => ({ kind: "star", id: String(s.id) })}
-                  selectable selected={selected}
-                  onSelectedChange={(keys) => {
-                    const hidden = selectedAll.filter((k) => !shownKeys.has(k));
-                    useSelection.getState().select("star", [...hidden, ...keys]);
-                  }}
-                  toolbar={selected.length > 0 && (
-                    <Button size="sm" variant="ghost" onClick={() => useSelection.getState().clear("star")}>
-                      Clear {selected.length}
-                    </Button>
-                  )}
-                  empty={all.length ? "No star matches the filters" : "The catalogue is empty"} />
-              </CardBody>
-            </Card>
           </>
         )}
       </LoadState>

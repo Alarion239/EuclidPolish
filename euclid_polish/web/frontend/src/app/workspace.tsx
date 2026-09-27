@@ -15,7 +15,12 @@
  * `/ensemble/foo` → Not found), redirects a bare workspace path to its default
  * tab (or `redirectTab`; query and hash kept), renders the router-linked tab
  * strip (<WorkspaceTabs>) and the active tab inside a per-tab error boundary
- * and a Suspense skeleton. A tabless workspace (home, inspect) passes
+ * and a Suspense skeleton, under a visually hidden h1 ("Members — Ensemble
+ * (starless)"; dropped by CSS when the page has its own h1, e.g. a PageHead).
+ * The strip stays one line and never cuts a label: a fixed run of leading
+ * tabs is shown whole, the active tab is always visible (in one reserved
+ * slot when it is past the run, so tabs never trade places), the rest sit in
+ * a "More" menu of router links inside the strip's <nav> (`tabFit.ts`). A tabless workspace (home, inspect) passes
  * `children`. Tab labels default to `app/nav.ts`; `aside` sits right of the
  * tab strip.
  *
@@ -25,18 +30,20 @@
  * nothing else would repaint them in the new theme (`useTokenRerender`).
  */
 import {
-  Suspense, cloneElement, isValidElement, lazy,
+  Suspense, cloneElement, isValidElement, lazy, useEffect, useLayoutEffect, useRef, useState,
   type ComponentType, type LazyExoticComponent, type ReactNode,
 } from "react";
+import * as RMenu from "@radix-ui/react-dropdown-menu";
 import { Link, Navigate, useLocation } from "react-router-dom";
 import { useUrlState } from "../hooks/useUrlState";
 import { usePrefs, useResolvedTheme } from "../state/prefs";
-import { Button, EmptyState, Page, Skeleton, Tabs } from "../ui";
+import { Button, EmptyState, Icon, Page, Skeleton } from "../ui";
 import type { IconName } from "../ui/icons";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { matchPage, workspace } from "./manifest";
-import { landingPath, pagePath, tabLabel, workspaceLabel, workspaceMeta } from "./nav";
+import { landingPath, pageHeading, pagePath, tabLabel, workspaceLabel, workspaceMeta } from "./nav";
 import { NotFound } from "./NotFound";
+import { fitTabs, sameIndices } from "./tabFit";
 
 export type TabModule = { default: ComponentType };
 
@@ -74,7 +81,67 @@ export function TabSkeleton() {
   );
 }
 
-/** The router-linked tab strip of a workspace (keeps `?inspect=`). */
+/** Width reserved for the "More" button until it has been measured. */
+const MORE_ESTIMATE_PX = 76;
+
+/** Measure the strip's tabs and fit them (see `tabFit.ts`). `signature`
+ *  changes with the labels/badges (→ re-measure every tab); the strip's own
+ *  resizes only re-fit. Returns the visible indices (null until measured:
+ *  every tab is rendered for that first, pre-paint measurement). */
+function useTabFit(signature: string, count: number, active: number) {
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  const widths = useRef<number[]>([]);
+  const moreWidth = useRef(MORE_ESTIMATE_PX);
+  const [visible, setVisible] = useState<number[] | null>(null);
+  const [tick, setTick] = useState(0);
+  const density = usePrefs((s) => s.density);
+  const measured = useRef<string | null>(null);
+  const key = `${signature}|${density}`;
+
+  useLayoutEffect(() => {
+    const wrap = wrapRef.current;
+    if (!wrap) return;
+    // New labels (or density, or the web fonts arrived): render every tab
+    // once and measure them all, before the browser paints.
+    if (measured.current !== key && visible !== null) { setVisible(null); return; }
+    const tabEls = [...wrap.querySelectorAll<HTMLElement>(".ws__tabs .ui-tab")];
+    const shown = visible ?? Array.from({ length: count }, (_, i) => i);
+    if (visible === null) {
+      if (tabEls.length !== count) return;
+      widths.current = tabEls.map((el) => el.getBoundingClientRect().width);
+      measured.current = key;
+    } else {
+      // Keep the visible tabs' widths current (fonts, badges); hidden ones keep theirs.
+      tabEls.forEach((el, j) => { if (shown[j] != null) widths.current[shown[j]] = el.getBoundingClientRect().width; });
+    }
+    const more = wrap.querySelector<HTMLElement>(".ws__more");
+    if (more) moreWidth.current = more.getBoundingClientRect().width;
+    const next = fitTabs(widths.current, wrap.clientWidth, moreWidth.current, active);
+    if (!sameIndices(next, visible)) setVisible(next);
+  }, [key, visible, count, active, tick]);
+
+  // Re-fit when the strip is resized; re-measure once the web fonts are in.
+  useEffect(() => {
+    const wrap = wrapRef.current;
+    if (!wrap) return undefined;
+    let raf = 0;
+    const ro = typeof ResizeObserver === "function"
+      ? new ResizeObserver(() => { cancelAnimationFrame(raf); raf = requestAnimationFrame(() => setTick((t) => t + 1)); })
+      : null;
+    ro?.observe(wrap);
+    let alive = true;
+    void document.fonts?.ready.then(() => { if (alive) { measured.current = null; setVisible(null); } });
+    return () => { alive = false; ro?.disconnect(); cancelAnimationFrame(raf); };
+  }, []);
+
+  return { wrapRef, visible };
+}
+
+/** The router-linked tab strip of a workspace (keeps `?inspect=`). One line
+ *  at every width: a fixed run of leading tabs, the active tab when it is
+ *  past them, then "More" for the rest (never cut; `tabFit.ts`). The More
+ *  button sits inside the strip's <nav> landmark and its items are router
+ *  links, so a middle- or ⌘-click opens a tab in a new browser tab. */
 export function WorkspaceTabs(
   { id, base, current, tabs, aside }: {
     id: string; base: string; current: string | null; tabs?: WorkspaceTabDefs; aside?: ReactNode;
@@ -89,10 +156,46 @@ export function WorkspaceTabs(
     badge: tabs?.[tab]?.badge,
     to: `${base === "/" ? "" : base}/${tab}${keep}`,
   }));
+  const active = current ? ws.tabs.indexOf(current) : -1;
+  const signature = items.map((t) => `${t.label}#${typeof t.badge === "string" || typeof t.badge === "number" ? t.badge : t.badge != null ? "*" : ""}`).join("|");
+  const { wrapRef, visible } = useTabFit(signature, items.length, active);
+  const shown = visible ? visible.map((i) => items[i]) : items;
+  const overflow = visible ? items.filter((_, i) => !visible.includes(i)) : [];
   return (
     <div className="ws__bar">
-      <Tabs value={current ?? ""} tabs={items} variant="line" aria-label={`${ws.label} tabs`}
-        className="ws__tabs" />
+      <nav className="ws__tabs-wrap" ref={wrapRef} aria-label={`${ws.label} tabs`}>
+        <div className="ui-tabs ui-tabs--line ws__tabs">
+          {shown.map((t) => (
+            <Link key={t.id} to={t.to} className="ui-tab" data-on={t.id === current}
+              aria-current={t.id === current ? "page" : undefined}>
+              {t.label}{t.badge != null && <span className="ui-tab__badge">{t.badge}</span>}
+            </Link>
+          ))}
+        </div>
+        {overflow.length > 0 && (
+          <RMenu.Root modal={false}>
+            <RMenu.Trigger asChild>
+              <button type="button" className="ui-tab ws__more"
+                aria-label={`More tabs: ${overflow.map((t) => t.label).join(", ")}`}>
+                More<Icon name="chevronDown" size={14} />
+              </button>
+            </RMenu.Trigger>
+            <RMenu.Portal>
+              <RMenu.Content className="ui-menu" align="end" side="bottom" sideOffset={6}
+                collisionPadding={8} aria-label={`More ${ws.label} tabs`}>
+                {overflow.map((t) => (
+                  <RMenu.Item key={t.id} asChild className="ui-menu__item">
+                    <Link to={t.to}>
+                      <span className="ui-menu__text">{t.label}</span>
+                      {t.badge != null && <span className="ui-tab__badge">{t.badge}</span>}
+                    </Link>
+                  </RMenu.Item>
+                ))}
+              </RMenu.Content>
+            </RMenu.Portal>
+          </RMenu.Root>
+        )}
+      </nav>
       {aside != null && <div className="ws__aside">{aside}</div>}
     </div>
   );
@@ -141,6 +244,9 @@ export function Workspace(
   else body = isValidElement(children) ? cloneElement(children) : children;
   return (
     <div className={`ws ws--${id}`} data-workspace={id}>
+      {/* The page's h1 for screen readers and the outline; hidden (CSS) when
+          the page renders its own h1. */}
+      <h1 className="sr-only ws__h1">{pageHeading(location.pathname)}</h1>
       {ws.tabs.length > 0 && (
         <WorkspaceTabs id={id} base={m.base} current={m.tab} tabs={tabs} aside={aside} />
       )}

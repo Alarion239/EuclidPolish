@@ -5,11 +5,12 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { queryClient } from "../api/query";
 import { useShortcutRegistry } from "../hooks/useShortcut";
 import { useDisplay } from "../state/display";
 import golden from "./__fixtures__/color_golden.json";
 import type { ColorMeta } from "./color";
-import { sharedCubeCache } from "./cube";
+import { resetMetaNotes, sharedCubeCache } from "./cube";
 import { ViewerController } from "./controller";
 import { heatbarModel, heatbarStops } from "./export";
 import { ViewerContext } from "./hooks";
@@ -67,11 +68,33 @@ function defaultHandler(m = meta()): Handler {
 
 beforeEach(() => {
   sharedCubeCache.clear();
+  queryClient.clear();      // the meta is shared through the app's query cache
+  resetMetaNotes();
   useDisplay.getState().reset();
 });
 afterEach(() => { vi.unstubAllGlobals(); });
 
 describe("ViewerController", () => {
+  it("shows LR and SR per unit area of the LR pixel (knee ÷ 4 on SR); native values and the heat bar unchanged", async () => {
+    mockBackend(defaultHandler());
+    localStorage.removeItem("euclid-polish.viewer.per-area");
+    const c = new ViewerController({ collection: "test", tiers: ["lr", "sr"] });
+    await c.start();
+    const sr = c.s.shown.sr, lr = c.s.shown.lr;
+    if (sr?.kind !== "cube" || lr?.kind !== "cube") throw new Error("not loaded");
+    expect(c.areaRef()).toBe(0.1);
+    const knee = c.displayParams(lr.rec).knee;
+    expect(c.displayParams(sr.rec).knee).toBeCloseTo(knee / 4);
+    expect(c.displayParams(sr.rec).K0).toBeCloseTo(c.K0() / 4);
+    expect(c.heatbarInfo("sr")?.scale).toBeCloseTo(4);          // the bar's ticks read native e⁻ per SR pixel
+    expect(c.getState().knee).toBe(knee);                         // the knee the page sees is unchanged
+    c.setPerArea(false);
+    expect(c.displayParams(sr.rec).knee).toBe(knee);
+    expect(localStorage.getItem("euclid-polish.viewer.per-area")).toBe("0");
+    c.destroy();
+    localStorage.removeItem("euclid-polish.viewer.per-area");
+  });
+
   it("loads meta and the default tier, and shows server errors verbatim", async () => {
     mockBackend(defaultHandler());
     const c = new ViewerController({ collection: "test", tiers: ["lr", "hr"] });
@@ -402,10 +425,19 @@ function Where() {
 describe("<ImageViewer>", () => {
   it("renders frames, overlays and the error message of a missing tier", async () => {
     mockBackend(defaultHandler());
-    render(<MemoryRouter><ImageViewer collection="test" tiers={["lr", "hr"]} /></MemoryRouter>);
-    expect(await screen.findByText(/^LR 0 · VIS/)).toBeTruthy();
+    const { container } = render(<MemoryRouter><ImageViewer collection="test" tiers={["lr", "hr"]} /></MemoryRouter>);
+    expect(await screen.findByText(/^LR 0 · VIS/)).toBeTruthy();       // the label's hover detail
     expect(await screen.findByText("HR records are not synced for this subset")).toBeTruthy();
-    expect(screen.getByRole("toolbar", { name: "Viewer tools" })).toBeTruthy();
+    // one light table: the bar, the frames, the readout line
+    const table = container.querySelector(".cv-table")!;
+    expect(table.querySelector(".cv-bar")).toBe(screen.getByRole("group", { name: "Image viewer controls" }));
+    expect(table.querySelector(".cv-frames")).not.toBeNull();
+    expect(table.querySelector(".cv-readout")).not.toBeNull();
+    expect(container.querySelector(".cv-frame[data-tier='lr'] .cv-label__name")?.textContent).toBe("LR");
+    // tier chips toggle; the navigation sits in the bar
+    expect(screen.getByRole("button", { name: "LR" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("button", { name: "SR" }).getAttribute("aria-pressed")).toBe("false");
+    expect(screen.getByRole("group", { name: "Navigation" })).toBeTruthy();
   });
 
   it("writes and restores the URL state (object id, tiers, view)", async () => {
@@ -460,8 +492,260 @@ describe("<ImageViewer>", () => {
   });
 });
 
+describe("<ImageViewer> control bar, keys and focus mode", () => {
+  const rootOf = (c: HTMLElement) => c.querySelector<HTMLElement>(".cv-root")!;
+
+  it("full bar: tiers, bands, Display, compare, tools, zoom, navigation, layout, export, focus", async () => {
+    mockBackend(defaultHandler());
+    render(<MemoryRouter><ImageViewer collection="test" tiers={["lr", "sr"]} /></MemoryRouter>);
+    await screen.findByText(/^LR 0/);
+    const bar = screen.getByRole("group", { name: "Image viewer controls" });
+    for (const name of ["Display settings for this viewer", "Tools: lens, profiles, residuals, playback", "Zoom in", "Previous", "Next",
+      "Run through the objects", "Arrange the frames, focus mode, full screen", "Export: PNG, figure, video, save the crop", "Focus mode"]) {
+      expect(bar.contains(screen.getByRole("button", { name }))).toBe(true);
+    }
+    // band chips use the short NISP names; Q–Y are their keys
+    const bands = screen.getByRole("radiogroup", { name: "Band or colour" });
+    expect(Array.from(bands.querySelectorAll("button")).map((b) => b.textContent)).toEqual(["VIS", "Y", "J", "H", "Lupton", "Temp"]);
+    expect(screen.getByRole("radiogroup", { name: "Compare" })).toBeTruthy();
+    // the counter counts from 1 over the object count; a typed position jumps there
+    const pos = screen.getByRole("textbox", { name: "Object number (1 to 3)" }) as HTMLInputElement;
+    expect(pos.value).toBe("1");
+    expect(screen.getByRole("group", { name: "Navigation" }).textContent).toContain("/ 3");
+    fireEvent.change(pos, { target: { value: "3" } });
+    fireEvent.keyDown(pos, { key: "Enter" });
+    await waitFor(() => expect(pos.value).toBe("3"));
+  });
+
+  it("export stays in a full bar without navigation", async () => {
+    mockBackend(defaultHandler());
+    render(<MemoryRouter><ImageViewer collection="test" nav={false} /></MemoryRouter>);
+    await screen.findByText(/^LR 0/);
+    expect(screen.queryByRole("group", { name: "Navigation" })).toBeNull();
+    expect(screen.getByRole("button", { name: /^Export/ })).toBeTruthy();
+  });
+
+  it("the Display dock sits beside the frames, keeps the keys to its controls, and Esc closes it", async () => {
+    mockBackend(defaultHandler());
+    let api: ViewerApi | null = null;
+    const { container } = render(<MemoryRouter><ImageViewer collection="test" tiers={["lr", "sr"]} onReady={(a) => { api = a; }} /></MemoryRouter>);
+    await screen.findByText(/^LR 0/);
+    const toggle = screen.getByRole("button", { name: "Display settings for this viewer" });
+    expect(toggle.getAttribute("aria-pressed")).toBe("false");
+    fireEvent.click(toggle);
+    const dock = await screen.findByRole("complementary", { name: "Display settings for this viewer" });
+    expect(toggle.getAttribute("aria-pressed")).toBe("true");
+    // in the light table next to the frames, not a popover over them
+    expect(dock.parentElement).toBe(container.querySelector(".cv-body"));
+    expect(dock.parentElement!.querySelector(".cv-frames")).not.toBeNull();
+    expect(screen.getByRole("combobox", { name: "Stretch" })).toBeTruthy();
+    // the knee and brightness come first; the rarely used settings wait behind "More settings"
+    const knee = screen.getByRole("slider", { name: "knee" });
+    const stretch = screen.getByRole("combobox", { name: "Stretch" });
+    expect(knee.compareDocumentPosition(stretch) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.queryByRole("combobox", { name: "Colormap" })).toBeNull();
+    expect(screen.getByRole("switch", { name: "Share with every viewer" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "More settings" }));
+    expect(screen.getByRole("combobox", { name: "Colormap" })).toBeTruthy();
+    expect(screen.getByRole("textbox", { name: "black point (e⁻)" })).toBeTruthy();
+    // the histogram waits behind its own disclosure
+    expect(container.querySelector(".cv-hist")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Histogram and cuts" }));
+    expect(container.querySelector(".cv-hist")).not.toBeNull();
+    // an arrow on a dock slider moves the slider, not the object
+    fireEvent.mouseEnter(rootOf(container));
+    const thumb = screen.getByRole("slider", { name: "knee" });
+    thumb.focus();
+    fireEvent.keyDown(thumb, { key: "ArrowRight" });
+    expect(api!.getIndex()).toBe(0);
+    fireEvent.keyDown(thumb, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("complementary", { name: "Display settings for this viewer" })).toBeNull());
+  });
+
+  it("compact bar: a basic Display dock (knee, brightness), no tools or export menus; a lens toggle", async () => {
+    mockBackend(defaultHandler());
+    render(<MemoryRouter><ImageViewer collection="test" tiers={["lr", "sr"]} toolbar="compact" /></MemoryRouter>);
+    await screen.findByText(/^LR 0/);
+    fireEvent.click(screen.getByRole("button", { name: "Display settings for this viewer" }));
+    expect(await screen.findByRole("textbox", { name: "knee (e⁻)" })).toBeTruthy();
+    expect(screen.getByRole("slider", { name: "brightness" })).toBeTruthy();
+    expect(screen.queryByRole("combobox", { name: "Stretch" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Histogram and cuts" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Tools/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Export/ })).toBeNull();
+    const lens = screen.getByRole("button", { name: "Magnifier lens" });
+    fireEvent.click(lens);
+    expect(lens.getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("button", { name: "Next" })).toBeTruthy();
+  });
+
+  it("toolbar none: no bar, or the navigation alone with nav", async () => {
+    mockBackend(defaultHandler());
+    const { unmount } = render(<MemoryRouter><ImageViewer collection="test" toolbar="none" nav={false} /></MemoryRouter>);
+    await screen.findByText(/^LR 0/);
+    expect(screen.queryByRole("group", { name: "Image viewer controls" })).toBeNull();
+    unmount();
+    render(<MemoryRouter><ImageViewer collection="test" toolbar="none" /></MemoryRouter>);
+    await screen.findByText(/^LR 0/);
+    expect(screen.getByRole("group", { name: "Image viewer controls" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Next" })).toBeTruthy();
+    expect(screen.queryByRole("group", { name: "Tiers" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Display settings for this viewer" })).toBeNull();
+  });
+
+  it("the old keys still answer in the hovered viewer: Q–Y, arrows, Space; the bar navigates", async () => {
+    mockBackend(defaultHandler());
+    let api: ViewerApi | null = null;
+    const { container } = render(<MemoryRouter><ImageViewer collection="test" onReady={(a) => { api = a; }} /></MemoryRouter>);
+    await screen.findByText(/^LR 0/);
+    fireEvent.mouseEnter(rootOf(container));
+    fireEvent.keyDown(document.body, { key: "w" });
+    expect(useDisplay.getState().color).toBe("Y_E");
+    expect(screen.getByRole("radio", { name: "Y" }).getAttribute("aria-checked")).toBe("true");
+    fireEvent.keyDown(document.body, { key: "ArrowRight" });
+    await waitFor(() => expect(api!.getIndex()).toBe(1));
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
+    await waitFor(() => expect(api!.getIndex()).toBe(2));
+    fireEvent.keyDown(document.body, { key: " " });
+    expect(api!.getState()).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Stop the run-through" }).getAttribute("aria-pressed")).toBe("true");
+    fireEvent.keyDown(document.body, { key: " " });
+    expect(screen.getByRole("button", { name: "Run through the objects" })).toBeTruthy();
+    // after the pointer leaves, the keys belong to the page again
+    fireEvent.mouseLeave(rootOf(container));
+    fireEvent.keyDown(document.body, { key: "e" });
+    expect(useDisplay.getState().color).toBe("Y_E");
+  });
+
+  it("F enters focus mode and Esc (or the button) leaves it", async () => {
+    mockBackend(defaultHandler());
+    const { container } = render(<MemoryRouter><ImageViewer collection="test" /></MemoryRouter>);
+    await screen.findByText(/^LR 0/);
+    const root = rootOf(container);
+    fireEvent.mouseEnter(root);
+    fireEvent.keyDown(document.body, { key: "f" });
+    await waitFor(() => expect(root.hasAttribute("data-focus")).toBe(true));
+    expect(root.style.position === "" || root.style.top !== "").toBe(true);
+    // the keys stay with the focused viewer even when the pointer leaves it
+    fireEvent.mouseLeave(root);
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    await waitFor(() => expect(root.hasAttribute("data-focus")).toBe(false));
+    fireEvent.click(screen.getByRole("button", { name: "Focus mode" }));
+    await waitFor(() => expect(root.hasAttribute("data-focus")).toBe(true));
+    fireEvent.click(screen.getByRole("button", { name: "Leave focus mode" }));
+    await waitFor(() => expect(root.hasAttribute("data-focus")).toBe(false));
+  });
+
+  it("keys work for a viewer inside a dialog (the inspector sheet), and Esc there is the viewer's first", async () => {
+    mockBackend(defaultHandler());
+    const { container } = render(<MemoryRouter><div role="dialog" aria-label="Inspector"><ImageViewer collection="test" /></div>
+      <div role="dialog" aria-label="Other"><button type="button">x</button></div></MemoryRouter>);
+    await screen.findByText(/^LR 0/);
+    const root = rootOf(container);
+    fireEvent.mouseEnter(root);
+    root.focus();
+    fireEvent.keyDown(root, { key: "f" });
+    await waitFor(() => expect(root.hasAttribute("data-focus")).toBe(true));
+    const esc = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+    root.dispatchEvent(esc);
+    expect(esc.defaultPrevented).toBe(true);                      // a capture-phase dialog sees it taken
+    await waitFor(() => expect(root.hasAttribute("data-focus")).toBe(false));
+    // a key typed in ANOTHER dialog is not the viewer's
+    fireEvent.keyDown(screen.getByRole("button", { name: "x" }), { key: "f" });
+    expect(root.hasAttribute("data-focus")).toBe(false);
+  });
+
+  it("a plain g leaves the next key to the shell's g-sequence", async () => {
+    mockBackend(defaultHandler());
+    const { container } = render(<MemoryRouter><ImageViewer collection="test" /></MemoryRouter>);
+    await screen.findByText(/^LR 0/);
+    fireEvent.mouseEnter(rootOf(container));
+    fireEvent.keyDown(document.body, { key: "g" });
+    fireEvent.keyDown(document.body, { key: "e" });            // "g e" = go to Ensemble, not J
+    expect(useDisplay.getState().color).toBe("VIS");
+  });
+
+  it("Display dock: knees span 0.1–1e4 on a log slider, each transfer group in its own unit", async () => {
+    const m = meta({
+      transfer_groups: ["euclid", "jwst"],
+      tiers: [{ key: "lr", label: "LR", unit: "e-" }, { key: "jw", label: "JWST", unit: "MJy/sr" }],
+    });
+    const base = defaultHandler(m);
+    mockBackend((url) => {
+      const tier = url.searchParams.get("tier");
+      if (tier === "jw") return cube(8, 8, 1, (i) => 0.01 * i, { "X-Cube-Bands": "F200W", "X-Cube-Unit": "MJy/sr", "X-Cube-Label": "JWST", "X-Cube-Transfer-Group": "jwst", "X-Cube-Display-Scale": "4000" });
+      if (tier === "lr") return cube(4, 4, 4, (i) => i, { "X-Cube-Label": "LR 0", "X-Cube-Transfer-Group": "euclid" });
+      return base(url);
+    });
+    render(<MemoryRouter><ImageViewer collection="test" tiers={["lr", "jw"]} /></MemoryRouter>);
+    await screen.findByText(/^LR 0/);
+    fireEvent.click(screen.getByRole("button", { name: "Display settings for this viewer" }));
+    const euclid = await screen.findByRole("textbox", { name: "Euclid knee (e⁻)" });
+    const jwst = screen.getByRole("textbox", { name: "JWST knee (MJy/sr)" });
+    expect((euclid as HTMLInputElement).value).toBe("100");
+    expect((jwst as HTMLInputElement).value).toBe("0.025");          // 100 / display scale 4000
+    // typed values, and the slider's ends
+    fireEvent.change(euclid, { target: { value: "3" } });
+    fireEvent.keyDown(euclid, { key: "Enter" });
+    expect(useDisplay.getState().groups.euclid.knee).toBe(3);
+    const thumb = screen.getByRole("slider", { name: "Euclid knee" });
+    fireEvent.keyDown(thumb, { key: "Home" });
+    expect(useDisplay.getState().groups.euclid.knee).toBeCloseTo(0.1, 6);
+    fireEvent.keyDown(thumb, { key: "End" });
+    expect(useDisplay.getState().groups.euclid.knee).toBeCloseTo(1e4, 3);
+    // the default stays absolute asinh at 100 e⁻
+    expect(useDisplay.getState().stretch).toBe("asinh-abs");
+    expect(useDisplay.getState().groups.jwst.knee).toBe(100);
+  });
+
+  it("no band chips for single-plane tiers", async () => {
+    const m = meta({ tiers: [{ key: "jw", label: "JWST", unit: "MJy/sr" }, { key: "lr", label: "LR", unit: "e-" }], default_tier: "jw" });
+    const base = defaultHandler(m);
+    mockBackend((url) => (url.searchParams.get("tier") === "jw"
+      ? cube(8, 8, 1, (i) => i, { "X-Cube-Bands": "F200W", "X-Cube-Unit": "MJy/sr", "X-Cube-Label": "JWST 0" })
+      : base(url)));
+    render(<MemoryRouter><ImageViewer collection="test" /></MemoryRouter>);
+    await screen.findByText(/^JWST 0/);
+    expect(screen.queryByRole("radiogroup", { name: "Band or colour" })).toBeNull();
+    // a four-band tier brings them back
+    fireEvent.click(screen.getByRole("button", { name: "LR" }));
+    await screen.findByText(/^LR 0/);
+    expect(await screen.findByRole("radiogroup", { name: "Band or colour" })).toBeTruthy();
+  });
+
+  it("returning to a view reuses the cached cubes and the meta (no new requests)", async () => {
+    mockBackend(defaultHandler());
+    const first = render(<MemoryRouter><ImageViewer collection="test" tiers={["lr", "sr"]} /></MemoryRouter>);
+    await screen.findByText(/^SR 0/);
+    await waitFor(() => expect(calls.filter((u) => u.startsWith("/viewer/cube/")).length).toBeGreaterThan(2));
+    await new Promise((r) => setTimeout(r, 50));             // the prefetch settles
+    expect(calls.filter((u) => u.startsWith("/viewer/meta/"))).toHaveLength(1);   // one meta per mount
+    first.unmount();
+    const before = calls.length;
+    render(<MemoryRouter><ImageViewer collection="test" tiers={["lr", "sr"]} /></MemoryRouter>);
+    await screen.findByText(/^SR 0/);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(calls.slice(before)).toEqual([]);
+  });
+
+  it("an explicit reload refetches the meta and the cubes", async () => {
+    mockBackend(defaultHandler());
+    let api: ViewerApi | null = null;
+    render(<MemoryRouter><ImageViewer collection="test" onReady={(a) => { api = a; }} /></MemoryRouter>);
+    await screen.findByText(/^LR 0/);
+    await new Promise((r) => setTimeout(r, 50));
+    const before = calls.length;
+    await act(async () => { await api!.reload(); });
+    const after = calls.slice(before);
+    expect(after.some((u) => u.startsWith("/viewer/meta/"))).toBe(true);
+    expect(after.some((u) => u.startsWith("/viewer/cube/test/0?") && u.includes("tier=lr"))).toBe(true);
+  });
+});
+
 /* The DOM layout the pointer maths reads: every .cv-frame is SIDE css px of
-   content inside a 1 px border (the real `.cv-frame` style), at (LEFT, TOP). */
+   content inside a 1 px border, at (LEFT, TOP). The real frames have no
+   border now; the pointer maths reads clientLeft/clientTop, so a border
+   must still be measured from the padding box. */
 const FRAME = { LEFT: 100, TOP: 50, SIDE: 240, BORDER: 1 };
 function stubFrameLayout() {
   const { LEFT, TOP, SIDE, BORDER } = FRAME;

@@ -3,11 +3,12 @@
 import { QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { ReactElement } from "react";
+import { Suspense } from "react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useJobsStore } from "../../../api/jobs";
 import { queryClient } from "../../../api/query";
-import { useInspectorRegistry } from "../../../app/inspector";
+import { registerInspector, useInspectorRegistry } from "../../../app/inspector";
 import { useInspector } from "../../../state/inspector";
 import { useSelection } from "../../../state/selection";
 import { resetConfirm } from "../../../ui";
@@ -84,8 +85,9 @@ const answer = async (title: RegExp | string, button: string) => {
 const MODELS = {
   regime: "starfull", production_kind: "spatial_gate", members: ["1·psnr", "2·psnr"],
   models: [
-    { spec: "production", kind: "production", label: "Production · spatial gate", available: true, n_members: 2 },
-    { spec: "mean", kind: "mean", label: "Mean of 2", available: true, n_members: 2 },
+    { spec: "production", kind: "production", label: "Production · spatial gate", available: true, n_members: 2, reads: ["1·psnr", "2·psnr"] },
+    { spec: "mean", kind: "mean", label: "Mean of 2", available: true, n_members: 2, members: ["1·psnr", "2·psnr"] },
+    { spec: "gate:pruned", kind: "gate", label: "Pruned gate", available: true, n_members: 20, reads: ["2·psnr", "7·psnr", "8·psnr", "9·psnr", "10·psnr", "11·psnr"] },
     { spec: "rbf", kind: "rbf", label: "RBF", available: false, reason: "fitted for 20 archived members" },
     { spec: "member:member_1", kind: "member", label: "Member 1·psnr", available: true, n_members: 1 },
     { spec: "member:member_2", kind: "member", label: "Member 2·psnr", available: true, n_members: 1 },
@@ -179,16 +181,27 @@ describe("inspector registration", () => {
     expect(kinds.realtile?.title).toBeTypeOf("function");
     expect(kinds.experiment).toBeTruthy();
   });
+
+  it("turns a realtile: target into tile: in place (one card, one kind label)", async () => {
+    const off = registerInspector("tile", () => <p>tile card</p>, { title: (id) => `Tile ${id}` });
+    try {
+      act(() => useInspector.getState().show({ kind: "realtile", id: "nexus/f200w-0040" }));
+      const Alias = useInspectorRegistry.getState().kinds.realtile.Component;
+      render(<Suspense fallback={null}><Alias id="nexus/f200w-0040" /></Suspense>);   // the inspector panel provides this boundary
+      await waitFor(() => expect(useInspector.getState().current).toEqual({ kind: "tile", id: "nexus/f200w-0040" }));
+      expect(useInspector.getState().back).toEqual([]);                  // replaced, not a history step
+    } finally { off(); }
+  });
 });
 
 describe("Real results tab", () => {
-  it("lists every source's tiles with state, models and metrics; a row opens the realtile inspector", async () => {
+  it("lists every source's tiles with state, models and metrics; a row opens the tile card", async () => {
     show(<Results />);
     expect(await screen.findByText("f200w-0001")).toBeTruthy();
     expect(screen.getByText("p1")).toBeTruthy();
     expect(screen.getByText("4.3")).toBeTruthy();                      // headline holes (rbf, legacy)
     fireEvent.click(screen.getByText("f200w-0001"));
-    expect(useInspector.getState().current).toEqual({ kind: "realtile", id: "nexus/f200w-0001" });
+    expect(useInspector.getState().current).toEqual({ kind: "tile", id: "nexus/f200w-0001" });
   });
 
   it("filters by production state through the URL", async () => {
@@ -230,7 +243,7 @@ describe("Real results tab", () => {
     show(<Results />);
     await screen.findByText("f200w-0002");
     fireEvent.pointerDown(screen.getByRole("button", { name: "More actions" }), { button: 0 });
-    fireEvent.click(await screen.findByRole("menuitem", { name: /Compute metrics · 1 unscored output/ }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: /Compute metrics of 1 unscored output/ }));
     await answer(/Compute the metrics of 1 output on 1 tile/, "Compute metrics");
     await waitFor(() => expect(posts).toEqual([{
       url: "/api/experiments", form: { tiles: "nexus/f200w-0002", models: "production", label: "metrics" },
@@ -301,21 +314,37 @@ describe("model picker", () => {
     expect(seen.at(-1)).toEqual(["production", "mean"]);
     fireEvent.click(screen.getByRole("button", { name: "+ all members" }));
     expect(seen.at(-1)).toEqual(["member:member_1", "member:member_2"]);
+    // a pruned gate says how many members it reads, not how many it was fitted on
+    expect(screen.getByText(/6 of 20 members/)).toBeTruthy();
   });
 });
 
 describe("realtile inspector", () => {
-  it("shows the card: viewer over the tile's models, models table, per-band metrics", async () => {
-    show(<RealTileInspector id="nexus/f200w-0001" />);
+  it("shows the one real-tile card: the viewer first (only the tile's own tiers), models table, per-band metrics", async () => {
+    const { container } = show(<RealTileInspector id="nexus/f200w-0001" />);
     const viewer = await screen.findByTestId("viewer");
-    expect(viewer.textContent).toBe("real|f200w-0001|lr,m:rbf,m:member:member_1,jwst|rbf,member:member_1");
+    // two large frames: LR and the first model output (JWST one chip away); the picker lists exactly this tile's outputs
+    expect(viewer.textContent).toBe("real|f200w-0001|lr,m:rbf|rbf,member:member_1");
+    // "Open large" puts the viewer in focus mode (the frames fill the stage)
+    expect(screen.getByRole("button", { name: "Open large" })).toBeTruthy();
+    expect(container.querySelector(".res-card")?.firstElementChild?.contains(viewer)).toBe(true);
     expect(screen.getByText("m1")).toBeTruthy();
-    expect(screen.getByText("Metrics · rbf")).toBeTruthy();
+    expect(screen.getByText("Metrics of rbf")).toBeTruthy();
     expect(screen.getByText("0.970")).toBeTruthy();                     // median R, VIS
     fireEvent.click(screen.getByText("m1"));
-    expect(screen.getByText("Metrics · m1")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "On sky" }));
-    expect(screen.getByTestId("loc").textContent).toBe("/sky/atlas?ra=268.400000&dec=65.100000&inspect=realtile%3Anexus%2Ff200w-0001");
+    expect(screen.getByText("Metrics of m1")).toBeTruthy();
+    // the atlas card's actions are on this card too
+    expect(screen.getByRole("button", { name: "Compare models…" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Overlay on the sky" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Show on sky" }));
+    expect(screen.getByTestId("loc").textContent).toMatch(/^\/sky\/atlas\?ra=268\.4\d*&dec=65\.1\d*&fov=/);
+  });
+
+  it("a tile without model outputs asks the viewer for no model tier at all", async () => {
+    routes["GET /api/real/poster/p1"] = () => ({ body: { ...POSTER.tiles[0], model_ready: true, image_urls: { lr: "/a" } } });
+    show(<RealTileInspector id="poster/p1" />);
+    expect((await screen.findByTestId("viewer")).textContent).toBe("real|p1|lr|,");
+    expect(screen.getByText(/No SR for this tile yet/)).toBeTruthy();
   });
 
   it("adds the catalogue-eval provenance for an eval object", async () => {
@@ -358,20 +387,39 @@ describe("Experiments tab", () => {
     expect(await screen.findByText("nexus/f200w-0001")).toBeTruthy();
     expect(screen.getByText("poster/p1")).toBeTruthy();
     await screen.findByRole("checkbox", { name: /production/ });
-    fireEvent.click(screen.getByRole("button", { name: "Run 2 × 2" }));
-    await answer(/Run 2 models on 2 tiles/, "Run");
+    // the cost is stated before anything runs
+    expect(screen.getByText(/4 outputs \(2 models on 2 tiles\)\. Needs 2 member SRs per tile: at most 4 member inferences/)).toBeTruthy();
+    // tiles handed over: the form is the point, no experiment opens by itself
+    expect(screen.queryByTestId("viewer")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Run 2 models on 2 tiles" }));
+    const dlg = await answer(/Run 2 models on 2 tiles/, "Run");
+    expect(dlg.textContent).toContain("4 outputs (2 models on 2 tiles).");
     await waitFor(() => expect(posts[0]).toEqual({
       url: "/api/experiments", form: { tiles: "nexus/f200w-0001,poster/p1", models: "production,mean" },
     }));
     await waitFor(() => expect(screen.getByTestId("loc").textContent).toContain("exp=20260926-121212-111111"));
   });
 
-  it("shows the history and the detail: metrics per model × band, comparison viewer, core weights", async () => {
+  it("shows the detail first: comparison viewer, then metrics per model × band and core weights; history below", async () => {
     show(<Experiments />, "/sky/experiments?exp=20260926-101010-abcdef&scope=poster%2Fp1");
     expect(await screen.findByText("core check", { selector: "strong" })).toBeTruthy();
-    expect((await screen.findByTestId("viewer")).textContent).toBe("real|p1|lr,m:production,m:member:member_1|production,member:member_1");
+    const viewer = await screen.findByTestId("viewer");
+    expect(viewer.textContent).toBe("real|p1|lr,m:production,m:member:member_1|production,member:member_1");
+    const history = screen.getByRole("grid", { name: "Experiments" });
+    expect(viewer.compareDocumentPosition(history) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(screen.getByText("7.0")).toBeTruthy();                       // production hole %, poster tile
     expect(screen.getByLabelText("Gate core weights")).toBeTruthy();
+  });
+
+  it("a plain visit (the tab link) opens the newest experiment, form folded, URL untouched", async () => {
+    const older = { ...RECORD, id: "20260901-000000-000000", label: "older", created: "2026-09-01T00:00:00" };
+    routes["GET /api/experiments"] = () => ({ body: { experiments: [older, { ...RECORD, created: "2026-09-26T10:10:10" }] } });
+    show(<Experiments />, "/sky/experiments");
+    expect(await screen.findByText("core check", { selector: "strong" })).toBeTruthy();
+    expect(await screen.findByTestId("viewer")).toBeTruthy();
+    const toggle = screen.getAllByRole("button", { name: /New experiment/ }).find((el) => el.hasAttribute("aria-expanded"));
+    expect(toggle?.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.getByTestId("loc").textContent).toBe("/sky/experiments");
   });
 
   it("keeps the comparison viewer on the Scope tile (no own navigation)", async () => {
@@ -404,6 +452,17 @@ describe("Experiments tab", () => {
   });
 });
 
+describe("Experiments tab before any experiment", () => {
+  it("reads the metric definitions without an experiment", async () => {
+    routes["GET /api/experiments"] = () => ({ body: { experiments: [] } });
+    show(<Experiments />, "/sky/experiments");
+    expect(await screen.findByText("No experiments yet")).toBeTruthy();
+    expect(await screen.findByText("What the metrics measure")).toBeTruthy();
+    expect(screen.getByText(/SR pixels under the brightest 1 % of LR pixels/)).toBeTruthy();
+    expect(screen.getByText(/Median enclosed-flux ratio over the peaks/)).toBeTruthy();
+  });
+});
+
 describe("experiment inspector", () => {
   it("summarises the record and links to the full comparison", async () => {
     show(<ExperimentInspector id="20260926-101010-abcdef" />, "/sky/atlas");
@@ -432,13 +491,21 @@ describe("Catalog eval tab", () => {
     routes["GET /auth/status"] = () => ({ body: { authenticated: false } });
   });
 
+  it("puts the reconstruction viewer (LR beside SR) before the object list", async () => {
+    show(<CatalogEval />, "/sky/catalog-eval");
+    const viewer = await screen.findByTestId("viewer");
+    expect(viewer.textContent).toBe("evaluation||LR,SR|");
+    const table = screen.getByRole("grid", { name: "Evaluation objects" });
+    expect(viewer.compareDocumentPosition(table) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   it("lists objects with their SR model state and hides failures unless asked", async () => {
     show(<CatalogEval />, "/sky/catalog-eval");
     expect(await screen.findByText("lensA")).toBeTruthy();
     expect(screen.getByText("syn1")).toBeTruthy();
     expect(screen.queryByText("bad")).toBeNull();
     expect(screen.getByText(/reconstructions predate the current model/)).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "+ failed" }));
+    fireEvent.click(screen.getByRole("button", { name: "Failed too" }));
     expect(await screen.findByText("bad")).toBeTruthy();
   });
 

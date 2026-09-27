@@ -10,6 +10,7 @@ import { formatNumber } from "../../format";
 import { useUrlState } from "../../hooks/useUrlState";
 import { Button, EmptyState, IconButton, Popover, RangeSlider, Skeleton, Tooltip, type Tone } from "../../ui";
 import type { CheckState } from "./api";
+import { autoTicks } from "../plotTicks";
 
 export function RealismBar({ children, label }: { children: ReactNode; label: string }) {
   return <div className="rl-bar" role="toolbar" aria-label={label}>{children}</div>;
@@ -156,7 +157,10 @@ export function BoundedPlot(props: PlotProps & { boundsLabel: string }) {
   };
   return (
     <div className="rl-bounded">
-      <Plot {...plot} view={view} onViewChange={setView} />
+      {/* a caller that picks no ticks still gets labelled axes (Plot draws only the ticks it is given) */}
+      <Plot {...plot} view={view} onViewChange={setView}
+        xTicks={plot.xTicks ?? autoTicks(plot.xDomain, plot.xScale, plot.xFormat)}
+        yTicks={plot.yTicks ?? autoTicks(plot.yDomain, plot.yScale, plot.yFormat)} />
       <div className="rl-bounded__bar">
         <Popover label={`${boundsLabel}: axis bounds`} width={320}
           trigger={<Button size="sm" variant="ghost" icon="zoomIn">{custom ? "custom bounds" : "bounds"}</Button>}>

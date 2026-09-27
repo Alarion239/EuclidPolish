@@ -184,6 +184,75 @@ describe("sky engine", () => {
     expect(Number.isNaN(moves.mock.calls.at(-1)![0].ra)).toBe(true);
   });
 
+  it("stops Aladin's per-frame loop while parked and restarts it on attach", async () => {
+    // Aladin 3.8.2: view.redraw ends with requestAnimationFrame(view.redrawClbk).
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => { frames.push(cb); return frames.length; });
+    try {
+      const e = await getSkyEngine(INIT);
+      let draws = 0;
+      const view: { redrawClbk?: FrameRequestCallback } = {};
+      const redraw: FrameRequestCallback = () => { draws++; requestAnimationFrame(view.redrawClbk!); };
+      view.redrawClbk = redraw;
+      (fake.al as { view?: object }).view = view;
+      const runFrame = () => { const cb = frames.shift(); cb?.(performance.now()); };
+
+      const slot = document.createElement("div");
+      e.attach(slot);
+      frames.length = 0;
+      requestAnimationFrame(view.redrawClbk);          // the loop Aladin started
+      runFrame(); runFrame();
+      expect(draws).toBe(2);
+
+      e.detach(slot);
+      runFrame();                                       // the frame already queued draws once more…
+      runFrame();                                       // …then the loop stops
+      const parked = draws;
+      expect(frames).toHaveLength(0);
+      expect(parked).toBe(3);
+
+      e.attach(slot);
+      expect(view.redrawClbk).toBe(redraw);            // Aladin's own callback is back
+      runFrame(); runFrame();
+      expect(draws).toBe(parked + 2);                  // running again
+      expect(frames.length).toBe(1);                   // exactly one loop, not two
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("a quick detach → attach (before the loop noticed) keeps a single loop running", async () => {
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => { frames.push(cb); return frames.length; });
+    try {
+      const e = await getSkyEngine(INIT);
+      let draws = 0;
+      const view: { redrawClbk?: FrameRequestCallback } = {};
+      view.redrawClbk = () => { draws++; requestAnimationFrame(view.redrawClbk!); };
+      (fake.al as { view?: object }).view = view;
+      const slot = document.createElement("div");
+      e.attach(slot);
+      frames.length = 0;
+      requestAnimationFrame(view.redrawClbk);
+      e.detach(slot);
+      frames.shift()!(0);                              // queues the parking stub
+      e.attach(slot);                                  // back before the stub ran
+      for (let i = 0; i < 3; i++) frames.shift()?.(0);
+      expect(draws).toBe(4);                           // every frame drew (the stub forwarded)…
+      expect(frames).toHaveLength(1);                  // …and there is still exactly one loop
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("parks safely when Aladin's internals are not there", async () => {
+    const e = await getSkyEngine(INIT);
+    (fake.al as { view?: object }).view = undefined;
+    const slot = document.createElement("div");
+    e.attach(slot);
+    expect(() => { e.detach(slot); e.attach(slot); }).not.toThrow();
+  });
+
   it("asks Aladin to repaint the overlays after a resize and on attach", async () => {
     const e = await getSkyEngine(INIT);
     let redraws = 0;

@@ -84,6 +84,21 @@ describe("layer renderer", () => {
     expect(fake.mocs[0].visible).toBe(false);
   });
 
+  it("the MOC fill is a live switch (outline only when zoomed in)", () => {
+    const fake = makeFakeAladin();
+    const r = new LayerRenderer({ A: fake.A, al: fake.al }, () => P);
+    const moc = CLIENT_LAYERS[0];
+    const s = (over: Partial<RenderSpec>) => ({ info: moc, features: [], dataVersion: 0, visible: true, opacity: 0.3, scale: { type: "fixed" as const, color: P.accent, label: "" }, lod: "shapes" as const, markerScale: 1, ...over });
+    r.sync([s({ fill: false })]);
+    expect(fake.mocs[0].opts.fill).toBe(false);
+    expect(fake.mocs[0].opts.perimeter).toBe(true);
+    r.sync([s({ fill: true })]);
+    expect(fake.mocs).toHaveLength(1);
+    expect((fake.mocs[0] as unknown as { fill: boolean }).fill).toBe(true);
+    r.sync([s({ fill: false })]);
+    expect((fake.mocs[0] as unknown as { fill: boolean }).fill).toBe(false);
+  });
+
   it("never asks Aladin for markers below its 5 px minimum (its sprite radius is size/2 − 2)", () => {
     const fake = makeFakeAladin();
     const r = new LayerRenderer({ A: fake.A, al: fake.al }, () => P);

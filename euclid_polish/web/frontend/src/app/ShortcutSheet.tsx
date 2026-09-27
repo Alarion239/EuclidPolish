@@ -41,7 +41,7 @@ export function ShortcutSheet() {
       <div className="shortcuts">
         {groupShortcuts(entries).map(([scope, list]) => (
           <section key={scope} className="shortcuts__group">
-            <h3 className="eyebrow">{scope}</h3>
+            <h3 className="shortcuts__head">{scope}</h3>
             <dl>
               {list.map((e) => (
                 <div key={e.id} className="shortcuts__row">

@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 import type { PlateRun, SavedResult } from "./api";
 import {
-  commonRecipes, cropSideArcsec, findRender, gridStatus, inspectLink, isRecipeKey, matchTile,
+  LIGHTBOX, commonRecipes, previewRows, cropSideArcsec, findRender, galleryMatches, gridSizeText, gridStatus, lightboxStageHeight, previewPaperCap, inspectLink, isRecipeKey, matchTile,
   missingRecipes, moveItem, normalizeIndex, parseTileList, plateCoverage, recipeLabel,
   renderKey, renderTitle, resultRegime, sanitizeColumns, skyLink, sourceLabel, specsCoveringAll,
   viewerLink, wcsState, type NexusTile,
@@ -30,6 +30,15 @@ describe("recipes", () => {
     expect(missingRecipes(a, ["dirty:VIS", "hr:VIS"])).toEqual(["hr:VIS"]);
     expect(commonRecipes([a, b])).toEqual(["dirty:VIS"]);
     expect(commonRecipes([])).toEqual([]);
+  });
+
+  it("previews the rows every column has while some cells are unavailable (instead of nothing)", () => {
+    const a = result({ id: "a" });
+    const b = result({ id: "b", recipes: ["dirty:VIS", "hr:VIS"] });
+    expect(previewRows(["hr:VIS", "dirty:VIS"], [a, b])).toEqual(["dirty:VIS"]);
+    expect(previewRows(["dirty:VIS"], [a, b])).toEqual(["dirty:VIS"]);
+    expect(previewRows(["hr:VIS"], [a, b])).toEqual([]);
+    expect(previewRows(["hr:VIS"], [])).toEqual(["hr:VIS"]);
   });
 });
 
@@ -178,5 +187,37 @@ describe("NEXUS plate form", () => {
     expect(findRender(run, "VIS~rbf")).toBe(run.renders[1]);
     expect(findRender(run, "nope")).toBe(run.renders[0]);
     expect(findRender(undefined, "x")).toBeUndefined();
+  });
+});
+
+describe("full-size view", () => {
+  it("pluralises the grid size", () => {
+    expect(gridSizeText(6, 1)).toBe("6 rows × 1 column");
+    expect(gridSizeText(1, 3)).toBe("1 row × 3 columns");
+  });
+
+  it("gives the image more height than the in-page preview it opens from", () => {
+    // the app top bar (tokens.css --topbar-h)
+    const topbar = 48;
+    for (const vh of [560, 640, 720, 768, 800, 900, 1080, 1440]) {
+      for (const stacked of [false, true]) {
+        const preview = previewPaperCap(vh, topbar, stacked);
+        expect(lightboxStageHeight(vh)).toBeGreaterThan(preview);
+        // a crop's panel row costs one more line and still wins
+        expect(lightboxStageHeight(vh, { panels: true })).toBeGreaterThan(preview);
+      }
+    }
+    // the dialog is the window minus a thin inset, the stage minus one header row
+    expect(lightboxStageHeight(768)).toBe(768 - 2 * LIGHTBOX.inset - LIGHTBOX.head);
+  });
+});
+
+describe("gallery filter", () => {
+  it("matches every word against label, id, source and tiers", () => {
+    const r = result({ label: "Tile 42 core", logical_tiers: ["dirty", "sr", "jwst"] });
+    expect(galleryMatches(r, "")).toBe(true);
+    expect(galleryMatches(r, "  tile  JWST ")).toBe(true);
+    expect(galleryMatches(r, "vr-1")).toBe(true);
+    expect(galleryMatches(r, "tile hr")).toBe(false);
   });
 });

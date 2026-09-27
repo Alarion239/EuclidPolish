@@ -3,7 +3,8 @@ import type { StarsPayload, TngPayload, TruthSource } from "./api";
 import {
   atlasHref, axisDomain, bandState, starState, clusterObjectId, decodeBand, decodeStars, decodeTng, DEFAULT_STAR_FILTER,
   fieldCounts, filterStars, histogram, magBins, nearestPoint, parseClusterId, parseRange,
-  parseTruthId, propertyHistogram, resumeSafeStep, stripRebuildFlags, scatterGroups, serializeRange, sourceMarker, summaryStats, tngValue, truthId,
+  noiseBadge, parseTruthId, propertyHistogram, recordFiles, resumeSafeStep, stripRebuildFlags, scatterGroups, serializeRange, sourceMarker, summaryStats, tngValue, truthId,
+  shownTypes, sourceTypeChips, toggleHiddenType, cutoutTiles, psfBandGroups,
 } from "./model";
 
 const BITS = { valid: 1, corrupted: 2, failed: 4, size_shift: 3 };
@@ -133,6 +134,33 @@ describe("truth-source map", () => {
 
 });
 
+describe("records status wording", () => {
+  const f = (name: string, count?: number | null) => ({ name, size_bytes: 2_516_582, mtime: 1, ...(count !== undefined ? { count } : {}) });
+
+  it("sums the four local files into one badge, the detail per file in its tip", () => {
+    const all = recordFiles({ dirty: f("dirty_test.tfrecord", 100), hr: f("hr_test.tfrecord", 100), clean: f("clean_test.tfrecord", 100), sources: f("sources_test.csv") }, "test");
+    expect(all.label).toBe("Files ok");
+    expect(all.tone).toBe("good");
+    expect(all.rows.map((r) => r.label)).toEqual(["LR", "HR", "Clean", "Sources"]);
+    expect(all.rows[0].detail).toBe("dirty_test.tfrecord, 2.4 MiB, 100 records");
+    const some = recordFiles({ dirty: f("dirty_test.tfrecord", 3), hr: f("hr_test.tfrecord", 3), clean: null, sources: null }, "test");
+    expect(some.label).toBe("2 of 4 files");
+    expect(some.tone).toBe("neutral");
+    expect(some.rows[2]).toMatchObject({ state: "missing", detail: "clean_test is not synced" });
+    const bad = recordFiles({ dirty: f("dirty_test.tfrecord", 3), hr: f("hr_test.tfrecord", 3), clean: f("clean_test.tfrecord", null), sources: f("sources_test.csv") }, "test");
+    expect(bad.label).toBe("1 corrupt file");
+    expect(bad.tone).toBe("bad");
+    expect(bad.rows[2].detail).toBe("clean_test.tfrecord, 2.4 MiB, truncated or corrupt");
+  });
+
+  it("names the noise-model check in plain words", () => {
+    expect(noiseBadge("ok")).toEqual({ label: "Noise ok", tone: "good" });
+    expect(noiseBadge("bad")).toEqual({ label: "Old noise model", tone: "bad" });
+    expect(noiseBadge("warn")).toEqual({ label: "Check noise", tone: "warn" });
+    expect(noiseBadge("unknown")).toEqual({ label: "Noise unverified", tone: "neutral" });
+  });
+});
+
 describe("TNG explorer", () => {
   const tng: TngPayload = {
     present: true, files: { properties: { present: true, name: "p", rows: 3, mtime: 1 }, atlas: { present: true, name: "a", rows: 3, mtime: 1 } },
@@ -179,6 +207,17 @@ describe("TNG explorer", () => {
     expect(h.counts).toEqual([1, 2]);
     expect(h.log).toBe(true);
   });
+
+  it("handles whole catalogues (no argument-spread min/max: it overflows the stack past ~120k values)", () => {
+    const many = Array.from({ length: 200_000 }, (_x, i) => 1 + (i % 1000));
+    expect(() => axisDomain(many, false)).not.toThrow();
+    const [lo, hi] = axisDomain(many, false);
+    expect(lo).toBeLessThan(1);
+    expect(hi).toBeGreaterThan(1000);
+    const h = propertyHistogram(many, false, 10);
+    expect(h.counts.reduce((a, b) => a + b, 0)).toBe(200_000);
+    expect(magBins(16.02, 18.97)).toEqual({ lo: 16, hi: 19, bins: 60 });
+  });
 });
 
 describe("synthetic_generate resume prefill", () => {
@@ -205,5 +244,92 @@ describe("synthetic_generate resume prefill", () => {
     const clean = { ...step, last_params: { extra_flags: "--seed 2" } };
     expect(resumeSafeStep(clean)).toEqual({ step: clean, dropped: [] });
     expect(resumeSafeStep({ ...step, last_params: null }).dropped).toEqual([]);
+  });
+});
+
+describe("truth-source type chips", () => {
+  const counts = { galaxy: 27, star: 1, lens: 0, other: 0, off_field: 2 };
+
+  it("starts with every present type shown and offers a chip per present type", () => {
+    expect(sourceTypeChips(counts, [])).toEqual([
+      { type: "galaxy", count: 27, shown: true },
+      { type: "star", count: 1, shown: true },
+    ]);
+  });
+
+  it("a click hides that type, a second click shows it again (a real toggle, not solo)", () => {
+    const hidden = toggleHiddenType([], "star");
+    expect(hidden).toEqual(["star"]);
+    expect(sourceTypeChips(counts, hidden)).toEqual([
+      { type: "galaxy", count: 27, shown: true },
+      { type: "star", count: 1, shown: false },
+    ]);
+    expect(toggleHiddenType(hidden, "star")).toEqual([]);
+  });
+
+  it("a record with one type can hide it (its lone chip is not a no-op)", () => {
+    const one = { galaxy: 37, star: 0, lens: 0, other: 0, off_field: 0 };
+    const hidden = toggleHiddenType([], "galaxy");
+    expect(sourceTypeChips(one, hidden)).toEqual([{ type: "galaxy", count: 37, shown: false }]);
+    expect(shownTypes(hidden)("galaxy")).toBe(false);
+  });
+
+  it("filters the sources by the hidden list", () => {
+    const show = shownTypes(["star"]);
+    expect(["galaxy", "star", "lens", "other"].filter(show)).toEqual(["galaxy", "lens", "other"]);
+    expect(["galaxy", "star"].filter(shownTypes([]))).toEqual(["galaxy", "star"]);
+  });
+
+  it("ignores unknown types in the URL", () => {
+    expect(toggleHiddenType(["bogus"], "star")).toEqual(["star"]);
+    expect(sourceTypeChips(counts, ["bogus"]).every((c) => c.shown)).toBe(true);
+  });
+});
+
+describe("cutout gallery tiles", () => {
+  const it_ = (file: string, id: number | null, size: number | null, mag: number | null = 17.8) =>
+    ({ file, id, size, ra: null, dec: null, mag });
+
+  it("shows one tile per star, the navigator's size preferred, the other sizes listed", () => {
+    const tiles = cutoutTiles([
+      it_("star_0001_255.fits", 1, 255), it_("star_0001_511.fits", 1, 511),
+      it_("star_0002_255.fits", 2, 255, 18.1), it_("star_0002_511.fits", 2, 511, 18.1),
+    ], 511);
+    expect(tiles.map((t) => [t.id, t.file, t.sizes])).toEqual([
+      [1, "star_0001_511.fits", [255, 511]],
+      [2, "star_0002_511.fits", [255, 511]],
+    ]);
+  });
+
+  it("without the navigator's size keeps the largest, and a star with one size keeps it", () => {
+    const tiles = cutoutTiles([it_("star_0003_127.fits", 3, 127), it_("star_0003_255.fits", 3, 255), it_("star_0004_127.fits", 4, 127)], 511);
+    expect(tiles.map((t) => [t.id, t.size])).toEqual([[3, 255], [4, 127]]);
+  });
+
+  it("keeps files it cannot name (no star id) as their own tiles, in order", () => {
+    const tiles = cutoutTiles([it_("odd.fits", null, null), it_("star_0001_255.fits", 1, 255), it_("odd2.fits", null, null)], null);
+    expect(tiles.map((t) => t.key)).toEqual(["file:odd.fits", "star:1", "file:odd2.fits"]);
+  });
+});
+
+describe("PSF band state badges", () => {
+  const b = (name: string, state: "empirical" | "no_empirical" | "not_cached") => ({ name, state });
+
+  it("groups the bands that share a state into one badge, in band order", () => {
+    expect(psfBandGroups([b("VIS", "empirical"), b("Y_E", "no_empirical"), b("J_E", "not_cached"), b("H_E", "not_cached")]))
+      .toEqual([
+        { state: "empirical", bands: ["VIS"], label: "VIS: empirical" },
+        { state: "no_empirical", bands: ["Y_E"], label: "Y: no empirical PSF" },
+        { state: "not_cached", bands: ["J_E", "H_E"], label: "J, H: not cached" },
+      ]);
+  });
+
+  it("says all bands when every band shares the state", () => {
+    const all = ["VIS", "Y_E", "J_E", "H_E"].map((n) => b(n, "not_cached"));
+    expect(psfBandGroups(all)).toEqual([{ state: "not_cached", bands: ["VIS", "Y_E", "J_E", "H_E"], label: "All bands: not cached" }]);
+  });
+
+  it("returns nothing for no bands", () => {
+    expect(psfBandGroups([])).toEqual([]);
   });
 });

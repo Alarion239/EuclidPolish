@@ -158,9 +158,65 @@ describe("Results tab", () => {
     expect(screen.getAllByText("WCS").length).toBe(2);                  // the header + REAL's badge
     expect(screen.getAllByText("no WCS").length).toBe(2);
     const thumb = document.querySelector<HTMLImageElement>(`img[src^="/viewer/results/${REAL.id}/panel.png"]`);
-    expect(thumb?.getAttribute("src")).toBe(`/viewer/results/${REAL.id}/panel.png?size=88`);
+    expect(thumb?.getAttribute("src")).toBe(`/viewer/results/${REAL.id}/panel.png?size=128`);
     fireEvent.click(screen.getByText("tile 42"));
     expect(useInspector.getState().current).toEqual({ kind: "figure", id: REAL2.id });
+  });
+
+  it("opens a thumbnail full size (every panel, pixels kept) without opening the inspector", async () => {
+    show(<Results />, "/figures/results?regime=real");
+    await screen.findByText("tile 42");
+    useInspector.getState().clear();
+    fireEvent.click(screen.getByRole("button", { name: "View NEXUS F200W tile 0040 full size" }));
+    const dlg = await screen.findByRole("dialog", { name: "NEXUS F200W tile 0040" });
+    expect(useInspector.getState().current).toBeNull();
+    const shown = () => within(dlg).getByRole("img", { name: /NEXUS F200W tile 0040, / }).getAttribute("src");
+    // The thumbnail recipe first, at the crop's own size (no ?size=), upscaled by CSS.
+    expect(shown()).toBe(`/viewer/results/${REAL.id}/panel.png?tier=sr&mode=VIS_H`);
+    fireEvent.click(within(dlg).getByRole("button", { name: "VIS Dirty" }));
+    expect(shown()).toBe(`/viewer/results/${REAL.id}/panel.png?tier=dirty&mode=VIS`);
+    expect(within(dlg).queryByRole("radio", { name: "Actual size" })).toBeNull();
+    fireEvent.click(within(dlg).getByRole("button", { name: "Open its card" }));
+    expect(useInspector.getState().current).toEqual({ kind: "figure", id: REAL.id });
+  });
+
+  it("shows the crops as a gallery of large thumbnails (?view=gallery), newest first, selectable", async () => {
+    show(<Results />, "/figures/results?view=gallery&regime=real");
+    await screen.findByText("tile 42");
+    const list = screen.getByRole("list", { name: "Saved viewer results" });
+    const items = await within(list).findAllByRole("listitem");
+    expect(items.map((li) => within(li).getByRole("button", { name: /full size$/ }).getAttribute("aria-label")))
+      .toEqual(["View NEXUS F200W tile 0040 full size", "View tile 42 full size"]);   // REAL is the newer crop
+    const img = items[1].querySelector("img");
+    expect(img?.getAttribute("src")).toBe(`/viewer/results/${REAL2.id}/panel.png?size=400`);
+    fireEvent.click(within(items[1]).getByRole("checkbox", { name: "Select tile 42" }));
+    expect(screen.getByText("1 selected")).toBeTruthy();
+    fireEvent.click(within(items[0]).getByRole("button", { name: "View NEXUS F200W tile 0040 full size" }));
+    expect(await screen.findByRole("dialog", { name: "NEXUS F200W tile 0040" })).toBeTruthy();
+  });
+
+  it("returns focus to the thumbnail that opened the full-size view", async () => {
+    show(<Results />, "/figures/results?view=gallery&regime=real");
+    await screen.findByText("tile 42");
+    const open = screen.getByRole("button", { name: "View tile 42 full size" });
+    open.focus();
+    fireEvent.click(open);
+    const dlg = await screen.findByRole("dialog", { name: "tile 42" });
+    fireEvent.keyDown(dlg, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "tile 42" })).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(open));
+  });
+
+  it("filters the gallery by text (?q=) and says what it shows", async () => {
+    show(<Results />, "/figures/results?view=gallery&regime=real");
+    await screen.findByText("tile 42");
+    expect(screen.getByText("Newest first · all 2")).toBeTruthy();
+    fireEvent.change(screen.getByRole("searchbox", { name: "Find saved results" }), { target: { value: "tile vr-aaaa" } });
+    await waitFor(() => expect(loc()).toMatch(/q=tile(\+| )vr-aaaa/));
+    const list = screen.getByRole("list", { name: "Saved viewer results" });
+    expect(within(list).getAllByRole("button", { name: /full size$/ }).map((b) => b.getAttribute("aria-label")))
+      .toEqual(["View NEXUS F200W tile 0040 full size"]);
+    expect(screen.getByText("Newest first · 1 of 2")).toBeTruthy();
   });
 
   it("filters by regime through the URL", async () => {
@@ -207,6 +263,22 @@ describe("Grid tab", () => {
     expect(png.getAttribute("href")).toContain("dpi=300");
   });
 
+  it("opens the sheet full size (a sharper render) from the preview, with Fit / Fit width / Actual size", async () => {
+    show(<Grid />, `/figures/grid?regime=real&cols=${REAL.id}&rows=dirty:VIS,sr:VIS_H`);
+    fireEvent.click(await screen.findByRole("button", { name: "View the grid full size" }));
+    const dlg = await screen.findByRole("dialog", { name: "Figure grid" });
+    const img = within(dlg).getByRole("img", { name: /Figure grid, 2 rows × 1 column$/ });
+    expect(dlg.textContent).toContain("2 rows × 1 column · rendered at 200 dpi");
+    expect(img.getAttribute("src")).toBe(`/viewer/results/grid.png?result=${REAL.id}&row=dirty%3AVIS&row=sr%3AVIS_H&dpi=200&inline=1`);
+    fireEvent.click(within(dlg).getByRole("radio", { name: "Fit width" }));
+    expect(dlg.querySelector(".fig-lightbox__stage")?.getAttribute("data-scale")).toBe("width");
+    fireEvent.click(within(dlg).getByRole("radio", { name: "Actual size" }));
+    expect(dlg.querySelector(".fig-lightbox__stage")?.getAttribute("data-scale")).toBe("actual");
+    expect(within(dlg).getByRole("link", { name: /PNG · 300 dpi/ }).getAttribute("href")).toContain("dpi=300");
+    fireEvent.click(within(dlg).getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Figure grid" })).toBeNull());
+  });
+
   it("keeps the last preview up (dimmed) while an edit settles and renders", async () => {
     show(<Grid />, `/figures/grid?regime=real&cols=${REAL.id}&rows=dirty:VIS,sr:VIS_H`);
     const first = `/viewer/results/grid.png?result=${REAL.id}&row=dirty%3AVIS&row=sr%3AVIS_H&dpi=120&inline=1`;
@@ -242,11 +314,16 @@ describe("Grid tab", () => {
     expect(document.querySelector('img[src^="/viewer/results/grid.png"]')).toBeNull();
   });
 
-  it("reports cells a column cannot render", async () => {
+  it("reports cells a column cannot render, and still previews the rows every column has", async () => {
     show(<Grid />, `/figures/grid?regime=real&cols=${REAL.id},${REAL2.id}&rows=dirty:VIS,jwst:native`);
-    expect((await screen.findAllByText("1 cell unavailable")).length).toBeGreaterThan(0);
-    expect(document.querySelector('img[src^="/viewer/results/grid.png"]')).toBeNull();
+    expect(await screen.findByText("1 cell unavailable: the preview leaves out 1 row")).toBeTruthy();
+    // the preview draws dirty:VIS (every column has it), not the jwst row
+    await waitFor(() => expect(document.querySelector('img[src^="/viewer/results/grid.png"]')).not.toBeNull());
+    const src = document.querySelector('img[src^="/viewer/results/grid.png"]')!.getAttribute("src")!;
+    expect(src).toContain("row=dirty%3AVIS");
+    expect(src).not.toContain("jwst");
     expect(screen.getByText(/1 missing/)).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: "Use the rows every column has" }).length).toBeGreaterThan(0);
   });
 
   it("applies a preset and a saved layout from the template picker", async () => {

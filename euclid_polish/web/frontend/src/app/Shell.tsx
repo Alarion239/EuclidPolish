@@ -1,16 +1,24 @@
 /* The console shell: the data router's root layout route.
  *
- *   ┌ rail ┬ top bar (breadcrumbs · ⌘K · FASRC · jobs · display · theme · ?) ┐
- *   │      ├ version banner (server behind HEAD)                              │
- *   │      ├ stage (<Outlet/>: the workspace) ║ inspector (resizable)         │
- *   └──────┴──────────────────────────────────────────────────────────────────┘
+ *   ┌ rail ┬ top bar: breadcrumbs, ⌘K, FASRC, jobs, display, theme, ?  ─────┐
+ *   │      ├ stage (scrolls) ─────────────────────────╥ inspector (resizable) │
+ *   │      │  restart banner (only when backend code  ║                       │
+ *   │      │  changed; scrolls away with the page)    ║                       │
+ *   │      │  page (<Outlet/>: the workspace; gets    ║                       │
+ *   │      │  the height left under the banner)       ║                       │
+ *   └──────┴──────────────────────────────────────────╨───────────────────────┘
+ *
+ * Only the one-line top bar stays put; nothing else is pinned over the
+ * images.
  *
  * It mounts, exactly once: `UiProvider` (tooltips, toasts, confirm() host —
  * inside the router so their content can use <Link>, FOUNDATION §9.1), the
  * command palette (+ the global "Run a job" actions), the ? sheet, the
  * Display panel, the global shortcuts, the `?inspect=` sync, local and SLURM
  * job toasts, `document.title` and the stage scroll management. Below 900 px the rail becomes a drawer and the inspector a
- * sheet. The inspector width is persisted (prefs.inspectorWidth).
+ * sheet. The inspector width is persisted (prefs.inspectorWidth). While the
+ * Display sheet is open (`data-display`) the body gives up the sheet's width
+ * (from 640 px), so the images refit beside it rather than under it.
  */
 import * as RDialog from "@radix-ui/react-dialog";
 import { useEffect, useRef } from "react";
@@ -34,6 +42,7 @@ import { useShellUi } from "./shellStore";
 import { ShortcutSheet } from "./ShortcutSheet";
 import { TopBar, VersionBanner } from "./TopBar";
 import { useStageScroll } from "./useStageScroll";
+import { viewerTakesEscape } from "./viewerEscape";
 import "./shell.css";
 // Workspace inspector kinds register at app start (their components are
 // lazy chunks), so a cold `?inspect=<kind>:<id>` link opens from any page.
@@ -57,7 +66,9 @@ function RailDrawer() {
   return (
     <RDialog.Root open={open} onOpenChange={(v) => useShellUi.getState().setOpen("drawer", v)}>
       <RDialog.Portal>
-        <RDialog.Overlay className="ui-dialog__overlay" />
+        {/* The scrim sits UNDER the drawer (the kit's dialog overlay is above
+            every drawer): a click on it closes, a click in the drawer navigates. */}
+        <RDialog.Overlay className="shell__scrim" />
         <RDialog.Content className="rail-drawer" aria-describedby={undefined}>
           <RDialog.Title className="sr-only">Navigation</RDialog.Title>
           <Rail inDrawer onNavigate={close} />
@@ -72,8 +83,10 @@ function InspectorSheet() {
   return (
     <RDialog.Root open={open} onOpenChange={(v) => { if (!v) useInspector.getState().hide(); }}>
       <RDialog.Portal>
-        <RDialog.Overlay className="ui-dialog__overlay" />
-        <RDialog.Content className="inspector-sheet" aria-describedby={undefined}>
+        {/* A light scrim under the sheet: its images stay bright and take the pointer. */}
+        <RDialog.Overlay className="shell__scrim shell__scrim--light" />
+        <RDialog.Content className="inspector-sheet" aria-describedby={undefined}
+          onEscapeKeyDown={(e) => { if (viewerTakesEscape(document.querySelector(".inspector-sheet"))) e.preventDefault(); }}>
           <RDialog.Title className="sr-only">Inspector</RDialog.Title>
           <InspectorPanel />
         </RDialog.Content>
@@ -91,6 +104,7 @@ function ShellFrame() {
   const railCollapsed = usePrefs((s) => s.railCollapsed);
   const inspectorWidth = usePrefs((s) => s.inspectorWidth);
   const inspecting = useInspector((s) => s.open && s.current != null);
+  const displayOpen = useShellUi((s) => s.display);
   const stageRef = useStageScroll<HTMLElement>();
   const inspectorRef = useRef<PanelImperativeHandle | null>(null);
 
@@ -102,7 +116,7 @@ function ShellFrame() {
   const [wMin, wMax] = INSPECTOR_WIDTH_RANGE;
   return (
     <div className="shell" data-rail={railCollapsed && !narrow ? "collapsed" : "expanded"}
-      data-narrow={narrow || undefined}>
+      data-narrow={narrow || undefined} data-display={displayOpen || undefined}>
       <a className="skip-link" href="#main">Skip to content</a>
       {!narrow && <Rail collapsed={railCollapsed} />}
       <div className="shell__main">
@@ -116,10 +130,10 @@ function ShellFrame() {
             <main id="main" className="stage" ref={stageRef} tabIndex={-1}>
               {/* in the scrolling stage, so it scrolls away with the page */}
               <VersionBanner />
-              <Outlet />
+              <div className="stage__page"><Outlet /></div>
             </main>
           </Panel>
-          {docked && <Separator className="shell__sep" />}
+          {docked && <Separator className="shell__sep" aria-label="Resize the inspector" />}
           {docked && (
             <Panel id="inspector" panelRef={inspectorRef} defaultSize={inspectorWidth}
               minSize={wMin} maxSize={wMax} groupResizeBehavior="preserve-pixel-size"

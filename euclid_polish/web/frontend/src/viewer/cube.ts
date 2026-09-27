@@ -11,7 +11,13 @@
  *   X-Cube-Index (resolved position; also for ?id= requests)
  *   X-Cube-Amp / X-Cube-Var (PCA eigen-image amplitude / variance fraction)
  *   X-Cube-Direct-RGB "1" (a JWST colour composite).
- * Errors are JSON {error} with the status code; the message is shown verbatim. */
+ * Errors are JSON {error} with the status code; the message is shown verbatim.
+ *
+ * /viewer/meta goes through the app's query cache (api/query.ts, keyed by
+ * URL), so a page that reads the same meta with useResource and the viewer
+ * share ONE request, and a remount within META_FRESH_MS reuses it. */
+import { ApiError, apiGet, isAbortError } from "../api/client";
+import { queryClient, resourceKey } from "../api/query";
 import type { CubeLike } from "./color";
 import { parseWcs, type Wcs } from "./wcs";
 
@@ -122,13 +128,79 @@ export function parseCube(key: string, headers: Headers, buffer: ArrayBuffer): C
   };
 }
 
-export async function fetchMeta<T = unknown>(collection: string, params: Params, signal?: AbortSignal): Promise<T> {
-  const r = await fetch(metaUrl(collection, params), { signal, headers: { Accept: "application/json" } });
-  if (!r.ok) throw await readViewerError(r);
-  return await r.json() as T;
+const abortError = () => new DOMException("The operation was aborted.", "AbortError");
+
+/** How long a fetched meta is reused by a (re)mounting viewer without a new
+ *  request. Short: a remount later re-validates the meta (small JSON) and
+ *  keeps the cubes when it is unchanged (`noteMeta`). */
+export const META_FRESH_MS = 15_000;
+
+/** The server's message of a failed GET, as readViewerError reads it
+ *  ({error}, {error: {message}}, {message}, plain text). */
+function metaError(e: unknown): unknown {
+  if (!(e instanceof ApiError) || e.status === 0) return e;
+  const b = e.body as { error?: unknown; message?: unknown } | string | null;
+  const nested = b && typeof b === "object" && b.error && typeof (b.error as { message?: unknown }).message === "string"
+    ? (b.error as { message: string }).message : null;
+  const plain = typeof b === "string" && b.trim() && !b.trim().startsWith("<") ? b.trim() : null;
+  const own = b && typeof b === "object" && typeof b.error === "string" ? b.error : null;
+  const msg = own ?? nested ?? (b && typeof b === "object" && typeof b.message === "string" ? b.message : null) ?? plain;
+  return msg && msg !== e.message ? new ApiError({ status: e.status, message: msg, code: e.code, body: e.body, url: e.url }) : e;
 }
 
-const abortError = () => new DOMException("The operation was aborted.", "AbortError");
+const getMeta = (url: string) => apiGet(url).catch((e) => { throw metaError(e); });
+
+/** GET /viewer/meta/<collection> through the shared query cache (one request
+ *  for every concurrent reader). `force` skips the cache (an explicit reload).
+ *  Aborting `signal` rejects this caller only; the shared request goes on. */
+export async function fetchMeta<T = unknown>(collection: string, params: Params, signal?: AbortSignal, { force = false } = {}): Promise<T> {
+  const url = metaUrl(collection, params);
+  if (signal?.aborted) throw abortError();
+  const shared = queryClient.fetchQuery({
+    queryKey: resourceKey(url),
+    // The request takes no abort signal: it is shared with the page's own
+    // useResource of the same URL, and a meta is small.
+    queryFn: () => getMeta(url),
+    staleTime: force ? 0 : META_FRESH_MS,
+    retry: false,
+  }) as Promise<T>;
+  if (!signal) return shared;
+  return await new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(abortError());
+    signal.addEventListener("abort", onAbort, { once: true });
+    shared.then(
+      (v) => { signal.removeEventListener("abort", onAbort); resolve(v); },
+      (e) => { signal.removeEventListener("abort", onAbort); reject(isAbortError(e) ? abortError() : e); },
+    );
+  });
+}
+
+/* The last meta each URL returned (object identity, then a content hash):
+   the cubes of a collection are dropped only when its meta really changed —
+   never merely because a viewer mounted (returning to a view reuses them). */
+const lastMeta = new Map<string, { obj: unknown; hash: number }>();
+
+function hashText(text: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) { h ^= text.charCodeAt(i); h = Math.imul(h, 0x01000193); }
+  return h >>> 0;
+}
+
+/** Record the meta a URL returned. True when it differs from the one seen
+ *  before for that URL (so cubes cached under it may be stale); false for the
+ *  first meta of a URL and for an unchanged one. */
+export function noteMeta(url: string, meta: unknown): boolean {
+  const prev = lastMeta.get(url);
+  if (prev && prev.obj === meta) return false;
+  let hash: number;
+  try { hash = hashText(JSON.stringify(meta) ?? ""); } catch { hash = Math.random() * 2 ** 32; }
+  lastMeta.set(url, { obj: meta, hash });
+  return !!prev && prev.hash !== hash;
+}
+
+/** Forget the recorded metas (tests). */
+export function resetMetaNotes(): void { lastMeta.clear(); }
+
 
 type Pending = { promise: Promise<CubeRec>; controller: AbortController; consumers: number };
 

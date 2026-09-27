@@ -2,9 +2,12 @@
  * run across (columns), display recipes run down (rows); the A4 PNG/PDF is
  * rebuilt server-side from the saved raw cubes with the locked absolute
  * asinh transfer. Templates (presets + saved layouts), live preview,
- * thumbnails of every saved crop. Columns, rows, regime, template and the
- * export dpi live in the URL. */
-import { useEffect, useMemo, useState } from "react";
+ * thumbnails of every saved crop. The preview is as large as the window
+ * allows (above the editors in a narrow pane); a click on it (or "Full
+ * size") opens the sheet in the Lightbox at FULL_DPI with Fit / Actual size,
+ * and a crop's thumbnail opens that crop full size. Columns, rows, regime,
+ * template and the export dpi live in the URL. */
+import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { Link } from "react-router-dom";
 import { useResource } from "../../../api/query";
 import { openInspector } from "../../../app/inspector";
@@ -15,16 +18,25 @@ import {
   Tooltip, confirm, toast, type DataColumn, type SelectOption,
 } from "../../../ui";
 import { URLS, deleteLayout, gridUrl, saveLayout, type FigureMode, type FigureRegime, type FigureTier, type GridLayout, type RecipeKey, type SavedResult } from "../api";
-import { ResultThumb, ServerImage, WcsBadge } from "../common";
+import { ServerImage, ThumbButton, WcsBadge } from "../common";
+import { Lightbox, ResultLightbox } from "../Lightbox";
 import { canAddGridRow, selectionForPreset } from "../grid/limits";
 import {
-  DEFAULT_PRESET, MODES, PRESETS, TIERS, commonRecipes, gridStatus, isRecipeKey, layoutValue,
+  DEFAULT_PRESET, MODES, PREVIEW, PRESETS, TIERS, commonRecipes, previewRows, gridSizeText, gridStatus, isRecipeKey, layoutValue,
   missingRecipes, modeTone, moveItem, normalizeIndex, recipeLabel, resultRegime, sanitizeColumns, splitRecipe,
 } from "../model";
 import "../figures.css";
 import "../register";
 
 const PREVIEW_DPI = 120;
+/** The full-size view's render: sharp at 100 % on a 2× screen, ~0.4 s. */
+const FULL_DPI = 200;
+/** The preview's cap in the CSS comes from model.ts PREVIEW (the full-size
+ *  view is tested to be taller than it). */
+const PREVIEW_GEOMETRY = {
+  "--fig-sticky-top": `${PREVIEW.stickyTop}px`, "--fig-preview-head": `${PREVIEW.head}px`,
+  "--fig-preview-stacked": `${PREVIEW.stackedChrome}px`, "--fig-preview-min": `${PREVIEW.stackedMin}px`, "--fig-paper-pad": `${PREVIEW.pad}px`,
+} as CSSProperties;
 const DPI_OPTIONS: SelectOption[] = [150, 300, 600].map((d) => ({ value: String(d), label: `${d} dpi` }));
 const REGIMES: { value: FigureRegime; label: string }[] = [{ value: "real", label: "Real" }, { value: "synthetic", label: "Synthetic" }];
 
@@ -45,6 +57,8 @@ export default function Grid() {
   const [tpl, setTpl] = useUrlState<string>("tpl", DEFAULT_PRESET.id);
   const [dpi, setDpi] = useUrlState<string>("dpi", "300");
   const [showPreview, setShowPreview] = useUrlState<boolean>("preview", true);
+  const [fullGrid, setFullGrid] = useState(false);
+  const [fullCrop, setFullCrop] = useState<SavedResult | null>(null);
   const regime: FigureRegime = regimeRaw === "synthetic" ? "synthetic" : "real";
   const rows = useMemo(() => rowsRaw.filter(isRecipeKey), [rowsRaw]);
 
@@ -63,7 +77,15 @@ export default function Grid() {
   });
   const activeLayout = tpl.startsWith("layout:") ? layouts.find((l) => layoutValue(l) === tpl) : undefined;
 
-  const previewQuery = status.canRender ? gridUrl(cols, rows, "png", PREVIEW_DPI, true) : null;
+  // With unavailable cells the preview still draws the rows every column has
+  // (the renderer needs every cell); the status says what is left out.
+  const drawable = useMemo(() => previewRows(rows, colResults), [rows, colResults]);
+  const partial = status.unsupported > 0 && drawable.length > 0;
+  const shown = partial ? gridStatus({
+    loading: index.loading, error: !!index.error || norm.malformed, results: norm.results,
+    columns: loaded ? cols : [], rows: drawable, maxResults: norm.maxResults, maxRows: norm.maxRows,
+  }) : status;
+  const previewQuery = shown.canRender ? gridUrl(cols, partial ? drawable : rows, "png", PREVIEW_DPI, true) : null;
   const settledSrc = useSettled(previewQuery, 450);
   /* the first render goes out at once; later edits settle for 450 ms while the
      last render stays up (dimmed) instead of blanking the preview */
@@ -178,6 +200,7 @@ export default function Grid() {
     { id: "fig-grid-common", label: "Use the rows every column supports", group: "Figure grid", disabled: !colResults.length, run: useCommon },
     { id: "fig-grid-clear", label: "Clear the grid columns", group: "Figure grid", disabled: !cols.length, run: () => { setCols([]); custom(); } },
     { id: "fig-grid-preview", label: showPreview ? "Collapse the live preview" : "Show the live preview", group: "Figure grid", run: () => setShowPreview(!showPreview) },
+    { id: "fig-grid-full", label: "View the grid full size", group: "Figure grid", disabled: !status.canRender, run: () => setFullGrid(true) },
     { id: "fig-grid-refresh", label: "Refresh saved crops", group: "Figure grid", run: () => { void index.reload(); void layoutsRes.reload(); } },
   ]);
 
@@ -189,7 +212,7 @@ export default function Grid() {
 
   const pickColumns = useMemo<DataColumn<SavedResult>[]>(() => [
     { id: "thumb", header: "", sortable: false, filterable: false, csv: false, hideable: false, width: 52,
-      cell: (r) => <ResultThumb result={r} size={40} /> },
+      cell: (r) => <ThumbButton result={r} size={40} onOpen={() => setFullCrop(r)} /> },
     { id: "label", header: "Saved crop", width: 190, filterText: (r) => `${r.label} ${r.source?.collection ?? ""} ${r.id}`,
       cell: (r) => {
         const missing = missingRecipes(r, rows);
@@ -218,7 +241,7 @@ export default function Grid() {
           <div className="fig-pop">
             <Input value={layoutName} onChange={setLayoutName} placeholder="Layout name" aria-label="Layout name" onEnter={() => void doSave()} autoFocus />
             <div className="fig-pop__row">
-              <span className="muted fig-pop__hint">{layouts.some((l) => l.name.toLowerCase() === layoutName.trim().toLowerCase()) ? "Updates the layout with this name" : `${rows.length} rows × ${colResults.length} columns`}</span>
+              <span className="muted fig-pop__hint">{layouts.some((l) => l.name.toLowerCase() === layoutName.trim().toLowerCase()) ? "Updates the layout with this name" : gridSizeText(rows.length, colResults.length)}</span>
               <Button size="sm" variant="primary" loading={savingLayout} disabled={!layoutName.trim()} onClick={() => void doSave()}>Save layout</Button>
             </div>
           </div>
@@ -326,20 +349,30 @@ export default function Grid() {
           </section>
         </div>
 
-        <section className="fig-grid__preview" aria-label="Live preview" data-collapsed={!showPreview || undefined}>
+        <section className="fig-grid__preview" aria-label="Live preview" data-collapsed={!showPreview || undefined} style={PREVIEW_GEOMETRY}>
           <div className="fig-grid__previewhead">
-            <span className="fig-grid__status fig-ellipsis" data-tone={status.canRender ? status.tone : undefined} role="status">
-              {status.canRender ? status.text : "Preview"}
+            <span className="fig-grid__status fig-ellipsis" data-tone={status.canRender ? status.tone : partial ? "warn" : undefined} role="status">
+              {status.canRender ? status.text
+                : partial ? `${status.text}: the preview leaves out ${rows.length - drawable.length} row${rows.length - drawable.length === 1 ? "" : "s"}`
+                  : "Preview"}
             </span>
+            {partial && <Button size="sm" variant="ghost" onClick={useCommon}>Use the rows every column has</Button>}
+            {showPreview && status.canRender && (
+              <Button size="sm" variant="ghost" icon="zoomIn" onClick={() => setFullGrid(true)}>Full size</Button>
+            )}
             <IconButton icon={showPreview ? "chevronUp" : "chevronDown"} size="sm"
               label={showPreview ? "Collapse the preview" : "Show the preview"} pressed={!showPreview}
               onClick={() => setShowPreview(!showPreview)} />
           </div>
           {showPreview && (
             <ServerImage src={previewSrc} keepPrevious pending={previewPending}
-              alt={`Figure grid preview, ${rows.length} rows × ${colResults.length} columns`}
-              className="fig-grid__paper" minHeight={280}>
-              {!status.canRender && (
+              alt={`Figure grid preview, ${gridSizeText(partial ? drawable.length : rows.length, colResults.length)}`}
+              className="fig-grid__paper" minHeight={280}
+              overlay={status.canRender ? (
+                <button type="button" className="fig-grid__zoom" aria-label="View the grid full size" title="View full size"
+                  onClick={() => setFullGrid(true)} />
+              ) : undefined}>
+              {!shown.canRender && (
                 <EmptyState compact icon="columns" title={status.text}
                   action={status.unsupported > 0 && commonRecipes(colResults).length
                     ? <Button size="sm" onClick={useCommon}>Use the rows every column has</Button>
@@ -351,6 +384,15 @@ export default function Grid() {
           )}
         </section>
       </div>
+      <Lightbox open={fullGrid && status.canRender} onOpenChange={setFullGrid}
+        title="Figure grid" description={`${gridSizeText(rows.length, colResults.length)} · rendered at ${FULL_DPI} dpi`}
+        src={fullGrid && status.canRender ? gridUrl(cols, rows, "png", FULL_DPI, true) : null}
+        alt={`Figure grid, ${gridSizeText(rows.length, colResults.length)}`}
+        footer={<>
+          <Button size="sm" icon="download" href={status.canRender ? gridUrl(cols, rows, "png", exportDpi) : undefined} download>PNG · {exportDpi} dpi</Button>
+          <Button size="sm" icon="download" href={status.canRender ? gridUrl(cols, rows, "pdf", exportDpi) : undefined} download>PDF</Button>
+        </>} />
+      <ResultLightbox result={fullCrop} onClose={() => setFullCrop(null)} />
     </Page>
   );
 }

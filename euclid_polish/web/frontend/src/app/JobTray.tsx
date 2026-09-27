@@ -15,7 +15,7 @@ import {
   JOBS_FEED_KEY, cancelJob, cancelSlurmJob, isTerminal, refreshJobsFeed, useJobsFeed, useJobsStore,
   type Job, type SlurmFeed, type SlurmJob,
 } from "../api/jobs";
-import { queryClient } from "../api/query";
+import { queryClient, useServerHealth } from "../api/query";
 import { formatDuration, formatRelative } from "../format";
 import {
   Badge, Button, Icon, IconButton, Popover, ProgressBar, confirm, toast, type Tone,
@@ -144,10 +144,17 @@ export function JobList({ jobs, limit, onOpen, empty }: {
 
 export function JobTrayPanel({ onClose }: { onClose?: () => void }) {
   const feed = useJobsFeed();
+  const health = useServerHealth();
   const LIMIT = 8;
   const hidden = Math.max(0, feed.jobs.length - LIMIT);
   return (
-    <div className="jobtray" aria-label="Jobs">
+    <div className="jobtray" aria-label="Jobs" data-stale={health.down || undefined}>
+      {health.down && (
+        <p className="jobtray__stale" role="note">
+          The local server is not responding, so these are the job states it last sent
+          {health.lastOkAt ? ` (${formatRelative(health.lastOkAt)})` : ""}. They update when it answers again.
+        </p>
+      )}
       <section className="jobtray__sec">
         <header className="jobtray__head">
           <h3>Local jobs</h3>
@@ -189,13 +196,16 @@ export function JobTray() {
   const open = useShellUi((s) => s.tray);
   const setOpen = (v: boolean) => useShellUi.getState().setOpen("tray", v);
   const feed = useJobsFeed();
+  const stale = useServerHealth().down;
   const n = feed.runningCount;
+  const label = n ? `Jobs: ${n} running` : "Jobs";
   return (
     <Popover open={open} onOpenChange={setOpen} align="end" label="Jobs" width={400}
       className="jobtray__pop"
       trigger={(
-        <button type="button" className="topbar__btn" data-active={n > 0 || undefined}
-          aria-label={n ? `Jobs: ${n} running` : "Jobs"} title="Jobs">
+        <button type="button" className="topbar__btn" data-active={n > 0 || undefined} data-stale={stale || undefined}
+          aria-label={stale ? `${label} when the server last answered` : label}
+          title={stale ? "Jobs (last known — the server is not responding)" : "Jobs"}>
           <Icon name="activity" />
           {n > 0 && <span className="topbar__count" aria-hidden="true">{n}</span>}
         </button>

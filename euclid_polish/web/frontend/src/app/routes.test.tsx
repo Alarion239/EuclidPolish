@@ -1,6 +1,7 @@
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { RouterProvider, createMemoryRouter, useLocation } from "react-router-dom";
-import { describe, expect, it } from "vitest";
+import { Outlet } from "react-router-dom";
+import { describe, expect, it, vi } from "vitest";
 import { MANIFEST, pagePaths } from "./manifest";
 import { ROUTER_FUTURE, buildRoutes, workspaceComponents, type WorkspaceLoader } from "./routes";
 import { Workspace, defineTabs } from "./workspace";
@@ -109,6 +110,31 @@ describe("buildRoutes", () => {
       await landed(`ensemble:${landing}`);
       expect(router.state.location.pathname + router.state.location.search).toBe(`/ensemble/starless/${landing}?x=1`);
       cleanup();
+    }
+  });
+
+  it("contains a workspace whose chunk fails to load: the shell stays, the next page works", async () => {
+    // The console was rebuilt under an open page: the old chunk 404s.
+    const quiet = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const components = {
+        ...fakes,
+        sky: () => Promise.reject(new TypeError("Failed to fetch dynamically imported module: /static/dist/assets/sky-old.js")),
+      };
+      const Layout = () => <div><nav aria-label="Shell">rail</nav><Outlet /></div>;
+      const router = createMemoryRouter(buildRoutes({ components, layout: Layout }), {
+        initialEntries: ["/sky/atlas"], future: ROUTER_FUTURE,
+      });
+      render(<RouterProvider router={router} future={{ v7_startTransition: true }} />);
+      expect(await screen.findByText("Sky hit an error")).toBeTruthy();
+      expect(screen.getByText(/The console was rebuilt while this page was open/)).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Reload page" })).toBeTruthy();
+      expect(screen.getByRole("navigation", { name: "Shell" })).toBeTruthy();   // not the root error page
+      await act(() => router.navigate("/data/records"));
+      await landed("data:records");
+      expect(screen.queryByText("Sky hit an error")).toBeNull();
+    } finally {
+      quiet.mockRestore();
     }
   });
 

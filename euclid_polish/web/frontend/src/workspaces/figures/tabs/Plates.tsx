@@ -36,7 +36,7 @@ const STATIC_PLATES: StaticPlateDef[] = [
 const PLATES = [
   ...STATIC_PLATES.map((p) => ({ value: p.id, label: p.id === "population" ? "Galaxy law" : p.id === "stars" ? "Stars" : "Galaxy 2×2" })),
   { value: "nexus", label: "NEXUS" },
-  { value: "poster", label: "Poster" },
+  { value: "poster", label: "Synthetic poster" },
 ];
 const DPI_OPTIONS: SelectOption[] = [150, 300, 600].map((d) => ({ value: String(d), label: `${d} dpi` }));
 

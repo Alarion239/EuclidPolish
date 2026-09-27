@@ -6,9 +6,12 @@
  * shift-drag line profile, click radial profile, double-click reset). */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useDisplay } from "../state/display";
+import { shortTierLabel } from "./barModel";
 import { planckianXY, srgbGamma, xyToLinearSrgb } from "./color";
+import { drawFrame } from "./draw";
 import { useController, useSettings, useViewer } from "./hooks";
 import { markerShapes, markersOnTier, useMarkers } from "./markers";
+import { cubeIsEmpty } from "./readout";
 import { contentBoxOrigin, frameToImage, frameToImageClamped, imageToFrame, type FrameLayout, type Selection } from "./selection";
 
 type Drag =
@@ -51,6 +54,7 @@ export function Frame({ tier, hidden = false, clip, label, labelRight = false }:
   const visRef = useRef<HTMLCanvasElement>(null);
   const legendRef = useRef<HTMLCanvasElement>(null);
   const [source] = useState(() => document.createElement("canvas"));
+  const [scratch] = useState(() => document.createElement("canvas"));
   const sizeRef = useRef(0);
   const [size, setSize] = useState(0);
   const drag = useRef<Drag | null>(null);
@@ -76,9 +80,9 @@ export function Frame({ tier, hidden = false, clip, label, labelRight = false }:
     ctx.clearRect(0, 0, px, px);
     const L = layout();
     if (!L || source.width < 1 || source.height < 1) return;
-    ctx.imageSmoothingEnabled = false;
-    ctx.drawImage(source, L.sx, L.sy, L.sw, L.sh, L.dx * dpr, L.dy * dpr, L.dw * dpr, L.dh * dpr);
-  }, [layout, source]);
+    // Equal-sized native pixels at any magnification (draw.ts).
+    drawFrame(ctx, source, L, dpr, scratch);
+  }, [layout, source, scratch]);
 
   // Register with the engine (movie frames, lens popups, exports).
   useLayoutEffect(() => {
@@ -102,16 +106,24 @@ export function Frame({ tier, hidden = false, clip, label, labelRight = false }:
     return () => ro.disconnect();
   }, []);
 
+  // A cube with no finite pixel (a JWST cutout outside the mosaic) is not
+  // painted as a flat NaN-coloured square: the frame keeps the neutral ink
+  // and says so. Partial NaNs keep the NaN colour.
+  const empty = shown?.kind === "cube" && cubeIsEmpty(shown.rec);
+  // The per-area display factor (area.ts) follows the other shown tiers.
+  const area = useViewer((s) => (shown?.kind === "cube" ? ctrl.areaFactorOf(shown.rec, s) : 1));
+
   // Render the cube with the display settings (the movie draws itself).
   useEffect(() => {
     if (!shown || tier === "morph") return;
+    if (empty) { source.width = 0; source.height = 0; redraw(); return; }
     const img = ctrl.renderShown(shown, settings);
     if (!img) return;
     if (source.width !== img.width || source.height !== img.height) { source.width = img.width; source.height = img.height; }
     source.getContext("2d")?.putImageData(img, 0, 0);
     redraw();
     ctrl.bumpDrawn();
-  }, [ctrl, tier, shown, settings, source, redraw]);
+  }, [ctrl, tier, shown, settings, source, redraw, empty, area]);
 
   useEffect(() => { redraw(); }, [redraw, view, size, shown]);
 
@@ -301,11 +313,15 @@ export function Frame({ tier, hidden = false, clip, label, labelRight = false }:
   const message = status?.kind === "error" || status?.kind === "missing" ? status.message : "";
   const hint = status?.kind === "error" ? status.hint : undefined;
   const loading = status?.kind === "loading" || (tier === "morph" && progress != null);
-  const text = message ? "" : (label ?? overlay ?? "");
+  // A minimal label: the tier's short name; the full label (cube label +
+  // magnitude) on hover, in the frame's accessible name and in the readout.
+  const residualTier = tier.startsWith("res:");
+  const name = label ?? (residualTier ? ctrl.tierLabel(tier) : shortTierLabel(ctrl.tierLabel(tier)));
+  const detail = message ? "" : (overlay ?? "");
 
   return (
     <div ref={elRef} className={`cv-frame${loading ? " cv-loading" : ""}${hidden ? " cv-frame--hidden" : ""}`}
-      data-tier={tier} role="img" aria-label={text || ctrl.tierLabel(tier)}
+      data-tier={tier} role="img" aria-label={detail || ctrl.tierLabel(tier)}
       style={clip ? { clipPath: clip } : undefined}
       onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp}
       onPointerCancel={onPointerUp} onPointerLeave={onPointerLeave}
@@ -350,12 +366,20 @@ export function Frame({ tier, hidden = false, clip, label, labelRight = false }:
           <span className="cv-legend-tick">3k</span>
         </div>
       )}
-      {text && <div className={`cv-overlay${labelRight ? " cv-overlay--right" : ""}`}>{text}</div>}
+      {name && (
+        <div className={`cv-label${labelRight ? " cv-label--right" : ""}`} aria-hidden="true">
+          <span className="cv-label__name">{name}</span>
+          {detail && detail !== name && <span className="cv-label__detail">{detail}</span>}
+        </div>
+      )}
       {message && <div className="cv-msg"><span>{message}{hint && hint !== message && <><br /><em>{hint}</em></>}</span></div>}
+      {!message && empty && (
+        <div className="cv-msg cv-msg--quiet"><span>No {name || "image"} data here<br /><em>Every pixel of this cutout is blank</em></span></div>
+      )}
       {tier === "morph" && progress != null && (
         <div className="cv-movie-prog" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(progress * 100)}>
           <div className="cv-movie-prog__fill" style={{ width: `${Math.round(progress * 100)}%` }} />
-          <div className="cv-movie-prog__lbl">caching movie… {Math.round(progress * 100)}%</div>
+          <div className="cv-movie-prog__lbl">Caching the movie… {Math.round(progress * 100)}%</div>
         </div>
       )}
     </div>

@@ -19,8 +19,19 @@
 
 /* position: relative: the stage is the containing block of every absolutely
    positioned descendant without a closer one (.sr-only text, overlays), so
-   they scroll with the stage instead of growing the document. */
-.stage { position: relative; height: 100%; overflow: auto; min-width: 0; outline: none; }
+   they scroll with the stage instead of growing the document.
+   A flex column: the restart banner (when shown) takes its own height and
+   the page box (.stage__page) exactly the rest, so a page sized to the stage
+   (height: 100% — the Sky atlas) fits under the banner instead of running
+   below the fold. A longer page simply overflows that box and the stage
+   scrolls as before (min-height 0: the box never grows to its content's
+   intrinsic height, which for the atlas is its whole layer list). */
+.stage {
+  position: relative; height: 100%; overflow: auto; min-width: 0; outline: none;
+  display: flex; flex-direction: column;
+}
+.stage > * { flex: none; }
+.stage > .stage__page { flex: 1 0 0; min-height: 0; min-width: 0; }
 
 .shell__sep {
   width: 6px; flex: none; cursor: col-resize;
@@ -32,8 +43,17 @@
   background: linear-gradient(to right, transparent 1px, var(--accent) 1px, var(--accent) 4px, transparent 4px);
 }
 
+/* The restart strip: one compact line (title + Details + dismiss); the
+   changed files open under it. It scrolls away with the page. */
 .shell__banner { padding: var(--s2) var(--s4) 0; }
-.shell__banner .ui-callout { margin: 0; }
+.shell__banner .ui-callout { margin: 0; padding-block: var(--s2); align-items: flex-start; }
+.shell__banner .ui-callout__icon { margin-top: 5px; }
+.shell__banner .ui-callout__title { padding-top: 3px; line-height: var(--lh-snug); }
+.shell__banner .ui-callout__action { align-self: flex-start; }
+.shell__banner-files { display: flex; flex-direction: column; gap: 4px; padding-top: 4px; }
+.shell__banner-files p { margin: 0; }
+.shell__banner-files ul { margin: 0; padding-left: var(--s4); }
+.shell__banner-files code { font-size: var(--fs-sm); color: var(--text); overflow-wrap: anywhere; }
 
 .skip-link {
   position: fixed; left: var(--s3); top: -80px; z-index: var(--z-toast);
@@ -64,10 +84,7 @@
 .rail__name { display: flex; flex-direction: column; min-width: 0; }
 .rail__title { font: 700 14px/1 var(--font-mono); letter-spacing: .06em; white-space: nowrap; }
 .rail__title span { color: var(--accent); }
-.rail__tag {
-  margin-top: 3px; font-size: var(--fs-2xs); letter-spacing: .12em; text-transform: uppercase;
-  color: var(--text-faint); white-space: nowrap;
-}
+.rail__tag { margin-top: 3px; font-size: var(--fs-xs); color: var(--text-faint); white-space: nowrap; }
 
 .rail__list {
   list-style: none; margin: 0; padding: var(--s3) var(--s2);
@@ -108,6 +125,14 @@
 }
 .rail[data-collapsed] .rail__foot { justify-content: center; padding: var(--s2) 0; }
 
+/* The narrow-screen drawer's and inspector sheet's scrim: below the drawer /
+   sheet (z-drawer), so their content takes the pointer (the kit's
+   .ui-dialog__overlay sits at z-dialog, above every drawer). */
+.shell__scrim {
+  position: fixed; inset: 0; z-index: calc(var(--z-drawer) - 1); background: var(--overlay);
+  animation: ui-fade-in var(--dur-base) var(--ease-out);
+}
+.shell__scrim--light { background: color-mix(in srgb, var(--overlay) 45%, transparent); }
 .rail-drawer {
   position: fixed; inset: 0 auto 0 0; z-index: var(--z-drawer);
   width: min(280px, 86vw); display: flex; background: var(--bg-1); box-shadow: var(--shadow-3);
@@ -160,12 +185,34 @@
 .topbar__conn {
   display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px;
   border: 1px solid var(--border); border-radius: var(--r-pill); background: var(--surface-2);
-  font: var(--fw-medium) var(--fs-xs)/1 var(--font-mono); letter-spacing: .06em; color: var(--text-dim);
+  font: var(--fw-medium) var(--fs-sm)/1 var(--font-sans); color: var(--text-dim);
 }
 .topbar__conn:hover { color: var(--text); border-color: var(--border-strong); }
-.topbar__dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-faint); }
+.topbar__dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--text-faint); }
 .topbar__conn[data-state="on"] .topbar__dot { background: var(--good); box-shadow: 0 0 0 3px var(--good-soft); }
 .topbar__conn[data-state="off"] .topbar__dot { background: var(--bad); box-shadow: 0 0 0 3px var(--bad-soft); }
+
+/* The local server is not answering: a calm status in the FASRC badge's place
+   and a warn line under the bar — everything below it may be stale. */
+.topbar[data-server="down"] { box-shadow: inset 0 -2px 0 var(--warn); }
+.topbar__server {
+  display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; min-width: 0;
+  border: 1px solid transparent; border-radius: var(--r-pill); background: var(--warn-soft);
+  font: var(--fw-medium) var(--fs-sm)/1 var(--font-sans); color: var(--warn); white-space: nowrap; cursor: pointer;
+}
+.topbar__server:hover { border-color: var(--warn); }
+.topbar__server .topbar__dot { background: var(--warn); }
+.topbar__server[aria-busy="true"] .topbar__dot { opacity: .45; }
+.topbar > .topbar__server { flex-shrink: 1; overflow: hidden; }
+.topbar__server-label, .topbar__server-more { overflow: hidden; text-overflow: ellipsis; }
+
+/* The console was rebuilt under this page: a calm accent chip. */
+.topbar__update {
+  display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px;
+  border: 1px solid transparent; border-radius: var(--r-pill); background: var(--accent-soft);
+  font: var(--fw-medium) var(--fs-sm)/1 var(--font-sans); color: var(--accent-press); white-space: nowrap; cursor: pointer;
+}
+.topbar__update:hover { border-color: var(--accent); }
 
 .topbar__btn {
   position: relative; display: inline-grid; place-items: center;
@@ -179,16 +226,27 @@
   border-radius: var(--r-pill); background: var(--accent); color: var(--on-accent);
   font: 600 9px/1 var(--font-mono); text-align: center;
 }
+/* Last known job states while the server is not answering. */
+.topbar__btn[data-stale] { color: var(--text-faint); }
+.topbar__btn[data-stale] .topbar__count { background: var(--surface-3); color: var(--text-dim); }
 
 @media (max-width: 1199px) {
   .topbar > .topbar__search { flex: none; }
   .topbar__search-text { display: none; }
 }
+/* Below 900 px the rail is a drawer, so the bar has room: the search is an
+   icon and the inspected entity leaves the breadcrumbs, but the FASRC and
+   server labels stay words (a bare dot says nothing) down to 600 px. */
 @media (max-width: 899px) {
   .topbar { padding: 0 var(--s2); gap: 4px; }
   .topbar > .topbar__search { flex: none; width: var(--ctl-h); padding: 0; justify-content: center; }
-  .topbar__search-text, .topbar__search .ui-kbdgroup, .topbar__conn-label, .crumbs li.crumbs__entity { display: none; }
-  .topbar__conn { padding: 0 8px; }
+  .topbar__search-text, .topbar__search .ui-kbdgroup, .crumbs li.crumbs__entity { display: none; }
+}
+@media (max-width: 599px) {
+  .topbar__conn-label, .topbar__update-label { display: none; }
+  .topbar__conn, .topbar__update { padding: 0 8px; }
+  /* The outage stays readable; "— retrying" is in the tooltip and aria-label. */
+  .topbar__server-more { display: none; }
 }
 /* Very narrow: the tab name alone (the workspace is in the rail drawer). */
 @media (max-width: 519px) {
@@ -201,12 +259,33 @@
    away with it, so the whole stage height is left to the images. (--ws-bar-h
    stays 0: side panels that stick only keep a small margin.) */
 .ws { min-height: 100%; --ws-bar-h: 0px; }
+/* One h1 per page: the shell's hidden one gives way to the page's own. */
+.ws:has(.ws__body h1) > .ws__h1 { display: none; }
 .ws__bar {
   position: relative;
   display: flex; align-items: center; gap: var(--s3);
   padding: 0 var(--s6); background: var(--app-bg); border-bottom: 1px solid var(--border);
 }
-.ws__tabs { flex: 1; min-width: 0; overflow-x: auto; border-bottom: 0; }
+/* One line that never cuts a label: WorkspaceTabs shows the tabs that fit
+   (whole) and puts the rest in "More" (app/tabFit.ts). The wrap's width is
+   the bar's, not its content's, so hiding tabs never resizes it. Tabs are
+   navigation, so they use the UI face (mono stays for data values). */
+.ws__tabs-wrap { flex: 1 1 0; min-width: 0; display: flex; align-items: stretch; overflow: hidden; }
+.ws__tabs { flex: none; min-width: 0; overflow: visible; border-bottom: 0; }
+.ws__tabs .ui-tab, .ws__more {
+  flex: none; white-space: nowrap;
+  font: var(--fw-medium) var(--fs-md)/1 var(--font-sans); letter-spacing: 0;
+}
+.ws__tabs .ui-tab[data-on="true"] { font-weight: var(--fw-semibold); }
+.ws__more {
+  display: inline-flex; align-items: center; gap: 4px; cursor: pointer;
+  padding: 9px 12px 9px 14px; margin-bottom: -1px;
+  border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent;
+  color: var(--text-dim);
+}
+.ws__more:hover, .ws__more[data-state="open"] { color: var(--text); }
+/* The strip clips (overflow: hidden), so its focus ring is drawn inside. */
+.ws__tabs .ui-tab:focus-visible, .ws__more:focus-visible { box-shadow: inset 0 0 0 2px var(--accent); border-radius: var(--r-sm); }
 .ws__aside { flex: none; display: flex; align-items: center; gap: var(--s2); }
 .ws-skeleton { display: flex; flex-direction: column; }
 @media (max-width: 899px) { .ws__bar { padding: 0 var(--s3); } }
@@ -221,7 +300,7 @@
   padding: var(--s2) var(--s2) var(--s2) var(--s3); border-bottom: 1px solid var(--border);
 }
 .inspector__title { flex: 1; min-width: 0; padding: 0 var(--s2); }
-.inspector__title .eyebrow { display: block; }
+.inspector__kind { display: block; font-size: var(--fs-xs); line-height: 1.2; color: var(--text-dim); }
 .inspector__title h2 {
   margin: 0; font-size: var(--fs-lg); line-height: var(--lh-tight);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -247,10 +326,12 @@
 .jobtray { display: flex; flex-direction: column; gap: var(--s3); }
 .jobtray__sec { display: flex; flex-direction: column; gap: var(--s2); }
 .jobtray__head { display: flex; align-items: center; gap: var(--s2); }
-.jobtray__head h3 {
-  margin: 0; font: var(--fw-semibold) var(--fs-2xs)/1 var(--font-mono);
-  letter-spacing: var(--ls-eyebrow); text-transform: uppercase; color: var(--text-faint);
+.jobtray__head h3 { margin: 0; font: var(--fw-semibold) var(--fs-sm)/1.2 var(--font-sans); color: var(--text-dim); }
+.jobtray__stale {
+  margin: 0; padding: var(--s2) var(--s3); border-radius: var(--r-md);
+  background: var(--warn-soft); color: var(--text); font-size: var(--fs-sm); line-height: var(--lh-snug);
 }
+.jobtray[data-stale] .joblist { opacity: .7; }
 .jobtray__spacer { flex: 1; }
 .jobtray__empty, .jobtray__more { margin: 0; color: var(--text-dim); font-size: var(--fs-sm); }
 .jobtray__foot {
@@ -278,7 +359,13 @@
   width: min(680px, calc(100vw - 32px)); transform: translateX(-50%);
   overflow: hidden; border: 1px solid var(--border-strong); border-radius: var(--r-lg);
   background: var(--surface-1); color: var(--text); box-shadow: var(--shadow-3);
-  animation: ui-pop-in var(--dur-fast) var(--ease-out);
+  animation: cmdk-in var(--dur-fast) var(--ease-out);
+}
+/* Keeps the centring translate while it pops in (the kit's ui-pop-in
+   animates transform to none, so the palette slid in from the right half). */
+@keyframes cmdk-in {
+  from { opacity: 0; transform: translateX(-50%) translateY(-2px) scale(.98); }
+  to { opacity: 1; transform: translateX(-50%); }
 }
 .cmdk:focus { outline: none; }
 .cmdk__search {
@@ -293,8 +380,7 @@
 .cmdk__list { max-height: min(60vh, 520px); overflow: auto; padding: var(--s2); overscroll-behavior: contain; }
 .cmdk [cmdk-group-heading] {
   padding: var(--s2) var(--s2) 4px;
-  font: var(--fw-semibold) var(--fs-2xs)/1 var(--font-mono);
-  letter-spacing: var(--ls-eyebrow); text-transform: uppercase; color: var(--text-faint);
+  font: var(--fw-semibold) var(--fs-sm)/1.2 var(--font-sans); color: var(--text-faint);
 }
 .cmdk__item {
   display: flex; align-items: center; gap: var(--s2); padding: 7px var(--s2);
@@ -314,6 +400,7 @@
 
 /* ── ? sheet ───────────────────────────────────────────────────────────── */
 .shortcuts { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: var(--s4) var(--s5); }
+.shortcuts__head { margin: 0; font: var(--fw-semibold) var(--fs-sm)/1.2 var(--font-sans); color: var(--text); }
 .shortcuts__group dl { display: flex; flex-direction: column; gap: 6px; margin: var(--s2) 0 0; }
 .shortcuts__row { display: flex; align-items: center; justify-content: space-between; gap: var(--s3); }
 .shortcuts__row dt { color: var(--text-dim); font-size: var(--fs-md); }
@@ -322,23 +409,60 @@
 .shortcuts__then { margin: 0 4px; font-size: var(--fs-2xs); color: var(--text-faint); }
 
 /* ── Display panel ─────────────────────────────────────────────────────── */
-.display-panel { display: flex; flex-direction: column; gap: var(--s4); }
+/* A non-modal sheet on the right under the top bar (no overlay): the page
+   and its images stay visible and live while you adjust. */
+:root { --display-w: clamp(296px, 40vw, 380px); }
+/* The body gives up the sheet's width, so the images refit beside it (the
+   sheet would otherwise cover half of the image it adjusts at ~720 px). */
+@media (min-width: 640px) {
+  /* max-width: the panel group sets an inline width: 100%. */
+  .shell[data-display] .shell__body { max-width: calc(100% - var(--display-w)); }
+}
+.display-sheet {
+  position: fixed; z-index: var(--z-drawer); top: var(--topbar-h); right: 0; bottom: 0;
+  width: var(--display-w); display: flex; flex-direction: column; min-height: 0;
+  background: var(--surface-1); color: var(--text);
+  border-left: 1px solid var(--border-strong); box-shadow: var(--shadow-3);
+  animation: display-sheet-in var(--dur-base) var(--ease-out);
+}
+.display-sheet:focus { outline: none; }
+@keyframes display-sheet-in { from { transform: translateX(16px); opacity: 0; } to { transform: none; opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .display-sheet { animation: none; } }
+@media (max-width: 639px) { .display-sheet { width: calc(100vw - 16px); } }
+.display-sheet__head { flex: none; display: flex; align-items: center; gap: var(--s2); padding: var(--s3) var(--s3) 0 var(--s4); }
+.display-sheet__title { flex: 1; margin: 0; font-size: var(--fs-lg); font-weight: var(--fw-semibold); }
+.display-sheet__desc { flex: none; margin: 0; padding: 4px var(--s4) var(--s3); color: var(--text-dim); font-size: var(--fs-sm); line-height: var(--lh-snug); }
+.display-sheet__body {
+  flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain;
+  padding: var(--s3) var(--s4) var(--s4); border-top: 1px solid var(--border);
+}
+.display-sheet__foot {
+  flex: none; display: flex; justify-content: flex-end; gap: var(--s2);
+  padding: var(--s3) var(--s4); border-top: 1px solid var(--border); background: var(--surface-2);
+}
+.display-panel { display: flex; flex-direction: column; gap: var(--s5); }
 .display-grid {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
   gap: var(--s3); align-items: end;
 }
-.display-groups {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: var(--s3); margin-top: var(--s3);
-}
+.display-grid--one { grid-template-columns: minmax(0, 1fr); }
 .display-group {
-  display: flex; flex-direction: column; gap: var(--s2); margin: 0; min-width: 0;
+  display: flex; flex-direction: column; gap: var(--s3); margin: var(--s4) 0 0; min-width: 0;
   padding: var(--s3); border: 1px solid var(--border); border-radius: var(--r-md);
 }
-.display-group legend {
-  padding: 0 4px; font: var(--fw-semibold) var(--fs-xs)/1 var(--font-mono);
-  letter-spacing: .08em; text-transform: uppercase; color: var(--text-faint);
+.display-group .ui-seg { align-self: flex-start; }
+/* Sentence-case labels in plain type (the kit's mono caps would also turn
+   the unit "e⁻" into "E⁻"); option text in the UI face so it fits. */
+.display-sheet .ui-field__label, .display-group legend {
+  font: var(--fw-medium) var(--fs-sm)/1.2 var(--font-sans); letter-spacing: 0; text-transform: none; color: var(--text-dim);
 }
+.display-sheet .ui-select, .display-sheet .ui-seg__item { font-family: var(--font-sans); letter-spacing: 0; text-transform: none; }
+.display-sheet .ui-select { width: 100%; min-width: 0; }
+.display-group legend { padding: 0 4px; }
+.display-knee { display: flex; align-items: center; gap: var(--s2); min-width: 0; }
+.display-knee .ui-slider-wrap { flex: 1; min-width: 0; }
+.display-knee__num { width: 72px; min-width: 0; text-align: right; }
+.display-knee__unit { flex: none; min-width: 3ch; font-size: var(--fs-sm); color: var(--text-dim); }
 .display-color {
   width: 56px; height: var(--ctl-h); padding: 2px; cursor: pointer;
   border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--surface-2);

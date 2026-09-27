@@ -1,8 +1,10 @@
 /* Sky › Catalog eval (spec §7.4): the catalogue evaluation over
- * data/eval_results — the reconstruction browser (viewer `evaluation`) beside
- * a DataTable of every manifest row with its SR's model state against the
+ * data/eval_results, image first — the reconstruction browser (viewer
+ * `evaluation`, LR beside SR) first (the left column when wide, the top when
+ * narrow), then the current-model line and a DataTable of every manifest row
+ * (a row moves the viewer to it) with its SR's model state against the
  * model an evaluation would load now (STARFULL members + production
- * combiner), position → atlas, real objects → the realtile inspector; the
+ * combiner), position → atlas, real objects → the real-tile card; the
  * grouped analysis, real-galaxy query (the one Euclid session of Settings),
  * lens catalogue fetch, FASRC sync (confirmed: rsync --delete-after) and the
  * summary figures, rendered only on request. */
@@ -24,6 +26,7 @@ import { ImageViewer, type ViewerApi } from "../../../viewer";
 import { errorText } from "../results/actions";
 import { atlasHref, URLS, type EvalRow, type EvalRuns } from "../results/api";
 import { StateBadge } from "../results/common";
+import { FitBox } from "../results/FitBox";
 import { EVAL_GROUPS, filterEvalRows, num } from "../results/model";
 import "../results/register";
 import "../results/results.css";
@@ -32,6 +35,8 @@ import "../results/results.css";
 type AuthStatus = { authenticated?: boolean; user?: string | null };
 
 const STATES = ["all", "current", "stale", "unknown"] as const;
+/** The browser opens on the comparison it exists for: LR beside SR. */
+const EVAL_TIERS = ["LR", "SR"];
 
 function columns(goAtlas: (r: EvalRow) => void): DataColumn<EvalRow>[] {
   return [
@@ -59,7 +64,7 @@ function columns(goAtlas: (r: EvalRow) => void): DataColumn<EvalRow>[] {
     { id: "go", header: "", sortable: false, filterable: false, csv: false, hideable: false, width: 64,
       cell: (r) => (
         <span className="res-chips res-chips--tight">
-          {r.realtile && <IconButton icon="panelRight" size="sm" label="Inspect the real tile" onClick={() => openInspector({ kind: "realtile", id: String(r.realtile) })} />}
+          {r.realtile && <IconButton icon="panelRight" size="sm" label="Inspect the real tile" onClick={() => openInspector({ kind: "tile", id: String(r.realtile) })} />}
           {num(r.ra) != null && num(r.dec) != null && <IconButton icon="globe" size="sm" label="Show on the sky" onClick={() => goAtlas(r)} />}
         </span>
       ) },
@@ -105,7 +110,15 @@ export default function CatalogEval() {
   const [regen, setRegen] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const viewer = useRef<ViewerApi | null>(null);
+  const viewerBox = useRef<HTMLDivElement>(null);
   const [active, setActive] = useState<string | null>(null);
+  // Stacked (a narrow pane): a row far down the list scrolls the images back
+  // into sight, by the least amount (nothing moves when they are visible).
+  const revealViewer = () => {
+    const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    // After the click's render (the viewer is moving to the row's object).
+    setTimeout(() => viewerBox.current?.scrollIntoView?.({ block: "nearest", behavior: reduce ? "auto" : "smooth" }), 0);
+  };
 
   const data = runs.data;
   const rows = useMemo(() => filterEvalRows(data?.rows ?? [], groups, state, !failed), [data, groups, state, failed]);
@@ -177,85 +190,104 @@ export default function CatalogEval() {
   ];
   const toggleGroup = (g: string) => setGroups(groups.includes(g) ? groups.filter((x) => x !== g) : [...groups, g]);
 
-  return (
-    <Page className="res-page">
-      <div className="res-bar" role="toolbar" aria-label="Catalog eval">
-        <div className="res-bar__group" role="group" aria-label="Groups">
-          <Chip on={!groups.length} onClick={() => setGroups([])}>All</Chip>
-          {EVAL_GROUPS.map((g) => (
-            <Chip key={g.id} on={groups.includes(g.id)} onClick={() => toggleGroup(g.id)} disabled={!data?.groups?.[g.id] && !groups.includes(g.id)}>
-              {g.label} <span className="muted">{formatCount(data?.groups?.[g.id] ?? 0)}</span>
-            </Chip>
-          ))}
-          <Chip on={failed} onClick={() => setFailed(!failed)}>+ failed</Chip>
+  // The page actions: one compact row beside the current-model line (under
+  // the images when stacked, beside them when wide).
+  const actions = (
+    <div className="res-bar res-bar--inline res-eval__actions" role="toolbar" aria-label="Catalog eval actions">
+      {data && (
+        <span className="res-ident" aria-label="Current model">
+          Now: <strong>{cur?.n_members ?? 0}</strong> STARFULL members, {cur?.combiner_kind ? <Badge size="sm" tone="accent">{cur.combiner_kind.replace(/_/g, " ")}</Badge> : <Badge size="sm" tone="warn">member mean</Badge>}
+          <span>{formatCount(data.n_ok)} of {formatCount(data.n)} ok</span>
+        </span>
+      )}
+      <span className="res-bar__spacer" />
+      <Popover open={groupedOpen} onOpenChange={setGroupedOpen} label="Grouped analysis" width={300} align="end"
+        trigger={<Button size="sm" variant="primary" icon="activity" loading={grouped.busy}>Grouped analysis…</Button>}>
+        <div className="res-form">
+          <NumberField label="Objects per group" value={nPer} onChange={setNPer} min={1} max={200}
+            hint="N lenses per grade; 3N galaxies, syn-lens and syn-gal." />
+          <Checkbox checked={synthetic} onChange={setSynthetic}>Synthetic groups (HR truth)</Checkbox>
+          <div className="res-form__foot"><Button size="sm" variant="primary" onClick={runGrouped}>Run</Button></div>
         </div>
-        <Segmented size="sm" value={state} onChange={setState} aria-label="SR model state"
-          options={STATES.map((s) => ({ value: s, label: s === "all" ? "All" : `${s} ${counts[s]}` }))} />
-        <span className="res-bar__spacer" />
-        <Popover open={groupedOpen} onOpenChange={setGroupedOpen} label="Grouped analysis" width={300} align="end"
-          trigger={<Button size="sm" variant="primary" icon="activity" loading={grouped.busy}>Grouped analysis…</Button>}>
-          <div className="res-form">
-            <NumberField label="Objects per group" value={nPer} onChange={setNPer} min={1} max={200}
-              hint="N lenses per grade; 3N galaxies, syn-lens and syn-gal." />
-            <Checkbox checked={synthetic} onChange={setSynthetic}>Synthetic groups (HR truth)</Checkbox>
-            <div className="res-form__foot"><Button size="sm" variant="primary" onClick={runGrouped}>Run</Button></div>
-          </div>
-        </Popover>
-        <Popover open={galOpen} onOpenChange={setGalOpen} label="Query real galaxies" width={320} align="end"
-          trigger={<Button size="sm" loading={galaxies.busy}>Query galaxies…</Button>}>
-          <div className="res-form">
-            {loggedIn ? <span className="res-note">Euclid archive: {auth.data?.user ?? "logged in"}</span> : (
-              <Callout tone="warn" title="Not logged in">
-                Log in once in <Link to="/settings/connections">Settings › Connections</Link>.
-              </Callout>
-            )}
-            <NumberField label="Galaxies" value={nGal} onChange={setNGal} min={1} max={2000} />
-            <Checkbox checked={regen} onChange={setRegen}>Discard the cache and re-query</Checkbox>
-            <div className="res-form__foot"><Button size="sm" variant="primary" disabled={!loggedIn} onClick={queryGalaxies}>Query</Button></div>
-          </div>
-        </Popover>
-        <Menu label="More catalogue actions" items={more}
-          trigger={<IconButton icon="more" label="More catalogue actions" size="sm" loading={busy != null} />} />
-        <IconButton icon="reset" label="Refresh" size="sm" onClick={reload} />
-      </div>
-
-      {(grouped.job || grouped.error) && <JobProgress job={grouped.job} error={grouped.error} />}
-      {(galaxies.job || galaxies.error) && <JobProgress job={galaxies.job} error={galaxies.error} />}
-
-      {runs.loading ? <Skeleton lines={6} /> : !data ? (
-        <Callout tone="bad" title="Could not load the catalogue evaluation" action={<Button size="sm" onClick={reload}>Retry</Button>}>
-          {runs.error?.message ?? "No data."}
-        </Callout>
-      ) : (
-        <>
-          <div className="res-ident" aria-label="Current model">
-            <span>Now: <strong>{cur?.n_members ?? 0}</strong> STARFULL members · {cur?.combiner_kind ? <Badge size="sm" tone="accent">{cur.combiner_kind.replace(/_/g, " ")}</Badge> : <Badge size="sm" tone="warn">member mean</Badge>}</span>
-            <span>{formatCount(data.n_ok)} / {formatCount(data.n)} ok</span>
-            <StateBadge state="current" prefix={String(counts.current)} />
-            <StateBadge state="stale" prefix={String(counts.stale)} />
-            <StateBadge state="unknown" prefix={String(counts.unknown)} />
-          </div>
-          {counts.stale + counts.unknown > 0 && (
-            <Callout tone="warn" title={`${formatCount(counts.stale + counts.unknown)} reconstructions predate the current model`}
-              action={<Button size="sm" onClick={() => setGroupedOpen(true)}>Grouped analysis…</Button>}>
-              The grouped analysis regenerates them with the STARFULL members and the production combiner.
+      </Popover>
+      <Popover open={galOpen} onOpenChange={setGalOpen} label="Query real galaxies" width={320} align="end"
+        trigger={<Button size="sm" loading={galaxies.busy}>Query galaxies…</Button>}>
+        <div className="res-form">
+          {loggedIn ? <span className="res-note">Euclid archive: {auth.data?.user ?? "logged in"}</span> : (
+            <Callout tone="warn" title="Not logged in">
+              Log in once in <Link to="/settings/connections">Settings › Connections</Link>.
             </Callout>
           )}
-          <div className="res-eval">
-            <DataTable rows={rows} columns={cols} rowKey={(r) => String(r.viewer_id || r.out_subdir || r.id)} aria-label="Evaluation objects"
-              activeKey={active} onRowClick={(r) => { if (r.viewer_id) void viewer.current?.goToId(String(r.viewer_id)); }}
-              exportName="eval-results" urlKey="ce" dense height="max(420px, calc(100vh - 330px))"
-              filterPlaceholder="Filter: grade:A  state:stale  field:EDF-S  flux<0.8"
-              empty={data.n ? "No object matches these filters." : "No evaluation results yet — run the grouped analysis."} />
-            <div className="res-eval__viewer">
-              {data.n_ok ? (
-                <ImageViewer collection="evaluation" urlKey="cev" id="catalog-eval" toolbar="full"
+          <NumberField label="Galaxies" value={nGal} onChange={setNGal} min={1} max={2000} />
+          <Checkbox checked={regen} onChange={setRegen}>Discard the cache and re-query</Checkbox>
+          <div className="res-form__foot"><Button size="sm" variant="primary" disabled={!loggedIn} onClick={queryGalaxies}>Query</Button></div>
+        </div>
+      </Popover>
+      <Menu label="More catalogue actions" items={more}
+        trigger={<IconButton icon="more" label="More catalogue actions" size="sm" loading={busy != null} />} />
+      <IconButton icon="reset" label="Refresh" size="sm" onClick={reload} />
+    </div>
+  );
+  const jobs = (
+    <>
+      {(grouped.job || grouped.error) && <JobProgress job={grouped.job} error={grouped.error} />}
+      {(galaxies.job || galaxies.error) && <JobProgress job={galaxies.job} error={galaxies.error} />}
+    </>
+  );
+
+  return (
+    <Page className="res-page">
+      {runs.loading ? <Skeleton lines={6} /> : !data ? (
+        <>
+          {actions}
+          {jobs}
+          <Callout tone="bad" title="Could not load the catalogue evaluation" action={<Button size="sm" onClick={reload}>Retry</Button>}>
+            {runs.error?.message ?? "No data."}
+          </Callout>
+        </>
+      ) : (
+        <div className="res-eval">
+          {/* Image first: the reconstruction browser is the top of the page
+              (the left column when wide); its frames end at the fold. */}
+          <div className="res-eval__viewer" ref={viewerBox}>
+            {data.n_ok ? (
+              <FitBox label="Reconstruction browser" min={360}>
+                <ImageViewer collection="evaluation" urlKey="cev" id="catalog-eval" toolbar="full" tiers={EVAL_TIERS}
                   onReady={(api) => { viewer.current = api; }}
                   onState={(s) => { if (s.id !== active) setActive(s.id ?? null); }} />
-              ) : <p className="muted res-note">No reconstructions to browse yet.</p>}
-            </div>
+              </FitBox>
+            ) : <p className="muted res-note">No reconstructions to browse yet: run the grouped analysis.</p>}
           </div>
-        </>
+          <div className="res-eval__list">
+            {actions}
+            {jobs}
+            {counts.stale + counts.unknown > 0 && (
+              <Callout tone="warn" title={`${formatCount(counts.stale + counts.unknown)} reconstructions predate the current model`}
+                action={<Button size="sm" onClick={() => setGroupedOpen(true)}>Grouped analysis…</Button>}>
+                The grouped analysis regenerates them with the STARFULL members and the production combiner.
+              </Callout>
+            )}
+            {/* The filters narrow the table (the viewer browses every reconstruction). */}
+            <div className="res-bar res-bar--inline" role="toolbar" aria-label="Filter the table">
+              <div className="res-bar__group" role="group" aria-label="Groups">
+                <Chip on={!groups.length} onClick={() => setGroups([])}>All</Chip>
+                {EVAL_GROUPS.map((g) => (
+                  <Chip key={g.id} on={groups.includes(g.id)} onClick={() => toggleGroup(g.id)} disabled={!data.groups?.[g.id] && !groups.includes(g.id)}>
+                    {g.label} <span className="muted">{formatCount(data.groups?.[g.id] ?? 0)}</span>
+                  </Chip>
+                ))}
+                <Chip on={failed} onClick={() => setFailed(!failed)}>Failed too</Chip>
+              </div>
+              <Segmented size="sm" value={state} onChange={setState} aria-label="SR model state"
+                options={STATES.map((s) => ({ value: s, label: s === "all" ? "Any state" : `${s[0].toUpperCase()}${s.slice(1)} ${counts[s]}` }))} />
+            </div>
+            <DataTable rows={rows} columns={cols} rowKey={(r) => String(r.viewer_id || r.out_subdir || r.id)} aria-label="Evaluation objects"
+              activeKey={active} onRowClick={(r) => { if (r.viewer_id) { void viewer.current?.goToId(String(r.viewer_id)); revealViewer(); } }}
+              exportName="eval-results" urlKey="ce" dense height="max(420px, calc(100vh - 330px))"
+              filterPlaceholder="Filter: grade:A  state:stale  field:EDF-S  flux<0.8"
+              empty={data.n ? "No object matches these filters." : "No evaluation results yet: run the grouped analysis."} />
+          </div>
+        </div>
       )}
 
       <Card><CardBody>

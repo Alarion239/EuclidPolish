@@ -2,30 +2,17 @@
  * catalogue decoding + filters, histograms, the records' source-map geometry,
  * ids of the inspector kinds, PSF state wording and the TNG explorer's
  * grouping. No React, no fetch. */
+import { formatBytes } from "../../format";
+import { extent } from "../../ticks";
 import type {
-  Grid, PsfState, SrState, StarsPayload, TngPayload, TruthSource,
+  Grid, PsfState, SplitInfo, SrState, StarsPayload, TngPayload, TruthSource,
 } from "./api";
 
 export type Tone = "neutral" | "good" | "warn" | "bad" | "info" | "accent";
 
-/* ── ids of the inspector kinds ────────────────────────────────────────── */
+/* ── ids of the inspector kinds (ids.ts; re-exported) ──────────────────── */
 
-/** `sky` viewer object id of a record: `"<split>:<index>"`. */
-export const recordObjectId = (split: string, index: number) => `${split}:${index}`;
-
-/** `truth:<split>/<index>/<row>` — one synthetic truth source. */
-export const truthId = (split: string, index: number, row: number) => `${split}/${index}/${row}`;
-export function parseTruthId(id: string): { split: string; index: number; row: number } | null {
-  const m = /^(test|validate|train)\/(\d+)\/(\d+)$/.exec(id);
-  return m ? { split: m[1], index: Number(m[2]), row: Number(m[3]) } : null;
-}
-
-/** `psf:<cluster index>` (1-based, as `cluster-NNN`). */
-export const clusterObjectId = (index: number) => `cluster-${String(index).padStart(3, "0")}`;
-export function parseClusterId(id: string): number | null {
-  const m = /^(?:cluster-)?0*(\d+)$/.exec(id.trim());
-  return m ? Number(m[1]) : null;
-}
+export { clusterObjectId, parseClusterId, parseTruthId, recordObjectId, truthId } from "./ids";
 
 /* ── sky atlas links (W-SkyAtlas URL contract: atlas/urlState.ts) ──────── */
 
@@ -217,8 +204,95 @@ export const SR_STATE_TONE: Record<SrState, Tone> = {
   current: "good", stale: "warn", partial: "warn", missing: "neutral", unknown: "info",
 };
 export const SR_STATE_LABEL: Record<SrState, string> = {
-  current: "SR current", stale: "SR stale", partial: "SR partial", missing: "no SR", unknown: "SR unverified",
+  current: "SR current", stale: "SR stale", partial: "SR partial", missing: "No SR", unknown: "SR unverified",
 };
+
+/** One local file of a split (LR, HR, Clean, Sources) for the Files badge's tip. */
+export type RecordFileRow = { key: string; label: string; state: "ok" | "corrupt" | "missing"; detail: string };
+
+const RECORD_FILES: [keyof SplitInfo["files"], string][] = [["dirty", "LR"], ["hr", "HR"], ["clean", "Clean"], ["sources", "Sources"]];
+
+/** The split's four local files as ONE toolbar badge (label + tone) and the
+ *  per-file rows for its tip: ok, truncated / corrupt (a TFRecord whose count
+ *  is null), or not synced. */
+export function recordFiles(files: SplitInfo["files"], split: string): { label: string; tone: Tone; rows: RecordFileRow[] } {
+  const rows = RECORD_FILES.map(([key, label]): RecordFileRow => {
+    const f = files[key];
+    if (!f) return { key, label, state: "missing", detail: `${key}_${split} is not synced` };
+    const count = "count" in f ? f.count : undefined;
+    const parts = [f.name, formatBytes(f.size_bytes)];
+    if (count === null) parts.push("truncated or corrupt");
+    else if (count != null) parts.push(`${count} records`);
+    return { key, label, state: count === null ? "corrupt" : "ok", detail: parts.join(", ") };
+  });
+  const corrupt = rows.filter((r) => r.state === "corrupt").length;
+  const present = rows.filter((r) => r.state !== "missing").length;
+  if (corrupt) return { label: `${corrupt} corrupt file${corrupt > 1 ? "s" : ""}`, tone: "bad", rows };
+  if (present === rows.length) return { label: "Files ok", tone: "good", rows };
+  return { label: `${present} of ${rows.length} files`, tone: "neutral", rows };
+}
+
+/** The records-noise system check (ok | warn | bad | unknown) in plain words. */
+export function noiseBadge(state: string): { label: string; tone: Tone } {
+  if (state === "ok") return { label: "Noise ok", tone: "good" };
+  if (state === "bad") return { label: "Old noise model", tone: "bad" };
+  if (state === "warn") return { label: "Check noise", tone: "warn" };
+  return { label: "Noise unverified", tone: "neutral" };
+}
+
+/* ── truth-source types (Records' overlay chips) ── */
+
+export const SOURCE_TYPES = ["galaxy", "star", "lens", "other"] as const;
+export type SourceType = (typeof SOURCE_TYPES)[number];
+const isSourceType = (v: string): v is SourceType => (SOURCE_TYPES as readonly string[]).includes(v);
+/** A source's chip type (anything unknown is "other"). */
+export const sourceType = (type: string): SourceType => (isSourceType(type) ? type : "other");
+
+/** Hide a shown type / show a hidden one (the URL keeps the hidden types, so
+ *  every type starts shown and a chip is a plain on / off toggle). */
+export function toggleHiddenType(hidden: readonly string[], type: SourceType): SourceType[] {
+  const clean = hidden.filter(isSourceType);
+  return clean.includes(type) ? clean.filter((t) => t !== type) : [...clean, type];
+}
+
+/** Whether a source type is drawn / listed. */
+export const shownTypes = (hidden: readonly string[]) => (type: string): boolean => !hidden.includes(sourceType(type));
+
+/** One chip per type the record has: its count and whether it is shown. */
+export function sourceTypeChips(counts: Partial<Record<SourceType, number>>, hidden: readonly string[]): { type: SourceType; count: number; shown: boolean }[] {
+  const show = shownTypes(hidden);
+  return SOURCE_TYPES.filter((t) => (counts[t] ?? 0) > 0).map((t) => ({ type: t, count: counts[t] ?? 0, shown: show(t) }));
+}
+
+/* ── the Cutouts gallery ── */
+
+type CutoutFile = { file: string; id: number | null; size: number | null; mag: number | null };
+export type CutoutTile = CutoutFile & { key: string; sizes: number[] };
+
+/** One gallery tile per star (the cache holds a file per cutout size): the
+ *  navigator's size when cached, else the largest; `sizes` lists them all.
+ *  Files without a star id stay tiles of their own; first-seen order. */
+export function cutoutTiles(items: readonly CutoutFile[], navSize: number | null): CutoutTile[] {
+  const tiles: CutoutTile[] = [];
+  const byId = new Map<number, CutoutTile>();
+  const better = (a: CutoutFile, b: CutoutTile) => {
+    if (navSize != null && (a.size === navSize) !== (b.size === navSize)) return a.size === navSize;
+    return (a.size ?? 0) > (b.size ?? 0);
+  };
+  for (const it of items) {
+    if (it.id == null) { tiles.push({ ...it, key: `file:${it.file}`, sizes: it.size != null ? [it.size] : [] }); continue; }
+    const had = byId.get(it.id);
+    if (!had) {
+      const tile = { ...it, key: `star:${it.id}`, sizes: it.size != null ? [it.size] : [] };
+      byId.set(it.id, tile);
+      tiles.push(tile);
+      continue;
+    }
+    if (it.size != null && !had.sizes.includes(it.size)) had.sizes = [...had.sizes, it.size].sort((a, b) => a - b);
+    if (better(it, had)) Object.assign(had, { file: it.file, size: it.size, mag: it.mag ?? had.mag });
+  }
+  return tiles;
+}
 
 export type Marker = { row: number; kind: string; cx: number; cy: number; r: number; off: boolean; title: string };
 
@@ -233,11 +307,11 @@ export function sourceMarker(s: TruthSource, grid: Grid | null): Marker | null {
   else if (s.type === "galaxy") r = Math.max(2, Math.min(80, (s.re_arcsec ?? 0.1) / scale));
   else if (s.type === "star") r = s.mag_vis != null ? Math.max(2.5, Math.min(9, 2.5 + (22 - s.mag_vis) * 1.1)) : 3;
   else r = 3;
-  const parts = [s.type, `(${s.x_pix.toFixed(1)}, ${s.y_pix.toFixed(1)}) px`];
+  const parts = [`${s.type} at (${s.x_pix.toFixed(1)}, ${s.y_pix.toFixed(1)}) px`];
   if (s.mag_vis != null) parts.push(`VIS ${s.mag_vis.toFixed(2)}`);
   if (s.flux_vis_e != null) parts.push(`${formatCompact(s.flux_vis_e)} e⁻`);
   if (s.off_field) parts.push("off-field");
-  return { row: s.row, kind: s.type, cx: s.x_pix, cy: s.y_pix, r, off: s.off_field, title: parts.join(" · ") };
+  return { row: s.row, kind: s.type, cx: s.x_pix, cy: s.y_pix, r, off: s.off_field, title: parts.join(", ") };
 }
 
 export function formatCompact(v: number): string {
@@ -260,6 +334,22 @@ export const PSF_STATE: Record<PsfState, { label: string; tone: Tone; hint: stri
     hint: "Not synchronised to this machine yet — FASRC may well have one. Sync the ePSFs.",
   },
 };
+
+/** The PSFs toolbar's band badges: one per state, naming its bands
+ *  ("J, H: not cached"; "All bands: …" when they all share it), band order. */
+export function psfBandGroups(bands: readonly { name: string; state: PsfState }[]): { state: PsfState; bands: string[]; label: string }[] {
+  const groups: { state: PsfState; bands: string[]; label: string }[] = [];
+  for (const band of bands) {
+    const g = groups.find((x) => x.state === band.state);
+    if (g) g.bands.push(band.name);
+    else groups.push({ state: band.state, bands: [band.name], label: "" });
+  }
+  for (const g of groups) {
+    const who = groups.length === 1 && bands.length > 1 ? "All bands" : g.bands.map(bandShort).join(", ");
+    g.label = `${who}: ${PSF_STATE[g.state].label}`;
+  }
+  return groups;
+}
 
 /* ── TNG explorer ──────────────────────────────────────────────────────── */
 
@@ -366,9 +456,10 @@ export function nearestPoint(
 
 /** A padded [lo, hi] domain (log-aware) for positive / any values. */
 export function axisDomain(values: readonly number[], log: boolean): [number, number] {
-  const v = values.filter((x) => Number.isFinite(x) && (!log || x > 0));
-  if (!v.length) return log ? [1, 10] : [0, 1];
-  let lo = Math.min(...v), hi = Math.max(...v);
+  // extent(), never Math.min(...v): an argument spread overflows the stack past ~120k values.
+  const range = extent(log ? values.filter((x) => x > 0) : values);
+  if (!range) return log ? [1, 10] : [0, 1];
+  let [lo, hi] = range;
   if (log) {
     const a = Math.log10(lo), b = Math.log10(hi);
     const pad = Math.max(0.05, (b - a) * 0.05);
@@ -384,7 +475,7 @@ export function propertyHistogram(values: readonly (number | null)[], log: boole
   const v = values.filter((x): x is number => x != null && Number.isFinite(x) && (!log || x > 0));
   if (!v.length) return { centers: [], counts: [], edges: [], log };
   const t = log ? v.map(Math.log10) : v;
-  let lo = Math.min(...t), hi = Math.max(...t);
+  let [lo, hi] = extent(t) ?? [0, 1];
   if (lo === hi) { lo -= 0.5; hi += 0.5; }
   const h = histogram(t, lo, hi, bins);
   return log

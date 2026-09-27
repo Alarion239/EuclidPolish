@@ -1,32 +1,48 @@
-/* realism/visual (spec §8.3): synthetic vs real, side by side — one real
-   Euclid LR sample of the multipoint archive collection and one synthetic
-   dirty LR record, indexed independently, each in the image viewer with its
-   own (compact) toolbar, both on ONE colour transfer: a colour / knee /
-   brightness edit in either viewer is applied to the other (./visual/
-   sync.ts; the lock is `?lock=`, the shared transfer `?c=&k=&g=`, default
-   Lupton so NISP-only blackouts stay visible). Only the multipoint archive
+/* realism/visual (spec §8.3; image-first pass 2026-09-27): synthetic vs
+   real, side by side and as large as fits — one real Euclid LR sample of the
+   multipoint archive collection and one synthetic dirty LR record, indexed
+   independently, on ONE dark instrument block:
+
+     ┌ shared row: colour · knee · brightness (a Display menu when narrow) ┐
+     │             · same transfer · fit both · reset · ⓘ (the viewer keys) │
+     ├ real viewer (nav bar only) ─────┬ synthetic viewer (nav bar only) ──┤
+     ├ caption: real sample · inspect  ┴ caption: synthetic subset · count ┘
+
+   The shared row is the only colour control: both viewers show its transfer
+   (setView), so the two lanes are always rendered alike (./visual/sync.ts;
+   the transfer is the URL's `?c=&k=&g=`, default Lupton so NISP-only
+   blackouts stay visible). Keys typed in a viewer (Q–Y colours, the
+   horizontal-wheel brightness) are edits too: with "Same transfer" on
+   (`?lock=`, default) they reach both viewers. Only the multipoint archive
    collection is used here (the legacy one-pointing real field is a Sky ›
-   Real results tile). */
+   Real results tile). The lanes stay side by side down to a ~400 px block
+   (two small frames compare better than one frame and a scroll). */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { openInspector } from "../../../app/inspector";
 import { usePageActions } from "../../../app/palette";
 import { useFasrcStatus } from "../../../app/status";
 import { StepById } from "../../../fasrc";
-import { formatNumber } from "../../../format";
 import { useUrlState } from "../../../hooks/useUrlState";
-import { Badge, Button, Card, CardBody, CardHead, EmptyState, IconButton, JobProgress, Page, Segmented, Skeleton, Switch } from "../../../ui";
+import { Badge, Button, Card, CardBody, CardHead, EmptyState, IconButton, JobProgress, Page, Popover, Segmented, Skeleton, Slider, Switch, Tooltip } from "../../../ui";
 import { ImageViewer, type ViewerApi, type ViewerState } from "../../../viewer";
+import { GAIN_SLIDER_RANGE, KNEE_SLIDER_RANGE, formatSig, parseNumber } from "../../../viewer/barModel";
 import { useArchiveMeta, useSkyMeta } from "../api";
 import { archiveFieldBreakdown, archiveOverview, archiveSampleProvenance, shortArchiveFingerprint } from "../archiveFields";
-import { BarGroup, BarSpacer, Info, RealismBar, SkyLink } from "../common";
+import { Info, SkyLink } from "../common";
 import { JOB, offlinePolicy, runJob, useRealismJob } from "../jobs";
-import { DEFAULT_GAIN, DEFAULT_KNEE, editOf, shows, viewPatch, type Reported, type Transfer } from "../visual/sync";
+import { DEFAULT_GAIN, DEFAULT_KNEE, editOf, shows, urlGain, urlKnee, viewPatch, type Reported, type Transfer } from "../visual/sync";
 
 type Subset = "test" | "validate" | "train";
 type Lane = "real" | "syn";
 const SUBSETS: { value: Subset; label: string }[] = [
-  { value: "test", label: "test" }, { value: "validate", label: "validate" }, { value: "train", label: "train" },
+  { value: "test", label: "Test" }, { value: "validate", label: "Validate" }, { value: "train", label: "Train" },
+];
+const COLOURS = [
+  { value: "VIS", label: "VIS", title: "VIS (key Q)" }, { value: "Y_E", label: "Y", title: "NISP Y (key W)" },
+  { value: "J_E", label: "J", title: "NISP J (key E)" }, { value: "H_E", label: "H", title: "NISP H (key R)" },
+  { value: "lupton", label: "Lupton", title: "Four-band Lupton RGB (key T): shows NISP-only blackouts" },
+  { value: "temp", label: "Temp", title: "Per-pixel blackbody colour (key Y)" },
 ];
 export const ARCHIVE_SYNC_URL = "/api/archive-fields/sync";
 
@@ -39,6 +55,28 @@ export const syncArchiveFields = () => runJob({
 });
 
 const reportOf = (s: ViewerState): Reported => ({ color: s.color, knee: s.knee, gain: s.gain });
+
+/** A log knee slider with the exact value typed beside it (Enter / blur
+ *  applies; anything but a positive number is ignored). */
+function KneeField({ value, onChange }: { value: number; onChange: (v: number) => void }) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const commit = () => {
+    const v = parseNumber(draft ?? "");
+    setDraft(null);
+    if (v != null && v > 0) onChange(v);
+  };
+  return (
+    <span className="rl-vis__field">
+      <span className="rl-vis__label">Knee</span>
+      <Slider value={value} min={KNEE_SLIDER_RANGE[0]} max={KNEE_SLIDER_RANGE[1]} scale="log" className="rl-vis__slider"
+        format={(v) => `${formatSig(v)} e⁻`} aria-label="Shared knee" onChange={onChange} />
+      <input className="ui-input ui-input--sm rl-vis__num" type="text" inputMode="decimal" aria-label="Shared knee (e⁻)"
+        value={draft ?? formatSig(value)} onChange={(e) => setDraft(e.target.value)} onBlur={commit}
+        onKeyDown={(e) => { if (e.key === "Enter") commit(); if (e.key === "Escape") setDraft(null); }} />
+      <span className="rl-vis__unit">e⁻</span>
+    </span>
+  );
+}
 
 export default function VisualTab() {
   const [rawSubset, setSubset] = useUrlState("sub", "test");
@@ -72,8 +110,9 @@ export default function VisualTab() {
     const api = apis.current[lane];
     if (api && !shows(reported.current[lane], sharedRef.current)) api.setView(viewPatch(sharedRef.current));
   }, []);
-  // A new shared transfer (a reset, a palette colour, an edit while locked)
-  // reaches both viewers; re-locking brings a viewer edited on its own back.
+  // A new shared transfer (the shared row, a reset, a palette colour, an edit
+  // while locked) reaches both viewers; re-locking brings a viewer edited on
+  // its own back.
   useEffect(() => { apply("real"); apply("syn"); }, [shared, lock, apply]);
 
   const onReady = (lane: Lane) => (api: ViewerApi | null) => {
@@ -90,11 +129,14 @@ export default function VisualTab() {
     if (!edit || !lockRef.current || shows(next, sharedRef.current)) return;
     if (edit.color != null) setColor(edit.color);
     // The default knee / brightness is the unset URL value (a clean link).
-    if (edit.knee != null) setKnee(Math.abs(edit.knee - DEFAULT_KNEE) < 1e-6 ? 0 : Number(edit.knee.toPrecision(4)));
-    if (edit.gain != null) setGain(Math.abs(edit.gain - DEFAULT_GAIN) < 1e-6 ? 0 : Number(edit.gain.toPrecision(3)));
+    if (edit.knee != null) setKnee(urlKnee(edit.knee));
+    if (edit.gain != null) setGain(urlGain(edit.gain));
   };
   const resetTransfer = () => { setColor("lupton"); setKnee(0); setGain(0); };
   const inspectCurrent = () => { if (object) openInspector({ kind: "archivefield", id: object.id ?? String(object.sample_id) }); };
+  const isDefault = color === "lupton" && knee === 0 && gain === 0;
+  const kneeValue = shared.knee ?? DEFAULT_KNEE;
+  const gainValue = shared.gain ?? DEFAULT_GAIN;
 
   usePageActions([
     { id: "visual-lock", label: lock ? "Unlock the synthetic–real transfer" : "Lock the synthetic–real transfer", group: "Visual", run: () => setLock(!lock) },
@@ -106,98 +148,119 @@ export default function VisualTab() {
       run: () => { void syncArchiveFields(); } },
   ]);
 
+  const fitBoth = () => { apis.current.real?.resetView(); apis.current.syn?.resetView(); };
+  const kneeField = <KneeField value={kneeValue} onChange={(v) => setKnee(urlKnee(v))} />;
+  const gainField = (
+    <span className="rl-vis__field">
+      <span className="rl-vis__label">Brightness</span>
+      <Slider value={gainValue} min={GAIN_SLIDER_RANGE[0]} max={GAIN_SLIDER_RANGE[1]} scale="log" showValue className="rl-vis__slider rl-vis__slider--gain"
+        format={(v) => `×${formatSig(v)}`} aria-label="Shared brightness" onChange={(v) => setGain(urlGain(v))} />
+    </span>
+  );
+
   return (
     <Page className="rl-page">
-      <RealismBar label="Synthetic–real controls">
-        <BarGroup label="synthetic">
-          <Segmented size="sm" aria-label="Synthetic subset" value={subset} onChange={setSubset} options={SUBSETS} />
-        </BarGroup>
-        <BarGroup label="transfer">
-          <Switch size="sm" checked={lock} onChange={setLock}>one transfer</Switch>
-          <Badge size="sm" title="The shared colour transfer (edit it in either viewer's toolbar)">
-            {color} · knee {formatNumber(shared.knee ?? DEFAULT_KNEE, { sig: 4 })} e⁻{shared.knee == null ? " (default)" : ""} · ×{formatNumber(shared.gain ?? DEFAULT_GAIN, { sig: 3 })}
-          </Badge>
-          <IconButton size="sm" icon="reset" label="Reset the shared transfer (Lupton, default knee)" onClick={resetTransfer}
-            disabled={color === "lupton" && knee === 0 && gain === 0} />
-        </BarGroup>
-        <BarSpacer />
-        <Badge size="sm" dot tone={stale ? "warn" : archiveCount > 0 && synCount > 0 ? "good" : "warn"}>
-          {stale ? "archive source changed" : archiveCount > 0 && synCount > 0 ? "both inputs ready" : "input missing"}
-        </Badge>
-        <Info label="About the synthetic–real view">
-          <p>The LR data the model actually receives: a real multipoint archive sample and a synthetic dirty record
-            (detector artifacts and warped PSFs included), rendered by the same colour transfer.</p>
-          <p>Lupton shows all four bands: NISP-only saturation blackouts are invisible in a single VIS channel.</p>
-        </Info>
-        <IconButton size="sm" icon="reset" label="Refresh both sources" loading={archive.fetching || sky.fetching}
-          onClick={() => { archive.reload(); sky.reload(); }} />
-      </RealismBar>
+      <div className="rl-vis">
+        <div className="rl-vis__bar" role="toolbar" aria-label="Shared display of both lanes">
+          <Segmented size="sm" aria-label="Colour of both lanes" value={COLOURS.some((c) => c.value === color) ? color : "lupton"}
+            onChange={setColor} options={COLOURS} />
+          {/* Wide: knee and brightness in the row. Narrow: one "Display" menu
+              holds them, so the row stays one or two lines. */}
+          <span className="rl-vis__inline">{kneeField}{gainField}</span>
+          <Popover label="Knee and brightness of both lanes" align="start" className="rl-vis rl-vis__pop" width={320}
+            trigger={<Button size="sm" variant="ghost" icon="contrast" iconRight="chevronDown" className="rl-vis__more"
+              title={`Knee ${formatSig(kneeValue)} e⁻, brightness ×${formatSig(gainValue)}`}>Display</Button>}>
+            {kneeField}{gainField}
+          </Popover>
+          <Tooltip content={lock ? "Keys typed in one viewer (Q–Y, brightness) change both. Switch off to let them differ."
+            : "Keys typed in a viewer change only that viewer; the row above still sets both."}>
+            <span className="rl-vis__lock"><Switch size="sm" checked={lock} onChange={setLock}>Same transfer</Switch></span>
+          </Tooltip>
+          <span className="rl-vis__spacer" />
+          <span className="rl-vis__end">
+            <Button size="sm" variant="ghost" onClick={fitBoth} title="Show the whole field in both lanes (0 in a viewer)">Fit both</Button>
+            <IconButton size="sm" icon="reset" label="Reset the shared transfer (Lupton, default knee)" onClick={resetTransfer} disabled={isDefault} />
+            <Info label="About the synthetic–real view">
+              <p>The LR data the model actually receives: a real multipoint archive sample and a synthetic dirty record
+                (detector artifacts and warped PSFs included), rendered by the same colour transfer.</p>
+              <p>Lupton shows all four bands: NISP-only saturation blackouts are invisible in a single VIS channel.</p>
+              <p className="rl-subhead">In either viewer</p>
+              <ul className="rl-info__defs">
+                <li><b>Wheel, + / −</b><span>zoom in and out; drag to pan</span></li>
+                <li><b>0</b><span>fit the whole field (the fit button above does both lanes)</span></li>
+                <li><b>L</b><span>the lens (magnifier); click to freeze a crop, S saves it</span></li>
+                <li><b>Q W E R T Y</b><span>VIS, Y, J, H, Lupton, temperature</span></li>
+                <li><b>← / →</b><span>previous / next sample in that lane</span></li>
+                <li><b>F</b><span>that lane full screen (⛶); Esc returns</span></li>
+              </ul>
+            </Info>
+          </span>
+        </div>
 
-      <div className="rl-lanes">
-        <section className="rl-lane" aria-label="Real Euclid LR">
-          <header className="rl-lane__head">
-            <div className="rl-lane__title">
-              <span className="rl-subhead">real Euclid · multipoint archive</span>
-              <strong>{archiveCount > 0 ? archiveSampleProvenance(object, archiveCount) : "no samples"}</strong>
-              <small title={info?.source_plan_fingerprint ?? undefined}>
-                {archiveOverview(info)}{info?.ready ? ` · ${archiveFieldBreakdown(info)} · plan ${shortArchiveFingerprint(info.source_plan_fingerprint)}` : ""}
-              </small>
+        <div className="rl-vis__lanes">
+          <section className="rl-vis__lane" aria-label="Real Euclid LR">
+            <div className="rl-vis__viewer">
+              {archive.loading && !archive.data ? <Skeleton height={320} />
+                : archiveCount > 0 ? (
+                  <ImageViewer key={info?.collection_fingerprint ?? "archive-fields"} collection="archive-fields" id="visual-real"
+                    tiers={["lr"]} urlKey="real" toolbar="none" nav onReady={onReady("real")} onState={onState("real")} />
+                ) : (
+                  <EmptyState icon="image" title="No multipoint archive samples"
+                    action={<Button size="sm" icon="download" loading={sync.busy} title={syncHint} onClick={() => void syncArchiveFields()}>Sync from FASRC</Button>}>
+                    {archive.error ? archive.error.message : info?.reasons?.[0] ?? "Synchronize the multipoint archive collection."}
+                  </EmptyState>
+                )}
             </div>
-            {object && (
-              <div className="rl-row">
+            <footer className="rl-vis__caption">
+              <span className="rl-vis__name">Real Euclid</span>
+              <span className="rl-vis__desc" title={archiveCount > 0 ? archiveSampleProvenance(object, archiveCount) : undefined}>
+                {archiveCount > 0 ? archiveSampleProvenance(object, archiveCount) : "no samples"}
+              </span>
+              {object && <>
                 <IconButton size="sm" icon="panelRight" label="Inspect this archive field" onClick={inspectCurrent} />
                 <SkyLink layers={["q1-tiles:0.2", "archive-fields"]} ra={object.ra} dec={object.dec} fov={0.3}
                   hint={`${object.parent_id} · RA ${object.ra.toFixed(4)}, Dec ${object.dec.toFixed(4)}`}>Sky</SkyLink>
-              </div>
-            )}
-          </header>
-          <div className="rl-lane__viewer">
-            {archive.loading && !archive.data ? <Skeleton height={320} />
-              : archiveCount > 0 ? (
-                <ImageViewer key={info?.collection_fingerprint ?? "archive-fields"} collection="archive-fields" id="visual-real"
-                  tiers={["lr"]} urlKey="real" toolbar="compact" onReady={onReady("real")} onState={onState("real")} />
-              ) : (
-                <EmptyState icon="image" title="No multipoint archive samples"
-                  action={<Button size="sm" icon="download" loading={sync.busy} title={syncHint} onClick={() => void syncArchiveFields()}>Sync from FASRC</Button>}>
-                  {archive.error ? archive.error.message : info?.reasons?.[0] ?? "Synchronize the multipoint archive collection."}
-                </EmptyState>
-              )}
-          </div>
-        </section>
-        <section className="rl-lane" aria-label="Synthetic LR">
-          <header className="rl-lane__head">
-            <div className="rl-lane__title">
-              <span className="rl-subhead">synthetic · forward model</span>
-              <strong>{synCount > 0 ? `${synCount.toLocaleString("en")} dirty ${subset} records` : "no records"}</strong>
-              <small>detector artifacts and warped PSFs</small>
+              </>}
+            </footer>
+          </section>
+          <section className="rl-vis__lane" aria-label="Synthetic LR">
+            <div className="rl-vis__viewer">
+              {sky.loading && !sky.data ? <Skeleton height={320} />
+                : synCount > 0 ? (
+                  <ImageViewer key={subset} collection="sky" params={{ subset }} id="visual-syn" tiers={["dirty"]}
+                    urlKey="syn" toolbar="none" nav onReady={onReady("syn")} onState={onState("syn")} />
+                ) : (
+                  <EmptyState icon="image" title={`No ${subset} dirty records`}
+                    action={<Button asChild size="sm" iconRight="chevronRight"><Link to="/data/records">Data › Records</Link></Button>}>
+                    {sky.error ? sky.error.message : `Sync the ${subset} records first.`}
+                  </EmptyState>
+                )}
             </div>
-          </header>
-          <div className="rl-lane__viewer">
-            {sky.loading && !sky.data ? <Skeleton height={320} />
-              : synCount > 0 ? (
-                <ImageViewer key={subset} collection="sky" params={{ subset }} id="visual-syn" tiers={["dirty"]}
-                  urlKey="syn" toolbar="compact" onReady={onReady("syn")} onState={onState("syn")} />
-              ) : (
-                <EmptyState icon="image" title={`No ${subset} dirty records`}
-                  action={<Button asChild size="sm" iconRight="chevronRight"><Link to="/data/records">Data › Records</Link></Button>}>
-                  {sky.error ? sky.error.message : `Sync the ${subset} records first.`}
-                </EmptyState>
-              )}
-          </div>
-        </section>
+            <footer className="rl-vis__caption">
+              <span className="rl-vis__name">Synthetic</span>
+              <span className="rl-vis__desc">{synCount > 0 ? `${synCount.toLocaleString("en")} dirty records` : "no records"}</span>
+              <Segmented size="sm" aria-label="Synthetic subset" value={subset} onChange={setSubset} options={SUBSETS} />
+            </footer>
+          </section>
+        </div>
       </div>
 
       <Card>
-        <CardHead title="Multipoint archive reference" sub="generate the four-band samples on FASRC, then sync them here"
-          right={stale ? <Badge tone="warn">source changed</Badge>
-            : info?.ready ? <Badge tone={info.current ? "good" : "warn"}>{info.current ? `${info.parent_count} pointings ready` : "source changed"}</Badge>
-              : <Badge tone="warn">not synchronized</Badge>} />
+        <CardHead title="Multipoint archive reference"
+          sub={info?.ready ? `${archiveOverview(info)} · ${archiveFieldBreakdown(info)} · plan ${shortArchiveFingerprint(info.source_plan_fingerprint)}`
+            : "generate the four-band samples on FASRC, then sync them here"}
+          right={stale ? <Badge tone="warn" dot>source changed</Badge>
+            : info?.ready ? <Badge tone={info.current ? "good" : "warn"} dot>{info.current ? `${info.parent_count} pointings ready` : "source changed"}</Badge>
+              : <Badge tone="warn" dot>not synchronized</Badge>} />
         <CardBody>
           <div className="rl-row">
             <Button variant="primary" icon="download" loading={sync.busy} title={syncHint} onClick={() => void syncArchiveFields()}>
               Sync archive fields from FASRC
             </Button>
             <SkyLink layers={["q1-tiles:0.2", "archive-fields"]} hint="Every archive field on the sky atlas">All fields on sky</SkyLink>
+            <Button size="sm" variant="ghost" icon="reset" loading={archive.fetching || sky.fetching}
+              onClick={() => { archive.reload(); sky.reload(); }}>Refresh both sources</Button>
+            <span className="rl-faint">{archiveCount > 0 && synCount > 0 ? "Both inputs ready" : "An input is missing"}</span>
           </div>
           <JobProgress job={sync.job} error={sync.error} />
           <StepById stepId="archive_field_sample" embedded />

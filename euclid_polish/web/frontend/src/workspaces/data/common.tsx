@@ -1,21 +1,66 @@
-/* Data workspace — shared pieces: the sticky tab toolbar, freshness badges,
+/* Data workspace — shared pieces: the tab toolbar (one plain row that
+ * scrolls with the page), freshness badges,
  * load/error states that show the server's text, sky links, and the job
  * starter every sync / generate button uses (confirm → POST → job tray →
  * invalidate the data resources → toast). */
-import type { ReactNode } from "react";
+import { useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { Link } from "react-router-dom";
 import { invalidate } from "../../api/query";
 import type { Job, UseJob } from "../../api/jobs";
 import type { FormRecord } from "../../api/client";
 import { useFasrcStatus } from "../../app/status";
 import { formatDateTime, formatRelative } from "../../format";
-import { Badge, Button, Callout, JobProgress, Skeleton, Tooltip, confirm, toast, type Tone } from "../../ui";
+import { Badge, Button, Callout, Icon, JobProgress, Skeleton, Tooltip, confirm, toast, type IconName, type Tone } from "../../ui";
 import { DATA_PREFIXES } from "./api";
 import { atlasHref } from "./model";
 
-/** The tab's sticky toolbar (under the workspace tab strip). */
-export function DataBar({ label, children }: { label: string; children: ReactNode }) {
-  return <div className="dt-bar" role="toolbar" aria-label={label}>{children}</div>;
+/** The tab's toolbar: one plain row under the workspace tab strip (never
+ *  pinned). With `compactable`, when the row does not fit with every label,
+ *  the buttons in its `<BarActions>` go icon-only (they keep their
+ *  aria-label and title) instead of wrapping onto a second row. */
+export function DataBar({ label, children, compactable = false }: { label: string; children: ReactNode; compactable?: boolean }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const compact = useFitsOneRow(ref, compactable);
+  return <div ref={ref} className="dt-bar" role="toolbar" aria-label={label} data-compact={compact || undefined}>{children}</div>;
+}
+
+/** The toolbar's action buttons (icon-only while the bar is compact). */
+export function BarActions({ children }: { children: ReactNode }) {
+  return <div className="dt-bar__act">{children}</div>;
+}
+
+/** Whether a flex row needs its compact form: its children at their natural
+ *  (labelled) widths plus the gaps exceed its width. Measured with the compact
+ *  attribute lifted for the reading, so the answer does not depend on the
+ *  current form (no flip-flop), on resize and whenever a child changes size. */
+function useFitsOneRow(ref: RefObject<HTMLElement>, enabled: boolean): boolean {
+  const [compact, setCompact] = useState(false);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!enabled || !el) return;
+    let raf = 0;
+    const measure = () => {
+      raf = 0;
+      const had = el.hasAttribute("data-compact");
+      if (had) el.removeAttribute("data-compact");
+      const kids = [...el.children] as HTMLElement[];
+      const gap = parseFloat(getComputedStyle(el).columnGap) || 0;
+      // Fractional widths (offsetWidth rounds): a row that fits to the pixel still wraps.
+      const natural = kids.reduce((w, k) => w + (k.classList.contains("dt-bar__spacer") ? 0 : k.getBoundingClientRect().width), 0)
+        + gap * Math.max(0, kids.length - 1);
+      if (had) el.setAttribute("data-compact", "");
+      setCompact(el.clientWidth > 0 && natural > el.clientWidth - 1);
+    };
+    const schedule = () => { if (!raf) raf = requestAnimationFrame(measure); };
+    const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(schedule) : null;
+    const observeKids = () => { ro?.disconnect(); ro?.observe(el); for (const k of el.children) ro?.observe(k); };
+    const mo = typeof MutationObserver !== "undefined" ? new MutationObserver(() => { observeKids(); schedule(); }) : null;
+    observeKids();
+    mo?.observe(el, { childList: true });
+    measure();
+    return () => { if (raf) cancelAnimationFrame(raf); ro?.disconnect(); mo?.disconnect(); };
+  }, [ref, enabled]);
+  return compact;
 }
 
 export const Spacer = () => <span className="dt-bar__spacer" />;
@@ -55,16 +100,23 @@ export function LoadState({ loading, error, onRetry, lines = 4, children }: {
   return <>{children}</>;
 }
 
+/** A router link styled as a small ghost button, with its icon and a label
+ *  that a compact toolbar hides (the link keeps its accessible name).
+ *  (`Button asChild` renders only its child, so the icon goes in here.) */
+export function LinkButton({ to, icon, label, hint }: { to: string; icon: IconName; label: string; hint?: string }) {
+  const link = (
+    <Button asChild size="sm" variant="ghost">
+      <Link to={to} aria-label={label}><Icon name={icon} /><span className="ui-btn__label">{label}</span></Link>
+    </Button>
+  );
+  return hint ? <Tooltip content={hint}>{link}</Tooltip> : link;
+}
+
 /** Router link to the Sky atlas (a small ghost button). */
 export function SkyButton({ ra, dec, fov = 0.05, layers, inspect, label = "On sky", hint }: {
   ra?: number | null; dec?: number | null; fov?: number; layers?: string[]; inspect?: string; label?: string; hint?: string;
 }) {
-  const link = (
-    <Button asChild size="sm" variant="ghost" icon="globe">
-      <Link to={atlasHref({ ra, dec, fov, layers, inspect })}>{label}</Link>
-    </Button>
-  );
-  return hint ? <Tooltip content={hint}>{link}</Tooltip> : link;
+  return <LinkButton to={atlasHref({ ra, dec, fov, layers, inspect })} icon="globe" label={label} hint={hint} />;
 }
 
 /** FASRC connection state for gating the remote actions. */

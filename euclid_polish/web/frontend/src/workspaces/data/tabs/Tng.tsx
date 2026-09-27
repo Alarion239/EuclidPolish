@@ -72,7 +72,7 @@ function Explorer({ rows }: { rows: TngRow[] }) {
   }));
   return (
     <Card>
-      <CardHead title="Property explorer" sub={`${formatCount(xs.length)} galaxies${hidden ? ` · ${hidden} not on these axes` : ""}`} />
+      <CardHead title="Property explorer" sub={`${formatCount(xs.length)} galaxies${hidden ? ` (${hidden} not on these axes)` : ""}`} />
       <CardBody>
         <div className="dt-axes">
           <Field label="X"><Select size="sm" value={x} onChange={setX} options={PROP_OPTIONS} /></Field>
@@ -108,7 +108,7 @@ function Distribution({ rows }: { rows: TngRow[] }) {
   const dom: [number, number] = hist.edges.length ? [hist.edges[0], hist.edges[hist.edges.length - 1]] : [0, 1];
   return (
     <Card>
-      <CardHead title="Distribution" sub={stats ? `median ${fmtSci(stats.median)} · 16–84 % ${fmtSci(stats.p16)}–${fmtSci(stats.p84)} · n ${stats.n}` : undefined} />
+      <CardHead title="Distribution" sub={stats ? `Median ${fmtSci(stats.median)}, 16–84 % ${fmtSci(stats.p16)}–${fmtSci(stats.p84)}, ${stats.n} galaxies` : undefined} />
       <CardBody>
         <div className="dt-axes">
           <Field label="Property"><Select size="sm" value={h} onChange={setH} options={PROP_OPTIONS} /></Field>
@@ -155,7 +155,7 @@ function RadiiCard() {
       <CardBody>
         {r && (
           <p className="mono dt-note">
-            {r.valid_count ?? 0}/{r.expected_count ?? 0} frames valid{r.failed_count ? ` · ${r.failed_count} failed` : ""}
+            {r.valid_count ?? 0}/{r.expected_count ?? 0} frames valid{r.failed_count ? `, ${r.failed_count} failed` : ""}
             {r.checked_at ? <> · <Freshness at={r.checked_at} label="checked" stale={24 * 3600} /></> : null}
           </p>
         )}
@@ -206,7 +206,12 @@ function ResultsCard() {
           {res?.stack.present && <Button size="sm" variant="ghost" icon="download" href={URLS.tngStack} download>Stacked FITS</Button>}
         </div>
         {res?.grid.present
-          ? <img className="dt-grid-img" src={`${URLS.tngGrid}?t=${res.grid.pulled_at ?? 0}`} alt="5 × 5 TNG galaxy grid" loading="lazy" />
+          ? (
+            <a href={`${URLS.tngGrid}?t=${res.grid.pulled_at ?? 0}`} target="_blank" rel="noreferrer" className="dt-grid-link"
+              title="Open the grid at full size">
+              <img className="dt-grid-img" src={`${URLS.tngGrid}?t=${res.grid.pulled_at ?? 0}`} alt="5 × 5 TNG galaxy grid" loading="lazy" />
+            </a>
+          )
           : <EmptyState compact icon="image" title="No grid pulled yet">Submit the grid job, then pull its result.</EmptyState>}
         <StepById stepId="tng_grid" />
         <StepById stepId="tng_stack" />
@@ -245,7 +250,9 @@ export default function Tng() {
           </Link>
         </Tooltip>
         {summary && (
-          <Badge size="sm">{formatCount(summary.n)} galaxies · {formatCount(summary.n_in_atlas)} measured · {summary.n_local} local</Badge>
+          <span className="dt-bar__text">
+            <b>{formatCount(summary.n)}</b> galaxies, <b>{formatCount(summary.n_in_atlas)}</b> measured, <b>{summary.n_local}</b> local
+          </span>
         )}
         {props.data?.files.properties.present && <Freshness at={props.data.files.properties.mtime} label="properties" stale={90 * 24 * 3600} />}
         <Spacer />

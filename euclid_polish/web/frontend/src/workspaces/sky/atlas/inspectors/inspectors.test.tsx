@@ -15,11 +15,11 @@ import { IMG_CODEC, resolveOverlays } from "../pixelOverlays";
 import { PointCard } from "./PointCard";
 import SourceInspector from "./SourceInspector";
 import { sourceViewerFor } from "./SourceViewer";
-import TileInspector, { jwstFilters, metricChips, outputOrigin, overlayTiers, tileFovDeg } from "./TileInspector";
+import TileInspector, { jwstFilters, outputOrigin, overlayTiers, tileFovDeg } from "./TileInspector";
 
 vi.mock("../../../../viewer", () => ({
-  ImageViewer: (p: { collection: string; initialId?: string; tiers?: string[] }) => (
-    <div data-testid="viewer">{p.collection}:{p.initialId}:{(p.tiers ?? []).join(",")}</div>
+  ImageViewer: (p: { collection: string; initialId?: string; tiers?: string[]; params?: Record<string, string> }) => (
+    <div data-testid="viewer" data-models={p.params?.models ?? ""}>{p.collection}:{p.initialId}:{(p.tiers ?? []).join(",")}</div>
   ),
 }));
 
@@ -95,22 +95,25 @@ describe("tile card", () => {
     expect(tileFovDeg({ shape: [255, 255], pixscale: 0.1 })).toBeCloseTo((25.5 / 3600) * 2.5);
   });
 
-  it("pure helpers: real-data metric chips and output provenance", () => {
-    expect(metricChips({ hole_pct: 3.214, median_R: 0.9412, flux_ratio: 1.0123, n_peaks: 4 })).toEqual(["holes 3.2%", "R̃ 0.94", "flux 1.012"]);
-    expect(metricChips({ hole_pct: null })).toEqual([]);
-    expect(metricChips(null)).toEqual([]);
+  it("pure helpers: output provenance", () => {
     expect(outputOrigin({ legacy: true, origin: "nexus-field", member_labels: ["m1", "m2"], combiner_kind: "spatial_gate" }))
       .toBe("legacy nexus-field · 2 members · spatial gate");
     expect(outputOrigin({})).toBe("");
   });
 
-  it("maps the palette's nexus/<n> to the real tile and shows state, viewer and models", async () => {
+  it("maps the palette's nexus/<n> to the real tile: the one real-tile card, image first", async () => {
     routes["GET /api/real/nexus/f200w-0012"] = () => ({ body: CARD });
-    show(<TileInspector id="nexus/12" />);
+    const { container } = show(<TileInspector id="nexus/12" />);
     expect(await screen.findByText("production stale")).toBeTruthy();
-    expect(screen.getByTestId("viewer").textContent).toBe("real:f200w-0012:lr,m:rbf,jwst");
-    expect(screen.getByText(/102158584 · VIS sky 27\.7 e⁻/)).toBeTruthy();
+    const viewer = screen.getByTestId("viewer");
+    expect(viewer.textContent).toBe("real:f200w-0012:lr,m:rbf");   // two large frames; JWST one chip away
+    // the tier picker offers only this tile's own outputs (no source-wide spec list)
+    expect(viewer.dataset.models).toBe("rbf");
+    // the viewer is the first thing on the card
+    expect(container.querySelector(".res-card")?.firstElementChild?.contains(viewer)).toBe(true);
+    expect(screen.getByText(/102158584, VIS sky 27\.7 e⁻/)).toBeTruthy();
     expect(screen.getByText("rbf")).toBeTruthy();
+    expect(screen.getByText(/Holes %/, { selector: "strong" })).toBeTruthy();          // defined on the card
   });
 
   it("server errors are shown verbatim", async () => {
@@ -122,7 +125,8 @@ describe("tile card", () => {
   it("overlay on the sky: writes the FITS overlay into the atlas URL and flies there", async () => {
     routes["GET /api/real/nexus/f200w-0012"] = () => ({ body: CARD });
     show(<TileInspector id="nexus/f200w-0012" />);
-    fireEvent.click(await screen.findByRole("button", { name: "On the sky" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Overlay on the sky" }));   // folded off the atlas
+    fireEvent.click(await screen.findByRole("button", { name: "Add to the sky" }));
     const loc = screen.getByTestId("loc").textContent!;
     expect(loc).toMatch(/^\/sky\/atlas\?ra=268\.41079&dec=65\.11848&fov=/);
     const img = IMG_CODEC.parse(new URLSearchParams(loc.split("?")[1]).get("img")!)!;
@@ -139,16 +143,24 @@ describe("tile card", () => {
     expect(screen.getByTestId("loc").textContent).toBe("/sky/experiments?tiles=nexus%2Ff200w-0012");
   });
 
-  it("run production asks first, then starts the experiment job", async () => {
+  it("run models proposes the missing production + mean, asks first, then starts the experiment job", async () => {
     routes["GET /api/real/nexus/f200w-0012"] = () => ({ body: CARD });
     routes["POST /api/experiments"] = () => ({ body: { ok: true, job_id: "abc12345", experiment_id: "e1" } });
     routes["GET /api/jobs"] = () => ({ body: [] });
+    routes["GET /api/models"] = () => ({ body: { regime: "starfull", models: [
+      { spec: "production", kind: "production", label: "P", available: true, n_members: 2, reads: ["1·psnr", "2·psnr"] },
+      { spec: "mean", kind: "mean", label: "M", available: true, n_members: 2, members: ["1·psnr", "2·psnr"] },
+    ] } });
     show(<TileInspector id="nexus/f200w-0012" />);
-    fireEvent.click(await screen.findByRole("button", { name: "Run production" }));
-    await answer(/Run production on 1 tile/, "Run");
+    fireEvent.click(await screen.findByRole("button", { name: "Run models…" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Run 2" }));
+    const dlg = await screen.findByRole("alertdialog", { name: /Run 2 models on 1 tile/ });
+    // the confirm states the cost
+    expect(dlg.textContent).toContain("2 outputs (2 models on 1 tile). Needs 2 member SRs per tile: at most 2 member inferences");
+    fireEvent.click(within(dlg).getByRole("button", { name: "Run" }));
     await waitFor(() => expect(posts.map((p) => p.url)).toContain("/api/experiments"));
-    expect(posts[0].form).toEqual({ tiles: "nexus/f200w-0012", models: "production" });
-    expect(useJobsStore.getState().started).toContain("abc12345");
+    expect(posts[0].form).toEqual({ tiles: "nexus/f200w-0012", models: "production,mean" });
+    expect(useJobsStore.getState().keyed["sky:experiment"]).toBe("abc12345");
   });
 });
 
@@ -258,7 +270,7 @@ describe("cache a tile here", () => {
     act(() => {
       useJobsStore.setState((st) => ({ jobs: { ...st.jobs, j9: { job_id: "j9", label: "cache tile", status: "done", result: { id: "ra268_dec65" } } as never } }));
     });
-    await waitFor(() => expect(useInspector.getState().current).toEqual({ kind: "realtile", id: "tile/ra268_dec65" }));
+    await waitFor(() => expect(useInspector.getState().current).toEqual({ kind: "tile", id: "tile/ra268_dec65" }));
     act(() => { useInspector.getState().hide(); });
   });
 

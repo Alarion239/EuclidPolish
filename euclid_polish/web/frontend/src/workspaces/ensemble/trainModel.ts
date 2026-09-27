@@ -70,6 +70,41 @@ export const defaultForm = (): TrainForm => ({
 
 const num = (s: string) => (s.trim() === "" ? NaN : Number(s));
 
+/** SLURM resources per model of the recipe (the 2026-09-24 batch 48107719:
+ *  a 70k-step member takes 2.5–3 h; 16 CPUs keep the GPU fed — the step's
+ *  own default of 4 CPUs / 48 h starves it and books far too long). */
+export type Resources = { n_cpus: string; memory: string; time_limit: string };
+export const RECIPE_RESOURCES: Resources = { n_cpus: "16", memory: "32G", time_limit: "3:00:00" };
+
+/** Jobs of the same kind as a form mode: a continue job runs members a few
+ *  thousand steps further; add and fork train whole new members. */
+const sameKind = (jobMode: string | undefined, mode: TrainMode) =>
+  mode === "continue" ? jobMode === "continue" : jobMode !== "continue";
+
+/** The resources a fresh Train form starts from: the newest COMPLETED
+ *  training job OF THE SAME KIND as the form's mode (what worked last time;
+ *  `from` names it), else the recipe. A short continue job's hour never
+ *  becomes the time limit of the next new 70k-step batch. */
+export function defaultResources(jobs: readonly TrainingJob[], mode: TrainMode = "add"): Resources & { from: string | null } {
+  const done = jobs.find((j) => j.state === "COMPLETED" && sameKind(j.mode, mode) && (j.req_cpus || j.req_time_limit));
+  if (!done) return { ...RECIPE_RESOURCES, from: null };
+  return {
+    n_cpus: done.req_cpus ? String(done.req_cpus) : RECIPE_RESOURCES.n_cpus,
+    memory: done.req_memory || RECIPE_RESOURCES.memory,
+    time_limit: done.req_time_limit || RECIPE_RESOURCES.time_limit,
+    from: done.jobid,
+  };
+}
+
+/** "Continue them…" (TIMEOUT members): run the picked members up to their
+ *  recorded target (the largest among them), not a fixed +N steps that
+ *  leaves one short and runs another past it. Null when none has a target. */
+export function continueTarget(rows: readonly { name: string; target_steps?: number | null }[], picked: readonly string[]): number | null {
+  const set = new Set(picked);
+  const ts = rows.filter((r) => set.has(r.name) && r.target_steps != null && r.target_steps > 0).map((r) => r.target_steps as number);
+  return ts.length ? Math.max(...ts) : null;
+}
+
 export function parseKnees(text: string): number[] | null {
   const vs = text.split(/[\s,;]+/).filter(Boolean).map(Number);
   return vs.length && vs.every((v) => Number.isFinite(v) && v > 0) ? vs : null;

@@ -20,6 +20,7 @@ import {
 import { BAND_SHORT, BANDS, url, type MemberDetail } from "./api";
 import { JOB, useOnJobEnd } from "./jobs";
 import { db, dbDelta, kneeText, memberName, memberNumber, relativeTo, stepsText, xy } from "./model";
+import { autoTicks } from "../plotTicks";
 import "./ensemble.css";
 
 type CurveMetric = "bands" | "loss" | "gnorm" | "time";
@@ -58,6 +59,7 @@ function CurvesPlot({ d }: { d: MemberDetail }) {
       <Segmented<CurveMetric> size="sm" aria-label="Curve" value={metric} onChange={setMetric}
         options={[{ value: "bands", label: "PSNR" }, { value: "loss", label: "loss" }, { value: "gnorm", label: "‖g‖" }, { value: "time", label: "time" }]} />
       <Plot xDomain={[0, Math.max(1, ...xs)]} yDomain={yDomain} yScale={log ? "log" : "linear"} series={series}
+        xTicks={autoTicks([0, Math.max(1, ...xs)], "linear", kfmt)} yTicks={autoTicks(yDomain, log ? "log" : "linear")}
         xLabel="step" yLabel={yLabel} aspect={0.62} legend="auto" xFormat={kfmt} zoomAxes="x"
         exportName={`${d.name}-${metric}`} aria-label={`${d.name} training ${metric}`} />
     </div>
@@ -85,7 +87,7 @@ function KneePlot({ d }: { d: MemberDetail }) {
       <Segmented size="sm" aria-label="Band" value={String(band)} onChange={(v) => setBand(Number(v))}
         options={k.bands.map((b, i) => ({ value: String(i), label: BAND_SHORT[b] ?? b }))} />
       <Plot xScale="log" xDomain={[k.knees[0], k.knees[k.knees.length - 1]]} xTicks={logTicks([k.knees[0], k.knees[k.knees.length - 1]])}
-        yDomain={[lo - pad, hi + pad]} series={series} xLabel="scoring knee [e⁻]" yLabel="PSNR − mean [dB]"
+        yDomain={[lo - pad, hi + pad]} yTicks={autoTicks([lo - pad, hi + pad])} series={series} xLabel="scoring knee [e⁻]" yLabel="PSNR − mean [dB]"
         aspect={0.62} legend="auto" exportName={`${d.name}-knee`} aria-label={`${d.name} PSNR vs knee`} />
       {k.stale && <Badge tone="warn">knee curves stale</Badge>}
     </div>
@@ -107,6 +109,7 @@ function GatePlot({ d }: { d: MemberDetail }) {
       <DefList dense items={g.bands.map((b) => [`${BAND_SHORT[b] ?? b} weight`,
         `${g.usage[b] != null ? (100 * (g.usage[b] as number)).toFixed(2) : "—"}% · sources ${g.usage_source[b] != null ? (100 * (g.usage_source[b] as number)).toFixed(2) : "—"}%`])} />
       <Plot xDomain={[-0.3, names.length - 0.7]} yDomain={[0, Math.max(g.uniform * 1.5, ...ys) * 1.1]}
+        yTicks={autoTicks([0, Math.max(g.uniform * 1.5, ...ys) * 1.1])}
         xTicks={names.map((n, i) => ({ v: i, label: n }))} series={series} xLabel="member-mean brightness" yLabel="mean gate weight"
         aspect={0.6} legend="auto" zoom={false} exportName={`${d.name}-gate`} aria-label={`${d.name} gate weight by brightness`} />
       {g.stale && <Badge tone="warn">from a stale gate</Badge>}

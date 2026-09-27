@@ -1,28 +1,39 @@
-/* Figures › Results (spec §8.5): every crop saved from a viewer (lens freeze,
- * then S / "Save crop to results") — thumbnail, source, tiers, crop size,
- * WCS badge, sky position. Row → the `figure` inspector; per-row actions
- * (open the source viewer, sky, inspect/download FITS, rename, delete) and
- * bulk "build a grid" / delete. Regime filter, table filter and sort live in
- * the URL. */
+/* Figures › Results (spec §8.5; image-first pass 2026-09-27): every crop
+ * saved from a viewer (lens freeze, then S / "Save crop to results") — as a
+ * table (thumbnail, source, tiers, crop size, WCS badge, sky position) or a
+ * gallery of large thumbnails (`?view=gallery`). A thumbnail opens the crop
+ * full size (Lightbox: every panel, pixels kept); a table row opens the
+ * `figure` inspector; per-row actions (open the source viewer, sky,
+ * inspect/download FITS, rename, delete) and bulk "build a grid" / delete.
+ * Regime filter, view, table filter and sort, and the gallery's own text
+ * filter (`?q=`, newest first) live in the URL. */
 import { useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useResource } from "../../../api/query";
+import { openInspector } from "../../../app/inspector";
 import { usePageActions } from "../../../app/palette";
 import { formatBytes, formatDateTime, formatDeg, formatNumber, formatRelative } from "../../../format";
 import { useUrlState } from "../../../hooks/useUrlState";
 import {
-  Badge, Button, Callout, DataTable, EmptyState, IconButton, Menu, Page, Segmented, Tooltip,
+  Badge, Button, Callout, Checkbox, DataTable, EmptyState, IconButton, Input, Menu, Page, Segmented, Skeleton, Tooltip,
   type DataColumn, type MenuItem,
 } from "../../../ui";
 import { confirmDeleteResults, RenameDialog } from "../actions";
 import { URLS, fitsUrl, type SavedResult } from "../api";
-import { RegimeBadge, ResultThumb, WcsBadge } from "../common";
-import { cropSideArcsec, gridHref, inspectLink, normalizeIndex, resultRegime, skyLink, sourceLabel, viewerLink } from "../model";
+import { RegimeBadge, ResultThumb, ThumbButton, WcsBadge } from "../common";
+import { ResultLightbox } from "../Lightbox";
+import { cropSideArcsec, galleryMatches, gridHref, inspectLink, normalizeIndex, resultRegime, skyLink, sourceLabel, viewerLink } from "../model";
+import { useMediaQuery } from "../../../hooks/useMediaQuery";
 import "../figures.css";
 import "../register";
 
 const REGIMES = ["all", "real", "synthetic"] as const;
 type RegimeFilter = (typeof REGIMES)[number];
+const REGIME_LABEL: Record<RegimeFilter, string> = { all: "All", real: "Real", synthetic: "Synthetic" };
+type View = "table" | "gallery";
+/** Thumbnail sides (css px): the table's, the gallery's. */
+const TABLE_THUMB = 64;
+const GALLERY_THUMB = 200;
 
 function objectText(r: SavedResult): string {
   const o = r.source?.object;
@@ -52,6 +63,10 @@ function rowMenu(r: SavedResult, rename: (r: SavedResult) => void, navigate: (to
 export default function Results() {
   const navigate = useNavigate();
   const [regime, setRegime] = useUrlState<string>("regime", "all");
+  const [viewRaw, setView] = useUrlState<string>("view", "table");
+  const view: View = viewRaw === "gallery" ? "gallery" : "table";
+  const [find, setFind] = useUrlState<string>("q", "");
+  const [full, setFull] = useState<SavedResult | null>(null);
   const [selected, setSelected] = useState<string[]>([]);
   const [renaming, setRenaming] = useState<SavedResult | null>(null);
   const index = useResource<unknown>(URLS.results, [], { ttl: 15_000 });
@@ -83,11 +98,17 @@ export default function Results() {
     { id: "fig-results-delete", label: "Delete the selected saved results…", group: "Figures", disabled: !picked.length, run: () => void removeSelected() },
     { id: "fig-results-real", label: "Show real saved results", group: "Figures", run: () => setRegime("real") },
     { id: "fig-results-synthetic", label: "Show synthetic saved results", group: "Figures", run: () => setRegime("synthetic") },
+    { id: "fig-results-view", label: view === "gallery" ? "Show saved results as a table" : "Show saved results as a gallery", group: "Figures",
+      run: () => setView(view === "gallery" ? "table" : "gallery") },
   ]);
 
+  // Below 1280 px the source (the result's second line names it), position
+  // and saved-at columns start hidden (the column menu brings them back), so
+  // the table fits the pane without a hidden horizontal scroll.
+  const narrowPane = useMediaQuery("(max-width: 1279px)");
   const columns = useMemo<DataColumn<SavedResult>[]>(() => [
-    { id: "thumb", header: "", sortable: false, filterable: false, csv: false, hideable: false, width: 60,
-      cell: (r) => <ResultThumb result={r} size={44} /> },
+    { id: "thumb", header: "", sortable: false, filterable: false, csv: false, hideable: false, width: TABLE_THUMB + 20,
+      cell: (r) => <ThumbButton result={r} size={TABLE_THUMB} onOpen={() => setFull(r)} /> },
     { id: "label", header: "Result", width: 220, filterText: (r) => `${r.label} ${r.id} ${objectText(r)}`,
       cell: (r) => (
         <span className="fig-cell-stack">
@@ -96,7 +117,7 @@ export default function Results() {
         </span>
       ) },
     { id: "regime", header: "Regime", accessor: (r) => resultRegime(r) ?? "", width: 88, hidden: true, cell: (r) => <RegimeBadge regime={resultRegime(r)} /> },
-    { id: "collection", header: "Source", accessor: (r) => sourceLabel(r), width: 110,
+    { id: "collection", header: "Source", accessor: (r) => sourceLabel(r), width: 110, hidden: narrowPane,
       filterText: (r) => `${sourceLabel(r)} ${r.source?.collection ?? ""}`,
       cell: (r) => <Badge size="sm" title={`viewer collection ${r.source?.collection ?? "—"}`}>{sourceLabel(r)}</Badge> },
     { id: "tiers", header: "Tiers", accessor: (r) => r.logical_tiers.join(" "), width: 150,
@@ -112,14 +133,14 @@ export default function Results() {
       csv: (r) => String(cropSideArcsec(r) ?? "") },
     { id: "wcs", header: "WCS", accessor: (r) => (r.wcs_preserved ? "wcs" : (r.wcs_tiers ?? []).length ? "partial" : "none"), width: 96,
       cell: (r) => <WcsBadge result={r} /> },
-    { id: "radec", header: "RA, Dec", numeric: true, width: 186,
+    { id: "radec", header: "RA, Dec", numeric: true, width: 186, hidden: narrowPane,
       accessor: (r) => r.center?.ra ?? r.source?.object?.ra ?? null,
       filterText: (r) => { const c = r.center ?? r.source?.object; return c?.ra != null ? `${c.ra} ${c.dec}` : ""; },
       cell: (r) => {
         const c = r.center ?? (r.source?.object?.ra != null ? { ra: r.source.object.ra, dec: r.source.object.dec ?? NaN } : null);
         return c ? <span className="mono">{formatDeg(c.ra, 4)} {formatDeg(c.dec, 4, { signed: true })}</span> : <span className="muted">—</span>;
       } },
-    { id: "created", header: "Saved", accessor: (r) => r.created_utc ?? "", width: 96,
+    { id: "created", header: "Saved", accessor: (r) => r.created_utc ?? "", width: 96, hidden: narrowPane,
       cell: (r) => <span title={formatDateTime(r.created_utc)}>{formatRelative(r.created_utc)}</span> },
     { id: "bytes", header: "Size", numeric: true, accessor: (r) => r.bytes ?? null, hidden: true, cell: (r) => formatBytes(r.bytes) },
     { id: "id", header: "Id", hidden: true, cell: (r) => <span className="mono">{r.id}</span> },
@@ -128,15 +149,27 @@ export default function Results() {
         <Menu label={`Actions for ${r.label}`} align="end" items={rowMenu(r, setRenaming, navigate)}
           trigger={<IconButton icon="more" size="sm" label={`Actions for ${r.label}`} />} />
       ) },
-  ], [navigate]);
+  ], [navigate, narrowPane]);
+  const newest = useMemo(() => rows.filter((r) => galleryMatches(r, find))
+    .sort((a, b) => String(b.created_utc ?? "").localeCompare(String(a.created_utc ?? ""))), [rows, find]);
+  const toggle = (id: string, on: boolean) => setSelected((cur) => (on ? [...new Set([...cur, id])] : cur.filter((x) => x !== id)));
 
   return (
     <Page className="fig-page">
       <div className="fig-bar" role="toolbar" aria-label="Saved results">
         <Segmented size="sm" value={filter} onChange={setRegime} aria-label="Regime"
-          options={REGIMES.map((r) => ({ value: r, label: `${r === "all" ? "All" : r} ${counts[r]}` }))} />
+          options={REGIMES.map((r) => ({ value: r, label: `${REGIME_LABEL[r]} ${counts[r]}` }))} />
+        <Segmented<View> size="sm" value={view} onChange={setView} aria-label="View"
+          options={[{ value: "table", label: "Table" }, { value: "gallery", label: "Gallery", title: "Large thumbnails" }]} />
+        {view === "gallery" && (
+          <Input size="sm" type="search" icon="search" clearable value={find} onChange={setFind}
+            placeholder="Find: label, tier, source" aria-label="Find saved results" className="fig-bar__find" />
+        )}
         <span className="fig-bar__spacer" />
-        <span className="fig-bar__note" aria-live="polite">{picked.length ? `${picked.length} selected` : ""}</span>
+        <span className="fig-bar__note" aria-live="polite">
+          {picked.length ? `${picked.length} selected`
+            : view === "gallery" && rows.length ? `Newest first · ${newest.length === rows.length ? `all ${rows.length}` : `${newest.length} of ${rows.length}`}` : ""}
+        </span>
         <Tooltip content={gridReason || "Open the selection as grid columns"}>
           <span tabIndex={gridable ? -1 : 0}>
             <Button size="sm" icon="columns" disabled={!gridable} onClick={buildGrid}>Grid</Button>
@@ -158,15 +191,49 @@ export default function Results() {
           In any viewer, freeze a region with the lens and press S (Save crop to results).
         </EmptyState>
       ) : (
-        <DataTable rows={rows} columns={columns} rowKey={(r) => r.id} aria-label="Saved viewer results"
-          selectable selected={selected} onSelectedChange={(keys) => setSelected(keys)}
-          inspect={(r) => ({ kind: "figure", id: r.id })} rowHeight={56}
-          exportName="saved-viewer-results" urlKey="fr" loading={index.loading && !index.data}
-          height="max(420px, calc(100vh - 240px))" defaultSort={[{ id: "created", desc: true }]}
-          filterPlaceholder="Filter: collection:real  tiers:jwst  wcs=wcs  side<2"
-          empty={filter === "all" ? "No saved results." : `No ${filter} saved results.`} />
+        view === "gallery" ? (index.loading && !index.data ? <Skeleton lines={4} /> : (
+          <ul className="fig-gallery" aria-label="Saved viewer results">
+            {newest.map((r) => {
+              const side = cropSideArcsec(r);
+              const on = selected.includes(r.id);
+              return (
+                <li key={r.id} className="fig-gallery__item" data-on={on || undefined}>
+                  <button type="button" className="fig-gallery__open" onClick={() => setFull(r)} aria-label={`View ${r.label} full size`}>
+                    <ResultThumb result={r} size={GALLERY_THUMB} className="fig-gallery__img" />
+                  </button>
+                  <div className="fig-gallery__cap">
+                    <Checkbox checked={on} onChange={(v) => toggle(r.id, v)} aria-label={`Select ${r.label}`} />
+                    <button type="button" className="fig-gallery__label fig-ellipsis" title={`${r.label} — open its card`}
+                      onClick={() => openInspector({ kind: "figure", id: r.id })}>{r.label}</button>
+                    <Menu label={`Actions for ${r.label}`} align="end" items={rowMenu(r, setRenaming, navigate)}
+                      trigger={<IconButton icon="more" size="sm" label={`Actions for ${r.label}`} />} />
+                  </div>
+                  <div className="fig-gallery__meta">
+                    <span>{sourceLabel(r)}</span>
+                    {side != null && <span>{formatNumber(side, { digits: 2 })}″</span>}
+                    <span title={formatDateTime(r.created_utc)}>{formatRelative(r.created_utc)}</span>
+                  </div>
+                </li>
+              );
+            })}
+            {!newest.length && (
+              <li className="fig-gallery__none muted">
+                {find.trim() && rows.length ? `Nothing matches “${find.trim()}”.` : filter === "all" ? "No saved results." : `No ${filter} saved results.`}
+              </li>
+            )}
+          </ul>
+        )) : (
+          <DataTable rows={rows} columns={columns} rowKey={(r) => r.id} aria-label="Saved viewer results"
+            selectable selected={selected} onSelectedChange={(keys) => setSelected(keys)}
+            inspect={(r) => ({ kind: "figure", id: r.id })} rowHeight={TABLE_THUMB + 12}
+            exportName="saved-viewer-results" urlKey="fr" loading={index.loading && !index.data}
+            height="max(420px, calc(100vh - 240px))" defaultSort={[{ id: "created", desc: true }]}
+            filterPlaceholder="Filter: collection:real  tiers:jwst  wcs=wcs  side<2"
+            empty={filter === "all" ? "No saved results." : `No ${filter} saved results.`} />
+        )
       )}
       <RenameDialog result={renaming} open={!!renaming} onOpenChange={(o) => { if (!o) setRenaming(null); }} />
+      <ResultLightbox result={full} onClose={() => setFull(null)} />
     </Page>
   );
 }

@@ -41,6 +41,17 @@ describe("render specs", () => {
     expect(tiles.opacity).toBe(0.5); // the layer's style default
   });
 
+  it("fills the coverage MOC only when zoomed out: inside the covered sky it is an outline (neutral imagery)", () => {
+    const at = (fov: number) => buildSpecs({
+      layers: [CLIENT_LAYERS[0]], settings: [{ id: CLIENT_LAYERS[0].id }], data: {}, palette: P, fov, width: 900, markerScale: 1,
+    })[0];
+    expect(at(30).fill).toBe(true);
+    expect(at(2).fill).toBe(true);
+    expect(at(0.45).fill).toBe(false);          // the NEXUS preset (27′)
+    const [tiles] = buildSpecs({ layers: [TILES], settings: [{ id: "nexus-tiles" }], data: {}, palette: P, fov: 0.5, width: 900, markerScale: 1 });
+    expect(tiles.fill).toBeUndefined();         // only MOCs have a fill switch
+  });
+
   it("default opacities by kind", () => {
     expect(layerOpacity({ ...TILES, style: {} })).toBe(0.7);
     expect(layerOpacity({ ...TILES, kind: "points", style: {} })).toBe(0.9);

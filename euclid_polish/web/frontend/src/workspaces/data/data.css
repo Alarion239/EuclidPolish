@@ -1,21 +1,44 @@
 /* Data workspace (records, catalog, cutouts, PSFs, TNG) + its inspector
-   cards. Scoped by .dt-* classes; every colour is a token; layouts collapse by
-   their container's width (the user's pane is often ~720 px wide). */
+   cards. Scoped by .dt-* classes; every colour is a token (the few fixed
+   image-surround / marker-key colours are declared once on .dt-page and
+   mirror the viewer's light table, src/viewer/viewer.css); layouts collapse by
+   their container's width (the user's pane is often ~720 px wide).
 
-.dt-page { container: dt-page / inline-size; display: flex; flex-direction: column; gap: var(--s3); min-width: 0; }
+   Image pages (Records, Cutouts, PSFs; .dt-page--image) are image first
+   (docs/superpowers/specs/2026-09-27-image-first-viewer-design.md): one
+   toolbar row, at most one caption row, then the viewer (ViewerStage.tsx
+   keeps its first frame row in view); everything else sits below it. */
+
+.dt-page {
+  container: dt-page / inline-size; display: flex; flex-direction: column; gap: var(--s3); min-width: 0;
+  /* the viewer's light table (viewer.css --cv-table / --cv-ink) for image
+     surfaces outside it (gallery thumbnails), and the truth-marker colours
+     (viewer.css --cv-mk-*) for the keys that explain them */
+  --dt-table: #161719;
+  --dt-table-ink: #050506;
+  --dt-table-text: #bcc0c6;
+  --dt-table-label-bg: rgb(0 0 0 / 0.62);
+  --dt-mk-galaxy: #6ec3ff;
+  --dt-mk-lens: #c9a2ff;
+  --dt-mk-star: #ffd166;
+  --dt-mk-other: #cdd6e6;
+}
 .dt-page > * { min-width: 0; }
+/* an image page starts its toolbar close under the tab strip (the images get the height) */
+.page.dt-page--image { padding-top: var(--s3); gap: var(--s2); }
 
-/* sticky toolbar under the tab strip (--ws-bar-h, app/workspace.tsx) */
+/* The tab's toolbar: ONE plain row (no card around it; it scrolls with the
+   page — nothing is pinned over the images). A long filter bar (Catalog)
+   wraps. */
 .dt-bar {
-  position: relative;
-  display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2);
-  padding: var(--s2) var(--s3); background: var(--bg-0);
-  border: 1px solid var(--border); border-radius: var(--r-lg); box-shadow: var(--shadow-1);
-  min-width: 0;
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--s1) var(--s2);
+  min-height: var(--ctl-h); min-width: 0;
 }
 .dt-bar__group { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s1); min-width: 0; }
 .dt-bar__spacer { flex: 1 1 0; min-width: 0; }
 .dt-bar__label { font-size: var(--fs-xs); color: var(--text-dim); white-space: nowrap; }
+.dt-bar__text { font-size: var(--fs-sm); color: var(--text-dim); white-space: nowrap; }
+.dt-bar__text b { color: var(--text); font-weight: var(--fw-semibold); font-variant-numeric: tabular-nums; }
 .dt-bar .ui-field { min-width: 0; }
 .dt-bar .ui-slider-wrap { min-width: 140px; flex: 0 1 220px; }
 .dt-fresh { display: inline-flex; }
@@ -38,39 +61,82 @@
 .dt-pop__title { font-weight: var(--fw-semibold); font-size: var(--fs-sm); }
 .dt-pop__set { border: 0; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .dt-pop__set > legend {
-  padding: 0; margin-bottom: var(--s1); font-size: var(--fs-2xs); font-weight: var(--fw-semibold);
-  letter-spacing: var(--ls-eyebrow); text-transform: uppercase; color: var(--text-faint);
+  padding: 0; margin-bottom: var(--s1); font-size: var(--fs-sm); font-weight: var(--fw-semibold); color: var(--text-dim);
 }
 
-/* KPI strip */
-.dt-kpis { display: grid; grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: var(--s2); }
+/* a summary line of headline counts (Catalog): words, values in tabular figures */
+.dt-summary {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--s1) var(--s4); margin: 0;
+  font-size: var(--fs-md); color: var(--text-dim);
+}
+.dt-summary__item { white-space: nowrap; border-radius: var(--r-sm); }
+.dt-summary__item--hint { text-decoration: underline dotted var(--border-strong); text-underline-offset: 3px; cursor: help; }
+.dt-summary__item:focus-visible { outline: none; box-shadow: var(--ring); }
+.dt-summary__v { color: var(--text); font-weight: var(--fw-semibold); font-variant-numeric: tabular-nums; }
+.dt-summary__v[data-tone="good"] { color: var(--good); }
+.dt-summary__v[data-tone="warn"] { color: var(--warn); }
+.dt-summary__v[data-tone="bad"] { color: var(--bad); }
+.dt-summary__link { color: var(--text-dim); text-decoration: none; }
+.dt-summary__link:hover { color: var(--accent); }
+.dt-summary__link:hover .dt-summary__v { color: var(--accent); }
 
 /* two-column layouts that collapse in narrow panes */
-.dt-split, .dt-two {
+.dt-two {
   display: grid; gap: var(--s3); align-items: start;
   grid-template-columns: minmax(0, 1fr);
-}
-@container dt-page (min-width: 1100px) {
-  .dt-split { grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); }
 }
 @container dt-page (min-width: 900px) {
   .dt-two { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
 }
-.dt-split > *, .dt-two > * { min-width: 0; }
-.dt-viewer-card .ui-card__body { padding: var(--s2); }
+.dt-two > * { min-width: 0; }
 
-/* ── records: truth-source overlay controls (the circles are the viewer's
-   markers, see src/viewer/markers.ts; these keys match their colours) ── */
-.dt-viewer-card .ui-card__heading { flex: none; white-space: nowrap; }
-.dt-truthbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: var(--s1) var(--s2); min-width: 0; }
-.dt-truthbar__key {
-  display: inline-block; width: 9px; height: 9px; margin-right: 5px; border-radius: 50%;
-  border: 1.6px solid #cdd6e6; vertical-align: -1px;
+/* ── the viewer slot (ViewerStage.tsx): the viewer first, full width; its
+   frames fitted to the height under its top (--dt-cols × --dt-side, centred
+   on the light table — the viewer's own fit uses the whole stage height);
+   never in focus mode. With a side panel, the viewer narrows to --dt-vw
+   (its frames, never below its bar's two-row width) and the panel sits
+   beside it, as tall as the viewer and scrolling inside; else below. ── */
+.dt-vstage { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s3); min-width: 0; }
+.dt-vstage__viewer { min-width: 0; width: 100%; }
+.dt-vstage[data-fit] .cv-root:not([data-focus]) .cv-frames {
+  grid-template-columns: repeat(var(--dt-cols, 1), minmax(0, var(--dt-side)));
 }
-.dt-truthbar__key[data-kind="galaxy"] { border-color: #6ec3ff; }
-.dt-truthbar__key[data-kind="lens"] { border-color: #c9a2ff; border-style: dashed; }
-.dt-truthbar__key[data-kind="star"] { border-color: #ffd166; border-radius: 1px; }
-:root:not([data-theme="dark"]) .dt-truthbar__key { background: #0b0f18; }
+.dt-vstage[data-beside] { grid-template-columns: minmax(0, var(--dt-vw)) minmax(0, 1fr); align-items: start; }
+.dt-vstage[data-beside] > .dt-vstage__aside { max-height: var(--dt-vh, none); overflow: auto; overscroll-behavior: contain; }
+/* asideFill: the panel is the viewer's height and its list scrolls inside it */
+.dt-vstage[data-beside] > .dt-vstage__aside[data-fill] {
+  height: var(--dt-vh, auto); overflow: hidden; display: flex; flex-direction: column;
+}
+.dt-vstage[data-beside] > .dt-vstage__aside[data-fill] > * { flex: 1 1 auto; min-height: 0; }
+.dt-vstage__aside { min-width: 0; }
+
+/* ── records: the image's caption row (record + truth-source overlay; the
+   circles are the viewer's markers, src/viewer/markers.ts, and these keys
+   match their colours) ── */
+.dt-figure { display: flex; flex-direction: column; gap: var(--s2); min-width: 0; }
+.dt-caption {
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--s1) var(--s2);
+  min-height: var(--ctl-h-sm); min-width: 0; font-size: var(--fs-sm);
+}
+.dt-caption__title { font-weight: var(--fw-semibold); font-size: var(--fs-md); margin-right: var(--s2); white-space: nowrap; }
+.dt-caption__label, .dt-caption__note { color: var(--text-dim); white-space: nowrap; }
+.dt-key {
+  display: inline-block; width: 9px; height: 9px; margin-right: 5px; border-radius: 50%;
+  border: 1.6px solid var(--dt-mk-other); background: var(--dt-table); vertical-align: -1px;
+}
+.dt-key[data-kind="galaxy"] { border-color: var(--dt-mk-galaxy); }
+.dt-key[data-kind="lens"] { border-color: var(--dt-mk-lens); border-style: dashed; }
+.dt-key[data-kind="star"] { border-color: var(--dt-mk-star); border-radius: 1px; }
+
+/* a status badge whose detail is its tooltip */
+.dt-tipbadge { display: inline-flex; border-radius: var(--r-pill); }
+.dt-tipbadge:focus-visible { outline: none; box-shadow: var(--ring); }
+.dt-tipdl { display: grid; gap: 2px; margin: 0; font-size: var(--fs-xs); }
+.dt-tipdl > div { display: grid; grid-template-columns: 4.5em minmax(0, 1fr); gap: var(--s2); }
+.dt-tipdl dt { font-weight: var(--fw-semibold); }
+.dt-tipdl dd { margin: 0; overflow-wrap: anywhere; }
+.dt-tipdl > [data-state="missing"] dd { opacity: 0.75; }
+.dt-label { font-size: var(--fs-sm); color: var(--text-dim); white-space: nowrap; }
 
 .dt-gen { display: flex; flex-direction: column; gap: var(--s3); min-width: 0; }
 .dt-gen__splits { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s1) var(--s2); min-width: 0; }
@@ -95,25 +161,58 @@
 .dt-dot[data-state="corrupted"] { background: var(--warn); border-color: var(--warn); }
 .dt-dot[data-state="failed"] { background: var(--bad); border-color: var(--bad); }
 
-.dt-legend { display: flex; flex-wrap: wrap; gap: var(--s1) var(--s3); font-size: var(--fs-xs); color: var(--text-dim); }
-.dt-legend > span { display: inline-flex; align-items: center; gap: var(--s1); }
 .dt-explain { display: flex; flex-direction: column; gap: var(--s1); font-size: var(--fs-xs); max-width: 320px; }
 
 /* ── cutouts ───────────────────────────────────────────────────────────── */
-.dt-facts { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s1) var(--s3); font-size: var(--fs-sm); min-width: 0; }
-.dt-facts .mono { font-size: var(--fs-xs); }
-.dt-pager { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); margin-top: var(--s2); }
+.dt-star { display: inline-flex; flex-wrap: wrap; align-items: center; gap: var(--s1) var(--s2); min-width: 0; font-size: var(--fs-md); }
+.dt-star__mag { font-size: var(--fs-sm); color: var(--text-dim); }
+
+/* the cached-cutout gallery (beside the viewer, or below it) */
+.dt-gallery { display: flex; flex-direction: column; gap: var(--s2); min-width: 0; }
+[data-fill] > .dt-gallery > .dt-thumbs { flex: 1 1 auto; min-height: 0; overflow: auto; overscroll-behavior: contain; align-content: start; }
+.dt-gallery__head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s1) var(--s2); min-width: 0; }
+.dt-gallery__title { font-weight: var(--fw-semibold); font-size: var(--fs-md); }
+.dt-gallery__count { font-size: var(--fs-sm); color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.dt-thumbs {
+  list-style: none; margin: 0; padding: 0;
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(128px, 1fr)); gap: 2px;
+  background: var(--dt-table); border-radius: var(--r-md); overflow: hidden;
+}
+.dt-thumb {
+  position: relative; display: block; width: 100%; padding: 0; border: 0; margin: 0;
+  background: var(--dt-table-ink); cursor: pointer; text-align: left; color: var(--dt-table-text);
+}
+/* the server renders gray_r (dark ink on white): inverted here, white stars on
+   black, as the viewer shows them */
+.dt-thumb img { display: block; width: 100%; aspect-ratio: 1 / 1; object-fit: contain; filter: invert(1); image-rendering: auto; }
+.dt-thumb__cap {
+  position: absolute; left: 0; right: 0; bottom: 0; display: flex; justify-content: space-between; gap: var(--s1);
+  padding: 2px 6px; font: var(--fw-medium) var(--fs-xs)/1.4 var(--font-mono); font-variant-numeric: tabular-nums;
+  background: var(--dt-table-label-bg); color: var(--dt-table-text);
+}
+.dt-thumb__meta { opacity: 0.85; }
+.dt-thumb:hover { outline: 2px solid var(--accent); outline-offset: -2px; }
+.dt-thumb:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; box-shadow: none; }
+.dt-thumb[aria-current="true"] { outline: 2px solid var(--dt-mk-star); outline-offset: -2px; }
+.dt-thumb[aria-current="true"] .dt-thumb__cap { color: var(--dt-mk-star); }
+.dt-thumb:disabled { cursor: default; opacity: 0.6; }
+.dt-pager { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: var(--s2); }
+.dt-pager__pos { font-size: var(--fs-sm); color: var(--text-dim); font-variant-numeric: tabular-nums; }
 
 /* ── PSFs ──────────────────────────────────────────────────────────────── */
+.dt-clusters { display: flex; flex-direction: column; gap: var(--s2); min-width: 0; }
+[data-fill] > .dt-clusters > .ui-dt { flex: 1 1 auto; min-height: 0; }
+[data-fill] > .dt-clusters .ui-dt__scroll { flex: 1 1 auto; min-height: 0; }
 .dt-warp { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); min-width: 0; }
 .dt-warp .ui-slider-wrap { min-width: 110px; flex: 0 1 160px; }
 .dt-warp__status { font-size: var(--fs-xs); color: var(--text-dim); font-family: var(--font-mono); }
-.dt-state { display: inline-flex; align-items: center; gap: var(--s1); }
 
 /* ── TNG ───────────────────────────────────────────────────────────────── */
 .dt-axes { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--s2); margin-bottom: var(--s2); min-width: 0; }
 .dt-axes .ui-field { min-width: 0; flex: 0 1 180px; }
-.dt-grid-img { max-width: 100%; height: auto; border-radius: var(--r-md); border: 1px solid var(--border); background: var(--surface-2); }
+.dt-grid-link { display: inline-block; max-width: min(100%, 720px); border-radius: var(--r-md); }
+.dt-grid-link:focus-visible { outline: none; box-shadow: var(--ring); }
+.dt-grid-img { display: block; max-width: 100%; height: auto; border-radius: var(--r-md); border: 1px solid var(--border); background: var(--surface-2); }
 .dt-steps { display: flex; flex-direction: column; gap: var(--s3); min-width: 0; }
 .dt-steps > * { min-width: 0; }
 
@@ -123,3 +222,23 @@
 .dt-insp__title { font-weight: var(--fw-semibold); font-size: var(--fs-md); }
 .dt-insp__actions { display: flex; flex-wrap: wrap; gap: var(--s1); }
 .dt-insp .ui-section + .ui-section { margin-top: 0; }
+
+/* toolbar groups: the status badges sit close; the actions are words, and
+   icon-only in a compact bar (common.tsx DataBar `compactable`) */
+.dt-bar__status { display: inline-flex; flex-wrap: wrap; align-items: center; gap: var(--s1); min-width: 0; }
+/* status chips are words ("Files ok", "No SR"), not data: the UI face */
+.dt-bar__status .ui-badge { font-family: var(--font-sans); letter-spacing: 0; }
+.dt-bar__act { display: inline-flex; align-items: center; gap: var(--s1); flex: none; }
+.dt-bar:not([data-compact]) .dt-bar__act .ui-btn > svg { display: none; }
+.dt-bar[data-compact] .dt-bar__act .ui-btn__label { display: none; }
+.dt-bar[data-compact] .dt-bar__act .ui-btn { padding-inline: 6px; min-width: var(--ctl-h-sm); justify-content: center; }
+
+/* a segmented control whose labels are words or band names ("All tiers",
+   "VIS"): the page's sans text as written, matching the viewer's own buttons
+   (the kit's Segmented is lowercase mono) */
+.dt-seg-text .ui-seg__item { font-family: var(--font-sans); text-transform: none; letter-spacing: 0; }
+
+/* Records' truth markers: a little lighter than the viewer's default, so the
+   (often faint) HR light under them shows through; full strength on hover and
+   for the inspected source (viewer.css .cv-mk[data-active]) */
+.dt-vstage .cv-mk:not([data-active]):not(:hover) .cv-mk__shape { stroke-opacity: 0.72; }

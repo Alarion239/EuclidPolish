@@ -26,7 +26,8 @@ import {
 } from "../api";
 import { BarGroup, EnsBar, LoadState } from "../common";
 import { JOB, useOnJobEnd } from "../jobs";
-import { db, dbDelta, memberNumber, variantLabel } from "../model";
+import { benchmarkExperiment, db, dbDelta, heldOutComparable, memberNumber, variantLabel, type Bench } from "../model";
+import { autoTicks } from "../../plotTicks";
 import "../ensemble.css";
 
 const method = (v: Variant) => (v.kind === "rbf" ? "rbf" : `gate:${v.name}`);
@@ -35,23 +36,9 @@ const meanOf = (vs: (number | null | undefined)[] | null | undefined) => {
   return f.length ? f.reduce((a, b) => a + b, 0) / f.length : null;
 };
 
-/* ── real-data benchmark (newest experiment that ran each spec) ────────── */
-type Bench = { expId: string; created?: string; nTiles?: number; holeMean?: number | null; holeMax?: number | null; medianR?: number | null; rLt08?: number | null };
-function benchBySpec(exps: ExperimentSummary[] | undefined): Map<string, Bench> {
-  const out = new Map<string, Bench>();
-  const sorted = [...(exps ?? [])].sort((a, b) => String(b.created ?? "").localeCompare(String(a.created ?? "")));
-  for (const e of sorted) {
-    for (const [spec, agg] of Object.entries(e.summary ?? {})) {
-      if (out.has(spec)) continue;
-      const a = agg as { n_tiles?: number; summary?: Record<string, number | null> };
-      out.set(spec, { expId: e.id, created: e.created, nTiles: a.n_tiles, holeMean: a.summary?.hole_pct_mean,
-        holeMax: a.summary?.hole_pct_max, medianR: a.summary?.median_R, rLt08: a.summary?.pct_R_lt_0p8 });
-    }
-  }
-  return out;
-}
-
-type Row = Variant & { testVis: number | null; testMean: number | null; kneeMean: number | null; blackoutVis: number | null; bench: Bench | null };
+/* ── real-data benchmark: ONE experiment (model.benchmarkExperiment), so
+   every variant's hole % is on the same tiles ─────────────────────────── */
+type Row = Variant & { testVis: number | null; testMean: number | null; kneeMean: number | null; blackoutVis: number | null; bench: Bench | null; lossComparable: boolean };
 
 /* ── fit dialog ─────────────────────────────────────────────────────────── */
 type FitKnobs = {
@@ -256,8 +243,9 @@ export default function Combiners() {
   const data = res.data;
   const rep = report.data;
 
+  const benchmark = useMemo(() => benchmarkExperiment(exps.data?.experiments), [exps.data]);
   const rows = useMemo<Row[]>(() => {
-    const bench = benchBySpec(exps.data?.experiments);
+    const production = data?.variants.find((v) => v.production);
     return (data?.variants ?? []).filter((v) => showBackups || !v.backup).map((v) => {
       const nat = rep?.groups?.natural?.[method(v)];
       const blk = rep?.groups?.blackout?.[method(v)];
@@ -267,10 +255,11 @@ export default function Combiners() {
         testMean: meanOf(nat?.band_psnr ?? v.test?.band_psnr),
         kneeMean: meanOf(rep?.knee?.methods?.[method(v)]?.integrated ?? v.knee?.integrated),
         blackoutVis: blk?.band_psnr?.[0] ?? v.test?.blackout_band_psnr?.[0] ?? null,
-        bench: bench.get(v.spec) ?? null,
+        bench: benchmark?.bySpec.get(v.spec) ?? null,
+        lossComparable: heldOutComparable(v, production),
       };
     });
-  }, [data, rep, exps.data, showBackups]);
+  }, [data, rep, benchmark, showBackups]);
   const prod = rows.find((r) => r.production);
 
   async function doPromote(v: Variant) {
@@ -317,15 +306,23 @@ export default function Combiners() {
     { id: "lr", header: "LR", accessor: (v) => (v.use_lr ? "yes" : "no"), width: 48, hidden: true },
     { id: "width", header: "Width", numeric: true, accessor: (v) => v.width ?? null, hidden: true },
     { id: "steps", header: "Steps", numeric: true, accessor: (v) => (v.fit.steps_run as number | undefined) ?? (v.fit.steps as number | undefined) ?? null, hidden: true },
-    { id: "loss", header: "Held-out", headerText: "held-out loss", numeric: true, width: 84, accessor: (v) => v.selected?.loss ?? null, cell: (v) => (v.selected?.loss != null ? v.selected.loss.toFixed(4) : "—") },
+    { id: "loss", header: "Held-out", headerText: "held-out loss (production's definition only)", numeric: true, width: 92,
+      // A loss on another scale (v1's band-weighted error) is not ranked against production's.
+      accessor: (v) => (v.lossComparable ? v.selected?.loss ?? null : null),
+      cell: (v) => (v.selected?.loss == null ? "—" : v.lossComparable ? v.selected.loss.toFixed(4) : (
+        <Tooltip content={`Not comparable: this fit's loss is “${String(v.fit.loss ?? "not recorded")}”, production's is “${String(prod?.fit.loss ?? "—")}”. Compare the variants by ∫PSNR or the compare report.`}>
+          <span tabIndex={0} className="ens-faint">{v.selected.loss.toFixed(4)} ≠</span>
+        </Tooltip>
+      )) },
     { id: "testVis", header: "Test VIS", headerText: "test PSNR VIS", numeric: true, width: 112, accessor: (v) => v.testVis,
       cell: (v) => <span>{db(v.testVis, 3)}{prod && !v.production && v.testVis != null && prod.testVis != null
         ? <span className={v.testVis > prod.testVis ? "ens-good" : "ens-faint"}> {dbDelta(v.testVis - prod.testVis)}</span> : null}</span> },
     { id: "kneeMean", header: "∫PSNR", headerText: "knee integrated mean", numeric: true, width: 76, accessor: (v) => v.kneeMean,
       cell: (v) => <b>{db(v.kneeMean, 3)}</b> },
     { id: "blackoutVis", header: "Blackout VIS", numeric: true, accessor: (v) => v.blackoutVis, cell: (v) => db(v.blackoutVis, 3), hidden: true },
-    { id: "holes", header: "Real holes", headerText: "real-data hole % (mean over bands)", numeric: true, width: 88, accessor: (v) => v.bench?.holeMean ?? null,
-      cell: (v) => (v.bench ? <Tooltip content={`Experiment ${v.bench.expId}: ${v.bench.nTiles} real tiles · max ${v.bench.holeMax?.toFixed(1)}% · median R ${v.bench.medianR?.toFixed(3)} · R<0.8 ${v.bench.rLt08?.toFixed(1)}%`}>
+    { id: "holes", header: benchmark ? <Tooltip content={`Real-data hole % (mean over bands) from ONE experiment, ${benchmark.label ?? benchmark.expId}${benchmark.nTiles ? ` on ${benchmark.nTiles} real tiles` : ""}${benchmark.created ? `, ${formatRelative(benchmark.created)}` : ""}: variants it did not run are blank.`}><span className="ens-defhead">Real holes</span></Tooltip> : "Real holes",
+      headerText: `real-data hole % (mean over bands)${benchmark ? `, experiment ${benchmark.expId}` : ""}`, numeric: true, width: 92, accessor: (v) => v.bench?.holeMean ?? null,
+      cell: (v) => (v.bench ? <Tooltip content={`Experiment ${benchmark?.expId}: ${v.bench.nTiles ?? "?"} real tiles · max ${v.bench.holeMax?.toFixed(1) ?? "—"}% · median R ${v.bench.medianR?.toFixed(3) ?? "—"} · R<0.8 ${v.bench.rLt08?.toFixed(1) ?? "—"}%`}>
         <span tabIndex={0}>{v.bench.holeMean != null ? `${v.bench.holeMean.toFixed(1)}%` : "—"}</span></Tooltip> : <span className="ens-faint">—</span>) },
     { id: "fitted", header: "Fitted", width: 84, accessor: (v) => v.fitted_at ?? null, cell: (v) => (v.fitted_at ? formatRelative(v.fitted_at) : "—") },
     { id: "actions", header: "", sortable: false, filterable: false, csv: false, hideable: false, width: 48,
@@ -336,7 +333,7 @@ export default function Combiners() {
           ...(v.kind === "gate" && v.applies_to_test_cubes ? [{ label: "Compare with production", onSelect: () => startCompare({ gates: [data?.production ?? "spatial_gate_combiner", v.name].filter((x, i, a) => a.indexOf(x) === i).join(","), blackout_fields: "40" }) }] : []),
         ]} />
       ) },
-  ], [prod, mode, data]); // eslint-disable-line react-hooks/exhaustive-deps
+  ], [prod, mode, data, benchmark]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const history = useMemo(() => {
     const series: Series[] = [];
@@ -391,6 +388,7 @@ export default function Combiners() {
                 <CardBody>
                   {history.series.length
                     ? <Plot {...lg.plotProps} xDomain={history.xDomain} yDomain={history.yDomain} xLabel="fit step"
+                        xTicks={autoTicks(history.xDomain)} yTicks={autoTicks(history.yDomain)}
                         yLabel={historyMetric === "loss" ? "held-out loss (1 = best member)" : "PSNR [dB]"}
                         series={history.series} legend="auto" aspect={0.55} exportName={`gate-history-${mode}`} aria-label="Held-out fit curves" />
                     : <EmptyState compact icon="activity" title="No fit history" />}

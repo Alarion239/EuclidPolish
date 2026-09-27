@@ -174,6 +174,14 @@ export function commonRecipes(results: readonly SavedResult[]): RecipeKey[] {
   return first.recipes.filter((k) => rest.every((r) => r.recipes.includes(k)));
 }
 
+/** The rows the preview can draw now: the grid's rows that every column
+ *  supports, in order (the renderer needs every cell). With unavailable cells
+ *  the preview shows these rather than nothing. */
+export function previewRows(rows: readonly string[], results: readonly SavedResult[]): string[] {
+  if (!results.length) return [...rows];
+  return rows.filter((row) => results.every((r) => (r.recipes as readonly string[]).includes(row)));
+}
+
 /** The grid's state for the status line and whether it can render. */
 export type GridStatus = { canRender: boolean; tone: "good" | "warn" | "bad"; text: string; unsupported: number };
 
@@ -385,4 +393,45 @@ export function renderKey(r: PlateRender): string {
 export function findRender(run: PlateRun | undefined, key: string): PlateRender | undefined {
   if (!run) return undefined;
   return run.renders.find((r) => renderKey(r) === key) ?? run.renders[0];
+}
+
+/* ─── full-size view vs the in-page preview ───────────────────────────────── */
+
+/** "6 rows × 1 column". */
+export function gridSizeText(rows: number, columns: number): string {
+  return `${rows} row${rows === 1 ? "" : "s"} × ${columns} column${columns === 1 ? "" : "s"}`;
+}
+
+/** The full-size view's geometry (css px), fed to figures.css as custom
+ *  properties so the CSS and this arithmetic cannot drift: the dialog is the
+ *  window minus `inset` on every side; one header row (title, description,
+ *  scale, actions, close) of `head`; a crop's panel choices add `panels`. */
+export const LIGHTBOX = { inset: 12, head: 44, panels: 36 } as const;
+
+/** The grid preview's cap (css px), also fed to figures.css: beside the
+ *  editors it sits `stickyTop` below the app top bar under a `head` row;
+ *  stacked above them it keeps `stackedChrome` for the tab strip and the bar
+ *  (never below `stackedMin`); the paper pads the image by `pad` a side. */
+export const PREVIEW = { stickyTop: 8, head: 48, stackedChrome: 200, stackedMin: 320, pad: 8 } as const;
+
+/** The full-size stage height for a window `vh` tall. */
+export function lightboxStageHeight(vh: number, opts: { panels?: boolean } = {}): number {
+  return vh - 2 * LIGHTBOX.inset - LIGHTBOX.head - (opts.panels ? LIGHTBOX.panels : 0);
+}
+
+/** The tallest the in-page grid preview image gets in a window `vh` tall. */
+export function previewPaperCap(vh: number, topbar: number, stacked: boolean): number {
+  const box = stacked ? Math.max(PREVIEW.stackedMin, vh - topbar - PREVIEW.stackedChrome) : vh - topbar - PREVIEW.stickyTop - PREVIEW.head;
+  return box - 2 * PREVIEW.pad;
+}
+
+/** The Results gallery's text filter: every word must appear in the label,
+ *  id, source object, source or tiers (case-insensitive). */
+export function galleryMatches(r: SavedResult, query: string): boolean {
+  const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (!words.length) return true;
+  const o = r.source?.object;
+  const hay = [r.label, r.id, o?.id, o?.label, sourceLabel(r), r.source?.collection, ...r.logical_tiers]
+    .filter((v) => v != null && v !== "").join(" ").toLowerCase();
+  return words.every((w) => hay.includes(w));
 }

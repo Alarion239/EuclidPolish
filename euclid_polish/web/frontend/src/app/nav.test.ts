@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { ICON_NAMES } from "../ui/icons";
 import { MANIFEST, isPagePath } from "./manifest";
 import {
-  WORKSPACE_META, allPages, describePath, humanize, landingPath, pagePath, pageTitle, tabLabel,
+  WORKSPACE_META, allPages, describePath, humanize, landingPath, pageHeading, pagePath, pageTitle, tabLabel,
 } from "./nav";
 
 describe("nav metadata ↔ route manifest", () => {
@@ -67,5 +67,13 @@ describe("labels", () => {
     expect(pageTitle("/sky")).toBe("Sky · EuclidPolish");
     expect(pageTitle("/nope")).toBe("Not found · EuclidPolish");
     expect(describePath("/ensemble/status.json")).toBeNull();
+  });
+
+  it("gives every page a heading: the tab, then where it lives", () => {
+    expect(pageHeading("/ensemble/starless/members")).toBe("Members — Ensemble (starless)");
+    expect(pageHeading("/data/records")).toBe("Records — Data");
+    expect(pageHeading("/")).toBe("Home");
+    expect(pageHeading("/inspect")).toBe("Inspect");
+    expect(pageHeading("/nope")).toBe("Not found");
   });
 });

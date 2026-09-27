@@ -1,13 +1,17 @@
-/* ⌘K command palette (spec §4, cmdk): fuzzy search over
+/* ⌘K command palette (spec §4, cmdk): search over
  *   - suggestions from the typed text (RA/Dec, member N, NEXUS tile N, FITS
- *     path, a name for the sky resolver — `paletteSuggestions`);
+ *     path — `paletteSuggestions`), first;
  *   - the current page's actions (`usePageActions`);
  *   - every page: each workspace × tab (× ensemble regime);
  *   - global commands: theme, Display panel, jobs, run a FASRC step, shortcuts,
- *     rail, inspector, refresh data, copy link.
- * Selecting an entry runs it and closes the palette. "Nothing matches" shows
- * only when there is nothing to pick: the typed-text suggestions are always
- * listed (forceMount) but cmdk does not count them. */
+ *     rail, inspector, refresh data, copy link;
+ *   - the global "Run a job" launchers (RunActions);
+ *   - "Find <text> on the sky" (the name resolver), always last.
+ * The ranking is ours (`rankPalette`, cmdk's filter is off): the page or
+ * command the user named comes first — an exact or word-start match beats a
+ * scattered-letter one, pages and commands win ties over job launchers — so
+ * Enter does what was typed. Selecting an entry runs it and closes the
+ * palette. "Nothing matches" shows only when there is nothing to pick. */
 import * as RDialog from "@radix-ui/react-dialog";
 import { Command } from "cmdk";
 import { useMemo, useState, type ReactNode } from "react";
@@ -21,6 +25,7 @@ import { Icon, Kbd, copyText, toast, type IconName } from "../ui";
 import { closeInspector, openInspector } from "./inspector";
 import { WORKSPACE_META, allPages } from "./nav";
 import { paletteSuggestions, usePaletteActions, type PageAction } from "./palette";
+import { rankPalette, type RankGroup } from "./paletteRank";
 import { RUN_GROUP } from "./RunActions";
 import { useShellUi } from "./shellStore";
 
@@ -35,10 +40,9 @@ type Entry = {
   run: () => void;
 };
 
-function Row({ entry, onPick, forceMount }: { entry: Entry; onPick: (e: Entry) => void; forceMount?: boolean }) {
+function Row({ entry, onPick }: { entry: Entry; onPick: (e: Entry) => void }) {
   return (
-    <Command.Item value={entry.key} keywords={[entry.label, ...(entry.keywords ?? [])]} disabled={entry.disabled}
-      forceMount={forceMount} onSelect={() => onPick(entry)} className="cmdk__item">
+    <Command.Item value={entry.key} disabled={entry.disabled} onSelect={() => onPick(entry)} className="cmdk__item">
       {entry.icon && <Icon name={entry.icon} size={15} className="cmdk__icon" />}
       <span className="cmdk__label">{entry.label}</span>
       {entry.hint && <span className="cmdk__hint">{entry.hint}</span>}
@@ -49,8 +53,8 @@ function Row({ entry, onPick, forceMount }: { entry: Entry; onPick: (e: Entry) =
   );
 }
 
-function Group({ heading, children, forceMount }: { heading: string; children: ReactNode; forceMount?: boolean }) {
-  return <Command.Group heading={heading} forceMount={forceMount} className="cmdk__group">{children}</Command.Group>;
+function Group({ heading, children }: { heading: string; children: ReactNode }) {
+  return <Command.Group heading={heading} className="cmdk__group">{children}</Command.Group>;
 }
 
 /** Page actions by group, the page's own groups first; the shell's global
@@ -82,11 +86,14 @@ export function CommandPalette() {
     entry.run();
   };
 
-  const suggestions: Entry[] = paletteSuggestions(query, parseSkyCoord).map((s) => ({
+  const typed = paletteSuggestions(query, parseSkyCoord);
+  const toEntry = (s: (typeof typed)[number]): Entry => ({
     key: `suggest:${s.id}`, label: s.label, hint: s.hint,
     icon: s.kind === "inspect" ? "panelRight" : s.id.startsWith("sky") ? "globe" : "fileSearch",
     run: s.kind === "navigate" ? () => navigate(s.to) : () => openInspector(s.target),
-  }));
+  });
+  const suggestions = typed.filter((s) => !s.fallback).map(toEntry);
+  const fallbacks = typed.filter((s) => s.fallback).map(toEntry);
 
   const pageEntries: Entry[] = pages.map((p) => ({
     key: `page:${p.path}`, label: p.label, hint: p.description, icon: WORKSPACE_META[p.workspace]?.icon,
@@ -119,14 +126,32 @@ export function CommandPalette() {
     },
   ];
 
+  // Pages and commands before the job launchers; a small bias breaks ties.
+  const actionGroups = groupActions(actions).map(([heading, list]): RankGroup<Entry> => ({
+    heading,
+    bias: heading === RUN_GROUP ? -1 : 0,
+    items: list.map((a) => ({
+      key: `action:${a.id}`, label: a.label, keywords: a.keywords, shortcut: a.shortcut,
+      disabled: a.disabled, icon: "command" as IconName, run: a.run,
+    })),
+  }));
+  const groups = rankPalette(query, [
+    ...actionGroups.filter((g) => g.heading !== RUN_GROUP),
+    { heading: "Pages", items: pageEntries, bias: 2 },
+    { heading: "Commands", items: commands, bias: 1 },
+    ...actionGroups.filter((g) => g.heading === RUN_GROUP),
+  ]);
+  const nothing = suggestions.length === 0 && groups.length === 0 && fallbacks.length === 0;
+
   return (
     <RDialog.Root open={open} onOpenChange={setOpen}>
       <RDialog.Portal>
         <RDialog.Overlay className="ui-dialog__overlay cmdk__overlay" />
         <RDialog.Content className="cmdk" aria-describedby={undefined}>
           <RDialog.Title className="sr-only">Command palette</RDialog.Title>
-          {/* vimBindings off: Ctrl-K is the palette's own toggle, not "up". */}
-          <Command label="Command palette" loop vimBindings={false}>
+          {/* vimBindings off: Ctrl-K is the palette's own toggle, not "up".
+              shouldFilter off: `rankPalette` filters and orders. */}
+          <Command label="Command palette" loop vimBindings={false} shouldFilter={false}>
             <div className="cmdk__search">
               <Icon name="search" size={16} />
               <Command.Input value={query} onValueChange={setQuery} className="cmdk__input"
@@ -134,26 +159,18 @@ export function CommandPalette() {
               <Kbd keys="escape" />
             </div>
             <Command.List className="cmdk__list" label="Results">
-              {suggestions.length === 0 && (
-                <Command.Empty className="cmdk__empty">Nothing matches “{query}”.</Command.Empty>
-              )}
+              {nothing && <div className="cmdk__empty" role="status">Nothing matches “{query}”.</div>}
               {suggestions.length > 0 && (
-                <Group heading="Go to" forceMount>
-                  {suggestions.map((e) => <Row key={e.key} entry={e} onPick={pick} forceMount />)}
-                </Group>
+                <Group heading="Go to">{suggestions.map((e) => <Row key={e.key} entry={e} onPick={pick} />)}</Group>
               )}
-              {groupActions(actions).map(([heading, list]) => (
-                <Group key={heading} heading={heading}>
-                  {list.map((a) => (
-                    <Row key={a.id} onPick={pick} entry={{
-                      key: `action:${a.id}`, label: a.label, keywords: a.keywords, shortcut: a.shortcut,
-                      disabled: a.disabled, icon: "command", run: a.run,
-                    }} />
-                  ))}
+              {groups.map((g) => (
+                <Group key={g.heading} heading={g.heading}>
+                  {g.items.map((e) => <Row key={e.key} entry={e} onPick={pick} />)}
                 </Group>
               ))}
-              <Group heading="Pages">{pageEntries.map((e) => <Row key={e.key} entry={e} onPick={pick} />)}</Group>
-              <Group heading="Commands">{commands.map((e) => <Row key={e.key} entry={e} onPick={pick} />)}</Group>
+              {fallbacks.length > 0 && (
+                <Group heading="Search the sky">{fallbacks.map((e) => <Row key={e.key} entry={e} onPick={pick} />)}</Group>
+              )}
             </Command.List>
           </Command>
         </RDialog.Content>

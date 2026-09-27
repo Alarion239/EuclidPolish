@@ -25,10 +25,7 @@
   box-shadow: var(--shadow-1); min-width: 0;
 }
 .rl-bar__group { display: inline-flex; flex-wrap: wrap; align-items: center; gap: var(--s2); min-width: 0; }
-.rl-bar__label {
-  font: var(--fw-medium) var(--fs-2xs)/1 var(--font-mono); letter-spacing: .06em;
-  text-transform: uppercase; color: var(--text-faint);
-}
+.rl-bar__label { font-size: var(--fs-xs); color: var(--text-dim); }
 .rl-bar__spacer { flex: 1 1 0; min-width: 0; }
 
 /* ── layout ──────────────────────────────────────────────────────────── */
@@ -58,10 +55,7 @@
 .rl-num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: var(--fs-xs); color: var(--text-dim); }
 .rl-faint { color: var(--text-faint); font-size: var(--fs-xs); }
 .rl-note { margin: var(--s2) 0 0; color: var(--text-dim); font-size: var(--fs-sm); line-height: var(--lh-base); }
-.rl-subhead {
-  margin: 0 0 var(--s2); font: var(--fw-medium) var(--fs-2xs)/1.2 var(--font-mono);
-  letter-spacing: .05em; text-transform: uppercase; color: var(--text-faint);
-}
+.rl-subhead { margin: 0 0 var(--s2); font-size: var(--fs-xs); font-weight: var(--fw-medium); line-height: 1.3; color: var(--text-dim); }
 .rl-info { font-size: var(--fs-sm); line-height: 1.5; color: var(--text-dim); }
 .rl-info p { margin: 0 0 var(--s2); }
 .rl-info .rl-subhead { margin: var(--s3) 0 var(--s1); }
@@ -248,15 +242,76 @@
 .rl-score small { color: var(--text-faint); font-family: var(--font-mono); }
 
 /* ── visual: two viewer lanes ────────────────────────────────────────── */
-.rl-lanes { display: grid; gap: var(--s4); grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 0 0 var(--s4); align-items: start; }
-@container (max-width: 900px) { .rl-lanes { grid-template-columns: minmax(0, 1fr); } }
-.rl-lane {
-  display: flex; flex-direction: column; gap: var(--s2); min-width: 0; padding: var(--s3);
-  border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--surface-1);
+/* ── visual: ONE dark instrument block (image-first pass) ─────────────────
+   The shared display row, the two viewers side by side and a caption under
+   each, on the viewer's neutral light-table surround (the same fixed values
+   and scoped dark palette as .cv-table in viewer/viewer.css: colour
+   judgement needs an untinted surround; every pairing AA). */
+.rl-vis {
+  --rl-lt-bg: #161719; --rl-lt-rule: #26282b;
+  color-scheme: dark;
+  --bg-0: #161719; --bg-1: #111214;
+  --surface-1: #1e1f22; --surface-2: #25272a; --surface-3: #2e3034;
+  --border: #2b2d31; --border-strong: #45484e;
+  --text: #ededf0; --text-dim: #bcc0c6; --text-faint: #9da1a9;
+  --accent: #74adff; --accent-press: #99c3ff; --accent-soft: #74adff2e; --on-accent: #06101f;
+  --ring: 0 0 0 2px var(--accent);
+  display: flex; flex-direction: column; min-width: 0; margin: 0 0 var(--s4);
+  background: var(--rl-lt-bg); color: var(--text); border-radius: var(--r-md);
+  container: rl-vis / inline-size;
 }
-.rl-lane__head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: var(--s2); }
-.rl-lane__title { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 200px; }
-.rl-lane__title .rl-subhead { margin: 0; }
-.rl-lane__title strong { font-size: var(--fs-sm); overflow-wrap: anywhere; }
-.rl-lane__title small { color: var(--text-faint); font-size: var(--fs-xs); overflow-wrap: anywhere; }
-.rl-lane__viewer { min-width: 0; }
+:root[data-accent="violet"] .rl-vis { --accent: #b48ef2; --accent-press: #c7a9f6; --accent-soft: #b48ef22e; --on-accent: #140a26; }
+:root[data-accent="teal"] .rl-vis { --accent: #33d6c4; --accent-press: #5fe2d3; --accent-soft: #33d6c42e; --on-accent: #021a17; }
+:root[data-accent="amber"] .rl-vis { --accent: #ffb454; --accent-press: #ffc67a; --accent-soft: #ffb4542e; --on-accent: #1f1300; }
+:root[data-accent="rose"] .rl-vis { --accent: #ff77c8; --accent-press: #ff96d5; --accent-soft: #ff77c82e; --on-accent: #26061a; }
+.rl-vis__bar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 4px var(--s3); min-width: 0;
+  padding: 5px 8px; border-bottom: 1px solid var(--rl-lt-rule); font-size: var(--fs-sm);
+}
+.rl-vis__field { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+.rl-vis__label, .rl-vis__unit { color: var(--text-dim); font-size: var(--fs-sm); flex: none; }
+.rl-vis .rl-vis__slider { width: 96px; min-width: 0; flex: none; }
+.rl-vis .rl-vis__slider--gain { width: 124px; }
+/* band names are proper names (VIS, not "vis"): the kit Segmented lowercases */
+.rl-vis .ui-seg__item { font-family: var(--font-sans); letter-spacing: 0; text-transform: none; }
+.rl-vis__num { width: 60px; min-width: 0; text-align: right; font-variant-numeric: tabular-nums; }
+.rl-vis__lock { display: inline-flex; }
+.rl-vis__spacer { flex: 1 1 0; min-width: 0; }
+/* the row's end (fit, reset, ⓘ) never breaks apart */
+.rl-vis__end { flex: none; display: inline-flex; align-items: center; gap: 2px; margin-left: auto; }
+/* knee + brightness: in the row when it is wide, in the Display menu when narrow */
+.rl-vis__inline { display: contents; }
+.rl-vis__more { display: none; }
+/* the Display menu carries the block's dark palette (.rl-vis on the popover) */
+.rl-vis.rl-vis__pop { container-type: normal; display: flex; flex-direction: column; gap: var(--s2); margin: 0; padding: var(--s3);
+  background: var(--surface-1); border: 1px solid var(--border-strong); border-radius: var(--r-md); }
+.rl-vis__pop .rl-vis__field { justify-content: space-between; }
+.rl-vis.rl-vis__pop .rl-vis__slider { width: auto; flex: 1 1 auto; }
+.rl-vis.rl-vis__pop .rl-vis__field > .rl-vis__label { min-width: 72px; }
+.rl-vis__lanes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 2px; min-width: 0; }
+.rl-vis__lane { display: flex; flex-direction: column; min-width: 0; }
+.rl-vis__viewer { min-width: 0; flex: 1 1 auto; }
+.rl-vis__viewer > .ui-emptystate { padding: var(--s6) var(--s3); }
+.rl-vis__caption {
+  display: flex; align-items: center; gap: var(--s2); min-width: 0; min-height: 36px;
+  padding: 3px 8px 5px; border-top: 1px solid var(--rl-lt-rule); font-size: var(--fs-sm); color: var(--text-dim);
+}
+.rl-vis__name { flex: none; color: var(--text); font-weight: var(--fw-semibold); }
+.rl-vis__desc { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rl-vis__caption > :not(.rl-vis__desc):not(.rl-vis__name) { flex: none; }
+@container rl-vis (max-width: 975px) {
+  .rl-vis__inline { display: none; }
+  .rl-vis__more { display: inline-flex; }
+}
+@container rl-vis (max-width: 640px) {
+  .rl-vis__bar { gap: 4px var(--s2); }
+  /* a lane's caption wraps (the subset choice under the name) instead of spilling out */
+  .rl-vis__caption { flex-wrap: wrap; row-gap: 2px; }
+  .rl-vis__desc { flex-basis: 60px; }
+}
+/* only a very narrow block stacks the lanes (two ~200 px frames side by
+   side still compare better than one frame and a scroll) */
+@container rl-vis (max-width: 400px) {
+  .rl-vis__lanes { grid-template-columns: minmax(0, 1fr); }
+  .rl-vis__caption { flex-wrap: wrap; }
+}

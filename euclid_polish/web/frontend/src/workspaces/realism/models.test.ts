@@ -24,6 +24,14 @@ describe("stars model", () => {
     expect(densityDomain({ ...vis, euclid: [], gaia: [], model: [], synthetic: [], point_sources: null, gaia_fit: null })).toEqual([1e-4, 1]);
   });
 
+  it("takes the density domain of 200k values (no spread into Math.max)", () => {
+    const vis = distribution.density_comparison!.parameters.vis;
+    const big = Array.from({ length: 200_000 }, (_, i) => 0.01 + (i % 10) / 100);
+    const [lo, hi] = densityDomain({ ...vis, euclid: big, gaia: [], model: [], synthetic: [], point_sources: null, gaia_fit: null });
+    expect(lo).toBeCloseTo(1e-2);
+    expect(hi).toBeCloseTo(0.1);            // values 0.01–0.1
+  });
+
   it("marks the Q1 and Gaia fit windows on the VIS panel", () => {
     const guides = fitGuides(distribution.density_comparison!.parameters.vis);
     expect(guides.map((g) => g.v)).toEqual([18, 23, 16, 20]);

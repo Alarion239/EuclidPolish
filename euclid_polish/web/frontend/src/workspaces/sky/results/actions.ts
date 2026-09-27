@@ -4,12 +4,12 @@
  * refusal is shown with the server's own error text. */
 import { apiGet, apiPost, ApiError } from "../../../api/client";
 import { isTerminal, refreshJobsFeed, useJobsStore, type Job } from "../../../api/jobs";
-import { invalidate } from "../../../api/query";
+import { getResourceData, invalidate } from "../../../api/query";
 import { openInspector } from "../../../app/inspector";
 import { formatBytes, formatDec, formatRA } from "../../../format";
 import { confirm, toast } from "../../../ui";
-import { URLS, type ExperimentStart } from "./api";
-import { specShort } from "./model";
+import { URLS, type ExperimentStart, type ModelSpecRow, type ModelsPayload } from "./api";
+import { experimentCost, experimentCostText, specShort } from "./model";
 
 type Form = Record<string, string | number | boolean | null | undefined>;
 
@@ -69,6 +69,29 @@ const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
 export type RunResult = { jobId: string | null; experimentId: string | null } | null;
 
+/** The model catalogue for a cost estimate (the query cache, else one GET;
+ *  null when it cannot be read — the confirm then names no numbers). */
+async function modelCatalogue(): Promise<ModelSpecRow[] | null> {
+  const cached = getResourceData<ModelsPayload>(URLS.models);
+  if (cached?.models) return cached.models;
+  try {
+    return (await apiGet<ModelsPayload>(URLS.models))?.models ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** The Run confirm's body: what runs, what it costs, what is reused. */
+export function runMessage(refs: readonly string[], specs: readonly string[], catalogue: readonly ModelSpecRow[] | null): string {
+  const what = `${specs.map(specShort).join(", ")} on ${refs.length === 1 ? refs[0] : plural(refs.length, "tile")}.`;
+  const cost = catalogue ? experimentCostText(experimentCost(specs, catalogue, refs.length)) : "";
+  return [
+    what,
+    cost || "Runs the needed ensemble members on this machine; cached ones are reused.",
+    "A local TensorFlow job; every SR is scored with the real-data metrics.",
+  ].join(" ");
+}
+
 /** Run model specs on real tiles as an experiment (TensorFlow, local job). */
 export async function runModels(
   refs: readonly string[], specs: readonly string[],
@@ -78,7 +101,7 @@ export async function runModels(
   if (opts.ask !== false) {
     const ok = await confirm({
       title: `Run ${plural(specs.length, "model")} on ${plural(refs.length, "tile")}?`,
-      message: `${specs.map(specShort).join(", ")} — runs the needed ensemble members locally (TensorFlow; cached member SRs are reused) and scores every SR with the real-data metrics.`,
+      message: runMessage(refs, specs, await modelCatalogue()),
       confirmLabel: "Run",
     });
     if (!ok) return null;

@@ -1,7 +1,9 @@
 /* Inspect workspace (spec §8.6): a file browser over every inspectable root,
-   then one FITS file — its HDU list, and per HDU the image (viewer, planes,
-   stats, histogram, sky), table (paged rows, column stats), 1-D plot, header
-   and the file's provenance. Every choice is in the URL:
+   then one FITS file, image first — a plain file bar, ONE row that picks the
+   HDU and the view, and at once the HDU's content: the image in the viewer
+   (planes, stats, histogram, sky below it), the table (paged rows, column
+   stats), a 1-D plot, the header or the file's provenance; the full HDU table
+   is under the view. Every choice is in the URL:
      fits   the open file (project-relative; `?path=` is accepted as an alias)
      dir    the browser folder ("@" = the roots; absent = the file's folder)
      q      the deep search in the browser
@@ -20,7 +22,7 @@ import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { useUrlState } from "../../hooks/useUrlState";
 import { readStorage, writeStorage } from "../../state/storage";
 import {
-  Badge, Button, Callout, Card, CardBody, CardHead, CopyButton, Icon, IconButton, Input,
+  Badge, Button, Callout, Card, CardBody, CardHead, DefList, Icon, IconButton, Input, Menu, Select,
   Skeleton, Tabs, copyText, toast,
 } from "../../ui";
 import { downloadUrl, inspectUrl, type InspectResponse } from "./api";
@@ -30,7 +32,7 @@ import { HeaderPanel } from "./HeaderPanel";
 import { ImagePanel } from "./ImagePanel";
 import {
   basename, defaultHduKey, dirname, fileCrumbs, hduByKey, hduFacts, INSPECT_WIDE_PX, isNarrowWidth, normalizeSummary,
-  pushRecent, sliceTarget, VIEW_LABELS, viewsFor, type View,
+  pushRecent, sliceTarget, VIEW_LABELS, viewsFor, type Selected, type View,
 } from "./model";
 import { ProvenancePanel } from "./ProvenancePanel";
 import { SkyLink } from "./SkyLink";
@@ -80,6 +82,59 @@ function useHduScopedReset(): () => void {
   const ref = useRef(setters);
   ref.current = setters;
   return () => ref.current.forEach((set) => set(""));
+}
+
+/** "0 PRIMARY" / a band group's label: the selected HDU in words. */
+function hduTitle(sel: Selected): string {
+  return sel.group ? sel.group.label : `HDU ${sel.hdu?.index ?? 0} ${sel.hdu?.name ?? ""}`.trim();
+}
+
+/** The file's and the selected HDU's facts, under the view (the top of the
+ *  page belongs to the image). */
+function FileFacts({ data, sel }: { data: InspectResponse; sel: Selected }) {
+  return (
+    <Card className="insp-facts">
+      <CardBody>
+        <DefList dense items={[
+          ["file", <span className="insp-id">
+            <span>{formatBytes(data.file.size)}, {data.hdus.length} HDU{data.hdus.length === 1 ? "" : "s"}</span>
+            {data.file.compressed && <Badge size="sm">compressed</Badge>}
+            {data.stamp && <Badge size="sm" tone="good" dot>PROVID {data.stamp.id}</Badge>}
+          </span>],
+          ["modified", <span title={formatDateTime(data.file.mtime)}>{formatRelative(data.file.mtime)}</span>],
+          ["HDU", <span className="mono">{hduTitle(sel)}: {hduFacts(sel)}</span>],
+          sel.hdu?.reason && sel.hdu.type !== "empty" ? ["note", sel.hdu.reason] : null,
+        ]} />
+      </CardBody>
+    </Card>
+  );
+}
+
+/** The one row above the HDU's content: which HDU (a picker when the file
+ *  has several), which view; the HDU's facts when the view has room (not the
+ *  image view: its drawing controls share the row). */
+function ViewHead({ data, sel, view, views, onHdu, onView }: {
+  data: InspectResponse; sel: Selected; view: View | null; views: View[];
+  onHdu: (key: string) => void; onView: (v: View) => void;
+}) {
+  const many = data.hdus.length > 1 || data.band_groups.length > 0;
+  const options = [
+    // an image HDU is the default kind: only the others say what they are
+    ...data.hdus.map((h) => ({ value: String(h.index), label: h.type === "image" ? `${h.index} ${h.name}` : `${h.index} ${h.name} (${h.type})` })),
+    ...data.band_groups.map((g) => ({ value: g.id, label: `${g.label} (colour)` })),
+  ];
+  return (
+    <>
+      {many ? (
+        <Select size="sm" aria-label="HDU" value={sel.key} onChange={onHdu} options={options} className="insp-viewbar__hdu" />
+      ) : view !== "image" && <span className="insp-viewbar__name mono">{hduTitle(sel)}</span>}
+      {view && (
+        <Tabs value={view} onChange={(v) => onView(v)} variant="line" aria-label="HDU view"
+          className="insp-view__tabs" tabs={views.map((v) => ({ id: v, label: VIEW_LABELS[v] }))} />
+      )}
+      {view !== "image" && <span className="insp-viewbar__facts mono" title={sel.hdu?.reason ?? undefined}>{hduFacts(sel)}</span>}
+    </>
+  );
 }
 
 function OpenByPath({ onOpen }: { onOpen: (rel: string) => void }) {
@@ -214,37 +269,29 @@ export default function InspectPage() {
               <div className="insp-filebar__title">
                 <IconButton icon="sidebar" label={showBrowser ? "Hide files" : "Show files"} pressed={showBrowser}
                   onClick={toggleBrowser} />
+                {/* one line: where the file is, then its name */}
                 <div className="insp-filebar__names">
                   <nav className="insp-crumbs insp-crumbs--file" aria-label="File location">
-                    {crumbs.map((c, i) => (
+                    {crumbs.map((c) => (
                       <span key={c.rel} className="insp-crumbs__seg">
-                        {i > 0 && <Icon name="chevronRight" size={11} />}
                         <button type="button" className="insp-crumbs__item" title={`Show ${c.rel} in the browser`}
                           onClick={() => { onDir(c.rel); if (!showBrowser) toggleBrowser(); }}>{c.name}</button>
+                        <Icon name="chevronRight" size={11} />
                       </span>
                     ))}
                   </nav>
-                  <h1 className="insp-filebar__name mono">{basename(rel)}</h1>
+                  <h1 className="insp-filebar__name mono" title={rel}>{basename(rel)}</h1>
                 </div>
               </div>
-              {data && (
-                <div className="insp-filebar__meta">
-                  <span>{formatBytes(data.file.size)}</span>
-                  <span>{data.hdus.length} HDU{data.hdus.length === 1 ? "" : "s"}</span>
-                  <span title={formatDateTime(data.file.mtime)}>modified {formatRelative(data.file.mtime)}</span>
-                  {data.file.compressed && <Badge size="sm">compressed</Badge>}
-                  {data.stamp && <Badge size="sm" tone="good" dot>PROVID {data.stamp.id}</Badge>}
-                </div>
-              )}
               <div className="insp-filebar__actions" role="toolbar" aria-label="File actions">
                 <Button size="sm" icon="download" href={downloadUrl(rel)} download disabled={!data}>Download</Button>
                 <Button size="sm" icon="pin" onClick={() => setTracking(true)} disabled={!data}>Track</Button>
                 {wcs && <SkyLink wcs={wcs} />}
-                <IconButton size="sm" icon="panelRight" label="Open in the side panel" disabled={!data}
-                  onClick={() => openInspector({ kind: "fits", id: rel })} />
-                <CopyButton value={rel} label="Copy the path" />
-                <IconButton size="sm" icon="reset" label="Reload the file"
-                  onClick={() => { void invalidate("/api/inspect"); void invalidate("/viewer/meta/fits"); }} />
+                <Menu label="More file actions" align="end" items={[
+                  { label: "Open in the side panel", disabled: !data, onSelect: () => openInspector({ kind: "fits", id: rel }) },
+                  { label: "Copy the path", onSelect: () => { void copyText(rel).then((ok) => { if (ok) toast.success("Path copied"); }); } },
+                  { label: "Reload the file", onSelect: () => { void invalidate("/api/inspect"); void invalidate("/viewer/meta/fits"); } },
+                ]} trigger={<IconButton size="sm" icon="more" label="More file actions" />} />
               </div>
             </header>
           )}
@@ -262,33 +309,40 @@ export default function InspectPage() {
                   This gzip file is too large to scan for extensions; download it to see them.
                 </Callout>
               )}
+              {/* Image first: one row picks the HDU and the view (and, on the
+                  image view, how it is drawn); the viewer follows at once. The
+                  full HDU table is below the view. */}
+              <section className="insp-view" aria-labelledby="insp-hdu-heading">
+                <h2 id="insp-hdu-heading" className="sr-only">{hduTitle(sel)}</h2>
+                {(() => {
+                  const head = (
+                    <ViewHead data={data} sel={sel} view={view} views={views} onHdu={selectHdu} onView={setViewParam} />
+                  );
+                  if (view === "image") {
+                    return slice ? <><div className="insp-viewbar">{head}</div><Skeleton height={320} /></>
+                      : <ImagePanel fits={data.rel} summary={data} sel={sel} unit={unit} head={head} />;
+                  }
+                  return (
+                    <>
+                      <div className="insp-viewbar">{head}</div>
+                      <div className="insp-view__body">
+                        {view === "plot" && sel.hdu && <VectorPanel fits={data.rel} hdu={sel.hdu} unit={unit} />}
+                        {view === "table" && sel.hdu && <TablePanel fits={data.rel} hdu={sel.hdu} />}
+                        {view === "header" && sel.hdu && <HeaderPanel hdu={sel.hdu} fileName={data.file.basename} />}
+                        {view === "provenance" && <ProvenancePanel fits={data.rel} />}
+                        {!view && <p className="insp-note">{sel.hdu?.reason ?? "Nothing to show for this HDU."}</p>}
+                      </div>
+                    </>
+                  );
+                })()}
+              </section>
+              <FileFacts data={data} sel={sel} />
               {(data.hdus.length > 1 || data.band_groups.length > 0) && (
                 <Card className="insp-hdus">
                   <CardHead title="HDUs" sub={hdusSub(data.hdus.length, data.band_groups.length)} />
                   <CardBody><HduList summary={data} selected={sel.key} onSelect={selectHdu} /></CardBody>
                 </Card>
               )}
-              <section className="insp-view" aria-label="Selected HDU">
-                <h2 className="insp-view__title">
-                  <span className="mono">{sel.group ? sel.group.label : `${sel.hdu?.index} · ${sel.hdu?.name}`}</span>
-                  <span className="insp-dim mono insp-view__facts">{hduFacts(sel)}</span>
-                  {sel.hdu?.reason && sel.hdu.type !== "empty" && <span className="insp-dim insp-view__reason">{sel.hdu.reason}</span>}
-                </h2>
-                {view && (
-                  <Tabs value={view} onChange={(v) => setViewParam(v)} variant="line" aria-label="HDU view"
-                    className="insp-view__tabs" tabs={views.map((v) => ({ id: v, label: VIEW_LABELS[v] }))}>
-                    <div className="insp-view__body">
-                      {view === "image" && (slice
-                        ? <Skeleton height={320} />
-                        : <ImagePanel fits={data.rel} summary={data} sel={sel} unit={unit} />)}
-                      {view === "plot" && sel.hdu && <VectorPanel fits={data.rel} hdu={sel.hdu} unit={unit} />}
-                      {view === "table" && sel.hdu && <TablePanel fits={data.rel} hdu={sel.hdu} />}
-                      {view === "header" && sel.hdu && <HeaderPanel hdu={sel.hdu} fileName={data.file.basename} />}
-                      {view === "provenance" && <ProvenancePanel fits={data.rel} />}
-                    </div>
-                  </Tabs>
-                )}
-              </section>
             </>
           )}
         </div>}

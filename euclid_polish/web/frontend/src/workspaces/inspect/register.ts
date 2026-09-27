@@ -9,5 +9,6 @@ import { basename } from "./model";
 const FitsInspector = lazy(() => import("./FitsInspector"));
 
 export const unregisterFitsInspector = registerInspector("fits", FitsInspector, {
-  title: (id) => `FITS · ${basename(id)}`,
+  // The panel names the kind ("Fits") above the title: the title is the file.
+  title: (id) => basename(id),
 });

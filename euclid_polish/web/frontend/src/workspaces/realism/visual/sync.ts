@@ -47,3 +47,12 @@ export function shows(state: Reported | null, shared: Transfer): boolean {
 export function viewPatch(shared: Transfer): Reported {
   return resolved(shared);
 }
+
+/** The URL value of a shared knee / brightness: 0 (unset) for the locked
+ *  default, else rounded (4 / 3 significant figures) — a clean link. */
+export function urlKnee(v: number): number {
+  return Math.abs(v - DEFAULT_KNEE) < 1e-6 ? 0 : Number(v.toPrecision(4));
+}
+export function urlGain(v: number): number {
+  return Math.abs(v - DEFAULT_GAIN) < 1e-6 ? 0 : Number(v.toPrecision(3));
+}

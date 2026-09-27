@@ -9,6 +9,11 @@ import type { LayerSetting } from "./urlState";
 
 const DEFAULT_OPACITY: Record<LayerInfo["kind"], number> = { points: 0.9, polygons: 0.7, circles: 0.45, moc: 0.3 };
 
+/** Below this field of view (deg) a coverage MOC is drawn as an outline only:
+ *  zoomed into the covered sky, a filled MOC tinted the Euclid colour
+ *  imagery blue (colour judgement needs a neutral surround). */
+export const MOC_FILL_MIN_FOV = 2;
+
 /* A scale scans the features (domains, categories: O(n log n) for the 43k
    stars), and the specs are rebuilt on every zoom step: cache it per
    feature array (stable per payload) × layer × override × palette. */
@@ -55,6 +60,7 @@ export function buildSpecs(a: {
       scale: cachedScale(info, features, a.palette, setting?.color),
       lod: info.kind === "moc" ? "shapes" : lodFor(d?.typicalSize ?? 0, a.fov, a.width),
       markerScale: a.markerScale,
+      ...(info.kind === "moc" ? { fill: a.fov >= MOC_FILL_MIN_FOV } : {}),
     });
   }
   const jwst = a.settings.find((s) => s.id === "jwst-mast");

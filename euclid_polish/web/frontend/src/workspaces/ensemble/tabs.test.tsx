@@ -4,14 +4,15 @@
  * promote guards, the train preview and the member inspector. */
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClientProvider } from "@tanstack/react-query";
-import type { ReactElement } from "react";
+import { useState, type ReactElement } from "react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { useJobsStore } from "../../api/jobs";
 import { queryClient } from "../../api/query";
 import { useInspector } from "../../state/inspector";
 import { useSelection } from "../../state/selection";
 import { resetConfirm } from "../../ui";
+import { TabAsideSlot } from "./aside";
 import type { CombinersPayload, KneeModel, MemberDetail, MemberRow, Overview as OverviewData } from "./api";
 
 vi.mock("../../viewer", () => ({
@@ -276,6 +277,73 @@ describe("members", () => {
   });
 });
 
+describe("members gate use", () => {
+  it("shows the gate's share as the mean over bands (the VIS weight alone hid NISP use), per band on hover", async () => {
+    routes["GET /ensemble/members.json?mode=starfull"] = () => ({ body: { ...MEMBERS, members: [
+      member(190, { gate_usage: { VIS: 0.00018, Y_E: 0.374, J_E: 0.366, H_E: 0.329 } }),
+    ] } });
+    const { default: Members } = await import("./tabs/Members");
+    show(<Members />, "/ensemble/starfull/members");
+    const cell = await screen.findByLabelText(/^Gate use 26\.7% \(mean over bands\)/);
+    expect(cell.getAttribute("aria-label")).toBe("Gate use 26.7% (mean over bands): VIS 0.0% · Y 37.4% · J 36.6% · H 32.9%");
+    expect(cell.querySelectorAll(".ens-gate__bars i")).toHaveLength(4);
+  });
+});
+
+describe("disagreement", () => {
+  const META = { count: 100, member_labels: ["178·psnr", "196·psnr", "197·psnr"] };
+  it("puts the viewer first and ONE compact, searchable member panel under it", async () => {
+    routes["GET /viewer/meta/ensemble?mode=starfull"] = () => ({ body: META });
+    const { default: Disagreement } = await import("./tabs/Disagreement");
+    show(<Disagreement />, "/ensemble/starfull/disagreement?sel=196,178");
+    const panel = await screen.findByRole("region", { name: "Members" });
+    const viewer = screen.getByTestId("viewer");
+    // The viewer comes before the member panel in the page (nothing above its bar).
+    expect(viewer.compareDocumentPosition(panel) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(panel).getByRole("status").textContent).toBe("Movie over 2 members: #196, #178");
+    const picker = within(panel).getByRole("group", { name: "Members in the movie" });
+    await waitFor(() => expect(within(picker).getAllByRole("button")).toHaveLength(3));
+    expect(within(picker).getAllByRole("button").filter((b) => b.getAttribute("aria-pressed") === "true")).toHaveLength(2);
+    // Search by number or knee description.
+    fireEvent.change(within(panel).getByRole("searchbox", { name: "Find members" }), { target: { value: "multi" } });
+    await waitFor(() => expect(within(picker).getAllByRole("button").map((b) => b.textContent?.slice(0, 4))).toEqual(["#196", "#197"]));
+    fireEvent.change(within(panel).getByRole("searchbox", { name: "Find members" }), { target: { value: "#178" } });
+    await waitFor(() => expect(within(picker).getAllByRole("button")).toHaveLength(1));
+    fireEvent.click(within(picker).getByRole("button"));
+    await waitFor(() => expect(lastLocation).toContain("sel=196"));
+    expect(lastLocation).not.toContain("178");
+    fireEvent.click(within(panel).getByRole("button", { name: "Clear selection" }));
+    await waitFor(() => expect(within(panel).getByRole("status").textContent).toMatch(/^Pick members/));
+  });
+
+  it("offers the members from a menu in the tab strip, reachable without scrolling", async () => {
+    routes["GET /viewer/meta/ensemble?mode=starfull"] = () => ({ body: META });
+    const { default: Disagreement } = await import("./tabs/Disagreement");
+    function WithStrip() {
+      const [slot, setSlot] = useState<HTMLElement | null>(null);
+      return (
+        <TabAsideSlot.Provider value={slot}>
+          <nav aria-label="Tab strip"><span ref={setSlot} /></nav>
+          <Disagreement />
+        </TabAsideSlot.Provider>
+      );
+    }
+    show(<WithStrip />, "/ensemble/starfull/disagreement?sel=196");
+    const strip = screen.getByRole("navigation", { name: "Tab strip" });
+    const trigger = await within(strip).findByRole("button", { name: "1 member" });
+    fireEvent.click(trigger);
+    const menu = await screen.findByRole("dialog", { name: "Pick members" });
+    expect(menu.textContent).toContain("Showing member #196");
+    const picker = within(menu).getByRole("group", { name: "Members in the movie" });
+    await waitFor(() => expect(within(picker).getAllByRole("button")).toHaveLength(3));
+    fireEvent.click(within(picker).getAllByRole("button").find((b) => b.textContent?.startsWith("#178"))!);
+    await waitFor(() => expect(lastLocation).toMatch(/sel=196(,|%2C)178/));
+    expect(await within(strip).findByRole("button", { name: "2 members" })).toBeTruthy();
+    fireEvent.click(within(menu).getByRole("button", { name: "Clear selection" }));
+    await waitFor(() => expect(within(strip).getByRole("button", { name: "Pick members" })).toBeTruthy());
+  });
+});
+
 describe("knee", () => {
   it("ranks the leaderboard over the selected range and draws no 100 e⁻ line", async () => {
     const { default: Knee } = await import("./tabs/Knee");
@@ -340,6 +408,18 @@ describe("combiners", () => {
     fireEvent.click(within(dlg).getByRole("button", { name: "Cancel" }));
   });
 
+  it("does not rank a held-out loss measured on another scale against production's", async () => {
+    routes["GET /ensemble/combiners.json?mode=starfull"] = () => ({ body: { ...COMBINERS, variants: [
+      variant("spatial_gate_combiner", { fit: { loss: "per-field relative asinh MSE" } }),
+      variant("spatial_gate_v1", { fit: { loss: "band-weighted asinh squared error" }, selected: { step: 3000, loss: 0.1775 } }),
+    ] } });
+    const { default: Combiners } = await import("./tabs/Combiners");
+    show(<Combiners />, "/ensemble/starfull/combiners");
+    const odd = await screen.findByText("0.1775 ≠");
+    expect(odd.className).toContain("ens-faint");
+    expect(screen.getByText("0.6500")).toBeTruthy();
+  });
+
   it("promotes a variant fitted for other members only with typed confirmation + force", async () => {
     const { default: Combiners } = await import("./tabs/Combiners");
     show(<Combiners />, "/ensemble/starfull/combiners");
@@ -392,6 +472,29 @@ describe("train", () => {
   });
 });
 
+describe("train resources", () => {
+  it("starts from the last finished batch's resources (not the step's 4 CPUs / 48 h) and names them in the confirm", async () => {
+    routes["GET /ensemble/training-jobs.json"] = () => ({ body: { jobs: [{
+      jobid: "48107719", state: "COMPLETED", submitted_at: "2026-09-24T04:54:24Z", mode: "add", member_names: ["member_195"],
+      req_time_limit: "3:00:00", req_memory: "32G", req_cpus: 16, params: { mode: "add", count: 1, steps: "70000" },
+    }] } });
+    const { default: Train } = await import("./tabs/Train");
+    show(<Train />, "/ensemble/starfull/train");
+    const cpus = await screen.findByRole("spinbutton", { name: "CPUs / model" });
+    expect((cpus as HTMLInputElement).value).toBe("16");
+    expect(screen.getByDisplayValue("3:00:00")).toBeTruthy();
+    expect(screen.getByText("As job 48107719 (the last finished new batch)")).toBeTruthy();
+  });
+
+  it("continues TIMEOUT members up to their target, not a fixed +20k", async () => {
+    const { default: Train } = await import("./tabs/Train");
+    show(<Train />, "/ensemble/starfull/train?mode=continue&members=member_178");
+    const upTo = await screen.findByRole("spinbutton", { name: "Up to step" });
+    expect((upTo as HTMLInputElement).value).toBe("70000");
+    await waitFor(() => expect(posts("/ensemble/train/preview").at(-1)?.form).toMatchObject({ continue_basis: "target", target_steps: "70000" }));
+  });
+});
+
 describe("train regime", () => {
   it("submits starless members from the starless workspace, with no per-row regime knob", async () => {
     routes["GET /ensemble/members.json?mode=starless"] = () => ({ body: { ...MEMBERS, regime: "starless", members: [] } });
@@ -425,5 +528,35 @@ describe("member inspector", () => {
     expect(screen.getAllByText("multi ×6 → 10").length).toBeGreaterThan(0);
     expect(screen.getByRole("button", { name: "Continue" })).toBeTruthy();
     expect(screen.getByText("Training curves")).toBeTruthy();
+  });
+});
+
+describe("pixel back-trace", () => {
+  const stamp = (hr: number, std: number, err: number) => ({
+    field: 7, y: 20, x: 20, center: 20, sr_is_combiner: true, model_kind: "spatial_gate",
+    hr: btoa(String.fromCharCode(...new Uint8Array(new Float32Array(4).buffer))),
+    sr: btoa(String.fromCharCode(...new Uint8Array(new Float32Array(4).buffer))),
+    std: btoa(String.fromCharCode(...new Uint8Array(new Float32Array(4).buffer))),
+    hr_val: hr, sr_val: hr, std_val: std, err_val: err, bright_asinh: 0,
+  });
+
+  it("gives each row a knee at its traced pixel's level and scrolls the trace into view once it is in", async () => {
+    routes["GET /ensemble/pixel-trace.json?mode=starfull&diag=std_err&i=32&j=32"] = () => ({ body: {
+      diag: "std_err", i: 32, j: 32, half: 1, size: 2, bands: ["VIS"], stretch: 1,
+      stamps: [stamp(3.1, 1.2, 1.6), stamp(11, 1.61, 1.5)],
+    } });
+    routes["GET /viewer/meta/ensemble?mode=starfull"] = () => ({ body: { color: { default_asinh: 100 } } });
+    const scrolled = vi.fn();
+    const had = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = scrolled;
+    onTestFinished(() => { Element.prototype.scrollIntoView = had; });
+    const { PixelTrace } = await import("./PixelTrace");
+    show(<PixelTrace mode="starfull" pick={{ diag: "std_err", i: 32, j: 32 }} cellLabel="σ 1.2–1.61 e⁻" targetLabel="HR" onClose={() => {}} />);
+    expect(await screen.findByText("knee 3.1 e⁻")).toBeTruthy();
+    expect(screen.getByText("knee 11 e⁻")).toBeTruthy();
+    await waitFor(() => expect(scrolled).toHaveBeenCalledWith(expect.objectContaining({ block: "nearest" })));
+    // the Display panel's knee is one click away
+    fireEvent.click(screen.getByRole("radio", { name: "Display panel knee" }));
+    expect(screen.getAllByText("knee 100 e⁻")).toHaveLength(2);
   });
 });

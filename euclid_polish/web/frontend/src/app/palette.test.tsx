@@ -97,8 +97,17 @@ describe("paletteSuggestions", () => {
       .toMatchObject({ kind: "navigate", to: "/inspect?fits=data%2Feval_results%2Fa%20b.fits" });
   });
 
-  it("falls back to a sky name lookup for other text", () => {
-    expect(paletteSuggestions("M 87", parse)[0]).toMatchObject({ to: "/sky/atlas?goto=M%2087" });
+  it("falls back to a sky name lookup for other text, marked as the fallback (listed last)", () => {
+    expect(paletteSuggestions("M 87", parse)[0]).toMatchObject({ to: "/sky/atlas?goto=M%2087", fallback: true });
     expect(paletteSuggestions("7", parse)).toEqual([]);
+    expect(paletteSuggestions("member 196", parse)[0].fallback).toBeFalsy();
+  });
+
+  it("reads 'member' + a separator or digits as a member, never a plural word", () => {
+    expect(paletteSuggestions("members", parse).map((s) => s.id)).toEqual(["sky-name"]);
+    expect(paletteSuggestions("membership", parse).map((s) => s.id)).toEqual(["sky-name"]);
+    expect(paletteSuggestions("member196", parse)[0]).toMatchObject({ target: { id: "member_196" } });
+    expect(paletteSuggestions("member #12", parse)[0]).toMatchObject({ target: { id: "member_12" } });
+    expect(paletteSuggestions("member: m3", parse)[0]).toMatchObject({ target: { id: "member_m3" } });
   });
 });

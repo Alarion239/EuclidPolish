@@ -13,6 +13,7 @@ import { Badge, Button, DefList, EmptyState, JobProgress, JsonTree, Section, Ske
 import { BAND_SHORT, useCombiners, type Mode } from "./api";
 import { JOB, useOnJobEnd } from "./jobs";
 import { db, memberNumber, variantLabel } from "./model";
+import { autoTicks } from "../plotTicks";
 import "./ensemble.css";
 
 const nums = (labels: string[]) => labels.map((l) => memberNumber(l) ?? l).join(", ");
@@ -82,13 +83,17 @@ export default function CombinerInspector({ id }: InspectorProps) {
         v.test?.band_psnr ? ["test PSNR (compare)", v.test.band_psnr.map((x, i) => `${BAND_SHORT[["VIS", "Y_E", "J_E", "H_E"][i]]} ${db(x)}`).join(" · ")] : null,
         kneeMean != null ? ["∫PSNR", `${db(kneeMean, 3)} dB mean · from ${v.knee?.source}${v.knee?.stale ? " (stale)" : ""}`] : null,
       ]} />
-      {hist.length > 1 && (
+      {hist.length > 1 && (() => {
+        const histX: [number, number] = [0, Math.max(...hist.map((h) => h.step), 1)];
+        const histY: [number, number] = [Math.min(...ys) * 0.98, Math.max(...ys) * 1.02];
+        return (
         <Section title="Held-out loss">
-          <Plot xDomain={[0, Math.max(...hist.map((h) => h.step), 1)]} yDomain={[Math.min(...ys) * 0.98, Math.max(...ys) * 1.02]}
+          <Plot xDomain={histX} yDomain={histY} xTicks={autoTicks(histX)} yTicks={autoTicks(histY)}
             series={[{ x: hist.map((h) => h.step), y: ys, color: C.comb, width: 2, dots: true, name: "held-out loss" }]}
             xLabel="fit step" yLabel="loss (1 = best member)" aspect={0.6} exportName={`${v.name}-history`} aria-label={`${v.name} held-out loss`} />
         </Section>
-      )}
+        );
+      })()}
       <Section title="Fit meta" collapsible defaultOpen={false}><JsonTree data={v.fit} expandDepth={1} /></Section>
     </div>
   );

@@ -8,7 +8,7 @@
 import type { ReactNode } from "react";
 import Plot, { type Series } from "../../../charts/Plot";
 import { useUrlState } from "../../../hooks/useUrlState";
-import { linearTicks } from "../../../ticks";
+import { extent, linearTicks } from "../../../ticks";
 import { Badge, Button, Chip, EmptyState } from "../../../ui";
 import type { BrightnessCurve, Parameter, RadiusCurve } from "../api";
 import { SOURCE_META, surveyColor, ticksFor } from "../chartKit";
@@ -155,7 +155,7 @@ export function BrightnessPanel({ parameter }: { parameter: Parameter }) {
   let summary: ReactNode = null;
   let trustAbout: ReactNode = null;
   if (series.length && xs.length) {
-    const xDomain: [number, number] = [Math.min(...xs), Math.max(...xs)];
+    const xDomain: [number, number] = extent(xs) ?? [0, 1];
     const yDomain = densityDomain(series);
     const o = brightnessOverlays(entries, xDomain, yDomain);
     plot = (

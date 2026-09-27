@@ -287,7 +287,7 @@ describe("the fits inspector kind", () => {
   it("is registered with a file-name title and renders a compact view", async () => {
     const reg = useInspectorRegistry.getState().kinds.fits;
     expect(reg).toBeTruthy();
-    expect(typeof reg.title === "function" && reg.title("data/x/SR.fits")).toBe("FITS · SR.fits");
+    expect(typeof reg.title === "function" && reg.title("data/x/SR.fits")).toBe("SR.fits");
     render(
       <QueryClientProvider client={queryClient}>
         <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>

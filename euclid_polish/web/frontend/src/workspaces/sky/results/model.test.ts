@@ -2,9 +2,10 @@ import { describe, expect, it } from "vitest";
 import type { ExperimentRecord, ModelSpecRow, TileList, TileRow } from "./api";
 import { atlasHref, experimentsHref, splitRef, URLS } from "./api";
 import {
-  bandSeries, experimentMarkdown, filterByState, filterEvalRows, flattenTiles, formatMetric, groupModels,
-  headlineSpec, metricRows, metricsPlan, num, parseRefs, productionCounts, recordSpecs, runnableSelection, seriesDomain,
-  sortSpecs, specShort, tileModels,
+  bandSeries, cardViewerTiers, defaultExperimentId, defaultRunSpecs, experimentCost, experimentCostText, experimentMarkdown, filterByState,
+  filterEvalRows, flattenTiles, formatMetric, groupModels, headlineSpec, membersText, metricRows, metricsPlan, num,
+  metricHeader, parseRefs, productionCounts, realTileViewerParams, recordSpecs, runnableSelection, seriesDomain, sortSpecs, specShort,
+  tileModels,
 } from "./model";
 
 const tile = (ref: string, state?: string, models: TileRow["models"] = {}): TileRow => {
@@ -61,8 +62,9 @@ describe("refs and URLs", () => {
     expect(URLS.deleteOutputs("nexus/f200w-0001")).toBe("/api/real/nexus/f200w-0001/delete-outputs");
   });
   it("links to the atlas and to experiments", () => {
+    // the atlas card of a real tile is the `tile:` kind (the one real-tile card, atlas-highlighted)
     expect(atlasHref(268.4, 65.2, "nexus/f200w-0001")).toBe(
-      "/sky/atlas?ra=268.400000&dec=65.200000&inspect=realtile%3Anexus%2Ff200w-0001");
+      "/sky/atlas?ra=268.400000&dec=65.200000&inspect=tile%3Anexus%2Ff200w-0001");
     expect(experimentsHref(["a/1", "b/2"])).toBe("/sky/experiments?tiles=a%2F1%2Cb%2F2");
     expect(experimentsHref([])).toBe("/sky/experiments");
   });
@@ -95,6 +97,67 @@ describe("model specs", () => {
       ["gate", ["gate:x"]], ["member", ["member:member_1"]],
     ]);
     expect(runnableSelection(["rbf", "mean", "gate:x", "unknown"], models)).toEqual(["mean"]);
+  });
+  it("counts the members a model reads (a pruned gate reads fewer than it was fitted on)", () => {
+    const six = ["170·psnr", "171·psnr", "180·psnr", "181·psnr", "184·psnr", "187·psnr"];
+    expect(membersText({ n_members: 20, reads: six })).toBe("6 of 20 members");
+    expect(membersText({ n_members: 30, reads: Array(30).fill("x") })).toBe("30 members");
+    expect(membersText({ n_members: 1 })).toBe("1 member");
+    expect(membersText({ members: ["a", "b"] })).toBe("2 members");
+    expect(membersText({})).toBe("");
+  });
+});
+
+describe("experiment cost", () => {
+  const CAT: ModelSpecRow[] = [
+    { spec: "production", kind: "production", label: "P", available: true, n_members: 3, reads: ["1·psnr", "2·psnr", "3·psnr"] },
+    { spec: "mean", kind: "mean", label: "M", available: true, n_members: 3, members: ["1·psnr", "2·psnr", "3·psnr"] },
+    { spec: "gate:pruned", kind: "gate", label: "G", available: true, n_members: 3, reads: ["2·psnr", "4·psnr"] },
+    { spec: "member:member_5", kind: "member", label: "m5", available: true, n_members: 1, reads: ["5·psnr"] },
+    { spec: "rbf", kind: "rbf", label: "R", available: false, reason: "stale", n_members: 2, reads: ["8·psnr", "9·psnr"] },
+  ];
+  it("counts every member SR the models need once per tile (union), and the outputs", () => {
+    expect(experimentCost(["production", "gate:pruned"], CAT, 2)).toEqual({
+      tiles: 2, models: 2, members: 4, inferences: 8, outputs: 4, skipped: [], unknown: [],
+    });
+    expect(experimentCost(["mean", "member:member_5"], CAT, 1)).toMatchObject({ members: 4, inferences: 4, outputs: 2 });
+  });
+  it("leaves out unavailable specs (the server skips them) and names unknown ones", () => {
+    expect(experimentCost(["rbf", "production", "gate:new"], CAT, 1)).toMatchObject({
+      models: 1, members: 3, outputs: 1, skipped: ["rbf"], unknown: ["gate:new"],
+    });
+  });
+  it("says the cost in words", () => {
+    expect(experimentCostText(experimentCost(["production", "gate:pruned"], CAT, 2)))
+      .toBe("4 outputs (2 models on 2 tiles). Needs 4 member SRs per tile: at most 8 member inferences on this machine; cached ones are reused.");
+    expect(experimentCostText(experimentCost(["member:member_5"], CAT, 1)))
+      .toBe("1 output (1 model on 1 tile). Needs 1 member SR per tile: at most 1 member inference on this machine; cached ones are reused.");
+    expect(experimentCostText({ ...experimentCost(["production"], CAT, 2), members: 0, inferences: 0 }))
+      .toBe("2 outputs (1 model on 2 tiles).");
+    expect(experimentCostText(null)).toBe("");
+    // a sentence, not an "A · B" label string
+    expect(experimentCostText(experimentCost(["production"], CAT, 2))).not.toMatch(/·|×/);
+  });
+});
+
+describe("the real-tile card", () => {
+  it("asks the viewer for exactly the tile's own model tiers", () => {
+    expect(realTileViewerParams("nexus", ["rbf", "production"])).toEqual({ source: "nexus", models: "production,rbf" });
+    // no model output: an empty list (",") — without `models` the server lists every spec of the source
+    expect(realTileViewerParams("poster", [])).toEqual({ source: "poster", models: "," });
+  });
+  it("opens on two frames, LR and the first model output (JWST one chip away), so they are large in the inspector", () => {
+    expect(cardViewerTiers(["production", "mean", "rbf"], false)).toEqual(["lr", "m:production"]);
+    expect(cardViewerTiers(["rbf", "production"], true)).toEqual(["lr", "m:production"]);
+    // no model output yet: LR and the JWST truth when there is one
+    expect(cardViewerTiers([], true)).toEqual(["lr", "jwst"]);
+    expect(cardViewerTiers([], false)).toEqual(["lr"]);
+  });
+  it("proposes the production / mean outputs a tile is missing", () => {
+    expect(defaultRunSpecs({})).toEqual(["production", "mean"]);
+    expect(defaultRunSpecs({ production: { state: "current" } })).toEqual(["mean"]);
+    expect(defaultRunSpecs({ production: { state: "stale" }, mean: { state: "current" } })).toEqual(["production"]);
+    expect(defaultRunSpecs({ production: { state: "current" }, mean: { state: "current" } })).toEqual(["production", "mean"]);
   });
 });
 
@@ -154,6 +217,10 @@ describe("experiment metrics", () => {
     expect(hi).toBeGreaterThan(1);
     expect(seriesDomain([], "hole_pct")).toEqual([0, 1]);
   });
+  it("finds the domain of a very long series without spreading it into Math.min", () => {
+    const y = Array.from({ length: 200_000 }, (_, i) => (i % 7) / 10);
+    expect(seriesDomain([{ spec: "p", label: "p", x: [], y }], "flux_ratio")[1]).toBeGreaterThan(1);
+  });
   it("summarises the experiment for the tracking log", () => {
     const md = experimentMarkdown(RECORD);
     expect(md).toContain("**Real-data experiment `20260926-101010-abcdef`** — poster core (done)");
@@ -193,5 +260,33 @@ describe("metricsPlan", () => {
       { specs: ["rbf"], refs: ["poster/p"] },
     ]);
     expect(metricsPlan([rows[3]])).toEqual([]);
+  });
+});
+
+describe("the experiment a visit opens", () => {
+  const H = [
+    { id: "20260925-101010-aaaaaa", created: "2026-09-25T10:10:10" },
+    { id: "20260927-024251-0fb0c1", created: "2026-09-27T02:42:51" },
+    { id: "20260926-090000-bbbbbb", created: "2026-09-26T09:00:00" },
+  ];
+  it("is the ?exp= one when the URL names it", () => {
+    expect(defaultExperimentId(H, "20260925-101010-aaaaaa", [])).toBe("20260925-101010-aaaaaa");
+  });
+  it("is the newest one on a plain visit (the tab strip's link)", () => {
+    expect(defaultExperimentId(H, "", [])).toBe("20260927-024251-0fb0c1");
+    // no `created`: the id's timestamp orders them
+    expect(defaultExperimentId(H.map(({ id }) => ({ id })), "", [])).toBe("20260927-024251-0fb0c1");
+  });
+  it("is none when tiles were handed over (the form is the point) or nothing exists", () => {
+    expect(defaultExperimentId(H, "", ["nexus/f200w-0040"])).toBe("");
+    expect(defaultExperimentId([], "", [])).toBe("");
+  });
+});
+
+describe("metric column headers", () => {
+  it("upper-case Latin letters only, so σ never becomes Σ under the kit's transform", () => {
+    expect(metricHeader("holes >100σ")).toBe("HOLES >100σ");
+    expect(metricHeader("R<0.8")).toBe("R<0.8");
+    expect(metricHeader("R̃")).toBe("R̃");
   });
 });

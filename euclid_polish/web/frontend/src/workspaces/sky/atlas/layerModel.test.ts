@@ -126,6 +126,8 @@ describe("layer model", () => {
   it("finds the loaded feature an inspector target points at", () => {
     const byLayer = { "nexus-tiles": normalisePayload(NEXUS), stars: normalisePayload(STARS) };
     expect(findFeatureByTarget({ kind: "tile", id: "nexus/0" }, byLayer)?.key).toBe("f200w-0000");
+    // `realtile:` opens the same real-tile card, so the atlas highlights it too
+    expect(findFeatureByTarget({ kind: "realtile", id: "nexus/f200w-0000" }, byLayer)?.key).toBe("f200w-0000");
     expect(findFeatureByTarget({ kind: "source", id: "stars/1" }, byLayer)?.key).toBe("1");
     expect(findFeatureByTarget({ kind: "source", id: "at/1,2" }, byLayer)).toBeNull();
     expect(findFeatureByTarget({ kind: "member", id: "member_1" }, byLayer)).toBeNull();

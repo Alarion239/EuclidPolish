@@ -7,7 +7,7 @@
 import { C, bandColor, categorical } from "../../colors";
 import type { Series } from "../../charts/Plot";
 import { formatNumber } from "../../format";
-import { linearTicks, logTicks, paddedDomain, type Domain, type Tick } from "../../ticks";
+import { extent, linearTicks, logTicks, paddedDomain, type Domain, type Tick } from "../../ticks";
 
 /* ─── palette ───────────────────────────────────────────────────────────── */
 
@@ -58,10 +58,11 @@ export const positiveOrNull = (values: readonly (number | null | undefined)[]): 
 /** A log-axis domain over the positive values, snapped outward to half
  *  decades (at least one decade wide). */
 export function logDomain(values: readonly (number | null | undefined)[], fallback: Domain = [1e-3, 1]): Domain {
-  const logs = finite(values).filter((v) => v > 0).map(Math.log10);
-  if (!logs.length) return fallback;
-  const lo = Math.floor(Math.min(...logs) * 2) / 2;
-  const hiRaw = Math.ceil(Math.max(...logs) * 2) / 2;
+  // extent(), not Math.min(...spread): a spread throws past ~120k values.
+  const span = extent(finite(values).filter((v) => v > 0).map(Math.log10));
+  if (!span) return fallback;
+  const lo = Math.floor(span[0] * 2) / 2;
+  const hiRaw = Math.ceil(span[1] * 2) / 2;
   const hi = hiRaw <= lo ? lo + 1 : hiRaw;
   return [10 ** lo, 10 ** hi];
 }
@@ -341,7 +342,7 @@ export function quantile(values: readonly number[], q: number): number | null {
 export function countHistogram(values: readonly number[], maxBins = 40): { edges: number[]; fraction: number[] } {
   const good = finite(values).filter((v) => v >= 0);
   if (!good.length) return { edges: [0, 1], fraction: [0] };
-  const top = Math.max(...good);
+  const top = extent(good)?.[1] ?? 0;
   const width = Math.max(1, Math.ceil((top + 1) / maxBins));
   const bins = Math.max(1, Math.ceil((top + 1) / width));
   const counts = new Array<number>(bins).fill(0);

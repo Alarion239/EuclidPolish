@@ -4,8 +4,8 @@
  *
  *   useEffect(() => registerDisplaySection({ id: "sky", title: "Sky", order: 10, Component: SkyDisplay }), []);
  *
- * Sections render below the built-in "Image" and "Viewers" sections, by
- * `order` then registration order. */
+ * Sections render ABOVE the built-in "Image" and "Viewers" sections (the
+ * page's own controls come first), by `order` then registration order. */
 import type { ComponentType } from "react";
 import { create } from "zustand";
 

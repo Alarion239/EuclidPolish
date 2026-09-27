@@ -101,7 +101,7 @@ export function TruthInspector({ id }: InspectorProps) {
         <div className="dt-insp">
           <div className="dt-insp__head">
             <Badge tone={d.source.type === "star" ? "warn" : d.source.type === "lens" ? "accent" : "info"}>{d.source.type}</Badge>
-            <span className="dt-insp__title">{target.split} · record {target.index} · #{target.row}</span>
+            <span className="dt-insp__title">Record {target.index} of {target.split}, source {target.row}</span>
             {d.source.off_field && <Badge size="sm">off-field</Badge>}
             {d.source.render && <Badge size="sm">{d.source.render}</Badge>}
           </div>
@@ -189,7 +189,7 @@ export function TngInspector({ id }: InspectorProps) {
         <Section title="Viewpoints">
           <DefList dense items={views.map(([o, px, kpc]) => [`view ${o ?? "?"}`, (
             <span key={String(o)} className="dt-chips">
-              <span className="mono">Rₑ {formatNumber(px, { digits: 1 })} px · {formatNumber(kpc, { digits: 3 })} kpc</span>
+              <span className="mono">Rₑ {formatNumber(px, { digits: 1 })} px ({formatNumber(kpc, { digits: 3 })} kpc)</span>
               {row.local > 0 && o != null && (
                 <Button size="sm" variant="ghost" icon="fileSearch"
                   onClick={() => openInspector({ kind: "fits", id: `data/tng_skirt/${row.id}/TNG${row.id}_O${o}_Euclid_VIS.fits` })}>

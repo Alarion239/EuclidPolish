@@ -104,19 +104,22 @@ export function usePaletteActions(): PageAction[] {
 /* ── query-driven suggestions (global commands that take the typed text) ── */
 
 export type Suggestion =
-  | { id: string; label: string; hint?: string; kind: "navigate"; to: string }
-  | { id: string; label: string; hint?: string; kind: "inspect"; target: { kind: string; id: string } };
+  | { id: string; label: string; hint?: string; fallback?: boolean; kind: "navigate"; to: string }
+  | { id: string; label: string; hint?: string; fallback?: boolean; kind: "inspect"; target: { kind: string; id: string } };
 
 const fmt = (v: number) => String(Number(v.toFixed(5)));
 
 /** What the palette offers for free text, in order:
  *  - "RA Dec" (degrees or sexagesimal) → the Sky atlas centred there
  *    (`/sky/atlas?ra=&dec=`);
- *  - "member 196" / "member_196" → the member inspector (`member:member_196`);
+ *  - "member 196" / "member_196" / "member196" → the member inspector
+ *    (`member:member_196`; "members" is a word, not member "s");
  *  - "nexus 12" / "tile 12" → the NEXUS tile inspector (`tile:nexus/12`);
  *  - a path containing ".fits" → the FITS inspector (`/inspect?fits=`);
  *  - any other text with a letter → "find on the sky" through the atlas's
- *    name resolver (`/sky/atlas?goto=<text>`). */
+ *    name resolver (`/sky/atlas?goto=<text>`), marked `fallback`: the
+ *    palette lists it after every page and command that matches, so it is
+ *    the Enter target only when nothing else is. */
 export function paletteSuggestions(query: string, parseCoord: (text: string) => { ra: number; dec: number } | null): Suggestion[] {
   const text = query.trim();
   if (!text) return [];
@@ -129,9 +132,10 @@ export function paletteSuggestions(query: string, parseCoord: (text: string) => 
     }];
   }
   const out: Suggestion[] = [];
-  const member = /^member[\s_:#-]*([\w.-]+)$/i.exec(text);
+  const member = /^member(?:[\s_:#-]+([\w.-]+)|(\d+))$/i.exec(text);
   if (member) {
-    const name = /^\d+$/.test(member[1]) ? `member_${member[1]}` : member[1].startsWith("member_") ? member[1] : `member_${member[1]}`;
+    const id = member[1] ?? member[2];
+    const name = id.startsWith("member_") ? id : `member_${id}`;
     out.push({ id: "member", kind: "inspect", label: `Open ${name}`, hint: "inspector", target: { kind: "member", id: name } });
   }
   const tile = /^(?:nexus|tile)[\s_:#/-]*(\d+)$/i.exec(text);
@@ -143,7 +147,7 @@ export function paletteSuggestions(query: string, parseCoord: (text: string) => 
   }
   if (!out.length && /[a-z]/i.test(text) && text.length >= 2) {
     out.push({
-      id: "sky-name", kind: "navigate", label: `Find “${text}” on the sky`, hint: "Sky › Atlas · name resolver",
+      id: "sky-name", kind: "navigate", fallback: true, label: `Find “${text}” on the sky`, hint: "Sky › Atlas name resolver",
       to: `/sky/atlas?goto=${encodeURIComponent(text)}`,
     });
   }

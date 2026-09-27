@@ -10,12 +10,13 @@ import { C, categorical } from "../../../colors";
 import { useResource } from "../../../api/query";
 import { usePageActions } from "../../../app/palette";
 import { useUrlState } from "../../../hooks/useUrlState";
-import { decadeTicks, logTicks } from "../../../ticks";
+import { decadeTicks, extent, logTicks } from "../../../ticks";
 import { Chip, EmptyState, Kpi, Page, Segmented } from "../../../ui";
 import { url, useMode, type Evals, type NumArr } from "../api";
 import { BarGroup, ColorBySelect, EnsBar, LoadState, useFacetColors } from "../common";
-import { facetOf, memberNumber, type ColorBy } from "../model";
+import { facetOf, formatE, memberNumber, type ColorBy } from "../model";
 import { PixelTrace, type Pick } from "../PixelTrace";
+import { autoTicks, unitTicks } from "../../plotTicks";
 import "../ensemble.css";
 
 type Section = "spectrum" | "transfer" | "coherence" | "stderr" | "axes" | "brightness" | "calibration";
@@ -35,8 +36,7 @@ const MODEL_LABEL: Record<string, string> = {
 const modelColor = (kind: string) => (kind === "ensemble_mean" ? C.mean : kind === "spatial_gate" ? C.comb : categorical(5));
 const num = (a: NumArr | undefined | null) => (a ?? []).map((v) => (v == null ? NaN : v));
 const has = (a: NumArr | undefined | null) => (a ?? []).some((v) => v != null && Number.isFinite(v));
-const fmtE = (v: number) => (!Number.isFinite(v) ? "—" : Math.abs(v) >= 1000 || (Math.abs(v) > 0 && Math.abs(v) < 0.01)
-  ? v.toExponential(1) : String(Number(v.toPrecision(3))));
+const fmtE = formatE;
 const range = (edges: number[], k: number) => `${fmtE(10 ** edges[k])}–${fmtE(10 ** edges[k + 1])}`;
 const X_TICKS = [0.05, 0.1, 0.2, 0.5, 1, 2, 5].map((v) => ({ v, label: String(v) }));
 
@@ -75,7 +75,7 @@ export default function Diagnostics() {
     if (!ps || !has(ps.theta)) return null;
     const theta = num(ps.theta);
     const g = e?.guides ?? {};
-    const xDomain: [number, number] = [g.theta_min ?? 0.05, Math.max(...theta.filter(Number.isFinite))];
+    const xDomain: [number, number] = [g.theta_min ?? 0.05, extent(theta)?.[1] ?? 1];
     const isT = section === "transfer";
     const series: Series[] = [];
     // Explicit legend: ONE entry per member facet (key members / members:<facet>,
@@ -114,8 +114,9 @@ export default function Diagnostics() {
       { axis: "x", v: g.lr_scale ?? 0.1, color: C.guide, dash: [6, 3], label: "LR pixel" },
       { axis: "x", v: g.vis_fwhm ?? 0.16, color: C.visfwhm, dash: [5, 2], alpha: 0.6, label: "VIS FWHM" },
     ];
-    const ys = series.flatMap((s) => s.y.filter((v): v is number => v != null && Number.isFinite(v)));
-    const yDomain: [number, number] = isT ? [0, Math.max(1.2, Math.min(2, Math.max(...ys, 1) * 1.05))] : [0, 1.05];
+    // extent(), not a spread: every member pair's curve can be tens of thousands of values.
+    const yTop = Math.max(1, extent(series.flatMap((s) => s.y))?.[1] ?? 1);
+    const yDomain: [number, number] = isT ? [0, Math.max(1.2, Math.min(2, yTop * 1.05))] : [0, 1.05];
     return { series, legend, guides, xDomain, yDomain };
   }, [e, section, pairs, colorBy, members, colors.values]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -207,8 +208,8 @@ export default function Diagnostics() {
     const cen = edges.slice(0, -1).map((v, i) => 0.5 * (v + edges[i + 1]));
     const gauss = cen.map((z) => Math.exp(-0.5 * z * z) / Math.sqrt(2 * Math.PI));
     const std = num(c.field_std), rmse = num(c.field_rmse);
-    const hi = Math.max(...std.filter(Number.isFinite), ...rmse.filter(Number.isFinite), 1);
-    const lo = Math.max(1e-3, Math.min(...std.filter((v) => v > 0), ...rmse.filter((v) => v > 0)));
+    const hi = Math.max(extent([...std, ...rmse])?.[1] ?? 1, 1);
+    const lo = Math.max(1e-3, extent([...std, ...rmse].filter((v) => v > 0))?.[0] ?? 1e-3);
     return {
       stats: c.stats,
       pdf: [
@@ -232,7 +233,7 @@ export default function Diagnostics() {
     cell?.diag === diag ? (
       <PixelTrace mode={mode} pick={cell} model={extra.model} axis={extra.axis} cellLabel={describe(cell)}
         targetLabel={targetLabel} onClose={() => setPick(null)} />
-    ) : <span className="ens-faint">Click a cell to back-trace it to real image stamps.</span>;
+    ) : <span className="ens-faint">Click a cell to see the real pixels that landed in it.</span>;
 
   return (
     <Page>
@@ -258,6 +259,7 @@ export default function Diagnostics() {
             {(section === "spectrum" || section === "transfer") && (spectrum ? (
               <div className="ens-chart">
                 <Plot {...lg.plotProps} xScale="log" xDomain={spectrum.xDomain} yDomain={spectrum.yDomain} xTicks={X_TICKS}
+                  yTicks={unitTicks(spectrum.yDomain[1])}
                   xLabel="angular scale θ = 1/2k [arcsec]" yLabel={section === "transfer" ? "T(k) [VIS]" : `r(k) vs ${targetLabel} [VIS]`}
                   series={spectrum.series} guides={spectrum.guides} aspect={0.46} legend={spectrum.legend} exportName={`ensemble-${section}-${mode}`}
                   xFormat={(v) => `${v.toPrecision(2)}″`} yFormat={(v) => v.toFixed(3)} aria-label={section === "transfer" ? "Transfer function" : "Cross-correlation r(k)"} />
@@ -280,6 +282,7 @@ export default function Diagnostics() {
             </> : <EmptyState icon="activity" title="No σ-vs-error diagnostic cached" />)}
             {section === "axes" && (axes ? <>
               <Plot xDomain={axes.xDomain} yDomain={axes.yDomain} xLabel={`${axes.axisNames[0]} [asinh]`} yLabel={`${axes.axisNames[1]} [asinh]`}
+                xTicks={autoTicks(axes.xDomain)} yTicks={autoTicks(axes.yDomain)}
                 heat={axes.heat} series={[]} aspect={0.62}
                 onHeatClick={(c) => setPick({ diag: "combiner_feature_error", ...c })}
                 highlight={cell?.diag === "combiner_feature_error" ? cell : null}
@@ -308,6 +311,7 @@ export default function Diagnostics() {
                   <div className="ens-chart">
                     <h3 className="ens-chart__title">z-score distribution</h3>
                     <Plot xDomain={[-6, 6]} yDomain={[0, 0.6]} xLabel="z" yLabel="pdf" series={calib.pdf} aspect={0.62}
+                      xTicks={autoTicks([-6, 6])} yTicks={autoTicks([0, 0.6])}
                       legend="auto" exportName={`ensemble-z-pdf-${mode}`} aria-label="z-score distribution" />
                   </div>
                   <div className="ens-chart">

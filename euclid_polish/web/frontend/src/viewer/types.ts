@@ -1,5 +1,6 @@
 /* Public and shared types of the image viewer (src/viewer/README.md). */
 import type { DisplaySettings } from "../state/display";
+import type { LayoutMode } from "./fit";
 import type { ViewerMarkers } from "./markers";
 import type { ColorMeta } from "./color";
 import type { CubeRec, Params } from "./cube";
@@ -45,7 +46,8 @@ export type ViewerMeta = {
   [k: string]: unknown;
 };
 
-export type Layout = "one-row" | "two-rows";
+/** Frame arrangement (fit.ts): auto | one-row | grid | stack. */
+export type Layout = LayoutMode;
 export type Tool = "pan" | "lens";
 export type Compare = "off" | "blink" | "swipe";
 
@@ -128,6 +130,8 @@ export type ViewerApi = {
   /** Centre the view on (ra, dec) with a field of view of `fovArcsec`. */
   zoomTo(ra: number, dec: number, fovArcsec?: number): boolean;
   resetView(): void;
+  /** Focus mode: the viewer covers the stage (an "Open large" button beside a small viewer). */
+  setFocus(on: boolean): void;
   getReadout(): Readout | null;
   destroy(): void;
 };
@@ -148,8 +152,10 @@ export type ImageViewerProps = {
   urlKey?: string;
   onState?: (s: ViewerState) => void;
   onReady?: (api: ViewerApi | null) => void;
+  /** The control bar: "full" (default), "compact" (no Display, tools or
+   *  export menus) or "none" (no bar; with `nav` a bar of navigation + export only). */
   toolbar?: ToolbarMode;
-  /** Show the navigation row (default true). */
+  /** Navigation (◀ index / count ▶, run-through) and the export menu in the bar (default true). */
   nav?: boolean;
   className?: string;
   /** Per-viewer display override (wins over the Display panel). */

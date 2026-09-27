@@ -7,7 +7,7 @@ import { useResource } from "../../../api/query";
 import { formatDateTime } from "../../../format";
 import { Button, Callout, Checkbox, Input, Skeleton, Tooltip } from "../../../ui";
 import { URLS, type ModelSpecRow, type ModelsPayload } from "./api";
-import { groupModels, specShort } from "./model";
+import { groupModels, membersText, specShort } from "./model";
 import "./results.css";
 
 export function useModels() {
@@ -17,11 +17,12 @@ export function useModels() {
 function detail(m: ModelSpecRow): string {
   const d = m.details ?? {};
   const bits: string[] = [];
-  if (m.n_members) bits.push(`${m.n_members} member${m.n_members === 1 ? "" : "s"}`);
+  const members = membersText(m);          // "6 of 20 members" for a pruned gate
+  if (members) bits.push(members);
   if (typeof d.mix_space === "string") bits.push(`${d.mix_space} mix`);
   if (d.use_lr === true) bits.push("LR input");
   if (typeof d.fitted_at === "string") bits.push(`fitted ${formatDateTime(d.fitted_at)}`);
-  return bits.join(" · ");
+  return bits.join(", ");
 }
 
 export function ModelPicker({ value, onChange, compact = false }: {
@@ -70,7 +71,7 @@ export function ModelPicker({ value, onChange, compact = false }: {
           <fieldset key={g.id} className="res-models__group" data-group={g.id}>
             <legend>
               {g.label}
-              {g.id === "member" && <span className="muted"> · {g.items.length}</span>}
+              {g.id === "member" && <span className="muted"> ({g.items.length})</span>}
             </legend>
             {g.id === "member" && g.items.length > 8 && (
               <Input size="sm" value={q} onChange={setQ} icon="search" clearable placeholder="Filter members"

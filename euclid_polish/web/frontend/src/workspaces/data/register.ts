@@ -5,7 +5,7 @@
    workspace has been visited. Idempotent. */
 import { lazy } from "react";
 import { registerInspector } from "../../app/inspector";
-import { parseClusterId, parseTruthId } from "./model";
+import { parseClusterId, parseTruthId } from "./ids";
 
 const load = () => import("./inspectors");
 const StarInspector = lazy(() => load().then((m) => ({ default: m.StarInspector })));

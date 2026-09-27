@@ -33,16 +33,18 @@ Rules that apply everywhere:
 | `app/devProxy.ts` | Decides which server answers a dev-server request (Vite / SPA / Flask) |
 | `app/routes.ts` | `buildRoutes()`: the data router's route table from the manifest; `workspaceComponents` (lazy workspace imports) |
 | `app/App.tsx` | `createBrowserRouter` + `<RouterProvider>` (main.tsx renders it inside `QueryClientProvider`) |
-| `app/nav.ts` | Workspace metadata (icon, description, go-key, tab labels) and path helpers: `pagePath`, `landingPath`, `describePath`, `pageTitle`, `allPages` |
+| `app/nav.ts` | Workspace metadata (icon, description, go-key, tab labels) and path helpers: `pagePath`, `landingPath`, `describePath`, `pageTitle`, `pageHeading`, `allPages` |
 | `app/workspace.tsx` | The workspace contract: `defineTabs`, `<Workspace>`, `<WorkspaceTabs>`, `<PendingTab>`, `TabSkeleton` |
 | `app/Shell.tsx` | Root layout: rail, top bar, stage, inspector, palette, ? sheet, Display panel, global shortcuts, `UiProvider` |
 | `app/Rail.tsx`, `TopBar.tsx`, `JobTray.tsx`, `InspectorPanel.tsx`, `CommandPalette.tsx`, `ShortcutSheet.tsx`, `DisplayPanel.tsx`, `GlobalShortcuts.tsx` | The shell's parts |
 | `app/inspector.ts` | Inspector registry (`registerInspector`, `openInspector`, `closeInspector`) and the `?inspect=` sync |
 | `app/inspectors/` | Built-in inspector kinds (`job`) |
 | `app/palette.ts` | `usePageActions` (palette actions) and `paletteSuggestions` |
+| `app/paletteRank.ts` | `rankPalette` / `scoreEntry`: the palette's ranking (pure) |
+| `app/tabFit.ts` | `fitTabs`: the stable leading run + active slot of a workspace strip, the rest in "More" (pure) |
 | `app/displaySections.ts` | `registerDisplaySection` (the Display panel's extension point) |
 | `app/shellStore.ts` | `useShellUi`: open/closed palette, ? sheet, Display panel, job tray, rail drawer |
-| `app/status.ts` | `useVersion` (C3), `useFasrcStatus` (C4) |
+| `app/status.ts` | `useVersion` (C3), `useFasrcStatus` (C4), `useSystemAlerts`, `bannerKey`, `useConsoleUpdate` |
 | `app/ErrorBoundary.tsx`, `NotFound.tsx`, `useStageScroll.ts` | Per-tab error boundary, 404 page, stage scroll management |
 | `state/display.ts` | Display (colour) settings store (C7) |
 | `state/prefs.ts` | Theme, accent, density, rail collapsed, inspector width |
@@ -197,6 +199,16 @@ const { data, loading, error, reload, fetching, staleError, updatedAt } =
   truthiness still holds. A failed refresh while data is shown lands in `staleError` instead.
 - After a mutation, call `invalidate("/ensemble/")` to refetch every mounted resource under that
   URL prefix. `invalidate()` with no argument refetches everything.
+- **Server health** (`serverHealth`, `useServerHealth()` → `{down, lastOkAt, downSince,
+  lastError}`): every query outcome in the shared cache feeds one tracker. Any answer the server
+  chose to send (a success, a 4xx, a 501, the 503 FASRC gate, and any 5xx whose body is the
+  app's JSON — e.g. the deliberate `{ok:false,error}` 502 of a failed SSH/FASRC call, or the JSON
+  500 of a crashed route) means it is up; it is `down` after a request got no response at all
+  (status 0, after the retries) or when two DIFFERENT resources failed with a body-less
+  (non-JSON) 500/502/504 (Vite's dev proxy answers an empty 500 when Flask is gone; one route's
+  500 is that route's bug). A `setQueryData` is not an answer. Stale data stays on screen; the top bar
+  marks it (§10.2). When the server answers again, every active resource whose refresh failed is
+  refetched. `isServerDownError(e)` is the rule; `serverHealth.reset()` for tests.
 - `main.tsx` provides `QueryClientProvider`, so components may also call `useQuery` directly with
   `queryClient`.
 
@@ -930,7 +942,7 @@ const router = createBrowserRouter(buildRoutes({ layout: Shell }), { future: ROU
 | Route | Renders |
 |---|---|
 | `/` | the home workspace |
-| `<workspace path>/*` (`/sky/*`, `/ensemble/:mode/*`, `/inspect/*`, …) | the lazy workspace component (`workspaceComponents[id]`) inside a Suspense skeleton |
+| `<workspace path>/*` (`/sky/*`, `/ensemble/:mode/*`, `/inspect/*`, …) | the lazy workspace component (`workspaceComponents[id]`) inside a Suspense skeleton and a contained `ErrorBoundary` (reset on navigation): a workspace chunk that fails to load — the console was rebuilt under an open page — shows "Reload page" in the stage while the rail, top bar and other workspaces keep working |
 | every `manifest.redirects` key, and `/app/*` | `RedirectRoute`: `<Navigate replace>` to `redirectTarget(pathname, search)` + the hash |
 | `*` | `NotFound` |
 
@@ -949,10 +961,14 @@ v7_startTransition: true }}>`); use the same flags in tests to keep them quiet.
 
 ### 10.2 Shell: `app/Shell.tsx`
 
-The root layout: rail | top bar, version banner, stage (`<main id="main" class="stage">`, the
-scroll container holding `<Outlet/>`) and the docked inspector (a `react-resizable-panels`
-panel; its width is `prefs.inspectorWidth`, saved after a drag). Below 900 px
-(`NARROW_QUERY`) the rail is a drawer (top-bar menu button) and the inspector a bottom sheet.
+The root layout: rail | top bar, stage (`<main id="main" class="stage">`, the scroll container:
+the restart banner, then `<div class="stage__page"><Outlet/></div>`) and the docked inspector (a
+`react-resizable-panels` panel with a named separator, "Resize the inspector"; its width is
+`prefs.inspectorWidth`, saved after a drag). Below 900 px (`NARROW_QUERY`) the rail is a drawer
+(top-bar menu button) and the inspector a bottom sheet. The stage is a flex column: the banner
+takes its own height and `.stage__page` exactly the rest (`flex: 1 0 0; min-height: 0`), so a
+page sized to the stage (`height: 100%`, the Sky atlas) fits under the banner; a longer page
+overflows that box and the stage scrolls as before.
 
 The shell mounts, exactly once: `UiProvider` (§9.1), `useInspectorUrlSync`, `useJobToasts`,
 `useSlurmToasts` (§10.6), the global shortcuts, `<RunActions/>` (the palette's "Run a job"
@@ -973,26 +989,49 @@ useShellUi.getState().openOnly("display");   // "palette" | "shortcuts" | "displ
 
 Top bar, left to right (one line at every width: the breadcrumbs take the free space and each
 crumb ellipsizes — the inspected entity first, the tab last — with the full path as the nav's
-tooltip; below 1200 px the search button is an icon + ⌘K, below 900 px an icon): menu (narrow
-only), breadcrumbs (workspace [· params] › tab › the inspected entity's title), the ⌘K search button, the FASRC badge (`/api/fasrc/status`; offline
-shows the real `last_error` in its tooltip; links to Settings › Connections), the job tray, the
-Display button, the theme toggle and the ? sheet button. The version banner under it appears when
-`/api/version` says `behind` (dismissable per HEAD commit). The rail shows the nine workspaces
-(icons from `nav.ts`), a health badge on Home (the count of warn/bad checks of
-`/api/system/alerts`, toned by the worst, their titles in the tooltip), a running-jobs badge on
-Ops, a "server behind HEAD" badge on Settings, and the collapse toggle (`prefs.railCollapsed`;
+tooltip; below 1200 px the search button is an icon + ⌘K, below 900 px an icon and the entity
+crumb goes; the FASRC / server / update chips keep their words down to 600 px): menu (narrow
+only), breadcrumbs (workspace [(params)] › tab › the inspected entity's title, e.g. "Ensemble
+(starfull) › Disagreement"), the ⌘K search button, "Reload to update" (only on a page served
+from the build, when `/api/version`'s `dist.entry` — the entry script index.html names now —
+differs from the `<script type="module" src>` this document was loaded from (`buildChanged`,
+exact even if the rebuild happened before the first answer; without an entry it falls back to
+the first `dist.index_hash` seen) — `useConsoleUpdate()`), the FASRC badge (`/api/fasrc/status`; offline shows the real
+`last_error` in its tooltip; links to Settings › Connections) — or, while the local server is
+not answering (`useServerHealth().down`, §4.2), the calm "Server not responding — retrying"
+chip in its place (a warn line under the bar marks everything below as possibly stale; it asks
+`/api/version` again every 5 s while the tab is visible, a click retries now, a polite live
+region announces the outage and the recovery) — the job tray (its count greys and its popover
+says "the job states it last sent" while the server is down), the Display button, the theme
+toggle and the ? sheet button.
+
+The restart banner (`VersionBanner`, top of the stage, scrolls away) appears when
+`/api/version` says `behind`: a backend `.py` file the server loaded changed on disk since
+(C3; a commit of the code it already runs is not "behind", a new SPA build never needs a
+restart). Text: "Backend code changed since the server started — restart it to load the new
+code."; Details lists `changed_files` (+ "and N more", the start time and pid). A dismissal is
+remembered in this browser (`ep.restartBanner.dismissed`) until the server restarts or the set
+of changed files changes (`bannerKey`, keyed on the server's `changed_digest` of the whole set,
+so re-saving an already-changed file — which reorders the capped list — does not bring it
+back). The rail shows the nine workspaces (icons from
+`nav.ts`), a health badge on Home (the count of warn/bad checks of `/api/system/alerts`, toned
+by the worst, their titles in the tooltip), a running-jobs badge on Ops, a warn "!" on Settings
+("Backend code changed — restart the server") and the collapse toggle (`prefs.railCollapsed`;
 collapsed items get tooltips).
 
 `app/status.ts` shares the status resources (one cache entry each):
 
 ```ts
-const v = useVersion().data;        // C3: {boot_short, head_short, behind, dirty, started_at, pid, dist}
+const v = useVersion().data;        // C3: {boot_short, head_short, behind, changed_files, changed_count, changed_digest, dirty, started_at, pid, dist{built_at,index_hash,entry}}
+bannerKey(v);                       // what a banner dismissal is tied to (process + changed_digest)
+useConsoleUpdate();                 // true once the served build's entry script differs from this document's
+buildChanged(documentEntry(), v.dist, firstSeenHash);   // the pure rule behind it
 const f = useFasrcStatus().data;    // C4: {ssh_connected, connected_at, socket, last_error}
 const a = useSystemAlerts().data;   // GET /api/system/alerts: {checks, alerts (warn/bad), counts, computed_at}
 alertBadge(a);                      // {count, tone: "warn"|"bad", label} | null (the rail badge)
 ```
 
-Nothing pins to the top of the page: the tab strip, each tab's toolbar and the version banner
+Nothing pins to the top of the page: the tab strip, each tab's toolbar and the restart banner
 sit at the top of the scrolling stage and scroll away with it, so the stage height goes to the
 images (user request, 2026-09-27). Only table headers (inside their own scroll box) and side
 panels (with `top: var(--s2)`) stick. `--ws-bar-h` is kept at `0px` for old offsets.
@@ -1025,7 +1064,9 @@ const off = bindShortcut("Shift+E", run, { description: "Evaluate" });   // impe
 Global shortcuts (`app/GlobalShortcuts.tsx`): `$mod+k` palette (also in fields), `?` this
 sheet, `g h/s/e/r/d/f/i/o/,` go to Home/Sky/Ensemble/Realism/Data/Figures/Inspect/Ops/Settings,
 `[` collapse the rail, `]` show/hide the inspector, `Shift+D` Display panel, `Shift+J` jobs,
-`Shift+T` toggle the theme. Escape inside the inspector closes it. Pages must not rebind these.
+`Shift+T` toggle the theme. Escape closes the docked inspector — from the page too, unless
+something nearer takes the key first (a menu, dialog or popover, the viewer, a field). Pages
+must not rebind these.
 
 ### 10.4 Inspector: `app/inspector.ts`, `app/InspectorPanel.tsx`
 
@@ -1041,8 +1082,12 @@ const href = inspectHref({ kind: "tile", id: "nexus/12" }, location); // "/sky/a
 ```
 
 - The panel shows the registered component for `current.kind` (a later registration of a kind
-  wins until unregistered), with back/forward (the store's history), pin (pinned targets are chips
-  at the top), copy link and close. Its content has its own error boundary and Suspense.
+  wins until unregistered) under its kind in sentence case ("Member", `kindLabel`), with
+  back/forward (the store's history), pin (pinned targets are chips at the top), copy link and
+  close. Its content has its own error boundary and Suspense.
+- Focus: opening never moves focus (it is a side panel, not a dialog). Closing it while focus
+  is inside hands focus back to what had it when the target opened (else the stage), so focus
+  never drops to `<body>`.
 - An unregistered kind shows a "no inspector yet" card with the target; the URL keeps it, so
   the link works once the owning workspace registers the kind.
 - `?inspect=kind:id` sync (`useInspectorUrlSync`, mounted by the shell): on load and on
@@ -1063,6 +1108,12 @@ const href = inspectHref({ kind: "tile", id: "nexus/12" }, location); // "/sky/a
   | `readiness`, `noisepos`, `archivefield` | see module | `workspaces/realism/register.ts` |
   | `tile`, `source` | `nexus/<n>` · `<layer>/<id>` | `workspaces/sky/atlas/inspectors/register.tsx` |
   | `realtile`, `experiment` | `<source>/<id>` · experiment id | `workspaces/sky/results/register.tsx` |
+
+  `tile:` and `realtile:` render the ONE real-tile card (`workspaces/sky/results/RealTileInspector.tsx`,
+  titled "Tile <ref>"): image first — the `real` viewer with only that tile's own tiers
+  (`models=<its outputs>`, "," when it has none) at the top of the inspector, then state, actions
+  (show on sky, compare models, run models, FITS, overlay on the sky) and the models / metrics. The
+  atlas highlights either kind.
   | `star`, `truth`, `psf`, `tng` | see module | `workspaces/data/register.ts` |
   | `figure` | saved result id | `workspaces/figures/register.tsx` |
   | `check` | health-check id | `workspaces/home/Dashboard.tsx` (registers when Home loads) |
@@ -1083,8 +1134,8 @@ usePageActions([
 ]);
 ```
 
-- A page registers its actions while mounted. They are listed first, under their `group`
-  (default "This page"). `run` is read from a ref, so inline closures are free; the registration
+- A page registers its actions while mounted, under their `group` (default "This page"); with
+  nothing typed they are listed first. `run` is read from a ref, so inline closures are free; the registration
   changes only when an id, label, group, keyword, shortcut or `disabled` changes. A `shortcut` is
   bound for as long as the page is mounted (and listed in the ? sheet); a disabled action ignores
   it.
@@ -1107,18 +1158,26 @@ usePageActions([
   const run = useRunJobs();                 // {evaluate, knee, memberPsnr, diskUsage, health}: {label, busy, run()}
   await startJob({ key: "check:disk", label, url, data, question }, { quiet: true });  // → job id | null
   ```
-- Free text adds `paletteSuggestions(text, parseSkyCoord)` on top:
+- **Ranking** (`app/paletteRank.ts`, cmdk's own filter is off): `rankPalette(query, groups)`
+  scores each entry on its label, keywords and hint — exact label 100, label prefix 90, a label
+  word starts with it 80, keyword exact 75 / prefix 65, label substring 60, every word of a
+  multi-word query matches 50, keyword substring 45, hint 40/30, letters in order from a word
+  start (3+ letters) 10 — orders groups by their best item and items by score, and breaks ties
+  toward pages (+2) and commands (+1) over the "Run a job" launchers (−1). So Enter does what
+  was typed: "git" → Ops › Git, "noise" → Realism › Noise, "theme" → the theme commands.
+- Free text adds `paletteSuggestions(text, parseSkyCoord)`: coordinates, members, tiles and
+  FITS paths first ("Go to"); the sky-name lookup (`fallback: true`) last, under "Search the
+  sky", so it is the Enter target only when nothing else matches:
 
   | Typed | Offers |
   |---|---|
   | `269.27 66.1`, `17:57:04 +66:06:00` | `/sky/atlas?ra=<deg>&dec=<deg>` |
-  | `member 196`, `member_196` | inspector `member:member_196` |
+  | `member 196`, `member_196`, `member196` (not "members") | inspector `member:member_196` |
   | `nexus 12`, `tile 12` | inspector `tile:nexus/12` |
   | `data/…/x.fits` | `/inspect?fits=<path>` |
   | any other text | `/sky/atlas?goto=<text>` (the atlas resolves names with Sesame) |
 
-  The suggestions are always listed (cmdk `forceMount`) but cmdk does not count them, so the
-  palette shows "Nothing matches" only when there are no suggestions either.
+  "Nothing matches" shows only when there is nothing to pick (no suggestion either).
 
   **URL contract for W-SkyAtlas:** the atlas tab reads `?ra&dec` (degrees; centre the view) and
   `?goto=` (a name or coordinate string for `gotoObject`).
@@ -1141,17 +1200,26 @@ usePageActions([
 
 ### 10.7 Display panel: `app/DisplayPanel.tsx`, `app/displaySections.ts`
 
-The Display panel (top-bar button, `Shift+D`, palette) edits the C7 store (`useDisplay`, §5.1):
-colour mode, custom RGB bands, stretch, colormap, residual colormap, NaN colour, invert, and the
-knee / gain / black point of the `default`, `euclid` and `jwst` transfer groups; "Viewers":
-link all viewers, mouse-wheel behaviour; "Reset to defaults". A workspace adds its own section:
+The Display panel (top-bar button, `Shift+D`, palette) edits the C7 store (`useDisplay`, §5.1).
+It is a **non-modal side sheet** on the right under the top bar: no overlay, the page stays live
+and clicking or dragging an image does not close it, so the images change as you adjust (Esc,
+Done or × closes it). From 640 px up it takes its width (`--display-w`, 296–380 px) from the
+stage — the shell sets `data-display` and the body shrinks — so the viewers refit beside it
+instead of sitting half under it; below 640 px it overlays. Closing it returns focus to what
+opened it (the Display settings button, or what had focus for `Shift+D`; else that button),
+unless focus had already moved to the page. Sections: the current page's own first (registered below), then Image
+(colour mode, custom RGB bands, stretch, colormap, residual colormap, NaN colour, invert, and the
+knee (0.1–10⁴, log) / brightness / black point of one transfer group at a time — Default, Euclid
+in e⁻, JWST in MJy/sr), then Viewers (link all viewers, mouse-wheel behaviour); "Reset to
+defaults". Labels are sentence case and match the viewer's Display menu. A workspace adds its
+own section:
 
 ```ts
 useEffect(() => registerDisplaySection({ id: "sky", title: "Sky", order: 10, Component: SkyDisplay }), []);
 ```
 
-Sections render after the built-in ones by `order` (default 100); registering an existing `id`
-replaces it. **Extension point for W-SkyAtlas:** the "Sky" section (base HiPS colormap, stretch,
+Registered sections render before the built-in ones, by `order` (default 100); registering an
+existing `id` replaces it. **Extension point for W-SkyAtlas:** the "Sky" section (base HiPS colormap, stretch,
 cuts…) is added this way.
 
 ### 10.8 Errors and not found: `app/ErrorBoundary.tsx`, `app/NotFound.tsx`
@@ -1159,8 +1227,8 @@ cuts…) is added this way.
 - Every tab renders inside `<ErrorBoundary resetKey={pathname} label="Workspace › Tab">`: a crash
   shows a contained card with Retry, Reload page and Copy details (message, URL, time, stacks);
   the rest of the console keeps working and navigating away resets it. A failed lazy chunk (the
-  bundle was rebuilt under an open page) offers only Reload. `RouteError` is the root route's
-  `errorElement`.
+  bundle was rebuilt under an open page) offers only Reload. A whole workspace chunk failing is
+  contained the same way (§10.1). `RouteError` is the root route's `errorElement`.
 - `<NotFound/>`: the path, a link to the workspace the path starts with, Home, and the ⌘K hint.
 
 ## 11. Workspaces
@@ -1190,9 +1258,24 @@ export default function RealismWorkspace() {
 - `<Workspace>` renders the router-linked tab strip (`<WorkspaceTabs>`: kit `Tabs` with `to`,
   `aria-current="page"`, the links keep `?inspect=`) and the active tab in its error boundary and
   a `TabSkeleton` Suspense fallback. A tabless workspace (home, inspect) passes `children`.
+- The strip is one line at every width and never cuts a label, and tabs never trade places: a
+  fixed run of leading tabs (the longest prefix that leaves room for the widest tab after it) is
+  shown whole, then ONE reserved slot that holds the active tab when it is past the run (empty
+  otherwise), then "More". Choosing from More only changes the slot. The More button is inside
+  the strip's `<nav>` landmark and its items are router links (middle-/⌘-click opens a new
+  browser tab). `app/tabFit.ts` (`fitTabs`, unit-tested) does the maths;
+  `WorkspaceTabs` measures the tabs before paint and re-fits on resize, density and font load.
+- Every page gets a visually hidden h1, `pageHeading(pathname)` ("Members — Ensemble
+  (starless)"), for screen readers and the outline; CSS drops it when the page renders its own
+  h1 (`.ws:has(.ws__body h1)`), so there is always exactly one.
 - A bare workspace path redirects to the manifest default tab, or to `redirectTab` when that is
   one of the workspace's tabs (the ensemble workspace passes the last tab it showed, so a regime
   switch to the bare `/ensemble/<mode>` keeps the tab).
+- `aside` is the workspace's (the ensemble regime switch). A tab that needs ONE control reachable
+  without scrolling and without a row over its images can portal it into the aside: the ensemble
+  workspace provides a slot left of the switch (`workspaces/ensemble/aside.ts`, `TabAsideSlot` /
+  `useTabAside`); Disagreement's "Pick members" menu lives there. Outside the workspace the slot
+  is null and the tab shows only its in-page controls.
 - A theme or accent flip re-renders the active tab (and `children`, which `<Workspace>` clones
   for that reason): the route elements above a workspace are static, and the legacy pages read
   colour tokens during render. `bindPrefsToDocument` has already updated `<html data-theme>`

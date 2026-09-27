@@ -26,10 +26,12 @@ type ImgState = { src: string; state: "loading" | "ready" | "error"; error?: str
  *  it renders, the server's error text (with Retry) when it fails.
  *  `keepPrevious` holds the last rendered image (dimmed, with an "Updating"
  *  badge) while the next `src` loads instead of blanking the box; `pending`
- *  marks the shown image as about to be replaced (e.g. an edit settling). */
-export function ServerImage({ src, alt, className, minHeight = 240, paper = true, onError, keepPrevious = false, pending = false, children }: {
+ *  marks the shown image as about to be replaced (e.g. an edit settling).
+ *  `children` show while there is no image (an empty state); `overlay` sits
+ *  over a shown image (e.g. a full-size button covering it). */
+export function ServerImage({ src, alt, className, minHeight = 240, paper = true, onError, keepPrevious = false, pending = false, children, overlay }: {
   src: string | null; alt: string; className?: string; minHeight?: number; paper?: boolean;
-  onError?: (message: string) => void; keepPrevious?: boolean; pending?: boolean; children?: ReactNode;
+  onError?: (message: string) => void; keepPrevious?: boolean; pending?: boolean; children?: ReactNode; overlay?: ReactNode;
 }) {
   const [s, setS] = useState<ImgState | null>(null);
   const [nonce, setNonce] = useState(0);
@@ -52,6 +54,7 @@ export function ServerImage({ src, alt, className, minHeight = 240, paper = true
           onError={() => { void imageError(url).then((error) => setS({ src, state: "error", error })); }} />
       )}
       {cur.state === "loading" && !stale && <div className="fig-image__overlay" role="status"><Skeleton height={Math.max(60, minHeight - 40)} /><span className="sr-only">Rendering {alt}</span></div>}
+      {cur.state !== "error" && overlay}
       {updating && <span className="fig-image__updating" role="status"><Badge size="sm" tone="info" dot>Updating</Badge></span>}
       {cur.state === "error" && (
         <div className="fig-image__error" role="alert">
@@ -76,6 +79,19 @@ export function ResultThumb({ result, recipe, size = 64, className, title }: {
   return (
     <img className={cx("fig-thumb", className)} src={src} width={size} height={size} loading="lazy" decoding="async"
       alt={title ?? `${result.label} preview`} title={title} onError={() => setFailed(src)} />
+  );
+}
+
+/** A saved result's thumbnail that opens it full size (the lightbox): a
+ *  real button (focusable, Enter / Space), so a table row's own click (the
+ *  inspector) is left alone. */
+export function ThumbButton({ result, size = 64, onOpen }: {
+  result: Pick<SavedResult, "id" | "label">; size?: number; onOpen: () => void;
+}) {
+  return (
+    <button type="button" className="fig-thumbbtn" onClick={onOpen} aria-label={`View ${result.label} full size`} title="View full size">
+      <ResultThumb result={result} size={size} />
+    </button>
   );
 }
 

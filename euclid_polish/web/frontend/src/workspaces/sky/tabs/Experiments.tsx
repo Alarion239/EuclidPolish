@@ -1,10 +1,14 @@
-/* Sky › Experiments (spec §7.3): model comparison on real tiles. Pick tiles
- * (the atlas / Real-results selection, a `?tiles=` link, or pasted refs) and
- * models from the catalogue → one cancellable local job caches every
- * (tile, model) SR with its real-data metrics → the history table and the
- * detail: comparison viewer, per-band metrics table + chart, gate core
- * weights, CSV, log to tracking. Selection, scope and metric are in the URL. */
-import { useEffect, useMemo, useState } from "react";
+/* Sky › Experiments (spec §7.3): model comparison on real tiles, image first.
+ * The picked experiment (`?exp=`, else the newest) is the top of the page: its comparison
+ * viewer, then the per-band metrics (chart + table, CSV), gate core weights,
+ * log to tracking. Below: the history (a row opens that experiment at the
+ * top), the new-experiment form — tiles from the atlas / Real-results
+ * selection, a `?tiles=` link or pasted refs; models from the catalogue; the
+ * cost stated before the Run confirm — and the metric definitions, readable
+ * before any experiment exists. One cancellable local job caches every
+ * (tile, model) SR with its real-data metrics. Selection, scope and metric are
+ * in the URL. */
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { useJob } from "../../../api/jobs";
 import { useResource } from "../../../api/query";
@@ -14,14 +18,16 @@ import { useUrlState } from "../../../hooks/useUrlState";
 import { useSelected } from "../../../state/selection";
 import {
   Badge, Button, Callout, Card, CardBody, Chip, DataTable, EmptyState, IconButton, Input, JobProgress,
-  Page, Section, Skeleton, Tooltip, type DataColumn,
+  Page, Section, Skeleton, type DataColumn,
 } from "../../../ui";
 import { refreshResults, runModels } from "../results/actions";
 import { URLS, type ExperimentRecord, type ExperimentSummary, type ExperimentsPayload } from "../results/api";
-import { StateBadge } from "../results/common";
+import { MetricDefinitions, StateBadge } from "../results/common";
 import { ExperimentDetail } from "../results/ExperimentDetail";
-import { ModelPicker } from "../results/ModelPicker";
-import { METRIC_BY_KEY, parseRefs, specShort, type MetricKey } from "../results/model";
+import { ModelPicker, useModels } from "../results/ModelPicker";
+import {
+  defaultExperimentId, experimentCost, experimentCostText, METRIC_BY_KEY, parseRefs, specShort, type MetricKey,
+} from "../results/model";
 import "../results/register";
 import "../results/results.css";
 
@@ -51,10 +57,13 @@ function NewExperiment({ tiles, setTiles, models, setModels, onStarted }: {
 }) {
   const selection = useSelected("tile");
   const job = useJob("sky:experiment");
+  const catalogue = useModels();
   const [paste, setPaste] = useState("");
   const [label, setLabel] = useState("");
   const [busy, setBusy] = useState(false);
   const fromSelection = selection.filter((s) => !tiles.includes(s));
+  const cost = catalogue.data && tiles.length && models.length
+    ? experimentCostText(experimentCost(models, catalogue.data.models, tiles.length)) : "";
   const addPasted = () => {
     const refs = parseRefs(paste);
     if (refs.length) setTiles([...tiles, ...refs.filter((r) => !tiles.includes(r))]);
@@ -76,7 +85,7 @@ function NewExperiment({ tiles, setTiles, models, setModels, onStarted }: {
           <span className="res-bar__spacer" />
           {!!fromSelection.length && (
             <Button size="sm" variant="subtle" onClick={() => setTiles([...tiles, ...fromSelection])}>
-              + selection ({fromSelection.length})
+              Add the selection ({fromSelection.length})
             </Button>
           )}
           <Button size="sm" variant="ghost" asChild><Link to="/sky/results">Pick in Real results</Link></Button>
@@ -97,13 +106,16 @@ function NewExperiment({ tiles, setTiles, models, setModels, onStarted }: {
         <Input size="sm" value={label} onChange={setLabel} placeholder="Label (optional)" aria-label="Experiment label" />
         <Button variant="primary" icon="activity" loading={busy || job.busy} disabled={!tiles.length || !models.length}
           onClick={run}>
-          Run {models.length} × {tiles.length}
+          Run {plural(models.length, "model")} on {plural(tiles.length, "tile")}
         </Button>
+        {cost && <span className="res-note res-new__cost">{cost}</span>}
         <JobProgress job={job.job} error={job.error} />
       </div>
     </div>
   );
 }
+
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
 export default function Experiments() {
   const [tiles, setTiles] = useUrlState<string[]>("tiles", []);
@@ -113,45 +125,77 @@ export default function Experiments() {
   const [metricRaw, setMetric] = useUrlState("metric", "hole_pct");
   const metric = (METRIC_BY_KEY[metricRaw] ? metricRaw : "hole_pct") as MetricKey;
   const [newOpen, setNewOpen] = useState<boolean | null>(null);
+  const [defsOpen, setDefsOpen] = useState<boolean | null>(null);
+  const top = useRef<HTMLDivElement>(null);
+  const newRef = useRef<HTMLDivElement>(null);
 
   const [pollList, setPollList] = useState(false);
   const list = useResource<ExperimentsPayload>(URLS.experiments, [], { ttl: 10_000, poll: pollList ? 4_000 : undefined });
   const history = useMemo(() => list.data?.experiments ?? [], [list.data]);
   const anyRunning = history.some((e) => e.status === "running");
   useEffect(() => { setPollList(anyRunning); }, [anyRunning]);
-  const current = exp || "";
+  // A plain visit (the tab strip's link) opens the newest experiment — the
+  // comparison first — without writing it to the URL; handed-over tiles
+  // (`?tiles=`) open the form instead.
+  const current = defaultExperimentId(history, exp, tiles);
   const summary = history.find((e) => e.id === current);
   const running = summary?.status === "running";
   const record = useResource<ExperimentRecord>(current ? URLS.experiment(current) : null, [], { ttl: 5_000, poll: running ? 3_000 : undefined });
 
+  // The form is open when there is nothing to look at, or tiles were handed over.
   const open = newOpen ?? (!history.length || !!tiles.length || !current);
   const onStarted = (id: string | null) => {
     if (id) { setExp(id); setScope("pooled"); }
     setNewOpen(false);
     void list.reload();
   };
+  const reveal = (el: HTMLElement | null) => {
+    const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    el?.scrollIntoView?.({ block: "start", behavior: reduce ? "auto" : "smooth" });
+  };
+  const pick = (id: string) => {
+    setExp(id);
+    setScope("pooled");
+    setTimeout(() => reveal(top.current), 0);   // after the render: the comparison is at the top
+  };
+  const openNew = () => { setNewOpen(true); setTimeout(() => reveal(newRef.current), 0); };
   usePageActions([
     { id: "exp-run", label: "Run the new experiment", group: "Experiments", disabled: !tiles.length || !models.length,
       run: () => { void runModels(tiles, models).then((r) => r && onStarted(r.experimentId)); } },
-    { id: "exp-new", label: "New experiment…", group: "Experiments", run: () => setNewOpen(true) },
+    { id: "exp-new", label: "New experiment…", group: "Experiments", run: openNew },
     { id: "exp-refresh", label: "Refresh experiments", group: "Experiments", run: () => { refreshResults(); void list.reload(); } },
   ]);
 
   return (
     <Page className="res-page">
-      <Card><CardBody>
-        <Section title="New experiment" sub={tiles.length ? `${tiles.length} tile${tiles.length === 1 ? "" : "s"} × ${models.length} model${models.length === 1 ? "" : "s"}` : undefined}
-          collapsible open={open} onOpenChange={setNewOpen}
-          right={<Tooltip content="Holes, enclosed-flux R and flux ratios per band are computed for every (tile, model); cached members are reused.">
-            <IconButton icon="help" label="About experiments" size="sm" />
-          </Tooltip>}>
-          <NewExperiment tiles={tiles} setTiles={setTiles} models={models} setModels={setModels} onStarted={onStarted} />
-        </Section>
-      </CardBody></Card>
+      <div ref={top} className="res-exp-top">
+        {current && (
+          record.loading && !record.data ? <Skeleton lines={8} />
+            : !record.data ? (
+              <Callout tone="bad" title={record.error?.status === 404 ? `Unknown experiment ${current}` : "Could not load the experiment"}
+                action={<Button size="sm" onClick={() => setExp("")}>Close</Button>}>
+                {record.error?.message ?? "No data."}
+              </Callout>
+            ) : (
+              <section aria-label="Experiment detail" className="res-exp-detail">
+                {record.data.status === "running" && (
+                  <Callout tone="info" title="Running">
+                    {record.data.duration_s != null ? formatDuration(record.data.duration_s) : "Results appear here as each tile finishes."}
+                  </Callout>
+                )}
+                <ExperimentDetail record={record.data} scope={scope} onScope={setScope} metric={metric}
+                  onMetric={setMetric} />
+              </section>
+            )
+        )}
+      </div>
 
       <Card><CardBody>
         <Section title="History" sub={history.length ? String(history.length) : undefined}
-          right={<IconButton icon="reset" label="Refresh" size="sm" onClick={() => { void list.reload(); void record.reload(); }} />}>
+          right={<>
+            {current && !open && <Button size="sm" icon="plus" onClick={openNew}>New experiment</Button>}
+            <IconButton icon="reset" label="Refresh" size="sm" onClick={() => { void list.reload(); void record.reload(); }} />
+          </>}>
           {list.loading ? <Skeleton lines={4} />
             : list.error && !history.length ? (
               <Callout tone="bad" title="Could not load experiments" action={<Button size="sm" onClick={list.reload}>Retry</Button>}>
@@ -164,35 +208,27 @@ export default function Experiments() {
               </EmptyState>
             ) : (
               <DataTable rows={history} columns={HISTORY} rowKey={(e) => e.id} aria-label="Experiments"
-                activeKey={current || null} onRowClick={(e) => { setExp(e.id); setScope("pooled"); }}
+                activeKey={current || null} onRowClick={(e) => pick(e.id)}
                 dense height={history.length > 8 ? 300 : "auto"} exportName="experiments" urlKey="eh" />
             )}
         </Section>
       </CardBody></Card>
 
-      {current && (
-        <Card aria-label="Experiment detail">
-          <CardBody>
-            {record.loading && !record.data ? <Skeleton lines={8} />
-              : !record.data ? (
-                <Callout tone="bad" title={record.error?.status === 404 ? `Unknown experiment ${current}` : "Could not load the experiment"}
-                  action={<Button size="sm" onClick={() => setExp("")}>Close</Button>}>
-                  {record.error?.message ?? "No data."}
-                </Callout>
-              ) : (
-                <>
-                  {record.data.status === "running" && (
-                    <Callout tone="info" title="Running">
-                      {record.data.duration_s != null ? formatDuration(record.data.duration_s) : "Results appear here as each tile finishes."}
-                    </Callout>
-                  )}
-                  <ExperimentDetail record={record.data} scope={scope} onScope={setScope} metric={metric}
-                    onMetric={setMetric} />
-                </>
-              )}
-          </CardBody>
-        </Card>
-      )}
+      <div ref={newRef}>
+        <Card><CardBody>
+          <Section title="New experiment" sub={tiles.length ? `${plural(tiles.length, "tile")}, ${plural(models.length, "model")}` : undefined}
+            collapsible open={open} onOpenChange={setNewOpen}>
+            <NewExperiment tiles={tiles} setTiles={setTiles} models={models} setModels={setModels} onStarted={onStarted} />
+          </Section>
+        </CardBody></Card>
+      </div>
+
+      <Card><CardBody>
+        <Section title="What the metrics measure" sub="computed per band for every tile and model"
+          collapsible open={defsOpen ?? (!list.loading && !history.length)} onOpenChange={setDefsOpen}>
+          <MetricDefinitions />
+        </Section>
+      </CardBody></Card>
     </Page>
   );
 }

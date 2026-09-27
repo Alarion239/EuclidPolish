@@ -27,15 +27,15 @@ import {
 } from "./testFixtures";
 
 type ViewerProps = { collection: string; params?: Record<string, string>; tiers?: string[]; urlKey?: string;
-  onReady?: (api: unknown) => void; onState?: (s: unknown) => void };
-const hoisted = vi.hoisted(() => ({ viewers: [] as { props: ViewerProps; api: { setView: ReturnType<typeof vi.fn> } }[] }));
+  toolbar?: string; nav?: boolean; onReady?: (api: unknown) => void; onState?: (s: unknown) => void };
+const hoisted = vi.hoisted(() => ({ viewers: [] as { props: ViewerProps; api: { setView: ReturnType<typeof vi.fn>; resetView: ReturnType<typeof vi.fn> } }[] }));
 
 vi.mock("../../viewer", async () => {
   const React = await import("react");
   return {
     ImageViewer: (props: ViewerProps) => {
       React.useEffect(() => {
-        const api = { setView: vi.fn(), goTo: vi.fn() };
+        const api = { setView: vi.fn(), goTo: vi.fn(), resetView: vi.fn() };
         hoisted.viewers.push({ props, api });
         props.onReady?.(api);
         return () => props.onReady?.(null);
@@ -610,11 +610,49 @@ describe("visual", () => {
     expect(params().get("c")).toBe("J_E");
     expect(params().get("k")).toBe("250");
     // Unlocked, an edit stays in its own viewer.
-    fireEvent.click(screen.getByRole("switch", { name: "one transfer" }));
+    fireEvent.click(screen.getByRole("switch", { name: "Same transfer" }));
     syn.api.setView.mockClear();
     act(() => { real.props.onState?.(state("VIS", 250)); });
     await new Promise((r) => setTimeout(r, 20));
     expect(syn.api.setView).not.toHaveBeenCalled();
+  });
+
+  it("puts both lanes side by side under ONE shared display row (the viewers carry navigation only)", async () => {
+    const Visual = await tab("Visual");
+    show(<Visual />, "/realism/visual");
+    await screen.findByTestId("viewer-sky");
+    const real = hoisted.viewers.find((v) => v.props.collection === "archive-fields")!;
+    const syn = hoisted.viewers.find((v) => v.props.collection === "sky")!;
+    for (const v of [real, syn]) expect(v.props).toMatchObject({ toolbar: "none", nav: true });
+    const row = screen.getByRole("toolbar", { name: "Shared display of both lanes" });
+    // The shared row is the colour control of both lanes.
+    real.api.setView.mockClear(); syn.api.setView.mockClear();
+    fireEvent.click(within(row).getByRole("radio", { name: "VIS" }));
+    await waitFor(() => expect(params().get("c")).toBe("VIS"));
+    await waitFor(() => expect(real.api.setView).toHaveBeenLastCalledWith({ color: "VIS", knee: 100, gain: 1 }));
+    expect(syn.api.setView).toHaveBeenLastCalledWith({ color: "VIS", knee: 100, gain: 1 });
+    // An exact knee (a training knee) is one typed entry away.
+    const kneeBox = within(row).getByRole("textbox", { name: "Shared knee (e⁻)" });
+    fireEvent.change(kneeBox, { target: { value: "3" } });
+    fireEvent.keyDown(kneeBox, { key: "Enter" });
+    await waitFor(() => expect(params().get("k")).toBe("3"));
+    await waitFor(() => expect(syn.api.setView).toHaveBeenLastCalledWith({ color: "VIS", knee: 3, gain: 1 }));
+    expect(real.api.setView).toHaveBeenLastCalledWith({ color: "VIS", knee: 3, gain: 1 });
+    // The knee slider spans the research grid 0.1–10⁴ e⁻.
+    const slider = within(row).getByRole("slider", { name: "Shared knee" });
+    expect(slider.getAttribute("aria-valuetext")).toBe("3 e⁻");
+    // One button fits both lanes (the viewers' own zoom stays on their keys, listed in ⓘ).
+    fireEvent.click(within(row).getByRole("button", { name: "Fit both" }));
+    expect(real.api.resetView).toHaveBeenCalledTimes(1);
+    expect(syn.api.resetView).toHaveBeenCalledTimes(1);
+    // Narrow blocks put knee and brightness in a Display menu (the same controls).
+    fireEvent.click(within(row).getByRole("button", { name: /^Display/ }));
+    const pop = await screen.findByRole("dialog", { name: "Knee and brightness of both lanes" });
+    expect(within(pop).getByRole("slider", { name: "Shared brightness" })).toBeTruthy();
+    fireEvent.keyDown(pop, { key: "Escape" });
+    // The synthetic subset lives in the synthetic lane's caption.
+    fireEvent.click(screen.getByRole("radio", { name: "Validate" }));
+    await waitFor(() => expect(params().get("sub")).toBe("validate"));
   });
 
   it("resets both viewers to the default transfer, and the URL with them", async () => {
@@ -640,7 +678,8 @@ describe("visual", () => {
     act(() => { real.props.onState?.(state(100)); syn.props.onState?.(state(100)); });
     await new Promise((r) => setTimeout(r, 20));
     expect(params().get("k")).toBeNull();
-    expect(screen.getByText(/knee 100 e⁻ \(default\) · ×1/)).toBeTruthy();
+    // No running transfer text (the controls show it); the Display menu's tooltip says it.
+    expect(screen.getByRole("button", { name: /^Display/ }).getAttribute("title")).toBe("Knee 100 e⁻, brightness ×1");
   });
 
   it("registers its palette actions: lock, colour, reset and the archive sync", async () => {

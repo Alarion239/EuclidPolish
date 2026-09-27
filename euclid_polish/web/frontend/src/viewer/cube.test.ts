@@ -1,5 +1,6 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { CubeCache, ViewerError, cubeKey, cubeUrl, fetchMeta, metaUrl, parseCube, readViewerError } from "./cube";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { queryClient } from "../api/query";
+import { CubeCache, ViewerError, cubeKey, cubeUrl, fetchMeta, metaUrl, noteMeta, parseCube, readViewerError, resetMetaNotes } from "./cube";
 
 const WCS = '{"CD1_1":-8.3333333333333e-06,"CD1_2":0.0,"CD2_1":0.0,"CD2_2":8.3333333333333e-06,"CRPIX1":-3885.5,"CRPIX2":12656.5,"CRVAL1":268.4625,"CRVAL2":65.199166666667,"CTYPE1":"RA---TAN","CTYPE2":"DEC--TAN"}';
 
@@ -11,6 +12,7 @@ function cubeResponse(h: number, w: number, c: number, headers: Record<string, s
   });
 }
 
+beforeEach(() => { queryClient.clear(); resetMetaNotes(); });
 afterEach(() => { vi.unstubAllGlobals(); });
 
 describe("URLs and keys", () => {
@@ -68,6 +70,43 @@ describe("server errors are surfaced verbatim", () => {
   it("fetchMeta rejects with the server message", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error: "no saved JWST × Euclid fields" }), { status: 404 })));
     await expect(fetchMeta("jwst-euclid", {})).rejects.toMatchObject({ status: 404, message: "no saved JWST × Euclid fields" });
+  });
+});
+
+describe("meta through the shared query cache", () => {
+  const metaFetch = () => {
+    const f = vi.fn(async () => new Response(JSON.stringify({ count: 1, tiers: [] }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", f);
+    return f;
+  };
+  it("concurrent readers of one meta URL share one request", async () => {
+    const f = metaFetch();
+    const [a, b] = await Promise.all([fetchMeta("sky", { subset: "test" }), fetchMeta("sky", { subset: "test" })]);
+    expect(a).toEqual(b);
+    expect(f).toHaveBeenCalledTimes(1);
+  });
+  it("a remount reuses the fresh meta; an explicit reload refetches", async () => {
+    const f = metaFetch();
+    await fetchMeta("sky", {});
+    await fetchMeta("sky", {});
+    expect(f).toHaveBeenCalledTimes(1);
+    await fetchMeta("sky", {}, undefined, { force: true });
+    expect(f).toHaveBeenCalledTimes(2);
+  });
+  it("aborting one caller rejects it with an AbortError", async () => {
+    metaFetch();
+    const ac = new AbortController();
+    const p = fetchMeta("sky", {}, ac.signal);
+    ac.abort();
+    await expect(p).rejects.toMatchObject({ name: "AbortError" });
+  });
+  it("noteMeta reports a change only when a URL's meta content changed", () => {
+    const m1 = { count: 1 };
+    expect(noteMeta("/viewer/meta/x", m1)).toBe(false);            // first sight
+    expect(noteMeta("/viewer/meta/x", m1)).toBe(false);            // same object
+    expect(noteMeta("/viewer/meta/x", { count: 1 })).toBe(false);  // equal content
+    expect(noteMeta("/viewer/meta/x", { count: 2 })).toBe(true);   // regenerated
+    expect(noteMeta("/viewer/meta/y", { count: 9 })).toBe(false);  // other URL
   });
 });
 

@@ -5,27 +5,28 @@
  *
  * One ViewerController per (collection, params); the Display panel store
  * (C7) drives the colour of every linked viewer. */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties } from "react";
 import { useInRouterContext, useLocation } from "react-router-dom";
 import { useUrlState } from "../hooks/useUrlState";
 import { useShortcutRegistry } from "../hooks/useShortcut";
 import { useDisplay } from "../state/display";
+import { Bar, type BarMode } from "./Bar";
+import { DisplayDock } from "./BarMenus";
+import { reservedBarRows, safeStorage } from "./barModel";
 import { ViewerController } from "./controller";
 import {
   compositeFrames, publicationFigureCanvas, publicationPanelName, recordCanvas, saveCanvasPng,
   type CompositeFrame, type FigurePanel,
 } from "./export";
-import { HistogramPanel } from "./HistogramPanel";
+import { figureLayout } from "./fit";
 import { ViewerContext, useController, useViewer } from "./hooks";
 import { LensLayer } from "./Lens";
 import { MarkersContext } from "./markers";
-import { Nav } from "./Nav";
 import { ProfilePanel } from "./ProfilePanel";
 import { ReadoutBar } from "./ReadoutBar";
 import { parseResidualKey } from "./residual";
 import type { Selection } from "./selection";
 import { TierGrid } from "./TierGrid";
-import { Toolbar } from "./Toolbar";
 import type { ImageViewerProps } from "./types";
 import "./viewer.css";
 
@@ -150,7 +151,8 @@ const HELP: [string, string][] = [
   ["0", "Fit the whole image (or double-click)"],
   ["l", "Toggle the magnifier lens (hold Alt for a moment's lens)"],
   ["b", "Blink the selected tiers"],
-  ["Escape", "Unfreeze the lens crop, clear the profile"],
+  ["f", "Focus mode: the images fill the page (F or Esc returns)"],
+  ["Escape", "Unfreeze the lens crop, clear the profile, leave focus mode"],
 ];
 let helpUsers = 0;
 function useViewerHelp() {
@@ -169,11 +171,14 @@ function useViewerHelp() {
 
 // ---- the viewer ---------------------------------------------------------------------------
 
-function ViewerBody({ ctrl, toolbar, nav, urlKey, urlBase }: { ctrl: ViewerController; toolbar: ImageViewerProps["toolbar"]; nav: boolean; urlKey?: string; urlBase: UrlBase | null }) {
+function ViewerBody({ ctrl, toolbar, nav, urlKey, urlBase, onFullscreen }: {
+  ctrl: ViewerController; toolbar: ImageViewerProps["toolbar"]; nav: boolean; urlKey?: string; urlBase: UrlBase | null;
+  onFullscreen: () => void;
+}) {
   const inRouter = useInRouterContext();
-  const histogram = useViewer((s) => s.histogram);
   const profileOpen = useViewer((s) => s.profileOpen);
   const recording = useViewer((s) => s.recording);
+  const dock = useViewer((s) => s.dock);
 
   const compositeInput = (): CompositeFrame[] => ctrl.frameKeys().flatMap((k) => {
     const h = ctrl.frames.get(k);
@@ -209,7 +214,8 @@ function ViewerBody({ ctrl, toolbar, nav, urlKey, urlBase }: { ctrl: ViewerContr
         heatbar,
       }];
     });
-    const out = publicationFigureCanvas(panels, ctrl.s.layout, ctrl.K0());
+    // The plate follows the on-screen arrangement (one row, or two rows).
+    const out = publicationFigureCanvas(panels, figureLayout(ctrl.s.fit, panels.length), ctrl.K0());
     if (out) saveCanvasPng(out, `${ctrl.stem()}_figure.png`);
   };
 
@@ -226,22 +232,112 @@ function ViewerBody({ ctrl, toolbar, nav, urlKey, urlBase }: { ctrl: ViewerContr
     ctrl.onSavePng = savePng;
   });
 
+  const mode: BarMode | null = toolbar === "none" ? (nav ? "nav" : null) : toolbar === "compact" ? "compact" : "full";
   return (
     <>
       {urlKey && inRouter && urlBase && <UrlSync urlKey={urlKey} base={urlBase} />}
-      <Toolbar mode={toolbar ?? "full"} />
-      <TierGrid />
-      <ReadoutBar />
-      {nav && <Nav onPng={savePng} onFigure={exportFigure} onRecord={toggleRecord} />}
-      {(histogram || profileOpen) && (
-        <div className="cv-panels">
-          {histogram && <HistogramPanel />}
-          {profileOpen && <ProfilePanel />}
+      <div className="cv-table">
+        {mode && <Bar mode={mode} nav={nav} onPng={savePng} onFigure={exportFigure} onRecord={toggleRecord} onFullscreen={onFullscreen} />}
+        <div className="cv-body" data-dock={(dock && (mode === "full" || mode === "compact")) || undefined}>
+          <TierGrid />
+          {dock && (mode === "full" || mode === "compact") && <DisplayDock basic={mode === "compact"} />}
         </div>
-      )}
+        <ReadoutBar />
+      </div>
+      {profileOpen && <div className="cv-panels"><ProfilePanel /></div>}
       <LensLayer />
     </>
   );
+}
+
+/** The light table before the controller exists: the same bar / frame /
+ *  readout boxes, so nothing jumps when the meta arrives. */
+function Placeholder({ bar, collection }: { bar: boolean; collection: string }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [rows, setRows] = useState<1 | 2>(() => reservedBarRows(collection, 0, safeStorage()));
+  // Two rows when the viewer is narrower than a one-row bar needs (unless
+  // this collection's bar was one row last time).
+  useLayoutEffect(() => { setRows(reservedBarRows(collection, ref.current?.clientWidth ?? 0, safeStorage())); }, [collection]);
+  return (
+    <div ref={ref} className="cv-table">
+      {bar && <div className="cv-bar" data-rows={rows} data-reserve aria-hidden="true" />}
+      <div className="cv-frames"><div className="cv-frame cv-frame--message cv-loading"><div className="cv-msg"><span>Loading…</span></div></div></div>
+      <div className="cv-readout" aria-hidden="true" />
+    </div>
+  );
+}
+
+const noFocus = { subscribe: () => () => {}, get: () => false };
+
+/** Focus mode: where the viewer sits (the stage below the top bar, or the
+ *  whole screen in full screen), and full screen through the Fullscreen API
+ *  (on the document, so the menus and tooltips — portalled to <body> — stay
+ *  visible). Leaving full screen leaves focus mode too. */
+function useFocusMode(ctrl: ViewerController | null, root: React.RefObject<HTMLDivElement>) {
+  const subscribe = useMemo(() => (ctrl ? (fn: () => void) => ctrl.store.subscribe(fn) : noFocus.subscribe), [ctrl]);
+  const focus = useSyncExternalStore(subscribe, ctrl ? () => ctrl.store.getState().focus : noFocus.get);
+  const [rect, setRect] = useState<{ top: number; left: number; width: number; height: number } | null>(null);
+  const [placeholder, setPlaceholder] = useState(0);
+  const fsByUs = useRef(false);
+  const lastHeight = useRef(0);
+
+  useLayoutEffect(() => {
+    if (!focus && root.current) lastHeight.current = root.current.offsetHeight;
+  });
+
+  useLayoutEffect(() => {
+    if (!focus) { setRect(null); setPlaceholder(0); return; }
+    setPlaceholder(lastHeight.current);
+    const stage = document.querySelector<HTMLElement>("main.stage");
+    const place = () => {
+      if (document.fullscreenElement) { setRect({ top: 0, left: 0, width: window.innerWidth, height: window.innerHeight }); return; }
+      const r = stage?.getBoundingClientRect();
+      const top = r ? Math.max(0, r.top) : 0, left = r ? Math.max(0, r.left) : 0;
+      setRect({ top, left, width: Math.max(0, window.innerWidth - left), height: Math.max(0, window.innerHeight - top) });
+    };
+    place();
+    root.current?.focus({ preventScroll: true });
+    window.addEventListener("resize", place);
+    document.addEventListener("fullscreenchange", place);
+    const ro = typeof ResizeObserver !== "undefined" && stage ? new ResizeObserver(place) : null;
+    if (stage) ro?.observe(stage);
+    return () => {
+      window.removeEventListener("resize", place);
+      document.removeEventListener("fullscreenchange", place);
+      ro?.disconnect();
+    };
+  }, [focus, root]);
+
+  // Leaving focus mode leaves the full screen we entered; leaving full
+  // screen (the browser's Esc) leaves focus mode.
+  useEffect(() => {
+    if (!ctrl) return;
+    const onChange = () => {
+      if (!document.fullscreenElement && fsByUs.current) { fsByUs.current = false; ctrl.setFocus(false); }
+    };
+    document.addEventListener("fullscreenchange", onChange);
+    return () => document.removeEventListener("fullscreenchange", onChange);
+  }, [ctrl]);
+  useEffect(() => {
+    if (!focus && fsByUs.current && document.fullscreenElement) { fsByUs.current = false; void document.exitFullscreen?.().catch(() => {}); }
+  }, [focus]);
+  useEffect(() => () => {
+    if (fsByUs.current && document.fullscreenElement) void document.exitFullscreen?.().catch(() => {});
+  }, []);
+
+  const enterFullscreen = () => {
+    if (!ctrl) return;
+    ctrl.setFocus(true);
+    const el = document.documentElement;
+    if (!document.fullscreenElement && el.requestFullscreen) {
+      el.requestFullscreen().then(() => { fsByUs.current = true; }, () => { /* refused: focus mode stays */ });
+    }
+  };
+
+  const style: CSSProperties | undefined = focus && rect
+    ? { top: rect.top, left: rect.left, width: rect.width, height: rect.height }
+    : undefined;
+  return { focus, style, placeholder, enterFullscreen };
 }
 
 /** The viewer reads its initial URL state from the router's location (or the
@@ -270,6 +366,7 @@ function ViewerCore(props: ImageViewerProps & { search: string }) {
   const init = useRef({ tiers, initialIndex, initialId, id, display, params });
   init.current = { tiers, initialIndex, initialId, id, display, params };
   useViewerHelp();
+  const rootRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const i = init.current;
@@ -284,6 +381,8 @@ function ViewerCore(props: ImageViewerProps & { search: string }) {
       display: fromUrl.color ? { ...(i.display ?? {}), color: fromUrl.color as never } : i.display,
     });
     if (fromUrl.residuals?.length) c.store.setState({ residuals: fromUrl.residuals });
+    // Reserve the bar's height (rows) until the meta arrives and it is measured.
+    c.store.setState({ bar: { ...c.store.getState().bar, rows: reservedBarRows(collection, rootRef.current?.clientWidth ?? 0, safeStorage()) } });
     c.setOnState((s) => onStateRef.current?.(s));
     setUrlBase({
       index: i.initialIndex ?? 0, id: i.initialId ?? null, tiers: i.tiers ?? null,
@@ -315,16 +414,23 @@ function ViewerCore(props: ImageViewerProps & { search: string }) {
     return () => window.removeEventListener("keyup", up);
   }, [ctrl]);
 
+  const focusMode = useFocusMode(ctrl, rootRef);
+
   return (
-    <div className={`cv-root${className ? ` ${className}` : ""}`} tabIndex={0} data-collection={collection}
-      aria-label={`Image viewer · ${collection}`}
-      onMouseEnter={() => ctrl?.activate()}
-      onMouseLeave={() => { if (!ctrl) return; ctrl.deactivate(); ctrl.hideHover(); ctrl.clearReadout(); }}
-      onFocus={() => ctrl?.activate()}
-      onBlur={(e) => { if (ctrl && !e.currentTarget.contains(e.relatedTarget as Node | null)) ctrl.deactivate(); }}>
-      {ctrl
-        ? <ViewerContext.Provider value={ctrl}><MarkersContext.Provider value={markers ?? null}><ViewerBody ctrl={ctrl} toolbar={toolbar} nav={nav} urlKey={urlKey} urlBase={urlBase} /></MarkersContext.Provider></ViewerContext.Provider>
-        : <div className="cv-frames"><div className="cv-frame cv-frame--message cv-loading"><div className="cv-msg"><span>Loading…</span></div></div></div>}
+    <div className="cv-host" style={focusMode.placeholder ? { minHeight: focusMode.placeholder } : undefined}>
+      <div ref={rootRef} className={`cv-root${className ? ` ${className}` : ""}`} tabIndex={0} data-collection={collection}
+        data-focus={focusMode.focus || undefined} style={focusMode.style}
+        aria-label={`Image viewer, ${collection}${focusMode.focus ? " (focus mode: F or Esc returns)" : ""}`}
+        onMouseEnter={() => ctrl?.activate()}
+        onMouseLeave={() => { if (!ctrl) return; ctrl.deactivate(); ctrl.hideHover(); ctrl.clearReadout(); }}
+        onFocus={() => ctrl?.activate()}
+        onBlur={(e) => { if (ctrl && !e.currentTarget.contains(e.relatedTarget as Node | null)) ctrl.deactivate(); }}>
+        {ctrl
+          ? <ViewerContext.Provider value={ctrl}><MarkersContext.Provider value={markers ?? null}>
+            <ViewerBody ctrl={ctrl} toolbar={toolbar} nav={nav} urlKey={urlKey} urlBase={urlBase} onFullscreen={focusMode.enterFullscreen} />
+          </MarkersContext.Provider></ViewerContext.Provider>
+          : <Placeholder bar={toolbar !== "none" || nav} collection={collection} />}
+      </div>
     </div>
   );
 }

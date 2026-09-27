@@ -10,6 +10,7 @@ import { openInspector } from "../../../../app/inspector";
 import { useResource } from "../../../../api/query";
 import { Button, Skeleton } from "../../../../ui";
 import { ImageViewer } from "../../../../viewer";
+import { FitBox } from "../../results/FitBox";
 
 export type SourceViewerSpec = {
   collection: string;
@@ -30,11 +31,13 @@ export function sourceViewerFor(layer: string, fid: string): SourceViewerSpec | 
 }
 
 function Viewer({ spec, layer }: { spec: SourceViewerSpec; layer: string }) {
+  // The full bar (residuals, export) — in a narrow inspector it wraps; the
+  // FitBox ends the frames and readout at the bottom of the inspector.
   return (
-    <div className="sky-card__viewer">
+    <FitBox className="sky-card__viewer" min={320}>
       <ImageViewer collection={spec.collection} initialId={spec.initialId} tiers={spec.tiers}
-        id={`sky-${layer}-${spec.initialId}`} toolbar="compact" nav={false} />
-    </div>
+        id={`sky-${layer}-${spec.initialId}`} toolbar="full" nav={false} />
+    </FitBox>
   );
 }
 

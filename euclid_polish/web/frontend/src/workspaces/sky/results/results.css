@@ -33,10 +33,29 @@
 .res-pos { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 2px var(--s2); }
 
 /* ── inspector cards ─────────────────────────────────────────────────── */
+/* The real-tile card: the viewer is its first child, so it gets the whole
+   inspector height (the fit measures the inspector's scroll box); the state
+   line and the actions follow right under the images. */
 .res-card { display: flex; flex-direction: column; gap: var(--s3); min-width: 0; }
-.res-card__badges, .res-card__actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s1); }
+.res-card__status, .res-card__actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s1); }
+.res-card__actions { gap: var(--s2); }
 .res-card__viewer { min-width: 0; }
 .res-card .ui-section + .ui-section { margin-top: 0; }
+
+/* overlay the tile's pixels on the sky (atlas/inspectors/overlay.tsx) */
+.res-overlay { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--s2); }
+.res-overlay .ui-field { flex: 1 1 110px; min-width: 0; }
+
+/* metric definitions: readable text, not only tooltips */
+.res-metricnote { margin-top: var(--s2); line-height: var(--lh-base, 1.45); }
+.res-metricnote strong { color: var(--text); font-weight: var(--fw-semibold); }
+.res-defs { margin: 0; display: grid; gap: var(--s2); font-size: var(--fs-sm); }
+.res-defs__row { display: grid; grid-template-columns: minmax(8rem, 12rem) minmax(0, 1fr); gap: var(--s1) var(--s3); }
+.res-defs dt { font-weight: var(--fw-semibold); color: var(--text); }
+.res-defs dt .muted { font-weight: var(--fw-regular); }
+.res-defs dd { margin: 0; color: var(--text-dim); line-height: var(--lh-base, 1.45); }
+@container res-page (max-width: 560px) { .res-defs__row { grid-template-columns: minmax(0, 1fr); } }
+.ui-popover .res-defs__row { grid-template-columns: minmax(0, 1fr); }
 
 /* per-band metrics (rows = metrics, columns = bands) */
 .res-mtable-wrap { overflow-x: auto; }
@@ -64,8 +83,7 @@
 .res-models__count { margin-left: auto; font-size: var(--fs-xs); }
 .res-models__group { border: 0; margin: 0; padding: 0; min-width: 0; display: flex; flex-direction: column; gap: var(--s1); }
 .res-models__group > legend {
-  padding: 0; margin-bottom: var(--s1); font-size: var(--fs-2xs); font-weight: var(--fw-semibold);
-  letter-spacing: var(--ls-eyebrow); text-transform: uppercase; color: var(--text-faint);
+  padding: 0; margin-bottom: var(--s1); font-size: var(--fs-sm); font-weight: var(--fw-semibold); color: var(--text-dim);
 }
 .res-models__list { display: flex; flex-direction: column; gap: 2px; }
 .res-models__grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(88px, 1fr)); gap: 2px var(--s2); }
@@ -86,11 +104,23 @@
 .res-mdnote { width: 100%; font-size: var(--fs-xs); }
 
 /* ── experiments ─────────────────────────────────────────────────────── */
+/* The picked experiment is the top of the page: head, tile picker, viewer. */
+.res-exp-top:empty { display: none; }
+.res-exp-detail { display: flex; flex-direction: column; gap: var(--s3); min-width: 0; }
 .res-exp { display: flex; flex-direction: column; gap: var(--s3); min-width: 0; }
+/* One line at the native width: the title takes the room left and ellipsizes,
+   the scope select shrinks, the actions never split (the ⋯ menu stays with
+   "Log to tracking"). Below ~520 px the actions wrap as one group. */
 .res-exp__head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); }
-.res-exp__title { font-size: var(--fs-md); }
-.res-exp__spacer { flex: 1; }
+.res-exp__title { flex: 1 1 0; font-size: var(--fs-md); min-width: 6ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.res-exp__scope { flex: 0 1 240px; min-width: 120px; }
+.res-exp__actions { display: flex; flex-wrap: nowrap; align-items: center; gap: var(--s1); margin-left: auto; }
+.res-case { text-transform: none; }
+/* a sentence-case inline label beside its control (not the kit's mono field eyebrow) */
+.res-inline { display: inline-flex; align-items: center; gap: 6px; }
+.res-inline__label { font-size: var(--fs-xs); color: var(--text-dim); }
 .res-exp__viewer { min-width: 0; }
+.res-new__cost { flex: 1 1 260px; min-width: 0; }
 .res-metrics { display: flex; flex-direction: column; gap: var(--s3); min-width: 0; }
 .res-metrics__chart { display: flex; flex-direction: column; gap: var(--s2); min-width: 0; }
 
@@ -102,17 +132,22 @@
 .res-tilelist { display: flex; flex-wrap: wrap; gap: var(--s1); max-height: 160px; overflow-y: auto; }
 
 /* ── catalogue evaluation ────────────────────────────────────────────── */
-.res-eval { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--s4); align-items: start; }
-.res-eval__viewer { position: sticky; top: var(--s2); min-width: 0; }
+/* image first: the viewer is the first column (wide) or the top of the page
+   (narrow), in a FitBox that ends its frames at the fold; the actions, the
+   table filters and the table follow (beside it when wide). Not sticky: the
+   FitBox measures its place in the page. */
+.res-eval { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: var(--s4); align-items: start; }
+.res-eval__viewer { min-width: 0; }
+.res-eval__actions { row-gap: var(--s1); }
+.res-eval__list { display: flex; flex-direction: column; gap: var(--s3); min-width: 0; }
 .res-figs { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: var(--s4); }
 .res-fig { display: flex; flex-direction: column; gap: var(--s2); min-width: 0; }
 .res-fig__img { max-width: 100%; height: auto; border-radius: var(--r-md); background: var(--surface-2); }
-.res-ident { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s1) var(--s3); font-size: var(--fs-sm); color: var(--text-dim); }
+.res-ident { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px var(--s2); font-size: var(--fs-sm); color: var(--text-dim); }
 
 /* narrow panes: toolbars wrap (above), grids collapse */
 @container res-page (max-width: 1100px) {
-  .res-eval { grid-template-columns: minmax(0, 1fr); }
-  .res-eval__viewer { position: static; }
+  .res-eval { grid-template-columns: minmax(0, 1fr); gap: var(--s3); }
 }
 @container res-page (max-width: 760px) {
   .res-new { grid-template-columns: minmax(0, 1fr); }
@@ -121,8 +156,8 @@
 
 .res-tilecell { display: inline-flex; align-items: center; gap: var(--s1); min-width: 0; max-width: 100%; }
 @container res-page (max-width: 1100px) {
-  /* stacked: keep the viewer within reach under the table */
-  .res-eval > .ui-dt .ui-dt__scroll { max-height: min(48vh, 520px) !important; }
+  /* stacked: a short list right under the viewer keeps both within reach */
+  .res-eval__list .ui-dt__scroll { max-height: min(48vh, 520px) !important; }
 }
 
 /* ── real-field diagnostics (Real results) ───────────────────────────── */
@@ -132,7 +167,4 @@
 @container res-diag (max-width: 640px) { .res-diag__pair { grid-template-columns: minmax(0, 1fr); } }
 .res-diag__side, .res-diag__block { min-width: 0; display: flex; flex-direction: column; gap: var(--s1); }
 .res-diag__block + .res-diag__block { margin-top: var(--s3); }
-.res-diag__eyebrow {
-  font-size: var(--fs-2xs); text-transform: uppercase; letter-spacing: 0.06em;
-  color: var(--text-dim); font-weight: var(--fw-semibold);
-}
+.res-diag__eyebrow { font-size: var(--fs-sm); color: var(--text-dim); font-weight: var(--fw-semibold); }

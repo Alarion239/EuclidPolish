@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_GAIN, DEFAULT_KNEE, editOf, shows, viewPatch } from "./sync";
+import { DEFAULT_GAIN, DEFAULT_KNEE, editOf, shows, urlGain, urlKnee, viewPatch } from "./sync";
 
 const lupton = { color: "lupton", knee: 100, gain: 1 };
 
@@ -28,5 +28,14 @@ describe("synthetic–real transfer sync", () => {
     expect([DEFAULT_KNEE, DEFAULT_GAIN]).toEqual([100, 1]);
     expect(viewPatch({ color: "lupton", knee: null, gain: null })).toEqual({ color: "lupton", knee: 100, gain: 1 });
     expect(viewPatch({ color: "J_E", knee: 40, gain: 0.5 })).toEqual({ color: "J_E", knee: 40, gain: 0.5 });
+  });
+
+  it("writes a clean URL value: the default is unset (0), others rounded", () => {
+    expect(urlKnee(100)).toBe(0);
+    expect(urlKnee(100 + 1e-9)).toBe(0);
+    expect(urlKnee(1256.4321)).toBe(1256);
+    expect(urlKnee(0.123456)).toBe(0.1235);
+    expect(urlGain(1)).toBe(0);
+    expect(urlGain(2.3456)).toBe(2.35);
   });
 });

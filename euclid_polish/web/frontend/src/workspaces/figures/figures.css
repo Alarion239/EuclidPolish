@@ -13,12 +13,15 @@
   min-width: 0;
 }
 .fig-bar__spacer { flex: 1 1 0; min-width: 0; }
+/* sentence-case choices ("Real", "All 3"): the kit Segmented lowercases */
+.fig-bar .ui-seg__item { font-family: var(--font-sans); letter-spacing: 0; text-transform: none; }
 .fig-bar__note { font-size: var(--fs-xs); color: var(--text-dim); white-space: nowrap; }
 .fig-bar__field { display: inline-flex; align-items: center; gap: var(--s2); min-width: 0; }
 .fig-bar__field .ui-select { max-width: 240px; }
 .fig-bar__label { font-size: var(--fs-xs); color: var(--text-dim); }
+.fig-bar__find { flex: 0 1 220px; min-width: 120px; }
 .fig-badge-wrap { display: inline-flex; border-radius: var(--r-sm); }
-.fig-badge-wrap:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.fig-badge-wrap:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 .fig-note { font-size: var(--fs-xs); color: var(--text-dim); margin: 0; }
 .fig-warn { color: var(--warn); }
@@ -33,6 +36,101 @@
   border-radius: var(--r-sm); background: var(--surface-3); border: 1px solid var(--border);
 }
 .fig-thumb--empty { display: inline-flex; align-items: center; justify-content: center; color: var(--text-faint); }
+/* a thumbnail that opens the crop full size */
+.fig-thumbbtn {
+  display: inline-flex; padding: 0; border: 0; background: none; border-radius: var(--r-sm); cursor: zoom-in; flex: none;
+}
+.fig-thumbbtn:hover .fig-thumb { border-color: var(--accent); }
+.fig-thumbbtn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* results gallery: large crops, newest first */
+.fig-gallery {
+  --fig-lt-bg: #161719;   /* the viewer's neutral light-table surround (viewer.css --cv-table) */
+  list-style: none; margin: 0; padding: 0; min-width: 0;
+  display: grid; gap: var(--s3); grid-template-columns: repeat(auto-fill, minmax(176px, 1fr));
+}
+.fig-gallery__item {
+  display: flex; flex-direction: column; min-width: 0;
+  border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface-1); overflow: hidden;
+}
+.fig-gallery__item[data-on] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.fig-gallery__open { display: block; padding: 0; border: 0; background: var(--fig-lt-bg); cursor: zoom-in; }
+.fig-gallery__open:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.fig-gallery__open .fig-gallery__img { width: 100%; height: auto; aspect-ratio: 1 / 1; border: 0; border-radius: 0; background: var(--fig-lt-bg); }
+.fig-gallery__cap { display: flex; align-items: center; gap: var(--s1); padding: var(--s1) var(--s1) 0 var(--s2); min-width: 0; }
+.fig-gallery__label {
+  flex: 1 1 auto; min-width: 0; padding: 2px 0; border: 0; background: none; text-align: left; cursor: pointer;
+  color: var(--text); font: inherit; font-size: var(--fs-sm); font-weight: var(--fw-medium); border-radius: var(--r-sm);
+}
+.fig-gallery__label:hover { color: var(--accent); }
+.fig-gallery__label:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.fig-gallery__meta { display: flex; flex-wrap: wrap; gap: 0 var(--s2); padding: 0 var(--s2) var(--s2); font-size: var(--fs-xs); color: var(--text-dim); }
+.fig-gallery__none { grid-column: 1 / -1; padding: var(--s4); text-align: center; }
+
+/* the full-size view: the whole window (a thin inset) on the viewer's
+   neutral dark light table in BOTH themes (the same fixed surround and
+   scoped dark palette as .cv-table in viewer/viewer.css: colour judgement
+   needs an untinted surround; every pairing AA). One header row, then the
+   stage takes the rest. The inset / head / panel-row sizes come from
+   model.ts LIGHTBOX (set inline), so the "never smaller than the preview"
+   test and this CSS cannot drift. */
+.fig-lightbox__scrim { position: fixed; inset: 0; z-index: var(--z-dialog); background: #000000b8; animation: ui-fade-in var(--dur-base) var(--ease-out); }
+.fig-lightbox {
+  --fig-lt-bg: #161719; --fig-lt-ink: #0d0e0f; --fig-lt-rule: #26282b;
+  color-scheme: dark;
+  --bg-0: #161719; --bg-1: #111214;
+  --surface-1: #1e1f22; --surface-2: #25272a; --surface-3: #2e3034;
+  --border: #2b2d31; --border-strong: #45484e;
+  --text: #ededf0; --text-dim: #bcc0c6; --text-faint: #9da1a9;
+  --accent: #74adff; --accent-press: #99c3ff; --accent-soft: #74adff2e; --on-accent: #06101f;
+  --ring: 0 0 0 2px var(--accent);
+  position: fixed; z-index: var(--z-dialog); inset: var(--fig-lb-inset, 12px);
+  display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden;
+  background: var(--fig-lt-bg); color: var(--text); border: 1px solid var(--border-strong); border-radius: var(--r-lg);
+  box-shadow: var(--shadow-3); animation: ui-fade-in var(--dur-base) var(--ease-out);
+}
+:root[data-accent="violet"] .fig-lightbox { --accent: #b48ef2; --accent-press: #c7a9f6; --accent-soft: #b48ef22e; --on-accent: #140a26; }
+:root[data-accent="teal"] .fig-lightbox { --accent: #33d6c4; --accent-press: #5fe2d3; --accent-soft: #33d6c42e; --on-accent: #021a17; }
+:root[data-accent="amber"] .fig-lightbox { --accent: #ffb454; --accent-press: #ffc67a; --accent-soft: #ffb4542e; --on-accent: #1f1300; }
+:root[data-accent="rose"] .fig-lightbox { --accent: #ff77c8; --accent-press: #ff96d5; --accent-soft: #ff77c82e; --on-accent: #26061a; }
+.fig-lightbox:focus { outline: none; }
+.fig-lightbox__head {
+  flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 4px var(--s2); min-width: 0;
+  min-height: var(--fig-lb-head, 44px); padding: 4px 6px 4px var(--s3); box-sizing: border-box;
+  border-bottom: 1px solid var(--fig-lt-rule);
+}
+.fig-lightbox__title {
+  flex: 0 1 auto; min-width: 0; max-width: 45%; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: var(--fs-md); font-weight: var(--fw-semibold);
+}
+.fig-lightbox__desc { flex: 1 1 120px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-sm); color: var(--text-dim); }
+.fig-lightbox__actions { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.fig-lightbox__scale .ui-seg__item { font-family: var(--font-sans); letter-spacing: 0; text-transform: none; }
+.fig-lightbox__before { flex: none; min-height: var(--fig-lb-panels, 36px); padding: 4px var(--s3); box-sizing: border-box; border-bottom: 1px solid var(--fig-lt-rule); }
+.fig-lightbox__stage { position: relative; flex: 1 1 auto; min-height: 0; min-width: 0; overflow: auto; background: var(--fig-lt-ink); }
+.fig-lightbox__stage .fig-image { background: transparent; border-radius: 0; }
+/* Fit: the whole image, as large as the stage (crops upscaled) */
+.fig-lightbox__stage[data-scale="fit"] { overflow: hidden; }
+.fig-lightbox__stage[data-scale="fit"] .fig-image { position: absolute; inset: 6px; }
+.fig-lightbox__stage[data-scale="fit"] .fig-image img:not(.is-loading) { width: 100%; height: 100%; max-width: none; object-fit: contain; }
+/* Fit width / Actual size: in the page flow, centred while smaller than the stage, scrolling when larger */
+.fig-lightbox__stage:not([data-scale="fit"]) { display: flex; }
+.fig-lightbox__stage:not([data-scale="fit"]) .fig-image { flex: none; margin: auto; padding: 6px; }
+.fig-lightbox__stage[data-scale="width"] .fig-image { width: 100%; box-sizing: border-box; }
+.fig-lightbox__stage[data-scale="width"] .fig-image img { width: 100%; height: auto; }
+.fig-lightbox__stage[data-scale="actual"] .fig-image img { max-width: none; max-height: none; width: auto; height: auto; }
+/* crops: every pixel kept */
+.fig-lightbox__stage[data-pixelated] .fig-image img { image-rendering: pixelated; }
+.fig-lightbox__panels { display: flex; flex-wrap: wrap; gap: 4px; }
+.fig-lightbox__panel {
+  padding: 3px 9px; border: 1px solid var(--border); border-radius: var(--r-pill); background: var(--surface-1);
+  color: var(--text-dim); font: inherit; font-size: var(--fs-sm); cursor: pointer;
+}
+.fig-lightbox__panel:hover { color: var(--text); border-color: var(--border-strong); }
+.fig-lightbox__panel[data-on="true"] { color: var(--text); background: var(--accent-soft); border-color: var(--accent); }
+.fig-lightbox__panel:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.fig-lightbox .ui-iconbtn:focus-visible, .fig-lightbox .ui-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+@media (prefers-reduced-motion: reduce) { .fig-lightbox, .fig-lightbox__scrim { animation: none; } }
 
 /* server-rendered images with loading / error states */
 .fig-image {
@@ -71,8 +169,7 @@
 /* isolate: the picker table's sticky header never paints over the preview */
 .fig-grid__controls { display: flex; flex-direction: column; gap: var(--s3); min-width: 0; isolation: isolate; }
 .fig-grid__preview {
-  --fig-sticky-top: var(--s2);
-  position: sticky; top: var(--fig-sticky-top);
+  position: sticky; top: var(--fig-sticky-top, 8px);
   display: flex; flex-direction: column; gap: var(--s1); min-width: 0;
 }
 .fig-grid__previewhead { display: flex; align-items: center; gap: var(--s2); min-width: 0; min-height: 28px; }
@@ -82,10 +179,13 @@
 .fig-grid__status[data-tone="good"] { color: var(--good); }
 .fig-grid__paper {
   /* the stage scrolls below the app top bar: viewport − top bar − sticky offset − preview head */
-  --fig-paper-max: calc(100dvh - var(--topbar-h) - var(--fig-sticky-top) - 48px);
-  aspect-ratio: 210 / 297; max-height: var(--fig-paper-max); width: 100%;
+  --fig-paper-max: calc(100dvh - var(--topbar-h) - var(--fig-sticky-top, 8px) - var(--fig-preview-head, 48px));
+  aspect-ratio: 210 / 297; max-height: var(--fig-paper-max); width: 100%; padding: var(--fig-paper-pad, 8px);
 }
-.fig-grid__paper img { max-height: calc(var(--fig-paper-max) - 2 * var(--s2)); max-width: 100%; width: auto; height: auto; object-fit: contain; }
+.fig-grid__paper img { max-height: calc(var(--fig-paper-max) - 2 * var(--fig-paper-pad, 8px)); max-width: 100%; width: auto; height: auto; object-fit: contain; }
+/* the whole preview opens the full-size view */
+.fig-grid__zoom { position: absolute; inset: 0; z-index: 1; padding: 0; border: 0; background: transparent; cursor: zoom-in; border-radius: inherit; }
+.fig-grid__zoom:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 
 .fig-order { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
 .fig-order__item {
@@ -98,7 +198,7 @@
   cursor: pointer; border-radius: var(--r-sm);
 }
 .fig-order__label:hover { color: var(--accent); }
-.fig-order__label:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+.fig-order__label:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 .fig-rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--s1); }
 .fig-row {
@@ -148,7 +248,7 @@
   transition: border-color var(--dur-fast);
 }
 .fig-nexus__tile:hover { border-color: var(--accent); }
-.fig-nexus__tile:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.fig-nexus__tile:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .fig-nexus__tile img { display: block; width: 100%; height: auto; }
 .fig-nexus__tilecap { display: flex; align-items: center; justify-content: space-between; gap: var(--s1); padding: 2px var(--s2) var(--s1); font-size: var(--fs-xs); background: var(--bg-0); }
 
@@ -166,7 +266,7 @@
   font-size: var(--fs-2xs); text-align: center;
 }
 .fig-insp__panel[data-on="true"] { border-color: var(--accent); color: var(--text); background: var(--accent-soft); }
-.fig-insp__panel:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+.fig-insp__panel:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .fig-insp__panel img { width: 100%; aspect-ratio: 1 / 1; object-fit: contain; image-rendering: pixelated; background: var(--surface-3); border-radius: 2px; }
 .fig-insp__panel span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
@@ -179,7 +279,8 @@
     position: static; order: -1;
     padding: var(--s2) 0; border-bottom: 1px solid var(--border);
   }
-  .fig-grid__paper { --fig-paper-max: min(40vh, 440px); aspect-ratio: auto; }
+  /* as large as the window allows below the bar (was capped at 40vh) */
+  .fig-grid__paper { --fig-paper-max: max(var(--fig-preview-min, 320px), calc(100dvh - var(--topbar-h) - var(--fig-preview-stacked, 200px))); aspect-ratio: auto; }
 }
 @container fig-page (max-width: 560px) {
   .fig-bar { padding: var(--s1) var(--s2); }

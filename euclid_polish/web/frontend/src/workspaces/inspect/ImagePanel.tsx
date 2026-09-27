@@ -1,8 +1,10 @@
 /* An image HDU (or a 4-band HDU group) of any dimensionality in the viewer
-   (collection `fits`): plane picker, colour/planes stacking, display bin, log
-   render and HDU comparison; the plane's statistics + histogram, its sky
-   footprint and a PNG thumbnail below. */
-import { useMemo, useRef, useState } from "react";
+   (collection `fits`), image first: one control row (the page's HDU / view
+   picker, then colour/planes stacking, display bin, log render, HDU
+   comparison; the plane picker for a cube), the viewer at the full size the
+   stage allows, then the plane's statistics + histogram, its sky footprint
+   and a PNG thumbnail. */
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useResource } from "../../api/query";
 import { formatCount, formatNumber, formatRaDec } from "../../format";
 import { useUrlState } from "../../hooks/useUrlState";
@@ -12,8 +14,9 @@ import {
 } from "../../ui";
 import { ImageViewer, type ViewerApi, type ViewerState } from "../../viewer";
 import { imageStatsUrl, previewUrl, type ImageStats, type InspectResponse, type WcsSummary } from "./api";
+import { FitBox } from "../sky/results/FitBox";
 import { HistogramPlot } from "./charts";
-import { axisName, basename, flatIndex, planeIndex, shapeText, viewerParams, type Selected } from "./model";
+import { axisName, basename, brightExposure, compareTiers, flatIndex, planeIndex, shapeText, viewerParams, type Selected } from "./model";
 import { SkyLink } from "./SkyLink";
 
 /** The viewer shows at most this many tier chips (the rest are hidden, see
@@ -21,7 +24,7 @@ import { SkyLink } from "./SkyLink";
 const SHOWN_TIERS = 12;
 
 const BIN_OPTIONS = [
-  { value: "auto", label: "auto" }, { value: "1", label: "1×" }, { value: "2", label: "2×" },
+  { value: "auto", label: "Auto" }, { value: "1", label: "1×" }, { value: "2", label: "2×" },
   { value: "4", label: "4×" }, { value: "8", label: "8×" }, { value: "16", label: "16×" },
 ];
 
@@ -108,8 +111,10 @@ function StatsCard({ stats, loading, error, unit, title }: {
   );
 }
 
-export function ImagePanel({ fits, summary, sel, unit }: {
+export function ImagePanel({ fits, summary, sel, unit, head }: {
   fits: string; summary: InspectResponse; sel: Selected; unit: string;
+  /** The page's HDU / view picker, the start of this panel's one control row. */
+  head?: ReactNode;
 }) {
   const [stack, setStack] = useUrlState("stack", "bands");
   const [bin, setBin] = useUrlState("bin", "auto");
@@ -145,22 +150,33 @@ export function ImagePanel({ fits, summary, sel, unit }: {
   const shownTiers = vstate?.tiers ?? [group ? group.id : `h${hdu?.index ?? 0}`];
 
   const wcs = group?.wcs ?? hdu?.wcs;
+  // A results FITS opens on LR and SR colour side by side (the comparison it is for).
+  const firstTiers = useMemo(() => compareTiers(summary, sel), [summary, sel]);
+  // A bright target (the poster galaxy's core at VIS 12 AB): scale knee and
+  // white to its 99.9th percentile once per HDU, so the core is not blown
+  // out. A per-viewer setting; the Display dock resets it.
+  const exposure = useRef<{ at: string; view: { knee: number; gain: number } | null }>({ at: "", view: null });
+  const p999 = stats.data?.percentiles?.["99.9"];
+  const exposureAt = `${fits}|${sel.key}|${render}`;
+  useEffect(() => {
+    if (render === "log" || p999 == null || exposure.current.at === exposureAt) return;
+    const view = brightExposure(p999, 100);
+    exposure.current = { at: exposureAt, view };
+    if (view) api.current?.setView(view);
+  }, [p999, exposureAt, render]);
   return (
     <div className="insp-img">
-      <div className="insp-toolbar insp-toolbar--sub" role="toolbar" aria-label="Image controls">
+      <div className="insp-viewbar">
+        {head}
+        <div className="insp-viewbar__controls" role="toolbar" aria-label="Image controls">
         {stackable && (
           <Segmented size="sm" aria-label="Planes as" value={stack === "planes" ? "planes" : "bands"}
             onChange={(v) => setStack(v)}
             options={[
-              { value: "bands", label: "colour", title: `The ${hdu?.bands?.length} planes as one colour cube${hdu?.bands_assumed ? " (bands assumed VIS, Y, J, H)" : ""}` },
-              { value: "planes", label: "planes", title: "One plane at a time" },
+              { value: "bands", label: "Colour", title: `The ${hdu?.bands?.length} planes as one colour cube${hdu?.bands_assumed ? " (bands assumed VIS, Y, J, H)" : ""}` },
+              { value: "planes", label: "Planes", title: "One plane at a time" },
             ]} />
         )}
-        {!stacked && planes > 1 && (
-          <PlanePicker axes={axes} ndim={hdu?.ndim ?? 3} plane={plane} bands={hdu?.bands ?? null}
-            onPlane={(k) => api.current?.goTo(Math.max(0, Math.min(planes - 1, k)))} />
-        )}
-        <span className="insp-toolbar__spacer" />
         <label className="insp-inline">
           <span className="insp-inline__label">Bin</span>
           <Select size="sm" aria-label="Display bin" value={bin} onChange={setBin} options={BIN_OPTIONS} />
@@ -174,16 +190,25 @@ export function ImagePanel({ fits, summary, sel, unit }: {
           <MultiSelect size="sm" aria-label="Compare HDUs" placeholder="Compare…" value={shownTiers}
             options={tierOptions} onChange={(keys) => { if (keys.length) api.current?.setTiers(keys); }} />
         )}
+        </div>
+        {!stacked && planes > 1 && (
+          <PlanePicker axes={axes} ndim={hdu?.ndim ?? 3} plane={plane} bands={hdu?.bands ?? null}
+            onPlane={(k) => api.current?.goTo(Math.max(0, Math.min(planes - 1, k)))} />
+        )}
       </div>
       {hdu?.bands_assumed && stacked && (
         <p className="insp-note">No BANDS card: the four planes are taken as VIS, Y, J, H.</p>
       )}
-      <div className="insp-viewer">
-        <ImageViewer collection="fits" params={params} urlKey="fits"
-          onReady={(a) => { api.current = a; }}
+      <FitBox className="insp-viewer" label="Image">
+        <ImageViewer collection="fits" params={params} urlKey="fits" tiers={firstTiers}
+          onReady={(a) => {
+            api.current = a;
+            const e = exposure.current;
+            if (a && e.view && e.at === exposureAt) a.setView(e.view);
+          }}
           onState={(s) => setVstate((prev) => (prev && prev.index === s.index && prev.tiers.join() === s.tiers.join()
             ? prev : { index: s.index, tiers: s.tiers }))} />
-      </div>
+      </FitBox>
       <div className="insp-cards">
         <StatsCard stats={stats.data} loading={stats.loading} error={stats.error?.message ?? null} unit={unit}
           title={statsTitle} />
