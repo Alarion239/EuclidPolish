@@ -353,17 +353,19 @@ export const Checkbox = forwardRef<HTMLInputElement, {
   checked: boolean; onChange: (checked: boolean) => void; children?: ReactNode;
   disabled?: boolean; indeterminate?: boolean; title?: string; className?: string;
   "aria-label"?: string; id?: string; name?: string;
+  /** Ids of the text that describes the box (e.g. why it is disabled). */
+  "aria-describedby"?: string;
   onClick?: (e: MouseEvent<HTMLInputElement>) => void;
 }>(function Checkbox(
   { checked, onChange, children, disabled, indeterminate = false, title, className, id, name, onClick,
-    "aria-label": ariaLabel },
+    "aria-label": ariaLabel, "aria-describedby": describedBy },
   ref,
 ) {
   const inner = useRef<HTMLInputElement>(null);
   useEffect(() => { if (inner.current) inner.current.indeterminate = indeterminate; }, [indeterminate]);
   const box = (
     <input ref={composeRefs(ref, inner)} type="checkbox" id={id} name={name} checked={checked}
-      disabled={disabled} aria-label={ariaLabel}
+      disabled={disabled} aria-label={ariaLabel} aria-describedby={describedBy || undefined}
       onClick={onClick} onChange={(e) => onChange(e.target.checked)} />
   );
   if (children == null) {

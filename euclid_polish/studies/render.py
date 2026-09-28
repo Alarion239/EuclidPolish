@@ -26,6 +26,7 @@ from __future__ import annotations
 import csv
 import dataclasses
 import io
+import re
 import threading
 from collections import OrderedDict
 from collections.abc import Mapping, Sequence
@@ -412,8 +413,21 @@ def csv_text(columns: Sequence[str], rows: Sequence[Mapping[str, Any]]) -> str:
 # drawing
 # ---------------------------------------------------------------------------
 
+_LOSS_WORD = re.compile(r"\b(l[123]|berhu)\b", re.IGNORECASE)
+_BAND_WORD = re.compile(r"\b([YJH])_E\b")
+
+
+def display_name(text: Any) -> str:
+    """Figure text as a paper writes it: loss families "L1"/"L2"/"L3"/"BerHu"
+    and Euclid bands "Y"/"J"/"H" (the recorded keys stay unchanged in the
+    CSVs and selections)."""
+    out = _LOSS_WORD.sub(lambda m: "BerHu" if m.group(1).lower() == "berhu" else m.group(1).upper(),
+                         str(text))
+    return _BAND_WORD.sub(r"\1", out)
+
+
 def _finish(ax, title: str, xlabel: str, ylabel: str) -> None:
-    ax.set_title(title, loc="left", fontsize=PANEL_TITLE_SIZE, fontweight=700, pad=10)
+    ax.set_title(display_name(title), loc="left", fontsize=PANEL_TITLE_SIZE, fontweight=700, pad=10)
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
     ax.grid(True, color=GRID, linewidth=0.55, alpha=0.8)
@@ -435,8 +449,9 @@ def _band_axes(fig: Figure, bands: Sequence[str]):
 
 def _legend(fig: Figure, handles, labels, ncol: int) -> None:
     if handles:
-        fig.legend(handles, labels, loc="lower center", ncol=max(1, min(ncol, 8)),
-                   frameon=False, fontsize=LEGEND_SIZE, bbox_to_anchor=(0.5, 0.035))
+        fig.legend(handles, [display_name(label) for label in labels], loc="lower center",
+                   ncol=max(1, min(ncol, 8)), frameon=False, fontsize=LEGEND_SIZE,
+                   bbox_to_anchor=(0.5, 0.035))
 
 
 def _note(fig: Figure, text: str) -> None:
@@ -533,7 +548,7 @@ def _draw_paired(fig: Figure, rows: list[dict], data: StudyData, sel: Selection)
                         capsize=4, markersize=6)
         ax.axvline(0.0, color=MUTED, linewidth=1.0)
         ax.set_yticks(range(len(targets)))
-        ax.set_yticklabels(targets if ax is axes[0] else [""] * len(targets))
+        ax.set_yticklabels([display_name(t) for t in targets] if ax is axes[0] else [""] * len(targets))
         ax.invert_yaxis()
         _finish(ax, band, f"Δ integrated PSNR vs {rows[0]['reference']} [dB]", "")
     first = rows[0]
@@ -566,7 +581,7 @@ def _draw_gate(fig: Figure, rows: list[dict], data: StudyData, sel: Selection) -
         ax.scatter(range(len(fam)), [r["uniform"] for r in fam], marker="_", s=300,
                    color=MUTED, zorder=3)
         ax.set_xticks(range(len(fam)))
-        ax.set_xticklabels([r["name"] for r in fam], rotation=30)
+        ax.set_xticklabels([display_name(r["name"]) for r in fam], rotation=30)
         _finish(ax, f"{band} · per family", sel.group or "loss", "summed weight")
     _legend(fig, list(handles.values()), list(handles), len(handles))
 

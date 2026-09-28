@@ -196,3 +196,16 @@ def test_study_data_is_memoized_per_manifest(tmp_path, monkeypatch):
     assert reads == [] and second.knee is first.knee
     store.set_selections(sid, [{"name": "one", "members": [LABELS[0]]}])
     assert render.StudyData.load(store, sid).selections[0]["name"] == "one"
+
+
+def test_figure_text_reads_like_a_paper():
+    """Loss families and Euclid bands are written as in a paper (L1, BerHu, Y),
+    while the group keys (used in selections and CSVs) stay as recorded."""
+    from euclid_polish.studies import render
+    assert render.display_name("l1") == "L1"
+    assert render.display_name("l2 · knee 3") == "L2 · knee 3"
+    assert render.display_name("berhu") == "BerHu"
+    assert render.display_name("169·psnr") == "169·psnr"
+    assert render.display_name("Y_E") == "Y"
+    assert render.display_name("H_E · per member") == "H · per member"
+    assert render.display_name("VIS") == "VIS"

@@ -76,6 +76,7 @@ export const WORKSPACE_META: Record<string, WorkspaceMeta> = {
     tabs: {
       plates: { label: "Plates", description: "Presentation and publication plates", keywords: ["publication", "poster"] },
       sheet: { label: "Sheet", description: "Contact sheets of saved crops", keywords: ["grid", "results", "crops"] },
+      studies: { label: "Studies", description: "Frozen whole-ensemble comparisons for the paper: charts, exports and attached fields", keywords: ["study", "freeze", "paired", "bootstrap", "loss choice"] },
     },
   },
   files: {

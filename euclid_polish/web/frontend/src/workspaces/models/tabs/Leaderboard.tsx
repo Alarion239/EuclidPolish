@@ -40,6 +40,7 @@ import {
   productionRun, relativeTo, statusChecks, type Comparison, type ComparisonRow, type LeaderBenchmark, type LeaderRow, type StatusCheck,
 } from "../model";
 import { evaluationNote, kneeNote } from "../notes";
+import { FreezeStudyDialog } from "../../shared/FreezeStudyDialog";
 import { LogToNotebookButton } from "../../shared/LogToNotebook";
 import "../models.css";
 
@@ -283,6 +284,7 @@ export default function Leaderboard() {
   const [legacyN] = useUrlState("n", 0);
   const askN = legacyN > 0 ? Math.min(MAX_FIELDS, Math.round(legacyN)) : nFields;
   const [evalAsk, setEvalAsk] = useState<null | { force: boolean }>(null);
+  const [freezeOpen, setFreezeOpen] = useState(false);
   const memberRows = members.data?.members;
   const checks = useMemo(() => (o ? statusChecks(o.checks, memberRows) : []), [o, memberRows]);
   const kneeOffered = checks.some((c) => c.fix === "knee" || c.action === "knee");
@@ -303,6 +305,7 @@ export default function Leaderboard() {
     { id: "mdl-member-psnr", label: "Refresh member PSNR", group: "Models", run: run_.psnr },
     { id: "knee-full", label: "Leaderboard: integrate over the full knee range", group: "Models", disabled: isFull, run: () => setRangeRaw("") },
     { id: "knee-relative", label: "Leaderboard: curves relative to the plain mean", group: "Models", run: () => setView("relative") },
+    { id: "study-freeze", label: `Freeze a study of the ${mode} ensemble…`, group: "Models", keywords: ["study", "paper", "figures", "snapshot"], run: () => setFreezeOpen(true) },
   ]);
 
   /* curves */
@@ -464,6 +467,8 @@ export default function Leaderboard() {
           {kneeData?.stale && <Badge tone="warn">curves stale</Badge>}
           <LogToNotebookButton from="Models › Leaderboard" disabled={!o} note={note}
             title="Open Notebook › Log with the evaluation summary and this leaderboard (range and band); you edit it there first" />
+          <Button size="sm" onClick={() => setFreezeOpen(true)}
+            title="Freeze the whole ensemble (members, gate, comparisons and up to 10 fields) into a study in Figures › Studies">Freeze study…</Button>
           {runMenu}
         </Toolbar>
         <LoadState loading={kneeRes.loading} error={kneeRes.error} onRetry={kneeRes.reload}
@@ -495,6 +500,7 @@ export default function Leaderboard() {
               : r.kind === "combiner" ? { kind: "combiner", id: `${mode}/spatial_gate_combiner` } : null)} />
         </LoadState>
       </section>
+      {freezeOpen && <FreezeStudyDialog mode={mode} onClose={() => setFreezeOpen(false)} />}
       {evalAsk && (
         <EvaluateDialog open onOpenChange={(v) => { if (!v) setEvalAsk(null); }} mode={mode}
           defaultN={askN} lastN={o?.headline.n_scored ?? null} defaultForce={evalAsk.force}

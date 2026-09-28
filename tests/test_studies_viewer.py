@@ -46,6 +46,12 @@ def test_meta_lists_the_attached_fields_and_tiers(frozen):
     assert len(members) == 3 and all(t["hidden"] for t in members)
     assert meta["member_labels"] == LABELS and meta["default_tier"] == "sr"
     assert "mask" not in meta["objects"][0]["tiers"] and "mask" in meta["objects"][1]["tiers"]
+    # Member tiers are listed per object only once fetched; the others are
+    # dimmed by the viewer with the reason from ``missing_tier_labels``.
+    assert not [t for t in meta["objects"][0]["tiers"] if t.startswith("member")]
+    assert meta["missing_tier_labels"] == {"member0": "fetch member 01 first",
+                                           "member1": "fetch member 02 first",
+                                           "member2": "fetch member 03 first"}
 
 
 def test_a_cube_needs_the_field_fetched_first(frozen):
@@ -68,7 +74,9 @@ def test_fetched_cubes_serve_every_product(frozen):
         viewer_data.get_cube("study", 0, "member1", params)
     assert err.value.code == 404 and "fetch member 02 first" in str(err.value)
     _fetch(frozen, "test-00001", ["member_02"])
-    assert viewer_data.get_meta("study", params)["objects"][0]["fetched_members"] == [1]
+    meta = viewer_data.get_meta("study", params)
+    assert meta["objects"][0]["fetched_members"] == [1]
+    assert [t for t in meta["objects"][0]["tiers"] if t.startswith("member")] == ["member1"]
     member, info = viewer_data.get_cube("study", 0, "member1", params)
     np.testing.assert_array_equal(member, np.load(frozen["cubes"] / "member1_00001.npy"))
     assert "02·psnr" in info["label"]

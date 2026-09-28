@@ -28,7 +28,7 @@ Rules that apply everywhere:
 
 | Path | What it holds |
 |---|---|
-| `api/client.ts` | `apiGet`, `apiPost`, `ApiError`, `isFasrcOffline`, `toFormData` |
+| `api/client.ts` | `apiGet`, `apiGetText` (a CSV body; refusals still throw `ApiError`), `apiPost`, `ApiError`, `isFasrcOffline`, `toFormData` |
 | `api/query.ts` | `queryClient`, `useResource`, `invalidate`, `prefetchResource`, `get/setResourceData` |
 | `api/jobs.ts` | `useJob`, `useJobsFeed`, `useTrackedJob`, `cancelJob`, `cancelSlurmJob`, `useJobsStore` |
 | `app/manifest.ts` | Typed route manifest (C1) and page matcher (mirrors `spa_routes.py`) |
@@ -1549,12 +1549,12 @@ workspace has its own subsection below (§11.7–§11.15).
 | `synthetic` | `tabs/{Status,Records,Galaxies,Stars,Noise,Psf,Fields}.tsx` (+ `galaxies/`, `stars/`, `psf/`, `fields/`, `statusModel.ts`, `recordsModel.ts`, `noiseModel.ts`, `generate.tsx`, `header.tsx`) | `readiness`, `noisepos`, `archivefield`, `star`, `truth`, `psf`, `tng` |
 | `models/:mode` | `tabs/{Leaderboard,Members,Train,Combiner,Diagnostics,Images}.tsx` (+ `members/`, `diagnostics/`, `images/`, `model.ts`, `trainModel.ts`, `notes.ts`, `common.tsx`, `PixelTrace.tsx`) | `member`, `combiner` |
 | `sky` | `tabs/{Atlas,Targets,Compare}.tsx` (+ `atlas/`, `targets/`, `compare/`, `results/` the tile card and model picker, `src/sky/` Aladin engine) | `tile`, `source`, `realtile`, `experiment` |
-| `figures` | `tabs/{Plates,Sheet}.tsx` (+ `plates/`, `sheet/`, `grid/`) | `figure` |
+| `figures` | `tabs/{Plates,Sheet,Studies}.tsx` (+ `plates/`, `sheet/`, `grid/`, `studies/`) | `figure` |
 | `files` | `FilesPage.tsx` (`?fits=`, `?path=`, `dir`, `q`, `hdu`, `slice`, `view`) | `fits` |
 | `runs` | `tabs/{Live,History,Steps}.tsx` (+ `steps/` the FASRC step card behind `src/fasrc.tsx`, `Connection.tsx`, `Queue.tsx`, `LogViewer.tsx`, `LocalJob.tsx`) | (`job`, built in) |
 | `notebook` | `tabs/{Log,Backups,Sandboxes}.tsx` (+ `NotebookView.tsx`, `CampaignBar.tsx`, `Backups.tsx`, `Archive.tsx`, `TimeTravel.tsx`, `TrackedJobs.tsx`) | `campaign` |
 | `system` | `tabs/{Connections,Config,Lineage,Code,Storage,Appearance}.tsx` (+ `configFields.ts`, `configModel.ts`, `git/`, `provenance/`) | `prov`, `commit`, `root` |
-| (shared) | `workspaces/shared/`: `LogToNotebook.tsx`, `ConfigKnobsLink.tsx`, `PageLead.tsx`, `versionText.ts`, `noteText.ts` (§11.6) | — |
+| (shared) | `workspaces/shared/`: `LogToNotebook.tsx`, `ConfigKnobsLink.tsx`, `PageLead.tsx`, `FreezeStudyDialog.tsx` (+ `studyFreeze.ts`), `versionText.ts`, `noteText.ts` (§11.6) | — |
 
 Old URLs: every page of the previous console (`/realism/*`, `/data/*`, `/ensemble/:mode/*`,
 `/inspect`, `/ops/*`, `/settings/*` and the pre-rework paths) redirects to its new home with its
@@ -1807,6 +1807,21 @@ rest, counts on the chips and controls they belong to (so a `DataTable` beside t
   sheet: the preview, the full-size view and the downloads ask for `missing=blank`
   (`api.ts gridUrl(…, missing)`) and the server draws a grey "Not available" cell in place;
   `gridStatus` refuses only when no cell is available. The limits are named only once reached.
+- **Studies** (`?study=<id>`; `studies/`): frozen whole-ensemble comparisons (API.md "Model studies"). The list
+  (resume an incomplete study, confirmed delete) and one study: what was frozen (summary line, facts, the
+  sidecar note, provenance in Details), the selection (members, group by, colour by, named selections
+  saved to the study's sidecar), the six charts (`?chart=` knee · integrated · paired · gate · training ·
+  real) and the attached fields. Every chart draws the backend's chart table (`…/figure/<chart>.csv`,
+  `api.ts useStudyCsv`), the rows its PDF / PNG / SVG export draws, so the page never recomputes a
+  statistic (the paired bootstrap included); each has Export (dpi · PDF · PNG · SVG · CSV, the links
+  carry the selection, `model.ts figureUrl / csvUrl`) and "Log to notebook" citing the study id and the
+  manifest sha256. Fields are fetched only by their buttons (one fetch at a time console-wide: the
+  buttons wait while any `study-fetch` job runs); a fetched field opens in the `study` viewer, with
+  chips for the member SRs already fetched. The freeze itself is `shared/FreezeStudyDialog.tsx` (Models ›
+  Leaderboard's "Freeze study…", this tab and the palette): what will be frozen → the field gallery
+  (≤ 10, sizes as upper bounds, disabled fields with their reason) → name and Freeze; only GETs until
+  Freeze, and every refusal (400 / 409 stale or busy / 503 / 507) is worded (`studyFreeze.ts
+  refusalMessage`).
 - `figures/model.ts viewerLink` sends a saved crop back to its source: a real tile to its Sky ›
   Targets card, a synthetic stamp to Models › Images `?set=stamps`, a test field to Models ›
   Images, a record to Synthetic › Records.

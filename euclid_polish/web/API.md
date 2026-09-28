@@ -276,7 +276,10 @@ attached fields, see *Model studies* below).
   target FWHM), `mask` (blackout holes, `arb`) and `member<i>` (hidden; the
   study's member order, `meta.member_labels`). Served from the fetched-field
   cache only: an object is `fetched` once its core products are, and lists
-  `fetched_members` (member indices); an unfetched field's cube is 404
+  `fetched_members` (member indices); its `tiers` hold every product tier it
+  has but only the fetched `member<i>` tiers — the others are dimmed by the
+  viewer with `meta.missing_tier_labels["member<i>"]` = "fetch member <N>
+  first". An unfetched field's cube is 404
   "fetch the field first", an unfetched member tier 404 "fetch member <N>
   first" (the viewer never fetches). Real-tile fields carry `X-Cube-WCS`
   (SR grid = LR ×2).

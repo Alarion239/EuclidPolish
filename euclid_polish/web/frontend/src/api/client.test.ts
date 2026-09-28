@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiError, apiGet, apiPost, isFasrcOffline } from "./client";
+import { ApiError, apiGet, apiGetText, apiPost, isFasrcOffline } from "./client";
 import { getJSON, postForm } from "../api";
 
 type Handler = (url: string, init: RequestInit) => Response | Promise<Response>;
@@ -143,5 +143,20 @@ describe("compat wrappers (src/api.ts)", () => {
     const err = await caught(postForm("/api/x", { a: 1 }));
     expect(err).toBeInstanceOf(Error);
     expect(err.message).toBe("nope");
+  });
+});
+
+describe("apiGetText", () => {
+  it("returns the raw text body (a CSV)", async () => {
+    mockFetch(() => new Response("a,b\n1,2\n", { status: 200, headers: { "Content-Type": "text/csv" } }));
+    await expect(apiGetText("/api/x.csv")).resolves.toBe("a,b\n1,2\n");
+  });
+
+  it("throws the server's JSON refusal as an ApiError", async () => {
+    mockFetch(() => json({ ok: false, error: "this study has no gate weight diagnostic" }, 404));
+    const err = await caught(apiGetText("/api/x.csv"));
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err.status).toBe(404);
+    expect(err.message).toBe("this study has no gate weight diagnostic");
   });
 });

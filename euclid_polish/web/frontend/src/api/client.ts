@@ -82,6 +82,16 @@ export async function apiGet<T = unknown>(url: string, opts: { signal?: AbortSig
   return p.json as T;
 }
 
+/** GET a text body (a CSV export the page also draws from). Throws
+ *  `ApiError` on HTTP/network errors, with the server's JSON `{error}` text
+ *  when the refusal carried one. */
+export async function apiGetText(url: string, opts: { signal?: AbortSignal } = {}): Promise<string> {
+  const r = await send(url, { headers: { Accept: "text/csv, text/plain, */*" }, signal: opts.signal });
+  const p = await read(r);
+  if (!r.ok) throw httpError(r, p, url);
+  return p.text;
+}
+
 /** Build the form body every mutation/job endpoint expects (null/undefined
  *  values are skipped; everything else is stringified). */
 export function toFormData(data: FormRecord | FormData): FormData {

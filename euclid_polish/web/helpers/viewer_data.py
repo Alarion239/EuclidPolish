@@ -2752,12 +2752,15 @@ def _study_manifest(params: dict[str, str]) -> dict[str, Any]:
         raise ViewerError(exc.code, str(exc)) from exc
 
 
-def _study_field_tiers(record: Mapping[str, Any], n_members: int) -> list[str]:
+def _study_field_tiers(record: Mapping[str, Any], fetched_members: list[int]) -> list[str]:
+    """The object's tiers: every product tier it has, and only the member
+    tiers already fetched (the others are dimmed with their reason from
+    ``missing_tier_labels``)."""
     products = record.get("products") or {}
     keys = [key for key, product in _STUDY_PRODUCTS.items() if product in products]
     if "hr" in products:
         keys.insert(keys.index("hr") + 1, "bhr")
-    return keys + [f"member{i}" for i in range(n_members)]
+    return keys + [f"member{i}" for i in fetched_members]
 
 
 def _study_meta(params: dict[str, str]) -> dict[str, Any]:
@@ -2771,18 +2774,24 @@ def _study_meta(params: dict[str, str]) -> dict[str, Any]:
         products = f.get("products") or {}
         cached = cache.cached_products(study_id, f["fid"], products)
         core = [name for name in CORE_PRODUCTS if name in products]
+        fetched_members = [i for i, label in enumerate(labels)
+                           if member_product(label) in cached]
         objects.append({
             "id": f["fid"], "label": f.get("label") or f["fid"], "kind": f.get("kind"),
             "fetched": bool(core) and set(core) <= cached, "bytes": f.get("bytes"),
-            "fetched_members": [i for i, label in enumerate(labels)
-                                if member_product(label) in cached],
-            "tiers": _study_field_tiers(f, len(labels))})
+            "fetched_members": fetched_members,
+            "tiers": _study_field_tiers(f, fetched_members)})
     tiers = [dict(t) for t in _STUDY_TIERS]
     tiers += [{"key": f"member{i}", "label": f"SR {label}", "hidden": True, "unit": "e-"}
               for i, label in enumerate(labels)]
     return {"count": len(objects), "tiers": tiers, "default_tier": "sr",
             "band_names": list(BAND_NAMES), "study": study_id, "regime": manifest.get("regime"),
-            "member_labels": labels, "objects": objects}
+            "member_labels": labels, "objects": objects,
+            # Why a member tier an object does not list is unavailable (the
+            # viewer dims it with this reason; member SRs are fetched one by one).
+            "missing_tier_labels": {
+                f"member{i}": f"fetch member {member_product(label).removeprefix('member_')} first"
+                for i, label in enumerate(labels)}}
 
 
 def _study_cube(index: int, tier: str, params: dict[str, str]):

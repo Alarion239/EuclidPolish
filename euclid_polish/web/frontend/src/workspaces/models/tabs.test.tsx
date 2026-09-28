@@ -201,6 +201,23 @@ describe("leaderboard", () => {
     .map((tr) => [...tr.querySelectorAll("td")].map((td) => td.textContent));
   const load = async () => (await import("./tabs/Leaderboard")).default;
 
+  it("opens the freeze-study dialog from the toolbar; it only reads until Freeze", async () => {
+    routes["GET /api/studies/candidates?mode=starfull"] = () => ({ body: {
+      ok: true, regime: "starfull", fields: [], max_fields: 10, can_freeze: true, blocking: null, fasrc_connected: true, fields_note: null,
+      ensemble: { members: ["196·psnr"], n_members: 1, gate: { available: true, state: "current", name: "spatial_gate_p20" }, evaluated_at: null,
+        blocks: [{ id: "members", title: "Members", state: "current", detail: "1 active starfull member." }], stale: [], numbers_bytes: 1000 },
+    } });
+    const Leaderboard = await load();
+    show(<Leaderboard />);
+    fireEvent.click(await screen.findByRole("button", { name: "Freeze study…" }));
+    const dlg = await screen.findByRole("dialog", { name: "Freeze a study" });
+    expect(await within(dlg).findByText("1 active starfull member.")).toBeTruthy();
+    expect(gets("/api/studies/candidates?mode=starfull")).toHaveLength(1);
+    expect(calls.filter((c) => c.method === "POST" && c.url.startsWith("/api/studies"))).toHaveLength(0);
+    fireEvent.click(within(dlg).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Freeze a study" })).toBeNull());
+  });
+
   it("states the production gate against the best member and the plain mean, with no tiles", async () => {
     const Leaderboard = await load();
     show(<Leaderboard />);

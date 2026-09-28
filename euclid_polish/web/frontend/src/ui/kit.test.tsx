@@ -206,6 +206,14 @@ describe("form controls", () => {
     expect(screen.getByRole("button", { name: "Select…" })).toBeTruthy();   // no label: its text
   });
 
+  it("Checkbox is described by the ids it is given (a disabled box's reason)", () => {
+    render(<><Checkbox checked={false} disabled aria-describedby="why" onChange={() => {}}>field</Checkbox><p id="why">no SR</p></>);
+    const box = screen.getByRole("checkbox", { name: "field" });
+    expect(box.getAttribute("aria-describedby")).toBe("why");
+    render(<Checkbox checked={false} onChange={() => {}}>plain</Checkbox>);
+    expect(screen.getByRole("checkbox", { name: "plain" }).hasAttribute("aria-describedby")).toBe(false);
+  });
+
   it("Checkbox reflects the indeterminate state", () => {
     render(<Checkbox checked={false} indeterminate onChange={() => {}}>some</Checkbox>);
     const box = screen.getByRole("checkbox") as HTMLInputElement;
