@@ -22,15 +22,15 @@ def client():
 
 
 def test_tracking_page_renders_when_empty(client):
-    r = client.get("/ops/tracking")
+    r = client.get("/notebook/log")
     assert r.status_code == 200
     assert b'id="root"' in r.data
 
 
 def test_tracking_page_reachable_without_ssh(client, monkeypatch):
-    # The Ops tracking tab is local-first: it serves with SSH down.
+    # The Notebook log is local-first: it serves with SSH down.
     monkeypatch.setattr(remote.STATE, "ssh", None)
-    r = client.get("/ops/tracking")
+    r = client.get("/notebook/log")
     assert r.status_code == 200
 
 
@@ -50,7 +50,7 @@ def test_new_then_state_then_save(client):
     assert st["active"]["title"] == "Route Run"
 
     # The React page reads the updated state through its JSON endpoint.
-    assert client.get("/ops/tracking").status_code == 200
+    assert client.get("/notebook/log").status_code == 200
 
     # Save → archived, no active.
     rs = client.post("/api/tracking/save")
@@ -340,3 +340,60 @@ def test_timetravel_acts_on_a_listed_sandbox(client, monkeypatch, action, target
     monkeypatch.setattr(tt, target, lambda s, **k: calls.append(s) or {"ok": True})
     r = client.post(f"/api/tracking/timetravel/{action}", data={"short": "abc1234"})
     assert r.status_code == 200 and calls == ["abc1234"]
+
+
+def test_jobs_endpoint_lists_every_job_id_of_a_campaign(client):
+    """``?ids=1``: the whole campaign's job ids (unpaged, deduped, newest
+    first) for Runs › History's campaign filter, without the records."""
+    store = default_store()
+    store.create_campaign("ids")
+    _log_jobs(store, 3)
+    store.log_fasrc_job({"jobid": "101", "label": "logged twice"})
+    body = client.get("/api/tracking/jobs?ids=1&limit=1").get_json()
+    assert body["ok"] and body["campaign"] == "current"
+    assert body["jobids"] == ["101", "102", "100"]
+    assert body["total"] == 3
+    assert "jobs" not in body and _BLOB not in json.dumps(body)
+    assert client.get("/api/tracking/jobs?ids=1&campaign=nope").status_code == 404
+
+
+def _stub_timetravel(monkeypatch, seen):
+    def fake_prepare(commit, **k):
+        seen.update(k, commit=commit)
+        return {"short": commit[:7], "home": "/tmp/x", "root": "/tmp/x"}
+
+    monkeypatch.setattr(tt, "prepare_local_sandbox", fake_prepare)
+    monkeypatch.setattr(tt, "write_home_fasrc_config", lambda short, cfg: "/tmp/x/fasrc.json")
+    monkeypatch.setattr(tt, "spawn_server", lambda short, **k: {"ok": True, "url": "http://127.0.0.1:8766/"})
+
+
+def test_timetravel_restore_from_a_fits_backup_uses_its_commit(client, tmp_path, monkeypatch):
+    """A FITS (or image) backup time-travels to the commit it was saved at."""
+    monkeypatch.setattr(Config, "DEFAULT_OUTPUT_DIR", str(tmp_path))
+    src = tmp_path / "result.fits"
+    src.write_bytes(b"SIMPLE = T" + b" " * 80)
+    client.post("/api/tracking/new", data={"title": "fits tt"})
+    rec = client.post("/api/tracking/backup", data={"kind": "fits", "path": str(src), "name": "sr"}).get_json()["record"]
+    seen: dict = {}
+    _stub_timetravel(monkeypatch, seen)
+    commit = (rec.get("commit") or {}).get("hash")
+    r = client.post("/api/tracking/timetravel/restore",
+                    data={"campaign": "current", "backup": rec["name"], "kind": "fits"})
+    if not commit:      # a checkout without git: the route says so
+        assert r.status_code == 400 and "no git commit" in r.get_json()["error"]
+        return
+    assert r.status_code == 200, r.get_data(as_text=True)
+    assert seen["commit"] == commit
+    assert seen["seed_ckpt_dir"] is None
+    assert seen["source"] == {"campaign": "current", "model": None, "backup": rec["name"], "kind": "fits"}
+
+
+def test_timetravel_restore_refuses_an_unknown_backup(client):
+    client.post("/api/tracking/new", data={"title": "nobackup"})
+    r = client.post("/api/tracking/timetravel/restore",
+                    data={"campaign": "current", "backup": "missing", "kind": "image"})
+    assert r.status_code == 400
+    assert "no image backup" in r.get_json()["error"]
+    r = client.post("/api/tracking/timetravel/restore",
+                    data={"campaign": "current", "backup": "x", "kind": "model"})
+    assert r.status_code == 400

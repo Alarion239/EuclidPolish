@@ -20,7 +20,7 @@ from euclid_polish.web import fasrc_config
 from euclid_polish.web import fasrc_fetcher as _fasrc_fetcher
 from euclid_polish.web.fasrc_fetcher import _local_path_for
 from euclid_polish.web.helpers import sky_records
-from euclid_polish.web.helpers.paths import _safe_relpath
+from euclid_polish.web.helpers.paths import _safe_relpath, _sky_records_local_dir
 from euclid_polish.web.remote import STATE
 
 
@@ -381,7 +381,7 @@ def psf_file_summary(path: str) -> dict[str, Any]:
 
 
 def psf_inventory_payload() -> dict[str, Any]:
-    """The ePSF inventory of Data › PSFs (local cache only — no SSH).
+    """The ePSF inventory of Synthetic › PSF (local cache only — no SSH).
 
     Per band ``state``:
 
@@ -469,12 +469,29 @@ def psf_inventory_payload() -> dict[str, Any]:
     meta_stat = _catalog_key(meta_path) if meta_path else None
     return {
         "bands": bands,
+        "generation": _records_psf_generation(),
         "clusters": clusters,
         "clusters_source": "metadata" if meta_rows else ("vis_headers" if vis else None),
         "clusters_meta": {"present": bool(meta_path),
                           "synced_at": os.path.getmtime(meta_path) if meta_stat else None},
         "last_sync": status.get("checked_at"),
     }
+
+
+def _records_psf_generation() -> dict[str, Any] | None:
+    """The PSFs the last generation run used, from the local records'
+    provenance (the newest split that recorded them): ``{subset, psf_kinds:
+    {band: empirical | gaussian}, run, created}``, or ``None`` when no local
+    split recorded them (records generated before the stamp, or not synced)."""
+    records_dir = _sky_records_local_dir()
+    if not records_dir or not os.path.isdir(records_dir):
+        return None
+    found = [(subset, info) for subset in sky_records.SUBSETS
+             if (info := sky_records.records_generation(records_dir, subset)) is not None]
+    if not found:
+        return None
+    subset, info = max(found, key=lambda item: str(item[1].get("created") or ""))
+    return {"subset": subset, **info}
 
 
 def _psf_status() -> dict[str, Any]:

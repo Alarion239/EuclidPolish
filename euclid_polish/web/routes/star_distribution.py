@@ -46,7 +46,7 @@ def _include_training_requested() -> bool:
 def register(app):
     @app.route("/view/star-population-calibration")
     def view_star_population_calibration():
-        """Render the reviewed Gaia-Euclid stellar-prior diagnostics."""
+        """Render the reviewed stellar-prior plate (no Gaia counts: the console plate)."""
         output_format = (request.args.get("format") or "png").strip().lower()
         if output_format not in {"png", "pdf", "svg"}:
             abort(400, description="format must be png, pdf or svg")
@@ -54,7 +54,7 @@ def register(app):
         calibration = state.get("active") or state.get("candidate")
         if not calibration:
             abort(404, description=(
-                "no stellar prior is active or pending — fit one on Realism › Stars"))
+                "no stellar prior is active or pending — fit one on Synthetic › Stars"))
         try:
             dpi = int(request.args.get("dpi", "300"))
             payload = render_star_population_calibration(

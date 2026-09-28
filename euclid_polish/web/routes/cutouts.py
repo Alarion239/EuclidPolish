@@ -1,4 +1,4 @@
-"""Star catalogue + star cutout routes (Data › Catalog and Data › Cutouts).
+"""Star catalogue + star cutout routes (Synthetic › PSF, catalogue and cutouts).
 
 Everything here reads the synchronised FASRC-mirror ``stars.csv`` and the
 local cutout cache only: no SSH, works offline. The explicit catalogue pull
@@ -18,6 +18,7 @@ from euclid_polish.web.helpers import star_catalog
 from euclid_polish.web.helpers.fits_render import (
     _list_band_cutouts,
     _render_fits_to_png,
+    _render_fits_to_png_adaptive,
     _resolve_cutout_path,
 )
 from euclid_polish.web.helpers.paths import _abort_json, root_of
@@ -92,6 +93,11 @@ def register(app):
 
     @app.route("/cutout-image/<band_name>/<path:filename>")
     def cutout_image(band_name: str, filename: str):
+        """One cached cutout as a gray_r PNG. ``stretch=band`` (default): the
+        band's fixed asinh knee, clipped at the 1 / 99.7 percentiles;
+        ``stretch=star``: the cutout's own min–max range under a soft asinh
+        (the Synthetic › PSF gallery), so a bright star's core keeps its
+        shape."""
         out_dir = _output_dir()
         try:
             size = int(request.args.get("size", 0)) or None
@@ -99,12 +105,16 @@ def register(app):
             size = None
         if size is not None and (size < 16 or size > 2048):
             abort(400)
+        stretch = request.args.get("stretch", "band")
+        if stretch not in ("band", "star"):
+            abort(400)
         try:
             band = Config.get_band(band_name)
         except ValueError:
             abort(404)
         fits_path = _resolve_cutout_path(band_name, filename, out_dir)
-        png = _render_fits_to_png(fits_path, band, size=size)
+        png = (_render_fits_to_png_adaptive(fits_path, size or 256) if stretch == "star"
+               else _render_fits_to_png(fits_path, band, size=size))
         return send_file(io.BytesIO(png), mimetype="image/png",
                          max_age=3600)
 

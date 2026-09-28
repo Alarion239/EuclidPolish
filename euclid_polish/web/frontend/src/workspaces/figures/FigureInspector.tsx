@@ -1,6 +1,6 @@
 /* The `figure:<result id>` inspector card: a saved viewer result — every
  * panel it can render, its source and crop geometry, WCS and sky position,
- * and its actions (source viewer, grid, sky, FITS, rename, delete). */
+ * and its actions (source viewer, sheet, sky, Files, FITS, rename, delete). */
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useResource } from "../../api/query";
@@ -62,10 +62,10 @@ export default function FigureInspector({ id }: { id: string }) {
       )}
       <div className="fig-insp__actions">
         {link && <Button asChild size="sm" variant="primary"><Link to={link.to}>{link.label}</Link></Button>}
-        <Button asChild size="sm" icon="columns"><Link to={gridHref([result.id], regime)}>Grid</Link></Button>
+        <Button asChild size="sm" icon="columns"><Link to={gridHref([result.id], regime)}>Sheet</Link></Button>
         {sky && <Button asChild size="sm" icon="globe"><Link to={sky}>Sky</Link></Button>}
         <Menu label="FITS" items={tiers.flatMap((t) => [
-          { label: `Inspect ${t}.fits`, disabled: !inspectLink(result, t), onSelect: () => { const to = inspectLink(result, t); if (to) navigate(to); } },
+          { label: `Open ${t}.fits in Files`, disabled: !inspectLink(result, t), onSelect: () => { const to = inspectLink(result, t); if (to) navigate(to); } },
           { label: `Download ${t}.fits`, onSelect: () => window.location.assign(fitsUrl(result.id, t)) },
         ])} trigger={<Button size="sm" icon="download">FITS</Button>} />
         <Button size="sm" variant="ghost" onClick={() => setRenaming(true)}>Rename</Button>

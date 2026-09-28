@@ -413,7 +413,7 @@ def test_ensemble_defaults_to_the_starfull_regime():
     assert vd._ensemble_starless({"mode": "starless"}) is True
 
 
-def test_ensemble_sr_is_the_production_gate_and_mean_is_its_own_tier(
+def test_ensemble_sr_is_the_one_production_tier_and_mean_is_its_own(
         ensemble_cubes, monkeypatch):
     loadable = {vd.SPATIAL_GATE_KIND, vd.RAW_INCREMENTAL_MINMEANMAX_RBF_KIND}
     monkeypatch.setattr(vd, "_load_field_combiner",
@@ -424,7 +424,8 @@ def test_ensemble_sr_is_the_production_gate_and_mean_is_its_own_tier(
     assert tiers["mean"]["label"] == "Mean of members"
     rbf = vd.COMBINER_MODELS[vd.RAW_INCREMENTAL_MINMEANMAX_RBF_KIND].cube_prefix
     gate = vd.COMBINER_MODELS[vd.SPATIAL_GATE_KIND].cube_prefix
-    assert rbf in tiers and gate not in tiers          # gate is `sr`, not duplicated
+    # One SR tier: the production gate (`sr`); the legacy RBF has none.
+    assert rbf not in tiers and gate not in tiers
     assert meta["default_tier"] == "sr"
     assert meta["morph_base_tier"] == "mean"
     assert all(tier.get("unit") == "e-" for key, tier in tiers.items()

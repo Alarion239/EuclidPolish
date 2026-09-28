@@ -1,14 +1,16 @@
-/* Figures workspace (spec §8.5): grid (the publication contact sheet of saved
-   crops), plates (presentation plates, NEXUS comparison plates, the poster
-   cutout) and results (every crop saved from a viewer). Loading the
-   workspace registers the `figure:<result id>` inspector kind. */
+/* Figures workspace, `/figures/<tab>` (console regrouping): which figures you
+   have for the paper and the poster, whether they are made from the current
+   model, and how to export them. Plates (the calibration plates, NEXUS
+   comparison plates and the synthetic poster scene) and Sheet (the
+   publication contact sheet built from the crops saved in any viewer; it
+   absorbs the old Grid and Results pages). Loading the workspace registers
+   the `figure:<result id>` inspector kind. */
 import { Workspace, defineTabs } from "../../app/workspace";
 import "./register";
 
 export const TABS = defineTabs("figures", {
-  grid: { load: () => import("./tabs/Grid") },
   plates: { load: () => import("./tabs/Plates") },
-  results: { load: () => import("./tabs/Results") },
+  sheet: { load: () => import("./tabs/Sheet") },
 });
 
 export default function FiguresWorkspace() {

@@ -124,7 +124,7 @@ def production_used_members(regime_dir: str, *,
 
     Raises :class:`ValueError` when the payload is missing, or was computed
     for another artifact than the production gate on disk now (open the
-    Ensemble › Combiners tab once to refresh it)."""
+    Models › Combiner tab once to refresh it)."""
     artifact_dir = COMBINER_MODELS[SPATIAL_GATE_KIND].artifact_dir
     path = os.path.join(regime_dir, f"{artifact_dir}_evals.json")
     try:
@@ -136,8 +136,8 @@ def production_used_members(regime_dir: str, *,
     now = combiner_artifact_fingerprint(regime_dir, artifact_dir)
     if not now or diagnostic.get("artifact_fp") != now:
         raise ValueError("the cached gate weight diagnostic is not for the production "
-                         "gate on disk (refit or promoted since) — open Ensemble › "
-                         "Combiners once to refresh it")
+                         "gate on disk (refit or promoted since) — open Models › "
+                         "Combiner once to refresh it")
     return used_members(diagnostic, payload.get("member_labels") or [], threshold=threshold)
 
 

@@ -59,6 +59,10 @@ class GenerationContext:
     #: The run's master RNG seed (recorded on the ``Process.generation``); the
     #: single value needed to replay the run. ``None`` if the run is unseeded.
     seed: int | None = None
+    #: Extra descriptors every record file of the run carries (e.g.
+    #: ``psf_kinds``: which bands used an empirical ePSF or the Gaussian
+    #: fallback), merged under ``kind``/``subset``.
+    descriptors: dict[str, Any] = field(default_factory=dict)
     _file_ids: dict[tuple[str, str], ProvId] = field(default_factory=dict)
 
     def file_id(self, kind: str, subset: str) -> ProvId:
@@ -91,7 +95,7 @@ class GenerationContext:
             format=Format.TFRECORD,
             path=path,
             parents=tuple(parents),
-            descriptors={"kind": kind, "subset": subset},
+            descriptors={**self.descriptors, "kind": kind, "subset": subset},
         )
         self.store.put(art, sidecar_dir=os.path.dirname(path) or None)
         return art

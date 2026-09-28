@@ -115,7 +115,7 @@ const fmt = (v: number) => String(Number(v.toFixed(5)));
  *  - "member 196" / "member_196" / "member196" → the member inspector
  *    (`member:member_196`; "members" is a word, not member "s");
  *  - "nexus 12" / "tile 12" → the NEXUS tile inspector (`tile:nexus/12`);
- *  - a path containing ".fits" → the FITS inspector (`/inspect?fits=`);
+ *  - a path containing ".fits" → Files (`/files?fits=`);
  *  - any other text with a letter → "find on the sky" through the atlas's
  *    name resolver (`/sky/atlas?goto=<text>`), marked `fallback`: the
  *    palette lists it after every page and command that matches, so it is
@@ -143,7 +143,7 @@ export function paletteSuggestions(query: string, parseCoord: (text: string) => 
     out.push({ id: "tile", kind: "inspect", label: `Open NEXUS tile ${tile[1]}`, hint: "inspector", target: { kind: "tile", id: `nexus/${tile[1]}` } });
   }
   if (/\.fits(\.gz|\.fz)?$/i.test(text) || /\.fits\b/i.test(text)) {
-    out.push({ id: "fits", kind: "navigate", label: `Inspect ${text}`, hint: "Inspect", to: `/inspect?fits=${encodeURIComponent(text)}` });
+    out.push({ id: "fits", kind: "navigate", label: `Open ${text} in Files`, hint: "Files", to: `/files?fits=${encodeURIComponent(text)}` });
   }
   if (!out.length && /[a-z]/i.test(text) && text.length >= 2) {
     out.push({

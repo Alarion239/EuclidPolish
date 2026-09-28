@@ -31,7 +31,7 @@ function measurer(el: HTMLElement): (text: string) => number {
 import { useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import { formatDec, formatDeg, formatRA } from "../format";
 import { CopyButton } from "../ui";
-import { bandLabel, readoutTierName } from "./barModel";
+import { bandLabel, readoutTierNames } from "./barModel";
 import { useController, useSettings, useViewer } from "./hooks";
 import { cubeIsEmpty, formatValue, readoutLines, unitLabel } from "./readout";
 import type { ReadoutTier } from "./types";
@@ -44,8 +44,15 @@ function bandIndex(t: ReadoutTier, color: string): number {
   return k >= 0 ? k : 0;
 }
 
+/** Unique readout names of these tiers (a residual tier keeps its label). */
+function tierNamesOf(ctrl: { tierLabel: (k: string) => string }, keys: readonly string[]): string[] {
+  const short = readoutTierNames(keys.map((k) => ctrl.tierLabel(k)));
+  return keys.map((k, i) => (k.startsWith("res:") ? ctrl.tierLabel(k) : short[i]));
+}
+
 export function ReadoutBar() {
   const ctrl = useController();
+  const tierNames = (keys: readonly string[]) => tierNamesOf(ctrl, keys);
   const readout = useViewer((s) => s.readout);
   const meta = useViewer((s) => s.meta);
   const index = useViewer((s) => s.index);
@@ -63,8 +70,9 @@ export function ReadoutBar() {
     if (!el || !meta) return;
     const keys = ctrl.frameKeys();
     const hasStd = (meta.tiers ?? []).some((t) => t.key === "std");
-    const tiers = keys.map((k) => ({
-      name: k.startsWith("res:") ? ctrl.tierLabel(k) : readoutTierName(ctrl.tierLabel(k)), unit: ctrl.tierMeta(k)?.unit ?? "",
+    const names = tierNamesOf(ctrl, keys);
+    const tiers = keys.map((k, i) => ({
+      name: names[i], unit: ctrl.tierMeta(k)?.unit ?? "",
       sigma: hasStd && k.toLowerCase() === "sr",
     }));
     const hasSky = anyWcs || (meta.objects ?? []).some((o) => Number.isFinite(o.ra));
@@ -88,7 +96,8 @@ export function ReadoutBar() {
   const crop = view && first ? ctrl.cropOf(first.tier, view) : null;
   const zoom = crop && first ? Math.min(first.width, first.height) / crop.side : 1;
   const fov = crop?.angularSideArcsec ?? (first?.pixscale ? Math.min(first.width, first.height) * first.pixscale : null);
-  const name = (k: string) => (k.startsWith("res:") ? ctrl.tierLabel(k) : readoutTierName(ctrl.tierLabel(k)));
+  const shownNames = tierNames(keys);
+  const name = (k: string) => shownNames[keys.indexOf(k)] ?? tierNames([k])[0];
 
   const src = readout?.tiers.find((t) => t.tier === readout.tier);
   const sky = readout?.sky ?? null;

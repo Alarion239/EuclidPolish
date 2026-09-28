@@ -1,7 +1,9 @@
 /* The model-catalogue picker (spec §7.3, GET /api/models): specs grouped
- * production / mean / rbf / gate variants / members, each with its
- * availability — an unavailable spec is disabled and says why. Quick picks
- * for the common comparisons; a filter for the member list. */
+ * production / mean / gate variants / members, each with its availability —
+ * an unavailable spec is disabled and says why. The legacy RBF combiner sits
+ * behind a "Legacy RBF" toggle (hidden by default, shown while one is picked),
+ * so it can still be benchmarked on real tiles. Quick picks for the common
+ * comparisons; a filter for the member list. */
 import { useMemo, useState } from "react";
 import { useResource } from "../../../api/query";
 import { formatDateTime } from "../../../format";
@@ -31,12 +33,16 @@ export function ModelPicker({ value, onChange, compact = false }: {
 }) {
   const models = useModels();
   const [q, setQ] = useState("");
-  const groups = useMemo(() => groupModels(models.data?.models ?? []), [models.data]);
+  const [legacyOpen, setLegacyOpen] = useState(false);
+  const offered = useMemo(() => models.data?.models ?? [], [models.data]);
   const selected = new Set(value);
-  const available = (models.data?.models ?? []).filter((m) => m.available);
+  const legacy = offered.filter((m) => m.kind === "rbf");
+  const showLegacy = legacyOpen || legacy.some((m) => selected.has(m.spec));
+  const groups = useMemo(() => groupModels(offered).filter((g) => g.id !== "rbf" || showLegacy), [offered, showLegacy]);
+  const available = offered.filter((m) => m.available);
   const set = (specs: Iterable<string>) => {
     const want = new Set(specs);
-    onChange((models.data?.models ?? []).map((m) => m.spec).filter((s) => want.has(s)));
+    onChange(offered.map((m) => m.spec).filter((s) => want.has(s)));
   };
   const toggle = (spec: string, on: boolean) => {
     const next = new Set(selected);
@@ -63,6 +69,14 @@ export function ModelPicker({ value, onChange, compact = false }: {
         <Button size="sm" variant="subtle" onClick={() => pick(["gate"])}>+ gate variants</Button>
         <Button size="sm" variant="subtle" onClick={() => pick(["member"])}>+ all members</Button>
         <Button size="sm" variant="ghost" disabled={!value.length} onClick={() => onChange([])}>Clear</Button>
+        {legacy.length > 0 && (
+          <Tooltip content="The retired RBF combiner, kept to benchmark it against the gate on real tiles">
+            <span><Button size="sm" variant="ghost" aria-pressed={showLegacy}
+              disabled={legacy.some((m) => selected.has(m.spec))} onClick={() => setLegacyOpen(!legacyOpen)}>
+              {showLegacy ? "Hide legacy RBF" : "Legacy RBF"}
+            </Button></span>
+          </Tooltip>
+        )}
         <span className="res-models__count muted">{value.length} selected</span>
       </div>
       {groups.map((g) => {
@@ -71,7 +85,7 @@ export function ModelPicker({ value, onChange, compact = false }: {
         return (
           <fieldset key={g.id} className="res-models__group" data-group={g.id}>
             <legend>
-              {g.label}
+              {g.id === "rbf" ? "Legacy RBF combiner" : g.label}
               {g.id === "member" && <span className="muted"> ({g.items.length})</span>}
             </legend>
             {g.id === "member" && g.items.length > 8 && (

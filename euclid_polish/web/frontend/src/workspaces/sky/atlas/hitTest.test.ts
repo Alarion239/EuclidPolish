@@ -4,7 +4,7 @@ import { normalisePayload, type LayerInfo, type LayerPayload, type SkyFeature } 
 import type { RenderSpec } from "./render";
 
 const info = (id: string, kind: LayerInfo["kind"]): LayerInfo => ({
-  id, label: id, group: "results", kind, count: 0, bbox: null, style: {}, ready: true, reason: null,
+  id, label: id, group: "real", kind, count: 0, bbox: null, style: {}, ready: true, reason: null,
   fill_action: null, description: "", url: null,
 });
 const sq = (ra: number, dec: number, side: number): [number, number][] =>

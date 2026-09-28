@@ -65,7 +65,7 @@ def test_save_endpoint_round_trips(client, cfg_path):
 
 
 def test_config_page_renders(client, cfg_path):
-    r = client.get("/settings/config")
+    r = client.get("/system/config")
     assert r.status_code == 200
     assert b'id="root"' in r.data
 
@@ -119,7 +119,7 @@ def test_psf_warp_mapped_for_all_generation_and_training_steps():
 
 
 def test_config_page_renders_training_section(client, cfg_path):
-    r = client.get("/settings/config")
+    r = client.get("/system/config")
     assert r.status_code == 200
     assert b'id="root"' in r.data
 
@@ -176,7 +176,7 @@ def test_saturation_mask_probability_is_capped_at_half(cfg_path):
 
 
 def test_config_page_renders_lr_plateau_section(client, cfg_path):
-    r = client.get("/settings/config")
+    r = client.get("/system/config")
     assert r.status_code == 200
     assert b'id="root"' in r.data
 

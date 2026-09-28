@@ -35,6 +35,7 @@ imports matplotlib and the TFRecord/sky loaders.
 from __future__ import annotations
 
 import dataclasses
+import json
 import os
 import warnings
 from typing import TypedDict
@@ -884,22 +885,21 @@ def _bands_from_cube(arr: np.ndarray) -> dict[int, np.ndarray]:
 # --------------------------------------------------------------------------- #
 # Renderer (matplotlib)                                                        #
 # --------------------------------------------------------------------------- #
-def render_power_spectrum_summary(
-    out_png: str, subset: str | None = None
-) -> str | None:
-    """Render the per-band HR-vs-SR power-spectrum figure → ``out_png``.
+def _finite_list(values) -> list[float | None]:
+    """A JSON-ready curve: NaN / ±inf → ``None``."""
+    return [float(v) if np.isfinite(v) else None for v in np.asarray(values, dtype=np.float64)]
 
-    Two rows (linear electrons / asinh space) × two columns (transfer function
-    ``T(k)`` and cross-correlation ``r(k)``), one curve per band, aggregated as a
-    per-field median over the sky validation fields (HR ``clean`` record vs
-    generated SR cube, paired by record index). Returns the PNG path, or ``None``
-    when the records aren't synced or no SR has been generated yet.
+
+def power_spectrum_summary_data(subset: str | None = None) -> dict | None:
+    """The per-band HR-vs-SR angular power spectrum as JSON-ready curves.
+
+    Per band and space (``linear`` electrons, ``asinh``): the angular scale
+    ``theta`` = 1/(2k) [arcsec] and the per-field median ``T``/``r`` with their
+    16–84% spread (``*_lo``/``*_hi``) and the per-bin field count, over the
+    sky validation fields (HR ``clean`` record vs generated SR cube, paired by
+    record index). ``None`` when the records aren't synced or no SR has been
+    generated yet.
     """
-    import matplotlib
-
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
     from euclid_polish.eval.subsets import eval_subset
     from euclid_polish.image.tfio import read_images, tfrecord_path
     from euclid_polish.web.helpers import sky_records
@@ -970,19 +970,52 @@ def render_power_spectrum_summary(
     if n_used == 0:
         return None
 
-    # finalize once per (space, band)
-    res = {(sp, b): accs[(sp, b)].finalize() for sp in spaces for b in band_names}
+    bands: dict[str, dict] = {}
+    for bname in band_names:
+        entry: dict = {"psf_fwhm": float(Config.get_band(bname).psf_fwhm_arcsec)}
+        for sp in spaces:
+            rb = accs[(sp, bname)].finalize()
+            entry[sp] = {
+                # plot against angular scale θ = 1/(2k) [arcsec] — the size of
+                # the finest resolvable feature (one 0.05″ pixel at HR Nyquist)
+                "theta": _finite_list(0.5 / np.asarray(rb["k"], dtype=float)),
+                **{key: _finite_list(rb[key])
+                   for key in ("T", "T_lo", "T_hi", "r", "r_lo", "r_hi", "count")},
+            }
+        bands[bname] = entry
+    return {
+        "subset": subset,
+        "n_fields": int(n_used),
+        "field_n": int(field_n),
+        "pixel_scale": pixel_scale,
+        "lr_scale": 0.5 / LR_NYQUIST_CYC_ARCSEC,       # 0.10″ LR sampling
+        "theta_max": float(0.5 / k_edges[0]),          # coarsest probed scale
+        "band_names": band_names,
+        "bands": bands,
+    }
 
+
+def render_power_spectrum_figure(out_png: str, data: dict) -> str:
+    """Draw :func:`power_spectrum_summary_data` → ``out_png``: two rows
+    (linear electrons / asinh space) × two columns (``T(k)``, ``r(k)``), one
+    curve per band with its 16–84% spread."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
     from matplotlib.ticker import FuncFormatter, NullFormatter
 
-    # plot against angular scale θ = 1/(2k) [arcsec] — the size of the finest
-    # resolvable feature: at the HR Nyquist that is one 0.05″ pixel.
-    def to_scale(k):
-        return 0.5 / np.asarray(k, dtype=float)
+    band_names = list(data["band_names"])
+    spaces = ("linear", "asinh")
+    field_n = int(data["field_n"])
+    n_used = int(data["n_fields"])
 
-    scale_lo = float(Config.DEFAULT_PIXEL_SCALE)             # 0.05″ = HR pixel
-    scale_hi = 0.5 / k_edges[0]                              # coarsest probed scale
-    lr_scale = 0.5 / LR_NYQUIST_CYC_ARCSEC                   # 0.10″ LR sampling
+    def arr(values) -> np.ndarray:
+        return np.asarray([np.nan if v is None else v for v in values], dtype=float)
+
+    scale_lo = float(data["pixel_scale"])                   # 0.05″ = HR pixel
+    scale_hi = float(data["theta_max"])                     # coarsest probed scale
+    lr_scale = float(data["lr_scale"])                      # 0.10″ LR sampling
     xticks = [0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0]
 
     fig, axes = plt.subplots(2, 2, figsize=(13.0, 9.5))
@@ -994,21 +1027,20 @@ def render_power_spectrum_summary(
         for ci, key, short, ylim in col_meta:
             ax = axes[ri, ci]
             for bname in band_names:
-                rb = res[(sp, bname)]
-                x = to_scale(rb["k"])
+                rb = data["bands"][bname][sp]
+                x = arr(rb["theta"])
                 color = BAND_COLORS.get(bname, "#444")
-                ax.fill_between(x, rb[key + "_lo"], rb[key + "_hi"],
+                ax.fill_between(x, arr(rb[key + "_lo"]), arr(rb[key + "_hi"]),
                                 color=color, alpha=0.12, lw=0)
-                ax.plot(x, rb[key], "-o", ms=3.0, lw=1.7, color=color, label=bname)
+                ax.plot(x, arr(rb[key]), "-o", ms=3.0, lw=1.7, color=color, label=bname)
             ax.axhline(1.0, ls=":", color="#888", lw=1.0)
             # LR sampling scale (0.10″) — above this is super-resolution
             ax.axvline(lr_scale, ls="--", color="#333", lw=1.3,
                        label="LR sampling (0.1″)" if (ri == 0 and ci == 0) else None)
             # per-band PSF FWHM (the band's true resolution scale), clearly visible
             for bname in band_names:
-                fwhm = float(Config.get_band(bname).psf_fwhm_arcsec)
-                ax.axvline(fwhm, ls=(0, (5, 2)), lw=1.5, alpha=0.55,
-                           color=BAND_COLORS.get(bname, "#444"))
+                ax.axvline(float(data["bands"][bname]["psf_fwhm"]), ls=(0, (5, 2)), lw=1.5,
+                           alpha=0.55, color=BAND_COLORS.get(bname, "#444"))
             ax.set_xscale("log")
             ax.set_xlim(scale_lo, scale_hi)
             ax.set_ylim(*ylim)
@@ -1033,3 +1065,22 @@ def render_power_spectrum_summary(
     fig.savefig(out_png, dpi=150, bbox_inches="tight")
     plt.close(fig)
     return out_png
+
+
+def render_power_spectrum_summary(
+    out_png: str, subset: str | None = None, *, out_json: str | None = None,
+) -> str | None:
+    """Measure the per-band HR-vs-SR angular power spectrum and draw it →
+    ``out_png`` (plus the curves as JSON → ``out_json`` when given, the
+    console's interactive plot). Returns the PNG path, or ``None`` when the
+    records aren't synced or no SR has been generated yet."""
+    data = power_spectrum_summary_data(subset)
+    if data is None:
+        return None
+    if out_json:
+        os.makedirs(os.path.dirname(out_json) or ".", exist_ok=True)
+        tmp = f"{out_json}.tmp"
+        with open(tmp, "w") as handle:
+            json.dump(data, handle)
+        os.replace(tmp, out_json)
+    return render_power_spectrum_figure(out_png, data)

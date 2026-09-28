@@ -26,7 +26,7 @@ import { GAIN_SLIDER_RANGE, KNEE_SLIDER_RANGE, formatSig, parseNumber } from "..
 import { useDisplaySections } from "./displaySections";
 import { useShellUi } from "./shellStore";
 
-/** Shared with Settings › Appearance. */
+/** Shared with System › Appearance. */
 export const COLOR_LABEL: Record<ColorMode, string> = {
   VIS: "VIS", Y_E: "Y", J_E: "J", H_E: "H", lupton: "Lupton RGB", temp: "Temperature",
   rgb: "Custom RGB", native: "Native (tier default)",

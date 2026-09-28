@@ -157,7 +157,7 @@ class TestInspectRoutes:
         assert "/sky/inspect" not in urls
 
     def test_inspect_page_is_the_spa_workspace(self, client):
-        response = client.get("/inspect?fits=data/x.fits")
+        response = client.get("/files?fits=data/x.fits")
         assert response.status_code == 200
         assert b'id="root"' in response.data
 

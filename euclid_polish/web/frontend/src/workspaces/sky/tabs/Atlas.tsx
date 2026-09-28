@@ -1,9 +1,13 @@
-/* Sky › Atlas — the celestial sphere (spec §7.1): Aladin Lite v3 with the
- * Euclid / JWST / all-sky HiPS, coverage MOCs and every local result and
- * catalogue as layers; click → inspector card, region selection → bulk
- * actions, right-click → "cache a tile here" / "what covers this point".
- * Every view is a URL (atlas/useAtlasUrl.ts). The engine is created once and
- * survives navigation (src/sky/engine.ts). */
+/* Sky › Atlas — where is it? (console regrouping): Aladin Lite v3 with the
+ * Euclid / JWST / all-sky HiPS and every local dataset as layers, grouped
+ * Real tiles / Targets / Scene inputs / Coverage (each linked to the tab that
+ * owns its data); click → inspector card, region selection → bulk compare /
+ * run production, right-click → "cache a tile here" / "what covers this
+ * point"; the JWST menu discovers observations and caches the NEXUS mosaic
+ * and pairs (all confirmed), `?obs=1` opens the discovered observations.
+ * Without URL coordinates it opens on the last inspected tile, else EDF-N
+ * (atlas/home.ts). Every view is a URL (atlas/useAtlasUrl.ts). The engine is
+ * created once and survives navigation (src/sky/engine.ts). */
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { registerDisplaySection } from "../../../app/displaySections";
 import { usePageActions, type PageAction } from "../../../app/palette";
@@ -19,8 +23,9 @@ import { useDisplay } from "../../../state/display";
 import { useInspector } from "../../../state/inspector";
 import { useResolvedTheme } from "../../../state/prefs";
 import { IconButton, downloadBlob, toast } from "../../../ui";
-import { discoverJwst, runNexusProduction, viewRegion } from "../atlas/actions";
+import { discoverJwst, viewRegion } from "../atlas/actions";
 import { AtlasToolbar } from "../atlas/AtlasToolbar";
+import { atlasHome } from "../atlas/home";
 import { readSkyPalette } from "../atlas/colorScale";
 import { useLayerData } from "../atlas/layerData";
 import {
@@ -69,6 +74,8 @@ function dataUrlToBlob(dataUrl: string): Blob {
 
 export default function Atlas() {
   const url = useAtlasUrl();
+  // Without URL coordinates the atlas opens on the last inspected tile, else EDF-N (read once).
+  const [home] = useState(atlasHome);
   const [obsOpen, setObsOpen] = useUrlState<boolean>("obs", false);
   const theme = useResolvedTheme();
   const rootRef = useRef<HTMLDivElement>(null);
@@ -94,7 +101,7 @@ export default function Atlas() {
   const size = useAtlas((s) => s.size);
   const selecting = useAtlas((s) => s.selecting);
   const markerScale = useSkyDisplay((s) => s.markerScale);
-  const fov = view?.fov ?? url.fov ?? DEFAULT_VIEW.fov;
+  const fov = view?.fov ?? url.fov ?? home.fov;
   const skyWidth = size.width || 800;
 
   const fpUrl = enabledIds.includes("jwst-mast") ? footprintsQuery(view) : null;
@@ -239,7 +246,6 @@ export default function Atlas() {
       run: () => { if (view) void discoverJwst({ region: viewRegion(view), label: "the current view" }); },
     },
     { id: "sky-observations", label: "Discovered JWST observations", group: "Sky", keywords: ["mast", "jwst", "pairs"], run: () => setObsOpen(true) },
-    { id: "sky-nexus-infer", label: "Run production on stale NEXUS tiles", group: "Sky", keywords: ["starfull", "sr", "inference"], run: () => { void runNexusProduction(); } },
     { id: "sky-export", label: "Export the sky view as PNG", group: "Sky", run: () => { void exportPng(); } },
     { id: "sky-panel", label: panelOpen ? "Hide the layers panel" : "Show the layers panel", group: "Sky", run: togglePanel },
     { id: "sky-galactic", label: url.gal ? "Equatorial coordinates" : "Galactic coordinates", group: "Sky", run: () => url.setGal(!url.gal) },
@@ -268,7 +274,7 @@ export default function Atlas() {
           </aside>
         )}
         <div className="sky-atlas__main">
-          <SkyStage url={url} specs={specs} base={base} overlays={stackOverlays} baseColor={baseColor}
+          <SkyStage url={url} home={home} specs={specs} base={base} overlays={stackOverlays} baseColor={baseColor}
             region={url.sel} focus={focus}>
             {url.sel && <SelectionPanel groups={groups} layers={layers} onClear={() => url.setSel(null)} />}
           </SkyStage>

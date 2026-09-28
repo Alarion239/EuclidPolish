@@ -104,16 +104,21 @@ describe("tile card", () => {
   it("maps the palette's nexus/<n> to the real tile: the one real-tile card, image first", async () => {
     routes["GET /api/real/nexus/f200w-0012"] = () => ({ body: CARD });
     const { container } = show(<TileInspector id="nexus/12" />);
-    expect(await screen.findByText("production stale")).toBeTruthy();
+    // one status sentence in the Targets vocabulary
+    expect(await screen.findByText("Production SR is stale, made by legacy RBF: only a legacy SR exists.")).toBeTruthy();
     const viewer = screen.getByTestId("viewer");
     expect(viewer.textContent).toBe("real:f200w-0012:lr,m:rbf");   // two large frames; JWST one chip away
     // the tier picker offers only this tile's own outputs (no source-wide spec list)
     expect(viewer.dataset.models).toBe("rbf");
     // the viewer is the first thing on the card
     expect(container.querySelector(".res-card")?.firstElementChild?.contains(viewer)).toBe(true);
-    expect(screen.getByText(/102158584, VIS sky 27\.7 e⁻/)).toBeTruthy();
-    expect(screen.getByText("rbf")).toBeTruthy();
-    expect(screen.getByText(/Holes %/, { selector: "strong" })).toBeTruthy();          // defined on the card
+    // the Q1 tile and its sky noise (unit explained) in the collapsed Details
+    const details = container.querySelector("details.res-card__details") as HTMLDetailsElement;
+    expect(details.open).toBe(false);
+    expect(within(details).getByText("102158584")).toBeTruthy();
+    expect(within(details).getByText(/VIS 27\.7 e⁻ \(the MER noise map's per-pixel RMS/)).toBeTruthy();
+    // an unscored output: no headline numbers, the card says how to get them
+    expect(screen.getByText(/RBF combiner is not scored yet: compare models on this tile/)).toBeTruthy();
   });
 
   it("server errors are shown verbatim", async () => {
@@ -134,13 +139,13 @@ describe("tile card", () => {
     expect(resolveOverlays(img)[0].url).toBe("/api/real/nexus/f200w-0012/image.fits?tier=m%3Arbf&band=VIS");
   });
 
-  it("compare models preselects exactly this tile (replacing an older pick) and opens Experiments", async () => {
+  it("compare models preselects exactly this tile (replacing an older pick) and opens Sky › Compare", async () => {
     routes["GET /api/real/nexus/f200w-0012"] = () => ({ body: CARD });
     useSelection.getState().select("tile", ["archive/007"]);
     show(<TileInspector id="nexus/f200w-0012" />);
-    fireEvent.click(await screen.findByRole("button", { name: "Compare models…" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Compare models on this tile…" }));
     expect(useSelection.getState().get("tile")).toEqual(["nexus/f200w-0012"]);
-    expect(screen.getByTestId("loc").textContent).toBe("/sky/experiments?tiles=nexus%2Ff200w-0012");
+    expect(screen.getByTestId("loc").textContent).toBe("/sky/compare?tiles=nexus%2Ff200w-0012");
   });
 
   it("run models proposes the missing production + mean, asks first, then starts the experiment job", async () => {

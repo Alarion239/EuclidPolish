@@ -1,5 +1,5 @@
-/* Home workspace (spec §8.1): no tabs — the dashboard (production numbers,
-   health checks with the rail badge, running work, quick actions, sky). */
+/* Home workspace (`/`, console regrouping): no tabs — the production
+   verdict, the Loop strip, what runs now and the latest figures. */
 import { Workspace } from "../../app/workspace";
 import Dashboard from "./Dashboard";
 

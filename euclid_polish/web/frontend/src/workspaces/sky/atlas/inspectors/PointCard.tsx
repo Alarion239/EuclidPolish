@@ -89,7 +89,7 @@ export function PointCard({ ra, dec }: { ra: number; dec: number }) {
           </ul>
         )}
       </Section>
-      <Section title="Real results here" sub={String(tiles.length + d.pairs.length)} collapsible defaultOpen>
+      <Section title="Real tiles here" sub={String(tiles.length + d.pairs.length)} collapsible defaultOpen>
         {tiles.length + d.pairs.length === 0 ? <p className="muted">No cached tile, NEXUS tile or pair covers this point.</p> : <HitList hits={[...tiles, ...d.pairs]} />}
       </Section>
       <Section title="JWST" sub={d.jwst_discovered ? `${d.jwst.length} footprints` : "not discovered"} collapsible defaultOpen={d.jwst.length > 0}>

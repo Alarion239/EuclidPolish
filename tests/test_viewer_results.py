@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+from io import BytesIO
 from pathlib import Path
 
 import numpy as np
@@ -741,6 +742,27 @@ def test_only_exact_f200w_is_advertised_as_nexus_native():
     assert viewer_results._supported_recipes(base) == []
     base["files"]["jwst"]["bands"] = ["F200W", "F444W"]
     assert viewer_results._supported_recipes(base) == []
+
+
+def test_every_euclid_band_is_a_sheet_row_in_band_order():
+    """Figures › Sheet rows: VIS, Y, J and H each as one grey band, then VIS + H."""
+    base = {"files": {"sr": {"bands": ["VIS", "Y_E", "J_E", "H_E"]},
+                      "dirty": {"bands": ["VIS", "J_E"]}}}
+    keys = [item["key"] for item in viewer_results._supported_recipes(base)]
+    assert keys == ["dirty:VIS", "dirty:J_E", "sr:VIS", "sr:Y_E", "sr:J_E", "sr:H_E", "sr:VIS_H"]
+    labels = {item["key"]: item["label"] for item in viewer_results._supported_recipes(base)}
+    assert labels["sr:Y_E"] == "Y_E SR" and labels["dirty:J_E"] == "J_E Dirty"
+
+
+def test_a_y_band_panel_renders_grey(saved_result_client):
+    client, _root, _cubes = saved_result_client
+    result_id = _post_result(client)["id"]
+    ok = client.get(f"/viewer/results/{result_id}/panel.png?tier=sr&mode=Y_E")
+    assert ok.status_code == 200
+    rgb = np.asarray(Image.open(BytesIO(ok.data)).convert("RGB"), dtype=np.int16)
+    assert np.all(rgb[..., 0] == rgb[..., 1]) and np.all(rgb[..., 1] == rgb[..., 2])
+    bad = client.get(f"/viewer/results/{result_id}/panel.png?tier=sr&mode=K")
+    assert bad.status_code == 400 and "Y_E" in bad.get_json()["error"]
 
 
 def test_jwst_native_honors_saved_display_scale(saved_result_client, tmp_path):

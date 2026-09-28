@@ -2,11 +2,13 @@
 of the last pulled copy that never write, and the data/vis archive."""
 from __future__ import annotations
 
+import io
 import os
 from types import SimpleNamespace
 
 import pytest
 from flask import Flask
+from PIL import Image
 
 from euclid_polish.config import Config
 from euclid_polish.web.routes import poster
@@ -89,3 +91,28 @@ def test_pull_reports_a_missing_remote_result(client):
     body = response.get_json()
     assert body["ok"] is False and body["errors"]["png"] == "no such file"
     assert http.get("/poster/result/pull").status_code == 405
+
+
+def test_the_pulled_scene_exports_for_print_at_a_chosen_dpi(client):
+    """Figures › Plates: the poster scene as PNG / PDF / SVG, the dpi setting
+    the printed size of the node's pixels; 404 before a pull, 400 otherwise."""
+    http, _tmp, _pulls, bodies = client
+    assert http.get("/poster/result/export?format=pdf&dpi=300").status_code == 404
+    real = io.BytesIO()
+    Image.new("RGB", (600, 300), (20, 40, 60)).save(real, format="PNG")
+    bodies["poster_cutout.png"] = real.getvalue()
+    assert http.post("/poster/result/pull").status_code == 200
+
+    png = http.get("/poster/result/export?format=png&dpi=300")
+    assert png.status_code == 200 and png.mimetype == "image/png"
+    assert "poster_cutout_300dpi.png" in png.headers["Content-Disposition"]
+    with Image.open(io.BytesIO(png.data)) as image:
+        assert image.size == (600, 300)
+        assert round(image.info["dpi"][0]) == 300
+    pdf = http.get("/poster/result/export?format=pdf&dpi=150")
+    assert pdf.status_code == 200 and pdf.data.startswith(b"%PDF")
+    svg = http.get("/poster/result/export?format=svg&dpi=600")
+    assert svg.status_code == 200 and b'width="1.0000in" height="0.5000in"' in svg.data
+    assert http.get("/poster/result/export?format=tiff").status_code == 400
+    assert http.get("/poster/result/export?dpi=72").status_code == 400
+    assert http.get("/poster/result/export?dpi=x").status_code == 400

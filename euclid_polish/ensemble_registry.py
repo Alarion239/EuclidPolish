@@ -238,7 +238,7 @@ def archived_members(base_dir: str, tracking_root: str | None = None
                      ) -> list[dict[str, Any]]:
     """The tombstones, newest first, each with where its zip is now:
     ``zip_found``, ``zip_path`` (absolute or ``None``), ``campaign`` and
-    ``size_bytes`` — the Ensemble › Members archived table and the restore
+    ``size_bytes`` — the Models › Members archived table and the restore
     action read this."""
     root = tracking_root or Config.TRACKING_DIR
     rows = []

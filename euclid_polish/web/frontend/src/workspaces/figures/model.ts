@@ -19,6 +19,8 @@ export const TIERS: { value: FigureTier; label: string }[] = [
 
 export const MODES: { value: FigureMode; label: string }[] = [
   { value: "VIS", label: "VIS" },
+  { value: "Y_E", label: "Y_E" },
+  { value: "J_E", label: "J_E" },
   { value: "H_E", label: "H_E" },
   { value: "VIS_H", label: "VIS + H_E" },
   { value: "native", label: "native band" },
@@ -55,7 +57,7 @@ export function splitRecipe(key: RecipeKey): [FigureTier, FigureMode] {
   return [tier as FigureTier, mode as FigureMode];
 }
 
-/** The row title the grid prints (the backend's `_recipe_label`). */
+/** The row title the sheet prints (the backend's `_recipe_label`). */
 export function recipeLabel(key: string): string {
   if (!isRecipeKey(key)) return key;
   const [tier, mode] = splitRecipe(key);
@@ -65,9 +67,43 @@ export function recipeLabel(key: string): string {
   return `${band} ${product}`;
 }
 
-/** Colour family of a recipe row (the grid's spectrum rule). */
-export function modeTone(mode: string): "vis" | "h" | "vis-h" | "native" {
-  return mode === "VIS_H" ? "vis-h" : mode === "VIS" ? "vis" : mode === "H_E" ? "h" : "native";
+/** How the sheet draws a recipe row (viewer_results.py): one band in grey
+ *  (absolute asinh; NEXUS F200W `native` is one band too), or the VIS + H_E
+ *  false colour (VIS azure, H_E amber). */
+export type SheetTone = "grey" | "vis-h";
+
+export function modeTone(mode: string): SheetTone {
+  return mode === "VIS_H" ? "vis-h" : "grey";
+}
+
+export type LegendEntry = {
+  id: SheetTone;
+  /** The swatches drawn before the text (`tone` is a CSS hook). */
+  swatches: { tone: "grey" | "vis" | "h"; label: string }[];
+  text: string;
+};
+
+const LEGEND: Record<SheetTone, LegendEntry> = {
+  grey: { id: "grey", swatches: [{ tone: "grey", label: "one band" }], text: "one band: grey" },
+  "vis-h": { id: "vis-h", swatches: [{ tone: "vis", label: "VIS" }, { tone: "h", label: "H_E" }], text: "VIS + H_E: VIS azure, H_E amber" },
+};
+
+/** The legend of the colours the sheet's rows use, in the order of the
+ *  rows' first appearance (only the kinds present). */
+export function sheetLegend(rows: readonly string[]): LegendEntry[] {
+  const seen: SheetTone[] = [];
+  for (const row of rows) {
+    if (!isRecipeKey(row)) continue;
+    const tone = modeTone(splitRecipe(row)[1]);
+    if (!seen.includes(tone)) seen.push(tone);
+  }
+  return seen.map((t) => LEGEND[t]);
+}
+
+/** A sheet limit, named only once it is reached ("12 columns: the most a
+ *  sheet holds"); null below it. */
+export function capText(n: number, max: number, noun: string): string | null {
+  return n >= max ? `${max} ${noun}: the most a sheet holds` : null;
 }
 
 /* ─── the saved-results index ─────────────────────────────────────────────── */
@@ -219,10 +255,10 @@ export function moveItem<T>(list: readonly T[], index: number, offset: -1 | 1): 
   return next;
 }
 
-/** The grid tab opened on these columns (`/figures/grid?regime&cols`). */
+/** The sheet tab opened on these columns (`/figures/sheet?regime&cols`). */
 export function gridHref(ids: readonly string[], regime: string): string {
   const q = new URLSearchParams({ regime, cols: ids.join(",") });
-  return `/figures/grid?${q.toString()}`;
+  return `/figures/sheet?${q.toString()}`;
 }
 
 /** The template picker value of a layout (`layout:<id>`). */
@@ -240,7 +276,7 @@ function q(params: Record<string, string | undefined>): string {
 }
 
 /** Where a saved result's source viewer lives now (the viewers' URL keys:
- *  `v.<key>.id` / `.i`, or the Sky results `realtile` inspector). */
+ *  `v.<key>.id` / `.i`, or the Sky targets `realtile` inspector). */
 export function viewerLink(r: SavedResult): SourceLink | null {
   const src = r.source;
   if (!src?.collection) return null;
@@ -249,7 +285,7 @@ export function viewerLink(r: SavedResult): SourceLink | null {
   const id = typeof obj.id === "string" && obj.id ? obj.id : undefined;
   const index = typeof src.index === "number" ? src.index : undefined;
   const pos = (key: string) => (id ? { [`v.${key}.id`]: id } : index != null ? { [`v.${key}.i`]: String(index) } : {});
-  const realtile = (ref: string) => ({ to: `/sky/results${q({ inspect: `realtile:${ref}` })}`, label: "Open the real tile" });
+  const realtile = (ref: string) => ({ to: `/sky/targets${q({ inspect: `realtile:${ref}` })}`, label: "Open the real tile" });
   switch (src.collection) {
     case "real": {
       const ref = obj.ref ?? (id && params.source ? `${params.source}/${id}` : undefined);
@@ -265,20 +301,30 @@ export function viewerLink(r: SavedResult): SourceLink | null {
     }
     case "jwst-euclid":
       return id ? realtile(`pair/${id}`) : null;
-    case "evaluation":
-      return { to: `/sky/catalog-eval${q(pos("cev"))}`, label: "Open in Catalog eval" };
+    case "evaluation": {
+      // Synthetic stamps (HR truth) are synthetic validation: Models › Images.
+      const stamp = /^syn-(lens|gal)(?:$|[_-])/.exec(String(obj.grade ?? "")) ?? (id ? /^syn-(lens|gal)[_-]/.exec(id) : null);
+      // The regime the stamp was scored in: the saved object's or the viewer's,
+      // else starfull (the catalogue evaluation runs the starfull production model).
+      const regime = [obj.regime, obj.mode, params.mode].find((m) => m === "starless" || m === "starfull") ?? "starfull";
+      if (stamp) return { to: `/models/${regime}/images${q({ set: "stamps", g: `syn-${stamp[1]}`, id })}`, label: "Open in Models › Images" };
+      // A real lens candidate or Q1 galaxy: its tile card in its target set.
+      const grade = String(obj.grade ?? "");
+      const set = /^[A-C]$/.test(grade) ? "lenses" : grade === "gal" ? "galaxies" : "lenses,galaxies";
+      return { to: `/sky/targets${q({ set, ...(id ? { inspect: `tile:eval/${id}` } : pos("cev")) })}`, label: "Open in Sky › Targets" };
+    }
     case "ensemble": {
       const mode = params.mode === "starless" ? "starless" : "starfull";
-      return { to: `/ensemble/${mode}/disagreement${q(pos("ens"))}`, label: "Open in Disagreement" };
+      return { to: `/models/${mode}/images${q(pos("ens"))}`, label: "Open in Models › Images" };
     }
     case "sky":
-      return { to: `/data/records${q({ ...pos("sky"), subset: params.subset })}`, label: "Open in Records" };
+      return { to: `/synthetic/records${q({ ...pos("sky"), subset: params.subset })}`, label: "Open in Records" };
     case "cutouts":
-      return { to: `/data/cutouts${q(pos("cutouts"))}`, label: "Open in Cutouts" };
+      return { to: `/synthetic/psf${q({ view: "cutouts", ...pos("cutouts") })}`, label: "Open in Synthetic › PSF" };
     case "psfs":
-      return { to: `/data/psfs${q(pos("psfs"))}`, label: "Open in PSFs" };
+      return { to: `/synthetic/psf${q({ view: "epsf", ...pos("psfs") })}`, label: "Open in Synthetic › PSF" };
     case "archive-fields":
-      return { to: `/realism/visual${q(pos("real"))}`, label: "Open in Visual" };
+      return { to: `/synthetic/fields${q({ view: "look", ...pos("real") })}`, label: "Open in Synthetic › Fields" };
     default:
       return null;
   }
@@ -303,7 +349,7 @@ export function skyLink(r: SavedResult): string | null {
 
 export function inspectLink(r: SavedResult, tier: string): string | null {
   const path = r.inspect_paths?.[tier];
-  return path ? `/inspect?path=${encodeURIComponent(path)}` : null;
+  return path ? `/files?path=${encodeURIComponent(path)}` : null;
 }
 
 /** Crop side in arcsec (the saved selection, else the first tier's size). */
@@ -404,11 +450,12 @@ export function gridSizeText(rows: number, columns: number): string {
  *  scale, actions, close) of `head`; a crop's panel choices add `panels`. */
 export const LIGHTBOX = { inset: 12, head: 44, panels: 36 } as const;
 
-/** The grid preview's cap (css px), also fed to figures.css: beside the
- *  editors it sits `stickyTop` below the app top bar under a `head` row;
+/** The sheet preview's cap (css px), also fed to figures.css: beside the
+ *  editors it sits `stickyTop` below the app top bar under a `head` (the
+ *  status row and the colour legend);
  *  stacked above them it keeps `stackedChrome` for the tab strip and the bar
  *  (never below `stackedMin`); the paper pads the image by `pad` a side. */
-export const PREVIEW = { stickyTop: 8, head: 48, stackedChrome: 200, stackedMin: 320, pad: 8 } as const;
+export const PREVIEW = { stickyTop: 8, head: 72, stackedChrome: 220, stackedMin: 320, pad: 8 } as const;
 
 /** The full-size stage height for a window `vh` tall. */
 export function lightboxStageHeight(vh: number, opts: { panels?: boolean } = {}): number {

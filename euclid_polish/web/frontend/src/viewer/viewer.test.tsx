@@ -611,6 +611,17 @@ describe("<ImageViewer>", () => {
     expect(screen.getByRole("button", { name: "SR: Not available for this object" })).toBeTruthy();
   });
 
+  it("a tier's hint from the backend is its chip's tooltip", async () => {
+    mockBackend(defaultHandler(meta({ tiers: [
+      { key: "lr", label: "LR", unit: "e-", hint: "The dirty image the model receives" },
+      { key: "hr", label: "HR", unit: "e-" },
+    ] })));
+    render(<MemoryRouter><ImageViewer collection="test" /></MemoryRouter>);
+    await screen.findByText(/^LR 0/);
+    fireEvent.focus(screen.getByRole("button", { name: "LR" }));
+    expect(await screen.findByRole("tooltip")).toHaveProperty("textContent", expect.stringContaining("LR: The dirty image the model receives"));
+  });
+
   it("a colour the page sets as the viewer loads is its default, not URL state", async () => {
     mockBackend(defaultHandler());
     let api: ViewerApi | null = null;

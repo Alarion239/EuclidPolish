@@ -1,4 +1,4 @@
-"""The TNG50 property explorer of Data › TNG (``GET /api/tng/properties``).
+"""The TNG50 property explorer of Synthetic › Galaxies (templates) (``GET /api/tng/properties``).
 
 Reads the local calibration CSVs only (no SSH, no TNG API, no writes):
 

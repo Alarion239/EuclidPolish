@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  bandMean, kneeHeadline, memberName, memberRange, productionFromStatus, productionHeadline, productionModel, runningItems, starfullMembers,
-  trackingCatchUpNote, unloggedItems, type KneePayload,
+  bandMean, compareRunPath, homeCaption, kneeHeadline, kneeText, memberName, memberRange, productionFromStatus, productionHeadline,
+  productionModel, productionRealHoles, starfullMembers, trackingCatchUpNote, unloggedItems, type ExperimentSummary, type KneePayload,
 } from "./homeModel";
 
 describe("productionHeadline (eval_summary.json)", () => {
@@ -148,7 +148,7 @@ describe("helpers", () => {
   });
 });
 
-describe("tracking catch-up note (Home › Quick actions › Log to tracking)", () => {
+describe("tracking catch-up note (the Home notebook alert › Log)", () => {
   const check = { id: "tracking", label: "Tracking log", state: "warn" as const, title: "Results since the last tracking entry (2026-09-21)",
     facts: { last_entry: "2026-09-21T14:42:29+00:00", unlogged: [
       { at: "2026-09-27T02:44:21+00:00", label: "experiment" }, { at: "2026-09-25T23:33:42+00:00", label: "PSNR vs knee" },
@@ -168,7 +168,7 @@ describe("tracking catch-up note (Home › Quick actions › Log to tracking)", 
   it("pre-fills one line per unlogged result with its headline numbers", () => {
     const md = trackingCatchUpNote(check, facts);
     expect(md).toContain("**Catch-up** — results since the last tracking entry (2026-09-21 14:42 UTC)");
-    expect(md).toContain("- experiment — 2026-09-27 02:44 UTC: see Sky › Experiments");
+    expect(md).toContain("- experiment — 2026-09-27 02:44 UTC: see Sky › Compare");
     expect(md).toContain("- PSNR vs knee — 2026-09-25 23:33 UTC: ∫PSNR production gate 60.97 dB (+1.01 dB vs member 196, +1.87 dB vs plain mean, 100 fields)");
     expect(md).toContain("- evaluation — 2026-09-25 23:32 UTC: test PSNR production gate 59.24 dB (+0.29 dB vs best member, +0.86 dB vs plain mean), 30 STARFULL members");
     expect(md).toContain("- production gate fit — 2026-09-25 22:30 UTC: spatial gate, linear mix, fitted for the current members");
@@ -181,45 +181,62 @@ describe("tracking catch-up note (Home › Quick actions › Log to tracking)", 
   });
 });
 
-describe("running now (Home, the jobs feed)", () => {
-  const local = (id: string, patch: Record<string, unknown> = {}) => ({
-    job_id: id, label: `job ${id}`, status: "running", duration: 0, error: null, log: null, log_truncated: false,
-    cancellable: false, cancel_requested: false, result: null, progress: { current: 0, total: 0, pct: 0, label: "" }, ...patch,
-  });
-
+describe("member ranges (the running line)", () => {
   it("names a training array by its members, compressed to ranges", () => {
     expect(memberRange(["member_199", "member_200", "member_201", "member_202"])).toBe("members 199–202");
     expect(memberRange(["member_195", "member_196", "member_199", "member_200", "member_201"])).toBe("members 195, 196, 199–201");
     expect(memberRange(["member_07"])).toBe("member 07");
     expect(memberRange([])).toBeNull();
   });
+});
 
-  it("lists the live SLURM jobs first, with their members and progress, then the local ones", () => {
-    const items = runningItems(
-      [local("a", { progress: { current: 4, total: 10, pct: 40, label: "" } }), local("b", { status: "done" })],
-      [
-        { jobid: "1", state: "RUNNING", label: "Train ensemble members", progress_step: 10500, progress_total: 70000,
-          params_json: JSON.stringify({ mode: "add", member_names: "member_199,member_200,member_201,member_202" }) },
-        { jobid: "2", state: "PENDING", label: "Generate synthetic records" },
-        { jobid: "3", state: "COMPLETED", label: "done already" },
-      ],
-    );
-    expect(items.map((i) => i.text)).toEqual([
-      "members 199–202 on FASRC · 15%", "Generate synthetic records on FASRC · queued", "job a on this laptop · 40%",
-    ]);
+describe("real holes from Sky › Compare", () => {
+  const perBand = (vis: number, y: number, j: number, h: number) => ({
+    VIS: { hole_pct: vis }, Y_E: { hole_pct: y }, J_E: { hole_pct: j }, H_E: { hole_pct: h },
+  });
+  const exps: ExperimentSummary[] = [
+    { id: "e-old", created: "2026-09-20T00:00:00Z", label: "poster", summary: { production: { n_tiles: 1, per_band: perBand(1, 1, 1, 1) } } },
+    { id: "e-new", created: "2026-09-27T20:38:56Z", label: "seed vs pruning on real tiles",
+      summary: { production: { n_tiles: 9, per_band: perBand(12.5, 15.2, 20.19, 17.5), summary: { hole_pct_mean: 17.9 } }, "gate:p20": {} } },
+    { id: "e-mean", created: "2026-09-28T00:00:00Z", summary: { mean: {} } },                          // did not score production
+  ];
+  const catalog = { models: [{ spec: "production", fingerprint: "d9ef" }] };
+
+  it("takes the newest run that scored production, when it scored this production fit", () => {
+    expect(productionRealHoles(exps, { id: "e-new", fingerprints: { production: "d9ef" } }, catalog)).toEqual({
+      state: "current", expId: "e-new", created: "2026-09-27T20:38:56Z", label: "seed vs pruning on real tiles", nTiles: 9,
+      worst: { band: "J", pct: 20.19 }, mean: 17.9,
+    });
+    expect(compareRunPath("e-new")).toBe("/sky/compare?exp=e-new");
   });
 
-  it("reads a continue submission's members and falls back to the label", () => {
-    const items = runningItems([local("c")], [
-      { jobid: "4", state: "RUNNING", label: "Continue members", params_json: JSON.stringify({ mode: "continue", members: "member_178, member_179" }) },
-      { jobid: "5", state: "RUNNING", label: null, step_id: "ensemble_evaluate", params_json: "{not json" },
-    ]);
-    expect(items.map((i) => i.text)).toEqual([
-      "members 178, 179 on FASRC", "ensemble_evaluate on FASRC", "job c on this laptop",
-    ]);
+  it("never shows an older fit's number: 'no real benchmark for this membership'", () => {
+    expect(productionRealHoles(exps, { id: "e-new", fingerprints: { production: "0000" } }, catalog))
+      .toMatchObject({ state: "none", why: "earlier", expId: "e-new" });
+    expect(productionRealHoles([exps[2]], null, catalog)).toEqual({ state: "none", why: "no-run" });
   });
 
-  it("is empty when nothing runs", () => {
-    expect(runningItems([local("d", { status: "failed" })], [])).toEqual([]);
+  it("waits for the run record and the catalogue", () => {
+    expect(productionRealHoles(undefined, null, catalog)).toEqual({ state: "loading" });
+    expect(productionRealHoles(exps, null, catalog)).toEqual({ state: "loading" });
+    expect(productionRealHoles(exps, { id: "e-old" }, catalog)).toEqual({ state: "loading" });
+    expect(productionRealHoles(exps, { id: "e-new", fingerprints: { production: "d9ef" } }, null)).toEqual({ state: "loading" });
+  });
+});
+
+describe("the caption under the verdict", () => {
+  const NOW = Date.parse("2026-09-27T23:00:00Z");
+  const production = { label: "spatial gate", mix: "linear", fittedAt: "2026-09-27T19:00:00Z", available: true, reason: null };
+  it("names the members, the gate fit, the test fields and the knee range", () => {
+    expect(homeCaption({ members: 30, production, nFields: 100, now: NOW,
+      knee: { available: true, integration: { from_e: 0.1, to_e: 10000 } } }))
+      .toEqual(["30 members", "gate fitted 4 h ago", "100 test fields", "knees 0.1–10⁴ e⁻"]);
+  });
+  it("leaves out what it does not know and says when the gate is out of date", () => {
+    expect(homeCaption({ members: null, production: { ...production, available: false }, nFields: null, knee: null, now: NOW }))
+      .toEqual(["gate out of date"]);
+    expect(kneeText(0.1)).toBe("0.1");
+    expect(kneeText(1000)).toBe("10³");
+    expect(kneeText(500)).toBe("500");
   });
 });

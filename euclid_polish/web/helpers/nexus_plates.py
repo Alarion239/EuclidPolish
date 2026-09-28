@@ -204,7 +204,7 @@ def resolve_request(tiles: str | Sequence[Any], model: str) -> tuple[str, list[P
             400,
             f"{spec} has not been run on {', '.join(missing[:6])}"
             + (f" and {len(missing) - 6} more" if len(missing) > 6 else "")
-            + " — run it in Sky › Experiments first",
+            + " — run it in Sky › Compare first",
             missing=missing,
         )
     return spec, resolved, meta
@@ -327,6 +327,28 @@ def default_tag(spec: str, now: datetime | None = None) -> str:
     return f"{model_catalog.spec_slug(spec)}-{stamp}"
 
 
+def _tile_figure(images, tile: PlateTile, band: str, short: str, filter_name: str,
+                 *, dpi: int = 200) -> Figure:
+    """One tile's 3-panel plate (LR · SR · NEXUS) as a figure."""
+    figure = Figure(figsize=(13.5, 4.9), dpi=dpi, facecolor="black")
+    FigureCanvasAgg(figure)
+    axes = figure.subplots(1, 3)
+    _draw_row(axes, images, tile, band, short, filter_name, titles=True)
+    figure.subplots_adjust(left=0.03, right=0.99, bottom=0.02, top=0.88, wspace=0.03)
+    return figure
+
+
+def _sheet_figure(rows, band: str, short: str, filter_name: str, *, dpi: int) -> Figure:
+    """The contact sheet (one 3-panel row per tile) as a figure."""
+    figure = Figure(figsize=(SHEET_WIDTH_IN, SHEET_ROW_IN * len(rows)), dpi=dpi, facecolor="black")
+    FigureCanvasAgg(figure)
+    axes = np.atleast_2d(figure.subplots(len(rows), 3, squeeze=False))
+    for row, (tile, panels) in enumerate(rows):
+        _draw_row(axes[row], panels, tile, band, short, filter_name, titles=row == 0)
+    figure.subplots_adjust(left=0.05, right=0.99, bottom=0.01, top=0.95, wspace=0.03, hspace=0.04)
+    return figure
+
+
 def render_plates(tiles: str | Sequence[Any], *, band: str = DEFAULT_BAND, model: str = "production",
                   tag: str | None = None,
                   progress: Callable[[int, int, str], None] | None = None,
@@ -358,11 +380,7 @@ def render_plates(tiles: str | Sequence[Any], *, band: str = DEFAULT_BAND, model
         sr_info = dict(panels[1][1])
         images = [panel_image(cube, info, band) for cube, info in panels]
         del panels
-        figure = Figure(figsize=(13.5, 4.9), dpi=200, facecolor="black")
-        FigureCanvasAgg(figure)
-        axes = figure.subplots(1, 3)
-        _draw_row(axes, images, tile, band, short, filter_name, titles=True)
-        figure.subplots_adjust(left=0.03, right=0.99, bottom=0.02, top=0.88, wspace=0.03)
+        figure = _tile_figure(images, tile, band, short, filter_name)
         name = tile_file(tile.source_index, band, spec)
         _save(figure, out_dir / name)
         figure.clear()
@@ -376,12 +394,7 @@ def render_plates(tiles: str | Sequence[Any], *, band: str = DEFAULT_BAND, model
         })
     if progress:
         progress(len(resolved), total, "contact sheet")
-    figure = Figure(figsize=(SHEET_WIDTH_IN, SHEET_ROW_IN * len(rows)), dpi=dpi, facecolor="black")
-    FigureCanvasAgg(figure)
-    axes = np.atleast_2d(figure.subplots(len(rows), 3, squeeze=False))
-    for row, (tile, panels) in enumerate(rows):
-        _draw_row(axes[row], panels, tile, band, short, filter_name, titles=row == 0)
-    figure.subplots_adjust(left=0.05, right=0.99, bottom=0.01, top=0.95, wspace=0.03, hspace=0.04)
+    figure = _sheet_figure(rows, band, short, filter_name, dpi=dpi)
     sheet = sheet_file(band, spec)
     _save(figure, out_dir / sheet)
     figure.clear()
@@ -400,6 +413,82 @@ def render_plates(tiles: str | Sequence[Any], *, band: str = DEFAULT_BAND, model
     if progress:
         progress(total, total, "done")
     return {"tag": tag, **record}
+
+
+#: Export choices of a rendered run (Figures › Plates: dpi, PNG / PDF / SVG).
+EXPORT_FORMATS = {"png": "image/png", "pdf": "application/pdf", "svg": "image/svg+xml"}
+EXPORT_DPIS = (150, 300, 600)
+#: A re-export's canvas cap: a long sheet at 600 dpi would be ~300 Mpx, so its
+#: dpi drops (as the rendered sheet's does) to stay under this many pixels.
+EXPORT_MAX_PIXELS = 40_000_000
+
+
+def export_dpi(width_in: float, height_in: float, dpi: int) -> int:
+    """``dpi`` unless the canvas would exceed EXPORT_MAX_PIXELS (never below
+    SHEET_MIN_DPI)."""
+    cap = math.floor(math.sqrt(EXPORT_MAX_PIXELS / max(1e-6, width_in * height_in)))
+    return int(max(SHEET_MIN_DPI, min(int(dpi), cap)))
+
+
+def export_render(tag: str, band: str, model: str, *, fmt: str = "png", dpi: int = 300,
+                  tile: int | None = None) -> tuple[bytes, str, int]:
+    """Redraw one rendered run's contact sheet (or, with ``tile``, that tile's
+    plate) at ``dpi`` in ``fmt`` from the cached tile outputs — the same
+    drawing as :func:`render_plates`, nothing written. Returns ``(bytes,
+    download name, effective dpi)``. 404 for an unknown run / render / tile or
+    a legacy run without a manifest; 409 when the model's outputs changed
+    since the run was rendered (render the run again)."""
+    fmt = str(fmt or "png").lower()
+    if fmt not in EXPORT_FORMATS:
+        raise PlateError(400, f"format must be one of {', '.join(EXPORT_FORMATS)}")
+    if int(dpi) not in EXPORT_DPIS:
+        raise PlateError(400, f"dpi must be one of {', '.join(map(str, EXPORT_DPIS))}")
+    band = check_band(band)
+    directory = plates_root() / check_tag(tag)
+    manifest = _read_json(directory / MANIFEST) if directory.is_dir() and not directory.is_symlink() else None
+    if manifest is None:
+        raise PlateError(404, "this run has no plates.json (a legacy run): render it again to export it")
+    record = next((item for item in manifest.get("renders") or []
+                   if isinstance(item, Mapping) and item.get("band") == band
+                   and item.get("model") == model), None)
+    if record is None:
+        raise PlateError(404, f"run {tag} has no {band} render of {model}")
+    tiles = [item for item in record.get("tiles") or [] if isinstance(item, Mapping) and item.get("id")]
+    if tile is not None:
+        tiles = [item for item in tiles if int(item.get("index", -1)) == int(tile)]
+    if not tiles:
+        raise PlateError(404, "no such tile in this render")
+    spec, resolved, _meta = resolve_request([str(item["id"]) for item in tiles], model)
+    catalog = {item.spec: item for item in model_catalog.list_specs()}
+    spec_info = catalog.get(spec)
+    recorded = record.get("model_fingerprint")
+    if recorded and spec_info and spec_info.fingerprint and spec_info.fingerprint != recorded:
+        raise PlateError(409, f"{model_short(spec)} changed since this run was rendered — "
+                              "render the run again")
+    short = model_short(spec)
+    filter_name = str(record.get("filter") or "F200W")
+    if tile is not None:
+        panels = _load_panels(resolved[0], spec)
+        images = [panel_image(cube, info, band) for cube, info in panels]
+        del panels
+        effective = export_dpi(13.5, 4.9, dpi)
+        figure = _tile_figure(images, resolved[0], band, short, filter_name, dpi=effective)
+        stem = f"{tag}_nexus_tile{resolved[0].source_index:03d}_{band}"
+    else:
+        effective = export_dpi(SHEET_WIDTH_IN, SHEET_ROW_IN * len(resolved), dpi)
+        slot_px = math.ceil(SHEET_WIDTH_IN / 3 * effective)
+        rows = []
+        for item in resolved:
+            panels = _load_panels(item, spec)
+            rows.append((item, [sheet_panel(*panel_image(cube, info, band), slot_px)
+                                for cube, info in panels]))
+            del panels
+        figure = _sheet_figure(rows, band, short, filter_name, dpi=effective)
+        stem = f"{tag}_nexus_tiles_{band}"
+    buffer = BytesIO()
+    figure.savefig(buffer, facecolor="black", format=fmt, dpi=effective)
+    figure.clear()
+    return buffer.getvalue(), f"{stem}_{effective}dpi.{fmt}", effective
 
 
 def _merge_manifest(out_dir: Path, record: Mapping[str, Any]) -> None:

@@ -9,7 +9,7 @@ same asinh space the gate is fitted in: per-band PSNR, VIS squared error per
 brightness bin, in star halos and (blackout group) in the zeroed holes. It
 also scores each combiner's PSNR-vs-knee curve on the natural group (the
 knee-integrated PSNR of :mod:`euclid_polish.eval.knee_psnr`, directly
-comparable with the Ensemble › Knee leaderboard) and each gate's member usage.
+comparable with the Models › Leaderboard) and each gate's member usage.
 
 A variant fitted for a SUBSET of the cube members (older 20/26-member gates,
 pruned gates) is applied to exactly its members, picked by label from the

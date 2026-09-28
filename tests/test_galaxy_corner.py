@@ -10,6 +10,7 @@ from euclid_polish.web.helpers import galaxy_distributions as distributions
 from euclid_polish.web.helpers.galaxy_corner import (
     CORNER_VARIABLES,
     EXPLORER_BINS,
+    _forward_noise_model_colours,
     build_galaxy_corner,
     mass_fraction_contours,
     orient_joint_pair,
@@ -189,3 +190,48 @@ def test_joint_pair_route_serves_the_sidecar(tmp_path, monkeypatch):
         "/api/galaxy-distributions/joint-pair?x=vis&y=log_re"
     ).get_json()
     assert missing["available"] is False
+
+
+def test_forward_noise_widens_model_colours_by_the_q1_ratio_variance():
+    count = 20_000
+    magnitude = np.linspace(20.0, 24.0, 200)
+    donors = type("Rows", (), {
+        "magnitude": magnitude,
+        "ratio_var": np.full((magnitude.size, 3), 0.01),
+    })()
+    model = np.zeros((count, len(CORNER_VARIABLES)))
+    model[:, 0] = 22.0
+    # Flat colours: every flux ratio is 1, so σ_ratio 0.1 → σ_colour ≈ 0.109.
+    noised = _forward_noise_model_colours(model, donors, np.random.default_rng(1))
+
+    assert np.std(noised[:, 3]) == pytest.approx(2.5 / np.log(10) * 0.1, rel=0.05)
+    # Y − J differences two noised ratios: √2 wider.
+    assert np.std(noised[:, 4]) == pytest.approx(np.sqrt(2) * 2.5 / np.log(10) * 0.1, rel=0.05)
+    # VIS, SFR and radius are not noised, and the input is left alone.
+    assert np.all(noised[:, :3] == model[:, :3])
+    assert np.all(model[:, 3:] == 0.0)
+
+
+def test_forward_noise_drops_colours_of_non_positive_ratios():
+    donors = type("Rows", (), {
+        "magnitude": np.asarray([22.0, 22.5]),
+        "ratio_var": np.full((2, 3), 4.0),                    # σ_ratio 2 ≫ 1
+    })()
+    model = np.zeros((4000, len(CORNER_VARIABLES)))
+    model[:, 0] = 22.2
+
+    noised = _forward_noise_model_colours(model, donors, np.random.default_rng(2))
+
+    missing = np.mean(~np.isfinite(noised[:, 3]))
+    assert 0.25 < missing < 0.45                            # P(1 + 2N ≤ 0) ≈ 0.31
+
+
+def test_corner_model_colours_carry_q1_measurement_noise(tmp_path):
+    rows = synthetic_rows(n_rows=400, sfr_missing_above_mag=23.0)
+    catalog_path, _meta = write_fixture_catalog(tmp_path, rows)
+
+    corner = build_galaxy_corner(catalog_path, active_payload(), model_draws=400)
+
+    assert corner["model_noise"] == {
+        "applied": True, "variables": ["vis_minus_y", "y_minus_j", "j_minus_h"],
+    }

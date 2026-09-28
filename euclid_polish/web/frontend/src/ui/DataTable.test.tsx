@@ -89,6 +89,20 @@ describe("DataTable filtering", () => {
     expect(screen.getByText(/No rows match/)).toBeTruthy();
     rerender(<DataTable rows={[]} columns={COLS} rowKey={key} empty="no members yet" />);
     expect(screen.getByText("no members yet")).toBeTruthy();
+    // The empty state says it: no "0 rows" beside it.
+    expect(document.querySelector(".ui-dt__count")).toBeNull();
+  });
+
+  it("a page can replace or hide the row count (its own chips or a server total say it)", () => {
+    const count = () => document.querySelector(".ui-dt__count")?.textContent ?? null;
+    const { rerender } = render(<DataTable rows={ROWS} columns={COLS} rowKey={key} countText="showing 4 of 11,345" />);
+    expect(count()).toBe("showing 4 of 11,345");
+    // A filter that narrows the rows still says how many of them it shows.
+    fireEvent.change(screen.getByRole("searchbox", { name: /filter/i }), { target: { value: "l1" } });
+    expect(count()).toBe("2 of 4 rows");
+    fireEvent.change(screen.getByRole("searchbox", { name: /filter/i }), { target: { value: "" } });
+    rerender(<DataTable rows={ROWS} columns={COLS} rowKey={key} countText={null} />);
+    expect(count()).toBeNull();
   });
 
   it("supports a controlled filter", () => {

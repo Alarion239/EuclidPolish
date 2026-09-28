@@ -6,8 +6,8 @@
  * "Fit" shows the whole image (crops upscaled with no smoothing, so every
  * pixel stays a pixel); "Fit width" fills the width and scrolls down (the
  * tall A4 sheet); "Actual size" shows the image's own pixels and scrolls.
- * Used by the grid preview (the A4 sheet) and the saved-result thumbnails
- * (Results, the Grid's crop picker), with the result's panels one click
+ * Used by the sheet preview (the A4 sheet) and the saved-crop thumbnails
+ * (the Sheet's crop pool), with the result's panels one click
  * apart. Esc or Close returns, focus back on what opened it. */
 import * as RDialog from "@radix-ui/react-dialog";
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
@@ -97,7 +97,7 @@ export function Lightbox({ open, onOpenChange, title, description, src, alt, pix
 }
 
 /** A saved result at full size: its panels (recipes) one click apart, and
- *  the ways on (its card, the grid, its source viewer). Stays mounted while
+ *  the ways on (its card, the sheet, its source viewer). Stays mounted while
  *  closing (the last result), so focus returns to the thumbnail. */
 export function ResultLightbox({ result, onClose }: { result: SavedResult | null; onClose: () => void }) {
   const [recipe, setRecipe] = useState<string | null>(null);
@@ -124,7 +124,7 @@ export function ResultLightbox({ result, onClose }: { result: SavedResult | null
       ) : undefined}
       footer={<>
         <Button size="sm" variant="ghost" onClick={() => { close(); openInspector({ kind: "figure", id: r.id }); }}>Open its card</Button>
-        <Button asChild size="sm" variant="ghost" icon="columns"><Link to={gridHref([r.id], resultRegime(r) ?? "real")} onClick={close}>Grid</Link></Button>
+        <Button asChild size="sm" variant="ghost" icon="columns"><Link to={gridHref([r.id], resultRegime(r) ?? "real")} onClick={close}>Sheet</Link></Button>
         {link && <Button asChild size="sm"><Link to={link.to} onClick={close}>{link.label}</Link></Button>}
       </>} />
   );

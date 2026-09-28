@@ -1,6 +1,7 @@
 /* The region selection: every visible feature inside the drawn region, as a
- * DataTable (row → inspector), with bulk actions on its real tiles (compare
- * models, run production, overlay LR / SR on the sky). */
+ * DataTable (row → inspector), with bulk actions on its real tiles: Compare
+ * models and Run production (both visible, each confirmed before anything
+ * runs), overlay LR / SR on the sky and copy (the ⋯ menu). */
 import { useMemo, useState } from "react";
 import { formatCount, formatDec, formatRA } from "../../../format";
 import {
@@ -59,7 +60,6 @@ export function SelectionPanel({ groups, layers, onClear }: {
     toast.success(`Overlaid ${withTier.length} tile${withTier.length === 1 ? "" : "s"} (${tierLabel(tier)} · VIS)`);
   };
   const items: MenuItem[] = [
-    { label: `Run the production model on ${refs.length} tile${refs.length === 1 ? "" : "s"}…`, disabled: !refs.length, onSelect: () => { void runModels(refs, ["production"]); } },
     {
       type: "sub", label: "Overlay on the sky", disabled: !refs.length, items: [
         { label: "LR (VIS)", onSelect: () => overlay("lr") },
@@ -83,6 +83,7 @@ export function SelectionPanel({ groups, layers, onClear }: {
         {refs.length > 0 && <Badge size="sm" tone="accent">{refs.length} real tile{refs.length === 1 ? "" : "s"}</Badge>}
         <span className="sky-toolbar__spacer" />
         <Button size="sm" variant="primary" disabled={!refs.length} onClick={compare}>Compare models…</Button>
+        <Button size="sm" disabled={!refs.length} onClick={() => { void runModels(refs, ["production"]); }}>Run production…</Button>
         <Menu label="Selection actions" items={items} trigger={<IconButton icon="more" size="sm" label="Selection actions" />} />
         <IconButton icon="close" size="sm" label="Clear selection" onClick={onClear} />
       </header>

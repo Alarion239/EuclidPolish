@@ -1,6 +1,6 @@
 /* Keep a nav-less image viewer on one object with the page's tiers.
  *
- * A comparison viewer (Experiments, the real-tile card) shows ONE tile of a
+ * A comparison viewer (Sky › Compare, the real-tile card) shows ONE tile of a
  * collection that walks every tile of the source; the page, not the viewer,
  * decides which (the Scope select, the inspected tile). `useFollowViewer`
  * moves the viewer there once its meta is in, and then puts back the tiers the

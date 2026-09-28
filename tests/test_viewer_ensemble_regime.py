@@ -95,9 +95,9 @@ def test_ensemble_meta_does_not_duplicate_the_production_combiner(monkeypatch):
 
     assert keys.count("sr") == 1
     assert vd.COMBINER_MODELS[vd.SPATIAL_GATE_KIND].cube_prefix not in keys
-    # The other active combiners (RBF kinds) stay as their own tiers.
+    # The legacy RBF gets no tier: Models › Images shows one SR (production).
     assert vd.COMBINER_MODELS[
-        vd.RAW_INCREMENTAL_MINMEANMAX_RBF_KIND].cube_prefix in keys
+        vd.RAW_INCREMENTAL_MINMEANMAX_RBF_KIND].cube_prefix not in keys
     assert next(tier["label"] for tier in tiers
                 if tier["key"] == "sr") == "SR · production gate"
 

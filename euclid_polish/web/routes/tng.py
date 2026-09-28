@@ -1,4 +1,4 @@
-"""TNG routes of Data › TNG: the API token on FASRC, the radius-manifest
+"""TNG routes of Synthetic › Galaxies (templates): the API token on FASRC, the radius-manifest
 validation, the property explorer and the grid/stack job results.
 
 * The token form writes the IllustrisTNG API key to ``~/.tng_api_key`` on
@@ -404,7 +404,7 @@ def register(app):
             if not ids:
                 raise RuntimeError("no downloaded galaxies found on FASRC")
             if not key:
-                raise RuntimeError("no TNG API token (Settings › Connections)")
+                raise RuntimeError("no TNG API token (System › Connections)")
             work = tng_explorer.calibration_dir()
             os.makedirs(work, exist_ok=True)
             props = gather_properties(work, ids, key, reporter=_CapReporter(cap))

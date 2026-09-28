@@ -46,7 +46,7 @@ export function layerOpacity(info: LayerInfo, setting?: LayerSetting): number {
 
 /** The per-view JWST footprints pseudo-layer (drawn with "jwst-mast"). */
 export const FOOTPRINTS_INFO: LayerInfo = {
-  id: "jwst-footprints", label: "JWST footprints in view", group: "catalogues", kind: "polygons", count: 0,
+  id: "jwst-footprints", label: "JWST footprints in view", group: "coverage", kind: "polygons", count: 0,
   bbox: null, style: {}, ready: true, reason: null, fill_action: null,
   description: "MAST observation polygons near the view centre", url: null,
 };

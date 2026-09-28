@@ -42,6 +42,8 @@ function sameView(a: { ra: number; dec: number; fov: number }, b: { ra: number; 
 
 export type SkyStageProps = {
   url: AtlasUrl;
+  /** The view without URL coordinates (atlas/home.ts: the last tile, else EDF-N). */
+  home?: { ra: number; dec: number; fov: number };
   specs: readonly RenderSpec[];
   base: StackEntry | null;
   overlays: readonly StackEntry[];
@@ -51,7 +53,7 @@ export type SkyStageProps = {
   children?: ReactNode;
 };
 
-export function SkyStage({ url, specs, base, overlays, baseColor, region, focus, children }: SkyStageProps) {
+export function SkyStage({ url, home = DEFAULT_VIEW, specs, base, overlays, baseColor, region, focus, children }: SkyStageProps) {
   const slot = useRef<HTMLDivElement>(null);
   const [engine, setEngine] = useState<SkyEngine | null>(null);
   const [attempt, setAttempt] = useState(0);
@@ -61,6 +63,8 @@ export function SkyStage({ url, specs, base, overlays, baseColor, region, focus,
   const theme = useResolvedTheme();
   const urlRef = useRef(url);
   urlRef.current = url;
+  const homeRef = useRef(home);
+  homeRef.current = home;
   const specsRef = useRef(specs);
   specsRef.current = specs;
   const [ctx, setCtx] = useState<ContextEvent | null>(null);
@@ -80,10 +84,11 @@ export function SkyStage({ url, specs, base, overlays, baseColor, region, focus,
     } else {
       store.set({ status: "loading", error: null, errorCode: null });
       const u = urlRef.current;
+      const h = homeRef.current;
       getSkyEngine(() => ({
         view: {
-          ra: u.ra ?? DEFAULT_VIEW.ra, dec: u.dec ?? DEFAULT_VIEW.dec,
-          fov: u.fov ?? (u.ra != null ? 0.5 : DEFAULT_VIEW.fov), proj: u.proj,
+          ra: u.ra ?? h.ra, dec: u.dec ?? h.dec,
+          fov: u.fov ?? (u.ra != null ? 0.5 : h.fov), proj: u.proj,
         },
         theme: document.documentElement.getAttribute("data-theme") === "dark" ? "dark" : "light",
         background: readBackground(),
@@ -124,8 +129,9 @@ export function SkyStage({ url, specs, base, overlays, baseColor, region, focus,
       clearTimeout(writeTimer);
       writeTimer = setTimeout(() => {
         const u = urlRef.current;
+        const h = homeRef.current;
         const cur = engine.getView();
-        const inUrl = { ra: u.ra ?? DEFAULT_VIEW.ra, dec: u.dec ?? DEFAULT_VIEW.dec, fov: u.fov ?? DEFAULT_VIEW.fov };
+        const inUrl = { ra: u.ra ?? h.ra, dec: u.dec ?? h.dec, fov: u.fov ?? h.fov };
         if (!sameView(cur, inUrl)) u.setView(cur);
       }, URL_WRITE_DEBOUNCE_MS);
     };

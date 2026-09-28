@@ -1,4 +1,4 @@
-"""Archive credentials for the web UI (Settings › Connections).
+"""Archive credentials for the web UI (System › Connections).
 
 - ONE laptop-side Euclid archive session (:mod:`euclid_polish.web.euclid_session`):
   ``/auth/status`` / ``/auth/login`` / ``/auth/logout``. Every local feature
@@ -27,10 +27,11 @@ _SESSION_LOCK = threading.Lock()
 
 #: The console features that read the laptop session (``id``, label, page).
 CONSUMERS = (
-    {"id": "galaxies", "label": "Realism › Galaxies (Euclid galaxy query)", "to": "/realism/galaxies"},
-    {"id": "stars", "label": "Realism › Stars (Euclid star query)", "to": "/realism/stars"},
-    {"id": "pixels", "label": "Realism › Pixels (population comparison)", "to": "/realism/pixels"},
-    {"id": "catalog-eval", "label": "Sky › Catalog eval (query galaxies)", "to": "/sky/catalog-eval"},
+    {"id": "galaxies", "label": "Synthetic › Galaxies (Euclid galaxy query)", "to": "/synthetic/galaxies"},
+    {"id": "stars", "label": "Synthetic › Stars (Euclid star query)", "to": "/synthetic/stars"},
+    {"id": "pixels", "label": "Synthetic › Fields (population comparison)",
+     "to": "/synthetic/fields?view=stats"},
+    {"id": "catalog-eval", "label": "Sky › Targets (query galaxies)", "to": "/sky/targets?set=galaxies"},
 )
 
 

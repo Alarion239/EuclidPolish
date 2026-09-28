@@ -8,12 +8,14 @@ import io
 import json
 import threading
 import time
+from pathlib import Path
 
 import numpy as np
 import pytest
 from astropy.io import fits
 from astropy.wcs import WCS
 
+from euclid_polish.config import Config
 from euclid_polish.web import app as web_app
 from euclid_polish.web import remote
 from euclid_polish.web.helpers import experiments, jwst_euclid, model_catalog, real_tiles
@@ -77,6 +79,23 @@ def test_sources_list_and_card(client):
                               "id": "f200w-0000"}
     assert "production" in card["runnable_models"]
     assert set(card["image_urls"]) == {"lr", "jwst"}
+    # "Open in Files": the tile's LR FITS as a path Files (/api/inspect) accepts
+    lr = card["files"]["lr"]
+    assert lr.endswith(".fits")
+    assert client.get("/api/inspect", query_string={"fits": lr}).status_code == 200
+
+
+def test_catalogue_object_card_opens_its_lr_and_sr_in_files(client):
+    """A catalogue object's SR is the evaluation's own SR.fits (no model
+    identity, so not a tier): the card still lists it for "Open in Files"."""
+    sub = fx.make_eval_store()
+    root = Path(Config.EVAL_RESULTS_DIR) / sub
+    fits.PrimaryHDU(np.zeros((4, 20, 20), np.float32)).writeto(root / "SR.fits")
+    card = client.get(f"/api/real/eval/{sub}").get_json()
+    assert set(card["files"]) == {"lr", "sr"}
+    assert card["files"]["sr"].endswith("SR.fits")
+    for path in card["files"].values():
+        assert client.get("/api/inspect", query_string={"fits": path}).status_code == 200
 
 
 @pytest.mark.parametrize("path,status", [
@@ -116,6 +135,13 @@ def test_experiment_job_record_and_card(client, world):
     assert card["experiments"] == [payload["experiment_id"]]
     row = client.get("/api/real/nexus").get_json()["tiles"][0]
     assert row["models"]["mean"]["state"] == "current"
+    # the listing carries each scored output's per-band SR/LR flux ratio
+    # (Sky › Targets sorts and plots it without opening every card)
+    assert row["models"]["mean"]["flux_ratio"]["VIS"] == pytest.approx(2.0, rel=1e-5)
+    assert set(row["models"]["mean"]["flux_ratio"]) == {"VIS", "Y_E", "J_E", "H_E"}
+    output = card["files"]["m:mean"]
+    assert output.endswith(".fits")
+    assert client.get("/api/inspect", query_string={"fits": output}).status_code == 200
 
 
 @pytest.mark.parametrize("data,status", [

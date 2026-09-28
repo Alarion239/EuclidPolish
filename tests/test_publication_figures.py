@@ -225,16 +225,21 @@ def test_star_population_calibration_exports_raster_and_vector_formats():
     assert b"Estimated colours with simulated Euclid noise" in svg
     assert b"Raw Euclid catalogue colours" in svg
     assert b"Q1-normalized straight law" in svg
-    assert b"native Gaia G" in svg
+    assert b"native Gaia G" not in svg          # the console plate: no Gaia counts
+    paper = render_star_population_calibration(
+        calibration, output_format="svg", dpi=120, include_gaia=True,
+    )
+    assert b"native Gaia G" in paper            # the paper figure keeps them
+    assert b"Gaia DR3" in paper
 
 
 def test_star_population_calibration_is_the_density_and_colour_pdf_panels(tmp_path):
     """The stellar plate is one density panel plus the three colour PDFs.
 
     The deleted Realism › Stars views (Gaia BP−RP vs the Euclid colours, the
-    Gaia CMD and the Gaia projection into Euclid) have no panel here. The
-    native Gaia G_AB counts stay on the density panel: they set the shared
-    slope of the fitted magnitude law.
+    Gaia CMD and the Gaia projection into Euclid) have no panel here, and the
+    console plate draws no native Gaia G_AB counts (``include_gaia=False``;
+    only the paper figure asks for them).
     """
     svg = render_star_population_calibration(
         _star_calibration(), output_format="svg", dpi=120,
@@ -244,7 +249,7 @@ def test_star_population_calibration_is_the_density_and_colour_pdf_panels(tmp_pa
 
     assert len(re.findall(r'<g id="axes_\d+"', text)) == 4
     for title in (
-        "Shared-slope stellar brightness laws",
+        "Stellar brightness law",
         "colour",                              # VIS − Y, Y − J, J − H PDFs
         "probability density",
     ):
@@ -252,4 +257,4 @@ def test_star_population_calibration_is_the_density_and_colour_pdf_panels(tmp_pa
     assert text.count("probability density") == 3
     for deleted in ("BP", "colour–magnitude", "projected", "projection"):
         assert deleted not in text, deleted
-    assert "native Gaia G" in text             # a fit input, kept
+    assert "Gaia" not in text                  # no Gaia series, window or title

@@ -180,7 +180,7 @@ def test_fasrc_file_inspect_fetch_failure_is_json_502(client, monkeypatch):
     assert response.get_json() == {"ok": False, "error": "too big"}
 
 
-def test_fasrc_file_inspect_redirects_to_the_inspect_workspace(
+def test_fasrc_file_inspect_redirects_to_the_files_workspace(
         client, monkeypatch, tmp_path):
     monkeypatch.setattr(remote.STATE, "ssh", _Up())
     local = Path(os.path.realpath(tmp_path)) / "x" / "a b.fits"
@@ -191,4 +191,4 @@ def test_fasrc_file_inspect_redirects_to_the_inspect_workspace(
         "euclid_polish.web.routes.files._safe_relpath", lambda path: "data/x/a b.fits")
     response = client.get("/fasrc/file/inspect?remote_path=/n/x.fits")
     assert response.status_code == 302
-    assert response.headers["Location"] == "/inspect?fits=data%2Fx%2Fa+b.fits"
+    assert response.headers["Location"] == "/files?fits=data%2Fx%2Fa+b.fits"

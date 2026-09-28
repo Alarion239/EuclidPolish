@@ -52,13 +52,15 @@ function TierChips({ collapsed = false }: { collapsed?: boolean }) {
         const name = shortTierLabel(t.label);
         const full = sentenceLabel(t.label);
         // A tier this object does not have: dimmed, not clickable, its tooltip says why.
+        // Else the tooltip is the tier's own hint (what it is), or its full name.
         const why = disabled ? `${full}: ${ctrl.missingTierLabel(t.key)}` : name !== full ? full : "";
+        const tip = disabled || !t.hint ? why : `${full}: ${t.hint}`;
         const chip = (
           <button key={t.key} type="button" className="cv-chip" aria-pressed={on} aria-disabled={disabled || undefined}
             aria-label={disabled ? why : name !== full ? full : undefined}
             onClick={() => { if (!disabled) ctrl.toggleTier(t.key); }}>{name}</button>
         );
-        return why ? <Tooltip key={t.key} content={why}>{chip}</Tooltip> : chip;
+        return tip ? <Tooltip key={t.key} content={tip}>{chip}</Tooltip> : chip;
       })}
       {hasMenu && (
         <Popover label="Tiers" width={340} trigger={

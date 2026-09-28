@@ -209,11 +209,36 @@ def test_alerts_are_memoised_until_fresh(client, monkeypatch):
     assert len(calls) == 2
 
 
+def test_loop_route_serves_the_staleness_service_and_never_starts_a_job(client, monkeypatch):
+    """GET /api/system/loop is the one staleness service Home's Loop and
+    System › Lineage read: it hands loop_payload the alerts and the
+    records-noise check, passes ?fresh=1 through, and starts nothing."""
+    seen = {}
+
+    def loop_payload(*, alerts, check_records_noise, fresh=False):
+        seen["alerts"] = alerts()
+        seen["noise"] = check_records_noise is system.check_records_noise
+        seen["fresh"] = fresh
+        return {"computed_at": "now", "ttl_s": 60.0, "stages": [{"id": "records", "state": "stale"}],
+                "counts": {"current": 0, "stale": 1, "blocked": 0, "unknown": 0}, "errors": {}}
+
+    _only(monkeypatch, a=_check("ok"))
+    monkeypatch.setattr(system.system_alerts, "loop_payload", loop_payload)
+    before = len(REGISTRY.list())
+    body = client.get("/api/system/loop").get_json()
+    assert body["stages"] == [{"id": "records", "state": "stale"}]
+    assert [c["id"] for c in seen["alerts"]["checks"]] == ["a"]
+    assert seen["noise"] is True and seen["fresh"] is False
+    client.get("/api/system/loop?fresh=1")
+    assert seen["fresh"] is True
+    assert len(REGISTRY.list()) == before
+
+
 def test_disk_check(monkeypatch):
     monkeypatch.setattr(system.shutil, "disk_usage", lambda _p: Usage(460 * GIB, 441 * GIB, 19 * GIB))
     check = system.check_disk()
     assert check["state"] == "warn" and "19.0 GiB free" in check["title"]
-    assert check["to"] == "/settings/about"
+    assert check["to"] == "/system/storage"
     monkeypatch.setattr(system.shutil, "disk_usage", lambda _p: Usage(460 * GIB, 300 * GIB, 160 * GIB))
     assert system.check_disk()["state"] == "ok"
 
@@ -232,7 +257,7 @@ def test_real_sr_check_counts_production_states(monkeypatch):
     assert check["facts"]["stale"] == 450 and check["facts"]["current"] == 1
     by = {s["source"]: s for s in check["facts"]["sources"]}
     assert by["nexus"] == {"source": "nexus", "label": "NEXUS tiles", "current": 0, "stale": 445, "missing": 0}
-    assert "450" in check["title"] and check["to"] == "/sky/results"
+    assert "450" in check["title"] and check["to"] == "/sky/targets"
 
 
 def test_real_sr_check_is_ok_when_everything_is_current(monkeypatch):
@@ -253,7 +278,7 @@ def test_combiner_check_follows_the_production_spec(monkeypatch):
     ])
     check = system.check_combiner()
     assert check["state"] == "warn" and "26 members" in check["detail"]
-    assert check["to"] == "/ensemble/starfull/combiners"
+    assert check["to"] == "/models/starfull/combiner"
     monkeypatch.setattr(system.model_catalog, "list_specs",
                         lambda: [_spec("production", True, members=["1·psnr"] * 30)])
     ok = system.check_combiner()
@@ -407,7 +432,7 @@ def test_tracking_check_flags_results_newer_than_the_last_entry(tmp_path, monkey
     assert check["state"] == "warn"
     assert check["facts"]["last_entry"].startswith("2026-09-21T14:42:29")
     assert "evaluation" in check["detail"]
-    assert check["to"] == "/ops/tracking"
+    assert check["to"] == "/notebook/log"
     old = time.mktime(time.strptime("2026-09-19 12:00", "%Y-%m-%d %H:%M"))
     os.utime(ensemble_dirs.regime / "eval_summary.json", (old, old))
     assert system.check_tracking()["state"] == "ok"

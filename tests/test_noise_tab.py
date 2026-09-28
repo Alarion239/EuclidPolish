@@ -115,7 +115,7 @@ def test_log_correlation_is_symmetric_with_unit_diagonal():
 def test_noise_page_and_api_route():
     client = create_app().test_client()
 
-    page = client.get("/realism/noise")
+    page = client.get("/synthetic/noise")
     assert page.status_code == 200
     assert b'<div id="root">' in page.data
 
@@ -125,10 +125,10 @@ def test_noise_page_and_api_route():
 
 
 def test_noise_tab_is_registered_in_the_route_manifest():
-    """The Noise view is the Realism workspace's ``noise`` tab; the old
+    """The Noise view is the Synthetic workspace's ``noise`` tab; the old
     ``/noise`` URL redirects there (contract C1, read by Flask and the SPA)."""
     manifest = json.loads((ROOT / "euclid_polish/web/spa_routes.json").read_text())
-    realism = next(w for w in manifest["workspaces"] if w["id"] == "realism")
-    assert realism["path"] == "/realism"
-    assert "noise" in realism["tabs"]
-    assert manifest["redirects"]["/noise"] == "/realism/noise"
+    synthetic = next(w for w in manifest["workspaces"] if w["id"] == "synthetic")
+    assert synthetic["path"] == "/synthetic"
+    assert "noise" in synthetic["tabs"]
+    assert manifest["redirects"]["/noise"] == "/synthetic/noise"

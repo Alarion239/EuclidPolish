@@ -18,8 +18,10 @@ data: ``requires_fasrc`` — needs the console's FASRC connection;
 POST answers the result directly (no ``job_id``), so refresh right away.
 
 Every builder reads local files only (works offline) and is memoised on the
-mtimes of what it reads. Groups follow the atlas Layers panel (spec §7.1):
-``coverage``, ``results``, ``catalogues``.
+mtimes of what it reads. Groups follow the atlas Layers panel (console
+regrouping): ``real`` (real tiles), ``targets`` (science targets), ``inputs``
+(the real data behind the synthetic scenes) and ``coverage``; ``home`` names
+the tab that owns (and fills) a layer's data.
 """
 
 from __future__ import annotations
@@ -58,13 +60,15 @@ STAR_FLAG_BITS = {band: 1 << index for index, band in enumerate(BAND_NAMES)}
 class LayerSpec:
     id: str
     label: str
-    group: str                      # coverage | results | catalogues
+    group: str                      # real | targets | inputs | coverage (GROUPS)
     kind: str                       # points | polygons | circles
     build: Callable[[], dict[str, Any]]
     stamp: Callable[[], tuple]
     style: Mapping[str, Any] = field(default_factory=dict)
     fill_action: Mapping[str, Any] | None = None
     description: str = ""
+    #: ``{path, label}`` of the tab that owns the layer's data (panel link).
+    home: Mapping[str, str] | None = None
 
 
 def _mtime(path: Path | str | None) -> float:
@@ -433,7 +437,119 @@ def _jwst_mast() -> dict[str, Any]:
 
 _STATE_COLORS = {"current": "#2e9d57", "stale": "#d99a06", "missing": "#8a8f98"}
 
+#: The Layers panel groups, in panel order (console regrouping): the real
+#: tiles SR runs on, the science targets, the real inputs of the synthetic
+#: scenes (each owned by a Synthetic tab) and coverage.
+GROUPS: tuple[str, ...] = ("real", "targets", "inputs", "coverage")
+
+
+def _home(path: str, label: str) -> dict[str, str]:
+    """The tab that owns a layer's data (and fills it), linked from the panel."""
+    return {"path": path, "label": label}
+
+
 LAYERS: tuple[LayerSpec, ...] = (
+    # ── real tiles ──────────────────────────────────────────────────────
+    LayerSpec("nexus-tiles", "NEXUS × Euclid tiles", "real", "polygons",
+              lambda: _entry_polygons("nexus"),
+              lambda: _results_stamp("nexus"),
+              style={"color_by": "state", "colors": _STATE_COLORS, "opacity": 0.5},
+              fill_action={"method": "POST", "url": "/api/experiments",
+                           "label": "Run models on selected tiles"},
+              description="Euclid tiles over the NEXUS F200W mosaic, with JWST; colour = "
+                          "production SR state.",
+              home=_home("/sky/targets?set=nexus", "Sky › Targets")),
+    LayerSpec("real-tiles", "Cached 25.6″ tiles", "real", "polygons",
+              lambda: _entry_polygons("tile"),
+              lambda: _results_stamp("tile"),
+              style={"color_by": "state", "colors": _STATE_COLORS, "opacity": 0.5},
+              fill_action={"method": "POST", "url": "/api/real/tiles",
+                           "label": "Cache a 25.6″ tile here"},
+              description="Four-band tiles cached from the atlas (right-click the sky).",
+              home=_home("/sky/targets?set=cached", "Sky › Targets")),
+    LayerSpec("real-fields", "Legacy real field", "real", "polygons",
+              lambda: _entry_polygons("field"),
+              lambda: _results_stamp("field"),
+              style={"color_by": "state", "colors": _STATE_COLORS, "opacity": 0.35},
+              description="The 256″ legacy real field, cut into 100 tiles.",
+              home=_home("/sky/targets?set=legacy", "Sky › Targets")),
+    LayerSpec("poster", "Poster galaxy", "real", "polygons",
+              lambda: _entry_polygons("poster"),
+              lambda: _results_stamp("poster"),
+              style={"color": "#e84393", "opacity": 0.5},
+              home=_home("/sky/targets?set=poster", "Sky › Targets")),
+    LayerSpec("pairs", "JWST × Euclid pairs", "real", "polygons",
+              lambda: _entry_polygons("pair"),
+              lambda: _results_stamp("pair"),
+              style={"color": "#00a8a8", "opacity": 0.5},
+              fill_action={"method": "POST", "url": "/api/sky/jwst/pair",
+                           "label": "Download a JWST × Euclid pair"},
+              description="Downloaded JWST × Euclid pairs (JWST menu, or right-click the sky).",
+              home=_home("/sky/targets?set=pairs", "Sky › Targets")),
+    LayerSpec("experiments", "Comparison tiles", "real", "points", _experiment_points,
+              lambda: (_dir_stamp(experiments.records_root()), real_tiles.sources_stamp()),
+              style={"color": "#ff7a45", "shape": "diamond", "size": 8},
+              description="Tiles a model comparison ran on.",
+              home=_home("/sky/compare", "Sky › Compare")),
+    # ── science targets ─────────────────────────────────────────────────
+    LayerSpec("eval-objects", "Reconstructed targets", "targets", "points", _eval_objects,
+              lambda: real_tiles.source_stamp("eval"),
+              style={"color_by": "flux_ratio_sr_over_lr", "shape": "circle", "size": 6},
+              description="Lens candidates and Q1 galaxies with a production SR; colour = "
+                          "flux SR/LR.",
+              home=_home("/sky/targets?set=lenses,galaxies", "Sky › Targets")),
+    LayerSpec("lens-candidates", "Q1 lens candidates", "targets", "points", _lenses,
+              lambda: (_mtime(lens_catalog_path()),),
+              style={"color_by": "grade",
+                     "colors": {"A": "#d63031", "B": "#e17055", "C": "#fdcb6e"},
+                     "shape": "circle", "size": 5},
+              # Synchronous (no job id): the answer IS the result.
+              fill_action={"method": "POST", "url": "/api/evaluation/fetch-catalog",
+                           "label": "Download the Q1 lens catalogue", "sync": True},
+              description="The Euclid Q1 strong-lens catalogue (grades A–C).",
+              home=_home("/sky/targets?set=lenses", "Sky › Targets")),
+    LayerSpec("galaxies", "Q1 galaxies", "targets", "points", _galaxies,
+              lambda: (_mtime(galaxy_catalog_path()),),
+              style={"color": "#00b894", "shape": "circle", "size": 4},
+              description="The Q1 galaxies drawn for the evaluation.",
+              home=_home("/sky/targets?set=galaxies", "Sky › Targets")),
+    # ── scene inputs (the real data behind the synthetic scenes) ────────
+    LayerSpec("stars", "PSF stars", "inputs", "points", _stars,
+              lambda: (_mtime(stars_path()),),
+              style={"color_by": "mag", "shape": "square", "size": 2},
+              fill_action={"method": "POST", "url": "/api/status/refresh-catalog",
+                           "label": "Pull stars.csv from FASRC", "requires_fasrc": True,
+                           "sync": True},
+              description="Real Euclid Q1 stars the empirical PSFs are built from.",
+              home=_home("/synthetic/psf?view=catalogue", "Synthetic › PSF")),
+    LayerSpec("psf-clusters", "PSF clusters", "inputs", "points", _psf_clusters,
+              _psf_stamp, style={"color_by": "fwhm_arcsec", "shape": "cross", "size": 10},
+              fill_action={"method": "POST", "url": "/api/euclid-psf/sync-meta",
+                           "label": "Sync PSF cluster metadata", "requires_fasrc": True},
+              description="Where each ePSF was built; colour = FWHM.",
+              home=_home("/synthetic/psf?view=epsf", "Synthetic › PSF")),
+    LayerSpec("noise-positions", "MER noise samples", "inputs", "points",
+              _noise_positions, lambda: (1,),
+              style={"color_by": "VIS", "shape": "circle", "size": 5},
+              description="The Q1 positions the scene noise levels are drawn from.",
+              home=_home("/synthetic/noise", "Synthetic › Noise")),
+    LayerSpec("population-cones", "Population cones", "inputs", "circles",
+              _population_cones, lambda: (_mtime(population_meta_path()),),
+              style={"color": "#0984e3", "opacity": 0.25},
+              description="The Q1 MER + PHZ cones the galaxy prior is fitted on.",
+              home=_home("/synthetic/galaxies?how=1", "Synthetic › Galaxies")),
+    LayerSpec("archive-fields", "Archive reference fields", "inputs", "polygons",
+              lambda: _entry_polygons("archive"),
+              lambda: _results_stamp("archive"),
+              style={"color": "#6c5ce7", "opacity": 0.45, "color_by": "field"},
+              # The job connects to FASRC by itself (ensure_ssh_connected):
+              # it works from an offline console and reports its own failure.
+              fill_action={"method": "POST", "url": "/api/archive-fields/sync",
+                           "label": "Sync the archive fields from FASRC",
+                           "self_connects": True},
+              description="The real Euclid LR fields the synthetic fields are compared with.",
+              home=_home("/synthetic/fields?ref=1", "Synthetic › Fields")),
+    # ── coverage ────────────────────────────────────────────────────────
     LayerSpec("q1-tiles", "Q1 MER tiles", "coverage", "polygons", _q1_tiles,
               lambda: (_mtime(q1_mer_tiles.TILES_PATH),),
               style={"color": "#4f7cff", "opacity": 0.35, "color_by": "vis_level_e",
@@ -446,88 +562,21 @@ LAYERS: tuple[LayerSpec, ...] = (
               _nexus_footprint, lambda: real_tiles.source_stamp("nexus"),
               style={"color": "#f39c12", "opacity": 0.2},
               fill_action={"method": "POST", "url": "/api/jwst-euclid/nexus/download-field",
-                           "label": "Cache the NEXUS mosaic + Euclid tiles"}),
-    LayerSpec("nexus-tiles", "NEXUS × Euclid tiles", "results", "polygons",
-              lambda: _entry_polygons("nexus"),
-              lambda: _results_stamp("nexus"),
-              style={"color_by": "state", "colors": _STATE_COLORS, "opacity": 0.5},
-              fill_action={"method": "POST", "url": "/api/experiments",
-                           "label": "Run models on selected tiles"}),
-    LayerSpec("real-tiles", "Cached 25.6″ tiles", "results", "polygons",
-              lambda: _entry_polygons("tile"),
-              lambda: _results_stamp("tile"),
-              style={"color_by": "state", "colors": _STATE_COLORS, "opacity": 0.5},
-              fill_action={"method": "POST", "url": "/api/real/tiles",
-                           "label": "Cache a 25.6″ tile here"}),
-    LayerSpec("real-fields", "Legacy real fields", "results", "polygons",
-              lambda: _entry_polygons("field"),
-              lambda: _results_stamp("field"),
-              style={"color_by": "state", "colors": _STATE_COLORS, "opacity": 0.35}),
-    LayerSpec("poster", "Poster target", "results", "polygons",
-              lambda: _entry_polygons("poster"),
-              lambda: _results_stamp("poster"),
-              style={"color": "#e84393", "opacity": 0.5}),
-    LayerSpec("pairs", "JWST × Euclid pairs", "results", "polygons",
-              lambda: _entry_polygons("pair"),
-              lambda: _results_stamp("pair"),
-              style={"color": "#00a8a8", "opacity": 0.5},
-              fill_action={"method": "POST", "url": "/api/sky/jwst/pair",
-                           "label": "Download a JWST × Euclid pair"}),
-    LayerSpec("archive-fields", "Archive fields", "results", "polygons",
-              lambda: _entry_polygons("archive"),
-              lambda: _results_stamp("archive"),
-              style={"color": "#6c5ce7", "opacity": 0.45, "color_by": "field"},
-              # The job connects to FASRC by itself (ensure_ssh_connected):
-              # it works from an offline console and reports its own failure.
-              fill_action={"method": "POST", "url": "/api/archive-fields/sync",
-                           "label": "Sync the archive fields from FASRC",
-                           "self_connects": True}),
-    LayerSpec("eval-objects", "Evaluation objects", "results", "points", _eval_objects,
-              lambda: real_tiles.source_stamp("eval"),
-              style={"color_by": "flux_ratio_sr_over_lr", "shape": "circle", "size": 6}),
-    LayerSpec("experiments", "Experiment tiles", "results", "points", _experiment_points,
-              lambda: (_dir_stamp(experiments.records_root()), real_tiles.sources_stamp()),
-              style={"color": "#ff7a45", "shape": "diamond", "size": 8}),
-    LayerSpec("lens-candidates", "Q1 lens candidates", "catalogues", "points", _lenses,
-              lambda: (_mtime(lens_catalog_path()),),
-              style={"color_by": "grade",
-                     "colors": {"A": "#d63031", "B": "#e17055", "C": "#fdcb6e"},
-                     "shape": "circle", "size": 5},
-              # Synchronous (no job id): the answer IS the result.
-              fill_action={"method": "POST", "url": "/api/evaluation/fetch-catalog",
-                           "label": "Download the Q1 lens catalogue", "sync": True}),
-    LayerSpec("galaxies", "Evaluation galaxies", "catalogues", "points", _galaxies,
-              lambda: (_mtime(galaxy_catalog_path()),),
-              style={"color": "#00b894", "shape": "circle", "size": 4}),
-    LayerSpec("stars", "Stars (FASRC catalogue)", "catalogues", "points", _stars,
-              lambda: (_mtime(stars_path()),),
-              style={"color_by": "mag", "shape": "square", "size": 2},
-              fill_action={"method": "POST", "url": "/api/status/refresh-catalog",
-                           "label": "Pull stars.csv from FASRC", "requires_fasrc": True,
-                           "sync": True}),
-    LayerSpec("psf-clusters", "PSF clusters", "catalogues", "points", _psf_clusters,
-              _psf_stamp, style={"color_by": "fwhm_arcsec", "shape": "cross", "size": 10},
-              fill_action={"method": "POST", "url": "/api/euclid-psf/sync-meta",
-                           "label": "Sync PSF cluster metadata", "requires_fasrc": True}),
-    LayerSpec("noise-positions", "MER noise samples", "catalogues", "points",
-              _noise_positions, lambda: (1,),
-              style={"color_by": "VIS", "shape": "circle", "size": 5}),
-    LayerSpec("population-cones", "Population cones", "catalogues", "circles",
-              _population_cones, lambda: (_mtime(population_meta_path()),),
-              style={"color": "#0984e3", "opacity": 0.25}),
-    LayerSpec("jwst-mast", "JWST MAST footprints", "catalogues", "points", _jwst_mast,
+                           "label": "Cache the NEXUS mosaic + Euclid tiles"},
+              description="The cached NEXUS mosaic (JWST menu › Cache the NEXUS mosaic)."),
+    LayerSpec("jwst-mast", "JWST MAST footprints", "coverage", "points", _jwst_mast,
               lambda: (_mtime(jwst_euclid.footprints_path()),),
               style={"color": "#e17055", "shape": "plus", "size": 6},
               fill_action={"method": "POST", "url": "/api/sky/jwst/discover",
                            "label": "Discover JWST observations (MAST)"},
-              description="Centres of discovered JWST imaging; polygons per view via "
-                          "/api/sky/jwst/footprints."),
+              description="Centres of discovered JWST imaging (JWST menu › Discover); "
+                          "polygons per view via /api/sky/jwst/footprints."),
 )
 _BY_ID = {layer.id: layer for layer in LAYERS}
 
 
 #: ``(monotonic time, fingerprint)``: one catalogue resolution (~6 ms) is
-#: shared by the six results-layer stamps of one ``/api/sky/layers`` call.
+#: shared by the results-layer stamps of one ``/api/sky/layers`` call.
 _FINGERPRINT_MEMO: list[tuple[float, str | None]] = []
 FINGERPRINT_MEMO_S = 1.0
 
@@ -614,9 +663,10 @@ def layers_payload() -> dict[str, Any]:
             "ready": count > 0, "reason": reason or (None if count else "no local data yet"),
             "fill_action": dict(layer.fill_action) if layer.fill_action else None,
             "description": layer.description,
+            "home": dict(layer.home) if layer.home else None,
             "url": f"/api/sky/layer/{layer.id}",
         })
-    return {"layers": out, "groups": ["coverage", "results", "catalogues"]}
+    return {"layers": out, "groups": list(GROUPS)}
 
 
 def at(ra: float, dec: float) -> dict[str, Any]:
@@ -659,6 +709,7 @@ def at(ra: float, dec: float) -> dict[str, Any]:
 
 
 __all__ = [
+    "GROUPS",
     "LAYERS",
     "convex_hull",
     "invalidate",

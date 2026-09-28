@@ -5,6 +5,7 @@ training-catalogue sync job."""
 from __future__ import annotations
 
 import json
+import os
 import time
 from pathlib import Path
 
@@ -58,6 +59,11 @@ def states(monkeypatch):
     monkeypatch.setattr(overview, "read_q1_galaxy_radius_statistics", lambda: {
         "completed_queries": 170, "total_queries": 170})
     monkeypatch.setattr(overview.euclid_session, "is_authenticated", lambda: False)
+    monkeypatch.setattr(overview, "psf_inventory_payload", lambda: {"bands": [
+        {"name": "VIS", "state": "empirical", "fwhm": 0.16, "measured_fwhm": 0.17},
+        {"name": "Y_E", "state": "not_cached", "fwhm": 0.4},
+    ]})
+    monkeypatch.setattr(overview, "local_records_time", lambda records_dir=None: None)
     return box
 
 
@@ -71,12 +77,18 @@ def test_overview_route_lists_every_prior_and_the_gate(states):
     payload = response.get_json()
     items = _items(payload)
     assert list(items) == [
-        "galaxy-model", "star-prior", "tng-radii", "noise-model", "records-noise",
-        "galaxy-plots", "comparison-cache", "archive-fields", "training-catalog",
+        "galaxy-model", "star-prior", "noise-model", "psf", "tng-radii", "saturation",
+        "training-catalog", "galaxy-plots", "comparison-cache",
     ]
+    assert [i["id"] for i in payload["items"] if i["group"] == overview.DIAGNOSTIC] == [
+        "galaxy-plots", "comparison-cache"]
     for item in payload["items"]:
         assert item["state"] in overview.STATES
-        assert set(item) >= {"id", "label", "state", "title", "detail", "to", "action", "facts"}
+        assert set(item) >= {"id", "label", "state", "title", "detail", "to", "action", "facts",
+                             "group", "records"}
+    # The records' noise model is the Noise row's tick, not a row of its own.
+    assert items["noise-model"]["records"]["state"] == "unknown"
+    assert payload["records"] == {"generated_at": None, "splits": ["test", "validate"]}
     assert payload["gate"]["ready"] is False
     assert [b["id"] for b in payload["gate"]["blockers"]] == ["galaxy-model", "star-prior"]
     assert payload["counts"]["bad"] == 2          # both priors unfitted
@@ -95,7 +107,8 @@ def test_fasrc_actions_say_whether_they_are_gated_or_self_connect():
     enabled (they open the connection themselves and report failure)."""
     stale = _availability(real={"ready": True, "current": False, "fields": 176,
                                 "independent_parents": 44, "unavailable_reason": "changed"})
-    archive = overview.archive_item(stale)["action"]
+    archive = overview.comparison_item(stale)["action"]
+    assert archive["url"] == "/api/archive-fields/sync"
     assert (archive["requires_fasrc"], archive["self_connects"]) == (False, True)
     training = overview.training_sync_action()
     assert (training["requires_fasrc"], training["self_connects"]) == (False, True)
@@ -129,7 +142,59 @@ def test_star_item_surfaces_the_refit_warning(states):
     assert item["action"]["url"] == "/api/star-distribution/activate"
     item = overview.star_item({"candidate": ACTIVE_STAR, "active": ACTIVE_STAR, "is_active": True})
     assert item["state"] == "ok"
-    assert "0.410 stars arcmin⁻²" in item["detail"]
+    # The density is the row's verdict and the fingerprints the inspector's: no detail.
+    assert item["detail"] is None
+    assert item["facts"]["density_arcmin2"] == pytest.approx(0.41)
+    assert item["facts"]["active_fingerprint"] == "s" * 64
+
+
+def test_records_tick_compares_the_records_with_the_prior():
+    assert overview.records_tick(100.0, 200.0, "stellar prior")["state"] == "current"
+    late = overview.records_tick(300.0, 200.0, "stellar prior")
+    assert late["state"] == "predates"
+    assert "predate the stellar prior" in late["detail"]
+    assert late["records_at"].startswith("1970-01-01T00:03:20")
+    assert overview.records_tick(100.0, None, "stellar prior")["state"] == "unknown"
+    assert overview.records_tick(None, 200.0, "stellar prior")["state"] == "unknown"
+    assert overview.noise_records_tick({"state": "bad", "title": "old"})["state"] == "predates"
+    assert overview.noise_records_tick({"state": "ok"})["state"] == "current"
+    assert overview.noise_records_tick({"state": "unknown"})["state"] == "unknown"
+
+
+def test_local_records_time_is_the_oldest_local_dirty_shard(tmp_path):
+    assert overview.local_records_time(str(tmp_path)) is None
+    for split, stamp in (("test", 2_000.0), ("validate", 1_000.0), ("train", 10.0)):
+        path = tmp_path / f"dirty_{split}.tfrecord"
+        path.write_bytes(b"x")
+        os.utime(path, (stamp, stamp))
+    # train is FASRC-only (never local as a rule) and is not a generation tick
+    assert overview.local_records_time(str(tmp_path)) == pytest.approx(1_000.0)
+
+
+def test_psf_item_names_the_fallback_and_the_uncached_bands():
+    band = lambda name, state: {"name": name, "state": state, "fwhm": 0.4}  # noqa: E731
+    ok = overview.psf_item(lambda: {"bands": [band("VIS", "empirical"), band("Y_E", "empirical")]})
+    assert (ok["state"], ok["title"], ok["action"]) == ("ok", "Empirical ePSF in every band", None)
+    fallback = overview.psf_item(lambda: {"bands": [band("VIS", "empirical"), band("J_E", "no_empirical"),
+                                                    band("H_E", "no_empirical")]})
+    assert (fallback["state"], fallback["title"]) == ("warn", "Gaussian fallback in J, H")
+    assert fallback["action"]["requires_fasrc"] is True
+    uncached = overview.psf_item(lambda: {"bands": [band("VIS", "not_cached")]})
+    assert uncached["state"] == "unknown"
+    assert uncached["facts"]["not_cached"] == ["VIS"]
+    broken = overview.psf_item(lambda: (_ for _ in ()).throw(OSError("disk")))
+    assert (broken["state"], broken["detail"]) == ("unknown", "disk")
+
+
+def test_saturation_item_states_the_blackout_ramp():
+    class Cfg:
+        saturation_mask_prob = 0.25
+    item = overview.saturation_item(lambda: Cfg())
+    assert item["state"] == "ok"
+    assert item["facts"]["base_probability"] == pytest.approx(0.25)
+    assert item["facts"]["bright_probability"] == pytest.approx(Config.SATURATION_MASK_PROB_BRIGHT)
+    assert item["facts"]["ramp_well_ratios"] == list(Config.SATURATION_MASK_RAMP_WELL_RATIOS)
+    assert set(item["facts"]["wells_e"]) == {"VIS", "Y", "J", "H"}
 
 
 @pytest.mark.parametrize(("galaxy", "star"), [
@@ -170,6 +235,8 @@ def test_tng_radii_item_reads_the_validation_cache(monkeypatch, tmp_path):
     item = overview.tng_radii_item(now)
     assert item["state"] == "ok"
     assert item["detail"] == "5770/5770 radii valid"
+    assert item["label"] == "TNG radii"
+    assert item["action"]["confirm"]
     assert item["facts"]["stale"] is False
     assert overview.tng_radii_item(now + 7200)["facts"]["stale"] is True
     path.write_text(json.dumps({"valid": False, "failed": True, "reasons": ["ssh timeout"],
@@ -305,3 +372,17 @@ def test_training_sync_job_can_rebuild_the_galaxy_plots(monkeypatch):
     captured["target"](Cap())
     assert order == ["ssh", "fetch", "census"]   # plain sync: no rebuild
 
+
+def test_field_statistics_row_owns_the_real_reference_problem():
+    """No separate archive row: a missing or changed real reference is the
+    field statistics row's warning, with the sync as its fix."""
+    missing = overview.comparison_item(_availability(real={"ready": False, "unavailable_reason": "not synced"}))
+    assert (missing["state"], missing["title"]) == ("warn", "Real reference fields not synced")
+    assert missing["to"] == "/synthetic/fields?ref=1"
+    assert missing["action"]["url"] == "/api/archive-fields/sync"
+    changed = overview.comparison_item(_availability(real={"ready": True, "current": False, "fields": 220}))
+    assert changed["title"] == "Real reference fields changed upstream"
+    ready = overview.comparison_item(_availability(real={"ready": True, "current": True, "fields": 220,
+                                                         "compared_fields": 176}))
+    assert ready["action"]["url"] == "/api/population-comparison/build"
+    assert ready["facts"]["real_fields"] == 176

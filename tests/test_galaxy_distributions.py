@@ -1001,8 +1001,79 @@ def test_q1_aperture_fit_route_waits_for_four_queried_bins(monkeypatch):
     assert "Zero-count bins are allowed" in response.get_json()["error"]
 
 
+def _complete_caches(monkeypatch, *, counts=None, radius=None):
+    monkeypatch.setattr(routes, "_q1_counts_state", lambda: counts if counts is not None else {
+        "complete": True, "completed_queries": 560, "total_queries": 560})
+    monkeypatch.setattr(routes, "_q1_radius_state", lambda: radius if radius is not None else {
+        "complete": True, "completed_queries": 12, "total_queries": 12})
+
+
+def test_galaxy_prior_fit_refits_from_the_cached_brackets_without_a_login(monkeypatch):
+    """Synthetic › Galaxies › Prior: "Fit galaxy prior from cached data"
+    refits the brightness line, the joint size + colour/SFR candidate and the
+    plots from the cached Q1 brackets; it never queries the archive, so it
+    needs no login."""
+    app = Flask(__name__)
+    events = []
+
+    class Capture:
+        def tick(self, *_args):
+            pass
+
+        def write(self, _message):
+            pass
+
+    _complete_caches(monkeypatch)
+    monkeypatch.setattr(routes.euclid_session, "catalog", lambda: None)
+    for name in ("query_q1_galaxy_aperture_counts", "query_q1_galaxy_radius_statistics"):
+        monkeypatch.setattr(routes, name, lambda **_kw: pytest.fail("the fit must not query the archive"))
+    monkeypatch.setattr(routes, "fit_q1_galaxy_aperture_counts",
+                        lambda: events.append("brightness fit") or {"apertures": {"f2": {}}})
+    monkeypatch.setattr(routes, "fit_euclid_joint_galaxy_candidate", lambda: events.append("joint fit") or {
+        "fingerprint": "b" * 64, "version": 15, "generation": {"surface_density_arcmin2": 151.5}})
+    monkeypatch.setattr(routes, "build_galaxy_distributions", lambda: events.append("plots") or {"version": 12})
+
+    result = {}
+
+    def spawn(*, label, target):
+        events.append(label)
+        result.update(target(Capture()))
+        return "galaxy-fit"
+
+    monkeypatch.setattr(routes.REGISTRY, "spawn", spawn)
+    routes.register(app)
+
+    response = app.test_client().post("/api/galaxy-distributions/fit")
+
+    assert response.status_code == 200
+    assert response.get_json()["job_id"] == "galaxy-fit"
+    assert events == ["galaxy distributions: fit the prior from cached Q1 data",
+                      "brightness fit", "joint fit", "plots"]
+    assert result["joint_galaxy_fit"] == {"fingerprint": "b" * 64, "version": 15,
+                                          "surface_density_arcmin2": 151.5}
+
+
+@pytest.mark.parametrize("counts, radius, needle", [
+    ({}, None, "Q1 aperture checkpoints"),
+    ({"complete": False, "completed_queries": 400, "total_queries": 560}, None, "400 of 560"),
+    (None, {"complete": False, "completed_queries": 3, "total_queries": 12}, "Rₑ brackets"),
+])
+def test_galaxy_prior_fit_waits_for_complete_caches(monkeypatch, counts, radius, needle):
+    app = Flask(__name__)
+    _complete_caches(monkeypatch, counts=counts, radius=radius)
+    if counts == {}:
+        monkeypatch.setattr(routes, "_q1_counts_state", lambda: None)
+    monkeypatch.setattr(routes.REGISTRY, "spawn", lambda **_kw: pytest.fail("no job while a cache is incomplete"))
+    routes.register(app)
+
+    response = app.test_client().post("/api/galaxy-distributions/fit")
+
+    assert response.status_code == 400
+    assert needle in response.get_json()["error"]
+
+
 def test_galaxy_distribution_page_is_registered_in_spa():
-    response = create_app().test_client().get("/realism/galaxies")
+    response = create_app().test_client().get("/synthetic/galaxies")
 
     assert response.status_code == 200
     assert 'id="root"' in response.get_data(as_text=True)
@@ -1020,6 +1091,7 @@ def test_galaxy_distribution_routes_expose_one_galaxy_query_action():
         rules.setdefault(rule.rule, set()).update(rule.methods or ())
 
     assert "POST" in rules["/api/galaxy-distributions/query-q1-counts"]
+    assert "POST" in rules["/api/galaxy-distributions/fit"]
     assert "POST" in rules["/api/galaxy-distributions/activate"]
     assert "GET" in rules["/api/galaxy-distributions"]
     for retired in (

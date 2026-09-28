@@ -87,6 +87,11 @@ export type DataTableProps<T> = {
   toolbar?: ReactNode;
   /** Hide the whole toolbar (filter, count, columns, CSV). */
   hideToolbar?: boolean;
+  /** The toolbar's row count: a string replaces "N rows" (e.g. "showing 1,000
+   *  of 11,345" for a server-capped list), `null` hides it (the page's own
+   *  chips carry the count). A filter that narrows the rows always shows
+   *  "N of M rows". */
+  countText?: string | null;
   empty?: ReactNode;
   loading?: boolean;
   dense?: boolean;
@@ -422,9 +427,12 @@ function DataTableView<T>(p: DataTableProps<T>) {
   const sumWidth = shownCols.reduce((s, c) => s + (widths[c.id] ?? 120), selectable ? 36 : 0);
   const cursorIdx = cursor != null ? viewIndex.get(cursor) : undefined;
   const rowId = (i: number) => `${uid}-r${i}`;
-  const countText = filter.trim() && view.length !== rows.length
+  const narrowed = !!filter.trim() && view.length !== rows.length;
+  const countText = narrowed
     ? `${view.length.toLocaleString("en-US")} of ${rows.length.toLocaleString("en-US")} rows`
-    : `${rows.length.toLocaleString("en-US")} row${rows.length === 1 ? "" : "s"}`;
+    : p.countText !== undefined ? p.countText
+    // No rows: the empty state says so, a "0 rows" beside it adds nothing.
+    : rows.length ? `${rows.length.toLocaleString("en-US")} row${rows.length === 1 ? "" : "s"}` : null;
 
   const bodyRows = indices.map((i) => {
     const row = view[i];
@@ -478,7 +486,7 @@ function DataTableView<T>(p: DataTableProps<T>) {
               placeholder={p.filterPlaceholder ?? "Filter… (col:x, col>n, -not)"} aria-label="Filter rows"
               className="ui-dt__search" />
           )}
-          <span className="ui-dt__count mono" aria-live="polite">{countText}</span>
+          {countText != null && <span className="ui-dt__count mono" aria-live="polite">{countText}</span>}
           {selectable && selSet.size > 0 && (
             <span className="ui-dt__selcount">
               <span className="mono">{selSet.size.toLocaleString("en-US")} selected</span>

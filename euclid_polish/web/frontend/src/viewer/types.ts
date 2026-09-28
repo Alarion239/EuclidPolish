@@ -8,7 +8,11 @@ import type { Residual, ResidualOp } from "./residual";
 import type { ReceptiveField, Selection, WireSelection } from "./selection";
 import type { Sky } from "./wcs";
 
-export type TierMeta = { key: string; label: string; unit?: string; hidden?: boolean; disabled?: boolean };
+export type TierMeta = {
+  key: string; label: string; unit?: string; hidden?: boolean; disabled?: boolean;
+  /** What the tier is, in one sentence: its chip's tooltip. */
+  hint?: string;
+};
 
 export type ViewerObject = {
   id?: string;

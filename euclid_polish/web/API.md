@@ -135,7 +135,7 @@ never entered; the request gets **503**
   `POST /api/connection/retry` (which answers its own 502 error, never the
   gate's), the jobs and version endpoints, and every local-data endpoint.
 - Nothing redirects to a connection-error page any more: a GET of
-  `/connection-error` 308s to `/settings/connections` (C1); the classic POST
+  `/connection-error` 308s to `/system/connections` (C1); the classic POST
   form is gone — connect with `POST /api/fasrc/connect` or
   `POST /api/connection/retry`.
 
@@ -178,24 +178,44 @@ Job dict:
   sacct), `fasrc-mirror` (pull ensemble checkpoints), `tng-radii`, `real-tile` (cache a 25.6″
   tile, optionally + models), `real-experiment`, `jwst-discover`, `jwst-pair`
   (contract C9), `system-disk-usage` (`routes/system.py`), `nexus-inference`
-  (`routes/jwst_euclid.py`), `figure-nexus-plates` (`routes/figures.py`), `sky-sync`,
-  `sky-generate-sr`, `psf-sync`, `tng-properties`, `tng-result` (Data workspace routes).
+  (`routes/jwst_euclid.py`), `figure-nexus-plates` (`routes/figures.py`), `ensemble-band-evals` (`routes/ensemble.py`), `sky-sync`,
+  `sky-generate-sr`, `psf-sync`, `tng-properties`, `tng-result` (the Synthetic and Models record routes).
 
 ### Pages and redirects (contract C1)
 
-`euclid_polish/web/spa_routes.json` is the single source of truth for page
-URLs (`euclid_polish/web/spa_routes.py`: `load_manifest`, `is_page_path`,
-`redirect_target`). A GET/HEAD of a **page path** — a workspace path with its
-`:params` substituted, optionally followed by one `/<tab>` from its tabs —
-serves `static/dist/index.html` (503 plain-text build hint when the bundle is
-missing). A GET/HEAD of a **redirect source** answers **308** to its target
-with the query string preserved; `/app/<rest>` → `/<rest>` with every
-leading slash, backslash or control character of `<rest>` collapsed into one
-`/` (so `/app//evil.example` → `/evil.example`, never the protocol-relative
-`//evil.example`: no open redirect). Other methods
-never get the shell or a redirect, and non-page paths that share a prefix
-with a page (`/ensemble/status.json`, `/inspect/preview.png`) reach their own
-handlers.
+`euclid_polish/web/spa_routes.json` (version 2, the "Loop console" rail:
+`/`, `/synthetic/<tab>`, `/models/:mode/<tab>`, `/sky/<tab>`, `/figures/<tab>`,
+`/files`, `/runs/<tab>`, `/notebook/<tab>`, `/system/<tab>`) is the single
+source of truth for page URLs (`euclid_polish/web/spa_routes.py`:
+`load_manifest`, `is_page_path`, `redirect_target`; the SPA's
+`app/manifest.ts` mirrors it). A GET/HEAD of a **page path** — a workspace
+path with its `:params` substituted, optionally followed by one `/<tab>` from
+its tabs — serves `static/dist/index.html` (503 plain-text build hint when the
+bundle is missing). A GET/HEAD of a **redirect source** answers **308** to its
+target. Redirects are tried in this order, first match wins:
+
+- `redirectRules` (query-aware): `from` is a path pattern whose `:name`
+  segments bind one segment each, restricted to `params[name]`; `query`
+  requires keys (`"*"` any value, a string, or a list of allowed values). The
+  target is `to` with `:name` substituted; its query is the original pairs
+  (order kept) after `drop`, `rename`, `map` (value per key), `prefix` and
+  `set` (replace or append), form-encoded like the browser's
+  `URLSearchParams` (e.g. `/ensemble/starless/curves?layout=time` →
+  `/runs/history?step=ensemble_train`, `/sky/results?source=tile` →
+  `/sky/targets?set=cached`).
+- `redirects` (exact path, trailing slash ignored): the query string is
+  appended untouched (`/inspect?fits=a.fits` → `/files?fits=a.fits`).
+- `/app/<rest>` → `/<rest>` with every leading slash, backslash or control
+  character of `<rest>` collapsed into one `/` (so `/app//evil.example` →
+  `/evil.example`, never the protocol-relative `//evil.example`: no open
+  redirect).
+
+No target is itself a redirect, and `spa_redirect_cases.json` (next to the
+manifest) pins Flask and the SPA to byte-identical targets for every old
+URL. Other methods never get the shell or a redirect, and non-page paths that
+share a prefix with a page or an old page (`/ensemble/status.json`,
+`/inspect/preview.png`) reach their own handlers; backend URLs never move
+with the pages.
 
 ### Route modules
 
@@ -247,7 +267,7 @@ schedule, `vis_pixels` …) are not task params.
 Collections (`helpers/viewer_data.py`): `sky`, `cutouts`, `evaluation`,
 `ensemble`, `archive-fields`, `real-field`, `jwst-euclid`, `nexus-field`,
 `psfs`, `real` (contract C9, see *Real tiles* below), `fits` (any
-inspectable FITS file, see *Inspect workspace* below).
+inspectable FITS file, see *Files workspace* below).
 
 - **Objects.** Every `meta.objects[i]` has a stable string `id` (`sky` /
   `ensemble`: `"<subset>:<record index>"`; `cutouts`: star id; `evaluation`:
@@ -259,7 +279,10 @@ inspectable FITS file, see *Inspect workspace* below).
   the navigator reads the synchronised FASRC mirror only, no SSH). Synthetic
   `sky` / `ensemble` records have none. The `sky` collection's tiers are
   `dirty` (LR), `hr`, `bhr`, `clean` ("Clean (starless)", the starless scene
-  — its own tier, never HR) and `sr`; records are read by position through a
+  — its own tier, never HR) and `sr` (listed only once the production SR was
+  generated over the split, Models › Images); each carries a one-sentence
+  `hint` (what the tier is: the chip's tooltip; any collection's tier may);
+  records are read by position through a
   header-scanned TFRecord offset index (`helpers/sky_records.py`), O(1) per
   cube. `archive-fields` objects carry the
   position-derived `field` and the manifest's `stored_field`.
@@ -471,8 +494,8 @@ a local job): **nothing is FASRC-gated**.
 | GET, POST | `/api/experiments` |  | GET: `{experiments:[{id, label, created, finished, status, job_id, tiles, models, skipped, summary, errors, counts}]}` newest first. POST: start an experiment (local job `real-experiment`): `tiles` = comma list of `source/id`, `models` = comma list of specs, `label?`. `{ok, job_id, experiment_id, tiles, models (runnable), skipped:{spec: reason}}`. 400 bad/unknown spec (`unknown model spec 'gate:x'`) or no runnable model; 404 unknown tile; 409 tile without four-band LR; **507** `{ok:false, code:"insufficient_storage", needed_bytes, free_bytes}` when the new outputs (`(4, 2H, 2W)` float32 per (tile, spec) not yet in the store) would leave < 5 GiB free. Job result: `{experiment_id, status, tiles, models, errors, counts}`. |
 | GET | `/api/experiments/<experiment_id>` |  | The experiment record (above); 404 unknown. |
 | GET | `/api/models` |  | `{regime:"starfull", production_kind, members:[labels], models:[{spec, kind, label, slug, members, member_names, reads, n_members, n_fitted, available, reason, note (soft remark, e.g. members joined after the fit)|null, fingerprint, member_fingerprints, combiner_kind, combiner_fingerprint, details{mix_space, use_lr, width, active_members, fitted_at, artifact_dir, loss, loss_knees_e, steps, complete, used_threshold, …}}]}` — order: production, mean, rbf, members, gate variants. `members` = the members the spec was built for (its staleness key), `reads` = the members it actually runs; `n_members` = `len(reads)` (a pruned gate: 6 of the 20 it was fitted with), `n_fitted` = `len(members)`. |
-| GET | `/api/real/<source>` |  | `{source, label, description, count, tiles:[tile entry + models:{spec:{state, legacy, label, fingerprint, created, experiment_id, file, origin, summary}} + production_state]}` (models = the tile's merged outputs). 404 unknown source. |
-| GET | `/api/real/<source>/<identifier>` |  | Card: tile entry + `models:{spec:{state, legacy, label, kind, fingerprint, created, experiment_id, file, member_labels, combiner_kind, lr_sha, shape, origin, metrics{per_band, summary, gate_core_weights?}, image_url}}` (store + legacy outputs), `production_state`, `legacy` (= `extras.legacy_sr`: the pre-C9 production-pipeline SR record or `null`), `runnable_models`, `experiments:[ids]`, `disk{tile_bytes, output_bytes, cache_bytes (member-SR cache), legacy_bytes (NEXUS / pair legacy SR files), total_bytes}`, `q1_tile` (the containing Q1 tile), `image_urls{tier: url}` (one per `m:<spec>` with an output), `viewer{collection:"real", params{source}, id}`. |
+| GET | `/api/real/<source>` |  | `{source, label, description, count, tiles:[tile entry + models:{spec:{state, legacy, label, fingerprint, created, experiment_id, file, origin, summary, flux_ratio?{band: ΣSR/ΣLR}}} + production_state]}` (models = the tile's merged outputs; `flux_ratio` only on a scored output, so Sky › Targets plots and sorts the flux ratio without opening every card). 404 unknown source. |
+| GET | `/api/real/<source>/<identifier>` |  | Card: tile entry + `models:{spec:{state, legacy, label, kind, fingerprint, created, experiment_id, file, member_labels, combiner_kind, lr_sha, shape, origin, metrics{per_band, summary, gate_core_weights?}, image_url}}` (store + legacy outputs), `production_state`, `legacy` (= `extras.legacy_sr`: the pre-C9 production-pipeline SR record or `null`), `runnable_models`, `experiments:[ids]`, `disk{tile_bytes, output_bytes, cache_bytes (member-SR cache), legacy_bytes (NEXUS / pair legacy SR files), total_bytes}`, `q1_tile` (the containing Q1 tile), `image_urls{tier: url}` (one per `m:<spec>` with an output), `files{lr?, sr?, "m:<spec>"?: project-relative FITS path}` (what the card's "Open in Files" opens — `/files?fits=<path>`; only files inside the inspectable roots; `sr` is a catalogue object's own evaluation SR), `viewer{collection:"real", params{source}, id}`. |
 | POST | `/api/real/<source>/<identifier>/delete-outputs` |  | Delete the tile's cached model outputs and member-SR cache (never the LR itself): `{ok, ref, removed:[paths], removed_count, cache_bytes_freed}`. |
 | GET | `/api/real/<source>/<identifier>/image.fits` |  | 2-D float32 FITS of one plane with its celestial WCS (CD form) for sky overlays: `tier` = `lr` (default) \| `jwst` \| `m:<spec>` (store output or legacy SR; SR WCS = LR WCS ×2), `band` = `VIS` (default) \| `Y_E` \| `J_E` \| `H_E` (JWST: its filter, default the first). Header `BUNIT` (`electron` / `MJy/sr`), `TIER`, `BAND`, `REALTILE` (+ `LEGACYSR` for a legacy SR). 400 bad tier/band; 404 missing tier. |
 | GET | `/api/real/sources` |  | `{sources:[{id, label, description, count, model_ready, has_jwst, ready, reason}]}` for `nexus, tile, field, archive, eval, poster, pair`. |
@@ -481,15 +504,21 @@ a local job): **nothing is FASRC-gated**.
 ### Sky atlas (contract C9, `routes/sky_atlas.py`)
 
 `helpers/sky_atlas.py`; every layer is built from local files (memoised on
-their mtimes, ≤ 30 s) and works offline. Layer groups: `coverage`
+their mtimes, ≤ 30 s) and works offline. Layer groups, in the Layers panel's
+order (`GROUPS`): `real` — the real tiles SR runs on (`nexus-tiles`,
+`real-tiles`, `real-fields`, `poster`, `pairs` — polygons with `state` =
+production state; `experiments`, the comparison tiles — points), `targets` —
+the science targets (`eval-objects`, the reconstructed lens candidates and Q1
+galaxies, coloured by flux SR/LR; `lens-candidates`; `galaxies`), `inputs` — the
+real data behind the synthetic scenes, each owned by a Synthetic tab (`stars`,
+the FASRC-mirror `stars.csv`, 43k rows `[ra, dec, mag, flags]`, `flags` bit
+`2^b` = valid cutout in band `b` ∈ VIS,Y_E,J_E,H_E; `psf-clusters`;
+`noise-positions`; `population-cones`; `archive-fields`) and `coverage`
 (`q1-tiles` 352 MER polygons with `levels_e`/`rejected`/`state`, `q1-fields`
-cones, `nexus-footprint` hull of the NEXUS tile cells), `results`
-(`nexus-tiles`, `real-tiles`, `real-fields`, `poster`, `pairs`,
-`archive-fields` — polygons with `state` = production state; `eval-objects`,
-`experiments` — points), `catalogues` (`lens-candidates`, `galaxies`,
-`stars` (the FASRC-mirror `stars.csv`, 43k rows `[ra, dec, mag, flags]`,
-`flags` bit `2^b` = valid cutout in band `b` ∈ VIS,Y_E,J_E,H_E), `psf-clusters`,
-`noise-positions`, `population-cones`, `jwst-mast`).
+cones, `nexus-footprint` hull of the NEXUS tile cells, `jwst-mast`). Each layer
+row names its `home` — `{path, label}`, the tab that owns (and fills) its data,
+e.g. `stars` → `/synthetic/psf?view=catalogue` "Synthetic › PSF",
+`nexus-tiles` → `/sky/targets?set=nexus` "Sky › Targets".
 
 Feature shapes (`GET /api/sky/layer/<id>`, always with `id, label, group, kind, count`):
 `points` → `{columns:[…], rows:[[ra, dec, …]], inspect:{kind, prefix, id_column}}`
@@ -505,7 +534,7 @@ tiles inspect as `realtile:<source>/<id>`, others as `source:<layer>/<id>`.
 | GET | `/api/sky/jwst/footprints` |  | Cached MAST footprints near `ra`, `dec` within `r` deg (default 0.5, ≤ 5): `{ra, dec, r, ready, updated_utc, fields, count, truncated, footprints:[{obs_id, instrument, filters, target, proposal_id, exptime_s, ra, dec, polygons:[[[ra,dec],…]], status, euclid_tiles, fields}]}` (nearest first, ≤ 2000). |
 | POST | `/api/sky/jwst/pair` |  | Download + align one JWST × Euclid pair, then build its four-band LR input (local job `jwst-pair`): `obs_id` (a discovered MAST observation → its location group) or `ra`, `dec` (inside one of the NEXUS × Euclid tile cells — their polygons, not the hull → a NEXUS cutout, `filter` F200W\|F444W; else the nearest discovered location within max(size/2, 15″)); `size_arcsec` (1–120, default 30); optional `run=<specs>`. 404 `code:"not_discovered"` when nothing covers it. `{ok, job_id, pair_id, ref:"pair/<id>", mode:"nexus"\|"archive"}`. NEXUS mode is a single-run job of kind `nexus-mosaic` (shared with `/api/jwst-euclid/nexus/download` and `/download-field`): the same pair again re-attaches (`already_running`), any other NEXUS mosaic job running → 409 `code:"busy"`. The crop streams only the mosaic rows it spans (`helpers/fits_plane.py`; tens of MB, never the 4.46 GB plane). The Euclid VIS box comes from the committed Q1 tiles containing the point (observed first, deepest inside first; the archive INTERSECTS search only outside every committed polygon) and must be ≥ 99.5 % observed, else the job fails (no partial pair is published); the pair manifest records `euclid_vis_tile_index` and `euclid_selection{method: q1_polygon\|archive_intersects, tile, coverage, tried}`. The pair becomes real source `pair`. |
 | GET | `/api/sky/layer/<layer_id>` |  | One layer's features (shapes above); 404 unknown layer. |
-| GET | `/api/sky/layers` |  | `{groups, layers:[{id, label, group, kind, count, bbox{ra_min, ra_max, dec_min, dec_max}\|null, style{color?, color_by?, colors?, shape?, size?, opacity?}, ready, reason, fill_action{method, url, label, requires_fasrc?, self_connects?, sync?}\|null, description, url}]}`. `requires_fasrc`: needs the console's FASRC connection; `self_connects`: the job opens its own FASRC connection (works from an offline console); `sync`: the POST answers the result directly (no `job_id`) — refresh right away. Layers are memoised on the stamp of their inputs (for results layers: the source listing, `outputs/<source>/<id>/` directories and the production fingerprint), never on a timer. |
+| GET | `/api/sky/layers` |  | `{groups, layers:[{id, label, group, kind, count, bbox{ra_min, ra_max, dec_min, dec_max}\|null, style{color?, color_by?, colors?, shape?, size?, opacity?}, ready, reason, fill_action{method, url, label, requires_fasrc?, self_connects?, sync?}\|null, description, home{path, label}\|null, url}]}` (`groups` = the group ids in panel order). `requires_fasrc`: needs the console's FASRC connection; `self_connects`: the job opens its own FASRC connection (works from an offline console); `sync`: the POST answers the result directly (no `job_id`) — refresh right away. Layers are memoised on the stamp of their inputs (for results layers: the source listing, `outputs/<source>/<id>/` directories and the production fingerprint), never on a timer. |
 
 ### Removed with the classic console (WP-B1b)
 
@@ -537,7 +566,7 @@ Later, with no SPA (source or bundle) reference: the matplotlib PNGs
 `/api/jwst-euclid/field.json` and `/api/jwst-euclid/scan-coverage`
 (`tests/test_legacy_removed.py` pins them).
 
-### Inspect workspace (`routes/files.py`, `helpers/{paths,fits_inspect,fits_render}.py`)
+### Files workspace (`routes/files.py`, `helpers/{paths,fits_inspect,fits_render}.py`)
 
 - **Roots** (`paths.inspect_roots()`, computed per request): evaluation
   results, Euclid inference, JWST × Euclid, Euclid sky, star cutouts, band
@@ -592,7 +621,7 @@ Later, with no SPA (source or bundle) reference: the matplotlib PNGs
   served in electrons (`e-`, label `… · e- via MAGZERO`) so its colour
   composites are physical. Without any WCS or `PIXSCALE` the pixel scale is
   assumed to be the VIS 0.1″. A plane is picked with the viewer's object id
-  (`initialId="p<k>"`, `?id=p<k>`); the Inspect page maps its one-shot
+  (`initialId="p<k>"`, `?id=p<k>`); the Files page maps its one-shot
   `?slice=` (flat index, `i,j` multi-index or band name) to it.
 
 ## Endpoints
@@ -611,7 +640,7 @@ syntax. Flask's own `/static/<path:filename>` is omitted.
 
 | Methods | Path | Gate | Notes |
 |---|---|---|---|
-| GET | `/api/inspect` |  | FITS inspector payload for `?fits=<project-relative path>` (headers only, no pixels): `{file{basename,size,size_kb,mtime,compressed}, hdus:[HDU summary + cards], band_groups, scan_truncated, stamp, rel, root, roots, allowed_roots}` (see *Inspect workspace* below). |
+| GET | `/api/inspect` |  | FITS inspector payload for `?fits=<project-relative path>` (headers only, no pixels): `{file{basename,size,size_kb,mtime,compressed}, hdus:[HDU summary + cards], band_groups, scan_truncated, stamp, rel, root, roots, allowed_roots}` (see *Files workspace* below). |
 | GET | `/api/inspect/browse` |  | File browser: no `dir` → the existing roots as entries; `dir` → its sub-directories + FITS files (`{dir, root, crumbs, entries, other, truncated}`); `q` → a bounded FITS-name search under `dir` (or every root). 403 outside the roots, 404 missing. |
 | GET | `/api/inspect/image/stats` |  | Statistics + histogram of one plane (`hdu`, `plane`) at full resolution (`sampled` = stride above 4096² px); a 1-D HDU returns its `series` instead. |
 | GET | `/api/inspect/table` |  | One page of a table HDU: `hdu`, `offset`, `limit` (1–2000, default 200), `sort` (column), `desc`. `{total, columns[{name,format,unit,dim,null,kind}], rows, row_index}`. |
@@ -623,9 +652,9 @@ syntax. Flask's own `/static/<path:filename>` is omitted.
 | GET | `/api/status` |  | Local status summary `{catalog, psfs, tfrecords, checkpoints}` — cache-only and cheap: no SSH, no rsync (`catalog.cached: true`, the last synchronised `stars.csv`). |
 | POST | `/api/status/refresh-catalog` | fasrc | Explicitly re-pull the FASRC `stars.csv` (forced rsync): `{ok:true, catalog}`. |
 | GET | `/api/version` |  | Server version (C3): boot and HEAD commits (informational), `behind` = a backend `euclid_polish/**/*.py` module the server loaded changed on disk since it was loaded (stat, then content hash; `web/frontend` and `web/static` excluded; checked at most every 10 s), `changed_files` (newest first, the first 8, repo-relative), `changed_count` and `changed_digest` (short hash of the whole changed set, null when none — a stable dismissal key), `dirty`, `started_at`, `pid`, `dist{built_at,index_hash,entry}` (`entry` = the build's `<script type="module" src>`). A module first seen after boot is checked against its `.pyc` source stamp, so an edit between its lazy import and the first check is still reported. Committing the code the server already runs is not `behind`. Safe to poll: the git probes are read-only (`--no-optional-locks`), so they never take `.git/index.lock` from a concurrent commit. |
-| POST | `/api/fasrc/file/fetch` | fasrc | Pull one FASRC file (`remote_path`) into the local cache (the POST form of the two link GETs below): `{ok, path (project-relative), inspect_url:"/inspect?fits=…", download_url}`; 400 without `remote_path`; a failed fetch is JSON 502 `{ok:false,error}`. |
+| POST | `/api/fasrc/file/fetch` | fasrc | Pull one FASRC file (`remote_path`) into the local cache (the POST form of the two link GETs below): `{ok, path (project-relative), inspect_url:"/files?fits=…", download_url}`; 400 without `remote_path`; a failed fetch is JSON 502 `{ok:false,error}`. |
 | GET | `/fasrc/file/download` | fasrc | Fetch one FASRC file (cached) and send it. A cross-site request is refused (403 JSON): the SPA's link is same-origin. |
-| GET | `/fasrc/file/inspect` | fasrc | Fetch one FASRC file (`?remote_path=`, cached) and 302 to `/inspect?fits=<project-relative path>`; a failed fetch is JSON 502 `{ok:false,error}`; a cross-site request is refused (403 JSON). |
+| GET | `/fasrc/file/inspect` | fasrc | Fetch one FASRC file (`?remote_path=`, cached) and 302 to `/files?fits=<project-relative path>`; a failed fetch is JSON 502 `{ok:false,error}`; a cross-site request is refused (403 JSON). |
 | GET | `/inference-files/<path:relpath>` |  | Serve FITS/PNG from `data/euclid_inference/` (jailed). |
 | GET | `/inspect/download` |  | Download the inspected FITS (`?fits=`), jailed to project data roots. |
 | GET | `/inspect/preview.png` |  | PNG thumbnail of one plane of the inspected FITS (`?fits=`, `hdu`, `plane`; default the first image HDU's first plane), longer side `size` px (16–2048), aspect kept, data-adaptive stretch. |
@@ -678,7 +707,7 @@ progress comes from its `.events` stream, `/api/fasrc/jobs/<jobid>/status`).
 |---|---|---|---|
 | POST | `/auth/login` |  | Log in to the ONE laptop-side Euclid archive session (`username`, `password`; the password is never stored). `{ok:true, user}` (the session's details: `/auth/status`); 400 missing field; 500 `{ok:false,error}` (the archive's refusal) — a failed login keeps the previous state. |
 | POST | `/auth/logout` |  | Log out of the laptop-side session: `{ok:true}`. |
-| GET | `/auth/status` |  | The laptop-side Euclid archive session every local archive query reads (Settings › Connections): `{authenticated, user, logged_in_at (ISO)\|null, used_by:[{id, label, to}]}` — `used_by` names the console features that need it (Realism › Galaxies / Stars / Pixels, Sky › Catalog eval). |
+| GET | `/auth/status` |  | The laptop-side Euclid archive session every local archive query reads (System › Connections): `{authenticated, user, logged_in_at (ISO)\|null, used_by:[{id, label, to}]}` — `used_by` names the console features that need it (Synthetic › Galaxies / Stars / Fields, Sky › Targets). |
 | POST | `/euclid-auth/save` | fasrc | Write Euclid archive credentials to `~/.euclid_credentials` on FASRC. |
 | GET | `/euclid-auth/status` |  | Whether a credentials file exists on FASRC (username only); `connected:false` offline (never gated). |
 
@@ -688,10 +717,11 @@ All local (never gated); JSON errors under `/api/system` (`errors.json_errors_fo
 
 | Methods | Path | Gate | Notes |
 |---|---|---|---|
-| GET | `/api/system` |  | Settings › About facts, cheap (nothing is walked): `{python{version, implementation, executable}, platform{system, release, machine, platform}, packages{flask, werkzeug, numpy, scipy, astropy, tensorflow, photutils: version\|null}, node (node --version, when Node is on the server PATH)\|null, pid, cwd, data_dir, noise_model, disk{path, total_bytes, free_bytes, used_bytes, used_fraction, level: ok\|warn\|bad\|unknown, warn_below_bytes (25 GiB), bad_below_bytes (10 GiB), warn_used_fraction (0.95)}, roots{items:[{id ("data/<dir>", "ckpt", "tracking", "poster", "output"), label, path, group, bytes, files, exists}] (biggest first), computed_at\|null, total_bytes, stale (never measured or > 6 h old), ttl_s, refresh_job\|null, experiments{cache_bytes, outputs_bytes}}, experiments{cache_budget_bytes, min_free_bytes, cache_bytes, outputs_bytes, measured_at}}`. The disk usage is the last measurement (memory, else `~/.euclid_polish/system_disk_usage.json`); clients POST the refresh when `stale && !refresh_job`. |
+| GET | `/api/system` |  | System › Code and System › Storage facts, cheap (nothing is walked): `{python{version, implementation, executable}, platform{system, release, machine, platform}, packages{flask, werkzeug, numpy, scipy, astropy, tensorflow, photutils: version\|null}, node (node --version, when Node is on the server PATH)\|null, pid, cwd, data_dir, noise_model, disk{path, total_bytes, free_bytes, used_bytes, used_fraction, level: ok\|warn\|bad\|unknown, warn_below_bytes (25 GiB), bad_below_bytes (10 GiB), warn_used_fraction (0.95)}, roots{items:[{id ("data/<dir>", "ckpt", "tracking", "poster", "output"), label, path, group, bytes, files, exists}] (biggest first), computed_at\|null, total_bytes, stale (never measured or > 6 h old), ttl_s, refresh_job\|null, experiments{cache_bytes, outputs_bytes}}, experiments{cache_budget_bytes, min_free_bytes, cache_bytes, outputs_bytes, measured_at}}`. The disk usage is the last measurement (memory, else `~/.euclid_polish/system_disk_usage.json`); clients POST the refresh when `stale && !refresh_job`. |
 | GET | `/api/system/production` |  | Home's production numbers without the ~8 s `/ensemble/status.json`: `{eval_summary: {the scalar keys of the STARFULL eval_summary.json — ensemble_psnr, mean_member_psnr, ensemble_gain_db, spatial_gate_combiner_psnr, spatial_gate_combiner_vs_mean_db, spatial_gate_combiner_vs_best_member_db, n_scored, …; lists/dicts dropped}\|null, evaluated_at (ISO, file mtime)\|null, stale (the `evaluation` check below is not ok: members or test records changed), stale_reason\|null, members (active STARFULL regime labels), starless_members (active starless)}`. |
 | POST | `/api/system/disk-usage/refresh` |  | Measure every data root (apparent size, symlinks not followed) + the experiments' member cache and outputs in a local job (`kind="system-disk-usage"`, one at a time — a running one's id is returned): `{ok, job_id}`; job result `{computed_at, roots, total_bytes}`. |
 | GET | `/api/system/alerts` |  | The Home health checks, memoised 30 s (`?fresh=1` recomputes): `{computed_at, ttl_s, counts{bad, warn, ok, unknown}, checks:[{id, label, state: ok\|warn\|bad\|unknown, title, detail\|null, to (SPA path)\|null, action?{label, method, url, params, confirm}, facts?{…}}], alerts:[the warn/bad checks, bad first]}`. Checks: `disk` (free space, thresholds above), `real-sr` (production state of NEXUS / cached / legacy-field / poster / pair tiles from the sky layers: warn when any is `stale`; `facts{current, stale, missing, sources[]}`), `combiner` (the production spec of `/api/models`: warn with its `reason` when it does not fit the STARFULL members), `evaluation` (STARFULL `eval_summary.json` vs the active members and vs the test records' `records_fp`; action = evaluate), `knee` (`/ensemble/knee-psnr.json` missing or `stale`; action = compute), `records-noise` (each local `dirty_*.tfrecord`'s generation run noise model, from its provenance stamp, vs `Config.NOISE_MODEL`: `bad` on a mismatch, `unknown` when the run is not in the local provenance store), `tracking` (the newest `## <ISO>` heading of `tracking/current/log.md` vs the evaluation, production-gate fit, knee curves and experiment records written after it). A check that raises reads `unknown` with its error. |
+| GET | `/api/system/loop` |  | The staleness service (`helpers/system_alerts.py`): one verdict per Loop stage, read by Home's Loop strip and System › Lineage, memoised 60 s (`?fresh=1` recomputes it and the alerts it reads): `{computed_at, ttl_s, stages:[{id: priors\|records\|members\|evaluation\|gate\|real-sr\|figures, label, state: current\|stale\|blocked\|unknown\|loading, reason (one short line), detail\|null (the tooltip), to (the SPA tab whose confirmed button fixes it)}] (loop order), counts{current, stale, blocked, unknown}, errors{<source>: message}}`. It reads the existing read-only checks — the Synthetic › Status overview, the STARFULL roster and the local `ensemble_train` log, the `evaluation` / `knee` / `combiner` / `real-sr` / `records-noise` alerts, the newest NEXUS plate render and the galaxy-plot cache; a source that raises is named in `errors` and its stage reads `unknown`. Read-only: never starts a job. |
 
 ### TNG (`routes/tng.py`)
 
@@ -701,7 +731,7 @@ All local (never gated); JSON errors under `/api/system` (`errors.json_errors_fo
 | POST | `/api/tng/radii/refresh` | fasrc | Re-validate the remote manifest now (local job, `kind="tng-radii"`, at most one at a time — a running one's id is returned): `{ok, job_id}`; the result lands in the status cache (failures too, with `failed: true`). |
 | POST | `/tng-auth/save` | fasrc | Write the TNG API token to FASRC. |
 | GET | `/tng-auth/status` |  | Whether a TNG token file exists on FASRC (presence + length only); `connected:false` offline. |
-| GET | `/api/tng/properties` |  | Data › TNG property explorer, local CSVs only (`helpers/tng_explorer.py`; no SSH, no TNG API, no writes; memoised per file state): `{present, files{properties, atlas: {present, name, rows, mtime, size_bytes}}, atlas_meta (the atlas CSV's `.meta.json`)\|null, columns: [id, sfr (M☉/yr), mass_stars (M☉), m_halo (total bound mass, M☉), reff (group-catalogue stellar half-mass radius, kpc), re_kpc (mean measured VIS R_e over the viewpoints), re_kpc_min, re_kpc_max, n_orient, local (SKIRT FITS frames of that galaxy under data/tng_skirt/<id>/)], rows, orientations{<id>: [[orientation, native_re_px, native_re_kpc], …]}, summary{n, n_quenched (SFR = 0), n_missing_sfr, n_in_atlas, n_local}}`. Galaxies measured in the atlas but missing from `tng_properties.csv` use the atlas copy of their properties. |
+| GET | `/api/tng/properties` |  | Synthetic › Galaxies TNG-template explorer, local CSVs only (`helpers/tng_explorer.py`; no SSH, no TNG API, no writes; memoised per file state): `{present, files{properties, atlas: {present, name, rows, mtime, size_bytes}}, atlas_meta (the atlas CSV's `.meta.json`)\|null, columns: [id, sfr (M☉/yr), mass_stars (M☉), m_halo (total bound mass, M☉), reff (group-catalogue stellar half-mass radius, kpc), re_kpc (mean measured VIS R_e over the viewpoints), re_kpc_min, re_kpc_max, n_orient, local (SKIRT FITS frames of that galaxy under data/tng_skirt/<id>/)], rows, orientations{<id>: [[orientation, native_re_px, native_re_kpc], …]}, summary{n, n_quenched (SFR = 0), n_missing_sfr, n_in_atlas, n_local}}`. Galaxies measured in the atlas but missing from `tng_properties.csv` use the atlas copy of their properties. |
 | POST | `/api/tng/properties/refresh` | fasrc | Re-query the TNG API for downloaded galaxies missing from `tng_properties.csv` (local job `kind="tng-properties"`, one at a time): ids from the FASRC `.done` markers, the token from `$TNG_API_KEY` or the FASRC token file (in memory only). `{ok, job_id}`; result `{n_ids, n_resolved}`. Replaces the removed `GET /tng/histograms.png` (which wrote the cache from a GET). |
 | GET | `/api/tng/results` |  | Which `tng_grid` / `tng_stack` results were pulled (local): `{grid: {present, pulled_at, size_bytes}, stack: {…}, pull_job}`. |
 | POST | `/api/tng/result/pull` | fasrc | Pull the latest job result(s) from FASRC (`kind=grid\|stack\|all`, default all; local job `kind="tng-result"`, force-fetched; the stack with the large ePSF cap). A new grid image is archived into `data/vis/tng/` (Figures gallery). `{ok, job_id}`; result `{grid?: {ok, size_bytes\|error}, stack?: …}` (the job fails when nothing was pulled). 400 bad kind. |
@@ -736,7 +766,7 @@ All local (never gated); JSON errors under `/api/system` (`errors.json_errors_fo
 |---|---|---|---|
 | POST | `/api/tracking/backup` |  | Back up a model (`kind=model`, `ckpt_dir` under the checkpoint root) / FITS (`kind=fits`, `path`) / image (`kind=image`) into the active campaign with `comment`, optional `name`: `{ok, record, warning (dirty commit), sync}`; best-effort push. |
 | GET | `/api/tracking/campaign/<name>` |  | One campaign (`current` or an archived campaign's dir): `{ok, dir, active, metadata, backups{models, fits, images}, log_md, jobs_count}`; 404 unknown. |
-| GET | `/api/tracking/jobs` |  | One page of a campaign's FASRC job records, newest first, **without** embedded payload blobs (`params` compacted, `params_omitted` `{key: size}`): `campaign` = `current` (default), an archived dir or `unassigned`; `q` (jobid/label/step/time); `offset`/`limit` (≤ 500, default 50) → `{ok, campaign, total, offset, limit, jobs}`; 404 unknown campaign. |
+| GET | `/api/tracking/jobs` |  | One page of a campaign's FASRC job records, newest first, **without** embedded payload blobs (`params` compacted, `params_omitted` `{key: size}`): `campaign` = `current` (default), an archived dir or `unassigned`; `q` (jobid/label/step/time); `offset`/`limit` (≤ 500, default 50) → `{ok, campaign, total, offset, limit, jobs}`; `ids=1` answers every job id of the campaign instead, unpaged, deduplicated, newest first (`{ok, campaign, total, jobids}`: Runs › History's campaign filter); 404 unknown campaign. |
 | POST | `/api/tracking/log` |  | Append to / replace the active campaign's log (`text`, `mode`). |
 | POST | `/api/tracking/new` |  | Create a campaign (`title`, `description`). |
 | POST | `/api/tracking/save` |  | Archive the active campaign; best-effort holylabs push (`sync`). |
@@ -749,7 +779,7 @@ All local (never gated); JSON errors under `/api/system` (`errors.json_errors_fo
 
 ### Provenance (`routes/provenance.py`, `helpers/provenance_index.py`)
 
-A read-only lineage browser (Ops › Provenance) over every provenance record
+A read-only lineage browser (System › Lineage) over every provenance record
 found locally: `data/_prov` (flat), `<id8>.<kind>.json` sidecars under the
 data dir, and checkpoint stamps (`<ckpt root>/[*/]*/provenance.json`, shown as
 `checkpointartifact` entries named by their member). Upstream edges are
@@ -762,7 +792,7 @@ changes). Local; JSON errors under `/api/provenance` (`errors.json_errors_for`).
 
 | Methods | Path | Gate | Notes |
 |---|---|---|---|
-| GET | `/api/provenance/record/<pid>` |  | One record (`pid` = 8 hex; 400 otherwise, 404 unknown): `{entry (listing row), record (the stored JSON), upstream[{id, role: parent\|produced_by\|input, exists, kind, label, member}], downstream[…role child] (≤ 300), ancestors{total, items[… depth]}, descendants{total, items}, models[{id, member}], current_models, inspect_path (FITS path for /inspect, else null)}`. |
+| GET | `/api/provenance/record/<pid>` |  | One record (`pid` = 8 hex; 400 otherwise, 404 unknown): `{entry (listing row), record (the stored JSON), upstream[{id, role: parent\|produced_by\|input, exists, kind, label, member}], downstream[…role child] (≤ 300), ancestors{total, items[… depth]}, descendants{total, items}, models[{id, member}], current_models, inspect_path (FITS path for /files, the SPA Files page; /inspect 308s there; else null)}`. |
 | GET | `/api/provenance/records` |  | Search, newest first: `q` (whitespace tokens ANDed over id/kind/label/path/git/member/config type/status), `kind` (comma list), `verdict` (current\|stale\|unknown; 400 otherwise), `source` (prov\|sidecar\|checkpoint), `offset`/`limit` (≤ 1000, default 200) → `{total, offset, limit, records[{id, kind, category, source, file, created_at, status, path, format, label, git, dirty, config_type, seed, produced_by, parents, inputs, outputs, ra, dec, member, verdict, models, n_upstream, n_downstream}]}`. |
 | POST | `/api/provenance/rebuild` |  | Re-scan every root now (synchronous); answers the new summary. |
 | GET | `/api/provenance/summary` |  | `{total, counts{kinds, verdicts}, roots[{path, role: index\|data\|checkpoints, records}], current_models[{id, member, regime, dir}], truncated (the walk hit its 500 k-file cap), duplicates, built_at, build_seconds, building}`. The GETs never wait for a re-scan: after ~5 min (or when `data/_prov` changes) the previous index keeps being served while one background thread rebuilds it (`building: true`); only the first build blocks. |
@@ -771,16 +801,16 @@ changes). Local; JSON errors under `/api/provenance` (`errors.json_errors_for`).
 
 | Methods | Path | Gate | Notes |
 |---|---|---|---|
-| GET | `/api/catalog/stars` |  | Data › Catalog explorer over the **FASRC-mirror** `stars.csv` (the synchronised `data/_fasrc_cache/…/euclid_stars/stars.csv`, 43 k stars) — never the stale 200-row `data/euclid_stars` copy; cache-only (no SSH), memoised per file state; the explicit pull is `POST /api/status/refresh-catalog`. `{present, source: "fasrc-mirror", path (remote), local_path, size_bytes, mtime (= last pull), age_s, columns: [id, ra, dec, mag, flux_uJy, fluxerr_uJy, field (EDF-N\|EDF-S\|EDF-F from the position, "" outside), b_VIS, b_Y_E, b_J_E, b_H_E, nav], rows, bands, sizes (cutout sides seen, ascending), bits{valid: 1, corrupted: 2, failed: 4, size_shift: 3}, summary{total, valid, corrupted, failed, pending (a star's overall state = its best band; the four sum to total), valid_all4, navigator{size, count}, mag_min, mag_max}, band_stats:[{band, valid, corrupted, failed, pending (exclusive: valid > corrupted > failed > pending, each row sums to total), by_size{<size>: valid count}}]}`. Band code `b_*`: bit 0 = a cutout at some size passed validation, bit 1 = downloaded but rejected (NaN/Inf, all-zero or constant, unopenable), bit 2 = download failed (no mosaic tile / bad coordinates), bit `3+i` = valid at `sizes[i]`; no bit = pending. `nav` = in the cutouts navigator (valid in all four bands at the navigator size). `present:false` with empty rows when the mirror was never pulled. |
-| GET | `/api/cutouts/<band_name>/list.json` |  | Paginated per-band cutout files of the local cache (`page`, `per_page` 12–240, default 60): `{band, files, items:[{file, id, size, ra, dec, mag}] (star from the mirror; null when unknown), total, page, n_pages, per_page, output_dir}`. `output_dir` (default `Config.DEFAULT_OUTPUT_DIR`) must resolve inside the inspectable data roots (the Inspect jail), else 403 JSON. |
+| GET | `/api/catalog/stars` |  | Synthetic › PSF star-catalogue explorer over the **FASRC-mirror** `stars.csv` (the synchronised `data/_fasrc_cache/…/euclid_stars/stars.csv`, 43 k stars) — never the stale 200-row `data/euclid_stars` copy; cache-only (no SSH), memoised per file state; the explicit pull is `POST /api/status/refresh-catalog`. `{present, source: "fasrc-mirror", path (remote), local_path, size_bytes, mtime (= last pull), age_s, columns: [id, ra, dec, mag, flux_uJy, fluxerr_uJy, field (EDF-N\|EDF-S\|EDF-F from the position, "" outside), b_VIS, b_Y_E, b_J_E, b_H_E, nav], rows, bands, sizes (cutout sides seen, ascending), bits{valid: 1, corrupted: 2, failed: 4, size_shift: 3}, summary{total, valid, corrupted, failed, pending (a star's overall state = its best band; the four sum to total), valid_all4, navigator{size, count}, mag_min, mag_max}, band_stats:[{band, valid, corrupted, failed, pending (exclusive: valid > corrupted > failed > pending, each row sums to total), by_size{<size>: valid count}}]}`. Band code `b_*`: bit 0 = a cutout at some size passed validation, bit 1 = downloaded but rejected (NaN/Inf, all-zero or constant, unopenable), bit 2 = download failed (no mosaic tile / bad coordinates), bit `3+i` = valid at `sizes[i]`; no bit = pending. `nav` = in the cutouts navigator (valid in all four bands at the navigator size). `present:false` with empty rows when the mirror was never pulled. |
+| GET | `/api/cutouts/<band_name>/list.json` |  | Paginated per-band cutout files of the local cache (`page`, `per_page` 12–240, default 60): `{band, files, items:[{file, id, size, ra, dec, mag}] (star from the mirror; null when unknown), total, page, n_pages, per_page, output_dir}`. `output_dir` (default `Config.DEFAULT_OUTPUT_DIR`) must resolve inside the inspectable data roots (the Files jail), else 403 JSON. |
 | GET | `/api/star-cutouts/totals` |  | Count/size of the stars valid in all four bands (the cutouts navigator) from the synchronised mirror — cache-only, works offline: `{count, size, cached: true, catalog{present, path, mtime, age_s}}`. |
-| GET | `/cutout-image/<band_name>/<path:filename>` |  | One cutout FITS rendered as PNG (`size` 16–2048); `output_dir` jailed like the listing (403 JSON outside the roots). |
+| GET | `/cutout-image/<band_name>/<path:filename>` |  | One cutout FITS rendered as PNG (`size` 16–2048); `stretch=band` (default: the band's shared stretch) or `stretch=star` (the cutout's own min–max under a soft asinh: the Synthetic › PSF cutout gallery; any other value is 400); `output_dir` jailed like the listing (403 JSON outside the roots). |
 
 ### PSFs (`routes/psfs.py`)
 
 | Methods | Path | Gate | Notes |
 |---|---|---|---|
-| GET | `/api/euclid-psf/inventory` |  | Data › PSFs inventory, local cache only (headers read, memoised per file state): `{bands:[{name, fwhm (config Gaussian fallback, ″), oversampling, epsf_pixel_scale, state: "empirical"\|"no_empirical"\|"not_cached", empirical, path?, size_bytes?, synced_at?, n_psf?, shape?, pixel_scale?, measured_fwhm?, error?, last_sync{ok, error?, missing_remote?, checked_at}\|null}], clusters:[{index, id: "cluster-NNN", ra, dec, n_stars, fwhm_by_band{band: ″\|null}}], clusters_source: "metadata"\|"vis_headers"\|null, clusters_meta{present, synced_at}, last_sync}`. `no_empirical` = the last sync found no ePSF for that band on FASRC (generation uses the Gaussian fallback); `not_cached` = not synchronised yet or the last sync failed otherwise (`error`). The per-band outcomes live in `<FASRC_CACHE_DIR>/euclid_psf_sync.json`. |
+| GET | `/api/euclid-psf/inventory` |  | Synthetic › PSF ePSF inventory, local cache only (headers read, memoised per file state): `{bands:[{name, fwhm (config Gaussian fallback, ″), oversampling, epsf_pixel_scale, state: "empirical"\|"no_empirical"\|"not_cached", empirical, path?, size_bytes?, synced_at?, n_psf?, shape?, pixel_scale?, measured_fwhm?, error?, last_sync{ok, error?, missing_remote?, checked_at}\|null}], clusters:[{index, id: "cluster-NNN", ra, dec, n_stars, fwhm_by_band{band: ″\|null}}], clusters_source: "metadata"\|"vis_headers"\|null, clusters_meta{present, synced_at}, last_sync, generation{subset, kind, run, created, psf_kinds{band: "empirical"\|"gaussian"}}\|null}`. `generation` is what the last generation run recorded in its records' provenance (the newest local split whose pulled `<id>.skytfrecordartifact.json` sidecar carries `psf_kinds`; `null` for records generated before the stamp or none synced). `no_empirical` = the last sync found no ePSF for that band on FASRC (generation uses the Gaussian fallback); `not_cached` = not synchronised yet or the last sync failed otherwise (`error`). The per-band outcomes live in `<FASRC_CACHE_DIR>/euclid_psf_sync.json`. |
 | POST | `/api/euclid-psf/sync` | fasrc | Force a re-rsync of the four band ePSFs (large ePSF cap) + the cluster metadata from FASRC — a local job (`kind="psf-sync"`, one at a time; a running sync's id comes back with `already_running`): `{ok, job_id}`; result `{ok, files{band: {ok, remote_path, size_bytes, error?, missing_remote?}}, clusters_meta}`; each band's outcome is recorded for the inventory. |
 | POST | `/api/euclid-psf/sync-meta` | fasrc | Metadata-only sync (job, `kind="psf-sync"`): dump the per-cluster centroids, star counts and per-band FWHM (`fwhm_arcsec` = VIS, `fwhm_by_band`) from the ePSF headers on the login node, rsync the kilobyte JSON: `{ok, job_id}`; result `{ok, n_clusters, local_path}`. |
 
@@ -791,15 +821,15 @@ changes). Local; JSON errors under `/api/provenance` (`errors.json_errors_for`).
 | POST | `/api/sky/generate-sr` |  | Run the production SR over the local dirty records (local job `kind="sky-generate-sr"`, one at a time): the production gate, restoring and running only the STARFULL members it reads (a pruned gate: its `active_members`), valid while every one of them is active (members that joined after the fit are logged as a note); the plain mean of every active STARFULL member, logged as a warning, when no current gate loads. `subsets` (comma list; default every split with dirty records; 400 unknown / no records), `overwrite=1` (deletes the split's cubes first; without it a split that has SR is skipped). Writes `<vis>/sky_sr/sr_<split>_NNNN.npy` + `sr_<split>.json` (model identity `{member_labels (the gate's full fitted list), combiner_kind, combiner_fingerprint, run_labels (the members that ran)}`, `model_label`, the input records' size/mtime, `count`, `generated_at`). `{ok, job_id, subsets, overwrite}`; result `{generated{split: n}, skipped, model, identity}`. 400 without records or active members. |
 | GET | `/api/sky/records/source` |  | Every column of one truth source (`subset`, `index` = record position, `row` = its position among the record's sources): `{subset, field_index, row, source (the compact row), values{column: number\|string\|null; JSON trace columns decoded}}`; 404 `{ok:false, error}` when absent, 400 bad arguments. |
 | GET | `/api/sky/records/sources` |  | Truth sources from the generator's `sources_<subset>.csv` (local). With `index` (record position = the CSV's `field_index`): `{subset, field_index, present, sources:[{row, type: galaxy\|star\|lens\|other, render, x_pix, y_pix (HR pixels, 0-based, pixel centres at integers), off_field, flux_vis_e, flux_y_e, flux_j_e, flux_h_e, mag_vis (a star's sampled magnitude, a galaxy's achieved 2FWHM magnitude, else its target), mag_y_e, mag_j_e, mag_h_e, target_vis_mag, z, re_arcsec, theta_E_arcsec, orientation, temperature_k, subhalo_id, source_subhalo_id, sfr_class}], counts{galaxy, star, lens, other, off_field}, geometry}`; without it the split census `{subset, present, fields:[{field_index, galaxy, star, lens, other, off_field, n, brightest_star_mag, brightest_galaxy_mag, total_vis_e}], geometry}`. `geometry{hr{height, width, pixscale}\|null, lr{…}\|null}` from the first hr (else clean) / dirty record. 400 bad subset/index. |
-| GET | `/api/sky/sr-status` |  | Data › Records state (local, headers only): `{records, checkpoint, can_generate, subsets (splits with dirty records), sr{split: n cubes}, records_dir, splits{split: {files{dirty\|hr\|clean: {name, size_bytes, mtime, count (null = truncated/corrupt)}\|null, sources: {name, size_bytes, mtime}\|null}, count, present, sr{state: current\|stale\|partial\|missing\|unknown, reasons[], count, records_count, manifest\|null}}}, model (the identity an SR run would load now)\|null, sync_job, generate_job}`. `unknown` = SR cubes without a manifest (made before model tracking). The records half of `stale` compares a content fingerprint (SHA-1 over every frame header + payload CRC, recorded in the manifest's `records.fingerprint`), never the mtime: a re-sync of unchanged records keeps the SR `current`; a legacy manifest without a fingerprint compares the size only. |
-| POST | `/api/sky/sync` | fasrc | Rsync the synthetic records from FASRC into the local cache as a local job (`kind="sky-sync"`, one at a time — a running sync's id comes back with `already_running`). `subsets` (comma list; default `test,validate`, `include_train=1` adds `train`), `kinds` (comma list of `dirty,hr,clean,sources`; default all). 5 GB pull cap; the requested files are protected from the cache LRU during the sync. `{ok, job_id, subsets, files}`; result `{ok, files{<kind>_<split>: {ok, size_bytes, error?}}, subsets, include_train}` (the job fails when nothing was pulled). 400 bad subsets/kinds. |
+| GET | `/api/sky/sr-status` |  | Synthetic › Records state (local, headers only): `{records, checkpoint, can_generate, subsets (splits with dirty records), sr{split: n cubes}, records_dir, splits{split: {files{dirty\|hr\|clean: {name, size_bytes, mtime, count (null = truncated/corrupt)}\|null, sources: {name, size_bytes, mtime}\|null}, count, present, sr{state: current\|stale\|partial\|missing\|unknown, reasons[], count, records_count, manifest\|null}}}, model (the identity an SR run would load now)\|null, sync_job, generate_job}`. `unknown` = SR cubes without a manifest (made before model tracking). The records half of `stale` compares a content fingerprint (SHA-1 over every frame header + payload CRC, recorded in the manifest's `records.fingerprint`), never the mtime: a re-sync of unchanged records keeps the SR `current`; a legacy manifest without a fingerprint compares the size only. |
+| POST | `/api/sky/sync` | fasrc | Rsync the synthetic records from FASRC into the local cache as a local job (`kind="sky-sync"`, one at a time — a running sync's id comes back with `already_running`). `subsets` (comma list; default `test,validate`, `include_train=1` adds `train`), `kinds` (comma list of `dirty,hr,clean,sources`; default all). Each pulled record file's provenance sidecar (`<id>.skytfrecordartifact.json`, beside it on FASRC) is pulled too, best-effort (`files.<key>.provenance`). 5 GB pull cap; the requested files are protected from the cache LRU during the sync. `{ok, job_id, subsets, files}`; result `{ok, files{<kind>_<split>: {ok, size_bytes, error?}}, subsets, include_train}` (the job fails when nothing was pulled). 400 bad subsets/kinds. |
 | GET | `/api/vis/list.json` |  | The `data/vis/` PNG gallery (newest first). |
 
-### Realism overview (`routes/realism.py`, `helpers/realism_overview.py`)
+### Synthetic status (`routes/realism.py`, `helpers/realism_overview.py`)
 
 | Methods | Path | Gate | Notes |
 |---|---|---|---|
-| GET | `/api/realism/overview` |  | Read-only readiness of every synthetic-realism prior (Realism › Overview): `{computed_at, gate{step: "synthetic_generate", ready, blockers:[{id, message}], message (the step's own first refusal)\|null, to}, items:[{id, label, state: ok\|warn\|bad\|unknown, title, detail\|null, to (SPA path)\|null, action{label, method: "POST", url, params, confirm\|null, requires_fasrc (a `@requires_fasrc` endpoint: the UI disables it offline), self_connects (a local job that connects itself and reports failure: enabled offline), requires_login}\|null, facts{…}}], counts{ok, warn, bad, unknown}, authenticated, training{available, population_fields, population_fields_with_training, sync (action)}}`. Items, in order: `galaxy-model` (active / candidate / unfitted joint galaxy model; action = activate), `star-prior` (same for the stellar prior), `tng-radii` (the last remote TNG radius-manifest validation cached by `POST /api/tng/radii/refresh`; `facts.stale` past its TTL), `noise-model` (`Config.NOISE_MODEL` and the committed noise-level table), `records-noise` (the Home `records-noise` check: local TFRecords' generation-run noise model vs `Config.NOISE_MODEL`), `galaxy-plots` (the galaxy plot artifact's schema/input freshness; action = build), `comparison-cache` (field-statistics cache freshness; action = build), `archive-fields` (multipoint archive reference; action = sync), `training-catalog` (`sources_train.csv`; action = the one training sync). The gate lists EVERY blocker `SyntheticGenerateStep.prepare_params` would raise (a parity test holds them together). Nothing is written. |
+| GET | `/api/realism/overview` |  | Read-only readiness of every synthetic-realism prior (Synthetic › Status): `{computed_at, gate{step: "synthetic_generate", ready, blockers:[{id, message}], message (the step's own first refusal)\|null, to}, items:[{id, label, state: ok\|warn\|bad\|unknown, title, detail\|null, to (SPA path)\|null, action{label, method: "POST", url, params, confirm\|null, requires_fasrc (a `@requires_fasrc` endpoint: the UI disables it offline), self_connects (a local job that connects itself and reports failure: enabled offline), requires_login}\|null, facts{…}}], counts{ok, warn, bad, unknown}, authenticated, training{available, population_fields, population_fields_with_training, sync (action)}}`. Items, in order: `galaxy-model` (active / candidate / unfitted joint galaxy model; action = activate), `star-prior` (same for the stellar prior), `tng-radii` (the last remote TNG radius-manifest validation cached by `POST /api/tng/radii/refresh`; `facts.stale` past its TTL), `noise-model` (`Config.NOISE_MODEL` and the committed noise-level table), `records-noise` (the Home `records-noise` check: local TFRecords' generation-run noise model vs `Config.NOISE_MODEL`), `galaxy-plots` (the galaxy plot artifact's schema/input freshness; action = build), `comparison-cache` (field-statistics cache freshness; action = build), `archive-fields` (multipoint archive reference; action = sync), `training-catalog` (`sources_train.csv`; action = the one training sync). The gate lists EVERY blocker `SyntheticGenerateStep.prepare_params` would raise (a parity test holds them together). Nothing is written. |
 
 ### Noise (`routes/noise.py`)
 
@@ -816,6 +846,7 @@ changes). Local; JSON errors under `/api/provenance` (`errors.json_errors_for`).
 | POST | `/api/galaxy-distributions/activate` |  | Activate the fitted joint galaxy candidate (local job). |
 | POST | `/api/galaxy-distributions/build` |  | Build the galaxy plot data (local job). |
 | POST | `/api/galaxy-distributions/fit-q1-counts` |  | Fit the cached Q1 aperture counts (local job; 400 until queried). |
+| POST | `/api/galaxy-distributions/fit` |  | Refit the galaxy prior from the cached Q1 brackets: the VIS 2FWHM line, the joint size + colour/SFR candidate, then the plots (local job; no archive query or login; 400 in words until every aperture checkpoint and Rₑ bracket is cached). |
 | GET | `/api/galaxy-distributions/joint-pair` |  | One pair-explorer grid (`x`, `y`). |
 | POST | `/api/galaxy-distributions/query-q1-counts` |  | Query Q1 MER + PHZ counts (Euclid archive login required; local job). |
 | POST | `/api/galaxy-distributions/refresh-population-cones` |  | Re-query the saved 24-cone population footprint (local job). |
@@ -826,11 +857,11 @@ changes). Local; JSON errors under `/api/provenance` (`errors.json_errors_for`).
 
 | Methods | Path | Gate | Notes |
 |---|---|---|---|
-| GET | `/api/star-distribution` |  | Stellar population payload: colour sample, calibration, distribution, availability (`?include_training=`). `distribution` holds the Gaia–Euclid colour-sample counts (`matched_stars`, `high_quality_stars`, `pointlike_over_0_9`), `density_comparison` (the VIS panel with Q1 PHZ / point sources and the native Gaia G_AB counts + shared-slope fit that set the law's slope, and six Euclid colour panels without a Gaia series) and `gaia_sampling`; the Gaia colour, CMD and projection views are deleted (no `colors`, `gaia_cmd`, `euclid_projection`). Read-only: a missing or stale plot cache is computed in memory (memoised per calibration + source signature); only the fit job writes `star_distribution*.json`. |
+| GET | `/api/star-distribution` |  | Stellar population payload: colour sample, calibration, distribution, availability (`?include_training=`). `distribution` holds the Gaia–Euclid colour-sample counts (`matched_stars`, `high_quality_stars`, `pointlike_over_0_9`), `density_comparison` (the VIS panel with Q1 PHZ / point sources, the law and the generated stars, and six Euclid colour panels; no Gaia series anywhere: no `gaia`, `gaia_x`, `gaia_fit`, `fit_ranges.gaia` or `gaia_native_g_count` since 2026-09-28) and `gaia_sampling`; the Gaia colour, CMD and projection views are deleted (no `colors`, `gaia_cmd`, `euclid_projection`). Read-only: a missing or stale plot cache is computed in memory (memoised per calibration + source signature); only the fit job writes `star_distribution*.json`. |
 | POST | `/api/star-distribution/activate` |  | Activate the fitted stellar candidate (local job). |
 | POST | `/api/star-distribution/fit` |  | Fit the stellar prior from the cached colour sample (local job); then persists both plot variants (with and without the training catalogue). |
 | POST | `/api/star-distribution/query` |  | Query stars (MER + PHZ + Gaia; Euclid archive login required; local job). |
-| GET | `/view/star-population-calibration` |  | Stellar calibration plate (`?format=` png, pdf or svg; `?dpi=`; `?inline=`): the shared-slope density panel (Q1 PHZ VIS counts, native Gaia G_AB counts) and the VIS − Y, Y − J, J − H colour PDFs. |
+| GET | `/view/star-population-calibration` |  | Stellar calibration plate (`?format=` png, pdf or svg; `?dpi=`; `?inline=`): the density panel (Q1 PHZ VIS counts and the Q1-normalised law; no Gaia series — only `paper_figures/build_figures.py` asks `render_star_population_calibration(include_gaia=True)` for the native Gaia G_AB counts) and the VIS − Y, Y − J, J − H colour PDFs. |
 
 ### Population comparison (`routes/population_comparison.py`)
 
@@ -838,7 +869,7 @@ changes). Local; JSON errors under `/api/provenance` (`errors.json_errors_for`).
 |---|---|---|---|
 | GET | `/api/population-comparison` |  | Pixel-statistics comparison payload (`?include_training=`). |
 | POST | `/api/population-comparison/build` |  | Build the local-field comparison (local job). |
-| POST | `/api/population-comparison/sync-training-catalog` |  | Pull `sources_train.csv` from FASRC in a local job that self-connects (`ensure_ssh_connected`) and reports failure in the job (never gated), then refresh the population census. `rebuild=1` (the Realism header's one sync action) also rebuilds the galaxy plots in the same job so their training variant exists; result `{path, size_bytes, galaxy_plots_version\|null}`. |
+| POST | `/api/population-comparison/sync-training-catalog` |  | Pull `sources_train.csv` from FASRC in a local job that self-connects (`ensure_ssh_connected`) and reports failure in the job (never gated), then refresh the population census. `rebuild=1` (the Synthetic header's one sync action) also rebuilds the galaxy plots in the same job so their training variant exists; result `{path, size_bytes, galaxy_plots_version\|null}`. |
 
 ### Archive fields (`routes/archive_fields.py`)
 
@@ -851,13 +882,13 @@ changes). Local; JSON errors under `/api/provenance` (`errors.json_errors_for`).
 
 | Methods | Path | Gate | Notes |
 |---|---|---|---|
-| GET | `/api/inference/diagnostics.json` |  | Diagnostics of the latest cached real field (`{diagnostics: {version, member_labels (the members that ran), member_scope ("gate" = the production gate's read members, "all"), n_ensemble_members, model_power{k, r_pairs, r_cross, pixel_scale_arcsec}, std_brightness{x_edges, y_edges, counts, x_label, y_label}, combiners{kind: occupancy}} \| null}`; shown by Sky › Real results › Diagnostics beside `/ensemble/evals.json?mode=starfull`). |
+| GET | `/api/inference/diagnostics.json` |  | Diagnostics of the latest cached real field (`{diagnostics: {version, member_labels (the members that ran), member_scope ("gate" = the production gate's read members, "all"), n_ensemble_members, model_power{k, r_pairs, r_cross, pixel_scale_arcsec}, std_brightness{x_edges, y_edges, counts, x_label, y_label}, combiners{kind: occupancy}} \| null}`; shown by Models › Diagnostics (real field) beside `/ensemble/evals.json?mode=starfull`). |
 | GET | `/api/inference/field.json` |  | Latest cached real field + field size. The field manifest's `member_labels` is the whole active STARFULL membership (member cubes are indexed by position in it); `run_members` / `run_member_labels` are the members that ran and `member_scope` is `"gate"` (only the production gate's read members, the default) or `"all"`; mean, std, PCA and diagnostics cover the members that ran. Manifests from before scopes lack these keys and ran every member. |
 | POST | `/inference/refresh-combiners` |  | Apply the newest STARFULL combiner to cached fields (local job). Runs only the members the production gate reads; `all_members=1` runs every active member (full member diagnostics). Member cubes already cached are reused and never deleted. |
 
 ### Ensemble (`routes/ensemble.py`)
 
-The Ensemble workspace (`/ensemble/:mode/<tab>`, spec §8.2). Every route
+The Models workspace (`/models/:mode/<tab>`, was `/ensemble/:mode/<tab>`; its data endpoints keep the `/ensemble/` prefix). Every route
 takes `mode` = `starfull` (default) | `starless` (query or form). Errors under
 `/ensemble/` are JSON `{error}` (`errors.json_errors_for`); the new endpoints
 answer `{ok:false, error}` with 400 on a bad knob. Everything is local except
@@ -895,8 +926,9 @@ answer `{ok:false, error}` with 400 on a bad knob. Everything is local except
   "used by the gate" rule's peak), used_by_gate (the production gate reads
   it, so production SR runs it)|null (no gate payload),
   coherence{overall, sr}|null, has_loss_best, size_mb}`.
-- **Variant row** (`combiners.json` `variants[]`): `{name (directory), kind:
-  gate|rbf, spec (production | gate:<x> | rbf), production, backup
+- **Variant row** (`combiners.json` `variants[]`; spatial-gate variants only —
+  the legacy RBF has no row): `{name (directory), kind: gate, spec
+  (production | gate:<x>), production, backup
   (spatial_gate_backup_*), member_labels, reads, n_members, n_reads, pruned,
   mix_space, use_lr, width, fitted_at, fingerprint, membership{current
   (every member it READS is active), missing (fitted members not active),
@@ -918,7 +950,8 @@ answer `{ok:false, error}` with 400 on a bad knob. Everything is local except
   (production only)}`.
 - **Compare report** (`scripts/fit_spatial_gate.py compare`, now
   `eval/spatial_gate_compare.py`; schema 2): `{id, created, regime, members,
-  bands, brightness_names, methods ["mean", "rbf"?, "gate:<dir>"…],
+  bands, brightness_names, methods ["mean", "gate:<dir>"…] (reports written
+  before 2026-09-27 may also hold "rbf"),
   method_labels, method_members, gates{method: selected}, n_fields{natural,
   blackout}, groups{natural|blackout: {method|member:<label>: {band_psnr[4],
   bin_mse[5], halo_mse[4], hole_mse[4]}}}, usage{gate: {labels, all_pixels,
@@ -932,19 +965,20 @@ answer `{ok:false, error}` with 400 on a bad knob. Everything is local except
 |---|---|---|---|
 | POST | `/ensemble/archive-member` |  | Retire one member (`member`: any member spelling): zip → tracking campaign, registry tombstone, member dir deleted, cube cache purged. The name is validated and must be ACTIVE before the job starts (400 `{ok:false, error}`); `{ok, job_id}`. |
 | GET | `/ensemble/combiners.json` |  | Variant registry: `{regime, production (dir), active_members, cube_members, variants:[variant row], compare:{id, created, methods, n_fields}\|null, reports:[{id, created, methods, n_fields, gates_requested}]}`. |
-| POST | `/ensemble/combiners/compare` |  | Compare job: `gates` (comma list of `spatial_gate_*` dirs or `gate:<x>`; default every variant that applies to the test cubes, backups excluded), `blackout_fields` (0–400, default 40), `seed`, `include_rbf` (the legacy RBF; default 0, the SPA never sends it), `knee` (default 1). Writes `spatial_gate_comparisons/<id>.json` + the latest `spatial_gate_comparison.json`. Job result `{report_id, methods, n_fields}`. |
+| POST | `/ensemble/combiners/compare` |  | Compare job: `gates` (comma list of `spatial_gate_*` dirs or `gate:<x>`; default every variant that applies to the test cubes, backups excluded), `blackout_fields` (0–400, default 40), `seed`, `knee` (default 1). The legacy RBF is never scored (`include_rbf` is ignored). Writes `spatial_gate_comparisons/<id>.json` + the latest `spatial_gate_comparison.json`. Job result `{report_id, methods, n_fields}`. |
 | GET | `/ensemble/combiners/compare.json` |  | One compare report (`?report=<id>`, default the latest); 404 before any compare. |
 | POST | `/ensemble/combiners/fit` |  | Fit a NAMED gate variant (job, TensorFlow): `out_name` (`spatial_gate_<x>` or `<x>`; never `spatial_gate_combiner`, never `spatial_gate_backup_*`, never `spatial_gate_comparison*` or a name ending `.json` / `_evals` (compare reports and eval sidecars share the prefix); an existing VARIANT needs `overwrite=1`, any other existing entry is refused), `mix_space` (`linear` default \| `asinh`), `loss_knees` (`all` = 11 knees 0.1–1e4 e⁻ default \| `band` \| comma list), `use_lr`, `width` (32), `steps` (2000), `batch_size` (8), `crop` (192), `learning_rate` (2e-3), `eval_every` (250), `holdout` (15), `blackout_fields` (40), `seed` (0), `members` (subset → pruned gate), `num_images` (validate fields, 100), `target_psf_fwhm_arcsec`, `compare_after` (default 1: compare with production afterwards). The validate member cubes are re-inferred when stale. `{ok, job_id, variant}`; job result `{variant, n_members, selected, report_id}`. |
 | POST | `/ensemble/combiners/promote` |  | Promote job: `variant` (dir or `gate:<x>`), `force` (required when the variant reads a member that is not active; members that joined after its fit need no force). A variant a fit is still writing, or whose `fit_meta.complete` is not true, is always refused (the job fails with the reason). Backs the current production gate up to `spatial_gate_backup_<UTC stamp>` (promote a backup to roll back), swaps the variant in, then refreshes the gate payload and — when the variant fits the cached test cubes — re-applies it and rebuilds the eval summary + knee curves (no member inference). Job result `{promoted, backup, test_rescored, summary}`. |
-| GET | `/ensemble/evals.json` |  | The Diagnostics dataset: power spectrum (+ T(k)), coherence, std-vs-error, std-vs-brightness, calibration (`z_edges, pdf, stats{cover1..3, sigma_z}, field_std, field_rmse`), per-member meta (no RBF combiner-axes block since the 2026-09-27 rework; an older cached payload may still carry `combiner_feature_error`). 404 JSON before an evaluation. `?fresh=1` recomputes from the cached cubes for a same-origin request only; a cross-site request gets the cached payload as it is (no diagnostics upgrade) or 404 when none exists. |
+| GET | `/ensemble/evals.json` |  | The Diagnostics dataset: power spectrum (+ T(k)), coherence, std-vs-error, std-vs-brightness, calibration (`z_edges, pdf, stats{cover1..3, sigma_z}, field_std, field_rmse`), per-member meta (no RBF combiner-axes block since the 2026-09-27 rework; an older cached payload may still carry `combiner_feature_error`). 404 JSON before an evaluation. `?fresh=1` recomputes from the cached cubes for a same-origin request only; a cross-site request gets the cached payload as it is (no diagnostics upgrade) or 404 when none exists. Every payload names its `band` and `guides{band, psf_fwhm, read_noise, lr_scale, theta_min, vis_fwhm, rn_vis}`. `?band=Y_E\|J_E\|H_E` serves that band's payload (same schema, no member-pair spectra, plus `identity` and `stale`: computed for an earlier evaluation) from `ensemble_evals_<band>.json` — cache only, 404 in words until computed; 400 for another band. |
+| POST | `/ensemble/evals/bands` |  | Compute the Y, J and H diagnostics from the cached test cubes (local job `ensemble-band-evals`, several minutes, no model inference; one at a time: a running one's id comes back with `already_running`) → `{ok, job_id, already_running}`; 400 in words without a cached evaluation. Evaluate refreshes them too, unless every band is current. |
 | POST | `/ensemble/evaluate` |  | Evaluate the ensemble on local test records (local job; `num_images`, `mode`, `force=1` re-infers even when an identical evaluation is cached, `target_psf_fwhm_arcsec`). Archives queued since the last evaluation are applied first from the cached cubes: the production spatial gate is left byte-identical while every member it reads stays active (archiving a member it does not read keeps its fingerprint, so its outputs stay current), and is moved to `spatial_gate_backup_<UTC stamp>` (promotable again once the member is restored) when a member it reads was archived. The spatial gate is applied and scored on the test cubes by label (members that joined after its fit are skipped); the RBF needs exactly the active members. |
 | POST | `/ensemble/knee-psnr` |  | Compute PSNR-vs-knee curves (local job; `mode`). |
 | GET | `/ensemble/knee-psnr.json` |  | PSNR-vs-knee curves + integrated PSNR for every model of a regime (``?mode=``), flagged ``stale`` when the cubes or combiners changed. |
 | GET | `/ensemble/member/<name>.json` |  | One member (`member_196`, `196`, `196·psnr`): `{name, label, active, archived (tombstone row)\|null, regime, row (member row)\|null, curves{psnr, band_psnr, loss_series, train_loss, gnorm, gnorm_max, step_time}\|null, knee{knees, bands, stale, models:[this member, the mean, the combiners]}\|null, gate{stale, bands, brightness_names, usage, usage_source, by_brightness, uniform}\|null}`. 400 bad name, 404 unknown. |
 | POST | `/ensemble/member-psnr` |  | Refresh the members table's test PSNRs (asinh space). |
 | GET | `/ensemble/members.json` |  | Members tab: `{regime, members:[member row] (active, this regime), other_regime_members, archived:[{name, archived_at, zip, commit, zip_found, zip_path, campaign, size_bytes}] newest first, knee{available, stale, n_fields}, gate{available, stale, n_members}, psnr_fields, vis_psnr{metric, knee_e, n_scored}\|null, eval_subset}`. Two per-member test PSNRs, never mixed: row `psnr` (+`psnr_rank`) = the member-PSNR cache, joint 4-band asinh `psnr_stretched` over `psnr_fields` test fields; row `vis_psnr` = the last evaluation's headline metric (VIS asinh, `eval_summary.per_member_vis_psnr`, or `per_member_psnr_stretched` of a cube-recomputed summary), the Overview "Best member" number. |
-| GET | `/ensemble/overview.json` |  | Overview tab: `{regime, active_members, n_members, records_dir, eval_subset, test_present, evaluated_at, summary (eval_summary.json)\|null, headline{metric, knee_e, n_scored, production{psnr, vs_mean_db, vs_best_member_db}, mean{psnr, vs_mean_member_db}, best_member{psnr, label, mean_member_psnr}, knee{available, stale, n_fields, integration, production, production_bands, mean, best_member, best_member_label}}, checks:[{id, ok, tone, title, detail, action}] (eval vs members / records / production gate, gate vs members, knee, pending archives), production_gate{available, n_members, mix_space, fitted_at, promoted_from}}`. |
-| GET | `/ensemble/pixel-trace.json` |  | Back-trace a diagnostic heatmap cell to real image stamps (`?mode=`, `diag` = `std_err` or `bright_std`, `model`, `i`, `j`; any other `diag` is 404). |
+| GET | `/ensemble/overview.json` |  | Models › Leaderboard's status and verdict lines: `{regime, active_members, n_members, records_dir, eval_subset, test_present, evaluated_at, summary (eval_summary.json)\|null, headline{metric, knee_e, n_scored, production{psnr, vs_mean_db, vs_best_member_db}, mean{psnr, vs_mean_member_db}, best_member{psnr, label, mean_member_psnr}, knee{available, stale, n_fields, integration, production, production_bands, mean, best_member, best_member_label}}, checks:[{id, ok, tone, title, detail, action}] (eval vs members / records / production gate, gate vs members, knee, pending archives), production_gate{available, n_members, mix_space, fitted_at, promoted_from}}`. |
+| GET | `/ensemble/pixel-trace.json` |  | Back-trace a diagnostic heatmap cell to real image stamps (`?mode=`, `diag` = `std_err` or `bright_std`, `model`, `i`, `j`, `band` = VIS (default) or Y_E/J_E/H_E: that band's back-tracing sidecar and per-pixel numbers; any other `diag` is 404, another band 400). |
 | POST | `/ensemble/pull` | fasrc | Download changed members from FASRC (local job): `members` (comma list) limits it to those; `dry_run=1` only probes — job result `{dry_run, changed, tombstoned_skipped}`; else `{local, n_members, changed, up_to_date, requested, psnr}`. |
 | POST | `/ensemble/restore-member` |  | Restore an archived member (`member`) from its tracking zip (searched in the active and every archived campaign; zip-slip refused): unzip into the ensemble dir, tombstone → active. Job result `{member, zip, regime}`. |
 | GET | `/ensemble/status.json` |  | Members table + summary payload; `?mode=` picks the regime's eval summary + staleness (default `starfull`). Home reads it; the workspace uses `members.json`. |
@@ -956,7 +990,8 @@ answer `{ok:false, error}` with 400 on a bad knob. Everything is local except
 
 | Methods | Path | Gate | Notes |
 |---|---|---|---|
-| GET, POST | `/api/evaluation/angular-power-spectrum` |  | The per-band HR-vs-SR angular power-spectrum PNG: served from its cache (`<eval_results>/angular_power_spectrum.png`), rendered when missing. `POST` re-renders → `{ok, rendered}`; `GET ?fresh=1` re-renders only for a same-origin request (a cross-site one gets the cache, or 404 when nothing is rendered yet — it never renders). 404 `{ok:false, error}` until the validation records and their SR cube exist. |
+| GET, POST | `/api/evaluation/angular-power-spectrum` |  | The per-band HR-vs-SR angular power-spectrum PNG: served from its cache (`<eval_results>/angular_power_spectrum.png`), rendered when missing. `POST` re-renders → `{ok, rendered}`; `GET ?fresh=1` re-renders only for a same-origin request (a cross-site one gets the cache, or 404 when nothing is rendered yet — it never renders). 404 `{ok:false, error}` until the validation records and their SR cube exist. Every render also writes the curves to `angular_power_spectrum.json` beside the PNG. |
+| GET | `/api/evaluation/angular-power-spectrum.json` |  | The angular power spectrum as curves (Models › Diagnostics › Recovery draws them): `{subset, n_fields, field_n, pixel_scale, lr_scale, theta_max, band_names, bands{<band>: {psf_fwhm, linear\|asinh: {theta, T, T_lo, T_hi, r, r_lo, r_hi, count}}}}` (θ = 1/2k in arcsec; per-field median and 16–84%; `null` for empty bins). Cache only: 404 in words until a render (`POST /api/evaluation/angular-power-spectrum`) wrote it. |
 | POST | `/api/evaluation/fetch-catalog` |  | Download + normalize the Euclid Q1 strong-lens catalog (Zenodo). |
 | GET | `/api/evaluation/objects/<object_id>` |  | One object's provenance card (`object_id` = `out_subdir`; `?run=` as for runs): the enriched manifest row (below) + `row` (raw), `members` (its `members.json`: `member_labels`, `combiner_kind`, `combiner_fingerprint`), `current` (the model an evaluation would load now), `disagreement` (`disagreement.json`), `files[{name, bytes, mtime}]`, `provenance` (the SR's `*.srcutoutartifact.json` sidecars, newest first: `id, created_at, produced_by, git, dirty, descriptors, file`), `sr_header` (provenance/geometry cards of `SR.fits`), `downloads{tier: /eval-files/…}`, `viewer{collection:"evaluation", id}`. 400 bad id, 404 unknown object. |
 | POST | `/api/evaluation/query-galaxies` |  | Query + cache the real-galaxy eval catalog as its own LOCAL step. |
@@ -986,12 +1021,12 @@ answer `{ok:false, error}` with 400 on a bad knob. Everything is local except
 |---|---|---|---|
 | GET | `/viewer/cube/<collection>` |  | The same cube addressed by object id: `?id=<meta object id>&tier=…` (404 unknown id, 400 without `id`). |
 | GET | `/viewer/cube/<collection>/<int:index>` |  | Raw little-endian float32 `(H, W, C)` cube of one object/tier (`?tier=` + collection params) with `X-Cube-*` headers, incl. `X-Cube-WCS` / `X-Cube-Unit` / `X-Cube-Index` (C6, see *Viewer collections*). JSON `{error}` on failure. |
-| GET | `/viewer/meta/<collection>` |  | Collection metadata: `count, tiers[{key,label,unit?,hidden?,disabled?}], default_tier, band_names, objects[{id, label, ra?, dec?, tiers?…}]`, colour constants; `?id=` adds `index`; `no-cache`. JSON `{error}` on failure (C6). |
+| GET | `/viewer/meta/<collection>` |  | Collection metadata: `count, tiers[{key,label,unit?,hidden?,disabled?,hint?}], default_tier, band_names, objects[{id, label, ra?, dec?, tiers?…}]`, colour constants; `?id=` adds `index`; `no-cache`. JSON `{error}` on failure (C6). |
 | GET, POST | `/viewer/results` |  | GET: `{schema_version, axis_defaults, limits{max_results, max_rows}, supported{logical_tiers, modes, transfer, dpi}, results:[summary]}` newest first. POST: save a crop/result (JSON or form; *Saved viewer results* below) → 201 `{id, result_id, result: summary}`. |
 | GET | `/viewer/results/<result_id>` |  | `{result: summary}`. |
 | GET | `/viewer/results/<result_id>/<logical>.fits` |  | Download one saved crop (`dirty`, `sr`, `hr`, `jwst`; checksum-verified; attachment). 400 bad tier, 404 absent, 409 checksum mismatch. |
 | POST | `/viewer/results/<result_id>/delete` |  | Delete one saved result (and drop it from every grid layout): `{ok, id}`; 404 unknown. |
-| GET | `/viewer/results/<result_id>/panel.png` |  | PNG panel of one saved result: `tier` + `mode` (both empty = the result's `thumbnail` recipe), `size` (8–2048 px thumbnail side; downsampled, never upsampled). Content-addressed `ETag` (`If-None-Match` → 304 without a render). |
+| GET | `/viewer/results/<result_id>/panel.png` |  | PNG panel of one saved result: `tier` + `mode` (`VIS` \| `Y_E` \| `J_E` \| `H_E` — one band in grey —, `VIS_H` — VIS azure + H_E amber — or `native`, a JWST tile's one band; 400 for any other mode; both empty = the result's `thumbnail` recipe), `size` (8–2048 px thumbnail side; downsampled, never upsampled). Content-addressed `ETag` (`If-None-Match` → 304 without a render). |
 | POST | `/viewer/results/<result_id>/rename` |  | Set the user `label` (JSON or form; ≤ 120 chars, no control characters; empty = back to the default label): `{ok, result: summary}`. The id does not change. |
 | GET | `/viewer/results/grid.<output_format>` |  | Publication grid of saved results (`result`, `row`, `dpi`, `missing`): results are the columns, recipes the rows, square cells on A4 with the row titles sized to their text (horizontal beside the cells when the page has the width, else rotated), the table centred across the page and hung from the top, titles 7–10 pt. `missing=refuse` (default) answers 400 unless every result supports every row; `missing=blank` draws every available cell and a grey "Not available" cell in place of each missing one (400 when no cell is available). |
 | GET, POST | `/viewer/grid-layouts` |  | Named figure-grid layouts (`<results root>/grid_layouts.json`). GET: `{layouts:[{id "gl-<12 hex>", name, results:[ids], rows:["tier:mode"], regime, created_utc, updated_utc}]}` newest first. POST (JSON or form; `results`/`rows` lists or comma strings): `{name, results, rows, regime?, id?}` — updates `id`, else the layout with the same name (any case), else creates one (201): `{ok, layout, created}`. 400 unknown result / bad recipe / > 12 results / > 16 rows; 409 at 200 layouts. |
@@ -1018,7 +1053,7 @@ answer `{ok:false, error}` with 400 on a bad knob. Everything is local except
   pixscale_arcsec, recipes:["tier:mode"], recipe_options:[{tier, mode, key, label}], thumbnail
   ("tier:mode"|null), files{logical:{filename, shape_hwc, bands, pixscale_arcsec, source_tier,
   source_label, display_scale, direct_rgb, transfer_group, wcs}}, bytes, inspect_paths{logical:
-  project-relative FITS path for /inspect}, display, wcs_preserved (every tier has a WCS),
+  project-relative FITS path for /files}, display, wcs_preserved (every tier has a WCS),
   wcs_tiers, center{ra, dec}|null}`. Bundles saved before these fields list with `wcs: false`,
   `center: null`.
 
@@ -1029,6 +1064,7 @@ answer `{ok:false, error}` with 400 on a bad knob. Everything is local except
 | GET | `/poster/result/cutout.fits` |  | The last pulled `poster_cutout` FITS (attachment; local FASRC-cache copy, works offline). 404 `{ok:false, error}` before the first pull. |
 | GET | `/poster/result/cutout.png` |  | The last pulled `poster_cutout` preview PNG (local copy). 404 before the first pull. |
 | POST | `/poster/result/pull` | fasrc | Pull the latest `poster_cutout` PNG + FITS from `$DATA/_poster/` (force, bypassing the fetch TTL) and archive a changed PNG into `data/vis/poster/poster_cutout_<ts>.png`: `{ok, png{size, mtime, pulled_at}\|null, fits…, archived (path)\|null, errors{kind: msg}}`; 404 when neither exists remotely. |
+| GET | `/poster/result/export` |  | The pulled scene PNG for print: `?format=` png, pdf or svg, `?dpi=` 150, 300 or 600 (the dpi sets the printed size — PNG `pHYs`, a PDF page, an SVG in inches; the pixels stay the node's render). Attachment `poster_cutout_<dpi>dpi.<format>`; 404 before a pull, 400 otherwise. |
 | GET | `/poster/result/status` |  | Local state of the last pull: `{ok, available, png{size, mtime, pulled_at}\|null, fits…, archive_dir}`. |
 
 ### Figures (`routes/figures.py`, `helpers/nexus_plates.py`)
@@ -1048,6 +1084,9 @@ the same helper.
 
 | Methods | Path | Gate | Notes |
 |---|---|---|---|
-| GET, POST | `/api/figures/nexus-plates` |  | GET: `{root, runs:[{tag, updated, renders:[render record \| legacy {band, model:null, legacy:true, model_label, sheet, tiles…} (a legacy tile's `id`/`ref` are resolved from its NEXUS tile number, the run's field first; `null` when no cached tile has that number)], files:[{name, size, kind: tile\|sheet, band, tile_index, model_slug}]}], bands, defaults{tiles, band, max_tiles}}` newest first. POST (form or JSON): `tiles` (comma list of NEXUS tile numbers, `f200w-NNNN` ids or `nexus/…` refs; ≤ 24), `band` (default `VIS`), `model` (a C9 spec, default `production`), `tag` (default `<model slug>-<YYYYMMDD>`) → local job `figure-nexus-plates` `{ok, job_id, tag, band, model, tiles}`; validated before the job: 400 bad band / tag / spec, or `{ok:false, error, missing:[ids]}` when the spec has no output on some tiles (run it in Sky › Experiments), 404 unknown tile. Job result `{tag, band, model, sheet, tiles}`. The contact sheet's dpi drops below 200 for long runs so its canvas stays ≤ 10 Mpx. |
+| GET, POST | `/api/figures/nexus-plates` |  | GET: `{root, runs:[{tag, updated, renders:[render record \| legacy {band, model:null, legacy:true, model_label, sheet, tiles…} (a legacy tile's `id`/`ref` are resolved from its NEXUS tile number, the run's field first; `null` when no cached tile has that number)], files:[{name, size, kind: tile\|sheet, band, tile_index, model_slug}]}], bands, defaults{tiles, band, max_tiles}}` newest first. POST (form or JSON): `tiles` (comma list of NEXUS tile numbers, `f200w-NNNN` ids or `nexus/…` refs; ≤ 24), `band` (default `VIS`), `model` (a C9 spec, default `production`), `tag` (default `<model slug>-<YYYYMMDD>`) → local job `figure-nexus-plates` `{ok, job_id, tag, band, model, tiles}`; validated before the job: 400 bad band / tag / spec, or `{ok:false, error, missing:[ids]}` when the spec has no output on some tiles (run it in Sky › Compare), 404 unknown tile. Job result `{tag, band, model, sheet, tiles}`. The contact sheet's dpi drops below 200 for long runs so its canvas stays ≤ 10 Mpx. |
 | GET | `/api/figures/nexus-plates/<tag>/<name>` |  | One plate PNG of a run (`?download=1` attachment; `?thumb=<px>` a JPEG preview, longest side 64–1600 px, memoised). 404 outside the run's plate files. |
+| GET | `/api/figures/nexus-plates/<tag>/export` |  | One rendered run re-drawn for download from the cached tile outputs (read-only): its contact sheet, or `?tile=<N>` that tile's plate, for the render `?band=` + `?model=`, at `?dpi=` 150, 300 or 600 as `?format=` png, pdf or svg. A long sheet's dpi drops to stay under 40 Mpx (`X-Plate-Dpi` and the file name carry the dpi used). 404 for an unknown run / render / tile or a legacy run without `plates.json`; 409 when the model's outputs changed since the render (render the run again); 400 for another format or dpi. |
 | POST | `/api/figures/nexus-plates/<tag>/delete` |  | Delete one run directory: `{ok, tag}`; 404 unknown. |
+| GET | `/api/figures/real-sr` |  | The newest cached production SRs of real tiles (the C9 output store only; Home's thumbnail strip): `{total, items:[{ref, source, id, source_label, label, created, state: current\|stale\|unavailable, thumb}]}` newest first; `?limit=` 0–24 (default 6; 400 when not an integer). Read-only: never runs a model. |
+| GET | `/api/figures/real-sr/<source>/<identifier>.jpg` |  | Colour JPEG preview (the viewer's Temp rendering) of one cached production SR, longest side `?size=` 64–640 (default 240), memoised per file state; 404 when the tile has no cached production SR, 400 for a bad id or size. |

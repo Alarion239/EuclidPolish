@@ -59,7 +59,7 @@ export function useShowOnSky(): (o: { view?: View; overlays?: readonly PixelOver
   }, [navigate, location.pathname, location.search]);
 }
 
-/** "Compare models…" handoff to Sky › Experiments: exactly these tiles. The
+/** "Compare models…" handoff to Sky › Compare: exactly these tiles. The
  *  `tile` selection scope is REPLACED (an earlier pick never leaks into a
  *  one-tile comparison) and `?tiles=<ref,…>` carries the same refs, so the
  *  link also works on a fresh load. */

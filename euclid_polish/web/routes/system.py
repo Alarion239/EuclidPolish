@@ -1,4 +1,4 @@
-"""System facts and the Home health checks (Settings › About, Home).
+"""System facts and the Home health checks (System › Code and Storage, Home).
 
 ``GET /api/system``
     The runtime (Python, platform, key package versions, Node when it is on
@@ -54,7 +54,7 @@ from euclid_polish.image.tfio import tfrecord_path
 from euclid_polish.provenance.defaults import default_store as provenance_store
 from euclid_polish.tracking.store import TrackingStore
 from euclid_polish.web import errors
-from euclid_polish.web.helpers import experiments, model_catalog, sky_atlas
+from euclid_polish.web.helpers import experiments, model_catalog, sky_atlas, system_alerts
 from euclid_polish.web.helpers.ensemble_viz import knee_psnr_status
 from euclid_polish.web.helpers.paths import _sky_records_local_dir
 from euclid_polish.web.jobs import REGISTRY
@@ -378,7 +378,7 @@ def system_payload() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def records_dir() -> str:
-    """The local mirror of the synthetic TFRecords (the Data › Records source)."""
+    """The local mirror of the synthetic TFRecords (the Synthetic › Records source)."""
     return _sky_records_local_dir()
 
 
@@ -394,7 +394,7 @@ def check_disk() -> dict[str, Any]:
     detail = (f"Experiments refuse to start when fewer than {_gib(experiments.MIN_FREE_BYTES)} "
               f"would stay free; the member-SR cache stops writing below "
               f"{_gib(experiments.MIN_FREE_BYTES + experiments.MEMBER_CACHE_BUDGET_BYTES)}.")
-    return {"state": disk["level"], "title": title, "detail": detail, "to": "/settings/about",
+    return {"state": disk["level"], "title": title, "detail": detail, "to": "/system/storage",
             "facts": {"free_bytes": disk["free_bytes"], "total_bytes": disk["total_bytes"]}}
 
 
@@ -430,14 +430,14 @@ def check_real_sr() -> dict[str, Any]:
         return {"state": "warn",
                 "title": f"{totals['stale']} real SR products are stale",
                 "detail": (f"{worst}: made by an older model than the production gate. "
-                           "Rerun the production model on them from Sky › Experiments."),
-                "to": "/sky/results", "facts": facts}
+                           "Rerun the production model on them from Sky › Targets."),
+                "to": "/sky/targets", "facts": facts}
     if totals["current"]:
         return {"state": "ok", "title": f"All {totals['current']} real production SRs are current",
-                "detail": None, "to": "/sky/results", "facts": facts}
+                "detail": None, "to": "/sky/targets", "facts": facts}
     return {"state": "ok", "title": "No real production SRs yet",
-            "detail": "Run the production model on real tiles from Sky › Experiments.",
-            "to": "/sky/results", "facts": facts}
+            "detail": "Run the production model on real tiles from Sky › Targets.",
+            "to": "/sky/targets", "facts": facts}
 
 
 def check_combiner() -> dict[str, Any]:
@@ -446,13 +446,13 @@ def check_combiner() -> dict[str, Any]:
                        if spec.spec == model_catalog.SPEC_PRODUCTION), None)
     if production is None:
         return {"state": "unknown", "title": "No production model in the catalogue",
-                "detail": None, "to": "/ensemble/starfull/combiners"}
+                "detail": None, "to": "/models/starfull/combiner"}
     if production.available:
         n = len(production.member_labels)
         return {"state": "ok", "title": f"Production gate fitted for the current {n} members",
-                "detail": None, "to": "/ensemble/starfull/combiners", "facts": {"members": n}}
+                "detail": None, "to": "/models/starfull/combiner", "facts": {"members": n}}
     return {"state": "warn", "title": "The production gate does not match the members",
-            "detail": production.reason, "to": "/ensemble/starfull/combiners"}
+            "detail": production.reason, "to": "/models/starfull/combiner"}
 
 
 _EVALUATE_ACTION = {
@@ -492,7 +492,7 @@ def check_evaluation() -> dict[str, Any]:
     if not isinstance(summary, dict):
         return {"state": "warn", "title": "The STARFULL ensemble is not evaluated yet",
                 "detail": "Evaluate it on the local test records to get the production numbers.",
-                "to": "/ensemble/starfull/overview", "action": _EVALUATE_ACTION}
+                "to": "/models/starfull/leaderboard", "action": _EVALUATE_ACTION}
     recorded = [str(x) for x in (summary.get("member_labels")
                                  or summary.get("per_member_labels") or [])]
     active = model_catalog.active_member_labels()
@@ -507,7 +507,7 @@ def check_evaluation() -> dict[str, Any]:
         return {"state": "warn", "title": "The evaluation predates the current members",
                 "detail": (f"Evaluated {len(recorded)} members; {len(active)} are active now"
                            f"{f' ({change})' if change else ''}."),
-                "to": "/ensemble/starfull/overview", "action": _EVALUATE_ACTION, "facts": facts}
+                "to": "/models/starfull/leaderboard", "action": _EVALUATE_ACTION, "facts": facts}
     identity = summary.get("eval_identity") or {}
     subset = str(identity.get("subset") or "test")
     match = (_records_match(identity["records_fp"], records_dir(), subset)
@@ -516,11 +516,11 @@ def check_evaluation() -> dict[str, Any]:
         return {"state": "warn", "title": "The evaluation predates the current test records",
                 "detail": (f"The {subset} records changed since the evaluation "
                            f"({evaluated_at[:10]}); its numbers describe the old fields."),
-                "to": "/ensemble/starfull/overview", "action": _EVALUATE_ACTION, "facts": facts}
+                "to": "/models/starfull/leaderboard", "action": _EVALUATE_ACTION, "facts": facts}
     return {"state": "ok",
             "title": f"Evaluation current ({len(active)} members, {subset} records)",
             "detail": None if match else "The test records could not be compared.",
-            "to": "/ensemble/starfull/overview", "facts": facts}
+            "to": "/models/starfull/leaderboard", "facts": facts}
 
 
 def starless_member_labels() -> list[str]:
@@ -560,13 +560,13 @@ def check_knee() -> dict[str, Any]:
               "confirm": "Recompute the PSNR-vs-knee curves from the cached test cubes?"}
     if not status.get("available"):
         return {"state": "warn", "title": "PSNR-vs-knee curves not computed",
-                "detail": status.get("reason"), "to": "/ensemble/starfull/knee", "action": action}
+                "detail": status.get("reason"), "to": "/models/starfull/leaderboard", "action": action}
     if status.get("stale"):
         return {"state": "warn", "title": "PSNR-vs-knee curves are stale",
                 "detail": "The cubes, members or combiners changed since they were computed.",
-                "to": "/ensemble/starfull/knee", "action": action}
+                "to": "/models/starfull/leaderboard", "action": action}
     return {"state": "ok", "title": "PSNR-vs-knee curves current", "detail": None,
-            "to": "/ensemble/starfull/knee"}
+            "to": "/models/starfull/leaderboard"}
 
 
 def _find_noise_model(value: Any) -> str | None:
@@ -615,7 +615,7 @@ def check_records_noise() -> dict[str, Any]:
     files = sorted(Path(rdir).glob("dirty_*.tfrecord")) if rdir and os.path.isdir(rdir) else []
     if not files:
         return {"state": "unknown", "title": "No local training records",
-                "detail": "Sync the records from FASRC in Data › Records.", "to": "/data/records"}
+                "detail": "Sync the records from FASRC in Synthetic › Records.", "to": "/synthetic/records"}
     seen = {path.stem: record_noise_model(str(path)) for path in files}
     wrong = {name: model for name, model in seen.items() if model and model != Config.NOISE_MODEL}
     facts = {"records": seen, "noise_model": Config.NOISE_MODEL}
@@ -623,17 +623,17 @@ def check_records_noise() -> dict[str, Any]:
         listed = "; ".join(f"{name}: {model}" for name, model in wrong.items())
         return {"state": "bad", "title": "Training records use an older noise model",
                 "detail": (f"{listed} — the code uses {Config.NOISE_MODEL}. Regenerate these "
-                           "splits (Data › Records › synthetic_generate)."),
-                "to": "/data/records", "facts": facts}
+                           "splits (Synthetic › Records › synthetic_generate)."),
+                "to": "/synthetic/records", "facts": facts}
     if all(model is None for model in seen.values()):
         return {"state": "unknown", "title": "Noise model of the local records unverified",
                 "detail": ("The generation run's provenance is not in the local store (the "
                            "records were generated on FASRC). Only the local splits are "
                            "examined — FASRC-only splits such as dirty_train/hr_train are "
                            "not checked here."),
-                "to": "/data/records", "facts": {**facts, "local_only": True}}
+                "to": "/synthetic/records", "facts": {**facts, "local_only": True}}
     return {"state": "ok", "title": f"Records match {Config.NOISE_MODEL}",
-            "detail": None, "to": "/data/records", "facts": facts}
+            "detail": None, "to": "/synthetic/records", "facts": facts}
 
 
 _HEADING = re.compile(
@@ -681,7 +681,7 @@ def check_tracking() -> dict[str, Any]:
     last = last_log_entry(text)
     if last is None:
         return {"state": "unknown", "title": "No tracking log entries",
-                "detail": "Start a campaign and log results in Ops › Tracking.", "to": "/ops/tracking"}
+                "detail": "Start a campaign and log results in Notebook › Log.", "to": "/notebook/log"}
     cutoff = last.timestamp() + TRACKING_LAG_S
     newer = sorted(((label, mtime) for label, mtime in _tracked_results() if mtime > cutoff),
                    key=lambda item: item[1], reverse=True)
@@ -693,10 +693,10 @@ def check_tracking() -> dict[str, Any]:
         listed = ", ".join(f"{label} {datetime.fromtimestamp(mtime, UTC).date().isoformat()}"
                            for label, mtime in newer)
         return {"state": "warn", "title": f"Results since the last tracking entry ({day})",
-                "detail": f"{listed} — log them in Ops › Tracking.", "to": "/ops/tracking",
+                "detail": f"{listed} — log them in Notebook › Log.", "to": "/notebook/log",
                 "facts": facts}
     return {"state": "ok", "title": f"Tracking log up to date (last entry {day})", "detail": None,
-            "to": "/ops/tracking", "facts": facts}
+            "to": "/notebook/log", "facts": facts}
 
 
 CHECK_LABELS = {
@@ -784,3 +784,12 @@ def register(app):
     def api_system_alerts():
         """The Home health checks (memoised; ``?fresh=1`` recomputes)."""
         return jsonify(alerts_payload(fresh=_truthy(request.args.get("fresh"))))
+
+    @app.get("/api/system/loop")
+    def api_system_loop():
+        """The staleness service: one verdict per Loop stage (Home's Loop
+        strip and System › Lineage). Memoised; ``?fresh=1`` recomputes it
+        and the alerts it reads. Read-only: never starts a job."""
+        fresh = _truthy(request.args.get("fresh"))
+        return jsonify(system_alerts.loop_payload(
+            alerts=lambda: alerts_payload(fresh=fresh), check_records_noise=check_records_noise, fresh=fresh))

@@ -4,18 +4,18 @@
  * default-exports the workspace component. It declares its tabs once, as lazy
  * modules `./tabs/<Tab>.tsx`, and renders <Workspace>:
  *
- *   const TABS = defineTabs("realism", {
- *     overview: { load: () => import("./tabs/Overview") },
- *     noise:    { load: () => import("./tabs/Noise") },
+ *   const TABS = defineTabs("synthetic", {
+ *     status: { load: () => import("./tabs/Status") },
+ *     noise:  { load: () => import("./tabs/Noise") },
  *     …                                   // exactly the manifest's tabs
  *   });
- *   export default function Realism() { return <Workspace id="realism" tabs={TABS} />; }
+ *   export default function Synthetic() { return <Workspace id="synthetic" tabs={TABS} />; }
  *
  * <Workspace> validates the URL against the manifest (`/sky/unknown`,
- * `/ensemble/foo` → Not found), redirects a bare workspace path to its default
+ * `/models/foo` → Not found), redirects a bare workspace path to its default
  * tab (or `redirectTab`; query and hash kept), renders the router-linked tab
  * strip (<WorkspaceTabs>) and the active tab inside a per-tab error boundary
- * and a Suspense skeleton, under a visually hidden h1 ("Members — Ensemble
+ * and a Suspense skeleton, under a visually hidden h1 ("Members, Models
  * (starless)"; dropped by CSS when the page has its own h1, e.g. a PageHead).
  * The strip stays one line and never cuts a label: a fixed run of leading
  * tabs is shown whole, the active tab is always visible (in one reserved

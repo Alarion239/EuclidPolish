@@ -43,7 +43,7 @@ warp seed), `setMorphMembers(csv | null)`, `getIndex()`, `isReady()`,
 step, landing on an integer device-pixel magnification; out past the
 smallest view fits the image — the + / − keys), `setTool("lens" | "profile"
 | "none")` (the magnifier, the profile panel, or pan and zoom), `setFocus(on)`,
-`getReadout()`, `destroy()`. Realism › Visual's shared row drives both of its
+`getReadout()`, `destroy()`. Synthetic › Fields (look)'s shared row drives both of its
 viewers through `zoomBy` and `setTool`.
 
 ## Look: one light table

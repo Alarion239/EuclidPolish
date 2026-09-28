@@ -49,14 +49,14 @@ import { viewerTakesEscape } from "./viewerEscape";
 import "./shell.css";
 // Workspace inspector kinds register at app start (their components are
 // lazy chunks), so a cold `?inspect=<kind>:<id>` link opens from any page.
-import "../workspaces/data/register";
-import "../workspaces/ensemble/register";
 import "../workspaces/figures/register";
-import "../workspaces/inspect/register";
-import "../workspaces/ops/register";
-import "../workspaces/realism/register";
+import "../workspaces/files/register";
+import "../workspaces/models/register";
+import "../workspaces/notebook/register";
 import "../workspaces/sky/atlas/inspectors/register";
 import "../workspaces/sky/results/register";
+import "../workspaces/synthetic/register";
+import "../workspaces/system/register";
 
 /* Built-in inspector kinds (workspaces register theirs when they load). */
 registerInspector("job", JobInspector, { title: jobTitle });

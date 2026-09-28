@@ -1,4 +1,4 @@
-"""Provenance lineage index for the Ops › Provenance browser.
+"""Provenance lineage index for the System › Lineage browser.
 
 Truth lives on disk as one ``<id8>.<kind>.json`` sidecar per object (the
 :mod:`euclid_polish.provenance` records), in ``data/_prov`` and next to the

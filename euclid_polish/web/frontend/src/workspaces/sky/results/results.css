@@ -1,8 +1,7 @@
-/* Sky › Real results / Experiments / Catalog eval + the realtile and
-   experiment inspector cards. Scoped by .res-* classes; every colour is a
+/* Sky › Targets / Compare + the real-tile and comparison inspector cards
+   (shared pieces). Scoped by .res-* classes; every colour is a
    token; layouts collapse by their container's width (the user's pane is
    often ~720 px). */
-
 .res-page { container: res-page / inline-size; display: flex; flex-direction: column; gap: var(--s3); }
 
 /* the tab's toolbar: at the top of the page, scrolls with it (nothing pins above the images) */
@@ -15,17 +14,8 @@
 .res-bar--inline {
   position: static; box-shadow: none; border: 0; padding: 0; background: transparent;
 }
-.res-bar__group { display: flex; flex-wrap: wrap; gap: var(--s1); min-width: 0; }
 .res-bar__spacer { flex: 1 1 0; min-width: 0; }
-.res-bar__sel { font-size: var(--fs-xs); color: var(--text-dim); white-space: nowrap; }
 .res-bar .ui-field { min-width: 0; }
-
-.res-summary {
-  display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2) var(--s4);
-  font-size: var(--fs-sm); color: var(--text-dim);
-}
-.res-summary > span { display: inline-flex; flex-wrap: wrap; align-items: center; gap: var(--s1); }
-
 .res-note { font-size: var(--fs-xs); color: var(--text-dim); margin: 0; }
 .res-ellipsis { display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
 .res-chips { display: inline-flex; flex-wrap: wrap; align-items: center; gap: var(--s1); }
@@ -33,22 +23,35 @@
 .res-pos { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 2px var(--s2); }
 
 /* ── inspector cards ─────────────────────────────────────────────────── */
-/* The real-tile card: the viewer is its first child, so it gets the whole
-   inspector height (the fit measures the inspector's scroll box); the state
-   line and the actions follow right under the images. */
+/* The real-tile card: the viewer is its first child; the Δm footer, the
+   status sentence and the two headline numbers follow right under it. The
+   viewer fits its frames to its scroll box's height, so it sits in a stage
+   of its own, capped, so those numbers are in the first screen too. */
 .res-card { display: flex; flex-direction: column; gap: var(--s3); min-width: 0; }
-.res-card__status, .res-card__actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s1); }
-.res-card__actions { gap: var(--s2); }
-.res-card__viewer { min-width: 0; }
+.res-card__actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); }
+.res-card__viewer { min-width: 0; display: flex; flex-direction: column; gap: var(--s1); }
+/* capped; results/snugStage.ts sets --res-stage-h when width-limited frames are shorter */
+.res-card__stage { min-width: 0; height: var(--res-stage-h, min(56vh, 520px)); overflow-y: auto; }
+/* under the images: the shown model's VIS Δm against the LR, and "Open large" */
+.res-card__foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s1) var(--s2); font-size: var(--fs-sm); }
+.res-card__delta { color: var(--text-dim); }
+.res-card__delta .mono { color: var(--text); }
+.res-card__delta[data-warn] .mono { color: var(--warn); font-weight: var(--fw-semibold); }
+.res-card__sentence { margin: 0; font-size: var(--fs-md); line-height: 1.45; }
+.res-card__details { font-size: var(--fs-sm); }
+/* the danger zone: alone at the foot of the card */
+.res-danger {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s2);
+  padding: var(--s2) var(--s3); border: 1px solid var(--bad); border-radius: var(--r-md);
+}
+.res-danger .res-note { flex: 1 1 200px; }
 .res-card .ui-section + .ui-section { margin-top: 0; }
 
 /* overlay the tile's pixels on the sky (atlas/inspectors/overlay.tsx) */
 .res-overlay { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--s2); }
 .res-overlay .ui-field { flex: 1 1 110px; min-width: 0; }
 
-/* metric definitions: readable text, not only tooltips */
-.res-metricnote { margin-top: var(--s2); line-height: var(--lh-base, 1.45); }
-.res-metricnote strong { color: var(--text); font-weight: var(--fw-semibold); }
+/* metric definitions (Sky › Compare's info popover): readable text, not only tooltips */
 .res-defs { margin: 0; display: grid; gap: var(--s2); font-size: var(--fs-sm); }
 .res-defs__row { display: grid; grid-template-columns: minmax(8rem, 12rem) minmax(0, 1fr); gap: var(--s1) var(--s3); }
 .res-defs dt { font-weight: var(--fw-semibold); color: var(--text); }
@@ -96,65 +99,29 @@
 .res-models__item[data-unavailable] .res-models__detail { color: var(--warn); }
 .res-models__filter { max-width: 220px; }
 .res-models[data-compact] .res-models__grid { max-height: 180px; overflow-y: auto; }
-
 .res-run { display: flex; flex-direction: column; gap: var(--s3); max-height: min(70vh, 560px); overflow-y: auto; }
-.res-run__foot, .res-form__foot { display: flex; align-items: center; justify-content: flex-end; gap: var(--s2); }
+.res-run__foot { display: flex; align-items: center; justify-content: flex-end; gap: var(--s2); }
 .res-run__foot .ui-input { flex: 1; min-width: 0; }
 .res-form { display: flex; flex-direction: column; gap: var(--s3); }
 
-/* ── experiments ─────────────────────────────────────────────────────── */
-/* The picked experiment is the top of the page: head, tile picker, viewer. */
-.res-exp-top:empty { display: none; }
-.res-exp-detail { display: flex; flex-direction: column; gap: var(--s3); min-width: 0; }
-.res-exp { display: flex; flex-direction: column; gap: var(--s3); min-width: 0; }
-/* One line at the native width: the title takes the room left and ellipsizes,
-   the scope select shrinks, the actions never split (the ⋯ menu stays with
-   "Log to tracking"). Below ~520 px the actions wrap as one group. */
-.res-exp__head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); }
+/* ── comparisons (Sky › Compare's New-comparison drawer, the comparison card) ── */
 .res-exp__title { flex: 1 1 0; font-size: var(--fs-md); min-width: 6ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.res-exp__scope { flex: 0 1 240px; min-width: 120px; }
-.res-exp__actions { display: flex; flex-wrap: nowrap; align-items: center; gap: var(--s1); margin-left: auto; }
-/* a sentence-case inline label beside its control (not the kit's mono field eyebrow) */
-.res-inline { display: inline-flex; align-items: center; gap: 6px; }
-.res-inline__label { font-size: var(--fs-xs); color: var(--text-dim); }
-.res-exp__viewer { min-width: 0; }
-.res-new__cost { flex: 1 1 260px; min-width: 0; }
-.res-metrics { display: flex; flex-direction: column; gap: var(--s3); min-width: 0; }
-.res-metrics__chart { display: flex; flex-direction: column; gap: var(--s2); min-width: 0; }
-
-.res-split { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s3); }
 .res-new { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: var(--s4); }
 .res-new__tiles { display: flex; flex-direction: column; gap: var(--s2); min-width: 0; }
 .res-new__foot { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); grid-column: 1 / -1; }
 .res-new__foot .ui-input { flex: 1 1 200px; min-width: 0; max-width: 360px; }
+.res-new__cost { flex: 1 1 260px; min-width: 0; }
 .res-tilelist { display: flex; flex-wrap: wrap; gap: var(--s1); max-height: 160px; overflow-y: auto; }
 
-/* ── catalogue evaluation ────────────────────────────────────────────── */
-/* image first: the viewer is the first column (wide) or the top of the page
-   (narrow) and ends its frames at the fold by itself (it fits under its own
-   top); the actions, the table filters and the table follow (beside it when
-   wide). Not sticky. */
-.res-eval { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: var(--s4); align-items: start; }
-.res-eval__viewer { min-width: 0; }
-.res-eval__actions { row-gap: var(--s1); }
-.res-eval__list { display: flex; flex-direction: column; gap: var(--s3); min-width: 0; }
-.res-figs { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: var(--s4); }
-.res-fig { display: flex; flex-direction: column; gap: var(--s2); min-width: 0; }
-.res-fig__img { max-width: 100%; height: auto; border-radius: var(--r-md); background: var(--surface-2); }
-.res-ident { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px var(--s2); font-size: var(--fs-sm); color: var(--text-dim); }
-
-/* narrow panes: toolbars wrap (above), grids collapse */
-@container res-page (max-width: 1100px) {
-  .res-eval { grid-template-columns: minmax(0, 1fr); gap: var(--s3); }
-}
+/* narrow panes: toolbars wrap, the drawer's two columns stack */
 @container res-page (max-width: 760px) {
   .res-new { grid-template-columns: minmax(0, 1fr); }
   .res-bar { padding: var(--s2); }
 }
 
-/* Real results key columns, two short lines each so Tile + RA / Dec +
-   Production fit the inspector-open table (columns.tsx): the tile id over its
-   JWST badge, RA over Dec (tabular mono, right-aligned like the header) */
+/* Sky › Targets key cells, two short lines each so Target + State + Flux fit
+   the table the tile card leaves (targets/columns.tsx): the id over its JWST
+   badge, RA over Dec (tabular mono, right-aligned like the header) */
 .res-tilecell {
   display: inline-flex; flex-direction: column; align-items: flex-start; gap: 1px;
   min-width: 0; max-width: 100%; vertical-align: middle; font-size: var(--fs-sm); line-height: 1.2;
@@ -163,16 +130,3 @@
   display: inline-flex; flex-direction: column; align-items: flex-end; vertical-align: middle;
   font: var(--fs-sm)/1.2 var(--font-mono); font-variant-numeric: tabular-nums;
 }
-@container res-page (max-width: 1100px) {
-  /* stacked: a short list right under the viewer keeps both within reach */
-  .res-eval__list .ui-dt__scroll { max-height: min(48vh, 520px) !important; }
-}
-
-/* ── real-field diagnostics (Real results) ───────────────────────────── */
-.res-diag { container: res-diag / inline-size; }
-.res-diag .ui-section__head { flex-wrap: wrap; row-gap: var(--s1); }
-.res-diag__pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s3); }
-@container res-diag (max-width: 640px) { .res-diag__pair { grid-template-columns: minmax(0, 1fr); } }
-.res-diag__side, .res-diag__block { min-width: 0; display: flex; flex-direction: column; gap: var(--s1); }
-.res-diag__block + .res-diag__block { margin-top: var(--s3); }
-.res-diag__eyebrow { font-size: var(--fs-sm); color: var(--text-dim); font-weight: var(--fw-semibold); }

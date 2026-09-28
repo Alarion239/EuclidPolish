@@ -1,8 +1,10 @@
 /* The workspace rail (spec §4): brand, the nine workspaces from the route
- * manifest with their icons, a health-alert badge on Home (warn/bad checks
- * of /api/system/alerts), a running-jobs badge on Ops and a "restart the
- * server" badge on Settings (a loaded backend file changed on disk, C3
- * `behind`), and the collapse toggle (persisted in prefs).
+ * manifest with their icons (Home, Synthetic, Models, Sky, Figures, Files,
+ * Runs, Notebook, System), a health-alert badge on Home (warn/bad checks
+ * of /api/system/alerts), a running-jobs badge on Runs (it lands on Runs ›
+ * Live, which lists the jobs it counts) and a "restart the server" badge on
+ * System (a loaded backend file changed on disk, C3 `behind`), and the
+ * collapse toggle (persisted in prefs).
  * Below 900 px the shell shows it in a drawer instead. */
 import { Link, useLocation } from "react-router-dom";
 import { useJobsFeed } from "../api/jobs";
@@ -23,8 +25,8 @@ export function Rail({ collapsed = false, inDrawer = false, onNavigate }: {
   const toggleRail = usePrefs((s) => s.toggleRail);
   const badges: Record<string, { text: string; label: string; tone?: "warn" | "bad" } | null> = {
     home: health ? { text: String(health.count), label: health.label, tone: health.tone } : null,
-    ops: running > 0 ? { text: String(running), label: `${running} running job${running === 1 ? "" : "s"}` } : null,
-    settings: behind ? { text: "!", label: "Backend code changed — restart the server", tone: "warn" } : null,
+    runs: running > 0 ? { text: String(running), label: `${running} running job${running === 1 ? "" : "s"}` } : null,
+    system: behind ? { text: "!", label: "Backend code changed — restart the server", tone: "warn" } : null,
   };
   return (
     <nav className="rail" aria-label="Workspaces" data-collapsed={collapsed || undefined}>

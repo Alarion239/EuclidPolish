@@ -5,13 +5,18 @@ import { apiPost } from "../../api/client";
 import { invalidate } from "../../api/query";
 
 export type FigureTier = "dirty" | "sr" | "hr" | "bhr" | "jwst";
-export type FigureMode = "VIS" | "H_E" | "VIS_H" | "native";
+/** One band in grey (VIS, Y_E, J_E, H_E), the VIS + H_E false colour, or a
+ *  tier's own colour (`native`: NEXUS F200W). Y_E / J_E rows appear once the
+ *  backend lists them in `supported.modes`. */
+export type FigureMode = "VIS" | "Y_E" | "J_E" | "H_E" | "VIS_H" | "native";
 export type FigureRegime = "real" | "synthetic";
 export type RecipeKey = `${FigureTier}:${FigureMode}`;
 
 export type SavedObject = {
   label?: string; id?: string; ref?: string; field?: string; ra?: number; dec?: number;
   grade?: string | number | null; subdir?: string | null; tiers?: string[];
+  /** The star regime the object was viewed in (evaluation stamps). */
+  regime?: string; mode?: string;
 };
 
 export type SavedSource = {
@@ -146,6 +151,23 @@ export function plateFileUrl(tag: string, name: string, opts: { thumb?: number; 
   const s = q.toString();
   return `/api/figures/nexus-plates/${encodeURIComponent(tag)}/${encodeURIComponent(name)}${s ? `?${s}` : ""}`;
 }
+
+export type PlateFormat = "png" | "pdf" | "svg";
+/** The print resolutions every plate offers. */
+export const PLATE_DPIS = [150, 300, 600] as const;
+
+/** One rendered NEXUS run re-drawn for download: its contact sheet (or one
+ *  tile's plate) at `dpi` as PNG / PDF / SVG, from the cached tile outputs. */
+export function plateExportUrl(tag: string, render: { band: string; model: string | null }, format: PlateFormat, dpi: number,
+  tile?: number): string {
+  const q = new URLSearchParams({ band: render.band, model: render.model ?? "", format, dpi: String(dpi) });
+  if (tile != null) q.set("tile", String(tile));
+  return `/api/figures/nexus-plates/${encodeURIComponent(tag)}/export?${q.toString()}`;
+}
+
+/** The pulled poster scene for print: the dpi sets the printed size. */
+export const posterExportUrl = (format: PlateFormat, dpi: number) =>
+  `/poster/result/export?${new URLSearchParams({ format, dpi: String(dpi) }).toString()}`;
 
 /* ─── mutations ───────────────────────────────────────────────────────────── */
 

@@ -263,3 +263,46 @@ def test_endpoint_validation_is_synchronous(client):
     # a default tag is the model slug + date
     ok = http.post("/api/figures/nexus-plates", json={"tiles": "40", "model": "rbf"}).get_json()
     assert ok["tag"].startswith("rbf-")
+
+
+def test_a_rendered_run_exports_at_a_chosen_dpi_and_format(client, monkeypatch):
+    """Figures › Plates: the NEXUS sheet (or one tile's plate) re-drawn at
+    150/300/600 dpi as PNG, PDF or SVG from the cached outputs; nothing is
+    written, and a model that changed since the render is refused."""
+    http, _spawn = client
+    nexus_plates.render_plates("40,42", band="VIS", model="rbf", tag="export-run")
+    before = sorted(path.name for path in (nexus_plates.plates_root() / "export-run").iterdir())
+
+    png = http.get("/api/figures/nexus-plates/export-run/export?band=VIS&model=rbf&format=png&dpi=150")
+    assert png.status_code == 200, png.get_json()
+    assert png.mimetype == "image/png" and png.headers["X-Plate-Dpi"] == "150"
+    assert png.headers["Content-Disposition"].startswith("attachment")
+    assert "export-run_nexus_tiles_VIS_150dpi.png" in png.headers["Content-Disposition"]
+    with Image.open(io.BytesIO(png.data)) as image:
+        assert image.size[0] == round(nexus_plates.SHEET_WIDTH_IN * 150)
+    pdf = http.get("/api/figures/nexus-plates/export-run/export?band=VIS&model=rbf&format=pdf&dpi=300")
+    assert pdf.status_code == 200 and pdf.data.startswith(b"%PDF")
+    svg = http.get("/api/figures/nexus-plates/export-run/export?band=VIS&model=rbf&format=svg&dpi=300&tile=42")
+    assert svg.status_code == 200 and b"<svg" in svg.data[:2000]
+    assert "nexus_tile042_VIS_300dpi.svg" in svg.headers["Content-Disposition"]
+    assert sorted(path.name for path in (nexus_plates.plates_root() / "export-run").iterdir()) == before
+
+    bad = "/api/figures/nexus-plates/export-run/export?band=VIS&model=rbf"
+    assert http.get(f"{bad}&dpi=72").status_code == 400
+    assert http.get(f"{bad}&format=tiff").status_code == 400
+    assert http.get(f"{bad}&tile=999").status_code == 404
+    assert http.get("/api/figures/nexus-plates/export-run/export?band=temp&model=rbf").status_code == 404
+    assert http.get("/api/figures/nexus-plates/nope/export?band=VIS&model=rbf").status_code == 404
+
+    # the model's outputs changed since the render → render the run again
+    monkeypatch.setattr(nexus_plates.model_catalog, "list_specs", lambda: [
+        SimpleNamespace(spec="rbf", label="RBF · minibatched", fingerprint="changed", available=True)])
+    changed = http.get(f"{bad}&format=png&dpi=150")
+    assert changed.status_code == 409 and "render the run again" in changed.get_json()["error"]
+
+
+def test_a_long_sheet_export_caps_its_pixels():
+    assert nexus_plates.export_dpi(10.5, 3.6, 300) == 300
+    long_sheet = nexus_plates.export_dpi(10.5, 3.6 * 24, 600)
+    assert long_sheet < 600
+    assert (10.5 * long_sheet) * (3.6 * 24 * long_sheet) <= nexus_plates.EXPORT_MAX_PIXELS

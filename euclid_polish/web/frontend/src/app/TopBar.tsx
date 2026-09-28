@@ -1,8 +1,9 @@
 /* The top bar (spec §4), one line at every width: breadcrumbs (workspace ›
  * tab › inspected entity), the ⌘K palette trigger, the FASRC connection badge
- * (→ Settings › Connections) — or, while the local server is not answering,
+ * (→ System › Connections) — or, while the local server is not answering,
  * the calm "Server not responding — retrying" status in its place — the job
- * tray, the Display panel button, the theme toggle and the shortcut sheet.
+ * tray, the "Open a file" button (→ Files), the Display panel button, the
+ * theme toggle and the shortcut sheet.
  *
  * One calm notice strip (`ShellNotices`) sits at the top of the STAGE (it
  * scrolls away with the page; nothing is pinned over the images), fed by
@@ -11,7 +12,7 @@
  * build is available" + Reload, dismissible per build — and `VersionBanner`
  * — "Backend code changed — restart the server". */
 import { useEffect, useRef, useState } from "react";
-import { Link, useLocation } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useServerHealth } from "../api/query";
 import { formatDateTime, formatRelative } from "../format";
 import { useInspector } from "../state/inspector";
@@ -35,7 +36,7 @@ export function Breadcrumbs() {
   useInspectorRegistry((s) => s.kinds);
   if (!info) return <nav className="crumbs" aria-label="Breadcrumbs"><span className="crumbs__here">Not found</span></nav>;
   const { match } = info;
-  // "Ensemble (starfull)": the regime is part of where you are.
+  // "Models (starfull)": the regime is part of where you are.
   const ws = info.paramLabels.length ? `${info.workspaceLabel} (${info.paramLabels.join(", ")})` : info.workspaceLabel;
   const wsTo = match.tab ? pagePath(match.workspace, { params: match.params }) : landingPath(match.workspace);
   const entity = current ? inspectorTitle(current) : null;
@@ -70,7 +71,7 @@ export function ConnectionBadge() {
     : s.data?.last_error ? `FASRC offline — ${s.data.last_error}` : "FASRC offline — local pages still work";
   return (
     <Tooltip content={tip}>
-      <Link to="/settings/connections" className="topbar__conn" data-state={state}
+      <Link to={pagePath("system", { tab: "connections" })} className="topbar__conn" data-state={state}
         aria-label={`FASRC ${state === "on" ? "connected" : state === "off" ? "offline" : "status unknown"}`}>
         <span className="topbar__dot" aria-hidden="true" />
         <span className="topbar__conn-label">FASRC</span>
@@ -133,6 +134,12 @@ export function ThemeToggle() {
   return <IconButton icon={theme === "dark" ? "moon" : "sun"} label={`Switch to ${next} theme`} onClick={toggle} />;
 }
 
+/** "Open a file": Files (the FITS browser and viewer), one click from any page. */
+export function OpenFileButton() {
+  const navigate = useNavigate();
+  return <IconButton icon="fileSearch" label="Open a file" onClick={() => navigate(pagePath("files"))} />;
+}
+
 export function TopBar({ narrow = false }: { narrow?: boolean }) {
   const down = useServerHealth().down;
   return (
@@ -149,6 +156,7 @@ export function TopBar({ narrow = false }: { narrow?: boolean }) {
       <ServerStatus />
       {!down && <ConnectionBadge />}
       <JobTray />
+      <OpenFileButton />
       <IconButton icon="contrast" label="Display settings" onClick={openDisplayPanel} />
       <ThemeToggle />
       <IconButton icon="keyboard" label="Keyboard shortcuts (?)" onClick={openShortcutSheet} />
@@ -218,7 +226,7 @@ export function VersionBanner() {
           {more > 0 && <p>and {more} more.</p>}
           <p>
             Server started {formatDateTime(v.started_at)}{v.pid ? `, process ${v.pid}` : ""}.
-            {" "}<Link to="/settings/about">Server details</Link>
+            {" "}<Link to={pagePath("system", { tab: "code" })}>Server details</Link>
           </p>
         </div>
       )}

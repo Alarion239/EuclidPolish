@@ -37,15 +37,15 @@ def test_every_manifest_page_serves_the_shell(client, path):
     _assert_shell(client.get(path))
 
 
-@pytest.mark.parametrize("path", ["/sky/atlas", "/", "/ensemble/starless/train",
-                                  "/settings/about", "/inspect"])
+@pytest.mark.parametrize("path", ["/sky/atlas", "/", "/models/starless/train",
+                                  "/system/storage", "/files"])
 def test_new_workspace_urls_serve_the_shell(client, path):
     _assert_shell(client.get(path))
 
 
 def test_page_path_with_query_and_trailing_slash_serves_the_shell(client):
     _assert_shell(client.get("/sky/atlas/?ra=150.1&dec=2.2"))
-    _assert_shell(client.get("/inspect?fits=data/foo.fits"))
+    _assert_shell(client.get("/files?fits=data/foo.fits"))
 
 
 def test_head_on_a_page_path_serves_the_shell_headers(client):
@@ -57,7 +57,7 @@ def test_head_on_a_page_path_serves_the_shell_headers(client):
 def test_legacy_config_url_redirects_permanently(client):
     response = client.get("/config")
     assert response.status_code == 308
-    assert response.headers["Location"] == "/settings/config"
+    assert response.headers["Location"] == "/system/config"
 
 
 @pytest.mark.parametrize("source,target", sorted(MANIFEST["redirects"].items()))
@@ -70,7 +70,7 @@ def test_every_legacy_url_redirects_with_its_query(client, source, target):
 def test_head_follows_the_same_redirect(client):
     response = client.head("/noise")
     assert response.status_code == 308
-    assert response.headers["Location"] == "/realism/noise"
+    assert response.headers["Location"] == "/synthetic/noise"
 
 
 def test_app_prefix_redirects_to_the_bare_route(client):
@@ -98,7 +98,7 @@ def test_app_prefix_redirect_is_not_an_open_redirect(client, path, location):
 def test_redirect_chain_ends_on_the_shell(client):
     response = client.get("/app/inference", follow_redirects=True)
     _assert_shell(response)
-    assert response.request.path == "/sky/results"
+    assert response.request.path == "/sky/targets"
 
 
 def test_data_endpoint_under_a_page_prefix_stays_json(client):

@@ -8,17 +8,29 @@ Everything here is local: small synthetic TFRecords and CSVs in ``tmp_path``.
 from __future__ import annotations
 
 import csv
+import dataclasses
 import json
 import os
 import struct
 import time
+from dataclasses import dataclass
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
 from euclid_polish.image import Image, Role
 from euclid_polish.image.tfio import tfrecord_path, write_images
+from euclid_polish.provenance.store import ProvStore
+from euclid_polish.psf.psf_library import psf_kinds
+from euclid_polish.sky.generation.gen_provenance import begin_generation_run
 from euclid_polish.web.helpers import sky_records
+from euclid_polish.web.routes import views
+
+
+@dataclass
+class _FakeCfg:
+    image_size: int = 8
 
 
 def _images(n: int, size: int = 8, channels: int = 4, seed: int = 0) -> list[Image]:
@@ -272,3 +284,47 @@ def test_clear_sr_removes_only_that_subset(sr_dir):
 
 def test_tfrecord_path_helper_is_shared():
     assert tfrecord_path("/x", "dirty_test").endswith("dirty_test.tfrecord")
+
+
+# ---------------------------------------------------------------------------
+# what the generation run recorded (the PSF of each band)
+# ---------------------------------------------------------------------------
+
+def test_records_generation_reads_the_psf_kinds_from_the_records_sidecar(tmp_path):
+    store = ProvStore(str(tmp_path / "store"))
+    ctx = begin_generation_run(store, _FakeCfg(), git=None)
+    ctx.descriptors["psf_kinds"] = psf_kinds(str(tmp_path / "no-psfs"))
+    stamp = ctx.stamp("dirty", "test")
+    images = [dataclasses.replace(image, stamp=stamp) for image in _images(2)]
+    path = write_images(images, "dirty_test", records_dir=str(tmp_path))
+    assert sky_records.records_artifact_id(path) == str(stamp.id)
+    # records whose sidecar was not pulled (or predates the stamp) say nothing
+    assert sky_records.records_generation(str(tmp_path), "test") is None
+    ctx.finalize("dirty", "test", path)                 # the sidecar next to the records
+    info = sky_records.records_generation(str(tmp_path), "test")
+    assert info is not None and info["kind"] == "dirty" and info["run"] == str(ctx.run_id)
+    assert info["psf_kinds"] == {"VIS": "gaussian", "Y_E": "gaussian", "J_E": "gaussian", "H_E": "gaussian"}
+    assert sky_records.records_generation(str(tmp_path), "validate") is None
+    unstamped = _write(tmp_path, "dirty_validate", 1)
+    assert sky_records.records_artifact_id(unstamped) is None
+
+
+def test_the_records_sync_pulls_each_record_files_provenance_sidecar(tmp_path, monkeypatch):
+    """After pulling a record file the sync pulls its generator sidecar
+    (``<id>.skytfrecordartifact.json`` beside it on FASRC), best-effort."""
+    store = ProvStore(str(tmp_path / "store"))
+    ctx = begin_generation_run(store, _FakeCfg(), git=None)
+    stamp = ctx.stamp("dirty", "test")
+    local = write_images([dataclasses.replace(image, stamp=stamp) for image in _images(1)],
+                         "dirty_test", records_dir=str(tmp_path))
+    remote = "/n/remote/records/dirty_test.tfrecord"
+    fetched: list[str] = []
+    monkeypatch.setattr(views._fasrc_fetcher, "_local_path_for", lambda path: local)
+    monkeypatch.setattr(views._fasrc_fetcher, "fetch_one_file", lambda path, **_kw: (
+        fetched.append(path), SimpleNamespace(ok=True, error=None))[1])
+    results = {"dirty_test": {"ok": True}, "sources_test": {"ok": True}, "hr_test": {"ok": False}}
+    cap = SimpleNamespace(write=lambda _text: None)
+    views._pull_generation_sidecars(cap, {"dirty_test": remote, "sources_test": "/n/remote/records/sources_test.csv",
+                                          "hr_test": "/n/remote/records/hr_test.tfrecord"}, results)
+    assert fetched == [f"/n/remote/records/{stamp.id}.skytfrecordartifact.json"]
+    assert results["dirty_test"]["provenance"] is True

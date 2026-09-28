@@ -223,14 +223,14 @@ def register(app):
         relative = _safe_relpath(result.local_path)
         return jsonify({
             "ok": True, "path": relative,
-            "inspect_url": "/inspect?" + urlencode({"fits": relative}),
+            "inspect_url": "/files?" + urlencode({"fits": relative}),
             "download_url": "/fasrc/file/download?" + urlencode({"remote_path": remote}),
         })
 
     @app.route("/fasrc/file/inspect")
     @requires_fasrc
     def fasrc_file_inspect():
-        """Fetch one file from FASRC (cached) then redirect to ``/inspect``.
+        """Fetch one file from FASRC (cached) then redirect to ``/files``.
 
         Query param: ``remote_path=<absolute path on FASRC>``. Subject
         to all the safeguards in :mod:`euclid_polish.web.fasrc_fetcher`
@@ -245,8 +245,8 @@ def register(app):
         result = _fasrc_fetcher.fetch_one_file(remote)
         if not result.ok or result.local_path is None:
             return jsonify({"ok": False, "error": result.error}), 502
-        # Hand off to the Inspect workspace with the local cache path.
-        return redirect("/inspect?" + urlencode(
+        # Hand off to Files with the local cache path.
+        return redirect("/files?" + urlencode(
             {"fits": _safe_relpath(result.local_path)}))
 
     @app.route("/fasrc/file/download")

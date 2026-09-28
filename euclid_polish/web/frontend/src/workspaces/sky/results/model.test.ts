@@ -1,11 +1,10 @@
 import { describe, expect, it } from "vitest";
-import type { ExperimentRecord, ModelSpecRow, TileList, TileRow } from "./api";
+import type { ExperimentRecord, ModelSpecRow, TileRow } from "./api";
 import { atlasHref, experimentsHref, splitRef, URLS } from "./api";
 import {
-  bandSeries, cardViewerTiers, defaultExperimentId, defaultRunSpecs, experimentCost, experimentCostText, experimentMarkdown, filterByState,
-  filterEvalRows, flattenTiles, formatMetric, groupModels, headlineSpec, membersText, metricRows, productionMembersText, metricsPlan, num,
-  metricHeader, parseRefs, productionCounts, realTileViewerParams, recordSpecs, runnableSelection, seriesDomain, sortSpecs, specShort,
-  tileModels,
+  bandSeries, cardDelta, cardFiles, evalHeadline, cardHeadline, cardViewerTiers, defaultExperimentId, defaultRunSpecs, experimentCost, experimentCostText,
+  experimentMarkdown, formatMetric, groupModels, headlineSpec, membersText, metricRows, productionMembersText, metricsPlan, num,
+  parseRefs, realTileViewerParams, recordSpecs, seriesDomain, sortSpecs, specShort,
 } from "./model";
 
 const tile = (ref: string, state?: string, models: TileRow["models"] = {}): TileRow => {
@@ -61,12 +60,12 @@ describe("refs and URLs", () => {
       "/api/real/tile/ra1_dec2/image.fits?tier=m%3Aproduction&band=VIS");
     expect(URLS.deleteOutputs("nexus/f200w-0001")).toBe("/api/real/nexus/f200w-0001/delete-outputs");
   });
-  it("links to the atlas and to experiments", () => {
+  it("links to the atlas and to Compare", () => {
     // the atlas card of a real tile is the `tile:` kind (the one real-tile card, atlas-highlighted)
     expect(atlasHref(268.4, 65.2, "nexus/f200w-0001")).toBe(
       "/sky/atlas?ra=268.400000&dec=65.200000&inspect=tile%3Anexus%2Ff200w-0001");
-    expect(experimentsHref(["a/1", "b/2"])).toBe("/sky/experiments?tiles=a%2F1%2Cb%2F2");
-    expect(experimentsHref([])).toBe("/sky/experiments");
+    expect(experimentsHref(["a/1", "b/2"])).toBe("/sky/compare?tiles=a%2F1%2Cb%2F2");
+    expect(experimentsHref([])).toBe("/sky/compare");
   });
   it("parses pasted refs, keeping known sources once", () => {
     expect(parseRefs("nexus/f200w-0001, tile/x\npair/p1 nexus/f200w-0001 bogus/1 nope eval/a/b"))
@@ -96,7 +95,6 @@ describe("model specs", () => {
       ["production", ["production"]], ["mean", ["mean"]], ["rbf", ["rbf"]],
       ["gate", ["gate:x"]], ["member", ["member:member_1"]],
     ]);
-    expect(runnableSelection(["rbf", "mean", "gate:x", "unknown"], models)).toEqual(["mean"]);
   });
   it("counts the members a model reads (a pruned gate reads fewer than it was fitted on)", () => {
     const six = ["170·psnr", "171·psnr", "180·psnr", "181·psnr", "184·psnr", "187·psnr"];
@@ -171,27 +169,11 @@ describe("the real-tile card", () => {
 });
 
 describe("real tiles", () => {
-  const lists: TileList[] = [
-    { source: "nexus", label: "N", count: 2, tiles: [tile("nexus/a", "stale"), tile("nexus/b", "current")] },
-    { source: "tile", label: "T", count: 1, tiles: [tile("tile/c"), tile("nexus/a", "stale")] },
-  ];
-  it("flattens every source once and counts production states", () => {
-    const rows = flattenTiles([...lists, null]);
-    expect(rows.map((r) => r.ref)).toEqual(["nexus/a", "nexus/b", "tile/c"]);
-    expect(productionCounts(rows)).toEqual({ total: 3, current: 1, stale: 1, missing: 1 });
-    expect(filterByState(rows, "missing").map((r) => r.ref)).toEqual(["tile/c"]);
-    expect(filterByState(rows, "all")).toHaveLength(3);
-  });
-  it("lists a tile's models in order and picks the headline spec", () => {
+  it("picks the headline spec: the first scored output in catalogue order", () => {
     const row = tile("nexus/a", "stale", {
       "member:member_3": { state: "current" }, rbf: { state: "current", legacy: true, summary: { median_R: 1 } },
       production: { state: "stale" },
     });
-    expect(tileModels(row)).toEqual([
-      { spec: "production", state: "stale", legacy: false },
-      { spec: "rbf", state: "current", legacy: true },
-      { spec: "member:member_3", state: "current", legacy: false },
-    ]);
     expect(headlineSpec(row)).toBe("rbf");
     expect(headlineSpec(tile("x/y"))).toBeNull();
   });
@@ -241,21 +223,6 @@ describe("experiment metrics", () => {
   });
 });
 
-describe("catalogue evaluation rows", () => {
-  const rows = [
-    { id: "a", grade: "A", ok: "True", state: "stale" },
-    { id: "b", grade: "gal", ok: "True", state: "current" },
-    { id: "c", grade: "A", ok: "False", state: null },
-    { id: "d", grade: "syn-gal", ok: "True", state: "unknown" },
-  ];
-  it("filters by group, state and success", () => {
-    expect(filterEvalRows(rows, [], "all", false).map((r) => r.id)).toEqual(["a", "b", "c", "d"]);
-    expect(filterEvalRows(rows, ["A"], "all", true).map((r) => r.id)).toEqual(["a"]);
-    expect(filterEvalRows(rows, [], "unknown", false).map((r) => r.id)).toEqual(["c", "d"]);
-    expect(filterEvalRows(rows, ["gal", "syn-gal"], "current", true).map((r) => r.id)).toEqual(["b"]);
-  });
-});
-
 describe("metricsPlan", () => {
   it("groups the tiles by the current outputs that still lack metrics (never an SR a tile does not have)", () => {
     const rows = [
@@ -292,11 +259,71 @@ describe("the experiment a visit opens", () => {
   });
 });
 
-describe("metric column headers", () => {
-  it("are sentence case, σ kept (no CSS text-transform)", () => {
-    expect(metricHeader("holes >100σ")).toBe("Holes >100σ");
-    expect(metricHeader("art.")).toBe("Art.");
-    expect(metricHeader("R<0.8")).toBe("R<0.8");
-    expect(metricHeader("R̃")).toBe("R̃");
+describe("the tile card's headline, Δm footer and files", () => {
+  const CARD = {
+    source: "poster", id: "new4", ref: "poster/new4", label: "Poster", ra: 273.2, dec: 68.4, extras: {},
+    models: {
+      production: { label: "Production · spatial gate", metrics: {
+        per_band: { VIS: { hole_pct: 2.1, flux_ratio: 0.31 }, Y_E: { hole_pct: 5.8 }, J_E: { hole_pct: 6.6 }, H_E: { hole_pct: 4 } },
+        summary: { hole_pct_max: 6.6, median_R: 1.23 } } },
+      "gate:p20": { label: "Gate variant · p20" },
+    },
+    files: { lr: "poster/new4_lr.fits", "m:production": "real_outputs/poster/new4/production.fits" },
+  };
+
+  it("names two headline metrics of the model the card shows: worst-band holes (with its band) and median R", () => {
+    expect(cardHeadline(CARD, "production")).toEqual({
+      spec: "production", label: "production",
+      facts: [
+        { label: "Holes, worst band (J)", value: "6.6", unit: "%", hint: expect.stringContaining("brightest 1 %") },
+        { label: "Median R", value: "1.230", hint: expect.stringContaining("1 = flux conserved") },
+      ],
+      note: null,
+    });
+    // no bright peak on the tile: no median R; the lowest NISP band's flux stands in, and a note says why
+    const noPeaks = { models: { production: { metrics: {
+      summary: { hole_pct_max: 77.5, median_R: null, n_peaks: 0 },
+      per_band: { VIS: { hole_pct: 70, flux_ratio: 0.3 }, Y_E: { hole_pct: 77.5, flux_ratio: 0.45 }, H_E: { hole_pct: 73, flux_ratio: 0.39 } },
+    } } } };
+    expect(cardHeadline(noPeaks, "production")).toEqual({
+      spec: "production", label: "production",
+      facts: [
+        { label: "Holes, worst band (Y)", value: "77.5", unit: "%", hint: expect.any(String) },
+        { label: "Flux SR/LR, lowest NISP band (H)", value: "0.39", hint: expect.any(String) },
+      ],
+      note: expect.stringContaining("no bright peak"),
+    });
+    expect(cardHeadline(CARD, "gate:p20")).toBeNull();          // not scored: no numbers to show
+    expect(cardHeadline(CARD, null)).toBeNull();
+  });
+
+  it("puts the VIS Δm against the LR in the footer, warned beyond 0.1 mag", () => {
+    expect(cardDelta(CARD, "production")).toEqual({ label: "production", text: "Δm +1.27 (flux ×0.31)", warn: true });
+    expect(cardDelta(CARD, "gate:p20")).toBeNull();
+    // a catalogue object carries its SR's flux ratio itself, named by what made it
+    const evalCard = { source: "eval", models: {}, extras: { flux_ratio_sr_over_lr: 0.97 } };
+    expect(cardDelta(evalCard, null, "22 members"))
+      .toEqual({ label: "SR (22 members)", text: "Δm +0.03 (flux ×0.97)", warn: false });
+    expect(cardDelta(evalCard, null)?.label).toBe("catalogue SR");
+    expect(cardDelta(evalCard, null, "22-member ensemble (combiner not recorded)")?.label).toBe("SR (22-member ensemble)");
+  });
+
+  it("gives a catalogue object its LR and SR fluxes as the headline numbers", () => {
+    expect(evalHeadline({ lr_total_e: "123456", sr_total_e: "80000" })).toEqual([
+      expect.objectContaining({ label: "LR", value: "123k", unit: "e⁻" }),
+      expect.objectContaining({ label: "SR", value: "80k", unit: "e⁻" }),
+    ]);
+    expect(evalHeadline({ lr_total_e: "", sr_total_e: null })).toBeNull();
+  });
+
+  it("lists the FITS files Files can open: the LR, then each model output", () => {
+    expect(cardFiles(CARD, ["production", "gate:p20"])).toEqual([
+      { key: "lr", label: "LR", href: "/files?fits=poster%2Fnew4_lr.fits" },
+      { key: "m:production", label: "production", href: "/files?fits=real_outputs%2Fposter%2Fnew4%2Fproduction.fits" },
+    ]);
+    expect(cardFiles({ files: undefined }, ["production"])).toEqual([]);
+    // a catalogue object's own evaluation SR
+    expect(cardFiles({ files: { lr: "data/eval_results/o/original_stack.fits", sr: "data/eval_results/o/SR.fits" } }, []).map((f) => f.label))
+      .toEqual(["LR", "SR (catalogue evaluation)"]);
   });
 });

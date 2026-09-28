@@ -10,7 +10,7 @@ const P: SkyPalette = {
   cat: ["#111111", "#222222", "#333333", "#444444", "#555555", "#666666", "#777777", "#888888"],
 };
 const TILES: LayerInfo = {
-  id: "nexus-tiles", label: "NEXUS", group: "results", kind: "polygons", count: 445, bbox: null,
+  id: "nexus-tiles", label: "NEXUS", group: "real", kind: "polygons", count: 445, bbox: null,
   style: { color_by: "state", opacity: 0.5 }, ready: true, reason: null, fill_action: null, description: "", url: "/api/sky/layer/nexus-tiles",
 };
 const data = (typicalSize: number, features: SkyFeature[] = []): LayerData => ({

@@ -1,7 +1,7 @@
 /* Page-specific styles that lived in the v1 kit stylesheet. They belong to
    legacy pages and are deleted by the phase-3 workspace that absorbs each
    page (W-Ensemble, W-Ops and W-Data removed theirs; the step card's styles are in
-   workspaces/ops/steps/steps.css). Do not add new rules here: co-locate
+   workspaces/runs/steps/steps.css). Do not add new rules here: co-locate
    workspace CSS with the workspace. */
 
 /* ── Page scaffold of the pre-rework pages (moved from the old src/app.css;

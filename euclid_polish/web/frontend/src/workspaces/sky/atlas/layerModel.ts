@@ -6,7 +6,10 @@ import { centroid, polygonDiameter, type RaDec } from "../../../sky/geometry";
 import { COVERAGE_MOCS } from "../../../sky/surveys";
 import type { InspectTarget } from "../../../state/inspector";
 
-export type LayerGroup = "coverage" | "results" | "catalogues";
+/** The Layers panel groups (console regrouping), in panel order: the real
+ *  tiles SR runs on, the science targets, the real inputs of the synthetic
+ *  scenes and coverage. */
+export type LayerGroup = "real" | "targets" | "inputs" | "coverage";
 
 export type LayerStyle = {
   color?: string;
@@ -33,6 +36,8 @@ export type LayerInfo = {
   fill_action: FillAction | null;
   description: string;
   url: string | null;
+  /** The tab that owns (and fills) the layer's data, linked from its row. */
+  home?: { path: string; label: string } | null;
   /** Client-side layers (coverage MOCs): drawn from `mocUrl`, no backend payload. */
   client?: boolean;
   mocUrl?: string;
@@ -85,11 +90,20 @@ export type SkyFeature = {
 };
 
 export const GROUP_LABEL: Record<LayerGroup, string> = {
+  real: "Real tiles",
+  targets: "Targets",
+  inputs: "Scene inputs",
   coverage: "Coverage",
-  results: "Real results",
-  catalogues: "Catalogues",
 };
-const GROUP_ORDER: LayerGroup[] = ["coverage", "results", "catalogues"];
+const GROUP_ORDER: LayerGroup[] = ["real", "targets", "inputs", "coverage"];
+
+/** A catalogue group from the server (an older server's `results` /
+ *  `catalogues` land in the nearest new group). */
+export function layerGroup(raw: unknown): LayerGroup {
+  if (raw === "real" || raw === "targets" || raw === "inputs" || raw === "coverage") return raw;
+  if (raw === "catalogues") return "inputs";
+  return "real";
+}
 
 /** Layers shown on a first visit (the `layers` URL param overrides). */
 export const DEFAULT_LAYERS: readonly string[] = [
@@ -102,17 +116,18 @@ export const CLIENT_LAYERS: readonly LayerInfo[] = COVERAGE_MOCS.map((m) => ({
   url: null, client: true, mocUrl: m.url,
 }));
 
-/** The server catalogue with the client MOCs first in "coverage". */
+/** The server catalogue with the client MOCs first in "coverage" (every
+ *  group normalised: see layerGroup). */
 export function withClientLayers(server: readonly LayerInfo[]): LayerInfo[] {
   const known = new Set(server.map((l) => l.id));
-  return [...CLIENT_LAYERS.filter((l) => !known.has(l.id)), ...server];
+  return [...CLIENT_LAYERS.filter((l) => !known.has(l.id)), ...server.map((l) => ({ ...l, group: layerGroup(l.group) }))];
 }
 
 /** A stand-in catalogue row for a layer whose payload arrived before the
  *  catalogue (a cold `/api/sky/layers` can take seconds): the payload names
  *  its kind, group and label; the style waits for the catalogue. */
 export function stubLayerInfo(id: string, payload?: Pick<LayerPayload, "label" | "group" | "kind" | "count"> | null): LayerInfo {
-  const group = (["coverage", "results", "catalogues"] as const).find((g) => g === payload?.group) ?? "results";
+  const group = layerGroup(payload?.group);
   return {
     id, label: payload?.label ?? id, group, kind: payload?.kind ?? "points", count: payload?.count ?? 0, bbox: null,
     style: {}, ready: true, reason: null, fill_action: null, description: "", url: null,

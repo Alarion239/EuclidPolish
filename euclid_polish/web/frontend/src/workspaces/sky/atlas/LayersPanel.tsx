@@ -1,15 +1,18 @@
-/* The Layers panel: background HiPS (radio), overlay HiPS (opacity), pixel
- * overlays of real tiles (opacity, blink), and every data layer by group
- * (visibility, opacity, colour, count, legend, zoom-to, fill action). */
+/* The Layers panel: the background survey (a Select), overlay HiPS
+ * (opacity), pixel overlays of real tiles (opacity, blink), and every data
+ * layer by group — Real tiles, Targets, Scene inputs, Coverage — with its
+ * visibility, opacity, colour, muted count, legend and zoom-to. A layer's
+ * data is filled in the tab that owns it (a shown layer, its options and an
+ * empty layer's note link there) or, for positional data, from the sky
+ * itself; the panel starts no job. */
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { useFasrcStatus } from "../../../app/status";
+import { Link } from "react-router-dom";
 import { formatCount } from "../../../format";
 import { BASE_SURVEYS, OVERLAY_SURVEYS } from "../../../sky/surveys";
 import {
-  Badge, Button, Callout, Checkbox, Field, Icon, IconButton, Popover, Section, Select, Skeleton, Slider, Spinner,
+  Button, Callout, Checkbox, Field, Icon, IconButton, Popover, Section, Select, Skeleton, Slider, Spinner,
   Switch, Tooltip,
 } from "../../../ui";
-import { runLayerFill } from "./actions";
 import { colorOptions, legendFor } from "./colorScale";
 import type { LayerData } from "./layerData";
 import { groupLayers, type LayerInfo } from "./layerModel";
@@ -31,20 +34,20 @@ function OpacitySlider({ value, onCommit, label }: { value: number; onCommit: (v
   );
 }
 
+/** The background surveys for the Select: Euclid first, then the all-sky
+ *  surveys (named as such), then none. */
+export const BACKGROUND_OPTIONS = BASE_SURVEYS.map((b) => ({
+  value: b.id,
+  label: b.group === "All-sky" ? `${b.label} (all-sky)` : b.label,
+}));
+
 function BackgroundSection({ url }: { url: AtlasUrl }) {
   const current = BASE_SURVEYS.find((b) => b.id === url.base) ?? BASE_SURVEYS[0];
   return (
-    <Section title="Background" sub={current.label} collapsible defaultOpen>
-      <div className="sky-radios" role="radiogroup" aria-label="Background survey">
-        {BASE_SURVEYS.map((b) => (
-          <label key={b.id} className="sky-radio" data-on={b.id === current.id} title={b.credit ?? b.label}>
-            <input type="radio" name="sky-base" value={b.id} checked={b.id === current.id}
-              onChange={() => url.setBase(b.id)} />
-            <span>{b.label}</span>
-            {b.format === "fits" && <span className="sky-radio__tag">FITS</span>}
-          </label>
-        ))}
-      </div>
+    <Section title="Background" collapsible defaultOpen>
+      <Field label="Survey">
+        <Select value={current.id} onChange={url.setBase} options={BACKGROUND_OPTIONS} />
+      </Field>
       {current.credit && <p className="sky-credit">{current.credit}</p>}
     </Section>
   );
@@ -104,23 +107,23 @@ function PixelOverlaysSection({ url }: { url: AtlasUrl }) {
   );
 }
 
-function FillButton({ info }: { info: LayerInfo }) {
-  const fasrc = useFasrcStatus().data;
-  const action = info.fill_action;
-  if (!action || action.method !== "POST") return null;
-  // Actions needing parameters are driven from the sky itself.
-  if (["/api/experiments", "/api/real/tiles", "/api/sky/jwst/pair"].includes(action.url)) return null;
-  const offline = !!action.requires_fasrc && !fasrc?.ssh_connected;
-  return (
-    <Tooltip content={offline ? "Needs the FASRC connection (Settings › Connections)" : action.label}>
-      <span>
-        <Button size="sm" variant="subtle" disabled={offline} onClick={() => { void runLayerFill(action); }}>
-          {action.label}
-        </Button>
-      </span>
-    </Tooltip>
-  );
+/** Where a layer's data comes from: its owning tab. */
+function HomeLink({ info, children, label }: { info: LayerInfo; children?: ReactNode; label?: string }) {
+  if (!info.home) return null;
+  return <Link className="sky-layer__home" to={info.home.path} aria-label={label}>{children ?? info.home.label}</Link>;
 }
+
+const sentence = (text: string) => (text ? text[0].toUpperCase() + text.slice(1) : text);
+
+/** Layers filled from the sky itself (a position, the JWST menu), not from
+ *  their owning tab: how to fill each. */
+const FILLED_ON_THE_SKY: Record<string, string> = {
+  "/api/sky/jwst/pair": "download one from the JWST menu, or right-click the sky",
+  "/api/real/tiles": "right-click the sky to cache one",
+  "/api/sky/jwst/discover": "JWST menu › Discover",
+  "/api/jwst-euclid/nexus/download-field": "JWST menu › Cache the NEXUS mosaic",
+  "/api/experiments": "compare models on tiles in Sky › Compare",
+};
 
 function hint(info: LayerInfo, extra?: string) {
   const text = [info.description, extra].filter(Boolean).join(" ");
@@ -141,9 +144,9 @@ function LayerRow({ info, spec, data, url, onZoomTo }: {
     <li className="sky-row sky-layer" data-on={on} data-ready={info.ready}>
       <div className="sky-row__main">
         <Checkbox checked={on} onChange={() => url.setLayers(toggleLayer(url.layers, info.id))}>
-          <span className="sky-layer__label">
+          <span className="sky-layer__label" title={info.label}>
             {swatch && <span className="sky-layer__swatch" style={{ background: swatch }} aria-hidden="true" />}
-            {info.label}
+            <span className="sky-layer__name">{info.label}</span>
           </span>
         </Checkbox>
         <span className="sky-row__tail">
@@ -153,7 +156,7 @@ function LayerRow({ info, spec, data, url, onZoomTo }: {
               <span className="sky-layer__err" tabIndex={0} aria-label={`Failed: ${data.error.message}`}><Icon name="warn" size={14} /></span>
             </Tooltip>
           )}
-          {info.kind !== "moc" && <Badge size="sm" tone={info.ready ? "neutral" : "warn"}>{formatCount(count)}</Badge>}
+          {info.kind !== "moc" && <span className="sky-row__count">{formatCount(count)}</span>}
           <IconButton icon="zoomIn" size="sm" label={`Zoom to ${info.label}`} onClick={() => onZoomTo(info.id)}
             disabled={!info.bbox && !data?.features.length && info.kind !== "moc"} />
           <Popover label={`${info.label} options`} width={280}
@@ -169,8 +172,8 @@ function LayerRow({ info, spec, data, url, onZoomTo }: {
                     }} />
                 </Field>
               )}
-              {!info.ready && info.reason && <Callout tone="warn">{info.reason}</Callout>}
-              <FillButton info={info} />
+              {!info.ready && info.reason && <p className="muted">{sentence(info.reason)}</p>}
+              {info.home && <p className="sky-layer__from">Its data: <HomeLink info={info} /></p>}
             </div>
           </Popover>
         </span>
@@ -182,9 +185,18 @@ function LayerRow({ info, spec, data, url, onZoomTo }: {
           {/* zoomed in, a coverage layer is only its outline (neutral imagery) until a fill is set */}
           {spec?.fill === false && <p className="sky-layer__note">Outline only while zoomed in; move the slider to fill it.</p>}
           {legend && spec?.scale.type !== "fixed" && info.kind !== "moc" && <SkyLegend legend={legend} compact />}
+          {info.home && info.ready && (
+            <p className="sky-layer__note">Its data: <HomeLink info={info} label={`${info.label}: open ${info.home.label}`} /></p>
+          )}
         </div>
       )}
-      {!info.ready && on && info.reason && <div className="sky-layer__reason muted">{info.reason}</div>}
+      {!info.ready && on && info.reason && (
+        <div className="sky-layer__reason muted">
+          {sentence(info.reason)}
+          {info.fill_action && FILLED_ON_THE_SKY[info.fill_action.url] ? `: ${FILLED_ON_THE_SKY[info.fill_action.url]}.`
+            : info.home ? <>; fill it in <HomeLink info={info} />.</> : "."}
+        </div>
+      )}
     </li>
   );
 }

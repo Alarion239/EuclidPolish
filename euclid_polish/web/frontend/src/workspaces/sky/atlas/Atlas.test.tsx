@@ -11,32 +11,40 @@ import { makeFakeAladin, type FakeAladin } from "../../../sky/testing/fakeAladin
 import { useInspector } from "../../../state/inspector";
 import { resetConfirm } from "../../../ui";
 import Atlas from "../tabs/Atlas";
+import { LAST_TILE_KEY, rememberTile } from "./home";
 import { useAtlas } from "./store";
 
 const poly = (ra: number): [number, number][] => [[ra, 65.1], [ra + 0.007, 65.1], [ra + 0.007, 65.107], [ra, 65.107]];
 
 const LAYERS = {
-  groups: ["coverage", "results", "catalogues"],
+  groups: ["real", "targets", "inputs", "coverage"],
   layers: [
     {
-      id: "nexus-tiles", label: "NEXUS × Euclid tiles", group: "results", kind: "polygons", count: 2, bbox: null,
+      id: "nexus-tiles", label: "NEXUS × Euclid tiles", group: "real", kind: "polygons", count: 2, bbox: null,
       style: { color_by: "state", opacity: 0.5 }, ready: true, reason: null, fill_action: null, description: "", url: "/api/sky/layer/nexus-tiles",
+      home: { path: "/sky/targets?set=nexus", label: "Sky › Targets" },
     },
     {
-      id: "lens-candidates", label: "Q1 lens candidates", group: "catalogues", kind: "points", count: 1, bbox: null,
+      id: "lens-candidates", label: "Q1 lens candidates", group: "targets", kind: "points", count: 1, bbox: null,
       style: { color_by: "grade", shape: "circle", size: 5 }, ready: true, reason: null, fill_action: null, description: "", url: "/api/sky/layer/lens-candidates",
+    },
+    {
+      id: "pairs", label: "JWST × Euclid pairs", group: "real", kind: "polygons", count: 0, bbox: null,
+      style: {}, ready: false, reason: "no local data yet", description: "", url: "/api/sky/layer/pairs",
+      fill_action: { method: "POST", url: "/api/sky/jwst/pair", label: "Download a JWST × Euclid pair" },
+      home: { path: "/sky/targets?set=pairs", label: "Sky › Targets" },
     },
   ],
 };
 const NEXUS = {
-  id: "nexus-tiles", label: "NEXUS × Euclid tiles", group: "results", kind: "polygons", count: 2,
+  id: "nexus-tiles", label: "NEXUS × Euclid tiles", group: "real", kind: "polygons", count: 2,
   features: [
     { id: "f200w-0000", polygon: poly(268.37), props: { state: "stale", label: "NEXUS F200W tile 0000" }, inspect: { kind: "realtile", id: "nexus/f200w-0000" } },
     { id: "f200w-0001", polygon: poly(268.39), props: { state: "current", label: "NEXUS F200W tile 0001" }, inspect: { kind: "realtile", id: "nexus/f200w-0001" } },
   ],
 };
 const LENSES = {
-  id: "lens-candidates", label: "Q1 lens candidates", group: "catalogues", kind: "points", count: 1,
+  id: "lens-candidates", label: "Q1 lens candidates", group: "targets", kind: "points", count: 1,
   columns: ["ra", "dec", "grade", "id"], rows: [[268.4, 65.2, "A", "L1"]],
   inspect: { kind: "source", prefix: "lens-candidates/", id_column: "id" },
 };
@@ -78,6 +86,7 @@ beforeEach(() => {
   queryClient.clear();
   useInspector.getState().clear();
   useAtlas.getState().set({ status: "idle", view: null, panelOpen: false });
+  localStorage.removeItem(LAST_TILE_KEY);
 });
 
 afterEach(() => {
@@ -207,6 +216,55 @@ describe("Sky atlas", () => {
     show("/sky/atlas");
     await waitFor(() => expect(engine.attachedTo).toBeTruthy());
     expect(fake.created).toHaveLength(1);
+  });
+
+  it("opens on EDF-N without URL coordinates (not the all-sky view), or on the last inspected tile", async () => {
+    const first = show("/sky/atlas?layers=-");
+    await waitFor(() => expect(fake.created).toHaveLength(1));
+    expect(fake.created[0].target).toBe("269.733 66.018");
+    expect(fake.created[0].fov).toBe(14);
+    first.unmount();
+    __resetSkyEngineForTests();
+    fake = makeFakeAladin();
+    __setSkyEngineTestHooks({ importer: async () => ({ default: fake.A }), hasWebGL2: () => true });
+    rememberTile("nexus/f200w-0040", 268.47, 65.14, 25.5 / 3600);
+    show("/sky/atlas?layers=-");
+    await waitFor(() => expect(fake.created).toHaveLength(1));
+    expect(fake.created[0].target).toBe("268.47 65.14");
+    expect(fake.created[0].fov as number).toBeLessThan(0.1);
+  });
+
+  it("picks the background from one Select: Euclid first, the all-sky surveys named as such", async () => {
+    show("/sky/atlas?ra=268.38&dec=65.1&fov=0.2&layers=-");
+    const survey = await screen.findByRole("combobox", { name: "Survey" }) as HTMLSelectElement;
+    const labels = [...survey.options].map((o) => o.textContent);
+    expect(labels.slice(0, 5)).toEqual(["Euclid Q1 colour", "Euclid Q1 VIS", "Euclid Q1 NISP Y", "Euclid Q1 NISP J", "Euclid Q1 NISP H"]);
+    expect(labels).toContain("DSS2 colour (all-sky)");
+    fireEvent.change(survey, { target: { value: "q1-vis" } });
+    await waitFor(() => expect(search().get("base")).toBe("q1-vis"));
+  });
+
+  it("reads the pixel value only on a FITS background (an RGB survey has none)", async () => {
+    const { unmount } = show("/sky/atlas?ra=268.38&dec=65.1&fov=0.2&layers=-");
+    await screen.findByText("FoV");
+    expect(screen.queryByText("Pixel")).toBeNull();                    // Euclid colour: PNG tiles
+    unmount();
+    show("/sky/atlas?ra=268.38&dec=65.1&fov=0.2&layers=-&base=q1-vis");
+    expect(await screen.findByText("Pixel")).toBeTruthy();
+  });
+
+  it("groups the layers by what they are, links a shown layer to the tab that owns its data, and fills nothing from the panel", async () => {
+    show("/sky/atlas?ra=268.38&dec=65.1&fov=0.2&layers=nexus-tiles");
+    expect(await screen.findByText("Real tiles")).toBeTruthy();
+    expect(screen.getByText("Targets")).toBeTruthy();
+    const open = await screen.findByRole("link", { name: "NEXUS × Euclid tiles: open Sky › Targets" });
+    expect(open.getAttribute("href")).toBe("/sky/targets?set=nexus");
+    expect(screen.queryByRole("button", { name: /Cache|Download|Sync|Pull|Discover/ })).toBeNull();
+  });
+
+  it("says how to fill an empty layer: on the sky for positional data, else in its owning tab", async () => {
+    show("/sky/atlas?ra=268.38&dec=65.1&fov=0.2&layers=pairs");
+    expect(await screen.findByText("No local data yet: download one from the JWST menu, or right-click the sky.")).toBeTruthy();
   });
 
   it("shows the WebGL2 message instead of a sky when WebGL2 is missing", async () => {

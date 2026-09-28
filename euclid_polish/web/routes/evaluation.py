@@ -6,7 +6,7 @@ strong-lens catalog) and surfaces the mirrored-back results as a gallery.
 
 The grouped run, galaxy query and lens-catalogue fetch are local jobs; the
 results are browsed through the viewer collection ``evaluation`` (the page is
-the SPA's Sky › Catalog-eval tab). This module adds:
+Sky › Targets, Models › Images and Models › Diagnostics). This module adds:
 
   * ``/api/evaluation/runs``      — one run's manifest rows, each with the
     staleness of its SR against the model an evaluation would load now
@@ -46,6 +46,8 @@ from euclid_polish.web.jobs import REGISTRY as JOB_REGISTRY
 from euclid_polish.web.remote import STATE
 from euclid_polish.web.security import fresh_requested, refuse_cross_site_cache_fill
 
+#: The angular power-spectrum curves written beside its PNG (the interactive plot).
+_APS_JSON = "angular_power_spectrum.json"
 #: Object sub-directory names (``out_subdir``): one path segment, no dot-files.
 _SAFE_OBJECT = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]{0,219}$")
 #: Manifest grade → object kind.
@@ -531,12 +533,29 @@ def register(app):
         refuse_cross_site_cache_fill(out_png)
         fresh = request.method == "POST" or fresh_requested()
         if ((fresh or not os.path.isfile(out_png))
-                and power_spectrum.render_power_spectrum_summary(out_png) is None):
+                and power_spectrum.render_power_spectrum_summary(
+                    out_png, out_json=os.path.join(run_dir, _APS_JSON)) is None):
             abort(404, description="needs the synced validation records and their generated "
-                                   "SR cube (Data › Records)")
+                                   "SR cube (Models › Images: Generate SR)")
         if request.method == "POST":
             return jsonify({"ok": True, "rendered": True})
         return send_file(out_png, mimetype="image/png", max_age=0)
+
+    @app.get("/api/evaluation/angular-power-spectrum.json")
+    def api_evaluation_angular_power_spectrum_json():
+        """The per-band HR-vs-SR angular power spectrum as curves (Models ›
+        Diagnostics › Recovery draws them): per band and space (linear,
+        asinh) θ = 1/2k with the per-field median T(k) and r(k), their
+        16–84% spread and the field count. Cache only — written next to the
+        PNG whenever it renders (``POST /api/evaluation/angular-power-spectrum``);
+        404 in words until then."""
+        run = (request.values.get("run") or "").strip()
+        run_dir, _run_name = _resolve_run_dir(run)
+        path = os.path.join(run_dir, _APS_JSON)
+        if not os.path.isfile(path):
+            abort(404, description="the angular power spectrum is not measured yet — compute it "
+                                   "(it needs the synced validation records and their generated SR)")
+        return send_file(path, mimetype="application/json", max_age=0)
 
     @app.route("/eval-files/<path:relpath>")
     def serve_eval_files(relpath: str):

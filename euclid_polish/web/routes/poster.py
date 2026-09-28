@@ -10,15 +10,21 @@ each submit overwrites the previous result).
   so each generated cutout is kept).
 * ``GET /poster/result/status`` / ``cutout.png`` / ``cutout.fits`` serve the
   last pulled copy — local, so they work offline and a GET never writes.
+* ``GET /poster/result/export?format=png|pdf|svg&dpi=150|300|600`` wraps the
+  pulled PNG for print: the pixels are the node's render, the dpi sets the
+  printed size (PNG ``pHYs``, a PDF page of that size, an SVG in inches).
 """
 from __future__ import annotations
 
+import base64
 import glob
+import io
 import os
 import time
 from typing import Any
 
-from flask import jsonify, send_file
+from flask import jsonify, request, send_file
+from PIL import Image
 
 from euclid_polish.config import Config
 from euclid_polish.web import fasrc_config
@@ -30,6 +36,10 @@ _POSTER_SUBDIR = "_poster"
 _FITS_NAME = "poster_cutout.fits"
 _PNG_NAME = "poster_cutout.png"
 _ARTIFACTS = {"png": _PNG_NAME, "fits": _FITS_NAME}
+
+#: Print exports of the pulled scene (Figures › Plates).
+EXPORT_FORMATS = {"png": "image/png", "pdf": "application/pdf", "svg": "image/svg+xml"}
+EXPORT_DPIS = (150, 300, 600)
 
 _NO_RESULT = ("no poster cutout pulled yet — submit the poster_cutout step, then "
               "pull its result once the job completes")
@@ -84,6 +94,35 @@ def archive_png_to_vis(png_bytes: bytes) -> str | None:
         return None
 
 
+def export_poster_png(png_bytes: bytes, fmt: str, dpi: int) -> bytes:
+    """The pulled scene PNG as ``fmt`` at ``dpi`` (the printed size is
+    pixels / dpi; the pixels are never resampled)."""
+    if fmt not in EXPORT_FORMATS:
+        raise ValueError(f"format must be one of {', '.join(EXPORT_FORMATS)}")
+    if int(dpi) not in EXPORT_DPIS:
+        raise ValueError(f"dpi must be one of {', '.join(map(str, EXPORT_DPIS))}")
+    with Image.open(io.BytesIO(png_bytes)) as image:
+        image.load()
+        width, height = image.size
+        out = io.BytesIO()
+        if fmt == "png":
+            image.save(out, format="PNG", dpi=(dpi, dpi))
+        elif fmt == "pdf":
+            image.convert("RGB").save(out, format="PDF", resolution=float(dpi))
+        else:
+            png = io.BytesIO()
+            image.save(png, format="PNG")
+            data = base64.b64encode(png.getvalue()).decode("ascii")
+            out.write((
+                '<svg xmlns="http://www.w3.org/2000/svg" '
+                'xmlns:xlink="http://www.w3.org/1999/xlink" '
+                f'width="{width / dpi:.4f}in" height="{height / dpi:.4f}in" '
+                f'viewBox="0 0 {width} {height}">'
+                f'<image width="{width}" height="{height}" '
+                f'xlink:href="data:image/png;base64,{data}"/></svg>').encode())
+    return out.getvalue()
+
+
 def register(app):
 
     def _serve(kind: str, mimetype: str, *, as_attachment=False):
@@ -131,3 +170,24 @@ def register(app):
     @app.get("/poster/result/cutout.fits")
     def poster_result_fits():
         return _serve("fits", "application/fits", as_attachment=True)
+
+    @app.get("/poster/result/export")
+    def poster_result_export():
+        """The pulled scene PNG for print (``format`` png|pdf|svg, ``dpi``
+        150|300|600; the dpi sets the printed size, the pixels stay the
+        node's render). 404 before a pull, 400 for another format or dpi."""
+        fmt = (request.args.get("format") or "png").strip().lower()
+        try:
+            dpi = int(request.args.get("dpi") or 300)
+        except ValueError:
+            return jsonify({"ok": False, "error": "dpi must be an integer"}), 400
+        path = _local(_PNG_NAME)
+        if not os.path.isfile(path):
+            return jsonify({"ok": False, "error": _NO_RESULT}), 404
+        try:
+            with open(path, "rb") as handle:
+                body = export_poster_png(handle.read(), fmt, dpi)
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+        return send_file(io.BytesIO(body), mimetype=EXPORT_FORMATS[fmt], as_attachment=True,
+                         download_name=f"poster_cutout_{dpi}dpi.{fmt}", max_age=0)

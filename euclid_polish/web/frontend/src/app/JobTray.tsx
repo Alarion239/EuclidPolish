@@ -21,6 +21,7 @@ import {
   Badge, Button, Icon, IconButton, Popover, ProgressBar, confirm, toast, type Tone,
 } from "../ui";
 import { openInspector } from "./inspector";
+import { pagePath } from "./nav";
 import { useShellUi } from "./shellStore";
 
 const STATUS_TONE: Record<string, Tone> = {
@@ -165,7 +166,12 @@ export function JobTrayPanel({ onClose }: { onClose?: () => void }) {
         {feed.error && !feed.jobs.length
           ? <p className="jobtray__empty">Could not list jobs: {feed.error.message}</p>
           : <JobList jobs={feed.jobs} limit={LIMIT} onOpen={onClose} />}
-        {hidden > 0 && <p className="jobtray__more">{hidden} older job{hidden === 1 ? "" : "s"} in Ops › Jobs</p>}
+        {hidden > 0 && (
+          <p className="jobtray__more">
+            {hidden} older job{hidden === 1 ? "" : "s"} in{" "}
+            <Link to={pagePath("runs", { tab: "live" })} onClick={onClose}>Runs › Live</Link>
+          </p>
+        )}
       </section>
       <section className="jobtray__sec">
         <header className="jobtray__head">
@@ -176,7 +182,7 @@ export function JobTrayPanel({ onClose }: { onClose?: () => void }) {
         </header>
         {feed.fasrcOffline ? (
           <p className="jobtray__empty">Connect to FASRC to see cluster jobs.
-            {" "}<Link to="/settings/connections" onClick={onClose}>Connections</Link></p>
+            {" "}<Link to={pagePath("system", { tab: "connections" })} onClick={onClose}>Connections</Link></p>
         ) : feed.slurmError ? (
           <p className="jobtray__empty">Could not read SLURM jobs: {feed.slurmError.message}</p>
         ) : feed.slurm.length ? (
@@ -184,8 +190,8 @@ export function JobTrayPanel({ onClose }: { onClose?: () => void }) {
         ) : <p className="jobtray__empty">No live SLURM jobs.</p>}
       </section>
       <footer className="jobtray__foot">
-        <Button asChild size="sm" variant="ghost"><Link to="/ops/jobs" onClick={onClose}>All jobs</Link></Button>
-        <Button asChild size="sm" variant="ghost"><Link to="/ops/fasrc" onClick={onClose}>FASRC console</Link></Button>
+        <Button asChild size="sm" variant="ghost"><Link to={pagePath("runs", { tab: "live" })} onClick={onClose}>All running</Link></Button>
+        <Button asChild size="sm" variant="ghost"><Link to={pagePath("runs", { tab: "history" })} onClick={onClose}>Run history</Link></Button>
       </footer>
     </div>
   );

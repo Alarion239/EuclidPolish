@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  BAR_ROWS_STORAGE_KEY, bandLabel, barLayout, navPosition, parsePosition, rememberBarRows, reservedBarRows, chipTiers, colourOptions, formatSig, groupUnit, isSinglePlane, parseNumber, sameBarLayout, sentenceLabel, sequencePending, shortTierLabel, plainLabel, readoutTierName,
+  BAR_ROWS_STORAGE_KEY, bandLabel, barLayout, navPosition, parsePosition, rememberBarRows, reservedBarRows, chipTiers, colourOptions, formatSig, groupUnit, isSinglePlane, parseNumber, sameBarLayout, sentenceLabel, sequencePending, shortTierLabel, plainLabel, readoutTierName, readoutTierNames,
 } from "./barModel";
 import { moreShape } from "./barModel";
 
@@ -24,6 +24,10 @@ describe("shortTierLabel", () => {
     expect(readoutTierName("SR · production gate")).toBe("SR");
     expect(readoutTierName("Production")).toBe("Production");
     expect(readoutTierName("disagreement movie")).toBe("Disagreement");
+    // two gate variants never share a readout name
+    expect(readoutTierNames(["LR", "Gate full30s1 · 30 members", "Gate full30s2 · 30 members", "Gate p20"]))
+      .toEqual(["LR", "Gate full30s1", "Gate full30s2", "Gate p20"]);
+    expect(readoutTierNames(["Mean of 30 STARFULL members", "SR · production gate"])).toEqual(["Mean", "SR"]);
   });
   it("names a FITS HDU tier by its HDU name, not its index", () => {
     expect(shortTierLabel("1 · LR_VIS")).toBe("LR VIS");

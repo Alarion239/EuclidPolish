@@ -421,7 +421,7 @@ def list_specs() -> list[ModelSpec]:
         if not _VARIANT.fullmatch(name):
             continue
         specs.append(_combiner_spec(
-            spec=f"{GATE_PREFIX}{name}", kind="gate", label=f"Gate variant · {name}",
+            spec=f"{GATE_PREFIX}{name}", kind="gate", label=f"Gate {name} · variant",
             directory=directory, fitted_for_current=False, active=active, fps=fps))
     return specs
 

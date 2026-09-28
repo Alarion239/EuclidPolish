@@ -6,9 +6,11 @@ This is the shared frontend API that every workspace builds on: contracts C1, C7
 
 > **Status:** the foundation is complete. WP-F1 (tooling, tokens, data layer, stores,
 > `format.ts`, `ticks.ts`), WP-F2 (UI kit v2, DataTable, Plot v2: §9) and WP-F3 (data router,
-> shell, command palette, shortcuts, inspector registry, job tray, Display panel and the nine
-> workspace shells with legacy adapters: §10–§11) are in. Phase 3 replaces the legacy adapters
-> workspace by workspace (§11.4).
+> shell, command palette, shortcuts, inspector registry, job tray, Display panel: §10) are in.
+> The console regrouping (spec `docs/superpowers/specs/2026-09-27-console-regrouping-design.md`,
+> the "Loop console") re-homed every page into nine rail entries — Home, Synthetic, Models, Sky,
+> Figures, Files, Runs, Notebook, System (§11) — with every old URL redirected (§3). No legacy
+> page, adapter or interim tab remains.
 
 Rules that apply everywhere:
 
@@ -60,12 +62,10 @@ Rules that apply everywhere:
 | `ui/` | UI kit v2 on Radix (§9): controls, overlays, `confirm`, `toast`, display primitives, `Toolbar`, `DataTable`, `LogView`, `JsonTree`, `JobProgress`, `Icon`, download/clipboard helpers, `UiProvider` |
 | `charts/` | `Plot` v2, `Legend`, `useLegend` (§9.4); the pure maths is in `plotModel.ts` |
 | `viewer/` | Viewer engine v2 (§12): `<ImageViewer>`, `ViewerApi`, the colour core, WCS, cube transport; `viewer/README.md` |
-| `workspaces/<id>/` | One folder per workspace: `index.tsx` + lazy `tabs/<Tab>.tsx` (§11) |
-| `pages/` | The pre-rework pages, rendered by the workspace tabs as legacy adapters until phase 3 |
-| `legacy.tsx` | Compat `CutoutViewer` / `loadColorEngine` for the pre-rework pages, on top of `viewer/` |
+| `workspaces/<id>/` | One folder per workspace: `index.tsx` + lazy `tabs/<Tab>.tsx` (§11); `workspaces/shared/` the pieces several use (§11.6) |
+| `fasrc.tsx` | The public facade of the FASRC step card and SLURM monitor (§11.5) |
 
-These compatibility modules keep the pre-rework pages compiling. New code should not import
-from them:
+Compatibility names from before the rework (new code should not import them):
 
 | Old import | Now |
 |---|---|
@@ -83,7 +83,7 @@ Run all of these from `euclid_polish/web/frontend`:
 | Command | Does |
 |---|---|
 | `npm run typecheck` | `tsc --noEmit` over `src` (`tsconfig.json`), `test/` + `vitest.config.ts` (`tsconfig.test.json`), and `vite.config.ts` (`tsconfig.node.json`) |
-| `npm run lint` | ESLint flat config (`eslint.config.js`): typescript-eslint + react-hooks. It must report 0 errors. Legacy `src/pages/**` only warns on dead locals |
+| `npm run lint` | ESLint flat config (`eslint.config.js`): typescript-eslint + react-hooks. It must report 0 errors |
 | `npm test` | `vitest run` (happy-dom + Testing Library; setup in `test/setup.ts`) |
 | `npm run build` | `tsc --noEmit && vite build` into the **committed** `../static/dist`. **Only the orchestrator runs this.** To check a build without touching dist, run `npx vite build --outDir <tmp> --emptyOutDir` |
 | `npm run dev` | Vite on :5173 |
@@ -124,9 +124,11 @@ dependencies.
 
 ```ts
 import { MANIFEST, matchPage, isPagePath, redirectTarget, workspace, workspacePaths, pagePaths } from "./app/manifest";
-matchPage("/ensemble/starless/knee") // {workspace:"ensemble", params:{mode:"starless"}, tab:"knee", base:"/ensemble/starless"}
-isPagePath("/ensemble/status.json")  // false (data URL sharing a page prefix)
-redirectTarget("/config", "?x=1")     // "/settings/config?x=1"; "/app/<rest>" → "/<rest>"
+matchPage("/models/starless/train")  // {workspace:"models", params:{mode:"starless"}, tab:"train", base:"/models/starless"}
+isPagePath("/ensemble/status.json")  // false (data URL sharing an old page prefix)
+redirectTarget("/config", "?x=1")     // "/system/config?x=1"
+redirectTarget("/ensemble/starless/curves", "?layout=time")   // "/runs/history?step=ensemble_train"
+redirectTarget("/app/ensemble")      // "/models/starfull/leaderboard" (the /app prefix and the old path, one hop)
 redirectTarget("/app//evil.example")  // "/evil.example" (never protocol-relative)
 ```
 
@@ -134,6 +136,18 @@ The manifest file is `euclid_polish/web/spa_routes.json`, and nobody edits it wi
 orchestrator. `manifest.test.ts` mirrors `tests/test_spa_routes.py`, so Flask and the SPA agree on
 what counts as a page. The router (`app/routes.ts`, §10.1), the rail, the breadcrumbs, the palette
 and `document.title` are all built from `MANIFEST` + `app/nav.ts`.
+
+Redirects are query-aware (manifest v2, console regrouping). `redirectRules` are tried first, in
+order, first match wins: `from` is a path pattern (`:name` binds one segment, restricted by
+`params`), `query` requires keys (`"*"`, a value or a list of values), and the target query is the
+original pairs after `drop`, `rename`, `map`, `prefix` and `set`, form-encoded exactly like
+`URLSearchParams`. Then the exact-path `redirects` map (query appended untouched). An old URL
+under `/app/` resolves once more after the prefix goes, so it lands in one hop. A target is never
+itself a redirect, and never carries a `#fragment` (the server cannot see one): a section is a
+query key (`?section=census`). `euclid_polish/web/spa_redirect_cases.json` lists every old URL
+with its expected target; `manifest.test.ts` and `tests/test_spa_routes.py` both run it, so the
+SPA's `<Navigate>` and Flask's 308 give byte-identical targets. Add a case there with every new
+rule.
 
 The `/app/<rest>` redirect collapses every leading `/`, `\`, space or control character of
 `<rest>` into one `/`, as `spa_routes._same_host_path` does. `//host` and `/\host` are
@@ -246,7 +260,8 @@ const fit = useTrackedJob("combiner: fit starfull");   // attach by label (feed-
 
 ### 4.4 Endpoint modules
 
-Per-domain typed endpoint modules (`api/<domain>.ts`) arrive with their workspaces in phase 3.
+Each workspace types the endpoints it reads in its own `api.ts` (`workspaces/models/api.ts`,
+`workspaces/runs/api.ts`, …); `api/` holds only the shared client, query layer and jobs feed.
 
 ---
 
@@ -920,8 +935,12 @@ activate the row.
   means no inner scroll and no virtualisation.
 - Rows are virtualised above `virtualize` rows (default 150; `true`/`false` force it). They are
   measured, and `rowHeight` is only the estimate.
-- `empty` sets the no-rows message. A filter that matches nothing shows "Clear filter".
-  `loading` shows a skeleton.
+- `empty` sets the no-rows message (with no rows the toolbar shows no "0 rows" beside it). A
+  filter that matches nothing shows "Clear filter". `loading` shows a skeleton.
+- `countText` replaces the toolbar's "N rows": a string for a server-capped list ("showing
+  1,000 of 11,345", System › Lineage), `null` when the page's own chips already carry the count
+  (Runs › History's Source chips, Notebook › Backups' kind chips). A filter that narrows the
+  rows always shows "N of M rows".
 - `dense`, `hideToolbar`, `rowClassName`, `caption`, `searchable`, `filterPlaceholder`,
   `columnVisibility`/`onColumnVisibilityChange`.
 
@@ -1082,14 +1101,14 @@ const router = createBrowserRouter(buildRoutes({ layout: Shell }), { future: ROU
 | Route | Renders |
 |---|---|
 | `/` | the home workspace |
-| `<workspace path>/*` (`/sky/*`, `/ensemble/:mode/*`, `/inspect/*`, …) | the lazy workspace component (`workspaceComponents[id]`) inside a Suspense skeleton and a contained `ErrorBoundary` (reset on navigation): a workspace chunk that fails to load — the console was rebuilt under an open page — shows "Reload page" in the stage while the rail, top bar and other workspaces keep working |
-| every `manifest.redirects` key, and `/app/*` | `RedirectRoute`: `<Navigate replace>` to `redirectTarget(pathname, search)` + the hash |
+| `<workspace path>/*` (`/sky/*`, `/models/:mode/*`, `/files/*`, …) | the lazy workspace component (`workspaceComponents[id]`) inside a Suspense skeleton and a contained `ErrorBoundary` (reset on navigation): a workspace chunk that fails to load — the console was rebuilt under an open page — shows "Reload page" in the stage while the rail, top bar and other workspaces keep working |
+| every `manifest.redirects` key, every `redirectRules` pattern, and `/app/*` | `RedirectRoute`: `<Navigate replace>` to `redirectTarget(pathname, search)` + the hash |
 | `*` | `NotFound` |
 
 The router only picks the workspace. The workspace validates the rest of the path with the
-manifest matcher (`<Workspace>`, §11), so `/sky/unknown`, `/ensemble/foo` and
-`/ensemble/starfull/knee/x` show Not found — the same URLs Flask 404s. A bare workspace path
-(`/sky`, `/ensemble/starless`) redirects to its default tab (or the workspace's `redirectTab`)
+manifest matcher (`<Workspace>`, §11), so `/sky/unknown`, `/models/foo` and
+`/models/starfull/train/x` show Not found — the same URLs Flask 404s. A bare workspace path
+(`/sky`, `/models/starless`) redirects to its default tab (or the workspace's `redirectTab`)
 with query and hash kept.
 
 Adding a workspace = a manifest entry (orchestrator) + an `app/nav.ts` entry + one line in
@@ -1119,7 +1138,7 @@ The shell mounts, exactly once: `UiProvider` (§9.1), `useInspectorUrlSync`, `us
 `useSlurmToasts` (§10.6), the global shortcuts, `<RunActions/>` (the palette's "Run a job"
 group, §10.5), the command palette, the ? sheet, the Display panel, a skip link, and:
 
-- `document.title` = `pageTitle(pathname)`, e.g. "Members · Ensemble (starless) · EuclidPolish";
+- `document.title` = `pageTitle(pathname)`, e.g. "Members · Models (starless) · EuclidPolish";
 - stage scrolling (`useStageScroll`): a new pathname scrolls to the top, back/forward restores
   that history entry's position, and a query-only change (a `useUrlState` write, `?inspect=`)
   keeps the scroll. This replaces react-router's `<ScrollRestoration>`, which only drives the
@@ -1136,15 +1155,15 @@ Top bar, left to right (one line at every width: the breadcrumbs take the free s
 crumb ellipsizes — the inspected entity first, the tab last — with the full path as the nav's
 tooltip; below 1200 px the search button is an icon + ⌘K, below 900 px an icon and the entity
 crumb goes; the FASRC / server chips keep their words down to 600 px): menu (narrow
-only), breadcrumbs (workspace [(params)] › tab › the inspected entity's title, e.g. "Ensemble
-(starfull) › Disagreement"), the ⌘K search button, the FASRC badge (`/api/fasrc/status`; offline shows the real
-`last_error` in its tooltip; links to Settings › Connections) — or, while the local server is
+only), breadcrumbs (workspace [(params)] › tab › the inspected entity's title, e.g. "Models
+(starfull) › Images"), the ⌘K search button, the FASRC badge (`/api/fasrc/status`; offline shows the real
+`last_error` in its tooltip; links to System › Connections) — or, while the local server is
 not answering (`useServerHealth().down`, §4.2), the calm "Server not responding — retrying"
 chip in its place (a warn line under the bar marks everything below as possibly stale; it asks
 `/api/version` again every 5 s while the tab is visible, a click retries now, a polite live
 region announces the outage and the recovery) — the job tray (its count greys and its popover
-says "the job states it last sent" while the server is down), the Display button, the theme
-toggle and the ? sheet button.
+says "the job states it last sent" while the server is down), the "Open a file" icon (→ Files),
+the Display button, the theme toggle and the ? sheet button.
 
 The stage opens with ONE notice strip (`ShellNotices`, `.shell__banner`: static, scrolls away,
 renders nothing while no notice applies). It holds up to two dense one-line notices
@@ -1169,8 +1188,8 @@ of changed files changes (`bannerKey`, keyed on the server's `changed_digest` of
 so re-saving an already-changed file — which reorders the capped list — does not bring it
 back). The rail shows the nine workspaces (icons from
 `nav.ts`), a health badge on Home (the count of warn/bad checks of `/api/system/alerts`, toned
-by the worst, their titles in the tooltip), a running-jobs badge on Ops, a warn "!" on Settings
-("Backend code changed — restart the server") and the collapse toggle (`prefs.railCollapsed`;
+by the worst, their titles in the tooltip), a running-jobs badge on Runs (it lands on Runs › Live,
+which lists the jobs it counts), a warn "!" on System ("Backend code changed — restart the server") and the collapse toggle (`prefs.railCollapsed`;
 collapsed items get tooltips).
 
 `app/status.ts` shares the status resources (one cache entry each):
@@ -1218,7 +1237,7 @@ const off = bindShortcut("Shift+E", run, { description: "Evaluate" });   // impe
   `scope`, default "Global").
 
 Global shortcuts (`app/GlobalShortcuts.tsx`): `$mod+k` palette (also in fields), `?` this
-sheet, `g h/s/e/r/d/f/i/o/,` go to Home/Sky/Ensemble/Realism/Data/Figures/Inspect/Ops/Settings,
+sheet, `g h/y/m/s/f/i/r/n/,` go to Home/Synthetic/Models/Sky/Figures/Files/Runs/Notebook/System,
 `[` collapse the rail, `]` show/hide the inspector, `Shift+D` Display panel, `Shift+J` jobs,
 `Shift+T` toggle the theme. Escape closes the inspector from anywhere — the page, a field, the
 inspector itself — unless a dialog, popover, menu or listbox is open (it closes first) or
@@ -1274,22 +1293,24 @@ const href = inspectHref({ kind: "tile", id: "nexus/12" }, location); // "/sky/a
 
   | Kind | Id | Registered by |
   |---|---|---|
-  | `member` | `member_<n>` | `workspaces/ensemble/register.ts` |
-  | `combiner` | `<regime>/<variant>` | `workspaces/ensemble/register.ts` |
-  | `fits` | project-relative path | `workspaces/inspect/register.ts` |
-  | `prov`, `campaign`, `commit` | record id / campaign / hash | `workspaces/ops/register.ts` |
-  | `readiness`, `noisepos`, `archivefield` | see module | `workspaces/realism/register.ts` |
+  | `readiness`, `noisepos`, `archivefield` | Status row id · Q1 tile · archive field id | `workspaces/synthetic/register.ts` |
+  | `star`, `truth`, `psf`, `tng` | catalogue row · `<split>/<index>/<row>` · cluster index · subhalo id | `workspaces/synthetic/register.ts` |
+  | `member` | `member_<n>` | `workspaces/models/register.ts` |
+  | `combiner` | `<regime>/<variant dir>` | `workspaces/models/register.ts` |
   | `tile`, `source` | `nexus/<n>` · `<layer>/<id>` | `workspaces/sky/atlas/inspectors/register.tsx` |
   | `realtile`, `experiment` | `<source>/<id>` · experiment id | `workspaces/sky/results/register.tsx` |
+  | `figure` | saved result id | `workspaces/figures/register.tsx` |
+  | `fits` | project-relative path | `workspaces/files/register.ts` |
+  | `campaign` | campaign dir (`current`) | `workspaces/notebook/register.ts` |
+  | `prov`, `commit`, `root` | record id · hash · data-root id | `workspaces/system/register.ts` |
 
   `tile:` and `realtile:` render the ONE real-tile card (`workspaces/sky/results/RealTileInspector.tsx`,
   titled "Tile <ref>"): image first — the `real` viewer with only that tile's own tiers
-  (`models=<its outputs>`, "," when it has none) at the top of the inspector, then state, actions
-  (show on sky, compare models, run models, FITS, overlay on the sky) and the models / metrics. The
+  (`models=<its outputs>`, "," when it has none) at the top of the inspector, with its flux
+  footer (Δm vs LR, warn-toned past 0.1 mag) — then one status sentence, two headline metrics,
+  "Compare models on this tile", "Open in Files" (the card's `files`, API.md) and a collapsed
+  Details; "Delete model outputs" sits alone in a danger zone behind a typed confirmation. The
   atlas highlights either kind.
-  | `star`, `truth`, `psf`, `tng` | see module | `workspaces/data/register.ts` |
-  | `figure` | saved result id | `workspaces/figures/register.tsx` |
-  | `check` | health-check id | `workspaces/home/Dashboard.tsx` (registers when Home loads) |
 
   A new workspace kind: register it in a `register.ts` in the workspace folder and add one
   side-effect import to `app/Shell.tsx`.
@@ -1302,7 +1323,7 @@ const href = inspectHref({ kind: "tile", id: "nexus/12" }, location); // "/sky/a
 
 ```ts
 usePageActions([
-  { id: "evaluate", label: "Evaluate on test set", group: "Ensemble", keywords: ["psnr"],
+  { id: "evaluate", label: "Evaluate on test set", group: "Models", keywords: ["psnr"],
     shortcut: "Shift+E", disabled: !ready, run: () => evalJob.run("/ensemble/evaluate", {…}) },
 ]);
 ```
@@ -1312,14 +1333,12 @@ usePageActions([
   changes only when an id, label, group, keyword, shortcut or `disabled` changes. A `shortcut` is
   bound for as long as the page is mounted (and listed in the ? sheet); a disabled action ignores
   it.
-- The palette also lists every page (`allPages()`: each workspace × tab × ensemble regime) and
+- The palette also lists every page (`allPages()`: each workspace × tab × models regime) and
   the global commands (theme light/dark/system/toggle, Display panel, jobs, "Run a FASRC step…"
-  (→ `/ops/fasrc`), shortcuts, rail, close inspector, refresh all data, copy a link to this
-  view).
-- **Not done in phase 1 (phase-3 owners):** no page registers `usePageActions` yet (the legacy
-  pages predate it), so on real pages the page-actions group is empty until the phase-3 tabs
-  register theirs (evaluate, fit gate, pull, fly to…). Per-step commands ("Submit <step>")
-  belong to W-Ops. `member N` / `nexus N` need the `member` / `tile` inspector kinds (§10.4).
+  (→ Runs › Steps), connections (→ System › Connections), open a file (→ Files), shortcuts, rail,
+  close inspector, refresh all data, copy a link to this view). A tab's `keywords` in `nav.ts`
+  keep the old names findable: "git" finds System › Code, "tracking" Notebook, "realism"
+  Synthetic, "ensemble" Models.
 - **"Run a job"** (`app/RunActions.tsx`, mounted once by the shell): the local jobs started most
   often, listed after the page's own groups — evaluate STARFULL, PSNR vs knee, member PSNR, disk
   usage, re-run the health checks — plus links to the knob-heavy runs (fit a gate variant,
@@ -1337,7 +1356,7 @@ usePageActions([
   multi-word query matches 50, keyword substring 45, hint 40/30, letters in order from a word
   start (3+ letters) 10 — orders groups by their best item and items by score, and breaks ties
   toward pages (+2) and commands (+1) over the "Run a job" launchers (−1). So Enter does what
-  was typed: "git" → Ops › Git, "noise" → Realism › Noise, "theme" → the theme commands.
+  was typed: "git" → System › Code, "noise" → Synthetic › Noise, "theme" → the theme commands.
 - Free text adds `paletteSuggestions(text, parseSkyCoord)`: coordinates, members, tiles and
   FITS paths first ("Go to"); the sky-name lookup (`fallback: true`) last, under "Search the
   sky", so it is the Enter target only when nothing else matches:
@@ -1347,7 +1366,7 @@ usePageActions([
   | `269.27 66.1`, `17:57:04 +66:06:00` | `/sky/atlas?ra=<deg>&dec=<deg>` |
   | `member 196`, `member_196`, `member196` (not "members") | inspector `member:member_196` |
   | `nexus 12`, `tile 12` | inspector `tile:nexus/12` |
-  | `data/…/x.fits` | `/inspect?fits=<path>` |
+  | `data/…/x.fits` | `/files?fits=<path>` |
   | any other text | `/sky/atlas?goto=<text>` (the atlas resolves names with Sesame) |
 
   "Nothing matches" shows only when there is nothing to pick (no suggestion either).
@@ -1369,7 +1388,9 @@ usePageActions([
   Offline and `stale` snapshots of the feed are ignored, so a slow login node never reads as a
   finish.
 - Reusable parts: `<JobList jobs limit? empty? onOpen?>`, `<JobRow job>`, `<SlurmRow job>`,
-  `orderJobs(jobs, limit)` (Home and Ops › Jobs use them).
+  `orderJobs(jobs, limit)`. More than 8 local jobs add "N older jobs in Runs › Live", a link that
+  closes the tray; the rail's Runs badge, the tray and Home's "Running now" line all land on Runs ›
+  Live, which lists every job they count.
 
 ### 10.7 Display panel: `app/DisplayPanel.tsx`, `app/displaySections.ts`
 
@@ -1414,17 +1435,17 @@ cuts…) is added this way.
 Each workspace is `src/workspaces/<id>/`:
 
 ```tsx
-// src/workspaces/realism/index.tsx
+// src/workspaces/synthetic/index.tsx
 import { Workspace, defineTabs } from "../../app/workspace";
 
-export const TABS = defineTabs("realism", {           // exactly the manifest's tabs
-  overview: { load: () => import("./tabs/Overview") },
-  noise:    { load: () => import("./tabs/Noise"), badge: "v5" },   // label from nav.ts unless `label`
+export const TABS = defineTabs("synthetic", {         // exactly the manifest's tabs
+  status: { load: () => import("./tabs/Status") },
+  noise:  { load: () => import("./tabs/Noise") },     // label from nav.ts unless `label`
   …
 });
 
-export default function RealismWorkspace() {
-  return <Workspace id="realism" tabs={TABS} />;       // aside={…}: controls right of the tabs
+export default function SyntheticWorkspace() {
+  return <Workspace id="synthetic" tabs={TABS} />;     // aside={…}: controls right of the tabs
 }
 ```
 
@@ -1433,7 +1454,7 @@ export default function RealismWorkspace() {
   exactly its manifest tabs and that each tab module loads to a component.
 - `<Workspace>` renders the router-linked tab strip (`<WorkspaceTabs>`: kit `Tabs` with `to`,
   `aria-current="page"`, the links keep `?inspect=`) and the active tab in its error boundary and
-  a `TabSkeleton` Suspense fallback. A tabless workspace (home, inspect) passes `children`.
+  a `TabSkeleton` Suspense fallback. A tabless workspace (home, files) passes `children`.
 - The strip is one line at every width and never cuts a label, and tabs never trade places: a
   fixed run of leading tabs (the longest prefix that leaves room for the widest tab after it) is
   shown whole, then ONE reserved slot that holds the active tab when it is past the run (empty
@@ -1441,18 +1462,16 @@ export default function RealismWorkspace() {
   the strip's `<nav>` landmark and its items are router links (middle-/⌘-click opens a new
   browser tab). `app/tabFit.ts` (`fitTabs`, unit-tested) does the maths;
   `WorkspaceTabs` measures the tabs before paint and re-fits on resize, density and font load.
-- Every page gets a visually hidden h1, `pageHeading(pathname)` ("Members, Ensemble
+- Every page gets a visually hidden h1, `pageHeading(pathname)` ("Members, Models
   (starless)"), for screen readers and the outline; CSS drops it when the page renders its own
   h1 (`.ws:has(.ws__body h1)`), so there is always exactly one.
 - A bare workspace path redirects to the manifest default tab, or to `redirectTab` when that is
-  one of the workspace's tabs (the ensemble workspace passes the last tab it showed, so a regime
-  switch to the bare `/ensemble/<mode>` keeps the tab).
-- `aside` is the workspace's (the ensemble regime switch). A tab that needs ONE control reachable
-  without scrolling and without a row over its images can portal it into the aside: the ensemble
-  workspace provides a slot left of the switch (`workspaces/ensemble/aside.ts`, `TabAsideSlot` /
-  `useTabAside`); Disagreement's member menu lives there (its button names what the movie shows:
-  "Members: 196, 195 +1 · Change", "Members: none · Pick"). Outside the workspace the slot is null
-  and the tab shows only its in-page controls.
+  one of the workspace's tabs (the models workspace passes the last tab it showed, so a regime
+  switch to the bare `/models/<mode>` keeps the tab).
+- `aside` is the workspace's and holds only workspace-wide controls: the Models regime switch
+  (starfull | starless, keeping the tab and `?inspect=`) and the Synthetic include-training
+  toggle. Nothing a tab owns goes there, so the strip never reshapes (the Models › Images member
+  picker is a side panel of its page).
 - A theme or accent flip re-renders the active tab (and `children`, which `<Workspace>` clones
   for that reason): the route elements above a workspace are static, and the legacy pages read
   colour tokens during render. `bindPrefsToDocument` has already updated `<html data-theme>`
@@ -1462,14 +1481,14 @@ export default function RealismWorkspace() {
   actions (`usePageActions`), inspector kinds (`registerInspector`), and its empty/loading/error
   states. Co-locate its CSS in the workspace folder, scoped by a workspace class (`.ws--<id>` is
   on the workspace root).
-- `<PendingTab workspace tab links?>`: the "arrives in phase 3" EmptyState, with links to related
-  pages that exist.
+- `<PendingTab workspace tab links?>`: an "arrives later" EmptyState with links to related pages
+  that exist; `<Workspace>` shows it for a manifest tab that has no module yet.
 - Tab labels, descriptions, icons and the go-key live in `app/nav.ts` (`WORKSPACE_META`).
 
 ### 11.2 How to build a tab (example)
 
 ```tsx
-// src/workspaces/ensemble/tabs/Members.tsx
+// src/workspaces/models/tabs/Members.tsx
 import { useState } from "react";
 import { useResource, invalidate } from "../../../api/query";
 import { useJob } from "../../../api/jobs";
@@ -1518,36 +1537,43 @@ export default function Members() {
 Charts: `import Plot, { Legend, useLegend } from "../../../charts/Plot"` (§9.4). Formatting:
 `format.ts` / `ticks.ts` (§7), never a local tick helper.
 
-### 11.3 Where every tab lives (phase 3 complete)
+### 11.3 Where every tab lives (the Loop console)
 
-Every legacy `src/pages/*` module and the `legacy.tsx` wrapper are gone; each tab is a module in
-its workspace folder, with its logic next to it.
+The rail (spec `2026-09-27-console-regrouping-design.md`): Home · Synthetic · Models · Sky ·
+Figures · Files · Runs · Notebook · System. Every tab name is unique across the rail. Each
+workspace has its own subsection below (§11.7–§11.15).
 
 | Workspace | Tabs → modules | Inspector kinds |
 |---|---|---|
-| `/` Home | `workspaces/home/Dashboard.tsx` (+ `homeModel.ts` incl. the tracking catch-up note, `skyProjection.ts`) | `check` |
-| `sky` | `tabs/Atlas.tsx` (+ `atlas/`, `src/sky/` Aladin engine) · `tabs/{Results,Experiments,CatalogEval}.tsx` (+ `results/`) | `tile`, `source`, `realtile`, `experiment` |
-| `ensemble/:mode` | `tabs/{Overview,Members,Curves,Knee,Diagnostics,Combiners,Disagreement,Train}.tsx` (+ `model.ts`, `trainModel.ts`, `notes.ts`, `PixelTrace.tsx`) | `member`, `combiner` |
-| `realism` | `tabs/{Overview,Noise,Galaxies,Stars,Pixels,Visual}.tsx` | `readiness`, `noisepos`, `archivefield` |
-| `data` | `tabs/{Records,Catalog,Cutouts,Psfs,Tng}.tsx` | `star`, `truth`, `psf`, `tng` |
-| `figures` | `tabs/{Grid,Plates,Results}.tsx` | `figure` |
-| `inspect` | `InspectPage` (`?path=`, `dir`, `q`, `hdu`, `slice`, `view`) | `fits` |
-| `ops` | `tabs/{Jobs,Fasrc,Tracking,Git,Provenance}.tsx` (+ `steps/`, behind `src/fasrc.tsx`) | `prov`, `campaign`, `commit` |
-| `settings` | `tabs/{Config,Connections,Appearance,About}.tsx` (+ `configModel.ts`, `appearanceModel.ts`) | `root` |
-| (shared) | `workspaces/shared/`: `LogToTracking.tsx`, `PageLead.tsx`, `versionText.ts`, `noteText.ts` (§11.6) | — |
+| `/` Home | `workspaces/home/Dashboard.tsx` (+ `homeModel.ts` headlines and the notebook catch-up entry, `loop.ts` Loop strip / Running now / thumbnails) | — |
+| `synthetic` | `tabs/{Status,Records,Galaxies,Stars,Noise,Psf,Fields}.tsx` (+ `galaxies/`, `stars/`, `psf/`, `fields/`, `statusModel.ts`, `recordsModel.ts`, `noiseModel.ts`, `generate.tsx`, `header.tsx`) | `readiness`, `noisepos`, `archivefield`, `star`, `truth`, `psf`, `tng` |
+| `models/:mode` | `tabs/{Leaderboard,Members,Train,Combiner,Diagnostics,Images}.tsx` (+ `members/`, `diagnostics/`, `images/`, `model.ts`, `trainModel.ts`, `notes.ts`, `common.tsx`, `PixelTrace.tsx`) | `member`, `combiner` |
+| `sky` | `tabs/{Atlas,Targets,Compare}.tsx` (+ `atlas/`, `targets/`, `compare/`, `results/` the tile card and model picker, `src/sky/` Aladin engine) | `tile`, `source`, `realtile`, `experiment` |
+| `figures` | `tabs/{Plates,Sheet}.tsx` (+ `plates/`, `sheet/`, `grid/`) | `figure` |
+| `files` | `FilesPage.tsx` (`?fits=`, `?path=`, `dir`, `q`, `hdu`, `slice`, `view`) | `fits` |
+| `runs` | `tabs/{Live,History,Steps}.tsx` (+ `steps/` the FASRC step card behind `src/fasrc.tsx`, `Connection.tsx`, `Queue.tsx`, `LogViewer.tsx`, `LocalJob.tsx`) | (`job`, built in) |
+| `notebook` | `tabs/{Log,Backups,Sandboxes}.tsx` (+ `NotebookView.tsx`, `CampaignBar.tsx`, `Backups.tsx`, `Archive.tsx`, `TimeTravel.tsx`, `TrackedJobs.tsx`) | `campaign` |
+| `system` | `tabs/{Connections,Config,Lineage,Code,Storage,Appearance}.tsx` (+ `configFields.ts`, `configModel.ts`, `git/`, `provenance/`) | `prov`, `commit`, `root` |
+| (shared) | `workspaces/shared/`: `LogToNotebook.tsx`, `ConfigKnobsLink.tsx`, `PageLead.tsx`, `versionText.ts`, `noteText.ts` (§11.6) | — |
+
+Old URLs: every page of the previous console (`/realism/*`, `/data/*`, `/ensemble/:mode/*`,
+`/inspect`, `/ops/*`, `/settings/*` and the pre-rework paths) redirects to its new home with its
+query translated (§3); `spa_redirect_cases.json` lists them all.
 
 ### 11.4 Adding or replacing a tab
 
-1. Write the tab in `src/workspaces/<id>/tabs/<Tab>.tsx` (your folder) on the foundation.
-2. Keep the tab ids and the module path; `workspaces.test.ts` keeps the contract.
-3. Delete the absorbed `src/pages/<X>.tsx` (and its CSS / `ui/pages-compat.css` block) when no
-   other tab imports it, and remove its row from the `ADAPTERS` list in `workspaces.test.ts`.
+1. Add the tab to the manifest (orchestrator), its label to `app/nav.ts` (unique across the
+   rail) and its module to the workspace's `defineTabs`.
+2. Write the tab in `src/workspaces/<id>/tabs/<Tab>.tsx` (your folder) on the foundation;
+   `workspaces.test.ts` keeps the contract.
+3. When a tab moves or a page is retired, add a redirect (rule) for its old URL and a line in
+   `spa_redirect_cases.json` (§3); `app/noOldPageLinks.test.ts` fails on a link to an old page.
 4. A missing shared primitive goes to the orchestrator; do not fork one.
 
-### 11.5 The shared FASRC step card: `src/fasrc.tsx` (W-Ops)
+### 11.5 The shared FASRC step card: `src/fasrc.tsx` (Runs)
 
-`src/fasrc.tsx` is the public facade of `workspaces/ops/steps/` — import from it, not from the
-Ops folder:
+`src/fasrc.tsx` is the public facade of `workspaces/runs/steps/` and the Runs live panel —
+import from it, not from the Runs folder:
 
 ```tsx
 import { StepById, SlurmMonitor, useStepsStatus } from "../../../fasrc";
@@ -1559,18 +1585,21 @@ import { StepById, SlurmMonitor, useStepsStatus } from "../../../fasrc";
 
 - The card renders the step's `task_params` (C5) generically — int/float (range), str, bool
   (switch), choice (segmented ≤ 3 short choices, else select), json — each with a help popover,
-  prefilled from `last_params` (the last successful run) or from a cloned past run (the history
-  table's "clone" button; Ops › FASRC › Steps `?step=&clone=<jobid>`), with "Defaults" / "Use last
-  run" resets, the SLURM resources (partition fixed per step) and a confirmed submit (a danger
+  prefilled from `last_params` (the last successful run) or from a cloned past run (Runs ›
+  History's "Clone"; Runs › Steps `?step=&clone=<jobid>`), with "Defaults" / "Use last run"
+  resets, the SLURM resources (partition fixed per step) and a confirmed submit (a danger
   confirm for `force`-style flags). A submit while another FASRC job runs is queued; the card says
   where. It re-attaches to the step's live job from the shared jobs feed after navigation and lists
   the step's known remote `outputs`.
 - Props (backward compatible): `stepId`/`step`, `extraParams` (host-controlled params: posted as
   given and hidden from the form), `embedded`, `showHistory`, `submitDisabled`,
-  `submitDisabledHint`; new: `hideParams`, `initial {params, resources?, jobid?}`, `onSubmitted`.
+  `submitDisabledHint`, `hideParams`, `initial {params, resources?, jobid?}`, `onSubmitted`.
 - Also exported: `StepCard`, `StepHistory`, `JobStatusBody`, `TrainingCurve`, `jobStateTone`,
   `ConnectionBar`, `CurrentSubmission` (the live SLURM jobs panel) and the `Step`/`StepsStatus`/
   `TaskParam`/`SlurmStatus` types.
+- The ingredient tabs embed the steps that make their real reference data in their "How this is
+  produced" drawers; Runs › Steps indexes every step by stage and links each to the tab that
+  embeds it.
 
 ### 11.6 Pieces shared across workspaces: `workspaces/shared/`
 
@@ -1578,122 +1607,258 @@ A component or pure helper that more than one workspace uses, and that is not a 
 lives here (import it from the workspace; never from another workspace's folder).
 
 ```tsx
-import { LogToTrackingButton, LogToTrackingDialog, appendTrackingNote } from "../../shared/LogToTracking";
-<LogToTrackingButton note={() => markdown} title="…" />                 // "Log to tracking" + the dialog
-<LogToTrackingDialog open={open} onOpenChange={setOpen} note={() => md} /> // controlled: a menu item, a Home action
+import { LogToNotebookButton, useLogToNotebook } from "../../shared/LogToNotebook";
+<LogToNotebookButton note={() => markdown} from="Models › Leaderboard" />   // → Notebook › Log, prefilled
+const log = useLogToNotebook("Home"); … log(markdown)                        // a menu item, a palette action
+import { ConfigKnobsLink } from "../../shared/ConfigKnobsLink";
+<ConfigKnobsLink groups={["scenes", "lenses"]} />                            // "2 knobs changed · Edit"
 import { PageLead } from "../../shared/PageLead";
 <PageLead right={<Button …>Refresh</Button>}>What the page is for.</PageLead>
 ```
 
-- **LogToTracking**: an editable markdown note (`textbox "Markdown note"`) pre-filled from the
-  page's facts when the dialog opens; nothing is sent until "Append" (`POST /api/tracking/log
-  mode=append`), then `/api/tracking/` is invalidated and the Home `tracking` check recomputed
-  (`/api/system/alerts?fresh=1`). Used by Sky › Experiments (`sky/results/LogToTracking.tsx` is a
-  one-line re-export), Ensemble › Overview / Knee / Combiners and Home › Quick actions.
-- **PageLead**: the lead line of an Ops / Settings / Home page with the page's own actions at its
-  right. Those pages render no visible title or eyebrow: the breadcrumb and the active tab name
-  the page, `<Workspace>` renders its visually hidden h1.
+- **LogToNotebook**: every "Log to notebook" (Models › Leaderboard and Combiner, Sky › Compare,
+  Home's "no notebook entry since" alert and palette action) builds a markdown entry from the
+  facts on the page and lands on Notebook › Log with it prefilled (`noteText.ts
+  notebookEntryUrl`: `?entry=<markdown>&from=<page label>`). Nothing is appended from the page:
+  the notebook's own "Append entry" does it, after the entry was read and edited there. A blank
+  entry does nothing.
+- **ConfigKnobsLink**: the back-link from a tab that judges a System › Config group to that group
+  (`/system/config?group=<id>&changed=1`, or `?changed=1` for several groups). It counts the
+  group's knobs that differ from their defaults (`GET /api/config`, read-only) and renders
+  nothing while the config loads, when it fails, or when every knob is at its default. Synthetic ›
+  Records passes `["scenes", "lenses"]` (in the caption under its viewer), Synthetic › PSF
+  `["cutouts", "psf"]` (in its toolbar; System › Config's `groupHome` is the other direction); Models › Train shows its own "N · Edit" per card
+  (Scheduling, Forward model).
+- **PageLead**: the lead line of a Home / Runs / Notebook / System page with the page's own
+  actions at its right. Those pages render no visible title or eyebrow: the breadcrumb and the
+  active tab name the page, `<Workspace>` renders its visually hidden h1.
 - **versionText** (`serverCodeText`): the version state in plain words — "Backend code changed —
   restart the server to load it" (`/api/version` `behind`), "The console build changed — reload"
-  (`useConsoleUpdate`), else "current code". Home › Server and Settings › About read it; never
-  "behind HEAD".
-- **noteText** (`utcText`): "2026-09-25 23:32 UTC" for notebook notes.
+  (`useConsoleUpdate`), else "current code". System › Code reads it; never "behind HEAD".
+- **noteText**: `utcText` ("2026-09-25 23:32 UTC" for notebook entries) and `notebookEntryUrl`.
 
-### 11.7 Ensemble, Ops, Figures, Home and Settings: page notes
+**Charts** (every workspace) pass no `xTicks`/`yTicks` unless they want specific ones: `Plot`
+generates them (and their grid lines) itself (§9.4). The r(k) / T(k) y axis keeps `unitTicks`
+(0, 0.25 … 1) with the horizontal grid; log axes pass `logTicks`/`decadeTicks`; categorical axes
+their labels. **Statistics** follow the user's rule — readable and informative, no useless
+numbers: one `SummaryLine` per page (with `Num` and its `unit`), `FactsList` / tables for the
+rest, counts on the chips and controls they belong to (so a `DataTable` beside them passes
+`countText={null}`), `Caption` for definitions and `Details` only for provenance.
 
-- **Charts** pass no `xTicks`/`yTicks` unless they want specific ones: `Plot` generates them (and
-  their grid lines) itself (§9.4). The r(k) / T(k) y axis keeps `unitTicks` (0, 0.25 … 1) with the
-  horizontal grid; log axes pass `logTicks`/`decadeTicks`; categorical axes their labels.
-- **Ensemble › Diagnostics, pixel back-trace** (`PixelTrace.tsx`): rows of LR · target · SR · σ
-  stamps on the viewer's light table (`cv-root cv-table` classes, its scoped dark palette in both
-  themes); ONE asinh knee per row from the traced pixel's level (`model.ts stampKnee`), named in
-  the row's header line with the field and pixel; each backing store is the whole number of device
-  pixels that fits the stamp box and the canvas's CSS box snaps to it (`model.ts stampBacking`:
-  a 141.5 css px cell at dpr 2 gets a 283 px backing shown at 141.5 css px, no rescale); a pick
-  scrolls the trace into view (`block: "nearest"`, instant under reduced motion).
-- **Ensemble › Disagreement** opens on LR | SR | HR (SR = the production gate); the member menu in
-  the tab strip names the picked members (`model.ts membersButtonText`; the "· Change" word hides
-  below 900 px).
-- **Ensemble › Combiners**: the real holes come from ONE Sky experiment (`?bench=`, default the
-  newest that ran production; `model.ts benchmarkExperiment / benchmarkChoices`), per band
-  VIS · Y · J · H with the worst band coloured (`holesText`); variants it did not run are blank; the
-  bar's "Real holes from" picker names the tile set. Member counts read `readsText` ("6 of 20
-  members" for a pruned gate). A line above the table says how many members production SR runs
-  (`model.ts productionRunsText`: "Runs 20 of 30 members: those with ≥ 0.5% of the gate's weight
-  somewhere" when the fit records `prune_threshold` / `used_threshold`, else "…: the ones the gate reads").
-- **Ensemble › Members "Gate use"**: the all-pixel mean over the bands rounds a core specialist
-  to 0.0%, so when the row has `gate_usage_peak` the cell reads "0.0% mean · 48% peak (VIS
-  cores)" (`model.ts gatePeak / gateUseText`; the peak is the largest share over bands and
-  brightness bins) and a "Read by gate" column shows `used_by_gate` ("read" / "not read"). A
-  payload without these keeps the mean-only cell and no column.
-- **Ensemble notebook notes** (`notes.ts`, pure): `evaluationNote` (Overview), `kneeNote` (the
-  leaderboard as a markdown table with its integration range), `variantNote` (a fit; row menu
-  and after a fit job), `compareNote` (the compare report card), `promoteNote` (after a promote).
-- **Ensemble › Train** seeds CPUs / memory / time from the newest COMPLETED job of the same kind
+### 11.7 Home: page notes
+
+- `Dashboard.tsx`, top to bottom: the production verdict sentence (∫PSNR against the best member
+  and the plain mean; the worst-band real holes of the newest Sky › Compare run of THIS
+  production fit, or "no real benchmark for this membership") and its caption; the Loop strip;
+  the problem-only warnings (disk, FASRC, unlogged results); "Running now" (local + SLURM, with
+  the TIMEOUT members and "Continue them"); up to six cached thumbnails. No KPI tiles and no job
+  launchers: opening Home only reads.
+- **The Loop** (`loop.ts`, pure): Priors, Records, Members, Evaluation, Gate, Real SR, Figures,
+  each current / stale / blocked / unknown with ONE reason and the tab whose confirmed button
+  fixes it. The verdicts come only from the backend staleness service `GET /api/system/loop`
+  (`helpers/system_alerts.py`, shared with System › Lineage; its rules are pinned by
+  `tests/test_system_alerts.py`); `loop.ts` holds no stage rules. Until it answers each chip reads
+  "checking" (a cold server can take ~15–35 s: the alerts it reads are cold too), if it fails
+  "not checked" — never "current". The Real SR chip lands on exactly the Sky › Targets sets it
+  counted, filtered to stale.
+- Thumbnails read caches only: the newest cached production SRs of real tiles (`GET
+  /api/figures/real-sr`, the C9 output store), saved real crops and the newest plates.
+- The Home rail badge counts the warn/bad checks of `/api/system/alerts`; "Running now", the
+  rail's Runs badge and the job tray all land on Runs › Live.
+
+### 11.8 Synthetic: page notes
+
+- Every ingredient tab has the same layout, top to bottom: the check against real data (its
+  verdict line), the prior (the Prior drawer, `?prior=1`: fit / activate, both confirmed), then
+  "How this is produced" (`?how=1`) with the real reference data and its FASRC steps; Fields calls
+  its drawer "Real reference" (`?ref=1`). The one header control beside the tabs is the
+  include-training toggle (`header.tsx`, `?training=1`, sticky for the session), shown only on the
+  tabs whose numbers the training split changes.
+- **Status** (landing): the `synthetic_generate` gate ("Ready to generate" / "Blocked by N") with
+  the confirmed "Generate validate+test on FASRC" (a dialog with the step card), then "Blocks
+  generation" and "Diagnostic caches" rows from `GET /api/realism/overview`, each with ONE verdict
+  number (`statusModel.ts rowVerdict`), a "records built with this?" tick, its confirmed fix and a
+  link to its tab; fingerprints live in the `readiness` inspector.
+- **Records**: split switch (train disabled with its reason), the viewer (LR, HR at matched
+  surface brightness, Blurred HR, Clean — each tier chip's tooltip is the backend's `hint`; the
+  SR tier appears only once the production SR was generated over the split, in Models › Images),
+  truth-marker chips as legend and filter, the truth-source table, then the census (Σ VIS /
+  brightest-star histograms, a click opens that record; sources per arcmin² generated · prior ·
+  Q1). Under the viewer, one caption line: "Open its SR in Models › Images" (or "Generate its SR…"
+  when the split has none; `recordsModel.ts recordSrLink`) and "N knobs changed · Edit" (§11.6;
+  not in the bar, which stays one row). The "Generate and sync" drawer (`?gen=1`) holds the step,
+  the sync and the generation knobs read-only.
+- **Data toolbars** compact by levels instead of wrapping (`dataCommon.tsx DataBar compactable`,
+  `dataModel.ts compactLevelFor`; `synthetic/README.md`): Records keeps ONE row. In the compact
+  levels the split's worst state keeps its word (`dataModel.ts worstToneIndex`) and the others
+  show their dot. The `cutouts` collection is served in electrons (MAGZERO), so the PSF cutouts
+  have no page-side stretch; the gallery asks `/cutout-image?stretch=star`.
+- **Galaxies** views `distributions` (default) · `relations` · `joint` · `templates` (the TNG
+  atlas); **Stars** is one view (the VIS density panel with the trusted window — Q1 point
+  sources, Q1 PHZ, the law, the generated stars; no Gaia series — then six colour PDFs over the Q1
+  colour sample's VIS window, forward-noised model draws); **Noise** leads with
+  "How a scene gets its noise" and compares realised background σ per band; **PSF** is the chain
+  catalogue → cutouts → ePSF (`?view=`, switching drops the other view's `?band=`; the ePSF view
+  leads with "Used by the last generation run", the `psf_kinds` the records' provenance
+  recorded — `GET /api/euclid-psf/inventory` `generation`, `psf/psfModel.ts generationPsfLine` — and
+  falls back to what the synced ePSFs say for records generated before that stamp); **Fields**
+  views `look` (default; the shared row drives both lanes' zoom and magnifier) · `stats` ·
+  `detection`, and a stale cache shows its last result behind a badge with an explicit Measure
+  button — it never runs on a visit.
+- Labels (check labels, kickers, curve-group titles, trust boxes) are the UI face in sentence
+  case; data values stay tabular mono.
+
+### 11.9 Models: page notes
+
+- `/models/:mode/<tab>`; the ONE starfull | starless switch sits beside the tabs and keeps the tab
+  and `?inspect=`; a bare `/models/<mode>` returns to the last tab visited. The data endpoints keep
+  their `/ensemble/` prefix (API.md). `register.ts` registers `member` and `combiner`.
+- One knee colour everywhere (`common.tsx kneeColor` / `kneeOrderOf`) and one gate-share precision
+  rule (`model.ts share()`: a zero share reads "0%" with no band tag).
+- **Leaderboard**: one status line ("All current", or each failing staleness check with its
+  confirmed fix), the verdict, the gate / plain mean / best member table with the real holes of
+  the newest Sky › Compare run of THIS production (`model.ts leaderboardBenchmark`) or "no real
+  benchmark for this membership", one TIMEOUT alert line ("5 members stopped short · Continue" →
+  Train with `?mode=continue&members=`), the knee curves and the full ranking (Test VIS @100 e⁻
+  and Test 4b hidden columns).
+- **Members**: a "Pull from FASRC…" banner only when finished members wait there (`model.ts
+  waitingOnFasrc`), views roster · curves (`?view=curves`) · archived. "Gate use": the all-pixel
+  mean over the bands rounds a core specialist to 0.0%, so when the row has `gate_usage_peak`
+  the cell reads "0.0% mean · 48% peak (VIS cores)" (`model.ts gatePeak / gateUseText`).
+- **Train** seeds CPUs / memory / time from the newest COMPLETED job of the same kind
   (`trainModel.ts defaultResources`, else the recipe 16 CPUs, 32G, 3:00:00); "Continue them…"
   (`?mode=continue&members=`) continues up to the members' `target_steps`; the submit confirm
-  names CPUs, memory and time. The command preview under the form is `POST
-  /ensemble/train/preview` from a debounced effect, also on open: a read-only exemption from
-  "no effect POSTs" (it builds the member names and the command locally; nothing reaches FASRC
-  or starts a job). Making it a GET needs a change in `routes/ensemble.py`.
-- **Ops › Tracking notebook**: newest entry first (`?nbnew=0` for oldest), a "Jump to a day" menu
-  in the card head and, on a page ≥ 1100 px, the day outline beside the text grouped by month
-  (`ops/model.ts notebookOrder / notebookDays`).
-- **Figures › Grid**: a cell a column lacks does not blank the sheet — the preview, the full-size
-  view and the downloads ask for `missing=blank` (`api.ts gridUrl(…, missing)`) and the server
-  draws a grey "Not available" cell in place; `gridStatus` refuses only when no cell is
-  available. The sheet's row titles are sized to their text (API.md).
-- **Settings › Appearance "Images"** is a read-only summary of the live Display settings
-  (`appearanceModel.ts displaySummary`, changed values in the accent colour) with "Open the
-  Display panel" — the panel is the one place they change.
+  names CPUs, memory and time and its label repeats the count and the regime ("Submit 4
+  STARFULL members to SLURM"). The command preview is `POST /ensemble/train/preview` from a
+  debounced effect, also on open: a read-only exemption from "no effect POSTs" (it builds the
+  member names and the command locally; nothing reaches FASRC or starts a job).
+- **Combiner**: the real holes come from ONE Sky › Compare run (`?bench=`, default the newest that
+  ran production; `model.ts benchmarkExperiment / benchmarkChoices`), per band VIS · Y · J · H with
+  the worst band coloured (`holesText`); variants it did not run are blank. Variants fitted for the
+  current membership show by default (`model.ts variantScope`), the others behind the History
+  chip. Member counts read `readsText` ("6 of 20 members" for a pruned gate); `productionRunsText`
+  says how many members production SR runs. Held-out curves only for fits on production's loss
+  scale (`model.ts heldOutCurves`). The legacy RBF is never listed or offered.
+- **Diagnostics** sections (`?d=`): spectrum, transfer, coherence, spread (σ vs error, σ vs
+  brightness and calibration in one), real-field (`diagnostics/FieldSection.tsx`, the member
+  caption `diagnostics/realField.ts membersCaption`) and recovery. A band switch (`?band=`
+  VIS · Y · J · H) drives the evaluation sections, the pixel back-trace and Recovery's angular power
+  spectrum: VIS is `/ensemble/evals.json`, the NISP bands its `?band=` payloads, computed from the
+  cached cubes by Evaluate or by the confirmed "Compute Y, J and H…" job (`jobs.ts
+  computeBandEvals`; never on open); a payload made for an earlier evaluation says so, with
+  Recompute. Recovery draws the angular power spectrum from
+  `/api/evaluation/angular-power-spectrum.json` (T(k) and r(k), asinh / linear, the band's 16–84%
+  shading, an "all bands" overlay); "Measure…" (confirmed) renders it. Pixel back-trace (`PixelTrace.tsx`): rows of LR · target · SR · σ stamps with ONE asinh knee per row
+  (`model.ts stampKnee`) and whole-device-pixel backing stores (`model.ts stampBacking`).
+- **Images**: set test fields (default, `ensemble` collection) · source-centred stamps
+  (`?set=stamps&g=syn-lens|syn-gal`, `evaluation` collection) · the local records
+  (`?set=records&split=&id=`, `sky` collection) and "Generate SR over local records…"
+  (confirmed). The viewer opens on LR | SR | HR with ONE SR tier (production); the member picker is
+  a side panel (`?sel=`, the button names what the movie shows, `model.ts membersButtonText`).
+- **Notebook entries** (`notes.ts`, pure): `evaluationNote`, `kneeNote`, `variantNote`,
+  `compareNote`, `promoteNote` — each lands on Notebook › Log (§11.6).
 
-### 11.8 Sky, Data, Inspect and Realism: page notes
+### 11.10 Sky: page notes
 
-- **Sky › Atlas coverage** (`atlas/specs.ts coverageFill`): every coverage layer — the Q1 / JWST
-  MOCs and the coverage-group shapes (Q1 deep-field circles, MER tiles) — is an outline only
-  below `MOC_FILL_MIN_FOV` (2°), so the Euclid colour imagery keeps a neutral surround (the
-  NEXUS preset at 27′ sits inside EDF-N's circle and the Q1 MOC); zoomed out it fills. A fill
-  the user set (the layer's slider, a URL opacity) is drawn at every zoom; the row says
-  "Outline only while zoomed in; move the slider to fill it". The renderer rebuilds a shape
-  layer when its fill flips (`specSignature` carries it).
-- **Sky › Atlas deep links**: `?inspect=<target>` without `ra`/`dec` opens framed on the
-  inspected feature (`urlState.ts featureView`: its size × 6, 1.2′–30°), not on the whole sky.
-  Status-bar labels are sentence case ("Centre", "FoV", "Pixel"); the values stay tabular mono.
-- **Sky › Real results table** (`results/columns.tsx`): Tile, RA / Dec and Production never
-  drop; Source (the chips say it), Field, Models, R̃ and Holes % drop in that order when the
-  table is narrow (kit `priority`, §9.3). The key columns are two short lines each — the tile
-  id over its JWST badge (110 px), RA over Dec (96 px, the whole "268.3772°" / "+65.0985°" in
-  tabular mono), Production (90 px) — so with the select column they fit the 340 px the tile
-  inspector leaves at 1024 × 768 (`INSPECTOR_TABLE_PX`) with no sideways scroll, in a 34 px
-  row. Without the inspector at 1024 only Source drops.
-- **Sky model picker**: the production entry says how many members it runs
-  (`results/model.ts productionMembersText`, the same sentence as Ensemble › Combiners); the
-  real-field diagnostics header names the members that made the field ("2 of 3 members (the
-  production gate's)", `diagnostics.ts fieldMembersText`).
+- **Atlas** (`atlas/`): default framing is the Q1 deep fields or the last inspected tile. Layer
+  groups (`GET /api/sky/layers` `groups`): Real tiles, Targets, Scene inputs (each layer links its
+  owning tab via the row's `home` — e.g. PSF stars → Synthetic › PSF, population cones →
+  Synthetic › Galaxies `?how=1`), Coverage; fill actions live on their tabs, not in the layer
+  popovers. Coverage layers (`atlas/specs.ts coverageFill`) are outlines below
+  `MOC_FILL_MIN_FOV` (2°) unless the user set a fill. `?inspect=<target>` without `ra`/`dec`
+  frames the inspected feature (`urlState.ts featureView`). `?obs=1` opens the JWST observations
+  (was `/jwst-euclid`). Status-bar labels are sentence case; the values stay tabular mono.
+- **Targets** (`targets/`): by science target, not by store — NEXUS × JWST, Poster galaxy, Lens
+  candidates, Q1 galaxies, Cached tiles, and under "More" the legacy field and JWST pairs (`?set=`,
+  comma list). ONE state vocabulary through `targets/model.ts` (current / stale / missing, plus
+  "made by <model>"); one sentence per set, the flux SR/LR strip, the table sorted by flux ratio;
+  "Run production on stale" (confirmed). A link carrying the old Catalog-eval keys (`?g=` groups,
+  `?st=`) or old store ids is rewritten once (`legacyTargetsPatch`).
+- **The tile card** (`tile:` / `realtile:`, `results/RealTileInspector.tsx`, §10.4): viewer first,
+  "Compare models on this tile", "Open in Files" (the card's `files`), a danger zone for "Delete
+  model outputs". `results/snugStage.ts` keeps the card's viewer snug to its images.
+- **Compare** (`compare/`): opens on the newest comparison (`?exp=`); the metric definitions live
+  once in its info popover (`?defs=1`, Targets links there); the New comparison drawer (`?new=1`)
+  holds the target-set chips and the model picker (`results/ModelPicker.tsx`: production says how
+  many members it runs, `results/model.ts productionMembersText`; the legacy RBF sits behind a
+  "Legacy RBF" toggle, shown while one is picked).
+  It is the only producer of the real-holes numbers Leaderboard, Combiner and Home read.
 - **Tier labels come from the backend in plain words** (API.md "Labels"): the chip is the part
-  before " · " — "LR VIS · HDU 1", "LR colour · VIS Y J H", "Mean · 30 starfull members",
-  "JWST (native)"; a spec whose every output in the source is an older legacy SR is named for
-  what is served ("RBF (10 or 20 members, legacy)"), not the current catalogue entry.
-- **Inspect**: a results FITS opens on LR colour | SR colour, drawn in colour (a per-viewer
-  Lupton override, `model.ts compareDisplay`; the Display panel stays VIS); a bright file's white point comes
-  from the server (`meta.color.default_asinh` = the selected plane's p99.99 ÷ 30) and the page
-  seeds the knee from its p99.9 (`model.ts brightExposure`: p99.9 ÷ 30, brightness 1×), so the
-  poster galaxy's core (VIS 12.2 AB) keeps its structure. The page's HDU picker is labelled
-  "HDU" (name first: "LR colour (HDUs 1–4)", "LR VIS (HDU 1)") — it picks what the header, table
-  and statistics describe; the viewer's chips pick the images. A squeezed breadcrumb gives way
-  in the middle ("Po… (repo)", `model.ts middleSplit`), never to its first letter.
-- **Data** toolbars compact by levels instead of wrapping (`common.tsx DataBar compactable`,
-  `model.ts compactLevelFor`; data/README.md): Records keeps ONE row — its viewer starts 85 px
-  under the stage top at 1024 × 768 and 720 × 720. In the compact levels the split's worst
-  state keeps its word ("No SR"; `model.ts worstToneIndex`) and the others show their dot, their
-  words clipped (not removed), so they stay the badges' text for screen readers. The `cutouts` collection is served in
-  electrons (MAGZERO), so Cutouts has no page-side stretch.
-- **Realism › Visual**: the shared row drives both lanes' zoom (− / +, `ViewerApi.zoomBy`) and
-  the magnifier (`setTool("lens")`, pressed while both lanes show it). Below a 720 px block the
-  "Same transfer" words are clipped off screen (still the switch's label), so the row stays one
-  line and the first frame starts 132 px under the stage top at 720 × 720 as at 1024. Realism labels (check
-  labels, kickers, curve-group titles, trust boxes) are the UI face in sentence case; data
-  values stay tabular mono.
+  before " · " — "LR VIS · HDU 1", "Mean · 30 starfull members", "Gate p20 · variant", "JWST
+  (native)"; a spec whose every output in the source is an older legacy SR is named for what is
+  served ("RBF (10 or 20 members, legacy)"). The pixel readout names each tier once
+  (`viewer/barModel.ts readoutTierNames`: two tiers that would both read "Gate" keep "Gate
+  full30s1" and "Gate full30s2").
+
+### 11.11 Figures: page notes
+
+- **Plates** (`?plate=`): Galaxy population calibration, Galaxy distributions, Stellar population
+  calibration, NEXUS comparison, Synthetic poster scene. Each carries one caption line — made
+  with, current / stale, when (`plates/plateStatus.ts`) — and a resolution (150 · 300 · 600 dpi,
+  `?dpi=`) with PNG · PDF · SVG: the calibration plates render at it; a NEXUS run's sheet or tile
+  re-draws from the cached outputs (`api.ts plateExportUrl`; a legacy run keeps its PNG); the
+  poster scene is wrapped for print at it (`posterExportUrl`). The stellar plate draws no Gaia
+  counts (the paper's `build_figures.py` asks for them). The NEXUS model defaults to production;
+  Render stays disabled, naming the tiles, while production has not run on some ("Run in Sky ›
+  Compare").
+- **Sheet** (was Grid and Results): the saved-crop pool (table or gallery, `?pool=`), the rows —
+  recipes product × band, VIS · Y_E · J_E · H_E (one band in grey), VIS + H_E (VIS azure, H_E amber)
+  or native — and the live A4 preview with its legend. A cell a column lacks does not blank the
+  sheet: the preview, the full-size view and the downloads ask for `missing=blank`
+  (`api.ts gridUrl(…, missing)`) and the server draws a grey "Not available" cell in place;
+  `gridStatus` refuses only when no cell is available. The limits are named only once reached.
+- `figures/model.ts viewerLink` sends a saved crop back to its source: a real tile to its Sky ›
+  Targets card, a synthetic stamp to Models › Images `?set=stamps`, a test field to Models ›
+  Images, a record to Synthetic › Records.
+
+### 11.12 Files: page notes
+
+- One page (was `/inspect`), also reachable from the top bar's "Open a file", ⌘K and every FITS
+  action ("Open in Files"). A results FITS opens on LR colour | SR colour, drawn in colour (a
+  per-viewer Lupton override, `model.ts compareDisplay`; the Display panel stays VIS); a bright
+  file's white point comes from the server and the page seeds the knee from its p99.9
+  (`model.ts brightExposure`). The HDU picker is labelled "HDU" (name first); the viewer's chips
+  pick the images. A squeezed breadcrumb gives way in the middle (`model.ts middleSplit`). The
+  per-frame statistics are one table.
+
+### 11.13 Runs: page notes
+
+- **Live**: one list of running local jobs and live SLURM jobs (`?scope=`), the selected job's
+  monitor, the fail-stop submission queue. Nothing reads "FASRC offline" or "Nothing is running"
+  before the status answers.
+- **History**: one ledger of the finished runs (SLURM + local), filtered by source / step / state /
+  campaign (`?campaign=current` = the jobs the active campaign logged), with labelled Clone and
+  Logs; the selected run's log opens beside the table (`?run=<jobid>|local:<id>&logs=1`); the
+  Source chips carry the counts. `ensemble_train` rows show wall time per 1000 steps.
+- **Steps**: the step catalogue grouped by stage (`?stage=`), one step's card (`?step=`,
+  `?clone=`), each linking the tab whose drawer embeds it.
+
+### 11.14 Notebook: page notes
+
+- **Log**: the campaign bar (New campaign, Back up…, Push; Save snapshot in its menu), the New
+  entry card — prefilled from `?entry=&from=` when a page's "Log to notebook" sent one; both leave
+  the URL once the entry is added, and only its "Append entry" writes — then the notebook, newest
+  entry first (`?nbnew=0` for oldest), a "Jump to a day" menu and, on a page ≥ 1100 px, the day
+  outline (`model.ts notebookOrder / notebookDays`).
+- **Backups**: model, FITS and image backups (`?show=`, the kind chips carry the counts) and the
+  archived campaigns (`?show=campaigns`), each with ⏱ time travel. **Sandboxes**: the running
+  time-travel servers.
+
+### 11.15 System: page notes
+
+- **Connections**: FASRC, the Euclid archive session (`used_by` names the tabs that need it),
+  FASRC-side credentials, the TNG token; single-column cards.
+- **Config**: the one editor of `job_config.json` (409 conflict flow kept). Each group header links
+  the tab that judges it (`model.ts groupHome`), which links back with "N knobs changed · Edit"
+  (§11.6); `?group=&changed=1` opens on one group's changed knobs. Star density is read-only (set by
+  the active stellar prior).
+- **Lineage**: a lookup — search a product, see its lineage in the side card; verdicts are the
+  Loop's (`/api/system/loop`); the table says "showing 1,000 of N" when the server caps it.
+- **Code**: are this laptop, the server and FASRC on the same commit (`model.ts codeSentence`);
+  `?side=fasrc` opens on the FASRC checkout. **Storage**: the laptop disk and data roots, FASRC
+  storage (`?side=fasrc`), the evaluation maintenance; one threshold sets the badge and Home's
+  alert. **Appearance**: theme, accent, density, layout, and one line saying how images are shown
+  (`model.ts imagesLine`) with "Open Display panel" — the panel is the one place they change.
 
 ## 12. Viewer engine v2: `viewer/` (WP-V)
 

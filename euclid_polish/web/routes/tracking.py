@@ -25,6 +25,10 @@ from euclid_polish.web.remote import STATE
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
+#: FITS / image backup kinds a time travel can start from → their list in
+#: ``TrackingStore.backups_in``.
+_FILE_BACKUP_KINDS = {"fits": "fits", "image": "images"}
+
 #: Page size bounds of ``GET /api/tracking/jobs``.
 _JOBS_DEFAULT_LIMIT = 50
 _JOBS_MAX_LIMIT = 500
@@ -126,13 +130,20 @@ def register(app):
         """One page of a campaign's FASRC job records, newest first, without
         the embedded payload blobs. ``campaign`` = ``current`` (default), an
         archived campaign's dir, or ``unassigned``; ``q`` filters on jobid,
-        label, step and time; ``offset``/``limit`` (≤ 500) page."""
+        label, step and time; ``offset``/``limit`` (≤ 500) page. ``ids=1``
+        answers every job id of the campaign instead (unpaged, deduped,
+        newest first; Runs › History's campaign filter)."""
         store = tracking_default_store()
         campaign = (request.args.get("campaign") or "current").strip()
         try:
             records = store.read_fasrc_jobs(campaign)
         except TrackingError as e:
             return jsonify({"ok": False, "error": str(e)}), 404
+        if request.args.get("ids") in ("1", "true", "yes"):
+            jobids = list(dict.fromkeys(
+                str(r.get("jobid")) for r in records if r.get("jobid") not in (None, "")))
+            return jsonify({"ok": True, "campaign": campaign, "total": len(jobids),
+                            "jobids": jobids})
         needle = (request.args.get("q") or "").strip().lower()
         if needle:
             records = [r for r in records if _job_matches(r, needle)]
@@ -272,11 +283,27 @@ def register(app):
         store = tracking_default_store()
         campaign = (request.form.get("campaign") or "current").strip()
         model = (request.form.get("model") or "").strip()
+        backup = (request.form.get("backup") or "").strip()
+        kind = (request.form.get("kind") or "").strip()
         want_remote = request.form.get("remote") in ("1", "true", "yes", "on")
-        # Resolve the commit (+ checkpoint to seed) from a model backup, else
-        # from the campaign's saved/created commit.
+        source: dict[str, Any] = {"campaign": campaign, "model": model or None}
+        # Resolve the commit (+ checkpoint to seed) from a model backup, a
+        # FITS / image backup (the code only: nothing to seed), else from
+        # the campaign's saved/created commit.
         try:
-            if model:
+            if backup:
+                if kind not in _FILE_BACKUP_KINDS:
+                    kinds = sorted(_FILE_BACKUP_KINDS)
+                    return jsonify({"ok": False, "error": f"kind must be one of {kinds}"}), 400
+                records = store.backups_in(campaign).get(_FILE_BACKUP_KINDS[kind], [])
+                rec = next((r for r in records if r.get("name") == backup), None)
+                if rec is None:
+                    error = f"no {kind} backup {backup!r} in {campaign!r}"
+                    return jsonify({"ok": False, "error": error}), 400
+                commit_info = rec.get("commit")
+                seed_dir = None
+                source.update(backup=backup, kind=kind)
+            elif model:
                 mm = store.model_backup_meta(campaign, model) or {}
                 commit_info = mm.get("commit")
                 # A retired-model zip restores the code at its commit but is
@@ -298,7 +325,7 @@ def register(app):
         try:
             sb = tracking_timetravel.prepare_local_sandbox(
                 commit, live_data_dir=Config.DATA_DIR, seed_ckpt_dir=seed_dir,
-                source={"campaign": campaign, "model": model or None})
+                source=source)
         except tracking_timetravel.TimeTravelError as e:
             return jsonify({"ok": False, "error": str(e)}), 400
         short = sb["short"]

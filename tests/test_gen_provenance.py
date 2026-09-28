@@ -140,3 +140,15 @@ def test_shard_stamp_plan_is_picklable():
     plan = ShardStampPlan(ProvId("aaaaaaaa"), ProvId("bbbbbbbb"),
                           ProvId("cccccccc"), ProvId("dddddddd"))
     assert pickle.loads(pickle.dumps(plan)) == plan
+
+
+def test_finalize_carries_the_runs_extra_descriptors(tmp_path):
+    """run_pipeline stamps which bands used an empirical ePSF on the run; every
+    record file's artifact carries it beside its kind and subset."""
+    store = ProvStore(str(tmp_path))
+    ctx = begin_generation_run(store, FakeCfg(), git=None)
+    ctx.descriptors["psf_kinds"] = {"VIS": "empirical", "Y_E": "gaussian"}
+    art = ctx.finalize("dirty", "test", str(tmp_path / "dirty_test.tfrecord"))
+    assert art.descriptors == {"psf_kinds": {"VIS": "empirical", "Y_E": "gaussian"},
+                               "kind": "dirty", "subset": "test"}
+    assert store.get(art.id).descriptors["psf_kinds"]["Y_E"] == "gaussian"

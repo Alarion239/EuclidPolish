@@ -1,5 +1,5 @@
 """The ``data/vis`` gallery listing and the synthetic training records
-(Data › Records).
+(Synthetic › Records).
 
 Records: ``GET /api/sky/sr-status`` (inventory + SR tier state),
 ``POST /api/sky/sync`` (FASRC pull as a background job),
@@ -11,6 +11,7 @@ is local and works offline.
 from __future__ import annotations
 
 import os
+import posixpath
 import threading
 from typing import Any
 
@@ -40,7 +41,7 @@ def register(app):
         React Visualization page's gallery reads this."""
         return jsonify({"pngs": _list_vis_pngs()})
 
-    # ---------------- synthetic training records (Data › Records) --------
+    # ---------------- synthetic training records (Synthetic › Records) ---
 
     @app.route("/api/sky/sync", methods=["POST"])
     @requires_fasrc
@@ -77,7 +78,7 @@ def register(app):
 
     @app.route("/api/sky/sr-status")
     def api_sky_sr_status():
-        """State of Data › Records (local, cheap: headers only).
+        """State of Synthetic › Records (local, cheap: headers only).
 
         ``can_generate`` is true when dirty records and an active ensemble
         are present; ``sr`` counts SR cubes per split; ``splits`` has the
@@ -278,12 +279,30 @@ def _job_sky_sync(cap, targets: dict[str, str], subsets: list[str]) -> dict[str,
             entry["error"] = r.error
             cap.write(f"{key}: not pulled — {r.error}\n")
         results[key] = entry
+    _pull_generation_sidecars(cap, targets, results)
     cap.tick(total, total, "done")
     if not any_ok:
         raise RuntimeError("nothing pulled — generate the records on FASRC first? "
                            + "; ".join(f"{k}: {v.get('error')}" for k, v in results.items())[:600])
     return {"ok": any_ok, "files": results, "subsets": subsets,
             "include_train": "train" in subsets}
+
+
+def _pull_generation_sidecars(cap, targets: dict[str, str], results: dict[str, dict[str, Any]]) -> None:
+    """Pull the provenance sidecar of every pulled record file (best-effort,
+    small JSON): it records what the generation run used, such as the PSF of
+    each band (Synthetic › PSF reads it)."""
+    for key, remote in targets.items():
+        if key.startswith("sources_") or not results.get(key, {}).get("ok"):
+            continue
+        artifact_id = sky_records.records_artifact_id(_fasrc_fetcher._local_path_for(remote))
+        if artifact_id is None:
+            continue
+        sidecar = posixpath.join(posixpath.dirname(remote), sky_records.artifact_sidecar_name(artifact_id))
+        r = _fasrc_fetcher.fetch_one_file(sidecar, force=True)
+        results[key]["provenance"] = bool(r.ok)
+        if not r.ok:
+            cap.write(f"{key}: no provenance sidecar ({r.error})\n")
 
 
 def _job_generate_sr(cap, records_dir: str, subsets: list[str], overwrite: bool) -> dict[str, Any]:

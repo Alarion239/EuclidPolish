@@ -1138,6 +1138,54 @@ def disk_usage(entry: TileEntry) -> dict[str, int]:
             "legacy_bytes": legacy, "total_bytes": own + outputs + cache + legacy}
 
 
+def lr_path(entry: TileEntry) -> Path | None:
+    """The FITS file a tile's LR is read from (``None`` when it is not one
+    FITS file on disk): what "Open in Files" opens. A legacy-field tile names
+    its whole field's stack, an archive sample its archive FITS."""
+    if entry.source == "nexus":
+        relative = entry.extras.get("lr_file") or entry.extras.get("vis_file")
+        path = (jwst_euclid.nexus_field_root() / str(entry.extras.get("field_id") or "")
+                / str(relative)) if relative else None
+    elif entry.source == "pair":
+        relative = entry.extras.get("lr_file") or entry.extras.get("vis_file")
+        path = jwst_euclid.pair_root() / entry.id / str(relative) if relative else None
+    elif entry.source == "tile":
+        path = tiles_root() / entry.id / "lr.fits"
+    elif entry.source == "field":
+        path = real_field.field_dir(str(entry.extras.get("field_id") or "")) / "original_stack.fits"
+    elif entry.source == "archive":
+        path = Path(str(entry.extras["path"])) if entry.extras.get("path") else None
+    elif entry.source == "eval":
+        path = Path(Config.EVAL_RESULTS_DIR) / entry.id / "original_stack.fits"
+    elif entry.source == "poster":
+        path = poster_root() / str(entry.extras.get("file") or "")
+    else:
+        path = None
+    return path if path is not None and path.is_file() else None
+
+
+def catalogue_sr_path(entry: TileEntry) -> Path | None:
+    """A catalogue object's own SR (``eval/<id>/SR.fits``: the evaluation's
+    SR, recorded without a model identity, so listed but not a tier)."""
+    legacy = entry.extras.get("legacy_sr") if entry.source == "eval" else None
+    if not isinstance(legacy, Mapping) or not legacy.get("file"):
+        return None
+    path = Path(Config.EVAL_RESULTS_DIR) / entry.id / str(legacy["file"])
+    return path if path.is_file() else None
+
+
+def output_path(entry: TileEntry, spec: str, meta: Mapping[str, Any]) -> Path | None:
+    """The FITS file one model output of a tile lives in (the C9 store's
+    ``<slug>.fits`` or a legacy SR read in place; ``None`` when missing)."""
+    if meta.get("legacy"):
+        raw = meta.get("path")
+        path = Path(str(raw)) if raw else None
+    else:
+        name = meta.get("file")
+        path = model_catalog.output_dir(entry.source, entry.id) / str(name) if name else None
+    return path if path is not None and path.is_file() else None
+
+
 def entries_containing(ra: float, dec: float, *, sources: tuple[str, ...] = SOURCES
                        ) -> list[TileEntry]:
     """Real tiles whose footprint polygon contains a sky position."""
@@ -1171,6 +1219,9 @@ __all__ = [
     "list_entries",
     "load_output",
     "lr_header",
+    "catalogue_sr_path",
+    "lr_path",
+    "output_path",
     "parse_refs",
     "poster_legacy_sr",
     "poster_root",

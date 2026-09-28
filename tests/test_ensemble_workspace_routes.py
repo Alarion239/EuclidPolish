@@ -104,9 +104,14 @@ def test_compare_validates_gates_and_passes_knobs(client, spawned, monkeypatch):
     r = client.post("/ensemble/combiners/compare", data={"blackout_fields": "0", "knee": "0"})
     assert r.status_code == 200 and r.get_json()["job_id"] == "job1"
     spawned[0]["target"](_Cap())
-    # the legacy RBF is scored only when asked for explicitly
+    # the legacy RBF is never scored, even when a stale form still asks for it
     assert seen == {"starless": False, "gates": None, "blackout_fields": 0, "seed": 0,
                     "include_rbf": False, "knee": False}
+    seen.clear()
+    r = client.post("/ensemble/combiners/compare", data={"include_rbf": "1"})
+    assert r.status_code == 200
+    spawned[-1]["target"](_Cap())
+    assert seen["include_rbf"] is False
     assert spawned[0]["kind"] == "ensemble-compare"
 
 

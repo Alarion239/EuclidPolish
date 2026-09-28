@@ -1,11 +1,13 @@
-/* The atlas toolbar (sticky, wraps at narrow widths): layers toggle, go-to
- * (a name via Sesame, or RA Dec), quick jumps, region selection, JWST tools,
- * PNG export and the all-sky reset. */
+/* The atlas toolbar (never sticky; wraps at narrow widths): layers
+ * toggle, go-to (a name via Sesame, or RA Dec), quick jumps, region
+ * selection, the JWST menu (discover, cache the NEXUS mosaic, pair
+ * downloads — each confirmed), PNG export and the all-sky view. Running
+ * production on the tiles lives in Sky › Targets. */
 import { useState } from "react";
 import { currentSkyEngine } from "../../../sky/engine";
 import { QUICK_JUMPS, type QuickJump } from "../../../sky/surveys";
 import { Button, Chip, IconButton, Input, Menu, type MenuItem } from "../../../ui";
-import { cacheNexusMosaic, discoverJwst, downloadAllPairs, runNexusProduction, viewRegion } from "./actions";
+import { cacheNexusMosaic, discoverJwst, downloadAllPairs, viewRegion } from "./actions";
 import { useAtlas } from "./store";
 import type { AtlasUrl } from "./useAtlasUrl";
 import { parseGoto } from "./urlState";
@@ -58,7 +60,6 @@ export function AtlasToolbar({ url, panelOpen, onTogglePanel, onSelect, onExport
         { label: "F444W · 60 mas · ≈ 250 MB", onSelect: () => { void cacheNexusMosaic("F444W"); } },
       ],
     },
-    { label: "Run production on stale NEXUS tiles…", onSelect: () => { void runNexusProduction(); } },
     { label: "Download every discovered pair…", onSelect: () => { void downloadAllPairs(); } },
   ];
   return (

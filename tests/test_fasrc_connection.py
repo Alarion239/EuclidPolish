@@ -104,13 +104,13 @@ def test_startup_error_has_a_single_source_of_truth(fake_ssh, monkeypatch):
 
 
 def test_legacy_connection_error_form_is_gone(client):
-    """The classic connect form was deleted: a GET moves to the Settings ›
-    Connections workspace (C1) and a POST no longer reaches any handler, so
+    """The classic connect form was deleted: a GET moves to System ›
+    Connections (C1) and a POST no longer reaches any handler, so
     ``POST /api/connection/retry`` / ``POST /api/fasrc/connect`` are the only
     connect actions."""
     get = client.get("/connection-error")
     assert get.status_code == 308
-    assert get.headers["Location"] == "/settings/connections"
+    assert get.headers["Location"] == "/system/connections"
     assert client.post("/connection-error", data={}).status_code == 404
 
 

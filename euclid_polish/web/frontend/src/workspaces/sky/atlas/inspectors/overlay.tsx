@@ -2,7 +2,7 @@
  * the atlas as a FITS overlay (the atlas `img` URL param) and fly there.
  * Used by the one real-tile card (sky/results/RealTileInspector.tsx), so the
  * overlay action is there whether the card was opened from the atlas or from
- * Real results. */
+ * Sky › Targets. */
 import { useState } from "react";
 import { Button, Field, Select } from "../../../../ui";
 import { useShowOnSky } from "../engineHooks";

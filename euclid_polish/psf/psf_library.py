@@ -248,3 +248,11 @@ def psf_inventory(psf_dir: str = Config.EUCLID_PSF_DIR) -> dict[str, str | None]
         path = psf_path_for_band(band, psf_dir)
         out[band.name] = path if os.path.isfile(path) else None
     return out
+
+
+def psf_kinds(psf_dir: str = Config.EUCLID_PSF_DIR) -> dict[str, str]:
+    """``{band_name: "empirical" | "gaussian"}``: which kernel a generation run
+    reading ``psf_dir`` convolves each band with (recorded in the records'
+    provenance, so Synthetic › PSF can say what the last run used)."""
+    return {name: ("empirical" if path else "gaussian")
+            for name, path in psf_inventory(psf_dir).items()}

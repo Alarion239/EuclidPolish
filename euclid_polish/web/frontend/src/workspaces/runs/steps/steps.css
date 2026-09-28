@@ -1,0 +1,96 @@
+/* The shared FASRC step card + SLURM monitor (workspaces/runs/steps, used by
+   every page that embeds a step through src/fasrc.tsx). Not scoped to a
+   workspace: the classes keep their ops- prefix (other workspaces use
+   ops-step-inline). Tokens only. */
+
+.ops-dim { color: var(--text-dim); }
+.ops-bad { color: var(--bad); }
+.ops-small { font-size: var(--fs-xs); }
+.ops-spacer { flex: 1 1 auto; }
+.ops-pre { white-space: pre-wrap; word-break: break-word; font-family: var(--font-mono); font-size: var(--fs-xs); }
+
+/* ── step card ─────────────────────────────────────────────────────────── */
+.ops-step { display: flex; flex-direction: column; gap: var(--s3); min-width: 0; container-type: inline-size; }
+.ops-step-inline {
+  display: flex; flex-direction: column; gap: var(--s3); min-width: 0;
+  margin-top: var(--s3); padding: var(--s3); border-radius: var(--r-lg);
+  border: 1px solid var(--border); background: var(--surface-2);
+}
+.ops-step-inline__head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--s3); }
+.ops-step-inline__head strong { margin-right: var(--s2); }
+
+.ops-step__live, .ops-step__prefill, .ops-step__submit {
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2);
+}
+.ops-step__livejob {
+  display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px 2px 4px;
+  border: 1px solid var(--border); border-radius: var(--r-pill); background: var(--surface-1);
+  color: var(--text); text-decoration: none; font-size: var(--fs-xs);
+}
+.ops-step__livejob:hover { border-color: var(--accent); }
+.ops-step__livejob:focus-visible { outline: none; box-shadow: var(--ring); }
+
+.ops-step__grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: var(--s2) var(--s3);
+}
+@container (max-width: 420px) { .ops-step__grid { grid-template-columns: minmax(0, 1fr); } }
+.ops-param {
+  min-width: 0; padding: 4px 6px 4px 8px; border-left: 2px solid transparent; border-radius: var(--r-sm);
+}
+.ops-param[data-changed] { border-left-color: var(--accent); background: var(--accent-soft); }
+.ops-param .ui-field { width: 100%; }
+.ops-param .ui-number > .ui-input, .ops-param .ui-input, .ops-param .ui-select { width: 100%; max-width: 100%; }
+.ops-param[data-type="json"] { grid-column: 1 / -1; }
+.ops-param__hint { display: flex; flex-direction: column; gap: 4px; max-width: 320px; }
+
+.ops-step__res {
+  display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--s2) var(--s3);
+  padding-top: var(--s2); border-top: 1px dashed var(--border);
+}
+.ops-step__res .ui-field { width: 118px; }
+.ops-step__partition { display: inline-flex; padding-bottom: 6px; }
+
+.ops-step__outputs { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.ops-out {
+  display: inline-flex; align-items: center; gap: 5px; padding: 1px 8px; border-radius: var(--r-pill);
+  border: 1px solid var(--border); background: var(--surface-1); color: var(--text-dim);
+  font: var(--fw-medium) var(--fs-2xs)/1.7 var(--font-mono); text-decoration: none;
+}
+.ops-out:hover { color: var(--text); border-color: var(--accent); }
+.ops-out:focus-visible { outline: none; box-shadow: var(--ring); }
+.ops-out__dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-faint); }
+.ops-out[data-state="yes"] .ops-out__dot { background: var(--good); }
+.ops-out[data-state="no"] .ops-out__dot { background: var(--bad); }
+
+.ops-step__history .ui-section__body { padding-top: var(--s2); }
+.ops-row-actions { display: inline-flex; align-items: center; gap: 2px; }
+.ops-iconlink {
+  display: inline-grid; place-items: center; width: 26px; height: 26px; border-radius: var(--r-sm);
+  color: var(--text-dim); text-decoration: none; font-weight: var(--fw-semibold);
+}
+.ops-iconlink:hover { background: var(--surface-3); color: var(--text); }
+.ops-iconlink:focus-visible { outline: none; box-shadow: var(--ring); }
+
+/* ── SLURM monitor ─────────────────────────────────────────────────────── */
+.ops-mon {
+  display: flex; flex-direction: column; gap: var(--s2); min-width: 0;
+  padding: var(--s3); border-radius: var(--r-md); border: 1px solid var(--border); background: var(--surface-1);
+}
+.ops-mon[data-compact] { padding: var(--s2) var(--s3); }
+.ops-mon__head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); }
+.ops-mon__body { display: flex; flex-direction: column; gap: 6px; }
+.ops-mon__stage { font-size: var(--fs-sm); color: var(--text-dim); }
+.ops-mon__res { display: flex; flex-wrap: wrap; gap: var(--s3); font: var(--fs-xs)/1.4 var(--font-mono); color: var(--text-dim); }
+.ops-mon__events { margin: 0; padding-left: 16px; font-size: var(--fs-xs); }
+.ops-mon__events--warn { color: var(--warn); }
+.ops-mon__events--err { color: var(--bad); }
+.ops-mon__tasks { display: grid; gap: var(--s2); grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
+.ops-mon__caption { grid-column: 1 / -1; font-size: var(--fs-xs); color: var(--text-dim); }
+.ops-mon__task {
+  display: flex; flex-direction: column; gap: 4px; padding: var(--s2);
+  border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--surface-2);
+}
+.ops-mon__links { display: flex; flex-wrap: wrap; gap: 4px; }
+
+.ops-curve { display: flex; flex-direction: column; gap: var(--s2); min-width: 0; }
+.ops-curve__head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); }

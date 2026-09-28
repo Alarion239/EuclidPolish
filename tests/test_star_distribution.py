@@ -6,6 +6,7 @@ import math
 import re
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from euclid_polish.web.app import create_app
@@ -216,10 +217,11 @@ def test_star_distribution_payload_keeps_the_density_and_colour_panels(
         assert {"euclid", "model", "synthetic"} <= set(panel)
         assert "gaia" not in panel, key               # the deleted projection
     vis = comparison["parameters"]["vis"]
-    # Native Gaia G_AB counts set the shared slope of the magnitude law.
-    assert {"euclid", "model", "gaia", "gaia_x", "gaia_fit"} <= set(vis)
+    assert {"euclid", "model"} <= set(vis)
+    # The native Gaia G_AB counts and their fit are not drawn in the console.
+    assert not {"gaia", "gaia_x", "gaia_fit"} & set(vis)
     assert "gaia_count" not in comparison
-    assert comparison["gaia_native_g_count"] == 9
+    assert "gaia_native_g_count" not in comparison
 
 
 def test_stellar_density_comparison_uses_area_density_and_all_six_colours(
@@ -268,19 +270,14 @@ def test_stellar_density_comparison_uses_area_density_and_all_six_colours(
     assert result["euclid_vis_count"] == 1
     assert result["euclid_color_count"] == 1
     assert "gaia_count" not in result                # the deleted projection count
-    assert result["gaia_native_g_count"] == 1
+    assert "gaia_native_g_count" not in result       # the deleted native counts
     assert result["synthetic_star_count"] == 2
     assert result["synthetic_color_count"] == 2
     assert result["synthetic_area_arcmin2"] == pytest.approx(4.0)
     assert "selected synthetic test + validation" in result["note"]
     magnitude = result["parameters"]["vis"]
-    gaia_bin_width = magnitude["gaia_x"][1] - magnitude["gaia_x"][0]
-    assert gaia_bin_width == pytest.approx(0.5)
-    assert sum(magnitude["gaia"]) * gaia_bin_width == pytest.approx(0.05)
-    assert magnitude["gaia_fit"] is not None
-    assert magnitude["fit_ranges"] == {
-        "gaia": [12.0, 18.0], "q1": [18.0, 23.0],
-    }
+    assert "gaia" not in magnitude and "gaia_fit" not in magnitude
+    assert magnitude["fit_ranges"] == {"q1": [18.0, 23.0]}
     assert result["q1_expected_point_sources"] is None
     assert set(result["parameters"]) == {
         "vis", "vis_y", "vis_j", "vis_h", "y_j", "y_h", "j_h",
@@ -331,7 +328,7 @@ def test_star_distribution_page_and_status_route(monkeypatch):
     monkeypatch.setattr(routes, "availability", lambda: {"synthetic": {}})
     client = create_app().test_client()
 
-    page = client.get("/realism/stars")
+    page = client.get("/synthetic/stars")
     assert page.status_code == 200
     assert b'<div id="root">' in page.data
 
@@ -485,3 +482,128 @@ def test_cached_stellar_fit_does_not_query_gaia_or_require_euclid_login(monkeypa
         {"include_training": False, "persist": True},
         {"include_training": True, "persist": True},
     ]
+
+
+def _noise_donor_rows(count: int, *, error: float) -> list[dict[str, str]]:
+    """Q1 colour stars at VIS 20–22 with flat colours and one aperture error."""
+    rows = []
+    for index in range(count):
+        vis = 20.0 + 2.0 * index / max(count - 1, 1)
+        rows.append({
+            "type": "star", "point_like_prob": "0.95",
+            "mag_vis": str(vis), "mag_y_e": str(vis),
+            "mag_j_e": str(vis), "mag_h_e": str(vis),
+            # Aperture flux is half the total: the error doubles on the total scale.
+            **{
+                f"flux_{band}_aper_uJy": str(0.5 * 10 ** (-0.4 * (vis - 23.9)))
+                for band in ("vis", "y", "j", "h")
+            },
+            **{f"fluxerr_{band}_aper_uJy": str(error) for band in ("vis", "y", "j", "h")},
+        })
+    return rows
+
+
+def test_noise_donors_carry_total_flux_errors_sorted_by_vis():
+    rows = list(reversed(_noise_donor_rows(5, error=0.3)))
+    rows.append({**rows[0], "fluxerr_y_aper_uJy": ""})      # no Y error: not a donor
+    rows.append({**rows[0], "point_like_prob": "0.5"})      # not in the colour sample
+
+    vis, sigma = star_population._star_noise_donors(rows)
+
+    assert vis.tolist() == pytest.approx([20.0, 20.5, 21.0, 21.5, 22.0])
+    assert sigma.shape == (5, 4)
+    assert sigma == pytest.approx(0.6)                        # 0.3 × total ÷ aperture
+
+
+def test_forward_noise_widens_model_colours_by_the_donor_errors():
+    vis, sigma = star_population._star_noise_donors(_noise_donor_rows(40, error=0.25))
+    rng = np.random.default_rng(3)
+    count = 20_000
+    magnitudes = {band: np.full(count, 21.0) for band in ("VIS", "Y_E", "J_E", "H_E")}
+
+    noised = star_population._forward_noise_magnitudes(magnitudes, vis, sigma, rng)
+
+    flux = 10 ** (-0.4 * (21.0 - 23.9))
+    expected = 2.5 / math.log(10) * math.sqrt(2.0) * 0.5 / flux  # two bands, σ_F = 0.5 µJy
+    colour = noised["VIS"] - noised["Y_E"]
+    assert np.nanmean(colour) == pytest.approx(0.0, abs=0.01)
+    assert np.nanstd(colour) == pytest.approx(expected, rel=0.05)
+    # The intrinsic draws are left alone.
+    assert np.all(magnitudes["VIS"] == 21.0)
+
+
+def test_forward_noise_keeps_absolute_errors_beyond_the_faintest_donor():
+    vis, sigma = star_population._star_noise_donors(_noise_donor_rows(20, error=1.0))
+    magnitudes = {band: np.full(4000, 28.0) for band in ("VIS", "Y_E", "J_E", "H_E")}
+
+    noised = star_population._forward_noise_magnitudes(
+        magnitudes, vis, sigma, np.random.default_rng(0),
+    )
+
+    # At VIS 28 a 2 µJy error swamps the 0.02 µJy flux: about half the draws
+    # go non-positive and, like a Q1 non-detection, have no magnitude.
+    missing = np.mean(~np.isfinite(noised["VIS"]))
+    assert 0.4 < missing < 0.6
+
+
+def test_density_comparison_forward_noises_the_model_colours(monkeypatch):
+    _no_q1_cache(monkeypatch)
+    rows = _noise_donor_rows(40, error=5.0)
+
+    def comparison(noise_rows):
+        return star_population._stellar_density_comparison(
+            noise_rows, [{"g_mag": "17.9", "central_selected_star": "0"}],
+            _stellar_model(), euclid_area_arcmin2=10.0, gaia_area_arcmin2=20.0,
+            sample_count=2000,
+        )
+
+    noised = comparison(rows)
+    # The model law is flat over 12–25, so the window holds 1.98 / 13 of it.
+    model = noised["parameters"]["y_j"]
+    width = model["x"][1] - model["x"][0]
+    assert sum(model["model"]) * width == pytest.approx(2.0 * 1.98 / 13.0, rel=0.1)
+    intrinsic = comparison([
+        {key: value for key, value in row.items() if not key.startswith("flux")}
+        for row in rows
+    ])
+
+    # The colour panels compare over the Q1 colour sample's VIS range.
+    assert noised["model_color_noise"] == {
+        "applied": True, "donors": 40, "vis_window": [20.01, 21.99],
+    }
+    assert intrinsic["model_color_noise"]["applied"] is False
+    assert "flux errors" in intrinsic["model_color_noise"]["detail"]
+    assert "measurement noise" in noised["note"]
+
+    def spread(result, key):
+        x = result["parameters"][key]["x"]
+        y = result["parameters"][key]["model"]
+        total = sum(y)
+        mean = sum(a * b for a, b in zip(x, y, strict=True)) / total
+        return math.sqrt(sum(b * (a - mean) ** 2 for a, b in zip(x, y, strict=True)) / total)
+
+    assert spread(noised, "y_j") > 1.2 * spread(intrinsic, "y_j")
+
+
+def test_generated_star_colours_are_windowed_and_noised_like_q1(monkeypatch):
+    _no_q1_cache(monkeypatch)
+    synthetic = [
+        {"type": "star", "mag_vis": str(vis), "mag_y_e": str(vis), "mag_j_e": str(vis), "mag_h_e": str(vis)}
+        for vis in np.linspace(15.0, 25.0, 400)
+    ]
+
+    result = star_population._stellar_density_comparison(
+        _noise_donor_rows(40, error=0.5), [{"g_mag": "17.9", "central_selected_star": "0"}],
+        _stellar_model(), euclid_area_arcmin2=10.0, gaia_area_arcmin2=20.0,
+        synthetic_rows=synthetic, synthetic_area_arcmin2=4.0, sample_count=500,
+    )
+
+    colour = result["parameters"]["y_j"]
+    width = colour["x"][1] - colour["x"][0]
+    # Only the stars inside VIS 20.01–21.99 (79 of 400) enter the colour panels
+    # (the shared edges trim the outermost 1%), and their flat intrinsic
+    # colours spread out with the Q1 noise.
+    assert sum(colour["synthetic"]) * width * 4.0 == pytest.approx(79, abs=3)
+    assert sum(1 for value in colour["synthetic"] if value > 0) > 3
+    # The VIS panel still counts every generated star.
+    assert result["synthetic_star_count"] == 400

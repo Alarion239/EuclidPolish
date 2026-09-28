@@ -1,6 +1,8 @@
 /* Status bar: cursor (or centre) RA/Dec in sexagesimal + degrees, a galactic
- * toggle, the field of view, the projection and the background HiPS value
- * under the cursor (`readPixel`). */
+ * toggle, the field of view, the projection and — on a FITS background
+ * (Euclid VIS / Y / J / H) — the HiPS value under the cursor (`readPixel`).
+ * An RGB background (colour PNG / JPEG tiles) has no physical pixel value,
+ * so the readout is not shown there. */
 import { formatDec, formatDeg, formatRA } from "../../../format";
 import { formatFov, icrsToGalactic } from "../../../sky/geometry";
 import { PROJECTIONS, baseSurvey, type Projection } from "../../../sky/surveys";
@@ -46,11 +48,13 @@ export function StatusBar({ url }: { url: AtlasUrl }) {
       <span className="sky-status__item"><span className="sky-status__k">FoV</span> <span className="mono">{view ? formatFov(view.fov) : "—"}</span></span>
       <Segmented<Projection> size="sm" aria-label="Projection" value={url.proj} onChange={url.setProj}
         options={PROJECTIONS.map((p) => ({ value: p, label: p, title: PROJ_TITLE[p] }))} />
-      <Tooltip content={`${survey.label} value under the cursor${survey.format === "fits" ? " (FITS tiles: HiPS units)" : " (RGB tiles)"}`}>
-        <span className="sky-status__item" tabIndex={0}>
-          <span className="sky-status__k">Pixel</span> <span className="mono">{cursor ? formatPixel(pixel) : "—"}</span>
-        </span>
-      </Tooltip>
+      {survey.format === "fits" && (
+        <Tooltip content={`${survey.label} value under the cursor (HiPS units)`}>
+          <span className="sky-status__item" tabIndex={0}>
+            <span className="sky-status__k">Pixel</span> <span className="mono">{cursor ? formatPixel(pixel) : "—"}</span>
+          </span>
+        </Tooltip>
+      )}
     </div>
   );
 }

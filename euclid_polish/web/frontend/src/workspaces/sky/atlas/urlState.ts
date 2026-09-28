@@ -137,9 +137,9 @@ export function parsePointId(id: string): { ra: number; dec: number } | null {
   return { ra, dec };
 }
 
-/** The Experiments tab with tiles preselected (it also reads the `tile` selection scope). */
+/** Sky › Compare with tiles preselected (it also reads the `tile` selection scope). */
 export function experimentsHref(refs: readonly string[]): string {
-  return refs.length ? `/sky/experiments?${new URLSearchParams({ tiles: refs.join(",") }).toString()}` : "/sky/experiments";
+  return refs.length ? `/sky/compare?${new URLSearchParams({ tiles: refs.join(",") }).toString()}` : "/sky/compare";
 }
 
 /** Set / delete query params, keeping every other param's exact spelling

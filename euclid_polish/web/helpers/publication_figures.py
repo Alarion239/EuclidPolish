@@ -623,12 +623,17 @@ def render_galaxy_distribution_plate(
 
 def render_star_population_calibration(
     calibration: Mapping[str, Any], *, output_format: str = "png", dpi: int = 300,
+    include_gaia: bool = False,
 ) -> bytes:
-    """Render the active Q1 PHZ × Gaia × Euclid calibration as one plate.
+    """Render the active stellar calibration as one plate.
 
-    The density panel shows the Q1/Gaia shared-slope straight-line calibration.
-    The three colour panels separate the fitted true-colour population,
-    inferred true colours, noise-simulated colours, and raw catalogue colours.
+    The density panel shows the Q1 PHZ VIS counts and the Q1-normalised
+    straight law; the three colour panels separate the fitted true-colour
+    population, inferred true colours, noise-simulated colours, and raw
+    catalogue colours. ``include_gaia`` adds the native Gaia G_AB counts and
+    their Gaia-intercept shared-slope fit to the density panel — the paper's
+    figure (``paper_figures/build_figures.py``) keeps them; the console plate
+    does not (the Gaia counts were deleted from the console).
     """
     fmt = output_format.lower()
     if fmt not in {"png", "pdf", "svg"}:
@@ -677,28 +682,31 @@ def render_star_population_calibration(
         x_gaia_fit, y_gaia_fit = _xy(
             density, "gaia_fitted", x_field="gaia_x",
         )
-        if x_gaia.size:
+        if include_gaia and x_gaia.size:
             ax_density.plot(
                 x_gaia, y_gaia, linestyle="none", marker="s", markersize=4.2,
                 markerfacecolor=PAPER, markeredgecolor=TNG,
                 markeredgewidth=1.1, label="native Gaia G$_{AB}$ counts",
                 zorder=4,
             )
-        if x_gaia_fit.size:
+        if include_gaia and x_gaia_fit.size:
             ax_density.plot(
                 x_gaia_fit, y_gaia_fit, color=TNG, linewidth=2.1,
                 linestyle=(0, (6, 3)), label="Gaia-intercept shared-slope fit",
                 zorder=3,
             )
         fit_ranges = density.get("fit_ranges") or {}
-        for key, color in (("q1", STAR_MODEL), ("gaia", TNG)):
+        windows = (("q1", STAR_MODEL), ("gaia", TNG)) if include_gaia else (("q1", STAR_MODEL),)
+        for key, color in windows:
             interval = fit_ranges.get(key) or []
             if len(interval) == 2:
                 ax_density.axvspan(
                     float(interval[0]), float(interval[1]),
                     color=color, alpha=0.055, linewidth=0,
                 )
-        ax_density.set_title("Shared-slope stellar brightness laws", loc="left")
+        ax_density.set_title(
+            "Shared-slope stellar brightness laws" if include_gaia
+            else "Stellar brightness law", loc="left")
         ax_density.set_xlabel(str(density.get("x_label") or "VIS PSF magnitude [AB]"))
         ax_density.set_ylabel(str(density.get("unit") or "stars arcmin$^{-2}$ mag$^{-1}$"))
         ax_density.set_xlim(12, 25)
@@ -763,7 +771,9 @@ def render_star_population_calibration(
         )
         provenance = calibration.get("population_provenance") or {}
         fig.suptitle(
-            "Stellar population calibration · Q1 PHZ × Gaia DR3 × Euclid MER",
+            "Stellar population calibration · Q1 PHZ × Gaia DR3 × Euclid MER"
+            if include_gaia else
+            "Stellar population calibration · Q1 PHZ × Euclid MER",
             x=0.075, y=0.985, ha="left",
             fontsize=FIGURE_TITLE_SIZE, fontweight=700, color=INK,
         )

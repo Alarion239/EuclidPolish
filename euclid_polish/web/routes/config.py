@@ -1,4 +1,4 @@
-"""Universal job-config API (the Settings › Config tab).
+"""Universal job-config API (the System › Config tab).
 
 The shared per-job knobs (:mod:`euclid_polish.web.job_config`) persist to
 ``~/.euclid_polish/job_config.json`` and get injected into the relevant job

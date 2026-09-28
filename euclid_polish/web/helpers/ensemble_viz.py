@@ -652,13 +652,27 @@ def _vis(arr: np.ndarray) -> np.ndarray:
     return a[..., 0] if a.ndim == 3 else a
 
 
-def _lr_on_hr_grid(lr_cube, n: int) -> np.ndarray | None:
-    """The LR VIS plane bicubic-resampled onto the ``(n, n)`` HR grid — the
-    no-super-resolution baseline for the power-spectrum r(k) reference. Returns
-    ``None`` if the LR cube is missing/degenerate."""
+def _plane(arr: np.ndarray, band: int) -> np.ndarray:
+    """Channel ``band`` of an ``(H, W, C)`` cube (a 2-D array is VIS only, so
+    it answers band 0 and raises for any other band)."""
+    a = np.asarray(arr, np.float32)
+    if a.ndim == 3:
+        return a[..., int(band)]
+    if int(band) != 0:
+        raise IndexError(f"a single-band array has no band {band}")
+    return a
+
+
+def _lr_on_hr_grid(lr_cube, n: int, band: int = 0) -> np.ndarray | None:
+    """The LR plane of ``band`` (VIS by default) bicubic-resampled onto the
+    ``(n, n)`` HR grid — the no-super-resolution baseline for the power-spectrum
+    r(k) reference. Returns ``None`` if the LR cube is missing/degenerate."""
     if lr_cube is None:
         return None
-    a = np.asarray(_vis(lr_cube), np.float64)
+    try:
+        a = np.asarray(_plane(lr_cube, band), np.float64)
+    except IndexError:
+        return None
     if a.ndim != 2 or a.size == 0:
         return None
     if a.shape == (n, n):
@@ -881,8 +895,11 @@ def _evals_payload(ps_curves: EnsembleSpectrumCurves | None,
                    member_labels: list, subset: str,
                    combiner: dict | None = None,
                    model_combiners: dict[str, dict | None] | None = None,
-                   coherence: dict | None = None) -> dict:
-    """The complete Evaluations-card dataset, JSON-ready.
+                   coherence: dict | None = None,
+                   band: str = "VIS") -> dict:
+    """The complete Evaluations-card dataset, JSON-ready, for one ``band``
+    (VIS is ``ensemble_evals.json``; the other bands are
+    :func:`compute_band_evaluation_payloads`).
 
     Everything the FRONTEND renderers draw — power-spectrum curves,
     diagnostic histograms, calibration stats, per-member loss/depth meta and
@@ -898,10 +915,15 @@ def _evals_payload(ps_curves: EnsembleSpectrumCurves | None,
                         member_labels,
                         _member_meta_from_labels(member_labels),
                         strict=True)],
+        "band": band,
         "guides": {
             "lr_scale": 0.5 / LR_NYQUIST_CYC_ARCSEC,
-            "vis_fwhm": float(Config.get_band("VIS").psf_fwhm_arcsec),
             "theta_min": float(Config.DEFAULT_PIXEL_SCALE),
+            "band": band,
+            "psf_fwhm": float(Config.get_band(band).psf_fwhm_arcsec),
+            "read_noise": float(Config.get_band(band).read_noise_e),
+            # the VIS names older readers use
+            "vis_fwhm": float(Config.get_band("VIS").psf_fwhm_arcsec),
             "rn_vis": float(Config.get_band("VIS").read_noise_e),
         },
         **diag.to_payload(),
@@ -1912,7 +1934,8 @@ def _lr_cube_on_hr_grid(lr_cube, n: int):
 def pixel_trace(starless: bool, diag: str, i: int, j: int,
                 model_kind: str | None = None,
                 axis_mode: str | None = None,
-                *, half: int = PIXEL_TRACE_HALF,
+                *, band: str = "VIS",
+                half: int = PIXEL_TRACE_HALF,
                 max_stamps: int = PIXEL_TRACE_STAMPS) -> dict:
     """Back-trace one heatmap cell to real image stamps.
 
@@ -1924,19 +1947,24 @@ def pixel_trace(starless: bool, diag: str, i: int, j: int,
     (SR = the regime's combiner where available, else the ensemble mean) as
     base64 float32 so the frontend can render them with the field viewer's exact
     colour / knee / brightness, plus the single-band cross-member σ, and the
-    per-pixel VIS numbers that place the pixel in the plot. Windows are zero-
-    padded to a fixed ``(2·half+1)²`` with the sampled pixel at the centre.
+    per-pixel numbers of ``band`` (the diagnostics' band, VIS by default)
+    that place the pixel in the plot. Windows are zero-padded to a fixed
+    ``(2·half+1)²`` with the sampled pixel at the centre.
     Returns ``{stamps: [...], ...}`` (``stamps`` empty when nothing sampled)."""
+    band_names = list(Config.LR_INPUT_BAND_NAMES)
+    if band not in band_names:
+        raise ValueError(f"unknown band {band!r}")
+    band_index = band_names.index(band)
     S = 2 * int(half) + 1
     selected_kind = str(model_kind or "")
     selected_axis = str(axis_mode or "")
     out = {"diag": diag, "model_kind": selected_kind or None,
            "axis_mode": selected_axis or None,
            "i": int(i), "j": int(j), "half": int(half),
-           "size": S, "bands": list(Config.LR_INPUT_BAND_NAMES),
+           "size": S, "bands": list(Config.LR_INPUT_BAND_NAMES), "band": band,
            "stretch": float(Config.STRETCH_SCALE_E), "stamps": []}
     try:
-        with open(_diag_samples_path(starless)) as f:
+        with open(diag_samples_path(starless, band)) as f:
             side = json.load(f)
     except (OSError, json.JSONDecodeError):
         return out
@@ -2025,11 +2053,14 @@ def pixel_trace(starless: bool, diag: str, i: int, j: int,
         if not os.path.isfile(model_f):
             continue
         sr_cube = np.load(model_f).astype(np.float32)
-        std_v = _vis(np.load(std_f)).astype(np.float32)          # scalar σ (VIS)
+        try:
+            std_v = _plane(np.load(std_f), band_index)           # scalar σ (band)
+            hr_v, sr_v = _plane(hr_cube, band_index), _plane(sr_cube, band_index)
+        except IndexError:
+            continue
         lr_rec = lr_by.get(rec)
         lr_cube = _lr_cube_on_hr_grid(
             np.asarray(lr_rec.data, np.float32), n) if lr_rec is not None else None
-        hr_v, sr_v = _vis(hr_cube), _vis(sr_cube)
         for (y, x) in coords:
             if not (0 <= y < n and 0 <= x < n):
                 continue
@@ -2122,6 +2153,137 @@ def refresh_evaluation_diagnostics(starless: bool) -> dict | None:
     with open(path, "w") as f:
         json.dump(payload, f)
     return payload
+
+
+#: The bands measured beyond VIS; each has its own evaluation payload next to
+#: ``ensemble_evals.json`` (same schema, one band).
+EVAL_EXTRA_BANDS: tuple[str, ...] = tuple(Config.LR_INPUT_BAND_NAMES[1:])
+#: Bumped when the per-band payload changes shape → the next refresh rebuilds.
+_BAND_EVALS_SCHEMA = 1
+
+
+def _band_evals_path(starless: bool, band: str) -> str:
+    return os.path.join(_ensemble_regime_dir(starless), f"ensemble_evals_{band}.json")
+
+
+def _band_diag_samples_path(starless: bool, band: str) -> str:
+    return os.path.join(_ensemble_regime_dir(starless),
+                        f"ensemble_diag_samples_{band}.json")
+
+
+def diag_samples_path(starless: bool, band: str = "VIS") -> str:
+    """The back-tracing sidecar of one band's diagnostics."""
+    return (_diag_samples_path(starless) if band == "VIS"
+            else _band_diag_samples_path(starless, band))
+
+
+def _band_evals_identity(starless: bool) -> dict | None:
+    """What a per-band payload depends on: the scored fields, the members and
+    every baked combiner (as the PSNR-vs-knee curves). ``None`` without a
+    cached evaluation."""
+    manifest = _read_test_manifest(starless)
+    if manifest is None:
+        return None
+    identity = {key: value for key, value in _knee_psnr_identity(starless, manifest).items()
+                if key not in ("schema", "knees")}
+    return {"schema": _BAND_EVALS_SCHEMA, **identity}
+
+
+def band_evals_state(starless: bool) -> dict[str, str]:
+    """``{band: "current" | "stale" | "missing"}`` for the bands beyond VIS."""
+    identity = _band_evals_identity(starless)
+    out: dict[str, str] = {}
+    for band in EVAL_EXTRA_BANDS:
+        try:
+            with open(_band_evals_path(starless, band)) as handle:
+                stored = json.load(handle).get("identity")
+        except (OSError, ValueError, AttributeError):
+            out[band] = "missing"
+            continue
+        out[band] = "current" if identity is not None and stored == identity else "stale"
+    return out
+
+
+def read_band_evals(starless: bool, band: str) -> dict | None:
+    """One band's cached evaluation payload with ``stale`` set (its identity
+    differs from the current evaluation), or ``None`` when it was never
+    computed. Cache only: nothing is recomputed."""
+    if band not in EVAL_EXTRA_BANDS:
+        raise ValueError(f"unknown band {band!r}; the extra bands are {', '.join(EVAL_EXTRA_BANDS)}")
+    try:
+        with open(_band_evals_path(starless, band)) as handle:
+            payload = json.load(handle)
+    except (OSError, ValueError):
+        return None
+    payload["stale"] = payload.get("identity") != _band_evals_identity(starless)
+    return payload
+
+
+def compute_band_evaluation_payloads(
+        starless: bool, *, bands: tuple[str, ...] | None = None,
+        progress: Callable[[int, int, str], None] | None = None) -> dict[str, dict] | None:
+    """The evaluation diagnostics of the bands beyond VIS, from the CACHED
+    cubes (no model inference): one sweep reads each field once and feeds a
+    spectrum and a pixel-diagnostics accumulator per band. Writes
+    ``ensemble_evals_<band>.json`` and its back-tracing sidecar per band and
+    returns ``{band: payload}``, or ``None`` when nothing valid is cached.
+    The member-pair spectra are left out (the VIS payload keeps them)."""
+    names = list(Config.LR_INPUT_BAND_NAMES)
+    wanted = tuple(names.index(b) for b in (bands or EVAL_EXTRA_BANDS) if b in names and b != "VIS")
+    manifest = _read_test_manifest(starless)
+    identity = _band_evals_identity(starless)
+    if not wanted or manifest is None or identity is None:
+        return None
+    labels = [str(x) for x in manifest.get("member_labels", []) or []]
+    total = len(manifest.get("indices", []) or [])
+    spectra: dict[int, EnsembleSpectrumAccumulator] = {}
+    diags = {band: EnsembleDiagnosticsAccumulator() for band in wanted}
+    for position, (rec, planes) in enumerate(_iter_cached_field_bands(starless, wanted), 1):
+        for band, (hr_v, mean_v, mem_v, model_v, lr_v) in planes.items():
+            spectrum = spectra.get(band)
+            if spectrum is None:
+                spectrum = spectra[band] = EnsembleSpectrumAccumulator(
+                    int(hr_v.shape[0]), float(Config.DEFAULT_PIXEL_SCALE),
+                    collect_pairwise=False)
+            spectrum.add(hr_v, mean_v, mem_v, model_combiners=model_v, lr=lr_v)
+            diags[band].add(hr_v, mean_v, mem_v, combiners=model_v, field_index=rec)
+        if progress is not None:
+            progress(position, total, f"Y, J, H diagnostics: test field {rec}")
+    out: dict[str, dict] = {}
+    for band in wanted:
+        diag = diags[band]
+        if diag.n_fields == 0:
+            continue
+        spectrum = spectra.get(band)
+        measured = spectrum is not None and float(spectrum.bc.sum()) > 0
+        payload = _evals_payload(
+            spectrum.curves() if measured else None, diag, labels,
+            manifest.get("subset", ""),
+            coherence=spectrum.coherence_scores() if measured else None,
+            band=names[band])
+        payload["regime"] = _regime_slug(starless)
+        payload["identity"] = identity
+        with open(_band_evals_path(starless, names[band]), "w") as handle:
+            json.dump(payload, handle)
+        try:
+            with open(_band_diag_samples_path(starless, names[band]), "w") as handle:
+                json.dump(diag.samples_payload(), handle)
+        except OSError:
+            pass
+        out[names[band]] = payload
+    return out or None
+
+
+def _refresh_band_evals(starless: bool, progress) -> None:
+    """Keep the Y/J/H diagnostics in step with the cubes; skipped while every
+    band is current (best-effort: never fails the evaluation)."""
+    try:
+        state = band_evals_state(starless)
+        if state and all(value == "current" for value in state.values()):
+            return
+        compute_band_evaluation_payloads(starless, progress=progress)
+    except Exception as exc:  # noqa: BLE001 — diagnostic only
+        print(f"[ensemble] Y/J/H diagnostics not refreshed: {exc}")
 
 
 def _rebuild_bucket_dropping_member(cubes_dir: str, member_nn: str,
@@ -2481,6 +2643,7 @@ def _reevaluate_from_cached_cubes(starless: bool,
     with open(os.path.join(out_dir, "eval_summary.json"), "w") as f:
         json.dump(summary, f, indent=2)
     _refresh_knee_psnr(starless, progress)
+    _refresh_band_evals(starless, progress)
     return summary
 
 
@@ -2690,7 +2853,7 @@ def job_ensemble_evaluate(cap, *, num_images: int,
         names = ", ".join(os.path.basename(path) for path in missing_records)
         raise RuntimeError(
             f"missing local {sub} record shard(s): {names}. "
-            "Use Sky → Sync records from FASRC; it pulls test + validate together.")
+            "Use Synthetic › Records › Sync from FASRC; it pulls test + validate together.")
 
     pending_archives = _pending_archived_members(starless)
     if pending_archives:
@@ -2725,6 +2888,7 @@ def job_ensemble_evaluate(cap, *, num_images: int,
             cap.tick(0, 1, "cached evaluation found — rebuilding figures (no inference)")
             compute_evaluation_payload(starless)   # payload + back-trace samples
             _refresh_knee_psnr(starless, lambda i, n, label: cap.tick(i, n, label))
+            _refresh_band_evals(starless, lambda i, n, label: cap.tick(i, n, label))
             cap.tick(1, 1, "reused cached evaluation (dataset + model unchanged)")
             summary = dict(cached)
             summary["reused"] = True
@@ -2897,23 +3061,34 @@ def job_ensemble_evaluate(cap, *, num_images: int,
         _clear_archive_stale(starless)
     print(json.dumps(out, indent=2))
     _refresh_knee_psnr(starless, lambda i, n, label: cap.tick(i, n, label))
+    _refresh_band_evals(starless, lambda i, n, label: cap.tick(i, n, label))
     out["viz_fields"] = len(saved)
     return out
 
 
 def _iter_cached_fields(starless: bool):
-    """Yield ``(target_vis, mean_vis, members_vis, model_vis, lr_vis, rec)``
-    per cached field of one regime (``rec`` = the
-    field's record index — the key the ``sr_``/``std_`` cubes and the
-    back-tracing sidecar are stored under).
+    """The VIS planes of :func:`_iter_cached_field_bands`: yield
+    ``(target_vis, mean_vis, members_vis, model_vis, lr_vis, rec)``."""
+    for rec, planes in _iter_cached_field_bands(starless, (0,)):
+        hr_v, mean_v, mem_v, model_v, lr_v = planes[0]
+        yield hr_v, mean_v, mem_v, model_v, lr_v, rec
+
+
+def _iter_cached_field_bands(starless: bool, bands: tuple[int, ...]):
+    """Yield ``(rec, {band: (target, mean, members, model, lr)})`` per cached
+    field — one read of each cube serves every requested band index.
+
+    ``rec`` is the field's record index — the key the ``sr_``/``std_`` cubes
+    and the back-tracing sidecar are stored under. A band a cube lacks is left
+    out of that field's dict.
 
     Streams the mean-SR (``sr_*.npy``) + individual member (``member*_*.npy``)
     cubes the last Evaluate wrote for this regime, paired with the regime's
     TARGET from the records (``clean`` for starless, ``hr`` for starfull) — so
     any evaluation figure can be recomputed (e.g. after a code fix) in seconds
-    with NO model inference and no full re-run. ``model_vis`` maps every
-    registered ordinary combiner kind to its VIS baked cube (or ``None``).
-    ``lr_vis`` is the LR plane bicubic-resampled onto the HR grid (the no-SR
+    with NO model inference and no full re-run. ``model`` maps every
+    registered ordinary combiner kind to that band of its baked cube (or
+    ``None``). ``lr`` is the LR plane bicubic-resampled onto the HR grid (the no-SR
     baseline for r(k)), or ``None`` when the dirty records are absent. Yields
     nothing when the cache is missing, or when the regime's membership changed
     since the cubes were written (a member archived/added → position-keyed
@@ -2973,20 +3148,33 @@ def _iter_cached_fields(starless: bool):
                    if os.path.isfile(mf := os.path.join(cubes_dir, f"member{i}_{rec:05d}.npy"))]
         if not members:
             continue
-        model_v = {}
+        model_cubes = {}
         for kind, spec in COMBINER_MODELS.items():
             model_f = os.path.join(cubes_dir, f"{spec.cube_prefix}_{rec:05d}.npy")
-            model_v[kind] = (_vis(np.load(model_f))
-                             if (man.get(f"has_combiner_{kind}")
-                                 and os.path.isfile(model_f)) else None)
-        hr_v = _vis(blur_target_array(
+            model_cubes[kind] = (np.load(model_f)
+                                 if (man.get(f"has_combiner_{kind}")
+                                     and os.path.isfile(model_f)) else None)
+        hr_cube = blur_target_array(
             np.asarray(hr.data, np.float32), target_fwhm,
-            pixel_scale_arcsec=hr.pixel_scale_arcsec))
-        lr_v = (_lr_on_hr_grid(np.asarray(lr_rec.data, np.float32),
-                               int(hr_v.shape[0])) if lr_rec is not None else None)
-        yield (hr_v, _vis(np.load(sr_f)),
-               np.stack([_vis(m) for m in members], 0), model_v,
-               lr_v, rec)
+            pixel_scale_arcsec=hr.pixel_scale_arcsec)
+        sr_cube = np.load(sr_f)
+        lr_cube = (np.asarray(lr_rec.data, np.float32)
+                   if lr_rec is not None else None)
+        planes = {}
+        for band in bands:
+            try:
+                hr_v = _plane(hr_cube, band)
+                model_v = {kind: (_plane(cube, band) if cube is not None else None)
+                           for kind, cube in model_cubes.items()}
+                planes[band] = (
+                    hr_v, _plane(sr_cube, band),
+                    np.stack([_plane(m, band) for m in members], 0), model_v,
+                    _lr_on_hr_grid(lr_cube, int(hr_v.shape[0]), band)
+                    if lr_cube is not None else None)
+            except IndexError:
+                continue          # a cube without this band: skip the band here
+        if planes:
+            yield rec, planes
 
 
 def _member_meta_from_labels(labels) -> list[dict]:
@@ -3140,7 +3328,7 @@ def job_ensemble_pull(cap, *, members: list[str] | None = None,
     afterwards is fingerprint-cached, so it re-scores only what was pulled.
 
     ``members`` (any member spelling) restricts the download to those members
-    (the Overview's member picker); a requested member the probe finds
+    (Models › Members, Pull from FASRC); a requested member the probe finds
     unchanged is reported in ``up_to_date``. ``dry_run`` stops after the
     probe and returns what WOULD be pulled (``changed``) — nothing is
     downloaded or re-scored.
@@ -3564,7 +3752,7 @@ class _MemberContext:
 
 def _summary_vis_psnr(summary: dict | None) -> tuple[dict[str, float | None], dict | None]:
     """label → the headline (VIS asinh) test PSNR of each member from
-    eval_summary.json: the metric of the Overview's "Best member" tile, NOT
+    eval_summary.json: the metric of the Leaderboard's best-member test PSNR, NOT
     the member-PSNR cache (joint 4-band). ``per_member_vis_psnr`` is the
     explicit key; summaries recomputed from cubes before it existed carry the
     same VIS numbers as ``per_member_psnr_stretched`` (the TF-evaluate path's
@@ -3658,7 +3846,7 @@ def _member_row(name: str, ctx: _MemberContext) -> dict:
 
 
 def members_payload(starless: bool) -> dict:
-    """The Ensemble › Members table: one joined row per ACTIVE member of the
+    """The Models › Members roster: one joined row per ACTIVE member of the
     regime (status + origin.json + training job + knee-integrated PSNR per
     band + production-gate usage + spectral coherence), the archived
     tombstones (with their zip location, for restore) and the join's own
@@ -3867,8 +4055,8 @@ def _promotion_state(directory: str, manifest: dict, reads: list[str],
 
 def combiner_variants(starless: bool) -> dict:
     """The combiner variant registry of a regime: every ``spatial_gate_*``
-    directory (the production gate, named variants, promotion backups) and
-    the RBF, each with its fit summary, held-out loss history, membership
+    directory (the production gate, named variants, promotion backups; the
+    legacy RBF is never listed), each with its fit summary, held-out loss history, membership
     against the active members, test PSNR (production: the eval summary;
     variants: the latest compare report) and knee-integrated PSNR (production:
     the knee payload; variants: the latest compare report)."""
@@ -3940,30 +4128,6 @@ def combiner_variants(starless: bool) -> dict:
                                "integrated": knee_gate.get("integrated"),
                                "psnr": knee_gate.get("psnr")}
         rows.append(row)
-    rbf_dir = COMBINER_MODELS[_RBF_KIND].artifact_dir
-    m = _read_json_file(os.path.join(regime_dir, rbf_dir, "combiner.json"))
-    if m is not None:
-        labels = [str(v) for v in m.get("member_labels") or []]
-        rows.append({
-            "name": rbf_dir, "kind": "rbf", "spec": "rbf", "production": False, "backup": False,
-            "member_labels": labels, "reads": labels, "n_members": len(labels),
-            "n_reads": len(labels), "pruned": False, "mix_space": "asinh", "use_lr": False,
-            "width": None, "fitted_at": _iso_mtime(os.path.join(regime_dir, rbf_dir, "combiner.npz")),
-            "fingerprint": combiner_artifact_fingerprint(regime_dir, rbf_dir),
-            "membership": {"current": labels == active,
-                           "missing": [lb for lb in labels if lb not in active],
-                           "extra": [lb for lb in active if lb not in labels]},
-            "applies_to_test_cubes": sgc.member_positions(labels, cube_labels) is not None,
-            "fit": {"n_kernels": m.get("n_kernels"), "model": COMBINER_MODELS[_RBF_KIND].label},
-            "selected": None, "baseline": None, "history": [],
-            "test": ({"source": "compare", "report": report.get("id"),
-                      "band_psnr": natural["rbf"].get("band_psnr"),
-                      "blackout_band_psnr": (blackout.get("rbf") or {}).get("band_psnr")}
-                     if "rbf" in natural else None),
-            "knee": ({"source": "compare", "report": report.get("id"),
-                      "integrated": report_knee["rbf"]["integrated"],
-                      "psnr": report_knee["rbf"]["psnr"]} if "rbf" in report_knee else None),
-        })
     return {"regime": _regime_slug(starless), "production": production_dir,
             "active_members": active, "cube_members": cube_labels,
             "variants": rows,
@@ -4026,7 +4190,7 @@ def job_combiner_compare(cap, *, starless: bool, gates: list[str] | None = None,
     regime_dir = _ensemble_regime_dir(starless)
     records_dir = _sky_records_local_dir()
     if not records_dir:
-        raise RuntimeError("no local sky records — sync them on Data › Records.")
+        raise RuntimeError("no local sky records — sync them on Synthetic › Records.")
     names = [variant_dir(starless, g) for g in (gates or default_compare_gates(starless))]
     names = [os.path.basename(p) for p in names]
     if not names:
@@ -4234,7 +4398,7 @@ def job_combiner_promote(cap, *, starless: bool, variant: str, force: bool = Fal
 # ---- overview -------------------------------------------------------------- #
 
 def ensemble_overview(starless: bool) -> dict:
-    """The Overview tab: headline numbers (each with its definition) and the
+    """Models › Leaderboard: headline numbers (each with its definition) and the
     staleness checks, all from local files (fast, offline)."""
     base = ensemble_dir()
     regime_dir = _regime_dir_ro(starless)

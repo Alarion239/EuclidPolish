@@ -461,3 +461,11 @@
   border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--surface-2);
 }
 .display-switch { display: flex; align-items: center; min-height: var(--ctl-h); }
+
+/* Console regrouping: the pages absorbed into Synthetic, Models and System
+   collapse by their own width (container queries), as they did under their
+   old workspace roots (.ws--realism, .ws--ensemble, .ws--settings). */
+.ws--synthetic .page,
+.ws--models .page,
+.ws--system .page { container-type: inline-size; min-width: 0; }
+.ws--system .ui-deflist > div { grid-template-columns: minmax(88px, 32%) minmax(0, 1fr); }

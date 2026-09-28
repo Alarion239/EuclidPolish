@@ -1,4 +1,4 @@
-/* Shared status resources for the shell chrome, Home and Settings › About:
+/* Shared status resources for the shell chrome, Home and System › Code:
  * the server version (C3) and the FASRC connection (C4). One TanStack cache
  * entry per URL, so the top bar, the rail and a page share one request. */
 import { useResource } from "../api/query";

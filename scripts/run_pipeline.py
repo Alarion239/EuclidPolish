@@ -61,7 +61,7 @@ from euclid_polish.image.tfio import (
 from euclid_polish.observability.reporter import Reporter
 from euclid_polish.observability.resource_sampler import ResourceSampler
 from euclid_polish.observability.stage_timer import StageTimer
-from euclid_polish.psf.psf_library import load_all_band_psf_sets
+from euclid_polish.psf.psf_library import load_all_band_psf_sets, psf_kinds
 from euclid_polish.sky.generation.cosmos_tng_prior import (
     CosmosTngPrior,
     F814WToVisTransfer,
@@ -560,6 +560,14 @@ def _observation_config_from_args(
     )
 
 
+def _stamp_psf_kinds(ctx, psf_dir: str) -> None:
+    """Record on every record file of the run which bands were convolved with
+    an empirical ePSF and which with the Gaussian fallback (the file-level
+    artifact's ``psf_kinds`` descriptor; Synthetic › PSF reads it)."""
+    if ctx is not None:
+        ctx.descriptors["psf_kinds"] = psf_kinds(psf_dir)
+
+
 def _generate_and_convolve_provenance_config(
     args: argparse.Namespace,
     observation: ObservationSimulatorConfig,
@@ -599,6 +607,7 @@ def step_generate(args: argparse.Namespace) -> None:
     # can be replayed via --seed; every per-subset RNG is derived from it.
     run_seed = _resolve_run_seed(args)
     gen_ctx = make_generation_context(cfg, seed=run_seed)
+    _stamp_psf_kinds(gen_ctx, args.psf_dir)
     _log(f"  run_seed={run_seed}  (replay with --seed {run_seed})")
 
     subsets = (("train", args.ntrain), ("validate", args.nvalid),
@@ -726,6 +735,7 @@ def step_convolve(args: argparse.Namespace) -> None:
     # artifact realisations can be replayed via --seed.
     run_seed = _resolve_run_seed(args)
     conv_ctx = make_generation_context(fwd.config, seed=run_seed)
+    _stamp_psf_kinds(conv_ctx, args.psf_dir)
     _log(f"  run_seed={run_seed}  (replay with --seed {run_seed})")
 
     # Structured progress for the WebUI — one cumulative bar across both
@@ -1405,6 +1415,7 @@ def step_generate_and_convolve_parallel(args: argparse.Namespace) -> None:
         _generate_and_convolve_provenance_config(args, observation_cfg),
         seed=run_seed,
     )
+    _stamp_psf_kinds(gen_ctx, args.psf_dir)
     _log(f"  run_seed={run_seed}  (replay with --seed {run_seed})")
     _log(
         "  PSF warp: "

@@ -21,21 +21,33 @@ describe("nav metadata ↔ route manifest", () => {
     expect(new Set(keys).size).toBe(keys.length);
     for (const m of Object.values(WORKSPACE_META)) expect(ICON_NAMES).toContain(m.icon);
   });
+
+  it("gives every tab a label that is unique across the rail, in sentence case", () => {
+    const labels = MANIFEST.workspaces.flatMap((ws) => ws.tabs.map((t) => tabLabel(ws.id, t)));
+    expect(new Set(labels).size).toBe(labels.length);
+    for (const label of labels) expect(label, label).toMatch(/^[A-Z][a-z]*( [a-z]+)*$|^PSF$/);
+    const ws = MANIFEST.workspaces.map((w) => w.label);
+    expect(new Set([...ws, ...labels]).size).toBe(ws.length + labels.length);
+  });
 });
 
 describe("paths", () => {
   it("lands on the default tab with default params", () => {
     expect(landingPath("home")).toBe("/");
+    expect(landingPath("synthetic")).toBe("/synthetic/status");
+    expect(landingPath("models")).toBe("/models/starfull/leaderboard");
     expect(landingPath("sky")).toBe("/sky/atlas");
-    expect(landingPath("ensemble")).toBe("/ensemble/starfull/overview");
-    expect(landingPath("inspect")).toBe("/inspect");
-    expect(landingPath("settings")).toBe("/settings/config");
+    expect(landingPath("figures")).toBe("/figures/plates");
+    expect(landingPath("files")).toBe("/files");
+    expect(landingPath("runs")).toBe("/runs/live");
+    expect(landingPath("notebook")).toBe("/notebook/log");
+    expect(landingPath("system")).toBe("/system/connections");
   });
 
   it("builds tab paths with params", () => {
-    expect(pagePath("ensemble", { tab: "knee", params: { mode: "starless" } })).toBe("/ensemble/starless/knee");
+    expect(pagePath("models", { tab: "combiner", params: { mode: "starless" } })).toBe("/models/starless/combiner");
     // an unknown param value falls back to the default
-    expect(pagePath("ensemble", { tab: "knee", params: { mode: "bogus" } })).toBe("/ensemble/starfull/knee");
+    expect(pagePath("models", { tab: "combiner", params: { mode: "bogus" } })).toBe("/models/starfull/combiner");
     // an unknown tab falls back to the base
     expect(pagePath("sky", { tab: "nope" })).toBe("/sky");
   });
@@ -44,25 +56,27 @@ describe("paths", () => {
     const pages = allPages();
     expect(pages.length).toBeGreaterThan(30);
     for (const p of pages) expect(isPagePath(p.path), p.path).toBe(true);
-    // both regimes of every ensemble tab
-    expect(pages.filter((p) => p.workspace === "ensemble")).toHaveLength(16);
-    expect(pages.find((p) => p.path === "/ensemble/starless/train")?.label).toBe("Ensemble (starless) › Train");
+    // both regimes of every models tab
+    expect(pages.filter((p) => p.workspace === "models")).toHaveLength(12);
+    expect(pages.find((p) => p.path === "/models/starless/train")?.label).toBe("Models (starless) › Train");
+    expect(pages.find((p) => p.path === "/files")?.label).toBe("Files");
   });
 });
 
 describe("labels", () => {
   it("humanizes slugs", () => {
     expect(humanize("catalog-eval")).toBe("Catalog eval");
-    expect(tabLabel("sky", "catalog-eval")).toBe("Catalog eval");
+    expect(tabLabel("synthetic", "psf")).toBe("PSF");
     expect(tabLabel("sky", "zzz-top")).toBe("Zzz top");
   });
 
   it("describes a location and titles the document", () => {
-    const d = describePath("/ensemble/starless/members");
-    expect(d?.workspaceLabel).toBe("Ensemble");
+    const d = describePath("/models/starless/members");
+    expect(d?.workspaceLabel).toBe("Models");
     expect(d?.tabLabel).toBe("Members");
     expect(d?.paramLabels).toEqual(["starless"]);
-    expect(pageTitle("/ensemble/starless/members")).toBe("Members · Ensemble (starless) · EuclidPolish");
+    expect(pageTitle("/models/starless/members")).toBe("Members · Models (starless) · EuclidPolish");
+    expect(pageTitle("/runs/history")).toBe("History · Runs · EuclidPolish");
     expect(pageTitle("/")).toBe("Home · EuclidPolish");
     expect(pageTitle("/sky")).toBe("Sky · EuclidPolish");
     expect(pageTitle("/nope")).toBe("Not found · EuclidPolish");
@@ -70,10 +84,11 @@ describe("labels", () => {
   });
 
   it("gives every page a heading: the tab, then where it lives", () => {
-    expect(pageHeading("/ensemble/starless/members")).toBe("Members, Ensemble (starless)");
-    expect(pageHeading("/data/records")).toBe("Records, Data");
+    expect(pageHeading("/models/starless/members")).toBe("Members, Models (starless)");
+    expect(pageHeading("/synthetic/records")).toBe("Records, Synthetic");
     expect(pageHeading("/")).toBe("Home");
-    expect(pageHeading("/inspect")).toBe("Inspect");
+    expect(pageHeading("/files")).toBe("Files");
+    expect(pageHeading("/inspect")).toBe("Not found");
     expect(pageHeading("/nope")).toBe("Not found");
   });
 });

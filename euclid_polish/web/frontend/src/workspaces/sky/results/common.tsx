@@ -3,7 +3,7 @@
 import { formatDec, formatDeg, formatRA } from "../../../format";
 import { Badge, CopyButton, Tooltip } from "../../../ui";
 import { BANDS, type BandMetrics, type GateCoreWeights } from "./api";
-import { bandLabel, formatMetric, METRIC_BY_KEY, METRICS, STATE_TONE, type MetricKey } from "./model";
+import { bandLabel, formatMetric, METRICS, STATE_TONE, type MetricKey } from "./model";
 
 export function StateBadge({ state, prefix, title }: { state?: string | null; prefix?: string; title?: string | null }) {
   const s = state || "missing";
@@ -25,19 +25,8 @@ export function Position({ ra, dec }: { ra: number | null | undefined; dec: numb
   );
 }
 
-/** The two headline metrics of the models tables (Real results, the tile
- *  card), defined where they are shown. */
-export function MetricNote() {
-  return (
-    <p className="res-note res-metricnote">
-      <strong>Holes %</strong>: {METRIC_BY_KEY.hole_pct.hint} Worst band.{" "}
-      <strong>R̃</strong>: {METRIC_BY_KEY.median_R.hint}
-    </p>
-  );
-}
-
-/** Every real-data metric with its definition (readable before any
- *  experiment exists: Experiments, the Real-results help). */
+/** Every real-data metric with its definition: the ONE definitions text,
+ *  in Sky › Compare's info popover (Targets and the tile card link there). */
 export function MetricDefinitions() {
   return (
     <dl className="res-defs">

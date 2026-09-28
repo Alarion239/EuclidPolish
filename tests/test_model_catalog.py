@@ -83,6 +83,9 @@ def test_list_specs_reports_availability_members_and_reasons(regime):
     assert not old.available and "9·psnr" in old.reason
     assert not specs["rbf"].available and "not fitted" in specs["rbf"].reason
     assert "gate:combiner" not in specs            # production is not a variant
+    # A chip shows the label before " · ": each variant's must name it.
+    assert specs["gate:two"].label.split(" · ")[0] == "Gate two"
+    assert specs["gate:old"].label.split(" · ")[0] == "Gate old"
     payload = production.to_dict()
     json.dumps(payload)
     assert {"spec", "kind", "label", "members", "available", "reason",

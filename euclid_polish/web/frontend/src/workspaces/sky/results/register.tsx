@@ -41,7 +41,7 @@ export function registerResultsInspectors(): void {
   if (registered) return;
   registered = true;
   registerInspector("realtile", RealTileInspector, { title: realtileTitle });
-  registerInspector("experiment", ExperimentInspector, { title: (id) => `Experiment ${id}` });
+  registerInspector("experiment", ExperimentInspector, { title: (id) => `Comparison ${id}` });
 }
 
 // Importing this module registers the kinds (the Sky workspace index does,

@@ -275,6 +275,20 @@ def test_combiner_variants_registry(env):
     assert rows["spatial_gate_backup_20260101-000000"]["backup"] is True
 
 
+def test_combiner_variants_never_list_the_legacy_rbf(env):
+    base = ev.ensemble_dir()
+    _member(base, 1)
+    regime = _regime(env)
+    _gate_dir(regime, "spatial_gate_combiner", ["01·psnr"])
+    rbf = os.path.join(regime, ev.COMBINER_MODELS[ev._RBF_KIND].artifact_dir)
+    os.makedirs(rbf, exist_ok=True)
+    with open(os.path.join(rbf, "combiner.json"), "w") as f:
+        json.dump({"kind": ev._RBF_KIND, "member_labels": ["01·psnr"], "n_kernels": 8}, f)
+    names = [r["name"] for r in ev.combiner_variants(False)["variants"]]
+    assert names == ["spatial_gate_combiner"]
+    assert all(r["kind"] == "gate" for r in ev.combiner_variants(False)["variants"])
+
+
 def test_combiner_variants_flag_reads_that_left_and_unfinished_fits(env):
     base = ev.ensemble_dir()
     _member(base, 1)

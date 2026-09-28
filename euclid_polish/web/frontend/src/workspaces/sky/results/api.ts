@@ -1,4 +1,4 @@
-/* Typed endpoints of the Sky › Real results / Experiments / Catalog-eval tabs
+/* Typed endpoints of Sky › Targets, Sky › Compare and the tile card
  * (contract C9 + /api/evaluation, euclid_polish/web/API.md). Pure types and
  * URL builders: the tabs GET through useResource and POST through the
  * actions in ./actions. */
@@ -46,6 +46,8 @@ export type TileModelRow = {
   state?: ModelState | string; legacy?: boolean; label?: string | null; fingerprint?: string | null;
   created?: string | null; experiment_id?: string | null; file?: string | null; origin?: string | null;
   summary?: MetricsSummary | null;
+  /** Per-band total SR/LR flux of a scored output (listing only). */
+  flux_ratio?: Record<string, number | null>;
 };
 export type TileRow = {
   source: string; id: string; ref: string; label: string;
@@ -71,6 +73,8 @@ export type TileCard = Omit<TileRow, "models"> & {
   disk?: { tile_bytes?: number; output_bytes?: number; cache_bytes?: number; legacy_bytes?: number; total_bytes?: number };
   q1_tile?: { tile?: string; field?: string | null; levels_e?: number[] | null; rejected?: string | null } | null;
   image_urls?: Record<string, string>;
+  /** FITS paths Files opens (`/files?fits=`): `lr` and `m:<spec>`. */
+  files?: Record<string, string>;
   viewer?: { collection: string; params: Record<string, string>; id: string };
 };
 
@@ -172,10 +176,6 @@ export const URLS = {
   evalRuns: "/api/evaluation/runs",
   evalObject: (id: string) => `/api/evaluation/objects/${enc(id)}`,
   authStatus: "/auth/status",
-  fieldStatus: "/api/inference/field.json",
-  fieldDiagnostics: "/api/inference/diagnostics.json",
-  fieldRefresh: "/inference/refresh-combiners",
-  syntheticEvals: "/ensemble/evals.json?mode=starfull",
 } as const;
 
 /** `"nexus/f200w-0001"` → `["nexus", "f200w-0001"]` (ids never contain `/`). */
@@ -192,11 +192,11 @@ export function atlasHref(ra: number, dec: number, ref?: string): string {
   return `/sky/atlas?${q.toString()}`;
 }
 
-/** `/sky/experiments` preselecting tiles (the atlas builds the same link). */
+/** `/sky/compare` preselecting tiles (the atlas builds the same link). */
 export function experimentsHref(refs: readonly string[], models?: readonly string[]): string {
   const q = new URLSearchParams();
   if (refs.length) q.set("tiles", refs.join(","));
   if (models?.length) q.set("models", models.join(","));
   const s = q.toString();
-  return s ? `/sky/experiments?${s}` : "/sky/experiments";
+  return s ? `/sky/compare?${s}` : "/sky/compare";
 }

@@ -272,16 +272,16 @@ class TestConnectionGate:
 
     def test_catalog_serves_react_console_when_disconnected(self, app_with_no_ssh):
         client = app_with_no_ssh.test_client()
-        r = client.get("/data/catalog", follow_redirects=False)
+        r = client.get("/synthetic/psf", follow_redirects=False)
         assert r.status_code == 200
         assert b'id="root"' in r.data
 
-    def test_connection_error_page_moves_to_settings(self, app_with_no_ssh):
+    def test_connection_error_page_moves_to_system_connections(self, app_with_no_ssh):
         client = app_with_no_ssh.test_client()
         r = client.get("/connection-error")
         assert r.status_code == 308
-        assert r.headers["Location"] == "/settings/connections"
-        page = client.get("/settings/connections")
+        assert r.headers["Location"] == "/system/connections"
+        page = client.get("/system/connections")
         assert page.status_code == 200
         assert b'id="root"' in page.data
 

@@ -299,6 +299,16 @@ def read_comparison() -> dict[str, Any] | None:
     return payload if payload and payload.get("version") == VERSION else None
 
 
+def read_previous_comparison() -> dict[str, Any] | None:
+    """The cache built at an older schema (read-only), or None. It keeps the
+    last measured statistics visible behind a stale badge until a rebuild;
+    a payload without its field statistics is not shown."""
+    payload = _read_json(comparison_path())
+    if not payload or payload.get("version") == VERSION:
+        return None
+    return payload if isinstance(payload.get("fields"), dict) else None
+
+
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
@@ -825,6 +835,10 @@ def availability() -> dict[str, Any]:
         source_csvs_with_training
     )
     real_fields = int(archive.get("sample_count") or 0)
+    # The statistics compare the offset tiles only (iter_comparison_fields:
+    # the centre tiles avoid bright stars), so the chips and the lanes count
+    # those; ``fields`` stays every stored sample.
+    compared_fields = int(archive.get("comparison_sample_count") or real_fields)
     parent_count = int(archive.get("parent_count") or 0)
     return {
         "synthetic": {
@@ -845,6 +859,7 @@ def availability() -> dict[str, Any]:
         },
         "real": {
             "fields": real_fields,
+            "compared_fields": compared_fields,
             "area_arcmin2": real_fields * FIELD_AREA_ARCMIN2,
             "independent_parents": parent_count,
             "available": bool(archive.get("available")),

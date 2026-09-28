@@ -1,13 +1,13 @@
-/* Pure logic of the Sky › Real results / Experiments / Catalog-eval tabs:
- * row flattening, model grouping, metric tables and chart series, the
- * tracking-log summary. No React, no fetch (unit-tested in model.test.ts). */
-import { formatNumber } from "../../../format";
+/* Pure logic shared by Sky › Targets, Sky › Compare and the tile card:
+ * model specs and their grouping, the real-data metrics, their tables and
+ * chart series, the experiment cost, the tile card's headline / Δm / files,
+ * the notebook summary. No React, no fetch (unit-tested in model.test.ts). */
+import { formatApprox, formatNumber } from "../../../format";
 import { extent } from "../../../ticks";
 import type { Tone } from "../../../ui";
-import { productionRunsText, shareThreshold } from "../../ensemble/model";
+import { productionRunsText, shareThreshold } from "../../models/model";
 import {
-  BANDS, SOURCES, type BandMetrics, type ExperimentRecord, type Metrics, type ModelSpecRow,
-  type TileList, type TileRow,
+  BANDS, SOURCES, type BandMetrics, type ExperimentRecord, type Metrics, type ModelSpecRow, type TileRow,
 } from "./api";
 
 /* ── small value helpers ───────────────────────────────────────────────── */
@@ -30,6 +30,29 @@ export const STATE_TONE: Record<string, Tone> = {
 export const BAND_LABEL: Record<string, string> = { VIS: "VIS", Y_E: "Y", J_E: "J", H_E: "H" };
 export const bandLabel = (band: string): string => BAND_LABEL[band] ?? band;
 
+/* ── flux kept, as a magnitude ─────────────────────────────────────────── */
+
+/** |Δm| above which the SR's flux is flagged (0.1 mag ≈ ±10 % of the LR flux). */
+export const DELTA_MAG_TOLERANCE = 0.1;
+
+/** Δm of an SR against its LR from their total-flux ratio SR/LR:
+ *  −2.5 log10(ratio) (positive = the SR lost flux); null without a ratio. */
+export function fluxDeltaMag(ratio: unknown): number | null {
+  const r = num(ratio);
+  return r != null && r > 0 ? -2.5 * Math.log10(r) : null;
+}
+
+export function deltaMagWarn(dm: number | null | undefined): boolean {
+  return dm != null && Number.isFinite(dm) && Math.abs(dm) > DELTA_MAG_TOLERANCE;
+}
+
+/** "Δm +1.28 (flux ×0.31)" of a flux ratio SR/LR; "" without one. */
+export function deltaMagText(ratio: unknown): string {
+  const dm = fluxDeltaMag(ratio);
+  if (dm == null) return "";
+  return `Δm ${formatNumber(dm, { digits: 2, signed: true })} (flux ×${formatNumber(num(ratio), { digits: 2 })})`;
+}
+
 /* ── model specs ───────────────────────────────────────────────────────── */
 
 /** Sort key: production, mean, rbf, gate variants, members (then natural). */
@@ -46,6 +69,15 @@ const COLLATOR = new Intl.Collator("en", { numeric: true, sensitivity: "base" })
 
 export function sortSpecs(specs: Iterable<string>): string[] {
   return [...specs].sort((a, b) => specRank(a) - specRank(b) || COLLATOR.compare(a, b));
+}
+
+const SPEC_WORDS: Record<string, string> = { production: "production", mean: "member mean", rbf: "RBF combiner" };
+
+/** A spec in words: `gate:p20` → "gate p20", `member:member_196` → "member 196". */
+export function specWords(spec: string): string {
+  if (spec.startsWith("gate:")) return `gate ${spec.slice(5)}`;
+  if (spec.startsWith("member:")) return `member ${spec.slice(7).replace(/^member_/, "")}`;
+  return SPEC_WORDS[spec] ?? spec;
 }
 
 /** Compact label: `member:member_196` → `m196`, `gate:26m` → `gate 26m`. */
@@ -93,47 +125,7 @@ export function productionMembersText(m: Pick<ModelSpecRow, "n_members" | "n_fit
   return productionRunsText(reads, total, shareThreshold(m.details));
 }
 
-/** Specs to keep after the catalogue refreshed: known and available ones. */
-export function runnableSelection(selected: readonly string[], models: readonly ModelSpecRow[]): string[] {
-  const ok = new Set(models.filter((m) => m.available).map((m) => m.spec));
-  return selected.filter((s) => ok.has(s));
-}
-
 /* ── real tiles ────────────────────────────────────────────────────────── */
-
-/** Every source's rows in one list (a ref appears once). */
-export function flattenTiles(lists: readonly (TileList | null | undefined)[]): TileRow[] {
-  const seen = new Set<string>();
-  const out: TileRow[] = [];
-  for (const list of lists) {
-    for (const row of list?.tiles ?? []) {
-      if (seen.has(row.ref)) continue;
-      seen.add(row.ref);
-      out.push(row);
-    }
-  }
-  return out;
-}
-
-export type StateCounts = { total: number; current: number; stale: number; missing: number };
-
-export function productionCounts(rows: readonly TileRow[]): StateCounts {
-  const out: StateCounts = { total: rows.length, current: 0, stale: 0, missing: 0 };
-  for (const r of rows) {
-    const s = r.production_state;
-    if (s === "current" || s === "stale") out[s] += 1;
-    else out.missing += 1;
-  }
-  return out;
-}
-
-/** A tile's model outputs, ordered, with their state. */
-export function tileModels(row: Pick<TileRow, "models">): { spec: string; state: string; legacy: boolean }[] {
-  const models = row.models ?? {};
-  return sortSpecs(Object.keys(models)).map((spec) => ({
-    spec, state: String(models[spec]?.state ?? "unknown"), legacy: !!models[spec]?.legacy,
-  }));
-}
 
 /** "Compute metrics" as experiments: the tiles grouped by the set of CURRENT
  *  outputs that have no metrics yet. An experiment reuses a current SR and
@@ -151,12 +143,6 @@ export function metricsPlan(rows: readonly Pick<TileRow, "ref" | "models">[]): {
     groups.set(key, g);
   }
   return [...groups.values()];
-}
-
-/** Filter by production state (`all` keeps every row). */
-export function filterByState(rows: readonly TileRow[], state: string): TileRow[] {
-  if (!state || state === "all") return [...rows];
-  return rows.filter((r) => (r.production_state ?? "missing") === state);
 }
 
 /** Refs typed or pasted (comma / whitespace separated), `source/id` with a
@@ -336,7 +322,7 @@ export function experimentCostText(c: ExperimentCost | null): string {
   return `${work} Needs ${count(c.members, "member SR")} per tile: at most ${count(c.inferences, "member inference")} on this machine; cached ones are reused.`;
 }
 
-/** The experiment a visit to Sky › Experiments opens: the `?exp=` one, else
+/** The comparison a visit to Sky › Compare opens: the `?exp=` one, else
  *  the newest (so the plain tab link opens on a comparison, not a form) —
  *  unless tiles were handed over (`?tiles=`): then the new-experiment form
  *  is the point. Ids start with their timestamp (`20260927-024251-…`), which
@@ -349,13 +335,6 @@ export function defaultExperimentId(
   const newer = (a: { id: string; created?: string | null }, b: { id: string; created?: string | null }) =>
     (a.created && b.created ? b.created > a.created : b.id > a.id);
   return history.reduce((a, b) => (newer(a, b) ? b : a)).id;
-}
-
-/** A metric column header in sentence case, as the kit's headers read
- *  ("holes >100σ" → "Holes >100σ"; σ stays σ — no CSS text-transform, which
- *  would have turned it into Σ, a sum sign). */
-export function metricHeader(short: string): string {
-  return short ? short[0].toUpperCase() + short.slice(1) : short;
 }
 
 /* ── the real-tile card ────────────────────────────────────────────────── */
@@ -387,6 +366,111 @@ export function outputOrigin(m: {
   if (m.member_labels?.length) parts.push(`${m.member_labels.length} member${m.member_labels.length === 1 ? "" : "s"}`);
   if (m.combiner_kind) parts.push(m.combiner_kind.replace(/_/g, " "));
   return parts.join(" · ");
+}
+
+type CardLike = {
+  source?: string;
+  models?: Record<string, { metrics?: Metrics | null; label?: string | null } | undefined>;
+  extras?: Record<string, unknown>;
+  files?: Record<string, string>;
+};
+
+/** The worst band of a model's per-band hole % (`{band, holes}`), else the
+ *  summary's maximum without a band; null when unscored. */
+export function worstHoles(metrics: Metrics | null | undefined): { band: string; holes: number } | null {
+  let worst: { band: string; holes: number } | null = null;
+  for (const b of BANDS) {
+    const v = num(metrics?.per_band?.[b]?.hole_pct);
+    if (v != null && (!worst || v > worst.holes)) worst = { band: b, holes: v };
+  }
+  if (worst) return worst;
+  const max = num(metrics?.summary?.hole_pct_max);
+  return max != null ? { band: "", holes: max } : null;
+}
+
+export type CardFact = { label: string; value: string; unit?: string; hint?: string };
+
+/** The tile card's two headline numbers for the model it shows (`focus`):
+ *  the worst band's holes and the median enclosed-flux ratio R. R needs a
+ *  bright peak (> 100σ); on a tile with none, the second number is the
+ *  lowest NISP band's flux SR/LR (the footer already gives VIS) and `note`
+ *  says why R is missing. Null when that model is not scored (the card says
+ *  so instead). */
+export function cardHeadline(
+  card: CardLike, focus: string | null | undefined,
+): { spec: string; label: string; facts: CardFact[]; note: string | null } | null {
+  if (!focus) return null;
+  const metrics = card.models?.[focus]?.metrics;
+  const worst = worstHoles(metrics);
+  const medR = num(metrics?.summary?.median_R);
+  const facts: CardFact[] = [];
+  let note: string | null = null;
+  if (worst) {
+    facts.push({ label: `Holes, worst band${worst.band ? ` (${bandLabel(worst.band)})` : ""}`, value: formatMetric("hole_pct", worst.holes), unit: "%", hint: METRIC_BY_KEY.hole_pct.hint });
+  }
+  if (medR != null) {
+    facts.push({ label: "Median R", value: formatMetric("median_R", medR), hint: METRIC_BY_KEY.median_R.hint });
+  } else if (facts.length) {
+    let low: { band: string; ratio: number } | null = null;
+    for (const b of BANDS) {
+      if (b === "VIS") continue;
+      const v = num(metrics?.per_band?.[b]?.flux_ratio);
+      if (v != null && (!low || v < low.ratio)) low = { band: b, ratio: v };
+    }
+    if (low) {
+      facts.push({ label: `Flux SR/LR, lowest NISP band (${bandLabel(low.band)})`, value: formatNumber(low.ratio, { digits: 2 }), hint: METRIC_BY_KEY.flux_ratio.hint });
+    }
+    const peaks = num(metrics?.summary?.n_peaks);
+    note = peaks === 0
+      ? "No median R: the tile has no bright peak (> 100σ) to measure the enclosed flux around."
+      : "No median R was measured for this output.";
+  }
+  return facts.length ? { spec: focus, label: specWords(focus), facts, note } : null;
+}
+
+/** The footer under the card's viewer: the shown model's total VIS flux
+ *  against the LR as "Δm +1.28 (flux ×0.31)", warned beyond 0.1 mag. A
+ *  catalogue object (`eval/`) records its SR's ratio itself; that SR is
+ *  named by what made it (`madeBy`, the status sentence's words), never
+ *  "production" (it may predate the production model). */
+export function cardDelta(
+  card: CardLike, focus: string | null | undefined, madeBy?: string | null,
+): { label: string; text: string; warn: boolean } | null {
+  let ratio = focus ? num(card.models?.[focus]?.metrics?.per_band?.VIS?.flux_ratio) : null;
+  let label = focus ? specWords(focus) : "";
+  if (ratio == null && card.source === "eval") {
+    ratio = num(card.extras?.flux_ratio_sr_over_lr);
+    // its own parenthesis ("(combiner not recorded)") stays in the status sentence
+    const by = madeBy?.replace(/\s*\([^)]*\)$/, "").trim();
+    label = by ? `SR (${by})` : "catalogue SR";
+  }
+  const text = deltaMagText(ratio);
+  return text ? { label, text, warn: deltaMagWarn(fluxDeltaMag(ratio)) } : null;
+}
+
+/** A catalogue object's two headline numbers (it has no holes or R): the
+ *  total VIS flux of its LR and of its SR, in electrons (the footer gives
+ *  their ratio as Δm). Null when neither is recorded. */
+export function evalHeadline(row: { lr_total_e?: unknown; sr_total_e?: unknown } | null | undefined): CardFact[] | null {
+  const lr = num(row?.lr_total_e), sr = num(row?.sr_total_e);
+  const facts: CardFact[] = [];
+  if (lr != null) facts.push({ label: "LR", value: formatApprox(lr, { sign: false }), unit: "e⁻", hint: "Total VIS flux of the LR cutout" });
+  if (sr != null) facts.push({ label: "SR", value: formatApprox(sr, { sign: false }), unit: "e⁻", hint: "Total VIS flux of the catalogue evaluation's SR" });
+  return facts.length ? facts : null;
+}
+
+/** The card's "Open in Files" entries: the LR, a catalogue object's own SR,
+ *  then each model output that is one FITS file Files can open (`/files?fits=`). */
+export function cardFiles(card: Pick<CardLike, "files">, specs: readonly string[]): { key: string; label: string; href: string }[] {
+  const files = card.files ?? {};
+  const href = (path: string) => `/files?${new URLSearchParams({ fits: path }).toString()}`;
+  const out = files.lr ? [{ key: "lr", label: "LR", href: href(files.lr) }] : [];
+  if (files.sr) out.push({ key: "sr", label: "SR (catalogue evaluation)", href: href(files.sr) });
+  for (const spec of sortSpecs(specs)) {
+    const path = files[`m:${spec}`];
+    if (path) out.push({ key: `m:${spec}`, label: specWords(spec), href: href(path) });
+  }
+  return out;
 }
 
 /** "Run models…" preselection: production and the mean when missing or
@@ -433,21 +517,4 @@ export function experimentMarkdown(record: ExperimentRecord): string {
     lines.push(`Errors (${errors.length}): ${errors.slice(0, 3).map(([k, v]) => `\`${k}\`: ${v}`).join("; ")}${errors.length > 3 ? " …" : ""}`);
   }
   return lines.join("\n");
-}
-
-/* ── catalogue evaluation ──────────────────────────────────────────────── */
-
-export const EVAL_GROUPS: { id: string; label: string }[] = [
-  { id: "A", label: "Lens A" }, { id: "B", label: "Lens B" }, { id: "C", label: "Lens C" },
-  { id: "gal", label: "Galaxies" }, { id: "syn-lens", label: "Syn lens" }, { id: "syn-gal", label: "Syn gal" },
-];
-
-/** Keep the rows of the chosen groups (none chosen = all) and state. */
-export function filterEvalRows<T extends { grade?: string; state?: string | null; ok?: string }>(
-  rows: readonly T[], groups: readonly string[], state: string, okOnly: boolean,
-): T[] {
-  const g = new Set(groups);
-  return rows.filter((r) => (!okOnly || String(r.ok).toLowerCase() === "true")
-    && (!g.size || g.has(String(r.grade ?? "")))
-    && (!state || state === "all" || (r.state ?? "unknown") === state));
 }

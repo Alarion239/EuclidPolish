@@ -1,6 +1,6 @@
 /* Error boundaries.
  *
- *   <ErrorBoundary resetKey={pathname} label="Ensemble › Members">…</ErrorBoundary>
+ *   <ErrorBoundary resetKey={pathname} label="Models › Members">…</ErrorBoundary>
  *
  * A runtime error in one tab shows a contained card (message, Retry, Copy
  * details, Reload) instead of blanking the console; the shell, rail and

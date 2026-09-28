@@ -63,14 +63,17 @@ def test_root_serves_react_console(client):
 def test_app_prefix_redirects_to_canonical_route(client):
     r = client.get("/app/inference")
     assert r.status_code == 308
-    assert r.headers["Location"] == "/inference"
+    assert r.headers["Location"] == "/sky/targets"  # one hop, not via /inference
 
 
 def test_ensemble_page_renders(client):
-    _assert_react_shell(client.get("/ensemble/starfull"))
+    _assert_react_shell(client.get("/models/starfull"))
     legacy = client.get("/ensemble")
     assert legacy.status_code == 308
-    assert legacy.headers["Location"] == "/ensemble/starfull"
+    assert legacy.headers["Location"] == "/models/starfull/leaderboard"
+    bare = client.get("/models")
+    assert bare.status_code == 308
+    assert bare.headers["Location"] == "/models/starfull/leaderboard"
 
 
 def test_ensemble_status_no_members(monkeypatch, tmp_path):
@@ -85,11 +88,11 @@ def test_ensemble_status_no_members(monkeypatch, tmp_path):
 
 
 def test_catalog_page_renders(client):
-    _assert_react_shell(client.get("/data/catalog"))
+    _assert_react_shell(client.get("/synthetic/psf?view=catalogue"))
 
 
 def test_psfs_page_renders(client):
-    _assert_react_shell(client.get("/data/psfs"))
+    _assert_react_shell(client.get("/synthetic/psf?view=epsf"))
 
 
 def test_sky_page_renders(client):
@@ -101,7 +104,7 @@ def test_visualization_page_renders(client):
 
 
 def test_cutouts_page_renders(client):
-    _assert_react_shell(client.get("/data/cutouts"))
+    _assert_react_shell(client.get("/synthetic/psf?view=cutouts"))
 
 
 # The SPA viewer engine (viewer/cube.ts in the frontend) parses these headers; a
@@ -285,9 +288,11 @@ def test_viewer_meta_sky_uses_starfull_hr_record(tmp_path, monkeypatch):
     # The clean (starless) record is its own tier — never substituted for HR.
     assert keys.index("clean") > keys.index("bhr")
     assert next(t for t in m["tiers"] if t["key"] == "clean")["label"] == "Clean (starless)"
-    assert "sr" in keys
-    sr = next(t for t in m["tiers"] if t["key"] == "sr")
-    assert isinstance(sr.get("disabled"), bool)
+    # No SR generated yet: no SR tier (Models › Images generates it).
+    assert "sr" not in keys
+    monkeypatch.setattr(vd.sky_records, "sr_count", lambda _subset: 2)
+    sr = next(t for t in vd.get_meta("sky", {"subset": "validate"})["tiers"] if t["key"] == "sr")
+    assert not sr.get("disabled") and sr["hint"]
     assert m["bhr_fwhm_control"] == {
         "param": "bhr_fwhm_arcsec",
         "default_arcsec": 0.066,
@@ -346,16 +351,16 @@ def test_viewer_meta_sky_accepts_test_subset(client):
     assert client.get("/viewer/meta/sky?subset=bogus").status_code == 400
 
 
-def test_training_redirects_to_ensemble(client):
-    """/training is folded into the Ensemble workspace (ensemble-only
+def test_training_redirects_to_models(client):
+    """/training is folded into the Models workspace (ensemble-only
     training); the legacy URL moves permanently."""
     r = client.get("/training")
     assert r.status_code == 308
-    assert r.headers["Location"] == "/ensemble/starfull/overview"
+    assert r.headers["Location"] == "/models/starfull/leaderboard"
 
 
 def test_inference_page_renders(client):
-    _assert_react_shell(client.get("/sky/results"))
+    _assert_react_shell(client.get("/sky/targets"))
 
 
 # ---------------------------------------------------------------------------
@@ -395,7 +400,7 @@ def test_psfs_page_reads_cache_without_rsync(client, monkeypatch):
         return fasrc_fetcher.FetchResult(ok=False)
 
     monkeypatch.setattr(fasrc_fetcher, "fetch_one_file", spy)
-    assert client.get("/data/psfs").status_code == 200
+    assert client.get("/synthetic/psf?view=epsf").status_code == 200
     assert calls == []                         # cache-only; no fetch on load
 
 
@@ -805,10 +810,10 @@ def test_failed_job_records_error():
 # ---------------------------------------------------------------------------
 
 def test_cutouts_gallery_page_renders(client):
-    """The deprecated per-band page redirects into the Data cutouts tab."""
+    """The deprecated per-band page redirects into the PSF tab's cutouts view."""
     r = client.get("/cutouts/VIS")
     assert r.status_code == 308
-    assert r.headers["Location"] == "/data/cutouts"
+    assert r.headers["Location"] == "/synthetic/psf?view=cutouts&band=VIS"
 
 
 def test_cutouts_gallery_unknown_band_404(client):

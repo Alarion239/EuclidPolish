@@ -85,7 +85,7 @@ def _base_manifest_row(obj, grade: str | None = None) -> dict[str, Any]:
 # (``combiner_kind`` is ``None`` for the plain member mean). ``member_labels``
 # is the production gate's full fitted list, ``run_labels`` the members it
 # reads — the ones that ran and that the disagreement cubes describe. The
-# reuse key and the staleness the Sky › Catalog-eval tab shows both compare
+# reuse key and the staleness Sky › Targets shows both compare
 # it with the model an evaluation would load NOW (:func:`current_eval_identity`);
 # ``run_labels`` follows from the other three (the gate artifact fixes its
 # reads), so it is recorded but never compared.

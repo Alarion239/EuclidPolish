@@ -1,6 +1,6 @@
 /* The shell's global shortcuts (listed in the ? sheet):
  *   ⌘/Ctrl-K  palette (also inside fields)   ?        this sheet
- *   g h / g s / g e / g r / g d / g f / g i / g o / g ,   go to a workspace
+ *   g h / g y / g m / g s / g f / g i / g r / g n / g ,   go to a workspace
  *   [  collapse / expand the rail             ]        show / hide the inspector
  *   Shift-D  Display panel   Shift-J  jobs   Shift-T  toggle theme */
 import { useNavigate } from "react-router-dom";

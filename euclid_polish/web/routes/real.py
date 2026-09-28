@@ -1,4 +1,6 @@
-"""Real results, model catalogue and experiments (contract C9, spec §9.1–9.2).
+"""Real tiles, model catalogue and experiments (contract C9, spec §9.1–9.2):
+the data of Sky › Targets (tile listings and cards) and Sky › Compare (model
+comparisons on real tiles, the only producer of the real-holes numbers).
 
 Everything here is local (or talks to the public Euclid archive from a local
 job) and works with FASRC disconnected — nothing is gated. Errors under
@@ -10,6 +12,7 @@ from __future__ import annotations
 
 import io
 import math
+import os
 
 import numpy as np
 from astropy.io import fits
@@ -23,6 +26,7 @@ from euclid_polish.web.helpers import (
     real_tiles,
     sky_atlas,
 )
+from euclid_polish.web.helpers.paths import _safe_relpath, root_of
 from euclid_polish.web.jobs import REGISTRY, start_exclusive
 
 
@@ -68,8 +72,42 @@ def _model_rows(entry: real_tiles.TileEntry, current: dict[str, str | None], *,
             row.update({key: meta.get(key) for key in (
                 "label", "fingerprint", "created", "experiment_id", "file", "origin")})
             row["summary"] = metrics.get("summary")
+            # Per-band total SR/LR flux of a scored output (Sky › Targets plots
+            # and sorts it without opening every card).
+            flux = {band: values.get("flux_ratio")
+                    for band, values in (metrics.get("per_band") or {}).items()
+                    if isinstance(values, dict) and values.get("flux_ratio") is not None}
+            if flux:
+                row["flux_ratio"] = flux
         rows[spec] = row
     return rows, outputs
+
+
+def _inspectable(path) -> str | None:
+    """A FITS path as Files (``/files?fits=``) opens it, or ``None`` outside
+    the inspectable roots."""
+    if path is None:
+        return None
+    real = os.path.realpath(path)
+    return _safe_relpath(real) if root_of(real) is not None else None
+
+
+def _files(entry: real_tiles.TileEntry, outputs: dict) -> dict[str, str]:
+    """``{"lr": path, "sr": path, "m:<spec>": path}`` of the tile's FITS that
+    Files can open (the card's "Open in Files"; ``sr`` is a catalogue
+    object's own evaluation SR)."""
+    out = {}
+    lr = _inspectable(real_tiles.lr_path(entry))
+    if lr:
+        out["lr"] = lr
+    sr = _inspectable(real_tiles.catalogue_sr_path(entry))
+    if sr:
+        out["sr"] = sr
+    for spec, meta in outputs.items():
+        path = _inspectable(real_tiles.output_path(entry, spec, meta))
+        if path:
+            out[f"m:{spec}"] = path
+    return out
 
 
 def _card(entry: real_tiles.TileEntry) -> dict:
@@ -91,6 +129,7 @@ def _card(entry: real_tiles.TileEntry) -> dict:
         "q1_tile": q1_tile.to_dict() if q1_tile is not None else None,
         "image_urls": {tier: (f"/api/real/{entry.source}/{entry.id}/image.fits"
                               f"?tier={tier}&band=VIS") for tier in tiers},
+        "files": _files(entry, outputs),
         "viewer": {"collection": "real", "params": {"source": entry.source}, "id": entry.id},
     }
 

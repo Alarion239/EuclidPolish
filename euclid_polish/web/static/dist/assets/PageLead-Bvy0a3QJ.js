@@ -1,1 +1,0 @@
-import{j as a}from"./react-D5bSKc-K.js";/* empty css               */function p({children:e,right:s}){return a.jsxs("div",{className:"page-lead",children:[e!=null&&a.jsx("p",{className:"page-lead__text",children:e}),s!=null&&a.jsx("div",{className:"page-lead__right",children:s})]})}export{p as P};

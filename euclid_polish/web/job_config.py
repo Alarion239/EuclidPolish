@@ -2,7 +2,7 @@
 
 A small set of knobs that several pages used to each carry their own copy
 of (VIS cutout size, stars-per-PSF, scene counts, HR image size, asinh
-scale). They now live here, are edited once in Settings › Config
+scale). They now live here, are edited once in System › Config
 (``/settings/config``), persist to ``~/.euclid_polish/job_config.json``
 (survives reloads/relaunches), and are injected into the relevant job
 submissions server-side.

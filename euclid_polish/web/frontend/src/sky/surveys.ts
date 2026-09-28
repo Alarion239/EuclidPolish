@@ -97,7 +97,7 @@ export const QUICK_JUMPS: readonly QuickJump[] = [
   { id: "edf-f", label: "EDF-F", ra: 52.932, dec: -28.088, fov: 10 },
   { id: "ldn1641", label: "LDN1641", ra: 85.761, dec: -8.437, fov: 2.5 },
   { id: "nexus", label: "NEXUS", ra: 268.4615, dec: 65.1964, fov: 0.45 },
-  { id: "poster", label: "Poster target", ra: 273.2309, dec: 68.3637, fov: 0.07 },
+  { id: "poster", label: "Poster galaxy", ra: 273.2309, dec: 68.3637, fov: 0.07 },
 ];
 
 export const PROJECTIONS = ["MOL", "AIT", "SIN", "TAN"] as const;

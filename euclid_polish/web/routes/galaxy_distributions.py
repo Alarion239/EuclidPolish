@@ -51,6 +51,25 @@ def _q1_radius_state():
         return None
 
 
+def galaxy_fit_missing(counts: dict | None, radius: dict | None) -> str | None:
+    """Why the galaxy prior cannot be refitted from the cache yet (the first
+    missing piece, in words), or None when every aperture checkpoint and Rₑ
+    bracket is cached."""
+    if not counts:
+        return ("No cached Q1 aperture checkpoints: run Query MER + PHZ "
+                "(How this is produced) first.")
+    done = counts.get("completed_queries", counts.get("query_count"))
+    total = counts.get("total_queries")
+    if not counts.get("complete") or (done is not None and total is not None and done < total):
+        where = f" ({done} of {total} cached)" if done is not None and total is not None else ""
+        return f"The Q1 aperture checkpoints are incomplete{where}: run Query MER + PHZ to resume."
+    if not radius or not radius.get("complete"):
+        where = (f" ({radius.get('completed_queries')} of {radius.get('total_queries')} cached)"
+                 if radius else "")
+        return f"The Q1 Rₑ brackets are incomplete{where}: run Query MER + PHZ to resume."
+    return None
+
+
 def _include_training_requested() -> bool:
     return request.args.get("include_training", "").strip().lower() in {
         "1", "true", "yes", "on",
@@ -103,7 +122,7 @@ def register(app):
         candidate = joint_galaxy_state().get("candidate")
         if not candidate:
             abort(404, description=(
-                "no joint galaxy-population candidate — fit one on Realism › Galaxies"))
+                "no joint galaxy-population candidate — fit one on Synthetic › Galaxies"))
         try:
             dpi = int(request.args.get("dpi", "300"))
             payload = render_population_atlas(
@@ -300,6 +319,48 @@ def register(app):
             "ok": True,
             "job_id": REGISTRY.spawn(
                 label="galaxy distributions: fit cached Q1 aperture counts",
+                target=run,
+            ),
+        })
+
+    @app.post("/api/galaxy-distributions/fit")
+    def api_fit_galaxy_prior():
+        """Synthetic › Galaxies › Prior: refit the galaxy prior from the
+        cached Q1 brackets — the VIS 2FWHM line, the joint size + colour/SFR
+        candidate, then the plots. Nothing is queried, so no login is needed;
+        400 until every aperture checkpoint and Rₑ bracket is cached (the
+        query job, How this is produced, fills them)."""
+        missing = galaxy_fit_missing(_q1_counts_state(), _q1_radius_state())
+        if missing:
+            return jsonify({"ok": False, "error": missing}), 400
+
+        def run(cap):
+            cap.tick(0, 3, "fit Q1 VIS 2FWHM straight line")
+            fit_q1_galaxy_aperture_counts()
+            cap.tick(1, 3, "fit aggregate Sersic R_e, MER FWHM and the colour forest")
+            joint_fit = fit_euclid_joint_galaxy_candidate()
+            cap.tick(2, 3, "rebuild galaxy-distribution plots")
+            plots = build_galaxy_distributions()
+            cap.tick(3, 3, "galaxy prior candidate ready")
+            cap.write(
+                f"Joint galaxy candidate {str(joint_fit.get('fingerprint'))[:12]}… ready "
+                "from the cached Q1 brackets; review the plots before activation\n"
+            )
+            return {
+                "joint_galaxy_fit": {
+                    "fingerprint": joint_fit.get("fingerprint"),
+                    "version": joint_fit.get("version"),
+                    "surface_density_arcmin2": (
+                        (joint_fit.get("generation") or {}).get("surface_density_arcmin2")
+                    ),
+                },
+                "plots": {"version": plots["version"]},
+            }
+
+        return jsonify({
+            "ok": True,
+            "job_id": REGISTRY.spawn(
+                label="galaxy distributions: fit the prior from cached Q1 data",
                 target=run,
             ),
         })

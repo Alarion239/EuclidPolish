@@ -10,6 +10,7 @@ from euclid_polish.web.helpers.population_comparison import (
     availability,
     build_comparison,
     read_comparison,
+    read_previous_comparison,
     refresh_population_comparison,
 )
 from euclid_polish.web.jobs import REGISTRY
@@ -19,20 +20,31 @@ from euclid_polish.web.remote import ensure_ssh_connected
 def register(app):
     @app.route("/api/population-comparison")
     def api_population_comparison():
-        comparison = read_comparison()
+        """The field statistics. ``comparison`` is the cache at the current
+        schema, else null; ``previous`` is then the last cache built at an
+        older schema (Synthetic › Fields shows it with a stale badge and a
+        Measure button, never rebuilding it on a visit), else null."""
         include_training = request.args.get(
             "include_training", ""
         ).strip().lower() in {"1", "true", "yes", "on"}
-        if comparison is not None:
-            comparison = dict(comparison)
+
+        def variant(payload):
+            if payload is None:
+                return None
+            payload = dict(payload)
             if include_training:
-                comparison["population"] = comparison.get(
+                payload["population"] = payload.get(
                     "population_with_training",
-                    comparison.get("population"),
+                    payload.get("population"),
                 )
-            comparison.pop("population_with_training", None)
+            payload.pop("population_with_training", None)
+            return payload
+
+        comparison = variant(read_comparison())
+        previous = variant(read_previous_comparison()) if comparison is None else None
         return jsonify({
             "comparison": comparison,
+            "previous": previous,
             "availability": availability(),
             "authenticated": euclid_session.is_authenticated(),
         })

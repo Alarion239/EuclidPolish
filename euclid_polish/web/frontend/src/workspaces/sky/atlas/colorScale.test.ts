@@ -11,7 +11,7 @@ const P: SkyPalette = {
 };
 
 const layer = (over: Partial<LayerInfo>): LayerInfo => ({
-  id: "x", label: "X", group: "results", kind: "polygons", count: 0, bbox: null, style: {},
+  id: "x", label: "X", group: "real", kind: "polygons", count: 0, bbox: null, style: {},
   ready: true, reason: null, fill_action: null, description: "", url: null, ...over,
 });
 const feat = (props: Record<string, unknown>, key = "k"): SkyFeature => ({

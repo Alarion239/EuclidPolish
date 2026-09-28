@@ -10,6 +10,7 @@ and stubbed fetches / ensembles.
 from __future__ import annotations
 
 import csv
+import io
 import json
 import os
 import time
@@ -18,6 +19,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 from astropy.io import fits
+from PIL import Image as PilImage
 
 from euclid_polish.catalog.catalog_object import CatalogObject
 from euclid_polish.config import Config
@@ -132,8 +134,11 @@ def test_record_sources_rejects_bad_arguments(client, records, query):
 def test_sky_viewer_offers_the_clean_tier_and_reads_by_position(records):
     meta = vd.get_meta("sky", {"subset": "test"})
     keys = [t["key"] for t in meta["tiers"]]
-    assert keys == ["dirty", "hr", "bhr", "clean", "sr"]
+    # No SR tier until one is generated (Models › Images owns Generate SR).
+    assert keys == ["dirty", "hr", "bhr", "clean"]
     assert next(t for t in meta["tiers"] if t["key"] == "clean")["label"].startswith("Clean")
+    # Every record tier says what it is (the chip's tooltip).
+    assert all(t.get("hint") for t in meta["tiers"])
     assert meta["count"] == 3
     cube, info = vd.get_cube("sky", 2, "clean", {"subset": "test"})
     assert cube.shape == (8, 8, 4) and float(cube[0, 0, 0]) == 2.0
@@ -161,13 +166,18 @@ def test_sky_sync_runs_as_a_job_and_pulls_the_selection(client, records, monkeyp
     assert result["files"]["sources_test"]["ok"] is True
     assert result["files"]["clean_validate"] == {"ok": False, "size_bytes": 12, "error": "No such file"}
     assert not any(p.endswith("_train.tfrecord") for p, _f, _m in pulled)
-    assert all(force and max_bytes == 5 * 1024 ** 3 for _p, force, max_bytes in pulled)
+    # the records themselves: forced, under the lifted 5 GB cap; each pulled
+    # record file's provenance sidecar follows it (small, best-effort)
+    records = [(p, f, m) for p, f, m in pulled if not p.endswith(".skytfrecordartifact.json")]
+    assert all(force and max_bytes == 5 * 1024 ** 3 for _p, force, max_bytes in records)
+    assert all(force for p, force, _m in pulled if p.endswith(".skytfrecordartifact.json"))
 
     pulled.clear()
     job = _wait(client.post("/api/sky/sync", data={"subsets": "train", "kinds": "clean,sources"})
                 .get_json()["job_id"])
-    assert sorted(p.rsplit("/", 1)[1] for p, _f, _m in pulled) == ["clean_train.tfrecord",
-                                                                    "sources_train.csv"]
+    assert sorted(p.rsplit("/", 1)[1] for p, _f, _m in pulled
+                  if not p.endswith(".skytfrecordartifact.json")) == ["clean_train.tfrecord",
+                                                                      "sources_train.csv"]
     assert job["result"]["include_train"] is True
 
 
@@ -600,3 +610,26 @@ def test_cutout_endpoints_are_jailed_to_the_inspectable_roots(client, tmp_path, 
     assert client.get("/cutout-image/VIS/star_1_64.fits?output_dir=").status_code == 200
     assert client.get(
         f"/cutout-image/VIS/star_1_64.fits?output_dir={tmp_path / 'stars'}").status_code == 200
+
+
+def test_cutout_thumbnail_per_star_stretch_keeps_the_core_unsaturated(client, tmp_path, monkeypatch):
+    """Synthetic › PSF › cutouts gallery: ``?stretch=star`` renders each
+    thumbnail on its own star's range (min–max, a soft asinh), so a bright
+    star's core is not clipped flat the way the band's fixed-knee percentile
+    stretch clips it; the default rendering is unchanged."""
+    monkeypatch.setattr(Config, "DEFAULT_OUTPUT_DIR", str(tmp_path / "stars"))
+    band_dir = tmp_path / "stars" / "cutouts" / "VIS"
+    band_dir.mkdir(parents=True)
+    yy, xx = np.mgrid[0:64, 0:64]
+    star = 1e5 * np.exp(-((xx - 32) ** 2 + (yy - 32) ** 2) / (2 * 3.0 ** 2)) + 10.0
+    fits.PrimaryHDU(star.astype(np.float32)).writeto(band_dir / "star_7_64.fits")
+
+    def saturated(query: str) -> int:
+        response = client.get(f"/cutout-image/VIS/star_7_64.fits{query}")
+        assert response.status_code == 200 and response.mimetype == "image/png"
+        pixels = np.asarray(PilImage.open(io.BytesIO(response.data)))
+        return int((pixels == 0).sum())          # gray_r: the brightest pixels are 0
+
+    default, per_star = saturated("?size=64"), saturated("?size=64&stretch=star")
+    assert 1 <= per_star < default
+    assert client.get("/cutout-image/VIS/star_7_64.fits?stretch=bogus").status_code == 400

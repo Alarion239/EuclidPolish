@@ -71,7 +71,7 @@ afterEach(() => {
 });
 
 /* fake workspaces (no legacy pages) — the sky atlas registers a page action;
-   realism/noise, the home page and the "probe" inspector read the theme during
+   synthetic/noise, the home page and the "probe" inspector read the theme during
    render, like the legacy pages that read colour tokens (categorical(), C.muted). */
 function SkyAtlas() {
   usePageActions([{ id: "fly", label: "Fly to NEXUS", group: "Sky", run: () => { (window as unknown as { flew: number }).flew = 1; } }]);
@@ -85,7 +85,7 @@ const fakes: Record<string, WorkspaceLoader> = Object.fromEntries(MANIFEST.works
   const tabs = defineTabs(ws.id, Object.fromEntries(ws.tabs.map((t) => [t, {
     load: async () => ({
       default: ws.id === "sky" && t === "atlas" ? SkyAtlas
-        : ws.id === "realism" && t === "noise" ? NoiseTab
+        : ws.id === "synthetic" && t === "noise" ? NoiseTab
           : () => <p>{`${ws.id}:${t}`}</p>,
     }),
   }])));
@@ -111,24 +111,28 @@ const MOD: KeyboardEventInit = /Mac|iPod|iPhone|iPad/.test(navigator.platform) ?
 
 describe("Shell", () => {
   it("renders the rail with every workspace, the active one marked, and breadcrumbs", async () => {
-    mount("/ensemble/starless/knee");
-    await screen.findByText("ensemble:knee");
+    mount("/models/starless/combiner");
+    await screen.findByText("models:combiner");
     const rail = screen.getByRole("navigation", { name: "Workspaces" });
     for (const ws of MANIFEST.workspaces) expect(within(rail).getByText(ws.label)).toBeTruthy();
-    expect(within(rail).getByText("Ensemble").closest("a")?.getAttribute("aria-current")).toBe("page");
+    // the approved "Loop console" order
+    expect([...rail.querySelectorAll(".rail__label")].map((e) => e.textContent)).toEqual([
+      "Home", "Synthetic", "Models", "Sky", "Figures", "Files", "Runs", "Notebook", "System",
+    ]);
+    expect(within(rail).getByText("Models").closest("a")?.getAttribute("aria-current")).toBe("page");
     const crumbs = screen.getByRole("navigation", { name: "Breadcrumbs" });
-    expect(crumbs.textContent).toContain("Ensemble (starless)");
-    expect(crumbs.textContent).toContain("Knee PSNR");
-    expect(document.title).toBe("Knee PSNR · Ensemble (starless) · EuclidPolish");
+    expect(crumbs.textContent).toContain("Models (starless)");
+    expect(crumbs.textContent).toContain("Combiner");
+    expect(document.title).toBe("Combiner · Models (starless) · EuclidPolish");
   });
 
   it("renders the router-linked workspace tabs", async () => {
-    const router = mount("/data/records");
-    await screen.findByText("data:records");
-    const tabs = screen.getByRole("navigation", { name: "Data tabs" });
-    fireEvent.click(within(tabs).getByText("PSFs"));
-    await screen.findByText("data:psfs");
-    expect(router.state.location.pathname).toBe("/data/psfs");
+    const router = mount("/synthetic/records");
+    await screen.findByText("synthetic:records");
+    const tabs = screen.getByRole("navigation", { name: "Synthetic tabs" });
+    fireEvent.click(within(tabs).getByText("PSF"));
+    await screen.findByText("synthetic:psf");
+    expect(router.state.location.pathname).toBe("/synthetic/psf");
   });
 
   it("collapses the rail (persisted pref)", async () => {
@@ -142,7 +146,7 @@ describe("Shell", () => {
   it("shows FASRC offline with the real error and never as a failure", async () => {
     mount();
     const badge = await screen.findByRole("link", { name: "FASRC offline" });
-    expect(badge.getAttribute("href")).toBe("/settings/connections");
+    expect(badge.getAttribute("href")).toBe("/system/connections");
   });
 
   it("opens the palette with ⌘/Ctrl-K, lists page actions and navigates", async () => {
@@ -151,10 +155,10 @@ describe("Shell", () => {
     press("k", MOD);
     const input = await screen.findByPlaceholderText(/Search pages and actions/);
     expect(await screen.findByText("Fly to NEXUS")).toBeTruthy();
-    fireEvent.change(input, { target: { value: "Ops › Git" } });
-    fireEvent.click(await screen.findByText("Ops › Git"));
-    await screen.findByText("ops:git");
-    expect(router.state.location.pathname).toBe("/ops/git");
+    fireEvent.change(input, { target: { value: "System › Code" } });
+    fireEvent.click(await screen.findByText("System › Code"));
+    await screen.findByText("system:code");
+    expect(router.state.location.pathname).toBe("/system/code");
     expect(useShellUi.getState().palette).toBe(false);
   });
 
@@ -169,12 +173,12 @@ describe("Shell", () => {
   it("navigates with g-sequences and lists them in the ? sheet", async () => {
     const router = mount();
     await screen.findByText("sky:atlas");
-    press("g"); press("o");
-    await screen.findByText("ops:jobs");
-    expect(router.state.location.pathname).toBe("/ops/jobs");
+    press("g"); press("r");
+    await screen.findByText("runs:live");
+    expect(router.state.location.pathname).toBe("/runs/live");
     press("?", { shiftKey: true, code: "Slash" });
     const sheet = await screen.findByRole("dialog", { name: "Keyboard shortcuts" });
-    expect(within(sheet).getByText("Go to Ops")).toBeTruthy();
+    expect(within(sheet).getByText("Go to Runs")).toBeTruthy();
     expect(within(sheet).getByText("Command palette")).toBeTruthy();
   });
 
@@ -276,6 +280,18 @@ describe("Shell", () => {
     await waitFor(() => expect(calls.some((c) => c.method === "POST" && c.url === "/api/jobs/j1/cancel")).toBe(true));
   });
 
+  it("links the tray's older jobs to Runs › Live", async () => {
+    const many = Array.from({ length: 10 }, (_, i) => job(`k${i}`, { status: "done", finished: Date.now() / 1000 - i }));
+    routes["GET /api/jobs?summary=1"] = () => ({ body: many });
+    const router = mount();
+    await screen.findByText("sky:atlas");
+    fireEvent.click(await screen.findByRole("button", { name: /^Jobs/ }));
+    const tray = await screen.findByLabelText("Jobs", { selector: ".jobtray" });
+    const more = await within(tray).findByText(/older jobs in/);
+    fireEvent.click(within(more).getByRole("link", { name: "Runs › Live" }));
+    await waitFor(() => expect(router.state.location.pathname).toBe("/runs/live"));
+  });
+
   it("opens a job in the inspector and mirrors it to ?inspect=", async () => {
     routes["GET /api/jobs/j1"] = () => ({ body: job("j1", { log: "line one\nline two" }) });
     const router = mount();
@@ -307,7 +323,7 @@ describe("Shell", () => {
     expect(within(banner).getByText("euclid_polish/web/routes/real.py")).toBeTruthy();
     expect(within(banner).getByText("euclid_polish/web/helpers/viewer_data.py")).toBeTruthy();
     expect(within(banner).getByText("and 1 more.")).toBeTruthy();
-    expect(within(banner).getByRole("link", { name: "Server details" }).getAttribute("href")).toBe("/settings/about");
+    expect(within(banner).getByRole("link", { name: "Server details" }).getAttribute("href")).toBe("/system/code");
     const rail = screen.getByRole("navigation", { name: "Workspaces" });
     expect(within(rail).getByText("Backend code changed — restart the server")).toBeTruthy();
     fireEvent.click(within(banner).getByRole("button", { name: "Dismiss" }));
@@ -380,32 +396,33 @@ describe("Shell", () => {
       return { x: 0, y: 0, top: 0, left: 0, bottom: 0, right: w, width: w, height: 30, toJSON: () => ({}) } as DOMRect;
     });
     const client = vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(function (this: HTMLElement) {
-      return this.classList.contains("ws__tabs-wrap") ? 360 : 0;
+      return this.classList.contains("ws__tabs-wrap") ? 420 : 0;
     });
     try {
-      const router = mount("/ensemble/starfull/disagreement");
-      await screen.findByText("ensemble:disagreement");
-      const strip = screen.getByRole("navigation", { name: "Ensemble tabs" });
+      const router = mount("/models/starfull/images");
+      await screen.findByText("models:images");
+      const strip = screen.getByRole("navigation", { name: "Models tabs" });
       const shown = () => within(strip).getAllByRole("link").map((a) => a.textContent);
-      // Overview 92 + Members 84 + Curves 76 = 252 of 360 − More; Disagreement (124) is active
-      await waitFor(() => expect(shown()).toEqual(["Overview", "Members", "Disagreement"]));
-      expect(within(strip).getByRole("link", { name: "Disagreement" }).getAttribute("aria-current")).toBe("page");
+      // Leaderboard 116 + Members 84 = 200, + the widest later tab (Diagnostics 116) fits
+      // 420 − More (60); Images (76) is active and takes the reserved slot
+      await waitFor(() => expect(shown()).toEqual(["Leaderboard", "Members", "Images"]));
+      expect(within(strip).getByRole("link", { name: "Images" }).getAttribute("aria-current")).toBe("page");
       const more = screen.getByRole("button", { name: /^More tabs: / });
       expect(strip.contains(more)).toBe(true);                   // inside the tabs landmark
-      expect(more.getAttribute("aria-label")).toBe("More tabs: Curves, Knee PSNR, Diagnostics, Combiners, Train");
+      expect(more.getAttribute("aria-label")).toBe("More tabs: Train, Combiner, Diagnostics");
       fireEvent.pointerDown(more, { button: 0, ctrlKey: false, pointerType: "mouse" });
       const menu = await screen.findByRole("menu");
       expect(within(menu).getAllByRole("menuitem").map((m) => m.textContent))
-        .toEqual(["Curves", "Knee PSNR", "Diagnostics", "Combiners", "Train"]);
+        .toEqual(["Train", "Combiner", "Diagnostics"]);
       // items are router links: a middle- or ⌘-click opens a new browser tab
       const train = within(menu).getByRole("menuitem", { name: "Train" });
       expect(train.tagName).toBe("A");
-      expect(train.getAttribute("href")).toBe("/ensemble/starfull/train");
+      expect(train.getAttribute("href")).toBe("/models/starfull/train");
       fireEvent.click(train);
-      await screen.findByText("ensemble:train");
-      expect(router.state.location.pathname).toBe("/ensemble/starfull/train");
+      await screen.findByText("models:train");
+      expect(router.state.location.pathname).toBe("/models/starfull/train");
       // the new active tab takes the reserved slot; the leading tabs never move
-      await waitFor(() => expect(shown()).toEqual(["Overview", "Members", "Train"]));
+      await waitFor(() => expect(shown()).toEqual(["Leaderboard", "Members", "Train"]));
       // no label is ever cut: every visible tab is a whole label
       for (const a of within(strip).getAllByRole("link")) expect(a.textContent?.length).toBeGreaterThan(2);
     } finally {
@@ -415,10 +432,10 @@ describe("Shell", () => {
   });
 
   it("shows every tab and no More button when the strip is wide enough", async () => {
-    mount("/data/records");
-    await screen.findByText("data:records");
-    const strip = screen.getByRole("navigation", { name: "Data tabs" });
-    expect(within(strip).getAllByRole("link")).toHaveLength(MANIFEST.workspaces.find((w) => w.id === "data")!.tabs.length);
+    mount("/synthetic/records");
+    await screen.findByText("synthetic:records");
+    const strip = screen.getByRole("navigation", { name: "Synthetic tabs" });
+    expect(within(strip).getAllByRole("link")).toHaveLength(MANIFEST.workspaces.find((w) => w.id === "synthetic")!.tabs.length);
     expect(screen.queryByRole("button", { name: /^More tabs/ })).toBeNull();
   });
 
@@ -498,11 +515,11 @@ describe("Shell", () => {
   });
 
   it("renders one visually hidden h1 per tab, in plain words", async () => {
-    mount("/data/records");
-    await screen.findByText("data:records");
+    mount("/synthetic/records");
+    await screen.findByText("synthetic:records");
     const h1s = screen.getAllByRole("heading", { level: 1 });
     expect(h1s).toHaveLength(1);
-    expect(h1s[0].textContent).toBe("Records, Data");
+    expect(h1s[0].textContent).toBe("Records, Synthetic");
     expect(h1s[0].classList.contains("sr-only")).toBe(true);
   });
 
@@ -531,8 +548,8 @@ describe("Shell", () => {
       const drawer = await screen.findByRole("dialog", { name: "Navigation" });
       expect(document.querySelector(".shell__scrim")).toBeTruthy();
       expect(document.querySelector(".ui-dialog__overlay")).toBeNull();
-      fireEvent.click(within(drawer).getByText("Data"));
-      await waitFor(() => expect(router.state.location.pathname.startsWith("/data")).toBe(true));
+      fireEvent.click(within(drawer).getByText("Synthetic"));
+      await waitFor(() => expect(router.state.location.pathname.startsWith("/synthetic")).toBe(true));
       await waitFor(() => expect(useShellUi.getState().drawer).toBe(false));
     });
 
@@ -578,7 +595,7 @@ describe("Shell", () => {
     const unregister = registerInspector("probe", () => <ThemeProbe name="insp" />);
     try {
       usePrefs.getState().setTheme("light");
-      const router = mount("/realism/noise");
+      const router = mount("/synthetic/noise");
       expect((await screen.findByTestId("probe-noise")).textContent).toBe("noise:light");
       act(() => openInspector({ kind: "probe", id: "x" }));
       expect((await screen.findByTestId("probe-insp")).textContent).toBe("insp:light");
@@ -615,7 +632,11 @@ describe("Shell", () => {
     const input = await screen.findByPlaceholderText(/Search pages and actions/);
     const selected = () => document.querySelector("[cmdk-item][aria-selected='true']")?.textContent ?? "";
     const items = () => [...document.querySelectorAll("[cmdk-item]")].map((e) => e.textContent ?? "");
-    for (const [q, page] of [["git", "Ops › Git"], ["noise", "Realism › Noise"], ["members", "Ensemble (starfull) › Members"]]) {
+    for (const [q, page] of [
+      ["code", "System › Code"], ["noise", "Synthetic › Noise"], ["members", "Models (starfull) › Members"],
+      // an old page name still finds its new home
+      ["git", "System › Code"], ["provenance", "System › Lineage"], ["experiments", "Sky › Compare"],
+    ]) {
       fireEvent.change(input, { target: { value: q } });
       await waitFor(() => expect(selected()).toContain(page));
       expect(items().at(-1)).toContain(`Find “${q}” on the sky`);
@@ -633,8 +654,8 @@ describe("Shell", () => {
     const input = await screen.findByPlaceholderText(/Search pages and actions/);
     fireEvent.change(input, { target: { value: "run job" } });
     fireEvent.click(await screen.findByText("Run a FASRC step…"));
-    await screen.findByText("ops:fasrc");
-    expect(router.state.location.pathname).toBe("/ops/fasrc");
+    await screen.findByText("runs:steps");
+    expect(router.state.location.pathname).toBe("/runs/steps");
   });
 
   it("toasts a job that finishes while watched", async () => {
@@ -659,13 +680,13 @@ const ALERTS = {
 
 describe("Shell polish", () => {
   it("puts the full breadcrumb path in a tooltip so truncated crumbs stay readable", async () => {
-    mount("/ensemble/starless/knee");
-    await screen.findByText("ensemble:knee");
+    mount("/models/starless/leaderboard");
+    await screen.findByText("models:leaderboard");
     const crumbs = screen.getByRole("navigation", { name: "Breadcrumbs" });
-    expect(crumbs.getAttribute("title")).toBe("Ensemble (starless) › Knee PSNR");
+    expect(crumbs.getAttribute("title")).toBe("Models (starless) › Leaderboard");
     // every crumb is a truncating text element (CSS ellipsis)
     expect(crumbs.querySelectorAll(".crumbs__text")).toHaveLength(2);
-    expect(within(crumbs).getByText("Knee PSNR").getAttribute("aria-current")).toBe("page");
+    expect(within(crumbs).getByText("Leaderboard").getAttribute("aria-current")).toBe("page");
   });
 
   it("badges Home in the rail with the number of health alerts, worst tone", async () => {

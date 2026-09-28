@@ -366,14 +366,19 @@ def _file_wcs(path: str | os.PathLike[str], hdu: int = 0) -> dict[str, Any] | No
 # Tiers offered for sky records: LR (the dirty record), raw HR (the starfull
 # scene), BHR (that scene with the target PSF), the clean record (the
 # deliberately STARLESS scene — its own tier, never substituted for HR) and SR
-# (model output, generated on demand in Data › Records — disabled until at
+# (model output, generated on demand in Models › Images — disabled until at
 # least one SR cube exists). Records are read by position through the
 # header-scanned offset index (sky_records.read_record): O(1) per cube.
 _SKY_RECORD_TIERS = [
-    {"key": "dirty", "label": "LR", "unit": "e-"},
-    {"key": "hr", "label": "HR", "unit": "e-"},
-    {"key": "clean", "label": "Clean (starless)", "unit": "e-"},
+    {"key": "dirty", "label": "LR", "unit": "e-",
+     "hint": "the dirty synthetic Euclid image the model receives (0.1″, detector noise, warped PSFs)"},
+    {"key": "hr", "label": "HR", "unit": "e-",
+     "hint": "the truth at 0.05″, drawn at the LR's surface brightness so both read alike"},
+    {"key": "clean", "label": "Clean (starless)", "unit": "e-",
+     "hint": "the starless target: the HR truth without its stars"},
 ]
+_SKY_BHR_HINT = "the HR truth convolved to the LR PSF: what a perfect LR would show"
+_SKY_SR_HINT = "the production model's SR of the record (generated in Models › Images)"
 
 
 def _sky_subset(params: dict[str, str]) -> str:
@@ -397,15 +402,17 @@ def _sky_meta(params: dict[str, str]) -> dict[str, Any]:
         hr_position = next(i for i, tier in enumerate(tiers)
                            if tier["key"] == "hr")
         tiers.insert(hr_position + 1, {
-            "key": "bhr", "label": "BHR (blurred HR)", "unit": "e-",
+            "key": "bhr", "label": "BHR (blurred HR)", "unit": "e-", "hint": _SKY_BHR_HINT,
         })
         counts["bhr"] = counts["hr"]
     count = max(counts.values()) if counts else 0
-    # SR is always offered so the user can see it exists; it's disabled until
-    # the model has been run over the records (the "Generate SR" button).
+    # The SR tier exists once the production model ran over the split
+    # (Models › Images: "Generate SR over local records"); before that the
+    # records viewer shows only the records themselves.
     n_sr = sky_records.sr_count(subset)
-    tiers.append({"key": "sr", "label": "SR", "disabled": n_sr == 0, "unit": "e-"})
-    counts["sr"] = n_sr
+    if n_sr:
+        tiers.append({"key": "sr", "label": "SR", "unit": "e-", "hint": _SKY_SR_HINT})
+        counts["sr"] = n_sr
     # An on-the-fly train split is clean-only (no dirty/hr): show what exists.
     default = "dirty" if any(t["key"] == "dirty" for t in tiers) else (
         tiers[0]["key"] if tiers and tiers[0]["key"] != "sr" else "dirty")
@@ -850,15 +857,6 @@ def _ensemble_meta(params: dict[str, str]) -> dict[str, Any]:
         tiers = [tier for tier in tiers if tier["key"] != "sr"]
     if not has_mean:
         tiers = [tier for tier in tiers if tier["key"] != "mean"]
-    # Every other active combiner (the RBF kinds) gets its own selectable
-    # tier after the mean, computed on demand when not baked by the eval.
-    position = 1 + max((i for i, tier in enumerate(tiers)
-                        if tier["key"] in {"mean", "sr"}), default=0)
-    for kind in reversed(ACTIVE_COMBINER_KINDS[1:]):
-        if _combiner_available(starless, man, kind):
-            spec = COMBINER_MODELS[kind]
-            tiers.insert(position, {"key": spec.cube_prefix,
-                                    "label": f"SR · {spec.label}", "unit": "e-"})
     # Individual member SR tiers, labelled from the eval. HIDDEN from the tier
     # chip row (they'd swamp it at 22 members) but still loadable on demand:
     # the React member panel searches/sorts them and toggles one in via the
@@ -2302,7 +2300,7 @@ def _real_meta(params: dict[str, str]) -> dict[str, Any]:
         "count": len(objects), "tiers": tiers, "default_tier": "lr",
         "band_names": list(BAND_NAMES), "source": source, "models": specs,
         "transfer_groups": ["euclid", "jwst"] if has_jwst else ["euclid"],
-        "missing_tier_labels": {f"m:{spec}": "Run this model (Sky → Experiments)"
+        "missing_tier_labels": {f"m:{spec}": "Run this model (Sky › Compare)"
                                 for spec in specs},
         "objects": objects,
     }

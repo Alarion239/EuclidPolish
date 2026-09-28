@@ -1,4 +1,4 @@
-"""Truth-free SR metrics for REAL tiles (Sky → Experiments, spec §7.3).
+"""Truth-free SR metrics for REAL tiles (Sky › Compare, spec §7.3).
 
 Definitions follow the 2026-09-23/25 real-galaxy analysis (memory
 ``project_combiner_real_galaxy_holes``). All fluxes are electrons; ``lr`` is

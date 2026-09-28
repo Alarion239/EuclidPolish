@@ -92,7 +92,10 @@ _GRID_CANVAS_BYTES_PER_PIXEL = 8
 _SHA_CACHE_MAX = 64
 
 LOGICAL_TIER_ORDER = ("dirty", "sr", "hr", "jwst")
-DISPLAY_MODES = ("VIS", "H_E", "VIS_H", "native")
+#: A sheet row's rendering: one Euclid band in grey (VIS, Y_E, J_E, H_E), the
+#: VIS + H_E false colour, or a JWST tile's native grey.
+SINGLE_BANDS = ("VIS", "Y_E", "J_E", "H_E")
+DISPLAY_MODES = (*SINGLE_BANDS, "VIS_H", "native")
 
 _RESULT_ID = re.compile(r"^vr-[0-9a-f]{24}$")
 _LAYOUT_ID = re.compile(r"^gl-[0-9a-f]{12}$")
@@ -1004,11 +1007,7 @@ def _supported_recipes(manifest: Mapping[str, Any]) -> list[dict[str, str]]:
         if not isinstance(entry, Mapping):
             continue
         bands = set(entry.get("bands", []))
-        modes = []
-        if "VIS" in bands:
-            modes.append("VIS")
-        if "H_E" in bands:
-            modes.append("H_E")
+        modes = [band for band in SINGLE_BANDS if band in bands]
         if {"VIS", "H_E"} <= bands:
             modes.append("VIS_H")
         # The real-data A4 preset is specifically a NEXUS F200W comparison.
@@ -1272,7 +1271,7 @@ def _render_panel_modes(
     """Render several modes from one FITS read, returning compact RGB uint8."""
     requested = list(dict.fromkeys(modes))
     if not requested or any(mode not in DISPLAY_MODES for mode in requested):
-        raise ViewerResultError(400, "mode must be VIS, H_E, VIS_H, or native")
+        raise ViewerResultError(400, "mode must be VIS, Y_E, J_E, H_E, VIS_H, or native")
     path, entry = _result_file(manifest, logical)
     cube = _read_saved_cube(path, entry)
     bands = [str(item) for item in entry.get("bands", [])]
@@ -1291,7 +1290,7 @@ def _render_panel_modes(
 
     rendered: dict[str, np.ndarray] = {}
     for mode in requested:
-        if mode in {"VIS", "H_E"}:
+        if mode in SINGLE_BANDS:
             if mode not in bands:
                 raise ViewerResultError(404, f"saved tier has no {mode} band")
             gray = _absolute_asinh(
@@ -1594,7 +1593,7 @@ def _recipe_label(logical: str, mode: str) -> str:
     if logical == "jwst" and mode == "native":
         return "NEXUS F200W"
     suffix = {"dirty": "Dirty", "sr": "SR", "hr": "HR", "jwst": "JWST"}[logical]
-    prefix = {"VIS": "VIS", "H_E": "H_E", "VIS_H": "VIS + H_E", "native": "Native"}[mode]
+    prefix = {**{band: band for band in SINGLE_BANDS}, "VIS_H": "VIS + H_E", "native": "Native"}[mode]
     return f"{prefix} {suffix}"
 
 

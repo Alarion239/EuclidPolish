@@ -45,7 +45,7 @@ def cached_spectrum(tmp_path, monkeypatch):
         handle.write(b"\x89PNG cached")
     renders: list[str] = []
 
-    def render(out_png):
+    def render(out_png, *, out_json=None):
         renders.append(out_png)
         with open(out_png, "wb") as handle:
             handle.write(b"\x89PNG fresh")
@@ -96,7 +96,7 @@ def test_the_fetch_post_pulls_into_the_cache(client, monkeypatch, tmp_path):
     monkeypatch.setattr("euclid_polish.web.routes.files._safe_relpath", lambda path: "data/x.fits")
     body = client.post("/api/fasrc/file/fetch", data={"remote_path": "/n/x.fits"}).get_json()
     assert body["ok"] is True
-    assert body["inspect_url"] == "/inspect?fits=data%2Fx.fits"
+    assert body["inspect_url"] == "/files?fits=data%2Fx.fits"
     assert body["download_url"] == "/fasrc/file/download?remote_path=%2Fn%2Fx.fits"
     assert client.post("/api/fasrc/file/fetch", data={}).status_code == 400
     monkeypatch.setattr(fasrc_fetcher, "fetch_one_file",

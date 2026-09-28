@@ -1,4 +1,4 @@
-/* Mutating actions of the Real results / Experiments / Catalog-eval tabs:
+/* Mutating actions of Sky › Targets, Sky › Compare and the tile card:
  * confirm → POST → a local job in the global tray (it survives navigation;
  * the shell toasts its end) → refresh the affected resources. Every server
  * refusal is shown with the server's own error text. */
@@ -150,13 +150,14 @@ export async function computeMetrics(plan: readonly { specs: string[]; refs: str
 
 /* ── delete outputs ────────────────────────────────────────────────────── */
 
-/** Delete the cached model outputs + member-SR cache of tiles (never the LR). */
+/** Delete the cached model outputs + member-SR cache of tiles (never the
+ *  LR). Irreversible, so the confirm asks for the word "delete" typed. */
 export async function deleteOutputs(refs: readonly string[]): Promise<number> {
   if (!refs.length) return 0;
   const ok = await confirm({
     title: `Delete the model outputs of ${plural(refs.length, "tile")}?`,
-    message: `Removes every cached SR, its metrics and the member-SR cache of ${refs.length <= 3 ? refs.join(", ") : `${refs.slice(0, 3).join(", ")} …`}. The LR tiles and legacy SR files stay.`,
-    tone: "danger", confirmLabel: "Delete outputs",
+    message: `Removes every cached SR, its metrics and the member-SR cache of ${refs.length <= 3 ? refs.join(", ") : `${refs.slice(0, 3).join(", ")} …`}. The LR tiles and legacy SR files stay. This cannot be undone.`,
+    tone: "danger", confirmLabel: "Delete outputs", requireText: "delete",
   });
   if (!ok) return 0;
   let removed = 0, freed = 0;
@@ -227,23 +228,3 @@ export async function runNexusField(fieldId: string, tiles: readonly string[], s
   announce(r, "NEXUS inference");
   return r;
 }
-
-/* ── the legacy 10×10 real field (its diagnostics) ─────────────────────── */
-
-/** Re-run the newest STARFULL combiners on the cached real field (rebuilding
- *  stale member SRs) — rewrites its model–model / σ / occupancy diagnostics. */
-export async function refreshFieldDiagnostics(fieldId: string, onDone?: () => void): Promise<Started | null> {
-  const ok = await confirm({
-    title: "Recompute the real-field diagnostics?",
-    message: `Applies the newest starfull combiners to field ${fieldId} (TensorFlow, local job; stale member SRs are rebuilt, the 100 sub-tiles re-downloaded only if the member cache is stale).`,
-    confirmLabel: "Recompute",
-  });
-  if (!ok) return null;
-  const r = await startJob(URLS.fieldRefresh, {}, {
-    key: "sky:field-diagnostics",
-    onDone: () => { void invalidate("/api/inference/"); refreshResults(); onDone?.(); },
-  });
-  announce(r, "Field diagnostics");
-  return r;
-}
-

@@ -1,4 +1,4 @@
-"""Model comparison on REAL tiles (Sky → Experiments, spec §7.3 / §9.2).
+"""Model comparison on REAL tiles (Sky › Compare, spec §7.3 / §9.2).
 
 An experiment = a set of real tiles (``source/id``) × a set of model specs
 (:mod:`model_catalog`). The job (:func:`run_experiment`):

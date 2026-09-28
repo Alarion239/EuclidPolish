@@ -3,8 +3,11 @@
 Variables: VIS 2FWHM magnitude, log10 SFR, log10 circularized Sérsic Rₑ, and
 the three NISP/VIS colours. The lower triangle traces the Q1 rows the
 colour+SFR forest is trained on (raw forced-photometry colours); the upper
-triangle traces draws from the fitted joint model (deconvolved colours),
-restricted to the Q1 VIS range so both describe the same population. Every
+triangle traces draws from the fitted joint model, restricted to the Q1
+VIS range so both describe the same population. The model's colours are
+deconvolved, so each draw gets the flux-ratio measurement noise of a
+VIS-nearest Q1 row before it is plotted: the contour widths then compare
+with the raw Q1 colours. SFR and radius stay intrinsic. Every
 off-diagonal cell plots the column variable on x against the row variable
 on y; the diagonal holds both samples' unit-area distributions.
 """
@@ -45,6 +48,11 @@ CORNER_SMOOTHING_SIGMA_BINS = 1.0
 CORNER_MODEL_DRAWS = 6000
 CORNER_MODEL_SEED = 20260914
 CORNER_MIN_ROWS = 50
+#: A model draw borrows the flux-ratio variance of a random Q1 row among this
+#: many VIS-nearest rows (the noise donors).
+CORNER_NOISE_DONOR_WINDOW = 16
+#: The noised model columns: the three colours.
+_COLOUR_KEYS = ("vis_minus_y", "y_minus_j", "j_minus_h")
 #: The pair explorer re-bins every pair finer and traces more levels; its
 #: smoothing kernel keeps the corner's width in data units.
 EXPLORER_BINS = 64
@@ -200,6 +208,48 @@ def _model_matrix(
     return samples[:kept]
 
 
+def _forward_noise_model_colours(
+    model: np.ndarray, rows: ColorSFRRows, rng: np.random.Generator,
+) -> np.ndarray:
+    """The model matrix with its colours as the Q1 photometry measures them.
+
+    The colours become NISP/VIS flux ratios; each draw takes the
+    ``ratio_var`` of a random Q1 row among the ``CORNER_NOISE_DONOR_WINDOW``
+    VIS-nearest rows and gets independent Gaussian noise on each ratio. The
+    donor sits at the same VIS flux, so its ratio variance is the draw's up
+    to the small r²σ_VIS² term (and the VIS error shared by the three ratios
+    is not correlated here). A ratio noised to ≤ 0 has no colour (NaN), as a
+    Q1 row with a non-positive ratio has none. Returns a copy.
+    """
+    noised = np.array(model, dtype=np.float64, copy=True)
+    order = np.argsort(rows.magnitude, kind="stable")
+    donor_vis = np.asarray(rows.magnitude, dtype=np.float64)[order]
+    donor_sigma = np.sqrt(np.maximum(
+        np.asarray(rows.ratio_var, dtype=np.float64)[order], 0.0,
+    ))
+    donors = int(donor_vis.size)
+    window = min(CORNER_NOISE_DONOR_WINDOW, donors)
+    nearest = np.searchsorted(donor_vis, noised[:, 0])
+    low = np.clip(nearest - window // 2, 0, donors - window)
+    chosen = low + rng.integers(0, window, size=noised.shape[0])
+    columns = [
+        index for index, (key, _label, _unit) in enumerate(CORNER_VARIABLES)
+        if key in _COLOUR_KEYS
+    ]
+    # VIS − Y = 2.5 log10(r_Y); Y − J = 2.5 log10(r_J / r_Y); J − H likewise.
+    log_ratio = 0.4 * np.cumsum(noised[:, columns], axis=1)
+    ratio = np.power(10.0, log_ratio)
+    ratio = ratio + donor_sigma[chosen] * rng.standard_normal(ratio.shape)
+    positive = ratio > 0.0
+    log_noised = np.where(
+        positive, np.log10(np.where(positive, ratio, 1.0)), np.nan,
+    )
+    noised[:, columns[0]] = 2.5 * log_noised[:, 0]
+    noised[:, columns[1]] = 2.5 * (log_noised[:, 1] - log_noised[:, 0])
+    noised[:, columns[2]] = 2.5 * (log_noised[:, 2] - log_noised[:, 1])
+    return noised
+
+
 def _window(
     q1_values: np.ndarray,
     q1_weight: np.ndarray,
@@ -338,8 +388,12 @@ def build_galaxy_corner(
     vis_low, vis_high = (float(value) for value in weighted_quantile(
         rows.magnitude, rows.weight, _VIS_QUANTILES,
     ))
-    model = _model_matrix(
-        candidate, (vis_low, vis_high), int(model_draws), int(seed),
+    model = _forward_noise_model_colours(
+        _model_matrix(
+            candidate, (vis_low, vis_high), int(model_draws), int(seed),
+        ),
+        rows,
+        np.random.default_rng(int(seed) + 1),
     )
     model_weight = np.ones(model.shape[0], dtype=np.float64)
 
@@ -435,6 +489,7 @@ def build_galaxy_corner(
         ),
         "q1_rows": int(rows.weight.size),
         "model_draws": int(model.shape[0]),
+        "model_noise": {"applied": True, "variables": list(_COLOUR_KEYS)},
         "vis_range": [round(vis_low, 3), round(vis_high, 3)],
     }
 
@@ -458,6 +513,7 @@ def split_joint_pairs(
         ),
         "q1_rows": corner.get("q1_rows"),
         "model_draws": corner.get("model_draws"),
+        "model_noise": corner.get("model_noise"),
         "vis_range": corner.get("vis_range"),
     }
     return slim, sidecar
@@ -511,6 +567,7 @@ def orient_joint_pair(
         "contour_mass_fractions": sidecar["contour_mass_fractions"],
         "q1_rows": sidecar["q1_rows"],
         "model_draws": sidecar["model_draws"],
+        "model_noise": sidecar.get("model_noise"),
         "vis_range": sidecar["vis_range"],
     }
     if x_index == y_index:

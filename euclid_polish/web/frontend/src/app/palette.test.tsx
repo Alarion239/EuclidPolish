@@ -94,7 +94,7 @@ describe("paletteSuggestions", () => {
     expect(paletteSuggestions("nexus 12", parse)[0]).toMatchObject({ target: { kind: "tile", id: "nexus/12" } });
     expect(paletteSuggestions("tile#7", parse)[0]).toMatchObject({ target: { id: "nexus/7" } });
     expect(paletteSuggestions("data/eval_results/a b.fits", parse)[0])
-      .toMatchObject({ kind: "navigate", to: "/inspect?fits=data%2Feval_results%2Fa%20b.fits" });
+      .toMatchObject({ kind: "navigate", to: "/files?fits=data%2Feval_results%2Fa%20b.fits" });
   });
 
   it("falls back to a sky name lookup for other text, marked as the fallback (listed last)", () => {

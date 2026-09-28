@@ -1021,11 +1021,12 @@ def test_population_comparison_page_and_status_route(monkeypatch):
     monkeypatch.setattr(routes, "availability",
                         lambda: expected_availability)
     monkeypatch.setattr(routes, "read_comparison", lambda: None)
+    monkeypatch.setattr(routes, "read_previous_comparison", lambda: None)
     monkeypatch.setattr(routes.euclid_session, "is_authenticated",
                         lambda: False)
     client = create_app().test_client()
 
-    page = client.get("/realism/pixels")
+    page = client.get("/synthetic/fields")
     assert page.status_code == 200
     assert b'<div id="root">' in page.data
 
@@ -1037,6 +1038,43 @@ def test_population_comparison_page_and_status_route(monkeypatch):
     assert payload["authenticated"] is False
     assert "vis_noise_calibration" not in payload
     assert "calibrations" not in payload
+
+
+def test_population_comparison_serves_an_older_cache_as_previous(monkeypatch, tmp_path):
+    """A cache built at an older schema stays visible (Fields shows it with a
+    stale badge and a Measure button); the current-schema key stays null, and
+    a current cache is never also sent as previous."""
+    path = tmp_path / "comparison.json"
+    monkeypatch.setattr(comparison, "comparison_path", lambda: path)
+    monkeypatch.setattr(routes, "availability", lambda: {})
+    monkeypatch.setattr(routes.euclid_session, "is_authenticated", lambda: False)
+    client = create_app().test_client()
+    assert client.get("/api/population-comparison").get_json()["previous"] is None
+    old = {"version": VERSION - 1, "fields": {"bands": ["VIS"]},
+           "population": {"synthetic_field_count": 200},
+           "population_with_training": {"synthetic_field_count": 6600}}
+    path.write_text(json.dumps(old))
+    payload = client.get("/api/population-comparison?include_training=1").get_json()
+    assert payload["comparison"] is None
+    assert payload["previous"]["version"] == VERSION - 1
+    assert payload["previous"]["population"]["synthetic_field_count"] == 6600
+    assert "population_with_training" not in payload["previous"]
+    path.write_text(json.dumps({"version": VERSION - 1}))
+    assert client.get("/api/population-comparison").get_json()["previous"] is None
+    path.write_text(json.dumps({**old, "version": VERSION}))
+    current = client.get("/api/population-comparison").get_json()
+    assert current["comparison"]["version"] == VERSION
+    assert current["previous"] is None
+
+
+def test_availability_counts_the_compared_real_fields(monkeypatch):
+    monkeypatch.setattr(comparison, "_archive_collection_state", lambda: {
+        "available": True, "valid": True, "ready": True, "complete": True, "current": True,
+        "sample_count": 220, "comparison_sample_count": 176, "parent_count": 44,
+        "collection_fingerprint": "c" * 64,
+    })
+    real = comparison.availability()["real"]
+    assert (real["fields"], real["compared_fields"], real["independent_parents"]) == (220, 176, 44)
 
 
 def test_field_statistics_has_no_population_query_or_fit_routes():

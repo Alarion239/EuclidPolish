@@ -1,0 +1,78 @@
+/* Runs workspace (workspaces/runs): Live, History, Steps. Scoped by the runs-
+   prefix (the step card and the SLURM monitor keep their shared ops- classes
+   in steps/steps.css). Tokens only; layouts collapse by the page's own width
+   (container queries), so the ~720 px pane stacks cleanly. Nothing sticks
+   over an image: only the side panel sticks, beside the table. */
+.runs-page { container-type: inline-size; container-name: runs; min-width: 0; }
+
+.runs-stack { display: flex; flex-direction: column; gap: var(--s4); min-width: 0; }
+.runs-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); min-width: 0; }
+.runs-note { margin: var(--s2) 0 0; font-size: var(--fs-xs); color: var(--text-dim); }
+.runs-ellipsis { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; max-width: 100%; vertical-align: bottom; }
+.runs-cell2 { display: flex; flex-direction: column; min-width: 0; line-height: 1.25; }
+.runs-cell2 > * { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.runs-section-title { margin: 0; font-size: var(--fs-sm); font-weight: var(--fw-semibold); }
+
+/* two panes: list | the selected job; one column below ~900 px of page width
+   (at 1280 × 800 the page is ~1000 px: the run's card stays beside the table) */
+.runs-split { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s4); align-items: start; margin-bottom: var(--s4); }
+.runs-split__main, .runs-split__side { min-width: 0; display: flex; flex-direction: column; gap: var(--s3); }
+@container runs (min-width: 900px) {
+  .runs-split:has(> .runs-split__side) { grid-template-columns: minmax(0, 1.25fr) minmax(340px, 1fr); }
+  .runs-split__side { position: sticky; top: var(--s2); max-height: calc(100vh - var(--topbar-h, 48px) - var(--s4)); overflow: auto; }
+}
+.runs-side__head { display: flex; align-items: center; gap: var(--s2); min-width: 0; }
+.runs-side__title { margin: 0; font-size: var(--fs-md); font-weight: var(--fw-semibold); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* the FASRC connection chip */
+.runs-conn { display: inline-flex; align-items: center; gap: var(--s2); }
+.runs-conn__chip { display: inline-flex; text-decoration: none; border-radius: var(--r-pill); }
+.runs-conn__chip:focus-visible { outline: none; box-shadow: var(--ring); }
+
+/* logs: server-side search results */
+.runs-grep { display: flex; flex-direction: column; gap: 4px; }
+.runs-grep__list { margin: 0; padding: 0; list-style: none; max-height: 220px; overflow: auto;
+  border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface-1); }
+.runs-grep__hit {
+  display: block; width: 100%; padding: 3px 8px; border: 0; background: none; text-align: left; cursor: pointer;
+  color: var(--text); font-size: var(--fs-xs); white-space: pre-wrap; word-break: break-word;
+}
+.runs-grep__hit:hover { background: var(--surface-2); }
+.runs-grep__hit:focus-visible { outline: none; box-shadow: inset var(--ring); }
+
+.runs-jobdetail .ui-card__body { display: flex; flex-direction: column; gap: var(--s3); }
+
+/* Steps: the stage-grouped list is always visible (beside the card when wide, above it when narrow) */
+.runs-steps { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s4); align-items: start; }
+@container runs (min-width: 900px) {
+  .runs-steps { grid-template-columns: minmax(240px, 300px) minmax(0, 1fr); }
+  .runs-steplist { position: sticky; top: var(--s2); max-height: calc(100vh - var(--topbar-h, 48px) - var(--s4)); overflow: auto; }
+}
+.runs-steplist { display: flex; flex-direction: column; gap: var(--s3); min-width: 0; }
+.runs-steplist__group { display: flex; flex-direction: column; gap: 2px; scroll-margin-top: var(--s3); }
+.runs-steplist__stage { margin: 0 0 2px; font-size: var(--fs-xs); font-weight: var(--fw-semibold); color: var(--text-dim); }
+.runs-steplist__group[data-focus] .runs-steplist__stage { color: var(--accent); }
+.runs-steplist ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.runs-steplist__item {
+  display: flex; flex-direction: column; gap: 3px; width: 100%; padding: 6px 8px; text-align: left;
+  border: 1px solid transparent; border-radius: var(--r-md); background: none; color: var(--text); cursor: pointer; font: inherit;
+}
+.runs-steplist__item:hover { background: var(--surface-2); }
+.runs-steplist__item[aria-current="true"] { background: var(--accent-soft); border-color: var(--accent); }
+.runs-steplist__item:focus-visible { outline: none; box-shadow: var(--ring); }
+.runs-steplist__label { font-size: var(--fs-sm); font-weight: var(--fw-medium); }
+.runs-steplist__meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; font-size: var(--fs-2xs); color: var(--text-faint); }
+.runs-steplist__groups { display: flex; flex-direction: column; gap: var(--s3); }
+@container runs (max-width: 899px) {
+  /* narrow: the stages sit side by side above the card, each a short list */
+  .runs-steplist__groups { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: var(--s3); }
+}
+.runs-stephome { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); margin-bottom: var(--s2); font-size: var(--fs-sm); color: var(--text-dim); }
+
+/* small text helpers of the Runs pages */
+.runs-dim { color: var(--text-dim); }
+.runs-bad { color: var(--bad); }
+.runs-small { font-size: var(--fs-xs); }
+.runs-spacer { flex: 1 1 auto; }
+.runs-pre { white-space: pre-wrap; word-break: break-word; font-family: var(--font-mono); font-size: var(--fs-xs); }
+.runs-row-actions { display: inline-flex; align-items: center; gap: 2px; }

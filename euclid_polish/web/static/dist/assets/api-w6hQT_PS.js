@@ -1,0 +1,1 @@
+const o=n=>{const s=new URLSearchParams;for(const[c,t]of Object.entries(n))t==null||t===""||t===!1||s.set(c,String(t));const a=s.toString();return a?`?${a}`:""},i="/api/tracking/state",r=(n,s,a,c)=>`/api/tracking/jobs${o({campaign:n,offset:s,limit:a,q:c})}`,e=n=>`/api/tracking/campaign/${encodeURIComponent(n)}`;export{i as T,e as c,r as t};

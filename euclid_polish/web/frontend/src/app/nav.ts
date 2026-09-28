@@ -1,4 +1,5 @@
-/* Navigation metadata for the nine workspaces: rail icon, description,
+/* Navigation metadata for the nine workspaces (the "Loop console" rail:
+ * Home, Synthetic, Models, Sky, Figures, Files, Runs, Notebook, System): rail icon, description,
  * "g <key>" shortcut and the human label of every tab.
  *
  * The URLs themselves come from the route manifest (`spa_routes.json`, C1,
@@ -13,7 +14,9 @@
 import type { IconName } from "../ui/icons";
 import { MANIFEST, matchPage, workspace, workspacePaths, type PageMatch, type WorkspaceDef } from "./manifest";
 
-export type TabMeta = { label: string; description?: string };
+/** `keywords`: other words the palette finds the page by (e.g. the page's
+ *  old name: "git" finds System › Code). */
+export type TabMeta = { label: string; description?: string; keywords?: string[] };
 
 export type WorkspaceMeta = {
   icon: IconName;
@@ -21,95 +24,92 @@ export type WorkspaceMeta = {
   /** Second key of the "g <key>" go-to shortcut. */
   goKey: string;
   tabs: Record<string, TabMeta>;
-  /** Labels of the values of each `:param` (e.g. the ensemble regime). */
+  /** Palette words for every page of the workspace (e.g. its old name). */
+  keywords?: string[];
+  /** Labels of the values of each `:param` (e.g. the models regime). */
   paramLabels?: Record<string, Record<string, string>>;
 };
 
 export const WORKSPACE_META: Record<string, WorkspaceMeta> = {
   home: {
     icon: "home", goKey: "h", tabs: {},
-    description: "Connection, server version, running work and the production model at a glance",
+    description: "What changed, what is running and what needs you now",
+  },
+  synthetic: {
+    icon: "wave", goKey: "y", keywords: ["realism", "data"],
+    description: "What goes into a synthetic scene, how each ingredient matches Euclid Q1, and whether you can generate",
+    tabs: {
+      status: { label: "Status", description: "Can you generate: every ingredient's state and the generation gate", keywords: ["overview", "readiness", "generate"] },
+      records: { label: "Records", description: "Generated records against their truth sources, and the census", keywords: ["tfrecords", "census", "truth"] },
+      galaxies: { label: "Galaxies", description: "Galaxy distributions against Q1, the prior and the TNG templates", keywords: ["tng", "templates", "galaxy distributions"] },
+      stars: { label: "Stars", description: "Star density and colours against Q1, and the stellar prior" },
+      noise: { label: "Noise", description: "How a scene gets its noise, from Q1 noise maps" },
+      psf: { label: "PSF", description: "Real Euclid stars, their cutouts and the empirical PSFs", keywords: ["catalog", "catalogue", "cutouts", "psfs", "epsf"] },
+      fields: { label: "Fields", description: "Synthetic against real LR fields: look, statistics, detection", keywords: ["pixels", "visual", "field statistics", "detection"] },
+    },
+  },
+  models: {
+    icon: "layers", goKey: "m", keywords: ["ensemble"],
+    description: "Which model is best on synthetic truth and real data, how the members trained, and which combiner is production",
+    paramLabels: { mode: { starfull: "starfull", starless: "starless" } },
+    tabs: {
+      leaderboard: { label: "Leaderboard", description: "Production gate, plain mean and members ranked, with the knee curves", keywords: ["overview", "knee", "psnr"] },
+      members: { label: "Members", description: "The roster, training curves and archived members", keywords: ["curves", "roster"] },
+      train: { label: "Train", description: "Train, continue or fork members on FASRC" },
+      combiner: { label: "Combiner", description: "Spatial-gate variants: fit, compare, promote", keywords: ["combiners", "gate", "spatial gate"] },
+      diagnostics: { label: "Diagnostics", description: "Spectrum, transfer, coherence, spread, real field, recovery", keywords: ["spectrum", "coherence", "calibration"] },
+      images: { label: "Images", description: "SR on synthetic test fields and stamps, with the members' disagreement", keywords: ["disagreement", "stamps"] },
+    },
   },
   sky: {
     icon: "globe", goKey: "s",
-    description: "Euclid and JWST coverage and every real result on the celestial sphere",
+    description: "What SR does on real Euclid sky: tiles and targets, production SR on each, and the safest model",
     tabs: {
-      atlas: { label: "Atlas", description: "The celestial sphere with coverage and result layers" },
-      results: { label: "Real results", description: "Every real tile source with its SR products" },
-      experiments: { label: "Experiments", description: "Compare models on real tiles with real-data metrics" },
-      "catalog-eval": { label: "Catalog eval", description: "Reconstruction browser and the grouped analysis" },
-    },
-  },
-  ensemble: {
-    icon: "layers", goKey: "e",
-    description: "Members, training, evaluation and combiners of the SR ensemble",
-    paramLabels: { mode: { starfull: "starfull", starless: "starless" } },
-    tabs: {
-      overview: { label: "Overview" },
-      members: { label: "Members" },
-      curves: { label: "Curves", description: "Training curves" },
-      knee: { label: "Knee PSNR", description: "PSNR-vs-knee curves and the integrated leaderboard" },
-      diagnostics: { label: "Diagnostics", description: "Power spectrum, coherence, calibration" },
-      combiners: { label: "Combiners", description: "Spatial-gate variants: fit, compare, promote" },
-      disagreement: { label: "Disagreement", description: "Where the members disagree" },
-      train: { label: "Train", description: "Train, continue or fork members on FASRC" },
-    },
-  },
-  realism: {
-    icon: "wave", goKey: "r",
-    description: "How close the synthetic training data are to real Euclid",
-    tabs: {
-      overview: { label: "Overview", description: "Readiness of every prior" },
-      noise: { label: "Noise" },
-      galaxies: { label: "Galaxies", description: "Galaxy distributions" },
-      stars: { label: "Stars", description: "Star distribution" },
-      pixels: { label: "Pixels", description: "Field statistics" },
-      visual: { label: "Visual", description: "Synthetic vs real, side by side" },
-    },
-  },
-  data: {
-    icon: "database", goKey: "d",
-    description: "Training records, the star catalogue, cutouts, PSFs and TNG",
-    tabs: {
-      records: { label: "Records", description: "Training TFRecords" },
-      catalog: { label: "Catalog", description: "Star catalogue" },
-      cutouts: { label: "Cutouts" },
-      psfs: { label: "PSFs" },
-      tng: { label: "TNG" },
+      atlas: { label: "Atlas", description: "Where it is: the celestial sphere with coverage, tiles and targets", keywords: ["jwst", "map"] },
+      targets: { label: "Targets", description: "Production SR on each science target, and whether it is current", keywords: ["results", "real results", "catalog eval", "lenses", "evaluation", "inference"] },
+      compare: { label: "Compare", description: "Models on real tiles, no truth: holes, flux, JWST", keywords: ["experiments", "holes"] },
     },
   },
   figures: {
     icon: "image", goKey: "f",
-    description: "Figure grids, publication plates and saved viewer results",
+    description: "Figures for the paper and poster, whether they use the current model, and their export",
     tabs: {
-      grid: { label: "Grid", description: "Figure grid builder" },
-      plates: { label: "Plates", description: "Presentation and publication plates" },
-      results: { label: "Results", description: "Saved viewer results" },
+      plates: { label: "Plates", description: "Presentation and publication plates", keywords: ["publication", "poster"] },
+      sheet: { label: "Sheet", description: "Contact sheets of saved crops", keywords: ["grid", "results", "crops"] },
     },
   },
-  inspect: {
-    icon: "fileSearch", goKey: "i", tabs: {},
-    description: "Open any FITS file: headers, HDUs and a preview",
+  files: {
+    icon: "fileSearch", goKey: "i", tabs: {}, keywords: ["inspect", "fits", "hdu", "header"],
+    description: "What is inside a FITS file, and where it came from",
   },
-  ops: {
-    icon: "server", goKey: "o",
-    description: "Local jobs, FASRC, experiment tracking, git and provenance",
+  runs: {
+    icon: "activity", goKey: "r", keywords: ["ops", "jobs", "fasrc", "slurm"],
+    description: "What is running or queued, locally and on FASRC, how past runs went, and which step makes what",
     tabs: {
-      jobs: { label: "Jobs", description: "Local background jobs" },
-      fasrc: { label: "FASRC", description: "The SLURM cluster console" },
-      tracking: { label: "Tracking", description: "Experiment lab notebook" },
-      git: { label: "Git" },
-      provenance: { label: "Provenance", description: "Lineage and staleness" },
+      live: { label: "Live", description: "Running and queued jobs, local and SLURM", keywords: ["queue", "running"] },
+      history: { label: "History", description: "Every past run, with its logs", keywords: ["logs", "ledger"] },
+      steps: { label: "Steps", description: "The FASRC step catalogue by stage", keywords: ["pipeline", "submit"] },
     },
   },
-  settings: {
-    icon: "settings", goKey: ",",
-    description: "Job config, connections, appearance and version",
+  notebook: {
+    icon: "copy", goKey: "n", keywords: ["tracking", "campaign"],
+    description: "What we tried and concluded, and how to get the exact state back",
     tabs: {
-      config: { label: "Config", description: "Universal job config" },
-      connections: { label: "Connections", description: "FASRC and archive sessions" },
-      appearance: { label: "Appearance", description: "Theme, accent, density, display defaults" },
-      about: { label: "About", description: "Server and build version" },
+      log: { label: "Log", description: "The campaign's lab notebook", keywords: ["notebook"] },
+      backups: { label: "Backups", description: "Model, FITS and image backups with time travel", keywords: ["archive", "time travel"] },
+      sandboxes: { label: "Sandboxes", description: "Running time-travel servers" },
+    },
+  },
+  system: {
+    icon: "settings", goKey: ",", keywords: ["settings"],
+    description: "Connections, the job config, lineage, code and disk",
+    tabs: {
+      connections: { label: "Connections", description: "FASRC, the Euclid archive and the TNG token", keywords: ["ssh", "login"] },
+      config: { label: "Config", description: "The universal job config", keywords: ["job config", "knobs"] },
+      lineage: { label: "Lineage", description: "Where a product came from, and whether it is stale", keywords: ["provenance", "staleness"] },
+      code: { label: "Code", description: "Laptop, server and FASRC commits", keywords: ["git", "commit", "about", "version"] },
+      storage: { label: "Storage", description: "Local and FASRC disk, data roots and caches", keywords: ["disk", "about"] },
+      appearance: { label: "Appearance", description: "Theme, accent, density and layout", keywords: ["theme"] },
     },
   },
 };
@@ -185,13 +185,13 @@ export function describePath(pathname: string): LocationInfo | null {
   };
 }
 
-/** "Ensemble (starless)": the workspace with its path parameters. */
+/** "Models (starless)": the workspace with its path parameters. */
 function workspaceWithParams(info: LocationInfo): string {
   return info.paramLabels.length
     ? `${info.workspaceLabel} (${info.paramLabels.join(", ")})` : info.workspaceLabel;
 }
 
-/** `document.title` for a page: "Members · Ensemble (starless) · EuclidPolish". */
+/** `document.title` for a page: "Members · Models (starless) · EuclidPolish". */
 export function pageTitle(pathname: string): string {
   const info = describePath(pathname);
   if (!info) return `Not found · ${APP_NAME}`;
@@ -199,7 +199,7 @@ export function pageTitle(pathname: string): string {
 }
 
 /** The page's one h1 (visually hidden; screen readers and the outline), in
- *  plain words: "Members, Ensemble (starless)", "Records, Data", "Home". */
+ *  plain words: "Members, Models (starless)", "Records, Synthetic", "Home". */
 export function pageHeading(pathname: string): string {
   const info = describePath(pathname);
   if (!info) return "Not found";
@@ -214,6 +214,8 @@ export type NavTarget = {
   path: string;
   label: string;
   description?: string;
+  /** Palette words (the workspace's and the tab's `keywords`). */
+  keywords?: string[];
 };
 
 /** Every addressable page (each param value × tab), for the palette. */
@@ -228,7 +230,10 @@ export function allPages(): NavTarget[] {
       const suffix = names.length
         ? ` (${names.map((n) => paramLabel(ws.id, n, params[n])).join(", ")})` : "";
       if (!ws.tabs.length) {
-        out.push({ workspace: ws.id, tab: null, params, path: concrete, label: `${ws.label}${suffix}`, description: meta?.description });
+        out.push({
+          workspace: ws.id, tab: null, params, path: concrete, label: `${ws.label}${suffix}`,
+          description: meta?.description, keywords: meta?.keywords,
+        });
         continue;
       }
       for (const tab of ws.tabs) {
@@ -237,6 +242,7 @@ export function allPages(): NavTarget[] {
           path: pagePath(ws.id, { tab, params }),
           label: `${ws.label}${suffix} › ${tabLabel(ws.id, tab)}`,
           description: meta?.tabs[tab]?.description,
+          keywords: [...(meta?.keywords ?? []), ...(meta?.tabs[tab]?.keywords ?? [])],
         });
       }
     }

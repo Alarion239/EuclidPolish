@@ -14,6 +14,7 @@ import { refreshJobsFeed, useJobsStore } from "../api/jobs";
 import { invalidate } from "../api/query";
 import { confirm, toast } from "../ui";
 import { openInspector } from "./inspector";
+import { pagePath } from "./nav";
 import { usePageActions, type PageAction } from "./palette";
 import { SYSTEM_ALERTS_URL } from "./status";
 
@@ -163,11 +164,11 @@ export function RunActions() {
     { id: "run:health", label: jobs.health.label, group: RUN_GROUP, keywords: [...K, "health", "alerts", "stale", "staleness"],
       run: () => { void jobs.health.run(); } },
     { id: "run:fit-gate", label: "Fit a spatial-gate variant…", group: RUN_GROUP, keywords: [...K, "combiner", "gate", "fit"],
-      run: () => navigate("/ensemble/starfull/combiners") },
+      run: () => navigate(pagePath("models", { tab: "combiner" })) },
     { id: "run:experiment", label: "Compare models on real tiles…", group: RUN_GROUP, keywords: [...K, "experiment", "real", "holes"],
-      run: () => navigate("/sky/experiments") },
+      run: () => navigate(pagePath("sky", { tab: "compare" })) },
     { id: "run:train", label: "Train or continue members on FASRC…", group: RUN_GROUP, keywords: [...K, "train", "members", "slurm"],
-      run: () => navigate("/ensemble/starfull/train") },
+      run: () => navigate(pagePath("models", { tab: "train" })) },
   ];
   usePageActions(actions);
   return null;

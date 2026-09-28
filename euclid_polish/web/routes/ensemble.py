@@ -22,10 +22,12 @@ from euclid_polish.web import errors
 from euclid_polish.web.fasrc_gate import requires_fasrc
 from euclid_polish.web.fasrc_pipeline import TaskParamError
 from euclid_polish.web.helpers.ensemble_viz import (
+    EVAL_EXTRA_BANDS,
     _evals_payload_path,
     check_new_variant_name,
     combiner_variants,
     compare_reports,
+    compute_band_evaluation_payloads,
     compute_evaluation_payload,
     ensemble_dir,
     ensemble_overview,
@@ -43,6 +45,7 @@ from euclid_polish.web.helpers.ensemble_viz import (
     member_detail,
     members_payload,
     pixel_trace,
+    read_band_evals,
     read_compare_report,
     refresh_evaluation_diagnostics,
     train_command_preview,
@@ -116,7 +119,8 @@ def register(app):
 
     @app.route("/ensemble/overview.json")
     def ensemble_overview_json():
-        """Overview tab: headline numbers with their definitions + staleness."""
+        """Models › Leaderboard: headline numbers with their definitions and
+        the staleness checks of its status line."""
         return jsonify(ensemble_overview(_mode_starless()))
 
     @app.route("/ensemble/members.json")
@@ -138,7 +142,7 @@ def register(app):
     @app.route("/ensemble/training-jobs.json")
     def ensemble_training_jobs_json():
         """Every ensemble_train submission in the local job log (newest first):
-        the Train tab's presets, "repeat last batch" and "clone a past job"."""
+        Models › Train's presets, "Repeat last batch" and "Clone a past job"."""
         return jsonify({"jobs": training_jobs()})
 
     @app.route("/ensemble/evaluate", methods=["POST"])
@@ -198,8 +202,8 @@ def register(app):
             seed = _form_number("seed", 0, int, lo=0, hi=2**31 - 1)
         except ValueError as exc:
             return _bad(str(exc))
-        # The RBF combiner is legacy: it is scored only when asked for.
-        include_rbf = _form_bool("include_rbf", False)
+        # The RBF combiner is legacy and never scored (the "include the RBF"
+        # option is gone with it).
         knee = _form_bool("knee", True)
         regime = "starless" if starless else "starfull"
         what = ", ".join(gates) if gates else "every applicable gate"
@@ -208,7 +212,7 @@ def register(app):
             target=lambda cap: job_combiner_compare(
                 cap, starless=starless, gates=gates or None,
                 blackout_fields=blackout_fields, seed=seed,
-                include_rbf=include_rbf, knee=knee),
+                include_rbf=False, knee=knee),
             kind="ensemble-compare")
         return jsonify({"ok": True, "job_id": job_id})
 
@@ -320,8 +324,20 @@ def register(app):
         coloring, tab switches) never recomputes anything. ``?fresh=1``
         recomputes the payload from the cached cubes (one sweep, seconds) —
         for a same-origin request only. A cross-site request gets the cached
-        payload as it is (no diagnostics upgrade), or 404 when none exists."""
+        payload as it is (no diagnostics upgrade), or 404 when none exists.
+        ``?band=Y_E|J_E|H_E`` serves that band's cached payload (same schema,
+        plus ``stale``: computed for an earlier evaluation) — cache only, 404
+        until ``POST /ensemble/evals/bands`` or an Evaluate has computed it."""
         starless = _mode_starless()
+        band = (request.args.get("band") or "VIS").strip()
+        if band != "VIS":
+            if band not in EVAL_EXTRA_BANDS:
+                abort(400, description=f"band must be VIS or one of {', '.join(EVAL_EXTRA_BANDS)}")
+            payload = read_band_evals(starless, band)
+            if payload is None:
+                abort(404, description=f"the {band} diagnostics are not computed yet — "
+                                       "compute them from the cached cubes (a local job)")
+            return jsonify(payload)
         path = _evals_payload_path(starless)
         refuse_cross_site_cache_fill(path)
         if not is_same_origin_request():
@@ -350,6 +366,28 @@ def register(app):
                                    "evaluate the ensemble first")
         return send_file(path, mimetype="application/json", max_age=0)
 
+    @app.route("/ensemble/evals/bands", methods=["POST"])
+    def ensemble_evals_bands():
+        """Compute the Y, J and H evaluation diagnostics from the cached test
+        cubes (a local job, ``kind="ensemble-band-evals"``; no model
+        inference; a running one's id is returned with ``already_running``).
+        400 without a cached evaluation of this regime."""
+        starless = _mode_starless()
+        if not os.path.isfile(_evals_payload_path(starless)):
+            return _bad("no evaluation cached for this regime — evaluate the ensemble first")
+        regime = "starless" if starless else "starfull"
+
+        def target(cap):
+            out = compute_band_evaluation_payloads(starless, progress=cap.tick)
+            if out is None:
+                raise RuntimeError("no cached test cubes for this regime — evaluate the ensemble first")
+            return {"regime": regime, "bands": sorted(out)}
+
+        job, started = REGISTRY.spawn_exclusive(
+            f"ensemble: Y, J, H diagnostics ({regime}, cached cubes)",
+            target, kind="ensemble-band-evals")
+        return jsonify({"ok": True, "job_id": job.job_id, "already_running": not started})
+
     @app.route("/ensemble/pixel-trace.json")
     def ensemble_pixel_trace():
         """Back-trace a diagnostic heatmap cell to real image stamps.
@@ -372,8 +410,11 @@ def register(app):
             j = int(request.args.get("j", ""))
         except (TypeError, ValueError):
             abort(400)
+        band = (request.args.get("band") or "VIS").strip()
+        if band != "VIS" and band not in EVAL_EXTRA_BANDS:
+            abort(400)
         return jsonify(pixel_trace(starless, diag, i, j,
-                                   model_kind=model_kind or None))
+                                   model_kind=model_kind or None, band=band))
 
     # ---- members: archive, restore, pull, train preview ------------------- #
 

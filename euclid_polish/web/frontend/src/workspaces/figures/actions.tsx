@@ -1,4 +1,4 @@
-/* Saved-result actions shared by the Results tab, the Grid tab and the
+/* Saved-crop actions shared by the Sheet tab (its crop pool) and the
  * `figure` inspector: confirmed delete and the rename dialog. */
 import { useEffect, useState } from "react";
 import { Button, Dialog, Field, Input, confirm, toast } from "../../ui";

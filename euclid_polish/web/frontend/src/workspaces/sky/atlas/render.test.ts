@@ -12,7 +12,7 @@ const P: SkyPalette = {
 };
 
 const TILES_INFO: LayerInfo = {
-  id: "nexus-tiles", label: "NEXUS × Euclid tiles", group: "results", kind: "polygons", count: 2, bbox: null,
+  id: "nexus-tiles", label: "NEXUS × Euclid tiles", group: "real", kind: "polygons", count: 2, bbox: null,
   style: { color_by: "state" }, ready: true, reason: null, fill_action: null, description: "", url: "/api/sky/layer/nexus-tiles",
 };
 const poly = (ra: number): [number, number][] => [[ra, 65], [ra + 0.01, 65], [ra + 0.01, 65.007], [ra, 65.007]];

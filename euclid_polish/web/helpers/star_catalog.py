@@ -1,4 +1,4 @@
-"""The star catalogue explorer of Data › Catalog (``GET /api/catalog/stars``).
+"""The star catalogue explorer of Synthetic › PSF (catalogue) (``GET /api/catalog/stars``).
 
 Serves the synchronised FASRC-mirror ``stars.csv`` (the brightest-N query's
 43k-star catalogue on netscratch, pulled into ``data/_fasrc_cache``) as

@@ -23,7 +23,7 @@ import { useInspector } from "../state/inspector";
 import { usePrefs } from "../state/prefs";
 import { Icon, Kbd, copyText, toast, type IconName } from "../ui";
 import { closeInspector, openInspector } from "./inspector";
-import { WORKSPACE_META, allPages } from "./nav";
+import { WORKSPACE_META, allPages, pagePath } from "./nav";
 import { paletteSuggestions, usePaletteActions, type PageAction } from "./palette";
 import { rankPalette, type RankGroup } from "./paletteRank";
 import { RUN_GROUP } from "./RunActions";
@@ -97,7 +97,7 @@ export function CommandPalette() {
 
   const pageEntries: Entry[] = pages.map((p) => ({
     key: `page:${p.path}`, label: p.label, hint: p.description, icon: WORKSPACE_META[p.workspace]?.icon,
-    keywords: [p.workspace, p.tab ?? "", p.path],
+    keywords: [p.workspace, p.tab ?? "", p.path, ...(p.keywords ?? [])],
     run: () => navigate(p.path),
   }));
 
@@ -109,13 +109,15 @@ export function CommandPalette() {
     { key: "cmd:theme-system", label: "Theme: follow the system", icon: "monitor", keywords: ["appearance", "auto"], run: () => prefs.setTheme("system") },
     { key: "cmd:display", label: "Open the Display panel", icon: "contrast", shortcut: "Shift+D", keywords: ["colour", "color", "stretch", "knee"], run: () => useShellUi.getState().openOnly("display") },
     { key: "cmd:jobs", label: "Show running jobs", icon: "activity", shortcut: "Shift+J", keywords: ["tray", "slurm"], run: () => useShellUi.getState().openOnly("tray") },
-    { key: "cmd:settings-connections", label: "FASRC & archive connections", hint: "Settings › Connections", icon: "server",
-      keywords: ["ssh", "connect", "login", "euclid", "tng", "token", "credentials"], run: () => navigate("/settings/connections") },
+    { key: "cmd:settings-connections", label: "FASRC & archive connections", hint: "System › Connections", icon: "server",
+      keywords: ["ssh", "connect", "login", "euclid", "tng", "token", "credentials", "settings"], run: () => navigate(pagePath("system", { tab: "connections" })) },
     {
-      key: "cmd:fasrc-step", label: "Run a FASRC step…", hint: "Ops › FASRC", icon: "server",
+      key: "cmd:fasrc-step", label: "Run a FASRC step…", hint: "Runs › Steps", icon: "server",
       keywords: ["run job", "job", "slurm", "submit", "step", "pipeline", "cluster", "sbatch"],
-      run: () => navigate("/ops/fasrc?view=steps"),
+      run: () => navigate(pagePath("runs", { tab: "steps" })),
     },
+    { key: "cmd:files", label: "Open a file", hint: "Files", icon: "fileSearch",
+      keywords: ["fits", "inspect", "hdu", "header", "browse"], run: () => navigate(pagePath("files")) },
     { key: "cmd:shortcuts", label: "Keyboard shortcuts", icon: "keyboard", shortcut: "Shift+?", run: () => useShellUi.getState().openOnly("shortcuts") },
     { key: "cmd:rail", label: "Collapse / expand the navigation", icon: "sidebar", shortcut: "[", run: () => prefs.toggleRail() },
     ...(inspectorOpen ? [{ key: "cmd:close-inspector", label: "Close the inspector", icon: "close" as IconName, run: closeInspector }] : []),

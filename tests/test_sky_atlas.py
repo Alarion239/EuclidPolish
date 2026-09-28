@@ -80,7 +80,7 @@ def mast(monkeypatch):
 
 def test_layer_catalogue_lists_every_spec_layer(world):
     payload = sky_atlas.layers_payload()
-    assert payload["groups"] == ["coverage", "results", "catalogues"]
+    assert payload["groups"] == ["real", "targets", "inputs", "coverage"]
     layers = {layer["id"]: layer for layer in payload["layers"]}
     for key in ("q1-tiles", "q1-fields", "nexus-footprint", "nexus-tiles", "real-tiles",
                 "real-fields", "poster", "pairs", "archive-fields", "eval-objects",
@@ -98,6 +98,41 @@ def test_layer_catalogue_lists_every_spec_layer(world):
     assert layers["jwst-mast"]["fill_action"]["url"] == "/api/sky/jwst/discover"
     assert layers["stars"]["fill_action"]["requires_fasrc"] is True
     json.dumps(payload, allow_nan=False)
+
+
+def test_layers_are_grouped_by_what_they_are_and_link_their_home_tab(world):
+    """The atlas Layers panel groups (console regrouping): real tiles, science
+    targets, the scene inputs of the synthetic data and coverage. Each layer
+    names the tab that owns (and fills) its data; the Gaia fields layer is gone."""
+    layers = {layer["id"]: layer for layer in sky_atlas.layers_payload()["layers"]}
+    groups = {}
+    for layer in layers.values():
+        groups.setdefault(layer["group"], []).append(layer["id"])
+    assert groups == {
+        "real": ["nexus-tiles", "real-tiles", "real-fields", "poster", "pairs", "experiments"],
+        "targets": ["eval-objects", "lens-candidates", "galaxies"],
+        "inputs": ["stars", "psf-clusters", "noise-positions", "population-cones", "archive-fields"],
+        "coverage": ["q1-tiles", "q1-fields", "nexus-footprint", "jwst-mast"],
+    }
+    assert "gaia-fields" not in layers
+    homes = {key: (layer["home"] or {}).get("path") for key, layer in layers.items()}
+    assert homes["nexus-tiles"] == "/sky/targets?set=nexus"
+    assert homes["real-tiles"] == "/sky/targets?set=cached"
+    assert homes["real-fields"] == "/sky/targets?set=legacy"
+    assert homes["experiments"] == "/sky/compare"
+    assert homes["lens-candidates"] == "/sky/targets?set=lenses"
+    assert homes["galaxies"] == "/sky/targets?set=galaxies"
+    assert homes["stars"] == "/synthetic/psf?view=catalogue"
+    assert homes["psf-clusters"] == "/synthetic/psf?view=epsf"
+    assert homes["noise-positions"] == "/synthetic/noise"
+    assert homes["population-cones"] == "/synthetic/galaxies?how=1"
+    assert homes["archive-fields"] == "/synthetic/fields?ref=1"
+    for key in ("real", "targets", "inputs"):
+        for layer_id in groups[key]:
+            home = layers[layer_id]["home"]
+            assert home["path"].startswith("/") and home["label"], layer_id
+    assert layers["stars"]["label"] == "PSF stars"
+    assert layers["archive-fields"]["label"] == "Archive reference fields"
 
 
 def test_feature_shapes(world):

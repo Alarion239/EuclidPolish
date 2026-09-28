@@ -2,9 +2,9 @@
 import { describe, expect, it } from "vitest";
 import type { PlateRun, SavedResult } from "./api";
 import {
-  LIGHTBOX, commonRecipes, cropSideArcsec, findRender, galleryMatches, gridSizeText, gridStatus, lightboxStageHeight, previewPaperCap, inspectLink, isRecipeKey, matchTile,
-  missingRecipes, moveItem, normalizeIndex, parseTileList, plateCoverage, recipeLabel,
-  renderKey, renderTitle, resultRegime, sanitizeColumns, skyLink, sourceLabel, specsCoveringAll,
+  LIGHTBOX, capText, commonRecipes, cropSideArcsec, findRender, galleryMatches, gridSizeText, gridStatus, lightboxStageHeight, previewPaperCap, inspectLink, isRecipeKey, matchTile,
+  missingRecipes, modeTone, moveItem, normalizeIndex, parseTileList, plateCoverage, recipeLabel,
+  renderKey, renderTitle, resultRegime, sanitizeColumns, sheetLegend, skyLink, sourceLabel, specsCoveringAll,
   viewerLink, wcsState, type NexusTile,
 } from "./model";
 
@@ -22,6 +22,35 @@ describe("recipes", () => {
     expect(recipeLabel("sr:VIS_H")).toBe("VIS + H_E SR");
     expect(recipeLabel("dirty:H_E")).toBe("H_E Dirty");
     expect(recipeLabel("bhr:VIS")).toBe("VIS BHR");
+  });
+
+  it("knows the Y and J bands (shown once the backend lists them)", () => {
+    expect(isRecipeKey("sr:Y_E")).toBe(true);
+    expect(isRecipeKey("dirty:J_E")).toBe(true);
+    expect(recipeLabel("sr:Y_E")).toBe("Y_E SR");
+    expect(recipeLabel("dirty:J_E")).toBe("J_E Dirty");
+    // a backend that lists only VIS / H_E keeps offering only those
+    expect(normalizeIndex({ supported: { modes: ["VIS", "H_E", "VIS_H", "native"] }, results: [] }).modes)
+      .toEqual(["VIS", "H_E", "VIS_H", "native"]);
+    expect(normalizeIndex({ supported: { modes: ["VIS", "Y_E", "J_E", "H_E", "VIS_H"] }, results: [] }).modes)
+      .toEqual(["VIS", "Y_E", "J_E", "H_E", "VIS_H"]);
+  });
+
+  it("colours rows the way the sheet draws them: one band grey, the composite VIS azure + H_E amber", () => {
+    expect(["VIS", "Y_E", "J_E", "H_E"].map(modeTone)).toEqual(["grey", "grey", "grey", "grey"]);
+    expect(modeTone("VIS_H")).toBe("vis-h");
+    expect(modeTone("native")).toBe("grey");                          // NEXUS F200W: one band
+    expect(sheetLegend(["dirty:VIS", "sr:VIS_H", "jwst:native"]).map((e) => e.id)).toEqual(["grey", "vis-h"]);
+    expect(sheetLegend(["sr:VIS_H"]).map((e) => e.id)).toEqual(["vis-h"]);
+    expect(sheetLegend([]).map((e) => e.id)).toEqual([]);
+    const composite = sheetLegend(["sr:VIS_H"])[0];
+    expect(composite.swatches.map((s) => [s.tone, s.label])).toEqual([["vis", "VIS"], ["h", "H_E"]]);
+  });
+
+  it("names a cap only once it is reached", () => {
+    expect(capText(3, 12, "columns")).toBeNull();
+    expect(capText(12, 12, "columns")).toBe("12 columns: the most a sheet holds");
+    expect(capText(16, 16, "rows")).toBe("16 rows: the most a sheet holds");
   });
 
   it("finds missing and common recipes", () => {
@@ -103,25 +132,43 @@ describe("regime and grid status", () => {
 describe("links back to the source", () => {
   it("opens real tiles in the realtile inspector", () => {
     expect(viewerLink(result({ source: { collection: "real", params: { source: "nexus" }, object: { id: "f200w-0040" } } }))?.to)
-      .toBe("/sky/results?inspect=realtile%3Anexus%2Ff200w-0040");
+      .toBe("/sky/targets?inspect=realtile%3Anexus%2Ff200w-0040");
     expect(viewerLink(result({ source: { collection: "real", object: { ref: "tile/ra1_dec2" } } }))?.to)
-      .toBe("/sky/results?inspect=realtile%3Atile%2Fra1_dec2");
+      .toBe("/sky/targets?inspect=realtile%3Atile%2Fra1_dec2");
     expect(viewerLink(result({ source: { collection: "nexus-field", index: 12, object: {} } }))?.to)
-      .toBe("/sky/results?inspect=realtile%3Anexus%2Ff200w-0012");
+      .toBe("/sky/targets?inspect=realtile%3Anexus%2Ff200w-0012");
     expect(viewerLink(result({ source: { collection: "real-field", object: { id: "rf1/007" } } }))?.to)
-      .toBe("/sky/results?inspect=realtile%3Afield%2Frf1-007");
+      .toBe("/sky/targets?inspect=realtile%3Afield%2Frf1-007");
     expect(viewerLink(result({ source: { collection: "jwst-euclid", object: { id: "pairX" } } }))?.to)
-      .toBe("/sky/results?inspect=realtile%3Apair%2FpairX");
+      .toBe("/sky/targets?inspect=realtile%3Apair%2FpairX");
+  });
+
+  it("opens a real catalogue object's tile card in its Sky › Targets set", () => {
+    expect(viewerLink(result({ source: { collection: "evaluation", object: { id: "102018666_NEG57", grade: "A" } } })))
+      .toEqual({ to: "/sky/targets?set=lenses&inspect=tile%3Aeval%2F102018666_NEG57", label: "Open in Sky › Targets" });
+    expect(viewerLink(result({ source: { collection: "evaluation", object: { id: "g-9", grade: "gal" } } }))?.to)
+      .toBe("/sky/targets?set=galaxies&inspect=tile%3Aeval%2Fg-9");
+    expect(viewerLink(result({ source: { collection: "evaluation", object: { id: "x-1" } } }))?.to)
+      .toBe("/sky/targets?set=lenses%2Cgalaxies&inspect=tile%3Aeval%2Fx-1");
+  });
+
+  it("opens a synthetic stamp in Models › Images (it has HR truth, so it is synthetic validation)", () => {
+    expect(viewerLink(result({ source: { collection: "evaluation", object: { id: "syn-lens_0007", grade: "syn-lens" } } })))
+      .toEqual({ to: "/models/starfull/images?set=stamps&g=syn-lens&id=syn-lens_0007", label: "Open in Models › Images" });
+    // the grade is read from the id when the save did not record it
+    expect(viewerLink(result({ source: { collection: "evaluation", object: { id: "syn-gal_0100" } } }))?.to)
+      .toBe("/models/starfull/images?set=stamps&g=syn-gal&id=syn-gal_0100");
+    // a stamp saved from a starless view opens in the starless regime
+    expect(viewerLink(result({ source: { collection: "evaluation", params: { mode: "starless" }, object: { id: "syn-gal_0100" } } }))?.to)
+      .toBe("/models/starless/images?set=stamps&g=syn-gal&id=syn-gal_0100");
   });
 
   it("opens viewer collections on their page with the object id or index", () => {
-    expect(viewerLink(result({ source: { collection: "evaluation", object: { id: "syn-7" } } }))?.to)
-      .toBe("/sky/catalog-eval?v.cev.id=syn-7");
     expect(viewerLink(result({ source: { collection: "ensemble", index: 3, params: { mode: "starless" } } }))?.to)
-      .toBe("/ensemble/starless/disagreement?v.ens.i=3");
+      .toBe("/models/starless/images?v.ens.i=3");
     expect(viewerLink(result({ source: { collection: "sky", object: { id: "test:5" }, params: { subset: "test" } } }))?.to)
-      .toBe("/data/records?v.sky.id=test%3A5&subset=test");
-    expect(viewerLink(result({ source: { collection: "psfs", index: 0 } }))?.to).toBe("/data/psfs?v.psfs.i=0");
+      .toBe("/synthetic/records?v.sky.id=test%3A5&subset=test");
+    expect(viewerLink(result({ source: { collection: "psfs", index: 0 } }))?.to).toBe("/synthetic/psf?view=epsf&v.psfs.i=0");
     expect(viewerLink(result({ source: {} }))).toBeNull();
     expect(viewerLink(result({ source: { collection: "unknown" } }))).toBeNull();
   });
@@ -131,7 +178,7 @@ describe("links back to the source", () => {
     expect(skyLink(result({ source: { object: { ra: 10, dec: -5 } } }))).toBe("/sky/atlas?ra=10.000000&dec=-5.000000&fov=0.01");
     expect(skyLink(result())).toBeNull();
     expect(inspectLink(result({ inspect_paths: { sr: "data/viewer_results/vr-1/sr.fits" } }), "sr"))
-      .toBe("/inspect?path=data%2Fviewer_results%2Fvr-1%2Fsr.fits");
+      .toBe("/files?path=data%2Fviewer_results%2Fvr-1%2Fsr.fits");
     expect(inspectLink(result(), "sr")).toBeNull();
   });
 

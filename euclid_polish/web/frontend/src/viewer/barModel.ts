@@ -39,6 +39,16 @@ export function readoutTierName(label: string): string {
   return short.length > 12 ? short.split(/\s+/)[0] : short;
 }
 
+/** The readout names of the shown tiers, each unique: a name shared by two
+ *  tiers ("Gate full30s1" and "Gate full30s2" both cut to "Gate") keeps its
+ *  short label, or the full label if that is shared too. */
+export function readoutTierNames(labels: readonly string[]): string[] {
+  const names = labels.map(readoutTierName);
+  const count = (xs: string[], x: string) => xs.filter((y) => y === x).length;
+  const longer = names.map((n, i) => (count(names, n) > 1 ? shortTierLabel(labels[i]) : n));
+  return longer.map((n, i) => (count(longer, n) > 1 ? String(labels[i] ?? "").trim() || n : n));
+}
+
 /** "LR_VIS" → "LR VIS", "SR_Y_E" → "SR Y" (the NISP suffix dropped). */
 function hduName(name: string): string {
   return name.replace(/_([YJH])_E$/, "_$1").replace(/_/g, " ").trim();

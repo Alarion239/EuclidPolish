@@ -1,4 +1,4 @@
-"""ePSF routes of Data › PSFs.
+"""ePSF routes of Synthetic › PSF.
 
 ``GET /api/euclid-psf/inventory`` is local (the synchronised cache only);
 the two syncs are background jobs (``kind="psf-sync"``, one at a time) that
@@ -189,7 +189,7 @@ def register(app):
     def api_euclid_psf_sync():
         """Force a re-rsync of the four Euclid band ePSFs from FASRC (a job).
 
-        Data › PSFs reads the local cache only (no rsync on load), so this is
+        Synthetic › PSF reads the local cache only (no rsync on load), so this is
         how a freshly-extracted PSF comes down — ``force=True`` bypasses the
         fetcher's TTL cache, with the larger ePSF pull cap. Bands not on
         FASRC are reported individually (``missing_remote``) without blocking

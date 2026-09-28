@@ -359,7 +359,7 @@ def client():
 
 class TestEvaluationRoutes:
     def test_page_renders(self, client):
-        r = client.get("/sky/catalog-eval")
+        r = client.get("/sky/targets?set=lenses,galaxies")
         assert r.status_code == 200
         assert b'id="root"' in r.data
 

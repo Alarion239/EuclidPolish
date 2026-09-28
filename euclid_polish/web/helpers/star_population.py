@@ -51,7 +51,7 @@ _GAIA_COUNT_LIMIT_MAG = 20.5
 _GAIA_G_AB_MINUS_VEGA_MAG = 25.8010446445 - 25.6873668671
 _GAIA_TAP_PROVIDER = "ARI Gaia TAP"
 _STAR_POPULATION_VERSION = 6
-_STAR_DISTRIBUTION_VERSION = 13
+_STAR_DISTRIBUTION_VERSION = 14
 _GAIA_COUNT_FIT_BIN_WIDTH_MAG = 0.5
 
 
@@ -290,10 +290,13 @@ def _stellar_density_comparison(
 ) -> dict[str, Any] | None:
     """Compare measured and generator stellar densities.
 
-    The VIS panel also carries the native Gaia G_AB counts and their
-    shared-slope fit, because they set the slope of the fitted magnitude law.
-    No Gaia series is drawn on the colour panels: projecting Gaia through the
-    fitted locus is a deterministic curve with no scatter (deleted view).
+    The VIS panel shows the Q1 counts, the fitted law and the generated
+    stars. No Gaia series is drawn: the native Gaia G_AB counts and the Gaia
+    projection were deleted from the console (the Gaia counts still enter
+    the shared-slope fit itself, see :func:`_fit_straight_star_magnitude_law`,
+    and the paper's calibration figure can draw them). ``gaia_rows`` and
+    ``gaia_area_arcmin2`` stay in the signature for the colour sample's
+    callers.
     """
     if (
         euclid_area_arcmin2 <= 0.0 or gaia_area_arcmin2 <= 0.0
@@ -351,14 +354,6 @@ def _stellar_density_comparison(
                 if value is not None
             })
 
-    model_colors = {
-        "vis_y": model_bands["VIS"] - model_bands["Y_E"],
-        "vis_j": model_bands["VIS"] - model_bands["J_E"],
-        "vis_h": model_bands["VIS"] - model_bands["H_E"],
-        "y_j": model_bands["Y_E"] - model_bands["J_E"],
-        "y_h": model_bands["Y_E"] - model_bands["H_E"],
-        "j_h": model_bands["J_E"] - model_bands["H_E"],
-    }
     euclid_colors = {
         "vis_y": np.asarray([row["VIS"] - row["Y_E"] for row in euclid_color_rows]),
         "vis_j": np.asarray([row["VIS"] - row["J_E"] for row in euclid_color_rows]),
@@ -389,13 +384,61 @@ def _stellar_density_comparison(
                 name: float(value) for name, value in magnitudes.items()
                 if value is not None
             })
+    # The Q1 colours are measured: noisy, and only over the VIS range of the
+    # Gaia-matched colour sample. The model's colour draws and the generated
+    # stars are compared the same way: restricted to that VIS window and
+    # given the Q1 flux errors (forward noised), so the widths compare. The
+    # VIS law panel stays intrinsic.
+    donor_vis, donor_sigma = _star_noise_donors(euclid_rows)
+    color_bands = model_bands
+    color_model_density = model_density
+    synthetic_color_bands = {
+        name: np.asarray([row[name] for row in synthetic_complete], dtype=np.float64)
+        for name in euclid_fields
+    }
+    if donor_vis.size >= _MIN_NOISE_DONORS:
+        window = np.quantile(donor_vis, _COLOR_WINDOW_QUANTILES)
+        in_window = (model_bands["VIS"] >= window[0]) & (model_bands["VIS"] <= window[1])
+        color_bands = _forward_noise_magnitudes(
+            {name: values[in_window] for name, values in model_bands.items()},
+            donor_vis, donor_sigma, rng,
+        )
+        color_model_density = model_density * float(np.mean(in_window))
+        synthetic_in = (
+            (synthetic_color_bands["VIS"] >= window[0])
+            & (synthetic_color_bands["VIS"] <= window[1])
+        )
+        synthetic_color_bands = _forward_noise_magnitudes(
+            {name: values[synthetic_in] for name, values in synthetic_color_bands.items()},
+            donor_vis, donor_sigma, rng,
+        )
+        model_color_noise: dict[str, Any] = {
+            "applied": True, "donors": int(donor_vis.size),
+            "vis_window": [round(float(window[0]), 2), round(float(window[1]), 2)],
+        }
+    else:
+        model_color_noise = {
+            "applied": False,
+            "detail": (
+                f"only {int(donor_vis.size)} Q1 colour stars carry flux errors in all "
+                f"four bands (at least {_MIN_NOISE_DONORS} are needed)"
+            ),
+        }
     synthetic_colors = {
-        "vis_y": np.asarray([row["VIS"] - row["Y_E"] for row in synthetic_complete]),
-        "vis_j": np.asarray([row["VIS"] - row["J_E"] for row in synthetic_complete]),
-        "vis_h": np.asarray([row["VIS"] - row["H_E"] for row in synthetic_complete]),
-        "y_j": np.asarray([row["Y_E"] - row["J_E"] for row in synthetic_complete]),
-        "y_h": np.asarray([row["Y_E"] - row["H_E"] for row in synthetic_complete]),
-        "j_h": np.asarray([row["J_E"] - row["H_E"] for row in synthetic_complete]),
+        "vis_y": synthetic_color_bands["VIS"] - synthetic_color_bands["Y_E"],
+        "vis_j": synthetic_color_bands["VIS"] - synthetic_color_bands["J_E"],
+        "vis_h": synthetic_color_bands["VIS"] - synthetic_color_bands["H_E"],
+        "y_j": synthetic_color_bands["Y_E"] - synthetic_color_bands["J_E"],
+        "y_h": synthetic_color_bands["Y_E"] - synthetic_color_bands["H_E"],
+        "j_h": synthetic_color_bands["J_E"] - synthetic_color_bands["H_E"],
+    }
+    model_colors = {
+        "vis_y": color_bands["VIS"] - color_bands["Y_E"],
+        "vis_j": color_bands["VIS"] - color_bands["J_E"],
+        "vis_h": color_bands["VIS"] - color_bands["H_E"],
+        "y_j": color_bands["Y_E"] - color_bands["J_E"],
+        "y_h": color_bands["Y_E"] - color_bands["H_E"],
+        "j_h": color_bands["J_E"] - color_bands["H_E"],
     }
     labels = {key: label for key, label, _left, _right in _STAR_COLOR_PAIRS}
 
@@ -419,39 +462,15 @@ def _stellar_density_comparison(
         ]
         if q1_counts is not None else None
     )
-    gaia_g_ab = np.asarray([
-        g_mag + _GAIA_G_AB_MINUS_VEGA_MAG
-        for row in gaia_rows
-        if str(row.get("central_selected_star") or "0").strip() != "1"
-        and (g_mag := _finite(row.get("g_mag"))) is not None
-    ], dtype=np.float64)
     magnitude_diagnostics = (
         stellar_model["population"]["magnitude_distribution"].get(
             "fit_diagnostics", {}
         )
     )
-    gaia_fit_diagnostics = magnitude_diagnostics.get("gaia") or {}
     q1_fit_diagnostics = magnitude_diagnostics.get("q1") or {}
-    gaia_bin_width = float(
-        gaia_fit_diagnostics.get("bin_width_mag")
-        or _GAIA_COUNT_FIT_BIN_WIDTH_MAG
-    )
-    gaia_edges = _fixed_width_edges(bright, faint, gaia_bin_width)
-    gaia_centres = 0.5 * (gaia_edges[:-1] + gaia_edges[1:])
-    gaia_fit_density = None
-    try:
-        gaia_intercept = float(gaia_fit_diagnostics["intercept"])
-        gaia_fit_density = np.power(
-            10.0,
-            model_magnitude_law.slope
-            * gaia_centres
-            + gaia_intercept,
-        ).tolist()
-    except (KeyError, TypeError, ValueError):
-        pass
     parameters: dict[str, Any] = {
         "vis": {
-            "label": "VIS and native Gaia G brightness",
+            "label": "VIS brightness",
             "x_label": "apparent magnitude [AB]",
             "x": (0.5 * (magnitude_edges[:-1] + magnitude_edges[1:])).tolist(),
             "x_domain": [bright, faint],
@@ -460,12 +479,6 @@ def _stellar_density_comparison(
                 area_arcmin2=euclid_area_arcmin2,
             ),
             "point_sources": q1_point_source_density,
-            # This is the native Gaia G band on the AB system, with only the
-            # release zero-point conversion. It is not projected into VIS.
-            "gaia_x": gaia_centres.tolist(),
-            "gaia": _density_series(
-                gaia_g_ab, gaia_edges, area_arcmin2=gaia_area_arcmin2,
-            ),
             "model": model_magnitude_law.density(
                 0.5 * (magnitude_edges[:-1] + magnitude_edges[1:])
             ).tolist(),
@@ -473,15 +486,10 @@ def _stellar_density_comparison(
                 synthetic_bands["VIS"], magnitude_edges,
                 area_arcmin2=synthetic_area_arcmin2,
             ) if synthetic_area_arcmin2 > 0.0 else [],
-            "gaia_fit": gaia_fit_density,
             "fit_ranges": {
                 "q1": [
                     q1_fit_diagnostics.get("fit_bright"),
                     q1_fit_diagnostics.get("fit_faint"),
-                ],
-                "gaia": [
-                    gaia_fit_diagnostics.get("fit_bright"),
-                    gaia_fit_diagnostics.get("fit_faint"),
                 ],
             },
         },
@@ -500,7 +508,7 @@ def _stellar_density_comparison(
                 area_arcmin2=euclid_area_arcmin2,
             ),
             "model": _density_series(
-                model_colors[key], edges, total_density_arcmin2=model_density,
+                model_colors[key], edges, total_density_arcmin2=color_model_density,
             ),
             "synthetic": _density_series(
                 synthetic_colors[key], edges,
@@ -512,6 +520,7 @@ def _stellar_density_comparison(
         "gaia_area_arcmin2": gaia_area_arcmin2,
         "model_density_arcmin2": model_density,
         "model_sample_count": sample_count,
+        "model_color_noise": model_color_noise,
         "euclid_vis_count": len(euclid_vis),
         "q1_phz_expected_stars": (
             float(q1_counts["expected_stars"])
@@ -530,7 +539,6 @@ def _stellar_density_comparison(
             if q1_counts is not None else None
         ),
         "euclid_color_count": len(euclid_color_rows),
-        "gaia_native_g_count": int(gaia_g_ab.size),
         "synthetic_area_arcmin2": synthetic_area_arcmin2 or None,
         "synthetic_star_count": int(synthetic_bands["VIS"].size),
         "synthetic_color_count": len(synthetic_complete),
@@ -550,8 +558,16 @@ def _stellar_density_comparison(
             "fit over independently selected straight regions with one shared "
             "slope and separate intercepts; the Q1 intercept normalizes the "
             "12–25 VIS generator. Colour curves "
-            "remain matched-field fit diagnostics; model curves are intrinsic "
-            "generator draws without Euclid measurement noise. Magenta points are "
+            "remain matched-field fit diagnostics; "
+            + (
+                "the model colour draws and the generated stars are taken over "
+                "the VIS range of the Q1 colour sample and carry Q1 measurement "
+                "noise, with flux errors borrowed from VIS-nearest Q1 stars. "
+                if model_color_noise["applied"] else
+                "the model colour draws are intrinsic, without Q1 measurement "
+                "noise (too few Q1 stars carry flux errors). "
+            )
+            + "Magenta points are "
             "the actual stars stored in the selected synthetic "
             f"{synthetic_scope} source catalogues, normalized by their "
             "rendered field area."
@@ -597,6 +613,96 @@ def _raw_measurement(row: dict[str, str], band: str) -> tuple[float, float] | No
     if flux is None or error is None or error <= 0.0:
         return None
     return float(flux), float(error)
+
+
+#: Model colour draws borrow their measurement noise from a random star
+#: among this many VIS-nearest Q1 colour stars (the noise donors).
+_NOISE_DONOR_WINDOW = 16
+#: Fewer donors than this leave the model colours intrinsic.
+_MIN_NOISE_DONORS = 5
+#: The colour panels compare over this VIS quantile range of the donors.
+_COLOR_WINDOW_QUANTILES = (0.005, 0.995)
+_AB_ZEROPOINT_UJY_MAG = 23.9
+#: (model band, catalogue flux band, catalogue magnitude column).
+_NOISE_BANDS = (
+    ("VIS", "vis", "mag_vis"), ("Y_E", "y", "mag_y_e"),
+    ("J_E", "j", "mag_j_e"), ("H_E", "h", "mag_h_e"),
+)
+
+
+def _star_noise_donors(
+    rows: list[dict[str, str]],
+) -> tuple[np.ndarray, np.ndarray]:
+    """VIS magnitudes and per-band flux errors [µJy] of the Q1 colour stars.
+
+    The donors are the rows of the colour sample (``type`` star,
+    POINT_LIKE_PROB ≥ 0.9, all four magnitudes) that also carry a positive
+    aperture flux and error in every band. Each aperture error is scaled by
+    the star's own aperture correction (total ÷ aperture flux), so it sits
+    on the flux scale of the magnitudes the colours are made from. Sorted by
+    VIS magnitude; shapes ``(n,)`` and ``(n, 4)``.
+    """
+    vis: list[float] = []
+    sigma: list[list[float]] = []
+    for row in rows:
+        probability = _finite(row.get("point_like_prob"))
+        if row.get("type") != "star" or probability is None or probability < 0.9:
+            continue
+        magnitudes = [_finite(row.get(column)) for _b, _f, column in _NOISE_BANDS]
+        measurements = [_raw_measurement(row, band) for _b, band, _c in _NOISE_BANDS]
+        if any(value is None for value in magnitudes) or any(
+            item is None or item[0] <= 0.0 for item in measurements
+        ):
+            continue
+        sigma.append([
+            measurement[1] * 10.0 ** (-0.4 * (magnitude - _AB_ZEROPOINT_UJY_MAG))
+            / measurement[0]
+            for magnitude, measurement in zip(magnitudes, measurements, strict=True)
+            if magnitude is not None and measurement is not None
+        ])
+        vis.append(float(magnitudes[0] or 0.0))
+    order = np.argsort(np.asarray(vis, dtype=np.float64), kind="stable")
+    return (
+        np.asarray(vis, dtype=np.float64)[order],
+        np.asarray(sigma, dtype=np.float64).reshape(-1, len(_NOISE_BANDS))[order],
+    )
+
+
+def _forward_noise_magnitudes(
+    magnitudes: dict[str, np.ndarray],
+    donor_vis: np.ndarray,
+    donor_sigma: np.ndarray,
+    rng: np.random.Generator,
+) -> dict[str, np.ndarray]:
+    """Model magnitudes as the Q1 photometry would measure them.
+
+    Each draw borrows the four flux errors of a random donor among the
+    ``_NOISE_DONOR_WINDOW`` VIS-nearest Q1 stars and gets independent
+    Gaussian flux noise in each band. The absolute error is kept
+    (background-limited photometry), so a draw fainter than every donor
+    takes the faintest donors' errors. A band whose noised flux is not
+    positive has no magnitude (NaN), as a Q1 non-detection has none. The
+    input arrays are not modified.
+    """
+    vis = np.asarray(magnitudes["VIS"], dtype=np.float64)
+    donors = int(donor_vis.size)
+    window = min(_NOISE_DONOR_WINDOW, donors)
+    nearest = np.searchsorted(donor_vis, vis)
+    low = np.clip(nearest - window // 2, 0, donors - window)
+    chosen = low + rng.integers(0, window, size=vis.size)
+    noised: dict[str, np.ndarray] = {}
+    for index, (band, _flux_band, _column) in enumerate(_NOISE_BANDS):
+        flux = 10.0 ** (-0.4 * (
+            np.asarray(magnitudes[band], dtype=np.float64) - _AB_ZEROPOINT_UJY_MAG
+        ))
+        flux = flux + donor_sigma[chosen, index] * rng.standard_normal(vis.size)
+        positive = flux > 0.0
+        noised[band] = np.where(
+            positive,
+            _AB_ZEROPOINT_UJY_MAG - 2.5 * np.log10(np.where(positive, flux, 1.0)),
+            np.nan,
+        )
+    return noised
 
 
 _STAR_COLOR_PAIRS = (

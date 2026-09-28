@@ -6,7 +6,7 @@ import {
 } from "./layerModel";
 
 const info = (over: Partial<LayerInfo>): LayerInfo => ({
-  id: "x", label: "X", group: "results", kind: "polygons", count: 0, bbox: null, style: {},
+  id: "x", label: "X", group: "real", kind: "polygons", count: 0, bbox: null, style: {},
   ready: true, reason: null, fill_action: null, description: "", url: "/api/sky/layer/x", ...over,
 });
 
@@ -99,13 +99,21 @@ describe("layer model", () => {
   });
 
   it("adds the client-side coverage MOCs and groups layers in a stable order", () => {
-    const server = [info({ id: "stars", group: "catalogues" }), info({ id: "q1-tiles", group: "coverage" }), info({ id: "nexus-tiles" })];
+    const server = [info({ id: "stars", group: "inputs" }), info({ id: "q1-tiles", group: "coverage" }), info({ id: "nexus-tiles", group: "real" }),
+      info({ id: "lens-candidates", group: "targets" })];
     const all = withClientLayers(server);
     expect(all.map((l) => l.id).slice(0, 2)).toEqual(["moc-q1", "moc-jwst"]);
     expect(all.find((l) => l.id === "moc-q1")!.kind).toBe("moc");
     const groups = groupLayers(all);
-    expect(groups.map((g) => g.group)).toEqual(["coverage", "results", "catalogues"]);
-    expect(groups[0].layers.map((l) => l.id)).toEqual(["moc-q1", "moc-jwst", "q1-tiles"]);
+    expect(groups.map((g) => [g.group, g.label])).toEqual([
+      ["real", "Real tiles"], ["targets", "Targets"], ["inputs", "Scene inputs"], ["coverage", "Coverage"],
+    ]);
+    expect(groups[3].layers.map((l) => l.id)).toEqual(["moc-q1", "moc-jwst", "q1-tiles"]);
+  });
+
+  it("files an older server's groups under the new ones", () => {
+    const all = withClientLayers([info({ id: "stars", group: "catalogues" as never }), info({ id: "nexus-tiles", group: "results" as never })]);
+    expect(Object.fromEntries(all.map((l) => [l.id, l.group]))).toMatchObject({ stars: "inputs", "nexus-tiles": "real", "moc-q1": "coverage" });
     expect(DEFAULT_LAYERS).toContain("nexus-tiles");
     expect(DEFAULT_LAYERS).toContain("moc-q1");
   });
@@ -145,8 +153,8 @@ describe("layer model", () => {
   it("stands in for layers whose payload arrived before the catalogue", () => {
     const payload = { id: "nexus-tiles", label: "NEXUS × Euclid tiles", group: "results", kind: "polygons", count: 445, features: [] } as LayerPayload;
     const stub = stubLayerInfo("nexus-tiles", payload);
-    expect(stub).toMatchObject({ id: "nexus-tiles", label: "NEXUS × Euclid tiles", group: "results", kind: "polygons", count: 445, url: null, style: {} });
-    expect(stubLayerInfo("x").group).toBe("results");
+    expect(stub).toMatchObject({ id: "nexus-tiles", label: "NEXUS × Euclid tiles", group: "real", kind: "polygons", count: 445, url: null, style: {} });
+    expect(stubLayerInfo("x").group).toBe("real");
     const known = withClientLayers([]);
     const merged = withStubLayers(known, ["moc-q1", "nexus-tiles", "stars"], { "nexus-tiles": { payload }, stars: { payload: null } });
     expect(merged.map((l) => l.id)).toEqual([...known.map((l) => l.id), "nexus-tiles"]);

@@ -1,4 +1,4 @@
-"""The synthetic training records behind Data › Records (spec §8.4).
+"""The synthetic training records behind Synthetic › Records (spec §8.4).
 
 * **Random access.** A TFRecord file is a sequence of ``uint64 length |
   uint32 masked-crc32c(length) | data | uint32 masked-crc32c(data)`` frames.
@@ -220,6 +220,54 @@ def record_geometry(path: str) -> dict[str, Any] | None:
                 "pixscale": float(rec.pixel_scale_arcsec or 0.0)}
     _GEOMETRY[key] = geometry
     return geometry
+
+
+def records_artifact_id(path: str) -> str | None:
+    """The file-level provenance id a TFRecord's records carry (its first
+    record's stamp), or ``None`` for unstamped / unreadable records."""
+    try:
+        stamp = read_record(path, 0).prov_stamp()
+    except (OSError, IndexError, ValueError):
+        return None
+    return str(stamp.id) if stamp is not None and stamp.id is not None else None
+
+
+def artifact_sidecar_name(artifact_id: str) -> str:
+    """The generator's provenance sidecar of a record file, written next to it
+    (``<id>.skytfrecordartifact.json``) and pulled with it by the sync."""
+    return f"{artifact_id}.skytfrecordartifact.json"
+
+
+#: Which record file of a split names the PSFs of its generation run: the
+#: forward model (dirty) convolves every band; clean only VIS.
+_PSF_RECORD_KINDS = ("dirty", "hr", "clean")
+
+
+def records_generation(records_dir: str, subset: str) -> dict[str, Any] | None:
+    """What the generation run of a local split recorded in its provenance:
+    ``{psf_kinds: {band: empirical | gaussian}, run, kind}`` from the pulled
+    sidecar of its dirty (else hr, clean) records, or ``None`` when the split's
+    records are absent, unstamped, or their sidecar was not pulled / predates
+    the PSF stamp."""
+    for kind in _PSF_RECORD_KINDS:
+        path = tfrecord_path(records_dir, f"{kind}_{subset}")
+        if not os.path.exists(path):
+            continue
+        artifact_id = records_artifact_id(path)
+        if artifact_id is None:
+            continue
+        try:
+            with open(os.path.join(records_dir, artifact_sidecar_name(artifact_id))) as handle:
+                sidecar = json.load(handle)
+        except (OSError, ValueError):
+            continue
+        descriptors = sidecar.get("descriptors") if isinstance(sidecar, Mapping) else None
+        kinds = descriptors.get("psf_kinds") if isinstance(descriptors, Mapping) else None
+        if isinstance(kinds, Mapping) and kinds:
+            return {"psf_kinds": {str(band): str(value) for band, value in kinds.items()},
+                    "run": sidecar.get("produced_by"), "kind": kind,
+                    "created": sidecar.get("created_at")}
+    return None
 
 
 def split_geometry(records_dir: str, subset: str) -> dict[str, Any]:

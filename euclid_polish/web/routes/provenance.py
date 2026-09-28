@@ -1,4 +1,4 @@
-"""Ops › Provenance: a read-only lineage browser over ``data/_prov``, the
+"""System › Lineage: a read-only lineage browser over ``data/_prov``, the
 sidecars next to the data and the checkpoint stamps
 (:mod:`euclid_polish.web.helpers.provenance_index`). Local, never gated."""
 

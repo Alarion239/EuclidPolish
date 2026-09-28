@@ -68,6 +68,10 @@
 .sky-row__main { display: flex; align-items: center; gap: var(--s1); min-width: 0; }
 .sky-row__main > :first-child { flex: 1; min-width: 0; }
 .sky-row__main .ui-check__label, .sky-row__main label { min-width: 0; }
+/* a long layer name ellipsizes before the count and the row's buttons */
+.sky-row__main .ui-check > span { display: flex; min-width: 0; overflow: hidden; }
+.sky-layer__label { max-width: 100%; }
+.sky-layer__name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sky-row__meta { font-size: var(--fs-xs); color: var(--text-faint); white-space: nowrap; }
 .sky-row__tail { display: inline-flex; align-items: center; gap: 2px; flex: none; }
 .sky-layer__label { display: inline-flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -81,18 +85,18 @@
 .sky-opacity { width: 100%; }
 .sky-layer__note { margin: 0; font-size: var(--fs-xs); color: var(--text-faint); }
 
-/* background radio pills */
-.sky-radios { display: flex; flex-wrap: wrap; gap: 4px; }
-.sky-radio {
-  position: relative; display: inline-flex; align-items: center; gap: 4px; cursor: pointer;
-  padding: 3px 8px; border: 1px solid var(--border); border-radius: var(--r-pill);
-  font-size: var(--fs-xs); color: var(--text-dim); background: var(--surface-1);
-}
-.sky-radio input { position: absolute; opacity: 0; pointer-events: none; }
-.sky-radio[data-on="true"] { border-color: var(--accent); color: var(--accent-press); background: var(--accent-soft); }
-.sky-radio:has(input:focus-visible) { box-shadow: var(--ring); }
+/* background survey (a Select) and its credit */
 .sky-credit { margin: var(--s2) 0 0; font-size: var(--fs-2xs); color: var(--text-faint); }
-.sky-radio__tag { font: var(--fw-semibold) var(--fs-2xs)/1 var(--font-sans); color: var(--text-faint); }
+
+/* a layer's muted feature count and the tab that owns its data */
+.sky-row__count {
+  min-width: 2.5ch; padding: 0 2px; text-align: right; white-space: nowrap;
+  font: var(--fs-xs)/1 var(--font-mono); font-variant-numeric: tabular-nums; color: var(--text-faint);
+}
+.sky-layer__home { color: var(--accent); text-decoration: none; white-space: nowrap; }
+.sky-layer__home:hover { text-decoration: underline; }
+.sky-layer__home:focus-visible { box-shadow: var(--ring); outline: none; border-radius: var(--r-sm); }
+.sky-layer__from { font-size: var(--fs-sm); }
 
 /* legend */
 .sky-legend { display: flex; flex-direction: column; gap: 4px; font-size: var(--fs-xs); color: var(--text-dim); }

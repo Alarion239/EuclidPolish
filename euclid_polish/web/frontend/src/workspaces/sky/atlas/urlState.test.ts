@@ -76,9 +76,9 @@ describe("atlas URL codecs", () => {
     expect(parsePointId("at/x,y")).toBeNull();
   });
 
-  it("links to the experiments tab with tiles preselected", () => {
-    expect(experimentsHref(["nexus/f200w-0001", "archive/007"])).toBe("/sky/experiments?tiles=nexus%2Ff200w-0001%2Carchive%2F007");
-    expect(experimentsHref([])).toBe("/sky/experiments");
+  it("links to Sky › Compare with tiles preselected", () => {
+    expect(experimentsHref(["nexus/f200w-0001", "archive/007"])).toBe("/sky/compare?tiles=nexus%2Ff200w-0001%2Carchive%2F007");
+    expect(experimentsHref([])).toBe("/sky/compare");
   });
 
   it("patches a query string keeping the other params' spelling", () => {
