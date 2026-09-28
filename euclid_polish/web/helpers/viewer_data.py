@@ -35,6 +35,8 @@ collection          tiers                             source
                                                       ``models`` = spec list)
 ``fits``            h<hdu>, b:<prefix>                any inspectable FITS file
                                                       (``path``, ``hdu``, …)
+``study``           lr, sr (gate), mean, hr, bhr,     a model study's attached
+                    mask, members                     fields (fetched cache)
 ==================  ================================  ============================
 
 Band order is always ``Config.LR_INPUT_BAND_NAMES = (VIS, Y_E, J_E, H_E)``.
@@ -75,6 +77,8 @@ from euclid_polish.eval.spatial_gate import SPATIAL_GATE_KIND
 from euclid_polish.image.tfio import read_images, tfrecord_path
 from euclid_polish.photometry import adu_per_s_to_electrons_factor
 from euclid_polish.psf.core import PSF
+from euclid_polish.studies.cache import CORE_PRODUCTS, FieldCache, member_product
+from euclid_polish.studies.store import StudyError, StudyStore
 from euclid_polish.training.target_blur import (
     blur_target_array,
     validate_target_fwhm_arcsec,
@@ -2720,6 +2724,123 @@ def _fits_cube(index: int, tier: str, params: dict[str, str]):
 
 
 # ---------------------------------------------------------------------------
+# study — a model study's attached fields, from the fetched-field cache
+# ---------------------------------------------------------------------------
+#
+# ``?study=<id>``. Objects are the study's attached fields (``id`` = the field
+# id); a field's cubes are served only once "Fetch field" copied it from
+# holylabs into the local cache — before that every cube is a 404 saying so
+# (the viewer never triggers a fetch). Tier keys follow the ``ensemble``
+# collection: ``sr`` is the production gate, ``member<i>`` the i-th member
+# (hidden) in the study's member order.
+
+_STUDY_TIERS = [
+    {"key": "lr", "label": "LR", "unit": "e-"},
+    {"key": "sr", "label": PRODUCTION_SR_LABEL, "unit": "e-"},
+    {"key": "mean", "label": MEAN_LABEL, "unit": "e-"},
+    {"key": "hr", "label": "HR", "unit": "e-"},
+    {"key": "bhr", "label": "BHR (blurred HR)", "unit": "e-"},
+    {"key": "mask", "label": "Blackout holes", "unit": "arb"},
+]
+_STUDY_PRODUCTS = {"lr": "lr", "sr": "gate", "mean": "mean", "hr": "hr", "mask": "mask"}
+
+
+def _study_manifest(params: dict[str, str]) -> dict[str, Any]:
+    try:
+        return StudyStore().manifest(str(params.get("study") or ""))
+    except StudyError as exc:
+        raise ViewerError(exc.code, str(exc)) from exc
+
+
+def _study_field_tiers(record: Mapping[str, Any], n_members: int) -> list[str]:
+    products = record.get("products") or {}
+    keys = [key for key, product in _STUDY_PRODUCTS.items() if product in products]
+    if "hr" in products:
+        keys.insert(keys.index("hr") + 1, "bhr")
+    return keys + [f"member{i}" for i in range(n_members)]
+
+
+def _study_meta(params: dict[str, str]) -> dict[str, Any]:
+    manifest = _study_manifest(params)
+    study_id = str(manifest["id"])
+    labels = [str(m.get("label")) for m in (manifest.get("ensemble") or {}).get("members") or []]
+    cache = FieldCache()
+    records = [f for f in manifest.get("fields") or [] if f.get("state") == "uploaded"]
+    objects = []
+    for f in records:
+        products = f.get("products") or {}
+        cached = cache.cached_products(study_id, f["fid"], products)
+        core = [name for name in CORE_PRODUCTS if name in products]
+        objects.append({
+            "id": f["fid"], "label": f.get("label") or f["fid"], "kind": f.get("kind"),
+            "fetched": bool(core) and set(core) <= cached, "bytes": f.get("bytes"),
+            "fetched_members": [i for i, label in enumerate(labels)
+                                if member_product(label) in cached],
+            "tiers": _study_field_tiers(f, len(labels))})
+    tiers = [dict(t) for t in _STUDY_TIERS]
+    tiers += [{"key": f"member{i}", "label": f"SR {label}", "hidden": True, "unit": "e-"}
+              for i, label in enumerate(labels)]
+    return {"count": len(objects), "tiers": tiers, "default_tier": "sr",
+            "band_names": list(BAND_NAMES), "study": study_id, "regime": manifest.get("regime"),
+            "member_labels": labels, "objects": objects}
+
+
+def _study_cube(index: int, tier: str, params: dict[str, str]):
+    manifest = _study_manifest(params)
+    study_id = str(manifest["id"])
+    records = [f for f in manifest.get("fields") or [] if f.get("state") == "uploaded"]
+    if index < 0 or index >= len(records):
+        raise ViewerError(404, "index out of range")
+    record = records[index]
+    fid = str(record["fid"])
+    cache = FieldCache()
+    products = record.get("products") or {}
+    cached = cache.cached_products(study_id, fid, products)
+    core = [name for name in CORE_PRODUCTS if name in products]
+    if not core or not set(core) <= cached:
+        raise ViewerError(404, f"fetch the field first (POST /api/studies/{study_id}/fields/"
+                               f"{fid}/fetch): {fid} is stored on holylabs")
+    labels = [str(m.get("label")) for m in (manifest.get("ensemble") or {}).get("members") or []]
+    if tier.startswith("member") and tier[6:].isdigit():
+        i = int(tier[6:])
+        if i >= len(labels):
+            raise ViewerError(404, "member out of range")
+        product, label = member_product(labels[i]), f"SR {labels[i]}"
+        number = product.removeprefix("member_")
+        if product not in cached:
+            raise ViewerError(404, f"fetch member {number} first (POST /api/studies/{study_id}"
+                                   f"/fields/{fid}/fetch with products={product}): member "
+                                   "SRs are fetched one by one")
+    elif tier in _STUDY_PRODUCTS or tier == "bhr":
+        product = _STUDY_PRODUCTS.get(tier, "hr")
+        label = next(t["label"] for t in _STUDY_TIERS if t["key"] == tier)
+    else:
+        raise ViewerError(400, "bad tier")
+    try:
+        cube = cache.load(study_id, fid, product)
+        meta = cache.read_json(study_id, fid, "field.json")
+    except (FileNotFoundError, OSError, ValueError) as exc:
+        raise ViewerError(404, f"{fid} has no {tier} tier") from exc
+    cache.touch(study_id, fid, product)
+    cube = _as_hwc(np.asarray(cube, np.float32), layout="hwc")
+    pixscale = (meta.get("pixscale") or {})
+    grid = "lr" if tier == "lr" else "sr"
+    if tier == "bhr":
+        target = meta.get("target") or {}
+        cube = blur_target_array(cube, float(target.get("fwhm_arcsec") or 0.0),
+                                 pixel_scale_arcsec=float(target.get("pixel_scale_arcsec")
+                                                          or pixscale.get("sr")))
+    info: dict[str, Any] = {"label": f"{label} · {record.get('label') or fid}",
+                            "asinh": float(Config.STRETCH_SCALE_E),
+                            "pixscale": float(pixscale.get(grid) or Config.DEFAULT_PIXEL_SCALE),
+                            "unit": "arb" if tier == "mask" else "e-"}
+    wcs = (meta.get("wcs") or {}).get(grid)
+    if wcs:
+        info["wcs"] = wcs
+    return cube, info
+
+
+# ---------------------------------------------------------------------------
 # registry
 # ---------------------------------------------------------------------------
 
@@ -2738,6 +2859,7 @@ _REGISTRY: dict[str, tuple[_Meta, _Cube]] = {
     "psfs": (_psf_meta, _psf_cube),
     "real": (_real_meta, _real_cube),
     "fits": (_fits_meta, _fits_cube),
+    "study": (_study_meta, _study_cube),
 }
 
 

@@ -20,7 +20,7 @@ import shlex
 import shutil
 import zipfile
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import UTC, datetime
 
 import numpy as np
@@ -2429,64 +2429,16 @@ def compute_knee_psnr_payload(starless: bool, *, force: bool = False,
             cached = json.load(handle)
             if cached.get("identity") == identity:
                 return cached
-    rdir = _sky_records_local_dir()
-    subset = str(manifest.get("subset", ""))
-    target_name = "clean" if starless else "hr"
-    target_path = tfrecord_path(rdir, f"{target_name}_{subset}") if rdir else ""
-    if (not identity["indices"] or not target_path or not os.path.isfile(target_path)
-            or manifest.get("records_fp")
-            != _eval_records_fingerprint(rdir, subset, starless=starless)):
+    fields = _knee_psnr_field_curves(starless, manifest, identity, progress)
+    if fields is None:
         return None
-    fwhm = validate_target_fwhm_arcsec(
-        manifest.get("target_psf_fwhm_arcsec", Config.TARGET_PSF_FWHM_ARCSEC))
-    cubes_dir = _ensemble_cubes_dir(starless=starless)
-    combiner_kinds = [kind for kind in COMBINER_MODELS
-                      if manifest.get(f"has_combiner_{kind}")]
-    model_ids = ([f"member_{i}" for i in range(len(labels))]
-                 + ["ensemble_mean"] + combiner_kinds)
-
-    def field_curves(rec: int, target: np.ndarray) -> np.ndarray | None:
-        tag = f"{rec:05d}"
-        paths = ([os.path.join(cubes_dir, f"member{i}_{tag}.npy")
-                  for i in range(len(labels))]
-                 + [os.path.join(cubes_dir, f"sr_{tag}.npy")]
-                 + [os.path.join(cubes_dir, f"{COMBINER_MODELS[k].cube_prefix}_{tag}.npy")
-                    for k in combiner_kinds])
-        if not all(os.path.isfile(p) for p in paths):
-            return None
-        truth = stretched_truth(target)
-        return np.stack([knee_psnr(np.load(p), target, truth_asinh=truth)
-                         for p in paths])                     # (models, K, C)
-
-    wanted = set(identity["indices"])
-    total, done, n_fields = len(wanted), 0, 0
     sums: np.ndarray | None = None
-    pending = []
-
-    def drain(limit: int) -> None:
-        nonlocal sums, done, n_fields
-        while len(pending) > limit:
-            result = pending.pop(0).result()
-            done += 1
-            if result is not None:
-                sums = result if sums is None else sums + result
-                n_fields += 1
-            if progress is not None:
-                progress(done, total, "PSNR vs knee")
-
-    with ThreadPoolExecutor(max_workers=_KNEE_PSNR_WORKERS) as pool:
-        for image in ImageSet.read(target_path, num_images=max(wanted) + 1):
-            rec = _record_index(image)
-            if rec not in wanted:
-                continue
-            target = blur_target_array(np.asarray(image.data, np.float32), fwhm,
-                                       pixel_scale_arcsec=image.pixel_scale_arcsec)
-            pending.append(pool.submit(field_curves, rec, target))
-            drain(2 * _KNEE_PSNR_WORKERS)
-        drain(0)
-    if sums is None:
-        return None
+    for curve in fields["curves"]:                     # field order, as before
+        sums = curve if sums is None else sums + curve
+    assert sums is not None
+    n_fields = len(fields["fields"])
     curves = sums / n_fields
+    model_ids = fields["model_ids"]
     member_meta = _member_meta_from_labels(labels)
     models = []
     for m, model_id in enumerate(model_ids):
@@ -2517,6 +2469,95 @@ def compute_knee_psnr_payload(starless: bool, *, force: bool = False,
     }
     _atomic_json(path, payload)
     return payload
+
+
+def knee_psnr_fields(starless: bool, *,
+                     progress: Callable[[int, int, str], None] | None = None
+                     ) -> dict | None:
+    """The per-field PSNR-vs-knee curves behind :func:`compute_knee_psnr_payload`
+    (same loop, same models, nothing averaged): ``{identity, labels, model_ids,
+    fields: [record index], curves: (fields, models, knees, bands)}`` (a field
+    whose cubes or target record are missing is left out of ``fields``). Model
+    ids are ``member_<i>`` (positional with ``labels``), ``ensemble_mean`` and
+    each baked combiner kind. ``None`` when the cubes are missing, belong to
+    another membership or their records changed. Writes nothing."""
+    manifest = _read_test_manifest(starless)
+    if manifest is None:
+        return None
+    labels = [str(x) for x in manifest.get("member_labels", []) or []]
+    if not labels or labels != _regime_labels(ensemble_dir(), starless):
+        return None
+    return _knee_psnr_field_curves(
+        starless, manifest, _knee_psnr_identity(starless, manifest), progress)
+
+
+def _knee_psnr_field_curves(starless: bool, manifest: dict, identity: dict,
+                            progress: Callable[[int, int, str], None] | None
+                            ) -> dict | None:
+    """Score every cached test field at every knee (see :func:`knee_psnr_fields`)."""
+    labels = [str(x) for x in manifest.get("member_labels", []) or []]
+    rdir = _sky_records_local_dir()
+    subset = str(manifest.get("subset", ""))
+    target_name = "clean" if starless else "hr"
+    target_path = tfrecord_path(rdir, f"{target_name}_{subset}") if rdir else ""
+    if (not identity["indices"] or not target_path or not os.path.isfile(target_path)
+            or manifest.get("records_fp")
+            != _eval_records_fingerprint(rdir, subset, starless=starless)):
+        return None
+    fwhm = validate_target_fwhm_arcsec(
+        manifest.get("target_psf_fwhm_arcsec", Config.TARGET_PSF_FWHM_ARCSEC))
+    cubes_dir = _ensemble_cubes_dir(starless=starless)
+    combiner_kinds = [kind for kind in COMBINER_MODELS
+                      if manifest.get(f"has_combiner_{kind}")]
+    model_ids = ([f"member_{i}" for i in range(len(labels))]
+                 + ["ensemble_mean"] + combiner_kinds)
+
+    def field_curves(rec: int, target: np.ndarray) -> np.ndarray | None:
+        tag = f"{rec:05d}"
+        paths = ([os.path.join(cubes_dir, f"member{i}_{tag}.npy")
+                  for i in range(len(labels))]
+                 + [os.path.join(cubes_dir, f"sr_{tag}.npy")]
+                 + [os.path.join(cubes_dir, f"{COMBINER_MODELS[k].cube_prefix}_{tag}.npy")
+                    for k in combiner_kinds])
+        if not all(os.path.isfile(p) for p in paths):
+            return None
+        truth = stretched_truth(target)
+        return np.stack([knee_psnr(np.load(p), target, truth_asinh=truth)
+                         for p in paths])                     # (models, K, C)
+
+    wanted = set(identity["indices"])
+    total, done = len(wanted), 0
+    recs: list[int] = []
+    curves: list[np.ndarray] = []
+    pending: list[tuple[int, Future]] = []
+
+    def drain(limit: int) -> None:
+        nonlocal done
+        while len(pending) > limit:
+            rec, future = pending.pop(0)
+            result = future.result()
+            done += 1
+            if result is not None:
+                recs.append(rec)
+                curves.append(result)
+            if progress is not None:
+                progress(done, total, "PSNR vs knee")
+
+    with ThreadPoolExecutor(max_workers=_KNEE_PSNR_WORKERS) as pool:
+        for image in ImageSet.read(target_path, num_images=max(wanted) + 1):
+            rec = _record_index(image)
+            if rec not in wanted:
+                continue
+            target = blur_target_array(np.asarray(image.data, np.float32), fwhm,
+                                       pixel_scale_arcsec=image.pixel_scale_arcsec)
+            pending.append((rec, pool.submit(field_curves, rec, target)))
+            drain(2 * _KNEE_PSNR_WORKERS)
+        drain(0)
+    if not curves:
+        return None
+    return {"identity": identity, "labels": labels, "model_ids": model_ids,
+            "fields": recs,
+            "curves": np.stack(curves)}
 
 
 def knee_psnr_status(starless: bool) -> dict:

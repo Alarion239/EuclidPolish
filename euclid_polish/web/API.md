@@ -267,7 +267,19 @@ schedule, `vis_pixels` …) are not task params.
 Collections (`helpers/viewer_data.py`): `sky`, `cutouts`, `evaluation`,
 `ensemble`, `archive-fields`, `real-field`, `jwst-euclid`, `nexus-field`,
 `psfs`, `real` (contract C9, see *Real tiles* below), `fits` (any
-inspectable FITS file, see *Files workspace* below).
+inspectable FITS file, see *Files workspace* below), `study` (a model study's
+attached fields, see *Model studies* below).
+
+- **Study.** `?study=<id>`; objects = the study's uploaded fields (`id` = the
+  field id, `kind`, `fetched`, `bytes`, `tiers`), tiers `lr`, `sr` (the
+  production gate), `mean`, `hr`, `bhr` (blurred on the fly with the field's
+  target FWHM), `mask` (blackout holes, `arb`) and `member<i>` (hidden; the
+  study's member order, `meta.member_labels`). Served from the fetched-field
+  cache only: an object is `fetched` once its core products are, and lists
+  `fetched_members` (member indices); an unfetched field's cube is 404
+  "fetch the field first", an unfetched member tier 404 "fetch member <N>
+  first" (the viewer never fetches). Real-tile fields carry `X-Cube-WCS`
+  (SR grid = LR ×2).
 
 - **Objects.** Every `meta.objects[i]` has a stable string `id` (`sky` /
   `ensemble`: `"<subset>:<record index>"`; `cutouts`: star id; `evaluation`:
@@ -1090,3 +1102,61 @@ the same helper.
 | POST | `/api/figures/nexus-plates/<tag>/delete` |  | Delete one run directory: `{ok, tag}`; 404 unknown. |
 | GET | `/api/figures/real-sr` |  | The newest cached production SRs of real tiles (the C9 output store only; Home's thumbnail strip): `{total, items:[{ref, source, id, source_label, label, created, state: current\|stale\|unavailable, thumb}]}` newest first; `?limit=` 0–24 (default 6; 400 when not an integer). Read-only: never runs a model. |
 | GET | `/api/figures/real-sr/<source>/<identifier>.jpg` |  | Colour JPEG preview (the viewer's Temp rendering) of one cached production SR, longest side `?size=` 64–640 (default 240), memoised per file state; 404 when the tile has no cached production SR, 400 for a bad id or size. |
+
+### Model studies (`routes/studies.py`, `euclid_polish/studies/`)
+
+A study freezes the **whole** ensemble of one regime (every active member, the production gate,
+the combiner comparison) into an immutable record that outlives the members: archiving,
+retraining or deleting a member never touches it. Local store
+`<Config.TRACKING_DIR>/studies/<id>/` (outside every tracking campaign): `study.json` (the
+manifest: `id` = `YYYYMMDD-HHMMSS-<slug>`, `name`, `note`, `created`, `commit`, `regime`, the
+ensemble snapshot `ensemble.members[{label, name, origin (origin.json), fingerprint, step,
+target_steps, status, timeout, loss, asinh_knee(s), output_knee, knee_loss, blocks, bootstrap,
+noise_aug, icnr, seed, …}]`, the production `gate` identity `{name (promoted_from), dir, kind,
+member_labels, reads, mix_space, use_lr, width, fingerprint, fit, fitted_at}`, `records`
+`{records_fp, subset, indices, target, target_psf_fwhm_arcsec, generation, noise_models}`,
+`evaluation{evaluated_at, checks, headline}`, `blocks`, `warnings` (stale blocks at freeze),
+`identity{labels, fingerprints, records_fp, gate_fingerprint}`, `numbers{file: {sha256,
+bytes}}`, `fields[{fid, kind, ref, label, state: pending|uploaded, remote_dir,
+products{name: {sha256, bytes, shape?, dtype?}}, bytes, gate}]`, `remote{field_root,
+numbers_dir}`, `complete`, `completed`, `error` while incomplete), `numbers/` (read-only once
+complete: `members.csv`, `knee_psnr.json` = `{knees (KNEE_GRID_E, 21), bands, fields
+[record index], dropped_fields [evaluated fields left out: a missing cube or target record; also in the manifest `warnings`], models[{id, kind: member|mean|gate|combiner, label}], psnr[model][field][knee]
+[band]}` — per field, the Leaderboard loop, `integrated.csv` = `model, kind, field, band,
+integrated_psnr`, `training_curves.json`, `gate.json` = `{production, diagnostic (held-out
+usage / source usage / by brightness), variants, compare (latest report or null),
+compare_note}`, `real.json` = `{experiments[{id, label, created, tiles, specs{spec: {label,
+member_label, fingerprint, summary, per_tile}}}], note}`, `thumbs/<fid>.jpg`) and the only
+mutable sidecars `note.json`, `selections.json`. Attached fields (≤ 10) live on holylabs only:
+`<parent of the remote tracking dir>/study_fields/<id>/<fid>/` — a sibling of the directory the
+tracking mirror pushes (plain `rsync -az`, never `--delete`), so a push can never remove them —
+one `<product>.npz` (key `data`, float32 lossless; `mask` uint8) per product: `member_<N>`,
+`mean`, `gate`, `lr`, `hr` (synthetic), `mask` (blackout holes), plus `truth.json` and
+`field.json` (identity, labels, pixel scales, WCS, target blur, product sha256s). Field ids:
+`test-NNNNN`, `blackout-NNNNN` (record index), `real-<source>-<tile id>`. A freeze packs one
+product at a time, uploads it, checks the remote `sha256sum` and deletes the temp file; the
+numbers directory is mirrored to `<remote tracking dir>/studies/<id>/` after completion
+(best-effort). Every local write of a freeze or a fetch reserves its bytes first, and each disk-margin check subtracts the other study jobs' reservations, so a freeze and a fetch cannot jointly leave < 5 GiB free. Fetching is per product: "Fetch field" brings the core products (`field.json`,
+`truth.json`, `lr`, `hr`, `mean`, `gate`, `mask` — those the field has); member SRs are fetched
+explicitly, one by one or "every member that fits". Fetched products are cached in
+`<Config.VIS_DIR>/study_fields/<id>/<fid>/` (≤ 2 GiB over every study, accounted and evicted
+per product file, least recently used first (by local use: a pulled product is stamped when it arrives, since rsync keeps the holylabs mtime), never a product of the field being fetched; a fetch
+never leaves < 5 GiB free; one fetch at a time; every product's sha256 checked against the
+manifest). Errors are JSON
+`{ok:false, error}`; a margin violation is **507** `{code:"insufficient_storage", needed_bytes,
+free_bytes}`; an offline request needing fields is 503 `fasrc_offline`. Opening or reading
+never starts a job or fetches a field.
+
+| Methods | Path | Gate | Notes |
+|---|---|---|---|
+| GET, POST | `/api/studies` |  | GET: `{ok, studies:[{id, name, created, completed, regime, members, gate, fields, field_ids, note, commit, state: complete\|incomplete, reason, numbers_bytes, fields_bytes}], root, max_fields: 10, freezing:{job_id, study_id}\|null}` newest first. POST (form or JSON): `name` (required), `note`, `mode` (`starfull` default \| `starless`), `fields` (comma list or JSON list of field ids, ≤ 10, each `available` in the candidates) → validates (400 no name / > 10 / unknown field; 409 stale test cubes, unavailable field or another freeze running `code:"busy"`; 503 `fasrc_offline` with fields while disconnected; 507 disk margin), creates the incomplete study and starts local job `study-freeze` → `{ok, job_id, study_id, fields, upload_bytes (upper bound)}`; a freeze that loses the race to another answers 409 `busy` with `study_id: null` and leaves no study. Job: numbers → fields (progress per product) → `complete` → mirror; result `{study_id, complete, fields, fields_bytes, numbers_bytes, mirror{ok, remote_dir, error?}}`. A failure (sha mismatch, cancel, …) leaves the study incomplete with `error`. |
+| GET | `/api/studies/candidates` |  | Read-only freeze-dialog contents for `?mode=`: `{ok, regime, ensemble{members, n_members, gate{available, state, name, reads, mix_space, fitted_at}, evaluated_at, blocks[{id: members\|test_cubes\|gate\|gate_diagnostic\|compare\|training_curves\|real, title, state: current\|stale\|missing, detail}], stale[ids], numbers_bytes (≈)}, fields[{fid, kind: test\|blackout\|real, ref, label, available, reason, bytes, core_bytes, largest_product_bytes, bytes_upper_bound: true, thumb_url}], max_fields, can_freeze, blocking (why not), fasrc_connected, fields_note}`. Sizes are uncompressed upper bounds (the study manifest then records the compressed bytes). The test cubes are `current` only when they hold exactly the active membership, on the current records, with the checkpoints and the production gate the evaluation recorded (`eval_summary.json` `eval_identity.member_fps` / `combiner_fps.spatial_gate`; else `stale`, e.g. "member 203's checkpoint changed since the evaluation", "the production gate changed since the evaluation"). A field is available only with SR for every active member (current test cubes; blackout cubes built for those members and not older than any member's checkpoint on this machine, `max(mtime, ctime)` of its index — else "… delete cubes_blackout/blackout_index.json and run a combiner comparison to rebuild them"; real tiles, STARFULL only, with a current cached member SR — checkpoint fingerprint + LR hash — for every member) and when its core products and its largest product fit the 2 GiB fetch cache. 400 bad mode. |
+| GET | `/api/studies/candidates/thumb/<fid>.jpg` |  | Colour JPEG of a candidate field (test: baked gate else mean; blackout: stamped LR; real: stored production SR else LR), `?size=` 32–480 (default 160), `?mode=`. 400 bad id, 404 no cube. |
+| GET | `/api/studies/<study_id>` |  | `{ok, study (summary), manifest, manifest_sha256, note, selections, fields[{fid, kind, ref, label, state, bytes (compressed, all products), estimated_bytes (upper bound at freeze), core_bytes, member_bytes{member_<N>: bytes}, gate, fetched (core products cached), cached_products, members_fetched, products, thumb_url, viewer{collection:"study", params{study}, id}}], charts, group_fields, citation, numbers{knee_psnr, training_curves, gate, real}}` (`numbers` only for a complete study; `?numbers=0` omits it). 404 unknown. |
+| POST | `/api/studies/<study_id>/resume` |  | Continue an incomplete study (same `study-freeze` job; the numbers are kept, pending fields uploaded) → `{ok, job_id, study_id, fields, upload_bytes}`. 409 already complete or the ensemble changed since it started (members, checkpoints, records or gate; delete and freeze again); 503 `fasrc_offline` with pending fields while disconnected. |
+| POST | `/api/studies/<study_id>/note` |  | `note` (≤ 4000 chars) → `{ok, id, note}` (the `note.json` sidecar; the manifest keeps the frozen note). |
+| POST | `/api/studies/<study_id>/selections` |  | JSON `{selections:[{name, members?:[label], group?:<recipe field>, note?}]}` (or form `selections` = that JSON list; names unique, ≤ 100) replaces the named selections → `{ok, id, selections}`. 400 malformed, a member that is not in the study, or an unknown group field. |
+| POST | `/api/studies/<study_id>/delete` |  | `confirm=1` required (400 `confirm_required`). Deletes the local study, its fetched-field cache and (guarded `rm -rf`: absolute, depth ≥ 4, `/study_fields/` or `/studies/` in the path, the study id last) its holylabs field store and numbers mirror → `{ok, id, remote:[status lines]}`. 409 while its freeze or a fetch of one of its fields runs, or offline for a study with fields unless `local_only=1`. With `local_only=1` only the local study (and its fetch cache) is deleted and the holylabs copies are always kept (connected or not), reported as `NOT deleted — kept on FASRC (local_only)`. |
+| POST | `/api/studies/<study_id>/fields/<fid>/fetch` | fasrc | Fetch products of one uploaded field from holylabs into the local cache (local job `study-fetch`; ONE fetch at a time: the same request re-attaches `already_running`, another answers 409 `busy`). `products` = `core` (default: the core products) \| `members` (every member SR that still fits, in member order; the rest are `skipped`) \| a comma list of product names (`member_170,…`) → `{ok, job_id, study_id, fid, products, bytes}`; job result `{study_id, fid, fetched, skipped, cached, bytes}`. Cached products are not transferred again. The job fails when a product would exceed the 2 GiB cache (with this field's products kept) or leave < 5 GiB free, or a sha256 does not match. 400 unknown product, 404 unknown field. |
+| GET | `/api/studies/<study_id>/figure/<name>` |  | `<name>` = a chart (`knee`, `integrated`, `paired`, `gate`, `training`, `real`) → the figure in the plate style, `?format=` png (default) \| pdf \| svg, `?dpi=` 120–600 (default 300); `<chart>.csv` (or `?format=csv`) → exactly the plotted numbers. Selection: `?members=` (comma labels), `?group=` (recipe field: loss, training_knee, asinh_knee, output_knee, knee_loss, blocks, bootstrap, noise_aug, icnr, status, op), `?selection=<saved name>`; `paired`: `?reference=` mean (default) \| gate \| best \| `<label>` \| `group:<name>`, `?seed=`, `?resamples=` (default 2000; 95 % paired bootstrap over fields; 409 when a band has fewer than 2 fields with both values); `gate`: `?source=` all \| sources \| a brightness bin; `training`: `?metric=` psnr \| VIS \| Y_E \| J_E \| H_E \| loss; `real`: `?experiment=`. `?download=1` attachment `study-<id>-<chart>[-<dpi>dpi].<ext>`. 404 unknown chart / missing data (the error names what the study lacks), 409 incomplete study, 400 bad format / selection. |
+| GET | `/api/studies/<study_id>/numbers/<path:name>` |  | One frozen numbers file (`members.csv`, `knee_psnr.json`, …, `thumbs/<fid>.jpg`); `?download=1` attachment. 404 unknown. |

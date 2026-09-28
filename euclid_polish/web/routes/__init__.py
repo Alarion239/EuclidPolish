@@ -31,6 +31,7 @@ from euclid_polish.web.routes import (
     realism,
     sky_atlas,
     star_distribution,
+    studies,
     system,
     tng,
     tracking,
@@ -64,6 +65,7 @@ MODULES = (
     provenance,
     viewer,
     figures,
+    studies,
     fasrc,
     system,
 )

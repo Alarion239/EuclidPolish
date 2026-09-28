@@ -25,6 +25,8 @@ __pycache__/
 
 # Experiment-tracking store: mirrored to FASRC holylabs, never committed.
 /tracking/
+# Model-study fields: stored beside tracking/ in the holylabs checkout only.
+/study_fields/
 
 # Time-travel sandboxes (git worktrees + isolated data/ckpt). Disposable.
 /.timetravel/

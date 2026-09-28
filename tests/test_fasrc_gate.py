@@ -274,6 +274,13 @@ GRACEFUL = {
                                 "is best-effort and skipped offline"),
     "api_fasrc_queue_resume": ("local queue; it only pokes the server-side queue "
                                "ticker, whose step skips while FASRC is offline"),
+    "api_studies_candidates": "read-only; reports fasrc_connected=false offline",
+    "api_studies_freeze": ("a freeze without fields is local (the numbers mirror is "
+                           "best-effort); with fields it answers 503 fasrc_offline"),
+    "api_study_resume": ("resuming the numbers is local; pending fields answer 503 "
+                         "fasrc_offline"),
+    "api_study_delete": ("local delete; a study with holylabs fields answers 409 unless "
+                         "local_only=1 while offline"),
 }
 
 _SSH_METHODS = {"run", "stream", "rsync_pull", "rsync_push", "write_text"}

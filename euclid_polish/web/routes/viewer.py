@@ -75,6 +75,8 @@ def _params() -> dict:
         # ``fits`` collection (Inspect workspace): file, HDU, plane stacking,
         # display bin, log render.
         "path", "hdu", "stack", "bin", "render",
+        # ``study`` collection: the model study whose attached fields to show.
+        "study",
         viewer_data.BHR_FWHM_PARAM,
         # PSF-page live preview: the client changes only the replay seed every
         # few seconds.  These remain harmless for every other collection.
